@@ -411,6 +411,8 @@ func (r *run) restorePause(m pauseMark) {
 // cancelled outright; what needs it is blocked for good, and the run may
 // end. The caller holds e.mu, in a transaction; t is not terminal.
 func (e *Engine) cancelTask(r *run, t *task) []event {
+	// What its attempts asked ends with it.
+	e.cancelAsked(r, t, t.def.ID+" was cancelled")
 	if a := t.active(); a != nil {
 		if a.sessionID != "" {
 			r.pendingStops = append(r.pendingStops, a.sessionID)
@@ -432,17 +434,23 @@ func (e *Engine) cancelTask(r *run, t *task) []event {
 
 // reopenRun opens r again for a person's change that makes one of its
 // tasks runnable or verified again (Retry, Accept anyway, Check again):
-// its outcome cleared and marked, and the prerequisites its end
-// interrupted armed again (reopenPrerequisites). Every such change
-// reopens the run through it, so what reopening a run must also do is
-// done for all of them in one place. The caller holds e.mu, in a
-// transaction's change.
-func (e *Engine) reopenRun(r *run) {
+// its outcome cleared and marked, the prerequisites its end interrupted
+// armed again (reopenPrerequisites), and every plan decision's gate the
+// change makes matter again asked again or kept holding (regate, with
+// cause, what made the work runnable): a gate's requirement outlives its
+// decision (I14), so no task a gate names is dispatched past it. Every
+// such change reopens the run through it, so what reopening a run must
+// also do is done for all of them in one place; each checks the room the
+// gates it would ask again need (retryNeedsRoom) before its change. The
+// caller holds e.mu, in a transaction's change, with the change's task
+// already in its new state.
+func (e *Engine) reopenRun(r *run, cause string) {
 	if r.outcome != "" {
 		r.outcome = ""
 		r.markRun()
 	}
 	r.reopenPrerequisites()
+	e.regate(r, cause)
 }
 
 // retryTask gives failed or cancelled t one more attempt: it is blocked
@@ -455,7 +463,7 @@ func (e *Engine) retryTask(r *run, t *task) []event {
 	}
 	t.state, t.reason = ledger.TaskBlocked, ""
 	r.markTask(t)
-	e.reopenRun(r)
+	e.reopenRun(r, t.def.ID+" was retried")
 	r.ready()
 	r.note(session.ActivityStatus, "task %s: retried, one more attempt allowed", t.def.ID)
 	return []event{{"task.retried", map[string]any{"task": t.def.ID}}}
@@ -477,8 +485,9 @@ func (e *Engine) acceptTask(r *run, t *task, actor string) ([]event, error) {
 	t.state, t.reason = ledger.TaskSucceeded, fmt.Sprintf("accepted by %s with attempt %d's result", actor, last.n)
 	r.markTask(t)
 	// Open again (what needs the task goes on), the prerequisites the
-	// run's end interrupted armed again, unless the acceptance settles it.
-	e.reopenRun(r)
+	// run's end interrupted armed again and its gates asked again, unless
+	// the acceptance settles it.
+	e.reopenRun(r, t.def.ID+" was accepted")
 	r.ready()
 	e.settleRun(r)
 	r.note(session.ActivityStatus, "task %s: attempt %d's result accepted by %s", t.def.ID, last.n, actor)
@@ -673,6 +682,9 @@ func (e *Engine) Retry(ctx context.Context, runID, actor string, cmd Command, ta
 		if _, err := taskCommandCheck(r, TaskRetry, t); err != nil {
 			return t, nil, err
 		}
+		if err := r.retryNeedsRoom(t, "retry"); err != nil {
+			return t, nil, err
+		}
 		return t, e.retryTask(r, t), nil
 	}, nil)
 }
@@ -686,6 +698,9 @@ func (e *Engine) Accept(ctx context.Context, runID, actor string, cmd Command, t
 			return nil, nil, ErrTaskNotFound
 		}
 		if _, err := taskCommandCheck(r, TaskAccept, t); err != nil {
+			return t, nil, err
+		}
+		if err := r.retryNeedsRoom(t, "accept"); err != nil {
 			return t, nil, err
 		}
 		events, err := e.acceptTask(r, t, actor)
@@ -782,6 +797,11 @@ func (e *Engine) Recheck(ctx context.Context, runID, actor string, cmd Command, 
 		}
 		fc, m, err := r.recheckOf(t, rq)
 		if err != nil {
+			return t, nil, err
+		}
+		// The gates its reopen would ask again need their room, as a
+		// Retry's do: refused before anything is recorded.
+		if err := r.retryNeedsRoom(t, "check again"); err != nil {
 			return t, nil, err
 		}
 		was.state, was.reason, was.outcome, was.pause = t.state, t.reason, r.outcome, r.pauseMarkOf()
@@ -930,7 +950,7 @@ func (e *Engine) recheckTask(r *run, t *task, m *member, fc ledger.AttemptRow, a
 	r.rechecks = append(r.rechecks, a)
 	r.markTask(t)
 	r.markAttempt(a)
-	e.reopenRun(r)
+	e.reopenRun(r, t.def.ID+" was checked again")
 	r.ready()
 	r.note(session.ActivityStatus, "task %s: attempt %d checks again the result %s of attempt %d, as %s asked", t.def.ID, n, short(fc.ResultCommit), fc.N, actor)
 	payload := map[string]any{"task": t.def.ID, "attempt": n, "commit": fc.ResultCommit, "of": fc.N, "actor": actor}

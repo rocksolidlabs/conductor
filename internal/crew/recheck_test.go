@@ -925,13 +925,14 @@ func TestRecheckWaitsForThePrerequisites(t *testing.T) {
 	stopRun(t, e, next.ID)
 }
 
-// Check again reopens a run a plan's gate holds work in, and leaves the
-// hold where it is: build's spent attempts finish the run failed with
-// deploy, which needs it, held by the gate; Check again's pass makes
-// deploy ready and still held with its words, no attempt of it dispatched,
-// the gate open and the run running; the operator's Approve then releases
-// it and it starts (docs/plans/decisions.md, Holding; reopenRun with #672's
-// holds).
+// Check again reopens a run a plan's gate held work in, and asks the gate
+// again: build's spent attempts finish the run failed and cancel the gate
+// that held deploy, which needs it; Check again's reopen (reopenRun's
+// regate) opens a fresh gate in its own change, so deploy, ready once the
+// check passes, stays held with its words, no attempt of it dispatched,
+// the run running; the operator's Approve of the fresh gate then releases
+// it and it starts (docs/plans/decisions.md, Holding; I14). It fails with
+// the regate taken out of reopenRun.
 func TestRecheckLeavesAGatesHoldInPlace(t *testing.T) {
 	dir := newRepo(t)
 	e, _, ld := decisionEngine(t)
@@ -942,14 +943,19 @@ func TestRecheckLeavesAGatesHoldInPlace(t *testing.T) {
 	g := gateOf(t, e, ld, run.ID)
 	c3 := spend(t, e, run.ID, "build", "built.txt").Attempt.Result
 	waitOutcome(t, e, run.ID, ledger.OutcomeFailed)
+	decisionWhen(t, ld, g.ID, "cancelled", inState(ledger.DecisionCancelled))
 
 	mustMark(t, mark)
 	if rc, err := recheck(e, run.ID, "r1", "build", 3, c3); err != nil || rc.Status != ledger.CommandDone {
 		t.Fatalf("Check again: %+v %v", rc, err)
 	}
+	fresh := gateOf(t, e, ld, run.ID)
+	if fresh.ID == g.ID || fresh.Gate != "ship" || !strings.Contains(string(fresh.History[0].Detail), "build was checked again after "+g.ID+" was cancelled") {
+		t.Fatalf("the fresh gate: %+v %s", fresh, fresh.History[0].Detail)
+	}
 	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 4)
 	dep := waitTaskWhere(t, e, run.ID, "deploy", "ready and held", func(ts TaskState) bool {
-		return ts.State == ledger.TaskReady && ts.Reason == "waits for decision "+g.ID
+		return ts.State == ledger.TaskReady && ts.Reason == "waits for decision "+fresh.ID
 	})
 	if dep.Attempts != 0 {
 		t.Fatalf("deploy dispatched past its gate: %+v", dep)
@@ -957,20 +963,60 @@ func TestRecheckLeavesAGatesHoldInPlace(t *testing.T) {
 	if r, _ := e.Get(run.ID); r.State != RunRunning || r.Outcome != "" {
 		t.Fatalf("the run reopened with a held task left: %s/%q", r.State, r.Outcome)
 	}
-	if rec := decisionWhen(t, ld, g.ID, "open", inState(ledger.DecisionOpen)); rec.Rev != 1 {
-		t.Fatalf("the gate after Check again: %+v", rec.DecisionRow)
+	if rec := decisionWhen(t, ld, fresh.ID, "open", inState(ledger.DecisionOpen)); rec.Rev != 1 {
+		t.Fatalf("the fresh gate after Check again: %+v", rec.DecisionRow)
 	}
-	if got := activeHolds(t, ld, run.ID); !slices.Equal(got, []string{"deploy " + g.ID}) {
+	if got := activeHolds(t, ld, run.ID); !slices.Equal(got, []string{"deploy " + fresh.ID}) {
 		t.Fatalf("holds after Check again: %q", got)
 	}
 	if ts := taskOf(t, e, run.ID, "deploy"); ts.Attempts != 0 {
 		t.Fatalf("deploy dispatched past its gate: %+v", ts)
 	}
 
-	answer(t, e, g.ID, Response{ResponseID: "a1", Choice: choice(0), ExpectedRev: 1})
-	if app := applied(t, decisionWhen(t, ld, g.ID, "applied", inState(ledger.DecisionApplied))); app.How != HowReleased || !slices.Equal(app.Tasks, []string{"deploy"}) {
+	answer(t, e, fresh.ID, Response{ResponseID: "a1", Choice: choice(0), ExpectedRev: 1})
+	if app := applied(t, decisionWhen(t, ld, fresh.ID, "applied", inState(ledger.DecisionApplied))); app.How != HowReleased || !slices.Equal(app.Tasks, []string{"deploy"}) {
 		t.Fatalf("the application: %+v", app)
 	}
 	waitAttempt(t, e, run.ID, "deploy", ledger.AttemptRunning)
+	stopRun(t, e, run.ID)
+}
+
+// A Check again whose reopen would ask two gates again, in a run with
+// room for one, is refused decision_limit before anything is recorded, as
+// a Retry is: build stays failed with no new attempt, and no gate opens.
+func TestRecheckNeedsRoomForEveryGate(t *testing.T) {
+	dir := newRepo(t)
+	e, _, ld := decisionEngine(t)
+	mark := filepath.Join(t.TempDir(), "passes")
+	build := work("build", "lead")
+	build.Checks = []Check{markedCheck("test", mark)}
+	smoke := PackageDecision{ID: "smoke", Question: "Smoke it?", Kind: ledger.DecisionApproval, Before: []string{"smoke"}}
+	run := launchGated(t, e, dir, "api-sweep-000000cb", repoCrew(dir, build, work("deploy", "ops", "build"), work("smoke", "qa", "build")), shipGate("deploy"), smoke)
+	c3 := spend(t, e, run.ID, "build", "built.txt").Attempt.Result
+	waitOutcome(t, e, run.ID, ledger.OutcomeFailed)
+	before, err := ld.Decisions(t.Context(), ledger.DecisionFilter{CurrentRun: run.ID})
+	if err != nil || len(before) != 2 || !before[0].Final() || !before[1].Final() {
+		t.Fatalf("the gates: %+v %v", before, err)
+	}
+	r := runOf(t, e, run.ID)
+	e.mu.Lock()
+	r.dec.opened = ledger.MaxDecisionsPerRun - 1
+	e.mu.Unlock()
+
+	mustMark(t, mark)
+	rc, err := recheck(e, run.ID, "r1", "build", 3, c3)
+	var de *DecisionError
+	if !errors.As(err, &de) || de.Code != CodeDecisionLimit || !strings.Contains(de.Words, "ship, smoke") || !strings.Contains(de.Words, "the check again is refused") || rc.Status != ledger.CommandFailed {
+		t.Fatalf("the Check again: %+v %v", rc, err)
+	}
+	if ts := taskOf(t, e, run.ID, "build"); ts.State != ledger.TaskFailed || ts.Attempts != 3 {
+		t.Fatalf("build after the refused Check again: %+v", ts)
+	}
+	if after, err := ld.Decisions(t.Context(), ledger.DecisionFilter{CurrentRun: run.ID}); err != nil || len(after) != 2 {
+		t.Fatalf("decisions after the refused Check again: %+v %v", after, err)
+	}
+	if got, _ := e.Get(run.ID); got.Outcome != ledger.OutcomeFailed {
+		t.Fatalf("the run after the refused Check again: %s/%q", got.State, got.Outcome)
+	}
 	stopRun(t, e, run.ID)
 }
