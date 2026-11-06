@@ -170,10 +170,21 @@ designs, an approval before a step, something only a person can do) is a
 decision: ask it with decision_request or task decide, not with ask or task
 blocked, whose question lasts only as long as this session. Conductor keeps
 a decision through restarts, holds your task until the operator answers,
-and does not count an attempt that ends while it waits. Commit and save a
-checkpoint first, then ask:
+and does not count an attempt that ends while it waits. What you do before
+you ask depends on your task's kind: a review is a task whose task.md says
+"Do not commit" under How to finish; any other is a work task.
+
+- A work task commits its work and saves a checkpoint first (task
+  checkpoint, below), so an attempt that ends while it waits loses
+  nothing, then asks:
 
       "${CONDUCTOR_BIN:-conductor}" task decide --type approval --question "Drop the legacy table?" --option "Drop it: frees 2 GB" --option "Keep it" --recommend 0 --authorizes "running migration 42" --evidence "task:$CONDUCTOR_RUN/$CONDUCTOR_TASK"
+
+- A review commits nothing and saves no checkpoint (task checkpoint
+  refuses a review): it asks as it is, about the candidate it reviews,
+  which is its HEAD. No checkpoint is needed for a decision:
+
+      "${CONDUCTOR_BIN:-conductor}" task decide --type clarification --question "Must the v1 routes stay as they are?" --evidence "task:$CONDUCTOR_RUN/$CONDUCTOR_TASK"
 
 - --type is clarification (options optional, answered in words too),
   approval (2 to 6 options and what a yes --authorizes) or assignment (no
@@ -183,8 +194,13 @@ checkpoint first, then ask:
   Pending. ...". dr-7 is the decision's id, which task decision, task
   withdraw and --supersedes take. Without an id, task decision lists your
   task's decisions (id, type, state, rev, question, answer); rev counts the
-  decision's changes and is nothing you send. Withdraw a decision once you
-  no longer need it.
+  decision's changes and is nothing you send. These commands take your
+  own task's decisions only: another task's id is answered exactly as an
+  id no decision has. Withdraw an open decision this attempt asked once you
+  no longer need it. A withdrawal refused not_held means your run was
+  continued: the decision stays open in the run that continues this one,
+  which waits on it. Stop there and end your turn, as this attempt's work
+  is over; submit nothing and ask nothing more.
 
       "${CONDUCTOR_BIN:-conductor}" task decision dr-7
       "${CONDUCTOR_BIN:-conductor}" task withdraw dr-7
@@ -242,12 +258,12 @@ What Conductor types into this session about a decision, and what you do:
 - Nothing is typed for the operator's comment or a re-route: keep
   waiting. A decision you superseded or withdrew is closed: nothing comes.
 - If the run stops or your session ends while you wait, the decision
-  waits with your task. Your task's next attempt starts at your
-  checkpoint once it is applied or closed, in this run or the one that
-  continues it, and its task file's Decisions section says each
-  decision's state: applied with the answer (do it), superseded or
-  cancelled with why (never act on an answer it shows). A run that ends
-  cancels the decisions it holds.
+  waits with your task. Your task's next attempt starts once it is
+  applied or closed, in this run or the one that continues it (a work
+  task's at your checkpoint, a review's at its candidate), and its task
+  file's Decisions section says each decision's state: applied with the
+  answer (do it), superseded or cancelled with why (never act on an
+  answer it shows). A run that ends cancels the decisions it holds.
 
 ## Messages, blockers and checkpoints
 

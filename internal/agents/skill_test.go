@@ -62,7 +62,19 @@ func TestSkillText(t *testing.T) {
 		// arrives, and what each id, receipt and ref it names is.
 		`"${CONDUCTOR_BIN:-conductor}" task decide --type approval --question "Drop the legacy table?" --option "Drop it: frees 2 GB" --option "Keep it" --recommend 0 --authorizes "running migration 42" --evidence "task:$CONDUCTOR_RUN/$CONDUCTOR_TASK"`,
 		"is a\ndecision: ask it with decision_request or task decide, not with ask or task\nblocked, whose question lasts only as long as this session.",
-		"Commit and save a\ncheckpoint first, then ask", "does not count an attempt that ends while it waits",
+		"does not count an attempt that ends while it waits",
+		// What each kind does before it asks (#689, review round 3): a
+		// work task commits and saves a checkpoint; a review, which can do
+		// neither, asks without them, as its own example shows.
+		"a review is a task whose task.md says\n\"Do not commit\" under How to finish; any other is a work task.",
+		"- A work task commits its work and saves a checkpoint first (task\n  checkpoint, below)",
+		"- A review commits nothing and saves no checkpoint (task checkpoint\n  refuses a review): it asks as it is, about the candidate it reviews,\n  which is its HEAD. No checkpoint is needed for a decision:",
+		`"${CONDUCTOR_BIN:-conductor}" task decide --type clarification --question "Must the v1 routes stay as they are?" --evidence "task:$CONDUCTOR_RUN/$CONDUCTOR_TASK"`,
+		"(a work\n  task's at your checkpoint, a review's at its candidate)",
+		// Only the task's own decisions answer, and a withdrawal refused
+		// not_held is the attempt's end (#637, review round 3).
+		"These commands take your\n  own task's decisions only: another task's id is answered exactly as an\n  id no decision has.",
+		"A withdrawal refused not_held means your run was\n  continued: the decision stays open in the run that continues this one,\n  which waits on it. Stop there and end your turn, as this attempt's work\n  is over; submit nothing and ask nothing more.",
 		// Every id and ref a command prints, named; the go-on rule (applied
 		// alone); and, for each state a decision reaches, what the agent
 		// sees and does (the lines themselves are tied to the engine's
@@ -77,7 +89,7 @@ func TestSkillText(t *testing.T) {
 		"give a requestId of your own: the same request with it\n  again replies with the same decision, never a second",
 		"dr-7/1 is the receipt of\n  the first response to dr-7, nothing you cite", "it overrides your recommendation",
 		"Ask again\n  with what was asked for in --context and --supersedes dr-7", "Take it as a no", "Never act\n  on its answer",
-		"Nothing is typed for the operator's comment or a re-route: keep\n  waiting.", "If the run stops or your session ends while you wait", "Decisions section says each\n  decision's state",
+		"Nothing is typed for the operator's comment or a re-route: keep\n  waiting.", "If the run stops or your session ends while you wait", "Decisions section says each decision's state",
 		"Options are\n  numbered from 0", "answered Done or Not done", "what a yes --authorizes",
 		"Only refs to your own\n  work are taken", "task:RUN/TASK", "attempt:RUN/TASK/N", "check:RUN/TASK/N/CHECK/K", "commit:RUN/SHA (the full id", "message:RUN/SEQ", "plan:KEY-n/REV (REV the number of the plan\n  revision that launched it, from the launch package, not an attempt's)",
 		// Each number is the cited record's own (#689, review round 2): N
@@ -125,6 +137,11 @@ func TestSkillText(t *testing.T) {
 	// A file: ref is outside an asker's grant (#683): never offered.
 	if strings.Contains(body, "file:SESSION") {
 		t.Error("the skill offers a file: ref, which a decision refuses")
+	}
+	// No checkpoint asked of every asker (#689, review round 3): a review
+	// cannot save one, and the Decisions section asks it of a work task.
+	if section := body[decisions:messages]; strings.Contains(section, "Commit and save a\ncheckpoint first") || strings.Count(section, "saves a checkpoint first") != 1 {
+		t.Error("the Decisions section asks every task for a checkpoint before a decision")
 	}
 	if strings.Contains(body, "--state needs_input") {
 		t.Error("the skill asks without the mark (--state needs_input)")

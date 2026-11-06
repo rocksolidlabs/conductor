@@ -53,12 +53,15 @@ commit submitted twice is taken once.
 
 A decision is a question a person must answer before your work goes on
 (docs/protocol.md, Decisions). dr-N is its id: task decision, task withdraw
-and --supersedes name it. Save a checkpoint first; do not submit your
-result until it is applied. Its states: open and answered (the response
-recorded, not yet applied) wait; applied goes on with its answer;
-superseded, cancelled and expired mean no answer will come. What is typed
-into this session about it, or written into your task's next attempt's
-task file when this session has ended:
+and --supersedes name it, for your own task's decisions only (another
+task's id is answered as one no decision has). Before you ask, a work task
+commits and saves a checkpoint; a review commits nothing and saves no
+checkpoint (task checkpoint refuses one), and asks about its candidate as
+it is. Do not submit your result until it is applied. Its states: open
+and answered (the response recorded, not yet applied) wait; applied goes
+on with its answer; superseded, cancelled and expired mean no answer will
+come. What is typed into this session about it, or written into your
+task's next attempt's task file when this session has ended:
   "Decision dr-N (TYPE) answered by NAME: ANSWER. Why: WHY. (receipt dr-N/K)"
       applied (Why when a rationale was given; K the response's number):
       do what it says, even against your recommendation
@@ -91,7 +94,10 @@ that "resolves to nothing". --file reads the request as JSON instead, as
 decision_request takes it: at most 1 MiB, one value and nothing after it
 but white space, no field it does not take; a requestId in it, sent again,
 replies with the same decision. A decide that failed may still have opened
-its decision: list them with task decision before you ask again.
+its decision: list them with task decision before you ask again. A
+withdrawal refused not_held means your run was continued: the decision
+stays open in the run that continues this one; stop there, as this
+attempt's work is over.
 
 Outside a Conductor session, or in a session that is no attempt, every
 command says so and exits 1.

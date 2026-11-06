@@ -18,6 +18,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // conductor task decide, decision and withdraw, and conductor decision
@@ -36,7 +37,30 @@ type decisionAPI struct {
 // newDecisionAPI launches the planned crew and waits for its attempt.
 func newDecisionAPI(t *testing.T) *decisionAPI {
 	t.Helper()
+	return launchDecisionAPI(t, newPlannedAPI(t))
+}
+
+// newReviewedDecisionAPI is newDecisionAPI with a crew whose build is
+// reviewed: its review task, on the same member, starts at build's
+// result once that is taken.
+func newReviewedDecisionAPI(t *testing.T) *decisionAPI {
+	t.Helper()
 	a := newPlannedAPI(t)
+	a.crew = a.admin(t, "POST", "/api/crews", map[string]any{
+		"name": "Reviewed", "goal": "fix it", "cwd": a.repo, "where": "server", "isolation": "worktree",
+		"members": []any{map[string]any{"name": "lead", "agentId": "ready-cat", "start": map[string]any{"when": "task"}}},
+		"tasks": []any{
+			map[string]any{"id": "build", "member": "lead", "kind": "work", "instructions": "Build it.",
+				"checks": []any{map[string]any{"id": "test", "argv": []string{"true"}}}},
+			map[string]any{"id": "review", "member": "lead", "kind": "review", "instructions": "Review it.", "needs": []string{"build"}},
+		},
+	}, http.StatusCreated)["crew"].(map[string]any)["id"].(string)
+	return launchDecisionAPI(t, a)
+}
+
+// launchDecisionAPI launches a's crew and waits for build's attempt.
+func launchDecisionAPI(t *testing.T, a *plannedAPI) *decisionAPI {
+	t.Helper()
 	run := a.admin(t, "POST", "/api/crews/"+a.crew+"/launch", nil, http.StatusCreated)["run"].(map[string]any)["id"].(string)
 	sid, token := a.memberSession(t, run)
 	d := &decisionAPI{plannedAPI: a, run: run, sid: sid, token: token}
@@ -53,6 +77,34 @@ func newDecisionAPI(t *testing.T) *decisionAPI {
 	})
 	inSessionOf(t, a.hs.URL, sid, token)
 	return d
+}
+
+// attempt polls the run until task's attempt runs, and gives its
+// session an agent token, as its process gets one: the attempt as the
+// run reports it, and the token.
+func (d *decisionAPI) attempt(t *testing.T, task string) (map[string]any, string) {
+	t.Helper()
+	var at map[string]any
+	d.until(t, task+"'s attempt running", func() bool {
+		tasks, _ := d.admin(t, "GET", "/api/runs/"+d.run, nil, http.StatusOK)["run"].(map[string]any)["tasks"].([]any)
+		for _, x := range tasks {
+			tk, _ := x.(map[string]any)
+			if a, _ := tk["attempt"].(map[string]any); tk["id"] == task && a != nil && a["state"] == "running" && a["sessionId"] != nil && a["sessionId"] != "" {
+				at = a
+				return true
+			}
+		}
+		return false
+	})
+	sid := at["sessionId"].(string)
+	s, ok := d.srv.Registry().Get(sid)
+	local, isLocal := s.(*session.Local)
+	if !ok || !isLocal {
+		t.Fatalf("session %s is not a server session", sid)
+	}
+	token := "agent-token-" + sid
+	local.SetAgentToken(token)
+	return at, token
 }
 
 // until polls ok until it holds, as long as the test may take.
@@ -210,6 +262,35 @@ func TestTaskWithdraw(t *testing.T) {
 	}
 	if code, _, err := task(t, "", "withdraw", "dr-1"); code != 1 || err == nil || !strings.Contains(err.Error(), "(decision_closed)") {
 		t.Fatalf("a second withdrawal: %d %v", code, err)
+	}
+}
+
+// A withdrawal refused not_held, its run continued (#637, review round
+// 3), prints the route's words with its code, which tell the agent to
+// stop, prints nothing on stdout and exits 1; the skill and the usage
+// name the code and say the same.
+func TestAWithdrawalRefusedNotHeldSaysStop(t *testing.T) {
+	const words = "dr-7's run was continued: its attempt is no longer the one that asked it. dr-7 stays as it is in the run that continues this one, which waits on it; stop here, as this attempt's work is over"
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/sessions/s1/decisions/dr-7/withdraw" {
+			http.Error(w, "unexpected", http.StatusTeapot)
+			return
+		}
+		w.WriteHeader(http.StatusConflict)
+		_, _ = fmt.Fprintf(w, `{"error":{"code":"not_held","message":%q}}`, words)
+	}))
+	defer hs.Close()
+	inSession(t, hs)
+	code, out, err := task(t, "", "withdraw", "dr-7")
+	if code != 1 || out != "" || err == nil || err.Error() != "task: "+words+" (not_held)" {
+		t.Fatalf("withdraw refused not_held: %d %q %v", code, out, err)
+	}
+	skill := strings.Join(strings.Fields(agents.Skill), " ")
+	if !strings.Contains(skill, "A withdrawal refused not_held means your run was continued") || !strings.Contains(skill, "Stop there and end your turn") {
+		t.Error("the skill does not say what a withdrawal refused not_held means")
+	}
+	if !strings.Contains(strings.Join(strings.Fields(taskUsage), " "), "A withdrawal refused not_held means your run was continued") {
+		t.Error("the usage does not say what a withdrawal refused not_held means")
 	}
 }
 
@@ -511,26 +592,42 @@ func shellWords(t *testing.T, line string) []string {
 }
 
 // Each command the skill's Decisions section shows is run as it stands,
-// against a real server, in the order it shows them: task decide makes
-// dr-7 (six asked and withdrawn before it) and replies as the skill quotes it, task
-// decision dr-7 reads it, task withdraw dr-7 withdraws it. A change to a
-// command that its example does not follow fails here (#689, review
-// round 2).
+// against a real server, in the order it shows them: a work task's task
+// decide makes dr-7 (six asked and withdrawn before it) and replies as
+// the skill quotes it, task decision dr-7 reads it, task withdraw dr-7
+// withdraws it. A change to a command that its example does not follow
+// fails here (#689, review round 2). The review's example runs in the
+// review task once build's result is taken: a review saves no checkpoint
+// (task checkpoint refuses it, as the skill says), and its decide opens
+// its decision without one, about the candidate at its HEAD (#689,
+// review round 3).
 func TestTheSkillsDecisionExamplesRun(t *testing.T) {
-	d := newDecisionAPI(t)
+	d := newReviewedDecisionAPI(t)
 	t.Setenv("CONDUCTOR_RUN", d.run)
 	t.Setenv("CONDUCTOR_TASK", "build")
 	t.Setenv("CONDUCTOR_BIN", "")
 	section := agents.Skill[strings.Index(agents.Skill, "\n## Decisions\n"):]
 	section = section[:strings.Index(section[1:], "\n## ")+1]
-	var examples [][]string
+	// Each example is a work task's or the review's, by the bullet it is
+	// under; the review's is read as a shell would once the review runs,
+	// its environment the review's.
+	var work [][]string
+	var review []string
+	reviews := false
 	for _, line := range strings.Split(section, "\n") {
+		if strings.HasPrefix(line, "- ") {
+			reviews = strings.HasPrefix(line, "- A review ")
+		}
 		if line = strings.TrimSpace(line); strings.HasPrefix(line, `"${CONDUCTOR_BIN:-conductor}" `) {
-			examples = append(examples, shellWords(t, line))
+			if reviews {
+				review = append(review, line)
+			} else {
+				work = append(work, shellWords(t, line))
+			}
 		}
 	}
-	if len(examples) != 3 {
-		t.Fatalf("the section's examples: %q", examples)
+	if len(work) != 3 || len(review) != 1 || !strings.HasPrefix(review[0], `"${CONDUCTOR_BIN:-conductor}" task decide `) {
+		t.Fatalf("the section's examples: a work task's %q, the review's %q", work, review)
 	}
 	// Six asked and withdrawn before it (an attempt holds at most four
 	// open), so that the example's is dr-7.
@@ -539,7 +636,7 @@ func TestTheSkillsDecisionExamplesRun(t *testing.T) {
 		mustTask(t, "withdraw", fmt.Sprintf("dr-%d", i))
 	}
 	skill := strings.Join(strings.Fields(agents.Skill), " ")
-	for _, words := range examples {
+	for _, words := range work {
 		if words[0] != "conductor" || words[1] != "task" {
 			t.Fatalf("an example that is no task command: %q", words)
 		}
@@ -565,6 +662,41 @@ func TestTheSkillsDecisionExamplesRun(t *testing.T) {
 		default:
 			t.Errorf("an example of no decision command: %q", words)
 		}
+	}
+
+	// build's result, a commit of its own, taken; the review runs at it.
+	built, _ := d.attempt(t, "build")
+	wt := built["worktree"].(string)
+	if err := os.WriteFile(filepath.Join(wt, "built.txt"), []byte("built\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, wt, "add", "built.txt")
+	gitIn(t, wt, "commit", "-q", "-m", "built")
+	candidate := gitIn(t, wt, "rev-parse", "HEAD")
+	mustTask(t, "result", "--summary", "built")
+	rev, token := d.attempt(t, "review")
+	inSessionOf(t, d.hs.URL, rev["sessionId"].(string), token)
+	t.Setenv("CONDUCTOR_TASK", "review")
+	if code, _, err := task(t, "", "checkpoint", "--done", "read it", "--remaining", "the verdict"); code != 1 || err == nil || !strings.Contains(err.Error(), "a review saves no checkpoint") {
+		t.Fatalf("a review's checkpoint: %d %v", code, err)
+	}
+	out := mustTask(t, shellWords(t, review[0])[2:]...)
+	if !strings.HasPrefix(out, "dr-8 open. Pending. ") {
+		t.Errorf("the review's decide: %q", out)
+	}
+	b := d.decision(t, "dr-8")
+	asker, _ := b["asker"].(map[string]any)
+	var req struct {
+		Subject  crew.DecisionSubject `json:"subject"`
+		Evidence []string             `json:"evidence"`
+	}
+	raw, _ := json.Marshal(b["request"])
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatal(err)
+	}
+	if b["type"] != "clarification" || b["state"] != "open" || asker == nil || asker["task"] != "review" ||
+		req.Subject.Kind != "commit" || req.Subject.Commit != candidate || fmt.Sprint(req.Evidence) != "[task:"+d.run+"/review]" {
+		t.Errorf("dr-8 as the review's decide made it: %v, its request %+v (the candidate %s)", b, req, candidate)
 	}
 }
 
