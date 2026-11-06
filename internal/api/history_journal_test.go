@@ -724,7 +724,7 @@ func TestTheEndCommitIsTheLaunchRepositorys(t *testing.T) {
 		// Every hint dropped, so the end is first settled by the removal's
 		// reconcile, after the registry's delete: the writer finds no
 		// session to read the end commit through (S28).
-		drop := func(func()) {}
+		drop := func(string, any, func()) {}
 		e.srv.recordDeliver.Store(&drop)
 		t.Cleanup(func() { e.srv.recordDeliver.Store(nil) })
 		w := filepath.Join(e.root, "removed-first")

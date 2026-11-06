@@ -78,18 +78,20 @@ import (
 // it leaves the registry. A session removed before the writer gets to it
 // has none read (its endCommit empty).
 //
-// The test seams: recordDeliver takes every hint and stream callback, to
-// deliver late, in another order, or not at all; recordHook is run at each
+// The test seams: recordDeliver takes every hint and stream callback, with
+// its session's id and what it carries, to deliver late, in another order,
+// or not at all; recordHook is run at each
 // stage recordSeam names.
 
 // revisionTimeout bounds a record's git read.
 const revisionTimeout = 2 * time.Second
 
-// deliver runs f, a hint or a stream callback, or hands it to the test's
-// seam (recordDeliver).
-func (s *Server) deliver(f func()) {
+// deliver runs f, a hint or a stream callback of the session id, or hands
+// it to the test's seam (recordDeliver) with what it carries: the
+// session.ActivityEntry or session.ChatMessage of a stream, nil for a hint.
+func (s *Server) deliver(id string, what any, f func()) {
 	if d := s.recordDeliver.Load(); d != nil {
-		(*d)(f)
+		(*d)(id, what, f)
 		return
 	}
 	f()
@@ -132,18 +134,19 @@ func (s *Server) closeSessionRecords(final bool) {
 	s.recMu.Lock()
 	s.recordsClosed = true
 	s.stopRecordsOne.Do(func() { close(s.recordsStop) })
-	var leaving []chan struct{}
+	var leaving []*recorder
 	for _, rc := range s.recCur {
 		switch {
 		case rc.leaving:
-			leaving = append(leaving, rc.gone)
+			leaving = append(leaving, rc)
 		case final:
 			s.reconcileLocked(rc, true)
 		}
 	}
 	s.recMu.Unlock()
-	for _, gone := range leaving {
-		<-gone
+	for _, rc := range leaving {
+		s.recordSeam("awaitLeaving", rc.in.ID())
+		<-rc.gone
 	}
 	s.recMu.Lock()
 	clear(s.recCur)
@@ -235,8 +238,9 @@ type recorder struct {
 // "afterRegistryAdd" (the registry holds the session, before registered),
 // "beforeAbandon" (the recorder marked leaving, before journal.Abandon),
 // "beforeRemovedReconcile" (OnRemove after the registry's delete, before
-// its reconcile) and "betweenReads" (a reconcile between its membership
-// read and its state read, recMu held).
+// its reconcile), "betweenReads" (a reconcile between its membership
+// read and its state read, recMu held) and "awaitLeaving" (the final pass,
+// recMu let go, about to wait for a leaving recorder to have gone).
 func (s *Server) recordSeam(stage, id string) {
 	if h := s.recordHook.Load(); h != nil {
 		(*h)(stage, id)
@@ -319,19 +323,19 @@ func (s *Server) recordHooks(rc *recorder, o *session.Options) {
 		if change != nil {
 			change(info)
 		}
-		s.deliver(func() { s.reconcile(rc) })
+		s.deliver(rc.in.ID(), nil, func() { s.reconcile(rc) })
 	}
 	o.OnActivity = func(id string, e session.ActivityEntry, st session.AttentionState) {
 		if activity != nil {
 			activity(id, e, st)
 		}
-		s.deliver(func() { s.recordActivity(rc, e) })
+		s.deliver(rc.in.ID(), e, func() { s.recordActivity(rc, e) })
 	}
 	o.OnChat = func(id string, m session.ChatMessage) {
 		if chat != nil {
 			chat(id, m)
 		}
-		s.deliver(func() { s.recordChat(rc, m) })
+		s.deliver(rc.in.ID(), m, func() { s.recordChat(rc, m) })
 	}
 }
 
@@ -494,7 +498,7 @@ func (s *Server) awaitProcessEnd(rc *recorder, l *session.Local) {
 	case <-s.recordsStop:
 		return
 	}
-	s.deliver(func() { s.reconcile(rc) })
+	s.deliver(rc.in.ID(), nil, func() { s.reconcile(rc) })
 }
 
 // recordActivity is a stream: the record's part of the session's activity

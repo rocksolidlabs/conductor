@@ -1815,7 +1815,7 @@ Rv with any other (below, S38).
 | S7 | Fp, a `Begin` | Before the mark: an admitted record, S5 or S6. After it: `beginServerRecord` reads the mark under `recMu` and begins nothing. Under way as the mark is set: the record written open, the mark found when its recorder would go in, none put in. After `Close`: the journal refuses it. | `recMu`, the mark, the journal's `closed` | no record; or open on disk, `lost` at the next start | `TestABeginAfterTheFinalPassRecordsNothing` |
 | S8 | Fp, a registration completing late (`made`, `registered`) | After Fp the recorder is gone; `registered`'s reconcile finds none and writes nothing; no `Settle` reaches the closed journal. | `recMu` | as Fp left it (S5 or S6) | `TestALaunchInFlightAtShutdownIsSettled`, `TestALaunchBeforeItsSessionAtShutdownIsLostAtTheNextStart` (each lets its launch go after `Close`) |
 | S9 | Ab, Hn or Sm or Wr | The leaving recorder reconciles nothing and keeps no stream; `Abandon` ends the instance under `wmu`, and the writer's work after finds its record gone. | `recMu`, the leaving mark, the instance rule | no record | `TestARefusedLaunchLeavesNoRecord` |
-| S10 | Ab, Fp | Leaving when Fp sets the mark: Fp does not settle it and waits, outside `recMu`, until the abandonment has gone. Gone before the mark: Fp never sees it. Not yet leaving when Fp settles it (its session object made): Fp settles it final and lets it go, and the abandonment that follows finds no recorder and removes nothing. | `recMu`, the leaving mark, Fp's wait | no record; or, an abandonment begun after Fp took its recorder, the record Fp settled | `TestARefusedLaunchAtTheFinalPass` (held at `beforeAbandon`, and before the leaving mark) |
+| S10 | Ab, Fp | Leaving when Fp sets the mark: Fp does not settle it and waits, outside `recMu`, until the abandonment has gone. Gone before the mark: Fp never sees it. Not yet leaving when Fp settles it (its session object made): Fp settles it final and lets it go, and the abandonment that follows finds no recorder and removes nothing. | `recMu`, the leaving mark, Fp's wait | no record; or, an abandonment begun after Fp took its recorder, the record Fp settled | `TestARefusedLaunchAtTheFinalPass` (held at `beforeAbandon` until Fp is at `awaitLeaving`, and before the leaving mark) |
 | S11 | Ab, Wf (`Abandon`'s delete fails) | The record is out of memory; the failed delete puts its row back from the file, as a removal's does, with no instance; its file says open, so by the rule for a record with no instance it is listed `lost` and its end written at the next pass. | `wmu`, the rule for a record with no instance | `lost`, listed, forgettable | `TestAFailedAbandonIsListedLost` |
 | S12 | Ab, Pe or Sr (the refused session's process ends, or is stopped by its launch) | The leaving recorder reconciles nothing. | `recMu`, the leaving mark | no record | lock |
 | S13 | Hn, Hn | Each reads the session under `recMu`; the later reads at least as new. The `Info` a hint carries is never read. | `recMu` | the session's state at the later read (the lowest Codex id the session chose, resumable as it says) | `TestAHintCarriesNoTruth` |
@@ -2137,8 +2137,9 @@ token), `TestHistorySessionsOffKeepsNoRecord`,
 lifecycle** (the property test and the rows that need a session in
 `internal/api`, the rows that are the journal's alone in
 `internal/journal`). The waits are on seams the code offers, never on a
-clock: `recordDeliver` (every hint and stream handed to the test to
-deliver late, in another order, or not at all), `betweenReads` (a
+clock: `recordDeliver` (every hint and stream handed to the test, with
+its session's id and what it carries, to deliver late, in another order,
+or not at all), `betweenReads` (a
 reconcile held between its membership read and its state read),
 `beforeRemovedReconcile` (`OnRemove` held after the registry's delete,
 before its reconcile), `afterRegistryAdd` (a launch held between
@@ -2146,7 +2147,9 @@ before its reconcile), `afterRegistryAdd` (a launch held between
 `AddReserved`), `afterBegin` (a `Begin` returned, before its recorder is
 put in place), `beforeMade` (a launch's recorder in place, before
 `session.NewLocal`), `beforeAbandon` (a recorder marked leaving, before
-`Abandon`), the journal's `beforeWrite` and `beforeDelete`, and `Flush`.
+`Abandon`), `awaitLeaving` (the final pass, `recMu` let go, about to
+wait for a leaving recorder), the journal's `beforeWrite` and
+`beforeDelete`, and `Flush`.
 
 `TestTheRecordFollowsTheSession`, a property test: a seeded random
 sequence (the seed printed, `CONDUCTOR_RECORD_SEED` replays one) of what
@@ -2249,10 +2252,12 @@ no record and the session started; a `Begin` held at `afterBegin` across
 the mark: its record open, no recorder put in),
 `TestARefusedLaunchLeavesNoRecord` (S9),
 `TestARefusedLaunchAtTheFinalPass` (S10: an abandonment held at
-`beforeAbandon` while the shutdown runs: the final pass waits, the record
-removed; and one held before its leaving mark while the final pass
-settles its recorder: the record as settled, the abandonment removing
-nothing), `TestAFailedAbandonIsListedLost` (S11),
+`beforeAbandon` while the shutdown runs, let go only once the final pass
+is at `awaitLeaving` and the shutdown has not returned: the record
+removed, its delete before the journal's `Close`; and one held before its
+leaving mark while the final pass settles its recorder: the record as
+settled, the abandonment removing nothing),
+`TestAFailedAbandonIsListedLost` (S11),
 `TestAHintCarriesNoTruth` (S13: two hints handed an older `Info` last, the
 lowest Codex id then a higher one, resumable then not: the record holds
 the session's own),

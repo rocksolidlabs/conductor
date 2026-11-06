@@ -153,9 +153,10 @@ type Server struct {
 	// put in place, settled or fed after it (closeSessionRecords).
 	recordsClosed bool
 	// recordDeliver, when a test sets it, is handed each hint and stream
-	// callback of a recorded session in place of running it (deliver);
-	// recordHook is run at each of the lifecycle's stages (recordSeam).
-	recordDeliver atomic.Pointer[func(func())]
+	// callback of a recorded session in place of running it (deliver),
+	// with its session's id and what it carries; recordHook is run at each
+	// of the lifecycle's stages (recordSeam).
+	recordDeliver atomic.Pointer[func(id string, what any, run func())]
 	recordHook    atomic.Pointer[func(stage, id string)]
 	// planFacts keeps what the plan revisions' reads take from each
 	// revision's body, by its digest (dispatch_plans.go), so a list reads

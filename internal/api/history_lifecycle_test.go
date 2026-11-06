@@ -268,15 +268,31 @@ func TestARefusedLaunchLeavesNoRecord(t *testing.T) {
 }
 
 // S10: an abandonment held at beforeAbandon while the shutdown runs: the
-// final pass waits for it, and the record is removed (were the journal
-// closed first, its delete would be refused and the file would stay). And
-// one that begins after the final pass settled its recorder removes
-// nothing: the record as settled.
+// abandonment is let go only once the final pass is at its wait for that
+// recorder (awaitLeaving), and the shutdown has not returned by then; the
+// record is removed, so its delete came before the journal's Close (were
+// the journal closed first, the delete would be refused and the file would
+// stay). And one that begins after the final pass settled its recorder
+// removes nothing: the record as settled.
 func TestARefusedLaunchAtTheFinalPass(t *testing.T) {
 	e := newTestEnv(t, nil)
 	lc := beginLaunch(t, e).make()
 	h := newHold(t)
-	onRecordStage(t, e, "beforeAbandon", lc.id, h.wait)
+	waiting := make(chan struct{})
+	var held, waited sync.Once
+	hook := func(stage, sid string) {
+		if sid != lc.id {
+			return
+		}
+		switch stage {
+		case "beforeAbandon":
+			held.Do(h.wait)
+		case "awaitLeaving":
+			waited.Do(func() { close(waiting) })
+		}
+	}
+	e.srv.recordHook.Store(&hook)
+	t.Cleanup(func() { e.srv.recordHook.Store(nil) })
 	abandoned := make(chan struct{})
 	go func() {
 		e.srv.abandon(lc.rc)
@@ -288,11 +304,23 @@ func TestARefusedLaunchAtTheFinalPass(t *testing.T) {
 		shutdown(e)
 		close(shut)
 	}()
+	select {
+	case <-waiting:
+	case <-shut:
+		t.Fatal("the shutdown returned with an abandonment under way: the final pass did not wait for it")
+	}
+	select {
+	case <-shut:
+		t.Fatal("the shutdown returned while the final pass waited for the abandonment")
+	case <-abandoned:
+		t.Fatal("the abandonment ended while held")
+	default:
+	}
 	h.release()
 	<-abandoned
 	<-shut
 	if !noRecordFile(t, e, lc.id) {
-		t.Fatal("the refused launch's record outlived the shutdown")
+		t.Fatal("the refused launch's record outlived the shutdown: its delete came after the journal's Close")
 	}
 
 	e2 := newTestEnv(t, nil)
@@ -308,7 +336,7 @@ func TestARefusedLaunchAtTheFinalPass(t *testing.T) {
 // S14: every hint dropped; the removal's reconcile reads the end.
 func TestALostHintIsReadByTheRemoval(t *testing.T) {
 	e := newTestEnv(t, nil)
-	drop := func(func()) {}
+	drop := func(string, any, func()) {}
 	e.srv.recordDeliver.Store(&drop)
 	t.Cleanup(func() { e.srv.recordDeliver.Store(nil) })
 	lc := beginLaunch(t, e).make().add(t).register()
@@ -333,7 +361,7 @@ func TestAnEndBeforeTheRemovalIsNeverReadStale(t *testing.T) {
 		lc := beginLaunch(t, e).make().add(t).register()
 		q := "q-" + lc.id
 		e.srv.recordChat(lc.rc, session.ChatMessage{ID: q, Kind: "question", Text: "Which?", By: session.ChatBy{Role: session.RoleAgent}, At: time.Now()})
-		drop := func(func()) {}
+		drop := func(string, any, func()) {}
 		e.srv.recordDeliver.Store(&drop)
 		if removalFirst {
 			lc.exit()
@@ -421,7 +449,7 @@ func TestAHintCarriesNoTruth(t *testing.T) {
 	e := newTestEnv(t, nil)
 	var mu sync.Mutex
 	var queued []func()
-	q := func(f func()) { mu.Lock(); queued = append(queued, f); mu.Unlock() }
+	q := func(_ string, _ any, f func()) { mu.Lock(); queued = append(queued, f); mu.Unlock() }
 	e.srv.recordDeliver.Store(&q)
 	t.Cleanup(func() { e.srv.recordDeliver.Store(nil) })
 	lc := beginLaunch(t, e).make().add(t).register()
@@ -445,7 +473,7 @@ func TestAnAnswerAfterTheEndReadsWithdrawn(t *testing.T) {
 	e := newTestEnv(t, nil)
 	var mu sync.Mutex
 	var queued []func()
-	q := func(f func()) { mu.Lock(); queued = append(queued, f); mu.Unlock() }
+	q := func(_ string, _ any, f func()) { mu.Lock(); queued = append(queued, f); mu.Unlock() }
 	e.srv.recordDeliver.Store(&q)
 	t.Cleanup(func() { e.srv.recordDeliver.Store(nil) })
 	lc := beginLaunch(t, e).make().add(t).register()
