@@ -734,6 +734,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/cancel", s.requireAdmin(s.handleCancelTask))
 	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/retry", s.requireAdmin(s.handleRetryTask))
 	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/accept", s.requireAdmin(s.handleAcceptTask))
+	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/recheck", s.launching(s.handleRecheckTask))
+	// A candidate's diff and its prepared failed-check request (review_diff.go, review_repair.go).
+	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}/attempts/{n}/diff", s.launching(s.handleCandidateDiff))
+	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}/attempts/{n}/diff/file", s.launching(s.handleCandidateDiffFile))
+	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/repair", s.launching(s.handlePrepareRepair))
 	// Brakeman's desk and its turn's session routes (brakeman.go).
 	s.routeBrakeman(mux)
 	// The operating guide, the admin's and a session's (guide.go).
@@ -821,8 +826,8 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 			h.Set("Access-Control-Allow-Origin", origin)
 			h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 			h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			// A receipt's log hash reaches the app's script across origins.
-			h.Set("Access-Control-Expose-Headers", logHashHeader)
+			// A receipt's log hash, and a diff file's commit and cut, reach the app's script across origins.
+			h.Set("Access-Control-Expose-Headers", logHashHeader+", "+commitHeader+", "+truncatedHeader)
 			h.Set("Vary", "Origin")
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)
