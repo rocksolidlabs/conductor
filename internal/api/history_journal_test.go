@@ -720,6 +720,24 @@ func TestTheEndCommitIsTheLaunchRepositorys(t *testing.T) {
 			t.Fatalf("the end commit %q of a repository made again (%s)", r.End, other)
 		}
 	})
+	t.Run("removed before the writer reads it", func(t *testing.T) {
+		// Every hint dropped, so the end is first settled by the removal's
+		// reconcile, after the registry's delete: the writer finds no
+		// session to read the end commit through (S28).
+		drop := func(func()) {}
+		e.srv.recordDeliver.Store(&drop)
+		t.Cleanup(func() { e.srv.recordDeliver.Store(nil) })
+		w := filepath.Join(e.root, "removed-first")
+		repoAt(t, w, "first")
+		id := sessionIn(t, e, w)
+		commitAt(t, w, "during the session")
+		e.stopAndWait(id)
+		<-e.local(id).ProcessDone()
+		e.srv.registry.Remove(id)
+		if r := endedRecord(t, e, id); r.End != "" || !strings.HasPrefix(r.Ending, "stopped") {
+			t.Fatalf("a session removed before its end commit's read: %q %q", r.End, r.Ending)
+		}
+	})
 }
 
 // stubbornProc is a process whose stop fails: it runs on until it ends
