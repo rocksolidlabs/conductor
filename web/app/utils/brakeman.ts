@@ -68,9 +68,28 @@ export interface BrakemanMade {
   state: string
   key?: string
   crew?: string
+  /** A draft plan revision proposed: the revision's id (its ticket's key in `key`). */
+  plan?: string
   rev?: number
   why?: string
   /** When its claim was written (the server's time): a newer claim of the item replaces an older one. */
+  at?: string
+}
+
+/**
+ * An operation Brakeman ran under a grant the person made (docs/plans/brakeman.md, PR-12): written pending before the operation ran,
+ * then done with its receipt (the id of what it made: a launch's, a revision's), refused with the words, or not_run when the server
+ * stopped before it ran. Its target is the ticket it acted on.
+ */
+export interface BrakemanAct {
+  opId: string
+  operation: string
+  target: string
+  run?: string
+  op: string
+  state: 'pending' | 'done' | 'refused' | 'not_run' | string
+  receipt?: string
+  why?: string
   at?: string
 }
 
@@ -104,6 +123,7 @@ export interface BrakemanRequest {
   briefAt?: string
   made?: BrakemanMade[]
   edges?: BrakemanEdge[]
+  acts?: BrakemanAct[]
   strayRun?: string
   closedAt?: string
 }
@@ -146,6 +166,24 @@ export type BriefItem =
   | { kind: 'evidence/1'; title: string; refs: string[] }
   | { kind: 'draft_ticket/1'; project: string; title: string; description?: string; acceptance?: string; priority?: number; blocks?: number[]; from?: string[] }
   | { kind: 'draft_crew/1'; crew: { name?: string } & Record<string, unknown>; gates?: Array<{ task: string; decision: string }>; from?: string[] }
+  | {
+      kind: 'draft_plan/1'
+      /** The ticket: ref it is for. */
+      ticket: string
+      /** A saved crew's id, one with tasks. */
+      crew: string
+      base?: string
+      /** A plan: ref of the same ticket, the revision it revises. */
+      basedOn?: string
+      references?: Array<{ path: string; start?: number; end?: number; note?: string }>
+      attachments?: string[]
+      /** comment: refs of the same ticket, handed over. */
+      comments?: string[]
+      constraints?: string
+      decisions?: Array<{ id: string; question: string; kind: string; before?: string[] }>
+      note?: string
+      from?: string[]
+    }
   | { kind: 'handoff/1'; objective: string; constraints?: string; decisions?: string[]; revision?: string; questions?: string[]; evidence?: string[] }
   | { kind: 'overlap/1'; paths: string[]; between: string[]; evidence?: string[] }
 
@@ -485,6 +523,9 @@ export function receiptPath(ref: string, resolution?: RefResolution): string | n
       return `/api/runs/${e(r.run!)}/commands/${e(r.command!)}`
     case 'op':
       return r.actor === 'admin' ? `/api/dispatch/ops/${e(r.op!)}` : null
+    case 'launch':
+      // A launch from a ticket, its summary and package (GET /api/dispatch/launches/{id}): its run's page is the chip's own (refPage).
+      return `/api/dispatch/launches/${e(r.launch!)}`
     case 'comment': {
       const u = resolution?.now.url
       return u?.startsWith(`/api/dispatch/tickets/${e(r.ticket!)}/comments?`) ? u : null
@@ -554,7 +595,7 @@ export const ITEM_GROUPS: ReadonlyArray<{ group: string; title: string; kinds: r
   { group: 'decisions', title: 'Decisions', kinds: ['decision/1'] },
   { group: 'proposals', title: 'Proposals', kinds: ['proposal/1'] },
   { group: 'outcomes', title: 'Verified outcomes', kinds: ['outcome/1'] },
-  { group: 'drafts', title: 'Drafts', kinds: ['draft_ticket/1', 'draft_crew/1'] },
+  { group: 'drafts', title: 'Drafts', kinds: ['draft_ticket/1', 'draft_crew/1', 'draft_plan/1'] },
   { group: 'handoffs', title: 'Handoffs', kinds: ['handoff/1'] },
   { group: 'overlaps', title: 'Overlapping changes', kinds: ['overlap/1'] },
   { group: 'evidence', title: 'Evidence', kinds: ['comparison/1', 'evidence/1'] },
@@ -763,7 +804,9 @@ export function formField(field: string): string {
 export function sameConfig(a: BrakemanConfig, b: BrakemanConfig): boolean {
   const norm = (c: BrakemanConfig) => {
     const { rev: _rev, updatedAt: _at, ...rest } = c
-    return stable({ ...rest, account: rest.account || undefined, model: rest.model || undefined, scope: Object.fromEntries(Object.entries(rest.scope ?? {}).filter(([, v]) => v?.length)) })
+    // No grant is as none (the server leaves an empty act out), and a grant list is the same whatever its order.
+    const act = rest.permissions?.act?.length ? [...rest.permissions.act].sort() : undefined
+    return stable({ ...rest, account: rest.account || undefined, model: rest.model || undefined, permissions: { ...rest.permissions, act }, scope: Object.fromEntries(Object.entries(rest.scope ?? {}).filter(([, v]) => v?.length)) })
   }
   return norm(a) === norm(b)
 }
@@ -832,4 +875,177 @@ export function unopened(requests: Iterable<Pick<BrakemanRequest, 'id' | 'hasBri
 /** A request's number, for ordering: br-12 is 12. */
 export function requestNumber(id: string): number {
   return Number(id.slice(3)) || 0
+}
+
+/**
+ * The operations the person may grant Brakeman (internal/brakeman, Grantable; docs/plans/brakeman.md, BK2), in Settings' order, each
+ * with what it authorizes in words. None approves, answers, accepts, closes or changes the configuration: those stay the person's,
+ * whatever is granted. A grant whose route this server does not serve is shown as not in this build (the admin's guide lists the ones it
+ * serves, under the scope act), and the server refuses it at the save.
+ */
+export const GRANTS: ReadonlyArray<{ value: string; label: string; words: string }> = [
+  {
+    value: 'launch_approved_plan',
+    label: 'Launch an approved plan',
+    words: "Launch a managed run from a ticket's plan revision you approved, while your approval still holds. It never approves one: a revision not approved, or whose ticket changed since, is refused.",
+  },
+  {
+    value: 'request_repair',
+    label: 'Request a repair',
+    words: "Ask for changes on a run's candidate, a Yardmaster repair round of the task. It never accepts a result.",
+  },
+  {
+    value: 'prepare_followup',
+    label: 'Prepare a follow-up',
+    words: "Propose a revision of a ticket's plan based on the approved one. You still approve it or not: it never runs until you do.",
+  },
+  {
+    value: 'route_decision',
+    label: 'Route a decision',
+    words: 'Send a decision record to you, the operator, to answer. It never answers one.',
+  },
+]
+
+/** A grant's label, or its name for one this page does not know. */
+export function grantLabel(op: string): string {
+  return GRANTS.find((g) => g.value === op)?.label ?? op
+}
+
+/** The ticket a ref names, for a ticket:, comment: or plan: ref; "" for any other. */
+export function refTicket(ref: string): string {
+  const r = parseRef(ref)
+  return r && (r.kind === 'ticket' || r.kind === 'comment' || r.kind === 'plan') ? r.ticket! : ''
+}
+
+/**
+ * The act Brakeman ran for a proposal, when it ran one: the request's act whose opId the proposal's arguments name (`args.opId`, as the
+ * guide asks of a proposal of an act it ran), of the proposal's operation on the proposal's ticket (an act's target is its ticket; the
+ * proposal's a ticket: or a plan: of it). Nothing weaker ties them: two proposals of one operation on one ticket (two revisions, two
+ * follow-ups) are told apart only by the act each names, so a proposal that names none, or names an opId of no such act, stays a
+ * proposal, whatever else Brakeman ran. An act not run (refused before its operation, the server stopped first) is still the
+ * proposal's: the card says so.
+ */
+export function actFor(p: Extract<BriefItem, { kind: 'proposal/1' }>, acts: readonly BrakemanAct[] | undefined): BrakemanAct | undefined {
+  const ticket = refTicket(p.target)
+  const opId = typeof p.args?.opId === 'string' ? p.args.opId : ''
+  if (!ticket || !opId || !acts?.length) return undefined
+  return acts.find((a) => a.opId === opId && a.operation === p.op && refTicket(a.target) === ticket)
+}
+
+/**
+ * The launch an act's receipt names (GET /api/dispatch/launches/{id}), as much of it as the act's card needs: Dispatch keeps the launch,
+ * and its receipt done, before the run is started, so the launch's own state says what came of it: pending while its run is being
+ * started, started with its run, failed with its words when the run never started.
+ */
+export interface ActLaunch {
+  state: 'pending' | 'started' | 'failed' | string
+  runId?: string
+  why?: string
+}
+
+/**
+ * What a proposal Brakeman ran shows of its act. A launch's act is done once its receipt is in, but the launch is done only once its
+ * run has started: until its launch is read, and while the launch is pending, it is under way (pending); a launch that failed is
+ * `failed`, never "Brakeman did this". Any other act is its own state.
+ */
+export function actShown(a: BrakemanAct, launch?: ActLaunch | null): string {
+  if (!actReceiptRef(a)) return a.state
+  if (!launch || launch.state === 'pending') return 'pending'
+  return launch.state === 'started' ? 'done' : 'failed'
+}
+
+/**
+ * What a proposal Brakeman ran says of the act: done with its receipt, under way, refused with the words, or never run. A launch's act
+ * says so by its launch (actShown): its run still being started, or the launch failed with its words and no run.
+ */
+export function actWords(a: BrakemanAct, launch?: ActLaunch | null): string {
+  const what = grantLabel(a.operation)
+  const shown = actShown(a, launch)
+  if (a.state === 'done' && actReceiptRef(a)) {
+    if (shown === 'pending') return `Brakeman launched this, under the grant "${what}": receipt ${a.receipt}. ${launch ? 'Its run is still being started.' : 'Whether its run has started is not read yet.'}`
+    if (shown === 'failed') return `Brakeman launched this, under the grant "${what}": receipt ${a.receipt}, but the launch failed${launch?.why ? `: ${launch.why}` : ''}. No run was started.`
+  }
+  switch (a.state) {
+    case 'done':
+      return `Brakeman did this, under the grant "${what}" you gave it${a.receipt ? `: receipt ${a.receipt}` : ''}.`
+    case 'pending':
+      return `Brakeman is doing this, under the grant "${what}": its receipt is not in yet.`
+    case 'refused':
+      return `Brakeman tried this, under the grant "${what}", and it was refused${a.why ? `: ${a.why}` : ''}. Nothing was done.`
+    case 'not_run':
+      return 'Brakeman began this, but the server stopped before it ran: it was not done, and it is not run again.'
+  }
+  return a.state
+}
+
+/** The ref of what an act made, for its receipt chip: a launch's (launch_approved_plan), else none (a revision is read on its ticket's page). */
+export function actReceiptRef(a: BrakemanAct): string | null {
+  return a.state === 'done' && a.operation === 'launch_approved_plan' && a.receipt && HEX.test(a.receipt) ? `launch:${a.receipt}` : null
+}
+
+/** How followLaunch reads a launch, and when it stops. */
+export interface FollowLaunch<L extends ActLaunch> {
+  /** The launch read now: resolves with it; rejects when the read failed. */
+  read: () => Promise<L>
+  /** What the card shows, given each launch a read answered. */
+  show: (l: L) => void
+  /** Whether it is no longer wanted (the card shows another act, or is gone): nothing more is read or shown. */
+  stop: () => boolean
+  /** Waits that many milliseconds before the launch is read again. */
+  wait: (ms: number) => Promise<void>
+  /** The first wait, doubled after each read that left the launch unsettled, up to `maxMs`. */
+  firstMs: number
+  maxMs: number
+}
+
+/** A launch still pending, or a read of it that failed, is read again after this, doubled each time up to LAUNCH_FOLLOW_MAX_MS. */
+export const LAUNCH_FOLLOW_FIRST_MS = 2000
+export const LAUNCH_FOLLOW_MAX_MS = 8000
+
+/**
+ * The launch an act's receipt names, read until it is settled: a launch pending (its run still being started) and a read that failed
+ * are read again after `firstMs`, doubled up to `maxMs`, until the launch has started or failed, or it is no longer wanted. Each answer
+ * is shown as it comes. Answers the settled launch, or null once stopped.
+ */
+export async function followLaunch<L extends ActLaunch>(o: FollowLaunch<L>): Promise<L | null> {
+  let delay = o.firstMs
+  for (;;) {
+    if (o.stop()) return null
+    try {
+      const l = await o.read()
+      if (o.stop()) return null
+      o.show(l)
+      if (l.state !== 'pending') return l
+    } catch {
+      if (o.stop()) return null
+    }
+    await o.wait(delay)
+    delay = Math.min(delay * 2, o.maxMs)
+  }
+}
+
+/** A grant list with `op` granted (on) or not, in GRANTS' order, each once: what Settings' switches save as `permissions.act`. */
+export function withGrant(act: readonly string[] | undefined, op: string, on: boolean): string[] {
+  const set = new Set(act ?? [])
+  if (on) set.add(op)
+  else set.delete(op)
+  return [...GRANTS.map((g) => g.value).filter((v) => set.has(v)), ...[...set].filter((v) => !GRANTS.some((g) => g.value === v))]
+}
+
+/**
+ * The grants a server serves, from its admin guide's operations (the scope act, an entry each under the grant's name), or null while the
+ * guide is not read: Settings offers those alone, and says of the rest that this build does not serve them (the server refuses them at
+ * the save, 400 invalid_config on permissions.act).
+ */
+export function servedGrants(ops: ReadonlyArray<{ name: string; scope?: string }> | null): Set<string> | null {
+  return ops ? new Set(ops.filter((o) => o.scope === 'act' && o.name !== 'act').map((o) => o.name)) : null
+}
+
+/**
+ * Whether Settings' switch for the grant `op` is held still: only turning a grant on is, while the guide is unread or its read failed
+ * (`served` null) or for a grant this server serves no route of. A grant that is on can always be turned off, whatever the guide: taking
+ * a grant away is its revoke, which needs nothing the guide says and never waits on a read (the Program's article 4).
+ */
+export function grantHeld(served: ReadonlySet<string> | null, on: boolean, op: string): boolean {
+  return !on && (!served || !served.has(op))
 }
