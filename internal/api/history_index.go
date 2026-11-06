@@ -579,6 +579,12 @@ func (h *historyIndexer) pass(ctx context.Context, key string) {
 	if ctx.Err() != nil {
 		return
 	}
+	if errors.Is(err, history.ErrBound) || errors.Is(err, history.ErrKind) || errors.Is(err, history.ErrClass) || errors.Is(err, history.ErrKeyTaken) {
+		// The source's entries are refused as they are: read again only
+		// when it changes, never retried as it stands.
+		h.log.Warn("a history source's entries were refused", "source", key, "err", err)
+		return
+	}
 	h.backoff = min(max(2*h.backoff, historyBackoffMin), historyBackoffMax)
 	h.due[key] = h.now().Add(h.backoff)
 	h.log.Warn("a history source could not be indexed; trying again", "source", key, "err", err, "in", h.backoff)
@@ -958,8 +964,8 @@ func (h *historyIndexer) indexReceipts(ctx context.Context, ix *history.Index, l
 	}
 	for _, r := range rows.checks {
 		key := hCheckRef(p.run, r.TaskID, r.N, r.ID, r.K)
-		if !receiptFinished(r) || held[key] {
-			continue
+		if !receiptFinished(r) || held[key] || r.Subject == "" {
+			continue // a receipt is bound to the commit it checked
 		}
 		full := r
 		if historyOutcome(r) == "failed" && !r.LogDropped {

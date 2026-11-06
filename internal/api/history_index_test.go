@@ -681,8 +681,19 @@ func (c *indexClock) After(d time.Duration) <-chan time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	ch := make(chan time.Time, 1)
+	if d <= 0 {
+		ch <- c.now
+		return ch
+	}
 	c.timers = append(c.timers, indexTimer{c.now.Add(d), ch})
 	return ch
+}
+
+// waiting says a timer for the time at is set.
+func (c *indexClock) waiting(at time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.ContainsFunc(c.timers, func(tm indexTimer) bool { return tm.at.Equal(at) })
 }
 
 func (c *indexClock) Advance(d time.Duration) {
@@ -721,6 +732,9 @@ func TestARunIsReadAtMostEvery2s(t *testing.T) {
 		defer h.mu.Unlock()
 		return len(h.queue) == 0
 	})
+	// The indexer waits for the interval's end on its timer: the clock is
+	// moved only once that timer is set.
+	until(t, "the deferred read's timer", func() bool { return clock.waiting(histNow.Add(minRunInterval)) })
 	clock.Advance(minRunInterval - time.Millisecond)
 	if c.runs.Load() != 1 {
 		t.Fatalf("the run read %d times within the interval", c.runs.Load())
@@ -777,6 +791,20 @@ func TestARecordOnlyChangeIsSeenAfterARestart(t *testing.T) {
 	}
 }
 
+// noTick gives e an indexer whose reconcile runs only when the test asks
+// (reconcileNow), never on its period.
+func noTick(t *testing.T, e *testEnv) {
+	t.Helper()
+	freshIndexer(t, e, func(h *historyIndexer) {
+		h.after = func(d time.Duration) <-chan time.Time {
+			if d == h.reconcileTick {
+				return nil
+			}
+			return time.After(d)
+		}
+	})
+}
+
 // otherServer is a second server on e's data directory, through a store
 // of its own: its writes reach none of e's hooks.
 func otherServer(t *testing.T, e *testEnv) *testEnv {
@@ -793,7 +821,7 @@ func otherServer(t *testing.T, e *testEnv) *testEnv {
 // restart.
 func TestARunRecordByTheOtherServerIsIndexed(t *testing.T) {
 	e := newTestEnv(t, nil)
-	histSettle(t, e)
+	noTick(t, e)
 	other := otherServer(t, e)
 	saveRecord(t, other.srv, crew.Run{ID: "hist-0000000c", Label: "the other's run", Cwd: e.root, StartedAt: histNow})
 	ix := histSettle(t, e)
@@ -1145,6 +1173,7 @@ func TestTheRecordsRideInAnExport(t *testing.T) {
 // when that one reconciles.
 func TestTheReadOnlyServerIndexesNothing(t *testing.T) {
 	e := newTestEnv(t, nil)
+	noTick(t, e)
 	ix := histSettle(t, e)
 	other := otherServer(t, e)
 	if ro, _ := other.srv.sessionRecords.ReadOnly(); !ro {
