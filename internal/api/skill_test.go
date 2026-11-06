@@ -104,8 +104,9 @@ func TestLaunchRegistersTheMCPServerUnlessOff(t *testing.T) {
 		got = append(got, a.(string))
 	}
 	bin, _ := agents.Binary()
-	// The command and args, then the variables Codex hands the server (#354).
-	if n := len(got); n < 6 || got[n-6] != "-c" || got[n-5] != "mcp_servers.conductor.command=\""+bin+"\"" || got[n-4] != "-c" || got[n-3] != `mcp_servers.conductor.args=["mcp"]` || got[n-2] != "-c" || !strings.HasPrefix(got[n-1], "mcp_servers.conductor.env_vars=[") || !strings.Contains(got[n-1], `"CONDUCTOR_NOTIFY_TOKEN"`) {
+	// The command and args, then the variables Codex hands the server (#354)
+	// and the wait it gives a tool.
+	if n := len(got); n < 8 || got[n-8] != "-c" || got[n-7] != "mcp_servers.conductor.command=\""+bin+"\"" || got[n-6] != "-c" || got[n-5] != `mcp_servers.conductor.args=["mcp"]` || got[n-4] != "-c" || !strings.HasPrefix(got[n-3], "mcp_servers.conductor.env_vars=[") || !strings.Contains(got[n-3], `"CONDUCTOR_NOTIFY_TOKEN"`) || got[n-2] != "-c" || got[n-1] != "mcp_servers.conductor.tool_timeout_sec=720" {
 		t.Fatalf("codex command %q", got)
 	}
 	off := false

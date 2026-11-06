@@ -1,7 +1,9 @@
 import type { RunInfo, RunTask, SessionInfo } from '~/composables/useSessions'
 import type { AttentionOption } from './protocol'
 import { liveAttention } from './attention'
-import { parseRef, refRoute, type BrakemanEdge, type BrakemanMade, type BrakemanRequest, type BriefItem } from './brakeman'
+import type { PlanSummary } from '~/composables/useDispatch'
+import { parseRef, refRoute, type BrakemanAct, type BrakemanEdge, type BrakemanMade, type BrakemanRequest, type BriefItem } from './brakeman'
+import { PLAN_BOUNDS, approvable, planReasons, revisionTag } from './dispatchPlans'
 import { taskActions, type TaskCommand } from './tasks'
 
 // A brief's decision cards and proposals as Conductor's controls (docs/plans/brakeman.md, "web/app: decision cards, drafts,
@@ -44,6 +46,15 @@ export type CardControls =
       words: string
     }
   | { kind: 'ticket'; to: string; words: string }
+  | {
+      kind: 'plan'
+      /** The ticket the revision is of, and its number: the card reads the revision's live record by them (DS2's own read). */
+      ticket: string
+      n: number
+      /** The ticket's page, whose Plan section is where the revision is decided as well. */
+      to: string
+      words: string
+    }
   | { kind: 'none'; to: string | null; words: string }
 
 /** A revision as a brief or a resolution carries it ("7"), as the number a command expects, or 0 for none. */
@@ -79,8 +90,42 @@ export function decisionControls(about: string, seen: string | undefined, live: 
     }
     case 'ticket':
       return { kind: 'ticket', to: refRoute(about)!, words: `Decide it on ${r.ticket}'s page.` }
+    case 'plan':
+      return { kind: 'plan', ticket: r.ticket!, n: r.n!, to: refRoute(about)!, words: `Revision ${r.n} of ${r.ticket}'s plan, as Dispatch holds it now.` }
   }
   return { kind: 'none', to: refRoute(about), words: 'This build has no control for what the card is about: open its page.' }
+}
+
+/**
+ * A plan revision's card control, from the revision's live record as DS2's own read gives it (null: not there, or not read yet): DS2's
+ * Approve, offered by DS2's own rule (approvable: a proposed or superseded revision, or an approved one whose only staleness an approval
+ * cures, never one whose agents changed), labelled Approve again for an approved one; or none, with what the revision is now. The
+ * approval is the operator's, made through DS2's own dialog and route: Brakeman never approves.
+ */
+export function planCardControl(p: Pick<PlanSummary, 'n' | 'state' | 'stale' | 'agentsChanged' | 'crewChanged' | 'crewName'> | null | undefined, ticket: string, n: number): { approve: 'Approve' | 'Approve again' | null; words: string } {
+  const tag = `${ticket} ${revisionTag(n)}`
+  if (!p) return { approve: null, words: `${tag} is not among ${ticket}'s revisions now: open the ticket.` }
+  const all = planReasons(p)
+  const reasons = all.map((r) => r.words)
+  // Whether an approval holds is the blocking reasons' alone: a saved crew edited since (crewChanged) leaves the revision its frozen
+  // crew, launchable as approved, and is said beside it.
+  const blocking = all.filter((r) => r.blocks).map((r) => r.words)
+  const besides = all.filter((r) => !r.blocks).map((r) => r.words)
+  const note = besides.length ? ` ${besides.join('; ')}.` : ''
+  if (approvable(p)) {
+    const again = p.state === 'approved'
+    return {
+      approve: again ? 'Approve again' : 'Approve',
+      words: again ? `${tag} is approved, but its approval no longer holds: ${blocking.join('; ')}. You approve it again, or not.${note}` : `${tag} is ${p.state}. You, the operator, approve it or not: Brakeman never does.${note}`,
+    }
+  }
+  switch (p.state) {
+    case 'approved':
+      return { approve: null, words: blocking.length ? `${tag} is approved, and its approval no longer holds: ${blocking.join('; ')}. Revise it on the ticket.${note}` : `${tag} is approved, and its approval holds.${note}` }
+    case 'withdrawn':
+      return { approve: null, words: `${tag} was withdrawn: nothing approves it now.` }
+  }
+  return { approve: null, words: `${tag} is ${p.state}${reasons.length ? `: ${reasons.join('; ')}` : ''}. Open the ticket to revise it.` }
 }
 
 /** The commands a task's card offers, by taskActions' rules, with the revision they carry. */
@@ -117,6 +162,8 @@ export function isStale(e: unknown): boolean {
 /** An operation as the guide lists it (GET /api/guide?section=operations): its name and the revision its route checks. */
 export interface GuideOperation {
   name: string
+  /** Who reaches it: admin, session, task, ticket, observe, or act (an operation the person may grant Brakeman). */
+  scope?: string
   revision?: string
   method?: string
   path?: string
@@ -153,7 +200,10 @@ export function proposalControl(p: Extract<BriefItem, { kind: 'proposal/1' }>, o
   const call = PROPOSAL_CALLS[p.op]
   if (!ops) return text('Do it from its page, on the record as it is.')
   if (!guide) return text(`${p.op} is no operation this server lists: do what it says from its page.`)
-  if (!guide.revision || !call) return text(`${p.op} checks no revision on its route, so a button here could act on what moved since Brakeman read it: do it from its page, where you see it as it is.`)
+  if (!guide.revision) return text(`${p.op} checks no revision on its route, so a button here could act on what moved since Brakeman read it: do it from its page, where you see it as it is.`)
+  // A launch and a follow-up revision (the operations a grant may name) are the ticket's Plan section's, which asks first and says what
+  // a launch runs; Brakeman runs them itself only when the person granted it.
+  if (!call) return text(guide.scope === 'act' ? `Do it from the ticket's Plan section, which says what it runs and asks first, or grant Brakeman "${p.op}" in Settings.` : `${p.op} has no button here: do it from its page, where you see it as it is.`)
   const r = parseRef(p.target)
   if (!r || r.kind !== call.target) return text(`${p.op} acts on a ${call.target}, and the proposal names ${p.target}: do it from its page.`)
   const expectedRevision = revisionOf(p.expectedRevision)
@@ -309,6 +359,41 @@ export function reconcileMade(had: Pick<BrakemanRequest, 'made' | 'edges'>, next
   return out
 }
 
+/** How far along an act is: pending, then refused (which the same opId may still run, its store holding no receipt), then done or not run, which it never leaves. */
+const actRank = (state: string) => (state === 'pending' ? 0 : state === 'refused' ? 1 : 2)
+
+/**
+ * A request's `acts` as a reply gives them, reconciled with what the page has: a reply sent before another (a read sent while an act was
+ * pending, answered after the read that saw it done) never takes an act back. Each act is kept by its opId and goes forward only
+ * (actRank), the later of two at one rank by its time; the server never removes one, so an act the reply lacks is the page's.
+ */
+export function reconcileActs(had: Pick<BrakemanRequest, 'acts'>, next: Pick<BrakemanRequest, 'acts'>): Pick<BrakemanRequest, 'acts'> {
+  const acts = new Map<string, BrakemanAct>()
+  for (const a of had.acts ?? []) acts.set(a.opId, a)
+  for (const n of next.acts ?? []) {
+    const h = acts.get(n.opId)
+    const older = h && (actRank(n.state) < actRank(h.state) || (actRank(n.state) === actRank(h.state) && claimedAt(n) < claimedAt(h)))
+    if (!older) acts.set(n.opId, n)
+  }
+  return acts.size ? { acts: [...acts.values()] } : {}
+}
+
+/**
+ * What keeps a draft plan revision's form from being proposed, in words, "" for nothing: a crew named, and the bounds the server applies,
+ * the constraints and the note in UTF-8 bytes, a decision's question in characters (Unicode code points), as internal/brakeman's
+ * CheckDraftPlan and Dispatch's propose route count it (MaxDraftDecisionAsk, MaxDecisionQuestion), so 200 characters of CJK, 600
+ * bytes, are within it.
+ */
+export function draftPlanProblem(f: { crew: string; constraints: string; note: string; questions: readonly string[] }): string {
+  if (!f.crew.trim()) return 'A plan revision runs a saved crew with tasks: name its id.'
+  if (utf8Bytes(f.constraints) > PLAN_BOUNDS.constraints) return `The constraints are at most ${PLAN_BOUNDS.constraints >> 10} KiB.`
+  if (utf8Bytes(f.note) > PLAN_BOUNDS.note) return `The note is at most ${PLAN_BOUNDS.note >> 10} KiB.`
+  // A decision the draft names keeps its question: the server refuses an empty one (CheckDraftPlan), and the card sends what the field holds.
+  if (f.questions.some((q) => !q.trim())) return 'Every decision needs its question: say what the person will decide.'
+  if (f.questions.some((q) => [...q].length > PLAN_BOUNDS.decisionQuestion)) return `A decision's question is at most ${PLAN_BOUNDS.decisionQuestion} characters.`
+  return ''
+}
+
 /** Dispatch's bound on a comment's body, in bytes (MaxCommentBody, internal/dispatch/model.go). */
 export const COMMENT_MAX = 16 << 10
 
@@ -357,10 +442,11 @@ export function handoffTickets(h: Extract<BriefItem, { kind: 'handoff/1' }>): st
 }
 
 /** A made draft's state in words, from the request's `made` entry: made (with its key or crew), being made, refused, deleted. */
-export function madeWords(m: { state: string; key?: string; crew?: string; why?: string } | undefined): string {
+export function madeWords(m: { state: string; key?: string; crew?: string; plan?: string; why?: string } | undefined): string {
   if (!m) return ''
   switch (m.state) {
     case 'made':
+      if (m.plan) return `Proposed as a revision of ${m.key}'s plan, under your name: the operator approves it or not.`
       return m.key ? `Made as ${m.key}.` : m.crew ? `Saved as the crew ${m.crew}, not launched.` : 'Made.'
     case 'pending':
       return PENDING_ELSEWHERE

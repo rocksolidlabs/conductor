@@ -38,7 +38,13 @@
 #                   proposes to change); through the CLI, or the MCP tools
 #                   with STUB_WORKER=mcp. With STUB_BRAKEMAN_ASK, a wake
 #                   request's turn (the background role's) first asks it as
-#                   its question (notify --state needs_input), before the gate
+#                   its question (notify --state needs_input), before the gate.
+#                   Before the brief, once the gate is open, it runs the act
+#                   STUB_BRAKEMAN_ACT's file names when it holds one
+#                   ("OPERATION KEY", its body the JSON file beside it,
+#                   <file>.body): conductor brakeman act, or the act tool;
+#                   what the server answered, taken or refused, is written to
+#                   <file>.out and the brief is submitted either way
 # $HOME/.codex/stub-hooks-review present: "Hooks need review" is drawn at
 # start as Codex 0.161 draws it when its hooks are new or changed (round 13,
 # G2c): 1. Review hooks highlighted; a digit moves the highlight, Enter
@@ -761,6 +767,9 @@ brakeman_turn() {
 		esac
 		printf 'brakeman: %s: read the ticket %s\n' "$req" "$STUB_BRAKEMAN_TICKET" >>"$transcript"
 	fi
+	if [[ -n ${STUB_BRAKEMAN_ACT:-} && -s $STUB_BRAKEMAN_ACT ]]; then
+		brakeman_act "$req"
+	fi
 	evidence=$(json_str "session:${CONDUCTOR_SESSION_ID:-}")
 	[[ -n $run ]] && evidence+=",$(json_str "run:$run")"
 	[[ -n ${STUB_BRAKEMAN_CHECK:-} ]] && evidence+=",$(json_str "$STUB_BRAKEMAN_CHECK")"
@@ -785,6 +794,31 @@ brakeman_turn() {
 		brakeman_why='the brief was refused'
 		return 1
 	fi
+}
+
+# brakeman_act runs the act STUB_BRAKEMAN_ACT's file names for request $1:
+# its one line is "OPERATION KEY", its body the JSON in <file>.body. The
+# answer (the command's words, or the tool's reply line), taken or refused,
+# goes to <file>.out, written whole by a rename, and into the transcript; a
+# refusal does not end the turn: a spec's brief says what happened.
+brakeman_act() {
+	local req=$1 op key body out status=taken
+	read -r op key <"$STUB_BRAKEMAN_ACT"
+	body='{}'
+	[[ -s $STUB_BRAKEMAN_ACT.body ]] && body=$(<"$STUB_BRAKEMAN_ACT.body")
+	case ${STUB_WORKER:-} in
+	mcp)
+		out=$(mcp_call act "{\"operation\":$(json_str "$op"),\"params\":{\"key\":$(json_str "$key")},\"body\":$body}")
+		mcp_ok "$out" || status=refused
+		;;
+	*)
+		printf '%s\n' "$body" >"$transcripts/$id.act.json"
+		out=$("$conductor" brakeman act "$op" --key "$key" --body-file "$transcripts/$id.act.json" 2>&1) || status=refused
+		;;
+	esac
+	printf '%s\n%s\n' "$status" "$out" >"$STUB_BRAKEMAN_ACT.out.new"
+	mv -f "$STUB_BRAKEMAN_ACT.out.new" "$STUB_BRAKEMAN_ACT.out"
+	printf 'brakeman: %s: act %s on %s: %s %s\n' "$req" "$op" "$key" "$status" "${out:0:300}" >>"$transcript"
 }
 
 # mcp_ok reports whether $1, a tools/call reply line from mcp_call, is a

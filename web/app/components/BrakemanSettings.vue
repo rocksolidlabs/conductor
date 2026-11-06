@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo } from '~/composables/useSessions'
 import type { BrakemanConfig, BrakemanScope, BrakemanVisibility } from '~/utils/brakeman'
-import { BOUNDS, BRAKEMAN_ADAPTERS, agentChoice, agentIdOf, agentItems as agentChoices, briefingLine, briefingList, configProblems, formField, formMove, sameConfig, scopeLines, scopeList } from '~/utils/brakeman'
+import { BOUNDS, BRAKEMAN_ADAPTERS, GRANTS, agentChoice, agentIdOf, agentItems as agentChoices, briefingLine, briefingList, configProblems, formField, formMove, sameConfig, grantHeld, scopeLines, scopeList, servedGrants, withGrant } from '~/utils/brakeman'
 import { ApiError } from '~/composables/useApi'
 import { SETTINGS_FIELD_UI as fieldUi } from '~/utils/settingsSections'
 
@@ -12,12 +12,23 @@ import { SETTINGS_FIELD_UI as fieldUi } from '~/utils/settingsSections'
  * its turns run in, what it may see (terminal screens off until turned on), its scope, whether it may draft and propose, and its
  * budget, and whether the background role wakes it (BK3: its window, cooldown, a question's wait and briefing times, and the day's
  * minutes). The form checks what the server checks; the server's own words are shown for what it refuses, and beside an agent whose
- * read-only mode does not hold (its warnings). What is refused of a field the form draws no control for (the scope as a whole, an
- * operation's grant, the wake mode, a model while the agent shows no model field) is said above Save.
+ * read-only mode does not hold (its warnings). What is refused of a field the form draws no control for (the scope as a whole, the
+ * wake mode, a model while the agent shows no model field) is said above Save.
+ *
+ * What it may run (PR-13): the four operations a person may grant Brakeman (BK2's closed list), each with what it authorizes in words,
+ * a switch each. A grant this server serves no route of is shown as not in this build and cannot be turned on (the admin's guide lists
+ * the ones it serves). A grant gives no read and a read no grant; none approves, answers, accepts, closes or changes this
+ * configuration, and the server checks each act against the grant, the scope and the target's state whatever is granted here.
  */
 const bk = useBrakeman()
 const api = useSessions()
 const toast = useToast()
+const ops = useGuideOps()
+/** The grants this server serves (null while its guide is unread): the others cannot be turned on. */
+const served = computed(() => servedGrants(ops.value))
+function grant(op: string, on: boolean) {
+  if (form.value) form.value.permissions.act = withGrant(form.value.permissions.act, op, on)
+}
 
 const agents = ref<AgentInfo[]>([])
 const form = ref<BrakemanConfig | null>(null)
@@ -108,7 +119,7 @@ const problems = computed(() => (body.value ? configProblems(body.value, agents.
 const warnings = computed(() => (form.value?.agentId && form.value.agentId === saved.value?.agentId ? (bk.state.value?.warnings ?? []) : []))
 /** The fields the form draws a control for, by the names the server gives them; `scope` is the scope's fieldset. */
 const controls = computed(() => {
-  const out = new Set(['agentId', 'account', 'cwd', 'scope', 'budget.turnMinutes', 'budget.readsPerTurn', 'budget.turnsPerDay', 'budget.minutesPerDay', 'wake.windowSeconds', 'wake.cooldownMinutes', 'wake.questionMinutes', 'wake.briefings'])
+  const out = new Set(['agentId', 'account', 'cwd', 'scope', 'permissions.act', 'budget.turnMinutes', 'budget.readsPerTurn', 'budget.turnsPerDay', 'budget.minutesPerDay', 'wake.windowSeconds', 'wake.cooldownMinutes', 'wake.questionMinutes', 'wake.briefings'])
   for (const k of Object.keys(scopeText)) out.add(`scope.${k}`)
   if (caps.value?.model) out.add('model')
   if (caps.value?.allowTools) out.add('allowConductorTools')
@@ -215,6 +226,29 @@ async function save() {
         <USwitch v-model="form.permissions.draft" label="Draft" description="Draft tickets, crews and handoffs, which you edit and make." data-brakeman-draft />
         <USwitch v-model="form.permissions.propose" label="Propose" description="Propose operations and prepare decisions, which you take." data-brakeman-propose />
         <p v-if="!form.permissions.draft && !form.permissions.propose" class="text-xs text-muted @3xl:col-span-2">Observe only.</p>
+      </fieldset>
+
+      <fieldset class="flex flex-col gap-2" data-brakeman-grants>
+        <legend class="mb-1 text-sm font-medium">What it may run</legend>
+        <p class="text-xs text-muted">
+          Off, Brakeman proposes and you act. Granted, it runs that operation itself through the operation's own route, which checks the grant,
+          its scope and what it acts on, and leaves a receipt on the brief. No grant approves, answers, accepts or closes anything, and none
+          changes these settings.
+        </p>
+        <div class="grid gap-2 @3xl:grid-cols-2 @3xl:gap-x-8">
+          <USwitch
+            v-for="g in GRANTS"
+            :key="g.value"
+            :model-value="form.permissions.act?.includes(g.value) ?? false"
+            :label="g.label"
+            :description="served && !served.has(g.value) ? `${g.words} Not in this build: nothing serves it yet.` : g.words"
+            :disabled="grantHeld(served, form.permissions.act?.includes(g.value) ?? false, g.value)"
+            :data-brakeman-grant="g.value"
+            :data-grant-served="served ? served.has(g.value) : undefined"
+            @update:model-value="(on: boolean) => grant(g.value, on)"
+          />
+        </div>
+        <p v-if="fieldError('permissions.act')" class="text-xs text-error" data-brakeman-grant-error>{{ fieldError('permissions.act') }}</p>
       </fieldset>
 
       <fieldset class="grid gap-3 sm:grid-cols-3">

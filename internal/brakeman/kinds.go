@@ -178,7 +178,7 @@ var kinds = []KindSpec{
 			fText("text", 2<<10, true, "what and why"),
 			{Name: "op", Type: FieldName, Required: true, Pattern: operationPattern.String(), Max: 64, About: "an operation the guide's operations section lists"},
 			{Name: "target", Type: FieldRef, Required: true, About: "what it acts on"},
-			{Name: "args", Type: FieldObject, Max: MaxArgs, About: "the operation's arguments"},
+			{Name: "args", Type: FieldObject, Max: MaxArgs, About: "the operation's arguments; for an operation you ran with act, its opId too, which shows the proposal done with the act's receipt"},
 			{Name: "expectedRevision", Type: FieldName, Pattern: revisionPattern, Max: MaxRevision, About: "the target's revision as you read it, above 0: required when the operation's route checks one"},
 			fIndexes("facts", 0, MaxItems, "the indexes, from 0, of the fact/1 items of this brief it rests on"),
 		},
