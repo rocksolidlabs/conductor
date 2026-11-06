@@ -177,6 +177,13 @@ describe('personLists', () => {
     expect(personLists({ ...work, recordsUnavailable: true }).tasks.unread).toContain('they may own more tasks than these')
     expect(personLists({ ...work, tasks: [], recordsUnavailable: true }).tasks).toEqual({ state: 'unread', unread: 'Some records of runs the server no longer holds could not be read: a task they own there may not be shown.' })
     expect(personLists({ ...work, recordsUnavailable: true }).crews).toEqual({ state: 'rows', unread: '' })
+    // The records' and the crews' directories listed and not searched: the server read none of their files and says so for each, so a
+    // person only they knew has a page whose two lists are not read, never empty, beside the tickets Dispatch read.
+    expect(personLists({ crews: [], tasks: [], tickets: { ...work.tickets, owner: 0 }, crewsUnavailable: true, recordsUnavailable: true })).toEqual({
+      crews: { state: 'unread', unread: 'Some saved crews could not be read: a crew that lists them may not be shown.' },
+      tasks: { state: 'unread', unread: 'Some records of runs the server no longer holds could not be read: a task they own there may not be shown.' },
+      tickets: { state: 'empty', unread: '' },
+    })
     // Dispatch not read: no tickets, said so; the other lists stay.
     expect(personLists({ ...work, tickets: null, dispatchUnavailable: true })).toEqual({
       crews: { state: 'rows', unread: '' },

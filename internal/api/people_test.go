@@ -933,9 +933,9 @@ func (f failingRead) List(ctx context.Context, q dispatch.Query) (dispatch.Page,
 // directory, its owner list and its assignee list (dispatchUnavailable, no
 // tickets; the directory's answer kept when only a list fails); one run
 // record that cannot be read, its directory read, and the records'
-// directory (recordsUnavailable); one crew that cannot be read, its
-// directory read, and the crews' directory (crewsUnavailable); Dispatch
-// closed. A file that is no record or crew is none, and with every source
+// directory, unlisted or listed and not searched (recordsUnavailable); one
+// crew that cannot be read, its directory read, and the crews' directory,
+// unlisted or listed and not searched (crewsUnavailable); Dispatch closed. A file that is no record or crew is none, and with every source
 // read again, a name no one has is 404.
 func TestAPersonsWorkWhenASourceCannotBeRead(t *testing.T) {
 	e := readyEnv(t, nil)
@@ -1028,17 +1028,24 @@ func TestAPersonsWorkWhenASourceCannotBeRead(t *testing.T) {
 		t.Log("root reads a directory whatever its mode: the unreadable directories are not tried")
 	} else {
 		// Each directory listed by no one, its files still opened by name
-		// (the ledger beside the records).
-		for _, dir := range []struct{ path, key, list string }{{runs, "recordsUnavailable", "tasks"}, {crews, "crewsUnavailable", "crews"}} {
-			if err := os.Chmod(dir.path, 0o300); err != nil {
-				t.Fatal(err)
-			}
-			kai, nobody := work("kai"), work("nobody")
-			if err := os.Chmod(dir.path, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if unread(kai) != dir.key || count(kai, dir.list) != 0 || unread(nobody) != dir.key {
-				t.Fatalf("%s unreadable: kai %v, nobody %v", dir.path, kai, nobody)
+		// (the ledger beside the records); then each listed and searched by
+		// no one, its files listed and none of them statted or read.
+		for _, dir := range []string{runs, crews} {
+			// A failure while one is closed still leaves it removable.
+			t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+		}
+		for _, mode := range []os.FileMode{0o300, 0o400} {
+			for _, dir := range []struct{ path, key, list string }{{runs, "recordsUnavailable", "tasks"}, {crews, "crewsUnavailable", "crews"}} {
+				if err := os.Chmod(dir.path, mode); err != nil {
+					t.Fatal(err)
+				}
+				kai, nobody := work("kai"), work("nobody")
+				if err := os.Chmod(dir.path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if unread(kai) != dir.key || count(kai, dir.list) != 0 || unread(nobody) != dir.key {
+					t.Fatalf("%s at %o: kai %v, nobody %v", dir.path, mode, kai, nobody)
+				}
 			}
 		}
 		e.expect(t, "GET", "/api/people/nobody", nil, http.StatusNotFound, "not_found")

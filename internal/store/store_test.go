@@ -282,6 +282,66 @@ func TestLoadRejectsEmptyAndTruncatedFiles(t *testing.T) {
 
 // A sub-store is a directory of the store, made 0700; it lists its documents,
 // and only them, by name, and deletes them.
+// ListAll lists every entry named as a document: a document as List has
+// it, and one List leaves out with why it is no document that can be read,
+// a link or a directory (ErrNotRegular) and, in a directory that can be
+// listed but not searched, every file, whose metadata cannot be read; a
+// name no document has is in neither. List is ListAll's documents.
+func TestListAllSaysWhatItCouldNotRead(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	if err := s.Save("a.json", doc{N: 1}); err != nil {
+		t.Fatal(err)
+	}
+	writeRaw(t, s, "c.json.123.tmp", "{}")
+	if err := os.Symlink(filepath.Join(s.Dir(), "a.json"), filepath.Join(s.Dir(), "link.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(s.Dir(), "dir.json"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	type seen struct {
+		name string
+		err  string
+	}
+	listed := func(list []Entry) []seen {
+		var out []seen
+		for _, e := range list {
+			out = append(out, seen{e.Name, fmt.Sprint(e.Err)})
+		}
+		return out
+	}
+	all, err := s.ListAll()
+	if want := []seen{{"a.json", "<nil>"}, {"dir.json", "not a regular file"}, {"link.json", "not a regular file"}}; err != nil || !slices.Equal(listed(all), want) || all[0].Size == 0 {
+		t.Fatalf("ListAll: %+v %v", all, err)
+	}
+	if !errors.Is(all[1].Err, ErrNotRegular) {
+		t.Fatalf("a directory: %v", all[1].Err)
+	}
+	if list, err := s.List(); err != nil || !slices.Equal(listed(list), []seen{{"a.json", "<nil>"}}) {
+		t.Fatalf("List: %+v %v", list, err)
+	}
+
+	if os.Geteuid() == 0 {
+		t.Log("root searches a directory whatever its mode: the directory listed but not searched is not tried")
+		return
+	}
+	// Listed, not searched: no entry's metadata can be read.
+	if err := os.Chmod(s.Dir(), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	all, err = s.ListAll()
+	list, listErr := s.List()
+	if err := os.Chmod(s.Dir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err != nil || len(all) != 3 || all[0].Name != "a.json" || !errors.Is(all[0].Err, os.ErrPermission) || all[0].Size != 0 {
+		t.Fatalf("ListAll of a directory not searched: %+v %v", all, err)
+	}
+	if listErr != nil || len(list) != 0 {
+		t.Fatalf("List of a directory not searched: %+v %v", list, listErr)
+	}
+}
+
 func TestSubListAndDelete(t *testing.T) {
 	s, _ := Open(t.TempDir())
 	sub, err := s.Sub("crews")

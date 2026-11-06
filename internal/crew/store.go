@@ -216,6 +216,19 @@ func NewStore(st *store.Store) (s *Store, problems []error, err error) {
 // failure to read the file (its mode, say) may pass, so the file is left out
 // of this listing only and read again at the next. The caller holds s.mu.
 func (s *Store) summaryOf(e store.Entry) cached {
+	if e.Err != nil {
+		// Listed and not read (store.ListAll): not a regular file, which
+		// read refuses as unusable, or its metadata could not be read, a
+		// read failure that may pass.
+		delete(s.sums, e.Name)
+		switch {
+		case !idPattern.MatchString(strings.TrimSuffix(e.Name, ".json")):
+			return cached{err: ErrNotFound}
+		case errors.Is(e.Err, store.ErrNotRegular):
+			return cached{err: fmt.Errorf("%w: %s is %w", ErrUnreadable, e.Name, e.Err)}
+		}
+		return cached{err: e.Err}
+	}
 	if c, ok := s.sums[e.Name]; ok && c.size == e.Size && c.mod.Equal(e.ModTime) {
 		return c
 	}
@@ -307,10 +320,11 @@ func (s *Store) Summaries() ([]Summary, int, error) {
 }
 
 // summaries reads the directory and every crew's summary (summaryOf), in
-// List's order, counting the files left out but those gone since the
-// listing. The caller holds s.mu.
+// List's order, counting the files left out, those listed and not statted
+// (store.ListAll) included, but those gone since the listing. The caller
+// holds s.mu.
 func (s *Store) summaries() ([]Summary, int, error) {
-	entries, err := s.st.List()
+	entries, err := s.st.ListAll()
 	if err != nil {
 		return nil, 0, err
 	}

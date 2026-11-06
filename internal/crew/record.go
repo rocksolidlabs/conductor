@@ -338,6 +338,12 @@ type recordFile struct {
 func (rs *Records) load(entries []store.Entry) ([]recordFile, error) {
 	out := make([]recordFile, 0, len(entries))
 	for _, en := range entries {
+		if en.Err != nil {
+			// Listed and not read: not a regular file, or its metadata
+			// could not be read (store.ListAll).
+			out = append(out, recordFile{name: en.Name, err: en.Err})
+			continue
+		}
 		var r Run
 		ok, err := rs.st.LoadLimit(en.Name, &r, maxRecordSize)
 		if errors.Is(err, store.ErrChanged) {
@@ -363,15 +369,16 @@ func (rs *Records) List(crewID string) ([]Run, error) {
 }
 
 // ListRead is List with how many records it left out because they could
-// not be read: a file named for a run's record that is there and failed to
-// load (an I/O error, not JSON, past maxRecordSize, not a regular file),
-// whose run, and so whose crew, is unknown. A file gone between the
-// directory's listing and its read, one named for no run, and one holding
-// another run's id (no record, as Get answers) are none and not counted.
+// not be read: an entry named for a run's record that is listed and could
+// not be statted (its directory not searchable) or failed to load (an I/O
+// error, not JSON, past maxRecordSize, not a regular file), whose run, and
+// so whose crew, is unknown. An entry gone between the directory's listing
+// and its stat or read, one named for no run, and one holding another
+// run's id (no record, as Get answers) are none and not counted.
 func (rs *Records) ListRead(crewID string) ([]Run, int, error) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
-	entries, err := rs.st.List()
+	entries, err := rs.st.ListAll()
 	if err != nil {
 		return nil, 0, err
 	}
