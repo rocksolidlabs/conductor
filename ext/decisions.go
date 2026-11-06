@@ -7,7 +7,10 @@ import (
 
 // DecisionRouter says whom a question a session asks goes to (Switchman's
 // team routing). Its free default answers the empty route: the people
-// watching answer, and the first answer wins.
+// watching answer, and the first answer wins. A durable decision (a managed
+// run's, Program item DR1) is routed as its record, once, when it opens
+// (Decision.Request, Kind "decision"), never as the session question that
+// mirrors it; Resolved is told when the record reaches a final state.
 type DecisionRouter interface {
 	Provider
 	// Route is told, once per question, a question a session shows, and
@@ -32,16 +35,27 @@ type SessionRef struct {
 	Attempt int    `json:"attempt,omitempty"`
 }
 
-// Decision is a question as the session shows it.
+// Decision is a question as the session shows it, or a durable decision's
+// record (Request set).
 type Decision struct {
-	ID      string           `json:"id"` // the question's id: what an answer names
-	Session SessionRef       `json:"session"`
-	Message string           `json:"message"`           // at most 500 bytes
-	Kind    string           `json:"kind,omitempty"`    // permission | prompt | ""
-	Source  string           `json:"source,omitempty"`  // api, bell, osc, pattern, trust, question, …
-	Options []DecisionOption `json:"options,omitempty"` // at most 6
+	ID      string     `json:"id"` // the question's id: what an answer names
+	Session SessionRef `json:"session"`
+	Message string     `json:"message"` // at most 500 bytes
+	// Kind is permission, prompt or "" for a session's question, and
+	// decision for a durable decision's record (Request set), whose answer
+	// is the record's, offered to the operator's policy: under the free
+	// build's (local/1) a router's answer is recorded refused, never
+	// applied, and its destinations are kept as the record's history.
+	Kind    string           `json:"kind,omitempty"`
+	Source  string           `json:"source,omitempty"`  // api, bell, osc, pattern, trust, question, …; none for a decision
+	Options []DecisionOption `json:"options,omitempty"` // at most 6; a decision's Input is its place, "1" first
 	Plan    string           `json:"plan,omitempty"`    // the plan a question asks approval for
 	Since   time.Time        `json:"since"`
+	// Request is the durable decision this is, "dr-<n>" (then also its
+	// ID), "" for a question no record holds. A decision's Session names
+	// the asking attempt's session, or none (an empty ID) for a plan's
+	// gate, with its run and task.
+	Request string `json:"request,omitempty"`
 }
 
 // DecisionOption is one of a question's choices.
@@ -77,6 +91,9 @@ type Resolution struct {
 	Session SessionRef `json:"session"`
 	Ended   bool       `json:"ended,omitempty"`
 	At      time.Time  `json:"at"`
+	// Request is the durable decision resolved, "dr-<n>" (Decision.Request:
+	// it reached a final state), "" for a session's question.
+	Request string `json:"request,omitempty"`
 }
 
 const (

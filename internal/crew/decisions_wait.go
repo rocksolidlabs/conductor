@@ -1213,6 +1213,48 @@ func (e *Engine) RouteDecision(ctx context.Context, id, opID string, to []Destin
 		notHeld: func(rec ledger.DecisionRecord) (opDetail, error) { return dt, nil }})
 }
 
+// RouterOpID is the operation id of a decision router's routing row
+// (RecordRoute): one per decision, so a repeat is answered by its receipt.
+const RouterOpID = "router"
+
+// RecordRoute records where a registered decision router (Switchman's
+// seam, ext.DecisionRouter) sent decision id: a routed history row by the
+// router named by, with its destinations (kind and name, as the router
+// gave them: ext.Destination's) and its rule. Unlike RouteDecision, the
+// operator's, it routes nothing under local/1, whose one approver stays
+// the operator: it is the routing history (Owner decisions, 8). It changes
+// no state and no rev, and is taken in every state.
+func (e *Engine) RecordRoute(ctx context.Context, id, by string, to []Destination, rule string) (OpReceipt, error) {
+	if len(to) == 0 {
+		return OpReceipt{}, refuse(CodeInvalid, "a route names its destination")
+	}
+	// The destinations kept are those the history row's bound holds, in
+	// order; the words count the rest.
+	dt := opDetail{Rule: rule, By: by}
+	for i, d := range to {
+		dt.To = append(dt.To, map[string]string{"kind": d.Kind, "name": d.Name})
+		dt.Words = fmt.Sprintf("%s is routed by %s to %d destinations", id, by, len(to))
+		if i > 0 && len(historyDetail(dt)) > ledger.MaxHistoryDetail-64 {
+			dt.To = dt.To[:i]
+			dt.Words = fmt.Sprintf("%s is routed by %s to %d destinations, %d of them kept", id, by, len(to), i)
+			break
+		}
+	}
+	if len(to) == 1 {
+		dt.Words = fmt.Sprintf("%s is routed by %s to %s %s", id, by, to[0].Kind, to[0].Name)
+	}
+	return e.operate(ctx, id, operation{kind: ledger.HistoryRouted, opID: RouterOpID, fp: fingerprintOf([]any{"router", to, rule}), actor: "router:" + by,
+		held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
+			return dt, nil, nil
+		},
+		notHeld: func(rec ledger.DecisionRecord) (opDetail, error) { return dt, nil }})
+}
+
+// OptionLabels is the labels of a decision's options as its record keeps
+// them (the row's type and request): an assignment's two fixed answers,
+// else the request's alternatives, in order.
+func OptionLabels(typ, request string) []string { return optionsOf(typ, request) }
+
 // CancelDecision is the operator's cancel of decision id, open or
 // answered, a command with a receipt (its commandId the operation's id): a
 // gate's tasks are released as "cancelled by the operator, not approved"

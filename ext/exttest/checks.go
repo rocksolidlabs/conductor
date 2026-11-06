@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -363,9 +364,13 @@ func Identity(t T, n *Network, p ext.IdentityProvider, known, unknown []string) 
 // valid for its question (Route.Valid) whenever it answers no error, from
 // Goroutines goroutines at once too; Resolved returning, told once of each
 // question Route was given, in order from one goroutine; and article 8
-// (Network). A router that fetches a question's route on the call's path
-// is caught on the questions asked with the network blocked, which it has
-// never been given before.
+// (Network). Each question is asked both as d's Request has it and as the
+// other: a session's question (Request empty) and a durable decision's
+// record (Request its ID, Kind "decision", no Source, each option picked
+// by its place, Program item DR1), told Resolved with its Request. A
+// router that fetches a question's route on the call's path is caught on
+// the questions asked with the network blocked, which it has never been
+// given before.
 func Router(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
 	t.Helper()
 	c, ok := begin(t, n, "Router", r)
@@ -382,18 +387,31 @@ func Router(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
 		asked  int
 		routed []ext.Decision // given to Route, not yet to Resolved
 	)
-	question := func() ext.Decision {
+	question := func(record bool) ext.Decision {
 		mu.Lock()
 		defer mu.Unlock()
 		asked++
 		q := d
 		q.ID = fmt.Sprintf("%s-%d", d.ID, asked)
 		q.Options = append([]ext.DecisionOption(nil), d.Options...)
+		if record != (d.Request != "") {
+			// The other kind of question than d: a record for a session's
+			// question, a session's question for a record.
+			q.Request, q.Kind, q.Source = "", "prompt", "api"
+			if record {
+				q.Request, q.Kind, q.Source = q.ID, "decision", ""
+				for i := range q.Options {
+					q.Options[i].Input = strconv.Itoa(i + 1)
+				}
+			}
+		} else if record {
+			q.Request = q.ID
+		}
 		routed = append(routed, q)
 		return q
 	}
-	route := func(ph phase) {
-		q := question()
+	routeOne := func(ph phase, record bool) {
+		q := question(record)
 		a, returned := run(c, "Route", ext.RouteWait, ph, func(ctx context.Context) answer {
 			rt, err := r.Route(ctx, q)
 			return answer{rt, err}
@@ -404,6 +422,10 @@ func Router(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
 			}
 		}
 	}
+	route := func(ph phase) {
+		routeOne(ph, false)
+		routeOne(ph, true)
+	}
 	resolved := func(ph phase) {
 		mu.Lock()
 		qs := routed
@@ -411,7 +433,7 @@ func Router(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
 		mu.Unlock()
 		for _, q := range qs {
 			run(c, "Resolved", ext.DeliveryWait, ph, func(ctx context.Context) struct{} {
-				r.Resolved(ctx, ext.Resolution{ID: q.ID, Session: q.Session, At: time.Now().UTC()})
+				r.Resolved(ctx, ext.Resolution{ID: q.ID, Session: q.Session, At: time.Now().UTC(), Request: q.Request})
 				return struct{}{}
 			})
 		}

@@ -2,14 +2,19 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/signal"
 )
@@ -33,6 +38,16 @@ import (
 //   - a routed question the session neither shows nor keeps, or shows
 //     answered in the terminal, is resolved, and the router is told so
 //     (Resolved) exactly once, in order, from a list that drops nothing.
+//
+// A question that mirrors a durable decision (Attention.Decision: a
+// managed run's, Program item DR1) is never routed as a session question:
+// the decision's record is routed instead (record), once, as it opens,
+// through the same guard, its bound and its list of resolutions, and told
+// Resolved when the record reaches a final state. Under the free build's
+// policy (local/1) the router's destinations become the record's routed
+// history row and an answer it holds is offered as a response under the
+// actor user:<subject> with the router's authority and no grant, which the
+// policy refuses (not_approver) and records: the operator alone answers.
 //
 // A question first seen answered in the terminal is never routed. Past
 // maxUnresolved routed and untold questions a new one is not routed (the
@@ -88,7 +103,7 @@ type routedSession struct {
 // pendingResolution is a Resolved to tell, and the question it is for.
 type pendingResolution struct {
 	r    ext.Resolution
-	sess *routedSession // the session's record when queued; it may be forgotten since
+	sess *routedSession // the session's record when queued; it may be forgotten since; nil for a decision's record
 }
 
 // decisionRouter is the server's router seam.
@@ -106,17 +121,25 @@ type decisionRouter struct {
 	working  map[string]bool // ids a worker reads now
 	workers  int
 	sessions map[string]*routedSession
-	untold   int                 // routed ids outstanding or being told
-	told     []pendingResolution // first in, first out
-	telling  bool
-	skips    int // skipped past the bound since the last log
-	skipLog  time.Time
+	// records are the durable decisions ("dr-<n>") seen open since the
+	// router began: outstanding, being told or skipped. One leaves once
+	// told Resolved, or at its final state when it was never routed; a
+	// decision opened before began (an earlier server's) is never routed
+	// here.
+	records map[string]routeState
+	began   time.Time
+	untold  int                 // routed ids outstanding or being told
+	told    []pendingResolution // first in, first out
+	telling bool
+	skips   int // skipped past the bound since the last log
+	skipLog time.Time
 }
 
 // newDecisionRouter is the router of s; nothing runs until a session
 // changes.
 func newDecisionRouter(s *Server) *decisionRouter {
-	return &decisionRouter{s: s, bound: maxUnresolved, dirty: map[string]bool{}, working: map[string]bool{}, sessions: map[string]*routedSession{}}
+	return &decisionRouter{s: s, bound: maxUnresolved, dirty: map[string]bool{}, working: map[string]bool{}, sessions: map[string]*routedSession{},
+		records: map[string]routeState{}, began: time.Now().UTC()}
 }
 
 // routerSeam, when a test sets it, is told the router's steps for a
@@ -208,6 +231,11 @@ func (r *decisionRouter) nextLocked() (string, bool) {
 // either way, so that a host back without answerAs still has them told
 // Resolved and gives back their place under the bound.
 func (r *decisionRouter) read(id string) {
+	if n, ok := ledger.ParseDecisionID(id); ok {
+		// A durable decision's record (record), never a session's id.
+		r.readRecord(id, n)
+		return
+	}
 	seam("read", id, "", ext.Route{}, nil)
 	defer seam("done", id, "", ext.Route{}, nil)
 	d, listed := r.s.registry.Get(id)
@@ -239,10 +267,11 @@ func (r *decisionRouter) read(id string) {
 
 // question is the id of the question info shows, "" for none: a needs_input
 // with an id, the hold of the turn aside (no question: a person at the
-// terminal deals with it).
+// terminal deals with it) and a durable decision's mirror (its record is
+// routed: record).
 func question(info session.Info) string {
 	a := info.Attention
-	if a.State != session.AttentionNeedsInput || a.ID == "" || a.Source == session.SourceSubmit {
+	if a.State != session.AttentionNeedsInput || a.ID == "" || a.Source == session.SourceSubmit || a.Decision != "" {
 		return ""
 	}
 	return a.ID
@@ -404,7 +433,11 @@ func (r *decisionRouter) tell() {
 			r.told = nil
 		}
 		r.untold--
-		if st := p.sess; r.sessions[p.r.Session.ID] == st && st.ids[p.r.ID] == routeResolving {
+		if p.r.Request != "" {
+			if r.records[p.r.Request] == routeResolving {
+				delete(r.records, p.r.Request)
+			}
+		} else if st := p.sess; r.sessions[p.r.Session.ID] == st && st.ids[p.r.ID] == routeResolving {
 			st.ids[p.r.ID] = routeResolved
 			r.pruneLocked(st)
 		}
@@ -443,6 +476,13 @@ func (r *decisionRouter) route(drv session.Driver, d ext.Decision) {
 func (r *decisionRouter) unsent(d ext.Decision) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if d.Request != "" {
+		if r.records[d.Request] == routeOutstanding {
+			r.records[d.Request] = routeSkipped
+			r.untold--
+		}
+		return
+	}
 	if st := r.sessions[d.Session.ID]; st != nil && st.ids[d.ID] == routeOutstanding {
 		st.ids[d.ID] = routeSkipped
 		r.untold--
@@ -533,3 +573,195 @@ func decisionOf(info session.Info) ext.Decision {
 	}
 	return d
 }
+
+// recordSeam, when a test sets it, is told the router's steps for a
+// durable decision: "routed" once its route is handled (the route the
+// guard answered; its destinations recorded and its answer offered, the
+// latter's refusal as err), "skipped" when it was not routed. Nil outside
+// tests.
+var recordSeam atomic.Pointer[func(step, decision string, rt ext.Route, err error)]
+
+func recordStep(step, decision string, rt ext.Route, err error) {
+	if f := recordSeam.Load(); f != nil {
+		(*f)(step, decision, rt, err)
+	}
+}
+
+// record notes that the durable decision id ("dr-<n>") changed
+// (Server.decisionTold, on the committing goroutine, after the commit): it
+// is marked as a session is, and a worker reads its record from the
+// ledger and judges from that read alone (readRecord), so a change made
+// while one reads it is read again after, and the last read is of the
+// record as it last committed. It never waits but on the router's own
+// lock.
+func (r *decisionRouter) record(id string) { r.mark(id) }
+
+// readRecord reads the record of the durable decision id (n) once and
+// judges from it: a record gone is forgotten.
+func (r *decisionRouter) readRecord(id string, n int64) {
+	ld := r.s.ledger
+	if ld == nil {
+		return
+	}
+	rec, found, err := ld.Decision(r.s.extCtx, n)
+	switch {
+	case err != nil:
+		if r.s.extCtx.Err() == nil {
+			r.s.log.Warn("decision router: a decision's record not read", "decision", id, "err", err)
+		}
+		return
+	case !found:
+		r.mu.Lock()
+		if r.records[id] != routeResolving && r.records[id] != routeOutstanding {
+			delete(r.records, id)
+		}
+		r.mu.Unlock()
+		return
+	}
+	if d, ok := r.judgeRecord(rec); ok {
+		r.routeRecord(d, rec.Rev)
+	}
+}
+
+// judgeRecord judges a durable decision's record as a read left it: one
+// seen open for the first time, opened since the router began, is to be
+// routed once, through its bound (the answer); one routed that has reached
+// a final state is told Resolved, in order with the sessions'
+// resolutions; one never routed is forgotten at its final state.
+func (r *decisionRouter) judgeRecord(rec ledger.DecisionRecord) (ext.Decision, bool) {
+	id := rec.ID()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state, seen := r.records[id]
+	now := time.Now().UTC()
+	if rec.Final() {
+		switch {
+		case state == routeOutstanding:
+			r.records[id] = routeResolving
+			r.told = append(r.told, pendingResolution{r: ext.Resolution{ID: id, Request: id, Session: recordRef(rec), At: now}})
+			r.tellLocked()
+		case seen && state != routeResolving:
+			delete(r.records, id)
+		}
+		return ext.Decision{}, false
+	}
+	if seen || rec.State != ledger.DecisionOpen || rec.CreatedAt.Before(r.began) {
+		// Routed or skipped already; answered before the router read it
+		// open (it waits for no one); or an earlier server's to route.
+		return ext.Decision{}, false
+	}
+	switch {
+	case r.untold >= r.bound:
+		r.records[id] = routeSkipped
+		r.skippedLocked(now)
+	case !routerLive(r.s.exts.router):
+		r.records[id] = routeSkipped
+	default:
+		r.records[id] = routeOutstanding
+		r.untold++
+		return recordDecision(rec), true
+	}
+	recordStep("skipped", id, ext.Route{}, nil)
+	return ext.Decision{}, false
+}
+
+// routeRecord asks the router where the decision d goes, within its wait,
+// and acts on what the guard answers, on a goroutine of its own: its
+// destinations kept as the record's routed history row, then its answer
+// offered as a response at rev, the rev the router was shown, which
+// local/1 refuses and records.
+func (r *decisionRouter) routeRecord(d ext.Decision, rev int) {
+	ctx, cancel := r.s.extCtx, context.CancelFunc(func() {})
+	if r.wait > 0 {
+		ctx, cancel = context.WithTimeout(ctx, r.wait)
+	}
+	rt, sent := routeSent(ctx, r.s.exts.router, d)
+	cancel()
+	if !sent {
+		r.unsent(d)
+	}
+	if len(rt.To) == 0 && rt.Answer == nil {
+		recordStep("routed", d.Request, rt, nil)
+		return
+	}
+	// What the route says is written by the engine, in the record's own
+	// transactions, on a goroutine of its own: the worker reads on.
+	r.s.track(func() {
+		if len(rt.To) > 0 {
+			to := make([]crew.Destination, 0, len(rt.To))
+			for _, t := range rt.To {
+				to = append(to, crew.Destination{Kind: t.Kind, Name: t.Name})
+			}
+			if _, err := r.s.runs.RecordRoute(r.s.extCtx, d.Request, r.s.exts.router.Name(), to, rt.Rule); err != nil {
+				r.s.log.Warn("routed decision's destinations not recorded", "decision", d.Request, "err", err)
+			}
+		}
+		var err error
+		if a := rt.Answer; a != nil {
+			err = r.offer(d, *a, rev)
+		}
+		recordStep("routed", d.Request, rt, err)
+	})
+}
+
+// offer offers the router's answer a to the decision d as a response at
+// rev: under the actor user:<subject> and the name the router's principal
+// gives, with the router's authority and no grant, whatever principal the
+// subject also names (Owner decisions, 8). local/1 refuses it
+// (not_approver) and keeps the refusal as the response's receipt; it is
+// never applied. The answer's choice is its option's place ("1" first).
+func (r *decisionRouter) offer(d ext.Decision, a ext.Answer, rev int) error {
+	resp := crew.Response{ResponseID: crew.RouterOpID, Text: a.Text, ExpectedRev: rev, ByName: a.By.Name}
+	if a.Input != "" {
+		n, err := strconv.Atoi(a.Input)
+		if err != nil || n < 1 {
+			return fmt.Errorf("the routed answer's choice %q is no option's place", a.Input)
+		}
+		n--
+		resp.Choice = &n
+	}
+	ctx, cancel := context.WithTimeout(r.s.extCtx, submitTimeout)
+	defer cancel()
+	rc, err := r.s.runs.RespondDecision(ctx, d.Request, resp, ext.SubjectActor+a.By.Subject, crew.Authority{Via: crew.ViaRouter, Subject: a.By.Subject})
+	switch {
+	case err == nil:
+		// No policy of this repository takes a router's answer: one that
+		// did would be a defect, and is said loudly.
+		r.s.log.Error("routed answer accepted for a decision", "decision", d.Request, "k", rc.K)
+	case errors.Is(err, crew.ErrDecision):
+		r.s.log.Info("routed answer refused", "decision", d.Request, "words", err.Error())
+	default:
+		r.s.log.Warn("routed answer not recorded", "decision", d.Request, "err", err)
+	}
+	return err
+}
+
+// recordRef is the session a decision's record names: its asking
+// attempt's (none for a plan's gate), with the run that holds it now and
+// its task.
+func recordRef(rec ledger.DecisionRecord) ext.SessionRef {
+	return ext.SessionRef{ID: rec.SessionID, Run: rec.CurrentRun, Task: rec.TaskID, Attempt: rec.Attempt}
+}
+
+// recordDecision is a durable decision's record as a router is told it:
+// its id twice (ID and Request), the question cut where a character ends
+// to the 500 bytes ext.Decision keeps, kind decision, and its options'
+// labels, each picked by its place ("1" first).
+func recordDecision(rec ledger.DecisionRecord) ext.Decision {
+	var body struct {
+		Question string `json:"question"`
+	}
+	_ = json.Unmarshal([]byte(rec.Request), &body)
+	d := ext.Decision{ID: rec.ID(), Request: rec.ID(), Session: recordRef(rec), Message: cutBytes(body.Question, maxRoutedMessage), Kind: decisionKind, Since: rec.CreatedAt}
+	for i, label := range crew.OptionLabels(rec.Type, rec.Request) {
+		d.Options = append(d.Options, ext.DecisionOption{Label: label, Input: strconv.Itoa(i + 1)})
+	}
+	return d
+}
+
+const (
+	// decisionKind is a durable decision's ext.Decision.Kind.
+	decisionKind = "decision"
+	// maxRoutedMessage is ext.Decision.Message's bound, in bytes.
+	maxRoutedMessage = 500
+)

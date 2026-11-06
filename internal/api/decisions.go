@@ -799,7 +799,9 @@ func (h *eventHub) decision(ev decisionEvent) {
 // decisionTold is told the decisions a committed transition of the
 // ledger changed (crew.SQLLedgerTold): for each, the decision event, then
 // one notification for the webhooks and the providers' sinks, queued
-// without waiting. It runs on the committing goroutine, after the commit.
+// without waiting, and the decision router told of the record (routed as
+// it opens, resolved at its final state: router.go). It runs on the
+// committing goroutine, after the commit.
 func (s *Server) decisionTold(ids []string) {
 	for _, id := range ids {
 		n, ok := ledger.ParseDecisionID(id)
@@ -814,6 +816,7 @@ func (s *Server) decisionTold(ids []string) {
 		if s.notifier != nil {
 			s.notifier.decision(decisionNotification(rec))
 		}
+		s.router.record(id)
 	}
 }
 
