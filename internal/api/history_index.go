@@ -69,8 +69,13 @@ const (
 	maxRunChain = 32
 	// maxRunRecord bounds a run record read (crew's own bound).
 	maxRunRecord = 4 << 20
-	// maxRepoCache bounds the folders whose repository is remembered.
+	// maxRepoCache bounds the folders whose repository is remembered, and
+	// the sources whose repository is not known.
 	maxRepoCache = 1024
+	// maxRepoRetries is how many passes in a row a source whose folder's
+	// repository could not be read fails (each retried after the backoff)
+	// before it is indexed without it (repoFor).
+	maxRepoRetries = 3
 	// maxEndedAttempts bounds the ended attempts whose receipts the
 	// indexer remembers (endedChecks).
 	maxEndedAttempts = 4096
@@ -111,16 +116,24 @@ type historyIndexer struct {
 	host     string
 	log      *slog.Logger
 
-	// Seams: the clock, the timer, a pause between a source's mark and
+	// Seams: the clock, the timer, the start of a source's pass, a pause
+	// between a source's mark and
 	// its read, a pause between a run's receipts and its own Replace, the
 	// index's Check, the repository read, and the reconcile's period.
 	now              func() time.Time
 	after            func(time.Duration) <-chan time.Time
+	beforePass       func(key string)
 	afterMark        func(key string)
 	beforeRunReplace func(key string)
+	beforePublish    func(key string) // nil: none (under pub, before the journal's answer)
 	checkIndex       func(ctx context.Context, ix *history.Index) (string, error)
 	repoOf           func(ctx context.Context, dir string) (top, common string, err error)
+	repoRetries      int // how many passes in a row a repository not known fails
 	reconcileTick    time.Duration
+
+	// pub is held while a session source is published (publishSession) and
+	// while a person's removal drops a record's rows (dropSessions).
+	pub sync.Mutex
 
 	mu       sync.Mutex
 	queue    []string
@@ -128,6 +141,7 @@ type historyIndexer struct {
 	overflow bool // the set passed its bound: a full catch-up
 	placed   bool // a project changed: every session and run source compared
 	reindex  bool // the index cleared on this goroutine, then a catch-up from nothing
+	sweep    bool // a person's removal the index has not taken: dropped before the index is read
 	projects bool // Dispatch's projects changed: read them again
 	behind   int  // a catch-up's sources not read yet
 	state    string
@@ -138,17 +152,25 @@ type historyIndexer struct {
 	wake     chan struct{}
 	owned    chan struct{}
 	ownOnce  sync.Once
+	opened   chan struct{} // closed once the owner's index is open (or the indexer stopped)
+	openOnce sync.Once
 	cancel   context.CancelFunc
 	done     chan struct{}
 	bg       sync.WaitGroup
 
 	// The goroutine's own.
-	due      map[string]time.Time // a source deferred to a time: its run read too lately, a retry
-	readAt   map[string]time.Time // when a run source was last read
-	backoff  time.Duration
-	pm       *projectMap
-	repos    map[string]repoIdent
-	runStats map[string]fileStat // the reconcile's last look at each run record
+	due     map[string]time.Time // a source deferred to a time: its run read too lately, a retry
+	readAt  map[string]time.Time // when a run source was last read
+	backoff time.Duration
+	gen     int64 // the index's generation as the pass under way began
+	pm      *projectMap
+	repos   map[string]repoIdent
+	// repoTries counts a source's passes in a row whose repository read
+	// was not known; repoUnknown are the sources indexed without it, read
+	// again by each reconcile.
+	repoTries   map[string]int
+	repoUnknown map[string]bool
+	runStats    map[string]fileStat // the reconcile's last look at each run record
 	// endedChecks are the receipt rows (no logs) of attempts that have
 	// ended with every receipt finished: rows that never change, read
 	// once. A row of the ledger's is read past its log's pages, so a
@@ -185,19 +207,24 @@ func newHistoryIndexer(data *store.Store, j *journal.Journal, ld func() indexLed
 		path:             filepath.Join(data.Dir(), journal.Dir, history.File),
 		now:              time.Now,
 		after:            time.After,
+		beforePass:       func(string) {},
 		afterMark:        func(string) {},
 		beforeRunReplace: func(string) {},
 		checkIndex:       func(ctx context.Context, ix *history.Index) (string, error) { return ix.Check(ctx) },
 		repoOf:           gitcli.RepoOf,
+		repoRetries:      maxRepoRetries,
 		reconcileTick:    historyReconcileEvery,
 		dirty:            map[string]bool{},
 		state:            indexOpening,
 		wake:             make(chan struct{}, 1),
 		owned:            make(chan struct{}),
+		opened:           make(chan struct{}),
 		done:             make(chan struct{}),
 		due:              map[string]time.Time{},
 		readAt:           map[string]time.Time{},
 		repos:            map[string]repoIdent{},
+		repoTries:        map[string]int{},
+		repoUnknown:      map[string]bool{},
 		runStats:         map[string]fileStat{},
 		endedChecks:      map[attemptID][]ledger.CheckRow{},
 		memberStarts:     map[string]string{},
@@ -297,6 +324,7 @@ func (h *historyIndexer) stop() {
 	cancel()
 	<-h.done
 	h.bg.Wait()
+	h.openOnce.Do(func() { close(h.opened) })
 	h.mu.Lock()
 	ix := h.ix
 	h.ix = nil
@@ -424,9 +452,22 @@ func (h *historyIndexer) openOwner(ctx context.Context) bool {
 	for {
 		ix, err := history.Open(ctx, h.path, history.Options{Logger: h.log})
 		if err == nil {
+			// A removal made while the index was not open is taken before
+			// the index is anyone's to read.
+			h.pub.Lock()
+			h.mu.Lock()
+			sweep := h.sweep
+			h.mu.Unlock()
+			if sweep && h.dropLocked(ctx, ix, nil, true) == nil {
+				h.mu.Lock()
+				h.sweep = false
+				h.mu.Unlock()
+			}
 			h.mu.Lock()
 			h.ix, h.state = ix, indexCatchingUp
 			h.mu.Unlock()
+			h.pub.Unlock()
+			h.openOnce.Do(func() { close(h.opened) })
 			if unchecked, err := ix.Unchecked(ctx); err == nil && unchecked {
 				h.mu.Lock()
 				h.checking = true
@@ -459,13 +500,13 @@ func (h *historyIndexer) check(ctx context.Context, ix *history.Index) {
 			h.mu.Lock()
 			h.checking = false
 			if outcome != history.CheckSound {
-				// Cleared or made again beside the indexing: a pass that
-				// spanned it wrote a mark over entries the clear took (a
-				// run's receipts written before it, the run's own source
-				// after), which a catch-up would trust. So the indexer's own
-				// goroutine clears the index again, between two passes, and
-				// catches up from nothing, as a reindex does.
-				h.reindex = true
+				// Cleared or made again beside the indexing: caught up from
+				// nothing. A pass that spanned the clear wrote nothing after
+				// it (its writes are of the generation it began in, refused
+				// in another), so what the index holds after a crash at any
+				// point is what a restart's catch-up compares: no repair is
+				// owed that only this process remembers.
+				h.overflow = true
 			}
 			h.mu.Unlock()
 			if outcome != history.CheckSound {
@@ -494,6 +535,8 @@ func (h *historyIndexer) loop(ctx context.Context) {
 		h.mu.Lock()
 		step := ""
 		switch {
+		case h.sweep:
+			step = "sweep"
 		case h.reindex:
 			step, h.reindex, h.overflow = "reindex", false, false
 		case h.overflow || h.placed:
@@ -504,6 +547,9 @@ func (h *historyIndexer) loop(ctx context.Context) {
 		var req chan struct{}
 		h.mu.Unlock()
 		switch step {
+		case "sweep":
+			h.doSweep(ctx)
+			continue
 		case "reindex":
 			h.doReindex(ctx)
 			continue
@@ -513,6 +559,15 @@ func (h *historyIndexer) loop(ctx context.Context) {
 		case "reconcile":
 			h.reconcile(ctx)
 			continue
+		}
+		// A reconcile whose time has come is made before the next source:
+		// a queue that is never empty defers it by one pass at most.
+		select {
+		case <-tick:
+			h.reconcile(ctx)
+			tick = h.after(h.reconcileTick)
+			continue
+		default:
 		}
 		if key, ok := h.take(); ok {
 			h.pass(ctx, key)
@@ -542,6 +597,33 @@ func (h *historyIndexer) loop(ctx context.Context) {
 			h.reconcile(ctx)
 			tick = h.after(h.reconcileTick)
 		}
+	}
+}
+
+// doSweep takes a removal the index owes (sweep): every indexed session
+// source whose record the journal no longer answers for removed, under
+// pub; a failure is tried again after a backoff.
+func (h *historyIndexer) doSweep(ctx context.Context) {
+	ix := h.index()
+	if ix == nil {
+		return
+	}
+	h.pub.Lock()
+	err := h.dropLocked(ctx, ix, nil, true)
+	if err == nil {
+		h.mu.Lock()
+		h.sweep = false
+		h.mu.Unlock()
+	}
+	h.pub.Unlock()
+	if err == nil || ctx.Err() != nil {
+		return
+	}
+	h.log.Warn("the history's index could not drop the records forgotten; trying again", "err", err)
+	h.backoff = min(max(2*h.backoff, historyBackoffMin), historyBackoffMax)
+	select {
+	case <-ctx.Done():
+	case <-h.after(h.backoff):
 	}
 }
 
@@ -582,23 +664,34 @@ func (h *historyIndexer) nextDue() (time.Time, bool) {
 // pass reads one source as it is now; a failure leaves it dirty, read
 // again after a backoff.
 func (h *historyIndexer) pass(ctx context.Context, key string) {
+	h.beforePass(key)
 	ix := h.index()
 	if ix == nil || ctx.Err() != nil {
 		return
 	}
 	kind, id, _ := strings.Cut(key, ":")
-	var err error
-	switch kind {
-	case "session":
-		err = h.indexSession(ctx, ix, id)
-	case "run":
-		err = h.indexRun(ctx, ix, id)
+	// The pass's writes are of the index's generation as it begins: one a
+	// clear has moved since (a Check's, a reindex's) is refused, so no mark
+	// stands over entries the clear took, and the source is read again.
+	gen, err := ix.Generation(ctx)
+	if err == nil {
+		h.gen = gen
+		switch kind {
+		case "session":
+			err = h.indexSession(ctx, ix, id)
+		case "run":
+			err = h.indexRun(ctx, ix, id)
+		}
 	}
 	if err == nil {
 		h.backoff = 0
 		return
 	}
 	if ctx.Err() != nil {
+		return
+	}
+	if errors.Is(err, history.ErrStale) {
+		h.mark(key)
 		return
 	}
 	if errors.Is(err, history.ErrBound) || errors.Is(err, history.ErrKind) || errors.Is(err, history.ErrClass) || errors.Is(err, history.ErrKeyTaken) {
@@ -645,9 +738,17 @@ func (h *historyIndexer) projectsOf(ctx context.Context) *projectMap {
 				if err != nil {
 					continue
 				}
-				id := h.repoIdent(ctx, v.Project.Cwd)
+				// A repository not known now is no repository of the
+				// project's in this map, and the digest says so: a later
+				// read (each reconcile reads the projects again) that knows
+				// it changes the digest, and every mark is compared again.
+				id, err := h.repoIdent(ctx, v.Project.Cwd)
+				common := id.common
+				if err != nil {
+					common = "?"
+				}
 				archived := !v.Project.ArchivedAt.IsZero()
-				lines = append(lines, fmt.Sprintf("%s\x00%s\x00%t", ps.Key, id.common, archived))
+				lines = append(lines, fmt.Sprintf("%s\x00%s\x00%t", ps.Key, common, archived))
 				if id.common != "" && !archived {
 					if _, taken := pm.byRepo[id.common]; !taken {
 						pm.byRepo[id.common] = ps.Key
@@ -669,26 +770,68 @@ func (h *historyIndexer) projectsOf(ctx context.Context) *projectMap {
 
 // repoIdent is a folder's repository (gitcli.RepoOf: its top and its
 // common git directory, one for every linked worktree), remembered once
-// read; none for a folder not in one.
-func (h *historyIndexer) repoIdent(ctx context.Context, dir string) repoIdent {
+// read; none, with no error, for a folder in none: git says it is not one,
+// or the folder is gone. Any other failure (git's timeout, git failing for
+// a moment) is not known: the error, nothing remembered.
+func (h *historyIndexer) repoIdent(ctx context.Context, dir string) (repoIdent, error) {
 	if dir == "" {
-		return repoIdent{}
+		return repoIdent{}, nil
 	}
 	if id, ok := h.repos[dir]; ok {
-		return id
+		return id, nil
 	}
 	rctx, cancel := context.WithTimeout(ctx, revisionTimeout)
 	defer cancel()
 	top, common, err := h.repoOf(rctx, dir)
 	if err != nil {
-		return repoIdent{}
+		if errors.Is(err, gitcli.ErrNotRepo) {
+			return repoIdent{}, nil
+		}
+		if fi, serr := os.Stat(dir); errors.Is(serr, fs.ErrNotExist) || (serr == nil && !fi.IsDir()) {
+			return repoIdent{}, nil
+		}
+		if ctx.Err() != nil {
+			return repoIdent{}, ctx.Err()
+		}
+		return repoIdent{}, fmt.Errorf("the repository of %s: %w", dir, err)
 	}
 	if len(h.repos) >= maxRepoCache {
 		clear(h.repos)
 	}
 	id := repoIdent{top: top, common: common}
 	h.repos[dir] = id
-	return id
+	return id, nil
+}
+
+// repoFor is the repository of a source's folder for its pass. A read
+// that is not known (repoIdent's error) is never written down as no
+// repository: the pass fails and is read again after its backoff, up to
+// repoRetries times in a row; past them the pass writes its entries
+// without the repository and a mark that says so (unknown true: the mark
+// carries U), and every reconcile reads the source again, so the first
+// read that succeeds writes it whole.
+func (h *historyIndexer) repoFor(ctx context.Context, key, dir string) (id repoIdent, unknown bool, err error) {
+	id, err = h.repoIdent(ctx, dir)
+	if err == nil {
+		delete(h.repoTries, key)
+		delete(h.repoUnknown, key)
+		return id, false, nil
+	}
+	if ctx.Err() != nil {
+		return repoIdent{}, false, ctx.Err()
+	}
+	if h.repoTries[key] < h.repoRetries {
+		if len(h.repoTries) >= maxRepoCache {
+			clear(h.repoTries)
+		}
+		h.repoTries[key]++
+		return repoIdent{}, false, err
+	}
+	h.log.Warn("a history source's repository could not be read; indexed without it until it can", "source", key, "err", err)
+	if len(h.repoUnknown) < maxRepoCache {
+		h.repoUnknown[key] = true
+	}
+	return repoIdent{}, true, nil
 }
 
 // indexSession reads a session record: its mark S<Seq>/P<projects>, and
@@ -738,10 +881,15 @@ func (h *historyIndexer) indexSession(ctx context.Context, ix *history.Index, id
 		if err != nil {
 			return err
 		}
-		if cwd != "" {
-			place.project = pm.byRepo[h.repoIdent(ctx, cwd).common]
+		repo, unknown, err := h.repoFor(ctx, key, cwd)
+		if err != nil {
+			return err
 		}
+		place.project = pm.byRepo[repo.common]
 		mark += fmt.Sprintf("/C%s/J%s", place.commit, place.project)
+		if unknown {
+			mark += "/U"
+		}
 	} else if !rec.Host.Hosted && rec.RepoCommon != "" {
 		place.project = pm.byRepo[rec.RepoCommon]
 	}
@@ -752,7 +900,118 @@ func (h *historyIndexer) indexSession(ctx context.Context, ix *history.Index, id
 	}
 	h.afterMark(key)
 	entries, links := sessionEntries(rec, place)
-	return ix.Replace(ctx, history.Source{Key: key, Mark: mark}, entries, links)
+	return h.publishSession(ctx, ix, id, history.Source{Key: key, Mark: mark, Generation: h.gen}, entries, links)
+}
+
+// publishSession writes a session record's entries only while the journal
+// still answers for the record, judged under pub, the lock a person's
+// removal takes to drop the record's rows (dropSessions): a pass that read
+// the record before a Forget chose it either publishes before the Forget's
+// drop, which then removes what it wrote, or finds the record gone and
+// removes it. So a forgotten record's rows are gone from the index before
+// Forget answers, and no pass publishes a record its source no longer
+// answers for.
+func (h *historyIndexer) publishSession(ctx context.Context, ix *history.Index, id string, src history.Source, entries []history.Entry, links []history.Link) error {
+	h.pub.Lock()
+	defer h.pub.Unlock()
+	if h.beforePublish != nil {
+		h.beforePublish(src.Key)
+	}
+	_, _, err := h.journal.Get(id)
+	var unreadable *store.ParseError
+	if errors.Is(err, journal.ErrNotFound) || errors.Is(err, journal.ErrBadID) || errors.As(err, &unreadable) {
+		return ix.Remove(ctx, src.Key)
+	}
+	if err != nil {
+		return err
+	}
+	return ix.Replace(ctx, src, entries, links)
+}
+
+// errIndexNotOpen is a person's removal the index could not take: it is
+// not open (yet, or any more).
+var errIndexNotOpen = errors.New("the history's index is not open")
+
+// dropSessions removes from the index the sources of the session records
+// ids (every session source the journal no longer answers for when all is
+// set), under pub, so no pass publishes one of them between the journal's
+// removal and this drop: what the Forget routes call before they answer.
+// An index not open, or one that could not be written, is an error, and
+// the drop is owed: the sources are read again (a full catch-up for all),
+// and an index opened later takes the drop before anything reads it.
+func (h *historyIndexer) dropSessions(ctx context.Context, ids []string, all bool) error {
+	// An index still opening (a Forget as the server starts) is waited
+	// for, as ctx allows.
+	select {
+	case <-h.opened:
+	case <-ctx.Done():
+	}
+	h.pub.Lock()
+	defer h.pub.Unlock()
+	ix := h.index()
+	err := errIndexNotOpen
+	if ix != nil && !ix.ReadOnly() {
+		err = h.dropLocked(ctx, ix, ids, all)
+	}
+	if err != nil {
+		h.mu.Lock()
+		h.sweep = true
+		if all {
+			h.overflow = true
+		}
+		h.mu.Unlock()
+		for _, id := range ids {
+			h.mark(hSessionRef(id))
+		}
+	}
+	return err
+}
+
+// dropLocked is dropSessions' work, the caller holding pub: each id's
+// source removed, and with all every indexed session source whose record
+// the journal no longer answers for.
+func (h *historyIndexer) dropLocked(ctx context.Context, ix *history.Index, ids []string, all bool) error {
+	for _, id := range ids {
+		if err := ix.Remove(ctx, hSessionRef(id)); err != nil {
+			return err
+		}
+	}
+	if !all {
+		return nil
+	}
+	var gone []string
+	for after := "session:"; ; {
+		page, err := ix.Sources(ctx, after, history.MaxSourcesPage)
+		if err != nil {
+			return err
+		}
+		done := len(page) < history.MaxSourcesPage
+		for _, src := range page {
+			id, ok := strings.CutPrefix(src.Key, "session:")
+			if !ok {
+				done = true
+				break
+			}
+			_, _, err := h.journal.Get(id)
+			var unreadable *store.ParseError
+			switch {
+			case errors.Is(err, journal.ErrNotFound) || errors.Is(err, journal.ErrBadID) || errors.As(err, &unreadable):
+				gone = append(gone, src.Key)
+			case err != nil:
+				return err
+			}
+		}
+		if done {
+			break
+		}
+		after = page[len(page)-1].Key
+	}
+	for _, key := range gone {
+		if err := ix.Remove(ctx, key); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // runCwd is a run's folder: its record's, else its crew's as the ledger
@@ -875,8 +1134,12 @@ func (h *historyIndexer) indexRun(ctx context.Context, ix *history.Index, id str
 			cwd = crewCwd(row)
 		}
 	}
+	repo, unknown, err := h.repoFor(ctx, key, cwd)
+	if err != nil {
+		return err
+	}
 	project := ""
-	if repo := h.repoIdent(ctx, cwd); repo.common != "" {
+	if repo.common != "" {
 		project = h.projectsOf(ctx).byRepo[repo.common]
 	}
 	var marks []string
@@ -889,6 +1152,9 @@ func (h *historyIndexer) indexRun(ctx context.Context, ix *history.Index, id str
 	}
 	if project != "" {
 		marks = append(marks, "J"+project)
+	}
+	if unknown {
+		marks = append(marks, "U")
 	}
 	mark := strings.Join(marks, "/")
 	if old, ok, err := ix.Mark(ctx, key); err != nil {
@@ -920,7 +1186,7 @@ func (h *historyIndexer) indexRun(ctx context.Context, ix *history.Index, id str
 			from = c.row.ContinuedFrom
 		}
 	}
-	p := h.runPlaceOf(ctx, id, cwd, project, rec, rows)
+	p := runPlaceOf(id, h.host, repo, project, rec, rows)
 	var kept []history.Link
 	if rows != nil {
 		var err error
@@ -935,7 +1201,7 @@ func (h *historyIndexer) indexRun(ctx context.Context, ix *history.Index, id str
 		}
 	}
 	h.beforeRunReplace(key)
-	if err := ix.Replace(ctx, history.Source{Key: key, Mark: mark}, entries, links); err != nil {
+	if err := ix.Replace(ctx, history.Source{Key: key, Mark: mark, Generation: h.gen}, entries, links); err != nil {
 		return err
 	}
 	// The members' sessions, each when what its entry takes from the run
@@ -954,14 +1220,21 @@ func (h *historyIndexer) indexRun(ctx context.Context, ix *history.Index, id str
 		h.memberStarts[sid] = start
 		h.mark(hSessionRef(sid))
 	}
+	// A member the record names and the rows hold is told by its attempt's
+	// row alone: the record's member has no start commit, and told twice
+	// the remembered start would never match.
+	inRows := map[string]bool{}
 	if rows != nil {
 		for _, a := range rows.attempts {
 			tell(a.SessionID, a.StartCommit)
+			inRows[a.SessionID] = true
 		}
 	}
 	if rec != nil {
 		for _, m := range rec.Members {
-			tell(m.SessionID, "")
+			if !inRows[m.SessionID] {
+				tell(m.SessionID, "")
+			}
 		}
 	}
 	return nil
@@ -1071,10 +1344,11 @@ func settledAttempt(a ledger.AttemptRow, rows []ledger.CheckRow) bool {
 	})
 }
 
-// runPlaceOf is what a run's entries take from beyond its rows; cwd and
-// project are the run's folder and project as its mark took them.
-func (h *historyIndexer) runPlaceOf(ctx context.Context, id, cwd, project string, rec *crew.Run, rows *runRows) runPlace {
-	p := runPlace{run: id, host: hField(h.host), project: project, kinds: map[string]string{}, agents: map[string]string{}, agentSessions: map[string]string{}, needs: map[string][]string{}}
+// runPlaceOf is what a run's entries take from beyond its rows; repo and
+// project are the run's folder's repository and its project as its mark
+// took them.
+func runPlaceOf(id, host string, repo repoIdent, project string, rec *crew.Run, rows *runRows) runPlace {
+	p := runPlace{run: id, host: hField(host), project: project, kinds: map[string]string{}, agents: map[string]string{}, agentSessions: map[string]string{}, needs: map[string][]string{}}
 	var c crew.Crew
 	if rows != nil {
 		_ = json.Unmarshal([]byte(rows.row.Crew), &c)
@@ -1112,7 +1386,7 @@ func (h *historyIndexer) runPlaceOf(ctx context.Context, id, cwd, project string
 			p.agents[t.ID] = cmp.Or(p.agents[t.ID], p.agents["member:"+t.Member])
 		}
 	}
-	if repo := h.repoIdent(ctx, cwd); repo.common != "" {
+	if repo.common != "" {
 		p.repo, p.tree = hFitID(repo.common), hFitID(repo.top)
 	}
 	return p
@@ -1167,7 +1441,7 @@ func (h *historyIndexer) indexReceipts(ctx context.Context, ix *history.Index, l
 			}
 		}
 		e := checkEntry(p, full, branch[r.TaskID+"/"+strconv.Itoa(r.N)])
-		if err := ix.Replace(ctx, history.Source{Key: key, Mark: want}, []history.Entry{e}, nil); err != nil {
+		if err := ix.Replace(ctx, history.Source{Key: key, Mark: want, Generation: h.gen}, []history.Entry{e}, nil); err != nil {
 			return err
 		}
 	}
@@ -1189,7 +1463,7 @@ func (h *historyIndexer) placeReceipt(ctx context.Context, ix *history.Index, ke
 		e.Class, e.Digest, e.Source, e.Project = "", "", "", project
 		entries = []history.Entry{e}
 	}
-	return ix.Replace(ctx, history.Source{Key: key, Mark: mark}, entries, nil)
+	return ix.Replace(ctx, history.Source{Key: key, Mark: mark, Generation: h.gen}, entries, nil)
 }
 
 // checkSources is the receipts of run the index holds as sources, with
@@ -1233,6 +1507,8 @@ func (h *historyIndexer) removeRun(ctx context.Context, ix *history.Index, id st
 			delete(h.endedChecks, a)
 		}
 	}
+	delete(h.repoTries, hRunRef(id))
+	delete(h.repoUnknown, hRunRef(id))
 	return ix.Remove(ctx, hRunRef(id))
 }
 
@@ -1454,6 +1730,10 @@ func (h *historyIndexer) reconcile(ctx context.Context) {
 				h.mark(key)
 			}
 		}
+	}
+	// The sources indexed without their repository, read again.
+	for key := range h.repoUnknown {
+		h.mark(key)
 	}
 	old := ""
 	if h.pm != nil {

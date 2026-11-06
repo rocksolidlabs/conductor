@@ -27,6 +27,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/export"
+	"github.com/rocksolidlabs/conductor/internal/gitcli"
 	"github.com/rocksolidlabs/conductor/internal/history"
 	"github.com/rocksolidlabs/conductor/internal/journal"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -1681,6 +1682,10 @@ func TestARunsTransitionReadsNoMemberAgain(t *testing.T) {
 		})
 	}
 	put(commitID(7))
+	// The run's record as the engine saves it: the member's session is in
+	// it too, with no start commit of its own.
+	saveRecord(t, e.srv, crew.Run{ID: "hist-00000034", CrewID: "hist", Name: "Hist", Cwd: e.root, Isolation: crew.IsolationWorktree, State: crew.RunRunning, StartedAt: histNow,
+		Members: []crew.MemberState{{Name: "lead", AgentID: "cat", Status: "running", SessionID: id, Task: "build", Attempt: 1}}})
 	// Ended and written: its record changes no more while the run moves.
 	e.srv.sessionRecords.Settle(in, journal.State{Name: r.Name, Crew: r.Crew, End: &journal.Ending{How: "exited"}, Final: true})
 	endedRecord(t, e, id)
@@ -1787,6 +1792,95 @@ func TestAFailedStepIndexesItsErrorAlone(t *testing.T) {
 	}
 	if got := histFind(t, ix, "zstepoutputword"); len(got) != 0 {
 		t.Fatalf("the step's output is indexed: %v", got)
+	}
+}
+
+// A step of the tree is judged by its words alone, as Dispatch judges its
+// phase: a setup step that succeeded (stable unset), a readiness probe
+// that passed and a service stopped in order (exit -1, a signal) are no
+// failed step; the setup step, the probe and the service that failed with
+// words are.
+func TestATreeStepIsJudgedByItsWords(t *testing.T) {
+	e := newTestEnv(t, nil)
+	ld := e.srv.ledger
+	run := "hist-00000040"
+	histCreate(t, ld, run, "", histCrew(e.root))
+	step := func(phase, id string, exit int, signal, words string) ledger.CheckRow {
+		r := histReceipt("build", 1, id, 1, commitID(0), exit, "")
+		r.Phase, r.Stable, r.Signal, r.Error = phase, false, signal, words
+		return r
+	}
+	histTx(t, ld, run, func(tx *ledger.Tx) error {
+		if err := tx.PutAttempt(histAttempt("build", 1, ledger.AttemptFailed, "ready web", commitID(0), "")); err != nil {
+			return err
+		}
+		for _, r := range []ledger.CheckRow{
+			step(ledger.PhaseSetup, "install", 0, "", ""),
+			step(ledger.PhaseReady, "probe", 0, "", ""),
+			step(ledger.PhaseService, "db", -1, "terminated", ""),
+			step(ledger.PhaseSetup, "migrate", 1, "", "the step exited with status 1"),
+			step(ledger.PhaseReady, "web", -1, "", "the URL did not answer in time"),
+			step(ledger.PhaseService, "queue", -1, "", "the service could not start"),
+		} {
+			if err := tx.PutCheck(r); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	ix := histSettle(t, e)
+	for _, id := range []string{"install", "probe", "db"} {
+		histGone(t, ix, hCheckRef(run, "build", 1, id, 1))
+	}
+	for _, id := range []string{"migrate", "web", "queue"} {
+		if h := histEntry(t, ix, hCheckRef(run, "build", 1, id, 1)); h.Kind != "step" || h.Outcome != "failed" {
+			t.Fatalf("the failed step %s: %+v", id, h.Entry)
+		}
+	}
+}
+
+// A review of a result a person accepted anyway (crew's acceptTask: the
+// task succeeds with its failed attempt's result) reviews that attempt,
+// and its needs_changes reopens the repair; an earlier attempt that
+// succeeded with the same commit is not the subject.
+func TestAReviewOfAnAcceptedResultIsLinked(t *testing.T) {
+	e := newTestEnv(t, nil)
+	ld := e.srv.ledger
+	run := "hist-00000041"
+	histCreate(t, ld, run, "", histReviewCrew(e.root))
+	same := commitID(6)
+	result, err := json.Marshal(crew.Result{Summary: "Done.", Commit: same})
+	if err != nil {
+		t.Fatal(err)
+	}
+	histTx(t, ld, run, func(tx *ledger.Tx) error {
+		first := histAttempt("other", 1, ledger.AttemptSucceeded, "", commitID(0), same)
+		first.Result, first.ClosedAt = string(result), histNow.Add(90*time.Second)
+		// The first review asked for changes; the repair failed its checks
+		// with the same commit, and a person accepted it anyway.
+		rv1 := histAttempt("review", 1, ledger.AttemptSucceeded, "", same, "")
+		rv1.Member, rv1.Result, rv1.ReservedAt, rv1.ClosedAt = "reviewer", needsChanges(t), histNow.Add(100*time.Second), histNow.Add(150*time.Second)
+		accepted := histAttempt("other", 2, ledger.AttemptFailed, "check unit", same, same)
+		accepted.Result, accepted.ClosedAt = string(result), histNow.Add(170*time.Second)
+		rv2 := histAttempt("review", 2, ledger.AttemptSucceeded, "", same, "")
+		rv2.Member, rv2.Result, rv2.ReservedAt = "reviewer", needsChanges(t), histNow.Add(180*time.Second)
+		for _, a := range []ledger.AttemptRow{first, rv1, accepted, rv2, histAttempt("other", 3, ledger.AttemptRunning, "", same, "")} {
+			if err := tx.PutAttempt(a); err != nil {
+				return err
+			}
+		}
+		return tx.PutTask(ledger.TaskRow{ID: "other", Member: "lead", Kind: crew.TaskWork, State: ledger.TaskRunning, Attempts: 3, ResultAttempt: 2, ResultCommit: same})
+	})
+	ix := histSettle(t, e)
+	rv := attemptKey(run, "review", 2)
+	if got := histOut(t, ix, rv, relReviews); !slices.Equal(got, []string{attemptKey(run, "other", 2)}) {
+		t.Fatalf("the review of the accepted result reviews: %v", got)
+	}
+	if got := histOut(t, ix, rv, relReopened); !slices.Equal(got, []string{attemptKey(run, "other", 3)}) {
+		t.Fatalf("its repair: %v", got)
+	}
+	if got := histOut(t, ix, attemptKey(run, "review", 1), relReviews); !slices.Equal(got, []string{attemptKey(run, "other", 1)}) {
+		t.Fatalf("the first review reviews: %v", got)
 	}
 }
 
@@ -1991,4 +2085,255 @@ func TestAHandoffSurvivesALaterWithdrawal(t *testing.T) {
 	if got := histOut(t, histSettle(t, e), failed, relHanded); !slices.Equal(got, []string{attemptKey(run, "build", 2)}) {
 		t.Fatalf("handed after the withdrawal: %v", got)
 	}
+}
+
+// A clear that lands between a run's receipts and its own Replace (a
+// Check's, its request to catch up lost with the process: a crash) leaves
+// no mark over what it took: the run's Replace, of the generation its pass
+// began in, is refused and the run read again, so the receipt is indexed,
+// and a restart finds it there.
+func TestAClearInsideARunsPassLeavesNoMarkOverWhatItTook(t *testing.T) {
+	e := newTestEnv(t, nil)
+	run := "hist-00000043"
+	receipt := hCheckRef(run, "build", 1, "unit", 1)
+	var once sync.Once
+	var cleared atomic.Bool
+	freshIndexer(t, e, func(h *historyIndexer) {
+		h.beforeRunReplace = func(key string) {
+			if key != hRunRef(run) {
+				return
+			}
+			if _, held, _ := h.index().Mark(context.Background(), receipt); !held {
+				return
+			}
+			once.Do(func() {
+				if err := h.index().Clear(context.Background()); err != nil {
+					t.Error(err)
+				}
+				cleared.Store(true)
+			})
+		}
+	})
+	ld := e.srv.ledger
+	histCreate(t, ld, run, "", histCrew(e.root))
+	failedAt(t, ld, run, 1, 1, "TestAcrossACrash")
+	ix := histSettle(t, e)
+	if !cleared.Load() {
+		t.Fatal("the index was never cleared inside the run's pass")
+	}
+	histEntry(t, ix, hRunRef(run))
+	if h := histEntry(t, ix, receipt); !strings.Contains(h.Body, "TestAcrossACrash") {
+		t.Fatalf("the receipt: %+v", h.Entry)
+	}
+	if h := histEntry(t, histSettle(t, restartServer(t, e)), receipt); !strings.Contains(h.Body, "TestAcrossACrash") {
+		t.Fatalf("the receipt after a restart: %+v", h.Entry)
+	}
+}
+
+// A dirty queue that is never empty defers the reconcile by one pass at
+// most: with a source marked again at every pass, the reconcile's timer
+// fires and a run record the other server wrote (no hook of this one) is
+// indexed.
+func TestABusyQueueStillReconciles(t *testing.T) {
+	e := newTestEnv(t, nil)
+	tick := make(chan time.Time, 1)
+	busy := hSessionRef("zbusy") // no record: its pass removes nothing, at once
+	var spinning atomic.Bool
+	var passes atomic.Int64
+	h := freshIndexer(t, e, func(h *historyIndexer) {
+		h.after = func(d time.Duration) <-chan time.Time {
+			if d == h.reconcileTick {
+				return tick
+			}
+			return time.After(d)
+		}
+		h.beforePass = func(key string) {
+			if key == busy && spinning.Load() {
+				passes.Add(1)
+				h.mark(busy)
+			}
+		}
+	})
+	t.Cleanup(func() { spinning.Store(false) })
+	histSettle(t, e)
+	other := otherServer(t, e)
+	saveRecord(t, other.srv, crew.Run{ID: "hist-00000044", Label: "the busy server's run", Cwd: e.root, StartedAt: histNow})
+	spinning.Store(true)
+	h.mark(busy)
+	until(t, "the queue busy", func() bool { return passes.Load() > 2 })
+	tick <- histNow
+	ix := h.index()
+	until(t, "the other server's run indexed while the queue is busy", func() bool {
+		_, err := ix.Entry(t.Context(), "run:hist-00000044")
+		return err == nil
+	})
+	spinning.Store(false)
+}
+
+// A repository read that fails for a moment is not written down as none:
+// the pass fails and is read again, and the run is indexed with its
+// repository. One that keeps failing past the retries is indexed without
+// it and a mark that says so, and the reconcile after the read recovers
+// writes it whole.
+func TestARepositoryNotKnownIsReadAgain(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		retries int
+	}{{"a moment", maxRepoRetries}, {"past the retries", 1}} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTestEnv(t, nil)
+			e.gitRepo(t)
+			var fails atomic.Int64
+			fails.Store(2)
+			freshIndexer(t, e, func(h *historyIndexer) {
+				h.repoRetries = tc.retries
+				h.after = func(d time.Duration) <-chan time.Time {
+					if d == h.reconcileTick {
+						return nil
+					}
+					return time.After(d)
+				}
+				h.repoOf = func(ctx context.Context, dir string) (string, string, error) {
+					if dir == e.root && fails.Add(-1) >= 0 {
+						return "", "", errors.New("git rev-parse: timed out")
+					}
+					return gitcli.RepoOf(ctx, dir)
+				}
+			})
+			run := "hist-00000045"
+			histCreate(t, e.srv.ledger, run, "", histCrew(e.root))
+			ix := histSettle(t, e)
+			if fails.Load() > 0 {
+				t.Fatal("the repository's reads did not fail twice")
+			}
+			h := histEntry(t, ix, hRunRef(run))
+			if tc.retries > 1 {
+				if h.Repo == "" || strings.HasSuffix(histMark(t, ix, hRunRef(run)), "/U") {
+					t.Fatalf("the run after a failed read: repo %q, mark %s", h.Repo, histMark(t, ix, hRunRef(run)))
+				}
+				return
+			}
+			if h.Repo != "" || !strings.HasSuffix(histMark(t, ix, hRunRef(run)), "/U") {
+				t.Fatalf("the run past its retries: repo %q, mark %s", h.Repo, histMark(t, ix, hRunRef(run)))
+			}
+			ix = histReconcile(t, e)
+			if h := histEntry(t, ix, hRunRef(run)); h.Repo == "" || strings.HasSuffix(histMark(t, ix, hRunRef(run)), "/U") {
+				t.Fatalf("the run after the read recovered: repo %q, mark %s", h.Repo, histMark(t, ix, hRunRef(run)))
+			}
+		})
+	}
+}
+
+// A forgotten record's rows are gone from the index before Forget
+// answers, and no pass publishes a record its source no longer answers
+// for: with the indexer held on another source, a search made as the
+// Forget (or Forget all) answers finds nothing; with a pass of the record
+// held between its read and its publish, the same, and the held pass,
+// released, publishes nothing.
+func TestAForgetAnswersOnceTheIndexHoldsNothingOfIt(t *testing.T) {
+	forget := func(t *testing.T, e *testEnv, id string, all bool) {
+		t.Helper()
+		if all {
+			if resp, out := e.do("DELETE", "/api/history/sessions", adminToken, nil); resp.StatusCode != http.StatusOK {
+				t.Fatalf("forget all: %d %v", resp.StatusCode, out)
+			}
+			return
+		}
+		if resp, out := e.do("DELETE", "/api/history/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("forget: %d %v", resp.StatusCode, out)
+		}
+	}
+	for _, all := range []bool{false, true} {
+		t.Run(fmt.Sprintf("held on another source, all %t", all), func(t *testing.T) {
+			e := newTestEnv(t, nil)
+			id, _ := forgettable(t, e, "zforgetheld")
+			gate, reached := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			h := freshIndexer(t, e, func(h *historyIndexer) {
+				h.beforePass = func(key string) {
+					if key == "run:hist-00000046" {
+						once.Do(func() {
+							close(reached)
+							<-gate
+						})
+					}
+				}
+			})
+			histSettle(t, e)
+			saveRecord(t, e.srv, crew.Run{ID: "hist-00000046", Label: "the held run", Cwd: e.root, StartedAt: histNow})
+			reachGate(t, reached)
+			forget(t, e, id, all)
+			forgotten(t, h.index(), id, "zforgetheld")
+			close(gate)
+			forgotten(t, histSettle(t, e), id, "zforgetheld")
+		})
+	}
+	t.Run("a pass of the record held", func(t *testing.T) {
+		e := newTestEnv(t, nil)
+		id, in := forgettable(t, e, "zforgetpass")
+		key := hSessionRef(id)
+		held, heldAt := make(chan struct{}), make(chan struct{})
+		next, nextAt := make(chan struct{}), make(chan struct{})
+		var armed atomic.Bool
+		var heldOnce, nextOnce sync.Once
+		var pass atomic.Int64
+		h := freshIndexer(t, e, func(h *historyIndexer) {
+			h.afterMark = func(k string) {
+				if k == key && armed.Load() {
+					heldOnce.Do(func() {
+						close(heldAt)
+						<-held
+					})
+				}
+			}
+			h.beforePass = func(k string) {
+				// The pass after the held one: the index is read before it
+				// runs.
+				if k == key && armed.Load() && pass.Add(1) == 2 {
+					nextOnce.Do(func() {
+						close(nextAt)
+						<-next
+					})
+				}
+			}
+		})
+		histSettle(t, e)
+		armed.Store(true)
+		e.srv.sessionRecords.Chat(in, journal.ChatLine{Kind: "message", Text: "one more", ByName: "nate", At: histNow})
+		e.srv.sessionRecords.Flush()
+		reachGate(t, heldAt)
+		forget(t, e, id, false)
+		forgotten(t, h.index(), id, "zforgetpass")
+		close(held)
+		reachGate(t, nextAt)
+		forgotten(t, h.index(), id, "zforgetpass")
+		close(next)
+		forgotten(t, histSettle(t, e), id, "zforgetpass")
+	})
+}
+
+// reachGate waits for a seam's gate to be reached, bounding a hang.
+func reachGate(t *testing.T, at <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-at:
+	case <-time.After(2 * testWait):
+		t.Fatal("the gate was never reached")
+	}
+}
+
+// A Forget the index cannot take (the indexer stopped: its index not
+// open) says so (503 history_index_failed) with the record gone from the
+// journal, and the next start's catch-up drops its rows.
+func TestAForgetTheIndexCannotTakeSaysSo(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id, _ := forgettable(t, e, "zforgetunopened")
+	e.srv.stopHistory()
+	if resp, out := e.do("DELETE", "/api/history/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusServiceUnavailable || errorCode(out) != "history_index_failed" {
+		t.Fatalf("forget with the index closed: %d %v", resp.StatusCode, out)
+	}
+	if resp, _ := e.do("GET", "/api/history/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("the record after the forget: %d", resp.StatusCode)
+	}
+	forgotten(t, histSettle(t, restartServer(t, e)), id, "zforgetunopened")
 }
