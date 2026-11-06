@@ -126,6 +126,7 @@ type historyIndexer struct {
 	afterMark        func(key string)
 	beforeRunReplace func(key string)
 	beforePublish    func(key string) // nil: none (under pub, before the journal's answer)
+	beforeDrop       func() error     // a removal's start: an error fails it (a test's write failure)
 	checkIndex       func(ctx context.Context, ix *history.Index) (string, error)
 	repoOf           func(ctx context.Context, dir string) (top, common string, err error)
 	repoRetries      int // how many passes in a row a repository not known fails
@@ -141,7 +142,10 @@ type historyIndexer struct {
 	overflow bool // the set passed its bound: a full catch-up
 	placed   bool // a project changed: every session and run source compared
 	reindex  bool // the index cleared on this goroutine, then a catch-up from nothing
-	sweep    bool // a person's removal the index has not taken: dropped before the index is read
+	// sweep is a person's removal the index has not taken (and, from the
+	// owner's start, any a stopped server left owed): while it is set the
+	// index is not read (index answers none), until the removal is made.
+	sweep    bool
 	projects bool // Dispatch's projects changed: read them again
 	behind   int  // a catch-up's sources not read yet
 	state    string
@@ -210,6 +214,7 @@ func newHistoryIndexer(data *store.Store, j *journal.Journal, ld func() indexLed
 		beforePass:       func(string) {},
 		afterMark:        func(string) {},
 		beforeRunReplace: func(string) {},
+		beforeDrop:       func() error { return nil },
 		checkIndex:       func(ctx context.Context, ix *history.Index) (string, error) { return ix.Check(ctx) },
 		repoOf:           gitcli.RepoOf,
 		repoRetries:      maxRepoRetries,
@@ -336,8 +341,35 @@ func (h *historyIndexer) stop() {
 	}
 }
 
-// index is the open index, nil before it opens.
+// owns is whether this server owns the index (and so writes it).
+func (h *historyIndexer) owns() bool {
+	select {
+	case <-h.owned:
+		return true
+	default:
+		return false
+	}
+}
+
+// index is the open index for the routes' reads: nil before it opens,
+// and nil while the index owes a removal (sweep), until it has made it.
+// An index that owes a removal is not read until it has made it: the
+// routes answer it as unavailable, availability given up on purpose for
+// the promise that a record forgotten is in no answer once Forget has
+// answered, its rows dropped or the drop owed. The indexer's own work
+// reads current.
 func (h *historyIndexer) index() *history.Index {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.sweep {
+		return nil
+	}
+	return h.ix
+}
+
+// current is the open index for the indexer's own work, a removal owed
+// or not; nil before it opens.
+func (h *historyIndexer) current() *history.Index {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.ix
@@ -447,7 +479,14 @@ func (h *historyIndexer) openReader(ctx context.Context) {
 
 // openOwner opens the index as its owner, trying again with a backoff;
 // an index owed a check is checked on a goroutine of its own.
+//
+// The owner starts owing the sweep: a server stopped between a journal's
+// removal and its index's left rows no flag remembers, so the index is
+// not read until the sweep has found and dropped them.
 func (h *historyIndexer) openOwner(ctx context.Context) bool {
+	h.mu.Lock()
+	h.sweep = true
+	h.mu.Unlock()
 	wait := historyBackoffMin
 	for {
 		ix, err := history.Open(ctx, h.path, history.Options{Logger: h.log})
@@ -604,7 +643,7 @@ func (h *historyIndexer) loop(ctx context.Context) {
 // source whose record the journal no longer answers for removed, under
 // pub; a failure is tried again after a backoff.
 func (h *historyIndexer) doSweep(ctx context.Context) {
-	ix := h.index()
+	ix := h.current()
 	if ix == nil {
 		return
 	}
@@ -665,7 +704,7 @@ func (h *historyIndexer) nextDue() (time.Time, bool) {
 // again after a backoff.
 func (h *historyIndexer) pass(ctx context.Context, key string) {
 	h.beforePass(key)
-	ix := h.index()
+	ix := h.current()
 	if ix == nil || ctx.Err() != nil {
 		return
 	}
@@ -939,6 +978,11 @@ var errIndexNotOpen = errors.New("the history's index is not open")
 // An index not open, or one that could not be written, is an error, and
 // the drop is owed: the sources are read again (a full catch-up for all),
 // and an index opened later takes the drop before anything reads it.
+//
+// The drop does not rest on the journal still holding the records: a
+// Forget again of a record already gone from the journal drops its rows
+// all the same. A removal owed when it comes (sweep) is made with it, and
+// a drop that succeeds clears it: the index is read again.
 func (h *historyIndexer) dropSessions(ctx context.Context, ids []string, all bool) error {
 	// An index still opening (a Forget as the server starts) is waited
 	// for, as ctx allows.
@@ -948,10 +992,18 @@ func (h *historyIndexer) dropSessions(ctx context.Context, ids []string, all boo
 	}
 	h.pub.Lock()
 	defer h.pub.Unlock()
-	ix := h.index()
+	ix := h.current()
+	h.mu.Lock()
+	owed := h.sweep
+	h.mu.Unlock()
 	err := errIndexNotOpen
 	if ix != nil && !ix.ReadOnly() {
-		err = h.dropLocked(ctx, ix, ids, all)
+		err = h.dropLocked(ctx, ix, ids, all || owed)
+	}
+	if err == nil && owed {
+		h.mu.Lock()
+		h.sweep = false
+		h.mu.Unlock()
 	}
 	if err != nil {
 		h.mu.Lock()
@@ -971,6 +1023,9 @@ func (h *historyIndexer) dropSessions(ctx context.Context, ids []string, all boo
 // source removed, and with all every indexed session source whose record
 // the journal no longer answers for.
 func (h *historyIndexer) dropLocked(ctx context.Context, ix *history.Index, ids []string, all bool) error {
+	if err := h.beforeDrop(); err != nil {
+		return err
+	}
 	for _, id := range ids {
 		if err := ix.Remove(ctx, hSessionRef(id)); err != nil {
 			return err
@@ -1518,7 +1573,7 @@ func (h *historyIndexer) removeRun(ctx context.Context, ix *history.Index, id st
 // removed. A project's change asks one too: a session's and a run's
 // marks carry the project they were placed in.
 func (h *historyIndexer) catchUp(ctx context.Context) {
-	ix := h.index()
+	ix := h.current()
 	if ix == nil {
 		return
 	}
@@ -1655,7 +1710,7 @@ func (h *historyIndexer) storeSources(ctx context.Context) ([]string, bool, erro
 // pass). Dispatch's projects are read again, a change of them comparing
 // every session's and run's mark.
 func (h *historyIndexer) reconcile(ctx context.Context) {
-	ix := h.index()
+	ix := h.current()
 	if ix == nil {
 		return
 	}
@@ -1762,7 +1817,7 @@ func ledgerRevOf(mark string) (int64, bool) {
 
 // doReindex clears the index in place and catches up from nothing.
 func (h *historyIndexer) doReindex(ctx context.Context) {
-	ix := h.index()
+	ix := h.current()
 	if ix == nil {
 		return
 	}

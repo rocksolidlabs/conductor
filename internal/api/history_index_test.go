@@ -2341,3 +2341,118 @@ func TestAForgetTheIndexCannotTakeSaysSo(t *testing.T) {
 	}
 	forgotten(t, histSettle(t, restartServer(t, e)), id, "zforgetunopened")
 }
+
+// failDrops is a seam that fails every removal of the index's while it
+// is set.
+func failDrops(fail *atomic.Bool) func() error {
+	return func() error {
+		if fail.Load() {
+			return errors.New("the index could not be written")
+		}
+		return nil
+	}
+}
+
+// indexServed waits for h's index to be read again (its removal made).
+func indexServed(t *testing.T, h *historyIndexer) *history.Index {
+	t.Helper()
+	deadline := time.Now().Add(2 * testWait)
+	for time.Now().Before(deadline) {
+		if ix := h.index(); ix != nil {
+			return ix
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("the index was not read again: %v", h.indexing())
+	return nil
+}
+
+// A Forget whose removal fails on an open index answers 503
+// history_index_failed, and the index is not read while it owes the
+// removal; once the removal is made the index is read again, the record's
+// rows gone.
+func TestAnIndexThatOwesARemovalIsNotRead(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id, _ := forgettable(t, e, "zforgetfailed")
+	var fail atomic.Bool
+	h := freshIndexer(t, e, func(h *historyIndexer) { h.beforeDrop = failDrops(&fail) })
+	histSettle(t, e)
+	fail.Store(true)
+	if resp, out := e.do("DELETE", "/api/history/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusServiceUnavailable || errorCode(out) != "history_index_failed" {
+		t.Fatalf("forget with the index failing: %d %v", resp.StatusCode, out)
+	}
+	if ix := h.index(); ix != nil {
+		t.Fatal("the index owing a removal is read")
+	}
+	fail.Store(false)
+	forgotten(t, indexServed(t, h), id, "zforgetfailed")
+}
+
+// A Forget again after one the index could not take drops the record's
+// rows though the journal no longer holds it, and the index is read
+// again: the sweep's own retry held off (its backoff never ends).
+func TestAForgetAgainDropsWhatTheFirstCouldNot(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id, _ := forgettable(t, e, "zforgetagain")
+	var fail atomic.Bool
+	h := freshIndexer(t, e, func(h *historyIndexer) {
+		h.beforeDrop = failDrops(&fail)
+		h.after = func(d time.Duration) <-chan time.Time {
+			if d == h.reconcileTick || fail.Load() || d >= historyBackoffMin {
+				return nil
+			}
+			return time.After(d)
+		}
+	})
+	histSettle(t, e)
+	fail.Store(true)
+	if resp, out := e.do("DELETE", "/api/history/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusServiceUnavailable || errorCode(out) != "history_index_failed" {
+		t.Fatalf("the first forget: %d %v", resp.StatusCode, out)
+	}
+	if h.index() != nil {
+		t.Fatal("the index owing a removal is read")
+	}
+	fail.Store(false)
+	if resp, out := e.do("DELETE", "/api/history/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("the forget again: %d %v", resp.StatusCode, out)
+	}
+	ix := h.index()
+	if ix == nil {
+		t.Fatal("the index is not read after the forget again dropped what was owed")
+	}
+	forgotten(t, ix, id, "zforgetagain")
+}
+
+// An owner starts owing the sweep: a record forgotten while the index was
+// not open (its rows still in the index) keeps the index from being read
+// until the sweep is made, then is in no answer.
+func TestAStartWithARemovalOwedReadsNothing(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id, _ := forgettable(t, e, "zforgetstart")
+	e.srv.stopHistory()
+	if resp, out := e.do("DELETE", "/api/history/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusServiceUnavailable || errorCode(out) != "history_index_failed" {
+		t.Fatalf("forget with the index closed: %d %v", resp.StatusCode, out)
+	}
+	var fail atomic.Bool
+	fail.Store(true)
+	old := e.srv.history
+	h := newHistoryIndexer(e.srv.store, e.srv.sessionRecords, old.ledger, e.srv.dispatch, old.host, e.srv.log)
+	h.beforeDrop = failDrops(&fail)
+	e.srv.commits.add(h.observer())
+	e.srv.history = h
+	h.start()
+	t.Cleanup(h.stop)
+	select {
+	case <-h.opened:
+	case <-time.After(2 * testWait):
+		t.Fatal("the index never opened")
+	}
+	if h.current() == nil {
+		t.Fatal("the owner's index did not open")
+	}
+	if h.index() != nil {
+		t.Fatal("the index owing the start's sweep is read")
+	}
+	fail.Store(false)
+	forgotten(t, indexServed(t, h), id, "zforgetstart")
+}

@@ -711,6 +711,12 @@ func (s *Server) handleForgetHistorySession(w http.ResponseWriter, r *http.Reque
 		}
 		w.WriteHeader(http.StatusNoContent)
 	case errors.Is(err, journal.ErrNotFound):
+		// A record already gone from the journal (a Forget again after
+		// one the index could not take) still has its rows dropped: the
+		// drop does not rest on the journal holding the record.
+		if s.history != nil && s.history.owns() && !s.dropFromHistory(w, []string{id}, false) {
+			return
+		}
 		writeError(w, http.StatusNotFound, "not_found", "no such record")
 	case errors.Is(err, journal.ErrLive):
 		writeError(w, http.StatusConflict, "live_session", "the session is still running")
