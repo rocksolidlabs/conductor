@@ -1267,10 +1267,12 @@ func (t *Tx) Release(run, task string, n int64) (bool, error) {
 }
 
 // MoveHolds is a continuation's, after MoveDecisions: every hold of from
-// is written under to as it is (active or released), and the active ones
-// of from are released at at, so an active hold is under its decision's
-// current run alone (I16). An active hold of a decision that to does not
-// hold is ErrNotCurrent. It answers how many active holds moved.
+// of a decision to now holds (one MoveDecisions moved) is written under to
+// as it is (active or released), and the active ones of from are released
+// at at, so an active hold is under its decision's current run alone
+// (I16). The holds of a decision to does not hold (a final one, left
+// behind) stay under from alone. An active hold of a decision that to
+// does not hold is ErrNotCurrent. It answers how many active holds moved.
 func (t *Tx) MoveHolds(from, to string, at time.Time) (int, error) {
 	stray, err := t.count(`SELECT COUNT(*) FROM decision_holds h JOIN decisions d ON d.n = h.decision WHERE h.run_id = ? AND h.released_at = '' AND d.current_run != ?`, from, to)
 	if err != nil {
@@ -1280,8 +1282,9 @@ func (t *Tx) MoveHolds(from, to string, at time.Time) (int, error) {
 		return 0, fmt.Errorf("%w: %d active holds of %s are of decisions %s does not hold", ErrNotCurrent, stray, from, to)
 	}
 	if _, err := t.tx.ExecContext(t.ctx, `INSERT INTO decision_holds (run_id, task_id, decision, released_at)
-		SELECT ?, task_id, decision, released_at FROM decision_holds WHERE run_id = ? ORDER BY task_id, decision
-		ON CONFLICT(run_id, task_id, decision) DO UPDATE SET released_at = excluded.released_at`, to, from); err != nil {
+		SELECT ?, task_id, decision, released_at FROM decision_holds
+		WHERE run_id = ? AND decision IN (SELECT n FROM decisions WHERE current_run = ?) ORDER BY task_id, decision
+		ON CONFLICT(run_id, task_id, decision) DO UPDATE SET released_at = excluded.released_at`, to, from, to); err != nil {
 		return 0, err
 	}
 	res, err := t.tx.ExecContext(t.ctx, `UPDATE decision_holds SET released_at = ? WHERE run_id = ? AND released_at = ''`, stamp(at), from)
