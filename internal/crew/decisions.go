@@ -333,6 +333,7 @@ type decisionTx interface {
 	Hold(run, task string, n int64) error
 	Release(run, task string, n int64) (bool, error)
 	Decision(n int64) (ledger.DecisionRow, bool, error)
+	Record(n int64) (ledger.DecisionRecord, bool, error)
 	Now() time.Time
 }
 
@@ -440,48 +441,85 @@ func (r *run) holdReason(t *task) {
 	}
 }
 
-// heldRow is a ready task's row as the transaction that opens a decision
-// holding it writes it again, once the decision has its number: the
-// snapshot's row, taken in the change, could only say "a decision".
+// heldRow is a ready task's row in a snapshot (snapshot.held) whose reason
+// names a decision the ledger has not numbered yet: the commit that opens
+// that decision writes the row again with its number (renumber). i is the
+// row's index among the snapshot's tasks; ns the holds' numbers as the
+// snapshot was taken, 0 for one not numbered; reason what the commit
+// wrote, set once it has.
 type heldRow struct {
-	t     *task
-	row   ledger.TaskRow
-	holds []*decision
+	i      int
+	holds  []*decision
+	ns     []int64
+	reason string
 }
 
-// heldRows are the rows of the ready tasks among ts, each once. The caller
-// holds e.mu, in the change, its holds made.
-func (r *run) heldRows(ts []*task) []*heldRow {
-	var out []*heldRow
-	for _, t := range ts {
-		if t.state == ledger.TaskReady && !slices.ContainsFunc(out, func(h *heldRow) bool { return h.t == t }) {
-			out = append(out, &heldRow{t: t, row: r.taskRow(t), holds: slices.Clone(t.holds)})
-		}
+// unnumbered is t's heldRow as row i of a snapshot, ok when t is ready and
+// one of its holds is not numbered yet. The caller holds e.mu.
+func unnumbered(t *task, i int) (heldRow, bool) {
+	if t.state != ledger.TaskReady || !slices.ContainsFunc(t.holds, func(d *decision) bool { return d.n == 0 }) {
+		return heldRow{}, false
 	}
-	return out
+	h := heldRow{i: i, holds: slices.Clone(t.holds)}
+	for _, d := range t.holds {
+		h.ns = append(h.ns, d.n)
+	}
+	return h, true
 }
 
-// put writes h's row with its holds' words, the decisions the transaction
-// opened named by their numbers (opened).
-func (h *heldRow) put(ltx LedgerTx, opened map[*decision]int64) error {
-	h.row.Reason = wordsOf(h.holds, func(d *decision) string {
-		if n := opened[d]; n != 0 {
+// opened records that the transaction under way opened d as decision n:
+// the snapshot's held rows name it by n (renumber). Called in a
+// transaction's writes, under txMu.
+func (r *run) opened(d *decision, n int64) {
+	if r.numbered != nil {
+		r.numbered[d] = n
+	}
+}
+
+// renumber writes the snapshot's held rows again, as the snapshot has
+// them, their reasons naming the decisions the transaction opened by their
+// numbers (numbered): the row is the task's newest, whatever change wrote
+// it, so a carried change's opening never puts back a state a later change
+// left (a task cancelled since). A row whose words do not change is not
+// written again.
+func (s *snapshot) renumber(ltx LedgerTx, numbered map[*decision]int64) error {
+	for k := range s.held {
+		h := &s.held[k]
+		row := s.tasks[h.i]
+		row.Reason = wordsOf(h.holds, func(d *decision) string {
+			n := h.ns[slices.Index(h.holds, d)]
+			if n == 0 {
+				n = numbered[d]
+			}
+			if n == 0 {
+				return "a decision"
+			}
 			return ledger.DecisionID(n)
+		})
+		h.reason = row.Reason
+		if row.Reason == s.tasks[h.i].Reason {
+			continue
 		}
-		return d.id()
-	})
-	return ltx.PutTask(h.row)
+		if err := ltx.PutTask(row); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// written gives h's task, once the transaction committed, the words its
-// row was written with, or marks it for the next one when they are not
-// its words now. The caller holds e.mu.
-func (r *run) written(h *heldRow) {
-	if h.t.state == ledger.TaskReady && holdWords(h.t) == h.row.Reason {
-		h.t.reason = h.row.Reason
-		return
+// written gives each held row's task, once the snapshot committed and its
+// decisions have their numbers, the words its row was written with, or
+// marks it for the next transaction when they are not its words now (its
+// holds changed since, or it is no longer ready). The caller holds e.mu.
+func (r *run) written(s snapshot) {
+	for _, h := range s.held {
+		t := s.ts[h.i]
+		if t.state == ledger.TaskReady && h.reason != "" && holdWords(t) == h.reason {
+			t.reason = h.reason
+			continue
+		}
+		r.holdReason(t)
 	}
-	r.holdReason(h.t)
 }
 
 // waitingDecision is a decision the attempt asked that is open, or
@@ -505,9 +543,12 @@ func (r *run) decisionN(n int64) *decision {
 	return nil
 }
 
-// dropDecision takes d from the run's open and answered ones.
+// dropDecision takes d from the run's open and answered ones: the place an
+// identity's answer held may be free now, so a gate found with no room is
+// asked again at the next pump (regateLater).
 func (r *run) dropDecision(d *decision) {
 	r.decisions = slices.DeleteFunc(r.decisions, func(x *decision) bool { return x == d })
+	r.dec.noRoom = false
 }
 
 // cleanRequest cleans a request and checks it against its bounds: the
@@ -788,12 +829,32 @@ func historyDetail(v any) string {
 // routedOperator is the routed row of a decision opened under local/1.
 var routedOperator = historyDetail(map[string]any{"to": []map[string]string{{"kind": "operator"}}, "rule": "local/1: the operator answers", "by": "policy"})
 
+// DecisionSent answers the decision a request names when the attempt's
+// member sent its request id before (sent true): that decision as it is
+// now, or decision_conflict for another body. The server asks it before
+// it resolves the request's evidence again (internal/api), so a request
+// sent again after a lost reply answers its decision whatever its
+// evidence has become. sent false for a request not sent before, or one
+// that is not a request (RequestDecision refuses it).
+func (e *Engine) DecisionSent(ctx context.Context, sessionID string, req DecisionRequest) (Decision, bool, error) {
+	r, a, err := e.attemptOf(sessionID)
+	if err != nil {
+		return Decision{}, false, nil
+	}
+	_, fp, err := cleanRequest(req)
+	if err != nil {
+		return Decision{}, false, nil
+	}
+	return e.requestSent(ctx, r, a, req.RequestID, fp)
+}
+
 // RequestDecision opens a decision that the session's attempt asks
 // (docs/plans/decisions.md, Opening): the attempt must be running; the
 // request is cleaned and checked against its bounds, its subject bound
 // (subjectOf); one transaction writes the decision's row, its opened and
 // routed history, the hold of the asking task, a superseded request's
-// supersession (its hold moved to this one) and the run's event. A request
+// supersession (made final before the opening, so its place among the
+// bounds is this one's; its hold moved to this one) and the run's event. A request
 // id the attempt's member sent before answers that decision (created
 // false), or decision_conflict for another body, before anything that may
 // have changed since it was first sent is checked again (the attempt
@@ -882,6 +943,30 @@ func (e *Engine) RequestDecision(ctx context.Context, sessionID string, req Deci
 			if err != nil {
 				return err
 			}
+			// The decision it supersedes final first: its place among the
+			// bounds is the new one's, as a replacement's is (Tx.OpenDecision),
+			// so a request that takes an open decision's place at the
+			// attempt's or the run's bound opens (#635, review round 2).
+			var prior ledger.DecisionRow
+			if supN != 0 {
+				var ok bool
+				if prior, ok, err = dtx.Decision(supN); err != nil {
+					return err
+				}
+				if !ok || prior.State != ledger.DecisionOpen || prior.CurrentRun != r.id {
+					// A request sent before answers its decision first, as it
+					// did when the opening came first; anything this opened
+					// is rolled back with the refusal.
+					if got, created, err := dtx.OpenDecision(row); err == nil && !created {
+						return repeatRequest{got.N}
+					}
+					return refuse(CodeInvalid, "supersedes names %s, which is no open decision of task %s", body.Supersedes, t.def.ID)
+				}
+				prior.State, prior.Rev, prior.Why = ledger.DecisionSuperseded, max(prior.Rev, supRev)+1, "a newer request of "+t.def.ID+" takes its place"
+				if err := dtx.PutDecision(prior); err != nil {
+					return err
+				}
+			}
 			got, created, err := dtx.OpenDecision(row)
 			if err != nil {
 				return err
@@ -890,6 +975,7 @@ func (e *Engine) RequestDecision(ctx context.Context, sessionID string, req Deci
 				return repeatRequest{got.N}
 			}
 			opened = got.N
+			r.opened(d, got.N)
 			if _, _, err := dtx.History(got.N, ledger.HistoryRow{Kind: ledger.HistoryOpened, By: by, Detail: historyDetail(map[string]any{"task": t.def.ID, "attempt": a.n})}); err != nil {
 				return err
 			}
@@ -906,14 +992,7 @@ func (e *Engine) RequestDecision(ctx context.Context, sessionID string, req Deci
 				return nil
 			}
 			why := fmt.Sprintf("%s takes its place", got.ID())
-			prior, ok, err := dtx.Decision(supN)
-			if err != nil {
-				return err
-			}
-			if !ok || prior.State != ledger.DecisionOpen || prior.CurrentRun != r.id {
-				return refuse(CodeInvalid, "supersedes names %s, which is no open decision of task %s", body.Supersedes, t.def.ID)
-			}
-			prior.State, prior.Rev, prior.Why, prior.SupersededBy = ledger.DecisionSuperseded, max(prior.Rev, supRev)+1, why, got.ID()
+			prior.Why, prior.SupersededBy = why, got.ID()
 			if err := dtx.PutDecision(prior); err != nil {
 				return err
 			}
@@ -1045,13 +1124,15 @@ func (e *Engine) askMirror(r *run, a *attempt, d *decision) {
 }
 
 // newerOpen reports whether the attempt asked a decision after d that is
-// open (r.decisions keeps their opening order). The caller holds e.mu.
+// open and numbered: their numbers are their openings' order, which no
+// change of r.decisions moves (a supersession refused puts its target
+// back last, #635, review round 2). One not numbered yet is not counted:
+// its ask follows its commit, and a commit refused never asks it. d is
+// numbered (its ask follows its commit). The caller holds e.mu.
 func (r *run) newerOpen(a *attempt, d *decision) bool {
-	i := slices.Index(r.decisions, d)
-	if i < 0 {
-		return false
-	}
-	return slices.ContainsFunc(r.decisions[i+1:], func(x *decision) bool { return x.a == a && x.state == ledger.DecisionOpen })
+	return slices.ContainsFunc(r.decisions, func(x *decision) bool {
+		return x != d && x.a == a && x.state == ledger.DecisionOpen && x.n > d.n
+	})
 }
 
 // withdrawMirror takes away the question that mirrors d, if one was put
@@ -1118,11 +1199,6 @@ func (e *Engine) openGates(r *run) (tx, func()) {
 		}
 		gates = append(gates, g)
 	}
-	var heldTasks []*task
-	for _, g := range gates {
-		heldTasks = append(heldTasks, g.d.holds...)
-	}
-	rows := r.heldRows(heldTasks)
 	opened := make([]int64, len(gates))
 	out := tx{last: func(ltx LedgerTx) error {
 		dtx, err := decisionsOf(ltx)
@@ -1135,6 +1211,7 @@ func (e *Engine) openGates(r *run) (tx, func()) {
 				return err
 			}
 			opened[i] = got.N
+			r.opened(g.d, got.N)
 			if _, _, err := dtx.History(got.N, ledger.HistoryRow{Kind: ledger.HistoryOpened, By: "plan", Detail: historyDetail(map[string]any{"gate": g.pd.ID, "before": g.pd.Before})}); err != nil {
 				return err
 			}
@@ -1150,24 +1227,12 @@ func (e *Engine) openGates(r *run) (tx, func()) {
 				return err
 			}
 		}
-		// The held tasks' rows again, naming their gates by number.
-		ids := map[*decision]int64{}
-		for i, g := range gates {
-			ids[g.d] = opened[i]
-		}
-		for _, h := range rows {
-			if err := h.put(ltx, ids); err != nil {
-				return err
-			}
-		}
+		// The held tasks' rows name their gates by number (renumber).
 		return nil
 	}, done: func() {
 		r.dec.opened += len(gates)
 		for i, g := range gates {
 			g.d.n = opened[i]
-		}
-		for _, h := range rows {
-			r.written(h)
 		}
 	}}
 	undo := func() {
@@ -1351,15 +1416,19 @@ type respondOutcome struct {
 	rev     int
 }
 
-func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, auth Authority, authRaw, fp string, prior ledger.DecisionRecord, mem membership, moved string, out *respondOutcome) error {
+func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, auth Authority, authRaw, fp string, mem membership, moved string, out *respondOutcome) error {
 	dtx, err := decisionsOf(ltx)
 	if err != nil {
 		return err
 	}
-	d, ok, err := dtx.Decision(n)
+	// The record as this transaction judges it: a refusal's words (who
+	// answered first, what changed since the rev read) are its, never a
+	// read made before another response committed (#635, review round 2).
+	rec, ok, err := dtx.Record(n)
 	if err != nil {
 		return err
 	}
+	d := rec.DecisionRow
 	if !ok {
 		return refuse(CodeNotFound, "no decision %s", ledger.DecisionID(n))
 	}
@@ -1386,18 +1455,20 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 	case policy.Revision != policyLocal:
 		rc.Code, rc.Words = CodeStalePolicy, fmt.Sprintf("%s was opened under policy %s, and %s is in force", id, policy.Revision, policyLocal)
 	case d.State == ledger.DecisionAnswered || d.State == ledger.DecisionApplied:
-		rc.Code, rc.Words = CodeDecisionAnswered, answeredWords(id, d, prior)
+		rc.Code, rc.Words = CodeDecisionAnswered, answeredWords(id, rec)
+	case moved != "" && (d.State == ledger.DecisionOpen || d.State == ledger.DecisionSuperseded):
+		// Its subject moved (S2, S4): superseded before this transaction,
+		// in a change of its own (supersede), whose rows a commit refused
+		// meanwhile carries ahead of these.
+		rc.Code, rc.Words = CodeStaleDecision, fmt.Sprintf("%s was superseded: %s", id, moved)
 	case d.State != ledger.DecisionOpen:
 		why := d.Why
 		if why == "" {
 			why = "it is " + d.State
 		}
 		rc.Code, rc.Words = CodeDecisionClosed, fmt.Sprintf("%s is %s: %s", id, d.State, why)
-	case moved != "":
-		// Its subject moved (S2, S4): superseded in this transaction.
-		rc.Code, rc.Words = CodeStaleDecision, fmt.Sprintf("%s was superseded: %s", id, moved)
 	case resp.ExpectedRev < d.Rev:
-		rc.Code, rc.Words = CodeStaleDecision, staleWords(id, resp.ExpectedRev, d.Rev, prior)
+		rc.Code, rc.Words = CodeStaleDecision, staleWords(id, resp.ExpectedRev, rec)
 	case mem.known && !mem.member:
 		rc.Code, rc.Words = CodeStaleDecision, fmt.Sprintf("%s's asking attempt is no longer its task's in this run", id)
 	}
@@ -1477,9 +1548,10 @@ func receiptJSON(rc ResponseReceipt) string {
 	return string(b)
 }
 
-// answeredWords say who answered a decision and when.
-func answeredWords(id string, d ledger.DecisionRow, prior ledger.DecisionRecord) string {
-	for _, r := range prior.Responses {
+// answeredWords say who answered a decision and when, from its record as
+// the transaction reads it.
+func answeredWords(id string, rec ledger.DecisionRecord) string {
+	for _, r := range rec.Responses {
 		if r.Status != ledger.ResponseAccepted {
 			continue
 		}
@@ -1487,16 +1559,18 @@ func answeredWords(id string, d ledger.DecisionRow, prior ledger.DecisionRecord)
 		_ = json.Unmarshal([]byte(r.Receipt), &rc)
 		return fmt.Sprintf("%s was answered by %s at %s", id, nameOf(rc.ByName, rc.Actor), r.At.UTC().Format(time.RFC3339))
 	}
-	if !d.AnsweredAt.IsZero() {
-		return fmt.Sprintf("%s was answered at %s", id, d.AnsweredAt.UTC().Format(time.RFC3339))
+	if !rec.AnsweredAt.IsZero() {
+		return fmt.Sprintf("%s was answered at %s", id, rec.AnsweredAt.UTC().Format(time.RFC3339))
 	}
 	return id + " was answered"
 }
 
-// staleWords say what changed a decision since the rev a response read.
-func staleWords(id string, read, now int, prior ledger.DecisionRecord) string {
+// staleWords say what changed a decision since the rev a response read,
+// from its record as the transaction reads it.
+func staleWords(id string, read int, rec ledger.DecisionRecord) string {
+	now := rec.Rev
 	var kinds []string
-	for _, h := range prior.History {
+	for _, h := range rec.History {
 		switch h.Kind {
 		case ledger.HistoryCommented, ledger.HistoryInfoRequested, ledger.HistoryResponded, ledger.HistorySuperseded, ledger.HistoryCancelled, ledger.HistoryApplied:
 			kinds = append(kinds, h.Kind)
@@ -1544,10 +1618,7 @@ func (e *Engine) RespondDecision(ctx context.Context, id string, resp Response, 
 		if !ok {
 			return ResponseReceipt{}, refuse(CodeNotFound, "no decision %s", id)
 		}
-		e.mu.Lock()
-		r := e.runs[prior.CurrentRun]
-		held := r != nil && r.managed && r.created && !r.stopping && r.ctx.Err() == nil
-		e.mu.Unlock()
+		r, held := e.holder(prior.CurrentRun)
 		if e.beforeRespond != nil {
 			e.beforeRespond(n)
 		}
@@ -1559,7 +1630,7 @@ func (e *Engine) RespondDecision(ctx context.Context, id string, resp Response, 
 				return ResponseReceipt{}, refuse(CodeNotHeld, "%s's run is not running: continue it, or answer with the workbench token", id)
 			}
 			_, err = e.ledger.Transition(ctx, prior.CurrentRun, func(ltx LedgerTx) error {
-				return respondTx(ltx, prior.CurrentRun, n, resp, actor, auth, string(authRaw), fp, prior, membership{}, "", &out)
+				return respondTx(ltx, prior.CurrentRun, n, resp, actor, auth, string(authRaw), fp, membership{}, "", &out)
 			})
 		}
 		if errors.Is(err, errDecisionMoved) || err == nil && (out.moved || out.unheld) {
@@ -1586,19 +1657,49 @@ func (e *Engine) RespondDecision(ctx context.Context, id string, resp Response, 
 	return ResponseReceipt{}, refuse(CodeDecisionMoved, "%s moved to another run while it was answered: send it again", id)
 }
 
+// holder is the run the engine holds a decision through, the run the
+// ledger says holds it (current), and whether it is held: its launch
+// recorded, not stopping. A transaction of the run under way is waited
+// for first (txMu): the launch's first commit writes the run's gates to
+// the ledger before it marks the run created, and a response read
+// between the two answered the ledger past the engine, whose gate then
+// stayed open (#635, review round 2). Once it is through, a run the ledger
+// holds a decision of is created, or its first commit was refused and
+// wrote none. The caller holds no lock.
+func (e *Engine) holder(current string) (*run, bool) {
+	e.mu.Lock()
+	r := e.runs[current]
+	managed := r != nil && r.managed
+	e.mu.Unlock()
+	if !managed {
+		return r, false
+	}
+	r.txMu.Lock()
+	defer r.txMu.Unlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return r, r.created && !r.stopping && r.ctx.Err() == nil
+}
+
 // respondHeld is RespondDecision's transaction through a run the engine
 // holds: the asking attempt's membership read under e.mu, the row written
-// in its transaction, the engine's copy answered once it commits.
+// in its transaction, the engine's copy answered once it commits. A
+// subject that moved (S2, S4) is superseded first, in a change of its own
+// that is never undone (supersede): what the response's transaction then
+// refuses or fails, it has nothing in the engine to put back (#636,
+// review round 1).
 func (e *Engine) respondHeld(ctx context.Context, r *run, n int64, resp Response, actor string, auth Authority, authRaw, fp string, prior ledger.DecisionRecord, out *respondOutcome) error {
-	// The subject rechecked first (S2, S4), read before the transaction at
-	// the place the transaction checks it is still read at.
+	// The subject rechecked first, read before the transaction at the
+	// place the supersession checks it is still read at.
 	e.mu.Lock()
 	d := r.decisionN(n)
 	e.mu.Unlock()
-	var at subjectAt
 	moved := ""
 	if d != nil {
-		at, moved = e.recheckSubject(ctx, r, d)
+		at, words := e.recheckSubject(ctx, r, d)
+		if words != "" {
+			moved = e.supersede(r, n, at, words)
+		}
 	}
 	return e.transact(ctx, r, func() tx {
 		if r.stopping || r.ctx.Err() != nil {
@@ -1607,12 +1708,6 @@ func (e *Engine) respondHeld(ctx context.Context, r *run, n int64, resp Response
 			return tx{}
 		}
 		d = r.decisionN(n)
-		if d == nil || d.state != ledger.DecisionOpen || !e.sameSubject(r, d, at) {
-			moved = ""
-		}
-		if moved != "" {
-			e.supersedeAgent(r, d, moved)
-		}
 		mem := membership{}
 		if prior.Origin == ledger.OriginAgent {
 			mem.known = true
@@ -1621,7 +1716,7 @@ func (e *Engine) respondHeld(ctx context.Context, r *run, n int64, resp Response
 			}
 		}
 		return tx{more: func(ltx LedgerTx) error {
-			return respondTx(ltx, r.id, n, resp, actor, auth, authRaw, fp, prior, mem, moved, out)
+			return respondTx(ltx, r.id, n, resp, actor, auth, authRaw, fp, mem, moved, out)
 		}, done: func() {
 			if !out.accepted || out.receipt.Repeat || d == nil || d.state != ledger.DecisionOpen {
 				return
@@ -1631,6 +1726,29 @@ func (e *Engine) respondHeld(ctx context.Context, r *run, n int64, resp Response
 			r.note(session.ActivityStatus, "decision %s answered by %s", d.id(), nameOf(resp.ByName, actor))
 		}}
 	}, func() {})
+}
+
+// supersede supersedes the run's open decision n, whose subject the read
+// at found moved (words), in a transaction of its own with no undo: a
+// refused commit carries it, and the run pauses until the pause's commit
+// writes it, so the engine, which has superseded it, and the ledger never
+// disagree for good. It answers the words it was superseded with, "" when
+// the decision was no longer open at at by the change (answered, closed,
+// or its subject read elsewhere since). Under no request's context: a
+// caller gone does not refuse it. The caller holds no lock.
+func (e *Engine) supersede(r *run, n int64, at subjectAt, words string) string {
+	done := ""
+	err := e.transact(context.Background(), r, func() tx {
+		d := r.decisionN(n)
+		if r.stopping || r.ctx.Err() != nil || d == nil || d.state != ledger.DecisionOpen || !e.sameSubject(r, d, at) {
+			return tx{}
+		}
+		e.supersedeAgent(r, d, words)
+		done = words
+		return tx{}
+	}, nil)
+	e.afterTransact(r, err)
+	return done
 }
 
 // ConfirmAuthority tells the engine whether the identity provider admitted
@@ -1925,7 +2043,6 @@ func (e *Engine) replaceDecision(r *run, d *decision, why string) (*decision, tx
 		r.release(t, d)
 		r.hold(t, fresh)
 	}
-	rows := r.heldRows(held)
 	var opened int64
 	n := d.n
 	return fresh, tx{more: func(ltx LedgerTx) error {
@@ -1955,6 +2072,7 @@ func (e *Engine) replaceDecision(r *run, d *decision, why string) (*decision, tx
 			return err
 		}
 		opened = got.N
+		r.opened(fresh, got.N)
 		words := fmt.Sprintf("%s; %s asks again", why, got.ID())
 		if _, _, err := dtx.History(got.N, ledger.HistoryRow{Kind: ledger.HistoryOpened, By: "yardmaster", Detail: historyDetail(map[string]any{"follows": old.ID(), "why": words})}); err != nil {
 			return err
@@ -1977,11 +2095,6 @@ func (e *Engine) replaceDecision(r *run, d *decision, why string) (*decision, tx
 				return err
 			}
 		}
-		for _, h := range rows {
-			if err := h.put(ltx, map[*decision]int64{fresh: got.N}); err != nil {
-				return err
-			}
-		}
 		if err := ltx.Event("decision.superseded", map[string]any{"decision": old.ID(), "by": got.ID(), "why": words}); err != nil {
 			return err
 		}
@@ -1989,9 +2102,6 @@ func (e *Engine) replaceDecision(r *run, d *decision, why string) (*decision, tx
 	}, done: func() {
 		fresh.n, fresh.openedAt = opened, time.Now().UTC()
 		r.dec.opened++
-		for _, h := range rows {
-			r.written(h)
-		}
 		r.note(session.ActivityStatus, "decision %s superseded: %s; %s asks again", d.id(), why, fresh.id())
 	}}
 }
@@ -2078,7 +2188,13 @@ func (e *Engine) nextAnswer(r *run, m *member, l *session.Local) (*answerLine, s
 // that is the question shown (Question and Decision), else as a line that
 // names its decision (Decision, UnlessWaiting), which passes every other
 // decision's mirror. It reports whether the line must wait (back to the
-// head of the answers), and withdraws the mirror once the line is in.
+// head of the answers, until the session's next activity wakes the
+// deliverer). An answer leaves the queue only for good: typed, or its
+// session or run gone; a refusal that typed nothing because a question or
+// a dialog came first puts it back (#635, review round 2). The mirror is
+// withdrawn once the line is in: at once, or when a line the program took
+// slowly has finished (Submission.Finished), never while its Enter may
+// still answer it.
 func (e *Engine) typeAnswer(r *run, m *member, l *session.Local, al *answerLine, mirror string) (wait bool) {
 	e.mu.Lock()
 	ok := al.a.sessionID == l.Info().ID && al.a.closedAt.IsZero()
@@ -2092,7 +2208,15 @@ func (e *Engine) typeAnswer(r *run, m *member, l *session.Local, al *answerLine,
 		}
 		return false
 	}
-	sub := session.Submission{Text: al.text, ByName: al.byName, Decision: al.d.id()}
+	sub := session.Submission{Text: al.text, ByName: al.byName, Decision: al.d.id(), Finished: func(res session.SubmitResult, err error) {
+		// Accepted while the program took it slowly (ErrSubmitPending): how
+		// it ended, and the mirror withdrawn only now, off the session's
+		// goroutine (lineDone commits a delivery row).
+		e.mu.Lock()
+		e.noteAnswer(r, m, al, res, err)
+		e.mu.Unlock()
+		go e.lineDone(r, al, res, err)
+	}}
 	if mirror != "" {
 		sub.Question = mirror
 	} else {
@@ -2104,20 +2228,17 @@ func (e *Engine) typeAnswer(r *run, m *member, l *session.Local, al *answerLine,
 			sub.Withdrawn = al.d.withdrawn
 		}
 		e.mu.Unlock()
-		sub.Finished = func(res session.SubmitResult, err error) {
-			// Accepted while the program took it slowly: told here how it
-			// ended.
-			if res.Entered {
-				go e.lineEnded(r, al.d, ledgerEntered, "")
-			} else {
-				go e.lineEnded(r, al.d, ledgerUntyped, errWords(err))
-			}
-		}
 		if e.beforeTyping != nil {
 			e.beforeTyping(al.d.n)
 		}
 	}
-	res, err := l.Submit(r.ctx, sub)
+	submit := l.Submit
+	if e.submitAnswer != nil {
+		submit = func(ctx context.Context, sub session.Submission) (session.SubmitResult, error) {
+			return e.submitAnswer(ctx, l, sub)
+		}
+	}
+	res, err := submit(r.ctx, sub)
 	if e.tried != nil {
 		e.tried(m.def.Name, res.Typed)
 	}
@@ -2132,6 +2253,16 @@ func (e *Engine) typeAnswer(r *run, m *member, l *session.Local, al *answerLine,
 		m.answers = slices.Insert(m.answers, 0, al)
 		e.mu.Unlock()
 		return false
+	case !res.Typed && (errors.Is(err, session.ErrQuestion) || errors.Is(err, session.ErrTrustQuestion)):
+		// A dialog or a question found on the screen as the line began, or
+		// as its text was taken (the session's look, its writer's guard),
+		// nothing typed: the answer waits for it to be answered, as a line
+		// that waits on a prompt does, and is looked at again then.
+		e.mu.Lock()
+		m.answers = slices.Insert(m.answers, 0, al)
+		r.noteQueued(m, "is waiting for input")
+		e.mu.Unlock()
+		return true
 	case err == nil && !res.Typed:
 		e.mu.Lock()
 		m.answers = slices.Insert(m.answers, 0, al)
@@ -2140,27 +2271,45 @@ func (e *Engine) typeAnswer(r *run, m *member, l *session.Local, al *answerLine,
 		return true
 	case errors.Is(err, session.ErrSubmitPending):
 		e.mu.Lock()
-		r.note(session.ActivityStatus, "decision %s's line typed into %s, entered as it reads", al.d.id(), m.def.Name)
+		r.note(session.ActivityStatus, "decision %s's answer waits for %s to take its input: it is entered once it has", al.d.id(), m.def.Name)
 		e.mu.Unlock()
-	case err == nil && res.Entered:
-		e.mu.Lock()
-		r.note(session.ActivityStatus, "decision %s's line typed into %s", al.d.id(), m.def.Name)
-		e.mu.Unlock()
-		if !al.notice {
-			e.lineEnded(r, al.d, ledgerEntered, "")
-		}
-	default:
-		e.mu.Lock()
-		r.note(session.ActivityError, "decision %s's line was not entered into %s: %v", al.d.id(), m.def.Name, err)
-		e.mu.Unlock()
-		if !al.notice {
-			e.lineEnded(r, al.d, ledgerUntyped, errWords(err))
-		}
+		return false
 	}
-	if !al.notice {
-		e.withdrawMirror(al.a, al.d)
-	}
+	e.mu.Lock()
+	e.noteAnswer(r, m, al, res, err)
+	e.mu.Unlock()
+	e.lineDone(r, al, res, err)
 	return false
+}
+
+// noteAnswer notes how a decision's line ended: entered, or not. The
+// caller holds e.mu.
+func (e *Engine) noteAnswer(r *run, m *member, al *answerLine, res session.SubmitResult, err error) {
+	if err == nil && res.Entered {
+		r.note(session.ActivityStatus, "decision %s's answer typed into %s", al.d.id(), m.def.Name)
+		return
+	}
+	if err == nil {
+		err = errors.New("typed without its Enter")
+	}
+	r.note(session.ActivityError, "decision %s's answer was not entered into %s: %v", al.d.id(), m.def.Name, err)
+}
+
+// lineDone follows a decision's line that ended, now or once its program
+// took it (ErrSubmitPending): an answer's delivery row, entered or
+// untyped (I6), and its mirror withdrawn; a notice's line (a
+// supersession's, a cancel's, the operator's request for more) answers
+// nothing, and leaves the decision's mirror be. The caller holds no lock.
+func (e *Engine) lineDone(r *run, al *answerLine, res session.SubmitResult, err error) {
+	if al.notice {
+		return
+	}
+	if err == nil && res.Entered {
+		e.lineEnded(r, al.d, ledgerEntered, "")
+	} else {
+		e.lineEnded(r, al.d, ledgerUntyped, errWords(err))
+	}
+	e.withdrawMirror(al.a, al.d)
 }
 
 // errWords is an error in words.

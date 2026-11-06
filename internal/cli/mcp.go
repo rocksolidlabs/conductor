@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -524,7 +525,31 @@ func decisionTool(ctx context.Context, c *crewClient, name string, body map[stri
 	if name == "decision_withdraw" {
 		return withdrawnWords(d["id"], d["state"]), nil
 	}
-	return pendingWords(d["id"], d["state"]), nil
+	return decisionRequestText(d), nil
+}
+
+// decisionRequestText is a request's reply in words for the decision's
+// state: a repeat of a requestId (a reply lost, asked again) answers the
+// decision as it is now, which may be answered or closed already.
+func decisionRequestText(d map[string]any) string {
+	id, state := d["id"], d["state"]
+	answer, _ := d["answer"].(string)
+	why, _ := d["why"].(string)
+	switch state {
+	case ledger.DecisionAnswered, ledger.DecisionApplied:
+		return fmt.Sprintf("%v is %v: %s. Go on with your task with this answer: it is also typed into this session as 'Decision %v … answered', "+
+			"or written into your task's next attempt's task file.", id, state, cmp.Or(answer, "see decision_read"), id)
+	case ledger.DecisionSuperseded:
+		if by, _ := d["supersededBy"].(string); by != "" {
+			return fmt.Sprintf("%v is superseded by %s: %s. Wait for %s's answer, not this one's.", id, by, cmp.Or(why, "a newer request takes its place"), by)
+		}
+		return fmt.Sprintf("%v is superseded: %s. It will not be answered.", id, cmp.Or(why, "it was replaced"))
+	case ledger.DecisionCancelled, ledger.DecisionExpired:
+		return fmt.Sprintf("%v is %v: %s. It will not be answered: go on without it, or ask again with a new requestId if the work still needs it.", id, state, cmp.Or(why, "it is closed"))
+	}
+	return fmt.Sprintf("%v %v. Pending. End your turn, or go on with work that does not depend on it; do not submit your result until it is answered. "+
+		"The answer is typed into this session as 'Decision %v … answered', or, if this session has ended, written into your task's next attempt's task file, "+
+		"which starts at your last checkpoint: save one before you end your turn.", id, state, id)
 }
 
 // inboxText lists an inbox reply's messages, one a line.

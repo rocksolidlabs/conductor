@@ -223,9 +223,7 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 		attempts = []crew.AttemptState{}
 	}
 	reply := map[string]any{"task": st, "attempts": attempts}
-	if ds := s.runDecisions(r.Context(), runID, taskID); ds != nil {
-		reply["decisions"] = ds
-	}
+	s.addRunDecisions(r, reply, runID, taskID)
 	writeJSON(w, http.StatusOK, reply)
 }
 

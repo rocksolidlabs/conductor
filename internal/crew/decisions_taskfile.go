@@ -1,6 +1,7 @@
 package crew
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
-	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // The task file's decisions (docs/plans/decisions.md, The task file): an
@@ -87,15 +87,23 @@ func (e *Engine) taskDecisions(ctx context.Context, r *run, a *attempt) ([]TaskD
 	}
 	taskID, start := a.t.def.ID, a.start
 	e.mu.Unlock()
-	rows, err := dl.Decisions(ctx, ledger.DecisionFilter{Task: taskID})
-	if err != nil {
-		return nil, err
+	// Each run of the chain's own, by the run that holds it now: a
+	// decision of the chain is held by one of its runs, and another run's
+	// decisions about a task of the same id are never read in their place
+	// (#636, review round 1). The newest maxTaskDecisions of each run hold
+	// the chain's newest.
+	var rows []ledger.DecisionRow
+	for _, runID := range chain {
+		got, err := dl.Decisions(ctx, ledger.DecisionFilter{CurrentRun: runID, Task: taskID, Limit: maxTaskDecisions})
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, got...)
 	}
+	slices.SortFunc(rows, func(x, y ledger.DecisionRow) int { return cmp.Compare(y.N, x.N) })
+	rows = slices.CompactFunc(rows, func(x, y ledger.DecisionRow) bool { return x.N == y.N })
 	var recs []ledger.DecisionRecord
 	for _, row := range rows {
-		if !slices.Contains(chain, row.RunID) && !slices.Contains(chain, row.CurrentRun) {
-			continue
-		}
 		rec, ok, err := dl.Decision(ctx, row.N)
 		if err != nil {
 			return nil, err
@@ -134,9 +142,14 @@ func (e *Engine) taskDecisions(ctx context.Context, r *run, a *attempt) ([]TaskD
 		}
 		carried = append(carried, rec.N)
 	}
+	if e.afterDecisionsRead != nil {
+		e.afterDecisionsRead(taskID)
+	}
 	if len(moved) > 0 || len(carried) > 0 {
 		stale := false
-		err := e.transact(ctx, r, func() tx {
+		// A change kept ahead (no undo): under no attempt's context, which
+		// a cancel or a stop ends, so that only the ledger refuses it.
+		err := e.transact(context.WithoutCancel(ctx), r, func() tx {
 			if !a.closedAt.IsZero() || a.start != start {
 				stale = true
 				return tx{}
@@ -153,12 +166,25 @@ func (e *Engine) taskDecisions(ctx context.Context, r *run, a *attempt) ([]TaskD
 				d := decisionOfRecord(r, rec)
 				e.closeDecision(r, d, ledger.DecisionSuperseded, fmt.Sprintf("%s was superseded: %s; ask again if you still need it", rec.ID(), words), "yardmaster", decisionOp{}, map[string]any{"moved": words}, "")
 			}
+			// Each applied answer marked carried once, whatever the
+			// attempts that read it before the mark committed: the mark
+			// is taken here, in the run's order of changes (#636, review
+			// round 1).
+			var ids []int64
 			for _, n := range carried {
+				if r.dec.filed[n] {
+					continue
+				}
+				if r.dec.filed == nil {
+					r.dec.filed = map[int64]bool{}
+				}
+				r.dec.filed[n] = true
+				ids = append(ids, n)
 				if d := settledN(r, n); d != nil {
 					d.taskFiled = true
 				}
 			}
-			ids, an := slices.Clone(carried), a.n
+			an := a.n
 			return tx{more: func(ltx LedgerTx) error {
 				dtx, err := decisionsOf(ltx)
 				if err != nil {
@@ -192,17 +218,24 @@ func (e *Engine) taskDecisions(ctx context.Context, r *run, a *attempt) ([]TaskD
 	return out, nil
 }
 
+// decisionsStage is the stage an attempt fails at, uncounted, when its
+// task's decisions cannot be read for its task files: the only way an
+// answer applied for its task file reaches it, so it is never started
+// without them, and the run pauses until a person looks.
+const decisionsStage = "decisions"
+
 // noteTaskDecisions reads a's task file decisions for dispatch: a read
-// that fails is noted, and the files carry none.
-func (e *Engine) noteTaskDecisions(ctx context.Context, r *run, a *attempt) {
+// that fails is its error, and dispatch fails the attempt at
+// decisionsStage (#636, review round 1).
+func (e *Engine) noteTaskDecisions(ctx context.Context, r *run, a *attempt) error {
 	ds, err := e.taskDecisions(ctx, r, a)
-	e.mu.Lock()
-	defer e.mu.Unlock()
 	if err != nil {
-		r.note(session.ActivityError, "task %s: attempt %d's task files carry no decisions: %v", a.t.def.ID, a.n, err)
-		return
+		return fmt.Errorf("its task's decisions could not be read: %w", err)
 	}
+	e.mu.Lock()
 	a.decisions = ds
+	e.mu.Unlock()
+	return nil
 }
 
 // writeDecisions writes task.md's Decisions section: each decision with

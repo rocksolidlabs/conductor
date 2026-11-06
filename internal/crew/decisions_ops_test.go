@@ -2,14 +2,19 @@ package crew
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // The operator's operations on a decision (docs/plans/decisions.md,
@@ -27,7 +32,7 @@ func TestMoreInfoIsTypedAndBumpsRev(t *testing.T) {
 	b, l, p := attemptOn(t, e, fl, run.ID, "build")
 	d := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
 	mirrorOf(t, l, d.ID)
-	rc, err := e.CommentDecision(t.Context(), d.ID, "o1", MoreInfoKind, "Which table is it for?", "admin")
+	rc, err := e.CommentDecision(t.Context(), d.ID, "o1", 0, MoreInfoKind, "Which table is it for?", "admin")
 	if err != nil || rc.Rev != 2 || rc.Op != ledger.HistoryInfoRequested {
 		t.Fatalf("the request for more: %+v %v", rc, err)
 	}
@@ -53,14 +58,14 @@ func TestMoreInfoNeedsALiveAsker(t *testing.T) {
 		t.Helper()
 		before := decisionWhen(t, ld, id, "read", func(ledger.DecisionRecord) bool { return true })
 		var de *DecisionError
-		if _, err := e.CommentDecision(t.Context(), id, "o1", MoreInfoKind, "More?", "admin"); !errors.As(err, &de) || de.Code != CodeNoRecipient || !strings.Contains(de.Words, want) {
+		if _, err := e.CommentDecision(t.Context(), id, "o1", 0, MoreInfoKind, "More?", "admin"); !errors.As(err, &de) || de.Code != CodeNoRecipient || !strings.Contains(de.Words, want) {
 			t.Fatalf("a request for more of %s: %v", id, err)
 		}
 		after := decisionWhen(t, ld, id, "read", func(ledger.DecisionRecord) bool { return true })
 		if after.Rev != before.Rev || len(after.History) != len(before.History) {
 			t.Fatalf("a refused request for more changed %s: rev %d → %d, %q", id, before.Rev, after.Rev, historyKinds(after))
 		}
-		rc, err := e.CommentDecision(t.Context(), id, "o2", CommentKind, "Noted.", "admin")
+		rc, err := e.CommentDecision(t.Context(), id, "o2", 0, CommentKind, "Noted.", "admin")
 		if err != nil || rc.Rev != before.Rev+1 {
 			t.Fatalf("a comment on %s: %+v %v", id, rc, err)
 		}
@@ -113,16 +118,14 @@ func TestMoreInfoKeepsItsAttemptFromBeingParked(t *testing.T) {
 	d := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
 	mirrorOf(t, l, d.ID)
 	reportDone(e, b.Attempt.SessionID)
-	if _, err := e.CommentDecision(t.Context(), d.ID, "o1", MoreInfoKind, "For which table?", "admin"); err != nil {
+	if _, err := e.CommentDecision(t.Context(), d.ID, "o1", 0, MoreInfoKind, "For which table?", "admin"); err != nil {
 		t.Fatal(err)
 	}
 	lineWith(t, p, "The operator asks about "+d.ID)
 	commitResult(t, e, pr, "prep.txt", "p\n", "prepared")
 	waitTask(t, e, run.ID, "docs", ledger.TaskReady, 0)
 	e.pumpLocked(runOf(t, e, run.ID))
-	if ts := taskOf(t, e, run.ID, "build"); ts.Attempt.State != ledger.AttemptRunning {
-		t.Fatalf("parked before the agent's next done: %+v", ts.Attempt)
-	}
+	unparked(t, e, run.ID, "build")
 	if ts := taskOf(t, e, run.ID, "docs"); ts.Attempts != 0 {
 		t.Fatalf("docs took the member: %+v", ts)
 	}
@@ -158,7 +161,7 @@ func TestAnOperationRepeatsItsReceipt(t *testing.T) {
 		}
 	}
 	comment := func() (OpReceipt, error) {
-		return e.CommentDecision(t.Context(), d.ID, "o1", CommentKind, "Looks right.", "admin")
+		return e.CommentDecision(t.Context(), d.ID, "o1", 0, CommentKind, "Looks right.", "admin")
 	}
 	c1, err := comment()
 	if err != nil {
@@ -167,11 +170,11 @@ func TestAnOperationRepeatsItsReceipt(t *testing.T) {
 	c2, err := comment()
 	same(t, c1, c2, err)
 	var de *DecisionError
-	if _, err := e.CommentDecision(t.Context(), d.ID, "o1", CommentKind, "Other words.", "admin"); !errors.As(err, &de) || de.Code != CodeOpConflict {
+	if _, err := e.CommentDecision(t.Context(), d.ID, "o1", 0, CommentKind, "Other words.", "admin"); !errors.As(err, &de) || de.Code != CodeOpConflict {
 		t.Fatalf("another body under the same id: %v", err)
 	}
 	more := func() (OpReceipt, error) {
-		return e.CommentDecision(t.Context(), d.ID, "o2", MoreInfoKind, "Which table?", "admin")
+		return e.CommentDecision(t.Context(), d.ID, "o2", 0, MoreInfoKind, "Which table?", "admin")
 	}
 	m1, err := more()
 	if err != nil {
@@ -181,11 +184,11 @@ func TestAnOperationRepeatsItsReceipt(t *testing.T) {
 	same(t, m1, m2, err)
 	lineWith(t, p, "The operator asks about "+d.ID)
 	to := []Destination{{Kind: "operator"}}
-	r1, err := e.RouteDecision(t.Context(), d.ID, "o3", to, "for the operator", "admin")
+	r1, err := e.RouteDecision(t.Context(), d.ID, "o3", 0, to, "for the operator", "admin")
 	if err != nil {
 		t.Fatal(err)
 	}
-	r2, err := e.RouteDecision(t.Context(), d.ID, "o3", to, "for the operator", "admin")
+	r2, err := e.RouteDecision(t.Context(), d.ID, "o3", 0, to, "for the operator", "admin")
 	same(t, r1, r2, err)
 	rec := decisionWhen(t, ld, d.ID, "commented", hasKind(ledger.HistoryCommented))
 	if kindCount(rec, ledger.HistoryCommented) != 1 || kindCount(rec, ledger.HistoryInfoRequested) != 1 || kindCount(rec, ledger.HistoryRouted) != 2 {
@@ -199,7 +202,7 @@ func TestAnOperationRepeatsItsReceipt(t *testing.T) {
 	// A cancel, a command with a receipt.
 	wd := ask(t, e, w.Attempt.SessionID, clarification("q1", "Which tone?"))
 	cancel := func() (OpReceipt, error) {
-		return e.CancelDecision(t.Context(), wd.ID, "c1", false, "not needed", "admin")
+		return e.CancelDecision(t.Context(), wd.ID, "c1", 0, false, "not needed", "admin")
 	}
 	k1, err := cancel()
 	if err != nil {
@@ -213,7 +216,7 @@ func TestAnOperationRepeatsItsReceipt(t *testing.T) {
 
 	// After a continuation moved the decision.
 	moved := ask(t, e, b.Attempt.SessionID, clarification("q3", "Which cache?"))
-	o1, err := e.CommentDecision(t.Context(), moved.ID, "o4", CommentKind, "Keep it small.", "admin")
+	o1, err := e.CommentDecision(t.Context(), moved.ID, "o4", 0, CommentKind, "Keep it small.", "admin")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +228,7 @@ func TestAnOperationRepeatsItsReceipt(t *testing.T) {
 	if rec := decisionWhen(t, ld, moved.ID, "moved", func(rec ledger.DecisionRecord) bool { return rec.CurrentRun == next.ID }); rec.State != ledger.DecisionOpen {
 		t.Fatalf("%s after the continuation: %+v", moved.ID, rec.DecisionRow)
 	}
-	o2, err := e.CommentDecision(t.Context(), moved.ID, "o4", CommentKind, "Keep it small.", "admin")
+	o2, err := e.CommentDecision(t.Context(), moved.ID, "o4", 0, CommentKind, "Keep it small.", "admin")
 	same(t, o1, o2, err)
 	stopRun(t, e, next.ID)
 }
@@ -267,6 +270,111 @@ func TestAReleasedGatesAnswerStaysInItsTasksFiles(t *testing.T) {
 		t.Fatalf("history %q", historyKinds(rec))
 	}
 	stopRun(t, e, next.ID)
+}
+
+// Two tasks a gate released read its applied answer at once, both reads
+// made before either's mark commits: each task file carries the answer,
+// and the decision is marked carried once (delivery.task_file).
+func TestAnAnswerIsMarkedCarriedOnce(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	var seen sync.Map
+	arrived, release := make(chan string, 2), make(chan struct{})
+	e.afterDecisionsRead = func(task string) {
+		if _, again := seen.LoadOrStore(task, true); !again {
+			arrived <- task
+			<-release
+		}
+	}
+	colour := PackageDecision{ID: "colour", Question: "Which colour?", Kind: ledger.DecisionClarification, Before: []string{"deploy", "smoke"}}
+	run := launchGated(t, e, dir, "api-sweep-000000d3", repoCrew(dir, work("deploy", "ops"), work("smoke", "qa")), colour)
+	g := gateOf(t, e, ld, run.ID)
+	answer(t, e, g.ID, Response{ResponseID: "r1", Text: "blue", ExpectedRev: 1})
+	for range 2 {
+		select {
+		case <-arrived:
+		case <-time.After(60 * time.Second):
+			t.Fatal("the two task files were not read")
+		}
+	}
+	close(release)
+	for _, id := range []string{"deploy", "smoke"} {
+		if _, f := taskFileOf(t, attemptLine(t, e, fl, run.ID, id, 1)); decisionIn(t, f, g.ID).Answer != "blue" {
+			t.Fatalf("%s's task file: %+v", id, f.Decisions)
+		}
+	}
+	if rec := decisionWhen(t, ld, g.ID, "carried", hasKind(ledger.HistoryDeliveryTaskFile)); kindCount(rec, ledger.HistoryDeliveryTaskFile) != 1 {
+		t.Fatalf("history %q", historyKinds(rec))
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A task file reads the decisions of its run chain by the runs that hold
+// them, never a page of every run's in their place: another run's newer
+// decisions about a task of the same id, more than a page of them, leave
+// the run's own answer in its task's next task file.
+func TestATaskFileReadsItsOwnChainsDecisions(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b, _, p := attemptOn(t, e, fl, run.ID, "build")
+	d := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
+	p.End(0)
+	waitGivenBack(t, e, run.ID, "build", 1, d.ID)
+	other := launchManaged(t, e, repoCrew(newRepo(t), work("build", "lead")))
+	stopRun(t, e, other.ID)
+	fillDecisions(t, ld, other.ID, ledger.MaxDecisionsPage+1)
+	answer(t, e, d.ID, Response{ResponseID: "r1", Text: "btree", ExpectedRev: 1})
+	b2 := attemptLine(t, e, fl, run.ID, "build", 2)
+	if _, f := taskFileOf(t, b2); decisionIn(t, f, d.ID).Answer != "btree" {
+		t.Fatalf("the task file: %+v", f.Decisions)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// failingReads is the real ledger whose reads of decisions fail while
+// fail is set.
+type failingReads struct {
+	sqlLedger
+	fail atomic.Bool
+}
+
+func (l *failingReads) Decisions(ctx context.Context, f ledger.DecisionFilter) ([]ledger.DecisionRow, error) {
+	if l.fail.Load() {
+		return nil, errors.New("the ledger could not read decisions (test)")
+	}
+	return l.sqlLedger.Decisions(ctx, f)
+}
+
+// An attempt whose task's decisions cannot be read is never started
+// without them: it fails at "decisions" before any session, not counted,
+// and the run pauses; unpaused once the ledger reads, the next attempt
+// starts.
+func TestAnAttemptWithoutItsDecisionsIsNotStarted(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	fr := &failingReads{sqlLedger: sqlLedger{l: ld}}
+	fr.fail.Store(true)
+	e.UseLedger(fr)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	ts := waitTaskWhere(t, e, run.ID, "build", "attempt 1 failed at "+decisionsStage, func(ts TaskState) bool {
+		return ts.Attempt != nil && ts.Attempt.N == 1 && ts.Attempt.Stage == decisionsStage && ts.State == ledger.TaskReady
+	})
+	if !paused(t, e, run.ID) || extraOf(t, e, run.ID, "build") != 1 || !strings.Contains(ts.Attempt.Error, "could not read decisions") {
+		t.Fatalf("after the failed read: paused %v, extra %d, %+v", paused(t, e, run.ID), extraOf(t, e, run.ID, "build"), ts.Attempt)
+	}
+	fl.mu.Lock()
+	launched := slices.ContainsFunc(fl.calls, func(c launchCall) bool { return strings.HasSuffix(c.name, "build #1") })
+	fl.mu.Unlock()
+	if launched {
+		t.Fatal("attempt 1's session was started")
+	}
+	fr.fail.Store(false)
+	if err := e.PauseRun(t.Context(), run.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	attemptLine(t, e, fl, run.ID, "build", 2)
+	stopRun(t, e, run.ID)
 }
 
 // The task file carries the task's decisions in the record's words: an
@@ -322,4 +430,53 @@ func TestTheTaskFileCarriesTheAnswer(t *testing.T) {
 	if err != nil || !bytes.Contains(more, []byte(`"decisions"`)) || bytes.Contains(js, []byte(`"decisions"`)) {
 		t.Fatalf("the decisions cut: %v\n%s", err, more)
 	}
+}
+
+// An operation is judged at the rev the operator read in its own
+// transaction: an answer committed after the operation's look (made at
+// the seam between the look and the transaction, where the routes once
+// checked the rev; an identity's, kept answered until its recheck is
+// confirmed) makes a cancel and a comment sent at the rev before it
+// stale_decision, and the answer stands (#637, review round 1).
+func TestAnOperationAtARevAnAnswerMovedIsStale(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("docs", "writer")))
+	b, l, _ := attemptOn(t, e, fl, run.ID, "build")
+	w, wl, _ := attemptOn(t, e, fl, run.ID, "docs")
+	for i, c := range []struct {
+		name string
+		sid  string
+		op   func(id string) (OpReceipt, error)
+	}{
+		{"a cancel", b.Attempt.SessionID, func(id string) (OpReceipt, error) {
+			return e.CancelDecision(t.Context(), id, "c1", 1, false, "not needed", "admin")
+		}},
+		{"a comment", w.Attempt.SessionID, func(id string) (OpReceipt, error) {
+			return e.CommentDecision(t.Context(), id, "o1", 1, CommentKind, "Looks right.", "admin")
+		}},
+	} {
+		d := ask(t, e, c.sid, clarification("q1", "Which index?"))
+		mirrorOf(t, []*session.Local{l, wl}[i], d.ID)
+		var rc ResponseReceipt
+		e.beforeOperate = func(int64) {
+			e.beforeOperate = nil
+			var err error
+			rc, err = e.RespondDecision(t.Context(), d.ID, Response{ResponseID: "r1", Text: "btree", ExpectedRev: 1}, "user:nate", identity(e, "nate"))
+			if err != nil || rc.Status != "accepted" {
+				t.Errorf("the answer: %+v %v", rc, err)
+			}
+		}
+		_, err := c.op(d.ID)
+		var de *DecisionError
+		if !errors.As(err, &de) || de.Code != CodeStaleDecision || !strings.Contains(de.Words, "rev 1") {
+			t.Fatalf("%s sent at the rev before the answer: %v", c.name, err)
+		}
+		e.ConfirmAuthority(d.ID, rc.K, true)
+		rec := decisionWhen(t, ld, d.ID, "applied", inState(ledger.DecisionApplied))
+		if kindCount(rec, ledger.HistoryCancelled) != 0 || kindCount(rec, ledger.HistoryCommented) != 0 {
+			t.Fatalf("%s was written: %q", c.name, historyKinds(rec))
+		}
+	}
+	stopRun(t, e, run.ID)
 }

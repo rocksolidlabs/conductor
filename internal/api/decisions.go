@@ -44,9 +44,16 @@ const (
 	maxDecisionsListed     = ledger.MaxDecisionsPage
 	// maxDecisionReply bounds GET /api/decisions/{did}: the record whole
 	// (its request, baseline, receipts, history and application at their
-	// bounds) and its refs, each at most maxDecisionRef.
+	// bounds) and its refs, each at most maxDecisionRef as encoded, its
+	// escapes counted (fitRef).
 	maxDecisionReply = 1 << 20
-	maxDecisionRef   = 2 << 10
+	maxDecisionRef   = 4 << 10
+	// maxDecisionListed bounds a record as the operator's lists give it
+	// (listedOf: its request, baseline, policy, application, why and
+	// answer at their bounds), and maxDecisionListPage a page of them
+	// (GET /api/decisions, a ticket's decisions; TestTheOperatorsDecisionListFitsItsBound).
+	maxDecisionListed   = 48 << 10
+	maxDecisionListPage = maxDecisionsListed*maxDecisionListed + 1<<10
 	// maxDecisionEvent bounds a decision event's data.
 	maxDecisionEvent = 256
 )
@@ -137,9 +144,10 @@ func (s *Server) decisionSession(w http.ResponseWriter, r *http.Request) (string
 }
 
 // handleSessionDecisionRequest takes an attempt's decision request:
-// 201 {decision} at once, 200 the same for a repeat of its requestId.
-// Its evidence refs are resolved first into the baseline the record
-// keeps (decisionBaseline).
+// 201 {decision} at once, 200 the same for a repeat of its requestId,
+// answered before anything else is looked at. A new request's evidence
+// refs are resolved, under the asker's own grant, into the baseline the
+// record keeps (decisionBaseline).
 func (s *Server) handleSessionDecisionRequest(w http.ResponseWriter, r *http.Request) {
 	sid, ok := s.decisionSession(w, r)
 	if !ok {
@@ -152,7 +160,17 @@ func (s *Server) handleSessionDecisionRequest(w http.ResponseWriter, r *http.Req
 	}
 	ctx, cancel := runContext(r)
 	defer cancel()
-	baseline, err := s.decisionBaseline(ctx, req.Evidence)
+	// A request sent before answers its decision as it is now, before its
+	// evidence is resolved again: what it cites may have changed since.
+	if d, sent, err := s.runs.DecisionSent(ctx, sid, req); sent {
+		if err != nil {
+			s.decisionError(w, "request", sid, err, nil)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"decision": d})
+		return
+	}
+	baseline, err := s.decisionBaseline(ctx, sid, req.Evidence)
 	if err != nil {
 		s.decisionError(w, "request", sid, err, nil)
 		return
@@ -272,9 +290,10 @@ func (s *Server) handleSessionDecisionWithdraw(w http.ResponseWriter, r *http.Re
 	d, err := s.runs.WithdrawDecision(ctx, sid, did)
 	var de *crew.DecisionError
 	if errors.As(err, &de) && de.Code == crew.CodeNotFound {
-		// One of its own that is final already: closed, in its words.
-		_, task, n, _ := s.runs.AttemptOf(sid)
-		if rec, rerr := s.runs.Decision(ctx, did); rerr == nil && rec.Asker != nil && rec.Asker.Task == task && rec.Asker.Attempt == n && rec.ClosedAt != nil {
+		// One of its own that is final already (asked in its run, by its
+		// task's attempt): closed, in its words.
+		run, task, n, _ := s.runs.AttemptOf(sid)
+		if rec, rerr := s.runs.Decision(ctx, did); rerr == nil && rec.OpenedIn == run && rec.Asker != nil && rec.Asker.Task == task && rec.Asker.Attempt == n && rec.ClosedAt != nil {
 			err = &crew.DecisionError{Code: crew.CodeDecisionClosed, Words: did + " is " + rec.State + ": " + cmp.Or(rec.Why, "it is closed")}
 		}
 	}
@@ -355,23 +374,14 @@ func (s *Server) writeDecisionPage(w http.ResponseWriter, r *http.Request, f led
 		return
 	}
 	ctx := r.Context()
-	rows, err := ld.Decisions(ctx, f)
-	next := false
-	if err == nil && len(rows) == f.Limit {
-		// A full page: next only when one follows it.
-		var after []ledger.DecisionRow
-		more := f
-		more.Before, more.Limit = rows[len(rows)-1].N, 1
-		after, err = ld.Decisions(ctx, more)
-		next = len(after) > 0
-	}
+	rows, next, err := decisionRows(ctx, ld, f)
 	if err != nil {
 		s.taskError(w, "decisions", f.CurrentRun, err)
 		return
 	}
 	reply := map[string]any{}
-	if next {
-		reply["next"] = rows[len(rows)-1].ID()
+	if next != "" {
+		reply["next"] = next
 	}
 	if summaries {
 		out, err := s.decisionSummaries(ctx, rows)
@@ -391,7 +401,25 @@ func (s *Server) writeDecisionPage(w http.ResponseWriter, r *http.Request, f led
 	writeJSON(w, http.StatusOK, reply)
 }
 
-// decisionRecords is rows' records, each without its history.
+// decisionRows is the page f names, newest first, and next, the last
+// id, when more follow it ("" for none).
+func decisionRows(ctx context.Context, ld *ledger.Ledger, f ledger.DecisionFilter) ([]ledger.DecisionRow, string, error) {
+	rows, err := ld.Decisions(ctx, f)
+	if err != nil || len(rows) < f.Limit || len(rows) == 0 {
+		return rows, "", err
+	}
+	// A full page: next only when one follows it.
+	more := f
+	more.Before, more.Limit = rows[len(rows)-1].N, 1
+	after, err := ld.Decisions(ctx, more)
+	if err != nil || len(after) == 0 {
+		return rows, "", err
+	}
+	return rows, rows[len(rows)-1].ID(), nil
+}
+
+// decisionRecords is rows' records as the operator's lists give them
+// (listedOf).
 func (s *Server) decisionRecords(ctx context.Context, rows []ledger.DecisionRow) ([]crew.Decision, error) {
 	out := make([]crew.Decision, 0, len(rows))
 	for _, row := range rows {
@@ -399,10 +427,18 @@ func (s *Server) decisionRecords(ctx context.Context, rows []ledger.DecisionRow)
 		if err != nil {
 			return nil, err
 		}
-		d.History = nil
-		out = append(out, d)
+		out = append(out, listedOf(d))
 	}
 	return out, nil
+}
+
+// listedOf is d as the operator's lists give it: without its history and
+// its responses' receipts (its answer, in words, stays), which its whole
+// read (GET /api/decisions/{did}) gives, so a record listed is at most
+// maxDecisionListed bytes as encoded.
+func listedOf(d crew.Decision) crew.Decision {
+	d.History, d.Responses = nil, nil
+	return d
 }
 
 // decisionSummary is a decision as a list of an attempt's gives it: never
@@ -657,32 +693,14 @@ type (
 	}
 )
 
-// opReady checks an operation against the rev the operator read: one
-// sent before under its actor and id goes on (the engine answers its
-// receipt, or op_conflict), any other is refused stale_decision when the
-// decision moved past the rev read, with the words of what changed. It
-// answers false once it has answered.
-func (s *Server) opReady(w http.ResponseWriter, r *http.Request, did, opID string, rev int) bool {
-	n, ok := ledger.ParseDecisionID(did)
-	if !ok || s.ledger == nil {
-		return true // the engine refuses it in words
-	}
-	rec, found, err := s.ledger.Decision(r.Context(), n)
-	if err != nil || !found {
-		return true
-	}
-	actor := actorOf(r)
-	for _, h := range rec.History {
-		if h.OpID == opID && h.By == actor {
-			return true
-		}
-	}
-	switch {
-	case rev < 1:
+// opRev checks that an operation names the rev the operator read, which
+// the engine judges in the operation's transaction (crew.Engine.operate):
+// one sent before under its actor and id answers its receipt, any other
+// at a rev the decision moved past stale_decision. It answers false once
+// it has answered.
+func opRev(w http.ResponseWriter, rev int) bool {
+	if rev < 1 {
 		writeError(w, http.StatusBadRequest, crew.CodeInvalid, "an operation names the rev it read, expectedRev")
-		return false
-	case rev != rec.Rev:
-		writeError(w, http.StatusConflict, crew.CodeStaleDecision, did+" is at rev "+strconv.Itoa(rec.Rev)+", not the rev "+strconv.Itoa(rev)+" read: read it again")
 		return false
 	}
 	return true
@@ -712,12 +730,12 @@ func (s *Server) handleDecisionCancel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, crew.CodeInvalid, err.Error())
 		return
 	}
-	if !s.opReady(w, r, did, body.CommandID, body.ExpectedRev) {
+	if !opRev(w, body.ExpectedRev) {
 		return
 	}
 	ctx, cancel := runContext(r)
 	defer cancel()
-	rc, err := s.runs.CancelDecision(ctx, did, body.CommandID, body.Release, body.Why, actorOf(r))
+	rc, err := s.runs.CancelDecision(ctx, did, body.CommandID, body.ExpectedRev, body.Release, body.Why, actorOf(r))
 	s.writeDecisionOp(w, r, "cancel", did, rc, err)
 }
 
@@ -730,12 +748,12 @@ func (s *Server) handleDecisionComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, crew.CodeInvalid, err.Error())
 		return
 	}
-	if !s.opReady(w, r, did, body.OpID, body.ExpectedRev) {
+	if !opRev(w, body.ExpectedRev) {
 		return
 	}
 	ctx, cancel := runContext(r)
 	defer cancel()
-	rc, err := s.runs.CommentDecision(ctx, did, body.OpID, body.Kind, body.Text, actorOf(r))
+	rc, err := s.runs.CommentDecision(ctx, did, body.OpID, body.ExpectedRev, body.Kind, body.Text, actorOf(r))
 	s.writeDecisionOp(w, r, "comment", did, rc, err)
 }
 
@@ -748,31 +766,43 @@ func (s *Server) handleDecisionRoute(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, crew.CodeInvalid, err.Error())
 		return
 	}
-	if !s.opReady(w, r, did, body.OpID, body.ExpectedRev) {
+	if !opRev(w, body.ExpectedRev) {
 		return
 	}
 	ctx, cancel := runContext(r)
 	defer cancel()
-	rc, err := s.runs.RouteDecision(ctx, did, body.OpID, []crew.Destination{body.To}, body.Note, actorOf(r))
+	rc, err := s.runs.RouteDecision(ctx, did, body.OpID, body.ExpectedRev, []crew.Destination{body.To}, body.Note, actorOf(r))
 	s.writeDecisionOp(w, r, "route", did, rc, err)
 }
 
-// runDecisions is the summaries of the decisions a run holds (task "")
-// or a task of it holds, newest first, at most maxDecisionsListed; none
-// without a ledger.
-func (s *Server) runDecisions(ctx context.Context, run, task string) []decisionSummary {
-	if s.ledger == nil {
-		return nil
+// addRunDecisions adds to the reply of a run's read (task "") or a
+// task's the summaries of the decisions the run or the task holds, newest
+// first, at most maxDecisionsListed, for the admin alone (a Brakeman
+// turn's shared read of the run carries none: its decisions are BK2's):
+// decisionsNext, the last id, when more follow (GET /api/decisions?run=
+// &after= reads on), and decisionsUnread, with no list, when the ledger
+// could not be read, which is logged. Nothing without a ledger or with no
+// decision.
+func (s *Server) addRunDecisions(r *http.Request, reply map[string]any, run, task string) {
+	if p, _ := r.Context().Value(principalKey{}).(principal); s.ledger == nil || !p.admin {
+		return
 	}
-	rows, err := s.ledger.Decisions(ctx, ledger.DecisionFilter{CurrentRun: run, Task: task, Limit: maxDecisionsListed})
-	if err != nil || len(rows) == 0 {
-		return nil
+	ctx := r.Context()
+	rows, next, err := decisionRows(ctx, s.ledger, ledger.DecisionFilter{CurrentRun: run, Task: task, Limit: maxDecisionsListed})
+	var out []decisionSummary
+	if err == nil {
+		out, err = s.decisionSummaries(ctx, rows)
 	}
-	out, err := s.decisionSummaries(ctx, rows)
-	if err != nil {
-		return nil
+	switch {
+	case err != nil:
+		s.log.Warn("the decisions of a run's read", "run", run, "task", task, "err", err)
+		reply["decisionsUnread"] = true
+	case len(out) > 0:
+		reply["decisions"] = out
+		if next != "" {
+			reply["decisionsNext"] = next
+		}
 	}
-	return out
 }
 
 // decisionEvent is the data of a `decision` event: a decision changed,
@@ -797,22 +827,17 @@ func (h *eventHub) decision(ev decisionEvent) {
 }
 
 // decisionTold is told the decisions a committed transition of the
-// ledger changed (crew.SQLLedgerTold): for each, the decision event, then
-// one notification for the webhooks and the providers' sinks, queued
-// without waiting. It runs on the committing goroutine, after the commit.
-func (s *Server) decisionTold(ids []string) {
-	for _, id := range ids {
-		n, ok := ledger.ParseDecisionID(id)
-		if !ok || s.ledger == nil {
-			continue
-		}
-		rec, found, err := s.ledger.Decision(context.Background(), n)
-		if err != nil || !found {
-			continue
-		}
-		s.events.decision(decisionEvent{ID: id, Run: rec.CurrentRun, Task: rec.TaskID, State: rec.State, Rev: rec.Rev})
+// ledger changed, each as the transition left it (crew.SQLLedgerTold):
+// for each, the decision event, then one notification for the webhooks
+// and the providers' sinks, queued without waiting. It runs under the
+// ledger's lock once the commit is made, in the order of the commits, and
+// reads nothing.
+func (s *Server) decisionTold(changes []crew.DecisionChange) {
+	for _, c := range changes {
+		row := c.Row
+		s.events.decision(decisionEvent{ID: row.ID(), Run: row.CurrentRun, Task: row.TaskID, State: row.State, Rev: row.Rev})
 		if s.notifier != nil {
-			s.notifier.decision(decisionNotification(rec))
+			s.notifier.decision(decisionNotification(row, c.By))
 		}
 	}
 }
@@ -820,25 +845,19 @@ func (s *Server) decisionTold(ids []string) {
 // decisionNotification is the notification of a decision's change: the
 // asking session (none for a gate) with its run and task, the state, the
 // question, the run page's task with the decision, and the responder's
-// actor once one was accepted.
-func decisionNotification(rec ledger.DecisionRecord) ext.Notification {
+// actor (by) once one was accepted.
+func decisionNotification(row ledger.DecisionRow, by string) ext.Notification {
 	var body struct {
 		Question string `json:"question"`
 	}
-	_ = json.Unmarshal([]byte(rec.Request), &body)
-	u := "/runs/" + url.PathEscape(rec.CurrentRun) + "?view=tasks"
-	if rec.TaskID != "" {
-		u += "&task=" + url.QueryEscape(rec.TaskID)
+	_ = json.Unmarshal([]byte(row.Request), &body)
+	u := "/runs/" + url.PathEscape(row.CurrentRun) + "?view=tasks"
+	if row.TaskID != "" {
+		u += "&task=" + url.QueryEscape(row.TaskID)
 	}
-	u += "&decision=" + rec.ID()
-	n := ext.Notification{Event: "decision", Type: "decision", At: time.Now().UTC(), State: rec.State, Message: body.Question, URL: u,
-		Session: ext.SessionRef{ID: rec.SessionID, Run: rec.CurrentRun, Task: rec.TaskID, Attempt: rec.Attempt}}
-	for _, r := range rec.Responses {
-		if r.Status == ledger.ResponseAccepted {
-			n.By = r.Actor
-		}
-	}
-	return n
+	u += "&decision=" + row.ID()
+	return ext.Notification{Event: "decision", Type: "decision", At: time.Now().UTC(), State: row.State, Message: body.Question, URL: u, By: by,
+		Session: ext.SessionRef{ID: row.SessionID, Run: row.CurrentRun, Task: row.TaskID, Attempt: row.Attempt}}
 }
 
 // decision queues a decision's notification for every webhook that lists
