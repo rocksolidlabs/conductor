@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 )
 
@@ -54,16 +55,28 @@ func taskCommandRows(t *testing.T) []taskCommandRow {
 // rowRun puts the run a fixture row describes into e, its one task in the
 // row's state with the row's attempts, as the engine would hold it.
 func rowRun(t *testing.T, e *Engine, i int, row taskCommandRow) *run {
+	return rowRunAt(t, e, i, row, 7)
+}
+
+// rowRunAt is rowRun at the revision rev.
+func rowRunAt(t *testing.T, e *Engine, i int, row taskCommandRow, rev int64) *run {
 	t.Helper()
 	tk := &task{def: Task{ID: "build", Member: "lead", Kind: row.Kind}, state: row.State, withdrawn: row.Withdrawn}
+	lead := &member{def: Member{Name: "lead"}}
 	for n, a := range row.Attempts {
-		at := &attempt{t: tk, n: n + 1, state: ledger.AttemptFailed}
+		// Every attempt closed, failed, but a running or verifying task's
+		// last, which is in flight.
+		at := &attempt{t: tk, m: lead, n: n + 1, state: ledger.AttemptFailed, closedAt: time.Now().UTC(), where: ext.WhereNative}
+		if inFlight := row.State == ledger.TaskRunning || row.State == ledger.TaskVerifying; inFlight && n == len(row.Attempts)-1 {
+			at.state, at.closedAt = ledger.AttemptRunning, time.Time{}
+			at.ctx, at.cancel = context.WithCancel(t.Context())
+		}
 		if a.Commit != "" {
 			at.submitted, at.result = &Result{Summary: "tried", Commit: a.Commit}, a.Commit
 		}
 		tk.attempts = append(tk.attempts, at)
 	}
-	r := &run{id: fmt.Sprintf("fixture-%08x", i), managed: true, created: true, revision: 7, tasks: []*task{tk}}
+	r := &run{id: fmt.Sprintf("fixture-%08x", i), managed: true, created: true, revision: rev, tasks: []*task{tk}, ctx: t.Context()}
 	switch row.Run {
 	case "live":
 	case "stopped":
@@ -84,21 +97,30 @@ func rowRun(t *testing.T, e *Engine, i int, row taskCommandRow) *run {
 	return r
 }
 
-// Every row of the fixture against TaskCommands and the engine: the
-// commands TaskCommands names are the row's, with the attempt an Accept
-// anyway takes, and each of the three is taken by the engine's own
-// precondition (the managed run, its launch recorded, not continued, then
-// the task's state: what act and the command's change judge) exactly when
-// it is named.
+// Every row of the fixture against TaskCommands and the engine itself:
+// the commands TaskCommands names are the row's, with the attempt an
+// Accept anyway takes, and each of the three, sent to the engine (Retry,
+// Accept, Cancel) at the revision the set was judged at on a run of its
+// own in the row's state, is taken (its receipt done) exactly when the set
+// names it and refused otherwise: a precondition a command gains that
+// TaskCommands does not judge fails a row here.
 func TestTaskCommandsFollowTheFixture(t *testing.T) {
-	e, _, _ := managedEngine(t)
-	for i, row := range taskCommandRows(t) {
-		r := rowRun(t, e, i, row)
+	e, _, l := managedEngine(t)
+	ctx := context.Background()
+	send := map[string]func(runID string, cmd Command) (Receipt, error){
+		TaskRetry:  func(runID string, cmd Command) (Receipt, error) { return e.Retry(ctx, runID, "admin", cmd, "build") },
+		TaskAccept: func(runID string, cmd Command) (Receipt, error) { return e.Accept(ctx, runID, "admin", cmd, "build") },
+		TaskCancel: func(runID string, cmd Command) (Receipt, error) { return e.Cancel(ctx, runID, "admin", cmd, "build") },
+	}
+	runs := 0
+	for _, row := range taskCommandRows(t) {
+		r := rowRun(t, e, runs, row)
+		runs++
 		got, err := e.TaskCommands(r.id, "build")
 		if err != nil {
 			t.Fatalf("%s: %v", row.Name, err)
 		}
-		if !slices.Equal(got.Commands, row.Commands) || got.Revision != 7 || got.AcceptAttempt != row.Accept {
+		if !slices.Equal(got.Commands, row.Commands) || got.Revision != 7 || got.AcceptAttempt != row.Accept || got.Task.ID != "build" || got.Task.State != row.State {
 			t.Errorf("%s: TaskCommands %+v, the fixture %v (accept %d)", row.Name, got, row.Commands, row.Accept)
 		}
 		if row.Accept > 0 && got.AcceptCommit != row.Attempts[row.Accept-1].Commit {
@@ -119,9 +141,22 @@ func TestTaskCommandsFollowTheFixture(t *testing.T) {
 			t.Errorf("%s: the task's read names %v (%v)", row.Name, st.Commands, err)
 		}
 		for _, name := range []string{TaskRetry, TaskAccept, TaskCancel} {
-			err := engineTakes(e, r, name)
-			if taken := err == nil; taken != slices.Contains(row.Commands, name) {
-				t.Errorf("%s: the engine on %s: %v", row.Name, name, err)
+			// A run of its own for each command (one taken changes the
+			// task), at the fake ledger's revision, which its next commit
+			// follows as a run's own ledger revision does.
+			l.mu.Lock()
+			rev := l.rev
+			l.mu.Unlock()
+			own := rowRunAt(t, e, runs, row, rev)
+			runs++
+			set, err := e.TaskCommands(own.id, "build")
+			if err != nil || !slices.Equal(set.Commands, got.Commands) || set.Revision != rev {
+				t.Fatalf("%s: TaskCommands on its own run %+v %v", row.Name, set, err)
+			}
+			rc, err := send[name](own.id, Command{ID: name + "-1", ExpectedRevision: set.Revision})
+			named := slices.Contains(row.Commands, name)
+			if taken := err == nil && rc.Status == ledger.CommandDone; taken != named {
+				t.Errorf("%s: the engine on %s: %+v %v, named %v", row.Name, name, rc, err, named)
 			}
 		}
 	}
@@ -137,29 +172,9 @@ func TestTaskCommandsFollowTheFixture(t *testing.T) {
 	if got, err := e2.TaskCommands(r.id, "build"); err != nil || len(got.Commands) != 0 {
 		t.Fatalf("no ledger: %+v %v", got, err)
 	}
-}
-
-// engineTakes is whether the engine would take the task command name on
-// r's task build, judged in act's order: the run managed (managedRun), a
-// ledger (act), the launch recorded and the run its own (commit), not
-// continued (continued, in the change), then the command's own check.
-func engineTakes(e *Engine, r *run, name string) error {
-	if _, err := e.managedRun(r.id); err != nil {
-		return err
+	if _, err := e2.Retry(ctx, r.id, "admin", Command{ID: "r-1"}, "build"); !errors.Is(err, ErrNoLedger) {
+		t.Fatalf("no ledger, a retry: %v", err)
 	}
-	if e.ledger == nil {
-		return ErrNoLedger
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if r.unrecorded() {
-		return errLaunching
-	}
-	if err := e.continued(r); err != nil {
-		return err
-	}
-	_, err := taskCommandCheck(name, r.task("build"))
-	return err
 }
 
 // The fixture's rows a live run passes through, against the engine
@@ -185,6 +200,11 @@ func TestTaskCommandsFollowALiveRun(t *testing.T) {
 	set, err := e.TaskCommands(run.ID, "build")
 	if err != nil || !slices.Equal(set.Commands, []string{TaskRetry, TaskAccept}) || set.AcceptAttempt != 3 || set.AcceptCommit != failed.Attempt.Result {
 		t.Fatalf("build: %+v %v", set, err)
+	}
+	// A Retry starts where the engine would start it: the failed attempt's
+	// result, not where that attempt started.
+	if set.RetryStart != failed.Attempt.Result || set.RetryStart == failed.Attempt.Start || set.Task.State != ledger.TaskFailed || set.Task.Attempts != 3 {
+		t.Fatalf("build's retry starts at %q (attempt 3 started at %q, its result %q); the task %+v", set.RetryStart, failed.Attempt.Start, failed.Attempt.Result, set.Task)
 	}
 	if docs, _ := e.TaskCommands(run.ID, "docs"); !slices.Equal(docs.Commands, []string{TaskCancel}) {
 		t.Fatalf("docs: %+v", docs)

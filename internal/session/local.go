@@ -304,6 +304,11 @@ type Local struct {
 	shownQ  string
 	left    map[string]Resumption
 	leftIDs []string
+	// consumedGone is the question last forgotten while keys typed in
+	// the terminal had reached it (consumed, which forgetLocked clears
+	// before the attention changes): noteLeftLocked reads it as answered
+	// in the terminal. Guarded by mu.
+	consumedGone string
 	// keysIn splits what is written to the program into the keys it reads
 	// (keysWritten), every write made, in the writer's order. Guarded by mu.
 	keysIn keyReader
@@ -3489,7 +3494,7 @@ func (s *Local) noteLeftLocked(att Attention) {
 		return
 	}
 	how := LeftWithdrawn
-	if s.consumed == prev {
+	if s.consumed == prev || s.consumedGone == prev {
 		how = LeftTerminal
 	}
 	if s.left == nil {
@@ -3592,7 +3597,7 @@ func (s *Local) forgetLocked(id string) {
 	s.leftInChatLocked(id, s.leftReasonLocked(id))
 	delete(s.claims, id)
 	if s.consumed == id {
-		s.consumed = ""
+		s.consumed, s.consumedGone = "", id
 	}
 	if s.shotWait == id {
 		s.shotWait, s.shotRows = "", nil

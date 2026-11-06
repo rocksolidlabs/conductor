@@ -207,6 +207,12 @@ func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, inte
 		e.afterTransact(r, err)
 		return Receipt{}, err
 	}
+	e.mu.Lock()
+	taken := e.afterTaken
+	e.mu.Unlock()
+	if taken != nil {
+		taken(runID, cmd.ID)
+	}
 	// The change, with its receipt.
 	var out Receipt
 	var cmdErr error
@@ -491,13 +497,21 @@ const (
 // TaskCommandSet is what a task's state allows of the three task
 // commands, as the engine would judge them now: their names in the order
 // retry, accept, cancel, the run's revision they were judged at (the
-// expected revision a command sent for them carries), and for an Accept
-// anyway the attempt and commit it would take.
+// expected revision a command sent for them carries), for an Accept
+// anyway the attempt and commit it would take, for a Retry the commit it
+// would start at, and the task they were judged on.
 type TaskCommandSet struct {
 	Commands      []string `json:"commands"`
 	Revision      int64    `json:"revision"`
 	AcceptAttempt int      `json:"acceptAttempt,omitempty"`
 	AcceptCommit  string   `json:"acceptCommit,omitempty"`
+	// RetryStart is the commit a Retry's next attempt would start at, as
+	// the engine picks it (startCommit): a failed attempt's result, a
+	// repair's, a checkpoint's; "" when the task's inputs give it.
+	RetryStart string `json:"retryStart,omitempty"`
+	// Task is the task as it stood when the commands were judged, read
+	// under the same lock as them: what a page describes them by.
+	Task TaskState `json:"task"`
 }
 
 // TaskCommands is what the run's task allows of Retry, Accept and Cancel,
@@ -519,23 +533,29 @@ func (e *Engine) TaskCommands(runID, taskID string) (TaskCommandSet, error) {
 	if t == nil {
 		return TaskCommandSet{}, ErrTaskNotFound
 	}
-	return e.commandsOf(r, t), nil
+	out := e.commandsOf(r, t)
+	out.Task = r.taskStateOf(t)
+	return out, nil
 }
 
-// commandsOf is TaskCommands for r's task t. The caller holds e.mu.
+// commandsOf is TaskCommands for r's task t, without the task's state.
+// The caller holds e.mu.
 func (e *Engine) commandsOf(r *run, t *task) TaskCommandSet {
 	out := TaskCommandSet{Commands: []string{}, Revision: r.revision}
 	if e.ledger == nil || !r.managed || r.unrecorded() || r.foreign || e.continued(r) != nil {
 		return out
 	}
 	for _, name := range []string{TaskRetry, TaskAccept, TaskCancel} {
-		a, err := taskCommandCheck(name, t)
+		a, err := taskCommandCheck(r, name, t)
 		if err != nil {
 			continue
 		}
 		out.Commands = append(out.Commands, name)
 		if a != nil {
 			out.AcceptAttempt, out.AcceptCommit = a.n, a.result
+		}
+		if name == TaskRetry {
+			out.RetryStart = r.startCommit(t)
 		}
 	}
 	return out
@@ -554,11 +574,13 @@ func (e *Engine) withCommands(r *run, out *Run) {
 	}
 }
 
-// taskCommandCheck is the task command name's precondition on t, the one
-// the command applies (Retry, Accept, Cancel) and TaskCommands asks: nil
-// when t's state takes it, with, for an Accept anyway, the attempt whose
-// result it takes. The caller holds e.mu.
-func taskCommandCheck(name string, t *task) (*attempt, error) {
+// taskCommandCheck is the task command name's precondition on t of the
+// run r, the one the command applies (Retry, Accept, Cancel) and
+// TaskCommands asks: nil when t's state takes it, with, for an Accept
+// anyway, the attempt whose result it takes. A precondition a command
+// gains, of the task or of its run, goes here, so the two never disagree.
+// The caller holds e.mu.
+func taskCommandCheck(r *run, name string, t *task) (*attempt, error) {
 	switch name {
 	case TaskRetry:
 		return nil, retryable(t)
@@ -571,6 +593,16 @@ func taskCommandCheck(name string, t *task) (*attempt, error) {
 		return nil, cancellable(t)
 	}
 	return nil, fmt.Errorf("%w: no task command %q", ErrTaskState, name)
+}
+
+// SetAfterTakenForTest sets the seam a command runs between its two
+// transactions, once the ledger took it and before its change (nil for
+// none), for a test of what reads its receipt meanwhile (the decision
+// inbox's track: accepted, the engine applying it).
+func (e *Engine) SetAfterTakenForTest(fn func(runID, commandID string)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.afterTaken = fn
 }
 
 // Pause is PauseRun as a command with a receipt (paused false: unpause).
@@ -609,7 +641,7 @@ func (e *Engine) Cancel(ctx context.Context, runID, actor string, cmd Command, t
 		if t == nil {
 			return nil, nil, ErrTaskNotFound
 		}
-		if _, err := taskCommandCheck(TaskCancel, t); err != nil {
+		if _, err := taskCommandCheck(r, TaskCancel, t); err != nil {
 			return t, nil, err
 		}
 		return t, e.cancelTask(r, t), nil
@@ -623,7 +655,7 @@ func (e *Engine) Retry(ctx context.Context, runID, actor string, cmd Command, ta
 		if t == nil {
 			return nil, nil, ErrTaskNotFound
 		}
-		if _, err := taskCommandCheck(TaskRetry, t); err != nil {
+		if _, err := taskCommandCheck(r, TaskRetry, t); err != nil {
 			return t, nil, err
 		}
 		return t, e.retryTask(r, t), nil
@@ -638,7 +670,7 @@ func (e *Engine) Accept(ctx context.Context, runID, actor string, cmd Command, t
 		if t == nil {
 			return nil, nil, ErrTaskNotFound
 		}
-		if _, err := taskCommandCheck(TaskAccept, t); err != nil {
+		if _, err := taskCommandCheck(r, TaskAccept, t); err != nil {
 			return t, nil, err
 		}
 		events, err := e.acceptTask(r, t, actor)

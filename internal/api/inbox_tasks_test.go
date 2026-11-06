@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -164,6 +165,18 @@ func TestABlockerIsOneItem(t *testing.T) {
 	if status, code := e.command(t, run.ID, "build", crew.TaskCancel, "c1", cancel.Expect); status != http.StatusConflict || code != "stale_revision" {
 		t.Fatalf("the cancel at the old revision: %d %s", status, code)
 	}
+	// The Cancel is tracked as the task's (its track), never as the
+	// question it rides on: under the question's ref its receipt is
+	// refused; under its track, refused stale_revision.
+	if cancel.Track != "task:"+run.ID+"/build" || actionOf(t, it, "answer").Track != "" {
+		t.Fatalf("the cancel's track: %+v", cancel)
+	}
+	if status, _ := e.get(t, "/api/inbox/track?ref="+url.QueryEscape(ref)+"&receipt=c1"); status != http.StatusBadRequest {
+		t.Fatalf("a command's receipt under the question's ref: %d", status)
+	}
+	if got := e.trackOf(t, cancel.Track, "c1", ""); got[stepValidated].State != stepRefused || !strings.Contains(got[stepValidated].Words, "stale_revision") {
+		t.Fatalf("the stale cancel's track: %+v", got)
+	}
 	if st := taskVia(t, e, run.ID, "build", "running", func(task map[string]any) bool { return true }); st["state"] != "running" {
 		t.Fatalf("cancelled at the old revision: %v", st)
 	}
@@ -174,6 +187,9 @@ func TestABlockerIsOneItem(t *testing.T) {
 	}
 	if status, code := e.command(t, run.ID, "build", crew.TaskCancel, "c2", fresh.Expect); status != http.StatusOK {
 		t.Fatalf("the cancel at the new revision: %d %s", status, code)
+	}
+	if got := e.trackOf(t, fresh.Track, "c2", ""); got[stepRecorded].State != stepDone || got[stepValidated].State != stepDone || got[stepResumed].State != stepNotApplicable {
+		t.Fatalf("the cancel's track: %+v", got)
 	}
 }
 
@@ -290,6 +306,39 @@ func TestInboxTrackACommandAcrossARestart(t *testing.T) {
 	e := readyEnv(t, nil)
 	e.gitRepo(t)
 	run := failBuild(t, e, failingCrew(e.root))
+	ref := "task:" + run + "/build"
+	// A retry held between its two transactions (the engine's seam):
+	// recorded done, validated waiting (the engine applying it), not final;
+	// let go, validated done. The run paused first, so nothing starts.
+	if resp, out := e.do("POST", "/api/runs/"+run+"/pause", adminToken, map[string]any{"commandId": "p1"}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("pause: %d %v", resp.StatusCode, out)
+	}
+	retry := actionOf(t, e.itemOf(t, ref), crew.TaskRetry)
+	taken, release := make(chan struct{}), make(chan struct{})
+	e.srv.runs.SetAfterTakenForTest(func(_, id string) {
+		if id == "held" {
+			close(taken)
+			<-release
+		}
+	})
+	t.Cleanup(func() { e.srv.runs.SetAfterTakenForTest(nil) })
+	sent := make(chan int, 1)
+	go func() {
+		status, _ := e.command(t, run, "build", crew.TaskRetry, "held", retry.Expect)
+		sent <- status
+	}()
+	<-taken
+	held := e.trackOf(t, ref, "held", "")
+	if held[stepRecorded].State != stepDone || held[stepValidated].State != stepWaiting || !strings.Contains(held[stepValidated].Words, "applying it") || held[stepResumed].State != stepWaiting {
+		t.Fatalf("held between its transactions: %+v", held)
+	}
+	close(release)
+	if status := <-sent; status != http.StatusOK {
+		t.Fatalf("the held retry: %d", status)
+	}
+	if got := e.trackOf(t, ref, "held", ""); got[stepValidated].State != stepDone || got[stepResumed].State != stepWaiting {
+		t.Fatalf("let go: %+v", got)
+	}
 	if resp, out := e.do("POST", "/api/runs/"+run+"/stop", adminToken, nil); resp.StatusCode != http.StatusOK {
 		t.Fatalf("stop: %d %v", resp.StatusCode, out)
 	}
@@ -314,37 +363,62 @@ func TestInboxTrackACommandAcrossARestart(t *testing.T) {
 	l.Close()
 	again := e.restart()
 	t.Cleanup(func() { stopEveryRun(again.srv) })
-	ref := "task:" + run + "/build"
 	for range 2 {
 		steps := again.trackOf(t, ref, "taken", "")
-		if steps[stepRecorded].State != stepDone || steps[stepValidated].State != stepUnknown || !strings.Contains(steps[stepValidated].Words, "the server stopped while the engine applied this") ||
-			steps[stepResumed].State != stepNotApplicable || !strings.Contains(steps[stepResumed].Words, "nothing shows it took effect") {
+		if steps[stepRecorded].State != stepDone || steps[stepValidated].State != stepUnknown || !strings.Contains(steps[stepValidated].Words, "the server stopped after the engine took this") ||
+			steps[stepResumed].State != stepNotApplicable || !strings.Contains(steps[stepResumed].Words, "nothing of it was made") {
 			t.Fatalf("after the restart: %+v", steps)
+		}
+	}
+	// The item of a task whose run the engine no longer holds is read
+	// from the run's record: no actions, its now saying why.
+	if _, held := again.srv.runs.Get(run); !held {
+		it := again.itemOf(t, ref)
+		if len(it.Actions) != 0 || !strings.Contains(it.Now, "no longer held by the engine") {
+			t.Fatalf("the item after the restart: %+v", it)
 		}
 	}
 }
 
-// The resumed step of an uncertain command read from the task: an
-// attempt started after it, the task accepted or cancelled after it, is
-// done ("it took effect before the stop"); none is not applicable.
-func TestInboxTrackUncertainReadsTheTask(t *testing.T) {
-	at := time.Now().UTC()
-	later := at.Add(time.Second)
-	for _, c := range []struct {
-		intent   string
-		task     crew.TaskState
-		attempts []crew.AttemptState
-		want     string
-	}{
-		{crew.TaskRetry, crew.TaskState{State: "running"}, []crew.AttemptState{{N: 4, StartedAt: &later}}, stepDone},
-		{crew.TaskRetry, crew.TaskState{State: "failed"}, nil, stepNotApplicable},
-		{crew.TaskAccept, crew.TaskState{State: ledger.TaskSucceeded, Result: &crew.ResultState{}}, nil, stepDone},
-		{crew.TaskAccept, crew.TaskState{State: "failed"}, nil, stepNotApplicable},
-		{crew.TaskCancel, crew.TaskState{State: ledger.TaskCancelled}, nil, stepDone},
-	} {
-		got := uncertainResumed(ledger.CommandRow{Intent: c.intent, CreatedAt: at}, &c.task, c.attempts)
-		if got.State != c.want {
-			t.Errorf("%s on %+v: %+v", c.intent, c.task, got)
-		}
+// An uncertain command made nothing (its change commits with its
+// receipt): its resumed step is not applicable whatever the task shows,
+// a success or a cancel that predates it or another command's since.
+func TestInboxTrackUncertainMadeNothing(t *testing.T) {
+	if got := uncertainResumed(); got.State != stepNotApplicable || !strings.Contains(got.Words, "nothing of it was made") {
+		t.Fatalf("uncertain: %+v", got)
+	}
+}
+
+// An Accept on a run the engine let go (stopped, then forgotten): the
+// item is read from the run's record, with no actions; the Accept's
+// resumed step reads the dependents from it too (docs needs build and
+// has not started: waiting), never "nothing else needs it"; a run found
+// nowhere is unknown.
+func TestInboxAcceptOnARunLetGo(t *testing.T) {
+	e := readyEnv(t, nil)
+	e.gitRepo(t)
+	run := failBuild(t, e, failingCrew(e.root))
+	ref := "task:" + run + "/build"
+	if resp, out := e.do("POST", "/api/runs/"+run+"/stop", adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop: %d %v", resp.StatusCode, out)
+	}
+	accept := actionOf(t, e.itemOf(t, ref), crew.TaskAccept)
+	if status, code := e.command(t, run, "build", crew.TaskAccept, "a1", accept.Expect); status != http.StatusOK {
+		t.Fatalf("the accept: %d %s", status, code)
+	}
+	e.srv.runs.ForgetForTest(run)
+	if _, held := e.srv.runs.Get(run); held {
+		t.Fatal("the run still held")
+	}
+	it := e.itemOf(t, ref)
+	if len(it.Actions) != 0 || !strings.Contains(it.Now, "no longer held by the engine") {
+		t.Fatalf("the item of a run let go: %+v", it)
+	}
+	got := e.trackOf(t, ref, "a1", "")
+	if got[stepValidated].State != stepDone || got[stepResumed].State != stepWaiting || strings.Contains(got[stepResumed].Words, "nothing else needs it") {
+		t.Fatalf("the accept's track: %+v", got)
+	}
+	if got := doneResumed(ledger.CommandRow{Intent: crew.TaskAccept}, crew.Receipt{}, nil, nil, nil, false); got.State != stepUnknown {
+		t.Fatalf("a run found nowhere: %+v", got)
 	}
 }

@@ -514,7 +514,13 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	s.hosts.OnChange = func(info session.Info) {
 		s.events.publishIf(info, s.listed)
 		s.router.mark(info.ID)
-		s.hostedSeen.change(info)
+		// How a question went on is read from what the host said, never
+		// from a change the server forwarded and the host has not applied.
+		if d, ok := s.registry.Get(info.ID); ok {
+			if hs, ok := d.(*signal.HostedSession); ok {
+				s.hostedSeen.change(hs.HostView())
+			}
+		}
 		// A hosted session that ended takes its links with it, as a server
 		// session does, and closes their viewers as its end.
 		if info.Status.Ended() {

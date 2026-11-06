@@ -62,6 +62,16 @@ func TestOpenPlans(t *testing.T) {
 	if len(page) != 1 || page[0].ID != second || page[0].Stale == nil || page[0].Stale.Remedy != RemedyRevise {
 		t.Fatalf("a revise: %+v", page)
 	}
+	// A closed ticket's approval, stale or not, needs nobody: not read,
+	// not counted; open again, it is.
+	mustEdit(t, s, "x1", key, TicketEdit{Set: TicketSet{Status: ptr(TicketCancelled)}})
+	if page, _, total := open(PlanCursor{}, 10); len(page) != 0 || total != 0 {
+		t.Fatalf("a cancelled ticket's approval: %v %d", openRefs(page), total)
+	}
+	mustEdit(t, s, "x2", key, TicketEdit{Set: TicketSet{Status: ptr(TicketInProgress)}})
+	if page, _, total := open(PlanCursor{}, 10); total != 1 || len(page) != 1 || page[0].ID != second {
+		t.Fatalf("open again: %v %d", openRefs(page), total)
+	}
 
 	// Oldest first, across tickets; the limit and the cursor; a deleted
 	// ticket's left out.
