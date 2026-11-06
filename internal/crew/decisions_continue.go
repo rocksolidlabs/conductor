@@ -302,6 +302,10 @@ func (e *Engine) continueDecisions(r *run, from Loaded, h history) func(LedgerTx
 	e.regate(r, "the run was continued")
 	fromID, to := from.Run.ID, r.id
 	uncertain := slices.Clone(dh.uncertain)
+	moving := make([]int64, 0, len(dh.moving))
+	for _, rec := range dh.moving {
+		moving = append(moving, rec.N)
+	}
 	return func(ltx LedgerTx) error {
 		dtx, err := decisionsOf(ltx)
 		if err != nil {
@@ -320,6 +324,15 @@ func (e *Engine) continueDecisions(r *run, from Loaded, h history) func(LedgerTx
 		rows, err := mv.MoveDecisions(fromID, to)
 		if err != nil {
 			return err
+		}
+		// The rows moved are the ones read, or nothing is made: a decision
+		// closed or opened on the run continued since the read would leave
+		// the engine holding what the ledger does not (#636, review round
+		// 3). Every change of a run the engine holds refuses once the run
+		// is marked (continued), before the read, so this refuses only
+		// what nothing should have written.
+		if !sameNs(rows, moving) {
+			return fmt.Errorf("%w: its decisions changed as it was continued", ErrRunUnsettled)
 		}
 		if _, err := mv.MoveHolds(fromID, to, dtx.Now()); err != nil {
 			return err
@@ -375,12 +388,37 @@ func (e *Engine) continueDecisions(r *run, from Loaded, h history) func(LedgerTx
 		for _, n := range uncertain {
 			// Its typing was under way when the server ended: never typed
 			// again (I6); the task's next attempt reads it in its files.
+			// Read again here, in the move's transaction: only a typing
+			// the ledger still holds without its end is marked, so a line's
+			// end written since the read is never followed by a second end
+			// (#636, review round 3).
+			rec, ok, err := dtx.Record(n)
+			if err == nil && !ok {
+				err = fmt.Errorf("%w: %s", ledger.ErrNoDecision, ledger.DecisionID(n))
+			}
+			if err != nil {
+				return err
+			}
+			last, _ := deliveryOf(rec)
+			if last != ledgerTyping {
+				e.mu.Lock()
+				if d := settledN(r, n); d != nil {
+					d.delivery = last
+				}
+				e.mu.Unlock()
+				continue
+			}
 			if _, _, err := dtx.History(n, ledger.HistoryRow{Kind: ledgerUncertain, By: "yardmaster", Detail: historyDetail(map[string]any{"why": "the server ended while its line was typed: it is never typed again"})}); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
+}
+
+// sameNs says rows are the decisions numbered ns, in their order.
+func sameNs(rows []ledger.DecisionRow, ns []int64) bool {
+	return slices.EqualFunc(rows, ns, func(row ledger.DecisionRow, n int64) bool { return row.N == n })
 }
 
 // recordN is the record of decision n among recs, zero for none.

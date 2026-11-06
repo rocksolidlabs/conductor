@@ -24,6 +24,63 @@ import (
 // asking task cancelled, withdrawn or reopened, the operator, the asking
 // agent), what a gate's requirement outlives (regate), and the operator's
 // operations, each repeating its receipt.
+//
+// The engine and the ledger (#636, review rounds 1 to 3). A decision is
+// applied at most once only if the engine's copy of it never runs ahead of
+// the ledger for good, nor behind it. Every write of a decision is made in
+// one of three ways, and each says what it changes in the engine before
+// its commit and what follows a commit the ledger refuses or a stop's
+// cancel ends:
+//
+//   - Nothing before the commit; given up when refused (undo giveUp or an
+//     empty one): the response (respondHeld: the answer is the commit's
+//     done), the operator's comment, request for more and re-route (the rev
+//     they bump and the turnEnded mark a request for more clears are the
+//     commit's done; nothing is put back, so no undo restores a value over
+//     what another change made of it meanwhile), the continuation's first
+//     transaction (the run it would have made goes whole, and the
+//     ancestor's copies are dropped only once it commits). A response runs
+//     under the request's context, which a stop never cancels; cut short,
+//     it changed nothing.
+//   - Made in the change and carried when refused (no undo, under no
+//     context a stop or a request cancels: context.Background or
+//     WithoutCancel): the application (applyTx: applied, holds released,
+//     the typing's intent), every supersession and cancellation
+//     (closeDecision: an agent's subject moved, S1 to S4, the asking task
+//     cancelled, withdrawn or reopened, the work under it ended, the run's
+//     end, the operator's cancel, the agent's withdrawal), the park and the
+//     give-back (the attempt closed), regate, a line's end (lineEnded: the
+//     delivery marked in its change) and the task file's mark
+//     (delivery.task_file). A refused commit keeps their rows, events and
+//     dones for the next commit, the pause's or whoever's, which writes
+//     them first (commit); a run holding such rows is not continued until
+//     they are written (markContinuing: ErrRunUnsettled).
+//   - Read from the ledger, never from memory, where another writer may
+//     have moved it: the continuation reads its decisions after marking the
+//     run (resuming, under its txMu), reads an answer and a typing's end
+//     again in its move's transaction, and refuses a move whose rows are
+//     not the ones it read; a task file's read is checked in its change
+//     against the engine (readStale: state, application, delivery) and read
+//     again when stale; a restart has no engine state and recovers from the
+//     rows alone (Recovered, continueDecisions).
+//
+// Two rules make the second way safe. A carried write is one the ledger
+// takes by its content and its counts, so only the ledger's own failure
+// refuses it, never the write itself, which would fail every commit after
+// it: a history row's detail is bounded whatever it holds (historyDetail),
+// the words (cutWhy), the application receipt (fitJSON), an event's
+// payload (writable); a decision's deliveries are one typing, one end
+// (entered, untyped or, after a restart or a continuation, uncertain) and
+// one task file's mark. And no change of a run being continued, or
+// continued, is made (continued): its continuation has read the run's
+// decisions and moves them, so a withdrawal, a line's end, an operation, a
+// task file's mark or an application after the mark would write to rows
+// the continuation no longer reads.
+//
+// A stop gives a run no outcome and cancels no decision: no write above is
+// bound to the run's context, so every decision, open, answered or applied
+// with its delivery under way, survives a stop, a shutdown and a restart,
+// and its continuation holds it.
 
 // stageDecision is the stage an attempt closes at when it ends while it
 // waits on a decision: given back, not counted.
@@ -385,7 +442,7 @@ func (e *Engine) park(r *run, a *attempt, why string) {
 	go func() {
 		err := e.transact(context.Background(), r, func() tx {
 			a.parking = false
-			if !r.parkable(a) || r.stopping || r.ctx.Err() != nil {
+			if !r.parkable(a) || r.stopping || r.ctx.Err() != nil || e.continued(r) != nil {
 				return tx{}
 			}
 			d := r.waitingDecision(a)
@@ -492,6 +549,9 @@ func (e *Engine) regateLater(r *run) {
 	go func() {
 		err := e.transact(context.Background(), r, func() tx {
 			r.dec.regating = false
+			if e.continued(r) != nil {
+				return tx{}
+			}
 			e.regate(r, "a task the plan's decision names was ready")
 			return tx{}
 		}, nil)
@@ -894,25 +954,27 @@ func (d *decision) closeWithdrawn() {
 }
 
 // lineEnded writes how d's typed line ended (delivery.entered, or
-// delivery.untyped with why), once, in a transaction of its own. The
-// caller holds no lock.
+// delivery.untyped with why), once, in a transaction of its own: the
+// engine's copy is marked in its change, in the run's order, so a task
+// file's read made before it is read again (readStale). A run being
+// continued, or continued, writes nothing: its continuation read the
+// typing without its end and marks it uncertain itself, and a second end
+// would pass the ledger's room for a decision's deliveries (#636, review
+// round 3). The caller holds no lock.
 func (e *Engine) lineEnded(r *run, d *decision, kind, why string) {
-	e.mu.Lock()
-	if d.delivery != ledgerTyping || d.n == 0 {
-		e.mu.Unlock()
-		return
-	}
-	d.delivery = kind
-	if kind == ledgerUntyped && d.state == ledger.DecisionSuperseded {
-		why = fmt.Sprintf("%s was superseded before its answer went in", d.id())
-	}
-	n := d.n
-	e.mu.Unlock()
-	detail := map[string]any{}
-	if why != "" {
-		detail["why"] = cutWhy(why)
-	}
 	err := e.transact(context.Background(), r, func() tx {
+		if d.delivery != ledgerTyping || d.n == 0 || e.continued(r) != nil {
+			return tx{}
+		}
+		d.delivery = kind
+		if kind == ledgerUntyped && d.state == ledger.DecisionSuperseded {
+			why = fmt.Sprintf("%s was superseded before its answer went in", d.id())
+		}
+		n := d.n
+		detail := map[string]any{}
+		if why != "" {
+			detail["why"] = cutWhy(why)
+		}
 		return tx{more: func(ltx LedgerTx) error {
 			dtx, err := decisionsOf(ltx)
 			if err != nil {
@@ -924,6 +986,12 @@ func (e *Engine) lineEnded(r *run, d *decision, kind, why string) {
 	}, nil)
 	if err != nil {
 		e.afterTransact(r, err)
+	}
+	if e.afterLineEnded != nil {
+		e.mu.Lock()
+		n := d.n
+		e.mu.Unlock()
+		e.afterLineEnded(n)
 	}
 }
 
@@ -1026,15 +1094,19 @@ type operation struct {
 	// operation refused when the run is not held (notHeld's words).
 	held    func(r *run, d *decision, rec ledger.DecisionRecord) (detail opDetail, after func(), refusal error)
 	notHeld func(rec ledger.DecisionRecord) (detail opDetail, refusal error)
-	// rev says the operation bumps the decision's rev.
-	rev bool
+	// rev says the operation bumps the decision's rev; wakes that its
+	// commit clears the asking attempt's turnEnded mark (a request for
+	// more: its agent takes a turn to answer).
+	rev, wakes bool
 	// ahead says the held change moves the engine's state past what an
 	// undo could put back (the cancel: a decision closed, its holds
 	// released, tasks cancelled): it has no undo, its commit is under no
 	// request's context, and a refused commit is carried by the pause's
-	// (#636, review round 1). Every other operation's change is put back
-	// whole when its commit is refused: the rev it bumped, the turnEnded
-	// mark it cleared.
+	// (#636, review round 1). Every other operation changes nothing in the
+	// engine before its commit: the rev it bumps and the mark it clears
+	// are its commit's (tx.done), so a refused commit has nothing to put
+	// back, and no undo restores a value over what another change (an
+	// agent's working report) made of it meanwhile (#636, review round 3).
 	ahead bool
 }
 
@@ -1070,7 +1142,7 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 		}
 		e.mu.Lock()
 		r := e.runs[rec.CurrentRun]
-		held := r != nil && r.managed && r.created && r.ctx.Err() == nil && !r.stopping
+		held := r != nil && r.managed && r.created && r.ctx.Err() == nil && !r.stopping && e.continued(r) == nil
 		e.mu.Unlock()
 		var (
 			out     OpReceipt
@@ -1110,7 +1182,6 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 		}
 		if held {
 			var after func()
-			var undo func()
 			moved := false
 			change := func() tx {
 				if r.stopping || r.ctx.Err() != nil {
@@ -1123,42 +1194,40 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 				if d == nil {
 					d = settledN(r, n)
 				}
-				var was int
-				var wasEnded bool
-				if d != nil {
-					was = d.rev
-					if d.a != nil {
-						wasEnded = d.a.turnEnded
-					}
+				if e.continued(r) != nil {
+					// Being continued since the look: chosen again, through
+					// the run that holds it then (#636, review round 3).
+					moved = true
+					return tx{}
 				}
 				dt, then, why := op.held(r, d, rec)
 				if why != nil {
 					refused = why
 					return tx{}
 				}
+				rev := 0
 				if d != nil && op.rev {
-					d.rev++
-					dt.Rev = d.rev
-				}
-				undo = func() {
-					if d != nil {
-						d.rev = was
-						if d.a != nil {
-							d.a.turnEnded = wasEnded
-						}
-					}
+					rev = d.rev + 1
+					dt.Rev = rev
 				}
 				after = then
-				return tx{more: func(ltx LedgerTx) error { return write(ltx, dt) }}
+				// What it changes in the engine follows its commit, under
+				// e.mu before anything reads the run: refused, it changed
+				// nothing (giveUp drops its write and this).
+				return tx{more: func(ltx LedgerTx) error { return write(ltx, dt) }, done: func() {
+					if d == nil {
+						return
+					}
+					d.rev = max(d.rev, rev)
+					if op.wakes && d.a != nil {
+						d.a.turnEnded = false
+					}
+				}}
 			}
 			if op.ahead {
 				err = e.transact(context.WithoutCancel(ctx), r, change, nil)
 			} else {
-				err = e.transact(ctx, r, change, func() {
-					if undo != nil {
-						undo()
-					}
-				})
+				err = e.transact(ctx, r, change, giveUp)
 			}
 			if moved {
 				continue
@@ -1263,7 +1332,7 @@ func (e *Engine) CommentDecision(ctx context.Context, id, opID, kind, text, acto
 	default:
 		return OpReceipt{}, refuse(CodeInvalid, "a comment is a comment or a more_info, not %q", kind)
 	}
-	return e.operate(ctx, id, operation{kind: ledger.HistoryInfoRequested, opID: opID, fp: fingerprintOf([]string{kind, text}), actor: actor, rev: true,
+	return e.operate(ctx, id, operation{kind: ledger.HistoryInfoRequested, opID: opID, fp: fingerprintOf([]string{kind, text}), actor: actor, rev: true, wakes: true,
 		held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
 			switch {
 			case rec.Origin == ledger.OriginPlan:
@@ -1273,7 +1342,6 @@ func (e *Engine) CommentDecision(ctx context.Context, id, opID, kind, text, acto
 			case d.a == nil || d.t == nil || d.t.active() != d.a || !d.a.closedAt.IsZero() || d.a.sessionID != rec.SessionID || !e.sessionLive(d.a.sessionID):
 				return opDetail{}, nil, refuse(CodeNoRecipient, "%s's agent has ended its attempt: comment, answer or cancel it", id)
 			}
-			d.a.turnEnded = false
 			line := fmt.Sprintf("The operator asks about %s: %s", id, text)
 			return opDetail{Text: text, By: actor, Words: fmt.Sprintf("Asked %s's agent for more", id)}, func() {
 				e.mu.Lock()
@@ -1459,6 +1527,10 @@ func (e *Engine) WithdrawDecision(ctx context.Context, sessionID, id string) (De
 	err = e.transact(context.WithoutCancel(ctx), r, func() tx {
 		d := r.decisionN(n)
 		switch {
+		case e.continued(r) != nil:
+			// Its continuation has read the decision open and moves it:
+			// the run continued changes nothing more (#636, review round 3).
+			refused = refuse(CodeNotHeld, "%s's run was continued: its attempt is no longer the one that asked it", id)
 		case d == nil || d.a != a:
 			refused = refuse(CodeNotFound, "%s is no decision of this attempt's that is open", id)
 		case d.state != ledger.DecisionOpen:

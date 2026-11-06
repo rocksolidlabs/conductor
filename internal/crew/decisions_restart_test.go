@@ -7,8 +7,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // Decisions across a restart and a continuation (docs/plans/decisions.md,
@@ -196,13 +198,36 @@ func TestHoldsFollowTheDecisionAcrossContinuations(t *testing.T) {
 	want := []string{"build " + d.ID, "deploy " + g.ID}
 	runs := []string{run.ID}
 	for range 2 {
-		stopRun(t, e, runs[len(runs)-1])
-		next := continueRun(t, e, runs[len(runs)-1])
+		stopped := runs[len(runs)-1]
+		stopRun(t, e, stopped)
+		// A stop gives the run no outcome and ends no decision: both stay
+		// open, held, for the continuation to take (the compare-approaches
+		// plan rests on it).
+		if got, _ := e.Get(stopped); got.Outcome != "" {
+			t.Fatalf("the stop gave %s the outcome %q", stopped, got.Outcome)
+		}
+		for _, id := range []string{d.ID, g.ID} {
+			if rec := decisionWhen(t, ld, id, "open", inState(ledger.DecisionOpen)); rec.CurrentRun != stopped {
+				t.Fatalf("%s after the stop: %+v", id, rec.DecisionRow)
+			}
+		}
+		next := continueRun(t, e, stopped)
 		runs = append(runs, next.ID)
 		for i, id := range runs {
 			got := activeHolds(t, ld, id)
 			if i == len(runs)-1 && !equalStrings(got, want) || i < len(runs)-1 && len(got) != 0 {
 				t.Fatalf("holds under %s after %d continuations: %q", id, len(runs)-1, got)
+			}
+			// The engine's view of each run continued shows no hold either:
+			// its tasks' holds went with its decisions (#636, review round
+			// 3).
+			if i < len(runs)-1 {
+				rec, _ := e.Get(id)
+				for _, ts := range rec.Tasks {
+					if len(ts.Holds) != 0 {
+						t.Fatalf("the engine shows %s's %s held after %d continuations: %+v", id, ts.ID, len(runs)-1, ts.Holds)
+					}
+				}
 			}
 		}
 	}
@@ -470,4 +495,138 @@ func TestAConfirmationFollowsItsDecisionIntoTheContinuation(t *testing.T) {
 			stopRun(t, e, next.ID)
 		})
 	}
+}
+
+// continueHeld starts the run's continuation and holds it once it has read
+// the run's history (afterAdd): resume lets it go on, and done answers it.
+func continueHeld(t *testing.T, e *Engine, runID string) (resume func(), done func() Run) {
+	t.Helper()
+	at, gate := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	e.afterAdd = func(string) { once.Do(func() { close(at); <-gate }) }
+	out := make(chan Run, 1)
+	go func() {
+		next, err := e.ContinueRun(context.Background(), runID, "")
+		if err != nil {
+			t.Error(err)
+			close(out)
+			return
+		}
+		out <- *next
+	}()
+	t.Cleanup(func() {
+		select {
+		case <-gate:
+		default:
+			close(gate)
+		}
+	})
+	select {
+	case <-at:
+	case <-time.After(60 * time.Second):
+		t.Fatal("the continuation did not read the run")
+	}
+	return func() { close(gate) }, func() Run {
+		next, ok := <-out
+		if !ok {
+			t.FailNow()
+		}
+		return next
+	}
+}
+
+// An agent's withdrawal that reaches the run after its continuation read
+// it is refused: the continuation, held once it read the decision open,
+// moves it, and the run continued writes nothing more; the continuation
+// holds the decision, open, in the ledger and in the engine, and its answer
+// is applied there (#636, review round 3).
+func TestAWithdrawalDuringAContinuationIsRefused(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b, _, _ := attemptOn(t, e, fl, run.ID, "build")
+	d := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
+	stopRun(t, e, run.ID)
+	resume, done := continueHeld(t, e, run.ID)
+	if _, err := e.WithdrawDecision(t.Context(), b.Attempt.SessionID, d.ID); err == nil {
+		t.Fatal("a withdrawal after the continuation's read was taken")
+	}
+	resume()
+	next := done()
+	rec := decisionWhen(t, ld, d.ID, "open in the continuation", func(rec ledger.DecisionRecord) bool {
+		return rec.State == ledger.DecisionOpen && rec.CurrentRun == next.ID
+	})
+	if kindCount(rec, ledger.HistoryCancelled) != 0 {
+		t.Fatalf("%s: %q", d.ID, historyKinds(rec))
+	}
+	if got := activeHolds(t, ld, next.ID); !equalStrings(got, []string{"build " + d.ID}) {
+		t.Fatalf("the continuation's holds: %q", got)
+	}
+	if _, ok := engineHolds(t, e, next.ID, d.ID); !ok {
+		t.Fatalf("the continuation's engine does not hold %s", d.ID)
+	}
+	answer(t, e, d.ID, Response{ResponseID: "r1", Text: "btree", ExpectedRev: 1})
+	decisionWhen(t, ld, d.ID, "applied", inState(ledger.DecisionApplied))
+	waitAttempt(t, e, next.ID, "build", ledger.AttemptRunning)
+	stopRun(t, e, next.ID)
+}
+
+// A line whose end comes after its run's continuation read it typing
+// writes nothing: the line's program took it slowly (ErrSubmitPending),
+// the run is stopped and continued, and its end arrives once the
+// continuation, held there, has read the typing. The continuation marks it
+// uncertain, the decision's one end, so its task file's mark, which the
+// continuation's attempt writes, has its room, and neither run is paused
+// (#636, review round 3).
+func TestALateLineEndDuringAContinuationWritesNothing(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	var mu sync.Mutex
+	var finished func(session.SubmitResult, error)
+	typing := make(chan struct{})
+	e.submitAnswer = func(ctx context.Context, l *session.Local, sub session.Submission) (session.SubmitResult, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if finished != nil || sub.Finished == nil {
+			return l.Submit(ctx, sub)
+		}
+		finished = sub.Finished
+		close(typing)
+		return session.SubmitResult{Typed: true}, session.ErrSubmitPending
+	}
+	ended := make(chan int64, 4)
+	e.afterLineEnded = func(n int64) { ended <- n }
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b, l, _ := attemptOn(t, e, fl, run.ID, "build")
+	d := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
+	mirrorOf(t, l, d.ID)
+	answer(t, e, d.ID, Response{ResponseID: "r1", Text: "btree", ExpectedRev: 1})
+	select {
+	case <-typing:
+	case <-time.After(60 * time.Second):
+		t.Fatal("the answer's line was not typed")
+	}
+	decisionWhen(t, ld, d.ID, "typing", hasKind(ledger.HistoryDeliveryTyping))
+	stopRun(t, e, run.ID)
+	resume, done := continueHeld(t, e, run.ID)
+	mu.Lock()
+	end := finished
+	mu.Unlock()
+	end(session.SubmitResult{}, errors.New("the session ended"))
+	select {
+	case <-ended:
+	case <-time.After(60 * time.Second):
+		t.Fatal("the line's end was not decided")
+	}
+	resume()
+	next := done()
+	waitAttempt(t, e, next.ID, "build", ledger.AttemptRunning)
+	rec := decisionWhen(t, ld, d.ID, "carried by the continuation's task file", hasKind(ledger.HistoryDeliveryTaskFile))
+	if kinds := historyKinds(rec); kindCount(rec, ledger.HistoryDeliveryUntyped) != 0 || kindCount(rec, ledger.HistoryDeliveryUncertain) != 1 {
+		t.Fatalf("%s's deliveries: %q", d.ID, kinds)
+	}
+	if paused(t, e, next.ID) || paused(t, e, run.ID) {
+		t.Fatalf("paused: the continuation %v, the run continued %v", paused(t, e, next.ID), paused(t, e, run.ID))
+	}
+	stopRun(t, e, next.ID)
 }
