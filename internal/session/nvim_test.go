@@ -186,13 +186,19 @@ func TestNvimBridgeThroughTheSession(t *testing.T) {
 // editorsEnd makes the test wait, as it ends, for s's editors to have
 // ended: a connection's editors end on goroutines of their own as it goes
 // (closeNvims), and Neovim writes its state in the test's directories as it
-// leaves.
+// leaves. An editor still there then was never closed: the test fails
+// rather than leave a Neovim running past the directories it writes to.
+// The session ends an editor within its nvimEndWait; the minute past that
+// bounds a hang only.
 func editorsEnd(t *testing.T, s *Local) {
 	t.Helper()
 	t.Cleanup(func() {
-		deadline := time.Now().Add(15 * time.Second)
+		deadline := time.Now().Add(s.nvimEndWait + time.Minute)
 		for s.nvimCount.Load() != 0 && time.Now().Before(deadline) {
 			time.Sleep(20 * time.Millisecond)
+		}
+		if n := s.nvimCount.Load(); n != 0 {
+			t.Errorf("%d editors still running as the test ends: none closed them", n)
 		}
 	})
 }
@@ -1059,6 +1065,9 @@ func TestARefusalComesBeforeTheWordThatItsKeysAreDone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The connection goes as the test ends, however it ends, and its editor
+	// with it, before editorsEnd waits for that.
+	t.Cleanup(func() { s.Detach(sub) })
 	id := openEditor(t, s, sub)
 	if err := s.NvimInput(sub, proto.NvimInput{T: proto.CtlNvimInput, ID: id, Keys: "i", Seq: 1}); err != nil {
 		t.Fatal(err)
@@ -1067,28 +1076,46 @@ func TestARefusalComesBeforeTheWordThatItsKeysAreDone(t *testing.T) {
 	nvimEvents(t, sink, &from, proto.NvimSettled, 10*time.Second)
 	refused := uint32(0)
 	keys := strings.Repeat("x", 250)
+	// Each post's refusal, if it has one, is judged before the next post is
+	// sent: NvimInput sends it before it returns, so it is among the sink's
+	// frames once the viewer has been handed all that was sent to it. A look
+	// made at once ran ahead of the viewer's own goroutine on a loaded
+	// machine and found the refusal only after the next post's, and took that
+	// one for the first (#281). Only the frames not looked at yet are read,
+	// and not under the sink's lock: Neovim sends the whole line, thousands
+	// of bytes, as each key lands, and a sink held while every frame was read
+	// again each round fell a MiB behind and was dropped as a slow consumer,
+	// its editor with it ("file access denied").
+	seen := from
 	for seq := uint32(2); seq < 200 && refused == 0; seq++ {
 		if err := s.NvimInput(sub, proto.NvimInput{T: proto.CtlNvimInput, ID: id, Keys: keys, Seq: seq}); err != nil {
-			t.Fatal(err)
+			t.Fatalf("keys %d: %v (the viewer: %v)", seq, err, sub.Reason())
+		}
+		if !waitFor(time.Minute, sub.drained) {
+			t.Fatal("the viewer was never handed what was sent to it")
 		}
 		sink.mu.Lock()
-		for _, frame := range sink.frames[from:] {
+		frames := sink.frames[seen:len(sink.frames):len(sink.frames)]
+		sink.mu.Unlock()
+		for _, frame := range frames {
+			seen++
 			if f, err := proto.Decode(frame); err == nil {
 				var ev proto.NvimEvent
 				if json.Unmarshal(f.Payload, &ev) == nil && ev.Kind == proto.NvimError && ev.ID == id {
 					refused = ev.Ack
+					break
 				}
 			}
 		}
-		sink.mu.Unlock()
 	}
 	if refused == 0 {
 		t.Fatal("Neovim took every key: the test filled nothing")
 	}
-	time.Sleep(time.Second)
+	// Every frame sent before the refusal is in the sink with it.
 	sink.mu.Lock()
-	defer sink.mu.Unlock()
-	for _, frame := range sink.frames[from:] {
+	frames := sink.frames[from:len(sink.frames):len(sink.frames)]
+	sink.mu.Unlock()
+	for _, frame := range frames {
 		f, err := proto.Decode(frame)
 		if err != nil {
 			continue
@@ -1193,7 +1220,11 @@ func TestALostNeovimsLastChangesComeAfterItsEnd(t *testing.T) {
 	sub.nvimMu.Unlock()
 	s.NvimClose(sub, proto.NvimClose{T: proto.CtlNvimClose, ID: "e2"})
 	(&nvimHandler{s: s, sub: sub, e: q}).Lines(0, 1, []string{"after the close"})
-	time.Sleep(100 * time.Millisecond)
+	// A frame the handler sent is the viewer's once it has been handed all
+	// that was sent to it: none is there then, or none was sent.
+	if !waitFor(time.Minute, sub.drained) {
+		t.Fatal("the viewer was never handed what was sent to it")
+	}
 	sink.mu.Lock()
 	defer sink.mu.Unlock()
 	for _, f := range sink.frames[from:] {
@@ -1288,6 +1319,12 @@ func TestKeysOnTheirWayToANeovimThatDiesAreNotRefused(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatal("the editor of a Neovim that died was never let go")
 		}
+	}
+	// A refusal of the keys would have been sent before their call returned:
+	// it is among the frames once the viewer has been handed all that was
+	// sent to it.
+	if !waitFor(time.Minute, sub.drained) {
+		t.Fatal("the viewer was never handed what was sent to it")
 	}
 	sink.mu.Lock()
 	defer sink.mu.Unlock()
