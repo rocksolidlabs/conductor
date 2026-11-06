@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo } from '~/composables/useSessions'
 import type { BrakemanConfig, BrakemanScope, BrakemanVisibility } from '~/utils/brakeman'
-import { BOUNDS, BRAKEMAN_ADAPTERS, agentChoice, agentIdOf, agentItems as agentChoices, configProblems, formField, formMove, sameConfig, scopeLines, scopeList } from '~/utils/brakeman'
+import { BOUNDS, BRAKEMAN_ADAPTERS, GRANTS, agentChoice, agentIdOf, agentItems as agentChoices, briefingLine, briefingList, configProblems, formField, formMove, sameConfig, grantHeld, scopeLines, scopeList, servedGrants, withGrant } from '~/utils/brakeman'
 import { ApiError } from '~/composables/useApi'
 import { SETTINGS_FIELD_UI as fieldUi } from '~/utils/settingsSections'
 
@@ -10,13 +10,25 @@ import { SETTINGS_FIELD_UI as fieldUi } from '~/utils/settingsSections'
  * the revision read): the agent (one whose adapter registers Conductor's tools and has a read-only mode: a turn never runs with yolo),
  * the account (the folder the agent's login lives in, or its default login), the model (for an agent with a model flag), the folder
  * its turns run in, what it may see (terminal screens off until turned on), its scope, whether it may draft and propose, and its
- * budget. The form checks what the server checks; the server's own words are shown for what it refuses, and beside an agent whose
- * read-only mode does not hold (its warnings). What is refused of a field the form draws no control for (the scope as a whole, an
- * operation's grant, the wake mode, a model while the agent shows no model field) is said above Save.
+ * budget, and whether the background role wakes it (BK3: its window, cooldown, a question's wait and briefing times, and the day's
+ * minutes). The form checks what the server checks; the server's own words are shown for what it refuses, and beside an agent whose
+ * read-only mode does not hold (its warnings). What is refused of a field the form draws no control for (the scope as a whole, the
+ * wake mode, a model while the agent shows no model field) is said above Save.
+ *
+ * What it may run (PR-13): the four operations a person may grant Brakeman (BK2's closed list), each with what it authorizes in words,
+ * a switch each. A grant this server serves no route of is shown as not in this build and cannot be turned on (the admin's guide lists
+ * the ones it serves). A grant gives no read and a read no grant; none approves, answers, accepts, closes or changes this
+ * configuration, and the server checks each act against the grant, the scope and the target's state whatever is granted here.
  */
 const bk = useBrakeman()
 const api = useSessions()
 const toast = useToast()
+const ops = useGuideOps()
+/** The grants this server serves (null while its guide is unread): the others cannot be turned on. */
+const served = computed(() => servedGrants(ops.value))
+function grant(op: string, on: boolean) {
+  if (form.value) form.value.permissions.act = withGrant(form.value.permissions.act, op, on)
+}
 
 const agents = ref<AgentInfo[]>([])
 const form = ref<BrakemanConfig | null>(null)
@@ -25,6 +37,13 @@ const base = ref<BrakemanConfig | null>(null)
 /** The store's generation the form was set under: a reset (a new token, perhaps another server) leaves it another token's. */
 const formGen = ref(-1)
 const scopeText = reactive<Record<keyof BrakemanScope, string>>({ projects: '', repos: '', crews: '', runs: '', sessions: '' })
+/** The briefing times as the form's field holds them, comma or space apart. */
+const briefingText = ref('')
+
+/** The background switch: the wake mode, background or invoked. */
+function setBackground(on: boolean) {
+  if (form.value) form.value.wake.mode = on ? 'background' : 'invoked'
+}
 const saving = ref(false)
 const serverError = ref<{ field?: string; message: string } | null>(null)
 
@@ -36,6 +55,7 @@ function reset(c: BrakemanConfig) {
   base.value = JSON.parse(JSON.stringify(c)) as BrakemanConfig
   form.value = JSON.parse(JSON.stringify(c)) as BrakemanConfig
   for (const k of Object.keys(scopeText) as Array<keyof BrakemanScope>) scopeText[k] = scopeLines(c.scope[k])
+  briefingText.value = briefingLine(c.wake.briefings)
   serverError.value = null
 }
 
@@ -55,7 +75,8 @@ const body = computed<BrakemanConfig | null>(() => {
     const list = scopeList(scopeText[k])
     if (list.length) scope[k] = list
   }
-  const c = { ...form.value, scope, account: form.value.account?.trim() || undefined, model: form.value.model?.trim() || undefined, cwd: form.value.cwd.trim() }
+  const briefings = briefingList(briefingText.value)
+  const c = { ...form.value, scope, wake: { ...form.value.wake, briefings: briefings.length ? briefings : undefined }, account: form.value.account?.trim() || undefined, model: form.value.model?.trim() || undefined, cwd: form.value.cwd.trim() }
   return c
 })
 /** Whether the form holds what is not saved: Save is offered for it. */
@@ -98,7 +119,7 @@ const problems = computed(() => (body.value ? configProblems(body.value, agents.
 const warnings = computed(() => (form.value?.agentId && form.value.agentId === saved.value?.agentId ? (bk.state.value?.warnings ?? []) : []))
 /** The fields the form draws a control for, by the names the server gives them; `scope` is the scope's fieldset. */
 const controls = computed(() => {
-  const out = new Set(['agentId', 'account', 'cwd', 'scope', 'budget.turnMinutes', 'budget.readsPerTurn', 'budget.turnsPerDay'])
+  const out = new Set(['agentId', 'account', 'cwd', 'scope', 'permissions.act', 'budget.turnMinutes', 'budget.readsPerTurn', 'budget.turnsPerDay', 'budget.minutesPerDay', 'wake.windowSeconds', 'wake.cooldownMinutes', 'wake.questionMinutes', 'wake.briefings'])
   for (const k of Object.keys(scopeText)) out.add(`scope.${k}`)
   if (caps.value?.model) out.add('model')
   if (caps.value?.allowTools) out.add('allowConductorTools')
@@ -207,6 +228,29 @@ async function save() {
         <p v-if="!form.permissions.draft && !form.permissions.propose" class="text-xs text-muted @3xl:col-span-2">Observe only.</p>
       </fieldset>
 
+      <fieldset class="flex flex-col gap-2" data-brakeman-grants>
+        <legend class="mb-1 text-sm font-medium">What it may run</legend>
+        <p class="text-xs text-muted">
+          Off, Brakeman proposes and you act. Granted, it runs that operation itself through the operation's own route, which checks the grant,
+          its scope and what it acts on, and leaves a receipt on the brief. No grant approves, answers, accepts or closes anything, and none
+          changes these settings.
+        </p>
+        <div class="grid gap-2 @3xl:grid-cols-2 @3xl:gap-x-8">
+          <USwitch
+            v-for="g in GRANTS"
+            :key="g.value"
+            :model-value="form.permissions.act?.includes(g.value) ?? false"
+            :label="g.label"
+            :description="served && !served.has(g.value) ? `${g.words} Not in this build: nothing serves it yet.` : g.words"
+            :disabled="grantHeld(served, form.permissions.act?.includes(g.value) ?? false, g.value)"
+            :data-brakeman-grant="g.value"
+            :data-grant-served="served ? served.has(g.value) : undefined"
+            @update:model-value="(on: boolean) => grant(g.value, on)"
+          />
+        </div>
+        <p v-if="fieldError('permissions.act')" class="text-xs text-error" data-brakeman-grant-error>{{ fieldError('permissions.act') }}</p>
+      </fieldset>
+
       <fieldset class="grid gap-3 sm:grid-cols-3">
         <legend class="mb-1 text-sm font-medium">Its budget</legend>
         <UFormField label="Minutes a turn" :error="fieldError('budget.turnMinutes')">
@@ -217,6 +261,34 @@ async function save() {
         </UFormField>
         <UFormField label="Turns a day" :error="fieldError('budget.turnsPerDay')">
           <UInput v-model.number="form.budget.turnsPerDay" type="number" :min="BOUNDS.turnsPerDay[0]" :max="BOUNDS.turnsPerDay[1]" class="w-full" data-brakeman-turns />
+        </UFormField>
+        <UFormField label="Minutes a day" description="Every turn's, whoever started it." :error="fieldError('budget.minutesPerDay')">
+          <UInput v-model.number="form.budget.minutesPerDay" type="number" :min="BOUNDS.minutesPerDay[0]" :max="BOUNDS.minutesPerDay[1]" class="w-full" data-brakeman-minutes />
+        </UFormField>
+      </fieldset>
+
+      <fieldset class="flex flex-col gap-3" data-brakeman-role-settings>
+        <legend class="mb-1 text-sm font-medium">In the background</legend>
+        <USwitch
+          :model-value="form.wake.mode === 'background'"
+          label="Wake on events"
+          description="A task that failed, a question left waiting, a run that ended or paused, a ticket made ready, and the briefing times below. Its turns ask no one anything that pages: their questions wait in Needs you."
+          data-brakeman-background
+          @update:model-value="setBackground"
+        />
+        <div class="grid gap-3 sm:grid-cols-3">
+          <UFormField label="Window, seconds" description="How long it gathers wakes into one turn." :error="fieldError('wake.windowSeconds')">
+            <UInput v-model.number="form.wake.windowSeconds" type="number" :min="BOUNDS.windowSeconds[0]" :max="BOUNDS.windowSeconds[1]" class="w-full" data-brakeman-window />
+          </UFormField>
+          <UFormField label="Cooldown, minutes" description="How long it waits after a turn." :error="fieldError('wake.cooldownMinutes')">
+            <UInput v-model.number="form.wake.cooldownMinutes" type="number" :min="BOUNDS.cooldownMinutes[0]" :max="BOUNDS.cooldownMinutes[1]" class="w-full" data-brakeman-cooldown />
+          </UFormField>
+          <UFormField label="A question waits, minutes" description="Before an open question wakes it." :error="fieldError('wake.questionMinutes')">
+            <UInput v-model.number="form.wake.questionMinutes" type="number" :min="BOUNDS.questionMinutes[0]" :max="BOUNDS.questionMinutes[1]" class="w-full" data-brakeman-question />
+          </UFormField>
+        </div>
+        <UFormField label="Briefing times" :description="`HH:MM in this server's time, comma apart, at most ${BOUNDS.briefings}; they fire while the server runs.`" :error="fieldError('wake.briefings')" :ui="fieldUi">
+          <UInput v-model="briefingText" class="w-full font-mono text-xs" placeholder="07:00, 18:00" data-brakeman-briefings />
         </UFormField>
       </fieldset>
 

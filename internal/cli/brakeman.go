@@ -20,16 +20,19 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/api"
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
+	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/notify"
 )
 
-// conductor brakeman and Brakeman's three MCP tools (docs/plans/
-// brakeman.md, PR-5). In a Brakeman turn's session (CONDUCTOR_BRAKEMAN,
-// set by the server) the turn reads its request, reads what it may see and
-// submits one brief, with the session's own token, as its MCP tools do for
-// an agent with MCP. With the workbench token a person asks Brakeman and
-// reads what it answered. Every route, schema and bound is the server's
-// table's (api.Operations): observe sends each what to its own route on
+// conductor brakeman and Brakeman's MCP tools (docs/plans/brakeman.md,
+// PR-5 and PR-13). In a Brakeman turn's session (CONDUCTOR_BRAKEMAN, set by
+// the server) the turn reads its request, reads what it may see, runs an
+// operation the person granted it and submits one brief, with the
+// session's own token, as its MCP tools do for an agent with MCP. With the
+// workbench token a person asks Brakeman and reads what it answered. Every
+// route, schema and bound is the server's table's (api.Operations):
+// observe sends each what, and act each operation, to its own route on
 // this side, and the server has no dispatcher of its own.
 
 // envBrakeman names the request a Brakeman turn's session answers.
@@ -45,6 +48,13 @@ In a Brakeman turn's session (CONDUCTOR_BRAKEMAN is set), with the session's tok
                                             ticket, history, comments, sessions or touched, and each
                                             --KEY one of its route's parameters (conductor guide
                                             --section operations lists them under observe_WHAT)
+  conductor brakeman act OPERATION [--KEY VALUE]... [--body-file F] [--op-id ID] [--json]
+                                            run an operation the person granted the turn (conductor
+                                            guide --section operations lists them, scope act): each
+                                            --KEY a path parameter of its route (--key CND-12), F its
+                                            body, a JSON object without opId (- for stdin), ID the
+                                            act's id, minted when absent; --json prints
+                                            {"opId": ID, "reply": the route's reply}
   conductor brakeman brief --file F         submit the turn's one brief (brakeman.brief/1) from the
                                             JSON file F, - for stdin; the turn ends once it is kept
 With the workbench token (--server, --token and --insecure as conductor dispatch takes them):
@@ -58,6 +68,11 @@ With the workbench token (--server, --token and --insecure as conductor dispatch
                                             today's turns
   conductor brakeman list [--json]          the requests, newest first, one a line
   conductor brakeman show br-n [--json]     a request whole, with its brief
+  conductor brakeman role on|off|pause|resume|status [--json]
+                                            the background role: on wakes Brakeman on events and at
+                                            its briefing times, off only when asked; pause holds it,
+                                            resume ends the pause; status its state and its last
+                                            wakes
 
 A write whose reply is lost to the network is sent once more with the same
 operation id, which the server answers without a second change. Outside a
@@ -153,8 +168,312 @@ func (c *brakemanClient) tool(ctx context.Context, name string, raw json.RawMess
 			return "", fmt.Errorf("brief_submit: %w", err)
 		}
 		return c.submit(ctx, a.OpID, a.Brief)
+	case "act":
+		var a struct {
+			Operation string            `json:"operation"`
+			Params    map[string]string `json:"params"`
+			Body      map[string]any    `json:"body"`
+			OpID      string            `json:"opId"`
+		}
+		if err := strictJSON(raw, &a); err != nil {
+			return "", fmt.Errorf("act: %w", err)
+		}
+		text, _, _, err := c.act(ctx, a.Operation, a.Params, a.Body, a.OpID)
+		return text, err
 	}
 	return "", unknownTool(name)
+}
+
+// grants is the operations the turn is granted, as its guide's
+// operations section lists them (the scope act: the snapshot its turn
+// began under and the configuration now together), the act tool left
+// out. The guide is read, not the request: a read of the request marks
+// it read, which tells a turn whose agent gave up from one whose agent
+// never started (an MCP server is started before the agent reads).
+func (c *brakemanClient) grants(ctx context.Context) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.root+"/api/sessions/"+url.PathEscape(c.session)+"/guide?section=operations", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, stripURL(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("brakeman: the guide answered %d", resp.StatusCode)
+	}
+	var out struct {
+		Operations []struct{ Name, Scope string } `json:"operations"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxSessionReply)).Decode(&out); err != nil {
+		return nil, fmt.Errorf("brakeman: an unreadable guide: %w", err)
+	}
+	var acts []string
+	for _, op := range out.Operations {
+		if op.Scope == "act" && op.Name != "act" {
+			acts = append(acts, op.Name)
+		}
+	}
+	return acts, nil
+}
+
+// actOperations is every operation the table lists for a grant (scope
+// act), but the act tool itself, in the table's order.
+func actOperations() []string {
+	var out []string
+	for _, op := range api.Operations() {
+		if op.Scope == "act" && op.Name != "act" {
+			out = append(out, op.Name)
+		}
+	}
+	return out
+}
+
+// maxActReply bounds an act's reply: a launch's (its summary and its run)
+// or a proposal's revision, each under 1 MiB on the server.
+const maxActReply = 4 << 20
+
+// actRequestTimeout bounds one request of an act: a launch's as
+// conductor dispatch launch waits for it (launchRequestTimeout, the
+// server's own bound on a launch and a request's time beside it), any
+// other operation's as the session client waits for a request. The
+// session client's own timeout never bounds an act (post), so a launch
+// the server is still starting is never reported failed at 60 s.
+func actRequestTimeout(name string) time.Duration {
+	if name == brakeman.ActLaunchApprovedPlan {
+		return launchRequestTimeout
+	}
+	return actSessionTimeout
+}
+
+// actSessionTimeout is a request's bound in the session client
+// (crewClientFromEnv), which an act's other operations keep.
+const actSessionTimeout = 60 * time.Second
+
+// actBudget is the most a whole act waits, every send it makes: each of
+// launchTries at its own bound, with the wait before a resend of a
+// launch still pending. The tool and the command give an act this.
+func actBudget() time.Duration {
+	return time.Duration(launchTries) * (launchRequestTimeout + launchResendWait)
+}
+
+// act runs the granted operation through its own route, the table's
+// entry of that name: params its path's parameters, body its body. The
+// op id is minted when empty (or taken from the body's opId) and sent
+// again with the same body, as conductor dispatch launch sends a launch,
+// within launchTries sends in all: at once when the reply is lost, and
+// after launchResendWait when the server answers a launch still being
+// started (503 ledger_unavailable naming it pending). The server answers
+// the act from its receipt and runs it once. An act left unsettled (its
+// reply lost every time, its launch still pending, a later send refused
+// after one of those, or a send answered with a 5xx) names its op id,
+// for the same act to be asked again, never a new one, which would be a
+// second act. It answers the act in words, then the route's reply; the
+// reply itself; and the act's op id, the one given or the one minted,
+// which a proposal of the act names (args.opId) and the route's receipt
+// does not (its id is derived from it).
+func (c *brakemanClient) act(ctx context.Context, name string, params map[string]string, body map[string]any, opID string) (string, json.RawMessage, string, error) {
+	op, ok := operation(name)
+	if name == "" || !ok || op.Scope != "act" || op.Name == "act" {
+		return "", nil, "", fmt.Errorf("act: operation is one of %s", strings.Join(actOperations(), ", "))
+	}
+	path := op.Path
+	for _, k := range slices.Sorted(maps.Keys(params)) {
+		p := "{" + k + "}"
+		if !strings.Contains(path, p) {
+			return "", nil, "", fmt.Errorf("act %s takes the path parameters %s", name, takes(pathParams(op.Path)))
+		}
+		path = strings.ReplaceAll(path, p, url.PathEscape(params[k]))
+	}
+	if m := regexp.MustCompile(`\{([a-z]+)\}`).FindStringSubmatch(path); m != nil {
+		return "", nil, "", fmt.Errorf("act %s needs %s", name, m[1])
+	}
+	b := map[string]any{}
+	maps.Copy(b, body)
+	if id, ok := b["opId"].(string); ok && opID == "" {
+		opID = id
+	} else if ok && id != opID {
+		return "", nil, "", errors.New("act: the body's opId and opId differ: give one")
+	}
+	if opID == "" {
+		opID = newOpID()
+	}
+	b["opId"] = opID
+	payload, err := encodeJSON(b)
+	if err != nil {
+		return "", nil, "", fmt.Errorf("act: %w", err)
+	}
+	if n := op.Bounds["body"]; n > 0 && len(payload) > n {
+		return "", nil, "", fmt.Errorf("act %s: the body is %d bytes, over its route's %d", name, len(payload), n)
+	}
+	reply, err := c.send(ctx, name, opID, path, payload)
+	if err != nil {
+		return "", nil, "", err
+	}
+	var b2 bytes.Buffer
+	if json.Indent(&b2, reply, "", "  ") != nil {
+		b2.Reset()
+		b2.Write(reply)
+	}
+	return actWords(name, opID, reply) + "\n\n" + b2.String(), reply, opID, nil
+}
+
+// pathParams is a route's path parameters, as a schema's properties.
+func pathParams(path string) map[string]any {
+	out := map[string]any{}
+	for _, m := range regexp.MustCompile(`\{([a-z]+)\}`).FindAllStringSubmatch(path, -1) {
+		out[m[1]] = true
+	}
+	return out
+}
+
+// send posts the act opID of the operation name until it is settled, as
+// act says: its reply, or the error that ends it, naming the op id when
+// the act may have run.
+func (c *brakemanClient) send(ctx context.Context, name, opID, path string, payload []byte) (json.RawMessage, error) {
+	// pending is the launch a 503 named still being started: once the
+	// server has named one, an exit that does not settle it says so.
+	var pending *dispatch.LaunchSummary
+	// unsure is whether an earlier send may have run the act unseen: its
+	// reply lost, or a launch named pending. Until a receipt settles it,
+	// a refusal of a later send says nothing of that one, so the error
+	// names the op id.
+	unsure := false
+	for sends := 1; ; sends++ {
+		reply, err := c.post(ctx, actRequestTimeout(name), path, payload)
+		if err == nil {
+			return reply, nil
+		}
+		var lost lostReply
+		if errors.As(err, &lost) {
+			unsure = true
+			if ctx.Err() == nil && sends < launchTries {
+				continue
+			}
+			if pending != nil {
+				return nil, fmt.Errorf("act %s: launch %s was still being started, and sending it again had no answer (%w): act again with opId %s for its outcome; another opId would be a second launch", name, oneLine(pending.ID), err, opID)
+			}
+			return nil, fmt.Errorf("act %s: no answer came (%w), so it may have run: act again with opId %s for its outcome; another opId would be another act", name, err, opID)
+		}
+		l, ok := pendingLaunch(err)
+		if !ok {
+			switch {
+			case failedLaunch(err):
+			case pending != nil:
+				return nil, fmt.Errorf("act %s: launch %s was still being started, and sending it again was answered without its outcome (%w): act again with opId %s for its outcome; another opId would be a second launch", name, oneLine(pending.ID), err, opID)
+			case unsure:
+				return nil, fmt.Errorf("act %s: an earlier send had no answer, so it may have run, and sending it again was answered without its outcome (%w): act again with opId %s for its outcome; another opId would be another act", name, err, opID)
+			case !refusedBeforeRunning(err):
+				return nil, fmt.Errorf("act %s: %w, so it may have run: act again with opId %s for its outcome; another opId would be another act", name, err, opID)
+			}
+			return nil, fmt.Errorf("act %s: %w", name, err)
+		}
+		pending = &l
+		unsure = true
+		if sends >= launchTries {
+			return nil, fmt.Errorf("act %s: launch %s is still being started after %d tries: act again with opId %s for its outcome; another opId would be a second launch", name, oneLine(l.ID), sends, opID)
+		}
+		t := time.NewTimer(launchResendWait)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return nil, fmt.Errorf("act %s: launch %s is still being started, interrupted: act again with opId %s for its outcome; another opId would be a second launch", name, oneLine(l.ID), opID)
+		case <-t.C:
+		}
+	}
+}
+
+// refusedBeforeRunning is whether a send's error says the act did not
+// run: a refusal under 500 (the route, or what stands in front of it,
+// refused the act before its handler ran it). A 5xx, a reply too large
+// or not JSON can come after the act's change was kept, and say nothing
+// of it.
+func refusedBeforeRunning(err error) bool {
+	var r replyRefusal
+	return errors.As(err, &r) && r.status < http.StatusInternalServerError
+}
+
+// post sends payload to path on the server's root as the turn (its token,
+// its session named), within timeout and never the session client's own
+// bound, answering the route's JSON reply: lostReply when the network
+// lost it or timeout passed, a replyRefusal (its status, its body, the
+// route's words) for a refusal.
+func (c *brakemanClient) post(ctx context.Context, timeout time.Duration, path string, payload []byte) (json.RawMessage, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.root+path, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("X-Conductor-Session", c.session)
+	req.Header.Set("Content-Type", "application/json")
+	// The session client with its redirect rule, but bounded by timeout:
+	// its own Timeout would cut a launch the server is still starting.
+	client := *c.client
+	client.Timeout = 0
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, lostReply{stripURL(err)}
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxActReply+1))
+	if err != nil {
+		return nil, lostReply{stripURL(err)}
+	}
+	if len(raw) > maxActReply {
+		return nil, fmt.Errorf("the server's reply is larger than %d MiB", maxActReply>>20)
+	}
+	if resp.StatusCode >= 300 {
+		var e struct {
+			Error struct{ Code, Message string } `json:"error"`
+		}
+		words := fmt.Errorf("the server answered %d", resp.StatusCode)
+		if json.Unmarshal(raw, &e) == nil && e.Error.Code != "" {
+			words = fmt.Errorf("%s (%s)", e.Error.Message, e.Error.Code)
+		}
+		return nil, replyRefusal{status: resp.StatusCode, body: raw, err: words}
+	}
+	if !json.Valid(raw) {
+		return nil, fmt.Errorf("the server answered %d with no JSON", resp.StatusCode)
+	}
+	return raw, nil
+}
+
+// actWords is an act's answer in one line: the operation, its id, its
+// receipt and what it made (a launch's run, a revision proposed).
+func actWords(operation, opID string, reply json.RawMessage) string {
+	var out struct {
+		Receipt *struct {
+			ID, Status string
+			Repeat     bool
+		} `json:"receipt"`
+		Launch *struct{ ID, RunID string } `json:"launch"`
+		Plan   *struct {
+			ID    string
+			N     int
+			State string
+		} `json:"plan"`
+	}
+	_ = json.Unmarshal(reply, &out)
+	line := fmt.Sprintf("%s ran (opId %s)", operation, opID)
+	if r := out.Receipt; r != nil {
+		line += fmt.Sprintf(": receipt %s, %s", r.ID, r.Status)
+		if r.Repeat {
+			line += ", a repeat of the act already kept"
+		}
+	}
+	// The act's answer carries the launch, never the run: a launch with
+	// its run's id has started it.
+	if l := out.Launch; l != nil && l.RunID != "" {
+		line += "; run " + l.RunID + " launched"
+	}
+	if p := out.Plan; p != nil && p.ID != "" {
+		line += fmt.Sprintf("; revision %d (%s) %s, for the operator to approve or not", p.N, p.ID, p.State)
+	}
+	return line
 }
 
 // strictJSON decodes a tool's arguments, refusing a field it does not take.
@@ -319,6 +638,20 @@ func observeFlags(flags []flagSpec) []flagSpec {
 	return flags
 }
 
+// actFlags is flags with each path parameter of the operations act runs
+// that flags do not name already, as a flag taking a value.
+func actFlags(flags []flagSpec) []flagSpec {
+	for _, name := range actOperations() {
+		op, _ := operation(name)
+		for _, k := range slices.Sorted(maps.Keys(pathParams(op.Path))) {
+			if !slices.ContainsFunc(flags, func(f flagSpec) bool { return f.name == "--"+k }) {
+				flags = append(flags, flagSpec{name: "--" + k, kind: flagValue})
+			}
+		}
+	}
+	return flags
+}
+
 // takes names a route's parameters, or says it takes none.
 func takes(props map[string]any) string {
 	if len(props) == 0 {
@@ -359,8 +692,11 @@ func runBrakeman(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		return 0, nil
 	}
 	sub, rest := args[0], args[1:]
-	if sub == "observe" {
+	switch sub {
+	case "observe":
 		return brakemanObserve(ctx, rest, stdout, stderr)
+	case "act":
+		return brakemanAct(ctx, rest, stdin, stdout, stderr)
 	}
 	fs := flag.NewFlagSet("brakeman "+sub, flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -373,7 +709,7 @@ func runBrakeman(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		asJSON = fs.Bool("json", false, "print the server's reply as it is")
 	case "brief":
 		file = fs.String("file", "", "the brief, a JSON file (brakeman.brief/1), - for stdin (required)")
-	case "ask", "status", "list", "show":
+	case "ask", "status", "list", "show", "role":
 		server = addAPIFlags(fs)
 		if sub == "ask" {
 			fs.Var(&subjects, "subject", "a subject, a ref such as run:<run> or ticket:CND-4 (repeatable)")
@@ -390,9 +726,11 @@ func runBrakeman(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		fmt.Fprint(stderr, brakemanUsage, "\nFlags:\n")
 		fs.PrintDefaults()
 	}
-	// ask's kind and show's id come first; flags may follow them.
+	// ask's kind, show's id and role's action come first; flags may
+	// follow them.
+	takesArg := sub == "ask" || sub == "show" || sub == "role"
 	var arg string
-	if (sub == "ask" || sub == "show") && len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
+	if takesArg && len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
 		arg, rest = rest[0], rest[1:]
 	}
 	if err := fs.Parse(rest); err != nil {
@@ -402,7 +740,7 @@ func runBrakeman(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		return 2, err
 	}
 	pos := fs.Args()
-	if arg == "" && len(pos) > 0 && (sub == "ask" || sub == "show") {
+	if arg == "" && len(pos) > 0 && takesArg {
 		arg, pos = pos[0], pos[1:]
 	}
 	if len(pos) > 0 {
@@ -452,6 +790,10 @@ func runBrakeman(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		if !regexp.MustCompile(`^br-[1-9][0-9]{0,17}$`).MatchString(arg) {
 			return 2, errors.New("brakeman show needs a request's id, br-n")
 		}
+	case "role":
+		if !slices.Contains(roleActions, arg) {
+			return 2, fmt.Errorf("brakeman role needs one of %s", strings.Join(roleActions, ", "))
+		}
 	}
 	client, err := server.client(stderr)
 	if err != nil {
@@ -462,6 +804,8 @@ func runBrakeman(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		return brakemanStatus(ctx, client, *asJSON, stdout)
 	case "list":
 		return brakemanList(ctx, client, *asJSON, stdout)
+	case "role":
+		return brakemanRole(ctx, client, arg, *asJSON, stdout)
 	}
 	return brakemanShow(ctx, client, arg, *asJSON, stdout)
 }
@@ -536,6 +880,94 @@ func brakemanObserve(ctx context.Context, args []string, stdout, stderr io.Write
 	return 0, err
 }
 
+// brakemanAct is conductor brakeman act OPERATION [--KEY VALUE]...
+// [--body-file F] [--op-id ID] [--json]: the keys are the route's path
+// parameters, read as pairs as observe reads its own.
+func brakemanAct(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help") {
+		fmt.Fprint(stderr, brakemanUsage)
+		return 0, nil
+	}
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return 2, fmt.Errorf("brakeman act needs an operation: %s", strings.Join(actOperations(), ", "))
+	}
+	operation, params := args[0], map[string]string{}
+	var bodyFile, opID string
+	asJSON := false
+	for i := 1; i < len(args); i++ {
+		k, ok := strings.CutPrefix(args[i], "--")
+		if !ok || k == "" {
+			return 2, fmt.Errorf("brakeman act takes --KEY VALUE pairs: %q", args[i])
+		}
+		if k == "json" {
+			asJSON = true
+			continue
+		}
+		k, v, eq := strings.Cut(k, "=")
+		if !eq {
+			if i+1 == len(args) {
+				return 2, fmt.Errorf("brakeman act: --%s needs a value", k)
+			}
+			i++
+			v = args[i]
+		}
+		switch k {
+		case "body-file":
+			bodyFile = v
+		case "op-id":
+			opID = v
+		default:
+			if _, dup := params[k]; dup {
+				return 2, fmt.Errorf("brakeman act: --%s given twice", k)
+			}
+			params[k] = v
+		}
+	}
+	var body map[string]any
+	if bodyFile != "" {
+		raw, err := readBounded(bodyFile, stdin, maxActBodyFile)
+		if err != nil {
+			return 2, fmt.Errorf("--body-file: %w", err)
+		}
+		if err := json.Unmarshal(raw, &body); err != nil || body == nil {
+			return 2, fmt.Errorf("--body-file: the body is a JSON object")
+		}
+	}
+	c, err := brakemanClientFromEnv(os.Getenv)
+	if errors.Is(err, errNotInSession) {
+		return 1, fmt.Errorf("brakeman: not in a Conductor session (%s and %s are not set)", notify.EnvURL, notify.EnvToken)
+	}
+	if err != nil {
+		return 1, err
+	}
+	actx, cancel := context.WithTimeout(ctx, actBudget())
+	defer cancel()
+	text, reply, opID, err := c.act(actx, operation, params, body, opID)
+	if err != nil {
+		return 1, err
+	}
+	if asJSON {
+		// The act's op id beside the route's reply: the reply's receipt
+		// carries the id derived from it, never the op id a proposal of
+		// the act names, and a minted one is known nowhere else.
+		out, err := json.Marshal(struct {
+			OpID  string          `json:"opId"`
+			Reply json.RawMessage `json:"reply"`
+		}{opID, reply})
+		if err != nil {
+			return 1, fmt.Errorf("act: %w", err)
+		}
+		_, err = stdout.Write(append(out, '\n'))
+		return 0, err
+	}
+	fmt.Fprintln(stdout, text)
+	return 0, nil
+}
+
+// maxActBodyFile bounds act's --body-file: the largest body a granted
+// operation's route takes (a proposal's 192 KiB).
+const maxActBodyFile = 256 << 10
+
 // parseSince reads --since: a time (RFC 3339, or a date and a time of
 // the day, local), a time of the day alone (its last occurrence, local),
 // or a duration back from now.
@@ -604,7 +1036,7 @@ func brakemanAsk(ctx context.Context, server apiFlags, kind string, subjects []s
 // brakemanStatusReply bounds GET /api/brakeman's reply: the configuration,
 // the turn in progress and the queue, each request at its bound.
 func brakemanStatusReply() int {
-	return wholeMiB(brakeman.MaxConfigDoc + (opBound("brakeman_ask", "queue")+1)*brakeman.MaxRequestDoc)
+	return wholeMiB(brakeman.MaxConfigDoc + (opBound("brakeman_ask", "queue")+1)*brakeman.MaxRequestDoc + brakeman.MaxRoleDoc)
 }
 
 // brakemanStatus is conductor brakeman status.
@@ -878,4 +1310,142 @@ func compactJSON(v json.RawMessage) string {
 		return string(v)
 	}
 	return b.String()
+}
+
+// roleActions are conductor brakeman role's actions.
+var roleActions = []string{"on", "off", "pause", "resume", "status"}
+
+// roleStatusRows is how many of the role's last wakes status prints.
+const roleStatusRows = 10
+
+// brakemanRole is conductor brakeman role (docs/plans/brakeman.md,
+// PR-15): on and off set the wake mode (background or invoked) at the
+// configuration's revision, pause and resume the role's own route, and
+// status the role with its last wakes; with --json each prints its
+// route's reply as it came.
+func brakemanRole(ctx context.Context, c *apiClient, action string, asJSON bool, stdout io.Writer) (int, error) {
+	switch action {
+	case "on", "off":
+		var st struct {
+			Config brakeman.Config `json:"config"`
+		}
+		if err := c.doLimit(ctx, http.MethodGet, "/api/brakeman", nil, &st, brakemanStatusReply()); err != nil {
+			return 1, fmt.Errorf("brakeman role %s: %w", action, err)
+		}
+		cfg := st.Config
+		cfg.Wake.Mode = brakeman.WakeInvoked
+		if action == "on" {
+			cfg.Wake.Mode = brakeman.WakeBackground
+		}
+		var raw json.RawMessage
+		if err := c.doLimit(ctx, http.MethodPut, "/api/brakeman/config", map[string]any{"rev": cfg.Rev, "config": cfg}, &raw, wholeMiB(brakeman.MaxConfigDoc)); err != nil {
+			return 1, fmt.Errorf("brakeman role %s: %w", action, err)
+		}
+		if asJSON {
+			_, err := stdout.Write(append(raw, '\n'))
+			return 0, err
+		}
+		var out struct {
+			Config brakeman.Config `json:"config"`
+		}
+		if err := json.Unmarshal(raw, &out); err != nil {
+			return 1, fmt.Errorf("brakeman role %s: an unreadable reply: %w", action, err)
+		}
+		switch {
+		case action == "off":
+			fmt.Fprintln(stdout, "the background role is off: Brakeman runs only when asked")
+		case !out.Config.Enabled:
+			fmt.Fprintln(stdout, "the background role is on, and Brakeman is off: nothing wakes it until it is turned on in Settings")
+		default:
+			fmt.Fprintf(stdout, "the background role is on: a window of %d s, a cooldown of %d min, %d turns and %d minutes a day\n",
+				out.Config.Wake.WindowSeconds, out.Config.Wake.CooldownMinutes, out.Config.Budget.TurnsPerDay, out.Config.Budget.MinutesPerDay)
+		}
+		return 0, nil
+	case "pause", "resume":
+		var raw json.RawMessage
+		if err := c.doLimit(ctx, http.MethodPost, "/api/brakeman/role", map[string]any{"action": action}, &raw, wholeMiB(brakeman.MaxRoleDoc)); err != nil {
+			return 1, fmt.Errorf("brakeman role %s: %w", action, err)
+		}
+		if asJSON {
+			_, err := stdout.Write(append(raw, '\n'))
+			return 0, err
+		}
+		var out struct {
+			Role crew.RoleRecord `json:"role"`
+		}
+		if err := json.Unmarshal(raw, &out); err != nil {
+			return 1, fmt.Errorf("brakeman role %s: an unreadable reply: %w", action, err)
+		}
+		fmt.Fprintf(stdout, "the background role is %s\n", out.Role.State)
+		return 0, nil
+	}
+	var raw json.RawMessage
+	if err := c.doLimit(ctx, http.MethodGet, fmt.Sprintf("/api/brakeman/role?limit=%d", roleStatusRows), nil, &raw, wholeMiB(2*brakeman.MaxRoleDoc)); err != nil {
+		return 1, fmt.Errorf("brakeman role status: %w", err)
+	}
+	if asJSON {
+		_, err := stdout.Write(append(raw, '\n'))
+		return 0, err
+	}
+	var out struct {
+		Role struct {
+			crew.RoleRecord
+			MinutesToday int `json:"minutesToday"`
+		} `json:"role"`
+		Log []crew.RoleLogRow `json:"log"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return 1, fmt.Errorf("brakeman role status: an unreadable reply: %w", err)
+	}
+	r := out.Role
+	line := "role: " + r.State
+	if r.Why != "" {
+		line += ": " + r.Why
+	}
+	fmt.Fprintln(stdout, line)
+	if r.State == crew.RoleUnavailable {
+		if r.RetryAt.IsZero() {
+			fmt.Fprintln(stdout, "tries again: on a person's request or the next briefing time")
+		} else {
+			fmt.Fprintf(stdout, "tries again: %s, or on a person's request or the next briefing time\n", r.RetryAt.Local().Format("2006-01-02 15:04"))
+		}
+	}
+	if r.Open != nil {
+		fmt.Fprintf(stdout, "gathering: %s, %d wakes, opened %s\n", r.Open.ID, batchCount(*r.Open), r.Open.OpenedAt.Local().Format("15:04:05"))
+	}
+	if r.Request != "" {
+		fmt.Fprintf(stdout, "briefing: %s for %s\n", r.Request, r.Fired.ID)
+	}
+	if r.State == crew.RoleCooling {
+		fmt.Fprintf(stdout, "cooling until %s\n", r.CoolUntil.Local().Format("15:04:05"))
+	}
+	fmt.Fprintf(stdout, "today: %d minutes\n", r.MinutesToday)
+	for _, row := range out.Log {
+		l := fmt.Sprintf("wake: %s %s", row.At.Local().Format("2006-01-02 15:04:05"), row.Source)
+		if row.Subject != "" {
+			l += " " + row.Subject
+		}
+		switch {
+		case row.Held != "":
+			l += " (" + row.Held + ")"
+		case row.Request != "":
+			l += " → " + row.Batch + " → " + row.Request
+		case row.Batch != "":
+			l += " → " + row.Batch
+		}
+		fmt.Fprintln(stdout, l)
+	}
+	return 0, nil
+}
+
+// batchCount is how many wakes a batch counts, its overflow too.
+func batchCount(b crew.Batch) int {
+	n := 0
+	for _, w := range b.Wakes {
+		n += w.Count
+	}
+	if b.Overflow != nil {
+		n += b.Overflow.Count
+	}
+	return n
 }

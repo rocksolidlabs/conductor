@@ -22,7 +22,9 @@ import { revisionTag } from '~/utils/dispatchPlans'
  * opens the ticket's page, "(deleted)" on it when the ticket is a tombstone;
  * for a run launched from a ticket's plan revision (DS2), "Launched from
  * CND-12 · plan r3" from the run's own `ticket`, which its continuations
- * carry, opening the ticket.
+ * carry, opening the ticket, with who launched it (the launch's own record:
+ * Brakeman, for a launch it ran under a grant) and the launch's receipt,
+ * read from its chip.
  */
 const props = withDefaults(
   defineProps<{
@@ -46,6 +48,24 @@ const api = useSessions()
 const toast = useToast()
 const live = useAttention()
 const router = useRouter()
+
+// Who launched a run from a ticket, from the launch it names (GET /api/dispatch/launches/{id}): once, a launch never changes who made it.
+const dispatchApi = useDispatchApi()
+const launchBy = ref('')
+watch(
+  () => props.run?.ticket?.launch,
+  async (id) => {
+    launchBy.value = ''
+    if (!id) return
+    try {
+      const l = await dispatchApi.launchRead(id)
+      if (props.run?.ticket?.launch === id) launchBy.value = l.createdBy
+    } catch {
+      /* the launch's chip reads it when opened */
+    }
+  },
+  { immediate: true },
+)
 
 const stopped = computed(() => !!props.run?.stoppedAt)
 /** Resume as new run: a stopped run the server holds, or a record (#153) not resumed yet. */
@@ -203,6 +223,10 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
           data-run-launched-from
           :data-run-launched-key="run.ticket.key"
         />
+        <span v-if="run?.ticket?.launch" class="hidden flex-none items-center gap-1 self-center text-xs text-muted sm:inline-flex" data-run-launch :data-run-launch-by="launchBy || undefined">
+          <template v-if="launchBy">by {{ launchBy }}</template>
+          <BrakemanRefChip :ref-name="`launch:${run.ticket.launch}`" />
+        </span>
       </span>
     </template>
     <template #trailing>

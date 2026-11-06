@@ -118,10 +118,12 @@ func completionSpec() []commandSpec {
 			after: map[string][]string{"ticket": {"comment"}}},
 		{name: "guide", flags: api(flagSpec{name: "--section", kind: flagEnum, values: []string{"operations", "limits", "host", "receipts", "providers", "briefs"}}, flagSpec{name: "--json"})},
 		// Every flag of every brakeman command (each takes its own), with
-		// observe's parameters from the table's observe_<what> entries, and
-		// the request's kinds as ask's argument.
-		{name: "brakeman", flags: observeFlags(api(flagSpec{name: "--json"}, flagSpec{name: "--file", kind: flagFile}, flagSpec{name: "--subject", kind: flagValue}, flagSpec{name: "--note-file", kind: flagFile}, flagSpec{name: "--since", kind: flagValue})),
-			words: []string{"request", "observe", "brief", "ask", "status", "list", "show"}, after: map[string][]string{"ask": brakeman.Kinds, "observe": observeWhats()}},
+		// observe's parameters from the table's observe_<what> entries and
+		// act's from its operations' routes, the request's kinds as ask's
+		// argument and the operations a grant names as act's.
+		{name: "brakeman", flags: actFlags(observeFlags(api(flagSpec{name: "--json"}, flagSpec{name: "--file", kind: flagFile}, flagSpec{name: "--subject", kind: flagValue}, flagSpec{name: "--note-file", kind: flagFile}, flagSpec{name: "--since", kind: flagValue},
+			flagSpec{name: "--body-file", kind: flagFile}, flagSpec{name: "--op-id", kind: flagValue}))),
+			words: []string{"request", "observe", "act", "brief", "ask", "status", "list", "show", "role"}, after: map[string][]string{"ask": brakeman.Kinds, "observe": observeWhats(), "act": actOperations(), "role": roleActions}},
 		{name: "up", flags: api(flagSpec{name: "--name", kind: flagValue}, flagSpec{name: "--resume", kind: flagValue}, flagSpec{name: "--open"}), crewID: true},
 		{name: "crews", flags: api(flagSpec{name: "--ids"})},
 		// Every flag of every dispatch command (each takes its own), and the
