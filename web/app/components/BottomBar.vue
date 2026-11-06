@@ -2,14 +2,17 @@
 import { accountItems } from '~/utils/sidebarActions'
 
 /**
- * The phone's bar at the foot (design 3e): Sessions, Yard (with the count),
- * Crews, Events; Roundhouse, Agents, Dispatch, Settings, Alerts and your menu
- * under More. Every target is at least 44 px tall; the padding reads the safe
+ * The phone's bar at the foot (design 3e): Decide first (Needs your
+ * decision, with the number of items waiting: Owner decisions 10 of
+ * docs/plans/decision-inbox.md), Sessions, Yard (with its count), Crews;
+ * Roundhouse, Agents, Dispatch, Events, Settings, Alerts and your menu under
+ * More. Every target is at least 44 px tall; the padding reads the safe
  * area under the home indicator. Below lg only: the one root hides itself
  * at lg and up (a class from the layout would not reach several roots).
  */
 const emit = defineEmits<{ token: [] }>()
 const attention = useAttention()
+const inbox = useInbox()
 const desktop = useDesktop()
 const route = useRoute()
 const { hasToken, clear } = useWorkbenchToken()
@@ -17,10 +20,10 @@ const shortcuts = useShortcutsModal()
 const colorMode = useColorMode()
 
 const tabs = computed(() => [
+  { key: 'decide', label: 'Decide', to: '/decisions', icon: 'i-lucide-gavel', count: inbox.count.value },
   { key: 'sessions', label: 'Sessions', to: '/sessions', icon: 'i-lucide-list', count: 0 },
   { key: 'yard', label: 'Yard', to: '/yard', icon: 'i-lucide-layout-grid', count: attention.count.value },
   { key: 'crews', label: 'Crews', to: '/crews', icon: 'i-lucide-users', count: 0 },
-  { key: 'events', label: 'Events', to: '/events', icon: 'i-lucide-radio-tower', count: 0 },
 ])
 function active(to: string): boolean {
   if (to === '/sessions') return route.path === '/sessions' || route.path.startsWith('/sessions/') || route.path === '/'
@@ -34,6 +37,7 @@ const pages = computed(() => [
   { label: 'Roundhouse', icon: 'i-lucide-gallery-horizontal', to: '/roundhouse' },
   { label: 'Agents', icon: 'i-lucide-bot', to: '/agents' },
   { label: 'Dispatch', icon: 'i-lucide-ticket', to: '/dispatch' },
+  { label: 'Events', icon: 'i-lucide-radio-tower', to: '/events' },
   ...(desktop.isDesktop.value ? [{ label: 'Settings', icon: 'i-lucide-settings', to: '/settings' }] : []),
 ])
 /** Your menu's items as buttons, the sheet closed before each acts. */

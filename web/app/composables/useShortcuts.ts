@@ -30,6 +30,7 @@ export const GLOBAL_SHORTCUTS: ShortcutGroup = {
     { keys: ['meta', 'B'], label: 'Collapse the sidebar to the rail, or expand it', terminal: ['alt', 'B'] },
     { keys: ['?'], label: 'Keyboard shortcuts', terminal: ['alt', 'H'] },
     { keys: ['N'], label: 'Launch an agent', terminal: ['alt', 'N'] },
+    { keys: ['G', 'N'], label: 'Go to Needs your decision' },
     { keys: ['G', 'Y'], label: 'Go to the Yard', terminal: ['alt', 'Y'] },
     { keys: ['G', 'R'], label: 'Go to the Roundhouse', terminal: ['alt', 'R'] },
     { keys: ['G', 'C'], label: 'Go to Crews', terminal: ['alt', 'C'] },

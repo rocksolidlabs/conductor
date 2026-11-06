@@ -59,14 +59,15 @@ export function useQuickReply() {
     }
   }
 
-  function send(session: Pick<SessionInfo, 'id' | 'kind'>, input: string, opts: { token?: string; server?: string; question?: string } = {}): Promise<boolean> {
-    return over(session, opts.token, { question: opts.question, input }, opts.server)
+  /** `reqId`, when given, is the request id the answer goes with (the decision page mints one per action: its track names it). */
+  function send(session: Pick<SessionInfo, 'id' | 'kind'>, input: string, opts: { token?: string; server?: string; question?: string; reqId?: string } = {}): Promise<boolean> {
+    return over(session, opts.token, { question: opts.question, input, reqId: opts.reqId }, opts.server)
   }
 
-  async function reply(session: Pick<SessionInfo, 'id' | 'kind'>, text: string, opts: { token?: string; server?: string; question?: string } = {}): Promise<boolean> {
+  async function reply(session: Pick<SessionInfo, 'id' | 'kind'>, text: string, opts: { token?: string; server?: string; question?: string; reqId?: string } = {}): Promise<boolean> {
     // The line sent, this browser shows it under the question to its own person: the owner repeats no typed line (#364). One
     // not sent (a reply under way from here, a duplicate) is not remembered.
-    const sent = await over(session, opts.token, { question: opts.question, text }, opts.server)
+    const sent = await over(session, opts.token, { question: opts.question, text, reqId: opts.reqId }, opts.server)
     if (sent) typedAnswers.remember(opts.question, text)
     return sent
   }

@@ -7,6 +7,9 @@ const showToken = ref(false)
 /** Where the desktop sidebar shows (lg and up, DESKTOP_SIDEBAR): below it the list is a page and the bar is at the foot, so the sidebar's list is not rendered. */
 const desktopWide = useMedia('(min-width: 64rem)')
 const attention = useAttention()
+// The decision inbox (Needs your decision): read for the whole app, its count on the sidebar's Decide row and the phone's tab.
+const inbox = useInbox()
+onMounted(() => inbox.start())
 const desktop = useDesktop()
 const sidebar = useSidebar()
 const shortcuts = useShortcutsModal()
@@ -211,6 +214,13 @@ onMounted(() =>
 const brakemanCount = computed(() => brakeman.unopened.value.length)
 
 const nav = computed<NavigationMenuItem[]>(() => [
+  {
+    label: 'Decide',
+    icon: 'i-lucide-gavel',
+    to: '/decisions',
+    'data-sidebar-decide': '',
+    badge: inbox.count.value ? { label: String(inbox.count.value), color: 'warning' as const, variant: 'solid' as const } : undefined,
+  },
   { label: 'Yard', icon: 'i-lucide-layout-grid', to: '/yard', badge: attention.count.value ? { label: String(attention.count.value), color: 'warning', variant: 'solid' } : undefined },
   { label: 'Roundhouse', icon: 'i-lucide-gallery-horizontal', to: '/roundhouse' },
   { label: 'Agents', icon: 'i-lucide-bot', to: '/agents' },
@@ -234,6 +244,10 @@ const nav = computed<NavigationMenuItem[]>(() => [
 const railNav = computed<NavigationMenuItem[]>(() =>
   nav.value.map((item) => {
     const n = item.to === '/yard' ? attention.count.value : 0
+    if (item.to === '/decisions') {
+      const d = inbox.count.value
+      return { ...item, 'aria-label': d ? `Needs your decision, ${d} waiting` : 'Needs your decision', chip: d ? { color: 'warning' } : undefined }
+    }
     if (item.to === '/brakeman') {
       const b = brakemanCount.value
       return { ...item, 'aria-label': b ? `${item.label}, ${b} new ${b === 1 ? 'brief' : 'briefs'}` : item.label, chip: b ? { color: 'primary' } : undefined }
@@ -254,6 +268,7 @@ defineShortcuts({
   '?': () => shortcuts.show(),
   n: () => launch.show(),
   '/': openPalette,
+  'g-n': chord(() => router.push('/decisions')),
   'g-y': chord(() => router.push('/yard')),
   'g-r': chord(() => router.push('/roundhouse')),
   'g-a': chord(() => router.push('/agents')),

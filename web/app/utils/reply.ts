@@ -6,7 +6,10 @@ import { MAX_ANSWER_REQ_ID, MAX_QUESTION_ID, QUESTION_ANSWERED, type AnswerMsg, 
  * shown (the attention's `id`): the owner takes the reply only while that question still waits, so that a click that arrives late
  * never lands on the question that came next. Without one (an older owner's question), whatever shows takes it, as before.
  */
-export type QuestionReply = { question?: string; input: string } | { question?: string; text: string }
+export type QuestionReply = ({ question?: string; input: string } | { question?: string; text: string }) & {
+  /** The request id the answer goes with, when the caller minted one (the decision page's, fresh per action: its attempt is told apart from the winner's); else the transport's own. */
+  reqId?: string
+}
 
 /** The question a reply to the attention shown names: its id while it waits on input; none otherwise. */
 export function questionOf(att: Pick<Attention, 'state' | 'id'> | null | undefined): string | undefined {
