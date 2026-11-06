@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // A person's repair (docs/plans/review-repair.md, RV1 PR-2b): a person's
@@ -176,6 +177,9 @@ func (cr ChangeRequest) validate() error {
 	if cr.Review == "" || len(cr.Review) > maxRequestRef || cr.By == "" || utf8.RuneCountInString(cr.By) > maxRequestBy || len(cr.Via) > maxRequestRef {
 		return bad("a request names its review in at most %d bytes and who asked in at most %d characters", maxRequestRef, maxRequestBy)
 	}
+	if !oneLineName(cr.Review, cr.By, cr.Via) {
+		return bad("the review, who asked and through what are each one line of text, with no control character")
+	}
 	if cr.Base != "" && !fullCommit(cr.Base) {
 		return bad("the base is not a full commit id")
 	}
@@ -205,6 +209,9 @@ func (cr ChangeRequest) validate() error {
 		if c.Side != "" && c.Side != "candidate" && c.Side != "base" {
 			return bad("change %s: its side is candidate or base", c.ID)
 		}
+		if !oneLineName(c.ID, c.Path) {
+			return bad("change %q: its id and its path are each one line of text, with no control character", c.ID)
+		}
 		if utf8.RuneCountInString(c.Message) > maxFindingText || utf8.RuneCountInString(c.Resolution) > maxFindingText {
 			return bad("change %s: its words and the resolution asked are at most %d characters each", c.ID, maxFindingText)
 		}
@@ -221,11 +228,29 @@ func (cr ChangeRequest) validate() error {
 		if ch := c.Check; ch != nil && (ch.Receipt == "" || len(ch.Receipt) > maxCheckReceipt || len(ch.Tail) > checkTail || len(ch.Quote) > checkTail || len(ch.Error) > maxCheckWords) {
 			return bad("change %s: its receipt is named in at most %d bytes, its tail and quote at most %d bytes each, its words %d", c.ID, maxCheckReceipt, checkTail, maxCheckWords)
 		}
+		if ch := c.Check; ch != nil && !oneLineName(ch.Receipt, ch.Run, ch.Task, ch.Phase, ch.ID, ch.Subject, ch.Signal, ch.LogSHA256, ch.Class, ch.Chosen) {
+			return bad("change %s: its check's receipt, identity, subject, signal, hash and classes are each one line of text, with no control character", c.ID)
+		}
 	}
 	if !asked {
 		return bad("a request asks for at least one change: questions and notes alone repair nothing")
 	}
 	return nil
+}
+
+// oneLineName says each of names is valid UTF-8 with no control character
+// (C0, DEL, C1) and no line or paragraph separator: a name task.md writes
+// in a line of its own words (who asked, an id, a path) can then never end
+// that line and start one that reads as the file's own.
+func oneLineName(names ...string) bool {
+	for _, s := range names {
+		if !utf8.ValidString(s) || strings.ContainsFunc(s, func(r rune) bool {
+			return r < 0x20 || r >= 0x7f && r <= 0x9f || r == '\u2028' || r == '\u2029'
+		}) {
+			return false
+		}
+	}
+	return true
 }
 
 // changeWords is a request's changes as a task's reason says them: "2
@@ -296,9 +321,13 @@ func (rp *repair) names(addressed []Addressed) error {
 // parts an attempt's file carries that are never cut (the first input's
 // references, the attempt before with its failed check's identity and its
 // error as cut, an attempt that could not be made usable, a project
-// manifest at its bounds). A request past either is refused whole
-// (ErrChangeRequestTooLarge), so one accepted never fails at its attempt's
-// start for its size; one not of a batch's shape is ErrBadChangeRequest.
+// manifest at its bounds, a review task's findings the request keeps as
+// cut), each text at its widest: once at four bytes a character, task.md's
+// worst, and once at six, task.json's (Go's JSON escapes a control
+// character, U+2028 and U+2029 as six bytes). A request past either is
+// refused whole (ErrChangeRequestTooLarge), so one accepted never fails at
+// its attempt's start for its size; one not of a batch's shape is
+// ErrBadChangeRequest.
 func FitChangeRequest(c Crew, pkg *Package, task string, cr ChangeRequest) error {
 	if err := cr.validate(); err != nil {
 		return err
@@ -320,21 +349,40 @@ func FitChangeRequest(c Crew, pkg *Package, task string, cr ChangeRequest) error
 	if n > ledger.MaxPayload {
 		return fmt.Errorf("%w: the notes are %d KiB as the run keeps them, more than %d KiB: shorten them", ErrChangeRequestTooLarge, kib(n), ledger.MaxPayload>>10)
 	}
-	if _, _, _, err := fitTaskFile(worstRepairFile(c, pkg, def, prompt, rp)); err != nil {
-		var tl *taskFileTooLarge
-		if errors.As(err, &tl) {
-			return fmt.Errorf("%w: with %s's own instructions the task file would be %d KiB, more than %d KiB: shorten the notes or their paths", ErrChangeRequestTooLarge, def.ID, kib(max(tl.md, tl.js)), maxTaskFile>>10)
+	for _, wide := range []bool{false, true} {
+		if _, _, _, err := fitTaskFile(worstRepairFile(c, pkg, def, prompt, rp, wide)); err != nil {
+			var tl *taskFileTooLarge
+			if errors.As(err, &tl) {
+				return fmt.Errorf("%w: with %s's own instructions the task file would be %d KiB, more than %d KiB: shorten the notes or their paths", ErrChangeRequestTooLarge, def.ID, kib(max(tl.md, tl.js)), maxTaskFile>>10)
+			}
+			return err
 		}
-		return err
 	}
 	return nil
 }
 
-// measuredRepair is the repair cr makes at its largest: the review's id at
-// its bound, the largest attempt, and a commit and a start of 64 hex
-// digits (a SHA-256 repository's).
+// measuredRepair is the repair cr makes at its largest: its own review's
+// id (as JSON escapes it), the largest attempt, and a commit and a start
+// of 64 hex digits (a SHA-256 repository's).
 func measuredRepair(cr ChangeRequest) *repair {
-	return requestRepair(cr, strings.Repeat("r", maxRequestRef), 1<<20, strings.Repeat("0", 64), strings.Repeat("0", 64))
+	return requestRepair(cr, cr.Review, 1<<20, strings.Repeat("0", 64), strings.Repeat("0", 64))
+}
+
+// widest is a text of at most n characters (or, bytes true, n bytes) at
+// its widest in the file wide names: in task.md (wide false) four bytes a
+// character, in task.json (wide true) six, as JSON escapes U+2028; a text
+// of bytes, at most n of them, is at its widest in task.json as U+2028s,
+// six bytes for three, and in task.md as its n bytes.
+func widest(n int, bytes, wide bool) string {
+	switch {
+	case bytes && wide:
+		return strings.Repeat("\u2028", (n+2)/3)
+	case bytes:
+		return strings.Repeat("e", n)
+	case wide:
+		return strings.Repeat("\u2028", n)
+	}
+	return strings.Repeat("\U0001D11E", n)
 }
 
 // repairBytes is FitChangeRequest's first measure: cr's repair at its
@@ -361,8 +409,9 @@ func requestRepair(cr ChangeRequest, review string, n int, commit, start string)
 
 // worstRepairFile is the repair attempt's task file for FitChangeRequest:
 // the crew's own text, people and ticket, rp, and every part that is never
-// cut at its largest.
-func worstRepairFile(c Crew, pkg *Package, def Task, prompt string, rp *repair) TaskFile {
+// cut at its largest, its texts at their widest in task.json (wide) or in
+// task.md (widest).
+func worstRepairFile(c Crew, pkg *Package, def Task, prompt string, rp *repair, wide bool) TaskFile {
 	runID := c.ID + "-ffffffff"
 	n := 1 << 20
 	name := fmt.Sprintf("%s.%d", def.ID, n)
@@ -371,6 +420,11 @@ func worstRepairFile(c Crew, pkg *Package, def Task, prompt string, rp *repair) 
 		Instructions: def.Instructions, Worktree: filepath.Join(c.Cwd, worktreesDir, runID, name), Branch: "crew/" + runID + "/" + name, Prefix: c.Cwd, Start: commit,
 		StartFrom: fmt.Sprintf("where attempt %d started: its result, which %s asked changes of, was refused before its checks", n, rp.request.By),
 		Checks:    slices.Clone(def.Checks), Repair: rp.taskRepair(), WrittenAt: time.Now().UTC()}
+	// A review task's findings the request keeps (keepReview), each cut
+	// whole before the person's changes are: their review named, and the
+	// cut said, at their largest.
+	f.Repair.FindingsFrom = &FindingsFrom{Review: strings.Repeat("v", 40), Attempt: n, Commit: commit, Summary: "s"}
+	f.Repair.Findings = slices.Repeat([]Finding{{Severity: "nit", Message: "m"}}, maxFindings)
 	f.Owner, f.OwnerFrom, f.People = taskPeople(c, def)
 	if pkg != nil {
 		f.Ticket = &TaskTicket{Key: pkg.Ticket.Key, Rev: 1<<63 - 1, Plan: pkg.Plan.ID, PlanN: pkg.Plan.N, Digest: strings.Repeat("0", 64), Files: packageFilePaths(*pkg)}
@@ -385,8 +439,11 @@ func worstRepairFile(c Crew, pkg *Package, def Task, prompt string, rp *repair) 
 	check := &TaskCheck{Run: runID, Task: def.ID, Attempt: n, Phase: ledger.PhaseVerify, ID: id, K: 1 << 30, Subject: commit, Exit: -1, Signal: "killed", TimedOut: true,
 		LogSHA256: commit, LogBytes: ledger.MaxLog, Log: taskDir + "/" + previousDir + "/check-" + id + ".log"}
 	check.Receipt = fmt.Sprintf("%s/%s/%d/%s/%s/%d", check.Run, check.Task, check.Attempt, check.Phase, check.ID, check.K)
-	f.Previous = &TaskPrevious{Attempt: n, State: ledger.AttemptFailed, Stage: "verify " + id, Error: strings.Repeat("e", maxPreviousError+1), Result: commit, Branch: f.Branch, Check: check}
-	f.Unusable = &TaskUnusable{Attempt: n, Stage: "setup " + id, Error: strings.Repeat("e", maxCheckWords)}
+	// The attempt before's error is cut to maxPreviousError characters and
+	// a mark; an unusable attempt's is never cut, and failUnusable has it
+	// through session.CleanMessage, at most MaxAttentionMessage bytes.
+	f.Previous = &TaskPrevious{Attempt: n, State: ledger.AttemptFailed, Stage: "verify " + id, Error: widest(maxPreviousError+1, false, wide), Result: commit, Branch: f.Branch, Check: check}
+	f.Unusable = &TaskUnusable{Attempt: n, Stage: "setup " + id, Error: widest(session.MaxAttentionMessage, true, wide)}
 	ports := map[string]int{}
 	var services []string
 	for i := range maxManifestPorts {
@@ -395,7 +452,7 @@ func worstRepairFile(c Crew, pkg *Package, def Task, prompt string, rp *repair) 
 	for i := range maxManifestServices {
 		services = append(services, fmt.Sprintf("%s%d", id[:idLen-1], i))
 	}
-	f.Manifest = &TaskManifest{Source: sourceFile, Revision: 1<<63 - 1, Digest: commit, Ports: ports, Preview: strings.Repeat("p", maxPreview), Services: services}
+	f.Manifest = &TaskManifest{Source: sourceFile, Revision: 1<<63 - 1, Digest: commit, Ports: ports, Preview: widest(maxPreview, true, wide), Services: services}
 	return f
 }
 
@@ -407,9 +464,10 @@ func worstRepairFile(c Crew, pkg *Package, def Task, prompt string, rp *repair) 
 // at the candidate, or where its attempt started when it was refused
 // before its checks), one more attempt granted when the task's are spent,
 // what rested on the result withdrawn, and a finished run open again
-// (reopenRun). A task a decision holds stays held; no decision is opened
-// or answered; nothing is typed into a session but the task line of the
-// repair attempt, a new attempt like any other.
+// (reopenRun). A task a review task's findings reopened keeps them beside
+// the request (keepReview). A task a decision holds stays held; no
+// decision is opened or answered; nothing is typed into a session but the
+// task line of the repair attempt, a new attempt like any other.
 //
 // Refused before anything is recorded: a request not of a batch's shape,
 // or one too large for the run to keep or for its attempt's task file
@@ -424,7 +482,9 @@ func worstRepairFile(c Crew, pkg *Package, def Task, prompt string, rp *repair) 
 // whose candidate a continuation carries. A run the engine does not hold
 // is ErrRunNotFound. The same command sent again is its receipt again,
 // never a second repair, and the same id naming another candidate or
-// review a conflict, as for every command (act).
+// review a conflict, as for every command (act). Refused with a receipt
+// too (ErrChangeRequestTooLarge, task_state): a request whose repair,
+// with the review's findings it keeps, the run could not keep.
 func (e *Engine) RequestChanges(ctx context.Context, runID, actor string, cmd Command, rq RepairRequest) (Receipt, error) {
 	if err := rq.Request.validate(); err != nil {
 		return Receipt{}, err
@@ -469,6 +529,14 @@ func (e *Engine) RequestChanges(ctx context.Context, runID, actor string, cmd Co
 		}
 		cr := rq.Request
 		rp := requestRepair(cr, cr.Review, rq.Attempt, rq.Commit, start)
+		rp.keepReview(t.repair)
+		if b, err := json.Marshal(rp.taskRepair()); err != nil || len(b) > ledger.MaxPayload {
+			kept := ""
+			if rp.from != nil {
+				kept = fmt.Sprintf(" with the %d findings of review %s it keeps,", len(rp.findings), rp.from.Review)
+			}
+			return t, nil, fmt.Errorf("%w:%s the repair is %d KiB as the run keeps it, more than %d KiB: shorten the notes", ErrChangeRequestTooLarge, kept, kib(len(b)), ledger.MaxPayload>>10)
+		}
 		who := cr.By
 		ev := map[string]any{"review": cr.Review, "by": cr.By, "attempt": rq.Attempt}
 		if rq.Imported != "" {
@@ -476,6 +544,26 @@ func (e *Engine) RequestChanges(ctx context.Context, runID, actor string, cmd Co
 		}
 		return t, e.reopenFor(r, t, rp, who, "changes requested by "+who+": "+changeWords(&cr), true, ev), nil
 	}, nil)
+}
+
+// keepReview carries into rp, a person's repair, the findings of a review
+// task that old, the task's repair until now, holds: old's own (a review
+// task's needs_changes reopened the task, and no attempt has made it
+// succeed since) or those old kept (a person's request before this one
+// kept them). A person's request never silently drops a review's
+// findings: the repair attempt's task file has both, the person's changes
+// first and the review's findings after them, and its cut takes the
+// review's findings before any part of the person's changes.
+func (rp *repair) keepReview(old *repair) {
+	switch {
+	case old == nil:
+	case old.request == nil:
+		rp.findings = slices.Clone(old.findings)
+		rp.from = &FindingsFrom{Review: old.review, Attempt: old.attempt, Commit: old.commit, Summary: old.summary}
+	case old.from != nil:
+		from := *old.from
+		rp.findings, rp.from = slices.Clone(old.findings), &from
+	}
 }
 
 // standingCandidate checks that rq names t's standing candidate: its
@@ -626,8 +714,11 @@ func moreChange(m *TaskMore, cs []RequestedChange, id string) *RequestedChange {
 // review, against which base, and where this attempt starts; their
 // summary; then the changes asked for, the questions to answer and the
 // notes, each with its id, its severity, its location, the lines as the
-// person saw them, the words and the resolution asked; and how to say
-// what was addressed.
+// person saw them, the words and the resolution asked; the findings of a
+// review task the request keeps, after them; and how to say what was
+// addressed. The person's words of more than one line (a summary, a
+// change's words, a resolution) are fenced under their item, so no line
+// of theirs reads as one of the file's own sections.
 func writeChangeRequest(b *strings.Builder, f TaskFile) {
 	rp := f.Repair
 	cr := rp.Request
@@ -643,10 +734,15 @@ func writeChangeRequest(b *strings.Builder, f TaskFile) {
 		b.WriteString(", where this attempt starts")
 	}
 	b.WriteString(".")
-	if s := strings.TrimSpace(rp.Summary); s != "" {
-		fmt.Fprintf(b, " Their summary: %s", s)
+	if s := strings.TrimSpace(rp.Summary); s != "" && singleLine(s) {
+		fmt.Fprintf(b, " Their summary: %s\n", s)
+	} else if s != "" {
+		b.WriteString(" Their summary:\n")
+		writeIndentedFence(b, s)
+	} else {
+		b.WriteString("\n")
 	}
-	b.WriteString("\n\n")
+	b.WriteString("\n")
 	for _, g := range []struct{ intent, head string }{
 		{"change", "Changes asked for"},
 		{"question", "Questions to answer in your summary"},
@@ -664,6 +760,17 @@ func writeChangeRequest(b *strings.Builder, f TaskFile) {
 			writeChange(b, f, c)
 		}
 	}
+	if from := rp.FindingsFrom; from != nil && (len(rp.Findings) > 0 || slices.ContainsFunc(f.Cut, func(s string) bool { return strings.HasSuffix(s, "of the review's findings") })) {
+		fmt.Fprintf(b, "### The findings of review %q (attempt %d), which this request keeps\n\nReview %q asked for changes to the commit %s before this request, and they stand: address each of these too, or say in your summary why not; the review runs again on your result.", from.Review, from.Attempt, from.Review, from.Commit)
+		if s := strings.TrimSpace(from.Summary); s != "" {
+			fmt.Fprintf(b, " Its summary: %s", s)
+		}
+		b.WriteString("\n\n")
+		writeFindings(b, rp.Findings)
+		if len(rp.Findings) > 0 {
+			b.WriteString("\n")
+		}
+	}
 	b.WriteString("Say which you addressed with `addressed` in your result (each change's id, and a note); a person checks each one on your result.\n\n")
 }
 
@@ -673,12 +780,26 @@ func writeChange(b *strings.Builder, f TaskFile, c RequestedChange) {
 	if c.Severity != "" {
 		fmt.Fprintf(b, " (%s)", c.Severity)
 	}
-	fmt.Fprintf(b, ", %s: ", changeLocation(c))
-	b.WriteString(strings.TrimSpace(c.Message))
+	fmt.Fprintf(b, ", %s:", changeLocation(c))
+	cut := ""
 	if c.messageCut {
-		b.WriteString(" (the rest is in the file named under \"Cut to fit\")")
+		cut = "(the rest is in the file named under \"Cut to fit\")"
 	}
-	b.WriteString("\n")
+	if msg := strings.TrimSpace(c.Message); singleLine(msg) {
+		if msg != "" {
+			b.WriteString(" " + msg)
+		}
+		if cut != "" {
+			b.WriteString(" " + cut)
+		}
+		b.WriteString("\n")
+	} else {
+		b.WriteString("\n")
+		writeIndentedFence(b, msg)
+		if cut != "" {
+			b.WriteString("\n  " + cut + "\n")
+		}
+	}
 	if len(c.Lines) > 0 {
 		writeIndentedFence(b, strings.Join(c.Lines, "\n"))
 	}
@@ -688,8 +809,11 @@ func writeChange(b *strings.Builder, f TaskFile, c RequestedChange) {
 	if c.linesCut {
 		b.WriteString("\n  Its lines are in the file named under \"Cut to fit\".\n")
 	}
-	if r := strings.TrimSpace(c.Resolution); r != "" {
+	if r := strings.TrimSpace(c.Resolution); r != "" && singleLine(r) {
 		fmt.Fprintf(b, "\n  Asked: %s\n", r)
+	} else if r != "" {
+		b.WriteString("\n  Asked:\n")
+		writeIndentedFence(b, r)
 	} else if c.resolutionCut {
 		b.WriteString("\n  The resolution asked is in the file named under \"Cut to fit\".\n")
 	}
@@ -742,8 +866,8 @@ func writeRequestedCheck(b *strings.Builder, f TaskFile, ch *RequestedCheck) {
 	case ch.Exit != nil:
 		how = append(how, "exit "+strconv.Itoa(*ch.Exit))
 	}
-	if ch.Error != "" {
-		how = append(how, ch.Error)
+	if words := strings.Join(strings.Fields(ch.Error), " "); words != "" {
+		how = append(how, words)
 	}
 	if len(how) > 0 {
 		fmt.Fprintf(b, " (%s)", strings.Join(how, ": "))
@@ -772,9 +896,18 @@ func writeRequestedCheck(b *strings.Builder, f TaskFile, ch *RequestedCheck) {
 	}
 }
 
+// singleLine says s has no line break a Markdown reader would take as one
+// (a line feed, a carriage return, a vertical tab, a form feed, U+0085,
+// U+2028 or U+2029).
+func singleLine(s string) bool {
+	return !strings.ContainsAny(s, "\n\r\v\f\u0085\u2028\u2029")
+}
+
 // writeIndentedFence writes s in a fence longer than any run of backticks
-// in it, indented to sit under a list item.
+// in it, indented to sit under a list item. Its line breaks are each made
+// a line feed first, so none of its lines can end the fence.
 func writeIndentedFence(b *strings.Builder, s string) {
+	s = strings.NewReplacer("\r\n", "\n", "\r", "\n", "\v", "\n", "\f", "\n", "\u0085", "\n", "\u2028", "\n", "\u2029", "\n").Replace(s)
 	fence := strings.Repeat("`", max(3, longestBacktickRun(s)+1))
 	b.WriteString("\n  " + fence + "\n")
 	for _, l := range strings.Split(strings.TrimSuffix(s, "\n"), "\n") {

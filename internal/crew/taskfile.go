@@ -157,15 +157,27 @@ const maxPreviousError = 2000
 // request), the attempt (the review task's, or the candidate's), the
 // commit reviewed, where the repair attempt starts when that commit cannot
 // be built on (Start, the refused candidate's start), the summary, and a
-// review task's findings or a person's request.
+// review task's findings or a person's request. A person's request on a
+// task a review task's findings had reopened keeps those findings beside
+// it (Findings), FindingsFrom naming that review.
 type TaskRepair struct {
-	Review   string         `json:"review"`
-	Attempt  int            `json:"attempt"`
-	Commit   string         `json:"commit"`
-	Start    string         `json:"start,omitempty"`
-	Summary  string         `json:"summary,omitempty"`
-	Findings []Finding      `json:"findings,omitempty"`
-	Request  *ChangeRequest `json:"request,omitempty"`
+	Review       string         `json:"review"`
+	Attempt      int            `json:"attempt"`
+	Commit       string         `json:"commit"`
+	Start        string         `json:"start,omitempty"`
+	Summary      string         `json:"summary,omitempty"`
+	Findings     []Finding      `json:"findings,omitempty"`
+	Request      *ChangeRequest `json:"request,omitempty"`
+	FindingsFrom *FindingsFrom  `json:"findingsFrom,omitempty"`
+}
+
+// FindingsFrom is the review task whose findings a person's request keeps:
+// its id, its attempt, the commit it asked changes of, and its summary.
+type FindingsFrom struct {
+	Review  string `json:"review"`
+	Attempt int    `json:"attempt"`
+	Commit  string `json:"commit"`
+	Summary string `json:"summary,omitempty"`
 }
 
 // TaskInput is a result the task starts from or has at hand.
@@ -357,6 +369,10 @@ func fitTaskFile(f TaskFile) (md, js, more []byte, err error) {
 		rp := *f.Repair
 		rp.Findings = slices.Clone(rp.Findings)
 		rp.Request = rp.Request.clone()
+		if rp.FindingsFrom != nil {
+			from := *rp.FindingsFrom
+			rp.FindingsFrom = &from
+		}
 		f.Repair = &rp
 	}
 	if f.Previous != nil {
@@ -448,10 +464,20 @@ func fitTaskFile(f TaskFile) (md, js, more []byte, err error) {
 		func() bool { return cutChanges(&f, &m, cutMessage) },
 		func() bool {
 			// A person's summary is never cut: FitChangeRequest counted it.
-			if f.Repair == nil || f.Repair.Summary == "" || f.Repair.Request != nil {
+			// The summary of the review whose findings it keeps is.
+			switch {
+			case f.Repair == nil:
 				return false
+			case f.Repair.Request != nil:
+				if f.Repair.FindingsFrom == nil || f.Repair.FindingsFrom.Summary == "" {
+					return false
+				}
+				m.RepairSummary, f.Repair.FindingsFrom.Summary = f.Repair.FindingsFrom.Summary, ""
+			case f.Repair.Summary == "":
+				return false
+			default:
+				m.RepairSummary, f.Repair.Summary = f.Repair.Summary, ""
 			}
-			m.RepairSummary, f.Repair.Summary = f.Repair.Summary, ""
 			f.Cut = append(f.Cut, "the review's summary")
 			return true
 		},
@@ -571,6 +597,20 @@ func (e *taskFileTooLarge) Error() string {
 	return fmt.Sprintf("the task files are %d and %d bytes with every part cut that can be, more than %d", e.md, e.js, maxTaskFile)
 }
 
+// writeFindings writes a review task's findings, one list item each.
+func writeFindings(b *strings.Builder, findings []Finding) {
+	for _, fd := range findings {
+		fmt.Fprintf(b, "- %s", fd.Severity)
+		if fd.Path != "" {
+			fmt.Fprintf(b, " %s", fd.Path)
+			if fd.Line > 0 {
+				fmt.Fprintf(b, ":%d", fd.Line)
+			}
+		}
+		fmt.Fprintf(b, ": %s\n", strings.TrimSpace(fd.Message))
+	}
+}
+
 // encodeTaskJSON is v as a task file keeps it: indented, and with "<",
 // ">" and "&" as they are (an agent reads it; escaped, each is six bytes).
 func encodeTaskJSON(v any) ([]byte, error) {
@@ -680,16 +720,7 @@ func taskMarkdown(f TaskFile) string {
 			fmt.Fprintf(&b, ": %s", s)
 		}
 		b.WriteString(".\n\n")
-		for _, fd := range rp.Findings {
-			fmt.Fprintf(&b, "- %s", fd.Severity)
-			if fd.Path != "" {
-				fmt.Fprintf(&b, " %s", fd.Path)
-				if fd.Line > 0 {
-					fmt.Fprintf(&b, ":%d", fd.Line)
-				}
-			}
-			fmt.Fprintf(&b, ": %s\n", strings.TrimSpace(fd.Message))
-		}
+		writeFindings(&b, rp.Findings)
 		b.WriteString("\nAddress each finding, or say in your summary why not; the review runs again on your result.\n\n")
 	}
 	if c := f.Checkpoint; c != nil {

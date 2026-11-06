@@ -311,7 +311,8 @@ func TestMigrationSevenToEightAddsOnlyTables(t *testing.T) {
 	if ro, why := again.ReadOnly(); ro {
 		t.Fatalf("read-only after the migration: %s", why)
 	}
-	// Brought to Version: 8's tables, and 9 (a barrier) adds nothing.
+	// Brought to Version: 8's tables, and the versions after it add no
+	// table (9 is #683's index, 10 a barrier).
 	if v := dbVersion(t, again); v != Version {
 		t.Fatalf("version %d after the migration, Version %d", v, Version)
 	}

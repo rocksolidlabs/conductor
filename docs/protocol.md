@@ -2992,11 +2992,18 @@ candidate's), `findings` (the changes counted) and `state`, and
 candidate, or, for a failed candidate refused before its checks (its
 checkout, its manifest, a setup, service or ready step), where that
 attempt started (`repair.start`), its task file naming the candidate's
-commit and branch and the refusal (`previous`). `task.json`'s `repair` is
-then `{review, attempt, commit, start?, summary?, request}`, the summary the
-review's (at most 4,000 characters, never cut) and `request` `{review, by,
-via?, base?, changes}`: `review` the Dispatch review's id and `by` who
-asked (at most 64 bytes and 200 characters), `base` the commit the
+commit and branch and the refusal (`previous`). A task a review task's
+`needs_changes` had reopened (left failed with no attempt, or its repair
+attempt failed since) keeps that review's findings beside the request: the
+repair carries both, never the person's alone. `task.json`'s `repair` is
+then `{review, attempt, commit, start?, summary?, request, findings?,
+findingsFrom?}`, the summary the person's review's (at most 4,000
+characters, never cut), `findings` and `findingsFrom` `{review, attempt,
+commit, summary?}` the review task's findings kept and that review, and
+`request` `{review, by, via?, base?, changes}`: `review` the Dispatch
+review's id and `by` who asked (at most 64 bytes and 200 characters;
+these, `via`, each change's `id` and `path` and a check's identity are one
+line of valid UTF-8 with no control character), `base` the commit the
 candidate was read against, `changes` 1 to 50 (at least one a change asked
 for), each `{id, kind, intent, severity?, path?, side?, from?, to?, lines?,
 message?, resolution?, check?}`: `id` the finding's (at most 64 bytes, each
@@ -3014,19 +3021,28 @@ asked for changes to which commit in which review against which base and
 where the attempt starts, their summary, then the changes asked for, the
 questions to answer in the summary and the notes, each with its id,
 severity, location, lines in a fence, words and "Asked:", a check's receipt
-with its class and its log (its file when `previous.check` wrote it), and
-asks for `addressed`. To fit 64 KiB, the changes' lines (a check's tail and
+with its class and its log (its file when `previous.check` wrote it), then
+the kept review's findings, and asks for `addressed`; the person's words of
+more than one line (the summary, a change's words, a resolution) are
+fenced under their item, so none of their lines reads as a section of the
+file. To fit 64 KiB, the kept review's findings are cut first, from the
+last, then the changes' lines (a check's tail and
 quote with them), then their resolutions, then their words past 200
 characters are cut, each from the last, into `task-more.json`'s `changes`
 (by `id`, with the parts cut), after the findings and before the checks'
 commands; ids, kinds, intents, severities, paths, sides and line numbers
 are never cut. A request is measured before anything is recorded
-(`FitChangeRequest`): its repair at its largest within the ledger's 64 KiB
-payload, and its repair attempt's task files with the task's own text,
-the crew's people and the ticket within 64 KiB each, or it is refused
-whole, so an accepted one never fails at its attempt's start for its size.
-A row written before this (ledger version 8 or earlier) has neither
-`request` nor `start` and reads as before; the ledger's version 9 changes
+(`FitChangeRequest`): its repair at its largest (its own review id, as
+JSON escapes it) within the ledger's 64 KiB payload, and its repair
+attempt's task files with the task's own text, the crew's people and the
+ticket within 64 KiB each, every part that is never cut at its widest
+(four bytes a character for `task.md`, six for `task.json`, as JSON
+escapes a control character or U+2028), or it is refused whole, so an
+accepted one never fails at its attempt's start for its size. A request
+whose repair, with the review's findings it keeps, the run could not keep
+is refused with a receipt (`task_state`), nothing changed. A row written
+before this (ledger version 9 or earlier) has none of `request`, `start`
+and `findingsFrom` and reads as before; the ledger's version 10 changes
 no table and is a barrier, so an older binary opens it read-only rather
 than dropping a request it does not know.
 

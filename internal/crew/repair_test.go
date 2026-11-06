@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -512,11 +513,12 @@ func TestOldRepairRowsReadAsBefore(t *testing.T) {
 	}
 }
 
-// The ledger's version 9 is a barrier: 8 to 9 changes no table and keeps
-// every row, a person's repair among them; and a ledger of a version
-// later than the binary's (as version 9 is to a binary before it), holding
-// a person's repair, opens read-only, where Continue, Retry and Request
-// changes are refused with nothing written.
+// The ledger's version 10 is a barrier: 9 to 10 changes no table and
+// keeps every row, a person's repair among them; and a ledger of a version
+// later than the binary's (as version 10 is to a binary before it),
+// holding a person's repair, opens read-only, where Continue is refused by
+// the barrier itself, and Retry and Request changes find no run to act on,
+// with nothing written.
 func TestLedgerVersionIsABarrier(t *testing.T) {
 	dir := newRepo(t)
 	ldir := t.TempDir()
@@ -587,20 +589,20 @@ func TestLedgerVersionIsABarrier(t *testing.T) {
 		return v
 	}
 
-	// 8 to 9: every row as it was.
-	setVersion(8)
+	// 9 to 10: every row as it was.
+	setVersion(9)
 	migrated, err := ledger.Open(ldir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ro, why := migrated.ReadOnly(); ro {
-		t.Fatalf("read-only after 8 to 9: %s", why)
+		t.Fatalf("read-only after 9 to 10: %s", why)
 	}
-	if v := version(); v != 9 || ledger.Version != 9 {
+	if v := version(); v != 10 || ledger.Version != 10 {
 		t.Fatalf("version %d after the migration, Version %d", v, ledger.Version)
 	}
 	if got := rows(migrated); got != before {
-		t.Fatalf("the rows after 8 to 9:\n%s\nwere:\n%s", got, before)
+		t.Fatalf("the rows after 9 to 10:\n%s\nwere:\n%s", got, before)
 	}
 	migrated.Close()
 
@@ -616,14 +618,19 @@ func TestLedgerVersionIsABarrier(t *testing.T) {
 	}
 	e2, _ := readyEngine(t)
 	e2.UseLedger(SQLLedger(later))
-	if _, err := e2.ContinueRun(ctx, run.ID, ""); err == nil {
-		t.Fatal("a run continued from a later version's ledger")
+	// The barrier's own refusal: the ledger is read-only, written by a
+	// newer Conductor, so no continuation is made.
+	if _, err := e2.ContinueRun(ctx, run.ID, ""); !errors.Is(err, ErrNoLedger) || !strings.Contains(err.Error(), "written by a newer Conductor") {
+		t.Fatalf("a run continued from a later version's ledger: %v", err)
 	}
-	if err := e2.RetryTask(ctx, run.ID, "build"); err == nil {
-		t.Fatal("a task retried in a later version's ledger")
+	// A server on a newer ledger holds no run to act on: Retry and Request
+	// changes act only on a run the engine holds, which only a
+	// continuation, refused above, could make.
+	if err := e2.RetryTask(ctx, run.ID, "build"); !errors.Is(err, ErrRunNotFound) {
+		t.Fatalf("a task retried in a later version's ledger: %v", err)
 	}
-	if _, err := requestChanges(e2, run.ID, "rq2", "build", 3, c3, personsRequest("rv-0013")); err == nil {
-		t.Fatal("changes requested in a later version's ledger")
+	if _, err := requestChanges(e2, run.ID, "rq2", "build", 3, c3, personsRequest("rv-0013")); !errors.Is(err, ErrRunNotFound) {
+		t.Fatalf("changes requested in a later version's ledger: %v", err)
 	}
 	if got := rows(later); got != before {
 		t.Fatalf("the rows after the refusals:\n%s\nwere:\n%s", got, before)
@@ -631,4 +638,293 @@ func TestLedgerVersionIsABarrier(t *testing.T) {
 	if v := version(); v != ledger.Version+1 {
 		t.Fatalf("the later version's ledger is version %d now", v)
 	}
+}
+
+// A request's shape is a review's batch: every rule of validate refuses
+// with ErrBadChangeRequest, and each bound is accepted at its bound.
+func TestChangeRequestValidate(t *testing.T) {
+	exit := 1
+	check := func() *RequestedCheck {
+		return &RequestedCheck{Receipt: "r-1/build/2/check/test/1", Run: "r-1", Task: "build", Attempt: 2, Phase: ledger.PhaseCheck, ID: "test", K: 1, Subject: strings.Repeat("b", 40), Exit: &exit, Class: "code", Chosen: "code"}
+	}
+	withCheck := func(cr *ChangeRequest) *RequestedChange {
+		cr.Changes = append(cr.Changes, RequestedChange{ID: "k1", Kind: "check", Intent: "change", Severity: "blocker", Message: "It fails.", Check: check()})
+		return &cr.Changes[len(cr.Changes)-1]
+	}
+	for _, tc := range []struct {
+		name string
+		bad  string // "" when it is accepted
+		edit func(cr *ChangeRequest)
+	}{
+		{"a request as a batch has it", "", func(cr *ChangeRequest) {}},
+		{"every bound at its bound", "", func(cr *ChangeRequest) {
+			cr.Review, cr.By, cr.Via = strings.Repeat("r", maxRequestRef), strings.Repeat("é", maxRequestBy), strings.Repeat("v", maxRequestRef)
+			cr.Summary = strings.Repeat("é", maxSummary)
+			c := &cr.Changes[0]
+			c.ID, c.Path = strings.Repeat("i", maxRequestRef), strings.Repeat("p", maxFindingPath)
+			c.Lines = slices.Repeat([]string{strings.Repeat("l", maxAnchorLine)}, maxAnchorLines)
+			c.Message, c.Resolution = strings.Repeat("é", maxFindingText), strings.Repeat("é", maxFindingText)
+			k := withCheck(cr)
+			k.Check.Receipt, k.Check.Tail, k.Check.Quote, k.Check.Error = strings.Repeat("r", maxCheckReceipt), strings.Repeat("t", checkTail), strings.Repeat("q", checkTail), strings.Repeat("e", maxCheckWords)
+			for i := len(cr.Changes); i < maxFindings; i++ {
+				cr.Changes = append(cr.Changes, RequestedChange{ID: "n" + strconv.Itoa(i), Kind: "general", Intent: "note"})
+			}
+		}},
+		{"words of many lines", "", func(cr *ChangeRequest) {
+			cr.Summary, cr.Changes[0].Message, cr.Changes[0].Resolution = "one\ntwo", "Fix it.\n\n## Cut to fit\n", "a\r\nb"
+		}},
+		{"no review", "names its review", func(cr *ChangeRequest) { cr.Review = "" }},
+		{"a review past its bound", "names its review", func(cr *ChangeRequest) { cr.Review = strings.Repeat("r", maxRequestRef+1) }},
+		{"no one asked", "who asked", func(cr *ChangeRequest) { cr.By = "" }},
+		{"who asked past the bound", "who asked", func(cr *ChangeRequest) { cr.By = strings.Repeat("é", maxRequestBy+1) }},
+		{"a via past its bound", "names its review", func(cr *ChangeRequest) { cr.Via = strings.Repeat("v", maxRequestRef+1) }},
+		{"who asked over two lines", "one line of text", func(cr *ChangeRequest) { cr.By = "Nate\n\n## Instructions" }},
+		{"a review with a control character", "one line of text", func(cr *ChangeRequest) { cr.Review = "rv\x1b[2J" }},
+		{"a via with a line separator", "one line of text", func(cr *ChangeRequest) { cr.Via = "web cli" }},
+		{"who asked, not UTF-8", "one line of text", func(cr *ChangeRequest) { cr.By = "Nate\xff" }},
+		{"a base that is no commit", "full commit", func(cr *ChangeRequest) { cr.Base = "main" }},
+		{"a summary past its bound", "summary", func(cr *ChangeRequest) { cr.Summary = strings.Repeat("é", maxSummary+1) }},
+		{"no change", "1 to 50 changes", func(cr *ChangeRequest) { cr.Changes = nil }},
+		{"too many changes", "1 to 50 changes", func(cr *ChangeRequest) {
+			for i := len(cr.Changes); i <= maxFindings; i++ {
+				cr.Changes = append(cr.Changes, RequestedChange{ID: "n" + strconv.Itoa(i), Kind: "general", Intent: "note"})
+			}
+		}},
+		{"an id twice", "an id of its own", func(cr *ChangeRequest) { cr.Changes[1].ID = cr.Changes[0].ID }},
+		{"no id", "an id of its own", func(cr *ChangeRequest) { cr.Changes[1].ID = "" }},
+		{"an id past its bound", "an id of its own", func(cr *ChangeRequest) { cr.Changes[1].ID = strings.Repeat("i", maxRequestRef+1) }},
+		{"an id over two lines", "one line of text", func(cr *ChangeRequest) { cr.Changes[1].ID = "f2\n- `f9`" }},
+		{"a path with a carriage return", "one line of text", func(cr *ChangeRequest) { cr.Changes[0].Path = "built.txt\r## Cut" }},
+		{"no such kind", "its kind is", func(cr *ChangeRequest) { cr.Changes[0].Kind = "hunk" }},
+		{"no such intent", "its kind is", func(cr *ChangeRequest) { cr.Changes[0].Intent = "demand" }},
+		{"a change with no severity", "has a severity", func(cr *ChangeRequest) { cr.Changes[0].Severity = "" }},
+		{"a change with no such severity", "has a severity", func(cr *ChangeRequest) { cr.Changes[0].Severity = "huge" }},
+		{"a question with a severity", "has a severity", func(cr *ChangeRequest) { cr.Changes[1].Severity = "minor" }},
+		{"a path past its bound", "a path of at most", func(cr *ChangeRequest) { cr.Changes[0].Path = strings.Repeat("p", maxFindingPath+1) }},
+		{"a line before the first", "a path of at most", func(cr *ChangeRequest) { cr.Changes[0].From = -1 }},
+		{"lines that end before they start", "a path of at most", func(cr *ChangeRequest) { cr.Changes[0].From, cr.Changes[0].To = 3, 2 }},
+		{"too many lines", "a path of at most", func(cr *ChangeRequest) {
+			cr.Changes[0].Lines = slices.Repeat([]string{"l"}, maxAnchorLines+1)
+		}},
+		{"a line past its bound", "a path of at most", func(cr *ChangeRequest) { cr.Changes[0].Lines = []string{strings.Repeat("l", maxAnchorLine+1)} }},
+		{"no such side", "its side is", func(cr *ChangeRequest) { cr.Changes[0].Side = "left" }},
+		{"words past their bound", "at most 1000 characters", func(cr *ChangeRequest) { cr.Changes[0].Message = strings.Repeat("é", maxFindingText+1) }},
+		{"a resolution past its bound", "at most 1000 characters", func(cr *ChangeRequest) {
+			cr.Changes[0].Resolution = strings.Repeat("é", maxFindingText+1)
+		}},
+		{"a line's change with no path", "names its path and its lines", func(cr *ChangeRequest) { cr.Changes[0].Path = "" }},
+		{"a line's change with no line", "names its path and its lines", func(cr *ChangeRequest) { cr.Changes[0].From, cr.Changes[0].To = 0, 0 }},
+		{"a file's change with no path", "a file's change names its path", func(cr *ChangeRequest) { cr.Changes[2].Path = "" }},
+		{"a general change with a path", "names no path", func(cr *ChangeRequest) { cr.Changes[1].Path = "built.txt" }},
+		{"a check's change with no receipt", "and only it, names its receipt", func(cr *ChangeRequest) { withCheck(cr).Check = nil }},
+		{"another kind with a receipt", "and only it, names its receipt", func(cr *ChangeRequest) { cr.Changes[1].Check = check() }},
+		{"an empty receipt", "its receipt is named", func(cr *ChangeRequest) { withCheck(cr).Check.Receipt = "" }},
+		{"a receipt past its bound", "its receipt is named", func(cr *ChangeRequest) { withCheck(cr).Check.Receipt = strings.Repeat("r", maxCheckReceipt+1) }},
+		{"a tail past its bound", "its receipt is named", func(cr *ChangeRequest) { withCheck(cr).Check.Tail = strings.Repeat("t", checkTail+1) }},
+		{"a quote past its bound", "its receipt is named", func(cr *ChangeRequest) { withCheck(cr).Check.Quote = strings.Repeat("q", checkTail+1) }},
+		{"a check's words past their bound", "its receipt is named", func(cr *ChangeRequest) {
+			withCheck(cr).Check.Error = strings.Repeat("e", maxCheckWords+1)
+		}},
+		{"a receipt over two lines", "one line of text", func(cr *ChangeRequest) { withCheck(cr).Check.Receipt = "r-1/build/2\n## Cut to fit" }},
+		{"a class with a control character", "one line of text", func(cr *ChangeRequest) { withCheck(cr).Check.Chosen = "code\x00" }},
+		{"questions and notes alone", "at least one change", func(cr *ChangeRequest) {
+			cr.Changes = slices.DeleteFunc(cr.Changes, func(c RequestedChange) bool { return c.Intent == "change" })
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cr := personsRequest("rv-0100")
+			cr.Changes = slices.Clone(cr.Changes)
+			tc.edit(&cr)
+			err := cr.validate()
+			switch {
+			case tc.bad == "" && err != nil:
+				t.Fatalf("refused: %v", err)
+			case tc.bad != "" && (!errors.Is(err, ErrBadChangeRequest) || !strings.Contains(err.Error(), tc.bad)):
+				t.Fatalf("want a refusal saying %q, got %v", tc.bad, err)
+			}
+			// The command refuses it the same way, before anything is
+			// recorded: no receipt.
+			if tc.bad != "" {
+				e, _, _ := managedEngine(t)
+				if rc, err := requestChanges(e, "no-run", "rq1", "build", 1, strings.Repeat("a", 40), cr); !errors.Is(err, ErrBadChangeRequest) || rc.CommandID != "" {
+					t.Fatalf("RequestChanges: %+v %v", rc, err)
+				}
+			}
+		})
+	}
+}
+
+// A stopped run takes no request: refused run_stopped with a receipt,
+// the task, its row and the run's events as they were, no attempt
+// dispatched.
+func TestRequestChangesRefusesAStoppedRun(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("docs", "writer")))
+	waitAttempt(t, e, run.ID, "docs", ledger.AttemptRunning)
+	commitResult(t, e, waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning), "built.txt", "built\n", "built")
+	c1 := waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1).Result.Commit
+	l.taskWhen(t, run.ID, "build", "succeeded", func(r ledger.TaskRow) bool { return r.State == ledger.TaskSucceeded && r.ResultAttempt == 1 })
+	stopRun(t, e, run.ID)
+	launched := len(fl.launched())
+	before := l.taskWhen(t, run.ID, "build", "as the stop left it", func(ledger.TaskRow) bool { return true })
+	events := len(l.kinds(run.ID))
+
+	rc, err := requestChanges(e, run.ID, "rq1", "build", 1, c1, personsRequest("rv-0101"))
+	if !errors.Is(err, ErrRunStopped) || rc.Status != ledger.CommandFailed || rc.Refusal != RefusalRunStopped || !strings.Contains(err.Error(), "continue it, then request changes in its continuation") {
+		t.Fatalf("a stopped run: %+v %v", rc, err)
+	}
+	if got, ok, err := l.Receipt(context.Background(), run.ID, "admin", "rq1"); err != nil || !ok || got.Status != ledger.CommandFailed {
+		t.Fatalf("the receipt kept: %+v %v %v", got, ok, err)
+	}
+	if ts := taskOf(t, e, run.ID, "build"); ts.State != ledger.TaskSucceeded || ts.Result == nil || ts.Result.Commit != c1 || ts.Attempts != 1 {
+		t.Fatalf("the task after the refusal: %+v", ts)
+	}
+	l.mu.Lock()
+	after := l.tasks[run.ID+"/build"]
+	l.mu.Unlock()
+	if !reflect.DeepEqual(after, before) || after.Repair != "" {
+		t.Fatalf("the task's row after the refusal:\n%+v\nwas:\n%+v", after, before)
+	}
+	kinds := l.kinds(run.ID)
+	for _, k := range kinds[events:] {
+		if k != "command.accepted" && k != "command.request_changes" {
+			t.Fatalf("an event besides the command's: %s (%q)", k, kinds[events:])
+		}
+	}
+	if n := len(fl.launched()); n != launched {
+		t.Fatalf("%d sessions launched after the refusal, %d before", n, launched)
+	}
+}
+
+// A person's repair is durable before its attempt starts: the request is
+// recorded for a candidate refused before its checks while the run is
+// paused, the server ends, and the continuation starts exactly one repair
+// attempt, where the refused attempt started (repair.start), with the
+// request in its task.json and the attempt the request granted; the
+// command's receipt is found again by its id.
+func TestPersonsRepairSurvivesARestart(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	build := work("build", "lead")
+	build.Checks = []Check{{ID: "ok", Argv: []string{"true"}}}
+	c := repoCrew(dir, build)
+	c.Setup = []Check{{ID: "deps", Argv: []string{"sh", "-c", "test ! -e broken.txt"}}}
+	run := launchManaged(t, e, c)
+	a3 := spend(t, e, run.ID, "build", "broken.txt").Attempt
+	if a3.Stage != "setup deps" || a3.Start == a3.Result {
+		t.Fatalf("attempt 3 failed at %q, from %s", a3.Stage, short(a3.Start))
+	}
+	ctx := context.Background()
+	if err := e.PauseRun(ctx, run.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	cr := personsRequest("rv-0102")
+	if rc, err := requestChanges(e, run.ID, "rq1", "build", 3, a3.Result, cr); err != nil || rc.Status != ledger.CommandDone {
+		t.Fatalf("Request changes: %+v %v", rc, err)
+	}
+	l.taskWhen(t, run.ID, "build", "with the person's repair and its attempt", func(r ledger.TaskRow) bool {
+		return strings.Contains(r.Repair, `"request"`) && strings.Contains(r.Repair, `"start":"`+a3.Start+`"`) && r.Extra == 1
+	})
+	if ts := taskOf(t, e, run.ID, "build"); ts.Attempts != maxAttemptsPerTask || ts.State != ledger.TaskReady {
+		t.Fatalf("the repair attempt dispatched in a paused run: %+v", ts)
+	}
+	// The server ends; another opens the ledger and continues the run.
+	interrupt(l, run.ID, nil)
+	e2, fl2 := readyEngine(t)
+	e2.UseLedger(l)
+	next, err := e2.ContinueRun(ctx, run.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e2.PauseRun(ctx, next.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	b4 := attemptN(t, e2, next.ID, "build", maxAttemptsPerTask+1)
+	if b4.Attempt.Start != a3.Start || b4.Attempt.SessionID == "" {
+		t.Fatalf("the repair attempt starts at %s, the refused attempt started at %s", short(b4.Attempt.Start), short(a3.Start))
+	}
+	_, f := taskFileOf(t, b4)
+	want := cr.clone()
+	want.Summary = ""
+	if rp := f.Repair; rp == nil || rp.Commit != a3.Result || rp.Start != a3.Start || rp.Attempt != 3 || rp.Review != "rv-0102" || rp.Summary != cr.Summary || !reflect.DeepEqual(rp.Request, want) {
+		t.Fatalf("the repair attempt's task.json: %+v", f.Repair)
+	}
+	if f.MaxAttempts != maxAttemptsPerTask+1 {
+		t.Fatalf("attempt %d of %d", f.Attempt, f.MaxAttempts)
+	}
+	commitResult(t, e2, b4, "fixed.txt", "fixed\n", "fixed")
+	done := waitTask(t, e2, next.ID, "build", ledger.TaskSucceeded, maxAttemptsPerTask+1)
+	if done.Attempts != maxAttemptsPerTask+1 || len(fl2.launched()) != 1 {
+		t.Fatalf("after the repair: %d attempts, %d sessions launched", done.Attempts, len(fl2.launched()))
+	}
+	if got, ok, err := l.Receipt(ctx, run.ID, "admin", "rq1"); err != nil || !ok || got.Status != ledger.CommandDone || got.Intent != "request_changes" {
+		t.Fatalf("the command's receipt after the restart: %+v %v %v", got, ok, err)
+	}
+	stopRun(t, e2, next.ID)
+}
+
+// A person's request on a task a review task's needs_changes left failed,
+// its attempts spent, keeps the review's findings: the repair carries
+// both, task.md has the person's changes first and the review's findings
+// after them, and the row keeps the review's name. A request too large
+// to keep beside those findings is refused with a receipt, nothing
+// changed.
+func TestRequestChangesKeepsAReviewsFindings(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	build := work("build", "lead")
+	build.Checks = []Check{{ID: "passed", Argv: []string{"sh", "-c", "test -e passed.txt"}}}
+	run := launchManaged(t, e, repoCrew(dir, build, review("check", "critic", "build")))
+	for n := 1; n < maxAttemptsPerTask; n++ {
+		commitResult(t, e, attemptN(t, e, run.ID, "build", n), "built.txt", strings.Repeat("yes\n", n), "built")
+	}
+	commitResult(t, e, attemptN(t, e, run.ID, "build", maxAttemptsPerTask), "passed.txt", "yes\n", "passed")
+	c3 := waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, maxAttemptsPerTask).Result.Commit
+	// The review's findings: twenty of 1,000 characters, and one short.
+	findings := []Finding{{Severity: "major", Path: "built.txt", Line: 1, Message: "Say why."}}
+	for i := range 20 {
+		findings = append(findings, Finding{Severity: "nit", Message: strconv.Itoa(i) + strings.Repeat("f", maxFindingText-2)})
+	}
+	rv := waitAttempt(t, e, run.ID, "check", ledger.AttemptRunning)
+	submit(t, e, rv.Attempt.SessionID, Result{Verdict: VerdictNeedsChanges, Summary: "Not yet.", Findings: findings})
+	failed := waitTask(t, e, run.ID, "build", ledger.TaskFailed, maxAttemptsPerTask)
+	if !strings.Contains(failed.Reason, "no attempt is left") {
+		t.Fatalf("build after the review: %+v", failed)
+	}
+	l.taskWhen(t, run.ID, "build", "with the review's repair", func(r ledger.TaskRow) bool { return strings.Contains(r.Repair, `"review":"check"`) })
+
+	// Too large beside the review's findings: refused, with a receipt.
+	big := edgeRequest(t, ledger.MaxPayload-16<<10)
+	if err := FitChangeRequest(repoCrew(dir, build, review("check", "critic", "build")), nil, "build", big); err != nil {
+		t.Fatalf("the large request alone: %v", err)
+	}
+	rc, err := requestChanges(e, run.ID, "rq0", "build", maxAttemptsPerTask, c3, big)
+	if !errors.Is(err, ErrChangeRequestTooLarge) || rc.Status != ledger.CommandFailed || !strings.Contains(err.Error(), "with the 21 findings of review check it keeps") {
+		t.Fatalf("too large beside the findings: %+v %v", rc, err)
+	}
+	if ts := taskOf(t, e, run.ID, "build"); ts.State != ledger.TaskFailed || ts.Attempts != maxAttemptsPerTask {
+		t.Fatalf("build after the refusal: %+v", ts)
+	}
+
+	cr := personsRequest("rv-0103")
+	if rc, err := requestChanges(e, run.ID, "rq1", "build", maxAttemptsPerTask, c3, cr); err != nil || rc.Status != ledger.CommandDone {
+		t.Fatalf("Request changes: %+v %v", rc, err)
+	}
+	b4 := attemptN(t, e, run.ID, "build", maxAttemptsPerTask+1)
+	md, f := taskFileOf(t, b4)
+	want := FindingsFrom{Review: "check", Attempt: 1, Commit: c3, Summary: "Not yet."}
+	if rp := f.Repair; rp == nil || rp.Request == nil || rp.Review != "rv-0103" || rp.FindingsFrom == nil || *rp.FindingsFrom != want || !reflect.DeepEqual(rp.Findings, findings) {
+		t.Fatalf("task.json's repair: %+v", f.Repair)
+	}
+	person := strings.Index(md, "- `f1` (major), `built.txt:1`, the candidate's side: Say what was built.")
+	kept := strings.Index(md, "### The findings of review \"check\" (attempt 1), which this request keeps\n\nReview \"check\" asked for changes to the commit "+c3+" before this request, and they stand: address each of these too, or say in your summary why not; the review runs again on your result. Its summary: Not yet.\n\n")
+	if person < 0 || kept < person || !strings.Contains(md[kept:], "- major built.txt:1: Say why.\n") || !strings.Contains(md[kept:], "- nit: 19f") {
+		t.Fatalf("task.md:\n%s", md)
+	}
+	row := l.taskWhen(t, run.ID, "build", "with both", func(r ledger.TaskRow) bool { return strings.Contains(r.Repair, `"rv-0103"`) })
+	if rp := decodeRepair(row.Repair); rp == nil || rp.request == nil || rp.from == nil || *rp.from != want || len(rp.findings) != len(findings) {
+		t.Fatalf("the task's row keeps %s", row.Repair)
+	}
+	stopRun(t, e, run.ID)
 }

@@ -430,11 +430,19 @@ type repair struct {
 	// request is a person's change request, its summary in summary; nil
 	// for a review task's repair.
 	request *ChangeRequest
+	// from names the review task whose findings a person's request keeps
+	// (findings, keepReview); nil otherwise.
+	from *FindingsFrom
 }
 
 // taskRepair is rp as the task's row and its task file keep it.
 func (rp *repair) taskRepair() *TaskRepair {
-	return &TaskRepair{Review: rp.review, Attempt: rp.attempt, Commit: rp.commit, Start: rp.start, Summary: rp.summary, Findings: slices.Clone(rp.findings), Request: rp.request.clone()}
+	tr := &TaskRepair{Review: rp.review, Attempt: rp.attempt, Commit: rp.commit, Start: rp.start, Summary: rp.summary, Findings: slices.Clone(rp.findings), Request: rp.request.clone()}
+	if rp.from != nil {
+		from := *rp.from
+		tr.FindingsFrom = &from
+	}
+	return tr
 }
 
 // taskResult is a task's accepted result.

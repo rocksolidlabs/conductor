@@ -34,7 +34,7 @@ const (
 
 // Version is the schema this binary writes. A database of a later version
 // opens read-only; an earlier one is brought to it (migrations).
-const Version = 9
+const Version = 10
 
 // migrations bring a database from the version keyed to the next, in one
 // transaction with the version's change: 1 to 2 adds the attempts'
@@ -97,16 +97,23 @@ var migrations = map[int][]string{
 	// before this version, so a version 7 database's rows are all true as
 	// they are: nothing is derived.
 	7: decisionTables,
-	// Version 9 (RV1, a person's repair, #622): no table changes and no
-	// row is rewritten. A task's repair may now hold a person's request
-	// and a start of its own (crew.TaskRepair's request and start), and
-	// an attempt's result what it addressed: members of JSON the ledger
+	// Version 9 is DR1's (#637, pull request #683: a decision request's
+	// index gains its task), which lands before RV1's version 10: its
+	// merge puts its statements here. Until then, on this branch alone,
+	// 8 to 9 changes nothing, so that the barrier below is version 10
+	// and no number names two schemas.
+	8: {},
+	// Version 10 (RV1, a person's repair, #622): no table changes and no
+	// row is rewritten. A task's repair may now hold a person's request,
+	// a start of its own and the review task's findings the request
+	// keeps (crew.TaskRepair's request, start and findingsFrom), and an
+	// attempt's result what it addressed: members of JSON the ledger
 	// keeps as text, which a binary before them would drop as it wrote
 	// the repair back and so launch a repair attempt without the
 	// person's changes. The version is a barrier: such a binary opens a
-	// version 9 ledger read-only. Every row a version 8 database holds
-	// has neither member and reads as it did.
-	8: {},
+	// version 10 ledger read-only. Every row a version 9 database holds
+	// has none of these members and reads as it did.
+	9: {},
 }
 
 // migrationsGo run after a version's statements, in the same transaction:
