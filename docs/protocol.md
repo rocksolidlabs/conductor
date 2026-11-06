@@ -478,7 +478,7 @@ that resumes without it has the pair it last sent stand until its first
 `attention`, which then drops the `kept`), and an older server ignores the
 field),
 `activity{sessionId,entry,state?}`,
-`chat{sessionId,message}` (a chat message the host's session kept, as `chat` carries it to a viewer; the server takes the connection's session, keeps `message`, `system`, `sent_to_agent` and `question` kinds, scope `session`, bounded ids, cleaned names, the text cleaned and cut to 2048 bytes, `to` only as `agent`; a `question` only from the agent's role (`by.role` `agent`), which no other kind may carry, its `options` cleaned as a server session's (at most 6, each label at most 60 runes, cut with an ellipsis); a `system` line's `event` only when it is `join`, `leave`, `answered` or `withdrawn`, the last two with their `ref`, and a `withdrawn` line's `text` only when it is `terminal` or `agent`; it mirrors the message into the events stream and the session's record (History); a switchyard drops it),
+`chat{sessionId,message}` (a chat message the host's session kept, as `chat` carries it to a viewer; the server takes the connection's session, keeps `message`, `system` and `sent_to_agent` kinds, scope `session`, bounded ids, cleaned names, the text cleaned and cut to 2048 bytes, `to` only as `agent`, and mirrors it into the events stream; a switchyard drops it),
 `link{requestId, role, ttlSeconds?, label?}` (a share link to the session,
 minted by the server: `requestId` ≤ 32 bytes, `label` ≤ 120 bytes,
 `ttlSeconds` ≤ 86400, at most 5 requests a minute per connection; one
@@ -3921,13 +3921,14 @@ state}`.
 
 ### History
 
-Every session the server runs or hosts gets a **record** (`docs/plans/history.md`,
+Every session the server runs gets a **record** (`docs/plans/history.md`,
 Program item HS1; `internal/journal`): a JSON document of its own,
 `history/sessions/<id>.json` in the data directory (the directory 0700,
-each file 0600), begun as the session is added, before it can keep an
-entry, and written as it changes, at most once every 5 s, and at once at
-its end, when a crew is taken after its launch, and for a hosted
-session's first write. The server holding `history/owner.lock` writes the
+each file 0600), begun and written as the session is made, before it can
+keep an entry, then written by the journal's writer as it changes, and
+at once at its end and when a crew is taken after its launch. A hosted
+session has no record yet. A server killed loses what was not yet
+written; no time bound is promised. The server holding `history/owner.lock` writes the
 records; another server on the same data directory reads them (its own
 sessions unrecorded, `readOnly` on the list) and takes the lock when the
 first lets it go. `history.sessions` (`CONDUCTOR_HISTORY_SESSIONS`, on by
@@ -3936,11 +3937,10 @@ server with no data directory, and a switchyard, keep none.
 
 A record holds the session's id, name and kind; its agent (`id`, `name`,
 `adapter`, `version` from the server's probe, its own `session` `{id,
-source, resumable}` as the session knows it); its host (`name`, `user`,
-for a hosted one `owner`, the hash the hub keeps of its host's instance,
-and `hosted`); `where` it ran (a server session's Runtime, always set;
-empty for a hosted one, whose host reports none); its `cwd`; for a native
-server session the `repo` (the worktree's top), `repoCommon` (the
+source, resumable}` as the session knows it); its host (`name`, `user`;
+`owner` and `hosted` are kept for a later version's hosted records,
+empty here); `where` it ran (its Runtime, always set); its `cwd`; for a native
+session the `repo` (the worktree's top), `repoCommon` (the
 repository's common git directory, absolute), `branch` and `startCommit`
 read in one `git rev-parse` in the folder opened and checked, the one its
 process starts in, before it starts (`startFrom: "launch"`; an attempt of
@@ -3949,22 +3949,23 @@ and `endCommit`, HEAD read once its process is gone in the session's own
 folder as it was opened (through its handle where the system has one), an
 observation kept only when the repository found there is the launch's by
 the file system's identity of its common directory, never by a path's
-text; its `launch` (server sessions: `args` only when the launch
+text; its `launch` (`args` only when the launch
 fits 16 KiB, else `argCount` and `argsSha256` with `argsKept: false`; the
 variables' `envNames`, at most 64, `envCount` and one `envSha256` over the
 sorted `name=value` lines, never a value; `yolo`, `renamed`); its `crew`
 (`runId, crewId, member, task?, attempt?, brakeman?`); `resumedFrom`;
-`startedAt`; `endedAt` (an observed end: an exit, or a stop once the
-process is gone; a stop that failed leaves the record open), or `lostAt`
-when the server stopped observing it (`ending` `lost` for a server
-session removed from the listing, or still running at a shutdown, while
-its process ran, and for a record found open at the next start; `host
-away` for a hosted one its hub let go past the disconnect grace, or whose
-host was connected at a shutdown: whether its process ended is not
-known); the end is read from the session itself, not from the order its
-events arrive in; `ending` (`exited (exit 0)`, `stopped`, …);
-`reopened`, how often its host took a hosted record up again under the
-same id; and its evidence: `entries[{seq, at, kind, id?, ref?, event?,
+`startedAt`; `endedAt` (an observed end: the session's process gone,
+with the status and exit code the session published, or `exited` with no
+exit code when the server's last look at a session leaving it found the
+process gone before its status was published; a stop that failed leaves
+the record open), or `lostAt` when the server stopped observing it
+(`ending` `lost`: a session removed from the listing, or still there at
+a shutdown, while its process ran; a record found open at the next
+start; a record whose delete failed while its file said open: whether
+its process ended is not known); the end is read from the session
+itself, not from the order its events arrive in, and once recorded it
+stands; `ending` (`exited (exit 0)`, `stopped`, `lost`, …); `reopened`,
+kept for a later version's hosted records, 0 here; and its evidence: `entries[{seq, at, kind, id?, ref?, event?,
 byName?, message?, path?, tool?, url?, to?, choices?, outcome?}]` in order
 of `at`, then `seq`: `typed` (a line Conductor typed: a crew's prompt, a
 broadcast, a handoff), `question` (the agent's question in the chat, `id`
@@ -3980,11 +3981,10 @@ last}]`, one row per path and op, at most 500, a path the server's deny
 list covers never written in a server session's record; `tools`, tool uses counted by tool, at most 64;
 `dropped`, the entries and files its bounds let go, oldest first, and
 those that arrived once its end was recorded, whatever their time says
-(what arrives before is kept in its place by its own time, a host's clock
-for a hosted session); `resumes`, the receipts of resumes from it.
+(what arrives before is kept in its place by its own time); `resumes`, the receipts of resumes from it.
 Never kept: what a person types into a terminal or a reply box, a typed
-answer's text (whoever passed it on: a reply box, a provider, a route's
-answer on a host), a variable's value, who joined, left or came through a
+answer's text (whoever passed it on: a reply box, a provider, a route),
+a variable's value, who joined, left or came through a
 link, an attention entry. A record is at most 64 KiB as written; a
 message at most 500 bytes, a chat line 2 KiB. The 2,000 records that
 ended (or were last observed) most recently are kept; a live one and one
@@ -3992,19 +3992,17 @@ with a resume being started are never pruned. A record of a later version
 is listed (`newer: true`) and read as it is, never rewritten. A file in
 `history/sessions/` this version cannot decode is kept as it is: listed
 by its id alone (`unreadable: true`, `startedAt` its file's last write),
-counted toward the 2,000 by that time, forgettable, never written over (a
-hosted session of its id is not recorded). A server that does not hold
+counted toward the 2,000 by that time, forgettable, never written over. A server that does not hold
 the records reads a file again only when its size or time changed.
 
 | Route | Who | Answers |
 |---|---|---|
 | `GET /api/history/sessions?after=&limit=` | admin | `{records[{id, name, kind, agent, host, where?, cwd, repo?, branch?, crew?, startedAt, endedAt?, lostAt?, ending?, entries, files, dropped?, newer?, unreadable?}], next?, readOnly?}`, newest first by `startedAt`; `limit` 1 to 100, default 50 (`400 invalid_request` otherwise); `after` the `next` of the page before (at most 64 bytes; `400 bad_cursor` for one that is not) |
 | `GET /api/history/sessions/{id}` | admin | `{record, live, newer}`: the record whole (at most 64 KiB), `live` while the registry lists its session running; `404 not_found` |
-| `DELETE /api/history/sessions/{id}` | admin | `204`: the record forgotten, its file deleted; `409 live_session` for a session still running, `409 resume_pending` for a record whose resume is being started, `409 history_read_only` on a server that does not hold the records, `404 not_found`, `500 history_failed` when its file could not be deleted: the record stays as last written, listed and forgettable again, and nothing more is written to it |
+| `DELETE /api/history/sessions/{id}` | admin | `204`: the record forgotten, its file deleted; `409 live_session` for a session still running, `409 resume_pending` for a record whose resume is being started, `409 history_read_only` on a server that does not hold the records, `404 not_found`, `500 history_failed` when its file could not be deleted: the record stays as last written, listed and forgettable again, nothing its session says is written to it, and one whose file has no end is listed `lost` and written so |
 | `DELETE /api/history/sessions` | admin | `{forgotten, kept}`: every record neither live nor pending forgotten, those kept counted; `500 history_failed` when a file could not be deleted (those records stay, as above) |
 
 From a forget on, nothing the forgotten record's session says is written
-anywhere, also when its host registers the same session again (a new
-record of the same id). A share link, a session's own token and
+anywhere. A share link, a session's own token and
 Brakeman's principal reach none of them (`401`). A server with no data directory, and a switchyard,
 answer `404 history_unavailable`.

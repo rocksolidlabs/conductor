@@ -18,91 +18,69 @@ import (
 )
 
 // The session journal (docs/plans/history.md, Program item HS1, PR-1):
-// a record of every session the server runs or hosts, kept by
-// internal/journal under the data directory's history/. The server opens
-// it with its data directory (a switchyard keeps none) and keeps each
-// recorded session's record in step with the session.
+// a record of every server session, kept by internal/journal under the
+// data directory's history/. The server opens it with its data directory
+// (a switchyard keeps none) and keeps each recorded session's record in
+// step with the session. A hosted session has no record yet.
 //
 // # The record follows the session (reconcile)
 //
 // A session's record is reconciled from the session's state, never
-// assembled from the order of its callbacks. One function, reconcile,
-// reads what is true of the session now and settles the difference into
-// its record (journal.Settle): its name, its agent's own session, its
-// crew, whether it has ended and how and when. Run twice, or after any
-// other write, it changes nothing more.
+// assembled from the order of its callbacks. One step, reconcile, reads
+// what is true of the session and settles it into its record through one
+// journal write (journal.Settle); run twice, or after any other write, it
+// changes nothing more. The sources of truth are two: the session object
+// (its Info and its process's ProcessDone), which stays readable after it
+// has left the registry, and the registry's membership (registry.Get
+// answers this very object). Each recorded session has one recorder, in
+// recCur under its id, from its Begin (the admission rule); a recorder no
+// longer there reconciles nothing and keeps nothing.
 //
-// The sources of truth, read under recMu:
+// reconcile runs at exactly these moments: the registration's completion
+// (registered), so what the session did before the registry held it is
+// read then; a hint; the registry's removal (recordRemoved), final; and
+// the shutdown's final pass (closeSessionRecords), final. A hint is a
+// callback that says something may have changed: the session's OnChange
+// and the wait for a stopped session's process (awaitProcessEnd). It
+// carries no truth: it only runs reconcile. A hint late, repeated, out of
+// order or lost is harmless.
 //
-//   - which registration the record follows: the recorder registered for
-//     its id (recCur). A recorder is one registration of a session: a
-//     server session's, begun at its launch; a hosted one's, begun as the
-//     hub adds it, and again each time its host registers it anew after
-//     the hub let it go (the record taken up again, its instance kept).
-//     A recorder that is not its id's (one a later registration replaced,
-//     one already final) reconciles nothing and keeps nothing.
-//   - whether the session is still the server's: the registry's entry for
-//     its id is this registration's session (registry.Get).
-//   - what the session is: the session object itself (Driver.Info), and a
-//     server session's process (ProcessDone): its end is one the server
-//     observed once its status has ended and, for a server session, its
-//     process is gone (a stop that failed leaves the status stopped while
-//     the process runs).
+// The snapshot rule (reconcileLocked): under recMu, membership first, then
+// the session's Info, then whether its process is gone. The run is final
+// when membership was read absent, or in the final pass; a final run lets
+// its recorder go. An end is observed when the process is gone: a final
+// read's end is what that read shows (the published end, else exited with
+// no exit code at the read's time; the process running, lost, for good);
+// a non-final read records an end only once the status is published too.
+// Membership read before the state is what makes a non-final run safe: a
+// removal after it runs its reconcile after this one (recMu), reads the
+// absence and reads the state again.
 //
-// reconcile runs, and the end is recorded, at exactly these moments:
+// The admission rule: the final pass marks the records closed under recMu
+// (recordsClosed) and, in the same hold, settles every recorder that has
+// its session object; one with none is left open on disk, for the next
+// start to close as lost. After the mark nothing is begun, no recorder is
+// put in place, and nothing reaches a record. An abandonment (the registry
+// refused the session) marks its recorder leaving and keeps it in recCur
+// until the journal's own removal has returned; the final pass waits for it.
 //
-//   - registration: once the registration is complete (a server session
-//     in the registry, registered; a hosted one added, beginHostedRecord),
-//     so whatever the session did before its recorder existed (an exit
-//     before the registry held it) is read then.
-//   - a hint (below): an observed end found is recorded.
-//   - removal: the registry's OnRemove (recordRemoved) runs it at once,
-//     before the removal returns. The session is no longer the registry's,
-//     so this run is final: the session's observed end, or, without one,
-//     host away for a hosted session and lost for a server one (its
-//     process's state unknown), and the recorder is let go. Nothing is owed
-//     afterwards. Should the hint of a removal be late (a hosted session
-//     re-registered meanwhile), the registration it names is no longer
-//     its id's and it changes nothing: the end of the record of a
-//     registration is read from what is registered now, never from the
-//     event.
-//   - shutdown: every recorder still registered, final: the session's own
-//     observed end, else the server stopped observing it (lost, host away)
-//     (closeSessionRecords).
-//   - the next start, for a record still open on disk (a process killed):
-//     the journal marks it lost or host away as it loads (journal.Open).
+// The streams (the activity entries and the chat lines) are evidence, not
+// state: each is appended while its recorder is held and its record is
+// open, and dropped once the end is recorded (journal.Note, journal.Chat).
 //
-// A hint is a callback that says something may have changed: a session's
-// OnChange (its status, its name, its agent's session, its crew), and the
-// wait for a stopped session's process (awaitProcessEnd). It carries no
-// truth: it only runs reconcile, which reads the session again. A hint
-// late, repeated, out of order or lost is harmless: the next reconcile, at
-// the latest the removal's or the shutdown's, reads the same state. A
-// write the journal could not make is made again by the writer; reconcile
-// carries no retry state.
+// recMu is never held across a file write, a session call that waits, the
+// end commit's git read, or a wait for another goroutine. The lock order
+// is recMu, the registry's lock, the session's own lock, the journal's mu.
 //
-// The streams are not state: the activity entries (a file touched, a tool
-// used, a report, a line typed) and the chat lines. Each is appended while
-// its registration is its id's and its record is open, and dropped once
-// the end is recorded (journal.Note, journal.Chat): what a session says as
-// it ends reaches its record before the end is recorded only when it
-// comes first. A question still open when the end is recorded is recorded
-// as withdrawn by that end (the journal's closeQuestions), as the session's
-// own end withdraws it, so its outcome does not hang on a line that comes
-// later.
+// One fact is still read in an order of events: the end commit
+// (recordEndCommit), a git read the journal's writer makes after the end
+// is recorded, through the session's folder, which the session closes as
+// it leaves the registry. A session removed before the writer gets to it
+// has none read (its endCommit empty).
 //
-// One fact is still read in an order of events, and it is no lifecycle
-// fact: the end commit (recordEndCommit), a git read the journal's writer
-// makes after the end is recorded, through the session's folder, which the
-// session closes as it leaves the registry. A session removed before the
-// writer gets to it has none read (the record says so by its empty
-// endCommit); a git read under recMu would hold every reconcile behind a
-// disk.
-//
-// The server's recordDeliver, a test's seam, takes every hint and every
-// stream callback of a recorded session, to deliver late, in another
-// order, or not at all; registration, removal and shutdown run reconcile
-// themselves.
+// The test seams: recordDeliver takes every hint and stream callback, to
+// deliver late, in another order, or not at all; recordHook is run at each
+// stage recordSeam names.
 
 // revisionTimeout bounds a record's git read.
 const revisionTimeout = 2 * time.Second
