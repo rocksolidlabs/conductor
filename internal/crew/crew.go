@@ -110,6 +110,10 @@ type Task struct {
 	Instructions string   `json:"instructions"`
 	Needs        []string `json:"needs,omitempty"`  // the tasks whose results it starts from; a review's one work task
 	Checks       []Check  `json:"checks,omitempty"` // run against the result; none for a review
+	// Owner is the person accountable for the task's outcome, a name of
+	// Crew.People, apart from Member, the agent that does it; "" for none
+	// (TaskOwner: the crew's acceptance owner then).
+	Owner string `json:"owner,omitempty"`
 }
 
 // Check is a command the controller runs: against a result (Task.Checks),
@@ -152,8 +156,12 @@ type Crew struct {
 	// Yolo overrides the server's yolo default for the crew's runs: nil
 	// follows it, false launches every member without its agent's yolo
 	// recipe, true with it. A launch fixes the choice on the run.
-	Yolo      *bool     `json:"yolo,omitempty"`
-	Members   []Member  `json:"members"`
+	Yolo    *bool    `json:"yolo,omitempty"`
+	Members []Member `json:"members"`
+	// People are the persons who own the crew's decisions and its tasks'
+	// outcomes (people.go): local labels, a list of their own so that no
+	// loop over Members can start one.
+	People    []Person  `json:"people,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 	// Origin is the Brakeman draft a person made this crew from
@@ -230,9 +238,9 @@ func gitRefuses(name string) bool {
 // ValidateSave is Validate with the rules a crew is held to as it is
 // saved, not as one saved before is read or a run of it continued (a crew
 // valid when it was saved stays readable and its runs continuable): no
-// task needs another twice, and a task's goal, role and instructions take
-// at most maxTaskText as its task.json keeps them, the part of a task file
-// never cut (fitTaskFile).
+// task needs another twice, and a task's goal, role and instructions, with
+// who answers for it (taskPeople), take at most maxTaskText as its
+// task.json keeps them, the part of a task file never cut (fitTaskFile).
 func (c Crew) ValidateSave() error {
 	if err := c.Validate(); err != nil {
 		return err
@@ -249,8 +257,13 @@ func (c Crew) ValidateSave() error {
 				prompt = m.Prompt
 			}
 		}
-		if n := taskTextBytes(c.Goal, prompt, t.Instructions); n > maxTaskText {
-			return invalidf("task %s: its goal, role and instructions are %d bytes as its task file keeps them, more than %d", quote(t.ID), n, maxTaskText)
+		people := taskPeopleBytes(c, t)
+		if n := taskTextBytes(c.Goal, prompt, t.Instructions) + people; n > maxTaskText {
+			what := "goal, role and instructions"
+			if people > 0 {
+				what = "goal, role, instructions and people"
+			}
+			return invalidf("task %s: its %s are %d bytes as its task file keeps them, more than %d", quote(t.ID), what, n, maxTaskText)
 		}
 	}
 	return nil
@@ -304,6 +317,9 @@ func (c Crew) Validate() error {
 		return err
 	}
 	if err := c.checkTasks(names); err != nil {
+		return err
+	}
+	if err := c.checkPeople(names); err != nil {
 		return err
 	}
 	b, err := store.Encode(c)
@@ -669,6 +685,10 @@ func (c Crew) clone() Crew {
 	c.Members = slices.Clone(c.Members)
 	for i := range c.Members {
 		c.Members[i].Args = slices.Clone(c.Members[i].Args)
+	}
+	c.People = slices.Clone(c.People)
+	for i := range c.People {
+		c.People[i].Responsibilities = slices.Clone(c.People[i].Responsibilities)
 	}
 	if c.Manifest != nil {
 		rec := c.Manifest.clone()
