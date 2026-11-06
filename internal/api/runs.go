@@ -685,6 +685,9 @@ func (s *Server) resumeRecord(w http.ResponseWriter, ctx context.Context, id str
 	if !ok {
 		return false
 	}
+	if f := gateSeam(&s.launches, &s.launches.afterRecordRead); f != nil {
+		f(id)
+	}
 	if rec.ResumedBy != "" {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{"code": "already_resumed", "message": "the run was resumed already, as " + rec.ResumedBy, "run": rec.ResumedBy}})
 		return true
@@ -692,7 +695,7 @@ func (s *Server) resumeRecord(w http.ResponseWriter, ctx context.Context, id str
 	if by := s.recordMark(id); by != "" {
 		// Resumed already, its mark not yet on the record: tried again, and
 		// the continuation named.
-		s.markRecord(rec, by)
+		s.markRecord(id, by)
 		writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{"code": "already_resumed", "message": "the run was resumed already, as " + by, "run": by}})
 		return true
 	}
@@ -700,6 +703,10 @@ func (s *Server) resumeRecord(w http.ResponseWriter, ctx context.Context, id str
 	if rec.Managed != nil {
 		// A managed run's record is a cache of the ledger, which the
 		// continuation reads (#334, row 8).
+		if aerr := s.continuationAdmission(); aerr != nil {
+			writeError(w, aerr.status, aerr.Code, aerr.Message)
+			return true
+		}
 		run, err = s.runs.ContinueRun(ctx, id, rec.Label)
 	} else {
 		run, err = s.runs.ResumeRecord(ctx, rec)
@@ -709,7 +716,7 @@ func (s *Server) resumeRecord(w http.ResponseWriter, ctx context.Context, id str
 		return true
 	}
 	s.recordContinuation(ctx, run.ID)
-	s.markRecord(rec, run.ID)
+	s.markRecord(id, run.ID)
 	writeJSON(w, http.StatusCreated, map[string]any{"run": run})
 	return true
 }
@@ -729,24 +736,28 @@ func (s *Server) recordContinuation(ctx context.Context, runID string) {
 	}
 }
 
-// markRecord marks the record rec with its continuation by (ResumedBy) and
-// writes it. A write that fails leaves the claim in memory (recordMarks),
-// for the next resume of the record to answer the continuation and try
-// again, so a failed write never lets a record be resumed twice.
-func (s *Server) markRecord(rec crew.Run, by string) {
+// markRecord marks the record of the run with the given ID with its
+// continuation by (ResumedBy) and writes it, the record read again as it
+// is on disk (Records.Mark), never the snapshot resumeRecord read before
+// the continuation: a takeover's syncRecords may have written the record
+// since, with the people and owners an older build dropped, at the same
+// revision or a newer one. A write that fails leaves the claim in memory
+// (recordMarks), for the next resume of the record to answer the
+// continuation and try again, so a failed write never lets a record be
+// resumed twice; a record gone meanwhile has nothing left to resume.
+func (s *Server) markRecord(id, by string) {
 	s.resumingMu.Lock()
 	if s.recordMarks == nil {
 		s.recordMarks = map[string]string{}
 	}
-	s.recordMarks[rec.ID] = by
+	s.recordMarks[id] = by
 	s.resumingMu.Unlock()
-	rec.ResumedBy = by
-	if err := s.records.Save(rec); err != nil {
-		s.log.Warn("run record not marked with its continuation; the mark is kept here", "run", rec.ID, "continuation", by, "err", err)
+	if _, err := s.records.Mark(id, by); err != nil {
+		s.log.Warn("run record not marked with its continuation; the mark is kept here", "run", id, "continuation", by, "err", err)
 		return
 	}
 	s.resumingMu.Lock()
-	delete(s.recordMarks, rec.ID)
+	delete(s.recordMarks, id)
 	s.resumingMu.Unlock()
 }
 
@@ -776,6 +787,10 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	if errors.Is(err, crew.ErrManaged) {
 		// A managed run is continued (#334, row 8): its results kept, the
 		// rest dispatched again.
+		if aerr := s.continuationAdmission(); aerr != nil {
+			writeError(w, aerr.status, aerr.Code, aerr.Message)
+			return
+		}
 		run, err = s.runs.ContinueRun(ctx, id, "")
 	}
 	if errors.Is(err, crew.ErrRunNotFound) && s.records != nil {

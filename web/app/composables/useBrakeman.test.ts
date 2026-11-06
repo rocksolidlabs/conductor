@@ -11,7 +11,7 @@ import { requestNumber } from '../utils/brakeman'
 // folded into the list.
 
 function req(id: string, state: string, over: Partial<BrakemanRequest> = {}): BrakemanRequest {
-  return { id, opId: `op-${id}`, kind: 'briefing', createdAt: '2026-11-02T09:00:00Z', state, agent: {}, config: { visibility: {} as never, scope: {}, permissions: { observe: true, draft: true, propose: true }, budget: { turnMinutes: 15, readsPerTurn: 300, turnsPerDay: 40 }, rev: 1 }, reads: 0, ...over }
+  return { id, opId: `op-${id}`, kind: 'briefing', createdAt: '2026-11-02T09:00:00Z', state, agent: {}, config: { visibility: {} as never, scope: {}, permissions: { observe: true, draft: true, propose: true }, budget: { turnMinutes: 15, readsPerTurn: 300, turnsPerDay: 40, minutesPerDay: 240 }, rev: 1 }, reads: 0, ...over }
 }
 
 /** Reads that answer from `server`, whose requests a test moves; each read resolves when the test lets it (`release`). */
@@ -147,11 +147,14 @@ describe('the brakeman events', () => {
     await live.readFirst()
     const before = changes
     f.server.set('br-1', req('br-1', 'briefed', { hasBrief: true }))
+    const roleSeq = live.roleSeq
     live.snapshot()
     await settle()
     await settle()
     expect(live.list().map((r) => r.id)).toEqual(['br-1'])
     expect(changes).toBeGreaterThan(before)
+    // The role's events missed meanwhile too: a page showing its log reads it again.
+    expect(live.roleSeq).toBe(roleSeq + 1)
   })
 
   it('take the request in progress off the page once its slot is given up, though its state is the same', async () => {
@@ -183,6 +186,21 @@ describe('the brakeman events', () => {
     expect(asBrakemanEvent({ id: 'x', state: 'running' })).toBeNull()
     expect(asBrakemanEvent({ id: 'br-3' })).toBeNull()
     expect(asBrakemanEvent(null)).toBeNull()
+    expect(asBrakemanEvent({ id: 'role', state: 'cooling' })).toEqual({ id: 'role', state: 'cooling' })
+  })
+
+  it("of the background role move its state at once, read the state again and count the role's changes", async () => {
+    let reads = 0
+    const live = new BrakemanLive()
+    const state = { config: {} as never, current: null, queue: [], turnsToday: 0, role: { state: 'briefing' } }
+    live.attach({ state: () => (reads++, Promise.resolve({ ...state, role: { state: 'cooling', coolUntil: '2026-11-05T22:00:00Z' } })), page: () => Promise.resolve({ requests: [], next: '' }), request: () => Promise.reject(new Error('none')) })
+    live.state = state
+    live.event({ id: 'role', state: 'cooling' })
+    expect([live.state?.role?.state, live.roleSeq, live.requests.size]).toEqual(['cooling', 1, 0])
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(reads).toBe(1)
+    expect(live.state?.role?.coolUntil).toBe('2026-11-05T22:00:00Z')
   })
 
   it('say Brakeman is not here on a server without it', async () => {

@@ -76,7 +76,7 @@ func TestCloneCopiesTheAgentTheDirectoryAndTheArguments(t *testing.T) {
 	}
 	v := dialViewer(t, e, c["id"].(string), adminToken)
 	v.hello(80, 24)
-	v.expectOutput("ARG[--model]\r\nARG[opus]\r\nARG[it's two words]\r\nARG[say \"hi\"]\r\nDONE")
+	v.printedUntil("ARG[--model]\nARG[opus]\nARG[it's two words]\nARG[say \"hi\"]\nDONE")
 
 	// What the request names is the clone's: another agent, directory and
 	// arguments; an empty list is no arguments.
