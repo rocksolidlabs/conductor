@@ -501,7 +501,9 @@ func TestBrakemanActFromTheCommandLine(t *testing.T) {
 		OpID  string `json:"opId"`
 		Reply struct {
 			Receipt struct{ ID string }
-			Launch  struct{ RunID string }
+			Launch  struct {
+				RunID string `json:"runId"`
+			}
 		} `json:"reply"`
 	}
 	if code != 0 || err != nil || json.Unmarshal([]byte(out), &printed) != nil || printed.Reply.Launch.RunID != "r-1" || printed.Reply.Receipt.ID == "" {
@@ -526,5 +528,26 @@ func TestBrakemanActFromTheCommandLine(t *testing.T) {
 	}
 	if n := len(g.sent()); n != 3 {
 		t.Fatalf("%d posts after a usage error", n)
+	}
+}
+
+// An act's words name a launch's run from Dispatch's launch, since the
+// server's answer to an act never carries the run: launched once the
+// launch is started, its state otherwise; a reply with a run (an
+// admin's launch) says the same.
+func TestActWordsNameTheRunFromTheLaunch(t *testing.T) {
+	for _, c := range []struct{ reply, want string }{
+		{`{"receipt":{"id":"0123456789abcdef","status":"done"},"launch":{"id":"0123456789abcdef","runId":"r-1","state":"started"}}`,
+			"launch_approved_plan ran (opId a1): receipt 0123456789abcdef, done; run r-1 launched"},
+		{`{"receipt":{"id":"0123456789abcdef","status":"done"},"launch":{"id":"0123456789abcdef","runId":"r-1","state":"failed"}}`,
+			"launch_approved_plan ran (opId a1): receipt 0123456789abcdef, done; run r-1, its launch failed"},
+		{`{"receipt":{"id":"0123456789abcdef","status":"done"},"launch":{"id":"0123456789abcdef","runId":"r-1"},"run":{"id":"r-1"}}`,
+			"launch_approved_plan ran (opId a1): receipt 0123456789abcdef, done; run r-1 launched"},
+		{`{"receipt":{"id":"0123456789abcdef","status":"done"}}`,
+			"launch_approved_plan ran (opId a1): receipt 0123456789abcdef, done"},
+	} {
+		if got := actWords("launch_approved_plan", "a1", json.RawMessage(c.reply)); got != c.want {
+			t.Errorf("%s:\n got %q\nwant %q", c.reply, got, c.want)
+		}
 	}
 }

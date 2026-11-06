@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo } from '~/composables/useSessions'
 import type { BrakemanConfig, BrakemanScope, BrakemanVisibility } from '~/utils/brakeman'
-import { BOUNDS, BRAKEMAN_ADAPTERS, GRANTS, agentChoice, agentIdOf, agentItems as agentChoices, briefingLine, briefingList, configProblems, formField, formMove, sameConfig, grantHeld, scopeLines, scopeList, servedGrants, withGrant } from '~/utils/brakeman'
+import { BOUNDS, BRAKEMAN_ADAPTERS, GRANTS, agentChoice, agentIdOf, agentItems as agentChoices, briefingLine, briefingList, configProblems, formField, formMove, sameConfig, grantHeld, observesOnly, scopeLines, scopeList, servedGrants, withGrant } from '~/utils/brakeman'
 import { ApiError } from '~/composables/useApi'
 import { SETTINGS_FIELD_UI as fieldUi } from '~/utils/settingsSections'
 
@@ -12,8 +12,8 @@ import { SETTINGS_FIELD_UI as fieldUi } from '~/utils/settingsSections'
  * its turns run in, what it may see (terminal screens off until turned on), its scope, whether it may draft and propose, and its
  * budget, and whether the background role wakes it (BK3: its window, cooldown, a question's wait and briefing times, and the day's
  * minutes). The form checks what the server checks; the server's own words are shown for what it refuses, and beside an agent whose
- * read-only mode does not hold (its warnings). What is refused of a field the form draws no control for (the scope as a whole, the
- * wake mode, a model while the agent shows no model field) is said above Save.
+ * read-only mode does not hold (its warnings). What is refused of a field the form draws no control for (the scope as a whole, an
+ * operation's grant, the wake mode, a model while the agent shows no model field) is said above Save.
  *
  * What it may run (PR-13): the four operations a person may grant Brakeman (BK2's closed list), each with what it authorizes in words,
  * a switch each. A grant this server serves no route of is shown as not in this build and cannot be turned on (the admin's guide lists
@@ -225,7 +225,7 @@ async function save() {
         <legend class="mb-1 text-sm font-medium">What it may do</legend>
         <USwitch v-model="form.permissions.draft" label="Draft" description="Draft tickets, crews and handoffs, which you edit and make." data-brakeman-draft />
         <USwitch v-model="form.permissions.propose" label="Propose" description="Propose operations and prepare decisions, which you take." data-brakeman-propose />
-        <p v-if="!form.permissions.draft && !form.permissions.propose" class="text-xs text-muted @3xl:col-span-2">Observe only.</p>
+        <p v-if="observesOnly(form.permissions)" class="text-xs text-muted @3xl:col-span-2" data-brakeman-observe-only>Observe only.</p>
       </fieldset>
 
       <fieldset class="flex flex-col gap-2" data-brakeman-grants>
