@@ -14,7 +14,11 @@ again in review round 2 after reading `internal/api`'s agent-token
 paths, the engine's refunds (`withdrawFrom`, `steps.go`), `checkTree`,
 the candidates route's revision rule, DR1's `room` and
 `MaxDecisionsPerRun` (`issue-636`) and `decisionSession` (`issue-637`);
-the lists of what changed are at the end.
+and again in review round 3 after reading `settleRun`, `commit` with
+DR1's `endedWork`, `startContinued`'s marks, `regate` and
+`readDecisionHistory`'s `maxChain` (`issue-636`), `gitcli`'s runner,
+Brakeman's `filterCandidates`, and the `authenticate` of the files and
+session reads; the lists of what changed are at the end.
 
 Some changes have no single right design until two have been tried: a
 cache keyed one way or another, a hard bug with two plausible causes, a
@@ -281,10 +285,12 @@ After this item ships, a person sees:
 - **The launch says what it costs.** The crew is proposed as a plan
   revision of the ticket and approved (DS2, unchanged). Launch from that
   revision shows, before anything starts, what it multiplies:
-  "This comparison starts 3 candidates at once (Claude Code, Codex,
-  Claude Code) and an agent review of each when it is done: 6 agent
-  sessions to begin with, then what 3 runs of one candidate's crew would
-  take, since each candidate is worked as a task of its own crew is
+  "This comparison starts 3 candidates (Claude Code, Codex, Claude
+  Code): 3 agent sessions, once the plan's decisions and the project's
+  prerequisites let the work start; then an agent review of each
+  candidate that succeeds: up to 3 more sessions, none for a candidate
+  that fails or is cancelled; then what 3 runs of one candidate's crew
+  would take, since each candidate is worked as a task of its own crew is
   (each attempt a session of its own; 3 counted attempts a task, and a
   review's request for changes, an attempt that could not start and
   each Retry you give add more); 2 checks on each submitted candidate
@@ -364,9 +370,9 @@ After this item ships, a person sees:
   The same record, with its options' commits and its required
   rationale, shows on the decision card: the ticket page's Decisions
   section, Needs your decision (MB0) and `conductor decision respond`.
-  The selection names exact commits. Any change to a lane before it is
-  applied (a retry of a failed lane, a Check again, an Accept anyway, a
-  lane cancelled) closes it, open or answered, and a new one opens when
+  The selection names exact commits. Any change to what a lane shows
+  before it is applied (a retry of a failed lane, a Check again, an
+  Accept anyway) closes it, open or answered, and a new one opens when
   every lane has ended again; the person answers that one. Nothing is
   ever selected by default.
 - **What becomes of the others.** The candidates not selected keep their
@@ -549,7 +555,7 @@ its test:
 
 | # | Door | What a lane's session gets in a comparison | Row | Test |
 |---|---|---|---|---|
-| 1 | Its worktree (`<cwd>/.conductor/worktrees/<run>/<task>.<n>`, branch `crew/<run>/<task>.<n>`) and `GET /api/sessions/{id}/files` | its own tree at the base (a review's at its candidate); the files route reads its own session's folder through its `os.Root`, as today; a sibling lane's worktree is a folder the worktree does not fence off (door 14) | PR-1 | `TestEveryCandidateStartsAtTheBase` |
+| 1 | Its worktree (`<cwd>/.conductor/worktrees/<run>/<task>.<n>`, branch `crew/<run>/<task>.<n>`) and `GET /api/sessions/{id}/files` | its own tree at the base (a review's at its candidate), read with the agent's own tools; the files route takes no agent token (`handleGetFile` calls `authenticate`, which resolves none), so a lane's token is refused `401` there, as today; a sibling lane's worktree is a folder the worktree does not fence off (door 14) | PR-1; the route's `401` tested in PR-1b | `TestEveryCandidateStartsAtTheBase`, `TestTheSessionReadsTakeNoAgentToken` |
 | 2 | Its task file (`task.md`, `task.json`, `task-more.json`) and `task_context` (`GET /api/sessions/{id}/task`) | its own task; the comparison part names its own approach, the criteria and the count of candidates, never another lane's task, member, branch, path or approach | PR-1 | `TestATaskFileNamesNoOtherLane` |
 | 3 | Inputs and handoffs (needs' results) | within its lane only: a candidate has no needs, a review needs its own candidate (validation) | PR-1 | `TestCompareValidates` |
 | 4 | Derived context (`ContextProvider` blocks) | none: no provider is asked for a comparison's attempts | PR-1 | `TestAComparisonTakesNoDerivedContext` |
@@ -561,18 +567,22 @@ its test:
 | 10 | Evidence, receipts and logs (`GET /api/runs/{run}/candidates`, the check rows and their logs, `GET /api/runs/{run}/comparison`) | refused: these are admin routes (and Brakeman's shared reads); a session's token is refused `401` | PR-3 | `TestALaneReadsNoEvidenceRoute` |
 | 11 | Brakeman's comparison (its request, its turn, its brief) | nothing: Brakeman's tools (`brakeman_request`, `brief_submit`, `observe`, `act`) answer only a Brakeman turn's token, so a lane's token is refused them; the brief is read by the admin and by Brakeman, and reaches no task file, context, message, ticket comment or decision of a lane | PR-5 | `TestTheDraftReachesNoLane` |
 | 12 | Self-service that forms or grows a crew (`form_crew`, `add_member`) | refused to a managed run's member already (`needNoRun`, `needUnmanaged`) | PR-1b (test only) | `TestEveryAgentDoorIsListed` |
-| 13 | Its own session's tools (`report`, `set_state`, `ask`, `link`, `open_url`, `guide`, `GET /api/sessions/{id}`) | its own session only; what it reports goes to the people watching, never to another session | PR-1b (test only) | `TestEveryAgentDoorIsListed` |
+| 13 | Its own session's tools (`report`, `set_state`, `ask`, `link`, `open_url`, `guide`) and the session read (`GET /api/sessions/{id}`) | the tools: its own session only, what it reports going to the people watching, never to another session; the session read takes no agent token (`handleGetSession` calls `authenticate`), so a lane's token is refused `401` there, as today | PR-1b (test only) | `TestEveryAgentDoorIsListed`, `TestTheSessionReadsTakeNoAgentToken` |
 | 14 | What Conductor does not own: the shared object store (`git log --all`), sibling folders, the network | partly observed, not prevented: shared commits and equivalent patches (PR-2), shown as independence findings; a read of a sibling folder or the network is not observed, and the page says so | PR-2 | `TestSharedCommitsAreFlagged`, `TestACherryPickIsFlagged` |
 | 15 | RV1's review (#627, #631) | no agent tool: a person's Request changes reaches the selected lane's next attempt through its task file (door 2); for every other lane, and for every lane before an applied selection, the engine refuses it on any `main`: `request_changes` is not in `compareIntents` until PR-8a (PR-1), and a comparison's continuation repairs no lane but the selected one (PR-3) | PR-1, PR-3; the route's words in PR-6b or PR-8a | `TestACompareRunTakesOnlyItsListedCommands`, `TestAComparisonsContinuationRepairsOnlyTheSelected`, `TestRequestChangesOnAnUnselectedCandidateIsRefused` |
 | 16 | Any door a later row adds | closed until listed: `compareDoors` in `internal/api` (new, `compare_doors.go`) holds one entry per route pattern an agent's token may call, each with its rule (`own`, `lane`, `refused`, or a function). Every route that takes an agent's token takes it through one predicate, `agentTokenOK` (`attention.go`; called by `attentionPrincipal`, `taskSession`, `brakeman_session.go`, `brakeman_observe.go`, and #637's `decisionSession`); `authenticate` resolves no agent token. PR-1b gives `agentTokenOK` the request, and for a session of a compare lane it answers false for a pattern (`r.Pattern`) with no entry, or listed `refused`: the route answers as it does for a token it does not take (its `401`), so a route added later, by any plan, is closed to a comparison's lanes until its rule is written | PR-1b | `TestEveryAgentDoorIsListed`, `TestEveryAgentTokenPathIsGuarded`, `TestAnUnlistedDoorIsClosedToALane` |
 
 `TestEveryAgentDoorIsListed` walks the guide's operations
 (`guideOperations`) of every scope an agent's token may call (`session`,
-`task`, `ticket`, `observe`, `act`) and the session routes outside the
-guide (door 1's files, door 13's session read) and fails for any pattern
-without an entry in `compareDoors`; DR1's four decision tools are listed
-from PR-1b as `refused`, so #637 lands with them already closed to a
-comparison's lanes and adds nothing for this plan.
+`task`, `ticket`, `observe`, `act`) and fails for any pattern without an
+entry in `compareDoors`; DR1's four decision tools are listed from PR-1b
+as `refused`, so #637 lands with them already closed to a comparison's
+lanes and adds nothing for this plan. The files route and the session
+read are not agent-token routes: `TestTheSessionReadsTakeNoAgentToken`
+calls each with a candidate's token and with an ordinary run's member's
+and finds each refused `401`, as `authenticate` refuses every agent
+token today, so a later change that lets an agent's token in there
+fails it and must give the routes their entries.
 `TestEveryAgentTokenPathIsGuarded` parses `internal/api`'s files
 (`go/parser`, the test files left out) and fails for any call of a
 session's `AgentTokenOK` outside `agentTokenOK`, so a route cannot take
@@ -588,7 +598,8 @@ one through `decisionSession`), and calls each with a candidate's token
 **What it measures.** `Engine.Comparison(ctx, runID) (Comparison,
 error)` takes any run of a comparison's chain (the launched run or a
 continuation of it), walks the chain to its launched run (the first
-whose crew has the block and which continues no run), and reads the
+whose crew has the block and which continues no run; at most
+`maxCompareChain`, 256 runs, PR-3's bound), and reads the
 crew as launched, its base, and for each lane the candidate it shows:
 the task's standing result along the chain (a continuation's imported
 result keeps its source run's reference, `candidate:<run>/<task>/<n>`,
@@ -627,7 +638,7 @@ type Comparison struct {
 type ComparedCandidate struct {
 	Task, Member, Agent string; Args []string; Approach string
 	State string                 // running, ready (a standing result), failed, cancelled
-	Run string; Attempt int; Commit string // the candidate shown: its run (a continuation's, or its source's), attempt and commit
+	Run string; Attempt int; Commit, Start string // the candidate shown: its run (a continuation's, or its source's), attempt, commit and start
 	Selectable bool              // a standing result; false for a failed lane's last submitted commit
 	Attempts int                  // attempts made of the task along the chain
 	AcceptedAnyway bool
@@ -641,15 +652,21 @@ type ComparedCandidate struct {
 }
 type ComparedCheck struct {
 	Phase, ID string; Argv []string; ArgvCut bool; ArgvDigest string; TimeoutSeconds int
-	Cells []CheckCell  // one per candidate shown: {Task, Attempt, K, State, Exit, Signal, TimedOut, DurationMS, Where, Manifest, Stable, Receipt}; State not_run when it has no receipt
+	Cells []CheckCell  // one per candidate shown: {Task, Attempt, K, State, Exit, Signal, TimedOut, DurationMS, Where, Manifest, Stable, Receipt, LogSHA256}; State not_run when it has no receipt
 	Verdict string     // comparable | unknown | not_comparable
 	Why []string       // words, at most 8, when not comparable or unknown
 }
 ```
 
-- `Size` is `git diff --numstat -z <base> <commit> --` in the run's
-  repository (argv, the C locale, through `gitcli`), with renames
-  counted as one file; a binary file counts its file and no lines.
+- `Size` is one `git diff --no-renames --raw --numstat -z <base>
+  <commit> --` in the run's repository (argv, the C locale, through
+  `gitcli`'s bounded runner, below): the raw part gives each path's
+  status (`A` added, `D` deleted, `M` or `T` changed), which the line
+  counts cannot (a new file of 5 lines and 5 lines appended to a file
+  both read `5 0`; an empty file added and one deleted both `0 0`), and
+  the numstat part its lines; renames are off, whatever `diff.renames`
+  says, so a renamed file counts as one deleted and one added; a binary
+  file counts its file and no lines.
 - `Deps` reads the paths `Size` found against one table of dependency
   files (`dependencyFiles`: `go.mod`, `go.sum`, `package.json`,
   `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`,
@@ -660,8 +677,9 @@ type ComparedCheck struct {
   and for each changed `go.mod` (its `require` lines, single and in
   blocks) and `package.json` (its `dependencies`, `devDependencies`,
   `peerDependencies` and `optionalDependencies`, with `encoding/json`)
-  reads the file at the base and at the commit (`git cat-file blob`, at
-  most 1 MiB each, else listed without modules) and lists each module
+  reads the file at the base and at the commit (its size asked first
+  with `git cat-file -s`, then `git cat-file blob` through the bounded
+  runner, at most 1 MiB each, else listed without modules) and lists each module
   added, removed or at another version. Anything else is listed as a
   changed file only: the page never claims a dependency change it did
   not parse.
@@ -673,14 +691,14 @@ type ComparedCheck struct {
   so.
 - `Equivalent` catches what ancestry cannot: a cherry-pick makes a new
   commit with another parent and id, so no object is shared. For each
-  candidate's commits in `<base>..<commit>` (at most 200; past that
-  "not checked: more than 200 commits"), the patch id of each (`git
-  diff-tree -p <c>^ <c>` piped by the server into `git patch-id
-  --stable`, two argv processes through `gitcli`, at most 8 MiB of
-  patch text a candidate, else "not checked: the patches pass 8 MiB"),
-  and a commit of one lane whose patch id equals one of another lane's
-  is listed with that lane ("1 commit carries the same change as one of
-  approach-b's"). A change copied by hand in other words, or squashed
+  pair of lanes whose candidates each have at most 200 commits in
+  `<base>..<commit>` (counted first with `git rev-list --count`; past
+  that "not checked: more than 200 commits"), one `git cherry <b> <a>
+  <base>`, git's own comparison of patch ids, lists a's commits since
+  the base with `-` before each whose change one of b's carries: one
+  argv process, nothing piped by the server, at most 200 lines. Such a
+  commit is listed with that lane ("1 commit carries the same change as
+  one of approach-b's"). A change copied by hand in other words, or squashed
   with other edits, has another patch id and is not caught; the page
   says "same patches: checked; a change rewritten by hand is not
   detected".
@@ -760,21 +778,31 @@ reply's bound:
 | a candidate's test and build files | 20 entries, each path cut at 300 bytes | 7 KiB |
 | a candidate's shared and equivalent | 3 lanes × (10 shared + 10 equivalent commits, each 40 hex digits) and each lane's task id | 4 KiB |
 | 4 candidates | the five lines above | 384 KiB |
-| check rows | 48 rows (8 task checks, 8 verify steps of the base's manifest, and up to 8 more from each of 4 candidates' manifests, whose ids may all differ from the base's; the expected rows among them whether or not any receipt exists), each with its argv preview cut at an entry's end to 1 KiB (`ArgvCut`; the comparison itself uses the whole argv's digest), 8 reasons of 300 bytes and 4 cells of 600 bytes | 288 KiB |
+| check rows | 48 rows (8 task checks, 8 verify steps of the base's manifest, and up to 8 more from each of 4 candidates' manifests, whose ids may all differ from the base's; the expected rows among them whether or not any receipt exists), each with its argv preview cut at an entry's end to 1 KiB (`ArgvCut`; the comparison itself uses the whole argv's digest), 8 reasons of 300 bytes and 4 cells of 800 bytes (with the receipt's ref and its log's SHA-256) | 320 KiB |
 | supporting (PR-5) | 4 claims (summary cut at 4 KiB), 4 reviews (verdict and at most 20 findings' titles cut at 300 bytes), Brakeman's state | 48 KiB |
 | selection (PR-6b) | 5 options' labels and tradeoffs, the rationale, who and when | 16 KiB |
 | envelope | the launched run, the base, flags (no history: no list of the chain's runs and no later candidates, which are the Review view's and DS2's candidates list's, each paged there) | 8 KiB |
 
-So the reply is at most 792 KiB, and `MaxComparison` is 1 MiB; no
+So the reply is at most 824 KiB, and `MaxComparison` is 1 MiB; no
 part of it grows with the chain's length or the number of continuations
 and repairs;
 `TestTheFullestComparisonFitsItsBound` builds one with every part at its
 bound, every string of `<`, and four manifests whose verify ids all
 differ. A receipt cut from a preview is reached by its link, whole.
 Every git call runs under the request's context with a 20 s budget for
-the whole measure; a failed or late call fills `Unavailable` for that
-candidate with git's words and leaves the other candidates and the
-checks table whole. Results are cached in memory by run, base and the
+the whole measure, through a bounded runner PR-2 adds to `internal/gitcli`
+(the one package that may start git, `ext/local`'s boundary test), since
+`Run` and `RunEnv` take no input and keep all of git's output in memory
+before a caller can measure it: `RunBounded(ctx, dir, limit, args...)`
+keeps at most `limit` bytes of standard output and 4 KiB of standard
+error, and past the limit ends the process and answers
+`ErrOutputLimit`; `Run` and `RunEnv` are unchanged. Each call names its
+limit: the diff 4 MiB (past it "the diff passes 4 MiB: not measured"),
+`rev-list` with `--max-count=10001`, `cherry` 200 lines, `ls-tree` one
+entry, and a dependency file's blob 1 MiB, its size asked first. A
+failed, late or over-limit call fills `Unavailable` for that candidate
+with git's words and leaves the other candidates and the checks table
+whole. Results are cached in memory by run, base and the
 candidates' commits (at most 32 entries, least recently used out),
 commits being immutable; the check rows are read from the ledger each
 time.
@@ -786,16 +814,39 @@ cancelled is never changed to failed or cancelled (`run.doomed`,
 `internal/crew/task.go`, which the run's outcome rule already counts as
 finished), so the predicate reuses `doomed` rather than waiting for a
 state that never comes. A review's `needs_changes` reopening its
-candidate is not an end. In the transaction that ends the last lane, the
-engine writes the run event `compare.settled` with the selectable
-candidates (`[{task, run, attempt, commit}]`, at most 4 entries, about
-500 bytes). A lane that ends again later (a retry after a failure, a
-repair before the selection is refused) writes it again with the new
-set, in the run where its end happens, a continuation's included; once a
-selection is applied in the chain, no `compare.settled` is written
-again, and a continuation whose lanes are all imported ends no lane, so
-writes none. Each is a ledger event of its run, in the run's history and
-its export. PR-6a opens the selection in the same transaction.
+candidate is not an end. A lane's **shown candidate** is its standing
+result (task, run, attempt, commit; an imported one keeps its source
+run), and the **settled set** is the shown candidates of the lanes that
+have one, in the block's order.
+
+The engine keeps one thing for it, `r.cmp.settled`: the set last
+written in `compare.settled`, or none while a lane has not ended since.
+It changes in one place, **the compare step** (`compareStep`, new),
+which `commit` calls for a compare run after every change's mutation and
+before the drain (and, once DR1's #636 is in, before its `endedWork`), so
+it sees each change whole,
+whatever command, continuation or engine step made it, and reads the
+lanes as they are, not which rows the change marked:
+
+1. while a lane has not ended, `settled` is none;
+2. when every lane has ended, no selection is applied in the chain, the
+   run is not stopping, the change is not a continuation's first, and
+   the settled set is not `settled` (none, or another set), the step
+   writes the run event `compare.settled` with the set (`[{task, run,
+   attempt, commit}]`, at most 4 entries, about 500 bytes) and sets
+   `settled` to it.
+
+A continuation's first transaction sets `settled` as it finds the lanes:
+the current set when every lane has ended, none otherwise. So
+`compare.settled` is written once for each settling of the lanes, in the
+change that ends the last one: again after a lane runs again (a retry of
+a failed lane, even one that fails again) or its shown candidate changes
+(an Accept anyway), never twice with no such change between, never by a
+stop or a
+continuation's first transaction (a continuation whose lanes are all
+imported writes none), and never once a selection is applied in the
+chain. Each is a ledger event of its run, in the run's history and its
+export. PR-6a adds the selection to the same step.
 
 ### `internal/api` and `internal/cli`: the template, the comparison, the launch's statement (PR-3)
 
@@ -826,11 +877,14 @@ change. So no total of sessions or check runs is a ceiling the engine
 keeps, and none is stated. What is stated is exact: DS2's plan revision
 reads (`GET /api/dispatch/plans/{id}`, `GET
 /api/dispatch/tickets/{key}/plans`) gain, for a revision whose crew has
-a compare block, `compare: {candidates, reviews, firstSessions,
-checksAtBase, brakemanTurn}`, computed from the body, never stored:
-`candidates` and `reviews` the lanes and their review tasks;
-`firstSessions` their sum, each lane's first attempts, which start
-whatever happens; `checksAtBase` the task's checks and the manifest's
+a compare block, `compare: {candidates, reviews, checksAtBase,
+brakemanTurn}`, computed from the body, never stored: `candidates` the
+lanes, each starting one candidate session once the plan's decisions
+and the project's prerequisites let the run's work start; `reviews` the
+review tasks, each starting a session only after its candidate succeeds
+(none for a candidate that fails or is cancelled, whose review the
+engine leaves blocked behind it, `doomed`), so the words say "up to";
+`checksAtBase` the task's checks and the manifest's
 verify steps at the base (the crew form's, or the file form's at the
 revision's base, read when the revision is read); `brakemanTurn`
 whether the template asks a draft. The words say the multiplier: the
@@ -884,6 +938,21 @@ it the repair in `startContinued`) meets the rule whichever of the two
 merges first. With `compareIntents` (PR-1) refusing `request_changes`
 in a run, no `main` repairs a comparison's candidate before a selection,
 whatever order RV1's rows and this plan's land in.
+
+**A comparison's chain is bounded.** DR1's continuation reads the
+decisions of at most 256 runs back (`maxChain`, `readDecisionHistory`,
+#636), and an applied record stays in the run it was applied in
+(`MoveDecisions` moves open and answered ones only), so a selection
+more than 256 runs back would not be read again and the lanes it left
+unselected would lose their refusals. The chain is bounded instead of
+adding a second lookup: from PR-3, `startContinued` refuses, before its
+first transaction and with no run made, a continuation of a compare
+chain that already holds `maxCompareChain` runs (256, DR1's number; "this
+comparison has been continued 255 times: launch a new comparison"), and
+`Engine.Comparison`'s walk stops at the same bound. So every run of a
+comparison's chain, the one its selection was applied in included, is
+inside the window DR1's reload reads, and PR-6a's test holds the two
+numbers equal.
 
 **A barrier against an older binary.** `ContinueRun` decodes
 `runs.crew` with `json.Unmarshal`, which drops an unknown field, so a
@@ -943,9 +1012,22 @@ ref) and the act (#534). Brakeman's plan is followed as it stands.
   of the reply is runs data (the crew as launched, the ledger's task,
   attempt and check rows, git of the run's repository): it carries
   nothing of the touched class (`ClassTouched`), whose index it does not
-  read, so the runs class alone is the right grant and the read's
-  footprint is the run's. From PR-6b, Brakeman's read leaves out the
-  `selection` part: the person's answer is never Brakeman's input.
+  read, so the runs class alone is the right grant. A run's footprint
+  does not say which candidates and receipts a turn saw, and Brakeman
+  resolves a citation's `Seen` by its exact reference
+  (`brakeman_refs.go`), so the read has a filter of its own,
+  `filterComparison`, as the candidates route has `filterCandidates`:
+  for each column it notes the candidate's `candidate:<run>/<task>/<n>`
+  ref (the run its attempt ran in, an imported one's source run) at the
+  state and commit `candidateRefState` reads, and for each check cell
+  with a receipt its `check:<run>/<task>/<n>/<id>/<k>` ref with
+  `noteHashed` (the receipt's state, the commit it checked, its log's
+  SHA-256), and puts each `ref` into the reply beside what it names. So
+  a brief that cites them after reading only the comparison cites what
+  was observed, with the observed state as its baseline. The reply
+  carries what the filter reads (each column's `Start`, each cell's
+  `LogSHA256`). From PR-6b, Brakeman's read leaves out the `selection`
+  part: the person's answer is never Brakeman's input.
 - **Queued once.** On `compare.settled` (the engine's run change,
   `OnRunChange`), when the block's `brakeman` is set, the API queues one
   Brakeman request of kind `compare` about the run, after the event's
@@ -1044,15 +1126,27 @@ test (Tests per surface), the decisions plan followed as it stands:
    task"): `how: selected`, and `Application` gains `Selected`
    (`{task, run, attempt, commit}`, JSON `selected`, omitted otherwise)
    or `None` (`none: true`) for None of these.
-3. The run's end (`run.settle` and the work-ended rule, #636): the run
-   takes no outcome while a selection of its chain that it holds is open
-   or answered: it is running and idle, the run page saying "waiting for
-   the selection dr-9". The work-ended rule (a decision whose held tasks
-   are all finished or doomed is cancelled) never fires for an
+3. The run's end (`settleRun`, `run.settle`, and DR1's work-ended rule,
+   #636). `settleRun` derives the run's outcome inside the change's
+   mutation, before the compare step runs (`closeAttempt` calls it as the
+   last lane's attempt closes), so a hold that waited for the record to
+   exist would come too late: the outcome, `endPending` and
+   `run.finished` would be set, and DR1's `endedWork` would cancel what
+   the run holds. So `settleRun` derives no outcome for a compare run
+   with no applied selection in its chain while either holds: a
+   selection of the chain that it holds is open or answered (the run is
+   running and idle, the run page saying "waiting for the selection
+   dr-9"), or every lane has ended, the run is not stopping, and the
+   settled set is not `settled` (the compare step has yet to settle it,
+   in this same change). The compare step ends every change of a compare
+   run by calling `settleRun`, so the change that closes the comparison
+   (an application, a cancel, a settling that opens none) derives the
+   outcome in that change. The work-ended rule (a decision whose held
+   tasks are all finished or doomed is cancelled) never fires for an
    `origin: compare` record, which holds no task by design. A stop of the
    run (`StopRun`) still cancels it with DR1's words ("the run was
-   stopped before dr-9 was answered"); once it is applied, `settle` runs
-   as it does today.
+   stopped before dr-9 was answered"); once it is applied or closed,
+   `settleRun` runs as it does today.
 4. The continuation's reload (`decisions_continue.go`, #636, which
    branches on `OriginPlan` and `OriginAgent` only): an arm for
    `OriginCompare`. Open and answered records move with
@@ -1063,11 +1157,16 @@ test (Tests per surface), the decisions plan followed as it stands:
    Continue, RV1's repair continuation (#623, `ContinueRunWith`) and a
    restart's. An imported candidate keeps its source run's reference, so
    the selected one is the same candidate in every run of the chain.
+   The chain is at most 256 runs (PR-3's bound), so the applied record
+   is always inside the window `readDecisionHistory` reads (`maxChain`).
    An answered record not yet applied (a run interrupted by a restart
    while selecting, answered on the ledger as DR1 takes any answer for
    a run it does not hold) is applied there, in the continuation's
    first transaction, by the `selected` arm, as DR1 applies every such
-   answer; an open one moves and stays open.
+   answer; an open one moves and stays open: the compare step reads the
+   lanes, not the rows `startContinued` marks, and an imported candidate
+   keeps its source run, so it is its option's and nothing supersedes
+   the record.
 5. The rationale (`Engine.RespondDecision`, #635, PR #672): a response
    to an `origin: compare` record without a non-empty rationale is
    refused `invalid` with no row ("say why: the rationale is the record
@@ -1087,48 +1186,58 @@ test (Tests per surface), the decisions plan followed as it stands:
    record with no holds, noted, and cancel it at the run's end. Such a
    binary then opens the ledger read-only.
 
-**Opening.** In the transaction that writes `compare.settled` (PR-2),
-when no selection of the chain is applied and none is open or answered,
-the engine opens the selection through DR1's writers (`Tx.OpenDecision`,
-its `opened` history and its `routed` one, to the operator with rule
-"local/1: the operator answers", the run's `decision.opened` event);
-DR1's routes, notifications and router are told after the commit, as
-for any record.
+**Opening.** The compare step (Settling, PR-2) opens the selection in
+the change that writes `compare.settled`, after its mutation and before
+its drain: when no selection of the chain is applied, open or answered,
+the settled set has a candidate, and the run has room
+(`decisionRoom(1)`, DR1's count), the engine opens it through DR1's
+writers in that change (`Tx.OpenDecision` from `r.later`, as `openGate`
+does, its `opened` history and its `routed` one, to the operator with
+rule "local/1: the operator answers", the run's `decision.opened`
+event); DR1's routes, notifications and router are told after the
+commit, as for any record. With no candidate, or no room, none opens and
+the comparison has **ended with none** ("no candidate has a result:
+nothing to select"; "this run has recorded 1,000 decisions: no room for
+a selection, launch a new comparison"), and the step's `settleRun`
+derives the run's outcome in that change. So the change that ends the
+last lane records no `run.finished` and calls no `OnEnd` unless it opens
+no selection.
 
 **Room for it.** `Tx.OpenDecision` refuses past `MaxDecisionsPerRun`
 (1,000 in a run, closed records counted, with the places DR1 holds for
-replacements, `Tx.room`). A compare run's records are its plan
-revision's decisions, opened at launch (at most
-`dispatch.MaxPlanDecisions`, 10, with their places), and its
-selections: its lanes open none (door 9). So the first selection always
-has room, and only a closed selection followed by a lane change makes
-another. The rule is kept where the change is asked, never where it
-would fail: a command that changes a lane of a compare run before an
-applied selection (`retry`, `accept`, `cancel`, `recheck`) asks
-`Tx.room` in its transaction and is refused before any write when there
-is none (`409 no_room`, "this comparison has recorded 1,000 decisions:
-launch a new comparison"); so the transaction that ends the last lane
-never meets a full ledger. A continuation's records are counted in its
-own run, as DR1 counts them.
+replacements). Nothing is reserved for the selection: a compare run's
+other records are its plan's decisions, which `regate` opens again when
+a Retry or an Accept makes their tasks runnable (`decisions_wait.go`),
+so no count kept apart from DR1's could stay right. The opener asks
+DR1's own count at the opening, and a run without room opens none: the
+comparison ends with none, said in words, nothing is selected by
+default, and the person launches a new comparison. A continuation's
+records are counted in its own run, as DR1 counts them.
 
 **At most one, and always current** (I8). The selection's states are
 DR1's: `open` → `answered` (a response) → `applied` (the application);
 `open` or `answered` → `superseded` (a lane changed) or `cancelled` (a
-stop, the operator's cancel). The rule, one sentence: **a lane changes
-only in a transaction, and a transaction that changes a lane closes the
-chain's open or answered selection.** It is kept in one place: the
-transaction's drain of the rows changed (`transition`, which writes
-every task and attempt row marked by `markTask` and `markAttempt`, so
-no change of a lane's task or attempt is written any other way): before
-writing them, when a marked task or attempt is of a lane of a compare
-run and the chain's selection is open or answered, it supersedes that
-record in the same transaction with its words ("approach-c was retried:
-dr-9 no longer lists what is compared"; an answered record keeps its
-response). Then, in that same drain, when every lane has ended and no
-selection is open, answered or applied, `compare.settled` is written and
-a new record opened, its `supersedes` naming the last. A command RV1 or
-a later row adds changes a lane only through those rows, so it is
-covered without a line of its own. The invariant: at most one selection
+stop, the operator's cancel). The rule, one sentence: **an open or
+answered selection stays so only while every lane has ended and shows
+the candidate its option names.** The compare step keeps it, after
+every change of a compare run and before its own settling: when a lane
+has not ended (a Retry, a reopen, a Check again) or a lane's shown
+candidate is not its option's (an Accept anyway of a failed lane), it
+supersedes the record in that change with its words ("approach-c was
+retried: dr-9 no longer lists what is compared"; an answered record
+keeps its response); then, in the same step, when every lane has ended
+again, `compare.settled` is written and a new record opened, its
+`supersedes` naming the last. It reads the lanes as they are, not which
+rows the change marked: a continuation's first transaction marks every
+imported task, and an imported candidate keeps its source run, so it is
+its option's and an open record moved there stays open. The operator's
+cancel and a stop change no lane, so the step opens nothing after them,
+in their change or any later one: `settled` is still the set the
+cancelled record was opened for, and only a change that runs a lane
+again or changes what it shows settles anew. A command RV1 or a later
+row adds changes a lane only through the engine's changes, each
+followed by the step, so it is covered without a line of its own. The
+invariant: at most one selection
 of a chain is open or answered, and while one is, every lane is as its
 options name it. So the application needs no check of its own: DR1
 applies an `answered` record, and a record whose lanes changed is no
@@ -1169,8 +1278,12 @@ lanes not selected start nothing.
 **Stopped, cancelled, none.** A stop of the run cancels its open or
 answered selection (above); the operator's cancel of the record (DR1's
 `CancelDecision`; its `release` holds nothing here and changes nothing)
-leaves no selection either, and the run settles; None of these selects
-no lane. Each is a comparison **ended** with no candidate selected.
+leaves no selection either, the compare step opens none after it, and
+the run settles; None of these selects no lane; a settling with no
+candidate or no room opens none. Each is a comparison **ended** with no
+candidate selected, until a lane runs again (a Retry reopens a finished
+run, as for every run), whose end settles the lanes anew and opens a new
+selection.
 
 **One rule for a comparison's candidates.** Only an applied selection
 with a candidate selects a lane. With none (running, selecting,
@@ -1258,7 +1371,7 @@ the first run would: the chain had no selection to keep.
   lists it in `compareIntents` with PR-6a's rule and its test,
   `TestCheckAgainSupersedesTheSelection`: before an applied selection a
   Check again of a lane makes a new attempt, which closes the record
-  through the drain; after it, one of a lane not selected is refused
+  through the compare step; after it, one of a lane not selected is refused
   `not_selected` before any write.
 - **For whom** (HM1's #645): `Compare.Selector` admits HM1's labels
   (`role:<responsibility>`, `person:<name>`), checked at save with
@@ -1277,8 +1390,9 @@ the first run would: the chain had no selection to keep.
 - `utils/compare.ts`: a row's words (its verdict, the reasons, each
   candidate's test and build files), a cell's words, size and
   dependency words, independence words (with what is not observed), the
-  launch statement's words from the plan's `compare` part: the first
-  sessions, the multiplier and its refunds, the checks at the base;
+  launch statement's words from the plan's `compare` part: the
+  candidates' sessions, up to as many review sessions after them, the
+  multiplier and its refunds, the checks at the base;
   `composables/useComparison.ts`: the comparison of a run, read
   again on the run's change event, on `dispatch` events naming its
   ticket, on `brakeman` events naming the comparison's request (a
@@ -1413,8 +1527,10 @@ these). From `selecting` or `answered`, any change to a lane supersedes
 the record and goes back to `running` until every lane has ended again,
 then to `selecting` with a new record; a stop of the run or the
 operator's cancel of the record goes to `ended` (no candidate
-selected). A finished, failed or stopped run with no `compare.settled`
-is `ended` too. After a restart, an interrupted run keeps its state as
+selected), and so does a settling with no candidate or with no room in
+the run's decisions; from `ended`, a change that runs a lane again or
+changes what it shows goes back to `running`. A finished, failed or
+stopped run with no `compare.settled` is `ended` too. After a restart, an interrupted run keeps its state as
 the ledger has it; its selection is answered on the ledger and applied
 in the first transaction of the run's continuation (PR-6a).
 
@@ -1427,10 +1543,13 @@ in the first transaction of the run's continuation (PR-6a).
   at the base while its candidates have no check.
 - O2. The base is read once in `prepare` (the plan revision's), and
   every candidate's first attempt starts at it, having no needs.
-- O3. `compare.settled` is written in the transaction that ends the last
-  lane, with that lane's task row; the selection is opened in that same
-  transaction (PR-6a), with no evidence refs; every side effect (the router told, notifications,
-  Brakeman's request) follows the commit.
+- O3. `compare.settled` and the selection (PR-6a, no evidence refs) are
+  written by the compare step of the change that ends the last lane,
+  with that lane's task row, after the change's mutation and before its
+  drain; `settleRun` derives no outcome in that change unless no
+  selection opens (no candidate, no room), so no `run.finished` or
+  `OnEnd` comes before the record; every side effect (the router told,
+  notifications, Brakeman's request) follows the commit.
 - O4. Brakeman's request is queued after `compare.settled` commits,
   keyed by a digest of the run and the event's sequence; a second wake
   finds the op id and queues nothing; one lost in a crash before it is
@@ -1439,12 +1558,13 @@ in the first transaction of the run's continuation (PR-6a).
   transaction (DR1's order); `compare.selected` and the run's settle are
   in the application's; on a run not held the application is in the
   continuation's first transaction, before it schedules anything.
-- O6. Every transaction that changes a lane before a selection is
-  applied supersedes an open or answered selection in that transaction
-  (the drain of its changed rows), never after; a new one opens only
-  with the next `compare.settled`. A command that would change a lane
-  when the run has no room for another selection is refused before any
-  write.
+- O6. Every change that leaves a lane not ended, or its shown candidate
+  not its option's, before a selection is applied supersedes an open or
+  answered selection in that change (its compare step), never after; a
+  new one opens only with the next `compare.settled`, which no cancel,
+  stop or continuation's first transaction writes. A settling with no
+  room in the run's decisions opens none and ends the comparison with
+  none.
 - O7. `not_selected` and `lane` refusals are decided before any write,
   and write nothing (the review route's step before Dispatch's commit).
 - O8. A continuation's first transaction reads the chain's applied
@@ -1483,8 +1603,10 @@ in the first transaction of the run's continuation (PR-6a).
 - I8. Current and single: at most one selection of a chain is open or
   answered, and while one is, every lane is as its options name it; a
   response whose lanes changed before its application was superseded by
-  that change and applies nothing; a selection always has room in the
-  run's decisions.
+  that change and applies nothing; after a cancel or a stop no
+  selection opens until a lane runs again or changes what it shows; a
+  settling that finds no room in the run's decisions opens none, and
+  the comparison ends with no candidate selected.
 - I9. Nothing is deleted, and only the selected is continued:
   candidates not selected keep their branches, worktrees, attempts and
   receipts; with no applied selection no candidate is delivered or
@@ -1495,7 +1617,8 @@ in the first transaction of the run's continuation (PR-6a).
   candidate of the selected task leaves the selection applied; no
   rebuild and no new launch.
 - I11. Deliberate: a compare launch states what it multiplies (the
-  candidates and reviews, the sessions that start at once, that each
+  candidates and their sessions, the reviews' sessions as up to one
+  after each candidate that succeeds, that each
   lane is worked as one crew's task is with the refunds named, the
   checks at the base, a Brakeman turn) and no total the engine does not
   keep, before it starts, and is refused unless the person's client
@@ -1625,6 +1748,9 @@ lane after the application and still refused to the others);
 an agent's scopes and the session routes outside the guide have an
 entry in `compareDoors`, DR1's four decision tools listed as `refused`;
 doors 12 and 13 asserted to answer as the table says);
+`TestTheSessionReadsTakeNoAgentToken` (doors 1 and 13: the files route
+and the session read refused `401` to a candidate's token and to an
+ordinary run's member's, as today);
 `TestEveryAgentTokenPathIsGuarded` (door 16: no call of a session's
 `AgentTokenOK` in `internal/api` outside `agentTokenOK`, read with
 `go/parser`); `TestAnUnlistedDoorIsClosedToALane` (door 16: three routes
@@ -1637,9 +1763,16 @@ tested with `TestMessagesStayInTheirLane`.
 **`internal/crew` (PR-2, `comparison_test.go`, `comparedeps_test.go`)**,
 with real git repositories under `t.TempDir()`:
 
-- `TestComparisonMeasuresEachCandidate`: numstat counts, renames, a
-  binary file, files added and deleted, the list cut at 100 with its
-  total.
+- `TestComparisonMeasuresEachCandidate`: line counts; a file added with
+  5 lines beside 5 lines appended to another (both `5 0`), and an empty
+  file added beside one deleted (both `0 0`), each told apart by its raw
+  status; a rename counted as one deleted and one added with
+  `diff.renames` set in the repository's config; a binary file; the
+  list cut at 100 with its total; a diff past 4 MiB "not measured".
+- `TestRunBoundedStopsAtItsLimit` and `TestRunBoundedEndsWithItsContext`
+  (`internal/gitcli`): a git whose output passes the limit ended with
+  `ErrOutputLimit` and at most the limit kept; a cancelled context ends
+  the process; `Run`'s tests unchanged.
 - `TestDependencyChangesAreRead`: `go.mod` single and block `require`
   lines added, removed and moved; `package.json`'s four maps; a lockfile
   only listed; a `go.mod` over 1 MiB listed without modules; a candidate
@@ -1649,8 +1782,8 @@ with real git repositories under `t.TempDir()`:
   two independent candidates report none.
 - `TestACherryPickIsFlagged` (I4): approach-a makes its own commit, then
   cherry-picks one of approach-b's; `Shared` is empty and `Equivalent`
-  names the commit and approach-b; a candidate past 200 commits says
-  "not checked".
+  names the commit and approach-b, read from `git cherry`; a candidate
+  past 200 commits says "not checked".
 - `TestComparableNeedsTheSameCheckManifestAndWhere` (I5): one condition
   broken at a time (argv, timeout, `Where` from a fake Runtime, manifest
   identity, `Stable` false, an interrupted, cancelled or running cell, a
@@ -1697,14 +1830,18 @@ with real git repositories under `t.TempDir()`:
   unreadable; that candidate `Unavailable` with git's words, the others
   and the checks table whole; a measure past its 20 s budget (a fake
   clock through the git seam) likewise.
-- `TestCompareSettledIsWrittenOnce`: written in the last lane's
-  transaction (read from the ledger with that task row), not before; a
-  failed lane counts as ended; a review's `needs_changes` delays it; a
-  later retry's end writes it again with the new set; a continuation
-  whose lanes are all imported writes none.
+- `TestCompareSettledIsWrittenOnce`: written by the compare step of the
+  last lane's change (read from the ledger with that task row), not
+  before; a failed lane counts as ended; a review's `needs_changes`
+  delays it; a later retry's end writes it again with the new set, and
+  a retried lane that fails again writes it again with the same set; a
+  pause and an unpause after it write none; a stop writes none; a
+  continuation whose lanes are all imported writes none.
 - `TestAFailedCandidateEndsItsLane`: reviews on, approach-a succeeded
   and reviewed, approach-b failed with no attempt left and cancelled in
-  a third case, their reviews blocked (doomed); `compare.settled` is
+  a third case, their reviews blocked (doomed) and never started (no
+  attempt row and no session for approach-b's reviewer);
+  `compare.settled` is
   written, with approach-a alone selectable.
 
 **`internal/api` and `internal/dispatch` (PR-3, `compare_test.go`)**:
@@ -1718,8 +1855,11 @@ candidates route and a check's log); `TestTheComparisonReadsNoTouches`
 worktree changes nothing in the reply, whose independence says what is
 not observed); `TestThePlanReadStatesTheMultiplier` (I11: for 2 and 4
 candidates, with and without reviews, with a crew-form and a file-form
-manifest: `candidates`, `reviews`, `firstSessions` and `checksAtBase`,
-and no field of a total); `TestAComparisonsContinuationRepairsOnlyTheSelected`
+manifest: `candidates`, `reviews` and `checksAtBase`, the words saying
+"up to" for the reviews' sessions, and no field of a total);
+`TestAComparisonsChainIsBounded` (a compare chain made to 256 runs; the
+next continuation refused with its words and no run made; the
+comparison of the last run read whole); `TestAComparisonsContinuationRepairsOnlyTheSelected`
 (I9, door 15, in `internal/crew`: through a test seam in
 `startContinued` that leaves one succeeded lane task unimported, or
 gives one a repair, the shape #623's options take, the continuation is
@@ -1780,21 +1920,33 @@ with their subjects and None of these, the record's comparison subject
 and digest, recommendation -1, the context's words, no evidence refs and
 no baseline, no hold; none when no lane
 stands, and the run settles; one candidate and None when one does);
+`TestTheLastLaneOpensTheSelectionBeforeTheRunEnds` (F1 of round 3: the
+last lane's attempt closes, and in that one transaction, read from the
+ledger, the record is opened and `compare.settled` written, with no
+`run.finished`, no `OnEnd` called (a counting hook) and the outcome
+empty; with no lane standing, the same change records `run.finished`
+and opens nothing); `TestAContinuationKeepsAnOpenSelection` (an
+unanswered selection, a restart, then Continue with every candidate
+imported unchanged: the record moved and still open, not superseded,
+no `compare.settled` in the continuation, its run running and idle;
+answered from the card and applied there);
 `TestAnOpenSelectionKeepsTheRunOpen` (the run running and idle with its
 words; the work-ended rule does not cancel it; stop cancels it with its
 words); `TestAnyLaneChangeSupersedesTheSelection` (I8: with approach-c
-failed, a Retry of approach-c while selecting; an Accept anyway; a lane
-task cancelled; each supersedes in the same transaction with its words,
+failed, a Retry of approach-c while selecting, which supersedes and
 opens nothing until every lane has ended again, then one record whose
-`supersedes` names the old; the open and answered records counted by
-origin never above one; a response to the old refused; the supersession
-made in the drain of the command's own transaction, read from the
-ledger with that command's row); `TestASelectionAlwaysHasRoom` (I8: a
-compare run brought to `MaxDecisionsPerRun`, 1,000, through DR1's
-`Tx.OpenDecision` and its cancels; a Retry of a lane refused `409
-no_room` with no write and the selection left as it was; at 999 with
-one place free, the Retry taken and the next selection opened when the
-lane ends; a first settlement with the plan's 10 decisions opened);
+`supersedes` names the old; an Accept anyway of approach-c, which
+supersedes and opens the next record in the same change; a failed
+lane's task cancelled, which changes no shown candidate and leaves the
+record open; the open and answered records counted by origin never
+above one; a response to the old refused; the supersession made in the
+compare step of the command's own change, read from the ledger with
+that command's row); `TestAFullRunOpensNoSelection` (I8: a compare run
+brought to `MaxDecisionsPerRun`, 1,000, its last places taken by plan
+gates `regate` opened again on Retries; the last lane ends: no record
+opened, `compare.settled` written, the comparison ended with none and
+its words, the run settled, a delivery refused "no candidate was
+selected"; a first settlement with the plan's 10 decisions opened);
 `TestAChangeBetweenAnswerAndApplicationAppliesNothing` (I8: a response
 recorded, a lane retried before the application's transaction; the
 record superseded with its response kept, nothing applied, no
@@ -1812,7 +1964,9 @@ rationale `invalid` with no row, the 2 KiB bound kept);
 `TestTheSelectionCrossesTheChain` (an applied selection, then a plain
 Continue and a restart's Continue; in each continuation the selection
 is restored before scheduling and a Retry of a lane not selected is
-refused; the `ContinueRunWith` case is PR-8a's, which waits for #623);
+refused; at PR-3's bound, the selection applied in the launched run is
+restored in the 256th run, and `maxCompareChain` equals DR1's
+`maxChain`; the `ContinueRunWith` case is PR-8a's, which waits for #623);
 `TestARestartWhileSelecting` (a restart between `compare.settled` and
 the response: the record open, the comparison read from the ledger as
 selecting; a workbench response recorded on the run not held and
@@ -1823,7 +1977,11 @@ nothing; a restart between the response and the application gives the
 same; an identity's response superseded as DR1 does);
 `TestCancelledOrStoppedSelectsNone`
 (the operator's cancel and a stop each leave the comparison ended with
-no candidate); `TestCheckAgainSupersedesTheSelection` when #620 is on
+no candidate; after the cancel, its own transaction and later ones (a
+pause and an unpause, a message within a lane, a restart and Continue)
+open no record and write no `compare.settled`, and the run settles;
+then a Retry of a failed lane reopens the run, and its end opens a new
+record); `TestCheckAgainSupersedesTheSelection` when #620 is on
 `main` at this row's cut (RV1's Check again of a failed lane before the
 selection supersedes the record; after an applied selection, one of a
 lane not selected refused `not_selected`); `TestLedgerVersionIsABarrier`
@@ -1873,7 +2031,8 @@ a role and a person admitted as HM1 admits them, others refused).
 **Web, vitest**: `utils/compare.test.ts` (each verdict's words and
 reasons, sizes, dependency, test-file and independence words, the
 launch statement for 2 and 4 candidates with and without reviews and
-Brakeman: the first sessions, the multiplier with its refunds named,
+Brakeman: the candidates' sessions, the reviews' as "up to", the
+multiplier with its refunds named,
 the checks at the base, and no total) and
 `useComparison.test.ts` (read again on the run's event, on a `brakeman`
 event naming its request while the run is idle, and on a reconnect
@@ -2006,11 +2165,11 @@ merges opens a rule.
 |---|---|---|---|---|---|---|
 | PR-1 | crew: the compare block, its lanes and the template | `Compare`, `Criterion`, `Candidate` on `Crew`, their validation and bounds (the file-form manifest left to the launch), `CompareTemplate` and `CompareSpec`, every launch of a compare crew refused for now, `run.lanes`, the message refusal (`ErrLane`, the route's `409 lane`), `compareIntents` in `act`, no derived context for a comparison, the task file's comparison part and its golden files; `docs/protocol.md`'s crew field and task file part | `internal/crew`, `internal/api` (the message route's code only), `docs/protocol.md` | the PR-1 tests above (`internal/crew`) | none | none |
 | PR-1b | api: a comparison's doors | `compare_doors.go` (`compareDoors`, the lane guard in `agentTokenOK`, which every agent-token path calls), `run_status`'s lane view, `ticket_read`'s and `ticket_comment`'s lane rules, DR1's four decision tools listed closed; `docs/protocol.md`'s lane views and refusals | `internal/api`, `docs/protocol.md` | the PR-1b tests above (`compare_doors_test.go`) | PR-1 | none |
-| PR-2 | crew: the comparison measured, and the lanes settled | `Engine.Comparison` over the chain and its types, the candidate shown for a failed lane, numstat, `dependencyFiles` and the `go.mod` and `package.json` readers, test and build files, shared commits and equivalent patches, the manifest's blob, the expected check rows with their `not_run` cells and the three verdicts, the one-revision read, the bounds and the git budget, the cache, the lane's end with `doomed`, `compare.settled`; `docs/protocol.md`'s event | `internal/crew`, `docs/protocol.md` | the PR-2 tests above | PR-1b | none |
-| PR-3 | api, cli, dispatch, ledger: the template and comparison routes, the launch's statement | `POST /api/crews/templates/compare`, `GET /api/runs/{run}/comparison`, the plan reads' statement (`candidates`, `reviews`, `firstSessions`, `checksAtBase`, `brakemanTurn`), the launch's `candidates`, `confirm_candidates` and `LaunchArgs.Candidates`, `LaunchApproved`'s refusal of a compare revision, the launch refusal lifted for `LaunchPlanned` and continuations, `startContinued`'s rule against repairing a lane not selected, every compare candidate's delivery refused, the ledger's first barrier, the guide rows, `conductor crews compare`, `conductor dispatch comparison`, `--candidates`, usage and completion; `docs/protocol.md`'s rows | `internal/api`, `internal/cli`, `internal/dispatch`, `internal/crew`, `internal/crew/ledger`, `docs/protocol.md` | the PR-3 tests above | PR-2 | none |
+| PR-2 | crew: the comparison measured, and the lanes settled | `Engine.Comparison` over the chain and its types, the candidate shown for a failed lane, numstat, `dependencyFiles` and the `go.mod` and `package.json` readers, test and build files, shared commits and equivalent patches, the manifest's blob, the expected check rows with their `not_run` cells and the three verdicts, the one-revision read, the bounds and the git budget, the cache, the lane's end with `doomed`, the compare step in `commit` with `settled` and `compare.settled`, `gitcli.RunBounded` and `git cherry` for equivalent patches; `docs/protocol.md`'s event | `internal/crew`, `internal/gitcli`, `docs/protocol.md` | the PR-2 tests above | PR-1b | none |
+| PR-3 | api, cli, dispatch, ledger: the template and comparison routes, the launch's statement | `POST /api/crews/templates/compare`, `GET /api/runs/{run}/comparison`, the plan reads' statement (`candidates`, `reviews`, `checksAtBase`, `brakemanTurn`), the launch's `candidates`, `confirm_candidates` and `LaunchArgs.Candidates`, `LaunchApproved`'s refusal of a compare revision, the launch refusal lifted for `LaunchPlanned` and continuations, `startContinued`'s rule against repairing a lane not selected, the chain's bound (`maxCompareChain`), every compare candidate's delivery refused, the ledger's first barrier, the guide rows, `conductor crews compare`, `conductor dispatch comparison`, `--candidates`, usage and completion; `docs/protocol.md`'s rows | `internal/api`, `internal/cli`, `internal/dispatch`, `internal/crew`, `internal/crew/ledger`, `docs/protocol.md` | the PR-3 tests above | PR-2 | none |
 | PR-4 | web: the template form, the launch's statement, the comparison page | `utils/compare.ts`, `useComparison` (with Brakeman's events and the reconnect), `CrewCompareTemplate`, `CrewCompareBlock`, `DispatchLaunch`'s statement and button, `DispatchComparison`, `CompareCandidates`, `CompareChecks`, `CompareMeasured`, the run card's and header's links, `RunTasks`' lanes, the stub's `STUB_COMPARE_EDIT`, `compare.spec.ts` | `web/app/components`, `web/app/composables`, `web/app/utils`, `web/app/pages`, `web/e2e` | vitest (`compare.test.ts`, `useComparison.test.ts`), `compare.spec.ts` | PR-3 | PR-5, PR-6a, PR-6b |
 | PR-5 | brakeman, api: Brakeman's comparison draft | the `compare` request kind, `CheckCompareBrief` and its kind-table rule, the guide's words, the comparison in `brakemanReads`, the request queued once on `compare.settled` under its digest op id, the reply's `supporting` part; `docs/protocol.md`'s request kind | `internal/brakeman`, `internal/api`, `docs/protocol.md` | the PR-5 tests above | PR-3; after Brakeman's #520, #525, #531, #534 (merged) | PR-4 |
-| PR-6a | ledger, crew: the selection as a decision record | in DR1's ledger the origin `compare`, an option's subject, the subject kind `comparison`; in DR1's engine the opener with `compare.settled` (no evidence refs), the run held open and the work-ended rule not applied, the close in the transaction's drain of changed lane rows, `no_room` for a lane command without room for the next selection, `how: selected` with `selected` or `none`, `compare.selected`, the continuation's `OriginCompare` reload with the applied selection and an answered one applied there, the required rationale, `not_selected` in the command path, `recheck` in `compareIntents` when #620 is on `main`; the ledger's second barrier; `docs/protocol.md`'s origin, subject kind, event and refusals | `internal/crew/ledger`, `internal/crew`, `docs/protocol.md` | the PR-6a tests above | PR-3; after DR1's #636 (PR #678), on #634 (PR #664) and #635 (PR #672); #620 when it is on `main` at the cut | PR-4 |
+| PR-6a | ledger, crew: the selection as a decision record | in DR1's ledger the origin `compare`, an option's subject, the subject kind `comparison`; in DR1's engine the selection in the compare step (opened with `compare.settled`, no evidence refs, none when there is no room; superseded when a lane is not as its options name it), `settleRun` deriving no outcome until the step has settled, the work-ended rule not applied, `how: selected` with `selected` or `none`, `compare.selected`, the continuation's `OriginCompare` reload with the applied selection and an answered one applied there, the required rationale, `not_selected` in the command path, `recheck` in `compareIntents` when #620 is on `main`; the ledger's second barrier; `docs/protocol.md`'s origin, subject kind, event and refusals | `internal/crew/ledger`, `internal/crew`, `docs/protocol.md` | the PR-6a tests above | PR-3; after DR1's #636 (PR #678), on #634 (PR #664) and #635 (PR #672); #620 when it is on `main` at the cut | PR-4 |
 | PR-6b | api: the selection on the routes, one rule for delivery | the delivery rule narrowed to the selected candidate, the comparison reply's `selection` (left out of Brakeman's read), `ticket_comment` for the selected lane, the door test's `decisionSession` route; `request_changes`' refusal step when #627 is on `main` at the cut; `docs/protocol.md`'s rows | `internal/api`, `docs/protocol.md` | the PR-6b tests above | PR-5, PR-6a; after DR1's #637 (PR #683); #627 when it is on `main` at the cut | PR-4 |
 | PR-7 | web: the supporting panel, Brakeman's draft and the selection | `CompareSupporting`, Ask Brakeman to compare, `useComparison` on `decision` events, `CompareSelect` over DR1's `DecisionRespond` with the finality words, in DR1's card an option's subject and the required rationale for origin compare, the selected and not selected labels on the comparison, the run page and `DispatchCandidates`, the stub brief, `compare-select.spec.ts` | `web/app/components`, `web/app/composables`, `web/app/utils`, `web/e2e` | vitest (`compareSelect.test.ts`, `decisionRespondCompare.test.ts`), `compare-select.spec.ts` | PR-4, PR-6b; after DR1's #640 | PR-8a |
 | PR-8a | api, crew: into review, and for whom | RV1's `request_changes` refusal step (unless PR-6b took it), `request_changes` in `compareIntents` for the selected lane, the `ContinueRunWith` tests, `recheck` and its test (unless PR-6a took them), `Compare.Selector` with HM1's labels and the record's `for` on the engine's opener; `docs/protocol.md`'s review refusal | `internal/api`, `internal/crew`, `docs/protocol.md` | the PR-8a tests above | PR-6b; after RV1's #623, #627 and HM1's #645 | PR-7, PR-9 |
@@ -2096,9 +2255,11 @@ taken.
    opened by Yardmaster in the transaction that settles the last lane,
    its options bound to exact commits, its own subject the comparison,
    no evidence refs, its recommendation always -1, its rationale
-   required, holding the run open while it is open or answered, closed
-   by the transaction of any change to a lane before it is applied (at
-   most one at a time), applied as `how: selected`, and after a restart
+   required, holding the run open while it is open or answered (and
+   while the change that ends the last lane has yet to open it), closed
+   by the change that leaves a lane not as its options name it, before
+   it is applied (at most one at a time), opened again by no cancel or
+   stop alone, not opened when the run has no room for it, applied as `how: selected`, and after a restart
    applied when the run is continued, as DR1 applies every answer of a
    run it does not hold; a later candidate of the selected task does not
    supersede it. The
@@ -2126,8 +2287,8 @@ taken.
 12. **None of these** is always an answer; it ends the comparison, and
     the ticket's next step is DS2's Revise and a follow-up launch.
 13. **The launch states what it multiplies and must repeat the count.**
-    The statement (candidates and reviews, the sessions that start at
-    once, each lane worked as one crew's task with the engine's refunds
+    The statement (the candidates and their sessions, the reviews'
+    sessions as up to one after each candidate that succeeds, each lane worked as one crew's task with the engine's refunds
     and Retries named, the checks at the base, a Brakeman turn) is this
     plan's, and states no total the engine does not keep; usage per account is AC1's, shown below it
     once AC1's PR-7 merges, with this plan's count of the launch's
@@ -2372,3 +2533,58 @@ and the promise was narrowed to what the code keeps.
   11).
 - `useComparison` reads again on DR1's `decision` events (PR-7) (Codex
   14).
+
+## Changed in review round 3
+
+Answers to Codex round 3 (2026-11-06), the last. Each was answered by
+asking first whether the item needs the mechanism; where one stays, its
+states, its invariant and its test are in the row that builds it.
+
+**Mechanisms removed:**
+
+- The supersession and opening in the transaction's drain, keyed on the
+  rows a change marked: `startContinued` marks every imported task, so
+  an unchanged continuation superseded an open selection, and the drain
+  ran after `settleRun` had already ended the run. Replaced by the
+  compare step (Settling, PR-2; At most one, PR-6a), which reads the
+  lanes as they are after each change, before `endedWork` and the
+  drain, with one remembered value, `settled` (Codex 1, 2, 3).
+- The `no_room` refusal of lane commands and the room it reserved for
+  the next selection: `regate` opens plan gates again on a Retry or an
+  Accept, so no count kept apart from DR1's stays right. The opener asks
+  DR1's count at the opening and, without room, opens none (Codex 4).
+- The server-piped `git patch-id` and its 8 MiB patch bound: `git
+  cherry`, one argv process with no input, compares patch ids itself
+  (Codex 6).
+- `firstSessions`, a count of sessions that start whatever happens:
+  reviews start only after their candidate succeeds (Codex 9).
+- The claim that the files route and the session read serve a lane's
+  token: they take none today, and the plan keeps it so (Codex 10).
+
+**Promises narrowed:**
+
+- A selection always has room becomes: a settling with no room opens
+  none, and the comparison ends with no candidate selected, said in
+  words (Codex 4).
+- A comparison's chain is at most 256 runs (DR1's `maxChain`): the next
+  continuation is refused, so the applied selection is always read
+  again (Codex 5).
+- After the operator's cancel or a stop, no selection opens until a lane
+  runs again or changes what it shows (Codex 3).
+- A renamed file counts as one deleted and one added (Codex 8).
+- The launch states the candidates' sessions and up to as many review
+  sessions after them, not a sum that starts at once (Codex 9).
+
+**Fixed where the mechanism stays:**
+
+- `settleRun` derives no outcome for a compare run while the change that
+  ends the last lane has yet to open its selection, so that change
+  records no `run.finished` and calls no `OnEnd` before the record
+  (Codex 1).
+- `gitcli` gains `RunBounded`, which ends git past its output limit, so
+  the comparison's bounds hold before allocation (Codex 6).
+- The raw status beside numstat tells files added and deleted from
+  lines appended and removed (Codex 8).
+- Brakeman's comparison read notes each candidate and receipt by its
+  exact ref (`filterComparison`), so a brief that cites them after that
+  read alone cites what was observed (Codex 7).
