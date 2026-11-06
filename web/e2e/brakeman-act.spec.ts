@@ -287,3 +287,25 @@ test('with the grant taken away, the act is refused and kept nowhere, and the pr
   await expect(p.locator('[data-proposal-did]')).toHaveCount(0)
   await expect(p.locator('[data-proposal-link]')).toHaveAttribute('href', `/dispatch/${PROJECT}/1`)
 })
+
+test('Settings opened before the right token was saved offers the grants once it is, with no reload', async ({ page }) => {
+  // The guide's read is refused with the token the browser holds, and asked again when the gate saves the right one: Settings is not
+  // mounted again, so the read that failed as it mounted is the only one the old code made (#538's review). Two waits of 30 s, then
+  // five steps.
+  budget(2 * 30_000 + 5 * STEP_MS)
+  await page.addInitScript(() => {
+    localStorage.setItem('conductor.workbenchToken', 'not-the-workbench-token')
+    localStorage.setItem('conductor.displayName', 'Nate')
+  })
+  await page.goto(`${server!.baseURL}/settings`)
+  const gate = page.getByRole('dialog', { name: 'Workbench token' })
+  await expect(gate).toBeVisible({ timeout: 30_000 })
+  const field = gate.getByPlaceholder('paste the workbench token')
+  await field.fill(server!.token)
+  await expect(field).toHaveValue(server!.token)
+  await gate.getByRole('button', { name: 'Save' }).click()
+  await expect(gate).toHaveCount(0)
+  const g = page.locator('[data-brakeman-grant="launch_approved_plan"]')
+  await expect(g).toHaveAttribute('data-grant-served', 'true', { timeout: 30_000 })
+  await expect(page.locator('[data-brakeman-grants]').getByRole('switch', { name: 'Launch an approved plan' })).toBeEnabled()
+})
