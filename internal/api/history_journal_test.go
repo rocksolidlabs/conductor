@@ -164,6 +164,76 @@ func TestWhatAPersonTypesIsNotKept(t *testing.T) {
 	}
 }
 
+// A typed answer a provider passes on (ext.Host's Submit naming the
+// question, as a decision router answers one: no By, the person's name)
+// never reaches the record or the session's own log: its text may be a
+// credential, whoever sent it. The answer's own entry, the question's
+// words, is recorded after where the line's would have been, so once it
+// is in the log the line's would be too.
+func TestARoutedTypedAnswerIsNotKept(t *testing.T) {
+	const secret = "routed-answer-secret-4"
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	l := e.local(id)
+	h := testHost(e.srv, t.Context(), "switchman")
+	l.SetAttentionFull(session.AttentionNeedsInput, "What is the password?", session.SourceAPI, session.KindPrompt, nil)
+	q := l.Info().Attention.ID
+	if res, err := h.Submit(t.Context(), ext.SubmitRequest{Session: id, Question: q, Text: secret, By: ada}); err != nil || res.Status != "entered" {
+		t.Fatalf("the routed answer: %+v %v", res, err)
+	}
+	until(t, "the answer's entry in the session's log", func() bool {
+		return slices.Contains(inputs(l), "What is the password? by Ada")
+	})
+	for _, in := range inputs(l) {
+		if strings.Contains(in, secret) {
+			t.Fatalf("the session's log keeps the answer: %q", inputs(l))
+		}
+	}
+	until(t, "the answer in the record", func() bool {
+		r, _, err := e.srv.sessionRecords.Get(id)
+		return err == nil && slices.ContainsFunc(r.Entries, func(e journal.Entry) bool { return e.Kind == journal.KindAnswer && e.Ref == q })
+	})
+	if _, raw := recordFile(t, e, id); bytes.Contains(raw, []byte(secret)) {
+		t.Fatalf("the record keeps the routed answer:\n%s", raw)
+	}
+	resp, out := e.do("GET", "/api/history/sessions/"+id, adminToken, nil)
+	if b, _ := json.Marshal(out); resp.StatusCode != http.StatusOK || bytes.Contains(b, []byte(secret)) {
+		t.Fatalf("the record served: %d %s", resp.StatusCode, b)
+	}
+}
+
+// A typed answer a route sends a real `conductor host` session
+// (answer_as, which the host types naming its question, no By) never
+// reaches the hosted record: the host keeps no entry of its text, so none
+// reaches the server.
+func TestAHostedRoutedTypedAnswerIsNotKept(t *testing.T) {
+	const secret = "hosted-answer-secret-5"
+	seams := watchRouter(t)
+	f := &fakeRouter{route: func(_ context.Context, d ext.Decision) (ext.Route, error) {
+		return ext.Route{Answer: &ext.Answer{Text: secret, By: ada}}, nil
+	}}
+	e := routerEnv(t, f)
+	out := filepath.Join(e.root, "read")
+	id := startHost(t, e, []string{"/bin/sh", "-c", `exec cat > "$0"`, out})
+	until(t, "the host says answerAs", func() bool { return hostedSession(t, e, id).TakesAnswers() })
+	q := hostedQuestion(t, e, f, id, map[string]any{"state": "needs_input", "message": "What is the password?", "kind": "prompt"})
+	if got := seams.wait(t, "applied", q); got.err != nil {
+		t.Fatalf("applied: %v", got.err)
+	}
+	until(t, "the program read the answer", func() bool {
+		b, _ := os.ReadFile(out)
+		return strings.Contains(string(b), secret)
+	})
+	until(t, "the answer in the record", func() bool {
+		r, _, err := e.srv.sessionRecords.Get(id)
+		return err == nil && slices.ContainsFunc(r.Entries, func(e journal.Entry) bool { return e.Kind == journal.KindAnswer && e.Ref == q })
+	})
+	seams.settle(t, e, id)
+	if _, raw := recordFile(t, e, id); bytes.Contains(raw, []byte(secret)) {
+		t.Fatalf("the hosted record keeps the routed answer:\n%s", raw)
+	}
+}
+
 // A question and how it ended come from the chat with their ids: one with
 // choices answered by a choice (its label), one the agent moved past
 // (withdrawn), each answer naming its question.
@@ -683,5 +753,27 @@ func TestASwitchyardKeepsNoHistory(t *testing.T) {
 	}
 	if resp, out := e.do("GET", "/api/history/sessions", adminToken, nil); resp.StatusCode != http.StatusNotFound || errorCode(out) != "history_unavailable" {
 		t.Fatalf("the list on a switchyard: %d %v", resp.StatusCode, out)
+	}
+}
+
+// The end commit is read at the folder's path once the process is gone,
+// and kept only while that path is still the repository the launch was
+// read in: a folder replaced by another repository lends no commit.
+func TestTheEndCommitIsTheLaunchRepositorys(t *testing.T) {
+	e := newTestEnv(t, nil)
+	answer := gitcli.Revision{Top: "/w", Common: "/w/.git", Commit: "0123456789abcdef0123456789abcdef01234567"}
+	e.srv.readRevision = func(context.Context, string) (gitcli.Revision, error) { return answer, nil }
+	r := journal.Record{Where: string(ext.WhereNative), Cwd: "/w", Repo: "/w", RepoCommon: "/w/.git"}
+	if got := e.srv.recordEndCommit(t.Context(), r); got != answer.Commit {
+		t.Fatalf("the same repository's end commit: %q", got)
+	}
+	for _, other := range []gitcli.Revision{
+		{Top: "/elsewhere", Common: "/elsewhere/.git", Commit: answer.Commit},
+		{Top: "/w", Common: "/other/.git", Commit: answer.Commit},
+	} {
+		answer = other
+		if got := e.srv.recordEndCommit(t.Context(), r); got != "" {
+			t.Fatalf("a replaced folder's commit was kept: %+v gave %q", other, got)
+		}
 	}
 }

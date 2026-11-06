@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -52,8 +53,20 @@ var LockWait = 10 * time.Second
 const lockTick = 250 * time.Millisecond
 
 // flushEvery is how often a dirty record is written at most, and how long
-// after its end a record is kept in memory.
-const flushEvery = 5 * time.Second
+// after its end a record is kept in memory; a test makes it longer.
+var flushEvery = 5 * time.Second
+
+// closeWait is how long Close gives the end commits still being read, all
+// of them together: a record whose read has not returned by then is
+// written without one (EndCommit, endCommits).
+var closeWait = 3 * time.Second
+
+// endReaders is how many end commits are read at once.
+const endReaders = 8
+
+// maxTouchPath bounds the path a touch holds until Denied is asked of it:
+// the path as it came, never cut, so the deny list judges the path itself.
+const maxTouchPath = 8 << 10
 
 // maxHeld bounds what one record holds in memory between two writes: the
 // entries and the touches not yet folded, past which the oldest go,
@@ -66,10 +79,14 @@ var idPattern = regexp.MustCompile(`^[0-9a-f]{16}$`)
 // The seams of the package's tests: takeLock is store.TakeOwnerLock;
 // beforeWrite, when set, runs before each document is written with its
 // name ("state.json", "sessions/<id>.json"), an error it answers the
-// write's.
+// write's; beforeDelete the same before a record's file is deleted, and
+// beforeLoad before a record's earlier file is read to be merged (merge),
+// with its id.
 var (
-	takeLock    = store.TakeOwnerLock
-	beforeWrite func(name string) error
+	takeLock     = store.TakeOwnerLock
+	beforeWrite  func(name string) error
+	beforeDelete func(name string) error
+	beforeLoad   func(id string) error
 )
 
 // Meta is what the journal reads of a session as it is now (Current): its
@@ -102,8 +119,10 @@ type Options struct {
 	// the journal's lock.
 	Current func(id string) (Meta, bool)
 	// EndCommit answers the commit a record's folder is at after its end,
-	// "" for none or unknown; called on the writer's goroutine.
-	EndCommit func(r Record) string
+	// "" for none or unknown; called on the writer's goroutine, several at
+	// once (at most endReaders). ctx ends when Close gives up on the reads
+	// (closeWait): an answer after that is not kept.
+	EndCommit func(ctx context.Context, r Record) string
 	// Denied says the session's deny list refuses path; such a file is
 	// never written. Called on the writer's goroutine.
 	Denied func(id, path string) bool
@@ -139,6 +158,14 @@ type Journal struct {
 	notified bool
 	inOwned  sync.WaitGroup
 	running  bool
+	// reads is the end commits' reads' context, ended closeWait after
+	// Close begins (endCommits).
+	reads     context.Context
+	stopReads context.CancelFunc
+	// roMu guards roRows, a read-only journal's rows by file, each read
+	// again only when its file's size or time changed (scan).
+	roMu   sync.Mutex
+	roRows map[string]scanned
 
 	wake    chan struct{}
 	flushes chan chan struct{}
@@ -154,12 +181,29 @@ type rec struct {
 	// dirty: changed since its last write; urgent: to be written at once
 	// (a hosted record begun, an end, a crew taken); stale: its metadata
 	// to be read through Current; needEnd: its end commit to be read;
-	// load: a hosted record reopened whose earlier file is still to be
-	// read and merged.
+	// load: its earlier file still to be read and what came meanwhile
+	// merged into it (merge): a hosted record its host took up again, or
+	// one a late hook brought back after it left memory.
 	dirty, urgent, stale, needEnd, load bool
-	touches                             []File
+	// host is the registration a hosted record taken up again brings, kept
+	// for its merge; loadWarned says its failed read was logged.
+	host       *Record
+	loadWarned bool
+	touches    []touch
+	// final is what the session was as it left the server, and denied its
+	// deny list (Gone): read for the work still pending once the server no
+	// longer lists it.
+	final  *Meta
+	denied func(path string) bool
 	// endedAt is when its end was set here, for its eviction.
 	endedAt time.Time
+}
+
+// touch is a file touched, not yet asked of Denied: path is the path as it
+// came, f the row it folds into, its path cut to MaxPath.
+type touch struct {
+	f    File
+	path string
 }
 
 // summary is what the journal keeps of every record: its list row and
@@ -168,6 +212,12 @@ type summary struct {
 	Summary
 	open, pending bool
 	owner         string
+	// stopped is when the record stopped being open (its end, else when it
+	// was last observed; an unreadable file's last write): Prune keeps the
+	// latest. evicted: the record left memory here, so a late hook may
+	// bring it back (held).
+	stopped time.Time
+	evicted bool
 }
 
 // Summary is a record's row in a list.
@@ -190,14 +240,32 @@ type Summary struct {
 	Files     int       `json:"files"`
 	Dropped   int       `json:"dropped,omitempty"`
 	Newer     bool      `json:"newer,omitempty"`
+	// Unreadable: a file in history/sessions/ this version cannot decode,
+	// kept as it is: listed by its id alone (StartedAt its file's last
+	// write), forgettable, counted toward MaxRecords, never written over.
+	Unreadable bool `json:"unreadable,omitempty"`
 }
 
 func summaryOf(r *Record, newer bool) *summary {
 	s := &summary{Summary: Summary{ID: r.ID, Name: r.Name, Kind: r.Kind, Agent: r.Agent, Host: r.Host, Where: r.Where, Cwd: r.Cwd, Repo: r.Repo, Branch: r.Branch,
 		Crew: r.Crew, StartedAt: r.StartedAt, EndedAt: r.EndedAt, LostAt: r.LostAt, Ending: r.Ending, Entries: len(r.Entries), Files: len(r.Files), Dropped: r.Dropped, Newer: newer},
-		open: r.open() && !newer, pending: r.pending(), owner: r.Host.Owner}
+		open: r.open() && !newer, pending: r.pending(), owner: r.Host.Owner, stopped: endOf(r)}
 	s.Host.Owner = ""
 	return s
+}
+
+// unreadableRow is the row of a record file this version cannot decode,
+// last written at mod.
+func unreadableRow(id string, mod time.Time) *summary {
+	mod = mod.UTC()
+	return &summary{Summary: Summary{ID: id, StartedAt: mod, Unreadable: true}, stopped: mod}
+}
+
+// fileID is the session id a record's file name holds, false for a name
+// that is no record's.
+func fileID(name string) (string, bool) {
+	id, ok := strings.CutSuffix(name, ".json")
+	return id, ok && idPattern.MatchString(id)
 }
 
 // Open takes history/ under the data directory st holds (0700), its
@@ -217,7 +285,8 @@ func Open(st *store.Store, o Options) (*Journal, error) {
 	}
 	j := &Journal{st: h, sess: sess, o: o, log: o.Log, recs: map[string]*rec{}, index: map[string]*summary{},
 		wake: make(chan struct{}, 1), flushes: make(chan chan struct{}), stop: make(chan struct{}), stopped: make(chan struct{}),
-		done: make(chan struct{}), shut: make(chan struct{})}
+		done: make(chan struct{}), shut: make(chan struct{}), roRows: map[string]scanned{}}
+	j.reads, j.stopReads = context.WithCancel(context.Background())
 	if j.o.Now == nil {
 		j.o.Now = time.Now
 	}
@@ -226,6 +295,7 @@ func Open(st *store.Store, o Options) (*Journal, error) {
 	}
 	lockPath := filepath.Join(h.Dir(), Lock)
 	lock, why, held, err := takeLock(lockPath)
+	wait := false
 	switch {
 	case err != nil:
 		j.readOnly, j.why = true, err.Error()
@@ -233,7 +303,7 @@ func Open(st *store.Store, o Options) (*Journal, error) {
 		j.readOnly, j.why = true, why
 		if held {
 			j.why = "waiting for the owner lock: " + why
-			go j.awaitLock(lockPath)
+			wait = true
 		}
 	default:
 		j.lock = lock
@@ -244,8 +314,12 @@ func Open(st *store.Store, o Options) (*Journal, error) {
 		j.owned = true
 		j.startWriter()
 	}
+	// Said before the waiter starts, which changes both under mu.
 	if j.readOnly {
 		j.log.Warn("the session records are read-only: this server's sessions are not recorded", "why", j.why)
+	}
+	if wait {
+		go j.awaitLock(lockPath)
 	}
 	return j, nil
 }
@@ -287,8 +361,11 @@ func (j *Journal) awaitLock(lockPath string) {
 				j.owned = true
 				j.startWriterLocked()
 			}
+			// Close may have begun while the records were recovered (mu let
+			// go, wmu held): then the callback never runs, as Close may
+			// already have waited for it.
 			cb := j.onOwned
-			run := cb != nil && !j.readOnly && !j.notified
+			run := cb != nil && !j.readOnly && !j.notified && !j.closed
 			if run {
 				j.notified = true
 				j.inOwned.Add(1)
@@ -355,6 +432,11 @@ func (j *Journal) Close() error {
 	close(j.done)
 	running := j.running
 	j.mu.Unlock()
+	// The end commits still to be read get closeWait from here, together
+	// (endCommits); the writer's last pass writes the rest without one.
+	giveUp := time.AfterFunc(closeWait, j.stopReads)
+	defer giveUp.Stop()
+	defer j.stopReads()
 	j.inOwned.Wait()
 	if running {
 		close(j.stop)
@@ -497,27 +579,42 @@ func (j *Journal) beginHosted(r Record) error {
 	}
 	now := j.o.Now().UTC()
 	if ex, ok := j.index[r.ID]; ok {
-		if !ex.Host.Hosted || ex.owner != r.Host.Owner || ex.Newer || !ex.EndedAt.IsZero() {
+		if ex.Unreadable || !ex.Host.Hosted || ex.owner != r.Host.Owner || ex.Newer || !ex.EndedAt.IsZero() {
 			j.log.Warn("a hosted session's record was not begun: its id has another", "session", r.ID)
+			// No hook of this session brings that record back (held).
+			if ex.evicted {
+				cp := *ex
+				cp.evicted = false
+				j.index[r.ID] = &cp
+			}
 			return ErrExists
 		}
 		taken := Entry{At: now, Kind: KindStatus, Message: "taken up again by its host"}
+		j.seq++
+		taken.Seq = j.seq
+		host := r
+		host.Entries = nil
 		if x, ok := j.recs[r.ID]; ok && !x.load {
 			reopen(&x.r, r)
-			j.seq++
-			taken.Seq = j.seq
 			x.r.Entries = insertEntry(x.r.Entries, taken)
 			x.dirty, x.urgent, x.endedAt = true, true, time.Time{}
 			j.index[r.ID] = summaryOf(&x.r, false)
 			j.poke()
 			return nil
+		} else if ok {
+			// Its file is still to be read (a late hook brought it back, or
+			// the host registered before): taken up with it (merge).
+			x.host = &host
+			x.r.LostAt, x.r.Ending = time.Time{}, ""
+			x.r.Entries = insertEntry(x.r.Entries, taken)
+			x.dirty, x.urgent, x.endedAt = true, true, time.Time{}
+		} else {
+			r.Entries = []Entry{taken}
+			j.recs[r.ID] = &rec{r: r, dirty: true, urgent: true, load: true, host: &host}
 		}
-		j.seq++
-		taken.Seq = j.seq
-		r.Entries = []Entry{taken}
-		x := &rec{r: r, dirty: true, urgent: true, load: true}
-		j.recs[r.ID] = x
-		j.index[r.ID] = summaryOf(&x.r, false)
+		row := *ex
+		row.open, row.LostAt, row.Ending, row.stopped, row.evicted = true, time.Time{}, "", time.Time{}, false
+		j.index[r.ID] = &row
 		j.poke()
 		return nil
 	}
@@ -670,9 +767,31 @@ func (j *Journal) Chat(id string, c ChatLine) {
 	j.add(id, e)
 }
 
+// held is the record of id in memory for a hook, brought back when it
+// left memory after its end (evicted): what a late callback carries is
+// taken all the same, its file read and merged by the writer (load).
+// Nil for an id this journal keeps no record of, or one it does not
+// write. The caller holds mu.
+func (j *Journal) held(id string) *rec {
+	if j.writable() != nil {
+		return nil
+	}
+	if x, ok := j.recs[id]; ok {
+		return x
+	}
+	s, ok := j.index[id]
+	if !ok || !s.evicted || s.Newer || s.Unreadable {
+		return nil
+	}
+	x := &rec{r: Record{ID: id, EndedAt: s.EndedAt, LostAt: s.LostAt, Ending: s.Ending}, load: true, endedAt: j.o.Now()}
+	j.recs[id] = x
+	j.poke()
+	return x
+}
+
 // add keeps e in the record of id, in its place by At then by arrival. An
 // entry after the record's end is dropped and counted; one an earlier
-// callback still carried is kept.
+// callback still carried is kept, also once the record has left memory.
 func (j *Journal) add(id string, e Entry) {
 	fitEntry(&e)
 	if e.At.IsZero() {
@@ -681,8 +800,8 @@ func (j *Journal) add(id string, e Entry) {
 	e.At = e.At.UTC()
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	x, ok := j.recs[id]
-	if !ok || j.writable() != nil {
+	x := j.held(id)
+	if x == nil {
 		return
 	}
 	if end := endOf(&x.r); !end.IsZero() && e.At.After(end) {
@@ -734,28 +853,27 @@ func (j *Journal) Touch(id string, f File) {
 	if f.Path == "" || f.Op == "" {
 		return
 	}
+	// Denied is asked of the path as it came, the row keeps it cut: a cut
+	// could leave out the part of the name a deny list covers.
+	t := touch{path: f.Path}
 	f.Path, f.Op = fitPath(f.Path, MaxPath), cutBytes(f.Op, 32)
 	if f.Last.IsZero() {
 		f.Last = j.o.Now()
 	}
 	f.Last, f.Count = f.Last.UTC(), max(f.Count, 1)
+	t.f = f
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	x, ok := j.recs[id]
-	if !ok || j.writable() != nil {
+	x := j.held(id)
+	if x == nil {
 		return
 	}
-	if end := endOf(&x.r); !end.IsZero() && f.Last.After(end) {
+	if end := endOf(&x.r); (!end.IsZero() && f.Last.After(end)) || len(x.touches) >= maxHeld || len(t.path) > maxTouchPath {
 		x.r.Dropped++
 		x.dirty = true
 		return
 	}
-	if len(x.touches) >= maxHeld {
-		x.r.Dropped++
-		x.dirty = true
-		return
-	}
-	x.touches = append(x.touches, f)
+	x.touches = append(x.touches, t)
 	x.dirty = true
 }
 
@@ -768,8 +886,8 @@ func (j *Journal) Tool(id, name string) {
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	x, ok := j.recs[id]
-	if !ok || j.writable() != nil {
+	x := j.held(id)
+	if x == nil {
 		return
 	}
 	if _, known := x.r.Tools[name]; !known && len(x.r.Tools) >= MaxTools {
@@ -788,10 +906,25 @@ func (j *Journal) Tool(id, name string) {
 func (j *Journal) Changed(id string) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if x, ok := j.recs[id]; ok && j.writable() == nil {
+	if x := j.held(id); x != nil {
 		x.stale = true
 		j.poke()
 	}
+}
+
+// Gone keeps what a session was as it left the server (final) and its
+// deny list (denied, nil for none): the writer reads them for the work it
+// still holds of it (its metadata to read, its touches to ask of a deny
+// list) once Current no longer answers it. It never waits.
+func (j *Journal) Gone(id string, final Meta, denied func(path string) bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	x, ok := j.recs[id]
+	if !ok || j.writable() != nil {
+		return
+	}
+	x.final, x.denied, x.stale = &final, denied, true
+	j.poke()
 }
 
 // End sets how the session ended, in memory, and has the writer write it
@@ -806,8 +939,15 @@ func (j *Journal) End(id string, end Ending) {
 	end.At = end.At.UTC()
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	x, ok := j.recs[id]
-	if !ok || j.writable() != nil {
+	// A record that left memory with the end this one would set changes
+	// nothing, and is not brought back for it.
+	if _, in := j.recs[id]; !in {
+		if s, ok := j.index[id]; !ok || !s.EndedAt.IsZero() || (end.Lost && !s.LostAt.IsZero()) {
+			return
+		}
+	}
+	x := j.held(id)
+	if x == nil {
 		return
 	}
 	j.endLocked(x, end)
@@ -827,44 +967,33 @@ func (j *Journal) endLocked(x *rec, end Ending) {
 		x.needEnd = true
 	}
 	x.dirty, x.urgent, x.endedAt = true, true, j.o.Now()
-	j.index[x.r.ID] = summaryOf(&x.r, false)
+	if !x.load {
+		j.index[x.r.ID] = summaryOf(&x.r, false)
+	}
 	j.poke()
 }
 
-// pass is one turn of the writer: the stale metadata read, the hosted
-// records reopened merged with their files, the end commits read, the
-// touches asked of Denied and folded, then the records written (every
+// pass is one turn of the writer: the records whose earlier files are to
+// be read merged with them, then the stale metadata read, then the end
+// commits read and the touches asked of Denied and folded (collected after
+// the metadata, which may end a record), then the records written (every
 // dirty one with all, else the urgent ones), the ended ones let go of and
 // the ended records past MaxRecords pruned.
 func (j *Journal) pass(all bool) {
-	j.mu.Lock()
-	var stale, loads, ends, touched []*rec
-	for _, x := range j.recs {
-		if x.stale {
-			x.stale = false
-			stale = append(stale, x)
-		}
-		if x.load {
-			loads = append(loads, x)
-		}
-		if x.needEnd {
-			ends = append(ends, x)
-		}
-		if len(x.touches) > 0 {
-			touched = append(touched, x)
-		}
-	}
-	j.mu.Unlock()
-	for _, x := range stale {
-		j.readMeta(x)
-	}
-	for _, x := range loads {
+	for _, x := range j.collect(func(x *rec) bool { return x.load }) {
 		j.merge(x)
 	}
-	for _, x := range ends {
-		j.endCommit(x)
+	for _, x := range j.collect(func(x *rec) bool {
+		if x.stale && !x.load {
+			x.stale = false
+			return true
+		}
+		return false
+	}) {
+		j.readMeta(x)
 	}
-	for _, x := range touched {
+	j.endCommits(j.collect(func(x *rec) bool { return x.needEnd && !x.load }))
+	for _, x := range j.collect(func(x *rec) bool { return len(x.touches) > 0 && !x.load }) {
 		j.fold(x)
 	}
 	j.wmu.Lock()
@@ -881,6 +1010,9 @@ func (j *Journal) pass(all bool) {
 		}
 		if !x.dirty && !x.stale && len(x.touches) == 0 && !x.endedAt.IsZero() && j.o.Now().Sub(x.endedAt) >= flushEvery {
 			delete(j.recs, id)
+			if s, ok := j.index[id]; ok {
+				s.evicted = true
+			}
 		}
 	}
 	j.mu.Unlock()
@@ -893,20 +1025,35 @@ func (j *Journal) pass(all bool) {
 	j.pruneLocked()
 }
 
+// collect answers the records in memory that pick takes, which it may
+// change, under mu.
+func (j *Journal) collect(pick func(*rec) bool) []*rec {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	var out []*rec
+	for _, x := range j.recs {
+		if pick(x) {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
 // readMeta reads the session of x as it is now and takes what changed: its
 // name, its agent's own session, its crew (written at once when it had
-// none) and its end.
+// none) and its end. A session the server no longer lists is read as it
+// left (Gone).
 func (j *Journal) readMeta(x *rec) {
-	if j.o.Current == nil {
-		return
-	}
-	m, ok := j.o.Current(x.r.ID)
-	if !ok {
-		return
+	m, ok := Meta{}, false
+	if j.o.Current != nil {
+		m, ok = j.o.Current(x.r.ID)
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if j.recs[x.r.ID] != x {
+	if !ok && x.final != nil {
+		m, ok = *x.final, true
+	}
+	if !ok || j.recs[x.r.ID] != x || x.load {
 		return
 	}
 	r := &x.r
@@ -936,78 +1083,176 @@ func (j *Journal) readMeta(x *rec) {
 	j.index[r.ID] = summaryOf(r, false)
 }
 
-// merge reads the earlier file of a hosted record taken up again and puts
-// what it held before what this registration brought.
+// merge reads the earlier file of a record held with load: a hosted record
+// its host took up again (host), or one a late hook brought back after it
+// left memory. What the file held comes first and what came meanwhile is
+// put among it; an end observed meanwhile stands. A file that is not there
+// begins a hosted record afresh and lets a late hook's go; one of a later
+// version or one this version cannot decode is never written over, its
+// row says which; any other failure to read it leaves the record to be
+// read again at the next pass, unwritten.
 func (j *Journal) merge(x *rec) {
-	old, newer, err := j.load(x.r.ID)
+	id := x.r.ID
+	var old Record
+	var newer bool
+	var err error
+	if f := beforeLoad; f != nil {
+		err = f(id)
+	}
+	if err == nil {
+		old, newer, err = j.load(id)
+	}
+	var bad *store.ParseError
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if j.recs[x.r.ID] != x {
+	if j.recs[id] != x || !x.load {
 		return
 	}
-	x.load = false
-	if err != nil || newer {
-		if !errors.Is(err, ErrNotFound) {
-			j.log.Warn("a hosted session's earlier record was not read; it is begun again", "session", x.r.ID, "err", err)
+	var base Record
+	switch {
+	case err == nil && newer:
+		j.log.Warn("a session's record is of a later version; it is not written over", "session", id)
+		delete(j.recs, id)
+		j.index[id] = summaryOf(&old, true)
+		return
+	case err == nil:
+		base = old
+		if x.host != nil {
+			if !old.EndedAt.IsZero() || !old.Host.Hosted || old.Host.Owner != x.host.Host.Owner {
+				j.log.Warn("a hosted session's record was not taken up again: it is another's or ended", "session", id)
+				delete(j.recs, id)
+				j.index[id] = summaryOf(&old, false)
+				return
+			}
+			reopen(&base, *x.host)
 		}
+	case errors.Is(err, ErrNotFound) && x.host != nil:
+		base = *x.host
+		base.Entries = []Entry{}
+	case errors.Is(err, ErrNotFound):
+		delete(j.recs, id)
+		delete(j.index, id)
 		return
-	}
-	if !old.EndedAt.IsZero() || !old.Host.Hosted || old.Host.Owner != x.r.Host.Owner {
-		j.log.Warn("a hosted session's record was not taken up again: it is another's or ended", "session", x.r.ID)
-		delete(j.recs, x.r.ID)
-		j.index[x.r.ID] = summaryOf(&old, false)
+	case errors.As(err, &bad):
+		j.log.Warn("a session's record was not read; it is kept as it is, listed as unreadable", "session", id, "err", err)
+		delete(j.recs, id)
+		j.index[id] = unreadableRow(id, j.o.Now())
+		return
+	default:
+		if !x.loadWarned {
+			x.loadWarned = true
+			j.log.Warn("a session's earlier record was not read; it is read again before anything is written", "session", id, "err", err)
+		}
 		return
 	}
 	fresh := x.r
-	reopen(&old, fresh)
 	for _, e := range fresh.Entries {
-		old.Entries = insertEntry(old.Entries, e)
+		base.Entries = insertEntry(base.Entries, e)
 	}
-	old.Dropped += fresh.Dropped
+	base.Dropped += fresh.Dropped
 	for k, n := range fresh.Tools {
-		if old.Tools == nil {
-			old.Tools = map[string]int{}
+		if base.Tools == nil {
+			base.Tools = map[string]int{}
 		}
-		if _, known := old.Tools[k]; known || len(old.Tools) < MaxTools {
-			old.Tools[k] += n
+		if _, known := base.Tools[k]; known || len(base.Tools) < MaxTools {
+			base.Tools[k] += n
 		}
 	}
 	for _, f := range fresh.Files {
-		old.Files = foldFile(old.Files, f, &old.Dropped)
+		base.Files = foldFile(base.Files, f, &base.Dropped)
 	}
-	x.r = old
-	x.dirty, x.urgent = true, true
-	j.index[x.r.ID] = summaryOf(&x.r, false)
+	switch {
+	case !base.EndedAt.IsZero():
+	case !fresh.EndedAt.IsZero():
+		base.EndedAt, base.LostAt, base.Ending = fresh.EndedAt, time.Time{}, fresh.Ending
+	case !fresh.LostAt.IsZero() && base.LostAt.IsZero():
+		base.LostAt, base.Ending = fresh.LostAt, fresh.Ending
+	}
+	x.r = base
+	x.load, x.loadWarned = false, false
+	if x.host != nil {
+		x.dirty, x.urgent, x.host = true, true, nil
+	}
+	if x.dirty {
+		j.index[id] = summaryOf(&x.r, false)
+	}
+}
+
+// endCommits reads the end commits of the records ended, at most
+// endReaders at once. Once Close has given up on them (reads ended,
+// closeWait after it began) those not read are written without one, and
+// an answer that comes later is not kept.
+func (j *Journal) endCommits(ends []*rec) {
+	if len(ends) == 0 {
+		return
+	}
+	ctx := j.reads
+	sem := make(chan struct{}, endReaders)
+	var wg sync.WaitGroup
+	for _, x := range ends {
+		wg.Go(func() {
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+				j.endCommit(ctx, x)
+			case <-ctx.Done():
+			}
+		})
+	}
+	read := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(read)
+	}()
+	select {
+	case <-read:
+	case <-ctx.Done():
+		j.mu.Lock()
+		for _, x := range ends {
+			if x.needEnd {
+				x.needEnd = false
+				x.dirty, x.urgent = true, true
+			}
+		}
+		j.mu.Unlock()
+	}
 }
 
 // endCommit reads the end commit of an ended record.
-func (j *Journal) endCommit(x *rec) {
+func (j *Journal) endCommit(ctx context.Context, x *rec) {
 	j.mu.Lock()
 	r := x.r
 	r.Entries, r.Files = nil, nil
 	j.mu.Unlock()
 	commit := ""
 	if j.o.EndCommit != nil {
-		commit = j.o.EndCommit(r)
+		commit = j.o.EndCommit(ctx, r)
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if !x.needEnd {
+		return
+	}
 	x.needEnd = false
 	x.r.End = fitPath(commit, 64)
 	x.dirty, x.urgent = true, true
 }
 
-// fold asks Denied of each touch x holds and folds the rest into its
-// files.
+// fold asks Denied (the session's own deny list once it is gone) of each
+// touch x holds, by the path as it came, and folds the rest into its files.
 func (j *Journal) fold(x *rec) {
 	j.mu.Lock()
 	touches := x.touches
 	x.touches = nil
 	id := x.r.ID
+	denied := x.denied
 	j.mu.Unlock()
+	if denied == nil && j.o.Denied != nil {
+		denied = func(path string) bool { return j.o.Denied(id, path) }
+	}
 	kept := touches[:0]
 	for _, t := range touches {
-		if j.o.Denied != nil && j.o.Denied(id, t.Path) {
+		if denied != nil && denied(t.path) {
 			continue
 		}
 		kept = append(kept, t)
@@ -1015,7 +1260,7 @@ func (j *Journal) fold(x *rec) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	for _, t := range kept {
-		x.r.Files = foldFile(x.r.Files, t, &x.r.Dropped)
+		x.r.Files = foldFile(x.r.Files, t.f, &x.r.Dropped)
 	}
 	x.dirty = true
 }
@@ -1059,9 +1304,10 @@ func (j *Journal) write(x *rec) error {
 		j.mu.Unlock()
 		return nil
 	}
-	bound(&x.r)
+	// Measured with the Seq it is written with, which may be longer.
 	j.seq++
 	x.r.Seq = j.seq
+	bound(&x.r)
 	r := cloneRecord(&x.r)
 	x.dirty, x.urgent = false, false
 	j.index[r.ID] = summaryOf(&x.r, false)
@@ -1307,21 +1553,78 @@ func newerRow(a, b Summary) bool {
 	return a.ID > b.ID
 }
 
-// scan reads every record's row from the files.
+// scanned is a read-only journal's row of a file, as of its size and time.
+type scanned struct {
+	size int64
+	mod  time.Time
+	row  Summary
+}
+
+// scan answers every record's row from the files, for a journal that does
+// not write: a file is read only when it is new to it or its size or time
+// changed since it was last read, so a page does not decode every record.
 func (j *Journal) scan() ([]Summary, error) {
 	docs, err := j.sess.List()
 	if err != nil {
 		return nil, err
 	}
-	var rows []Summary
+	j.roMu.Lock()
+	defer j.roMu.Unlock()
+	seen := make(map[string]bool, len(docs))
+	rows := make([]Summary, 0, len(docs))
 	for _, d := range docs {
-		r, newer, err := loadFrom(j.sess, d.Name)
-		if err != nil {
+		id, ok := fileID(d.Name)
+		if !ok {
 			continue
 		}
-		rows = append(rows, summaryOf(&r, newer).Summary)
+		seen[d.Name] = true
+		if c, ok := j.roRows[d.Name]; ok && c.size == d.Size && c.mod.Equal(d.ModTime) {
+			rows = append(rows, c.row)
+			continue
+		}
+		var row Summary
+		r, newer, err := loadFrom(j.sess, d.Name)
+		switch {
+		case errors.Is(err, ErrNotFound):
+			continue
+		case err != nil:
+			row = unreadableRow(id, d.ModTime).Summary
+		default:
+			row = summaryOf(&r, newer).Summary
+		}
+		j.roRows[d.Name] = scanned{size: d.Size, mod: d.ModTime, row: row}
+		rows = append(rows, row)
+	}
+	for name := range j.roRows {
+		if !seen[name] {
+			delete(j.roRows, name)
+		}
 	}
 	return rows, nil
+}
+
+// remove deletes the file of the record id. The caller holds wmu.
+func (j *Journal) remove(id string) error {
+	if f := beforeDelete; f != nil {
+		if err := f(SessionsDir + "/" + id + ".json"); err != nil {
+			return err
+		}
+	}
+	return j.sess.Delete(id + ".json")
+}
+
+// forgetLocked lets go of the record id once its file is deleted; a file
+// not deleted keeps it, listed and to be forgotten again. The caller holds
+// wmu, so no write comes between.
+func (j *Journal) forgetLocked(id string) error {
+	if err := j.remove(id); err != nil {
+		return err
+	}
+	j.mu.Lock()
+	delete(j.recs, id)
+	delete(j.index, id)
+	j.mu.Unlock()
+	return nil
 }
 
 // Forget deletes the record of id: refused for a live session (ErrLive)
@@ -1349,14 +1652,14 @@ func (j *Journal) Forget(id string) error {
 		j.mu.Unlock()
 		return ErrResumePending
 	}
-	delete(j.recs, id)
-	delete(j.index, id)
 	j.mu.Unlock()
-	return j.sess.Delete(id + ".json")
+	return j.forgetLocked(id)
 }
 
 // ForgetAll deletes every record that is neither live nor holds a pending
-// receipt, and counts those it kept.
+// receipt, and counts those it kept. Only a record whose file was deleted
+// is counted forgotten; one that was not stays, and the first error is
+// answered.
 func (j *Journal) ForgetAll() (forgotten, kept int, err error) {
 	j.wmu.Lock()
 	defer j.wmu.Unlock()
@@ -1372,23 +1675,25 @@ func (j *Journal) ForgetAll() (forgotten, kept int, err error) {
 			continue
 		}
 		gone = append(gone, id)
-		delete(j.recs, id)
-		delete(j.index, id)
 	}
 	j.mu.Unlock()
 	slices.Sort(gone)
 	for _, id := range gone {
-		if derr := j.sess.Delete(id + ".json"); derr != nil && err == nil {
-			err = derr
+		if derr := j.forgetLocked(id); derr != nil {
+			if err == nil {
+				err = derr
+			}
+			continue
 		}
 		forgotten++
 	}
 	return forgotten, kept, err
 }
 
-// Prune deletes the oldest ended records past MaxRecords; a live one, one
-// holding a pending receipt and one of a later version are never deleted
-// and never counted.
+// Prune deletes the ended records past MaxRecords, those that stopped
+// being open longest ago first (by their end, else when they were last
+// observed); a live one, one holding a pending receipt and one of a later
+// version are never deleted and never counted.
 func (j *Journal) Prune() {
 	j.wmu.Lock()
 	defer j.wmu.Unlock()
@@ -1405,26 +1710,30 @@ func (j *Journal) pruneLocked() {
 		j.mu.Unlock()
 		return
 	}
-	var ended []Summary
+	var ended []*summary
 	for _, s := range j.index {
 		if !s.open && !s.pending && !s.Newer {
-			ended = append(ended, s.Summary)
+			ended = append(ended, s)
 		}
 	}
 	if len(ended) <= maxRecords {
 		j.mu.Unlock()
 		return
 	}
-	sort.Slice(ended, func(a, b int) bool { return newerRow(ended[a], ended[b]) })
-	gone := ended[maxRecords:]
-	for _, s := range gone {
-		delete(j.recs, s.ID)
-		delete(j.index, s.ID)
+	sort.Slice(ended, func(a, b int) bool {
+		if x, y := ended[a].stopped, ended[b].stopped; !x.Equal(y) {
+			return x.After(y)
+		}
+		return ended[a].ID > ended[b].ID
+	})
+	var gone []string
+	for _, s := range ended[maxRecords:] {
+		gone = append(gone, s.ID)
 	}
 	j.mu.Unlock()
-	for _, s := range gone {
-		if err := j.sess.Delete(s.ID + ".json"); err != nil {
-			j.log.Warn("a pruned session's record was not removed", "session", s.ID, "err", err)
+	for _, id := range gone {
+		if err := j.forgetLocked(id); err != nil {
+			j.log.Warn("a pruned session's record was not removed; it is tried again", "session", id, "err", err)
 		}
 	}
 }
@@ -1455,12 +1764,18 @@ func (j *Journal) recoverLocked() error {
 		mod   time.Time
 	}
 	var all []found
+	var unread []*summary
 	ids := map[string]bool{}
 	var maxSeq int64
 	for _, d := range docs {
 		r, newer, err := loadFrom(j.sess, d.Name)
 		if err != nil {
-			j.log.Warn("a session's record was not read; it is kept as it is", "file", d.Name, "err", err)
+			// Kept as it is, and in the index as unreadable: listed,
+			// forgettable, counted toward MaxRecords, never written over.
+			j.log.Warn("a session's record was not read; it is kept as it is, listed as unreadable", "file", d.Name, "err", err)
+			if id, ok := fileID(d.Name); ok {
+				unread = append(unread, unreadableRow(id, d.ModTime))
+			}
 			continue
 		}
 		all = append(all, found{r, newer, d.ModTime})
@@ -1476,6 +1791,9 @@ func (j *Journal) recoverLocked() error {
 	}
 	j.mu.Lock()
 	j.seq, j.high = max(j.seq, st.Seq, maxSeq), st.Seq
+	for _, s := range unread {
+		j.index[s.ID] = s
+	}
 	var changed []*rec
 	for _, f := range all {
 		r := f.r

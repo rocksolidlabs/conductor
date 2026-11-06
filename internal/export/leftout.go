@@ -10,7 +10,7 @@ import (
 // archive that holds it.
 const (
 	WhySecret     = "secret"             // the workbench token, tls/
-	WhyLock       = "lock"               // a lock file: the token's, the ledger's, Brakeman's and the history's owner locks, restore.lock
+	WhyLock       = "lock"               // a lock file: the token's, the ledger's, Brakeman's and the session journal's owner locks, restore.lock
 	WhyTemporary  = "temporary"          // a database's -wal, -shm or -journal, *.tmp, .probe-*, .restore-*, Dispatch's attachments/tmp/
 	WhyProvider   = "provider"           // ext/, a provider's own state
 	WhyNotRegular = "not a regular file" // a link, a device, a socket, a pipe
