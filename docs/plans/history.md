@@ -698,10 +698,17 @@ moves the file aside when the clear meets the damage too, and the
 indexer's catch-up writes it again. A clean stop owes no check, and SQLite
 answers `SQLITE_CORRUPT` when a read or write meets a bad page anyway.
 `TestAnIndexNotClosedIsCheckedBeforeItIsSearched`,
-`TestCheckClearsADamagedIndex`, `TestACancelledOpenKeepsTheIndex`. `Close`
-returns only once every call begun before it has ended, so nothing writes
-the file after it, and so does every other `Close` made while it runs
-(`TestCloseWaitsForAWrite`). A clear marks the index open and owes it no
+`TestCheckClearsADamagedIndex`, `TestACancelledOpenKeepsTheIndex`. A
+`Check` whose context ends before its move aside has begun answers the
+context's error and changes nothing, the index still owed its check; one
+that holds the index whole and has begun the move aside finishes it
+(`TestACancelledCheckChangesNothing`). `Close` returns only once every
+call begun before it has ended, each with its transaction committed or
+rolled back (a cancelled call waits for the rollback database/sql runs for
+it) and its connection back in its pool, and every connection is closed,
+so nothing reads or writes the file after it; so does every other `Close`
+made while it runs (`TestCloseWaitsForAWrite`,
+`TestCloseWaitsForACancelledRollback`). A clear marks the index open and owes it no
 check in its own transaction, so clears that overlap never read the
 owner's own mark as a crash (`TestOverlappingClearsOweNoCheck`). The
 package's doc says who may call what while what else runs (a write waits
@@ -1838,7 +1845,9 @@ holding the marks), `TestClipSnippetKeepsItsMarks`;
 `TestCloseWaitsForASearch`, `TestCloseWaitsForAClear`,
 `TestCloseWaitsForACheck`, `TestCloseDuringAMoveAside`,
 `TestAWriteNeverWaitsBehindSearches`, `TestOverlappingClearsOweNoCheck`,
-`TestAReaderReopensBesideASearch`;
+`TestAReaderReopensBesideASearch`, `TestCloseWaitsForACancelledRollback`,
+`TestACancelledCheckChangesNothing`, `TestAWriteAndAClearTakeTurns`,
+`TestChecksTakeTurns`, `TestAMoveAsideWaitsForTheCallsRunning`;
 `BenchmarkSearch` (100,000 entries; the medians in PR-2's body).
 
 **Go, `internal/api` and `internal/crew` (PR-3):**
