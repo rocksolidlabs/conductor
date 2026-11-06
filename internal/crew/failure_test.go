@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -334,21 +335,70 @@ func TestClassifyFailure(t *testing.T) {
 			} {
 				dir := newRepo(t)
 				e, _, l := managedEngine(t)
+				// A service's watcher records its end after the tree has
+				// seen it gone (tree.exited), so the attempt fails at it
+				// with its row still running: held there until the
+				// attempt's failure is in the ledger, every run.
+				release := make(chan struct{})
+				var once sync.Once
+				let := func() { once.Do(func() { close(release) }) }
+				t.Cleanup(let)
+				e.beforeServiceEnd = func(string) { <-release }
 				run, _ := firstResult(t, e, repoManifestCrew(dir, m.m, buildWith(dir, shStep("ok", "true")).Tasks...))
 				a := l.attemptWhen(t, run.ID, "build", 1, failedRow)
+				let()
+				// The receipt as the ledger holds it once it is finished:
+				// the attempt's failure is no sign of that.
 				var r ledger.CheckRow
-				for _, c := range l.stepRows(run.ID, "build", 1) {
-					if c.ID == m.id && c.Subject == a.ResultCommit && failedOutcome(c) {
-						r = c
+				waitFake(t, "the failing receipt of "+m.id+" finished in the ledger", func() bool {
+					for _, c := range l.stepRows(run.ID, "build", 1) {
+						if c.ID == m.id && c.Subject == a.ResultCommit && c.State == ledger.CheckFinished && c.Error != "" {
+							r = c
+							return true
+						}
 					}
-				}
+					return false
+				})
 				stopRun(t, e, run.ID)
-				if r.State == "" {
-					t.Fatalf("no failing receipt of %s in the checkout: %s", m.id, rowWords(l.stepRows(run.ID, "build", 1)))
-				}
-				out = append(out, classCase{a: a, r: r, class: FailureInfrastructure, words: "the " + r.Phase + " step " + m.id + " failed as the checkout was made ready"})
+				out = append(out, classCase{a: a, r: r, class: FailureInfrastructure, words: "the " + r.Phase + " step " + m.id + ", which makes the tree the checks run in, failed: " + m.id})
 			}
 			return out
+		}},
+		{"unavailable: a setup step, a service and a ready probe that passed, before a check that failed", func(t *testing.T) []classCase {
+			dir := newRepo(t)
+			e, _, l := managedEngine(t)
+			m := Manifest{
+				Setup:    []Check{shStep("deps", "true")},
+				Services: []Check{shStep("web", `echo $$ > "$CONDUCTOR_STATE_DIR/web.pid"; while :; do sleep 0.05; done`)},
+				Ready:    []Probe{byFile("up", "web.pid")},
+			}
+			run, _ := firstResult(t, e, repoManifestCrew(dir, m, buildWith(dir, shStep("test", "exit 1")).Tasks...))
+			a := l.attemptWhen(t, run.ID, "build", 1, failedRow)
+			stopRun(t, e, run.ID)
+			if a.Stage != "check test" {
+				t.Fatalf("build's attempt 1: %+v", a)
+			}
+			var out []classCase
+			for _, id := range []string{"deps", "web", "up"} {
+				// The checkout's receipt, finished: a service's once the
+				// tree's end has stopped it.
+				var r ledger.CheckRow
+				waitFake(t, "the receipt of "+id+" in the checkout finished", func() bool {
+					for _, c := range l.stepRows(run.ID, "build", 1) {
+						if c.ID == id && c.Subject == a.ResultCommit && c.State == ledger.CheckFinished {
+							r = c
+							return true
+						}
+					}
+					return false
+				})
+				if r.Error != "" || (id != "web" && r.Exit != 0) {
+					t.Fatalf("the receipt of %s that passed: %+v", id, r)
+				}
+				out = append(out, classCase{a: a, r: r, class: FailureUnavailable, words: "holds nothing that says why"})
+			}
+			_, test := endedAs(t, l, run.ID, ledger.AttemptFailed, "test", 1)
+			return append(out, classCase{a: a, r: test, class: FailureCode, words: "exited 1"})
 		}},
 
 		// flaky: another receipt of the same check on the same commit passed.
@@ -476,9 +526,97 @@ func TestClassifyFailure(t *testing.T) {
 				if got.Class != k.class || !strings.Contains(got.Words, k.words) {
 					t.Fatalf("case %d (%s k%d, attempt %s at %q): %+v, want %s with %q", i, k.r.ID, k.r.K, k.a.State, k.a.Stage, got, k.class, k.words)
 				}
+				// The class is the ledger's: the same rows after a restart
+				// and the recovery give the same class and words.
+				after := recovered(t, k)
+				if again := ClassifyFailure(after.a, after.r, after.same); again != got {
+					t.Fatalf("case %d (%s k%d): %+v, after the recovery (attempt %s at %q, receipt %s) %+v", i, k.r.ID, k.r.K, got, after.a.State, after.a.Stage, after.r.State, again)
+				}
 			}
 		})
 	}
+}
+
+// recovered is k's rows as the next server reads them: put in a ledger of
+// their own as the engine left them, each run still open (the owner ended
+// under it), the ledger closed and opened again and the server's recovery
+// pass run over it (Ledger.Recover, as api's recoverLedger runs it at a
+// start), then read back by their keys.
+func recovered(t *testing.T, k classCase) classCase {
+	t.Helper()
+	ctx := context.Background()
+	dir := t.TempDir()
+	ld, err := ledger.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := k.r.State != ""
+	rows := slices.Clone(k.same)
+	if held {
+		rows = append([]ledger.CheckRow{k.r}, rows...)
+	}
+	runs := map[string][]ledger.CheckRow{k.a.RunID: nil}
+	for _, c := range rows {
+		runs[c.RunID] = append(runs[c.RunID], c)
+	}
+	for id, checks := range runs {
+		if _, err := ld.Transition(ctx, id, func(tx *ledger.Tx) error {
+			if err := tx.CreateRun(ledger.RunRow{ID: id, CrewID: "crew", State: ledger.RunRunning}); err != nil {
+				return err
+			}
+			// The rows the receipts hang from: their tasks, and the
+			// attempt classed as it is; another attempt of same, which
+			// the class never reads, as one that ended.
+			attempts := map[[2]any]ledger.AttemptRow{}
+			if id == k.a.RunID {
+				attempts[[2]any{k.a.TaskID, k.a.N}] = k.a
+			}
+			for _, c := range checks {
+				if _, ok := attempts[[2]any{c.TaskID, c.N}]; !ok {
+					attempts[[2]any{c.TaskID, c.N}] = ledger.AttemptRow{RunID: id, TaskID: c.TaskID, N: c.N, Member: "lead", State: ledger.AttemptFailed, Where: c.Where}
+				}
+			}
+			for _, at := range attempts {
+				if err := tx.PutTask(ledger.TaskRow{ID: at.TaskID, Member: at.Member, Kind: string(TaskWork), State: ledger.TaskFailed}); err != nil {
+					return err
+				}
+				if err := tx.PutAttempt(at); err != nil {
+					return err
+				}
+			}
+			for _, c := range checks {
+				if err := tx.PutCheck(c); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("the rows of run %s: %v", id, err)
+		}
+	}
+	if err := ld.Close(); err != nil {
+		t.Fatal(err)
+	}
+	again, err := ledger.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { again.Close() })
+	if _, err := again.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	attempts, err := again.Attempts(ctx, k.a.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := classCase{a: byN(attempts, k.a.TaskID, k.a.N), class: k.class, words: k.words}
+	if held {
+		out.r = sqlCheck(t, again, k.r.RunID, k.r.TaskID, k.r.N, k.r.ID, k.r.K)
+	}
+	for _, c := range k.same {
+		out.same = append(out.same, sqlCheck(t, again, c.RunID, c.TaskID, c.N, c.ID, c.K))
+	}
+	return out
 }
 
 // timedOutBehindTheSlot runs a check allowed 1 s that never ends, queued

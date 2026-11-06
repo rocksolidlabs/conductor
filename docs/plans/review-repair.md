@@ -593,10 +593,20 @@ answers `{class, words}`, worked out from what the ledger keeps:
 | Class | When |
 |---|---|
 | `cancelled` | read first, from the attempt's state, whatever the receipt says: the attempt `stopped` (the run's stop, the engine's `AttemptStopped`), `cancelled` (a cancel), or cancelled at stage `withdrawn` (a withdrawal); so a check a stop interrupted (`interrupted`, `killed` false) is a cancellation |
-| `infrastructure` | the check never ran (exit -1 with an `error`: the runner or the Runtime could not start it), was `interrupted` while its attempt was `interrupted` too (the server ended under it, the state the recovery writes), was refused by the ledger (its running row, so the engine ended its process and finished the receipt with the ledger's words; or its outcome, so the row was left `started` or `running`, or the attempt failed at it with the ledger's words), exited 0 and its checkout could not be compared after it (the server's comparison failed, not the command), or failed in a manifest phase that makes the tree (`setup`, `service`, `ready`), not a check or a verify step |
+| `infrastructure` | the receipt has no outcome (`started` or `running`, which the recovery makes `interrupted`, or `interrupted`, one fact) while its attempt was `interrupted` (the server ended under it, the state the recovery writes); it was refused by the ledger (its running row, so the engine ended its process and finished the receipt with the ledger's words; or its outcome, so the attempt failed at it with the ledger's words, whatever the row was left as); it is a step of a manifest phase that makes the tree (`setup`, `service`, `ready`), not a check or a verify step, finished with the engine's words of its failure (`error`: a step that passed and a service the engine stopped have none, and are not taken here); it never ran (exit -1 with an `error`: the runner or the Runtime could not start it); or it exited 0 and its checkout could not be compared after it (the server's comparison failed, not the command) |
 | `flaky` | it holds a failing fact (as in `code`) and another receipt of the same check on the same `subject` passed (in `same`: the run's and its continuations' rows of that commit, the same task, phase and id, and the same `argv`, and for a verify step the same manifest identity, so another task's check of the same id, or a check whose command changed, never makes it flaky) |
-| `unavailable` | the receipt's row is not in the ledger, or its log was dropped (`log_dropped`) and its tail is empty, or it holds no failing fact (it did not exit non-zero or by a signal, did not time out, left the checkout stable, and no other row of the table takes it): the words say the receipt holds nothing that says why the check failed |
-| `code` | it exited non-zero or by a signal, or left the checkout changed (`stable` false), or timed out (the words say "timed out after 600 s: a hang in the code, or a machine too slow", the check's own timeout as the receipt's words give it, never the receipt's span, which counts its wait for the server's check slot); `killed` (`internal/proc`: a leftover process held the output and went with the group) is said in the words and decides no class |
+| `unavailable` | the receipt's row is not in the ledger, or its log was dropped (`log_dropped`) and its tail is empty, or it holds no failing fact (it has no outcome, or did not exit non-zero or by a signal, did not time out, and, a check or a verify step, left the checkout stable, and no other row of the table takes it): the words say the receipt holds nothing that says why the check failed |
+| `code` | it exited non-zero or by a signal, or left the checkout changed (`stable` false, for a check or a verify step, whose checkout the server compares), or timed out (the words say "timed out after 600 s: a hang in the code, or a machine too slow", the check's own timeout as the receipt's words give it, never the receipt's span, which counts its wait for the server's check slot); `killed` (`internal/proc`: a leftover process held the output and went with the group) is said in the words and decides no class |
+
+Every fact the table reads is one the ledger keeps for the receipt and
+the recovery (`Ledger.Recover`, at a server's start) leaves as it was, so
+a receipt's class and words are the same after a restart: the attempt's
+`state`, `stage` and `error` once it has ended (the recovery rewrites only
+an attempt still under way, to `interrupted`; the error is the engine's
+words, kept whole on the attempt's row), the receipt's `state` as
+finished or not, and its `exit`, `signal`, `timed_out`, `stable`,
+`phase`, `error` (at most `MaxPayload`), `log_dropped` and `tail`, which
+nothing rewrites.
 
 The class is a hint; the person's choice is recorded beside it. `same`
 is read by `Ledger.ChecksOn(ctx, runs []string, task, phase, id, subject
@@ -1125,7 +1135,10 @@ whose check is `interrupted` with `killed` false: `cancelled`; a server
 that ended under the check: `infrastructure`; a `killed` check that
 exited non-zero: `code`; two tasks sharing a
 check id and a subject with different commands are never flaky for each
-other; a check whose `argv` changed neither),
+other; a check whose `argv` changed neither; a setup step, a service
+and a ready probe that passed, before a check that failed: `unavailable`;
+every case classed again after its rows are put in a ledger, closed,
+opened and recovered (`Ledger.Recover`): the same class and words),
 `TestChecksOnReadsTheChainsRows` (ledger: by task, phase, id and
 subject).
 
