@@ -2031,7 +2031,7 @@ its run, and on no other.
 | `GET /api/sessions/{id}/files` | admin or share token | read a file of a server session (`path`, `stat`, `raw` query), see File reads |
 | `POST /api/sessions/{id}/attention` | agent token or admin (not a switchyard's) | report an attention state, and with it the agent's own session id (`agentSession`, at most 128 bytes) and whether the report is of a turn (`turn`), see Attention |
 | `POST /api/sessions/{id}/events` | agent token or admin (not a switchyard's) | report an event or an attention word, reply `202 {accepted}`, see Events |
-| `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one), of chat messages (`chat`: the message as `chat` carries it, with `sessionId` for a session's chat or `runId` for a run's; as droppable as `activity`; for the browsers' unread counts; a `conductor host` session's chat arrives the same way, the host sending each message on its control connection), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), and of Dispatch's changes (`dispatch`: `{seq, entity, id, ticket, project}`, one per entity a commit changed, but one with `id` and `ticket` `""` for more than 64 of a kind in a project, a commit's arriving together and in order, at most 160 bytes; dropped with the client as a `run` event is, see Dispatch), and of Brakeman's requests (`brakeman`: `{id, state}`, at most 200 bytes, see Brakeman), and of the links agents open (`open`: `{id, sessionId, url, browser?, state}`, at most 15,200 bytes, as droppable as `activity`, see Opening a link); a desktop app's workbench that opens links sends `X-Conductor-Desktop: 1` with it, see Attention and Events |
+| `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one), of chat messages (`chat`: the message as `chat` carries it, with `sessionId` for a session's chat or `runId` for a run's; as droppable as `activity`; for the browsers' unread counts; a `conductor host` session's chat arrives the same way, the host sending each message on its control connection), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), and of Dispatch's changes (`dispatch`: `{seq, entity, id, ticket, project}`, one per entity a commit changed, but one with `id` and `ticket` `""` for more than 64 of a kind in a project, a commit's arriving together and in order, at most 160 bytes; dropped with the client as a `run` event is, see Dispatch), and of Brakeman's requests (`brakeman`: `{id, state}`, at most 200 bytes, `id` `role` for a change of the background role, see Brakeman), and of the links agents open (`open`: `{id, sessionId, url, browser?, state}`, at most 15,200 bytes, as droppable as `activity`, see Opening a link); a desktop app's workbench that opens links sends `X-Conductor-Desktop: 1` with it, see Attention and Events |
 | `GET /api/join/{token}` | share token in the path | resolve a share link for the join page (rate limited): `{session, role, label}` for a session link; `{run: {id, name, members}, role, label}` for a run link, each with `switchyard` (whether this server is one, which the join page names), each member `{name, sessionId?, agentId, status}` in the run's order, with `sessionId` only while its session runs (`agentId` and `status` then the session's) and otherwise its state in the run, `pending`, `starting` or `ended`; `404` with `invalid_link`, `revoked`, `expired`, `session_gone` or `run_gone`; on a switchyard, `503 host_offline` for a link it keeps whose host is not connected now (it works again once the host registers) |
 
 The catalog routes persist their changes as `catalog.json` in the data
@@ -3500,7 +3500,7 @@ crew a person names Brakeman is saved as `brakeman-2`.
 request), `failed` (the launch failed, with the engine's words, or the
 agent exited before it read its request: "is it logged in?", with its
 exit and last line), `over_budget` (at the dequeue the day's turns were
-spent), `cancelled` (a person, or Brakeman turned off, which cancels the
+spent, or the day's minutes left fewer than 2), `cancelled` (a person, or Brakeman turned off, which cancels the
 turn in progress and the queue) and `interrupted` (the server stopped
 while it was starting or running; a restart finds it so). A deadline, a
 cancel and turning Brakeman off write the closing state first and stop
@@ -3512,9 +3512,9 @@ cancel is recorded as the request's `strayRun` and stopped at once.
 
 | Route | Body and answer |
 |---|---|
-| `GET /api/brakeman` | `{config, current, queue, turnsToday, warnings?, readOnly?, why?, stuck?}`: the configuration (the defaults, written on the first read: off, no agent, the server's default folder, every visibility but terminals, all of scope, observe, draft and propose, 15 minutes and 300 reads a turn, 40 turns a day, mode `invoked`), the request holding the slot or `null`, the queued requests oldest first, the turns charged to today, `warnings` as the configuration's save answers them; on a server that does not own the records (`readOnly`), `current` and `queue` are read from the records: the owner's request starting or running, and those queued |
+| `GET /api/brakeman` | `{config, current, queue, turnsToday, minutesToday, role?, warnings?, readOnly?, why?, stuck?}`: the configuration (the defaults, written on the first read: off, no agent, the server's default folder, every visibility but terminals, all of scope, observe, draft and propose, 15 minutes and 300 reads a turn, 40 turns and 240 minutes a day, mode `invoked` with a window of 120 s, a cooldown of 30 minutes, a question threshold of 15 minutes and no briefing time; a configuration written before the background role reads back with those wake fields and minutes), the request holding the slot or `null`, the queued requests oldest first, the turns and the minutes charged to today, `role` the background role as `GET /api/brakeman/role` answers it without its log and notes, `warnings` as the configuration's save answers them; on a server that does not own the records (`readOnly`), `current` and `queue` are read from the records: the owner's request starting or running, and those queued |
 | `PUT /api/brakeman/config` | `{rev, config}` → `{config, warnings?}`, its `rev` bumped and `updatedAt` stamped; `config.permissions.act` the operations granted, from the closed list (What a turn may do); `warnings` the words Settings shows beside the agent chosen, for an agent whose read-only mode does not hold (Codex 0.163.0's leaves the person's own MCP servers and exec-policy allow rules: Codex is taken, with that limit said); `409 stale_revision` for a `rev` not the stored one; `400 invalid_config` with `field` and the words (an agent without an MCP registration or a read-only mode); `503 shutting_down` once the server is shutting down (nothing saved, nothing cancelled); at most 64 KiB |
-| `POST /api/brakeman/requests` | `{opId, kind, subjects?, note?, since?, by?}` → `201 {request}`; `200` for the same `opId` and content, `409 op_conflict` for other content, whatever stands since; `409 brakeman_off`; `503 brakeman_stuck`; `429 queue_full` (8 waiting); `429 budget_spent` (the turns charged today and those queued reach `turnsPerDay`); `400 invalid_request` with `field` for a bad kind, subject or note |
+| `POST /api/brakeman/requests` | `{opId, kind, subjects?, note?, since?, by?}` → `201 {request}` (a kind of `wake`, or an `opId` beginning `wake-`, is refused `400 invalid_request`: they are the background role's own); `200` for the same `opId` and content, `409 op_conflict` for other content, whatever stands since; `409 brakeman_off`; `503 brakeman_stuck`; `429 queue_full` (8 waiting); `429 budget_spent` (the turns charged today and those queued reach `turnsPerDay`); `400 invalid_request` with `field` for a bad kind, subject or note |
 | `GET /api/brakeman/requests?after=&limit=` | `{requests, next}`, newest first, at most 100 a page; `next` the id to ask after, `""` for none |
 | `GET /api/brakeman/requests/{id}` | `{request, brief}`, `brief` `null` until one is kept; at most 512 KiB |
 | `GET /api/brakeman/requests/{id}/refs` | `{refs: [{ref, seen, now}]}`, each `{url?, state?, rev?, sha256?, at?}`: what the turn read of each ref of the brief (`state` `unobserved` for one it never read) and what it was as the brief was kept; `404 no_brief` before one; at most 4 MiB |
@@ -3531,7 +3531,11 @@ last complete briefing), `explain` (one `run:`, `task:`, `attempt:`,
 note as the discussion), `propose_crew` (one `ticket:`), `handoff` (one
 `task:`, `attempt:` or `session:`), `locate` (the note), `overlaps`
 (none) and `ask` (the note, up to 10 subjects). A note is Markdown of at
-most 16 KiB.
+most 16 KiB. The background role's requests are of kind `wake`, no
+subjects, naming their `batch` (`wb-<n>`), kept under the op id
+`wake-<batch>` (see The background role), a prefix a person's request
+may not take; a wake turn's brief holds a
+`fact/1` as a briefing's does.
 
 **The turn's routes**, its session's own token (`agentTokenOK`), for
 the request its launch marked it with, while that request is `starting`
@@ -3540,7 +3544,7 @@ that is not a turn's:
 
 | Route | Body and answer |
 |---|---|
-| `GET /api/sessions/{id}/brakeman/request` | `{request: {id, kind, state, subjects: [{ref, url?, state?, rev?, why?}], note?, since?, lastBriefing?: {id, at, coverage?}, scope, scopeNow?, visibility, permissions, budget: {readsLeft, deadline, secondsLeft}}}`: the subjects resolved now (`why` for one that is not), the newest briefing whose footprint and scope the turn's grant covers, the scope the turn began under (and the configuration's now when it differs: an item must be in both), the visibility and permissions of the snapshot and the configuration together (`permissions.act` the operations both grant that this build serves, absent for none). The admin's token reads it too; read with the session's own, it marks the request read |
+| `GET /api/sessions/{id}/brakeman/request` | `{request: {id, kind, state, subjects: [{ref, url?, state?, rev?, why?}], note?, since?, lastBriefing?: {id, at, coverage?}, scope, scopeNow?, visibility, permissions, budget: {readsLeft, deadline, secondsLeft}, batch?, notes?}}`: a wake request's `batch` as the role holds it (`{id, openedAt, wakes: [{source, subject?, count, first, last}], overflow?: {count, first, last}}`) with only the wakes whose subjects the turn's grant admits (the snapshot's and the configuration's scope and visibility together, as now; a subject that cannot be read now left out) and its `overflow` only under a grant that narrows neither the scope nor the runs', sessions' or Dispatch's visibility, the role's `notes` (`[{text, from?, at}]`) for every turn; the subjects resolved now (`why` for one that is not), the newest briefing whose footprint and scope the turn's grant covers, the scope the turn began under (and the configuration's now when it differs: an item must be in both), the visibility and permissions of the snapshot and the configuration together (`permissions.act` the operations both grant that this build serves, absent for none). The admin's token reads it too; read with the session's own, it marks the request read |
 | `POST /api/sessions/{id}/brakeman/brief` | `{opId, brief}` → `201 {request}`, briefed. The `opId` is looked up first: the same `opId` and brief answer `200` with the request whatever its state now, another brief `409 brief_exists`; so does a submission that overlapped the one kept (both checked before either was kept). Only a new brief is held to the state, the bounds and the refs: `400 invalid_brief` with `field` (its path, a list's entry by its index: `items[1].alternatives[1].label`) and why (a field past its bound is refused, never cut; a brief with no item is refused, and a briefing's with no `fact/1`; a proposal's `op` must be an operation the guide lists, and one whose route checks a revision needs `expectedRevision` above 0; the why names what is taken beside what was sent: an unknown item kind with every kind, an unknown field with the fields its object takes, a value of another type with its field's type, a ref of no kind with the ref forms); `422 bad_refs` with `refs: [{ref, why}]`, every ref that resolves to nothing, lies outside the scope or the visibility, or names a revision other than the one read; `413 bound` past 256 KiB as kept, or with resolutions past 4 MiB, or a body past 1 MiB; all of it against the configuration as the brief is kept, a save meanwhile having it checked again (`409 stale_revision` when the configuration keeps changing); nothing written on a refusal. The admin's token is refused (`403 agent_only`): a brief is always Brakeman's own |
 
 **What a turn reads.** A request whose bearer is a turn's session token
@@ -3763,7 +3767,9 @@ turn's first read of changes began, before it listed the parts (kept
 even when a read listed none): a part begun after that listing, absent
 from its answer and with no watermark, is read from no later than it.
 A brief's footprint counts every class its turn's answers used,
-an answer with no item a ref names (a page of projects) among them.
+an answer with no item a ref names (a page of projects) among them, and
+the classes of the wake batch its request gave it (each wake's by its
+subject's kind; an overflow's runs, sessions and Dispatch).
 
 **A brief**, schema `brakeman.brief/1`, at most 256 KiB as kept: `{schema,
 title, summary, uncertainty?, items}`, `title` at most 200 characters,
@@ -3825,6 +3831,93 @@ notifications, Chime and webhooks only when its `crew.brakeman.quiet` is
 false (every turn a person asked for; a background turn's, Program item
 BK3, will be quiet): the server's webhooks and providers' sinks skip a
 quiet session's entries.
+
+**The background role** (`docs/plans/brakeman.md`, BK3; `internal/crew`,
+`role.go`, its record `brakeman/role.json`, at most 1 MiB). With
+`config.wake.mode` `background` (and Brakeman on), Brakeman is woken by
+events: a task of a person's run failed with proof (the engine's failed
+state), a question open past `wake.questionMinutes` (1 to 1,440; 15), a
+run ended (stopped, finished, or every task terminal) or paused (a
+managed run read as its ledger holds it: never a change whose
+transaction is pending or was refused), a ticket moved to `ready` (by
+the status that change set; Dispatch's changes read from the server's
+start, every row of each commit, at most 20 pages of 500 a pass and
+the rest on the next pass at once), a person's own request (logged once,
+its op id asked again too; one whose write fails is kept and logged on a
+later pass), and the
+briefing times `wake.briefings` (at most 24 `HH:MM`, the server's local
+zone, firing while it runs; one that passed while the server was stopped
+fires once at its start, one that passed while the role was off or
+paused fires nothing, whether or not the role stepped between: a save
+that turns the role off or on drops the briefing times' mark before the
+configuration is written, and is refused `500 store_failed`, nothing
+saved, when the mark cannot be written). None fires for a Brakeman turn's run or session,
+or for what a request made (a change under the actor `brakeman` or an op
+id a request derived; a run an act launched, known by its launch's maker
+in Dispatch, and its members' questions); while the role is off nothing
+fires, what happened meanwhile wakes nothing once it is on, and a wake
+request still queued (behind a person's turn) as it is set to run only
+when asked is cancelled (a wake turn running runs to its end). Nor
+does a source fire for a subject outside the configuration's scope or
+visibility. A wake whose write fails, and what the sources noted while
+the configuration cannot be read, are kept and taken on a later pass
+(Dispatch's feed read on from the change not yet taken); a configuration
+that cannot be read changes nothing of the role. The
+role is `idle`, then
+`gathering` once a wake opens a batch (`wb-<n>`, its id written as it
+opens), and once the window ends (`wake.windowSeconds`, 10 to 900; 120)
+the batch is frozen as the one firing (`firing`), written before its
+request is made, so a wake from then on joins the next batch and none
+joins a batch whose turn may have read it; it makes one request of kind
+`wake` naming the batch, under the op id `wake-<batch>` (a crash or a
+failed write between the request and the role's write finds the request
+made, so a batch fires once; a request found under that op id that is
+not the batch's own, kept by a person before the prefix was the role's,
+is passed over for `wake-<batch>.<k>`, k from 2 to 8), and is
+`briefing`; a turn refused before its request was made leaves the batch
+open under its own id, the wakes since folded in, fired once a turn can
+start; when the
+request closes it is `cooling` for `wake.cooldownMinutes` (0 to 1,440;
+30), then `idle`. Wakes while briefing, cooling or unavailable join the
+next batch. A batch holds at most 200 wakes, the same source and subject
+coalesced with a count, past them an `overflow` count with the first and
+last times; a wake whose source, subject and key the log holds already
+(a task's attempts, a question's time) is one fired before, after a
+restart too. `paused` (a person) gathers nothing (a wake is logged
+`held: "paused"`), a turn running then runs to its end, and a wake
+request still queued (behind a person's turn) waits in the queue,
+starting once the role is resumed; the briefing times passed while
+paused fire nothing, whether or not the role stepped between;
+`unavailable` (a turn could not start: its launch refused, its agent
+exited before it read its request, or the day's turns or minutes spent)
+says why, keeps its batch (a turn that started none gives its wakes to
+the next batch, under a new id), and tries again on a person's request, the
+next briefing time, or, for a budget spent, the next local day. The
+day's minutes, `budget.minutesPerDay` (10 to 1,440; 240), count every
+turn, whatever started it: a turn's reservation at its start is the
+least of `turnMinutes` and what the day has left, its deadline its start
+plus the reservation, and fewer than 2 minutes left close the request
+`over_budget`. A wake turn is a turn as any other; its session's mark is
+`brakeman: {request, quiet: true}`, so its questions are listed in
+Needs you and reach no webhook, browser notification or Chime, and its
+deadline ends it unanswered. The role keeps no process and polls no
+model between turns; each change is written before what it starts, and
+a restart reads it back (a batch gathering fires once; a turn briefing
+follows its request, interrupted by the restart, to cooling); a server
+waiting for the owner lock answers the role as the records hold it at
+each read, and takes up the record the last owner left once the lock is
+its own. The log
+keeps the newest 1,000 wakes; the notes (a brief's facts or
+interpretations a person kept, given to every turn) at most 64 KiB, 4
+KiB each. A change of the role sends the `brakeman` event `{id: "role",
+state}`.
+
+| Route | Body and answer |
+|---|---|
+| `GET /api/brakeman/role?limit=` | `{role: {schema, identity, state, why?, retryAt?, last, open?, fired?, firing?, request?, coolUntil?, briefed?, notes?, updatedAt, minutesToday}, log: [{source, subject?, key?, at, batch?, request?, held?}]}`: the role, and its log newest first, `limit` rows (1 to 1,000; 200) |
+| `POST /api/brakeman/role` | `{action}`, `pause` or `resume` → `{role}`; `400 invalid_request` for another action |
+| `POST /api/brakeman/role/notes` | `{request, item}` → `{role}`: the text of a kept brief's `fact/1` or `interpretation/1` kept as a note, `from` its `brief:` ref; `400 not_a_note` for another kind; `404` for no such request or item; `413 bound` past the notes' 64 KiB |
+| `DELETE /api/brakeman/role/notes` | → `{role}`, the notes cleared |
 
 ### History
 
