@@ -109,10 +109,6 @@ type Subscription struct {
 	// quiet marks a connection for a run's chat alone (hello.chatOnly): no
 	// output or scrollback, not a viewer of the session.
 	quiet bool
-	// awaitCut marks a viewer whose replay held nothing and left it inside
-	// a string or sequence (Ring.Replay): it is sent no output until a
-	// chunk that begins at a cut (BroadcastLoud). Under the session's mu.
-	awaitCut bool
 	// want is the size this controller's window would give the terminal (its
 	// hello's, then its last resize), for a hand-over of the size; under the
 	// session's mu.
@@ -403,18 +399,14 @@ func (h *Hub) Broadcast(frame []byte) {
 }
 
 // BroadcastLoud enqueues frame to every subscription but the quiet ones: the
-// terminal's output, a chunk that begins at a cut or not (fromCut,
-// Ring.Append). One awaiting a cut is sent nothing before a chunk that
-// begins at one. Under the session's mu.
-func (h *Hub) BroadcastLoud(frame []byte, fromCut bool) {
+// terminal's output.
+func (h *Hub) BroadcastLoud(frame []byte) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	for _, s := range h.subs {
-		if s.quiet || s.awaitCut && !fromCut {
-			continue
+		if !s.quiet {
+			s.send(frame)
 		}
-		s.awaitCut = false
-		s.send(frame)
 	}
 }
 

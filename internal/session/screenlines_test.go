@@ -61,8 +61,8 @@ func TestScreenLinesOfAFullScreenDialog(t *testing.T) {
 }
 
 // During a synchronized update the screen reads as the frame as far as it
-// is drawn, and says an update is under way; once it ends, or a full
-// reset (RIS) ends it, it says none is.
+// is drawn, and says an update is under way; once it ends, it says none
+// is.
 func TestScreenReadDuringASynchronizedUpdate(t *testing.T) {
 	s, p := newLocalWith(t, Options{ScrollbackBytes: 4096})
 	reads := func(want string, updating bool) {
@@ -86,79 +86,4 @@ func TestScreenReadDuringASynchronizedUpdate(t *testing.T) {
 	}
 	waitShot(t, s, "second, half and whole")
 	reads("second, half and whole", false)
-	// A program killed during an update, and a shell that resets the
-	// terminal after it.
-	if _, err := p.outW.Write([]byte("\x1b[?2026h\x1b[2J\x1b[Hthird, cut")); err != nil {
-		t.Fatal(err)
-	}
-	waitShot(t, s, "third, cut")
-	reads("third, cut", true)
-	if _, err := p.outW.Write([]byte("\x1bc$ ")); err != nil {
-		t.Fatal(err)
-	}
-	waitShot(t, s, "$")
-	reads("$", false)
-}
-
-// A concealed character (SGR 8: a prompt that hides what is typed) reads
-// as a blank, as a terminal draws it, however much output came after it;
-// 28 and 0 end it, a colour's 8 does not begin it, and a saved cursor
-// keeps it with the attributes.
-func TestScreenLinesHideConcealedText(t *testing.T) {
-	s, p := newLocalWith(t, Options{ScrollbackBytes: 4096})
-	out := "Password: \x1b[8mhunter2\x1b[0m\r\n" +
-		strings.Repeat("\x1b[0m", 2000) + // past the scrollback: only escapes
-		"\x1b[38;5;8mgrey\x1b[48;2;8;8;8m on \x1b[38:2::8:8:8mgrey\x1b[0m\r\n" +
-		"\x1b[8mA\x1b[28mB\x1b[8mC\x1b[mD\r\n" +
-		"\x1b[8m\x1b7\x1b[0m\x1b[5GE\x1b8F\x1b[0m\r\n$ "
-	if _, err := p.outW.Write([]byte(out)); err != nil {
-		t.Fatal(err)
-	}
-	waitShot(t, s, "$")
-	want := []string{"Password:", "grey on grey", " B D", "    E", "$"}
-	if got := s.ScreenLines(50); !slices.Equal(got, want) {
-		t.Fatalf("the screen reads %q, want %q", got, want)
-	}
-}
-
-// The screen model's parser is the page's terminal's (xterm.js 6.0.0,
-// its VT500 table): what a simpler one gets wrong reads as the page draws
-// it (#695's reviews).
-func TestScreenParsesAsThePageDoes(t *testing.T) {
-	for _, tc := range []struct{ in, want string }{
-		{"\x1bP1$rAAAA\x07BBBB;38mXX\x1b\\ok", "ok"}, // BEL is a DCS's data
-		{"\x1b_Ga=T\x07QUJD;9mXX\x1b\\ok", "ok"},     // and nothing in an APC
-		{"\x1bXsos\x07x\x1b\\ok", "ok"},              // or an SOS
-		{"\x1b]0;title\x07ok", "ok"},                 // but ends an OSC
-		{"\u009b38;2;1;2;3mok", "ok"},                // C1 CSI
-		{"\u009d0;title\u009cok", "ok"},              // C1 OSC and ST
-		{"\u0090+q544e\u009cok", "ok"},               // C1 DCS
-		{"\u009fGa=T\u009cok", "ok"},                 // C1 APC
-		{"\x1b]0;ti\u0085ok", "\nok"},                // a C1 control cancels a string and acts
-		{"a\u0084b", "a\n b"},                        // IND
-		{"\x1b\r[31mok", "ok"},                       // a C0 control after ESC acts; the escape goes on
-		{"\x1b(\r0ok", "ok"},                         // and after its intermediate
-		{"\x1b]0;ti\x18tle", "tle"},                  // CAN cancels a string
-		{"\x1b[3\x1amok", "mok"},                     // SUB a sequence
-		{"\x1b_Gab\u00e9ok", "ok"},                   // a character ends an APC, dropped
-		{"\x1b[1\u00e9ok", "ok"},                     // and a sequence
-		{"\x1b[1>\u00e9;3mok", "ok"},                 // a private marker after a parameter: ignored to its end
-		{"\x1b[>1;2\u00e9;3mok", ";3mok"},            // a character ends a sequence's parameters
-		{"\x1bP1;2\u00e9ok", "ok"},                   // a DCS before its final byte
-		{"\x1bP1$q\u00e9x\x1b\\ok", "ok"},            // its data holds characters
-		{"\x1b\x1b[?1049hALT\x1b[?1049lok", "ok"},    // ESC starts over
-		{"\x1b[?2026h\x1bc", ""},                     // RIS
-	} {
-		sc := NewScreen(80, 24)
-		sc.Write([]byte(tc.in))
-		if got := sc.Text(); got != tc.want {
-			t.Errorf("%q reads %q, want %q", tc.in, got, tc.want)
-		}
-	}
-	// A full reset ends a synchronized update, as the page's does.
-	sc := NewScreen(80, 24)
-	sc.Write([]byte("\x1b[?2026hhalf\x1bc"))
-	if !sc.Drawn() {
-		t.Error("a reset left an update under way")
-	}
 }

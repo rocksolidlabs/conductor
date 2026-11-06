@@ -21,27 +21,16 @@ const (
 // wideTail marks the second cell of a wide character.
 const wideTail rune = -1
 
-// screenState is where a Screen's parser is in the stream: the states of
-// the page's terminal's parser (xterm.js's EscapeSequenceParser, the VT500
-// table), so that the screen reads a stream as the page does and knows
-// where a replay of it may start (atCut).
+// screenState is where a Screen's parser is in the stream.
 type screenState uint8
 
 const (
 	scrGround    screenState = iota
 	scrEsc                   // after ESC
 	scrEscInter              // after ESC and intermediate bytes, until the final byte
-	scrCSI                   // after CSI (ESC [ or 0x9b), nothing collected yet
-	scrCSIParam              // a control sequence's parameter bytes
-	scrCSIInter              // its intermediate bytes
-	scrCSIIgnore             // a malformed one, ignored up to its final byte
-	scrOSC                   // inside OSC, until BEL or ST
-	scrDCS                   // after DCS, nothing collected yet
-	scrDCSParam              // a DCS's parameter bytes
-	scrDCSInter              // its intermediate bytes
-	scrDCSIgnore             // a malformed one, ignored up to its end
-	scrDCSPass               // its data, until ST: a BEL is data
-	scrSOS                   // inside SOS, PM or APC, until ST: a BEL is nothing
+	scrCSI                   // after ESC [, until a final byte
+	scrString                // inside OSC, DCS, SOS, PM or APC, until BEL or ST
+	scrStringEsc             // inside a string, after ESC
 )
 
 // Screen is a terminal's screen as a program draws it, kept from its output:
@@ -57,12 +46,9 @@ const (
 // CNL, CPL, CHA, HPA, VPA, CR, LF, BS, HT, RI, IND, NEL, save and restore),
 // erasing (ED, EL, ECH), inserting and deleting (IL, DL, ICH, DCH),
 // scrolling (DECSTBM, SU, SD), autowrap, the alternate screen (1049, 1047,
-// 47), a synchronized update under way (2026, Settled) and concealed
-// characters (SGR 8, drawn as blanks, as a terminal shows them). Colours,
-// other attributes and modes and every other sequence are skipped, as are
-// the strings of OSC, DCS and the rest; the parser's states and how a byte
-// moves between them are the page's terminal's (screenState), C1 controls
-// (U+0080 to U+009F) and CAN and SUB included. A character's width is an approximation
+// 47) and a synchronized update under way (2026, Settled). Colours, other
+// modes and every other sequence are skipped, as are the
+// strings of OSC, DCS and the rest. A character's width is an approximation
 // (wide East Asian characters and most emoji take two cells, combining marks
 // none): a program that positions its cells, as a TUI does, puts the next
 // ones right whatever the guess. A sequence or a character cut between two
@@ -77,11 +63,6 @@ type Screen struct {
 	wrap       bool // the last column was written: the next character goes to the next row
 	saved      [2]int
 	savedMain  [2]int // the cursor on the main screen as 1049 left it
-	// conceal says the characters written now are concealed (SGR 8 until
-	// SGR 28 or 0, a soft or full reset): their cells read as blanks, as
-	// a terminal draws them. savedConceal and savedMainConceal are it as
-	// the cursor was saved (ESC 7, CSI s; 1049), which saves attributes.
-	conceal, savedConceal, savedMainConceal bool
 	// syncing says the program has begun a synchronized update (2026) and
 	// not ended it: a terminal shows the frame before it until it ends,
 	// and this screen holds half of the next.
@@ -292,206 +273,110 @@ func (s *Screen) Write(chunk []byte) {
 	}
 }
 
-// byte reads one byte of the stream: UTF-8 is decoded in every state, as
-// the page's terminal decodes the stream before it parses it (a C1
-// control is U+0080 to U+009F, two bytes), and each character goes to the
-// parser (code). A character cut short stands for one that could not be
-// read on the screen (it is dropped inside a sequence, as the page's
-// decoder drops it); a byte that begins none (a continuation byte alone,
-// 0xf8 and above) is dropped.
 func (s *Screen) byte(b byte) {
-	if s.utfWant > 0 {
-		if b&0xc0 == 0x80 {
-			s.utf[s.utfN] = b
-			s.utfN++
-			if s.utfN == s.utfWant {
-				s.utfWant = 0
-				if r, n := utf8.DecodeRune(s.utf[:s.utfN]); n > 1 || s.st == scrGround {
-					s.code(r)
-				}
-			}
-			return
-		}
-		s.utfWant = 0
-		if s.st == scrGround {
-			s.put(utf8.RuneError)
-		}
-	}
-	switch {
-	case b < 0x80:
-		s.code(rune(b))
-	case b >= 0xc0 && b < 0xf8:
-		s.utf[0], s.utfN = b, 1
-		switch {
-		case b >= 0xf0:
-			s.utfWant = 4
-		case b >= 0xe0:
-			s.utfWant = 3
-		default:
-			s.utfWant = 2
-		}
-	}
-}
-
-// atCut reports whether the parser is at a cut: in its ground state, no
-// sequence, string or character under way. A terminal that starts reading
-// the stream there reads what follows as one that read it all does.
-func (s *Screen) atCut() bool { return s.st == scrGround && s.utfWant == 0 }
-
-// code moves the parser on by one character, as the page's terminal does.
-func (s *Screen) code(r rune) {
-	// What a terminal does with these in every state.
-	switch {
-	case r == 0x1b:
-		s.st = scrEsc
-		return
-	case r == 0x18 || r == 0x1a || r == 0x9c:
-		// CAN and SUB cancel what is under way; ST ends a string.
-		s.st = scrGround
-		return
-	case r >= 0x80 && r < 0xa0:
-		s.c1(r)
-		return
-	}
 	switch s.st {
 	case scrGround:
-		if r < 0x20 {
-			s.control(byte(r))
-		} else if r != 0x7f {
-			s.put(r)
+		if s.utfWant > 0 {
+			if b&0xc0 == 0x80 {
+				s.utf[s.utfN] = b
+				s.utfN++
+				if s.utfN == s.utfWant {
+					r, _ := utf8.DecodeRune(s.utf[:s.utfN])
+					s.utfWant = 0
+					s.put(r)
+				}
+				return
+			}
+			// A character cut short: it stands for one that could not be read.
+			s.utfWant = 0
+			s.put(utf8.RuneError)
+		}
+		switch {
+		case b == 0x1b:
+			s.st = scrEsc
+		case b < 0x20 || b == 0x7f:
+			s.control(b)
+		case b < 0x80:
+			s.put(rune(b))
+		case b >= 0xc0 && b < 0xf8:
+			s.utf[0], s.utfN = b, 1
+			switch {
+			case b >= 0xf0:
+				s.utfWant = 4
+			case b >= 0xe0:
+				s.utfWant = 3
+			default:
+				s.utfWant = 2
+			}
 		}
 	case scrEsc:
+		s.st = scrGround
 		switch {
-		case r < 0x20:
-			s.control(byte(r)) // acts at once, and the escape goes on
-		case r == 0x7f:
-		case r == '[':
+		case b == '[':
 			s.st, s.params, s.long = scrCSI, s.params[:0], false
-		case r == ']':
-			s.st = scrOSC
-		case r == 'P':
-			s.st = scrDCS
-		case r == 'X' || r == '^' || r == '_':
-			s.st = scrSOS
-		case r <= 0x2f:
+		case b == ']' || b == 'P' || b == 'X' || b == '^' || b == '_':
+			s.st = scrString
+		case b == '7':
+			s.saved = [2]int{s.x, s.y}
+		case b == '8':
+			s.x, s.y, s.wrap = s.saved[0], s.saved[1], false
+			s.clampCursor()
+		case b == 'M':
+			s.reverseIndex()
+		case b == 'D':
+			s.index()
+		case b == 'E':
+			s.x = 0
+			s.index()
+		case b == 'c':
+			s.reset()
+		case b == 0x1b:
+			s.st = scrEsc
+		case b >= 0x20 && b <= 0x2f:
 			s.st = scrEscInter
-		case r < 0x7f:
-			s.st = scrGround
-			s.esc(byte(r))
-		default:
-			s.st = scrGround // a character after ESC: dropped
 		}
 	case scrEscInter:
 		switch {
-		case r < 0x20:
-			s.control(byte(r))
-		case r <= 0x2f || r == 0x7f:
+		case b >= 0x20 && b <= 0x2f:
+		case b == 0x1b:
+			s.st = scrEsc
 		default:
 			s.st = scrGround
 		}
-	case scrCSI, scrCSIParam, scrCSIInter, scrCSIIgnore:
-		s.csiCode(r)
-	case scrOSC:
-		if r == 0x07 {
-			s.st = scrGround
-		}
-	case scrDCS, scrDCSParam, scrDCSInter:
+	case scrCSI:
 		switch {
-		case r < 0x20 || r == 0x7f:
-		case r <= 0x2f:
-			s.st = scrDCSInter
-		case r <= 0x3b && s.st != scrDCSInter, r <= 0x3f && s.st == scrDCS:
-			s.st = scrDCSParam
-		case r <= 0x3f:
-			s.st = scrDCSIgnore
-		case r < 0x7f:
-			s.st = scrDCSPass
+		case b >= 0x40 && b <= 0x7e:
+			s.st = scrGround
+			if !s.long {
+				s.csi(b)
+			}
+		case b >= 0x20 && b <= 0x3f:
+			if len(s.params) < maxScreenParams {
+				s.params = append(s.params, b)
+			} else {
+				s.long = true
+			}
+		case b == 0x1b:
+			s.st = scrEsc
+		case b < 0x20:
+			s.control(b) // a C0 control inside a sequence acts at once
 		default:
 			s.st = scrGround
 		}
-	case scrSOS:
-		if r >= 0xa0 {
-			s.st = scrGround // a character ends it (and is dropped)
+	case scrString:
+		switch b {
+		case 0x07:
+			s.st = scrGround
+		case 0x1b:
+			s.st = scrStringEsc
 		}
-	}
-	// scrDCSIgnore and scrDCSPass: everything else is the string's.
-}
-
-// c1 applies a C1 control (U+0080 to U+009F) other than ST: it ends what
-// is under way, as CAN does, and begins a sequence or a string, or acts.
-func (s *Screen) c1(r rune) {
-	s.st = scrGround
-	switch r {
-	case 0x9b:
-		s.st, s.params, s.long = scrCSI, s.params[:0], false
-	case 0x9d:
-		s.st = scrOSC
-	case 0x90:
-		s.st = scrDCS
-	case 0x98, 0x9e, 0x9f:
-		s.st = scrSOS
-	case 0x84: // IND
-		s.index()
-	case 0x85: // NEL
-		s.x = 0
-		s.index()
-	}
-}
-
-// esc applies a two-byte escape sequence ending in final.
-func (s *Screen) esc(final byte) {
-	switch final {
-	case '7':
-		s.saved, s.savedConceal = [2]int{s.x, s.y}, s.conceal
-	case '8':
-		s.x, s.y, s.wrap, s.conceal = s.saved[0], s.saved[1], false, s.savedConceal
-		s.clampCursor()
-	case 'M':
-		s.reverseIndex()
-	case 'D':
-		s.index()
-	case 'E':
-		s.x = 0
-		s.index()
-	case 'c':
-		s.reset()
-	}
-}
-
-// csiCode moves a control sequence on by one character.
-func (s *Screen) csiCode(r rune) {
-	switch {
-	case r < 0x20:
-		s.control(byte(r)) // a C0 control inside a sequence acts at once
-	case r == 0x7f:
-	case r >= 0x40 && r <= 0x7e:
-		ignored := s.st == scrCSIIgnore
-		s.st = scrGround
-		if !ignored && !s.long {
-			s.csi(byte(r))
+	default: // scrStringEsc
+		if b == '\\' {
+			s.st = scrGround
+			return
 		}
-	case r >= 0xa0:
-		if s.st != scrCSIIgnore {
-			s.st = scrGround // a character ends it (and is dropped)
-		}
-	case s.st == scrCSIIgnore:
-	case r <= 0x2f:
-		s.st = scrCSIInter
-		s.param(byte(r))
-	case s.st == scrCSIInter, r >= 0x3c && s.st == scrCSIParam:
-		s.st = scrCSIIgnore
-	default:
-		s.st = scrCSIParam
-		s.param(byte(r))
-	}
-}
-
-// param keeps a control sequence's parameter or intermediate byte.
-func (s *Screen) param(b byte) {
-	if len(s.params) < maxScreenParams {
-		s.params = append(s.params, b)
-	} else {
-		s.long = true
+		s.st = scrEsc
+		s.byte(b)
 	}
 }
 
@@ -543,14 +428,9 @@ func (s *Screen) put(r rune) {
 	if row[s.x] == wideTail && s.x > 0 {
 		row[s.x-1] = ' '
 	}
-	c, tail := r, wideTail
-	if s.conceal {
-		// A terminal draws nothing of a concealed character.
-		c, tail = ' ', ' '
-	}
-	row[s.x] = c
+	row[s.x] = r
 	if w == 2 {
-		row[s.x+1] = tail
+		row[s.x+1] = wideTail
 	} else if s.x+1 < s.cols && row[s.x+1] == wideTail {
 		row[s.x+1] = ' '
 	}
@@ -620,9 +500,6 @@ func (s *Screen) reset() {
 	s.layMain, s.layAlt = layout{drawnCols: s.cols, drawnRows: s.rows}, layout{}
 	s.cells, s.soft, s.wrapAt, s.lay, s.altOn = s.main, s.softMain, s.wrapMain, &s.layMain, false
 	s.x, s.y, s.top, s.bot, s.wrap = 0, 0, 0, s.rows-1, false
-	// A full reset ends a synchronized update and the attributes, as a
-	// terminal's does.
-	s.syncing, s.conceal = false, false
 }
 
 func (s *Screen) clampCursor() {
@@ -673,9 +550,6 @@ func (s *Screen) csi(final byte) {
 		nums = append(nums, cur)
 	}
 	if inter {
-		if final == 'p' && string(s.params) == "!" {
-			s.conceal = false // DECSTR: a soft reset ends the attributes
-		}
 		return // DECSCUSR, DECRQM and the like: nothing drawn
 	}
 	arg := func(i, def int) int {
@@ -706,10 +580,6 @@ func (s *Screen) csi(final byte) {
 				}
 			}
 		}
-		return
-	}
-	if final == 'm' {
-		s.sgr()
 		return
 	}
 	switch final {
@@ -805,9 +675,9 @@ func (s *Screen) csi(final byte) {
 		}
 		s.x, s.y = 0, 0
 	case 's':
-		s.saved, s.savedConceal = [2]int{s.x, s.y}, s.conceal
+		s.saved = [2]int{s.x, s.y}
 	case 'u':
-		s.x, s.y, s.conceal = s.saved[0], s.saved[1], s.savedConceal
+		s.x, s.y = s.saved[0], s.saved[1]
 	default:
 		return
 	}
@@ -822,7 +692,7 @@ func (s *Screen) altScreen(on, cursor bool) {
 	}
 	if on {
 		if cursor {
-			s.savedMain, s.savedMainConceal = [2]int{s.x, s.y}, s.conceal
+			s.savedMain = [2]int{s.x, s.y}
 		}
 		s.alt = blankRows(s.rows, s.cols)
 		s.softAlt, s.wrapAlt = make([]bool, s.rows), make([]int, s.rows)
@@ -831,87 +701,11 @@ func (s *Screen) altScreen(on, cursor bool) {
 	} else {
 		s.cells, s.soft, s.wrapAt, s.lay, s.altOn = s.main, s.softMain, s.wrapMain, &s.layMain, false
 		if cursor {
-			s.x, s.y, s.conceal = s.savedMain[0], s.savedMain[1], s.savedMainConceal
+			s.x, s.y = s.savedMain[0], s.savedMain[1]
 			s.clampCursor()
 		}
 	}
 	s.top, s.bot, s.wrap = 0, s.rows-1, false
-}
-
-// sgr applies SGR (CSI m) to what the screen keeps of the attributes:
-// conceal alone. 8 sets it; 28 and 0 (or no parameter) end it; a colour's
-// parameters (38, 48 and 58, with 5 and an index or 2 and three values,
-// or as sub-parameters after colons) are passed over, their 8s included.
-func (s *Screen) sgr() {
-	p := s.params
-	skip := 0
-	for i := 0; i <= len(p); {
-		v, colon, j := 0, false, i
-		for ; j < len(p) && p[j] != ';'; j++ {
-			switch c := p[j]; {
-			case c == ':':
-				colon = true
-			case !colon && c >= '0' && c <= '9' && v < 1000:
-				v = v*10 + int(c-'0')
-			}
-		}
-		switch {
-		case skip < 0: // the colour's form: 5 an index, 2 three values
-			switch v {
-			case 5:
-				skip = 1
-			case 2:
-				skip = 3
-			default:
-				skip = 0
-			}
-		case skip > 0:
-			skip--
-		case colon:
-			// A colour as sub-parameters (38:2::r:g:b): nothing hidden.
-		case v == 38 || v == 48 || v == 58:
-			skip = -1 // its form next
-		case v == 0 || v == 28:
-			s.conceal = false
-		case v == 8:
-			s.conceal = true
-		}
-		i = j + 1
-	}
-}
-
-// A chunkCut is a place in a chunk of the stream where the screen's
-// parser was at a cut (atCut), an offset into the chunk: where a replay may
-// start (Ring.Cut). line says it follows a line feed.
-type chunkCut struct {
-	at   int
-	line bool
-}
-
-// WriteCuts is Write, appending to cuts places in chunk where the parser
-// was at a cut: past the first line feed read in the ground state since
-// the place appended before, the first cut every bytes or more past that
-// place, and the chunk's end when the parser is at a cut there.
-func (s *Screen) WriteCuts(chunk []byte, every int, cuts []chunkCut) []chunkCut {
-	last, lined := 0, false
-	for i, b := range chunk {
-		lf := b == '\n' && s.st == scrGround
-		s.byte(b)
-		switch {
-		case lf && !lined:
-			cuts = append(cuts, chunkCut{i + 1, true})
-			last, lined = i+1, true
-		case i+1-last >= every && s.atCut():
-			cuts = append(cuts, chunkCut{i + 1, lf})
-			last, lined = i+1, lf
-		}
-	}
-	if n := len(chunk); n > last && s.atCut() {
-		// A line feed that leaves the parser at a cut was read in the
-		// ground state: no other state goes there on one.
-		cuts = append(cuts, chunkCut{n, chunk[n-1] == '\n'})
-	}
-	return cuts
 }
 
 // Text returns what the screen shows: each row's characters with the spaces
