@@ -1068,7 +1068,7 @@ func (l *refusingLedger) Transition(ctx context.Context, runID string, fn func(L
 func TestARefusedApplicationIsCarriedWhole(t *testing.T) {
 	dir := newRepo(t)
 	e, fl, ld := decisionEngine(t)
-	rl := &refusingLedger{sqlLedger: sqlLedger{ld}}
+	rl := &refusingLedger{sqlLedger: sqlLedger{l: ld}}
 	e.UseLedger(rl)
 
 	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
