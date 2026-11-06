@@ -2257,7 +2257,9 @@ func (s *Server) failedProof(ctx context.Context, runID string, t ledger.TaskRow
 }
 
 // handleBrakemanScreen answers GET /api/brakeman/screen?session=&lines=:
-// a server session's screen's last lines (at most maxScreenLines), only
+// a server session's screen's last lines (at most maxScreenLines), the rows
+// a terminal shows of it (Local.ScreenRead), and updating: true while a
+// synchronized update is under way, its rows then possibly half drawn; only
 // with terminals visible (403 not_visible); 409 unavailable for a hosted
 // session, whose screen the server does not hold.
 func (s *Server) handleBrakemanScreen(w http.ResponseWriter, r *http.Request, o *observer) {
@@ -2303,7 +2305,7 @@ func (s *Server) handleBrakemanScreen(w http.ResponseWriter, r *http.Request, o 
 		writeError(w, http.StatusConflict, "unavailable", "a hosted session's screen is its host's: the server does not hold it")
 		return
 	}
-	text := l.TailLines(lines)
+	text, updating := l.ScreenRead(lines)
 	// Held to the reply's bound: the oldest lines go first.
 	for size := screenSize(text); size > maxObserveReply-1024 && len(text) > 0; size = screenSize(text) {
 		text = text[1:]
@@ -2312,7 +2314,11 @@ func (s *Server) handleBrakemanScreen(w http.ResponseWriter, r *http.Request, o 
 		text = []string{}
 	}
 	o.noteRef("session:"+id, brakeman.ClassTerminals, sessionState(info), "")
-	writeJSON(w, http.StatusOK, map[string]any{"session": "session:" + id, "lines": text})
+	reply := map[string]any{"session": "session:" + id, "lines": text}
+	if updating {
+		reply["updating"] = true
+	}
+	writeJSON(w, http.StatusOK, reply)
 }
 
 // screenSize is the lines' size as JSON.

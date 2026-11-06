@@ -410,6 +410,10 @@ type Engine struct {
 	// refused and before the refusal is handled (afterTransact): a test
 	// commits the run's launch there.
 	afterRefused func(runID string, err error)
+	// beforeRecheck, when set, runs once a Check again's change is
+	// committed and before its verification starts (recheckRecorded): a
+	// test ends the server there.
+	beforeRecheck func(runID string)
 	// afterVisit, when set, is called by withdraw for each task it visits,
 	// under e.mu: a test counts the visits.
 	afterVisit func(taskID string)
@@ -516,6 +520,10 @@ type run struct {
 	checks    sync.WaitGroup
 	revision  int64
 	crewJSON  string // the crew as launched, for the ledger's run row
+	// rechecks are the attempts Check again recorded whose verification
+	// has not started: the pump starts them once their change is
+	// committed and the prerequisites have passed (startRechecks).
+	rechecks []*attempt
 	// decisions are the run's open and answered decisions (decisions.go),
 	// under e.mu. Their order is not their opening's: a supersession
 	// refused puts its target back last; what needs that order compares

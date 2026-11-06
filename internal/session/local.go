@@ -5422,34 +5422,40 @@ func (s *Local) LastLine() string {
 	return ""
 }
 
-// TailLines is the last n lines of output the session kept (at most n,
-// oldest first), their escape sequences stripped, each cut to at most
-// maxLastLine*4 bytes and made valid UTF-8, trailing blank lines left out:
-// what a person reading its screen sees of its end (the Brakeman desk's
-// screen read).
-func (s *Local) TailLines(n int) []string {
+// ScreenLines is ScreenRead's rows (the Brakeman desk's screen read).
+func (s *Local) ScreenLines(n int) []string {
+	rows, _ := s.ScreenRead(n)
+	return rows
+}
+
+// ScreenRead is what a person reading the session's terminal sees: the
+// last n rows at most of the screen every session keeps of its output
+// (shot, at the terminal's size: the alternate screen while the program
+// is on it), oldest first, blank rows at the bottom left out, each row's
+// trailing spaces too, each cut to at most maxLastLine*4 bytes: the
+// characters in the cells, whatever their attributes, as copying from a
+// terminal's own selection gives them. A program that redraws one row in
+// place reads as that row. updating says a synchronized update is under
+// way: the program has begun one and not ended it, and the rows are its
+// frame as far as it is drawn, which a terminal shows only once the update
+// ends (or its own timeout passes).
+func (s *Local) ScreenRead(n int) (rows []string, updating bool) {
 	if n <= 0 {
-		return nil
+		return nil, false
 	}
-	text := strings.ReplaceAll(string(StripANSI(s.ring.Snapshot())), "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\r", "\n")
-	lines := strings.Split(strings.TrimRight(text, " \t\n"), "\n")
-	if len(lines) == 1 && lines[0] == "" {
-		return nil
+	rows, drawn := s.shot.Rows()
+	for len(rows) > 0 && rows[len(rows)-1] == "" {
+		rows = rows[:len(rows)-1]
 	}
-	if len(lines) > n {
-		lines = lines[len(lines)-n:]
-	}
-	out := make([]string, 0, len(lines))
-	for _, l := range lines {
-		l = strings.ToValidUTF8(strings.TrimRight(l, " \t"), "")
+	rows = rows[len(rows)-min(n, len(rows)):]
+	for i, l := range rows {
 		for len(l) > maxLastLine*4 {
 			_, k := utf8.DecodeLastRuneInString(l)
 			l = l[:len(l)-k]
 		}
-		out = append(out, l)
+		rows[i] = l
 	}
-	return out
+	return rows, !drawn
 }
 
 // DisconnectLink evicts every subscription created through linkID as
