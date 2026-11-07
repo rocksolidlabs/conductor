@@ -3473,14 +3473,45 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestTheGuideListsC9sProviders` and `TestAnEmptyRegistryIsKnownAndEmpty`
   hold the section to the route's rows with a provider registered and
   without one. Still pending: an official app's build listing the
-  providers it registers, which waits for a build that registers one, and
-  a real Codex session told only "call the guide tool" listing what it
-  may do there and the limits it must keep. A real agent did read the
+  providers it registers, which waits for a build that registers one.
+  The real Codex session is the next paragraph. A real agent did read the
   guide unasked: in BK1's live check below, Claude Code went to the guide
   for a brief's shape, did not find it, and so showed the gap that #603
   closed with the guide's `briefs` section. That a plain session's guide
   differs from an attempt's and from a ticket member's is held by
   `TestASessionsGuideListsItsScopesOnly`.
+
+  **BK0's real Codex session (#659, 2026-11-06 and 2026-11-07): the
+  guide's text now carries what may be called and the limits; told only
+  to call it, Codex names the operations and not the limits.** Each time
+  a plain Codex 0.163.0 session on a `conductor serve` of its own, its
+  update dialog to a newer version skipped with the session page's "Skip
+  this update", and the line "call the guide tool" typed on the session
+  page. On `main` at b3084a50 (`v0.7.0-rc.21-114-gb3084a50`, the
+  stream's PRs #655, #656 and #657 merged): Codex called the tool and
+  answered with the version, its scope and the sections' names, since the
+  overview then carried no operation and no limit (#685); a second
+  session's call did not reach the server in 20 minutes, while its page
+  drew the tail of a colour sequence (#692, fixed in #695). On `main` at
+  d522979c (`v0.7.0-rc.21-388-gd522979c`, #691 merged, the overview's
+  `may` and `limits`): Codex waited at its own approval prompt for the
+  tool, which Conductor showed as working with nothing to answer (#716,
+  outside the stream); allowed, it again named only the sections: the
+  route's overview had both fields and the tool's text printed neither
+  (#715, fixed in #721). On `main` at c1f2d33b
+  (`v0.7.0-rc.21-589-gc1f2d33b`, #721 merged), the tool's text read "You
+  may call: report, set_state, ask, form_crew, link, guide, open_url."
+  and, under "Your limits:", its four bounds (a message's 500 bytes, 2
+  crews an hour, 5 view links a day, a 64 KiB body). Two fresh sessions
+  told only "call the guide tool", once the same approval prompt was
+  allowed, each named the seven operations and the sections, and neither
+  the limits. A third, told "call the guide tool and say what you may do
+  here and the limits you must keep", read the overview and its `limits`
+  and `operations` sections and listed both. The clause as the plan
+  states it is not passed: what Conductor hands the agent now carries
+  both, and what the agent says of it unasked leaves the limits out.
+  Whether the text's two lines meet the clause, or the clause is
+  reworded, is the maintainers' call.
 
   **BK1's live check, 2026-11-05: every clause but one, then fixed
   (#602).** Against `main` at 9723fdc6, on a `conductor serve` of its own
@@ -3580,13 +3611,46 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   the same records). The live check above is the first of these
   observations; a bug the stream caused, found there, is fixed in the
   stream.
+
+  **BK1's observation made again after PR-11 (#659, 2026-11-06).** On
+  `main` at b3084a50 (`v0.7.0-rc.21-114-gb3084a50`, the stream's PRs
+  #655, #656 and #657 merged), on a `conductor serve` of its own, with a
+  real Claude Code 2.1.318 as Brakeman's agent and as every member
+  (2.1.319 from its own update midway; each brief records the version it
+  ran), configured in Settings, after an evening of managed crews: one
+  whose check failed until a retry, one whose attempts were spent, one
+  whose member's question was left open, a shell session gone quiet, and
+  a ticket launched from an approved plan revision. Each of these
+  passed. "Brief me since 23:40" (opus) was kept on its first
+  `brief_submit`, with no read of Conductor's source; its facts link the
+  runs, the tasks, six check receipts and the open question, the failing
+  check's log SHA-256 equal to the step log route's header and to the
+  body's; it tells the quiet session from the failed task; the spent
+  task's decision card offered Retry, Accept anyway and the run page,
+  and Retry, pressed, gave its receipt; its evidence cites the ticket's
+  plan revision and its launch (`plan:` and `launch:` refs). "Draft
+  tickets" (sonnet) from a ticket's discussion gave drafts that were
+  edited and made, one blocking the other, the Blocks line naming the
+  made ticket. "Propose a crew" (sonnet) gave a crew that saved and
+  opened in the editor, after one refusal (a crew with tasks starts
+  every member with its task, which the draft crew's guidance now says:
+  #685, fixed in #691). After a restart and the model changed in
+  Settings, "What changed since your last brief?" (haiku) read the
+  earlier brief and its coverage and cited only what happened since; one
+  slip, it called the made crew not launched without saying it was made.
+  Once with Codex 0.163.0 as Brakeman's agent, "Brief me since" was kept
+  on its first submission, once a person had skipped Codex's update
+  dialog with the page's button. The opus brief's uncertainty list
+  showed as one paragraph (fixed in #691). Not observed: the owner's
+  word on that brief, which is the owner's to give, and an overnight
+  wait (the question was left 25 minutes, and the restart ended it).
   Neither item was done with this slice: BK0 waited for the guide's
-  providers (PR-9), and BK1 still waits for its observation made again
-  after PR-11, with a ticket launched from an approved plan revision
-  among the evidence and the owner's word on that brief. Both checks
-  above ran before PR-11, so neither is that observation. How BK0 stands
-  is recorded above; the next entry has BK2 and BK3, and #659 holds BK1's
-  observation with theirs.
+  providers (PR-9), and BK1 for its observation made again after PR-11,
+  with a ticket launched from an approved plan revision among the
+  evidence and the owner's word on that brief. The two checks of
+  2026-11-05 ran before PR-11; #659's, above, is that observation but
+  for the owner's word. How BK0 stands is recorded above; the next entry
+  has BK2 and BK3.
 - **Brakeman, the second and third slices: authorized actions and the
   background role (BK2 and BK3, #530 to #538, 2026-11-04 to
   2026-11-05).** Program items BK2 and BK3, with BK0's providers part,
@@ -3694,15 +3758,38 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `internal/api`'s race tests took 1,194 to 1,298 s on the loaded Linux
   box.
 
-  **BK2's observation: pending.** After this stream merges, the run's
-  owner session makes it, with a real agent as Brakeman's on the owner's
-  `conductor serve`: Brakeman, granted `launch_approved_plan`, launches a
-  ticket's approved revision, and the run page and the brief show the
-  receipt; asked to launch an unapproved revision, it is refused and says
-  so; with every read granted and no grant to act, every act is refused;
-  with a grant and a narrower visibility, the act on what it cannot see is
-  refused. Until then the stub agent drives the first and third
-  (`brakeman-act.spec.ts`), and Go race tests hold each clause
+  **BK2's observation: made (#659, 2026-11-06 and 2026-11-07).** On a
+  `conductor serve` of its own, with a real Claude Code as Brakeman's
+  agent configured in Settings, on a project whose tickets had plan
+  revisions approved or left proposed. On `main` at b3084a50 (Claude
+  Code 2.1.318, then 2.1.319 after its own update; haiku and sonnet):
+  granted `launch_approved_plan`,
+  Brakeman launched a ticket's approved revision, twice, and the run
+  page's header named the launch, by Brakeman, with a receipt button
+  that opens the launch record (passed); asked to launch a proposed
+  revision, the act was refused `stale_target` and the brief said so,
+  with a decision card asking for the approval (passed); with every read
+  granted, terminals too, and no grant, the turn was not offered the
+  `act` tool, its guide's scopes named no act operation, and its brief
+  said it could not launch (passed as the turn sees it; an act sent with
+  the turn's own token, for the server's `403`, was not sent live, since
+  that meant reading the token out of the agent's process); with the
+  grant and Dispatch's visibility off, the act was refused `not_visible`
+  and the brief said so (passed). Not passed: the brief showing the
+  receipt. The act's words called the launch's id the receipt, both
+  models' tries at citing the act were refused, and a brief whose
+  proposals did not name the act showed it nowhere (#685, fixed in
+  #691). Observed again on `main` at d522979c (2026-11-07, Claude Code
+  2.1.319, haiku and sonnet): the act's answer named its receipt
+  `op:brakeman/<op>`; both briefs were kept on their first submission
+  with an `outcome/1` citing it; the brief page showed each act under
+  "What Brakeman did" with its launch, the run it launched and the
+  ticket it changed, and the outcome with its receipt chip under
+  "Verified outcomes" (passed). Both launched runs succeeded. One slip
+  of words, the act card calling the launch's id the receipt beside the
+  outcome's chip, was fixed in #721 (#715). Every clause of BK2 has now
+  been observed passing. `brakeman-act.spec.ts` drives the first and
+  third with the stub agent, and Go race tests hold each clause
   (`TestLaunchApprovedRefusesAnUnapprovedRevision`,
   `TestLaunchApprovedRetryAfterALostReplyIsOneRun`,
   `TestLaunchApprovedCarriesItsExpectedRev`, `TestAnUngrantedActIsRefused`,
@@ -3745,13 +3832,42 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestTheScreenReadIsBoundedAtItsLargest`, each failing on main but the
   last, which holds a bound that was right.
 
-  **BK3's observation: pending.** Made the same way after the merge: a
-  task failing overnight wakes Brakeman once; a second failure inside the
-  window joins the same brief; the cooldown holds the next; the day's
-  budget stops it with words; a server restarted while a batch was
-  gathering fires that batch once; and, with Brakeman's agent logged out,
-  the role says it is unavailable while the crews run and their questions
-  are answered as before. Until then `brakeman-role.spec.ts` drives a
+  **BK3's observation: made (#659, 2026-11-06 and 2026-11-07).** The
+  same way, with the role in the background, Claude Code 2.1.319 (haiku)
+  as its agent, the window at 10 s (the least Settings takes) and the
+  cooldown at a minute, and crews whose checks failed at a moment chosen
+  by hand rather than overnight. On `main` at b3084a50: a task failing
+  woke Brakeman once, one batch and one request; a second task's failure
+  inside the window joined that batch, and its one brief cited both
+  runs; a batch opened while the role cooled fired at the cooldown's
+  end, not at its window's; with turns a day set to the turns already
+  used, the role went unavailable with "the day's budget is spent" and
+  its retry at the next local midnight, the batch kept; and the server,
+  stopped while a batch was gathering (the window at 60 s for that
+  step), read it back as gathering and fired it once (each passed). With
+  Brakeman's account an empty folder (Claude Code signed out), a crew
+  member's question was answered with the page's button and its run
+  succeeded meanwhile, but the role never said it was unavailable: the
+  turn sat at the sign-in screen for its 15 minutes, timed out, and the
+  role fired the next batch into the same screen (not passed, #685,
+  fixed in #691). Raising the day's budget had also left the role's
+  spent words in place (#685, fixed in #691). Observed again on `main`
+  at d522979c (2026-11-07): a failing crew's task woke a turn, which
+  ended after 5 minutes with no call to Conductor; the role went
+  unavailable in words quoting the sign-in screen, its link left out,
+  and saying when it tries again; the day's minutes were charged for the
+  minutes the turn ran; meanwhile a question crew's member was answered
+  with the page's button and its run succeeded, its end joining the kept
+  batch without firing a turn; the role retried by itself ten minutes
+  later, failed the same way, and set its next try twenty minutes on
+  (passed). It passed through the start cutoff, not through the sign-in
+  screen recognised: Claude Code on an account never used opens on a
+  theme picker and a login-method screen, and the turn's line and its
+  Enter went into them (#714, fixed in #720, which types into nothing
+  but the agent's prompt and knows those screens). A save that cleared
+  the account and turned the background off together left the role
+  unavailable with stale words (#715, fixed in #721). Every clause of
+  BK3 has now been observed passing. `brakeman-role.spec.ts` drives a
   wake, its quiet question, its one brief, the cooldown and a pause with
   the stub agent, and Go race tests hold the rest
   (`TestWakesInTheWindowAreOneBatch`, `TestTheCooldownHoldsTheNextBatch`,
@@ -3759,11 +3875,13 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestACrashBetweenTheRequestAndTheRoleFiresOnce`, `TestNoModelIsPolled`,
   `TestALoggedOutAgentMakesTheRoleUnavailable`,
   `TestAnUnavailableRoleHoldsNothingElse`).
-  Neither item is done with this entry: each is done once its observation
-  is made and recorded here, a bug the stream caused found there fixed in
-  the stream. #659 holds these two observations, BK1's made again after
-  PR-11 and BK0's real Codex session, the docs PR that records them, and
-  any stream bug they find.
+  With these, BK2 and BK3 are done: each clause observed passing with a
+  real agent, and every bug of the stream the checks found fixed in it
+  (#685 in #691, #692 in #695, #714 in #720, #715 in #721). Found
+  outside the stream and left to the maintainers: Codex's approval
+  prompt for a tool shown as working rather than as a question (#716),
+  and a broadcast to a run's member that leaves nothing in the run's
+  record (#693).
 
   **What #659's live check found, fixed in the stream (#685,
   2026-11-06).** The check, made with real Claude Code and real Codex,
@@ -3937,8 +4055,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
     first draft crew was refused by.
     `TestTheDraftCrewGuidanceStatesTheStartRule`.
   The three clauses that did not pass (BK2's brief showing the act's
-  receipt, BK3's logged-out role, BK0's Codex half) are observed again on
-  the fixed build under #659.
+  receipt, BK3's logged-out role, BK0's Codex half) were observed again
+  on the fixed builds: BK2's and BK3's passed (their observations
+  above); BK0's is recorded in the first slice's entry.
 - **Project manifests: a fresh attempt worktree made usable, predictably
   (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
   `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the
