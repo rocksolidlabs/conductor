@@ -38,6 +38,15 @@ export const MAX_ANSWER_INPUT = 48
 export const QUESTION_ANSWERED = 'question_answered'
 
 /**
+ * The error code of an answer whose question mirrors a durable decision (the attention's `decision`): it is answered as that
+ * decision, never as the session's question, and the message names it. Nothing was sent.
+ */
+export const ANSWER_DECISION = 'decision'
+
+/** A durable decision's id where the protocol carries it (`dr-<n>`), in bytes (proto.MaxDecisionRef). */
+export const MAX_DECISION_REF = 16
+
+/**
  * A reply to the question a person was shown (`answer`, client → owner, controllers only; only to an owner whose welcome says
  * `answer`): `question` is that attention's `id`; exactly one of `input` (a choice's keys, written as INPUT is) and `text` (a line,
  * submitted as `submit` is). The owner writes nothing unless the question still waits, and answers `reqId` with `answer_ok` or an
@@ -186,6 +195,12 @@ export interface Attention {
    * folder's files: a page offers to open it. Absent from any other question, and from an older owner.
    */
   plan?: string
+  /**
+   * The durable decision the question mirrors (`dr-<n>`, at most MAX_DECISION_REF bytes; Program item DR1): it is answered only as
+   * that decision, so a page offers it no reply, choice or number key (`decisionOf`), and an `answer` naming it is refused
+   * (`decision`). Absent from every other question, and from an older owner.
+   */
+  decision?: string
 }
 export type TransportKind = 'ws' | 'webrtc' | 'relay'
 
@@ -315,7 +330,7 @@ export type ControlMessage =
   /** `by` names the viewer that sizes the session now (absent: nobody holds the size) when the welcome said `sizer` (round 14). */
   | { t: 'resize'; cols: number; rows: number; by?: string }
   | { t: 'status'; status: string; exitCode?: number }
-  | { t: 'attention'; state: AttentionState; message?: string; source?: string; kind?: AttentionKind; options?: AttentionOption[]; id?: string; answered?: 'terminal'; plan?: string }
+  | { t: 'attention'; state: AttentionState; message?: string; source?: string; kind?: AttentionKind; options?: AttentionOption[]; id?: string; answered?: 'terminal'; plan?: string; decision?: string }
   /** The owner took the answer `requestId`: its keys are written, or its line accepted. */
   | { t: 'answer_ok'; requestId: string }
   /** The owner entered the line of the submit `requestId` (#322): its text typed and its Enter written. */

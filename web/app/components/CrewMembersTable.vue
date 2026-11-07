@@ -11,10 +11,18 @@ import { startWords } from '~/utils/crewWords'
  * A row's menu adds the extra arguments line, moves the row (the order is
  * for display only) and removes it. `single` shows one row alone, for
  * adding a member to a run; `others` are the names outside the table (the
- * run's members), which a row may not take and may start after.
+ * run's members), which a row may not take and may start after; `people`
+ * the run's people, whose names a row may not take (a person is never a
+ * member) and never starts after.
  */
 const members = defineModel<DraftMember[]>({ required: true })
-const props = withDefaults(defineProps<{ agents: AgentInfo[]; others?: string[]; single?: boolean; host?: string; managed?: boolean }>(), { others: () => [], single: false, host: '', managed: false })
+const props = withDefaults(defineProps<{ agents: AgentInfo[]; others?: string[]; people?: string[]; single?: boolean; host?: string; managed?: boolean }>(), {
+  others: () => [],
+  people: () => [],
+  single: false,
+  host: '',
+  managed: false,
+})
 const emit = defineEmits<{ add: []; addFromSession: [] }>()
 
 // Every cell keeps its place in the one-column-per-field layout of a wide
@@ -63,7 +71,7 @@ function taken(m: DraftMember): string[] {
 }
 
 function nameError(m: DraftMember): string {
-  return memberNameError(m.name, taken(m))
+  return memberNameError(m.name, taken(m), props.people)
 }
 
 /** At launch, after any other member with a usable name is done, or when you press Start; each with its icon. */

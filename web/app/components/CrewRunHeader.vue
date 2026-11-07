@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ApiError } from '~/composables/useApi'
 import type { AgentInfo, RunInfo } from '~/composables/useSessions'
-import { draftMember, memberNameError, memberNameFrom, type DraftMember } from '~/utils/crews'
+import { draftMember, memberNameError, memberNameFrom, responsibilityWords, type DraftMember } from '~/utils/crews'
+import { avatarTone } from '~/utils/avatar'
 import { runResumable, runSubtitle, shortRunId } from '~/utils/crewWords'
-import { relativeTime } from '~/utils/sessions'
+import { initials, relativeTime } from '~/utils/sessions'
 import { commandBody, sendCommand, taskBadges } from '~/utils/tasks'
 import type { RelatedTicket } from '~/composables/useDispatch'
 import { ticketPath } from '~/utils/dispatch'
@@ -24,7 +25,9 @@ import { revisionTag } from '~/utils/dispatchPlans'
  * CND-12 · plan r3" from the run's own `ticket`, which its continuations
  * carry, opening the ticket, with who launched it (the launch's own record:
  * Brakeman, for a launch it ran under a grant) and the launch's receipt,
- * read from its chip.
+ * read from its chip. Under the bar, the run's people as the crew was
+ * launched (HM1), each a chip with the responsibilities they hold: never
+ * started, they own its decisions and its tasks' outcomes.
  */
 const props = withDefaults(
   defineProps<{
@@ -85,9 +88,11 @@ const member = ref<DraftMember[]>([])
 const adding = ref(false)
 const addError = ref('')
 const runNames = computed(() => props.run?.members.map((m) => m.name) ?? [])
+// The run's people's names, which the server refuses for a member added to the run (a person is never a member).
+const peopleNames = computed(() => props.run?.people?.map((p) => p.name) ?? [])
 const addInvalid = computed(() => {
   const m = member.value[0]
-  return !m || !m.agentId || !!memberNameError(m.name, runNames.value)
+  return !m || !m.agentId || !!memberNameError(m.name, runNames.value, peopleNames.value)
 })
 
 async function openAdd() {
@@ -99,7 +104,7 @@ async function openAdd() {
     addError.value = (e as Error).message
   }
   const first = agents.value[0]
-  member.value = first ? [draftMember({ name: memberNameFrom(first.id, runNames.value), agentId: first.id, prompt: '', start: { when: 'immediately' } })] : []
+  member.value = first ? [draftMember({ name: memberNameFrom(first.id, [...runNames.value, ...peopleNames.value]), agentId: first.id, prompt: '', start: { when: 'immediately' } })] : []
 }
 
 async function add() {
@@ -272,11 +277,28 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
     <span class="min-w-0 truncate font-mono text-[11px] text-muted">{{ uptime }}</span>
   </div>
 
+  <!-- The run's people as launched: names, never sessions. -->
+  <div v-if="run?.people?.length" class="flex flex-wrap items-center gap-1.5 border-b border-default px-4 py-1.5" data-run-people>
+    <span class="text-xs text-muted">People</span>
+    <span
+      v-for="p in run.people"
+      :key="p.name"
+      class="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md px-1.5 py-0.5 text-xs ring ring-default"
+      :title="p.note || undefined"
+      :data-run-person="p.name"
+      :data-run-person-responsibilities="(p.responsibilities ?? []).join(' ')"
+    >
+      <span class="grid size-4 flex-none place-items-center rounded-full text-[8px] font-semibold" :class="avatarTone(p.name)" aria-hidden="true">{{ initials(p.name) }}</span>
+      <span class="min-w-0 truncate font-medium text-highlighted">{{ p.name }}</span>
+      <span v-if="p.responsibilities?.length" class="truncate text-muted" data-run-person-words>{{ responsibilityWords(p.responsibilities) }}</span>
+    </span>
+  </div>
+
   <USlideover v-model:open="addOpen" title="Add an agent" description="It joins this run, not the saved crew. One that starts at launch starts now; its prompt is typed once it is ready." :ui="{ content: 'sm:max-w-4xl' }">
     <template #body>
       <div class="flex flex-col gap-4">
         <UAlert v-if="addError" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="addError" />
-        <CrewMembersTable v-if="member.length" v-model="member" :agents="agents" :others="runNames" single />
+        <CrewMembersTable v-if="member.length" v-model="member" :agents="agents" :others="runNames" :people="peopleNames" single />
         <p v-else-if="!addError" class="text-sm text-muted">No agents in the catalog.</p>
       </div>
     </template>

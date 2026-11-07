@@ -172,9 +172,10 @@ type Attention struct {
 	// Decision is the durable decision this question mirrors, "dr-<n>"
 	// (Local.TryAskDecision), "" for any other question: answered only
 	// through the decision (ErrDecisionQuestion), and kept through keys,
-	// the screen and lines naming no decision. Not sent to viewers yet
-	// (docs/plans/decisions.md, PR-5 sends it).
-	Decision string `json:"-"`
+	// the screen and lines naming no decision. Sent to viewers (the
+	// attention message's `decision`, proto.Attention.Decision) and in
+	// Info, so that a page offers no reply to it.
+	Decision string `json:"decision,omitempty"`
 	// approval marks a dialog read off the screen as a plan's approval (its
 	// footer says so: planApprovalShown, #289): the one a late report of
 	// that approval names the plan for, and the one that keeps the plan of

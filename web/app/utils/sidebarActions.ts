@@ -1,6 +1,6 @@
 import type { DropdownMenuItem } from '@nuxt/ui'
 import { accountActions, rowActions, toMenuItems, type AccountHandlers, type RowActionHandlers, type RowActionTarget } from './actions'
-import { ANSWER_IN_TERMINAL, TERMINAL_FIRST, answersInTerminal, waitsForTerminal } from './attention'
+import { decisionOf, noReply } from './attention'
 import type { AttentionOption } from './protocol'
 import type { SessionRow } from './sidebar'
 
@@ -28,11 +28,15 @@ export interface RowPrompt {
   /** A hosted session whose host is away: nothing reaches it until the host is back. */
   away: boolean
   /**
-   * The session waits for someone to type in its terminal (waitsForTerminal), a reply would only wait, or its question is answered
-   * there (answersInTerminal), a reply's Enter would pick what its dialog highlights: none is taken.
+   * The question takes no typed reply (noReply): the session waits for someone to type in its terminal, a reply would only wait;
+   * its question is answered there, a reply's Enter would pick what its dialog highlights; or it mirrors a durable decision,
+   * answered as that decision. None is taken.
    */
   held: boolean
+  /** What the row says in place of a reply when it takes none (noReply's words), else what its field says. */
   placeholder: string
+  /** The durable decision the question mirrors (`dr-<n>`): the row says where it is answered, and offers no field or choice. */
+  decision?: string
   /** The question's id: an answer from the row names it, and the owner refuses it once the question no longer waits. */
   question?: string
 }
@@ -42,10 +46,10 @@ export const HOST_AWAY = 'The host is away'
 export function rowPrompt(row: Pick<SessionRow, 'prompt' | 'session'>): RowPrompt | null {
   if (!row.prompt) return null
   const away = row.session.status === 'host_disconnected'
-  const typing = waitsForTerminal(row.session.attention)
-  const terminal = answersInTerminal(row.session.attention)
-  const placeholder = away ? HOST_AWAY : typing ? TERMINAL_FIRST : terminal ? ANSWER_IN_TERMINAL : 'Reply…'
-  return { message: row.prompt.message, choices: row.prompt.options, away, held: typing || terminal, placeholder, question: row.prompt.question }
+  const none = noReply(row.session.attention)
+  const decision = decisionOf(row.session.attention)
+  const placeholder = away ? HOST_AWAY : (none ?? 'Reply…')
+  return { message: row.prompt.message, choices: decision ? [] : row.prompt.options, away, held: none !== undefined, placeholder, question: row.prompt.question, decision }
 }
 
 export function accountItems(hasToken: boolean, on: AccountHandlers): DropdownMenuItem[][] {
