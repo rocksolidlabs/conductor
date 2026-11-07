@@ -1084,14 +1084,14 @@ export interface ActLaunch {
  * `failed`, never "Brakeman did this". Any other act is its own state.
  */
 export function actShown(a: BrakemanAct, launch?: ActLaunch | null): string {
-  if (!actReceiptRef(a)) return a.state
+  if (!actLaunchRef(a)) return a.state
   if (!launch || launch.state === 'pending') return 'pending'
   return launch.state === 'started' ? 'done' : 'failed'
 }
 
 /** The launch an act's receipt names, by its id ("" for an act that is not a launch's done act): the key its launch is kept under. */
 export function actLaunchId(a: BrakemanAct): string {
-  const ref = actReceiptRef(a)
+  const ref = actLaunchRef(a)
   return ref ? ref.slice('launch:'.length) : ''
 }
 
@@ -1131,13 +1131,15 @@ export function keepLaunch<L extends ActLaunch>(kept: Readonly<Record<string, L>
 export function actWords(a: BrakemanAct, launch?: ActLaunch | null): string {
   const what = grantLabel(a.operation)
   const shown = actShown(a, launch)
-  if (a.state === 'done' && actReceiptRef(a)) {
-    if (shown === 'pending') return `Brakeman launched this, under the grant "${what}": receipt ${a.receipt}. ${launch ? 'Its run is still being started.' : 'Whether its run has started is not read yet.'}`
-    if (shown === 'failed') return `Brakeman launched this, under the grant "${what}": receipt ${a.receipt}, but the launch failed${launch?.why ? `: ${launch.why}` : ''}. No run was started.`
+  const receipt = actReceiptRef(a) ? `: receipt ${a.op}` : ''
+  const made = actMade(a)
+  if (a.state === 'done' && actLaunchRef(a)) {
+    if (shown === 'pending') return `Brakeman launched this, under the grant "${what}"${receipt}; ${made}. ${launch ? 'Its run is still being started.' : 'Whether its run has started is not read yet.'}`
+    if (shown === 'failed') return `Brakeman launched this, under the grant "${what}"${receipt}, but ${made} failed${launch?.why ? `: ${launch.why}` : ''}. No run was started.`
   }
   switch (a.state) {
     case 'done':
-      return `Brakeman did this, under the grant "${what}" you gave it${a.receipt ? `: receipt ${a.receipt}` : ''}.`
+      return `Brakeman did this, under the grant "${what}" you gave it${receipt}${made ? `; ${made}` : ''}.`
     case 'pending':
       return `Brakeman is doing this, under the grant "${what}": its receipt is not in yet.`
     case 'refused':
@@ -1148,9 +1150,32 @@ export function actWords(a: BrakemanAct, launch?: ActLaunch | null): string {
   return a.state
 }
 
-/** The ref of what an act made, for its receipt chip: a launch's (launch_approved_plan), else none (a revision is read on its ticket's page). */
+/**
+ * The ref of a done act's receipt, for its receipt chip: op:brakeman/<op>, the act's derived key, under which Dispatch keeps the receipt,
+ * the ref an outcome of its brief cites it by (the act tool's receiptRef); null for an act not done. The receipt's own id (a.receipt) is
+ * what the operation made, a launch's or a revision's, never named the receipt (actMade).
+ */
 export function actReceiptRef(a: BrakemanAct): string | null {
+  return a.state === 'done' && OP.test(a.op ?? '') ? `op:brakeman/${a.op}` : null
+}
+
+/** The ref of the launch a done launch_approved_plan act made, for its launch chip and the launch it is read by; else null. */
+export function actLaunchRef(a: BrakemanAct): string | null {
   return a.state === 'done' && a.operation === 'launch_approved_plan' && a.receipt && HEX.test(a.receipt) ? `launch:${a.receipt}` : null
+}
+
+/** What a done act made, by its receipt's id, in words: the launch or the plan revision of its ticket; "" with none. */
+export function actMade(a: BrakemanAct): string {
+  if (a.state !== 'done' || !a.receipt) return ''
+  const ticket = refTicket(a.target)
+  const of = ticket ? ` of ${ticket}` : ''
+  switch (a.operation) {
+    case 'launch_approved_plan':
+      return `the launch ${a.receipt}${of}`
+    case 'prepare_followup':
+      return `the plan revision ${a.receipt}${of}`
+  }
+  return `${a.receipt}, what it made`
 }
 
 /** How followLaunch reads a launch, and when it stops. */
