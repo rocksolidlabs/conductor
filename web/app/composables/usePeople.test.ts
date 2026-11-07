@@ -93,4 +93,26 @@ describe('usePeople', () => {
     sent[1]!.ok(page())
     await sixty
   })
+
+  it("searches as the palette's @ is typed one read at a time, the latest asked after the one under way", async () => {
+    const people = usePeople()
+    const first = people.search('n')
+    void people.search('na')
+    const last = people.search('nat')
+    // One read under way: the keys typed meanwhile send nothing yet.
+    expect(sent.map((s) => s.query)).toEqual([{ q: 'n' }])
+    sent[0]!.ok(page('nate', 'nan'))
+    await new Promise((r) => setTimeout(r, 0))
+    // Its reply is dropped (a newer q was asked), and only the latest is read.
+    expect(people.known.value).toEqual([])
+    expect(sent.map((s) => s.query)).toEqual([{ q: 'n' }, { q: 'nat' }])
+    sent[1]!.ok(page('nate'))
+    await Promise.all([first, last])
+    expect(people.known.value.map((p) => p.name)).toEqual(['nate'])
+    expect(people.names.value).toEqual(['nate'])
+    // Longer than a name: none, unread.
+    await people.search('é'.repeat(61))
+    expect(sent).toHaveLength(2)
+    expect(people.known.value).toEqual([])
+  })
 })

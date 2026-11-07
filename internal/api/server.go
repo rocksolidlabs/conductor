@@ -80,6 +80,10 @@ type Server struct {
 	// is read, so a test can commit a twin try of the operation there
 	// (addDelivery).
 	deliveryReplayed func(ctx context.Context, op dispatch.Op, key string, l dispatch.NewLink)
+	// personDispatch is nil but in tests: what a person's work reads of
+	// Dispatch in its store's place (ticketReads), so a test fails one of
+	// its reads alone.
+	personDispatch ticketDirectory
 	// keeper keeps the links a switchyard mints across its restarts
 	// (linkfiles.go); nil elsewhere.
 	keeper *linkKeeper
@@ -757,6 +761,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/crews/{id}/runs", s.launching(s.handleCrewRuns))
 	// The people Conductor knows: Dispatch's and the crews' (people.go).
 	mux.HandleFunc("GET /api/people", s.launching(s.handlePeople))
+	mux.HandleFunc("GET /api/people/{name}", s.launching(s.handlePerson))
 	mux.HandleFunc("GET /api/paths", s.launching(s.handleListPaths))
 	mux.HandleFunc("GET /api/git/check", s.launching(s.handleGitCheck))
 	mux.HandleFunc("GET /api/runs", s.readable("GET /api/runs", s.launchingAny(s.handleListRuns)))

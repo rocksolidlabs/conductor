@@ -1,0 +1,137 @@
+{
+ "comment": "A person's name and its path segment, by the rule of internal/api/people.go (personSegment) and web/app/utils/people.ts (personSegment); both are tested against these.",
+ "cases": [
+  {
+   "name": ".",
+   "segment": "~Lg"
+  },
+  {
+   "name": "..",
+   "segment": "~Li4"
+  },
+  {
+   "name": "...",
+   "segment": "~Li4u"
+  },
+  {
+   "name": "~",
+   "segment": "~fg"
+  },
+  {
+   "name": "~.",
+   "segment": "~fi4"
+  },
+  {
+   "name": "~~",
+   "segment": "~fn4"
+  },
+  {
+   "name": "~x",
+   "segment": "~fng"
+  },
+  {
+   "name": "~nate",
+   "segment": "~fm5hdGU"
+  },
+  {
+   "name": "a/b",
+   "segment": "~YS9i"
+  },
+  {
+   "name": "/",
+   "segment": "~Lw"
+  },
+  {
+   "name": "../brand/conductor-favicon.svg",
+   "segment": "~Li4vYnJhbmQvY29uZHVjdG9yLWZhdmljb24uc3Zn"
+  },
+  {
+   "name": "..%2Fbrand",
+   "segment": "~Li4lMkZicmFuZA"
+  },
+  {
+   "name": "50% c",
+   "segment": "~NTAlIGM"
+  },
+  {
+   "name": "%2E%2E",
+   "segment": "~JTJFJTJF"
+  },
+  {
+   "name": "Ana María",
+   "segment": "Ana%20Mar%C3%ADa"
+  },
+  {
+   "name": "nate",
+   "segment": "nate"
+  },
+  {
+   "name": "José",
+   "segment": "Jos%C3%A9"
+  },
+  {
+   "name": "nate.r",
+   "segment": "nate.r"
+  },
+  {
+   "name": "-x_y.z",
+   "segment": "-x_y.z"
+  },
+  {
+   "name": "lead ",
+   "segment": "~bGVhZCA"
+  },
+  {
+   "name": "trail ",
+   "segment": "~dHJhaWwg"
+  },
+  {
+   "name": " lead",
+   "segment": "~IGxlYWQ"
+  },
+  {
+   "name": "a\\b",
+   "segment": "~YVxi"
+  },
+  {
+   "name": "a?b#c;d",
+   "segment": "~YT9iI2M7ZA"
+  },
+  {
+   "name": "a+b",
+   "segment": "~YSti"
+  },
+  {
+   "name": "O'Brien",
+   "segment": "~TydCcmllbg"
+  },
+  {
+   "name": "日本語",
+   "segment": "%E6%97%A5%E6%9C%AC%E8%AA%9E"
+  },
+  {
+   "name": "😀",
+   "segment": "%F0%9F%98%80"
+  },
+  {
+   "name": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+   "segment": "%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9%C3%A9"
+  },
+  {
+   "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "segment": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/",
+   "segment": "~YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEv"
+  },
+  {
+   "name": "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+   "segment": "~fn5-fn5-fn5-fn5-fn5-fn5-fn5-fn5-fn5-fn5-fn5-fn5-fn5-fn5-fn5-fn5-fn5-fn5-fn5-fn5-"
+  },
+  {
+   "name": "bm9i",
+   "segment": "bm9i"
+  }
+ ]
+}
