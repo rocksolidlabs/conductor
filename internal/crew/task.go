@@ -702,6 +702,11 @@ type TaskState struct {
 	ImportedFrom string `json:"importedFrom,omitempty"`
 	// Blocker is what the attempt in flight says stops it (checkpoints.go).
 	Blocker *Blocker `json:"blocker,omitempty"`
+	// Commands are the task commands its state allows now (retry, accept,
+	// cancel, in that order), as TaskCommands judges them, in the engine's
+	// reads of a live run (Get, GetWithDiffs, List, TaskOf); absent for none and in a
+	// record. The run page offers these and no others.
+	Commands []string `json:"commands,omitempty"`
 	// Owner is the person accountable for the task's outcome in the crew as
 	// launched, and OwnerFrom how (TaskOwner: task or acceptance); both
 	// absent for a crew without people.
