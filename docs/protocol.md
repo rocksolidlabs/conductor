@@ -2496,7 +2496,10 @@ overview at most 4 KiB, each section at most 64 KiB, the seven at most
 `500 guide_bound`, never a cut reply). The sections:
 
 - `overview`: `{caller: {kind, session?, kinds?, run?, member?, scopes},
-  may, limits, sections: [{name, bytes}], rules}`. `kind` is `admin` or `session`; a
+  report, may, limits, sections: [{name, bytes}], rules}`, its fields in
+  that order. `report` is one sentence for every caller, ahead of the two
+  it names: asked what it can do here, the agent tells the person both
+  lists, the operations it may call and the limits it must keep (#726). `kind` is `admin` or `session`; a
   session's `kinds` are `plain` (in no run) or `run_member`, `attempt` (of
   a managed run) and `ticket_member` (of a run a live ticket's run link
   names), or `brakeman` (a Brakeman turn's, which is never a ticket's
