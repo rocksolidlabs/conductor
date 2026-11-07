@@ -182,6 +182,12 @@ type Server struct {
 	// from a record ("reserved", "launched"; resumeStops): true says the
 	// server stops there, the receipt left as the stop would leave it.
 	resumeHook atomic.Pointer[func(stage, id string) bool]
+	// starting marks the server sessions whose process runs before the
+	// registry holds them, for a report in that window to wait for
+	// (launching.go); launchHook, when a test sets it, runs at a launch's
+	// stages (launchSeam).
+	starting   startingSessions
+	launchHook atomic.Pointer[func(stage, id string)]
 	// planFacts keeps what the plan revisions' reads take from each
 	// revision's body, by its digest (dispatch_plans.go), so a list reads
 	// no body it has read before.

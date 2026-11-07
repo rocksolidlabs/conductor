@@ -127,7 +127,7 @@ export abstract class BaseTransport implements TerminalTransport {
       else this.submit(reply.text)
       return Promise.resolve(false)
     }
-    const reqId = `a${(++this.reqCounter).toString(36)}`
+    const reqId = reply.reqId && !this.answers.has(reply.reqId) ? reply.reqId : `a${(++this.reqCounter).toString(36)}`
     const msg = answerMessage(reply, reqId)
     if (!msg) return Promise.reject(new ReplyError(NO_QUESTION, 'the page does not know which question this reply is for'))
     return new Promise((resolve, reject) => {

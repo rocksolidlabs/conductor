@@ -126,6 +126,20 @@ func TestTaskCommandsFollowTheFixture(t *testing.T) {
 		if row.Accept > 0 && got.AcceptCommit != row.Attempts[row.Accept-1].Commit {
 			t.Errorf("%s: accept takes %q", row.Name, got.AcceptCommit)
 		}
+		e.mu.Lock()
+		e.order = append(e.order, r)
+		e.mu.Unlock()
+		// The runs' list names the same commands on the task (the run
+		// page's taskActions offers these; Get puts them in as List does),
+		// and so does the task's own read. A legacy run's read has no tasks.
+		if listed := e.List(); !slices.ContainsFunc(listed, func(l Run) bool {
+			return l.ID == r.id && (len(l.Tasks) == 0 && len(row.Commands) == 0 || len(l.Tasks) == 1 && slices.Equal(append([]string{}, l.Tasks[0].Commands...), row.Commands))
+		}) {
+			t.Errorf("%s: the runs' list names other commands", row.Name)
+		}
+		if st, _, err := e.TaskOf(r.id, "build"); err != nil || !slices.Equal(append([]string{}, st.Commands...), row.Commands) {
+			t.Errorf("%s: the task's read names %v (%v)", row.Name, st.Commands, err)
+		}
 		for _, name := range []string{TaskRetry, TaskAccept, TaskCancel} {
 			// A run of its own for each command (one taken changes the
 			// task), at the fake ledger's revision, which its next commit
@@ -197,6 +211,21 @@ func TestTaskCommandsFollowALiveRun(t *testing.T) {
 	}
 	if rc, err := e.Cancel(ctx, run.ID, "admin", Command{ID: "c1", ExpectedRevision: set.Revision}, "build"); !errors.Is(err, ErrTaskState) || rc.Status != ledger.CommandFailed {
 		t.Fatalf("a cancel the set leaves out: %+v %v", rc, err)
+	}
+	// Every read of the live run names them on its tasks: the run page's
+	// (GET /api/runs/{run} is GetWithDiffs), the list's and Get's.
+	reads := map[string]Run{}
+	reads["Get"], _ = e.Get(run.ID)
+	reads["GetWithDiffs"], _ = e.GetWithDiffs(ctx, run.ID)
+	for _, l := range e.List() {
+		if l.ID == run.ID {
+			reads["List"] = l
+		}
+	}
+	for name, rd := range reads {
+		if len(rd.Tasks) != 2 || !slices.Equal(rd.Tasks[0].Commands, []string{TaskRetry, TaskAccept}) || !slices.Equal(rd.Tasks[1].Commands, []string{TaskCancel}) {
+			t.Fatalf("%s names %+v", name, rd.Tasks)
+		}
 	}
 	set, _ = e.TaskCommands(run.ID, "build")
 	if rc, err := e.Accept(ctx, run.ID, "admin", Command{ID: "a1", ExpectedRevision: set.Revision}, "build"); err != nil || rc.Task == nil || rc.Task.State != ledger.TaskSucceeded || rc.Task.Result.Attempt != set.AcceptAttempt {

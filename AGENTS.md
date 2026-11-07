@@ -341,6 +341,14 @@ add its rule here.
   (`dnsPair` in `internal/certs`); where a program takes only an address,
   hold the port until it starts and start again on a loss
   (`pebblePorts`).
+- A read the page keeps one of in flight is bounded, or one request that
+  never answers holds every later read behind it. A spec that cut the
+  events stream with a route and removed it left one inbox read on the
+  page unanswered (the page's last route gone while the request was held
+  in it), and the live inbox, its next reads queued behind that one, never
+  showed what the stream's return brought (`decision-page.spec.ts`, CI on
+  #684). The inbox gives up on a read past `INBOX_READ_WAIT_MS`, and the
+  spec keeps a route on the page across the step it judges.
 - A test's git repository does no maintenance of its own. Apple Git's
   `git commit` (2.54 on the Mac) starts a detached `git maintenance run
   --auto` that packs the loose objects and deletes them under the test's

@@ -1651,6 +1651,13 @@ per-client limiter that the API's credential checks share: a client refused with
 `401` or `404` 20 times in quick succession (and 5 times a second after that) is
 answered `429` in place of the next refusal.
 
+A server session's process starts a moment before the server holds the
+session: its record is written in between. A report on either route that
+comes in that moment (an agent's first hook, at its start) waits for the
+launch to end, at most 10 s, and is then applied, or answered `404` when the
+launch failed; it is never refused for a session the server is still
+making.
+
 A server session spends a token of its bucket on each event it records and
 on each attention word, by this route or by `/attention`, before the word
 changes anything: with no token the answer is `429 rate_limited` and neither
@@ -3245,8 +3252,11 @@ version 3 for the checkpoint column and the messages table; a version 2
 database is brought to it as it opens.
 
 The run reports `tasks` (each with its `state`, `reason`, `attempts`, latest
-`attempt`, `result`, in a continuation `importedFrom`, and, in a crew with
-people, its `owner` and `ownerFrom`), `paused` and, once every task is terminal, `outcome`
+`attempt`, `result`, in a continuation `importedFrom`, in a crew with
+people its `owner` and `ownerFrom`, and `commands`, the task commands its
+state allows now, `retry`, `accept` and `cancel` in that order, as the
+decision inbox's `crew.TaskCommands` judges them, absent for none and in a
+record: the run page offers these and no others), `paused` and, once every task is terminal, `outcome`
 (`succeeded` when all succeeded, `cancelled` when one was cancelled and none
 failed, `failed` otherwise): the run is `finished` then, its idle sessions
 kept for a look until a stop; a managed run is not finished by its sessions
