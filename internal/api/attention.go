@@ -65,11 +65,18 @@ func agentTokenOK(d session.Driver, tok string) bool {
 	return false
 }
 
-// reportTarget finds the session a report is about. An unknown session is a
-// 404 that counts against the caller's rate limit, so ids cannot be guessed
-// at speed. It writes the response and returns false when there is none.
+// reportTarget finds the session a report is about. A session whose launch
+// is under way, its process running but the registry not holding it yet,
+// is waited for (awaitLaunch): an agent's first report comes as its
+// process starts. An unknown session is a 404 that counts against the
+// caller's rate limit, so ids cannot be guessed at speed. It writes the
+// response and returns false when there is none.
 func (s *Server) reportTarget(w http.ResponseWriter, r *http.Request) (session.Driver, bool) {
-	d, ok := s.registry.Get(r.PathValue("id"))
+	id := r.PathValue("id")
+	d, ok := s.registry.Get(id)
+	if !ok && s.awaitLaunch(r.Context(), id) {
+		d, ok = s.registry.Get(id)
+	}
 	if !ok {
 		if !s.limiter.allow(clientKey(r)) {
 			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")

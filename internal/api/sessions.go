@@ -348,6 +348,9 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		where = ext.WhereNative
 	}
 	rev, repo := s.launchRevision(where, cwd, dirFile)
+	// From before its process starts until this returns, a report for id
+	// waits for the registry to hold it (launching.go).
+	defer s.starting.begin(id)()
 	term, err := rt.StartTerminal(startCtx, ext.TerminalSpec{
 		Argv:    argv,
 		Dir:     cwd,
@@ -363,6 +366,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		s.log.Warn("session start failed", "agent", agent.ID, "err", err)
 		return nil, newAPIError(http.StatusBadGateway, "start_failed", "could not start the agent process")
 	}
+	s.launchSeam("started", id)
 	info := session.Info{
 		ID:           id,
 		Name:         name,
