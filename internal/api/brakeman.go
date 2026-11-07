@@ -1856,13 +1856,13 @@ func (s *Server) handleBrakemanConfig(w http.ResponseWriter, r *http.Request) {
 		(*f)(change)
 	}
 	// The save's step in the role (crew.Role.Reconfigured): it advances
-	// the configuration generation, so a batch fires only under the
-	// configuration it was gathered under, and, by what this save did, a
-	// save of the role off drops the batch kept and an agent that did not
-	// start; an unavailable role looks again at what refused its turn
-	// when the save changed it (a budget raised, an agent or an account
-	// changed: crew.SaveEnds), the batch it kept firing within its rules,
-	// or the refusal said again in words true now.
+	// the configuration generation and drops the batch open and an agent
+	// that did not start, carrying nothing into the new generation, so a
+	// batch fires only under the configuration it was gathered under,
+	// whatever order the steps of overlapping saves reach the role in; an
+	// unavailable role looks again at what refused its turn when the save
+	// changed it (a budget raised: crew.SaveEnds), the refusal said again
+	// in words true at its next turn.
 	if err := d.role.Reconfigured(change); err != nil {
 		s.log.Warn("Brakeman's role could not look again after the configuration's save", "err", err)
 	}

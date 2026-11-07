@@ -665,17 +665,17 @@ func (rr roleRecords) Fire(b crew.Batch) (string, error) {
 	}
 	for k := 1; k <= maxWakeOps; k++ {
 		in := brakeman.Request{OpID: wakeOpID(b.ID, k), Kind: brakeman.KindWake, Batch: b.ID}
-		prev, found, err := d.st.ByOp(in.OpID)
+		id, mine, err := rr.madeUnder(in.OpID, b.ID)
 		if err != nil {
 			return "", err
 		}
-		if found {
-			if prev.Kind == brakeman.KindWake && prev.Batch == b.ID {
-				return prev.ID, nil
+		if id != "" {
+			if mine {
+				return id, nil
 			}
 			continue
 		}
-		id, err := rr.make(in)
+		id, err = rr.make(in)
 		if errors.Is(err, brakeman.ErrOpConflict) {
 			// Another request's op id, that request pruned since.
 			continue
@@ -683,6 +683,44 @@ func (rr roleRecords) Fire(b crew.Batch) (string, error) {
 		return id, err
 	}
 	return "", fmt.Errorf("the batch %s's %d op ids are other requests'", b.ID, maxWakeOps)
+}
+
+// Made answers the request Fire made for the batch, "" when none was
+// made under any of its op ids (or it is gone): it makes none, so a
+// batch the role will not fire anew is taken up only by a request that
+// exists.
+func (rr roleRecords) Made(b crew.Batch) (string, error) {
+	d := rr.d
+	d.admit.Lock()
+	defer d.admit.Unlock()
+	if d.closing.Load() {
+		return "", errDeskClosing
+	}
+	if !d.recovered.Load() {
+		return "", d.notOwner()
+	}
+	for k := 1; k <= maxWakeOps; k++ {
+		id, mine, err := rr.madeUnder(wakeOpID(b.ID, k), b.ID)
+		if err != nil {
+			return "", err
+		}
+		// Every op id is looked at: Fire passes over one another
+		// request kept, pruned since, as well as one it holds.
+		if mine {
+			return id, nil
+		}
+	}
+	return "", nil
+}
+
+// madeUnder answers the request kept under the op id: its id ("" for
+// none), and whether it is the batch's wake request (its kind and batch).
+func (rr roleRecords) madeUnder(op, batch string) (string, bool, error) {
+	prev, found, err := rr.d.st.ByOp(op)
+	if err != nil || !found {
+		return "", false, err
+	}
+	return prev.ID, prev.Kind == brakeman.KindWake && prev.Batch == batch, nil
 }
 
 // make keeps the wake request in, once Brakeman runs in the background

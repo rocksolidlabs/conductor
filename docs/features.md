@@ -3851,31 +3851,44 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
     operation": `TestGuideTextSaysWhatMayBeCalledOnlyWhenTheOverviewSays`.
   - Saving Brakeman's settings makes an unavailable role look again at
     what the save changed, by the reason kept with the state: a budget
-    raised clears "the day's budget is spent" and fires the batch kept
-    (one still spent says so in words true now); another agent, model,
-    account or folder tries an agent that did not start again; a save that
-    changes nothing it weighs fires nothing. The role card's retry words
+    raised clears "the day's budget is spent" (one still spent says so in
+    words true at the next turn); an agent that did not start is tried
+    again at its next wake after any save (#715); a save that changes
+    nothing it weighs fires nothing. The role card's retry words
     follow the reason. `TestASavedConfigurationIsLookedAtAgain`,
     `TestASaveWeighsOnlyWhatItChanged`, `TestASaveEndsOnlyWhatItChanged`.
-    The background turned off or on, or the account cleared while it is
-    off, ends an agent that did not start too, with its count of such
-    turns, and the save of the role off drops the failed turn's batch, so
-    the background turned on again fires no turn for it: one save that
-    cleared the account and turned the background off had left the role
-    unavailable with the sign-in's words, and on again it stayed so (#715). `TestASaveOfTheRoleOffEndsAnAgentNotStarted`,
-    `TestASaveOfTheBackgroundOffAndTheAccountClearedStartsClean`.
-    A batch fires only under the configuration it was gathered under:
-    the role keeps a configuration generation that each save's step
-    advances under the role's lock, acting on what that save left (the
-    role off), never on the settings read when the step comes; a batch
-    records its generation, and one of another is dropped with a log
-    line, never fired or kept. Two overlapping saves, the background off
-    then on, whose steps reached the role after both were written had
-    both read "on", so the failed turn's batch still fired (#715, review
-    round 2). `TestOverlappingSavesOfTheRoleOffAndOnFireNoTurn`,
+    A batch fires only under the configuration it was gathered under.
+    The role keeps a configuration generation that every save's step
+    advances under the role's lock, and every save, whatever it changes
+    and in whatever order the steps of saves reach the role, drops the
+    batch gathering or kept and the state of an agent that did not start
+    (its words and its count of such turns), carrying nothing into the
+    new generation: the next wake gathers afresh. A batch records its
+    generation, and one of another, frozen to fire or kept by a turn that
+    did not start, is dropped with a log line, never fired or kept. One
+    save that cleared the account and turned the background off had left
+    the role unavailable with the sign-in's words, and on again it stayed
+    so; two overlapping saves, the background off then on, whose steps
+    reached the role after both were written had both read "on", so the
+    failed turn's batch still fired; and the on save's step, run first,
+    had carried the batch into its generation for a step before the off
+    save's to fire (#715, review rounds 1 to 3). A save of only a budget
+    or a model loses the batch gathering too, accepted: its wakes stay
+    in the log and the role gathers again at its next wake. A frozen batch
+    whose request was made already (the role's write after it failed) is
+    not dropped blind under a newer generation: the role finds that
+    request and takes its turn up, its outcome and cooldown, making none.
+    `TestASaveOfTheRoleOffEndsAnAgentNotStarted`,
+    `TestASaveOfTheBackgroundOffAndTheAccountClearedStartsClean`,
+    `TestOverlappingSavesOfTheRoleOffAndOnFireNoTurn`,
+    `TestAStepBetweenOverlappingSavesFiresNoTurn` (a step between the two
+    saves' steps, a batch due, both orders),
     `TestABatchFiresOnlyUnderTheConfigurationItWasGatheredUnder`,
+    `TestACrashBetweenTheRequestAndTheRoleFiresOnce` (the background off
+    after the failed write), `TestMadeFindsTheBatchsRequestAndMakesNone`,
     `TestOverlappingSavesOfTheBackgroundOffAndOnFireNoTurn` (the route's
-    two saves held at a gate, their steps let go in both orders).
+    two saves held at a gate, the loop passing between their steps, let
+    go in both orders).
   - A proposal's launch state is drawn from the request's acts and the
     launch they name each time, so a re-read of the request keeps a failed
     launch's "try again" and never shows a second control for one under

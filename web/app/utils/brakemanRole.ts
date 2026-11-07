@@ -69,7 +69,7 @@ export function roleWords(r: Pick<BrakemanRole, 'state' | 'why' | 'open' | 'requ
 
 /** What else tries again for an unavailable role, by the reason it is (the server's crew.SaveEnds and Role.Started). */
 const RETRY_ASKED: Record<string, string> = {
-  start: 'its agent reading a request (yours, once it is signed in or past its screen) or another agent, model or account saved in its settings, or its background turned off and on',
+  start: 'its agent reading a request (yours, once it is signed in or past its screen) or any save of its settings',
   budget: 'your next request, a change of its budget or the next briefing time',
   off: 'your next request, turning it on in its settings or the next briefing time',
   stuck: 'your next request or the next briefing time, once the last run is stopped',

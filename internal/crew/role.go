@@ -41,15 +41,16 @@ import (
 // role keeps a configuration generation (RoleRecord.Gen) that every save
 // of its owner's configuration advances, under the role's own lock, in
 // the step that applies the save (Reconfigured); a batch records the
-// generation it was gathered under (Batch.Gen). The step that applies a
-// save that leaves the role off, having turned it off or changed what its
-// agent starts with (an account cleared), drops the open batch and the
-// state of an agent that did not start; any other save carries the
-// batches of the generation before it to its own. A batch the role would
-// fire, or keep for the next turn, under another generation is dropped,
-// with a log line, never fired: a turn in flight across a save of the
-// role off, or saves whose steps reach the role in another order than
-// their writes, fires nothing the save dropped (#715).
+// generation it was gathered under (Batch.Gen). Every save's step,
+// whatever the save changed and in whatever order the steps of saves
+// reach the role, drops the open batch and the state of an agent that
+// did not start, and carries nothing into the new generation: the next
+// wake gathers afresh. So a batch the role could fire is always one
+// gathered since the latest save's step, and one of an older generation,
+// frozen to fire or kept for the next turn, is dropped with a log line,
+// never fired. A batch frozen whose request was made already (the
+// role's write after it failed) is not dropped blind: its request is
+// found and the role takes it up, making none (#715).
 //
 // The role judges every outcome by the turn it belongs to, never by the
 // order the outcomes reach it. Turns are numbered in the order their
@@ -160,19 +161,17 @@ type RoleChange struct {
 
 // SaveEnds reports whether a save that made the change ch ends an
 // unavailability kept for reason: a spent budget by a budget changed; a
-// turn whose agent did not start by a change of what the agent starts
-// with (another agent, model, account or folder: the same one signed out
-// would not start again) or by the role turned off or on (a person's own
-// start again, #715); the role off by the role turned on or off; a
-// run that did not stop by none (stopping it does). A save that changes
-// nothing ends nothing. An unavailability kept before reasons were (no
+// turn whose agent did not start by any save (every save drops the state
+// of an agent that did not start, with the batch it kept, #715); the
+// role off by the role turned on or off; a run that did not stop by none
+// (stopping it does). A save that changes nothing ends nothing else. An unavailability kept before reasons were (no
 // reason) ends at any change, as every save then ended it.
 func SaveEnds(reason string, ch RoleChange) bool {
 	switch reason {
 	case ReasonBudget:
 		return ch.Budget
 	case ReasonStart:
-		return ch.Start || ch.On
+		return true
 	case ReasonOff:
 		return ch.On
 	case ReasonStuck:
@@ -364,6 +363,11 @@ type RoleRecords interface {
 	// answers the request's id; a *RoleRefused for a turn that cannot
 	// start, ErrRoleFired for a request made and gone.
 	Fire(b Batch) (request string, err error)
+	// Made answers the request Fire made for the batch, "" when it made
+	// none (or the request is gone), and never makes one: a batch frozen
+	// under an older configuration generation is taken up by the request
+	// made for it already, never fired anew.
+	Made(b Batch) (request string, err error)
 	// Outcome answers what became of a request Fire made.
 	Outcome(request string) (RoleOutcome, error)
 }
@@ -423,12 +427,18 @@ func (r *Role) logger() *slog.Logger {
 // generation than the record c's, and says so when it was: such a batch
 // is dropped, never fired.
 func (r *Role) stale(c *RoleRecord, b *Batch) bool {
-	if b == nil || b.Gen == c.Gen {
+	if !older(c, b) {
 		return false
 	}
 	r.logger().Info("Brakeman's role dropped a batch gathered under an earlier configuration, unfired",
 		"batch", b.ID, "gen", b.Gen, "configGen", c.Gen, "wakes", len(b.Wakes))
 	return true
+}
+
+// older reports whether b was gathered under another configuration
+// generation than the record c's.
+func older(c *RoleRecord, b *Batch) bool {
+	return b != nil && b.Gen != c.Gen
 }
 
 // Again makes the loop pass again after RoleRetry though nothing pokes
@@ -814,62 +824,40 @@ func (r *Role) Asked(w RoleWake) error {
 
 // Reconfigured is its owner's configuration saved with the change ch,
 // the step that applies the save: it advances the configuration
-// generation (RoleRecord.Gen), so a batch fires only under the
-// configuration it was gathered under, and it acts on what the save
-// itself did (ch, its Off too), never on the settings read now, which a
-// later save may have changed before this step reached the role.
+// generation (RoleRecord.Gen) and drops the open batch and the state of
+// an agent that did not start (an unavailability for ReasonStart, with
+// its count of such turns in a row), whatever the save changed: nothing
+// is carried from one generation into the next, and the next wake
+// gathers afresh (#715). A batch in flight then (the one frozen to fire,
+// or the turn's) stays of the generation before: the role never keeps it
+// for the next turn, and fires a frozen one only by taking up the request
+// made for it already (Step). A save that changed only a budget or a
+// model loses the batch gathering too: its wakes are kept as events, and
+// the role gathers again at its next wake.
 //
-// A save that leaves the role off (ch.Off) having turned it off or
-// changed what its agent starts with (an account cleared) drops the open
-// batch and the state of an agent that did not start (an unavailability
-// for ReasonStart, with its count of such turns in a row): the role
-// turned on again starts clean, never unavailable with the old agent's
-// words, and fires no turn for a batch from before (#715). A batch in
-// flight then (the one firing, or the turn's) stays of the generation
-// before, so the role drops it, never keeps it for the next turn (stale).
+// So saves whose steps reach the role in another order than their writes
+// (two overlapping, the role off then on) leave nothing to fire between
+// their steps or after them: a batch due to fire is of a generation before
+// the first step, and the first step drops it.
 //
-// Any other save carries the batches of the generation before it to its
-// own, and an unavailable role on after it looks again at once, as a
-// person's request makes it (Asked), when the save changed what made it
-// unavailable (SaveEnds, by the reason kept with it): a budget raised,
-// another agent or account, or the background turned on, for one that did
-// not start. It takes up what its record holds: a batch kept fires
-// within its rules on the next step (its window, the cooldown), and Fire
-// weighs the turn against the configuration now, so a budget raised
-// clears "the day's budget is spent" and one still spent makes the role
-// unavailable again in words true now. Off, any other reason waits for
-// the role on.
-//
-// Saves whose steps reach the role in another order than their writes
-// (two overlapping, the role off then on) leave the same role: the save
-// of the role off drops what it drops whenever its step comes, and a
-// batch it did not carry is of a generation no later save carries.
+// An unavailable role for another reason looks again at once, as a
+// person's request makes it (Asked), when a save that leaves the role on
+// (ch.Off false: what the save itself wrote, never the settings read now)
+// changed what made it unavailable (SaveEnds, by the reason kept with
+// it): a budget raised. Fire weighs the next turn against the
+// configuration then, so one still spent makes the role unavailable again
+// in words true then. Off, any other reason waits for the role on.
 func (r *Role) Reconfigured(ch RoleChange) error {
 	r.mu.Lock()
 	now := r.now()
 	err := r.change(func(c *RoleRecord) error {
-		was := c.Gen
 		c.Gen++
-		if ch.Off && (ch.On || ch.Start) {
-			c.Open, c.Tries = nil, 0
-			switch {
-			case c.State == RoleUnavailable && c.Reason == ReasonStart:
-				c.available(now)
-			case c.State != RoleUnavailable && c.State != RolePaused:
-				c.State = c.derive(now)
-			}
-			return nil
-		}
-		for _, b := range []*Batch{c.Open, c.Fired} {
-			if b != nil && b.Gen == was {
-				b.Gen = c.Gen
-			}
-		}
-		if !ch.Off && c.State == RoleUnavailable && SaveEnds(c.Reason, ch) {
-			if c.Reason == ReasonStart {
-				c.Tries = 0
-			}
+		c.Open, c.Tries = nil, 0
+		switch {
+		case c.State == RoleUnavailable && (c.Reason == ReasonStart || !ch.Off && SaveEnds(c.Reason, ch)):
 			c.available(now)
+		case c.State != RoleUnavailable && c.State != RolePaused:
+			c.State = c.derive(now)
 		}
 		return nil
 	})
@@ -1178,14 +1166,28 @@ func (r *Role) Step() (time.Duration, error) {
 	tried := false
 	fire := func() {
 		tried = true
-		if r.stale(&c, c.Fired) {
-			// Frozen under another configuration generation (a save of
-			// the role off since): dropped, never fired.
-			c.Fired, c.Firing, c.Request = nil, false, ""
-			c.State, dirty = c.derive(now), true
-			return
+		var id string
+		var err error
+		if older(&c, c.Fired) {
+			// Frozen under another configuration generation (a save
+			// since): never fired anew. Its request may be made already
+			// (the role's write after Fire failed): that turn is taken up,
+			// its outcome and cooldown the role's; with none made, the
+			// batch is dropped.
+			id, err = r.records.Made(*c.Fired)
+			if err == nil && id == "" {
+				r.stale(&c, c.Fired)
+				c.Fired, c.Firing, c.Request = nil, false, ""
+				c.State, dirty = c.derive(now), true
+				return
+			}
+			if err == nil {
+				r.logger().Info("Brakeman's role took up the request made for a batch gathered under an earlier configuration",
+					"batch", c.Fired.ID, "request", id, "gen", c.Fired.Gen, "configGen", c.Gen)
+			}
+		} else {
+			id, err = r.records.Fire(*c.Fired)
 		}
-		id, err := r.records.Fire(*c.Fired)
 		var refused *RoleRefused
 		switch {
 		case errors.As(err, &refused):
