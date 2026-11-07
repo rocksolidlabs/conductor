@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { BrakemanAct, BrakemanConfig, BriefItem } from './brakeman'
 import { renderMarkdown } from './markdown'
-import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actFor, actsApart, readingBlocks, actReceiptRef, actShown, actShownFrom, actLaunchId, keepLaunch, MAX_KEPT_LAUNCHES, proposalOffered, actWords, followLaunch, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedFromBaseline, changedSince, configProblems, displayBy, formField, formMove, grantHeld, grantLabel, groupItems, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
+import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actFor, actsApart, readingBlocks, actLaunchRef, actMade, actReceiptRef, actShown, actShownFrom, actLaunchId, keepLaunch, MAX_KEPT_LAUNCHES, proposalOffered, actWords, followLaunch, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedFromBaseline, changedSince, configProblems, displayBy, formField, formMove, grantHeld, grantLabel, groupItems, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
 
 // Brakeman's words, refs and checks on the app's pages (docs/plans/brakeman.md, PR-6).
 
@@ -508,7 +508,8 @@ describe("the grants in Settings and what Brakeman did under them (PR-13)", () =
   })
 
   const proposal = (op: string, target: string, args?: Record<string, unknown>): Extract<BriefItem, { kind: 'proposal/1' }> => ({ kind: 'proposal/1', text: 'Launch it.', op, target, args, expectedRevision: '3' })
-  const act = (over: Partial<BrakemanAct>): BrakemanAct => ({ opId: 'a1', operation: 'launch_approved_plan', target: 'ticket:CND-4', op: 'bk' + '0'.repeat(30), state: 'done', receipt: '0123456789abcdef', at: '2026-11-05T10:00:00Z', ...over })
+  const OP = 'bk' + '0'.repeat(30)
+  const act = (over: Partial<BrakemanAct>): BrakemanAct => ({ opId: 'a1', operation: 'launch_approved_plan', target: 'ticket:CND-4', op: OP, state: 'done', receipt: '0123456789abcdef', at: '2026-11-05T10:00:00Z', ...over })
 
   it("finds the act Brakeman ran for a proposal by the opId the proposal names: its operation on the proposal's ticket, and no other", () => {
     const acts = [act({ opId: 'a1', at: '2026-11-05T10:00:00Z' }), act({ opId: 'a2', at: '2026-11-05T10:05:00Z', receipt: 'fedcba9876543210' }), act({ opId: 'f1', operation: 'prepare_followup', receipt: '1111111111111111' })]
@@ -554,23 +555,41 @@ describe("the grants in Settings and what Brakeman did under them (PR-13)", () =
   })
 
   it('says "Brakeman did this" with its receipt only for an act done, and what became of any other', () => {
-    expect(actWords(act({}), { state: 'started', runId: 'r-1' })).toBe('Brakeman did this, under the grant "Launch an approved plan" you gave it: receipt 0123456789abcdef.')
-    expect(actWords(act({ operation: 'prepare_followup', receipt: 'fedcba9876543210' }))).toBe('Brakeman did this, under the grant "Prepare a follow-up" you gave it: receipt fedcba9876543210.')
-    expect(actReceiptRef(act({}))).toBe('launch:0123456789abcdef')
+    expect(actWords(act({}), { state: 'started', runId: 'r-1' })).toBe(`Brakeman did this, under the grant "Launch an approved plan" you gave it: receipt ${OP}; the launch 0123456789abcdef of CND-4.`)
+    expect(actWords(act({ operation: 'prepare_followup', target: 'plan:CND-4/1', receipt: 'fedcba9876543210' }))).toBe(`Brakeman did this, under the grant "Prepare a follow-up" you gave it: receipt ${OP}; the plan revision fedcba9876543210 of CND-4.`)
+    expect(actLaunchRef(act({}))).toBe('launch:0123456789abcdef')
+    expect(actWords(act({ state: 'pending', receipt: undefined }))).toContain('is doing this')
     expect(actWords(act({ state: 'pending', receipt: undefined }))).toContain('is doing this')
     expect(actWords(act({ state: 'refused', receipt: undefined, why: 'revision 1 of CND-4 is proposed' }))).toBe('Brakeman tried this, under the grant "Launch an approved plan", and it was refused: revision 1 of CND-4 is proposed. Nothing was done.')
     expect(actWords(act({ state: 'not_run', receipt: undefined }))).toContain('not run again')
-    for (const a of [act({ state: 'refused' }), act({ state: 'pending' }), act({ operation: 'prepare_followup' }), act({ receipt: 'nope' })]) expect(actReceiptRef(a)).toBeNull()
+    for (const a of [act({ state: 'refused' }), act({ state: 'pending' }), act({ operation: 'prepare_followup' }), act({ receipt: 'nope' })]) expect(actLaunchRef(a)).toBeNull()
+  })
+
+  it("names the act's receipt as the outcome's chip does, and the launch's id as the launch of its ticket (#715)", () => {
+    // The live check's brief: an outcome citing the act's receipt by the ref the act's answer gave. The act's card shows that same ref,
+    // labelled as the outcome's chip labels it, and the launch's id as the launch, never as the receipt.
+    const a = act({})
+    const outcome = { kind: 'outcome/1', text: 'Launched.', receipt: `op:brakeman/${a.op}` } as const
+    expect(actReceiptRef(a)).toBe(outcome.receipt)
+    expect(actWords(a, { state: 'started', runId: 'r-1' })).toContain(`: ${refLabel(outcome.receipt)}; `)
+    expect(actWords(a, { state: 'started', runId: 'r-1' })).not.toContain('receipt 0123456789abcdef')
+    expect(refLabel(actLaunchRef(a)!)).toBe('launch 0123456789abcdef')
+    expect(actMade(a)).toBe('the launch 0123456789abcdef of CND-4')
+    expect(actMade(act({ operation: 'request_repair', target: `run:${RUN}`, receipt: 'r-1' }))).toBe('r-1, what it made')
+    // Not done, or with an op that is no op ref: no receipt.
+    for (const x of [act({ state: 'refused' }), act({ state: 'pending', receipt: undefined }), act({ op: 'no/op' }), act({ op: '' })]) expect(actReceiptRef(x)).toBeNull()
+    expect(actMade(act({ state: 'refused' }))).toBe('')
+    expect(actWords(act({ op: '', operation: 'prepare_followup', receipt: undefined }))).toBe('Brakeman did this, under the grant "Prepare a follow-up" you gave it.')
   })
 
   it('says a launch is done only once its run has started: pending while it is being started or unread, failed with its words', () => {
     const a = act({})
     // Dispatch keeps the launch, and its receipt done, before the run is started: the launch says what came of it.
-    expect([actShown(a, { state: 'started', runId: 'r-1' }), actWords(a, { state: 'started', runId: 'r-1' })]).toEqual(['done', 'Brakeman did this, under the grant "Launch an approved plan" you gave it: receipt 0123456789abcdef.'])
-    expect([actShown(a, { state: 'pending', runId: 'r-1' }), actWords(a, { state: 'pending', runId: 'r-1' })]).toEqual(['pending', 'Brakeman launched this, under the grant "Launch an approved plan": receipt 0123456789abcdef. Its run is still being started.'])
-    expect([actShown(a, null), actWords(a, null)]).toEqual(['pending', 'Brakeman launched this, under the grant "Launch an approved plan": receipt 0123456789abcdef. Whether its run has started is not read yet.'])
+    expect([actShown(a, { state: 'started', runId: 'r-1' }), actWords(a, { state: 'started', runId: 'r-1' })]).toEqual(['done', `Brakeman did this, under the grant "Launch an approved plan" you gave it: receipt ${OP}; the launch 0123456789abcdef of CND-4.`])
+    expect([actShown(a, { state: 'pending', runId: 'r-1' }), actWords(a, { state: 'pending', runId: 'r-1' })]).toEqual(['pending', `Brakeman launched this, under the grant "Launch an approved plan": receipt ${OP}; the launch 0123456789abcdef of CND-4. Its run is still being started.`])
+    expect([actShown(a, null), actWords(a, null)]).toEqual(['pending', `Brakeman launched this, under the grant "Launch an approved plan": receipt ${OP}; the launch 0123456789abcdef of CND-4. Whether its run has started is not read yet.`])
     const failed = { state: 'failed', runId: 'r-1', why: 'the agent could not be started' }
-    expect([actShown(a, failed), actWords(a, failed)]).toEqual(['failed', 'Brakeman launched this, under the grant "Launch an approved plan": receipt 0123456789abcdef, but the launch failed: the agent could not be started. No run was started.'])
+    expect([actShown(a, failed), actWords(a, failed)]).toEqual(['failed', `Brakeman launched this, under the grant "Launch an approved plan": receipt ${OP}, but the launch 0123456789abcdef of CND-4 failed: the agent could not be started. No run was started.`])
     for (const l of [{ state: 'started' }, { state: 'pending' }, failed, null]) expect(actWords(a, l)).not.toBe(actWords(act({ state: 'refused' })))
     // Not a launch's act, or not done: its own state, whatever launch is given.
     expect(actShown(act({ operation: 'prepare_followup', receipt: 'fedcba9876543210' }), null)).toBe('done')

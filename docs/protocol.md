@@ -4133,12 +4133,13 @@ batch kept; a turn of the agent that reads its request, a person's
 included, ends it at once, and `tries` starts again from 0. For the
 others a person's request and the next briefing time try again, and for
 a budget spent the next local day. A save of the configuration
-(`PUT /api/brakeman/config`) tries again only for what it changed: the
-budget for `budget` (the batch kept fires within its rules, or one
-still spent says so again in words true now), the agent, its model, its
-account, its folder or its tools allowed for `start`, the role turned on
-or off for `off`, nothing for `stuck`; a save that changes none of what
-the reason weighs, the same body again included, fires nothing. The
+(`PUT /api/brakeman/config`) drops the batch open or kept and ends
+`start` (its `tries` with it), whatever it changed: the role gathers
+again at its next wake. It tries again for the other reasons only for
+what it changed: the budget for `budget` (one still spent says so again
+in words true at the next turn), the role turned on or off for `off`,
+nothing for `stuck`; a save that changes none of what the reason
+weighs, the same body again included, fires nothing. The
 day's minutes, `budget.minutesPerDay` (10 to 1,440; 240), count every
 turn, whatever started it: a turn's reservation at its start is the
 least of `turnMinutes` and what the day has left, its deadline its start
@@ -4160,7 +4161,7 @@ state}`.
 
 | Route | Body and answer |
 |---|---|
-| `GET /api/brakeman/role?limit=` | `{role: {schema, identity, state, why?, retryAt?, reason?, tries?, lastStarted?, last, open?, fired?, firing?, request?, coolUntil?, briefed?, notes?, updatedAt, minutesToday}, log: [{source, subject?, key?, at, batch?, request?, held?}]}`: the role, and its log newest first, `limit` rows (1 to 1,000; 200) |
+| `GET /api/brakeman/role?limit=` | `{role: {schema, identity, state, why?, retryAt?, reason?, tries?, lastStarted?, last, open?, fired?, firing?, request?, coolUntil?, gen?, briefed?, notes?, updatedAt, minutesToday}, log: [{source, subject?, key?, at, batch?, request?, held?}]}`: the role, and its log newest first, `limit` rows (1 to 1,000; 200). `gen` is the configuration generation every save of the configuration advances, and `open` and `fired` carry the one they were gathered under (`gen?`): every save drops the batch open, carrying none into the new generation, and a batch fires only under its own: one of another is dropped unfired, but for one frozen whose request was made already, whose turn the role takes up; a turn's request reads its batch without it |
 | `POST /api/brakeman/role` | `{action}`, `pause` or `resume` → `{role}`; `400 invalid_request` for another action |
 | `POST /api/brakeman/role/notes` | `{request, item}` → `{role}`: the text of a kept brief's `fact/1` or `interpretation/1` kept as a note, `from` its `brief:` ref; `400 not_a_note` for another kind; `404` for no such request or item; `413 bound` past the notes' 64 KiB |
 | `DELETE /api/brakeman/role/notes` | → `{role}`, the notes cleared |
