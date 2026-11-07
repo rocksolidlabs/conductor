@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/proto"
@@ -40,7 +41,22 @@ type Hub struct {
 	// contract as OnActivity: it must not block, and it must be safe for
 	// concurrent use. Set it before the first host registers.
 	OnChat func(sessionID string, m session.ChatMessage)
+	// decisions says this switchyard carries a decision link's lane
+	// (SetDecisions).
+	decisions atomic.Bool
 }
+
+// SetDecisions says whether this switchyard carries a decision link's
+// lane: its registered says so (proto.Registered.Decisions), and only then
+// does a publisher mint a decision link here. It relays the lane's frames
+// and keeps desks (RegisterDesk) whatever it says; it is said where the
+// switchyard's join page has the Decide tab it serves
+// (docs/plans/decision-inbox.md, PR-7), so no build advertises what its
+// page lacks. Only tests say it before then.
+func (hub *Hub) SetDecisions(on bool) { hub.decisions.Store(on) }
+
+// Decisions is what SetDecisions last said.
+func (hub *Hub) Decisions() bool { return hub.decisions.Load() }
 
 // NewHub creates a hub that registers hosted sessions in registry.
 func NewHub(registry *session.Registry, log *slog.Logger) *Hub {
@@ -77,7 +93,7 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 		hub.mu.Lock()
 		hs, ok := hub.sessions[reg.Resume.SessionID]
 		hub.mu.Unlock()
-		if !ok || !share.Equal(reg.Resume.Secret, hs.secret) {
+		if !ok || hs.desk != "" || !share.Equal(reg.Resume.Secret, hs.secret) {
 			return nil, false, ErrBadResume
 		}
 		if !hs.attach(reg, conn) {
@@ -97,7 +113,7 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 		hs, ok := hub.sessions[id]
 		hub.mu.Unlock()
 		if ok {
-			if hs.owner != owner || !hs.attach(reg, conn) {
+			if hs.desk != "" || hs.owner != owner || !hs.attach(reg, conn) {
 				return nil, false, ErrBadRegister
 			}
 			return hs, true, nil
@@ -202,14 +218,29 @@ func (hub *Hub) Expire(now time.Time) {
 		hs.mu.Lock()
 		gone := hs.conn == nil && !hs.disconnectedAt.IsZero() && now.Sub(hs.disconnectedAt) >= DisconnectGrace
 		hs.mu.Unlock()
+		if hs.desk != "" {
+			// A desk is in no registry: its host gone past the grace ends it.
+			if gone {
+				expired = append(expired, id)
+			}
+			continue
+		}
 		if _, inRegistry := hub.registry.Get(id); gone || !inRegistry {
 			expired = append(expired, id)
 		}
 	}
+	var desks []*HostedSession
 	for _, id := range expired {
+		if hs := hub.sessions[id]; hs.desk != "" {
+			desks = append(desks, hs)
+		}
 		delete(hub.sessions, id)
 	}
 	hub.mu.Unlock()
+	for _, d := range desks {
+		hub.log.Info("desk expired", "desk", d.info.ID)
+		d.retireDesk()
+	}
 	for _, id := range expired {
 		if _, ok := hub.registry.Get(id); ok {
 			hub.log.Info("hosted session expired", "session", id)
