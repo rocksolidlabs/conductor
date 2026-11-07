@@ -126,6 +126,10 @@ type brakemanDesk struct {
 	beforeRecover, beforeAdmit atomic.Pointer[func()]
 	beforeCheck, beforeKeep    atomic.Pointer[func(requestID string)]
 	afterWrite                 atomic.Pointer[func(requestID, state string)]
+	// beforeFeed runs in the role's pass once it has read its
+	// configuration and before it reads Dispatch's change feed
+	// (readTickets): a test's gate, nil otherwise.
+	beforeFeed atomic.Pointer[func()]
 	// recovered says the desk holds the records' queue as their owner: set
 	// once the store is this server's and the queue is read from it (at
 	// open for a store that took the owner lock then, in OnOwned's
