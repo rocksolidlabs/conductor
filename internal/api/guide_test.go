@@ -772,6 +772,8 @@ func TestEachBodySchemaIsWhatItsRouteDecodes(t *testing.T) {
 		"launch_approved_plan": ticketLaunchBody{}, "prepare_followup": planProposeBody{},
 		// The operator's operations on a decision.
 		"decision_respond": crew.Response{}, "decision_cancel": decisionCancelBody{}, "decision_comment": decisionCommentBody{}, "decision_route": decisionRouteBody{},
+		// A person's reviews.
+		"review_submit": reviewSubmitBody{}, "review_retry": reviewRetryBody{}, "finding_mark": findingMarkBody{},
 	}
 	seen := 0
 	for _, op := range Operations() {

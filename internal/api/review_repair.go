@@ -189,81 +189,19 @@ func (s *Server) handlePrepareRepair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	row, found, err := ld.Run(ctx, runID)
-	if err != nil {
-		s.receiptError(w, "repair: the run", runID, err)
-		return
-	}
-	if !found {
-		writeError(w, http.StatusNotFound, "not_found", "no such run")
-		return
-	}
-	checks, err := ld.Checks(ctx, runID, taskID, n, false)
-	if err != nil {
-		s.receiptError(w, "repair: the receipts", runID, err)
-		return
-	}
-	i := slices.IndexFunc(checks, func(c ledger.CheckRow) bool { return c.ID == id && c.K == k })
-	if i < 0 {
-		writeError(w, http.StatusNotFound, "not_found", "no such step")
-		return
-	}
-	rc := checks[i]
-	rc.RunID, rc.TaskID, rc.N = runID, taskID, n
-	phase := rc.Phase
-	if phase == "" {
-		phase = ledger.PhaseCheck
-	}
+	fr, aerr, err := s.failedReceipt(ctx, ld, runID, taskID, n, id, k)
 	switch {
-	case !slices.Contains(repairPhases, phase):
-		writeError(w, http.StatusConflict, crew.RefusalTaskState, "a "+phase+" step's failure fails no attempt: there is nothing to repair")
-		return
-	case rc.State == ledger.CheckStarted || rc.State == ledger.CheckRunning:
-		writeError(w, http.StatusConflict, crew.RefusalTaskState, "the step is still running")
-		return
-	case receiptPassed(rc):
-		writeError(w, http.StatusConflict, crew.RefusalTaskState, "the step passed: nothing failed to repair")
-		return
-	}
-	attempts, err := ld.Attempts(ctx, runID)
-	if err != nil {
-		s.receiptError(w, "repair: the attempts", runID, err)
-		return
-	}
-	j := slices.IndexFunc(attempts, func(a ledger.AttemptRow) bool { return a.TaskID == taskID && a.N == n })
-	if j < 0 {
-		writeError(w, http.StatusNotFound, "not_found", "no such attempt")
-		return
-	}
-	a := attempts[j]
-	nodes, _, _, err := s.runChain(ctx, runID)
-	if err != nil {
+	case err != nil && errors.Is(err, errRunContinuing):
 		s.chainReadError(w, runID, err)
 		return
-	}
-	same, err := ld.ChecksOn(ctx, chainRuns(nodes, runID), taskID, rc.Phase, id, rc.Subject)
-	if err != nil {
-		s.receiptError(w, "repair: the same check's receipts", runID, err)
+	case err != nil:
+		s.receiptError(w, "repair: the receipt", runID, err)
+		return
+	case aerr != nil:
+		writeAPIError(w, aerr)
 		return
 	}
-	failure := crew.ClassifyFailure(a, rc, same)
-	previous, err := s.attemptBefore(ctx, attempts, nodes, taskID, n)
-	if err != nil {
-		s.receiptError(w, "repair: the attempt before", runID, err)
-		return
-	}
-	ref := dispatch.CheckRef{Source: "ledger", Receipt: receiptIdentity(rc, phase), Run: runID, Task: taskID, Attempt: n, Phase: phase, ID: id, K: k,
-		Subject: rc.Subject, Argv: rc.Argv, Signal: rc.Signal, TimedOut: rc.TimedOut, Killed: rc.Killed, Stable: rc.Stable, State: rc.State,
-		Error: fitCheckError(rc.Error), Where: rc.Where, LogSHA256: rc.LogSHA256, LogBytes: rc.LogBytes, Tail: fitTail(rc.Tail),
-		Class: failure.Class, Chosen: failure.Class, Previous: previous}
-	ref.Quote = ref.Tail
-	if ref.Argv == nil {
-		ref.Argv = []string{}
-	}
-	if rc.State == ledger.CheckFinished {
-		exit := rc.Exit
-		ref.Exit = &exit
-	}
+	row, a, nodes, ref, failure, phase, rc := fr.run, fr.attempt, fr.nodes, fr.ref, fr.failure, fr.ref.Phase, fr.row
 	out := preparedRepair{
 		Finding: preparedFinding{Kind: "check", Intent: "change", Check: ref,
 			Message: cutRunes(fmt.Sprintf("The %s %s failed on %s (attempt %d): %s.", phase, id, shortCommit(rc.Subject), n, failure.Words), dispatch.MaxFindingMessage)},
@@ -279,6 +217,97 @@ func (s *Server) handlePrepareRepair(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(b.Bytes())
+}
+
+// failedReceiptOf is a failed receipt as the ledger keeps it, read for a
+// check finding: the run's row, the attempt, the run's chain, the receipt's
+// row, its class (crew.ClassifyFailure over the same check's receipts on
+// the same commit across the chain) and the receipt filled as a check
+// finding keeps it (dispatch.CheckRef: chosen set to the class, quote to
+// the tail).
+type failedReceiptOf struct {
+	run     ledger.RunRow
+	attempt ledger.AttemptRow
+	nodes   []chainNode
+	row     ledger.CheckRow
+	failure crew.Failure
+	ref     dispatch.CheckRef
+}
+
+// failedReceipt reads the receipt k of the step id of attempt n of the
+// task in the run from the ledger ld, for the prepared request and a
+// review's check finding alike: an apiError for what the reader is told
+// (404 not_found for a run, an attempt or a receipt the ledger has not;
+// 409 task_state for a receipt that did not fail, one still running, or a
+// phase whose failure fails no attempt), an error for a read that failed
+// (errRunContinuing among them, while a continuation of the chain is
+// made).
+func (s *Server) failedReceipt(ctx context.Context, ld *ledger.Ledger, runID, taskID string, n int, id string, k int) (failedReceiptOf, *apiError, error) {
+	var out failedReceiptOf
+	row, found, err := ld.Run(ctx, runID)
+	if err != nil {
+		return out, nil, err
+	}
+	if !found {
+		return out, newAPIError(http.StatusNotFound, "not_found", "no such run"), nil
+	}
+	checks, err := ld.Checks(ctx, runID, taskID, n, false)
+	if err != nil {
+		return out, nil, err
+	}
+	i := slices.IndexFunc(checks, func(c ledger.CheckRow) bool { return c.ID == id && c.K == k })
+	if i < 0 {
+		return out, newAPIError(http.StatusNotFound, "not_found", "no such step"), nil
+	}
+	rc := checks[i]
+	rc.RunID, rc.TaskID, rc.N = runID, taskID, n
+	phase := rc.Phase
+	if phase == "" {
+		phase = ledger.PhaseCheck
+	}
+	switch {
+	case !slices.Contains(repairPhases, phase):
+		return out, newAPIError(http.StatusConflict, crew.RefusalTaskState, "a "+phase+" step's failure fails no attempt: there is nothing to repair"), nil
+	case rc.State == ledger.CheckStarted || rc.State == ledger.CheckRunning:
+		return out, newAPIError(http.StatusConflict, crew.RefusalTaskState, "the step is still running"), nil
+	case receiptPassed(rc):
+		return out, newAPIError(http.StatusConflict, crew.RefusalTaskState, "the step passed: nothing failed to repair"), nil
+	}
+	attempts, err := ld.Attempts(ctx, runID)
+	if err != nil {
+		return out, nil, err
+	}
+	j := slices.IndexFunc(attempts, func(a ledger.AttemptRow) bool { return a.TaskID == taskID && a.N == n })
+	if j < 0 {
+		return out, newAPIError(http.StatusNotFound, "not_found", "no such attempt"), nil
+	}
+	a := attempts[j]
+	nodes, _, _, err := s.runChain(ctx, runID)
+	if err != nil {
+		return out, nil, err
+	}
+	same, err := ld.ChecksOn(ctx, chainRuns(nodes, runID), taskID, rc.Phase, id, rc.Subject)
+	if err != nil {
+		return out, nil, err
+	}
+	failure := crew.ClassifyFailure(a, rc, same)
+	previous, err := s.attemptBefore(ctx, attempts, nodes, taskID, n)
+	if err != nil {
+		return out, nil, err
+	}
+	ref := dispatch.CheckRef{Source: "ledger", Receipt: receiptIdentity(rc, phase), Run: runID, Task: taskID, Attempt: n, Phase: phase, ID: id, K: k,
+		Subject: rc.Subject, Argv: rc.Argv, Signal: rc.Signal, TimedOut: rc.TimedOut, Killed: rc.Killed, Stable: rc.Stable, State: rc.State,
+		Error: fitCheckError(rc.Error), Where: rc.Where, LogSHA256: rc.LogSHA256, LogBytes: rc.LogBytes, Tail: fitTail(rc.Tail),
+		Class: failure.Class, Chosen: failure.Class, Previous: previous}
+	ref.Quote = ref.Tail
+	if ref.Argv == nil {
+		ref.Argv = []string{}
+	}
+	if rc.State == ledger.CheckFinished {
+		exit := rc.Exit
+		ref.Exit = &exit
+	}
+	return failedReceiptOf{run: row, attempt: a, nodes: nodes, row: rc, failure: failure, ref: ref}, nil, nil
 }
 
 // criteriaOf is what the run row's candidate of the task was to meet:

@@ -240,6 +240,9 @@ func (s *Server) ledgerRecovered(ld *ledger.Ledger) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	s.reconcileLaunches(ctx, ld)
+	// The pending reviews too, before a review is admitted
+	// (dispatch_reviews.go).
+	s.reconcileReviews(ctx, ld)
 	s.launches.ready.Store(true)
 }
 
