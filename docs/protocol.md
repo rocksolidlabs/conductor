@@ -4234,13 +4234,33 @@ the records reads a file again only when its size or time changed.
 |---|---|---|
 | `GET /api/history/sessions?after=&limit=` | admin | `{records[{id, name, kind, agent, host, where?, cwd, repo?, branch?, crew?, startedAt, endedAt?, lostAt?, ending?, entries, files, dropped?, newer?, unreadable?}], next?, readOnly?}`, newest first by `startedAt`; `limit` 1 to 100, default 50 (`400 invalid_request` otherwise); `after` the `next` of the page before (at most 64 bytes; `400 bad_cursor` for one that is not) |
 | `GET /api/history/sessions/{id}` | admin | `{record, live, newer}`: the record whole (at most 64 KiB), `live` while the registry lists its session running; `404 not_found` |
-| `DELETE /api/history/sessions/{id}` | admin | `204`: the record forgotten, its file deleted; `409 live_session` for a session still running, `409 resume_pending` for a record whose resume is being started, `409 history_read_only` on a server that does not hold the records, `404 not_found`, `500 history_failed` when its file could not be deleted: the record stays as last written, listed and forgettable again, nothing its session says is written to it, and one whose file has no end is listed `lost` and written so |
-| `DELETE /api/history/sessions` | admin | `{forgotten, kept}`: every record neither live nor pending forgotten, those kept counted; `500 history_failed` when a file could not be deleted (those records stay, as above) |
+| `DELETE /api/history/sessions/{id}` | admin | `204`: the record forgotten, its file deleted; `409 live_session` for a session still running, `409 resume_pending` for a record whose resume is being started, `409 history_read_only` on a server that does not hold the records, `404 not_found`, `500 history_failed` when its file could not be deleted: the record stays as last written, listed and forgettable again, nothing its session says is written to it, and one whose file has no end is listed `lost` and written so; `503 history_index_failed` when the record is removed but the history's index could not drop its entries yet (they are dropped before the index is read again); a `204` answers once the index holds nothing of it |
+| `DELETE /api/history/sessions` | admin | `{forgotten, kept}`: every record neither live nor pending forgotten, those kept counted, answered once the index holds nothing of those forgotten; `500 history_failed` when a file could not be deleted (those records stay, as above); `503 history_index_failed` as above |
+| `POST /api/history/reindex` | admin | `202 {indexing}`: the history's index cleared in place and caught up from nothing, on the indexer's goroutine; `409 history_read_only` on a server that does not hold `history/owner.lock` |
 
 From a forget on, nothing the forgotten record's session says is written
 anywhere. A share link, a session's own token and
 Brakeman's principal reach none of them (`401`). A server with no data directory, and a switchyard,
 answer `404 history_unavailable`.
+
+The **index** of history (`history/index.sqlite`, `internal/history`) is a
+cache of the session records, the ledger, the run records, Dispatch and
+Brakeman's briefs, rebuilt from them when it is missing, damaged or of
+another version, left out of an export (`derived`) and refused in a
+restore. The holder of `history/owner.lock` writes it, opening it off the
+server's start path (an index its last owner did not close is checked on
+a goroutine of its own; its searches meanwhile answer `checking`); another
+server reads it. `indexing` is `{state, behind?, ledger?}`: `state`
+`opening`, `catching_up`, `checking`, `ready`, `read_only` or
+`unavailable`; `behind` the sources not read yet; `ledger:
+"unavailable"` when this process has no ledger to read (the runs are then
+indexed from their records alone). Each source is read with its mark
+taken first: a run's `L<revision>/R<sha256>` (the ledger's revision and
+its record file's hash), a session record's `S<seq>/P<projects>`, and
+`/L<revision>` for a crew member's; a finished check receipt is a source
+of its own, read once. A run is read at most once every 2 s; what another
+server writes to the ledger and the run records is found by a reconcile
+every 30 s.
 
 ### Decisions
 

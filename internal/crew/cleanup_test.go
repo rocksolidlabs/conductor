@@ -809,7 +809,7 @@ func TestARefusedRunningRowEndsAndFailsTheCheck(t *testing.T) {
 // step with the ledger's words, and the step's receipt is there finished,
 // its log and hash with it, never left running (Codex's review of #498).
 // The step passed: attempt 2 is handed no receipt, there being no failure
-// in it, as a continuation would hand none (failingReceipt).
+// in it, as a continuation would hand none (FailingReceipt).
 func TestARefusedFinishedRowOfAVerifyStepIsKept(t *testing.T) {
 	dir := newRepo(t)
 	e, _, l := managedEngine(t)
@@ -835,7 +835,7 @@ func TestARefusedFinishedRowOfAVerifyStepIsKept(t *testing.T) {
 	if _, f := taskFileOf(t, a2); f.Previous == nil || f.Previous.Attempt != 1 || f.Previous.Stage != "verify e2e" || f.Previous.Check != nil {
 		t.Fatalf("attempt 2's attempt before: %+v", f.Previous)
 	}
-	if _, ok := failingReceipt(row, []ledger.CheckRow{e2e}); ok {
+	if _, ok := FailingReceipt(row, []ledger.CheckRow{e2e}); ok {
 		t.Fatal("the rows hand a receipt that passed")
 	}
 	stopRun(t, e, run.ID)
@@ -875,7 +875,7 @@ func TestARefusedFinishedRowOfAFailingVerifyStepReachesTheNextAttempt(t *testing
 		t.Fatalf("the log file: %q %v", got, err)
 	}
 	// The rows give the same receipt, as a continuation reads them.
-	if fr, ok := failingReceipt(row, []ledger.CheckRow{e2e}); !ok || fr.K != c.K {
+	if fr, ok := FailingReceipt(row, []ledger.CheckRow{e2e}); !ok || fr.K != c.K {
 		t.Fatalf("the rows' receipt: %+v %v", fr, ok)
 	}
 	stopRun(t, e, run.ID)
@@ -924,7 +924,7 @@ func TestARefusedRunningRowThenARefusedFinishedRowStillReachTheNextAttempt(t *te
 			if err != nil || string(got) != string(e2e.Log) {
 				t.Fatalf("the log file: %q %v", got, err)
 			}
-			if fr, ok := failingReceipt(row, []ledger.CheckRow{e2e}); !ok || fr.K != c.K {
+			if fr, ok := FailingReceipt(row, []ledger.CheckRow{e2e}); !ok || fr.K != c.K {
 				t.Fatalf("the rows' receipt: %+v %v", fr, ok)
 			}
 			stopRun(t, e, run.ID)
