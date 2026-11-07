@@ -98,6 +98,32 @@ type candidate struct {
 	result Result
 }
 
+// ContinueOptions is what a continuation carries beyond the run it
+// continues: a person's Request changes of a candidate of that run's chain
+// (Repair), asked by Actor as the command Command, for a run the engine no
+// longer runs (docs/plans/review-repair.md, RV1 PR-2c). The zero value is
+// a plain continuation (ContinueRun).
+type ContinueOptions struct {
+	Repair  *RepairRequest
+	Actor   string
+	Command Command
+}
+
+// validate holds o to what a continuation that carries a repair needs: a
+// command id of the pattern, an actor, and a request of a batch's shape.
+func (o ContinueOptions) validate() error {
+	if o.Repair == nil {
+		return nil
+	}
+	if !CommandIDPattern.MatchString(o.Command.ID) {
+		return ErrBadCommandID
+	}
+	if o.Actor == "" {
+		return fmt.Errorf("%w: a repair a continuation carries names who asked for it", ErrBadChangeRequest)
+	}
+	return o.Repair.Request.validate()
+}
+
 // ContinueRun makes the run that continues runID, a managed run the ledger
 // has: interrupted, stopped or finished, and not continued yet. The new run
 // names the old in ResumedFrom (the ledger's ContinuedFrom) and the old
@@ -108,12 +134,59 @@ type candidate struct {
 // (ErrChainTooLong) with nothing made or moved: the chain's decisions are
 // read whole or the continuation is not made (readDecisionHistory). The
 // label is the old run's when none is given and the engine still holds it.
+// It is ContinueRunWith with no options.
 func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, error) {
+	return e.ContinueRunWith(ctx, runID, label, ContinueOptions{})
+}
+
+// ContinueRunWith is ContinueRun with what the continuation carries. With
+// a Repair it is a person's Request changes of a run the engine does not
+// run (finished and let go, stopped, or from before a restart), made as
+// the continuation of it, never a new launch: the source's crew, base and
+// package as ContinueRun carries them. The candidate must be the one the
+// chain's history leaves standing (standingCandidate, as RequestChanges
+// judges it in a continuation): the repaired task's result as imported,
+// named by its reference (Repair.Imported, "<run>/<task>/<n>"; "" names
+// an attempt of runID), or a failed task's last kept attempt, having
+// submitted that commit. That candidate is not imported: the task gets
+// the repair (its attempt starting at the candidate, or where its attempt
+// started when it was refused before its checks, repair.start), one more
+// attempt when its are spent, and the tasks that need it, transitively,
+// import nothing either (the withdrawal's rule, applied before anything is
+// dispatched). The continuation's first transaction (run.created) holds
+// the repair with the command's row and its settled receipt under Actor
+// and Command.ID, the intent and arguments RequestChanges gives the same
+// request, so a resend of the command to the continuation answers that
+// receipt (a repeat) and the API finds it by its id.
+//
+// Refused with nothing made, no run and no receipt: a request not of a
+// batch's shape, or one too large for the run (FitChangeRequest, with the
+// crew and package as launched); a Command.ExpectedRevision that is not
+// the source run's revision (ErrStaleRevision); a task the crew has not
+// (ErrTaskNotFound), a review task (ErrTaskState); a candidate that does
+// not stand (ErrStaleCandidate, in words that say what stands); gates the
+// reopen would ask again with no room for them (decision_limit); and
+// whatever refuses a plain continuation. A continuation exists for anyone
+// else only once its first transaction has committed (run.continuation):
+// until then nothing but that transaction writes it, and a Stop of it is
+// refused as of no such run and unmakes it (ErrRunStopped here). One whose
+// first transaction is refused, fails or is unmade is discarded whole
+// (discard): no run of it, stopped or not, no command, the source as it
+// was.
+func (e *Engine) ContinueRunWith(ctx context.Context, runID, label string, o ContinueOptions) (*Run, error) {
 	if e.ledger == nil {
 		return nil, ErrNoLedger
 	}
 	if err := ValidateLabel(label); err != nil {
 		return nil, err
+	}
+	if err := o.validate(); err != nil {
+		return nil, err
+	}
+	if o.Repair != nil {
+		rq := *o.Repair
+		rq.Imported = cmp.Or(rq.Imported, fmt.Sprintf("%s/%s/%d", runID, rq.Task, rq.Attempt))
+		o.Repair = &rq
 	}
 	e.flushPending(ctx, runID)
 	old, label, err := e.markContinuing(runID, label)
@@ -147,6 +220,10 @@ func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, er
 		undo()
 		return nil, ErrRunRunning
 	}
+	if want := o.Command.ExpectedRevision; o.Repair != nil && want > 0 && want != from.Run.Revision {
+		undo()
+		return nil, fmt.Errorf("%w: expected %d, run %s is at %d", ErrStaleRevision, want, runID, from.Run.Revision)
+	}
 	var c Crew
 	if err := json.Unmarshal([]byte(from.Run.Crew), &c); err != nil {
 		undo()
@@ -178,6 +255,18 @@ func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, er
 		undo()
 		return nil, err
 	}
+	if o.Repair != nil {
+		// Measured with the crew and the package as launched, before
+		// anything is made, as RequestChanges measures it.
+		var p *Package
+		if pkg != nil {
+			p = &pkg.p
+		}
+		if err := FitChangeRequest(c, p, o.Repair.Task, o.Repair.Request); err != nil {
+			undo()
+			return nil, err
+		}
+	}
 	// Prepared at its own base, never at the directory's HEAD: the
 	// commit its manifest and its prerequisites are read at.
 	p, err := e.prepare(ctx, c, from.Run.Base)
@@ -185,6 +274,7 @@ func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, er
 		undo()
 		return nil, err
 	}
+	p.continuation = true
 	// Its id is minted against the runs the engine holds; one the ledger
 	// has (a planned run's) is refused by the continuation's first
 	// transaction before anything is made, and another is minted.
@@ -194,16 +284,22 @@ func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, er
 		if e.afterAdd != nil {
 			e.afterAdd(r.id)
 		}
-		err := e.startContinued(ctx, r, from, h, old)
+		err := e.startContinued(ctx, r, from, h, old, o)
 		if err == nil {
 			break
 		}
-		e.abort(r)
+		// Its first transaction did not commit: nothing of it is kept,
+		// and nothing else wrote it (run.continuation).
+		e.discard(r)
 		e.launched(r)
 		if minted(err, try) {
 			continue
 		}
 		undo()
+		if errors.Is(err, errNeverMade) {
+			// A Stop came first and unmade it (unmake).
+			return nil, fmt.Errorf("%w: the continuation was stopped before it was made", ErrRunStopped)
+		}
 		return nil, err
 	}
 	defer e.launched(r)
@@ -519,11 +615,15 @@ func (e *Engine) readHistory(ctx context.Context, from Loaded) (history, error) 
 // base and the pause carried, every task as its row and its last attempt
 // say (imported, failed, cancelled, verified again, waiting for a person,
 // or new), the old run's row naming the new; then the ready tasks are
-// dispatched.
-func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h history, old *run) error {
+// dispatched. With o.Repair, the repair is made in the same change, after
+// the tasks and the decisions are carried and before anything is readied
+// (continuedRepair), and the transaction holds its command's row and
+// receipt; a repair refused there fails the transaction, so no run is
+// made.
+func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h history, old *run, o ContinueOptions) error {
 	rows, last, refs, refOf := h.rows, h.last, h.refs, h.refOf
 	var imported, again, uncertain, held int
-	err := e.transactFirst(ctx, r, func() tx {
+	err := e.transactContinued(ctx, r, func() tx {
 		r.base, r.paused, r.pausedWhy, r.resumedFrom = from.Run.Base, from.Run.Paused, from.Run.PausedWhy, from.Run.ID
 		r.markRun()
 		// The prerequisites run again in the continuation, at its base,
@@ -647,11 +747,35 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 		// The decisions of the run continued, with their holds, before
 		// anything is readied on them (decisions_continue.go).
 		moveDecisions := e.continueDecisions(r, from, h)
+		var rc *continuedRepair
+		if o.Repair != nil {
+			rc = e.carryRepair(r, o)
+			if rc.err == nil {
+				// What the repair took back is not kept: the candidate and
+				// what rested on it.
+				imported, again = 0, 0
+				for _, t := range r.tasks {
+					if t.imported != "" {
+						imported++
+					}
+					if t.candidate != nil {
+						again++
+					}
+				}
+			}
+		}
 		r.ready()
 		e.settleRun(r)
 		r.note(session.ActivityStatus, "continues %s: %d results kept, %d verified again, %d uncertain launches waiting for a retry, %d messages carried", from.Run.ID, imported, again, uncertain, len(r.messages))
 		w := ev("run.continued", map[string]any{"from": from.Run.ID, "base": r.base, "imported": imported, "reverified": again, "uncertain": uncertain, "messages": len(r.messages), "held": held})
+		if rc != nil {
+			w.events = append(w.events, rc.events(r)...)
+		}
 		w.more = func(ltx LedgerTx) error {
+			if rc != nil && rc.err != nil {
+				// Refused: nothing of the continuation is written.
+				return rc.err
+			}
 			if err := ltx.Continued(from.Run.ID); err != nil {
 				return err
 			}
@@ -662,10 +786,21 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 					return err
 				}
 			}
-			return moveDecisions(ltx)
+			if err := moveDecisions(ltx); err != nil {
+				return err
+			}
+			if rc != nil {
+				return rc.record(ltx)
+			}
+			return nil
 		}
 		return w
-	}, giveUp)
+	}, func() {
+		// Refused or failed, the continuation is discarded whole
+		// (ContinueRunWith): marked here, under the transaction's txMu,
+		// so no change of it after this one writes it.
+		r.discarded = true
+	})
 	if errors.Is(err, ledger.ErrContinued) {
 		// Continued meanwhile, by another server or request: the one that
 		// was is the continuation.
@@ -713,6 +848,64 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 	e.applyDecisions(r)
 	e.pumpLocked(r)
 	return nil
+}
+
+// continuedRepair is a person's repair a continuation carries, as its
+// first change made it (carryRepair): the command, the events of the
+// repair, the receipt settled with it, or the refusal that unmakes the
+// continuation.
+type continuedRepair struct {
+	actor   string
+	cmd     Command
+	args    []string
+	t       *task
+	changes []event
+	err     error
+	receipt Receipt
+}
+
+// carryRepair makes o's repair in r, the continuation being made, as
+// RequestChanges makes it in a run the engine holds (repairCandidate):
+// the candidate judged on the task as the continuation carried it, its
+// result, the standing failed candidate it read from the chain
+// (t.priorLast) and the repair its row kept. The caller holds e.mu, in
+// the continuation's first change, with the tasks and the decisions
+// carried and nothing readied yet.
+func (e *Engine) carryRepair(r *run, o ContinueOptions) *continuedRepair {
+	rq := *o.Repair
+	rc := &continuedRepair{actor: o.Actor, cmd: o.Command, args: requestArgs(rq)}
+	if rc.t = r.task(rq.Task); rc.t == nil {
+		rc.err = ErrTaskNotFound
+		return rc
+	}
+	rc.changes, rc.err = e.repairCandidate(r, rc.t, rq)
+	return rc
+}
+
+// events are the command's events, as act writes them for a command taken
+// and settled, around the repair's; its receipt is made here, after the
+// continuation's change readied and settled its tasks, so it says the
+// task as the transaction leaves it. The caller holds e.mu, in the change.
+func (rc *continuedRepair) events(r *run) []event {
+	if rc.err != nil {
+		return nil
+	}
+	paused := r.paused
+	rc.receipt = Receipt{CommandID: rc.cmd.ID, Intent: intentRequestChanges, Revision: r.revision + 1, Status: ledger.CommandDone, Task: receiptTask(r.taskStateOf(rc.t)), Paused: &paused}
+	out := []event{{"command.accepted", map[string]any{"actor": rc.actor, "command": rc.cmd.ID, "intent": intentRequestChanges, "args": rc.args}}}
+	out = append(out, rc.changes...)
+	return append(out, event{"command." + intentRequestChanges, map[string]any{"actor": rc.actor, "command": rc.cmd.ID, "args": rc.args, "status": rc.receipt.Status, "error": ""}})
+}
+
+// record writes the command's row and its settled receipt, in the
+// continuation's first transaction: a new run has no command of that id.
+func (rc *continuedRepair) record(ltx LedgerTx) error {
+	if _, found, err := ltx.Command(rc.actor, rc.cmd.ID, intentRequestChanges, fingerprint(intentRequestChanges, rc.args...)); err != nil {
+		return err
+	} else if found {
+		return errCommandRepeated
+	}
+	return ltx.Settle(rc.actor, rc.cmd.ID, rc.receipt.Status, rc.receipt)
 }
 
 // parseImport reads an import reference, "<run>/<task>/<n>".
