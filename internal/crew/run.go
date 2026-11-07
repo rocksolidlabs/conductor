@@ -1943,8 +1943,20 @@ func (e *Engine) Stop(ctx context.Context, runID string) error {
 // first transaction under way commits or fails first: one that committed
 // leaves a run that is stopped as any other. The caller holds neither
 // lock.
+//
+// A continuation already committed is told by e.mu alone (created is
+// never unset), before r.txMu: its Stop sets stopping, cancels the run's
+// context and stops its sessions before it waits for any transaction of
+// the run, as an original run's does, so a transaction the ledger holds up
+// does not hold up the stop of the work under way (#623, review round 3).
 func (e *Engine) unmake(r *run) bool {
 	if !r.continuation {
+		return false
+	}
+	e.mu.Lock()
+	made := r.created
+	e.mu.Unlock()
+	if made {
 		return false
 	}
 	r.txMu.Lock()

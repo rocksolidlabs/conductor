@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 )
@@ -570,6 +571,160 @@ func TestContinuationStoppedBeforeItsFirstCommitIsNeverMade(t *testing.T) {
 	}
 	absent("once the continuation is made")
 	// Made, it is a run as any other: a Stop stops it.
+	stopRun(t, e, next.ID)
+}
+
+// A continuation whose first transaction has committed is a run as any
+// other, and its Stop interrupts the work under way before it waits for
+// any transaction of the run (#623, review round 3): with docs' line held
+// in the ledger (its transaction holding the run's transaction lock), the
+// Stop cancels the run's context and ends its sessions, and the record
+// then refused under the stop does not pause the run.
+func TestAStopOfAMadeContinuationDoesNotWaitForItsTransactions(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("docs", "writer", "build")))
+	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	stopRun(t, e, run.ID)
+	next, err := e.ContinueRun(context.Background(), run.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.runRowWhen(t, run.ID, "continued", func(r ledger.RunRow) bool { return r.ContinuedBy == next.ID })
+	build := waitTaskWhere(t, e, next.ID, "build", "at attempt 2, running", func(ts TaskState) bool {
+		return ts.Attempt != nil && ts.Attempt.N == 2 && ts.Attempt.State == ledger.AttemptRunning
+	})
+	// docs' line, once typed, is recorded in a transaction that waits here.
+	l.mu.Lock()
+	l.blockOn, l.blocked, l.release = "attempt.prompted", make(chan struct{}, 1), make(chan struct{})
+	l.mu.Unlock()
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			close(l.release)
+		}
+	}
+	defer release()
+	commitResult(t, e, build, "built.txt", "yes\n", "built")
+	waitTask(t, e, next.ID, "build", ledger.TaskSucceeded, 2)
+	select {
+	case <-l.blocked:
+	case <-time.After(60 * time.Second):
+		t.Fatal("docs' line was not recorded within 60 s")
+	}
+	stopped := make(chan error, 1)
+	go func() { stopped <- e.Stop(context.Background(), next.ID) }()
+	// The bound only bounds a hang: the old code never cancels while the
+	// line's transaction is held.
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		e.mu.Lock()
+		r := e.runs[next.ID]
+		cancelled := r.stopping && r.ctx.Err() != nil
+		e.mu.Unlock()
+		if cancelled {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the Stop of the made continuation did not cancel it while its transaction was held")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	release()
+	if err := <-stopped; err != nil {
+		t.Fatal(err)
+	}
+	got, _ := e.Get(next.ID)
+	if got.StoppedAt == nil || got.State != RunStopped || got.Paused {
+		t.Fatalf("the continuation after its Stop: %+v", got)
+	}
+	l.runRowWhen(t, next.ID, "stopped", func(r ledger.RunRow) bool { return r.State == ledger.RunStopped && !r.Paused })
+}
+
+// firstRefused is the real ledger, which refuses the first transition of
+// the run named by id, before it writes anything.
+type firstRefused struct {
+	sqlLedger
+	mu sync.Mutex
+	id string
+}
+
+func (l *firstRefused) refuse(id string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.id = id
+}
+
+func (l *firstRefused) Transition(ctx context.Context, runID string, fn func(LedgerTx) error) (int64, error) {
+	l.mu.Lock()
+	refused := l.id != "" && l.id == runID
+	if refused {
+		l.id = ""
+	}
+	l.mu.Unlock()
+	if refused {
+		return 0, errors.New("the ledger refused the commit (test)")
+	}
+	return l.sqlLedger.Transition(ctx, runID, fn)
+}
+
+// A repair continuation whose first commit fails leaves the engine's
+// authority confirmations as they were (#623, review round 3): deploy,
+// which needs build, waits on an identity's accepted answer when the run
+// is stopped; its recheck answers while the continuation carrying a
+// repair of build is held after its read (afterAdd), and the repair
+// withdraws deploy, which cancels the decision in the continuation. The
+// first commit fails, so the source's decision is still answered in the
+// ledger: its confirmation is still the engine's, and a plain
+// continuation then applies it.
+func TestAFailedRepairContinuationKeepsTheConfirmation(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	rl := &firstRefused{sqlLedger: sqlLedger{l: ld}}
+	e.UseLedger(rl)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("deploy", "ops", "build")))
+	commitResult(t, e, waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning), "built.txt", "built\n", "built")
+	c1 := waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1).Result.Commit
+	dp, _, _ := attemptOn(t, e, fl, run.ID, "deploy")
+	d := ask(t, e, dp.Attempt.SessionID, approval("q1", "Ship it?"))
+	rc, err := e.RespondDecision(t.Context(), d.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1, ByName: "Nate"}, "user:nate", identity(e, "nate"))
+	if err != nil || rc.Status != "accepted" {
+		t.Fatalf("the identity's response: %+v %v", rc, err)
+	}
+	stopRun(t, e, run.ID)
+	decisionWhen(t, ld, d.ID, "answered", inState(ledger.DecisionAnswered))
+	n, _ := ledger.ParseDecisionID(d.ID)
+	confirmed := func() int {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return e.confirms[confirmKey{n, rc.K}]
+	}
+
+	var once sync.Once
+	e.afterAdd = func(id string) {
+		once.Do(func() {
+			e.ConfirmAuthority(d.ID, rc.K, true)
+			rl.refuse(id)
+		})
+	}
+	if _, err := continueWithRepair(e, run.ID, "rq1", "build", 1, c1, "", personsRequest("rv-0031")); err == nil || !strings.Contains(err.Error(), "refused the commit (test)") {
+		t.Fatalf("the repair continuation whose first commit failed: %v", err)
+	}
+	e.afterAdd = nil
+	if got := confirmed(); got != 1 {
+		t.Fatalf("the confirmation after the failed first commit: %d", got)
+	}
+	if rec := decisionWhen(t, ld, d.ID, "answered", inState(ledger.DecisionAnswered)); rec.CurrentRun != run.ID {
+		t.Fatalf("the decision is %s's", rec.CurrentRun)
+	}
+
+	next := continueRun(t, e, run.ID)
+	rec := decisionWhen(t, ld, d.ID, "applied", inState(ledger.DecisionApplied))
+	if app := applied(t, rec); app.Run != next.ID || rec.CurrentRun != next.ID || kindCount(rec, ledger.HistoryApplied) != 1 {
+		t.Fatalf("the application: %+v in %s", app, rec.CurrentRun)
+	}
+	waitAttempt(t, e, next.ID, "deploy", ledger.AttemptRunning)
 	stopRun(t, e, next.ID)
 }
 
