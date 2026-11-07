@@ -65,7 +65,7 @@ func TestTheSkillStatesTheServersLimits(t *testing.T) {
 		{"a url is at most %d bytes", MaxOpenURL, op("open_url").Bounds["url"]},
 		{"a url is at most %d bytes", session.MaxEventURL, op("report").Bounds["url"]},
 		{"a member name at most %d characters", b.MemberName, limit("member_name")},
-		{"(at most %d, each at most 40 characters)", session.MaxAttentionOptions, maxItems(op("ask"), "choices")},
+		{"(at most %d, each at most 40 bytes)", session.MaxAttentionOptions, maxItems(op("ask"), "choices")},
 		{"approval (2 to %d options", ledger.MaxDecisionOptions, maxItems(op("decision_request"), "options")},
 	}
 	said := []string{}
@@ -79,9 +79,10 @@ func TestTheSkillStatesTheServersLimits(t *testing.T) {
 			t.Errorf("%q: the guide says %d, the server enforces %d", say, l.guide, l.server)
 		}
 	}
-	// A choice's 40 is the command's and the tool's (internal/cli,
-	// maxChoiceSize): the guide's ask says it as the skill does.
-	if say := fmt.Sprintf("at most %d, each at most 40 characters", session.MaxAttentionOptions); !strings.Contains(strings.ToLower(op("ask").Description), say) {
+	// A choice's 40 bytes are the command's and the tool's (internal/cli,
+	// maxChoiceSize, which TestTheSkillStatesTheChoiceBoundInBytes holds
+	// the skill to): the guide's ask says it as the skill does.
+	if say := fmt.Sprintf("at most %d, each at most 40 bytes", session.MaxAttentionOptions); !strings.Contains(strings.ToLower(op("ask").Description), say) {
 		t.Errorf("the guide's ask does not say %q as the skill does", say)
 	}
 	// Every number the skill bounds something by is one of the above.
@@ -97,8 +98,10 @@ func TestTheSkillStatesTheServersLimits(t *testing.T) {
 // skillToolLeads are the conditions the skill lists its tools under, each
 // as the guide lists an operation: its scope and what it needs of the
 // session, past a launching server (not a switchyard) and a turn that is
-// not Brakeman's, which the skill says apart. A Brakeman turn's own tools
-// (the observe and act scopes) are its Brakeman section's.
+// not Brakeman's: the skill names Brakeman only in its Brakeman section
+// (TestTheSkillsBrakemanSectionIsShort), which carries a Brakeman turn's
+// own tools (the observe and act scopes) and names every tool it may not
+// call.
 var skillToolLeads = map[string]struct {
 	scope string
 	needs opNeeds
@@ -115,7 +118,9 @@ var skillToolLeads = map[string]struct {
 // The skill names every tool the guide has, each under the condition the
 // guide lists it under, and no other: none it does not know, none as
 // always there that the guide gives only to a session in a crew (#703:
-// add_member and run_status were listed for every session).
+// add_member and run_status were listed for every session), and none as
+// a Brakeman turn's that the guide refuses it (add_member, form_crew:
+// 403 brakeman_cannot).
 func TestTheSkillListsTheGuidesTools(t *testing.T) {
 	type cond struct {
 		scope string
@@ -123,6 +128,13 @@ func TestTheSkillListsTheGuidesTools(t *testing.T) {
 	}
 	_, brakemans, _ := strings.Cut(agents.Skill, "\n## If you are Brakeman\n")
 	brakemans, _, _ = strings.Cut(brakemans, "\n## ")
+	// The section's sentence of the tools refused it: "…: a, b, c and d
+	// refuse it."
+	refused := regexp.MustCompile(`: ([a-z_, ]+) refuse it\.`).FindStringSubmatch(brakemans)
+	if refused == nil {
+		t.Fatal("the skill's Brakeman section names no tool refused a Brakeman turn")
+	}
+	brakemanRefuses := regexp.MustCompile(`^(` + strings.Join(strings.Split(strings.ReplaceAll(refused[1], " and ", ", "), ", "), "|") + `)$`)
 	want := map[cond][]string{}
 	for _, op := range operationsTable() {
 		if op.MCP != "" && (op.Scope == "observe" || op.Scope == "act") {
@@ -130,6 +142,12 @@ func TestTheSkillListsTheGuidesTools(t *testing.T) {
 				t.Errorf("the skill's Brakeman section does not name %s", op.MCP)
 			}
 		} else if op.MCP != "" {
+			// A tool the guide refuses a Brakeman turn is listed under its
+			// other needs, and the Brakeman section says the turn may not
+			// call it (#703, review round 1: add_member was not said).
+			if op.needs&needNotBrakeman != 0 && !brakemanRefuses.MatchString(op.MCP) {
+				t.Errorf("the skill's Brakeman section does not say a Brakeman turn may not call %s", op.MCP)
+			}
 			c := cond{op.Scope, op.needs &^ (needLauncher | needNotBrakeman)}
 			want[c] = append(want[c], op.MCP)
 		}

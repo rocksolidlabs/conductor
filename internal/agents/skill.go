@@ -94,7 +94,7 @@ same.
 
 - A question with a few answers: name them in the terminal on their own
   line, then ask with the same words as choices, so one click types the
-  answer as a line (at most 6, each at most 40 characters):
+  answer as a line (at most 6, each at most 40 bytes):
 
       "${CONDUCTOR_BIN:-conductor}" notify --ask --message "Which database?" --choices "Postgres|SQLite|Keep both"
 
@@ -338,7 +338,7 @@ there is nothing more to do about it.
 
 ## If you are Brakeman
 
-- CONDUCTOR_BRAKEMAN is set: this session is one Brakeman turn, answering one request.
+- CONDUCTOR_BRAKEMAN is set: this session is one Brakeman turn, answering one request. It forms no crew and adds no member: form_crew, add_member, crew create and crew add refuse it.
 - Call guide first (its briefs section gives a brief's kinds, fields and refs), then read the request: brakeman_request, or "${CONDUCTOR_BIN:-conductor}" brakeman request.
 - Read before you write: observe (or brakeman observe WHAT) reads what you may see.
 - Every fact cites the evidence refs it rests on; your reading stays apart from the facts.

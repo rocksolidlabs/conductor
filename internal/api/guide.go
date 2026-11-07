@@ -192,7 +192,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			Bounds:      map[string]int{"body": maxBody, "message": session.MaxAttentionMessage}},
 		{Name: "ask", MCP: "ask", Scope: "session", Method: http.MethodPost, Path: sessions + "/attention",
 			Summary:     "Ask the people watching for a decision you cannot make: the session needs input until someone answers in the terminal; at most 6 choices.",
-			Description: "Ask the people watching for a decision you cannot make yourself; the session shows as needing input until someone answers in the terminal, also once your turn has ended. With choices (at most 6, each at most 40 characters), name them in the terminal too: a click types the choice as a line. If you no longer need the answer, clear the question with set_state clear.",
+			Description: "Ask the people watching for a decision you cannot make yourself; the session shows as needing input until someone answers in the terminal, also once your turn has ended. With choices (at most 6, each at most 40 bytes), name them in the terminal too: a click types the choice as a line. If you no longer need the answer, clear the question with set_state clear.",
 			CLI:         []string{"conductor", "notify", "--ask", "--message", "TEXT", "--choices", "a|b"},
 			Input:       obj(map[string]any{"message": str("the question, one line"), "choices": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": session.MaxAttentionOptions}}, "message"),
 			Bounds:      map[string]int{"body": maxBody, "message": session.MaxAttentionMessage}},
