@@ -799,11 +799,6 @@ func (e *Engine) Recheck(ctx context.Context, runID, actor string, cmd Command, 
 		if err != nil {
 			return t, nil, err
 		}
-		// The gates its reopen would ask again need their room, as a
-		// Retry's do: refused before anything is recorded.
-		if err := r.retryNeedsRoom(t, "check again"); err != nil {
-			return t, nil, err
-		}
 		was.state, was.reason, was.outcome, was.pause = t.state, t.reason, r.outcome, r.pauseMarkOf()
 		a, events := e.recheckTask(r, t, m, fc, actor)
 		made = a
@@ -839,7 +834,9 @@ func (e *Engine) Recheck(ctx context.Context, runID, actor string, cmd Command, 
 
 // recheckOf is the rule a Check again of rq is taken by (Recheck), on the
 // run's task t as it stands: its standing failed candidate fc and its
-// member when taken, else the refusal. The caller holds e.mu.
+// member when taken, else the refusal, the room the gates its reopen would
+// ask again need among them (retryNeedsRoom), so the prepared request
+// (RecheckTaken) answers what the command would. The caller holds e.mu.
 func (r *run) recheckOf(t *task, rq RecheckRequest) (ledger.AttemptRow, *member, error) {
 	if r.stopping || r.stoppedAt != nil {
 		return ledger.AttemptRow{}, nil, fmt.Errorf("%w: the run is stopped: continue it, then check again in its continuation", ErrTaskState)
@@ -871,6 +868,11 @@ func (r *run) recheckOf(t *task, rq RecheckRequest) (ledger.AttemptRow, *member,
 	if m == nil {
 		return ledger.AttemptRow{}, nil, fmt.Errorf("%w: the task's member %s is not in the run", ErrTaskState, t.def.Member)
 	}
+	// The gates its reopen would ask again need their room, as a Retry's
+	// do: refused before anything is recorded (#625, review round 3).
+	if err := r.retryNeedsRoom(t, "check again"); err != nil {
+		return ledger.AttemptRow{}, nil, err
+	}
 	return fc, m, nil
 }
 
@@ -878,7 +880,8 @@ func (r *run) recheckOf(t *task, rq RecheckRequest) (ledger.AttemptRow, *member,
 // the run, by Recheck's own rule (recheckOf), with the run's revision: nil
 // when it would; ErrRunNotFound for a run the engine does not hold, else
 // the refusal the command would answer (ErrTaskState, ErrStaleCandidate,
-// ErrTaskNotFound). A read: nothing is recorded, and the command, judged
+// ErrTaskNotFound, a DecisionError decision_limit when the gates its
+// reopen would ask again have no room). A read: nothing is recorded, and the command, judged
 // again when it is sent, has the last word (the API's prepared failed-check
 // request, docs/plans/review-repair.md).
 func (e *Engine) RecheckTaken(runID string, rq RecheckRequest) (int64, error) {
