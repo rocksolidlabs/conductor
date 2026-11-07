@@ -560,9 +560,14 @@ func TestRequestChangesNeedsRoomForEveryGate(t *testing.T) {
 	run := launchGated(t, e, dir, "api-sweep-000000c4", repoCrew(dir, build, work("deploy", "ops", "build"), work("smoke", "qa", "build")), shipGate("deploy"), smoke)
 	c3 := spend(t, e, run.ID, "build", "built.txt").Attempt.Result
 	waitOutcome(t, e, run.ID, ledger.OutcomeFailed)
+	// The outcome is the engine's view; the gates' cancellations commit
+	// after it, outside its lock: wait for the ledger to hold both final.
 	before, err := ld.Decisions(t.Context(), ledger.DecisionFilter{CurrentRun: run.ID})
-	if err != nil || len(before) != 2 || !before[0].Final() || !before[1].Final() {
+	if err != nil || len(before) != 2 {
 		t.Fatalf("the gates: %+v %v", before, err)
+	}
+	for _, g := range before {
+		decisionWhen(t, ld, g.ID(), "final", func(rec ledger.DecisionRecord) bool { return rec.Final() })
 	}
 	r := runOf(t, e, run.ID)
 	e.mu.Lock()
