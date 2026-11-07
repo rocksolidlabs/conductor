@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"regexp"
 
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -197,15 +198,41 @@ func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, aerr)
 		return
 	}
-	agent, id, cwd := plan.agent, plan.id, plan.cwd
-	yolo := launched.Yolo
-	next, aerr := s.createLocalSession(createSessionRequest{AgentID: launched.AgentID, Name: launched.Name, Cwd: cwd,
-		Args: launched.Args, Env: launched.Env, Yolo: &yolo, resume: id, resumedFrom: info.ID, renamed: launched.Renamed, ctx: context.WithoutCancel(r.Context())}, nil)
+	agent, id := plan.agent, plan.id
+	next, aerr := s.resumeLaunch(context.WithoutCancel(r.Context()), resumeSpec{agentID: launched.AgentID, name: launched.Name, cwd: plan.cwd,
+		args: launched.Args, env: launched.Env, yolo: launched.Yolo, renamed: launched.Renamed, resume: id, from: info.ID})
 	if aerr != nil {
 		writeAPIError(w, aerr)
 		return
 	}
 	writeJSON(w, http.StatusCreated, resumeReply(next.Info(), id != "", agent))
+}
+
+// resumeSpec is what a resume launches: the agent, the name, the folder
+// (resumeCheck's), the arguments, the variables, the yolo choice and
+// whether the name is a person's, the Runtime (where; "" is the native
+// one), the agent's conversation to take up ("" for a plain relaunch),
+// the session it resumes (from), and the new session's id (id; "" makes
+// one, a record's resume allocates it with its receipt).
+type resumeSpec struct {
+	agentID, name, cwd string
+	args               []string
+	env                map[string]string
+	yolo, renamed      bool
+	where              ext.Where
+	resume, from, id   string
+}
+
+// resumeLaunch is the launch both resume routes make
+// (handleResumeSession for a listed session, handleResumeHistorySession
+// for a record, a listed session's among them): a session made as every
+// server session is (createLocalSession: the folder through openCwd, the
+// process through the Runtime at where), its agent's conversation taken
+// for it (takeResume) and its resumedFrom set.
+func (s *Server) resumeLaunch(ctx context.Context, sp resumeSpec) (*session.Local, *apiError) {
+	yolo := sp.yolo
+	return s.createLocalSession(createSessionRequest{AgentID: sp.agentID, Name: sp.name, Cwd: sp.cwd, Args: sp.args, Env: sp.env, Yolo: &yolo,
+		resume: sp.resume, resumedFrom: sp.from, renamed: sp.renamed, where: sp.where, id: sp.id, ctx: ctx}, nil)
 }
 
 // handleResumeRunMember resumes an ended member of a run, in its worktree:

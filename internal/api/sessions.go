@@ -40,6 +40,10 @@ type createSessionRequest struct {
 	// resume, set by Resume, is the agent session id the launch resumes with
 	// the agent's recipe; resumedFrom the session it resumes or relaunches.
 	resume, resumedFrom string
+	// id, set by a resume from a record, is the new session's id, allocated
+	// with its receipt before the launch (journal.ReserveResume); "" makes
+	// one now.
+	id string
 	// renamed, set by a resume, says Name is one a person renamed the
 	// session it resumes to, or its own resumed from (session.Launched.Renamed).
 	renamed bool
@@ -290,7 +294,10 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	if err != nil {
 		return nil, newAPIError(http.StatusInternalServerError, "invalid_agent", err.Error())
 	}
-	id := session.NewID()
+	id := req.id
+	if id == "" {
+		id = session.NewID()
+	}
 	agentToken, _ := share.NewToken()
 	notifyURL := s.notifyBase() + "/api/sessions/" + id + "/attention"
 	// The binary the hooks run, for what the agent runs itself (the skill).

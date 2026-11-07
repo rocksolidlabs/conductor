@@ -56,6 +56,10 @@ const (
 	maxEntryLinks = history.MaxLinks
 )
 
+// MaxHistoryReply is maxHistoryReply, the bound conductor history reads a
+// search's reply under.
+const MaxHistoryReply = maxHistoryReply
+
 // historyReplyLimit is maxHistoryReply; a test lowers it.
 var historyReplyLimit = maxHistoryReply
 
