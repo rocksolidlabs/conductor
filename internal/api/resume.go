@@ -125,6 +125,49 @@ func resumeReply(info session.Info, resumed bool, agent catalog.Agent) map[strin
 	return out
 }
 
+// resumePlan is what a resume of a server session takes up: its agent,
+// the agent's own conversation ("" for a plain relaunch) and the folder it
+// starts in ("" for the agent's or the server's default, its own being
+// gone).
+type resumePlan struct {
+	agent catalog.Agent
+	id    string
+	cwd   string
+	// cwdErr is why the folder was refused (resolveCwd's error), with the
+	// plan's refusal when the agent resumes only where it ran: the
+	// history's offer tells a folder gone from one it could not read.
+	cwdErr error
+}
+
+// resumeCheck applies the resume routes' rules to a session of the agent
+// agentID whose agent's conversation is as and whose folder was cwd: the
+// agent still in the catalog (400 invalid_agent); its conversation, when
+// it has one to resume, held by no running session (409
+// already_resumed); its folder there through resolveCwd, or the agent
+// not needing it (400 invalid_cwd), else started in the default folder.
+// handleResumeSession answers with it, and the history's availability
+// offers Resume by it (history_availability.go), so the two never differ.
+func (s *Server) resumeCheck(agentID string, as *session.AgentSession, cwd string) (resumePlan, *apiError) {
+	agent, ok := s.Catalog().Get(agentID)
+	if !ok {
+		return resumePlan{}, newAPIError(http.StatusBadRequest, "invalid_agent", "the session's agent is no longer in the catalog")
+	}
+	id := resumeID(agent, as)
+	if id != "" && s.liveAgentSession(id) {
+		return resumePlan{}, newAPIError(http.StatusConflict, "already_resumed", "a running session holds that conversation")
+	}
+	// The session's directory, unless it is gone: then an agent that resumes
+	// only where it ran is refused, and anything else starts in the agent's
+	// or the server's default directory.
+	if _, err := s.resolveCwd(cwd); err != nil {
+		if id != "" && agent.Session.ResumeNeedsCwd {
+			return resumePlan{cwdErr: err}, newAPIError(http.StatusBadRequest, "invalid_cwd", "the session's working directory is gone: "+err.Error())
+		}
+		cwd = ""
+	}
+	return resumePlan{agent: agent, id: id, cwd: cwd}, nil
+}
+
 // handleResumeSession resumes an ended server session: 201 {session,
 // resumed, notice?}. A crew member's session is resumed as the member
 // (Engine.ResumeMember).
@@ -149,27 +192,12 @@ func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	launched := local.Launched()
-	agent, ok := s.Catalog().Get(launched.AgentID)
-	if !ok {
-		writeError(w, http.StatusBadRequest, "invalid_agent", "the session's agent is no longer in the catalog")
+	plan, aerr := s.resumeCheck(launched.AgentID, info.AgentSession, launched.Cwd)
+	if aerr != nil {
+		writeAPIError(w, aerr)
 		return
 	}
-	id := resumeID(agent, info.AgentSession)
-	if id != "" && s.liveAgentSession(id) {
-		writeError(w, http.StatusConflict, "already_resumed", "a running session holds that conversation")
-		return
-	}
-	// The session's directory, unless it is gone: then an agent that resumes
-	// only where it ran is refused, and anything else starts in the agent's
-	// or the server's default directory.
-	cwd := launched.Cwd
-	if _, err := s.resolveCwd(cwd); err != nil {
-		if id != "" && agent.Session.ResumeNeedsCwd {
-			writeError(w, http.StatusBadRequest, "invalid_cwd", "the session's working directory is gone: "+err.Error())
-			return
-		}
-		cwd = ""
-	}
+	agent, id, cwd := plan.agent, plan.id, plan.cwd
 	yolo := launched.Yolo
 	next, aerr := s.createLocalSession(createSessionRequest{AgentID: launched.AgentID, Name: launched.Name, Cwd: cwd,
 		Args: launched.Args, Env: launched.Env, Yolo: &yolo, resume: id, resumedFrom: info.ID, renamed: launched.Renamed, ctx: context.WithoutCancel(r.Context())}, nil)

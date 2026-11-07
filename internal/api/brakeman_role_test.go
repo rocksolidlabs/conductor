@@ -1398,6 +1398,56 @@ func TestAWakeBatchIsReadUnderTheTurnsGrant(t *testing.T) {
 	}
 }
 
+// TestATicketReadyPastANarrowingIsJudgedByIt: a pass of the role reads
+// its configuration with Dispatch visible and is held before it reads
+// the change feed; meanwhile Dispatch is made not visible and a ticket
+// made ready. The pass, let go, reads the ready ticket's change, which
+// was committed after the narrowing, and is not woken by it; a ticket
+// made ready once Dispatch is visible again wakes the role.
+func TestATicketReadyPastANarrowingIsJudgedByIt(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.background(t, "bk", nil)
+	b.expect(t, "POST", "/api/dispatch/projects", map[string]any{"opId": "p-1", "key": "CND", "name": "Conductor"}, http.StatusCreated, "")
+	b.expect(t, "POST", "/api/dispatch/tickets", map[string]any{"opId": "t-1", "project": "CND", "title": "Unseen"}, http.StatusCreated, "")
+	b.expect(t, "POST", "/api/dispatch/tickets", map[string]any{"opId": "t-2", "project": "CND", "title": "Seen"}, http.StatusCreated, "")
+	b.roleSettle(t)
+	var armed atomic.Bool
+	held, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	let := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(let)
+	gate := func() {
+		if armed.CompareAndSwap(true, false) {
+			close(held)
+			<-release
+		}
+	}
+	b.desk.beforeFeed.Store(&gate)
+	t.Cleanup(func() { b.desk.beforeFeed.Store(nil) })
+	armed.Store(true)
+	// A commit of Dispatch's: the next pass reads the feed, its
+	// configuration read first, with Dispatch visible.
+	b.expect(t, "POST", "/api/dispatch/tickets/CND-2/edit", map[string]any{"opId": "e-0", "set": map[string]any{"title": "Seen, renamed"}}, http.StatusOK, "")
+	select {
+	case <-held:
+	case <-t.Context().Done():
+		t.Fatal("the role's pass never reached the feed")
+	}
+	b.configure(t, func(c map[string]any) { c["visibility"].(map[string]any)["dispatch"] = false })
+	b.expect(t, "POST", "/api/dispatch/tickets/CND-1/edit", map[string]any{"opId": "e-1", "set": map[string]any{"status": "ready"}}, http.StatusOK, "")
+	let()
+	b.roleSettle(t)
+	if r := b.roleRecord(t); len(r.Log) != 0 {
+		t.Fatalf("a ticket made ready after Dispatch was made not visible woke the role: %+v", r.Log)
+	}
+	b.configure(t, func(c map[string]any) { c["visibility"].(map[string]any)["dispatch"] = true })
+	b.readyTicket(t, "CND-2", "e-2")
+	if !b.hasWake(t, crew.WakeTicketReady, "ticket:CND-2") {
+		t.Fatalf("the ticket seen woke nothing: %+v", b.roleRecord(t).Log)
+	}
+}
+
 // TestAPausedRoleStartsNoQueuedWake: a wake request queued behind a
 // person's turn when the role is paused waits in the queue once the slot
 // is free, and starts once the role is resumed.

@@ -574,6 +574,19 @@ type run struct {
 	// is written again, recorded or told as forgotten, and it is dropped
 	// (dropForeign) with the browsers told to read the id again.
 	foreign bool
+	// discarded says the run was a continuation whose first transaction
+	// did not commit (refused or failed): nothing of it is ever written,
+	// a stop of it included, and it is forgotten (discard) (#623, review
+	// round 1).
+	discarded bool
+	// continuation says the run is a continuation (ContinueRunWith), set
+	// before the engine holds it and never changed. Until its first
+	// transaction commits, it exists for no one else: that transaction,
+	// its own (startContinued), is the only change that writes it, and a
+	// Stop of it is refused as of no such run and unmakes it (Stop). A
+	// refusal before that commit leaves no row of it, by construction
+	// (#623, review round 2).
+	continuation bool
 	// pkg is the launch package of a run launched from a ticket
 	// (LaunchPlanned) or of a continuation of one; nil for any other run.
 	pkg *runPackage
@@ -889,6 +902,8 @@ type prepared struct {
 	man    resolvedManifest
 	// opts are the run's class and request (LaunchNamedWith).
 	opts LaunchOpts
+	// continuation makes the run a continuation (run.continuation).
+	continuation bool
 }
 
 // prepare checks c as LaunchHeld describes and, with worktrees, finds where
@@ -1216,7 +1231,7 @@ func (e *Engine) addRun(c Crew, p prepared, label, id string, pkg *runPackage) (
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &run{crewID: c.ID, name: c.Name, label: label, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation, prefix: p.prefix,
 		yolo: c.Yolo != nil && *c.Yolo, changed: e.OnRunChange, startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true, managed: c.Managed(),
-		class: p.opts.Class, request: p.opts.Request, people: c.clone().People}
+		class: p.opts.Class, request: p.opts.Request, people: c.clone().People, continuation: p.continuation}
 	if r.managed {
 		// The crew's project manifest as launched, a legacy setup lifted
 		// into it, and the manifest at the pinned base, whose prerequisites
@@ -1907,14 +1922,52 @@ func (r *run) admit(m Member) error {
 // once the executor hands it over, the handoffs waiting are
 // dropped and the run is marked stopped. The worktrees stay. Stopping a
 // stopped run again changes nothing.
+//
+// A continuation whose first transaction has not committed is no run yet
+// for anyone else: its Stop is refused as of no such run, and the
+// continuation is then never made (unmake).
 func (e *Engine) Stop(ctx context.Context, runID string) error {
 	e.mu.Lock()
 	r, ok := e.runs[runID]
 	e.mu.Unlock()
-	if !ok {
+	if !ok || e.unmake(r) {
 		return ErrRunNotFound
 	}
 	return e.stop(ctx, r)
+}
+
+// unmake reports whether r is a continuation whose first transaction has
+// not committed, and marks such a one discarded: its first transaction,
+// when it comes, is refused (commit) and the continuation is refused as
+// stopped (ContinueRunWith), nothing of it written. Under r.txMu, so a
+// first transaction under way commits or fails first: one that committed
+// leaves a run that is stopped as any other. The caller holds neither
+// lock.
+//
+// A continuation already committed is told by e.mu alone (created is
+// never unset), before r.txMu: its Stop sets stopping, cancels the run's
+// context and stops its sessions before it waits for any transaction of
+// the run, as an original run's does, so a transaction the ledger holds up
+// does not hold up the stop of the work under way (#623, review round 3).
+func (e *Engine) unmake(r *run) bool {
+	if !r.continuation {
+		return false
+	}
+	e.mu.Lock()
+	made := r.created
+	e.mu.Unlock()
+	if made {
+		return false
+	}
+	r.txMu.Lock()
+	defer r.txMu.Unlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if r.created {
+		return false
+	}
+	r.discarded, r.stopping = true, true
+	return true
 }
 
 func (e *Engine) stop(ctx context.Context, r *run) error {
@@ -2010,6 +2063,27 @@ func (e *Engine) abort(r *run) {
 	e.endMu.Lock()
 	e.mu.Lock()
 	e.journalForgotten(r)
+	e.forget(r)
+	e.mu.Unlock()
+	e.endMu.Unlock()
+}
+
+// discard forgets r, a continuation whose first transaction did not
+// commit (refused, its id another run's, or failed), as if it had never
+// been made: nothing of it is written, neither the stop abort would record
+// (a stopped run naming the source as the one it continues) nor its record
+// (journalForgotten), so the ledger holds no run continuing the source,
+// no command of a repair it carried, and the source is as it was. Nothing
+// of it started: its tasks are dispatched, its prerequisites run and its
+// trees made only once that transaction commits, and nothing else wrote
+// it meanwhile (run.continuation): a Stop of it was refused. Marked
+// discarded, it writes nothing from now on (commit). The caller holds no
+// lock.
+func (e *Engine) discard(r *run) {
+	e.endMu.Lock()
+	e.mu.Lock()
+	r.discarded, r.stopping = true, true
+	r.pendingEvents, r.pendingMore, r.pendingLast, r.pendingDone = nil, nil, nil, nil
 	e.forget(r)
 	e.mu.Unlock()
 	e.endMu.Unlock()

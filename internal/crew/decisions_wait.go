@@ -187,8 +187,15 @@ func (e *Engine) closeDecision(r *run, d *decision, state, why, by string, op de
 		}
 		r.dec.unapplied[d.n] = true
 	}
-	if d.answer != nil {
-		delete(e.confirms, confirmKey{d.n, d.answer.k})
+	// Its answer's confirmation goes once the change commits (the
+	// done below), never before: a change that fails, a continuation's
+	// first transaction discarded whole among them, leaves the decision
+	// answered where it was, and its confirmation with it (#623, review
+	// round 3).
+	confirmed := d.answer != nil
+	var key confirmKey
+	if confirmed {
+		key = confirmKey{d.n, d.answer.k}
 	}
 	d.state, d.rev = state, d.rev+1
 	r.dropDecision(d)
@@ -244,6 +251,9 @@ func (e *Engine) closeDecision(r *run, d *decision, state, why, by string, op de
 		}
 		return ltx.Event(event, map[string]any{"decision": row.ID(), "why": why, "tasks": tasks})
 	}, func() {
+		if confirmed {
+			delete(e.confirms, key)
+		}
 		e.withdrawMirror(d.a, d)
 		if tell != "" {
 			e.tell(r, d, tell)

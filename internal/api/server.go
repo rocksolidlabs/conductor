@@ -146,9 +146,16 @@ type Server struct {
 	sessionRecords *journal.Journal
 	// history feeds the history's index from the session records and the
 	// runs (history_index.go); nil where there are no session records.
-	history      *historyIndexer
-	commits      *commitFan // the commit hooks' observers (commits.go)
-	readRevision func(ctx context.Context, dir string) (gitcli.Revision, error)
+	history *historyIndexer
+	// historyReads counts the history's reads in flight (history_search.go).
+	// A test's seams: historyHold holds a read once it has its slot, with
+	// the read's context; historyDeadline, when set, is a read's deadline
+	// in place of historyReadTimeout.
+	historyReads    historyGate
+	historyHold     func(ctx context.Context, r *http.Request)
+	historyDeadline time.Duration
+	commits         *commitFan // the commit hooks' observers (commits.go)
+	readRevision    func(ctx context.Context, dir string) (gitcli.Revision, error)
 	// recordRepos is each native server session's launch repository, by
 	// the identity of its common git directory (*launchRepo, which holds
 	// it open where the system reuses identities), until its end commit is
@@ -759,6 +766,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/history/sessions/{id}", s.requireAdmin(s.handleForgetHistorySession))
 	mux.HandleFunc("DELETE /api/history/sessions", s.requireAdmin(s.handleForgetHistorySessions))
 	mux.HandleFunc("POST /api/history/reindex", s.requireAdmin(s.handleHistoryReindex))
+	mux.HandleFunc("GET /api/history", historyRoute(s.requireAdmin(s.handleHistorySearch)))
+	mux.HandleFunc("GET /api/history/entry", historyRoute(s.requireAdmin(s.handleHistoryEntry)))
+	mux.HandleFunc("GET /api/history/similar", historyRoute(s.requireAdmin(s.handleHistorySimilar)))
+	mux.HandleFunc("GET /api/history/command", historyRoute(s.requireAdmin(s.handleHistoryCommand)))
 	// The decision inbox, read-only (inbox.go, inbox_track.go).
 	mux.HandleFunc("GET /api/inbox", s.inboxOnly(s.handleInbox))
 	mux.HandleFunc("GET /api/inbox/item", s.inboxOnly(s.handleInboxItem))
