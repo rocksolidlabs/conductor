@@ -5,6 +5,7 @@ import { latestReads, ownedBy, type Owned } from '~/utils/latestReads'
 import { prerequisitesRefused, stepManifest, taskActions, taskAnswer, taskDot, taskWords } from '~/utils/tasks'
 import type { DecisionSummary } from '~/utils/decisions'
 import { ownerWords } from '~/utils/crews'
+import { personPath } from '~/utils/people'
 
 /**
  * The tasks of a managed run (#334, row 7): one row per task in the crew's
@@ -233,7 +234,7 @@ async function confirm() {
     <section v-if="selectedTask" class="flex flex-col gap-2 rounded-md border border-default p-3 text-sm" data-task-detail :data-task-detail-id="selectedTask.id">
       <div class="flex items-center gap-2">
         <span class="font-mono font-semibold text-highlighted">{{ selectedTask.id }}</span>
-        <span class="truncate text-muted">{{ selectedTask.kind }} · {{ selectedTask.member }}<span v-if="selectedTask.owner" data-task-detail-owner> · {{ ownerWords(selectedTask) }}</span>{{ selectedTask.needs?.length ? ` · needs ${selectedTask.needs.join(', ')}` : '' }}</span>
+        <span class="truncate text-muted">{{ selectedTask.kind }} · {{ selectedTask.member }}<span v-if="selectedTask.owner" data-task-detail-owner> · <NuxtLink :to="personPath(selectedTask.owner)" class="hover:underline" data-task-detail-owner-link>{{ ownerWords(selectedTask) }}</NuxtLink></span>{{ selectedTask.needs?.length ? ` · needs ${selectedTask.needs.join(', ')}` : '' }}</span>
         <UButton icon="i-lucide-x" size="xs" variant="ghost" color="neutral" class="ml-auto" aria-label="Close" data-task-detail-close @click="emit('select', '')" />
       </div>
       <p v-if="selectedTask.blocker" class="rounded-md bg-warning/10 p-2 text-warning" data-task-blocker>

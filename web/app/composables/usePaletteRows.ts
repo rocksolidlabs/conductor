@@ -21,6 +21,7 @@ import { skipWords } from '~/utils/crews'
 import { mergeTouched, type FeedFile } from '~/utils/touchedIndex'
 import { sayWords, type SayOutcome } from '~/utils/sayWords'
 import { SayDrafts } from '~/utils/sayDrafts'
+import { capPeople, personRows } from '~/utils/people'
 
 /**
  * The palette's groups for a query (#302): every row read from the live
@@ -96,6 +97,7 @@ export function usePaletteRows(ctx: PaletteContext) {
   const decisions = useDecisions()
   const decisionModal = useDecisionModal()
   const route = useRoute()
+  const people = usePeople()
   const integrations = ref<Awaited<ReturnType<typeof api.integrations>>['integrations']>([])
   const showExited = ref(false)
 
@@ -754,10 +756,28 @@ export function usePaletteRows(ctx: PaletteContext) {
     }))
   }
 
-  function peopleGroups(): PaletteGroup<PaletteItem>[] {
+  // The people Conductor knows (HM1): the first page of GET /api/people, read again with what follows the `@` as `q` while the palette is
+  // open in that mode, one read at a time (usePeople's `search`: the latest `q` asked is read after the one under way, a reply older
+  // than the last asked is dropped), and a failed one keeps the rows read before.
+  watch(
+    () => {
+      if (!palette.open.value || !admin.hasToken.value) return null
+      const { mode, rest } = parsePrefix(palette.query.value)
+      return mode === 'people' ? rest : null
+    },
+    (q) => {
+      if (q !== null) void people.search(q)
+    },
+    { immediate: true },
+  )
+
+  function peopleGroups(query: string): PaletteGroup<PaletteItem>[] {
     const page = palette.page.value
     const groups: PaletteGroup<PaletteItem>[] = []
     if (page?.people?.length) groups.push({ id: 'people', label: page.label, rows: page.people })
+    // By name only, as the server's `q`: rows read for an earlier query whose detail alone matches are never offered.
+    const known = personRows(people.known.value, go, query)
+    if (known.length) groups.push({ id: 'known-people', label: 'People', rows: known })
     groups.push({ id: 'you', label: 'You', rows: [{ key: 'action:name', label: 'Your name…', icon: 'i-lucide-user-round', run: () => ctx.name() }] })
     return groups
   }
@@ -926,7 +946,8 @@ export function usePaletteRows(ctx: PaletteContext) {
       // The typed path is the query: the rows beneath are filtered by it, the Open row stays.
       return { mode, verb: null, groups: rank(groups, rest.replace(/:\d+$/, ''), r, now) }
     }
-    if (mode === 'people') return { mode, verb: null, groups: rank(peopleGroups(), rest, r, now) }
+    // The People group shows its first rows as ranked, as Tickets does; the rest are found by typing.
+    if (mode === 'people') return { mode, verb: null, groups: capPeople(rank(peopleGroups(rest), rest, r, now), rest) }
     if (mode === 'events') return { mode, verb: null, groups: rank(eventModeGroups(), rest, r, now) }
     return { mode, verb: null, groups: rank(shortcutGroups(), rest, r, now) }
   }
