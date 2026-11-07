@@ -3,6 +3,8 @@ package session
 import (
 	"context"
 	"errors"
+
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // An answer with no connection behind it (the decision seam, Program item
@@ -25,6 +27,19 @@ type Actor struct {
 	Subject   string
 	Name      string
 	Withdrawn <-chan struct{}
+	// ReqID is the request id of the answer (a decision link's decide's
+	// opId), kept with the question's result as the winner's
+	// (QuestionResult), so an attempt is told from another by its id. At
+	// most proto.MaxAnswerReqID bytes of printable ASCII; another is kept
+	// as none.
+	ReqID string
+	// Hold, when set, is the actor's credential held while its keys are
+	// written (writeWait.hold): a decision link's, so their write is begun
+	// only while the link stands, checked as the writer takes them and
+	// again at the write's commit boundary, and held until it has returned
+	// (its link's end waits for it, up to its bound). An error from it (ErrRevoked, ErrExpired) and
+	// nothing is written. Hold must not call the session and must not wait.
+	Hold func() (Held, error)
 }
 
 // ErrNotAChoice refuses keys AnswerAs is given that are not one of the
@@ -52,7 +67,10 @@ func (s *Local) AnswerAs(ctx context.Context, question, input string, by Actor) 
 	if question == "" {
 		return ErrQuestionAnswered
 	}
-	who := typist{actor: true, name: CleanName(by.Name), gone: by.Withdrawn}
+	who := typist{actor: true, name: CleanName(by.Name), gone: by.Withdrawn, hold: by.Hold}
+	if proto.ValidAnswerReqID(by.ReqID) {
+		who.reqID = by.ReqID
+	}
 	// The landing's word is nobody's to wait for: the question's resolve
 	// (or its refusal) is what follows it.
 	landed := func(error) {}
@@ -67,6 +85,8 @@ type typist struct {
 	actor bool
 	name  string
 	gone  <-chan struct{}
+	// hold is the actor's Actor.Hold.
+	hold func() (Held, error)
 	// reqID is the request id of the reply the keys are (AnswerInputReq),
 	// kept with the question's result.
 	reqID string
@@ -86,12 +106,13 @@ func (t typist) id() string {
 	return t.sub.ID
 }
 
-// displayName is the subscriber's display name, or the actor's.
+// displayName is the subscriber's name as its answers are kept
+// (answerer), or the actor's.
 func (t typist) displayName() string {
 	if t.actor {
 		return t.name
 	}
-	return t.sub.Name
+	return t.sub.answerer()
 }
 
 // typesSomething reports whether data types anything, a terminal's own
