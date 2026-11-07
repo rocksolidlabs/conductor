@@ -291,7 +291,7 @@ type CheckPrevious struct {
 // So: a row not finished failed (bindCheck refuses one not ended), words
 // fail a finished row of every phase, and a finished check or verify step
 // passed only with exit 0, stable, in time and by no signal besides,
-// because a version 4 database kept no words (crew's failedOutcome) and
+// because a version 4 database kept no words (crew's FailedOutcome) and
 // stable false is a checkout the command left changed. A step of the tree
 // is judged by its words alone: its stable is set by a checkout's setup
 // alone, its exit is -1 for a URL probe that did not pass and a service

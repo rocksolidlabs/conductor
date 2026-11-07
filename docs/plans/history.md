@@ -1022,7 +1022,13 @@ owner did not close it, the indexer runs `Check` in the background at once
 (a goroutine of its own, the server's context, never on the start path)
 and indexes beside it; searches meanwhile answer `indexing: {state:
 "checking"}`, and a `Check` that cleared the index or moved it aside is
-followed by a full catch-up (as after a reindex). The server's shutdown
+followed by a catch-up from nothing. Every write of a pass is of the
+index's generation as the pass began (`Source.Generation`; `Replace`
+judges it in its own transaction and refuses another, `ErrStale`, and the
+source is read again), so no pass that ran across a clear writes a mark
+over entries the clear took, and a crash at any point leaves nothing a
+restart's catch-up may not trust: no repair is owed that only the process
+remembers (PR-3, review rounds 1 and 2). The server's shutdown
 calls `Close`, which waits for a write in flight and marks the index
 closed, so the next start owes no check.
 A dirty set of source keys, filled by the commit hooks (a run's id from the
@@ -1031,7 +1037,9 @@ the session sources of the run's members; a ticket's key from Dispatch's
 changes, and every session source for a change of a project; a session
 record from the journal's writes; a brief from `brakeman/` saves), bounded at 10,000 keys: past that the set is
 emptied and a full catch-up is asked instead, so nothing is dropped. One
-goroutine takes the oldest key and indexes that source as it is now:
+goroutine takes the oldest key and indexes that source as it is now; a
+reconcile whose time has come is made before the next key, so a queue that
+is never empty defers it by one pass at most (PR-3, review round 2):
 
 1. the source's mark is read first, then the source (the marks are in
    "Marks" below: a run's is its ledger revision with its record file's
@@ -1104,7 +1112,10 @@ keep durably, every 30 s (`reconcileEvery`, driven in tests by a seam,
 `reconcileNow`): Dispatch's change feed after the last seq it indexed
 (`Store.ChangesAfter`, the position kept in the index's `sources` row
 `dispatch:feed`), every changed ticket marked dirty; the ledger's run
-revisions (`Ledger.Pointers`, paged) against the indexed marks; the run
+revisions (`Ledger.Pointers`, paged) against the indexed marks, and,
+once every pointer is listed, the runs indexed from the ledger that it no
+longer holds (pruned by the ledger's owner, another process, whose
+`OnPrune` tells no hook of this one: PR-3, review round 1); the run
 records' and the briefs' files by size and modification time, a file whose
 stat differs hashed and compared with its mark. The hooks are the fast
 path; the reconcile is what makes a write by another server searchable
@@ -1146,7 +1157,12 @@ and links, every field of the six taken from the record itself:
   The index's `repo` holds that identity (a run's from its folder, read the
   same way) and `tree` the worktree's top; `repo:` and `Similar`'s
   repository scope compare `repo`, so crews in sibling worktrees of one
-  repository are one repository's.
+  repository are one repository's. A folder is in no repository only when
+  git says so or the folder is gone; any other failed read (git's timeout)
+  is not known, never written down as none: the pass fails and is read
+  again after its backoff, three times in a row, then is indexed without
+  the repository under a mark that says so (`U`), and every reconcile
+  reads it again until a read succeeds (PR-3, review round 2).
 - **A run** (source `run:<id>`, from its record `runs/<id>.json` and, for a
   managed run, the ledger's rows): a `run` record entry (the crew, the label
   or goal, the base commit, the outcome); per task a `task` entry; per
@@ -1192,7 +1208,14 @@ and links, every field of the six taken from the record itself:
   issue for its own) and writes `candidate.verified` only when `verifiedOf`
   holds and `crew.FailedOutcome` fails none of the candidate's receipts, so
   no Checked ✓ stands over a receipt the history shows Checked ✗; a failed
-  setup or service step as `step`. Links: `continues` to the run it continues;
+  setup, service or readiness step as `step`, judged as Dispatch judges its
+  phase (`dispatch.CheckRef.passed`): by its words of failure alone (its
+  stable is a checkout's setup's alone, its exit -1 for a probe that did
+  not pass and for a service stopped in order), so a step that succeeded
+  is none (PR-3, review round 2); its body the row's `Error` alone, never
+  its output's tail: a step's output (a service's
+  start-up lines, a package manager's log) is terminal output the history
+  does not index (PR-3, review round 1). Links: `continues` to the run it continues;
   `launched_from` to its ticket and plan revision (`Run.Ticket`); `handed`
   from a failed receipt to the attempt that was handed it; `passed_after`
   from a failed receipt to the first later receipt of the same check id on
@@ -1214,7 +1237,23 @@ and links, every field of the six taken from the record itself:
   and `crew.FailingReceipt`, and the indexer applies them as `previousOf`
   does: the receipt that failed attempt n is handed to the task's next
   counted attempt in the run, or to the first attempt of the task in the
-  continuation when attempt n was the run's last.
+  continuation when attempt n was the run's last. The walk back along the
+  continuations is the engine's (`readHistory`): it goes past a run whose
+  attempts at the task are all uncounted, as the engine carries the
+  receipt through them, and bounds an ancestor's attempts by the continued
+  run's withdrawal and count. An attempt a later withdrawal took back
+  (its number at or below its task's `Withdrawn`) keeps the `handed` link
+  the index wrote while the withdrawal before its launch was still in the
+  rows; one rebuilt from nothing after it gets none, since today's rows no
+  longer say what it was handed (PR-3, review round 1). A review's subject
+  is the task it needs first (`Needs[0]`, the engine's `reopen`), its
+  attempt the one whose result the review started from, never another
+  task's or attempt's with the same commit: the last whose result stood
+  before the review was reserved, one that succeeded or one that failed
+  with a result a person accepted anyway (`acceptTask` makes the task
+  succeed and leaves the attempt failed; PR-3, review round 2); `reopened` is written by the
+  run that makes the repair, the review's own or, when the review's run
+  ended before it, the continuation that carries it.
   `TestTheIndexHandsWhatTheEngineHands` runs a managed run with fake
   sessions and compares each `handed` link with the `previous.check` of the
   attempt's own `task.json`.
@@ -1918,32 +1957,48 @@ already_resumed`.
 **Marks.** Every source's mark is read before the source, and recorded with
 the entries only when the read loaded (AGENTS.md, "Mark what you read with
 what you saw before reading it"). A **run's mark covers every input its
-source reads**: `L<revision>/R<sha256>`, the ledger's run revision
+source reads**: `L<revision>/R<sha256>/J<project>`, the ledger's run revision
 (`ledger.Pointer`, every transition bumps it) read before the rows and the
 SHA-256 of the record file `runs/<id>.json` as read, because the record
 changes without a transition (the engine's `crew.OnChange` sets a member's
 `AgentSession` and saves the record, `internal/crew/handoff.go`, with no
 ledger write); a legacy run, which has no ledger rows, has `R<sha256>`
-alone. A record change with the ledger's revision unchanged therefore
-changes the mark, and the catch-up after a restart sees it.
+alone; `J` the Dispatch project its folder's repository is in (left out
+when none), since its entries and its receipts' carry it, so a project
+made over the run's repository, moved or archived places the run again
+(PR-3, review round 1). A record change with the ledger's revision
+unchanged therefore changes the mark, and the catch-up after a restart
+sees it.
 `TestARecordOnlyChangeIsSeenAfterARestart` changes a member's agent
 session with no transition, restarts, and finds the new id indexed. A
-finished receipt's mark is `finished` (never read again); Dispatch's is the
+finished receipt's mark is `finished` (never read again), with
+`/J<project>` when its run is in a project: a run's pass whose project
+changed writes each held receipt's entry again under the new one from the
+entry the index holds, its log never read again; Dispatch's is the
 ticket's `rev` with its changes' last seq, and the feed's position for the
 reconcile; a session record's covers every input its source reads, as a run's
-does: `S<Seq>/P<projects>`, and `/L<revision>` for a crew member. `S` is
+does: `S<Seq>/P<projects>`, and `/C<start commit>/J<project>` for a crew
+member. `S` is
 its `Seq` (from `history/state.json`, written before the record, so it
 never goes back); `P` a digest of Dispatch's projects as the pass read
 them (the SHA-256 of their keys, their folders' common git directories
 and their archived flags, computed once a pass), since a session's
-project is derived from them; `L` its run's ledger revision, since a crew
-member's start commit is its attempt's `StartCommit` from the ledger.
-Neither of the last two changes the journal's `Seq`, so a project made or
-moved, or an attempt's start recorded, changes the session's mark
-instead: a project's change in Dispatch's commits or feed marks every
-session source dirty, a run's commit marks its members' session sources
-beside the run's, and the start's catch-up compares the whole mark, so no
-session stays under an old project after a restart; a brief's is its
+project is derived from them; for a crew member `C` its attempt's
+`StartCommit` and `J` its run's project, the two things its entries take
+from its run, read before the mark is compared (a failed read is the
+pass's error, retried, never a mark over an entry without them). An
+earlier draft carried the run's ledger revision (`L`) instead, which
+every transition bumps, so every pass of a run read every member's whole
+record again for one value that almost never changes; a run's pass now
+marks a member's session source only when that member's start commit is
+new to it (PR-3, review round 1). None of these changes the journal's
+`Seq`, so a project made or moved, or an attempt's start recorded,
+changes the session's mark instead: a project's change in Dispatch's
+commits or feed asks a catch-up that compares every session's and run's
+mark, a run's pass marks the session source of a member whose start
+commit changed, and the start's catch-up compares the whole mark, so no
+session or run stays under an old project after a restart; a brief's is
+its
 request's update time. A source changed between its mark and its read is
 read again on the next pass, because its commit marked it dirty after the
 mark was taken (or the reconcile finds the mark behind).
@@ -1976,7 +2031,19 @@ retried after a backoff (1 s doubling to 1 min).
   line a person typed into the terminal or a reply box.
 - The index's text is bounded by kind and in total; history older than the
   budget is dropped by age and the reply says from when it holds.
-- A Forget removes the record's file and, at the next pass, its entries; the
+- A Forget removes the record's file and its entries, the entries before
+  the route answers: the route drops the record's sources from the index
+  (`dropSessions`) under the lock a pass takes to publish a session
+  record, and a pass publishes one only while the journal still answers
+  for it, judged under that lock (`publishSession`; a record a Forget,
+  ForgetAll or Prune has chosen is hidden from `Get` until the removal
+  returns, PR-1's rule). So a forgotten record's rows are gone from the
+  index before Forget answers, and no pass publishes a record its source
+  no longer answers for; an index that cannot take the drop (not open, a
+  write refused) makes the route answer `503 history_index_failed`, the
+  drop owed and taken before the index is read again. A record whose file
+  went while no server ran is removed by the next start's catch-up (PR-3,
+  review rounds 1 and 2); the
   ledger's, Dispatch's and Brakeman's own records are never deleted through
   history.
 

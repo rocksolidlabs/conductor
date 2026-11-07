@@ -772,8 +772,17 @@ func (s *Server) handleForgetHistorySession(w http.ResponseWriter, r *http.Reque
 	}
 	switch err := s.sessionRecords.Forget(id); {
 	case err == nil:
+		if !s.dropFromHistory(w, []string{id}, false) {
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	case errors.Is(err, journal.ErrNotFound):
+		// A record already gone from the journal (a Forget again after
+		// one the index could not take) still has its rows dropped: the
+		// drop does not rest on the journal holding the record.
+		if s.history != nil && s.history.owns() && !s.dropFromHistory(w, []string{id}, false) {
+			return
+		}
 		writeError(w, http.StatusNotFound, "not_found", "no such record")
 	case errors.Is(err, journal.ErrLive):
 		writeError(w, http.StatusConflict, "live_session", "the session is still running")
@@ -787,6 +796,28 @@ func (s *Server) handleForgetHistorySession(w http.ResponseWriter, r *http.Reque
 	}
 }
 
+// dropFromHistory removes the forgotten records' rows from the history's
+// index before a Forget route answers (ids, or every record the journal no
+// longer answers for with all): false, with the answer written, when the
+// index could not take them. The records are gone from the journal either
+// way; the index drops them when it can, before anything reads it.
+func (s *Server) dropFromHistory(w http.ResponseWriter, ids []string, all bool) bool {
+	if s.history == nil {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), historyDropTimeout)
+	defer cancel()
+	if err := s.history.dropSessions(ctx, ids, all); err != nil {
+		s.log.Warn("forgotten records could not be dropped from the history's index", "err", err)
+		writeError(w, http.StatusServiceUnavailable, "history_index_failed", "the record is removed, but the history's index could not drop it yet: it does before it is read again")
+		return false
+	}
+	return true
+}
+
+// historyDropTimeout bounds a Forget's wait for the index's drop.
+const historyDropTimeout = 30 * time.Second
+
 // handleForgetHistorySessions answers DELETE /api/history/sessions: every
 // record neither live nor pending forgotten, those kept counted.
 func (s *Server) handleForgetHistorySessions(w http.ResponseWriter, r *http.Request) {
@@ -794,10 +825,16 @@ func (s *Server) handleForgetHistorySessions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	forgotten, kept, err := s.sessionRecords.ForgetAll()
-	switch {
-	case errors.Is(err, journal.ErrNotOwner):
+	if errors.Is(err, journal.ErrNotOwner) {
 		writeError(w, http.StatusConflict, "history_read_only", "another server owns the session records")
 		return
+	}
+	// The records removed leave the index before the answer, those a
+	// failed delete kept or not.
+	if !s.dropFromHistory(w, nil, true) {
+		return
+	}
+	switch {
 	case err != nil:
 		s.log.Warn("the session records could not all be forgotten", "err", err)
 		writeError(w, http.StatusInternalServerError, "history_failed", "the records could not all be removed")
