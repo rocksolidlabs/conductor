@@ -6,9 +6,9 @@ import { formedCrew } from '~/utils/activity'
 import { desktopBridge } from '~/utils/desktop'
 import type { ActivityEntry, ChatMessage, SessionActivity } from '~/utils/protocol'
 import { RunStore } from '~/utils/runs'
+import { decisionsLive } from './useDecisions'
 import { asDispatchEvent, dispatchLive } from './useDispatchLive'
 import { asBrakemanEvent, brakemanLive } from './useBrakeman'
-import { decisionsLive } from './useDecisions'
 
 const SETTINGS_KEY = 'conductor.attention.settings'
 /** Shortest gap between two chimes, so a burst of routed events plays one. */
