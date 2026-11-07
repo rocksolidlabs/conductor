@@ -359,5 +359,6 @@ defineShortcuts({
     <LaunchSessionModal v-model:open="launch.open.value" @launched="(s) => navigateTo(`/sessions/${s.id}`)" />
     <RenameSessionModal />
     <CloneSessionModal />
+    <DecisionModal />
   </UDashboardGroup>
 </template>

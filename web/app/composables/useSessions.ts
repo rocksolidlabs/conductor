@@ -1,5 +1,6 @@
 import type { ChatMessage, ActivityEntry, AgentBrowser, Attention, AttentionKind, AttentionOption, OpenEvent, Role } from '~/utils/protocol'
 import type { Receipt } from '~/utils/tasks'
+import type { DecisionSummary, TaskHold } from '~/utils/decisions'
 import { toCrewInput, toCrewMember } from '~/utils/crews'
 import type { TouchedReply } from '~/utils/touchedIndex'
 
@@ -541,6 +542,8 @@ export interface RunTask {
   reason?: string
   /** Attempts made so far. */
   attempts: number
+  /** The durable decisions that hold it (Program item DR1): it is not dispatched until each is applied or ends; absent for none. */
+  holds?: TaskHold[]
   /** The latest attempt. */
   attempt?: RunAttempt
   /** The result that stands, once an attempt succeeded. */
@@ -941,7 +944,7 @@ export function useSessions() {
     broadcastRun: (runId: string, body: { text: string; members?: string[]; byName?: string }) =>
       request<BroadcastResult>(`/api/runs/${encodeURIComponent(runId)}/broadcast`, { method: 'POST', body }),
     /** A managed run's task with every attempt, each with what it submitted (#334) and its receipts; a run the server let go answers from its ledger. */
-    runTask: (runId: string, taskId: string) => request<{ task: RunTask; attempts: RunAttempt[] }>(`/api/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}`),
+    runTask: (runId: string, taskId: string) => request<{ task: RunTask; attempts: RunAttempt[]; decisions?: DecisionSummary[] }>(`/api/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}`),
     /** An attempt's receipts, by when each started (EN1). */
     runSteps: (runId: string, taskId: string, n: number) =>
       request<{ steps: RunStep[] }>(`/api/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}/attempts/${n}/steps`).then((r) => r.steps ?? []),

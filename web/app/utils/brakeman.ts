@@ -606,6 +606,21 @@ export function changedSince(now: RefState | undefined, live: { state?: string; 
   return live.rev !== undefined && now.rev !== undefined && live.rev !== now.rev
 }
 
+/**
+ * What changed of a decision's evidence ref since its question was asked (docs/plans/decisions.md, "web/app": the chip's `baseline`
+ * mode), from its resolution alone: its `seen` (the record when the request was made) against its `now`. `unread` when the baseline's
+ * store could not be read then (nothing says what it was), `deleted` when the record is gone since, `changed` when its state, revision
+ * or digest differ (a run's or a task's state alone: a run's revision moves with every transition of it, the decision's own opening
+ * among them, internal/api refChange), '' when nothing changed.
+ */
+export function changedFromBaseline(r: { ref: string; seen: RefState; now: RefState }): '' | 'changed' | 'deleted' | 'unread' {
+  if (r.seen.state === 'unavailable') return 'unread'
+  if (r.now.state === 'deleted' && r.seen.state !== 'deleted') return 'deleted'
+  const kind = r.ref.slice(0, r.ref.indexOf(':'))
+  if (kind === 'run' || kind === 'task') return r.now.state !== r.seen.state ? 'changed' : ''
+  return r.now.state !== r.seen.state || (r.now.rev ?? '') !== (r.seen.rev ?? '') || (r.now.sha256 ?? '') !== (r.seen.sha256 ?? '') ? 'changed' : ''
+}
+
 /** The groups a brief's items are shown in, in this order (docs/plans/brakeman.md, PR-6); comparisons go with the evidence panels. */
 export const ITEM_GROUPS: ReadonlyArray<{ group: string; title: string; kinds: readonly string[] }> = [
   { group: 'facts', title: 'Facts', kinds: ['fact/1'] },

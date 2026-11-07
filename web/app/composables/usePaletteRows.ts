@@ -7,6 +7,7 @@ import type { LaunchPrefill } from '~/composables/useLaunchModal'
 import { sameQuestions } from '~/utils/needsCursor'
 import { rowActions, sessionTarget, type Action } from '~/utils/actions'
 import { hostedReason } from '~/utils/clone'
+import { answerRows, runRuns } from '~/utils/decisions'
 import { isActive, isEnded, needingInput, noReply, offeredChoices } from '~/utils/attention'
 import type { FeedEntry } from '~/utils/events'
 import { joinedDot, joinedPath } from '~/utils/joined'
@@ -93,6 +94,8 @@ export function usePaletteRows(ctx: PaletteContext) {
   const renameModal = useRenameModal()
   const cloneModal = useCloneModal()
   const brakeman = useBrakeman()
+  const decisions = useDecisions()
+  const decisionModal = useDecisionModal()
   const route = useRoute()
   const people = usePeople()
   const integrations = ref<Awaited<ReturnType<typeof api.integrations>>['integrations']>([])
@@ -868,6 +871,15 @@ export function usePaletteRows(ctx: PaletteContext) {
     }
   }
 
+  // The open durable decisions of runs that run (Program item DR1), as Needs you counts them: "Answer dr-7: …", Enter opening its card
+  // in the app's modal. A stopped run's is answered from its run page or its ticket's.
+  function decisionItems(): PaletteItem[] {
+    return answerRows(
+      decisions.open.value.filter((d) => runRuns(attention.runOf(d.run))),
+      (id) => decisionModal.open(id),
+    )
+  }
+
   // ---------------------------------------------------------------------------
   // The groups for a query.
 
@@ -884,7 +896,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     const exited = everyRow.filter((r) => isEnded(r.session.status))
     const blocks = [...model.needs, ...model.running].filter((it): it is RunBlock => it.kind === 'run' && !it.stoppedAt && it.state !== 'exited')
     const groups: PaletteGroup<PaletteItem>[] = [
-      { id: 'needs', label: 'Needs you', pinned: true, rows: [...answerAllItems(), ...needs.map((s) => sessionItem(s, now))] },
+      { id: 'needs', label: 'Needs you', pinned: true, rows: [...answerAllItems(), ...needs.map((s) => sessionItem(s, now)), ...decisionItems()] },
       ...(page ? [{ id: 'page', label: page.label, pinned: true, rows: page.rows }] : []),
       { id: 'running', label: 'Running', rows: running.map((r) => sessionItem(r.session, now)) },
     ]

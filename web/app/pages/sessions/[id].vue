@@ -18,6 +18,8 @@ import type { CommitRow } from '~/utils/commits'
 import type { FileHeader } from '~/utils/protocol'
 
 const route = useRoute()
+// The question bar's Answer on a durable decision's question opens its card (Program item DR1).
+const decisionModal = useDecisionModal()
 const api = useSessions()
 const admin = useWorkbenchToken()
 const toast = useToast()
@@ -614,7 +616,7 @@ palette.registerPage(() => {
           />
           <div v-if="typingLine" class="pointer-events-none absolute bottom-2 left-3 flex items-center gap-2 rounded bg-default/80 px-2 py-0.5 text-xs text-muted backdrop-blur-sm"><span class="inline-block h-3.5 w-1.5 bg-muted/70" />{{ typingLine }}</div>
           <template #bar>
-            <QuickReplyBar :attention="attention" :agent-name="agentLabel" role="control" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
+            <QuickReplyBar :attention="attention" :agent-name="agentLabel" role="control" answers @answer="decisionModal.open" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
           </template>
         </EditorColumn>
         <!-- The inspector (design 4h): its rail stays at xl, the panel beside it open or collapsed. -->

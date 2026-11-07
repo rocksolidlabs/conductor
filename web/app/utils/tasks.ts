@@ -111,6 +111,8 @@ export function taskBadges(run: Pick<RunInfo, 'tasks' | 'paused' | 'outcome' | '
   if (c.cancelled) out.push({ label: `${c.cancelled} cancelled`, color: 'neutral' })
   if (c.running) out.push({ label: `${c.running} running`, color: 'success' })
   if (c.checking) out.push({ label: `${c.checking} checking`, color: 'info' })
+  const decisions = openDecisions(run.tasks)
+  if (decisions) out.push({ label: `${decisions} ${decisions === 1 ? 'decision' : 'decisions'} open`, color: 'warning', title: 'Tasks wait for the operator: Answer on the task opens the card' })
   if (run.paused) out.push(run.pausedWhy ? { label: 'paused', color: 'warning', title: `Paused: ${run.pausedWhy}` } : { label: 'paused', color: 'warning', title: 'Paused by a person' })
   if ((run.cleaning ?? 0) > 0) out.push({ label: 'cleaning up', color: 'info', title: `${run.cleaning} ${run.cleaning === 1 ? 'tree is' : 'trees are'} being ended: services stopped, cleanup steps run` })
   return out
@@ -123,8 +125,10 @@ export function taskWords(t: RunTask, run: Pick<RunInfo, 'stoppedAt' | 'paused'>
   const n = t.attempt?.n ?? t.attempts
   switch (t.state) {
     case 'blocked':
-      return { text: t.reason || (t.needs?.length ? `needs ${t.needs.join(', ')}` : 'waiting'), tone: t.reason?.includes('will not') ? 'error' : 'muted' }
+      return { text: t.reason || holdsWords(t) || (t.needs?.length ? `needs ${t.needs.join(', ')}` : 'waiting'), tone: t.reason?.includes('will not') ? 'error' : 'muted' }
     case 'ready': {
+      // Held by a decision (a gate's, Program item DR1): it starts once the operator's answer is applied, never before.
+      if (openHolds(t).length) return { text: run.state === 'interrupted' ? `${holdsWords(t)}; taken up when the run is continued` : holdsWords(t), tone: 'warning' }
       const why = t.reason ? `${t.reason}; ` : ''
       if (run.state === 'interrupted') return { text: `${why}taken up when the run is continued`, tone: 'warning' }
       if (run.stoppedAt) return { text: `${why}ready, the run is stopped`, tone: 'muted' }
@@ -137,6 +141,8 @@ export function taskWords(t: RunTask, run: Pick<RunInfo, 'stoppedAt' | 'paused'>
       return { text: `${why}ready to start`, tone: 'default' }
     }
     case 'running':
+      // Its attempt asked a durable decision and waits for it (Program item DR1): what it waits for, which Answer opens.
+      if (openHolds(t).length) return { text: `attempt ${n} ${holdsWords(t)}`, tone: 'warning' }
       if (t.blocker) return { text: `attempt ${n} blocked by ${t.blocker.by}: ${t.blocker.reason}`, tone: 'warning' }
       return { text: `attempt ${n} running`, tone: 'default' }
     case 'verifying':
@@ -172,6 +178,33 @@ export function taskDot(state: RunTask['state']): string {
       return 'bg-transparent ring-1 ring-neutral-400'
   }
   return 'bg-neutral-400'
+}
+
+/** The decisions that hold a task and wait for an answer (open, or answered and not applied yet). */
+export function openHolds(t: Pick<RunTask, 'holds'>): NonNullable<RunTask['holds']> {
+  return (t.holds ?? []).filter((h) => h.state === 'open' || h.state === 'answered')
+}
+
+/** What a held task waits for, in the engine's words (`waits for decision dr-7`, `waits for decisions dr-3, dr-4`); '' for none. */
+export function holdsWords(t: Pick<RunTask, 'holds'>): string {
+  const ids = openHolds(t).map((h) => h.id)
+  if (!ids.length) return ''
+  return ids.length === 1 ? `waits for decision ${ids[0]}` : `waits for decisions ${ids.join(', ')}`
+}
+
+/**
+ * The decision a held task's Answer opens (the run page's row): the first of its holds still open; undefined for a task nothing open
+ * holds (an answered one is the operator's no more: Yardmaster applies it).
+ */
+export function taskAnswer(t: Pick<RunTask, 'holds'>): string | undefined {
+  return (t.holds ?? []).find((h) => h.state === 'open')?.id
+}
+
+/** How many distinct decisions of the run are open (the header's `1 decision open`), from its tasks' holds. */
+export function openDecisions(tasks: readonly Pick<RunTask, 'holds'>[] | undefined): number {
+  const ids = new Set<string>()
+  for (const t of tasks ?? []) for (const h of t.holds ?? []) if (h.state === 'open') ids.add(h.id)
+  return ids.size
 }
 
 export interface TaskActionSet {

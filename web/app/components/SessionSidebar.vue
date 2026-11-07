@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { runRuns, unmirrored } from '~/utils/decisions'
 import type { SessionInfo } from '~/composables/useSessions'
 import { choiceKey, newlyNeedingInput } from '~/utils/attention'
 import { sidebarRunFor } from '~/utils/crews'
@@ -37,6 +38,11 @@ let tick: number | undefined
 
 const model = computed(() => sidebarModel(filterSessions(attention.sessions.value, query.value), attention.runOf))
 const needsDot = computed(() => needsDotShown(events.routes.value))
+// The open durable decisions no shown session question mirrors (a gate's, Program item DR1), of runs that run: Needs you counts and lists each once,
+// and its row opens the decision's card.
+const decisions = useDecisions()
+const decisionModal = useDecisionModal()
+const loneDecisions = computed(() => (query.value ? [] : unmirrored(decisions.open.value, attention.sessions.value, (id) => runRuns(attention.runOf(id)))))
 const empty = computed(() => attention.sessions.value.length === 0 && joined.list.value.length === 0)
 const folds = foldState.folds
 /** The run of the page open now: the run page, or a member's page. */
@@ -353,7 +359,7 @@ onBeforeUnmount(() => window.clearInterval(tick))
     <div ref="listEl" class="flex-1 min-h-0 overflow-y-auto px-1 flex flex-col gap-3" :data-session-list="props.page ? 'page' : 'sidebar'" @keydown="onKey" @focusin="onFocusIn" @focusout="onFocusOut">
       <p v-if="empty" class="px-2 py-4 text-xs text-muted leading-relaxed">No sessions yet. Launch an agent here or run <code>conductor host</code> from your machine.</p>
 
-      <SidebarSection v-if="model.needs.length" id="needs" title="Needs you" :count="model.counts.needs" tone="warning" :preview="preview('needs')" :folded="folds.needs" @update:folded="foldState.fold('needs', $event)">
+      <SidebarSection v-if="model.needs.length || loneDecisions.length" id="needs" title="Needs you" :count="model.counts.needs + loneDecisions.length" tone="warning" :preview="preview('needs')" :folded="folds.needs" @update:folded="foldState.fold('needs', $event)">
         <ol class="flex flex-col gap-0.5">
           <template v-for="it in model.needs" :key="it.id">
             <SidebarRunBlock
@@ -396,6 +402,12 @@ onBeforeUnmount(() => window.clearInterval(tick))
               @sheet="openSheet"
             />
           </template>
+          <li v-for="d in loneDecisions" :key="d.id">
+            <button type="button" class="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-elevated/60" :data-sidebar-decision="d.id" @click="decisionModal.open(d.id)">
+              <UIcon name="i-lucide-scale" class="size-4 flex-none text-warning" />
+              <span class="min-w-0 flex-1 truncate"><span class="font-mono text-xs">{{ d.id }}</span> {{ d.request.question }}</span>
+            </button>
+          </li>
         </ol>
       </SidebarSection>
 

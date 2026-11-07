@@ -6,6 +6,7 @@ import { formedCrew } from '~/utils/activity'
 import { desktopBridge } from '~/utils/desktop'
 import type { ActivityEntry, ChatMessage, SessionActivity } from '~/utils/protocol'
 import { RunStore } from '~/utils/runs'
+import { decisionsLive } from './useDecisions'
 import { asDispatchEvent, dispatchLive } from './useDispatchLive'
 import { asBrakemanEvent, brakemanLive } from './useBrakeman'
 
@@ -279,6 +280,7 @@ export function useAttention() {
     if (signal.aborted) return
     // Poll once while the stream is down, then retry with backoff.
     await poll()
+    decisionsLive().down()
     window.setTimeout(() => {
       if (!signal.aborted) stream()
     }, backoff)
@@ -295,6 +297,8 @@ export function useAttention() {
     if (!data.length) return
     try {
       const payload = JSON.parse(data.join('\n'))
+      // A durable decision changed, or the stream came back: the decisions' store reads again (useDecisions; Program item DR1).
+      decisionsLive().stream(event, payload)
       if (event === 'snapshot') {
         replaceAll(payload as SessionInfo[])
         // What changed while the stream was away: every run, once, and every Dispatch page open.
@@ -354,7 +358,10 @@ export function useAttention() {
     pollTimer = window.setInterval(() => {
       // While the stream is down, or open but without its first snapshot yet (a stall before it), the list is read
       // directly, so that a page waiting for the sessions to be read (#359) is not left waiting.
-      if ((!store.value.connected || !store.value.loaded) && document.visibilityState === 'visible') poll()
+      if ((!store.value.connected || !store.value.loaded) && document.visibilityState === 'visible') {
+        poll()
+        decisionsLive().down()
+      }
     }, 3000)
     watch(
       () => admin.token.value,
