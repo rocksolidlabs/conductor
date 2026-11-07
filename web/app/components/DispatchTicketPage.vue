@@ -293,7 +293,7 @@ const decisions = computed(() => (ticket.value ? ticketDecisions({ plans: plan.p
 const approvedPlan = computed(() => {
   const a = plan.approved.value
   const body = a ? plan.bodies.get(a.id) : undefined
-  return a && body ? { n: a.n, body } : null
+  return a && body ? { id: a.id, n: a.n, body } : null
 })
 const people = computed(() =>
   ticket.value ? ticketPeople({ ticket: ticket.value, plans: plan.plans.value, launches: knownLaunches.value, agentName: (id) => agents.value.find((a) => a.id === id)?.name }) : [],
@@ -840,7 +840,7 @@ const askBrakeman = computed(() =>
             <DispatchPlan ref="planSection" :ticket="ticket" :plans="plan" :project="project" :archived="archived" :locked="locked" :agents="agents" :now="now" />
             <DispatchRuns :links="ticket.links ?? []" :runs="runs" :changes="changes" :names="historyNames" :history-more="!!historyNext" :locked="locked" :status="ticket.status" :now="now" :add="linkRun" :remove="removeLink" @revise="reviseFrom" @follow-up="planSection?.launch()" />
 
-            <DispatchDecisions :rows="decisions" :records="decisionRecords.decisions.value" :required="approvedPlan?.body.decisions" :revision="approvedPlan ? revisionTag(approvedPlan.n) : ''" :now="now" />
+            <DispatchDecisions :rows="decisions" :records="decisionRecords.decisions.value" :required="approvedPlan?.body.decisions" :revision="approvedPlan ? revisionTag(approvedPlan.n) : ''" :plan-id="approvedPlan?.id" :now="now" />
 
             <DispatchClosePolicy :ticket="ticket" :locked="locked" :now="now" :accept="accept" :unaccept="unaccept" :close="closeTicket" />
             <DispatchLinks :links="ticket.links ?? []" :locked="locked" :now="now" :add="addLink" :remove="removeLink" :candidates="deliveryChoices" :candidates-loading="candidates.loading.value" :candidates-error="candidates.error.value" :withdrawn="withdrawn" />

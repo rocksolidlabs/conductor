@@ -221,6 +221,69 @@ export function acceptedReceipt(d: Pick<Decision, 'responses'>): ResponseReceipt
   return d.responses?.find((r) => r.status === 'accepted')
 }
 
+/**
+ * The accepted response as the card shows it once a decision is answered (Codex's round 1 on #719): the option picked (by its label,
+ * an assignment's Done or Not done), the words a clarification was answered with, the rationale kept with it, and who answered; from
+ * the accepted receipt when the record carries its responses, else from the record's `answer` (the lists' words) alone. Null while
+ * nothing was accepted.
+ */
+export function acceptedAnswer(d: Pick<Decision, 'type' | 'request' | 'responses' | 'answer'>): { choice?: string; text?: string; rationale?: string; by?: string; words?: string } | null {
+  const rc = acceptedReceipt(d)
+  if (rc) {
+    const out: { choice?: string; text?: string; rationale?: string; by?: string } = {}
+    if (typeof rc.choice === 'number' && rc.choice >= 0) out.choice = optionsOf(d)[rc.choice]?.label ?? `option ${rc.choice + 1}`
+    if (rc.text) out.text = rc.text
+    if (rc.rationale) out.rationale = rc.rationale
+    const by = rc.byName || rc.actor
+    if (by) out.by = by
+    return out
+  }
+  return d.answer ? { words: d.answer } : null
+}
+
+/**
+ * What the confirm step says a choice authorizes (the independent review of #719, finding 3): a gate's options are fixed, Approve then
+ * Reject, and an assignment's Done then Not done, so their yes is option 0 and only that choice authorizes; an agent's approval has
+ * options of its own labels, none of them the yes by its place, so whichever is picked the confirm says what the approval
+ * authorizes. '' for nothing to say.
+ */
+export function confirmAuthorizes(d: Pick<Decision, 'origin' | 'type' | 'request'>, choice: number): string {
+  const a = d.request.authorizes
+  if (!a) return ''
+  if (d.origin === 'plan' || d.type === 'assignment') return choice === 0 ? `A yes authorizes: ${a}` : ''
+  return d.type === 'approval' ? `This approval authorizes: ${a}` : ''
+}
+
+/**
+ * Whether a write's or a read's reply may replace the record a card shows (Codex's round 1 on #719): a reply of another decision never,
+ * an older revision never (a write's reply delayed past a read of what another tab did since would bring the record back), the same
+ * revision only when it is the whole record (a read, which carries the history and the responses a write's reply leaves out).
+ */
+export function replaces(current: Pick<Decision, 'id' | 'rev'> | null, next: Pick<Decision, 'id' | 'rev'>, whole: boolean): boolean {
+  if (!current || current.id !== next.id) return true
+  return next.rev > current.rev || (next.rev === current.rev && whole)
+}
+
+/**
+ * Whether the run that holds a decision runs here now, from the run as the live store holds it or as it was read for the card: true
+ * for a run the server holds and runs, false for one stopped, a record (interrupted at a restart and not continued: the live store
+ * leaves those out) or continued by another, or for none the server holds (null); undefined while it is not known yet.
+ */
+export function runHeldOf(r: { stoppedAt?: string; record?: boolean; resumedBy?: string; state?: string } | null | undefined): boolean | undefined {
+  if (r === undefined) return undefined
+  if (r === null) return false
+  return !r.record && !r.stoppedAt && !r.resumedBy && r.state !== 'interrupted'
+}
+
+/**
+ * A required decision's latest record on the ticket page (the reviews of #719): the newest gate of that plan decision opened under the
+ * approved revision `plan`, never a gate of the same id another revision's run opened. Records come newest first.
+ */
+export function requiredRecord<D extends Pick<Decision, 'origin' | 'gate' | 'plan'>>(records: readonly D[] | null | undefined, gate: string, plan: string | undefined): D | undefined {
+  if (!plan) return undefined
+  return records?.find((r) => r.origin === 'plan' && r.gate === gate && r.plan === plan)
+}
+
 /** One of the four states the card shows apart. */
 export interface DecisionStep {
   key: 'open' | 'recorded' | 'validated' | 'applied'
@@ -421,13 +484,62 @@ export function runRuns(r: { stoppedAt?: string; record?: boolean; resumedBy?: s
   return !!r && !r.stoppedAt && !r.record && !r.resumedBy
 }
 
-/** The palette's rows: one per open decision, "Answer dr-7: <question>", oldest first; Enter (`open`) opens its card. */
-export function answerRows(decisions: ReadonlyArray<Pick<Decision, 'id' | 'state' | 'request' | 'origin' | 'gate' | 'asker' | 'createdAt'>>, open: (id: string) => void) {
+/**
+ * The palette's rows: one per open decision, "Answer dr-7: <question>", oldest first; Enter (`open`) opens its card. `in` names the
+ * session whose shown question mirrors it, if one does: that row stands for the session's question too (oneRowPerDecision).
+ */
+export function answerRows(decisions: ReadonlyArray<Pick<Decision, 'id' | 'state' | 'request' | 'origin' | 'gate' | 'asker' | 'createdAt'>>, open: (id: string) => void, inSession: (id: string) => string | undefined = () => undefined) {
   return decisions
     .filter((d) => d.state === 'open')
     .slice()
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
-    .map((d) => ({ key: `decision:${d.id}`, label: `Answer ${d.id}: ${d.request.question}`, detail: `asked by ${askedWhere(d)}`, icon: 'i-lucide-scale', run: () => open(d.id) }))
+    .map((d) => {
+      const where = inSession(d.id)
+      return { key: `decision:${d.id}`, label: `Answer ${d.id}: ${d.request.question}`, detail: `asked by ${askedWhere(d)}${where ? ` in ${where}` : ''}`, icon: 'i-lucide-scale', run: () => open(d.id) }
+    })
+}
+
+/**
+ * The sessions whose shown question mirrors an open decision of `open` (an attention needing input with `decision`), by session id:
+ * the palette lists such a question once, as its decision's row, and the session itself among the running ones.
+ */
+export function mirroringSessions(sessions: ReadonlyArray<{ id: string; attention?: { state?: string; decision?: string } }>, open: ReadonlyArray<Pick<Decision, 'id'>>): Map<string, string> {
+  const ids = new Set(open.map((d) => d.id))
+  const out = new Map<string, string>()
+  for (const s of sessions) if (s.attention?.state === 'needs_input' && s.attention.decision && ids.has(s.attention.decision)) out.set(s.id, s.attention.decision)
+  return out
+}
+
+/**
+ * One row per durable decision across the palette's groups (the independent review of #719, finding 2): the first row naming a
+ * decision stays (Needs you's "Answer dr-7", which opens its card), every later row naming the same decision goes, whatever group
+ * gave it: the decision page's row of the session question that mirrors it among them. `decisionOf` names a row's decision, or none.
+ */
+export function oneRowPerDecision<G extends { rows: ReadonlyArray<{ key: string }> }>(groups: G[], decisionOf: (key: string) => string | undefined): G[] {
+  const seen = new Set<string>()
+  return groups.map((g) => ({
+    ...g,
+    rows: g.rows.filter((r) => {
+      const d = decisionOf(r.key)
+      if (!d) return true
+      if (seen.has(d)) return false
+      seen.add(d)
+      return true
+    }),
+  }))
+}
+
+/**
+ * The decision a palette row names, by its key: a decision's own row (`decision:dr-7`, and the decision page's `decide:decision:dr-7`
+ * once its items carry decisions), or a row of a session's question
+ * (`decide:question:<session>/<question>`, the decision page's) whose session shows that question mirroring a decision.
+ */
+export function rowDecision(key: string, sessions: ReadonlyArray<{ id: string; attention?: { id?: string; state?: string; decision?: string } }>): string | undefined {
+  for (const prefix of ['decision:', 'decide:decision:']) if (key.startsWith(prefix)) return isDecisionId(key.slice(prefix.length)) ? key.slice(prefix.length) : undefined
+  const m = /^decide:question:([^/]+)\/(.+)$/.exec(key)
+  if (!m) return undefined
+  const s = sessions.find((x) => x.id === m[1])
+  return s?.attention?.state === 'needs_input' && s.attention.id === m[2] && s.attention.decision ? s.attention.decision : undefined
 }
 
 /** The words a history row is shown with: its kind in words, and its text when it has one. */

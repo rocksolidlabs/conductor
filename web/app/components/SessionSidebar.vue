@@ -167,7 +167,7 @@ const listEl = useTemplateRef<HTMLElement>('listEl')
 const focused = ref<string | null>(null)
 /** The row asking whether to stop (`s:<id>`, `r:<runId>`): one at a time, from the keys or a hover Stop. */
 const confirmingId = ref<string | null>(null)
-const rows = computed(() => focusRows(model.value, joined.list.value, folds.value))
+const rows = computed(() => focusRows(model.value, joined.list.value, folds.value, loneDecisions.value.map((d) => d.id)))
 const byId = computed(() => {
   const m = new Map<string, SessionRow | RunBlock>()
   for (const key of ['needs', 'running', 'exited'] as const) {
@@ -181,7 +181,9 @@ const byId = computed(() => {
   return m
 })
 function rowEl(id: string, within = 'a[href]'): HTMLElement | null {
-  return listEl.value?.querySelector<HTMLElement>(`[data-sidebar-row="${CSS.escape(id)}"] ${within}`) ?? null
+  // A decision's row is a button: the card opens in place, nothing navigates.
+  const what = id.startsWith('d:') && within === 'a[href]' ? 'button' : within
+  return listEl.value?.querySelector<HTMLElement>(`[data-sidebar-row="${CSS.escape(id)}"] ${what}`) ?? null
 }
 function focusRow(id: string | null) {
   focused.value = id
@@ -218,6 +220,7 @@ function openRow(id: string) {
   if (!f) return
   if (f.kind === 'session') router.push(`/sessions/${f.sessionId}`)
   else if (f.kind === 'run') router.push(`/runs/${encodeURIComponent(f.runId)}`)
+  else if (f.kind === 'decision') decisionModal.open(f.decision)
   else {
     const e = joined.list.value.find((x) => x.id === f.entryId)
     if (e) router.push(joinedPath(e))
@@ -402,12 +405,19 @@ onBeforeUnmount(() => window.clearInterval(tick))
               @sheet="openSheet"
             />
           </template>
-          <li v-for="d in loneDecisions" :key="d.id">
-            <button type="button" class="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-elevated/60" :data-sidebar-decision="d.id" @click="decisionModal.open(d.id)">
+          <li v-for="d in loneDecisions" :key="d.id" :data-sidebar-row="`d:${d.id}`">
+            <button
+              type="button"
+              class="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none hover:bg-elevated/60 focus-visible:ring-2 focus-visible:ring-primary"
+              :class="focused === `d:${d.id}` ? 'bg-elevated/60' : ''"
+              :data-sidebar-decision="d.id"
+              @click="decisionModal.open(d.id)"
+            >
               <UIcon name="i-lucide-scale" class="size-4 flex-none text-warning" />
               <span class="min-w-0 flex-1 truncate"><span class="font-mono text-xs">{{ d.id }}</span> {{ d.request.question }}</span>
             </button>
           </li>
+          <li v-if="loneDecisions.length && decisions.cut.value" class="px-2 py-1 text-xs text-muted" data-sidebar-decisions-cut>More decisions are open than these: the oldest are on their run and ticket pages.</li>
         </ol>
       </SidebarSection>
 

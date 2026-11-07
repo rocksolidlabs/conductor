@@ -1,6 +1,6 @@
 import type { DecisionEvent } from '~/utils/protocol'
 import type { Decision, DecisionRef } from '~/utils/decisions'
-import { isDecisionId } from '~/utils/decisions'
+import { isDecisionId, replaces } from '~/utils/decisions'
 
 /**
  * The durable decisions the operator has before them (Program item DR1, docs/plans/decisions.md, "web/app"): the open and answered
@@ -18,9 +18,28 @@ export function asDecisionEvent(v: unknown): DecisionEvent | null {
   return isDecisionId(e.id as string) && typeof e.run === 'string' && typeof e.state === 'string' && typeof e.rev === 'number' ? (e as unknown as DecisionEvent) : null
 }
 
-/** What the store reads: one state's page of the operator's list, newest first. */
+/** What the store reads: one state's page of the operator's list, newest first, after `after` (a page's `next`) when given. */
 export interface DecisionReads {
-  list: (state: 'open' | 'answered') => Promise<Decision[]>
+  list: (state: 'open' | 'answered', after?: string) => Promise<{ decisions: Decision[]; next?: string }>
+}
+
+/**
+ * How many pages of each state the store reads (the route's pages hold at most 100): past them the list is cut, and the store says
+ * so (`cut`), so Needs you and the palette never claim to be whole. Ten pages are a thousand decisions open at once.
+ */
+export const DECISION_PAGES = 10
+
+/** Every page of one state, following `next` up to DECISION_PAGES pages; `cut` when more followed. */
+export async function readAll(reads: DecisionReads, state: 'open' | 'answered', pages = DECISION_PAGES): Promise<{ decisions: Decision[]; cut: boolean }> {
+  const out: Decision[] = []
+  let after: string | undefined
+  for (let i = 0; i < pages; i++) {
+    const r = await reads.list(state, after)
+    out.push(...r.decisions)
+    if (!r.next || r.next === after) return { decisions: out, cut: false }
+    after = r.next
+  }
+  return { decisions: out, cut: true }
 }
 
 /** What a page that shows decisions is told: a decision changed (`e`), or the stream came back or is down (null: read it all again). */
@@ -30,6 +49,8 @@ export class DecisionsLive {
   /** The open and answered decisions, oldest first. */
   decisions: Decision[] = []
   loaded = false
+  /** The open or the answered decisions were more than DECISION_PAGES pages: the oldest past them are not here. */
+  cut = false
   error = ''
   /** The pages' counter: bumped after every change of the store. */
   changed: () => void = () => {}
@@ -95,8 +116,9 @@ export class DecisionsLive {
       try {
         do {
           this.again = false
-          const [open, answered] = await Promise.all([reads.list('open'), reads.list('answered')])
-          this.decisions = [...open, ...answered].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+          const [open, answered] = await Promise.all([readAll(reads, 'open'), readAll(reads, 'answered')])
+          this.decisions = [...open.decisions, ...answered.decisions].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+          this.cut = open.cut || answered.cut
           this.loaded = true
           this.error = ''
           this.changed()
@@ -131,11 +153,11 @@ export function useDecisions() {
   const version = useState('decisionsVersion', () => 0)
   const store = decisionsLive()
   store.attach({
-    list: async (state) => {
+    list: async (state, after) => {
       // Only the operator reads them: without the workbench token there is nothing to read (and no prompt for one).
-      if (!admin.token.value) return []
-      const r = await request<{ decisions?: Decision[] }>('/api/decisions', { query: { state } })
-      return r.decisions ?? []
+      if (!admin.token.value) return { decisions: [] }
+      const r = await request<{ decisions?: Decision[]; next?: string }>('/api/decisions', { query: after ? { state, after } : { state } })
+      return { decisions: r.decisions ?? [], next: r.next }
     },
   })
   store.changed = () => version.value++
@@ -145,10 +167,15 @@ export function useDecisions() {
     return store.decisions
   })
   const open = computed(() => decisions.value.filter((d) => d.state === 'open'))
+  /** Whether the list is cut (more than DECISION_PAGES pages of a state): the rest are on their run and ticket pages. */
+  const cut = computed(() => {
+    void version.value
+    return store.cut
+  })
   function start() {
     if (import.meta.client) void store.read()
   }
-  return { decisions, open, start, read: () => store.read() }
+  return { decisions, open, cut, start, read: () => store.read() }
 }
 
 /** The card the app shows in its modal: the decision's id, or '' for none. One for the app (DecisionModal.vue in the layout). */
@@ -164,44 +191,80 @@ export function useDecisionModal() {
 }
 
 /**
+ * The record a card shows, ordered by the record's revision (Codex's round 1 on #719): a read's or a write's reply replaces it only
+ * when it is of the decision shown and no older than it (`replaces`), so a reply delayed past a newer one never brings an older
+ * record back, whichever of a read and a write answers last. A read of another decision than the one now asked for is dropped.
+ */
+export class DecisionRecordView {
+  decision: Decision | null = null
+  refs: DecisionRef[] = []
+
+  /** A read's reply, the record whole; false when it was dropped. */
+  read(asked: string, now: string, r: { decision: Decision; refs?: DecisionRef[] }): boolean {
+    if (asked !== now || r.decision.id !== now || !replaces(this.decision, r.decision, true)) return false
+    this.decision = r.decision
+    this.refs = r.refs ?? []
+    return true
+  }
+
+  /** A write's reply (the record without its history and responses, which the shown one's fill); false when it was dropped. */
+  write(now: string, d: Decision): boolean {
+    if (d.id !== now || !replaces(this.decision, d, false)) return false
+    const same = this.decision?.id === d.id
+    this.decision = { ...d, history: d.history ?? (same ? this.decision?.history : undefined), responses: d.responses ?? (same ? this.decision?.responses : undefined) }
+    return true
+  }
+
+  clear() {
+    this.decision = null
+    this.refs = []
+  }
+}
+
+/**
  * One decision whole (`GET /api/decisions/{id}`, with its evidence's resolutions), read when the id is set, again on its own `decision`
- * event and when the stream comes back, and after each of the card's writes (`read`). Only the last read started is shown.
+ * event and when the stream comes back, and after each of the card's writes (`read`). What is shown is the newest revision any reply
+ * brought (DecisionRecordView).
  */
 export function useDecisionRecord(id: () => string) {
   const { request } = useApi()
+  const view = new DecisionRecordView()
   const decision = ref<Decision | null>(null)
   const refs = ref<DecisionRef[]>([])
   const error = ref('')
   const loading = ref(false)
   let seq = 0
+  function show() {
+    decision.value = view.decision
+    refs.value = view.refs
+  }
   async function read(): Promise<void> {
     const d = id()
     const mine = ++seq
     if (!d) {
-      decision.value = null
-      refs.value = []
+      view.clear()
+      show()
       error.value = ''
       return
+    }
+    if (view.decision && view.decision.id !== d) {
+      view.clear()
+      show()
     }
     loading.value = true
     try {
       const r = await request<{ decision: Decision; refs?: DecisionRef[] }>(`/api/decisions/${encodeURIComponent(d)}`)
-      if (mine !== seq) return
-      decision.value = r.decision
-      refs.value = r.refs ?? []
-      error.value = ''
+      if (view.read(d, id(), r)) show()
+      if (mine === seq) error.value = ''
     } catch (e) {
       if (mine === seq) error.value = (e as Error).message
     } finally {
       if (mine === seq) loading.value = false
     }
   }
-  /** Takes a decision a write answered with: it is the newest there is. */
+  /** Takes a decision a write answered with, unless a newer revision is shown already. */
   function apply(d: Decision) {
-    if (d.id !== id()) return
-    seq++
-    decision.value = { ...d, history: d.history ?? decision.value?.history, responses: d.responses ?? decision.value?.responses }
-    loading.value = false
+    if (view.write(id(), d)) show()
   }
   const stop = decisionsLive().subscribe((e) => {
     if (!e || e.id === id()) void read()

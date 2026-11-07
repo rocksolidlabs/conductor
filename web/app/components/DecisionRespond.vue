@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Decision, OpReceipt, ResponseReceipt } from '~/utils/decisions'
-import { askForMore, commentDecision, optionsOf, recommended, refusalOf, respondDecision, responseBody } from '~/utils/decisions'
+import { askForMore, commentDecision, confirmAuthorizes, optionsOf, recommended, refusalOf, respondDecision, responseBody } from '~/utils/decisions'
 
 /**
  * The operator's answer to a durable decision (Program item DR1, docs/plans/decisions.md, "web/app"): the controls by its type (a
@@ -131,7 +131,7 @@ watch(
       <div v-if="pending" class="flex flex-col gap-2 rounded-md bg-warning/10 p-2 ring ring-warning/30" data-decision-confirm-step>
         <p class="text-sm">
           Answer {{ decision.id }} <span class="font-semibold">{{ options[pending.choice]?.label }}</span>?
-          <template v-if="decision.request.authorizes && pending.choice === 0"> A yes authorizes: {{ decision.request.authorizes }}</template>
+          <template v-if="confirmAuthorizes(decision, pending.choice)"> <span data-decision-confirm-authorizes>{{ confirmAuthorizes(decision, pending.choice) }}</span></template>
         </p>
         <p v-if="moved" class="text-xs text-warning" data-decision-moved>{{ decision.id }} changed since you picked it: it is {{ decision.state }} now. Confirm sends it anyway, and the answer says what happened.</p>
         <div class="flex justify-end gap-2">

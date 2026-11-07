@@ -181,6 +181,11 @@ test("build's approval waits while docs finishes, is answered in its card from t
   const palette = await openPalette(page)
   const prow = palette.locator(`[data-palette-row="decision:${id}"]`)
   await expect(prow).toContainText(`Answer ${id}: ${question}`)
+  // One row for the decision (the reviews of #719): its "Answer" row in Needs you stands for the session's question that mirrors it,
+  // so the session is listed among the running, not again in Needs you.
+  await expect(prow).toHaveCount(1)
+  await expect(palette.locator(`[data-palette-group="needs"] [data-palette-row="session:${sid}"]`)).toHaveCount(0)
+  await expect(palette.locator(`[data-palette-group="running"] [data-palette-row="session:${sid}"]`)).toHaveCount(1)
   await prow.click()
   await expect(modal.locator('[data-decision-question]')).toHaveText(question)
   await modal.locator('[data-decision-choice-label="Approve"]').click()
@@ -193,6 +198,10 @@ test("build's approval waits while docs finishes, is answered in its card from t
   await expect(modal.locator('[data-decision-step="applied"] [data-step-words]')).toContainText("typed into build's attempt 1")
   await expect(modal.locator('[data-decision-step="recorded"] [data-step-words]')).toContainText(`Recorded: ${id} answered by Nate`)
   await expect(modal.locator('[data-decision-state-words]')).toHaveText("Applied: typed into build's attempt 1")
+  // The card says the answer itself: the option picked, why, and who (Codex's round 1 on #719).
+  await expect(modal.locator('[data-decision-answer-choice]')).toHaveText('Approve')
+  await expect(modal.locator('[data-decision-answer-rationale]')).toHaveText('Small enough.')
+  await expect(modal.locator('[data-decision-answer-by]')).toHaveText('Nate')
 
   // The stub took the typed line as its answer and went on: build succeeds with stub-answer.txt in its result.
   const done = await runUntil(api, runId, (r) => task(r, 'build').state === 'succeeded', 'build succeeds once its answer is typed')

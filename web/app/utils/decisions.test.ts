@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
   DecisionRefused,
+  acceptedAnswer,
   answerRows,
+  confirmAuthorizes,
+  mirroringSessions,
+  oneRowPerDecision,
+  replaces,
+  requiredRecord,
+  rowDecision,
+  runHeldOf,
   askForMore,
   cancelDecision,
   commentDecision,
@@ -202,5 +210,104 @@ describe("Needs you's and the palette's decisions", () => {
     ])
     rows[1]!.run()
     expect(opened).toEqual(['dr-2'])
+  })
+})
+
+// The reviews of #719, each finding's rule.
+describe("the card's answer, its confirm, its run and its record", () => {
+  it('shows the accepted answer: the option picked, the words, the rationale and who (an approval, a clarification)', () => {
+    // An agent's approval answered with its second option, and a rationale.
+    expect(acceptedAnswer(decision({ state: 'applied', responses: [{ ...recorded, choice: 1, rationale: 'Too big' }] }))).toEqual({ choice: 'Reject', rationale: 'Too big', by: 'Nate' })
+    // A clarification answered in words.
+    const clar = decision({ type: 'clarification', request: { question: 'Which port?' }, state: 'answered', responses: [{ ...recorded, choice: undefined, text: 'Use 8443', rationale: 'TLS' }] })
+    expect(acceptedAnswer(clar)).toEqual({ text: 'Use 8443', rationale: 'TLS', by: 'Nate' })
+    // A refused response is no answer; a list's record carries only the words.
+    expect(acceptedAnswer(decision({ responses: [{ ...recorded, status: 'refused', code: 'stale_decision' }] }))).toBeNull()
+    expect(acceptedAnswer(decision({ state: 'answered', answer: 'Approve (Nate)' }))).toEqual({ words: 'Approve (Nate)' })
+    expect(acceptedAnswer(decision())).toBeNull()
+  })
+
+  it("says what an agent's approval authorizes whichever option is picked, and a gate's only for its Approve", () => {
+    // An agent's approval whose option 0 is not the yes.
+    const agent = decision({ request: { question: 'Ship?', options: [{ label: 'Reject' }, { label: 'Approve' }], authorizes: 'build ships' } })
+    expect(confirmAuthorizes(agent, 0)).toBe('This approval authorizes: build ships')
+    expect(confirmAuthorizes(agent, 1)).toBe('This approval authorizes: build ships')
+    const gate = decision({ origin: 'plan', gate: 'ship', request: { question: 'Ship?', options: [{ label: 'Approve' }, { label: 'Reject' }], authorizes: 'deploy runs' } })
+    expect(confirmAuthorizes(gate, 0)).toBe('A yes authorizes: deploy runs')
+    expect(confirmAuthorizes(gate, 1)).toBe('')
+    expect(confirmAuthorizes(decision({ request: { question: 'Ship?' } }), 0)).toBe('')
+  })
+
+  it('takes a reply only of the decision shown and no older than it', () => {
+    expect(replaces(null, { id: 'dr-7', rev: 1 }, false)).toBe(true)
+    expect(replaces({ id: 'dr-7', rev: 3 }, { id: 'dr-7', rev: 2 }, true)).toBe(false)
+    expect(replaces({ id: 'dr-7', rev: 3 }, { id: 'dr-7', rev: 3 }, false)).toBe(false)
+    expect(replaces({ id: 'dr-7', rev: 3 }, { id: 'dr-7', rev: 3 }, true)).toBe(true)
+    expect(replaces({ id: 'dr-7', rev: 3 }, { id: 'dr-7', rev: 4 }, false)).toBe(true)
+    expect(replaces({ id: 'dr-7', rev: 3 }, { id: 'dr-8', rev: 1 }, false)).toBe(true)
+  })
+
+  it('knows a run interrupted at a restart (a record the live store leaves out) does not run, and one not read yet is not known', () => {
+    expect(runHeldOf(undefined)).toBeUndefined()
+    expect(runHeldOf(null)).toBe(false)
+    expect(runHeldOf({ record: true, state: 'interrupted' })).toBe(false)
+    expect(runHeldOf({ stoppedAt: T0 })).toBe(false)
+    expect(runHeldOf({ state: 'running' })).toBe(true)
+    // Answered on such a run: the words wait for it to be continued.
+    expect(decisionWords(decision({ state: 'answered', responses: [recorded] }), { runHeld: runHeldOf({ record: true }) }).state).toBe('Recorded: waiting for the run to be continued')
+  })
+
+  it("names a required decision's record only from a run of the approved revision", () => {
+    const r1 = decision({ id: 'dr-1', origin: 'plan', gate: 'ship', plan: 'pl-r1', state: 'applied' })
+    const r2 = decision({ id: 'dr-2', origin: 'plan', gate: 'ship', plan: 'pl-r2' })
+    // r2 approved, no run of it yet: r1's applied gate of the same id is not r2's.
+    expect(requiredRecord([r1], 'ship', 'pl-r2')).toBeUndefined()
+    expect(requiredRecord([r2, r1], 'ship', 'pl-r2')?.id).toBe('dr-2')
+    expect(requiredRecord([r2, r1], 'ship', 'pl-r1')?.id).toBe('dr-1')
+    expect(requiredRecord([r1], 'ship', undefined)).toBeUndefined()
+  })
+})
+
+describe('one palette row per decision', () => {
+  const sessions = [
+    { id: 's1', name: 'build', attention: { id: 'q1', state: 'needs_input', decision: 'dr-1' } },
+    { id: 's2', name: 'docs', attention: { id: 'q2', state: 'needs_input' } },
+    { id: 's3', name: 'old', attention: { id: 'q3', state: 'working', decision: 'dr-3' } },
+  ]
+
+  it('finds the sessions whose shown question mirrors an open decision', () => {
+    expect([...mirroringSessions(sessions, [{ id: 'dr-1' }, { id: 'dr-3' }])]).toEqual([['s1', 'dr-1']])
+    expect([...mirroringSessions(sessions, [])]).toEqual([])
+  })
+
+  it("names a row's decision: its own row, the decision page's row of a question that mirrors one, and none else", () => {
+    expect(rowDecision('decision:dr-1', sessions)).toBe('dr-1')
+    expect(rowDecision('decide:decision:dr-4', sessions)).toBe('dr-4')
+    expect(rowDecision('decide:question:s1/q1', sessions)).toBe('dr-1')
+    expect(rowDecision('decide:question:s1/q0', sessions)).toBeUndefined()
+    expect(rowDecision('decide:question:s2/q2', sessions)).toBeUndefined()
+    expect(rowDecision('session:s1', sessions)).toBeUndefined()
+    expect(rowDecision('decision:nope', sessions)).toBeUndefined()
+  })
+
+  // The overlap with the decision page (#684): its "Needs your decision" group lists a row per inbox item, the question that mirrors a
+  // decision among them; Needs you's "Answer dr-1" stands for it, and the page's row of it goes.
+  it("keeps the first row of each decision across the groups and drops every later one, the decision page's among them", () => {
+    const groups = [
+      { id: 'needs', rows: [{ key: 'session:s2' }, { key: 'decision:dr-1' }, { key: 'decision:dr-2' }] },
+      { id: 'running', rows: [{ key: 'session:s1' }] },
+      { id: 'decide', rows: [{ key: 'decide:question:s1/q1' }, { key: 'decide:question:s2/q2' }, { key: 'decide:plan:DRG-1/1' }] },
+    ]
+    const out = oneRowPerDecision(groups, (k) => rowDecision(k, sessions))
+    expect(out.map((g) => [g.id, g.rows.map((r) => r.key)])).toEqual([
+      ['needs', ['session:s2', 'decision:dr-1', 'decision:dr-2']],
+      ['running', ['session:s1']],
+      ['decide', ['decide:question:s2/q2', 'decide:plan:DRG-1/1']],
+    ])
+  })
+
+  it("names the session a mirrored decision's row stands for", () => {
+    const rows = answerRows([decision({ id: 'dr-1' })], () => {}, (id) => (id === 'dr-1' ? 'build' : undefined))
+    expect(rows[0]!.detail).toBe("asked by build's attempt 1 in build")
   })
 })

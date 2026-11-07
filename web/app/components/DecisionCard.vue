@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { Decision, DecisionRef } from '~/utils/decisions'
-import { approverWords, askedWhere, decisionWords, historyWords, optionsOf, recommended, subjectWords } from '~/utils/decisions'
+import type { RunInfo } from '~/composables/useSessions'
+import { acceptedAnswer, approverWords, askedWhere, decisionWords, historyWords, optionsOf, recommended, runHeldOf, subjectWords } from '~/utils/decisions'
 import { relativeTime } from '~/utils/sessions'
 
 /**
@@ -14,13 +15,30 @@ import { relativeTime } from '~/utils/sessions'
 const props = defineProps<{ decision: Decision; refs?: readonly DecisionRef[]; now: number }>()
 
 const live = useAttention()
+/**
+ * The run that holds it, read for the card when the live store does not hold it (Codex's round 1 on #719): a run interrupted at a
+ * restart is a record the live store leaves out, so the store's silence is read through the run's own route (`record`), or null for
+ * one the server does not have.
+ */
+const read = ref<{ id: string; run: RunInfo | null } | null>(null)
+watch(
+  () => [props.decision.run, !!live.runOf(props.decision.run)] as const,
+  async ([id, held]) => {
+    if (held || read.value?.id === id) return
+    try {
+      const run = await live.refreshRun(id)
+      if (props.decision.run === id) read.value = { id, run }
+    } catch {
+      /* not known: the card says what it can without it */
+    }
+  },
+  { immediate: true },
+)
 /** Whether the run that holds it runs here now: an answer recorded on a run that does not waits for it to be continued. */
-const runHeld = computed(() => {
-  const r = live.runOf(props.decision.run)
-  if (!r) return undefined
-  return !r.record && !r.stoppedAt && !r.resumedBy && r.state !== 'interrupted'
-})
+const runHeld = computed(() => runHeldOf(live.runOf(props.decision.run) ?? (read.value?.id === props.decision.run ? read.value.run : undefined)))
 const words = computed(() => decisionWords(props.decision, { runHeld: runHeld.value }))
+/** The accepted answer, once there is one: the option picked, the words, the rationale and who. */
+const answer = computed(() => acceptedAnswer(props.decision))
 const options = computed(() => optionsOf(props.decision))
 const best = computed(() => recommended(props.decision))
 const subject = computed(() => subjectWords(props.decision.request.subject))
@@ -84,6 +102,30 @@ const showHistory = ref(false)
     <div v-if="decision.request.evidence?.length" class="flex flex-wrap gap-1.5" data-decision-evidence>
       <BrakemanRefChip v-for="ref in decision.request.evidence" :key="ref" :ref-name="ref" :resolution="refOf(ref)" baseline />
     </div>
+
+    <!-- The accepted answer: what was picked or said, why, and who (Codex's round 1 on #719). -->
+    <dl v-if="answer" class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-md bg-success/5 p-2 text-xs ring ring-success/20" data-decision-answer>
+      <template v-if="answer.choice">
+        <dt class="text-muted">Answer</dt>
+        <dd class="break-words font-medium" data-decision-answer-choice>{{ answer.choice }}</dd>
+      </template>
+      <template v-if="answer.text">
+        <dt class="text-muted">{{ answer.choice ? 'Said' : 'Answer' }}</dt>
+        <dd class="whitespace-pre-wrap break-words" data-decision-answer-text>{{ answer.text }}</dd>
+      </template>
+      <template v-if="answer.words && !answer.choice && !answer.text">
+        <dt class="text-muted">Answer</dt>
+        <dd class="break-words" data-decision-answer-words>{{ answer.words }}</dd>
+      </template>
+      <template v-if="answer.rationale">
+        <dt class="text-muted">Why</dt>
+        <dd class="whitespace-pre-wrap break-words" data-decision-answer-rationale>{{ answer.rationale }}</dd>
+      </template>
+      <template v-if="answer.by">
+        <dt class="text-muted">By</dt>
+        <dd class="break-words" data-decision-answer-by>{{ answer.by }}</dd>
+      </template>
+    </dl>
 
     <!-- The four states apart: each with what it rests on and when. -->
     <ol class="flex flex-col gap-1 rounded-md bg-elevated/40 p-2" data-decision-steps>

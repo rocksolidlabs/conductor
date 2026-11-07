@@ -1,4 +1,4 @@
-import { expect, stopStrays, task, test } from './fixtures'
+import { expect, stopStrays, task, test, type Session } from './fixtures'
 import { budget, decision, decisionServer, decisionUntil, decisionsOf, makeTicket, operatorPage, propose, runUntil, type DecisionServer } from './decisions-helpers'
 
 // A ticket's plan revision gating a task (Program item DR1, docs/plans/decisions.md, PR-7: the approve half; the reject half is PR-8's),
@@ -57,6 +57,8 @@ test("a revision's gate holds deploy until the operator approves it on the ticke
   await propose(api, ticket, crewId, [{ id: 'ship', question: 'May deploy go out?', kind: 'approval', before: ['deploy'] }])
 
   const page = await operatorPage(browser, srv.started)
+  // The pill ] shows lives as long as the test may (PILL_MS is the product's bound, not this test's: palette-reach.spec.ts).
+  await page.addInitScript((ms) => ((window as Window & { conductorPillMs?: number }).conductorPillMs = ms), test.info().timeout + 600_000)
   budget(8 * STEP_MS)
   await page.goto(`${base}/dispatch/${PROJECT}/1`)
   await expect(page.locator('[data-ticket-title]')).toHaveText('Deploy the stub build', { timeout: 30_000 })
@@ -97,6 +99,51 @@ test("a revision's gate holds deploy until the operator approves it on the ticke
   await expect(page.locator('[data-task-row="deploy"] [data-task-words]')).toHaveText(`waits for decision ${id}`, { timeout: 30_000 })
   await expect(page.locator('[data-task-row="deploy"] [data-task-answer="deploy"]')).toBeVisible()
   expect((await api.run(runId)).tasks!.find((t) => t.id === 'deploy')!.attempts).toBe(0)
+
+  // Needs you with a session's question waiting beside the gate (the reviews of #719): ] steps from the session's pill to the gate's,
+  // which stays shown, and Enter opens its card; in the sidebar, the gate's row is one a key lands on (↓ from the session's row, or
+  // the focus moved there), and Enter on it opens its card, not the session before it.
+  budget(16 * STEP_MS)
+  const asker = await api.ok<Session>('POST', '/api/sessions', { agentId: 'asker', name: 'e2e gate asker' })
+  await expect.poll(async () => (await api.session(asker.id)).attention?.state, { timeout: 30_000, intervals: [250] }).toBe('needs_input')
+  const sideRow = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${asker.id}"]`).first()
+  await expect(sideRow).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
+  const gateRow = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="d:${id}"]`)
+  await expect(gateRow).toBeVisible({ timeout: 30_000 })
+  const card = page.locator(`[data-decision-modal][data-decision-modal-id="${id}"]`)
+  const closeCard = async () => {
+    await page.getByRole('dialog', { name: /^Decision dr-/ }).getByRole('button', { name: 'Close' }).click()
+    await expect(page.locator('[data-decision-modal]')).toHaveCount(0)
+  }
+  // Each pill by what it shows: the one it replaces leaves through its transition while the next comes in.
+  const sessionPill = page.locator(`[data-needs-pill][data-pill-session="${asker.id}"]`)
+  const gatePill = page.locator(`[data-needs-pill][data-pill-decision="${id}"]`)
+  await page.keyboard.press(']')
+  await expect(sessionPill.locator('[data-pill-count]')).toHaveText('1 of 2')
+  await page.keyboard.press(']')
+  await expect(gatePill.locator('[data-pill-count]')).toHaveText('2 of 2')
+  await expect(gatePill.locator('[data-pill-message]')).toHaveText('May deploy go out?')
+  await expect(sessionPill).toHaveCount(0)
+  // Still the gate's once the session's has gone: nothing of the session it stepped from hid it.
+  await expect(gatePill).toBeVisible()
+  await page.keyboard.press('Enter')
+  await expect(card.locator('[data-decision-question]')).toHaveText('May deploy go out?')
+  await expect(page.locator('[data-needs-pill]')).toHaveCount(0)
+  await closeCard()
+  const gateButton = gateRow.locator(`[data-sidebar-decision="${id}"]`)
+  await sideRow.locator('a[href]').first().focus()
+  await page.keyboard.press('ArrowDown')
+  await expect(gateButton).toBeFocused()
+  await page.keyboard.press('Enter')
+  await expect(card.locator('[data-decision-question]')).toHaveText('May deploy go out?')
+  await closeCard()
+  await sideRow.locator('a[href]').first().focus()
+  await gateButton.focus()
+  await page.keyboard.press('Enter')
+  await expect(card.locator('[data-decision-question]')).toHaveText('May deploy go out?')
+  await expect(page).toHaveURL(new RegExp(`/runs/${runId}\\?view=tasks$`))
+  await closeCard()
+  await api.stopSession(asker.id)
 
   // The ticket page's Decisions lists the gate open, and its required decision names it; Answer opens the card, where it is approved.
   budget(8 * STEP_MS)

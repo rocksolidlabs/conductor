@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { choiceKey } from '~/utils/attention'
+import { pillGoes } from '~/utils/needsCursor'
 import { replyFailure } from '~/utils/reply'
 import { rowPrompt } from '~/utils/sidebarActions'
 import { sessionRow } from '~/utils/sidebar'
@@ -31,12 +32,14 @@ watch(lone, (d) => {
   if (cursor.shown.value?.decision && !d) cursor.hide()
 })
 const prompt = computed(() => (session.value ? rowPrompt(sessionRow(session.value)) : null))
-/** The session answered, gone, or asking another question: the pill goes with the question it showed (Codex's round on #303). */
+/**
+ * The session answered, gone, or asking another question: the pill goes with the question it showed (Codex's round on #303). A
+ * decision's pill shows no session, so a step from a session's pill to a decision's is no session moving on (pillGoes).
+ */
 watch(
   () => [session.value?.attention?.state, session.value?.attention?.id] as const,
   ([state, id]) => {
-    const shown = cursor.shown.value
-    if (shown && (state !== 'needs_input' || id !== shown.question)) cursor.hide()
+    if (pillGoes(cursor.shown.value, state, id)) cursor.hide()
   },
 )
 /** Where the focus was when the Alt twins gave it to the pill: given back when the pill goes while it still holds it. */

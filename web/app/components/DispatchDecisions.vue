@@ -2,7 +2,7 @@
 import type { PlanDecision } from '~/composables/useDispatch'
 import type { DecisionRow } from '~/utils/dispatch'
 import type { Decision } from '~/utils/decisions'
-import { decisionWords } from '~/utils/decisions'
+import { decisionWords, requiredRecord } from '~/utils/decisions'
 import { relativeTime } from '~/utils/sessions'
 
 /**
@@ -19,9 +19,10 @@ const props = defineProps<{
   rows: readonly DecisionRow[]
   /** The durable decisions of the ticket's runs, newest first; null before the first read answered. */
   records?: readonly Decision[] | null
-  /** The approved revision's required decisions, and its tag (r2), when its body is read. */
+  /** The approved revision's required decisions, its tag (r2) and its id, when its body is read. */
   required?: readonly PlanDecision[]
   revision?: string
+  planId?: string
   now: number
 }>()
 
@@ -33,8 +34,8 @@ const ICONS: Record<DecisionRow['kind'], string> = {
 }
 const tones = { warning: 'text-warning', error: 'text-error', muted: 'text-muted', default: 'text-default', success: 'text-success' }
 const decisionModal = useDecisionModal()
-/** A required decision's latest record: the newest gate of that plan decision. */
-const recordOf = (gate: string) => props.records?.find((r) => r.origin === 'plan' && r.gate === gate)
+/** A required decision's latest record: the newest gate of that plan decision opened under the approved revision, none of another's. */
+const recordOf = (gate: string) => requiredRecord(props.records, gate, props.planId)
 </script>
 
 <template>
