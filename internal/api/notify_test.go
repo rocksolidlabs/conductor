@@ -794,7 +794,10 @@ func funcName(f any) string { return runtime.FuncForPC(reflect.ValueOf(f).Pointe
 func TestSinksInMainsOrder(t *testing.T) {
 	plain := newTestEnv(t, nil)
 	engine := funcName(plain.srv.runs.OnActivity)
-	if len(plain.srv.events.sinks) != 1 || funcName(plain.srv.events.sinks[0]) != engine {
+	// Brakeman's background role's sink comes before the engine's, on a
+	// server with a data directory (docs/plans/brakeman.md, PR-14).
+	role := funcName(plain.srv.brakeman.activity)
+	if len(plain.srv.events.sinks) != 2 || funcName(plain.srv.events.sinks[0]) != role || funcName(plain.srv.events.sinks[1]) != engine {
 		t.Fatalf("the free build's sinks: %d", len(plain.srv.events.sinks))
 	}
 
@@ -829,17 +832,17 @@ func TestSinksInMainsOrder(t *testing.T) {
 	t.Cleanup(func() { close(release) })
 	e.srv.events.mu.Lock()
 	sinks := e.srv.events.sinks
-	if len(sinks) != 2 || funcName(sinks[0]) != funcName((&notifier{}).offer) || funcName(sinks[1]) != engine {
+	if len(sinks) != 3 || funcName(sinks[0]) != funcName((&notifier{}).offer) || funcName(sinks[1]) != role || funcName(sinks[2]) != engine {
 		e.srv.events.mu.Unlock()
-		t.Fatalf("the hub's sinks are not the notifier, then the engine")
+		t.Fatalf("the hub's sinks are not the notifier, then Brakeman's role, then the engine")
 	}
 	// The engine, as it is handed an entry, sees it queued already for
 	// the webhook and the sink.
 	type seen struct{ webhook, sink int }
 	saw := make(chan seen, 4)
 	hook, sink := e.srv.webhooks.hooks[0], sinkOf(t, e.srv, "held")
-	runs := sinks[1]
-	e.srv.events.sinks = []activitySink{sinks[0], func(id string, en session.ActivityEntry, st session.AttentionState) {
+	runs := sinks[2]
+	e.srv.events.sinks = []activitySink{sinks[0], sinks[1], func(id string, en session.ActivityEntry, st session.AttentionState) {
 		if id == "probe" {
 			w, _ := hook.stats()
 			s, _ := sink.queue.stats()

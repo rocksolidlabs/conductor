@@ -118,6 +118,9 @@ type Submission struct {
 	// typed whose Enter is not written lets the claim go (ErrLineStranded,
 	// the turn held). A line naming no question answers nothing.
 	Question string
+	// ReqID is the request id of the reply the line is (proto.Answer.ReqID),
+	// kept with the question's result when the line answers it.
+	ReqID string
 	// Withdrawn, when set, is closed once whoever sent the submission no
 	// longer stands (an extension's Host whose try was given up): as a
 	// revoked link does for By or From, it withdraws the submission
@@ -192,6 +195,15 @@ type submitState struct {
 // claimed reports whether the submission holds a claim on its question.
 func (st submitState) claimed() bool { return st.claim != nil && st.claim.Load() != 0 }
 
+// settle gives up the claim the submission holds, resolved or not, as it
+// ends (claimSettled): a claim it resolved is gone already, and one it
+// handed on (strand) is no longer its own.
+func (st submitState) settle(s *Local, sub Submission) {
+	if st.claim != nil {
+		s.claimSettled(sub.Question, st.claim.Swap(0))
+	}
+}
+
 // strand is the submission's line typed and its Enter not written for
 // good: its claim is taken from it and kept as the stranded line's
 // (strandedClaim, with holdPending), to be let go as the hold of the turn
@@ -218,6 +230,8 @@ func (st submitState) strand(s *Local, sub Submission, res SubmitResult, err err
 	}
 	s.mu.Lock()
 	s.strandedClaim, s.holdPending = claim, true
+	// No claimant resolves it now: its Enter is not written for good.
+	delete(s.claiming, claim.token)
 	s.mu.Unlock()
 	if err == nil {
 		err = ErrLineStranded
@@ -425,6 +439,14 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		claim:    new(atomic.Uint64),
 		decision: sub.Decision,
 	}
+	// A claim the line made and did not resolve is given up as it ends
+	// (claimSettled): here, or by the goroutine it is handed to.
+	handed := false
+	defer func() {
+		if !handed {
+			st.settle(s, sub)
+		}
+	}()
 	if text != "" {
 		data := text
 		if s.paste.on() {
@@ -463,6 +485,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 			// accepted.
 			res.Typed = true
 			release = false
+			handed = true
 			go s.finishSubmission(landed, sub, text, st)
 			if errors.Is(err, ErrRevoked) {
 				return res, err
@@ -492,6 +515,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		// its word given then (finishEntered), never before the last byte
 		// lands. The turn is given back: the Enter is in the writer's
 		// hands ahead of whatever comes next.
+		handed = true
 		go s.finishEntered(sub, res, st)
 		res.landed = nil
 		return res, ErrSubmitPending
@@ -503,6 +527,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		// the program reads, holding the turn till then, so no other line
 		// joins its text.
 		release = false
+		handed = true
 		go s.finishEnter(sub, res, st)
 		return res, ErrSubmitPending
 	}
@@ -562,6 +587,7 @@ var errEnterLater = errors.New("session: the Enter is to be pressed later")
 // again, as for any.
 func (s *Local) finishEnter(sub Submission, res SubmitResult, st submitState) {
 	defer func() { <-s.submitting }()
+	defer st.settle(s, sub)
 	s.finishLine(sub, res, st)
 }
 
@@ -845,6 +871,7 @@ func (s *Local) typedEntry(sub Submission, text string, st submitState) {
 // Enter, which is logged.
 func (s *Local) finishSubmission(landed <-chan error, sub Submission, text string, st submitState) {
 	defer func() { <-s.submitting }()
+	defer st.settle(s, sub)
 	select {
 	case err := <-landed:
 		if err != nil {
@@ -1053,7 +1080,7 @@ func (s *Local) resolveLine(sub Submission, st submitState) {
 		by, name = sub.By.ID, sub.By.Name
 	}
 	// A line's text is never repeated in the chat (answerWords): the line resolves the question by whom alone.
-	s.resolve(sub.Question, token, by, name, nil)
+	s.resolve(sub.Question, token, by, name, sub.ReqID, nil)
 }
 
 // landEnter waits for a submission's Enter whose write had begun when its
@@ -1088,6 +1115,7 @@ func (s *Local) landEnter(sub Submission, res SubmitResult, st submitState) (Sub
 // finishEntered is landEnter for a submission accepted with its Enter
 // pending (Submit's ErrSubmitPending): its word once the Enter has landed.
 func (s *Local) finishEntered(sub Submission, res SubmitResult, st submitState) {
+	defer st.settle(s, sub)
 	res, err := s.landEnter(sub, res, st)
 	s.finished(sub, res, err)
 }

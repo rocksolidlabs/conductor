@@ -123,11 +123,14 @@ const (
 
 // The intents whose resend, its receipt pruned, is compared by the
 // fingerprint kept with what the operation made (Replay): a plan
-// revision's proposal, a launch, a link's add.
+// revision's proposal, a launch, a link's add, a review's submit and a
+// finding's mark.
 const (
 	IntentPlanPropose  = "plan.propose"
 	IntentTicketLaunch = "ticket.launch"
 	IntentLinkAdd      = "link.add"
+	IntentReviewSubmit = "review.submit"
+	IntentFindingMark  = "finding.mark"
 )
 
 // Receipt is what an operation gets and what the store keeps under
@@ -189,6 +192,13 @@ const (
 	// ticket's.
 	EntityPlan   = "plan"
 	EntityLaunch = "launch"
+	// EntityReview is a ticket's review and EntityFinding one of its
+	// findings (Program item RV1): their rows name their ticket and its
+	// project; a review bumps its own rev, never the ticket's, and a
+	// finding has none (it is never edited: its marks are rows of its own
+	// log, field marks).
+	EntityReview  = "review"
+	EntityFinding = "finding"
 )
 
 // The ops of a change row: a scalar field set (value and prior), a set
@@ -244,6 +254,7 @@ var revTables = map[string]struct {
 	EntityView:      {"views", true},
 	EntityPlan:      {"plans", false},
 	EntityLaunch:    {"launches", false},
+	EntityReview:    {"reviews", false},
 }
 
 // tx is one operation's transaction: what a change writes through. It
@@ -701,6 +712,21 @@ func prunedAnswer(ctx context.Context, q queryer, op Op, intent, fp string) (rc 
 			return conflictReceipt(op, intent, wordsOpConflict), true, nil
 		}
 		table, id = "links", v.ID
+	case IntentReviewSubmit:
+		// A database before version 3 holds no review: its first row is
+		// another operation's.
+		if entity != EntityReview || kind != OpCreate || schemaOf(q) < 3 {
+			return conflictReceipt(op, intent, wordsOpConflict), true, nil
+		}
+		table, id = "reviews", entityID
+	case IntentFindingMark:
+		var v struct {
+			ID string `json:"id"`
+		}
+		if entity != EntityFinding || field != "marks" || kind != OpAdd || schemaOf(q) < 3 || json.Unmarshal([]byte(value), &v) != nil || v.ID == "" {
+			return conflictReceipt(op, intent, wordsOpConflict), true, nil
+		}
+		table, id = "finding_marks", v.ID
 	default:
 		return done, true, nil
 	}
@@ -875,7 +901,7 @@ func (s *Store) Receipt(ctx context.Context, actor, id string) (rc Receipt, foun
 // store holds it (done, or a refusal kept); once it is pruned, from the
 // changes log, which keeps the operation's first row (n 0) for good, a
 // done Repeat receipt whose id is what that row made for a plan
-// revision's proposal or a launch (the receipt's id), none for another
+// revision's proposal, a launch or a review's submit (the receipt's id), none for another
 // operation. found is false when neither holds it: never given, a
 // refusal never kept, or one whose receipt is pruned (a refusal writes no
 // change row). A caller that must tell an operation that never committed
@@ -896,7 +922,7 @@ func (s *Store) Committed(ctx context.Context, actor, id string) (rc Receipt, fo
 		return Receipt{}, false, err
 	}
 	rc = Receipt{OpID: id, Status: StatusDone, Repeat: true}
-	if kind == OpCreate && (entity == EntityPlan || entity == EntityLaunch) {
+	if kind == OpCreate && (entity == EntityPlan || entity == EntityLaunch || entity == EntityReview) {
 		rc.ID = entityID
 	}
 	return rc, true, nil

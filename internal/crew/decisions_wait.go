@@ -606,7 +606,8 @@ func (r *run) gateTasks(pd PackageDecision, doomed map[*task]bool) []*task {
 }
 
 // regate is the end of every change that makes a task runnable again (a
-// retry, an accept, a reopen, a continuation): for each plan decision the
+// retry, an accept and a Check again, through reopenRun; a review's
+// reopen; a continuation): for each plan decision the
 // run chain has not released, the tasks it names that are unfinished and
 // not doomed are held by its standing decision, or by a fresh one opened
 // in this change ("dr-9 asks again: build was retried after dr-1 was
@@ -779,10 +780,11 @@ func (e *Engine) openGate(r *run, pd PackageDecision, tasks []*task, cause strin
 	})
 }
 
-// retryNeedsRoom refuses a retry or an accept of t that would make a plan
+// retryNeedsRoom refuses a retry, an accept or a Check again of t (what
+// names the command in the refusal's words) that would make a plan
 // decision ask again in a run with no room for it (decision_limit): the
 // task stays as it was. The caller holds e.mu.
-func (r *run) retryNeedsRoom(t *task) error {
+func (r *run) retryNeedsRoom(t *task, what string) error {
 	if r.dec.gates == nil || r.pkg == nil {
 		return nil
 	}
@@ -818,7 +820,7 @@ func (r *run) retryNeedsRoom(t *task) error {
 	if len(asks) == 0 || r.decisionRoom(len(asks)) {
 		return nil
 	}
-	return refuse(CodeDecisionLimit, "the plan's decisions %s would ask again, and the run has room for %d more (%s): the retry is refused", strings.Join(asks, ", "), r.roomLeft(), r.roomWords())
+	return refuse(CodeDecisionLimit, "the plan's decisions %s would ask again, and the run has room for %d more (%s): the %s is refused", strings.Join(asks, ", "), r.roomLeft(), r.roomWords(), what)
 }
 
 // decisionsHeld counts what decisionRoom counts against the run's bound:
@@ -1397,8 +1399,13 @@ func settledN(r *run, n int64) *decision {
 	return nil
 }
 
-// cleanOpText cleans an operation's text: 1 to 4,000 characters.
+// cleanOpText cleans an operation's text: UTF-8 as sent (so the
+// fingerprint of the body as sent tells every two bodies apart, as a
+// response's does: checkResponse), 1 to 4,000 characters.
 func cleanOpText(text string, need bool) (string, error) {
+	if !utf8.ValidString(text) {
+		return "", refuse(CodeInvalid, "the text is UTF-8")
+	}
 	text = strings.TrimSpace(cleanText(text))
 	if n := utf8.RuneCountInString(text); need && n < 1 || n > ledger.MaxDecisionContext {
 		return "", refuse(CodeInvalid, "the text is 1 to %d characters", ledger.MaxDecisionContext)
@@ -1419,13 +1426,18 @@ func cleanOpText(text string, need bool) (string, error) {
 // its agent takes a turn to answer, by a new request that supersedes the
 // decision.
 func (e *Engine) CommentDecision(ctx context.Context, id, opID string, expectedRev int, kind, text, actor string) (OpReceipt, error) {
+	// Each operation's fingerprint is of its body as sent, before its text
+	// is cleaned, as a response's is (RespondDecision): a cleaned body
+	// could make two bodies one, and the plan's op_conflict tells them
+	// apart.
+	fp := fingerprintOf([]string{kind, text})
 	text, err := cleanOpText(text, true)
 	if err != nil {
 		return OpReceipt{}, err
 	}
 	switch kind {
 	case CommentKind:
-		return e.operate(ctx, id, operation{kind: ledger.HistoryCommented, opID: opID, fp: fingerprintOf([]string{kind, text}), actor: actor, rev: true, expectedRev: expectedRev,
+		return e.operate(ctx, id, operation{kind: ledger.HistoryCommented, opID: opID, fp: fp, actor: actor, rev: true, expectedRev: expectedRev,
 			held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
 				return opDetail{Text: text, By: actor, Words: fmt.Sprintf("Comment kept on %s", id)}, nil, nil
 			},
@@ -1436,7 +1448,7 @@ func (e *Engine) CommentDecision(ctx context.Context, id, opID string, expectedR
 	default:
 		return OpReceipt{}, refuse(CodeInvalid, "a comment is a comment or a more_info, not %q", kind)
 	}
-	return e.operate(ctx, id, operation{kind: ledger.HistoryInfoRequested, opID: opID, fp: fingerprintOf([]string{kind, text}), actor: actor, rev: true, wakes: true, expectedRev: expectedRev,
+	return e.operate(ctx, id, operation{kind: ledger.HistoryInfoRequested, opID: opID, fp: fp, actor: actor, rev: true, wakes: true, expectedRev: expectedRev,
 		held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
 			switch {
 			case rec.Origin == ledger.OriginPlan:
@@ -1491,12 +1503,13 @@ func (e *Engine) RouteDecision(ctx context.Context, id, opID string, expectedRev
 			return OpReceipt{}, refuse(CodeInvalid, "a decision is routed to the operator, not %q", shortText(d.Kind+" "+d.Name))
 		}
 	}
+	fp := fingerprintOf([]any{"route", to, note})
 	note, err := cleanOpText(note, false)
 	if err != nil {
 		return OpReceipt{}, err
 	}
 	dt := opDetail{Note: note, To: []any{map[string]string{"kind": "operator"}}, Rule: "local/1: the operator answers", By: actor, Words: fmt.Sprintf("%s is routed to the operator", id)}
-	return e.operate(ctx, id, operation{kind: ledger.HistoryRouted, opID: opID, fp: fingerprintOf([]string{"route", note}), actor: actor, expectedRev: expectedRev,
+	return e.operate(ctx, id, operation{kind: ledger.HistoryRouted, opID: opID, fp: fp, actor: actor, expectedRev: expectedRev,
 		held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
 			return dt, nil, nil
 		},
@@ -1510,11 +1523,12 @@ func (e *Engine) RouteDecision(ctx context.Context, id, opID string, expectedRev
 // cancelled once the decision is final; an agent's decision's hold is
 // released and its agent told.
 func (e *Engine) CancelDecision(ctx context.Context, id, commandID string, expectedRev int, release bool, why, actor string) (OpReceipt, error) {
+	fp := fingerprintOf([]any{"cancel", release, why})
 	why, err := cleanOpText(why, false)
 	if err != nil {
 		return OpReceipt{}, err
 	}
-	return e.operate(ctx, id, operation{kind: ledger.HistoryCancelled, opID: commandID, fp: fingerprintOf([]any{"cancel", release, why}), actor: actor, ahead: true, expectedRev: expectedRev,
+	return e.operate(ctx, id, operation{kind: ledger.HistoryCancelled, opID: commandID, fp: fp, actor: actor, ahead: true, expectedRev: expectedRev,
 		held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
 			if d == nil || !d.waits() || d.n == 0 {
 				return opDetail{}, nil, refuse(CodeDecisionClosed, "%s is %s: it is not cancelled", id, cmpState(d, rec))

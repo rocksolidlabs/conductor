@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -298,6 +299,36 @@ func (t *Tx) Continued(from string) error {
 		return fmt.Errorf("%w: %s", ErrContinued, from)
 	}
 	t.marked = from
+	return nil
+}
+
+// ErrPeopleListed says RestorePeople found the run's crew listing people
+// already: the transition is undone, so a crew as launched with people is
+// never written over.
+var ErrPeopleListed = errors.New("ledger: the run's crew lists people already")
+
+// RestorePeople writes crew, the run's crew as launched with the people
+// and the tasks' owners an older build left out of it (docs/plans/
+// decisions.md, HM1, Migration and downgrade), into the run's row: one
+// UPDATE, made only while the crew the row holds lists no people, so it
+// writes once (ErrPeopleListed otherwise, which undoes the transition).
+// ErrNoRun for a run with no row.
+func (t *Tx) RestorePeople(crew string) error {
+	if len(crew) > MaxCrew {
+		return fmt.Errorf("%w: the crew is %d bytes", ErrTooLarge, len(crew))
+	}
+	if _, ok, err := t.Run(); err != nil {
+		return err
+	} else if !ok {
+		return ErrNoRun
+	}
+	res, err := t.tx.ExecContext(t.ctx, `UPDATE runs SET crew = ? WHERE id = ? AND COALESCE(json_array_length(crew, '$.people'), 0) = 0`, crew, t.runID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return ErrPeopleListed
+	}
 	return nil
 }
 
@@ -797,6 +828,69 @@ func (l *Ledger) Check(ctx context.Context, runID, taskID string, n int, id stri
 		return CheckRow{}, false, err
 	}
 	return r, true, nil
+}
+
+// Bounds of ChecksOn: the runs it reads (a chain of continuations) and the
+// rows it answers.
+const (
+	MaxChecksOnRuns = 64
+	MaxChecksOn     = 20
+)
+
+// ChecksOn reads the receipts of one task's check or step (phase and id)
+// whose subject is the commit given, in any of the runs named (a run and
+// its continuations), without their logs: at most MaxChecksOn, newest
+// first (attempt numbers run on across continuations, and k within an
+// attempt). They are read by the table's primary key, which begins with
+// the run's id and the task's; no index of its own. More than
+// MaxChecksOnRuns runs is refused.
+func (l *Ledger) ChecksOn(ctx context.Context, runs []string, taskID, phase, id, subject string) ([]CheckRow, error) {
+	if len(runs) == 0 {
+		return nil, nil
+	}
+	if len(runs) > MaxChecksOnRuns {
+		return nil, fmt.Errorf("ledger: %d runs asked, more than %d", len(runs), MaxChecksOnRuns)
+	}
+	args := make([]any, 0, len(runs)+4)
+	marks := make([]string, len(runs))
+	for i, r := range runs {
+		marks[i] = "?"
+		args = append(args, r)
+	}
+	args = append(args, taskID, id, phase, subject)
+	var out []CheckRow
+	err := l.readAt(ctx, func(q querier, version int) error {
+		rows, err := q.QueryContext(ctx, `SELECT run_id, `+checkCols(version)+`, NULL FROM checks WHERE run_id IN (`+strings.Join(marks, ", ")+`) AND task_id = ? AND id = ? AND phase = ? AND subject = ? ORDER BY n DESC, k DESC, run_id LIMIT `+strconv.Itoa(MaxChecksOn), args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var runID string
+			r, err := scanCheck(prefixed{rows, &runID}, "")
+			if err != nil {
+				return err
+			}
+			r.RunID = runID
+			out = append(out, r)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// prefixed is a row whose first column is scanned into first, the rest
+// by the scan it is handed to.
+type prefixed struct {
+	sc    scanner
+	first *string
+}
+
+func (p prefixed) Scan(dest ...any) error {
+	return p.sc.Scan(append([]any{p.first}, dest...)...)
 }
 
 // CheckChanged reads the tracked paths a receipt's command changed, which
