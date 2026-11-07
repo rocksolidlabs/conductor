@@ -217,7 +217,7 @@ func version7Like(t *testing.T, src, dir string) {
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1) // the ATTACH and the pragma are the connection's
-	stmts := slices.Clone(schema[:len(schema)-len(decisionTables)])
+	stmts := slices.Clone(schema[:len(schema)-len(decisionTables)-len(decisionsRequestV9)])
 	// The rows are copied as they are, in no parent-first order.
 	stmts = append(stmts, "INSERT INTO schema_version (version) VALUES (7)", "PRAGMA foreign_keys = OFF", "ATTACH DATABASE '"+filepath.Join(src, File)+"' AS src")
 	for _, table := range v7Tables {
@@ -311,7 +311,7 @@ func TestMigrationSevenToEightAddsOnlyTables(t *testing.T) {
 	if ro, why := again.ReadOnly(); ro {
 		t.Fatalf("read-only after the migration: %s", why)
 	}
-	if v := dbVersion(t, again); v != 8 || Version != 8 {
+	if v := dbVersion(t, again); v != Version {
 		t.Fatalf("version %d after the migration, Version %d", v, Version)
 	}
 	wantTables := slices.Sorted(slices.Values(append(slices.Clone(v7Tables), "decisions", "decision_responses", "decision_history", "decision_holds", "decision_refunds")))
@@ -387,14 +387,15 @@ func TestDecisionIDsAreNeverReused(t *testing.T) {
 	}
 }
 
-// A request id the member sent before is the same decision: the row it
-// opened, nothing written; another body is a conflict; another member's
-// is a decision of its own.
+// A request id the member sent before for the task is the same decision:
+// the row it opened, nothing written; another body is a conflict; another
+// member's, and the same member's for another task, are decisions of
+// their own, read back by DecisionByRequest only for their own task.
 func TestARepeatedRequestIDIsTheSameDecision(t *testing.T) {
 	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
 	const run = "team-00000001"
 	newRun(t, l, run)
-	tasksOf(t, l, run, "build")
+	tasksOf(t, l, run, "build", "docs")
 	n := open(t, l, agentDecision(run, "build", 1, "q1"))
 	in(t, l, run, func(tx *Tx) error {
 		again, created, err := tx.OpenDecision(agentDecision(run, "build", 1, "q1"))
@@ -411,10 +412,21 @@ func TestARepeatedRequestIDIsTheSameDecision(t *testing.T) {
 		if d, created, err := tx.OpenDecision(mate); err != nil || !created || d.N == n {
 			return fmt.Errorf("another member's: %+v %v %v", d, created, err)
 		}
+		docs := agentDecision(run, "docs", 1, "q1")
+		docs.Fingerprint = "fp-other"
+		if d, created, err := tx.OpenDecision(docs); err != nil || !created || d.N == n {
+			return fmt.Errorf("the member's for another task: %+v %v %v", d, created, err)
+		}
 		return nil
 	})
-	if c := countRows(t, l, "SELECT COUNT(*) FROM decisions"); c != 2 {
+	if c := countRows(t, l, "SELECT COUNT(*) FROM decisions"); c != 3 {
 		t.Fatalf("%d decisions", c)
+	}
+	for task, want := range map[string]int64{"build": n, "docs": n + 2, "lint": 0} {
+		row, ok, err := l.DecisionByRequest(context.Background(), run, "lead", task, "q1")
+		if err != nil || ok != (want != 0) || row.N != want {
+			t.Fatalf("task %s's q1: %+v %v %v", task, row, ok, err)
+		}
 	}
 }
 
@@ -1738,5 +1750,42 @@ func TestACancellationKeepsItsCommandID(t *testing.T) {
 	})
 	if rec := record(t, l, n); rec.History[len(rec.History)-1].OpID != "c1" || rec.History[len(rec.History)-1].Fingerprint != "fp-c1" {
 		t.Fatalf("the kept row: %+v", rec.History[len(rec.History)-1])
+	}
+}
+
+// A version 8 database is brought to version 9 as it opens: its request
+// index is keyed by the task too, every row it held is kept as it was,
+// and the member's request id, taken for one task, is then free for
+// another.
+func TestMigrationEightToNineKeysARequestByItsTask(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "runs")
+	l := openLedger(t, dir)
+	const run = "team-00000001"
+	newRun(t, l, run)
+	tasksOf(t, l, run, "build", "docs")
+	n := open(t, l, agentDecision(run, "build", 1, "q1"))
+	before := tableRows(t, l, "decisions")
+	l.Close()
+	rawExec(t, dir, "DROP INDEX decisions_request",
+		"CREATE UNIQUE INDEX decisions_request ON decisions(run_id, member, request_id) WHERE request_id != ''",
+		"UPDATE schema_version SET version = 8")
+
+	again := openLedger(t, dir)
+	if ro, why := again.ReadOnly(); ro {
+		t.Fatalf("read-only after the migration: %s", why)
+	}
+	if v := dbVersion(t, again); v != 9 || Version != 9 {
+		t.Fatalf("version %d after the migration, Version %d", v, Version)
+	}
+	var sqlText string
+	if err := again.db.QueryRow("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'decisions_request'").Scan(&sqlText); err != nil || !strings.Contains(sqlText, "(run_id, member, task_id, request_id)") {
+		t.Fatalf("the request index after the migration: %q %v", sqlText, err)
+	}
+	if got := tableRows(t, again, "decisions"); !slices.Equal(got, before) {
+		t.Fatalf("decisions after the migration:\n%v\nbefore:\n%v", got, before)
+	}
+	docs := open(t, again, agentDecision(run, "docs", 1, "q1"))
+	if docs == n {
+		t.Fatalf("docs' q1 is build's %s", DecisionID(n))
 	}
 }

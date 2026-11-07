@@ -397,7 +397,9 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("run")
 	if run, ok := s.runs.GetWithDiffs(r.Context(), id); ok {
-		writeJSON(w, http.StatusOK, map[string]any{"run": run})
+		reply := map[string]any{"run": run}
+		s.addRunDecisions(r, reply, id, "")
+		writeJSON(w, http.StatusOK, reply)
 		return
 	}
 	if s.records != nil {
@@ -406,7 +408,10 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 			s.log.Warn("run record", "run", id, "err", err)
 		}
 		if ok {
-			writeJSON(w, http.StatusOK, map[string]any{"run": run, "record": true})
+			// Its decisions are the ledger's, and outlast the engine's hold.
+			reply := map[string]any{"run": run, "record": true}
+			s.addRunDecisions(r, reply, id, "")
+			writeJSON(w, http.StatusOK, reply)
 			return
 		}
 	}

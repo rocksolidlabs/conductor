@@ -2427,3 +2427,57 @@ func TestTheGuideListsEachReadsOwnBound(t *testing.T) {
 		t.Fatalf("a check's log at its bound: %d, %d bytes", resp.StatusCode, len(body))
 	}
 }
+
+// A turn's shared read of a run, and of its task, holding a decision
+// carries none of it: no decisions, no decisionsNext, no decisionsUnread
+// (the decisions are BK2's observe_decisions), for a run the engine holds
+// and for a record it does not; the admin's reads of the same list it,
+// the record's from the ledger (#637, review round 1).
+func TestATurnsRunReadCarriesNoDecisions(t *testing.T) {
+	f := newObsFixture(t)
+	f.gitRepo(t)
+	if _, err := f.srv.ledger.Transition(t.Context(), f.run, func(tx *ledger.Tx) error {
+		_, _, err := tx.OpenDecision(ledger.DecisionRow{Origin: ledger.OriginAgent, Type: ledger.DecisionClarification, TaskID: "build", Attempt: 1,
+			Member: "lead", Fingerprint: "fp-1", Request: `{"question":"Which index?","subject":{"kind":"commit","commit":"` + strings.Repeat("a", 40) + `"}}`,
+			Policy: `{"revision":"local/1","approver":"operator","quorum":1,"authority":[{"kind":"operator"}]}`})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cat := f.srv.Catalog().Clone()
+	if err := cat.Upsert(catalog.Agent{ID: "ready-cat", Name: "ready cat", Command: []string{"/bin/sh", "-c", "echo ready; exec cat"}}); err != nil {
+		t.Fatal(err)
+	}
+	f.setCatalog(cat)
+	c := crew.Crew{ID: "held", Name: "Held", Goal: "build it", Cwd: f.root, Where: crew.WhereServer, Isolation: crew.IsolationWorktree,
+		Members: []crew.Member{{Name: "lead", AgentID: "ready-cat", Start: crew.Start{When: crew.StartTask}}},
+		Tasks:   []crew.Task{{ID: "build", Member: "lead", Kind: crew.TaskWork, Instructions: "Build it."}}}
+	run, release, err := f.srv.runs.LaunchNamed(t.Context(), c, "")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := run.ID
+	t.Cleanup(func() { f.do("POST", "/api/runs/"+live+"/stop", adminToken, nil) })
+	sid := runningAttempt(t, f.testEnv, live, "build", 1)["sessionId"].(string)
+	f.expectAs(t, f.agentToken(sid), http.MethodPost, "/api/sessions/"+sid+"/decisions", map[string]any{"requestId": "r1", "type": "clarification", "question": "Which index?"}, http.StatusCreated, "")
+	var paths []string
+	for _, id := range []string{f.run, live} {
+		paths = append(paths, "/api/runs/"+id, "/api/runs/"+id+"/tasks/build")
+	}
+	for _, path := range paths {
+		admin := f.expect(t, "GET", path, nil, http.StatusOK, "")
+		if ds, _ := admin["decisions"].([]any); len(ds) != 1 || ds[0].(map[string]any)["question"] != "Which index?" {
+			t.Fatalf("the admin's %s: %v", path, admin)
+		}
+	}
+	f.turn(t, func(map[string]any) {})
+	for _, path := range paths {
+		out := f.expectRead(t, path, http.StatusOK, "")
+		for _, key := range []string{"decisions", "decisionsNext", "decisionsUnread"} {
+			if _, ok := out[key]; ok {
+				t.Fatalf("the turn's %s carries %s: %v", path, key, out)
+			}
+		}
+	}
+}

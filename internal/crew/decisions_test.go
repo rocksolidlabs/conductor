@@ -232,11 +232,10 @@ func gatedPlan(t *testing.T, runID, base string, ds ...PackageDecision) Planned 
 	return Planned{RunID: runID, Base: base, Digest: packageDigest(raw), Package: raw}
 }
 
-// launchGated launches c as a planned run whose package names ds, with its
+// launchGated launches c as a planned run whose package names ds, its
 // gates opened at the launch.
 func launchGated(t *testing.T, e *Engine, dir, runID string, c Crew, ds ...PackageDecision) Run {
 	t.Helper()
-	e.gatesAtLaunch = true
 	return launchPlanned(t, e, c, gatedPlan(t, runID, head(t, dir), ds...))
 }
 
@@ -546,7 +545,11 @@ func TestRejectingTheLastHeldTaskEndsTheRunOnce(t *testing.T) {
 }
 
 // A result while the attempt's decision waits is refused decision_open,
-// the attempt running on; once the decision is applied it is taken.
+// the attempt running on: open, it is not answered yet; answered (an
+// identity's answer, recorded while its recheck has not said yes), its
+// answer is not applied yet, and nothing tells the agent to go on with it
+// (#637, review round 2); once the decision is applied the result is
+// taken.
 func TestAResultWhileADecisionWaitsIsRefused(t *testing.T) {
 	dir := newRepo(t)
 	e, fl, ld := decisionEngine(t)
@@ -564,7 +567,16 @@ func TestAResultWhileADecisionWaitsIsRefused(t *testing.T) {
 	if ts := taskOf(t, e, run.ID, "build"); ts.Attempt.State != ledger.AttemptRunning {
 		t.Fatalf("the attempt after the refusal: %+v", ts.Attempt)
 	}
-	answer(t, e, d.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1})
+	rc, err := e.RespondDecision(t.Context(), d.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1, ByName: "Nate"}, "user:nate", identity(e, "nate"))
+	if err != nil || rc.Status != "accepted" || !strings.HasPrefix(rc.Words, "Recorded: ") {
+		t.Fatalf("the identity's answer: %+v %v", rc, err)
+	}
+	decisionWhen(t, ld, d.ID, "answered", inState(ledger.DecisionAnswered))
+	_, err = e.SubmitResult(t.Context(), b.Attempt.SessionID, Result{Summary: "built"})
+	if !errors.As(err, &de) || de.Code != CodeDecisionOpen || !strings.Contains(de.Words, d.ID+" is answered and its answer is not applied yet") || strings.Contains(de.Words, "not answered") {
+		t.Fatalf("a result while %s is answered: %v", d.ID, err)
+	}
+	e.ConfirmAuthority(d.ID, rc.K, true)
 	decisionWhen(t, ld, d.ID, "applied", inState(ledger.DecisionApplied))
 	lineWith(t, p, "Decision "+d.ID)
 	submit(t, e, b.Attempt.SessionID, Result{Summary: "built"})
@@ -647,7 +659,7 @@ func TestALateMirrorNeverOutlivesItsAnswer(t *testing.T) {
 		b, l, _ := attemptOn(t, e, fl, run.ID, "build")
 		d := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
 		<-at
-		if _, err := e.CancelDecision(t.Context(), d.ID, "c1", false, "not needed", "admin"); err != nil {
+		if _, err := e.CancelDecision(t.Context(), d.ID, "c1", 0, false, "not needed", "admin"); err != nil {
 			t.Fatal(err)
 		}
 		decisionWhen(t, ld, d.ID, "cancelled", inState(ledger.DecisionCancelled))
@@ -1076,7 +1088,7 @@ func (l *refusingLedger) Transition(ctx context.Context, runID string, fn func(L
 func TestARefusedApplicationIsCarriedWhole(t *testing.T) {
 	dir := newRepo(t)
 	e, fl, ld := decisionEngine(t)
-	rl := &refusingLedger{sqlLedger: sqlLedger{ld}}
+	rl := &refusingLedger{sqlLedger: sqlLedger{l: ld}}
 	e.UseLedger(rl)
 
 	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
@@ -1187,7 +1199,7 @@ func TestAMirrorSetAsideBeforeItsLineIsWithdrawn(t *testing.T) {
 func TestAnOlderMirrorNeverReplacesANewer(t *testing.T) {
 	dir := newRepo(t)
 	e, fl, ld := decisionEngine(t)
-	rl := &refusingLedger{sqlLedger: sqlLedger{ld}}
+	rl := &refusingLedger{sqlLedger: sqlLedger{l: ld}}
 	e.UseLedger(rl)
 	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
 	b, l, _ := attemptOn(t, e, fl, run.ID, "build")
@@ -1348,7 +1360,7 @@ func TestARejectedGateEndsTheRunOnceAfterAllItsTasks(t *testing.T) {
 func TestACarriedReplacementNeverUndoesACancellation(t *testing.T) {
 	dir := newRepo(t)
 	e, _, ld := decisionEngine(t)
-	rl := &refusingLedger{sqlLedger: sqlLedger{ld}}
+	rl := &refusingLedger{sqlLedger: sqlLedger{l: ld}}
 	e.UseLedger(rl)
 	run := launchGated(t, e, dir, "api-sweep-000000b5", repoCrew(dir, work("build", "lead"), work("deploy", "ops")), shipGate("deploy"))
 	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
@@ -1460,7 +1472,7 @@ func TestAResponseDuringTheLaunchsCommitIsTheEngines(t *testing.T) {
 	dir := newRepo(t)
 	e, _, ld := decisionEngine(t)
 	const runID = "api-sweep-000000b6"
-	hl := &holdingLedger{sqlLedger: sqlLedger{ld}, run: runID, at: make(chan struct{}), gate: make(chan struct{}), read: make(chan int64, 1)}
+	hl := &holdingLedger{sqlLedger: sqlLedger{l: ld}, run: runID, at: make(chan struct{}), gate: make(chan struct{}), read: make(chan int64, 1)}
 	e.UseLedger(hl)
 	t.Cleanup(func() {
 		select {
@@ -1469,7 +1481,6 @@ func TestAResponseDuringTheLaunchsCommitIsTheEngines(t *testing.T) {
 			close(hl.gate)
 		}
 	})
-	e.gatesAtLaunch = true
 	plan := gatedPlan(t, runID, head(t, dir), shipGate("deploy"))
 	type launched struct {
 		run *Run
@@ -1720,7 +1731,7 @@ func savedAs(t *testing.T, rec ledger.DecisionRecord, k int, rc ResponseReceipt)
 func TestARepeatIsItsSavedReceipt(t *testing.T) {
 	dir := newRepo(t)
 	e, fl, ld := decisionEngine(t)
-	rl := &respondRefusing{sqlLedger: sqlLedger{ld}}
+	rl := &respondRefusing{sqlLedger: sqlLedger{l: ld}}
 	e.UseLedger(rl)
 	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
 	b, l, p := attemptOn(t, e, fl, run.ID, "build")
@@ -1929,7 +1940,7 @@ func TestARepeatHeldAcrossASubjectMoveSupersedesNothing(t *testing.T) {
 	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
 	b, _, _ := attemptOn(t, e, fl, run.ID, "build")
 	d := ask(t, e, b.Attempt.SessionID, approval("q1", "Merge it?"))
-	if _, err := e.CommentDecision(t.Context(), d.ID, "o1", CommentKind, "Look at the index first.", "admin"); err != nil {
+	if _, err := e.CommentDecision(t.Context(), d.ID, "o1", 0, CommentKind, "Look at the index first.", "admin"); err != nil {
 		t.Fatal(err)
 	}
 	decisionWhen(t, ld, d.ID, "commented", hasKind(ledger.HistoryCommented))
@@ -2057,7 +2068,7 @@ func TestACarriedReplacementHoldsItsPlace(t *testing.T) {
 	}
 	old := decisionWhen(t, ld, ship, "superseded", inState(ledger.DecisionSuperseded))
 	fresh := decisionWhen(t, ld, old.SupersededBy, "open", inState(ledger.DecisionOpen))
-	all, err := allDecisions(t.Context(), sqlLedger{ld}, ledger.DecisionFilter{CurrentRun: run.ID})
+	all, err := allDecisions(t.Context(), sqlLedger{l: ld}, ledger.DecisionFilter{CurrentRun: run.ID})
 	if err != nil || len(all) != ledger.MaxDecisionsPerRun || all[0].N != fresh.N {
 		t.Fatalf("the run's decisions: %d, %v (the replacement %s)", len(all), err, fresh.ID())
 	}

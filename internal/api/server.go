@@ -519,7 +519,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			// (another server holds the owner lock, for a while after a
 			// restart), or with none, managed launches are refused and
 			// legacy runs work.
-			s.runs.UseLedger(crew.SQLLedger(s.ledger))
+			s.runs.UseLedger(crew.SQLLedgerTold(s.ledger, s.decisionTold))
 		}
 		s.runs.SetCheckConcurrency(cfg.CheckConcurrency())
 		// The host's names a project manifest's env may pass on to its
@@ -786,6 +786,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/inbox/ack", s.handleSessionInboxAck)
 	mux.HandleFunc("POST /api/sessions/{id}/task/blocked", s.handleSessionTaskBlocked)
 	mux.HandleFunc("POST /api/sessions/{id}/task/checkpoint", s.handleSessionTaskCheckpoint)
+	// Durable decisions: an attempt's, the operator's (decisions.go).
+	s.routeDecisions(mux)
 	mux.HandleFunc("GET /api/runs/{run}/messages", s.readable("GET /api/runs/{run}/messages", s.handleRunMessages))
 	mux.HandleFunc("GET /api/runs/{run}/links", s.launching(s.handleListRunLinks))
 	mux.HandleFunc("POST /api/runs/{run}/links", s.launching(s.handleCreateRunLink))

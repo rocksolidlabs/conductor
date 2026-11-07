@@ -518,7 +518,7 @@ func TestTheGuideToolReadsTheServer(t *testing.T) {
 		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"guide","arguments":{"section":"operations"}}}`,
 		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"guide","arguments":{"section":"nope"}}}`,
 	)
-	if text, isErr := toolText(t, replies[0]); isErr || !hasAll(text, "session "+sid, "run_member", "scopes: session.", "A question goes to a person with ask.", "operations (", `call guide with {"section": NAME}`) || strings.Contains(text, "the guide is the server's") {
+	if text, isErr := toolText(t, replies[0]); isErr || !hasAll(text, "session "+sid, "run_member", "scopes: session.", "A question goes to a person with ask;", "operations (", `call guide with {"section": NAME}`) || strings.Contains(text, "the guide is the server's") {
 		t.Fatalf("overview %q %v", text, isErr)
 	}
 	text, isErr := toolText(t, replies[1])
@@ -672,7 +672,8 @@ func TestNoCrewToolsForBrakeman(t *testing.T) {
 			t.Errorf("a Brakeman turn's session does not list %s", name)
 		}
 	}
-	if want := len(mcpTools(false, false)) - 4 + 3; len(turn) != want {
+	// Less the crew and ticket tools and the task's own, plus Brakeman's.
+	if want := len(mcpTools(false, false)) - 4 - len(taskOnly) + 3; len(turn) != want {
 		t.Fatalf("%d tools, want %d: %v", len(turn), want, turn)
 	}
 }
@@ -1192,5 +1193,119 @@ func TestAnActResendsALaunchStillBeingStarted(t *testing.T) {
 				t.Fatalf("%d sends: %v", len(bodies), err)
 			}
 		})
+	}
+}
+
+// The four decision tools are listed in an attempt's session of a managed
+// run alone (CONDUCTOR_TASK set), each the table's; a session that is no
+// attempt, or a Brakeman turn's, lists none of them, and the rest of its
+// list is unchanged.
+func TestMCPListsDecisionToolsOnlyInATask(t *testing.T) {
+	decisions := []string{"decision_request", "decision_list", "decision_read", "decision_withdraw"}
+	env := func(task string) func(string) string {
+		return func(k string) string {
+			if k == "CONDUCTOR_TASK" {
+				return task
+			}
+			return ""
+		}
+	}
+	in, out := listedTools(t, env("build")), listedTools(t, env(""))
+	for _, name := range decisions {
+		if !slices.Contains(in, name) {
+			t.Errorf("an attempt's session does not list %s: %v", name, in)
+		}
+		if slices.Contains(out, name) {
+			t.Errorf("a session that is no attempt lists %s", name)
+		}
+	}
+	if len(in) != len(out)+len(decisions) || !slices.Equal(slices.DeleteFunc(slices.Clone(in), func(n string) bool { return taskOnly[n] }), out) {
+		t.Fatalf("an attempt's list %v, another's %v", in, out)
+	}
+	if turn := listedTools(t, brakemanEnv("http://127.0.0.1:1", "s1", "tok")); slices.ContainsFunc(turn, func(n string) bool { return taskOnly[n] }) {
+		t.Fatalf("a Brakeman turn lists a decision tool: %v", turn)
+	}
+}
+
+// decision_request is one call to its route with a requestId minted when
+// the agent gives none, the same id sent again when the first reply was
+// lost; it answers the decision's id and state with what to do while it
+// waits, never waiting for the answer.
+func TestDecisionRequestToolAnswersPending(t *testing.T) {
+	var (
+		mu   sync.Mutex
+		ids  []string
+		lost = true
+	)
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/sessions/s1/decisions" || r.Header.Get("Authorization") != "Bearer tok" {
+			http.Error(w, "unexpected", http.StatusTeapot)
+			return
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		id, _ := body["requestId"].(string)
+		ids = append(ids, id)
+		drop := lost
+		lost = false
+		mu.Unlock()
+		if drop {
+			// The first reply is lost: the connection closes unanswered.
+			hj, _ := w.(http.Hijacker)
+			conn, _, _ := hj.Hijack()
+			conn.Close()
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"decision":{"id":"dr-7","state":"open","question":"Ship it?"}}`))
+	}))
+	defer hs.Close()
+	env := map[string]string{"CONDUCTOR_SESSION_ID": "s1", "CONDUCTOR_NOTIFY_URL": hs.URL + "/api/sessions/s1/attention", "CONDUCTOR_NOTIFY_TOKEN": "tok", "CONDUCTOR_TASK": "build"}
+	s := &mcpServer{getenv: func(k string) string { return env[k] }}
+	text, err := s.call(t.Context(), "decision_request", json.RawMessage(`{"type":"approval","question":"Ship it?"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasAll(text, "dr-7 open", "Pending.", "do not submit your result until its answer is applied", "Decision dr-7", "task file", "save one before you end your turn") {
+		t.Fatalf("the reply: %q", text)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ids) != 2 || ids[0] == "" || ids[0] != ids[1] {
+		t.Fatalf("the request ids sent: %q", ids)
+	}
+	// A read and a withdrawal name the decision's id, or are refused before anything is sent.
+	for _, name := range []string{"decision_read", "decision_withdraw"} {
+		if _, err := s.call(t.Context(), name, json.RawMessage(`{"id":"7"}`)); err == nil || !strings.Contains(err.Error(), "dr-N") {
+			t.Fatalf("%s of a bad id: %v", name, err)
+		}
+	}
+	// A repeat answers the decision as it is now, in words for its state:
+	// only an open one is pending, and only an applied one's answer is the
+	// agent's to go on with: an answered one is recorded, not yet applied
+	// (#637, review round 2).
+	for _, c := range []struct {
+		decision string
+		want     []string
+		not      string
+	}{
+		{`{"id":"dr-7","state":"answered","answer":"Approve"}`, []string{"dr-7 is answered: Approve", "recorded, not yet applied", "Do not act on it yet", "do not submit your result until it is applied"}, "Go on"},
+		{`{"id":"dr-7","state":"applied","answer":"Approve"}`, []string{"dr-7 is applied: Approve", "Go on with your task with this answer"}, "Pending"},
+		{`{"id":"dr-7","state":"superseded","why":"dr-9 takes its place","supersededBy":"dr-9"}`, []string{"dr-7 is superseded by dr-9", "Wait for dr-9's answer"}, "Pending"},
+		{`{"id":"dr-7","state":"cancelled","why":"cancelled by the operator, not approved"}`, []string{"dr-7 is cancelled: cancelled by the operator", "will not be answered"}, "Pending"},
+	} {
+		rs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"decision":` + c.decision + `}`))
+		}))
+		env := map[string]string{"CONDUCTOR_SESSION_ID": "s1", "CONDUCTOR_NOTIFY_URL": rs.URL + "/api/sessions/s1/attention", "CONDUCTOR_NOTIFY_TOKEN": "tok", "CONDUCTOR_TASK": "build"}
+		rsv := &mcpServer{getenv: func(k string) string { return env[k] }}
+		text, err := rsv.call(t.Context(), "decision_request", json.RawMessage(`{"requestId":"q1","type":"approval","question":"Ship it?"}`))
+		rs.Close()
+		if err != nil || !hasAll(text, c.want...) || strings.Contains(text, c.not) {
+			t.Fatalf("the repeat of %s: %q %v", c.decision, text, err)
+		}
 	}
 }
