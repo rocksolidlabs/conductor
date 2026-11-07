@@ -32,6 +32,15 @@ import (
 // no decision.
 const versionDecisions = 8
 
+// decisionsRequestV9 is version 9's key of a request id: the run that
+// opened the decision, its member, its asking task and the id (migration
+// 8, and a new database's after decisionTables). A plan's decision has no
+// request id and no task.
+var decisionsRequestV9 = []string{
+	`DROP INDEX decisions_request`,
+	`CREATE UNIQUE INDEX decisions_request ON decisions(run_id, member, task_id, request_id) WHERE request_id != ''`,
+}
+
 // decisionTables are the decision tables and their indexes as version 8
 // made them: a new database's (schema) and migration 7's. A migration's
 // statements are history: a later version's change to these tables is
@@ -715,8 +724,10 @@ func (t *Tx) room(run string) (bool, error) {
 
 // OpenDecision opens a decision in the transaction's run: its row, open at
 // rev 1, its n new and never given before. A row whose RequestID the run's
-// member sent before answers that decision's row and opens nothing
-// (created false), or ErrDecisionConflict when its fingerprint differs. A
+// member sent before for the same task answers that decision's row and
+// opens nothing (created false), or ErrDecisionConflict when its
+// fingerprint differs; the same id sent for another task is another
+// request (decisionsRequestV9). A
 // bound passed is ErrDecisionLimit: MaxOpenPerAttempt open of its asking
 // attempt, MaxOpenPerRun open in the run, MaxDecisionsPerRun in all with
 // the places held for replacements; an answered decision with an
@@ -748,7 +759,7 @@ func (t *Tx) OpenDecision(d DecisionRow) (DecisionRow, bool, error) {
 		return DecisionRow{}, false, err
 	}
 	if d.RequestID != "" {
-		prior, ok, err := t.decision("WHERE run_id = ? AND member = ? AND request_id = ?", d.RunID, d.Member, d.RequestID)
+		prior, ok, err := t.decision("WHERE run_id = ? AND member = ? AND task_id = ? AND request_id = ?", d.RunID, d.Member, d.TaskID, d.RequestID)
 		if err != nil {
 			return DecisionRow{}, false, err
 		}
@@ -1076,6 +1087,16 @@ func scanResponse(sc scanner) (ResponseRow, error) {
 	return r, err
 }
 
+// AcceptedActor is the actor of decision n's accepted response, "" for
+// none, read within the transaction.
+func (t *Tx) AcceptedActor(n int64) (string, error) {
+	r, ok, err := t.response("WHERE decision = ? AND status = ? ORDER BY k DESC LIMIT 1", n, ResponseAccepted)
+	if err != nil || !ok {
+		return "", err
+	}
+	return r.Actor, nil
+}
+
 func (t *Tx) response(where string, args ...any) (ResponseRow, bool, error) {
 	r, err := scanResponse(t.tx.QueryRowContext(t.ctx, "SELECT "+responseCols+" FROM decision_responses "+where, args...))
 	switch {
@@ -1351,13 +1372,29 @@ type DecisionFilter struct {
 // one commit (one read transaction), so a transition committed meanwhile
 // is seen whole or not at all.
 func (l *Ledger) Decision(ctx context.Context, n int64) (DecisionRecord, bool, error) {
+	return l.decisionWhere(ctx, n, "")
+}
+
+// TaskDecision is Decision for one task: decision n only when run holds
+// it and it is task's (asked by it, or held by it, as DecisionFilter's
+// Task reads), judged in the read that finds it, so a decision of another
+// task's is not found, as one that does not exist is not.
+func (l *Ledger) TaskDecision(ctx context.Context, n int64, run, task string) (DecisionRecord, bool, error) {
+	if run == "" || task == "" {
+		return DecisionRecord{}, false, nil
+	}
+	return l.decisionWhere(ctx, n, " AND d.current_run = ? AND (d.task_id = ? OR EXISTS (SELECT 1 FROM decision_holds h WHERE h.decision = d.n AND h.task_id = ?))", run, task, task)
+}
+
+// decisionWhere reads decision n whole when its row also meets cond.
+func (l *Ledger) decisionWhere(ctx context.Context, n int64, cond string, args ...any) (DecisionRecord, bool, error) {
 	var rec DecisionRecord
 	found := false
 	err := l.readSnapshot(ctx, func(q querier, version int) error {
 		if version < versionDecisions {
 			return nil
 		}
-		d, err := scanDecision(q.QueryRowContext(ctx, "SELECT "+decisionCols+" FROM decisions WHERE n = ?", n))
+		d, err := scanDecision(q.QueryRowContext(ctx, "SELECT "+decisionCols+" FROM decisions d WHERE d.n = ?"+cond, append([]any{n}, args...)...))
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			return nil
@@ -1424,11 +1461,12 @@ func (t *Tx) Record(n int64) (DecisionRecord, bool, error) {
 	return rec, true, nil
 }
 
-// DecisionByRequest reads the decision run's member opened under request
-// id requestID (OpenDecision's repeat), ok false for none: the request sent
-// again is answered with it before anything that may have changed since is
-// checked again (a decision it superseded, the file it is about).
-func (l *Ledger) DecisionByRequest(ctx context.Context, run, member, requestID string) (DecisionRow, bool, error) {
+// DecisionByRequest reads the decision run's member opened for task under
+// request id requestID (OpenDecision's repeat), ok false for none, the
+// same id another task's included: the request sent again is answered
+// with it before anything that may have changed since is checked again (a
+// decision it superseded, the file it is about).
+func (l *Ledger) DecisionByRequest(ctx context.Context, run, member, task, requestID string) (DecisionRow, bool, error) {
 	if requestID == "" {
 		return DecisionRow{}, false, nil
 	}
@@ -1438,7 +1476,7 @@ func (l *Ledger) DecisionByRequest(ctx context.Context, run, member, requestID s
 		if version < versionDecisions {
 			return nil
 		}
-		row, err := scanDecision(q.QueryRowContext(ctx, "SELECT "+decisionCols+" FROM decisions WHERE run_id = ? AND member = ? AND request_id = ?", run, member, requestID))
+		row, err := scanDecision(q.QueryRowContext(ctx, "SELECT "+decisionCols+" FROM decisions WHERE run_id = ? AND member = ? AND task_id = ? AND request_id = ?", run, member, task, requestID))
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			return nil
