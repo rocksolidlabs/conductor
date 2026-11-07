@@ -1445,7 +1445,13 @@ outcome it cannot know into a false one. Its order:
    it, through the engine), `400 invalid_agent`, `409 already_resumed`, `400 invalid_cwd`), a record
    whose arguments were not kept answers `409 args_not_kept`, a record
    whose `where` names a Runtime this server does not have answers `409
-   runtime_gone`, and a record whose launch had variables answers `409
+   runtime_gone`, a listed session whose stop failed (its status ended,
+   its process still running) answers `409 still_running`, a record whose
+   working directory may be a cut of a longer one (its JSON form within
+   one escape of the record's bound, `journal.CwdMayBeCut`) answers `409
+   cwd_not_kept` (the record cannot say which folder it was; a listed
+   session starts in its own, whole), and a record whose launch had
+   variables answers `409
    env_not_kept` naming them, unless `withoutEnv: true`, which resumes
    without them and says so in the reply's notice, and a `lost` record
    answers `409 lost_unconfirmed` with the words above unless
@@ -2529,10 +2535,17 @@ nothing launched, the run's member state unchanged), a `lost` record
 without `confirmLost` (`409 lost_unconfirmed`); each refusal settling its
 receipt `failed`);
 `TestARuntimeTerminalThatOutlivesTheServer` (a `sessiontest.FakeRuntime`
-whose terminal keeps running when the server stops: after the restart the
+whose terminal keeps running when it is stopped and when the server
+stops: listed after a failed stop, Resume is refused `409 still_running`
+and not offered, nothing started; after the restart the
 record is `lost` with no `EndedAt`, its availability and record page say
 its process's state is not known, Resume is refused `409
 lost_unconfirmed`, and with `confirmLost` it launches);
+`TestAFolderTheRecordCutIsNeverResumedIn` (a folder whose path's JSON
+form is past the record's bound, its parent at the bound and on disk:
+the record keeps the parent, and Resume is refused `409 cwd_not_kept`,
+not offered, for an agent that resumes only where it ran; the journal's
+`TestACutWorkingDirectoryIsKnownCut` judges every cut cut);
 `TestTheSeventeenthResumeIsRefusedAndTheOldestStillAnswers` (16 receipts,
 refused ones among them; a 17th command id `409 resume_limit`, nothing
 reserved or launched; the server restarted; the oldest id sent again

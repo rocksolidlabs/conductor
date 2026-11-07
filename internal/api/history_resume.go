@@ -81,8 +81,11 @@ type recordPlan struct {
 // a run record naming the session (memberOf; 503 member_unknown when the
 // run records cannot all be read); never a launch whose arguments were
 // not kept (409 args_not_kept); only in a Runtime this server has (409
-// runtime_gone); never a session still running (409 still_running); then
-// resumeCheck's (400 invalid_agent, 409 already_resumed, 400 invalid_cwd);
+// runtime_gone); never a session still running, nor one ended whose
+// process is not (409 still_running: a stop that failed); never from a
+// record's folder that may be cut (409 cwd_not_kept,
+// journal.CwdMayBeCut); then resumeCheck's (400 invalid_agent, 409
+// already_resumed, 400 invalid_cwd);
 // and only a conversation there is to take up (409 not_resumable: no
 // session recipe, or no turn yet). It is the record route's judgement and
 // the history's offer (resumeOffered), so the two never differ.
@@ -126,12 +129,25 @@ func (s *Server) recordResume(rec journal.Record) (recordPlan, *apiError) {
 			return p, newAPIError(http.StatusConflict, "still_running", "the session is still running")
 		}
 		if l, ok := d.(*session.Local); ok {
+			// Ended is not gone: a stop that failed marks the session
+			// stopped with its process still running, which would then
+			// hold the conversation beside the resumed one.
+			select {
+			case <-l.ProcessDone():
+			default:
+				return p, newAPIError(http.StatusConflict, "still_running", "the session's process is still running: its stop did not end it; stop it again")
+			}
 			// Listed: what it was launched with, and its conversation as
 			// the session knows it now.
 			p.listed = l
 			launched := l.Launched()
 			agentID, cwd, as = launched.AgentID, launched.Cwd, info.AgentSession
 		}
+	}
+	if p.listed == nil && journal.CwdMayBeCut(cwd) {
+		// The record's folder may be a cut of the session's, its parent
+		// or another: never one to start the conversation in.
+		return p, newAPIError(http.StatusConflict, "cwd_not_kept", fmt.Sprintf("its working directory was too long for its record to keep whole (its bound is %d bytes): start a session there anew", journal.MaxCwd))
 	}
 	plan, aerr := s.resumeCheck(agentID, as, cwd)
 	p.resumePlan = plan

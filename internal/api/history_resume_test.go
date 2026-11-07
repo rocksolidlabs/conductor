@@ -389,10 +389,13 @@ func (o *outliving) StartTerminal(context.Context, ext.TerminalSpec) (ext.Termin
 	return outlivingTerminal{sessiontest.FakeTerminal(p)}, nil
 }
 
-// A Runtime's terminal that keeps running when the server stops leaves its
-// record lost, with no end: after the restart its availability says its
-// process's state is not known, Resume is refused lost_unconfirmed, and
-// with the person's second yes (confirmLost) it launches, there.
+// A Runtime's terminal that keeps running when it is stopped and when the
+// server stops: while it is listed, its stop failed and its status
+// stopped, Resume is refused still_running and not offered, nothing
+// launched; the server's stop leaves its record lost, with no end: after
+// the restart its availability says its process's state is not known,
+// Resume is refused lost_unconfirmed, and with the person's second yes
+// (confirmLost) it launches, there.
 func TestARuntimeTerminalThatOutlivesTheServer(t *testing.T) {
 	terms := &outliving{procs: make(chan *sessiontest.FakeProc, 4)}
 	t.Cleanup(func() {
@@ -413,6 +416,23 @@ func TestARuntimeTerminalThatOutlivesTheServer(t *testing.T) {
 	}
 	id := l.Info().ID
 	conv := talk(t, e, id)
+	if err := l.Stop(context.Background()); err == nil || !l.Info().Status.Ended() {
+		t.Fatalf("the stop: %v, the status %s", err, l.Info().Status)
+	}
+	select {
+	case <-l.ProcessDone():
+		t.Fatal("the process ended")
+	default:
+	}
+	if offer := e.srv.resumeOfRecord(id); offer.Offered != answerNo || !strings.Contains(offer.Why, "process is still running") {
+		t.Fatalf("the offer after a failed stop: %+v", offer)
+	}
+	starts := len(rt.Asked("StartTerminal"))
+	status, out := resumeRecord(t, e, id, map[string]any{"commandId": "c0"})
+	if status != http.StatusConflict || errorCode(out) != "still_running" || !strings.Contains(out["error"].(map[string]any)["message"].(string), "stop it again") ||
+		len(rt.Asked("StartTerminal")) != starts || resumeReceipt(t, e, id, "c0").State != journal.ResumeFailed {
+		t.Fatalf("after a failed stop: %d %v", status, out)
+	}
 	e2 := restartWith(t, e, withRuntime(rt))
 	resp, got := e2.do("GET", "/api/history/sessions/"+id, adminToken, nil)
 	record := got["record"].(map[string]any)
@@ -422,8 +442,8 @@ func TestARuntimeTerminalThatOutlivesTheServer(t *testing.T) {
 	if offer := e2.srv.resumeOfRecord(id); offer.Offered != answerYes || !offer.Confirm || !strings.Contains(offer.Why, "its process may still be running") {
 		t.Fatalf("the offer: %+v", offer)
 	}
-	starts := len(rt.Asked("StartTerminal"))
-	status, out := resumeRecord(t, e2, id, map[string]any{"commandId": "c1"})
+	starts = len(rt.Asked("StartTerminal"))
+	status, out = resumeRecord(t, e2, id, map[string]any{"commandId": "c1"})
 	if status != http.StatusConflict || errorCode(out) != "lost_unconfirmed" || !strings.Contains(out["error"].(map[string]any)["message"].(string), "on boxcar") ||
 		len(rt.Asked("StartTerminal")) != starts {
 		t.Fatalf("without confirmLost: %d %v", status, out)
@@ -436,6 +456,74 @@ func TestARuntimeTerminalThatOutlivesTheServer(t *testing.T) {
 	spec := calls[len(calls)-1].Spec.(ext.TerminalSpec)
 	if len(calls) != starts+1 || !slices.Contains(spec.Argv, conv) || spec.Ref.Session != out["session"].(map[string]any)["id"] {
 		t.Fatalf("the start: %d calls, %+v", len(calls), spec)
+	}
+}
+
+// longFolder makes, under root, a folder whose path's JSON form, escapes
+// included, is journal.MaxCwd bytes exactly, of components of quotes (two
+// bytes each), and in it the folder x: the session's folder, whose
+// record's cut is its parent. Made a component at a time through os.Root,
+// so no single call takes a path past a system's own bound.
+func longFolder(t *testing.T, root string) (parent, child string) {
+	t.Helper()
+	size := len(root) + strings.Count(root, `"`) + strings.Count(root, `\`)
+	var comps []string
+	for left := journal.MaxCwd - size; left > 0; {
+		n := min(left, 201)
+		if left-n == 1 {
+			n -= 2
+		}
+		comps = append(comps, strings.Repeat(`"`, (n-1)/2)+strings.Repeat("a", (n-1)%2))
+		left -= n
+	}
+	r, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range append(comps, "x") {
+		if err := r.Mkdir(c, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		next, err := r.OpenRoot(c)
+		r.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		r = next
+	}
+	r.Close()
+	parent = root + "/" + strings.Join(comps, "/")
+	return parent, parent + "/x"
+}
+
+// A record keeps a working directory past its bound cut, which can be the
+// session's parent folder, there on disk: a resume from that record is
+// refused cwd_not_kept and not offered, nothing launched, even for an
+// agent that resumes only where it ran, whose folder check the parent
+// would pass.
+func TestAFolderTheRecordCutIsNeverResumedIn(t *testing.T) {
+	e := resumeEnv(t)
+	parent, child := longFolder(t, e.root)
+	at := time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)
+	id := "0000000000000c01"
+	in, err := e.srv.sessionRecords.Begin(journal.Record{ID: id, Name: "long folder", Kind: "server", Where: "native", Cwd: child, StartedAt: at,
+		Agent: journal.Agent{ID: "strict", Name: "Strict"}, Launch: &journal.Launch{ArgsKept: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.srv.sessionRecords.Settle(in, journal.State{Name: "long folder", Final: true, End: &journal.Ending{At: at.Add(time.Minute), How: "stopped"},
+		AgentSession: &journal.AgentSession{ID: "0a1b2c3d-0000-4000-8000-000000000c01", Source: "set", Resumable: true}})
+	e.srv.sessionRecords.Flush()
+	if r, _ := recordFile(t, e, id); r.Cwd != parent || r.EndedAt.IsZero() || !journal.CwdMayBeCut(r.Cwd) {
+		t.Fatalf("the record keeps %d bytes of the folder, ended %v", len(r.Cwd), r.EndedAt)
+	}
+	if offer := e.srv.resumeOfRecord(id); offer.Offered != answerNo || !strings.Contains(offer.Why, "too long for its record to keep whole") {
+		t.Fatalf("the offer: %+v", offer)
+	}
+	before := sessionCount(e)
+	status, out := resumeRecord(t, e, id, map[string]any{"commandId": "c1"})
+	if status != http.StatusConflict || errorCode(out) != "cwd_not_kept" || sessionCount(e) != before || resumeReceipt(t, e, id, "c1").Code != "cwd_not_kept" {
+		t.Fatalf("resume: %d %v", status, out)
 	}
 }
 

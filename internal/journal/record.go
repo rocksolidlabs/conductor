@@ -452,6 +452,25 @@ func fitPath(s string, n int) string {
 	return s
 }
 
+// maxEscape is the most bytes one character takes in a JSON string
+// (escapedLen): a control character's \u escape.
+const maxEscape = 6
+
+// CwdMayBeCut says a record's working directory may be the cut that
+// fitRecord made of a longer one at MaxCwd, its JSON form, escapes
+// included, being within maxEscape of the bound: fitPath stops only where
+// the next character would pass it, so every cut one is, those of the
+// records an earlier version wrote among them. Such a folder is not the
+// session's: it may be its parent, or another folder. One that is whole
+// and that long is judged cut all the same.
+func CwdMayBeCut(cwd string) bool {
+	size := 0
+	for _, r := range cwd {
+		size += escapedLen(r)
+	}
+	return size > MaxCwd-maxEscape
+}
+
 // escapedLen is how many bytes r takes in a JSON string as store.Encode
 // writes one (HTML characters as they are).
 func escapedLen(r rune) int {

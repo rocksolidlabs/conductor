@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -93,29 +94,73 @@ func TestTheSeventeenthReceiptIsRefused(t *testing.T) {
 	}
 }
 
+// hookWrites sets beforeWrite under j's writes' lock (wmu), which every
+// write that reads it holds: the writer's own passes cannot read it
+// meanwhile.
+func hookWrites(j *Journal, f func(name string) error) {
+	j.wmu.Lock()
+	defer j.wmu.Unlock()
+	beforeWrite = f
+}
+
 // A reservation whose write fails is taken back: nothing runs under a
 // receipt that is not on disk, and the record holds none.
 func TestAReservationNotWrittenIsTakenBack(t *testing.T) {
 	j, dir := newJournal(t, Options{})
 	endedRecords(t, j, 1, 1)
 	crash := errors.New("the disk refused it")
-	beforeWrite = func(name string) error {
+	written, _ := onDisk(t, dir, sid(1))
+	var refused atomic.Int32
+	hookWrites(j, func(name string) error {
 		if name == SessionsDir+"/"+sid(1)+".json" {
+			refused.Add(1)
 			return crash
 		}
 		return nil
-	}
-	t.Cleanup(func() { beforeWrite = nil })
-	if _, _, fresh, err := j.ReserveResume(sid(1), Resume{CommandID: "c1", Session: sid(9)}); !errors.Is(err, crash) || fresh {
+	})
+	t.Cleanup(func() { hookWrites(j, nil) })
+	if _, _, fresh, err := j.ReserveResume(sid(1), Resume{CommandID: "c1", Session: sid(9)}); !errors.Is(err, crash) || fresh || refused.Load() == 0 {
 		t.Fatalf("reserved on a disk that refuses: %v %v", fresh, err)
 	}
-	beforeWrite = nil
+	// The writer may try the record again meanwhile, refused as well; the
+	// hook is let go under the writes' lock, and the flush's pass writes
+	// it.
+	hookWrites(j, nil)
 	j.Flush()
-	if r, _ := onDisk(t, dir, sid(1)); len(r.Resumes) != 0 {
-		t.Fatalf("receipts kept: %+v", r.Resumes)
+	if r, _ := onDisk(t, dir, sid(1)); len(r.Resumes) != 0 || r.Seq <= written.Seq {
+		t.Fatalf("receipts kept, or not written again (seq %d, was %d): %+v", r.Seq, written.Seq, r.Resumes)
 	}
 	if err := j.Forget(sid(1)); err != nil {
 		t.Fatalf("forget: %v", err)
+	}
+}
+
+// A working directory past MaxCwd is cut, and the cut known as one: a path
+// whose JSON form is the bound exactly, of quotes, with a folder in it, is
+// kept as that path, its parent; every cut of a path of any kind of
+// character at the bound is judged cut, and a whole one well short of it
+// is not.
+func TestACutWorkingDirectoryIsKnownCut(t *testing.T) {
+	j, dir := newJournal(t, Options{})
+	parent := "/" + strings.Repeat(`"`, (MaxCwd-1)/2) + strings.Repeat("a", (MaxCwd-1)%2)
+	r := serverRecord(sid(1))
+	r.Cwd = parent + "/x"
+	begin(t, j, r)
+	j.Flush()
+	got, _ := onDisk(t, dir, sid(1))
+	if got.Cwd != parent || !CwdMayBeCut(got.Cwd) {
+		t.Fatalf("kept %d bytes, cut %v", len(got.Cwd), CwdMayBeCut(got.Cwd))
+	}
+	for _, c := range []string{"a", `"`, `\`, "\x01", "\u00e9", "\u2028", "\U0001F600"} {
+		for pad := range maxEscape {
+			s := strings.Repeat("a", pad) + strings.Repeat(c, MaxCwd+1)
+			if cut := fitPath(s, MaxCwd); cut == s || !CwdMayBeCut(cut) {
+				t.Fatalf("%q after %d: the cut of %d bytes is not judged cut", c, pad, len(cut))
+			}
+		}
+	}
+	if CwdMayBeCut("/w") || CwdMayBeCut(strings.Repeat("a", MaxCwd-maxEscape)) {
+		t.Fatal("a whole folder judged cut")
 	}
 }
 
