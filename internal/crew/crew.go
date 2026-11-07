@@ -2,6 +2,31 @@
 // role prompt, extra arguments and a start condition, that a run launches
 // together. Crews persist one file each, crews/<id>.json in the data
 // directory (store.go).
+//
+// # Durable decisions' keys
+//
+// The keys a durable decision (decisions.go) is looked up by, and which of
+// them a caller controls. The operator (the admin) reads and operates on
+// any decision by its id, dr-N. An attempt's agent supplies two keys, and
+// each is judged against the attempt's own task in the one read or
+// transaction that looks it up, so another task's decision is answered
+// exactly as one that does not exist (not_found, or a new request),
+// whatever it is:
+//   - the request id (requestId, the agent's): looked up by the run that
+//     opened the decision, the attempt's member, the attempt's task and
+//     the id (ledger.DecisionByRequest, Tx.OpenDecision's repeat, the
+//     ledger's unique key since version 9), so a repeat or a conflict is
+//     only ever its own task's request's;
+//   - the decision id (dr-N, the agent's, in decision_read,
+//     decision_withdraw and a request's supersedes): a read finds it only
+//     in the run that holds the attempt and when it is the task's, asked
+//     by it or held by it (ledger.TaskDecision); a withdrawal and a
+//     supersession only when the attempt's own task asked it in that run
+//     (a withdrawal: the attempt itself), judged by the row in the
+//     transaction that changes it.
+//
+// The run, the member, the task and the attempt are never the caller's:
+// they are the session's, from its own agent token (attemptOf).
 package crew
 
 import (
@@ -217,10 +242,14 @@ const MaxEncoded = 1 << 20
 // which lower it to reach it.
 var maxEncoded = MaxEncoded
 
-// memberNamePattern keeps member names short, lower case and free of path
-// separators: they become branch names and worktree paths. gitRefuses adds
-// what git refuses in a branch name that the pattern lets through.
-var memberNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,39}$`)
+// maxMemberName bounds a member's name, in characters.
+const maxMemberName = 40
+
+// memberNamePattern keeps member names short (maxMemberName), lower case
+// and free of path separators: they become branch names and worktree
+// paths. gitRefuses adds what git refuses in a branch name that the
+// pattern lets through.
+var memberNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,` + strconv.Itoa(maxMemberName-1) + `}$`)
 
 // gitRefuses reports whether git check-ref-format refuses a name that matches
 // memberNamePattern as a branch name.

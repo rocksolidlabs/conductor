@@ -50,13 +50,52 @@ func TestSkillText(t *testing.T) {
 		// A project manifest's tree (EN1 PR-3): its ports, its preview and
 		// its state directory, in the environment.
 		"CONDUCTOR_PORT_<NAME> holds each of its ports", "CONDUCTOR_PREVIEW_URL its preview", "CONDUCTOR_STATE_DIR (.conductor/state)",
-		"task_context, task_result,\nmessage_send, inbox_read, inbox_ack, task_blocked, task_checkpoint,\nticket_read and ticket_comment",
 		`"${CONDUCTOR_BIN:-conductor}" task send --to docs "the API is under internal/api/users.go; the handler names are final"`,
 		`"${CONDUCTOR_BIN:-conductor}" task inbox`,
 		`"${CONDUCTOR_BIN:-conductor}" task ack 3`,
 		`"${CONDUCTOR_BIN:-conductor}" task blocked --reason "no token for the registry" --message "Set NPM_TOKEN in the worktree's .env, then answer here"`,
 		`"${CONDUCTOR_BIN:-conductor}" task checkpoint --done "handlers and tests" --remaining "the docs" --notes "the docs page is docs/api.md"`,
 		"most 50 not acknowledged",
+		// Decisions (DR1 PR-6): when a question is one rather than ask or
+		// task blocked, that the request answers at once, how the answer
+		// arrives, and what each id, receipt and ref it names is.
+		`"${CONDUCTOR_BIN:-conductor}" task decide --type approval --question "Drop the legacy table?" --option "Drop it: frees 2 GB" --option "Keep it" --recommend 0 --authorizes "running migration 42" --evidence "task:$CONDUCTOR_RUN/$CONDUCTOR_TASK"`,
+		"is a\ndecision: ask it with decision_request or task decide, not with ask or task\nblocked, whose question lasts only as long as this session.",
+		"does not count an attempt that ends while it waits",
+		// What each kind does before it asks (#689, review round 3): a
+		// work task commits and saves a checkpoint; a review, which can do
+		// neither, asks without them, as its own example shows.
+		"a review is a task whose task.md says\n\"Do not commit\" under How to finish; any other is a work task.",
+		"- A work task commits its work and saves a checkpoint first (task\n  checkpoint, below)",
+		"- A review commits nothing and saves no checkpoint (task checkpoint\n  refuses a review): it asks as it is, about the candidate it reviews,\n  which is its HEAD. No checkpoint is needed for a decision:",
+		`"${CONDUCTOR_BIN:-conductor}" task decide --type clarification --question "Must the v1 routes stay as they are?" --evidence "task:$CONDUCTOR_RUN/$CONDUCTOR_TASK"`,
+		"(a work\n  task's at your checkpoint, a review's at its candidate)",
+		// Only the task's own decisions answer, and a withdrawal refused
+		// not_held is the attempt's end (#637, review round 3).
+		"These commands take your\n  own task's decisions only: another task's id is answered exactly as an\n  id no decision has.",
+		"A withdrawal refused not_held means your run was\n  continued: the decision stays open in the run that continues this one,\n  which waits on it. Stop there and end your turn, as this attempt's work\n  is over; submit nothing and ask nothing more.",
+		// Every id and ref a command prints, named; the go-on rule (applied
+		// alone); and, for each state a decision reaches, what the agent
+		// sees and does (the lines themselves are tied to the engine's
+		// words by crew's TestTheSkillQuotesTheEngine).
+		"\"dr-7 open.\n  Pending. ...\". dr-7 is the decision's id", `"${CONDUCTOR_BIN:-conductor}" task decision dr-7`, `"${CONDUCTOR_BIN:-conductor}" task withdraw dr-7`,
+		"rev counts the\n  decision's changes and is nothing you send",
+		"never\n  submit your result until its answer is applied", "Go on only once a decision is applied:\n  open and answered (the response recorded, not yet applied: it may still\n  be superseded or cancelled instead) still wait; superseded, cancelled\n  and expired mean no answer will come.",
+		// A list's answer is without its rationale: an applied decision is
+		// read whole before acting; a failed decide is looked for before
+		// asking again (#689, review round 2).
+		"read an applied decision whole (task decision dr-7) before you act\n  on it", "list them with task decision before you ask again, or you wait on two",
+		"give a requestId of your own: the same request with it\n  again replies with the same decision, never a second",
+		"dr-7/1 is the receipt of\n  the first response to dr-7, nothing you cite", "it overrides your recommendation",
+		"Ask again\n  with what was asked for in --context and --supersedes dr-7", "Take it as a no", "Never act\n  on its answer",
+		"Nothing is typed for the operator's comment or a re-route: keep\n  waiting.", "If the run stops or your session ends while you wait", "Decisions section says each decision's state",
+		"Options are\n  numbered from 0", "answered Done or Not done", "what a yes --authorizes",
+		"Only refs to your own\n  work are taken", "task:RUN/TASK", "attempt:RUN/TASK/N", "check:RUN/TASK/N/CHECK/K", "commit:RUN/SHA (the full id", "message:RUN/SEQ", "plan:KEY-n/REV (REV the number of the plan\n  revision that launched it, from the launch package, not an attempt's)",
+		// Each number is the cited record's own (#689, review round 2): N
+		// the attempt the record belongs to, a check's an earlier one's.
+		"N is the number of the attempt\n  the record belongs to: CONDUCTOR_ATTEMPT for your own, an earlier one's", "so a\n  check's N is an earlier attempt's, CHECK the check's id and K which run\n  of it on that attempt, from 1.",
+		"comment:KEY-n/ID and launch:ID", "ticket:KEY-n", "CONDUCTOR_SESSION_ID", "\"evidence[0]: REF resolves to nothing\"",
+		"artifact:PATH", "candidate:RUN/TASK/N@COMMIT",
 		// The ticket the run is linked to (DS1 PR-12): read it, comment on
 		// it, nothing more.
 		`"${CONDUCTOR_BIN:-conductor}" task ticket`,
@@ -68,7 +107,7 @@ func TestSkillText(t *testing.T) {
 		".conductor/ticket.md", ".conductor/package.json", ".conductor/attachments/",
 		"Your\n  run follows that package.", "a change that matters to your work is a\n  person's to decide: tell them, with a comment or task blocked, and never\n  act on it alone.",
 		"ever call notify or crew outside a Conductor session; the commands exit silently there",
-		"CONDUCTOR_AGENT", "at most 2 a session", "at most 12 members",
+		"CONDUCTOR_AGENT", "most 2 an hour", "at most 12\n  members",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the skill does not say %q", want)
@@ -83,6 +122,25 @@ func TestSkillText(t *testing.T) {
 	task, ticket, rules := strings.Index(body, "\n## Your task\n"), strings.Index(body, "\n## Your ticket\n"), strings.Index(body, "\n## Rules\n")
 	if strings.Count(body, "\n## Your ticket\n") != 1 || task < 0 || !(task < ticket && ticket < rules) {
 		t.Errorf("the ticket's section is not between the task's and the rules: %d %d %d", task, ticket, rules)
+	}
+	// The decisions' section follows the task's, once, before the messages'.
+	decisions, messages := strings.Index(body, "\n## Decisions\n"), strings.Index(body, "\n## Messages, blockers and checkpoints\n")
+	if strings.Count(body, "\n## Decisions\n") != 1 || !(task < decisions && decisions < messages) {
+		t.Errorf("the decisions' section is not between the task's and the messages': %d %d %d", task, decisions, messages)
+	}
+	// No number is said to be CONDUCTOR_ATTEMPT for every ref (#689,
+	// review round 2): a plan's revision and a check's attempt are not.
+	if strings.Contains(body, "N and SESSION are") {
+		t.Error("the skill says every ref's N is CONDUCTOR_ATTEMPT")
+	}
+	// A file: ref is outside an asker's grant (#683): never offered.
+	if strings.Contains(body, "file:SESSION") {
+		t.Error("the skill offers a file: ref, which a decision refuses")
+	}
+	// No checkpoint asked of every asker (#689, review round 3): a review
+	// cannot save one, and the Decisions section asks it of a work task.
+	if section := body[decisions:messages]; strings.Contains(section, "Commit and save a\ncheckpoint first") || strings.Count(section, "saves a checkpoint first") != 1 {
+		t.Error("the Decisions section asks every task for a checkpoint before a decision")
 	}
 	if strings.Contains(body, "--state needs_input") {
 		t.Error("the skill asks without the mark (--state needs_input)")

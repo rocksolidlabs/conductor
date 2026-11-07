@@ -106,6 +106,19 @@ func defaults() []Agent {
 				Prompt:            claudeAnswersReview,
 				Anytime:           true,
 				AnswersFromScreen: true,
+			}, {
+				// Signed out, Claude Code does not exit: it opens its
+				// sign-in screen and waits there for a browser's sign-in
+				// or a code pasted ("Browser didn't open? Use the url below
+				// to sign in (c to copy)", the URL, then "Paste code here
+				// if prompted >"; 2.1.319 under an empty CLAUDE_CONFIG_DIR,
+				// seen by #659's live check on 2026-11-06). A startup
+				// screen with no answers: no key of Conductor's passes it,
+				// so it holds the session's first line as every startup
+				// question does, shows under Needs you with its words, and
+				// a Brakeman turn that meets it ends (heldAtStartup).
+				Prompt: `(?i)paste\s*code\s*here\s*if\s*prompted`,
+				Words:  `(?i)browser\s*didn.t\s*open\?\s*use\s*the\s*url\s*below\s*to\s*sign\s*in`,
 			}},
 		},
 		{

@@ -2,9 +2,11 @@ package gitcli
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"syscall"
@@ -457,7 +459,7 @@ func TestFilterNames(t *testing.T) {
 	r := gitclitest.New(t, gitclitest.Options{})
 	names := func(dir string) []string {
 		t.Helper()
-		n, err := filterNames(context.Background(), []string{"-C", dir})
+		n, err := filterNames(context.Background(), "", []string{"-C", dir})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -542,5 +544,124 @@ func TestChangedSince(t *testing.T) {
 	}
 	if _, _, err := ChangedSince(ctx, t.TempDir(), base); err == nil {
 		t.Fatal("outside a repository")
+	}
+}
+
+// RevisionOf reads a folder's top, its repository's common directory (the
+// main checkout's .git for a linked worktree, absolute), HEAD's full id
+// and its branch in one rev-parse; a detached HEAD has no branch, a
+// repository with no commit its top and common directory alone, a folder
+// outside any repository ErrNotRepo. RepoOf answers the first two.
+func TestRevisionOfAndRepoOf(t *testing.T) {
+	dir := repo(t)
+	ctx := context.Background()
+	real, _ := filepath.EvalSymlinks(dir)
+	head, err := Run(ctx, dir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	head = strings.TrimSpace(head)
+	// Through a link to the repository, as macOS's /var is to
+	// /private/var: the common directory is the real path, as the top is.
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	rev, err := RevisionOf(ctx, filepath.Join(link, "internal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev.Top != real || rev.Common != filepath.Join(real, ".git") || rev.Commit != head || rev.Branch == "" {
+		t.Fatalf("the main checkout's revision %+v", rev)
+	}
+	wt := filepath.Join(t.TempDir(), "wt")
+	if _, err := Run(ctx, dir, "worktree", "add", "--no-checkout", "-b", "side", wt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, wt, "checkout", "-q", "side"); err != nil {
+		t.Fatal(err)
+	}
+	realWt, _ := filepath.EvalSymlinks(wt)
+	rev, err = RevisionOf(ctx, wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev.Top != realWt || rev.Common != filepath.Join(real, ".git") || rev.Branch != "side" || rev.Commit != head {
+		t.Fatalf("the linked worktree's revision %+v", rev)
+	}
+	top, common, err := RepoOf(ctx, wt)
+	if err != nil || top != realWt || common != filepath.Join(real, ".git") {
+		t.Fatalf("RepoOf %q %q %v", top, common, err)
+	}
+	if _, err := Run(ctx, wt, "checkout", "-q", "--detach"); err != nil {
+		t.Fatal(err)
+	}
+	if rev, err = RevisionOf(ctx, wt); err != nil || rev.Branch != "" || rev.Commit != head {
+		t.Fatalf("detached %+v %v", rev, err)
+	}
+	empty := t.TempDir()
+	if _, err := Run(ctx, empty, "init", "-q"); err != nil {
+		t.Fatal(err)
+	}
+	realEmpty, _ := filepath.EvalSymlinks(empty)
+	if rev, err = RevisionOf(ctx, empty); err != nil || rev.Top != realEmpty || rev.Commit != "" || rev.Common != filepath.Join(realEmpty, ".git") {
+		t.Fatalf("no commit yet %+v %v", rev, err)
+	}
+	if _, err := RevisionOf(ctx, t.TempDir()); !errors.Is(err, ErrNotRepo) {
+		t.Fatalf("outside a repository: %v", err)
+	}
+}
+
+// RunIn runs git in the directory its caller opened, never by its path
+// again: with the folder renamed and a link to another repository put at
+// its path after it was opened, git reads the folder opened, and nothing
+// of the other repository; where the system cannot start git in an open
+// directory, it runs nothing.
+func TestRunInReadsTheOpenedFolder(t *testing.T) {
+	a, b := repo(t), repo(t)
+	ctx := context.Background()
+	if err := os.WriteFile(filepath.Join(b, "only-b.txt"), []byte("b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "-A"}, {"commit", "-q", "-m", "only in b"}} {
+		if _, err := Run(ctx, b, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	onlyB, err := Run(ctx, b, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	headA, err := Run(ctx, a, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := filepath.Join(t.TempDir(), "repo")
+	if err := os.Rename(a, at); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := os.Rename(at, at+".moved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(b, at); err != nil {
+		t.Fatal(err)
+	}
+	head, err := RunIn(ctx, f, "rev-parse", "HEAD")
+	if runtime.GOOS != "linux" {
+		if !errors.Is(err, ErrNoDirHandle) {
+			t.Fatalf("RunIn on %s: %q %v, want ErrNoDirHandle", runtime.GOOS, head, err)
+		}
+		return
+	}
+	if err != nil || head != headA {
+		t.Fatalf("HEAD read in the opened folder: %q %v, want its own %q (the link's is %q)", head, err, headA, onlyB)
+	}
+	if out, err := RunIn(ctx, f, "rev-parse", "--verify", "--quiet", strings.TrimSpace(onlyB)+"^{commit}"); err == nil {
+		t.Fatalf("a commit only the link's repository holds is found: %q", out)
 	}
 }

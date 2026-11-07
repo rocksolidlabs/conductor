@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -755,5 +756,361 @@ func TestADraftsPeopleAreCheckedAndKept(t *testing.T) {
 	var kept crew.Crew
 	if err := json.Unmarshal(file, &kept); err != nil || !reflect.DeepEqual(kept.People, crewPeople()) || kept.Tasks[0].Owner != "nate" {
 		t.Fatalf("the made crew's file: %s %v", file, err)
+	}
+}
+
+// A person's work (PR-11): the tasks they own in two runs, newest first,
+// one owned by the fallback to the acceptance owner; the tickets they own
+// and are assigned, counted; a person removed from the saved crew after
+// the launch still answered with that run's work; a name in Dispatch's
+// directory alone answered; 404 for a name no source knows, matched
+// exactly; and the bound of 200 tasks with more.
+func TestAPersonsWork(t *testing.T) {
+	e := readyEnv(t, nil)
+	e.gitRepo(t)
+	saved, err := e.srv.crews.Create(peopledCrew(e.root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	older := launchPeopled(t, e, saved)
+	newer, release, err := e.srv.runs.LaunchNamed(t.Context(), saved, "second")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runningAttempt(t, e, newer.ID, "build", 1)
+	defer e.expect(t, "POST", "/api/runs/"+newer.ID+"/stop", nil, http.StatusOK, "")
+
+	e.newDispatchProject(t, "PPL", nil)
+	e.newDispatchTicket(t, "PPL", "owned", map[string]any{"owner": "nate"})
+	e.newDispatchTicket(t, "PPL", "assigned", map[string]any{"assignees": []string{"person:nate"}})
+	e.newDispatchTicket(t, "PPL", "both", map[string]any{"owner": "nate", "assignees": []string{"person:nate"}})
+	e.newDispatchTicket(t, "PPL", "another's", map[string]any{"owner": "ana2"})
+
+	work := func(name string) personWork {
+		t.Helper()
+		out := e.expect(t, "GET", "/api/people/"+url.PathEscape(name), nil, http.StatusOK, "")
+		b, _ := json.Marshal(out)
+		var w personWork
+		if err := json.Unmarshal(b, &w); err != nil {
+			t.Fatal(err)
+		}
+		return w
+	}
+	tasksOf := func(w personWork) []string {
+		var out []string
+		for _, x := range w.Tasks {
+			out = append(out, x.Run+"/"+x.Task+"/"+x.Member+"/"+x.OwnerFrom)
+		}
+		return out
+	}
+
+	nate := work("nate")
+	if want := []string{newer.ID + "/build/lead/task", older + "/build/lead/task"}; !reflect.DeepEqual(tasksOf(nate), want) || nate.More {
+		t.Fatalf("nate's tasks: %v, want %v", tasksOf(nate), want)
+	}
+	if nate.Tasks[0].RunLabel != "second" || nate.Tasks[1].RunLabel != saved.Name || nate.Tasks[0].State == "" {
+		t.Fatalf("nate's tasks: %+v", nate.Tasks)
+	}
+	if want := []personCrew{{ID: saved.ID, Name: saved.Name, Responsibilities: []string{crew.RespArchitecture}}}; !reflect.DeepEqual(nate.Crews, want) || nate.CrewsMore {
+		t.Fatalf("nate's crews: %+v", nate.Crews)
+	}
+	tk := nate.Tickets
+	if tk == nil || tk.Owner != 2 || tk.Assignee != 2 || tk.OwnerHref != "/api/dispatch/tickets?owner=nate" || tk.AssigneeHref != "/api/dispatch/tickets?assignee=person%3Anate" {
+		t.Fatalf("nate's tickets: %+v", tk)
+	}
+	// Naming nate a ticket's owner put him in Dispatch's directory.
+	if !nate.Dispatch || nate.DispatchUnavailable || nate.Decisions == nil || len(nate.Decisions) != 0 {
+		t.Fatalf("nate: %+v", nate)
+	}
+	// The links are Dispatch's own lists, which answer the counted tickets.
+	if got := e.expect(t, "GET", tk.AssigneeHref, nil, http.StatusOK, "")["total"]; got != 2.0 {
+		t.Fatalf("the assignee list: %v", got)
+	}
+
+	// ana leaves the saved crew; the runs launched with her keep her
+	// tasks, docs hers as the acceptance owner.
+	edited := saved
+	edited.People = []crew.Person{{Name: "nate", Responsibilities: []string{crew.RespArchitecture}}}
+	if _, err := e.srv.crews.Update(saved.ID, edited); err != nil {
+		t.Fatal(err)
+	}
+	ana := work("ana")
+	if want := []string{newer.ID + "/docs/writer/acceptance", older + "/docs/writer/acceptance"}; !reflect.DeepEqual(tasksOf(ana), want) {
+		t.Fatalf("ana's tasks: %v, want %v", tasksOf(ana), want)
+	}
+	if len(ana.Crews) != 0 || ana.Dispatch || ana.Tickets == nil || ana.Tickets.Owner != 0 || ana.Tickets.Assignee != 0 {
+		t.Fatalf("ana: %+v", ana)
+	}
+
+	// A name in Dispatch's directory alone, and one a ticket alone names.
+	e.expect(t, "POST", "/api/dispatch/people", map[string]any{"opId": opID(), "name": "zed"}, http.StatusCreated, "")
+	if zed := work("zed"); !zed.Dispatch || len(zed.Tasks) != 0 || len(zed.Crews) != 0 {
+		t.Fatalf("zed: %+v", zed)
+	}
+	if ana2 := work("ana2"); ana2.Tickets == nil || ana2.Tickets.Owner != 1 {
+		t.Fatalf("ana2: %+v", ana2)
+	}
+
+	// No source knows these: the name is matched exactly.
+	for _, name := range []string{"nobody", "NATE", "nat", strings.Repeat("n", 61), "na\tte"} {
+		e.expect(t, "GET", "/api/people/"+url.PathEscape(name), nil, http.StatusNotFound, "not_found")
+	}
+	e.expect(t, "GET", "/api/people/nate?x=1", nil, http.StatusBadRequest, "invalid_request")
+	if resp, _ := e.do("GET", "/api/people/nate", "", nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("no token: %d", resp.StatusCode)
+	}
+
+	// 256 tasks owned in two records: the 200 of the newest first, more.
+	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for i, id := range []string{"bulk-0000000a", "bulk-0000000b"} {
+		run := crew.Run{ID: id, CrewID: "bulk", Name: "bulk", Cwd: e.root, State: crew.RunStopped, StartedAt: at.Add(time.Duration(i) * time.Hour), Managed: &crew.Managed{Revision: 1},
+			People: []crew.Person{{Name: "kai"}}}
+		for n := range 128 {
+			run.Tasks = append(run.Tasks, crew.TaskState{ID: fmt.Sprintf("t%03d", n), Member: "lead", State: ledger.TaskReady, Owner: "kai", OwnerFrom: crew.OwnerFromTask})
+		}
+		if err := e.srv.records.Save(run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	kai := work("kai")
+	if len(kai.Tasks) != maxWorkTasks || !kai.More || kai.Tasks[0].Run != "bulk-0000000b" || kai.Tasks[0].Task != "t000" || kai.Tasks[127].Run != "bulk-0000000b" || kai.Tasks[128].Run != "bulk-0000000a" || kai.Tasks[199].Task != "t071" {
+		t.Fatalf("kai: %d tasks, more %v, %+v", len(kai.Tasks), kai.More, kai.Tasks[:2])
+	}
+}
+
+// The crews of a person's page are at most 100, with crewsMore.
+func TestAPersonsCrewsBound(t *testing.T) {
+	e := newTestEnv(t, nil)
+	for i := range 101 {
+		c := crew.Crew{Name: fmt.Sprintf("Crew %03d", i), Where: crew.WhereServer, Isolation: crew.IsolationNone, Members: []crew.Member{{Name: "lead", AgentID: "claude", Start: crew.Start{When: crew.StartImmediately}}}, People: []crew.Person{{Name: "kai", Responsibilities: []string{crew.RespProduct}}}}
+		if _, err := e.srv.crews.Create(c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b, _ := json.Marshal(e.expect(t, "GET", "/api/people/kai", nil, http.StatusOK, ""))
+	var kai personWork
+	if err := json.Unmarshal(b, &kai); err != nil {
+		t.Fatal(err)
+	}
+	if len(kai.Crews) != maxWorkCrews || !kai.CrewsMore || kai.Crews[0].Responsibilities[0] != crew.RespProduct {
+		t.Fatalf("kai in 101 crews: %d crews, more %v", len(kai.Crews), kai.CrewsMore)
+	}
+}
+
+// failingLists is Dispatch's store whose lists cannot be read.
+type failingLists struct{ *dispatch.Store }
+
+func (failingLists) List(context.Context, dispatch.Query) (dispatch.Page, error) {
+	return dispatch.Page{}, fmt.Errorf("the lists cannot be read")
+}
+
+// failingRead is Dispatch's store with one of the reads a person's work
+// makes failing: its directory, the owner list or the assignee list.
+type failingRead struct {
+	*dispatch.Store
+	fail string // "people", "owner" or "assignee"
+}
+
+func (f failingRead) People(ctx context.Context) ([]dispatch.Person, error) {
+	if f.fail == "people" {
+		return nil, fmt.Errorf("the directory cannot be read")
+	}
+	return f.Store.People(ctx)
+}
+
+func (f failingRead) List(ctx context.Context, q dispatch.Query) (dispatch.Page, error) {
+	if (f.fail == "owner" && q.Filter.Owner != "") || (f.fail == "assignee" && len(q.Filter.Assignees) > 0) {
+		return dispatch.Page{}, fmt.Errorf("the %s list cannot be read", f.fail)
+	}
+	return f.Store.List(ctx, q)
+}
+
+// Every read a person's work makes has its place in the reply, each failed
+// alone: a list read whole holds its rows or is empty, and a list not read
+// whole, its source or one of its records, says so, with what was read
+// listed all the same, and never makes a person no one's. Dispatch's
+// directory, its owner list and its assignee list (dispatchUnavailable, no
+// tickets; the directory's answer kept when only a list fails); one run
+// record that cannot be read, its directory read, and the records'
+// directory, unlisted or listed and not searched (recordsUnavailable); one
+// crew that cannot be read, its directory read, and the crews' directory,
+// unlisted or listed and not searched (crewsUnavailable); Dispatch closed. A file that is no record or crew is none, and with every source
+// read again, a name no one has is 404.
+func TestAPersonsWorkWhenASourceCannotBeRead(t *testing.T) {
+	e := readyEnv(t, nil)
+	e.expect(t, "POST", "/api/dispatch/people", map[string]any{"opId": opID(), "name": "zed"}, http.StatusCreated, "")
+	if tk, in, err := personTicketsOf(t.Context(), failingLists{e.srv.dispatch}, "zed"); tk != nil || !in || err == nil {
+		t.Fatalf("the lists failing: %+v %v %v", tk, in, err)
+	}
+	work := func(name string) map[string]any {
+		t.Helper()
+		return e.expect(t, "GET", "/api/people/"+personSegment(name), nil, http.StatusOK, "")
+	}
+	unread := func(out map[string]any) string {
+		var keys []string
+		for _, k := range []string{"crewsUnavailable", "recordsUnavailable", "dispatchUnavailable"} {
+			if out[k] == true {
+				keys = append(keys, k)
+			}
+		}
+		return strings.Join(keys, ",")
+	}
+	count := func(out map[string]any, list string) int { return len(out[list].([]any)) }
+
+	// kai's work: a crew, and two records; zed is in Dispatch's directory.
+	if _, err := e.srv.crews.Create(crew.Crew{Name: "kai's", Where: crew.WhereServer, Isolation: crew.IsolationNone, Members: []crew.Member{{Name: "lead", AgentID: "claude", Start: crew.Start{When: crew.StartImmediately}}}, People: []crew.Person{{Name: "kai"}}}); err != nil {
+		t.Fatal(err)
+	}
+	for i, id := range []string{"kai-0000000a", "kai-0000000b"} {
+		run := crew.Run{ID: id, CrewID: "kai", Name: "kai's", Cwd: e.root, State: crew.RunStopped, StartedAt: time.Now().Add(time.Duration(i) * time.Minute), Managed: &crew.Managed{Revision: 1},
+			Tasks: []crew.TaskState{{ID: "t1", Member: "lead", State: ledger.TaskReady, Owner: "kai", OwnerFrom: crew.OwnerFromTask}}}
+		if err := e.srv.records.Save(run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if kai := work("kai"); count(kai, "tasks") != 2 || count(kai, "crews") != 1 || unread(kai) != "" || kai["tickets"] == nil {
+		t.Fatalf("kai: %v", kai)
+	}
+	e.expect(t, "GET", "/api/people/nobody", nil, http.StatusNotFound, "not_found")
+
+	// Dispatch's reads, each failing alone.
+	for _, fail := range []string{"people", "owner", "assignee"} {
+		e.srv.personDispatch = failingRead{e.srv.dispatch, fail}
+		zed, kai, nobody := work("zed"), work("kai"), work("nobody")
+		e.srv.personDispatch = nil
+		if unread(zed) != "dispatchUnavailable" || zed["tickets"] != nil || zed["dispatch"] != (fail != "people") {
+			t.Fatalf("Dispatch's %s failing: zed %v", fail, zed)
+		}
+		if unread(kai) != "dispatchUnavailable" || kai["tickets"] != nil || count(kai, "tasks") != 2 || count(kai, "crews") != 1 || unread(nobody) != "dispatchUnavailable" {
+			t.Fatalf("Dispatch's %s failing: kai %v, nobody %v", fail, kai, nobody)
+		}
+	}
+
+	// One record that cannot be read, its directory read; then a file that
+	// is no record, which is none.
+	runs := filepath.Join(e.srv.cfg.DataDir, "runs")
+	broken := filepath.Join(runs, "kai-0000000b.json")
+	if err := os.WriteFile(broken, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	kai, nobody := work("kai"), work("nobody")
+	if unread(kai) != "recordsUnavailable" || count(kai, "tasks") != 1 || count(kai, "crews") != 1 || kai["tickets"] == nil || unread(nobody) != "recordsUnavailable" {
+		t.Fatalf("one record unreadable: kai %v, nobody %v", kai, nobody)
+	}
+	if err := os.Remove(broken); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runs, "notes.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if kai := work("kai"); unread(kai) != "" || count(kai, "tasks") != 1 {
+		t.Fatalf("a file that is no record: kai %v", kai)
+	}
+	e.expect(t, "GET", "/api/people/nobody", nil, http.StatusNotFound, "not_found")
+
+	// One crew that cannot be read, its directory read.
+	crews := filepath.Join(e.srv.cfg.DataDir, "crews")
+	brokenCrew := filepath.Join(crews, "broken.json")
+	if err := os.WriteFile(brokenCrew, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	kai, nobody = work("kai"), work("nobody")
+	if unread(kai) != "crewsUnavailable" || count(kai, "crews") != 1 || count(kai, "tasks") != 1 || unread(nobody) != "crewsUnavailable" {
+		t.Fatalf("one crew unreadable: kai %v, nobody %v", kai, nobody)
+	}
+	if err := os.Remove(brokenCrew); err != nil {
+		t.Fatal(err)
+	}
+	e.expect(t, "GET", "/api/people/nobody", nil, http.StatusNotFound, "not_found")
+
+	if os.Geteuid() == 0 {
+		t.Log("root reads a directory whatever its mode: the unreadable directories are not tried")
+	} else {
+		// Each directory listed by no one, its files still opened by name
+		// (the ledger beside the records); then each listed and searched by
+		// no one, its files listed and none of them statted or read.
+		for _, dir := range []string{runs, crews} {
+			// A failure while one is closed still leaves it removable.
+			t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+		}
+		for _, mode := range []os.FileMode{0o300, 0o400} {
+			for _, dir := range []struct{ path, key, list string }{{runs, "recordsUnavailable", "tasks"}, {crews, "crewsUnavailable", "crews"}} {
+				if err := os.Chmod(dir.path, mode); err != nil {
+					t.Fatal(err)
+				}
+				kai, nobody := work("kai"), work("nobody")
+				if err := os.Chmod(dir.path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if unread(kai) != dir.key || count(kai, dir.list) != 0 || unread(nobody) != dir.key {
+					t.Fatalf("%s at %o: kai %v, nobody %v", dir.path, mode, kai, nobody)
+				}
+			}
+		}
+		e.expect(t, "GET", "/api/people/nobody", nil, http.StatusNotFound, "not_found")
+	}
+
+	if err := e.srv.dispatch.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"zed", "nobody"} {
+		out := work(name)
+		if out["dispatchUnavailable"] != true || out["tickets"] != nil || out["dispatch"] != false || len(out["tasks"].([]any)) != 0 || len(out["crews"].([]any)) != 0 {
+			t.Fatalf("%s with Dispatch closed: %v", name, out)
+		}
+	}
+}
+
+// Two pages read one crew and each adds a person: the first save is kept,
+// the second, made from the same revision, is 409 stale_revision and
+// saves nothing, so the stored crew holds the first's person; the second
+// page, made again from the copy the first saved, keeps both. A body
+// without a revision replaces the crew as before; a revision of another
+// shape is 400, and a create refuses one as an unknown field.
+func TestASaveFromAStaleReadIsRefused(t *testing.T) {
+	e := readyEnv(t, nil)
+	c := managedCrew(e.root)
+	body := func(people []crew.Person, revision string) map[string]any {
+		out := map[string]any{"name": "Two pages", "goal": c.Goal, "cwd": c.Cwd, "where": c.Where, "isolation": c.Isolation, "members": c.Members, "tasks": c.Tasks, "people": people}
+		if revision != "" {
+			out["revision"] = revision
+		}
+		return out
+	}
+	nate := crew.Person{Name: "nate", Responsibilities: []string{crew.RespArchitecture}}
+	created := e.expect(t, "POST", "/api/crews", body([]crew.Person{nate}, ""), http.StatusCreated, "")
+	id := created["crew"].(map[string]any)["id"].(string)
+	read := e.expect(t, "GET", "/api/crews/"+id, nil, http.StatusOK, "")
+	base, _ := read["revision"].(string)
+	if len(base) != 64 || base != created["revision"] {
+		t.Fatalf("the read's revision %q, the create's %v", base, created["revision"])
+	}
+	pageA := e.expect(t, "PUT", "/api/crews/"+id, body([]crew.Person{nate, {Name: "ana"}}, base), http.StatusOK, "")
+	out := e.expect(t, "PUT", "/api/crews/"+id, body([]crew.Person{nate, {Name: "cy"}}, base), http.StatusConflict, "stale_revision")
+	if msg := out["error"].(map[string]any)["message"].(string); !strings.Contains(msg, "read the crew again") {
+		t.Fatalf("the refusal says %q", msg)
+	}
+	got := e.expect(t, "GET", "/api/crews/"+id, nil, http.StatusOK, "")
+	if people := peopleOf(t, got["crew"].(map[string]any)["people"]); !reflect.DeepEqual(people, []crew.Person{nate, {Name: "ana"}}) {
+		t.Fatalf("stored people %+v", people)
+	}
+	if got["revision"] != pageA["revision"] || got["revision"] == base {
+		t.Fatalf("stored %v, page A's save answered %v, the first read %s", got["revision"], pageA["revision"], base)
+	}
+	both := []crew.Person{nate, {Name: "ana"}, {Name: "cy"}}
+	pageB := e.expect(t, "PUT", "/api/crews/"+id, body(both, got["revision"].(string)), http.StatusOK, "")
+	if people := peopleOf(t, pageB["crew"].(map[string]any)["people"]); !reflect.DeepEqual(people, both) {
+		t.Fatalf("page B again: %+v", people)
+	}
+	// No revision: whatever is stored is replaced, as before.
+	e.expect(t, "PUT", "/api/crews/"+id, body([]crew.Person{nate}, ""), http.StatusOK, "")
+	for _, bad := range []string{"abc", strings.Repeat("A", 64), strings.Repeat("0", 65)} {
+		e.expect(t, "PUT", "/api/crews/"+id, body([]crew.Person{nate}, bad), http.StatusBadRequest, "invalid_request")
+	}
+	e.expect(t, "PUT", "/api/crews/missing", body([]crew.Person{nate}, base), http.StatusNotFound, "")
+	e.expect(t, "POST", "/api/crews", body([]crew.Person{nate}, base), http.StatusBadRequest, "invalid_request")
+	if people := peopleOf(t, e.expect(t, "GET", "/api/crews/"+id, nil, http.StatusOK, "")["crew"].(map[string]any)["people"]); !reflect.DeepEqual(people, []crew.Person{nate}) {
+		t.Fatalf("after the refusals: %+v", people)
 	}
 }

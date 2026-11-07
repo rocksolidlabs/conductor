@@ -8,7 +8,7 @@ import type { LaunchPrefill } from '~/composables/useLaunchModal'
 import { sameQuestions } from '~/utils/needsCursor'
 import { rowActions, sessionTarget, type Action } from '~/utils/actions'
 import { hostedReason } from '~/utils/clone'
-import { answersInTerminal, isActive, isEnded, needingInput, waitsForTerminal } from '~/utils/attention'
+import { isActive, isEnded, needingInput, noReply, offeredChoices } from '~/utils/attention'
 import type { FeedEntry } from '~/utils/events'
 import { joinedDot, joinedPath } from '~/utils/joined'
 import { resolveTyped } from '~/utils/fileTree'
@@ -21,6 +21,7 @@ import { skipWords } from '~/utils/crews'
 import { mergeTouched, type FeedFile } from '~/utils/touchedIndex'
 import { sayWords, type SayOutcome } from '~/utils/sayWords'
 import { SayDrafts } from '~/utils/sayDrafts'
+import { capPeople, personRows } from '~/utils/people'
 
 /**
  * The palette's groups for a query (#302): every row read from the live
@@ -107,6 +108,7 @@ export function usePaletteRows(ctx: PaletteContext) {
   const cloneModal = useCloneModal()
   const brakeman = useBrakeman()
   const route = useRoute()
+  const people = usePeople()
   const integrations = ref<Awaited<ReturnType<typeof api.integrations>>['integrations']>([])
   const showExited = ref(false)
 
@@ -766,10 +768,28 @@ export function usePaletteRows(ctx: PaletteContext) {
     }))
   }
 
-  function peopleGroups(): PaletteGroup<PaletteItem>[] {
+  // The people Conductor knows (HM1): the first page of GET /api/people, read again with what follows the `@` as `q` while the palette is
+  // open in that mode, one read at a time (usePeople's `search`: the latest `q` asked is read after the one under way, a reply older
+  // than the last asked is dropped), and a failed one keeps the rows read before.
+  watch(
+    () => {
+      if (!palette.open.value || !admin.hasToken.value) return null
+      const { mode, rest } = parsePrefix(palette.query.value)
+      return mode === 'people' ? rest : null
+    },
+    (q) => {
+      if (q !== null) void people.search(q)
+    },
+    { immediate: true },
+  )
+
+  function peopleGroups(query: string): PaletteGroup<PaletteItem>[] {
     const page = palette.page.value
     const groups: PaletteGroup<PaletteItem>[] = []
     if (page?.people?.length) groups.push({ id: 'people', label: page.label, rows: page.people })
+    // By name only, as the server's `q`: rows read for an earlier query whose detail alone matches are never offered.
+    const known = personRows(people.known.value, go, query)
+    if (known.length) groups.push({ id: 'known-people', label: 'People', rows: known })
     groups.push({ id: 'you', label: 'You', rows: [{ key: 'action:name', label: 'Your name…', icon: 'i-lucide-user-round', run: () => ctx.name() }] })
     return groups
   }
@@ -805,7 +825,7 @@ export function usePaletteRows(ctx: PaletteContext) {
       }
       case 'answer': {
         const s = session(v.target.id)
-        const o = s?.attention?.options?.[v.choice - 1]
+        const o = offeredChoices(s?.attention)[v.choice - 1]
         if (!s) return null
         const bound = boundQuestion(`answer:${s.id}`, s.attention?.id)
         const moved = bound !== s.attention?.id
@@ -814,10 +834,11 @@ export function usePaletteRows(ctx: PaletteContext) {
       case 'reply': {
         const s = session(v.target.id)
         if (!s) return null
-        const asking = s.attention?.state === 'needs_input' && !waitsForTerminal(s.attention) && !answersInTerminal(s.attention)
+        const none = noReply(s.attention)
+        const asking = s.attention?.state === 'needs_input' && none === undefined
         const bound = boundQuestion(`reply:${s.id}`, s.attention?.id)
         const moved = bound !== s.attention?.id
-        return { key: `verb:reply:${s.id}`, label: `Reply to ${s.name}: “${v.text}”`, detail: moved ? 'The question moved on: read the row again' : asking ? (s.attention?.message ?? 'Typed, then Enter a quarter of a second later') : 'It is not asking a question a reply can answer', icon: 'i-lucide-reply', agentId: s.agentId, disabled: !asking || moved, run: () => reply(s, v.text, bound) }
+        return { key: `verb:reply:${s.id}`, label: `Reply to ${s.name}: “${v.text}”`, detail: moved ? 'The question moved on: read the row again' : asking ? (s.attention?.message ?? 'Typed, then Enter a quarter of a second later') : (none ?? 'It is not asking a question a reply can answer'), icon: 'i-lucide-reply', agentId: s.agentId, disabled: !asking || moved, run: () => reply(s, v.text, bound) }
       }
       case 'say': {
         const s = session(v.target.id)
@@ -929,7 +950,8 @@ export function usePaletteRows(ctx: PaletteContext) {
       // The typed path is the query: the rows beneath are filtered by it, the Open row stays.
       return { mode, verb: null, groups: rank(groups, rest.replace(/:\d+$/, ''), r, now) }
     }
-    if (mode === 'people') return { mode, verb: null, groups: rank(peopleGroups(), rest, r, now) }
+    // The People group shows its first rows as ranked, as Tickets does; the rest are found by typing.
+    if (mode === 'people') return { mode, verb: null, groups: capPeople(rank(peopleGroups(rest), rest, r, now), rest) }
     if (mode === 'events') return { mode, verb: null, groups: rank(eventModeGroups(), rest, r, now) }
     return { mode, verb: null, groups: rank(shortcutGroups(), rest, r, now) }
   }

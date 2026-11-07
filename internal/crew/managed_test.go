@@ -164,7 +164,7 @@ func (l *fakeLedger) Load(ctx context.Context, runID string) (Loaded, bool, erro
 	// The receipts that failed its attempts, as the ledger's Load reads
 	// them: each (task, n, id, k) as last put.
 	for _, a := range out.Attempts {
-		if fr, ok := failingReceipt(a, l.lastChecks(runID, a.TaskID, a.N)); ok {
+		if fr, ok := FailingReceipt(a, l.lastChecks(runID, a.TaskID, a.N)); ok {
 			out.FailedChecks = append(out.FailedChecks, fr)
 		}
 	}
@@ -1417,9 +1417,14 @@ func TestAPausedRunStillSettlesAndTheRunRowFollows(t *testing.T) {
 		r, _ := e.Get(run.ID)
 		return r.State == RunFinished && r.Outcome == ledger.OutcomeSucceeded && r.Paused
 	})
-	l.mu.Lock()
-	row = l.runs[run.ID]
-	l.mu.Unlock()
+	// The engine settles the run in its view and commits the row after,
+	// outside its lock: the row is waited for, never read at once (#281).
+	waitTrue(t, "the run row settled", func() bool {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		row = l.runs[run.ID]
+		return row.State != ledger.RunRunning
+	})
 	if row.State != ledger.RunFinished || row.Outcome != ledger.OutcomeSucceeded || !row.Paused {
 		t.Fatalf("the run row after the outcome: %+v", row)
 	}

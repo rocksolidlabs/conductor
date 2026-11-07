@@ -21,7 +21,7 @@ var (
 	decision  = ext.Decision{
 		ID: "q1", Session: session, Message: "Allow the edit?", Kind: "permission", Source: "question",
 		Options: []ext.DecisionOption{{Label: "Yes", Input: "1"}, {Label: "No", Input: "2"}},
-		Plan:    "the plan", Since: at,
+		Plan:    "the plan", Since: at, Request: "dr-7",
 	}
 )
 
@@ -35,7 +35,7 @@ var records = []any{
 	&ext.Route{To: []ext.Destination{{Kind: "person", Name: "Ada"}}, Rule: "owner of the file", Answer: &ext.Answer{Input: "1", Text: "yes", By: principal}},
 	&ext.Destination{Kind: "role", Name: "reviewer"},
 	&ext.Answer{Input: "1", Text: "yes", By: principal},
-	&ext.Resolution{ID: "q1", Session: session, Ended: true, At: at},
+	&ext.Resolution{ID: "q1", Session: session, Ended: true, At: at, Request: "dr-7"},
 	&ext.TouchedFile{Session: session, Path: "/src/a.go", Op: "edit", Tool: "Edit", By: "claude", At: at},
 	&ext.ContextQuery{
 		Run: "r1", Crew: "c1", Task: "build", Attempt: 1, Kind: "work", Goal: "g", Instructions: "i",

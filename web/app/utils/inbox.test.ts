@@ -10,6 +10,7 @@ import {
   homeNext,
   inboxEmpty,
   mergeRecent,
+  recentBadge,
   recentFor,
   UNCONFIRMED,
   withoutRecent,
@@ -282,6 +283,27 @@ describe("a command's or an operation's failure", () => {
     expect(receiptFailure(new TypeError('Failed to fetch'))).toBe('unconfirmed')
     expect(receiptFailure(Object.assign(new Error('no receipt'), { status: 500 }))).toBe('unconfirmed')
     expect(receiptFailure(Object.assign(new Error('lost'), { status: 0 }))).toBe('unconfirmed')
+  })
+})
+
+describe("a Recent row's word", () => {
+  const answer: RecentEntry = { ref: 'question:s/q', receipt: 'q', attempt: 'd1', at: 1, outcome: UNCONFIRMED }
+  const command: RecentEntry = { ref: 'task:r/t', receipt: 'c1', at: 1 }
+  it('is Not confirmed for an answer nobody confirmed, even once its session ended or resumed: never a word of success', () => {
+    // A hosted answer whose acknowledgement was lost, the session then ended (resumed not_applicable) or resumed on another answer.
+    expect(recentBadge(answer, steps('done', 'unknown', 'unknown', 'not_applicable'), false)).toEqual({ text: 'Not confirmed', color: 'warning' })
+    expect(recentBadge(answer, steps('done', 'unknown', 'unknown', 'done'), false)).toEqual({ text: 'Not confirmed', color: 'warning' })
+    // A page reloaded while it was out (no word kept): the same.
+    expect(recentBadge({ ...answer, outcome: undefined }, steps('done', 'unknown', 'unknown', 'not_applicable'), false).text).toBe('Not confirmed')
+  })
+  it('says what the track says once something confirmed it, Refused first, and Sent while it is out', () => {
+    expect(recentBadge(answer, steps('done', 'done', 'done', 'done'), false)).toEqual({ text: 'Work resumed', color: 'success' })
+    expect(recentBadge(answer, steps('done', 'done', 'done', 'not_applicable'), false)).toEqual({ text: 'Taken', color: 'neutral' })
+    expect(recentBadge({ ...answer, outcome: 'accepted' }, steps('done', 'unknown', 'unknown', 'not_applicable'), false).text).toBe('Taken')
+    expect(recentBadge(answer, steps('done', 'done', 'done', 'waiting'), false).text).toBe('Resumed: waiting')
+    expect(recentBadge(answer, steps('done', 'refused', 'unknown', 'not_applicable'), false)).toEqual({ text: 'Refused', color: 'error' })
+    expect(recentBadge(command, steps('done', 'done', 'refused', 'unknown'), false).text).toBe('Refused')
+    expect(recentBadge(command, undefined, true)).toEqual({ text: 'Sent', color: 'neutral' })
   })
 })
 

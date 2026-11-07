@@ -35,11 +35,25 @@ session's activity and on the Events page. You are in a Conductor session
 when CONDUCTOR_NOTIFY_URL and CONDUCTOR_NOTIFY_TOKEN are set.
 
 With Conductor's MCP server registered (Claude Code and Codex get it at
-launch), the same reports and crew actions are tools: report, set_state,
-ask, form_crew, add_member, run_status, link, open_url, task_context, task_result,
-message_send, inbox_read, inbox_ack, task_blocked, task_checkpoint,
-ticket_read and ticket_comment. Call those when you have them; the
-commands below do the same.
+launch), the same reports and actions are tools, each where the server
+lets this session call it; the guide tool says which it may call now and
+the limits that bind it. Call those you have; the commands below do the
+same.
+
+- In every session: guide, report, set_state and ask.
+- In a session the server runs (not a hosted one), while it lets agents
+  serve themselves (its agents.selfService setting, on by default): link
+  and open_url.
+- There, while the session is in no crew: form_crew.
+- There, once the session is in a crew: run_status.
+- There, once the session is in a crew that is not a managed run:
+  add_member.
+- In an attempt of a managed run (CONDUCTOR_TASK is set): task_context,
+  task_result, message_send, inbox_read, inbox_ack, task_blocked,
+  task_checkpoint, decision_request, decision_list, decision_read and
+  decision_withdraw.
+- In a run a person linked to a Dispatch ticket: ticket_read and
+  ticket_comment.
 
 ## When to report
 
@@ -55,8 +69,8 @@ commands below do the same.
 - A link meant for the person, such as an artifact, a pull request, a
   preview or a sign-in page: open it with open_url, or this command, rather
   than your own opener. It opens in the browser your agent's settings name,
-  where the right account is signed in; it prints what happened. Ten a
-  minute.
+  where the right account is signed in; it prints what happened. At most
+  10 a minute.
 
       "${CONDUCTOR_BIN:-conductor}" open <url>
 
@@ -80,7 +94,7 @@ commands below do the same.
 
 - A question with a few answers: name them in the terminal on their own
   line, then ask with the same words as choices, so one click types the
-  answer as a line (at most 6, each at most 40 characters):
+  answer as a line (at most 6, each at most 40 bytes):
 
       "${CONDUCTOR_BIN:-conductor}" notify --ask --message "Which database?" --choices "Postgres|SQLite|Keep both"
 
@@ -116,11 +130,13 @@ people watching.
 - A member that starts "after" you begins when you next finish a turn, so do
   your part first; one that starts "immediately" begins at once; "manual"
   waits for a person. Hand details to a member with a handoff (above).
-- Never form a crew for work you can finish alone, and at most 2 a session.
-  A crew has at most 12 members and works in this session's directory.
-- Later, crew status lists the members and their states, crew add member.json
-  adds one member (the shape of one entry above), and crew link prints a
-  view-only link to this session for a pull request or a message:
+- Never form a crew for work you can finish alone; a session forms at
+  most 2 an hour, and none while it is in a crew. A crew has at most 12
+  members and works in this session's directory.
+- Once the crew is formed, crew status lists the members and their
+  states, crew add member.json adds one member (the shape of one entry
+  above), and crew link prints a view-only link to this session for a
+  pull request or a message:
 
       "${CONDUCTOR_BIN:-conductor}" crew status
       "${CONDUCTOR_BIN:-conductor}" crew add member.json
@@ -162,6 +178,108 @@ the end of your turn finishes nothing; only a submitted result does.
   a commit not from the inputs): fix it and submit again. The same commit
   submitted twice is taken once.
 
+## Decisions
+
+In a managed run, a question your work must wait for (a choice between
+designs, an approval before a step, something only a person can do) is a
+decision: ask it with decision_request or task decide, not with ask or task
+blocked, whose question lasts only as long as this session. Conductor keeps
+a decision through restarts, holds your task until the operator answers,
+and does not count an attempt that ends while it waits. What you do before
+you ask depends on your task's kind: a review is a task whose task.md says
+"Do not commit" under How to finish; any other is a work task.
+
+- A work task commits its work and saves a checkpoint first (task
+  checkpoint, below), so an attempt that ends while it waits loses
+  nothing, then asks:
+
+      "${CONDUCTOR_BIN:-conductor}" task decide --type approval --question "Drop the legacy table?" --option "Drop it: frees 2 GB" --option "Keep it" --recommend 0 --authorizes "running migration 42" --evidence "task:$CONDUCTOR_RUN/$CONDUCTOR_TASK"
+
+- A review commits nothing and saves no checkpoint (task checkpoint
+  refuses a review): it asks as it is, about the candidate it reviews,
+  which is its HEAD. No checkpoint is needed for a decision:
+
+      "${CONDUCTOR_BIN:-conductor}" task decide --type clarification --question "Must the v1 routes stay as they are?" --evidence "task:$CONDUCTOR_RUN/$CONDUCTOR_TASK"
+
+- --type is clarification (options optional, answered in words too),
+  approval (2 to 6 options and what a yes --authorizes) or assignment (no
+  options, answered Done or Not done, for work a person does). Options are
+  numbered from 0 in the order given; --recommend names one by its number.
+- It replies at once with the decision's id and its state: "dr-7 open.
+  Pending. ...". dr-7 is the decision's id, which task decision, task
+  withdraw and --supersedes take. Without an id, task decision lists your
+  task's decisions (id, type, state, rev, question, answer); rev counts the
+  decision's changes and is nothing you send. These commands take your
+  own task's decisions only: another task's id is answered exactly as an
+  id no decision has. Withdraw an open decision this attempt asked once you
+  no longer need it. A withdrawal refused not_held means your run was
+  continued: the decision stays open in the run that continues this one,
+  which waits on it. Stop there and end your turn, as this attempt's work
+  is over; submit nothing and ask nothing more.
+
+      "${CONDUCTOR_BIN:-conductor}" task decision dr-7
+      "${CONDUCTOR_BIN:-conductor}" task withdraw dr-7
+
+- Then end your turn, or go on with work that does not depend on it; never
+  submit your result until its answer is applied (a result is refused,
+  decision_open, while one waits). Go on only once a decision is applied:
+  open and answered (the response recorded, not yet applied: it may still
+  be superseded or cancelled instead) still wait; superseded, cancelled
+  and expired mean no answer will come. task decision says which of these
+  each is; its list shows an answer without the rationale it was given,
+  so read an applied decision whole (task decision dr-7) before you act
+  on it. A task decide that failed may still have opened its decision:
+  list them with task decision before you ask again, or you wait on two.
+  With --file, give a requestId of your own: the same request with it
+  again replies with the same decision, never a second.
+- --evidence cites a record by its ref, repeatable. Only refs to your own
+  work are taken: run:RUN, task:RUN/TASK, attempt:RUN/TASK/N and
+  check:RUN/TASK/N/CHECK/K (your task's), commit:RUN/SHA (the full id, git
+  rev-parse HEAD, of a commit in your run's repository), session:SESSION
+  and question:SESSION/ID (this session's), message:RUN/SEQ (a message to
+  you, #SEQ as task inbox numbers it), and, in a run launched from a
+  ticket, ticket:KEY-n, plan:KEY-n/REV (REV the number of the plan
+  revision that launched it, from the launch package, not an attempt's),
+  comment:KEY-n/ID and launch:ID (as the launch package in your task
+  folder names them). RUN, TASK and SESSION are CONDUCTOR_RUN,
+  CONDUCTOR_TASK and CONDUCTOR_SESSION_ID. N is the number of the attempt
+  the record belongs to: CONDUCTOR_ATTEMPT for your own, an earlier one's
+  as your task file names it; checks run after an attempt submits, so a
+  check's N is an earlier attempt's, CHECK the check's id and K which run
+  of it on that attempt, from 1. Any other ref (a file:, another task's
+  or run's) and one that names no record refuse the whole request as
+  "evidence[0]: REF resolves to nothing": drop it and ask again. --subject is what it is about: commit (your
+  HEAD, the default), artifact:PATH (a file committed in your worktree) or
+  candidate:RUN/TASK/N@COMMIT (a result attempt N submitted).
+
+What Conductor types into this session about a decision, and what you do:
+
+- "Decision dr-7 (approval) answered by NAME: ANSWER. Why: WHY. (receipt
+  dr-7/1)" (Why only when the operator gave one; dr-7/1 is the receipt of
+  the first response to dr-7, nothing you cite): the answer, applied. Do
+  what it says, even when it is not the option you recommended or adds
+  words of its own; it overrides your recommendation. Then go on and
+  submit.
+- "The operator asks about dr-7: TEXT": dr-7 is not answered. Ask again
+  with what was asked for in --context and --supersedes dr-7; dr-7 closes
+  and you wait for the new decision's answer.
+- "Decision dr-7 was cancelled by the operator, not approved: WHY": it is
+  never answered. Take it as a no: do not do what it asked about, finish
+  the rest and submit, naming what was not done with --issue.
+- "dr-7 was superseded: WHAT MOVED; ask again if you still need it", or
+  "Decision dr-7's answer was not applied: WHAT MOVED": what it was about
+  (your HEAD, the file, the candidate) changed since you asked. Never act
+  on its answer; ask again about what is there now if you still need it.
+- Nothing is typed for the operator's comment or a re-route: keep
+  waiting. A decision you superseded or withdrew is closed: nothing comes.
+- If the run stops or your session ends while you wait, the decision
+  waits with your task. Your task's next attempt starts once it is
+  applied or closed, in this run or the one that continues it (a work
+  task's at your checkpoint, a review's at its candidate), and its task
+  file's Decisions section says each decision's state: applied with the
+  answer (do it), superseded or cancelled with why (never act on an
+  answer it shows). A run that ends cancels the decisions it holds.
+
 ## Messages, blockers and checkpoints
 
 - What the next task needs to know beyond your result, send its member as
@@ -175,7 +293,7 @@ the end of your turn finishes nothing; only a submitted result does.
       "${CONDUCTOR_BIN:-conductor}" task ack 3
 
 - Something stops you that only a person can give (a credential, a
-  decision, a step by hand): say so. The task shows as blocked with the
+  step by hand) and that you wait for in this session: say so. The task shows as blocked with the
   reason, and your session asks the message as your question; report
   working, or submit, once you go on.
 
@@ -220,7 +338,7 @@ there is nothing more to do about it.
 
 ## If you are Brakeman
 
-- CONDUCTOR_BRAKEMAN is set: this session is one Brakeman turn, answering one request.
+- CONDUCTOR_BRAKEMAN is set: this session is one Brakeman turn, answering one request. It forms no crew and adds no member: form_crew, add_member, crew create and crew add refuse it.
 - Call guide first (its briefs section gives a brief's kinds, fields and refs), then read the request: brakeman_request, or "${CONDUCTOR_BIN:-conductor}" brakeman request.
 - Read before you write: observe (or brakeman observe WHAT) reads what you may see.
 - Every fact cites the evidence refs it rests on; your reading stays apart from the facts.
@@ -232,7 +350,7 @@ there is nothing more to do about it.
 - Never call notify or crew outside a Conductor session; the commands exit silently there.
 - task context and task result work in an attempt of a managed run; elsewhere
   they say so and exit 1.
-- Keep a message to one short line, at most 500 characters. A URL is at most
+- Keep a message to one short line, at most 500 bytes. A URL is at most
   2048 bytes, a member name at most 40 characters.
 - Do not report every tool call or file edit: Conductor's hooks report those
   when the session asks for them.

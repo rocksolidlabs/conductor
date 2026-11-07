@@ -5,9 +5,9 @@ import { qrSvg } from '~/utils/qr'
 import {
   inboxEmpty,
   phoneOffer,
+  recentBadge,
   recentFor,
   showingWords,
-  stateWords,
   trackKey,
   unknownWords,
   type InboxAction,
@@ -60,10 +60,34 @@ const missing = ref('')
 const shownFeedback = computed(() => (item.value ? acts.feedback.value[item.value.ref] : undefined))
 const busy = computed(() => shownFeedback.value?.busy ?? '')
 const refusal = computed(() => shownFeedback.value?.words ?? '')
-let reading = 0
-async function readItem() {
+/**
+ * The open item's reads: one in flight, at most one queued behind it however often the list is read again, so a read that answers is
+ * drawn even while the list keeps changing faster than an item is read. Only another item (`openRef` changed, `opened`) drops what
+ * an earlier item's read brings back, and its own read starts at once. Resolves once a read started after the call has answered.
+ */
+let opened = 0
+let reader: { opened: number; again: boolean; done: Promise<void> } | null = null
+function readItem(): Promise<void> {
+  if (reader && reader.opened === opened) {
+    reader.again = true
+    return reader.done
+  }
+  const l = { opened, again: false, done: Promise.resolve() }
+  l.done = (async () => {
+    try {
+      do {
+        l.again = false
+        await readOnce(l.opened)
+      } while (l.again && l.opened === opened)
+    } finally {
+      if (reader === l) reader = null
+    }
+  })()
+  reader = l
+  return l.done
+}
+async function readOnce(n: number) {
   const r = openRef.value
-  const n = ++reading
   if (!r) {
     item.value = null
     missing.value = ''
@@ -71,22 +95,24 @@ async function readItem() {
   }
   try {
     const it = await api.inboxItem(r)
-    if (n !== reading) return
+    if (n !== opened) return
     item.value = it
     missing.value = ''
   } catch (e) {
-    if (n !== reading) return
+    if (n !== opened) return
     item.value = null
     missing.value = (e as { status?: number }).status === 404 ? 'Nothing the server holds goes by this name now.' : (e as Error).message
   }
 }
 watch(openRef, (r) => {
   // Another item: the one shown goes until the new one is read, so nothing drawn for one is pressed for the other.
+  opened++
   if (item.value && item.value.ref !== r) item.value = null
   missing.value = ''
   void readItem()
 }, { immediate: true })
-// The list read again (an event, the stream's return): the open item is read again too, so a choice already made elsewhere is gone.
+// The list read again (an event, the stream's return): the open item is read again too (coalesced), so a choice already made
+// elsewhere is gone.
 watch(() => [state.value.items, state.value.total], () => {
   if (openRef.value && !acts.pending(openRef.value)) void readItem()
 })
@@ -159,10 +185,17 @@ async function act(ref: string, a: InboxAction, text?: string) {
   void inbox.changed()
 }
 
-/** Comment on the ticket a run of the item was launched from: Dispatch's comment operation; for the item shown, or not at all. */
-async function comment(ref: string, ticket: string, body: string) {
+/**
+ * Comment on the ticket a run of the item was launched from: Dispatch's comment operation; for the item shown, or not at all. `taken`
+ * says at once whether it goes: an action under way on the item sends nothing, and the card keeps the draft.
+ */
+async function comment(ref: string, ticket: string, body: string, taken?: (sent: boolean) => void) {
   const it = item.value
-  if (it?.ref !== ref) return
+  if (it?.ref !== ref || acts.pending(ref)) {
+    taken?.(false)
+    return
+  }
+  taken?.(true)
   await acts.comment(it, ticket, body)
 }
 
@@ -178,18 +211,8 @@ const phoneWords = computed(() =>
 )
 
 const recent = computed(() => state.value.recent)
-function recentWord(e: RecentEntry): { text: string; color: 'success' | 'warning' | 'error' | 'neutral' } {
-  const steps = state.value.tracks[trackKey(e)]
-  const of = (n: string) => steps?.find((s) => s.step === n)?.state
-  if (of('validated') === 'refused' || of('recorded') === 'refused') return { text: 'Refused', color: 'error' }
-  const r = of('resumed')
-  if (r === 'done') return { text: 'Work resumed', color: 'success' }
-  if (r === 'not_applicable') return { text: 'Taken', color: 'neutral' }
-  // Went, and neither a receipt nor the server's track says what became of it.
-  if (unknownWords(e, steps, out(e))) return { text: 'Not confirmed', color: 'warning' }
-  if (r) return { text: `Resumed: ${stateWords(r).toLowerCase()}`, color: 'warning' }
-  return { text: 'Sent', color: 'neutral' }
-}
+/** A Recent row's word (recentBadge: Not confirmed before any word of success). */
+const recentWord = (e: RecentEntry) => recentBadge(e, state.value.tracks[trackKey(e)], out(e))
 </script>
 
 <template>

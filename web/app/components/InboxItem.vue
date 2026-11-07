@@ -29,7 +29,7 @@ const props = defineProps<{
   /** The question Accept anyway and Cancel ask, the run page's (useTaskCommands.question). */
   confirmQuestion?: (a: InboxAction) => { title: string; detail: string }
 }>()
-const emit = defineEmits<{ act: [ref: string, action: InboxAction, text?: string]; comment: [ref: string, ticket: string, text: string]; reread: [] }>()
+const emit = defineEmits<{ act: [ref: string, action: InboxAction, text?: string]; comment: [ref: string, ticket: string, text: string, taken: (sent: boolean) => void]; reread: [] }>()
 
 const brakeman = computed(() => props.item.briefBy === 'brakeman')
 const steps = computed(() => (props.delivery?.length ? props.delivery : props.item.delivery) ?? [])
@@ -74,11 +74,15 @@ function sendLine() {
 
 const commenting = ref(false)
 const comment = ref('')
+/** Sends the draft unless an action on the item is under way; the draft goes only once the parent says it was sent (`taken`). */
 function sendComment() {
-  if (!comment.value.trim()) return
-  emit('comment', props.item.ref, ticket.value, comment.value)
-  comment.value = ''
-  commenting.value = false
+  if (props.busy || !comment.value.trim()) return
+  const body = comment.value
+  emit('comment', props.item.ref, ticket.value, body, (sent) => {
+    if (!sent || comment.value !== body) return
+    comment.value = ''
+    commenting.value = false
+  })
 }
 </script>
 
@@ -190,7 +194,7 @@ function sendComment() {
       </div>
       <form v-if="commenting" class="flex flex-col gap-2" data-inbox-comment @submit.prevent="sendComment">
         <UTextarea v-model="comment" :rows="3" autoresize placeholder="A comment on the ticket" data-inbox-comment-input />
-        <UButton type="submit" :label="`Comment on ${ticket}`" icon="i-lucide-send" size="md" class="min-h-11 self-start" :disabled="!comment.trim()" data-inbox-comment-send />
+        <UButton type="submit" :label="`Comment on ${ticket}`" icon="i-lucide-send" size="md" class="min-h-11 self-start" :loading="busy === 'Comment'" :disabled="!!busy || !comment.trim()" data-inbox-comment-send />
       </form>
       <p class="text-xs text-muted" data-inbox-dr1>Durable decisions arrive with DR1: asking for more information and commenting on a decision come with them.</p>
     </section>

@@ -45,10 +45,12 @@ const (
 const MaxSubmitText = proto.MaxInput - len(pasteStart) - len(pasteEnd)
 
 // TrustQuestionWords say why a person's typed text is refused while the
-// agent's trust question shows: its Enter would pick whatever the dialog
-// highlights (Claude Code highlights "No, exit"). The question's own choices
+// agent's trust question, or another of its startup questions, shows: its
+// Enter would pick whatever the dialog highlights (Claude Code highlights
+// "No, exit"), or reach a screen that waits for something else (its
+// sign-in, for a pasted code). The question's own choices
 // (Options.TrustAnswers) or the terminal answer it.
-const TrustQuestionWords = "the agent asks whether to trust the folder: answer with the question's choices, or in its terminal"
+const TrustQuestionWords = "the agent asks a startup question (whether to trust the folder, its sign-in, an update): answer with the question's choices, or in its terminal"
 
 // ErrTrustQuestion is Submit's refusal of a person's text while the trust
 // question shows.
@@ -859,9 +861,15 @@ func (s *Local) pressEnterHeld(sub Submission, res SubmitResult, st submitState)
 }
 
 // typedEntry records what Conductor typed itself (By unset), once its text
-// is written.
+// is written. A line that names a question is an answer, whoever passed it
+// on (a provider's Submit, a host's answer_as): its text may be a
+// credential and is never recorded; its Enter's resolve records the
+// answer as a reply's is, by the question's words. A decision's line (the
+// run engine's application, Decision set) is recorded even when it answers
+// the question that mirrors its decision: the engine wrote it, from the
+// response the ledger already keeps, as it writes a crew's prompt.
 func (s *Local) typedEntry(sub Submission, text string, st submitState) {
-	if sub.By == nil {
+	if sub.By == nil && (sub.Question == "" || sub.Decision != "") {
 		// A line Conductor typed (a crew's prompt, a broadcast), not an
 		// answer to a question: Op says so (OpTyped), and the inspector
 		// reads it as sent, not answered.

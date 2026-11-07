@@ -599,3 +599,85 @@ func manyWords(n int) string {
 	}
 	return strings.Join(ws, " ")
 }
+
+// ExceptCrews leaves a crew's entries out of a search, of words and of
+// filters alone, and its cursor is another query's; Filter answers what
+// the line gave a filter.
+func TestExceptCrewsLeavesTheirEntriesOut(t *testing.T) {
+	ix := openIndex(t, t.TempDir(), Options{})
+	mine := chat("session:a#e1", "a", "the turnstile jammed", t0)
+	turn := chat("session:b#e1", "b", "the turnstile jammed again", t0.Add(time.Minute))
+	turn.Crew = "brakeman"
+	put(t, ix, "session:a", mine)
+	put(t, ix, "session:b", turn)
+	for _, line := range []string{"turnstile", "class:said"} {
+		q, err := ParseQuery(line)
+		if err != nil {
+			t.Fatal(err)
+		}
+		all, err := ix.Search(t.Context(), q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		q.ExceptCrews = []string{"brakeman"}
+		some, err := ix.Search(t.Context(), q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := keysOf(some.Entries); len(all.Entries) != 2 || !slices.Equal(got, []string{"session:a#e1"}) || some.Total != 1 {
+			t.Fatalf("%q: all %v, except brakeman %v (total %d)", line, keysOf(all.Entries), got, some.Total)
+		}
+	}
+	q, _ := ParseQuery("turnstile")
+	q.Limit = 1
+	first, err := ix.Search(t.Context(), q)
+	if err != nil || first.Next == "" {
+		t.Fatalf("a first page of one: %v %+v", err, first)
+	}
+	q.After, q.ExceptCrews = first.Next, []string{"brakeman"}
+	if _, err := ix.Search(t.Context(), q); !errors.Is(err, ErrCursor) {
+		t.Fatalf("a cursor of the search without the exception: %v", err)
+	}
+	q, _ = ParseQuery("crew:brakeman,ops kind:brief.item turnstile")
+	if v, ok := q.Filter("crew"); !ok || !slices.Equal(v, []string{"brakeman", "ops"}) {
+		t.Fatalf("crew: %v %v", v, ok)
+	}
+	if v, ok := q.Filter("kind"); !ok || !slices.Equal(v, []string{"brief.item"}) {
+		t.Fatalf("kind: %v %v", v, ok)
+	}
+	if _, ok := q.Filter("project"); ok {
+		t.Fatal("project: given")
+	}
+}
+
+// A page's After(i) is the cursor after its entry i: the same rows follow
+// it as follow a page that ended there.
+func TestAfterIsTheCursorAfterAnEntry(t *testing.T) {
+	ix := openIndex(t, t.TempDir(), Options{})
+	for i, id := range []string{"a", "b", "c", "d"} {
+		put(t, ix, "session:"+id, chat("session:"+id+"#e1", id, "the turnstile jammed "+manyWords(i+1), t0.Add(time.Duration(i)*time.Minute)))
+	}
+	for _, line := range []string{"turnstile", "class:said"} {
+		q, _ := ParseQuery(line)
+		whole, err := ix.Search(t.Context(), q)
+		if err != nil || len(whole.Entries) != 4 {
+			t.Fatalf("%q: %v %v", line, err, keysOf(whole.Entries))
+		}
+		for i := range 3 {
+			q.Limit = i + 1
+			short, err := ix.Search(t.Context(), q)
+			if err != nil || short.Next != whole.After(i) {
+				t.Fatalf("%q: the cursor after %d: %q, a page of %d ends at %q (%v)", line, i, whole.After(i), i+1, short.Next, err)
+			}
+			q.Limit, q.After = 0, whole.After(i)
+			rest, err := ix.Search(t.Context(), q)
+			if err != nil || !slices.Equal(keysOf(rest.Entries), keysOf(whole.Entries[i+1:])) {
+				t.Fatalf("%q: after %d: %v, want %v (%v)", line, i, keysOf(rest.Entries), keysOf(whole.Entries[i+1:]), err)
+			}
+			q.After = ""
+		}
+		if whole.After(4) != "" || whole.After(-1) != "" {
+			t.Fatalf("%q: a cursor past the page", line)
+		}
+	}
+}

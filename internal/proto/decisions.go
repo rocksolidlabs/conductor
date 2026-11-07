@@ -46,12 +46,12 @@ const (
 	// its fields' encoded worst cases (a text of MaxSubmit control
 	// characters is 24 KiB) under a data channel's message cap.
 	MaxDecide = 32 << 10
-	// MaxDecisionReqID bounds a request's id, MaxDecisionRef an item's or
+	// MaxDecisionReqID bounds a request's id, MaxDecisionItemRef an item's or
 	// an evidence entry's ref, MaxDecisionCursor a list's after,
 	// MaxDecisionReceipt a receipt, MaxDecisionAttempt an action's
 	// identity (its decide's opId).
 	MaxDecisionReqID   = 32
-	MaxDecisionRef     = 512
+	MaxDecisionItemRef = 512
 	MaxDecisionCursor  = 600
 	MaxDecisionReceipt = 512
 	MaxDecisionAttempt = 32
@@ -237,10 +237,10 @@ func ValidDecisionReqID(id string) bool {
 	return id != "" && len(id) <= MaxDecisionReqID && printable(id)
 }
 
-// validRef reports whether ref can be a lane ref: 1 to MaxDecisionRef
+// validRef reports whether ref can be a lane ref: 1 to MaxDecisionItemRef
 // bytes of UTF-8.
 func validRef(ref string) bool {
-	return ref != "" && len(ref) <= MaxDecisionRef && utf8.ValidString(ref)
+	return ref != "" && len(ref) <= MaxDecisionItemRef && utf8.ValidString(ref)
 }
 
 // Valid reports whether m is within its bounds.

@@ -9,9 +9,10 @@ import {
   MAX_DECIDE_IN_FLIGHT,
   MAX_DECISION,
   MAX_DECISION_CURSOR,
+  MAX_DECISION_EVENT,
   MAX_DECISION_READS_IN_FLIGHT,
   MAX_DECISION_RECEIPT,
-  MAX_DECISION_REF,
+  MAX_DECISION_ITEM_REF,
   MAX_RATIONALE,
   MAX_SUBMIT,
   decideValid,
@@ -25,6 +26,7 @@ import {
   type DecideMsg,
   type DecideOkMsg,
   type DecideRefusedMsg,
+  type DecisionEvent,
   type DecisionsChangedMsg,
   type Welcome,
 } from './protocol'
@@ -104,8 +106,8 @@ describe('the decision lane', () => {
     expect(decisionRequestValid({ t: 'decisions_list', reqId: 'r1', after: 'a'.repeat(MAX_DECISION_CURSOR) })).toBe(true)
     expect(decisionRequestValid({ t: 'decisions_list', reqId: 'r1', after: 'a'.repeat(MAX_DECISION_CURSOR + 1) })).toBe(false)
     expect(decisionRequestValid({ t: 'decisions_list', reqId: 'r 1' })).toBe(false)
-    expect(decisionRequestValid({ t: 'decision_read', reqId: 'r1', ref: 'q'.repeat(MAX_DECISION_REF) })).toBe(true)
-    expect(decisionRequestValid({ t: 'decision_read', reqId: 'r1', ref: 'q'.repeat(MAX_DECISION_REF + 1) })).toBe(false)
+    expect(decisionRequestValid({ t: 'decision_read', reqId: 'r1', ref: 'q'.repeat(MAX_DECISION_ITEM_REF) })).toBe(true)
+    expect(decisionRequestValid({ t: 'decision_read', reqId: 'r1', ref: 'q'.repeat(MAX_DECISION_ITEM_REF + 1) })).toBe(false)
     expect(decisionRequestValid({ t: 'decision_track', reqId: 'r1', ref: 'task:a/b', receipt: 'c'.repeat(MAX_DECISION_RECEIPT), attempt: 'op-1' })).toBe(true)
     expect(decisionRequestValid({ t: 'decision_track', reqId: 'r1', ref: 'task:a/b', receipt: 'c'.repeat(MAX_DECISION_RECEIPT + 1), attempt: 'op-1' })).toBe(false)
     expect(decisionRequestValid({ t: 'decision_track', reqId: 'r1', ref: 'task:a/b', receipt: 'c', attempt: 'a b' })).toBe(false)
@@ -137,5 +139,21 @@ describe('the decision lane', () => {
     const welcome: Partial<Welcome> = { t: 'welcome', decisions: true }
     expect(welcome.decisions).toBe(true)
     expect(MAX_RATIONALE).toBe(2048)
+  })
+})
+
+// The `decision` event's data (docs/protocol.md "Decisions"): its largest, every field at its longest as the server writes it,
+// fits the bound the server holds it to (internal/api, maxDecisionEvent, TestDecisionEventIsBounded).
+describe('the decision event', () => {
+  it('fits its bound at its largest', () => {
+    const largest: DecisionEvent = {
+      id: 'dr-9223372036854775807',
+      run: `${'c'.repeat(64)}-0123abcd`,
+      task: 't'.repeat(40),
+      state: 'superseded',
+      rev: 2 ** 31 - 1,
+    }
+    expect(new TextEncoder().encode(JSON.stringify(largest)).length).toBeLessThanOrEqual(MAX_DECISION_EVENT)
+    expect(MAX_DECISION_EVENT).toBe(256)
   })
 })

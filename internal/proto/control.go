@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Control message discriminators (the "t" field).
@@ -60,6 +61,11 @@ const (
 	// the one waiting (answered by another reply, or gone): nothing was
 	// written.
 	ErrCodeQuestionAnswered = "question_answered"
+	// ErrCodeDecision answers an answer whose question mirrors a durable
+	// decision (Attention.Decision): it is answered as that decision,
+	// never as the session's question, and the message names it ("dr-7 is
+	// answered as a decision …"). Nothing was written.
+	ErrCodeDecision = "decision"
 )
 
 // Transport labels reported in Welcome.
@@ -578,6 +584,32 @@ type Attention struct {
 	// a page offers to open it. Absent from any other question, and from
 	// an older owner.
 	Plan string `json:"plan,omitempty"`
+	// Decision is the durable decision the question mirrors ("dr-<n>", at
+	// most MaxDecisionRef bytes: docs/protocol.md, Attention), which only
+	// that decision's answer answers: a client offers no reply to it, and
+	// an answer naming it is refused (ErrCodeDecision). Absent from every
+	// other question, and from an older owner.
+	Decision string `json:"decision,omitempty"`
+}
+
+// MaxDecisionRef bounds a durable decision's id where the protocol carries
+// it (Attention.Decision): "dr-" and a decimal number.
+const MaxDecisionRef = 16
+
+// ValidDecisionRef reports whether ref can name a durable decision: "dr-"
+// and a decimal number from 1 with no leading zero, at most MaxDecisionRef
+// bytes in all.
+func ValidDecisionRef(ref string) bool {
+	n, ok := strings.CutPrefix(ref, "dr-")
+	if !ok || len(ref) > MaxDecisionRef || n == "" || n[0] == '0' {
+		return false
+	}
+	for i := 0; i < len(n); i++ {
+		if n[i] < '0' || n[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // Activity is one entry of the session activity log (owner -> client). The

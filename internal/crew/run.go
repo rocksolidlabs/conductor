@@ -145,6 +145,12 @@ var (
 	// read the run without them, and a later commit would write them
 	// after it.
 	ErrRunUnsettled = errors.New("the run has changes the ledger has not recorded yet: continue it once the ledger takes them")
+	// ErrChainTooLong refuses a continuation of a run whose chain of
+	// continuations is longer than a server reads (maxChain runs, the run
+	// itself among them): its decisions could not be read whole, and a
+	// continuation that read them in part would ask a released gate again
+	// or drop an answer (readDecisionHistory). Nothing is made or moved.
+	ErrChainTooLong = errors.New("the run's chain of continuations is longer than this server reads: it is not continued")
 	// ErrManaged says the run is a managed one (a crew with tasks, #334),
 	// which the start, add and resume paths of a legacy run do not serve:
 	// a managed run dispatches its own tasks, and continues after a restart
@@ -410,6 +416,10 @@ type Engine struct {
 	// refused and before the refusal is handled (afterTransact): a test
 	// commits the run's launch there.
 	afterRefused func(runID string, err error)
+	// beforeRecheck, when set, runs once a Check again's change is
+	// committed and before its verification starts (recheckRecorded): a
+	// test ends the server there.
+	beforeRecheck func(runID string)
 	// afterVisit, when set, is called by withdraw for each task it visits,
 	// under e.mu: a test counts the visits.
 	afterVisit func(taskID string)
@@ -458,10 +468,16 @@ type Engine struct {
 	// identity's response to a decision is applied only by the process
 	// that accepted it (decisions.go).
 	boot string
-	// gatesAtLaunch opens a planned run's gates in its first transaction
-	// (openGates). Off until the response route ships with it
-	// (docs/plans/decisions.md, PR-4): a test turns it on.
-	gatesAtLaunch bool
+	// confirms are the answers of the identity providers' rechecks of
+	// accepted identity responses (ConfirmAuthority), by the response:
+	// whichever run holds its decision reads them, so one is never lost
+	// with a copy a continuation left behind. Under e.mu.
+	confirms map[confirmKey]int
+	// opMu orders the operators' operations on decisions (operate), from
+	// the look for their ids through their commits: an operation's row is
+	// never refused in its transaction as another's with the same id,
+	// which a change kept for the next commit could not survive.
+	opMu sync.Mutex
 	// beforeMirror, when set, runs as a decision's question is about to be
 	// put to its session (askMirror), on the attempt's askMu, the decision
 	// read as open: a test holds the ask there. beforeRespond, when set, runs in RespondDecision
@@ -469,6 +485,10 @@ type Engine struct {
 	// transaction: a test lands a change there.
 	beforeMirror  func(n int64)
 	beforeRespond func(n int64)
+	// beforeOperate, when set, runs in an operator's operation once it has
+	// looked for a repeat of its id and before its transaction: a test
+	// commits an answer there, which the operation's rev read must meet.
+	beforeOperate func(n int64)
 	// beforeAnswer, when set, runs in a member's deliverer as it is about
 	// to take the next decision answer (nextAnswer): a test queues two
 	// answers there before either is typed. afterLook, when set, runs once
@@ -476,10 +496,26 @@ type Engine struct {
 	// for none) and before it types it: a test sets the mirror aside there.
 	beforeAnswer func(member string)
 	afterLook    func(member, mirror string)
+	// beforeTyping, when set, runs as a decision's answer is about to be
+	// submitted to its session: a test holds the line there while its
+	// decision is superseded.
+	beforeTyping func(n int64)
+	// tryAsk, when set, asks a decision's question in place of the
+	// session's TryAskDecision: a test refuses it as the session's rate
+	// limit does.
+	tryAsk func(l *session.Local, id, question string) (string, error)
+	// afterDecisionsRead, when set, runs once an attempt's task file
+	// decisions are read and before the change that marks them carried
+	// (taskDecisions): a test holds two readers there.
+	afterDecisionsRead func(task string)
 	// submitAnswer, when set, submits a decision's line in place of the
 	// session's Submit (typeAnswer): a test answers as the session's
 	// writer does when a dialog came as the text was taken.
 	submitAnswer func(ctx context.Context, l *session.Local, sub session.Submission) (session.SubmitResult, error)
+	// afterLineEnded, when set, runs once lineEnded has decided a line's
+	// end and its transaction returned: a test waits there before it lets
+	// a continuation go on.
+	afterLineEnded func(n int64)
 }
 
 // sessionMember is the member a session is, and its run.
@@ -516,11 +552,17 @@ type run struct {
 	checks    sync.WaitGroup
 	revision  int64
 	crewJSON  string // the crew as launched, for the ledger's run row
+	// rechecks are the attempts Check again recorded whose verification
+	// has not started: the pump starts them once their change is
+	// committed and the prerequisites have passed (startRechecks).
+	rechecks []*attempt
 	// decisions are the run's open and answered decisions (decisions.go),
 	// under e.mu. Their order is not their opening's: a supersession
 	// refused puts its target back last; what needs that order compares
-	// their numbers (newerOpen).
+	// their numbers (newerOpen). dec is the rest of what it keeps of them
+	// (decisions_wait.go).
 	decisions []*decision
+	dec       runDecisions
 	// created says the run's row is in the ledger: its first transaction
 	// committed. Until then only a change that may be the run's first (its
 	// launch's, its continuation's, its stop's: transactFirst) is written,
@@ -532,6 +574,19 @@ type run struct {
 	// is written again, recorded or told as forgotten, and it is dropped
 	// (dropForeign) with the browsers told to read the id again.
 	foreign bool
+	// discarded says the run was a continuation whose first transaction
+	// did not commit (refused or failed): nothing of it is ever written,
+	// a stop of it included, and it is forgotten (discard) (#623, review
+	// round 1).
+	discarded bool
+	// continuation says the run is a continuation (ContinueRunWith), set
+	// before the engine holds it and never changed. Until its first
+	// transaction commits, it exists for no one else: that transaction,
+	// its own (startContinued), is the only change that writes it, and a
+	// Stop of it is refused as of no such run and unmakes it (Stop). A
+	// refusal before that commit leaves no row of it, by construction
+	// (#623, review round 2).
+	continuation bool
 	// pkg is the launch package of a run launched from a ticket
 	// (LaunchPlanned) or of a continuation of one; nil for any other run.
 	pkg *runPackage
@@ -847,6 +902,8 @@ type prepared struct {
 	man    resolvedManifest
 	// opts are the run's class and request (LaunchNamedWith).
 	opts LaunchOpts
+	// continuation makes the run a continuation (run.continuation).
+	continuation bool
 }
 
 // prepare checks c as LaunchHeld describes and, with worktrees, finds where
@@ -1174,7 +1231,7 @@ func (e *Engine) addRun(c Crew, p prepared, label, id string, pkg *runPackage) (
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &run{crewID: c.ID, name: c.Name, label: label, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation, prefix: p.prefix,
 		yolo: c.Yolo != nil && *c.Yolo, changed: e.OnRunChange, startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true, managed: c.Managed(),
-		class: p.opts.Class, request: p.opts.Request, people: c.clone().People}
+		class: p.opts.Class, request: p.opts.Request, people: c.clone().People, continuation: p.continuation}
 	if r.managed {
 		// The crew's project manifest as launched, a legacy setup lifted
 		// into it, and the manifest at the pinned base, whose prerequisites
@@ -1691,6 +1748,13 @@ func (e *Engine) OnActivity(sessionID string, entry session.ActivityEntry, state
 	r, m := sm.r, sm.m
 	m.poke()
 	isHandoff := entry.Type == session.ActivityHandoff
+	if !isHandoff && entry.Type == session.ActivityAttention && state == session.AttentionWorking && sm.a != nil {
+		// Its agent works again: an attempt that waits on a decision is
+		// not given up until its next done (decisions_wait.go: park).
+		e.mu.Lock()
+		sm.a.turnEnded = false
+		e.mu.Unlock()
+	}
 	if !isHandoff && entry.Type == session.ActivityAttention && (state == session.AttentionWorking || state == session.AttentionDone) && sm.a != nil {
 		// A blocker the attempt reported is cleared once it works on, or
 		// says it is done (checkpoints.go).
@@ -1858,14 +1922,52 @@ func (r *run) admit(m Member) error {
 // once the executor hands it over, the handoffs waiting are
 // dropped and the run is marked stopped. The worktrees stay. Stopping a
 // stopped run again changes nothing.
+//
+// A continuation whose first transaction has not committed is no run yet
+// for anyone else: its Stop is refused as of no such run, and the
+// continuation is then never made (unmake).
 func (e *Engine) Stop(ctx context.Context, runID string) error {
 	e.mu.Lock()
 	r, ok := e.runs[runID]
 	e.mu.Unlock()
-	if !ok {
+	if !ok || e.unmake(r) {
 		return ErrRunNotFound
 	}
 	return e.stop(ctx, r)
+}
+
+// unmake reports whether r is a continuation whose first transaction has
+// not committed, and marks such a one discarded: its first transaction,
+// when it comes, is refused (commit) and the continuation is refused as
+// stopped (ContinueRunWith), nothing of it written. Under r.txMu, so a
+// first transaction under way commits or fails first: one that committed
+// leaves a run that is stopped as any other. The caller holds neither
+// lock.
+//
+// A continuation already committed is told by e.mu alone (created is
+// never unset), before r.txMu: its Stop sets stopping, cancels the run's
+// context and stops its sessions before it waits for any transaction of
+// the run, as an original run's does, so a transaction the ledger holds up
+// does not hold up the stop of the work under way (#623, review round 3).
+func (e *Engine) unmake(r *run) bool {
+	if !r.continuation {
+		return false
+	}
+	e.mu.Lock()
+	made := r.created
+	e.mu.Unlock()
+	if made {
+		return false
+	}
+	r.txMu.Lock()
+	defer r.txMu.Unlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if r.created {
+		return false
+	}
+	r.discarded, r.stopping = true, true
+	return true
 }
 
 func (e *Engine) stop(ctx context.Context, r *run) error {
@@ -1961,6 +2063,27 @@ func (e *Engine) abort(r *run) {
 	e.endMu.Lock()
 	e.mu.Lock()
 	e.journalForgotten(r)
+	e.forget(r)
+	e.mu.Unlock()
+	e.endMu.Unlock()
+}
+
+// discard forgets r, a continuation whose first transaction did not
+// commit (refused, its id another run's, or failed), as if it had never
+// been made: nothing of it is written, neither the stop abort would record
+// (a stopped run naming the source as the one it continues) nor its record
+// (journalForgotten), so the ledger holds no run continuing the source,
+// no command of a repair it carried, and the source is as it was. Nothing
+// of it started: its tasks are dispatched, its prerequisites run and its
+// trees made only once that transaction commits, and nothing else wrote
+// it meanwhile (run.continuation): a Stop of it was refused. Marked
+// discarded, it writes nothing from now on (commit). The caller holds no
+// lock.
+func (e *Engine) discard(r *run) {
+	e.endMu.Lock()
+	e.mu.Lock()
+	r.discarded, r.stopping = true, true
+	r.pendingEvents, r.pendingMore, r.pendingLast, r.pendingDone = nil, nil, nil, nil
 	e.forget(r)
 	e.mu.Unlock()
 	e.endMu.Unlock()

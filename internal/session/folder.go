@@ -133,9 +133,26 @@ func (f *Folder) Path() string {
 // Close closes the folder; what is under way finishes or fails.
 func (f *Folder) Close() error { return f.root.Close() }
 
+// Lstat describes rel, a path relative to the folder, through the
+// folder's root, a link at its last element not followed: nothing outside
+// the folder is looked at, whatever a link on the way names.
+func (f *Folder) Lstat(rel string) (os.FileInfo, error) { return f.root.Lstat(rel) }
+
 // Dir opens the folder's directory itself, for a process to start in
 // (pty.Spec.DirFile).
 func (f *Folder) Dir() (*os.File, error) { return f.root.Open(".") }
+
+// FolderDir opens the session's folder as it was opened at its start (its
+// working directory, Options.Folder), wherever its path leads now: what a
+// read of the folder after the session's end must go through (the session
+// records' end commit). An error once the session has left the server
+// (Retire closes it) or when it has none.
+func (s *Local) FolderDir() (*os.File, error) {
+	if s.folder == nil {
+		return nil, errFolderGone
+	}
+	return s.folder.Dir()
+}
 
 // check reports whether the folder's path still names the folder, by its
 // links resolved: the paths a request's check speaks of are the folder's.

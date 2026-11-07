@@ -509,14 +509,20 @@ func TestARefusedRunningRowEndsAndFailsTheSetupStep(t *testing.T) {
 	run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Setup: []Check{shStep("deps", gated(gate))}}, work("build", "lead")))
 	attemptFailed(t, e, run.ID, "build", 1)
 	words := "the ledger could not record the step deps: ledger: disk full (injected)"
-	rows := l.stepRows(run.ID, "build", 1)
-	if len(rows) != 1 || rows[0].State != ledger.CheckFinished || rows[0].Error != words || rows[0].PID == 0 {
+	// The engine fails the attempt in its view before it commits the rows:
+	// each is waited for in the ledger, never read at once.
+	var rows []ledger.CheckRow
+	waitFake(t, "the step's row finished with the ledger's words", func() bool {
+		rows = l.stepRows(run.ID, "build", 1)
+		return len(rows) == 1 && rows[0].State == ledger.CheckFinished
+	})
+	if rows[0].Error != words || rows[0].PID == 0 {
 		t.Fatalf("the step:\n%s", rowWords(rows))
 	}
 	if alive(rows[0].PID) {
 		t.Fatalf("the setup step's process %d outlived its refused row", rows[0].PID)
 	}
-	if row := l.attemptRow(t, run.ID, "build", 1); row.Stage != "setup deps" || row.Error != words {
+	if row := l.attemptWhen(t, run.ID, "build", 1, func(r ledger.AttemptRow) bool { return r.Error != "" }); row.Stage != "setup deps" || row.Error != words {
 		t.Fatalf("attempt 1: %+v", row)
 	}
 	waitTrue(t, "the run paused", func() bool { r, _ := e.Get(run.ID); return r.Paused && strings.Contains(r.PausedWhy, words) })

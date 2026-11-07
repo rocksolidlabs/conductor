@@ -48,8 +48,10 @@ type bkEnv struct {
 // brakemanEnv is a server whose catalog holds the scripted agents: bk
 // (bkScript), bkexit (an agent that prints why and exits at once, as a
 // logged-out CLI does), bkcodex (Codex's adapter: its read-only mode
-// does not hold) and bkfixed (bkScript, an entry that takes no extra
-// arguments).
+// does not hold), bkfixed (bkScript, an entry that takes no extra
+// arguments), bksignin (a signed-out Claude Code at its sign-in screen),
+// bkupdate (an agent at its update dialog) and bkunknown (an agent at a
+// full-screen prompt no catalog entry knows).
 func brakemanEnv(t *testing.T, mutate func(*config.Config)) *bkEnv {
 	t.Helper()
 	e := newTestEnvAgents(t, mutate, slog.New(slog.NewTextHandler(io.Discard, nil)), bkAgents())
@@ -64,7 +66,54 @@ func bkAgents() []catalog.Agent {
 		{ID: "bkexit", Name: "bkexit", Command: []string{"/bin/sh", "-c", "echo 'Please run /login'; exit 3"}, Adapter: "claude", AllowArgs: true},
 		{ID: "bkcodex", Name: "bkcodex", Command: []string{"/bin/sh", "-c", "exec cat"}, Adapter: "codex", AllowArgs: true},
 		{ID: "bkfixed", Name: "bkfixed", Command: []string{"/bin/sh", "-c", bkScript}, Adapter: "claude"},
+		{ID: "bksignin", Name: "bksignin", Command: []string{"/bin/sh", "-c", bkSignInScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("claude")},
+		{ID: "bkupdate", Name: "bkupdate", Command: []string{"/bin/sh", "-c", bkUpdateScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("codex")},
+		{ID: "bkunknown", Name: "bkunknown", Command: []string{"/bin/sh", "-c", bkUnknownScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("claude")},
 	}
+}
+
+// bkRecord keeps every byte that reaches a scripted agent's terminal in
+// typed-<request>.txt as it arrives: the terminal is put in raw mode
+// first, so a key with no Enter after it (a digit, a letter) is read and
+// written at once, not held in the line discipline's buffer where no
+// test would see it.
+const bkRecord = `stty raw -echo; : > "typed-$CONDUCTOR_BRAKEMAN.txt"; `
+
+// bkKeep is the end of a scripted agent that waits at its screen: its
+// terminal's raw input kept (bkRecord), never its request read.
+const bkKeep = `exec cat > "typed-$CONDUCTOR_BRAKEMAN.txt"`
+
+// bkSignInScript is a signed-out Claude Code as #659's live check met it:
+// it does not exit, it draws its sign-in screen (the URL made up here)
+// and waits there, reading its terminal, never its request. What reaches
+// its terminal is kept (bkRecord): no key may.
+const bkSignInScript = bkRecord + `printf "Welcome to Claude Code\r\n\r\n Browser didn't open? Use the url below to sign in (c to copy)\r\n\r\nhttps://example.invalid/sign-in?code=true\r\n\r\n\r\n Paste code here if prompted > "; ` + bkKeep
+
+// bkUpdateScript is an agent that opens on its own update dialog, as
+// Codex did at the live check: Codex's words, waiting with its terminal
+// kept as bkSignInScript's is.
+const bkUpdateScript = bkRecord + `printf "  Update available! 0.1.0 -> 0.2.0\r\n\r\n> 1. Update now (runs npm install -g @openai/codex)\r\n  2. Skip\r\n  3. Skip until next version\r\n\r\n  Press enter to continue\r\n"; ` + bkKeep
+
+// bkUnknownScript is an agent at a full-screen prompt no catalog entry
+// knows (another program's sign-in, a version's new wording): the
+// alternate screen, a box, a link, and it waits, never reading its
+// request, its terminal kept as bkSignInScript's is.
+const bkUnknownScript = bkRecord + `printf "\033[?1049h\033[2J\033[H  Acme Agent 9.0\r\n\r\n  You are not signed in.\r\n  Open https://example.invalid/device?code=ABCD to continue\r\n\r\n  [ Sign in ]   [ Quit ]"; ` + bkKeep
+
+// builtInQuestions is the built-in agent id's startup questions, the
+// catalog's own, so a scripted agent is held by the patterns that ship.
+func builtInQuestions(id string) []catalog.Question {
+	a, ok := catalog.Default().Get(id)
+	if !ok {
+		panic("no built-in " + id)
+	}
+	var out []catalog.Question
+	for _, q := range a.Questions {
+		if !q.Anytime {
+			out = append(out, q)
+		}
+	}
+	return out
 }
 
 // bkEnvOf is e as a bkEnv: its limiter out of the way and every session
@@ -662,16 +711,21 @@ func TestOneTurnAtATimeAndABoundedQueue(t *testing.T) {
 }
 
 // The deadline ends the turn: at TurnMinutes after starting (the desk's
-// clock), the request is timed_out, then its run is stopped.
+// clock), the request of a turn whose agent read it is timed_out, then
+// its run is stopped. (One whose agent never read it ends failed then,
+// its agent not started: TestAnAgentAtAScreenNobodyKnowsDidNotStart.)
 func TestTheDeadlineEndsTheTurn(t *testing.T) {
 	t.Parallel()
 	b := brakemanEnv(t, nil)
 	c := b.fakeClock()
 	b.enable(t, "bk", func(c map[string]any) { c["budget"].(map[string]any)["turnMinutes"] = 1 })
 	id := b.briefing(t)
-	sid, _, _ := b.turnSession(t, id)
+	sid, tok, _ := b.turnSession(t, id)
 	run := b.runOf(t, sid)
 	b.waitState(t, id, brakeman.StateRunning)
+	if status, _ := b.readRequest(t, sid, tok); status != http.StatusOK {
+		t.Fatalf("read: %d", status)
+	}
 	c.add(59 * time.Second)
 	b.settle(t)
 	if r, _ := b.desk.st.Get(id); r.State != brakeman.StateRunning {
@@ -1300,7 +1354,8 @@ func TestBrakemansTokenReachesNoAdminRoute(t *testing.T) {
 	own := map[string]bool{}
 	for _, p := range []string{"GET brakeman/request", "POST brakeman/brief", "GET ticket", "POST ticket/comments", "GET guide", "GET task",
 		"POST task/result", "POST messages", "GET inbox", "POST inbox/ack", "POST task/blocked", "POST task/checkpoint", "POST crew",
-		"POST run/members", "GET run", "POST links/agent", "POST open", "GET files", "POST attention", "POST events"} {
+		"POST run/members", "GET run", "POST links/agent", "POST open", "GET files", "POST attention", "POST events",
+		"POST decisions", "GET decisions", "GET decisions/{did}", "POST decisions/{did}/withdraw"} {
 		method, path, _ := strings.Cut(p, " ")
 		own[method+" /api/sessions/{id}/"+path] = true
 	}

@@ -499,6 +499,28 @@ export function unknownWords(e: RecentEntry | undefined, steps: readonly Deliver
 }
 
 /**
+ * The word a Recent row shows for one of this browser's actions, from its entry, its steps as last read and whether its request is
+ * still out from this page (`pending`): Refused by the server's track; Not confirmed while nothing confirmed it was taken
+ * (unknownWords), checked before any word of success, since a session that ended or resumed on another answer says nothing of this
+ * one; then what the resumed step says; Sent otherwise.
+ */
+export function recentBadge(
+  e: RecentEntry,
+  steps: readonly DeliveryStep[] | undefined,
+  pending: boolean,
+): { text: string; color: 'success' | 'warning' | 'error' | 'neutral' } {
+  const of = (n: StepName) => steps?.find((s) => s.step === n)?.state
+  if (of('validated') === 'refused' || of('recorded') === 'refused') return { text: 'Refused', color: 'error' }
+  // Went, and neither a receipt nor the server's track says what became of it.
+  if (unknownWords(e, steps, pending)) return { text: 'Not confirmed', color: 'warning' }
+  const r = of('resumed')
+  if (r === 'done') return { text: 'Work resumed', color: 'success' }
+  if (r === 'not_applicable') return { text: 'Taken', color: 'neutral' }
+  if (r) return { text: `Resumed: ${stateWords(r).toLowerCase()}`, color: 'warning' }
+  return { text: 'Sent', color: 'neutral' }
+}
+
+/**
  * Where a question an answer was refused for can still be answered, from the server's track of it read after the refusal (`steps`,
  * as the server gave them): a question still waiting (shown to another answer under way, or set aside or held over to show again)
  * is answered here once the page offers it again, or in the session's terminal; '' for one that is gone.

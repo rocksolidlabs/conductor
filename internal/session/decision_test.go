@@ -2,9 +2,12 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // A question that mirrors a durable decision (TryAskDecision,
@@ -217,5 +220,64 @@ func TestADecisionLinePassesAnotherDecisionsMirror(t *testing.T) {
 	}
 	if got := written(t, p2); got != "Postgres\r" {
 		t.Fatalf("the first write is %q", got)
+	}
+}
+
+// A decision's line (the run engine's, Decision set) answering the question
+// that mirrors its decision is recorded as a typed line, as the engine's
+// other lines are: its words are the response the ledger keeps, and a
+// crew's test holds the line at that entry. A line naming the question
+// with no decision (a provider's or a host's typed answer) is never
+// recorded (typedEntry).
+func TestADecisionsLineIsRecordedTyped(t *testing.T) {
+	s, p, _ := asking(t, Options{})
+	q := askDecision(t, s, "dr-7", "Ship the schema change?")
+	if _, err := answerLine(s, q, "dr-7", "Decision dr-7 answered: Approve"); err != nil {
+		t.Fatal(err)
+	}
+	written(t, p)
+	written(t, p)
+	var typed []ActivityEntry
+	for _, e := range inputEntries(s) {
+		if e.Op == OpTyped {
+			typed = append(typed, e)
+		}
+	}
+	if len(typed) != 1 || typed[0].Message != "Decision dr-7 answered: Approve" || typed[0].ByName != "Nate" {
+		t.Fatalf("the decision's line: %+v", typed)
+	}
+}
+
+// A decision's question names its decision to viewers (the attention
+// message's decision) and in Info, and only it: the agent's own question
+// carries none. A ref that is no decision's (dr-<n>, at most
+// proto.MaxDecisionRef bytes) is refused, nothing asked; a refused reply's
+// word is the code decision, naming it.
+func TestADecisionQuestionNamesItsDecision(t *testing.T) {
+	s, _, _ := asking(t, Options{})
+	for _, bad := range []string{"", "7", "dr-x", "dr-" + strings.Repeat("1", proto.MaxDecisionRef)} {
+		if _, err := s.TryAskDecision(bad, "Ship it?"); err == nil {
+			t.Fatalf("asked for %q", bad)
+		}
+	}
+	if a := s.Info().Attention; a.State == AttentionNeedsInput {
+		t.Fatalf("a bad ref asked: %+v", a)
+	}
+	q := askDecision(t, s, "dr-7", "Ship the schema change?")
+	b, _ := json.Marshal(s.Info())
+	if !strings.Contains(string(b), `"decision":"dr-7"`) {
+		t.Fatalf("the info: %s", b)
+	}
+	if m := attentionMessage(q); m.Decision != "dr-7" || m.ID != q.ID {
+		t.Fatalf("the attention message: %+v", m)
+	}
+	err := s.AnswerInput(context.Background(), ownerOf(t, s), q.ID, []byte("yes\r"))
+	var word map[string]any
+	if json.Unmarshal(AnswerResult("r1", err)[1:], &word); word["code"] != proto.ErrCodeDecision || word["requestId"] != "r1" || !strings.Contains(word["message"].(string), "dr-7") {
+		t.Fatalf("the refusal's word: %v (%v)", word, err)
+	}
+	s.Ask("Which index?", SourceAPI, KindPrompt, nil)
+	if a := s.Info().Attention; a.Decision != "" || attentionMessage(a).Decision != "" {
+		t.Fatalf("the agent's own question names a decision: %+v", a)
 	}
 }

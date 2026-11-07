@@ -532,7 +532,7 @@ function handleControl(msg: ControlMessage) {
       break
     case 'attention':
       // A question answered by keys in the terminal reads as none to offer (liveAttention, #258).
-      emit('attention', liveAttention({ state: msg.state, message: msg.message, source: msg.source, kind: msg.kind, options: msg.options, id: msg.id, answered: msg.answered, plan: msg.plan }))
+      emit('attention', liveAttention({ state: msg.state, message: msg.message, source: msg.source, kind: msg.kind, options: msg.options, id: msg.id, answered: msg.answered, plan: msg.plan, decision: msg.decision }))
       break
     case 'viewers':
       roster.value = msg.list ?? []

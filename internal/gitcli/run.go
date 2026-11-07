@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -126,59 +127,87 @@ func Run(ctx context.Context, dir string, args ...string) (string, error) {
 	return run(ctx, []string{"-C", dir}, args)
 }
 
+// RunIn runs git as Run does, in dir, a directory its caller opened, never
+// by a path of its own: git starts in the open directory itself, so a
+// rename of the folder dir was opened at, or a link put in its place,
+// before or while git runs, moves it nowhere. ErrNoDirHandle where the
+// system offers git no way into an open directory (startIn).
+func RunIn(ctx context.Context, dir *os.File, args ...string) (string, error) {
+	cwd, err := startIn(dir)
+	if err != nil {
+		return "", err
+	}
+	defer runtime.KeepAlive(dir)
+	return runEnv(ctx, cwd, nil, nil, args)
+}
+
+// ErrNoDirHandle is RunIn where git cannot be started in an open
+// directory: a read that would have to name it by its path again is not
+// made.
+var ErrNoDirHandle = errors.New("git: this system cannot start git in an open directory")
+
 // RunEnv is Run with env set in git's environment beside the safe one: an
 // index of its own (GIT_INDEX_FILE) for a comparison of a checkout with
 // its commit that trusts no flag of the checkout's index (the crew's
 // checks).
 func RunEnv(ctx context.Context, dir string, env map[string]string, args ...string) (string, error) {
-	return runEnv(ctx, []string{"-C", dir}, env, args)
+	return runEnv(ctx, "", []string{"-C", dir}, env, args)
 }
 
 // run runs git with args where loc points it (-C dir, or a git directory
 // and a working tree named outright), for the filter look-up and the
 // command alike.
 func run(ctx context.Context, loc, args []string) (string, error) {
-	return runEnv(ctx, loc, nil, args)
+	return runEnv(ctx, "", loc, nil, args)
 }
 
 // RunTo is Run with git's standard output written to w as it comes rather
 // than kept: a blob read whole (a decision's artifact, hashed) is never
 // held in memory.
 func RunTo(ctx context.Context, dir string, w io.Writer, args ...string) error {
-	argv, err := argvFor(ctx, []string{"-C", dir}, args)
+	return RunToEnv(ctx, dir, nil, w, args...)
+}
+
+// RunToEnv is RunTo with env set in git's environment beside the safe one:
+// GIT_NO_REPLACE_OBJECTS for a blob read by the id a tree records, which
+// must be that object and not one refs/replace puts in its place.
+func RunToEnv(ctx context.Context, dir string, env map[string]string, w io.Writer, args ...string) error {
+	argv, err := argvFor(ctx, "", []string{"-C", dir}, args)
 	if err != nil {
 		return err
 	}
 	var stderr bytes.Buffer
-	if err := execGitTo(ctx, argv, nil, w, &stderr); err != nil {
+	if err := execGitTo(ctx, "", argv, env, w, &stderr); err != nil {
 		return gitError(ctx, args[0], stderr.String(), err)
 	}
 	return nil
 }
 
-// runEnv is run with env set in git's environment beside the safe one.
-func runEnv(ctx context.Context, loc []string, env map[string]string, args []string) (string, error) {
-	argv, err := argvFor(ctx, loc, args)
+// runEnv is run with env set in git's environment beside the safe one, in
+// the working directory cwd ("" for the server's own: loc then points git
+// where it runs).
+func runEnv(ctx context.Context, cwd string, loc []string, env map[string]string, args []string) (string, error) {
+	argv, err := argvFor(ctx, cwd, loc, args)
 	if err != nil {
 		return "", err
 	}
-	out, stderr, err := execGit(ctx, argv, env)
+	out, stderr, err := execGit(ctx, cwd, argv, env)
 	if err != nil {
 		return "", gitError(ctx, args[0], stderr, err)
 	}
 	return out, nil
 }
 
-// argvFor is the argv of git with args where loc points it, hardened as
-// above.
-func argvFor(ctx context.Context, loc, args []string) ([]string, error) {
+// argvFor is the argv of git with args where loc points it, from the
+// working directory cwd, hardened as above.
+func argvFor(ctx context.Context, cwd string, loc, args []string) ([]string, error) {
 	if len(args) == 0 {
 		return nil, errors.New("git: no command")
 	}
 	if len(args) > 1 && args[0] == "worktree" && args[1] == "add" && !slices.Contains(args, "--no-checkout") {
 		return nil, errors.New("git worktree add: a worktree is checked out by AddWorktree")
 	}
-	filters, err := filterArgs(ctx, loc, args)
+	filters, err := filterArgs(ctx, cwd, loc, args)
 	if err != nil {
 		return nil, err
 	}
@@ -260,16 +289,18 @@ func baseArgs() []string {
 	return argv
 }
 
-// execGit runs git with argv in safeEnv, and env beside it, no input.
-func execGit(ctx context.Context, argv []string, env map[string]string) (stdout, stderr string, err error) {
+// execGit runs git with argv in safeEnv, and env beside it, no input, in
+// the working directory cwd ("" for the server's own).
+func execGit(ctx context.Context, cwd string, argv []string, env map[string]string) (stdout, stderr string, err error) {
 	var o, e bytes.Buffer
-	err = execGitTo(ctx, argv, env, &o, &e)
+	err = execGitTo(ctx, cwd, argv, env, &o, &e)
 	return o.String(), e.String(), err
 }
 
 // execGitTo is execGit with its output written to stdout and stderr.
-func execGitTo(ctx context.Context, argv []string, env map[string]string, stdout, stderr io.Writer) error {
+func execGitTo(ctx context.Context, cwd string, argv []string, env map[string]string, stdout, stderr io.Writer) error {
 	cmd := exec.CommandContext(ctx, "git", argv...)
+	cmd.Dir = cwd
 	set := safeEnv
 	if len(env) > 0 {
 		set = maps.Clone(safeEnv)
@@ -298,11 +329,11 @@ func gitError(ctx context.Context, sub, stderr string, err error) error {
 // filterArgs are the -c options that turn off every clean, smudge and
 // process filter the configuration where loc points names (and that none
 // is required), read there just before the command.
-func filterArgs(ctx context.Context, loc, args []string) ([]string, error) {
+func filterArgs(ctx context.Context, cwd string, loc, args []string) ([]string, error) {
 	if noFilters[args[0]] {
 		return nil, nil
 	}
-	names, err := filterNames(ctx, loc)
+	names, err := filterNames(ctx, cwd, loc)
 	if err != nil {
 		return nil, err
 	}
@@ -329,10 +360,10 @@ const filterKeys = `^filter\..*\.(clean|smudge|process)$`
 // filterNames lists the names of the filters the configuration where loc
 // points gives a program, each once, the empty name too ([filter ""],
 // which the attribute filter= selects).
-func filterNames(ctx context.Context, loc []string) ([]string, error) {
+func filterNames(ctx context.Context, cwd string, loc []string) ([]string, error) {
 	argv := append(baseArgs(), loc...)
 	argv = append(argv, "config", "-z", "--name-only", "--get-regexp", filterKeys)
-	out, stderr, err := execGit(ctx, argv, nil)
+	out, stderr, err := execGit(ctx, cwd, argv, nil)
 	var exit *exec.ExitError
 	switch {
 	case err == nil:

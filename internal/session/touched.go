@@ -180,5 +180,13 @@ func (s *Local) TouchedFiles() []proto.TouchedFile {
 // either (the context providers, internal/api's extcontext.go). It reads
 // the files the list names, outside the session's lock.
 func (s *Local) Denied(path string) bool {
-	return insideAny(path, s.fileDeny())
+	return DeniedBy(path, s.fileDeny())
+}
+
+// DeniedBy reports whether the deny list deny refuses path, as Denied
+// judges a server session's by its own: what a reader of a session's
+// touches after the session has gone judges them by (the session
+// records', internal/api's history_journal.go, by the server's list).
+func DeniedBy(path string, deny []string) bool {
+	return insideAny(path, deny)
 }

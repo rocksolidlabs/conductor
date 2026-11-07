@@ -292,7 +292,9 @@ func (c Crew) withPeopleOf(launch Crew) Crew {
 }
 
 // maxChain bounds the walk along a run's continued_from links to its
-// launch row: a sanity bound, as a link that went round would loop.
+// launch row: a sanity bound, as a link that went round would loop. A
+// continuation reads its chain's decisions whole or is refused
+// (ErrChainTooLong, readDecisionHistory).
 const maxChain = 10000
 
 // LaunchCrew is the crew as launched of runID's chain: the crew JSON of

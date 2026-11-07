@@ -25,6 +25,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 )
 
 // What Brakeman reads (docs/plans/brakeman.md, PR-4): a turn's session
@@ -492,6 +493,114 @@ func TestAHostedSessionsScreenIsUnavailable(t *testing.T) {
 	t.Cleanup(func() { f.srv.registry.Remove(h.info.ID) })
 	f.turn(t, func(c map[string]any) { c["visibility"].(map[string]any)["terminals"] = true })
 	f.expectRead(t, "/api/brakeman/screen?session="+h.info.ID, http.StatusConflict, "unavailable")
+}
+
+// A session's screen reads as a terminal shows it (#692): a program that
+// redraws one row in place past its scrollback reads as that row, a
+// full-screen dialog as its rows; a session outside the scope is refused.
+func TestTheScreenReadsAsATerminalShowsIt(t *testing.T) {
+	f := newObsFixture(t)
+	p := sessiontest.NewFakeProc()
+	l := session.NewLocal(session.Info{ID: session.NewID(), Name: "redraws", Kind: session.KindServer, Cwd: f.root, Cols: 80, Rows: 24}, p, session.Options{ScrollbackBytes: 4096})
+	if err := f.srv.registry.Add(l); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		f.srv.registry.Remove(l.Info().ID)
+		p.End(0)
+	})
+	id := l.Info().ID
+	f.turn(t, func(c map[string]any) { c["visibility"].(map[string]any)["terminals"] = true })
+	// shows waits until the session's screen reads want: the output that
+	// draws it has been fed to the screen the route reads.
+	shows := func(want ...string) {
+		t.Helper()
+		for deadline := time.Now().Add(10 * time.Second); !slices.Equal(l.ScreenLines(len(want)), want); {
+			if time.Now().After(deadline) {
+				t.Fatalf("the screen never read %q: %q", want, l.ScreenLines(len(want)))
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	frame := "\r\x1b[38;2;138;138;138;49m•\x1b[0m Working"
+	if err := p.Print(strings.Repeat(frame, 4096/len(frame)+10) + "\r\x1b[2K• done"); err != nil {
+		t.Fatal(err)
+	}
+	shows("• done")
+	out := f.expectRead(t, "/api/brakeman/screen?session="+id, http.StatusOK, "")
+	if got := fmt.Sprint(out["lines"]); got != "[• done]" {
+		t.Fatalf("a row redrawn in place reads %s", got)
+	}
+	if err := p.Print("\x1b[?1049h\x1b[2J\x1b[1;1H╭─ Allow? ─╮\x1b[3;3H1. Yes\x1b[4;3H2. No\x1b[5;1H╰──────────╯"); err != nil {
+		t.Fatal(err)
+	}
+	shows("╭─ Allow? ─╮", "", "  1. Yes", "  2. No", "╰──────────╯")
+	out = f.expectRead(t, "/api/brakeman/screen?session="+id+"&lines=3", http.StatusOK, "")
+	if got := fmt.Sprint(out["lines"]); got != "[  1. Yes   2. No ╰──────────╯]" {
+		t.Fatalf("a dialog's last 3 rows read %s", got)
+	}
+	if out["updating"] != nil {
+		t.Fatalf("no update under way, the read says %v", out["updating"])
+	}
+	// A synchronized update under way: the rows as far as drawn, and the
+	// reply says so.
+	if err := p.Print("\x1b[?2026h\x1b[2J\x1b[1;1Hhalf a frame"); err != nil {
+		t.Fatal(err)
+	}
+	shows("half a frame")
+	out = f.expectRead(t, "/api/brakeman/screen?session="+id, http.StatusOK, "")
+	if got := fmt.Sprint(out["lines"]); got != "[half a frame]" || out["updating"] != true {
+		t.Fatalf("mid-update, the read is %s, updating %v", got, out["updating"])
+	}
+	f.again(t, func(c map[string]any) { c["scope"] = map[string]any{"crews": []string{"team"}} })
+	f.expectRead(t, "/api/brakeman/screen?session="+id, http.StatusForbidden, "outside_scope")
+}
+
+// A screen read at its largest, a 500 by 500 screen whose 200 bottom rows
+// are full of a character JSON writes in six bytes, is held to the reply's
+// bound, its oldest rows dropped and its newest kept.
+func TestTheScreenReadIsBoundedAtItsLargest(t *testing.T) {
+	f := newObsFixture(t)
+	p := sessiontest.NewFakeProc()
+	const size = 500
+	l := session.NewLocal(session.Info{ID: session.NewID(), Name: "full", Kind: session.KindServer, Cwd: f.root, Cols: size, Rows: size}, p, session.Options{ScrollbackBytes: 4096})
+	if err := f.srv.registry.Add(l); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		f.srv.registry.Remove(l.Info().ID)
+		p.End(0)
+	})
+	f.turn(t, func(c map[string]any) { c["visibility"].(map[string]any)["terminals"] = true })
+	var out strings.Builder
+	for r := size - maxScreenLines + 1; r <= size; r++ {
+		fmt.Fprintf(&out, "\x1b[%d;1H%s", r, strings.Repeat("<", size))
+	}
+	newest := strings.Repeat("<", size-6) + "newest"
+	fmt.Fprintf(&out, "\x1b[%d;1H%s", size, newest)
+	if err := p.Print(out.String()); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(10 * time.Second); !slices.Equal(l.ScreenLines(1), []string{newest}); {
+		if time.Now().After(deadline) {
+			t.Fatalf("the screen never read its newest row: %q", l.ScreenLines(1))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := len(l.ScreenLines(maxScreenLines)); n != maxScreenLines {
+		t.Fatalf("the screen holds %d rows, want %d", n, maxScreenLines)
+	}
+	resp, body := f.readRaw(t, fmt.Sprintf("/api/brakeman/screen?session=%s&lines=%d", l.Info().ID, maxScreenLines))
+	if resp.StatusCode != http.StatusOK || len(body) > maxObserveReply {
+		t.Fatalf("%d, %d bytes", resp.StatusCode, len(body))
+	}
+	var reply struct{ Lines []string }
+	if err := json.Unmarshal(body, &reply); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(reply.Lines); n == 0 || n >= maxScreenLines || reply.Lines[n-1] != newest {
+		t.Fatalf("%d rows read, the last %.20q", n, reply.Lines[max(0, n-1):])
+	}
 }
 
 // A hosted session's quiet time is unknown, never quiet.
@@ -2316,5 +2425,59 @@ func TestTheGuideListsEachReadsOwnBound(t *testing.T) {
 	resp, body := f.readRaw(t, "/api/runs/"+f.run+"/tasks/build/attempts/1/steps/big/1/log")
 	if resp.StatusCode != http.StatusOK || len(body) != ledger.MaxLog || len(body) <= maxObserveReply {
 		t.Fatalf("a check's log at its bound: %d, %d bytes", resp.StatusCode, len(body))
+	}
+}
+
+// A turn's shared read of a run, and of its task, holding a decision
+// carries none of it: no decisions, no decisionsNext, no decisionsUnread
+// (the decisions are BK2's observe_decisions), for a run the engine holds
+// and for a record it does not; the admin's reads of the same list it,
+// the record's from the ledger (#637, review round 1).
+func TestATurnsRunReadCarriesNoDecisions(t *testing.T) {
+	f := newObsFixture(t)
+	f.gitRepo(t)
+	if _, err := f.srv.ledger.Transition(t.Context(), f.run, func(tx *ledger.Tx) error {
+		_, _, err := tx.OpenDecision(ledger.DecisionRow{Origin: ledger.OriginAgent, Type: ledger.DecisionClarification, TaskID: "build", Attempt: 1,
+			Member: "lead", Fingerprint: "fp-1", Request: `{"question":"Which index?","subject":{"kind":"commit","commit":"` + strings.Repeat("a", 40) + `"}}`,
+			Policy: `{"revision":"local/1","approver":"operator","quorum":1,"authority":[{"kind":"operator"}]}`})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cat := f.srv.Catalog().Clone()
+	if err := cat.Upsert(catalog.Agent{ID: "ready-cat", Name: "ready cat", Command: []string{"/bin/sh", "-c", "echo ready; exec cat"}}); err != nil {
+		t.Fatal(err)
+	}
+	f.setCatalog(cat)
+	c := crew.Crew{ID: "held", Name: "Held", Goal: "build it", Cwd: f.root, Where: crew.WhereServer, Isolation: crew.IsolationWorktree,
+		Members: []crew.Member{{Name: "lead", AgentID: "ready-cat", Start: crew.Start{When: crew.StartTask}}},
+		Tasks:   []crew.Task{{ID: "build", Member: "lead", Kind: crew.TaskWork, Instructions: "Build it."}}}
+	run, release, err := f.srv.runs.LaunchNamed(t.Context(), c, "")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := run.ID
+	t.Cleanup(func() { f.do("POST", "/api/runs/"+live+"/stop", adminToken, nil) })
+	sid := runningAttempt(t, f.testEnv, live, "build", 1)["sessionId"].(string)
+	f.expectAs(t, f.agentToken(sid), http.MethodPost, "/api/sessions/"+sid+"/decisions", map[string]any{"requestId": "r1", "type": "clarification", "question": "Which index?"}, http.StatusCreated, "")
+	var paths []string
+	for _, id := range []string{f.run, live} {
+		paths = append(paths, "/api/runs/"+id, "/api/runs/"+id+"/tasks/build")
+	}
+	for _, path := range paths {
+		admin := f.expect(t, "GET", path, nil, http.StatusOK, "")
+		if ds, _ := admin["decisions"].([]any); len(ds) != 1 || ds[0].(map[string]any)["question"] != "Which index?" {
+			t.Fatalf("the admin's %s: %v", path, admin)
+		}
+	}
+	f.turn(t, func(map[string]any) {})
+	for _, path := range paths {
+		out := f.expectRead(t, path, http.StatusOK, "")
+		for _, key := range []string{"decisions", "decisionsNext", "decisionsUnread"} {
+			if _, ok := out[key]; ok {
+				t.Fatalf("the turn's %s carries %s: %v", path, key, out)
+			}
+		}
 	}
 }

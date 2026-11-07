@@ -42,6 +42,15 @@ export const MAX_ANSWER_INPUT = 48
 export const QUESTION_ANSWERED = 'question_answered'
 
 /**
+ * The error code of an answer whose question mirrors a durable decision (the attention's `decision`): it is answered as that
+ * decision, never as the session's question, and the message names it. Nothing was sent.
+ */
+export const ANSWER_DECISION = 'decision'
+
+/** A durable decision's id where the protocol carries it (`dr-<n>`), in bytes (proto.MaxDecisionRef). */
+export const MAX_DECISION_REF = 16
+
+/**
  * A reply to the question a person was shown (`answer`, client → owner, controllers only; only to an owner whose welcome says
  * `answer`): `question` is that attention's `id`; exactly one of `input` (a choice's keys, written as INPUT is) and `text` (a line,
  * submitted as `submit` is). The owner writes nothing unless the question still waits, and answers `reqId` with `answer_ok` or an
@@ -190,6 +199,12 @@ export interface Attention {
    * folder's files: a page offers to open it. Absent from any other question, and from an older owner.
    */
   plan?: string
+  /**
+   * The durable decision the question mirrors (`dr-<n>`, at most MAX_DECISION_REF bytes; Program item DR1): it is answered only as
+   * that decision, so a page offers it no reply, choice or number key (`decisionOf`), and an `answer` naming it is refused
+   * (`decision`). Absent from every other question, and from an older owner.
+   */
+  decision?: string
 }
 export type TransportKind = 'ws' | 'webrtc' | 'relay'
 
@@ -252,6 +267,23 @@ export interface OpenEvent {
   state: 'pending' | 'offered'
 }
 
+/**
+ * Data of a `decision` event on GET /api/events (Program item DR1, docs/protocol.md "Decisions"): a durable decision changed
+ * (opened, answered, applied, superseded, cancelled, commented), sent after each commit, for a page to read it again with
+ * `GET /api/decisions/{id}`. `task` is the asking task's, absent for a plan's gate. At most 256 bytes of data
+ * (`MAX_DECISION_EVENT`).
+ */
+export interface DecisionEvent {
+  id: string
+  run: string
+  task?: string
+  state: 'open' | 'answered' | 'applied' | 'superseded' | 'cancelled' | 'expired'
+  rev: number
+}
+
+/** The bound of a `decision` event's data, in bytes (internal/api, maxDecisionEvent). */
+export const MAX_DECISION_EVENT = 256
+
 export interface ICEServer {
   urls: string[]
   username?: string
@@ -304,7 +336,7 @@ export type ControlMessage =
   /** `by` names the viewer that sizes the session now (absent: nobody holds the size) when the welcome said `sizer` (round 14). */
   | { t: 'resize'; cols: number; rows: number; by?: string }
   | { t: 'status'; status: string; exitCode?: number }
-  | { t: 'attention'; state: AttentionState; message?: string; source?: string; kind?: AttentionKind; options?: AttentionOption[]; id?: string; answered?: 'terminal'; plan?: string }
+  | { t: 'attention'; state: AttentionState; message?: string; source?: string; kind?: AttentionKind; options?: AttentionOption[]; id?: string; answered?: 'terminal'; plan?: string; decision?: string }
   /** The owner took the answer `requestId`: its keys are written, or its line accepted. */
   | { t: 'answer_ok'; requestId: string }
   /** The owner entered the line of the submit `requestId` (#322): its text typed and its Enter written. */
@@ -882,7 +914,7 @@ export const MAX_DECISION = 128 * 1024
 export const MAX_DECIDE = 32 * 1024
 /** The lane's bounds, in bytes (proto.MaxDecisionReqID, …): ids, refs, cursors, receipts, an action's name and revision, a rationale encoded. */
 export const MAX_DECISION_REQ_ID = 32
-export const MAX_DECISION_REF = 512
+export const MAX_DECISION_ITEM_REF = 512
 export const MAX_DECISION_CURSOR = 600
 export const MAX_DECISION_RECEIPT = 512
 export const MAX_DECISION_RECORD_REV = 20
@@ -987,7 +1019,7 @@ function validReqId(id: string): boolean {
 }
 
 function validRef(ref: string): boolean {
-  return ref.length > 0 && byteLength(ref) <= MAX_DECISION_REF
+  return ref.length > 0 && byteLength(ref) <= MAX_DECISION_ITEM_REF
 }
 
 /** Whether a lane request is within its bounds, as the owner checks it (proto's Valid). */
