@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -104,6 +105,9 @@ func TestLaunchRefusesAFolderThatBecameALinkOutOfTheRoots(t *testing.T) {
 func TestLaunchUsesTheFolderItChecked(t *testing.T) {
 	e := newTestEnv(t, nil)
 	proj, outside, marker := launchTree(t, e)
+	// Each a repository of its own: the record's launch revision is the
+	// folder checked's too, never where its path leads once changed.
+	inside, other := commitIn(t, proj), commitIn(t, outside)
 	onLaunch(t, "checked", func() {
 		os.Rename(proj, proj+".was")
 		os.Symlink(outside, proj)
@@ -126,6 +130,38 @@ func TestLaunchUsesTheFolderItChecked(t *testing.T) {
 	if strings.Contains(body, "outside") {
 		t.Fatalf("the session's file read went outside the folder: %d %s", status, body)
 	}
+	if inside == "" {
+		return
+	}
+	if r, _ := recordFile(t, e, id); r.Start != inside || r.Repo != proj+".was" {
+		t.Fatalf("the launch revision %s of %s, want %s of %s.was (not %s)", r.Start, r.Repo, inside, proj, other)
+	}
+}
+
+// commitIn makes dir a repository with one commit and answers its id, ""
+// without git.
+func commitIn(t *testing.T, dir string) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		return ""
+	}
+	t.Setenv("HOME", t.TempDir())
+	env := append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+	for _, args := range [][]string{{"init", "-q"}, {"add", "file.txt"}, {"-c", "commit.gpgsign=false", "commit", "-q", "-m", dir}} {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = env
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	cmd := exec.Command("git", "-C", dir, "rev-parse", "HEAD")
+	cmd.Env = env
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // The allowed root itself replaced between its check and the folder's open

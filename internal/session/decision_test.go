@@ -223,6 +223,31 @@ func TestADecisionLinePassesAnotherDecisionsMirror(t *testing.T) {
 	}
 }
 
+// A decision's line (the run engine's, Decision set) answering the question
+// that mirrors its decision is recorded as a typed line, as the engine's
+// other lines are: its words are the response the ledger keeps, and a
+// crew's test holds the line at that entry. A line naming the question
+// with no decision (a provider's or a host's typed answer) is never
+// recorded (typedEntry).
+func TestADecisionsLineIsRecordedTyped(t *testing.T) {
+	s, p, _ := asking(t, Options{})
+	q := askDecision(t, s, "dr-7", "Ship the schema change?")
+	if _, err := answerLine(s, q, "dr-7", "Decision dr-7 answered: Approve"); err != nil {
+		t.Fatal(err)
+	}
+	written(t, p)
+	written(t, p)
+	var typed []ActivityEntry
+	for _, e := range inputEntries(s) {
+		if e.Op == OpTyped {
+			typed = append(typed, e)
+		}
+	}
+	if len(typed) != 1 || typed[0].Message != "Decision dr-7 answered: Approve" || typed[0].ByName != "Nate" {
+		t.Fatalf("the decision's line: %+v", typed)
+	}
+}
+
 // A decision's question names its decision to viewers (the attention
 // message's decision) and in Info, and only it: the agent's own question
 // carries none. A ref that is no decision's (dr-<n>, at most

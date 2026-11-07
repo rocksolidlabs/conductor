@@ -150,7 +150,7 @@ func TestRoundTrip(t *testing.T) {
 }
 
 // What the export leaves out it lists with why: the workbench token and
-// its lock, restore.lock, the ledger's and Brakeman's owner locks, the databases' -wal
+// its lock, restore.lock, the ledger's, Brakeman's and the session journal's owner locks, the databases' -wal
 // and -shm, *.tmp (in any case), .probe-*, a .restore- directory, Dispatch's uploads'
 // temporary directory, tls/, ext/, a link, and a name no archive holds;
 // none is in the archive, which restores.
@@ -161,6 +161,7 @@ func TestExportLeavesOut(t *testing.T) {
 		"workbench-token":                "s3cret",
 		"workbench-token.lock":           "",
 		"brakeman/owner.lock":            "",
+		"history/owner.lock":             "",
 		export.LockFile:                  "pid 1",
 		"tls/account.key":                "key",
 		"ext/provider/state.json":        "{}",
@@ -182,6 +183,7 @@ func TestExportLeavesOut(t *testing.T) {
 		export.LockFile:             export.WhyLock,
 		"runs/" + ledger.Lock:       export.WhyLock,
 		"brakeman/owner.lock":       export.WhyLock,
+		"history/owner.lock":        export.WhyLock,
 		"tls/":                      export.WhySecret,
 		"ext/":                      export.WhyProvider,
 		"x.tmp":                     export.WhyTemporary,

@@ -26,6 +26,8 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
+	"github.com/rocksolidlabs/conductor/internal/gitcli"
+	"github.com/rocksolidlabs/conductor/internal/journal"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/share"
 	"github.com/rocksolidlabs/conductor/internal/signal"
@@ -129,6 +131,34 @@ type Server struct {
 	// brakeman is Brakeman's desk (brakeman.go), opened beside Dispatch;
 	// nil without a data directory and on a switchyard.
 	brakeman *brakemanDesk
+	// sessionRecords is the session journal (history_journal.go), opened
+	// beside Brakeman's desk; nil without a data directory, on a
+	// switchyard, and when it could not be opened. readRevision is how a
+	// record's git facts are read (gitcli.RevisionOf; a test's seam).
+	sessionRecords *journal.Journal
+	readRevision   func(ctx context.Context, dir string) (gitcli.Revision, error)
+	// recordRepos is each native server session's launch repository, by
+	// the identity of its common git directory (*launchRepo, which holds
+	// it open where the system reuses identities), until its end commit is
+	// read (recordEndCommit) or none is to be read; recCur, under recMu, the
+	// registration each record follows (*recorder), by its id, until its
+	// last reconcile (history_journal.go); recordsStop, closed as the
+	// journal's close begins (closeSessionRecords), ends the waits for
+	// processes still running (awaitProcessEnd).
+	recordRepos    sync.Map
+	recMu          sync.Mutex
+	recCur         map[string]*recorder
+	recordsStop    chan struct{}
+	stopRecordsOne sync.Once
+	// recordsClosed, under recMu, is the final pass's mark: no recorder is
+	// put in place, settled or fed after it (closeSessionRecords).
+	recordsClosed bool
+	// recordDeliver, when a test sets it, is handed each hint and stream
+	// callback of a recorded session in place of running it (deliver),
+	// with its session's id and what it carries; recordHook is run at each
+	// of the lifecycle's stages (recordSeam).
+	recordDeliver atomic.Pointer[func(id string, what any, run func())]
+	recordHook    atomic.Pointer[func(stage, id string)]
 	// planFacts keeps what the plan revisions' reads take from each
 	// revision's body, by its digest (dispatch_plans.go), so a list reads
 	// no body it has read before.
@@ -371,6 +401,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	}
 	// Every provider behind the guard before the server's first write of
 	// its own (the ledger's recovery, the records): nothing calls them yet.
+	s.readRevision = gitcli.RevisionOf
 	s.installExtensions(o.providers)
 	s.installRuntimes(o.providers, o.native)
 	s.syncs = syncs
@@ -466,6 +497,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		}
 		if !cfg.Switchyard.Enabled {
 			s.brakeman = s.openBrakemanDesk(st)
+			s.sessionRecords = s.openSessionRecords(st)
 		}
 		if s.brakeman != nil {
 			// A run's end reaches Brakeman's background role too: a legacy
@@ -567,6 +599,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.unpublish(id)
 		s.pastes.closeAll(id)
 		s.router.mark(id)
+		s.recordRemoved(id, d)
 		s.hostedSeen.gone(id)
 	}
 	if cfg.Switchyard.Enabled && s.store != nil {
@@ -680,6 +713,7 @@ func (s *Server) WaitBackground(ctx context.Context) {
 	if s.dispatch != nil {
 		s.dispatch.Close()
 	}
+	s.closeSessionRecords(false)
 }
 
 // Handler returns the routed handler with middleware applied.
@@ -693,6 +727,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/switchyard/status", s.requireAdmin(s.handleSwitchyardStatus))
 	mux.HandleFunc("GET /api/export", s.requireAdmin(s.handleExport))
 	mux.HandleFunc("GET /api/capabilities", s.requireAdmin(s.handleCapabilities))
+	mux.HandleFunc("GET /api/history/sessions", s.requireAdmin(s.handleHistorySessions))
+	mux.HandleFunc("GET /api/history/sessions/{id}", s.requireAdmin(s.handleHistorySession))
+	mux.HandleFunc("DELETE /api/history/sessions/{id}", s.requireAdmin(s.handleForgetHistorySession))
+	mux.HandleFunc("DELETE /api/history/sessions", s.requireAdmin(s.handleForgetHistorySessions))
 	// The decision inbox, read-only (inbox.go, inbox_track.go).
 	mux.HandleFunc("GET /api/inbox", s.inboxOnly(s.handleInbox))
 	mux.HandleFunc("GET /api/inbox/item", s.inboxOnly(s.handleInboxItem))
@@ -1197,6 +1235,10 @@ func (s *Server) Shutdown(ctx context.Context) {
 			s.log.Warn("Dispatch's store did not close cleanly", "err", err)
 		}
 	}
+	// The sessions stopped and the hosts let go, every record is
+	// reconciled a last time from its session and written
+	// (closeSessionRecords).
+	s.closeSessionRecords(true)
 }
 
 // Registry exposes the session index (used by tests and the CLI).
