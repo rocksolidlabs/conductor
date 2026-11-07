@@ -7,17 +7,32 @@ import (
 
 // DecisionRouter says whom a question a session asks goes to (Switchman's
 // team routing). Its free default answers the empty route: the people
-// watching answer, and the first answer wins.
+// watching answer, and the first answer wins. A durable decision (a managed
+// run's, Program item DR1) is routed as its record (Decision.Request, Kind
+// "decision"), never as the session question that mirrors it. The ledger
+// is the truth, and the server keeps no account of what a router heard: a
+// decision is told when it opens, as often as needed (whenever a server
+// takes the ledger over, and again after a tell that failed or was not
+// made, every decision the ledger holds open is told); told when it ends
+// when that can be done at once (Resolved, best-effort, never owed); and
+// its state can always be read (Host.Decision). A router so may be told
+// of the same decision more than once and treats a repeat (the same
+// Request) as nothing new, and one that heard of a decision and not of its
+// end reads it.
 type DecisionRouter interface {
 	Provider
-	// Route is told, once per question, a question a session shows, and
+	// Route is told, once per question, a question a session shows (a
+	// durable decision's record at least once: see above), and
 	// answers at once whom it went to and why; it may carry an answer the
 	// router already holds. It never waits for a person: an answer that
 	// comes later goes through Host.Submit. Safe for concurrent use.
 	Route(ctx context.Context, d Decision) (Route, error)
 	// Resolved is told that a question Route was given no longer waits:
 	// answered (by whoever), gone from the screen, or ended with its
-	// session. Called in order, from one goroutine.
+	// session; for a durable decision, that its record reached a final
+	// state, when that could be told at once (see above). A session's
+	// questions are told in order, from one goroutine; a decision's end on
+	// a goroutine of its own: Safe for concurrent use.
 	Resolved(ctx context.Context, r Resolution)
 }
 
@@ -32,16 +47,39 @@ type SessionRef struct {
 	Attempt int    `json:"attempt,omitempty"`
 }
 
-// Decision is a question as the session shows it.
+// Decision is a question as the session shows it, or a durable decision's
+// record (Request set).
 type Decision struct {
-	ID      string           `json:"id"` // the question's id: what an answer names
-	Session SessionRef       `json:"session"`
-	Message string           `json:"message"`           // at most 500 bytes
-	Kind    string           `json:"kind,omitempty"`    // permission | prompt | ""
-	Source  string           `json:"source,omitempty"`  // api, bell, osc, pattern, trust, question, …
-	Options []DecisionOption `json:"options,omitempty"` // at most 6
+	ID      string     `json:"id"` // the question's id: what an answer names
+	Session SessionRef `json:"session"`
+	Message string     `json:"message"` // at most 500 bytes
+	// Kind is permission, prompt or "" for a session's question, and
+	// decision for a durable decision's record (Request set), whose answer
+	// is the record's, offered to the operator's policy: under the free
+	// build's (local/1) a router's answer is recorded refused, never
+	// applied, and its destinations are kept as the record's history.
+	Kind    string           `json:"kind,omitempty"`
+	Source  string           `json:"source,omitempty"`  // api, bell, osc, pattern, trust, question, …; none for a decision
+	Options []DecisionOption `json:"options,omitempty"` // at most 6; a decision's Input is its place, "1" first
 	Plan    string           `json:"plan,omitempty"`    // the plan a question asks approval for
 	Since   time.Time        `json:"since"`
+	// Request is the durable decision this is, "dr-<n>" (then also its
+	// ID), "" for a question no record holds. A decision's Session names
+	// the asking attempt's session, or none (an empty ID) for a plan's
+	// gate, with its run and task.
+	Request string `json:"request,omitempty"`
+}
+
+// DecisionState is a durable decision's state as Host.Decision reads it:
+// its id, its state (open, answered, applied, superseded, cancelled or
+// expired), whether that state is final (no answer is taken any more),
+// its revision and, once final, when it closed.
+type DecisionState struct {
+	Request  string    `json:"request"`
+	State    string    `json:"state"`
+	Final    bool      `json:"final"`
+	Rev      int       `json:"rev"`
+	ClosedAt time.Time `json:"closedAt,omitzero"`
 }
 
 // DecisionOption is one of a question's choices.
@@ -77,6 +115,9 @@ type Resolution struct {
 	Session SessionRef `json:"session"`
 	Ended   bool       `json:"ended,omitempty"`
 	At      time.Time  `json:"at"`
+	// Request is the durable decision resolved, "dr-<n>" (Decision.Request:
+	// it reached a final state), "" for a session's question.
+	Request string `json:"request,omitempty"`
 }
 
 const (

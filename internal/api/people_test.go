@@ -757,3 +757,56 @@ func TestADraftsPeopleAreCheckedAndKept(t *testing.T) {
 		t.Fatalf("the made crew's file: %s %v", file, err)
 	}
 }
+
+// Two pages read one crew and each adds a person: the first save is kept,
+// the second, made from the same revision, is 409 stale_revision and
+// saves nothing, so the stored crew holds the first's person; the second
+// page, made again from the copy the first saved, keeps both. A body
+// without a revision replaces the crew as before; a revision of another
+// shape is 400, and a create refuses one as an unknown field.
+func TestASaveFromAStaleReadIsRefused(t *testing.T) {
+	e := readyEnv(t, nil)
+	c := managedCrew(e.root)
+	body := func(people []crew.Person, revision string) map[string]any {
+		out := map[string]any{"name": "Two pages", "goal": c.Goal, "cwd": c.Cwd, "where": c.Where, "isolation": c.Isolation, "members": c.Members, "tasks": c.Tasks, "people": people}
+		if revision != "" {
+			out["revision"] = revision
+		}
+		return out
+	}
+	nate := crew.Person{Name: "nate", Responsibilities: []string{crew.RespArchitecture}}
+	created := e.expect(t, "POST", "/api/crews", body([]crew.Person{nate}, ""), http.StatusCreated, "")
+	id := created["crew"].(map[string]any)["id"].(string)
+	read := e.expect(t, "GET", "/api/crews/"+id, nil, http.StatusOK, "")
+	base, _ := read["revision"].(string)
+	if len(base) != 64 || base != created["revision"] {
+		t.Fatalf("the read's revision %q, the create's %v", base, created["revision"])
+	}
+	pageA := e.expect(t, "PUT", "/api/crews/"+id, body([]crew.Person{nate, {Name: "ana"}}, base), http.StatusOK, "")
+	out := e.expect(t, "PUT", "/api/crews/"+id, body([]crew.Person{nate, {Name: "cy"}}, base), http.StatusConflict, "stale_revision")
+	if msg := out["error"].(map[string]any)["message"].(string); !strings.Contains(msg, "read the crew again") {
+		t.Fatalf("the refusal says %q", msg)
+	}
+	got := e.expect(t, "GET", "/api/crews/"+id, nil, http.StatusOK, "")
+	if people := peopleOf(t, got["crew"].(map[string]any)["people"]); !reflect.DeepEqual(people, []crew.Person{nate, {Name: "ana"}}) {
+		t.Fatalf("stored people %+v", people)
+	}
+	if got["revision"] != pageA["revision"] || got["revision"] == base {
+		t.Fatalf("stored %v, page A's save answered %v, the first read %s", got["revision"], pageA["revision"], base)
+	}
+	both := []crew.Person{nate, {Name: "ana"}, {Name: "cy"}}
+	pageB := e.expect(t, "PUT", "/api/crews/"+id, body(both, got["revision"].(string)), http.StatusOK, "")
+	if people := peopleOf(t, pageB["crew"].(map[string]any)["people"]); !reflect.DeepEqual(people, both) {
+		t.Fatalf("page B again: %+v", people)
+	}
+	// No revision: whatever is stored is replaced, as before.
+	e.expect(t, "PUT", "/api/crews/"+id, body([]crew.Person{nate}, ""), http.StatusOK, "")
+	for _, bad := range []string{"abc", strings.Repeat("A", 64), strings.Repeat("0", 65)} {
+		e.expect(t, "PUT", "/api/crews/"+id, body([]crew.Person{nate}, bad), http.StatusBadRequest, "invalid_request")
+	}
+	e.expect(t, "PUT", "/api/crews/missing", body([]crew.Person{nate}, base), http.StatusNotFound, "")
+	e.expect(t, "POST", "/api/crews", body([]crew.Person{nate}, base), http.StatusBadRequest, "invalid_request")
+	if people := peopleOf(t, e.expect(t, "GET", "/api/crews/"+id, nil, http.StatusOK, "")["crew"].(map[string]any)["people"]); !reflect.DeepEqual(people, []crew.Person{nate}) {
+		t.Fatalf("after the refusals: %+v", people)
+	}
+}

@@ -2,6 +2,7 @@ package hostagent
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -255,5 +256,41 @@ func TestTheHostTellsTheServerEachQuestionsID(t *testing.T) {
 	}
 	if m := hostAttentionMsg("s", x, nil); m.ID != x.ID {
 		t.Fatalf("the message %+v", m)
+	}
+}
+
+// A host's peer refuses an answer to a question that mirrors a durable
+// decision as the server does, through the session's shared word
+// (session.AnswerResult): the code decision, words naming the decision,
+// nothing written, the question still shown. No hosted session asks one
+// (a managed run's attempts are the server's), but the code is shared.
+func TestAnswerToADecisionIsRefused(t *testing.T) {
+	local, proc, nate, _ := answerHost(t)
+	if _, err := local.TryAskDecision("dr-7", "Ship the schema change?"); err != nil {
+		t.Fatal(err)
+	}
+	q := local.Info().Attention
+	if q.Decision != "dr-7" || q.ID == "" {
+		t.Fatalf("the mirror: %+v", q)
+	}
+	m := untilControl(t, nate.frames, func(m map[string]any) bool { return m["t"] == proto.CtlAttention && m["id"] == q.ID })
+	if m["decision"] != "dr-7" {
+		t.Fatalf("the attention sent: %v", m)
+	}
+	nate.answer("n1", q.ID, "y", "")
+	nate.answer("n2", q.ID, "", "Ship it")
+	for _, req := range []string{"n1", "n2"} {
+		m := nate.verdict(req)
+		if m["t"] != proto.CtlError || m["code"] != proto.ErrCodeDecision || !strings.Contains(m["message"].(string), "dr-7 is answered as a decision") {
+			t.Fatalf("the answer %s: %v", req, m)
+		}
+	}
+	select {
+	case b := <-proc.Input:
+		t.Fatalf("written %q", b)
+	default:
+	}
+	if a := local.Info().Attention; a.ID != q.ID || a.Decision != "dr-7" {
+		t.Fatalf("the mirror after the refusals: %+v", a)
 	}
 }

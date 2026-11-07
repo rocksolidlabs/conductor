@@ -2,9 +2,12 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // A question that mirrors a durable decision (TryAskDecision,
@@ -217,5 +220,39 @@ func TestADecisionLinePassesAnotherDecisionsMirror(t *testing.T) {
 	}
 	if got := written(t, p2); got != "Postgres\r" {
 		t.Fatalf("the first write is %q", got)
+	}
+}
+
+// A decision's question names its decision to viewers (the attention
+// message's decision) and in Info, and only it: the agent's own question
+// carries none. A ref that is no decision's (dr-<n>, at most
+// proto.MaxDecisionRef bytes) is refused, nothing asked; a refused reply's
+// word is the code decision, naming it.
+func TestADecisionQuestionNamesItsDecision(t *testing.T) {
+	s, _, _ := asking(t, Options{})
+	for _, bad := range []string{"", "7", "dr-x", "dr-" + strings.Repeat("1", proto.MaxDecisionRef)} {
+		if _, err := s.TryAskDecision(bad, "Ship it?"); err == nil {
+			t.Fatalf("asked for %q", bad)
+		}
+	}
+	if a := s.Info().Attention; a.State == AttentionNeedsInput {
+		t.Fatalf("a bad ref asked: %+v", a)
+	}
+	q := askDecision(t, s, "dr-7", "Ship the schema change?")
+	b, _ := json.Marshal(s.Info())
+	if !strings.Contains(string(b), `"decision":"dr-7"`) {
+		t.Fatalf("the info: %s", b)
+	}
+	if m := attentionMessage(q); m.Decision != "dr-7" || m.ID != q.ID {
+		t.Fatalf("the attention message: %+v", m)
+	}
+	err := s.AnswerInput(context.Background(), ownerOf(t, s), q.ID, []byte("yes\r"))
+	var word map[string]any
+	if json.Unmarshal(AnswerResult("r1", err)[1:], &word); word["code"] != proto.ErrCodeDecision || word["requestId"] != "r1" || !strings.Contains(word["message"].(string), "dr-7") {
+		t.Fatalf("the refusal's word: %v (%v)", word, err)
+	}
+	s.Ask("Which index?", SourceAPI, KindPrompt, nil)
+	if a := s.Info().Attention; a.Decision != "" || attentionMessage(a).Decision != "" {
+		t.Fatalf("the agent's own question names a decision: %+v", a)
 	}
 }

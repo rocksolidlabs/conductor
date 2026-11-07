@@ -677,6 +677,11 @@ task_attempt() {
 	local kind=$1 task=$2 n=$3 ctx
 	ctx=$(task_read)
 	printf 'task: %s %s attempt %s: read %s bytes\n' "$kind" "$task" "$n" "${#ctx}" >>"$transcript"
+	if [[ $kind == task && $ctx == *"STUB DECIDE"* ]]; then
+		# Its instructions ask the operator first: a durable decision, and nothing submitted while it waits.
+		stub_decide "$task"
+		return
+	fi
 	if [[ $kind == task ]]; then
 		printf 'attempt %s of %s by %s\n' "$n" "$task" "$member" >>"stub-$member.txt"
 		if [[ -f .conductor/ticket.md ]]; then
@@ -704,6 +709,18 @@ task_attempt() {
 	else
 		task_submit "{\"verdict\":\"needs_changes\",\"summary\":\"one thing\",\"findings\":[{\"severity\":\"major\",\"path\":\"stub-$member.txt\",\"line\":1,\"message\":\"add stub-fixed.txt\"}]}" --verdict needs_changes --summary "one thing" --finding "major:stub-$member.txt:1 add stub-fixed.txt"
 	fi
+}
+
+# stub_decide asks the operator a durable decision for the task $1 (its
+# instructions say STUB DECIDE): a clarification, POSTed over the session's
+# own token to the decisions route beside its attention route, as an
+# agent's tool asks one; the token goes in a header read from a pipe, never
+# in curl's argv. What the server answered goes into the transcript.
+stub_decide() {
+	local url=${CONDUCTOR_NOTIFY_URL%/attention}/decisions reply
+	reply=$(printf 'Authorization: Bearer %s\n' "${CONDUCTOR_NOTIFY_TOKEN:-}" | curl -sS -X POST -H @- -H 'Content-Type: application/json' \
+		--data "{\"requestId\":\"stub-$1\",\"type\":\"clarification\",\"question\":\"Which name should $1 take?\"}" "$url" 2>&1) || true
+	printf 'decision: %s\n' "$reply" >>"$transcript"
 }
 
 # brakeman_turn does the Brakeman request $1 (STUB_BRAKEMAN=1): it reads the

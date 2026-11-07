@@ -130,31 +130,12 @@ func (c *crewClient) into(ctx context.Context, method, path string, body, out an
 	return nil
 }
 
-// readJSONArg reads the file named, or stdin for "-", as a JSON object.
+// readJSONArg reads the file named, or stdin for "-", as a JSON object,
+// by readOneJSON's rule.
 func readJSONArg(name string, stdin io.Reader) (map[string]any, error) {
-	var r io.Reader
-	if name == "-" {
-		r = stdin
-	} else {
-		f, err := os.Open(name)
-		if err != nil {
-			return nil, err
-		}
-		defer f.Close()
-		r = f
-	}
-	raw, err := io.ReadAll(io.LimitReader(r, maxCrewFile+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(raw) > maxCrewFile {
-		return nil, fmt.Errorf("%s: larger than %d bytes", name, maxCrewFile)
-	}
 	var out map[string]any
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&out); err != nil {
-		return nil, fmt.Errorf("%s: %w", name, err)
+	if err := readOneJSON(name, stdin, maxCrewFile, &out); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
