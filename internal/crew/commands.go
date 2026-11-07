@@ -38,12 +38,40 @@ var (
 	ErrStaleRevision   = errors.New("the run has moved on since the revision expected")
 	ErrCommandConflict = errors.New("the command id was used before with other content")
 	ErrTooManyCommands = errors.New("the run has taken as many commands as it keeps")
+	// ErrWithdrawn fails a command whose asker's credential no longer
+	// stood as its change was to be made (Command.Stands): nothing changed.
+	ErrWithdrawn = errors.New("the command was withdrawn: its asker's credential no longer stands")
 )
 
 // Command is what the asker sends with a change.
 type Command struct {
 	ID               string `json:"commandId"`
 	ExpectedRevision int64  `json:"expectedRevision,omitempty"`
+	// Stands, when set, says whether the asker's credential still stands
+	// (a decision link's hold, share.Held.Stands): asked before the
+	// command is taken, and again at its commit boundary, under the run's
+	// lock as its change is to be made, before anything else is judged.
+	// An error from it fails the command, ErrWithdrawn, nothing changed: a
+	// command not yet taken is not taken (no receipt), one taken settles
+	// failed (refusal withdrawn). Nothing is begun for a credential that no
+	// longer stands; a change begun while it stood may land after it ends.
+	// Only the transaction it was asked in commits the change: when the
+	// ledger refuses that one, the change is put back, never carried by a
+	// later transaction that would not ask again, and the command settles
+	// failed, refusal withdrawn. It must not wait or call the engine.
+	Stands func() error `json:"-"`
+}
+
+// withdrawn is ErrWithdrawn with why when the asker's credential no
+// longer stands (Stands), nil while it does or there is none.
+func (c Command) withdrawn() error {
+	if c.Stands == nil {
+		return nil
+	}
+	if err := c.Stands(); err != nil {
+		return fmt.Errorf("%w: %w", ErrWithdrawn, err)
+	}
+	return nil
 }
 
 // Receipt is what a command gets: its id and intent, the run's revision
@@ -104,6 +132,7 @@ const (
 	RefusalNotFound      = "not_found"
 	RefusalStaleRevision = "stale_revision"
 	RefusalRunContinued  = "run_continued"
+	RefusalWithdrawn     = "withdrawn"
 	// RefusalStaleCandidate refuses a command bound to a candidate that is
 	// no longer the task's standing one (Recheck).
 	RefusalStaleCandidate = "stale_candidate"
@@ -124,6 +153,8 @@ func refusalOf(err error) string {
 		return RefusalStaleRevision
 	case errors.Is(err, ErrRunContinued):
 		return RefusalRunContinued
+	case errors.Is(err, ErrWithdrawn):
+		return RefusalWithdrawn
 	case errors.Is(err, ErrStaleCandidate):
 		return RefusalStaleCandidate
 	}
@@ -159,7 +190,12 @@ type change func(r *run) (t *task, events []event, err error)
 // beside it, so a change is never made for a command the ledger did not
 // take, and a command taken without a settled receipt is one the server
 // ended between (the recovery leaves it uncertain). undo, when given, puts
-// the change back when its commit fails, as transact takes it.
+// the change back when its commit fails, as transact takes it. A command
+// whose asker's credential is asked (Command.Stands) with no undo of its
+// own is put back by a mark of what a task command changes (cmdMark),
+// and its receipt settles withdrawn with the commit after: its change is
+// committed by its own transaction, where the credential was asked, or
+// not at all.
 func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, intent string, args []string, do change, undo func(r *run)) (Receipt, error) {
 	if !CommandIDPattern.MatchString(cmd.ID) {
 		return Receipt{}, ErrBadCommandID
@@ -175,6 +211,9 @@ func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, inte
 		e.afterLookup(runID)
 	}
 	fp := fingerprint(intent, args...)
+	if err := cmd.withdrawn(); err != nil {
+		return Receipt{}, err
+	}
 	if prior, found, err := e.ledger.Receipt(ctx, runID, actor, cmd.ID); err != nil {
 		return Receipt{}, err
 	} else if found {
@@ -228,17 +267,37 @@ func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, inte
 	var out Receipt
 	var cmdErr error
 	var back func()
-	if undo != nil {
+	// withdraw: the credential is asked (Stands) and the caller has no
+	// undo, so a change the ledger refuses is put back by its mark.
+	withdraw := undo == nil && cmd.Stands != nil
+	var mark *cmdMark
+	switch {
+	case undo != nil:
 		back = func() { undo(r) }
+	case withdraw:
+		back = func() {
+			if mark != nil {
+				mark.restore(r)
+				r.note(session.ActivityError, "the ledger could not record the %s: it was withdrawn", intent)
+			}
+		}
 	}
 	err = e.transact(ctx, r, func() tx {
 		var t *task
 		var events []event
-		if err := e.continued(r); err != nil {
+		// The commit boundary: the asker's credential asked once more,
+		// fail-closed, before anything else is judged.
+		if err := cmd.withdrawn(); err != nil {
+			cmdErr = err
+		} else if err := e.continued(r); err != nil {
 			cmdErr = err
 		} else if cmd.ExpectedRevision > 0 && (cmd.ExpectedRevision != before || r.revision != before+1) {
 			cmdErr = fmt.Errorf("%w: expected %d, the run was at %d when the command was taken and is at %d", ErrStaleRevision, cmd.ExpectedRevision, before, r.revision)
 		} else {
+			if withdraw {
+				m := r.markOf()
+				mark = &m
+			}
 			t, events, cmdErr = do(r)
 		}
 		// A run's transactions commit one after another, each as the
@@ -257,11 +316,122 @@ func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, inte
 		return w
 	}, back)
 	if err != nil {
+		if withdraw {
+			e.settleWithdrawn(r, actor, cmd.ID, intent, args, err)
+		}
 		e.afterTransact(r, err)
 		return Receipt{}, err
 	}
 	e.afterTransact(r, nil)
 	return out, cmdErr
+}
+
+// settleWithdrawn settles the receipt of a command whose change the ledger
+// refused and which was put back (act, withdraw): failed, refusal
+// withdrawn, in a transaction of its own; refused too, it is carried by
+// the next commit (the pause's), which writes it first. It is the
+// receipt alone: nothing of the change. The caller holds neither lock.
+func (e *Engine) settleWithdrawn(r *run, actor, id, intent string, args []string, why error) {
+	out := Receipt{CommandID: id, Intent: intent, Status: ledger.CommandFailed, Refusal: RefusalWithdrawn,
+		Error: session.CleanMessage("the command was withdrawn: the ledger could not record its change: " + why.Error())}
+	_ = e.transact(context.Background(), r, func() tx {
+		out.Revision = r.revision + 1
+		paused := r.paused
+		out.Paused = &paused
+		w := tx{events: []event{{"command." + intent, map[string]any{"actor": actor, "command": id, "args": args, "status": out.Status, "error": out.Error}}}}
+		w.more = func(ltx LedgerTx) error { return ltx.Settle(actor, id, out.Status, out) }
+		return w
+	}, nil)
+}
+
+// cmdMark is what a task command (a retry, an acceptance, a cancel)
+// changes in memory, taken before its change and put back when its commit
+// is refused (act, withdraw): every task's state and its own fields, the
+// attempt in flight a cancel closes, the run's outcome and prerequisites,
+// and what waits for the change's commit (the cancels, stops and trees
+// it queued). A blocker's question a cancel's close withdrew from its
+// session is not asked again.
+type cmdMark struct {
+	tasks                 []taskMark
+	pause                 pauseMark
+	outcome               string
+	endPending            bool
+	active                int
+	cancels, stops, trees int
+}
+
+// taskMark is one task as a command may change it, with its attempt in
+// flight (nil for none).
+type taskMark struct {
+	t             *task
+	state, reason string
+	extra         int
+	result        *taskResult
+	repair        *repair
+	imported      string
+	blocker       *blocker
+	a             *attempt
+	attempt       attemptMark
+}
+
+// attemptMark is an attempt in flight as a close changes it.
+type attemptMark struct {
+	state, stage, err, preview string
+	closedAt                   time.Time
+	provisional                bool
+	trees                      []treeMark
+}
+
+// treeMark is an attempt's tree as a close hands it over.
+type treeMark struct {
+	t       *tree
+	handed  bool
+	session string
+}
+
+// markOf is r as a task command may change it. The caller holds e.mu.
+func (r *run) markOf() cmdMark {
+	m := cmdMark{pause: r.pauseMarkOf(), outcome: r.outcome, endPending: r.endPending, active: r.active,
+		cancels: len(r.pendingCancels), stops: len(r.pendingStops), trees: len(r.pendingTrees)}
+	for _, t := range r.tasks {
+		tm := taskMark{t: t, state: t.state, reason: t.reason, extra: t.extra, result: t.result, repair: t.repair, imported: t.imported, blocker: t.blocker}
+		if a := t.active(); a != nil {
+			tm.a = a
+			tm.attempt = attemptMark{state: a.state, stage: a.stage, err: a.err, preview: a.preview, closedAt: a.closedAt, provisional: a.provisional}
+			for _, tr := range a.trees {
+				tm.attempt.trees = append(tm.attempt.trees, treeMark{t: tr, handed: tr.handed, session: tr.session})
+			}
+		}
+		m.tasks = append(m.tasks, tm)
+	}
+	return m
+}
+
+// restore puts r back as m had it, marking what it puts back changed for
+// the next commit. The caller holds e.mu.
+func (m cmdMark) restore(r *run) {
+	for _, tm := range m.tasks {
+		t := tm.t
+		t.state, t.reason, t.extra, t.result, t.repair, t.imported, t.blocker = tm.state, tm.reason, tm.extra, tm.result, tm.repair, tm.imported, tm.blocker
+		r.markTask(t)
+		if a := tm.a; a != nil {
+			am := tm.attempt
+			a.state, a.stage, a.err, a.preview, a.closedAt, a.provisional = am.state, am.stage, am.err, am.preview, am.closedAt, am.provisional
+			for _, tr := range am.trees {
+				tr.t.handed, tr.t.session = tr.handed, tr.session
+			}
+			r.markAttempt(a)
+		}
+	}
+	r.restorePause(m.pause)
+	if r.outcome != m.outcome {
+		r.outcome = m.outcome
+		r.markRun()
+	}
+	r.endPending, r.active = m.endPending, m.active
+	r.pendingCancels = r.pendingCancels[:min(m.cancels, len(r.pendingCancels))]
+	r.pendingStops = r.pendingStops[:min(m.stops, len(r.pendingStops))]
+	r.pendingTrees = r.pendingTrees[:min(m.trees, len(r.pendingTrees))]
 }
 
 // priorReceipt is the receipt given before, as a repeat; a conflict when

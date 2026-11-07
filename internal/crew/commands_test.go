@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -358,4 +359,67 @@ func TestARetryTakesTheRetryableStatesOnly(t *testing.T) {
 			t.Errorf("a %s task: %v", st, err)
 		}
 	}
+}
+
+// A command whose asker's credential is asked (a decision link's,
+// Command.Stands) is committed by its own transaction, where the
+// credential was asked, or not at all: when the ledger refuses its change
+// and the pause after it, and the credential then ends, the ledger that
+// recovers commits nothing of the command. The change was put back as it
+// was refused (no task.cancelled, the task as it was, in memory and in
+// its row), and its receipt settles failed, refusal withdrawn, with the
+// next commit.
+func TestARefusedCommandOfACredentialIsNeverCarried(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("test", "lead", "build")))
+	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	ctx := context.Background()
+	before := taskOf(t, e, run.ID, "test")
+	var ended atomic.Bool
+	stands := func() error {
+		if ended.Load() {
+			return errors.New("the link was revoked")
+		}
+		return nil
+	}
+	// The change's transaction, the receipt's and the pause's: all refused.
+	l.mu.Lock()
+	l.failOn = "command.cancel"
+	l.mu.Unlock()
+	if _, err := e.Cancel(ctx, run.ID, "link:x", Command{ID: "c-1", Stands: stands}, "test"); err == nil {
+		t.Fatal("a cancel the ledger refused was taken")
+	}
+	if r, _ := e.Get(run.ID); !r.Paused {
+		t.Fatal("the run is not paused after the refused change")
+	}
+	if ts := taskOf(t, e, run.ID, "test"); ts.State != before.State || ts.Reason != before.Reason {
+		t.Fatalf("the task after its refused cancel: %+v, was %+v", ts, before)
+	}
+	// The credential ends; the ledger recovers; the next commit (an
+	// unpause) writes what was carried.
+	ended.Store(true)
+	l.mu.Lock()
+	l.failOn = ""
+	l.mu.Unlock()
+	if err := e.PauseRun(ctx, run.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if kinds := l.kinds(run.ID); slices.Contains(kinds, "task.cancelled") {
+		t.Fatalf("the refused cancel landed: %v", kinds)
+	}
+	l.mu.Lock()
+	row := l.tasks[run.ID+"/test"]
+	l.mu.Unlock()
+	if row.State == ledger.TaskCancelled {
+		t.Fatalf("the task's row: %+v", row)
+	}
+	if ts := taskOf(t, e, run.ID, "test"); ts.State == ledger.TaskCancelled {
+		t.Fatalf("the task: %+v", ts)
+	}
+	rc, ok, _ := l.Receipt(ctx, run.ID, "link:x", "c-1")
+	if !ok || rc.Status != ledger.CommandFailed || !strings.Contains(rc.Receipt, RefusalWithdrawn) {
+		t.Fatalf("the command's receipt: %+v %v", rc, ok)
+	}
+	stopRun(t, e, run.ID)
 }

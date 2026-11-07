@@ -134,6 +134,11 @@ const (
 // The guide's sections, in the overview's order, beside the overview.
 var guideSections = []string{"operations", "limits", "host", "receipts", "providers", "briefs"}
 
+// guideReport is the overview's sentence ahead of what the caller may
+// call and its limits, for every caller: a real Codex told only to call
+// the guide reported the operations and left the limits unsaid (#726).
+const guideReport = "Asked what you can do here, tell the person both lists below: the operations you may call and the limits you must keep."
+
 // The guide's three lines, for every caller.
 var guideRules = []string{
 	"A fact needs evidence: name the record it rests on (a run, a task, a check receipt, a ticket, a session).",
@@ -1156,6 +1161,9 @@ func extensionKinds(caps capabilitiesReply) []string {
 // guide learns there what it may do and within what, in a few lines.
 type guideOverview struct {
 	Caller guideCaller `json:"caller"`
+	// Report asks the caller, asked what it can do, to say both of what
+	// follows: May and Limits, which come next, together.
+	Report string `json:"report"`
 	// May is the operations the caller may call, by name (an MCP tool's
 	// name where it has one), in the table's order.
 	May []string `json:"may"`
@@ -1291,7 +1299,7 @@ func briefSubmitSchema() map[string]any {
 // sizes, for the caller.
 func encodeGuide(c guideCaller, content map[string]any) (map[string][]byte, error) {
 	out := make(map[string][]byte, len(content)+1)
-	ov := guideOverview{Caller: c, May: []string{}, Limits: overviewLimits(c), Rules: guideRules}
+	ov := guideOverview{Caller: c, Report: guideReport, May: []string{}, Limits: overviewLimits(c), Rules: guideRules}
 	if ops, ok := content["operations"].([]Operation); ok {
 		for _, op := range ops {
 			ov.May = append(ov.May, op.Name)
