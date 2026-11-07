@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/proto"
@@ -102,6 +103,11 @@ type Options struct {
 	// text (Submit) is refused while the question shows (ErrTrustQuestion),
 	// since its Enter would pick whatever the dialog highlights.
 	TrustAnswers []Option
+	// PromptShape, when set, matches the agent's own prompt at rest on its
+	// whole screen (the catalog's promptShape): a submission OnlyAtPrompt
+	// is typed, and entered, only while the screen matches and shows no
+	// dialog's numbered choice (atPrompt).
+	PromptShape *regexp.Regexp
 	// Questions are the agent's other startup questions (the catalog's
 	// questions; round 13, G2c), held exactly as the trust question is:
 	// source "trust", their answers the choices, typed text refused while
@@ -634,6 +640,13 @@ func (s *Local) pump() {
 				left = s.feedAsked(chunk)
 			}
 			s.feedMu.Unlock()
+			// The screen a submission's prompt is looked for on (atPrompt)
+			// takes it too before any viewer has it, and before the output
+			// is scanned for what says the agent waits (scanOutput): a
+			// submission typed once it waits finds the screen it waits at.
+			if !title {
+				s.shot.Feed(chunk)
+			}
 			s.mu.Lock()
 			s.ring.Write(chunk)
 			s.hub.BroadcastLoud(proto.Encode(proto.TypeOutput, chunk))
@@ -651,9 +664,6 @@ func (s *Local) pump() {
 			}
 			if left != "" {
 				s.withdraw(left)
-			}
-			if !title {
-				s.shot.Feed(chunk)
 			}
 		}
 		if err != nil {
@@ -5526,6 +5536,47 @@ func (s *Local) LastLine() string {
 func (s *Local) ScreenLines(n int) []string {
 	rows, _ := s.ScreenRead(n)
 	return rows
+}
+
+// atPrompt reports whether the screen shows the agent's prompt, the one
+// screen a submission OnlyAtPrompt is typed into: read whole, as one frame
+// (PatternWatcher.Frame: every row, from the screen the pump feeds before
+// the viewers and before the scan for what says the agent waits), it shows
+// everything the program drew as it drew it (no synchronized update under
+// way, nothing cut by a window made smaller: a dialog cut away is not
+// known gone), it matches the agent's prompt when the agent has a shape
+// known (Options.PromptShape), and, shape or none, no row of it is a
+// dialog's numbered choice, read by its shape as startupChoiceShown reads
+// one: a shape that matches never admits a screen with a choice a digit of
+// the line would pick. Both read the frame with every horizontal space a
+// plain one (plainSpaces): a row indented with a no-break space is read as
+// the same row indented with spaces, so no indentation turns a choice into
+// text for either. Anything else, an unknown dialog, a sign-in screen,
+// half a frame, is not the prompt (#714).
+func (s *Local) atPrompt() bool {
+	text, _, uncut, _, _ := s.shot.Frame()
+	if !uncut {
+		return false
+	}
+	text = plainSpaces(text)
+	if s.opts.PromptShape != nil && !s.opts.PromptShape.MatchString(text) {
+		return false
+	}
+	return !startupChoiceShown(text)
+}
+
+// plainSpaces is text with every Unicode space (unicode.IsSpace: a
+// no-break space, the typographic spaces, the ideographic space, a tab)
+// written as a plain space, but the line breaks between its rows, kept: the one reading of a screen's rows that atPrompt's prompt shape and
+// its numbered-choice rule both take, since a pattern's \s is ASCII
+// alone (#714).
+func plainSpaces(text string) string {
+	return strings.Map(func(r rune) rune {
+		if r != '\n' && unicode.IsSpace(r) {
+			return ' '
+		}
+		return r
+	}, text)
 }
 
 // ScreenCols is the width of the screen ScreenRead reads, in cells: a row

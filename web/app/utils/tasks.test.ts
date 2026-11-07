@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import type { RunStep, RunTask } from '~/composables/useSessions'
 import {
@@ -19,6 +21,7 @@ import {
   taskWords,
   type CommandBody,
   type Receipt,
+  type TaskCommand,
 } from './tasks'
 
 const task = (p: Partial<RunTask>): RunTask => ({ id: 'build', member: 'lead', kind: 'work', state: 'ready', attempts: 0, ...p })
@@ -115,12 +118,32 @@ describe('taskWords', () => {
 
 describe('taskActions', () => {
   const live = {}
-  it('offers retry and accept on a failed task with a submitted commit, cancel on a live one, open and copy with an attempt', () => {
-    expect(taskActions(task({ state: 'failed', attempt: { n: 3, state: 'failed', result: 'abc', sessionId: 's', branch: 'crew/r/build.3' } }), live)).toEqual({ retry: true, accept: true, cancel: false, open: true, copyBranch: true, showResult: false, preview: '', askWhy: true })
+  // The fixture the engine's TaskCommands and the decision inbox are held to (internal/crew/testdata/task-commands.json, read by
+  // TestTaskCommandsFollowTheFixture, which also holds the run's read to name each row's commands on its task): the run page offers
+  // what the run's read names, as it names it, and nothing on a run no longer the engine's.
+  const fixture = JSON.parse(readFileSync(fileURLToPath(new URL('../../../internal/crew/testdata/task-commands.json', import.meta.url)), 'utf8')) as {
+    rows: Array<{ name: string; state: RunTask['state']; kind: RunTask['kind']; attempts: Array<{ commit: string }>; withdrawn: number; run: string; commands: TaskCommand[]; accept?: number }>
+  }
+  it.each(fixture.rows.map((r) => [r.name, r] as const))('offers what the engine takes: %s', (_, row) => {
+    const n = row.attempts.length
+    const t = task({ state: row.state, kind: row.kind, attempts: n, ...(n ? { attempt: { n, state: 'failed', result: row.attempts[n - 1]!.commit || undefined } } : {}), ...(row.commands.length ? { commands: row.commands } : {}) })
+    const run = { live: {}, stopped: { stoppedAt: '2026-11-06T00:00:00Z' }, continued: { resumedBy: 'next-00000000' }, launching: {}, legacy: {} }[row.run]!
+    const a = taskActions(t, run)
+    expect((['retry', 'accept', 'cancel'] as const).filter((c) => a[c])).toEqual(row.commands)
+  })
+  it('offers Accept anyway as the engine names it, whatever the latest attempt and the kind: the run page used to judge from the latest work attempt alone', () => {
+    // The latest attempt submitted nothing, an earlier kept one did: the engine takes it.
+    expect(taskActions(task({ state: 'failed', attempts: 3, attempt: { n: 3, state: 'failed' }, commands: ['retry', 'accept'] }), live).accept).toBe(true)
+    // A review that submitted a commit.
+    expect(taskActions(task({ state: 'failed', kind: 'review', attempt: { n: 1, state: 'failed', result: 'abc' }, commands: ['retry', 'accept'] }), live).accept).toBe(true)
+    // A commit a withdrawal took back: the engine names no Accept, and the page offers none though the latest attempt has a result.
+    expect(taskActions(task({ state: 'failed', attempt: { n: 2, state: 'failed', result: 'abc' }, commands: ['retry'] }), live).accept).toBe(false)
+  })
+  it('offers retry and accept on a failed task the engine names them on, cancel on a live one, open and copy with an attempt', () => {
+    expect(taskActions(task({ state: 'failed', attempt: { n: 3, state: 'failed', result: 'abc', sessionId: 's', branch: 'crew/r/build.3' }, commands: ['retry', 'accept'] }), live)).toEqual({ retry: true, accept: true, cancel: false, open: true, copyBranch: true, showResult: false, preview: '', askWhy: true })
     expect(taskActions(task({ state: 'failed', attempt: { n: 3, state: 'failed' } }), live).accept).toBe(false)
-    expect(taskActions(task({ state: 'failed', kind: 'review', attempt: { n: 1, state: 'failed', result: 'abc' } }), live).accept).toBe(false)
-    expect(taskActions(task({ state: 'cancelled' }), live)).toMatchObject({ retry: true, accept: false, cancel: false })
-    expect(taskActions(task({ state: 'running', attempt: { n: 1, state: 'running', sessionId: 's' } }), live)).toMatchObject({ retry: false, cancel: true, open: true })
+    expect(taskActions(task({ state: 'cancelled', commands: ['retry'] }), live)).toMatchObject({ retry: true, accept: false, cancel: false })
+    expect(taskActions(task({ state: 'running', attempt: { n: 1, state: 'running', sessionId: 's' }, commands: ['cancel'] }), live)).toMatchObject({ retry: false, cancel: true, open: true })
     expect(taskActions(task({ state: 'succeeded', result: { attempt: 1, at: '' } }), live)).toMatchObject({ retry: false, cancel: false, showResult: true })
   })
   it('offers Ask Brakeman why on a task that failed, was cancelled or is blocked, or whose attempt reports a blocker', () => {
@@ -133,11 +156,10 @@ describe('taskActions', () => {
     // A record's task too: asking reads, it changes nothing.
     expect(taskActions(task({ state: 'failed' }), { record: true }).askWhy).toBe(true)
   })
-  it('offers nothing that changes a stopped run, a record or a run continued', () => {
-    expect(taskActions(task({ state: 'failed', attempt: { n: 1, state: 'failed', result: 'abc' } }), { stoppedAt: 'x' })).toMatchObject({ retry: false, accept: false, cancel: false })
-    expect(taskActions(task({ state: 'running' }), { record: true })).toMatchObject({ cancel: false })
+  it('offers nothing that changes a record or a run continued, whatever its tasks carry', () => {
+    expect(taskActions(task({ state: 'running', commands: ['cancel'] }), { record: true })).toMatchObject({ cancel: false })
     // A finished run, continued: its continuation owns its tasks.
-    expect(taskActions(task({ state: 'failed', attempt: { n: 1, state: 'failed', result: 'abc', sessionId: 's' } }), { resumedBy: 'next' })).toMatchObject({ retry: false, accept: false, cancel: false, open: true })
+    expect(taskActions(task({ state: 'failed', attempt: { n: 1, state: 'failed', result: 'abc', sessionId: 's' }, commands: ['retry', 'accept'] }), { resumedBy: 'next' })).toMatchObject({ retry: false, accept: false, cancel: false, open: true })
   })
   it("offers Open preview by the attempt's preview alone (EN1): the server sets it at tree.ready and clears it at the close", () => {
     const url = 'http://127.0.0.1:41234/'
