@@ -1,11 +1,16 @@
 package share
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -527,5 +532,325 @@ func TestAGroupsRevisionIsNotWritten(t *testing.T) {
 	b, err := json.Marshal(Group{Name: "api", Revision: 42, Members: []GroupMember{{Name: "lead"}}})
 	if err != nil || strings.Contains(string(b), "42") || strings.Contains(strings.ToLower(string(b)), "revision") {
 		t.Fatalf("written as %s (%v)", b, err)
+	}
+}
+
+// A decision link is a control link: a view one is refused, nothing made;
+// a control one carries Decide, resolves as a link does and is revoked as
+// one is. A plain link does not carry it.
+func TestADecisionLinkNeedsControl(t *testing.T) {
+	s := NewStore()
+	if _, _, err := s.CreateDecision("s1", session.RoleView, "", 0); !errors.Is(err, ErrDecideNeedsControl) {
+		t.Fatalf("a view decision link: %v", err)
+	}
+	if _, _, err := s.CreateRunDecision("r1", session.RoleView, "", 0); !errors.Is(err, ErrDecideNeedsControl) {
+		t.Fatalf("a view run decision link: %v", err)
+	}
+	if n := len(s.ListBySession("s1")) + len(s.ListByRun("r1")); n != 0 {
+		t.Fatalf("%d links made", n)
+	}
+	l, tok, err := s.CreateDecision("s1", session.RoleControl, "phone", 0)
+	if err != nil || !l.Decide || l.Role != session.RoleControl {
+		t.Fatalf("a decision link: %+v %v", l, err)
+	}
+	got, err := s.Resolve(tok)
+	if err != nil || !got.Decide {
+		t.Fatalf("resolved: %+v %v", got, err)
+	}
+	rl, _, err := s.CreateRunDecision("r1", session.RoleControl, "", 0)
+	if err != nil || !rl.Decide || rl.RunID != "r1" {
+		t.Fatalf("a run decision link: %+v %v", rl, err)
+	}
+	plain, _, _ := s.Create("s1", session.RoleControl, "", 0)
+	if plain.Decide {
+		t.Fatal("a plain link decides")
+	}
+	if found, _ := s.Revoke("s1", l.ID); !found {
+		t.Fatal("not revoked")
+	}
+	if _, err := s.Resolve(tok); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("after the revoke: %v", err)
+	}
+}
+
+// A decision link's Recent keeps the newest MaxRecent, one entry per ref
+// and attempt, and goes with the link; a plain link keeps none.
+func TestADecisionLinksRecent(t *testing.T) {
+	s := NewStore()
+	l, _, _ := s.CreateRunDecision("r1", session.RoleControl, "", 0)
+	plain, _, _ := s.CreateRunLink("r1", session.RoleControl, "", 0)
+	if s.NoteRecent(plain.ID, Recent{Ref: "task:r1/a", Attempt: "x"}) {
+		t.Fatal("a plain link noted")
+	}
+	at := time.Now()
+	for i := range MaxRecent + 5 {
+		s.NoteRecent(l.ID, Recent{Ref: "task:r1/a", Receipt: "c", Attempt: "op-" + strconv.Itoa(i), At: at})
+	}
+	s.NoteRecent(l.ID, Recent{Ref: "task:r1/a", Receipt: "c", Attempt: "op-10", At: at.Add(time.Second)})
+	got := s.RecentOf(l.ID)
+	if len(got) != MaxRecent || got[0].Attempt != "op-5" || got[len(got)-1].Attempt != "op-10" {
+		t.Fatalf("recent: %d, first %+v last %+v", len(got), got[0], got[len(got)-1])
+	}
+	if c, _ := s.Get(l.ID); c.recent != nil {
+		t.Fatal("a copy carries the recent list")
+	}
+	s.DeleteRun("r1")
+	if got := s.RecentOf(l.ID); got != nil {
+		t.Fatalf("after the run's links went: %v", got)
+	}
+}
+
+// A link's act is held while it is under way (Hold): a revoke waits for
+// the act under way and returns once it is let go, a hold asked while the
+// revoke waits is refused at once, as one after it is, and the act held
+// asks at its commit boundary (Stands) and is told the link ended; an
+// expired link is refused ErrExpired; a link revoked on its session's end
+// (End) does not wait, its session refusing what comes after on its own.
+func TestALinksActIsHeldAgainstItsRevoke(t *testing.T) {
+	s := NewStore()
+	// The bound far off: the revoke is judged waiting for the act.
+	s.HoldWait = time.Hour
+	now := time.Now()
+	s.now = func() time.Time { return now }
+	l, _, _ := s.CreateRunDecision("r1", session.RoleControl, "phone", time.Minute)
+	held, err := s.Hold(l.ID)
+	if err != nil || held.Link.ID != l.ID {
+		t.Fatalf("hold: %+v %v", held, err)
+	}
+	if err := held.Stands(); err != nil {
+		t.Fatalf("stands: %v", err)
+	}
+	// Two holds at once are fine.
+	again, err := s.Hold(l.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again.Release()
+	revoked := make(chan struct{})
+	go func() {
+		s.RevokeRun("r1", l.ID)
+		close(revoked)
+	}()
+	// The revoke waits: holds are refused meanwhile, the act's still held,
+	// and told at its commit boundary that its link ended.
+	barrierBegun(t, s, l.ID, ErrRevoked)
+	if err := held.Stands(); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("stands while the revoke waits: %v", err)
+	}
+	select {
+	case <-revoked:
+		t.Fatal("the revoke returned with an act held")
+	default:
+	}
+	held.Release()
+	held.Release() // once
+	<-revoked
+	if _, err := s.Hold(l.ID); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("a hold after the revoke: %v", err)
+	}
+	e, _, _ := s.CreateRunDecision("r1", session.RoleControl, "", time.Minute)
+	now = now.Add(time.Minute)
+	if _, err := s.Hold(e.ID); !errors.Is(err, ErrExpired) {
+		t.Fatalf("a hold of an expired link: %v", err)
+	}
+	if _, err := s.Hold("nope"); !errors.Is(err, ErrUnknownLink) {
+		t.Fatalf("a hold of no link: %v", err)
+	}
+	sl, _, _ := s.CreateDecision("s1", session.RoleControl, "", 0)
+	sh, _ := s.Hold(sl.ID)
+	defer sh.Release()
+	if !s.End("s1", sl.ID) {
+		t.Fatal("not ended")
+	}
+}
+
+// barrierBegun waits for the barrier of the link linkID to have begun
+// (end: its ended closed), and then a hold is refused why.
+func barrierBegun(t *testing.T, s *Store, linkID string, why error) {
+	t.Helper()
+	s.mu.RLock()
+	a := s.byID[linkID].acts
+	s.mu.RUnlock()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		a.mu.Lock()
+		ended := a.isEnded()
+		a.mu.Unlock()
+		if ended {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the barrier never began")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := s.Hold(linkID); !errors.Is(err, why) {
+		t.Fatalf("a hold while the barrier waits: %v", err)
+	}
+}
+
+// An expiry is a revoke the clock makes: the sweep (ExpireDue) and a
+// link's own deadline (Expire) end the link through the same barrier,
+// waiting for the act under way, which is told at its commit boundary
+// that the link expired; the hooks are told once, after the acts let go.
+// A link not yet due is left as it is.
+func TestAnExpiryWaitsAsARevokeDoes(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		expire func(s *Store, linkID string, now time.Time)
+	}{
+		{"the sweep", func(s *Store, _ string, now time.Time) { s.ExpireDue(now) }},
+		{"its own deadline", func(s *Store, linkID string, _ time.Time) { s.Expire(linkID) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewStore()
+			s.HoldWait = time.Hour
+			var mu sync.Mutex
+			now := time.Now()
+			s.now = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+			var told atomic.Int32
+			s.OnRevokeRun = func(string, string) { told.Add(1) }
+			l, _, _ := s.CreateRunDecision("r1", session.RoleControl, "phone", time.Minute)
+			if s.Expire(l.ID) {
+				t.Fatal("expired before its deadline")
+			}
+			held, err := s.Hold(l.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mu.Lock()
+			now = now.Add(time.Minute)
+			at := now
+			mu.Unlock()
+			expired := make(chan struct{})
+			go func() {
+				tc.expire(s, l.ID, at)
+				close(expired)
+			}()
+			barrierBegun(t, s, l.ID, ErrExpired)
+			if err := held.Stands(); !errors.Is(err, ErrExpired) {
+				t.Fatalf("stands while the expiry waits: %v", err)
+			}
+			select {
+			case <-expired:
+				t.Fatal("the expiry returned with an act held")
+			default:
+			}
+			if told.Load() != 0 {
+				t.Fatal("the hooks told before the act let go")
+			}
+			held.Release()
+			<-expired
+			s.Expire(l.ID)
+			s.ExpireDue(at)
+			if n := told.Load(); n != 1 {
+				t.Fatalf("told %d times", n)
+			}
+		})
+	}
+}
+
+// The barrier waits for the acts begun before it up to HoldWait, and no
+// longer: past it the revoke returns with the act still held, the act told
+// (Cancelled) and still refused at its commit boundary, and the log line
+// says how many were pending. What the act had begun is its own.
+func TestABarrierReturnsPastItsBoundSayingWhatIsPending(t *testing.T) {
+	var logs bytes.Buffer
+	var lmu sync.Mutex
+	s := NewStore()
+	s.HoldWait = 50 * time.Millisecond
+	s.Log = slog.New(slog.NewTextHandler(lockedWriter{&lmu, &logs}, nil))
+	l, _, _ := s.CreateRunDecision("r1", session.RoleControl, "phone", 0)
+	stalled, _ := s.Hold(l.ID)
+	defer stalled.Release()
+	s.RevokeRun("r1", l.ID)
+	select {
+	case <-stalled.Cancelled():
+	default:
+		t.Fatal("the act still held was not told")
+	}
+	if err := stalled.Stands(); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("the act still held at its commit boundary: %v", err)
+	}
+	lmu.Lock()
+	line := logs.String()
+	lmu.Unlock()
+	if !strings.Contains(line, "link="+l.ID) || !strings.Contains(line, "pending=1") {
+		t.Fatalf("the log: %q", line)
+	}
+	if _, err := s.Hold(l.ID); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("a hold after the revoke: %v", err)
+	}
+}
+
+// lockedWriter writes to w under mu.
+type lockedWriter struct {
+	mu *sync.Mutex
+	w  io.Writer
+}
+
+func (l lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
+}
+
+// An opId names one operation of a link: the same request again finds the
+// first, under way or settled; another request under it is a conflict,
+// before and after it settles; one let go (nothing begun) frees it; past
+// MaxOps a new one is refused, an old one still answered; another link's
+// opIds are its own; a plain link takes none; and they go with the link.
+func TestAnOpIDNamesOneOperation(t *testing.T) {
+	s := NewStore()
+	l, _, _ := s.CreateRunDecision("r1", session.RoleControl, "", 0)
+	other, _, _ := s.CreateRunDecision("r1", session.RoleControl, "", 0)
+	op, mine, err := s.ClaimOp(l.ID, "op-1", "fp-a")
+	if err != nil || !mine || op.Settled {
+		t.Fatalf("a new opId: %+v %v %v", op, mine, err)
+	}
+	twin, mine, err := s.ClaimOp(l.ID, "op-1", "fp-a")
+	if err != nil || mine || twin.Settled {
+		t.Fatalf("the twin under way: %+v %v %v", twin, mine, err)
+	}
+	if _, _, err := s.ClaimOp(l.ID, "op-1", "fp-b"); !errors.Is(err, ErrOpConflict) {
+		t.Fatalf("another request under way: %v", err)
+	}
+	if _, mine, err := s.ClaimOp(other.ID, "op-1", "fp-b"); err != nil || !mine {
+		t.Fatalf("another link's opId: %v %v", mine, err)
+	}
+	s.SettleOp(l.ID, "op-1", true, "kept")
+	<-twin.Done
+	if got, mine, err := s.ClaimOp(l.ID, "op-1", "fp-a"); err != nil || mine || !got.Settled || got.Outcome != "kept" {
+		t.Fatalf("settled: %+v %v %v", got, mine, err)
+	}
+	if _, _, err := s.ClaimOp(l.ID, "op-1", "fp-b"); !errors.Is(err, ErrOpConflict) {
+		t.Fatalf("another request after: %v", err)
+	}
+	s.ClaimOp(l.ID, "op-2", "fp-a")
+	s.SettleOp(l.ID, "op-2", false, "")
+	if _, mine, err := s.ClaimOp(l.ID, "op-2", "fp-b"); err != nil || !mine {
+		t.Fatalf("an opId let go: %v %v", mine, err)
+	}
+	for i := 3; i <= MaxOps; i++ {
+		if _, _, err := s.ClaimOp(l.ID, "op-"+strconv.Itoa(i), "fp"); err != nil {
+			t.Fatalf("op %d: %v", i, err)
+		}
+	}
+	if _, _, err := s.ClaimOp(l.ID, "op-new", "fp"); !errors.Is(err, ErrTooManyOps) {
+		t.Fatalf("past MaxOps: %v", err)
+	}
+	if got, _, err := s.ClaimOp(l.ID, "op-1", "fp-a"); err != nil || got.Outcome != "kept" {
+		t.Fatalf("an old one past MaxOps: %+v %v", got, err)
+	}
+	plain, _, _ := s.CreateRunLink("r1", session.RoleControl, "", 0)
+	if _, _, err := s.ClaimOp(plain.ID, "op-1", "fp"); !errors.Is(err, ErrUnknownLink) {
+		t.Fatalf("a plain link: %v", err)
+	}
+	if c, _ := s.Get(l.ID); c.ops != nil {
+		t.Fatal("a copy carries the ops")
+	}
+	s.DeleteRun("r1")
+	if _, _, err := s.ClaimOp(l.ID, "op-1", "fp-a"); !errors.Is(err, ErrUnknownLink) {
+		t.Fatalf("after the run's links went: %v", err)
 	}
 }

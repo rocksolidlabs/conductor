@@ -87,10 +87,45 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 		return
 	}
 	sink := s.viewerSink(c, raw)
+	decides := s.isDecisionLink(linkID)
+	// A decision link's writes are taken only while the link stands,
+	// checked with each write (lane.go, rule 1): its lane's answers are
+	// this subscription's.
+	var hold func() (session.Held, error)
+	label := s.linkLabel(linkID)
+	answerName := ""
+	// lapse is a decision link's deadline, which the session is not given
+	// (its own timer would close the viewer without the link's barrier):
+	// the viewer is closed at it through the link's expiry instead.
+	var lapse time.Time
+	if decides {
+		hold = s.holdLink(linkID)
+		// Its answers are the link's, kept under its label as a decision
+		// link's answer to another session's question is (laneAnswer),
+		// whatever name its client says.
+		answerName = linkAnswerName(label)
+		if check != nil {
+			authorize, first := check, true
+			check = func() (session.Grant, error) {
+				g, err := authorize()
+				if first {
+					// The attach's own call, under the session's lock in
+					// AttachWith, before it returns; later ones (a write's
+					// look at the credential) only judge.
+					lapse, first = g.Until, false
+				}
+				g.Until = time.Time{}
+				return g, err
+			}
+		}
+	}
 	sub, err := local.AttachWith(session.AttachOptions{
-		Role: role, LinkID: linkID, LinkLabel: s.linkLabel(linkID), Name: hello.Name, Cols: hello.Cols, Rows: hello.Rows, ChatOnly: hello.ChatOnly,
-		Authorize: check,
-		Owner:     owner,
+		Role: role, LinkID: linkID, LinkLabel: label, Name: hello.Name, Cols: hello.Cols, Rows: hello.Rows, ChatOnly: hello.ChatOnly,
+		AnswerName: answerName,
+		Authorize:  check,
+		Owner:      owner,
+		Decisions:  decides,
+		Hold:       hold,
 	}, sink)
 	if err != nil {
 		switch {
@@ -106,6 +141,16 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 		return
 	}
 	defer local.Detach(sub)
+	if !lapse.IsZero() {
+		// A decision link's expiry, made at its deadline through the link's
+		// barrier as a revoke is (share.Store.ExpireThen: nothing begun for
+		// the link after its mark, the acts begun before waited for up to
+		// HoldWait, rule 1), and the viewer closed as expired after it, as a
+		// desk is; a link revoked or expired before is closed by its end.
+		defer s.armLapse(linkID, lapse, func() {
+			s.links.ExpireThen(linkID, func() { sub.Revoke(session.ErrExpired) })
+		})()
+	}
 	if watch != nil {
 		// Revoked as a revoked link's viewer is: its transport closed, and
 		// what it has under way (a submission waiting for its turn or its
@@ -118,6 +163,14 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 	var held heldTyping
 	// The viewer's slot stays taken until what it asked to type is done.
 	defer held.wait()
+	// A decision link's lane (lane.go): nil for any other connection,
+	// whose lane requests are refused.
+	send := func(f []byte) { local.Send(sub, f) }
+	var lane *laneConn
+	if decides {
+		lane = s.newLane(sink.ctx, linkID, local.Info().ID, send, s.ownAnswer(sub, local))
+		defer lane.end()
+	}
 	for {
 		f, err := readFrame(sink.ctx, c, 0)
 		if err != nil {
@@ -139,10 +192,15 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 				s.sendKeysError(sub, local, err)
 			}
 		case proto.TypeControl:
+			if lane.control(f.Payload, send) {
+				continue
+			}
 			if !s.handleLocalControl(sub, local, &held, f.Payload) {
 				sink.Close(nil)
 				return
 			}
+		case proto.TypeDecide:
+			lane.decide(f.Payload, send)
 		case proto.TypeFileWrite:
 			// A save from the editor (design round 12, F6): its answer is a FILE frame.
 			h, part, err := proto.DecodeFileWrite(f.Payload)
@@ -378,7 +436,7 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 			// its outcome is known (a line the program takes slowly is
 			// finished later, and its word comes then).
 			held.typeIn(sub, local, m.ReqID, func() error {
-				if err := s.answer(sub, local, m, reply); !errors.Is(err, session.ErrSubmitPending) {
+				if err := s.answer(context.Background(), sub, local, m, reply); !errors.Is(err, session.ErrSubmitPending) {
 					reply(err)
 				}
 				return nil
@@ -388,7 +446,7 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 		// A choice's keys on the read loop, as a keystroke is, so what the
 		// client sends next comes after them; the owner's word names them,
 		// once they have landed.
-		if err := s.answer(sub, local, m, reply); !errors.Is(err, session.ErrSubmitPending) {
+		if err := s.answer(context.Background(), sub, local, m, reply); !errors.Is(err, session.ErrSubmitPending) {
 			reply(err)
 		}
 	case proto.CtlChat:
@@ -438,7 +496,14 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 // known yet (session.ErrSubmitPending): finished gets it then, on another
 // goroutine (nil once the keys landed or the line was entered,
 // session.ErrLineStranded for a line typed and not entered).
-func (s *Server) answer(sub *session.Subscription, local *session.Local, m proto.Answer, finished func(error)) error {
+//
+// ctx is whoever asked for the answer: the connection's own answer goes on
+// whatever becomes of it (context.Background()); a decision link's lane
+// passes its own, which ends with the connection, so that an answer queued
+// behind another write (keys, a line's text or Enter) and not yet begun
+// is withdrawn as it ends, never begun; a write begun lands as the
+// program reads, its word still waited for.
+func (s *Server) answer(ctx context.Context, sub *session.Subscription, local *session.Local, m proto.Answer, finished func(error)) error {
 	// The reply's request id is kept with the question's result, so the
 	// winner is told by its id (the decision inbox's track).
 	reqID := m.ReqID
@@ -446,11 +511,11 @@ func (s *Server) answer(sub *session.Subscription, local *session.Local, m proto
 		reqID = ""
 	}
 	if m.Input != "" {
-		return local.AnswerInputReq(context.Background(), sub, m.Question, reqID, []byte(m.Input), finished)
+		return local.AnswerInputReq(ctx, sub, m.Question, reqID, []byte(m.Input), finished)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), submitTimeout)
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), submitTimeout)
 	defer cancel()
-	_, err := local.Submit(ctx, session.Submission{Text: m.Text, By: sub, Question: m.Question, ReqID: reqID, Finished: func(res session.SubmitResult, err error) {
+	_, err := local.Submit(sctx, session.Submission{Text: m.Text, By: sub, Question: m.Question, ReqID: reqID, Withdrawn: ctx.Done(), Finished: func(res session.SubmitResult, err error) {
 		finished(session.AnswerWord(res, err))
 	}})
 	return err
