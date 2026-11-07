@@ -12,6 +12,10 @@ export const FrameType = {
   Chunk: 0x07,
   /** client -> owner: one part of a file save (design round 12, F6). */
   FileWrite: 0x08,
+  /** owner -> client: a decision link's lane reply (see Decision links, below). */
+  Decision: 0x09,
+  /** client -> owner: one action on a decision, to an owner whose welcome says `decisions`. */
+  Decide: 0x0a,
   Relay: 0x10,
 } as const
 
@@ -285,6 +289,8 @@ export interface Welcome {
   answer?: boolean
   /** The owner answers a `submit` naming a `reqId` with `submit_ok` or an `error` naming it, and takes `unlessWaiting` (#322); absent from an older owner, which types the line and says nothing. */
   submitAck?: boolean
+  /** This connection is a decision link's: it takes the lane's reads and `Decide` frames (see Decision links). Absent otherwise and from an older owner, which is sent none. */
+  decisions?: boolean
   /** The session's working directory, from the owner itself, to a role that may read files (at most 4096 bytes; absent from an older owner): a guest's Files root. */
   cwd?: string
   iceServers?: ICEServer[]
@@ -311,6 +317,9 @@ export type ControlMessage =
   | ChatMessage
   | ChatHistory
   | ChatRoster
+  | DecideOkMsg
+  | DecideRefusedMsg
+  | DecisionsChangedMsg
 
 export interface FileEntry {
   name: string
@@ -860,3 +869,169 @@ export interface ChatQuote {
 export const MAX_QUOTE_LINES = 12
 export const MAX_QUOTE_LINE = 200
 export const MAX_QUOTE_PATH = 512
+
+/*
+ * Decision links (docs/protocol.md, Decision links; internal/proto/decisions.go): over the connection a decision link opens (a
+ * session's viewer, or a run's desk, `/ws/runs/{run}/desk`), the holder lists the decisions in the link's scope, reads one, unfolds
+ * its evidence, reads the four steps of what it did and acts on one. Reads are controls; an action is a `Decide` frame. Every read and
+ * every decide is answered by exactly one reply naming its `reqId`: a `Decision` frame, `decide_ok` or `decide_refused`.
+ */
+
+/** A `Decision` frame's payload and a `Decide` frame's, in bytes (proto.MaxDecision, MaxDecide). */
+export const MAX_DECISION = 128 * 1024
+export const MAX_DECIDE = 32 * 1024
+/** The lane's bounds, in bytes (proto.MaxDecisionReqID, …): ids, refs, cursors, receipts, an action's name and revision, a rationale encoded. */
+export const MAX_DECISION_REQ_ID = 32
+export const MAX_DECISION_REF = 512
+export const MAX_DECISION_CURSOR = 600
+export const MAX_DECISION_RECEIPT = 512
+export const MAX_DECISION_RECORD_REV = 20
+export const MAX_DECISION_RECORD_AFTER = 64
+export const MAX_DECIDE_ACTION = 32
+export const MAX_DECIDE_REVISION = 64
+export const MAX_RATIONALE = 2048
+export const MAX_DECIDE_CHOICE = 5
+/** How many summaries a page holds, and how many decides and reads one connection may have under way. */
+export const DECISION_PAGE = 25
+export const MAX_DECIDE_IN_FLIGHT = 4
+export const MAX_DECISION_READS_IN_FLIGHT = 4
+
+/** The codes a `decide_refused` carries; an operation may give one of its own besides. */
+export const DecideCode = {
+  StaleRevision: 'stale_revision',
+  NotInScope: 'not_in_scope',
+  NotDecisionLink: 'not_decision_link',
+  NotFound: 'not_found',
+  QuestionAnswered: 'question_answered',
+  TooManyRequests: 'too_many_requests',
+  Unsupported: 'unsupported',
+  Invalid: 'invalid',
+  RecordMoved: 'record_moved',
+  Revoked: 'revoked',
+  Expired: 'expired',
+  /** The opId was taken before for another request (another item, action or argument): nothing was done. */
+  OpConflict: 'op_conflict',
+} as const
+
+export interface DecisionsListMsg { t: 'decisions_list'; reqId: string; after?: string }
+export interface DecisionReadMsg { t: 'decision_read'; reqId: string; ref: string }
+/** The four steps of an action taken through this link: `attempt` is its identity (its decide's `opId`), apart from `reqId`. */
+export interface DecisionTrackMsg { t: 'decision_track'; reqId: string; ref: string; receipt: string; attempt: string }
+/** One part of a DR1 record; answered `unsupported` until DR1's records are items. */
+export interface DecisionRecordMsg { t: 'decision_record'; reqId: string; ref: string; part: 'head' | 'responses' | 'history'; rev?: string; after?: string }
+/** A bounded read of one evidence entry of the item `ref`, named by the entry's own ref. */
+export interface DecisionEvidenceMsg { t: 'decision_evidence'; reqId: string; ref: string; evidence: string }
+export type DecisionRequest = DecisionsListMsg | DecisionReadMsg | DecisionTrackMsg | DecisionRecordMsg | DecisionEvidenceMsg
+
+/** The scope's items changed: list again, and track again what was acted on. */
+export interface DecisionsChangedMsg { t: 'decisions_changed'; seq: number }
+/** The owner took a decide: its steps are read by `ref` and `receipt`; `repeat` when its `opId` was taken before. */
+export interface DecideOkMsg { t: 'decide_ok'; reqId: string; ref: string; receipt: string; repeat?: boolean }
+/** A refused read or decide: `rev` a record's new revision with `record_moved`; `ref` and `receipt` a refusal kept as a receipt. */
+export interface DecideRefusedMsg { t: 'decide_refused'; reqId: string; code: string; message: string; rev?: string; ref?: string; receipt?: string }
+
+/** One action on an item (a `Decide` frame), `revision` the action's `expect`; the actor is the link, never a field. */
+export interface DecideMsg {
+  reqId: string
+  ref: string
+  action: string
+  revision: string
+  ticketRev?: number
+  input?: string
+  choice?: number
+  text?: string
+  rationale?: string
+  opId: string
+}
+
+/** A `Decision` frame's payload: the reply to the read `reqId` names, one of its fields set. */
+export interface DecisionReply {
+  reqId: string
+  list?: unknown
+  item?: unknown
+  track?: unknown
+  evidence?: unknown
+  record?: unknown
+}
+
+const OP_ID = /^[A-Za-z0-9._~-]{1,32}$/
+
+/** UTF-8 bytes of s. */
+function byteLength(s: string): number {
+  return encoder.encode(s).length
+}
+
+/** Printable ASCII, no space (proto's `printable`). */
+function printableASCII(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    if (c <= 0x20 || c >= 0x7f) return false
+  }
+  return true
+}
+
+/** How many bytes s takes as Go's encoder writes it in JSON, quotes left out: `<`, `>`, `&`, a control character (but `\\b`, `\\f`, `\\n`, `\\r`, `\\t`), U+2028 and U+2029 in six. */
+export function goJSONLength(s: string): number {
+  let n = 0
+  for (const ch of s) {
+    const c = ch.codePointAt(0)!
+    if (ch === '"' || ch === '\\' || ch === '\n' || ch === '\r' || ch === '\t' || ch === '\b' || ch === '\f') n += 2
+    else if (c < 0x20 || ch === '<' || ch === '>' || ch === '&' || c === 0x2028 || c === 0x2029) n += 6
+    else n += byteLength(ch)
+  }
+  return n
+}
+
+function validReqId(id: string): boolean {
+  return id.length > 0 && byteLength(id) <= MAX_DECISION_REQ_ID && printableASCII(id)
+}
+
+function validRef(ref: string): boolean {
+  return ref.length > 0 && byteLength(ref) <= MAX_DECISION_REF
+}
+
+/** Whether a lane request is within its bounds, as the owner checks it (proto's Valid). */
+export function decisionRequestValid(m: DecisionRequest): boolean {
+  if (!validReqId(m.reqId)) return false
+  switch (m.t) {
+    case 'decisions_list':
+      return byteLength(m.after ?? '') <= MAX_DECISION_CURSOR
+    case 'decision_read':
+      return validRef(m.ref)
+    case 'decision_track':
+      return validRef(m.ref) && m.receipt.length > 0 && byteLength(m.receipt) <= MAX_DECISION_RECEIPT && OP_ID.test(m.attempt)
+    case 'decision_record': {
+      const rev = m.rev ?? ''
+      if (!validRef(m.ref) || byteLength(m.after ?? '') > MAX_DECISION_RECORD_AFTER || !printableASCII(m.after ?? '')) return false
+      if (!['head', 'responses', 'history'].includes(m.part) || (m.part !== 'head' && rev === '')) return false
+      return rev.length <= MAX_DECISION_RECORD_REV && /^[0-9]*$/.test(rev)
+    }
+    case 'decision_evidence':
+      return validRef(m.ref) && validRef(m.evidence)
+  }
+  return false
+}
+
+/** Whether a decide is within its bounds, as the owner checks it (proto.Decide.Valid): which fields an action takes is the owner's. */
+export function decideValid(m: DecideMsg): boolean {
+  if (!validReqId(m.reqId) || !OP_ID.test(m.opId) || !validRef(m.ref)) return false
+  if (m.action.length === 0 || byteLength(m.action) > MAX_DECIDE_ACTION || !printableASCII(m.action)) return false
+  if (byteLength(m.revision) > MAX_DECIDE_REVISION || (m.ticketRev ?? 0) < 0) return false
+  if (byteLength(m.input ?? '') > MAX_ANSWER_INPUT || byteLength(m.text ?? '') > MAX_SUBMIT) return false
+  if (m.choice !== undefined && (!Number.isInteger(m.choice) || m.choice < 0 || m.choice > MAX_DECIDE_CHOICE)) return false
+  return goJSONLength(m.rationale ?? '') <= MAX_RATIONALE
+}
+
+/** A `Decide` frame for m; null for one past its bounds or past MAX_DECIDE encoded. */
+export function encodeDecide(m: DecideMsg): Uint8Array<ArrayBuffer> | null {
+  if (!decideValid(m)) return null
+  const frame = encodeJSONFrame(FrameType.Decide, m)
+  return frame.length - 1 > MAX_DECIDE ? null : frame
+}
+
+/** A `Decision` frame's reply; null for one that does not parse, names no request or passes MAX_DECISION. */
+export function decodeDecision(payload: Uint8Array): DecisionReply | null {
+  if (payload.length > MAX_DECISION) return null
+  const d = parseJSON<DecisionReply>(payload)
+  return d && typeof d.reqId === 'string' && d.reqId !== '' ? d : null
+}
