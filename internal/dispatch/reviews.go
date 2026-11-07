@@ -1626,6 +1626,14 @@ func readReview(ctx context.Context, q queryer, id string) (Review, error) {
 // counted and its latest mark. ErrNotFound when there is none; a version
 // 2 database, read as it was found, has none.
 func (s *Store) Review(ctx context.Context, id string) (Review, error) {
+	s.mu.Lock()
+	fails := s.reviewReadFails
+	s.mu.Unlock()
+	if fails != nil {
+		if err := fails(id); err != nil {
+			return Review{}, err
+		}
+	}
 	var out Review
 	err := s.read(ctx, func(q queryer) error {
 		if schemaOf(q) < 3 {
@@ -1730,6 +1738,16 @@ func (s *Store) PendingReviews(ctx context.Context) ([]ReviewSummary, error) {
 		return err
 	})
 	return out, err
+}
+
+// SetReviewReadFailsForTest sets the seam Review runs before its read (nil
+// for none), failing the read when it answers an error: a test of the
+// store's callers fails the read that follows a review's commit
+// (SubmitReview, ApplyingReview), the commit kept.
+func (s *Store) SetReviewReadFailsForTest(fn func(id string) error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reviewReadFails = fn
 }
 
 // pageEnvelope is the room a page's reply takes beside its entries: its
