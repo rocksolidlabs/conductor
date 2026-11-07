@@ -45,8 +45,15 @@ var (
 	claudePermission = rule80 + "\r\n Bash command\r\n\r\n   ls\r\n\r\n Do you want to proceed?\r\n ❯ 1. Yes\r\n   2. No\r\n\r\n Esc to cancel"
 	// A dialog drawn under a prompt box: the box is not the screen's end.
 	claudeUnderBox = claudeBanner + rule80 + "\r\n❯ \r\n" + rule80 + "\r\n Do you want to proceed?\r\n ❯ 1. Yes\r\n   2. No"
-	unknownSignIn  = "  Acme Agent 9.0\r\n\r\n  You are not signed in.\r\n  Open https://example.invalid/device to continue\r\n\r\n  [ Sign in ]   [ Quit ]"
-	unknownDialog  = "  Select a sign-in method\r\n\r\n ❯ 1. Acme account with subscription\r\n   2. Acme Console account\r\n\r\n  Enter to confirm"
+	// A dialog drawn inside a prompt box (Codex round 2 on #720): a ❯ row
+	// between two rules, and under it a highlighted numbered choice a digit
+	// of the line would pick.
+	claudeBoxedChoice = "────────\r\n❯ \r\nSelect an account\r\n ❯ 1. Use Acme\r\n  2. Quit\r\n────────\r\nEnter to confirm"
+	// A dialog's numbered choices above a prompt box drawn whole: the box
+	// is the prompt's shape, the screen is still not the prompt.
+	claudeChoiceAboveBox = claudeBanner + " Do you want to proceed?\r\n ❯ 1. Yes\r\n   2. No\r\n" + rule80 + "\r\n❯ \r\n" + rule80 + "\r\n  ? for shortcuts"
+	unknownSignIn        = "  Acme Agent 9.0\r\n\r\n  You are not signed in.\r\n  Open https://example.invalid/device to continue\r\n\r\n  [ Sign in ]   [ Quit ]"
+	unknownDialog        = "  Select a sign-in method\r\n\r\n ❯ 1. Acme account with subscription\r\n   2. Acme Console account\r\n\r\n  Enter to confirm"
 	// Codex 0.163.0's composer at rest: a › row, its status line and
 	// footer under it (seen in a PTY, #714).
 	codexComposer = func(text string) string {
@@ -99,6 +106,8 @@ func TestTheAgentsPromptIsKnownByItsShape(t *testing.T) {
 			claudeLogin:                       false,
 			claudePermission:                  false,
 			claudeUnderBox:                    false,
+			claudeBoxedChoice:                 false,
+			claudeChoiceAboveBox:              false,
 			unknownSignIn:                     false,
 			unknownDialog:                     false,
 			codexComposer("Ask Codex to do anything"): false,
@@ -116,12 +125,14 @@ func TestTheAgentsPromptIsKnownByItsShape(t *testing.T) {
 		{"", map[string]bool{
 			claudePromptRow(`Try "create a util logging.py that..."`): true,
 			codexComposer("Ask Codex to do anything"):                 true,
-			unknownSignIn:  true,
-			unknownDialog:  false,
-			claudeLogin:    false,
-			codexUpdate:    false,
-			codexApproval:  false,
-			claudeUnderBox: false,
+			unknownSignIn:        true,
+			unknownDialog:        false,
+			claudeLogin:          false,
+			codexUpdate:          false,
+			codexApproval:        false,
+			claudeUnderBox:       false,
+			claudeBoxedChoice:    false,
+			claudeChoiceAboveBox: false,
 		}},
 	} {
 		var shape *regexp.Regexp
@@ -173,6 +184,33 @@ func TestALineForThePromptIsTypedIntoThePromptAlone(t *testing.T) {
 	}
 	if got := written(t, p) + written(t, p); got != "Brakeman request bk-1 (briefing)\r" {
 		t.Fatalf("written %q", got)
+	}
+}
+
+// TestAChoiceInOrAboveThePromptsBoxGetsNoByte (Codex round 2 on #720):
+// Claude Code's shape reads no row inside its box that is a choice, so a
+// dialog drawn inside a box is not the prompt's shape; and a screen whose
+// box is the shape but which shows a dialog's numbered choice above it is
+// not the prompt either, the numbered-choice rule in force with a shape as
+// without one. At each the line is refused: not a byte of its text (a
+// digit of it would pick a choice), nor its Enter.
+func TestAChoiceInOrAboveThePromptsBoxGetsNoByte(t *testing.T) {
+	shape := builtInShape(t, "claude")
+	unescaped := func(screen string) string { return strings.ReplaceAll(screen, "\r\n", "\n") }
+	if shape.MatchString(unescaped(claudeBoxedChoice)) {
+		t.Fatal("the shape matches a choice inside its box")
+	}
+	if !shape.MatchString(unescaped(claudeChoiceAboveBox)) {
+		t.Fatal("the shape does not match the box under the choices: the test proves nothing of the rule")
+	}
+	for _, screen := range []string{claudeBoxedChoice, claudeChoiceAboveBox} {
+		s, p := newLocalWith(t, quiet(Options{PromptShape: shape}))
+		draw(t, s, p, screen)
+		res, err := s.Submit(t.Context(), Submission{Text: "1 Brakeman request bk-1 (briefing)", OnlyAtPrompt: true})
+		if !errors.Is(err, ErrNotAtPrompt) || res.Typed || res.Entered {
+			t.Fatalf("the line at %q: %+v %v", s.ScreenLines(24), res, err)
+		}
+		nothingIn(t, s, p)
 	}
 }
 

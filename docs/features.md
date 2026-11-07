@@ -3833,10 +3833,11 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
     feeds before the viewers and before what says the agent waits) is a
     whole frame, nothing cut by a smaller window, that matches the
     agent's prompt shape (the catalog's `promptShape`): Claude Code's a ❯
-    row between two rules at the screen's foot, Codex's a › row that is
-    no numbered choice and not "Waiting for startup", their words never
-    matched (seen with 2.1.319 and 0.163.0). An agent with no shape known
-    keeps a whole screen with no dialog's numbered choice. Never "typed
+    row between two rules at the screen's foot, no row in the box a
+    choice, Codex's a › row that is no numbered choice and not "Waiting
+    for startup", their words never matched (seen with 2.1.319 and
+    0.163.0); and, shape or none, no row of the screen is a dialog's
+    numbered choice, so a shape that matches never admits one. Never "typed
     anyway" after a minute as a person's run is. Any other screen (a
     version's new sign-in, an update offer the catalog does not have, a
     sign-in no entry knows) keeps the line waiting, no byte and no

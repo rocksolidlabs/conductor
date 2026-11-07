@@ -701,10 +701,10 @@ func TestTheLineIsTypedAtTheAgentsPrompt(t *testing.T) {
 	}
 }
 
-// TestATurnWhoseAgentNeverSettlesGetsNoLine: an agent at its prompt whose
-// screen never goes quiet (bkSpinScript: a spinner under the prompt) is
-// never ready; past the readiness wait's cap
-// (a second here, SetReadyCapForTest) a person's run would have its
+// TestATurnWhoseAgentNeverSettlesGetsNoLine: an agent whose readiness
+// wait gives up at its cap, every time it is asked (SetNotReadyForTest:
+// no clock and no output's pace decide it), at a screen that is its
+// prompt's very shape (bkPromptScript): a person's run would have its
 // prompt typed anyway, a Brakeman turn's line never is: the engine notes
 // the line waits at a screen not recognised, and at the turn's start
 // bound, on the desk's clock, the turn ends with words saying so. Nothing
@@ -712,9 +712,9 @@ func TestTheLineIsTypedAtTheAgentsPrompt(t *testing.T) {
 func TestATurnWhoseAgentNeverSettlesGetsNoLine(t *testing.T) {
 	t.Parallel()
 	b := brakemanEnv(t, nil)
-	b.srv.runs.SetReadyCapForTest(time.Second)
+	b.srv.runs.SetNotReadyForTest()
 	c := b.fakeClock()
-	b.enable(t, "bkspin", nil)
+	b.enable(t, "bkprompt", nil)
 	id := b.briefing(t)
 	b.launched(t, id)
 	b.heldUnrecognised(t, id)

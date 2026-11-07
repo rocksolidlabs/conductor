@@ -55,9 +55,10 @@ type Agent struct {
 	// its whole screen (rows joined by line breaks, a row autowrap went on
 	// from read with the next as one): a Brakeman turn's line, and its
 	// Enter, are typed only while the screen matches, never into anything
-	// else (#714). As TrustPrompt; empty, the line is kept from a screen
-	// that shows a dialog's numbered choice alone, and empty in a saved
-	// override takes the replaced agent's.
+	// else (#714); a screen that shows a dialog's numbered choice is never
+	// the prompt, shape or none. As TrustPrompt; empty, that rule alone
+	// keeps the line out, and empty in a saved override takes the replaced
+	// agent's.
 	PromptShape string `json:"promptShape,omitempty"`
 	// TrustAnswers are the answers to that question as the choices a page
 	// offers for it (the session page's reply bar, the sidebar's row, the

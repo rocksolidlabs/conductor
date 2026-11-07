@@ -54,8 +54,7 @@ type bkEnv struct {
 // full-screen prompt no catalog entry knows), bkdialog (an agent at a
 // dialog no catalog entry knows), bkprompt and bkcodexprompt (Claude Code
 // and Codex at their prompts), bktheme and bklogin (Claude Code's
-// first-run theme and login screens), and bkspin (an agent whose screen
-// never goes quiet). The scripted Claude Code and Codex carry their
+// first-run theme and login screens). The scripted Claude Code and Codex carry their
 // built-ins' prompt shapes (builtInShape); bk has none.
 func brakemanEnv(t *testing.T, mutate func(*config.Config)) *bkEnv {
 	t.Helper()
@@ -79,7 +78,6 @@ func bkAgents() []catalog.Agent {
 		{ID: "bktheme", Name: "bktheme", Command: []string{"/bin/sh", "-c", bkThemeScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("claude"), PromptShape: builtInShape("claude")},
 		{ID: "bklogin", Name: "bklogin", Command: []string{"/bin/sh", "-c", bkLoginScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("claude"), PromptShape: builtInShape("claude")},
 		{ID: "bkcodexprompt", Name: "bkcodexprompt", Command: []string{"/bin/sh", "-c", bkCodexPromptScript}, Adapter: "codex", AllowArgs: true, Questions: builtInQuestions("codex"), PromptShape: builtInShape("codex")},
-		{ID: "bkspin", Name: "bkspin", Command: []string{"/bin/sh", "-c", bkSpinScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("claude"), PromptShape: builtInShape("claude")},
 	}
 }
 
@@ -127,14 +125,6 @@ const bkPromptScript = bkRecord + `r=$(printf '─%.0s' $(seq 60)); printf " ▐
 // PTY (#714): a › row with its placeholder, its status line and its
 // footer. Its terminal is kept as bkSignInScript's is.
 const bkCodexPromptScript = bkRecord + `printf "  >_ OpenAI Codex (v0.163.0)\r\n\r\n› Ask Codex to do anything\r\n\r\n  GPT-6 xhigh · Context 0%% used\r\n  ? for shortcuts\r\n"; ` + bkKeep
-
-// bkSpinScript is an agent at its prompt as bkPromptScript draws it, a
-// spinner under it redrawn every 200 ms and no report: its screen is its
-// prompt's shape, but it never goes quiet, so it is never ready, and its
-// line is never typed, not even once the readiness wait's cap has passed
-// (a person's run is typed into then). Its terminal is kept as
-// bkSignInScript's is.
-const bkSpinScript = bkRecord + `r=$(printf '─%.0s' $(seq 60)); printf " ▐▛███▛█   Claude Code v2.1.319\r\n\r\n%s\r\n❯\302\240Try \"create a util logging.py that...\"\r\n%s\r\n  ? for shortcuts\r\n" "$r" "$r"; (while :; do printf "\r  ✻ Starting %s" "$(date +%N)"; sleep 0.2; done) & ` + bkKeep
 
 // bkThemeScript and bkLoginScript are Claude Code 2.1.319's first two
 // screens on an account folder never used, as #659's third live check

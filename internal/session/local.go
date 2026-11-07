@@ -104,7 +104,8 @@ type Options struct {
 	TrustAnswers []Option
 	// PromptShape, when set, matches the agent's own prompt at rest on its
 	// whole screen (the catalog's promptShape): a submission OnlyAtPrompt
-	// is typed, and entered, only while the screen matches (atPrompt).
+	// is typed, and entered, only while the screen matches and shows no
+	// dialog's numbered choice (atPrompt).
 	PromptShape *regexp.Regexp
 	// Questions are the agent's other startup questions (the catalog's
 	// questions; round 13, G2c), held exactly as the trust question is:
@@ -5542,17 +5543,19 @@ func (s *Local) ScreenLines(n int) []string {
 // the viewers and before the scan for what says the agent waits), it shows
 // everything the program drew as it drew it (no synchronized update under
 // way, nothing cut by a window made smaller: a dialog cut away is not
-// known gone), and it matches the agent's prompt (Options.PromptShape); an
-// agent with no shape known, it shows no dialog's numbered choice, read by
-// its shape as startupChoiceShown reads one. Anything else, an unknown
-// dialog, a sign-in screen, half a frame, is not the prompt (#714).
+// known gone), it matches the agent's prompt when the agent has a shape
+// known (Options.PromptShape), and, shape or none, no row of it is a
+// dialog's numbered choice, read by its shape as startupChoiceShown reads
+// one: a shape that matches never admits a screen with a choice a digit of
+// the line would pick. Anything else, an unknown dialog, a sign-in screen,
+// half a frame, is not the prompt (#714).
 func (s *Local) atPrompt() bool {
 	text, _, uncut, _, _ := s.shot.Frame()
 	if !uncut {
 		return false
 	}
-	if s.opts.PromptShape != nil {
-		return s.opts.PromptShape.MatchString(text)
+	if s.opts.PromptShape != nil && !s.opts.PromptShape.MatchString(text) {
+		return false
 	}
 	return !startupChoiceShown(text)
 }

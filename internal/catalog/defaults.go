@@ -411,8 +411,11 @@ func defaults() []Agent {
 
 // The built-in agents' prompt shapes (Agent.PromptShape). A text or a row
 // that is no choice begins with neither a highlight's marker nor a number
-// and a dot ("2. Skip"); an empty row is none either.
+// and a dot ("2. Skip"); an empty row is none either. Every row a shape
+// reads, the ones inside Claude Code's box as the ones under it, is such a
+// row, and a screen with a numbered choice anywhere on it is still not the
+// prompt (the session's atPrompt asks both).
 const (
-	claudePromptShape = `(?m)^─{8,}\n❯[ \x{a0}]*(?:(?:[^\d\s\x{a0}]|\d+[^\d.\n])[^\n]*)?(?:\n[^─\n][^\n]*){0,8}\n─{8,}(?:\n *(?:(?:[^\d\s❯›>]|\d+[^\d.\n])[^\n]*)?){0,8}\s*\z`
+	claudePromptShape = `(?m)^─{8,}\n❯[ \x{a0}]*(?:(?:[^\d\s\x{a0}]|\d+[^\d.\n])[^\n]*)?(?:\n *(?:(?:[^\d\s─❯›>]|\d+[^\d.\n])[^\n]*)?){0,8}\n─{8,}(?:\n *(?:(?:[^\d\s❯›>]|\d+[^\d.\n])[^\n]*)?){0,8}\s*\z`
 	codexPromptShape  = `(?m)^ {0,3}›[ \x{a0}]+(?:[^\d\sW\x{a0}]|W[^a\n]|\d+[^\d.\n])[^\n]*(?:\n *(?:(?:[^\d\s❯›>]|\d+[^\d.\n])[^\n]*)?){1,6}\s*\z`
 )

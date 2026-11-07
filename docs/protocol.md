@@ -1090,11 +1090,11 @@ at rest matched by its shape against the server session's whole screen (its
 rows joined by line breaks, a row autowrap went on from read with the next as
 one): a Brakeman turn's line, and its Enter, are typed only while the screen,
 read as the writer takes each, is a whole frame (no synchronized update under
-way, nothing cut by a smaller window) that matches it, and nothing is typed
-into any other screen; the turn then ends at its start bound saying the
-screen was not recognised, with its words. The built-in Claude Code and Codex
-carry theirs; with none, the line is kept from a whole screen that shows a
-dialog's numbered choice. Hosted sessions are not handed it (no host types
+way, nothing cut by a smaller window) that matches it and shows no dialog's
+numbered choice on any row, and nothing is typed into any other screen; the
+turn then ends at its start bound saying the screen was not recognised, with
+its words. The built-in Claude Code and Codex carry theirs; with none, the
+numbered-choice rule alone keeps the line from a whole screen. Hosted sessions are not handed it (no host types
 such a line), so `registered.recipe` does not carry it.
 
 An agent's catalog entry can carry a `trustPrompt`, the words of its

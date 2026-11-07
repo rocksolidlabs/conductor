@@ -2470,22 +2470,28 @@ func awaitReady(ctx context.Context, l *session.Local, held func(question string
 	return productReady.await(ctx, l, held)
 }
 
-// SetReadyCapForTest makes the engine's readiness wait give up after cap
-// rather than readyCap, for a test of what follows (a Brakeman turn's line
-// never typed anyway). It is called before the engine launches any run:
-// the wait is read without a lock.
-func (e *Engine) SetReadyCapForTest(cap time.Duration) {
-	e.await = readyWait{readyPoll, readyQuiet, readyMin, cap}.await
+// SetNotReadyForTest makes the engine's readiness wait answer at once, and
+// every time it is asked, that a member is not ready by the cap
+// (errNotReady), whatever its screen shows: a test of what follows (a
+// Brakeman turn's line never typed anyway) with no clock and no output's
+// pace deciding readiness. It is called before the engine launches any
+// run: the wait is read without a lock.
+func (e *Engine) SetNotReadyForTest() {
+	e.await = func(ctx context.Context, _ *session.Local, _ func(string)) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return errNotReady
+	}
 }
 
 // readyWait is how a readiness wait looks: every poll, and ready once the
-// output has been quiet for quiet and min has passed since the wait began;
-// not ready by cap (readyCap when zero), errNotReady.
+// output has been quiet for quiet and min has passed since the wait began.
 // The product's is productReady; a test that is not about readiness gives
 // its sessions a short one, as the product's bounds are not the test's.
-type readyWait struct{ poll, quiet, min, cap time.Duration }
+type readyWait struct{ poll, quiet, min time.Duration }
 
-var productReady = readyWait{readyPoll, readyQuiet, readyMin, readyCap}
+var productReady = readyWait{readyPoll, readyQuiet, readyMin}
 
 // await is awaitReady with w's bounds.
 func (w readyWait) await(ctx context.Context, l *session.Local, held func(question string)) error {
@@ -2559,11 +2565,7 @@ func (w readyWait) at(rd readiness, start, now time.Time) (ready, capped, hold b
 	if rd.state == session.AttentionNeedsInput || rd.state == session.AttentionDone {
 		return true, false, false
 	}
-	limit := w.cap
-	if limit == 0 {
-		limit = readyCap
-	}
-	capped = now.Sub(start) >= limit
+	capped = now.Sub(start) >= readyCap
 	if rd.pasteSeen && !rd.pasteOn {
 		return false, capped, false
 	}
