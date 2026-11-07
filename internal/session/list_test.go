@@ -432,15 +432,22 @@ func TestReadListTakesOnlyTheDialogsOwnList(t *testing.T) {
 
 // claudeQuestions are Claude Code's built-in questions asked during the
 // work, as a session gets them from the catalog: its dialogs, and
-// AskUserQuestion's last page.
+// AskUserQuestion's last page (its sign-in screen, a startup question,
+// left out).
 func claudeQuestions(t *testing.T) []StartupQuestion {
 	t.Helper()
 	claude, ok := catalog.Default().Get("claude")
-	if !ok || len(claude.Questions) != 2 {
+	var anytime []catalog.Question
+	for _, q := range claude.Questions {
+		if q.Anytime {
+			anytime = append(anytime, q)
+		}
+	}
+	if !ok || len(anytime) != 2 {
 		t.Fatalf("Claude Code's questions: %+v", claude.Questions)
 	}
 	var out []StartupQuestion
-	for _, q := range claude.Questions {
+	for _, q := range anytime {
 		if !q.Anytime || !q.AnswersFromScreen || len(q.Answers) != 0 {
 			t.Fatalf("Claude Code's question %+v", q)
 		}

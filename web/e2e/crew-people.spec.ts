@@ -1,0 +1,529 @@
+import { existsSync, readdirSync } from 'node:fs'
+import { join } from 'node:path'
+import type { Page } from '@playwright/test'
+import { expect, task, test, type Api, type Run, type Session } from './fixtures'
+import { freeProjectKey, makeProject, makeTicket, opOf } from './dispatch-helpers'
+
+// People in a crew (docs/plans/decisions.md, HM1, PR-10): the crew editor's People section and Owner column, the run page's people and
+// owners, the approved revision's people. A crew given an architecture owner (nate, who owns build) and an acceptance owner (ana, who owns
+// docs by the fallback) is saved through the editor and read back after a reload; the second holder of a responsibility is refused in the
+// editor (the option held by another row is disabled, a person named as a member blocks Save) and by the server. Launched from a ticket's
+// approved plan revision with the stub workers: the run header's people, each task row's owner and the fallback's words, the sessions of
+// the run counted by its id equal to its attempts (none for a person, and no worktree under a person's name), and the ticket's People
+// listing the revision's people; the person's page (PR-11) reached from the header's chip, the task detail's owner, the ticket's People
+// and the palette's @ row, listing the tasks and tickets they own, its crews and tasks kept when a ticket list cannot be read, the page
+// of a name no one has; a person's tickets past the first twenty reached with Show more; names that are path words or hold what a path
+// reads as more than a name (`.`, `..`, `~`, a slash climbing to the brand's image, a percent sign, a space, letters past ASCII, the
+// longest name) with pages of their own, loaded, reloaded and reached by a link. A person removed with their name cleared leaves the
+// task's Owner enabled, so that "none" answers the problem it leaves; a name past the first 200 people Conductor knows is offered when
+// it is searched for; a live run's Add an agent marks a person's name and holds the button. Every crew, ticket and run is found by its
+// id or key, never by a list's length.
+test.describe.configure({ mode: 'serial' })
+
+let crewId = ''
+const crews: string[] = []
+const runs: string[] = []
+
+const crewBody = {
+  name: `e2e people ${Date.now().toString(36)}`,
+  goal: 'prove the people',
+  cwd: '',
+  where: 'server',
+  isolation: 'worktree',
+  openAfterLaunch: false,
+  yolo: null,
+  members: [
+    { name: 'builder', agentId: 'worker', prompt: '', start: { when: 'task' } },
+    { name: 'writer', agentId: 'worker-cli', prompt: '', start: { when: 'task' } },
+  ],
+  tasks: [
+    { id: 'build', member: 'builder', kind: 'work', instructions: 'Build it.' },
+    { id: 'docs', member: 'writer', kind: 'work', instructions: 'Document it.', needs: ['build'] },
+  ],
+}
+
+interface PeopleCrew {
+  people?: Array<{ name: string; responsibilities?: string[]; note?: string }>
+  tasks?: Array<{ id: string; owner?: string }>
+}
+
+test.beforeAll(async ({ api }) => {
+  crewId = (await api.ok<{ crew: { id: string } }>('POST', '/api/crews', crewBody)).crew.id
+})
+
+test.afterAll(async ({ api }) => {
+  for (const id of runs) await api.stopRun(id)
+  for (const id of [crewId, ...crews]) if (id) await api.call('DELETE', `/api/crews/${encodeURIComponent(id)}`)
+})
+
+/**
+ * Raises the test's timeout by a long wait's cap as the wait starts, so that the waits of one test, each within its own cap, never add up
+ * to more than the test is given (AGENTS.md, "Tests that do not flake").
+ */
+function budget(ms: number) {
+  const info = test.info()
+  info.setTimeout(info.timeout + ms)
+}
+
+/**
+ * A person's page, by the app's rule (utils/people.ts, personSegment): a plain name (ASCII letters and digits, `-`, `_`, `.`, a space,
+ * characters past ASCII; not starting with `.` or a space, not ending with a space) escaped as itself, any other `~` and its base64url.
+ */
+function personPath(name: string): string {
+  const plain = !!name && !/^[. ]/.test(name) && !name.endsWith(' ') && [...name].every((c) => c.codePointAt(0)! >= 0x80 || /^[A-Za-z0-9._ -]$/.test(c))
+  return `/people/${plain ? encodeURIComponent(name) : `~${Buffer.from(name, 'utf8').toString('base64url')}`}`
+}
+
+/** Picks a name in a person row's name picker: the name Conductor knows, or the typed one; the menu is gone before the next field. */
+async function pickName(page: Page, row: number, name: string) {
+  await page.locator('[data-crew-person]').nth(row).locator('[data-person-name-picker]').click()
+  await page.getByPlaceholder('A name…').fill(name)
+  await page.getByRole('option', { name: new RegExp(`^(Name them )?${name}$`) }).click()
+  await expect(page.getByRole('listbox')).toHaveCount(0)
+  await expect(page.locator('[data-crew-person]').nth(row)).toHaveAttribute('data-person-name', name)
+}
+
+/** Gives a person row a responsibility by its words; the menu, which stays open for more, is closed before going on. */
+async function hold(page: Page, row: number, words: string) {
+  await page.locator('[data-crew-person]').nth(row).locator('[data-person-responsibilities]').click()
+  await page.getByRole('option', { name: words, exact: true }).click()
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('listbox')).toHaveCount(0)
+}
+
+test('a crew given an architecture owner and an acceptance owner is saved and read back; a second holder is refused in the editor and by the server', async ({ page, api }) => {
+  await page.goto(`/crews/${encodeURIComponent(crewId)}`)
+  // The first check after the navigation waits out the page's first paint (#281).
+  budget(30_000)
+  await expect(page.locator('[data-crew-people-section]')).toBeVisible({ timeout: 30_000 })
+  await expect(page.locator('[data-people-never-started]')).toHaveText('A person is never started: no session, worktree or agent. They own decisions and outcomes.')
+  await expect(page.locator('[data-crew-person]')).toHaveCount(0)
+
+  // nate, the architecture owner.
+  await page.locator('[data-add-person]').click()
+  await pickName(page, 0, 'nate')
+  await hold(page, 0, 'architecture owner')
+
+  // A second person named as a member: the editor refuses it under the row and at Save.
+  const save = page.locator('[data-unsaved-bar]').getByRole('button', { name: 'Save' })
+  await page.locator('[data-add-person]').click()
+  await pickName(page, 1, 'builder')
+  await expect(page.locator('[data-crew-person]').nth(1).locator('[data-person-error]')).toContainText("builder is a member's name")
+  await expect(save).toBeDisabled()
+  await expect(save).toHaveAttribute('data-save-problem', /builder is a member's name/)
+
+  // ana instead, the acceptance owner: the architecture owner nate holds is offered to her disabled, with its holder.
+  await pickName(page, 1, 'ana')
+  await expect(page.locator('[data-crew-person]').nth(1).locator('[data-person-error]')).toHaveCount(0)
+  await page.locator('[data-crew-person]').nth(1).locator('[data-person-responsibilities]').click()
+  await expect(page.getByRole('option', { name: 'architecture owner · held by nate' })).toHaveAttribute('data-disabled', '')
+  await page.getByRole('option', { name: 'acceptance owner', exact: true }).click()
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('listbox')).toHaveCount(0)
+
+  // build is nate's; docs names no owner, so the "none" says whose it is then.
+  const build = page.locator('[data-crew-task][data-task-id="build"]')
+  const docs = page.locator('[data-crew-task][data-task-id="docs"]')
+  await expect(docs.locator('[data-task-owner]')).toContainText('none: ana, the acceptance owner')
+  await build.locator('[data-task-owner]').click()
+  await page.getByRole('option', { name: 'nate', exact: true }).click()
+  await expect(page.getByRole('listbox')).toHaveCount(0)
+  await expect(build.locator('[data-task-owner]')).toContainText('nate')
+
+  await expect(save).toBeEnabled()
+  await save.click()
+  await expect(page.locator('[data-unsaved-bar]')).toHaveCount(0)
+  const saved = (await api.crew(crewId)) as unknown as PeopleCrew
+  expect(saved.people).toEqual([
+    { name: 'nate', responsibilities: ['architecture'] },
+    { name: 'ana', responsibilities: ['acceptance'] },
+  ])
+  expect(saved.tasks?.map((t) => [t.id, t.owner])).toEqual([
+    ['build', 'nate'],
+    ['docs', undefined],
+  ])
+
+  // Read back after a reload.
+  await page.reload()
+  budget(30_000)
+  await expect(page.locator('[data-crew-person]')).toHaveCount(2, { timeout: 30_000 })
+  await expect(page.locator('[data-crew-person]').nth(0)).toHaveAttribute('data-person-name', 'nate')
+  await expect(page.locator('[data-crew-person]').nth(0).locator('[data-person-responsibilities]')).toContainText('architecture owner')
+  await expect(page.locator('[data-crew-person]').nth(1)).toHaveAttribute('data-person-name', 'ana')
+  await expect(page.locator('[data-crew-person]').nth(1).locator('[data-person-responsibilities]')).toContainText('acceptance owner')
+  await expect(build.locator('[data-task-owner]')).toContainText('nate')
+  await expect(docs.locator('[data-task-owner]')).toContainText('none: ana, the acceptance owner')
+  await expect(page.locator('[data-unsaved-bar]')).toHaveCount(0)
+
+  // The server refuses a second holder of the acceptance owner, whatever the editor offers, and keeps the crew as it was.
+  const { createdAt: _c, updatedAt: _u, id: _i, manifestRevision: _m, ...body } = (await api.ok<{ crew: Record<string, unknown> }>('GET', `/api/crews/${encodeURIComponent(crewId)}`)).crew
+  const twice = { ...body, people: [{ name: 'nate', responsibilities: ['architecture', 'acceptance'] }, { name: 'ana', responsibilities: ['acceptance'] }] }
+  const refused = await api.call<{ error: { code: string; message: string } }>('PUT', `/api/crews/${encodeURIComponent(crewId)}`, twice)
+  expect(refused.status).toBe(400)
+  expect(refused.body.error.code).toBe('invalid_crew')
+  expect(refused.body.error.message).toContain('acceptance is nate\'s already; one person of a crew is its acceptance owner')
+  expect(((await api.crew(crewId)) as unknown as PeopleCrew).people).toEqual(saved.people)
+})
+
+test("launched from the approved revision: the run's people and owners, a session per attempt and none for a person, the revision's people", async ({ page, api, state }) => {
+  const project = await freeProjectKey(api, 'PPL')
+  await makeProject(api, project)
+  const ticketKey = await makeTicket(api, project, '1', { title: 'Ship it with its people', owner: 'nate' })
+  const proposed = await api.ok<{ plan: { id: string; n: number } }>('POST', `/api/dispatch/tickets/${ticketKey}/plans`, { opId: opOf(project, 'r1'), crew: crewId })
+  await api.ok('POST', `/api/dispatch/plans/${proposed.plan.id}/approve`, { opId: opOf(project, 'ap1') })
+  const launched = await api.ok<{ launch: { runId: string; state: string } }>('POST', `/api/dispatch/tickets/${ticketKey}/launch`, { opId: opOf(project, 'l1'), plan: proposed.plan.id })
+  expect(launched.launch.state).toBe('started')
+  const runId = launched.launch.runId
+  runs.push(runId)
+
+  budget(120_000)
+  let run: Run = await api.run(runId)
+  await expect.poll(async () => (run = await api.run(runId)).outcome ?? '', { timeout: 120_000, intervals: [500], message: 'the run succeeds' }).toBe('succeeded')
+  expect(run.people).toEqual([
+    { name: 'nate', responsibilities: ['architecture'] },
+    { name: 'ana', responsibilities: ['acceptance'] },
+  ])
+  expect(run.tasks?.map((t) => [t.owner, t.ownerFrom])).toEqual([
+    ['nate', 'task'],
+    ['ana', 'acceptance'],
+  ])
+
+  // The run's sessions, found by its id, are its attempts: none was made for a person, and no worktree is named for one.
+  const attempts = task(run, 'build').attempts + task(run, 'docs').attempts
+  const listed = await api.ok<{ sessions?: Session[] } | Session[]>('GET', '/api/sessions')
+  const sessions = (Array.isArray(listed) ? listed : (listed.sessions ?? [])).filter((s) => s.crew?.runId === runId)
+  expect(sessions).toHaveLength(attempts)
+  expect(sessions.map((s) => s.crew?.member).sort()).toEqual(['builder', 'writer'])
+  const trees = join(state.repo, '.conductor', 'worktrees', runId)
+  const names = existsSync(trees) ? readdirSync(trees) : []
+  // An attempt's worktree is <task>.<n>, the checkout its checks ran in <task>.<n>.check.
+  expect(names.filter((n) => !/^(build|docs)\.\d+(\.check)?$/.test(n))).toEqual([])
+
+  // The run page: the people under the bar, each task row's owner, the fallback's words in the row and the detail.
+  await page.goto(`/runs/${encodeURIComponent(runId)}?view=tasks`)
+  budget(30_000)
+  await expect(page.locator('[data-run-people]')).toBeVisible({ timeout: 30_000 })
+  await expect(page.locator('[data-run-people] [data-run-person="nate"]')).toContainText('architecture owner')
+  await expect(page.locator('[data-run-people] [data-run-person="ana"]')).toContainText('acceptance owner')
+  await expect(page.locator('[data-task-row="build"] [data-task-owner]')).toHaveText('owner nate')
+  await expect(page.locator('[data-task-row="build"] [data-task-owner]')).toHaveAttribute('data-task-owner-from', 'task')
+  await expect(page.locator('[data-task-row="docs"] [data-task-owner]')).toHaveText('owner ana, the acceptance owner')
+  await page.locator('[data-task-row="docs"] [role="button"]').click()
+  await expect(page.locator('[data-task-detail-id="docs"] [data-task-detail-owner]')).toContainText('owner ana, the acceptance owner')
+
+  // A person's page (PR-11): the task detail's owner opens ana's, listing docs, hers as the acceptance owner; the header's chip opens
+  // nate's, listing the task he owns in this run and the ticket he owns.
+  await page.locator('[data-task-detail-id="docs"] [data-task-detail-owner-link]').click()
+  await expect(page).toHaveURL(/\/people\/ana$/)
+  budget(30_000)
+  const anaTask = page.locator(`[data-person-page-name="ana"] [data-person-task="${runId}/docs"]`)
+  await expect(anaTask).toBeVisible({ timeout: 30_000 })
+  await expect(anaTask).toHaveAttribute('data-person-task-from', 'acceptance')
+  await expect(anaTask).toContainText('as the acceptance owner')
+  await page.goto(`/runs/${encodeURIComponent(runId)}?view=tasks`)
+  budget(30_000)
+  await expect(page.locator('[data-run-people] [data-run-person="nate"]')).toBeVisible({ timeout: 30_000 })
+  await page.locator('[data-run-people] [data-run-person="nate"]').click()
+  await expect(page).toHaveURL(/\/people\/nate$/)
+  budget(30_000)
+  const nateTask = page.locator(`[data-person-page-name="nate"] [data-person-task="${runId}/build"]`)
+  await expect(nateTask).toBeVisible({ timeout: 30_000 })
+  await expect(nateTask).toHaveAttribute('data-person-task-from', 'task')
+  await expect(nateTask).toContainText('done by builder')
+  await expect(page.locator(`[data-person-task="${runId}/docs"]`)).toHaveCount(0)
+  await expect(page.locator(`[data-person-crew="${crewId}"] [data-person-crew-words]`)).toHaveText('architecture owner')
+  await expect(page.locator('[data-person-ticket-list="owner"]').locator(`[data-person-ticket="${ticketKey}"]`)).toBeVisible()
+
+  // Dispatch's list failing alone: the crews and the tasks stay, the counts too, and the list says it could not be read; read again once
+  // the list answers.
+  const isList = (url: URL) => url.pathname === '/api/dispatch/tickets'
+  await page.route(isList, (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unavailable', message: 'the list is down' } }) }))
+  await page.reload()
+  budget(30_000)
+  await expect(page.locator('[data-person-ticket-list="owner"] [data-person-ticket-error]')).toContainText('the list is down', { timeout: 30_000 })
+  await expect(nateTask).toBeVisible()
+  await expect(page.locator(`[data-person-crew="${crewId}"]`)).toBeVisible()
+  await expect(page.locator('[data-person-ticket-counts]')).toHaveText('They own 1 and are assigned 0.')
+  await page.unroute(isList)
+  await page.locator('[data-person-ticket-list="owner"] [data-person-ticket-more]').click()
+  await expect(page.locator('[data-person-ticket-list="owner"]').locator(`[data-person-ticket="${ticketKey}"]`)).toBeVisible()
+  await expect(page.locator('[data-person-ticket-list="owner"] [data-person-ticket-error]')).toHaveCount(0)
+
+  // A name no source knows has no page of work.
+  const nobody = `nobody ${Date.now().toString(36)}`
+  await page.goto(personPath(nobody))
+  budget(30_000)
+  await expect(page.locator(`[data-person-page-name="${nobody}"] [data-person-missing]`)).toBeVisible({ timeout: 30_000 })
+
+  // The palette's @ mode: a row per person Conductor knows, worded by what they hold, opening their page.
+  await page.goto(`/runs/${encodeURIComponent(runId)}?view=tasks`)
+  budget(30_000)
+  await expect(page.locator('#dashboard-sidebar-main')).toBeAttached({ timeout: 30_000 })
+  await expect(page.locator('[data-run-people]')).toBeVisible({ timeout: 30_000 })
+  await page.keyboard.press('Alt+/')
+  const palette = page.locator('[data-palette]')
+  await expect(palette).toBeVisible()
+  await palette.locator('input[data-palette-input]').fill('@nate')
+  const row = palette.locator('[data-palette-row="person:nate"]')
+  await expect(row).toBeVisible()
+  await expect(row.locator('[data-palette-detail]')).toContainText(`architecture owner in ${crewBody.name}`)
+  await row.click()
+  await expect(page).toHaveURL(/\/people\/nate$/)
+  await expect(page.locator(`[data-person-page-name="nate"] [data-person-task="${runId}/build"]`)).toBeVisible()
+
+  // The ticket's People: the approved revision's people with their responsibilities.
+  await page.goto(`/dispatch/${ticketKey.replace('-', '/')}`)
+  budget(30_000)
+  const people = page.locator('[data-ticket-people] [data-people-plan-people]')
+  await expect(people).toContainText(`as r${proposed.plan.n} was approved`, { timeout: 30_000 })
+  await expect(people.locator('[data-people-plan-person="nate"]')).toHaveAttribute('data-responsibilities', 'architecture')
+  await expect(people.locator('[data-people-plan-person="ana"]')).toContainText('acceptance owner')
+  // The ticket's owner is linked; the approver, a name a reply recorded, is not.
+  await expect(page.locator('[data-ticket-people] [data-people] [data-person="admin"]')).toContainText('approved a plan')
+  await expect(page.locator('[data-ticket-people] [data-people] [data-person="admin"] [data-person-link]')).toHaveCount(0)
+  await page.locator('[data-ticket-people] [data-people] [data-person="nate"] [data-person-link]').click()
+  await expect(page).toHaveURL(/\/people\/nate$/)
+  await expect(page.locator(`[data-person-page-name="nate"] [data-person-task="${runId}/build"]`)).toBeVisible({ timeout: 30_000 })
+})
+
+test("a person's tickets past the first twenty are reached; names that are path words have pages of their own", async ({ page, api }) => {
+  const project = await freeProjectKey(api, 'PPW')
+  await makeProject(api, project)
+  // A name made for this test, with a slash, a space and a percent sign; it owns 21 tickets.
+  const owner = `pw/${Date.now().toString(36)} 50%`
+  const keys: string[] = []
+  for (let n = 1; n <= 21; n++) keys.push(await makeTicket(api, project, String(n), { title: `Owned ${n}`, owner }))
+  // Names that are path words, or hold what a path reads as more than a name, each owning a ticket.
+  const stamp = Date.now().toString(36)
+  const names = ['.', '..', '~', '~.', '~~', '../brand/conductor-favicon.svg', `a/b ${stamp}`, '50% c', `Ana Mar\u00eda ${stamp}`, '\u00e9'.repeat(60)]
+  const owns: string[] = []
+  for (const [n, name] of names.entries()) owns.push(await makeTicket(api, project, `w${n}`, { title: `Owned by a path word ${n}`, owner: name }))
+
+  await page.goto(personPath(owner))
+  budget(30_000)
+  const owned = page.locator(`[data-person-page-name="${owner}"] [data-person-ticket-list="owner"]`)
+  await expect(owned).toHaveAttribute('data-person-ticket-shown', '20', { timeout: 30_000 })
+  await expect(owned.locator('[data-person-ticket-part]')).toHaveText(' · 20 of 21 shown')
+  await owned.locator('[data-person-ticket-more]').click()
+  await expect(owned).toHaveAttribute('data-person-ticket-shown', '21')
+  for (const key of keys) await expect(owned.locator(`[data-person-ticket="${key}"]`)).toBeAttached()
+  await expect(owned.locator('[data-person-ticket-part]')).toHaveCount(0)
+  await expect(owned.locator('[data-person-ticket-more]')).toHaveCount(0)
+
+  // Each has its page, never another route's or another person's: loaded at its address, reloaded, and reached by the link the ticket's
+  // People draws, the address kept as written each time.
+  for (const [n, name] of names.entries()) {
+    const ticket = page.locator(`[data-person-page-name=${JSON.stringify(name)}] [data-person-ticket-list="owner"] [data-person-ticket="${owns[n]}"]`)
+    await page.goto(personPath(name))
+    budget(30_000)
+    await expect(ticket, name).toBeVisible({ timeout: 30_000 })
+    expect(new URL(page.url()).pathname, name).toBe(personPath(name))
+    await page.reload()
+    budget(30_000)
+    await expect(ticket, name).toBeVisible({ timeout: 30_000 })
+    expect(new URL(page.url()).pathname, name).toBe(personPath(name))
+    await page.goto(`/dispatch/${owns[n]!.replace('-', '/')}`)
+    budget(30_000)
+    await page.locator(`[data-ticket-people] [data-people] [data-person=${JSON.stringify(name)}] [data-person-link]`).click({ timeout: 30_000 })
+    budget(30_000)
+    await expect(ticket, name).toBeVisible({ timeout: 30_000 })
+    expect(new URL(page.url()).pathname, name).toBe(personPath(name))
+  }
+})
+
+test("a task's owner removed with their name cleared leaves the Owner enabled, and none answers it", async ({ page, api }) => {
+  // kai, the crew's only person, owns build, as saved.
+  const id = (
+    await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+      ...crewBody,
+      name: `e2e people gone ${Date.now().toString(36)}`,
+      people: [{ name: 'kai' }],
+      tasks: crewBody.tasks.map((t) => (t.id === 'build' ? { ...t, owner: 'kai' } : t)),
+    })
+  ).crew.id
+  crews.push(id)
+  await page.goto(`/crews/${encodeURIComponent(id)}`)
+  budget(30_000)
+  await expect(page.locator('[data-crew-person]')).toHaveCount(1, { timeout: 30_000 })
+  const save = page.locator('[data-unsaved-bar]').getByRole('button', { name: 'Save' })
+  const owner = page.locator('[data-crew-task][data-task-id="build"] [data-task-owner]')
+  await expect(owner).toContainText('kai')
+
+  // kai's name cleared, then kai removed: build's owner is gone, with no name to show.
+  const person = page.locator('[data-crew-person]').nth(0)
+  await person.locator('[data-person-name-picker] [data-slot="trailingClear"]').click()
+  await expect(person).toHaveAttribute('data-person-name', '')
+  await person.locator('[data-person-remove]').click()
+  await expect(page.locator('[data-crew-person]')).toHaveCount(0)
+  await expect(save).toBeDisabled()
+  await expect(save).toHaveAttribute('data-save-problem', /Task build: its owner is gone: choose one, or none/)
+  await expect(owner).toBeEnabled()
+  await expect(owner).toContainText('a removed person')
+
+  // none: the problem is answered, Save is open, and the Owner is disabled again with no person to name.
+  await owner.click()
+  await page.getByRole('option', { name: 'none', exact: true }).click()
+  await expect(page.getByRole('listbox')).toHaveCount(0)
+  await expect(save).toBeEnabled()
+  await expect(owner).toBeDisabled()
+})
+
+/**
+ * Two pages of one crew, opened before either saves: the second adds cy and leaves it unsaved, the first adds ana and saves, and the second's
+ * save is refused. Returns the second page, its stale alert and its Save button, with the refusal checked: nothing saved, cy still in the
+ * field typed, the unsaved bar still up, and the alert saying what the first page changed.
+ */
+async function refusedSecondPage(page: Page, api: Api, token: string, label: string) {
+  const name = `e2e people ${label} ${Date.now().toString(36)}`
+  const id = (await api.ok<{ crew: { id: string } }>('POST', '/api/crews', { ...crewBody, name, people: [{ name: 'nate' }] })).crew.id
+  crews.push(id)
+  // The second page, in the same browser: the fixture's token reaches only its own page, so it gets it the same way.
+  const other = await page.context().newPage()
+  await other.addInitScript((t) => {
+    try {
+      localStorage.setItem('conductor.workbenchToken', t)
+    } catch {
+      /* storage refused: the page asks for the token, and the test fails on what it cannot find */
+    }
+  }, token)
+  for (const p of [page, other]) {
+    await p.goto(`/crews/${encodeURIComponent(id)}`)
+    budget(30_000)
+    await expect(p.locator('[data-crew-person]')).toHaveCount(1, { timeout: 30_000 })
+  }
+  // The second page adds cy first, unsaved: its draft is edited, so no read of the crew moves it on.
+  await other.locator('[data-add-person]').click()
+  await pickName(other, 1, 'cy')
+  // The first adds ana and saves.
+  await page.locator('[data-add-person]').click()
+  await pickName(page, 1, 'ana')
+  await page.locator('[data-unsaved-bar]').getByRole('button', { name: 'Save' }).click()
+  await expect(page.locator('[data-unsaved-bar]')).toHaveCount(0)
+  expect(((await api.crew(id)) as unknown as PeopleCrew).people).toEqual([{ name: 'nate' }, { name: 'ana' }])
+
+  // The second saves from the copy it read: refused, nothing saved, cy still in the field it was typed into, and what changed said.
+  const save = other.locator('[data-unsaved-bar]').getByRole('button', { name: 'Save' })
+  await save.click()
+  const stale = other.locator('[data-crew-stale]')
+  await expect(stale).toContainText('This crew was changed elsewhere since you opened it')
+  await expect(stale).toContainText('Changed there: 1 person added (ana).')
+  expect(((await api.crew(id)) as unknown as PeopleCrew).people).toEqual([{ name: 'nate' }, { name: 'ana' }])
+  await expect(other.locator('[data-crew-person]')).toHaveCount(2)
+  await expect(other.locator('[data-crew-person]').nth(1)).toHaveAttribute('data-person-name', 'cy')
+  await expect(other.locator('[data-unsaved-bar]')).toBeVisible()
+  return { id, name, other, stale }
+}
+
+test('two pages add a person each to one crew: the second is refused, keeps what was typed, and reads the crew again only when it chooses to', async ({ page, api, state }) => {
+  const { id, other, stale } = await refusedSecondPage(page, api, state.token, 'read')
+  // A cancelled choice changes nothing.
+  await stale.getByRole('button', { name: 'Read the crew again' }).click()
+  const dialog = other.getByRole('dialog')
+  await expect(dialog).toContainText('the edits made here will be lost')
+  await dialog.getByRole('button', { name: 'Cancel' }).click()
+  await expect(dialog).toHaveCount(0)
+  await expect(other.locator('[data-crew-person]').nth(1)).toHaveAttribute('data-person-name', 'cy')
+
+  await stale.getByRole('button', { name: 'Read the crew again' }).click()
+  await dialog.getByRole('button', { name: 'Read it again' }).click()
+  await expect(stale).toHaveCount(0)
+  await expect(other.locator('[data-unsaved-bar]')).toHaveCount(0)
+  await expect(other.locator('[data-crew-person]')).toHaveCount(2)
+  expect(await other.locator('[data-crew-person]').evaluateAll((rows) => rows.map((r) => r.getAttribute('data-person-name')))).toEqual(['nate', 'ana'])
+  expect(((await api.crew(id)) as unknown as PeopleCrew).people).toEqual([{ name: 'nate' }, { name: 'ana' }])
+  await other.close()
+})
+
+test('two pages add a person each to one crew: Save mine anyway replaces the other change, and a change made once more is said again first', async ({ page, api, state }) => {
+  const { id, name, other, stale } = await refusedSecondPage(page, api, state.token, 'anyway')
+  // The crew changes once more before the person confirms: bo added through the API (a PUT without a revision replaces).
+  await api.ok('PUT', `/api/crews/${encodeURIComponent(id)}`, { ...crewBody, name, people: [{ name: 'nate' }, { name: 'ana' }, { name: 'bo' }] })
+
+  await stale.getByRole('button', { name: 'Save mine anyway' }).click()
+  const dialog = other.getByRole('dialog')
+  await expect(dialog).toContainText('what was changed there is lost: 1 person added (ana).')
+  await dialog.getByRole('button', { name: 'Save mine' }).click()
+  // Refused again: the new difference is said, the same two choices offered, nothing saved, cy still there.
+  await expect(stale).toContainText('Changed there: 2 people added (ana, bo).')
+  expect(((await api.crew(id)) as unknown as PeopleCrew).people).toEqual([{ name: 'nate' }, { name: 'ana' }, { name: 'bo' }])
+  await expect(other.locator('[data-crew-person]').nth(1)).toHaveAttribute('data-person-name', 'cy')
+  await expect(stale.getByRole('button', { name: 'Read the crew again' })).toBeVisible()
+
+  await stale.getByRole('button', { name: 'Save mine anyway' }).click()
+  await expect(dialog).toContainText('what was changed there is lost: 2 people added (ana, bo).')
+  await dialog.getByRole('button', { name: 'Save mine' }).click()
+  await expect(stale).toHaveCount(0)
+  await expect(other.locator('[data-unsaved-bar]')).toHaveCount(0)
+  expect(((await api.crew(id)) as unknown as PeopleCrew).people).toEqual([{ name: 'nate' }, { name: 'cy' }])
+  await other.close()
+})
+
+test('a name past the first page of the people Conductor knows is offered when it is searched for', async ({ page, api }) => {
+  // 201 names Dispatch's directory gains, ordered after the e2e's other names (byte order): the last is past a first page of 200,
+  // whatever else is known.
+  const tag = Date.now().toString(36)
+  const names = Array.from({ length: 201 }, (_, i) => `zz-${tag}-${String(i).padStart(3, '0')}`)
+  budget(60_000)
+  for (let i = 0; i < names.length; i += 20) {
+    await Promise.all(names.slice(i, i + 20).map((name, j) => api.ok('POST', '/api/dispatch/people', { opId: `zz-${tag}-${i + j}`, name })))
+  }
+  const target = names[200]!
+  const first = await api.ok<{ people: Array<{ name: string }>; next?: string }>('GET', '/api/people')
+  expect(first.people.map((p) => p.name)).not.toContain(target)
+
+  const id = (await api.ok<{ crew: { id: string } }>('POST', '/api/crews', { ...crewBody, name: `e2e people search ${tag}` })).crew.id
+  crews.push(id)
+  await page.goto(`/crews/${encodeURIComponent(id)}`)
+  budget(30_000)
+  await expect(page.locator('[data-crew-people-section]')).toBeVisible({ timeout: 30_000 })
+  await page.locator('[data-add-person]').click()
+  await page.locator('[data-crew-person]').nth(0).locator('[data-person-name-picker]').click()
+  await page.getByPlaceholder('A name…').fill(target)
+  // The known name, read with the search: not only the row that takes a typed name.
+  await expect(page.getByRole('option', { name: target, exact: true })).toBeVisible()
+  await expect(page.getByRole('option', { name: `Name them ${target}`, exact: true })).toHaveCount(0)
+  await page.getByRole('option', { name: target, exact: true }).click()
+  await expect(page.getByRole('listbox')).toHaveCount(0)
+  await expect(page.locator('[data-crew-person]').nth(0)).toHaveAttribute('data-person-name', target)
+})
+
+test("a live run's Add an agent marks a person's name and holds the button, as the server refuses it", async ({ page, api }) => {
+  const id = (
+    await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+      name: `e2e people add ${Date.now().toString(36)}`,
+      cwd: '',
+      where: 'server',
+      isolation: 'none',
+      openAfterLaunch: false,
+      yolo: null,
+      members: [{ name: 'solo', agentId: 'codex', prompt: '', start: { when: 'immediately' } }],
+      people: [{ name: 'nate', responsibilities: ['architecture'] }],
+    })
+  ).crew.id
+  crews.push(id)
+  const run = await api.launchCrew(id)
+  runs.push(run.id)
+
+  await page.goto(`/runs/${encodeURIComponent(run.id)}`)
+  budget(30_000)
+  await expect(page.locator('[data-run-people] [data-run-person="nate"]')).toBeVisible({ timeout: 30_000 })
+  const addAgent = page.getByRole('button', { name: 'Add agent', exact: true })
+  await expect(addAgent).toBeEnabled()
+  await addAgent.click()
+  const dialog = page.getByRole('dialog', { name: 'Add an agent' })
+  const name = dialog.locator('[data-crew-member]').getByPlaceholder('name')
+  await expect(name).toBeVisible()
+  const addButton = dialog.getByRole('button', { name: 'Add to the run' })
+
+  await name.fill('nate')
+  await expect(dialog.locator('[data-name-error]')).toHaveText("The name is a person's; a person is never a member, so the two names differ")
+  await expect(addButton).toBeDisabled()
+  // The server refuses it the same way.
+  const refused = await api.call<{ error: { message: string } }>('POST', `/api/runs/${encodeURIComponent(run.id)}/members`, { name: 'nate', agentId: 'codex', prompt: '', start: { when: 'manual' } })
+  expect(refused.status).toBe(400)
+  expect(refused.body.error.message).toContain("the name is a person's")
+
+  await name.fill('helper')
+  await expect(dialog.locator('[data-name-error]')).toHaveCount(0)
+  await expect(addButton).toBeEnabled()
+})

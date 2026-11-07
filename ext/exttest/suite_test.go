@@ -90,6 +90,7 @@ func TestSuitePassesEveryDefault(t *testing.T) {
 		// Each check alone too, with no network: the defaults reach none.
 		Identity(t, nil, local.Identity{}, nil, []string{UnknownToken, "x"})
 		Router(t, nil, local.Router{}, SampleDecision())
+		Router(t, nil, local.Router{}, SampleDecisionRequest())
 		Continuity(t, nil, local.Continuity{})
 		Entitlements(t, nil, local.AllowAll{})
 		Media(t, nil, local.Media{})
@@ -283,6 +284,17 @@ type strayRouter struct{ *FakeRouter }
 
 func (strayRouter) Route(context.Context, ext.Decision) (ext.Route, error) {
 	return ext.Route{Answer: &ext.Answer{Input: "9", By: ada}}, nil
+}
+
+// recordStrayRouter answers a session's question well, and a durable
+// decision's record (Request set) with keys that are none of its places.
+type recordStrayRouter struct{ *FakeRouter }
+
+func (recordStrayRouter) Route(_ context.Context, d ext.Decision) (ext.Route, error) {
+	if d.Request == "" {
+		return ext.Route{Answer: &ext.Answer{Input: d.Options[0].Input, By: ada}}, nil
+	}
+	return ext.Route{Answer: &ext.Answer{Input: "y", By: ada}}, nil
 }
 
 // panicMedia panics in ICEServers.
@@ -496,6 +508,12 @@ func TestSuiteCatchesABreach(t *testing.T) {
 		{"a route its decision does not offer", func(t T, n *Network) {
 			Router(t, n, strayRouter{NewFakeRouter("stray")}, SampleDecision())
 		}, []string{`exttest: Router "stray": Route answered a route not valid for its decision`, `"9"`}},
+		{"a record's route its decision does not offer", func(t T, n *Network) {
+			Router(t, n, recordStrayRouter{NewFakeRouter("records")}, SampleDecision())
+		}, []string{`exttest: Router "records": Route answered a route not valid for its decision`, `"y"`}},
+		{"a record's route its decision does not offer, asked from a record", func(t T, n *Network) {
+			Router(t, n, recordStrayRouter{NewFakeRouter("records")}, SampleDecisionRequest())
+		}, []string{`exttest: Router "records": Route answered a route not valid for its decision`, `"y"`}},
 		{"a panic", func(t T, n *Network) {
 			Media(t, n, panicMedia{NewFakeMedia("panicky")})
 		}, []string{`exttest: Media "panicky": ICEServers panicked: boom`}},

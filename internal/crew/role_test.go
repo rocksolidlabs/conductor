@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -43,7 +44,10 @@ type fakeRecords struct {
 	open     map[string]bool   // request → open
 	outcome  map[string]RoleOutcome
 	fires    int
-	refuse   *RoleRefused
+	// turns numbers the requests made, the role's and a person's alike
+	// (ask), as the store does.
+	turns  int64
+	refuse *RoleRefused
 	// fireErr fails every Fire before its request is made.
 	fireErr error
 	// saveFails makes the next SaveRole fail, as a crash would;
@@ -105,7 +109,8 @@ func (f *fakeRecords) Fire(b Batch) (string, error) {
 	id, ok := f.requests[b.ID]
 	if !ok {
 		f.fires++
-		id = fmt.Sprintf("br-%d", f.fires)
+		f.turns++
+		id = fmt.Sprintf("br-%d", f.turns)
 		f.requests[b.ID] = id
 		f.open[id] = true
 	}
@@ -123,7 +128,20 @@ func (f *fakeRecords) Outcome(id string) (RoleOutcome, error) {
 	if f.open[id] {
 		return RoleOutcome{Open: true}, nil
 	}
-	return f.outcome[id], nil
+	out := f.outcome[id]
+	if out.Unavailable != "" {
+		fmt.Sscanf(id, "br-%d", &out.Turn)
+	}
+	return out, nil
+}
+
+// ask makes a person's request, numbered after every request made
+// before it, and answers its number.
+func (f *fakeRecords) ask() int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.turns++
+	return f.turns
 }
 
 // close closes a request, with what came of it.
@@ -563,17 +581,17 @@ func TestAPausedRoleGathersNothing(t *testing.T) {
 	}
 }
 
-// TestAPersonsRequestTriesAgain: an unavailable role (its agent could not
-// start) holds its wakes in a batch and starts nothing by itself; a
-// person's own request, logged and joined to no batch, tries again.
+// TestAPersonsRequestTriesAgain: an unavailable role (its budget spent)
+// holds its wakes in a batch and starts nothing by itself; a person's own
+// request, logged and joined to no batch, tries again.
 func TestAPersonsRequestTriesAgain(t *testing.T) {
 	f := newRoleFixture(t)
 	f.failed("build", 1)
 	f.clock.add(2 * time.Minute)
 	f.state(RoleBriefing)
-	f.rec.close("br-1", RoleOutcome{Unavailable: "the turn could not start: the agent exited before it read its request: is it logged in?"})
+	f.rec.close("br-1", RoleOutcome{Unavailable: "the day's budget is spent: 240 of 240 minutes", Reason: ReasonBudget})
 	r := f.state(RoleUnavailable)
-	if !strings.Contains(r.Why, "is it logged in?") || !r.RetryAt.IsZero() {
+	if r.Reason != ReasonBudget || !r.RetryAt.IsZero() {
 		t.Fatalf("%+v", r)
 	}
 	f.failed("lint", 1)
@@ -593,6 +611,169 @@ func TestAPersonsRequestTriesAgain(t *testing.T) {
 	}
 	if row := r.Log[len(r.Log)-1]; row.Source != WakeRequest || row.Batch != "" || row.Held == "" {
 		t.Fatalf("the person's request in the log: %+v", row)
+	}
+}
+
+// TestAnAgentThatDidNotStartIsNotFiredIntoAgain: a turn whose agent did
+// not start (signed out, held at a screen) leaves the role unavailable with
+// its words, the batch kept, and a retry of its own that doubles with each
+// such turn in a row. A wake, a briefing time and a person's own request
+// fire nothing into the same state meanwhile (the person's turn is its own
+// try); its retry time does, and a turn of the agent that reads its request
+// (Started, a person's) takes the batch up at once and counts from 0.
+func TestAnAgentThatDidNotStartIsNotFiredIntoAgain(t *testing.T) {
+	f := newRoleFixture(t)
+	f.rec.settings.Briefings = []string{"21:05"}
+	f.state(RoleIdle)
+	f.failed("build", 1)
+	f.clock.add(2 * time.Minute)
+	f.state(RoleBriefing)
+	words := "the turn could not start: the agent did not start in 5 minutes, no call to Conductor"
+	f.rec.close("br-1", RoleOutcome{Unavailable: words, Reason: ReasonStart})
+	r := f.state(RoleUnavailable)
+	if r.Why != words || r.Reason != ReasonStart || r.Tries != 1 || !r.RetryAt.Equal(f.clock.now().Add(RoleStartRetry)) || r.Open == nil {
+		t.Fatalf("%+v", r)
+	}
+	// A wake, a briefing time (21:05) and a person's request: none fires.
+	f.failed("lint", 1)
+	f.clock.add(RoleStartRetry - time.Minute)
+	if err := f.role.Asked(RoleWake{Subject: "br-2"}); err != nil {
+		t.Fatal(err)
+	}
+	r = f.state(RoleUnavailable)
+	if f.rec.fired() != 1 || r.Why != words {
+		t.Fatalf("fired into the same state: %d turns, %+v", f.rec.fired(), r)
+	}
+	// Its retry time: the batch kept fires, and its agent does not start
+	// again: the wait doubles.
+	f.clock.add(time.Minute)
+	r = f.state(RoleBriefing)
+	if f.rec.fired() != 2 || len(r.Fired.Wakes) != 3 {
+		t.Fatalf("the retry: %d turns, %+v", f.rec.fired(), r.Fired)
+	}
+	f.rec.close("br-2", RoleOutcome{Unavailable: words, Reason: ReasonStart})
+	r = f.state(RoleUnavailable)
+	if r.Tries != 2 || !r.RetryAt.Equal(f.clock.now().Add(2*RoleStartRetry)) {
+		t.Fatalf("the second: %+v", r)
+	}
+	// A person's turn whose agent reads its request: the batch fires.
+	if err := f.role.Started(f.rec.ask()); err != nil {
+		t.Fatal(err)
+	}
+	f.state(RoleGathering)
+	f.clock.add(2 * time.Minute) // the kept batch's window
+	r = f.state(RoleBriefing)
+	if f.rec.fired() != 3 || r.Tries != 0 || r.Reason != "" || r.Request != "br-4" {
+		t.Fatalf("after the agent started: %d turns, %+v", f.rec.fired(), r)
+	}
+	f.rec.close("br-4", RoleOutcome{})
+	f.state(RoleCooling)
+}
+
+// TestALaterTurnStartedOutweighsAnEarlierFailureTakenUpLate: the role's
+// own turn (br-1) fails, its agent not started, and stops; before the
+// role's loop takes that outcome up, a person's turn made after it (br-2)
+// starts and its agent reads its request. The failure, taken up then, is
+// br-1's own: the role is not made unavailable, counts no try, and the
+// batch br-1 could not start fires within its rules. Judged by the order
+// the outcomes reached it, the role read the start while it briefed (and
+// noted nothing), then the failure, and was unavailable though its agent
+// had started. A failure of a turn made after the start still counts.
+func TestALaterTurnStartedOutweighsAnEarlierFailureTakenUpLate(t *testing.T) {
+	f := newRoleFixture(t)
+	f.failed("build", 1)
+	f.clock.add(2 * time.Minute)
+	if r := f.state(RoleBriefing); r.Request != "br-1" {
+		t.Fatalf("%+v", r)
+	}
+	words := "the turn could not start: the agent did not start in 5 minutes, no call to Conductor"
+	f.rec.close("br-1", RoleOutcome{Unavailable: words, Reason: ReasonStart})
+	person := f.rec.ask()
+	if err := f.role.Started(person); err != nil {
+		t.Fatal(err)
+	}
+	r := f.state(RoleGathering)
+	if r.Why != "" || r.Reason != "" || r.Tries != 0 || !r.RetryAt.IsZero() || r.LastStarted != person || r.Open == nil || len(r.Open.Wakes) != 1 || r.Open.Wakes[0].Subject != "task:run-1/build" {
+		t.Fatalf("an earlier turn's failure after a later turn started: %+v", r)
+	}
+	f.clock.add(2 * time.Minute)
+	r = f.state(RoleBriefing)
+	if f.rec.fired() != 2 || r.Request != "br-3" {
+		t.Fatalf("the batch kept: %d turns, %+v", f.rec.fired(), r)
+	}
+	// A turn made after the start that fails: the role is unavailable.
+	f.rec.close("br-3", RoleOutcome{Unavailable: words, Reason: ReasonStart})
+	if r = f.state(RoleUnavailable); r.Tries != 1 || r.Reason != ReasonStart {
+		t.Fatalf("a later turn's failure: %+v", r)
+	}
+}
+
+// TestTheStartRetryDoublesToItsBound: the wait after the n-th turn in a
+// row whose agent did not start.
+func TestTheStartRetryDoublesToItsBound(t *testing.T) {
+	for tries, want := range map[int]time.Duration{1: RoleStartRetry, 2: 2 * RoleStartRetry, 3: 4 * RoleStartRetry, 5: 16 * RoleStartRetry, 6: RoleStartRetryMax, 60: RoleStartRetryMax} {
+		if got := startRetry(tries); got != want {
+			t.Errorf("after %d: %s, want %s", tries, got, want)
+		}
+	}
+}
+
+// TestASaveEndsOnlyWhatItChanged: each reason a role is unavailable for,
+// against each kind of save: a budget changed ends a spent budget; what the
+// agent starts with changed ends a turn whose agent did not start; the role
+// turned on or off ends its being off; nothing ends a run that did not
+// stop; a save that changed nothing ends nothing. Each is read from the
+// role's record after Reconfigured.
+func TestASaveEndsOnlyWhatItChanged(t *testing.T) {
+	saves := map[string]RoleChange{
+		"nothing": {},
+		"budget":  {Budget: true},
+		"agent":   {Start: true},
+		"on":      {On: true},
+		"other":   {Other: true},
+	}
+	ends := map[string][]string{
+		ReasonBudget: {"budget"},
+		ReasonStart:  {"agent"},
+		ReasonOff:    {"on"},
+		ReasonStuck:  nil,
+		"":           {"budget", "agent", "on", "other"},
+	}
+	for reason, want := range ends {
+		for name, ch := range saves {
+			t.Run(reason+"/"+name, func(t *testing.T) {
+				f := newRoleFixture(t)
+				f.failed("build", 1)
+				f.clock.add(2 * time.Minute)
+				f.state(RoleBriefing)
+				f.rec.close("br-1", RoleOutcome{Unavailable: "unavailable for " + reason, Reason: reason, RetryAt: f.clock.now().Add(24 * time.Hour)})
+				f.state(RoleUnavailable)
+				if err := f.role.Reconfigured(ch); err != nil {
+					t.Fatal(err)
+				}
+				r := f.record()
+				ended := slices.Contains(want, name)
+				if SaveEnds(reason, ch) != ended {
+					t.Fatalf("SaveEnds(%q, %+v) = %v", reason, ch, !ended)
+				}
+				if ended {
+					if r.State == RoleUnavailable || r.Why != "" || r.Reason != "" {
+						t.Fatalf("not ended: %+v", r)
+					}
+					f.clock.add(2 * time.Minute) // the kept batch's window
+					if r := f.state(RoleBriefing); f.rec.fired() != 2 {
+						t.Fatalf("the batch kept did not fire: %+v", r)
+					}
+					return
+				}
+				if r.State != RoleUnavailable || r.Why != "unavailable for "+reason || r.Reason != reason {
+					t.Fatalf("ended by a save that changed nothing it weighs: %+v", r)
+				}
+				if f.state(RoleUnavailable); f.rec.fired() != 1 {
+					t.Fatal("a turn fired")
+				}
+			})
+		}
 	}
 }
 

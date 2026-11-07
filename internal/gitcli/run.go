@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"os/exec"
@@ -160,30 +161,62 @@ func run(ctx context.Context, loc, args []string) (string, error) {
 	return runEnv(ctx, "", loc, nil, args)
 }
 
+// RunTo is Run with git's standard output written to w as it comes rather
+// than kept: a blob read whole (a decision's artifact, hashed) is never
+// held in memory.
+func RunTo(ctx context.Context, dir string, w io.Writer, args ...string) error {
+	return RunToEnv(ctx, dir, nil, w, args...)
+}
+
+// RunToEnv is RunTo with env set in git's environment beside the safe one:
+// GIT_NO_REPLACE_OBJECTS for a blob read by the id a tree records, which
+// must be that object and not one refs/replace puts in its place.
+func RunToEnv(ctx context.Context, dir string, env map[string]string, w io.Writer, args ...string) error {
+	argv, err := argvFor(ctx, "", []string{"-C", dir}, args)
+	if err != nil {
+		return err
+	}
+	var stderr bytes.Buffer
+	if err := execGitTo(ctx, "", argv, env, w, &stderr); err != nil {
+		return gitError(ctx, args[0], stderr.String(), err)
+	}
+	return nil
+}
+
 // runEnv is run with env set in git's environment beside the safe one, in
 // the working directory cwd ("" for the server's own: loc then points git
 // where it runs).
 func runEnv(ctx context.Context, cwd string, loc []string, env map[string]string, args []string) (string, error) {
+	argv, err := argvFor(ctx, cwd, loc, args)
+	if err != nil {
+		return "", err
+	}
+	out, stderr, err := execGit(ctx, cwd, argv, env)
+	if err != nil {
+		return "", gitError(ctx, args[0], stderr, err)
+	}
+	return out, nil
+}
+
+// argvFor is the argv of git with args where loc points it, from the
+// working directory cwd, hardened as above.
+func argvFor(ctx context.Context, cwd string, loc, args []string) ([]string, error) {
 	if len(args) == 0 {
-		return "", errors.New("git: no command")
+		return nil, errors.New("git: no command")
 	}
 	if len(args) > 1 && args[0] == "worktree" && args[1] == "add" && !slices.Contains(args, "--no-checkout") {
-		return "", errors.New("git worktree add: a worktree is checked out by AddWorktree")
+		return nil, errors.New("git worktree add: a worktree is checked out by AddWorktree")
 	}
 	filters, err := filterArgs(ctx, cwd, loc, args)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	argv := append(baseArgs(), filters...)
 	argv = append(argv, loc...)
 	argv = append(argv, args[0])
 	argv = append(argv, commandOptions(args[0])...)
 	argv = append(argv, args[1:]...)
-	out, stderr, err := execGit(ctx, cwd, argv, env)
-	if err != nil {
-		return "", gitError(ctx, args[0], stderr, err)
-	}
-	return out, nil
+	return argv, nil
 }
 
 // AddWorktree adds a worktree of the repository repo is in at path, on a
@@ -259,6 +292,13 @@ func baseArgs() []string {
 // execGit runs git with argv in safeEnv, and env beside it, no input, in
 // the working directory cwd ("" for the server's own).
 func execGit(ctx context.Context, cwd string, argv []string, env map[string]string) (stdout, stderr string, err error) {
+	var o, e bytes.Buffer
+	err = execGitTo(ctx, cwd, argv, env, &o, &e)
+	return o.String(), e.String(), err
+}
+
+// execGitTo is execGit with its output written to stdout and stderr.
+func execGitTo(ctx context.Context, cwd string, argv []string, env map[string]string, stdout, stderr io.Writer) error {
 	cmd := exec.CommandContext(ctx, "git", argv...)
 	cmd.Dir = cwd
 	set := safeEnv
@@ -267,10 +307,8 @@ func execGit(ctx context.Context, cwd string, argv []string, env map[string]stri
 		maps.Copy(set, env)
 	}
 	cmd.Env = pty.BuildEnv(pty.ParentEnv(), nil, set, nil)
-	var o, e bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &o, &e
-	err = cmd.Run()
-	return o.String(), e.String(), err
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	return cmd.Run()
 }
 
 // gitError is the error of a git that failed: ctx's when it ended,

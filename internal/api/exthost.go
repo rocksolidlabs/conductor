@@ -15,6 +15,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
@@ -658,6 +659,33 @@ func (s *Server) submitTo(ctx context.Context, local *session.Local, r ext.Submi
 // hands it to the sinks that take provider notices. A provider one of
 // whose sinks takes them answers ext.ErrUnsupported: it may take notices
 // or send them, never both.
+// Decision reads the durable decision request as the ledger holds it now
+// (ext.Host.Decision): a router told of a decision and not of its end
+// reads it. It reads the ledger whether or not this server owns it (a
+// read-only ledger is read as it stands).
+func (h *extHost) Decision(ctx context.Context, request string) (ext.DecisionState, error) {
+	if err := h.gone(); err != nil {
+		return ext.DecisionState{}, err
+	}
+	if h.s.cfg.Switchyard.Enabled || h.s.ledger == nil {
+		return ext.DecisionState{}, fmt.Errorf("%w: this server keeps no ledger of decisions", ext.ErrUnsupported)
+	}
+	n, ok := ledger.ParseDecisionID(request)
+	if !ok || len(request) > ext.MaxDecisionRef {
+		return ext.DecisionState{}, refused("%q is not a decision's id", cutBytes(request, ext.MaxDecisionRef))
+	}
+	bctx, end := h.bound(ctx)
+	defer end()
+	rec, found, err := h.s.ledger.Decision(bctx, n)
+	switch {
+	case err != nil:
+		return ext.DecisionState{}, err
+	case !found:
+		return ext.DecisionState{}, fmt.Errorf("%w: no decision %s", ext.ErrNotFound, request)
+	}
+	return ext.DecisionState{Request: rec.ID(), State: rec.State, Final: rec.Final(), Rev: rec.Rev, ClosedAt: rec.ClosedAt}, nil
+}
+
 func (h *extHost) Notify(_ context.Context, n ext.Notification) error {
 	if err := h.gone(); err != nil {
 		return err

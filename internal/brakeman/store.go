@@ -426,6 +426,11 @@ func siblingName(name string) (id, sib string, ok bool) {
 	return m[1], m[2], true
 }
 
+// RequestNumber is the n of a request's id br-<n>: requests numbered in
+// the order they were made, a person's and a wake's alike; 0 for an id
+// of no request.
+func RequestNumber(id string) int64 { return requestNumber(id) }
+
 // The names of a request's documents.
 func requestDoc(id string) string     { return id + ".json" }
 func briefDoc(id string) string       { return id + "-brief.json" }

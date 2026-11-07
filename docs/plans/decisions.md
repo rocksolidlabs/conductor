@@ -1169,14 +1169,26 @@ unchanged.
   C5's records compiles and behaves unchanged.
 - `internal/api/router.go`: a session question with `Decision` set is not
   routed as a session question (its record is). The decision record is
-  routed once, when it opens, through the same guard (`routeSent`, its
+  routed when it opens, through the same guard (`routeSent`, its
   wait and its slots): `ext.Decision{ID: "dr-7", Request: "dr-7",
   Session: <the asking session, or an empty id for a gate, with run and
   task>, Message: the question cut to `ext.Decision`'s 500 bytes at a
   character's end, Kind: "decision" (a new value beside `permission` and
   `prompt`, documented on the field), Options: the labels, Since}`; its
-  destinations become a `routed` history row; `Resolved` is told when the
-  decision reaches a final state, through the existing ordered list. An
+  destinations become a `routed` history row. The ledger is the truth,
+  only the ledger's owner tells the router anything, and the server keeps
+  no account of what a router heard: a decision is told when it opens, as
+  often as needed (whenever a server holds the ledger, at its start, at a
+  takeover and after a tell that failed or was not made, one query of the
+  ledger tells the router every decision it holds open; a router treats a
+  repeat, the same Request, as nothing new); told when it ends when that
+  can be done at once (`Resolved`, best-effort, never owed); and its state
+  can always be read (`ext.Host.Decision(ctx, "dr-7")`: its state, whether
+  final, its rev and when it closed), so a router that heard of a decision
+  and not of its end reads it. The calls run off every path, each on a
+  goroutine of its own under a bound of 16: a provider that hangs holds a
+  slot and stalls nothing. The router's `routed` row is written once per
+  decision whatever it is told again. An
   answer the router holds is offered to `RespondDecision` under
   the actor `user:<By.Subject>` and the authority `{via: router}` with
   no grant, which `local/1` refuses (`not_approver`) whatever principal
@@ -1557,11 +1569,16 @@ Brakeman use them is Brakeman's.
   stay apart, and the list is their union.
 - `GET /api/people/{name}` (admin): a person's work: `{name, crews:
   [...], tasks: [{run, runLabel, task, state, member, ownerFrom}],
-  tickets: {owner, assignee, href}, decisions: []}`, the tasks from the
-  runs the engine holds and the managed runs' records, at most 200, the
-  newest first, with `more: true` past them; `tickets` the counts of
-  Dispatch's own query (`owner:` and `assignee:person:`) and the link to
-  that view; `decisions` empty until PR-12; `crews` at most 100, with
+  tickets: {owner, assignee, ownerHref, assigneeHref}, decisions: []}`,
+  the tasks from the runs the engine holds and the managed runs' records,
+  at most 200, the newest first, with `more: true` past them; `tickets`
+  the counts of Dispatch's own two lists (`owner=` and
+  `assignee=person:`) and each list's link, `GET /api/dispatch/tickets`
+  with that filter, which the person's page reads and pages through with
+  the list's cursor, so every ticket is reachable from the counts. Two
+  links, not one: every condition of Dispatch's filter must hold, so no
+  one list is the union of the two (amended by PR-11). `decisions`
+  empty until PR-12; `crews` at most 100, with
   `crewsMore`. `404 not_found` only for a name that no source of the page
   knows: neither store, nor a run the engine holds or a managed run's
   record (its `people` and its tasks' owners, as launched), nor, from

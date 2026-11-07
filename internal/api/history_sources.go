@@ -249,6 +249,9 @@ type runPlace struct {
 	// ("<task>/<n>").
 	agentSessions map[string]string
 	fallback      time.Time
+	// repoUnknown: the run's repository could not be read (its mark and
+	// its receipts' carry U).
+	repoUnknown bool
 }
 
 // base is an entry of the run, its fields of the six filled.
@@ -726,17 +729,22 @@ func resultStood(a ledger.AttemptRow) bool {
 
 // reviewLinks are the review links whose later end is the run's: reviews
 // from each of its review attempts to the work attempt it reviewed
-// (reviewedBy), and reopened from a needs_changes verdict to the reviewed
+// (reviewedBy), and reopened from a needs_changes verdict the engine
+// applied to the reviewed
 // task's next attempt, the repair, which is the run's either because the
 // review is (its next attempt in the run) or because the review is an
 // ancestor's whose run ended before the repair began, carried into this
 // continuation (the task's first attempt here, when no run between holds
-// one).
+// one). A verdict the engine applied is the ledger's record of its
+// acceptance: the review's attempt succeeded, in the transaction that
+// reopened the task (crew's accept). A verdict submitted and never
+// applied (its attempt cancelled by another review's reopening, or
+// failed) reopened nothing and links to nothing.
 func reviewLinks(p runPlace, rows *runRows, chain []runRows) []history.Link {
 	runs := append([]runRows{*rows}, chain...)
 	needsChanges := func(v ledger.AttemptRow) bool {
 		var res crew.Result
-		return v.Result != "" && json.Unmarshal([]byte(v.Result), &res) == nil && res.Verdict == crew.VerdictNeedsChanges
+		return v.State == ledger.AttemptSucceeded && v.Result != "" && json.Unmarshal([]byte(v.Result), &res) == nil && res.Verdict == crew.VerdictNeedsChanges
 	}
 	next := func(as []ledger.AttemptRow, task string, after int) int {
 		n := 0

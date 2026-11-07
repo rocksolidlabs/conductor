@@ -125,8 +125,8 @@ type TaskRow struct {
 	ResultCommit  string // its commit
 	Verdict       string // a review's
 	ImportedFrom  string // "<run>/<task>/<n>" when a continuation imported the result
-	// Repair is the repair a review asked of the task, as JSON (the
-	// engine's crew.TaskRepair), "" without one; Extra the attempts
+	// Repair is the repair a review or a person asked of the task, as
+	// JSON (the engine's crew.TaskRepair), "" without one; Extra the attempts
 	// allowed past the bound (retries, and attempts not counted).
 	Repair string
 	Extra  int

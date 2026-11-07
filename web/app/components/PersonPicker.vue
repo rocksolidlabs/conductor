@@ -7,15 +7,36 @@ import { initials } from '~/utils/sessions'
  * A ticket's owner, the accountable person (decision D4: people are names until identity exists): one of the directory's names, a new
  * name typed (the store adds it to the directory as the owner is set), or none (the clear button). The directory is read again whole
  * each time the picker opens, so a name another browser added is offered.
+ *
+ * Given `names` (a crew's person, HM1: the names Conductor knows, usePeople), it offers those instead and reads no directory; it says
+ * `open` as it opens, so its owner can read them again, and `search` with the text typed in its search field while it is open, so its
+ * owner can read the names that contain it (GET /api/people's `q`: a page holds 200 names, and the one typed may be past them). `create`
+ * words the row that takes a typed name.
  */
-const props = defineProps<{ modelValue: string; disabled?: boolean; placeholder?: string }>()
-const emit = defineEmits<{ 'update:modelValue': [name: string] }>()
+const props = withDefaults(defineProps<{ modelValue: string; disabled?: boolean; placeholder?: string; names?: readonly string[]; create?: string; size?: 'sm' | 'md' }>(), {
+  placeholder: undefined,
+  names: undefined,
+  create: undefined,
+  size: 'sm',
+})
+const emit = defineEmits<{ 'update:modelValue': [name: string]; open: []; search: [q: string] }>()
 
 const api = useDispatchApi()
 const people = ref<string[]>([])
 const open = ref(false)
+const term = ref('')
+// Given names, the search is said only while this picker is open (usePickerSearch): its own search cleared after it closed never
+// replaces the names another picker of the same owner is searching.
+usePickerSearch(open, term, {
+  open: () => {
+    if (props.names) emit('open')
+  },
+  search: (q) => {
+    if (props.names) emit('search', q)
+  },
+})
 watch(open, (o) => {
-  if (o) void load()
+  if (o && !props.names) void load()
 })
 
 // The directory read whole, through a gate of its own (utils/dispatchOrder.ts): a slow reply never replaces a newer one.
@@ -27,9 +48,11 @@ async function load() {
     // The names read before stay offered; a typed name still sets.
   }
 }
-onMounted(load)
+onMounted(() => {
+  if (!props.names) void load()
+})
 
-const items = computed(() => [...new Set([...people.value, ...(props.modelValue ? [props.modelValue] : [])])].sort((a, b) => a.localeCompare(b)))
+const items = computed(() => [...new Set([...(props.names ?? people.value), ...(props.modelValue ? [props.modelValue] : [])])].sort((a, b) => a.localeCompare(b)))
 
 /**
  * A pick, said whatever the picker shows: what it shows is the owner as the store last answered, while an edit setting another may still
@@ -46,6 +69,7 @@ function pick(v: unknown) {
 <template>
   <USelectMenu
     v-model:open="open"
+    v-model:search-term="term"
     :model-value="modelValue || undefined"
     :items="items"
     create-item="always"
@@ -53,7 +77,7 @@ function pick(v: unknown) {
     :placeholder="placeholder ?? 'No owner'"
     :disabled="disabled"
     :search-input="{ placeholder: 'A name…' }"
-    size="sm"
+    :size="size"
     class="w-full"
     data-person-picker
     @update:model-value="pick"
@@ -63,6 +87,6 @@ function pick(v: unknown) {
       <span v-if="modelValue" class="grid size-5 place-items-center rounded-full text-[9px] font-semibold" :class="avatarTone(modelValue)">{{ initials(modelValue) }}</span>
       <UIcon v-else name="i-lucide-user" class="size-4 text-dimmed" />
     </template>
-    <template #create-item-label="{ item }">Make {{ item }} the owner</template>
+    <template #create-item-label="{ item }">{{ (create ?? 'Make {name} the owner').replace('{name}', item) }}</template>
   </USelectMenu>
 </template>

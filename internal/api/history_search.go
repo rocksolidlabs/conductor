@@ -675,7 +675,7 @@ func (s *Server) serveEntry(av *availability, e history.Entry, snippet string, r
 	out := servedEntry{
 		Key: e.Key, Kind: e.Kind, Class: e.Class, Outcome: e.Outcome, Title: e.Title, Summary: e.Summary, Snippet: snippet,
 		At: e.At, Actor: e.Actor, Crew: e.Crew, Run: e.Run, Ticket: e.Ticket, Repeats: rep, Links: []servedLink{},
-		Source:   servedSource{Store: storeOfKind(e.Kind), Label: labelOfKind(e.Kind, s.agentName(e.Agent)), Ref: e.Ref},
+		Source:   servedSource{Store: storeOfKind(e.Kind), Label: labelOfKind(e.Kind, s.catalogAgentName(e.Agent)), Ref: e.Ref},
 		Host:     servedHost{Name: e.Host, User: e.HostUser, Hosted: e.Hosted, Where: e.Where},
 		Project:  servedProject{Key: e.Project, Repo: e.Repo, Tree: e.Tree},
 		Revision: servedRevision{Label: cmpOr(e.Revision, hShort(e.Commit)), Commit: e.Commit},
@@ -686,7 +686,7 @@ func (s *Server) serveEntry(av *availability, e history.Entry, snippet string, r
 		out.URL = launchURL(e)
 	}
 	if e.Agent != "" {
-		out.Agent = &servedAgent{ID: e.Agent, Name: s.agentName(e.Agent), Version: e.AgentVersion, Session: e.AgentSession}
+		out.Agent = &servedAgent{ID: e.Agent, Name: s.catalogAgentName(e.Agent), Version: e.AgentVersion, Session: e.AgentSession}
 	}
 	for _, way := range []struct {
 		dir  string
@@ -735,9 +735,9 @@ func (av *availability) launchURL(ref string) string {
 	return u
 }
 
-// agentName is a catalog agent's name, its id when the catalog no longer
+// catalogAgentName is a catalog agent's name, its id when the catalog no longer
 // holds it.
-func (s *Server) agentName(id string) string {
+func (s *Server) catalogAgentName(id string) string {
 	if id == "" {
 		return ""
 	}

@@ -274,6 +274,17 @@ add its rule here.
   another's waits for the server's read after them (`viewerSeam.read`
   with `wsClient.sent`, `viewerReads.await`), and holds the writer that
   would drain them (`writerGate`) rather than trusting a full socket.
+- A frame the session has sent is not a frame the viewer has. The session
+  queues it, and the subscription's own goroutine hands it to the sink
+  later: a refusal sent before `NvimInput` returned was not yet in a test's
+  sink when it looked at once, and the test, finding it only beside the
+  next keys' refusal, judged the wrong one (#281). Wait until the viewer has
+  been handed all that was sent (`drained`) before judging what it holds,
+  the absence of a frame too. And a test's sink is a viewer like any other,
+  held to the session's queue bound: read the frames it has not read yet,
+  outside its lock. A test that read every frame again each round under
+  that lock held it for 11 s on a loaded machine, and the session dropped
+  the sink as a slow consumer, its editor with it ("file access denied").
 - Keep what decides ahead of what is shown, and wait on what decides.
   The output pump sent each chunk to the viewers before it fed the screen
   a key is routed by (`startupMayShow`): a viewer that answered the
@@ -330,6 +341,18 @@ add its rule here.
   (`dnsPair` in `internal/certs`); where a program takes only an address,
   hold the port until it starts and start again on a loss
   (`pebblePorts`).
+- A test's git repository does no maintenance of its own. Apple Git's
+  `git commit` (2.54 on the Mac) starts a detached `git maintenance run
+  --auto` that packs the loose objects and deletes them under the test's
+  reads (go-git lists a repository's packs once per opening: `object not
+  found`) and is still writing when `t.TempDir` removes the directory
+  (`directory not empty`); Linux's git did neither, so the test passed
+  there 30 of 30 and failed on the Mac 10 of 10 (#711). A test repository
+  sets `maintenance.auto=false` and `gc.auto=0` (`scratch` in
+  `internal/gitrepo`), as `internal/gitcli` does for every git Conductor
+  runs; and a server read that meets a repack opens the repository again
+  and reads once more (`read` in `internal/gitrepo`), since a run's
+  repository is repacked by the agent's own git.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.

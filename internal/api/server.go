@@ -80,6 +80,10 @@ type Server struct {
 	// is read, so a test can commit a twin try of the operation there
 	// (addDelivery).
 	deliveryReplayed func(ctx context.Context, op dispatch.Op, key string, l dispatch.NewLink)
+	// personDispatch is nil but in tests: what a person's work reads of
+	// Dispatch in its store's place (ticketReads), so a test fails one of
+	// its reads alone.
+	personDispatch ticketDirectory
 	// keeper keeps the links a switchyard mints across its restarts
 	// (linkfiles.go); nil elsewhere.
 	keeper *linkKeeper
@@ -113,6 +117,10 @@ type Server struct {
 	// (beginContinuation), whose runs no chain's walk judges until they
 	// end (continuingAt). Under resumingMu.
 	continuations map[*continuation]struct{}
+	// rechecking is held by one Check again at a time, from its chain's
+	// read to its answer (handleRecheckTask): one command id is taken in
+	// one run of a chain, never in two.
+	rechecking chan struct{}
 	// journaling holds the runs whose record is about to be written again
 	// (scheduleJournal), under journalMu.
 	journalMu  sync.Mutex
@@ -149,8 +157,9 @@ type Server struct {
 	commits         *commitFan // the commit hooks' observers (commits.go)
 	readRevision    func(ctx context.Context, dir string) (gitcli.Revision, error)
 	// recordRepos is each native server session's launch repository, by
-	// the identity of its common git directory (os.FileInfo), until its
-	// end commit is read (recordEndCommit); recCur, under recMu, the
+	// the identity of its common git directory (*launchRepo, which holds
+	// it open where the system reuses identities), until its end commit is
+	// read (recordEndCommit) or none is to be read; recCur, under recMu, the
 	// registration each record follows (*recorder), by its id, until its
 	// last reconcile (history_journal.go); recordsStop, closed as the
 	// journal's close begins (closeSessionRecords), ends the waits for
@@ -160,9 +169,15 @@ type Server struct {
 	recCur         map[string]*recorder
 	recordsStop    chan struct{}
 	stopRecordsOne sync.Once
+	// recordsClosed, under recMu, is the final pass's mark: no recorder is
+	// put in place, settled or fed after it (closeSessionRecords).
+	recordsClosed bool
 	// recordDeliver, when a test sets it, is handed each hint and stream
-	// callback of a recorded session in place of running it (deliver).
-	recordDeliver atomic.Pointer[func(func())]
+	// callback of a recorded session in place of running it (deliver),
+	// with its session's id and what it carries; recordHook is run at each
+	// of the lifecycle's stages (recordSeam).
+	recordDeliver atomic.Pointer[func(id string, what any, run func())]
+	recordHook    atomic.Pointer[func(stage, id string)]
 	// planFacts keeps what the plan revisions' reads take from each
 	// revision's body, by its digest (dispatch_plans.go), so a list reads
 	// no body it has read before.
@@ -305,6 +320,9 @@ type Server struct {
 	// router is the decision router's seam over the sessions' questions
 	// (router.go).
 	router *decisionRouter
+	// hostedSeen is how the hosted sessions' questions went on, as their
+	// hosts synced them (the decision inbox's track, inbox.go).
+	hostedSeen hostedResumes
 	// launches admits and settles the launches from a ticket
 	// (dispatch_launch.go).
 	launches launchGate
@@ -404,6 +422,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		instance:    newInstance(),
 		started:     time.Now(),
 		relayed:     newRelayMeter(nil),
+		rechecking:  make(chan struct{}, 1),
 	}
 	// Every provider behind the guard before the server's first write of
 	// its own (the ledger's recovery, the records): nothing calls them yet.
@@ -415,6 +434,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	syncs.attach(s)
 	s.holdQueue(o.providers.Continuity, s.exts.sync.Name(), syncs.begin)
 	s.router = newDecisionRouter(s)
+	// The decision router reads the ledger's decisions once its provider
+	// answers (its Start succeeded, or it needs none: at New's end).
+	s.holdQueue(o.providers.Router, s.exts.router.Name(), s.router.begin)
 	s.relayBurstFloor = relayBurstFloor
 	s.hostPingEvery = hostPingEvery
 	s.hostGoneWait = writeTimeout
@@ -529,7 +551,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			// (another server holds the owner lock, for a while after a
 			// restart), or with none, managed launches are refused and
 			// legacy runs work.
-			s.runs.UseLedger(crew.SQLLedger(s.ledger))
+			s.runs.UseLedger(crew.SQLLedgerTold(s.ledger, s.decisionTold))
 		}
 		s.runs.SetCheckConcurrency(cfg.CheckConcurrency())
 		// The host's names a project manifest's env may pass on to its
@@ -555,9 +577,23 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	if cfg.MaxViewersPerSession > 0 {
 		s.hosts.MaxViewers = cfg.MaxViewersPerSession
 	}
-	// A hosted session's record, its own hooks feeding it (recorder).
-	s.hosts.OnAdded = s.beginHostedRecord
 	s.hosts.OnChange = func(info session.Info) {
+		// How a question went on is read from what the host said, never
+		// from a change the server forwarded and the host has not applied;
+		// noted before the change is published, so that a browser that
+		// reads the track as the change reaches it reads what it says.
+		if d, ok := s.registry.Get(info.ID); ok {
+			if hs, ok := d.(*signal.HostedSession); ok {
+				s.hostedSeen.change(hs.HostViewSeq())
+				// Removed while its change was noted, its OnRemove may
+				// have forgotten it before the note: what the note kept
+				// goes with it (the registry lets a session go before
+				// its OnRemove, so one of the two forgets it last).
+				if _, ok := s.registry.Get(info.ID); !ok {
+					s.hostedSeen.gone(info.ID)
+				}
+			}
+		}
 		s.events.publishIf(info, s.listed)
 		s.router.mark(info.ID)
 		// A hosted session that ended takes its links with it, as a server
@@ -593,6 +629,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.pastes.closeAll(id)
 		s.router.mark(id)
 		s.recordRemoved(id, d)
+		s.hostedSeen.gone(id)
 	}
 	if cfg.Switchyard.Enabled && s.store != nil {
 		s.openLinkKeeper(s.store)
@@ -733,6 +770,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/history/entry", historyRoute(s.requireAdmin(s.handleHistoryEntry)))
 	mux.HandleFunc("GET /api/history/similar", historyRoute(s.requireAdmin(s.handleHistorySimilar)))
 	mux.HandleFunc("GET /api/history/command", historyRoute(s.requireAdmin(s.handleHistoryCommand)))
+	// The decision inbox, read-only (inbox.go, inbox_track.go).
+	mux.HandleFunc("GET /api/inbox", s.inboxOnly(s.handleInbox))
+	mux.HandleFunc("GET /api/inbox/item", s.inboxOnly(s.handleInboxItem))
+	mux.HandleFunc("GET /api/inbox/track", s.inboxOnly(s.handleInboxTrack))
 	mux.HandleFunc("GET /api/catalog", s.launching(s.handleCatalog))
 	mux.HandleFunc("POST /api/catalog", s.launching(s.handleSaveAgent))
 	mux.HandleFunc("POST /api/catalog/check", s.launching(s.handleCheckCommand))
@@ -750,6 +791,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/crews/{id}/runs", s.launching(s.handleCrewRuns))
 	// The people Conductor knows: Dispatch's and the crews' (people.go).
 	mux.HandleFunc("GET /api/people", s.launching(s.handlePeople))
+	mux.HandleFunc("GET /api/people/{name}", s.launching(s.handlePerson))
 	mux.HandleFunc("GET /api/paths", s.launching(s.handleListPaths))
 	mux.HandleFunc("GET /api/git/check", s.launching(s.handleGitCheck))
 	mux.HandleFunc("GET /api/runs", s.readable("GET /api/runs", s.launchingAny(s.handleListRuns)))
@@ -773,6 +815,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/cancel", s.requireAdmin(s.handleCancelTask))
 	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/retry", s.requireAdmin(s.handleRetryTask))
 	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/accept", s.requireAdmin(s.handleAcceptTask))
+	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/recheck", s.launching(s.handleRecheckTask))
+	// A candidate's diff and its prepared failed-check request (review_diff.go, review_repair.go).
+	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}/attempts/{n}/diff", s.launching(s.handleCandidateDiff))
+	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}/attempts/{n}/diff/file", s.launching(s.handleCandidateDiffFile))
+	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/repair", s.launching(s.handlePrepareRepair))
 	// Brakeman's desk and its turn's session routes (brakeman.go).
 	s.routeBrakeman(mux)
 	// The operating guide, the admin's and a session's (guide.go).
@@ -787,6 +834,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/inbox/ack", s.handleSessionInboxAck)
 	mux.HandleFunc("POST /api/sessions/{id}/task/blocked", s.handleSessionTaskBlocked)
 	mux.HandleFunc("POST /api/sessions/{id}/task/checkpoint", s.handleSessionTaskCheckpoint)
+	// Durable decisions: an attempt's, the operator's (decisions.go).
+	s.routeDecisions(mux)
 	mux.HandleFunc("GET /api/runs/{run}/messages", s.readable("GET /api/runs/{run}/messages", s.handleRunMessages))
 	mux.HandleFunc("GET /api/runs/{run}/links", s.launching(s.handleListRunLinks))
 	mux.HandleFunc("POST /api/runs/{run}/links", s.launching(s.handleCreateRunLink))
@@ -860,8 +909,8 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 			h.Set("Access-Control-Allow-Origin", origin)
 			h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 			h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			// A receipt's log hash reaches the app's script across origins.
-			h.Set("Access-Control-Expose-Headers", logHashHeader)
+			// A receipt's log hash, and a diff file's commit and cut, reach the app's script across origins.
+			h.Set("Access-Control-Expose-Headers", logHashHeader+", "+commitHeader+", "+truncatedHeader)
 			h.Set("Vary", "Origin")
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)

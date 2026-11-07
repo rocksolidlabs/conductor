@@ -233,6 +233,43 @@ func TestShow(t *testing.T) {
 	}
 }
 
+// countingWriter counts the writes it takes and the bytes, keeping none.
+type countingWriter struct{ writes, n int }
+
+func (w *countingWriter) Write(b []byte) (int, error) {
+	w.writes++
+	w.n += len(b)
+	return len(b), nil
+}
+
+// RunTo hands git's output to its writer as it comes: a blob of 4 MiB
+// arrives in pieces, whole, and nothing of it is kept; a failure is
+// git's, with its line.
+func TestRunToStreamsTheOutput(t *testing.T) {
+	dir := repo(t)
+	big := strings.Repeat("0123456789abcdef", 1<<18)
+	os.WriteFile(filepath.Join(dir, "big.txt"), []byte(big), 0o644)
+	for _, args := range [][]string{{"add", "big.txt"}, {"commit", "-q", "-m", "big"}} {
+		if _, err := Run(context.Background(), dir, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oid, err := Run(context.Background(), dir, "rev-parse", "HEAD:big.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var w countingWriter
+	if err := RunTo(context.Background(), dir, &w, "cat-file", "blob", strings.TrimSpace(oid)); err != nil {
+		t.Fatal(err)
+	}
+	if w.n != len(big) || w.writes < 2 {
+		t.Fatalf("%d bytes in %d writes, want %d in pieces", w.n, w.writes, len(big))
+	}
+	if err := RunTo(context.Background(), dir, &w, "cat-file", "blob", strings.Repeat("0", 40)); err == nil || !strings.Contains(err.Error(), "git cat-file") {
+		t.Fatalf("a missing blob: %v", err)
+	}
+}
+
 // Porcelain is the status without the line counts: the top and each change
 // with its letter, from a directory inside the tree; outside one, an error.
 func TestPorcelain(t *testing.T) {

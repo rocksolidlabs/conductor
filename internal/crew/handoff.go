@@ -165,7 +165,7 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 	defer r.deliveries.Done()
 	for {
 		e.mu.Lock()
-		if len(m.handoffs) == 0 {
+		if len(m.handoffs) == 0 && len(m.answers) == 0 {
 			m.stopDelivering()
 			e.mu.Unlock()
 			// Messages past the queue's room, if any, are queued now
@@ -189,7 +189,13 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 				}
 				r.note(session.ActivityError, "handoff dropped from %s to %s: %s", h.from, m.def.Name, why)
 			}
-			m.handoffs = nil
+			for _, al := range m.answers {
+				r.note(session.ActivityError, "decision %s's answer was not typed into %s: %s", al.d.id(), m.def.Name, why)
+				if !al.notice {
+					go e.lineEnded(r, al.d, ledgerUntyped, why)
+				}
+			}
+			m.handoffs, m.answers = nil, nil
 			m.stopDelivering()
 			e.mu.Unlock()
 			return
@@ -198,6 +204,25 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 			r.noteQueued(m, "has not had its prompt yet")
 			e.mu.Unlock()
 			waitWake(r, m, l)
+			continue
+		}
+		if len(m.answers) > 0 {
+			// A decision's answer goes ahead of every handoff: the one whose
+			// mirror is the question shown first, then the others in their
+			// order, each typed past another decision's mirror
+			// (decisions.go: nextAnswer, typeAnswer).
+			e.mu.Unlock()
+			if e.beforeAnswer != nil {
+				e.beforeAnswer(m.def.Name)
+			}
+			if al, mirror := e.nextAnswer(r, m, l); al != nil {
+				if e.afterLook != nil {
+					e.afterLook(m.def.Name, mirror)
+				}
+				if e.typeAnswer(r, m, l, al, mirror) {
+					waitWake(r, m, l)
+				}
+			}
 			continue
 		}
 		h := m.handoffs[0]

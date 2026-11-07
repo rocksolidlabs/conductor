@@ -1417,9 +1417,14 @@ func TestAPausedRunStillSettlesAndTheRunRowFollows(t *testing.T) {
 		r, _ := e.Get(run.ID)
 		return r.State == RunFinished && r.Outcome == ledger.OutcomeSucceeded && r.Paused
 	})
-	l.mu.Lock()
-	row = l.runs[run.ID]
-	l.mu.Unlock()
+	// The engine settles the run in its view and commits the row after,
+	// outside its lock: the row is waited for, never read at once (#281).
+	waitTrue(t, "the run row settled", func() bool {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		row = l.runs[run.ID]
+		return row.State != ledger.RunRunning
+	})
 	if row.State != ledger.RunFinished || row.Outcome != ledger.OutcomeSucceeded || !row.Paused {
 		t.Fatalf("the run row after the outcome: %+v", row)
 	}

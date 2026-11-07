@@ -2346,3 +2346,230 @@ func TestAForgetTheIndexCannotTakeSaysSo(t *testing.T) {
 	}
 	forgotten(t, histSettle(t, restartServer(t, e)), id, "zforgetunopened")
 }
+
+// failDrops is a seam that fails every removal of the index's while it
+// is set.
+func failDrops(fail *atomic.Bool) func() error {
+	return func() error {
+		if fail.Load() {
+			return errors.New("the index could not be written")
+		}
+		return nil
+	}
+}
+
+// indexServed waits for h's index to be read again (its removal made).
+func indexServed(t *testing.T, h *historyIndexer) *history.Index {
+	t.Helper()
+	deadline := time.Now().Add(2 * testWait)
+	for time.Now().Before(deadline) {
+		if ix := h.index(); ix != nil {
+			return ix
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("the index was not read again: %v", h.indexing())
+	return nil
+}
+
+// A Forget whose removal fails on an open index answers 503
+// history_index_failed, and the index is not read while it owes the
+// removal; once the removal is made the index is read again, the record's
+// rows gone.
+func TestAnIndexThatOwesARemovalIsNotRead(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id, _ := forgettable(t, e, "zforgetfailed")
+	var fail atomic.Bool
+	h := freshIndexer(t, e, func(h *historyIndexer) { h.beforeDrop = failDrops(&fail) })
+	histSettle(t, e)
+	fail.Store(true)
+	if resp, out := e.do("DELETE", "/api/history/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusServiceUnavailable || errorCode(out) != "history_index_failed" {
+		t.Fatalf("forget with the index failing: %d %v", resp.StatusCode, out)
+	}
+	if ix := h.index(); ix != nil {
+		t.Fatal("the index owing a removal is read")
+	}
+	fail.Store(false)
+	forgotten(t, indexServed(t, h), id, "zforgetfailed")
+}
+
+// A Forget again after one the index could not take drops the record's
+// rows though the journal no longer holds it, and the index is read
+// again: the sweep's own retry held off (its backoff never ends).
+func TestAForgetAgainDropsWhatTheFirstCouldNot(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id, _ := forgettable(t, e, "zforgetagain")
+	var fail atomic.Bool
+	h := freshIndexer(t, e, func(h *historyIndexer) {
+		h.beforeDrop = failDrops(&fail)
+		h.after = func(d time.Duration) <-chan time.Time {
+			if d == h.reconcileTick || fail.Load() || d >= historyBackoffMin {
+				return nil
+			}
+			return time.After(d)
+		}
+	})
+	histSettle(t, e)
+	fail.Store(true)
+	if resp, out := e.do("DELETE", "/api/history/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusServiceUnavailable || errorCode(out) != "history_index_failed" {
+		t.Fatalf("the first forget: %d %v", resp.StatusCode, out)
+	}
+	if h.index() != nil {
+		t.Fatal("the index owing a removal is read")
+	}
+	fail.Store(false)
+	if resp, out := e.do("DELETE", "/api/history/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("the forget again: %d %v", resp.StatusCode, out)
+	}
+	ix := h.index()
+	if ix == nil {
+		t.Fatal("the index is not read after the forget again dropped what was owed")
+	}
+	forgotten(t, ix, id, "zforgetagain")
+}
+
+// An owner starts owing the sweep: a record forgotten while the index was
+// not open (its rows still in the index) keeps the index from being read
+// until the sweep is made, then is in no answer.
+func TestAStartWithARemovalOwedReadsNothing(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id, _ := forgettable(t, e, "zforgetstart")
+	e.srv.stopHistory()
+	if resp, out := e.do("DELETE", "/api/history/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusServiceUnavailable || errorCode(out) != "history_index_failed" {
+		t.Fatalf("forget with the index closed: %d %v", resp.StatusCode, out)
+	}
+	var fail atomic.Bool
+	fail.Store(true)
+	old := e.srv.history
+	h := newHistoryIndexer(e.srv.store, e.srv.sessionRecords, old.ledger, e.srv.dispatch, old.host, e.srv.log)
+	h.beforeDrop = failDrops(&fail)
+	e.srv.commits.add(h.observer())
+	e.srv.history = h
+	h.start()
+	t.Cleanup(h.stop)
+	select {
+	case <-h.opened:
+	case <-time.After(2 * testWait):
+		t.Fatal("the index never opened")
+	}
+	if h.current() == nil {
+		t.Fatal("the owner's index did not open")
+	}
+	if h.index() != nil {
+		t.Fatal("the index owing the start's sweep is read")
+	}
+	fail.Store(false)
+	forgotten(t, indexServed(t, h), id, "zforgetstart")
+}
+
+// receiptsOf are the keys of run's receipt sources in the index.
+func receiptsOf(t *testing.T, ix *history.Index, run string) []string {
+	t.Helper()
+	page, err := ix.Sources(t.Context(), "check:"+run+"/", history.MaxSourcesPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, s := range page {
+		if strings.HasPrefix(s.Key, "check:"+run+"/") {
+			out = append(out, s.Key)
+		}
+	}
+	return out
+}
+
+// Sources indexed without their repository (past the retries) are found
+// again by their marks, which the index keeps: after a restart (nothing
+// in the new process remembers them), the repository answering again,
+// a reconcile repairs every run and its receipts, and a search by the
+// repository finds them.
+func TestARepositoryNotKnownIsRepairedFromTheMarks(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.gitRepo(t)
+	var down atomic.Bool
+	down.Store(true)
+	set := func(h *historyIndexer) {
+		h.repoRetries = 1
+		h.after = func(d time.Duration) <-chan time.Time {
+			if d == h.reconcileTick {
+				return nil
+			}
+			return time.After(d)
+		}
+		h.repoOf = func(ctx context.Context, dir string) (string, string, error) {
+			if dir == e.root && down.Load() {
+				return "", "", errors.New("git rev-parse: timed out")
+			}
+			return gitcli.RepoOf(ctx, dir)
+		}
+	}
+	freshIndexer(t, e, set)
+	runs := []string{"hist-00000070", "hist-00000071", "hist-00000072"}
+	for i, run := range runs {
+		histCreate(t, e.srv.ledger, run, "", histCrew(e.root))
+		failedAt(t, e.srv.ledger, run, 1, 1, fmt.Sprintf("TestRepoLost%d", i))
+	}
+	ix := histSettle(t, e)
+	for _, run := range runs {
+		keys := receiptsOf(t, ix, run)
+		if len(keys) != 1 {
+			t.Fatalf("the receipts of %s: %v", run, keys)
+		}
+		for _, key := range append(keys, hRunRef(run)) {
+			if h := histEntry(t, ix, key); h.Repo != "" || !repoNotKnown(histMark(t, ix, key)) {
+				t.Fatalf("%s with its repository not known: repo %q, mark %s", key, h.Repo, histMark(t, ix, key))
+			}
+		}
+	}
+	down.Store(false)
+	freshIndexer(t, e, set) // a restart: the marks are all that remember
+	ix = histReconcile(t, e)
+	base := filepath.Base(e.root)
+	for i, run := range runs {
+		keys := receiptsOf(t, ix, run)
+		for _, key := range append(keys, hRunRef(run)) {
+			if h := histEntry(t, ix, key); h.Repo == "" || repoNotKnown(histMark(t, ix, key)) {
+				t.Fatalf("%s after the repository recovered: repo %q, mark %s", key, h.Repo, histMark(t, ix, key))
+			}
+		}
+		if got := histFind(t, ix, fmt.Sprintf("repo:%s TestRepoLost%d", base, i)); !slices.Contains(got, keys[0]) {
+			t.Fatalf("a search by the repository for %s's receipt: %v", run, got)
+		}
+	}
+}
+
+// Two reviews of one work task both submit needs_changes; the engine
+// accepts one, which reopens the work and cancels the other: only the
+// accepted review links the repair as reopened, the cancelled one, its
+// submitted verdict kept, links to nothing it did not reopen.
+func TestACancelledReviewLinksNoReopening(t *testing.T) {
+	e := newTestEnv(t, nil)
+	ld := e.srv.ledger
+	run := "hist-00000073"
+	c := histCrew(e.root)
+	c.Tasks = append(c.Tasks, crew.Task{ID: "review2", Member: "reviewer", Kind: crew.TaskReview, Instructions: "Review too.", Needs: []string{"build"}})
+	histCreate(t, ld, run, "", c)
+	histTx(t, ld, run, func(tx *ledger.Tx) error {
+		if err := tx.PutAttempt(histAttempt("build", 1, ledger.AttemptSucceeded, "", commitID(0), commitID(1))); err != nil {
+			return err
+		}
+		rv := histAttempt("review", 1, ledger.AttemptSucceeded, "", commitID(1), "")
+		rv.Member, rv.Result = "reviewer", needsChanges(t)
+		if err := tx.PutAttempt(rv); err != nil {
+			return err
+		}
+		cancelled := histAttempt("review2", 1, ledger.AttemptCancelled, "", commitID(1), "")
+		cancelled.Member, cancelled.Result = "reviewer", needsChanges(t)
+		if err := tx.PutAttempt(cancelled); err != nil {
+			return err
+		}
+		return tx.PutAttempt(histAttempt("build", 2, ledger.AttemptRunning, "", commitID(1), ""))
+	})
+	ix := histSettle(t, e)
+	if got := histOut(t, ix, attemptKey(run, "review", 1), relReopened); !slices.Equal(got, []string{attemptKey(run, "build", 2)}) {
+		t.Fatalf("the accepted review's reopened: %v", got)
+	}
+	if got := histOut(t, ix, attemptKey(run, "review2", 1), relReopened); len(got) != 0 {
+		t.Fatalf("the cancelled review's reopened: %v", got)
+	}
+}

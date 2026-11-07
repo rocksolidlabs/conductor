@@ -153,7 +153,7 @@ test("the trust question's answers are choices on the page and in the chat; type
   await page.locator('[data-chat-to-agent]').click()
   // The line is kept in the chat; the typing into the agent is refused with the words (a toast), so no "Sent to agent" marker follows.
   await expect(chat.locator('[data-chat-kind="message"]').last()).toContainText('yes', { timeout: 15_000 })
-  await expect(page.getByText(/the agent asks whether to trust the folder/).first()).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByText(/the agent asks a startup question \(whether to trust the folder/).first()).toBeVisible({ timeout: 15_000 })
   await expect(chat.locator('[data-chat-marker]')).toHaveCount(0)
   await page.waitForTimeout(1_000)
   let r = await api.run(run.id)
