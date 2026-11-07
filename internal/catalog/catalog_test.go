@@ -1546,3 +1546,36 @@ func TestClaudeCodesFirstRunScreensAreStartupQuestionsWithNoAnswers(t *testing.T
 		}
 	}
 }
+
+// Claude Code and Codex carry their prompts' shapes (#714; the screens
+// they are read on are the session's tests, TestTheAgentsPromptIsKnownByItsShape):
+// each compiles as a pattern, a saved override that leaves the shape out
+// takes the replaced agent's, and a shape that matches an empty screen,
+// or one past 200 bytes, is refused.
+func TestThePromptShape(t *testing.T) {
+	c := Default()
+	for _, id := range []string{"claude", "codex"} {
+		a, _ := c.Get(id)
+		if _, err := CompilePattern(a.PromptShape); err != nil {
+			t.Fatalf("%s's prompt shape %q: %v", id, a.PromptShape, err)
+		}
+	}
+	claude, _ := c.Get("claude")
+	if err := c.ApplyOverlay(Overlay{Agents: []Agent{{ID: "claude", Name: "Claude, mine", Command: []string{"claude"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if mine, _ := c.Get("claude"); mine.PromptShape != claude.PromptShape {
+		t.Fatalf("the override's shape: %q", mine.PromptShape)
+	}
+	ok := Agent{ID: "x", Name: "X", Command: []string{"x"}, PromptShape: `(?m)^› .*\z`}
+	if err := validate(ok); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{".*", "(", strings.Repeat("x", 201)} {
+		a := ok
+		a.PromptShape = bad
+		if err := validate(a); err == nil || !strings.Contains(err.Error(), "promptShape") {
+			t.Errorf("%q: %v", bad, err)
+		}
+	}
+}

@@ -825,7 +825,7 @@ func (d *brakemanDesk) heldAtStartup(t *deskTurn, req brakeman.Request) string {
 // server within waited: what its screen shows (screenWords), or that no
 // session of it was started. The turn ends and its run is stopped; what
 // was typed into the screen before (the request's line, once the screen
-// was quiet and showed no dialog's choices) is all it was given.
+// was quiet and its screen was its agent's prompt) is all it was given.
 //
 // A turn whose line was never typed because its agent's screen was not
 // recognised as its prompt (crew.UnknownScreen: a dialog the catalog does

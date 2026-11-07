@@ -102,6 +102,10 @@ type Options struct {
 	// text (Submit) is refused while the question shows (ErrTrustQuestion),
 	// since its Enter would pick whatever the dialog highlights.
 	TrustAnswers []Option
+	// PromptShape, when set, matches the agent's own prompt at rest on its
+	// whole screen (the catalog's promptShape): a submission OnlyAtPrompt
+	// is typed, and entered, only while the screen matches (atPrompt).
+	PromptShape *regexp.Regexp
 	// Questions are the agent's other startup questions (the catalog's
 	// questions; round 13, G2c), held exactly as the trust question is:
 	// source "trust", their answers the choices, typed text refused while
@@ -634,6 +638,13 @@ func (s *Local) pump() {
 				left = s.feedAsked(chunk)
 			}
 			s.feedMu.Unlock()
+			// The screen a submission's prompt is looked for on (atPrompt)
+			// takes it too before any viewer has it, and before the output
+			// is scanned for what says the agent waits (scanOutput): a
+			// submission typed once it waits finds the screen it waits at.
+			if !title {
+				s.shot.Feed(chunk)
+			}
 			s.mu.Lock()
 			s.ring.Write(chunk)
 			s.hub.BroadcastLoud(proto.Encode(proto.TypeOutput, chunk))
@@ -651,9 +662,6 @@ func (s *Local) pump() {
 			}
 			if left != "" {
 				s.withdraw(left)
-			}
-			if !title {
-				s.shot.Feed(chunk)
 			}
 		}
 		if err != nil {
@@ -5528,21 +5536,25 @@ func (s *Local) ScreenLines(n int) []string {
 	return rows
 }
 
-// DialogMayShow reports whether the screen every session keeps (shot, the
-// one ScreenRead reads) may show a dialog rather than the agent's prompt:
-// it shows a dialog's choice, read by its shape as startupChoiceShown reads
-// one (a numbered row with words, highlighted or not: "❯ 1. Yes", "› 1.
-// Update now"), or it is half a frame (a synchronized update under way),
-// so what it shows is not known. Text typed and its Enter would reach that
-// dialog and pick its highlighted choice. Unlike startupMayShow it needs no
-// startup question and no watch: it reads any agent's screen, at any time,
-// for what must type nothing into a screen it does not know (a Brakeman
-// turn's line, crew.UnknownScreen). Claude Code's prompt ("❯ Try …"
-// between two rules) and Codex's ("› Ask Codex to do anything") show no
-// numbered row.
-func (s *Local) DialogMayShow() bool {
-	rows, drawn := s.shot.Rows()
-	return !drawn || startupChoiceShown(strings.Join(rows, "\n"))
+// atPrompt reports whether the screen shows the agent's prompt, the one
+// screen a submission OnlyAtPrompt is typed into: read whole, as one frame
+// (PatternWatcher.Frame: every row, from the screen the pump feeds before
+// the viewers and before the scan for what says the agent waits), it shows
+// everything the program drew as it drew it (no synchronized update under
+// way, nothing cut by a window made smaller: a dialog cut away is not
+// known gone), and it matches the agent's prompt (Options.PromptShape); an
+// agent with no shape known, it shows no dialog's numbered choice, read by
+// its shape as startupChoiceShown reads one. Anything else, an unknown
+// dialog, a sign-in screen, half a frame, is not the prompt (#714).
+func (s *Local) atPrompt() bool {
+	text, _, uncut, _, _ := s.shot.Frame()
+	if !uncut {
+		return false
+	}
+	if s.opts.PromptShape != nil {
+		return s.opts.PromptShape.MatchString(text)
+	}
+	return !startupChoiceShown(text)
 }
 
 // ScreenCols is the width of the screen ScreenRead reads, in cells: a row

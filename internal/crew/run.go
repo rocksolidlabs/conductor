@@ -163,7 +163,7 @@ var (
 // UnknownScreen is what a Brakeman turn's run log says of a member whose
 // screen is not recognised as its agent's prompt (promptWith): its line is
 // not typed. The Brakeman desk's words of such a turn say the same.
-const UnknownScreen = "shows a screen not recognised as its prompt (a dialog's choices, or no readiness)"
+const UnknownScreen = "shows a screen not recognised as its prompt (not its prompt's shape, a dialog's choices, or no readiness)"
 
 // Diff is what a member's worktree adds and removes against the commit it
 // began from, in lines: tracked changes against the base, uncommitted
@@ -1491,9 +1491,35 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 	pending := false
 	if hasPrompt {
 		var res session.SubmitResult
-		// unknown says the prompt waits at a screen not recognised
-		// (atUnknownScreen), noted once in the run log.
-		unknown := false
+		// unrecognised holds a Brakeman turn's line, typed only into its
+		// agent's prompt (session.Submission.OnlyAtPrompt: its screen, as
+		// the writer takes the text and its Enter, matches the agent's
+		// prompt shape), never into a screen not recognised as one (a
+		// dialog the catalog does not know, a sign-in, half a frame), nor
+		// "anyway" once not ready by the cap: its Enter would pick the
+		// choice a dialog highlights. Noted once (UnknownScreen), the line
+		// waits and is tried again a poll later; the desk ends the turn at
+		// its start bound with the screen's words (notStarted). stop says
+		// the wait ended, with what promptWith returns.
+		noted := false
+		unrecognised := func() (stop bool, err error) {
+			if !noted {
+				noted = true
+				e.mu.Lock()
+				m.state.Unrecognised = true
+				r.note(session.ActivityStatus, "%s %s: its prompt waits", name, UnknownScreen)
+				e.mu.Unlock()
+			}
+			select {
+			case <-ctx.Done():
+				return true, ctx.Err()
+			case <-local.Ended():
+				e.endedEarly(r, m, local, "before its prompt was typed")
+				return true, nil
+			case <-time.After(readyPoll):
+			}
+			return false, nil
+		}
 		for {
 			err := e.await(ctx, local, func(question string) {
 				e.mu.Lock()
@@ -1502,7 +1528,7 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 			})
 			switch {
 			case errors.Is(err, errNotReady) && r.class == ClassBrakeman:
-				// Not taken for its prompt: nothing is typed (below).
+				// Not taken for its prompt: nothing is typed (unrecognised).
 			case errors.Is(err, errNotReady):
 				e.mu.Lock()
 				r.note(session.ActivityStatus, "%s was not ready after %v: typing its prompt anyway", name, readyCap)
@@ -1513,33 +1539,15 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 			case err != nil:
 				return err
 			}
-			if r.class == ClassBrakeman && (err != nil || local.DialogMayShow()) {
-				// A Brakeman turn types its line into its agent's prompt
-				// only, never into a screen not recognised as one: a
-				// dialog's choices on the screen (one the catalog does not
-				// know: a startup question it knows holds the wait above),
-				// or no readiness by the cap. Its Enter would pick the
-				// choice highlighted. The line waits, looked for again a
-				// poll later; the desk ends the turn at its start bound,
-				// with the screen's words (notStarted).
-				if !unknown {
-					unknown = true
-					e.mu.Lock()
-					m.state.Unrecognised = true
-					r.note(session.ActivityStatus, "%s %s: its prompt waits", name, UnknownScreen)
-					e.mu.Unlock()
-				}
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-local.Ended():
-					e.endedEarly(r, m, local, "before its prompt was typed")
-					return nil
-				case <-time.After(readyPoll):
+			if err != nil && r.class == ClassBrakeman {
+				// A Brakeman turn's member not ready by the cap: its line
+				// is never typed anyway.
+				if stop, err := unrecognised(); stop {
+					return err
 				}
 				continue
 			}
-			res, err = local.Submit(ctx, session.Submission{Text: text, ByName: typedBy, Confirm: true, BeforeEnter: func() {
+			res, err = local.Submit(ctx, session.Submission{Text: text, ByName: typedBy, Confirm: true, OnlyAtPrompt: r.class == ClassBrakeman, BeforeEnter: func() {
 				e.mu.Lock()
 				m.markPrompted()
 				e.mu.Unlock()
@@ -1559,6 +1567,12 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 				e.mu.Unlock()
 				m.poke()
 			}})
+			if errors.Is(err, session.ErrNotAtPrompt) {
+				if stop, err := unrecognised(); stop {
+					return err
+				}
+				continue
+			}
 			if errors.Is(err, session.ErrTrustQuestion) || errors.Is(err, session.ErrQuestion) {
 				// A question the wait had not seen yet (a dialog Submit
 				// found on the screen) holds the prompt: nothing was
@@ -2456,13 +2470,22 @@ func awaitReady(ctx context.Context, l *session.Local, held func(question string
 	return productReady.await(ctx, l, held)
 }
 
+// SetReadyCapForTest makes the engine's readiness wait give up after cap
+// rather than readyCap, for a test of what follows (a Brakeman turn's line
+// never typed anyway). It is called before the engine launches any run:
+// the wait is read without a lock.
+func (e *Engine) SetReadyCapForTest(cap time.Duration) {
+	e.await = readyWait{readyPoll, readyQuiet, readyMin, cap}.await
+}
+
 // readyWait is how a readiness wait looks: every poll, and ready once the
-// output has been quiet for quiet and min has passed since the wait began.
+// output has been quiet for quiet and min has passed since the wait began;
+// not ready by cap (readyCap when zero), errNotReady.
 // The product's is productReady; a test that is not about readiness gives
 // its sessions a short one, as the product's bounds are not the test's.
-type readyWait struct{ poll, quiet, min time.Duration }
+type readyWait struct{ poll, quiet, min, cap time.Duration }
 
-var productReady = readyWait{readyPoll, readyQuiet, readyMin}
+var productReady = readyWait{readyPoll, readyQuiet, readyMin, readyCap}
 
 // await is awaitReady with w's bounds.
 func (w readyWait) await(ctx context.Context, l *session.Local, held func(question string)) error {
@@ -2536,7 +2559,11 @@ func (w readyWait) at(rd readiness, start, now time.Time) (ready, capped, hold b
 	if rd.state == session.AttentionNeedsInput || rd.state == session.AttentionDone {
 		return true, false, false
 	}
-	capped = now.Sub(start) >= readyCap
+	limit := w.cap
+	if limit == 0 {
+		limit = readyCap
+	}
+	capped = now.Sub(start) >= limit
 	if rd.pasteSeen && !rd.pasteOn {
 		return false, capped, false
 	}

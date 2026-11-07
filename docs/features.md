@@ -3826,22 +3826,29 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
     `TestTheRecordOfATerminalCatchesOneKey` proves catches one key with no
     Enter.
   - A dialog no catalog entry knows gets no key (#714, 2026-11-07). A
-    Brakeman turn types its line only into its agent's prompt: the
-    engine's readiness (the agent's report, or its screen quiet), with no
-    dialog's choice on the screen (a numbered row, highlighted or not,
-    read by its shape as the startup questions' choices are), never "typed
-    anyway" after a minute as a person's run is. A screen that shows a
-    choice (a version's new sign-in menu, an update offer the catalog does
-    not have) keeps the line waiting, no Enter to pick its highlighted
-    choice; at the start bound the turn ends failed, "the agent's screen
+    Brakeman turn types its line, and presses its Enter, only into its
+    agent's prompt: the engine's readiness (the agent's report, or its
+    screen quiet), then, as the writer takes the text and again its
+    Enter, the screen read whole (every row, from the screen the output
+    feeds before the viewers and before what says the agent waits) is a
+    whole frame, nothing cut by a smaller window, that matches the
+    agent's prompt shape (the catalog's `promptShape`): Claude Code's a ❯
+    row between two rules at the screen's foot, Codex's a › row that is
+    no numbered choice and not "Waiting for startup", their words never
+    matched (seen with 2.1.319 and 0.163.0). An agent with no shape known
+    keeps a whole screen with no dialog's numbered choice. Never "typed
+    anyway" after a minute as a person's run is. Any other screen (a
+    version's new sign-in, an update offer the catalog does not have, a
+    sign-in no entry knows) keeps the line waiting, no byte and no
+    Enter; at the start bound the turn ends failed, "the agent's screen
     was not recognised, neither its prompt nor a startup screen Conductor
     knows, so its request's line was not typed", with the screen's words,
-    and the role is unavailable as above. Claude Code's prompt (a ❯ row
-    between two rules) and Codex's (a › row) show no numbered row (seen
-    with 2.1.319 and 0.163.0). A full screen with no choices (the bound's
-    test above) is still read as a prompt. `TestAnUnknownDialogGetsNoLine`
-    (no byte reaches the dialog; a prompt drawn as Claude Code draws it
-    gets the line), `TestDialogMayShowReadsAnyScreen`. #659's third live
+    and the role is unavailable as above. `TestTheAgentsPromptIsKnownByItsShape`,
+    `TestADialogDrawnWhileTheLineWaitsForTheWriterGetsNoByte`,
+    `TestTheScreenHasADialogBeforeTheAgentIsSeenWaiting`,
+    `TestADialogCutByASmallerWindowKeepsTheLineOut`,
+    `TestAnUnknownDialogGetsNoLine`, `TestTheLineIsTypedAtTheAgentsPrompt`,
+    `TestATurnWhoseAgentNeverSettlesGetsNoLine`. #659's third live
     check met the hazard with real Claude Code 2.1.319 on an account
     folder never used: it opens on a theme picker ("Choose the text style
     that looks best with your terminal", a choice highlighted and no

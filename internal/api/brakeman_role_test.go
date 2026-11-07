@@ -525,21 +525,20 @@ func (b *bkEnv) typedWait(t *testing.T, id, want string) string {
 
 // TestAnAgentAtAScreenNobodyKnowsDidNotStart: an agent that draws a
 // full-screen prompt no catalog entry knows (another program's sign-in, a
-// reworded screen) and no dialog's choices is read as its prompt: once it
-// is quiet the request's line is typed into it (a screen that shows a
-// dialog's choices gets no line, TestAnUnknownDialogGetsNoLine, and the
-// catalog's startup questions no key). Its agent then never calls the server, and the
-// turn is held only until its start bound (a third of its 15 minutes:
-// 5), on the desk's clock, far short of its deadline: it ends failed,
-// the agent did not start, with what its screen shows (its link left
-// out), charged the minutes it ran. The role is unavailable with those
-// words and a retry of its own, read from its records; a wake is
+// reworded screen), with no dialog's numbered choice on it, is not at its
+// prompt: its screen does not match its agent's prompt shape (Claude
+// Code's), so the request's line is never typed into it, nor its Enter
+// (#714). Its agent then never calls the server, and the turn is held only
+// until its start bound (a third of its 15 minutes: 5), on the desk's
+// clock, far short of its deadline: it ends failed, its screen not
+// recognised and its line not typed, with what its screen shows (its link
+// left out), charged the minutes it ran. The role is unavailable with
+// those words and a retry of its own, read from its records; a wake is
 // gathered, not fired, and a person's own request in the same state says
 // the same at the same bound instead of waiting out its minutes. At the
 // role's retry the batch kept fires, and once the agent reads that
 // request (it started) the role counts from 0 again and the bound no
-// longer applies. No pattern is involved: the bound is the fallback for
-// every screen.
+// longer applies. Nothing reaches the screen throughout.
 func TestAnAgentAtAScreenNobodyKnowsDidNotStart(t *testing.T) {
 	t.Parallel()
 	b := brakemanEnv(t, nil)
@@ -550,9 +549,8 @@ func TestAnAgentAtAScreenNobodyKnowsDidNotStart(t *testing.T) {
 	if !waitFor(30*time.Second, func() bool { return strings.Contains(strings.Join(l.ScreenLines(12), "\n"), "[ Sign in ]") }) {
 		t.Fatalf("the screen was never drawn: %q", l.ScreenLines(12))
 	}
-	// The screen went quiet and the request's line was typed into it, as
-	// into any agent's: the bound is counted only after that.
-	b.typedWait(t, id, "Brakeman request "+id+" (wake)")
+	// The screen went quiet and is not the agent's prompt: the line waits.
+	b.heldUnrecognised(t, id)
 	by, wait := b.startBy(t, id)
 	if wait != 5*time.Minute {
 		t.Fatalf("a 15-minute turn's start bound is %v, want a third of it", wait)
@@ -565,7 +563,7 @@ func TestAnAgentAtAScreenNobodyKnowsDidNotStart(t *testing.T) {
 	c.add(time.Second)
 	b.settle(t)
 	q := b.waitState(t, id, brakeman.StateFailed)
-	for _, want := range []string{"did not start in 5 minutes, no call to Conductor", "You are not signed in.", "[ Sign in ]", "[link]"} {
+	for _, want := range []string{"the agent's screen was not recognised", "its request's line was not typed in 5 minutes", "You are not signed in.", "[ Sign in ]", "[link]"} {
 		if !strings.Contains(q.Why, want) {
 			t.Fatalf("the turn's words lack %q: %+v", want, q)
 		}
@@ -590,14 +588,19 @@ func TestAnAgentAtAScreenNobodyKnowsDidNotStart(t *testing.T) {
 	if !waitFor(30*time.Second, func() bool { return strings.Contains(strings.Join(la.ScreenLines(12), "\n"), "[ Sign in ]") }) {
 		t.Fatalf("the screen was never drawn: %q", la.ScreenLines(12))
 	}
-	b.typedWait(t, ask, "Brakeman request "+ask+" (briefing)")
+	b.heldUnrecognised(t, ask)
 	by, _ = b.startBy(t, ask)
 	c.add(by.Sub(c.now()))
 	b.settle(t)
-	if q := b.waitState(t, ask, brakeman.StateFailed); !strings.Contains(q.Why, "did not start in 5 minutes") || !strings.Contains(q.Why, "You are not signed in.") {
+	if q := b.waitState(t, ask, brakeman.StateFailed); !strings.Contains(q.Why, "line was not typed in 5 minutes") || !strings.Contains(q.Why, "You are not signed in.") {
 		t.Fatalf("the person's request: %+v", q)
 	}
 	b.slotFree(t)
+	for _, req := range []string{id, ask} {
+		if got := b.typedInto(t, req); got != "" {
+			t.Fatalf("keys reached the screen: %q", got)
+		}
+	}
 	// A wake meanwhile is gathered, not fired; nor is the batch by the
 	// person's request.
 	b.desk.roleWake(crew.RoleWake{Source: crew.WakeTaskFailed, Subject: "task:run-1/lint", Key: "attempts 1", At: c.now()})
@@ -637,8 +640,8 @@ func TestAnAgentAtAScreenNobodyKnowsDidNotStart(t *testing.T) {
 // line waits (crew.UnknownScreen). At the turn's start bound, on the
 // desk's clock, the turn ends failed with words saying the agent's screen
 // was not recognised and what it shows; still nothing has reached it. The
-// same turn against an agent at its prompt (bkPromptScript, a ❯ row as
-// Claude Code draws it) types its line.
+// same turn against an agent at its prompt types its line
+// (TestTheLineIsTypedAtTheAgentsPrompt).
 func TestAnUnknownDialogGetsNoLine(t *testing.T) {
 	t.Parallel()
 	b := brakemanEnv(t, nil)
@@ -646,14 +649,7 @@ func TestAnUnknownDialogGetsNoLine(t *testing.T) {
 	b.enable(t, "bkdialog", nil)
 	id := b.briefing(t)
 	b.launched(t, id)
-	sid, _, l := b.turnSession(t, id)
-	run := b.runOf(t, sid)
-	if !waitFor(30*time.Second, func() bool {
-		r, _ := b.srv.runs.Get(run)
-		return slices.ContainsFunc(r.Log, func(e session.ActivityEntry) bool { return strings.Contains(e.Message, crew.UnknownScreen) })
-	}) {
-		t.Fatalf("the engine never held the line at the dialog: %q", l.ScreenLines(12))
-	}
+	b.heldUnrecognised(t, id)
 	if got := b.typedInto(t, id); got != "" {
 		t.Fatalf("keys reached the dialog: %q", got)
 	}
@@ -670,12 +666,69 @@ func TestAnUnknownDialogGetsNoLine(t *testing.T) {
 	if got := b.typedInto(t, id); got != "" {
 		t.Fatalf("keys reached the dialog: %q", got)
 	}
-	// At its prompt, the line is typed.
-	b.configure(t, func(cfg map[string]any) { cfg["agentId"] = "bkprompt" })
-	ask := b.briefing(t)
-	b.typedWait(t, ask, "Brakeman request "+ask+" (briefing)")
-	b.expect(t, "POST", "/api/brakeman/requests/"+ask+"/cancel", map[string]any{"opId": "c-1"}, http.StatusOK, "")
+}
+
+// heldUnrecognised waits for the engine to note that the line of the turn
+// for request id waits at a screen not recognised as its agent's prompt
+// (crew.UnknownScreen): what the desk's words of the turn then say.
+func (b *bkEnv) heldUnrecognised(t *testing.T, id string) {
+	t.Helper()
+	sid, _, l := b.turnSession(t, id)
+	run := b.runOf(t, sid)
+	if !waitFor(30*time.Second, func() bool {
+		r, _ := b.srv.runs.Get(run)
+		return slices.ContainsFunc(r.Log, func(e session.ActivityEntry) bool { return strings.Contains(e.Message, crew.UnknownScreen) })
+	}) {
+		t.Fatalf("the engine never held the line: %q", l.ScreenLines(12))
+	}
+}
+
+// TestTheLineIsTypedAtTheAgentsPrompt: at its prompt, as Claude Code
+// 2.1.319 and Codex 0.163.0 draw it (bkPromptScript, bkCodexPromptScript),
+// each agent's screen matches its prompt shape: the request's line is
+// typed, and its Enter pressed.
+func TestTheLineIsTypedAtTheAgentsPrompt(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	for i, agent := range []string{"bkprompt", "bkcodexprompt"} {
+		b.enable(t, agent, nil)
+		ask := b.briefing(t)
+		if got := b.typedWait(t, ask, "\r"); !strings.HasPrefix(got, "Brakeman request "+ask+" (briefing): ") || !strings.HasSuffix(got, "\r") {
+			t.Fatalf("%s's terminal: %q", agent, got)
+		}
+		b.expect(t, "POST", "/api/brakeman/requests/"+ask+"/cancel", map[string]any{"opId": fmt.Sprintf("c-%d", i)}, http.StatusOK, "")
+		b.slotFree(t)
+	}
+}
+
+// TestATurnWhoseAgentNeverSettlesGetsNoLine: an agent at its prompt whose
+// screen never goes quiet (bkSpinScript: a spinner under the prompt) is
+// never ready; past the readiness wait's cap
+// (a second here, SetReadyCapForTest) a person's run would have its
+// prompt typed anyway, a Brakeman turn's line never is: the engine notes
+// the line waits at a screen not recognised, and at the turn's start
+// bound, on the desk's clock, the turn ends with words saying so. Nothing
+// reaches the agent's terminal.
+func TestATurnWhoseAgentNeverSettlesGetsNoLine(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.srv.runs.SetReadyCapForTest(time.Second)
+	c := b.fakeClock()
+	b.enable(t, "bkspin", nil)
+	id := b.briefing(t)
+	b.launched(t, id)
+	b.heldUnrecognised(t, id)
+	by, _ := b.startBy(t, id)
+	c.add(by.Sub(c.now()))
+	b.settle(t)
+	q := b.waitState(t, id, brakeman.StateFailed)
+	if !strings.Contains(q.Why, "the agent's screen was not recognised") || !strings.Contains(q.Why, "its request's line was not typed") {
+		t.Fatalf("the turn's words: %+v", q)
+	}
 	b.slotFree(t)
+	if got := b.typedInto(t, id); got != "" {
+		t.Fatalf("keys reached the agent: %q", got)
+	}
 }
 
 // TestClaudeCodesFirstRunScreensGetNoKey: Claude Code on an account

@@ -69,6 +69,13 @@ func defaults() []Agent {
 			TrustPrompt: `Is\s*this\s*a\s*project\s*you\s*created\s*or\s*one\s*you\s*trust\?`,
 			// Claude Code highlights "No, exit" first: the trusting answer is Down, then Enter (verified in a PTY on 2026-10-03, 2.1.288).
 			TrustAnswers: []Answer{{Label: "Yes, I trust this folder", Input: "\x1b[B\r"}, {Label: "No, exit", Input: "\r"}},
+			// Its prompt at rest, by its shape (2.1.319 in a PTY, #714): a
+			// ❯ row, its text not a numbered choice, right under a rule,
+			// a rule under it, and only rows that are no choice below that
+			// to the screen's end. The ❯ row's words change (eight "Try …"
+			// placeholders in turn, the typed line, none), so they are not
+			// matched; a dialog's ❯ row is not between two rules.
+			PromptShape: claudePromptShape,
 			// Verified live (2.1.287).
 			Session: &SessionRecipe{StartArgs: []string{"--session-id", IDArg}, IDFrom: "hook", ResumeArgs: []string{"--resume", IDArg}, IDPattern: uuidPattern},
 			// Claude Code's dialogs during the work, as 2.1.304 drew them in
@@ -161,6 +168,14 @@ func defaults() []Agent {
 			// the label says so, as Claude Code's "No, exit" does (seen in the
 			// rc.7 app on 2026-10-11).
 			TrustAnswers: []Answer{{Label: "Yes, trust this folder", Input: "\r"}, {Label: "No, quit", Input: "\x1b[B\r"}},
+			// Its composer at rest, by its shape (0.163.0 in a PTY, #714):
+			// a › row whose text is no numbered choice (its dialogs'
+			// highlighted row, "› 1. Update now") and not "Waiting for
+			// startup" (the composer before its session is configured: RE2
+			// has no lookahead, so a text that starts "Wa" is refused),
+			// then only rows that are no choice (its status line, "? for
+			// shortcuts") to the screen's end.
+			PromptShape: codexPromptShape,
 			// Codex 0.161 opens on "Hooks need review" whenever its hooks are
 			// new or changed (1. Review hooks, highlighted; 2. Trust all and
 			// continue; 3. Continue without trusting): a digit moves the
@@ -393,3 +408,11 @@ func defaults() []Agent {
 		},
 	}
 }
+
+// The built-in agents' prompt shapes (Agent.PromptShape). A text or a row
+// that is no choice begins with neither a highlight's marker nor a number
+// and a dot ("2. Skip"); an empty row is none either.
+const (
+	claudePromptShape = `(?m)^─{8,}\n❯[ \x{a0}]*(?:(?:[^\d\s\x{a0}]|\d+[^\d.\n])[^\n]*)?(?:\n[^─\n][^\n]*){0,8}\n─{8,}(?:\n *(?:(?:[^\d\s❯›>]|\d+[^\d.\n])[^\n]*)?){0,8}\s*\z`
+	codexPromptShape  = `(?m)^ {0,3}›[ \x{a0}]+(?:[^\d\sW\x{a0}]|W[^a\n]|\d+[^\d.\n])[^\n]*(?:\n *(?:(?:[^\d\s❯›>]|\d+[^\d.\n])[^\n]*)?){1,6}\s*\z`
+)
