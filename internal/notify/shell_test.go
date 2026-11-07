@@ -56,3 +56,73 @@ func TestShellFiles(t *testing.T) {
 		t.Errorf("no cwd: %v", got)
 	}
 }
+
+// A word under /dev is a device and names nothing, judged on the word as
+// written, before the file system is asked: /dev/fd/3 and /dev/stdin can
+// resolve to a regular file the hook itself holds open. The one exception is
+// /dev/shm, a tmpfs where people keep files, for a word that stays under it
+// once cleaned. Every other word is reported as before: an absolute one as
+// written, never cleaned, since the function cannot know that a component
+// before a ".." is a symlink (link/.. is the link target's parent, not the
+// folder holding link); a relative one joined to the command's directory.
+// The temporary folder may itself be under /dev/shm (TMPDIR in memory), so
+// no case depends on where it is.
+func TestShellFilesDeviceWords(t *testing.T) {
+	dir := t.TempDir()
+	for _, d := range []string{"a/b", "sub"} {
+		if err := os.MkdirAll(filepath.Join(dir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{"notes.txt", "a/notes.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(dir, "a", "b"), filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	p := func(f string) string { return dir + "/" + f }
+	type c struct {
+		word, want string // want "" is nothing reported
+	}
+	cases := []c{
+		{"/dev/null", ""},
+		{"/dev/tty", ""},
+		{"/dev/fd/0", ""},
+		{"/dev/stdin", ""},
+		{"/dev/mqueue/q", ""},
+		{"/dev/shmfoo", ""},           // not under /dev/shm/: a device word, as on main
+		{"/dev/shm", ""},              // the folder itself, not under it
+		{"/dev/shm/../null", ""},      // /dev/null once cleaned
+		{"/dev/shm/../fd/0", ""},      // /dev/fd/0 once cleaned, a regular file when stdin is one
+		{"notes.txt", p("notes.txt")}, // relative: joined to the command's directory
+		{"sub/../notes.txt", p("notes.txt")},
+		{p("notes.txt"), p("notes.txt")},
+		{p("sub/../notes.txt"), p("sub/../notes.txt")},   // through "..": as written
+		{p("link/../notes.txt"), p("link/../notes.txt")}, // link/.. is a/, so this is a/notes.txt; cleaned it would be dir/notes.txt
+	}
+	// A file under /dev/shm itself, when there is one to write.
+	if shm, err := os.MkdirTemp("/dev/shm", "notify-shell-"); err == nil {
+		t.Cleanup(func() { os.RemoveAll(shm) })
+		if err := os.WriteFile(shm+"/notes.txt", []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		os.Mkdir(shm+"/sub", 0o755)
+		cases = append(cases,
+			c{shm + "/notes.txt", shm + "/notes.txt"},
+			c{shm + "/sub/../notes.txt", shm + "/sub/../notes.txt"},
+		)
+	} else {
+		t.Logf("no writable /dev/shm here, its kept cases not run: %v", err)
+	}
+	for _, c := range cases {
+		var want []FileRef
+		if c.want != "" {
+			want = []FileRef{{"read", c.want}}
+		}
+		if got := shellFiles("cat "+c.word, dir); !reflect.DeepEqual(got, want) {
+			t.Errorf("cat %s: %v, want %v", c.word, got, want)
+		}
+	}
+}

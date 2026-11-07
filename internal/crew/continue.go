@@ -48,6 +48,10 @@ type Loaded struct {
 	Prerequisites []ledger.PrerequisiteRow
 	Imported      map[string]ledger.AttemptRow
 	FailedChecks  []ledger.CheckRow
+	// Holds are its decisions' holds of its tasks, active and released, and
+	// HeldDecisions the decisions of the active ones (decisions_continue.go).
+	Holds         []ledger.HoldRow
+	HeldDecisions map[int64]ledger.DecisionRow
 }
 
 // LoadImports reads into from.Imported the attempt rows of the results its
@@ -98,8 +102,12 @@ type candidate struct {
 // has: interrupted, stopped or finished, and not continued yet. The new run
 // names the old in ResumedFrom (the ledger's ContinuedFrom) and the old
 // names it in ResumedBy (ContinuedBy). A run still going is refused
-// (ErrRunRunning), one continued already with RunResumedError. The label
-// is the old run's when none is given and the engine still holds it.
+// (ErrRunRunning), one continued already with RunResumedError. A run
+// whose chain of continuations is longer than a server reads, more than
+// maxChain (10,000) runs with runID among them, is refused
+// (ErrChainTooLong) with nothing made or moved: the chain's decisions are
+// read whole or the continuation is not made (readDecisionHistory). The
+// label is the old run's when none is given and the engine still holds it.
 func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, error) {
 	if e.ledger == nil {
 		return nil, ErrNoLedger
@@ -156,6 +164,10 @@ func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, er
 	}
 	h, err := e.readHistory(ctx, from)
 	if err != nil {
+		undo()
+		return nil, err
+	}
+	if h.dec, err = e.readDecisionHistory(ctx, from); err != nil {
 		undo()
 		return nil, err
 	}
@@ -287,6 +299,9 @@ type history struct {
 	// failed is the receipt that failed each task's last attempt, when it
 	// failed at a check or a verify step, from the run that holds it.
 	failed map[string]*failedCheck
+	// dec is what the continuation takes of the chain's decisions
+	// (decisions_continue.go).
+	dec decisionHistory
 }
 
 // uncountedRow reports whether an attempt's row is one not counted: its
@@ -294,10 +309,11 @@ type history struct {
 // stage of the project manifest, or, for a run launched from a ticket, it
 // could not start as its plan revision approved, at "package" or "agent"
 // (launchStage), or it could not be handed the receipt of the check that
-// failed the attempt before (receiptStage). A continuation passes over it
+// failed the attempt before (receiptStage), or its task's decisions
+// (decisionsStage). A continuation passes over it
 // as the run that made it did.
 func uncountedRow(a ledger.AttemptRow) bool {
-	return a.State == ledger.AttemptFailed && a.ResultCommit == "" && (manifestStage(a.Stage) || launchStage(a.Stage) || a.Stage == receiptStage)
+	return a.State == ledger.AttemptFailed && a.ResultCommit == "" && (manifestStage(a.Stage) || launchStage(a.Stage) || a.Stage == receiptStage || a.Stage == decisionsStage)
 }
 
 // manifestStage reports whether stage is a project manifest's: one of its
@@ -566,6 +582,12 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 				// Failed at a check: the next attempt is handed its receipt.
 				t.priorFailed = &priorFailed{n: la.N, state: la.State, stage: la.Stage, err: la.Error, result: la.ResultCommit, branch: la.Branch, check: fc}
 			}
+			if hasLast {
+				// The standing failed candidate of a task that fails here
+				// before it makes an attempt (standingFailed).
+				pl := ledger.AttemptRow{RunID: la.RunID, TaskID: la.TaskID, N: la.N, Member: la.Member, Branch: la.Branch, StartCommit: la.StartCommit, ResultCommit: la.ResultCommit, State: la.State, Stage: la.Stage, Error: la.Error, Result: la.Result, Where: la.Where}
+				t.priorLast = &pl
+			}
 			if hasLast && t.def.Kind == TaskWork && la.State == ledger.AttemptFailed && la.ResultCommit != "" && la.StartCommit != "" && refusedBeforeChecks(la.Stage) {
 				t.refused = &refusal{n: la.N, start: la.StartCommit, stage: la.Stage, err: la.Error, result: la.ResultCommit, branch: la.Branch}
 			}
@@ -622,9 +644,12 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 			}
 			r.markTask(t)
 		}
+		// The decisions of the run continued, with their holds, before
+		// anything is readied on them (decisions_continue.go).
+		moveDecisions := e.continueDecisions(r, from, h)
 		r.ready()
 		e.settleRun(r)
-		r.note(session.ActivityStatus, "continues %s: %d results kept, %d verified again, %d waiting for a decision, %d messages carried", from.Run.ID, imported, again, uncertain, len(r.messages))
+		r.note(session.ActivityStatus, "continues %s: %d results kept, %d verified again, %d uncertain launches waiting for a retry, %d messages carried", from.Run.ID, imported, again, uncertain, len(r.messages))
 		w := ev("run.continued", map[string]any{"from": from.Run.ID, "base": r.base, "imported": imported, "reverified": again, "uncertain": uncertain, "messages": len(r.messages), "held": held})
 		w.more = func(ltx LedgerTx) error {
 			if err := ltx.Continued(from.Run.ID); err != nil {
@@ -637,7 +662,7 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 					return err
 				}
 			}
-			return nil
+			return moveDecisions(ltx)
 		}
 		return w
 	}, giveUp)
@@ -664,10 +689,28 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 		}
 		old.resumedBy = r.id
 		old.resuming = false
+		// The decisions it held are the continuation's now: its copies go,
+		// so nothing finds or applies one through it (ConfirmAuthority),
+		// and with them the holds its tasks show (Get, the saved record),
+		// which the move released in the ledger (#636, review round 3).
+		// Only the engine's mirror: the run continued writes nothing more.
+		for _, d := range old.decisions {
+			if d.n == 0 || !d.waits() {
+				continue
+			}
+			for _, t := range d.holds {
+				t.holds = slices.DeleteFunc(t.holds, func(x *decision) bool { return x == d })
+			}
+			d.holds = nil
+		}
+		old.decisions = slices.DeleteFunc(old.decisions, func(d *decision) bool { return d.n != 0 && d.waits() })
 		old.note(session.ActivityStatus, "continued as %s", r.id)
 		old.touch()
 		e.mu.Unlock()
 	}
+	// The answered decisions moved are applied now, each in its own
+	// transaction (O6).
+	e.applyDecisions(r)
 	e.pumpLocked(r)
 	return nil
 }
@@ -771,6 +814,13 @@ func (e *Engine) dispatchCandidate(ctx context.Context, r *run, a *attempt, c ca
 		}, nil)
 		return
 	}
+	e.verifyRecorded(r, a)
+}
+
+// verifyRecorded verifies a, recorded as verifying its result (verify),
+// unless it closed meanwhile or its run stops, which close it. The caller
+// holds neither lock and counts a start in r.starts until it returns.
+func (e *Engine) verifyRecorded(r *run, a *attempt) {
 	e.mu.Lock()
 	closed := !a.closedAt.IsZero() || r.stopping
 	if !closed {
@@ -864,6 +914,9 @@ func Recovered(rec Run, from Loaded) Run {
 		t := &rec.Tasks[i]
 		row, ok := rows[t.ID]
 		taskStateOfRow(t, row, ok, from.Attempts, from.Imported)
+		// The decisions that hold it, as the ledger has its holds: active
+		// rows under this run only (I16).
+		t.Holds = recoveredHolds(from, t.ID)
 	}
 	now := time.Now().UTC()
 	for i := range rec.Members {

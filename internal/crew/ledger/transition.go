@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -41,7 +42,15 @@ type Tx struct {
 	// marked is the run Continued marked, "" for none: its pointer
 	// changes in this transition too (OnCommit).
 	marked string
+	// after is what AfterCommit was given.
+	after []func()
 }
+
+// AfterCommit gives the transaction fn, called once it has committed,
+// under the ledger's lock, so in the order of the commits with every
+// other transaction's, and never for one that failed. fn must only
+// queue: every transition of the ledger waits for it.
+func (t *Tx) AfterCommit(fn func()) { t.after = append(t.after, fn) }
 
 // Now is the transaction's time, one for all it writes.
 func (t *Tx) Now() time.Time { return t.now }
@@ -111,6 +120,9 @@ func (l *Ledger) Transition(ctx context.Context, runID string, fn func(*Tx) erro
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, cancelledAs(ctx, err)
+	}
+	for _, fn := range t.after {
+		fn()
 	}
 	l.committed(told)
 	return told[0].Revision, nil
@@ -818,6 +830,69 @@ func (l *Ledger) Check(ctx context.Context, runID, taskID string, n int, id stri
 	return r, true, nil
 }
 
+// Bounds of ChecksOn: the runs it reads (a chain of continuations) and the
+// rows it answers.
+const (
+	MaxChecksOnRuns = 64
+	MaxChecksOn     = 20
+)
+
+// ChecksOn reads the receipts of one task's check or step (phase and id)
+// whose subject is the commit given, in any of the runs named (a run and
+// its continuations), without their logs: at most MaxChecksOn, newest
+// first (attempt numbers run on across continuations, and k within an
+// attempt). They are read by the table's primary key, which begins with
+// the run's id and the task's; no index of its own. More than
+// MaxChecksOnRuns runs is refused.
+func (l *Ledger) ChecksOn(ctx context.Context, runs []string, taskID, phase, id, subject string) ([]CheckRow, error) {
+	if len(runs) == 0 {
+		return nil, nil
+	}
+	if len(runs) > MaxChecksOnRuns {
+		return nil, fmt.Errorf("ledger: %d runs asked, more than %d", len(runs), MaxChecksOnRuns)
+	}
+	args := make([]any, 0, len(runs)+4)
+	marks := make([]string, len(runs))
+	for i, r := range runs {
+		marks[i] = "?"
+		args = append(args, r)
+	}
+	args = append(args, taskID, id, phase, subject)
+	var out []CheckRow
+	err := l.readAt(ctx, func(q querier, version int) error {
+		rows, err := q.QueryContext(ctx, `SELECT run_id, `+checkCols(version)+`, NULL FROM checks WHERE run_id IN (`+strings.Join(marks, ", ")+`) AND task_id = ? AND id = ? AND phase = ? AND subject = ? ORDER BY n DESC, k DESC, run_id LIMIT `+strconv.Itoa(MaxChecksOn), args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var runID string
+			r, err := scanCheck(prefixed{rows, &runID}, "")
+			if err != nil {
+				return err
+			}
+			r.RunID = runID
+			out = append(out, r)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// prefixed is a row whose first column is scanned into first, the rest
+// by the scan it is handed to.
+type prefixed struct {
+	sc    scanner
+	first *string
+}
+
+func (p prefixed) Scan(dest ...any) error {
+	return p.sc.Scan(append([]any{p.first}, dest...)...)
+}
+
 // CheckChanged reads the tracked paths a receipt's command changed, which
 // its row does not hold: they are in the finished event the transaction
 // that finished the row committed with it, a task's check's
@@ -1288,7 +1363,10 @@ var ErrNotPrunable = errors.New("ledger: the run is still needed")
 // prerequisites', trees', commands' and events' with them, once the run
 // is closed, every tree of it ended, no prerequisite of it running, and
 // nothing cites it: a finished run can still be ending a tree, and its
-// rows are what the end and the recovery write.
+// rows are what the end and the recovery write. A run that holds or
+// opened a decision that is not final stays; the final decisions it
+// opened go with it, and those an ancestor opened are handed back to the
+// run it continued (pruneDecisions).
 func (l *Ledger) Prune(ctx context.Context, runID string) error {
 	if l.readOnly {
 		return fmt.Errorf("%w: %s", ErrReadOnly, l.why)
@@ -1332,6 +1410,9 @@ func (l *Ledger) Prune(ctx context.Context, runID string) error {
 	}
 	if cited > 0 {
 		return fmt.Errorf("%w: %d runs cite it", ErrNotPrunable, cited)
+	}
+	if err := pruneDecisions(ctx, tx, runID); err != nil {
+		return err
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM runs WHERE id = ?", runID); err != nil {
 		return err

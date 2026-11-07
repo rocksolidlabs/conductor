@@ -3709,6 +3709,42 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestAReadGivesNoGrant`, `TestAGrantGivesNoRead`,
   `TestNoGrantApprovesAnswersOrAccepts`, `TestBrakemanCannotGrantItself`).
 
+  **A session's replay and Brakeman's screen read (#692, 2026-11-06).**
+  #659's live check watched a Codex session redraw its status row in
+  place for minutes, with no line feed. Opening its page drew the tail of
+  a colour sequence (`138;138;138;49m•`) as text: a replay began wherever
+  the scrollback's cut fell when no newline was in its first 4 KiB. A
+  wrapped scrollback's replay now starts at the earliest of its first ESC
+  and the byte after its first line feed within 4 KiB; with neither, at
+  its oldest whole character. It keeps no state: an ESC restarts a
+  terminal's parser whatever came before it, so what lies before the
+  first ESC is text or the tail of a sequence, and less than 4 KiB of
+  text is given up. Accepted and named: an ESC inside a device control
+  string's payload is taken for a sequence's start; a line feed inside a
+  string's payload before the first ESC is taken for a line's end; output
+  with no ESC and no line feed in 4 KiB replays from its oldest whole
+  character, which may be the tail of a long string. A session's last
+  line kept on its exit (a turn's "Please run /login") reads from the
+  same start. Brakeman's screen read answered the kept output with its
+  escapes stripped, split at line breaks: for that session, one line of
+  some 250 bullets after a fragment. It answers the screen now: the rows
+  of the screen model every session keeps, at the terminal's size, the
+  alternate screen while the program is on it, blank rows at the bottom
+  left out, the characters in the cells whatever their attributes (as a
+  terminal's own selection copies them), and `updating: true` while a
+  synchronized update is under way, its rows then drawn only as far as
+  the program got. Tests: `TestRingReplayStart` (a table),
+  `TestRingReplayStartsWhereATerminalCan` (streams of colours, cursor
+  moves, titles ended by BEL and by ESC backslash, a synchronized update
+  and characters of two to four bytes, wrapped at every offset; each
+  replay drawn on a fresh screen shows no fragment of a sequence),
+  `TestAnAttachReplaysNoFragment`, `TestLastLineHasNoFragment`,
+  `TestScreenLinesOfARowRedrawnInPlace`, `TestScreenLinesOfAFullScreenDialog`,
+  `TestScreenReadDuringASynchronizedUpdate`,
+  `TestTheScreenReadsAsATerminalShowsIt` and
+  `TestTheScreenReadIsBoundedAtItsLargest`, each failing on main but the
+  last, which holds a bound that was right.
+
   **BK3's observation: pending.** Made the same way after the merge: a
   task failing overnight wakes Brakeman once; a second failure inside the
   window joins the same brief; the cooldown holds the next; the day's

@@ -387,18 +387,19 @@ func chains(lists ...[]string) func(string) ([]string, error) {
 	}
 }
 
-// A decision link is reserved for Program item DR1's durable decision
-// records: refused on a local write with the words, nothing kept but the
-// receipt; one a merge brought (a row written as a replica's would be) is
-// kept and read with the ticket's links.
-func TestDecisionLinksAreReserved(t *testing.T) {
+// A decision link is reserved: refused on a local write with the words,
+// which say where a ticket's decisions are (a decision names its ticket
+// itself), nothing kept but the receipt; one a merge brought (a row
+// written as a replica's would be) is kept and read with the ticket's
+// links.
+func TestADecisionLinkIsRefused(t *testing.T) {
 	s := openStore(t, storeDir(t))
 	ctx := context.Background()
 	newProject(t, s, "CND")
 	tid, key := newTicket(t, s, "CND", "Decided")
 	rc, err := addLink(s, "d1", key, NewLink{Kind: LinkDecision, Ref: "dec1", URL: "https://example.com/decisions/1"})
 	want(t, rc, err, StatusFailed, RefusalInvalid)
-	if !strings.Contains(rc.Error, "reserved for durable decision records") {
+	if !strings.Contains(rc.Error, "a decision link is reserved: a decision names its ticket itself") || !strings.Contains(rc.Error, "/api/dispatch/tickets/{key}/decisions") || strings.Contains(rc.Error, "DR1") {
 		t.Fatalf("the words: %q", rc.Error)
 	}
 	if n := count(t, s, "SELECT COUNT(*) FROM links"); n != 0 {

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -66,12 +67,28 @@ func TestMapperMapsThroughUPnPAndUnmapsOnClose(t *testing.T) {
 	igd := newFakeIGD(t, svcWANIP2)
 	ssdp := newFakeSSDP(t, igdDevice2, igd.location())
 	gw := newFakeGateway(t, true)
+	verify := make(chan struct{})
 	m := New(Options{Mode: ModeAuto, Ports: []PortMap{{External: 443, Internal: 8443}}, STUNServer: stunAnswering(t, "203.0.113.9"),
 		SSDPAddr: ssdp.addr(), Gateway: gw.addr.Addr(), GatewayPort: gw.addr.Port(),
-		Verify: func(context.Context, string) string { return "ok" }})
+		Verify: func(ctx context.Context, _ string) string {
+			select {
+			case <-verify:
+				return "ok"
+			case <-ctx.Done():
+				return ""
+			}
+		}})
 	stop := run(t, m)
-	st := await(t, m, 5*time.Second, func(s Status) bool { return s.Mapped })
-	if st.Method != MethodUPnP || st.PublicURL != "https://203.0.113.9" || st.ExternalPort != 443 || st.ListenPort != 8443 || st.Verified != "ok" || st.Err != "" {
+	// The mapper shows the mapping before it verifies it: a status with
+	// Mapped and no Verified yet is one it passes through. The verify is
+	// held until that status is seen, then the wait is for the verified
+	// one the assertions read, never for Mapped alone.
+	if st := await(t, m, 5*time.Second, func(s Status) bool { return s.Mapped }); st.Verified != "" {
+		t.Fatalf("verified before the verify ran: %+v", st)
+	}
+	close(verify)
+	st := await(t, m, 5*time.Second, func(s Status) bool { return s.Verified != "" })
+	if !st.Mapped || st.Method != MethodUPnP || st.PublicURL != "https://203.0.113.9" || st.ExternalPort != 443 || st.ListenPort != 8443 || st.Verified != "ok" || st.Err != "" {
 		t.Fatalf("status %+v", st)
 	}
 	if st.ExpiresAt.Before(time.Now().Add(50*time.Minute)) || st.RenewedAt.IsZero() {
@@ -135,8 +152,19 @@ func TestMapperManualModeOnlyAsksSTUN(t *testing.T) {
 	gw := newFakeGateway(t, true)
 	m := New(Options{Mode: ModeManual, Ports: []PortMap{{External: 8443, Internal: 8443}}, STUNServer: stunAnswering(t, "203.0.113.7"),
 		SSDPAddr: silentUDP(t), Gateway: gw.addr.Addr(), GatewayPort: gw.addr.Port()})
+	// The address shows before the manual URL does (setAddress, its
+	// OnAddress callbacks, then setManual): a callback held here holds
+	// the mapper in that gap, and the wait is for the URL itself.
+	held := make(chan struct{})
+	release := sync.OnceFunc(func() { close(held) })
+	m.OnAddress(func(netip.Addr) { <-held })
 	run(t, m)
-	st := await(t, m, 5*time.Second, func(s Status) bool { return s.ExternalIP.IsValid() })
+	t.Cleanup(release) // before run's stop, which waits for Run
+	if st := await(t, m, 5*time.Second, func(s Status) bool { return s.ExternalIP.IsValid() }); st.Method != "" || st.PublicURL != "" {
+		t.Fatalf("the manual URL before its address's callbacks ran: %+v", st)
+	}
+	release()
+	st := await(t, m, 5*time.Second, func(s Status) bool { return s.Method != "" })
 	if st.Mapped || st.Method != MethodManual || st.PublicURL != "https://203.0.113.7:8443" || st.ExternalPort != 8443 {
 		t.Fatalf("status %+v", st)
 	}
@@ -149,15 +177,25 @@ func TestMapperManualModeOnlyAsksSTUN(t *testing.T) {
 func TestMapperAutoWithoutPortsOnlyDiscovers(t *testing.T) {
 	gw := newFakeGateway(t, true)
 	m := New(Options{Mode: ModeAuto, STUNServer: stunAnswering(t, "203.0.113.7"), SSDPAddr: silentUDP(t), Gateway: gw.addr.Addr(), GatewayPort: gw.addr.Port()})
-	var seen []netip.Addr
-	m.OnAddress(func(a netip.Addr) { seen = append(seen, a) })
+	// The address shows in the status before its OnAddress callbacks run:
+	// the wait is for the callback, not the status.
+	seen := make(chan netip.Addr, 8)
+	m.OnAddress(func(a netip.Addr) { seen <- a })
 	run(t, m)
+	select {
+	case a := <-seen:
+		if a != netip.MustParseAddr("203.0.113.7") {
+			t.Fatalf("OnAddress saw %v", a)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnAddress was never called")
+	}
 	st := await(t, m, 5*time.Second, func(s Status) bool { return s.ExternalIP.IsValid() })
 	if st.Mapped || st.PublicURL != "" || st.Method != "" || st.Err != "" {
 		t.Fatalf("status %+v", st)
 	}
-	if len(seen) != 1 || seen[0] != netip.MustParseAddr("203.0.113.7") {
-		t.Fatalf("OnAddress saw %v", seen)
+	if n := len(seen); n != 0 {
+		t.Fatalf("OnAddress was called %d more times for one address", n)
 	}
 }
 

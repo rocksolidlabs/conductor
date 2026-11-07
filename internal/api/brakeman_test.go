@@ -1300,7 +1300,8 @@ func TestBrakemansTokenReachesNoAdminRoute(t *testing.T) {
 	own := map[string]bool{}
 	for _, p := range []string{"GET brakeman/request", "POST brakeman/brief", "GET ticket", "POST ticket/comments", "GET guide", "GET task",
 		"POST task/result", "POST messages", "GET inbox", "POST inbox/ack", "POST task/blocked", "POST task/checkpoint", "POST crew",
-		"POST run/members", "GET run", "POST links/agent", "POST open", "GET files", "POST attention", "POST events"} {
+		"POST run/members", "GET run", "POST links/agent", "POST open", "GET files", "POST attention", "POST events",
+		"POST decisions", "GET decisions", "GET decisions/{did}", "POST decisions/{did}/withdraw"} {
 		method, path, _ := strings.Cut(p, " ")
 		own[method+" /api/sessions/{id}/"+path] = true
 	}
@@ -1377,15 +1378,49 @@ func TestTheDequeueRechecksTheBudget(t *testing.T) {
 
 // The brakeman event is {id, state}, at most 200 bytes whatever the id and
 // the state, and is sent after each change of a request's state.
+//
+// The turn's launch writes running after the run and its session have
+// started, which a loaded machine's disk can make take longer than any
+// fixed wait for the event (waitEvent's 5 s, #281). So the running event
+// is held (afterWrite) until the test has seen running in the records,
+// the state that holds, and each event is then waited for with a bound
+// only a hang reaches: the events of one request are sent in the order
+// of its writes (an ask's under admit, a dequeue's under admit before
+// its launch starts, the launch's last), so none is passed over.
 func TestTheBrakemanEventIsBounded(t *testing.T) {
 	t.Parallel()
 	b := brakemanEnv(t, nil)
 	events := b.sse(t)
 	b.enable(t, "bk", nil)
+	seen := make(chan struct{})
+	release := sync.OnceFunc(func() { close(seen) })
+	f := func(_, state string) {
+		if state == brakeman.StateRunning {
+			<-seen
+		}
+	}
+	b.desk.afterWrite.Store(&f)
+	t.Cleanup(func() {
+		release()
+		b.desk.afterWrite.Store(nil)
+	})
 	id := b.briefing(t)
+	b.waitState(t, id, brakeman.StateRunning)
+	release()
 	for _, state := range []string{brakeman.StateQueued, brakeman.StateStarting, brakeman.StateRunning} {
 		want := fmt.Sprintf(`brakeman {"id":%q,"state":%q}`, id, state)
-		b.waitEvent(t, events, func(ev string) bool { return ev == want })
+		deadline := time.After(30 * time.Second)
+	read:
+		for {
+			select {
+			case ev := <-events:
+				if ev == want {
+					break read
+				}
+			case <-deadline:
+				t.Fatalf("no %s event for %s", state, id)
+			}
+		}
 	}
 	longest := ""
 	for _, s := range brakeman.States {
