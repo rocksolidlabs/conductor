@@ -1,5 +1,5 @@
 import type { SessionInfo } from '~/composables/useSessions'
-import type { Attention, AttentionOption } from '~/utils/protocol'
+import type { Attention, AttentionOption, Role } from '~/utils/protocol'
 
 /**
  * Whether the session waits for a person to type into its terminal: a submission's text was typed and not entered,
@@ -27,6 +27,43 @@ export const TERMINAL_FIRST = 'Type in the terminal first'
  */
 export function answersInTerminal(a: Pick<Attention, 'state' | 'kind' | 'options'> | undefined): boolean {
   return a?.state === 'needs_input' && a.kind === 'permission' && !a.options?.length
+}
+
+/**
+ * The durable decision a question mirrors (`dr-<n>`, the attention's `decision`; Program item DR1), or undefined for any other
+ * attention: such a question is answered only as its decision, so a page offers it no reply field, choice or number key, whatever
+ * the viewer's role, and the session refuses an answer naming it (`decision`).
+ */
+export function decisionOf(a: Pick<Attention, 'state' | 'decision'> | undefined): string | undefined {
+  return a?.state === 'needs_input' && a.decision ? a.decision : undefined
+}
+
+/** The choices a question bar offers for a, each with its number key (choiceKey): its options, none for a decision's (decisionOf). */
+export function offeredChoices(a: Pick<Attention, 'state' | 'decision' | 'options'> | undefined): AttentionOption[] {
+  return a?.state === 'needs_input' && !decisionOf(a) ? (a.options ?? []) : []
+}
+
+/**
+ * Why a page takes no typed reply to a, in the words its reply field shows in place of one; undefined when it takes one. Every
+ * place that draws a reply field for an attention (the question bar, the sidebar's row and Needs you, the Yard's queue, the
+ * command palette) asks this one function: the session waits for its terminal (waitsForTerminal), the question is answered in
+ * the terminal (answersInTerminal), or it mirrors a durable decision (decisionOf), answered as that decision, where it says.
+ */
+export function noReply(a: Pick<Attention, 'state' | 'source' | 'kind' | 'options' | 'decision'> | undefined): string | undefined {
+  if (waitsForTerminal(a)) return TERMINAL_FIRST
+  if (answersInTerminal(a)) return ANSWER_IN_TERMINAL
+  const d = decisionOf(a)
+  return d ? decisionAnsweredBy(d) : undefined
+}
+
+/** Whether a page takes a typed reply to a from a viewer of role: a controller's, unless a takes none (noReply). */
+export function takesReply(a: Pick<Attention, 'state' | 'source' | 'kind' | 'options' | 'decision'> | undefined, role: Role): boolean {
+  return role === 'control' && noReply(a) === undefined
+}
+
+/** Where a question that mirrors decision id (decisionOf) is answered, said in place of a reply: by the operator, in Conductor. */
+export function decisionAnsweredBy(id: string): string {
+  return `The operator answers ${id} in Conductor`
 }
 
 /** What a reply field says while the question is answered in the terminal (answersInTerminal). */

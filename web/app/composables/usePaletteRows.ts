@@ -8,7 +8,7 @@ import type { LaunchPrefill } from '~/composables/useLaunchModal'
 import { sameQuestions } from '~/utils/needsCursor'
 import { rowActions, sessionTarget, type Action } from '~/utils/actions'
 import { hostedReason } from '~/utils/clone'
-import { answersInTerminal, isActive, isEnded, needingInput, waitsForTerminal } from '~/utils/attention'
+import { isActive, isEnded, needingInput, noReply, offeredChoices } from '~/utils/attention'
 import type { FeedEntry } from '~/utils/events'
 import { joinedDot, joinedPath } from '~/utils/joined'
 import { resolveTyped } from '~/utils/fileTree'
@@ -805,7 +805,7 @@ export function usePaletteRows(ctx: PaletteContext) {
       }
       case 'answer': {
         const s = session(v.target.id)
-        const o = s?.attention?.options?.[v.choice - 1]
+        const o = offeredChoices(s?.attention)[v.choice - 1]
         if (!s) return null
         const bound = boundQuestion(`answer:${s.id}`, s.attention?.id)
         const moved = bound !== s.attention?.id
@@ -814,10 +814,11 @@ export function usePaletteRows(ctx: PaletteContext) {
       case 'reply': {
         const s = session(v.target.id)
         if (!s) return null
-        const asking = s.attention?.state === 'needs_input' && !waitsForTerminal(s.attention) && !answersInTerminal(s.attention)
+        const none = noReply(s.attention)
+        const asking = s.attention?.state === 'needs_input' && none === undefined
         const bound = boundQuestion(`reply:${s.id}`, s.attention?.id)
         const moved = bound !== s.attention?.id
-        return { key: `verb:reply:${s.id}`, label: `Reply to ${s.name}: “${v.text}”`, detail: moved ? 'The question moved on: read the row again' : asking ? (s.attention?.message ?? 'Typed, then Enter a quarter of a second later') : 'It is not asking a question a reply can answer', icon: 'i-lucide-reply', agentId: s.agentId, disabled: !asking || moved, run: () => reply(s, v.text, bound) }
+        return { key: `verb:reply:${s.id}`, label: `Reply to ${s.name}: “${v.text}”`, detail: moved ? 'The question moved on: read the row again' : asking ? (s.attention?.message ?? 'Typed, then Enter a quarter of a second later') : (none ?? 'It is not asking a question a reply can answer'), icon: 'i-lucide-reply', agentId: s.agentId, disabled: !asking || moved, run: () => reply(s, v.text, bound) }
       }
       case 'say': {
         const s = session(v.target.id)

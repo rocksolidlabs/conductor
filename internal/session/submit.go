@@ -45,10 +45,12 @@ const (
 const MaxSubmitText = proto.MaxInput - len(pasteStart) - len(pasteEnd)
 
 // TrustQuestionWords say why a person's typed text is refused while the
-// agent's trust question shows: its Enter would pick whatever the dialog
-// highlights (Claude Code highlights "No, exit"). The question's own choices
+// agent's trust question, or another of its startup questions, shows: its
+// Enter would pick whatever the dialog highlights (Claude Code highlights
+// "No, exit"), or reach a screen that waits for something else (its
+// sign-in, for a pasted code). The question's own choices
 // (Options.TrustAnswers) or the terminal answer it.
-const TrustQuestionWords = "the agent asks whether to trust the folder: answer with the question's choices, or in its terminal"
+const TrustQuestionWords = "the agent asks a startup question (whether to trust the folder, its sign-in, an update): answer with the question's choices, or in its terminal"
 
 // ErrTrustQuestion is Submit's refusal of a person's text while the trust
 // question shows.

@@ -377,6 +377,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	syncs.attach(s)
 	s.holdQueue(o.providers.Continuity, s.exts.sync.Name(), syncs.begin)
 	s.router = newDecisionRouter(s)
+	// The decision router reads the ledger's decisions once its provider
+	// answers (its Start succeeded, or it needs none: at New's end).
+	s.holdQueue(o.providers.Router, s.exts.router.Name(), s.router.begin)
 	s.relayBurstFloor = relayBurstFloor
 	s.hostPingEvery = hostPingEvery
 	s.hostGoneWait = writeTimeout
@@ -487,7 +490,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			// (another server holds the owner lock, for a while after a
 			// restart), or with none, managed launches are refused and
 			// legacy runs work.
-			s.runs.UseLedger(crew.SQLLedger(s.ledger))
+			s.runs.UseLedger(crew.SQLLedgerTold(s.ledger, s.decisionTold))
 		}
 		s.runs.SetCheckConcurrency(cfg.CheckConcurrency())
 		// The host's names a project manifest's env may pass on to its
@@ -748,6 +751,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/inbox/ack", s.handleSessionInboxAck)
 	mux.HandleFunc("POST /api/sessions/{id}/task/blocked", s.handleSessionTaskBlocked)
 	mux.HandleFunc("POST /api/sessions/{id}/task/checkpoint", s.handleSessionTaskCheckpoint)
+	// Durable decisions: an attempt's, the operator's (decisions.go).
+	s.routeDecisions(mux)
 	mux.HandleFunc("GET /api/runs/{run}/messages", s.readable("GET /api/runs/{run}/messages", s.handleRunMessages))
 	mux.HandleFunc("GET /api/runs/{run}/links", s.launching(s.handleListRunLinks))
 	mux.HandleFunc("POST /api/runs/{run}/links", s.launching(s.handleCreateRunLink))

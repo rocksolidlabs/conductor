@@ -353,20 +353,11 @@ func TestAnAttemptThatSubmittedIsCounted(t *testing.T) {
 	decisionWhen(t, ld, d.ID, "applied", inState(ledger.DecisionApplied))
 	lineWith(t, p, "Decision "+d.ID)
 	commitResult(t, e, b, "x.txt", "x\n", "no ok.txt")
-	// Attempt 2 dispatches as soon as attempt 1 fails: waited for, then
-	// attempt 1 read where it lasts, in the task's attempts and the
-	// ledger's row, never as the task's latest.
-	attemptLine(t, e, fl, run.ID, "build", 2)
-	_, as, err := e.TaskOf(run.ID, "build")
-	if err != nil || len(as) < 2 || as[0].State != ledger.AttemptFailed || as[0].Stage == stageDecision || extraOf(t, e, run.ID, "build") != 0 {
-		t.Fatalf("an attempt that submitted was given back: %+v %v", as, err)
-	}
-	rows, err := ld.Attempts(t.Context(), run.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if i := slices.IndexFunc(rows, func(a ledger.AttemptRow) bool { return a.TaskID == "build" && a.N == 1 }); i < 0 || rows[i].State != ledger.AttemptFailed || rows[i].Stage == stageDecision {
-		t.Fatalf("attempt 1's row: %+v", rows)
+	// Attempt 1 failed in the ledger: the task's attempt 2 starts at once,
+	// so the task's own attempt only passes through it.
+	row := ledgerAttempt(t, ld, run.ID, "build", 1, ledger.AttemptFailed)
+	if row.Stage == stageDecision || extraOf(t, e, run.ID, "build") != 0 {
+		t.Fatalf("an attempt that submitted was given back: %+v", row)
 	}
 	if rec := decisionWhen(t, ld, d.ID, "applied", inState(ledger.DecisionApplied)); kindCount(rec, ledger.HistoryRefunded) != 0 {
 		t.Fatalf("%s's history: %q", d.ID, historyKinds(rec))
@@ -665,7 +656,7 @@ func TestAReleasingCancelIsAWaiver(t *testing.T) {
 	e, _, ld := decisionEngine(t)
 	run := launchGated(t, e, dir, "api-sweep-000000b6", repoCrew(dir, work("deploy", "ops")), shipGate("deploy"))
 	g := gateOf(t, e, ld, run.ID)
-	rc, err := e.CancelDecision(t.Context(), g.ID, "c1", true, "ship it anyway", "admin")
+	rc, err := e.CancelDecision(t.Context(), g.ID, "c1", 0, true, "ship it anyway", "admin")
 	if err != nil || rc.Op != ledger.HistoryCancelled {
 		t.Fatalf("the cancel: %+v %v", rc, err)
 	}
@@ -700,7 +691,7 @@ func TestCancellingTheLastHeldTasksGateEndsTheRunOnce(t *testing.T) {
 	e, _, ld := decisionEngine(t)
 	run := launchGated(t, e, dir, "api-sweep-000000b7", repoCrew(dir, work("deploy", "ops")), shipGate("deploy"))
 	g := gateOf(t, e, ld, run.ID)
-	if _, err := e.CancelDecision(t.Context(), g.ID, "c1", false, "", "admin"); err != nil {
+	if _, err := e.CancelDecision(t.Context(), g.ID, "c1", 0, false, "", "admin"); err != nil {
 		t.Fatal(err)
 	}
 	rec := decisionWhen(t, ld, g.ID, "cancelled", inState(ledger.DecisionCancelled))
@@ -733,7 +724,7 @@ func TestCancellingAGateOfDependentTasksEndsTheRunOnce(t *testing.T) {
 	e, _, ld := decisionEngine(t)
 	run := launchGated(t, e, dir, "api-sweep-000000cb", repoCrew(dir, work("build", "lead"), work("deploy", "ops", "build")), shipGate("build", "deploy"))
 	g := gateOf(t, e, ld, run.ID)
-	if _, err := e.CancelDecision(t.Context(), g.ID, "c1", false, "", "admin"); err != nil {
+	if _, err := e.CancelDecision(t.Context(), g.ID, "c1", 0, false, "", "admin"); err != nil {
 		t.Fatal(err)
 	}
 	waitOutcome(t, e, run.ID, ledger.OutcomeCancelled)
@@ -834,7 +825,7 @@ func TestARetryNeedsRoomAmongTheOpenDecisions(t *testing.T) {
 			standing = row
 		}
 	}
-	if _, err := e.CancelDecision(t.Context(), standing.ID(), "c1", false, "", "admin"); err != nil {
+	if _, err := e.CancelDecision(t.Context(), standing.ID(), "c1", 0, false, "", "admin"); err != nil {
 		t.Fatalf("the run's next change: %v", err)
 	}
 	decisionWhen(t, ld, standing.ID(), "cancelled", inState(ledger.DecisionCancelled))

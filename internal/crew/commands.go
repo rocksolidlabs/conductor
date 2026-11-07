@@ -432,16 +432,18 @@ func (e *Engine) cancelTask(r *run, t *task) []event {
 	return events
 }
 
-// reopenRun opens r again for a person's change that makes one of its
-// tasks runnable or verified again (Retry, Accept anyway, Check again):
+// reopenRun opens r again for a change that makes one of its tasks
+// runnable or verified again (Retry, Accept anyway, Check again, and a
+// repair through reopenFor: a review's needs_changes or Request changes):
 // its outcome cleared and marked, the prerequisites its end interrupted
 // armed again (reopenPrerequisites), and every plan decision's gate the
 // change makes matter again asked again or kept holding (regate, with
 // cause, what made the work runnable): a gate's requirement outlives its
 // decision (I14), so no task a gate names is dispatched past it. Every
 // such change reopens the run through it, so what reopening a run must
-// also do is done for all of them in one place; each checks the room the
-// gates it would ask again need (retryNeedsRoom) before its change. The
+// also do is done for all of them in one place; each person's command
+// checks the room the gates it would ask again need (retryNeedsRoom)
+// before its change. The
 // caller holds e.mu, in a transaction's change, with the change's task
 // already in its new state.
 func (e *Engine) reopenRun(r *run, cause string) {

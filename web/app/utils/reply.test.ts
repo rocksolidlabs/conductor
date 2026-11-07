@@ -123,6 +123,15 @@ describe('repliedQuestions', () => {
 })
 
 describe('replyFailure', () => {
+  it("says where a durable decision's question is answered when an answer names it (decision): nothing was sent", () => {
+    const refused = Object.assign(new Error('dr-7 is answered as a decision, by the operator in Conductor: nothing was sent'), { code: 'decision' })
+    expect(replyFailure(refused, 'fix-auth')).toEqual({
+      title: 'Answered as a decision',
+      description: "The operator answers dr-7 in Conductor: fix-auth's question takes no reply. Nothing was sent.",
+      color: 'warning',
+    })
+  })
+
   it('says a question was answered already, nothing sent, naming the session where the page lists several', () => {
     const refused = new ReplyError('question_answered', 'this question was already answered: nothing was sent')
     expect(replyFailure(refused, 'fix-auth')).toEqual({

@@ -4,11 +4,13 @@ import type { AgentInfo } from '~/composables/useSessions'
 import { agentVersionWords, type PersonRow } from '~/utils/dispatch'
 import { argvLine, resolvedArgv, revisionTag } from '~/utils/dispatchPlans'
 import { shortRunId } from '~/utils/crewWords'
+import { responsibilityWords } from '~/utils/crews'
 
 /**
  * A ticket's People (Program item DS2, docs/plans/dispatch-evidence.md, "web/app", PR-12): who it is to whom, each name once with every
  * role it holds (the owner, the assignees, who approved its plan revisions, who launched its runs, who commented), then the agents: the
- * approved revision's members, each with its agent and the command it runs as the revision resolved it (the agent and model selection the
+ * approved revision's people (HM1: the crew's people as the revision keeps them, with their responsibilities, "as r3 was approved"), its
+ * members, each with its agent and the command it runs as the revision resolved it (the agent and model selection the
  * approval covers), and each launch's members with the agent each started and the version its identity probe reported then. One column on
  * a phone.
  */
@@ -38,6 +40,17 @@ const started = computed(() => props.launches.filter((l) => l.state === 'started
       </li>
       <li v-if="!people.length" class="text-sm text-dimmed">Nobody yet.</li>
     </ul>
+
+    <div v-if="plan?.body.crew.people?.length" class="flex flex-col gap-1" data-people-plan-people>
+      <span class="text-xs font-medium text-muted">The people of the crew, as {{ revisionTag(plan.n) }} was approved</span>
+      <ul class="flex flex-wrap gap-1.5">
+        <li v-for="p in plan.body.crew.people" :key="p.name" class="flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-sm ring ring-default" :data-people-plan-person="p.name" :data-responsibilities="(p.responsibilities ?? []).join(' ')">
+          <UIcon name="i-lucide-user" class="size-3.5 flex-none text-muted" />
+          <span class="min-w-0 truncate font-medium">{{ p.name }}</span>
+          <span v-if="p.responsibilities?.length" class="text-xs text-dimmed">{{ responsibilityWords(p.responsibilities) }}</span>
+        </li>
+      </ul>
+    </div>
 
     <div v-if="plan" class="flex flex-col gap-1" data-people-plan-agents>
       <span class="text-xs font-medium text-muted">The agents of {{ revisionTag(plan.n) }}, as it was approved</span>

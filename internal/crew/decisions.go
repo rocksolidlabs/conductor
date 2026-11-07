@@ -37,6 +37,9 @@ import (
 // history and the run's event; an attempt's session shows the decision as
 // its agent's own question (session.Local.TryAskDecision), which only the
 // decision's application answers.
+//
+// The keys a decision is looked up by, and which a caller controls: the
+// package's doc comment (crew.go).
 
 // The policy of this repository (local/1): one response from a principal
 // with the admin grant decides a decision.
@@ -259,6 +262,7 @@ type Decision struct {
 	Rev          int               `json:"rev"`
 	Why          string            `json:"why,omitempty"`
 	SupersededBy string            `json:"supersededBy,omitempty"`
+	Answer       string            `json:"answer,omitempty"` // the accepted response in words
 	Responses    []ResponseReceipt `json:"responses,omitempty"`
 	Applied      *Application      `json:"applied,omitempty"`
 	History      []DecisionEntry   `json:"history,omitempty"`
@@ -341,10 +345,11 @@ type decisionReader interface {
 	Decision(ctx context.Context, n int64) (ledger.DecisionRecord, bool, error)
 }
 
-// requestReader is the ledger's read of a decision by its request id:
-// ledger.Ledger's.
+// requestReader is the ledger's read of a decision by its request id, and
+// of one decision for one task: ledger.Ledger's.
 type requestReader interface {
-	DecisionByRequest(ctx context.Context, run, member, requestID string) (ledger.DecisionRow, bool, error)
+	DecisionByRequest(ctx context.Context, run, member, task, requestID string) (ledger.DecisionRow, bool, error)
+	TaskDecision(ctx context.Context, n int64, run, task string) (ledger.DecisionRecord, bool, error)
 }
 
 var errNoDecisions = errors.New("the ledger keeps no decisions")
@@ -360,8 +365,12 @@ func (s sqlLedger) Decision(ctx context.Context, n int64) (ledger.DecisionRecord
 	return s.l.Decision(ctx, n)
 }
 
-func (s sqlLedger) DecisionByRequest(ctx context.Context, run, member, requestID string) (ledger.DecisionRow, bool, error) {
-	return s.l.DecisionByRequest(ctx, run, member, requestID)
+func (s sqlLedger) DecisionByRequest(ctx context.Context, run, member, task, requestID string) (ledger.DecisionRow, bool, error) {
+	return s.l.DecisionByRequest(ctx, run, member, task, requestID)
+}
+
+func (s sqlLedger) TaskDecision(ctx context.Context, n int64, run, task string) (ledger.DecisionRecord, bool, error) {
+	return s.l.TaskDecision(ctx, n, run, task)
 }
 
 // readDecision reads decision n from the ledger.
@@ -590,7 +599,11 @@ func cleanRequest(req DecisionRequest) (requestBody, string, error) {
 		hi = 0
 	}
 	if len(req.Options) < lo || len(req.Options) > hi {
-		return requestBody{}, "", refuse(CodeInvalid, "a %s has %d to %d options, not %d", req.Type, lo, hi, len(req.Options))
+		article := "an" // an approval, an assignment
+		if req.Type == ledger.DecisionClarification {
+			article = "a"
+		}
+		return requestBody{}, "", refuse(CodeInvalid, "%s %s has %d to %d options, not %d", article, req.Type, lo, hi, len(req.Options))
 	}
 	for _, o := range req.Options {
 		label := strings.TrimSpace(oneLine.Replace(cleanText(o.Label)))
@@ -894,6 +907,25 @@ func fitObject(m map[string]any, size, limit int) string {
 // routedOperator is the routed row of a decision opened under local/1.
 var routedOperator = historyDetail(map[string]any{"to": []map[string]string{{"kind": "operator"}}, "rule": "local/1: the operator answers", "by": "policy"})
 
+// DecisionSent answers the decision a request names when the attempt's
+// member sent its request id before (sent true): that decision as it is
+// now, or decision_conflict for another body. The server asks it before
+// it resolves the request's evidence again (internal/api), so a request
+// sent again after a lost reply answers its decision whatever its
+// evidence has become. sent false for a request not sent before, or one
+// that is not a request (RequestDecision refuses it).
+func (e *Engine) DecisionSent(ctx context.Context, sessionID string, req DecisionRequest) (Decision, bool, error) {
+	r, a, err := e.attemptOf(sessionID)
+	if err != nil {
+		return Decision{}, false, nil
+	}
+	_, fp, err := cleanRequest(req)
+	if err != nil {
+		return Decision{}, false, nil
+	}
+	return e.requestSent(ctx, r, a, req.RequestID, fp)
+}
+
 // RequestDecision opens a decision that the session's attempt asks
 // (docs/plans/decisions.md, Opening): the attempt must be running; the
 // request is cleaned and checked against its bounds, its subject bound
@@ -999,7 +1031,7 @@ func (e *Engine) RequestDecision(ctx context.Context, sessionID string, req Deci
 				if prior, ok, err = dtx.Decision(supN); err != nil {
 					return err
 				}
-				if !ok || prior.State != ledger.DecisionOpen || prior.CurrentRun != r.id {
+				if !ok || prior.State != ledger.DecisionOpen || prior.CurrentRun != r.id || prior.Origin != ledger.OriginAgent || prior.TaskID != t.def.ID {
 					// A request sent before answers its decision first, as it
 					// did when the opening came first; anything this opened
 					// is rolled back with the refusal.
@@ -1094,16 +1126,18 @@ func (e *Engine) RequestDecision(ctx context.Context, sessionID string, req Deci
 	return dec, true, err
 }
 
-// requestSent is the decision the attempt's member opened in r under
-// request id, read from the ledger (ok), refused decision_conflict when it
-// was sent with another body (fp the fingerprint of this one's); not ok for
-// none, or no request id.
+// requestSent is the decision the attempt's member opened in r for the
+// attempt's task under request id, read from the ledger (ok), refused
+// decision_conflict when it was sent with another body (fp the
+// fingerprint of this one's); not ok for none, or no request id. The task
+// is part of the key the ledger looks it up by (DecisionByRequest), so
+// another task's request under the same id is none.
 func (e *Engine) requestSent(ctx context.Context, r *run, a *attempt, id, fp string) (Decision, bool, error) {
 	rr, can := e.ledger.(requestReader)
 	if id == "" || !can {
 		return Decision{}, false, nil
 	}
-	row, ok, err := rr.DecisionByRequest(ctx, r.id, a.m.def.Name, id)
+	row, ok, err := rr.DecisionByRequest(ctx, r.id, a.m.def.Name, a.t.def.ID, id)
 	if err != nil || !ok {
 		return Decision{}, false, err
 	}
@@ -1310,6 +1344,34 @@ func (e *Engine) Decision(ctx context.Context, id string) (Decision, error) {
 	return e.decisionOf(rec), nil
 }
 
+// TaskDecision reads decision id for the session's attempt: one of its
+// task's in the run that holds the attempt (asked by the task, or holding
+// it), read whole in the one read that judges it so (the ledger's
+// TaskDecision). Another task's decision is refused not_found in the
+// words of an id no decision has.
+func (e *Engine) TaskDecision(ctx context.Context, sessionID, id string) (Decision, error) {
+	r, a, err := e.attemptOf(sessionID)
+	if err != nil {
+		return Decision{}, err
+	}
+	n, ok := ledger.ParseDecisionID(id)
+	if !ok {
+		return Decision{}, refuse(CodeNotFound, "%q is not a decision's id", shortText(id))
+	}
+	rr, can := e.ledger.(requestReader)
+	if !can {
+		return Decision{}, errNoDecisions
+	}
+	rec, ok, err := rr.TaskDecision(ctx, n, r.id, a.t.def.ID)
+	if err != nil {
+		return Decision{}, err
+	}
+	if !ok {
+		return Decision{}, refuse(CodeNotFound, "no decision %s of task %s", id, a.t.def.ID)
+	}
+	return e.decisionOf(rec), nil
+}
+
 // decisionOf is a decision's record as the engine reports it.
 func (e *Engine) decisionOf(rec ledger.DecisionRecord) Decision {
 	d := Decision{ID: rec.ID(), Run: rec.CurrentRun, OpenedIn: rec.RunID, Origin: rec.Origin, Type: rec.Type, Gate: rec.Gate, Member: rec.Member,
@@ -1322,6 +1384,7 @@ func (e *Engine) decisionOf(rec ledger.DecisionRecord) Decision {
 		at := rec.AnsweredAt
 		d.AnsweredAt = &at
 	}
+	d.Answer, _, _ = answerOf(rec)
 	if !rec.ClosedAt.IsZero() {
 		at := rec.ClosedAt
 		d.ClosedAt = &at
@@ -1504,8 +1567,13 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 		return refuse(CodeInvalid, "%s is at rev %d: no rev %d has been read", id, d.Rev, resp.ExpectedRev)
 	}
 	options := optionsOf(d.Type, d.Request)
-	if err := answerFits(d.Type, len(options), resp); err != nil {
-		return err
+	if auth.Via != ViaRouter {
+		// A router's answer is refused (not_approver, below) and kept
+		// whatever its shape: a line to an approval too (Owner decisions,
+		// 8; #638, review round 1).
+		if err := answerFits(d.Type, len(options), resp); err != nil {
+			return err
+		}
 	}
 	rc := ResponseReceipt{Decision: id, Actor: actor, ByName: resp.ByName, Choice: resp.Choice, Text: resp.Text, Rationale: resp.Rationale, At: dtx.Now(), Rev: d.Rev}
 	var policy struct {
@@ -1712,7 +1780,8 @@ const (
 // the actor the API names and the authority it authenticated: through the
 // run that holds the decision when the engine holds it (its transact), else
 // through the ledger on that run directly, changing no engine state, for
-// the workbench token only (not_held for an identity). The transaction
+// the workbench token, and a router's answer, which is refused there as
+// anywhere (not_held for an identity). The transaction
 // does not trust that choice: its answer is conditional on the run
 // (Tx.Answer), and a decision moved meanwhile is looked up and answered
 // again, at most maxDecisionTries times (decision_moved after). The
@@ -1771,7 +1840,10 @@ func (e *Engine) RespondDecision(ctx context.Context, id string, resp Response, 
 		if held {
 			err = e.respondHeld(ctx, r, n, resp, actor, auth, string(authRaw), fp, prior, &out)
 		} else {
-			if auth.Via != ViaWorkbench {
+			// A router's answer is kept refused (not_approver) through the
+			// ledger as well: its refusal is the record's, held or not
+			// (#638, review round 1).
+			if auth.Via != ViaWorkbench && auth.Via != ViaRouter {
 				return ResponseReceipt{}, refuse(CodeNotHeld, "%s's run is not running: continue it, or answer with the workbench token", id)
 			}
 			_, err = e.ledger.Transition(ctx, prior.CurrentRun, func(ltx LedgerTx) error {
@@ -1909,7 +1981,7 @@ func (e *Engine) supersede(ctx context.Context, r *run, n int64, at subjectAt, w
 		return "", nil
 	}
 	done := ""
-	err = e.commitHeld(context.Background(), r, false, func() tx {
+	err = e.commitHeld(context.Background(), r, false, nil, func() tx {
 		d := r.decisionN(n)
 		if r.stopping || r.ctx.Err() != nil || d == nil || d.state != ledger.DecisionOpen || !e.sameSubject(r, d, at) {
 			return tx{}
