@@ -311,6 +311,8 @@ func TestMigrationSevenToEightAddsOnlyTables(t *testing.T) {
 	if ro, why := again.ReadOnly(); ro {
 		t.Fatalf("read-only after the migration: %s", why)
 	}
+	// Brought to Version: 8's tables, and the versions after it add no
+	// table (9 is #683's index, 10 a barrier).
 	if v := dbVersion(t, again); v != Version {
 		t.Fatalf("version %d after the migration, Version %d", v, Version)
 	}
@@ -1753,11 +1755,18 @@ func TestACancellationKeepsItsCommandID(t *testing.T) {
 	}
 }
 
-// A version 8 database is brought to version 9 as it opens: its request
-// index is keyed by the task too, every row it held is kept as it was,
-// and the member's request id, taken for one task, is then free for
-// another.
+// A version 8 database is brought to Version as it opens, through 9 (its
+// request index keyed by the task too) and 10 (RV1's barrier, no table
+// changed): the index is then a new database's, every row it held is kept
+// as it was, and the member's request id, taken for one task, is then
+// free for another.
 func TestMigrationEightToNineKeysARequestByItsTask(t *testing.T) {
+	fresh := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	var freshIndex string
+	if err := fresh.db.QueryRow("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'decisions_request'").Scan(&freshIndex); err != nil || !strings.Contains(freshIndex, "(run_id, member, task_id, request_id)") {
+		t.Fatalf("a new database's request index: %q %v", freshIndex, err)
+	}
+
 	dir := filepath.Join(t.TempDir(), "runs")
 	l := openLedger(t, dir)
 	const run = "team-00000001"
@@ -1774,12 +1783,12 @@ func TestMigrationEightToNineKeysARequestByItsTask(t *testing.T) {
 	if ro, why := again.ReadOnly(); ro {
 		t.Fatalf("read-only after the migration: %s", why)
 	}
-	if v := dbVersion(t, again); v != 9 || Version != 9 {
+	if v := dbVersion(t, again); v != Version || Version != 10 {
 		t.Fatalf("version %d after the migration, Version %d", v, Version)
 	}
 	var sqlText string
-	if err := again.db.QueryRow("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'decisions_request'").Scan(&sqlText); err != nil || !strings.Contains(sqlText, "(run_id, member, task_id, request_id)") {
-		t.Fatalf("the request index after the migration: %q %v", sqlText, err)
+	if err := again.db.QueryRow("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'decisions_request'").Scan(&sqlText); err != nil || sqlText != freshIndex {
+		t.Fatalf("the request index after the migration: %q %v, a new database's %q", sqlText, err, freshIndex)
 	}
 	if got := tableRows(t, again, "decisions"); !slices.Equal(got, before) {
 		t.Fatalf("decisions after the migration:\n%v\nbefore:\n%v", got, before)

@@ -2,9 +2,15 @@ package gitrepo
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +44,13 @@ func scratch(t *testing.T) string {
 	gitIn(t, dir, time.Time{}, "config", "user.name", "Ada")
 	gitIn(t, dir, time.Time{}, "config", "user.email", "ada@example.invalid")
 	gitIn(t, dir, time.Time{}, "config", "commit.gpgsign", "false")
+	// No repack of git's own under the test's reads: a commit starts
+	// `git maintenance run --auto`, detached, which from Git 2.5x on
+	// (Apple Git 2.54 on the Mac) packs a few hundred loose objects and
+	// deletes them while the test reads, and still writes in .git as
+	// t.TempDir removes it. The repack test makes its repacks itself.
+	gitIn(t, dir, time.Time{}, "config", "maintenance.auto", "false")
+	gitIn(t, dir, time.Time{}, "config", "gc.auto", "0")
 	return dir
 }
 
@@ -169,3 +182,329 @@ func TestCommitDetail(t *testing.T) {
 		t.Fatal("an unknown revision")
 	}
 }
+
+// Compare lists the files between two commits, however many commits lie
+// between them: added, modified, deleted and renamed, with their counts;
+// a binary file without lines; past MaxFiles the list ends, truncated. A
+// commit the repository has not is ErrNoCommit, and an id not in full is
+// refused before anything is read.
+func TestCompareListsTheFilesBetweenTwoCommits(t *testing.T) {
+	dir := scratch(t)
+	ctx := context.Background()
+	at := time.Date(2026, 11, 6, 8, 0, 0, 0, time.UTC)
+	long := strings.Repeat("a line that stays put\n", 20)
+	write(t, dir, "keep.go", "package keep\n")
+	write(t, dir, "edit.go", "one\ntwo\nthree\n")
+	write(t, dir, "gone.txt", "bye\n")
+	write(t, dir, "old/name.go", long)
+	base := commit(t, dir, at, "base")
+	write(t, dir, "edit.go", "one\n2\nthree\nfour\n")
+	commit(t, dir, at.Add(time.Minute), "between")
+	os.Remove(filepath.Join(dir, "gone.txt"))
+	os.MkdirAll(filepath.Join(dir, "new"), 0o755)
+	if err := os.Rename(filepath.Join(dir, "old/name.go"), filepath.Join(dir, "new/name.go")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "added.txt", "x\ny\n")
+	if err := os.WriteFile(filepath.Join(dir, "blob.bin"), []byte{0, 1, 2, 0, 3}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	head := commit(t, dir, at.Add(2*time.Minute), "candidate")
+	d, err := Compare(ctx, dir, base, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]Change{}
+	for _, c := range d.Changes {
+		by[c.Path] = c
+	}
+	want := map[string]Change{
+		"edit.go":     {Path: "edit.go", Status: "M", Added: 2, Removed: 1},
+		"gone.txt":    {Path: "gone.txt", Status: "D", Removed: 1},
+		"new/name.go": {Path: "new/name.go", From: "old/name.go", Status: "R"},
+		"added.txt":   {Path: "added.txt", Status: "A", Added: 2},
+		"blob.bin":    {Path: "blob.bin", Status: "A", Binary: true},
+	}
+	if len(by) != len(want) || d.Commit.Sha != head || d.Truncated {
+		t.Fatalf("compare: %+v", d)
+	}
+	for p, w := range want {
+		if by[p] != w {
+			t.Errorf("%s: %+v, want %+v", p, by[p], w)
+		}
+	}
+	// The other way round, the same files the other way.
+	back, err := Compare(ctx, dir, head, base)
+	if err != nil || len(back.Changes) != len(want) || back.Commit.Sha != base {
+		t.Fatalf("back: %+v %v", back, err)
+	}
+	// Past MaxFiles: the first MaxFiles, truncated.
+	for i := range MaxFiles + 3 {
+		write(t, dir, fmt.Sprintf("many/f%04d.txt", i), fmt.Sprintf("%d\n", i))
+	}
+	many := commit(t, dir, at.Add(3*time.Minute), "many")
+	d, err = Compare(ctx, dir, head, many)
+	if err != nil || len(d.Changes) != MaxFiles || !d.Truncated {
+		t.Fatalf("many: %d %v %v", len(d.Changes), d.Truncated, err)
+	}
+	gone := strings.Repeat("ab", 20)
+	if _, err := Compare(ctx, dir, base, gone); !errors.Is(err, ErrNoCommit) {
+		t.Fatalf("a commit not there: %v", err)
+	}
+	for _, id := range []string{"HEAD", "main", base[:12], strings.ToUpper(base), base + "^"} {
+		if _, err := Compare(ctx, dir, id, head); err == nil || errors.Is(err, ErrNoCommit) {
+			t.Fatalf("%q: %v", id, err)
+		}
+	}
+	if _, err := Compare(ctx, t.TempDir(), base, head); !errors.Is(err, ErrNotRepo) {
+		t.Fatalf("outside a repository: %v", err)
+	}
+}
+
+// A repack between two reads of one call (git packs a repository by
+// itself after a commit, `git maintenance run --auto`) loses nothing:
+// go-git, which listed the packs before it, looks for an object in a pack
+// it never listed, or in one the repack removed, and the call opens the
+// repository again and reads it all once more. The repack is made through
+// afterCommit, after the call's first commit is read: Compare's second
+// commit, loose, is then packed into a pack go-git has not listed, and
+// FileAt's tree, packed, is in a pack removed.
+func TestReadsSurviveARepackBetweenThem(t *testing.T) {
+	dir := scratch(t)
+	ctx := context.Background()
+	write(t, dir, "a.txt", "one\n")
+	base := commit(t, dir, time.Time{}, "base")
+	gitIn(t, dir, time.Time{}, "repack", "-a", "-d", "-q")
+	write(t, dir, "a.txt", "one\ntwo\n")
+	write(t, dir, "b.txt", "new\n")
+	head := commit(t, dir, time.Time{}, "head")
+	repacks := 0
+	arm := func() {
+		t.Helper()
+		calls := 0
+		afterCommit = func() {
+			if calls++; calls == 1 {
+				gitIn(t, dir, time.Time{}, "repack", "-a", "-d", "-q")
+				repacks++
+			}
+		}
+	}
+	t.Cleanup(func() { afterCommit = nil })
+	packs := func() []string {
+		t.Helper()
+		p, _ := filepath.Glob(filepath.Join(dir, ".git", "objects", "pack", "*.pack"))
+		return p
+	}
+
+	// Compare: base packed, head loose; the repack after base's read
+	// packs head into a pack go-git has not listed.
+	before := packs()
+	arm()
+	d, err := Compare(ctx, dir, base, head)
+	if err != nil || len(d.Changes) != 2 || d.Commit.Sha != head || d.Added != 2 {
+		t.Fatalf("compare across a repack: %+v %v", d, err)
+	}
+	if after := packs(); repacks != 1 || len(after) != 1 || slices.Equal(after, before) {
+		t.Fatalf("the repack: %d, packs %v then %v", repacks, before, after)
+	}
+
+	// FileAt: head and its tree packed; a new loose commit makes the
+	// repack after head's read write a new pack and remove that one.
+	write(t, dir, "c.txt", "later\n")
+	commit(t, dir, time.Time{}, "later")
+	before = packs()
+	arm()
+	f, err := FileAt(ctx, dir, head, "b.txt", 1<<20)
+	if err != nil || string(f.Content) != "new\n" {
+		t.Fatalf("FileAt across a repack: %+v %v", f, err)
+	}
+	if after := packs(); repacks != 2 || len(after) != 1 || slices.Equal(after, before) {
+		t.Fatalf("the second repack: %d, packs %v then %v", repacks, before, after)
+	}
+}
+
+// FileAt reads a file at a commit, by id: its bytes up to the bound
+// (truncated past it), a binary file without them, ErrNoFile for a path
+// the commit has no file at (none, a folder), ErrNoCommit for a commit
+// the repository has not.
+func TestFileAtReadsAFileOfACommit(t *testing.T) {
+	dir := scratch(t)
+	ctx := context.Background()
+	write(t, dir, "a/b.txt", "hello\n")
+	if err := os.WriteFile(filepath.Join(dir, "bin"), []byte{'x', 0, 'y'}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../../etc/passwd", filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	c := commit(t, dir, time.Time{}, "files")
+	f, err := FileAt(ctx, dir, c, "a/b.txt", 1<<20)
+	if err != nil || string(f.Content) != "hello\n" || f.Truncated || f.Binary || f.Size != 6 {
+		t.Fatalf("a/b.txt: %+v %v", f, err)
+	}
+	if f, err = FileAt(ctx, dir, c, "a/b.txt", 3); err != nil || string(f.Content) != "hel" || !f.Truncated {
+		t.Fatalf("cut: %+v %v", f, err)
+	}
+	if f, err = FileAt(ctx, dir, c, "bin", 1<<20); err != nil || !f.Binary || f.Content != nil {
+		t.Fatalf("bin: %+v %v", f, err)
+	}
+	if f, err = FileAt(ctx, dir, c, "link", 1<<20); err != nil || string(f.Content) != "../../etc/passwd" {
+		t.Fatalf("a link is its target's text: %+v %v", f, err)
+	}
+	for _, p := range []string{"a", "nope.txt", "a/b.txt/c"} {
+		if _, err := FileAt(ctx, dir, c, p, 1<<20); !errors.Is(err, ErrNoFile) {
+			t.Fatalf("%s: %v", p, err)
+		}
+	}
+	if _, err := FileAt(ctx, dir, strings.Repeat("cd", 20), "a/b.txt", 1<<20); !errors.Is(err, ErrNoCommit) {
+		t.Fatalf("a commit not there: %v", err)
+	}
+}
+
+// FileAt's memory is bounded, not only its reply: a file far past the
+// bound, committed twice with one byte changed, is read at each commit
+// with its loose objects and again once packed, the older then stored as a
+// delta of the newer (git gc --aggressive), and no read allocates more
+// than fileAtAllocBound, whatever the file's size.
+func TestFileAtMemoryIsBounded(t *testing.T) {
+	dir := scratch(t)
+	ctx := context.Background()
+	body := strings.Repeat("a line of a file far past the bound\n", (32<<20)/36)
+	write(t, dir, "big.txt", body)
+	older := commit(t, dir, time.Time{}, "big")
+	write(t, dir, "big.txt", "L"+body[1:])
+	newer := commit(t, dir, time.Time{}, "big again")
+	read := func(state, c string) {
+		t.Helper()
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		f, err := FileAt(ctx, dir, c, "big.txt", 1<<20)
+		runtime.ReadMemStats(&after)
+		if err != nil || len(f.Content) != 1<<20 || !f.Truncated || f.Binary || f.Size != int64(len(body)) {
+			t.Fatalf("%s, %s: %d bytes, %+v %v", state, c, len(f.Content), f.Truncated, err)
+		}
+		alloc := after.TotalAlloc - before.TotalAlloc
+		t.Logf("%s, %s: %d bytes allocated", state, c[:7], alloc)
+		if alloc > fileAtAllocBound {
+			t.Fatalf("%s, %s: %d bytes allocated for a read of a %d-byte file, past %d", state, c[:7], alloc, len(body), fileAtAllocBound)
+		}
+	}
+	read("loose", older)
+	read("loose", newer)
+	gitIn(t, dir, time.Time{}, "gc", "-q", "--aggressive", "--prune=now")
+	deltas := 0
+	for _, line := range strings.Split(gitIn(t, dir, time.Time{}, "cat-file", "--batch-all-objects", "--batch-check=%(objectname) %(objecttype) %(deltabase)"), "\n") {
+		if f := strings.Fields(line); len(f) == 3 && f[1] == "blob" && strings.Trim(f[2], "0") != "" {
+			deltas++
+		}
+	}
+	if deltas == 0 {
+		t.Fatal("no blob is stored as a delta after the gc")
+	}
+	read("packed", older)
+	read("packed", newer)
+
+	// Read by the git binary: a file under the bound is whole, a NUL in
+	// the first 8,000 bytes is binary.
+	mid := body[:600<<10]
+	write(t, dir, "mid.txt", mid)
+	if err := os.WriteFile(filepath.Join(dir, "big.bin"), append([]byte("head\x00"), body...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := commit(t, dir, time.Time{}, "more")
+	if f, err := FileAt(ctx, dir, c, "mid.txt", 1<<20); err != nil || string(f.Content) != mid || f.Truncated || f.Binary || f.Size != int64(len(mid)) {
+		t.Fatalf("mid.txt: %d bytes, %v %v %v", len(f.Content), f.Truncated, f.Binary, err)
+	}
+	if f, err := FileAt(ctx, dir, c, "big.bin", 1<<20); err != nil || !f.Binary || f.Content != nil || f.Size != int64(len(body)+5) {
+		t.Fatalf("big.bin: %d bytes, %v %v %v", len(f.Content), f.Binary, f.Size, err)
+	}
+}
+
+// FileAt's memory is bounded for a blob packed as a delta of megabytes of
+// changed lines, not only of one byte: a file whose second commit
+// rewrites 5 MiB of it, each commit's lines its own, is packed with the
+// one stored as a delta of the other (git gc --aggressive), a delta whose
+// instructions are megabytes of literal bytes, and no read of either
+// commit allocates more than fileAtAllocBound (go-git, which inflates the
+// whole delta to learn the blob's size, allocated it all, #625 review
+// round 3).
+func TestFileAtMemoryIsBoundedForALargeDelta(t *testing.T) {
+	dir := scratch(t)
+	ctx := context.Background()
+	const at, span = 4 << 20, 5 << 20
+	rnd := rand.New(rand.NewChaCha8([32]byte{6, 2, 5}))
+	changed := func() string {
+		var b strings.Builder
+		for b.Len() < span {
+			fmt.Fprintf(&b, "%016x%016x%016x\n", rnd.Uint64(), rnd.Uint64(), rnd.Uint64())
+		}
+		return b.String()[:span]
+	}
+	base := strings.Repeat("a line of a file far past the bound\n", (16<<20)/36)
+	older := base[:at] + changed() + base[at+span:]
+	newer := base[:at] + changed() + base[at+span:]
+	write(t, dir, "big.txt", older)
+	first := commit(t, dir, time.Time{}, "big")
+	write(t, dir, "big.txt", newer)
+	second := commit(t, dir, time.Time{}, "big, rewritten")
+	gitIn(t, dir, time.Time{}, "gc", "-q", "--aggressive", "--prune=now")
+	idx, err := filepath.Glob(filepath.Join(dir, ".git", "objects", "pack", "*.idx"))
+	if err != nil || len(idx) != 1 {
+		t.Fatalf("the pack: %q %v", idx, err)
+	}
+	// verify-pack -v: id, type, size (a delta's, its instructions
+	// inflated), size in the pack, offset, depth, base.
+	biggest := int64(0)
+	for _, line := range strings.Split(gitIn(t, dir, time.Time{}, "verify-pack", "-v", idx[0]), "\n") {
+		if f := strings.Fields(line); len(f) == 7 && f[1] == "blob" {
+			n, _ := strconv.ParseInt(f[2], 10, 64)
+			biggest = max(biggest, n)
+		}
+	}
+	if biggest < 4<<20 {
+		t.Fatalf("the largest blob delta is %d bytes, not megabytes", biggest)
+	}
+	t.Logf("a delta of %d bytes", biggest)
+	for _, c := range []struct{ id, body string }{{first, older}, {second, newer}} {
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		f, err := FileAt(ctx, dir, c.id, "big.txt", 1<<20)
+		runtime.ReadMemStats(&after)
+		if err != nil || string(f.Content) != c.body[:1<<20] || !f.Truncated || f.Binary || f.Size != int64(len(c.body)) {
+			t.Fatalf("%s: %d bytes, %+v %v", c.id[:7], len(f.Content), f.Truncated, err)
+		}
+		alloc := after.TotalAlloc - before.TotalAlloc
+		t.Logf("%s: %d bytes allocated", c.id[:7], alloc)
+		if alloc > fileAtAllocBound {
+			t.Fatalf("%s: %d bytes allocated for a read of a %d-byte file packed beside a %d-byte delta, past %d", c.id[:7], alloc, len(c.body), biggest, fileAtAllocBound)
+		}
+	}
+}
+
+// A blob, read by the git binary, is the one the commit's tree records even when refs/replace puts another in its place: the
+// replacement's bytes never come back under the original's size, as
+// go-git, which knows no replacements, reads a smaller file and the diff.
+func TestFileAtIgnoresReplacedBlobs(t *testing.T) {
+	dir := scratch(t)
+	ctx := context.Background()
+	orig := strings.Repeat("the original's line\n", (512<<10)/20)
+	write(t, dir, "big.txt", orig)
+	c := commit(t, dir, time.Time{}, "big")
+	write(t, dir, "other.txt", "REPLACED "+orig[:300<<10])
+	repl := gitIn(t, dir, time.Time{}, "hash-object", "-w", "other.txt")
+	blob := gitIn(t, dir, time.Time{}, "rev-parse", c+":big.txt")
+	gitIn(t, dir, time.Time{}, "replace", blob, repl)
+	if got := gitIn(t, dir, time.Time{}, "cat-file", "-p", blob); !strings.HasPrefix(got, "REPLACED ") {
+		t.Fatalf("the replacement is not in place: %.20q", got)
+	}
+	f, err := FileAt(ctx, dir, c, "big.txt", 1<<20)
+	if err != nil || string(f.Content) != orig || f.Truncated || f.Binary || f.Size != int64(len(orig)) {
+		t.Fatalf("big.txt: %d bytes starting %.20q, %+v %v", len(f.Content), f.Content, f.Truncated, err)
+	}
+}
+
+// fileAtAllocBound is what one FileAt of a 1 MiB head may allocate: the
+// head and the buffers of the read (about 1.3 MiB measured).
+const fileAtAllocBound = 4 << 20

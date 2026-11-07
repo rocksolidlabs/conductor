@@ -432,16 +432,18 @@ func (e *Engine) cancelTask(r *run, t *task) []event {
 	return events
 }
 
-// reopenRun opens r again for a person's change that makes one of its
-// tasks runnable or verified again (Retry, Accept anyway, Check again):
+// reopenRun opens r again for a change that makes one of its tasks
+// runnable or verified again (Retry, Accept anyway, Check again, and a
+// repair through reopenFor: a review's needs_changes or Request changes):
 // its outcome cleared and marked, the prerequisites its end interrupted
 // armed again (reopenPrerequisites), and every plan decision's gate the
 // change makes matter again asked again or kept holding (regate, with
 // cause, what made the work runnable): a gate's requirement outlives its
 // decision (I14), so no task a gate names is dispatched past it. Every
 // such change reopens the run through it, so what reopening a run must
-// also do is done for all of them in one place; each checks the room the
-// gates it would ask again need (retryNeedsRoom) before its change. The
+// also do is done for all of them in one place; each person's command
+// checks the room the gates it would ask again need (retryNeedsRoom)
+// before its change. The
 // caller holds e.mu, in a transaction's change, with the change's task
 // already in its new state.
 func (e *Engine) reopenRun(r *run, cause string) {
@@ -790,44 +792,13 @@ func (e *Engine) Recheck(ctx context.Context, runID, actor string, cmd Command, 
 		state, reason, outcome string
 		pause                  pauseMark
 	}
-	return e.act(ctx, runID, actor, cmd, "recheck", []string{rq.Task, strconv.Itoa(rq.Attempt), rq.Commit}, func(r *run) (*task, []event, error) {
+	return e.act(ctx, runID, actor, cmd, "recheck", recheckArgs(rq), func(r *run) (*task, []event, error) {
 		t := r.task(rq.Task)
 		if t == nil {
 			return nil, nil, ErrTaskNotFound
 		}
-		if r.stopping || r.stoppedAt != nil {
-			return t, nil, fmt.Errorf("%w: the run is stopped: continue it, then check again in its continuation", ErrTaskState)
-		}
-		if t.def.Kind != TaskWork {
-			return t, nil, fmt.Errorf("%w: a review task's verdict is not checked again", ErrTaskState)
-		}
-		if t.state != ledger.TaskFailed {
-			return t, nil, fmt.Errorf("%w: it is %s, and only a failed task's candidate is checked again", ErrTaskState, t.state)
-		}
-		fc, ok := r.standingFailed(t)
-		if !ok {
-			return t, nil, fmt.Errorf("%w: the task has no failed candidate since its withdrawal", ErrStaleCandidate)
-		}
-		named := rq.Imported
-		if named == "" {
-			named = fmt.Sprintf("%s/%s/%d", r.id, rq.Task, rq.Attempt)
-		}
-		if standing := fmt.Sprintf("%s/%s/%d", fc.RunID, fc.TaskID, fc.N); named != standing || fc.ResultCommit != rq.Commit {
-			return t, nil, staleCandidate(fc, rq)
-		}
-		if !Recheckable(fc) {
-			return t, nil, fmt.Errorf("%w: attempt %d failed at %s, not in its verification: retry the task instead", ErrTaskState, fc.N, cmp.Or(fc.Stage, fc.State))
-		}
-		if r.active >= maxActiveAttempts {
-			return t, nil, fmt.Errorf("%w: the run has %d attempts in flight, as many as it runs at once: check again once one ends", ErrTaskState, r.active)
-		}
-		m := r.member(t.def.Member)
-		if m == nil {
-			return t, nil, fmt.Errorf("%w: the task's member %s is not in the run", ErrTaskState, t.def.Member)
-		}
-		// The gates its reopen would ask again need their room, as a
-		// Retry's do: refused before anything is recorded.
-		if err := r.retryNeedsRoom(t, "check again"); err != nil {
+		fc, m, err := r.recheckOf(t, rq)
+		if err != nil {
 			return t, nil, err
 		}
 		was.state, was.reason, was.outcome, was.pause = t.state, t.reason, r.outcome, r.pauseMarkOf()
@@ -861,6 +832,95 @@ func (e *Engine) Recheck(ctx context.Context, runID, actor string, cmd Command, 
 		r.ready()
 		r.note(session.ActivityError, "the ledger could not record the check again of task %s", t.def.ID)
 	})
+}
+
+// recheckOf is the rule a Check again of rq is taken by (Recheck), on the
+// run's task t as it stands: its standing failed candidate fc and its
+// member when taken, else the refusal, the room the gates its reopen would
+// ask again need among them (retryNeedsRoom), so the prepared request
+// (RecheckTaken) answers what the command would. The caller holds e.mu.
+func (r *run) recheckOf(t *task, rq RecheckRequest) (ledger.AttemptRow, *member, error) {
+	if r.stopping || r.stoppedAt != nil {
+		return ledger.AttemptRow{}, nil, fmt.Errorf("%w: the run is stopped: continue it, then check again in its continuation", ErrTaskState)
+	}
+	if t.def.Kind != TaskWork {
+		return ledger.AttemptRow{}, nil, fmt.Errorf("%w: a review task's verdict is not checked again", ErrTaskState)
+	}
+	if t.state != ledger.TaskFailed {
+		return ledger.AttemptRow{}, nil, fmt.Errorf("%w: it is %s, and only a failed task's candidate is checked again", ErrTaskState, t.state)
+	}
+	fc, ok := r.standingFailed(t)
+	if !ok {
+		return ledger.AttemptRow{}, nil, fmt.Errorf("%w: the task has no failed candidate since its withdrawal", ErrStaleCandidate)
+	}
+	named := rq.Imported
+	if named == "" {
+		named = fmt.Sprintf("%s/%s/%d", r.id, rq.Task, rq.Attempt)
+	}
+	if standing := fmt.Sprintf("%s/%s/%d", fc.RunID, fc.TaskID, fc.N); named != standing || fc.ResultCommit != rq.Commit {
+		return ledger.AttemptRow{}, nil, staleCandidate(fc, rq)
+	}
+	if !Recheckable(fc) {
+		return ledger.AttemptRow{}, nil, fmt.Errorf("%w: attempt %d failed at %s, not in its verification: retry the task instead", ErrTaskState, fc.N, cmp.Or(fc.Stage, fc.State))
+	}
+	if r.active >= maxActiveAttempts {
+		return ledger.AttemptRow{}, nil, fmt.Errorf("%w: the run has %d attempts in flight, as many as it runs at once: check again once one ends", ErrTaskState, r.active)
+	}
+	m := r.member(t.def.Member)
+	if m == nil {
+		return ledger.AttemptRow{}, nil, fmt.Errorf("%w: the task's member %s is not in the run", ErrTaskState, t.def.Member)
+	}
+	// The gates its reopen would ask again need their room, as a Retry's
+	// do: refused before anything is recorded (#625, review round 3).
+	if err := r.retryNeedsRoom(t, "check again"); err != nil {
+		return ledger.AttemptRow{}, nil, err
+	}
+	return fc, m, nil
+}
+
+// RecheckTaken reports whether a Check again of rq would be taken now in
+// the run, by Recheck's own rule (recheckOf), with the run's revision: nil
+// when it would; ErrRunNotFound for a run the engine does not hold, else
+// the refusal the command would answer (ErrTaskState, ErrStaleCandidate,
+// ErrTaskNotFound, a DecisionError decision_limit when the gates its
+// reopen would ask again have no room). A read: nothing is recorded, and the command, judged
+// again when it is sent, has the last word (the API's prepared failed-check
+// request, docs/plans/review-repair.md).
+func (e *Engine) RecheckTaken(runID string, rq RecheckRequest) (int64, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	r, ok := e.runs[runID]
+	if !ok {
+		return 0, ErrRunNotFound
+	}
+	if !r.managed {
+		return r.revision, fmt.Errorf("%w: a legacy run takes no command", ErrTaskState)
+	}
+	if err := e.continued(r); err != nil {
+		return r.revision, err
+	}
+	t := r.task(rq.Task)
+	if t == nil {
+		return r.revision, ErrTaskNotFound
+	}
+	_, _, err := r.recheckOf(t, rq)
+	return r.revision, err
+}
+
+// recheckArgs are a Check again's arguments, its fingerprint's content: the
+// candidate as the person named it (Imported is where it is found, not
+// what was asked).
+func recheckArgs(rq RecheckRequest) []string {
+	return []string{rq.Task, strconv.Itoa(rq.Attempt), rq.Commit}
+}
+
+// RecheckRepeat is the receipt a Check again kept in a command row, row,
+// answered again (repeat): the same request answers it, another content
+// under the same id is ErrCommandConflict, as every command's resend
+// (act). The API reads the row along a run's chain, where a continuation
+// took the command (the recheck route).
+func RecheckRepeat(row ledger.CommandRow, rq RecheckRequest) (Receipt, error) {
+	return priorReceipt(row, "recheck", fingerprint("recheck", recheckArgs(rq)...))
 }
 
 // staleCandidate is the refusal of a Check again whose candidate is not
