@@ -143,6 +143,10 @@ func completionSpec() []commandSpec {
 		{name: "decision", flags: api(flagSpec{name: "--state", kind: flagEnum, values: decisionStates}, flagSpec{name: "--run", kind: flagValue}, flagSpec{name: "--ticket", kind: flagValue}, flagSpec{name: "--json"},
 			flagSpec{name: "--choice", kind: flagValue}, flagSpec{name: "--text", kind: flagValue}, flagSpec{name: "--why", kind: flagValue}, flagSpec{name: "--release"}),
 			words: []string{"list", "show", "respond", "cancel"}},
+		// Every flag of every history command (each takes its own).
+		{name: "history", flags: api(flagSpec{name: "--limit", kind: flagValue}, flagSpec{name: "--json"}, flagSpec{name: "--everywhere"}, flagSpec{name: "--all"},
+			flagSpec{name: "--without-env"}, flagSpec{name: "--confirm-lost"}),
+			words: []string{"search", "show", "similar", "sessions", "session", "forget", "resume", "reindex"}},
 		{name: "export", flags: api(flagSpec{name: "--data-dir", kind: flagFile}, flagSpec{name: "--config", kind: flagFile}, flagSpec{name: "--out", kind: flagFile})},
 		{name: "restore", flags: []flagSpec{{name: "--config", kind: flagFile}, {name: "--data-dir", kind: flagFile}, {name: "--provider"}}, file: true},
 		{name: "hooks", flags: []flagSpec{{name: "--home", kind: flagFile}, {name: "--data-dir", kind: flagFile}}, words: []string{"install", "status"}, after: map[string][]string{"install": adapters}},
