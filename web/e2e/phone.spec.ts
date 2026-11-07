@@ -3,8 +3,8 @@ import { join } from 'node:path'
 import type { BrowserContext, Locator, Page } from '@playwright/test'
 import { expect, test, type Session } from './fixtures'
 
-// The phone (design 3e): the list is the home screen, not a drawer; the
-// pages sit in a bar at the foot; a prompt is answered in the row with
+// The phone (design 3e): the list is a page of its own, not a drawer; the
+// pages sit in a bar at the foot, Decide first; a prompt is answered in the row with
 // full-width 44 px buttons; a row opens its page and Back returns to the
 // list; a long press opens the row's actions as a sheet, Stop asking again;
 // More holds the other pages, the alerts and your menu.
@@ -51,7 +51,8 @@ test('the list is the home screen: the bar at the foot, the filter on top, a pro
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'asker', name: 'phone asker' })
   sessions.push(s.id)
   await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 30_000 }).toBe('needs_input')
-  await phone.goto('/')
+  // The list itself (the first load of / in a tab lands on Needs your decision while an item waits: decision-page.spec.ts).
+  await phone.goto('/sessions')
   await expect(phone).toHaveURL(/\/sessions$/)
   const list = phone.locator('[data-session-list="page"]')
   await expect(list).toBeVisible()
@@ -59,10 +60,13 @@ test('the list is the home screen: the bar at the foot, the filter on top, a pro
   // No hamburger, no slideover: the sidebar's own list is not even rendered below lg.
   await expect(phone.locator('[data-session-list="sidebar"]')).toHaveCount(0)
   await expect(phone.locator('[data-slot="toggle"]')).toHaveCount(0)
-  // The bar: five targets of at least 44 px, the Yard's count.
+  // The bar: five targets of at least 44 px, Decide first (Needs your decision, with its count), then Sessions, the Yard (with its
+  // count), Crews and More; Events is under More.
   const bar = phone.locator('[data-bottom-bar]')
   const tabs = bar.locator('[data-bottom-tab]')
   await expect(tabs).toHaveCount(5)
+  await expect(tabs).toHaveText([/Decide/, /Sessions/, /Yard/, /Crews/, /More/])
+  await expect(bar.locator('[data-bottom-tab="decide"] [data-bottom-count]')).toHaveText(/^[1-9]\d*$/)
   for (let i = 0; i < 5; i++) expect((await tabs.nth(i).boundingBox())!.height).toBeGreaterThanOrEqual(44)
   await expect(bar.locator('[data-bottom-tab="yard"] [data-bottom-count]')).toHaveText(/^[1-9]\d*$/)
   await expect(bar.locator('[data-bottom-tab="sessions"]')).toHaveAttribute('aria-current', 'page')
@@ -147,7 +151,7 @@ test('More holds the other pages, the alerts and your menu', async () => {
   await phone.locator('[data-bottom-tab="more"]').tap()
   const more = phone.locator('[data-bottom-more]')
   await expect(more).toBeVisible()
-  await expect(more.getByRole('link')).toHaveText([/Roundhouse/, /Agents/, /Dispatch/])
+  await expect(more.getByRole('link')).toHaveText([/Roundhouse/, /Agents/, /Dispatch/, /Events/])
   await expect(more.getByText('Browser notification')).toBeVisible()
   await expect(more.getByRole('button')).toHaveText([/Your name/, /Keyboard shortcuts/, /Toggle theme/, /Workbench token/, /Forget token/])
   await more.getByRole('button', { name: /Your name/ }).tap()

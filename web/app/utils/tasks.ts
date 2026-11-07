@@ -38,8 +38,8 @@ export interface CommandBody {
 }
 
 /** A command's body with a minted id and, when one is given (above 0), the revision it expects. */
-export function commandBody(expectedRevision?: number): CommandBody {
-  const body: CommandBody = { commandId: mintCommandId() }
+export function commandBody(expectedRevision?: number, commandId = mintCommandId()): CommandBody {
+  const body: CommandBody = { commandId }
   if (expectedRevision) body.expectedRevision = expectedRevision
   return body
 }
@@ -221,18 +221,21 @@ export interface TaskActionSet {
 }
 
 /**
- * Which actions apply to a task: Retry on a failed or cancelled task, Accept anyway on a failed task whose last attempt submitted a commit,
- * Cancel on a live one, Ask Brakeman why on one that failed, was cancelled or is blocked. None that changes a run continued: its continuation owns its tasks (`409 run_continued`). Open preview follows the
- * attempt's `preview` alone: the server sets it at its worktree's `tree.ready` and clears it at the attempt's close, at a service's own
- * exit and while the run stops, so nothing here second-guesses it.
+ * Which actions apply to a task: Retry, Accept anyway and Cancel as the engine names them on the task (`commands`, which the
+ * decision inbox reads too: `crew.TaskCommands`, one fixture for both, internal/crew/testdata/task-commands.json), on a run the
+ * server still holds and no continuation owns (`409 run_continued`); Ask Brakeman why on one that failed, was cancelled or is
+ * blocked. The engine judges what the page cannot see: an Accept anyway takes any attempt kept since a withdrawal that submitted a
+ * commit, of any kind, and a stopped run still takes its commands. Open preview follows the attempt's `preview` alone: the server
+ * sets it at its worktree's `tree.ready` and clears it at the attempt's close, at a service's own exit and while the run stops, so
+ * nothing here second-guesses it.
  */
-export function taskActions(t: RunTask, run: Pick<RunInfo, 'stoppedAt' | 'record' | 'resumedBy'>): TaskActionSet {
-  const live = !run.stoppedAt && !run.record && !run.resumedBy
-  const terminal = t.state === 'succeeded' || t.state === 'failed' || t.state === 'cancelled'
+export function taskActions(t: RunTask, run: Pick<RunInfo, 'record' | 'resumedBy'> & Partial<Pick<RunInfo, 'stoppedAt'>>): TaskActionSet {
+  const live = !run.record && !run.resumedBy
+  const named = (c: TaskCommand) => live && !!t.commands?.includes(c)
   return {
-    retry: live && (t.state === 'failed' || t.state === 'cancelled'),
-    accept: live && t.state === 'failed' && t.kind === 'work' && !!t.attempt?.result,
-    cancel: live && !terminal,
+    retry: named('retry'),
+    accept: named('accept'),
+    cancel: named('cancel'),
     open: !!t.attempt?.sessionId,
     copyBranch: !!t.attempt?.branch,
     showResult: !!t.result,

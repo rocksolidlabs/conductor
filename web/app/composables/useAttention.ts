@@ -9,6 +9,8 @@ import { RunStore } from '~/utils/runs'
 import { decisionsLive } from './useDecisions'
 import { asDispatchEvent, dispatchLive } from './useDispatchLive'
 import { asBrakemanEvent, brakemanLive } from './useBrakeman'
+import { inboxLive } from './useInbox'
+import { notificationTarget } from '~/utils/inbox'
 
 const SETTINGS_KEY = 'conductor.attention.settings'
 /** Shortest gap between two chimes, so a burst of routed events plays one. */
@@ -186,7 +188,7 @@ export function useAttention() {
     if (!import.meta.client) return
     const fresh = alerting(newlyNeedingInput(prev, next))
     if (!fresh.length || !events.routes.value.needs_input.browser) return
-    for (const s of fresh) notify(`${s.name} needs input`, s.attention?.message || 'The agent is waiting for you.', `conductor-${s.id}`, s.id)
+    for (const s of fresh) notify(`${s.name} needs input`, s.attention?.message || 'The agent is waiting for you.', `conductor-${s.id}`, s.id, s.attention?.id)
     chime()
   }
 
@@ -213,13 +215,14 @@ export function useAttention() {
     chime()
   }
 
-  function notify(title: string, body: string, tag: string, sessionId: string) {
+  /** A browser notification; tapped, it opens the session, or below lg a question's item on the decision page (`question`). */
+  function notify(title: string, body: string, tag: string, sessionId: string, question?: string) {
     if (!settings.value.notifications || !('Notification' in window) || Notification.permission !== 'granted') return
     try {
       const n = new Notification(title, { body, tag })
       n.onclick = () => {
         window.focus()
-        navigateTo(`/sessions/${sessionId}`)
+        navigateTo(notificationTarget(window.innerWidth, sessionId, question))
         n.close()
       }
     } catch {
@@ -305,9 +308,15 @@ export function useAttention() {
         runs.readAll().catch(() => {})
         dispatchLive().snapshot()
         brakemanLive().snapshot()
-      } else if (event === 'session') upsert(payload as SessionInfo)
-      else if (event === 'removed') remove((payload as { id: string }).id)
-      else if (event === 'run') {
+        void inboxLive().snapshot()
+      } else if (event === 'session') {
+        upsert(payload as SessionInfo)
+        void inboxLive().event()
+      } else if (event === 'removed') {
+        remove((payload as { id: string }).id)
+        void inboxLive().event()
+      } else if (event === 'run') {
+        void inboxLive().event()
         const r = payload as { id: string; removed?: boolean }
         if (r.removed) runs.remove(r.id)
         else runs.schedule(r.id)
@@ -315,10 +324,12 @@ export function useAttention() {
         // Something of Dispatch's changed: the pages it names or touches read again (useDispatchLive).
         const e = asDispatchEvent(payload)
         if (e) dispatchLive().event(e)
+        void inboxLive().event()
       } else if (event === 'brakeman') {
         // A Brakeman request changed state: the pages' list and the sidebar's count follow (useBrakeman). Nothing takes the focus.
         const e = asBrakemanEvent(payload)
         if (e) brakemanLive().event(e)
+        void inboxLive().event()
       } else if (event === 'activity') {
         const { sessionId, ...entry } = payload as SessionActivity
         offerFormedCrew(sessionId, entry)
@@ -340,7 +351,8 @@ export function useAttention() {
     if (!admin.token.value) return
     try {
       replaceAll(await api.list())
-      // The fallback while the stream is down reads the runs with the sessions.
+      // The fallback while the stream is down reads the runs with the sessions, and the decision inbox.
+      void inboxLive().changed()
       await runs.readAll()
       store.value.error = ''
     } catch (e) {

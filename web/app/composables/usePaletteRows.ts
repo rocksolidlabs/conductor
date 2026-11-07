@@ -3,6 +3,7 @@ import type { TicketSummary } from '~/composables/useDispatch'
 import { parseTicketKey, pickEdit, priorityWord, statusWord, ticketPath, ticketSummaryOf, type PickField } from '~/utils/dispatch'
 import { taskCounts } from '~/utils/tasks'
 import { usePalette, type PaletteItem } from '~/composables/usePalette'
+import type { InboxSummary } from '~/utils/inbox'
 import type { LaunchPrefill } from '~/composables/useLaunchModal'
 import { sameQuestions } from '~/utils/needsCursor'
 import { rowActions, sessionTarget, type Action } from '~/utils/actions'
@@ -49,6 +50,7 @@ export interface PaletteContext {
 }
 
 const PAGES: Array<{ id: string; label: string; to: string; kbds: string[]; icon: string }> = [
+  { id: 'decisions', label: 'Needs your decision', to: '/decisions', kbds: ['G', 'N'], icon: 'i-lucide-gavel' },
   { id: 'yard', label: 'Yard', to: '/yard', kbds: ['G', 'Y'], icon: 'i-lucide-layout-grid' },
   { id: 'roundhouse', label: 'Roundhouse', to: '/roundhouse', kbds: ['G', 'R'], icon: 'i-lucide-gallery-horizontal' },
   { id: 'crews', label: 'Crews', to: '/crews', kbds: ['G', 'C'], icon: 'i-lucide-users' },
@@ -59,6 +61,17 @@ const PAGES: Array<{ id: string; label: string; to: string; kbds: string[]; icon
   { id: 'events-integrations', label: 'Events · Integrations', to: '/events?tab=integrations', kbds: [], icon: 'i-lucide-plug' },
   { id: 'paste', label: 'Paste invite', to: '/paste', kbds: [], icon: 'i-lucide-clipboard-paste' },
 ]
+
+/**
+ * The decision page's rows (docs/plans/decision-inbox.md, PR-2): one per open item, by its ref, "Decide: <title>", each opening the
+ * item on the page. `go` navigates (and closes the palette).
+ */
+export function decisionRows(items: ReadonlyArray<Pick<InboxSummary, 'ref' | 'title' | 'question' | 'brief'>>, go: (to: string) => void): PaletteItem[] {
+  return items.map((s) => {
+    const to = `/decisions?item=${encodeURIComponent(s.ref)}`
+    return { key: `decide:${s.ref}`, label: `Decide: ${s.title}`, detail: s.question || s.brief, icon: 'i-lucide-gavel', run: () => go(to), href: to }
+  })
+}
 
 /** The Tickets group's rows shown with nothing typed, and with something typed (capGroup). */
 const TICKETS_IDLE = 10
@@ -71,6 +84,7 @@ function sessionDetail(s: SessionInfo, now: number): string {
 
 export function usePaletteRows(ctx: PaletteContext) {
   const attention = useAttention()
+  const inbox = useInbox()
   const events = useEvents()
   const joined = useJoined()
   const desktop = useDesktop()
@@ -437,9 +451,10 @@ export function usePaletteRows(ctx: PaletteContext) {
 
   function pageItems(): PaletteItem[] {
     const n = attention.count.value
+    const d = inbox.count.value
     return PAGES.filter((p) => (p.id !== 'settings' ? true : desktop.isDesktop.value)).map((p) => ({
       key: `go:${p.id}`,
-      label: p.id === 'yard' && n ? `Yard · ${n} ${n === 1 ? 'needs' : 'need'} you` : p.label,
+      label: p.id === 'yard' && n ? `Yard · ${n} ${n === 1 ? 'needs' : 'need'} you` : p.id === 'decisions' && d ? `Needs your decision · ${d} waiting` : p.label,
       icon: p.icon,
       kbds: p.kbds,
       run: () => go(p.to),
@@ -921,6 +936,7 @@ export function usePaletteRows(ctx: PaletteContext) {
       if (query || showExited.value) groups.push({ id: 'exited', label: 'Exited', rows: exited.map((r) => sessionItem(r.session, now)) })
       else groups.push({ id: 'exited', label: 'Exited', rows: [{ key: 'exited:unfold', label: `${exited.length} exited ${exited.length === 1 ? 'session' : 'sessions'}`, detail: 'Enter unfolds them', icon: 'i-lucide-chevron-right', keepOpen: true, run: () => (showExited.value = true) }] })
     }
+    groups.push({ id: 'decide', label: 'Needs your decision', rows: decisionRows(inbox.state.value.items, go) })
     groups.push({ id: 'runs', label: 'Runs', rows: blocks.map((b) => runItem(b, attention.runOf(b.runId))) })
     // A ticket's key typed whole puts the Tickets group first after Needs you and the page's, so Enter opens that ticket.
     const tickets: PaletteGroup<PaletteItem> = { id: 'tickets', label: 'Tickets', rows: ticketItems(query) }

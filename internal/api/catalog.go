@@ -440,6 +440,9 @@ func copyFromSource(a *catalog.Agent, src catalog.Agent) error {
 	if a.TrustPrompt == "" {
 		a.TrustPrompt = src.TrustPrompt
 	}
+	if a.PromptShape == "" {
+		a.PromptShape = src.PromptShape
+	}
 	if a.TrustAnswers == nil {
 		a.TrustAnswers = src.TrustAnswers
 	}
