@@ -284,14 +284,21 @@ func (a *dispatchAPI) launchMember(t *testing.T) (run, sid, token string) {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
+	return run, sid, a.agentToken(t, sid)
+}
+
+// agentToken gives the server's session sid an agent token, as its
+// process gets one, and answers it.
+func (a *dispatchAPI) agentToken(t *testing.T, sid string) string {
+	t.Helper()
 	d, ok := a.srv.Registry().Get(sid)
 	local, isLocal := d.(*session.Local)
 	if !ok || !isLocal {
 		t.Fatalf("session %s is not a server session", sid)
 	}
-	token = "agent-token-" + sid
+	token := "agent-token-" + sid
 	local.SetAgentToken(token)
-	return run, sid, token
+	return token
 }
 
 // The read and write commands against a real server: tickets made with

@@ -126,6 +126,10 @@ type brakemanDesk struct {
 	beforeRecover, beforeAdmit atomic.Pointer[func()]
 	beforeCheck, beforeKeep    atomic.Pointer[func(requestID string)]
 	afterWrite                 atomic.Pointer[func(requestID, state string)]
+	// afterSave runs in a configuration's save once it is written and
+	// admit let go, before the save's step in the role (Reconfigured),
+	// with what the save changed: a test's gate, nil otherwise.
+	afterSave atomic.Pointer[func(crew.RoleChange)]
 	// beforeFeed runs in the role's pass once it has read its
 	// configuration and before it reads Dispatch's change feed
 	// (readTickets): a test's gate, nil otherwise.
@@ -1856,6 +1860,9 @@ func (s *Server) handleBrakemanConfig(w http.ResponseWriter, r *http.Request) {
 		if err == nil && perr == nil {
 			change = roleChange(prev, saved)
 		}
+		// What the save itself left, which the role acts on when this
+		// save's step reaches it, whatever a later save wrote meanwhile.
+		change.Off = !saved.Background()
 		switch {
 		case err != nil:
 		case !saved.Enabled:
@@ -1872,10 +1879,17 @@ func (s *Server) handleBrakemanConfig(w http.ResponseWriter, r *http.Request) {
 		s.brakemanError(w, err)
 		return
 	}
-	// An unavailable role looks again at what refused its turn when the
-	// save changed it (a budget raised, an agent or an account changed:
-	// crew.SaveEnds): the batch it kept fires within its rules, or the
-	// refusal is said again in words true now.
+	if f := d.afterSave.Load(); f != nil {
+		(*f)(change)
+	}
+	// The save's step in the role (crew.Role.Reconfigured): it advances
+	// the configuration generation and drops the batch open and an agent
+	// that did not start, carrying nothing into the new generation, so a
+	// batch fires only under the configuration it was gathered under,
+	// whatever order the steps of overlapping saves reach the role in; an
+	// unavailable role looks again at what refused its turn when the save
+	// changed it (a budget raised: crew.SaveEnds), the refusal said again
+	// in words true at its next turn.
 	if err := d.role.Reconfigured(change); err != nil {
 		s.log.Warn("Brakeman's role could not look again after the configuration's save", "err", err)
 	}

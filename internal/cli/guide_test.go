@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -54,6 +56,48 @@ func TestGuideInASession(t *testing.T) {
 	}
 }
 
+// The guide tool's text says what the caller may call now and the limits
+// that bind it, as the route's overview names them (#715: Codex, told
+// only to call the tool, read the sections and nothing it may do): for a
+// crew's member and for a session of no crew, the text holds the
+// overview's operations, in its order, and each of its limits.
+func TestGuideToolTextSaysWhatTheCallerMayCallAndItsLimits(t *testing.T) {
+	a := newDispatchAPI(t)
+	_, member, memberToken := a.launchMember(t)
+	plain := a.admin(t, "POST", "/api/sessions", map[string]any{"agentId": "cat", "cwd": a.root}, http.StatusCreated)["id"].(string)
+	plainToken := a.agentToken(t, plain)
+	var mays [][]string
+	for _, c := range []struct{ sid, token string }{{member, memberToken}, {plain, plainToken}} {
+		var ov struct{ May, Limits []string }
+		b, err := json.Marshal(a.call(t, c.token, "GET", "/api/sessions/"+c.sid+"/guide", nil, http.StatusOK)["overview"])
+		if err != nil || json.Unmarshal(b, &ov) != nil || len(ov.May) == 0 || len(ov.Limits) == 0 {
+			t.Fatalf("%s's overview: %v %s", c.sid, err, b)
+		}
+		mays = append(mays, ov.May)
+		inSessionOf(t, a.hs.URL, c.sid, c.token)
+		client, err := crewClientFromEnv(os.Getenv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text, err := guideToolText(t.Context(), client, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"You are session " + c.sid, "\nYou may call: " + strings.Join(ov.May, ", ") + ".\nYour limits:\n"}
+		for _, l := range ov.Limits {
+			want = append(want, "\n- "+l+"\n")
+		}
+		if !hasAll(text, want...) {
+			t.Fatalf("%s's text, want %q:\n%s", c.sid, want, text)
+		}
+	}
+	// The member's text is its own: a crew's member may call its run's
+	// operations, which a session of no crew may not.
+	if slices.Equal(mays[0], mays[1]) || !slices.Contains(mays[0], "run_status") || slices.Contains(mays[1], "run_status") {
+		t.Fatalf("the member's and the plain session's operations: %v, %v", mays[0], mays[1])
+	}
+}
+
 // conductor guide outside a session, or with --server and --token, reads
 // the admin's guide with the workbench token.
 func TestGuideWithTheWorkbenchToken(t *testing.T) {
@@ -81,6 +125,28 @@ func TestGuideWithTheWorkbenchToken(t *testing.T) {
 	t.Setenv("CONDUCTOR_ADMIN_TOKEN", "")
 	if code, _, _, err := guideCmd(t, "--server", a.hs.URL); code != 2 || err == nil {
 		t.Fatalf("no token: %d %v", code, err)
+	}
+}
+
+// The overview text says what the caller may call only as the overview
+// says it: the operations named, none named as none, and an overview
+// without the field (a server older than #691) nothing at all, never that
+// no operation may be called; its limits, rules and sections as ever.
+func TestGuideTextSaysWhatMayBeCalledOnlyWhenTheOverviewSays(t *testing.T) {
+	head := "Conductor " + version.Version + " (c), guide 1\nYou are session s1 (agent); your scopes: session.\n"
+	tail := "Your limits:\n- 8 requests\nRules:\n- be brief\nSections: operations (10 bytes)\nRead one: how."
+	for _, c := range []struct{ may, want string }{
+		{`"may":["report","guide"],`, head + "You may call: report, guide.\n" + tail},
+		{`"may":[],`, head + "You may call no operation here.\n" + tail},
+		{``, head + tail},
+	} {
+		raw := `{"guide":1,"version":"` + version.Version + `","commit":"c","section":"overview","overview":{` +
+			`"caller":{"kind":"session","session":"s1","kinds":["agent"],"scopes":["session"]},` + c.may +
+			`"limits":["8 requests"],"rules":["be brief"],"sections":[{"name":"operations","bytes":10}]}}`
+		text, err := guideText([]byte(raw), "how")
+		if err != nil || text != c.want {
+			t.Fatalf("%s: got\n%s\n(%v), want\n%s", c.may, text, err, c.want)
+		}
 	}
 }
 
