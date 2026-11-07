@@ -1,6 +1,7 @@
 package crew
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -1091,6 +1092,15 @@ type operation struct {
 	kind     string // the history row's
 	opID, fp string
 	actor    string
+	// expectedRev is the rev the operator read: the operation is refused
+	// stale_decision when the decision's row is at another (staleOp),
+	// judged by the row in the transaction that applies the operation,
+	// before anything changes, whether or not the engine holds a copy of
+	// the decision (judge), after the look for a repeat of its id. 0
+	// checks none:
+	// the routes always send one (internal/api, decisions.go), and only
+	// the engine's own tests send none.
+	expectedRev int
 	// held makes the change in the run the engine holds: what it changes
 	// in memory, its refusal, and the history row it writes. Nil for an
 	// operation refused when the run is not held (notHeld's words).
@@ -1142,6 +1152,12 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 		if rc, found, err := opOf(rec, op.actor, op.opID, op.fp); found {
 			return rc, err
 		}
+		if op.expectedRev < 0 {
+			return OpReceipt{}, refuse(CodeInvalid, "an operation names the rev it read, expectedRev")
+		}
+		if e.beforeOperate != nil {
+			e.beforeOperate(n)
+		}
 		e.mu.Lock()
 		r := e.runs[rec.CurrentRun]
 		held := r != nil && r.managed && r.created && r.ctx.Err() == nil && !r.stopping && e.continued(r) == nil
@@ -1150,7 +1166,13 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			out     OpReceipt
 			refused error
 		)
-		write := func(ltx LedgerTx, dt opDetail) error {
+		// judge is the operation's one judgement of the decision, in the
+		// transaction that applies it and before anything changes: its row
+		// still the run's the look chose, and at the rev the operator read.
+		// The row judges, never the engine's copy, which a write outside
+		// the run's transactions (a comment kept while a continuation read
+		// the decisions) leaves behind (#637, review round 2).
+		judge := func(ltx LedgerTx) error {
 			dtx, err := decisionsOf(ltx)
 			if err != nil {
 				return err
@@ -1161,6 +1183,32 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			}
 			if row.CurrentRun != rec.CurrentRun {
 				return errOpMoved
+			}
+			if why := staleOp(id, op.expectedRev, row.Rev); why != nil {
+				return why
+			}
+			if held {
+				// The engine's copy takes its row's rev, which the change
+				// then bumps.
+				e.mu.Lock()
+				if d := r.decisionN(n); d != nil {
+					d.rev = max(d.rev, row.Rev)
+				} else if d := settledN(r, n); d != nil {
+					d.rev = max(d.rev, row.Rev)
+				}
+				e.mu.Unlock()
+			}
+			return nil
+		}
+		// write is the operation's rows in its transaction, after judge.
+		write := func(ltx LedgerTx, dt opDetail) error {
+			dtx, err := decisionsOf(ltx)
+			if err != nil {
+				return err
+			}
+			row, ok, err := dtx.Decision(n)
+			if err != nil || !ok {
+				return cmpErr(err, fmt.Errorf("%w: %s", ledger.ErrNoDecision, id))
 			}
 			if op.rev {
 				row.Rev++
@@ -1227,17 +1275,29 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 				}}
 			}
 			if op.ahead {
-				err = e.transact(context.WithoutCancel(ctx), r, change, nil)
+				err = e.transactJudged(context.WithoutCancel(ctx), r, judge, change, nil)
 			} else {
-				err = e.transact(ctx, r, change, giveUp)
+				err = e.transactJudged(ctx, r, judge, change, giveUp)
 			}
 			if moved {
 				continue
 			}
+			// Refused or failed before its change was made (judge, at the
+			// row's rev): nothing changed, nothing is carried or paused.
+			var um errUnmade
+			unmade := errors.As(err, &um)
+			if unmade {
+				err = um.err
+			}
+			var de *DecisionError
+			if (unmade || !op.ahead) && errors.As(err, &de) {
+				// Refused in its transaction, undone or never made.
+				refused, err = de, nil
+			}
 			if err == nil && refused == nil && after != nil {
 				after()
 			}
-			if err == nil && refused == nil || err != nil && op.ahead {
+			if !unmade && (err == nil && refused == nil || err != nil && op.ahead) {
 				// Committed, what it released is dispatched; refused, a
 				// change kept ahead pauses the run, whose pause's commit
 				// writes it.
@@ -1254,7 +1314,16 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			if op.rev {
 				dt.Rev = rec.Rev + 1
 			}
-			_, err = e.ledger.Transition(ctx, rec.CurrentRun, func(ltx LedgerTx) error { return write(ltx, dt) })
+			_, err = e.ledger.Transition(ctx, rec.CurrentRun, func(ltx LedgerTx) error {
+				if err := judge(ltx); err != nil {
+					return err
+				}
+				return write(ltx, dt)
+			})
+			var de *DecisionError
+			if errors.As(err, &de) {
+				refused, err = de, nil
+			}
 		}
 		var rep errOpRepeat
 		switch {
@@ -1282,6 +1351,19 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 		return out, nil
 	}
 	return OpReceipt{}, refuse(CodeDecisionMoved, "%s moved to another run while it was changed: send it again", id)
+}
+
+// staleOp refuses an operation sent at the rev read when the decision is
+// at the rev now: stale_decision when it moved past it, invalid for a rev
+// it never had; nil when they agree, or when no rev was sent (read 0).
+func staleOp(id string, read, now int) error {
+	switch {
+	case read == 0 || read == now:
+		return nil
+	case read > now:
+		return refuse(CodeInvalid, "%s is at rev %d: no rev %d has been read", id, now, read)
+	}
+	return refuse(CodeStaleDecision, "%s is at rev %d, not the rev %d read: read it again", id, now, read)
 }
 
 // settledN is the run's settled decision n, nil for none. The caller holds
@@ -1321,7 +1403,7 @@ func cleanOpText(text string, need bool) (string, error) {
 // them is stale_decision. A more_info clears the attempt's turnEnded mark:
 // its agent takes a turn to answer, by a new request that supersedes the
 // decision.
-func (e *Engine) CommentDecision(ctx context.Context, id, opID, kind, text, actor string) (OpReceipt, error) {
+func (e *Engine) CommentDecision(ctx context.Context, id, opID string, expectedRev int, kind, text, actor string) (OpReceipt, error) {
 	// Each operation's fingerprint is of its body as sent, before its text
 	// is cleaned, as a response's is (RespondDecision): a cleaned body
 	// could make two bodies one, and the plan's op_conflict tells them
@@ -1333,7 +1415,7 @@ func (e *Engine) CommentDecision(ctx context.Context, id, opID, kind, text, acto
 	}
 	switch kind {
 	case CommentKind:
-		return e.operate(ctx, id, operation{kind: ledger.HistoryCommented, opID: opID, fp: fp, actor: actor, rev: true,
+		return e.operate(ctx, id, operation{kind: ledger.HistoryCommented, opID: opID, fp: fp, actor: actor, rev: true, expectedRev: expectedRev,
 			held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
 				return opDetail{Text: text, By: actor, Words: fmt.Sprintf("Comment kept on %s", id)}, nil, nil
 			},
@@ -1344,7 +1426,7 @@ func (e *Engine) CommentDecision(ctx context.Context, id, opID, kind, text, acto
 	default:
 		return OpReceipt{}, refuse(CodeInvalid, "a comment is a comment or a more_info, not %q", kind)
 	}
-	return e.operate(ctx, id, operation{kind: ledger.HistoryInfoRequested, opID: opID, fp: fp, actor: actor, rev: true, wakes: true,
+	return e.operate(ctx, id, operation{kind: ledger.HistoryInfoRequested, opID: opID, fp: fp, actor: actor, rev: true, wakes: true, expectedRev: expectedRev,
 		held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
 			switch {
 			case rec.Origin == ledger.OriginPlan:
@@ -1390,7 +1472,7 @@ type Destination struct {
 // destination is the operator (what Brakeman's route_decision grant does);
 // any other is invalid until a person's label is one. It changes no
 // state.
-func (e *Engine) RouteDecision(ctx context.Context, id, opID string, to []Destination, note, actor string) (OpReceipt, error) {
+func (e *Engine) RouteDecision(ctx context.Context, id, opID string, expectedRev int, to []Destination, note, actor string) (OpReceipt, error) {
 	if len(to) == 0 {
 		return OpReceipt{}, refuse(CodeInvalid, "a route names its destination")
 	}
@@ -1405,7 +1487,7 @@ func (e *Engine) RouteDecision(ctx context.Context, id, opID string, to []Destin
 		return OpReceipt{}, err
 	}
 	dt := opDetail{Note: note, To: []any{map[string]string{"kind": "operator"}}, Rule: "local/1: the operator answers", By: actor, Words: fmt.Sprintf("%s is routed to the operator", id)}
-	return e.operate(ctx, id, operation{kind: ledger.HistoryRouted, opID: opID, fp: fp, actor: actor,
+	return e.operate(ctx, id, operation{kind: ledger.HistoryRouted, opID: opID, fp: fp, actor: actor, expectedRev: expectedRev,
 		held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
 			return dt, nil, nil
 		},
@@ -1418,13 +1500,13 @@ func (e *Engine) RouteDecision(ctx context.Context, id, opID string, to []Destin
 // only with release, the plan decision then waived for the run chain, else
 // cancelled once the decision is final; an agent's decision's hold is
 // released and its agent told.
-func (e *Engine) CancelDecision(ctx context.Context, id, commandID string, release bool, why, actor string) (OpReceipt, error) {
+func (e *Engine) CancelDecision(ctx context.Context, id, commandID string, expectedRev int, release bool, why, actor string) (OpReceipt, error) {
 	fp := fingerprintOf([]any{"cancel", release, why})
 	why, err := cleanOpText(why, false)
 	if err != nil {
 		return OpReceipt{}, err
 	}
-	return e.operate(ctx, id, operation{kind: ledger.HistoryCancelled, opID: commandID, fp: fp, actor: actor, ahead: true,
+	return e.operate(ctx, id, operation{kind: ledger.HistoryCancelled, opID: commandID, fp: fp, actor: actor, ahead: true, expectedRev: expectedRev,
 		held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
 			if d == nil || !d.waits() || d.n == 0 {
 				return opDetail{}, nil, refuse(CodeDecisionClosed, "%s is %s: it is not cancelled", id, cmpState(d, rec))
@@ -1526,6 +1608,18 @@ func (e *Engine) closeDecisionOp(r *run, d *decision, why, by string) {
 
 // WithdrawDecision is the asking agent's withdrawal of its own open
 // decision (the tool decision_withdraw): cancelled, its hold released.
+// The decision is judged by its row in the transaction that cancels it,
+// before anything changes (transactJudged), as an operator's operation is:
+// one this attempt did not ask (another task's, another attempt's, or none
+// at all) is refused not_found in the same words, whatever it is; one of
+// its own answered or closed is refused decision_answered or
+// decision_closed. Once its run is continued, from the continuation's mark
+// on (markContinuing), a withdrawal is refused not_held and changes
+// nothing (#636, review round 3): the continuation reads the run's
+// decisions after its mark and moves the open ones with their holds, so a
+// decision it moved is the continuation's, and the attempt that asked it
+// has stopped. Taken before the mark, the decision is cancelled, and the
+// continuation reads it so and moves nothing of it.
 func (e *Engine) WithdrawDecision(ctx context.Context, sessionID, id string) (Decision, error) {
 	r, a, err := e.attemptOf(sessionID)
 	if err != nil {
@@ -1535,18 +1629,53 @@ func (e *Engine) WithdrawDecision(ctx context.Context, sessionID, id string) (De
 	if !ok {
 		return Decision{}, refuse(CodeNotFound, "%q is not a decision's id", shortText(id))
 	}
-	var refused error
+	notOurs := refuse(CodeNotFound, "%s is no decision of this attempt's that is open", id)
+	// Checked before the transaction too: once the continuation has moved
+	// the decision, its row is no longer this run's, and the refusal is
+	// still the continuation's, not an unknown id's.
+	continued := func() error {
+		if e.continued(r) != nil {
+			return refuse(CodeNotHeld, "%s's run was continued: its attempt is no longer the one that asked it. %s stays as it is in the run that continues this one, which waits on it; stop here, as this attempt's work is over", id, id)
+		}
+		return nil
+	}
+	e.mu.Lock()
+	refused := continued()
+	e.mu.Unlock()
+	if refused != nil {
+		return Decision{}, refused
+	}
+	judge := func(ltx LedgerTx) error {
+		dtx, err := decisionsOf(ltx)
+		if err != nil {
+			return err
+		}
+		row, ok, err := dtx.Decision(n)
+		if err != nil {
+			return err
+		}
+		if !ok || row.Origin != ledger.OriginAgent || row.CurrentRun != r.id || row.TaskID != a.t.def.ID || row.Attempt != a.n {
+			return notOurs
+		}
+		switch row.State {
+		case ledger.DecisionOpen:
+			return nil
+		case ledger.DecisionAnswered:
+			return refuse(CodeDecisionAnswered, "%s is %s: it is not withdrawn", id, row.State)
+		}
+		return refuse(CodeDecisionClosed, "%s is %s: %s", id, row.State, cmp.Or(row.Why, "it is closed"))
+	}
 	// A change kept ahead (no undo): under no request's context, so that
 	// only the ledger refuses it.
-	err = e.transact(context.WithoutCancel(ctx), r, func() tx {
+	err = e.transactJudged(context.WithoutCancel(ctx), r, judge, func() tx {
 		d := r.decisionN(n)
 		switch {
-		case e.continued(r) != nil:
+		case continued() != nil:
 			// Its continuation has read the decision open and moves it:
 			// the run continued changes nothing more (#636, review round 3).
-			refused = refuse(CodeNotHeld, "%s's run was continued: its attempt is no longer the one that asked it", id)
+			refused = continued()
 		case d == nil || d.a != a:
-			refused = refuse(CodeNotFound, "%s is no decision of this attempt's that is open", id)
+			refused = notOurs
 		case d.state != ledger.DecisionOpen:
 			refused = refuse(CodeDecisionAnswered, "%s is %s: it is not withdrawn", id, d.state)
 		default:
@@ -1554,6 +1683,12 @@ func (e *Engine) WithdrawDecision(ctx context.Context, sessionID, id string) (De
 		}
 		return tx{}
 	}, nil)
+	// Refused by its row, or failed before its change was made: nothing
+	// changed, and nothing is paused.
+	var um errUnmade
+	if errors.As(err, &um) {
+		return Decision{}, um.err
+	}
 	if refused != nil {
 		return Decision{}, refused
 	}

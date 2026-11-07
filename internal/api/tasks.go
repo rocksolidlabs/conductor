@@ -134,7 +134,11 @@ func (s *Server) handleSessionTaskResult(w http.ResponseWriter, r *http.Request)
 // taskError answers an error of the task routes with its code.
 func (s *Server) taskError(w http.ResponseWriter, what, id string, err error) {
 	var dirty *crew.DirtyWorktreeError
+	var de *crew.DecisionError
 	switch {
+	case errors.As(err, &de):
+		// A decision's refusal (decision_open: a result while one waits).
+		writeError(w, decisionStatus(de.Code), de.Code, de.Words)
 	case errors.Is(err, crew.ErrNotAnAttempt):
 		writeError(w, http.StatusNotFound, "not_an_attempt", err.Error())
 	case errors.Is(err, crew.ErrRunNotFound):
@@ -218,7 +222,9 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	if attempts == nil {
 		attempts = []crew.AttemptState{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"task": st, "attempts": attempts})
+	reply := map[string]any{"task": st, "attempts": attempts}
+	s.addRunDecisions(r, reply, runID, taskID)
+	writeJSON(w, http.StatusOK, reply)
 }
 
 // taskCommand reads a command's body: {commandId, expectedRevision?}.

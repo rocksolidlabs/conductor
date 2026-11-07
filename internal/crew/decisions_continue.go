@@ -56,9 +56,8 @@ type decisionHistory struct {
 	// uncertain are the applied decisions whose typing has no end: the
 	// server ended while their line was typed (I6).
 	uncertain []int64
-	// gates says the chain opened gates; released the plan decisions it
-	// released, lastGate each gate's decision last closed without it.
-	gates    bool
+	// released is the plan decisions the chain released, lastGate each
+	// gate's decision last closed without it.
 	released map[string]bool
 	lastGate map[string]gateEnd
 }
@@ -160,9 +159,6 @@ func (e *Engine) readDecisionHistory(ctx context.Context, from Loaded) (decision
 		}
 		// Newest first: a gate's last decision is the first seen.
 		for _, row := range rows {
-			if row.Origin == ledger.OriginPlan {
-				dh.gates = true
-			}
 			switch {
 			case runID == from.Run.ID && (row.State == ledger.DecisionOpen || row.State == ledger.DecisionAnswered):
 				rec, err := record(row.N)
@@ -268,7 +264,7 @@ func (e *Engine) continueDecisions(r *run, from Loaded, h history) func(LedgerTx
 	dh := h.dec
 	r.dec.chain = append([]string{r.id}, dh.chain...)
 	r.dec.lastGate = dh.lastGate
-	if r.pkg != nil && len(r.pkg.p.Decisions) > 0 && (dh.gates || e.gatesAtLaunch) {
+	if r.pkg != nil && len(r.pkg.p.Decisions) > 0 {
 		r.dec.gates = map[string]bool{}
 		for _, pd := range r.pkg.p.Decisions {
 			r.dec.gates[pd.ID] = dh.released[pd.ID]
@@ -350,14 +346,19 @@ func (e *Engine) continueDecisions(r *run, from Loaded, h history) func(LedgerTx
 		// answered on the old run since it was read is moved as answered,
 		// with its answer read here, in the move's transaction, so it is
 		// the engine's once the move commits and never lost to a read
-		// after it (#636, review round 2).
+		// after it (#636, review round 2). Every copy takes its row's rev:
+		// an operation kept on the old run since (a comment) moved it
+		// (#637, review round 2).
 		for _, row := range rows {
-			if row.State != ledger.DecisionAnswered {
-				continue
-			}
 			e.mu.Lock()
 			d := r.decisionN(row.N)
-			stale := d != nil && d.state == ledger.DecisionOpen
+			if d == nil {
+				d = settledN(r, row.N)
+			}
+			if d != nil {
+				d.rev = max(d.rev, row.Rev)
+			}
+			stale := d != nil && row.State == ledger.DecisionAnswered && d.state == ledger.DecisionOpen
 			e.mu.Unlock()
 			if !stale {
 				continue

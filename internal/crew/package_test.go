@@ -292,6 +292,8 @@ func TestTheAttemptGetsThePackageFiles(t *testing.T) {
 	c := repoCrew(dir, work("build", "lead"), review("check", "critic", "build"))
 	p := encodePackage(t, fullPackage("api-sweep-0000000a", base))
 	run := launchPlanned(t, e, c, p)
+	// The package's gate on build, opened at the launch, approved.
+	answer(t, e, "dr-1", Response{ResponseID: "go", Choice: choice(0), ExpectedRev: 1})
 	want := wantPackageFiles(t, p, store.files)
 	if len(want.Attachments) != 2 {
 		t.Fatalf("the package's attachments: %v", want.Attachments)
@@ -652,6 +654,7 @@ func TestAContinuationsAttemptGetsThePackageFiles(t *testing.T) {
 	e.UsePackageFiles(store.open)
 	p := encodePackage(t, fullPackage("api-sweep-0000000a", base))
 	run := launchPlanned(t, e, repoCrew(dir, work("build", "lead")), p)
+	answer(t, e, "dr-1", Response{ResponseID: "go", Choice: choice(0), ExpectedRev: 1})
 	a1 := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
 	src := readPackageFiles(t, a1)
 	_, srcTF := taskFileOf(t, a1)
