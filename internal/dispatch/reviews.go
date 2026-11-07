@@ -615,16 +615,45 @@ func errEvidence(format string, args ...any) error {
 // a review past MaxReviewDetail as its read encodes it (bound). An
 // expected revision is the ticket's. The receipt carries the review's id
 // and its rev, 1 or 2; the review is read after the commit as it stands,
-// a resend's included (none for a refusal).
+// a resend's included (none for a refusal). The try it makes pending is
+// claimed by no one: SubmitReviewClaimed is the one that applies it.
 func (s *Store) SubmitReview(ctx context.Context, op Op, key string, r NewReview, ev ReviewEvidence) (Receipt, Review, error) {
+	rc, v, _, err := s.submitReviewOp(ctx, op, key, r, ev, false)
+	return rc, v, err
+}
+
+// SubmitReviewClaimed is SubmitReview whose request, made now, comes with
+// the store's claim on its try 1, taken in the commit that makes the try
+// pending (review_claims.go): no other actor settles it before the caller
+// has sent its command and released the claim. No claim for a review that
+// is not a request, a refusal or a resend.
+func (s *Store) SubmitReviewClaimed(ctx context.Context, op Op, key string, r NewReview, ev ReviewEvidence) (Receipt, Review, ReviewClaim, error) {
+	return s.submitReviewOp(ctx, op, key, r, ev, true)
+}
+
+// submitReviewOp is review.submit, its try claimed when claim is set.
+func (s *Store) submitReviewOp(ctx context.Context, op Op, key string, r NewReview, ev ReviewEvidence, claim bool) (Receipt, Review, ReviewClaim, error) {
+	var c ReviewClaim
 	rc, err := s.Apply(ctx, op, IntentReviewSubmit, ReviewSubmitArgs{Key: key, Review: r}, func(t *tx) error {
-		return t.submitReview(key, r, ev)
+		if err := t.submitReview(key, r, ev); err != nil {
+			return err
+		}
+		if claim && r.Verdict == VerdictRequestChanges {
+			// Under mu, which Apply holds through the commit: the try is
+			// claimed with it, and released below when it is not kept.
+			c = s.claimLocked(t.id, 1)
+		}
+		return nil
 	})
+	if c.Held() && (err != nil || rc.Status != StatusDone || rc.Repeat || rc.ID != c.Review) {
+		s.ReleaseReview(c)
+		c = ReviewClaim{}
+	}
 	if err != nil || rc.Status != StatusDone || rc.ID == "" {
-		return rc, Review{}, err
+		return rc, Review{}, c, err
 	}
 	v, err := s.Review(ctx, rc.ID)
-	return rc, v, err
+	return rc, v, c, err
 }
 
 // submitReview is review.submit's change.
@@ -1121,12 +1150,33 @@ type reviewIDArgs struct {
 // are: the run's link moved to another ticket, or its chain contested,
 // since the review was kept). An expected revision is the review's. The review is read
 // after the commit as it stands (none for a refusal). ErrNotFound for an
-// id not of an id's shape.
+// id not of an id's shape; ErrReviewClaimed, nothing kept, while another
+// holds the review's claim (its try's outcome not yet recorded and let
+// go). The new try is claimed by no one: ApplyingReviewClaimed is the one
+// that applies it.
 func (s *Store) ApplyingReview(ctx context.Context, op Op, id string) (Receipt, Review, error) {
+	rc, v, _, err := s.applyingReview(ctx, op, id, false)
+	return rc, v, err
+}
+
+// ApplyingReviewClaimed is ApplyingReview whose new try comes with the
+// store's claim on it, taken in the commit that makes it pending
+// (review_claims.go); none for a refusal or a resend.
+func (s *Store) ApplyingReviewClaimed(ctx context.Context, op Op, id string) (Receipt, Review, ReviewClaim, error) {
+	return s.applyingReview(ctx, op, id, true)
+}
+
+// applyingReview is review.retry, its new try claimed when claim is set.
+func (s *Store) applyingReview(ctx context.Context, op Op, id string, claim bool) (Receipt, Review, ReviewClaim, error) {
 	if !ValidID(id) {
-		return Receipt{}, Review{}, ErrNotFound
+		return Receipt{}, Review{}, ReviewClaim{}, ErrNotFound
 	}
+	var cl ReviewClaim
 	rc, err := s.Apply(ctx, op, IntentReviewRetry, reviewIDArgs{ID: id}, func(t *tx) error {
+		// Under mu, which Apply holds through the commit.
+		if _, held := s.claims[id]; held {
+			return ErrReviewClaimed
+		}
 		base, rv, err := t.reviewRow(id)
 		if err != nil {
 			return err
@@ -1170,13 +1220,23 @@ func (s *Store) ApplyingReview(ctx context.Context, op Op, id string) (Receipt, 
 		setField(after, "app_try", strconv.Itoa(rv.Application.Try+1))
 		setField(after, "app_why", "")
 		setField(after, "app_at", "")
-		return t.setScalars("reviews", base, before, after)
+		if err := t.setScalars("reviews", base, before, after); err != nil {
+			return err
+		}
+		if claim {
+			cl = s.claimLocked(id, rv.Application.Try+1)
+		}
+		return nil
 	})
+	if cl.Held() && (err != nil || rc.Status != StatusDone || rc.Repeat) {
+		s.ReleaseReview(cl)
+		cl = ReviewClaim{}
+	}
 	if err != nil || rc.Status != StatusDone {
-		return rc, Review{}, err
+		return rc, Review{}, cl, err
 	}
 	v, err := s.Review(ctx, id)
-	return rc, v, err
+	return rc, v, cl, err
 }
 
 // applicationColumns is a review's application's columns, in the order an
@@ -1204,9 +1264,23 @@ type reviewTryArgs struct {
 // that is not a request is invalid; none is not_found. It is recorded
 // whatever became of the ticket and its project since, since the repair
 // was made. ErrNotFound for an id not of an id's shape or a try not 1 to
-// MaxReviewTries.
+// MaxReviewTries. While anyone holds the review's claim it is answered
+// failed, no receipt kept: the claim's holder records the outcome
+// (AppliedReviewClaimed).
 func (s *Store) AppliedReview(ctx context.Context, op Op, id string, try int, a Applied) (Receipt, error) {
-	return s.settleReview(ctx, op, id, try, IntentReviewApplied, "applied", func() ([]fieldValue, error) {
+	return s.appliedReview(ctx, op, id, try, nil, a)
+}
+
+// AppliedReviewClaimed is AppliedReview of the try the claim c holds, by
+// its holder: answered failed, no receipt kept, unless c is the claim the
+// store holds on that try (review_claims.go).
+func (s *Store) AppliedReviewClaimed(ctx context.Context, op Op, c ReviewClaim, a Applied) (Receipt, error) {
+	return s.appliedReview(ctx, op, c.Review, c.Try, &c, a)
+}
+
+// appliedReview is review.applied, under the claim c when it is given.
+func (s *Store) appliedReview(ctx context.Context, op Op, id string, try int, c *ReviewClaim, a Applied) (Receipt, error) {
+	return s.settleReview(ctx, op, id, try, c, IntentReviewApplied, "applied", func() ([]fieldValue, error) {
 		switch {
 		case !validRunID(a.Run):
 			return nil, refuse(RefusalInvalid, "the run %q is not a run id", a.Run)
@@ -1227,22 +1301,45 @@ func (s *Store) AppliedReview(ctx context.Context, op Op, id string, try int, a 
 // control characters but newlines and tabs made spaces; empty is
 // "Yardmaster did not apply the request"): app_state refused, why and the
 // time. As AppliedReview, the operation is the actor server's under the
-// op id <id>.<try>.refused, and it settles only its own try.
+// op id <id>.<try>.refused, and it settles only its own try; while
+// anyone holds the review's claim, only its holder records it
+// (RefusedReviewClaimed).
 func (s *Store) RefusedReview(ctx context.Context, op Op, id string, try int, why string) (Receipt, error) {
-	return s.settleReview(ctx, op, id, try, IntentReviewRefused, "refused", func() ([]fieldValue, error) {
+	return s.refusedReview(ctx, op, id, try, nil, why)
+}
+
+// RefusedReviewClaimed is RefusedReview of the try the claim c holds, by
+// its holder, as AppliedReviewClaimed.
+func (s *Store) RefusedReviewClaimed(ctx context.Context, op Op, c ReviewClaim, why string) (Receipt, error) {
+	return s.refusedReview(ctx, op, c.Review, c.Try, &c, why)
+}
+
+// refusedReview is review.refused, under the claim c when it is given.
+func (s *Store) refusedReview(ctx context.Context, op Op, id string, try int, c *ReviewClaim, why string) (Receipt, error) {
+	return s.settleReview(ctx, op, id, try, c, IntentReviewRefused, "refused", func() ([]fieldValue, error) {
 		return []fieldValue{{"app_state", ApplicationRefused}, {"app_why", reviewWhy(why)}}, nil
 	})
 }
 
 // settleReview is AppliedReview's and RefusedReview's operation: fields
 // gives the outcome's fields (a refusal it gives is unkept), set beside
-// the time on the review pending at that try.
-func (s *Store) settleReview(ctx context.Context, op Op, id string, try int, intent, suffix string, fields func() ([]fieldValue, error)) (Receipt, error) {
+// the time on the review pending at that try. With a claim c, only c's
+// holder settles the try (the store holding c on it); without one, only
+// a review nobody holds a claim on; otherwise it is answered failed, no
+// receipt kept.
+func (s *Store) settleReview(ctx context.Context, op Op, id string, try int, c *ReviewClaim, intent, suffix string, fields func() ([]fieldValue, error)) (Receipt, error) {
 	if !ValidID(id) || try < 1 || try > MaxReviewTries {
 		return Receipt{}, ErrNotFound
 	}
 	op = outcomeOp(op, id+"."+strconv.Itoa(try)+"."+suffix)
 	rc, err := s.Apply(ctx, op, intent, reviewTryArgs{ID: id, Try: try}, func(t *tx) error {
+		// Under mu, which Apply holds through the commit.
+		switch _, held := s.claims[id]; {
+		case c != nil && !s.heldLocked(*c):
+			return unkeptRefusal{&Refusal{Code: RefusalInvalid, Words: fmt.Sprintf("the review %s's try %d is not held by this claim", id, try)}}
+		case c == nil && held:
+			return unkeptRefusal{&Refusal{Code: RefusalInvalid, Words: fmt.Sprintf("the review %s is claimed: its holder records its try's outcome", id)}}
+		}
 		base, rv, err := t.reviewRow(id)
 		if err != nil {
 			return err

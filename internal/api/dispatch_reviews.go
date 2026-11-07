@@ -51,12 +51,19 @@ import (
 // memory is the source of truth, so a review any path left pending (a
 // read that failed after its commit, a read or a write past its
 // deadline, a listing that failed) is taken up by the next pass whatever
-// failed before. What memory keeps is a hint that hurries or informs a
-// pass, never a condition of one: the run whose commit wakes the worker,
-// an outcome known that Dispatch could not record, and which reviews
-// this process committed a try of (ours). A pass leaves alone a review
-// a request still applies (its hold) and, while a submit is between its
-// commit and its hold, every review it does not know as ours. It judges
+// failed before. Who settles a try is the store's too: a review's try is
+// settled only by whoever holds the store's claim on that exact try
+// (dispatch.ClaimReview), taken at the moment of acting by a
+// compare-and-set on the review's try and state. A submit and Request
+// again take it in the commit that makes their try pending and keep it
+// until their command's receipt is recorded (or left pending, for the
+// worker); a pass takes it on each listed try before it reads, records or
+// drops anything, and a try stale by then (settled, or a later one begun)
+// or held by another is left, the actor stopping. What memory keeps is a
+// hint of one try, written and dropped only under that try's claim, that
+// hurries or informs a pass, never a condition of one: the run whose
+// commit wakes the worker, an outcome known that Dispatch could not
+// record, and that this process committed the try (ours). A pass judges
 // one of ours by its command, in the run that holds it along the
 // candidate's chain (judgeCommand): no request of this process sends it
 // any more, so a command found nowhere is refused, and one accepted
@@ -109,26 +116,19 @@ const (
 	wordsUnread       = "the review could not be read to apply it, so nothing was sent: send it again"
 )
 
-// reviewGate holds what applies and settles the reviews in this process:
-// the reviews held, by id, by the request applying one or the pass
-// settling it, a second waiting for the first (inFlight); the submits
-// between their commit and their hold (committing); the hints, by review
-// (hints), which hurry or inform a pass and are never its worklist; and
-// the worker's wake, a channel of one that a send never blocks on. Its
-// zero value is ready once the worker's channels are made
-// (startReviews).
+// reviewGate holds what this process knows of the reviews beyond the
+// store: the hints, by review (hints), which hurry or inform a pass and
+// are never its worklist nor its permission (a review's try is settled
+// only under the store's claim on it, dispatch.ClaimReview); and the
+// worker's wake, a channel of one that a send never blocks on. Its zero
+// value is ready once the worker's channels are made (startReviews).
 type reviewGate struct {
-	mu         sync.Mutex
-	inFlight   map[string]chan struct{}
-	committing int
-	hints      map[string]reviewHint
-	// gen counts the passes' listings: a hint touched before a listing
-	// that did not find its review pending is dropped (prune).
-	gen  uint64
-	wake chan struct{}
-	stop context.CancelFunc
-	done chan struct{}
-	once sync.Once
+	mu    sync.Mutex
+	hints map[string]reviewHint
+	wake  chan struct{}
+	stop  context.CancelFunc
+	done  chan struct{}
+	once  sync.Once
 	// The tests' seams, under mu: afterRegister with a review's id once
 	// its read-back has noted the run it went to, before its command is
 	// read back; afterReadBack once the read-back's first read has
@@ -138,35 +138,39 @@ type reviewGate struct {
 	// review's id before its command is sent; recordFails with a review's
 	// id before its outcome is written, the write failing when it answers
 	// an error; listFails before a pass lists the pending reviews, the
-	// listing failing when it answers an error; workerSkips with a
-	// review's id, the worker's passes (not the start's) leaving it alone
-	// when it answers true, as a server before this one would have; ticks,
-	// when set, the worker's interval in place of reviewPassEvery's
-	// ticker, a test's clock; settleWait, when set, a settlement's budget
-	// in place of reviewSettleWait.
+	// listing failing when it answers an error; afterListing once a pass
+	// has listed them, before it claims the first; retryWaits with a
+	// review's id when Request again finds the review claimed and waits
+	// for it; workerSkips with a review's id, the worker's passes (not the
+	// start's) leaving it alone when it answers true, as a server before
+	// this one would have; ticks, when set, the worker's interval in place
+	// of reviewPassEvery's ticker, a test's clock; settleWait, when set, a
+	// settlement's budget in place of reviewSettleWait.
 	afterRegister    func(review string)
 	afterReadBack    func(review string)
 	beforeSettleRead func(ctx context.Context, run string)
 	beforeApply      func(review string)
 	recordFails      func(review string) error
 	listFails        func() error
+	afterListing     func()
+	retryWaits       func(review string)
 	workerSkips      func(review string) bool
 	ticks            chan time.Time
 	settleWait       time.Duration
 }
 
-// reviewHint is what this process knows of a pending review beyond the
-// store, none of it the condition of a pass: ours, a try of it committed
-// here (judged by its command, judgeCommand, not as the start judges
-// one); watch, the run whose commit wakes the worker for it; out, the
-// outcome of the try outTry, known, that Dispatch could not record; gen,
-// the listing count when it was last touched.
+// reviewHint is what this process knows of one try of a pending review
+// beyond the store, none of it the condition of a pass: try, the try it
+// concerns; ours, that try committed here (judged by its command,
+// judgeCommand, not as the start judges one); watch, the run whose commit
+// wakes the worker for it; out, its outcome, known, that Dispatch could
+// not record. Only the holder of the store's claim on that try writes it
+// or drops it, so a hint is never another try's.
 type reviewHint struct {
-	ours   bool
-	watch  string
-	outTry int
-	out    *applyOutcome
-	gen    uint64
+	try   int
+	ours  bool
+	watch string
+	out   *applyOutcome
 }
 
 // reviewSettle is a try a pass or a read-back settles: the review, its
@@ -209,188 +213,87 @@ func (g *reviewGate) seam(f *func(string), arg string) {
 	}
 }
 
-// hold makes this request the one applying the review: a second waits
-// for the first, at most runTimeout, and holds it then; ok false when the
-// wait ended first, nothing held. The release ends the hold and wakes the
-// worker, which settles what the request left pending.
-func (g *reviewGate) hold(ctx context.Context, id string) (func(), bool) {
-	for {
-		g.mu.Lock()
-		ch, ok := g.inFlight[id]
-		if !ok {
-			release := g.takeLocked(id, true)
-			g.mu.Unlock()
-			return release, true
-		}
-		g.mu.Unlock()
-		t := time.NewTimer(runTimeout)
-		select {
-		case <-ch:
-			t.Stop()
-		case <-t.C:
-			return nil, false
-		case <-ctx.Done():
-			t.Stop()
-			return nil, false
-		}
-	}
-}
-
-// takeLocked holds the review, free, under mu: its release ends the hold
-// and, for a request's (wake), wakes the worker.
-func (g *reviewGate) takeLocked(id string, wake bool) func() {
-	ch := make(chan struct{})
-	if g.inFlight == nil {
-		g.inFlight = map[string]chan struct{}{}
-	}
-	g.inFlight[id] = ch
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			g.mu.Lock()
-			delete(g.inFlight, id)
-			g.mu.Unlock()
-			close(ch)
-			if wake {
-				g.poke()
-			}
-		})
-	}
-}
-
-// begin notes a submit about to commit a review: until its end, a pass
-// leaves alone every pending review it does not know as ours (the one
-// being committed may be among them, not yet held).
-func (g *reviewGate) begin() func() {
-	g.mu.Lock()
-	g.committing++
-	g.mu.Unlock()
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			g.mu.Lock()
-			g.committing--
-			g.mu.Unlock()
-		})
-	}
-}
-
-// own notes the review, whose try the submit just committed, as ours and
-// holds it, before the submit's end: no pass has looked at it since its
-// commit. The release ends the hold and wakes the worker.
-func (g *reviewGate) own(id string) func() {
+// touch changes the hint of the review's try, the caller holding the
+// store's claim on that try: a hint of another try is replaced.
+func (g *reviewGate) touch(id string, try int, f func(h *reviewHint)) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.touchLocked(id, func(h *reviewHint) { h.ours = true })
-	if _, held := g.inFlight[id]; held {
-		return func() {}
-	}
-	return g.takeLocked(id, true)
-}
-
-// ownHeld notes as ours a review the request already holds (Request
-// again, held before its commit).
-func (g *reviewGate) ownHeld(id string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.touchLocked(id, func(h *reviewHint) { h.ours = true })
-}
-
-// touchLocked changes the review's hint, under mu, stamped with the
-// listing count.
-func (g *reviewGate) touchLocked(id string, f func(h *reviewHint)) {
 	if g.hints == nil {
 		g.hints = map[string]reviewHint{}
 	}
 	h := g.hints[id]
+	if h.try != try {
+		h = reviewHint{try: try}
+	}
 	f(&h)
-	h.gen = g.gen
 	g.hints[id] = h
 }
 
-// watch notes the run whose next commit wakes the worker for the review:
-// the run that holds its command, or the one it went to.
-func (g *reviewGate) watch(id, run string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.touchLocked(id, func(h *reviewHint) { h.watch = run })
+// ours notes the try, which this process committed, as ours: judged by
+// its command (judgeCommand).
+func (g *reviewGate) ours(id string, try int) {
+	g.touch(id, try, func(h *reviewHint) { h.ours = true })
+}
+
+// watch notes the run whose next commit wakes the worker for the review's
+// try: the run that holds its command, or the one it went to.
+func (g *reviewGate) watch(id string, try int, run string) {
+	g.touch(id, try, func(h *reviewHint) { h.watch = run })
 }
 
 // keep notes the try's outcome, known, that Dispatch could not record:
 // the next pass writes it.
 func (g *reviewGate) keep(id string, try int, out applyOutcome) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.touchLocked(id, func(h *reviewHint) { h.outTry, h.out = try, &out })
+	g.touch(id, try, func(h *reviewHint) { h.out = &out })
 }
 
-// settled drops the review's hint once its try's outcome is recorded: a
-// later try (Request again) notes it again.
-func (g *reviewGate) settled(id string) {
+// hintOf is the hint of the review's try; none for another try's.
+func (g *reviewGate) hintOf(id string, try int) reviewHint {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	delete(g.hints, id)
-}
-
-// listing counts a pass's listing, before it reads the store.
-func (g *reviewGate) listing() uint64 {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.gen++
-	return g.gen
-}
-
-// prune drops the hints of reviews the listing gen did not find pending
-// and that nothing touched since before it read: settled or gone, so
-// nothing is kept of them past one listing.
-func (g *reviewGate) prune(gen uint64, pending []dispatch.ReviewSummary) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if len(g.hints) == 0 {
-		return
+	if h, ok := g.hints[id]; ok && h.try == try {
+		return h
 	}
-	listed := make(map[string]bool, len(pending))
-	for _, v := range pending {
-		listed[v.ID] = true
-	}
-	for id, h := range g.hints {
-		if h.gen < gen && !listed[id] {
-			delete(g.hints, id)
-		}
+	return reviewHint{}
+}
+
+// settled drops the hint of the review's try once its outcome is
+// recorded, the caller holding the store's claim on that try: a hint of
+// another try is left as it is.
+func (g *reviewGate) settled(id string, try int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if h, ok := g.hints[id]; ok && h.try == try {
+		delete(g.hints, id)
 	}
 }
 
-// How a pass settles a pending review (claim).
+// How a pass settles a pending review's try (settleOne).
 const (
 	settleAsOurs  = iota // judged by its command (judgeCommand)
 	settleAsStart        // judged as the start judges one (reconcileCommand)
 	settleKnown          // its outcome known, written again
 )
 
-// claim holds the pending try e for a pass, answering how the pass
-// settles it: nil when it is left alone this pass (a request holds it, a
-// submit is between its commit and its hold and e is not known as ours,
-// or a test's workerSkips for a worker's pass).
-func (g *reviewGate) claim(e reviewSettle, worker bool) (func(), int, *applyOutcome) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if worker && g.workerSkips != nil && g.workerSkips(e.review) {
-		return nil, 0, nil
-	}
-	if _, held := g.inFlight[e.review]; held {
-		return nil, 0, nil
-	}
-	h, known := g.hints[e.review]
-	how := settleAsStart
+// settleHow is how a pass settles the try, by its hint.
+func settleHow(h reviewHint) int {
 	switch {
-	case known && h.out != nil && h.outTry == e.try:
-		how = settleKnown
-	case known && h.ours:
-		how = settleAsOurs
-	case g.committing > 0:
-		return nil, 0, nil
+	case h.out != nil:
+		return settleKnown
+	case h.ours:
+		return settleAsOurs
 	}
-	return g.takeLocked(e.review, false), how, h.out
+	return settleAsStart
+}
+
+// releaseReview ends a request's claim on a review's try and wakes the
+// worker, which settles what the request left pending.
+func (s *Server) releaseReview(c dispatch.ReviewClaim) {
+	if !c.Held() || s.dispatch == nil {
+		return
+	}
+	s.dispatch.ReleaseReview(c)
+	s.reviews.poke()
 }
 
 // runChanged notes that a commit of the run landed: the engine's
@@ -495,10 +398,9 @@ func (s *Server) passReviews(ctx context.Context, ld reviewLedger, worker bool) 
 		return nil
 	}
 	g := &s.reviews
-	gen := g.listing()
 	lctx, cancel := context.WithTimeout(ctx, reviewSettleWait)
 	g.mu.Lock()
-	fails := g.listFails
+	fails, listed := g.listFails, g.afterListing
 	g.mu.Unlock()
 	var pending []dispatch.ReviewSummary
 	var err error
@@ -513,7 +415,9 @@ func (s *Server) passReviews(ctx context.Context, ld reviewLedger, worker bool) 
 		s.log.Warn("the pending reviews could not be listed; the next pass lists them again", "err", err)
 		return err
 	}
-	g.prune(gen, pending)
+	if listed != nil {
+		listed()
+	}
 	for _, v := range pending {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -525,36 +429,54 @@ func (s *Server) passReviews(ctx context.Context, ld reviewLedger, worker bool) 
 	return nil
 }
 
-// settleOne settles the pending try e, held for this pass (claim), within
-// reviewSettleWait: an outcome known is written again; one of ours is
+// settleOne settles the pending try e within reviewSettleWait, under the
+// store's claim on that exact try (dispatch.ClaimReview), taken first:
+// a try stale by then (settled, or a later one begun since the listing)
+// or claimed by another (a request sending it, another pass) is left, and
+// the pass goes on. Under the claim the review is read again and judged
+// as it stands then: an outcome known is written again; one of ours is
 // judged by its command (judgeCommand) and one from before this server as
 // the start judges it (reconcileCommand, in ld; a run ld does not hold
 // leaves it, for the ledger's owner). Still pending, it is watched on the
 // run that holds its command; a read that fails, or an outcome Dispatch
-// could not record (kept), leaves it pending for the next pass.
+// could not record (kept), leaves it pending for the next pass. The claim
+// is released when it ends, its hint dropped first once its outcome is
+// recorded.
 func (s *Server) settleOne(ctx context.Context, ld reviewLedger, e reviewSettle, worker bool) {
 	g := &s.reviews
-	release, how, known := g.claim(e, worker)
-	if release == nil {
+	g.mu.Lock()
+	skips, seam, wait := g.workerSkips, g.beforeSettleRead, cmp.Or(g.settleWait, reviewSettleWait)
+	g.mu.Unlock()
+	if worker && skips != nil && skips(e.review) {
 		return
 	}
-	defer release()
-	g.mu.Lock()
-	seam, wait := g.beforeSettleRead, cmp.Or(g.settleWait, reviewSettleWait)
-	g.mu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
+	c, now, ok, err := s.dispatch.ClaimReview(ctx, e.review, e.try)
+	if err != nil {
+		s.log.Warn("a pending review could not be claimed; the next pass tries again", "review", e.review, "err", err)
+		return
+	}
+	if !ok {
+		return
+	}
+	defer s.dispatch.ReleaseReview(c)
+	if e, ok = settleOf(now); !ok || e.try != c.Try {
+		return
+	}
 	if seam != nil {
 		seam(ctx, e.anchor)
 	}
+	h := g.hintOf(e.review, e.try)
+	how := settleHow(h)
 	var out applyOutcome
 	switch how {
 	case settleKnown:
-		out = *known
+		out = *h.out
 	case settleAsOurs:
 		o, at, err := s.judgeCommand(ctx, e, e.anchor, false, "")
 		if o.pending {
-			g.watch(e.review, at)
+			g.watch(e.review, e.try, at)
 			if err != nil {
 				s.log.Warn("a pending review's command could not be read; the next pass reads it again", "review", e.review, "run", at, "err", err)
 			}
@@ -573,11 +495,11 @@ func (s *Server) settleOne(ctx context.Context, ld reviewLedger, e reviewSettle,
 		}
 		out = o
 	}
-	if !s.recordOutcome(ctx, e.review, e.try, out) {
+	if !s.recordOutcome(ctx, c, out) {
 		g.keep(e.review, e.try, out)
 		return
 	}
-	g.settled(e.review)
+	g.settled(e.review, e.try)
 	if how == settleAsStart {
 		s.log.Info("a pending review from before this server was settled", "review", e.review, "applied", out.applied != nil)
 	}
@@ -605,7 +527,8 @@ func commandOutcome(row ledger.CommandRow, found bool) (applyOutcome, bool) {
 // candidate's run for a pass): read along the candidate's chain
 // (commandAlong, from e.anchor) and settled by its row (commandOutcome).
 // A command found nowhere is refused at once: no request sends it any
-// more (the read-back's call answered, and a pass holds the review), in
+// more (the read-back's call answered, and a pass holds the store's claim
+// on the try), in
 // why for the read-back, wordsNotFound for a pass. When its row is still
 // accepted, the engine's hold on the run that holds it is read and only
 // then the command again, so a commit and a release between the two
@@ -691,14 +614,16 @@ func refusedFrom(row ledger.CommandRow) applyOutcome {
 	return applyOutcome{why: cmp.Or(rc.Error, "Yardmaster refused the request")}
 }
 
-// recordOutcome commits the try's outcome in Dispatch (the actor server's,
-// review.applied or review.refused), reporting whether it is recorded: a
-// failure is logged and the review stays pending, its outcome kept as a
-// hint the next pass writes (keep).
-func (s *Server) recordOutcome(ctx context.Context, id string, try int, out applyOutcome) bool {
+// recordOutcome commits the outcome of the try the claim c holds in
+// Dispatch (the actor server's, review.applied or review.refused, under
+// the claim), reporting whether it is recorded: a failure is logged and
+// the review stays pending, its outcome kept as a hint the next pass
+// writes (keep).
+func (s *Server) recordOutcome(ctx context.Context, c dispatch.ReviewClaim, out applyOutcome) bool {
 	if s.dispatch == nil || out.pending {
 		return false
 	}
+	id, try := c.Review, c.Try
 	var rc dispatch.Receipt
 	var err error
 	s.reviews.mu.Lock()
@@ -710,16 +635,17 @@ func (s *Server) recordOutcome(ctx context.Context, id string, try int, out appl
 	switch {
 	case err != nil:
 	case out.applied != nil:
-		rc, err = s.dispatch.AppliedReview(ctx, dispatch.Op{}, id, try, *out.applied)
+		rc, err = s.dispatch.AppliedReviewClaimed(ctx, dispatch.Op{}, c, *out.applied)
 	default:
-		rc, err = s.dispatch.RefusedReview(ctx, dispatch.Op{}, id, try, out.why)
+		rc, err = s.dispatch.RefusedReviewClaimed(ctx, dispatch.Op{}, c, out.why)
 	}
 	if err != nil {
 		s.log.Warn("a review's application could not be recorded; it stays pending", "review", id, "try", try, "err", err)
 		return false
 	}
 	if rc.Status != dispatch.StatusDone {
-		// Settled already (by the worker, or a twin), or past this try.
+		// Not kept: a store that writes nothing, or a claim not held (no
+		// actor but the claim's holder settles a try).
 		s.log.Info("a review's application was settled before", "review", id, "try", try, "refusal", rc.Refusal, "words", rc.Error)
 	}
 	return true
@@ -904,21 +830,17 @@ func (s *Server) submitReview(ctx context.Context, w http.ResponseWriter, ds *di
 			return
 		}
 	}
-	// A request is ours and held from its commit on, before any pass can
-	// judge it (begin, own); the hold's release wakes the worker, which
+	// A request comes with the store's claim on its try 1, taken in the
+	// commit that makes it pending, so no pass or Request again settles it
+	// before the request has sent its command and recorded its receipt;
+	// noted as ours under the claim. The release wakes the worker, which
 	// settles whatever the request leaves pending, its read failed after
 	// the commit included.
-	end := func() {}
-	if request {
-		end = s.reviews.begin()
+	rc, v, claim, err := ds.SubmitReviewClaimed(ctx, op, key, rv, ev)
+	if claim.Held() {
+		s.reviews.ours(claim.Review, claim.Try)
+		defer s.releaseReview(claim)
 	}
-	rc, v, err := ds.SubmitReview(ctx, op, key, rv, ev)
-	release := func() {}
-	if request && rc.Status == dispatch.StatusDone && !rc.Repeat && rc.ID != "" {
-		release = s.reviews.own(rc.ID)
-	}
-	end()
-	defer release()
 	switch {
 	case rc.Status == dispatch.StatusDone && err != nil:
 		// Committed, its read failed: done all the same, answered by its
@@ -929,8 +851,8 @@ func (s *Server) submitReview(ctx context.Context, w http.ResponseWriter, ds *di
 		s.writeOp(w, "review", rc, err, true, "review", func(dispatch.Receipt) (any, error) { return v, nil })
 		return
 	}
-	if request && !rc.Repeat && v.Application.State == dispatch.ApplicationPending {
-		v = s.applyReview(ctx, ds, v, v.Application.Try, body.ContinueRun, body.ExpectedRevision)
+	if claim.Held() {
+		v = s.applyReview(ctx, ds, v, claim, body.ContinueRun, body.ExpectedRevision)
 	}
 	s.writeOp(w, "review", rc, nil, true, "review", func(dispatch.Receipt) (any, error) { return v, nil })
 }
@@ -1257,38 +1179,47 @@ func andList(items []string) string {
 }
 
 // applyReview applies the pending try of the review v (step 3 of the
-// order), the caller holding it (own, hold): the review read again inside
-// the hold (a second request finds it settled), then the command sent and
-// its outcome recorded (applyTry, recordOutcome). It answers the review
-// as it stands after.
-func (s *Server) applyReview(ctx context.Context, ds *dispatch.Store, v dispatch.Review, try int, continueRun bool, expected int64) dispatch.Review {
-	e := reviewSettle{review: v.ID, try: try, command: reviewCommandID(v.ID, try), actor: v.Actor}
-	if c, err := dispatch.ParseCandidate(v.Candidate); err == nil {
-		e.anchor = c.Run
+// order) that the claim c holds, the caller holding it until its return:
+// the review read again under the claim, then the command sent and its
+// receipt recorded (applyTry, recordOutcome), the try's hint dropped once
+// it is. It answers the review as it stands after.
+func (s *Server) applyReview(ctx context.Context, ds *dispatch.Store, v dispatch.Review, c dispatch.ReviewClaim, continueRun bool, expected int64) dispatch.Review {
+	e := reviewSettle{review: c.Review, try: c.Try, command: reviewCommandID(c.Review, c.Try), actor: v.Actor}
+	if cand, err := dispatch.ParseCandidate(v.Candidate); err == nil {
+		e.anchor = cand.Run
 	}
-	now, err := ds.Review(ctx, v.ID)
+	now, err := ds.Review(ctx, c.Review)
 	if err != nil {
 		// Nothing sent: the try is refused, the outcome kept for the
 		// next pass until it is recorded.
-		s.log.Warn("a review could not be read for its application", "review", v.ID, "err", err)
-		if !s.recordOutcome(ctx, v.ID, try, applyOutcome{why: wordsUnread}) {
-			s.reviews.keep(v.ID, try, applyOutcome{why: wordsUnread})
-		}
+		s.log.Warn("a review could not be read for its application", "review", c.Review, "err", err)
+		s.settledBy(ctx, c, applyOutcome{why: wordsUnread})
 		return v
 	}
-	if now.Application.State != dispatch.ApplicationPending || now.Application.Try != try {
+	if now.Application.State != dispatch.ApplicationPending || now.Application.Try != c.Try {
 		return now
 	}
-	s.reviews.seam(&s.reviews.beforeApply, v.ID)
+	s.reviews.seam(&s.reviews.beforeApply, c.Review)
 	out := s.applyTry(ctx, now, e, continueRun, expected)
-	if !out.pending && !s.recordOutcome(ctx, v.ID, try, out) {
-		s.reviews.keep(v.ID, try, out)
+	if !out.pending {
+		s.settledBy(ctx, c, out)
 	}
-	after, err := ds.Review(ctx, v.ID)
+	after, err := ds.Review(ctx, c.Review)
 	if err != nil {
 		return now
 	}
 	return after
+}
+
+// settledBy records the outcome of the try the claim c holds, under it,
+// and drops the try's hint once it is recorded, or keeps the outcome for
+// the next pass when it is not.
+func (s *Server) settledBy(ctx context.Context, c dispatch.ReviewClaim, out applyOutcome) {
+	if s.recordOutcome(ctx, c, out) {
+		s.reviews.settled(c.Review, c.Try)
+		return
+	}
+	s.reviews.keep(c.Review, c.Try, out)
 }
 
 // applyTry sends the try's command to the newest run of the candidate's
@@ -1411,15 +1342,15 @@ func (s *Server) commandAlong(ctx context.Context, run, actor, id string) (ledge
 // refused with why. A ledger that cannot be read leaves it pending, for
 // the next pass.
 func (s *Server) readBack(ctx context.Context, to string, e reviewSettle, why string) applyOutcome {
-	s.reviews.watch(e.review, to)
+	s.reviews.watch(e.review, e.try, to)
 	s.reviews.seam(&s.reviews.afterRegister, e.review)
 	out, at, err := s.judgeCommand(ctx, e, to, true, why)
 	switch {
 	case out.pending && err != nil:
 		s.log.Warn("a review's command could not be read back; it stays pending, for the next pass", "review", e.review, "command", e.command, "err", err)
-		s.reviews.watch(e.review, at)
+		s.reviews.watch(e.review, e.try, at)
 	case out.pending:
-		s.reviews.watch(e.review, at)
+		s.reviews.watch(e.review, e.try, at)
 		s.log.Info("a review waits for its command's receipt to settle", "review", e.review, "run", at, "command", e.command)
 	}
 	return out
@@ -1492,19 +1423,22 @@ func (s *Server) handleDispatchRetryReview(w http.ResponseWriter, r *http.Reques
 			}
 		}
 	}
-	// Held before its commit, so no pass judges the new try before the
-	// request has sent it; the release wakes the worker, which settles
+	// The new try comes with the store's claim on it, taken in the commit
+	// that makes it pending, so no pass judges it before the request has
+	// sent its command and recorded its receipt; while another holds the
+	// review's claim (a request or a pass settling its try), the store
+	// makes no new try and the request waits for that claim's release, at
+	// most runTimeout. The release wakes the worker, which settles
 	// whatever the request leaves pending, its read failed after the
 	// commit included.
-	release, ok := s.reviews.hold(ctx, id)
-	if !ok {
+	var claim dispatch.ReviewClaim
+	if rc, v, claim, err = s.applyingClaimed(ctx, ds, op, id); errors.Is(err, dispatch.ErrReviewClaimed) {
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "the review is being settled: send it again")
 		return
 	}
-	defer release()
-	rc, v, err = ds.ApplyingReview(ctx, op, id)
-	if rc.Status == dispatch.StatusDone && !rc.Repeat {
-		s.reviews.ownHeld(id)
+	if claim.Held() {
+		s.reviews.ours(claim.Review, claim.Try)
+		defer s.releaseReview(claim)
 	}
 	switch {
 	case rc.Status == dispatch.StatusDone && err != nil:
@@ -1516,10 +1450,37 @@ func (s *Server) handleDispatchRetryReview(w http.ResponseWriter, r *http.Reques
 		s.writeOp(w, "review", rc, err, false, "review", func(dispatch.Receipt) (any, error) { return v, nil })
 		return
 	}
-	if !rc.Repeat && v.Application.State == dispatch.ApplicationPending {
-		v = s.applyReview(ctx, ds, v, v.Application.Try, body.ContinueRun, body.ExpectedRevision)
+	if claim.Held() {
+		v = s.applyReview(ctx, ds, v, claim, body.ContinueRun, body.ExpectedRevision)
 	}
 	s.writeOp(w, "review", rc, nil, false, "review", func(dispatch.Receipt) (any, error) { return v, nil })
+}
+
+// applyingClaimed is Request again's commit with the store's claim on its
+// new try (dispatch.ApplyingReviewClaimed): while another holds the
+// review's claim it waits for that claim's release and sends it again, at
+// most runTimeout in all, ErrReviewClaimed when the wait ends first.
+func (s *Server) applyingClaimed(ctx context.Context, ds *dispatch.Store, op dispatch.Op, id string) (dispatch.Receipt, dispatch.Review, dispatch.ReviewClaim, error) {
+	t := time.NewTimer(runTimeout)
+	defer t.Stop()
+	for {
+		rc, v, c, err := ds.ApplyingReviewClaimed(ctx, op, id)
+		if !errors.Is(err, dispatch.ErrReviewClaimed) {
+			return rc, v, c, err
+		}
+		free := ds.ReviewFree(id)
+		if free == nil {
+			continue
+		}
+		s.reviews.seam(&s.reviews.retryWaits, id)
+		select {
+		case <-free:
+		case <-t.C:
+			return rc, v, c, err
+		case <-ctx.Done():
+			return rc, v, c, err
+		}
+	}
 }
 
 // handleDispatchReviews is GET /api/dispatch/tickets/{key}/reviews

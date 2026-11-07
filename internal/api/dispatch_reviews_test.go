@@ -24,9 +24,9 @@ import (
 // A person's review sent, applied, reconciled and marked
 // (docs/plans/review-repair.md, RV1 PR-4). The tests wait on the
 // mechanism: the ledger's command rows, the store's review, the engine's
-// attempts, and the review gate's seams (beforeApply, afterRegister,
-// afterReadBack, beforeSettleRead, listFails, workerSkips, and ticks, the
-// worker's clock); a ledger that refuses or answers falsely is a wrapper
+// attempts, the store's claims, and the review gate's seams (beforeApply,
+// afterRegister, afterReadBack, beforeSettleRead, listFails, afterListing,
+// retryWaits, workerSkips, and ticks, the worker's clock); a ledger that refuses or answers falsely is a wrapper
 // of the engine's (refuseAfterLedger, lostReplyLedger).
 
 // candName is a candidate's name: <run>/<task>/<n>@<commit>.
@@ -1545,14 +1545,13 @@ func TestAnOutcomeNotRecordedIsWrittenAgain(t *testing.T) {
 	l.srv.reviews.setSeams(func(rg *reviewGate) { rg.recordFails = nil })
 }
 
-// The hints inform a pass, never decide whether the store's pending
-// reviews are looked at: a review held by a request is left alone; while a
-// submit is between its commit and its hold, a review not known as ours is
-// left alone and one of ours is judged by its command; an outcome kept for
-// a try is written for that try alone; a listing drops the hints of the
-// reviews it did not find pending, but not one touched since it began; a
-// commit wakes the worker only for a run a review is watched on.
-func TestAPassJudgesByWhatItKnows(t *testing.T) {
+// The hints inform a pass, never decide whether it settles (the store's
+// claim does): a hint is of one try, so a later try's notes replace an
+// earlier try's, an outcome kept for a try is read for that try alone,
+// and dropping a try's hint, a late settlement of an earlier try, leaves
+// a later try's as it is; a commit wakes the worker only for a run a
+// review is watched on.
+func TestAHintIsOfOneTry(t *testing.T) {
 	var g reviewGate
 	g.wake = make(chan struct{}, 1)
 	woke := func() bool {
@@ -1563,50 +1562,29 @@ func TestAPassJudgesByWhatItKnows(t *testing.T) {
 			return false
 		}
 	}
-	e := func(id string, try int) reviewSettle {
-		return reviewSettle{review: id, try: try, command: reviewCommandID(id, try), actor: adminActor, anchor: "run-a"}
+	if how := settleHow(g.hintOf("r0", 1)); how != settleAsStart {
+		t.Fatalf("a review not known: %d", how)
 	}
-	release, how, _ := g.claim(e("r0", 1), true)
-	if release == nil || how != settleAsStart {
-		t.Fatalf("a review not known: %v %d", release != nil, how)
+	g.ours("r1", 1)
+	if how := settleHow(g.hintOf("r1", 1)); how != settleAsOurs {
+		t.Fatalf("a try of ours: %d", how)
 	}
-	if again, _, _ := g.claim(e("r0", 1), true); again != nil {
-		t.Fatal("a held review was claimed twice")
-	}
-	release()
-	if woke() {
-		t.Fatal("a pass's release woke the worker")
-	}
-	end := g.begin()
-	if r, _, _ := g.claim(e("r0", 1), true); r != nil {
-		t.Fatal("a review not known was claimed while a submit commits")
-	}
-	own := g.own("r1")
-	end()
-	if r, _, _ := g.claim(e("r1", 1), true); r != nil {
-		t.Fatal("a review its submit holds was claimed")
-	}
-	own()
-	if !woke() {
-		t.Fatal("a request's release did not wake the worker")
-	}
-	r, how, _ := g.claim(e("r1", 1), true)
-	if r == nil || how != settleAsOurs {
-		t.Fatalf("a review of ours: %d", how)
-	}
-	r()
 	g.keep("r1", 1, applyOutcome{why: "late"})
-	r, how, out := g.claim(e("r1", 1), true)
-	if r == nil || how != settleKnown || out == nil || out.why != "late" {
-		t.Fatalf("an outcome kept for try 1: %d %+v", how, out)
+	if h := g.hintOf("r1", 1); settleHow(h) != settleKnown || h.out.why != "late" {
+		t.Fatalf("an outcome kept for try 1: %+v", h)
 	}
-	r()
-	if r, how, _ := g.claim(e("r1", 2), true); r == nil || how != settleAsOurs {
-		t.Fatalf("try 2 after an outcome kept for try 1: %d", how)
-	} else {
-		r()
+	if how := settleHow(g.hintOf("r1", 2)); how != settleAsStart {
+		t.Fatalf("try 2 read try 1's hint: %d", how)
 	}
-	g.watch("r1", "run-a")
+	g.ours("r1", 2)
+	if h := g.hintOf("r1", 2); settleHow(h) != settleAsOurs || h.out != nil {
+		t.Fatalf("try 2 after try 1's outcome kept: %+v", h)
+	}
+	g.settled("r1", 1)
+	if how := settleHow(g.hintOf("r1", 2)); how != settleAsOurs {
+		t.Fatalf("dropping try 1's hint dropped try 2's: %d", how)
+	}
+	g.watch("r1", 2, "run-a")
 	g.runChanged("run-b")
 	if woke() {
 		t.Fatal("a commit of a run no review is watched on woke the worker")
@@ -1615,23 +1593,127 @@ func TestAPassJudgesByWhatItKnows(t *testing.T) {
 	if !woke() {
 		t.Fatal("a commit of a watched run did not wake the worker")
 	}
-	gen := g.listing()
-	g.watch("r2", "run-b")
-	g.prune(gen, []dispatch.ReviewSummary{{ID: "r0"}})
+	g.settled("r1", 2)
 	if _, ok := g.hints["r1"]; ok {
-		t.Fatal("the hint of a review no longer pending was kept")
+		t.Fatal("try 2's hint kept after its outcome was recorded")
 	}
-	if _, ok := g.hints["r2"]; !ok {
-		t.Fatal("a hint touched after the listing began was dropped")
+}
+
+// A pass acts on a listed try only under the store's claim on that exact
+// try, taken when it acts: a pass lists try 1 pending, and before it
+// reaches it the try is recorded refused and Request again leaves try 2
+// pending (its command accepted, its change retained in the run's
+// memory). The pass's claim of try 1 fails (stale), so it records nothing
+// and drops nothing of try 2: a pass after it judges try 2 as ours (it
+// waits while the engine holds the run, never refused as a command a
+// server before this one left), and the run's next commit applies it.
+func TestAPassLeavesAStaleListedTry(t *testing.T) {
+	l := newLaunchTest(t, nil, nil)
+	g := &refuseAfterLedger{Ledger: crew.SQLLedger(l.srv.ledger)}
+	l.srv.runs.UseLedger(g)
+	run, c1 := succeededCandidate(t, l, func(dir string) string { return commitFile(t, dir, "a.txt", "a\n") })
+	let := holdWorkerOff(l.srv)
+	v := submitPending(t, l.srv, candName(run, "build", 1, c1), l.head)
+	var once sync.Once
+	reached := false
+	l.srv.reviews.setSeams(func(rg *reviewGate) {
+		rg.afterListing = func() {
+			once.Do(func() {
+				reached = true
+				if rc, err := l.srv.dispatch.RefusedReview(context.Background(), adminOp("Nate"), v.ID, 1, "no"); err != nil || rc.Status != dispatch.StatusDone {
+					t.Fatalf("try 1 refused: %+v %v", rc, err)
+				}
+				g.arm(run, 1, 2)
+				out := retryReview(t, l.testEnv, v.ID, nil, http.StatusOK, "")
+				if a := applicationOf(t, out); a["try"] != 2.0 || a["state"] != dispatch.ApplicationPending {
+					t.Fatalf("Request again, its change retained: %v", a)
+				}
+			})
+		}
+	})
+	if err := l.srv.passReviews(t.Context(), l.srv.ledger, false); err != nil {
+		t.Fatal(err)
 	}
-	g.workerSkips = func(string) bool { return true }
-	if r, _, _ := g.claim(e("r3", 1), true); r != nil {
-		t.Fatal("workerSkips did not hold the worker's pass off")
+	l.srv.reviews.setSeams(func(rg *reviewGate) { rg.afterListing = nil })
+	if !reached {
+		t.Fatal("the pass never listed")
 	}
-	if r, _, _ := g.claim(e("r3", 1), false); r == nil {
-		t.Fatal("workerSkips held the start's pass off")
-	} else {
-		r()
+	if a := reviewNow(t, l.srv, v.ID).Application; a.Try != 2 || a.State != dispatch.ApplicationPending {
+		t.Fatalf("after the pass that listed try 1: %+v", a)
+	}
+	if h := l.srv.reviews.hintOf(v.ID, 2); !h.ours || h.watch != run {
+		t.Fatalf("try 2's hint after the pass that listed try 1: %+v", h)
+	}
+	if err := l.srv.passReviews(t.Context(), l.srv.ledger, false); err != nil {
+		t.Fatal(err)
+	}
+	if a := reviewNow(t, l.srv, v.ID).Application; a.Try != 2 || a.State != dispatch.ApplicationPending {
+		t.Fatalf("try 2, its command accepted and its run held: %+v", a)
+	}
+	let()
+	commitRun(t, l.testEnv, run)
+	if a := waitApplication(t, l.srv, v.ID, dispatch.ApplicationApplied); a.Try != 2 || a.Run != run || a.Command != reviewCommandID(v.ID, 2) {
+		t.Fatalf("try 2's application: %+v", a)
+	}
+}
+
+// The submit holds the store's claim on its try from the commit that
+// makes it pending until its command's receipt is recorded: Request again
+// sent between the commit and the command waits for the claim, making no
+// try of its own, and a pass made then leaves the try alone (its claim
+// fails), so nothing records the request not taken while its command is
+// still to be sent. Released, the review is applied, and Request again
+// is answered 409 invalid: only a refused request is sent again.
+func TestASubmitsClaimHoldsOffARetryAndAPass(t *testing.T) {
+	l := newLaunchTest(t, nil, nil)
+	run, c1 := succeededCandidate(t, l, func(dir string) string { return commitFile(t, dir, "a.txt", "a\n") })
+	type answer struct {
+		status int
+		out    map[string]any
+	}
+	retried, waiting := make(chan answer, 1), make(chan struct{})
+	var once, wonce sync.Once
+	l.srv.reviews.setSeams(func(rg *reviewGate) {
+		rg.retryWaits = func(string) { wonce.Do(func() { close(waiting) }) }
+		rg.beforeApply = func(review string) {
+			once.Do(func() {
+				go func() {
+					status, _, out := l.call(t, "POST", "/api/dispatch/reviews/"+review+"/retry", map[string]any{"opId": opID()})
+					retried <- answer{status, out}
+				}()
+				select {
+				case <-waiting:
+				case <-time.After(testWait):
+					t.Error("Request again never waited for the submit's claim")
+					return
+				}
+				if err := l.srv.passReviews(context.Background(), l.srv.ledger, true); err != nil {
+					t.Errorf("a pass during the submit: %v", err)
+				}
+				if v, err := l.srv.dispatch.Review(context.Background(), review); err != nil || v.Application.State != dispatch.ApplicationPending || v.Application.Try != 1 {
+					t.Errorf("settled while the submit holds its claim: %+v %v", v.Application, err)
+				}
+			})
+		}
+	})
+	out := sendReview(t, l.testEnv, "CND-1", reviewOf(candName(run, "build", 1, c1), l.head, "request_changes", changeOf("x")), http.StatusCreated, "")
+	l.srv.reviews.setSeams(func(rg *reviewGate) { rg.beforeApply, rg.retryWaits = nil, nil })
+	id := entityOf(t, out, "review")["id"].(string)
+	if app := applicationOf(t, out); app["state"] != dispatch.ApplicationApplied || app["try"] != 1.0 || app["run"] != run {
+		t.Fatalf("the submit's application: %v", app)
+	}
+	select {
+	case a := <-retried:
+		if e, _ := a.out["error"].(map[string]any); a.status != http.StatusConflict || e == nil || e["code"] != dispatch.RefusalInvalid {
+			if rc, _ := a.out["receipt"].(map[string]any); a.status != http.StatusConflict || rc == nil || rc["refusal"] != dispatch.RefusalInvalid {
+				t.Fatalf("Request again after the submit: %d %v", a.status, a.out)
+			}
+		}
+	case <-time.After(testWait):
+		t.Fatal("Request again never answered")
+	}
+	if a := reviewNow(t, l.srv, id).Application; a.State != dispatch.ApplicationApplied || a.Try != 1 {
+		t.Fatalf("the review: %+v", a)
 	}
 }
 
