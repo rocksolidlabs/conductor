@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { unmirrored } from '~/utils/decisions'
+import { runRuns, unmirrored } from '~/utils/decisions'
 import type { SessionInfo } from '~/composables/useSessions'
 import { choiceKey, newlyNeedingInput } from '~/utils/attention'
 import { sidebarRunFor } from '~/utils/crews'
@@ -38,11 +38,11 @@ let tick: number | undefined
 
 const model = computed(() => sidebarModel(filterSessions(attention.sessions.value, query.value), attention.runOf))
 const needsDot = computed(() => needsDotShown(events.routes.value))
-// The open durable decisions no shown session question mirrors (a gate's, Program item DR1): Needs you counts and lists each once,
+// The open durable decisions no shown session question mirrors (a gate's, Program item DR1), of runs that run: Needs you counts and lists each once,
 // and its row opens the decision's card.
 const decisions = useDecisions()
 const decisionModal = useDecisionModal()
-const loneDecisions = computed(() => (query.value ? [] : unmirrored(decisions.open.value, attention.sessions.value)))
+const loneDecisions = computed(() => (query.value ? [] : unmirrored(decisions.open.value, attention.sessions.value, (id) => runRuns(attention.runOf(id)))))
 const empty = computed(() => attention.sessions.value.length === 0 && joined.list.value.length === 0)
 const folds = foldState.folds
 /** The run of the page open now: the run page, or a member's page. */

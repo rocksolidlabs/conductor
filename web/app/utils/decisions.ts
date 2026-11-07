@@ -406,10 +406,19 @@ export function mirroredIds(sessions: ReadonlyArray<{ attention?: { state?: stri
   return out
 }
 
-/** The open decisions no shown session question mirrors (a gate's, or an agent's set aside while it works): Needs you counts each once. */
-export function unmirrored<D extends Pick<Decision, 'id' | 'state'>>(decisions: readonly D[], sessions: ReadonlyArray<{ attention?: { state?: string; decision?: string } }>): D[] {
+/**
+ * The open decisions no shown session question mirrors (a gate's, or an agent's set aside while it works), of a run that runs (`runs`
+ * says which: held by the server, not stopped, not continued): Needs you counts each once. A stopped run's open decision waits for the
+ * run as much as for the operator, and is answered from its run page, its ticket page or the palette.
+ */
+export function unmirrored<D extends Pick<Decision, 'id' | 'state' | 'run'>>(decisions: readonly D[], sessions: ReadonlyArray<{ attention?: { state?: string; decision?: string } }>, runs: (id: string) => boolean): D[] {
   const shown = mirroredIds(sessions)
-  return decisions.filter((d) => d.state === 'open' && !shown.has(d.id))
+  return decisions.filter((d) => d.state === 'open' && !shown.has(d.id) && runs(d.run))
+}
+
+/** Whether a run, as the live store holds it, runs: the server holds it, and it is not stopped or continued by another. */
+export function runRuns(r: { stoppedAt?: string; record?: boolean; resumedBy?: string } | undefined): boolean {
+  return !!r && !r.stoppedAt && !r.record && !r.resumedBy
 }
 
 /** The palette's rows: one per open decision, "Answer dr-7: <question>", oldest first; Enter (`open`) opens its card. */

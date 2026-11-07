@@ -11,6 +11,7 @@ import {
   refusalOf,
   respondDecision,
   responseBody,
+  runRuns,
   subjectWords,
   unmirrored,
   type Decision,
@@ -178,10 +179,18 @@ describe("Needs you's and the palette's decisions", () => {
   const done = decision({ id: 'dr-3', state: 'applied' })
   const sessions = [{ attention: { state: 'needs_input', decision: 'dr-1' } }, { attention: { state: 'working', decision: 'dr-9' } }]
 
-  it('counts each open decision once: none a shown question mirrors, none that is not open', () => {
-    expect(unmirrored([gate, asked, done], sessions).map((d) => d.id)).toEqual(['dr-2'])
+  it('counts each open decision once: none a shown question mirrors, none that is not open, none of a run that does not run', () => {
+    const running = () => true
+    expect(unmirrored([gate, asked, done], sessions, running).map((d) => d.id)).toEqual(['dr-2'])
     // A mirror set aside while its agent works shows no question: the decision is counted on its own.
-    expect(unmirrored([asked], [{ attention: { state: 'working', decision: 'dr-1' } }]).map((d) => d.id)).toEqual(['dr-1'])
+    expect(unmirrored([asked], [{ attention: { state: 'working', decision: 'dr-1' } }], running).map((d) => d.id)).toEqual(['dr-1'])
+    // A stopped run's, or one the live store does not hold: answered from its run page, not counted as needing you now.
+    expect(unmirrored([gate, asked], [], (id) => id !== RUN)).toEqual([])
+    expect(runRuns({})).toBe(true)
+    expect(runRuns({ stoppedAt: T0 })).toBe(false)
+    expect(runRuns({ record: true })).toBe(false)
+    expect(runRuns({ resumedBy: 'next-00000000' })).toBe(false)
+    expect(runRuns(undefined)).toBe(false)
   })
 
   it("gives the palette a row per open decision, oldest first, Enter opening its card", () => {

@@ -1,5 +1,5 @@
 import { needingInput } from '../utils/attention'
-import { unmirrored } from '../utils/decisions'
+import { runRuns, unmirrored } from '../utils/decisions'
 import { nextNeeding, pillMs } from '../utils/needsCursor'
 
 /**
@@ -10,7 +10,7 @@ import { nextNeeding, pillMs } from '../utils/needsCursor'
  * nothing navigates. From a terminal's Alt twins the pill takes the focus,
  * so the digits typed next are the pill's, never the terminal's. After the
  * sessions come the open durable decisions no shown question mirrors (a
- * gate's, Program item DR1), each once: the pill shows its question, and
+ * gate's, Program item DR1) of runs that run, each once: the pill shows its question, and
  * Enter opens its card.
  */
 export interface PillShown {
@@ -45,7 +45,7 @@ export function useNeedsCursor() {
 
   /** One step: the next (1) or the previous (-1) session that needs you; nothing with none waiting. */
   function step(delta: 1 | -1, focus = false) {
-    const lone = unmirrored(decisions.open.value, attention.sessions.value).map((d) => d.id)
+    const lone = unmirrored(decisions.open.value, attention.sessions.value, (id) => runRuns(attention.runOf(id))).map((d) => d.id)
     const ids = [...needingInput(attention.sessions.value).map((s) => s.id), ...lone]
     const page = palette.page.value?.sessionId
     const from = shown.value?.id ?? (page && ids.includes(page) ? page : null)

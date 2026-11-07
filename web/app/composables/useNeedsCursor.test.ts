@@ -14,7 +14,9 @@ function asking(id: string, since: string): SessionInfo {
 
 let states: Map<string, Ref<unknown>>
 /** The open durable decisions the store holds (Program item DR1): none unless a test puts some there. */
-const decisions = ref<Array<{ id: string; state: string }>>([])
+const decisions = ref<Array<{ id: string; state: string; run: string }>>([])
+/** The runs the live store holds, by id. */
+const runs: Record<string, { stoppedAt?: string }> = { live: {}, stopped: { stoppedAt: '2026-10-31T00:00:00Z' } }
 beforeEach(() => {
   vi.useFakeTimers()
   states = new Map()
@@ -23,7 +25,7 @@ beforeEach(() => {
     if (!states.has(key)) states.set(key, ref(init()))
     return states.get(key) as Ref<T>
   })
-  vi.stubGlobal('useAttention', () => ({ sessions: ref([asking('a', '2026-10-31T00:00:02Z'), asking('b', '2026-10-31T00:00:01Z')]) }))
+  vi.stubGlobal('useAttention', () => ({ sessions: ref([asking('a', '2026-10-31T00:00:02Z'), asking('b', '2026-10-31T00:00:01Z')]), runOf: (id: string) => runs[id] }))
   vi.stubGlobal('usePalette', () => ({ page: ref(null) }))
   vi.stubGlobal('useDecisions', () => ({ open: decisions }))
 })
@@ -79,10 +81,12 @@ describe('the needs-you pill', () => {
     }
   })
 
-  it('steps after the sessions to each open decision no shown question mirrors, once, and to none that is not open', () => {
+  it('steps after the sessions to each open decision no shown question mirrors, once, and to none not open or of a run that does not run', () => {
     decisions.value = [
-      { id: 'dr-2', state: 'open' },
-      { id: 'dr-3', state: 'answered' },
+      { id: 'dr-2', state: 'open', run: 'live' },
+      { id: 'dr-3', state: 'answered', run: 'live' },
+      { id: 'dr-4', state: 'open', run: 'stopped' },
+      { id: 'dr-5', state: 'open', run: 'gone' },
     ]
     const cursor = useNeedsCursor()
     cursor.step(1)
