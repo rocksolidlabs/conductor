@@ -53,14 +53,19 @@ func (s *Server) nextRunRevision() int64 {
 }
 
 // runGroup is the run as the switchyard should show it, and a publication to
-// carry requests about it (nil when no member is published).
+// carry requests about it (nil when no member is published). A member's
+// publication that has ended (its session's end, and the while it lingers
+// after; it stays in the published map until its session leaves the
+// server) is neither: it would carry nothing but a wait for its answer,
+// where the run's desk would carry it, and the switchyard, which forgets
+// the session, refuses a group that names it.
 func (s *Server) runGroup(run crew.Run) (proto.RunGroup, PublishedSession) {
 	g := proto.RunGroup{ID: run.ID, Name: cmpLabel(run.Label, run.Name)}
 	var carrier PublishedSession
 	for _, m := range run.Members {
 		pm := proto.RunMember{Name: m.Name, AgentID: m.AgentID, Status: m.Status}
 		if m.SessionID != "" {
-			if pub := s.publishedOf(m.SessionID); pub != nil {
+			if pub := s.publishedOf(m.SessionID); pub != nil && !ended(pub.Done()) {
 				pm.SessionID = pub.CurrentID()
 				if carrier == nil {
 					carrier = pub

@@ -31,8 +31,14 @@ type Decisions interface {
 	// link's actor. answer, when not nil, is the connection's own answer
 	// (its subscriber's, as its `answer` message is taken): a question of
 	// sessionID is answered through it, and every other question through
-	// the question's claim as the link.
-	Decide(ctx context.Context, linkID, sessionID string, m proto.Decide, answer func(context.Context, proto.Answer) error) []byte
+	// the question's claim as the link. stands, when not nil, is the
+	// connection's own check of its viewer (a publisher's peer: its link's
+	// credential there, and the host vouching for its switchyard), asked
+	// with the link's at the operation's commit boundary, as a terminal
+	// write asks it (session.AttachOptions.Authorize and Fresh): an error
+	// (session.ErrRevoked, ErrExpired, or a kind of them) and nothing is
+	// done. It must not call the session and must not wait.
+	Decide(ctx context.Context, linkID, sessionID string, m proto.Decide, answer func(context.Context, proto.Answer) error, stands func() error) []byte
 	// Watch calls changed whenever what the link's viewer sees may have
 	// changed (its scope's items, their actions' revisions, the steps of
 	// what it acted on), until stop is called.

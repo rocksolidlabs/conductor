@@ -31,6 +31,11 @@ type linkView struct {
 	*share.Link
 	Active int  `json:"active"`
 	Remote bool `json:"remote,omitempty"`
+	// RevokePending says a decision link minted at the rendezvous was
+	// revoked here and the rendezvous has not confirmed it yet: it is
+	// tried again until it does, and a revoke again from the dialog tries
+	// at once.
+	RevokePending bool `json:"revokePending,omitempty"`
 }
 
 // sessionLinks lists a session's links: the ones made here, with their
@@ -46,7 +51,7 @@ func (s *Server) sessionLinks(id string, d session.Driver) []linkView {
 		out = append(out, linkView{Link: l, Active: active[l.ID]})
 	}
 	for _, rl := range s.remoteLinksOf(id) {
-		out = append(out, linkView{Link: &share.Link{ID: rl.ID, SessionID: id, Label: rl.Label, Role: rl.Role, CreatedAt: rl.CreatedAt, ExpiresAt: rl.ExpiresAt, Decide: rl.Decide}, Remote: true})
+		out = append(out, linkView{Link: &share.Link{ID: rl.ID, SessionID: id, Label: rl.Label, Role: rl.Role, CreatedAt: rl.CreatedAt, ExpiresAt: rl.ExpiresAt, Decide: rl.Decide}, Remote: true, RevokePending: rl.revokePending})
 	}
 	return out
 }
@@ -479,7 +484,7 @@ func (s *Server) handleListRunLinks(w http.ResponseWriter, r *http.Request) {
 		out = append(out, linkView{Link: l, Active: active[l.ID]})
 	}
 	for _, rl := range s.remoteRunLinksOf(id) {
-		out = append(out, linkView{Link: &share.Link{ID: rl.ID, RunID: id, Role: rl.Role, Label: rl.Label, CreatedAt: rl.CreatedAt, ExpiresAt: rl.ExpiresAt, Decide: rl.Decide}, Remote: true})
+		out = append(out, linkView{Link: &share.Link{ID: rl.ID, RunID: id, Role: rl.Role, Label: rl.Label, CreatedAt: rl.CreatedAt, ExpiresAt: rl.ExpiresAt, Decide: rl.Decide}, Remote: true, RevokePending: rl.revokePending})
 	}
 	reply := map[string]any{"links": out}
 	// As a session's (handleListLinks): whether a member is published, and
@@ -511,36 +516,34 @@ func (s *Server) handleRevokeRunLink(w http.ResponseWriter, r *http.Request) {
 	if l, ok := s.links.Get(linkID); ok {
 		label, remote = l.Label, l.Remote && l.RunID == id
 	}
+	found, revoked := false, false
 	if remote {
 		// A decision link minted at the rendezvous ends here first, through
 		// its barrier (nothing of its lane begun after), then there; the
 		// run's desk, which may carry the revoke, is held until it has.
+		// Its record stays, listed as owing its revoke there, until the
+		// rendezvous confirms it (remoteRevoked): one it did not is tried
+		// again (retryRevokeThere), and a revoke again from here tries at
+		// once.
 		defer s.holdDesk(id)()
 		s.links.RevokeRun(id, linkID)
-	}
-	found, revoked := false, false
-	if !remote {
+	} else {
 		found, revoked = s.links.RevokeRun(id, linkID)
 	}
 	if !found {
 		// A link minted at the rendezvous is revoked there, over any member's
 		// publication, else over the run's desk.
 		if s.hasRemoteRunLink(id, linkID) || remote {
-			run, _ := s.runs.Get(id)
-			_, member := s.runGroup(run)
-			var carrier runCarrier = member
-			if carrier == nil {
-				if d := s.liveDesk(id); d != nil {
-					carrier = d
-				}
-			}
-			if carrier == nil {
-				writeError(w, http.StatusBadGateway, "rendezvous_unavailable", "no member of the run is published to the rendezvous now")
-				return
-			}
 			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 			defer cancel()
-			if err := carrier.Revoke(ctx, linkID); err != nil && !strings.Contains(err.Error(), "not_found") {
+			if err := s.carryRunRevoke(ctx, id, linkID); err != nil {
+				if _, owed := s.revokeOwed("", id, linkID); owed {
+					s.retryRevokeThere("", id, linkID)
+				}
+				if errors.Is(err, errNoCarrier) {
+					writeError(w, http.StatusBadGateway, "rendezvous_unavailable", err.Error())
+					return
+				}
 				writeError(w, http.StatusBadGateway, "rendezvous_unavailable", "the rendezvous did not revoke the link: "+err.Error())
 				return
 			}
@@ -575,6 +578,7 @@ func (s *Server) handleRevokeLink(w http.ResponseWriter, r *http.Request) {
 	}
 	if !found && remote && s.publishedOf(id) == nil {
 		// Its publication is gone, and the link with it there.
+		s.forgetRemoteLink(id, linkID)
 		s.recordLink(id, "link revoked: "+linkLabelOr(label))
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -586,6 +590,11 @@ func (s *Server) handleRevokeLink(w http.ResponseWriter, r *http.Request) {
 			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 			defer cancel()
 			if err := pub.Revoke(ctx, linkID); err != nil && !strings.Contains(err.Error(), "not_found") {
+				// A decision link revoked here stays listed, owing its
+				// revoke there, which is tried again until it is done.
+				if _, owed := s.revokeOwed(id, "", linkID); owed {
+					s.retryRevokeThere(id, "", linkID)
+				}
 				writeError(w, http.StatusBadGateway, "rendezvous_unavailable", "the rendezvous did not revoke the link: "+err.Error())
 				return
 			}

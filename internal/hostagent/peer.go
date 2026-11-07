@@ -87,11 +87,14 @@ type peer struct {
 
 	// lane is the viewer's decision link's lane (lane.go), nil for a
 	// viewer of no decision link; deskSink is a desk's viewer's transport
-	// as its last hello came over it (a desk holds no subscription), and
-	// deskMu orders what is written to it. Guarded by mu but deskMu.
+	// as its last hello came over it (a desk holds no subscription).
+	// Guarded by mu. deskQ holds what waits to be written to a desk's
+	// viewer by its writer (deskWriter), made with it at the first send
+	// (deskOnce).
 	lane     *laneConn
 	deskSink session.Sink
-	deskMu   sync.Mutex
+	deskQ    chan []byte
+	deskOnce sync.Once
 }
 
 var (
@@ -484,13 +487,13 @@ func (p *peer) handle(f proto.Frame, via *dcSink) {
 		default:
 			// A decision link's lane (lane.go): refused on a viewer of no
 			// decision link, and by a host that serves no decisions.
-			laneControl(p.laneOf(), p.a.opts.Decisions != nil, f.Payload, p.laneSend)
+			laneControl(p.laneOf(), p.a.servesDecisions(), f.Payload, p.laneSend)
 		}
 	case proto.TypeDecide:
 		if sub == nil {
 			return
 		}
-		laneDecide(p.laneOf(), p.a.opts.Decisions != nil, f.Payload, p.laneSend)
+		laneDecide(p.laneOf(), p.a.servesDecisions(), f.Payload, p.laneSend)
 	case proto.TypeFileWrite:
 		// A save from the editor (design round 12, F6), written on this machine.
 		if sub == nil {
@@ -893,7 +896,7 @@ func (p *peer) attach(hello proto.Hello, via *dcSink) {
 	// Handed over: a later attach of this viewer replaces this one.
 	p.replaces = nil
 	if decides && p.lane == nil {
-		p.lane = openLane(p.a.opts.Decisions, p.linkID, p.a.local.Info().ID, p.laneSend)
+		p.lane = openLane(p.a.opts.Decisions, p.linkID, p.a.local.Info().ID, p.laneSend, p.laneStands)
 	}
 	p.mu.Unlock()
 }

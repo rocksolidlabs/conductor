@@ -157,10 +157,14 @@ type Options struct {
 	// unsupported and sends no TypeDecision frame.
 	Decisions Decisions
 	// LinkGone, when set, is told each link the server says no longer
-	// opens what it was minted for (link_gone), after its viewers' acts
-	// are withdrawn: the Uplink's, so the publisher's record of a decision
-	// link there ends with it.
-	LinkGone func(linkID string)
+	// opens what this connection carries (link_gone), after its viewers'
+	// acts are withdrawn, with what that is: the server's own id of the
+	// published session (sessionID), or the run of a desk (runID). The
+	// Uplink's, so the publisher's record of a decision link there ends
+	// with it where the word is the link's own end: a session link's, from
+	// its session; a run link's, from the run's desk alone (a member's says
+	// only that the member left the run's group).
+	LinkGone func(linkID, sessionID, runID string)
 
 	// transport, when set (tests), is the control connection's transport in
 	// place of the standard one: a test's names dialed to its own servers.
@@ -1371,7 +1375,13 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		}
 		a.creds.gone(m.LinkID)
 		if a.opts.LinkGone != nil {
-			a.opts.LinkGone(m.LinkID)
+			sessionID, runID := "", ""
+			if a.desk != nil {
+				runID = a.desk.ID
+			} else if a.local != nil {
+				sessionID = a.local.Info().ID
+			}
+			a.opts.LinkGone(m.LinkID, sessionID, runID)
 		}
 	case proto.HostOffer:
 		var m proto.ViewerSDP

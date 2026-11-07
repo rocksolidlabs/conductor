@@ -729,7 +729,11 @@ member lives. The publisher opens the desk with the run's first decision
 link there and ends it once nothing needs it (the run stopped, continued
 or forgotten, after a linger; its last decision link revoked or expired;
 the server's stop): a run that finished failed keeps it, since a Retry
-reopens the run.
+reopens the run. A decision link revoked on the publisher whose revoke the
+switchyard has not confirmed keeps its record (listed as owing it) and the
+desk, and the revoke is tried again until the switchyard confirms it: a
+revoke never leaves a link standing there that the publisher no longer
+lists.
 
 What the switchyard sees: a control link it minted (it does not know the
 link answers decisions; the publisher keeps that, and holds the link for

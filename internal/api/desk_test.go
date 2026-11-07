@@ -1,12 +1,16 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +21,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/hostagent"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/share"
 )
 
 // The lane through a switchyard, and a run's desk (desk_publish.go,
@@ -298,7 +303,9 @@ func TestADeskEndsWithItsLastDecisionLink(t *testing.T) {
 // its decisions not said: the Decide tab is not served yet) no decision
 // link is minted, a session's or a run's, 409 switchyard_too_old, and no
 // desk is left open; a plain control link is, and its viewer's lane is
-// refused by the owner, nothing of it a decision, the connection going on.
+// refused by the owner unsupported (it serves no lane through a
+// switchyard that does not carry one), nothing of it a decision, the
+// connection going on.
 func TestNoDecisionLinkAtAnOlderSwitchyard(t *testing.T) {
 	yard, local := deskPair(t, false)
 	id := local.createSession("cat")
@@ -339,7 +346,7 @@ func TestNoDecisionLinkAtAnOlderSwitchyard(t *testing.T) {
 		}
 		var m map[string]any
 		if f.Type == proto.TypeControl && json.Unmarshal(f.Payload, &m) == nil && m["t"] == proto.CtlDecideRefused {
-			if m["code"] != proto.DecideNotDecisionLink {
+			if m["code"] != proto.DecideUnsupported {
 				t.Fatalf("the refusal %v", m)
 			}
 			break
@@ -622,4 +629,461 @@ func TestADeskIsItsPublishers(t *testing.T) {
 func fmt5(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
+}
+
+// failingDesk is a run's desk whose revokes at the switchyard fail while
+// fail is set (its connection there gone quiet), the rest its own.
+type failingDesk struct {
+	Desk
+	fail atomic.Bool
+}
+
+func (d *failingDesk) Revoke(ctx context.Context, linkID string) error {
+	if d.fail.Load() {
+		return errors.New("rendezvous_unavailable: no answer")
+	}
+	return d.Desk.Revoke(ctx, linkID)
+}
+
+// failingPub is a session's publication whose revokes fail while fail is
+// set, the rest its own.
+type failingPub struct {
+	PublishedSession
+	fail atomic.Bool
+}
+
+func (p *failingPub) Revoke(ctx context.Context, linkID string) error {
+	if p.fail.Load() {
+		return errors.New("rendezvous_unavailable: no answer")
+	}
+	return p.PublishedSession.Revoke(ctx, linkID)
+}
+
+func (p *failingPub) Decisions() bool { return carriesDecisions(p.PublishedSession) }
+
+// retries hands the test each retry of a revoke owed at the switchyard,
+// to start when it chooses.
+func retries(e *testEnv) chan func() {
+	next := make(chan func(), 8)
+	e.srv.pubMu.Lock()
+	e.srv.revokeRetrySeam = func(_ string, try func()) { next <- try }
+	e.srv.pubMu.Unlock()
+	return next
+}
+
+// linksOf lists the links route path answers.
+func linksOf(t *testing.T, e *testEnv, path string) []map[string]any {
+	t.Helper()
+	resp, out := e.do("GET", path, adminToken, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("%s: %d %v", path, resp.StatusCode, out)
+	}
+	var links []map[string]any
+	for _, l := range out["links"].([]any) {
+		links = append(links, l.(map[string]any))
+	}
+	return links
+}
+
+// A run decision link's revoke that fails at the switchyard fails closed:
+// the link ends here (its lane opens nothing) but stays listed, owing its
+// revoke there (revokePending), the run's desk stays to carry it, and the
+// switchyard still holds the link; it is tried again (a retry that fails
+// changes nothing), and a revoke again from here, once the switchyard
+// answers, revokes it there: the link no longer joins, it is listed no
+// more, and the desk ends with it.
+func TestAFailedRevokeThereKeepsTheRunLinkOwed(t *testing.T) {
+	yard, local := deskPair(t, true)
+	next := retries(local)
+	run, _ := heldRun(t, local)
+	linkID, token := remoteDecisionLink(t, local, "/api/runs/"+run.ID+"/links", "phone")
+	deskID := deskOf(t, yard, token)
+	local.srv.pubMu.Lock()
+	rd := local.srv.desks[run.ID]
+	failing := &failingDesk{Desk: rd.desk}
+	failing.fail.Store(true)
+	rd.desk = failing
+	local.srv.pubMu.Unlock()
+
+	resp, out := local.do("DELETE", "/api/runs/"+run.ID+"/links/"+linkID, adminToken, nil)
+	if resp.StatusCode != http.StatusBadGateway || errCodeOf(out) != "rendezvous_unavailable" {
+		t.Fatalf("a revoke the switchyard did not take: %d %v", resp.StatusCode, out)
+	}
+	if local.srv.Lane().DecisionLink(linkID, "", run.ID) {
+		t.Fatal("the revoked link still opens a lane here")
+	}
+	links := linksOf(t, local, "/api/runs/"+run.ID+"/links")
+	if len(links) != 1 || links[0]["id"] != linkID || links[0]["revokePending"] != true {
+		t.Fatalf("the run's links after a failed revoke: %v", links)
+	}
+	if local.srv.liveDesk(run.ID) == nil {
+		t.Fatal("the desk ended with a revoke owed")
+	}
+	if code, out := joinStatus(t, yard, token); code != http.StatusOK {
+		t.Fatalf("the switchyard's link: %d %v", code, out)
+	}
+	// A retry while the switchyard still does not answer: owed still.
+	var try func()
+	select {
+	case try = <-next:
+	case <-time.After(testWait):
+		t.Fatal("no retry was armed")
+	}
+	try()
+	select {
+	case try = <-next:
+	case <-time.After(testWait):
+		t.Fatal("the retry gave up")
+	}
+	if l := linksOf(t, local, "/api/runs/"+run.ID+"/links"); len(l) != 1 || l[0]["revokePending"] != true || local.srv.liveDesk(run.ID) == nil {
+		t.Fatalf("after a retry that failed: %v", l)
+	}
+	failing.fail.Store(false)
+	if resp, out := local.do("DELETE", "/api/runs/"+run.ID+"/links/"+linkID, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("the revoke again: %d %v", resp.StatusCode, out)
+	}
+	if code, _ := joinStatus(t, yard, token); code != http.StatusNotFound {
+		t.Fatalf("the link still joins at the switchyard: %d", code)
+	}
+	if l := linksOf(t, local, "/api/runs/"+run.ID+"/links"); len(l) != 0 {
+		t.Fatalf("the run's links after the revoke went through: %v", l)
+	}
+	until(t, "the desk ended", func() bool { return local.srv.liveDesk(run.ID) == nil })
+	until(t, "the switchyard let the desk go", func() bool {
+		_, there := yard.srv.hosts.Desk(deskID)
+		return !there
+	})
+	// The retry armed meanwhile finds nothing owed and ends.
+	try()
+}
+
+// A session decision link's revoke that fails at the switchyard fails
+// closed too: listed, owing its revoke, the switchyard holding the link;
+// the retry, once the switchyard answers, revokes it there and the record
+// goes; a revoke again from here then answers done.
+func TestAFailedRevokeThereKeepsTheSessionLinkOwed(t *testing.T) {
+	yard, local := deskPair(t, true)
+	next := retries(local)
+	id := sessionHex("published")
+	fs := newFakeSession(t, local, id, session.Options{})
+	local.srv.publish(fs.l)
+	until(t, "the session published", func() bool { return local.srv.publishedOf(id) != nil })
+	linkID, token := remoteDecisionLink(t, local, "/api/sessions/"+id+"/links", "phone")
+	local.srv.pubMu.Lock()
+	failing := &failingPub{PublishedSession: local.srv.published[id]}
+	failing.fail.Store(true)
+	local.srv.published[id] = failing
+	local.srv.pubMu.Unlock()
+
+	resp, out := local.do("DELETE", "/api/sessions/"+id+"/links/"+linkID, adminToken, nil)
+	if resp.StatusCode != http.StatusBadGateway || errCodeOf(out) != "rendezvous_unavailable" {
+		t.Fatalf("a revoke the switchyard did not take: %d %v", resp.StatusCode, out)
+	}
+	if local.srv.Lane().DecisionLink(linkID, id, "") {
+		t.Fatal("the revoked link still opens a lane here")
+	}
+	links := linksOf(t, local, "/api/sessions/"+id+"/links")
+	if len(links) != 1 || links[0]["id"] != linkID || links[0]["revokePending"] != true {
+		t.Fatalf("the session's links after a failed revoke: %v", links)
+	}
+	if code, out := joinStatus(t, yard, token); code != http.StatusOK {
+		t.Fatalf("the switchyard's link: %d %v", code, out)
+	}
+	failing.fail.Store(false)
+	select {
+	case try := <-next:
+		try()
+	case <-time.After(testWait):
+		t.Fatal("no retry was armed")
+	}
+	until(t, "the retry revoked it there", func() bool {
+		code, _ := joinStatus(t, yard, token)
+		return code == http.StatusNotFound && len(linksOf(t, local, "/api/sessions/"+id+"/links")) == 0
+	})
+	if resp, _ := local.do("DELETE", "/api/sessions/"+id+"/links/"+linkID, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("a revoke again: %d", resp.StatusCode)
+	}
+}
+
+// olderLinkFile is a switchyard's link file as a build before run desks
+// reads it (linkFile, its run a share.Group of a name and members),
+// strictly: a field it does not know leaves the link out at its start.
+type olderLinkFile struct {
+	ID        string `json:"id"`
+	TokenHash string `json:"tokenHash"`
+	SessionID string `json:"sessionId,omitempty"`
+	RunID     string `json:"runId,omitempty"`
+	Run       *struct {
+		Name    string
+		Members []share.GroupMember
+	} `json:"run,omitempty"`
+	Role      session.Role `json:"role"`
+	Label     string       `json:"label,omitempty"`
+	CreatedAt time.Time    `json:"createdAt"`
+	ExpiresAt *time.Time   `json:"expiresAt,omitempty"`
+	Owner     string       `json:"owner"`
+	Addr      string       `json:"addr,omitempty"`
+}
+
+// A run link whose group names its desk is kept in a file without the
+// desk, which a switchyard rolled back to a build before desks reads
+// strictly; after a restart the link names the desk again once the desk
+// is back (its register_desk), and opens it.
+func TestADesksLinkFileReadsAtAnOlderSwitchyard(t *testing.T) {
+	dir := t.TempDir() + "/data"
+	yard := keptSwitchyard(t, dir, nil)
+	desk, _ := dialFakeDesk(t, yard, deskReg("instance-a-0123456789", "run-1"))
+	g := proto.RunGroup{ID: "run-1", Name: "Release", Desk: desk.sessionID, Members: []proto.RunMember{{Name: "lead", AgentID: "cat", Status: "pending"}}}
+	created := runLinkOver(desk, "control", g)
+	linkID := created["linkId"].(string)
+	u := created["url"].(string)
+	token := u[strings.LastIndex(u, "/")+1:]
+	if deskOf(t, yard, token) != desk.sessionID {
+		t.Fatal("the join names another desk")
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "links", linkID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ToLower(string(raw)), "desk") || strings.Contains(string(raw), desk.sessionID) {
+		t.Fatalf("the link's file names the desk: %s", raw)
+	}
+	var older olderLinkFile
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&older); err != nil || older.Run == nil || older.RunID != "run-1" || len(older.Run.Members) != 1 {
+		t.Fatalf("the file read as an older switchyard reads it: %+v %v", older, err)
+	}
+	desk.c.Close(websocket.StatusNormalClosure, "")
+	<-desk.done
+
+	yard2 := keptSwitchyard(t, dir, nil)
+	again, reg := dialFakeDesk(t, yard2, deskReg("instance-a-0123456789", "run-1"))
+	if again.sessionID != desk.sessionID || !strings.Contains(fmt5(reg["links"]), linkID) {
+		t.Fatalf("after a restart: %s (was %s), links %v", again.sessionID, desk.sessionID, reg["links"])
+	}
+	if deskOf(t, yard2, token) != desk.sessionID {
+		t.Fatal("after a restart the link does not name its desk")
+	}
+}
+
+// A desk's judgement and its end are one step under the lock a mint
+// counts itself by: a run's desk that nothing needs any more (its opening
+// mint ended, no decision link made) is checked, and a mint counted on it
+// between the check's first look and its judgement (the check's seam) is
+// seen by the judgement, which keeps the desk; the mint is handed a desk
+// that stays, mints a link over it that opens it at the switchyard, and
+// the desk ends once that mint ends, nothing needing it then.
+func TestADeskCheckKeepsADeskAMintTook(t *testing.T) {
+	yard, local := deskPair(t, true)
+	run, _ := heldRun(t, local)
+	d, _, _, words := local.srv.openRunDesk(t.Context(), run.ID)
+	if d == nil {
+		t.Fatalf("the desk: %s", words)
+	}
+	handed := make(chan Desk, 1)
+	var armed atomic.Bool
+	armed.Store(true)
+	local.srv.pubMu.Lock()
+	local.srv.deskCheckSeam = func(runID string) {
+		if !armed.CompareAndSwap(true, false) {
+			return
+		}
+		h, _, _, words := local.srv.openRunDesk(context.Background(), runID)
+		if h == nil {
+			t.Errorf("the mint in the check's window: %s", words)
+		}
+		handed <- h
+	}
+	local.srv.pubMu.Unlock()
+	// The opening mint ends with no link made: the check that follows would
+	// end the desk but for the mint it is handed in its window.
+	local.srv.deskMinted(run.ID)
+	var h Desk
+	select {
+	case h = <-handed:
+	case <-time.After(testWait):
+		t.Fatal("the desk's check never came")
+	}
+	if h == nil || ended(h.Done()) || local.srv.liveDesk(run.ID) != h {
+		t.Fatal("the check stopped the desk a mint was handed")
+	}
+	r, _ := local.srv.runs.Get(run.ID)
+	g, _ := local.srv.runGroup(r)
+	res, err := h.RunLink(t.Context(), "control", time.Hour, "tablet", g)
+	if err != nil {
+		t.Fatalf("a link over the handed desk: %v", err)
+	}
+	if deskOf(t, yard, res.URL[strings.LastIndex(res.URL, "/")+1:]) != h.CurrentID() {
+		t.Fatal("the link does not open the handed desk")
+	}
+	local.srv.deskMinted(run.ID)
+	deskGone(t, yard, local, run.ID, h.CurrentID())
+}
+
+// A member's link_gone says only that the member left the run's group (the
+// run's next attempt replacing it): the run decision link stands here and
+// is listed; the run's desk's says the link itself is gone there, and it
+// ends here too, its record with it. A session link's from another
+// session's connection is no word of its own.
+func TestAMembersLinkGoneIsNoRunLinksEnd(t *testing.T) {
+	_, local := deskPair(t, true)
+	run, _ := heldRun(t, local)
+	linkID, _ := remoteDecisionLink(t, local, "/api/runs/"+run.ID+"/links", "phone")
+	local.srv.RemoteLinkGone(linkID, sessionHex("member"), "")
+	if !local.srv.Lane().DecisionLink(linkID, "", run.ID) {
+		t.Fatal("a member's link_gone ended the run's decision link")
+	}
+	if l := linksOf(t, local, "/api/runs/"+run.ID+"/links"); len(l) != 1 {
+		t.Fatalf("the run's links after a member's link_gone: %v", l)
+	}
+	local.srv.RemoteLinkGone(linkID, "", "another-run")
+	if !local.srv.Lane().DecisionLink(linkID, "", run.ID) {
+		t.Fatal("another run's desk's link_gone ended the link")
+	}
+	local.srv.RemoteLinkGone(linkID, "", run.ID)
+	if local.srv.Lane().DecisionLink(linkID, "", run.ID) {
+		t.Fatal("the desk's link_gone left the link standing")
+	}
+	if l := linksOf(t, local, "/api/runs/"+run.ID+"/links"); len(l) != 0 {
+		t.Fatalf("the run's links after the desk's link_gone: %v", l)
+	}
+	until(t, "the desk ended", func() bool { return local.srv.liveDesk(run.ID) == nil })
+
+	id := sessionHex("published")
+	fs := newFakeSession(t, local, id, session.Options{})
+	local.srv.publish(fs.l)
+	until(t, "the session published", func() bool { return local.srv.publishedOf(id) != nil })
+	sl, _ := remoteDecisionLink(t, local, "/api/sessions/"+id+"/links", "phone")
+	local.srv.RemoteLinkGone(sl, sessionHex("other"), "")
+	if !local.srv.Lane().DecisionLink(sl, id, "") {
+		t.Fatal("another session's link_gone ended the session's link")
+	}
+	local.srv.RemoteLinkGone(sl, id, "")
+	if local.srv.Lane().DecisionLink(sl, id, "") {
+		t.Fatal("its own session's link_gone left it standing")
+	}
+}
+
+// A member whose publication has ended (its session's end; it stays in the
+// published map until its session leaves the server) carries nothing and
+// is named in no group: the run's group names no session of it, and the
+// run decision link's revoke goes over the run's desk, done.
+func TestAnEndedPublicationCarriesNothingOfTheRun(t *testing.T) {
+	yard, local := deskPair(t, true)
+	run, release := heldRun(t, local)
+	linkID, token := remoteDecisionLink(t, local, "/api/runs/"+run.ID+"/links", "phone")
+	if err := release(); err != nil {
+		t.Fatal(err)
+	}
+	sid := runningAttempt(t, local, run.ID, "build", 1)["sessionId"].(string)
+	until(t, "the member published", func() bool { return local.srv.publishedOf(sid) != nil })
+	pub := local.srv.publishedOf(sid)
+	pub.Stop()
+	<-pub.Done()
+	if local.srv.publishedOf(sid) == nil {
+		t.Fatal("the ended publication left the published map")
+	}
+	r, _ := local.srv.runs.Get(run.ID)
+	g, carrier := local.srv.runGroup(r)
+	if carrier != nil {
+		t.Fatal("an ended publication carries the run")
+	}
+	for _, m := range g.Members {
+		if m.SessionID != "" && m.SessionID == pub.CurrentID() {
+			t.Fatalf("the group names the ended publication: %+v", g)
+		}
+	}
+	if resp, out := local.do("DELETE", "/api/runs/"+run.ID+"/links/"+linkID, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("the revoke over the desk: %d %v", resp.StatusCode, out)
+	}
+	if code, _ := joinStatus(t, yard, token); code != http.StatusNotFound {
+		t.Fatalf("the link still joins: %d", code)
+	}
+}
+
+// Through a switchyard, a session evidence entry names the session by the
+// id the switchyard knows it by (its publication's), never this server's
+// own, which opens nothing there: in the item's read and in the evidence
+// read.
+func TestEvidenceThroughASwitchyardNamesThePublishedSession(t *testing.T) {
+	yard, local := deskPair(t, true)
+	id := sessionHex("published")
+	fs := newFakeSession(t, local, id, session.Options{})
+	local.srv.publish(fs.l)
+	until(t, "the session published", func() bool { return local.srv.publishedOf(id) != nil })
+	q := fs.ask(t, "Which name?", threeChoices)
+	_, token := remoteDecisionLink(t, local, "/api/sessions/"+id+"/links", "phone")
+	hosted := local.srv.publishedOf(id).CurrentID()
+	if hosted == id {
+		t.Fatal("the published id is the server's own: the test proves nothing")
+	}
+	w := &laneClient{wsClient: dialViewer(t, yard, hosted, token)}
+	w.welcome = joinedRelay(t, w.wsClient)
+	ref := questionRef(id, q)
+	it := w.read(ref)
+	found := false
+	for _, e := range it.Evidence {
+		if e.Ref == "session:"+id {
+			found = true
+			if e.Session != hosted {
+				t.Fatalf("the item's session entry: %+v (published %s)", e, hosted)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("the item has no session entry: %+v", it.Evidence)
+	}
+	if got, ctl := w.evidence(ref, "session:"+id); ctl != nil || got.Session != hosted {
+		t.Fatalf("the evidence read: %+v %v (published %s)", got, ctl, hosted)
+	}
+	if _, there := yard.srv.hosts.Get(hosted); !there {
+		t.Fatal("the switchyard does not know the id given")
+	}
+}
+
+// A lane action asks the connection's own check (a publisher's peer's:
+// its link held there, its host vouching for its switchyard) at its
+// operation's commit boundary: refused revoked when it fails, before or at
+// the commit, and the engine keeps nothing done (no command taken, or one
+// settled withdrawn).
+func TestALaneActAsksTheConnectionsCheck(t *testing.T) {
+	e := readyEnv(t, nil)
+	e.gitRepo(t)
+	run := failedRun(t, e)
+	linkID, tok := e.decisionLink(t, "/api/runs/"+run+"/links", "phone", 0)
+	ref := "task:" + run + "/build"
+	w := dialLane(t, e, "/ws/runs/"+run+"/desk", tok)
+	retry := actionOf(t, w.read(ref), crew.TaskRetry)
+	decide := func(op string, stands func() error) map[string]any {
+		f := e.srv.Lane().Decide(t.Context(), linkID, "", proto.Decide{ReqID: "r-" + op, Ref: ref, Action: crew.TaskRetry, Revision: retry.Expect, OpID: op}, nil, stands)
+		var m map[string]any
+		if err := json.Unmarshal(f[1:], &m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	if m := decide("op-quiet", func() error { return session.ErrRevoked }); !refusedWith(m, proto.DecideRevoked) {
+		t.Fatalf("an act whose connection's check fails: %v", m)
+	}
+	if _, found, err := e.srv.ledger.Receipt(t.Context(), run, laneActor(linkID), "op-quiet"); err != nil || found {
+		t.Fatalf("the engine took the refused act: %v %v", found, err)
+	}
+	// Standing as the act is judged, failing at its commit.
+	var asked atomic.Int32
+	m := decide("op-late", func() error {
+		if asked.Add(1) == 1 {
+			return nil
+		}
+		return session.ErrRevoked
+	})
+	if !refusedWith(m, proto.DecideRevoked) || asked.Load() < 2 {
+		t.Fatalf("an act whose check fails at its commit: %v (asked %d)", m, asked.Load())
+	}
+	if r, ok := e.srv.runs.Get(run); !ok || r.Outcome == "" {
+		t.Fatalf("the run moved: %+v", r)
+	}
+	if task := taskVia(t, e, run, "build", "failed", func(task map[string]any) bool { return true }); task["state"] != "failed" {
+		t.Fatalf("the task after the refused acts: %v", task)
+	}
 }

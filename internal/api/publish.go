@@ -69,6 +69,10 @@ type remoteLink struct {
 	// Decide says it is a decision link (desk_publish.go): this server
 	// holds it as a remote link for its lane.
 	Decide bool
+	// revokePending says the decision link was revoked here and its revoke
+	// is still owed at the rendezvous (desk_publish.go, remoteRevoked): it
+	// is listed so, and its record kept, until the rendezvous confirms.
+	revokePending bool
 }
 
 // recordRemoteLink keeps a link minted at the rendezvous for session id.

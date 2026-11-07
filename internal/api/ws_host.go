@@ -101,6 +101,13 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	)
 	if isDesk {
 		hs, resumed, err = s.hosts.RegisterDesk(desk, conn)
+		if err == nil {
+			// The desk is in no link's file (share.Group.Desk): its owner's
+			// links of its run name it again as it registers (after this
+			// switchyard restarted, the links restored from their files),
+			// before its registered lists the links naming it.
+			s.links.NameDesk(hs.Owner(), desk.Run.ID, hs.Info().ID)
+		}
 	} else {
 		hs, resumed, err = s.hosts.Register(reg, conn)
 	}

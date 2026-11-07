@@ -249,10 +249,23 @@ type Server struct {
 	// is armed. Guarded by pubMu.
 	desks          map[string]*runDesk
 	deskLingerSeam func(runID string, fire func())
-	runSyncing     map[string]bool
-	runSent        map[string]string
-	pubPending     map[string]chan struct{}
-	pubErr         map[string]string
+	// deskCheckSeam, in tests, runs as a desk's judgement is about to be
+	// made (deskCheck), its desk seen live.
+	deskCheckSeam func(runID string)
+	// revokeRetries are the decision links whose revoke at the rendezvous
+	// is being tried again (retryRevokeThere), revokesCtx ends them as the
+	// server stops (revokesStopped: none begun after); revokeRetrySeam, in
+	// tests, is handed each retry's next try to start when it chooses.
+	// Guarded by pubMu.
+	revokeRetries   map[string]bool
+	revokesStopped  bool
+	revokesCtx      context.Context
+	revokesCancel   context.CancelFunc
+	revokeRetrySeam func(linkID string, next func())
+	runSyncing      map[string]bool
+	runSent         map[string]string
+	pubPending      map[string]chan struct{}
+	pubErr          map[string]string
 	// pubStopped are the sessions whose publication the rendezvous ended
 	// with a stop of its own: the next Share publishes them again.
 	pubStopped map[string]bool
@@ -768,6 +781,7 @@ func (s *Server) track(f func()) {
 // at its end; tests call it before their directories go.
 func (s *Server) WaitBackground(ctx context.Context) {
 	s.stopExtensions()
+	s.stopRevokeRetries()
 	s.bgMu.Lock()
 	s.bgDone = true
 	s.bgMu.Unlock()
@@ -1234,6 +1248,7 @@ func (s *Server) Shutdown(ctx context.Context) {
 	}
 	s.runs.Draining(ctx)
 	s.shutDesks()
+	s.stopRevokeRetries()
 	s.stopRunDesks()
 	s.webhooks.close(ctx)
 	// The providers' queues end as the webhooks' do: what waits in them is

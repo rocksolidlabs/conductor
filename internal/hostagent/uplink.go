@@ -44,8 +44,9 @@ type Uplink struct {
 	// sets its API's (internal/cli, serve.go); nil serves none.
 	Decisions Decisions
 	// LinkGone, when set, is told each link the switchyard says no longer
-	// opens what it was minted for (Options.LinkGone).
-	LinkGone func(linkID string)
+	// opens what one of its connections carries, with that connection's
+	// session or desk's run (Options.LinkGone).
+	LinkGone func(linkID, sessionID, runID string)
 
 	// instance is this server's secret with the rendezvous: with each
 	// session's own id it gives a published session the same id after the

@@ -81,9 +81,14 @@ type Group struct {
 	Members  []GroupMember
 	Revision int64 `json:"-"`
 	// Desk is the run's desk there (proto.RunGroup.Desk), "" with none:
-	// the link opens it as it opens a member's session (Names), kept in
-	// the link's file so it opens the desk again after a restart.
-	Desk string `json:",omitempty"`
+	// the link opens it as it opens a member's session (Names). It is held
+	// in memory alone, never in the link's file (a switchyard's link file
+	// keeps the shape an older switchyard reads strictly, and an older one
+	// rolled back to would leave out every run link of a run with a desk):
+	// after a restart the desk's own register_desk names it again in its
+	// owner's links of its run (NameDesk), as the publisher's next sync
+	// would.
+	Desk string `json:"-"`
 }
 
 // GroupMember is a member of a Group: its session there, "" while it has none.
@@ -816,6 +821,32 @@ func (s *Store) SetGroup(owner, runID string, g Group) (changed, left []string, 
 	sort.Strings(changed)
 	sort.Strings(left)
 	return changed, left, nil
+}
+
+// NameDesk names the desk deskID in each live link of owner's run runID
+// (a switchyard's run links), as the desk registers: the desk is never in
+// a link's file (Group.Desk), so after a restart the links restored from
+// their files name it again only as it is back, the same id under the same
+// owner, which the publisher's syncs name while it has the desk. Its
+// revision is left as it is. It returns the links it changed.
+func (s *Store) NameDesk(owner, runID, deskID string) []string {
+	if owner == "" || runID == "" || deskID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var changed []string
+	for _, l := range s.byRun[groupKey(owner, runID)] {
+		if l.Revoked || l.Group == nil || l.Group.Desk == deskID {
+			continue
+		}
+		next := l.Group.clone()
+		next.Desk = deskID
+		l.Group = &next
+		changed = append(changed, l.ID)
+	}
+	sort.Strings(changed)
+	return changed
 }
 
 // RevokeGroup revokes owner's run link linkID, notifying OnRevokeRun.

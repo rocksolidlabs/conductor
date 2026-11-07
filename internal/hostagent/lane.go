@@ -26,18 +26,24 @@ type laneConn struct {
 	cancel            context.CancelFunc
 	linkID, sessionID string
 	send              func([]byte)
-	decides, reads    atomic.Int32
-	wg                sync.WaitGroup
-	stopWatch         func()
-	seq               atomic.Int64
+	// stands is the connection's own check of its viewer, asked at each
+	// decide's commit boundary (Decisions.Decide); nil for none.
+	stands         func() error
+	decides, reads atomic.Int32
+	wg             sync.WaitGroup
+	stopWatch      func()
+	seq            atomic.Int64
 }
 
 // openLane opens the lane of the decision link linkID for a viewer: its
 // requests are answered through d, sessionID the server's own id of the
-// session the viewer holds ("" for a desk), and its replies sent with send.
-func openLane(d Decisions, linkID, sessionID string, send func([]byte)) *laneConn {
+// session the viewer holds ("" for a desk), and its replies sent with send;
+// stands is the viewer's own check, which each decide's operation asks at
+// its commit boundary (the peer's credential and the host's vouch, as a
+// terminal write asks them).
+func openLane(d Decisions, linkID, sessionID string, send func([]byte), stands func() error) *laneConn {
 	ctx, cancel := context.WithCancel(context.Background())
-	c := &laneConn{d: d, ctx: ctx, cancel: cancel, linkID: linkID, sessionID: sessionID, send: send}
+	c := &laneConn{d: d, ctx: ctx, cancel: cancel, linkID: linkID, sessionID: sessionID, send: send, stands: stands}
 	c.stopWatch = d.Watch(linkID, sessionID, func() {
 		send(proto.MustControl(proto.DecisionsChanged{T: proto.CtlDecisionsChanged, Seq: c.seq.Add(1)}))
 	})
@@ -117,7 +123,10 @@ func laneControl(c *laneConn, served bool, payload []byte, send func([]byte)) bo
 // laneDecide serves a TypeDecide frame on c (a connection with no lane
 // refused, noLane). Every answer goes through the question's claim as the
 // link (Decisions.Decide with no own answer): the link's name, request id
-// and hold, whichever session asked.
+// and hold, whichever session asked; the operation asks the viewer's own
+// check (c.stands) beside the link's at its commit boundary, so a viewer
+// whose link the host no longer holds, or whose host no longer hears its
+// switchyard, acts on nothing, as its terminal writes do not.
 func laneDecide(c *laneConn, served bool, payload []byte, send func([]byte)) {
 	reqID := proto.DecideReqID(payload)
 	if c == nil {
@@ -136,6 +145,6 @@ func laneDecide(c *laneConn, served bool, payload []byte, send func([]byte)) {
 	}
 	c.wg.Go(func() {
 		defer c.decides.Add(-1)
-		c.send(c.d.Decide(c.ctx, c.linkID, c.sessionID, m, nil))
+		c.send(c.d.Decide(c.ctx, c.linkID, c.sessionID, m, nil, c.stands))
 	})
 }

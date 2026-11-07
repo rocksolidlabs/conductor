@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/share"
 )
 
@@ -191,17 +193,29 @@ func (s *Server) deskMinted(runID string) {
 // tooOldWords say why a decision link is not minted at a switchyard.
 const tooOldWords = "This switchyard must be updated to answer decisions through its links"
 
-// endRunDesk stops the run's desk, if it has one.
+// endRunDesk stops the run's desk, if it has one, whatever holds it (the
+// run forgotten: no decision of it is answered).
 func (s *Server) endRunDesk(runID string) {
 	s.pubMu.Lock()
 	rd := s.desks[runID]
-	delete(s.desks, runID)
-	if rd != nil && rd.stopLinger != nil {
-		rd.stopLinger()
+	if rd != nil {
+		s.dropDeskLocked(runID, rd)
 	}
 	s.pubMu.Unlock()
 	if rd != nil {
 		rd.desk.Stop()
+	}
+}
+
+// dropDeskLocked forgets rd as the run's desk, its linger disarmed; the
+// caller holds pubMu, and stops the desk once it has let it go.
+func (s *Server) dropDeskLocked(runID string, rd *runDesk) {
+	if s.desks[runID] == rd {
+		delete(s.desks, runID)
+	}
+	if rd.stopLinger != nil {
+		rd.stopLinger()
+		rd.stopLinger = nil
 	}
 }
 
@@ -230,9 +244,18 @@ func (s *Server) runTakesCommands(runID string) bool {
 	return ok && run.StoppedAt == nil && run.ResumedBy == ""
 }
 
-// liveRemoteDecision says whether a decision link of the run minted at the
-// rendezvous still stands here.
-func (s *Server) liveRemoteDecision(runID string) bool {
+// deskNeededLocked says whether the run's desk is still needed, minting
+// aside: a decision link of the run minted at the rendezvous still stands
+// here, or one revoked here is still owed its revoke there (revokePending:
+// the desk may be what carries it). The caller holds pubMu; the link
+// store's lock is taken under it, never the other way round (the store
+// tells its hooks outside its lock).
+func (s *Server) deskNeededLocked(runID string) bool {
+	for _, rl := range s.remoteRunLinks[runID] {
+		if rl.Decide && rl.revokePending {
+			return true
+		}
+	}
 	for _, l := range s.links.ListByRun(runID) {
 		if l.Remote {
 			if _, err := s.links.Live(l.ID); err == nil {
@@ -243,34 +266,64 @@ func (s *Server) liveRemoteDecision(runID string) bool {
 	return false
 }
 
-// deskCheck ends the run's desk once nothing needs it: at once when its
-// last decision link no longer stands, after deskLinger when the engine
-// takes the run's commands no more (disarmed should it take them again).
+// deskCheck ends the run's desk once nothing needs it: at once when no
+// decision link of the run stands and no revoke of one is owed at the
+// rendezvous, after deskLinger when the engine takes the run's commands no
+// more (disarmed should it take them again). Its judgement and the end are
+// made under one hold of pubMu, the lock a mint takes to count itself on
+// the desk (openRunDesk): a mint counted before is seen, and one after
+// finds no desk and opens another, so no mint is handed a desk that is
+// then stopped. The linger's fire judges the same way.
 func (s *Server) deskCheck(runID string) {
 	if s.liveDesk(runID) == nil {
 		return
 	}
-	s.pubMu.Lock()
-	minting := s.desks[runID] != nil && s.desks[runID].minting > 0
-	s.pubMu.Unlock()
-	if !minting && !s.liveRemoteDecision(runID) {
-		s.endRunDesk(runID)
-		return
-	}
+	// The engine is asked off pubMu (its hooks take pubMu).
 	takes := s.runTakesCommands(runID)
 	s.pubMu.Lock()
-	defer s.pubMu.Unlock()
+	seam := s.deskCheckSeam
+	s.pubMu.Unlock()
+	if seam != nil {
+		seam(runID)
+	}
+	s.pubMu.Lock()
 	rd := s.desks[runID]
+	if rd == nil || ended(rd.desk.Done()) {
+		s.pubMu.Unlock()
+		return
+	}
+	if rd.minting == 0 && !s.deskNeededLocked(runID) {
+		s.dropDeskLocked(runID, rd)
+		s.pubMu.Unlock()
+		rd.desk.Stop()
+		return
+	}
+	defer s.pubMu.Unlock()
 	switch {
-	case rd == nil:
 	case takes && rd.stopLinger != nil:
 		rd.stopLinger()
 		rd.stopLinger = nil
 	case !takes && rd.stopLinger == nil:
 		fire := func() {
-			if !s.runTakesCommands(runID) {
-				s.endRunDesk(runID)
+			if s.runTakesCommands(runID) {
+				return
 			}
+			s.pubMu.Lock()
+			if s.desks[runID] != rd {
+				s.pubMu.Unlock()
+				return
+			}
+			if rd.minting > 0 || s.revokeOwedLocked(runID) {
+				// A mint under way, or a revoke still owed there that the
+				// desk may carry: judged again as that ends (deskMinted,
+				// revokeConfirmed), which arms the linger anew.
+				rd.stopLinger = nil
+				s.pubMu.Unlock()
+				return
+			}
+			s.dropDeskLocked(runID, rd)
+			s.pubMu.Unlock()
+			rd.desk.Stop()
 		}
 		t := time.AfterFunc(deskLinger, func() { s.track(fire) })
 		rd.stopLinger = func() { t.Stop() }
@@ -282,10 +335,32 @@ func (s *Server) deskCheck(runID string) {
 	}
 }
 
-// remoteRevoked is a remote decision link's end here (revoked, expired):
-// its record goes, and the run's desk is judged again.
+// revokeOwedLocked says whether a revoke of one of the run's decision
+// links minted at the rendezvous is still owed there. The caller holds
+// pubMu.
+func (s *Server) revokeOwedLocked(runID string) bool {
+	for _, rl := range s.remoteRunLinks[runID] {
+		if rl.Decide && rl.revokePending {
+			return true
+		}
+	}
+	return false
+}
+
+// remoteRevoked is a remote decision link's end here (revoked, expired),
+// told by the link store's hooks. Expired, its record goes, as the link
+// expires there by the same deadline, and the run's desk is judged again.
+// Revoked here, it is not yet revoked there: its record stays, listed and
+// marked revokePending, and the run's desk with it, until the rendezvous
+// confirms the revoke (the revoke's handler, or its retries:
+// retryRevokeThere), so a revoke that fails there never leaves a link
+// standing at the switchyard that nothing here lists or can revoke again.
 func (s *Server) remoteRevoked(l *share.Link) {
 	if !l.Remote {
+		return
+	}
+	if l.Revoked {
+		s.markRevokeOwed(l.SessionID, l.RunID, l.ID)
 		return
 	}
 	if l.RunID != "" {
@@ -296,19 +371,230 @@ func (s *Server) remoteRevoked(l *share.Link) {
 	s.forgetRemoteLink(l.SessionID, l.ID)
 }
 
+// markRevokeOwed marks the record of a decision link minted at the
+// rendezvous, a session's or a run's, as revoked here and owed its revoke
+// there.
+func (s *Server) markRevokeOwed(sessionID, runID, linkID string) {
+	s.pubMu.Lock()
+	defer s.pubMu.Unlock()
+	m := s.remoteLinks[sessionID]
+	if runID != "" {
+		m = s.remoteRunLinks[runID]
+	}
+	if rl, ok := m[linkID]; ok {
+		rl.revokePending = true
+		m[linkID] = rl
+	}
+}
+
+// revokeOwed says whether the record of the decision link is still kept
+// and owed its revoke at the rendezvous.
+func (s *Server) revokeOwed(sessionID, runID, linkID string) (remoteLink, bool) {
+	s.pubMu.Lock()
+	defer s.pubMu.Unlock()
+	m := s.remoteLinks[sessionID]
+	if runID != "" {
+		m = s.remoteRunLinks[runID]
+	}
+	rl, ok := m[linkID]
+	return rl, ok && rl.revokePending
+}
+
+// errNoCarrier says nothing of this server's can carry a request about a
+// run's link to the rendezvous now.
+var errNoCarrier = errors.New("no member of the run is published to the rendezvous now")
+
+// carryRunRevoke revokes a run's link at the rendezvous over a member's
+// publication still up, else the run's desk: nil once it is revoked there
+// or the rendezvous no longer holds it (not_found).
+func (s *Server) carryRunRevoke(ctx context.Context, runID, linkID string) error {
+	run, ok := s.runs.Get(runID)
+	if !ok {
+		return errNoCarrier
+	}
+	var carrier runCarrier
+	if _, member := s.runGroup(run); member != nil {
+		carrier = member
+	} else if d := s.liveDesk(runID); d != nil {
+		carrier = d
+	}
+	if carrier == nil {
+		return errNoCarrier
+	}
+	if err := carrier.Revoke(ctx, linkID); err != nil && !strings.Contains(err.Error(), "not_found") {
+		return err
+	}
+	return nil
+}
+
+// revokeRetry is how long after a revoke the rendezvous did not confirm it
+// is carried again, twice as long after each failure in a row, up to
+// revokeRetryMax.
+const (
+	revokeRetry    = 2 * time.Second
+	revokeRetryMax = time.Minute
+)
+
+// retryRevokeThere carries the revoke of a decision link minted at the
+// rendezvous (a session's: sessionID; a run's: runID), revoked here and
+// not confirmed there, again and again until the rendezvous confirms it
+// (or no longer holds it), the record is forgotten otherwise (a revoke
+// again from the Share dialog that went through, the session gone, the
+// run forgotten), or the server stops. A run's carrier is a member's
+// publication, else the run's desk, which the owed revoke keeps open (and
+// opens again should the switchyard have ended it). One retry per link at
+// a time.
+func (s *Server) retryRevokeThere(sessionID, runID, linkID string) {
+	s.pubMu.Lock()
+	if s.revokesStopped || s.revokeRetries[linkID] {
+		s.pubMu.Unlock()
+		return
+	}
+	if s.revokeRetries == nil {
+		s.revokeRetries = map[string]bool{}
+	}
+	s.revokeRetries[linkID] = true
+	if s.revokesCtx == nil {
+		s.revokesCtx, s.revokesCancel = context.WithCancel(context.Background())
+	}
+	stop := s.revokesCtx
+	seam := s.revokeRetrySeam
+	s.pubMu.Unlock()
+	s.track(func() {
+		defer func() {
+			s.pubMu.Lock()
+			delete(s.revokeRetries, linkID)
+			s.pubMu.Unlock()
+		}()
+		wait := revokeRetry
+		kick := make(chan struct{}, 1)
+		next := func() {
+			select {
+			case kick <- struct{}{}:
+			default:
+			}
+		}
+		for {
+			var t *time.Timer
+			if seam != nil {
+				// The test says when the next try goes.
+				seam(linkID, next)
+			} else {
+				t = time.AfterFunc(wait, next)
+			}
+			select {
+			case <-stop.Done():
+				if t != nil {
+					t.Stop()
+				}
+				return
+			case <-kick:
+			}
+			if _, owed := s.revokeOwed(sessionID, runID, linkID); !owed {
+				return
+			}
+			ctx, cancel := context.WithTimeout(stop, runSyncWait)
+			err := s.carryRevoke(ctx, sessionID, runID, linkID)
+			cancel()
+			if err == nil {
+				s.revokeConfirmed(sessionID, runID, linkID)
+				return
+			}
+			s.log.Warn("a decision link revoked here is not revoked at the rendezvous yet; trying again", "link", linkID, "err", err)
+			wait = min(wait*2, revokeRetryMax)
+		}
+	})
+}
+
+// carryRevoke carries a decision link's revoke to the rendezvous once:
+// nil when it is revoked there, or gone there (not_found, or a session's
+// publication gone with its session).
+func (s *Server) carryRevoke(ctx context.Context, sessionID, runID, linkID string) error {
+	if runID != "" {
+		err := s.carryRunRevoke(ctx, runID, linkID)
+		if !errors.Is(err, errNoCarrier) {
+			return err
+		}
+		// The desk ended there meanwhile, and no member is up: one is
+		// opened again to carry it.
+		d, _, _, words := s.openRunDesk(ctx, runID)
+		if d == nil {
+			return errors.New(words)
+		}
+		defer s.deskMinted(runID)
+		if err := d.Revoke(ctx, linkID); err != nil && !strings.Contains(err.Error(), "not_found") {
+			return err
+		}
+		return nil
+	}
+	pub := s.publishedOf(sessionID)
+	if pub == nil {
+		return nil
+	}
+	if ended(pub.Done()) {
+		return errors.New("the session is not published to the rendezvous now")
+	}
+	if err := pub.Revoke(ctx, linkID); err != nil && !strings.Contains(err.Error(), "not_found") {
+		return err
+	}
+	return nil
+}
+
+// revokeConfirmed ends the record of a decision link the rendezvous has
+// revoked, noted in its run's or session's log, and judges the run's desk
+// again.
+func (s *Server) revokeConfirmed(sessionID, runID, linkID string) {
+	rl, _ := s.revokeOwed(sessionID, runID, linkID)
+	if runID != "" {
+		s.forgetRemoteRunLinks(runID, linkID)
+		s.runs.Note(runID, session.ActivityLink, "link revoked at the rendezvous: "+linkLabelOr(rl.Label))
+		s.deskCheck(runID)
+		return
+	}
+	s.forgetRemoteLink(sessionID, linkID)
+	s.recordLink(sessionID, "link revoked at the rendezvous: "+linkLabelOr(rl.Label))
+}
+
+// stopRevokeRetries ends every retry of a revoke owed at the rendezvous, as
+// the server stops: none is begun after.
+func (s *Server) stopRevokeRetries() {
+	s.pubMu.Lock()
+	s.revokesStopped = true
+	cancel := s.revokesCancel
+	s.pubMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 // RemoteLinkGone is told a link the switchyard says no longer opens what
-// it was minted for (hostagent.Uplink.LinkGone): a decision link of this
-// server's there ends here too, through its barrier, as a revoke.
-func (s *Server) RemoteLinkGone(linkID string) {
+// one of the publisher's connections carries (hostagent.Uplink.LinkGone):
+// the server's own id of a published session, or the run of a desk. A
+// decision link of this server's there ends here too, through its barrier,
+// and its record with it, the switchyard having let it go, where that word
+// is the link's own end: a session link's, from its session's connection;
+// a run link's, from the run's desk alone. A member's connection is told
+// so when the member only left the run's group (the run's next attempt
+// replacing it), which ends nothing of the link.
+func (s *Server) RemoteLinkGone(linkID, sessionID, runID string) {
 	l, ok := s.links.Get(linkID)
 	if !ok || !l.Remote {
 		return
 	}
 	if l.RunID != "" {
+		if runID != l.RunID {
+			return
+		}
 		s.links.RevokeRun(l.RunID, linkID)
+		s.forgetRemoteRunLinks(l.RunID, linkID)
+		s.track(func() { s.deskCheck(l.RunID) })
+		return
+	}
+	if sessionID == "" || sessionID != l.SessionID {
 		return
 	}
 	s.links.Revoke(l.SessionID, linkID)
+	s.forgetRemoteLink(l.SessionID, linkID)
 }
 
 // DecisionLink says whether linkID is a decision link this server minted

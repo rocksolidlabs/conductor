@@ -741,11 +741,14 @@ same signalling, `viewer_join` carrying the link's id, to whom the
 publisher sends its own `welcome` (`decisions: true`, no terminal fields)
 and serves the lane; a view link's viewer is refused there (`4401`), and
 a link the group no longer names closes its viewers as a member's do. The
-group's desk is kept with the link's members in the file a switchyard
-keeps the link in, so after a restart the link names the desk the
-publisher registers again. The publisher sends the desk in every group of
-the run while it has one, so its syncs never take the desk from the run's
-links.
+group's desk is held in memory alone, never in the file a switchyard
+keeps the link in (the file keeps the shape an older switchyard reads
+strictly, so a switchyard rolled back keeps every run link of the run):
+after a restart the links restored from their files name no desk until
+the desk is back, and its `register_desk` names it again in its owner's
+links of its run, before its `registered` lists them. The publisher sends
+the desk in every group of the run while it has one, so its syncs never
+take the desk from the run's links.
 
 `activity` carries one activity-log entry, the fields of the `activity`
 control message above (`entry` has its own `t`), in both directions. Host to
@@ -2134,12 +2137,33 @@ ends at the first of the run stopped, continued or forgotten (5 s after,
 as a publication lingers past its session's end), its last decision link
 revoked or expired, and the server's stop. A revoke from the server ends
 the link there first, through its barrier, then at the switchyard (over a
-member's publication, or the desk); a link the switchyard says is gone
-(`link_gone`) ends there too. The viewer joins at the switchyard as any
+member's publication still up, or the desk). It fails closed: until the
+switchyard confirms it (revoked, or `not_found`), the link stays in the
+links' list with `revokePending: true`, its record and the run's desk are
+kept (the desk may carry the revoke; one the switchyard ended is opened
+again for it), the revoke is tried again (2 s, then twice as long after
+each failure, a minute at most) and a revoke again from the list tries at
+once; the route answers `502 rendezvous_unavailable` meanwhile. A link
+the switchyard says is gone (`link_gone`) ends there too, where the word
+is the link's own end: a session link's from its session's connection, a
+run link's from the run's desk (a member's says only that the member left
+the run's group). The viewer joins at the switchyard as any
 viewer of the link does; the publisher's own connection to the switchyard
-welcomes it with `decisions: true` and serves the lane end to end, every
+welcomes it with `decisions: true`, while the switchyard's last
+`registered` said `decisions` (after a reconnect that did not, no viewer
+is welcomed with them and every lane message is refused `unsupported`),
+and serves the lane end to end, every
 answer through the question's claim as the link (`AnswerAs` for keys,
-`Submit` naming the question for a line), whichever session asked. Over
+`Submit` naming the question for a line), whichever session asked; an
+action is taken only while the viewer's link is held on the publisher's
+connection and the publisher vouches for the switchyard (it heard it
+within the bound a terminal line needs), checked at the operation's
+commit, as its terminal writes are. A session evidence entry read
+through it names the session by its published id, the one the
+switchyard knows (not found while it is not published there). A desk
+writes its replies to its viewer from a queue of the viewer's own (64
+frames; a viewer that lets it fill is closed `slow_consumer`), never on
+the connection's read loop. Over
 WebRTC the switchyard sees nothing of it; through its relay, when ICE
 fails, it carries DECISION and DECIDE in RELAY envelopes as it carries
 terminal bytes, and drops a view-role viewer's DECIDE and lane reads
@@ -2267,7 +2291,7 @@ its run, and on no other.
 | `POST /api/runs/{run}/tasks/{task}/accept` | admin | take a failed task's last submitted commit as its result all the same ("Accept anyway", a person's decision over a failed check): the task `succeeded` with it, what needs it goes on; `200 {receipt}`; `409 task_state` with the receipt for a task not failed, or one no attempt of which submitted a commit |
 | `POST /api/runs/{run}/tasks/{task}/recheck` | admin | Check again (RV1): a failed task's standing failed candidate verified again as it is, the same commit, as a new attempt not counted (no session, its receipts its own; the candidate's stay as they were), a finished run open again; body `{commandId, attempt, commit, expectedRevision?}`, `attempt` and `commit` the candidate as its own run `{run}` names it, `expectedRevision` the revision of the run it goes to (the prepared request's `recheck.revision`); sent to the newest run of `{run}`'s chain, with the candidate's reference when that is a continuation; `200 {receipt, run, attempt}`, `run` and `attempt` where it is checked again (attempt n+1 there); a resend is found by its command id along the chain from `{run}` and answered from the run that took it (`receipt.repeat`), another content under the id `409 command_conflict`; one Check again at a time from the chain's read to its answer, so one command id is taken in one run of the chain; `409 {error, receipt, run}` for a refusal recorded: `stale_candidate` when it is no longer the task's standing failed candidate there, `stale_revision` when `expectedRevision` is not the run's (a prepared request read before the run moved), `run_continued` when the run was continued between the chain's read and the command (recorded in that run, nothing checked; a resend under the id answers the same refusal, so Check again again takes a new id), `task_state` otherwise (not failed, failed outside its verification, a stopped run); `409 task_state` "continue run X first" when the server runs no run of the chain, nothing checked; `404 not_found` for a run the ledger has not; `400 invalid_request` for a body that is not one; `503 run_changing` (Retry-After 1) while a continuation of the chain is made, or when another Check again held the server for the request's whole time, nothing taken |
 | `POST /api/runs/{run}/links` | admin | create a run link: `{role, label?, ttlSeconds?, decide?}`, reply `201 {link, token, url}` as for a session link (its `url` on the same base); it grants its role on the session of every member of the run, a member added later included (see Crew runs); `decide: true` makes it a decision link (see Decision links: control only, `400 bad_request` with a view role; the link says `decide: true`; `409 switchyard_too_old` where the link would be minted at a switchyard whose `registered` does not say `decisions`, or that keeps no desks; at one that does, minted there over the run's desk: see Decision links, Through a switchyard; `502 rendezvous_unavailable` when the desk cannot be opened); `409 too_many_links` past 100 links for the run; `404` when unknown |
-| `DELETE /api/runs/{run}/links/{linkId}` | admin | revoke a run link, which closes every viewer attached through it (`4403`); `204`, `404` when the link is not the run's |
+| `DELETE /api/runs/{run}/links/{linkId}` | admin | revoke a run link, which closes every viewer attached through it (`4403`); `204`, `404` when the link is not the run's; a link minted at a switchyard is revoked there over a member's publication or the run's desk, `502 rendezvous_unavailable` when it is not (a decision link then stays listed with `revokePending: true` and is tried again until the switchyard confirms: Decision links, Through a switchyard) |
 | `GET /api/dispatch/projects` | admin | Dispatch's projects (see Dispatch below): `{projects, next?}`, a page of at most `limit` (1 to 200, 200 when absent) summaries by key after `cursor` (a page's opaque `next`), each `{id, key, name, tracker, archivedAt?, open, done, rev, updatedAt}`, `open` counting its live tickets neither done nor cancelled and `done` those done, without its description, folder, tracker URL and close policy, which its read carries, so a page is under 128 KiB (a name of 60 characters encodes to at most 360 bytes); the archived ones only with `archived=1`; `400 invalid_request` for a bad value |
 | `POST /api/dispatch/projects` | admin | make a project (`project.create`, Dispatch operations below): `{opId, byName?, key, name, description?, cwd?, tracker?, trackerUrl?, closeRequires?}`, `key` one upper-case letter then one to five upper-case letters or digits, chosen now and never changed, `name` 1 to 60 characters, `description` Markdown of at most 16 KiB, `cwd` a folder kept as text (at most 4096 bytes), `tracker` `native` (the default) or `external` with an `http` or `https` `trackerUrl` (at most 2 KiB), `closeRequires` any of `acceptance`, `delivery` and `verified` (A delivery's candidate, below), each at most once, kept in that order (`["acceptance"]` for a native project and `[]` for an external one when absent); reply `201 {receipt, project}`; `409 key_taken` for a key another project holds, archived or not |
 | `GET /api/dispatch/projects/{key}` | admin | a project, archived or not, with what its pages offer: `{project, labels, milestones, views}`, its live labels by name, its live milestones by target, and the live saved views of the project and of every project, a view's `query` the JSON it is; at most 3 MiB with every field and set at its bound (`maxProjectReply`); `404 not_found` |
