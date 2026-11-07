@@ -239,8 +239,10 @@ func (s *Server) handleResumeHistorySession(w http.ResponseWriter, r *http.Reque
 	out, aerr := s.resumeFromRecord(context.WithoutCancel(r.Context()), rec, body, receipt.Session)
 	if aerr != nil {
 		receipt.State, receipt.Code, receipt.Error = journal.ResumeFailed, aerr.Code, aerr.Message
+		// The receipt as the record keeps it, its words cut to their
+		// bound: the same id sent again answers the same.
 		receipt = s.settleResume(id, receipt)
-		writeJSON(w, aerr.status, map[string]any{"error": apiError{Code: aerr.Code, Message: aerr.Message}, "receipt": receipt})
+		writeJSON(w, aerr.status, map[string]any{"error": apiError{Code: receipt.Code, Message: receipt.Error}, "receipt": receipt})
 		return
 	}
 	if s.resumeStops("launched", id) {
@@ -269,7 +271,7 @@ func (s *Server) resumeFromRecord(ctx context.Context, rec journal.Record, body 
 		sp.args, sp.yolo, sp.renamed = slices.Clone(rec.Launch.Args), rec.Launch.Yolo, rec.Launch.Renamed
 		if names, n := envNamesOf(rec.Launch); n > 0 {
 			if !body.WithoutEnv {
-				return nil, newAPIError(http.StatusConflict, "env_not_kept", "its launch had variables, whose values no record keeps: "+envWords(names, n)+"; resume without them (withoutEnv)")
+				return nil, newAPIError(http.StatusConflict, "env_not_kept", "its launch had variables, whose values no record keeps; resume without them (withoutEnv): "+envWords(names, n))
 			}
 			notice = "resumed without its launch's variables: " + envWords(names, n)
 		}
@@ -289,14 +291,17 @@ func (s *Server) resumeFromRecord(ctx context.Context, rec journal.Record, body 
 }
 
 // settleResume settles the receipt in the record id as it says and
-// answers it: a write that fails is logged, the receipt settled in
-// memory for the journal's writer, or, the journal closed, left pending
-// on disk for the next start's recovery.
+// answers it as the journal stored it (journal.SettleResume), every field
+// cut to its bound, which is what the same command id answers again: a
+// write that fails is logged, the receipt settled in memory for the
+// journal's writer, or, the journal closed, left pending on disk for the
+// next start's recovery.
 func (s *Server) settleResume(id string, receipt journal.Resume) journal.Resume {
-	if err := s.sessionRecords.SettleResume(id, receipt.CommandID, receipt); err != nil {
+	stored, err := s.sessionRecords.SettleResume(id, receipt.CommandID, receipt)
+	if err != nil {
 		s.log.Warn("a resume's receipt was not written as it settled", "record", id, "state", receipt.State, "err", err)
 	}
-	return receipt
+	return stored
 }
 
 // answerResumeReceipt answers a command id sent again with its receipt,

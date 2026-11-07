@@ -106,9 +106,31 @@ import (
 	"unicode/utf8"
 )
 
-// V is the version of the records this package writes. A record of a
-// later version is read as it is and never rewritten.
-const V = 1
+// The versions of the records this package writes. A record is written at
+// the lowest version that holds it (versionOf): V while none of its
+// resumes' receipts carries a Code, VCode, the version that added
+// Resume.Code, once one does. So a server that knows version 1 alone still
+// reads strictly every record without a failed receipt's code, and reads
+// one with it as a later version's: as it is, never rewritten. This
+// package reads both versions strictly, a version 1 record as before; a
+// record of a version past VCode is read as it is and never rewritten.
+const (
+	V     = 1
+	VCode = 2
+	// maxV is the latest version this package reads strictly.
+	maxV = VCode
+)
+
+// versionOf is the version r is written at: VCode when a receipt of its
+// carries a Code, else V.
+func versionOf(r *Record) int {
+	for _, x := range r.Resumes {
+		if x.Code != "" {
+			return VCode
+		}
+	}
+	return V
+}
 
 // The record's bounds. A record is at most MaxRecord bytes as store.Encode
 // writes it: past that its oldest entries go first, then its oldest files,
@@ -329,6 +351,7 @@ type Resume struct {
 	State     string `json:"state"`
 	// Code is a failed receipt's refusal, the code its route answered
 	// with; Error says why in words.
+	// A record that holds one is written at VCode (versionOf).
 	Code  string    `json:"code,omitempty"`
 	Error string    `json:"error,omitempty"`
 	At    time.Time `json:"at"`

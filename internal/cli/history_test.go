@@ -3,13 +3,17 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/journal"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
@@ -201,5 +205,82 @@ func TestHistoryForgetAll(t *testing.T) {
 	}
 	if code, _, _, err := a.historyCmd(t, "forget", "--all", first); code != 2 || err == nil {
 		t.Fatalf("an id and --all: %d %v", code, err)
+	}
+}
+
+// cannedHistory runs conductor history sub against a server that answers
+// path with reply, as the server writes JSON (HTML characters escaped),
+// and 404 for anything else.
+func cannedHistory(t *testing.T, path string, reply any, sub string, args ...string) (int, string, error) {
+	t.Helper()
+	clearConductorEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != path {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(reply)
+	}))
+	t.Cleanup(srv.Close)
+	var out, errb bytes.Buffer
+	code, err := runHistory(t.Context(), append([]string{sub, "--server", srv.URL, "--token", dispatchToken}, args...), &out, &errb)
+	return code, out.String(), err
+}
+
+// A search that stopped at its scan or ranking bound says so, with no
+// entries as much as with some: it is never taken for one that read every
+// match. One that read every match says nothing of a bound.
+func TestHistorySearchSaysWhichBoundItStoppedAt(t *testing.T) {
+	entry := map[string]any{"key": "session:0000000000000001#e1", "kind": "session", "class": "said", "title": "the talk", "at": "2026-11-05T09:00:00Z"}
+	for _, c := range []struct {
+		cut     string
+		entries []any
+		want    string
+	}{
+		{"scanned", []any{}, "stopped at its scan bound"},
+		{"scanned", []any{entry}, "stopped at its scan bound"},
+		{"ranked", []any{entry}, "stopped at its ranking bound"},
+		{"", []any{entry}, ""},
+	} {
+		reply := map[string]any{"entries": c.entries, "total": len(c.entries), "indexing": map[string]any{"state": "ready"}}
+		if c.cut != "" {
+			reply["cut"] = c.cut
+		}
+		code, out, err := cannedHistory(t, "/api/history", reply, "search", "agent:talker", "words")
+		if code != 0 || err != nil {
+			t.Fatalf("cut %q: %d %v", c.cut, code, err)
+		}
+		switch {
+		case c.want != "" && !strings.Contains(out, c.want):
+			t.Errorf("cut %q, %d entries: no %q in\n%s", c.cut, len(c.entries), c.want, out)
+		case c.want == "" && strings.Contains(out, "bound"):
+			t.Errorf("no cut: a bound named in\n%s", out)
+		}
+	}
+}
+
+// conductor history sessions reads a whole page of rows each at its most
+// as the server writes it, every path in '<', which HTML escaping writes
+// in six bytes: a page past the other routes' bound.
+func TestHistorySessionsReadsAWholePageAtItsBound(t *testing.T) {
+	f := func(n int) string { return strings.Repeat("<", n) }
+	var rows []journal.Summary
+	for i := range journal.MaxPage {
+		rows = append(rows, journal.Summary{ID: fmt.Sprintf("%016x", i+1), Name: f(200), Kind: "server",
+			Agent: journal.Agent{ID: f(200), Name: f(200), Adapter: f(200), Version: f(200), Session: &journal.AgentSession{ID: f(200), Source: f(16), Resumable: true}},
+			Host:  journal.Host{Name: f(200), User: f(200), Hosted: true}, Where: f(200), Cwd: f(journal.MaxCwd), Repo: f(journal.MaxCwd), Branch: f(journal.MaxBranch),
+			Crew:      &journal.Crew{RunID: f(200), CrewID: f(200), Member: f(200), Task: f(200), Attempt: 1 << 30, Brakeman: f(200)},
+			StartedAt: time.Now(), EndedAt: time.Now(), LostAt: time.Now(), Ending: f(200), Entries: 1 << 30, Files: 1 << 30, Dropped: 1 << 30, Newer: true})
+	}
+	reply := map[string]any{"records": rows, "next": "", "readOnly": true}
+	var page bytes.Buffer
+	_ = json.NewEncoder(&page).Encode(reply)
+	if page.Len() <= maxHistoryCLIReply || page.Len() > maxHistorySessionsReply {
+		t.Fatalf("the page is %d bytes: want past %d, within %d", page.Len(), maxHistoryCLIReply, maxHistorySessionsReply)
+	}
+	code, out, err := cannedHistory(t, "/api/history/sessions", reply, "sessions")
+	if code != 0 || err != nil || strings.Count(out, "\n") != journal.MaxPage+1 {
+		t.Fatalf("a page of %d bytes: %d %v, %d lines", page.Len(), code, err, strings.Count(out, "\n"))
 	}
 }

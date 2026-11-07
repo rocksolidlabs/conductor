@@ -63,9 +63,16 @@ starting a second session.
 
 // maxHistoryCLIReply bounds what conductor history reads of a reply: the
 // smallest whole number of MiB above the search routes' bound
-// (api.MaxHistoryReply), which a record (journal.MaxRecord) and a page of
-// records are far under.
+// (api.MaxHistoryReply), which a record of this version
+// (journal.MaxRecord, six bytes for each HTML character escaped) is under;
+// a page of the records has its own (maxHistorySessionsReply).
 const maxHistoryCLIReply = (max(api.MaxHistoryReply, journal.MaxRecord)>>20 + 1) << 20
+
+// maxHistorySessionsReply bounds what conductor history sessions reads of
+// a page of the session records: a whole page (journal.MaxPage rows), each
+// row at its most as the server writes it (journal.MaxSummary, HTML
+// characters escaped), and the page's cursor and flags.
+const maxHistorySessionsReply = journal.MaxPage*journal.MaxSummary + 4<<10
 
 // historyPage is how many records conductor history sessions asks for a
 // page at a time: the route's most.
@@ -312,6 +319,7 @@ func historyEntries(ctx context.Context, c *apiClient, path string, asJSON bool,
 		Entries     []historyEntry `json:"entries"`
 		Total       int            `json:"total"`
 		TotalCapped bool           `json:"totalCapped"`
+		Cut         string         `json:"cut"`
 		Next        string         `json:"next"`
 		Indexing    struct {
 			State string `json:"state"`
@@ -336,10 +344,26 @@ func historyEntries(ctx context.Context, c *apiClient, path string, asJSON bool,
 	case out.Total > len(out.Entries):
 		fmt.Fprintf(stdout, "%d of %d entries\n", len(out.Entries), out.Total)
 	}
+	if words := cutWords(out.Cut); words != "" {
+		fmt.Fprintln(stdout, words)
+	}
 	if out.Indexing.State != "" && out.Indexing.State != "ready" {
 		fmt.Fprintf(stdout, "the history is %s: an entry may be missing yet\n", out.Indexing.State)
 	}
 	return 0, nil
+}
+
+// cutWords says which of the search's bounds it stopped at (cut, the
+// reply's cut), "" for none: what was read, so that a search that found
+// fewer entries, or none, is not taken for one that read every match.
+func cutWords(cut string) string {
+	switch cut {
+	case history.CutScanned:
+		return fmt.Sprintf("the search stopped at its scan bound: its words match more than %d entries, and only the %d most recently indexed were read, newest first and unranked; with filters, older matches are neither counted nor shown: narrow the words", history.MaxScanned, history.MaxScanned)
+	case history.CutRanked:
+		return fmt.Sprintf("the search stopped at its ranking bound: more than %d entries matched, and only the %d most recently indexed were ranked; narrow the words or the filters", history.MaxRanked, history.MaxRanked)
+	}
+	return ""
 }
 
 // historyShow prints one entry: its line of the table's fields, its
@@ -415,7 +439,7 @@ func historySessions(ctx context.Context, c *apiClient, asJSON bool, stdout io.W
 			Next     string            `json:"next"`
 			ReadOnly bool              `json:"readOnly"`
 		}
-		if err := c.doLimit(ctx, http.MethodGet, "/api/history/sessions?"+q.Encode(), nil, &out, maxHistoryCLIReply); err != nil {
+		if err := c.doLimit(ctx, http.MethodGet, "/api/history/sessions?"+q.Encode(), nil, &out, maxHistorySessionsReply); err != nil {
 			return 1, err
 		}
 		rows = append(rows, out.Records...)

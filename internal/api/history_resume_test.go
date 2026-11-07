@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -329,6 +330,44 @@ func TestResumeFromARecordRefuses(t *testing.T) {
 	if now := runMember(t, run["run"].(map[string]any), "a"); !jsonEqual(now, member) {
 		t.Fatalf("the member's state changed: %v, was %v", now, member)
 	}
+}
+
+// A refusal whose words pass the receipt's bound (a launch with many long
+// variables) is answered the first time as the record keeps it: the same
+// command id sent again, after a restart too, answers the same error and
+// the same receipt, and the words' cut still leaves the way on
+// (withoutEnv) in them.
+func TestALongRefusalIsAnsweredAsItsReceiptKeepsIt(t *testing.T) {
+	e := resumeEnv(t)
+	at := time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)
+	var names []string
+	for i := range 12 {
+		names = append(names, fmt.Sprintf("SOME_LONGISH_VARIABLE_%c_%s", 'A'+i, strings.Repeat("N", 24)))
+	}
+	id := "0000000000000a01"
+	writeRecordFile(t, e, journal.Record{ID: id, Name: "many variables", Kind: "server", Where: "native", Cwd: e.root, StartedAt: at, EndedAt: at.Add(time.Minute), Ending: "stopped",
+		Agent:  journal.Agent{ID: "talker", Name: "Talker", Session: &journal.AgentSession{ID: "0a1b2c3d-0000-4000-8000-000000000a01", Source: "set", Resumable: true}},
+		Launch: &journal.Launch{ArgsKept: true, EnvNames: names, EnvCount: len(names), EnvSHA256: strings.Repeat("b", 64)}})
+	e2 := restartServer(t, e)
+	status, first := resumeRecord(t, e2, id, map[string]any{"commandId": "long-1"})
+	words := first["error"].(map[string]any)["message"].(string)
+	full := "its launch had variables, whose values no record keeps; resume without them (withoutEnv): " + strings.Join(names, ", ")
+	if status != http.StatusConflict || errorCode(first) != "env_not_kept" || len(full) <= 200 || len(words) > 200 || !strings.HasPrefix(full, words) ||
+		!strings.Contains(words, "(withoutEnv)") || first["receipt"].(map[string]any)["error"] != words {
+		t.Fatalf("the first reply: %d %v", status, first)
+	}
+	if receipt := resumeReceipt(t, e2, id, "long-1"); !jsonEqual(first["receipt"], receipt) {
+		t.Fatalf("answered %v, the record keeps %+v", first["receipt"], receipt)
+	}
+	again := func(e *testEnv, when string) {
+		t.Helper()
+		status, again := resumeRecord(t, e, id, map[string]any{"commandId": "long-1"})
+		if status != http.StatusConflict || !jsonEqual(again, first) {
+			t.Fatalf("the same id again %s: %d %v, first %v", when, status, again, first)
+		}
+	}
+	again(e2, "at once")
+	again(restartServer(t, e2), "after a restart")
 }
 
 // outliving is a Runtime whose terminals outlive a stop: Stop fails and

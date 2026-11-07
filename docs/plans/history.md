@@ -236,7 +236,7 @@ store's own modes):
 
 ```go
 type Record struct {
-	V        int        `json:"v"`        // 1
+	V        int        `json:"v"`        // 1; 2 once a receipt carries a code
 	ID       string     `json:"id"`       // the session's id
 	Seq      int64      `json:"seq"`      // bumped on every write: the index's mark
 	Name     string     `json:"name"`
@@ -272,7 +272,7 @@ type Launch struct { Args []string; ArgCount int; ArgsSHA256 string; ArgsKept bo
 type Crew struct { RunID, CrewID, Member, Task string; Attempt int; Brakeman string }
 type Entry struct { Seq int64; At time.Time; Kind, ID, Ref, Event, ByName, Message, Op, Path, Tool, URL, To string; Choices []string; Outcome string }
 type File struct { Path, Op string; Count int; Last time.Time }
-type Resume struct { CommandID, Actor, Session, State, Error string; At time.Time } // pending | started | failed | uncertain; Session preallocated
+type Resume struct { CommandID, Actor, Session, State, Code, Error string; At time.Time } // pending | started | failed | uncertain; Session preallocated; Code a failed one's refusal
 ```
 
 An `Entry` keeps the identity its source gave it: `ID` a chat message's id
@@ -2051,7 +2051,11 @@ retried after a backoff (1 s doubling to 1 min).
 Brakeman's and the run records' schemas and files are unchanged, and each is
 only read (the conservative-migration rule holds by touching none). The
 journal's records carry `v: 1`; a later version adds fields with defaults
-and reads every older record as it is. The index has no migration: another
+and reads every older record as it is. A record is written at the lowest
+version that holds it: version 2 added a failed receipt's `code`
+(`Resume.Code`), so a record is written at `v: 2` only once one of its
+receipts carries one, and a server that knows version 1 alone reads it as
+a later version's (as it is, never rewritten) rather than as unreadable. The index has no migration: another
 version is rebuilt.
 
 **Two servers on one data directory.** The holder of `history/owner.lock`

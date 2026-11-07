@@ -83,38 +83,49 @@ func (j *Journal) ReserveResume(id string, want Resume) (rec Record, receipt Res
 // SettleResume settles the pending receipt of commandID in the record of
 // id as got says (its State, ResumeStarted or ResumeFailed, its Session,
 // Code and Error) and writes it before it returns. A receipt no longer
-// pending is left as it is. A write that fails leaves the receipt settled
-// in memory for the writer to write, and answers the error; a journal that
-// no longer writes (closed, read-only) answers why, the receipt pending
-// on disk for the next start's Recover to settle.
-func (j *Journal) SettleResume(id, commandID string, got Resume) error {
+// pending is left as it is. It answers the receipt as the record holds it
+// now, every field cut to its bound (fitRecord), so that its caller
+// answers what a later look-up of the same command id answers; got so cut
+// when the record holds no such receipt or cannot be read. A write that
+// fails leaves the receipt settled in memory for the writer to write, and
+// answers the error; a journal that no longer writes (closed, read-only)
+// answers why, the receipt pending on disk for the next start's Recover to
+// settle.
+func (j *Journal) SettleResume(id, commandID string, got Resume) (Resume, error) {
+	got.CommandID = commandID
+	probe := Record{Resumes: []Resume{got}}
+	fitRecord(&probe)
+	fitted := probe.Resumes[0]
 	if !idPattern.MatchString(id) {
-		return ErrNotFound
+		return fitted, ErrNotFound
 	}
 	j.wmu.Lock()
 	defer j.wmu.Unlock()
 	x, err := j.takeLocked(id)
 	if err != nil {
-		return err
+		return fitted, err
 	}
 	j.mu.Lock()
 	i := slices.IndexFunc(x.r.Resumes, func(r Resume) bool { return r.CommandID == commandID })
-	if i < 0 || x.r.Resumes[i].State != ResumePending {
+	if i < 0 {
 		j.mu.Unlock()
-		return nil
+		return fitted, nil
 	}
 	r := &x.r.Resumes[i]
-	r.State, r.Code, r.Error = got.State, got.Code, got.Error
-	if got.Session != "" {
-		r.Session = got.Session
+	if r.State != ResumePending {
+		stored := *r
+		j.mu.Unlock()
+		return stored, nil
 	}
-	probe := Record{Resumes: []Resume{*r}}
-	fitRecord(&probe)
-	*r = probe.Resumes[0]
+	r.State, r.Code, r.Error = fitted.State, fitted.Code, fitted.Error
+	if fitted.Session != "" {
+		r.Session = fitted.Session
+	}
+	stored := *r
 	x.dirty = true
 	j.index[id] = j.row(x)
 	j.mu.Unlock()
-	return j.write(x)
+	return stored, j.write(x)
 }
 
 // takeLocked is the record of id in memory, read from its file first when

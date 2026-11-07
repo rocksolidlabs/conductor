@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -678,15 +679,16 @@ func TestForgetRefusesALiveSession(t *testing.T) {
 	}
 }
 
-// A record of a later version is listed as newer and read as it is, and
-// never rewritten, not even by Recover, though it has no end.
+// A record of a later version than any this package reads (past VCode)
+// is listed as newer and read as it is, and never rewritten, not even by
+// Recover, though it has no end.
 func TestANewerRecordIsReadNotRewritten(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, Dir, SessionsDir, sid(1)+".json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	body := []byte(`{"v": 2, "id": "` + sid(1) + `", "seq": 9, "name": "from later", "kind": "server", "agent": {"id": "cat"}, "host": {}, "cwd": "/w", "startedAt": "2026-11-05T09:00:00Z", "entries": [], "future": {"x": 1}}` + "\n")
+	body := []byte(`{"v": ` + strconv.Itoa(maxV+1) + `, "id": "` + sid(1) + `", "seq": 9, "name": "from later", "kind": "server", "agent": {"id": "cat"}, "host": {}, "cwd": "/w", "startedAt": "2026-11-05T09:00:00Z", "entries": [], "future": {"x": 1}}` + "\n")
 	if err := os.WriteFile(path, body, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -917,6 +919,30 @@ func TestTheHeadAtEveryBoundLeavesRoom(t *testing.T) {
 	t.Logf("the head at every bound: %d bytes (%v)", len(b), parts)
 	if len(b) > maxHead {
 		t.Fatalf("the head is %d bytes, past %d", len(b), maxHead)
+	}
+}
+
+// A list's row is at most MaxSummary bytes as the API's replies write it,
+// HTML characters escaped, every field past its bound in '<' (six bytes
+// escaped, one counted), from a record of a later version, read as it is,
+// as much as from one of this version.
+func TestASummaryAtEveryBoundFits(t *testing.T) {
+	q := strings.Repeat("<", 2*MaxCwd)
+	r := Record{V: maxV + 1, ID: sid(1), Name: q, Kind: q, Agent: Agent{ID: q, Name: q, Adapter: q, Version: q, Session: &AgentSession{ID: q, Source: q, Resumable: true}},
+		Host: Host{Name: q, User: q, Owner: q, Hosted: true}, Where: q, Cwd: q, Repo: q, Branch: q,
+		Crew:      &Crew{RunID: q, CrewID: q, Member: q, Task: q, Attempt: 1 << 30, Brakeman: q},
+		StartedAt: time.Now(), EndedAt: time.Now(), LostAt: time.Now(), Ending: q, Dropped: 1 << 30, Entries: make([]Entry, 3), Files: make([]File, 2)}
+	for _, newer := range []bool{true, false} {
+		row := summaryOf(&r, newer).Summary
+		row.Unreadable = true
+		b, err := json.Marshal(row)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("a row at every bound (newer %v): %d bytes", newer, len(b))
+		if len(b) > MaxSummary || len(row.Cwd) != MaxCwd || row.Host.Owner != "" || r.Cwd != q {
+			t.Fatalf("the row is %d bytes, past %d (its folder %d bytes)", len(b), MaxSummary, len(row.Cwd))
+		}
 	}
 }
 
