@@ -920,15 +920,31 @@ func TestRestoreRefusesServerData(t *testing.T) {
 			sameTree(t, into, before)
 		})
 	}
-	// A running server's directory: refused by its ledger.
+	// A running server's directory: refused by its ledger. The server
+	// writes on meanwhile, and its databases' own files of a write (a
+	// rollback journal, a WAL and its index) come and go with it: the
+	// files it keeps are what must all be there still.
 	s := serveSource(t, filepath.Join(realTempDir(t), "running"))
 	before := tree(t, s.dir)
 	if code, _, _, err := restoreCmd(t, out, "--data-dir", s.dir); code != 1 || err == nil {
 		t.Fatalf("a running server's directory: %d %v", code, err)
 	}
-	if after := tree(t, s.dir); after[export.LockFile] != "" || len(after) < len(before) {
-		t.Fatalf("the running server's directory changed")
+	after := tree(t, s.dir)
+	if after[export.LockFile] != "" {
+		t.Fatalf("the refused restore left %s", export.LockFile)
 	}
+	for p := range before {
+		if _, ok := after[p]; !ok && !sqliteTransient(p) {
+			t.Errorf("the running server's %s is gone", p)
+		}
+	}
+}
+
+// sqliteTransient reports whether p is a file SQLite keeps beside a
+// database only while it writes or holds it open: a rollback journal, a
+// WAL and its shared-memory index.
+func sqliteTransient(p string) bool {
+	return strings.HasSuffix(p, "-journal") || strings.HasSuffix(p, "-wal") || strings.HasSuffix(p, "-shm")
 }
 
 // Without --data-dir, a restore goes where conductor serve would go with the
