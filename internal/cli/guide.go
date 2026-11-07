@@ -127,8 +127,10 @@ func guideToolText(ctx context.Context, c *crewClient, section string) (string, 
 
 // guideText is a reply of the guide as an agent or a person reads it:
 // first, when the server's version is not this binary's, that the guide
-// is the server's; then the overview or the operations as lines, and any
-// other section as its JSON. how says how to read a section.
+// is the server's; then the overview (who the caller is, the operations
+// it may call, the limits that bind it, the rules and the sections) or
+// the operations as lines, and any other section as its JSON. how says
+// how to read a section.
 func guideText(raw []byte, how string) (string, error) {
 	var env map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &env); err != nil {
@@ -153,7 +155,7 @@ func guideText(raw []byte, how string) (string, error) {
 				Name  string
 				Bytes int
 			}
-			Rules []string
+			May, Limits, Rules []string
 		}
 		if err := json.Unmarshal(env["overview"], &ov); err != nil {
 			return "", fmt.Errorf("guide: an unreadable overview: %w", err)
@@ -167,6 +169,23 @@ func guideText(raw []byte, how string) (string, error) {
 			}
 		}
 		fmt.Fprintf(&b, "You are %s; your scopes: %s.\n", who, strings.Join(ov.Caller.Scopes, ", "))
+		// What it may call now and within what, as the overview names them
+		// (each whole in the operations and limits sections): an agent told
+		// only to call the guide reads them here.
+		if len(ov.May) > 0 {
+			fmt.Fprintf(&b, "You may call: %s.\n", strings.Join(ov.May, ", "))
+		} else {
+			b.WriteString("You may call no operation here.\n")
+		}
+		if len(ov.Limits) > 0 {
+			b.WriteString("Your limits:\n")
+			for _, l := range ov.Limits {
+				fmt.Fprintf(&b, "- %s\n", l)
+			}
+		}
+		if len(ov.Rules) > 0 {
+			b.WriteString("Rules:\n")
+		}
 		for _, r := range ov.Rules {
 			fmt.Fprintf(&b, "- %s\n", r)
 		}

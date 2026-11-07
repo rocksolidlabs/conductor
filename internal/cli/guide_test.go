@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -51,6 +53,48 @@ func TestGuideInASession(t *testing.T) {
 	}
 	if code, _, _, err := guideCmd(t, "extra"); code != 2 || err == nil {
 		t.Fatalf("an argument: %d %v", code, err)
+	}
+}
+
+// The guide tool's text says what the caller may call now and the limits
+// that bind it, as the route's overview names them (#715: Codex, told
+// only to call the tool, read the sections and nothing it may do): for a
+// crew's member and for a session of no crew, the text holds the
+// overview's operations, in its order, and each of its limits.
+func TestGuideToolTextSaysWhatTheCallerMayCallAndItsLimits(t *testing.T) {
+	a := newDispatchAPI(t)
+	_, member, memberToken := a.launchMember(t)
+	plain := a.admin(t, "POST", "/api/sessions", map[string]any{"agentId": "cat", "cwd": a.root}, http.StatusCreated)["id"].(string)
+	plainToken := a.agentToken(t, plain)
+	var mays [][]string
+	for _, c := range []struct{ sid, token string }{{member, memberToken}, {plain, plainToken}} {
+		var ov struct{ May, Limits []string }
+		b, err := json.Marshal(a.call(t, c.token, "GET", "/api/sessions/"+c.sid+"/guide", nil, http.StatusOK)["overview"])
+		if err != nil || json.Unmarshal(b, &ov) != nil || len(ov.May) == 0 || len(ov.Limits) == 0 {
+			t.Fatalf("%s's overview: %v %s", c.sid, err, b)
+		}
+		mays = append(mays, ov.May)
+		inSessionOf(t, a.hs.URL, c.sid, c.token)
+		client, err := crewClientFromEnv(os.Getenv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text, err := guideToolText(t.Context(), client, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"You are session " + c.sid, "\nYou may call: " + strings.Join(ov.May, ", ") + ".\nYour limits:\n"}
+		for _, l := range ov.Limits {
+			want = append(want, "\n- "+l+"\n")
+		}
+		if !hasAll(text, want...) {
+			t.Fatalf("%s's text, want %q:\n%s", c.sid, want, text)
+		}
+	}
+	// The member's text is its own: a crew's member may call its run's
+	// operations, which a session of no crew may not.
+	if slices.Equal(mays[0], mays[1]) || !slices.Contains(mays[0], "run_status") || slices.Contains(mays[1], "run_status") {
+		t.Fatalf("the member's and the plain session's operations: %v, %v", mays[0], mays[1])
 	}
 }
 
