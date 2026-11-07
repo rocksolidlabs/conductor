@@ -85,6 +85,11 @@ func badQuery(format string, args ...any) error {
 type Query struct {
 	Limit int
 	After string
+	// ExceptCrews leaves out the entries of these crews: the API's default
+	// search leaves Brakeman's turns out unless the line asks for them
+	// (docs/plans/history.md, "A Brakeman brief"). Part of the query's
+	// digest, so a cursor of one is refused by the other.
+	ExceptCrews []string
 
 	terms   []string // FTS5 strings, each a condition of its own
 	none    bool     // words were typed and none is kept: nothing matches
@@ -118,6 +123,19 @@ func (w *when) time(now time.Time) time.Time {
 // string, the last word's a prefix: what TestHistoryAndDispatchReadWordsAlike
 // compares with Dispatch's reading of the same line.
 func (q Query) Terms() []string { return slices.Clone(q.terms) }
+
+// Filter is the values the line gave the filter name (each alternative,
+// as given), and whether it gave it at all.
+func (q Query) Filter(name string) ([]string, bool) {
+	var out []string
+	found := false
+	for _, f := range q.filters {
+		if f.Name == name {
+			out, found = append(out, f.Values...), true
+		}
+	}
+	return out, found
+}
 
 // The filters a line takes, by name; any other name:value is a word.
 var filterNames = []string{"class", "kind", "outcome", "project", "repo", "host", "agent", "crew", "run", "ticket", "session", "since", "until"}
@@ -371,7 +389,8 @@ func (q Query) digest() string {
 		F []filter `json:"f"`
 		S *when    `json:"s"`
 		U *when    `json:"u"`
-	}{q.terms, q.none, q.filters, q.since, q.until})
+		X []string `json:"x,omitempty"`
+	}{q.terms, q.none, q.filters, q.since, q.until, q.ExceptCrews})
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:16])
 }
@@ -411,6 +430,9 @@ func (q Query) conds(now time.Time) (conds []string, args []any) {
 			conds = append(conds, "("+a+" OR "+r+")")
 		}
 	}
+	if len(q.ExceptCrews) > 0 {
+		conds = append(conds, "NOT "+in("e.crew", q.ExceptCrews))
+	}
 	if q.since != nil {
 		conds = append(conds, "e.at >= ?")
 		args = append(args, stamp(q.since.time(now)))
@@ -443,6 +465,19 @@ type Page struct {
 	TotalCapped bool   `json:"totalCapped,omitempty"`
 	Cut         string `json:"cut,omitempty"`
 	State       string `json:"state,omitempty"`
+	// after is the cursor after each entry of the page, in its order: a
+	// reply that serves only the first rows of a page reads on from the
+	// last it served (After).
+	after []string
+}
+
+// After is the cursor of the rows after the page's entry i: the next
+// page of a reply that served the entries up to i and no more.
+func (p Page) After(i int) string {
+	if i < 0 || i >= len(p.after) {
+		return ""
+	}
+	return p.after[i]
 }
 
 // Hit is an entry as a search answers it: with its best column's snippet
@@ -706,8 +741,8 @@ func (ix *Index) Search(ctx context.Context, q Query) (Page, error) {
 		return page, err
 	}
 	var ids []int64
-	var scores []float64
 	total := -1
+	digest := q.digest()
 	for rows.Next() {
 		var s float64
 		id, e, err := scanEntry(rows, &total, &s)
@@ -716,12 +751,12 @@ func (ix *Index) Search(ctx context.Context, q Query) (Page, error) {
 			return page, err
 		}
 		if len(page.Entries) == limit {
-			last := page.Entries[limit-1]
-			page.Next = encodeCursor(cursor{Score: scores[limit-1], At: stamp(last.At), Key: last.Key, Query: q.digest(), V: Version, Gen: gen})
+			page.Next = page.after[limit-1]
 			break
 		}
-		ids, scores = append(ids, id), append(scores, s)
+		ids = append(ids, id)
 		page.Entries = append(page.Entries, Hit{Entry: e})
+		page.after = append(page.after, encodeCursor(cursor{Score: s, At: stamp(e.At), Key: e.Key, Query: digest, V: Version, Gen: gen}))
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {

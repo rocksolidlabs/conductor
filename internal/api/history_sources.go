@@ -52,9 +52,10 @@ func attemptKey(run, task string, n int) string {
 	return fmt.Sprintf("attempt:%s/%s/%d", run, task, n)
 }
 
-// planRef is a plan revision's ref (Brakeman's PR-10 spelling,
-// plan:<KEY-n>/<revision>, the revision as the pages label it: r2).
-func hPlanRef(ticket string, n int) string { return fmt.Sprintf("plan:%s/r%d", ticket, n) }
+// hPlanRef is a plan revision's ref, as Brakeman's grammar spells it
+// (brakeman.RefPlan: plan:<KEY-n>/<revision>, the revision's number alone,
+// plan:CND-1/2), so ParseRef reads it and a brief's citation joins it.
+func hPlanRef(ticket string, n int) string { return fmt.Sprintf("plan:%s/%d", ticket, n) }
 
 // field is a metadata field as the index bounds it (history.MaxField); an
 // identity that does not fit is no identity, so repo and tree are left
@@ -363,6 +364,9 @@ func runSource(p runPlace, rec *crew.Run, rows *runRows, chain []runRows, kept [
 		links = append(links, history.Link{From: ref, Rel: relLaunched, To: "ticket:" + rec.Ticket.Key})
 		if rec.Ticket.PlanN > 0 {
 			links = append(links, history.Link{From: ref, Rel: relLaunched, To: hPlanRef(rec.Ticket.Key, rec.Ticket.PlanN)})
+		}
+		if rec.Ticket.Launch != "" {
+			links = append(links, history.Link{From: ref, Rel: relLaunched, To: hLaunchRef(rec.Ticket.Launch)})
 		}
 	}
 	if rows == nil {
