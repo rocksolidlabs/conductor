@@ -133,6 +133,8 @@ export interface AgentInfo {
   yolo?: YoloRecipe
   /** RE2 matched against its screen's text: its workspace-trust question, while which a crew types no prompt. */
   trustPrompt?: string
+  /** RE2 matched against its whole screen: its own prompt at rest, the one screen a Brakeman turn's line is typed into (#714). */
+  promptShape?: string
   /** That question's answers, as the choices a page offers. */
   trustAnswers?: AgentAnswer[]
   /** Its other startup questions (round 13: Codex's "Hooks need review"), held like the trust question. */
@@ -188,6 +190,8 @@ export interface AgentInput {
   /** Left out, an agent that replaces a built-in keeps the built-in's; `{}` has none. */
   yolo?: YoloRecipe
   trustPrompt?: string
+  /** Left out, an agent that replaces a built-in keeps the built-in's. */
+  promptShape?: string
   trustAnswers?: AgentAnswer[]
   questions?: AgentQuestion[]
   session?: SessionRecipe
