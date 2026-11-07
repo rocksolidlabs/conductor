@@ -459,6 +459,149 @@ func TestARuntimeTerminalThatOutlivesTheServer(t *testing.T) {
 	}
 }
 
+// outlivingEnv is a resume server with the Runtime boxcar, whose
+// terminals outlive a stop (outliving); every process left is ended at
+// the test's end.
+func outlivingEnv(t *testing.T) (*testEnv, *outliving, *sessiontest.FakeRuntime) {
+	t.Helper()
+	terms := &outliving{procs: make(chan *sessiontest.FakeProc, 8)}
+	t.Cleanup(func() {
+		for {
+			select {
+			case p := <-terms.procs:
+				p.End(0)
+			default:
+				return
+			}
+		}
+	})
+	rt := &sessiontest.FakeRuntime{Place: "boxcar", Base: terms}
+	return resumeEnv(t, withRuntime(rt)), terms, rt
+}
+
+// heldResume sends the record route for id with body while its launch is
+// held at the stage reserved, runs between there, and answers the reply.
+func heldResume(t *testing.T, e *testEnv, id string, body map[string]any, between func()) (int, map[string]any) {
+	t.Helper()
+	reached, release := holdResume(e, "reserved", id)
+	t.Cleanup(release)
+	type reply struct {
+		status int
+		out    map[string]any
+	}
+	done := make(chan reply, 1)
+	go func() {
+		resp, out := e.do("POST", "/api/history/sessions/"+id+"/resume", adminToken, body)
+		done <- reply{resp.StatusCode, out}
+	}()
+	<-reached
+	between()
+	release()
+	r := <-done
+	return r.status, r.out
+}
+
+// A resume launches only on what it reads as it launches, never on the
+// reservation's snapshot. A ended, resumed as B, which then names a
+// conversation of its own: B is of A's conversation by its chain alone.
+// Held after its reservation, a second resume of A meets B's stop, which
+// fails with B's process running: refused still_running, naming B,
+// nothing launched, its receipt failed, and not offered. Once B's
+// process has ended, A resumes.
+func TestASuccessorWhoseStopFailedHoldsItsPredecessorsConversation(t *testing.T) {
+	e, terms, rt := outlivingEnv(t)
+	a, aerr := e.srv.createLocalSession(createSessionRequest{AgentID: "talker", where: "boxcar"}, nil)
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	pa := <-terms.procs
+	idA := a.Info().ID
+	talk(t, e, idA)
+	pa.End(0)
+	<-a.ProcessDone()
+	endedRecord(t, e, idA)
+	status, out := resumeRecord(t, e, idA, map[string]any{"commandId": "c1"})
+	if status != http.StatusCreated {
+		t.Fatalf("the first resume: %d %v", status, out)
+	}
+	idB := out["session"].(map[string]any)["id"].(string)
+	pb := <-terms.procs
+	b := e.local(idB)
+	other := newAgentSessionID("")
+	if resp, out := e.do("POST", "/api/sessions/"+idB+"/attention", e.agentToken(idB), map[string]any{"state": "done", "agentSession": other, "turn": true}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("B's turn: %d %v", resp.StatusCode, out)
+	}
+	until(t, "B's own conversation", func() bool {
+		as := b.Info().AgentSession
+		return as != nil && as.ID == other
+	})
+	starts := 0
+	status, out = heldResume(t, e, idA, map[string]any{"commandId": "c2"}, func() {
+		if err := b.Stop(context.Background()); err == nil || !b.Info().Status.Ended() {
+			t.Errorf("B's stop: %v, its status %s", err, b.Info().Status)
+		}
+		starts = len(rt.Asked("StartTerminal"))
+	})
+	if status != http.StatusConflict || errorCode(out) != "still_running" || !strings.Contains(out["error"].(map[string]any)["message"].(string), idB) ||
+		len(rt.Asked("StartTerminal")) != starts || resumeReceipt(t, e, idA, "c2").State != journal.ResumeFailed {
+		t.Fatalf("A's resume with B's process running: %d %v", status, out)
+	}
+	if offer := e.srv.resumeOfRecord(idA); offer.Offered != answerNo || !strings.Contains(offer.Why, "stop it again") {
+		t.Fatalf("the offer: %+v", offer)
+	}
+	pb.End(0)
+	<-b.ProcessDone()
+	if status, out := resumeRecord(t, e, idA, map[string]any{"commandId": "c3"}); status != http.StatusCreated {
+		t.Fatalf("once B's process ended: %d %v", status, out)
+	}
+}
+
+// A session whose stop failed, removed while a resume of it is held after
+// its reservation (whose snapshot read its record open, neither ended nor
+// lost): the launch reads the removed session's process, still running,
+// and refuses still_running, nothing launched. Once that process has
+// ended, the record the removal left lost needs the person's second yes
+// (lost_unconfirmed), and launches with it.
+func TestASourceRemovedAfterItsReservationIsReadAtTheLaunch(t *testing.T) {
+	e, terms, rt := outlivingEnv(t)
+	a, aerr := e.srv.createLocalSession(createSessionRequest{AgentID: "talker", where: "boxcar"}, nil)
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	pa := <-terms.procs
+	id := a.Info().ID
+	talk(t, e, id)
+	if err := a.Stop(context.Background()); err == nil || !a.Info().Status.Ended() {
+		t.Fatalf("the stop: %v, the status %s", err, a.Info().Status)
+	}
+	if r, _, err := e.srv.sessionRecords.Get(id); err != nil || !r.EndedAt.IsZero() || !r.LostAt.IsZero() {
+		t.Fatalf("the record before the resume: %+v %v", r, err)
+	}
+	starts := 0
+	status, out := heldResume(t, e, id, map[string]any{"commandId": "c1"}, func() {
+		if resp, out := e.do("DELETE", "/api/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+			t.Errorf("the removal: %d %v", resp.StatusCode, out)
+		}
+		if _, ok := e.srv.registry.Get(id); ok {
+			t.Error("still listed")
+		}
+		starts = len(rt.Asked("StartTerminal"))
+	})
+	if status != http.StatusConflict || errorCode(out) != "still_running" || !strings.Contains(out["error"].(map[string]any)["message"].(string), "stop it again") ||
+		len(rt.Asked("StartTerminal")) != starts || resumeReceipt(t, e, id, "c1").State != journal.ResumeFailed {
+		t.Fatalf("removed with its process running: %d %v", status, out)
+	}
+	pa.End(0)
+	<-a.ProcessDone()
+	status, out = resumeRecord(t, e, id, map[string]any{"commandId": "c2"})
+	if status != http.StatusConflict || errorCode(out) != "lost_unconfirmed" || len(rt.Asked("StartTerminal")) != starts {
+		t.Fatalf("without confirmLost: %d %v", status, out)
+	}
+	if status, out := resumeRecord(t, e, id, map[string]any{"commandId": "c3", "confirmLost": true}); status != http.StatusCreated {
+		t.Fatalf("with confirmLost: %d %v", status, out)
+	}
+}
+
 // longFolder makes, under root, a folder whose path's JSON form, escapes
 // included, is journal.MaxCwd bytes exactly, of components of quotes (two
 // bytes each), and in it the folder x: the session's folder, whose

@@ -1445,19 +1445,32 @@ outcome it cannot know into a false one. Its order:
    it, through the engine), `400 invalid_agent`, `409 already_resumed`, `400 invalid_cwd`), a record
    whose arguments were not kept answers `409 args_not_kept`, a record
    whose `where` names a Runtime this server does not have answers `409
-   runtime_gone`, a listed session whose stop failed (its status ended,
-   its process still running) answers `409 still_running`, a record whose
+   runtime_gone`, a session still running answers `409 still_running`, a record whose
    working directory may be a cut of a longer one (its JSON form within
    one escape of the record's bound, `journal.CwdMayBeCut`) answers `409
    cwd_not_kept` (the record cannot say which folder it was; a listed
    session starts in its own, whole), and a record whose launch had
    variables answers `409
    env_not_kept` naming them, unless `withoutEnv: true`, which resumes
-   without them and says so in the reply's notice, and a `lost` record
-   answers `409 lost_unconfirmed` with the words above unless
-   `confirmLost: true`, which the record page sends only once the person
-   has read them and asked again; a refusal settles the receipt `failed`
-   with its code;
+   without them and says so in the reply's notice; a refusal settles the
+   receipt `failed` with its code. The launch then reads one rule again,
+   at the moment it takes the conversation (`takeConversation`, under
+   the lock every resume's launch holds until its session is
+   registered), and launches only on that read: no local session of the
+   conversation (one holding its id, the record's own, any it resumed
+   from, any resumed from it, up the `resumedFrom` chain) has a process
+   that is not done (`Registry.Holders`: listed, running or ended by a
+   stop that failed, or removed while its process ran: `409
+   still_running`, or `409 already_resumed` for another running one),
+   and the record's end was observed (an observed end in the record as
+   the journal holds it then, or the session listed with its process
+   done) or the person confirmed it lost: else `409 lost_unconfirmed`
+   with the words above unless `confirmLost: true`, which the record page
+   sends only once the person has read them and asked again. Nothing read
+   earlier (the reservation's record, the judgement) decides there: a
+   removal, a stop that failed or a resume of the chain in between
+   changes what the launch reads. The history's offer judges by the same
+   rule;
 3. the launch is one function both routes share, `resumeLaunch` (factored
    out of `handleResumeSession` in PR-5, the route's answers and tests
    unchanged): it takes what to launch (a listed session's `Launched`, or
@@ -2541,6 +2554,16 @@ and not offered, nothing started; after the restart the
 record is `lost` with no `EndedAt`, its availability and record page say
 its process's state is not known, Resume is refused `409
 lost_unconfirmed`, and with `confirmLost` it launches);
+`TestASuccessorWhoseStopFailedHoldsItsPredecessorsConversation` (A
+resumed as B, which names a conversation of its own; a resume of A held
+after its reservation while B's stop fails, B's process running: `409
+still_running` naming B, nothing started, not offered; once B's process
+ended, A resumes);
+`TestASourceRemovedAfterItsReservationIsReadAtTheLaunch` (a session
+whose stop failed, removed while its resume is held after the
+reservation, whose snapshot read the record open: `409 still_running`,
+nothing started; once its process ended, the record the removal left
+`lost` needs `confirmLost`, and launches with it);
 `TestAFolderTheRecordCutIsNeverResumedIn` (a folder whose path's JSON
 form is past the record's bound, its parent at the bound and on disk:
 the record keeps the parent, and Resume is refused `409 cwd_not_kept`,

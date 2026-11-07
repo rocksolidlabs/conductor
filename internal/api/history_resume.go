@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/crew"
@@ -28,12 +29,19 @@ import (
 //     now, and written before anything else;
 //  2. the record judged by the resume routes' rules and its own
 //     (recordResume, the judgement the history's offer says too), then
-//     the launch's variables (env_not_kept unless withoutEnv) and a lost
-//     record (lost_unconfirmed unless confirmLost): a refusal settles the
-//     receipt failed with its code;
+//     the launch's variables (env_not_kept unless withoutEnv): a refusal
+//     settles the receipt failed with its code;
 //  3. the session launched as the session route launches one
 //     (resumeLaunch), with the allocated id and the record's Runtime: a
-//     listed session from its own Launched, a record from its launch;
+//     listed session from its own Launched, a record from its launch. It
+//     launches only on one read made as it takes the conversation
+//     (takeConversation, then atLaunch): no local session of the
+//     conversation (the record's own, any it resumed from, any resumed
+//     from it) has a process that is not done, and the record's end was
+//     observed or the person confirmed it lost (lost_unconfirmed unless
+//     confirmLost). What step 1 or 2 read decides nothing there: a
+//     removal, a stop that failed or a resume of the chain in between
+//     changes what the launch reads;
 //  4. the receipt settled started with the new session's id: 201.
 //
 // A stop between 1 and 4 leaves the receipt pending on disk; the next
@@ -81,14 +89,17 @@ type recordPlan struct {
 // a run record naming the session (memberOf; 503 member_unknown when the
 // run records cannot all be read); never a launch whose arguments were
 // not kept (409 args_not_kept); only in a Runtime this server has (409
-// runtime_gone); never a session still running, nor one ended whose
-// process is not (409 still_running: a stop that failed); never from a
-// record's folder that may be cut (409 cwd_not_kept,
+// runtime_gone); never a session still running (409 still_running);
+// never from a record's folder that may be cut (409 cwd_not_kept,
 // journal.CwdMayBeCut); then resumeCheck's (400 invalid_agent, 409
-// already_resumed, 400 invalid_cwd);
-// and only a conversation there is to take up (409 not_resumable: no
-// session recipe, or no turn yet). It is the record route's judgement and
-// the history's offer (resumeOffered), so the two never differ.
+// already_resumed, 400 invalid_cwd); then the launch's own rule read now
+// (conversationHolder: 409 still_running or already_resumed while a
+// local session of the conversation has a process not done); and only a
+// conversation there is to take up (409 not_resumable: no session recipe,
+// or no turn yet). lost is that the record's end was not observed
+// (endObserved). It is the record route's judgement and the history's
+// offer (resumeOffered), so the two never differ; the launch reads its
+// rule again (resumeFromRecord).
 func (s *Server) recordResume(rec journal.Record) (recordPlan, *apiError) {
 	var p recordPlan
 	if rec.Host.Hosted {
@@ -129,14 +140,6 @@ func (s *Server) recordResume(rec journal.Record) (recordPlan, *apiError) {
 			return p, newAPIError(http.StatusConflict, "still_running", "the session is still running")
 		}
 		if l, ok := d.(*session.Local); ok {
-			// Ended is not gone: a stop that failed marks the session
-			// stopped with its process still running, which would then
-			// hold the conversation beside the resumed one.
-			select {
-			case <-l.ProcessDone():
-			default:
-				return p, newAPIError(http.StatusConflict, "still_running", "the session's process is still running: its stop did not end it; stop it again")
-			}
 			// Listed: what it was launched with, and its conversation as
 			// the session knows it now.
 			p.listed = l
@@ -154,20 +157,48 @@ func (s *Server) recordResume(rec journal.Record) (recordPlan, *apiError) {
 	if aerr != nil {
 		return p, aerr
 	}
+	if aerr := s.conversationHolder(plan.id, rec.ID); aerr != nil {
+		return p, aerr
+	}
 	if plan.id == "" {
 		if plan.agent.Session.Empty() {
 			return p, newAPIError(http.StatusConflict, "not_resumable", plan.agent.Name+" has no session recipe: nothing of its conversation can be resumed")
 		}
 		return p, newAPIError(http.StatusConflict, "not_resumable", "nothing to resume yet: the agent had no turn")
 	}
-	p.lost = rec.Ending == journal.EndingLost || (!rec.LostAt.IsZero() && rec.EndedAt.IsZero())
+	p.lost = !s.endObserved(rec)
 	return p, nil
 }
 
-// lostWords is what a lost record's resume asks the person to read before
-// their second yes.
+// endObserved reports whether the end of rec's session was observed: its
+// record holds an observed end (an exit or a stop whose process this
+// server saw end), or the registry lists the session with its process
+// done. A record lost, or open with its session no longer listed (removed,
+// its record not yet settled), was not: its process may still run.
+func (s *Server) endObserved(rec journal.Record) bool {
+	if !rec.EndedAt.IsZero() {
+		return true
+	}
+	if d, ok := s.registry.Get(rec.ID); ok {
+		if l, ok := d.(*session.Local); ok {
+			select {
+			case <-l.ProcessDone():
+				return true
+			default:
+			}
+		}
+	}
+	return false
+}
+
+// lostWords is what a resume of a record whose end was not observed asks
+// the person to read before their second yes.
 func lostWords(rec journal.Record) string {
-	return fmt.Sprintf("the server stopped while this session ran on %s; its process may still be running", cmpOr(rec.Where, string(ext.WhereNative)))
+	where := cmpOr(rec.Where, string(ext.WhereNative))
+	if rec.LostAt.IsZero() {
+		return fmt.Sprintf("this server did not see this session's process end on %s; its process may still be running", where)
+	}
+	return fmt.Sprintf("the server stopped while this session ran on %s; its process may still be running", where)
 }
 
 // envNamesOf is the variables a launch had, as its record names them, and
@@ -270,15 +301,18 @@ func (s *Server) handleResumeHistorySession(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusCreated, out)
 }
 
-// resumeFromRecord is steps 2 and 3 of a resume from rec: the judgement,
-// the variables and a lost record's second yes, then the launch under the
-// allocated id. It answers the reply's fields, or the refusal.
+// resumeFromRecord is steps 2 and 3 of a resume from rec: the judgement
+// and the variables, then the launch under the allocated id, which reads
+// the record again as it takes the conversation (atLaunch): its end
+// observed, or the person's second yes. It answers the reply's fields, or
+// the refusal.
 func (s *Server) resumeFromRecord(ctx context.Context, rec journal.Record, body historyResumeBody, allocated string) (map[string]any, *apiError) {
 	p, aerr := s.recordResume(rec)
 	if aerr != nil {
 		return nil, aerr
 	}
-	sp := resumeSpec{agentID: rec.Agent.ID, name: rec.Name, cwd: p.cwd, where: ext.Where(rec.Where), resume: p.id, from: rec.ID, id: allocated}
+	sp := resumeSpec{agentID: rec.Agent.ID, name: rec.Name, cwd: p.cwd, where: ext.Where(rec.Where), resume: p.id, from: rec.ID, id: allocated,
+		atLaunch: func() *apiError { return s.endAtLaunch(rec, body.ConfirmLost) }}
 	notice := ""
 	if p.listed != nil {
 		l := p.listed.Launched()
@@ -292,9 +326,6 @@ func (s *Server) resumeFromRecord(ctx context.Context, rec journal.Record, body 
 			notice = "resumed without its launch's variables: " + envWords(names, n)
 		}
 	}
-	if p.lost && !body.ConfirmLost {
-		return nil, newAPIError(http.StatusConflict, "lost_unconfirmed", lostWords(rec)+"; resume it all the same (confirmLost) once you have looked")
-	}
 	next, aerr := s.resumeLaunch(ctx, sp)
 	if aerr != nil {
 		return nil, aerr
@@ -304,6 +335,27 @@ func (s *Server) resumeFromRecord(ctx context.Context, rec journal.Record, body 
 		out["notice"] = notice
 	}
 	return out, nil
+}
+
+// endAtLaunch is a resume's last read of the record rec, made as its
+// launch takes the conversation, after the conversation's holders were
+// read (takeConversation): the record as the journal holds it now, its
+// end observed (endObserved), else the person's second yes (confirmed),
+// else 409 lost_unconfirmed. A record that cannot be read now is not
+// observed.
+func (s *Server) endAtLaunch(rec journal.Record, confirmed bool) *apiError {
+	if confirmed {
+		return nil
+	}
+	now, _, err := s.sessionRecords.Get(rec.ID)
+	if err != nil {
+		now = rec
+		now.EndedAt = time.Time{}
+	}
+	if s.endObserved(now) {
+		return nil
+	}
+	return newAPIError(http.StatusConflict, "lost_unconfirmed", lostWords(now)+"; resume it all the same (confirmLost) once you have looked")
 }
 
 // settleResume settles the receipt in the record id as it says and

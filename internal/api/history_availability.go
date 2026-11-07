@@ -529,7 +529,8 @@ func (av *availability) check(r brakeman.Ref, full bool) availabilityOf {
 // hosted session (its machine resumes it), a crew member (its run does),
 // a managed attempt (its run continues) or a Brakeman turn; never a
 // launch whose arguments were too long to keep, nor a folder its record
-// may have cut; never a listed session whose process outlived its stop;
+// may have cut; never while a session of its conversation has a process
+// that outlived its stop (conversationHolder);
 // only in a Runtime this server still has; a lost record (its process's
 // state unknown) only with the person's second yes.
 func (s *Server) resumeOfRecord(id string) *resumeOffer {

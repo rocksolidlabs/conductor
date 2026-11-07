@@ -96,6 +96,98 @@ func (s *Server) takeResume(id string) bool {
 	return true
 }
 
+// takeConversation takes the agent conversation conv for a resume of the
+// session from being launched now, by the one rule a resume launches on,
+// read at this moment under resumingMu (which every resume's launch takes
+// and holds until its session is registered): no session is being made
+// for conv, no running session holds it (liveAgentSession), and no local
+// session of the conversation has a process that is not done
+// (conversationHolder). Whatever a route read before (its judgement, a
+// record's reservation) decides nothing here. releaseResume lets it go.
+func (s *Server) takeConversation(conv, from string) *apiError {
+	s.resumingMu.Lock()
+	defer s.resumingMu.Unlock()
+	if _, taken := s.resuming[conv]; taken || s.liveAgentSession(conv) {
+		return newAPIError(http.StatusConflict, "already_resumed", "a running session holds that conversation, or one is being made for it")
+	}
+	if aerr := s.conversationHolder(conv, from); aerr != nil {
+		return aerr
+	}
+	if s.resuming == nil {
+		s.resuming = map[string]struct{}{}
+	}
+	s.resuming[conv] = struct{}{}
+	return nil
+}
+
+// maxChainWalk bounds the steps of a walk up a session's resumedFrom
+// chain (chainAbove).
+const maxChainWalk = 64
+
+// conversationHolder is the refusal a resume of the conversation conv,
+// from the session from, meets when a local session of that conversation
+// has a process that is not done (Registry.Holders: listed, running or
+// ended by a stop that failed, or removed while its process ran): one
+// that holds conv, from's own, any session from resumed from (at any
+// remove, up its resumedFrom chain) and any session resumed from it. A
+// running one is already_resumed (still_running for from's own); one
+// ended whose process is not, still_running: its stop failed. nil when
+// none.
+func (s *Server) conversationHolder(conv, from string) *apiError {
+	holders := map[string]session.Info{}
+	for _, d := range s.registry.Holders() {
+		info := d.Info()
+		holders[info.ID] = info
+	}
+	if len(holders) == 0 {
+		return nil
+	}
+	var above map[string]bool
+	if from != "" {
+		above = s.chainAbove(from, holders)
+	}
+	for id, info := range holders {
+		held := (conv != "" && info.AgentSession != nil && info.AgentSession.ID == conv) ||
+			(from != "" && (id == from || above[id] || s.chainAbove(id, holders)[from]))
+		switch {
+		case !held:
+		case info.Status.Ended() && id == from:
+			return newAPIError(http.StatusConflict, "still_running", "the session's process is still running: its stop did not end it; stop it again")
+		case info.Status.Ended():
+			return newAPIError(http.StatusConflict, "still_running", fmt.Sprintf("the process of %s, a session of this conversation, is still running: its stop did not end it; stop it again", id))
+		case id == from:
+			return newAPIError(http.StatusConflict, "still_running", "the session is still running")
+		default:
+			return newAPIError(http.StatusConflict, "already_resumed", "a running session holds that conversation")
+		}
+	}
+	return nil
+}
+
+// chainAbove is the sessions id resumed from, at any remove: each one's
+// resumedFrom, read from holders, the registry, else its record.
+func (s *Server) chainAbove(id string, holders map[string]session.Info) map[string]bool {
+	above := map[string]bool{}
+	for range maxChainWalk {
+		next := ""
+		if info, ok := holders[id]; ok {
+			next = info.ResumedFrom
+		} else if d, ok := s.registry.Get(id); ok {
+			next = d.Info().ResumedFrom
+		} else if s.sessionRecords != nil {
+			if r, _, err := s.sessionRecords.Get(id); err == nil {
+				next = r.ResumedFrom
+			}
+		}
+		if next == "" || above[next] {
+			break
+		}
+		above[next] = true
+		id = next
+	}
+	return above
+}
+
 func (s *Server) releaseResume(id string) {
 	s.resumingMu.Lock()
 	defer s.resumingMu.Unlock()
@@ -212,8 +304,9 @@ func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
 // (resumeCheck's), the arguments, the variables, the yolo choice and
 // whether the name is a person's, the Runtime (where; "" is the native
 // one), the agent's conversation to take up ("" for a plain relaunch),
-// the session it resumes (from), and the new session's id (id; "" makes
-// one, a record's resume allocates it with its receipt).
+// the session it resumes (from), the new session's id (id; "" makes
+// one, a record's resume allocates it with its receipt), and a record's
+// last read at the launch (atLaunch, createSessionRequest's).
 type resumeSpec struct {
 	agentID, name, cwd string
 	args               []string
@@ -221,6 +314,7 @@ type resumeSpec struct {
 	yolo, renamed      bool
 	where              ext.Where
 	resume, from, id   string
+	atLaunch           func() *apiError
 }
 
 // resumeLaunch is the launch both resume routes make
@@ -228,11 +322,12 @@ type resumeSpec struct {
 // for a record, a listed session's among them): a session made as every
 // server session is (createLocalSession: the folder through openCwd, the
 // process through the Runtime at where), its agent's conversation taken
-// for it (takeResume) and its resumedFrom set.
+// for it by the one rule a resume launches on (takeConversation) and its
+// resumedFrom set.
 func (s *Server) resumeLaunch(ctx context.Context, sp resumeSpec) (*session.Local, *apiError) {
 	yolo := sp.yolo
 	return s.createLocalSession(createSessionRequest{AgentID: sp.agentID, Name: sp.name, Cwd: sp.cwd, Args: sp.args, Env: sp.env, Yolo: &yolo,
-		resume: sp.resume, resumedFrom: sp.from, renamed: sp.renamed, where: sp.where, id: sp.id, ctx: ctx}, nil)
+		resume: sp.resume, resumedFrom: sp.from, renamed: sp.renamed, where: sp.where, id: sp.id, atLaunch: sp.atLaunch, ctx: ctx}, nil)
 }
 
 // handleResumeRunMember resumes an ended member of a run, in its worktree:
