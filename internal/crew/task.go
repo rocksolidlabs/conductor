@@ -1119,6 +1119,11 @@ func (e *Engine) commitHeld(ctx context.Context, r *run, first bool, judge func(
 			// Its id is another run's: nothing of it is written again.
 			return false, fmt.Errorf("%w: %s", ErrRunExists, r.id)
 		}
+		if r.discarded {
+			// A continuation whose first transaction did not commit:
+			// nothing of it is written (discard).
+			return false, fmt.Errorf("%w: %s was never made", ErrRunNotFound, r.id)
+		}
 		made = true
 		t := mutate()
 		// What the change left with no work under it ends with it (I11), and
@@ -2792,10 +2797,11 @@ func (e *Engine) reopenFor(r *run, sub *task, rp *repair, who, ready string, gra
 // number), and its repair, candidate, checkpoint and refusal dropped, all
 // made on the input withdrawn. An attempt in flight on it ends (cancelled,
 // its session stopped once that is durable), and neither it nor a result
-// made on it counts against its task. A task that succeeded loses its
-// result; it and a ready or blocked one are blocked again. A task that
-// failed or was cancelled stays so until a person retries it, which starts
-// it at the new input. Each task is visited once (a dense graph is walked
+// made on it counts against its task, nor does a continuation's attempt
+// whose result waits to be verified again (its candidate). A task that
+// succeeded loses its result; it and a ready or blocked one are blocked
+// again. A task that failed or was cancelled stays so until a person
+// retries it, which starts it at the new input. Each task is visited once (a dense graph is walked
 // once under e.mu). The caller holds e.mu, in a transaction.
 func (e *Engine) withdraw(r *run, sub *task, why string) []event {
 	return e.withdrawFrom(r, sub, why, map[*task]bool{sub: true})
@@ -2821,6 +2827,15 @@ func (e *Engine) withdrawFrom(r *run, sub *task, why string, seen map[*task]bool
 			t.extra++
 			r.note(session.ActivityStatus, "task %s: attempt %d withdrawn: %s", t.def.ID, a.n, why)
 			events = append(events, event{"attempt.withdrawn", map[string]any{"task": t.def.ID, "attempt": a.n, "needs": sub.def.ID}})
+		case t.candidate != nil && t.kept(t.candidate.n):
+			// A continuation's result to verify again, the attempt that
+			// made it cut while it was verified: given back, as the
+			// attempt verifying it in a run the engine holds is (#623,
+			// review round 1). One a withdrawal took back already was
+			// given back then.
+			t.extra++
+			r.note(session.ActivityStatus, "task %s: attempt %d withdrawn before its result was verified again: %s", t.def.ID, t.candidate.n, why)
+			events = append(events, event{"attempt.withdrawn", map[string]any{"task": t.def.ID, "attempt": t.candidate.n, "needs": sub.def.ID}})
 		case t.state == ledger.TaskSucceeded:
 			t.result, t.imported = nil, ""
 			t.extra++

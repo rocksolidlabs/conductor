@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
@@ -31,6 +33,77 @@ func runFinished(t *testing.T, e *Engine, l *fakeLedger, runID, outcome string) 
 	t.Helper()
 	waitOutcome(t, e, runID, outcome)
 	l.runRowWhen(t, runID, "finished", func(r ledger.RunRow) bool { return r.State == ledger.RunFinished })
+}
+
+// continuing is the runs the fake ledger holds that continue runID, by id.
+func (l *fakeLedger) continuing(runID string) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []string
+	for id, row := range l.runs {
+		if row.ContinuedFrom == runID {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// commandRuns is the runs the fake ledger holds a command of the actor and
+// id in.
+func (l *fakeLedger) commandRuns(actor, id string) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []string
+	for _, row := range l.commands {
+		if row.Actor == actor && row.ID == id {
+			out = append(out, row.RunID)
+		}
+	}
+	return out
+}
+
+// resumedIn is the runs the engine holds that continue runID, by id.
+func resumedIn(e *Engine, runID string) []string {
+	var out []string
+	for _, r := range e.List() {
+		if r.ResumedFrom == runID {
+			out = append(out, r.ID)
+		}
+	}
+	return out
+}
+
+// sqlContinuing is the runs the real ledger holds that continue runID.
+func sqlContinuing(t *testing.T, ld *ledger.Ledger, runID string) []string {
+	t.Helper()
+	rows, err := ld.Runs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, row := range rows {
+		if row.ContinuedFrom == runID {
+			out = append(out, row.ID)
+		}
+	}
+	return out
+}
+
+// mintedBy collects the ids the engine mints for its continuations
+// (afterAdd), in order.
+func mintedBy(e *Engine) func() []string {
+	var mu sync.Mutex
+	var ids []string
+	e.afterAdd = func(id string) {
+		mu.Lock()
+		defer mu.Unlock()
+		ids = append(ids, id)
+	}
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(ids)
+	}
 }
 
 // A finished run continued with a person's request of build's result:
@@ -147,7 +220,7 @@ func TestContinuationRefusesAStaleCandidate(t *testing.T) {
 	approves(t, e, waitAttempt(t, e, run.ID, "check", ledger.AttemptRunning))
 	runFinished(t, e, l, run.ID, ledger.OutcomeSucceeded)
 	cr := personsRequest("rv-0022")
-	runs := len(e.List())
+	minted := mintedBy(e)
 
 	other := strings.Repeat("a", 40)
 	for _, tc := range []struct {
@@ -191,13 +264,37 @@ func TestContinuationRefusesAStaleCandidate(t *testing.T) {
 	if _, err := e.ContinueRunWith(context.Background(), run.ID, "", ContinueOptions{Repair: &RepairRequest{Task: "build", Attempt: 1, Commit: c1, Request: cr}, Actor: "admin"}); !errors.Is(err, ErrBadCommandID) {
 		t.Fatalf("a request with no command id: %v", err)
 	}
-	// Nothing was made: no run, no mark on the run, no command.
-	if n := len(e.List()); n != runs {
-		t.Fatalf("%d runs after the refusals, were %d", n, runs)
+	// Nothing was made: no run continuing it, in the engine or the ledger
+	// (not even one stopped: a refused continuation is discarded whole),
+	// none of the ids minted for the refused ones, no mark on the run, no
+	// command.
+	if ids := minted(); len(ids) == 0 {
+		t.Fatal("no continuation was minted for the refusals in the transaction")
+	}
+	for _, id := range minted() {
+		if _, ok := e.Get(id); ok {
+			t.Fatalf("the refused continuation %s is held", id)
+		}
+		l.mu.Lock()
+		row, ok := l.runs[id]
+		l.mu.Unlock()
+		if ok {
+			t.Fatalf("the refused continuation %s is in the ledger: %+v", id, row)
+		}
+	}
+	if ids := resumedIn(e, run.ID); len(ids) != 0 {
+		t.Fatalf("the engine holds continuations %v", ids)
+	}
+	if ids := l.continuing(run.ID); len(ids) != 0 {
+		t.Fatalf("the ledger holds continuations %v", ids)
+	}
+	if ids := l.commandRuns("admin", "rq1"); len(ids) != 0 {
+		t.Fatalf("the command is in %v", ids)
 	}
 	if r := l.runRowWhen(t, run.ID, "as it was", func(ledger.RunRow) bool { return true }); r.ContinuedBy != "" {
 		t.Fatalf("the run is marked continued by %s", r.ContinuedBy)
 	}
+	e.afterAdd = nil
 
 	// Continued with no request, build's result is imported: named by the
 	// continuation, it is not the candidate; named by its reference, it is.
@@ -255,6 +352,18 @@ func TestContinuationRepairOfARefusedCandidate(t *testing.T) {
 			runFinished(t, e, l, run.ID, ledger.OutcomeFailed)
 			sessions := len(fl.launched())
 
+			// A failed candidate that does not stand: attempt 2, not the
+			// source's last (t.priorLast). Nothing is made.
+			if _, err := continueWithRepair(e, run.ID, "rq0", "build", 2, a3.Result, "", personsRequest("rv-0023")); !errors.Is(err, ErrStaleCandidate) {
+				t.Fatalf("a failed candidate that does not stand: %v", err)
+			}
+			if got := l.continuing(run.ID); len(got) != 0 {
+				t.Fatalf("the ledger holds continuations %v", got)
+			}
+			if got := resumedIn(e, run.ID); len(got) != 0 {
+				t.Fatalf("the engine holds continuations %v", got)
+			}
+
 			next, err := continueWithRepair(e, run.ID, "rq1", "build", 3, a3.Result, "", personsRequest("rv-0023"))
 			if err != nil {
 				t.Fatal(err)
@@ -281,5 +390,254 @@ func TestContinuationRepairOfARefusedCandidate(t *testing.T) {
 			}
 			stopRun(t, e, next.ID)
 		})
+	}
+}
+
+// A continuation carrying a valid repair whose first commit the ledger
+// refuses once is discarded whole: no run continuing the source, in the
+// engine or the ledger, not even a stopped one, no command, the source
+// not marked; the same command sent again then makes the continuation,
+// its receipt in the continuation's first transaction, and sent once more
+// is that receipt.
+func TestContinuationWhoseFirstCommitFailsIsDiscarded(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("docs", "writer", "build")))
+	commitResult(t, e, waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning), "built.txt", "built\n", "built")
+	c1 := waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1).Result.Commit
+	commitResult(t, e, waitAttempt(t, e, run.ID, "docs", ledger.AttemptRunning), "docs.txt", "docs\n", "docs")
+	runFinished(t, e, l, run.ID, ledger.OutcomeSucceeded)
+	cr := personsRequest("rv-0024")
+	minted := mintedBy(e)
+	l.mu.Lock()
+	l.failOn, l.failOnce = "run.continued", true
+	l.mu.Unlock()
+
+	if _, err := continueWithRepair(e, run.ID, "rq1", "build", 1, c1, "", cr); err == nil || !strings.Contains(err.Error(), "disk full (injected)") {
+		t.Fatalf("the continuation whose first commit failed: %v", err)
+	}
+	ids := minted()
+	if len(ids) != 1 {
+		t.Fatalf("minted %v", ids)
+	}
+	if _, ok := e.Get(ids[0]); ok {
+		t.Fatalf("the discarded continuation %s is held", ids[0])
+	}
+	l.mu.Lock()
+	row, ok := l.runs[ids[0]]
+	l.mu.Unlock()
+	if ok {
+		t.Fatalf("the discarded continuation is in the ledger: %+v", row)
+	}
+	if got := l.continuing(run.ID); len(got) != 0 {
+		t.Fatalf("the ledger holds continuations %v", got)
+	}
+	if got := l.commandRuns("admin", "rq1"); len(got) != 0 {
+		t.Fatalf("the command is in %v", got)
+	}
+	if r := l.runRowWhen(t, run.ID, "as it was", func(ledger.RunRow) bool { return true }); r.ContinuedBy != "" {
+		t.Fatalf("the run is marked continued by %s", r.ContinuedBy)
+	}
+	if got, _ := e.Get(run.ID); got.Outcome != ledger.OutcomeSucceeded {
+		t.Fatalf("the source after the discard: %s/%q", got.State, got.Outcome)
+	}
+	e.afterAdd = nil
+
+	next, err := continueWithRepair(e, run.ID, "rq1", "build", 1, c1, "", cr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.ID == ids[0] {
+		t.Fatalf("the continuation has the discarded one's id %s", next.ID)
+	}
+	if got := l.continuing(run.ID); !slices.Equal(got, []string{next.ID}) {
+		t.Fatalf("the ledger's continuations %v, not %s", got, next.ID)
+	}
+	if row, found, _ := l.Receipt(context.Background(), next.ID, "admin", "rq1"); !found || row.Status != ledger.CommandDone {
+		t.Fatalf("the receipt in the continuation: %+v %v", row, found)
+	}
+	again, err := e.RequestChanges(context.Background(), next.ID, "admin", Command{ID: "rq1"}, RepairRequest{Task: "build", Attempt: 1, Commit: c1, Imported: run.ID + "/build/1", Request: cr})
+	if err != nil || !again.Repeat || again.Status != ledger.CommandDone {
+		t.Fatalf("the command again: %+v %v", again, err)
+	}
+	if b2 := attemptN(t, e, next.ID, "build", 2); b2.Attempt.Start != c1 {
+		t.Fatalf("attempt 2 starts at %s, not the candidate %s", short(b2.Attempt.Start), short(c1))
+	}
+	stopRun(t, e, next.ID)
+}
+
+// A dependent whose result was being verified when the run stopped is
+// given its attempt back when a continuation's repair withdraws it, as
+// the dependent verifying in a run the engine holds is when Request
+// changes withdraws it there: one more attempt each, every attempt so far
+// taken back. The continuation is of a stopped run.
+func TestContinuationRepairGivesBackAVerifyingDependentsAttempt(t *testing.T) {
+	setup := func(t *testing.T, e *Engine, l *fakeLedger) (Run, string) {
+		dir := newRepo(t)
+		docs := work("docs", "writer", "build")
+		// A check that passes only once its mark exists, never made: the
+		// result stays verifying until it is withdrawn or the run stops.
+		mark := filepath.Join(t.TempDir(), "never")
+		docs.Checks = []Check{{ID: "ok", Argv: []string{"sh", "-c", "until test -e " + mark + "; do sleep 0.05; done"}}}
+		run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), docs))
+		commitResult(t, e, waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning), "built.txt", "built\n", "built")
+		c1 := waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1).Result.Commit
+		d1 := waitAttempt(t, e, run.ID, "docs", ledger.AttemptRunning)
+		writeFile(t, filepath.Join(d1.Attempt.Worktree, "docs.txt"), "docs\n")
+		commitAll(t, d1.Attempt.Worktree, "docs")
+		submit(t, e, d1.Attempt.SessionID, Result{Summary: "docs"})
+		l.attemptWhen(t, run.ID, "docs", 1, func(a ledger.AttemptRow) bool {
+			return a.State == ledger.AttemptVerifying && a.ResultCommit != "" && a.Result != ""
+		})
+		return run, c1
+	}
+	cr := personsRequest("rv-0025")
+	givenBack := func(r ledger.TaskRow) bool {
+		return r.Extra == 1 && r.Withdrawn == 1 && r.State == ledger.TaskBlocked
+	}
+
+	// Held: Request changes of build while docs verifies.
+	e, _, l := managedEngine(t)
+	held, c1 := setup(t, e, l)
+	if _, err := requestChanges(e, held.ID, "rq1", "build", 1, c1, cr); err != nil {
+		t.Fatal(err)
+	}
+	h := l.taskWhen(t, held.ID, "docs", "given back", givenBack)
+	stopRun(t, e, held.ID)
+
+	// A continuation of the run stopped while docs verified: docs' attempt
+	// was carried as a result to verify again.
+	e2, _, l2 := managedEngine(t)
+	stopped, c1 := setup(t, e2, l2)
+	stopRun(t, e2, stopped.ID)
+	l2.attemptWhen(t, stopped.ID, "docs", 1, func(a ledger.AttemptRow) bool {
+		return a.State == ledger.AttemptStopped && strings.HasPrefix(a.Stage, "verifying") && a.ResultCommit != ""
+	})
+	next, err := continueWithRepair(e2, stopped.ID, "rq1", "build", 1, c1, "", cr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := l2.taskWhen(t, next.ID, "docs", "given back", givenBack)
+	if c.Extra != h.Extra || c.Withdrawn != h.Withdrawn || c.Attempts != h.Attempts {
+		t.Fatalf("docs in the continuation: extra %d, withdrawn %d, attempts %d; held: %d, %d, %d", c.Extra, c.Withdrawn, c.Attempts, h.Extra, h.Withdrawn, h.Attempts)
+	}
+	if p := l2.payloads(next.ID, "attempt.withdrawn"); len(p) != 1 || p[0]["task"] != "docs" || p[0]["attempt"] != 1 || p[0]["needs"] != "build" {
+		t.Fatalf("attempt.withdrawn in the continuation: %+v", p)
+	}
+	if p := l2.payloads(next.ID, "run.continued"); len(p) != 1 || p[0]["reverified"] != 0 {
+		t.Fatalf("run.continued: %+v", p)
+	}
+	if b2 := attemptN(t, e2, next.ID, "build", 2); b2.Attempt.Start != c1 {
+		t.Fatalf("attempt 2 starts at %s, not the candidate %s", short(b2.Attempt.Start), short(c1))
+	}
+	stopRun(t, e2, next.ID)
+}
+
+// A continuation carrying a repair of a run from before a restart (the
+// engine holds it no more) on the real ledger: the candidate, build's
+// result, not imported, nor docs which needs it; the command's row and
+// settled receipt in the continuation's first transaction, found by its
+// id; the command sent again to the continuation is that receipt.
+func TestContinuationRepairOfARunFromBeforeARestart(t *testing.T) {
+	dir, ldir := newRepo(t), t.TempDir()
+	e, _, ld := decisionEngineAt(t, ldir)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("docs", "writer", "build")))
+	commitResult(t, e, waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning), "built.txt", "built\n", "built")
+	c1 := waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1).Result.Commit
+	commitResult(t, e, waitAttempt(t, e, run.ID, "docs", ledger.AttemptRunning), "docs.txt", "docs\n", "docs")
+	waitOutcome(t, e, run.ID, ledger.OutcomeSucceeded)
+	waitFake(t, "the run's row finished", func() bool {
+		row, ok, err := ld.Run(context.Background(), run.ID)
+		return err == nil && ok && row.State == ledger.RunFinished
+	})
+	e2, _, ld2 := restart(t, e, ld, ldir, run.ID)
+	if _, ok := e2.Get(run.ID); ok {
+		t.Fatal("the engine after the restart holds the run")
+	}
+	cr := personsRequest("rv-0026")
+
+	next, err := continueWithRepair(e2, run.ID, "rv.rv-0026.1", "build", 1, c1, "", cr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.ResumedFrom != run.ID {
+		t.Fatalf("the continuation continues %q", next.ResumedFrom)
+	}
+	if got := sqlContinuing(t, ld2, run.ID); !slices.Equal(got, []string{next.ID}) {
+		t.Fatalf("the ledger's continuations %v, not %s", got, next.ID)
+	}
+	row, found, err := ld2.Receipt(context.Background(), next.ID, "admin", "rv.rv-0026.1")
+	if err != nil || !found || row.Status != ledger.CommandDone || row.Intent != intentRequestChanges {
+		t.Fatalf("the command's row in the continuation: %+v %v %v", row, found, err)
+	}
+	if kept, err := priorReceipt(row, intentRequestChanges, fingerprint(intentRequestChanges, "build", "1", c1, "rv-0026")); err != nil || kept.Revision != 1 || kept.Task == nil || kept.Task.State != ledger.TaskReady {
+		t.Fatalf("the receipt kept: %+v %v", kept, err)
+	}
+	if d := ledgerTask(t, ld2, next.ID, "docs"); d.State != ledger.TaskBlocked || d.ResultCommit != "" || d.ImportedFrom != "" {
+		t.Fatalf("docs in the continuation: %+v", d)
+	}
+	if b := ledgerTask(t, ld2, next.ID, "build"); b.ResultCommit != "" || b.ImportedFrom != "" || !strings.Contains(b.Repair, "rv-0026") {
+		t.Fatalf("build in the continuation: %+v", b)
+	}
+	again, err := e2.RequestChanges(context.Background(), next.ID, "admin", Command{ID: "rv.rv-0026.1"}, RepairRequest{Task: "build", Attempt: 1, Commit: c1, Imported: run.ID + "/build/1", Request: cr})
+	if err != nil || !again.Repeat || again.Revision != 1 || again.Status != ledger.CommandDone {
+		t.Fatalf("the command again: %+v %v", again, err)
+	}
+	if b2 := attemptN(t, e2, next.ID, "build", 2); b2.Attempt.Start != c1 {
+		t.Fatalf("attempt 2 starts at %s, not the candidate %s", short(b2.Attempt.Start), short(c1))
+	}
+	stopRun(t, e2, next.ID)
+}
+
+// A continuation's repair whose reopen would ask two gates again, in a
+// continuation with room for one, is refused decision_limit, as the
+// request is in a run the engine holds: nothing made, no run continuing
+// the source in the ledger and no mark on it.
+func TestContinuationRepairNeedsRoomForEveryGate(t *testing.T) {
+	dir := newRepo(t)
+	e, _, ld := decisionEngine(t)
+	build := work("build", "lead")
+	build.Checks = []Check{markedCheck("test", filepath.Join(t.TempDir(), "passes"))}
+	smoke := PackageDecision{ID: "smoke", Question: "Smoke it?", Kind: ledger.DecisionApproval, Before: []string{"smoke"}}
+	run := launchGated(t, e, dir, "api-sweep-000000d1", repoCrew(dir, build, work("deploy", "ops", "build"), work("smoke", "qa", "build")), shipGate("deploy"), smoke)
+	c3 := spend(t, e, run.ID, "build", "built.txt").Attempt.Result
+	waitOutcome(t, e, run.ID, ledger.OutcomeFailed)
+	before, err := ld.Decisions(t.Context(), ledger.DecisionFilter{CurrentRun: run.ID})
+	if err != nil || len(before) != 2 {
+		t.Fatalf("the gates: %+v %v", before, err)
+	}
+	for _, g := range before {
+		decisionWhen(t, ld, g.ID(), "final", func(rec ledger.DecisionRecord) bool { return rec.Final() })
+	}
+	// The continuation made with room for one decision more.
+	var minted []string
+	e.afterAdd = func(id string) {
+		minted = append(minted, id)
+		r := runOf(t, e, id)
+		e.mu.Lock()
+		r.dec.opened = ledger.MaxDecisionsPerRun - 1
+		e.mu.Unlock()
+	}
+
+	_, err = continueWithRepair(e, run.ID, "rq1", "build", 3, c3, "", personsRequest("rv-0027"))
+	var de *DecisionError
+	if !errors.As(err, &de) || de.Code != CodeDecisionLimit || !strings.Contains(de.Words, "ship, smoke") || !strings.Contains(de.Words, "the request for changes is refused") {
+		t.Fatalf("the request: %v", err)
+	}
+	e.afterAdd = nil
+	if len(minted) != 1 {
+		t.Fatalf("minted %v", minted)
+	}
+	if _, ok, err := ld.Run(context.Background(), minted[0]); err != nil || ok {
+		t.Fatalf("the refused continuation %s in the ledger: %v %v", minted[0], ok, err)
+	}
+	if got := sqlContinuing(t, ld, run.ID); len(got) != 0 {
+		t.Fatalf("the ledger holds continuations %v", got)
+	}
+	if row, ok, err := ld.Run(context.Background(), run.ID); err != nil || !ok || row.ContinuedBy != "" {
+		t.Fatalf("the run after the refusal: %+v %v %v", row, ok, err)
+	}
+	if got, _ := e.Get(run.ID); got.Outcome != ledger.OutcomeFailed {
+		t.Fatalf("the run after the refused request: %s/%q", got.State, got.Outcome)
 	}
 }

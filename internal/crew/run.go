@@ -574,6 +574,11 @@ type run struct {
 	// is written again, recorded or told as forgotten, and it is dropped
 	// (dropForeign) with the browsers told to read the id again.
 	foreign bool
+	// discarded says the run was a continuation whose first transaction
+	// did not commit (refused or failed): nothing of it is ever written,
+	// a stop of it included, and it is forgotten (discard) (#623, review
+	// round 1).
+	discarded bool
 	// pkg is the launch package of a run launched from a ticket
 	// (LaunchPlanned) or of a continuation of one; nil for any other run.
 	pkg *runPackage
@@ -2010,6 +2015,26 @@ func (e *Engine) abort(r *run) {
 	e.endMu.Lock()
 	e.mu.Lock()
 	e.journalForgotten(r)
+	e.forget(r)
+	e.mu.Unlock()
+	e.endMu.Unlock()
+}
+
+// discard forgets r, a continuation whose first transaction did not
+// commit (refused, its id another run's, or failed), as if it had never
+// been made: nothing of it is written, neither the stop abort would record
+// (a stopped run naming the source as the one it continues) nor its record
+// (journalForgotten), so the ledger holds no run continuing the source,
+// no command of a repair it carried, and the source is as it was. Nothing
+// of it started: its tasks are dispatched, its prerequisites run and its
+// trees made only once that transaction commits. Marked discarded, a
+// change of it a Stop makes meanwhile writes nothing (commit). The caller
+// holds no lock.
+func (e *Engine) discard(r *run) {
+	e.endMu.Lock()
+	e.mu.Lock()
+	r.discarded, r.stopping = true, true
+	r.pendingEvents, r.pendingMore, r.pendingLast, r.pendingDone = nil, nil, nil, nil
 	e.forget(r)
 	e.mu.Unlock()
 	e.endMu.Unlock()

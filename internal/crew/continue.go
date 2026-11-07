@@ -166,7 +166,9 @@ func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, er
 // (ErrTaskNotFound), a review task (ErrTaskState); a candidate that does
 // not stand (ErrStaleCandidate, in words that say what stands); gates the
 // reopen would ask again with no room for them (decision_limit); and
-// whatever refuses a plain continuation.
+// whatever refuses a plain continuation. A continuation whose first
+// transaction is refused or fails is discarded whole (discard): no run of
+// it, stopped or not, no command, the source as it was.
 func (e *Engine) ContinueRunWith(ctx context.Context, runID, label string, o ContinueOptions) (*Run, error) {
 	if e.ledger == nil {
 		return nil, ErrNoLedger
@@ -281,7 +283,9 @@ func (e *Engine) ContinueRunWith(ctx context.Context, runID, label string, o Con
 		if err == nil {
 			break
 		}
-		e.abort(r)
+		// Its first transaction did not commit: nothing of it is kept,
+		// not even its stop (discard).
+		e.discard(r)
 		e.launched(r)
 		if minted(err, try) {
 			continue
@@ -782,7 +786,12 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 			return nil
 		}
 		return w
-	}, giveUp)
+	}, func() {
+		// Refused or failed, the continuation is discarded whole
+		// (ContinueRunWith): marked here, under the transaction's txMu,
+		// so no change of it after this one (a Stop's) writes it.
+		r.discarded = true
+	})
 	if errors.Is(err, ledger.ErrContinued) {
 		// Continued meanwhile, by another server or request: the one that
 		// was is the continuation.
