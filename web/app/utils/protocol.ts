@@ -914,7 +914,7 @@ export const MAX_DECISION = 128 * 1024
 export const MAX_DECIDE = 32 * 1024
 /** The lane's bounds, in bytes (proto.MaxDecisionReqID, …): ids, refs, cursors, receipts, an action's name and revision, a rationale encoded. */
 export const MAX_DECISION_REQ_ID = 32
-export const MAX_DECISION_ITEM_REF = 512
+export const MAX_LANE_REF = 512
 export const MAX_DECISION_CURSOR = 600
 export const MAX_DECISION_RECEIPT = 512
 export const MAX_DECISION_RECORD_REV = 20
@@ -1019,7 +1019,7 @@ function validReqId(id: string): boolean {
 }
 
 function validRef(ref: string): boolean {
-  return ref.length > 0 && byteLength(ref) <= MAX_DECISION_ITEM_REF
+  return ref.length > 0 && byteLength(ref) <= MAX_LANE_REF
 }
 
 /** Whether a lane request is within its bounds, as the owner checks it (proto's Valid). */

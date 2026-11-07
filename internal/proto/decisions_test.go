@@ -81,8 +81,8 @@ func TestDecisionsListValid(t *testing.T) {
 
 func TestDecisionReadValid(t *testing.T) {
 	lane(t, CtlDecisionRead, `{"t":"decision_read","reqId":"r1","ref":"task:run-1/build"}`, true)
-	lane(t, CtlDecisionRead, `{"t":"decision_read","reqId":"r1","ref":"`+strings.Repeat("q", MaxDecisionItemRef)+`"}`, true)
-	lane(t, CtlDecisionRead, `{"t":"decision_read","reqId":"r1","ref":"`+strings.Repeat("q", MaxDecisionItemRef+1)+`"}`, false)
+	lane(t, CtlDecisionRead, `{"t":"decision_read","reqId":"r1","ref":"`+strings.Repeat("q", MaxLaneRef)+`"}`, true)
+	lane(t, CtlDecisionRead, `{"t":"decision_read","reqId":"r1","ref":"`+strings.Repeat("q", MaxLaneRef+1)+`"}`, false)
 	lane(t, CtlDecisionRead, `{"t":"decision_read","reqId":"r1","ref":""}`, false)
 }
 
@@ -108,7 +108,7 @@ func TestDecisionRecordValid(t *testing.T) {
 
 func TestDecisionEvidenceValid(t *testing.T) {
 	lane(t, CtlDecisionEvidence, `{"t":"decision_evidence","reqId":"r1","ref":"task:run-1/build","evidence":"check:run-1/build/1/test/1"}`, true)
-	lane(t, CtlDecisionEvidence, `{"t":"decision_evidence","reqId":"r1","ref":"task:run-1/build","evidence":"`+strings.Repeat("e", MaxDecisionItemRef+1)+`"}`, false)
+	lane(t, CtlDecisionEvidence, `{"t":"decision_evidence","reqId":"r1","ref":"task:run-1/build","evidence":"`+strings.Repeat("e", MaxLaneRef+1)+`"}`, false)
 	lane(t, CtlDecisionEvidence, `{"t":"decision_evidence","reqId":"r1","ref":"task:run-1/build"}`, false)
 }
 
@@ -236,7 +236,7 @@ func fitsControl(t *testing.T, v any) map[string]any {
 }
 
 func TestDecideOkValid(t *testing.T) {
-	m := fitsControl(t, DecideOK{T: CtlDecideOK, ReqID: strings.Repeat("<", MaxDecisionReqID), Ref: strings.Repeat("<", MaxDecisionItemRef), Receipt: strings.Repeat("<", MaxDecisionReceipt), Repeat: true})
+	m := fitsControl(t, DecideOK{T: CtlDecideOK, ReqID: strings.Repeat("<", MaxDecisionReqID), Ref: strings.Repeat("<", MaxLaneRef), Receipt: strings.Repeat("<", MaxDecisionReceipt), Repeat: true})
 	if m["t"] != CtlDecideOK || m["repeat"] != true {
 		t.Fatalf("%v", m)
 	}
@@ -257,7 +257,7 @@ func TestDecideRefusedCodes(t *testing.T) {
 	for _, code := range []string{DecideStaleRevision, DecideNotInScope, DecideNotDecisionLink, DecideNotFound, DecideAnswered, DecideTooMany,
 		DecideUnsupported, DecideInvalid, DecideRecordMoved, DecideRevoked, DecideExpired, DecideOpConflict} {
 		m := fitsControl(t, DecideRefused{T: CtlDecideRefused, ReqID: strings.Repeat("r", MaxDecisionReqID), Code: code, Message: strings.Repeat("<", MaxDecideWords/6),
-			Rev: strings.Repeat("9", MaxDecisionRecordRev), Ref: strings.Repeat("<", MaxDecisionItemRef), Receipt: strings.Repeat("<", MaxDecisionReceipt)})
+			Rev: strings.Repeat("9", MaxDecisionRecordRev), Ref: strings.Repeat("<", MaxLaneRef), Receipt: strings.Repeat("<", MaxDecisionReceipt)})
 		if m["code"] != code {
 			t.Fatalf("%v", m)
 		}
@@ -281,10 +281,10 @@ func TestLaneRequestsAtTheirBoundsFitMaxControl(t *testing.T) {
 	esc := func(n int) string { return strings.Repeat("<", n) }
 	for _, m := range []any{
 		DecisionsList{T: CtlDecisionsList, ReqID: esc(MaxDecisionReqID), After: esc(MaxDecisionCursor)},
-		DecisionRead{T: CtlDecisionRead, ReqID: esc(MaxDecisionReqID), Ref: esc(MaxDecisionItemRef)},
-		DecisionTrack{T: CtlDecisionTrack, ReqID: esc(MaxDecisionReqID), Ref: esc(MaxDecisionItemRef), Receipt: esc(MaxDecisionReceipt), Attempt: strings.Repeat("a", MaxDecisionAttempt)},
-		DecisionRecord{T: CtlDecisionRecord, ReqID: esc(MaxDecisionReqID), Ref: esc(MaxDecisionItemRef), Part: RecordHistory, Rev: strings.Repeat("9", MaxDecisionRecordRev), After: esc(MaxDecisionRecordAfter)},
-		DecisionEvidence{T: CtlDecisionEvidence, ReqID: esc(MaxDecisionReqID), Ref: esc(MaxDecisionItemRef), Evidence: esc(MaxDecisionItemRef)},
+		DecisionRead{T: CtlDecisionRead, ReqID: esc(MaxDecisionReqID), Ref: esc(MaxLaneRef)},
+		DecisionTrack{T: CtlDecisionTrack, ReqID: esc(MaxDecisionReqID), Ref: esc(MaxLaneRef), Receipt: esc(MaxDecisionReceipt), Attempt: strings.Repeat("a", MaxDecisionAttempt)},
+		DecisionRecord{T: CtlDecisionRecord, ReqID: esc(MaxDecisionReqID), Ref: esc(MaxLaneRef), Part: RecordHistory, Rev: strings.Repeat("9", MaxDecisionRecordRev), After: esc(MaxDecisionRecordAfter)},
+		DecisionEvidence{T: CtlDecisionEvidence, ReqID: esc(MaxDecisionReqID), Ref: esc(MaxLaneRef), Evidence: esc(MaxLaneRef)},
 	} {
 		b, err := json.Marshal(m)
 		if err != nil || len(b) > MaxControl {
@@ -298,5 +298,5 @@ func TestLaneRequestsAtTheirBoundsFitMaxControl(t *testing.T) {
 			t.Fatalf("%T decoded: %v %v", m, ok, err)
 		}
 	}
-	lane(t, CtlDecisionEvidence, `{"t":"decision_evidence","reqId":"r1","ref":"task:run-1/build","evidence":"`+strings.Repeat("e", MaxDecisionItemRef)+`"}`, true)
+	lane(t, CtlDecisionEvidence, `{"t":"decision_evidence","reqId":"r1","ref":"task:run-1/build","evidence":"`+strings.Repeat("e", MaxLaneRef)+`"}`, true)
 }
