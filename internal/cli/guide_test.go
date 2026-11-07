@@ -128,6 +128,28 @@ func TestGuideWithTheWorkbenchToken(t *testing.T) {
 	}
 }
 
+// The overview text says what the caller may call only as the overview
+// says it: the operations named, none named as none, and an overview
+// without the field (a server older than #691) nothing at all, never that
+// no operation may be called; its limits, rules and sections as ever.
+func TestGuideTextSaysWhatMayBeCalledOnlyWhenTheOverviewSays(t *testing.T) {
+	head := "Conductor " + version.Version + " (c), guide 1\nYou are session s1 (agent); your scopes: session.\n"
+	tail := "Your limits:\n- 8 requests\nRules:\n- be brief\nSections: operations (10 bytes)\nRead one: how."
+	for _, c := range []struct{ may, want string }{
+		{`"may":["report","guide"],`, head + "You may call: report, guide.\n" + tail},
+		{`"may":[],`, head + "You may call no operation here.\n" + tail},
+		{``, head + tail},
+	} {
+		raw := `{"guide":1,"version":"` + version.Version + `","commit":"c","section":"overview","overview":{` +
+			`"caller":{"kind":"session","session":"s1","kinds":["agent"],"scopes":["session"]},` + c.may +
+			`"limits":["8 requests"],"rules":["be brief"],"sections":[{"name":"operations","bytes":10}]}}`
+		text, err := guideText([]byte(raw), "how")
+		if err != nil || text != c.want {
+			t.Fatalf("%s: got\n%s\n(%v), want\n%s", c.may, text, err, c.want)
+		}
+	}
+}
+
 // The operations text carries what the running server says of each
 // operation's input and bounds, whatever this binary's tools would say:
 // a property only that server has is printed, compact, and its bounds in

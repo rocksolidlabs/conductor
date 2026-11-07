@@ -155,7 +155,10 @@ func guideText(raw []byte, how string) (string, error) {
 				Name  string
 				Bytes int
 			}
-			May, Limits, Rules []string
+			// May is a pointer: a server older than the field (#691) sends
+			// none, which is not "nothing may be called".
+			May           *[]string
+			Limits, Rules []string
 		}
 		if err := json.Unmarshal(env["overview"], &ov); err != nil {
 			return "", fmt.Errorf("guide: an unreadable overview: %w", err)
@@ -171,10 +174,14 @@ func guideText(raw []byte, how string) (string, error) {
 		fmt.Fprintf(&b, "You are %s; your scopes: %s.\n", who, strings.Join(ov.Caller.Scopes, ", "))
 		// What it may call now and within what, as the overview names them
 		// (each whole in the operations and limits sections): an agent told
-		// only to call the guide reads them here.
-		if len(ov.May) > 0 {
-			fmt.Fprintf(&b, "You may call: %s.\n", strings.Join(ov.May, ", "))
-		} else {
+		// only to call the guide reads them here. An overview without the
+		// field says nothing of what may be called, and neither does the
+		// text: its operations section says it.
+		switch {
+		case ov.May == nil:
+		case len(*ov.May) > 0:
+			fmt.Fprintf(&b, "You may call: %s.\n", strings.Join(*ov.May, ", "))
+		default:
 			b.WriteString("You may call no operation here.\n")
 		}
 		if len(ov.Limits) > 0 {

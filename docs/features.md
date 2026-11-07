@@ -3846,7 +3846,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
     "Your limits:"), from the same overview: the third live check's Codex,
     told only to call the tool, had read the sections and nothing it may
     do (#715). `TestGuideToolTextSaysWhatTheCallerMayCallAndItsLimits` (a
-    crew's member and a session of no crew).
+    crew's member and a session of no crew). An overview from a server
+    older than the field says nothing of what may be called, never "no
+    operation": `TestGuideTextSaysWhatMayBeCalledOnlyWhenTheOverviewSays`.
   - Saving Brakeman's settings makes an unavailable role look again at
     what the save changed, by the reason kept with the state: a budget
     raised clears "the day's budget is spent" and fires the batch kept
@@ -3857,9 +3859,10 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
     `TestASaveWeighsOnlyWhatItChanged`, `TestASaveEndsOnlyWhatItChanged`.
     The background turned off or on, or the account cleared while it is
     off, ends an agent that did not start too, with its count of such
-    turns: one save that cleared the account and turned the background off
-    had left the role unavailable with the sign-in's words, and on again
-    it stayed so (#715). `TestASaveOfTheRoleOffEndsAnAgentNotStarted`,
+    turns, and the save of the role off drops the failed turn's batch, so
+    the background turned on again fires no turn for it: one save that
+    cleared the account and turned the background off had left the role
+    unavailable with the sign-in's words, and on again it stayed so (#715). `TestASaveOfTheRoleOffEndsAnAgentNotStarted`,
     `TestASaveOfTheBackgroundOffAndTheAccountClearedStartsClean`.
   - A proposal's launch state is drawn from the request's acts and the
     launch they name each time, so a re-read of the request keeps a failed
