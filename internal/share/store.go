@@ -2,6 +2,7 @@ package share
 
 import (
 	"errors"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -21,6 +22,11 @@ type Link struct {
 	CreatedAt time.Time    `json:"createdAt"`
 	ExpiresAt *time.Time   `json:"expiresAt,omitempty"`
 	Revoked   bool         `json:"revoked"`
+	// Decide marks a decision link (docs/plans/decision-inbox.md, PR-5): a
+	// control link whose holder may also list, read and act on the
+	// decisions in its scope over its connection's lane. Only CreateDecision
+	// and CreateRunDecision set it, and only on a control link.
+	Decide bool `json:"decide,omitempty"`
 	// Owner, on a switchyard, is the hash of the host instance a durable
 	// link was minted for (kept on disk, outliving the host's absences);
 	// Addr the open host's address it counts against. Never in a reply.
@@ -34,7 +40,29 @@ type Link struct {
 	hash Hash
 	// lapsed says ExpireDue has told the hooks this link expired.
 	lapsed bool
+	// recent is a decision link's Recent: what was acted on through it
+	// (NoteRecent), in memory with the link and gone with it.
+	recent []Recent
+	// acts are the acts taken through the link under way (Hold) and the
+	// barrier a revoke or an expiry ends them through (end).
+	acts *linkActs
+	// ops are the operations a decision link took, by their opId (ClaimOp),
+	// in memory with the link and gone with it.
+	ops map[string]*op
 }
+
+// Recent is one action taken through a decision link: the item's ref,
+// the receipt its steps are read by, the action's own identity (its
+// decide's opId) and when it was taken.
+type Recent struct {
+	Ref     string    `json:"ref"`
+	Receipt string    `json:"receipt"`
+	Attempt string    `json:"attempt"`
+	At      time.Time `json:"at"`
+}
+
+// MaxRecent bounds a decision link's Recent: the newest kept.
+const MaxRecent = 50
 
 // Group is a crew run as a switchyard knows it: its name and its members.
 //
@@ -100,6 +128,15 @@ type Store struct {
 	OnRevoke func(sessionID, linkID string)
 	// OnRevokeRun is OnRevoke for a run's link.
 	OnRevokeRun func(runID, linkID string)
+	// HoldWait bounds how long a revoke or an expiry waits for the acts
+	// begun through the link before it (Hold); DefaultHoldWait when zero.
+	// Past it the revoke or the expiry returns, the acts still under way
+	// told (Held.Cancelled) and counted in a log line (Log); nothing begun
+	// is undone. Set before the store is used.
+	HoldWait time.Duration
+	// Log, when set, is told of a revoke or an expiry that returned with
+	// acts still under way, and how many. Set before the store is used.
+	Log *slog.Logger
 }
 
 // NewStore creates an empty store.
@@ -120,6 +157,151 @@ func (s *Store) CreateRunLink(runID string, role session.Role, label string, ttl
 	return s.create(&Link{RunID: runID}, s.byRun, runID, role, label, ttl, nil)
 }
 
+// ErrDecideNeedsControl refuses a decision link of any role but control.
+var ErrDecideNeedsControl = errors.New("share: a decision link is a control link")
+
+// CreateDecision issues a decision link to a session (Link.Decide): a
+// control link only (ErrDecideNeedsControl).
+func (s *Store) CreateDecision(sessionID string, role session.Role, label string, ttl time.Duration) (*Link, string, error) {
+	if role != session.RoleControl {
+		return nil, "", ErrDecideNeedsControl
+	}
+	return s.create(&Link{SessionID: sessionID, Decide: true}, s.bySession, sessionID, role, label, ttl, nil)
+}
+
+// CreateRunDecision issues a decision link to a crew run, as CreateDecision.
+func (s *Store) CreateRunDecision(runID string, role session.Role, label string, ttl time.Duration) (*Link, string, error) {
+	if role != session.RoleControl {
+		return nil, "", ErrDecideNeedsControl
+	}
+	return s.create(&Link{RunID: runID, Decide: true}, s.byRun, runID, role, label, ttl, nil)
+}
+
+// NoteRecent keeps r in the decision link linkID's Recent, the newest
+// MaxRecent, one entry per ref and attempt (the newest kept); false when
+// the store holds no such decision link.
+func (s *Store) NoteRecent(linkID string, r Recent) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, ok := s.byID[linkID]
+	if !ok || !l.Decide {
+		return false
+	}
+	kept := l.recent[:0:0]
+	for _, o := range l.recent {
+		if o.Ref != r.Ref || o.Attempt != r.Attempt {
+			kept = append(kept, o)
+		}
+	}
+	kept = append(kept, r)
+	if len(kept) > MaxRecent {
+		kept = kept[len(kept)-MaxRecent:]
+	}
+	l.recent = kept
+	return true
+}
+
+// RecentOf is the decision link linkID's Recent, oldest first.
+func (s *Store) RecentOf(linkID string) []Recent {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if l, ok := s.byID[linkID]; ok {
+		return append([]Recent(nil), l.recent...)
+	}
+	return nil
+}
+
+// MaxOps bounds the operations a decision link keeps by their opId for its
+// life: past it the link takes no new one (ErrTooManyOps), so an opId is
+// never forgotten while the link stands.
+const MaxOps = 1024
+
+// Errors of ClaimOp.
+var (
+	// ErrOpConflict refuses an opId the link took before for another
+	// request: an opId names one operation.
+	ErrOpConflict = errors.New("share: the opId was used before for another request")
+	// ErrTooManyOps refuses a new opId past MaxOps.
+	ErrTooManyOps = errors.New("share: the link has taken as many operations as it keeps")
+)
+
+// op is one operation of a decision link, under the store's lock.
+type op struct {
+	fingerprint, outcome string
+	settled              bool
+	done                 chan struct{}
+}
+
+// Op is an operation a decision link holds by its opId, as ClaimOp found
+// it: Settled with its Outcome (what its taker kept of it), or under way,
+// Done closed once it is settled or let go.
+type Op struct {
+	Outcome string
+	Settled bool
+	Done    <-chan struct{}
+}
+
+// ClaimOp claims the opId opID of the decision link linkID for a request
+// whose fingerprint is fp (the whole request as it was sent). An opId names
+// one operation, for as long as the link stands:
+//
+//   - none held: it is held for this request, under way, and mine is true:
+//     the caller settles it (SettleOp) on every way out, kept once its
+//     operation was begun, let go when nothing was;
+//   - held for another fingerprint: ErrOpConflict, whether settled or not;
+//   - held for this one: the Op as it stands, mine false: a settled one is
+//     answered from its Outcome, one under way (a twin from another
+//     connection) is waited for (Done) and claimed again.
+//
+// ErrUnknownLink for a link the store does not hold as a decision link,
+// ErrTooManyOps for a new opId past MaxOps.
+func (s *Store) ClaimOp(linkID, opID, fp string) (Op, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, ok := s.byID[linkID]
+	if !ok || !l.Decide {
+		return Op{}, false, ErrUnknownLink
+	}
+	if o, ok := l.ops[opID]; ok {
+		if o.fingerprint != fp {
+			return Op{}, false, ErrOpConflict
+		}
+		return Op{Outcome: o.outcome, Settled: o.settled, Done: o.done}, false, nil
+	}
+	if len(l.ops) >= MaxOps {
+		return Op{}, false, ErrTooManyOps
+	}
+	if l.ops == nil {
+		l.ops = map[string]*op{}
+	}
+	o := &op{fingerprint: fp, done: make(chan struct{})}
+	l.ops[opID] = o
+	return Op{Done: o.done}, true, nil
+}
+
+// SettleOp settles the opId opID the caller claimed (ClaimOp, mine): kept
+// with outcome once its operation was begun, so the same request again is
+// answered from it and another is a conflict; let go when nothing was
+// begun, the opId free again. Its waiters are woken either way.
+func (s *Store) SettleOp(linkID, opID string, keep bool, outcome string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, ok := s.byID[linkID]
+	if !ok {
+		return
+	}
+	o, ok := l.ops[opID]
+	if !ok || o.settled {
+		return
+	}
+	if keep {
+		o.outcome, o.settled = outcome, true
+	} else {
+		delete(l.ops, opID)
+	}
+	close(o.done)
+}
+
 // create completes link, whose scope is set, and indexes it in scopes under
 // key: at most MaxLinksPerSession links per key, and only when admit (when
 // not nil, called with mu held) returns nil.
@@ -131,7 +313,7 @@ func (s *Store) create(link *Link, scopes map[string]map[string]*Link, key strin
 		label = label[:120]
 	}
 	tok, hash := NewToken()
-	link.ID, link.Label, link.Role, link.CreatedAt, link.hash = session.NewID(), label, role, s.now(), hash
+	link.ID, link.Label, link.Role, link.CreatedAt, link.hash, link.acts = session.NewID(), label, role, s.now(), hash, newActs()
 	if ttl > 0 {
 		exp := link.CreatedAt.Add(ttl)
 		link.ExpiresAt = &exp
@@ -210,7 +392,7 @@ func (s *Store) Get(linkID string) (*Link, bool) {
 // found is false when the link does not belong to sessionID; revoked says
 // whether this call revoked it (false when it was revoked before).
 func (s *Store) Revoke(sessionID, linkID string) (found, revoked bool) {
-	return s.revoke(linkID, func(l *Link) bool { return l.RunID == "" && l.SessionID == sessionID }, func() {
+	return s.revoke(linkID, func(l *Link) bool { return l.RunID == "" && l.SessionID == sessionID }, true, func() {
 		if s.OnRevoke != nil {
 			s.OnRevoke(sessionID, linkID)
 		}
@@ -225,13 +407,13 @@ func (s *Store) Revoke(sessionID, linkID string) (found, revoked bool) {
 // already, is not the end's to close, for a revoke closes its viewers as
 // revoked (its OnRevoke may still be on its way).
 func (s *Store) End(sessionID, linkID string) bool {
-	_, ended := s.revoke(linkID, func(l *Link) bool { return l.RunID == "" && l.SessionID == sessionID }, func() {})
+	_, ended := s.revoke(linkID, func(l *Link) bool { return l.RunID == "" && l.SessionID == sessionID }, false, func() {})
 	return ended
 }
 
 // RevokeRun is Revoke for a run's link, notifying OnRevokeRun.
 func (s *Store) RevokeRun(runID, linkID string) (found, revoked bool) {
-	return s.revoke(linkID, func(l *Link) bool { return l.RunID != "" && l.RunID == runID }, func() {
+	return s.revoke(linkID, func(l *Link) bool { return l.RunID != "" && l.RunID == runID }, true, func() {
 		if s.OnRevokeRun != nil {
 			s.OnRevokeRun(runID, linkID)
 		}
@@ -241,14 +423,25 @@ func (s *Store) RevokeRun(runID, linkID string) (found, revoked bool) {
 // revoke marks the link with linkID revoked when owned says it is the
 // caller's, and then calls notify, outside the lock, each time: the mark
 // comes first, so a viewer attaching meanwhile either sees it or is there
-// for notify's close to find.
-func (s *Store) revoke(linkID string, owned func(*Link) bool, notify func()) (found, revoked bool) {
+// for notify's close to find. With wait (a revoke, not a session's end,
+// whose session refuses what comes after on its own) the link is ended
+// through its barrier first (end): nothing is begun for the link from
+// then on, and the acts begun before are waited for, up to HoldWait,
+// before the mark; one still under way then may land after the revoke
+// returns, and is logged.
+func (s *Store) revoke(linkID string, owned func(*Link) bool, wait bool, notify func()) (found, revoked bool) {
 	s.mu.Lock()
 	link, ok := s.byID[linkID]
 	if !ok || !owned(link) {
 		s.mu.Unlock()
 		return false, false
 	}
+	acts := link.acts
+	s.mu.Unlock()
+	if wait {
+		s.end(linkID, acts, ErrRevoked)
+	}
+	s.mu.Lock()
 	already := link.Revoked
 	link.Revoked = true
 	s.mu.Unlock()
@@ -256,39 +449,77 @@ func (s *Store) revoke(linkID string, owned func(*Link) bool, notify func()) (fo
 	return true, !already
 }
 
-// ExpireDue tells the hooks of each link that has expired by now, once per
-// link, as a revoke does (OnRevoke for a session's link, OnRevokeRun for a
-// run's), so the viewers still attached through it are closed. A link
-// revoked before is not told again. It returns how many it told.
+// ExpireDue ends each link that has expired by now through its barrier,
+// as a revoke does (end: nothing begun for it after, those begun before
+// waited for up to HoldWait), and then tells its hooks, once per link (OnRevoke for a
+// session's link, OnRevokeRun for a run's), so the viewers still attached
+// through it are closed. A link revoked before is not told again. It
+// returns how many it told.
 func (s *Store) ExpireDue(now time.Time) int {
-	type due struct {
-		run         bool
-		scope, link string
-	}
-	var todo []due
+	var todo []*Link
 	s.mu.Lock()
 	for _, l := range s.byID {
 		if l.Revoked || l.lapsed || l.ExpiresAt == nil || now.Before(*l.ExpiresAt) {
 			continue
 		}
 		l.lapsed = true
-		if l.RunID != "" {
-			todo = append(todo, due{run: true, scope: l.RunID, link: l.ID})
-		} else {
-			todo = append(todo, due{scope: l.SessionID, link: l.ID})
-		}
+		todo = append(todo, l)
 	}
 	s.mu.Unlock()
-	for _, d := range todo {
-		if d.run {
-			if s.OnRevokeRun != nil {
-				s.OnRevokeRun(d.scope, d.link)
-			}
-		} else if s.OnRevoke != nil {
-			s.OnRevoke(d.scope, d.link)
-		}
+	var wg sync.WaitGroup
+	for _, l := range todo {
+		wg.Go(func() { s.end(l.ID, l.acts, ErrExpired) })
+	}
+	wg.Wait()
+	for _, l := range todo {
+		s.tellExpired(l)
 	}
 	return len(todo)
+}
+
+// Expire is ExpireDue for the one link linkID as its own deadline comes
+// (a desk's timer at the link's ExpiresAt): once the store's clock has
+// passed the deadline, the link is ended through its barrier as an expiry
+// (end: nothing begun for it after; the acts begun before waited for up
+// to HoldWait), and its hooks are told unless ExpireDue or Expire told
+// them before. It reports whether the link had expired; a link revoked,
+// unknown or not yet due is left as it is.
+func (s *Store) Expire(linkID string) bool { return s.ExpireThen(linkID, nil) }
+
+// ExpireThen is Expire with then, when set, run once the barrier has
+// returned and before the hooks are told, when the link had expired: a
+// connection that closes itself as expired (a decision link's session
+// viewer, which the hooks would close as revoked) is closed so then, after
+// the link's mark and wait, as every other is.
+func (s *Store) ExpireThen(linkID string, then func()) bool {
+	s.mu.Lock()
+	l, ok := s.byID[linkID]
+	if !ok || l.Revoked || l.ExpiresAt == nil || s.now().Before(*l.ExpiresAt) {
+		s.mu.Unlock()
+		return false
+	}
+	tell := !l.lapsed
+	l.lapsed = true
+	s.mu.Unlock()
+	s.end(l.ID, l.acts, ErrExpired)
+	if then != nil {
+		then()
+	}
+	if tell {
+		s.tellExpired(l)
+	}
+	return true
+}
+
+// tellExpired tells l's hook that it expired.
+func (s *Store) tellExpired(l *Link) {
+	if l.RunID != "" {
+		if s.OnRevokeRun != nil {
+			s.OnRevokeRun(l.RunID, l.ID)
+		}
+	} else if s.OnRevoke != nil {
+		s.OnRevoke(l.SessionID, l.ID)
+	}
 }
 
 // ListBySession returns links for a session, newest first.
@@ -338,7 +569,7 @@ func (s *Store) DeleteSession(sessionID string, durableToo bool) []string {
 // Restore puts back a link kept on disk, under the hash of its token.
 func (s *Store) Restore(l Link, hash Hash) {
 	link := l
-	link.hash = hash
+	link.hash, link.acts, link.recent, link.ops = hash, newActs(), nil, nil
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.byHash[hash] = &link
@@ -436,6 +667,7 @@ func (s *Store) DeleteRun(runID string) []string {
 
 func copyLink(l *Link) *Link {
 	cp := *l
+	cp.recent, cp.acts, cp.ops = nil, nil, nil
 	if l.Group != nil {
 		g := l.Group.clone()
 		cp.Group = &g
@@ -531,7 +763,7 @@ func (s *Store) RevokeGroup(owner, linkID string) (found, revoked bool) {
 	return s.revoke(linkID, func(l *Link) bool {
 		runID = l.RunID
 		return l.Group != nil && l.Owner == owner
-	}, func() {
+	}, true, func() {
 		if s.OnRevokeRun != nil {
 			s.OnRevokeRun(runID, linkID)
 		}
