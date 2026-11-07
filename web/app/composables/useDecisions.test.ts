@@ -137,17 +137,58 @@ describe('the decisions store', () => {
     expect(s.reads).toHaveLength(4)
   })
 
-  it('tells the watchers which decision changed, and null when the stream came back or is down', () => {
+  // Codex's round 2 on #719: the read under way failed after an event had asked for another, and the one asked was never made; with the
+  // stream connected nothing else reads, so an open decision stayed missing from Needs you and the palette.
+  it('reads again after a read that failed when an event came meanwhile, and keeps what was read before it', async () => {
+    const s = server()
+    s.now.push(decision('dr-1', 'open', '2026-11-07T10:00:00Z'))
+    const live = new DecisionsLive()
+    let fail = false
+    live.attach({ list: (state, after) => (fail ? Promise.reject(new Error('the server is busy')) : s.list(state, after)) })
+    const first = live.read()
+    await s.drain()
+    await first
+    expect(live.open().map((d) => d.id)).toEqual(['dr-1'])
+    // A gate opens: its event reads, and that read fails; a second event comes while it is under way.
+    s.now.push(decision('dr-2', 'open', '2026-11-07T10:01:00Z'))
+    fail = true
+    live.stream('decision', ev('dr-2'))
+    fail = false
+    live.stream('decision', ev('dr-2'))
+    // The failure comes first (no read is held for it); then the read asked meanwhile.
+    await new Promise((r) => setTimeout(r, 0))
+    expect(s.held).toHaveLength(2)
+    await s.drain()
+    expect(live.open().map((d) => d.id)).toEqual(['dr-1', 'dr-2'])
+    expect(live.error).toBe('')
+  })
+
+  it('says a read that failed, and keeps what was read before it', async () => {
+    const s = server()
+    s.now.push(decision('dr-1', 'open', '2026-11-07T10:00:00Z'))
+    const live = new DecisionsLive()
+    let fail = false
+    live.attach({ list: (state, after) => (fail ? Promise.reject(new Error('the server is busy')) : s.list(state, after)) })
+    const first = live.read()
+    await s.drain()
+    await first
+    fail = true
+    await live.read()
+    expect(live.error).toBe('the server is busy')
+    expect(live.open().map((d) => d.id)).toEqual(['dr-1'])
+  })
+
+  it('tells the watchers which decision changed, and null when the stream came back (restarted) or is down', () => {
     const live = new DecisionsLive()
     const told: Array<string | null> = []
-    const stop = live.subscribe((e) => told.push(e ? e.id : null))
+    const stop = live.subscribe((e, restarted) => told.push(e ? e.id : restarted ? 'restarted' : null))
     live.stream('decision', ev('dr-7'))
     live.stream('snapshot', [])
     live.down()
     live.stream('session', { id: 's1' })
     stop()
     live.stream('decision', ev('dr-8'))
-    expect(told).toEqual(['dr-7', null, null])
+    expect(told).toEqual(['dr-7', 'restarted', null])
     expect(asDecisionEvent({ id: 'dr-7', run: RUN, state: 'open', rev: 2 })).toEqual({ id: 'dr-7', run: RUN, state: 'open', rev: 2 })
     expect(asDecisionEvent({ id: 'dr-7', run: RUN, state: 'open' })).toBeNull()
   })
@@ -160,30 +201,46 @@ describe("the card's record", () => {
 
   it('keeps the newer revision when a write answers after a read of a newer one', () => {
     const v = new DecisionRecordView()
-    expect(v.read('dr-7', 'dr-7', { decision: at(1, 'open') })).toBe(true)
+    expect(v.read(v.generation, 'dr-7', 'dr-7', { decision: at(1, 'open') })).toBe(true)
     // The event of the other tab's answer read the applied record; the comment's reply, sent at rev 1, answers with rev 2 after it.
-    expect(v.read('dr-7', 'dr-7', { decision: at(4, 'applied') })).toBe(true)
+    expect(v.read(v.generation, 'dr-7', 'dr-7', { decision: at(4, 'applied') })).toBe(true)
     expect(v.write('dr-7', { ...at(2, 'open'), history: undefined })).toBe(false)
     expect([v.decision?.rev, v.decision?.state]).toEqual([4, 'applied'])
   })
 
   it('keeps the newer revision when a read answers after a write of a newer one', () => {
     const v = new DecisionRecordView()
-    v.read('dr-7', 'dr-7', { decision: at(1, 'open') })
+    v.read(v.generation, 'dr-7', 'dr-7', { decision: at(1, 'open') })
     // The answer's reply (rev 2) came first; a read started before it answers with rev 1.
     expect(v.write('dr-7', { ...at(2, 'answered'), history: undefined })).toBe(true)
     expect(v.decision?.history).toEqual(at(1, 'open').history)
-    expect(v.read('dr-7', 'dr-7', { decision: at(1, 'open') })).toBe(false)
+    expect(v.read(v.generation, 'dr-7', 'dr-7', { decision: at(1, 'open') })).toBe(false)
     expect([v.decision?.rev, v.decision?.state]).toEqual([2, 'answered'])
     // A read of the same revision fills what the write's reply left out.
-    expect(v.read('dr-7', 'dr-7', { decision: at(2, 'answered') })).toBe(true)
+    expect(v.read(v.generation, 'dr-7', 'dr-7', { decision: at(2, 'answered') })).toBe(true)
     expect(v.decision?.history).toHaveLength(1)
   })
 
   it("drops a read of another decision than the one asked for now, and a write's reply of another", () => {
     const v = new DecisionRecordView()
-    expect(v.read('dr-7', 'dr-8', { decision: at(1, 'open') })).toBe(false)
+    expect(v.read(v.generation, 'dr-7', 'dr-8', { decision: at(1, 'open') })).toBe(false)
     expect(v.write('dr-8', at(1, 'open'))).toBe(false)
     expect(v.decision).toBeNull()
+  })
+
+  // Codex's round 2 on #719: a store restored from a backup answers below the revision shown; after the stream comes back (reset) the
+  // next read is taken whatever its revision, a read asked before the reset is dropped, and so is a write's reply until that read.
+  it('takes the next read whatever its revision after a reset, and drops what was asked before it', () => {
+    const v = new DecisionRecordView()
+    v.read(v.generation, 'dr-7', 'dr-7', { decision: at(5, 'applied') })
+    const before = v.generation
+    v.reset()
+    expect(v.read(before, 'dr-7', 'dr-7', { decision: at(6, 'applied') })).toBe(false)
+    expect(v.write('dr-7', { ...at(6, 'applied'), history: undefined })).toBe(false)
+    expect(v.read(v.generation, 'dr-7', 'dr-7', { decision: at(1, 'open') })).toBe(true)
+    expect([v.decision?.rev, v.decision?.state]).toEqual([1, 'open'])
+    // Ordered by revision again from there.
+    expect(v.read(v.generation, 'dr-7', 'dr-7', { decision: at(0, 'open') })).toBe(false)
+    expect(v.write('dr-7', { ...at(2, 'answered'), history: undefined })).toBe(true)
   })
 })

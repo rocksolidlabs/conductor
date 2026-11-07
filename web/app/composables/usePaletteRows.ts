@@ -7,7 +7,7 @@ import type { LaunchPrefill } from '~/composables/useLaunchModal'
 import { sameQuestions } from '~/utils/needsCursor'
 import { rowActions, sessionTarget, type Action } from '~/utils/actions'
 import { hostedReason } from '~/utils/clone'
-import { answerRows, mirroringSessions, oneRowPerDecision, rowDecision, runRuns } from '~/utils/decisions'
+import { answerRows, cutNotice, mirroringSessions, oneRowPerDecision, rowDecision, runRuns } from '~/utils/decisions'
 import { isActive, isEnded, needingInput, noReply, offeredChoices } from '~/utils/attention'
 import type { FeedEntry } from '~/utils/events'
 import { joinedDot, joinedPath } from '~/utils/joined'
@@ -879,7 +879,7 @@ export function usePaletteRows(ctx: PaletteContext) {
   }
   function decisionItems(): PaletteItem[] {
     const mirrored = new Map([...mirroringSessions(attention.sessions.value, liveDecisions())].map(([sid, d]) => [d, sid]))
-    return answerRows(
+    const rows: PaletteItem[] = answerRows(
       liveDecisions(),
       (id) => decisionModal.open(id),
       (id) => {
@@ -887,6 +887,10 @@ export function usePaletteRows(ctx: PaletteContext) {
         return sid ? attention.sessions.value.find((s) => s.id === sid)?.name : undefined
       },
     )
+    // The store's list is cut (Codex's round 2 on #719): said by a row of its own, whether or not a row of the list read is here.
+    const cut = cutNotice(decisions.cut.value, rows.length)
+    if (cut) rows.push({ key: 'decisions-cut', label: cut, detail: 'Enter opens Dispatch', icon: 'i-lucide-info', run: () => go('/dispatch') })
+    return rows
   }
 
   // ---------------------------------------------------------------------------

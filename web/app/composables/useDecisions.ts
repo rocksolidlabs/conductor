@@ -1,6 +1,7 @@
 import type { DecisionEvent } from '~/utils/protocol'
 import type { Decision, DecisionRef } from '~/utils/decisions'
-import { isDecisionId, replaces } from '~/utils/decisions'
+import { isDecisionId, replaces, runHeldOf } from '~/utils/decisions'
+import type { RunInfo } from './useSessions'
 
 /**
  * The durable decisions the operator has before them (Program item DR1, docs/plans/decisions.md, "web/app"): the open and answered
@@ -42,8 +43,54 @@ export async function readAll(reads: DecisionReads, state: 'open' | 'answered', 
   return { decisions: out, cut: true }
 }
 
-/** What a page that shows decisions is told: a decision changed (`e`), or the stream came back or is down (null: read it all again). */
-export type DecisionWatcher = (e: DecisionEvent | null) => void
+/**
+ * What a page that shows decisions is told: a decision changed (`e`), or the stream came back or is down (null: read it all again);
+ * `restarted` when the stream came back (its `snapshot`), which may follow a store restored from a backup.
+ */
+export type DecisionWatcher = (e: DecisionEvent | null, restarted?: boolean) => void
+
+/**
+ * The one rule every reader of decisions keeps (the store's list, the ticket page's, the card's record; Codex's round 2 on #719): one
+ * read in flight and at most one queued. A read asked while one is under way is made once after it, so a burst of events reads twice at
+ * most and the last read always starts after the last ask; the replies therefore come back in the order the reads were made, and a
+ * reply is never older than one applied before it, whatever revision it carries. A read that fails ends only itself (`failed` is told):
+ * one asked meanwhile is still made, since the event that asked for it may be the only one that comes.
+ */
+export class SerialReads {
+  private inflight: Promise<void> | null = null
+  private again = false
+  constructor(
+    private readonly once: () => Promise<void>,
+    private readonly failed: (e: Error) => void = () => {},
+  ) {}
+
+  /** Asks for a read: made now, or once after the one under way. Resolves when the reads it waits for are done; never rejects. */
+  run(): Promise<void> {
+    if (this.inflight) {
+      this.again = true
+      return this.inflight
+    }
+    this.inflight = (async () => {
+      try {
+        do {
+          this.again = false
+          try {
+            await this.once()
+          } catch (e) {
+            try {
+              this.failed(e as Error)
+            } catch {
+              /* a failure's report never stops the read queued after it */
+            }
+          }
+        } while (this.again)
+      } finally {
+        this.inflight = null
+      }
+    })()
+    return this.inflight
+  }
+}
 
 export class DecisionsLive {
   /** The open and answered decisions, oldest first. */
@@ -55,8 +102,13 @@ export class DecisionsLive {
   /** The pages' counter: bumped after every change of the store. */
   changed: () => void = () => {}
   private reads: DecisionReads | null = null
-  private inflight: Promise<void> | null = null
-  private again = false
+  private readonly serial = new SerialReads(
+    () => this.once(),
+    (e) => {
+      this.error = e.message
+      this.changed()
+    },
+  )
   private watchers = new Set<DecisionWatcher>()
 
   attach(r: DecisionReads) {
@@ -81,7 +133,7 @@ export class DecisionsLive {
       this.tell(e)
     } else if (event === 'snapshot') {
       void this.read()
-      this.tell(null)
+      this.tell(null, true)
     }
   }
 
@@ -91,46 +143,31 @@ export class DecisionsLive {
     this.tell(null)
   }
 
-  private tell(e: DecisionEvent | null) {
+  private tell(e: DecisionEvent | null, restarted = false) {
     for (const w of this.watchers) {
       try {
-        w(e)
+        w(e, restarted)
       } catch {
         /* a page's watcher never stops the others */
       }
     }
   }
 
-  /**
-   * Reads the open and the answered decisions. One read at a time: one asked while another is under way is made once after it, so a
-   * burst of events reads twice at most and the last read always starts after the last event.
-   */
+  /** Reads the open and the answered decisions, one read at a time (SerialReads): a read that fails leaves what was read before. */
   read(): Promise<void> {
     if (!this.reads) return Promise.resolve()
-    if (this.inflight) {
-      this.again = true
-      return this.inflight
-    }
+    return this.serial.run()
+  }
+
+  private async once() {
     const reads = this.reads
-    this.inflight = (async () => {
-      try {
-        do {
-          this.again = false
-          const [open, answered] = await Promise.all([readAll(reads, 'open'), readAll(reads, 'answered')])
-          this.decisions = [...open.decisions, ...answered.decisions].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
-          this.cut = open.cut || answered.cut
-          this.loaded = true
-          this.error = ''
-          this.changed()
-        } while (this.again)
-      } catch (e) {
-        this.error = (e as Error).message
-        this.changed()
-      } finally {
-        this.inflight = null
-      }
-    })()
-    return this.inflight
+    if (!reads) return
+    const [open, answered] = await Promise.all([readAll(reads, 'open'), readAll(reads, 'answered')])
+    this.decisions = [...open.decisions, ...answered.decisions].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+    this.cut = open.cut || answered.cut
+    this.loaded = true
+    this.error = ''
+    this.changed()
   }
 
   /** The open ones. */
@@ -193,15 +230,27 @@ export function useDecisionModal() {
 /**
  * The record a card shows, ordered by the record's revision (Codex's round 1 on #719): a read's or a write's reply replaces it only
  * when it is of the decision shown and no older than it (`replaces`), so a reply delayed past a newer one never brings an older
- * record back, whichever of a read and a write answers last. A read of another decision than the one now asked for is dropped.
+ * record back, whichever of a read and a write answers last. A read of another decision than the one now asked for is dropped. The
+ * reads come one at a time (SerialReads), so a read's reply of the same revision (a continuation names another run, an evidence's
+ * resolution changed) is always the later one and is taken (Codex's round 2).
+ *
+ * The stream come back (Codex's round 2): the store may have been restored from a backup whose revisions are below the one shown, so
+ * `reset` starts a new generation, as DispatchOrder.reset does on the same `snapshot`. A read asked before it is dropped, the next read is taken
+ * whatever its revision, and a write's reply is dropped until that read is taken (the write's own event reads it again).
  */
 export class DecisionRecordView {
   decision: Decision | null = null
   refs: DecisionRef[] = []
+  /** Bumped by `reset` and `clear`: a read asked in an earlier generation is dropped. */
+  generation = 0
+  /** Since `reset`, no read was taken: the record shown is not ordered against the store's revisions until one is. */
+  private restored = false
 
-  /** A read's reply, the record whole; false when it was dropped. */
-  read(asked: string, now: string, r: { decision: Decision; refs?: DecisionRef[] }): boolean {
-    if (asked !== now || r.decision.id !== now || !replaces(this.decision, r.decision, true)) return false
+  /** A read's reply, the record whole, asked in generation `gen`; false when it was dropped. */
+  read(gen: number, asked: string, now: string, r: { decision: Decision; refs?: DecisionRef[] }): boolean {
+    if (gen !== this.generation || asked !== now || r.decision.id !== now) return false
+    if (!this.restored && !replaces(this.decision, r.decision, true)) return false
+    this.restored = false
     this.decision = r.decision
     this.refs = r.refs ?? []
     return true
@@ -209,13 +258,22 @@ export class DecisionRecordView {
 
   /** A write's reply (the record without its history and responses, which the shown one's fill); false when it was dropped. */
   write(now: string, d: Decision): boolean {
-    if (d.id !== now || !replaces(this.decision, d, false)) return false
+    if (this.restored || d.id !== now || !replaces(this.decision, d, false)) return false
     const same = this.decision?.id === d.id
     this.decision = { ...d, history: d.history ?? (same ? this.decision?.history : undefined), responses: d.responses ?? (same ? this.decision?.responses : undefined) }
     return true
   }
 
+  /** A new generation for a store that may have been restored: what is shown stays until the next read replaces it, whatever its revision. */
+  reset() {
+    this.generation++
+    this.restored = this.decision !== null
+  }
+
+  /** Another decision is asked for: nothing is shown, and a read asked before is dropped. */
   clear() {
+    this.generation++
+    this.restored = false
     this.decision = null
     this.refs = []
   }
@@ -223,8 +281,9 @@ export class DecisionRecordView {
 
 /**
  * One decision whole (`GET /api/decisions/{id}`, with its evidence's resolutions), read when the id is set, again on its own `decision`
- * event and when the stream comes back, and after each of the card's writes (`read`). What is shown is the newest revision any reply
- * brought (DecisionRecordView).
+ * event, when the stream comes back (a new generation: DecisionRecordView.reset) and on its fallback's cadence while it is down, and
+ * after each of the card's writes
+ * (`read`). The reads come one at a time (SerialReads); what is shown is what DecisionRecordView takes.
  */
 export function useDecisionRecord(id: () => string) {
   const { request } = useApi()
@@ -233,43 +292,78 @@ export function useDecisionRecord(id: () => string) {
   const refs = ref<DecisionRef[]>([])
   const error = ref('')
   const loading = ref(false)
-  let seq = 0
   function show() {
     decision.value = view.decision
     refs.value = view.refs
   }
-  async function read(): Promise<void> {
+  const reads = new SerialReads(async () => {
     const d = id()
-    const mine = ++seq
-    if (!d) {
-      view.clear()
-      show()
-      error.value = ''
-      return
-    }
-    if (view.decision && view.decision.id !== d) {
-      view.clear()
-      show()
-    }
+    if (!d) return
+    const gen = view.generation
     loading.value = true
     try {
       const r = await request<{ decision: Decision; refs?: DecisionRef[] }>(`/api/decisions/${encodeURIComponent(d)}`)
-      if (view.read(d, id(), r)) show()
-      if (mine === seq) error.value = ''
+      if (view.read(gen, d, id(), r)) show()
+      if (d === id()) error.value = ''
     } catch (e) {
-      if (mine === seq) error.value = (e as Error).message
+      if (d === id()) error.value = (e as Error).message
     } finally {
-      if (mine === seq) loading.value = false
+      loading.value = false
     }
+  })
+  function read(): Promise<void> {
+    return reads.run()
   }
   /** Takes a decision a write answered with, unless a newer revision is shown already. */
   function apply(d: Decision) {
     if (view.write(id(), d)) show()
   }
-  const stop = decisionsLive().subscribe((e) => {
+  const stop = decisionsLive().subscribe((e, restarted) => {
+    if (restarted) view.reset()
     if (!e || e.id === id()) void read()
   })
-  watch(id, () => void read(), { immediate: true })
+  watch(
+    id,
+    (d) => {
+      if (view.decision?.id !== d) {
+        view.clear()
+        show()
+        error.value = ''
+      }
+      if (d) void read()
+    },
+    { immediate: true },
+  )
   onBeforeUnmount(stop)
   return { decision, refs, error, loading, read, apply }
+}
+
+/**
+ * Whether the run that holds a decision runs here now, for its card (runHeldOf): the live store's run while the store holds it, else the
+ * run read through its own route (`refreshRun`: a record interrupted at a restart, which the live store leaves out, or null for one the
+ * server does not have; Codex's round 1 on #719); undefined while neither is known. What was read stands only while the store does not
+ * hold the run (Codex's round 2): the store taking it forgets the read, the store letting it go (a restart that left the run a record)
+ * reads it again, and the reply of a read asked before either is dropped, so a run read as running before a restart is never what the
+ * card judges by after it.
+ */
+export function useDecisionRun(run: () => string) {
+  const live = useAttention()
+  const read = ref<{ id: string; run: RunInfo | null } | null>(null)
+  let asked = 0
+  watch(
+    () => [run(), !!live.runOf(run())] as const,
+    async ([id, held]) => {
+      const mine = ++asked
+      read.value = null
+      if (held || !id) return
+      try {
+        const r = await live.refreshRun(id)
+        if (mine === asked) read.value = { id, run: r }
+      } catch {
+        /* not known: the card says what it can without it */
+      }
+    },
+    { immediate: true },
+  )
+  return computed(() => runHeldOf(live.runOf(run()) ?? (read.value?.id === run() ? read.value.run : undefined)))
 }

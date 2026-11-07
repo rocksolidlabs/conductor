@@ -479,6 +479,16 @@ export function unmirrored<D extends Pick<Decision, 'id' | 'state' | 'run'>>(dec
   return decisions.filter((d) => d.state === 'open' && !shown.has(d.id) && runs(d.run))
 }
 
+/**
+ * What Needs you says when the store's list of decisions is cut (more open or answered than it reads, useDecisions' `cut`), or '' when
+ * it is whole. Said whether or not a row of it is shown (Codex's round 2 on #719): the open decisions read may all be of stopped runs
+ * or mirrored, and the ones past the cut, a running gate's among them, are still open.
+ */
+export function cutNotice(cut: boolean, shown: number): string {
+  if (!cut) return ''
+  return shown ? 'More decisions are open than these: the oldest are on their run and ticket pages.' : 'More decisions are open than could be read here: the oldest are on their run and ticket pages.'
+}
+
 /** Whether a run, as the live store holds it, runs: the server holds it, and it is not stopped or continued by another. */
 export function runRuns(r: { stoppedAt?: string; record?: boolean; resumedBy?: string } | undefined): boolean {
   return !!r && !r.stoppedAt && !r.record && !r.resumedBy

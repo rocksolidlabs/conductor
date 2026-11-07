@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import type { Decision, DecisionRef } from '~/utils/decisions'
-import type { RunInfo } from '~/composables/useSessions'
-import { acceptedAnswer, approverWords, askedWhere, decisionWords, historyWords, optionsOf, recommended, runHeldOf, subjectWords } from '~/utils/decisions'
+import { acceptedAnswer, approverWords, askedWhere, decisionWords, historyWords, optionsOf, recommended, subjectWords } from '~/utils/decisions'
 import { relativeTime } from '~/utils/sessions'
 
 /**
@@ -14,28 +13,8 @@ import { relativeTime } from '~/utils/sessions'
  */
 const props = defineProps<{ decision: Decision; refs?: readonly DecisionRef[]; now: number }>()
 
-const live = useAttention()
-/**
- * The run that holds it, read for the card when the live store does not hold it (Codex's round 1 on #719): a run interrupted at a
- * restart is a record the live store leaves out, so the store's silence is read through the run's own route (`record`), or null for
- * one the server does not have.
- */
-const read = ref<{ id: string; run: RunInfo | null } | null>(null)
-watch(
-  () => [props.decision.run, !!live.runOf(props.decision.run)] as const,
-  async ([id, held]) => {
-    if (held || read.value?.id === id) return
-    try {
-      const run = await live.refreshRun(id)
-      if (props.decision.run === id) read.value = { id, run }
-    } catch {
-      /* not known: the card says what it can without it */
-    }
-  },
-  { immediate: true },
-)
 /** Whether the run that holds it runs here now: an answer recorded on a run that does not waits for it to be continued. */
-const runHeld = computed(() => runHeldOf(live.runOf(props.decision.run) ?? (read.value?.id === props.decision.run ? read.value.run : undefined)))
+const runHeld = useDecisionRun(() => props.decision.run)
 const words = computed(() => decisionWords(props.decision, { runHeld: runHeld.value }))
 /** The accepted answer, once there is one: the option picked, the words, the rationale and who. */
 const answer = computed(() => acceptedAnswer(props.decision))

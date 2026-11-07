@@ -4,6 +4,7 @@ import {
   acceptedAnswer,
   answerRows,
   confirmAuthorizes,
+  cutNotice,
   mirroringSessions,
   oneRowPerDecision,
   replaces,
@@ -199,6 +200,17 @@ describe("Needs you's and the palette's decisions", () => {
     expect(runRuns({ record: true })).toBe(false)
     expect(runRuns({ resumedBy: 'next-00000000' })).toBe(false)
     expect(runRuns(undefined)).toBe(false)
+  })
+
+  // Codex's round 2 on #719: the newest thousand open decisions all of stopped runs, an older running gate's past the cut. Needs you
+  // lists none of what was read, and still says the list is cut.
+  it('says the list is cut even when none of the decisions read is listed', () => {
+    const stopped = Array.from({ length: 3 }, (_, i) => decision({ id: `dr-${i + 10}`, run: 'stopped-00000000', state: 'open' }))
+    const shown = unmirrored(stopped, [], (id) => id === RUN)
+    expect(shown).toEqual([])
+    expect(cutNotice(true, shown.length)).toBe('More decisions are open than could be read here: the oldest are on their run and ticket pages.')
+    expect(cutNotice(true, 2)).toBe('More decisions are open than these: the oldest are on their run and ticket pages.')
+    expect(cutNotice(false, 0)).toBe('')
   })
 
   it("gives the palette a row per open decision, oldest first, Enter opening its card", () => {
