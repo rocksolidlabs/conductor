@@ -366,3 +366,74 @@ func Show(ctx context.Context, dir, rev, path string) (content []byte, truncated
 	}
 	return b, false, nil
 }
+
+// RepoOf is dir's working tree's top (--show-toplevel) and its
+// repository's identity: its common git directory (--git-common-dir),
+// made absolute, one for every linked worktree of the repository. One
+// rev-parse; ErrNotRepo outside a repository.
+func RepoOf(ctx context.Context, dir string) (top, common string, err error) {
+	out, err := Run(ctx, dir, "rev-parse", "--show-toplevel", "--git-common-dir")
+	if err != nil {
+		return "", "", err
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 {
+		return "", "", fmt.Errorf("git rev-parse: %d lines, not 2", len(lines))
+	}
+	return repoLines(dir, lines[0], lines[1])
+}
+
+// repoLines checks rev-parse's top and makes its common directory
+// absolute (git before 2.31 answers it relative to dir) and, as git
+// answers the top, with its links resolved: a relative one joined to dir
+// keeps dir's spelling (macOS's /var for /private/var), and a repository's
+// identity is compared as a path.
+func repoLines(dir, top, common string) (string, string, error) {
+	if !filepath.IsAbs(top) || common == "" {
+		return "", "", fmt.Errorf("git rev-parse: an unexpected top %q", top)
+	}
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(dir, common)
+	}
+	if real, err := filepath.EvalSymlinks(common); err == nil {
+		common = real
+	}
+	return top, filepath.Clean(common), nil
+}
+
+// Revision is what a folder is at: its working tree's top, its
+// repository's common git directory, the commit HEAD names (a full id)
+// and the branch checked out ("" when HEAD is detached).
+type Revision struct {
+	Top, Common, Commit, Branch string
+}
+
+// RevisionOf reads dir's Revision in one rev-parse, so that the four
+// describe one moment. A repository with no commit yet answers its top
+// and common directory alone; ErrNotRepo outside a repository.
+func RevisionOf(ctx context.Context, dir string) (Revision, error) {
+	out, err := Run(ctx, dir, "rev-parse", "--show-toplevel", "--git-common-dir", "HEAD", "--abbrev-ref", "HEAD")
+	if errors.Is(err, ErrNotRepo) || ctx.Err() != nil {
+		return Revision{}, err
+	}
+	if err != nil {
+		top, common, rerr := RepoOf(ctx, dir)
+		if rerr != nil {
+			return Revision{}, err
+		}
+		return Revision{Top: top, Common: common}, nil
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 4 || !isObjectID(lines[2]) {
+		return Revision{}, fmt.Errorf("git rev-parse: an unexpected answer of %d lines", len(lines))
+	}
+	top, common, err := repoLines(dir, lines[0], lines[1])
+	if err != nil {
+		return Revision{}, err
+	}
+	rev := Revision{Top: top, Common: common, Commit: lines[2], Branch: lines[3]}
+	if rev.Branch == "HEAD" {
+		rev.Branch = ""
+	}
+	return rev, nil
+}
