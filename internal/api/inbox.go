@@ -654,7 +654,14 @@ func (rd *inboxRead) taskItem(run crew.Run, task crew.TaskState) (*inboxItem, bo
 		it.block("task:" + run.ID + "/" + d)
 	}
 	it.block("run:" + run.ID)
-	it.Blocking.Words = fitText(fmt.Sprintf("%d tasks wait for %s, and the run does not end until it is decided", len(deps), task.ID), 500)
+	waits := fmt.Sprintf("%d tasks wait", len(deps))
+	switch len(deps) {
+	case 0:
+		waits = "No task waits"
+	case 1:
+		waits = "1 task waits"
+	}
+	it.Blocking.Words = fitText(fmt.Sprintf("%s for %s, and the run does not end until it is decided", waits, task.ID), 500)
 	it.addRef("run:"+run.ID, "the run "+run.Name)
 	it.addRef(ref, "the task "+task.ID)
 	if a := task.Attempt; a != nil {

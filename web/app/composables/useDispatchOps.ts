@@ -24,6 +24,8 @@ export interface DispatchOpOptions<R> {
   refused?: (receipt: DispatchReceipt) => void
   /** Throw a failure to the caller (a dialog that shows it in place) instead of a toast. */
   raise?: boolean
+  /** The op id, when the caller minted it and kept it before sending (the decision page's recent list tracks it); else one is minted. */
+  opId?: string
 }
 
 /** What became of several tickets' edits: the keys done (or holding the value already, which needs no operation), and the others with why. */
@@ -76,7 +78,7 @@ export function useDispatchOps(gate: DispatchOrder) {
   /** Sends one operation; resolves to its reply, or null when it failed (said in a toast, unless `raise` throws it). */
   async function run<R extends { receipt: DispatchReceipt }>(send: (body: OpBody) => Promise<R>, o: DispatchOpOptions<R>): Promise<R | null> {
     const n = gate.ask()
-    const body: OpBody = { opId: mintCommandId() }
+    const body: OpBody = { opId: o.opId ?? mintCommandId() }
     if (o.expectedRev) body.expectedRev = o.expectedRev
     const name = identity.name.value.trim()
     if (name) body.byName = name

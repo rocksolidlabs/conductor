@@ -2287,6 +2287,7 @@ func (e *Engine) Get(runID string) (Run, bool) {
 	var out Run
 	if ok {
 		out = r.snapshot(false, true)
+		e.withCommands(r, &out)
 	}
 	e.mu.Unlock()
 	if !ok {
@@ -2317,6 +2318,7 @@ func (e *Engine) List() []Run {
 	out := make([]Run, 0, len(e.order))
 	for i := len(e.order) - 1; i >= 0; i-- {
 		out = append(out, e.order[i].snapshot(false, false))
+		e.withCommands(e.order[i], &out[len(out)-1])
 	}
 	e.mu.Unlock()
 	for i := range out {
@@ -2375,6 +2377,7 @@ func (e *Engine) GetWithDiffs(ctx context.Context, runID string) (Run, bool) {
 	wg.Wait()
 	e.mu.Lock()
 	out := r.snapshot(true, true)
+	e.withCommands(r, &out)
 	e.mu.Unlock()
 	e.refresh(&out)
 	return out, true

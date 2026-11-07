@@ -49,23 +49,24 @@ const records = (r?: ReturnType<typeof run>, s?: Pick<SessionInfo, 'id' | 'name'
 
 describe("a decision card's controls from the live record", () => {
   it('offers a failed work task with a submitted result Retry and Accept anyway, and no Cancel, with the revision the turn read', () => {
-    const c = decisionControls(`task:${RUN}/build`, '7', records(run([task({ state: 'failed', attempts: 3, attempt: { n: 3, state: 'failed', result: 'abc' } })])))
+    const c = decisionControls(`task:${RUN}/build`, '7', records(run([task({ state: 'failed', attempts: 3, attempt: { n: 3, state: 'failed', result: 'abc' }, commands: ['retry', 'accept'] })])))
     expect(c).toMatchObject({ kind: 'task', run: RUN, task: 'build', commands: ['retry', 'accept'], expectedRevision: 7, to: `/runs/${RUN}?view=tasks&task=build` })
   })
 
-  it('offers a failed task without a submitted result Retry alone, and a failed review task no Accept anyway', () => {
-    expect(decisionControls(`task:${RUN}/build`, '7', records(run([task({ state: 'failed', attempts: 1, attempt: { n: 1, state: 'failed' } })])))).toMatchObject({ commands: ['retry'] })
-    expect(decisionControls(`task:${RUN}/build`, '7', records(run([task({ state: 'failed', kind: 'review', attempt: { n: 1, state: 'failed', result: 'abc' } })])))).toMatchObject({ commands: ['retry'] })
+  it('offers what the engine names on the task: a failed task without a submitted result Retry alone, a failed review with one Accept anyway too', () => {
+    expect(decisionControls(`task:${RUN}/build`, '7', records(run([task({ state: 'failed', attempts: 1, attempt: { n: 1, state: 'failed' }, commands: ['retry'] })])))).toMatchObject({ commands: ['retry'] })
+    expect(decisionControls(`task:${RUN}/build`, '7', records(run([task({ state: 'failed', kind: 'review', attempt: { n: 1, state: 'failed', result: 'abc' }, commands: ['retry', 'accept'] })])))).toMatchObject({ commands: ['retry', 'accept'] })
   })
 
   it('offers a blocked task Cancel and no Retry', () => {
-    const c = decisionControls(`task:${RUN}/docs`, '7', records(run([task({ id: 'docs', state: 'blocked', reason: 'build will not succeed' })])))
+    const c = decisionControls(`task:${RUN}/docs`, '7', records(run([task({ id: 'docs', state: 'blocked', reason: 'build will not succeed', commands: ['cancel'] })])))
     expect(c).toMatchObject({ kind: 'task', task: 'docs', commands: ['cancel'], expectedRevision: 7 })
   })
 
-  it("follows the run page's rules: nothing that changes a stopped run, a record or a run continued", () => {
-    const failed = task({ state: 'failed', attempt: { n: 1, state: 'failed', result: 'abc' } })
-    for (const p of [{ stoppedAt: 'x' }, { record: true }, { resumedBy: 'next' }]) {
+  it("follows the run page's rules: nothing that changes a record or a run continued; a stopped run's task as the engine names it", () => {
+    const failed = task({ state: 'failed', attempt: { n: 1, state: 'failed', result: 'abc' }, commands: ['retry', 'accept'] })
+    expect(decisionControls(`task:${RUN}/build`, '7', records(run([failed], { stoppedAt: 'x' })))).toMatchObject({ kind: 'task', commands: ['retry', 'accept'] })
+    for (const p of [{ record: true }, { resumedBy: 'next' }]) {
       const c = decisionControls(`task:${RUN}/build`, '7', records(run([failed], p)))
       expect(c).toMatchObject({ kind: 'task', commands: [] })
       expect(c.words).toBe('build is failed: nothing can be done to it from here now.')
@@ -75,10 +76,10 @@ describe("a decision card's controls from the live record", () => {
   })
 
   it('offers no command without the revision the turn read, and none for a task the page does not hold', () => {
-    const c = decisionControls(`task:${RUN}/build`, undefined, records(run([task({ state: 'failed' })])))
+    const c = decisionControls(`task:${RUN}/build`, undefined, records(run([task({ state: 'failed', commands: ['retry'] })])))
     expect(c).toMatchObject({ kind: 'task', commands: [], expectedRevision: 0 })
     expect(c.words).toContain('named no revision')
-    expect(decisionControls(`task:${RUN}/build`, '0', records(run([task({ state: 'failed' })])))).toMatchObject({ commands: [] })
+    expect(decisionControls(`task:${RUN}/build`, '0', records(run([task({ state: 'failed', commands: ['retry'] })])))).toMatchObject({ commands: [] })
     expect(decisionControls(`task:${RUN}/gone`, '7', records(run([])))).toMatchObject({ kind: 'none', to: `/runs/${RUN}?view=tasks&task=gone` })
     expect(decisionControls(`task:${RUN}/build`, '7', records())).toMatchObject({ kind: 'none' })
   })
