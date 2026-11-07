@@ -525,21 +525,20 @@ func (b *bkEnv) typedWait(t *testing.T, id, want string) string {
 
 // TestAnAgentAtAScreenNobodyKnowsDidNotStart: an agent that draws a
 // full-screen prompt no catalog entry knows (another program's sign-in, a
-// reworded screen) is an agent's screen like any other: once it is quiet
-// the request's line is typed into it, as for every agent (no recogniser
-// guesses at screens no pattern names; only the catalog's startup
-// questions get no key). Its agent then never calls the server, and the
-// turn is held only until its start bound (a third of its 15 minutes:
-// 5), on the desk's clock, far short of its deadline: it ends failed,
-// the agent did not start, with what its screen shows (its link left
-// out), charged the minutes it ran. The role is unavailable with those
-// words and a retry of its own, read from its records; a wake is
+// reworded screen), with no dialog's numbered choice on it, is not at its
+// prompt: its screen does not match its agent's prompt shape (Claude
+// Code's), so the request's line is never typed into it, nor its Enter
+// (#714). Its agent then never calls the server, and the turn is held only
+// until its start bound (a third of its 15 minutes: 5), on the desk's
+// clock, far short of its deadline: it ends failed, its screen not
+// recognised and its line not typed, with what its screen shows (its link
+// left out), charged the minutes it ran. The role is unavailable with
+// those words and a retry of its own, read from its records; a wake is
 // gathered, not fired, and a person's own request in the same state says
 // the same at the same bound instead of waiting out its minutes. At the
 // role's retry the batch kept fires, and once the agent reads that
 // request (it started) the role counts from 0 again and the bound no
-// longer applies. No pattern is involved: the bound is the fallback for
-// every screen.
+// longer applies. Nothing reaches the screen throughout.
 func TestAnAgentAtAScreenNobodyKnowsDidNotStart(t *testing.T) {
 	t.Parallel()
 	b := brakemanEnv(t, nil)
@@ -550,9 +549,8 @@ func TestAnAgentAtAScreenNobodyKnowsDidNotStart(t *testing.T) {
 	if !waitFor(30*time.Second, func() bool { return strings.Contains(strings.Join(l.ScreenLines(12), "\n"), "[ Sign in ]") }) {
 		t.Fatalf("the screen was never drawn: %q", l.ScreenLines(12))
 	}
-	// The screen went quiet and the request's line was typed into it, as
-	// into any agent's: the bound is counted only after that.
-	b.typedWait(t, id, "Brakeman request "+id+" (wake)")
+	// The screen went quiet and is not the agent's prompt: the line waits.
+	b.heldUnrecognised(t, id)
 	by, wait := b.startBy(t, id)
 	if wait != 5*time.Minute {
 		t.Fatalf("a 15-minute turn's start bound is %v, want a third of it", wait)
@@ -565,7 +563,7 @@ func TestAnAgentAtAScreenNobodyKnowsDidNotStart(t *testing.T) {
 	c.add(time.Second)
 	b.settle(t)
 	q := b.waitState(t, id, brakeman.StateFailed)
-	for _, want := range []string{"did not start in 5 minutes, no call to Conductor", "You are not signed in.", "[ Sign in ]", "[link]"} {
+	for _, want := range []string{"the agent's screen was not recognised", "its request's line was not typed in 5 minutes", "You are not signed in.", "[ Sign in ]", "[link]"} {
 		if !strings.Contains(q.Why, want) {
 			t.Fatalf("the turn's words lack %q: %+v", want, q)
 		}
@@ -590,14 +588,19 @@ func TestAnAgentAtAScreenNobodyKnowsDidNotStart(t *testing.T) {
 	if !waitFor(30*time.Second, func() bool { return strings.Contains(strings.Join(la.ScreenLines(12), "\n"), "[ Sign in ]") }) {
 		t.Fatalf("the screen was never drawn: %q", la.ScreenLines(12))
 	}
-	b.typedWait(t, ask, "Brakeman request "+ask+" (briefing)")
+	b.heldUnrecognised(t, ask)
 	by, _ = b.startBy(t, ask)
 	c.add(by.Sub(c.now()))
 	b.settle(t)
-	if q := b.waitState(t, ask, brakeman.StateFailed); !strings.Contains(q.Why, "did not start in 5 minutes") || !strings.Contains(q.Why, "You are not signed in.") {
+	if q := b.waitState(t, ask, brakeman.StateFailed); !strings.Contains(q.Why, "line was not typed in 5 minutes") || !strings.Contains(q.Why, "You are not signed in.") {
 		t.Fatalf("the person's request: %+v", q)
 	}
 	b.slotFree(t)
+	for _, req := range []string{id, ask} {
+		if got := b.typedInto(t, req); got != "" {
+			t.Fatalf("keys reached the screen: %q", got)
+		}
+	}
 	// A wake meanwhile is gathered, not fired; nor is the batch by the
 	// person's request.
 	b.desk.roleWake(crew.RoleWake{Source: crew.WakeTaskFailed, Subject: "task:run-1/lint", Key: "attempts 1", At: c.now()})
@@ -627,6 +630,143 @@ func TestAnAgentAtAScreenNobodyKnowsDidNotStart(t *testing.T) {
 	b.settle(t)
 	if q, _ := b.desk.st.Get(r.Request); !q.Open() {
 		t.Fatalf("a turn whose agent read its request was ended at the bound: %+v", q)
+	}
+}
+
+// TestAnUnknownDialogGetsNoLine: an agent that opens on a dialog no
+// catalog entry knows, a choice highlighted (bkDialogScript), is not at
+// its prompt: a person's turn types nothing into it, neither its line nor
+// the Enter that would pick the choice, and the engine notes once that the
+// line waits (crew.UnknownScreen). At the turn's start bound, on the
+// desk's clock, the turn ends failed with words saying the agent's screen
+// was not recognised and what it shows; still nothing has reached it. The
+// same turn against an agent at its prompt types its line
+// (TestTheLineIsTypedAtTheAgentsPrompt).
+func TestAnUnknownDialogGetsNoLine(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	c := b.fakeClock()
+	b.enable(t, "bkdialog", nil)
+	id := b.briefing(t)
+	b.launched(t, id)
+	b.heldUnrecognised(t, id)
+	if got := b.typedInto(t, id); got != "" {
+		t.Fatalf("keys reached the dialog: %q", got)
+	}
+	by, _ := b.startBy(t, id)
+	c.add(by.Sub(c.now()))
+	b.settle(t)
+	q := b.waitState(t, id, brakeman.StateFailed)
+	for _, want := range []string{"the agent's screen was not recognised", "its request's line was not typed", "Select a sign-in method", "1. Acme account with subscription"} {
+		if !strings.Contains(q.Why, want) {
+			t.Fatalf("the turn's words lack %q: %+v", want, q)
+		}
+	}
+	b.slotFree(t)
+	if got := b.typedInto(t, id); got != "" {
+		t.Fatalf("keys reached the dialog: %q", got)
+	}
+}
+
+// heldUnrecognised waits for the engine to note that the line of the turn
+// for request id waits at a screen not recognised as its agent's prompt
+// (crew.UnknownScreen): what the desk's words of the turn then say.
+func (b *bkEnv) heldUnrecognised(t *testing.T, id string) {
+	t.Helper()
+	sid, _, l := b.turnSession(t, id)
+	run := b.runOf(t, sid)
+	if !waitFor(30*time.Second, func() bool {
+		r, _ := b.srv.runs.Get(run)
+		return slices.ContainsFunc(r.Log, func(e session.ActivityEntry) bool { return strings.Contains(e.Message, crew.UnknownScreen) })
+	}) {
+		t.Fatalf("the engine never held the line: %q", l.ScreenLines(12))
+	}
+}
+
+// TestTheLineIsTypedAtTheAgentsPrompt: at its prompt, as Claude Code
+// 2.1.319 and Codex 0.163.0 draw it (bkPromptScript, bkCodexPromptScript),
+// each agent's screen matches its prompt shape: the request's line is
+// typed, and its Enter pressed.
+func TestTheLineIsTypedAtTheAgentsPrompt(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	for i, agent := range []string{"bkprompt", "bkcodexprompt"} {
+		b.enable(t, agent, nil)
+		ask := b.briefing(t)
+		if got := b.typedWait(t, ask, "\r"); !strings.HasPrefix(got, "Brakeman request "+ask+" (briefing): ") || !strings.HasSuffix(got, "\r") {
+			t.Fatalf("%s's terminal: %q", agent, got)
+		}
+		b.expect(t, "POST", "/api/brakeman/requests/"+ask+"/cancel", map[string]any{"opId": fmt.Sprintf("c-%d", i)}, http.StatusOK, "")
+		b.slotFree(t)
+	}
+}
+
+// TestATurnWhoseAgentNeverSettlesGetsNoLine: an agent whose readiness
+// wait gives up at its cap, every time it is asked (SetNotReadyForTest:
+// no clock and no output's pace decide it), at a screen that is its
+// prompt's very shape (bkPromptScript): a person's run would have its
+// prompt typed anyway, a Brakeman turn's line never is: the engine notes
+// the line waits at a screen not recognised, and at the turn's start
+// bound, on the desk's clock, the turn ends with words saying so. Nothing
+// reaches the agent's terminal. The wait gives up only once the agent has
+// drawn its prompt (Codex round 3 on #720): before, a screen still blank
+// would keep the line out by itself, and the clock advanced could stop
+// the agent before it made its terminal's record.
+func TestATurnWhoseAgentNeverSettlesGetsNoLine(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	gate := make(chan struct{})
+	b.srv.runs.SetNotReadyForTest(gate)
+	c := b.fakeClock()
+	b.enable(t, "bkprompt", nil)
+	id := b.briefing(t)
+	b.launched(t, id)
+	_, _, l := b.turnSession(t, id)
+	if !waitFor(30*time.Second, func() bool {
+		screen := strings.Join(l.ScreenLines(12), "\n")
+		return strings.Contains(screen, `Try "create a util logging.py that..."`) && strings.Contains(screen, "? for shortcuts")
+	}) {
+		t.Fatalf("the agent never drew its prompt: %q", l.ScreenLines(12))
+	}
+	if _, err := os.Stat(filepath.Join(b.root, "typed-"+id+".txt")); err != nil {
+		t.Fatalf("the agent drew its prompt with no record of its terminal: %v", err)
+	}
+	close(gate)
+	b.heldUnrecognised(t, id)
+	by, _ := b.startBy(t, id)
+	c.add(by.Sub(c.now()))
+	b.settle(t)
+	q := b.waitState(t, id, brakeman.StateFailed)
+	if !strings.Contains(q.Why, "the agent's screen was not recognised") || !strings.Contains(q.Why, "its request's line was not typed") {
+		t.Fatalf("the turn's words: %+v", q)
+	}
+	b.slotFree(t)
+	if got := b.typedInto(t, id); got != "" {
+		t.Fatalf("keys reached the agent: %q", got)
+	}
+}
+
+// TestClaudeCodesFirstRunScreensGetNoKey: Claude Code on an account
+// folder never used opens on its theme picker, then its login-method
+// screen (#659's third live check: the line's Enter picked a theme and a
+// login method, and a browser opened). Both are the catalog's startup
+// screens with no answers: a turn that meets either types nothing into
+// it and ends at once with the screen's own words, its login refused,
+// not at its start bound.
+func TestClaudeCodesFirstRunScreensGetNoKey(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	for agent, words := range map[string]string{"bktheme": "Choose the text style that looks best with your terminal", "bklogin": "Select login method:"} {
+		b.enable(t, agent, nil)
+		id := b.briefing(t)
+		q := b.waitState(t, id, brakeman.StateFailed)
+		if !strings.Contains(q.Why, "its login refused") || !strings.Contains(q.Why, words) || q.Reads != 0 {
+			t.Fatalf("%s's turn: %+v", agent, q)
+		}
+		b.slotFree(t)
+		if got := b.typedInto(t, id); got != "" {
+			t.Fatalf("keys reached %s's screen: %q", agent, got)
+		}
 	}
 }
 
@@ -774,41 +914,201 @@ func TestTheRecordOfATerminalCatchesOneKey(t *testing.T) {
 }
 
 // TestASaveWeighsOnlyWhatItChanged: the role unavailable because its
-// agent did not start (signed out at its sign-in screen) is left so by a
-// save that changes nothing, and by one that changes what cannot start it
-// (a grant, its visibility): same words, no request made. A save that
-// changes what the agent starts with (its model here; an account, an
-// agent) tries again: the batch kept fires.
+// agent did not start (signed out at its sign-in screen) is ended by any
+// save, one that changes nothing, one of what cannot start it (its
+// visibility) or one of what the agent starts with (its model), and the
+// save drops the batch the failed turn kept, carrying nothing (#715,
+// review round 3): the role is idle, its count of turns not started gone,
+// and past the old batch's window no request is made. The next wake
+// gathers afresh and fires.
 func TestASaveWeighsOnlyWhatItChanged(t *testing.T) {
 	t.Parallel()
-	b := brakemanEnv(t, nil)
-	c := b.background(t, "bksignin", nil)
-	id := b.failTask(t, c, "build")
-	b.waitState(t, id, brakeman.StateFailed)
-	before := b.waitRole(t, crew.RoleUnavailable)
-	b.slotFree(t)
 	for name, mod := range map[string]func(map[string]any){
 		"nothing":    func(map[string]any) {},
 		"visibility": func(cfg map[string]any) { cfg["visibility"].(map[string]any)["touched"] = false },
+		"the model":  func(cfg map[string]any) { cfg["model"] = "sonnet" },
 	} {
-		b.configure(t, mod)
-		b.roleSettle(t)
-		b.settle(t)
-		if r := b.ledgerRole(t); r.State != crew.RoleUnavailable || r.Why != before.Why || r.Reason != crew.ReasonStart || !r.RetryAt.Equal(before.RetryAt) {
-			t.Fatalf("a save of %s: %+v", name, r)
-		}
-		if page, _, _ := b.desk.st.List("", 10); len(page) != 1 {
-			t.Fatalf("a save of %s started a turn: %d requests", name, len(page))
-		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			b := brakemanEnv(t, nil)
+			c := b.background(t, "bksignin", nil)
+			id := b.failTask(t, c, "build")
+			b.waitState(t, id, brakeman.StateFailed)
+			if r := b.waitRole(t, crew.RoleUnavailable); r.Reason != crew.ReasonStart || r.Open == nil {
+				t.Fatalf("%+v", r)
+			}
+			b.slotFree(t)
+			b.configure(t, mod)
+			b.roleSettle(t)
+			if r := b.ledgerRole(t); r.State != crew.RoleIdle || r.Open != nil || r.Why != "" || r.Reason != "" || r.Tries != 0 {
+				t.Fatalf("after the save: %+v", r)
+			}
+			c.add(time.Duration(brakeman.MinWindowSeconds) * time.Second)
+			b.roleSettle(t)
+			b.settle(t)
+			if page, _, _ := b.desk.st.List("", 10); len(page) != 1 {
+				t.Fatalf("the batch kept fired after the save: %d requests", len(page))
+			}
+			b.desk.roleWake(crew.RoleWake{Source: crew.WakeTaskFailed, Subject: "task:run-1/lint", Key: "attempts 1", At: c.now()})
+			c.add(time.Duration(brakeman.MinWindowSeconds) * time.Second)
+			if !waitFor(30*time.Second, func() bool {
+				b.desk.role.Poke()
+				page, _, _ := b.desk.st.List("", 10)
+				return len(page) == 2
+			}) {
+				t.Fatalf("the next wake did not fire: %+v", b.ledgerRole(t))
+			}
+		})
 	}
-	b.configure(t, func(cfg map[string]any) { cfg["model"] = "sonnet" })
-	c.add(time.Duration(brakeman.MinWindowSeconds) * time.Second)
-	if !waitFor(30*time.Second, func() bool {
-		b.desk.role.Poke()
-		page, _, _ := b.desk.st.List("", 10)
-		return len(page) == 2
-	}) {
-		t.Fatalf("a save of the model did not try again: %+v", b.ledgerRole(t))
+}
+
+// TestASaveOfTheBackgroundOffAndTheAccountClearedStartsClean (#715): the
+// role unavailable because its agent, at an account folder, did not start
+// (signed out); one save clears the account and turns the background off:
+// the role is no longer unavailable with the sign-in's words and the
+// failed turn's batch is dropped by the save itself, and with the
+// background on again it is idle, its count of turns not started gone,
+// no turn made by either save.
+func TestASaveOfTheBackgroundOffAndTheAccountClearedStartsClean(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	account := realRoot(t, t.TempDir())
+	c := b.background(t, "bksignin", func(cfg map[string]any) { cfg["account"] = account })
+	id := b.failTask(t, c, "build")
+	b.waitState(t, id, brakeman.StateFailed)
+	if r := b.waitRole(t, crew.RoleUnavailable); r.Reason != crew.ReasonStart || r.Tries != 1 {
+		t.Fatalf("%+v", r)
+	}
+	b.slotFree(t)
+	b.configure(t, func(cfg map[string]any) {
+		cfg["account"] = ""
+		cfg["wake"].(map[string]any)["mode"] = brakeman.WakeInvoked
+	})
+	// The save itself ends it and drops the failed turn's batch: read at
+	// once, before the role's loop steps.
+	if r := b.ledgerRole(t); r.State != crew.RoleIdle || r.Open != nil || r.Why != "" || r.Reason != "" || r.Tries != 0 {
+		t.Fatalf("the background off and the account cleared: %+v", r)
+	}
+	b.configure(t, func(cfg map[string]any) { cfg["wake"].(map[string]any)["mode"] = brakeman.WakeBackground })
+	if r := b.ledgerRole(t); r.State != crew.RoleIdle || r.Open != nil || r.Tries != 0 {
+		t.Fatalf("the background on again: %+v", r)
+	}
+	// Nothing is left to fire: the loop's passes after the save make no
+	// turn.
+	b.roleSettle(t)
+	if r := b.ledgerRole(t); r.State != crew.RoleIdle || r.Open != nil || r.Tries != 0 {
+		t.Fatalf("the background on again, the loop passed: %+v", r)
+	}
+	if page, _, _ := b.desk.st.List("", 10); len(page) != 1 {
+		t.Fatalf("a save started a turn: %d requests", len(page))
+	}
+}
+
+// TestOverlappingSavesOfTheBackgroundOffAndOnFireNoTurn (#715, review
+// rounds 2 and 3): the role unavailable because its agent did not start,
+// its batch kept, two saves overlap through the route: the background
+// off, then on, each written and held at the gate before its step reaches
+// the role (afterSave), the steps let go in either order. After the first
+// step, with the second still held, the clock passes the old batch's
+// window and the start retry and the loop passes: it makes no turn (the
+// first step, whichever it is, dropped the batch, carrying nothing). After
+// both, the role is clean (idle, no batch, no count of turns not started,
+// no words) and the loop's passes make no turn.
+func TestOverlappingSavesOfTheBackgroundOffAndOnFireNoTurn(t *testing.T) {
+	t.Parallel()
+	for name, offFirst := range map[string]bool{"the off save's step first": true, "the on save's step first": false} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			b := brakemanEnv(t, nil)
+			c := b.background(t, "bksignin", nil)
+			id := b.failTask(t, c, "build")
+			b.waitState(t, id, brakeman.StateFailed)
+			if r := b.waitRole(t, crew.RoleUnavailable); r.Reason != crew.ReasonStart || r.Tries != 1 || r.Open == nil {
+				t.Fatalf("%+v", r)
+			}
+			b.slotFree(t)
+			// Each save, written and admit let go, waits here, by what it
+			// left (off or on), until the test lets its step go.
+			arrived := make(chan bool, 2)
+			release := map[bool]chan struct{}{true: make(chan struct{}), false: make(chan struct{})}
+			let := map[bool]func(){true: sync.OnceFunc(func() { close(release[true]) }), false: sync.OnceFunc(func() { close(release[false]) })}
+			gate := func(ch crew.RoleChange) {
+				arrived <- ch.Off
+				<-release[ch.Off]
+			}
+			b.desk.afterSave.Store(&gate)
+			t.Cleanup(func() {
+				b.desk.afterSave.Store(nil)
+				let[true]()
+				let[false]()
+			})
+			wait := func(what string, ch <-chan bool) bool {
+				t.Helper()
+				select {
+				case v := <-ch:
+					return v
+				case <-time.After(30 * time.Second):
+					t.Fatalf("%s never came", what)
+				}
+				return false
+			}
+			save := func(mode string) <-chan int {
+				t.Helper()
+				cfg := b.config(t)
+				rev := cfg["rev"]
+				cfg["wake"].(map[string]any)["mode"] = mode
+				done := make(chan int, 1)
+				go func() { done <- b.post("PUT", "/api/brakeman/config", map[string]any{"rev": rev, "config": cfg}) }()
+				return done
+			}
+			done := map[bool]<-chan int{}
+			done[true] = save(brakeman.WakeInvoked)
+			if off := wait("the off save at the gate", arrived); !off {
+				t.Fatal("the off save reached the gate as on")
+			}
+			// Read after the off save was written: the on save's rev is its.
+			done[false] = save(brakeman.WakeBackground)
+			if off := wait("the on save at the gate", arrived); off {
+				t.Fatal("the on save reached the gate as off")
+			}
+			for i, off := range []bool{offFirst, !offFirst} {
+				let[off]()
+				select {
+				case status := <-done[off]:
+					if status != http.StatusOK {
+						t.Fatalf("the save (off %v): %d", off, status)
+					}
+				case <-time.After(30 * time.Second):
+					t.Fatalf("the save (off %v) never answered", off)
+				}
+				if i > 0 {
+					break
+				}
+				// Between the steps, the old batch due and the start
+				// retry passed: the loop's passes make no turn.
+				c.add(crew.RoleStartRetry + time.Duration(brakeman.MinWindowSeconds)*time.Second)
+				b.roleSettle(t)
+				if r := b.ledgerRole(t); r.Open != nil || r.Request != "" || r.Firing || r.State == crew.RoleBriefing {
+					t.Fatalf("between the saves' steps: %+v", r)
+				}
+				if page, _, _ := b.desk.st.List("", 10); len(page) != 1 {
+					t.Fatalf("a turn fired between the saves' steps: %d requests", len(page))
+				}
+			}
+			if r := b.ledgerRole(t); r.State != crew.RoleIdle || r.Open != nil || r.Why != "" || r.Reason != "" || r.Tries != 0 {
+				t.Fatalf("after both saves' steps: %+v", r)
+			}
+			// Past the old batch's window and the start retry: the loop's
+			// passes make no turn.
+			c.add(crew.RoleStartRetry + time.Duration(brakeman.MinWindowSeconds)*time.Second)
+			b.roleSettle(t)
+			if r := b.ledgerRole(t); r.State != crew.RoleIdle || r.Open != nil || r.Tries != 0 {
+				t.Fatalf("after the loop's passes: %+v", r)
+			}
+			if page, _, _ := b.desk.st.List("", 10); len(page) != 1 {
+				t.Fatalf("a save started a turn: %d requests", len(page))
+			}
+		})
 	}
 }
 
@@ -908,10 +1208,13 @@ func TestTheRoleSpendsNoMoreThanTheDaysTurns(t *testing.T) {
 
 // TestASavedConfigurationIsLookedAtAgain: the role unavailable with the
 // day's turns spent looks again when the configuration is saved through
-// its route: turns raised but minutes now spent, it stays unavailable in
-// the words true now (the minutes, no longer the turns); the minutes
-// raised too, the batch it kept fires, a wake request made. Each step is
-// waited on in the role's record, never on a clock.
+// its route: the save ends the spent budget and drops the batch kept,
+// carrying nothing (#715, review round 3), so the role is idle and makes
+// no request. Turns raised but minutes now spent, the next wake's batch is
+// refused in the words true then (the minutes, no longer the turns), and
+// kept; the minutes raised too, that save drops it as well, and the next
+// wake's batch fires, a wake request made. Each step is waited on in the
+// role's record, never on a clock.
 func TestASavedConfigurationIsLookedAtAgain(t *testing.T) {
 	t.Parallel()
 	b := brakemanEnv(t, nil)
@@ -927,6 +1230,12 @@ func TestASavedConfigurationIsLookedAtAgain(t *testing.T) {
 		bu := cfg["budget"].(map[string]any)
 		bu["turnsPerDay"], bu["minutesPerDay"] = 3, 10
 	})
+	b.roleSettle(t)
+	if r := b.roleRecord(t); r.State != crew.RoleIdle || r.Open != nil || r.Why != "" || r.Request != "" {
+		t.Fatalf("the role after the save: %+v", r)
+	}
+	b.desk.roleWake(crew.RoleWake{Source: crew.WakeTaskFailed, Subject: "task:run-1/lint", Key: "attempts 1", At: c.now()})
+	c.add(time.Duration(brakeman.MinWindowSeconds) * time.Second)
 	var r crew.RoleRecord
 	if !waitFor(30*time.Second, func() bool {
 		b.desk.role.Poke()
@@ -935,14 +1244,20 @@ func TestASavedConfigurationIsLookedAtAgain(t *testing.T) {
 	}) {
 		t.Fatalf("the role after a save that still refuses: %+v", r)
 	}
-	if r.Open == nil || len(r.Open.Wakes) != 1 || r.Request != "" {
+	if r.Open == nil || len(r.Open.Wakes) != 1 || r.Open.Wakes[0].Subject != "task:run-1/lint" || r.Request != "" {
 		t.Fatalf("the batch is not kept: %+v", r)
 	}
 	b.configure(t, func(cfg map[string]any) { cfg["budget"].(map[string]any)["minutesPerDay"] = 240 })
+	b.roleSettle(t)
+	if r := b.roleRecord(t); r.State != crew.RoleIdle || r.Open != nil || r.Why != "" || r.Request != "" {
+		t.Fatalf("the role after the minutes raised: %+v", r)
+	}
+	b.desk.roleWake(crew.RoleWake{Source: crew.WakeTaskFailed, Subject: "task:run-1/test", Key: "attempts 1", At: c.now()})
+	c.add(time.Duration(brakeman.MinWindowSeconds) * time.Second)
 	r = b.waitRole(t, crew.RoleBriefing)
 	q, err := b.desk.st.Get(r.Request)
-	if err != nil || q.Kind != brakeman.KindWake || r.Why != "" || r.Fired == nil || len(r.Fired.Wakes) != 1 || r.Fired.Wakes[0].Subject != "task:run-1/build" {
-		t.Fatalf("the batch kept, fired: %+v %+v %v", r, q, err)
+	if err != nil || q.Kind != brakeman.KindWake || r.Why != "" || r.Fired == nil || len(r.Fired.Wakes) != 1 || r.Fired.Wakes[0].Subject != "task:run-1/test" {
+		t.Fatalf("the next wake's batch, fired: %+v %+v %v", r, q, err)
 	}
 }
 
@@ -1080,9 +1395,10 @@ func TestTheFirstCommitAfterAStartIsReadWhole(t *testing.T) {
 
 // TestAWakeClosedAtItsDequeueIsFollowedUnpoked: a wake request closed
 // over budget at its dequeue (no run made) is followed by the role from
-// the request's own change: it is unavailable in the budget's words, its
-// batch kept, with nothing of the test's poking the role once the request
-// is queued.
+// the request's own change: it is unavailable in the budget's words, with
+// nothing of the test's poking the role once the request is queued. Its
+// batch, of the configuration before the budget's save, is not kept
+// (#715, review round 3: a save carries nothing).
 func TestAWakeClosedAtItsDequeueIsFollowedUnpoked(t *testing.T) {
 	t.Parallel()
 	b := brakemanEnv(t, nil)
@@ -1120,7 +1436,7 @@ func TestAWakeClosedAtItsDequeueIsFollowedUnpoked(t *testing.T) {
 	}) {
 		t.Fatalf("the role never followed its request's close: %+v", r)
 	}
-	if !strings.Contains(r.Why, "the day's budget is spent") || r.Open == nil || len(r.Open.Wakes) != 1 || r.Open.Wakes[0].Subject != "task:run-1/build" {
+	if !strings.Contains(r.Why, "the day's budget is spent") || r.Open != nil {
 		t.Fatalf("%+v", r)
 	}
 }
@@ -1887,5 +2203,30 @@ func TestAWakeOpIDIsTheRolesOwn(t *testing.T) {
 	}
 	if r, _ := b.desk.st.Get(old.ID); r.Kind != brakeman.KindBriefing || r.State != brakeman.StateCancelled {
 		t.Fatalf("the person's request: %+v", r)
+	}
+}
+
+// TestMadeFindsTheBatchsRequestAndMakesNone (#715, review round 3): the
+// lookup the role takes up a frozen batch of an older configuration by
+// answers "" for a batch whose request was not made, and makes none; once
+// Fire made it, it answers that request, as Fire again would.
+func TestMadeFindsTheBatchsRequestAndMakesNone(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.background(t, "bk", nil)
+	rr := roleRecords{d: b.desk}
+	batch := crew.Batch{ID: "wb-900", Wakes: []crew.BatchWake{}}
+	if id, err := rr.Made(batch); err != nil || id != "" {
+		t.Fatalf("before Fire: %q %v", id, err)
+	}
+	if _, found, err := b.desk.st.ByOp(wakeOpID(batch.ID, 1)); err != nil || found {
+		t.Fatalf("Made made a request: %v %v", found, err)
+	}
+	fired, err := rr.Fire(batch)
+	if err != nil || fired == "" {
+		t.Fatalf("Fire: %q %v", fired, err)
+	}
+	if id, err := rr.Made(batch); err != nil || id != fired {
+		t.Fatalf("after Fire: %q %v, want %q", id, err, fired)
 	}
 }

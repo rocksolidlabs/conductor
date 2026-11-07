@@ -1270,9 +1270,14 @@ whose operation began when the connection closed is not taken back: its
 receipt stands, and the same `opId` sent again after a reconnect is
 answered with it (`repeat`) before the item's current state is judged;
 one not begun is never begun. A link revoked or expired ends the
-viewer's connection as today (`link_gone`, `OnRevoke`), and a `decide`
-checked after the revocation is refused, so nothing of a link's acts
-lands after its end. A run's desk lives while the engine still takes the run's commands
+viewer's connection as today (`link_gone`, `OnRevoke`), and nothing not
+yet begun for a link lands after its revoke or its expiry: an act asks
+whether its link stands as it is begun (the answer's write, the
+command's commit), fail-closed, and one whose link has ended is refused,
+nothing done. An act begun before may land (a write to a PTY cannot be
+taken back, a committed command stays committed): the revoke or expiry
+waits up to `share.Store.HoldWait` for what was begun, then returns and
+says what is still pending (amended in PR-5, review round 3). A run's desk lives while the engine still takes the run's commands
 and one of its decision links stands, a finished `failed` run included,
 so a run with no member alive (the last attempt failed; from PR-3, a
 gate before the first attempt) is still reached through its link.
@@ -1735,8 +1740,9 @@ The eight of the Program, section 2.5:
       MB1's, behind cloud.
 - [x] Article 4: every approval goes through the operation that checks
       it, at the revision read; nothing times out into an answer; stop,
-      inspect and revoke are untouched, and a revoked decision link acts
-      no more.
+      inspect and revoke are untouched, and a revoked or expired decision
+      link begins nothing more (an act begun before may land; the revoke
+      waits up to `HoldWait` for it, then says what is pending).
 
 ## The PRs
 

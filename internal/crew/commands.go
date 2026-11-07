@@ -132,10 +132,10 @@ const (
 	RefusalNotFound      = "not_found"
 	RefusalStaleRevision = "stale_revision"
 	RefusalRunContinued  = "run_continued"
+	RefusalWithdrawn     = "withdrawn"
 	// RefusalStaleCandidate refuses a command bound to a candidate that is
 	// no longer the task's standing one (Recheck).
 	RefusalStaleCandidate = "stale_candidate"
-	RefusalWithdrawn      = "withdrawn"
 )
 
 // ErrStaleCandidate refuses a command bound to a candidate the task has
@@ -153,10 +153,10 @@ func refusalOf(err error) string {
 		return RefusalStaleRevision
 	case errors.Is(err, ErrRunContinued):
 		return RefusalRunContinued
-	case errors.Is(err, ErrStaleCandidate):
-		return RefusalStaleCandidate
 	case errors.Is(err, ErrWithdrawn):
 		return RefusalWithdrawn
+	case errors.Is(err, ErrStaleCandidate):
+		return RefusalStaleCandidate
 	}
 	return RefusalTaskState
 }

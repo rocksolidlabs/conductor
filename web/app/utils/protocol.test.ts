@@ -148,7 +148,6 @@ describe('the decision lane', () => {
   })
 })
 
-
 // The `decision` event's data (docs/protocol.md "Decisions"): its largest, every field at its longest as the server writes it,
 // fits the bound the server holds it to (internal/api, maxDecisionEvent, TestDecisionEventIsBounded).
 describe('the decision event', () => {

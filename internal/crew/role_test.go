@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -120,6 +121,15 @@ func (f *fakeRecords) Fire(b Batch) (string, error) {
 		after()
 	}
 	return id, nil
+}
+
+func (f *fakeRecords) Made(b Batch) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fireErr != nil {
+		return "", f.fireErr
+	}
+	return f.requests[b.ID], nil
 }
 
 func (f *fakeRecords) Outcome(id string) (RoleOutcome, error) {
@@ -387,52 +397,98 @@ func TestARestartFiresAnOpenBatchOnce(t *testing.T) {
 // role goes on with the record it holds or a restarted one reads it back;
 // the next step fires the frozen batch again and finds the request made,
 // so one turn runs, for the wakes it read.
+//
+// With the background turned off before that step (#715, review round
+// 3), the frozen batch is of an older configuration generation and is
+// not fired anew, nor dropped blind: the role finds the request made for
+// it (Made) and takes that turn up, making none, so its batch stays the
+// one the request names, its end is the role's and the cooldown follows.
 func TestACrashBetweenTheRequestAndTheRoleFiresOnce(t *testing.T) {
-	for _, restart := range []bool{false, true} {
-		t.Run(fmt.Sprintf("restart=%v", restart), func(t *testing.T) {
-			f := newRoleFixture(t)
-			f.failed("build", 1)
-			f.clock.add(2 * time.Minute)
-			f.rec.afterFire = func() {
-				f.rec.mu.Lock()
-				f.rec.saveFails = true
-				f.rec.mu.Unlock()
-			}
-			if _, err := f.role.Step(); err == nil {
-				t.Fatal("the role's write after the request did not fail")
-			}
-			f.rec.afterFire = nil
-			if restart {
-				f.restart()
-			}
-			if r := f.record(); r.State != RoleBriefing || !r.Firing || r.Fired == nil || r.Fired.ID != "wb-1" || r.Open != nil {
-				t.Fatalf("after the failed write %+v", r)
-			}
-			// The request's turn reads its batch now; a wake arriving after
-			// joins the next batch.
-			f.failed("lint", 1)
-			r := f.record()
-			if r.Open == nil || r.Open.ID != "wb-2" || len(r.Fired.Wakes) != 1 || r.Fired.Wakes[0].Subject != "task:run-1/build" {
-				t.Fatalf("the wake after the request joined the batch firing: %+v", r)
-			}
-			r = f.state(RoleBriefing)
-			if f.rec.fired() != 1 || r.Request != "br-1" || r.Firing || r.Fired.ID != "wb-1" || len(r.Fired.Wakes) != 1 || r.Open == nil || r.Open.ID != "wb-2" {
-				t.Fatalf("%d turns %+v", f.rec.fired(), r)
-			}
-			for _, row := range r.Log {
-				if want := map[string]string{"wb-1": "br-1", "wb-2": ""}[row.Batch]; row.Request != want {
-					t.Fatalf("the log: %+v", r.Log)
+	for _, off := range []bool{false, true} {
+		for _, restart := range []bool{false, true} {
+			t.Run(fmt.Sprintf("off=%v/restart=%v", off, restart), func(t *testing.T) {
+				f := newRoleFixture(t)
+				var logged strings.Builder
+				var logMu sync.Mutex
+				f.role.SetLogger(slog.New(slog.NewTextHandler(lockedWriter{&logMu, &logged}, nil)))
+				f.failed("build", 1)
+				f.clock.add(2 * time.Minute)
+				f.rec.afterFire = func() {
+					f.rec.mu.Lock()
+					f.rec.saveFails = true
+					f.rec.mu.Unlock()
 				}
-			}
-			// Its turn ends and the cooldown passes: the next batch fires
-			// a turn of its own.
-			f.rec.close("br-1", RoleOutcome{})
-			f.state(RoleCooling)
-			f.clock.add(30 * time.Minute)
-			if r := f.state(RoleBriefing); f.rec.fired() != 2 || r.Request != "br-2" || r.Fired.ID != "wb-2" {
-				t.Fatalf("%d turns %+v", f.rec.fired(), r)
-			}
-		})
+				if _, err := f.role.Step(); err == nil {
+					t.Fatal("the role's write after the request did not fail")
+				}
+				f.rec.afterFire = nil
+				if restart {
+					f.restart()
+					f.role.SetLogger(slog.New(slog.NewTextHandler(lockedWriter{&logMu, &logged}, nil)))
+				}
+				if r := f.record(); r.State != RoleBriefing || !r.Firing || r.Fired == nil || r.Fired.ID != "wb-1" || r.Open != nil {
+					t.Fatalf("after the failed write %+v", r)
+				}
+				if off {
+					f.rec.mu.Lock()
+					f.rec.settings.On = false
+					f.rec.mu.Unlock()
+					if err := f.role.Reconfigured(RoleChange{On: true, Off: true}); err != nil {
+						t.Fatal(err)
+					}
+					r := f.state(RoleBriefing)
+					if f.rec.fired() != 1 || r.Request != "br-1" || r.Firing || r.Fired == nil || r.Fired.ID != "wb-1" || len(r.Fired.Wakes) != 1 || r.Open != nil {
+						t.Fatalf("the request made was not taken up: %d turns %+v", f.rec.fired(), r)
+					}
+					for _, row := range r.Log {
+						if row.Batch == "wb-1" && row.Request != "br-1" {
+							t.Fatalf("the log: %+v", r.Log)
+						}
+					}
+					logMu.Lock()
+					said := logged.String()
+					logMu.Unlock()
+					if !strings.Contains(said, "took up the request made for a batch gathered under an earlier configuration") || strings.Contains(said, "dropped a batch") {
+						t.Fatalf("the log line: %q", said)
+					}
+					// Its turn ends: the cooldown is the role's, and nothing
+					// more fires, the role off.
+					f.rec.close("br-1", RoleOutcome{})
+					if r := f.state(RoleCooling); !r.CoolUntil.Equal(f.clock.now().Add(30 * time.Minute)) {
+						t.Fatalf("the cooldown: %+v", r)
+					}
+					f.clock.add(30 * time.Minute)
+					if r := f.state(RoleIdle); f.rec.fired() != 1 || r.Request != "" {
+						t.Fatalf("%d turns %+v", f.rec.fired(), r)
+					}
+					return
+				}
+				// The request's turn reads its batch now; a wake arriving after
+				// joins the next batch.
+				f.failed("lint", 1)
+				r := f.record()
+				if r.Open == nil || r.Open.ID != "wb-2" || len(r.Fired.Wakes) != 1 || r.Fired.Wakes[0].Subject != "task:run-1/build" {
+					t.Fatalf("the wake after the request joined the batch firing: %+v", r)
+				}
+				r = f.state(RoleBriefing)
+				if f.rec.fired() != 1 || r.Request != "br-1" || r.Firing || r.Fired.ID != "wb-1" || len(r.Fired.Wakes) != 1 || r.Open == nil || r.Open.ID != "wb-2" {
+					t.Fatalf("%d turns %+v", f.rec.fired(), r)
+				}
+				for _, row := range r.Log {
+					if want := map[string]string{"wb-1": "br-1", "wb-2": ""}[row.Batch]; row.Request != want {
+						t.Fatalf("the log: %+v", r.Log)
+					}
+				}
+				// Its turn ends and the cooldown passes: the next batch fires
+				// a turn of its own.
+				f.rec.close("br-1", RoleOutcome{})
+				f.state(RoleCooling)
+				f.clock.add(30 * time.Minute)
+				if r := f.state(RoleBriefing); f.rec.fired() != 2 || r.Request != "br-2" || r.Fired.ID != "wb-2" {
+					t.Fatalf("%d turns %+v", f.rec.fired(), r)
+				}
+			})
+		}
 	}
 }
 
@@ -719,11 +775,13 @@ func TestTheStartRetryDoublesToItsBound(t *testing.T) {
 }
 
 // TestASaveEndsOnlyWhatItChanged: each reason a role is unavailable for,
-// against each kind of save: a budget changed ends a spent budget; what the
-// agent starts with changed ends a turn whose agent did not start; the role
-// turned on or off ends its being off; nothing ends a run that did not
-// stop; a save that changed nothing ends nothing. Each is read from the
-// role's record after Reconfigured.
+// against each kind of save: a budget changed ends a spent budget; every
+// save ends a turn whose agent did not start (#715, review round 3); the
+// role turned on or off ends its being off; nothing ends a run that did
+// not stop; a save that changed nothing ends nothing else. Each is read
+// from the role's record after Reconfigured. Every save drops the batch
+// the failed turn kept, whether it ends the unavailability or not: past
+// its window no turn fires.
 func TestASaveEndsOnlyWhatItChanged(t *testing.T) {
 	saves := map[string]RoleChange{
 		"nothing": {},
@@ -734,7 +792,7 @@ func TestASaveEndsOnlyWhatItChanged(t *testing.T) {
 	}
 	ends := map[string][]string{
 		ReasonBudget: {"budget"},
-		ReasonStart:  {"agent"},
+		ReasonStart:  {"nothing", "budget", "agent", "on", "other"},
 		ReasonOff:    {"on"},
 		ReasonStuck:  nil,
 		"":           {"budget", "agent", "on", "other"},
@@ -756,13 +814,16 @@ func TestASaveEndsOnlyWhatItChanged(t *testing.T) {
 				if SaveEnds(reason, ch) != ended {
 					t.Fatalf("SaveEnds(%q, %+v) = %v", reason, ch, !ended)
 				}
+				if r.Open != nil {
+					t.Fatalf("the batch kept survived the save: %+v", r)
+				}
 				if ended {
-					if r.State == RoleUnavailable || r.Why != "" || r.Reason != "" {
+					if r.State == RoleUnavailable || r.Why != "" || r.Reason != "" || r.Tries != 0 {
 						t.Fatalf("not ended: %+v", r)
 					}
 					f.clock.add(2 * time.Minute) // the kept batch's window
-					if r := f.state(RoleBriefing); f.rec.fired() != 2 {
-						t.Fatalf("the batch kept did not fire: %+v", r)
+					if r := f.state(RoleIdle); f.rec.fired() != 1 {
+						t.Fatalf("the batch kept fired: %+v", r)
 					}
 					return
 				}
@@ -775,6 +836,274 @@ func TestASaveEndsOnlyWhatItChanged(t *testing.T) {
 			})
 		}
 	}
+}
+
+// TestASaveOfTheRoleOffEndsAnAgentNotStarted (#715): the role's agent did
+// not start (signed out), and a save turns the background off, clears the
+// account, or both: the role is not left unavailable with the old words,
+// and its count of turns not started is gone, so with the background on
+// again the next turn is fired by its wake and a failure of it counts
+// once. The batch the failed turn kept is dropped by the save itself:
+// turned on again before the role's loop steps, the role fires no turn
+// for it. The same for a role turned off while its turn ran, by a save of
+// the account cleared, and for a save of the role off that changed
+// anything else: every save drops the state of an agent that did not
+// start (#715, review round 3).
+func TestASaveOfTheRoleOffEndsAnAgentNotStarted(t *testing.T) {
+	words := "the agent did not start in 5 minutes, no call to Conductor (signed out?)"
+	for name, c := range map[string]struct {
+		offBefore bool
+		ch        RoleChange
+	}{
+		"off and the account cleared": {ch: RoleChange{On: true, Start: true, Off: true}},
+		"off":                         {ch: RoleChange{On: true, Off: true}},
+		"the account cleared, off":    {offBefore: true, ch: RoleChange{Start: true, Off: true}},
+		"anything else, off":          {offBefore: true, ch: RoleChange{Other: true, Budget: true, Off: true}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newRoleFixture(t)
+			f.failed("build", 1)
+			f.clock.add(2 * time.Minute)
+			f.state(RoleBriefing)
+			// Turned off by an earlier save while the turn ran, which found
+			// nothing to end then.
+			f.rec.settings.On = !c.offBefore
+			f.rec.close("br-1", RoleOutcome{Unavailable: words, Reason: ReasonStart})
+			if r := f.state(RoleUnavailable); r.Tries != 1 {
+				t.Fatalf("%+v", r)
+			}
+			f.rec.settings.On = false
+			if err := f.role.Reconfigured(c.ch); err != nil {
+				t.Fatal(err)
+			}
+			// Off: the batch the failed turn kept is dropped by the save
+			// itself, read before any step.
+			if r := f.record(); r.State != RoleIdle || r.Why != "" || r.Reason != "" || r.Tries != 0 || !r.RetryAt.IsZero() || r.Open != nil {
+				t.Fatalf("after the save: %+v", r)
+			}
+			// On again with no step between: nothing is gathering, and past
+			// the old batch's window and the start retry no turn is fired.
+			f.rec.settings.On = true
+			if err := f.role.Reconfigured(RoleChange{On: true}); err != nil {
+				t.Fatal(err)
+			}
+			if r := f.record(); r.State != RoleIdle || r.Open != nil || r.Tries != 0 {
+				t.Fatalf("the background on again: %+v", r)
+			}
+			f.clock.add(RoleStartRetry + 2*time.Minute)
+			if r := f.state(RoleIdle); f.rec.fired() != 1 || r.Open != nil {
+				t.Fatalf("the old batch fired: %d turns, %+v", f.rec.fired(), r)
+			}
+			f.failed("lint", 1)
+			f.clock.add(2 * time.Minute)
+			if r := f.state(RoleBriefing); f.rec.fired() != 2 || r.Request != "br-2" {
+				t.Fatalf("the background on again: %d turns, %+v", f.rec.fired(), r)
+			}
+			f.rec.close("br-2", RoleOutcome{Unavailable: words, Reason: ReasonStart})
+			if r := f.state(RoleUnavailable); r.Tries != 1 || !r.RetryAt.Equal(f.clock.now().Add(RoleStartRetry)) {
+				t.Fatalf("the next failure counts once: %+v", r)
+			}
+		})
+	}
+}
+
+// TestOverlappingSavesOfTheRoleOffAndOnFireNoTurn (#715, review round
+// 2): the role's agent did not start, and two saves overlap, the
+// background off and then on, both written before the step of either
+// reaches the role, in either order: the role is clean (idle, no batch,
+// no count of turns not started, no words) and fires no turn, past the
+// old batch's window and the start retry. The steps act on what each save
+// did, never on the settings read when they come, which are the later
+// save's (on) for both.
+func TestOverlappingSavesOfTheRoleOffAndOnFireNoTurn(t *testing.T) {
+	words := "the agent did not start in 5 minutes, no call to Conductor (signed out?)"
+	off, on := RoleChange{On: true, Off: true}, RoleChange{On: true}
+	for name, order := range map[string][]RoleChange{
+		"the off save's step first": {off, on},
+		"the on save's step first":  {on, off},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newRoleFixture(t)
+			f.failed("build", 1)
+			f.clock.add(2 * time.Minute)
+			f.state(RoleBriefing)
+			f.rec.close("br-1", RoleOutcome{Unavailable: words, Reason: ReasonStart})
+			if r := f.state(RoleUnavailable); r.Tries != 1 || r.Open == nil {
+				t.Fatalf("%+v", r)
+			}
+			// Both saves written: the settings are the on save's.
+			f.rec.mu.Lock()
+			f.rec.settings.On = true
+			f.rec.mu.Unlock()
+			gen := f.record().Gen
+			for _, ch := range order {
+				if err := f.role.Reconfigured(ch); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if r := f.record(); r.State != RoleIdle || r.Open != nil || r.Why != "" || r.Reason != "" || r.Tries != 0 || !r.RetryAt.IsZero() || r.Gen != gen+2 {
+				t.Fatalf("after both saves' steps: %+v", r)
+			}
+			f.clock.add(RoleStartRetry + 2*time.Minute)
+			if r := f.state(RoleIdle); f.rec.fired() != 1 || r.Open != nil {
+				t.Fatalf("a turn fired after the saves: %d turns, %+v", f.rec.fired(), r)
+			}
+		})
+	}
+}
+
+// TestAStepBetweenOverlappingSavesFiresNoTurn (#715, review round 3):
+// two saves overlap, the background off and then on, both written (the
+// settings are the on save's), and the role steps between their steps,
+// in either order, with a batch due: one gathering past its window, or
+// one a turn whose agent did not start kept, past the start retry. The
+// first step, whichever save it is, drops the batch and carries nothing
+// into its generation, so the step between fires no turn, nor any step
+// after the second; a wake after both gathers afresh and fires.
+func TestAStepBetweenOverlappingSavesFiresNoTurn(t *testing.T) {
+	words := "the agent did not start in 5 minutes, no call to Conductor (signed out?)"
+	off, on := RoleChange{On: true, Off: true}, RoleChange{On: true}
+	for _, kept := range []bool{false, true} {
+		for name, order := range map[string][]RoleChange{
+			"the off save's step first": {off, on},
+			"the on save's step first":  {on, off},
+		} {
+			t.Run(fmt.Sprintf("kept=%v/%s", kept, name), func(t *testing.T) {
+				f := newRoleFixture(t)
+				f.failed("build", 1)
+				turns := 0
+				if kept {
+					f.clock.add(2 * time.Minute)
+					f.state(RoleBriefing)
+					f.rec.close("br-1", RoleOutcome{Unavailable: words, Reason: ReasonStart})
+					if r := f.state(RoleUnavailable); r.Open == nil {
+						t.Fatalf("%+v", r)
+					}
+					turns = 1
+				} else if r := f.record(); r.State != RoleGathering || r.Open == nil {
+					t.Fatalf("%+v", r)
+				}
+				// Both saves written: the settings are the on save's.
+				f.rec.mu.Lock()
+				f.rec.settings.On = true
+				f.rec.mu.Unlock()
+				if err := f.role.Reconfigured(order[0]); err != nil {
+					t.Fatal(err)
+				}
+				// The batch due, the loop steps before the second save's step.
+				f.clock.add(RoleStartRetry + 2*time.Minute)
+				if r := f.step(); f.rec.fired() != turns {
+					t.Fatalf("a turn fired between the saves' steps: %d turns (next %s), %+v", f.rec.fired(), r, f.record())
+				}
+				if r := f.record(); r.Open != nil || r.Firing || r.Request != "" {
+					t.Fatalf("between the saves' steps: %+v", r)
+				}
+				if err := f.role.Reconfigured(order[1]); err != nil {
+					t.Fatal(err)
+				}
+				f.clock.add(RoleStartRetry + 2*time.Minute)
+				if r := f.state(RoleIdle); f.rec.fired() != turns || r.Open != nil || r.Tries != 0 || r.Reason != "" {
+					t.Fatalf("after both saves' steps: %d turns, %+v", f.rec.fired(), r)
+				}
+				// A wake after both gathers afresh, and fires.
+				f.failed("lint", 1)
+				f.clock.add(2 * time.Minute)
+				if r := f.state(RoleBriefing); f.rec.fired() != turns+1 {
+					t.Fatalf("the next wake: %d turns, %+v", f.rec.fired(), r)
+				}
+			})
+		}
+	}
+}
+
+// TestABatchFiresOnlyUnderTheConfigurationItWasGatheredUnder (#715,
+// review round 2): a batch records the configuration generation it was
+// gathered under. A turn in flight across saves of the background off and
+// on (their steps in either order) whose agent then does not start keeps
+// no batch for the next turn: its batch is of the generation before the
+// off save, dropped with a log line, and no turn fires for it. A batch
+// frozen to fire across them, its request not made, is dropped unfired
+// the same way. A save that leaves the role on (a budget) carries nothing
+// either (review round 3): the turn that did not start keeps no batch,
+// and no turn fires for it.
+func TestABatchFiresOnlyUnderTheConfigurationItWasGatheredUnder(t *testing.T) {
+	words := "the agent did not start in 5 minutes, no call to Conductor (signed out?)"
+	off, on := RoleChange{On: true, Off: true}, RoleChange{On: true}
+	for name, c := range map[string]struct {
+		saves  []RoleChange
+		frozen bool
+	}{
+		"off then on":           {saves: []RoleChange{off, on}},
+		"on then off":           {saves: []RoleChange{on, off}},
+		"frozen, off then on":   {saves: []RoleChange{off, on}, frozen: true},
+		"frozen, on then off":   {saves: []RoleChange{on, off}, frozen: true},
+		"a budget, the role on": {saves: []RoleChange{{Budget: true}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newRoleFixture(t)
+			var logged strings.Builder
+			var logMu sync.Mutex
+			f.role.SetLogger(slog.New(slog.NewTextHandler(lockedWriter{&logMu, &logged}, nil)))
+			f.failed("build", 1)
+			f.clock.add(2 * time.Minute)
+			if c.frozen {
+				// The batch frozen to fire, its request not made: the
+				// store refused it for now.
+				f.rec.mu.Lock()
+				f.rec.fireErr = errors.New("the store is busy")
+				f.rec.mu.Unlock()
+				if _, err := f.role.Step(); err == nil {
+					t.Fatal("the fire did not fail")
+				}
+				if r := f.record(); !r.Firing || r.Fired == nil {
+					t.Fatalf("not frozen: %+v", r)
+				}
+			} else {
+				f.state(RoleBriefing)
+			}
+			for _, ch := range c.saves {
+				if err := f.role.Reconfigured(ch); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if c.frozen {
+				f.rec.mu.Lock()
+				f.rec.fireErr = nil
+				f.rec.mu.Unlock()
+				if r := f.state(RoleIdle); r.Fired != nil || r.Firing || r.Open != nil || f.rec.fired() != 0 {
+					t.Fatalf("the frozen batch fired: %d turns, %+v", f.rec.fired(), r)
+				}
+			} else {
+				f.rec.close("br-1", RoleOutcome{Unavailable: words, Reason: ReasonStart})
+				if r := f.state(RoleUnavailable); r.Open != nil {
+					t.Fatalf("the batch kept: %+v", r)
+				}
+				f.clock.add(RoleStartRetry + 2*time.Minute)
+				f.step()
+				if f.rec.fired() != 1 {
+					t.Fatalf("%d turns, want 1: %+v", f.rec.fired(), f.record())
+				}
+			}
+			logMu.Lock()
+			said := logged.String()
+			logMu.Unlock()
+			if !strings.Contains(said, "dropped a batch gathered under an earlier configuration") {
+				t.Fatalf("no log line: %q", said)
+			}
+		})
+	}
+}
+
+// lockedWriter is a writer under a mutex, for a log the test reads.
+type lockedWriter struct {
+	mu *sync.Mutex
+	b  *strings.Builder
+}
+
+func (w lockedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.Write(p)
 }
 
 // TestTheLogKeepsItsNewest: the log keeps its newest MaxRoleLog rows.
