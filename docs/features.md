@@ -3780,7 +3780,11 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
     before, or else under "What Brakeman did" (an act the brief never
     names showed nowhere). `TestAnActsReceiptRefIsCited`,
     `TestActWordsNameTheRunFromTheLaunch`, vitest, and a
-    `brakeman-act.spec.ts` step.
+    `brakeman-act.spec.ts` step. The act's card says its receipt as the
+    outcome's chip does, the `op:brakeman/` ref's id with its chip, and
+    names the launch's id as the launch of its ticket, with the launch's
+    own chip: the card had called the launch's id the receipt beside an
+    outcome chip showing the act's (#715). vitest and the spec's steps.
   - A signed-out agent makes the role unavailable. Claude Code with no
     login does not exit: it waits at its sign-in screen, which the
     catalog now finds as a startup question with no answers (the trust
@@ -3837,7 +3841,12 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
     the routes refuse by: the admin is not listed what only an agent's own
     token calls, a turn not a read of a class it may not see.
     `TestTheOverviewListsWhatTheCallerMayDoAndItsLimits`,
-    `TestTheOverviewListsWhatTheRoutesAdmit` (the routes called).
+    `TestTheOverviewListsWhatTheRoutesAdmit` (the routes called). The
+    guide tool's text and `conductor guide` print both ("You may call:",
+    "Your limits:"), from the same overview: the third live check's Codex,
+    told only to call the tool, had read the sections and nothing it may
+    do (#715). `TestGuideToolTextSaysWhatTheCallerMayCallAndItsLimits` (a
+    crew's member and a session of no crew).
   - Saving Brakeman's settings makes an unavailable role look again at
     what the save changed, by the reason kept with the state: a budget
     raised clears "the day's budget is spent" and fires the batch kept
@@ -3846,6 +3855,12 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
     changes nothing it weighs fires nothing. The role card's retry words
     follow the reason. `TestASavedConfigurationIsLookedAtAgain`,
     `TestASaveWeighsOnlyWhatItChanged`, `TestASaveEndsOnlyWhatItChanged`.
+    The background turned off or on, or the account cleared while it is
+    off, ends an agent that did not start too, with its count of such
+    turns: one save that cleared the account and turned the background off
+    had left the role unavailable with the sign-in's words, and on again
+    it stayed so (#715). `TestASaveOfTheRoleOffEndsAnAgentNotStarted`,
+    `TestASaveOfTheBackgroundOffAndTheAccountClearedStartsClean`.
   - A proposal's launch state is drawn from the request's acts and the
     launch they name each time, so a re-read of the request keeps a failed
     launch's "try again" and never shows a second control for one under
