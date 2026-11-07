@@ -923,18 +923,19 @@ func TestRestoreRefusesServerData(t *testing.T) {
 	// A running server's directory: refused by its ledger. The server
 	// writes on meanwhile, and its databases' own files of a write (a
 	// rollback journal, a WAL and its index) come and go with it: the
-	// files it keeps are what must all be there still.
+	// snapshots leave them out before opening anything, and the files it
+	// keeps are what must all be there still.
 	s := serveSource(t, filepath.Join(realTempDir(t), "running"))
-	before := tree(t, s.dir)
+	before := snapshotLive(t, s.dir)
 	if code, _, _, err := restoreCmd(t, out, "--data-dir", s.dir); code != 1 || err == nil {
 		t.Fatalf("a running server's directory: %d %v", code, err)
 	}
-	after := tree(t, s.dir)
-	if after[export.LockFile] != "" {
+	after := snapshotLive(t, s.dir)
+	if _, ok := after[export.LockFile]; ok {
 		t.Fatalf("the refused restore left %s", export.LockFile)
 	}
 	for p := range before {
-		if _, ok := after[p]; !ok && !sqliteTransient(p) {
+		if _, ok := after[p]; !ok {
 			t.Errorf("the running server's %s is gone", p)
 		}
 	}
@@ -945,6 +946,105 @@ func TestRestoreRefusesServerData(t *testing.T) {
 // WAL and its shared-memory index.
 func sqliteTransient(p string) bool {
 	return strings.HasSuffix(p, "-journal") || strings.HasSuffix(p, "-wal") || strings.HasSuffix(p, "-shm")
+}
+
+// liveTree is tree of a directory a running server writes in, each file
+// read with read: SQLite's transient files (sqliteTransient) are left out
+// by their names, before anything opens them, since they come and go with
+// the server's writes; any other file that cannot be read, one gone
+// between the listing and its read included, is an error, so an
+// incomplete snapshot is never taken as the whole directory.
+func liveTree(dir string, read func(string) ([]byte, error)) (map[string]string, error) {
+	out := map[string]string{}
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(dir, p)
+		rel = filepath.ToSlash(rel)
+		switch {
+		case d.IsDir():
+			out[rel+"/"] = ""
+			return nil
+		case sqliteTransient(rel):
+			return nil
+		case d.Type()&fs.ModeSymlink != 0:
+			to, err := os.Readlink(p)
+			out[rel] = "-> " + to
+			return err
+		}
+		b, err := read(p)
+		if err != nil {
+			return err
+		}
+		out[rel] = string(b)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("the snapshot of %s is incomplete: %w", dir, err)
+	}
+	return out, nil
+}
+
+// snapshotLive is liveTree of dir, failing t when the snapshot is
+// incomplete or holds no file at all.
+func snapshotLive(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	got, err := liveTree(dir, os.ReadFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for p := range got {
+		if !strings.HasSuffix(p, "/") {
+			return got
+		}
+	}
+	t.Fatalf("the snapshot of %s holds no file", dir)
+	return nil
+}
+
+// A live directory's snapshot leaves SQLite's transient files out before
+// it opens anything: a journal gone between the listing and the reads (as
+// a server's write ends) is never opened, and the files kept are all
+// there. A kept file gone between the listing and its read fails the
+// snapshot, never answered as a smaller one.
+func TestLiveTreeSkipsTransientFilesBeforeReading(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"dispatch/dispatch.db", "dispatch/dispatch.db-journal", "runs/ledger.db-wal", "runs/x.json"} {
+		writeFile(t, dir, name, name)
+	}
+	var opened []string
+	got, err := liveTree(dir, func(p string) ([]byte, error) {
+		rel, _ := filepath.Rel(dir, p)
+		opened = append(opened, filepath.ToSlash(rel))
+		// The journal and the WAL go at the first read, after the listing.
+		for _, gone := range []string{"dispatch/dispatch.db-journal", "runs/ledger.db-wal"} {
+			_ = os.Remove(filepath.Join(dir, filepath.FromSlash(gone)))
+		}
+		return os.ReadFile(p)
+	})
+	if err != nil {
+		t.Fatalf("a journal gone after the listing: %v", err)
+	}
+	if !slices.Equal(opened, []string{"dispatch/dispatch.db", "runs/x.json"}) {
+		t.Fatalf("opened %v", opened)
+	}
+	for _, p := range []string{"dispatch/dispatch.db", "runs/x.json"} {
+		if got[p] != p {
+			t.Fatalf("%s in the snapshot: %q", p, got[p])
+		}
+	}
+	got, err = liveTree(dir, func(p string) ([]byte, error) {
+		if strings.HasSuffix(p, "x.json") {
+			if err := os.Remove(p); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return os.ReadFile(p)
+	})
+	if !errors.Is(err, fs.ErrNotExist) || got != nil {
+		t.Fatalf("a kept file gone after the listing: %v %v", got, err)
+	}
 }
 
 // Without --data-dir, a restore goes where conductor serve would go with the
