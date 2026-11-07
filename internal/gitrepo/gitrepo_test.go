@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -43,6 +44,13 @@ func scratch(t *testing.T) string {
 	gitIn(t, dir, time.Time{}, "config", "user.name", "Ada")
 	gitIn(t, dir, time.Time{}, "config", "user.email", "ada@example.invalid")
 	gitIn(t, dir, time.Time{}, "config", "commit.gpgsign", "false")
+	// No repack of git's own under the test's reads: a commit starts
+	// `git maintenance run --auto`, detached, which from Git 2.5x on
+	// (Apple Git 2.54 on the Mac) packs a few hundred loose objects and
+	// deletes them while the test reads, and still writes in .git as
+	// t.TempDir removes it. The repack test makes its repacks itself.
+	gitIn(t, dir, time.Time{}, "config", "maintenance.auto", "false")
+	gitIn(t, dir, time.Time{}, "config", "gc.auto", "0")
 	return dir
 }
 
@@ -250,6 +258,68 @@ func TestCompareListsTheFilesBetweenTwoCommits(t *testing.T) {
 	}
 	if _, err := Compare(ctx, t.TempDir(), base, head); !errors.Is(err, ErrNotRepo) {
 		t.Fatalf("outside a repository: %v", err)
+	}
+}
+
+// A repack between two reads of one call (git packs a repository by
+// itself after a commit, `git maintenance run --auto`) loses nothing:
+// go-git, which listed the packs before it, looks for an object in a pack
+// it never listed, or in one the repack removed, and the call opens the
+// repository again and reads it all once more. The repack is made through
+// afterCommit, after the call's first commit is read: Compare's second
+// commit, loose, is then packed into a pack go-git has not listed, and
+// FileAt's tree, packed, is in a pack removed.
+func TestReadsSurviveARepackBetweenThem(t *testing.T) {
+	dir := scratch(t)
+	ctx := context.Background()
+	write(t, dir, "a.txt", "one\n")
+	base := commit(t, dir, time.Time{}, "base")
+	gitIn(t, dir, time.Time{}, "repack", "-a", "-d", "-q")
+	write(t, dir, "a.txt", "one\ntwo\n")
+	write(t, dir, "b.txt", "new\n")
+	head := commit(t, dir, time.Time{}, "head")
+	repacks := 0
+	arm := func() {
+		t.Helper()
+		calls := 0
+		afterCommit = func() {
+			if calls++; calls == 1 {
+				gitIn(t, dir, time.Time{}, "repack", "-a", "-d", "-q")
+				repacks++
+			}
+		}
+	}
+	t.Cleanup(func() { afterCommit = nil })
+	packs := func() []string {
+		t.Helper()
+		p, _ := filepath.Glob(filepath.Join(dir, ".git", "objects", "pack", "*.pack"))
+		return p
+	}
+
+	// Compare: base packed, head loose; the repack after base's read
+	// packs head into a pack go-git has not listed.
+	before := packs()
+	arm()
+	d, err := Compare(ctx, dir, base, head)
+	if err != nil || len(d.Changes) != 2 || d.Commit.Sha != head || d.Added != 2 {
+		t.Fatalf("compare across a repack: %+v %v", d, err)
+	}
+	if after := packs(); repacks != 1 || len(after) != 1 || slices.Equal(after, before) {
+		t.Fatalf("the repack: %d, packs %v then %v", repacks, before, after)
+	}
+
+	// FileAt: head and its tree packed; a new loose commit makes the
+	// repack after head's read write a new pack and remove that one.
+	write(t, dir, "c.txt", "later\n")
+	commit(t, dir, time.Time{}, "later")
+	before = packs()
+	arm()
+	f, err := FileAt(ctx, dir, head, "b.txt", 1<<20)
+	if err != nil || string(f.Content) != "new\n" {
+		t.Fatalf("FileAt across a repack: %+v %v", f, err)
+	}
+	if after := packs(); repacks != 2 || len(after) != 1 || slices.Equal(after, before) {
+		t.Fatalf("the second repack: %d, packs %v then %v", repacks, before, after)
 	}
 }
 

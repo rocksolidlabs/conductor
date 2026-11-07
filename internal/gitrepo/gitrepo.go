@@ -28,6 +28,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/go-git/go-git/v5/storage/filesystem"
+	"github.com/go-git/go-git/v5/storage/filesystem/dotgit"
 
 	"github.com/rocksolidlabs/conductor/internal/gitcli"
 )
@@ -124,6 +125,38 @@ func open(dir string) (*git.Repository, string, error) {
 	return r, top, nil
 }
 
+// read is f over the repository at dir, opened for it, and f once more
+// over a second opening when the first finds an object, a commit or a file
+// gone: go-git lists a repository's packs once, at its first read from one,
+// and git repacks a repository by itself meanwhile (every commit may start
+// `git maintenance run --auto`, which from Git 2.5x on packs a few hundred
+// loose objects and deletes them, and drops packs it merged), so a read
+// begun before the repack looks for an object in a pack it never listed or
+// in a pack since removed. The second opening lists them again. A commit
+// or a file that truly is not there is looked for twice.
+func read[T any](dir string, f func(r *git.Repository, top string) (T, error)) (T, error) {
+	r, top, err := open(dir)
+	if err != nil {
+		var none T
+		return none, err
+	}
+	out, err := f(r, top)
+	if !gone(err) {
+		return out, err
+	}
+	if r, top, err = open(dir); err != nil {
+		return out, err
+	}
+	return f(r, top)
+}
+
+// gone reports whether err says an object was not found where go-git
+// looked for it (read).
+func gone(err error) bool {
+	return errors.Is(err, plumbing.ErrObjectNotFound) || errors.Is(err, dotgit.ErrPackfileNotFound) ||
+		errors.Is(err, ErrNoCommit) || errors.Is(err, ErrNoFile)
+}
+
 // largeObject is the size past which an object is read as a stream rather
 // than whole (a commit's and a comparison's files, diffTrees). FileAt
 // reads no blob through go-git (blobAt).
@@ -133,10 +166,10 @@ const largeObject = 256 << 10
 // base with HEAD when base names a revision, else those committed at or
 // after since. A repository with no commit yet has none.
 func Commits(ctx context.Context, dir, base string, since time.Time) (Log, error) {
-	r, top, err := open(dir)
-	if err != nil {
-		return Log{}, err
-	}
+	return read(dir, func(r *git.Repository, top string) (Log, error) { return commits(ctx, r, top, base, since) })
+}
+
+func commits(ctx context.Context, r *git.Repository, top, base string, since time.Time) (Log, error) {
 	out := Log{Top: top}
 	head, err := r.Head()
 	if err != nil {
@@ -200,10 +233,10 @@ func Commits(ctx context.Context, dir, base string, since time.Time) (Log, error
 // CommitDetail is the commit rev names and its files against its first
 // parent (every file added, for a root commit), renames found.
 func CommitDetail(ctx context.Context, dir, rev string) (Detail, error) {
-	r, top, err := open(dir)
-	if err != nil {
-		return Detail{}, err
-	}
+	return read(dir, func(r *git.Repository, top string) (Detail, error) { return commitDetail(ctx, r, top, rev) })
+}
+
+func commitDetail(ctx context.Context, r *git.Repository, top, rev string) (Detail, error) {
 	h, err := r.ResolveRevision(plumbing.Revision(rev))
 	if err != nil {
 		return Detail{}, fmt.Errorf("unknown revision %q", rev)
@@ -238,10 +271,10 @@ func CommitDetail(ctx context.Context, dir, rev string) (Detail, error) {
 // file past MaxDiffed is listed without its lines. ErrNoCommit (wrapped)
 // for an id the repository has no commit of.
 func Compare(ctx context.Context, dir, from, to string) (Detail, error) {
-	r, top, err := open(dir)
-	if err != nil {
-		return Detail{}, err
-	}
+	return read(dir, func(r *git.Repository, top string) (Detail, error) { return compare(ctx, r, top, from, to) })
+}
+
+func compare(ctx context.Context, r *git.Repository, top, from, to string) (Detail, error) {
 	fc, err := commitByID(r, from)
 	if err != nil {
 		return Detail{}, err
@@ -280,10 +313,10 @@ type File struct {
 // for an id the repository has no commit of, ErrNoFile for a path the
 // commit has no file at.
 func FileAt(ctx context.Context, dir, id, path string, limit int) (File, error) {
-	r, _, err := open(dir)
-	if err != nil {
-		return File{}, err
-	}
+	return read(dir, func(r *git.Repository, _ string) (File, error) { return fileAt(ctx, r, dir, id, path, limit) })
+}
+
+func fileAt(ctx context.Context, r *git.Repository, dir, id, path string, limit int) (File, error) {
 	c, err := commitByID(r, id)
 	if err != nil {
 		return File{}, err
@@ -443,8 +476,15 @@ func commitByID(r *git.Repository, id string) (*object.Commit, error) {
 	if errors.Is(err, plumbing.ErrObjectNotFound) {
 		return nil, fmt.Errorf("%w: %s", ErrNoCommit, id)
 	}
+	if err == nil && afterCommit != nil {
+		afterCommit()
+	}
 	return c, err
 }
+
+// afterCommit, set by a test, runs once commitByID has read a commit: a
+// repack between that read and the next (read).
+var afterCommit func()
 
 // fullID reports whether s is a full object id: 40 lowercase hex digits
 // (go-git reads SHA-1 repositories).
