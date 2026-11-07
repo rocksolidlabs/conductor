@@ -812,6 +812,40 @@ func TestASaveWeighsOnlyWhatItChanged(t *testing.T) {
 	}
 }
 
+// TestASaveOfTheBackgroundOffAndTheAccountClearedStartsClean (#715): the
+// role unavailable because its agent, at an account folder, did not start
+// (signed out); one save clears the account and turns the background off:
+// the role is no longer unavailable with the sign-in's words, and with the
+// background on again it is idle, its count of turns not started gone,
+// no turn made by either save.
+func TestASaveOfTheBackgroundOffAndTheAccountClearedStartsClean(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	account := realRoot(t, t.TempDir())
+	c := b.background(t, "bksignin", func(cfg map[string]any) { cfg["account"] = account })
+	id := b.failTask(t, c, "build")
+	b.waitState(t, id, brakeman.StateFailed)
+	if r := b.waitRole(t, crew.RoleUnavailable); r.Reason != crew.ReasonStart || r.Tries != 1 {
+		t.Fatalf("%+v", r)
+	}
+	b.slotFree(t)
+	b.configure(t, func(cfg map[string]any) {
+		cfg["account"] = ""
+		cfg["wake"].(map[string]any)["mode"] = brakeman.WakeInvoked
+	})
+	if r := b.ledgerRole(t); r.State == crew.RoleUnavailable || r.Why != "" || r.Reason != "" || r.Tries != 0 {
+		t.Fatalf("the background off and the account cleared: %+v", r)
+	}
+	b.configure(t, func(cfg map[string]any) { cfg["wake"].(map[string]any)["mode"] = brakeman.WakeBackground })
+	b.roleSettle(t)
+	if r := b.ledgerRole(t); r.State != crew.RoleIdle || r.Tries != 0 {
+		t.Fatalf("the background on again: %+v", r)
+	}
+	if page, _, _ := b.desk.st.List("", 10); len(page) != 1 {
+		t.Fatalf("a save started a turn: %d requests", len(page))
+	}
+}
+
 // TestAnUnavailableRoleHoldsNothingElse: while the role is unavailable a
 // person's crew runs and a question its member asks is answered as ever:
 // nothing waits on Brakeman.

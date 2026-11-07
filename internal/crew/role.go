@@ -143,7 +143,8 @@ type RoleChange struct {
 // unavailability kept for reason: a spent budget by a budget changed; a
 // turn whose agent did not start by a change of what the agent starts
 // with (another agent, model, account or folder: the same one signed out
-// would not start again); the role off by the role turned on or off; a
+// would not start again) or by the role turned off or on (a person's own
+// start again, #715); the role off by the role turned on or off; a
 // run that did not stop by none (stopping it does). A save that changes
 // nothing ends nothing. An unavailability kept before reasons were (no
 // reason) ends at any change, as every save then ended it.
@@ -152,7 +153,7 @@ func SaveEnds(reason string, ch RoleChange) bool {
 	case ReasonBudget:
 		return ch.Budget
 	case ReasonStart:
-		return ch.Start
+		return ch.Start || ch.On
 	case ReasonOff:
 		return ch.On
 	case ReasonStuck:
@@ -762,24 +763,31 @@ func (r *Role) Asked(w RoleWake) error {
 // Reconfigured is its owner's configuration saved with the change ch: an
 // unavailable role looks again at once, as a person's request makes it
 // (Asked), when the save changed what made it unavailable (SaveEnds, by
-// the reason kept with it): a budget raised, another agent or account for
-// one that did not start. It takes up what its record holds: a batch kept
+// the reason kept with it): a budget raised, another agent or account, or
+// the background turned off or on, for one that did not start. It takes up what its record holds: a batch kept
 // fires within its rules on the next step (its window, the cooldown), and
 // Fire weighs the turn against the configuration now, so a budget raised
 // clears "the day's budget is spent" and one still spent makes the role
 // unavailable again in words true now. A save that changed nothing it
-// weighs, the role off, or any other state, changes nothing.
+// weighs, or any other state, changes nothing. A turn whose agent did
+// not start is ended, with its count of such turns in a row, by a save
+// that changed what the agent starts with (an account cleared) or turned
+// the role off or on, the role off too: the role turned on again starts
+// clean, never unavailable with the old agent's words (#715). Any other
+// reason waits for the role on.
 func (r *Role) Reconfigured(ch RoleChange) error {
-	if s, err := r.records.RoleSettings(); err != nil {
+	s, err := r.records.RoleSettings()
+	if err != nil {
 		return err
-	} else if !s.On {
-		return nil
 	}
 	r.mu.Lock()
 	now := r.now()
-	err := r.change(func(c *RoleRecord) error {
-		if c.State != RoleUnavailable || !SaveEnds(c.Reason, ch) {
+	err = r.change(func(c *RoleRecord) error {
+		if c.State != RoleUnavailable || !s.On && c.Reason != ReasonStart || !SaveEnds(c.Reason, ch) {
 			return errNothing
+		}
+		if c.Reason == ReasonStart {
+			c.Tries = 0
 		}
 		c.available(now)
 		return nil

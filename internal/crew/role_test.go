@@ -720,8 +720,8 @@ func TestTheStartRetryDoublesToItsBound(t *testing.T) {
 
 // TestASaveEndsOnlyWhatItChanged: each reason a role is unavailable for,
 // against each kind of save: a budget changed ends a spent budget; what the
-// agent starts with changed ends a turn whose agent did not start; the role
-// turned on or off ends its being off; nothing ends a run that did not
+// agent starts with changed, or the role turned on or off, ends a turn whose
+// agent did not start; the role turned on or off ends its being off; nothing ends a run that did not
 // stop; a save that changed nothing ends nothing. Each is read from the
 // role's record after Reconfigured.
 func TestASaveEndsOnlyWhatItChanged(t *testing.T) {
@@ -734,7 +734,7 @@ func TestASaveEndsOnlyWhatItChanged(t *testing.T) {
 	}
 	ends := map[string][]string{
 		ReasonBudget: {"budget"},
-		ReasonStart:  {"agent"},
+		ReasonStart:  {"agent", "on"},
 		ReasonOff:    {"on"},
 		ReasonStuck:  nil,
 		"":           {"budget", "agent", "on", "other"},
@@ -774,6 +774,69 @@ func TestASaveEndsOnlyWhatItChanged(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestASaveOfTheRoleOffEndsAnAgentNotStarted (#715): the role's agent did
+// not start (signed out), and a save turns the background off, clears the
+// account, or both: the role is not left unavailable with the old words,
+// and its count of turns not started is gone, so with the background on
+// again the next turn is fired by its wake and a failure of it counts
+// once. The same for a role turned off while its turn ran, by a save of
+// the account cleared; a save of the role off that changed nothing it
+// weighs ends nothing.
+func TestASaveOfTheRoleOffEndsAnAgentNotStarted(t *testing.T) {
+	words := "the agent did not start in 5 minutes, no call to Conductor (signed out?)"
+	for name, c := range map[string]struct {
+		offBefore bool
+		ch        RoleChange
+		ends      bool
+	}{
+		"off and the account cleared": {ch: RoleChange{On: true, Start: true}, ends: true},
+		"off":                         {ch: RoleChange{On: true}, ends: true},
+		"the account cleared, off":    {offBefore: true, ch: RoleChange{Start: true}, ends: true},
+		"anything else, off":          {offBefore: true, ch: RoleChange{Other: true, Budget: true}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newRoleFixture(t)
+			f.failed("build", 1)
+			f.clock.add(2 * time.Minute)
+			f.state(RoleBriefing)
+			// Turned off by an earlier save while the turn ran, which found
+			// nothing to end then.
+			f.rec.settings.On = !c.offBefore
+			f.rec.close("br-1", RoleOutcome{Unavailable: words, Reason: ReasonStart})
+			if r := f.state(RoleUnavailable); r.Tries != 1 {
+				t.Fatalf("%+v", r)
+			}
+			f.rec.settings.On = false
+			if err := f.role.Reconfigured(c.ch); err != nil {
+				t.Fatal(err)
+			}
+			if !c.ends {
+				if r := f.record(); r.State != RoleUnavailable || r.Why != words || r.Tries != 1 {
+					t.Fatalf("ended by a save that changed nothing it weighs: %+v", r)
+				}
+				return
+			}
+			// Off: the batch the failed turn kept is dropped, never fired.
+			if r := f.state(RoleIdle); r.Why != "" || r.Reason != "" || r.Tries != 0 || !r.RetryAt.IsZero() || r.Open != nil {
+				t.Fatalf("after the save: %+v", r)
+			}
+			f.rec.settings.On = true
+			if err := f.role.Reconfigured(RoleChange{On: true}); err != nil {
+				t.Fatal(err)
+			}
+			f.failed("lint", 1)
+			f.clock.add(2 * time.Minute)
+			if r := f.state(RoleBriefing); f.rec.fired() != 2 || r.Request != "br-2" {
+				t.Fatalf("the background on again: %d turns, %+v", f.rec.fired(), r)
+			}
+			f.rec.close("br-2", RoleOutcome{Unavailable: words, Reason: ReasonStart})
+			if r := f.state(RoleUnavailable); r.Tries != 1 || !r.RetryAt.Equal(f.clock.now().Add(RoleStartRetry)) {
+				t.Fatalf("the next failure counts once: %+v", r)
+			}
+		})
 	}
 }
 
