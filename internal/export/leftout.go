@@ -15,6 +15,7 @@ const (
 	WhyProvider   = "provider"           // ext/, a provider's own state
 	WhyNotRegular = "not a regular file" // a link, a device, a socket, a pipe
 	WhyName       = "unsupported name"   // a name an archive cannot hold, or another spelling of one it holds (Install would refuse it)
+	WhyDerived    = "derived"            // the history's index: a cache of the stores, rebuilt at the next start
 )
 
 // leftRule is a row of leftOut: an exact slash path (file), a directory
@@ -30,7 +31,9 @@ type leftRule struct {
 // reserved"): a credential, a lock, a temporary file, a provider's state
 // or the restore's own files can neither leave the data directory nor be
 // planted in one. The databases' -wal, -shm and -journal are left because
-// the snapshot holds what they did.
+// the snapshot holds what they did. The history's index
+// (docs/plans/history.md) is derived: rebuilt from the stores at the next
+// start, never carried.
 var leftOut = []leftRule{
 	{file: "workbench-token", why: WhySecret},
 	{file: "workbench-token.lock", why: WhyLock},
@@ -38,6 +41,8 @@ var leftOut = []leftRule{
 	{file: "runs/owner.lock", why: WhyLock},
 	{file: "brakeman/owner.lock", why: WhyLock},
 	{file: "history/owner.lock", why: WhyLock},
+	{file: "history/index.sqlite", why: WhyDerived},
+	{file: "history/index.sqlite.damaged", why: WhyDerived},
 	{dir: "tls", why: WhySecret},
 	{dir: "ext", why: WhyProvider},
 	{dir: "dispatch/attachments/tmp", why: WhyTemporary},

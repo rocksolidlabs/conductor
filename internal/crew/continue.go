@@ -34,7 +34,7 @@ import (
 // from by reference, by the reference (run/task/n), read from the runs
 // that hold them (LoadImports): empty unless read. FailedChecks are the
 // receipts that failed its attempts failed at a check or a verify step,
-// one each (failingReceipt), without their logs: a continuation hands the
+// one each (FailingReceipt), without their logs: a continuation hands the
 // one of a task's last attempt to its first (taskfile.go). Launch is the
 // crew as launched of the run's chain, the crew JSON of its launch row
 // (LaunchCrew), where its people and its tasks' owners are read from; ""
@@ -400,7 +400,7 @@ type history struct {
 	dec decisionHistory
 }
 
-// uncountedRow reports whether an attempt's row is one not counted: its
+// UncountedAttempt reports whether an attempt's row is one not counted: its
 // worktree could not be made usable (steps.go), failed with no result at a
 // stage of the project manifest, or, for a run launched from a ticket, it
 // could not start as its plan revision approved, at "package" or "agent"
@@ -408,7 +408,7 @@ type history struct {
 // failed the attempt before (receiptStage), or its task's decisions
 // (decisionsStage). A continuation passes over it
 // as the run that made it did.
-func uncountedRow(a ledger.AttemptRow) bool {
+func UncountedAttempt(a ledger.AttemptRow) bool {
 	return a.State == ledger.AttemptFailed && a.ResultCommit == "" && (manifestStage(a.Stage) || launchStage(a.Stage) || a.Stage == receiptStage || a.Stage == decisionsStage)
 }
 
@@ -416,7 +416,7 @@ func uncountedRow(a ledger.AttemptRow) bool {
 // phases' steps, "ready" for the tree's readiness not recorded (treeReady:
 // its tree.ready refused), or "manifest" for one that could not be
 // resolved. A checkout's "ready" (its ready phase changed tracked files)
-// is a result's, which its row carries, so uncountedRow never takes it.
+// is a result's, which its row carries, so UncountedAttempt never takes it.
 func manifestStage(stage string) bool {
 	return stage == "manifest" || stage == "ready" || strings.HasPrefix(stage, "setup ") || strings.HasPrefix(stage, "service ") || strings.HasPrefix(stage, "ready ")
 }
@@ -448,7 +448,7 @@ func (e *Engine) readHistory(ctx context.Context, from Loaded) (history, error) 
 		if a.N > top[a.TaskID].N {
 			top[a.TaskID] = a
 		}
-		if uncountedRow(a) {
+		if UncountedAttempt(a) {
 			uncounted[a.TaskID] = append(uncounted[a.TaskID], a)
 			return
 		}
@@ -564,7 +564,7 @@ func (e *Engine) readHistory(ctx context.Context, from Loaded) (history, error) 
 	unusable, refusedCP := map[string]ledger.AttemptRow{}, map[string]bool{}
 	for id, t := range top {
 		la, hasLast := last[id]
-		if uncountedRow(t) && (!hasLast || t.N > la.N) {
+		if UncountedAttempt(t) && (!hasLast || t.N > la.N) {
 			unusable[id] = t
 		}
 		if !hasLast || la.Checkpoint == "" {
@@ -586,7 +586,7 @@ func (e *Engine) readHistory(ctx context.Context, from Loaded) (history, error) 
 	// from memory, so a restart hands the next attempt the same.
 	failed := map[string]*failedCheck{}
 	for id, la := range last {
-		phase, cid, ok := failedAtCheck(la)
+		phase, cid, ok := FailedAtCheck(la)
 		if !ok {
 			continue
 		}

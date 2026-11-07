@@ -23,6 +23,11 @@ import (
 // In the run the receipt is the one verify kept on the attempt; after a
 // restart, and for a continuation, it is read back from the rows, the
 // changed paths from the finished event committed with the row.
+//
+// FailedAtCheck, FailingReceipt, FailedOutcome and UncountedAttempt are
+// exported for the history's index (docs/plans/history.md, PR-3), which
+// links each failed receipt to the attempt the engine hands it by the
+// engine's own rules, never a copy of them.
 
 // Bounds of the handed receipt.
 const (
@@ -104,9 +109,9 @@ func (fc *failedCheck) handed() *TaskCheck {
 		Changed: append([]string(nil), fc.changed...), Tail: r.Tail, LogSHA256: r.LogSHA256}
 }
 
-// failedAtCheck reports whether an attempt's row failed at a task's check
+// FailedAtCheck reports whether an attempt's row failed at a task's check
 // or a verify step, and which: the stage verify wrote, "<phase> <id>".
-func failedAtCheck(a ledger.AttemptRow) (phase, id string, ok bool) {
+func FailedAtCheck(a ledger.AttemptRow) (phase, id string, ok bool) {
 	if a.State != ledger.AttemptFailed {
 		return "", "", false
 	}
@@ -117,15 +122,15 @@ func failedAtCheck(a ledger.AttemptRow) (phase, id string, ok bool) {
 	return phase, id, true
 }
 
-// failingReceipt is, of an attempt's receipts (rows, by id and k), the one
+// FailingReceipt is, of an attempt's receipts (rows, by id and k), the one
 // that failed it: the last finished run of the check or verify step its
-// stage names, when that run failed (failedOutcome). None when the attempt
+// stage names, when that run failed (FailedOutcome). None when the attempt
 // did not fail at one, the ledger kept no finished row of it (its outcome
 // refused), or the run passed and the attempt failed at it only because
 // its outcome was not recorded then (verify keeps no receipt in memory for
 // that either).
-func failingReceipt(a ledger.AttemptRow, rows []ledger.CheckRow) (ledger.CheckRow, bool) {
-	phase, id, ok := failedAtCheck(a)
+func FailingReceipt(a ledger.AttemptRow, rows []ledger.CheckRow) (ledger.CheckRow, bool) {
+	phase, id, ok := FailedAtCheck(a)
 	if !ok {
 		return ledger.CheckRow{}, false
 	}
@@ -136,20 +141,20 @@ func failingReceipt(a ledger.AttemptRow, rows []ledger.CheckRow) (ledger.CheckRo
 			out, found = r, true
 		}
 	}
-	if !found || !failedOutcome(out) {
+	if !found || !FailedOutcome(out) {
 		return ledger.CheckRow{}, false
 	}
 	out.Log = nil
 	return out, true
 }
 
-// failedOutcome reports whether a finished receipt's row records a
+// FailedOutcome reports whether a finished receipt's row records a
 // failure: its failure's words, or, for a row without them, how it ended:
 // a non-zero exit, a signal, a timeout, or a checkout left changed. A row
 // a version 4 database kept has no words (the migration to version 5
 // gives every row an empty error), and its failure is still its outcome
 // (Codex's review of #559, round 2); a run that passed has neither.
-func failedOutcome(r ledger.CheckRow) bool {
+func FailedOutcome(r ledger.CheckRow) bool {
 	return r.Error != "" || r.Exit != 0 || r.Signal != "" || r.TimedOut || !r.Stable
 }
 
