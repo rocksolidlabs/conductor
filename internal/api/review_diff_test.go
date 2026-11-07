@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/gitcli"
+	"github.com/rocksolidlabs/conductor/internal/gitrepo"
 )
 
 // A candidate's diff (docs/plans/review-repair.md, RV1 PR-3): the files a
@@ -304,5 +307,92 @@ func TestReviewDiffRoutesAreTheAdmins(t *testing.T) {
 		if status, data, out := yard.callAs(t, adminToken, rt.method, rt.path, body); status != http.StatusForbidden || errorCode(out) != "switchyard" {
 			t.Fatalf("%s %s on a switchyard: %d %.200s", rt.method, rt.path, status, data)
 		}
+	}
+}
+
+// The diff's reply is bounded by its encoded size, not only by
+// gitrepo.MaxFiles: renames whose paths and sources JSON escapes to
+// several times their length (a quote, a backslash, '<' as \u003c, a
+// control byte as \u0001) are kept in order until the next would take the
+// reply as writeJSON writes it past MaxDiffReply, truncated then; a reply
+// of exactly MaxDiffReply keeps every file, a byte more drops the last.
+func TestFitDiffBoundsTheEncodedReply(t *testing.T) {
+	candidate, base := strings.Repeat("c", 40), strings.Repeat("b", 40)
+	escaped := strings.Repeat("\"\\<\x01", 60) // 240 bytes, 960 encoded
+	change := func(i int) gitrepo.Change {
+		return gitrepo.Change{
+			Path: fmt.Sprintf("new/%03d/%s", i, escaped), From: fmt.Sprintf("old/%03d/%s", i, escaped),
+			Status: "R", Added: i, Removed: 1,
+		}
+	}
+	asFiles := func(cs []gitrepo.Change) []diffFile {
+		files := make([]diffFile, 0, len(cs))
+		for _, c := range cs {
+			files = append(files, diffFile{Path: c.Path, From: c.From, Status: c.Status, Added: c.Added, Removed: c.Removed, Binary: c.Binary})
+		}
+		return files
+	}
+	encoded := func(files []diffFile, truncated bool) []byte {
+		rec := httptest.NewRecorder()
+		writeJSON(rec, http.StatusOK, diffReply(candidate, base, files, truncated))
+		return rec.Body.Bytes()
+	}
+	var d gitrepo.Detail
+	for i := range 300 {
+		d.Changes = append(d.Changes, change(i))
+	}
+	if len(d.Changes) >= gitrepo.MaxFiles {
+		t.Fatal("the test must stay under gitrepo.MaxFiles, so that only the bytes cut it")
+	}
+
+	files, truncated := fitDiff(candidate, base, d)
+	body := encoded(files, truncated)
+	kept := len(files)
+	if !truncated || kept == 0 || kept >= len(d.Changes) {
+		t.Fatalf("%d of %d files kept, truncated %v", kept, len(d.Changes), truncated)
+	}
+	if !reflect.DeepEqual(files, asFiles(d.Changes[:kept])) {
+		t.Fatal("the files kept are not the diff's first ones, in order")
+	}
+	if len(body) > MaxDiffReply {
+		t.Fatalf("the reply is %d bytes, past %d", len(body), MaxDiffReply)
+	}
+	if n := len(encoded(asFiles(d.Changes[:kept+1]), false)); n <= MaxDiffReply {
+		t.Fatalf("with the next file the reply would be %d bytes, within %d: it was left out for nothing", n, MaxDiffReply)
+	}
+	var reply struct {
+		Files     []diffFile `json:"files"`
+		Truncated bool       `json:"truncated"`
+	}
+	if err := json.Unmarshal(body, &reply); err != nil || !reply.Truncated || !reflect.DeepEqual(reply.Files, files) {
+		t.Fatalf("the reply does not decode to what was kept: %v %v", reply.Truncated, err)
+	}
+
+	// The kept files, the last one's path padded so that the reply not cut
+	// is exactly MaxDiffReply: every file kept, not truncated; one byte
+	// more and the last is left out, truncated, the reply within the bound.
+	edge := gitrepo.Detail{Changes: slices.Clone(d.Changes[:kept])}
+	pad := MaxDiffReply - len(encoded(asFiles(edge.Changes), false))
+	edge.Changes[kept-1].Path += strings.Repeat("a", pad)
+	files, truncated = fitDiff(candidate, base, edge)
+	if body := encoded(files, truncated); truncated || len(files) != kept || len(body) != MaxDiffReply {
+		t.Fatalf("at the bound: %d of %d files, truncated %v, %d bytes", len(files), kept, truncated, len(body))
+	}
+	edge.Changes[kept-1].Path += "a"
+	files, truncated = fitDiff(candidate, base, edge)
+	if body := encoded(files, truncated); !truncated || len(files) != kept-1 || len(body) > MaxDiffReply ||
+		!reflect.DeepEqual(files, asFiles(edge.Changes[:kept-1])) {
+		t.Fatalf("a byte past the bound: %d of %d files, truncated %v, %d bytes", len(files), kept, truncated, len(body))
+	}
+
+	// Every file within the bound, the diff itself cut at
+	// gitrepo.MaxFiles: truncated still.
+	small := gitrepo.Detail{Changes: d.Changes[:3], Truncated: true}
+	if files, truncated := fitDiff(candidate, base, small); !truncated || len(files) != 3 {
+		t.Fatalf("a diff cut by gitrepo: %d files, truncated %v", len(files), truncated)
+	}
+	small.Truncated = false
+	if files, truncated := fitDiff(candidate, base, small); truncated || len(files) != 3 {
+		t.Fatalf("a small diff: %d files, truncated %v", len(files), truncated)
 	}
 }
