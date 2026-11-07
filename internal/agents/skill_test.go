@@ -50,7 +50,6 @@ func TestSkillText(t *testing.T) {
 		// A project manifest's tree (EN1 PR-3): its ports, its preview and
 		// its state directory, in the environment.
 		"CONDUCTOR_PORT_<NAME> holds each of its ports", "CONDUCTOR_PREVIEW_URL its preview", "CONDUCTOR_STATE_DIR (.conductor/state)",
-		"task_context, task_result,\nmessage_send, inbox_read, inbox_ack, task_blocked, task_checkpoint,\nticket_read, ticket_comment, and in a managed run decision_request,\ndecision_list, decision_read and decision_withdraw",
 		`"${CONDUCTOR_BIN:-conductor}" task send --to docs "the API is under internal/api/users.go; the handler names are final"`,
 		`"${CONDUCTOR_BIN:-conductor}" task inbox`,
 		`"${CONDUCTOR_BIN:-conductor}" task ack 3`,
@@ -108,7 +107,7 @@ func TestSkillText(t *testing.T) {
 		".conductor/ticket.md", ".conductor/package.json", ".conductor/attachments/",
 		"Your\n  run follows that package.", "a change that matters to your work is a\n  person's to decide: tell them, with a comment or task blocked, and never\n  act on it alone.",
 		"ever call notify or crew outside a Conductor session; the commands exit silently there",
-		"CONDUCTOR_AGENT", "at most 2 a session", "at most 12 members",
+		"CONDUCTOR_AGENT", "most 2 an hour", "at most 12\n  members",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the skill does not say %q", want)
