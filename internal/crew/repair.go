@@ -144,6 +144,10 @@ type RepairRequest struct {
 	Request  ChangeRequest `json:"request"`
 }
 
+// intentRequestChanges is a person's Request changes' intent, as its
+// command and receipt name it.
+const intentRequestChanges = "request_changes"
+
 // clone is a deep copy of cr, nil for nil.
 func (cr *ChangeRequest) clone() *ChangeRequest {
 	if cr == nil {
@@ -516,7 +520,7 @@ func (e *Engine) RequestChanges(ctx context.Context, runID, actor string, cmd Co
 			}
 		}
 	}
-	return e.act(ctx, runID, actor, cmd, "request_changes", []string{rq.Task, strconv.Itoa(rq.Attempt), rq.Commit, rq.Request.Review}, func(r *run) (*task, []event, error) {
+	return e.act(ctx, runID, actor, cmd, intentRequestChanges, requestArgs(rq), func(r *run) (*task, []event, error) {
 		t := r.task(rq.Task)
 		if t == nil {
 			return nil, nil, ErrTaskNotFound
@@ -524,35 +528,55 @@ func (e *Engine) RequestChanges(ctx context.Context, runID, actor string, cmd Co
 		if r.stopping || r.stoppedAt != nil {
 			return t, nil, fmt.Errorf("%w: continue it, then request changes in its continuation", ErrRunStopped)
 		}
-		if t.def.Kind != TaskWork {
-			return t, nil, fmt.Errorf("%w: a review task's verdict is not repaired: request changes of the candidate it reviewed", ErrTaskState)
-		}
-		start, err := r.standingCandidate(t, rq)
-		if err != nil {
-			return t, nil, err
-		}
-		// The gates its reopen would ask again need their room, as a
-		// Retry's do: refused before anything is recorded.
-		if err := r.retryNeedsRoom(t, "request for changes"); err != nil {
-			return t, nil, err
-		}
-		cr := rq.Request
-		rp := requestRepair(cr, cr.Review, rq.Attempt, rq.Commit, start)
-		rp.keepReview(t.repair)
-		if b, err := json.Marshal(rp.taskRepair()); err != nil || len(b) > ledger.MaxPayload {
-			kept := ""
-			if rp.from != nil {
-				kept = fmt.Sprintf(" with the %d findings of review %s it keeps,", len(rp.findings), rp.from.Review)
-			}
-			return t, nil, fmt.Errorf("%w:%s the repair is %d KiB as the run keeps it, more than %d KiB: shorten the notes", ErrChangeRequestTooLarge, kept, kib(len(b)), ledger.MaxPayload>>10)
-		}
-		who := cr.By
-		ev := map[string]any{"review": cr.Review, "by": cr.By, "attempt": rq.Attempt}
-		if rq.Imported != "" {
-			ev["imported"] = rq.Imported
-		}
-		return t, e.reopenFor(r, t, rp, who, "changes requested by "+who+": "+changeWords(&cr), true, ev), nil
+		events, err := e.repairCandidate(r, t, rq)
+		return t, events, err
 	}, nil)
+}
+
+// repairCandidate is a person's repair of t's standing candidate, the
+// change RequestChanges makes in its command's transaction and a
+// continuation that carries the repair in its first (ContinueRunWith):
+// the task a work task, the candidate rq names standing
+// (standingCandidate), room for the gates its reopen asks again, the
+// repair within what the run keeps, then the repair transition
+// (reopenFor), one more attempt granted when the task's are spent. An
+// error changes nothing. The caller holds e.mu, in a transaction's change.
+func (e *Engine) repairCandidate(r *run, t *task, rq RepairRequest) ([]event, error) {
+	if t.def.Kind != TaskWork {
+		return nil, fmt.Errorf("%w: a review task's verdict is not repaired: request changes of the candidate it reviewed", ErrTaskState)
+	}
+	start, err := r.standingCandidate(t, rq)
+	if err != nil {
+		return nil, err
+	}
+	// The gates its reopen would ask again need their room, as a Retry's
+	// do: refused before anything is recorded.
+	if err := r.retryNeedsRoom(t, "request for changes"); err != nil {
+		return nil, err
+	}
+	cr := rq.Request
+	rp := requestRepair(cr, cr.Review, rq.Attempt, rq.Commit, start)
+	rp.keepReview(t.repair)
+	if b, err := json.Marshal(rp.taskRepair()); err != nil || len(b) > ledger.MaxPayload {
+		kept := ""
+		if rp.from != nil {
+			kept = fmt.Sprintf(" with the %d findings of review %s it keeps,", len(rp.findings), rp.from.Review)
+		}
+		return nil, fmt.Errorf("%w:%s the repair is %d KiB as the run keeps it, more than %d KiB: shorten the notes", ErrChangeRequestTooLarge, kept, kib(len(b)), ledger.MaxPayload>>10)
+	}
+	who := cr.By
+	ev := map[string]any{"review": cr.Review, "by": cr.By, "attempt": rq.Attempt}
+	if rq.Imported != "" {
+		ev["imported"] = rq.Imported
+	}
+	return e.reopenFor(r, t, rp, who, "changes requested by "+who+": "+changeWords(&cr), true, ev), nil
+}
+
+// requestArgs are a person's Request changes' arguments as its command
+// keeps them, in RequestChanges and in a continuation that carries it
+// alike: the same command sent to either is the same content.
+func requestArgs(rq RepairRequest) []string {
+	return []string{rq.Task, strconv.Itoa(rq.Attempt), rq.Commit, rq.Request.Review}
 }
 
 // keepReview carries into rp, a person's repair, the findings of a review
