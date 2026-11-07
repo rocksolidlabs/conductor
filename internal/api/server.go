@@ -144,7 +144,18 @@ type Server struct {
 	// switchyard, and when it could not be opened. readRevision is how a
 	// record's git facts are read (gitcli.RevisionOf; a test's seam).
 	sessionRecords *journal.Journal
-	readRevision   func(ctx context.Context, dir string) (gitcli.Revision, error)
+	// history feeds the history's index from the session records and the
+	// runs (history_index.go); nil where there are no session records.
+	history *historyIndexer
+	// historyReads counts the history's reads in flight (history_search.go).
+	// A test's seams: historyHold holds a read once it has its slot, with
+	// the read's context; historyDeadline, when set, is a read's deadline
+	// in place of historyReadTimeout.
+	historyReads    historyGate
+	historyHold     func(ctx context.Context, r *http.Request)
+	historyDeadline time.Duration
+	commits         *commitFan // the commit hooks' observers (commits.go)
+	readRevision    func(ctx context.Context, dir string) (gitcli.Revision, error)
 	// recordRepos is each native server session's launch repository, by
 	// the identity of its common git directory (*launchRepo, which holds
 	// it open where the system reuses identities), until its end commit is
@@ -345,11 +356,16 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// The sync hooks before the first write (the masked catalog, the crews'
 	// migration, the ledger's recovery), so the start-up's commits are told
 	// too; taken off the data directory again when New fails.
+	// The commit hooks go through one fan (commits.go): the sync adapter
+	// first, the history's indexer after it.
+	fan := newCommitFan()
 	syncs := newSyncAdapter(st)
+	fan.add(syncs.observer())
+	fan.observeData(st)
 	made := false
 	defer func() {
 		if !made {
-			syncs.detach()
+			fan.detachData(st)
 		}
 	}()
 	base := cat.Clone()
@@ -420,6 +436,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	s.installExtensions(o.providers)
 	s.installRuntimes(o.providers, o.native)
 	s.syncs = syncs
+	s.commits = fan
 	syncs.attach(s)
 	s.holdQueue(o.providers.Continuity, s.exts.sync.Name(), syncs.begin)
 	s.router = newDecisionRouter(s)
@@ -506,13 +523,16 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			}
 		}
 		if s.dispatch != nil {
-			syncs.observeDispatch(s.dispatch)
+			fan.observeDispatch(s.dispatch)
 			s.dispatch.SetRunExists(s.runKnown)
 			s.dispatch.OnChange(s.events.dispatch)
 		}
 		if !cfg.Switchyard.Enabled {
 			s.brakeman = s.openBrakemanDesk(st)
 			s.sessionRecords = s.openSessionRecords(st)
+			// The history's indexer, which opens the index off the start
+			// path once the journal holds history/owner.lock.
+			s.openHistoryIndexer(fan)
 		}
 		if s.brakeman != nil {
 			// A run's end reaches Brakeman's background role too: a legacy
@@ -527,7 +547,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			}
 		}
 		s.wireLaunches()
-		s.ledger = openLedger(context.Background(), st, s.records, log, syncs.observeLedger, syncs.ledgerOwned, s.ledgerRecovered, s.restoreLaunchPeople)
+		s.ledger = openLedger(context.Background(), st, s.records, log, fan.observeLedger, syncs.ledgerOwned, s.ledgerRecovered, s.restoreLaunchPeople)
 		if s.ledger == nil {
 			// Its runs are not gone: the sync store is never told they are.
 			syncs.unopened("the ledger")
@@ -642,6 +662,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// Starter drain from now on (a Starter's once its Start has succeeded).
 	s.beginFreeQueues()
 	made = true
+	if s.history != nil {
+		s.history.start()
+	}
 	return s, nil
 }
 
@@ -715,7 +738,9 @@ func (s *Server) WaitBackground(ctx context.Context) {
 	case <-done:
 	case <-ctx.Done():
 	}
-	// No record lands after this: the directories may be going.
+	// No record lands after this: the directories may be going. The
+	// history's indexer ends first: it reads the stores closed after it.
+	s.stopHistory()
 	if s.brakeman != nil {
 		s.brakeman.release(ctx)
 	}
@@ -746,6 +771,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/history/sessions/{id}", s.requireAdmin(s.handleHistorySession))
 	mux.HandleFunc("DELETE /api/history/sessions/{id}", s.requireAdmin(s.handleForgetHistorySession))
 	mux.HandleFunc("DELETE /api/history/sessions", s.requireAdmin(s.handleForgetHistorySessions))
+	mux.HandleFunc("POST /api/history/reindex", s.requireAdmin(s.handleHistoryReindex))
+	mux.HandleFunc("GET /api/history", historyRoute(s.requireAdmin(s.handleHistorySearch)))
+	mux.HandleFunc("GET /api/history/entry", historyRoute(s.requireAdmin(s.handleHistoryEntry)))
+	mux.HandleFunc("GET /api/history/similar", historyRoute(s.requireAdmin(s.handleHistorySimilar)))
+	mux.HandleFunc("GET /api/history/command", historyRoute(s.requireAdmin(s.handleHistoryCommand)))
 	// The decision inbox, read-only (inbox.go, inbox_track.go).
 	mux.HandleFunc("GET /api/inbox", s.inboxOnly(s.handleInbox))
 	mux.HandleFunc("GET /api/inbox/item", s.inboxOnly(s.handleInboxItem))
@@ -1238,6 +1268,9 @@ func (s *Server) Shutdown(ctx context.Context) {
 	case <-done:
 	case <-ctx.Done():
 	}
+	// The history's indexer ends before the stores it reads close, and
+	// closes its index (the next start then owes it no check).
+	s.stopHistory()
 	if s.records != nil {
 		wctx, cancel := context.WithTimeout(context.Background(), recordsGrace)
 		if !s.runs.WaitRecorded(wctx) {

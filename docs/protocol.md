@@ -2383,10 +2383,10 @@ overview at most 4 KiB, each section at most 64 KiB, the seven at most
 - `limits`: `[{name, min?, max?, default?, pattern?, unit?, about}]`,
   each read from the constant that refuses past it (`default` what 0
   takes, a check timeout's): a task id's pattern, a crew's
-  members and tasks, a task's checks, a check's timeout, a result's
-  summary, issues and findings, a message and an inbox, a report's
-  message, a comment, a ticket's title and description, a task file's
-  page, the self-service crews and links, a brief's size, items, refs,
+  members and tasks, a member's name, a task's checks, a check's timeout,
+  a result's summary, issues and findings, a message and an inbox, a
+  report's message, a comment, a ticket's title and description, a task
+  file's page, the self-service crews, links and opens, a brief's size, items, refs,
   title, summary and draft tickets, Brakeman's queue, a body.
 - `host`: `{os, arch, switchyard, managedCrews, selfService, ledger:
   {state, why?}, dispatch: {state, why?}, checksMaxConcurrent,
@@ -4232,13 +4232,115 @@ the records reads a file again only when its size or time changed.
 |---|---|---|
 | `GET /api/history/sessions?after=&limit=` | admin | `{records[{id, name, kind, agent, host, where?, cwd, repo?, branch?, crew?, startedAt, endedAt?, lostAt?, ending?, entries, files, dropped?, newer?, unreadable?}], next?, readOnly?}`, newest first by `startedAt`; `limit` 1 to 100, default 50 (`400 invalid_request` otherwise); `after` the `next` of the page before (at most 64 bytes; `400 bad_cursor` for one that is not) |
 | `GET /api/history/sessions/{id}` | admin | `{record, live, newer}`: the record whole (at most 64 KiB), `live` while the registry lists its session running; `404 not_found` |
-| `DELETE /api/history/sessions/{id}` | admin | `204`: the record forgotten, its file deleted; `409 live_session` for a session still running, `409 resume_pending` for a record whose resume is being started, `409 history_read_only` on a server that does not hold the records, `404 not_found`, `500 history_failed` when its file could not be deleted: the record stays as last written, listed and forgettable again, nothing its session says is written to it, and one whose file has no end is listed `lost` and written so |
-| `DELETE /api/history/sessions` | admin | `{forgotten, kept}`: every record neither live nor pending forgotten, those kept counted; `500 history_failed` when a file could not be deleted (those records stay, as above) |
+| `DELETE /api/history/sessions/{id}` | admin | `204`: the record forgotten, its file deleted; `409 live_session` for a session still running, `409 resume_pending` for a record whose resume is being started, `409 history_read_only` on a server that does not hold the records, `404 not_found`, `500 history_failed` when its file could not be deleted: the record stays as last written, listed and forgettable again, nothing its session says is written to it, and one whose file has no end is listed `lost` and written so; `503 history_index_failed` when the record is removed but the history's index could not drop its entries yet (they are dropped before the index is read again); a `204` answers once the index holds nothing of it |
+| `DELETE /api/history/sessions` | admin | `{forgotten, kept}`: every record neither live nor pending forgotten, those kept counted, answered once the index holds nothing of those forgotten; `500 history_failed` when a file could not be deleted (those records stay, as above); `503 history_index_failed` as above |
+| `POST /api/history/reindex` | admin | `202 {indexing}`: the history's index cleared in place and caught up from nothing, on the indexer's goroutine; `409 history_read_only` on a server that does not hold `history/owner.lock` |
 
 From a forget on, nothing the forgotten record's session says is written
 anywhere. A share link, a session's own token and
 Brakeman's principal reach none of them (`401`). A server with no data directory, and a switchyard,
 answer `404 history_unavailable`.
+
+The **index** of history (`history/index.sqlite`, `internal/history`) is a
+cache of the session records, the ledger, the run records, Dispatch and
+Brakeman's briefs, rebuilt from them when it is missing, damaged or of
+another version, left out of an export (`derived`) and refused in a
+restore. The holder of `history/owner.lock` writes it, opening it off the
+server's start path (an index its last owner did not close is checked on
+a goroutine of its own; its searches meanwhile answer `checking`); another
+server reads it. `indexing` is `{state, behind?, ledger?}`: `state`
+`opening`, `catching_up`, `checking`, `ready`, `read_only` or
+`unavailable`; `behind` the sources not read yet; `ledger:
+"unavailable"` when this process has no ledger to read (the runs are then
+indexed from their records alone). Each source is read with its mark
+taken first: a run's `L<revision>/R<sha256>` (the ledger's revision and
+its record file's hash), a session record's `S<seq>/P<projects>`, and
+`/L<revision>` for a crew member's; a finished check receipt is a source
+of its own, read once. A run is read at most once every 2 s; what another
+server writes to the ledger and the run records is found by a reconcile
+every 30 s.
+
+A **ticket** (`ticket:<KEY-n>`) is read through Dispatch's own reads, its
+mark `Q<seq>` (its changes' last, read first): its record, each comment
+(said; a deleted one its place and number, never its words), each plan
+revision (its crew, base and number, never its body), the approvals,
+withdrawals and supersessions of its revisions, its acceptances and
+their withdrawals and a close by a person (decided, each keyed by the op
+id of the change that recorded it, with the operator), its launches, and
+each delivery whose candidate's verification receipt is kept (checked,
+`delivers` to the candidate's attempt). A ticket's history is read for
+those acts alone: no field's earlier value, nothing of a review or a
+finding. A plan revision's ref is Brakeman's, `plan:<KEY-n>/<n>`, so a
+brief that cites one is joined to it. An act's note is the one in effect
+at the act (Dispatch writes a note only when it changes). Dispatch's hook
+names a changed ticket by its id, so it only asks for the change feed,
+which is read on the indexer's goroutine from the position the index
+keeps (`dispatch:feed`); the same read is the reconcile's, so another
+server's edit is found within 30 s. A **brief** (`brief:<br-n>`) is read
+through Brakeman's store, its mark the brief's time and op id, and found
+by the reconcile from its request's file as well as its brief's (the
+brief is written before the request that says it keeps one; the files
+are looked at before the requests are listed): one `brief.item` per fact, interpretation, proposal and
+outcome (said: Brakeman's words), each `cites` the refs it names; what a
+person asked Brakeman is never read, and a brief whose turn could see the
+terminals' screens keeps its items' words out of the index. Brakeman's own
+runs and sessions are indexed under the crew `brakeman` and left out of a
+search unless it names a crew (`crew:`) or the kind `brief.item`.
+
+The search routes read only their query string (every parameter named,
+each once, the whole at most 12 KiB: `400 invalid_request` otherwise),
+never log it (the request line names the route), and answer `429
+history_busy` past two reads of the index in flight from one client or
+four in all. A read has 15 s (`503 history_timeout` past it); its slot is
+let go before its reply is written, and every reply, refusals and
+errors included, has 15 s of its own to reach the connection (`Content-Length` set, the reply flushed within it; a
+client that reads nothing past it has its connection closed), and a read
+whose client left is answered nothing and logged as no failure. A
+forgotten session record is in nothing a reply says (its rows, `total`,
+the ranking and choice of matches, every cursor, `repeats`, `links`,
+`indexing.oldest`): its rows are gone from the index before its Forget
+answers, so a search reads the index alone. An entry or similar read
+asks the journal for the entry's record once more: `404 entry_gone` when
+it is not found; when the journal could not be read the entry is served,
+its availability `unknown`. An entry as served is `{key, kind, class,
+outcome?, title, summary?, snippet?, at, actor?, source{store, label,
+ref}, host{name?, user?, hosted?, where?}, project{key?, repo?, tree?},
+revision{label?, commit?}, agent?{id, name?, version?, session?}, crew?,
+run?, ticket?, anchor{ref, label, url?}, url, repeats{count, anchors},
+links[{rel, dir, ref, label, key?, class?, outcome?, url?}],
+availability{state, words, resume?, commit?, branch?, log?}}`, never its
+body (`snippet`, at most 300 bytes, is cut from it). `class` is `said`,
+`decided`, `checked` or `record`, from the kind alone. `url` is the page
+that shows the evidence, never an API route: a check receipt the run page
+at its step (`/runs/<run>?view=tasks&task=&attempt=&step=<phase>/<id>/<k>`),
+a command receipt the run page at the receipt (`?command=&actor=`), a
+comment its ticket's page at it (`?comment=<n>`), a launch (an entry or a
+link's end) its run's page (its ticket's before it has a run), a session `/sessions/<id>` while the server lists it and
+`/history/sessions/<id>#e<seq>` after; every other ref the page Brakeman's
+references open. `availability.state` is `live`, `listed`, `record`,
+`lost` or `host_away` for a session, `worktree`, `worktree_gone` or
+`elsewhere` (another Runtime's, not looked at) for an attempt, `pruned`
+for an attempt or a receipt whose run's rows are gone, `log`,
+`log_dropped` or `pruned` for a receipt, `deleted` for a ticket's or a
+comment's tombstone, `kept` or `pruned` for a brief (by Brakeman's store's
+own read), else `kept`; `unknown` wherever the store could not be read
+(the ledger not open, a read that failed, a run's folder not known or a
+step of a worktree's place that could not be looked at): never said as
+gone. Every yes-or-no answer of availability and eligibility is `yes`,
+`no` or `unknown`, and only a finding that the thing is not there (no
+such file or record, a path refused as not its place) is `no`. An
+attempt's worktree is looked at only where its run puts it
+(`<run's folder>/.conductor/worktrees/<run>/<task>.<n>`), through the
+run's folder as a launch opens it, each step a directory and never a
+link: anything else is `worktree_gone` in the same words, and its
+`branch` is its ledger row's.
+
+| Route | Who | Answers |
+|---|---|---|
+| `GET /api/history?q=&limit=&after=` | admin | `{entries[Entry], next?, total, totalCapped?, cut?, truncated?, indexing{state, behind?, ledger?, oldest?, dropped?}, readOnly?}`: the entries whose text holds the line's words (at most 512 bytes, 16 terms; `"quoted phrases"`; the filters `class: kind: outcome: project: repo: host: agent: crew: run: ticket: session: since: until:`) ranked, or newest first by filters alone; `limit` 1 to 100 (20 when absent); `after` a page's `next`, at most 2 KiB. `cut` is `ranked` or `scanned` past the search's bounds; `state` also `other_version`; the reply at most 2 MiB, the rows past it left to `next` (the cursor after the last row served) with `truncated: true`. `400 bad_query` with words, `400 bad_cursor`, `409 stale_cursor` (the history was rebuilt), `503 history_not_ready`, `503 history_timeout` |
+| `GET /api/history/entry?key=` | admin | `{entry, indexing, linksCut?}`: one entry by its key (1 to 512 bytes; `400 bad_key`), its links each way (at most 100), and its full availability: for a session's record `resume{offered, why?, confirm?, url?}` by the resume routes' rules, `offered` `yes`, `no` or `unknown` (a hosted session, a crew member, a managed attempt or a Brakeman turn `no`; a launch whose arguments were not kept or a Runtime the server lacks `no`; a lost record `yes` with `confirm`; a record the journal does not find `no`; `unknown`, with words, for a record it holds but cannot read or decode, when the run records cannot all be read (a crew member is known by its record, the engine's runs or a run record naming it), or when the folder an agent resumes only in could not be looked at), for an attempt `commit{id, present}` (`present` `yes` or `no` as git finds it in the run's folder as the reply opened it, started in that open directory, never at its path again; `unknown` when it could not be asked there, on a system where git cannot be started in an open directory among it) and `branch`, for a receipt `log{size, sha256}`; the reply at most 2 MiB, its links cut past it (`linksCut: true`); `404 entry_gone` for a key the index no longer holds or whose session record the journal no longer holds; `503 history_timeout` |
+| `GET /api/history/similar?key=&scope=&limit=` | admin | `{entries[Entry], truncated?}`: the receipts of the same command elsewhere, the entry's run chain left out, in its repository (`scope` `repo`, the default) or every one (`all`), those that hold its failure's last line first, passed before failed; `limit` 1 to 50 (10 when absent); `400 bad_query`, `404 entry_gone` |
+| `GET /api/history/command?run=&actor=&id=` | admin | `{command{id, actor, intent, status, receipt, createdAt}}`: the receipt of that actor (at most 60 bytes), never the caller's; `id` 1 to 32 of `[A-Za-z0-9._~-]` (`400 invalid_request`); `404 not_found`, `503 ledger_unavailable` |
 
 ### Decisions
 

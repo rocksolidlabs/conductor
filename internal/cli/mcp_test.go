@@ -383,7 +383,10 @@ func TestMcpTicketCommentResendsAfterAStalledReply(t *testing.T) {
 // The golden file is main's tools/list reply before the tools were listed
 // from the table (docs/plans/brakeman.md, PR-2): its sixteen tools are
 // listed byte for byte as they were, in their order, and the guide after
-// them, then open_url (#436).
+// them, then open_url (#436). Two words of it were changed since, to say
+// what the server enforces as the guide and the skill do (#703): form_crew's
+// limit (2 an hour, not 2 a session) and report's message (500 bytes, not
+// characters).
 func TestToolsListIsUnchanged(t *testing.T) {
 	golden, err := os.ReadFile("testdata/tools-list-main.json")
 	if err != nil {

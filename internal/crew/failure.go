@@ -142,7 +142,7 @@ func ClassifyFailure(a ledger.AttemptRow, r ledger.CheckRow, same []ledger.Check
 		if o.TaskID != r.TaskID || o.Phase != r.Phase || o.ID != r.ID || o.Subject != r.Subject || !slices.Equal(o.Argv, r.Argv) || (r.Phase == ledger.PhaseVerify && o.Manifest != r.Manifest) {
 			continue
 		}
-		if o.State == ledger.CheckFinished && !failedOutcome(o) {
+		if o.State == ledger.CheckFinished && !FailedOutcome(o) {
 			return Failure{FailureFlaky, fmt.Sprintf("the same check passed on the same commit as attempt %d of run %s", o.N, o.RunID)}
 		}
 	}

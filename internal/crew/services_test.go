@@ -401,7 +401,7 @@ func TestATreeReadyTheLedgerRefusesIsNotCounted(t *testing.T) {
 			row1, row2 := l.attemptWhen(t, run.ID, "build", 1, failedRow), l.attemptWhen(t, run.ID, "build", 2, failedRow)
 			b := row1.ResultCommit
 			words := "the ledger could not record the tree ready: ledger: disk full (injected)"
-			if row1.Stage != "check ok" || b == "" || row2.StartCommit != b || row2.Stage != "ready" || row2.Error != words || row2.ResultCommit != "" || !uncountedRow(row2) {
+			if row1.Stage != "check ok" || b == "" || row2.StartCommit != b || row2.Stage != "ready" || row2.Error != words || row2.ResultCommit != "" || !UncountedAttempt(row2) {
 				t.Fatalf("attempt 1 %+v\nattempt 2 %+v", row1, row2)
 			}
 			failed := l.payloads(run.ID, "attempt.failed")

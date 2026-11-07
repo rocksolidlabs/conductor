@@ -207,11 +207,22 @@ func (s *Server) candidateVerified(ctx context.Context, c dispatch.Candidate) (v
 		}
 	}
 	v = &dispatch.Verified{At: time.Now().UTC(), Attempt: c.Attempt, Receipts: []dispatch.VerifiedReceipt{}}
-	passed := a.State == ledger.AttemptSucceeded
 	for _, r := range cand.Receipts {
-		passed = passed && r.State == ledger.CheckFinished && r.Exit != nil && *r.Exit == 0 && r.Stable && !r.TimedOut && r.Signal == ""
 		v.Receipts = append(v.Receipts, dispatch.VerifiedReceipt{Phase: r.Phase, ID: r.ID, K: r.K, Where: r.Where, Exit: r.Exit, Stable: r.Stable, LogSHA256: r.LogSHA256})
 	}
-	v.Passed = passed && len(v.Receipts) > 0
+	v.Passed = verifiedOf(a, cand.Receipts)
 	return v, "", "", nil
+}
+
+// verifiedOf is the delivery's verification predicate over the rows: the
+// attempt succeeded, it has a receipt, and every one finished with exit 0,
+// stable, not timed out and with no signal. It does not read a row's
+// Error, which the engine's crew.FailedOutcome does: the history's
+// candidate.verified takes both (history_sources.go).
+func verifiedOf(a ledger.AttemptRow, receipts []candidateReceipt) bool {
+	passed := a.State == ledger.AttemptSucceeded && len(receipts) > 0
+	for _, r := range receipts {
+		passed = passed && r.State == ledger.CheckFinished && r.Exit != nil && *r.Exit == 0 && r.Stable && !r.TimedOut && r.Signal == ""
+	}
+	return passed
 }

@@ -745,7 +745,7 @@ type RecheckRequest struct {
 
 // Recheckable reports whether a failed attempt's verification is what
 // failed it, so its result can be checked again as it is: it failed with
-// a result commit at a check or a verify step (failedAtCheck), or before
+// a result commit at a check or a verify step (FailedAtCheck), or before
 // the checks, as its checkout was made ready (refusedBeforeChecks: the
 // checkout, the manifest, a setup, service or ready step, the ready
 // phase).
@@ -753,7 +753,7 @@ func Recheckable(a ledger.AttemptRow) bool {
 	if a.State != ledger.AttemptFailed || a.ResultCommit == "" {
 		return false
 	}
-	if _, _, ok := failedAtCheck(a); ok {
+	if _, _, ok := FailedAtCheck(a); ok {
 		return true
 	}
 	return refusedBeforeChecks(a.Stage)
