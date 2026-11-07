@@ -63,7 +63,9 @@ func TestGuideWithTheWorkbenchToken(t *testing.T) {
 		t.Fatalf("overview: %d %v %q %q", code, err, out, errOut)
 	}
 	code, out, _, err = guideCmd(t, "--server", a.hs.URL, "--token", dispatchToken, "--section", "operations")
-	if code != 0 || err != nil || !hasAll(out, "run_pause [admin] POST /api/runs/{run}/pause", "checks the run's revision", "task_result [task]", "launch_approved_plan [act] POST /api/dispatch/tickets/{key}/launch") {
+	// task_result is an agent's own (the admin's token is refused it,
+	// agent_only): the admin's guide does not list it.
+	if code != 0 || err != nil || !hasAll(out, "run_pause [admin] POST /api/runs/{run}/pause", "checks the run's revision", "task_context [task]", "launch_approved_plan [act] POST /api/dispatch/tickets/{key}/launch") || strings.Contains(out, "task_result [task]") {
 		t.Fatalf("operations: %d %v %q", code, err, out)
 	}
 	// An admin operation's input is its route's body: a Dispatch one's

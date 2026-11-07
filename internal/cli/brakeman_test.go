@@ -493,7 +493,7 @@ func TestBrakemanActFromTheCommandLine(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, out, _, err := brakemanCmd(t, "", "act", "launch_approved_plan", "--key", "CND-7", "--body-file", body, "--op-id", "mine-7")
-	if code != 0 || err != nil || !strings.HasPrefix(out, "launch_approved_plan ran (opId mine-7): receipt 0123456789abcdef, done; run r-1 launched") {
+	if code != 0 || err != nil || !strings.HasPrefix(out, "launch_approved_plan ran (opId mine-7): done; its receipt is op:brakeman/bk1, the ref a brief cites it by (an outcome/1's receipt); launch 0123456789abcdef; run r-1 launched") {
 		t.Fatalf("act: %d %v %q", code, err, out)
 	}
 	code, out, _, err = brakemanCmd(t, `{"plan":"0123456789abcdef"}`, "act", "launch_approved_plan", "--key=CND-7", "--body-file", "-", "--json")
@@ -531,20 +531,23 @@ func TestBrakemanActFromTheCommandLine(t *testing.T) {
 	}
 }
 
-// An act's words name a launch's run from Dispatch's launch, since the
-// server's answer to an act never carries the run: launched once the
-// launch is started, its state otherwise; a reply with a run (an
-// admin's launch) says the same.
+// An act's words give the ref a brief cites its receipt by (the
+// answer's receiptRef, else op:brakeman/<the receipt's opId>) and name
+// the launch as the launch, never as the receipt; they name a launch's
+// run from Dispatch's launch, since the server's answer to an act never
+// carries the run: launched once the launch is started, its state
+// otherwise; a reply with a run (an admin's launch) says the same.
 func TestActWordsNameTheRunFromTheLaunch(t *testing.T) {
+	const cite = "its receipt is op:brakeman/bk0123456789abcdef0123456789abcd, the ref a brief cites it by (an outcome/1's receipt)"
 	for _, c := range []struct{ reply, want string }{
-		{`{"receipt":{"id":"0123456789abcdef","status":"done"},"launch":{"id":"0123456789abcdef","runId":"r-1","state":"started"}}`,
-			"launch_approved_plan ran (opId a1): receipt 0123456789abcdef, done; run r-1 launched"},
-		{`{"receipt":{"id":"0123456789abcdef","status":"done"},"launch":{"id":"0123456789abcdef","runId":"r-1","state":"failed"}}`,
-			"launch_approved_plan ran (opId a1): receipt 0123456789abcdef, done; run r-1, its launch failed"},
-		{`{"receipt":{"id":"0123456789abcdef","status":"done"},"launch":{"id":"0123456789abcdef","runId":"r-1"},"run":{"id":"r-1"}}`,
-			"launch_approved_plan ran (opId a1): receipt 0123456789abcdef, done; run r-1 launched"},
-		{`{"receipt":{"id":"0123456789abcdef","status":"done"}}`,
-			"launch_approved_plan ran (opId a1): receipt 0123456789abcdef, done"},
+		{`{"receipt":{"opId":"bk0123456789abcdef0123456789abcd","id":"0123456789abcdef","status":"done"},"receiptRef":"op:brakeman/bk0123456789abcdef0123456789abcd","launch":{"id":"0123456789abcdef","runId":"r-1","state":"started"}}`,
+			"launch_approved_plan ran (opId a1): done; " + cite + "; launch 0123456789abcdef; run r-1 launched"},
+		{`{"receipt":{"opId":"bk0123456789abcdef0123456789abcd","id":"0123456789abcdef","status":"done"},"launch":{"id":"0123456789abcdef","runId":"r-1","state":"failed"}}`,
+			"launch_approved_plan ran (opId a1): done; " + cite + "; launch 0123456789abcdef; run r-1, its launch failed"},
+		{`{"receipt":{"opId":"bk0123456789abcdef0123456789abcd","id":"0123456789abcdef","status":"done"},"launch":{"id":"0123456789abcdef","runId":"r-1"},"run":{"id":"r-1"}}`,
+			"launch_approved_plan ran (opId a1): done; " + cite + "; launch 0123456789abcdef; run r-1 launched"},
+		{`{"receipt":{"opId":"bk0123456789abcdef0123456789abcd","id":"0123456789abcdef","status":"done","repeat":true},"receiptRef":"op:brakeman/bk0123456789abcdef0123456789abcd"}`,
+			"launch_approved_plan ran (opId a1): done, a repeat of the act already kept; " + cite},
 	} {
 		if got := actWords("launch_approved_plan", "a1", json.RawMessage(c.reply)); got != c.want {
 			t.Errorf("%s:\n got %q\nwant %q", c.reply, got, c.want)

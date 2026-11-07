@@ -165,8 +165,17 @@ func (s *Server) handleSessionBrakemanRequest(w http.ResponseWriter, r *http.Req
 	}
 	if own {
 		d.mu.Lock()
+		first := !d.read[id]
 		d.read[id] = true
 		d.mu.Unlock()
+		if first {
+			// The agent started: a role unavailable for one that did not
+			// (crew.ReasonStart) takes up its batch again, and a failure
+			// of an earlier turn it takes up later changes nothing.
+			if err := d.role.Started(brakeman.RequestNumber(id)); err != nil {
+				s.log.Warn("Brakeman's role could not note its agent started", "request", id, "err", err)
+			}
+		}
 	}
 	now := d.now()
 	out := turnRequest{ID: req.ID, Kind: req.Kind, State: req.State, Subjects: []turnSubject{}, Note: req.Note, Since: req.Since,
@@ -304,7 +313,7 @@ type briefBody struct {
 // while the brief is checked). Nothing is written on a refusal. The
 // session's own token only (403 agent_only for the admin's).
 func (s *Server) handleSessionBrakemanBrief(w http.ResponseWriter, r *http.Request) {
-	sd, id, _, ok := s.turnSession(w, r, true)
+	sd, id, _, ok := s.turnSession(w, r, opAgentOnly("brief_submit"))
 	if !ok {
 		return
 	}

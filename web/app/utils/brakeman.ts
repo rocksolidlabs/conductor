@@ -894,6 +894,10 @@ export interface BrakemanRole {
   state: string
   why?: string
   retryAt?: string
+  /** What made it unavailable (start, budget, off, stuck), which says what else tries again. */
+  reason?: string
+  /** The turns in a row whose agent did not start. */
+  tries?: number
   last?: number
   open?: RoleBatch
   fired?: RoleBatch
@@ -1038,6 +1042,32 @@ export function actFor(p: Extract<BriefItem, { kind: 'proposal/1' }>, acts: read
 }
 
 /**
+ * The acts of a request that no proposal of its brief shows (actFor), in the order Brakeman ran them: the brief page shows them apart,
+ * under "What Brakeman did", each with its receipt, so every act a request holds shows on the page whether or not the brief names it
+ * (two real models briefed an act they ran without a proposal naming it, and it showed nowhere).
+ */
+export function actsApart(items: readonly BriefItem[], acts: readonly BrakemanAct[] | undefined): BrakemanAct[] {
+  if (!acts?.length) return []
+  const shown = new Set<BrakemanAct>()
+  for (const it of items) {
+    if (it.kind !== 'proposal/1') continue
+    const a = actFor(it, acts)
+    if (a) shown.add(a)
+  }
+  return acts.filter((a) => !shown.has(a))
+}
+
+/**
+ * Brakeman's reading as the brief page draws it: the summary, then what it is unsure of, each Markdown rendered the same way (a list
+ * written in either is drawn as a list); the uncertainty only when it has one.
+ */
+export function readingBlocks(b: Pick<BrakemanBrief, 'summary' | 'uncertainty'>): Array<{ key: 'summary' | 'uncertainty'; label?: string; text: string }> {
+  const out: Array<{ key: 'summary' | 'uncertainty'; label?: string; text: string }> = [{ key: 'summary', text: b.summary }]
+  if (b.uncertainty?.trim()) out.push({ key: 'uncertainty', label: 'Uncertain', text: b.uncertainty })
+  return out
+}
+
+/**
  * The launch an act's receipt names (GET /api/dispatch/launches/{id}), as much of it as the act's card needs: Dispatch keeps the launch,
  * and its receipt done, before the run is started, so the launch's own state says what came of it: pending while its run is being
  * started, started with its run, failed with its words when the run never started.
@@ -1057,6 +1087,41 @@ export function actShown(a: BrakemanAct, launch?: ActLaunch | null): string {
   if (!actReceiptRef(a)) return a.state
   if (!launch || launch.state === 'pending') return 'pending'
   return launch.state === 'started' ? 'done' : 'failed'
+}
+
+/** The launch an act's receipt names, by its id ("" for an act that is not a launch's done act): the key its launch is kept under. */
+export function actLaunchId(a: BrakemanAct): string {
+  const ref = actReceiptRef(a)
+  return ref ? ref.slice('launch:'.length) : ''
+}
+
+/**
+ * What a proposal, or an act's card, shows of the act, drawn afresh each time from the request's act and the launch its receipt names
+ * as last read (kept by the launch's id, never by the act's object): a re-read of the request hands the same act as a new object, and
+ * it shows what it showed, a launch that failed still failed. "" with no act.
+ */
+export function actShownFrom(a: BrakemanAct | undefined | null, launches: Readonly<Record<string, ActLaunch>>): string {
+  if (!a) return ''
+  const id = actLaunchId(a)
+  return actShown(a, id ? (launches[id] ?? null) : null)
+}
+
+/** Whether a proposal offers its own control: not while Brakeman's act of it is done or under way (a launch that failed is offered again). */
+export function proposalOffered(shown: string): boolean {
+  return shown !== 'done' && shown !== 'pending'
+}
+
+/** The launches the page keeps read at most: the oldest read is dropped past it. */
+export const MAX_KEPT_LAUNCHES = 200
+
+/** The launches kept with `id`'s read `l` added (or replaced), at most MAX_KEPT_LAUNCHES of them, the oldest dropped first. */
+export function keepLaunch<L extends ActLaunch>(kept: Readonly<Record<string, L>>, id: string, l: L): Record<string, L> {
+  const out: Record<string, L> = { ...kept }
+  delete out[id]
+  out[id] = l
+  const keys = Object.keys(out)
+  for (const k of keys.slice(0, Math.max(0, keys.length - MAX_KEPT_LAUNCHES))) delete out[k]
+  return out
 }
 
 /**

@@ -57,7 +57,8 @@ test('Clone fills the form from the agent, and the copy is a catalog agent of it
   })
   expect(copy?.replaces).toBeUndefined()
   expect(copy?.trustPrompt).toBeTruthy()
-  expect((copy?.questions as unknown[]).length).toBe(2)
+  // The built-in's questions: its two dialogs during the work and its sign-in screen (#685).
+  expect((copy?.questions as unknown[]).length).toBe(3)
   // The source is as it was.
   const source = agents.find((a) => a.id === 'claude')
   expect(source).toMatchObject({ name: 'Claude Code (e2e stub)', source: 'config', env: { STUB_IDENTITY: '***', STUB_REPORT: '***' } })
