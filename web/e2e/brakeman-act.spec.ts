@@ -231,8 +231,11 @@ test('granted in Settings, Brakeman launches the approved revision, and the brie
   const p = page.locator(`[data-brief="${id}"] [data-proposal-op="launch_approved_plan"]`)
   await expect(p).toHaveAttribute('data-proposal-act', 'done', { timeout: 30_000 })
   await expect(p.locator('[data-proposal-did-badge]')).toHaveText('Brakeman did this')
-  await expect(p.locator('[data-proposal-did-words]')).toHaveText(`Brakeman did this, under the grant "Launch an approved plan" you gave it: receipt ${launch.id}.`)
-  await expect(p.locator(`[data-ref-chip="launch:${launch.id}"]`)).toBeVisible()
+  // The act's receipt is its own (op:brakeman/<op>, what an outcome cites and its chip shows), the launch's id named as the launch (#715).
+  const op = acts[0]!.op
+  await expect(p.locator('[data-proposal-did-words]')).toHaveText(`Brakeman did this, under the grant "Launch an approved plan" you gave it: receipt ${op}; the launch ${launch.id} of ${KEY}.`)
+  await expect(p.locator(`[data-proposal-did-receipt][data-ref-chip="op:brakeman/${op}"]`)).toHaveText(`receipt ${op}`)
+  await expect(p.locator(`[data-proposal-did-launch][data-ref-chip="launch:${launch.id}"]`)).toContainText(`launch ${launch.id}`)
   // Done: no control offers it again.
   await expect(p.locator('[data-proposal-button], [data-proposal-text]')).toHaveCount(0)
   const run = p.locator(`[data-proposal-did-run="${launch.runId}"]`)
@@ -278,14 +281,14 @@ test('granted in Settings, Brakeman launches the approved revision, and the brie
     await route.fulfill({ response: r, json: body })
   })
   await open(page, `/brakeman?request=${id}`)
-  await expect(p.locator('[data-proposal-did-words]')).toHaveText(`Brakeman launched this, under the grant "Launch an approved plan": receipt ${launch.id}. Its run is still being started.`, { timeout: 30_000 })
+  await expect(p.locator('[data-proposal-did-words]')).toHaveText(`Brakeman launched this, under the grant "Launch an approved plan": receipt ${op}; the launch ${launch.id} of ${KEY}. Its run is still being started.`, { timeout: 30_000 })
   await expect(p).toHaveAttribute('data-proposal-act', 'pending')
   await expect(p.locator('[data-proposal-did-badge]')).toHaveText('Brakeman is doing this')
   await expect(p.locator('[data-proposal-did-run]')).toHaveCount(0)
   shownState = 'failed'
   await expect(p).toHaveAttribute('data-proposal-act', 'failed', { timeout: 30_000 })
   await expect(p.locator('[data-proposal-did-badge]')).toHaveText('Not done')
-  await expect(p.locator('[data-proposal-did-words]')).toHaveText(`Brakeman launched this, under the grant "Launch an approved plan": receipt ${launch.id}, but the launch failed: the agent could not be started. No run was started.`)
+  await expect(p.locator('[data-proposal-did-words]')).toHaveText(`Brakeman launched this, under the grant "Launch an approved plan": receipt ${op}, but the launch ${launch.id} of ${KEY} failed: the agent could not be started. No run was started.`)
   await expect(p.locator('[data-proposal-did-run]')).toHaveCount(0)
   // A launch that failed started nothing: the proposal is offered again, as text with its page.
   await expect(p.locator('[data-proposal-text]')).toBeVisible()
@@ -320,7 +323,9 @@ test("an act the brief names in no proposal shows apart with its receipt, and th
   const card = apart.locator('[data-act="bka-act-apart"]')
   await expect(card).toHaveAttribute('data-act-shown', 'done', { timeout: 30_000 })
   await expect(card.locator('[data-proposal-did-badge]')).toHaveText('Brakeman did this')
-  await expect(card.locator(`[data-ref-chip="launch:${launch.id}"]`)).toBeVisible()
+  // The card's receipt is the ref the act's words gave, as an outcome citing it shows it; the launch is its own chip.
+  await expect(card.locator(`[data-proposal-did-receipt][data-ref-chip="op:brakeman/${acts[0]!.op}"]`)).toHaveText(`receipt ${acts[0]!.op}`)
+  await expect(card.locator(`[data-proposal-did-launch][data-ref-chip="launch:${launch.id}"]`)).toBeVisible()
   await expect(card.locator(`[data-proposal-did-run="${launch.runId}"]`)).toHaveAttribute('href', `/runs/${launch.runId}`)
   await expect(page.locator(`[data-brief="${id}"] [data-brief-proposal]`)).toHaveCount(0)
   // What Brakeman is unsure of is Markdown, drawn as the summary is: its list a list.
