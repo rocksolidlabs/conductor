@@ -349,6 +349,29 @@ func TestFileAtMemoryIsBounded(t *testing.T) {
 	}
 }
 
+// A blob past largeObject, read by the git binary, is the one the commit's
+// tree records even when refs/replace puts another in its place: the
+// replacement's bytes never come back under the original's size, as
+// go-git, which knows no replacements, reads a smaller file and the diff.
+func TestFileAtIgnoresReplacedBlobs(t *testing.T) {
+	dir := scratch(t)
+	ctx := context.Background()
+	orig := strings.Repeat("the original's line\n", (512<<10)/20)
+	write(t, dir, "big.txt", orig)
+	c := commit(t, dir, time.Time{}, "big")
+	write(t, dir, "other.txt", "REPLACED "+orig[:300<<10])
+	repl := gitIn(t, dir, time.Time{}, "hash-object", "-w", "other.txt")
+	blob := gitIn(t, dir, time.Time{}, "rev-parse", c+":big.txt")
+	gitIn(t, dir, time.Time{}, "replace", blob, repl)
+	if got := gitIn(t, dir, time.Time{}, "cat-file", "-p", blob); !strings.HasPrefix(got, "REPLACED ") {
+		t.Fatalf("the replacement is not in place: %.20q", got)
+	}
+	f, err := FileAt(ctx, dir, c, "big.txt", 1<<20)
+	if err != nil || string(f.Content) != orig || f.Truncated || f.Binary || f.Size != int64(len(orig)) {
+		t.Fatalf("big.txt: %d bytes starting %.20q, %+v %v", len(f.Content), f.Content, f.Truncated, err)
+	}
+}
+
 // fileAtAllocBound is what one FileAt of a 1 MiB head may allocate: the
 // head and the buffers of the read (about 1.3 MiB measured).
 const fileAtAllocBound = 4 << 20

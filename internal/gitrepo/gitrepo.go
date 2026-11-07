@@ -328,8 +328,8 @@ func FileAt(ctx context.Context, dir, id, path string, limit int) (File, error) 
 // v5.19.3), so a blob past largeObject is read by the git binary (git
 // cat-file blob, its id in full, through gitcli), its output stopped once
 // n bytes are in: git, a process of its own that ends with the read,
-// resolves the delta. A smaller blob go-git reads, whole at most
-// largeObject.
+// resolves the delta, with replacements off (noReplace). A smaller blob
+// go-git reads, whole at most largeObject.
 func head(ctx context.Context, dir string, f *object.File, n int64) ([]byte, error) {
 	b := make([]byte, 0, n)
 	if f.Size <= largeObject {
@@ -341,7 +341,7 @@ func head(ctx context.Context, dir string, f *object.File, n int64) ([]byte, err
 		return io.ReadAll(io.LimitReader(rd, n))
 	}
 	w := &headWriter{b: b}
-	err := gitcli.RunTo(ctx, dir, w, "cat-file", "blob", f.Hash.String())
+	err := gitcli.RunToEnv(ctx, dir, noReplace, w, "cat-file", "blob", f.Hash.String())
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -350,6 +350,11 @@ func head(ctx context.Context, dir string, f *object.File, n int64) ([]byte, err
 	}
 	return w.b, nil
 }
+
+// noReplace turns off git's replacement objects (refs/replace) for the
+// read: the blob read is the one the tree records, as go-git reads it
+// (go-git knows no replacements), never one put in its place.
+var noReplace = map[string]string{"GIT_NO_REPLACE_OBJECTS": "1"}
 
 // headWriter keeps what is written to it up to its buffer's capacity and
 // then refuses more (errHeadFull), which ends the git writing to it.
