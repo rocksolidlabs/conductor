@@ -119,6 +119,25 @@ func defaults() []Agent {
 				// a Brakeman turn that meets it ends (heldAtStartup).
 				Prompt: `(?i)paste\s*code\s*here\s*if\s*prompted`,
 				Words:  `(?i)browser\s*didn.t\s*open\?\s*use\s*the\s*url\s*below\s*to\s*sign\s*in`,
+			}, {
+				// On an account folder never used (2.1.319 under an empty
+				// CLAUDE_CONFIG_DIR, seen by #659's third live check on
+				// 2026-11-07), Claude Code first asks for a theme, its
+				// highlight on one ("Choose the text style that looks best
+				// with your terminal", "❯ ✔ Dark mode"), then for a login
+				// method ("Select login method:", "❯ 1. Claude account with
+				// subscription"), then opens a browser to sign in ("Opening
+				// browser to sign in…") before the sign-in screen above.
+				// An Enter picks a theme and a login method, and the browser
+				// opens: these are startup screens with no answers, as the
+				// sign-in screen is: no key of Conductor's is typed, the
+				// session shows under Needs you with the screen's words, and
+				// a Brakeman turn that meets one ends (heldAtStartup).
+				Prompt: `(?i)choose\s*the\s*text\s*style\s*that\s*looks\s*best\s*with\s*your\s*terminal`,
+			}, {
+				Prompt: `(?i)select\s*login\s*method:`,
+			}, {
+				Prompt: `(?i)opening\s*browser\s*to\s*sign\s*in`,
 			}},
 		},
 		{

@@ -52,7 +52,8 @@ type bkEnv struct {
 // arguments), bksignin (a signed-out Claude Code at its sign-in screen),
 // bkupdate (an agent at its update dialog), bkunknown (an agent at a
 // full-screen prompt no catalog entry knows), bkdialog (an agent at a
-// dialog no catalog entry knows) and bkprompt (an agent at its prompt).
+// dialog no catalog entry knows), bkprompt (an agent at its prompt), and
+// bktheme and bklogin (Claude Code's first-run theme and login screens).
 func brakemanEnv(t *testing.T, mutate func(*config.Config)) *bkEnv {
 	t.Helper()
 	e := newTestEnvAgents(t, mutate, slog.New(slog.NewTextHandler(io.Discard, nil)), bkAgents())
@@ -72,6 +73,8 @@ func bkAgents() []catalog.Agent {
 		{ID: "bkunknown", Name: "bkunknown", Command: []string{"/bin/sh", "-c", bkUnknownScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("claude")},
 		{ID: "bkdialog", Name: "bkdialog", Command: []string{"/bin/sh", "-c", bkDialogScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("claude")},
 		{ID: "bkprompt", Name: "bkprompt", Command: []string{"/bin/sh", "-c", bkPromptScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("claude")},
+		{ID: "bktheme", Name: "bktheme", Command: []string{"/bin/sh", "-c", bkThemeScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("claude")},
+		{ID: "bklogin", Name: "bklogin", Command: []string{"/bin/sh", "-c", bkLoginScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("claude")},
 	}
 }
 
@@ -114,6 +117,15 @@ const bkDialogScript = bkRecord + `printf "  Select a sign-in method\r\n\r\n ❯
 // so a turn types its line there. Its terminal is kept as
 // bkSignInScript's is.
 const bkPromptScript = bkRecord + `printf "────────\r\n❯ Try \"create a util\"\r\n────────\r\n  ? for shortcuts\r\n"; ` + bkKeep
+
+// bkThemeScript and bkLoginScript are Claude Code 2.1.319's first two
+// screens on an account folder never used, as #659's third live check
+// captured them: its theme picker (no numbered row, a choice highlighted)
+// and its login-method screen. Each waits with its terminal kept as
+// bkSignInScript's is: no key may reach it.
+const bkThemeScript = bkRecord + `printf "Welcome to Claude Code v2.1.319\r\n Let's get started.\r\n Choose the text style that looks best with your terminal\r\n To change this later, run /theme\r\n     Auto (match terminal)\r\n ❯ ✔ Dark mode\r\n     Light mode\r\n     Dark mode (colorblind-friendly)\r\n"; ` + bkKeep
+
+const bkLoginScript = bkRecord + `printf "Welcome to Claude Code v2.1.319\r\n Claude Code can be used with your Claude subscription or billed based on API\r\n usage through your Console account.\r\n Select login method:\r\n ❯ 1. Claude account with subscription · Individual, Team, or Enterprise\r\n   2. Anthropic Console account · API usage billing\r\n"; ` + bkKeep
 
 // builtInQuestions is the built-in agent id's startup questions, the
 // catalog's own, so a scripted agent is held by the patterns that ship.

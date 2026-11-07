@@ -678,6 +678,30 @@ func TestAnUnknownDialogGetsNoLine(t *testing.T) {
 	b.slotFree(t)
 }
 
+// TestClaudeCodesFirstRunScreensGetNoKey: Claude Code on an account
+// folder never used opens on its theme picker, then its login-method
+// screen (#659's third live check: the line's Enter picked a theme and a
+// login method, and a browser opened). Both are the catalog's startup
+// screens with no answers: a turn that meets either types nothing into
+// it and ends at once with the screen's own words, its login refused,
+// not at its start bound.
+func TestClaudeCodesFirstRunScreensGetNoKey(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	for agent, words := range map[string]string{"bktheme": "Choose the text style that looks best with your terminal", "bklogin": "Select login method:"} {
+		b.enable(t, agent, nil)
+		id := b.briefing(t)
+		q := b.waitState(t, id, brakeman.StateFailed)
+		if !strings.Contains(q.Why, "its login refused") || !strings.Contains(q.Why, words) || q.Reads != 0 {
+			t.Fatalf("%s's turn: %+v", agent, q)
+		}
+		b.slotFree(t)
+		if got := b.typedInto(t, id); got != "" {
+			t.Fatalf("keys reached %s's screen: %q", agent, got)
+		}
+	}
+}
+
 // TestAScreensWordsLeaveAWrappedLinkOutWhole: the words of a turn whose
 // agent did not start are the screen's rows (ScreenLines), and a link
 // wrapped across rows, its one-time state on the next row, is left out

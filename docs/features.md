@@ -3841,7 +3841,18 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
     with 2.1.319 and 0.163.0). A full screen with no choices (the bound's
     test above) is still read as a prompt. `TestAnUnknownDialogGetsNoLine`
     (no byte reaches the dialog; a prompt drawn as Claude Code draws it
-    gets the line), `TestDialogMayShowReadsAnyScreen`.
+    gets the line), `TestDialogMayShowReadsAnyScreen`. #659's third live
+    check met the hazard with real Claude Code 2.1.319 on an account
+    folder never used: it opens on a theme picker ("Choose the text style
+    that looks best with your terminal", a choice highlighted and no
+    number), then a login-method screen ("Select login method:"), then
+    "Opening browser to sign in…", and the line's Enter had picked a
+    theme and a login method. The catalog now has all three as Claude
+    Code startup screens with no answers, as its sign-in screen is: no
+    key, the session under Needs you with the screen's words, and a turn
+    ends at once with them ("its login refused").
+    `TestClaudeCodesFirstRunScreensGetNoKey`,
+    `TestClaudeCodesFirstRunScreensAreStartupQuestionsWithNoAnswers`.
   - Any other startup question ends a background turn the same way: an
     agent's update dialog (as Codex showed) ends a wake turn, whose
     questions page no one, naming the dialog and saying to answer it in a
