@@ -248,6 +248,23 @@ export interface OpenEvent {
   state: 'pending' | 'offered'
 }
 
+/**
+ * Data of a `decision` event on GET /api/events (Program item DR1, docs/protocol.md "Decisions"): a durable decision changed
+ * (opened, answered, applied, superseded, cancelled, commented), sent after each commit, for a page to read it again with
+ * `GET /api/decisions/{id}`. `task` is the asking task's, absent for a plan's gate. At most 256 bytes of data
+ * (`MAX_DECISION_EVENT`).
+ */
+export interface DecisionEvent {
+  id: string
+  run: string
+  task?: string
+  state: 'open' | 'answered' | 'applied' | 'superseded' | 'cancelled' | 'expired'
+  rev: number
+}
+
+/** The bound of a `decision` event's data, in bytes (internal/api, maxDecisionEvent). */
+export const MAX_DECISION_EVENT = 256
+
 export interface ICEServer {
   urls: string[]
   username?: string

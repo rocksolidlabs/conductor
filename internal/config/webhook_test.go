@@ -370,3 +370,18 @@ func TestWebhookEndpoint(t *testing.T) {
 		}
 	}
 }
+
+// A webhook may list decision, a durable decision's change, and a config
+// that names it validates; a name beside it that is none still fails.
+func TestDecisionIsAWebhookEvent(t *testing.T) {
+	fakeLookup(t, map[string][]string{"hooks.example.com": {"93.184.215.14"}})
+	if !ValidWebhookEvent(EventDecision) || EventDecision != "decision" {
+		t.Fatal("decision is not a webhook's event")
+	}
+	if err := withWebhooks(Webhook{URL: "https://hooks.example.com/c", Events: []string{"decision"}}).Validate(); err != nil {
+		t.Fatalf("a webhook of decisions: %v", err)
+	}
+	if err := withWebhooks(Webhook{URL: "https://hooks.example.com/c", Events: []string{"decision", "decisions"}}).Validate(); err == nil || !strings.Contains(err.Error(), `"decisions"`) {
+		t.Fatalf("an unknown event beside it: %v", err)
+	}
+}
