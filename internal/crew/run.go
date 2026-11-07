@@ -160,6 +160,11 @@ var (
 	errNotReady = errors.New("not ready")
 )
 
+// UnknownScreen is what a Brakeman turn's run log says of a member whose
+// screen is not recognised as its agent's prompt (promptWith): its line is
+// not typed. The Brakeman desk's words of such a turn say the same.
+const UnknownScreen = "shows a screen not recognised as its prompt (not its prompt's shape, a dialog's choices, or no readiness)"
+
 // Diff is what a member's worktree adds and removes against the commit it
 // began from, in lines: tracked changes against the base, uncommitted
 // included (DiffStat).
@@ -188,6 +193,11 @@ type MemberState struct {
 	// session waits on a prompt: a trust question before its prompt, or a
 	// question of its agent's.
 	NeedsInput bool `json:"needsInput,omitempty"`
+	// Unrecognised is set while a Brakeman turn's member's line waits at a
+	// screen not recognised as its agent's prompt (UnknownScreen), and
+	// cleared once the line is typed: what the Brakeman desk's words of
+	// a turn that did not start say. Not in the run's JSON.
+	Unrecognised bool `json:"-"`
 	// Task and Attempt are the member's latest attempt in a managed run.
 	Task    string `json:"task,omitempty"`
 	Attempt int    `json:"attempt,omitempty"`
@@ -1478,8 +1488,10 @@ func (e *Engine) launch(ctx context.Context, r *run, m *member) (*session.Local,
 // submitted (Submit refuses it, nothing typed), and the wait starts over.
 // m is prompted as the Enter is written, so a done the agent
 // reported before it never starts the members after m. A session that ends
-// first gets no prompt: m ends, with how its process ended. An error means
-// the start failed: ctx ended or the prompt could not be written.
+// first gets no prompt: m ends, with how its process ended. A Brakeman
+// turn's member is never prompted "anyway": its line waits while its
+// screen is not recognised as its agent's prompt (UnknownScreen). An error
+// means the start failed: ctx ended or the prompt could not be written.
 func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.Local) error {
 	return e.promptWith(ctx, r, m, local, typedPrompt(m.def.Prompt, r.goal))
 }
@@ -1494,6 +1506,35 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 	pending := false
 	if hasPrompt {
 		var res session.SubmitResult
+		// unrecognised holds a Brakeman turn's line, typed only into its
+		// agent's prompt (session.Submission.OnlyAtPrompt: its screen, as
+		// the writer takes the text and its Enter, matches the agent's
+		// prompt shape), never into a screen not recognised as one (a
+		// dialog the catalog does not know, a sign-in, half a frame), nor
+		// "anyway" once not ready by the cap: its Enter would pick the
+		// choice a dialog highlights. Noted once (UnknownScreen), the line
+		// waits and is tried again a poll later; the desk ends the turn at
+		// its start bound with the screen's words (notStarted). stop says
+		// the wait ended, with what promptWith returns.
+		noted := false
+		unrecognised := func() (stop bool, err error) {
+			if !noted {
+				noted = true
+				e.mu.Lock()
+				m.state.Unrecognised = true
+				r.note(session.ActivityStatus, "%s %s: its prompt waits", name, UnknownScreen)
+				e.mu.Unlock()
+			}
+			select {
+			case <-ctx.Done():
+				return true, ctx.Err()
+			case <-local.Ended():
+				e.endedEarly(r, m, local, "before its prompt was typed")
+				return true, nil
+			case <-time.After(readyPoll):
+			}
+			return false, nil
+		}
 		for {
 			err := e.await(ctx, local, func(question string) {
 				e.mu.Lock()
@@ -1501,6 +1542,8 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 				e.mu.Unlock()
 			})
 			switch {
+			case errors.Is(err, errNotReady) && r.class == ClassBrakeman:
+				// Not taken for its prompt: nothing is typed (unrecognised).
 			case errors.Is(err, errNotReady):
 				e.mu.Lock()
 				r.note(session.ActivityStatus, "%s was not ready after %v: typing its prompt anyway", name, readyCap)
@@ -1511,7 +1554,15 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 			case err != nil:
 				return err
 			}
-			res, err = local.Submit(ctx, session.Submission{Text: text, ByName: typedBy, Confirm: true, BeforeEnter: func() {
+			if err != nil && r.class == ClassBrakeman {
+				// A Brakeman turn's member not ready by the cap: its line
+				// is never typed anyway.
+				if stop, err := unrecognised(); stop {
+					return err
+				}
+				continue
+			}
+			res, err = local.Submit(ctx, session.Submission{Text: text, ByName: typedBy, Confirm: true, OnlyAtPrompt: r.class == ClassBrakeman, BeforeEnter: func() {
 				e.mu.Lock()
 				m.markPrompted()
 				e.mu.Unlock()
@@ -1531,6 +1582,12 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 				e.mu.Unlock()
 				m.poke()
 			}})
+			if errors.Is(err, session.ErrNotAtPrompt) {
+				if stop, err := unrecognised(); stop {
+					return err
+				}
+				continue
+			}
 			if errors.Is(err, session.ErrTrustQuestion) || errors.Is(err, session.ErrQuestion) {
 				// A question the wait had not seen yet (a dialog Submit
 				// found on the screen) holds the prompt: nothing was
@@ -1558,6 +1615,7 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 			return fmt.Errorf("typing its prompt: %w", err)
 		}
 		e.mu.Lock()
+		m.state.Unrecognised = false
 		switch {
 		case pending:
 			// Accepted: entered as the program reads, and marked
@@ -2487,6 +2545,28 @@ func runState(r Run) (string, int) {
 // the session has ended it returns session.ErrSessionEnded.
 func awaitReady(ctx context.Context, l *session.Local, held func(question string)) error {
 	return productReady.await(ctx, l, held)
+}
+
+// SetNotReadyForTest makes the engine's readiness wait answer, once gate
+// is closed and every time it is asked from then on, that a member is not
+// ready by the cap (errNotReady), whatever its screen shows: a test of what
+// follows (a Brakeman turn's line never typed anyway) with no clock and no
+// output's pace deciding readiness. Until gate is closed the wait holds,
+// so the test closes it once the agent's screen is what it means to test
+// (its prompt drawn). It is called before the engine launches any run:
+// the wait is read without a lock.
+func (e *Engine) SetNotReadyForTest(gate <-chan struct{}) {
+	e.await = func(ctx context.Context, _ *session.Local, _ func(string)) error {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return errNotReady
+	}
 }
 
 // readyWait is how a readiness wait looks: every poll, and ready once the

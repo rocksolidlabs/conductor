@@ -69,6 +69,13 @@ func defaults() []Agent {
 			TrustPrompt: `Is\s*this\s*a\s*project\s*you\s*created\s*or\s*one\s*you\s*trust\?`,
 			// Claude Code highlights "No, exit" first: the trusting answer is Down, then Enter (verified in a PTY on 2026-10-03, 2.1.288).
 			TrustAnswers: []Answer{{Label: "Yes, I trust this folder", Input: "\x1b[B\r"}, {Label: "No, exit", Input: "\r"}},
+			// Its prompt at rest, by its shape (2.1.319 in a PTY, #714): a
+			// ❯ row, its text not a numbered choice, right under a rule,
+			// a rule under it, and only rows that are no choice below that
+			// to the screen's end. The ❯ row's words change (eight "Try …"
+			// placeholders in turn, the typed line, none), so they are not
+			// matched; a dialog's ❯ row is not between two rules.
+			PromptShape: claudePromptShape,
 			// Verified live (2.1.287).
 			Session: &SessionRecipe{StartArgs: []string{"--session-id", IDArg}, IDFrom: "hook", ResumeArgs: []string{"--resume", IDArg}, IDPattern: uuidPattern},
 			// Claude Code's dialogs during the work, as 2.1.304 drew them in
@@ -119,6 +126,25 @@ func defaults() []Agent {
 				// a Brakeman turn that meets it ends (heldAtStartup).
 				Prompt: `(?i)paste\s*code\s*here\s*if\s*prompted`,
 				Words:  `(?i)browser\s*didn.t\s*open\?\s*use\s*the\s*url\s*below\s*to\s*sign\s*in`,
+			}, {
+				// On an account folder never used (2.1.319 under an empty
+				// CLAUDE_CONFIG_DIR, seen by #659's third live check on
+				// 2026-11-07), Claude Code first asks for a theme, its
+				// highlight on one ("Choose the text style that looks best
+				// with your terminal", "❯ ✔ Dark mode"), then for a login
+				// method ("Select login method:", "❯ 1. Claude account with
+				// subscription"), then opens a browser to sign in ("Opening
+				// browser to sign in…") before the sign-in screen above.
+				// An Enter picks a theme and a login method, and the browser
+				// opens: these are startup screens with no answers, as the
+				// sign-in screen is: no key of Conductor's is typed, the
+				// session shows under Needs you with the screen's words, and
+				// a Brakeman turn that meets one ends (heldAtStartup).
+				Prompt: `(?i)choose\s*the\s*text\s*style\s*that\s*looks\s*best\s*with\s*your\s*terminal`,
+			}, {
+				Prompt: `(?i)select\s*login\s*method:`,
+			}, {
+				Prompt: `(?i)opening\s*browser\s*to\s*sign\s*in`,
 			}},
 		},
 		{
@@ -142,6 +168,14 @@ func defaults() []Agent {
 			// the label says so, as Claude Code's "No, exit" does (seen in the
 			// rc.7 app on 2026-10-11).
 			TrustAnswers: []Answer{{Label: "Yes, trust this folder", Input: "\r"}, {Label: "No, quit", Input: "\x1b[B\r"}},
+			// Its composer at rest, by its shape (0.163.0 in a PTY, #714):
+			// a › row whose text is no numbered choice (its dialogs'
+			// highlighted row, "› 1. Update now") and not "Waiting for
+			// startup" (the composer before its session is configured: RE2
+			// has no lookahead, so a text that starts "Wa" is refused),
+			// then only rows that are no choice (its status line, "? for
+			// shortcuts") to the screen's end.
+			PromptShape: codexPromptShape,
 			// Codex 0.161 opens on "Hooks need review" whenever its hooks are
 			// new or changed (1. Review hooks, highlighted; 2. Trust all and
 			// continue; 3. Continue without trusting): a digit moves the
@@ -374,3 +408,16 @@ func defaults() []Agent {
 		},
 	}
 }
+
+// The built-in agents' prompt shapes (Agent.PromptShape). A text or a row
+// that is no choice begins with neither a highlight's marker nor a number
+// and a dot ("2. Skip"); an empty row is none either. Every row a shape
+// reads, the ones inside Claude Code's box as the ones under it, is such a
+// row, and a screen with a numbered choice anywhere on it is still not the
+// prompt (the session's atPrompt asks both). The session matches a shape
+// on the screen with every Unicode space a plain one (Claude Code's no-break
+// space after its marker included), so a shape names spaces as " " and \s.
+const (
+	claudePromptShape = `(?m)^─{8,}\n❯ *(?:(?:[^\d\s]|\d+[^\d.\n])[^\n]*)?(?:\n *(?:(?:[^\d\s─❯›>]|\d+[^\d.\n])[^\n]*)?){0,8}\n─{8,}(?:\n *(?:(?:[^\d\s❯›>]|\d+[^\d.\n])[^\n]*)?){0,8}\s*\z`
+	codexPromptShape  = `(?m)^ {0,3}› +(?:[^\d\sW]|W[^a\n]|\d+[^\d.\n])[^\n]*(?:\n *(?:(?:[^\d\s❯›>]|\d+[^\d.\n])[^\n]*)?){1,6}\s*\z`
+)
