@@ -1631,6 +1631,31 @@ func (s *Store) Review(ctx context.Context, id string) (Review, error) {
 	return out, err
 }
 
+// Finding reads the finding with the id, with its review's candidate, its
+// state, its marks counted and its latest mark, and the key of its
+// ticket: what a mark's route checks the mark against (the API's,
+// docs/plans/review-repair.md, PR-4). ErrNotFound when there is none; a
+// version 2 database, read as it was found, has none.
+func (s *Store) Finding(ctx context.Context, id string) (Finding, string, error) {
+	var out Finding
+	var key string
+	err := s.read(ctx, func(q queryer) error {
+		if schemaOf(q) < 3 || !ValidID(id) {
+			return ErrNotFound
+		}
+		fs, err := scanFindings(ctx, q, "SELECT "+findingColumns+findingFrom+" WHERE f.id = ?", id)
+		if err != nil {
+			return err
+		}
+		if len(fs) == 0 {
+			return ErrNotFound
+		}
+		out = fs[0]
+		return q.QueryRowContext(ctx, "SELECT key FROM tickets WHERE id = ?", out.TicketID).Scan(&key)
+	})
+	return out, key, err
+}
+
 // Reviews reads a page of the reviews of the ticket with the key, deleted
 // or not, newest first: ReviewsPerPage of them before the review with the id
 // before ("" for the newest), each with its findings counted by state,
