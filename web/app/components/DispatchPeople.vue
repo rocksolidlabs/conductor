@@ -5,6 +5,7 @@ import { agentVersionWords, type PersonRow } from '~/utils/dispatch'
 import { argvLine, resolvedArgv, revisionTag } from '~/utils/dispatchPlans'
 import { shortRunId } from '~/utils/crewWords'
 import { responsibilityWords } from '~/utils/crews'
+import { personPath } from '~/utils/people'
 
 /**
  * A ticket's People (Program item DS2, docs/plans/dispatch-evidence.md, "web/app", PR-12): who it is to whom, each name once with every
@@ -26,6 +27,8 @@ const props = defineProps<{
 const ROLE_WORDS: Record<PersonRow['roles'][number], string> = { owner: 'owner', assignee: 'assignee', approver: 'approved a plan', launcher: 'launched a run', commenter: 'commented' }
 const agentName = (id: string) => props.agents.find((a) => a.id === id)?.name ?? id
 const agentOf = (id: string) => props.plan?.body.agents.find((a) => a.id === id)
+/** A person the ticket owns or is assigned to has a page (their work): Conductor knows them by the ticket; an approver or a commenter is a name a reply typed, which may be no one's. */
+const linked = (p: PersonRow) => p.kind === 'person' && (p.roles.includes('owner') || p.roles.includes('assignee'))
 const started = computed(() => props.launches.filter((l) => l.state === 'started' && l.agents?.length))
 </script>
 
@@ -35,7 +38,8 @@ const started = computed(() => props.launches.filter((l) => l.state === 'started
     <ul class="flex flex-wrap gap-1.5" data-people>
       <li v-for="p in people" :key="`${p.kind}:${p.name}`" class="flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-sm ring ring-default" :data-person="p.name" :data-person-kind="p.kind" :data-person-roles="p.roles.join(' ')">
         <UIcon :name="p.kind === 'agent' ? 'i-lucide-bot' : 'i-lucide-user'" class="size-3.5 flex-none text-muted" />
-        <span class="min-w-0 truncate font-medium">{{ p.name }}</span>
+        <NuxtLink v-if="linked(p)" :to="personPath(p.name)" class="min-w-0 truncate font-medium hover:underline" data-person-link>{{ p.name }}</NuxtLink>
+        <span v-else class="min-w-0 truncate font-medium">{{ p.name }}</span>
         <span class="text-xs text-dimmed">{{ p.roles.map((r) => ROLE_WORDS[r]).join(', ') }}</span>
       </li>
       <li v-if="!people.length" class="text-sm text-dimmed">Nobody yet.</li>
@@ -46,7 +50,7 @@ const started = computed(() => props.launches.filter((l) => l.state === 'started
       <ul class="flex flex-wrap gap-1.5">
         <li v-for="p in plan.body.crew.people" :key="p.name" class="flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-sm ring ring-default" :data-people-plan-person="p.name" :data-responsibilities="(p.responsibilities ?? []).join(' ')">
           <UIcon name="i-lucide-user" class="size-3.5 flex-none text-muted" />
-          <span class="min-w-0 truncate font-medium">{{ p.name }}</span>
+          <NuxtLink :to="personPath(p.name)" class="min-w-0 truncate font-medium hover:underline" data-person-link>{{ p.name }}</NuxtLink>
           <span v-if="p.responsibilities?.length" class="text-xs text-dimmed">{{ responsibilityWords(p.responsibilities) }}</span>
         </li>
       </ul>

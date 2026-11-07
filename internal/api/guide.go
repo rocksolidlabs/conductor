@@ -20,6 +20,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
+	"github.com/rocksolidlabs/conductor/internal/gitcli"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/version"
 )
@@ -428,6 +429,21 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		taskCommandOp("task_cancel", "Cancel a task of a managed run: its attempt stops and the task ends cancelled.", "/cancel"),
 		taskCommandOp("task_retry", "Retry a "+strings.Join(crew.RetryableStates(), " or ")+" task of a managed run: a new attempt starts.", "/retry"),
 		taskCommandOp("task_accept", "Accept a task's submitted result although its checks did not pass.", "/accept"),
+		{Name: "task_recheck", Scope: "admin", Method: http.MethodPost, Path: "/api/runs/{run}/tasks/{task}/recheck", Receipt: "ledger", Revision: "run", needs: needLauncher,
+			Summary: "Check again a failed task's standing failed candidate (attempt and commit, as its run names it): the same commit verified again as a new attempt, in the newest run of its chain.",
+			Input:   bodySchema(recheckBody{}), Bounds: map[string]int{"body": maxBody}},
+		{Name: "diff", Scope: "admin", Method: http.MethodGet, Path: "/api/runs/{run}/tasks/{task}/attempts/{n}/diff", needs: needLauncher,
+			Summary: "A candidate's files against a base (?base=: the run's by default, the attempt's start, or a result of the task in the run's chain), with their counts.",
+			Input:   map[string]any{"type": "object", "description": "no body; ?base= names the base"},
+			Bounds:  map[string]int{"reply": MaxDiffReply}},
+		{Name: "diff_file", Scope: "admin", Method: http.MethodGet, Path: "/api/runs/{run}/tasks/{task}/attempts/{n}/diff/file", needs: needLauncher,
+			Summary: "A file of a candidate's diff as text at one side (?path=, ?side=base|candidate, ?base=), its commit in X-Conductor-Commit.",
+			Input:   map[string]any{"type": "object", "description": "no body; ?path=, ?side= and ?base= name the file"},
+			Bounds:  map[string]int{"reply": gitcli.MaxShowBytes}},
+		{Name: "repair_prepare", Scope: "admin", Method: http.MethodGet, Path: "/api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/repair", needs: needLauncher,
+			Summary: "A failed receipt as a prepared repair: a check finding with its class, the criteria, and whether Check again would be taken now (recheck).",
+			Input:   map[string]any{"type": "object", "description": "no body"},
+			Bounds:  map[string]int{"reply": MaxRepairReply}},
 		{Name: "decision_respond", Scope: "admin", Method: http.MethodPost, Path: "/api/decisions/{did}/respond", needs: needLauncher, Receipt: "ledger", Revision: "decision",
 			Summary: "Answer a decision as the operator: an option's index, a text, or both for a clarification, with a rationale and the rev read. Recorded, then applied by Yardmaster.",
 			CLI:     []string{"conductor", "decision", "respond", "dr-N", "--choice", "N"},
