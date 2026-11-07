@@ -3780,7 +3780,11 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
     before, or else under "What Brakeman did" (an act the brief never
     names showed nowhere). `TestAnActsReceiptRefIsCited`,
     `TestActWordsNameTheRunFromTheLaunch`, vitest, and a
-    `brakeman-act.spec.ts` step.
+    `brakeman-act.spec.ts` step. The act's card says its receipt as the
+    outcome's chip does, the `op:brakeman/` ref's id with its chip, and
+    names the launch's id as the launch of its ticket, with the launch's
+    own chip: the card had called the launch's id the receipt beside an
+    outcome chip showing the act's (#715). vitest and the spec's steps.
   - A signed-out agent makes the role unavailable. Claude Code with no
     login does not exit: it waits at its sign-in screen, which the
     catalog now finds as a startup question with no answers (the trust
@@ -3837,15 +3841,54 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
     the routes refuse by: the admin is not listed what only an agent's own
     token calls, a turn not a read of a class it may not see.
     `TestTheOverviewListsWhatTheCallerMayDoAndItsLimits`,
-    `TestTheOverviewListsWhatTheRoutesAdmit` (the routes called).
+    `TestTheOverviewListsWhatTheRoutesAdmit` (the routes called). The
+    guide tool's text and `conductor guide` print both ("You may call:",
+    "Your limits:"), from the same overview: the third live check's Codex,
+    told only to call the tool, had read the sections and nothing it may
+    do (#715). `TestGuideToolTextSaysWhatTheCallerMayCallAndItsLimits` (a
+    crew's member and a session of no crew). An overview from a server
+    older than the field says nothing of what may be called, never "no
+    operation": `TestGuideTextSaysWhatMayBeCalledOnlyWhenTheOverviewSays`.
   - Saving Brakeman's settings makes an unavailable role look again at
     what the save changed, by the reason kept with the state: a budget
-    raised clears "the day's budget is spent" and fires the batch kept
-    (one still spent says so in words true now); another agent, model,
-    account or folder tries an agent that did not start again; a save that
-    changes nothing it weighs fires nothing. The role card's retry words
+    raised clears "the day's budget is spent" (one still spent says so in
+    words true at the next turn); an agent that did not start is tried
+    again at its next wake after any save (#715); a save that changes
+    nothing it weighs fires nothing. The role card's retry words
     follow the reason. `TestASavedConfigurationIsLookedAtAgain`,
     `TestASaveWeighsOnlyWhatItChanged`, `TestASaveEndsOnlyWhatItChanged`.
+    A batch fires only under the configuration it was gathered under.
+    The role keeps a configuration generation that every save's step
+    advances under the role's lock, and every save, whatever it changes
+    and in whatever order the steps of saves reach the role, drops the
+    batch gathering or kept and the state of an agent that did not start
+    (its words and its count of such turns), carrying nothing into the
+    new generation: the next wake gathers afresh. A batch records its
+    generation, and one of another, frozen to fire or kept by a turn that
+    did not start, is dropped with a log line, never fired or kept. One
+    save that cleared the account and turned the background off had left
+    the role unavailable with the sign-in's words, and on again it stayed
+    so; two overlapping saves, the background off then on, whose steps
+    reached the role after both were written had both read "on", so the
+    failed turn's batch still fired; and the on save's step, run first,
+    had carried the batch into its generation for a step before the off
+    save's to fire (#715, review rounds 1 to 3). A save of only a budget
+    or a model loses the batch gathering too, accepted: its wakes stay
+    in the log and the role gathers again at its next wake. A frozen batch
+    whose request was made already (the role's write after it failed) is
+    not dropped blind under a newer generation: the role finds that
+    request and takes its turn up, its outcome and cooldown, making none.
+    `TestASaveOfTheRoleOffEndsAnAgentNotStarted`,
+    `TestASaveOfTheBackgroundOffAndTheAccountClearedStartsClean`,
+    `TestOverlappingSavesOfTheRoleOffAndOnFireNoTurn`,
+    `TestAStepBetweenOverlappingSavesFiresNoTurn` (a step between the two
+    saves' steps, a batch due, both orders),
+    `TestABatchFiresOnlyUnderTheConfigurationItWasGatheredUnder`,
+    `TestACrashBetweenTheRequestAndTheRoleFiresOnce` (the background off
+    after the failed write), `TestMadeFindsTheBatchsRequestAndMakesNone`,
+    `TestOverlappingSavesOfTheBackgroundOffAndOnFireNoTurn` (the route's
+    two saves held at a gate, the loop passing between their steps, let
+    go in both orders).
   - A proposal's launch state is drawn from the request's acts and the
     launch they name each time, so a re-read of the request keeps a failed
     launch's "try again" and never shows a second control for one under
