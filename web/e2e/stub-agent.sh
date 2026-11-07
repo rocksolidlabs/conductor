@@ -639,6 +639,15 @@ holds() { git cat-file -e "$1:stub-$2.txt" 2>/dev/null; }
 # change; a review says
 # needs_changes with one finding on its first attempt and approved after.
 # What it reads and what the server answered go into the transcript.
+# With STUB_DECISION=approval or clarification, a work task's first
+# attempt asks the operator one durable decision before it commits
+# (decision_request through conductor mcp, or conductor task decide under
+# STUB_WORKER=cli), writes its id into stub-decision.txt and ends its turn;
+# on the line Conductor types once it is answered ("Decision dr-N (TYPE)
+# answered by …") it writes that line into stub-answer.txt and goes on:
+# both files are committed with stub-<member>.txt and the result submitted.
+# STUB_DECISION_EVIDENCE is the request's evidence refs, space-separated,
+# each `{run}` in them the run's id.
 
 # mcp_call runs one tool through conductor mcp and prints its reply line.
 mcp_call() {
@@ -677,6 +686,11 @@ task_attempt() {
 	local kind=$1 task=$2 n=$3 ctx
 	ctx=$(task_read)
 	printf 'task: %s %s attempt %s: read %s bytes\n' "$kind" "$task" "$n" "${#ctx}" >>"$transcript"
+	if [[ $kind == task && -n ${STUB_DECISION:-} && -z $decided ]]; then
+		# STUB_DECISION: ask the operator first, end the turn, and go on once the answer is typed (answer, below).
+		stub_decision "$task" "$n"
+		return
+	fi
 	if [[ $kind == task && $ctx == *"STUB DECIDE"* ]]; then
 		# Its instructions ask the operator first: a durable decision, and nothing submitted while it waits.
 		stub_decide "$task"
@@ -690,6 +704,9 @@ task_attempt() {
 			printf 'ticket: %s\n' "$(head -n 1 .conductor/ticket.md)" >>"stub-$member.txt"
 		fi
 		git add -- "stub-$member.txt" >/dev/null 2>&1 || true
+		if [[ -n $decided ]]; then
+			git add -- stub-decision.txt stub-answer.txt >/dev/null 2>&1 || true
+		fi
 		if [[ $ctx == *"Findings to address"* || $ctx == *"The attempt before"* || $n -ge 2 ]]; then
 			printf 'fixed in attempt %s\n' "$n" >stub-fixed.txt
 			git add -- stub-fixed.txt >/dev/null 2>&1 || true
@@ -721,6 +738,46 @@ stub_decide() {
 	reply=$(printf 'Authorization: Bearer %s\n' "${CONDUCTOR_NOTIFY_TOKEN:-}" | curl -sS -X POST -H @- -H 'Content-Type: application/json' \
 		--data "{\"requestId\":\"stub-$1\",\"type\":\"clarification\",\"question\":\"Which name should $1 take?\"}" "$url" 2>&1) || true
 	printf 'decision: %s\n' "$reply" >>"$transcript"
+}
+
+# stub_decision asks the operator the durable decision STUB_DECISION names
+# for task $1, attempt $2, before anything is committed (so the commit it is
+# about, HEAD, stays where it was asked), through decision_request
+# (STUB_WORKER=mcp) or conductor task decide --file - (cli); its evidence is
+# STUB_DECISION_EVIDENCE's refs, `{run}` the run's id. The decision's id goes
+# into stub-decision.txt, and the task and attempt are kept for the answer's
+# line (answer). What the server answered goes into the transcript.
+decision_task=''
+decision_n=''
+decided=''
+stub_decision() {
+	local task=$1 n=$2 body reply ref evidence='' options
+	for ref in ${STUB_DECISION_EVIDENCE:-}; do
+		ref=${ref//\{run\}/$run}
+		evidence+="${evidence:+,}$(json_str "$ref")"
+	done
+	case $STUB_DECISION in
+	approval)
+		options='[{"label":"Approve","tradeoffs":"the change goes in as it is"},{"label":"Reject","tradeoffs":"nothing is committed"}]'
+		body="{\"requestId\":\"stub-$task-$n\",\"type\":\"approval\",\"question\":$(json_str "May $task commit its change?"),\"context\":$(json_str "The stub is about to commit stub-$member.txt for **$task**.")"
+		body+=",\"options\":$options,\"recommendation\":0,\"uncertainty\":\"none: it is a stub\",\"authorizes\":$(json_str "$task commits stub-$member.txt and submits it")"
+		;;
+	*)
+		options='[{"label":"stub-a","tradeoffs":"the short name"},{"label":"stub-b"}]'
+		body="{\"requestId\":\"stub-$task-$n\",\"type\":\"clarification\",\"question\":$(json_str "Which name should $task take?"),\"options\":$options,\"recommendation\":0"
+		;;
+	esac
+	body+=",\"evidence\":[$evidence]}"
+	case ${STUB_WORKER:-} in
+	mcp) reply=$(mcp_call decision_request "$body") ;;
+	*) reply=$("$conductor" task decide --file - <<<"$body" 2>&1) ;;
+	esac
+	printf 'decision: %s\n' "${reply:0:300}" >>"$transcript"
+	if [[ $reply =~ (dr-[1-9][0-9]*) ]]; then
+		printf '%s\n' "${BASH_REMATCH[1]}" >stub-decision.txt
+		decision_task=$task
+		decision_n=$n
+	fi
 }
 
 # brakeman_turn does the Brakeman request $1 (STUB_BRAKEMAN=1): it reads the
@@ -1159,6 +1216,17 @@ answer() {
 			title_ready done
 			report_done "brakeman $req: no brief, $brakeman_why" "$line"
 		fi
+		return
+	fi
+	if [[ -n ${STUB_WORKER:-} && -n $decision_task && $line =~ ^Decision\ dr-[1-9][0-9]*\ \([a-z]+\)\ answered\  ]]; then
+		# The answer of the decision it asked (STUB_DECISION), typed by Yardmaster: kept, and the attempt goes on to commit and submit.
+		printf '%s\n' "$line" >stub-answer.txt
+		local dtask=$decision_task dn=$decision_n
+		decision_task=''
+		decided=1
+		task_attempt task "$dtask" "$dn"
+		title_ready done
+		report_done "task $dtask attempt $dn: submitted after its decision" "$line"
 		return
 	fi
 	if [[ -n ${STUB_WORKER:-} && -n ${CONDUCTOR_TASK:-} && $line =~ ^Conductor\ (task|review)\ \"([a-z0-9_-]+)\",\ attempt\ ([0-9]+): ]]; then
