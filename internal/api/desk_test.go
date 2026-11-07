@@ -299,7 +299,7 @@ func TestADeskEndsWithItsLastDecisionLink(t *testing.T) {
 // link is minted, a session's or a run's, 409 switchyard_too_old, and no
 // desk is left open; a plain control link is, and its viewer's lane is
 // refused by the owner, nothing of it a decision, the connection going on.
-func TestNoDecisionLinkAtAnOlderSwitchyardOfThisBuild(t *testing.T) {
+func TestNoDecisionLinkAtAnOlderSwitchyard(t *testing.T) {
 	yard, local := deskPair(t, false)
 	id := local.createSession("cat")
 	until(t, "the session published", func() bool { return local.srv.publishedOf(id) != nil })
@@ -352,7 +352,7 @@ func TestNoDecisionLinkAtAnOlderSwitchyardOfThisBuild(t *testing.T) {
 // A switchyard's relay carries the lane's two frames: a control viewer's
 // decide and reads reach the host in envelopes, the host's decision
 // reaches the viewer, and the host's connection stays.
-func TestRelayCarriesDecisionFramesThroughASwitchyard(t *testing.T) {
+func TestRelayCarriesDecisionFrames(t *testing.T) {
 	yard := newTestEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true })
 	host := dialFakeHost(t, yard, "")
 	token := host.link("control", "phone")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/proto"
@@ -204,18 +205,21 @@ func (s *Server) endRunDesk(runID string) {
 	}
 }
 
-// stopRunDesks stops every desk, as the server stops.
+// stopRunDesks stops every desk, as the server stops: together, so the
+// whole takes one desk's last word at most.
 func (s *Server) stopRunDesks() {
 	s.pubMu.Lock()
 	desks := s.desks
 	s.desks = nil
 	s.pubMu.Unlock()
+	var wg sync.WaitGroup
 	for _, rd := range desks {
 		if rd.stopLinger != nil {
 			rd.stopLinger()
 		}
-		rd.desk.Stop()
+		wg.Go(rd.desk.Stop)
 	}
+	wg.Wait()
 }
 
 // runTakesCommands says whether the engine still takes the run's

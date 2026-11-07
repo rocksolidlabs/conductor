@@ -186,11 +186,11 @@ func readLinkRequest(w http.ResponseWriter, r *http.Request) (createLinkRequest,
 	return req, true
 }
 
-// switchyardTooOld refuses a decision link a switchyard would mint: none
-// carries decisions yet, so its link would answer none (the switchyard's
-// side is the plan's PR-6).
+// switchyardTooOld refuses a decision link a switchyard would mint whose
+// registered did not say it carries decisions: its link would answer none
+// (desk_publish.go).
 func switchyardTooOld(w http.ResponseWriter) {
-	writeError(w, http.StatusConflict, "switchyard_too_old", "This switchyard must be updated to answer decisions through its links")
+	writeError(w, http.StatusConflict, "switchyard_too_old", tooOldWords)
 }
 
 // linkRole is a link's role as the activity says it; a decision link's
