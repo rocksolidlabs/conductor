@@ -1088,7 +1088,8 @@ by itself, as under the title alone; with 0.164 it gives way after its
 An agent's catalog entry can carry a `promptShape` (#714), its own prompt
 at rest matched by its shape against the server session's whole screen (its
 rows joined by line breaks, a row autowrap went on from read with the next as
-one): a Brakeman turn's line, and its Enter, are typed only while the screen,
+one, every other Unicode space read as a plain one, for the numbered-choice
+rule below too, so no indentation makes a choice read as text): a Brakeman turn's line, and its Enter, are typed only while the screen,
 read as the writer takes each, is a whole frame (no synchronized update under
 way, nothing cut by a smaller window) that matches it and shows no dialog's
 numbered choice on any row, and nothing is typed into any other screen; the

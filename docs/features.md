@@ -3831,8 +3831,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
     screen quiet), then, as the writer takes the text and again its
     Enter, the screen read whole (every row, from the screen the output
     feeds before the viewers and before what says the agent waits) is a
-    whole frame, nothing cut by a smaller window, that matches the
-    agent's prompt shape (the catalog's `promptShape`): Claude Code's a ❯
+    whole frame, nothing cut by a smaller window, read with every
+    Unicode space a plain one (a choice row indented with a no-break
+    space is still a choice), that matches the agent's prompt shape (the catalog's `promptShape`): Claude Code's a ❯
     row between two rules at the screen's foot, no row in the box a
     choice, Codex's a › row that is no numbered choice and not "Waiting
     for startup", their words never matched (seen with 2.1.319 and

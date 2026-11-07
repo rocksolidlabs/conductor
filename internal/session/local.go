@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/proto"
@@ -5547,17 +5548,35 @@ func (s *Local) ScreenLines(n int) []string {
 // known (Options.PromptShape), and, shape or none, no row of it is a
 // dialog's numbered choice, read by its shape as startupChoiceShown reads
 // one: a shape that matches never admits a screen with a choice a digit of
-// the line would pick. Anything else, an unknown dialog, a sign-in screen,
+// the line would pick. Both read the frame with every horizontal space a
+// plain one (plainSpaces): a row indented with a no-break space is read as
+// the same row indented with spaces, so no indentation turns a choice into
+// text for either. Anything else, an unknown dialog, a sign-in screen,
 // half a frame, is not the prompt (#714).
 func (s *Local) atPrompt() bool {
 	text, _, uncut, _, _ := s.shot.Frame()
 	if !uncut {
 		return false
 	}
+	text = plainSpaces(text)
 	if s.opts.PromptShape != nil && !s.opts.PromptShape.MatchString(text) {
 		return false
 	}
 	return !startupChoiceShown(text)
+}
+
+// plainSpaces is text with every Unicode space (unicode.IsSpace: a
+// no-break space, the typographic spaces, the ideographic space, a tab)
+// written as a plain space, but the line breaks between its rows, kept: the one reading of a screen's rows that atPrompt's prompt shape and
+// its numbered-choice rule both take, since a pattern's \s is ASCII
+// alone (#714).
+func plainSpaces(text string) string {
+	return strings.Map(func(r rune) rune {
+		if r != '\n' && unicode.IsSpace(r) {
+			return ' '
+		}
+		return r
+	}, text)
 }
 
 // ScreenCols is the width of the screen ScreenRead reads, in cells: a row

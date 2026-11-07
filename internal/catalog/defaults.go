@@ -414,8 +414,10 @@ func defaults() []Agent {
 // and a dot ("2. Skip"); an empty row is none either. Every row a shape
 // reads, the ones inside Claude Code's box as the ones under it, is such a
 // row, and a screen with a numbered choice anywhere on it is still not the
-// prompt (the session's atPrompt asks both).
+// prompt (the session's atPrompt asks both). The session matches a shape
+// on the screen with every Unicode space a plain one (Claude Code's no-break
+// space after its marker included), so a shape names spaces as " " and \s.
 const (
-	claudePromptShape = `(?m)^─{8,}\n❯[ \x{a0}]*(?:(?:[^\d\s\x{a0}]|\d+[^\d.\n])[^\n]*)?(?:\n *(?:(?:[^\d\s─❯›>]|\d+[^\d.\n])[^\n]*)?){0,8}\n─{8,}(?:\n *(?:(?:[^\d\s❯›>]|\d+[^\d.\n])[^\n]*)?){0,8}\s*\z`
-	codexPromptShape  = `(?m)^ {0,3}›[ \x{a0}]+(?:[^\d\sW\x{a0}]|W[^a\n]|\d+[^\d.\n])[^\n]*(?:\n *(?:(?:[^\d\s❯›>]|\d+[^\d.\n])[^\n]*)?){1,6}\s*\z`
+	claudePromptShape = `(?m)^─{8,}\n❯ *(?:(?:[^\d\s]|\d+[^\d.\n])[^\n]*)?(?:\n *(?:(?:[^\d\s─❯›>]|\d+[^\d.\n])[^\n]*)?){0,8}\n─{8,}(?:\n *(?:(?:[^\d\s❯›>]|\d+[^\d.\n])[^\n]*)?){0,8}\s*\z`
+	codexPromptShape  = `(?m)^ {0,3}› +(?:[^\d\sW]|W[^a\n]|\d+[^\d.\n])[^\n]*(?:\n *(?:(?:[^\d\s❯›>]|\d+[^\d.\n])[^\n]*)?){1,6}\s*\z`
 )

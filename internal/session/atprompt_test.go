@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -71,8 +72,16 @@ var csi = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)
 // atPrompt reads shows each of its rows (each screen has one of its own).
 func draw(t *testing.T, s *Local, p *fakeProc, screen string) {
 	t.Helper()
+	if !drawsOn(s, p, screen) {
+		t.Fatalf("the screen never showed %q: %q", screen, s.ScreenLines(24))
+	}
+}
+
+// drawsOn is draw for a hook outside the test's goroutine: whether the
+// screen came to show screen.
+func drawsOn(s *Local, p *fakeProc, screen string) bool {
 	p.outW.Write([]byte("\x1b[2J\x1b[H" + screen))
-	if !waitFor(10*time.Second, func() bool {
+	return waitFor(10*time.Second, func() bool {
 		text, _, _, _, _ := s.shot.Frame()
 		for _, row := range strings.Split(csi.ReplaceAllString(screen, ""), "\r\n") {
 			if !strings.Contains(text, strings.TrimSpace(row)) {
@@ -80,9 +89,7 @@ func draw(t *testing.T, s *Local, p *fakeProc, screen string) {
 			}
 		}
 		return true
-	}) {
-		t.Fatalf("the screen never showed %q: %q", screen, s.ScreenLines(24))
-	}
+	})
 }
 
 // TestTheAgentsPromptIsKnownByItsShape: Claude Code's prompt and Codex's
@@ -187,13 +194,80 @@ func TestALineForThePromptIsTypedIntoThePromptAlone(t *testing.T) {
 	}
 }
 
+// TestAPromptGoneBeforeAnEnterGetsNoEnter (Codex round 3 on #720): the
+// line is typed at the prompt, and the prompt is replaced by a sign-in no
+// catalog entry knows, a screen with no numbered choice the dialog guards
+// would see: before the line's Enter (the beforeEnter hook, as the
+// submission comes to it), its Enter is withheld; after it (BeforeEnter,
+// as the writer takes it) and before the confirming Enter an agent that
+// does not report taking the line gets (ConfirmSubmit), that one is
+// withheld. A line whose prompt stays gets both, so the second case
+// reaches the confirming Enter.
+func TestAPromptGoneBeforeAnEnterGetsNoEnter(t *testing.T) {
+	text := "Brakeman request bk-1 (briefing)"
+	opts := func() Options {
+		// InputWait bounds a hang alone: the screen is drawn while the
+		// writer holds the first Enter (BeforeEnter).
+		return quiet(Options{PromptShape: builtInShape(t, "claude"), ConfirmSubmit: true, ConfirmWait: 50 * time.Millisecond, InputWait: 30 * time.Second})
+	}
+
+	// Gone after the text, before its Enter.
+	s, p := newLocalWith(t, opts())
+	draw(t, s, p, claudePromptRow(`Try "fix lint errors"`))
+	var shown bool
+	hook := func() { shown = drawsOn(s, p, unknownSignIn) }
+	s.beforeEnter.Store(&hook)
+	res, err := s.Submit(t.Context(), Submission{Text: text, OnlyAtPrompt: true, Confirm: true})
+	s.beforeEnter.Store(nil)
+	if !shown {
+		t.Fatalf("the sign-in was never drawn: %q", s.ScreenLines(24))
+	}
+	if err != nil || !res.Typed || res.Entered || res.Reentered {
+		t.Fatalf("the line, its prompt gone before its Enter: %+v %v", res, err)
+	}
+	if got := written(t, p); got != text {
+		t.Fatalf("written %q", got)
+	}
+	nothingIn(t, s, p)
+
+	// Gone after its Enter, before the confirming one.
+	for _, gone := range []bool{true, false} {
+		s, p := newLocalWith(t, opts())
+		draw(t, s, p, claudePromptRow(`Try "fix lint errors"`))
+		var shown atomic.Bool
+		sub := Submission{Text: text, OnlyAtPrompt: true, Confirm: true}
+		if gone {
+			sub.BeforeEnter = func() { shown.Store(drawsOn(s, p, unknownSignIn)) }
+		}
+		res, err := s.Submit(t.Context(), sub)
+		if gone && !shown.Load() {
+			t.Fatalf("the sign-in was never drawn: %q", s.ScreenLines(24))
+		}
+		if err != nil || !res.Typed || !res.Entered || res.Reentered != !gone {
+			t.Fatalf("the line, its prompt gone after its Enter %v: %+v %v", gone, res, err)
+		}
+		want := []string{text, "\r", "\r"}
+		if gone {
+			want = want[:2]
+		}
+		for _, w := range want {
+			if got := written(t, p); got != w {
+				t.Fatalf("gone %v: written %q, want %q", gone, got, w)
+			}
+		}
+		nothingIn(t, s, p)
+	}
+}
+
 // TestAChoiceInOrAboveThePromptsBoxGetsNoByte (Codex round 2 on #720):
 // Claude Code's shape reads no row inside its box that is a choice, so a
-// dialog drawn inside a box is not the prompt's shape; and a screen whose
-// box is the shape but which shows a dialog's numbered choice above it is
-// not the prompt either, the numbered-choice rule in force with a shape as
-// without one. At each the line is refused: not a byte of its text (a
-// digit of it would pick a choice), nor its Enter.
+// dialog drawn inside a box is not the prompt's shape, its choices indented
+// with a no-break space or another Unicode space as with plain ones (Codex
+// round 3); and a screen whose box is the shape but which shows a dialog's
+// numbered choice above it is not the prompt either, the numbered-choice
+// rule in force with a shape as without one. At each the line is refused:
+// not a byte of its text (a digit of it would pick a choice), nor its
+// Enter.
 func TestAChoiceInOrAboveThePromptsBoxGetsNoByte(t *testing.T) {
 	shape := builtInShape(t, "claude")
 	unescaped := func(screen string) string { return strings.ReplaceAll(screen, "\r\n", "\n") }
@@ -203,7 +277,26 @@ func TestAChoiceInOrAboveThePromptsBoxGetsNoByte(t *testing.T) {
 	if !shape.MatchString(unescaped(claudeChoiceAboveBox)) {
 		t.Fatal("the shape does not match the box under the choices: the test proves nothing of the rule")
 	}
-	for _, screen := range []string{claudeBoxedChoice, claudeChoiceAboveBox} {
+	screens := []string{claudeBoxedChoice, claudeChoiceAboveBox}
+	// Codex round 3 on #720: the box's choice rows indented with a
+	// no-break space (or another Unicode space) in place of their first
+	// plain one. Read raw, the shape takes each row for text (a pattern's
+	// \s is ASCII) and the numbered-choice rule finds no choice; atPrompt
+	// reads both with every space a plain one (plainSpaces).
+	for _, space := range []string{"\u00a0", "\u2007", "\u3000"} {
+		indented := strings.Replace(strings.Replace(claudeBoxedChoice, "\r\n ❯ 1.", "\r\n"+space+"❯ 1.", 1), "\r\n  2.", "\r\n"+space+" 2.", 1)
+		if indented == claudeBoxedChoice || strings.Count(indented, space) != 2 {
+			t.Fatalf("the fixture: %q", indented)
+		}
+		if raw := unescaped(indented); !shape.MatchString(raw) || startupChoiceShown(raw) {
+			t.Fatalf("read raw, %q is the shape (%v) or shows a choice: the test proves nothing", raw, shape.MatchString(raw))
+		}
+		if plain := plainSpaces(unescaped(indented)); shape.MatchString(plain) || !startupChoiceShown(plain) {
+			t.Fatalf("read with plain spaces, %q is the shape or shows no choice", plain)
+		}
+		screens = append(screens, indented)
+	}
+	for _, screen := range screens {
 		s, p := newLocalWith(t, quiet(Options{PromptShape: shape}))
 		draw(t, s, p, screen)
 		res, err := s.Submit(t.Context(), Submission{Text: "1 Brakeman request bk-1 (briefing)", OnlyAtPrompt: true})

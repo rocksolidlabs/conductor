@@ -53,7 +53,8 @@ type Agent struct {
 	TrustPrompt string `json:"trustPrompt,omitempty"`
 	// PromptShape matches the agent's own prompt at rest, by its shape, on
 	// its whole screen (rows joined by line breaks, a row autowrap went on
-	// from read with the next as one): a Brakeman turn's line, and its
+	// from read with the next as one, every other Unicode space read as a
+	// plain one): a Brakeman turn's line, and its
 	// Enter, are typed only while the screen matches, never into anything
 	// else (#714); a screen that shows a dialog's numbered choice is never
 	// the prompt, shape or none. As TrustPrompt; empty, that rule alone

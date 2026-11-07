@@ -708,15 +708,30 @@ func TestTheLineIsTypedAtTheAgentsPrompt(t *testing.T) {
 // prompt typed anyway, a Brakeman turn's line never is: the engine notes
 // the line waits at a screen not recognised, and at the turn's start
 // bound, on the desk's clock, the turn ends with words saying so. Nothing
-// reaches the agent's terminal.
+// reaches the agent's terminal. The wait gives up only once the agent has
+// drawn its prompt (Codex round 3 on #720): before, a screen still blank
+// would keep the line out by itself, and the clock advanced could stop
+// the agent before it made its terminal's record.
 func TestATurnWhoseAgentNeverSettlesGetsNoLine(t *testing.T) {
 	t.Parallel()
 	b := brakemanEnv(t, nil)
-	b.srv.runs.SetNotReadyForTest()
+	gate := make(chan struct{})
+	b.srv.runs.SetNotReadyForTest(gate)
 	c := b.fakeClock()
 	b.enable(t, "bkprompt", nil)
 	id := b.briefing(t)
 	b.launched(t, id)
+	_, _, l := b.turnSession(t, id)
+	if !waitFor(30*time.Second, func() bool {
+		screen := strings.Join(l.ScreenLines(12), "\n")
+		return strings.Contains(screen, `Try "create a util logging.py that..."`) && strings.Contains(screen, "? for shortcuts")
+	}) {
+		t.Fatalf("the agent never drew its prompt: %q", l.ScreenLines(12))
+	}
+	if _, err := os.Stat(filepath.Join(b.root, "typed-"+id+".txt")); err != nil {
+		t.Fatalf("the agent drew its prompt with no record of its terminal: %v", err)
+	}
+	close(gate)
 	b.heldUnrecognised(t, id)
 	by, _ := b.startBy(t, id)
 	c.add(by.Sub(c.now()))

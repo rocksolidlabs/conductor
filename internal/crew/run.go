@@ -2470,14 +2470,21 @@ func awaitReady(ctx context.Context, l *session.Local, held func(question string
 	return productReady.await(ctx, l, held)
 }
 
-// SetNotReadyForTest makes the engine's readiness wait answer at once, and
-// every time it is asked, that a member is not ready by the cap
-// (errNotReady), whatever its screen shows: a test of what follows (a
-// Brakeman turn's line never typed anyway) with no clock and no output's
-// pace deciding readiness. It is called before the engine launches any
-// run: the wait is read without a lock.
-func (e *Engine) SetNotReadyForTest() {
+// SetNotReadyForTest makes the engine's readiness wait answer, once gate
+// is closed and every time it is asked from then on, that a member is not
+// ready by the cap (errNotReady), whatever its screen shows: a test of what
+// follows (a Brakeman turn's line never typed anyway) with no clock and no
+// output's pace deciding readiness. Until gate is closed the wait holds,
+// so the test closes it once the agent's screen is what it means to test
+// (its prompt drawn). It is called before the engine launches any run:
+// the wait is read without a lock.
+func (e *Engine) SetNotReadyForTest(gate <-chan struct{}) {
 	e.await = func(ctx context.Context, _ *session.Local, _ func(string)) error {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
