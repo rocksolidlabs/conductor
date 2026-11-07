@@ -249,3 +249,26 @@ func TestASignInScreenClearedBeforeItsLookIsReadIsNotAsked(t *testing.T) {
 		t.Fatalf("written %q", got)
 	}
 }
+
+// DialogMayShow reads any agent's screen, with no startup question and
+// no watch: a dialog's numbered choice on it, highlighted or not, is a
+// dialog (#714); Claude Code's and Codex's prompts, a ❯ or › row with no
+// number, are not; half a frame (a synchronized update under way) may be.
+func TestDialogMayShowReadsAnyScreen(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{}))
+	shows := func(screen, want string, dialog bool) {
+		t.Helper()
+		p.outW.Write([]byte(screen))
+		if !waitFor(10*time.Second, func() bool { return strings.Contains(strings.Join(s.ScreenLines(24), "\n"), want) }) {
+			t.Fatalf("the screen never showed %q: %q", want, s.ScreenLines(24))
+		}
+		if got := s.DialogMayShow(); got != dialog {
+			t.Fatalf("DialogMayShow on %q: %v, want %v", s.ScreenLines(24), got, dialog)
+		}
+	}
+	shows("\x1b[2J\x1b[H────────\r\n❯ Try \"create a util\"\r\n────────\r\n  ? for shortcuts", "? for shortcuts", false)
+	shows("\x1b[2J\x1b[H\x1b[1m›\x1b[0m Ask Codex to do anything\r\n\r\n ? for shortcuts", "Ask Codex", false)
+	shows("\x1b[2J\x1b[H  Select a sign-in method\r\n\r\n ❯ 1. Acme account\r\n   2. Quit", "2. Quit", true)
+	shows("\x1b[2J\x1b[H  Update available\r\n\x1b[7m› 1. Update now\x1b[27m\r\n  2. Skip", "2. Skip", true)
+	shows("\x1b[2J\x1b[H❯ Try it\x1b[?2026h\r\nhalf", "half", true)
+}

@@ -525,10 +525,10 @@ func (b *bkEnv) typedWait(t *testing.T, id, want string) string {
 
 // TestAnAgentAtAScreenNobodyKnowsDidNotStart: an agent that draws a
 // full-screen prompt no catalog entry knows (another program's sign-in, a
-// reworded screen) is an agent's screen like any other: once it is quiet
-// the request's line is typed into it, as for every agent (no recogniser
-// guesses at screens no pattern names; only the catalog's startup
-// questions get no key). Its agent then never calls the server, and the
+// reworded screen) and no dialog's choices is read as its prompt: once it
+// is quiet the request's line is typed into it (a screen that shows a
+// dialog's choices gets no line, TestAnUnknownDialogGetsNoLine, and the
+// catalog's startup questions no key). Its agent then never calls the server, and the
 // turn is held only until its start bound (a third of its 15 minutes:
 // 5), on the desk's clock, far short of its deadline: it ends failed,
 // the agent did not start, with what its screen shows (its link left
@@ -628,6 +628,54 @@ func TestAnAgentAtAScreenNobodyKnowsDidNotStart(t *testing.T) {
 	if q, _ := b.desk.st.Get(r.Request); !q.Open() {
 		t.Fatalf("a turn whose agent read its request was ended at the bound: %+v", q)
 	}
+}
+
+// TestAnUnknownDialogGetsNoLine: an agent that opens on a dialog no
+// catalog entry knows, a choice highlighted (bkDialogScript), is not at
+// its prompt: a person's turn types nothing into it, neither its line nor
+// the Enter that would pick the choice, and the engine notes once that the
+// line waits (crew.UnknownScreen). At the turn's start bound, on the
+// desk's clock, the turn ends failed with words saying the agent's screen
+// was not recognised and what it shows; still nothing has reached it. The
+// same turn against an agent at its prompt (bkPromptScript, a ❯ row as
+// Claude Code draws it) types its line.
+func TestAnUnknownDialogGetsNoLine(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	c := b.fakeClock()
+	b.enable(t, "bkdialog", nil)
+	id := b.briefing(t)
+	b.launched(t, id)
+	sid, _, l := b.turnSession(t, id)
+	run := b.runOf(t, sid)
+	if !waitFor(30*time.Second, func() bool {
+		r, _ := b.srv.runs.Get(run)
+		return slices.ContainsFunc(r.Log, func(e session.ActivityEntry) bool { return strings.Contains(e.Message, crew.UnknownScreen) })
+	}) {
+		t.Fatalf("the engine never held the line at the dialog: %q", l.ScreenLines(12))
+	}
+	if got := b.typedInto(t, id); got != "" {
+		t.Fatalf("keys reached the dialog: %q", got)
+	}
+	by, _ := b.startBy(t, id)
+	c.add(by.Sub(c.now()))
+	b.settle(t)
+	q := b.waitState(t, id, brakeman.StateFailed)
+	for _, want := range []string{"the agent's screen was not recognised", "its request's line was not typed", "Select a sign-in method", "1. Acme account with subscription"} {
+		if !strings.Contains(q.Why, want) {
+			t.Fatalf("the turn's words lack %q: %+v", want, q)
+		}
+	}
+	b.slotFree(t)
+	if got := b.typedInto(t, id); got != "" {
+		t.Fatalf("keys reached the dialog: %q", got)
+	}
+	// At its prompt, the line is typed.
+	b.configure(t, func(cfg map[string]any) { cfg["agentId"] = "bkprompt" })
+	ask := b.briefing(t)
+	b.typedWait(t, ask, "Brakeman request "+ask+" (briefing)")
+	b.expect(t, "POST", "/api/brakeman/requests/"+ask+"/cancel", map[string]any{"opId": "c-1"}, http.StatusOK, "")
+	b.slotFree(t)
 }
 
 // TestAScreensWordsLeaveAWrappedLinkOutWhole: the words of a turn whose

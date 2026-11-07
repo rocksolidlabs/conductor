@@ -50,8 +50,9 @@ type bkEnv struct {
 // logged-out CLI does), bkcodex (Codex's adapter: its read-only mode
 // does not hold), bkfixed (bkScript, an entry that takes no extra
 // arguments), bksignin (a signed-out Claude Code at its sign-in screen),
-// bkupdate (an agent at its update dialog) and bkunknown (an agent at a
-// full-screen prompt no catalog entry knows).
+// bkupdate (an agent at its update dialog), bkunknown (an agent at a
+// full-screen prompt no catalog entry knows), bkdialog (an agent at a
+// dialog no catalog entry knows) and bkprompt (an agent at its prompt).
 func brakemanEnv(t *testing.T, mutate func(*config.Config)) *bkEnv {
 	t.Helper()
 	e := newTestEnvAgents(t, mutate, slog.New(slog.NewTextHandler(io.Discard, nil)), bkAgents())
@@ -69,6 +70,8 @@ func bkAgents() []catalog.Agent {
 		{ID: "bksignin", Name: "bksignin", Command: []string{"/bin/sh", "-c", bkSignInScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("claude")},
 		{ID: "bkupdate", Name: "bkupdate", Command: []string{"/bin/sh", "-c", bkUpdateScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("codex")},
 		{ID: "bkunknown", Name: "bkunknown", Command: []string{"/bin/sh", "-c", bkUnknownScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("claude")},
+		{ID: "bkdialog", Name: "bkdialog", Command: []string{"/bin/sh", "-c", bkDialogScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("claude")},
+		{ID: "bkprompt", Name: "bkprompt", Command: []string{"/bin/sh", "-c", bkPromptScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("claude")},
 	}
 }
 
@@ -99,6 +102,18 @@ const bkUpdateScript = bkRecord + `printf "  Update available! 0.1.0 -> 0.2.0\r\
 // alternate screen, a box, a link, and it waits, never reading its
 // request, its terminal kept as bkSignInScript's is.
 const bkUnknownScript = bkRecord + `printf "\033[?1049h\033[2J\033[H  Acme Agent 9.0\r\n\r\n  You are not signed in.\r\n  Open https://example.invalid/device?code=ABCD to continue\r\n\r\n  [ Sign in ]   [ Quit ]"; ` + bkKeep
+
+// bkDialogScript is an agent that opens on a dialog no catalog entry
+// knows, its first choice highlighted as Claude Code highlights one (a
+// version's new sign-in menu): an Enter would pick it. It waits with its
+// terminal kept as bkSignInScript's is: no key may reach it.
+const bkDialogScript = bkRecord + `printf "  Select a sign-in method\r\n\r\n ❯ 1. Acme account with subscription\r\n   2. Acme Console account\r\n\r\n  Enter to confirm\r\n"; ` + bkKeep
+
+// bkPromptScript is an agent at its prompt as Claude Code 2.1.319 draws
+// it (a ❯ row between two rules, its footer below): no dialog's choice,
+// so a turn types its line there. Its terminal is kept as
+// bkSignInScript's is.
+const bkPromptScript = bkRecord + `printf "────────\r\n❯ Try \"create a util\"\r\n────────\r\n  ? for shortcuts\r\n"; ` + bkKeep
 
 // builtInQuestions is the built-in agent id's startup questions, the
 // catalog's own, so a scripted agent is held by the patterns that ship.

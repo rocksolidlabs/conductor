@@ -5528,6 +5528,23 @@ func (s *Local) ScreenLines(n int) []string {
 	return rows
 }
 
+// DialogMayShow reports whether the screen every session keeps (shot, the
+// one ScreenRead reads) may show a dialog rather than the agent's prompt:
+// it shows a dialog's choice, read by its shape as startupChoiceShown reads
+// one (a numbered row with words, highlighted or not: "❯ 1. Yes", "› 1.
+// Update now"), or it is half a frame (a synchronized update under way),
+// so what it shows is not known. Text typed and its Enter would reach that
+// dialog and pick its highlighted choice. Unlike startupMayShow it needs no
+// startup question and no watch: it reads any agent's screen, at any time,
+// for what must type nothing into a screen it does not know (a Brakeman
+// turn's line, crew.UnknownScreen). Claude Code's prompt ("❯ Try …"
+// between two rules) and Codex's ("› Ask Codex to do anything") show no
+// numbered row.
+func (s *Local) DialogMayShow() bool {
+	rows, drawn := s.shot.Rows()
+	return !drawn || startupChoiceShown(strings.Join(rows, "\n"))
+}
+
 // ScreenCols is the width of the screen ScreenRead reads, in cells: a row
 // that fills it may go on in the next row (a line the terminal wrapped).
 func (s *Local) ScreenCols() int {
