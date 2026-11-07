@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo, CrewInfo, CrewSummary, RunInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
-import { crewKey, defaultCrew, holdViewLink, keepParked, memberNameError, pageAfterDelete, summaryOf, toDraft, type DraftCrew, taskProblems, taskSaveProblems } from '~/utils/crews'
+import { crewKey, defaultCrew, holdViewLink, keepParked, memberNameError, pageAfterDelete, peopleProblems, refusedAsStale, revisionToSave, elsewhereWords, summaryOf, toDraft, type DraftCrew, taskProblems, taskSaveProblems } from '~/utils/crews'
 import { changedFields, liveRunLine, startedClock } from '~/utils/crewWords'
 import { runLive, runState } from '~/utils/runs'
 
@@ -191,7 +191,8 @@ const ruleProblem = computed(() => {
     if (err) return err
     if (!m.agentId) return `${m.name || 'A member'} needs an agent`
   }
-  return taskProblems(d)[0] ?? ''
+  // The server checks the tasks, then the people (internal/crew Validate).
+  return taskProblems(d)[0] ?? peopleProblems(d)[0] ?? ''
 })
 /** Why a save of the draft would be refused by the rules a crew is held to as it is saved only (taskSaveProblems); '' when not. */
 const saveOnlyProblem = computed(() => (draft.value ? (taskSaveProblems(draft.value)[0] ?? '') : ''))
@@ -256,14 +257,22 @@ function setName(name: string) {
   if (draft.value) draft.value = { ...draft.value, name }
 }
 
-/** Saves the draft on screen and returns the crew as saved; undefined when the server refused it (a toast says why). */
-async function save(): Promise<CrewInfo | undefined> {
+/**
+ * Saves the draft on screen and returns the crew as saved; undefined when the server refused it (a toast says why). An update is made from the
+ * copy the draft was made from (its base's revision), or, `anyway`, from the copy the server holds now as read after a refusal: the person
+ * chose to replace the change made elsewhere. When another save came between, the server refuses it and nothing is saved; the draft stays
+ * exactly as typed, marked, and the crew as saved now is read so the page can say what changed (readTheirs). Never saved again by itself.
+ */
+async function save(anyway = false): Promise<CrewInfo | undefined> {
   const key = selectedKey.value
   const d = draft.value
   if (key === undefined || !d) return undefined
+  const revision = revisionToSave(d, anyway)
+  // Save mine anyway goes over a copy the page has read, never unconditionally.
+  if (anyway && !revision) return undefined
   saving.value = true
   try {
-    const c = await api.saveCrew(d, d.id)
+    const c = await api.saveCrew(d, d.id, revision)
     full.value = { ...full.value, [c.id]: c }
     if (crews.value.some((x) => x.id === c.id)) crews.value = crews.value.map((x) => (x.id === c.id ? summaryOf(c) : x))
     else crews.value = [...crews.value, summaryOf(c)].sort((a, b) => a.name.localeCompare(b.name))
@@ -277,11 +286,80 @@ async function save(): Promise<CrewInfo | undefined> {
     drafts.value = next
     return c
   } catch (e) {
-    fail(e instanceof ApiError && e.code === 'invalid_crew' ? 'The server refused the crew' : 'Save failed', e)
+    // The draft as it is now, edits made while the save was out included.
+    const now = drafts.value[key]
+    if (e instanceof ApiError && e.code === 'stale_revision' && now && key !== NEW) {
+      drafts.value = { ...drafts.value, [key]: refusedAsStale(now) }
+      void readTheirs(key)
+    } else fail(e instanceof ApiError && e.code === 'invalid_crew' ? 'The server refused the crew' : 'Save failed', e)
     return undefined
   } finally {
     saving.value = false
   }
+}
+
+/** The crew being read as saved now after a refused save, by id, and why such a read failed, by id. */
+const theirsReading = ref<string>()
+const theirsError = ref<Record<string, string>>({})
+
+/** Reads the crew as the server holds it now after a refused save and keeps it beside the draft (DraftCrew.theirs); the draft itself is not touched. */
+async function readTheirs(id: string) {
+  theirsReading.value = id
+  theirsError.value = { ...theirsError.value, [id]: '' }
+  try {
+    const theirs = await api.getCrew(id)
+    full.value = { ...full.value, [id]: theirs }
+    const d = drafts.value[id]
+    // Only a draft still marked: one read again meanwhile, or saved, has nothing to say.
+    if (d?.changedElsewhere) drafts.value = { ...drafts.value, [id]: refusedAsStale(d, theirs) }
+  } catch (e) {
+    theirsError.value = { ...theirsError.value, [id]: (e as Error).message }
+  } finally {
+    if (theirsReading.value === id) theirsReading.value = undefined
+  }
+}
+
+/** The choice the person is confirming after a refused save: read the crew again (losing the edits here), or save theirs over the other. */
+const staleChoice = ref<'read' | 'save'>()
+const staleChoiceOpen = computed({
+  get: () => !!staleChoice.value,
+  set: (open: boolean) => {
+    if (!open) staleChoice.value = undefined
+  },
+})
+const staleText = computed(() => (draft.value ? elsewhereWords(draft.value) : ''))
+const staleDescription = computed(() => {
+  const head = 'Your save was refused and nothing was saved; your edits are still here.'
+  const id = crewId.value
+  if (theirsReading.value === id) return `${head} Reading what changed there…`
+  if (theirsError.value[id]) return `${head} Reading what changed there failed: ${theirsError.value[id]}`
+  return `${head} Changed there: ${staleText.value}.`
+})
+const reading = ref(false)
+
+/** Read the crew again: the crew as saved now replaces the draft, its edits lost (the person confirmed). */
+async function readAgain() {
+  const id = crewId.value
+  if (!id) return
+  reading.value = true
+  try {
+    const fresh = await api.getCrew(id)
+    full.value = { ...full.value, [id]: fresh }
+    drafts.value = { ...drafts.value, [id]: toDraft(fresh) }
+    staleChoice.value = undefined
+  } catch (e) {
+    fail('Reading the crew again failed', e)
+  } finally {
+    reading.value = false
+  }
+}
+
+/** Save mine anyway: the whole draft over the copy the server holds now (the person confirmed); refused again when it changed once more. */
+async function saveAnyway() {
+  staleChoice.value = undefined
+  // The draft's own rules hold as for any save (the Save button's).
+  if (invalid.value) return
+  if (await save(true)) toast.add({ title: 'Crew saved', description: 'It replaced the change made elsewhere.', icon: 'i-lucide-check', color: 'success' })
 }
 
 async function onSave() {
@@ -602,6 +680,19 @@ usePalette().registerPage(() => ({
               </span>
               <NuxtLink :to="`/runs/${encodeURIComponent(b.run.id)}`" class="ml-auto flex flex-none items-center gap-1 font-medium text-highlighted hover:underline">Open run <UIcon name="i-lucide-arrow-right" class="size-3.5" /></NuxtLink>
             </div>
+            <UAlert
+              v-if="draft.changedElsewhere"
+              color="warning"
+              variant="subtle"
+              icon="i-lucide-git-compare-arrows"
+              title="This crew was changed elsewhere since you opened it"
+              :description="staleDescription"
+              :actions="[
+                { label: 'Read the crew again', icon: 'i-lucide-refresh-cw', color: 'neutral', variant: 'outline', loading: reading, onClick: () => (staleChoice = 'read') },
+                { label: 'Save mine anyway', icon: 'i-lucide-save', color: 'warning', variant: 'solid', loading: saving, disabled: !draft.theirs || invalid, onClick: () => (staleChoice = 'save') },
+              ]"
+              data-crew-stale
+            />
             <UTabs v-model="tab" :items="tabItems" :content="false" color="neutral" variant="link" size="sm" class="-mb-1" data-crew-tabs />
             <CrewEditor v-if="tab === 'setup'" :key="selectedKey" v-model="draft" :agents="agents" :yolo-default="yoloDefault" />
             <CrewRunsPanel v-else :runs="records.runs.value" :sessions="live.sessions.value" :now="now" :error="records.error.value" />
@@ -652,6 +743,23 @@ usePalette().registerPage(() => ({
         </template>
       </UModal>
 
+      <UModal
+        v-model:open="staleChoiceOpen"
+        :title="staleChoice === 'save' ? 'Save yours over the other change?' : 'Read the crew again?'"
+        :description="
+          staleChoice === 'save'
+            ? `The crew as it is on this page replaces the one saved elsewhere, and what was changed there is lost: ${staleText}.`
+            : 'The crew as saved now replaces what is on this page: the edits made here will be lost.'
+        "
+      >
+        <template #footer>
+          <div class="flex w-full justify-end gap-2" data-crew-stale-confirm>
+            <UButton label="Cancel" color="neutral" variant="ghost" @click="staleChoice = undefined" />
+            <UButton v-if="staleChoice === 'save'" label="Save mine" icon="i-lucide-save" color="warning" :loading="saving" @click="saveAnyway" />
+            <UButton v-else label="Read it again" icon="i-lucide-refresh-cw" color="warning" :loading="reading" @click="readAgain" />
+          </div>
+        </template>
+      </UModal>
       <UModal v-model:open="deleteOpen" :title="`Delete ${saved?.name ?? routeId ?? 'crew'}?`" description="The saved crew goes. Runs already launched keep going, and their worktrees and branches stay.">
         <template #footer>
           <div class="flex w-full justify-end gap-2">
