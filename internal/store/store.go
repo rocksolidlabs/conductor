@@ -163,12 +163,41 @@ type Entry struct {
 	Name    string // the document's name, such as "todo-app.json"
 	Size    int64
 	ModTime time.Time
+	// Err is why an entry ListAll reports could not be read as a
+	// document: ErrNotRegular, or the failure to read its metadata (a
+	// directory that can be listed but not searched). nil for a document,
+	// and always nil in List's.
+	Err error
 }
+
+// ErrNotRegular is an entry named as a document that is not a regular file
+// (a link, a directory), which the store neither reads nor writes.
+var ErrNotRegular = errors.New("not a regular file")
 
 // List returns the documents in the store, sorted by name: the regular files
 // whose names a document may have. Temp files, the write probe, links,
 // directories and anything else are left out.
-func (s *Store) List() ([]Entry, error) { return listDir(s.dir) }
+func (s *Store) List() ([]Entry, error) {
+	all, err := listDir(s.dir)
+	if err != nil {
+		return nil, err
+	}
+	out := all[:0]
+	for _, e := range all {
+		if e.Err == nil {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+// ListAll is List with the entries List leaves out though they are named as
+// documents, each with its Err: one that is not a regular file, and one
+// listed whose metadata could not be read, so a reader of every document
+// knows when what it read is not all of them. An entry gone between the
+// listing and the read of its metadata is no entry, as a listing is a
+// moment.
+func (s *Store) ListAll() ([]Entry, error) { return listDir(s.dir) }
 
 // ListDocs is List for the store's directory sub ("" for the store's own),
 // as Sub would open it, without making it: a directory that is not there
@@ -181,14 +210,25 @@ func (s *Store) ListDocs(sub string) ([]Entry, error) {
 		}
 		dir = filepath.Join(s.dir, sub)
 	}
-	out, err := listDir(dir)
+	all, err := listDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	var out []Entry
+	for _, e := range all {
+		if e.Err == nil {
+			out = append(out, e)
+		}
+	}
+	return out, nil
 }
 
-// listDir is List of dir.
+// listDir is ListAll of dir: every entry named as a document, those that
+// are not regular files and those whose metadata could not be read with
+// their Err, and none gone since the listing.
 func listDir(dir string) ([]Entry, error) {
 	des, err := os.ReadDir(dir)
 	if err != nil {
@@ -196,12 +236,20 @@ func listDir(dir string) ([]Entry, error) {
 	}
 	var out []Entry
 	for _, de := range des {
-		if !de.Type().IsRegular() || !namePattern.MatchString(de.Name()) {
+		if !namePattern.MatchString(de.Name()) {
+			continue
+		}
+		if !de.Type().IsRegular() {
+			out = append(out, Entry{Name: de.Name(), Err: ErrNotRegular})
 			continue
 		}
 		fi, err := de.Info()
-		if err != nil {
+		switch {
+		case errors.Is(err, os.ErrNotExist):
 			continue // removed meanwhile
+		case err != nil:
+			out = append(out, Entry{Name: de.Name(), Err: err})
+			continue
 		}
 		out = append(out, Entry{Name: de.Name(), Size: fi.Size(), ModTime: fi.ModTime()})
 	}

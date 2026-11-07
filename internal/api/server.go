@@ -80,6 +80,10 @@ type Server struct {
 	// is read, so a test can commit a twin try of the operation there
 	// (addDelivery).
 	deliveryReplayed func(ctx context.Context, op dispatch.Op, key string, l dispatch.NewLink)
+	// personDispatch is nil but in tests: what a person's work reads of
+	// Dispatch in its store's place (ticketReads), so a test fails one of
+	// its reads alone.
+	personDispatch ticketDirectory
 	// keeper keeps the links a switchyard mints across its restarts
 	// (linkfiles.go); nil elsewhere.
 	keeper *linkKeeper
@@ -113,6 +117,10 @@ type Server struct {
 	// (beginContinuation), whose runs no chain's walk judges until they
 	// end (continuingAt). Under resumingMu.
 	continuations map[*continuation]struct{}
+	// rechecking is held by one Check again at a time, from its chain's
+	// read to its answer (handleRecheckTask): one command id is taken in
+	// one run of a chain, never in two.
+	rechecking chan struct{}
 	// journaling holds the runs whose record is about to be written again
 	// (scheduleJournal), under journalMu.
 	journalMu  sync.Mutex
@@ -136,7 +144,11 @@ type Server struct {
 	// switchyard, and when it could not be opened. readRevision is how a
 	// record's git facts are read (gitcli.RevisionOf; a test's seam).
 	sessionRecords *journal.Journal
-	readRevision   func(ctx context.Context, dir string) (gitcli.Revision, error)
+	// history feeds the history's index from the session records and the
+	// runs (history_index.go); nil where there are no session records.
+	history      *historyIndexer
+	commits      *commitFan // the commit hooks' observers (commits.go)
+	readRevision func(ctx context.Context, dir string) (gitcli.Revision, error)
 	// recordRepos is each native server session's launch repository, by
 	// the identity of its common git directory (*launchRepo, which holds
 	// it open where the system reuses identities), until its end commit is
@@ -331,11 +343,16 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// The sync hooks before the first write (the masked catalog, the crews'
 	// migration, the ledger's recovery), so the start-up's commits are told
 	// too; taken off the data directory again when New fails.
+	// The commit hooks go through one fan (commits.go): the sync adapter
+	// first, the history's indexer after it.
+	fan := newCommitFan()
 	syncs := newSyncAdapter(st)
+	fan.add(syncs.observer())
+	fan.observeData(st)
 	made := false
 	defer func() {
 		if !made {
-			syncs.detach()
+			fan.detachData(st)
 		}
 	}()
 	base := cat.Clone()
@@ -398,6 +415,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		instance:    newInstance(),
 		started:     time.Now(),
 		relayed:     newRelayMeter(nil),
+		rechecking:  make(chan struct{}, 1),
 	}
 	// Every provider behind the guard before the server's first write of
 	// its own (the ledger's recovery, the records): nothing calls them yet.
@@ -405,6 +423,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	s.installExtensions(o.providers)
 	s.installRuntimes(o.providers, o.native)
 	s.syncs = syncs
+	s.commits = fan
 	syncs.attach(s)
 	s.holdQueue(o.providers.Continuity, s.exts.sync.Name(), syncs.begin)
 	s.router = newDecisionRouter(s)
@@ -491,13 +510,16 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			}
 		}
 		if s.dispatch != nil {
-			syncs.observeDispatch(s.dispatch)
+			fan.observeDispatch(s.dispatch)
 			s.dispatch.SetRunExists(s.runKnown)
 			s.dispatch.OnChange(s.events.dispatch)
 		}
 		if !cfg.Switchyard.Enabled {
 			s.brakeman = s.openBrakemanDesk(st)
 			s.sessionRecords = s.openSessionRecords(st)
+			// The history's indexer, which opens the index off the start
+			// path once the journal holds history/owner.lock.
+			s.openHistoryIndexer(fan)
 		}
 		if s.brakeman != nil {
 			// A run's end reaches Brakeman's background role too: a legacy
@@ -512,7 +534,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			}
 		}
 		s.wireLaunches()
-		s.ledger = openLedger(context.Background(), st, s.records, log, syncs.observeLedger, syncs.ledgerOwned, s.ledgerRecovered, s.restoreLaunchPeople)
+		s.ledger = openLedger(context.Background(), st, s.records, log, fan.observeLedger, syncs.ledgerOwned, s.ledgerRecovered, s.restoreLaunchPeople)
 		if s.ledger == nil {
 			// Its runs are not gone: the sync store is never told they are.
 			syncs.unopened("the ledger")
@@ -627,6 +649,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// Starter drain from now on (a Starter's once its Start has succeeded).
 	s.beginFreeQueues()
 	made = true
+	if s.history != nil {
+		s.history.start()
+	}
 	return s, nil
 }
 
@@ -700,7 +725,9 @@ func (s *Server) WaitBackground(ctx context.Context) {
 	case <-done:
 	case <-ctx.Done():
 	}
-	// No record lands after this: the directories may be going.
+	// No record lands after this: the directories may be going. The
+	// history's indexer ends first: it reads the stores closed after it.
+	s.stopHistory()
 	if s.brakeman != nil {
 		s.brakeman.release(ctx)
 	}
@@ -731,6 +758,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/history/sessions/{id}", s.requireAdmin(s.handleHistorySession))
 	mux.HandleFunc("DELETE /api/history/sessions/{id}", s.requireAdmin(s.handleForgetHistorySession))
 	mux.HandleFunc("DELETE /api/history/sessions", s.requireAdmin(s.handleForgetHistorySessions))
+	mux.HandleFunc("POST /api/history/reindex", s.requireAdmin(s.handleHistoryReindex))
 	// The decision inbox, read-only (inbox.go, inbox_track.go).
 	mux.HandleFunc("GET /api/inbox", s.inboxOnly(s.handleInbox))
 	mux.HandleFunc("GET /api/inbox/item", s.inboxOnly(s.handleInboxItem))
@@ -752,6 +780,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/crews/{id}/runs", s.launching(s.handleCrewRuns))
 	// The people Conductor knows: Dispatch's and the crews' (people.go).
 	mux.HandleFunc("GET /api/people", s.launching(s.handlePeople))
+	mux.HandleFunc("GET /api/people/{name}", s.launching(s.handlePerson))
 	mux.HandleFunc("GET /api/paths", s.launching(s.handleListPaths))
 	mux.HandleFunc("GET /api/git/check", s.launching(s.handleGitCheck))
 	mux.HandleFunc("GET /api/runs", s.readable("GET /api/runs", s.launchingAny(s.handleListRuns)))
@@ -775,6 +804,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/cancel", s.requireAdmin(s.handleCancelTask))
 	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/retry", s.requireAdmin(s.handleRetryTask))
 	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/accept", s.requireAdmin(s.handleAcceptTask))
+	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/recheck", s.launching(s.handleRecheckTask))
+	// A candidate's diff and its prepared failed-check request (review_diff.go, review_repair.go).
+	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}/attempts/{n}/diff", s.launching(s.handleCandidateDiff))
+	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}/attempts/{n}/diff/file", s.launching(s.handleCandidateDiffFile))
+	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/repair", s.launching(s.handlePrepareRepair))
 	// Brakeman's desk and its turn's session routes (brakeman.go).
 	s.routeBrakeman(mux)
 	// The operating guide, the admin's and a session's (guide.go).
@@ -864,8 +898,8 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 			h.Set("Access-Control-Allow-Origin", origin)
 			h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 			h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			// A receipt's log hash reaches the app's script across origins.
-			h.Set("Access-Control-Expose-Headers", logHashHeader)
+			// A receipt's log hash, and a diff file's commit and cut, reach the app's script across origins.
+			h.Set("Access-Control-Expose-Headers", logHashHeader+", "+commitHeader+", "+truncatedHeader)
 			h.Set("Vary", "Origin")
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)
@@ -1217,6 +1251,9 @@ func (s *Server) Shutdown(ctx context.Context) {
 	case <-done:
 	case <-ctx.Done():
 	}
+	// The history's indexer ends before the stores it reads close, and
+	// closes its index (the next start then owes it no check).
+	s.stopHistory()
 	if s.records != nil {
 		wctx, cancel := context.WithTimeout(context.Background(), recordsGrace)
 		if !s.runs.WaitRecorded(wctx) {
