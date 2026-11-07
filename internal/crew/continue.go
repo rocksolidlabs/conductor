@@ -166,9 +166,13 @@ func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, er
 // (ErrTaskNotFound), a review task (ErrTaskState); a candidate that does
 // not stand (ErrStaleCandidate, in words that say what stands); gates the
 // reopen would ask again with no room for them (decision_limit); and
-// whatever refuses a plain continuation. A continuation whose first
-// transaction is refused or fails is discarded whole (discard): no run of
-// it, stopped or not, no command, the source as it was.
+// whatever refuses a plain continuation. A continuation exists for anyone
+// else only once its first transaction has committed (run.continuation):
+// until then nothing but that transaction writes it, and a Stop of it is
+// refused as of no such run and unmakes it (ErrRunStopped here). One whose
+// first transaction is refused, fails or is unmade is discarded whole
+// (discard): no run of it, stopped or not, no command, the source as it
+// was.
 func (e *Engine) ContinueRunWith(ctx context.Context, runID, label string, o ContinueOptions) (*Run, error) {
 	if e.ledger == nil {
 		return nil, ErrNoLedger
@@ -270,6 +274,7 @@ func (e *Engine) ContinueRunWith(ctx context.Context, runID, label string, o Con
 		undo()
 		return nil, err
 	}
+	p.continuation = true
 	// Its id is minted against the runs the engine holds; one the ledger
 	// has (a planned run's) is refused by the continuation's first
 	// transaction before anything is made, and another is minted.
@@ -284,13 +289,17 @@ func (e *Engine) ContinueRunWith(ctx context.Context, runID, label string, o Con
 			break
 		}
 		// Its first transaction did not commit: nothing of it is kept,
-		// not even its stop (discard).
+		// and nothing else wrote it (run.continuation).
 		e.discard(r)
 		e.launched(r)
 		if minted(err, try) {
 			continue
 		}
 		undo()
+		if errors.Is(err, errNeverMade) {
+			// A Stop came first and unmade it (unmake).
+			return nil, fmt.Errorf("%w: the continuation was stopped before it was made", ErrRunStopped)
+		}
 		return nil, err
 	}
 	defer e.launched(r)
@@ -614,7 +623,7 @@ func (e *Engine) readHistory(ctx context.Context, from Loaded) (history, error) 
 func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h history, old *run, o ContinueOptions) error {
 	rows, last, refs, refOf := h.rows, h.last, h.refs, h.refOf
 	var imported, again, uncertain, held int
-	err := e.transactFirst(ctx, r, func() tx {
+	err := e.transactContinued(ctx, r, func() tx {
 		r.base, r.paused, r.pausedWhy, r.resumedFrom = from.Run.Base, from.Run.Paused, from.Run.PausedWhy, from.Run.ID
 		r.markRun()
 		// The prerequisites run again in the continuation, at its base,
@@ -789,7 +798,7 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 	}, func() {
 		// Refused or failed, the continuation is discarded whole
 		// (ContinueRunWith): marked here, under the transaction's txMu,
-		// so no change of it after this one (a Stop's) writes it.
+		// so no change of it after this one writes it.
 		r.discarded = true
 	})
 	if errors.Is(err, ledger.ErrContinued) {

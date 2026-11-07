@@ -466,6 +466,113 @@ func TestContinuationWhoseFirstCommitFailsIsDiscarded(t *testing.T) {
 	stopRun(t, e, next.ID)
 }
 
+// A continuation exists for anyone else only once its first transaction
+// has committed (#623, review round 2): a Stop of the minted run before
+// that (afterAdd) is refused as of no such run and unmakes it, with a
+// stale candidate (the refusal that came after a Stop's committed row) or
+// a standing one, so the ledger never holds the minted id, stopped or
+// not; and no first transaction but the continuation's own writes it (a
+// stop's recorded directly is refused). The source is as it was: the
+// same request then makes the continuation, and the minted ids are still
+// absent once the ledger holds it.
+func TestContinuationStoppedBeforeItsFirstCommitIsNeverMade(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("docs", "writer", "build")))
+	commitResult(t, e, waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning), "built.txt", "built\n", "built")
+	c1 := waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1).Result.Commit
+	commitResult(t, e, waitAttempt(t, e, run.ID, "docs", ledger.AttemptRunning), "docs.txt", "docs\n", "docs")
+	runFinished(t, e, l, run.ID, ledger.OutcomeSucceeded)
+	cr := personsRequest("rv-0028")
+
+	var (
+		mu      sync.Mutex
+		minted  []string
+		stopErr []error
+	)
+	e.afterAdd = func(id string) {
+		err := e.Stop(context.Background(), id)
+		mu.Lock()
+		minted, stopErr = append(minted, id), append(stopErr, err)
+		mu.Unlock()
+	}
+	for _, tc := range []struct {
+		name, commit string
+	}{
+		{"a stale candidate", strings.Repeat("a", 40)},
+		{"the standing candidate", c1},
+	} {
+		if _, err := continueWithRepair(e, run.ID, "rq1", "build", 1, tc.commit, "", cr); !errors.Is(err, ErrRunStopped) {
+			t.Fatalf("%s, stopped before its first commit: %v", tc.name, err)
+		}
+	}
+	// No first transaction but its own writes a continuation not made: a
+	// stop recorded for one is refused, nothing written.
+	e.afterAdd = func(id string) {
+		err := e.recordStop(runOf(t, e, id))
+		mu.Lock()
+		minted, stopErr = append(minted, id), append(stopErr, err)
+		mu.Unlock()
+		if !errors.Is(err, ErrRunNotFound) {
+			t.Errorf("a stop recorded for the continuation %s not made: %v", id, err)
+		}
+	}
+	if _, err := continueWithRepair(e, run.ID, "rq1", "build", 1, strings.Repeat("a", 40), "", cr); !errors.Is(err, ErrStaleCandidate) {
+		t.Fatalf("a stale candidate, a stop recorded before its first commit: %v", err)
+	}
+	e.afterAdd = nil
+	mu.Lock()
+	ids, errs := slices.Clone(minted), slices.Clone(stopErr)
+	mu.Unlock()
+	if len(ids) != 3 {
+		t.Fatalf("minted %v", ids)
+	}
+	for i, err := range errs[:2] {
+		if !errors.Is(err, ErrRunNotFound) {
+			t.Fatalf("the Stop of %s before its first commit: %v", ids[i], err)
+		}
+	}
+	absent := func(when string) {
+		t.Helper()
+		for _, id := range ids {
+			if _, ok := e.Get(id); ok {
+				t.Fatalf("%s: the continuation never made %s is held", when, id)
+			}
+			l.mu.Lock()
+			row, ok := l.runs[id]
+			l.mu.Unlock()
+			if ok {
+				t.Fatalf("%s: the continuation never made is in the ledger: %+v", when, row)
+			}
+		}
+	}
+	absent("refused")
+	if got := l.continuing(run.ID); len(got) != 0 {
+		t.Fatalf("the ledger holds continuations %v", got)
+	}
+	if got := l.commandRuns("admin", "rq1"); len(got) != 0 {
+		t.Fatalf("the command is in %v", got)
+	}
+	if r := l.runRowWhen(t, run.ID, "as it was", func(ledger.RunRow) bool { return true }); r.ContinuedBy != "" {
+		t.Fatalf("the run is marked continued by %s", r.ContinuedBy)
+	}
+
+	next, err := continueWithRepair(e, run.ID, "rq1", "build", 1, c1, "", cr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(ids, next.ID) {
+		t.Fatalf("the continuation has an unmade one's id %s", next.ID)
+	}
+	l.runRowWhen(t, run.ID, "continued", func(r ledger.RunRow) bool { return r.ContinuedBy == next.ID })
+	if row, found, _ := l.Receipt(context.Background(), next.ID, "admin", "rq1"); !found || row.Status != ledger.CommandDone {
+		t.Fatalf("the receipt in the continuation: %+v %v", row, found)
+	}
+	absent("once the continuation is made")
+	// Made, it is a run as any other: a Stop stops it.
+	stopRun(t, e, next.ID)
+}
+
 // A dependent whose result was being verified when the run stopped is
 // given its attempt back when a continuation's repair withdraws it, as
 // the dependent verifying in a run the engine holds is when Request

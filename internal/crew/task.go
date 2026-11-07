@@ -1037,7 +1037,7 @@ func ev(kind string, payload map[string]any) tx {
 // commit after it. A change that sets the run's outcome reports the end
 // once committed. Nothing is written for a change that changed nothing.
 func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo func()) error {
-	return e.commit(ctx, r, false, nil, mutate, undo)
+	return e.commit(ctx, r, notFirst, nil, mutate, undo)
 }
 
 // transactJudged is transact for a change the ledger's rows judge first:
@@ -1050,7 +1050,7 @@ func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo fu
 // paused. The order of the locks is the continuation move's: r.txMu, the
 // ledger's, then e.mu.
 func (e *Engine) transactJudged(ctx context.Context, r *run, judge func(LedgerTx) error, mutate func() tx, undo func()) error {
-	return e.commit(ctx, r, false, judge, mutate, undo)
+	return e.commit(ctx, r, notFirst, judge, mutate, undo)
 }
 
 // errWroteNothing is a judged change that wrote nothing: its transaction is
@@ -1073,18 +1073,46 @@ func (u errUnmade) Unwrap() error { return u.err }
 // (unrecorded) is refused (errLaunching) before it is made: a command
 // taken before run.created would dispatch tasks before the prerequisites
 // were armed, or before a continuation's history was installed.
+//
+// A continuation's first transaction is its own (transactContinued): a
+// change that may be some run's first is refused for a continuation not
+// yet committed, as of no such run.
 func (e *Engine) transactFirst(ctx context.Context, r *run, mutate func() tx, undo func()) error {
-	return e.commit(ctx, r, true, nil, mutate, undo)
+	return e.commit(ctx, r, anyFirst, nil, mutate, undo)
 }
+
+// transactContinued is transactFirst for a continuation's own first
+// transaction (startContinued), the only change that writes a
+// continuation not yet committed (run.continuation).
+func (e *Engine) transactContinued(ctx context.Context, r *run, mutate func() tx, undo func()) error {
+	return e.commit(ctx, r, continuedFirst, nil, mutate, undo)
+}
+
+// firstTx says which first transaction a change may be (commit).
+type firstTx int
+
+const (
+	// notFirst: a change of a run whose first transaction committed.
+	notFirst firstTx = iota
+	// anyFirst: a launch's first transaction, or a stop's of a run whose
+	// launch is not recorded (transactFirst).
+	anyFirst
+	// continuedFirst: a continuation's own (transactContinued).
+	continuedFirst
+)
 
 // errLaunching refuses a change of a managed run whose launch is not
 // recorded yet (transactFirst): a conflict with the run's state, as a
 // command on a task not in a state for it is.
 var errLaunching = fmt.Errorf("%w: the run's launch is not recorded yet, and it takes no change before it is", ErrTaskState)
 
-// commit is transact, transactFirst when first is set, and
-// transactJudged when judge is.
-func (e *Engine) commit(ctx context.Context, r *run, first bool, judge func(LedgerTx) error, mutate func() tx, undo func()) error {
+// errNeverMade refuses a change of a continuation that is not made: its
+// first transaction not committed, or never to be (discarded).
+var errNeverMade = fmt.Errorf("%w: the continuation is not made", ErrRunNotFound)
+
+// commit is transact, transactFirst or transactContinued as first says,
+// and transactJudged when judge is.
+func (e *Engine) commit(ctx context.Context, r *run, first firstTx, judge func(LedgerTx) error, mutate func() tx, undo func()) error {
 	if e.ledger == nil {
 		return ErrNoLedger
 	}
@@ -1096,7 +1124,7 @@ func (e *Engine) commit(ctx context.Context, r *run, first bool, judge func(Ledg
 // commitHeld is commit for a caller that holds r.txMu already: one that
 // reads the ledger before its change, and must have no transaction of the
 // run between that read and the change (supersede).
-func (e *Engine) commitHeld(ctx context.Context, r *run, first bool, judge func(LedgerTx) error, mutate func() tx, undo func()) error {
+func (e *Engine) commitHeld(ctx context.Context, r *run, first firstTx, judge func(LedgerTx) error, mutate func() tx, undo func()) error {
 	if e.ledger == nil {
 		return ErrNoLedger
 	}
@@ -1112,7 +1140,7 @@ func (e *Engine) commitHeld(ctx context.Context, r *run, first bool, judge func(
 	// prepare makes the change and takes what its commit writes, under
 	// e.mu: false when there is nothing to write.
 	prepare := func() (bool, error) {
-		if r.unrecorded() && !first {
+		if r.unrecorded() && first == notFirst {
 			return false, errLaunching
 		}
 		if r.foreign {
@@ -1120,9 +1148,15 @@ func (e *Engine) commitHeld(ctx context.Context, r *run, first bool, judge func(
 			return false, fmt.Errorf("%w: %s", ErrRunExists, r.id)
 		}
 		if r.discarded {
-			// A continuation whose first transaction did not commit:
-			// nothing of it is written (discard).
-			return false, fmt.Errorf("%w: %s was never made", ErrRunNotFound, r.id)
+			// A continuation whose first transaction did not commit, or
+			// one a Stop unmade before it did: nothing of it is written
+			// (discard, unmake).
+			return false, fmt.Errorf("%w: %s", errNeverMade, r.id)
+		}
+		if r.unrecorded() && r.continuation && first != continuedFirst {
+			// Nothing but its own first transaction writes a continuation
+			// not yet committed: it is no run yet for anyone else.
+			return false, fmt.Errorf("%w: %s", errNeverMade, r.id)
 		}
 		made = true
 		t := mutate()
