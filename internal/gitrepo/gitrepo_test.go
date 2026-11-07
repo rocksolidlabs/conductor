@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -333,8 +335,8 @@ func TestFileAtMemoryIsBounded(t *testing.T) {
 	read("packed", older)
 	read("packed", newer)
 
-	// Past largeObject, read by the git binary: a file under the bound is
-	// whole, a NUL in the first 8,000 bytes is binary.
+	// Read by the git binary: a file under the bound is whole, a NUL in
+	// the first 8,000 bytes is binary.
 	mid := body[:600<<10]
 	write(t, dir, "mid.txt", mid)
 	if err := os.WriteFile(filepath.Join(dir, "big.bin"), append([]byte("head\x00"), body...), 0o644); err != nil {
@@ -349,8 +351,69 @@ func TestFileAtMemoryIsBounded(t *testing.T) {
 	}
 }
 
-// A blob past largeObject, read by the git binary, is the one the commit's
-// tree records even when refs/replace puts another in its place: the
+// FileAt's memory is bounded for a blob packed as a delta of megabytes of
+// changed lines, not only of one byte: a file whose second commit
+// rewrites 5 MiB of it, each commit's lines its own, is packed with the
+// one stored as a delta of the other (git gc --aggressive), a delta whose
+// instructions are megabytes of literal bytes, and no read of either
+// commit allocates more than fileAtAllocBound (go-git, which inflates the
+// whole delta to learn the blob's size, allocated it all, #625 review
+// round 3).
+func TestFileAtMemoryIsBoundedForALargeDelta(t *testing.T) {
+	dir := scratch(t)
+	ctx := context.Background()
+	const at, span = 4 << 20, 5 << 20
+	rnd := rand.New(rand.NewChaCha8([32]byte{6, 2, 5}))
+	changed := func() string {
+		var b strings.Builder
+		for b.Len() < span {
+			fmt.Fprintf(&b, "%016x%016x%016x\n", rnd.Uint64(), rnd.Uint64(), rnd.Uint64())
+		}
+		return b.String()[:span]
+	}
+	base := strings.Repeat("a line of a file far past the bound\n", (16<<20)/36)
+	older := base[:at] + changed() + base[at+span:]
+	newer := base[:at] + changed() + base[at+span:]
+	write(t, dir, "big.txt", older)
+	first := commit(t, dir, time.Time{}, "big")
+	write(t, dir, "big.txt", newer)
+	second := commit(t, dir, time.Time{}, "big, rewritten")
+	gitIn(t, dir, time.Time{}, "gc", "-q", "--aggressive", "--prune=now")
+	idx, err := filepath.Glob(filepath.Join(dir, ".git", "objects", "pack", "*.idx"))
+	if err != nil || len(idx) != 1 {
+		t.Fatalf("the pack: %q %v", idx, err)
+	}
+	// verify-pack -v: id, type, size (a delta's, its instructions
+	// inflated), size in the pack, offset, depth, base.
+	biggest := int64(0)
+	for _, line := range strings.Split(gitIn(t, dir, time.Time{}, "verify-pack", "-v", idx[0]), "\n") {
+		if f := strings.Fields(line); len(f) == 7 && f[1] == "blob" {
+			n, _ := strconv.ParseInt(f[2], 10, 64)
+			biggest = max(biggest, n)
+		}
+	}
+	if biggest < 4<<20 {
+		t.Fatalf("the largest blob delta is %d bytes, not megabytes", biggest)
+	}
+	t.Logf("a delta of %d bytes", biggest)
+	for _, c := range []struct{ id, body string }{{first, older}, {second, newer}} {
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		f, err := FileAt(ctx, dir, c.id, "big.txt", 1<<20)
+		runtime.ReadMemStats(&after)
+		if err != nil || string(f.Content) != c.body[:1<<20] || !f.Truncated || f.Binary || f.Size != int64(len(c.body)) {
+			t.Fatalf("%s: %d bytes, %+v %v", c.id[:7], len(f.Content), f.Truncated, err)
+		}
+		alloc := after.TotalAlloc - before.TotalAlloc
+		t.Logf("%s: %d bytes allocated", c.id[:7], alloc)
+		if alloc > fileAtAllocBound {
+			t.Fatalf("%s: %d bytes allocated for a read of a %d-byte file packed beside a %d-byte delta, past %d", c.id[:7], alloc, len(c.body), biggest, fileAtAllocBound)
+		}
+	}
+}
+
+// A blob, read by the git binary, is the one the commit's tree records even when refs/replace puts another in its place: the
 // replacement's bytes never come back under the original's size, as
 // go-git, which knows no replacements, reads a smaller file and the diff.
 func TestFileAtIgnoresReplacedBlobs(t *testing.T) {

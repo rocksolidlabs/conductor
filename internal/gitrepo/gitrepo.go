@@ -2,8 +2,9 @@
 // 12, F5): the commits on the checked-out branch since a time or a base,
 // and one commit's files with their added and removed lines against its
 // first parent. No git binary is needed for them; a crew's linked worktree
-// opens through its common directory. FileAt reads the head of a large
-// file through the git binary (head says why). The working tree's status
+// opens through its common directory. FileAt finds a file's blob with
+// go-git and reads its size and head through the git binary (blobAt says
+// why). The working tree's status
 // and a file at a revision stay with internal/gitcli, which the git binary
 // does faster.
 package gitrepo
@@ -13,7 +14,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +23,7 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/cache"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/format/diff"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
@@ -122,8 +125,8 @@ func open(dir string) (*git.Repository, string, error) {
 }
 
 // largeObject is the size past which an object is read as a stream rather
-// than whole: a file's head (FileAt) costs then about what it returns,
-// whatever the file's size.
+// than whole (a commit's and a comparison's files, diffTrees). FileAt
+// reads no blob through go-git (blobAt).
 const largeObject = 256 << 10
 
 // Commits lists the commits on HEAD newest first: those after base's merge
@@ -272,9 +275,10 @@ type File struct {
 // FileAt reads the file at path (relative to the repository's top, with
 // '/') in the tree of the commit id (a full object id, read by id), at
 // most limit bytes of it, the memory it takes bounded by about that,
-// however large the file (head). A link is its target's text, as git keeps it,
-// never followed. ErrNoCommit (wrapped) for an id the repository has no
-// commit of, ErrNoFile for a path the commit has no file at.
+// however large the file and however it is stored (blobAt). A link is its
+// target's text, as git keeps it, never followed. ErrNoCommit (wrapped)
+// for an id the repository has no commit of, ErrNoFile for a path the
+// commit has no file at.
 func FileAt(ctx context.Context, dir, id, path string, limit int) (File, error) {
 	r, _, err := open(dir)
 	if err != nil {
@@ -288,24 +292,26 @@ func FileAt(ctx context.Context, dir, id, path string, limit int) (File, error) 
 	if err != nil {
 		return File{}, err
 	}
-	f, err := tree.File(path)
-	if errors.Is(err, object.ErrFileNotFound) || errors.Is(err, object.ErrDirectoryNotFound) || errors.Is(err, plumbing.ErrObjectNotFound) {
-		return File{}, ErrNoFile
-	}
+	e, err := entryAt(r, tree, path)
 	if err != nil {
 		return File{}, err
 	}
-	if !f.Mode.IsFile() {
+	if err := r.Storer.HasEncodedObject(e.Hash); errors.Is(err, plumbing.ErrObjectNotFound) {
 		return File{}, ErrNoFile
+	} else if err != nil {
+		return File{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return File{}, err
 	}
-	// The object read once, at most what the reply and git's binary sniff
-	// need of it (head).
-	out := File{Size: f.Size}
-	want := min(max(int64(limit)+1, sniffLen), f.Size)
-	b, err := head(ctx, dir, f, want)
+	// The size, then the object read once, at most what the reply and
+	// git's binary sniff need of it (blobAt).
+	size, err := blobSize(ctx, dir, e.Hash)
+	if err != nil {
+		return File{}, err
+	}
+	out := File{Size: size}
+	b, err := blobAt(ctx, dir, e.Hash, min(max(int64(limit)+1, sniffLen), size))
 	if err != nil {
 		return File{}, err
 	}
@@ -320,28 +326,76 @@ func FileAt(ctx context.Context, dir, id, path string, limit int) (File, error) 
 	return out, nil
 }
 
-// head is the first n bytes of the blob f (n at most its size), read
-// without the blob whole in this process's memory. go-git streams an
-// object past open's largeObject from its file, loose or packed whole, but
-// a delta's base it reads whole (a packed blob stored as a delta of a
-// 32 MiB one, 165 MiB allocated for its first MiB, measured with go-git
-// v5.19.3), so a blob past largeObject is read by the git binary (git
-// cat-file blob, its id in full, through gitcli), its output stopped once
-// n bytes are in: git, a process of its own that ends with the read,
-// resolves the delta, with replacements off (noReplace). A smaller blob
-// go-git reads, whole at most largeObject.
-func head(ctx context.Context, dir string, f *object.File, n int64) ([]byte, error) {
-	b := make([]byte, 0, n)
-	if f.Size <= largeObject {
-		rd, err := f.Reader()
-		if err != nil {
-			return nil, err
+// entryAt is the entry of the file at path in tree, found by reading the
+// trees on the way to it and never a blob: go-git's Tree.File reads the
+// blob's size, which for a blob packed as a delta inflates the delta's
+// whole instruction stream into memory first (go-git v5.19.3's
+// getObjectSize; megabytes of changed lines are megabytes of heap, and
+// LargeObjectThreshold does not bound it), and its FindEntry reads an
+// entry on the way as a tree whatever its mode (a/b.txt/c reads b.txt).
+// ErrNoFile when there is no such entry, a folder on the way is not one,
+// or the entry is not a file (a folder, a submodule).
+func entryAt(r *git.Repository, tree *object.Tree, path string) (object.TreeEntry, error) {
+	parts := strings.Split(path, "/")
+	for i, name := range parts {
+		k := slices.IndexFunc(tree.Entries, func(e object.TreeEntry) bool { return e.Name == name })
+		if name == "" || k < 0 {
+			return object.TreeEntry{}, ErrNoFile
 		}
-		defer rd.Close()
-		return io.ReadAll(io.LimitReader(rd, n))
+		e := tree.Entries[k]
+		if i == len(parts)-1 {
+			if !e.Mode.IsFile() {
+				return object.TreeEntry{}, ErrNoFile
+			}
+			return e, nil
+		}
+		if e.Mode != filemode.Dir {
+			return object.TreeEntry{}, ErrNoFile
+		}
+		next, err := object.GetTree(r.Storer, e.Hash)
+		if errors.Is(err, plumbing.ErrObjectNotFound) {
+			return object.TreeEntry{}, ErrNoFile
+		}
+		if err != nil {
+			return object.TreeEntry{}, err
+		}
+		tree = next
 	}
-	w := &headWriter{b: b}
-	err := gitcli.RunToEnv(ctx, dir, noReplace, w, "cat-file", "blob", f.Hash.String())
+	return object.TreeEntry{}, ErrNoFile
+}
+
+// blobSize is the size of the blob h as git records it (git cat-file -s,
+// through gitcli, replacements off): git, a process of its own, works the
+// size out of a delta, which go-git does by inflating the delta whole in
+// this process (entryAt).
+func blobSize(ctx context.Context, dir string, h plumbing.Hash) (int64, error) {
+	out, err := gitcli.RunEnv(ctx, dir, noReplace, "cat-file", "-s", h.String())
+	if err != nil {
+		return 0, err
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("git cat-file -s %s: %q is not a size", h, out)
+	}
+	return n, nil
+}
+
+// blobAt is the first n bytes of the blob h (n at most its size, from
+// blobSize), read by the git binary (git cat-file blob, its id in full,
+// through gitcli), its output stopped once n bytes are in: git, a process
+// of its own that ends with the read, resolves a delta and its base,
+// whatever their sizes, with replacements off (noReplace). This process
+// holds the n bytes and the pipe's buffers, never the blob, its delta or
+// its base: go-git reads a delta's base whole (a packed blob stored as a
+// delta of a 32 MiB one, 165 MiB allocated for its first MiB, measured
+// with go-git v5.19.3), and a delta's instructions whole for its size,
+// whatever the blob's size.
+func blobAt(ctx context.Context, dir string, h plumbing.Hash, n int64) ([]byte, error) {
+	w := &headWriter{b: make([]byte, 0, n)}
+	if n == 0 {
+		return w.b, nil
+	}
+	err := gitcli.RunToEnv(ctx, dir, noReplace, w, "cat-file", "blob", h.String())
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
