@@ -599,7 +599,11 @@ func cleanRequest(req DecisionRequest) (requestBody, string, error) {
 		hi = 0
 	}
 	if len(req.Options) < lo || len(req.Options) > hi {
-		return requestBody{}, "", refuse(CodeInvalid, "a %s has %d to %d options, not %d", req.Type, lo, hi, len(req.Options))
+		article := "an" // an approval, an assignment
+		if req.Type == ledger.DecisionClarification {
+			article = "a"
+		}
+		return requestBody{}, "", refuse(CodeInvalid, "%s %s has %d to %d options, not %d", article, req.Type, lo, hi, len(req.Options))
 	}
 	for _, o := range req.Options {
 		label := strings.TrimSpace(oneLine.Replace(cleanText(o.Label)))

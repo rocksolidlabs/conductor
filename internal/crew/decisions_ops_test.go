@@ -154,7 +154,7 @@ func TestAnOperationRepeatsItsReceipt(t *testing.T) {
 	e, fl, ld := decisionEngine(t)
 	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("docs", "writer")))
 	b, l, p := attemptOn(t, e, fl, run.ID, "build")
-	w, _, _ := attemptOn(t, e, fl, run.ID, "docs")
+	w, _, wp := attemptOn(t, e, fl, run.ID, "docs")
 	d := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
 	mirrorOf(t, l, d.ID)
 	same := func(t *testing.T, first, again OpReceipt, err error) {
@@ -225,6 +225,8 @@ func TestAnOperationRepeatsItsReceipt(t *testing.T) {
 	if rec := decisionWhen(t, ld, wd.ID, "cancelled", inState(ledger.DecisionCancelled)); kindCount(rec, ledger.HistoryCancelled) != 1 {
 		t.Fatalf("history %q", historyKinds(rec))
 	}
+	// Its agent is told in one line, the cancel's words once.
+	lineWith(t, wp, "Decision "+wd.ID+" was cancelled by the operator, not approved: not needed")
 
 	// After a continuation moved the decision.
 	moved := ask(t, e, b.Attempt.SessionID, clarification("q3", "Which cache?"))

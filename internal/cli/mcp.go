@@ -523,7 +523,7 @@ func decisionTool(ctx context.Context, c *crewClient, name string, body map[stri
 	}
 	d, _ := out["decision"].(map[string]any)
 	if name == "decision_withdraw" {
-		return fmt.Sprintf("%v is %v: your task waits for it no more", d["id"], d["state"]), nil
+		return withdrawnWords(d["id"], d["state"]), nil
 	}
 	return decisionRequestText(d), nil
 }
