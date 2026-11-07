@@ -542,6 +542,8 @@ export interface RunTask {
   reason?: string
   /** Attempts made so far. */
   attempts: number
+  /** The durable decisions that hold it (Program item DR1): it is not dispatched until each is applied or ends; absent for none. */
+  holds?: TaskHold[]
   /** The latest attempt. */
   attempt?: RunAttempt
   /** The result that stands, once an attempt succeeded. */
@@ -553,8 +555,6 @@ export interface RunTask {
   /** The person accountable for its outcome in the crew as launched, and how: the task names them, or the crew's acceptance owner; absent for no one. */
   owner?: string
   ownerFrom?: 'task' | 'acceptance'
-  /** The durable decisions that hold it (Program item DR1): it is not dispatched until each is applied or ends; absent for none. */
-  holds?: TaskHold[]
 }
 
 /** Where an attempt got to, as it saved it: tied to its worktree's commit. */
