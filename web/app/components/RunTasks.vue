@@ -3,10 +3,13 @@ import type { RunAttempt, RunInfo, RunStep, RunTask } from '~/composables/useSes
 import { relativeTime } from '~/utils/sessions'
 import { latestReads, ownedBy, type Owned } from '~/utils/latestReads'
 import { prerequisitesRefused, stepManifest, taskActions, taskDot, taskWords } from '~/utils/tasks'
+import { ownerWords } from '~/utils/crews'
 
 /**
  * The tasks of a managed run (#334, row 7): one row per task in the crew's
- * order with its state, member, attempt, what it does in words, its result
+ * order with its state, member, owner (the person accountable for its
+ * outcome as the crew was launched: "owner ana, the acceptance owner" when
+ * the task names none), attempt, what it does in words, its result
  * commit, and what can be done with it (Open the attempt's session, Open
  * preview while the attempt's worktree answers behind its project
  * manifest's preview, Retry, Accept anyway, Cancel, Ask Brakeman why,
@@ -194,6 +197,7 @@ async function confirm() {
           <span class="font-mono font-semibold text-highlighted" data-task-id>{{ t.id }}</span>
           <UBadge :label="t.state" :color="stateColor(t.state)" variant="subtle" size="sm" class="flex-none" data-task-state-badge />
           <span class="flex flex-none items-center gap-1.5 text-muted"><SessionAvatar :agent-id="agentOf(t.member)" /><span>{{ t.member }}</span></span>
+          <span v-if="t.owner" class="flex flex-none items-center gap-1 text-xs text-muted" :data-task-owner="t.owner" :data-task-owner-from="t.ownerFrom"><UIcon name="i-lucide-user" class="size-3.5" />{{ ownerWords(t) }}</span>
           <span v-if="t.attempts" class="flex-none font-mono text-xs text-muted" data-task-attempt>attempt {{ t.attempt?.n ?? t.attempts }}</span>
           <span class="min-w-[12rem] flex-1 truncate" :class="tone[words(t).tone]" :title="words(t).text" data-task-words>{{ words(t).text }}</span>
           <span v-if="t.result?.commit" class="flex-none font-mono text-xs text-muted" :title="t.result.commit" data-task-commit>{{ short(t.result.commit) }}</span>
@@ -214,7 +218,7 @@ async function confirm() {
     <section v-if="selectedTask" class="flex flex-col gap-2 rounded-md border border-default p-3 text-sm" data-task-detail :data-task-detail-id="selectedTask.id">
       <div class="flex items-center gap-2">
         <span class="font-mono font-semibold text-highlighted">{{ selectedTask.id }}</span>
-        <span class="truncate text-muted">{{ selectedTask.kind }} · {{ selectedTask.member }}{{ selectedTask.needs?.length ? ` · needs ${selectedTask.needs.join(', ')}` : '' }}</span>
+        <span class="truncate text-muted">{{ selectedTask.kind }} · {{ selectedTask.member }}<span v-if="selectedTask.owner" data-task-detail-owner> · {{ ownerWords(selectedTask) }}</span>{{ selectedTask.needs?.length ? ` · needs ${selectedTask.needs.join(', ')}` : '' }}</span>
         <UButton icon="i-lucide-x" size="xs" variant="ghost" color="neutral" class="ml-auto" aria-label="Close" data-task-detail-close @click="emit('select', '')" />
       </div>
       <p v-if="selectedTask.blocker" class="rounded-md bg-warning/10 p-2 text-warning" data-task-blocker>

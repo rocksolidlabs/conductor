@@ -3764,6 +3764,101 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   the stream. #659 holds these two observations, BK1's made again after
   PR-11 and BK0's real Codex session, the docs PR that records them, and
   any stream bug they find.
+
+  **What #659's live check found, fixed in the stream (#685,
+  2026-11-06).** The check, made with real Claude Code and real Codex,
+  passed most clauses and found defects in the stream's own code, each
+  fixed with a test that fails without its fix:
+  - An act's receipt can be cited. The act's answer carries
+    `receiptRef`, `op:brakeman/<the receipt's opId>`, and its words (the
+    `act` tool's text, `conductor brakeman act`'s output) give that ref
+    and name the launch as the launch: two real models had tried three
+    spellings each, all refused, since the words called the launch's id
+    the receipt. The guide's ref forms say what an act's receipt ref is,
+    with an example of that kind. On the brief page, every act of the
+    request shows with its receipt: inside the proposal that names it, as
+    before, or else under "What Brakeman did" (an act the brief never
+    names showed nowhere). `TestAnActsReceiptRefIsCited`,
+    `TestActWordsNameTheRunFromTheLaunch`, vitest, and a
+    `brakeman-act.spec.ts` step.
+  - A signed-out agent makes the role unavailable. Claude Code with no
+    login does not exit: it waits at its sign-in screen, which the
+    catalog now finds as a startup question with no answers (the trust
+    question's mechanism; nothing is typed into it). A turn whose agent
+    shows it before reading its request ends at once, failed with the
+    screen's words ("its login refused"), charged only the minutes it ran,
+    and the role says it is unavailable in those words, firing nothing
+    more into the same screen; a person's own request says the same. A
+    plain session of a signed-out Claude Code shows the screen under
+    Needs you, and once the person signs in through the browser and the
+    program moves on by itself, the question is withdrawn with no key
+    typed and the session takes text again.
+    `TestASignedOutAgentMakesTheRoleUnavailable` (a stub that waits there
+    and never exits), `TestASignInScreenTheProgramLeavesByItselfIsWithdrawn`.
+  - A screen no catalog entry knows (another agent's sign-in, a version's
+    new wording) is not recognised: like any agent's screen, once it is
+    quiet the request's line is typed into it (only the catalog's startup
+    questions get no key). What ends the turn is that its agent then makes
+    no call to the server: a turn whose agent has made no call with its own
+    token (any route: the guide, its MCP server's tool listing, a report,
+    an observation, an act, its request's read) a third of the turn's
+    minutes after its launch returned (5 of the default 15, 20 of a
+    60-minute turn; at least 2, a real agent calls within two; by its
+    deadline, for a shorter turn) ends failed, "the agent did not start in
+    5 minutes, no call to Conductor", with the last lines its screen
+    shows as a terminal shows them (links left out, one wrapped across
+    rows whole), charged the minutes it ran; a person's own
+    turn too, instead of waiting out its minutes. A turn whose agent has
+    made any call runs to its minutes, however late it reads its request.
+    The role is unavailable with those words and a retry of its own, 10
+    minutes doubled for each such turn in a row up to 4 hours; meanwhile a
+    wake, a briefing time and a person's request fire nothing into the
+    same state, and a turn whose agent reads its request (a person's,
+    once the agent is signed in) takes the batch up at once.
+    `TestAnAgentAtAScreenNobodyKnowsDidNotStart` (the request's line typed
+    into the quiet screen, then the bound),
+    `TestAScreensWordsLeaveAWrappedLinkOutWhole`,
+    `TestAnAgentThatHasCalledRunsToItsMinutes` (the guide read a minute
+    in, the request six), `TestALongTurnIsGivenLongerToStart`,
+    `TestALoggedOutAgentMakesTheRoleUnavailable`. The tests that promise no
+    key reached a known startup screen read the terminal's raw input (the
+    stub's terminal in raw mode), which
+    `TestTheRecordOfATerminalCatchesOneKey` proves catches one key with no
+    Enter.
+  - Any other startup question ends a background turn the same way: an
+    agent's update dialog (as Codex showed) ends a wake turn, whose
+    questions page no one, naming the dialog and saying to answer it in a
+    session of that agent; a person's own turn still shows it under
+    Needs you. `TestABackgroundTurnEndsAtAStartupQuestion`.
+  - The guide's overview says what the caller may do: `may`, the
+    operations it may call, and `limits`, the headline bounds that bind it
+    (a Brakeman turn's reads and minutes, its acts when granted), within
+    its 4 KiB. The list and the operations section are made by the check
+    the routes refuse by: the admin is not listed what only an agent's own
+    token calls, a turn not a read of a class it may not see.
+    `TestTheOverviewListsWhatTheCallerMayDoAndItsLimits`,
+    `TestTheOverviewListsWhatTheRoutesAdmit` (the routes called).
+  - Saving Brakeman's settings makes an unavailable role look again at
+    what the save changed, by the reason kept with the state: a budget
+    raised clears "the day's budget is spent" and fires the batch kept
+    (one still spent says so in words true now); another agent, model,
+    account or folder tries an agent that did not start again; a save that
+    changes nothing it weighs fires nothing. The role card's retry words
+    follow the reason. `TestASavedConfigurationIsLookedAtAgain`,
+    `TestASaveWeighsOnlyWhatItChanged`, `TestASaveEndsOnlyWhatItChanged`.
+  - A proposal's launch state is drawn from the request's acts and the
+    launch they name each time, so a re-read of the request keeps a failed
+    launch's "try again" and never shows a second control for one under
+    way. vitest and a `brakeman-act.spec.ts` step that re-reads the
+    request.
+  - What a brief is unsure of renders as Markdown, as its summary does;
+    the draft crew's guidance states that a crew with tasks starts every
+    member with its task (`start.when` `"task"`), which a real model's
+    first draft crew was refused by.
+    `TestTheDraftCrewGuidanceStatesTheStartRule`.
+  The three clauses that did not pass (BK2's brief showing the act's
+  receipt, BK3's logged-out role, BK0's Codex half) are observed again on
+  the fixed build under #659.
 - **Project manifests: a fresh attempt worktree made usable, predictably
   (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
   `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the

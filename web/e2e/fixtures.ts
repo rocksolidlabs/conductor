@@ -42,6 +42,8 @@ export interface Run {
   cleaning?: number
   outcome?: string
   tasks?: RunTask[]
+  /** The crew's people as launched (HM1): never started; absent for a crew without. */
+  people?: Array<{ name: string; responsibilities?: string[]; note?: string }>
 }
 
 export interface RunAttempt {
@@ -70,6 +72,9 @@ export interface RunTask {
   attempts: number
   attempt?: RunAttempt
   result?: { attempt: number; commit?: string; summary?: string; issues?: string[]; verdict?: string; findings?: Array<{ severity: string; path?: string; line?: number; message: string }>; at: string }
+  /** The person accountable for its outcome as launched, and how (`task`, or `acceptance` for the crew's acceptance owner); absent for no one. */
+  owner?: string
+  ownerFrom?: string
 }
 
 export interface Session {
@@ -81,7 +86,7 @@ export interface Session {
   cols?: number
   crew?: { runId: string; crewId: string; member: string }
   /** `id` names the question (a reply to it names it). */
-  attention?: { state: string; message?: string; source?: string; kind?: string; options?: Array<{ label: string; input: string }>; id?: string; answered?: string; plan?: string }
+  attention?: { state: string; message?: string; source?: string; kind?: string; options?: Array<{ label: string; input: string }>; id?: string; answered?: string; plan?: string; decision?: string }
   /** Who answered the last prompt, and its words. */
   lastAnswer?: { byName: string; message?: string }
   /** The agent's own session (its conversation), as the server captured or chose it. */

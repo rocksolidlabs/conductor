@@ -417,6 +417,20 @@ export interface CrewTask {
   needs?: string[]
   /** At most 8, none for a review. */
   checks?: CrewCheck[]
+  /** The person accountable for its outcome, a name of the crew's `people`, apart from `member`, the agent that does it; absent for none (the crew's acceptance owner then). */
+  owner?: string
+}
+
+/** A person's responsibility in a crew: each held by at most one person of it (docs/plans/decisions.md, HM1). */
+export type Responsibility = 'architecture' | 'product' | 'security' | 'acceptance'
+
+/** A person of a crew: a local label, never started (no session, worktree or agent); they own decisions and outcomes. */
+export interface CrewPerson {
+  /** 1 to 60 characters, no control character (Dispatch's rule for a person's name), unique in the crew and none a member's. */
+  name: string
+  responsibilities?: Responsibility[]
+  /** At most 500 characters on one line. */
+  note?: string
 }
 
 /** A saved crew in full, as GET /api/crews/{id} answers it and the crew routes reply. */
@@ -438,6 +452,8 @@ export interface CrewInfo {
   yolo?: boolean
   /** At most 12. The whole crew is at most 1 MiB as its file. */
   members: CrewMember[]
+  /** At most 12: the persons who own the crew's decisions and its tasks' outcomes; absent for a crew without. */
+  people?: CrewPerson[]
   /** At most 128; present, the crew is managed (#334): every member starts by its tasks and `isolation` is `worktree`. */
   tasks?: CrewTask[]
   /** At most 8 commands run in every new attempt worktree before its member starts; only with tasks. The project manifest's setup phase as a crew saved before manifests holds it: never beside `manifest`. */
@@ -448,6 +464,22 @@ export interface CrewInfo {
   manifestRevision?: number
   createdAt: string
   updatedAt: string
+  /**
+   * The copy of the crew this is, as the server named it beside the crew (64 hex digits, a digest of the crew as stored): a save made from it
+   * sends it back, and the server refuses it (409 `stale_revision`) once another save has come between. Absent on a crew not read whole.
+   */
+  revision?: string
+}
+
+/** What the crew routes answer for one crew: the crew, and the revision of the copy stored. */
+interface CrewReply {
+  crew: CrewInfo
+  revision?: string
+}
+
+/** The crew of a reply, carrying its revision (CrewInfo.revision). */
+function crewOfReply(r: CrewReply): CrewInfo {
+  return r.revision ? { ...r.crew, revision: r.revision } : r.crew
 }
 
 /** A crew as GET /api/crews lists it: what the list shows, without the prompts. GET /api/crews/{id} answers it in full. */
@@ -459,11 +491,13 @@ export interface CrewSummary {
   where: 'server' | 'host'
   isolation: 'none' | 'worktree'
   members: Array<{ name: string; agentId: string; start: CrewStart }>
+  /** The crew's people with their responsibilities, never their notes; absent for a crew without. */
+  people?: Array<Pick<CrewPerson, 'name' | 'responsibilities'>>
   updatedAt: string
 }
 
 /** Body of POST /api/crews and PUT /api/crews/{id}: a crew without what the server sets. The server rejects unknown fields, these four included. */
-export type CrewInput = Omit<CrewInfo, 'id' | 'createdAt' | 'updatedAt' | 'manifestRevision'>
+export type CrewInput = Omit<CrewInfo, 'id' | 'createdAt' | 'updatedAt' | 'manifestRevision' | 'revision'>
 
 /** A member of a crew run, as the run routes report it. */
 export interface RunMember {
@@ -515,6 +549,9 @@ export interface RunTask {
   importedFrom?: string
   /** What the attempt in flight says stops it (#334, row 10), until it works on or ends. */
   blocker?: { reason: string; message?: string; by: string; at: string }
+  /** The person accountable for its outcome in the crew as launched, and how: the task names them, or the crew's acceptance owner; absent for no one. */
+  owner?: string
+  ownerFrom?: 'task' | 'acceptance'
 }
 
 /** Where an attempt got to, as it saved it: tied to its worktree's commit. */
@@ -717,6 +754,8 @@ export interface RunInfo {
   outcome?: 'succeeded' | 'failed' | 'cancelled'
   /** A managed run's tasks, in the crew's order. */
   tasks?: RunTask[]
+  /** The crew's people as launched, fixed for the run; absent for a crew without (and for the record of a run without tasks). */
+  people?: CrewPerson[]
   /**
    * A record of a run the server no longer holds (it ended before the server last started, or was evicted), as `GET /api/runs/{run}`
    * marks it and the crew's runs list it: read-only, nothing of it live, its `state` as recorded (`interrupted` for a run that was running
@@ -842,22 +881,23 @@ export function useSessions() {
     listCrews: (offset = 0, limit = 100) =>
       request<{ crews: CrewSummary[]; total: number }>('/api/crews', { query: { offset: String(offset), limit: String(limit) } }).then((r) => ({ crews: r.crews ?? [], total: r.total ?? 0 })),
     /** One crew in full, for the editor. 404 for an unknown id; 409 `crew_unreadable` for a file the server cannot use, with why. */
-    getCrew: (id: string) => request<{ crew: CrewInfo }>(`/api/crews/${encodeURIComponent(id)}`).then((r) => r.crew),
+    getCrew: (id: string) => request<CrewReply>(`/api/crews/${encodeURIComponent(id)}`).then(crewOfReply),
     /**
      * Without an id, creates a crew: the server derives its id from the name (then `-2`, `-3`… when taken). With an id, replaces that crew's
      * fields; its id and createdAt stay. Only CrewInput's fields are sent, so a CrewInfo read with getCrew can be passed as it is.
      * 400 `invalid_crew` says what is wrong, an agent the catalog does not have included; 404 for an unknown id; 409 `crew_unreadable` for a
-     * crew whose file the server cannot use.
+     * crew whose file the server cannot use. With a revision (the CrewInfo's the edit was made from), an update is saved only over that copy:
+     * 409 `stale_revision` when another save came between, nothing saved. The crew answered carries the revision of the copy saved.
      */
-    saveCrew: (crew: CrewInput, id?: string) =>
+    saveCrew: (crew: CrewInput, id?: string, revision?: string) =>
       (id === undefined
-        ? request<{ crew: CrewInfo }>('/api/crews', { method: 'POST', body: toCrewInput(crew) })
-        : request<{ crew: CrewInfo }>(`/api/crews/${encodeURIComponent(id)}`, { method: 'PUT', body: toCrewInput(crew) })
-      ).then((r) => r.crew),
+        ? request<CrewReply>('/api/crews', { method: 'POST', body: toCrewInput(crew) })
+        : request<CrewReply>(`/api/crews/${encodeURIComponent(id)}`, { method: 'PUT', body: revision ? { ...toCrewInput(crew), revision } : toCrewInput(crew) })
+      ).then(crewOfReply),
     deleteCrew: (id: string) => request<void>(`/api/crews/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     /** Saves a copy under `<id>-copy` (then `-copy-2`…), named "<name> copy". 400 `invalid_crew` when one of its agents is no longer in the catalog. */
     duplicateCrew: (id: string) =>
-      request<{ crew: CrewInfo }>(`/api/crews/${encodeURIComponent(id)}/duplicate`, { method: 'POST' }).then((r) => r.crew),
+      request<CrewReply>(`/api/crews/${encodeURIComponent(id)}/duplicate`, { method: 'POST' }).then(crewOfReply),
     /**
      * Seeds the five example crews, as `conductor serve --examples` does: each is saved unless a file with its id exists, which is left
      * alone. Returns the ids added and skipped, in the examples' order. 503 `store_unavailable` without a data directory.

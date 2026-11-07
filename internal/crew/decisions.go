@@ -599,7 +599,11 @@ func cleanRequest(req DecisionRequest) (requestBody, string, error) {
 		hi = 0
 	}
 	if len(req.Options) < lo || len(req.Options) > hi {
-		return requestBody{}, "", refuse(CodeInvalid, "a %s has %d to %d options, not %d", req.Type, lo, hi, len(req.Options))
+		article := "an" // an approval, an assignment
+		if req.Type == ledger.DecisionClarification {
+			article = "a"
+		}
+		return requestBody{}, "", refuse(CodeInvalid, "%s %s has %d to %d options, not %d", article, req.Type, lo, hi, len(req.Options))
 	}
 	for _, o := range req.Options {
 		label := strings.TrimSpace(oneLine.Replace(cleanText(o.Label)))
@@ -1563,8 +1567,13 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 		return refuse(CodeInvalid, "%s is at rev %d: no rev %d has been read", id, d.Rev, resp.ExpectedRev)
 	}
 	options := optionsOf(d.Type, d.Request)
-	if err := answerFits(d.Type, len(options), resp); err != nil {
-		return err
+	if auth.Via != ViaRouter {
+		// A router's answer is refused (not_approver, below) and kept
+		// whatever its shape: a line to an approval too (Owner decisions,
+		// 8; #638, review round 1).
+		if err := answerFits(d.Type, len(options), resp); err != nil {
+			return err
+		}
 	}
 	rc := ResponseReceipt{Decision: id, Actor: actor, ByName: resp.ByName, Choice: resp.Choice, Text: resp.Text, Rationale: resp.Rationale, At: dtx.Now(), Rev: d.Rev}
 	var policy struct {
@@ -1771,7 +1780,8 @@ const (
 // the actor the API names and the authority it authenticated: through the
 // run that holds the decision when the engine holds it (its transact), else
 // through the ledger on that run directly, changing no engine state, for
-// the workbench token only (not_held for an identity). The transaction
+// the workbench token, and a router's answer, which is refused there as
+// anywhere (not_held for an identity). The transaction
 // does not trust that choice: its answer is conditional on the run
 // (Tx.Answer), and a decision moved meanwhile is looked up and answered
 // again, at most maxDecisionTries times (decision_moved after). The
@@ -1830,7 +1840,10 @@ func (e *Engine) RespondDecision(ctx context.Context, id string, resp Response, 
 		if held {
 			err = e.respondHeld(ctx, r, n, resp, actor, auth, string(authRaw), fp, prior, &out)
 		} else {
-			if auth.Via != ViaWorkbench {
+			// A router's answer is kept refused (not_approver) through the
+			// ledger as well: its refusal is the record's, held or not
+			// (#638, review round 1).
+			if auth.Via != ViaWorkbench && auth.Via != ViaRouter {
 				return ResponseReceipt{}, refuse(CodeNotHeld, "%s's run is not running: continue it, or answer with the workbench token", id)
 			}
 			_, err = e.ledger.Transition(ctx, prior.CurrentRun, func(ltx LedgerTx) error {

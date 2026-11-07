@@ -81,6 +81,9 @@ const (
 	exQuestion = "8192a3b4c5d6e7f8"
 	exCommit   = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 	exLaunch   = "5f3e2d1c0b9a8f7e"
+	// exActOp is an act's receipt's opId: bk and 30 hex digits, the act's
+	// derived key.
+	exActOp = "bk0f1e2d3c4b5a69788796a5b4c3d2e1"
 )
 
 // refForms is every ref ParseRef reads, in Evidence references' order.
@@ -96,7 +99,7 @@ var refForms = []RefForm{
 	{RefQuestion, "question:<session>/<question>", "a question a session asks or asked", "question:" + exSession + "/" + exQuestion},
 	{RefTicket, "ticket:<KEY-n>", "a Dispatch ticket", "ticket:CND-12"},
 	{RefComment, "comment:<KEY-n>/<id>", "a ticket's comment, 16 hex digits", "comment:CND-12/" + exQuestion},
-	{RefOp, "op:<actor>/<opId>", "a Dispatch operation's receipt", "op:admin/bk-1"},
+	{RefOp, "op:<actor>/<opId>", "a Dispatch operation's receipt, kept under its actor and opId; an act you ran is op:brakeman/<its receipt's opId>, the receiptRef its answer gives (not your opId, not the launch's id)", "op:brakeman/" + exActOp},
 	{RefCommit, "commit:<run>/<sha>", "a commit on a run's branches, its full id", "commit:" + exRun + "/" + exCommit},
 	{RefFile, "file:<session>/<path>", "a touched file, its path absolute", "file:" + exSession + "//home/me/app/cache.go"},
 	{RefBrief, "brief:<br-n>/<item>", "an earlier brief's item, from 0", "brief:br-1/0"},
@@ -186,7 +189,7 @@ var kinds = []KindSpec{
 	{Kind: ItemOutcome, Rule: "A verified outcome: it names a receipt, or it is a fact or an interpretation.",
 		Fields: []Field{
 			fText("text", 1<<10, true, "what was done and verified"),
-			{Name: "receipt", Type: FieldRef, Required: true, Refs: []string{RefCheck, RefCommand, RefOp}, About: "the receipt that verifies it"},
+			{Name: "receipt", Type: FieldRef, Required: true, Refs: []string{RefCheck, RefCommand, RefOp}, About: "the receipt that verifies it: an act you ran, the receiptRef its answer gave"},
 		},
 		Example: json.RawMessage(`{"kind":"outcome/1","text":"The retry passed its tests.","receipt":"check:` + exRun + `/build/4/tests/1"}`)},
 	{Kind: ItemDecision, Needs: "propose", Rule: "A decision card: Conductor draws its controls from the live record of about, never from these fields.",
@@ -235,7 +238,7 @@ var kinds = []KindSpec{
 			fRefs("from", 0, 10, "what it was drafted from"),
 		},
 		Example: json.RawMessage(`{"kind":"draft_ticket/1","project":"CND","title":"Key the cache by locale","description":"The cache key ignores the locale.","acceptance":"A cached page in one locale is never served in another.","priority":2,"from":["comment:CND-12/` + exQuestion + `"]}`)},
-	{Kind: ItemDraftCrew, Needs: "draft", Rule: "A crew a person may save (never launched): the crew must pass the checks POST /api/crews makes.",
+	{Kind: ItemDraftCrew, Needs: "draft", Rule: "A crew a person may save (never launched): the crew must pass the checks POST /api/crews makes. In a crew with tasks, every member's start.when is \"task\": the run starts each member for its task.",
 		Fields: []Field{
 			{Name: "crew", Type: FieldObject, Required: true, Max: MaxCrewBody, About: "the body POST /api/crews takes"},
 			{Name: "gates", Type: FieldList, Max: 10, Of: &Field{Type: FieldEntry, Required: true, Fields: []Field{

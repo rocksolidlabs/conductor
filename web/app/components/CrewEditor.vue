@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AgentInfo, CrewStart, SessionInfo } from '~/composables/useSessions'
-import { draftMember, manifestIds, memberNameFrom, tasksFollowMembers, type DraftCrew, type DraftMember } from '~/utils/crews'
+import { draftMember, manifestIds, memberNameFrom, ownersFollowPeople, tasksFollowMembers, type DraftCrew, type DraftMember, type DraftPerson } from '~/utils/crews'
 import { startSentence } from '~/utils/crewWords'
 import { withStart } from '~/utils/crewGraph'
 import { isActive } from '~/utils/attention'
@@ -11,7 +11,9 @@ import { yoloChoice, yoloFromChoice, type YoloChoice } from '~/utils/yolo'
 /**
  * A saved crew's Setup: its goal, where its runs work, what each run does,
  * and its members as a table or as the graph of their start rules; a crew
- * with tasks has its tasks and, under them, its project manifest. The page
+ * with tasks has its tasks and, under them, its project manifest. Between the
+ * members and the tasks, its people (HM1): never started, they own its
+ * decisions and its tasks' outcomes. The page
  * owns the name (in its header), saving, launching, duplicating and
  * deleting; the editor only changes the draft.
  */
@@ -99,6 +101,12 @@ function set<K extends keyof DraftCrew>(key: K, value: DraftCrew[K]) {
 function setMembers(next: DraftMember[]) {
   const tasks = crew.value.tasks ? tasksFollowMembers(crew.value.tasks, next) : undefined
   crew.value = { ...crew.value, members: next, tasks }
+}
+
+/** The people as the table hands them back; each task's owner follows its draft person's name, by key. */
+function setPeople(next: DraftPerson[]) {
+  const tasks = crew.value.tasks ? ownersFollowPeople(crew.value.tasks, next) : undefined
+  crew.value = { ...crew.value, people: next, tasks }
 }
 
 const taken = computed(() => crew.value.members.map((m) => m.name))
@@ -237,7 +245,15 @@ function refused(message: string) {
       </template>
     </div>
 
-    <CrewTasksTable v-if="managed" :model-value="crew.tasks ?? []" :members="crew.members" :isolation="crew.isolation" :taken="manifestIds(crew.manifest)" @update:model-value="set('tasks', $event)" />
+    <div class="flex flex-col gap-3" data-crew-people-section>
+      <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+        <span class="text-sm font-semibold text-highlighted">People</span>
+        <span class="min-w-0 text-[12.5px] text-muted">who owns the crew's decisions and its tasks' outcomes: the architecture, product and acceptance owners and the security reviewer</span>
+      </div>
+      <CrewPeopleTable :model-value="crew.people ?? []" :members="crew.members" :tasks="crew.tasks" @update:model-value="setPeople" />
+    </div>
+
+    <CrewTasksTable v-if="managed" :model-value="crew.tasks ?? []" :members="crew.members" :people="crew.people ?? []" :isolation="crew.isolation" :taken="manifestIds(crew.manifest)" @update:model-value="set('tasks', $event)" />
     <CrewManifestEditor v-if="managed" :model-value="crew.manifest" :tasks="crew.tasks ?? []" :setup="crew.setup" @update:model-value="set('manifest', $event)" />
 
     <UModal v-model:open="pickOpen" title="Add from a running session" description="Its agent becomes a new member, and its working directory the crew's when the crew has none yet.">
