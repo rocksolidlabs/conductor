@@ -1084,11 +1084,17 @@ type errOpRepeat struct{ row ledger.HistoryRow }
 
 func (errOpRepeat) Error() string { return "the operation was sent before" }
 
-// opOf finds actor's operation id among a record's history: its receipt,
-// repeated, or op_conflict for another body; ok false when not sent.
-func opOf(rec ledger.DecisionRecord, actor, opID, fp string) (OpReceipt, bool, error) {
+// opOf finds op among a record's history: its actor's operation id, or,
+// for an operation once per decision (op.once), its actor's row of its
+// kind: its receipt, repeated, or op_conflict for another body; ok false
+// when not sent.
+func opOf(rec ledger.DecisionRecord, op operation) (OpReceipt, bool, error) {
+	actor, opID, fp := op.actor, op.opID, op.fp
 	for _, h := range rec.History {
-		if h.OpID == opID && h.By == actor {
+		if op.once && h.Kind == op.kind && h.By == actor && h.OpID == "" {
+			return receiptOfRow(rec.ID(), h), true, nil
+		}
+		if !op.once && h.OpID == opID && h.By == actor {
 			if h.Fingerprint != fp {
 				return OpReceipt{}, true, refuse(CodeOpConflict, "operation %s on %s was sent before with another body", opID, rec.ID())
 			}
@@ -1132,6 +1138,12 @@ type operation struct {
 	// commit clears the asking attempt's turnEnded mark (a request for
 	// more: its agent takes a turn to answer).
 	rev, wakes bool
+	// once makes the operation its actor's once per decision (a decision
+	// router's routing row, RecordRoute): no op id is written, and its
+	// repeat, whatever its body, is answered by the receipt of the row its
+	// actor wrote of its kind. Its row takes the bound of its kind, never
+	// one of the operator's operations (Tx.History).
+	once bool
 	// ahead says the held change moves the engine's state past what an
 	// undo could put back (the cancel: a decision closed, its holds
 	// released, tasks cancelled): it has no undo, its commit is under no
@@ -1153,7 +1165,7 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 	if !ok {
 		return OpReceipt{}, refuse(CodeNotFound, "%q is not a decision's id", shortText(id))
 	}
-	if !responseID.MatchString(op.opID) {
+	if !op.once && !responseID.MatchString(op.opID) {
 		return OpReceipt{}, refuse(CodeInvalid, "an operation's id is 1 to 32 of A-Z a-z 0-9 . _ ~ -")
 	}
 	if op.actor == "" || len(op.actor) > ledger.MaxDecisionActor {
@@ -1171,7 +1183,7 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 		if !ok {
 			return OpReceipt{}, refuse(CodeNotFound, "no decision %s", id)
 		}
-		if rc, found, err := opOf(rec, op.actor, op.opID, op.fp); found {
+		if rc, found, err := opOf(rec, op); found {
 			return rc, err
 		}
 		if op.expectedRev < 0 {
@@ -1239,7 +1251,22 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 				}
 			}
 			dt.Rev = max(dt.Rev, row.Rev)
-			got, repeat, err := dtx.History(n, ledger.HistoryRow{Kind: op.kind, By: op.actor, Detail: historyDetail(dt), OpID: op.opID, Fingerprint: op.fp})
+			hr := ledger.HistoryRow{Kind: op.kind, By: op.actor, Detail: historyDetail(dt), OpID: op.opID, Fingerprint: op.fp}
+			if op.once {
+				// Its repeat is its actor's row of its kind, looked for in
+				// this transaction as the look above did.
+				rec, _, err := dtx.Record(n)
+				if err != nil {
+					return err
+				}
+				for _, h := range rec.History {
+					if h.Kind == op.kind && h.By == op.actor && h.OpID == "" {
+						return errOpRepeat{h}
+					}
+				}
+				hr.OpID, hr.Fingerprint = "", ""
+			}
+			got, repeat, err := dtx.History(n, hr)
 			if err != nil {
 				return err
 			}
@@ -1353,7 +1380,7 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			// A repeat whose first commit came after the look above finds
 			// the decision changed by it: its receipt, not a refusal.
 			if again, ok, rerr := e.readDecision(ctx, n); rerr == nil && ok {
-				if rc, found, err := opOf(again, op.actor, op.opID, op.fp); found {
+				if rc, found, err := opOf(again, op); found {
 					return rc, err
 				}
 			}
@@ -1515,6 +1542,79 @@ func (e *Engine) RouteDecision(ctx context.Context, id, opID string, expectedRev
 		},
 		notHeld: func(rec ledger.DecisionRecord) (opDetail, error) { return dt, nil }})
 }
+
+// RouterResponseID is the response id of a decision router's answer
+// offered to a decision (internal/api, router.go): one per decision, so a
+// repeat is answered by its receipt.
+const RouterResponseID = "router"
+
+// RecordRoute records where a registered decision router (Switchman's
+// seam, ext.DecisionRouter) sent decision id: a routed history row by the
+// router named by, with its destinations (kind and name, as the router
+// gave them: ext.Destination's) and its rule. Unlike RouteDecision, the
+// operator's, it routes nothing under local/1, whose one approver stays
+// the operator: it is the routing history (Owner decisions, 8). It changes
+// no state and no rev, and is taken in every state. It is the router's
+// once per decision: its row takes the second of the two routed rows of a
+// decision's opening (the operator's by policy is the first), never one
+// of the operator's operations, and a router told the decision again (a
+// server that took the ledger over) is answered the first row's receipt,
+// whatever it names this time.
+func (e *Engine) RecordRoute(ctx context.Context, id, by string, to []Destination, rule string) (OpReceipt, error) {
+	if len(to) == 0 {
+		return OpReceipt{}, refuse(CodeInvalid, "a route names its destination")
+	}
+	dt := routeDetail(id, by, to, rule)
+	return e.operate(ctx, id, operation{kind: ledger.HistoryRouted, once: true, actor: "router:" + by,
+		held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
+			return dt, nil, nil
+		},
+		notHeld: func(rec ledger.DecisionRecord) (opDetail, error) { return dt, nil }})
+}
+
+// maxRev is a rev's widest encoding: a routing row's detail is bounded
+// with it in place, whatever rev its transaction writes.
+const maxRev = 1<<31 - 1
+
+// routeDetail is the detail of a router's routing row, bounded as it will
+// be encoded, its words and widest rev in place (ledger.MaxHistoryDetail,
+// every field escaped as JSON escapes it): every destination and the
+// words naming the one, when that fits; else the words counting them; else
+// the destinations its bound holds, in order, the words counting those
+// kept. A rule and the one destination always fit (ext.MaxRouteRule and
+// ext.MaxDestinationName bound them).
+func routeDetail(id, by string, to []Destination, rule string) opDetail {
+	fits := func(dt opDetail) bool {
+		dt.Rev = maxRev
+		b, err := json.Marshal(dt)
+		return err == nil && len(b) <= ledger.MaxHistoryDetail
+	}
+	dt := opDetail{Rule: rule, By: by}
+	for _, d := range to {
+		dt.To = append(dt.To, map[string]string{"kind": d.Kind, "name": d.Name})
+	}
+	if len(to) == 1 {
+		dt.Words = fmt.Sprintf("%s is routed by %s to %s %s", id, by, to[0].Kind, to[0].Name)
+		if fits(dt) {
+			return dt
+		}
+	}
+	dt.Words = fmt.Sprintf("%s is routed by %s to %d destinations", id, by, len(to))
+	if len(to) == 1 {
+		dt.Words = fmt.Sprintf("%s is routed by %s to one destination", id, by)
+	}
+	for kept := len(dt.To); kept > 1 && !fits(dt); {
+		kept--
+		dt.To = dt.To[:kept]
+		dt.Words = fmt.Sprintf("%s is routed by %s to %d destinations, %d of them kept", id, by, len(to), kept)
+	}
+	return dt
+}
+
+// OptionLabels is the labels of a decision's options as its record keeps
+// them (the row's type and request): an assignment's two fixed answers,
+// else the request's alternatives, in order.
+func OptionLabels(typ, request string) []string { return optionsOf(typ, request) }
 
 // CancelDecision is the operator's cancel of decision id, open or
 // answered, a command with a receipt (its commandId the operation's id): a

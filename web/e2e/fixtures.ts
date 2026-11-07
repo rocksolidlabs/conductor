@@ -86,7 +86,7 @@ export interface Session {
   cols?: number
   crew?: { runId: string; crewId: string; member: string }
   /** `id` names the question (a reply to it names it). */
-  attention?: { state: string; message?: string; source?: string; kind?: string; options?: Array<{ label: string; input: string }>; id?: string; answered?: string; plan?: string }
+  attention?: { state: string; message?: string; source?: string; kind?: string; options?: Array<{ label: string; input: string }>; id?: string; answered?: string; plan?: string; decision?: string }
   /** Who answered the last prompt, and its words. */
   lastAnswer?: { byName: string; message?: string }
   /** The agent's own session (its conversation), as the server captured or chose it. */

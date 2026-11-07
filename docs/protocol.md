@@ -45,7 +45,7 @@ Client → owner:
 | `chat` | `nonce?, scope?, text, on?, to?, quote?` | Every role, once the owner's `welcome` said `chat` (an older owner closes on an unknown message). `text` is kept cleaned (line breaks as `\n`, other control characters but tabs dropped, trimmed) and must be 1–2048 bytes after that (0 with a `quote`); `quote` `{path, from, to, lines[], cut?}` is lines of a file the message is about (design round 12, F7): the path (at most 512 bytes), the 1-based range, at most 12 lines of at most 200 bytes, control characters but tabs dropped, its last lines left out (`cut`) when the message would pass 8 KiB, dropped without a path or range; a message with a quote sent to the agent types `path:from-to`, the lines as `> ` lines, then the text (at most 4096 bytes); `scope` is `session` when absent, or `run` for the chat of the run the session is a member of (`welcome.runChat`; `bad_frame` otherwise); `nonce` (≤ 32 bytes) is the client's own id of the post, echoed in the message; `to`, a controller's, also types the text as `chat_send` does: `"agent"` into this session's agent, a member's name into that member in scope `run`; `on` (scope `run`) names the member the sender looks at, kept when it is one. 10 a second with a burst of 20 per connection, beyond which `error{too_many_requests, requestId: nonce}` and the connection stays. Refusals name the nonce: `bad_frame` (empty, too long, a scope or `to` not here), `read_only` (`to` from a view link), `session_ended`, `revoked` or `expired` (the viewer's link no longer opens the session: nothing kept or sent) |
 | `chat_send` | `ref, scope?, to?` | Controllers only (`read_only`, also on the relay). Types the text of the kept message `ref` into the agent as a `submit` would, then keeps and sends a `sent_to_agent` marker. In scope `run`, into the member `to` of the run as a broadcast does (nothing while that member waits on a prompt), with the marker in the run's chat, or `error{not_sent, message: needs_input|not_running|unknown|no_enter, requestId: ref}`. `bad_frame` with `requestId: ref` for a message not kept or not a message, or a run send naming no member; `revoked` or `expired` with `requestId: ref` once the viewer's link no longer opens the session (nothing typed), as it is taken and as its text is typed |
 | `submit` | `text` | Controllers only; `text` at most 4096 bytes (`bad_frame` beyond, `read_only` from a view link, also on the relay). The owner submits it as a line: line breaks and tabs become spaces and other control characters are dropped, the text is written as a bracketed paste while the program has that mode on (`ESC[?2004h`), then a carriage return is written on its own 250 ms later, so that a TUI takes it as Enter rather than as part of a paste. The Enter answers the prompt that was showing when the text was typed; a prompt raised during the pause is not answered and the Enter is left out. The submission goes on if the client disconnects meanwhile (or its time runs out once its text is typed: see below), but not once its link is revoked or expires (its run forgotten, its link gone) before its carriage return is written: before its text is typed, nothing of it is written; once its text is typed, its carriage return is not written either, the text stays in the program's input (it cannot be taken back out), and the session's turn stays held, so that no other submission (a reply, a crew's prompt, a handoff) is typed after it and entered with it, until a person types into the terminal (INPUT from a controller, a terminal's own reports and mouse reports aside, any number of them in a write, mixed, or one a write begins and the next finishes, at any byte: the pointer, moved or clicked, types nothing; a lone Escape counts with the key after it), who deals with the text, or the session ends. Meanwhile the session is `needs_input` with `source:"submit"` and the words `Text from a link that was let go was typed and not entered: type in the terminal to continue`, which that input clears. While the turn is held (or becomes held as it waits), a server connection's `submit`, `chat` to the agent or `chat_send` waits for it apart from the connection's other frames, so that its own INPUT can end the hold; one at a time, another meanwhile refused with `error{too_many_requests}` (its `requestId` as for a host's) and the connection stays; a connection that closes keeps its viewer until it is done, as one whose frames waited for it does. At most 64 submissions wait for a session's turn together, every connection's and Conductor's own: one more is refused at once (`too_many_requests`). A host is told when a viewer's link goes (`viewer_leave` with a reason, `link_gone`), also once the viewer has left, and does the same. On a host, one that still waits for the keys the viewer sent before it is dropped as the viewer goes. The reply boxes use it to an owner whose `welcome` lacks `answer`; keys typed into the terminal stay INPUT. With `reqId` (#322; at most 32 bytes of printable ASCII, as `answer`'s) the owner answers it, to a client whose `welcome` said `submitAck`: `submit_ok{requestId}` once the line was entered; else `error{code, requestId}`: `not_sent` with the question's words when `unlessWaiting: true` held it back (the session was asking, looked at as the owner holds the session's turn, so no prompt slips between the look and the write: the broadcast's guard, what the palette's typed line asks for; nothing typed), `input_failed` when the line was typed and not entered (the turn held, as above), `too_many_requests`, `session_ended`, `read_only`, `bad_frame` (past its bounds; no `requestId` when the id itself is). Without `reqId` nothing is answered, as before, and `unlessWaiting` still holds |
-| `answer` | `reqId?, question, input?, text?` | A reply to the question the person was shown (see Attention, Answering a question), sent only to an owner whose `welcome` says `answer` (an older one closes on an unknown message). Controllers only (`read_only`, also on the relay). `question` is that question's `id` (1–32 bytes of printable ASCII, no space); exactly one of `input` (a choice's keys, at most 48 bytes, written as INPUT is) and `text` (a line, at most 4096 bytes, submitted as `submit` is); `reqId` at most 32 bytes of the same. Out of those bounds: `error{bad_frame, requestId}` (no `requestId` when it is itself out of bounds), the connection stays. The owner writes nothing unless the question is still the one shown, nobody is answering it and nobody answered it in the terminal, looked at as the reply arrives and again, together with claiming the question, as the keys (a line's text, its Enter for a line with none) are written: first to claim wins; otherwise `error{question_answered, requestId}`, whose `message` says what became of the question when the owner knows (`this question was already answered by <name>: nothing was sent` once a result is recorded, `this question is being answered: nothing was sent` while another reply's keys are on their way, `this question was answered in the terminal: nothing was sent` once keys typed in the terminal reached it, else `this question was already answered: nothing was sent`). `answer_ok{requestId}` is the final word: the keys landed, or the line was entered, and the question is resolved by this reply (or was withdrawn by the agent moving on while they were written); it is never sent while the outcome is open (a line the program takes slowly is told once it is entered). A line typed whose Enter was not written (a question came in its pause, its link went) is `error{input_failed}` with `the line was typed and not entered: type in the terminal to continue`: the session's turn is held. Any other refusal is an `error` naming it as INPUT's or `submit`'s would be (`not_sent`, `input_failed`, `too_many_requests`, `session_ended`). An `answer`, a choice's keys too, is withdrawn as a `submit` is once its link's credential no longer stands (revoked or expired; on a host, no ping of its own sent within 15 s answered by the server: see the host control connection), whether or not its connection has closed for it yet: nothing of it written, `input_failed`. A `text` waits for the session's turn as `submit` does, also while it is held for a person, on a server connection apart from its other frames as `submit` does; an `input` answers a `trust` or `question` prompt showing over a held turn without ending the hold, the hold's words shown again once it is answered; an `answer` naming the hold itself (`source:"submit"`) is refused (`question_answered`), nothing written. Every quick reply uses it: the sidebar's row and its 1–9, the Yard's card and queue, the session page's and a link's reply bar and its digits, a question's choices in the chat |
+| `answer` | `reqId?, question, input?, text?` | A reply to the question the person was shown (see Attention, Answering a question), sent only to an owner whose `welcome` says `answer` (an older one closes on an unknown message). Controllers only (`read_only`, also on the relay). `question` is that question's `id` (1–32 bytes of printable ASCII, no space); exactly one of `input` (a choice's keys, at most 48 bytes, written as INPUT is) and `text` (a line, at most 4096 bytes, submitted as `submit` is); `reqId` at most 32 bytes of the same. Out of those bounds: `error{bad_frame, requestId}` (no `requestId` when it is itself out of bounds), the connection stays. The owner writes nothing unless the question is still the one shown, nobody is answering it and nobody answered it in the terminal, looked at as the reply arrives and again, together with claiming the question, as the keys (a line's text, its Enter for a line with none) are written: first to claim wins; otherwise `error{question_answered, requestId}`, whose `message` says what became of the question when the owner knows (`this question was already answered by <name>: nothing was sent` once a result is recorded, `this question is being answered: nothing was sent` while another reply's keys are on their way, `this question was answered in the terminal: nothing was sent` once keys typed in the terminal reached it, else `this question was already answered: nothing was sent`). `answer_ok{requestId}` is the final word: the keys landed, or the line was entered, and the question is resolved by this reply (or was withdrawn by the agent moving on while they were written); it is never sent while the outcome is open (a line the program takes slowly is told once it is entered). A line typed whose Enter was not written (a question came in its pause, its link went) is `error{input_failed}` with `the line was typed and not entered: type in the terminal to continue`: the session's turn is held. Any other refusal is an `error` naming it as INPUT's or `submit`'s would be (`not_sent`, `input_failed`, `too_many_requests`, `session_ended`). An `answer`, a choice's keys too, is withdrawn as a `submit` is once its link's credential no longer stands (revoked or expired; on a host, no ping of its own sent within 15 s answered by the server: see the host control connection), whether or not its connection has closed for it yet: nothing of it written, `input_failed`. A `text` waits for the session's turn as `submit` does, also while it is held for a person, on a server connection apart from its other frames as `submit` does; an `input` answers a `trust` or `question` prompt showing over a held turn without ending the hold, the hold's words shown again once it is answered; an `answer` naming the hold itself (`source:"submit"`) is refused (`question_answered`), nothing written; one naming a question that mirrors a durable decision (the attention's `decision`) is refused `error{decision, requestId}`, its message naming the decision, nothing written. Every quick reply uses it: the sidebar's row and its 1–9, the Yard's card and queue, the session page's and a link's reply bar and its digits, a question's choices in the chat |
 
 Owner → client:
 
@@ -79,7 +79,9 @@ the dialog highlights, and the question's own choices answer it),
 `question_answered` (an `answer` whose question takes no reply: another
 reply answered it first or is answering it, keys typed in the terminal
 reached it, or it went; nothing was written; the message says which, see
-`answer`).
+`answer`), `decision` (an `answer` whose question mirrors a durable
+decision: answered only as that decision, the message naming it; nothing
+was written; see Answering a question).
 
 WebSocket close codes: `1000` normal, `1001` server shutdown, `4400` protocol
 error, `4401` unauthorized, `4403` link revoked or expired (reason `link
@@ -778,7 +780,7 @@ revoke, and they expire or go with the host's others.
 
 ## Attention
 
-Each session carries `attention{state, message, source, since, kind?, options?, id?, answered?, plan?}`
+Each session carries `attention{state, message, source, since, kind?, options?, id?, answered?, plan?, decision?}`
 in its `Info`. States: `""` (nothing), `working`, `needs_input`, `done`.
 `plan` (#289) is the path of the plan a question asks approval for (Claude
 Code's ExitPlanMode: its hook names it as `planFilePath`, reported as the
@@ -786,6 +788,14 @@ attention route's `plan`, or the dialog's last row prints it), once the session
 has seen it to be one of the agent's plans (File reads, the plans directory),
 at most 1,024 bytes; a page opens it with a `file_get` of that path. Absent
 from any other question, and from an older owner.
+`decision` is the durable decision a question mirrors (`dr-<n>`, at most 16
+bytes, `proto.MaxDecisionRef`; see Decisions): an attempt's agent asked it,
+and its session shows it as the agent's own question with no `options`,
+which keys, the screen and lines naming no decision never take away. It is
+answered only as that decision, so a client offers it no reply field,
+choice or number key, whatever its role, and an `answer` naming it is
+refused (`decision`, see Answering a question). Absent from every other
+question, and from an older owner; the attention message carries it too.
 Sources: `api` (the agent's own token), `admin`, `bell`, `osc`, `pattern` (the
 screen-pattern detector, below), `trust` (the agent's workspace-trust
 question, below), `question` (a question asked during the work, below),
@@ -1496,6 +1506,18 @@ older host's questions are routed by no one, as before, and a provider's
 answer to one is unsupported; a switchyard routes none and sends no
 `answer_as`. A line that answers no question is never typed into a hosted
 session.
+
+A question that mirrors a durable decision (the attention's `decision`)
+takes no reply at all: an `answer` naming it, a choice's keys or a line,
+is refused `error{decision, requestId}` with
+`dr-7 is answered as a decision, by the operator in Conductor: nothing
+was sent`, nothing written, by the server and by a host alike (the same
+code, though no hosted session asks one: a managed run's attempts are
+the server's); a provider's `Host.Submit` naming it is refused
+(`ext.ErrQuestionAnswered`), nothing written. A `submit` names no question: its line is typed, and the question
+stays. Only the decision's application types its answer (see
+Decisions). The decision router is never told such a question: it is told
+the decision's record instead (Decisions, Routed decisions).
 
 A reply to a question read off the screen is taken only while the screen
 still shows that question, too (a next question drawn after it and not asked
@@ -4088,4 +4110,33 @@ message, the run page's task with `&decision=dr-N` as URL, and the
 responder's actor as `by`): the webhooks that list `decision`
 (`config.ValidWebhookEvent` takes it) and the providers' sinks that take
 it receive it, queued without waiting. An agent's decision also shows as
-its session's question.
+its session's question, with the decision's id as its attention's
+`decision` (see Attention), which takes no reply but the decision's.
+
+**Routed decisions.** On a build with a decision router registered
+(`ext.DecisionRouter`), a decision's record is told to it as it opens, as
+`ext.Decision{id: dr-N, request: dr-N, session:
+the asking attempt's (an empty id for a plan's gate) with its run and
+task, message: the question cut where a character ends to 500 bytes, kind:
+decision, options: the labels, each picked by its place ("1" first),
+since}`, through the router's guard, never the session question that
+mirrors it. The ledger is the truth, only its owner tells the router, and
+the server keeps no account of what a router heard: a decision is told
+when it opens, as often as needed (whenever the server holds the ledger,
+at its start, at a takeover from another server holding its owner lock
+and after a tell that failed or was not made, one query of the ledger
+tells every decision it holds open, so a router may be told of a decision
+more than once and treats a repeat, the same `request`, as nothing new);
+told `Resolved` (with `request`) when it reaches a final state, when that
+can be done at once (best-effort, never owed); and its state can always
+be read through the provider's Host (`ext.Host.Decision`, a `dr-N` of at
+most 21 bytes: its state, whether final, its rev, when it closed). Each
+call about a decision runs on a goroutine of its own, at most 16 at once:
+a provider that hangs holds one and stalls nothing. A route's destinations become one
+`routed` history row (by `router:<name>`, its `to` and `rule`; a repeat
+writes none); an answer
+it holds is offered as a response under the actor `user:<subject>` with
+the authority `{via: router}` and no grant, which `local/1` refuses
+(`not_approver`, "refused under local/1") whatever principal the subject
+names: kept as a refused response with its `responded` row, never
+applied. The operator answers it as any other.
