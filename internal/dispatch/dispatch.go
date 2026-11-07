@@ -21,7 +21,11 @@
 // pending under a run id it mints before the API starts the run, with the
 // package the run is handed, frozen and hashed, whose attachments the
 // sweep keeps (launches.go, package.go), and answers a resend before its
-// caller does any work of its own (Replay). It starts nothing and imports
+// caller does any work of its own (Replay). From version 3 it keeps a
+// ticket's reviews of its runs' candidates, their findings and the
+// findings' marks (reviews.go; Program item RV1,
+// docs/plans/review-repair.md), a request's application recorded as the
+// ledger's owner reports it. It starts nothing and imports
 // nothing of the engine's: its sight of the runs is the functions the API
 // gives it (SetRunExists, SetRunTicket, SetRunChain). The API, the CLI
 // and the tests are its callers.
@@ -91,6 +95,11 @@ type Store struct {
 	// the engine.
 	runExists func(id string) bool
 	sight     runSight
+	// writes is the schema version this store writes, Version: a database
+	// of a later one opens read-only (prepare). A test sets it lower,
+	// through openWith, to open a database as a binary before Version
+	// would.
+	writes int
 	// runSuffix, when set, mints a launch's run id's last part in place of
 	// crypto/rand (mintRunID): a test forces a run id the store holds
 	// already, set through openWith.
@@ -228,7 +237,7 @@ func openWith(dir string, configure func(*Store)) (*Store, error) {
 	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("dispatch: %s is a symbolic link", path)
 	}
-	s := &Store{dir: dir, path: path, pruneEvery: defaultPruneEvery, syncDir: syncDirectory, unlink: os.Remove, sweepGrace: defaultSweepGrace}
+	s := &Store{dir: dir, path: path, writes: Version, pruneEvery: defaultPruneEvery, syncDir: syncDirectory, unlink: os.Remove, sweepGrace: defaultSweepGrace}
 	if configure != nil {
 		configure(s)
 	}
@@ -434,8 +443,8 @@ func (s *Store) prepare(ctx context.Context, db *sql.DB) error {
 	var version int
 	err = tx.QueryRowContext(ctx, "SELECT version FROM schema_version").Scan(&version)
 	switch {
-	case err == nil && version > Version:
-		return fmt.Errorf("dispatch: the database is version %d, written by a newer Conductor; this one writes version %d", version, Version)
+	case err == nil && version > s.writes:
+		return fmt.Errorf("dispatch: the database is version %d, written by a newer Conductor; this one writes version %d", version, s.writes)
 	case err == nil && version == Version:
 		// Nothing to write: a write rolled back proves the connection
 		// writes at all (writable).

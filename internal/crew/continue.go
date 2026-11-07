@@ -35,9 +35,13 @@ import (
 // that hold them (LoadImports): empty unless read. FailedChecks are the
 // receipts that failed its attempts failed at a check or a verify step,
 // one each (failingReceipt), without their logs: a continuation hands the
-// one of a task's last attempt to its first (taskfile.go).
+// one of a task's last attempt to its first (taskfile.go). Launch is the
+// crew as launched of the run's chain, the crew JSON of its launch row
+// (LaunchCrew), where its people and its tasks' owners are read from; ""
+// reads the run's own row.
 type Loaded struct {
 	Run           ledger.RunRow
+	Launch        string
 	Tasks         []ledger.TaskRow
 	Attempts      []ledger.AttemptRow
 	Messages      []ledger.MessageRow
@@ -98,8 +102,12 @@ type candidate struct {
 // has: interrupted, stopped or finished, and not continued yet. The new run
 // names the old in ResumedFrom (the ledger's ContinuedFrom) and the old
 // names it in ResumedBy (ContinuedBy). A run still going is refused
-// (ErrRunRunning), one continued already with RunResumedError. The label
-// is the old run's when none is given and the engine still holds it.
+// (ErrRunRunning), one continued already with RunResumedError. A run
+// whose chain of continuations is longer than a server reads, more than
+// maxChain (10,000) runs with runID among them, is refused
+// (ErrChainTooLong) with nothing made or moved: the chain's decisions are
+// read whole or the continuation is not made (readDecisionHistory). The
+// label is the old run's when none is given and the engine still holds it.
 func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, error) {
 	if e.ledger == nil {
 		return nil, ErrNoLedger
@@ -143,6 +151,12 @@ func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, er
 	if err := json.Unmarshal([]byte(from.Run.Crew), &c); err != nil {
 		undo()
 		return nil, fmt.Errorf("the run's crew as launched cannot be read: %w", err)
+	}
+	// Its people and its tasks' owners are the launch's, which this
+	// continuation's row keeps too: a continuation an older build made
+	// wrote its row without them.
+	if launch, ok := launchCrewOf(from); ok {
+		c = c.withPeopleOf(launch)
 	}
 	if !c.Managed() {
 		undo()
@@ -568,6 +582,12 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 				// Failed at a check: the next attempt is handed its receipt.
 				t.priorFailed = &priorFailed{n: la.N, state: la.State, stage: la.Stage, err: la.Error, result: la.ResultCommit, branch: la.Branch, check: fc}
 			}
+			if hasLast {
+				// The standing failed candidate of a task that fails here
+				// before it makes an attempt (standingFailed).
+				pl := ledger.AttemptRow{RunID: la.RunID, TaskID: la.TaskID, N: la.N, Member: la.Member, Branch: la.Branch, StartCommit: la.StartCommit, ResultCommit: la.ResultCommit, State: la.State, Stage: la.Stage, Error: la.Error, Result: la.Result, Where: la.Where}
+				t.priorLast = &pl
+			}
 			if hasLast && t.def.Kind == TaskWork && la.State == ledger.AttemptFailed && la.ResultCommit != "" && la.StartCommit != "" && refusedBeforeChecks(la.Stage) {
 				t.refused = &refusal{n: la.N, start: la.StartCommit, stage: la.Stage, err: la.Error, result: la.ResultCommit, branch: la.Branch}
 			}
@@ -794,6 +814,13 @@ func (e *Engine) dispatchCandidate(ctx context.Context, r *run, a *attempt, c ca
 		}, nil)
 		return
 	}
+	e.verifyRecorded(r, a)
+}
+
+// verifyRecorded verifies a, recorded as verifying its result (verify),
+// unless it closed meanwhile or its run stops, which close it. The caller
+// holds neither lock and counts a start in r.starts until it returns.
+func (e *Engine) verifyRecorded(r *run, a *attempt) {
 	e.mu.Lock()
 	closed := !a.closedAt.IsZero() || r.stopping
 	if !closed {
@@ -842,6 +869,18 @@ func Recovered(rec Run, from Loaded) Run {
 		// Its input, which the row keeps: a record written before the
 		// run's binding was read says it too.
 		rec.Ticket = ticketOfRow(from.Run)
+	}
+	// The people and the tasks' owners are the launch's, whatever the
+	// record said: an older build writes it without them.
+	rec.People = nil
+	launch, read := launchCrewOf(from)
+	if read {
+		rec.People = launch.clone().People
+	}
+	for i := range rec.Tasks {
+		t := &rec.Tasks[i]
+		def, _ := launch.task(t.ID)
+		t.setOwner(launch, def)
 	}
 	rec.ResumedBy = from.Run.ContinuedBy
 	if from.Run.ContinuedFrom != "" {
@@ -1080,6 +1119,10 @@ func LoadedTask(from Loaded, taskID string) (TaskState, []AttemptState, bool) {
 	}
 	if !known && !hasRow {
 		return TaskState{}, nil, false
+	}
+	if launch, ok := launchCrewOf(from); ok {
+		def, _ := launch.task(taskID)
+		st.setOwner(launch, def)
 	}
 	if hasRow {
 		if st.Member == "" {

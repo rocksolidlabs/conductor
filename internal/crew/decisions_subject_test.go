@@ -2,6 +2,7 @@ package crew
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -337,10 +338,15 @@ func TestAnArtifactThatChangedSupersedes(t *testing.T) {
 }
 
 // A supersession's words name what moved, here a file's path the request
-// may make long (six directories of 200 bytes): its history row is kept
-// within the ledger's bound whatever it holds, so the supersession, which
-// the engine has made, commits, the run is not paused, and the run's next
-// change commits after it (#636, review round 3).
+// may make long: its history row is kept within the ledger's bound
+// whatever it holds, so the supersession, which the engine has made,
+// commits, the run is not paused, and the run's next change commits after
+// it (#636, review round 3). The path's characters are ones JSON escapes
+// ("<" is six bytes as encoded), so that a path the system can make under
+// the Mac's long temporary folder, within the 1,024 bytes of its
+// PATH_MAX, is still far past the detail's bound twice over (as the
+// words that moved and in the decision's why): the file must be in the
+// worktree, which the request compares with its blob.
 func TestALongArtifactPathIsSuperseded(t *testing.T) {
 	dir := newRepo(t)
 	e, fl, ld := decisionEngine(t)
@@ -348,10 +354,18 @@ func TestALongArtifactPathIsSuperseded(t *testing.T) {
 	b, _, p := attemptOn(t, e, fl, run.ID, "build")
 	wt := b.Attempt.Worktree
 	parts := []string{}
-	for i := range 6 {
-		parts = append(parts, strings.Repeat(string(rune('a'+i)), 200))
+	for i := range 4 {
+		parts = append(parts, fmt.Sprintf("%d%s", i, strings.Repeat("<", 100)))
 	}
 	rel := strings.Join(append(parts, "notes.md"), "/")
+	// Room under the Mac's PATH_MAX for the whole path, and past the
+	// detail's bound with the path once, as encoded.
+	if n := len(filepath.Join(wt, rel)); n > 900 {
+		t.Fatalf("the path is %d bytes under the worktree, too long for the Mac's 1,024", n)
+	}
+	if b, _ := json.Marshal(rel); len(b) <= ledger.MaxHistoryDetail {
+		t.Fatalf("the path is %d bytes as encoded, within the detail's bound", len(b))
+	}
 	if err := os.MkdirAll(filepath.Join(wt, filepath.Dir(rel)), 0o755); err != nil {
 		t.Fatal(err)
 	}

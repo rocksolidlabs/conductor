@@ -1,6 +1,7 @@
 package crew
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -1438,10 +1439,15 @@ func fingerprintOf(v any) string {
 }
 
 // checkResponse refuses a response that is not of its shape (invalid, no
-// row): its id, its text and rationale within their bounds, cleaned.
+// row): its id, its text, rationale and name UTF-8 as sent (so the
+// fingerprint of the body as sent tells every two bodies apart:
+// RespondDecision), its text and rationale within their bounds, cleaned.
 func checkResponse(resp Response) (Response, error) {
 	if !responseID.MatchString(resp.ResponseID) {
 		return resp, refuse(CodeInvalid, "a response id is 1 to 32 of A-Z a-z 0-9 . _ ~ -")
+	}
+	if !utf8.ValidString(resp.Text) || !utf8.ValidString(resp.Rationale) || !utf8.ValidString(resp.ByName) {
+		return resp, refuse(CodeInvalid, "a response's text, rationale and name are UTF-8")
 	}
 	resp.Text = cleanText(resp.Text)
 	resp.Rationale = cleanText(resp.Rationale)
@@ -1535,6 +1541,19 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 	if !ok {
 		return refuse(CodeNotFound, "no decision %s", ledger.DecisionID(n))
 	}
+	// A response sent before is answered from its saved row first, before
+	// any recheck or receipt of this send is made (#635, review round 3):
+	// see replayed.
+	if rc, found, err := replayed(rec, actor, resp.ResponseID, fp); found {
+		if err != nil {
+			return err
+		}
+		out.receipt, out.accepted, out.rev = rc, rc.Status == "accepted", d.Rev
+		if rc.Code != "" {
+			out.refusal = refuse(rc.Code, "%s", rc.Words)
+		}
+		return nil
+	}
 	if d.CurrentRun != run {
 		out.moved = true
 		return nil
@@ -1591,22 +1610,18 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 	}
 	got, err := dtx.Respond(n, ledger.ResponseRow{Actor: actor, Authority: authRaw, ResponseID: resp.ResponseID, Fingerprint: fp, Status: status, Receipt: receiptJSON(rc)})
 	switch {
-	case errors.Is(err, ledger.ErrDecisionConflict):
-		return refuse(CodeResponseConflict, "response %s to %s was sent before with another body", resp.ResponseID, id)
 	case errors.Is(err, ledger.ErrDecisionLimit) && auth.Via == ViaIdentity:
 		return refuse(CodeDecisionLimit, "%s's run has no room for the decision this answer would need if its recheck failed: answer with the workbench token", id)
 	case err != nil:
 		return err
 	}
 	if got.Repeat {
-		var prev ResponseReceipt
-		_ = json.Unmarshal([]byte(got.Row.Receipt), &prev)
-		prev.Repeat, prev.K = true, got.Row.K
-		out.receipt, out.accepted, out.rev = prev, got.Row.Status == ledger.ResponseAccepted, d.Rev
-		if prev.Code != "" {
-			out.refusal = refuse(prev.Code, "%s", prev.Words)
-		}
-		return nil
+		// Never: replayed answered every row of (decision, actor,
+		// responseId) that rec holds, and rec is read in this
+		// transaction, whose writes are one at a time. A row Tx.Respond
+		// found that rec did not show fails the transaction, never
+		// answered with a receipt constructed again (#635, final step).
+		return fmt.Errorf("response %s to %s: the ledger holds a row this transaction's record did not show", resp.ResponseID, id)
 	}
 	rc.K = got.Row.K
 	if !got.Kept {
@@ -1641,6 +1656,37 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 
 var errDecisionMoved = errors.New("the decision moved to another run")
 
+// replayed answers a response its actor sent before (Responding, 1) from
+// the row the ledger saved for (decision, actor, responseId), found says
+// there is one: the same body (fp, the fingerprint of the body as sent) is
+// that row's receipt as saved, byte for byte, with repeat and its k, and a
+// refusal kept is refused again with its own words; another body is
+// response_conflict. Invariant (one application): a repeat constructs
+// nothing and writes nothing, so no recheck made again, no receipt built
+// again and no bound counted again can turn a response accepted once into
+// another outcome; it is looked up before any of them, in RespondDecision
+// on the record read before the transaction and again in the transaction
+// (respondTx), where a row Tx.Respond's own lookup finds after it fails
+// the transaction instead of being answered. A saved row is never changed, so a record read outside a transaction answers it
+// as well as one read inside.
+func replayed(rec ledger.DecisionRecord, actor, responseID, fp string) (ResponseReceipt, bool, error) {
+	for _, r := range rec.Responses {
+		if r.Actor != actor || r.ResponseID != responseID {
+			continue
+		}
+		if r.Fingerprint != fp {
+			return ResponseReceipt{}, true, refuse(CodeResponseConflict, "response %s to %s was sent before with another body", responseID, rec.ID())
+		}
+		var rc ResponseReceipt
+		if err := json.Unmarshal([]byte(r.Receipt), &rc); err != nil {
+			return ResponseReceipt{}, true, fmt.Errorf("response %s to %s: its saved receipt: %w", responseID, rec.ID(), err)
+		}
+		rc.Repeat, rc.K = true, r.K
+		return rc, true, nil
+	}
+	return ResponseReceipt{}, false, nil
+}
+
 // nameOf is the name a responder is told by: the name it gave, or its
 // actor.
 func nameOf(byName, actor string) string {
@@ -1673,23 +1719,58 @@ func answeredWords(id string, rec ledger.DecisionRecord) string {
 	return id + " was answered"
 }
 
-// staleWords say what changed a decision since the rev a response read,
-// from its record as the transaction reads it.
+// staleWords say what changed a decision since the rev a response read
+// (Responding, 2: the history rows since that rev in words), from its
+// record as the transaction reads it. Only the changes after the rev read
+// are told, never one the response already saw (#635, review round 3).
+// staleWords is asked of an open decision only (respondTx's order: an
+// answered or closed one is refused before), and an open decision's rev
+// moves past its first only by an operation (a comment, a request for
+// information, a re-route), whose history row names the rev it made
+// ("rev" in its detail). A row that names no rev made none past the first
+// (the opening's, a refused response's, a notification): every response
+// has read rev 1, so none of them is a change since. Each change is told
+// by its rev, kind and author and its words (the detail's text, note or
+// why, on one line, cut to staleText bytes), at most staleChanges of them,
+// the newest, with how many earlier ones were left out.
 func staleWords(id string, read int, rec ledger.DecisionRecord) string {
-	now := rec.Rev
-	var kinds []string
+	var changes []string
 	for _, h := range rec.History {
-		switch h.Kind {
-		case ledger.HistoryCommented, ledger.HistoryInfoRequested, ledger.HistoryResponded, ledger.HistorySuperseded, ledger.HistoryCancelled, ledger.HistoryApplied:
-			kinds = append(kinds, h.Kind)
+		var dt struct {
+			Rev  int    `json:"rev"`
+			Text string `json:"text"`
+			Note string `json:"note"`
+			Why  string `json:"why"`
 		}
+		if h.Detail == "" || json.Unmarshal([]byte(h.Detail), &dt) != nil || dt.Rev <= read {
+			continue
+		}
+		c := fmt.Sprintf("rev %d, %s by %s", dt.Rev, h.Kind, h.By)
+		if w := strings.TrimSpace(oneLine.Replace(cmp.Or(dt.Text, dt.Note, dt.Why))); w != "" {
+			if cut := cutBytes(w, staleText); cut != w {
+				w = cut + "…"
+			}
+			c += ": " + w
+		}
+		changes = append(changes, c)
 	}
-	words := fmt.Sprintf("%s changed since rev %d: it is at rev %d", id, read, now)
-	if len(kinds) > 0 {
-		words += " (" + strings.Join(kinds, ", ") + ")"
+	words := fmt.Sprintf("%s changed since rev %d: it is at rev %d", id, read, rec.Rev)
+	if left := len(changes) - staleChanges; left > 0 {
+		changes = append([]string{fmt.Sprintf("%d earlier changes", left)}, changes[left:]...)
+	}
+	if len(changes) > 0 {
+		words += " (" + strings.Join(changes, "; ") + ")"
 	}
 	return words + ": read it again, then answer"
 }
+
+// The bounds of staleWords: at most staleChanges changes told, each one's
+// words cut to staleText bytes, so a stale refusal's words stay well under
+// a receipt's bound (ledger.MaxDecisionReceipt).
+const (
+	staleChanges = 5
+	staleText    = 160
+)
 
 // RespondDecision records a response to decision id (Responding), under
 // the actor the API names and the authority it authenticated: through the
@@ -1707,6 +1788,15 @@ func (e *Engine) RespondDecision(ctx context.Context, id string, resp Response, 
 	if !ok {
 		return ResponseReceipt{}, refuse(CodeNotFound, "%q is not a decision's id", shortText(id))
 	}
+	// The fingerprint that tells a repeat from a conflict is of the body as
+	// sent, before checkResponse cleans a field (#635, review round 3), the
+	// rule RequestDecision follows: a cleaned body could make two bodies
+	// one ("yes" and "yes "), and a body is fingerprinted the same on every
+	// send (encoding/json's encoding is a function of the value). Two bodies
+	// that differ never share it: checkResponse refuses a field that is not
+	// UTF-8, and on valid UTF-8 the encoding decodes back to the value it
+	// encodes, so it is one to one.
+	fp := fingerprintOf(resp)
 	resp, err := checkResponse(resp)
 	if err != nil {
 		return ResponseReceipt{}, err
@@ -1718,7 +1808,6 @@ func (e *Engine) RespondDecision(ctx context.Context, id string, resp Response, 
 	// caller says: an identity's is applied only here (applyDecisions).
 	auth.Boot = e.boot
 	authRaw, _ := json.Marshal(auth)
-	fp := fingerprintOf(resp)
 	for range maxDecisionTries {
 		prior, ok, err := e.readDecision(ctx, n)
 		if err != nil {
@@ -1726,6 +1815,18 @@ func (e *Engine) RespondDecision(ctx context.Context, id string, resp Response, 
 		}
 		if !ok {
 			return ResponseReceipt{}, refuse(CodeNotFound, "no decision %s", id)
+		}
+		// A response sent before is answered from its saved row whatever
+		// holds the decision now, a run not held after a restart included
+		// (replayed).
+		if rc, found, err := replayed(prior, actor, resp.ResponseID, fp); found {
+			if err != nil {
+				return ResponseReceipt{}, err
+			}
+			if rc.Code != "" {
+				return rc, refuse(rc.Code, "%s", rc.Words)
+			}
+			return rc, nil
 		}
 		r, held := e.holder(prior.CurrentRun)
 		if e.beforeRespond != nil {
@@ -1796,10 +1897,10 @@ func (e *Engine) holder(current string) (*run, bool) {
 // respondHeld is RespondDecision's transaction through a run the engine
 // holds: the asking attempt's membership read under e.mu, the row written
 // in its transaction, the engine's copy answered once it commits. A
-// subject that moved (S2, S4) is superseded first, in a change of its own
-// that is never undone (supersede): what the response's transaction then
-// refuses or fails, it has nothing in the engine to put back (#636,
-// review round 1).
+// subject that moved (S2, S4) is superseded first, unless the response is
+// a repeat, in a change of its own that is never undone (supersede): what
+// the response's transaction then refuses or fails, it has nothing in the
+// engine to put back (#636, review round 1).
 func (e *Engine) respondHeld(ctx context.Context, r *run, n int64, resp Response, actor string, auth Authority, authRaw, fp string, prior ledger.DecisionRecord, out *respondOutcome) error {
 	// The subject rechecked first, read before the transaction at the
 	// place the supersession checks it is still read at.
@@ -1816,7 +1917,9 @@ func (e *Engine) respondHeld(ctx context.Context, r *run, n int64, resp Response
 			return err
 		}
 		if words != "" {
-			moved = e.supersede(r, n, at, words)
+			if moved, err = e.supersede(ctx, r, n, at, words, actor, resp.ResponseID, fp); err != nil {
+				return err
+			}
 		}
 	}
 	return e.transact(ctx, r, func() tx {
@@ -1847,16 +1950,34 @@ func (e *Engine) respondHeld(ctx context.Context, r *run, n int64, resp Response
 }
 
 // supersede supersedes the run's open decision n, whose subject the read
-// at found moved (words), in a transaction of its own with no undo: a
+// at found moved (words), for the response actor sent as responseID (fp
+// its body's fingerprint), in a transaction of its own with no undo: a
 // refused commit carries it, and the run pauses until the pause's commit
 // writes it, so the engine, which has superseded it, and the ledger never
 // disagree for good. It answers the words it was superseded with, "" when
 // the decision was no longer open at at by the change (answered, closed,
-// or its subject read elsewhere since). Under no request's context: a
-// caller gone does not refuse it. The caller holds no lock.
-func (e *Engine) supersede(r *run, n int64, at subjectAt, words string) string {
+// or its subject read elsewhere since), or when the ledger holds a row of
+// that response already: a repeat changes nothing (replayed), and the
+// response's transaction answers it from its row. The repeat is looked
+// for where it would act, under the run's txMu with the change that
+// supersedes, so a copy of the response that committed after
+// RespondDecision's own look, a transaction of this run, is seen before
+// anything is superseded (#636, review round 4). Its commit is under no
+// request's context: a caller gone does not refuse it. An error is the
+// ledger's read, with nothing changed. The caller holds no lock.
+func (e *Engine) supersede(ctx context.Context, r *run, n int64, at subjectAt, words, actor, responseID, fp string) (string, error) {
+	r.txMu.Lock()
+	rec, ok, err := e.readDecision(ctx, n)
+	if err != nil {
+		r.txMu.Unlock()
+		return "", err
+	}
+	if _, found, _ := replayed(rec, actor, responseID, fp); !ok || found {
+		r.txMu.Unlock()
+		return "", nil
+	}
 	done := ""
-	err := e.transact(context.Background(), r, func() tx {
+	err = e.commitHeld(context.Background(), r, false, nil, func() tx {
 		d := r.decisionN(n)
 		if r.stopping || r.ctx.Err() != nil || d == nil || d.state != ledger.DecisionOpen || !e.sameSubject(r, d, at) {
 			return tx{}
@@ -1865,8 +1986,9 @@ func (e *Engine) supersede(r *run, n int64, at subjectAt, words string) string {
 		done = words
 		return tx{}
 	}, nil)
+	r.txMu.Unlock()
 	e.afterTransact(r, err)
-	return done
+	return done, nil
 }
 
 // confirmKey names an accepted response: its decision and its k.
@@ -2191,13 +2313,21 @@ func answerWords(d *decision, ans *accepted) string {
 // replaceDecision supersedes answered d, whose answer's authority could
 // not be rechecked, by a fresh decision of the same request with the same
 // holds, in the caller's transaction: the operator answers again. The
-// caller holds e.mu, in that transaction's change.
+// fresh decision counts against the run's bound from the change on
+// (decisionsHeld), as the place it takes over did. The caller holds e.mu,
+// in that transaction's change, which has no undo.
 func (e *Engine) replaceDecision(r *run, d *decision, why string) (*decision, tx) {
 	fresh := &decision{origin: d.origin, typ: d.typ, gate: d.gate, t: d.t, a: d.a, question: d.question, options: slices.Clone(d.options), state: ledger.DecisionOpen, rev: 1, subject: d.subject}
 	held := slices.Clone(d.holds)
 	d.state = ledger.DecisionSuperseded
 	r.dropDecision(d)
 	r.decisions = append(r.decisions, fresh)
+	// Counted as it is carried, in the change that frees the answer's
+	// place, never at its commit: a commit refused (and the pause's after
+	// it) leaves the replacement carried and the place gone, and a count
+	// made at the commit said there was room the replacement holds (#636,
+	// review round 4). The change is never undone (applyOne).
+	r.dec.opened++
 	for _, t := range held {
 		r.release(t, d)
 		r.hold(t, fresh)
@@ -2260,7 +2390,6 @@ func (e *Engine) replaceDecision(r *run, d *decision, why string) (*decision, tx
 		return ltx.Event("decision.opened", map[string]any{"decision": got.ID(), "origin": old.Origin, "type": old.Type, "follows": old.ID()})
 	}, done: func() {
 		fresh.n, fresh.openedAt = opened, time.Now().UTC()
-		r.dec.opened++
 		r.note(session.ActivityStatus, "decision %s superseded: %s; %s asks again", d.id(), why, fresh.id())
 	}}
 }

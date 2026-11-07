@@ -1131,7 +1131,7 @@ func TestBroadcastSkipsWaitingMembers(t *testing.T) {
 	}
 	core := dialViewer(t, e, coreID, adminToken)
 	core.hello(80, 24)
-	core.expectOutput("run the suite\r\n")
+	core.printedUntil("run the suite\n")
 	if got := inputsBy(e.local(coreID), "jd"); !reflect.DeepEqual(got, []string{"run the suite"}) {
 		t.Fatalf("core records %q", got)
 	}
@@ -1178,7 +1178,7 @@ func TestBroadcastReasonsAndLimits(t *testing.T) {
 	}
 	core := dialViewer(t, e, coreID, adminToken)
 	core.hello(80, 24)
-	core.expectOutput("line one line two tabbed  bell\r\n")
+	core.printedUntil("line one line two tabbed  bell\n")
 	if got := inputsBy(e.local(coreID), "jd"); !reflect.DeepEqual(got, []string{"line one line two tabbed  bell"}) {
 		t.Fatalf("core records %q", got)
 	}

@@ -154,6 +154,39 @@ func Class(entity, field string) FieldClass {
 		case "launch_id", "sha256":
 			return ClassImmutable
 		}
+	case EntityReview:
+		// A review (docs/plans/review-repair.md, "Field rules for
+		// replication"): what the person sent is immutable, a different
+		// batch being a new review; its application is gated, written only
+		// by the server that owns the run's ledger (the API applies,
+		// Dispatch records), and a merge takes each of its fields as a
+		// scalar, the last writer's, and never applies the review again.
+		switch field {
+		case "id", "ticket_id", "candidate", "base", "verdict", "summary", "created_at", "created_by", "actor", "via", "fingerprint":
+			return ClassImmutable
+		case "app_state", "app_try", "app_run", "app_command", "app_revision", "app_attempt", "app_why", "app_at":
+			return ClassGated
+		}
+	case EntityFinding, "review_findings":
+		// A finding: every field written once with its review; its marks
+		// are a log, append only in the one order, and its state is never
+		// stored but read from them, so a merge has no state to reconcile.
+		switch field {
+		case "id", "review_id", "ticket_id", "k", "kind", "intent", "severity", "path", "side", "from_line", "to_line", "anchor_commit",
+			"lines", "message", "resolution", "check_ref", "created_at":
+			return ClassImmutable
+		case "marks", "finding_marks":
+			return ClassLog
+		}
+	case "mark", "finding_marks":
+		// A mark: a row of its finding's log, never written again; two
+		// marks made at once on two replicas are both kept, the later in
+		// the one order deciding the finding's state.
+		switch field {
+		case "id", "finding_id", "ticket_id", "candidate", "verdict", "located", "note", "created_at", "created_by", "actor", "via", "op_id",
+			"fingerprint":
+			return ClassImmutable
+		}
 	case "change", "changes":
 		switch field {
 		case "actor", "op_id", "n":

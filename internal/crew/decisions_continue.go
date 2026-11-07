@@ -41,9 +41,6 @@ func (s sqlLedger) RunRow(ctx context.Context, id string) (ledger.RunRow, bool, 
 	return s.l.Run(ctx, id)
 }
 
-// maxChain bounds the runs of a chain a continuation walks back.
-const maxChain = 256
-
 // decisionHistory is what a continuation takes of the decisions of the
 // runs it continues, read before its first transaction (the ledger's one
 // connection serves no reader inside one).
@@ -117,6 +114,15 @@ func waived(rec ledger.DecisionRecord) bool {
 
 // readDecisionHistory reads what a continuation of from takes of the
 // decisions of its chain. A ledger that keeps none has none.
+//
+// The chain is read whole or not at all: its walk along continued_from
+// reads at most maxChain runs, from among them, and a chain with a run
+// still unread past them is refused (ErrChainTooLong), nothing read, moved
+// or reopened. Read in part, the decisions of the runs left out (an
+// applied gate's release, a waiver, an approval's answer), which stay
+// under the run that closed them, would be missing from the continuation:
+// a released gate asked again, an answer gone from its task's file (#636,
+// review round 4).
 func (e *Engine) readDecisionHistory(ctx context.Context, from Loaded) (decisionHistory, error) {
 	dh := decisionHistory{chain: []string{from.Run.ID}, released: map[string]bool{}, lastGate: map[string]gateEnd{}}
 	dl, ok := e.ledger.(decisionLedger)
@@ -124,7 +130,10 @@ func (e *Engine) readDecisionHistory(ctx context.Context, from Loaded) (decision
 		return dh, nil
 	}
 	seen := map[string]bool{from.Run.ID: true}
-	for prev := from.Run.ContinuedFrom; prev != "" && !seen[prev] && len(dh.chain) < maxChain; {
+	for prev := from.Run.ContinuedFrom; prev != "" && !seen[prev]; {
+		if len(dh.chain) == maxChain {
+			return decisionHistory{}, fmt.Errorf("%w: %s continues more than the %d runs a server reads of a chain", ErrChainTooLong, from.Run.ID, maxChain)
+		}
 		seen[prev] = true
 		row, ok, err := dl.RunRow(ctx, prev)
 		if err != nil {

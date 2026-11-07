@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -1656,6 +1657,423 @@ func TestALateResponseNamesWhoAnsweredFirst(t *testing.T) {
 	}
 	if !strings.Contains(kept.Words, "answered by Nate") {
 		t.Fatalf("the kept refusal: %+v", kept)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// respondRefusing is the real ledger, which refuses the commit of the next
+// transaction that kept a response to decision n once refuse is set: the
+// response's row written, then the commit refused, so nothing of it is kept.
+type respondRefusing struct {
+	sqlLedger
+	n      atomic.Int64
+	refuse atomic.Bool
+}
+
+func (l *respondRefusing) Transition(ctx context.Context, runID string, fn func(LedgerTx) error) (int64, error) {
+	if !l.refuse.Load() {
+		return l.sqlLedger.Transition(ctx, runID, fn)
+	}
+	return l.sqlLedger.Transition(ctx, runID, func(ltx LedgerTx) error {
+		dtx, err := decisionsOf(ltx)
+		if err != nil {
+			return err
+		}
+		before, _, err := dtx.Record(l.n.Load())
+		if err != nil {
+			return err
+		}
+		if err := fn(ltx); err != nil {
+			return err
+		}
+		after, _, err := dtx.Record(l.n.Load())
+		if err != nil {
+			return err
+		}
+		if len(after.Responses) > len(before.Responses) && l.refuse.CompareAndSwap(true, false) {
+			return errors.New("the ledger refused the response's commit (test)")
+		}
+		return nil
+	})
+}
+
+// savedAs fails unless rc is the receipt the ledger saved for the response
+// k of rec, byte for byte, given again: repeat, with its k.
+func savedAs(t *testing.T, rec ledger.DecisionRecord, k int, rc ResponseReceipt) {
+	t.Helper()
+	if !rc.Repeat || rc.K != k {
+		t.Fatalf("not the repeat of response %d: %+v", k, rc)
+	}
+	rc.Repeat, rc.K = false, 0
+	for _, r := range rec.Responses {
+		if r.K == k {
+			if got := receiptJSON(rc); got != r.Receipt {
+				t.Fatalf("the receipt given again:\n%s\nthe receipt saved:\n%s", got, r.Receipt)
+			}
+			return
+		}
+	}
+	t.Fatalf("no response %d in %+v", k, rec.Responses)
+}
+
+// A response sent again is answered from the row the ledger saved, byte for
+// byte, before anything of the new send is built (#635, review round 3).
+// The answer's accepted receipt fills the ledger's receipt bound, so a
+// receipt built again for it (decision_answered's code and words are
+// longer) would pass the bound and the repeat be refused too large. Its
+// first send's commit is refused (nothing kept: the next send is a new
+// response); a copy sent while that one commits finds its row in its own
+// transaction; sent again once applied, it is the saved receipt; another
+// body under its id is response_conflict; and after a restart (an engine
+// over the same ledger, the run not held) it is the saved receipt again,
+// for the workbench token and for an identity, whose repeat is not
+// refused not_held. One response row, one application.
+func TestARepeatIsItsSavedReceipt(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	rl := &respondRefusing{sqlLedger: sqlLedger{l: ld}}
+	e.UseLedger(rl)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b, l, p := attemptOn(t, e, fl, run.ID, "build")
+	d := ask(t, e, b.Attempt.SessionID, DecisionRequest{RequestID: "q1", Type: ledger.DecisionClarification, Question: "Which index?"})
+	mirrorOf(t, l, d.ID)
+	n, _ := ledger.ParseDecisionID(d.ID)
+	rl.n.Store(n)
+
+	// The text whose accepted receipt is the bound at its widest time.
+	size := func(text string) int {
+		return len(receiptJSON(ResponseReceipt{Decision: d.ID, Status: "accepted", Words: fmt.Sprintf("Recorded: %s answered by Nate", d.ID),
+			Actor: "admin", ByName: "Nate", Text: text, At: time.Date(2026, 11, 6, 12, 0, 0, 123456789, time.UTC), Rev: 2}))
+	}
+	text := strings.Repeat("<", 1300)
+	for size(text+"x") <= ledger.MaxDecisionReceipt {
+		text += "x"
+	}
+	if size(text) < ledger.MaxDecisionReceipt-1 || len(text) > maxAnswerText {
+		t.Fatalf("the text's receipt is %d bytes, the text %d", size(text), len(text))
+	}
+	resp := Response{ResponseID: "r1", Text: text, ExpectedRev: 1, ByName: "Nate"}
+
+	rl.refuse.Store(true)
+	if _, err := e.RespondDecision(t.Context(), d.ID, resp, "admin", workbench(e)); err == nil || rl.refuse.Load() {
+		t.Fatalf("the refused commit: %v", err)
+	}
+	if rec := decisionWhen(t, ld, d.ID, "open", inState(ledger.DecisionOpen)); len(rec.Responses) != 0 {
+		t.Fatalf("a refused commit kept %+v", rec.Responses)
+	}
+
+	// Sent again: a copy commits after this send read the decision and
+	// before its transaction, which finds the copy's row.
+	var copied atomic.Bool
+	var inner ResponseReceipt
+	var innerErr error
+	e.beforeRespond = func(int64) {
+		if copied.CompareAndSwap(false, true) { // the copy's own send passes here too
+			inner, innerErr = e.RespondDecision(t.Context(), d.ID, resp, "admin", workbench(e))
+		}
+	}
+	outer, err := e.RespondDecision(t.Context(), d.ID, resp, "admin", workbench(e))
+	e.beforeRespond = nil
+	if innerErr != nil || inner.Status != "accepted" || inner.Repeat || inner.K != 1 {
+		t.Fatalf("the copy: %+v %v", inner, innerErr)
+	}
+	if err != nil {
+		t.Fatalf("the send its copy passed: %v", err)
+	}
+	rec := decisionWhen(t, ld, d.ID, "applied", inState(ledger.DecisionApplied))
+	savedAs(t, rec, 1, outer)
+	lineWith(t, p, "Decision "+d.ID)
+
+	again, err := e.RespondDecision(t.Context(), d.ID, resp, "admin", workbench(e))
+	if err != nil {
+		t.Fatalf("the response again: %v", err)
+	}
+	savedAs(t, rec, 1, again)
+	other := resp
+	other.Text += "y"
+	var de *DecisionError
+	if _, err := e.RespondDecision(t.Context(), d.ID, other, "admin", workbench(e)); !errors.As(err, &de) || de.Code != CodeResponseConflict {
+		t.Fatalf("another body under r1: %v", err)
+	}
+
+	// An identity's answer to a second question, accepted.
+	d2 := ask(t, e, b.Attempt.SessionID, DecisionRequest{RequestID: "q2", Type: ledger.DecisionClarification, Question: "Which cache?"})
+	resp2 := Response{ResponseID: "r1", Text: "lru", ExpectedRev: 1, ByName: "Ana"}
+	if rc, err := e.RespondDecision(t.Context(), d2.ID, resp2, "user:ana", identity(e, "ana")); err != nil || rc.Status != "accepted" || rc.Repeat {
+		t.Fatalf("the identity's response: %+v %v", rc, err)
+	}
+
+	// After a restart: an engine over the same ledger, the run not held.
+	e2, _ := readyEngine(t)
+	e2.UseLedger(SQLLedger(ld))
+	restarted, err := e2.RespondDecision(t.Context(), d.ID, resp, "admin", workbench(e2))
+	if err != nil {
+		t.Fatalf("the response after a restart: %v", err)
+	}
+	savedAs(t, rec, 1, restarted)
+	byIdentity, err := e2.RespondDecision(t.Context(), d2.ID, resp2, "user:ana", identity(e2, "ana"))
+	if err != nil {
+		t.Fatalf("the identity's response after a restart: %v", err)
+	}
+	savedAs(t, decisionWhen(t, ld, d2.ID, "answered", inState(ledger.DecisionAnswered)), 1, byIdentity)
+
+	rec = decisionWhen(t, ld, d.ID, "applied", inState(ledger.DecisionApplied))
+	applies := 0
+	for _, k := range historyKinds(rec) {
+		if k == ledger.HistoryApplied {
+			applies++
+		}
+	}
+	if applies != 1 || len(rec.Responses) != 1 {
+		t.Fatalf("%d applied rows, %d responses", applies, len(rec.Responses))
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A stale response is told the changes after the rev it read, with their
+// words, never one it saw (#635, review round 3): comments at revs 2 and 3
+// (written as an operation writes them, its rev in its detail); a response
+// that read rev 2 is told rev 3's words and not rev 2's, one that read
+// rev 1 both, in order; past staleChanges the newest are told, with the
+// count of the earlier, each one's words cut to staleText.
+func TestAStaleResponseIsToldTheChangesSinceItsRev(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b, _, _ := attemptOn(t, e, fl, run.ID, "build")
+	d := ask(t, e, b.Attempt.SessionID, DecisionRequest{RequestID: "q1", Type: ledger.DecisionClarification, Question: "Which index?"})
+	stopRun(t, e, run.ID)
+	n, _ := ledger.ParseDecisionID(d.ID)
+	comment := func(rev int, text string) {
+		t.Helper()
+		detail, _ := json.Marshal(map[string]any{"text": text, "by": "admin", "rev": rev, "words": "Comment kept on " + d.ID})
+		if _, err := ld.Transition(context.Background(), run.ID, func(tx *ledger.Tx) error {
+			row, _, err := tx.Decision(n)
+			if err != nil {
+				return err
+			}
+			row.Rev = rev
+			if err := tx.PutDecision(row); err != nil {
+				return err
+			}
+			_, _, err = tx.History(n, ledger.HistoryRow{Kind: ledger.HistoryCommented, By: "admin", Detail: string(detail), OpID: fmt.Sprintf("c%d", rev), Fingerprint: fmt.Sprintf("fp%d", rev)})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	comment(2, "the old index is fine")
+	comment(3, "use the btree index\nfor the sweep")
+	stale := func(responseID string, read int) string {
+		t.Helper()
+		rc, err := e.RespondDecision(t.Context(), d.ID, Response{ResponseID: responseID, Text: "btree", ExpectedRev: read}, "admin", workbench(e))
+		var de *DecisionError
+		if !errors.As(err, &de) || de.Code != CodeStaleDecision || rc.Words != de.Words {
+			t.Fatalf("the response that read rev %d: %+v %v", read, rc, err)
+		}
+		return rc.Words
+	}
+	if w := stale("r1", 2); !strings.Contains(w, "rev 3, commented by admin: use the btree index for the sweep") || strings.Contains(w, "old index") || strings.Contains(w, "rev 2,") {
+		t.Fatalf("read at rev 2: %q", w)
+	}
+	w := stale("r2", 1)
+	if i, j := strings.Index(w, "rev 2, commented by admin: the old index is fine"), strings.Index(w, "rev 3, commented"); i < 0 || j < i {
+		t.Fatalf("read at rev 1: %q", w)
+	}
+	for rev := 4; rev <= 8; rev++ {
+		comment(rev, fmt.Sprintf("comment %d ", rev)+strings.Repeat("é", 200))
+	}
+	w = stale("r3", 1)
+	if !strings.Contains(w, "2 earlier changes; rev 4, commented") || strings.Contains(w, "rev 3,") || !strings.Contains(w, "rev 8, commented by admin: comment 8 ") || !utf8.ValidString(w) {
+		t.Fatalf("read at rev 1, seven changes: %q", w)
+	}
+	if strings.Contains(w, strings.Repeat("é", staleText/2)) || !strings.Contains(w, strings.Repeat("é", (staleText-len("comment 8 "))/2)+"…") {
+		t.Fatalf("a change's words not cut to %d bytes: %q", staleText, w)
+	}
+}
+
+// A response's fingerprint is of its body as sent (#635, review round 3):
+// the same id with a text or a name that cleans to the answer's is another
+// body (response_conflict), the body sent again its repeat, and a body
+// whose text is not UTF-8 is refused with no row.
+func TestAResponseIsFingerprintedAsSent(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b, _, p := attemptOn(t, e, fl, run.ID, "build")
+	d := ask(t, e, b.Attempt.SessionID, DecisionRequest{RequestID: "q1", Type: ledger.DecisionClarification, Question: "Which index?"})
+	resp := Response{ResponseID: "r1", Text: "btree", ExpectedRev: 1, ByName: "Nate"}
+	answer(t, e, d.ID, resp)
+	lineWith(t, p, "Decision "+d.ID)
+	var de *DecisionError
+	for _, other := range []Response{
+		{ResponseID: "r1", Text: "btree ", ExpectedRev: 1, ByName: "Nate"},
+		{ResponseID: "r1", Text: "btree\x01", ExpectedRev: 1, ByName: "Nate"},
+		{ResponseID: "r1", Text: "btree", ExpectedRev: 1, ByName: " Nate"},
+	} {
+		if rc, err := e.RespondDecision(t.Context(), d.ID, other, "admin", workbench(e)); !errors.As(err, &de) || de.Code != CodeResponseConflict {
+			t.Fatalf("%+v under r1: %+v %v", other, rc, err)
+		}
+	}
+	if rc, err := e.RespondDecision(t.Context(), d.ID, resp, "admin", workbench(e)); err != nil || !rc.Repeat || rc.Status != "accepted" {
+		t.Fatalf("the body again: %+v %v", rc, err)
+	}
+	if _, err := e.RespondDecision(t.Context(), d.ID, Response{ResponseID: "r2", Text: "b\xfftree", ExpectedRev: 1}, "admin", workbench(e)); !errors.As(err, &de) || de.Code != CodeInvalid {
+		t.Fatalf("a text not UTF-8: %v", err)
+	}
+	if rec := decisionWhen(t, ld, d.ID, "applied", inState(ledger.DecisionApplied)); len(rec.Responses) != 1 {
+		t.Fatalf("responses %+v", rec.Responses)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A repeat is looked for where it would act (#636, review round 4): a
+// copy of a response held after its first look, while the other copy
+// records a stale refusal (the approval commented on since its rev) and
+// the asking worktree's HEAD then moves, finds the saved refusal under
+// the supersession's lock when released: it answers the saved receipt and
+// supersedes nothing. The approval stays open, its hold active, in the
+// ledger as in the engine.
+func TestARepeatHeldAcrossASubjectMoveSupersedesNothing(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b, _, _ := attemptOn(t, e, fl, run.ID, "build")
+	d := ask(t, e, b.Attempt.SessionID, approval("q1", "Merge it?"))
+	if _, err := e.CommentDecision(t.Context(), d.ID, "o1", 0, CommentKind, "Look at the index first.", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	decisionWhen(t, ld, d.ID, "commented", hasKind(ledger.HistoryCommented))
+	at, gate := make(chan struct{}), make(chan struct{})
+	var first atomic.Bool
+	e.beforeRespond = func(int64) {
+		if first.CompareAndSwap(false, true) {
+			close(at)
+			<-gate
+		}
+	}
+	t.Cleanup(func() {
+		select {
+		case <-gate:
+		default:
+			close(gate)
+		}
+	})
+	resp := Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1, ByName: "Nate"}
+	type responded struct {
+		rc  ResponseReceipt
+		err error
+	}
+	held := make(chan responded, 1)
+	go func() {
+		rc, err := e.RespondDecision(context.Background(), d.ID, resp, "admin", workbench(e))
+		held <- responded{rc, err}
+	}()
+	<-at // the held copy looked, and found no row of r1
+	var de *DecisionError
+	saved, err := e.RespondDecision(t.Context(), d.ID, resp, "admin", workbench(e))
+	if !errors.As(err, &de) || de.Code != CodeStaleDecision || saved.Repeat {
+		t.Fatalf("the copy that records: %+v %v", saved, err)
+	}
+	writeFile(t, filepath.Join(b.Attempt.Worktree, "more.txt"), "m\n")
+	commitAll(t, b.Attempt.Worktree, "more")
+	close(gate)
+	got := <-held
+	if !errors.As(got.err, &de) || de.Code != CodeStaleDecision {
+		t.Fatalf("the held copy: %+v %v", got.rc, got.err)
+	}
+	rec := decisionWhen(t, ld, d.ID, "open", inState(ledger.DecisionOpen))
+	savedAs(t, rec, saved.K, got.rc)
+	if rec.Rev != 2 || kindCount(rec, ledger.HistorySuperseded) != 0 || len(rec.Responses) != 1 {
+		t.Fatalf("%s after the repeat: rev %d %q, %d responses", d.ID, rec.Rev, historyKinds(rec), len(rec.Responses))
+	}
+	if got := activeHolds(t, ld, run.ID); !slices.Equal(got, []string{"build " + d.ID}) {
+		t.Fatalf("holds %q", got)
+	}
+	if rev, ok := engineHolds(t, e, run.ID, d.ID); !ok || rev != 2 {
+		t.Fatalf("the engine's %s: rev %d, held %v", d.ID, rev, ok)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A replacement is counted as it is carried (#636, review round 4): in a
+// run at its bound, an identity's answer holding the last place, its
+// recheck failed and the replacement's commit refused, and the pause's
+// after it, the run still holds every decision it may, so a retry that
+// would ask a rejected gate again is refused decision_limit; nothing
+// carried must then fail for ever, and the next commit writes the
+// replacement as the run's 1,000th decision.
+func TestACarriedReplacementHoldsItsPlace(t *testing.T) {
+	dir := newRepo(t)
+	e, _, ld := decisionEngine(t)
+	rl := refusing(e, ld)
+	smoke := PackageDecision{ID: "smoke", Question: "Smoke it?", Kind: ledger.DecisionApproval, Before: []string{"smoke"}}
+	run := launchGated(t, e, dir, "api-sweep-000000cb", repoCrew(dir, work("deploy", "ops"), work("smoke", "qa")), shipGate("deploy"), smoke)
+	gates := map[string]ledger.DecisionRow{}
+	rows, err := ld.Decisions(t.Context(), ledger.DecisionFilter{CurrentRun: run.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		gates[row.Gate] = row
+	}
+	answer(t, e, gates["smoke"].ID(), Response{ResponseID: "r1", Choice: choice(1), ExpectedRev: 1})
+	waitTask(t, e, run.ID, "smoke", ledger.TaskCancelled, 0)
+	fillDecisions(t, ld, run.ID, ledger.MaxDecisionsPerRun-3)
+	r := runOf(t, e, run.ID)
+	e.mu.Lock()
+	r.dec.opened = ledger.MaxDecisionsPerRun - 1 // as the ledger counts them
+	e.mu.Unlock()
+	ship := gates["ship"].ID()
+	rc, err := e.RespondDecision(t.Context(), ship, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1}, "user:nate", identity(e, "nate"))
+	if err != nil || rc.Status != "accepted" {
+		t.Fatalf("the identity's response: %+v %v", rc, err)
+	}
+
+	g := rl.armHeld("decision.superseded")
+	released := sync.OnceFunc(func() { close(g.release) })
+	t.Cleanup(released) // a check that fails while the commit is held ends the test, never hangs it
+	confirmed := make(chan struct{})
+	go func() {
+		defer close(confirmed)
+		e.ConfirmAuthority(ship, rc.K, false)
+	}()
+	<-g.reached // the replacement made, its commit not answered
+	room := func(when string) {
+		t.Helper()
+		e.mu.Lock()
+		held, ok := r.decisionsHeld(), r.decisionRoom(1)
+		e.mu.Unlock()
+		if held != ledger.MaxDecisionsPerRun || ok {
+			t.Fatalf("%s: the run holds %d, room for one more %v", when, held, ok)
+		}
+	}
+	room("the replacement's commit under way")
+	rl.arm("decision.superseded") // and the pause's, which carries it
+	released()
+	rl.wasRefused(t)
+	rl.wasRefused(t)
+	<-confirmed
+	room("both commits refused")
+	var de *DecisionError
+	if err := e.RetryTask(t.Context(), run.ID, "smoke"); !errors.As(err, &de) || de.Code != CodeDecisionLimit {
+		t.Fatalf("the retry: %v", err)
+	}
+	if ts := taskOf(t, e, run.ID, "smoke"); ts.State != ledger.TaskCancelled {
+		t.Fatalf("smoke after the refused retry: %+v", ts)
+	}
+
+	if err := e.PauseRun(t.Context(), run.ID, false); err != nil {
+		t.Fatalf("the unpause, which writes what was carried: %v", err)
+	}
+	old := decisionWhen(t, ld, ship, "superseded", inState(ledger.DecisionSuperseded))
+	fresh := decisionWhen(t, ld, old.SupersededBy, "open", inState(ledger.DecisionOpen))
+	all, err := allDecisions(t.Context(), sqlLedger{l: ld}, ledger.DecisionFilter{CurrentRun: run.ID})
+	if err != nil || len(all) != ledger.MaxDecisionsPerRun || all[0].N != fresh.N {
+		t.Fatalf("the run's decisions: %d, %v (the replacement %s)", len(all), err, fresh.ID())
+	}
+	if paused(t, e, run.ID) {
+		t.Fatal("the run is still paused")
 	}
 	stopRun(t, e, run.ID)
 }

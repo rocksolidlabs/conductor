@@ -114,6 +114,9 @@ func versionOneStore(t *testing.T, fill func(s *Store)) string {
 	}
 	db := openRaw(t, filepath.Join(dir, File))
 	for _, stmt := range []string{
+		"DROP TABLE finding_marks",
+		"DROP TABLE review_findings",
+		"DROP TABLE reviews",
 		"DROP TABLE launch_files",
 		"DROP TABLE launches",
 		"DROP TABLE plans",
@@ -183,15 +186,10 @@ func columnsOf(t *testing.T, db *sql.DB, table string) []string {
 	return out
 }
 
+// What version 2 added is in the schema this binary writes, version 3
+// keeping it as it was.
 func TestSchemaVersion2(t *testing.T) {
-	if Version != 2 {
-		t.Fatalf("Version is %d", Version)
-	}
 	s := openStore(t, storeDir(t))
-	var version int
-	if err := s.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil || version != 2 {
-		t.Fatalf("version %d %v", version, err)
-	}
 	for table, want := range map[string][]string{
 		"plans": {"id", "ticket_id", "based_on", "crew_id", "crew_name", "crew_updated_at", "base", "body", "digest", "bytes", "state",
 			"approved_at", "approved_by", "approved_note", "approved_rev", "approved_intent", "withdrawn_at", "withdrawn_by", "created_at",
@@ -265,7 +263,7 @@ func TestMigratedVersion2EqualsAFreshOne(t *testing.T) {
 	for _, table := range tables {
 		// The version 2 tables, the FTS index (whose entries a search
 		// below reads) and the version, which the migration bumps.
-		if slices.Contains([]string{"plans", "launches", "launch_files", "tickets_fts", "schema_version"}, table) {
+		if slices.Contains([]string{"plans", "launches", "launch_files", "reviews", "review_findings", "finding_marks", "tickets_fts", "schema_version"}, table) {
 			continue
 		}
 		v1Columns[table] = columnsOf(t, raw, table)

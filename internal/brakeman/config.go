@@ -141,20 +141,44 @@ func validateAct(act []string, f Facts) error {
 	return nil
 }
 
-// Wake is when Brakeman runs: only when invoked, until BK3's background
-// role.
+// Wake is when Brakeman runs: only when invoked, or also in the
+// background (BK3's role, docs/plans/brakeman.md, PR-14), woken by the
+// role's sources, gathered into batches over WindowSeconds, held by a
+// cooldown of CooldownMinutes after each turn, and at the configured
+// briefing times in the server's local zone. Its fields are read in the
+// background mode and held to their bounds in either.
 type Wake struct {
-	Mode string `json:"mode"`
+	Mode            string `json:"mode"`
+	WindowSeconds   int    `json:"windowSeconds"`   // 10 to 900; 120
+	CooldownMinutes int    `json:"cooldownMinutes"` // 0 to 1,440; 30
+	// QuestionMinutes is how long a question stays open before it wakes
+	// the role: 1 to 1,440; 15.
+	QuestionMinutes int `json:"questionMinutes"`
+	// Briefings are the briefing times, "HH:MM" in the server's local
+	// zone, at most MaxBriefings, each once.
+	Briefings []string `json:"briefings,omitempty"`
 }
 
-// WakeInvoked is the one wake mode of this build.
-const WakeInvoked = "invoked"
+// The wake modes: invoked (a person asks) and background (BK3's role
+// also wakes it).
+const (
+	WakeInvoked    = "invoked"
+	WakeBackground = "background"
+)
+
+// Background reports whether the role wakes Brakeman: on, and in the
+// background mode.
+func (c Config) Background() bool { return c.Enabled && c.Wake.Mode == WakeBackground }
 
 // Budget bounds Brakeman's turns.
 type Budget struct {
 	TurnMinutes  int `json:"turnMinutes"`  // 1 to 60; 15
 	ReadsPerTurn int `json:"readsPerTurn"` // 10 to 2,000; 300
 	TurnsPerDay  int `json:"turnsPerDay"`  // 1 to 500; 40, counted by the server's local day
+	// MinutesPerDay is the day's minutes, whatever started the turns: 10
+	// to 1,440; 240. A turn's reservation at its start is the least of
+	// TurnMinutes and what the day has left (Store.Start).
+	MinutesPerDay int `json:"minutesPerDay"`
 }
 
 // The configuration's bounds and defaults.
@@ -168,11 +192,31 @@ const (
 	MaxReadsPerTurn = 2000
 	MinTurnsPerDay  = 1
 	MaxTurnsPerDay  = 500
+	// BK3's (PR-14).
+	MinMinutesPerDay   = 10
+	MaxMinutesPerDay   = 1440
+	MinWindowSeconds   = 10
+	MaxWindowSeconds   = 900
+	MinCooldownMinutes = 0
+	MaxCooldownMinutes = 1440
+	MinQuestionMinutes = 1
+	MaxQuestionMinutes = 1440
+	MaxBriefings       = 24
+	// MinReservation is the least a turn starts with: a day with less
+	// left closes the request over_budget.
+	MinReservation = 2
 
-	DefaultTurnMinutes  = 15
-	DefaultReadsPerTurn = 300
-	DefaultTurnsPerDay  = 40
+	DefaultTurnMinutes     = 15
+	DefaultReadsPerTurn    = 300
+	DefaultTurnsPerDay     = 40
+	DefaultMinutesPerDay   = 240
+	DefaultWindowSeconds   = 120
+	DefaultCooldownMinutes = 30
+	DefaultQuestionMinutes = 15
 )
+
+// briefingPattern is a briefing time: "HH:MM", 00:00 to 23:59.
+var briefingPattern = regexp.MustCompile(`^([01][0-9]|2[0-3]):[0-5][0-9]$`)
 
 // modelPattern is a model's shape: an argument of the adapter's own flag,
 // never free arguments.
@@ -195,9 +239,28 @@ func DefaultConfig(cwd string) Config {
 		Cwd:         cwd,
 		Visibility:  Visibility{Runs: true, Logs: true, Dispatch: true, Sessions: true, Touched: true},
 		Permissions: Permissions{Observe: true, Draft: true, Propose: true},
-		Wake:        Wake{Mode: WakeInvoked},
-		Budget:      Budget{TurnMinutes: DefaultTurnMinutes, ReadsPerTurn: DefaultReadsPerTurn, TurnsPerDay: DefaultTurnsPerDay},
+		Wake:        defaultWake(),
+		Budget:      Budget{TurnMinutes: DefaultTurnMinutes, ReadsPerTurn: DefaultReadsPerTurn, TurnsPerDay: DefaultTurnsPerDay, MinutesPerDay: DefaultMinutesPerDay},
 	}
+}
+
+func defaultWake() Wake {
+	return Wake{Mode: WakeInvoked, WindowSeconds: DefaultWindowSeconds, CooldownMinutes: DefaultCooldownMinutes, QuestionMinutes: DefaultQuestionMinutes}
+}
+
+// upgrade gives a configuration written before BK3's fields (PR-14) their
+// defaults: a window of 0 seconds, which no save takes, says the wake's
+// fields were never written, and a day's minutes of 0 the budget's.
+func upgrade(c Config) Config {
+	if c.Wake.WindowSeconds == 0 {
+		w := defaultWake()
+		w.Mode = c.Wake.Mode
+		c.Wake = w
+	}
+	if c.Budget.MinutesPerDay == 0 {
+		c.Budget.MinutesPerDay = DefaultMinutesPerDay
+	}
+	return c
 }
 
 // Facts answers what internal/brakeman cannot know itself: the catalog's
@@ -343,8 +406,8 @@ func Validate(c Config, f Facts) error {
 	if err := validateAct(p.Act, f); err != nil {
 		return err
 	}
-	if c.Wake.Mode != WakeInvoked {
-		return invalidConfig("wake.mode", "must be %q in this build", WakeInvoked)
+	if err := c.Wake.validate(); err != nil {
+		return err
 	}
 	b := c.Budget
 	switch {
@@ -354,6 +417,33 @@ func Validate(c Config, f Facts) error {
 		return invalidConfig("budget.readsPerTurn", "must be between %d and %d", MinReadsPerTurn, MaxReadsPerTurn)
 	case b.TurnsPerDay < MinTurnsPerDay || b.TurnsPerDay > MaxTurnsPerDay:
 		return invalidConfig("budget.turnsPerDay", "must be between %d and %d", MinTurnsPerDay, MaxTurnsPerDay)
+	case b.MinutesPerDay < MinMinutesPerDay || b.MinutesPerDay > MaxMinutesPerDay:
+		return invalidConfig("budget.minutesPerDay", "must be between %d and %d", MinMinutesPerDay, MaxMinutesPerDay)
+	}
+	return nil
+}
+
+// validate holds the wake's fields to their bounds, whatever the mode.
+func (w Wake) validate() error {
+	switch {
+	case w.Mode != WakeInvoked && w.Mode != WakeBackground:
+		return invalidConfig("wake.mode", "must be %q or %q", WakeInvoked, WakeBackground)
+	case w.WindowSeconds < MinWindowSeconds || w.WindowSeconds > MaxWindowSeconds:
+		return invalidConfig("wake.windowSeconds", "must be between %d and %d", MinWindowSeconds, MaxWindowSeconds)
+	case w.CooldownMinutes < MinCooldownMinutes || w.CooldownMinutes > MaxCooldownMinutes:
+		return invalidConfig("wake.cooldownMinutes", "must be between %d and %d", MinCooldownMinutes, MaxCooldownMinutes)
+	case w.QuestionMinutes < MinQuestionMinutes || w.QuestionMinutes > MaxQuestionMinutes:
+		return invalidConfig("wake.questionMinutes", "must be between %d and %d", MinQuestionMinutes, MaxQuestionMinutes)
+	case len(w.Briefings) > MaxBriefings:
+		return invalidConfig("wake.briefings", "at most %d", MaxBriefings)
+	}
+	for i, t := range w.Briefings {
+		if !briefingPattern.MatchString(t) {
+			return invalidConfig(fmt.Sprintf("wake.briefings[%d]", i), "a time of day, HH:MM from 00:00 to 23:59")
+		}
+		if slices.Contains(w.Briefings[:i], t) {
+			return invalidConfig(fmt.Sprintf("wake.briefings[%d]", i), "%s is named twice", t)
+		}
 	}
 	return nil
 }

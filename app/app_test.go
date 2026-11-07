@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rocksolidlabs/conductor"
 	"github.com/rocksolidlabs/conductor/internal/cli"
 	"github.com/rocksolidlabs/conductor/internal/version"
 )
@@ -33,5 +34,25 @@ func TestRunVersion(t *testing.T) {
 	code, err = Run(context.Background(), []string{"no-such-command"}, strings.NewReader(""), &stdout, &stderr)
 	if code != 2 || err == nil || !strings.Contains(stderr.String(), "Usage:") {
 		t.Fatalf("Run(no-such-command) = %d, %v; stderr %q", code, err, stderr.String())
+	}
+}
+
+// SetThirdPartyNotices refuses an empty text and one over its limit, 8 MiB,
+// which the embedded notices are well under. (What it takes, and that it
+// refuses a text once a server started, is internal/cli's
+// TestServeServesTheNoticesAMainHandedIn: a text taken here would stay in
+// the process's holder.)
+func TestSetThirdPartyNoticesRefuses(t *testing.T) {
+	if MaxThirdPartyNotices != 8<<20 {
+		t.Fatalf("MaxThirdPartyNotices = %d, want 8 MiB", MaxThirdPartyNotices)
+	}
+	if n := len(conductor.ThirdPartyNotices); n == 0 || n > MaxThirdPartyNotices {
+		t.Fatalf("the embedded notices are %d bytes, over the limit a main's own are held to, %d", n, MaxThirdPartyNotices)
+	}
+	if err := SetThirdPartyNotices(""); err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("SetThirdPartyNotices(empty) = %v, want refused", err)
+	}
+	if err := SetThirdPartyNotices(strings.Repeat("n", MaxThirdPartyNotices+1)); err == nil || !strings.Contains(err.Error(), "over the limit") {
+		t.Fatalf("SetThirdPartyNotices(over the limit) = %v, want refused", err)
 	}
 }
