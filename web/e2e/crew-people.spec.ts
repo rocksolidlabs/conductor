@@ -10,9 +10,14 @@ import { freeProjectKey, makeProject, makeTicket, opOf } from './dispatch-helper
 // editor (the option held by another row is disabled, a person named as a member blocks Save) and by the server. Launched from a ticket's
 // approved plan revision with the stub workers: the run header's people, each task row's owner and the fallback's words, the sessions of
 // the run counted by its id equal to its attempts (none for a person, and no worktree under a person's name), and the ticket's People
-// listing the revision's people. A person removed with their name cleared leaves the task's Owner enabled, so that "none" answers the
-// problem it leaves; a name past the first 200 people Conductor knows is offered when it is searched for; a live run's Add an agent marks
-// a person's name and holds the button. Every crew, ticket and run is found by its id or key, never by a list's length.
+// listing the revision's people; the person's page (PR-11) reached from the header's chip, the task detail's owner, the ticket's People
+// and the palette's @ row, listing the tasks and tickets they own, its crews and tasks kept when a ticket list cannot be read, the page
+// of a name no one has; a person's tickets past the first twenty reached with Show more; names that are path words or hold what a path
+// reads as more than a name (`.`, `..`, `~`, a slash climbing to the brand's image, a percent sign, a space, letters past ASCII, the
+// longest name) with pages of their own, loaded, reloaded and reached by a link. A person removed with their name cleared leaves the
+// task's Owner enabled, so that "none" answers the problem it leaves; a name past the first 200 people Conductor knows is offered when
+// it is searched for; a live run's Add an agent marks a person's name and holds the button. Every crew, ticket and run is found by its
+// id or key, never by a list's length.
 test.describe.configure({ mode: 'serial' })
 
 let crewId = ''
@@ -58,6 +63,15 @@ test.afterAll(async ({ api }) => {
 function budget(ms: number) {
   const info = test.info()
   info.setTimeout(info.timeout + ms)
+}
+
+/**
+ * A person's page, by the app's rule (utils/people.ts, personSegment): a plain name (ASCII letters and digits, `-`, `_`, `.`, a space,
+ * characters past ASCII; not starting with `.` or a space, not ending with a space) escaped as itself, any other `~` and its base64url.
+ */
+function personPath(name: string): string {
+  const plain = !!name && !/^[. ]/.test(name) && !name.endsWith(' ') && [...name].every((c) => c.codePointAt(0)! >= 0x80 || /^[A-Za-z0-9._ -]$/.test(c))
+  return `/people/${plain ? encodeURIComponent(name) : `~${Buffer.from(name, 'utf8').toString('base64url')}`}`
 }
 
 /** Picks a name in a person row's name picker: the name Conductor knows, or the typed one; the menu is gone before the next field. */
@@ -154,7 +168,7 @@ test('a crew given an architecture owner and an acceptance owner is saved and re
 test("launched from the approved revision: the run's people and owners, a session per attempt and none for a person, the revision's people", async ({ page, api, state }) => {
   const project = await freeProjectKey(api, 'PPL')
   await makeProject(api, project)
-  const ticketKey = await makeTicket(api, project, '1', { title: 'Ship it with its people' })
+  const ticketKey = await makeTicket(api, project, '1', { title: 'Ship it with its people', owner: 'nate' })
   const proposed = await api.ok<{ plan: { id: string; n: number } }>('POST', `/api/dispatch/tickets/${ticketKey}/plans`, { opId: opOf(project, 'r1'), crew: crewId })
   await api.ok('POST', `/api/dispatch/plans/${proposed.plan.id}/approve`, { opId: opOf(project, 'ap1') })
   const launched = await api.ok<{ launch: { runId: string; state: string } }>('POST', `/api/dispatch/tickets/${ticketKey}/launch`, { opId: opOf(project, 'l1'), plan: proposed.plan.id })
@@ -197,6 +211,66 @@ test("launched from the approved revision: the run's people and owners, a sessio
   await page.locator('[data-task-row="docs"] [role="button"]').click()
   await expect(page.locator('[data-task-detail-id="docs"] [data-task-detail-owner]')).toContainText('owner ana, the acceptance owner')
 
+  // A person's page (PR-11): the task detail's owner opens ana's, listing docs, hers as the acceptance owner; the header's chip opens
+  // nate's, listing the task he owns in this run and the ticket he owns.
+  await page.locator('[data-task-detail-id="docs"] [data-task-detail-owner-link]').click()
+  await expect(page).toHaveURL(/\/people\/ana$/)
+  budget(30_000)
+  const anaTask = page.locator(`[data-person-page-name="ana"] [data-person-task="${runId}/docs"]`)
+  await expect(anaTask).toBeVisible({ timeout: 30_000 })
+  await expect(anaTask).toHaveAttribute('data-person-task-from', 'acceptance')
+  await expect(anaTask).toContainText('as the acceptance owner')
+  await page.goto(`/runs/${encodeURIComponent(runId)}?view=tasks`)
+  budget(30_000)
+  await expect(page.locator('[data-run-people] [data-run-person="nate"]')).toBeVisible({ timeout: 30_000 })
+  await page.locator('[data-run-people] [data-run-person="nate"]').click()
+  await expect(page).toHaveURL(/\/people\/nate$/)
+  budget(30_000)
+  const nateTask = page.locator(`[data-person-page-name="nate"] [data-person-task="${runId}/build"]`)
+  await expect(nateTask).toBeVisible({ timeout: 30_000 })
+  await expect(nateTask).toHaveAttribute('data-person-task-from', 'task')
+  await expect(nateTask).toContainText('done by builder')
+  await expect(page.locator(`[data-person-task="${runId}/docs"]`)).toHaveCount(0)
+  await expect(page.locator(`[data-person-crew="${crewId}"] [data-person-crew-words]`)).toHaveText('architecture owner')
+  await expect(page.locator('[data-person-ticket-list="owner"]').locator(`[data-person-ticket="${ticketKey}"]`)).toBeVisible()
+
+  // Dispatch's list failing alone: the crews and the tasks stay, the counts too, and the list says it could not be read; read again once
+  // the list answers.
+  const isList = (url: URL) => url.pathname === '/api/dispatch/tickets'
+  await page.route(isList, (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unavailable', message: 'the list is down' } }) }))
+  await page.reload()
+  budget(30_000)
+  await expect(page.locator('[data-person-ticket-list="owner"] [data-person-ticket-error]')).toContainText('the list is down', { timeout: 30_000 })
+  await expect(nateTask).toBeVisible()
+  await expect(page.locator(`[data-person-crew="${crewId}"]`)).toBeVisible()
+  await expect(page.locator('[data-person-ticket-counts]')).toHaveText('They own 1 and are assigned 0.')
+  await page.unroute(isList)
+  await page.locator('[data-person-ticket-list="owner"] [data-person-ticket-more]').click()
+  await expect(page.locator('[data-person-ticket-list="owner"]').locator(`[data-person-ticket="${ticketKey}"]`)).toBeVisible()
+  await expect(page.locator('[data-person-ticket-list="owner"] [data-person-ticket-error]')).toHaveCount(0)
+
+  // A name no source knows has no page of work.
+  const nobody = `nobody ${Date.now().toString(36)}`
+  await page.goto(personPath(nobody))
+  budget(30_000)
+  await expect(page.locator(`[data-person-page-name="${nobody}"] [data-person-missing]`)).toBeVisible({ timeout: 30_000 })
+
+  // The palette's @ mode: a row per person Conductor knows, worded by what they hold, opening their page.
+  await page.goto(`/runs/${encodeURIComponent(runId)}?view=tasks`)
+  budget(30_000)
+  await expect(page.locator('#dashboard-sidebar-main')).toBeAttached({ timeout: 30_000 })
+  await expect(page.locator('[data-run-people]')).toBeVisible({ timeout: 30_000 })
+  await page.keyboard.press('Alt+/')
+  const palette = page.locator('[data-palette]')
+  await expect(palette).toBeVisible()
+  await palette.locator('input[data-palette-input]').fill('@nate')
+  const row = palette.locator('[data-palette-row="person:nate"]')
+  await expect(row).toBeVisible()
+  await expect(row.locator('[data-palette-detail]')).toContainText(`architecture owner in ${crewBody.name}`)
+  await row.click()
+  await expect(page).toHaveURL(/\/people\/nate$/)
+  await expect(page.locator(`[data-person-page-name="nate"] [data-person-task="${runId}/build"]`)).toBeVisible()
+
   // The ticket's People: the approved revision's people with their responsibilities.
   await page.goto(`/dispatch/${ticketKey.replace('-', '/')}`)
   budget(30_000)
@@ -204,6 +278,57 @@ test("launched from the approved revision: the run's people and owners, a sessio
   await expect(people).toContainText(`as r${proposed.plan.n} was approved`, { timeout: 30_000 })
   await expect(people.locator('[data-people-plan-person="nate"]')).toHaveAttribute('data-responsibilities', 'architecture')
   await expect(people.locator('[data-people-plan-person="ana"]')).toContainText('acceptance owner')
+  // The ticket's owner is linked; the approver, a name a reply recorded, is not.
+  await expect(page.locator('[data-ticket-people] [data-people] [data-person="admin"]')).toContainText('approved a plan')
+  await expect(page.locator('[data-ticket-people] [data-people] [data-person="admin"] [data-person-link]')).toHaveCount(0)
+  await page.locator('[data-ticket-people] [data-people] [data-person="nate"] [data-person-link]').click()
+  await expect(page).toHaveURL(/\/people\/nate$/)
+  await expect(page.locator(`[data-person-page-name="nate"] [data-person-task="${runId}/build"]`)).toBeVisible({ timeout: 30_000 })
+})
+
+test("a person's tickets past the first twenty are reached; names that are path words have pages of their own", async ({ page, api }) => {
+  const project = await freeProjectKey(api, 'PPW')
+  await makeProject(api, project)
+  // A name made for this test, with a slash, a space and a percent sign; it owns 21 tickets.
+  const owner = `pw/${Date.now().toString(36)} 50%`
+  const keys: string[] = []
+  for (let n = 1; n <= 21; n++) keys.push(await makeTicket(api, project, String(n), { title: `Owned ${n}`, owner }))
+  // Names that are path words, or hold what a path reads as more than a name, each owning a ticket.
+  const stamp = Date.now().toString(36)
+  const names = ['.', '..', '~', '~.', '~~', '../brand/conductor-favicon.svg', `a/b ${stamp}`, '50% c', `Ana Mar\u00eda ${stamp}`, '\u00e9'.repeat(60)]
+  const owns: string[] = []
+  for (const [n, name] of names.entries()) owns.push(await makeTicket(api, project, `w${n}`, { title: `Owned by a path word ${n}`, owner: name }))
+
+  await page.goto(personPath(owner))
+  budget(30_000)
+  const owned = page.locator(`[data-person-page-name="${owner}"] [data-person-ticket-list="owner"]`)
+  await expect(owned).toHaveAttribute('data-person-ticket-shown', '20', { timeout: 30_000 })
+  await expect(owned.locator('[data-person-ticket-part]')).toHaveText(' · 20 of 21 shown')
+  await owned.locator('[data-person-ticket-more]').click()
+  await expect(owned).toHaveAttribute('data-person-ticket-shown', '21')
+  for (const key of keys) await expect(owned.locator(`[data-person-ticket="${key}"]`)).toBeAttached()
+  await expect(owned.locator('[data-person-ticket-part]')).toHaveCount(0)
+  await expect(owned.locator('[data-person-ticket-more]')).toHaveCount(0)
+
+  // Each has its page, never another route's or another person's: loaded at its address, reloaded, and reached by the link the ticket's
+  // People draws, the address kept as written each time.
+  for (const [n, name] of names.entries()) {
+    const ticket = page.locator(`[data-person-page-name=${JSON.stringify(name)}] [data-person-ticket-list="owner"] [data-person-ticket="${owns[n]}"]`)
+    await page.goto(personPath(name))
+    budget(30_000)
+    await expect(ticket, name).toBeVisible({ timeout: 30_000 })
+    expect(new URL(page.url()).pathname, name).toBe(personPath(name))
+    await page.reload()
+    budget(30_000)
+    await expect(ticket, name).toBeVisible({ timeout: 30_000 })
+    expect(new URL(page.url()).pathname, name).toBe(personPath(name))
+    await page.goto(`/dispatch/${owns[n]!.replace('-', '/')}`)
+    budget(30_000)
+    await page.locator(`[data-ticket-people] [data-people] [data-person=${JSON.stringify(name)}] [data-person-link]`).click({ timeout: 30_000 })
+    budget(30_000)
+    await expect(ticket, name).toBeVisible({ timeout: 30_000 })
+    expect(new URL(page.url()).pathname, name).toBe(personPath(name))
+  }
 })
 
 test("a task's owner removed with their name cleared leaves the Owner enabled, and none answers it", async ({ page, api }) => {

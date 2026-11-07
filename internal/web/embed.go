@@ -31,7 +31,12 @@ func Handler() http.Handler {
 	if err != nil {
 		return nil
 	}
-	files := http.FS(sub)
+	return handler(sub)
+}
+
+// handler is Handler for the generated app in fsys.
+func handler(fsys fs.FS) http.Handler {
+	files := http.FS(fsys)
 	static := http.FileServer(files)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
