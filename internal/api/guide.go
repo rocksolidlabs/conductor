@@ -122,7 +122,12 @@ const (
 	maxOpDescription = 1 << 10
 	maxGuideOverview = 4 << 10
 	maxGuideSection  = 64 << 10
-	maxGuideWhole    = 256 << 10
+	// maxGuideOperations bounds the operations section, which lists every
+	// operation of the table: twice a section's, since the admin's rows
+	// (RV1's seven review operations among them, with their CLI forms to
+	// come) filled the 64 KiB a section has.
+	maxGuideOperations = 128 << 10
+	maxGuideWhole      = 256 << 10
 	// maxGuideAgents bounds the host section's agents, the rest counted.
 	maxGuideAgents = 64
 	// guideLookupWait bounds how long the host section waits for the
@@ -405,7 +410,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			Description: "What this Conductor server lets you do here, from the server itself: without a section, an overview (the server's version, who you are, the operations you may call and the limits that bind you, the sections and their sizes); with one, that section: operations (what you may call, with its tool, command, route and input), limits, host, receipts, providers, or briefs (a Brakeman brief's shape: its item kinds, their fields and bounds, the ref forms, an example).",
 			CLI:         []string{"conductor", "guide", "--section", "SECTION"},
 			Input:       obj(map[string]any{"section": map[string]any{"type": "string", "enum": guideSections, "description": "the section to read; the overview when not given"}}),
-			Bounds:      map[string]int{"overview": maxGuideOverview, "section": maxGuideSection}},
+			Bounds:      map[string]int{"overview": maxGuideOverview, "section": maxGuideSection, "operations": maxGuideOperations}},
 		{Name: "open_url", MCP: "open_url", Scope: "session", Method: http.MethodPost, Path: sessions + "/open", needs: needSelfService,
 			Summary:     "Open a link meant for the person (an artifact, a pull request, a preview, a sign-in page) in the browser this agent's settings name: ten a minute.",
 			Description: "Open a link meant for the person, such as an artifact, a pull request, a preview or a sign-in page, in the browser this agent's settings name, on the computer the desktop app runs on; with no desktop app, the workbench offers it. Answers what happened. Ten a minute; not for a link you only read yourself.",
@@ -416,7 +421,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			Summary: "The guide for the workbench token: every operation, the server's limits, host, receipts, providers and a brief's shape.",
 			CLI:     []string{"conductor", "guide", "--server", "URL", "--section", "SECTION"},
 			Input:   map[string]any{"type": "object", "description": "no body; ?section= names the section"},
-			Bounds:  map[string]int{"overview": maxGuideOverview, "section": maxGuideSection}},
+			Bounds:  map[string]int{"overview": maxGuideOverview, "section": maxGuideSection, "operations": maxGuideOperations}},
 		// The admin's operations a proposal may name.
 		runCommandOp("run_pause", "Pause a managed run's dispatch: nothing new starts; what runs goes on.", "/pause"),
 		runCommandOp("run_unpause", "Let a paused managed run dispatch again.", "/unpause"),
@@ -1354,6 +1359,18 @@ func guideReply(name string, content any) ([]byte, error) {
 	return b.Bytes(), err
 }
 
+// guideBound is the section's bound: the overview's, the operations
+// section's, or every other section's.
+func guideBound(section string) int {
+	switch section {
+	case "overview":
+		return maxGuideOverview
+	case "operations":
+		return maxGuideOperations
+	}
+	return maxGuideSection
+}
+
 // handleGuide answers the admin's guide: GET /api/guide?section=.
 func (s *Server) handleGuide(w http.ResponseWriter, r *http.Request) {
 	s.serveGuide(w, r, adminCaller())
@@ -1397,11 +1414,7 @@ func (s *Server) serveGuide(w http.ResponseWriter, r *http.Request, c guideCalle
 		return
 	}
 	b := replies[section]
-	limit := maxGuideSection
-	if section == "overview" {
-		limit = maxGuideOverview
-	}
-	if len(b) > limit {
+	if len(b) > guideBound(section) {
 		// TestEachSectionIsBounded holds every section to its bound with
 		// every entry at its largest: this is a bug, said rather than sent.
 		s.log.Warn("guide section past its bound", "section", section, "bytes", len(b))

@@ -284,10 +284,7 @@ func TestEachSectionIsBounded(t *testing.T) {
 		whole := 0
 		for name, b := range replies {
 			whole += len(b)
-			limit := maxGuideSection
-			if name == "overview" {
-				limit = maxGuideOverview
-			}
+			limit := guideBound(name)
 			if len(b) > limit {
 				t.Errorf("%s's %s: %d bytes, over %d", c.Kind, name, len(b), limit)
 			}

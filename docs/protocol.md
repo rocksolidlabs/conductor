@@ -2334,9 +2334,13 @@ no_section` for a name not below, `400 invalid_request` for any other
 parameter. Every reply is `{guide: 1, version, commit, section, <section>:
 …}`, `version` and `commit` the server's build, the content under the
 section's own name; encoded with HTML escaping off and measured so: the
-overview at most 4 KiB, each section at most 64 KiB, the seven at most
-256 KiB, which a test holds with every entry at its largest (a past bound is
-`500 guide_bound`, never a cut reply). The sections:
+overview at most 4 KiB, `operations` at most 128 KiB (it lists every
+operation of the table, and the admin's rows filled the 64 KiB it had
+until RV1's review operations), each other section at most 64 KiB, the
+seven at most 256 KiB, which a test holds with every entry at its largest
+(a past bound is `500 guide_bound`, never a cut reply). The two guide
+operations' `bounds` name all three: `overview`, `section` and
+`operations`. The sections:
 
 - `overview`: `{caller: {kind, session?, kinds?, run?, member?, scopes},
   may, limits, sections: [{name, bytes}], rules}`. `kind` is `admin` or `session`; a
