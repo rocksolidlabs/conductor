@@ -382,6 +382,13 @@ func TestInboxTrackHostedQuestion(t *testing.T) {
 	report(t, e, id, map[string]any{"state": "working"})
 	// Synced: the host said it (HostView), not only the server forwarded it.
 	until(t, "the host's working synced", func() bool { return hostedSession(t, e, id).HostView().Attention.State == session.AttentionWorking })
+	// And noted: the hub's read loop notes the host's change after the
+	// session shows it (the view changes under the session's lock, the
+	// note follows it), so the track is read once the record is made.
+	until(t, "the resumption noted", func() bool {
+		res, _, _ := e.srv.hostedSeen.of(id, q)
+		return res != nil
+	})
 	for range 2 {
 		if got := e.trackOf(t, ref, q, "r1")[stepResumed]; got.State != stepDone || got.At == nil {
 			t.Fatalf("resumed: %+v", got)
@@ -903,6 +910,14 @@ func TestInboxTrackHostedQuestionSetAside(t *testing.T) {
 // resumed; the event, once out, finds the same. And the moment before the
 // noting (the host's change taken, the server's note not made yet) reads
 // waiting, never unknown, so a page that read it then reads again.
+//
+// The gate holds every change whose own view shows the work, at both
+// moments: the hub's read loop notes the host's earlier report of the
+// question after the host's view shows it, and on a slow machine that
+// note comes late, its view taken after the work (#281). Judged by the
+// session as it is now rather than by the change's own view, or held one
+// change only, the gate could hold that note and let the change it is
+// about publish its event.
 func TestInboxTrackHostedNotedBeforeTheEvent(t *testing.T) {
 	e := newTestEnv(t, nil)
 	id := startHost(t, e, []string{"/bin/cat"})
@@ -913,6 +928,12 @@ func TestInboxTrackHostedNotedBeforeTheEvent(t *testing.T) {
 		return q != ""
 	})
 	ref := questionRef(id, q)
+	// The server noted the question shown: the work's change finds it
+	// held, and its leaving is that change's.
+	until(t, "the question noted", func() bool {
+		_, seen, _ := e.srv.hostedSeen.of(id, q)
+		return seen
+	})
 	ch := e.srv.events.subscribe()
 	t.Cleanup(func() { e.srv.events.unsubscribe(ch) })
 	working := func(msg []byte) bool {
@@ -925,25 +946,24 @@ func TestInboxTrackHostedNotedBeforeTheEvent(t *testing.T) {
 	}
 	before, letBefore := make(chan struct{}), make(chan struct{})
 	at, release := make(chan struct{}), make(chan struct{})
-	var onceBefore, once sync.Once
-	gate := func(sess string, noted bool) {
-		if sess != id || hostedSession(t, e, id).HostView().Attention.State != session.AttentionWorking {
+	var onceBefore, once, letOnce, releaseOnce sync.Once
+	letGo := func() { letOnce.Do(func() { close(letBefore) }) }
+	releaseAll := func() { releaseOnce.Do(func() { close(release) }) }
+	gate := func(view session.Info, _ uint64, noted bool) {
+		if view.ID != id || view.Attention.State != session.AttentionWorking {
 			return
 		}
 		if !noted {
-			onceBefore.Do(func() {
-				close(before)
-				<-letBefore
-			})
+			onceBefore.Do(func() { close(before) })
+			<-letBefore
 			return
 		}
-		once.Do(func() {
-			close(at)
-			<-release
-		})
+		once.Do(func() { close(at) })
+		<-release
 	}
 	e.srv.hostedSeen.seam.Store(&gate)
 	t.Cleanup(func() { e.srv.hostedSeen.seam.Store(nil) })
+	t.Cleanup(func() { letGo(); releaseAll() })
 	// The host's report of its work, as the hub takes it from the host
 	// (no change forwarded first: what the server publishes then is the
 	// host's change alone).
@@ -954,16 +974,16 @@ func TestInboxTrackHostedNotedBeforeTheEvent(t *testing.T) {
 	}()
 	<-before
 	if got := e.trackOf(t, ref, q, "r1")[stepResumed]; got.State != stepWaiting {
-		close(letBefore)
+		letGo()
 		t.Fatalf("resumed before the server noted the host's change: %+v", got)
 	}
-	close(letBefore)
+	letGo()
 	<-at
 	for {
 		select {
 		case msg := <-ch:
 			if working(msg) {
-				close(release)
+				releaseAll()
 				t.Fatal("the change's event went out before the server noted how the question went on")
 			}
 			continue
@@ -972,10 +992,10 @@ func TestInboxTrackHostedNotedBeforeTheEvent(t *testing.T) {
 		break
 	}
 	if got := e.trackOf(t, ref, q, "r1")[stepResumed]; got.State != stepDone {
-		close(release)
+		releaseAll()
 		t.Fatalf("resumed at the moment it is noted: %+v", got)
 	}
-	close(release)
+	releaseAll()
 	<-applied
 	for msg := range ch {
 		if working(msg) {
@@ -993,43 +1013,91 @@ func TestInboxTrackHostedNotedBeforeTheEvent(t *testing.T) {
 // is noted meanwhile, the question's resumption with it. The older view,
 // noted last, changes nothing (HostViewSeq's order, not arrival's): the
 // resumption stays, and the track reads it done.
+//
+// The gate holds every change whose own view shows the question, not the
+// first change of the session to come: the hub's read loop notes the
+// host's report of the question after the host's view shows it, and on a
+// slow machine that note reached the gate first, which held the read
+// loop, and the host's report of its work was never read (#281). So the
+// work is reported as the hub takes it from the host (HostAttentionKept,
+// which a held read loop cannot stop), noted when the call returns.
 func TestInboxTrackHostedOlderViewNotedLast(t *testing.T) {
 	e := newTestEnv(t, nil)
 	id := startHost(t, e, []string{"/bin/cat"})
 	report(t, e, id, map[string]any{"state": "needs_input", "message": "Allow?", "kind": "permission", "options": yes})
+	hs := hostedSession(t, e, id)
 	var q string
 	until(t, "the hosted question shown", func() bool {
-		q = hostedSession(t, e, id).HostView().Attention.ID
+		q = hs.HostView().Attention.ID
 		return q != ""
 	})
 	ref := questionRef(id, q)
+	// The server noted the question shown: the work's change finds it
+	// held, and its leaving is that change's.
+	until(t, "the question noted", func() bool {
+		_, seen, _ := e.srv.hostedSeen.of(id, q)
+		return seen
+	})
 	held, let := make(chan struct{}), make(chan struct{})
-	var first atomic.Bool
-	gate := func(sess string, noted bool) {
-		if sess == id && !noted && first.CompareAndSwap(false, true) {
-			close(held)
-			<-let
+	var (
+		mu       sync.Mutex
+		holding  = map[uint64]bool{} // the held views not noted yet, by their place
+		released bool
+		heldOnce sync.Once
+		letOnce  sync.Once
+	)
+	letGo := func() {
+		letOnce.Do(func() {
+			mu.Lock()
+			released = true
+			mu.Unlock()
+			close(let)
+		})
+	}
+	gate := func(view session.Info, seq uint64, noted bool) {
+		if view.ID != id || view.Attention.ID != q {
+			return
 		}
+		mu.Lock()
+		if noted {
+			delete(holding, seq)
+			mu.Unlock()
+			return
+		}
+		if released {
+			mu.Unlock()
+			return
+		}
+		holding[seq] = true
+		mu.Unlock()
+		heldOnce.Do(func() { close(held) })
+		<-let
 	}
 	e.srv.hostedSeen.seam.Store(&gate)
 	t.Cleanup(func() { e.srv.hostedSeen.seam.Store(nil) })
-	var letOnce sync.Once
-	t.Cleanup(func() { letOnce.Do(func() { close(let) }) })
+	t.Cleanup(letGo)
 	// A viewer's change: its callback takes the view, the question shown.
 	older := make(chan struct{})
 	go func() {
 		defer close(older)
-		e.srv.hosts.OnChange(hostedSession(t, e, id).Info())
+		e.srv.hosts.OnChange(hs.Info())
 	}()
 	<-held
-	report(t, e, id, map[string]any{"state": "working"})
-	until(t, "the newer view's resumption noted", func() bool {
-		res, _, _ := e.srv.hostedSeen.of(id, q)
-		return res != nil
-	})
-	letOnce.Do(func() { close(let) })
-	<-older
+	// The host's report of its work, as the hub takes it from the host:
+	// noted as it returns, the newer view, while an older one is held.
+	hs.HostAttentionKept(session.AttentionWorking, "", session.SourceAPI, "", nil, "", false, "", "", nil)
 	res, _, _ := e.srv.hostedSeen.of(id, q)
+	if res == nil || res.How != session.ResumedWorking {
+		t.Fatalf("the newer view's resumption: %+v", res)
+	}
+	letGo()
+	<-older
+	until(t, "the older views noted", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(holding) == 0
+	})
+	res, _, _ = e.srv.hostedSeen.of(id, q)
 	if res == nil || res.How != session.ResumedWorking {
 		t.Fatalf("the older view, noted last, took the resumption away: %+v", res)
 	}
@@ -1049,8 +1117,8 @@ func TestInboxHostedNotesGoWithASessionRemovedMidNote(t *testing.T) {
 	hs := hostedSession(t, e, id)
 	var removed atomic.Bool
 	notedAfter := make(chan struct{})
-	gate := func(sess string, noted bool) {
-		if sess != id {
+	gate := func(view session.Info, _ uint64, noted bool) {
+		if view.ID != id {
 			return
 		}
 		if !noted && removed.CompareAndSwap(false, true) {
