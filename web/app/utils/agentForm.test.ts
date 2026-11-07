@@ -193,18 +193,19 @@ describe('the yolo recipe', () => {
     allowArgs: true,
     yolo: { args: ['--yolo'], env: { COPILOT_ALLOW_ALL: 'true' } },
     trustPrompt: 'Do you trust',
+    promptShape: '(?m)^› .*\\z',
     trustAnswers: [{ label: 'Yes', input: '\r' }],
     questions: [{ prompt: 'Hooks\\s*need\\s*review', answers: [{ label: 'Trust all and continue', input: '2\r' }] }],
     session: { startArgs: ['--session-id', '{id}'], resumeArgs: ['--session-id', '{id}'], idPattern: '^x$' },
     probe: false,
   }
 
-  it('round-trips a recipe, and carries the trust prompt, the session recipe and the probe switch the form has no control for', () => {
+  it('round-trips a recipe, and carries the trust prompt, the prompt shape, the session recipe and the probe switch the form has no control for', () => {
     const f = formFromAgent(copilot, counter())
     expect(f.yoloArgs).toEqual(['--yolo'])
     expect(f.yoloEnv.map((r) => [r.key, r.value])).toEqual([['COPILOT_ALLOW_ALL', 'true']])
     // probe: false stays with the agent across a save (a copy with its probe off would be probed again otherwise; #291).
-    expect(agentPayload(f, copilot)).toMatchObject({ yolo: copilot.yolo, trustPrompt: 'Do you trust', trustAnswers: copilot.trustAnswers, questions: copilot.questions, session: copilot.session, probe: false })
+    expect(agentPayload(f, copilot)).toMatchObject({ yolo: copilot.yolo, trustPrompt: 'Do you trust', promptShape: copilot.promptShape, trustAnswers: copilot.trustAnswers, questions: copilot.questions, session: copilot.session, probe: false })
     expect(agentPayload(f, { ...copilot, probe: undefined })).not.toHaveProperty('probe', false)
   })
 

@@ -1229,7 +1229,7 @@ func TestStartupQuestions(t *testing.T) {
 // do.
 func TestClaudeCodesDialogQuestion(t *testing.T) {
 	claude, _ := Default().Get("claude")
-	if len(claude.Questions) != 3 {
+	if len(claude.Questions) != 6 {
 		t.Fatalf("claude: %+v", claude.Questions)
 	}
 	q, last := claude.Questions[0], claude.Questions[1]
@@ -1504,5 +1504,78 @@ func TestClaudeCodesSignInScreenIsAStartupQuestionWithNoAnswers(t *testing.T) {
 	}
 	if prompt.MatchString("Welcome to Claude Code v2.1.319\n> Try \"fix lint errors\"") {
 		t.Fatal("an ordinary start reads as the sign-in screen")
+	}
+}
+
+// Claude Code on an account folder never used asks for a theme, then a
+// login method, then opens a browser to sign in (2.1.319, #659's third
+// live check, #714): each a startup screen with no answers, so no key is
+// typed into it, found on the screens as that check captured them. Its
+// prompt at rest is none of them.
+func TestClaudeCodesFirstRunScreensAreStartupQuestionsWithNoAnswers(t *testing.T) {
+	claude, _ := Default().Get("claude")
+	screens := map[string]string{
+		"Choose the text style that looks best with your terminal": "Welcome to Claude Code v2.1.319\n Let's get started.\n Choose the text style that looks best with your terminal\n To change this later, run /theme\n     Auto (match terminal)\n ❯ ✔ Dark mode\n     Light mode\n     Dark mode (colorblind-friendly)",
+		"Select login method:":       "Welcome to Claude Code v2.1.319\n Claude Code can be used with your Claude subscription or billed based on API\n usage through your Console account.\n Select login method:\n ❯ 1. Claude account with subscription · Individual, Team, or Enterprise\n   2. Anthropic Console account · API usage billing",
+		"Opening browser to sign in": "Welcome to Claude Code v2.1.319\n ✻ Opening browser to sign in…",
+	}
+	prompt := "Welcome to Claude Code v2.1.319\n────────\n❯ Try \"create a util logging.py that...\"\n────────\n  ? for shortcuts"
+	for words, screen := range screens {
+		found := 0
+		for _, q := range claude.Questions {
+			re, err := CompilePattern(q.Prompt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if re.MatchString(prompt) {
+				t.Fatalf("Claude Code's prompt reads as %q", q.Prompt)
+			}
+			if !re.MatchString(screen) {
+				continue
+			}
+			found++
+			if q.Anytime || q.AnswersFromScreen || len(q.Answers) != 0 || q.Words != "" {
+				t.Fatalf("the screen %q: %+v", words, q)
+			}
+			if got := re.FindString(screen); got != words {
+				t.Fatalf("the words of %q: %q", words, got)
+			}
+		}
+		if found != 1 {
+			t.Fatalf("%d questions find the screen %q", found, words)
+		}
+	}
+}
+
+// Claude Code and Codex carry their prompts' shapes (#714; the screens
+// they are read on are the session's tests, TestTheAgentsPromptIsKnownByItsShape):
+// each compiles as a pattern, a saved override that leaves the shape out
+// takes the replaced agent's, and a shape that matches an empty screen,
+// or one past 200 bytes, is refused.
+func TestThePromptShape(t *testing.T) {
+	c := Default()
+	for _, id := range []string{"claude", "codex"} {
+		a, _ := c.Get(id)
+		if _, err := CompilePattern(a.PromptShape); err != nil {
+			t.Fatalf("%s's prompt shape %q: %v", id, a.PromptShape, err)
+		}
+	}
+	claude, _ := c.Get("claude")
+	if err := c.ApplyOverlay(Overlay{Agents: []Agent{{ID: "claude", Name: "Claude, mine", Command: []string{"claude"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if mine, _ := c.Get("claude"); mine.PromptShape != claude.PromptShape {
+		t.Fatalf("the override's shape: %q", mine.PromptShape)
+	}
+	ok := Agent{ID: "x", Name: "X", Command: []string{"x"}, PromptShape: `(?m)^› .*\z`}
+	if err := validate(ok); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{".*", "(", strings.Repeat("x", 201)} {
+		a := ok
+		a.PromptShape = bad
+		if err := validate(a); err == nil || !strings.Contains(err.Error(), "promptShape") {
+			t.Errorf("%q: %v", bad, err)
+		}
 	}
 }

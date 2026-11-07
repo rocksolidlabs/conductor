@@ -56,6 +56,10 @@ const TrustQuestionWords = "the agent asks a startup question (whether to trust 
 // question shows.
 var ErrTrustQuestion = errors.New(TrustQuestionWords)
 
+// ErrNotAtPrompt is Submit's refusal of a submission OnlyAtPrompt while the
+// agent's screen is not its prompt (atPrompt): nothing of it was written.
+var ErrNotAtPrompt = errors.New("the agent's screen is not recognised as its prompt: nothing was typed")
+
 // QuestionWords say why a person's typed text is refused while a question
 // the agent asks during its work shows (source "question"): its letters
 // would reach the dialog's keys (Codex's command approval takes y, p and
@@ -150,6 +154,12 @@ type Submission struct {
 	// question, and a question that mirrors a decision coming during its
 	// pause does not hold its Enter back.
 	Decision string
+	// OnlyAtPrompt types the line, and presses its Enter, only into the
+	// agent's prompt: each looked at as the writer takes it, on the screen
+	// as it is then (atPrompt). Its text refused, nothing is written
+	// (ErrNotAtPrompt); its Enter refused, it is left out, as for a prompt
+	// come in the pause. A Brakeman turn's line (#714).
+	OnlyAtPrompt bool
 }
 
 // ErrSubmitPending says a submission's text was being taken when its time
@@ -980,6 +990,15 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 	// the Enter waited behind another write, or a dialog drawn on the
 	// screen meanwhile, is never answered by it.
 	wait.guard = s.enterGuard(st.comesAfter)
+	if sub.OnlyAtPrompt {
+		enter := wait.guard
+		wait.guard = func() error {
+			if !s.atPrompt() {
+				return errPromptCame
+			}
+			return enter()
+		}
+	}
 	if sub.Question != "" && !res.Typed {
 		// A reply that is an Enter alone: its question still waits, and is
 		// noted answered as the Enter is taken (its text did so for a line).
@@ -1077,7 +1096,7 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 	}
 	s.resolveLine(sub, st)
 	if sub.Confirm && s.opts.ConfirmSubmit && !s.confirmed(ctx, enterAt) {
-		res.Reentered = s.enterAgain(ctx)
+		res.Reentered = s.enterAgain(ctx, sub.OnlyAtPrompt)
 	}
 	return res, nil
 }
@@ -1182,7 +1201,8 @@ var errWaiting = errors.New("session: the session waits on a prompt")
 // for a question or a dialog come while the text waited behind another
 // write. With UnlessWaiting, any prompt (errWaiting); else a startup
 // question (ErrTrustQuestion), a question asked during the work or a
-// dialog on the screen now or Held (ErrQuestion). A reply to a question
+// dialog on the screen now or Held (ErrQuestion); with OnlyAtPrompt, a
+// screen that is not the agent's prompt (ErrNotAtPrompt). A reply to a question
 // (Question) is refused once that question no longer waits
 // (ErrQuestionAnswered), and passing, it claims the question in the same
 // critical section (claimQuestion), the claim kept in st.
@@ -1206,6 +1226,8 @@ func (s *Local) textGuard(sub Submission, st submitState) func() error {
 			return ErrTrustQuestion
 		case dialog || showing && att.Source == SourceQuestion:
 			return ErrQuestion
+		case sub.OnlyAtPrompt && !s.atPrompt():
+			return ErrNotAtPrompt
 		}
 		if sub.Question != "" {
 			// The screen still shows the question, and no other drawn in
@@ -1328,8 +1350,9 @@ func (s *Local) confirmed(ctx context.Context, enterAt time.Time) bool {
 }
 
 // enterAgain writes one more carriage return, unless the session has ended or
-// waits on a prompt, which the Enter must not answer. It records nothing.
-func (s *Local) enterAgain(ctx context.Context) bool {
+// waits on a prompt, which the Enter must not answer, or, onlyAtPrompt,
+// its screen is not the agent's prompt (atPrompt). It records nothing.
+func (s *Local) enterAgain(ctx context.Context, onlyAtPrompt bool) bool {
 	s.mu.Lock()
 	skip := s.info.Status.Ended() || s.info.Attention.State == AttentionNeedsInput
 	s.mu.Unlock()
@@ -1338,9 +1361,15 @@ func (s *Local) enterAgain(ctx context.Context) bool {
 	}
 	// Looked at again as the writer takes it: no prompt or dialog come
 	// meanwhile is answered by it.
-	again := writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait, guard: s.enterGuard(func(att Attention) bool {
+	guard := s.enterGuard(func(att Attention) bool {
 		return att.State == AttentionNeedsInput
-	}), before: func() { s.keysWritten([]byte{'\r'}) }}
+	})
+	again := writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait, guard: func() error {
+		if onlyAtPrompt && !s.atPrompt() {
+			return errPromptCame
+		}
+		return guard()
+	}, before: func() { s.keysWritten([]byte{'\r'}) }}
 	if _, err := s.writeProc(ctx, []byte{'\r'}, again); err != nil {
 		return false
 	}
