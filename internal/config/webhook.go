@@ -37,20 +37,25 @@ const (
 // page names it.
 const EventExitNonZero = "exit_nonzero"
 
+// EventDecision is the event of a durable decision's change (opened,
+// answered, applied, superseded, cancelled, commented), which the server
+// sends after each commit (docs/plans/decisions.md, Notifications).
+const EventDecision = "decision"
+
 // webhookResolveTimeout bounds the lookups of the webhooks' hosts at
 // validation, which run at once.
 const webhookResolveTimeout = 2 * time.Second
 
 // ValidWebhookEvent reports whether a webhook may list t: an activity entry
 // type (session.ValidEventType); an attention state, needs_input, working or
-// done, which an attention entry counts as when it records it; or
-// EventExitNonZero. These are the Events page's names.
+// done, which an attention entry counts as when it records it;
+// EventExitNonZero; or EventDecision. These are the Events page's names.
 func ValidWebhookEvent(t string) bool {
 	switch session.AttentionState(t) {
 	case session.AttentionNeedsInput, session.AttentionWorking, session.AttentionDone:
 		return true
 	}
-	return t == EventExitNonZero || session.ValidEventType(t)
+	return t == EventExitNonZero || t == EventDecision || session.ValidEventType(t)
 }
 
 // Endpoint is the webhook's URL without its user info, query and fragment,

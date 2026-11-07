@@ -379,6 +379,18 @@ func (rr *refResolver) resolve(ctx context.Context, ref brakeman.Ref) (brakeman.
 	if !rr.grant.admits(f.item) {
 		return brakeman.Resolution{}, "outside the request's scope", nil
 	}
+	now, u := rr.stateNow(ref, f)
+	seen := brakeman.RefState{State: refUnobserved}
+	if observed {
+		seen = brakeman.RefState{URL: u, State: read.State, Rev: read.Rev, SHA256: read.SHA256, At: read.At}
+	}
+	return brakeman.Resolution{Ref: ref, Seen: fitState(seen), Now: fitState(now)}, "", nil
+}
+
+// stateNow is what f, the lookup of ref, says of it now: its record's
+// state, deleted or unavailable, with its URL and time; and the URL the
+// ref is followed at (a comment's where it is now).
+func (rr *refResolver) stateNow(ref brakeman.Ref, f refFound) (brakeman.RefState, string) {
 	u := refURL(ref)
 	if ref.Kind == brakeman.RefComment && f.now.URL != "" {
 		// What the turn read is followed where the comment is now.
@@ -397,11 +409,7 @@ func (rr *refResolver) resolve(ctx context.Context, ref brakeman.Ref) (brakeman.
 	if now.At.IsZero() {
 		now.At = rr.at
 	}
-	seen := brakeman.RefState{State: refUnobserved}
-	if observed {
-		seen = brakeman.RefState{URL: u, State: read.State, Rev: read.Rev, SHA256: read.SHA256, At: read.At}
-	}
-	return brakeman.Resolution{Ref: ref, Seen: fitState(seen), Now: fitState(now)}, "", nil
+	return now, u
 }
 
 // liveWindow reports a ref kind the server holds only while it is live:

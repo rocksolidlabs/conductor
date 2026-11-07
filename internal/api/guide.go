@@ -67,9 +67,10 @@ type Operation struct {
 	// dispatch (a Dispatch operation's), or "" for none.
 	Receipt string `json:"receipt,omitempty"`
 	// Revision names the precondition the route itself enforces: "run"
-	// (a command's expectedRevision, above 0) or "ticket" (Dispatch's
-	// expectedRev); "" for a route that decodes no revision (a run's stop
-	// and resume), which a proposal never gets a button for.
+	// (a command's expectedRevision, above 0), "ticket" (Dispatch's
+	// expectedRev) or "decision" (a decision's expectedRev); "" for a
+	// route that decodes no revision (a run's stop and resume), which a
+	// proposal never gets a button for.
 	Revision string `json:"revision,omitempty"`
 	// Bounds are the body's and the reply's limits, in bytes.
 	Bounds map[string]int `json:"bounds,omitempty"`
@@ -131,7 +132,7 @@ var guideSections = []string{"operations", "limits", "host", "receipts", "provid
 var guideRules = []string{
 	"A fact needs evidence: name the record it rests on (a run, a task, a check receipt, a ticket, a session).",
 	"Nothing an agent writes becomes work by itself: a person makes it work.",
-	"A question goes to a person with ask.",
+	"A question goes to a person with ask; in a managed run, one whose answer the work must wait for goes with decision_request.",
 }
 
 // mcpObject and mcpString build the MCP tools' schemas, as tools/list
@@ -261,6 +262,39 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			CLI:         []string{"conductor", "task", "checkpoint", "--done", "TEXT", "--remaining", "TEXT"},
 			Input:       obj(map[string]any{"done": str("what is done, at most 4000 characters"), "remaining": str("what remains"), "notes": str("anything the next attempt should know")}, "done", "remaining"),
 			Bounds:      map[string]int{"body": maxBody}},
+		{Name: "decision_request", MCP: "decision_request", Scope: "task", Method: http.MethodPost, Path: sessions + "/decisions", needs: needLauncher,
+			Summary:     "Ask the operator a decision your task must wait for: the reply comes at once with its id; end your turn or go on with other work, and submit no result until its answer is applied.",
+			Description: "In a managed run, ask the operator a decision your work must wait for: a clarification, an approval (with options and what a yes authorizes) or an assignment, with the context, the alternatives and their tradeoffs, your recommendation and its uncertainty, and evidence refs. Save a checkpoint first. It replies at once with the decision's id and open: end your turn, or go on with work that does not depend on it; do not submit your result, or act on the answer, until it is applied. A decision is open (waiting), answered (an answer recorded, not yet applied: Yardmaster validates it first, and it may still be superseded or cancelled instead) or applied (the answer is yours to act on). Yardmaster applies the answer by typing it into this session as \"Decision dr-N (...) answered by ...\", or, if this session has ended, by writing it into your task's next attempt's task file, which starts at your last checkpoint. The same requestId again replies with the same decision as it is now.",
+			Input: obj(map[string]any{
+				"requestId":      str("your id for this request, 1 to 32 of A-Z a-z 0-9 . _ ~ -: the same again answers the same decision"),
+				"type":           map[string]any{"type": "string", "enum": []string{"clarification", "approval", "assignment"}},
+				"question":       str("the question, one line of at most 500 characters"),
+				"context":        str("what happened and why a person is needed, Markdown, at most 4000 characters"),
+				"options":        map[string]any{"type": "array", "maxItems": 6, "items": obj(map[string]any{"label": str("at most 80 characters"), "tradeoffs": str("at most 1 KiB")}, "label"), "description": "the alternatives: 2 to 6 for an approval, none for an assignment"},
+				"recommendation": map[string]any{"type": "integer", "minimum": -1, "description": "the option you recommend, from 0; -1 for none"},
+				"uncertainty":    str("how sure you are, at most 1 KiB"),
+				"authorizes":     str("what a yes allows, at most 1 KiB; an approval's is required"),
+				"evidence":       map[string]any{"type": "array", "maxItems": 20, "items": map[string]any{"type": "string"}, "description": "refs to the records it rests on (run:, task:, ticket:, file:, ...), at most 300 bytes each"},
+				"expertise":      map[string]any{"type": "array", "maxItems": 4, "items": map[string]any{"type": "string"}, "description": "the expertise the answer needs, at most 40 characters each"},
+				"subject":        obj(map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"commit", "candidate", "artifact"}}, "commit": str("commit: your HEAD"), "run": str("candidate: the run"), "task": str("candidate: the task"), "n": map[string]any{"type": "integer", "description": "candidate: the attempt"}, "path": str("artifact: the file, relative to your worktree, committed")}, "kind"),
+				"supersedes":     str("dr-N, an open decision of your task this one takes the place of"),
+			}, "type", "question"),
+			Bounds: map[string]int{"body": maxDecisionRequestBody}},
+		{Name: "decision_list", MCP: "decision_list", Scope: "task", Method: http.MethodGet, Path: sessions + "/decisions", needs: needLauncher,
+			Summary:     "Your task's decisions, newest first, each a summary: its id, state, question and answer.",
+			Description: "In a managed run, your task's decisions, newest first, at most 100 a page: each its id, type, state, rev, question and, once answered, the answer and why. Act on an answer only once its state is applied: answered is recorded, not yet applied. Pass after (the next a page gave) for the next page; decision_read reads one whole.",
+			Input:       obj(map[string]any{"after": str("dr-N: the page after it"), "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": maxDecisionsListed}}),
+			Bounds:      map[string]int{"reply": maxDecisionSummaryPage, "summary": maxDecisionSummary}},
+		{Name: "decision_read", MCP: "decision_read", Scope: "task", Method: http.MethodGet, Path: sessions + "/decisions/{did}", needs: needLauncher,
+			Summary:     "One of your task's decisions whole: the request, the responses, the history and the application.",
+			Description: "In a managed run, one of your task's decisions whole: what was asked, its state, the responses with their receipts, its history and how Yardmaster applied the answer. Act on the answer only once its state is applied: answered is recorded, not yet applied.",
+			Input:       obj(map[string]any{"id": str("the decision's id, dr-N")}, "id"),
+			Bounds:      map[string]int{"reply": maxDecisionReply}},
+		{Name: "decision_withdraw", MCP: "decision_withdraw", Scope: "task", Method: http.MethodPost, Path: sessions + "/decisions/{did}/withdraw", needs: needLauncher,
+			Summary:     "Withdraw an open decision you asked that you no longer need: your task waits for it no more.",
+			Description: "In a managed run, withdraw an open decision you asked that you no longer need: it is cancelled and your task waits for it no more. An answered one cannot be withdrawn, and none once your run is being continued (not_held: the decision stays open in the run that continues it, and this attempt's work is over).",
+			Input:       obj(map[string]any{"id": str("the decision's id, dr-N")}, "id"),
+			Bounds:      map[string]int{"body": maxDecisionAnswerBody}},
 		{Name: "ticket_read", MCP: "ticket_read", Scope: "ticket", Method: http.MethodGet, Path: sessions + "/ticket", needs: needLauncher,
 			Summary:     "The Dispatch ticket your run is linked to: what was asked and how it is accepted, with its last comments.",
 			Description: "The Dispatch ticket your run is linked to, when a person linked it to one: its key and title, status, priority, owner, labels, description, acceptance criteria, close policy, links and last comments. Read it for what was asked and how it is accepted. A run belongs to one ticket at most; with none, the tool says so.",
@@ -395,6 +429,22 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			Summary: "A failed receipt as a prepared repair: a check finding with its class, the criteria, and whether Check again would be taken now (recheck).",
 			Input:   map[string]any{"type": "object", "description": "no body"},
 			Bounds:  map[string]int{"reply": MaxRepairReply}},
+		{Name: "decision_respond", Scope: "admin", Method: http.MethodPost, Path: "/api/decisions/{did}/respond", needs: needLauncher, Receipt: "ledger", Revision: "decision",
+			Summary: "Answer a decision as the operator: an option's index, a text, or both for a clarification, with a rationale and the rev read. Recorded, then applied by Yardmaster.",
+			Input:   bodySchema(crew.Response{}),
+			Bounds:  map[string]int{"body": maxDecisionAnswerBody, "reply": maxDecisionReply}},
+		{Name: "decision_cancel", Scope: "admin", Method: http.MethodPost, Path: "/api/decisions/{did}/cancel", needs: needLauncher, Receipt: "ledger", Revision: "decision",
+			Summary: "Cancel an open or answered decision with why: its tasks cancelled with it, or released when release says so.",
+			Input:   bodySchema(decisionCancelBody{}),
+			Bounds:  map[string]int{"body": maxDecisionAnswerBody}},
+		{Name: "decision_comment", Scope: "admin", Method: http.MethodPost, Path: "/api/decisions/{did}/comment", needs: needLauncher, Receipt: "ledger", Revision: "decision",
+			Summary: "Comment on a decision, or ask its live asking attempt for more information (more_info, typed into its session).",
+			Input:   bodySchema(decisionCommentBody{}),
+			Bounds:  map[string]int{"body": maxDecisionAnswerBody}},
+		{Name: "decision_route", Scope: "admin", Method: http.MethodPost, Path: "/api/decisions/{did}/route", needs: needLauncher, Receipt: "ledger", Revision: "decision",
+			Summary: "Route a decision to a destination: under local/1, the operator.",
+			Input:   bodySchema(decisionRouteBody{}),
+			Bounds:  map[string]int{"body": maxDecisionAnswerBody}},
 		{Name: "ticket_create", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/tickets", needs: needLauncher, Receipt: "dispatch",
 			Summary: "Make a Dispatch ticket in a project.",
 			CLI:     []string{"conductor", "dispatch", "create", "--project", "KEY", "--title", "TITLE"},
@@ -962,7 +1012,7 @@ type guideReceipt struct {
 func guideReceipts() []guideReceipt {
 	return []guideReceipt{
 		{Name: "brakeman", About: "a Brakeman request's, kept under its opId: the same opId again answers the same request, and the same brief's opId again the kept brief", Fields: receiptFields(reflect.TypeFor[brakeman.Request]())},
-		{Name: "ledger", About: "a run command's (pause, unpause, cancel, retry, accept), kept in the ledger under its actor and commandId: the same command again answers the same receipt, repeat true", Fields: receiptFields(reflect.TypeFor[crew.Receipt]())},
+		{Name: "ledger", About: "a run command's (pause, unpause, cancel, retry, accept), kept in the ledger under its actor and commandId: the same command again answers the same receipt, repeat true; a decision's response and operation are kept there the same way, under responseId, commandId or opId", Fields: receiptFields(reflect.TypeFor[crew.Receipt]())},
 		{Name: "dispatch", About: "a Dispatch operation's, kept under its actor and opId: the same opId again answers it, repeat true", Fields: receiptFields(reflect.TypeFor[dispatch.Receipt]())},
 	}
 }
