@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -182,7 +183,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 				"op":      map[string]any{"type": "string", "enum": []string{"read", "edit", "write", "delete"}, "description": "file: what you did to it"},
 				"path":    str("file: the file's path"),
 			}, "event"),
-			Bounds: map[string]int{"body": maxBody, "message": session.MaxAttentionMessage}},
+			Bounds: map[string]int{"body": maxBody, "message": session.MaxAttentionMessage, "url": session.MaxEventURL}},
 		{Name: "set_state", MCP: "set_state", Scope: "session", Method: http.MethodPost, Path: sessions + "/attention",
 			Summary:     "Say you are working or done, or clear the state; a question is ask's.",
 			Description: "Tell the people watching that you are working, done, or clear the state; use ask for a question.",
@@ -193,11 +194,11 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			Summary:     "Ask the people watching for a decision you cannot make: the session needs input until someone answers in the terminal; at most 6 choices.",
 			Description: "Ask the people watching for a decision you cannot make yourself; the session shows as needing input until someone answers in the terminal, also once your turn has ended. With choices (at most 6, each at most 40 characters), name them in the terminal too: a click types the choice as a line. If you no longer need the answer, clear the question with set_state clear.",
 			CLI:         []string{"conductor", "notify", "--ask", "--message", "TEXT", "--choices", "a|b"},
-			Input:       obj(map[string]any{"message": str("the question, one line"), "choices": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 6}}, "message"),
+			Input:       obj(map[string]any{"message": str("the question, one line"), "choices": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": session.MaxAttentionOptions}}, "message"),
 			Bounds:      map[string]int{"body": maxBody, "message": session.MaxAttentionMessage}},
 		{Name: "form_crew", MCP: "form_crew", Scope: "session", Method: http.MethodPost, Path: sessions + "/crew", needs: needLauncher | needSelfService | needNoRun | needNotBrakeman,
-			Summary:     "Form a crew around this session when the work splits into parts that run side by side: this session stays as one member. Twice an hour at most.",
-			Description: "Form a crew around this session when the work splits into parts that can run side by side: you stay as the member named by self (its agentId and prompt may be empty), the others get sessions of their own. At most 2 a session; never for work you can finish alone.",
+			Summary:     "Form a crew around this session when the work splits into parts that run side by side: this session stays as one member. At most " + strconv.Itoa(selfCrewsPerHour) + " an hour.",
+			Description: "Form a crew around this session when the work splits into parts that can run side by side: you stay as the member named by self (its agentId and prompt may be empty), the others get sessions of their own. At most " + strconv.Itoa(selfCrewsPerHour) + " an hour; never for work you can finish alone.",
 			CLI:         []string{"conductor", "crew", "create", "CREW.json", "--self", "NAME"},
 			Input: obj(map[string]any{
 				"name":      str("the crew's name"),
@@ -942,6 +943,7 @@ func guideLimits() []guideLimit {
 	return []guideLimit{
 		{Name: "task_id", Pattern: b.TaskIDPattern, About: "a task's and a check's id"},
 		{Name: "crew_members", Max: b.Members, About: "members a crew"},
+		{Name: "member_name", Max: b.MemberName, Pattern: b.MemberNamePattern, Unit: "characters", About: "a crew member's name"},
 		{Name: "crew_tasks", Max: b.Tasks, About: "tasks a managed crew"},
 		{Name: "task_checks", Max: b.ChecksPerTask, About: "checks a task"},
 		{Name: "check_timeout", Min: b.CheckTimeoutMin, Max: b.CheckTimeoutMax, Default: b.CheckTimeoutDefault, Unit: "seconds", About: "a check's timeoutSeconds; 0 takes the default"},
@@ -957,6 +959,7 @@ func guideLimits() []guideLimit {
 		{Name: "task_page", Max: taskPage, Unit: "bytes", About: "a page of a task file"},
 		{Name: "self_crews", Max: selfCrewsPerHour, About: "crews a session forms an hour"},
 		{Name: "self_links", Max: selfLinksPerDay, About: "view links a session mints a day"},
+		{Name: "self_opens", Max: selfOpensPerMinute, About: "links a session opens a minute"},
 		{Name: "brief", Max: brakeman.MaxBrief, Unit: "bytes", About: "a Brakeman brief as kept (store.Encode's form)"},
 		{Name: "brief_items", Max: brakeman.MaxItems, About: "items a brief"},
 		{Name: "brief_refs", Max: brakeman.MaxBriefRefs, About: "distinct refs a brief, across its items"},

@@ -35,12 +35,25 @@ session's activity and on the Events page. You are in a Conductor session
 when CONDUCTOR_NOTIFY_URL and CONDUCTOR_NOTIFY_TOKEN are set.
 
 With Conductor's MCP server registered (Claude Code and Codex get it at
-launch), the same reports and crew actions are tools: report, set_state,
-ask, form_crew, add_member, run_status, link, open_url, task_context, task_result,
-message_send, inbox_read, inbox_ack, task_blocked, task_checkpoint,
-ticket_read, ticket_comment, and in a managed run decision_request,
-decision_list, decision_read and decision_withdraw. Call those when you
-have them; the commands below do the same.
+launch), the same reports and actions are tools, each where the server
+lets this session call it; the guide tool says which it may call now and
+the limits that bind it. Call those you have; the commands below do the
+same.
+
+- In every session: guide, report, set_state and ask.
+- In a session the server runs (not a hosted one), while it lets agents
+  serve themselves (its agents.selfService setting, on by default): link
+  and open_url.
+- There, while the session is in no crew: form_crew.
+- There, once the session is in a crew: run_status.
+- There, once the session is in a crew that is not a managed run:
+  add_member.
+- In an attempt of a managed run (CONDUCTOR_TASK is set): task_context,
+  task_result, message_send, inbox_read, inbox_ack, task_blocked,
+  task_checkpoint, decision_request, decision_list, decision_read and
+  decision_withdraw.
+- In a run a person linked to a Dispatch ticket: ticket_read and
+  ticket_comment.
 
 ## When to report
 
@@ -56,8 +69,8 @@ have them; the commands below do the same.
 - A link meant for the person, such as an artifact, a pull request, a
   preview or a sign-in page: open it with open_url, or this command, rather
   than your own opener. It opens in the browser your agent's settings name,
-  where the right account is signed in; it prints what happened. Ten a
-  minute.
+  where the right account is signed in; it prints what happened. At most
+  10 a minute.
 
       "${CONDUCTOR_BIN:-conductor}" open <url>
 
@@ -117,11 +130,13 @@ people watching.
 - A member that starts "after" you begins when you next finish a turn, so do
   your part first; one that starts "immediately" begins at once; "manual"
   waits for a person. Hand details to a member with a handoff (above).
-- Never form a crew for work you can finish alone, and at most 2 a session.
-  A crew has at most 12 members and works in this session's directory.
-- Later, crew status lists the members and their states, crew add member.json
-  adds one member (the shape of one entry above), and crew link prints a
-  view-only link to this session for a pull request or a message:
+- Never form a crew for work you can finish alone; a session forms at
+  most 2 an hour, and none while it is in a crew. A crew has at most 12
+  members and works in this session's directory.
+- Once the crew is formed, crew status lists the members and their
+  states, crew add member.json adds one member (the shape of one entry
+  above), and crew link prints a view-only link to this session for a
+  pull request or a message:
 
       "${CONDUCTOR_BIN:-conductor}" crew status
       "${CONDUCTOR_BIN:-conductor}" crew add member.json
@@ -335,7 +350,7 @@ there is nothing more to do about it.
 - Never call notify or crew outside a Conductor session; the commands exit silently there.
 - task context and task result work in an attempt of a managed run; elsewhere
   they say so and exit 1.
-- Keep a message to one short line, at most 500 characters. A URL is at most
+- Keep a message to one short line, at most 500 bytes. A URL is at most
   2048 bytes, a member name at most 40 characters.
 - Do not report every tool call or file edit: Conductor's hooks report those
   when the session asks for them.
