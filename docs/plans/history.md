@@ -258,7 +258,7 @@ type Record struct {
 	EndedAt   time.Time `json:"endedAt,omitzero"` // an observed end only: an exit or a stop the server saw
 	LostAt    time.Time `json:"lostAt,omitzero"`  // when the server stopped observing it ("lost", "host away"): its process's state unknown
 	Ending    string    `json:"ending,omitempty"` // "exited (exit 0)", "stopped", "lost", "host away"
-	Reopened  int       `json:"reopened,omitempty"` // a hosted record taken up again by its host (below)
+	Reopened  int       `json:"reopened,omitempty"` // a hosted record taken up again by its host (PR-12; 0 in PR-1)
 	Entries  []Entry    `json:"entries"`
 	Dropped  int        `json:"dropped,omitempty"` // entries the bound let go, oldest first
 	Files    []File     `json:"files,omitempty"`
@@ -280,8 +280,8 @@ An `Entry` keeps the identity its source gave it: `ID` a chat message's id
 withdraws, `Event` the chat's event, so two questions of the same words are
 two entries and each answer names the one it ended.
 
-What each kept entry is taken from, by its source on `main` (PR-1 changes
-nothing in `internal/session`; every source below exists today):
+What each kept entry is taken from, by its source on `main` (PR-1 adds no
+source in `internal/session`; every source below exists today):
 
 | Entry (`Kind`) | Source | What it holds |
 |---|---|---|
@@ -307,9 +307,8 @@ and a link's name may be a person's), nor the chat's join and leave lines.
 entry folds into `Files`, one row per path and op with its count and last
 time, at most 500 rows (the oldest by `Last` let go, counted in `Dropped`),
 and a path the session's deny list covers is never written (the deny list
-`/api/touched` applies, `session.DenyList`). The session's chat reaches no
-hub sink today: PR-1 gives the hub's `chat` one call for the journal
-(below).
+`/api/touched` applies, `session.DenyList`). The session's chat reaches the
+journal through each recorded session's own chat hook (below).
 
 **Bounds** (`bounds.go`): an entry's texts as the session bounds them
 already (`MaxAttentionMessage` 500 bytes, `MaxEventPath`, `MaxEventURL`,
@@ -331,12 +330,10 @@ names at most 64, past it their count only (in the hash all the same).
 
 `MaxRecords` (2,000) counts ended records (a `lost` or `host away` one
 among them: it is no session this server runs); a live record, and one with a
-`pending` resume, is never pruned and is not counted, and live records are
-bounded by the server's `MaxSessions` (config, 32 by default, at most
-10,000). Worst case on disk is (2,000 + `MaxSessions`) × 64 KiB, and one more
-record per resume in flight: about 127 MiB at the default, said in `history.sessions`'s config text; a typical
-record is a few KiB. When live records alone pass `MaxRecords`, every ended
-one past the bound is pruned and the live ones stay.
+`pending` resume, is never pruned and is not counted; a typical record is
+a few KiB. When live records alone pass `MaxRecords`, every ended one past
+the bound is pruned and the live ones stay. The open records are not
+bounded by the session cap ("Promises at the edges").
 
 **The launch's variables.** A session's launch may carry variables
 (`session.Launched.Env`), which may be secrets. The record keeps their
@@ -354,45 +351,59 @@ journal writes. Not held (another server owns the data directory):
 and the server logs once that its sessions are not recorded. Methods, each
 safe for concurrent use:
 
-- `Begin(r Record) error`: the record of a session as it is added, in
-  memory at once (a session's record exists before its first entry is
-  kept). A server session's is written at once by its caller
-  (`createLocalSession`, not a sink); a hosted one's is handed to the
-  writer, which writes it before anything else it holds, since its caller
-  is the goroutine that reads the host's connection and must not wait on a
-  disk. **Begin on an id that already has a record** reopens it only when
-  both are the same host's hosted session (`Host.Hosted`, the same
-  `Host.Owner`) and the record is open or marked `host away` or `lost`: a
-  hosted session's id is `HostedID(instance, localID)`
-  (`internal/signal/hub.go`), the same after a server restart or after its
-  host comes back past `DisconnectGrace`, and its process may have lived
-  through either. Reopened, `LostAt` and `Ending` are cleared,
-  `Reopened` counts it, a `status` entry says "taken up again by its host",
-  and every earlier entry and `Seq` stay. Any other existing id is refused
-  (`ErrExists`, logged): a server session's id is random and never comes
-  back.
-- `Note(id string, e Entry)`, `Chat(id string, c Entry)`, `Touch(id string,
-  f File)`, `Tool(id, name string)`: appended in memory, the record marked
-  dirty; never waits on a disk (the caller is the hub's sink, which must
-  never wait). The hub hands entries over concurrently and out of order
-  (`eventHub.activity`: "concurrently and out of order"; `Local.record`
-  calls `OnActivity` after its lock), so a record's entries are kept in
-  order of `At`, then of arrival, never of arrival alone.
-- `Changed(id string)`: the session's metadata marked stale and the
-  writer woken; the writer reads it as it is then through `Current(id)`
-  (the API's callback, "The API's part of PR-1"), never from a snapshot a
-  caller hands it, and writes a record whose `Crew` or end it changed at
-  once.
-- `End(id string, end Ending)`: the end commit, the time and how it ended,
-  set in memory and the writer woken to write it at once; never a disk
-  write on the caller's goroutine (a sink or the registry's `OnRemove`). An
-  entry noted after `End` whose `At` is not after `EndedAt` (one an earlier
-  callback still carried) is kept in its place and written at the next
-  flush; one after `EndedAt` is dropped and counted in `Dropped`.
-- A writer goroutine writes each dirty record at most once every 5 s
-  (`flushEvery`), and every one at `Close`, so a crash loses at most the
-  last 5 s of entries, and a record is never written more often than that
-  however chatty its agent.
+- `Begin(r Record) (Instance, error)`: the record of a server session as
+  it is made, in memory at once (a session's record exists before its
+  first entry is kept) and written before `Begin` returns; a write that
+  fails leaves it kept in memory, dirty, for the writer to try again, and
+  `Begin` answers an error only for a record it did not keep. It answers
+  the record's **instance**, which every later write names. A server
+  session's id is made once (`session.NewID`) and never comes back, so an
+  instance is one with its id: an id that already has a record is refused
+  (`ErrExists`, logged). After `Close`, and while the journal does not
+  hold the owner lock, `Begin` is refused (`ErrClosed`, `ErrNotOwner`) and
+  the session has no record.
+- **The streams**: `Note(in Instance, a Activity)`, `Chat(in Instance, c
+  ChatLine)`, `Touch(in Instance, f File)`, `Tool(in Instance, name
+  string)`. The session's activity entry and chat line as the API hands
+  them over (the journal chooses what is evidence, by the table above),
+  appended in memory and the record marked dirty; never a disk. Entries
+  are kept in order of `At`, then of arrival, never of arrival alone: a
+  session calls its hooks after its lock (`Local.record`), so two of its
+  entries can arrive in either order. **A stream is kept while its record
+  is open, and dropped, counted in `Dropped`, once the record's end is
+  recorded, whatever its `At` says** ("The record follows the session",
+  below); `Tool` drops without counting.
+- `Settle(in Instance, st State)`: the one write of what is true of a
+  session, `State{Name, AgentSession, Crew, End *Ending, Final bool}`, as
+  its server reads it from the session. It takes the name, the agent's own
+  session and the crew as `st` gives them (a crew where there was none is
+  written at once, not at the next pass), and `st.End` once: an observed
+  end (`EndedAt` and `Ending` as the session's status gives them, every
+  question still open in the record ended `withdrawn` at the end's time,
+  its end commit read by the writer and written when it is read: an
+  enrichment, never a condition of the end's write) or a
+  lost one (`LostAt`, `Ending` `lost`, no `EndedAt`). It is idempotent: a
+  `State` settled again changes nothing, and an end once recorded stands.
+  Which of two `State`s is the newer is its caller's to order (the API
+  reads every one under one lock, below). `st.Final` says the session has
+  left the server: the instance's last `State`, after which its record may
+  leave memory once its end is written. `Settle` never waits on a disk.
+- `Abandon(in Instance)`: the record of a session the registry refused,
+  removed from memory and from the disk while `in` is still its record's
+  instance; it returns once the delete has been made or has failed.
+- **The writer**: a goroutine that writes every dirty record at each
+  periodic pass (`flushEvery` apart), and an urgent one (a crew first
+  set, an end) at the next pass, woken at once. Before it writes, a pass
+  reads the end commits of the records ended since the last (a git read
+  each, `endReaders` at once, each within its 2 s), which can delay that
+  pass's writes. An end, once observed, is written whether or not its
+  commit could be read: an end settled while a pass reads is written by
+  that pass without its commit, which the next pass reads and writes. What
+  a kill loses is what was not yet written (an end written before its
+  commit keeps no commit). `Close()`: the writer's last pass writes every
+  record; an end commit still being read gets `closeWait` (3 s), past
+  which its record is written with the commit it has, none, and an answer
+  after it is not kept; every later write and `Begin` is refused.
 - `Get(id)`, `List(after string, limit int)` (newest first by `StartedAt`,
   pages of at most 100), `Forget(id)` (refused for a live session,
   `ErrLive`, and for a record holding a `pending` resume receipt,
@@ -405,22 +416,64 @@ safe for concurrent use:
 - `Prune()`: past `MaxRecords` the oldest ended records go; a live one, and
   one with a `pending` resume, never.
 - `Recover()`, at open once the lock is held: a record with no end is
-  marked as no longer observed, never as ended: a server session's `lost`,
-  a hosted one's `host away`, `LostAt` its last write's time and `EndedAt`
-  left empty. That the lock's last holder is gone says nothing of the
+  marked as no longer observed, never as ended: `lost`, `LostAt` its last
+  write's time and `EndedAt` left empty. That the lock's last holder is gone says nothing of the
   session's process: a Runtime's context bounds its start, never its
   process's life (`ext.Runtime.StartTerminal`, `ext/runtime.go`), nothing
   promises that a guest's terminal ends with the server (Boxcar constraint
   7), and even a native child can outlive a server that crashed. The
   record page says "not observed since <time>; whether its process ended
   is not known", and Resume from it asks first ("Resume from a record").
-  A hosted record's host's next register reopens it (`Begin`, above). A `pending` resume receipt is settled by the rule of "Resume from
-  a record" below. Run once, before the first `Begin`.
+  It is the rule for a record with no instance ("Instances and
+  removers"), applied at a start. A `pending` resume receipt is settled by
+  the rule of "Resume from a record" below. Run once, before the first
+  `Begin`.
 - `Seq` on every write, from a counter in `history/state.json` written
   before the record, so a mark never goes back after a restart.
 
 A record of a newer `V` is read as it is, never rewritten (no `Note` reaches
 it: its session is not this server's), listed with `newer: true`.
+
+**Instances and removers.** Every write names its record's instance,
+never an id alone, and is taken only while that instance is its id's
+record in memory; for a server session, whose id is never reused, the
+instance and the id name the same record. A removal (`Forget`,
+`ForgetAll`, `Prune`, `Abandon`) chooses its records under the journal's
+lock and ends their instances there, at once and for good: out of memory
+and out of the index before the file goes, and the file deleted after any
+write under way (`wmu`). A stream, a `Settle`, or the writer's work on the
+record done outside the lock (an end commit, a fold) that comes after the
+choice is dropped. A delete that fails answers its error, and that answer
+is the truth: the file stays as last written, its row is listed again from
+it, with no instance; what the ended instance held unwritten is never
+written, and no later `Begin` can take its id. **A record with no instance
+is never open.** Wherever such a record comes from (a delete that failed,
+the files read at a start, the files read when the owner lock is taken
+late), the journal that holds the owner lock reads and lists one whose file
+has no end as `lost` (`LostAt` its file's last write, `Ending` `lost`, no
+`EndedAt`), exactly as the next start's recovery would make it, holds it
+in memory, dirty, and writes that end at its next pass (`Close`'s last
+pass among them). The rule lives in the journal, in its listing of a row
+read from a file and in its pass, not in the API; a read-only journal lists
+another server's files as they are, since their sessions are that server's.
+So a row that comes back after a failed delete is ended, and can be
+forgotten again at once. A
+record stays in memory until its last `State` (`Final`) is in and its end
+is written, so no write of a live instance finds its record gone, and
+nothing brings a record back from its file. The journal's locks are `wmu`
+(the disk: a record's write, the state file, a delete), then `rmu` (a
+removal after the reads under way), then `mu` (memory); the journal calls
+out (`EndCommit`, `Denied`) only on the writer's goroutine and with none of
+them held.
+
+**What the record keeps for PR-12.** The journal records server sessions
+alone (`session.KindServer`, launched by this server); a hosted session
+has no record until PR-12. The record's format already holds what a hosted
+record will need, every field optional and empty in PR-1's records, so
+PR-12 adds no migration: `Host.Hosted` (false), `Host.Owner` (empty), `Where`
+(always set for a server session; a hosted record's may be empty),
+`StartFrom: host`, `Reopened` (0), and `Ending`'s `host away` (never
+written by PR-1). PR-1 reads a record holding them as any other.
 
 **Config** (`internal/config`): `history.sessions`
 (`CONDUCTOR_HISTORY_SESSIONS`, `1`/`0`), on by default. Off: no record is
@@ -433,10 +486,12 @@ it), as it keeps no Dispatch.
 opens the journal with its data directory (none without one) and wires it
 at these places, each named as it is on `main`:
 
-- **A server session's start**, in `createLocalSession`: `Begin` once the
-  session's `Info` is made and before `session.NewLocal` (so the record
-  exists before the session can keep an entry; a session the registry then
-  refuses, `too_many_sessions`, has its record removed), from its `Info`,
+- **A server session's start**, in `createLocalSession`: only a server
+  session (`session.KindServer`) is recorded; `Begin` once the session's
+  `Info` is made and
+  before `session.NewLocal` (so the record exists before the session can
+  keep an entry; a session the registry then refuses, `too_many_sessions`,
+  has its record removed, `Abandon`), from its `Info`,
   its `Launched` and `req.where` as `Where`. **The launch revision** is read
   before the process starts: for a session whose `where` is native, one
   `git rev-parse` (argv, the C locale, 2 s; `--show-toplevel`,
@@ -452,85 +507,161 @@ at these places, each named as it is on `main`:
   and unknown, never the server's folder read natively. The end commit is
   read the same way after the end (native only, on the writer's
   goroutine), and is shown as "HEAD after the end", an observation.
-- **A server session's changes**: the `localChange` hook (`OnChange` of
-  every server session, `sessions.go`) calls the journal's `Changed(id)`,
-  which marks the record's metadata stale and wakes the writer, never
-  waiting; the `Info` the hook is handed is never copied. A session reads
-  its `Info` before it calls the hook, and its calls are not ordered
-  among themselves (`Local.notifyChange`, `internal/session/local.go`; the
-  race `hostagent`'s `noteChange` and `forwardChanges` document and
-  handle, #482), so a copied snapshot could put an older, higher Codex id
-  back over the lowest one the session chose, or a resumable id back to
-  not resumable. The writer instead reads the session as it is when it
-  gets to it, through a `Current(id)` callback the API hands `Open` (the
-  registry's `Info` of that id, as `publishLatest` reads `listedInfo`),
-  which is at least as new as every change marked before the read; a
-  change after the read marks it again. It answers the journal's own
-  `Meta` (the journal imports no session package), and from it the
-  record takes the agent's own session (`ID`, `Source`, `Resumable`), the
-  name, **the crew** and the status. A session adopted into a crew after
-  its start (`handleSelfCrew`, `internal/api/selfservice.go`:
-  `LaunchAdopting`, then `Local.SetCrew`) gets its `Crew` this way, and a
-  record whose `Crew` goes from none to one is written at once, as an end
-  is, not at the next flush. An ended `Info` (`Status.Ended()`, its exit
-  code and `EndedAt`) ends the record as `End` does, so an end never rests
-  on the status activity entry alone.
-- **A hosted session's add**: a new `OnAdded` callback on the hub
-  (`internal/signal`), called by `Register` after `registry.Add` succeeds,
-  which the API sets and which calls `Begin` from the session's `Info`
-  (its host's name and user, `Host.Owner` from the hub's owner, the agent's
-  id, command, folder and branch as the host registered them). A hosted
-  record's Runtime (`Where`), its agent version, its agent's own session
-  id, its repository and its commits are what its host reports and nothing
-  else: on `main` a host reports none of them (`proto.HostSession` carries the agent's id, the
-  command, the folder and the branch), so they stay empty and are said
-  "not reported by the host" until PR-12 adds them (an empty `Where` is
-  unknown, never native: `hostagent.Options` takes a Runtime of its own); the server's probe
-  cache and a git read on the server would describe the server's machine,
-  not the host's, and are never used for a hosted record.
-- **A hosted session's changes**: the hub's `OnChange` (`s.hosts.OnChange`,
-  `server.go`), which carries a hosted `Info`; `localChange` is never
-  called for a hosted session. It calls `Changed(id)` the same way, and
-  `Current` reads the hosted session's `Info` as it is then. A hosted
-  session's exit reaches the server twice: as the host's `status` activity
-  entry, which the host's bounded queue may drop (`activityForwarder`,
-  `internal/hostagent/activity.go`: a full queue drops the entry), and as
-  the host's status control message, which sets the hosted `Info`'s status
-  and exit code and calls `OnChange` with no activity entry
-  (`HostedSession.HostStatus`, `internal/signal/hosted.go`). The record's
-  end is taken from the ended `Info` whichever of the two arrives.
-- **Every session's entries and end**: a sink on the event hub
-  (`eventHub.addSink`), which hands every activity entry of every session,
-  server and hosted alike (`s.hosts.OnActivity` is the hub's `activity`
-  too), to `Note`/`Touch`/`Tool`, and a session's `status` end to `End`;
-  the session's removal from the registry (`session.Registry.OnRemove`,
-  the registry's hook, not the hub's) to `End` as well, `host away` for a
-  hosted session the hub let go past `DisconnectGrace` (`Hub.Expire`),
-  which proves nothing of its process (`LostAt`, no `EndedAt`). **A known
-  end is kept**: once a record holds an observed end (an exit or a stop,
-  from its `Info` or its status entry), a later removal or expiry changes
-  nothing, so "exited (exit 0)" never becomes "host away"; only a record
-  with no observed end is marked by a removal. The hub's `chat` (the `OnChat` of
-  server sessions, `localChat`, and of hosted ones, `s.hosts.OnChat`)
-  calls the journal's `Chat` for a session's chat (one call, never
-  waiting; run chat stays the run record's).
-- **A hosted session's questions reach its chat.** A hosted chat message
-  reaches `s.hosts.OnChat` only through `HostedSession.HostChat`
-  (`internal/signal/hosted.go`), which on `main` drops what the record
-  needs: it refuses the `question` kind and the agent's role
-  (`role.Valid()` is view or control), copies no `Options`, and keeps only
-  the `join` and `leave` events. PR-1 extends it, the host still
-  untrusted: the `question` kind taken with `By.Role` `agent`
-  (`session.RoleAgent`), and that role only on a question; its `Options`
-  cleaned and bounded as a server session's (`session.CleanOptions`: at
-  most `MaxAttentionOptions`, 6, each label at most `MaxOptionLabel`, 60
-  runes); the `answered` and `withdrawn` events kept with their `Ref` (a
-  cleaned id) and, on `withdrawn`, a `Text` that is one of the chat's own
-  reasons (`ChatLeftTerminal`, `ChatLeftAgent`) or none, any other text
-  dropped. `proto.ChatMessage` already carries every one of these fields,
-  so the protocol does not change.
+- **A server session's entries**: the session's own hooks, called after
+  the hooks it has on `main` (`recordHooks` wraps its `session.Options`),
+  never one of the event hub's sinks, whose order stays `main`'s:
+  `OnChange` is a hint, `OnActivity` and `OnChat` are streams (a chat line
+  of the session's own scope only: run chat stays the run record's). The
+  registry's `OnRemove` (`session.Registry.OnRemove`, the registry's hook,
+  not the hub's, called after the registry's lock) is the removal's
+  moment.
 - **The agent's version** of a server session from the probe cache
   (`cachedIdentity`, "" while it is cold, said so on the record page).
+
+**The record follows the session.** A record is reconciled from its
+session's state, never assembled from the order of the callbacks that
+tell of it. The sources of truth are two: **the session object** (the
+session's `session.Local`, its `Info` and its process's `ProcessDone`),
+which stays readable after it has left the registry, and **the registry's
+membership** (whether `registry.Get(id)` answers this very object). The
+API keeps one **recorder** per recorded session (`recorder`: the instance
+its `Begin` answered, the session object once made, whether its
+registration is complete, whether its process is being waited for,
+whether it is leaving), under the session's id in `recCur`; a recorder no
+longer in `recCur` reconciles nothing and keeps nothing. **One step,
+`reconcile`,** reads what is true of the session and settles it into the
+record through **one journal write, `Settle`**; run twice, or after any
+other write, it changes nothing more. It runs at exactly these moments:
+the registration's completion (`registered`, once the registry holds the
+session), so what the session did before its recorder could see it is read
+then; a hint; the registry's removal (`OnRemove`), final; and the
+shutdown's final pass, final. A record still open on disk at the next
+start is closed by the next start's recovery, as `lost`. **A hint** is a
+callback that says something may have changed: the session's `OnChange`
+(its status, its name, its agent's session, its crew) and the wait for a
+stopped session's process (`awaitProcessEnd`, started by a reconcile that
+finds the status ended while the process runs, ended by the final pass). A
+hint carries no truth: the `Info` it is handed is never read, it only
+runs `reconcile`, so a hint late, repeated, out of order or lost is
+harmless; the next reconcile, at the latest the removal's or the final
+pass's, reads the same state. **A stream** is a callback that carries
+evidence, an activity entry or a chat line: appended (`Note`, `Chat`)
+while its recorder is in `recCur` and its record is open, dropped and
+counted once the end is recorded, and dropped uncounted once its recorder
+is gone (its session final or abandoned). **An end is observed** by the
+fact the kernel gives: the session's process is gone (`ProcessDone`). A
+stop that fails leaves the status `stopped` while the process runs, and
+that record is not ended. A non-final reconcile records the end once the
+session has also published it (its status ended), so the end carries its
+details; a final one records it whenever the process is gone (the
+snapshot rule). A final reconcile that finds the process running records
+that the server stopped observing the session: `lost` (`LostAt`, no
+`EndedAt`), for good.
+A write the journal could not make is the writer's to make again;
+`reconcile` keeps no retry state.
+
+**The snapshot rule.** One reconcile holds `recMu` from its first read to
+its `Settle` and reads in this order:
+
+1. its recorder: nothing is done for a recorder that is not in `recCur`,
+   or that is leaving (the admission rule); outside the shutdown's final
+   pass, for one whose registration is not complete (that registration's
+   own reconcile reads what this one would have); in the final pass, for
+   one whose session object does not exist yet (the admission rule);
+2. **membership, first**: whether `registry.Get(id)` answers the
+   recorder's session object;
+3. **then the state**: the session's `Info`, one call under the session's
+   own lock, so its status, exit code, `EndedAt`, name, agent's session and
+   crew are one snapshot; and after it, whether `ProcessDone` is closed.
+
+The run is **final** when membership was read absent, or in the
+shutdown's final pass; a final run lets its recorder go. **A final
+record's end is what the session object says at that read**, and the
+process-done signal is the truth that the session ended: its process gone,
+an end, with the status, exit code and `EndedAt` from the session's `Info`
+when it has published them, and as `exited` with no exit code and the
+read's time when it has not yet (the session's read loop publishes the
+status a moment after the process is reaped, `Local.pump`, `markEnded`);
+its process running, `lost`, for good. A non-final run records an end only
+once the status is published too, and the publication's own change is the
+hint that brings it. Whatever
+the session did before the read, before or after the registry let it go,
+is what the read sees; what it does after the read is never read, for the
+recorder goes with the final. Membership read before the state is what
+makes a non-final run safe: read present, the state read after it is at
+least as new; a removal after the membership read runs `OnRemove` after
+the registry's delete, and its reconcile waits for `recMu`, so it runs
+after this one, reads the absence and reads the state again. No final is
+ever made from a state read before the absence was seen.
+
+`recMu` guards `recCur` and each recorder's session object, its
+registration's completion, its process wait (`watching`) and its leaving,
+and the records' closing (`recordsClosed`, set by the final pass). It is
+held across the registry's `Get`, the session's `Info`, the look at
+`ProcessDone` and the journal's in-memory calls (`Settle`, the streams),
+none of which waits on a disk. It is **never held across** a file write
+(`Begin`, `Abandon`, the writer, `Close`), a session call that waits
+(`Stop`), the end commit's git read, or a wait for another goroutine. The
+lock order is `recMu`, then the registry's lock, then the session's own
+lock, then the journal's `mu`; `recMu` and the journal's `wmu` are never
+held together. `recMu` is never taken under any of the others: the
+registry calls `OnRemove` after its lock, and a session calls its hooks
+after its lock (`Local.record`, `notifyChange`, `chatHook`).
+
+**The admission rule.** A record is admitted the moment its `Begin`
+succeeds, and its recorder exists from that moment, in `recCur`, whether
+or not its registration has completed. An admitted record is settled by
+its registration's reconcile and the hints after it, by its removal, by
+the shutdown's final pass, or removed by its abandonment.
+
+**An abandonment** (the registry refused the session, `too_many_sessions`)
+marks its recorder leaving under `recMu`, and the recorder stays in
+`recCur`, visible, while the journal's own removal runs outside the lock
+(`Abandon`, which returns once the delete has been made or has failed);
+then, under `recMu` again, it takes the recorder out of `recCur` and says
+it has gone (a channel the final pass may wait on). A leaving recorder
+reconciles nothing and keeps no stream. An abandonment that finds its
+recorder no longer in `recCur` (the final pass took it first) removes
+nothing: the record stays as the final pass settled it.
+
+**The final pass** (`closeSessionRecords`, last in `Server.Shutdown`,
+after the sessions' stops and the other stores) does:
+
+1. under `recMu`, marks the records closed (`recordsClosed`) and closes
+   `recordsStop`, which ends the process waits;
+2. in the same hold of `recMu`, settles every recorder it holds that is
+   not leaving,
+   its registration complete or not. One whose session object exists
+   (`made`) is settled final from that session's state by the snapshot
+   rule, so an exit the session observed before the registry held it is
+   recorded as that exit. One whose session object does not exist yet is
+   left as its `Begin` wrote it, open on disk, for the next start's
+   recovery to close as `lost`. Each settled recorder is let go;
+3. **waits**, with `recMu` let go, for every recorder that was leaving when
+   it set the mark, until its abandonment has said it has gone (one
+   file's delete; nothing else is waited for). It never settles a leaving
+   recorder: a refused launch's record is removed, whichever came first;
+4. under `recMu`, lets every recorder still held go (`recCur` emptied);
+   then the journal closes (`Close`, its last pass writing what was
+   settled).
+
+After the mark nothing writes a record. `beginServerRecord` reads the mark
+under `recMu` before its `Begin` and begins nothing: the launch goes on
+without a record, the server stopping. A `Begin` already under way as the
+mark is set writes its record, finds the mark when it would put its
+recorder in place, and puts none: its record stays open on disk, as step 2
+leaves one without its session object. A `made`, a `registered`, a hint or
+a stream that comes after finds no recorder of its id and writes nothing,
+so no `Settle` reaches a closed journal; and after `Close` the journal
+itself refuses every `Begin` and every write.
+
+Nothing about launches changes: there is no admission to wait on, no new
+answer, nothing the engine reads differently, and the shutdown stops the
+runs and sessions it stops on `main` (`Server.Shutdown`). `serve` drains
+the HTTP server only after `Server.Shutdown` returns
+(`internal/cli/serve.go`), so a launch can run through the whole
+shutdown; the mark, read under `recMu`, is what orders its record against
+the final pass.
 
 The routes:
 
@@ -1010,6 +1141,8 @@ and links, every field of the six taken from the record itself:
   `crew.RepoRoots` makes it), cached per folder for the pass. A crew
   member's project is its run's. A hosted record's common directory is a
   path on its host's machine and is matched against no server project.
+  There is no hosted record until PR-12: until then nothing of a hosted
+  session is indexed.
   The index's `repo` holds that identity (a run's from its folder, read the
   same way) and `tree` the worktree's top; `repo:` and `Similar`'s
   repository scope compare `repo`, so crews in sibling worktrees of one
@@ -1146,6 +1279,10 @@ whose `refURL` is not a page of the app that shows that exact evidence
 No row's URL is an API route. A session entry opens `/sessions/<id>` while the registry lists it
 and `/history/sessions/<id>#e<seq>` after.
 
+Until PR-12 no record is hosted: a hosted session has no History row, its
+own session page is as today, and the `host_away` state below comes with
+PR-12's hosted records.
+
 **Availability** (`history_availability.go`, PR-4), computed when a page is
 answered, never stored, from what the server holds now and cheap enough for
 a page of 100 (no git, no disk read but a `stat`):
@@ -1232,6 +1369,9 @@ An `Entry` as served:
 these, PR-5 the resume) with every field and bound above.
 
 ### `internal/api`, `internal/cli` (PR-5): resume from a record, the CLI, the guide
+
+Until PR-12 there is no hosted record to resume from; a hosted session is
+resumed by its host, as today.
 
 **Resume from a record.** `POST /api/history/sessions/{id}/resume` (admin),
 body `{commandId, withoutEnv?, confirmLost?}` (`DisallowUnknownFields`; `commandId` in the
@@ -1327,7 +1467,8 @@ page a History row's Enter or → can reach (a session record, the run page
 at a step and at a command receipt, the ticket page at a comment) and the
 record's Resume, on PR-5's route, so that when PR-7
 adds the palette and the History page no row leads to a page `main` does
-not have.
+not have. Until PR-12 no record is hosted: a hosted session has no record
+page and no History row, and its own session page is as today.
 
 **PR-6, the record page and the run page's step.**
 
@@ -1485,6 +1626,81 @@ three protocol places together:
 Resume of a hosted session stays the host's (`400 hosted_session`,
 unchanged): the reported agent session is evidence, not a door.
 
+**A hosted session's record.** PR-12 also gives a hosted session its
+record: PR-1 records server sessions alone, and a hosted record's
+lifecycle belongs where the host's own report is the source of truth,
+rather than what the server infers from registrations and expiries. PR-12
+is designed when it is built. Its inputs, from PR-1's first design and
+the review of it (on #673), are listed here, not designed:
+
+**What PR-12 takes over from PR-1's first design**
+
+- **What the journal needs from the hub**: a callback once a hosted
+  session is in the registry (PR-1's first design had `Hub.OnAdded`,
+  called by `Register` after `registry.Add`, outside the hub's lock and on
+  the connection's goroutine), and the session's own hooks for its changes
+  (its end from `HostedSession.HostStatus`, which sets the status and
+  exit code with no activity entry), its activity and its chat. A hosted
+  record borrows nothing of the server's machine (no probe, no git read,
+  no Runtime).
+- **The re-registration rule**: a hosted session's id is
+  `HostedID(instance, localID)`, the same after a server restart or after
+  its host comes back past `DisconnectGrace`, so one id has several
+  registrations. PR-1's first design took a `lost` or `host away` record
+  of the same `Host.Owner` up again (`Reopened` counted, a "taken up again
+  by its host" entry, entries and `Seq` kept, the record merged with its
+  earlier file when it had left memory), refused an ended one
+  (`ErrExists`), and recorded `host away` when the hub let a session go,
+  at the final pass and at recovery.
+- **A hosted session's questions reach its chat**: `HostChat` on `main`
+  refuses the `question` kind and the agent's role, copies no `Options`,
+  and keeps only the `join` and `leave` events. The first design took the
+  question with `By.Role` `agent` (that role only on a question), its
+  `Options` cleaned as a server session's (`session.CleanOptions`), the
+  `answered` and `withdrawn` events with their `Ref`, and on `withdrawn` a
+  `Text` among the chat's own reasons or none; `proto.ChatMessage` already
+  carries these fields.
+- **A hosted file path** made absolute against the hosted session's
+  folder as its host says it (`signal.HostAbs`), at delivery in the first
+  design, which moved the path when the folder changed between the touch
+  and its delivery.
+- **The hub defects the review found**: a registration serialized with
+  expiry, the attach included (`Register` lets the hub's lock go between
+  its lookup and its attach or insertion, so an expiry can remove the very
+  session it then attaches to, and two registrations of one id can both
+  insert and deliver their callbacks in reverse order); the stop route's
+  removal by identity (`handleDeleteSession` reads a driver and its status,
+  then `Registry.Remove(id)` removes whatever holds the id by then, a
+  replacement included); and `Hub.Expire`'s removal by id, the defect on
+  `main` filed as its own issue.
+- **The orderings a reused id brings**, which a server session's never-
+  reused id does not have: an outgoing registration's end against the
+  recorder that replaces it (reconcile the outgoing one before replacing
+  it, so an observed end is kept), and a failed delete against a fresh
+  record of the same id (the fresh one must not overwrite the file the
+  failed delete left).
+- **The host queue's accounting**: `hostagent`'s activity forwarder sends
+  activity and chat through one bounded queue (256) that drops at full. An
+  answer dropped there, and a later status message, leave the record's
+  question `withdrawn` by the end with nothing counted: the loss to be
+  counted, and a withdrawal inferred across a gap told apart from a known
+  outcome.
+- **The tests the first design named for hosted records**:
+  `TestAHostedSessionGetsARecord`,
+  `TestAHostedRecordBorrowsNothingFromTheServer`,
+  `TestAHostedQuestionAndItsEndsReachTheRecord`,
+  `TestAHostedRecordSurvivesAServerRestart`,
+  `TestAHostedRecordLetGoByExpiryIsReopened`,
+  `TestAHostedExitIsKeptWithItsActivityDropped`,
+  `TestRecoverMarksAHostedRecordHostAway`,
+  `TestBeginReopensTheSameHostsRecord`, `TestAnEndDuringTheMergeStands`,
+  `TestAHostedBeginDuringItsRemoval`,
+  `TestADelayedHostedRemovalLeavesTheReconnectedRecordOpen`.
+
+PR-1's record format already holds the fields a hosted record needs
+(`Host.Hosted`, `Host.Owner`, `Where` empty, `StartFrom: host`, `Reopened`,
+`Ending` `host away`), so PR-12 adds no migration.
+
 ### Later PRs (PR-9 to PR-11): what waits on other items
 
 - **PR-9, DR1's decision records** (waits on DR1's PRs that serve
@@ -1540,36 +1756,154 @@ Each of the three adds its paragraph to the features entry PR-8 writes.
 
 ## Events, orderings and invariants
 
-**The session record's states.** `open` (begun, its session live) →
-`ended` (its `status` end or its removal from the registry: `EndedAt` and
-`Ending` set, the writer woken to write it at once, the end commit read
-after on the writer's goroutine, native only; from its status entry or
-its ended `Info`, whichever comes first, and kept against a later removal)
-or `lost` (a server session's record found open by `Recover` after a stop
-the session did not see: `LostAt` its last write's time, no `EndedAt`, its
-process's state unknown) or `host away` (a hosted record found open by
-`Recover`, or let go by `Hub.Expire` past `DisconnectGrace`: `LostAt`, no
-`EndedAt`; its process runs on its host and may still be running). `host away` and `lost`
-on a hosted record → `open` again when the same host's session registers
-under the same id (`Begin`'s reopening: same `Host.Owner`, `Reopened`
-counted, entries and `Seq` kept). A record exists in memory before its
-session can keep an entry (begun before `session.NewLocal` for a server
-session, written at once there; at the hub's add for a hosted one, whose
-entries come from its host only once it is registered, written by the
-writer before anything else it holds) and is written at its end at once;
-between, at most every 5 s.
+**The session record's states.** PR-1 records server sessions alone (a
+hosted session has no record until PR-12). `open` (admitted: its session
+live, or its registration in flight) → `ended` (a reconcile read an
+observed end: `EndedAt` and `Ending` from the session's `Info`, every
+question still open withdrawn by the end, the end commit read by the
+writer and written when read, never a condition of the end's write) or `lost` (a final reconcile read no
+observed end: the session gone from the registry, or the shutdown's final
+pass, with its process running at that read; or a record with no instance
+whose file has no end, at the next start's recovery or after a failed
+delete: `LostAt`, no `EndedAt`, its process's state unknown). Both are for good: an end once recorded stands. An ended or lost
+record changes only by a stream's drop count, its end commit, a resume's
+receipt, and `Forget`. A record is written when begun (before `Begin`
+returns), at the writer's passes while it changes, and at its end by a
+pass woken for it.
 
-**Entries reach a record out of order.** The hub calls its sinks on the
-goroutines that recorded the entries, concurrently and out of order, after
-the session's lock, so a session's end can reach `End` before an earlier
-report or chat line reaches `Note`. A record therefore places entries by
-`At` (then arrival), and after `End` still takes an entry whose `At` is
-not after `EndedAt`, writing it at the next flush; an entry after
-`EndedAt` is dropped and counted. An ended record changes only by such an
-earlier entry, by a resume's receipt, by a hosted record's reopening, or
-by `Forget`. `TestAnEarlierEntryHeldPastTheEndIsKept` holds a report's
-callback at a gate in a test sink until `End` has run and been written,
-then lets it go: the record holds it, in its place by `At`.
+**The table.** Every moment that can touch a session's record:
+
+- **Bg**, a registration in flight: `Begin` written, its recorder in
+  `recCur`, with no session object yet (before `session.NewLocal`) or with
+  one the registry does not hold yet.
+- **Rg**, a registration complete: `registered` after `AddReserved`.
+- **Ab**, an abandonment: the registry refused the session; its recorder
+  marked leaving, `Abandon`, the recorder gone.
+- **Hn**, a hint: `reconcile` from `OnChange` or `awaitProcessEnd`.
+- **Sm**, a stream: `Note`, `Chat`, `Touch`, `Tool` through the recorder.
+- **Pe**, the process ending: the status ended (`markEnded`) and the
+  process gone (`ProcessDone`), in either order.
+- **Sr**, the stop route on a running session (`Stop`).
+- **Rm**, the registry's removal (`Registry.Remove` from the stop route on
+  an ended session, `GC` past the retention), then `OnRemove`'s final
+  reconcile.
+- **Fp**, the shutdown's final pass: the mark (`recordsClosed`), every
+  recorder with its session object settled final, the leaving ones waited
+  for, every recorder let go; then the journal's `Close`.
+- **Wr**, the journal's writer: an end commit, a fold, a write, an
+  eviction.
+- **Rv**, the next start's recovery (`Open`, or `awaitLock` once the lock
+  comes).
+- **Fg**, `Forget`, `ForgetAll`, `Prune`.
+- **Wf**, a write that fails: a record's, the state file's, a delete.
+
+For every pair of them that can overlap, what each reads and writes, what
+orders them, and the record afterwards, in either order where the row
+gives two. A test is named where a lock alone does not settle the row;
+"lock" means the row needs none beyond the property test below. Pairs that
+cannot overlap: Ab with Rm (a refused session is never in the registry),
+Rv with any other (below, S38).
+
+| # | Pair | What each reads and writes | Ordered by | The record afterwards | Test |
+|---|---|---|---|---|---|
+| S1 | Bg, Hn | The hint's reconcile finds the registration incomplete and does nothing. | `recMu`, the completion flag | open as begun; Rg's reconcile reads all the hint would have | lock |
+| S2 | Bg, Sm | The stream is appended: the recorder is in `recCur` and the record open from `Begin`. | `recMu`, the journal's `mu` | the entry kept in its place by `At` | `TestARecordIsWrittenBeforeItsFirstEntry` |
+| S3 | Bg, Pe (the process exits before the registry holds it) | Pe changes the session; its hint finds the registration incomplete. Rg reads membership (present), then the state: an observed end once the status is published (until then the publication's own hint brings it). | `recMu`, membership first | ended, `exited (exit n)` | `TestAnExitBeforeTheRegistryHeldTheSessionIsRecorded` |
+| S4 | Bg, Rm (removed between `AddReserved` and `registered`) | Rm's reconcile finds the registration incomplete and does nothing. Rg reads membership (absent: final), then the state. | `recMu`, membership first | the end the session object shows at Rg's read, or `lost`; the recorder let go | `TestARemovalBeforeTheRegistrationCompletes` |
+| S5 | Fp, Bg with its session object made | Fp settles the recorder final from the session object's state at its read; the recorder let go; `Close` writes it. | `recMu`, the snapshot rule | ended when its process is gone at the read: `exited (exit n)` as published, or `exited` with no exit code when the status is not yet published; `lost` when it runs | `TestALaunchInFlightAtShutdownIsSettled`, `TestAFinalReadBeforeTheStatusIsPublishedRecordsAnExit` |
+| S6 | Fp, Bg with no session object yet | Fp leaves the record as `Begin` wrote it, open, and lets the recorder go. The next start's recovery reads it open. | `recMu`, the mark | open on disk; `lost` at the next start | `TestALaunchBeforeItsSessionAtShutdownIsLostAtTheNextStart` |
+| S7 | Fp, a `Begin` | Before the mark: an admitted record, S5 or S6. After it: `beginServerRecord` reads the mark under `recMu` and begins nothing. Under way as the mark is set: the record written open, the mark found when its recorder would go in, none put in. After `Close`: the journal refuses it. | `recMu`, the mark, the journal's `closed` | no record; or open on disk, `lost` at the next start | `TestABeginAfterTheFinalPassRecordsNothing` |
+| S8 | Fp, a registration completing late (`made`, `registered`) | After Fp the recorder is gone; `registered`'s reconcile finds none and writes nothing; no `Settle` reaches the closed journal. | `recMu` | as Fp left it (S5 or S6) | `TestALaunchInFlightAtShutdownIsSettled`, `TestALaunchBeforeItsSessionAtShutdownIsLostAtTheNextStart` (each lets its launch go after `Close`) |
+| S9 | Ab, Hn or Sm or Wr | The leaving recorder reconciles nothing and keeps no stream; `Abandon` ends the instance under `wmu`, and the writer's work after finds its record gone. | `recMu`, the leaving mark, the instance rule | no record | `TestARefusedLaunchLeavesNoRecord` |
+| S10 | Ab, Fp | Leaving when Fp sets the mark: Fp does not settle it and waits, outside `recMu`, until the abandonment has gone. Gone before the mark: Fp never sees it. Not yet leaving when Fp settles it (its session object made): Fp settles it final and lets it go, and the abandonment that follows finds no recorder and removes nothing. | `recMu`, the leaving mark, Fp's wait | no record; or, an abandonment begun after Fp took its recorder, the record Fp settled | `TestARefusedLaunchAtTheFinalPass` (held at `beforeAbandon` until Fp is at `awaitLeaving`, and before the leaving mark) |
+| S11 | Ab, Wf (`Abandon`'s delete fails) | The record is out of memory; the failed delete puts its row back from the file, as a removal's does, with no instance; its file says open, so by the rule for a record with no instance it is listed `lost` and its end written at the next pass. | `wmu`, the rule for a record with no instance | `lost`, listed, forgettable | `TestAFailedAbandonIsListedLost` |
+| S12 | Ab, Pe or Sr (the refused session's process ends, or is stopped by its launch) | The leaving recorder reconciles nothing. | `recMu`, the leaving mark | no record | lock |
+| S13 | Hn, Hn | Each reads the session under `recMu`; the later reads at least as new. The `Info` a hint carries is never read. | `recMu` | the session's state at the later read (the lowest Codex id the session chose, resumable as it says) | `TestAHintCarriesNoTruth` |
+| S14 | Hn, Pe | A hint before the end reads no end; the end's own change is a hint; a status ended while the process runs is waited for (`awaitProcessEnd`), a hint at `ProcessDone`. A hint lost is made up by the next reconcile, at the latest Rm's or Fp's. | `recMu`, idempotence | ended once observed, once | `TestAFailedStopIsNoEnd`, `TestALostHintIsReadByTheRemoval` |
+| S15 | Hn, Rm after the hint's membership read | Hn reads membership present, then the state: an observed end if the process has gone and the status is published meanwhile, not final. Rm's reconcile waits on `recMu`, reads the absence, final, and the state again. | `recMu`, membership first | the end the session object shows at Rm's read (the same as Hn's when Hn saw one); the recorder let go | `TestAnEndBeforeTheRemovalIsNeverReadStale` |
+| S16 | Hn, Rm before the hint's membership read | Hn reads the absence (final), then the state; the recorder let go. Rm's reconcile finds no recorder. | `recMu`, membership first | the end the session object shows at Hn's read, or `lost` | `TestAnEndBeforeTheRemovalIsNeverReadStale` (its second order) |
+| S17 | Sm, an end settled | Under the journal's `mu`: before the end, kept by `At`; after it, dropped and counted, whatever its `At`. | the journal's `mu` | as said; a question whose answer is dropped reads `withdrawn` | `TestAnEntryAfterTheEndIsDropped`, `TestAnAnswerAfterTheEndReadsWithdrawn` |
+| S18 | Sm, Rm | After Rm's final the recorder is gone: dropped, not counted. Before: as S17. | `recMu` | as S17 | lock |
+| S19 | Sm (a touch), Wr | A touch is folded by the pass that finds it, outside `mu`, before that pass's writes; one that comes during a pass waits for the next. | the journal's `mu` | the touch folded | lock |
+| S20 | Pe, Sr | `Stop` marks `stopRequested`, stops the process, marks the status `stopped`; a process that exits meanwhile ends as the status says once both are in; a stop that fails leaves `stopped` with the process running: no end, the process waited for. | the session's own lock; reconcile reads the result | ended as the status says, once the process is gone | `TestAFailedStopIsNoEnd` |
+| S21 | Rm, Pe (a failed stop's session removed while its process runs) | Rm's final read decides: the process gone at that read (it exited between the delete and the read), that end; still running, `lost`. A process that exits after the read is read by no one. | the final read (the snapshot rule) | `stopped (exit n)`, or `lost` for good | `TestTheFinalReadDecidesTheEnd` |
+| S22 | Rm, Rm (the stop route and `GC`) | The registry deletes once and calls `OnRemove` only for the delete it made (`Remove`, `removeIf`); a server session's id is never another's. | the registry's lock | one final | lock |
+| S23 | Fp, Hn or Sm | After Fp the recorder is gone; `awaitProcessEnd` ends on `recordsStop`. | `recMu` | as Fp left it | lock |
+| S24 | Fp, Rm | Both final; whichever is second finds no recorder. | `recMu`, idempotence | one end | lock |
+| S25 | Fp, Sr or Pe | Fp's read decides, as Rm's does (S21): what the session object shows at the read. | `recMu`, the snapshot rule | its end, or `lost` | lock |
+| S26 | Fp's `Close`, Wr's end commits | The ends Fp settled are written by `Close`'s last pass, and every end observed before it, whether or not its commit was read: an end is never held for its commit. A commit read within `closeWait` (3 s) is written with it; a read not answered by then leaves the record ended with no commit, and an answer after it is not kept. | `closeWait`, the reads' context | ended, with its end commit or none | `TestCloseGivesUpOnEndCommits`, `TestAnEndIsWrittenWhateverItsCommitRead` (a pass held reading one commit, another record ending meanwhile, then `Close`) |
+| S27 | Fp, Fg (a Forget route during the shutdown) | Before `Close`: as any Forget. After: refused (`ErrClosed`). | the journal's `mu` and `closed` | forgotten, or as it was | lock |
+| S28 | Wr's end commit, Rm | The end commit is read through the registry's session and its folder: removed first, none is read. | the order of events (a promise, below) | ended, `endCommit` empty | `TestTheEndCommitIsTheLaunchRepositorys` (with its removed-first case) |
+| S29 | Wr, Settle | The writer copies the record under `mu`; a later `Settle` marks it dirty again. An end is written at the write that finds it, whether or not its end commit is read; the commit, read after, marks the record dirty again and is written then (`needEnd` keeps the record in memory until it is, and gates no write). | the journal's `mu` | the later state at the next write; the end before its commit when the commit is read after the write | `TestAnEndCommitReadAfterItsEndIsWritten` |
+| S30 | Wr, Fg | Chosen under `mu`, the record's instance ends; the writer's work after finds its record gone; a write under way ends before the delete. | the instance rule, `wmu` | gone | `TestAForgottenRecordIsHiddenBeforeItsFileGoes`, `TestARemovalAgainstTheFold` |
+| S31 | Fg, Hn or Rm or Sm on an ended record whose session is still registered | `Forget` takes the ended record; the instance ends; a later `Settle` or stream is dropped. | the instance rule | gone, and stays gone | `TestAHookOfAForgottenInstanceIsDropped` |
+| S32 | Fg, a live session | The route refuses a session listed and not ended; the journal refuses any open record (`ErrLive`), a stopped session whose process runs among them. | the journal's `mu` | kept | `TestForgetRefusesALiveSession` |
+| S33 | Fg (`Prune`), Settle | `Prune` chooses only ended or lost records with no pending receipt; a later `Settle` of a pruned instance is dropped. | the instance rule | open records kept; a pruned one gone | `TestPruneKeepsLiveAndPendingRecords` |
+| S34 | Wf, anything | A record's write that fails leaves it dirty in memory, written again at the next pass; `Settle` and the streams go on in memory; a state file's failure fails the write the same way. | `wmu`, the writer's retry | in memory as settled; on disk the last write that succeeded | `TestARecordWhoseFirstWriteFailedFollowsItsSession` |
+| S35 | Wf (a `Forget`'s delete fails), its record's end settled and not yet written | `Forget` chooses by the record as memory holds it: one whose end is settled but not yet written (its end commit being read, its write pending or failed) is ended there while its file still says open. The delete fails: the row comes back from the file with no instance and, by the rule for a record with no instance, is listed `lost` and its end written at the next pass. A record whose end was written comes back ended as written. | `wmu`, the rule for a record with no instance | ended (`lost`, or its written end), forgettable again at once; a shutdown between: `Close`'s last pass writes it `lost` | `TestAFailedDeleteOfAnUnwrittenEndIsListedLost`, `TestAFailedDeleteKeepsTheRecord` |
+| S36 | Wf (a `ForgetAll`'s or `Prune`'s delete fails), its record's end settled and not yet written | Neither chooses a live record, but both choose by the row memory holds, so an end settled and not yet written is ended there and open on its file, as at S35. The same rule: listed `lost`, its end written at the next pass. | `wmu`, the rule for a record with no instance | as S35; `ForgetAll` counts it kept and answers the error, `Prune` chooses it again at a later pass | `TestAFailedDeleteOfAnUnwrittenEndIsListedLost` (each remover) |
+| S37 | Wf, Fp's `Close` | A record whose last write fails at `Close` stays on disk as last written. | `wmu` | as last written; open, `lost` at the next start | `TestALastWriteThatFailsIsLostAtTheNextStart` |
+| S38 | Rv, anything | At `Open` with the lock held: before the server makes any session. The lock taken late (`awaitLock`): under `wmu`, read-only until it ends, so a `Begin` before is refused (`ErrNotOwner`) and its session is unrecorded for its life. | `wmu`, read-only | `lost` for each record open on disk | `TestReadOnlyWithoutTheLock`, `TestOpenSaysReadOnlyBeforeItsWaiterRuns` |
+| S39 | Bg, Ab (the same launch) | One goroutine: `Begin`, `made`, `AddReserved` refused, the abandonment; no overlap but with Fp (S10). | the launch's own order | no record | lock |
+
+**Promises at the edges.** Each follows from the rules above and is said
+once here.
+
+- **What is dropped after an end.** A stream that reaches the journal once
+  its record's end is recorded is dropped and counted in `Dropped`,
+  whenever it was emitted. That includes a real answer given a moment
+  before the end: a choice picked, or keys typed in the terminal, whose
+  chat line reaches the journal after the end is recorded is dropped, and
+  the question then reads `withdrawn` by the end. This is a cost, taken on
+  purpose: a session tells its streams on other goroutines than its end,
+  after its lock, and a rule that kept a late line by its time would make
+  the record depend on the order of callbacks and on two clocks, which
+  this design removes.
+- **A final record's end is the final read's.** When a reconcile sees the
+  session gone from the registry, or in the shutdown's final pass, the
+  record's end is what the session object says at that read, one of three
+  (the snapshot rule, S5, S21): its process still running, `lost`, for
+  good; its process gone with its status published, that end (the status,
+  exit code and `EndedAt` as published); its process gone before its
+  status is published, `exited` with no exit code at the read's time. What
+  the process does after that read is never recorded.
+- **The end commit** is read by the writer after the end is recorded,
+  and written when it is read: the end's write never waits for it, so an
+  end written before its commit keeps none should the process be killed
+  between. It is read through the session's own folder (`FolderDir`, by
+  its handle where the system names one) and only from the launch's
+  repository, by the file system's identity of its common directory,
+  which the launch holds open until the end commit is read (or none is to
+  be read: an abandonment, a lost end, the record removed by `Forget`,
+  `ForgetAll` or `Prune`, its delete failed or not, the journal closed)
+  where the system gives a removed directory's identity to the
+  next one made (Linux's inode numbers): a repository made again at the
+  launch's path never lends its commit. A session removed from the
+  registry before the writer reads it (its folder closed with it) gets
+  none, said by an empty `endCommit`. It is the one fact still read in an
+  order of events: a git read under `recMu` would hold every reconcile
+  behind a disk.
+- **A kill** (the process ended without its shutdown) runs no final pass:
+  what was not yet written is lost (the evidence since the record's last
+  write, and an end recorded in memory and not yet written), and the next
+  start marks each record still open on disk `lost`, `LostAt` its file's
+  last write, never ended. A record whose end was written stays ended.
+- **A launch caught by the shutdown before its session object** (its
+  record begun, `session.NewLocal` not yet returned when the final pass
+  ran, or its `Begin` under way as the mark was set) is recorded `lost` by
+  the next start, whatever its process did. A launch that reaches `Begin`
+  after the mark has no record.
+- **A refused launch has no record**, except when its abandonment's
+  delete fails (it comes back listed `lost`, as every record with no
+  instance does) or begins after the final pass has settled it (its record
+  is what the final pass read).
+- **What bounds the journal** is each record's own caps (64 KiB on disk,
+  its entries, files and tools) and the pruning of ended records past
+  `MaxRecords`; the open records are not bounded by the session cap, since
+  a stop that fails frees its session's place while its record stays open
+  until its process is gone or its session is removed.
+
+**Open in the design.** Nothing: every pair above has its outcome.
 
 **A resume's receipt.** `pending` (reserved under the record's lock, with
 the new session's id allocated, before any check or launch) → `started`
@@ -1688,6 +2022,14 @@ for Program item TS1 to decide, an item not yet planned.
   (Owner decisions, 2).
 - Keeping a terminal's output, scrollback or screen in a record, or what a
   person types into the terminal or a reply box (Owner decisions, 4).
+- A hosted session's record: a hosted session has no record until PR-12,
+  which gives it one from its host's report.
+- `Hub.Expire` removing a session its host has just registered again: a
+  defect on `main` today, whatever the journal does; it leaves PR-1 with
+  the hosted records and is its own issue.
+- Stopping a session launched after the shutdown's stops: on `main` such a
+  session is not stopped by the shutdown, and PR-1 leaves that as it is
+  (its record, if it began one, is settled by the final pass, S5 to S8).
 - Sharing history between machines or people, and conflict rules for it:
   Program item TS1's, over CS1's sync, an item not yet planned and with no
   plan file; HS1 only reserves the `origin` column.
@@ -1729,10 +2071,13 @@ through a seam (`flushNow`) in every test that needs a write.
 `TestARecordKeepsEvidenceEntriesOnly` (join, leave and link never kept, an
 attention entry never kept, tool use counted);
 `TestTwoQuestionsOfTheSameWordsAreTwoEntries` (each answer's `Ref` names
-its own); `TestAnEarlierEntryHeldPastTheEndIsKept` (a gate holds the
-earlier entry until `End` is written; kept in its place by `At`; one after
-`EndedAt` dropped and counted); `TestEndWritesOffTheCallersGoroutine` (the
-writer's disk held at a gate: `End` returns at once);
+its own); `TestAnEntryAfterTheEndIsDropped` (an entry noted before the end
+kept in its place by `At`; one noted after the end is settled dropped and
+counted, one whose `At` is before `EndedAt` among them);
+`TestAnOpenQuestionEndsWithItsSession` (a question with no answer at an
+observed end: one `withdrawn` entry at the end's time; none at a lost
+end); `TestEndWritesOffTheCallersGoroutine` (the writer's disk held at a
+gate: `Settle` with an end returns at once);
 `TestAFileFoldsIntoOneRowPerPathAndOp`;
 `TestADenyListedPathIsNeverWritten`; `TestAVariableValueIsNeverWritten` (the
 names and the hash only; the file grepped for the value);
@@ -1742,26 +2087,31 @@ the count and hash kept, no argument, the record under 64 KiB with every
 other field at its bound); `TestPruneKeepsLiveAndPendingRecords` and
 `TestLiveRecordsPastMaxRecords` (more live than `MaxRecords`: none pruned,
 every ended one past the bound pruned); `TestRecoverMarksAnOpenRecordLost`
-(a server session's: `lost`, `LostAt` its last write, `EndedAt` empty) and
-`TestRecoverMarksAHostedRecordHostAway` (the same, `host away`);
-`TestAnOlderChangeNeverOvertakesANewerOne` (two `Changed` calls whose
-snapshots arrive older last, Codex's lowest id then a higher one and a
-resumable id then not resumable: the record holds what `Current` answers,
-the lowest id, resumable);
-`TestBeginReopensTheSameHostsRecord` (marked `host away`, then `lost`; the
-same owner reopens it with its entries and `Seq`; another owner, or a
-server session's id, refused `ErrExists`); `TestRecoverSettlesAPendingResume`
+(`lost`, `LostAt` its last write, `EndedAt` empty);
+`TestSettleIsIdempotent` (a `State` settled twice changes nothing; a
+second end, observed or lost, leaves the first);
+`TestAnEndedRecordStaysUntilItsSessionIsDone` (an ended record not yet
+`Final` stays in memory and takes its `Settle`s; `Final` and written, it
+leaves); `TestACrewTakenIsWrittenAtOnce`; `TestBeginRefusesAnIdThatHasARecord`
+(`ErrExists`); `TestARecordHoldingPR12sFieldsIsRead` (a record with
+`Host.Hosted`, `Host.Owner`, `Reopened` and `host away`, as PR-12 will
+write it, listed and read as it is); `TestRecoverSettlesAPendingResume`
 (the allocated id's record there: `started`; none: `uncertain`);
-`TestSeqNeverGoesBack` (a crash between
-the state file and the record, by a seam); `TestForgetRefusesALiveSession`
-(and a record holding a `pending` receipt, `ErrResumePending`; `ForgetAll`
-keeping and counting it);
-`TestANewerRecordIsReadNotRewritten`; `TestReadOnlyWithoutTheLock` (two
-processes, as the ledger's lock test); `TestFilesAre0600InA0700Directory`
-(unix); 32 goroutines noting into 8 records under `-race`, every entry kept
-once in order of `Seq`.
+`TestSeqNeverGoesBack` (a crash between the state file and the record, by
+a seam); `TestForgetRefusesALiveSession` (and a record holding a `pending`
+receipt, `ErrResumePending`; `ForgetAll` keeping and counting it); the
+instance rule against each remover, each held at a seam in the order its
+row of "The table" names: `TestAHookOfAForgottenInstanceIsDropped`,
+`TestAForgottenRecordIsHiddenBeforeItsFileGoes`,
+`TestARemovalAgainstTheFold`, `TestAFailedDeleteKeepsTheRecord`;
+`TestCloseGivesUpOnEndCommits`; `TestANewerRecordIsReadNotRewritten`;
+`TestReadOnlyWithoutTheLock` (two processes, as the ledger's lock test);
+`TestFilesAre0600InA0700Directory` (unix); 32 goroutines noting into 8
+records under `-race`, every entry kept once in order of `Seq`.
 
 **Go, `internal/api` (PR-1):** `TestEveryServerSessionGetsARecord`;
+`TestAHostedSessionGetsNoRecord` (a host registers a session: no record,
+no route lists it, the session's own page as today);
 `TestWhatAPersonTypesIsNotKept` (a reply-box submission, keys typed into
 the terminal and a typed answer to a question: the record file grepped for
 each, none there; a line Conductor typed kept as `typed`);
@@ -1770,43 +2120,199 @@ answered by a choice, one withdrawn: ids, choices, `Ref` and outcome as the
 chat had them); `TestTheChatIsKeptWithWhatWasSentToTheAgent`;
 `TestATerminalAnswerIsNotAWithdrawal` (a question answered by keys typed in
 the terminal: `answered_in_terminal`, no text kept; one its agent moved
-past: `withdrawn`); `TestAHostedQuestionAndItsEndsReachTheRecord` (real
-host `chat` messages through `HostChat`: an agent's question with its
-choices, its `answered` line, a terminal-left and an agent-left
-`withdrawn` line, each in the record with its ids; refused or cut: the
-agent's role on a plain message, a seventh option, a label past 60 runes,
-a `withdrawn` text not among the chat's reasons);
-`TestTheStartCommitIsReadBeforeTheAgentRuns` (a `sessiontest.FakeRuntime`
-whose `StartTerminal` commits in the folder before it returns: the record's
-`startCommit` is the commit before it); `TestACrewMembersStartIsItsAttempts`;
+past: `withdrawn`); `TestTheStartCommitIsReadBeforeTheAgentRuns` (a
+`sessiontest.FakeRuntime` whose `StartTerminal` commits in the folder
+before it returns: the record's `startCommit` is the commit before it);
+`TestACrewMembersStartIsItsAttempts`;
 `TestANonNativeSessionGetsNoGitReadOnTheServer` (a FakeRuntime at another
 `where`: the git reader's seam never called, `Where` recorded, the record
-page's words "on <where>"); `TestAHostedSessionGetsARecord` (its host's
-name, user and owner, its entries through `s.hosts.OnActivity`, its chat
-through `s.hosts.OnChat`, its changes through `s.hosts.OnChange`, never
-`localChange`); `TestAHostedRecordBorrowsNothingFromTheServer` (agent
-version, own session id, repository and commits empty with the server's
-probe cache warm and the hosted folder a repository on the server's disk);
-`TestAHostedRecordSurvivesAServerRestart` (a host registered with an
-instance and a local id, the server restarted, the host registering again:
-one record, `host away` then reopened, entries from before and after in
-order, `Seq` never back) and `TestAHostedRecordLetGoByExpiryIsReopened`
-(`Hub.Expire` past `DisconnectGrace`, then the same register);
-`TestTheRecordSurvivesARestart` (a server ended and started again on the
-same data directory; the record listed, ended);
-`TestACrewAdoptedAfterLaunchIsRecorded` (a session forms a crew around
-itself, `POST /api/sessions/{id}/crew`: the record's `Crew` written at
-once; the session ended, the server stopped and started again; the
+page's words "on <where>"); `TestTheRecordSurvivesARestart` (a server
+ended and started again on the same data directory; the record listed,
+ended); `TestACrewAdoptedAfterLaunchIsRecorded` (a session forms a crew
+around itself, `POST /api/sessions/{id}/crew`: the record's `Crew` written
+at once; the session ended, the server stopped and started again; the
 record's Resume answers `409 crew_member`, and a record whose adoption the
 journal had not written before the stop, by a seam, is refused the same
 way from the run record's member state, nothing launched in either);
-`TestAHostedExitIsKeptWithItsActivityDropped` (a host's `status` activity
-entry dropped at a full queue, its status message delivered: the record
-ends "exited (exit 0)" from its `Info`; `Hub.Expire` after it leaves that
-end, never `host away`);
 `TestHistorySessionRoutesAreAdminOnly` (a share link, a session token, no
 token), `TestHistorySessionsOffKeepsNoRecord`,
 `TestASwitchyardKeepsNoHistory`.
+
+**Go, `internal/api` and `internal/journal` (PR-1), the record's
+lifecycle** (the property test and the rows that need a session in
+`internal/api`, the rows that are the journal's alone in
+`internal/journal`). The waits are on seams the code offers, never on a
+clock: `recordDeliver` (every hint and stream handed to the test, with
+its session's id and what it carries, to deliver late, in another order,
+or not at all), `betweenReads` (a
+reconcile held between its membership read and its state read),
+`beforeRemovedReconcile` (`OnRemove` held after the registry's delete,
+before its reconcile), `afterRegistryAdd` (a launch held between
+`AddReserved` and `registered`), `req.spawned` (a launch held before
+`AddReserved`), `afterBegin` (a `Begin` returned, before its recorder is
+put in place), `beforeMade` (a launch's recorder in place, before
+`session.NewLocal`), `beforeAbandon` (a recorder marked leaving, before
+`Abandon`), `awaitLeaving` (the final pass, `recMu` let go, about to
+wait for a leaving recorder), the journal's `beforeWrite` and
+`beforeDelete`, and `Flush`.
+
+`TestTheRecordFollowsTheSession`, a property test: a seeded random
+sequence (the seed printed, `CONDUCTOR_RECORD_SEED` replays one) of what
+the API sees of several server sessions at once: a launch made, held at
+`afterBegin`, `beforeMade`, `spawned` or `afterRegistryAdd`, refused by
+the registry and held at `beforeAbandon`, its process exiting before or
+after its registration; a stop, one that fails, a process exiting late; a
+removal by the stop route or by `GC`, held at `beforeRemovedReconcile`
+while the process exits or not; a rename, an agent's session set, a crew
+adopted; activity, touches, chat lines, a question and its answer;
+`Forget`, `ForgetAll`, `Prune`; a write or a delete made to fail; and the
+shutdown, run while launches are held at each of those seams, and the
+launches let go after `Close`, then the next `Open`. Every hint and stream
+is queued and delivered late, shuffled or not at all, and any step may run
+inside a reconcile held at `betweenReads`. After every step and at the
+end, against the model the test keeps of each session's truth (each
+session's object as every read showed it, the reads that settled a record
+among them):
+
+- I1: before the final pass, the record of a session that is in the
+  registry with its process running is open, and `Forget` refuses it (a
+  failed stop's session among them; the final pass then settles it `lost`,
+  which I2 allows);
+- I2: a record has at most one end, and once written to its file it
+  never changes (an end settled in memory whose write failed, or was cut
+  by a kill, was never written: S34, S37). An
+  observed end is what the session object showed at the read that
+  recorded it: its process gone, with the status, exit code and `EndedAt`
+  it had published, or, at a final read before it published them,
+  `exited` with no exit code at the read's time. A
+  `lost` end is recorded only by a final read that showed the process
+  running (a removal's or the final pass's), by the next start's
+  recovery for a record left open on disk, or by the owner's rule for a
+  record with no instance whose file has no end (a failed delete's, S11,
+  S35, S36: listed `lost` and that end written at the next pass). That
+  last is a legal move to `lost` with no final read and no restart, and
+  only there: a record whose instance is live never takes it, and a
+  read-only journal never takes it (it lists another server's open file as
+  it is);
+- I3: its name, agent's session and crew are what the session object
+  showed at the last read that settled the record, each cut to its
+  field's bound, never an older value;
+- I4: an entry (a line kept as an entry, by the table of what is kept)
+  that reached the journal while the record was open and its recorder held
+  is in the record at most once, in order of `At` then arrival, or is
+  counted in `Dropped` by the bounds: the record's 64 KiB (`MaxRecord`,
+  oldest entries first, then the oldest file rows), the entries held in
+  memory (`maxHeld`). A touch is in its file row (one per path and op) or
+  counted (`MaxFiles`, `maxHeld`, a path past its bound), unless the deny
+  list covers its path (neither kept nor counted); a tool use is counted in
+  `Tools` unless it is past `MaxTools` (not counted). One that reached the
+  journal after the end is counted in `Dropped`; one that found no
+  recorder is neither kept nor counted;
+- I5: every question still in a record with an observed end has exactly
+  one ending entry (the bounds drop the older first, so a question goes
+  before its ending); a `lost` record adds none;
+- I6: nothing of a forgotten or abandoned record is written after its
+  removal returns; a record whose removal deleted its file stays gone, and
+  one whose delete failed comes back ended (S11, S35, S36);
+- I7: after the shutdown, no record is open on disk but one whose launch
+  had no session object when the final pass ran or whose `Begin` was under
+  way at the mark, and one whose last write failed; the next `Open` marks
+  each of those `lost`, and nothing else is written after the mark but by
+  `Close`'s last pass; and no record without an instance is listed open;
+- I8: a record's `Seq` only goes up, across a restart too.
+
+Each invariant is checked against every row of the table: no row's
+outcome breaks one, and a row whose outcome would is a defect of the
+design, not of the test. Before the randomized runs, the rows the
+invariants are most likely to read wrongly run as fixed examples: a failed
+stop settled `lost` by the final pass (S25, I1 and I2), a hint lost and
+the end read by the removal (S14, I2), an answer after the end (S17, I4
+and I5), a launch caught before its session object (S6, I7), a record
+past its 64 KiB with an early report, a question and its ending among the
+entries let go (I4, I5), a final read before the status is published (S5,
+I2), and a failed delete of an unwritten end (S35, I6, I7).
+
+One test per row of the table that a lock alone does not settle, each
+driving its row's two moments in the order the row names through the
+seams above (both orders where the row gives two):
+`TestARecordIsWrittenBeforeItsFirstEntry` (S2),
+`TestAnExitBeforeTheRegistryHeldTheSessionIsRecorded` (S3),
+`TestARemovalBeforeTheRegistrationCompletes` (S4: a session held at
+`afterRegistryAdd`, its process exited, removed by the stop route, then
+let go: `exited (exit 0)`),
+`TestALaunchInFlightAtShutdownIsSettled` (S5, S8: a launch held at
+`spawned` with its process exited, the shutdown run to its end: the
+record `exited (exit 0)`; let go after `Close`, the launch writes
+nothing; a variant whose process still runs: `lost`; and the same held at
+`afterRegistryAdd`),
+`TestAFinalReadBeforeTheStatusIsPublishedRecordsAnExit` (S5: a
+`sessiontest.FakeRuntime` whose process is done while its terminal's read
+side stays open, so the session has not published its status; the
+shutdown's final pass: `exited`, no exit code, never `lost`),
+`TestALaunchBeforeItsSessionAtShutdownIsLostAtTheNextStart` (S6, S8: a
+launch held at `beforeMade`, the shutdown run to its end: the record open
+on disk; let go, nothing written; the next `Open`: `lost`),
+`TestABeginAfterTheFinalPassRecordsNothing` (S7: a launch after the mark,
+no record and the session started; a `Begin` held at `afterBegin` across
+the mark: its record open, no recorder put in),
+`TestARefusedLaunchLeavesNoRecord` (S9),
+`TestARefusedLaunchAtTheFinalPass` (S10: an abandonment held at
+`beforeAbandon` while the shutdown runs, let go only once the final pass
+is at `awaitLeaving` and the shutdown has not returned: the record
+removed, its delete before the journal's `Close`; and one held before its
+leaving mark while the final pass settles its recorder: the record as
+settled, the abandonment removing nothing),
+`TestAFailedAbandonIsListedLost` (S11),
+`TestAHintCarriesNoTruth` (S13: two hints handed an older `Info` last, the
+lowest Codex id then a higher one, resumable then not: the record holds
+the session's own),
+`TestALostHintIsReadByTheRemoval` (S14: every hint dropped; the removal's
+reconcile records the observed end), `TestAFailedStopIsNoEnd` (S14,
+S20),
+`TestAnEndBeforeTheRemovalIsNeverReadStale` (S15 and S16: a hint's
+reconcile held at `betweenReads` after reading the session a member; the
+process ended and `Local.Ended()` waited for; the stop route's removal
+made and `registry.Get` absent; the reconcile let go: `exited (exit 0)`
+with its open question withdrawn, never `lost`; then the removal first
+and the hint's membership read after),
+`TestAnEntryAfterTheEndIsDropped` and
+`TestAnAnswerAfterTheEndReadsWithdrawn` (S17: a question, the session's
+end settled, then the choice's `answered` line delivered: dropped and
+counted, the question `withdrawn`),
+`TestTheFinalReadDecidesTheEnd` (S21: a stop that fails, the ended
+session removed, `OnRemove` held at `beforeRemovedReconcile`, the process
+let exit, then the reconcile let go: `stopped`; and the reconcile let go
+first, the process exiting after: `lost`, still `lost` after a `Flush`),
+`TestCloseGivesUpOnEndCommits` and
+`TestAnEndIsWrittenWhateverItsCommitRead` (S26),
+`TestAnEndCommitReadAfterItsEndIsWritten` (S29),
+`TestTheEndCommitIsTheLaunchRepositorys` (S28, with a session removed
+before the writer reads its end commit: none),
+`TestAForgottenRecordIsHiddenBeforeItsFileGoes` and
+`TestARemovalAgainstTheFold` (S30),
+`TestAHookOfAForgottenInstanceIsDropped` (S31),
+`TestForgetRefusesALiveSession` (S32),
+`TestPruneKeepsLiveAndPendingRecords` (S33),
+`TestARecordWhoseFirstWriteFailedFollowsItsSession` (S34: the record's
+folder made unwritable, a launch, the file's absence checked while the
+folder is still unwritable; then the permission restored and `Flush`: the
+file there, the session's end then written over it),
+`TestAFailedDeleteKeepsTheRecord` and
+`TestAFailedDeleteOfAnUnwrittenEndIsListedLost` (S35, S36: for each of
+`Forget`, `ForgetAll` and `Prune`, an end settled and its write kept from
+the file by holding its end commit in the test's `EndCommit`, which the
+writer calls on its own goroutine with none of the journal's locks held
+(`beforeWrite` runs under `wmu`, which every remover takes first, so a
+write held there would hold the removal too); the file read and found
+open before the removal, the delete failed at `beforeDelete`, the end
+commit let go after: the row listed `lost`, forgotten again at once; and
+with a shutdown between: the file `lost` after `Close`, the next `Open`
+the same),
+`TestALastWriteThatFailsIsLostAtTheNextStart` (S37),
+`TestReadOnlyWithoutTheLock` and `TestOpenSaysReadOnlyBeforeItsWaiterRuns`
+(S38). Each is proved as AGENTS.md asks of a race's test: `go test -race
+-count=30` on the rows' tests, and the property test the same way, each
+run on a new seed.
 
 **Go, `internal/history` (PR-2):**
 `TestSchemaV1AndARebuildOfAnotherVersion` (cleared in place, the file's
@@ -1919,7 +2425,7 @@ delivery `checked` with its candidate, a tombstone `deleted`);
 `TestBriefItemsAreSaidAndCiteTheirRefs`;
 `TestBrakemansRunsAreLeftOutByDefault`; `TestHistoryURLsAgreeWithBrakemans`
 (every kind both link); `TestAvailabilityOfASession` (live, listed, record,
-host away, forgotten), `TestAvailabilityOfACheck` (log, dropped, pruned),
+lost, forgotten; host away once PR-12 records hosted sessions), `TestAvailabilityOfACheck` (log, dropped, pruned),
 `TestAWhereOtherThanNativeIsNotLookedAt` (a row whose `where_ran` a fake
 Runtime set); `TestResumeOfferedByTheResumeRoutesRules` (each refusal's
 case, and the resume routes' own tests unchanged after `resumeCheck` is
@@ -2049,7 +2555,7 @@ never native).
 Codex sessions recorded with their versions and own session ids (Codex's
 lowest-id policy), a plain Claude Code session resumed from its record after
 a restart (`--resume <id>`) and a Codex one (`resume <id>`, its folder
-needed), a hosted session from `conductor host` on the Mac (its host and
+needed), once PR-12 has landed a hosted session from `conductor host` on the Mac (its host and
 user, "not reported by the host" for what an old host does not report,
 "host away" once the host stops and the same record taken up again when it
 comes back, no Resume from the server; PR-12's own observation adds the
@@ -2100,8 +2606,8 @@ the time it took.
    `TestANonNativeRecordResumesInItsRuntime` hold it with
    `sessiontest.FakeRuntime`.
 8. **`hostagent` is a launch site as much as `api`.** Honoured: PR-1
-   records a hosted session on the server from what its host already
-   reports and borrows nothing of the server's machine for it; PR-12 makes
+   records no hosted session, so it borrows nothing of the server's
+   machine for one; PR-12 records it from its host's own report, and makes
    the host, the launch site, report its own Runtime, read its own launch
    revision before its process starts (native only, through its Runtime's
    `where`) and report it with its agent's version, as the server does for
@@ -2136,17 +2642,16 @@ touch no common package or directory, as named.
 record, its bounds, the journal with its lock, flush, prune, recover,
 forget, `history/state.json`); `history.sessions` in `internal/config`; in
 `internal/api` the journal opened with the data directory, `Begin` for
-server and hosted sessions (a hosted record's reopening), the hooks as
-named in "The API's part of PR-1" (`localChange` and `s.hosts.OnChange`
-through `Changed` and `Current`, the hub's sink and `chat`, the registry's
-`OnRemove`), `End`, the agent's
+server sessions alone (a hosted session has no record until PR-12), the
+hooks as named in "The API's part of PR-1" (each recorded session's own hooks as
+hints and streams, `reconcile` through `Settle` under the snapshot rule,
+the registry's `OnRemove`, and the shutdown's final pass with its mark), the agent's
 version and the launch revision read before `StartTerminal` (native only),
 the four record routes. Touches `internal/journal`, `internal/config`,
-`internal/signal` (the `OnAdded` callback, `HostChat`'s questions and
-their ends), `internal/gitcli` (`RepoOf`), `internal/api`,
-`docs/protocol.md`; nothing in `internal/session` (every entry's source
-exists on `main`). Tests: PR-1's of
-`internal/journal` and `internal/api` above. About 1,300 lines. Depends on
+`internal/gitcli` (`RepoOf`), `internal/api`, `docs/protocol.md`; nothing
+in `internal/signal` and no source in `internal/session` (every entry's
+source exists on `main`). Tests: PR-1's of `internal/journal` and
+`internal/api` above. About 1,300 lines. Depends on
 nothing. May run beside PR-2.
 
 **PR-2: the history index and its search.** `internal/history` whole (the
@@ -2250,12 +2755,15 @@ the register's new fields (`where` among them), `session_info`, the
 `registered` reply's `sessionInfo`, the host's reads before its process
 starts through its Runtime, the hub's checks and `OnSessionInfo`, the
 server's capture of a hosted agent's session from its hook
-(`session.NextAgentSession`), the journal's hosted fields. Touches
+(`session.NextAgentSession`), the journal's hosted fields, and a hosted
+session's record, whose inputs its section lists ("What PR-12 takes over
+from PR-1's first design"), designed when it is built. Touches
 `internal/proto`, `internal/hostagent`, `internal/signal`,
 `internal/session` (the pure policy function), `internal/journal`
 (`Journal.AgentSession` and the hosted fields), `internal/api`,
 `web/app/utils/protocol.ts`, `docs/protocol.md`. Tests: PR-12's above and
-the Mac's row. About 700 lines. Depends on PR-8; runs before, between or
+the Mac's row. About 700 lines for the report; the hosted record's size is
+estimated when it is designed. Depends on PR-8; runs before, between or
 after PR-9 to PR-11, never beside them (`internal/api`). It adds its own
 paragraph and by-hand observation to the features entry; HS1's Done does
 not wait on it, since the acceptance boundary is a managed run on the

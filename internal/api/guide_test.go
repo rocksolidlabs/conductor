@@ -764,7 +764,7 @@ func matchesEncoding(t *testing.T, at string, schema map[string]any, v any) {
 // value (no omitempty, no omitzero) are the required ones.
 func TestEachBodySchemaIsWhatItsRouteDecodes(t *testing.T) {
 	bodies := map[string]any{
-		"run_pause": crew.Command{}, "run_unpause": crew.Command{}, "task_cancel": crew.Command{}, "task_retry": crew.Command{}, "task_accept": crew.Command{},
+		"run_pause": crew.Command{}, "run_unpause": crew.Command{}, "task_cancel": crew.Command{}, "task_retry": crew.Command{}, "task_accept": crew.Command{}, "task_recheck": recheckBody{},
 		"ticket_create": ticketCreateBody{}, "ticket_edit": ticketEditBody{}, "ticket_comment_admin": commentBody{}, "ticket_link": linkBody{},
 		"crew_create": crewInput{}, "crew_launch": launchBody{},
 		"brakeman_config": brakemanConfigBody{}, "brakeman_ask": brakemanAskBody{}, "brakeman_cancel": brakemanCancelBody{},

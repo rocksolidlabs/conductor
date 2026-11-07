@@ -349,6 +349,18 @@ add its rule here.
   showed what the stream's return brought (`decision-page.spec.ts`, CI on
   #684). The inbox gives up on a read past `INBOX_READ_WAIT_MS`, and the
   spec keeps a route on the page across the step it judges.
+- A test's git repository does no maintenance of its own. Apple Git's
+  `git commit` (2.54 on the Mac) starts a detached `git maintenance run
+  --auto` that packs the loose objects and deletes them under the test's
+  reads (go-git lists a repository's packs once per opening: `object not
+  found`) and is still writing when `t.TempDir` removes the directory
+  (`directory not empty`); Linux's git did neither, so the test passed
+  there 30 of 30 and failed on the Mac 10 of 10 (#711). A test repository
+  sets `maintenance.auto=false` and `gc.auto=0` (`scratch` in
+  `internal/gitrepo`), as `internal/gitcli` does for every git Conductor
+  runs; and a server read that meets a repack opens the repository again
+  and reads once more (`read` in `internal/gitrepo`), since a run's
+  repository is repacked by the agent's own git.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
