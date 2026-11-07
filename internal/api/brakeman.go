@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -50,6 +51,28 @@ const (
 	brakemanStuck = 6
 	// brakemanStopWait bounds one stop of a turn's run.
 	brakemanStopWait = 15 * time.Second
+	// brakemanStartShare is the share of a turn's minutes its agent has,
+	// from the turn's launch's return, to make its first call to the
+	// server with its own token (any route: the guide, its MCP server's
+	// tool listing, a report, an observation, an act, its request's
+	// read; Local.AgentCalled) before the turn is ended as one whose
+	// agent did not start (notStarted), whatever its screen shows: a
+	// sign-in, an update dialog, a question Conductor does not know. A
+	// third: five minutes of the default 15-minute turn, twenty of a
+	// 60-minute one, so a turn given longer is given longer to start,
+	// and a turn held at a screen still gives two thirds of its minutes
+	// back. A turn whose agent has made any call is never ended by it.
+	brakemanStartShare = 3
+	// brakemanStartMin is the least time to start a turn of few minutes
+	// has: a real agent calls within two minutes of its start (Claude
+	// Code in seconds; Codex, its MCP servers started first, about 90 s
+	// at #659's live check). A turn shorter than it is judged so at its
+	// deadline.
+	brakemanStartMin = 2 * time.Minute
+	// brakemanScreenWords bounds the screen's lines a turn whose agent
+	// did not start carries in its words: its last lines not blank, at
+	// most this many bytes together.
+	brakemanScreenWords = 220
 	// maxBrakemanLine bounds the line typed into a turn's session.
 	maxBrakemanLine = 300
 	// maxStampVersion bounds the agent's version a request's stamp
@@ -226,6 +249,43 @@ type deskTurn struct {
 	// made for (agentSelection): its session starts only from that entry
 	// (createLocalSession's agent_changed otherwise).
 	agentSHA256 string
+	// started is when the turn's launch returned (its agent's process
+	// made), on the desk's clock: its agent calls the server by
+	// startBy(started), or the turn ends as one whose agent did not
+	// start. Zero while it launches: the deadline covers starting, its
+	// run then the request's stray run.
+	started time.Time
+}
+
+// startBy is when a turn of req whose launch returned at started ends as
+// one whose agent did not start, unless its agent has called the server
+// (agentCalled): a third of the turn's minutes after started
+// (brakemanStartShare), at least brakemanStartMin, or its deadline when
+// that comes first.
+func startBy(req brakeman.Request, started time.Time) time.Time {
+	wait := max(time.Duration(req.Config.Budget.TurnMinutes)*time.Minute/brakemanStartShare, brakemanStartMin)
+	by := started.Add(wait)
+	if !req.Deadline.IsZero() && req.Deadline.Before(by) {
+		by = req.Deadline
+	}
+	return by
+}
+
+// agentCalled reports whether the agent of the turn t has called the
+// server with its own token, on any route: its request read (read), or
+// any other call its session's token was taken for (Local.AgentCalled,
+// noted where the token is checked, so no route is left out). The
+// caller holds d.mu.
+func (d *brakemanDesk) agentCalled(t *deskTurn) bool {
+	if d.read[t.id] {
+		return true
+	}
+	for _, l := range t.locals {
+		if l.AgentCalled() {
+			return true
+		}
+	}
+	return false
 }
 
 // openBrakemanDesk opens the desk over the data directory st: its store
@@ -626,6 +686,27 @@ func (d *brakemanDesk) tend(t *deskTurn) time.Duration {
 		d.s.log.Warn("Brakeman's turn could not be read", "request", t.id, "err", err)
 		return brakemanRetry
 	}
+	// An agent that has made no call to the server by its bound did not
+	// start (signed out, held at a screen): the turn ends, failed, with
+	// what its screen shows, before the deadline's time-out would read it
+	// as a turn that ran and charge all its minutes. One that has made any
+	// call runs to its deadline.
+	d.mu.Lock()
+	called, started := d.agentCalled(t), t.started
+	d.mu.Unlock()
+	if req.Open() && !called && !started.IsZero() && !now.Before(startBy(req, started)) {
+		why := d.notStarted(t, startBy(req, started).Sub(started))
+		req, err = d.update(t.id, func(r *brakeman.Request) error {
+			if !r.Open() {
+				return nil
+			}
+			return r.To(brakeman.StateFailed, why, now)
+		})
+		if err != nil {
+			d.s.log.Warn("Brakeman's turn whose agent did not start could not be ended", "request", t.id, "err", err)
+			return brakemanRetry
+		}
+	}
 	if req.Open() && !req.Deadline.IsZero() && !now.Before(req.Deadline) {
 		req, err = d.update(t.id, func(r *brakeman.Request) error {
 			if !r.Open() {
@@ -638,10 +719,28 @@ func (d *brakemanDesk) tend(t *deskTurn) time.Duration {
 			return brakemanRetry
 		}
 	}
+	if req.Open() {
+		if why := d.heldAtStartup(t, req); why != "" {
+			req, err = d.update(t.id, func(r *brakeman.Request) error {
+				if !r.Open() {
+					return nil
+				}
+				return r.To(brakeman.StateFailed, why, now)
+			})
+			if err != nil {
+				d.s.log.Warn("Brakeman's turn held at its agent's startup could not be ended", "request", t.id, "err", err)
+				return brakemanRetry
+			}
+		}
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if req.Open() {
-		return untilPositive(req.Deadline, now)
+		next := req.Deadline
+		if !t.started.IsZero() && !d.agentCalled(t) {
+			next = startBy(req, t.started)
+		}
+		return untilPositive(next, now)
 	}
 	if t.cancel != nil {
 		t.cancel()
@@ -675,6 +774,128 @@ func (d *brakemanDesk) tend(t *deskTurn) time.Duration {
 	runID, locals := t.runID, slices.Clone(t.locals)
 	d.s.track(func() { d.stopTurn(t, runID, locals) })
 	return 0
+}
+
+// heldAtStartup says why the turn t, which has not read its request,
+// cannot go on: its agent shows a startup question (the catalog's trust
+// question or its other startup screens, raised as a session's question
+// with source trust: Local.fireTrust) that the turn may not pass, and
+// which holds the turn's line, as every startup question holds a
+// submission, so the agent would wait there until the turn's minutes
+// end. One with no answers is a screen no answer of Conductor's passes
+// (Claude Code's sign-in, waiting for a browser or a pasted code): every
+// turn ends at it. One with answers (a trust question, an update dialog)
+// ends a background turn, whose questions page no one; a person's own
+// turn shows it under Needs you, to be answered there. No key is typed
+// into either: the turn ends and its run is stopped. "" for a turn that
+// read its request, or whose agent shows no such question.
+func (d *brakemanDesk) heldAtStartup(t *deskTurn, req brakeman.Request) string {
+	d.mu.Lock()
+	read := d.read[t.id]
+	locals := liveLocals(t.locals)
+	d.mu.Unlock()
+	if read {
+		return ""
+	}
+	for _, l := range locals {
+		att := l.Info().Attention
+		if att.State != session.AttentionNeedsInput || att.Source != session.SourceTrust {
+			continue
+		}
+		words := att.Message
+		var why string
+		switch {
+		case len(att.Options) == 0:
+			why = fmt.Sprintf("the agent waits at a screen no answer of Conductor's passes, its login refused (%q): sign it in from a session of its own, or set another account in Settings; Brakeman tries again by itself, or ask it now", words)
+		case req.Kind == brakeman.KindWake:
+			why = fmt.Sprintf("the agent shows a startup question a background turn may not answer (%q): answer it in a session of that agent; Brakeman tries again by itself, or ask it now", words)
+		default:
+			continue
+		}
+		for len(why) > brakeman.MaxWhy {
+			_, n := utf8.DecodeLastRuneInString(why)
+			why = why[:len(why)-n]
+		}
+		return why
+	}
+	return ""
+}
+
+// notStarted is the words of the turn t whose agent made no call to the
+// server within waited: what its screen shows (screenWords), or that no
+// session of it was started. The turn ends and its run is stopped; what
+// was typed into the screen before (the request's line, once the screen
+// was quiet, as for any agent) is all it was given.
+func (d *brakemanDesk) notStarted(t *deskTurn, waited time.Duration) string {
+	d.mu.Lock()
+	locals := liveLocals(t.locals)
+	d.mu.Unlock()
+	shown := "no session of it had started"
+	if len(locals) > 0 {
+		if lines := screenWords(locals[0]); lines != "" {
+			shown = fmt.Sprintf("its screen shows %q", lines)
+		} else {
+			shown = "its screen is blank"
+		}
+	}
+	mins := max(1, int(waited.Round(time.Minute)/time.Minute))
+	why := fmt.Sprintf("the agent did not start in %d minutes, no call to Conductor (signed out, or held at a screen Conductor does not know?); %s: sign it in or answer it in a session of that agent; Brakeman tries again by itself, or ask it now", mins, shown)
+	for len(why) > brakeman.MaxWhy {
+		_, n := utf8.DecodeLastRuneInString(why)
+		why = why[:len(why)-n]
+	}
+	return why
+}
+
+// screenLinks are the links a screen read shows, left out of a turn's
+// words: a sign-in screen's carries a one-time state.
+var screenLinks = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://\S+`)
+
+// screenWords is what l's screen shows, for the words of a turn whose
+// agent did not start: the rows a terminal shows of it (ScreenLines, as
+// the screen read answers), the whole screen read so that a line wrapped
+// across its rows is read whole.
+func screenWords(l *session.Local) string {
+	return screenWordsOf(l.ScreenLines(maxScreenLines), l.ScreenCols())
+}
+
+// screenWordLines is how many of the screen's last lines not blank a
+// turn's words draw on.
+const screenWordLines = 12
+
+// screenWordsOf is rows' words: a row that fills the screen's cols cells
+// joined with the next (a wrapped line, so a link that runs on is left out
+// whole), links left out, blank rows dropped, the last screenWordLines
+// joined with " | ", the oldest dropped past brakemanScreenWords bytes.
+func screenWordsOf(rows []string, cols int) string {
+	var joined []string
+	wrapped := false
+	for _, row := range rows {
+		if wrapped && len(joined) > 0 {
+			joined[len(joined)-1] += row
+		} else {
+			joined = append(joined, row)
+		}
+		wrapped = cols > 0 && utf8.RuneCountInString(row) >= cols
+	}
+	var lines []string
+	for _, line := range joined {
+		line = strings.Join(strings.Fields(screenLinks.ReplaceAllString(line, "[link]")), " ")
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	lines = lines[len(lines)-min(screenWordLines, len(lines)):]
+	out := strings.Join(lines, " | ")
+	for len(out) > brakemanScreenWords && len(lines) > 1 {
+		lines = lines[1:]
+		out = strings.Join(lines, " | ")
+	}
+	for len(out) > brakemanScreenWords {
+		_, n := utf8.DecodeLastRuneInString(out)
+		out = out[:len(out)-n]
+	}
+	return out
 }
 
 // untilPositive is how long until at, at least a millisecond.
@@ -946,6 +1167,7 @@ func (d *brakemanDesk) launch(ctx context.Context, t *deskTurn, req brakeman.Req
 	}
 	d.mu.Lock()
 	t.launching = false
+	t.started = d.now()
 	if runID != "" {
 		t.runID = runID
 	}
@@ -1556,7 +1778,7 @@ type brakemanConfigBody struct {
 // gap said); 409 stale_revision for a rev not the stored one; 400 invalid_config
 // with the field and its words; 503 shutting_down once the server is
 // shutting down. Turning Brakeman off cancels the turn in progress and
-// the queue.
+// the queue; an unavailable role looks again (Role.Reconfigured).
 func (s *Server) handleBrakemanConfig(w http.ResponseWriter, r *http.Request) {
 	d, ok := s.brakemanDeskOf(w)
 	if !ok {
@@ -1594,6 +1816,7 @@ func (s *Server) handleBrakemanConfig(w http.ResponseWriter, r *http.Request) {
 	// saw it, not the records' (recovered).
 	d.admit.Lock()
 	var saved brakeman.Config
+	var change crew.RoleChange
 	var err error
 	switch {
 	case d.closing.Load():
@@ -1601,7 +1824,11 @@ func (s *Server) handleBrakemanConfig(w http.ResponseWriter, r *http.Request) {
 		// could be written.
 		err = errDeskClosing
 	case d.recovered.Load():
+		prev, perr := d.st.Config()
 		saved, err = d.st.SaveConfig(c, brakemanFacts{s: s})
+		if err == nil && perr == nil {
+			change = roleChange(prev, saved)
+		}
 		switch {
 		case err != nil:
 		case !saved.Enabled:
@@ -1618,6 +1845,13 @@ func (s *Server) handleBrakemanConfig(w http.ResponseWriter, r *http.Request) {
 		s.brakemanError(w, err)
 		return
 	}
+	// An unavailable role looks again at what refused its turn when the
+	// save changed it (a budget raised, an agent or an account changed:
+	// crew.SaveEnds): the batch it kept fires within its rules, or the
+	// refusal is said again in words true now.
+	if err := d.role.Reconfigured(change); err != nil {
+		s.log.Warn("Brakeman's role could not look again after the configuration's save", "err", err)
+	}
 	d.poke()
 	d.role.Poke()
 	out := map[string]any{"config": saved}
@@ -1625,6 +1859,26 @@ func (s *Server) handleBrakemanConfig(w http.ResponseWriter, r *http.Request) {
 		out["warnings"] = warn
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// roleChange is what a save from prev to next changed, as the role weighs
+// it (crew.SaveEnds): the budget; what the agent starts with (the agent,
+// its model, its account, its folder, the tools it may call without
+// asking); the role turned on or off; anything else. The revision and the
+// time saved are no change.
+func roleChange(prev, next brakeman.Config) crew.RoleChange {
+	ch := crew.RoleChange{
+		Budget: prev.Budget != next.Budget,
+		Start:  prev.AgentID != next.AgentID || prev.Model != next.Model || prev.Account != next.Account || prev.Cwd != next.Cwd || prev.AllowConductorTools != next.AllowConductorTools,
+		On:     prev.Background() != next.Background(),
+	}
+	rest := func(c brakeman.Config) string {
+		c.Budget, c.AgentID, c.Model, c.Account, c.Cwd, c.AllowConductorTools = brakeman.Budget{}, "", "", "", "", false
+		c.Rev, c.UpdatedAt = 0, time.Time{}
+		return mustJSON(c)
+	}
+	ch.Other = rest(prev) != rest(next)
+	return ch
 }
 
 // brakemanAskBody is POST /api/brakeman/requests's body.

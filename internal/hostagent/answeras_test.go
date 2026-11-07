@@ -264,6 +264,31 @@ func TestAnswerAsApplied(t *testing.T) {
 	}
 }
 
+// A line answer_as is an answer: the host's session keeps no entry of its
+// text, which may be a credential, so none reaches the server's records
+// through the host's activity; the answer's own entry, recorded after
+// where the line's would have been, holds the question's words.
+func TestAnswerAsLineKeepsNoText(t *testing.T) {
+	const secret = "answer-as-secret-6"
+	proc := sessiontest.NewFakeProc()
+	t.Cleanup(func() { proc.End(0) })
+	h := newAnswering(t, proc, Options{})
+	l := h.a.local
+	q := ask(t, l, "What is the password?", nil)
+	h.answer(t, proto.HostAnswerAsMsg{Question: q, Text: secret, ByName: "Ada"})
+	h.idle()
+	waitFor(t, "the answer's entry", func() bool {
+		return slices.ContainsFunc(l.Activity(), func(e session.ActivityEntry) bool {
+			return e.Type == session.ActivityInput && e.Message == "What is the password?"
+		})
+	})
+	for _, e := range l.Activity() {
+		if strings.Contains(e.Message, secret) {
+			t.Fatalf("the host's session keeps the answer: %+v", l.Activity())
+		}
+	}
+}
+
 // An answer_as out of its bounds is dropped and logged, nothing written;
 // so is one no viewer could have sent either way (keys that are no choice
 // of the question, a line blank once cleaned): the session refuses it.

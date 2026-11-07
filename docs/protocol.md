@@ -45,7 +45,7 @@ Client → owner:
 | `chat` | `nonce?, scope?, text, on?, to?, quote?` | Every role, once the owner's `welcome` said `chat` (an older owner closes on an unknown message). `text` is kept cleaned (line breaks as `\n`, other control characters but tabs dropped, trimmed) and must be 1–2048 bytes after that (0 with a `quote`); `quote` `{path, from, to, lines[], cut?}` is lines of a file the message is about (design round 12, F7): the path (at most 512 bytes), the 1-based range, at most 12 lines of at most 200 bytes, control characters but tabs dropped, its last lines left out (`cut`) when the message would pass 8 KiB, dropped without a path or range; a message with a quote sent to the agent types `path:from-to`, the lines as `> ` lines, then the text (at most 4096 bytes); `scope` is `session` when absent, or `run` for the chat of the run the session is a member of (`welcome.runChat`; `bad_frame` otherwise); `nonce` (≤ 32 bytes) is the client's own id of the post, echoed in the message; `to`, a controller's, also types the text as `chat_send` does: `"agent"` into this session's agent, a member's name into that member in scope `run`; `on` (scope `run`) names the member the sender looks at, kept when it is one. 10 a second with a burst of 20 per connection, beyond which `error{too_many_requests, requestId: nonce}` and the connection stays. Refusals name the nonce: `bad_frame` (empty, too long, a scope or `to` not here), `read_only` (`to` from a view link), `session_ended`, `revoked` or `expired` (the viewer's link no longer opens the session: nothing kept or sent) |
 | `chat_send` | `ref, scope?, to?` | Controllers only (`read_only`, also on the relay). Types the text of the kept message `ref` into the agent as a `submit` would, then keeps and sends a `sent_to_agent` marker. In scope `run`, into the member `to` of the run as a broadcast does (nothing while that member waits on a prompt), with the marker in the run's chat, or `error{not_sent, message: needs_input|not_running|unknown|no_enter, requestId: ref}`. `bad_frame` with `requestId: ref` for a message not kept or not a message, or a run send naming no member; `revoked` or `expired` with `requestId: ref` once the viewer's link no longer opens the session (nothing typed), as it is taken and as its text is typed |
 | `submit` | `text` | Controllers only; `text` at most 4096 bytes (`bad_frame` beyond, `read_only` from a view link, also on the relay). The owner submits it as a line: line breaks and tabs become spaces and other control characters are dropped, the text is written as a bracketed paste while the program has that mode on (`ESC[?2004h`), then a carriage return is written on its own 250 ms later, so that a TUI takes it as Enter rather than as part of a paste. The Enter answers the prompt that was showing when the text was typed; a prompt raised during the pause is not answered and the Enter is left out. The submission goes on if the client disconnects meanwhile (or its time runs out once its text is typed: see below), but not once its link is revoked or expires (its run forgotten, its link gone) before its carriage return is written: before its text is typed, nothing of it is written; once its text is typed, its carriage return is not written either, the text stays in the program's input (it cannot be taken back out), and the session's turn stays held, so that no other submission (a reply, a crew's prompt, a handoff) is typed after it and entered with it, until a person types into the terminal (INPUT from a controller, a terminal's own reports and mouse reports aside, any number of them in a write, mixed, or one a write begins and the next finishes, at any byte: the pointer, moved or clicked, types nothing; a lone Escape counts with the key after it), who deals with the text, or the session ends. Meanwhile the session is `needs_input` with `source:"submit"` and the words `Text from a link that was let go was typed and not entered: type in the terminal to continue`, which that input clears. While the turn is held (or becomes held as it waits), a server connection's `submit`, `chat` to the agent or `chat_send` waits for it apart from the connection's other frames, so that its own INPUT can end the hold; one at a time, another meanwhile refused with `error{too_many_requests}` (its `requestId` as for a host's) and the connection stays; a connection that closes keeps its viewer until it is done, as one whose frames waited for it does. At most 64 submissions wait for a session's turn together, every connection's and Conductor's own: one more is refused at once (`too_many_requests`). A host is told when a viewer's link goes (`viewer_leave` with a reason, `link_gone`), also once the viewer has left, and does the same. On a host, one that still waits for the keys the viewer sent before it is dropped as the viewer goes. The reply boxes use it to an owner whose `welcome` lacks `answer`; keys typed into the terminal stay INPUT. With `reqId` (#322; at most 32 bytes of printable ASCII, as `answer`'s) the owner answers it, to a client whose `welcome` said `submitAck`: `submit_ok{requestId}` once the line was entered; else `error{code, requestId}`: `not_sent` with the question's words when `unlessWaiting: true` held it back (the session was asking, looked at as the owner holds the session's turn, so no prompt slips between the look and the write: the broadcast's guard, what the palette's typed line asks for; nothing typed), `input_failed` when the line was typed and not entered (the turn held, as above), `too_many_requests`, `session_ended`, `read_only`, `bad_frame` (past its bounds; no `requestId` when the id itself is). Without `reqId` nothing is answered, as before, and `unlessWaiting` still holds |
-| `answer` | `reqId?, question, input?, text?` | A reply to the question the person was shown (see Attention, Answering a question), sent only to an owner whose `welcome` says `answer` (an older one closes on an unknown message). Controllers only (`read_only`, also on the relay). `question` is that question's `id` (1–32 bytes of printable ASCII, no space); exactly one of `input` (a choice's keys, at most 48 bytes, written as INPUT is) and `text` (a line, at most 4096 bytes, submitted as `submit` is); `reqId` at most 32 bytes of the same. Out of those bounds: `error{bad_frame, requestId}` (no `requestId` when it is itself out of bounds), the connection stays. The owner writes nothing unless the question is still the one shown, nobody is answering it and nobody answered it in the terminal, looked at as the reply arrives and again, together with claiming the question, as the keys (a line's text, its Enter for a line with none) are written: first to claim wins; otherwise `error{question_answered, requestId}`, whose `message` says what became of the question when the owner knows (`this question was already answered by <name>: nothing was sent` once a result is recorded, `this question is being answered: nothing was sent` while another reply's keys are on their way, `this question was answered in the terminal: nothing was sent` once keys typed in the terminal reached it, else `this question was already answered: nothing was sent`). `answer_ok{requestId}` is the final word: the keys landed, or the line was entered, and the question is resolved by this reply (or was withdrawn by the agent moving on while they were written); it is never sent while the outcome is open (a line the program takes slowly is told once it is entered). A line typed whose Enter was not written (a question came in its pause, its link went) is `error{input_failed}` with `the line was typed and not entered: type in the terminal to continue`: the session's turn is held. Any other refusal is an `error` naming it as INPUT's or `submit`'s would be (`not_sent`, `input_failed`, `too_many_requests`, `session_ended`). An `answer`, a choice's keys too, is withdrawn as a `submit` is once its link's credential no longer stands (revoked or expired; on a host, no ping of its own sent within 15 s answered by the server: see the host control connection), whether or not its connection has closed for it yet: nothing of it written, `input_failed`. A `text` waits for the session's turn as `submit` does, also while it is held for a person, on a server connection apart from its other frames as `submit` does; an `input` answers a `trust` or `question` prompt showing over a held turn without ending the hold, the hold's words shown again once it is answered; an `answer` naming the hold itself (`source:"submit"`) is refused (`question_answered`), nothing written. Every quick reply uses it: the sidebar's row and its 1–9, the Yard's card and queue, the session page's and a link's reply bar and its digits, a question's choices in the chat |
+| `answer` | `reqId?, question, input?, text?` | A reply to the question the person was shown (see Attention, Answering a question), sent only to an owner whose `welcome` says `answer` (an older one closes on an unknown message). Controllers only (`read_only`, also on the relay). `question` is that question's `id` (1–32 bytes of printable ASCII, no space); exactly one of `input` (a choice's keys, at most 48 bytes, written as INPUT is) and `text` (a line, at most 4096 bytes, submitted as `submit` is); `reqId` at most 32 bytes of the same. Out of those bounds: `error{bad_frame, requestId}` (no `requestId` when it is itself out of bounds), the connection stays. The owner writes nothing unless the question is still the one shown, nobody is answering it and nobody answered it in the terminal, looked at as the reply arrives and again, together with claiming the question, as the keys (a line's text, its Enter for a line with none) are written: first to claim wins; otherwise `error{question_answered, requestId}`, whose `message` says what became of the question when the owner knows (`this question was already answered by <name>: nothing was sent` once a result is recorded, `this question is being answered: nothing was sent` while another reply's keys are on their way, `this question was answered in the terminal: nothing was sent` once keys typed in the terminal reached it, else `this question was already answered: nothing was sent`). `answer_ok{requestId}` is the final word: the keys landed, or the line was entered, and the question is resolved by this reply (or was withdrawn by the agent moving on while they were written); it is never sent while the outcome is open (a line the program takes slowly is told once it is entered). A line typed whose Enter was not written (a question came in its pause, its link went) is `error{input_failed}` with `the line was typed and not entered: type in the terminal to continue`: the session's turn is held. Any other refusal is an `error` naming it as INPUT's or `submit`'s would be (`not_sent`, `input_failed`, `too_many_requests`, `session_ended`). An `answer`, a choice's keys too, is withdrawn as a `submit` is once its link's credential no longer stands (revoked or expired; on a host, no ping of its own sent within 15 s answered by the server: see the host control connection), whether or not its connection has closed for it yet: nothing of it written, `input_failed`. A `text` waits for the session's turn as `submit` does, also while it is held for a person, on a server connection apart from its other frames as `submit` does; an `input` answers a `trust` or `question` prompt showing over a held turn without ending the hold, the hold's words shown again once it is answered; an `answer` naming the hold itself (`source:"submit"`) is refused (`question_answered`), nothing written; one naming a question that mirrors a durable decision (the attention's `decision`) is refused `error{decision, requestId}`, its message naming the decision, nothing written. Every quick reply uses it: the sidebar's row and its 1–9, the Yard's card and queue, the session page's and a link's reply bar and its digits, a question's choices in the chat |
 
 Owner → client:
 
@@ -58,7 +58,7 @@ Owner → client:
 | `attention` | `state, message?, source?, kind?, options?[{label, input}], id?, answered?` (see Attention; `id` names the question, absent with the empty state and from an older owner; `answered:"terminal"` marks a question keys typed in the terminal have answered) |
 | `answer_ok` | `requestId` — the owner took the `answer` of that `reqId`: its keys are written, or its line accepted |
 | `submit_ok` | `requestId` — the owner entered the line of the `submit` of that `reqId` (#322): its text typed and its Enter written; never sent while the outcome is open (a line the program takes slowly is told once it is entered) |
-| `activity` | `at, type, by?, byName?, message?, url?, to?, tool?, op?` — one activity-log entry: `attention`, `input`, `join`, `leave`, `link`, `status` or one of the seven event types (see Events). An `input` entry carries `op` `typed` when the line was typed by Conductor (a crew's prompt, a broadcast) rather than a reply to a question. The last 50 entries replay right after `ready`; new ones follow live. |
+| `activity` | `at, type, by?, byName?, message?, url?, to?, tool?, op?` — one activity-log entry: `attention`, `input`, `join`, `leave`, `link`, `status` or one of the seven event types (see Events). An `input` entry carries `op` `typed` when the line was typed by Conductor (a crew's prompt, a broadcast) rather than a reply to a question. A line that answers a question is never recorded by its text, which may be a credential, whoever passed it on (a reply box, a provider's `Host.Submit`, a route's `answer_as` on a host): its entry holds the question's words. The last 50 entries replay right after `ready`; new ones follow live. |
 | `viewers` | `count, list[{id, name, role, link?, since, lastInputAt?}]` — the full roster, sent on every join and leave and at most every 2 s per viewer while they type, a quiet connection (`hello.chatOnly`, a run chat's) left out. `link` is the share link's label. |
 | `error` | `code, message, requestId?` — `requestId` names the chat post (its nonce), send (its ref), answer or submit (its `reqId`) the error answers |
 | `pong` | `ts` |
@@ -79,7 +79,9 @@ the dialog highlights, and the question's own choices answer it),
 `question_answered` (an `answer` whose question takes no reply: another
 reply answered it first or is answering it, keys typed in the terminal
 reached it, or it went; nothing was written; the message says which, see
-`answer`).
+`answer`), `decision` (an `answer` whose question mirrors a durable
+decision: answered only as that decision, the message naming it; nothing
+was written; see Answering a question).
 
 WebSocket close codes: `1000` normal, `1001` server shutdown, `4400` protocol
 error, `4401` unauthorized, `4403` link revoked or expired (reason `link
@@ -778,7 +780,7 @@ revoke, and they expire or go with the host's others.
 
 ## Attention
 
-Each session carries `attention{state, message, source, since, kind?, options?, id?, answered?, plan?}`
+Each session carries `attention{state, message, source, since, kind?, options?, id?, answered?, plan?, decision?}`
 in its `Info`. States: `""` (nothing), `working`, `needs_input`, `done`.
 `plan` (#289) is the path of the plan a question asks approval for (Claude
 Code's ExitPlanMode: its hook names it as `planFilePath`, reported as the
@@ -786,6 +788,14 @@ attention route's `plan`, or the dialog's last row prints it), once the session
 has seen it to be one of the agent's plans (File reads, the plans directory),
 at most 1,024 bytes; a page opens it with a `file_get` of that path. Absent
 from any other question, and from an older owner.
+`decision` is the durable decision a question mirrors (`dr-<n>`, at most 16
+bytes, `proto.MaxDecisionRef`; see Decisions): an attempt's agent asked it,
+and its session shows it as the agent's own question with no `options`,
+which keys, the screen and lines naming no decision never take away. It is
+answered only as that decision, so a client offers it no reply field,
+choice or number key, whatever its role, and an `answer` naming it is
+refused (`decision`, see Answering a question). Absent from every other
+question, and from an older owner; the attention message carries it too.
 Sources: `api` (the agent's own token), `admin`, `bell`, `osc`, `pattern` (the
 screen-pattern detector, below), `trust` (the agent's workspace-trust
 question, below), `question` (a question asked during the work, below),
@@ -1270,9 +1280,20 @@ without the daemon, `3` cancels and Codex exits; Cancel is highlighted) and
 "Update available" (Update now highlighted, which runs `npm install -g`;
 Escape skips, `3` alone skips until the next version), both held the same
 way; the update question is found by its highlighted "Update now (runs" and
-its words are its heading, "Update available 0.161.0 → 0.162.1". An input
-that is exactly one of the showing question's choices answers it with or
-without an Enter.
+its words are its heading, "Update available 0.161.0 → 0.162.1". Claude
+Code's built-in entry has its sign-in screen (2.1.319 signed out: "Browser
+didn't open? Use the url below to sign in", the URL, "Paste code here if
+prompted >"), a startup question with no answers: no key of Conductor's
+passes it, and the person signs in through the browser, after which the
+program leaves the screen by itself. Such a question is withdrawn, with
+no answer recorded and no key typed, once the screen, after output since
+it was asked (output fed while it was being asked counts), shows no
+startup question (as one a key reached is), and a
+person's text is taken again. A person's text refused while a startup
+question shows says so: "the agent asks a startup question (whether to
+trust the folder, its sign-in, an update): answer with the question's
+choices, or in its terminal". An input that is exactly one of the showing
+question's choices answers it with or without an Enter.
 
 A question marked `anytime` (`{prompt, words?, anytime: true, answers}`) is
 one the agent asks during its work, not only as it starts. A server session
@@ -1496,6 +1517,18 @@ older host's questions are routed by no one, as before, and a provider's
 answer to one is unsupported; a switchyard routes none and sends no
 `answer_as`. A line that answers no question is never typed into a hosted
 session.
+
+A question that mirrors a durable decision (the attention's `decision`)
+takes no reply at all: an `answer` naming it, a choice's keys or a line,
+is refused `error{decision, requestId}` with
+`dr-7 is answered as a decision, by the operator in Conductor: nothing
+was sent`, nothing written, by the server and by a host alike (the same
+code, though no hosted session asks one: a managed run's attempts are
+the server's); a provider's `Host.Submit` naming it is refused
+(`ext.ErrQuestionAnswered`), nothing written. A `submit` names no question: its line is typed, and the question
+stays. Only the decision's application types its answer (see
+Decisions). The decision router is never told such a question: it is told
+the decision's record instead (Decisions, Routed decisions).
 
 A reply to a question read off the screen is taken only while the screen
 still shows that question, too (a next question drawn after it and not asked
@@ -1924,7 +1957,7 @@ its run, and on no other.
 | `GET /.well-known/acme-challenge/{token}` | none | the key authorization of an open ACME `http-01` order (RFC 8555 §8.3), on the plain listener; `404` for any other token, a token over 128 bytes, or without a TLS listener |
 | `GET /api/switchyard/status` | admin | on a switchyard only (`404` elsewhere): the landing page's operator figures, `{hosts, sessions, viewers, relayBytesHour, hostList: [{name, since, sessions, viewers}]}`, the live hosted sessions grouped by the publishing host, earliest first, and the bytes the relay carried in the last sixty minutes |
 | `GET /api/whoami` | admin | OS user running the server (the default display name); `host` is the machine's name (`""` when it cannot tell) and `switchyard` whether this server launches nothing; `home` the server user's home directory, when it has one (the settings picker's Home); `version` the server's version, as `conductor version` prints it (Settings → The app) |
-| `GET /api/export` | admin (a switchyard's too) | the data directory as one zip archive (`docs/plans/ext.md`, C6), streamed as it is made, nothing buffered whole: `200` with `Content-Type: application/zip` and `Content-Disposition: attachment; filename="conductor-export-<UTC time>.zip"` (`20060102T150405Z`). The archive holds `data/` as the data directory holds it (the catalog, the crews, the runs' records, a switchyard's `links/` (hashes, never tokens), `hooks/` and any other file) with the ledger's and Dispatch's databases as snapshots (`VACUUM INTO`, consistent while the server writes), the attachment files the Dispatch snapshot's live rows and launch pins require, and `conductor-export.json` last: `{format: 1, version, createdAt, files: [{path, size, sha256}], left: [{path, why}]}`. Left out, and listed with why: the workbench token and its lock, `restore.lock`, `runs/owner.lock`, `brakeman/owner.lock`, the databases' `-wal`, `-shm` and `-journal`, `*.tmp`, `.probe-*`, `.restore-*`, `dispatch/attachments/tmp/`, `tls/`, `ext/`, anything not a regular file or a directory, and a name not of `[A-Za-z0-9._-]` elements. The catalog is resolved against the configuration the server runs with, so saved agents' env values, configured ones they inherit among them, are in it in full: the archive is the person's own file. The records are copied before the ledger's snapshot, and none written after their copy is taken, so a record may lag its ledger, never lead it. A failure before the first byte is `500 internal`; one after it cuts the archive short, with no manifest, which no restore takes, and aborts the response (the connection dropped, or the stream reset, never a whole `200`), so the client's transfer fails; `503 no_data_dir` for a server with none |
+| `GET /api/export` | admin (a switchyard's too) | the data directory as one zip archive (`docs/plans/ext.md`, C6), streamed as it is made, nothing buffered whole: `200` with `Content-Type: application/zip` and `Content-Disposition: attachment; filename="conductor-export-<UTC time>.zip"` (`20060102T150405Z`). The archive holds `data/` as the data directory holds it (the catalog, the crews, the runs' records, a switchyard's `links/` (hashes, never tokens), `hooks/` and any other file) with the ledger's and Dispatch's databases as snapshots (`VACUUM INTO`, consistent while the server writes), the attachment files the Dispatch snapshot's live rows and launch pins require, and `conductor-export.json` last: `{format: 1, version, createdAt, files: [{path, size, sha256}], left: [{path, why}]}`. Left out, and listed with why: the workbench token and its lock, `restore.lock`, `runs/owner.lock`, `brakeman/owner.lock`, `history/owner.lock`, the databases' `-wal`, `-shm` and `-journal`, `*.tmp`, `.probe-*`, `.restore-*`, `dispatch/attachments/tmp/`, `tls/`, `ext/`, anything not a regular file or a directory, and a name not of `[A-Za-z0-9._-]` elements. The catalog is resolved against the configuration the server runs with, so saved agents' env values, configured ones they inherit among them, are in it in full: the archive is the person's own file. The records are copied before the ledger's snapshot, and none written after their copy is taken, so a record may lag its ledger, never lead it. A failure before the first byte is `500 internal`; one after it cuts the archive short, with no manifest, which no restore takes, and aborts the response (the connection dropped, or the stream reset, never a whole `200`), so the client's transfer fails; `503 no_data_dir` for a server with none |
 | `GET /api/capabilities` | admin | what is registered beside the open-source feature set (`docs/plans/ext.md`, C9): `{providers: [{kind, name, state}]}`, one row per provider in each slot it holds (one value in two slots is two rows under one name), in the registry's order (the kinds `identity`, `decisions`, `context`, `notifications`, `sync`, `entitlements`, `media`, `runtime`, then a list's registration order); `state` is `ready` once the provider's start has succeeded (or it needs none) and `starting` until then, its start tried again and its slot answering the free default meanwhile. A plain build answers `{"providers": []}`. No provider is asked anything to answer it, and a row says nothing a caller could gate a feature on: the web app shows a capability that is there, never a plan (Settings → The app, its Extensions row, read again while a provider is `starting`, 2 s after the last reply doubling to a minute). At most a few KB (six one-value slots and two lists of at most 16). A kind added later joins as a row of its own, and a field a kind needs is added to the row, left out when empty. The guide's `providers` section (Guide, below) carries the same rows to the admin and to a session's agent, which this route does not answer |
 | `GET /api/catalog` | admin | `{agents, hidden, yoloDefault}`: the launchable agents, `env` values masked as `***`, and the IDs hidden from the catalog; each agent, here and in the replies of the catalog routes below, also carries `source` (`built-in`, `config` or `saved`) and, for a saved agent that replaces a built-in or configured one, `replaces` (where that one came from); `available`, whether `command[0]` resolves on the server (the check of `POST /api/catalog/check`; any program of that name on the server's `PATH` counts, and a relative `command[0]` with a path separator counts without a lookup, since it resolves in the session's directory, which the server's own cannot stand for; the answer is kept 30 s per program, and the programs with no fresh answer are looked up together, at most 8 lookups at a time across all requests; a lookup that does not answer within 2 s (a `PATH` entry on a mount that stalls), or before the client goes away, counts as available, so the launch of such an agent is allowed and its spawn fails if the program is missing, and the lookup's answer is kept when it lands); and `site` when the agent has a website (an `https` URL: a built-in's, or the saved agent's); each agent also carries, when it has them, its `yolo` recipe `{args?, env?}` (its `env` values shown as they are: switches, not secrets), its `trustPrompt` and its `session` recipe `{startArgs?, newId?, idFrom?, idPolicy?, resumeArgs?, idPattern?, resumeNeedsCwd?}` (limits below); `yoloDefault` is the server's `yolo` setting, which a launch or a crew without `yolo` follows; each agent whose adapter has an identity probe (the real agent's `--version` line, checked against what it prints: Claude Code and Codex verified live, the others from their docs until the nightly recipes job confirms them) and whose program the lookup found at an absolute path also carries `identity` `{ran, pending?, identified, impostor?, verified, name?, version?, output?, error?}`: the program on the server run with its version flag (argv only, a spartan environment, 3 s, 4 KiB), its answer kept 10 min; `identified` with `version` when it is the agent, `impostor` when it is a known other program of that name (the Go migrations tool called goose; the agent's `available` is then `false`: it is not offered, and `POST /api/sessions` refuses it), `output` the first line it printed otherwise, `pending` when the probe is still under way (ask again), `verified` whether the adapter's expectation was checked against the real CLI (a verified probe that matches nothing means the program is not the agent; an unverified one leaves it unidentified and refuses nothing); an agent with `probe: false` is not probed |
 | `POST /api/catalog` | admin | add an agent or replace the one with the same `id` (a built-in too); body is the agent, reply `{agent}`; `source`, `replaces` and `available` in the body are ignored; an `env` value of `***` (what `GET /api/catalog` shows) keeps the value the saved entry holds for that key; for an agent that replaces a built-in or configured one, a `***` value the saved entry does not hold is stored as `***` and means "the replaced agent's value", so a change in the config reaches it, and a value equal to the replaced agent's is stored as `***` too; a saved agent that leaves out `adapter`, `signal`, `site`, `yolo`, `trustPrompt` or `session` takes those of the agent it replaces, and a `signal` without `workingTitle` the replaced agent's `workingTitle`, and `"yolo": {}` or `"session": {}` says it has none; `browser` (#436), the browser the agent's links open in, is `{name, profile?}`, `name` one of `chrome`, `edge`, `firefox`, `brave` and `safari`, `profile` a Chromium profile directory (`Default`, `Profile 2`) for `chrome`, `edge` and `brave` alone, at most 100 characters with no control character, quote or space at either end; left out it is the replaced agent's, and `"browser": {}` is the computer's default browser over it, as no `browser` is for an agent of its own (a config file's agents take it too, and the catalog shows it unmasked); `***` is rejected for a key neither has; `site`, when present, must be an `https://` URL with a host name, a valid port if it has one, no user info and no white space, at most 200 bytes, a rule that also holds for the config's agents and for `catalog.json`; `400 invalid_agent` carries the validation message, an unknown `adapter` or a bad `site` included (the adapter check also runs for the config's agents and for `catalog.json` at startup); `503 store_unavailable` when there is no data directory |
@@ -1960,13 +1993,17 @@ its run, and on no other.
 | `GET /api/runs/{run}/tasks/{task}` | admin | a managed run's task with every attempt (#334, row 6): `{task, attempts}`, `task` as the run reports it (Managed runs) and `attempts` each `{n, sessionId?, worktree?, branch?, start?, result?, state, stage?, error?, startedAt?, endedAt?, submitted?, checkpoint?, steps?, preview?, where?}`, `submitted` what the attempt submitted (`{summary, commit, issues, verdict, findings}`), `steps` its receipts as the steps route below answers them, `preview` its worktree's preview while the tree answers behind it (Project manifests, under Managed runs) and `where` where it ran (Where an attempt ran, under Managed runs), absent only from a run record saved before the ledger kept it; for a run the server no longer holds (evicted, or run by a server before this one) the task and its attempts as the ledger has them, with no preview, a result a continuation imported read from the run that made it; `404 not_found` for a run or task neither the server nor the ledger has; `503 ledger_unavailable` for a run not held when there is no ledger to read; `400 invalid_request` for an id that is not shaped as one |
 | `GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps` | admin | an attempt's receipts from the ledger (Project manifests below): `{steps}`, by when each started, each `{phase, id, k, state, argv?, url?, dir?, subject?, manifest?, exit?, timedOut?, duration?, error?, ports?, tries, startedAt, finishedAt?, logBytes, logDropped?, logSha256?, where}`, the row whole but for its log, `where` where its command ran (its attempt's; Where an attempt ran, under Managed runs) (`duration` in milliseconds; `exit` once it finished); a run the server let go answers the same; `404 not_found` for a run or attempt the ledger has not; `503 ledger_unavailable`; `400 invalid_request` for an id or number that is not shaped as one |
 | `GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/log` | admin | one receipt's log: `200 text/plain`, the bytes the ledger keeps (at most 1 MiB: the output's head, a line saying how many bytes were dropped, and its last bytes), their SHA-256 in `X-Conductor-Log-SHA256` (exposed to a dev origin's script; a log kept empty answers `200`, empty, with its hash); `404 not_found` for a row the ledger has not, one still running, or one that ended with no log (a check its attempt closed under, a step or prerequisite the recovery concluded); `410 log_dropped` for a log not kept past the run's 64 MiB of logs (its hash and tail stay on the row); fetched with the bearer header, never as a link the browser follows |
+| `GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/repair` | admin | the prepared failed-check request of one receipt (Program item RV1, docs/plans/review-repair.md): `{finding, criteria, plan?, ticket?, recheck}`; `finding` a draft note `{kind: "check", intent: "change", message, check}`, `message` a first draft of its words (at most 1,000 characters), `check` the receipt as the ledger keeps it `{source: "ledger", receipt, run, task, attempt, phase, id, k, subject, argv, exit?, signal?, timedOut, killed, stable, state, error?, where, logSha256?, logBytes, tail, class, chosen, quote, previous?}`, `receipt` its identity `<run>/<task>/<n>/<phase>/<id>/<k>`, `argv` whole, `error` cut to 500 bytes, `tail` the log's last 2 KiB, `class` the server's (`code`, `infrastructure`, `flaky`, `unavailable`, `cancelled`, worked out from the receipt's row, its attempt and the same check's receipts on the same commit in the run's chain), `chosen` and `quote` the person's to change (set to the class and the tail), `previous` the attempt before `{attempt, state, stage?, commit?}`; `criteria` `{source: "ticket", acceptance}` from the package of a run a ticket launched, else `{source: "checks", checks}` the task's checks as the crew names them; `plan` `{id, n}` and `ticket` `{id, key}` the launch's; `recheck` `{allowed, run, revision, attempt, commit, why?}`: whether Check again would be taken now, by the engine's own rule, on the newest run of the receipt's chain (`run`, at `revision`), `attempt` and `commit` the candidate as the receipt names it, `why` the words when not ("continue run X first", "attempt 4 failed since, …"); `404 not_found` for a run, attempt or receipt the ledger has not; `409 task_state` for a receipt that did not fail (running, passed) or a cleanup step's; `503 run_changing` while a continuation of the chain is made; whole, under 512 KiB (`MaxRepairReply`) |
 | `GET /api/runs/{run}/candidates` | admin | a page of a managed run's candidates from the ledger (Program item DS2; see A run's candidates under Dispatch): `{run, managed, base, candidates, next?}`, `candidates` at most 8 tasks in the crew's order, each `{task, kind, candidates, more, withdrawn, acceptedOlder}` with at most 6 of its attempts that submitted something, newest first (`more` the rest, which the task's route reads, and `?task=` with `?before=` lists; `withdrawn` the task's last attempt a withdrawal took back, 0 for none, so an attempt at or below it was taken back whether or not it is listed; `acceptedOlder` how many of the rest a person accepted anyway), each `{task, kind, attempt, commit?, start?, state, stage?, standing, withdrawn, acceptedAnyway?, verdict?, findings?, receipts}`: `commit` a work attempt's result, `start` where it started (a review's: the commit it reviewed), `standing` that it is the task's result now, `withdrawn` that a withdrawal took it back, `acceptedAnyway` `{actor, at, command}`, `findings` a review's counted by severity (the text is the task route's), `receipts` at most 16 of the attempt's check and verify rows whose subject is that commit, each `{phase, id, k, where, state, exit?, signal?, timedOut, killed, stable, error?, startedAt, finishedAt?, logSha256?, logBytes, logDropped}`, `where` where it ran, its row's (Where an attempt ran, under Managed runs), `error` cut to 120 characters, its log the step log route's, no pid and no process group; `?after=` a task's id, the page's `next`; `?task=` a task's id instead, the page holding that task alone and no `next`, and `?before=` with it (1 or more) its attempts below that number only, so a task's older candidates are read page by page, each before the oldest the last one listed; the page's rows are of one revision of the run, read again while it moves, and `503 run_changing` with `Retry-After: 1` when it moved through every one of 8 reads, never rows of two revisions; a run the ledger has not, or any run while the ledger cannot be read, is looked for as `GET /api/runs/{run}` looks: found, a legacy run `{managed: false, candidates: []}` (`true` for a managed run's record whose rows are gone), and only a run found nowhere, with a ledger read or none, `404 not_found`; `503 ledger_unavailable` for a managed run, or a run found nowhere, while the ledger cannot be read; `400 invalid_request` for an id, an `after` or a `task` that is no task of the run, both of them, a `before` without a `task` or below 1, and any other parameter; under 1 MiB (`MaxCandidatesReply`) |
+| `GET /api/runs/{run}/tasks/{task}/attempts/{n}/diff` | admin | a candidate's diff (RV1): `{candidate, base, files, truncated}`, the files that differ between `base` and the attempt's result commit (`candidate`), renames found, each `{path, from?, status, added, removed, binary}` (`status` `A`, `M`, `D` or `R`, `from` a rename's old path, `binary` for a file git calls binary or one past 1 MiB, listed without its lines), at most 500 and fewer when the next would pass 256 KiB (`MaxDiffReply`), `truncated` then; `?base=` a commit in full, the run's base when absent, else the attempt's start or a result commit of the same task in any run of the run's chain, any other `400 invalid_request` before git is asked; every commit read by its id from the run's repository (the crew's working directory as launched, through the allowed roots), no worktree opened; `404 not_found` for a run or attempt the ledger has not and an attempt with no result commit; `409 repo_unavailable` for a repository not readable here now; `410 commit_gone` for a commit no longer in it; a run the engine let go answers from the ledger |
+| `GET /api/runs/{run}/tasks/{task}/attempts/{n}/diff/file?path=P&side=base\|candidate[&base=COMMIT]` | admin | one file of a candidate's diff at one side's commit (the base as the diff route takes it, or the result): `200 text/plain`, at most 1 MiB, `X-Conductor-Truncated: 1` past it, `X-Conductor-Commit` the commit read (both exposed to a dev origin's script); `path` relative to the repository's top, with no `..`, `.` or empty part, no leading `/`, no NUL, at most 4096 bytes (`400 invalid_request` otherwise, and for a side that is neither); a link is its target's text as git keeps it, never followed; `404 not_found` for a path the commit has no file at (an added file's base side, a deleted file's candidate side, a folder); `415 binary` for a binary file; the rest as the diff route |
 | `GET /api/runs/{run}/prerequisites` | admin | a run's prerequisites' receipts from the ledger: `{steps}` as the steps route answers them, each of phase `prerequisite`, `k` counting its runs in the run, `where` its run's; `404 not_found` for a run the ledger has not; `503 ledger_unavailable` |
 | `GET /api/runs/{run}/prerequisites/{id}/{k}/log` | admin | one prerequisite receipt's log, as a step's log route answers it |
 | `POST /api/runs/{run}/pause`, `POST /api/runs/{run}/unpause` | admin | pause a managed run's scheduling (attempts in flight go on, none starts) or resume it; body `{commandId, expectedRevision?}` (Commands with receipts below); reply `200 {receipt}`; `409 run_stopped` with the receipt once the run is stopped |
 | `POST /api/runs/{run}/tasks/{task}/cancel` | admin | cancel a task: its attempt in flight ends (its session stopped once the cancel is recorded), the task is `cancelled`, what needs it is blocked for good, and the run ends when every task is terminal; body `{commandId, expectedRevision?}`; `200 {receipt}` with the task; `409 task_state` with the receipt for a task already succeeded, failed or cancelled |
 | `POST /api/runs/{run}/tasks/{task}/retry` | admin | allow a failed or cancelled task one more attempt: it is `blocked` or `ready` again (a repair it carries stays), the run open again; `200 {receipt}`; `409 task_state` with the receipt otherwise |
 | `POST /api/runs/{run}/tasks/{task}/accept` | admin | take a failed task's last submitted commit as its result all the same ("Accept anyway", a person's decision over a failed check): the task `succeeded` with it, what needs it goes on; `200 {receipt}`; `409 task_state` with the receipt for a task not failed, or one no attempt of which submitted a commit |
+| `POST /api/runs/{run}/tasks/{task}/recheck` | admin | Check again (RV1): a failed task's standing failed candidate verified again as it is, the same commit, as a new attempt not counted (no session, its receipts its own; the candidate's stay as they were), a finished run open again; body `{commandId, attempt, commit, expectedRevision?}`, `attempt` and `commit` the candidate as its own run `{run}` names it, `expectedRevision` the revision of the run it goes to (the prepared request's `recheck.revision`); sent to the newest run of `{run}`'s chain, with the candidate's reference when that is a continuation; `200 {receipt, run, attempt}`, `run` and `attempt` where it is checked again (attempt n+1 there); a resend is found by its command id along the chain from `{run}` and answered from the run that took it (`receipt.repeat`), another content under the id `409 command_conflict`; one Check again at a time from the chain's read to its answer, so one command id is taken in one run of the chain; `409 {error, receipt, run}` for a refusal recorded: `stale_candidate` when it is no longer the task's standing failed candidate there, `stale_revision` when `expectedRevision` is not the run's (a prepared request read before the run moved), `run_continued` when the run was continued between the chain's read and the command (recorded in that run, nothing checked; a resend under the id answers the same refusal, so Check again again takes a new id), `task_state` otherwise (not failed, failed outside its verification, a stopped run); `409 task_state` "continue run X first" when the server runs no run of the chain, nothing checked; `404 not_found` for a run the ledger has not; `400 invalid_request` for a body that is not one; `503 run_changing` (Retry-After 1) while a continuation of the chain is made, or when another Check again held the server for the request's whole time, nothing taken |
 | `POST /api/runs/{run}/links` | admin | create a run link: `{role, label?, ttlSeconds?}`, reply `201 {link, token, url}` as for a session link (its `url` on the same base); it grants its role on the session of every member of the run, a member added later included (see Crew runs); `409 too_many_links` past 100 links for the run; `404` when unknown |
 | `DELETE /api/runs/{run}/links/{linkId}` | admin | revoke a run link, which closes every viewer attached through it (`4403`); `204`, `404` when the link is not the run's |
 | `GET /api/dispatch/projects` | admin | Dispatch's projects (see Dispatch below): `{projects, next?}`, a page of at most `limit` (1 to 200, 200 when absent) summaries by key after `cursor` (a page's opaque `next`), each `{id, key, name, tracker, archivedAt?, open, done, rev, updatedAt}`, `open` counting its live tickets neither done nor cancelled and `done` those done, without its description, folder, tracker URL and close policy, which its read carries, so a page is under 128 KiB (a name of 60 characters encodes to at most 360 bytes); the archived ones only with `archived=1`; `400 invalid_request` for a bad value |
@@ -2026,7 +2063,7 @@ its run, and on no other.
 | `GET /api/runs/{run}/messages` | admin | a managed run's messages in sequence: `{messages}` |
 | `POST /api/sessions/{id}/task/blocked` | the session's agent token, or admin | report what blocks the session's attempt (#334, row 10): body `{reason, message?}` (a reason of one to 500 characters, a message of at most 4,000); reply `{task}` with its `blocker` (`{reason, message?, by, at}`); the session then asks the message (else the reason) as its own question; a `working` or `done` report of the attempt, or its result, clears the blocker; `409 not_running` for an attempt not running; `404 not_an_attempt` |
 | `POST /api/sessions/{id}/task/checkpoint` | the session's agent token, or admin | save where the session's attempt got to, tied to the commit its worktree is at: body `{done, remaining, notes?}` (each at most 4,000 characters, `done` and `remaining` given); reply `{attempt}` with its `checkpoint` (`{done, remaining, notes?, commit, at}`), kept in the ledger; the task's next attempt reads it in its task file, and one after an attempt that ended without a result, or a continuation's first, starts at that commit; `409 no_commit` for a worktree with none; `409 not_running` |
-| `POST /api/sessions/{id}/task/result` | the session's agent token only | submit the attempt's result: body `{summary?, commit?, issues?, verdict?, findings?}` (a work task: the commit, HEAD when not given, with a summary of at most 4,000 characters and at most 20 issues; a review: the verdict, `approved` or `needs_changes`, with at most 50 findings `{severity, path?, line?, message}`); reply `201 {task}` once recorded (the task `verifying`, or `succeeded` when it has no checks), `200 {task}` for the same commit submitted again while the first is verified; `409` with why otherwise, the attempt running on: `dirty_worktree` (the paths in the message), `off_branch`, `commit_mismatch` (the worktree is not at the commit named), `not_from_input`, `review_changed`, `reserved_path`, `submodules`, `stale_attempt` (not the task's active attempt, or another commit while one is verified), `not_running`, `decision_open` (a decision of the attempt's is open, or answered and not applied: see Decisions); `400 bad_result` for a result that does not fit the task's kind or its bounds; `403 agent_only` for the workbench token, as a result is always the agent's own; `404 not_an_attempt` |
+| `POST /api/sessions/{id}/task/result` | the session's agent token only | submit the attempt's result: body `{summary?, commit?, issues?, verdict?, findings?, addressed?}` (a work task: the commit, HEAD when not given, with a summary of at most 4,000 characters and at most 20 issues, and, for a repair a person asked for, `addressed`: at most 50 `{id, note?}`, each a change of the request by its id, once, with a note of at most 1,000 characters, which the attempt's row keeps with its result as its claim, never the change's resolution; a review: the verdict, `approved` or `needs_changes`, with at most 50 findings `{severity, path?, line?, message}`, and no `addressed`); reply `201 {task}` once recorded (the task `verifying`, or `succeeded` when it has no checks), `200 {task}` for the same commit submitted again while the first is verified; `409` with why otherwise, the attempt running on: `dirty_worktree` (the paths in the message), `off_branch`, `commit_mismatch` (the worktree is not at the commit named), `not_from_input`, `review_changed`, `reserved_path`, `submodules`, `stale_attempt` (not the task's active attempt, or another commit while one is verified), `not_running`, `decision_open` (a decision of the attempt's is open, or answered and not applied: see Decisions); `400 bad_result` for a result that does not fit the task's kind or its bounds, or whose `addressed` names a change the attempt's repair does not have (`addressed names a change the request does not have`); `403 agent_only` for the workbench token, as a result is always the agent's own; `404 not_an_attempt` |
 | `GET /api/sessions/{id}/ticket` | the session's agent token, or admin | the Dispatch ticket the session's run is linked to (see Dispatch, An attempt's ticket), for `conductor task ticket` and the MCP tool `ticket_read`: `{ticket, labels, milestone}`, `ticket` as `GET /api/dispatch/tickets/{key}` reads it (its last 50 comments among it), `labels` the rows of its live labels, by name, and `milestone` its live milestone's row or `null`, which the project's routes give the admin alone; for a run launched from a ticket that ticket, by the run's package, whatever links say (a continuation's sessions find it too), the reply gaining `launch` `{id, rev, plan: {id, n}, digest, changed}` (`rev` the ticket's revision it was launched at, `changed` `{fields, comments, rev}`, what changed of the ticket since, `null` when this store has no such launch); else the live ticket whose live `run` link names the session's run, one at most, a deleted ticket's link holding none; `404 no_ticket` for a session that is no member of a run, for a run no live ticket holds, and for a run whose launching ticket is deleted (saying the run follows its package); `400 invalid_request` for any parameter; under 3.5 MiB, as the ticket's own read; a switchyard's `403 switchyard` |
 | `POST /api/sessions/{id}/ticket/comments` | the session's agent token, or admin | comment on that ticket (`comment.add`, Dispatch operations), for `conductor task ticket comment` and the MCP tool `ticket_comment`: body `{opId, body}`, `body` Markdown of 1 to 16 KiB; the comment is the session's member's, `agent:<member>` its author and the actor its operation is kept under, whichever token sent it, with no display name; reply `201 {receipt, comment}`, `200` for the same `opId` sent again, as the admin's comment route; `404 no_ticket` as above; `400 invalid_request` for a body that is not `{opId, body}`, `413 bound` past 64 KiB, and the store's refusals as the admin's route answers them; an agent reads its ticket and comments on it, nothing more; a switchyard's `403 switchyard` |
 | `GET /api/sessions/{id}/run` | the session's agent token, or admin | the session's run with the last 50 log entries, and the session's member name: `{run, member}`; `404 no_run` |
@@ -2275,7 +2312,7 @@ overview at most 4 KiB, each section at most 64 KiB, the seven at most
 `500 guide_bound`, never a cut reply). The sections:
 
 - `overview`: `{caller: {kind, session?, kinds?, run?, member?, scopes},
-  sections: [{name, bytes}], rules}`. `kind` is `admin` or `session`; a
+  may, limits, sections: [{name, bytes}], rules}`. `kind` is `admin` or `session`; a
   session's `kinds` are `plain` (in no run) or `run_member`, `attempt` (of
   a managed run) and `ticket_member` (of a run a live ticket's run link
   names), or `brakeman` (a Brakeman turn's, which is never a ticket's
@@ -2283,7 +2320,27 @@ overview at most 4 KiB, each section at most 64 KiB, the seven at most
   `task` for an attempt, `ticket` for a ticket's member, `observe` for a
   Brakeman turn: its request and its brief, and `act` for a Brakeman turn
   the person granted an operation (What a turn may do); the admin's are
-  `admin`, `session`, `task`, `ticket`, `observe` and `act`). `bytes` is the size of that
+  `admin`, `session`, `task`, `ticket`, `observe` and `act`). `may` is
+  the names of the operations the caller may call, the `operations`
+  section's, in its order, so a caller told only to read the guide knows
+  what it may do without reading a section. Both are made by the check the
+  routes refuse by, for this caller now: an operation only a session's
+  own token calls (`task_result`, `brief_submit`, which answer the
+  admin's `403 agent_only`) is not listed to the admin, and a Brakeman
+  turn is not listed a read of a class it may not see, its snapshot and
+  the configuration now together (`observe_screen` with terminals off;
+  Dispatch's reads, the act tool and its operations with Dispatch hidden;
+  `observe_status` and `observe_overlaps` with neither runs nor sessions),
+  which its route answers `403 not_visible`. `limits` is the headline
+  bounds that bind it, one line of words each, from the `limits`
+  section's entries for its scopes (a crew's members, tasks and checks and
+  a ticket's title and description for the admin; a report's message and
+  the self-service hour's crews and day's links for a session; a message,
+  an inbox and a result for an attempt; a comment for a ticket's member;
+  a brief's bytes, items, refs and summary for a Brakeman turn), then a
+  Brakeman turn's reads and minutes from the configuration its turn
+  began under, its acts a request (at most 20) when it is granted one,
+  and a JSON body's bound for every caller. `bytes` is the size of that
   section's reply. `rules` are three lines for every caller: a fact needs
   evidence; nothing an agent writes becomes work by itself; a question
   goes to a person with `ask`.
@@ -2979,6 +3036,82 @@ findings. The run log says what was reopened and withdrawn, and the events
 `task.reopened`, `task.withdrawn` and `attempt.withdrawn` are recorded with
 the review's result.
 
+A person's Request changes (Program item RV1, `docs/plans/review-repair.md`)
+is the same repair transition with a person as its source, applied to a
+work task's standing candidate: its result (the task succeeded with that
+attempt and commit; in a continuation, named by its reference
+`<run>/<task>/<n>`), or its standing failed candidate (the last attempt a
+withdrawal has not taken back, or in a continuation with no attempt of its
+own the continued run's last, having submitted that commit). The result is
+dropped, the repair set, what rested on it withdrawn as above, a task whose
+attempts are spent granted one more (the request is its authority, as a
+retry's is), the decisions its attempts asked cancelled, a finished run
+open again, a task a decision holds left held. The request re-applies the
+task's gates as every reopen does; a gate may ask a decision (a plan's
+gate whose decision ended asks again, and a request whose reopen would ask
+more than the run has room for is refused `decision_limit` before anything
+is recorded, as a retry is). No decision is answered, and nothing is typed
+into any session but the repair attempt's task line. `task.reopened` names the Dispatch
+review (`review`) and who asked (`by`) beside `task`, `attempt` (the
+candidate's), `findings` (the changes counted) and `state`, and
+`imported` for a continuation's candidate. The repair attempt starts at the
+candidate, or, for a failed candidate refused before its checks (its
+checkout, its manifest, a setup, service or ready step), where that
+attempt started (`repair.start`), its task file naming the candidate's
+commit and branch and the refusal (`previous`). A task a review task's
+`needs_changes` had reopened (left failed with no attempt, or its repair
+attempt failed since) keeps that review's findings beside the request: the
+repair carries both, never the person's alone. `task.json`'s `repair` is
+then `{review, attempt, commit, start?, summary?, request, findings?,
+findingsFrom?}`, the summary the person's review's (at most 4,000
+characters, never cut), `findings` and `findingsFrom` `{review, attempt,
+commit, summary?}` the review task's findings kept and that review, and
+`request` `{review, by, via?, base?, changes}`: `review` the Dispatch
+review's id and `by` who asked (at most 64 bytes and 200 characters;
+these, `via`, each change's `id` and `path` and a check's identity are one
+line of valid UTF-8 with no control character), `base` the commit the
+candidate was read against, `changes` 1 to 50 (at least one a change asked
+for), each `{id, kind, intent, severity?, path?, side?, from?, to?, lines?,
+message?, resolution?, check?}`: `id` the finding's (at most 64 bytes, each
+once), `kind` `line`, `file`, `general` or `check`, `intent` `change`
+(with a `severity`, `blocker`, `major`, `minor` or `nit`), `question` or
+`note`, `path` at most 1,024 bytes on `side` `candidate` or `base`,
+`from`/`to` the lines, `lines` at most 12 of 200 bytes as the person saw
+them, `message` and `resolution` at most 1,000 characters each, and for a
+check `check` `{receipt, run?, task?, attempt?, phase?, id?, k?, subject?,
+exit?, signal?, timedOut?, stable, error?, logSha256?, logBytes?, tail?,
+class?, chosen?, quote?}` (the ledger's receipt identity at most 512 bytes,
+the server's class and the person's choice, `tail` and `quote` at most
+2 KiB each, `error` 500 bytes). `task.md`'s "Findings to address" says who
+asked for changes to which commit in which review against which base and
+where the attempt starts, their summary, then the changes asked for, the
+questions to answer in the summary and the notes, each with its id,
+severity, location, lines in a fence, words and "Asked:", a check's receipt
+with its class and its log (its file when `previous.check` wrote it), then
+the kept review's findings, and asks for `addressed`; the person's words of
+more than one line (the summary, a change's words, a resolution) are
+fenced under their item, so none of their lines reads as a section of the
+file. To fit 64 KiB, the kept review's findings are cut first, from the
+last, then the changes' lines (a check's tail and
+quote with them), then their resolutions, then their words past 200
+characters are cut, each from the last, into `task-more.json`'s `changes`
+(by `id`, with the parts cut), after the findings and before the checks'
+commands; ids, kinds, intents, severities, paths, sides and line numbers
+are never cut. A request is measured before anything is recorded
+(`FitChangeRequest`): its repair at its largest (its own review id, as
+JSON escapes it) within the ledger's 64 KiB payload, and its repair
+attempt's task files with the task's own text, the crew's people and the
+ticket within 64 KiB each, every part that is never cut at its widest
+(four bytes a character for `task.md`, six for `task.json`, as JSON
+escapes a control character or U+2028), or it is refused whole, so an
+accepted one never fails at its attempt's start for its size. A request
+whose repair, with the review's findings it keeps, the run could not keep
+is refused with a receipt (`task_state`), nothing changed. A row written
+before this (ledger version 9 or earlier) has none of `request`, `start`
+and `findingsFrom` and reads as before; the ledger's version 10 changes
+no table and is a barrier, so an older binary opens it read-only rather
+than dropping a request it does not know.
+
 **Commands with receipts.** A person's change to a managed run (pause,
 unpause, cancel, retry, accept) is a command: the client mints a `commandId`
 (1 to 32 of letters, digits, `.`, `_`, `~` and `-`), the run keeps the
@@ -3542,9 +3675,31 @@ crew a person names Brakeman is saved as `brakeman-2`.
 **A request's states.** `queued` → `starting` → `running` →
 `briefed`; the others close it: `timed_out` (its deadline, which covers
 `starting`), `ended` (its session ended with no brief, after it read its
-request), `failed` (the launch failed, with the engine's words, or the
+request), `failed` (the launch failed, with the engine's words; the
 agent exited before it read its request: "is it logged in?", with its
-exit and last line), `over_budget` (at the dequeue the day's turns were
+exit and last line; the agent made no call to the server with its own
+token, on any route (the guide, its MCP server's tool listing, a
+report, an observation, an act, its request's read), within a third of
+the turn's minutes of its launch's return (its process made; a launch
+still under way is covered by the deadline, as before), at least 2
+minutes, or by its deadline when that comes first, whatever its screen
+shows, ended then with words naming the bound ("did not start in 5
+minutes, no call to Conductor") and the last lines its screen shows
+(the rows a terminal shows, as `/api/brakeman/screen` reads them, a line
+wrapped across rows read whole, links left out, at most 220 bytes), a
+person's turn as a wake turn: a
+real agent calls within two minutes, and a turn whose agent has made any
+call runs to its deadline (a screen no catalog entry knows is not told
+from any other: once it is quiet the request's line is typed into it, as
+into every agent's); or, sooner, before it read its request, its agent shows a
+startup question the turn may not pass, ended at once with the words of
+what it shows and no key typed into it: a startup question with no
+answers, a screen no key of Conductor's passes (Claude Code's sign-in
+screen, "its login refused"), ends any turn, and any startup question (a
+trust question, an update dialog) ends a wake turn, whose questions page
+no one, saying to answer it in a session of that agent; a person's own
+turn shows one with answers under Needs you, as before; the turn is
+charged the minutes it ran), `over_budget` (at the dequeue the day's turns were
 spent, or the day's minutes left fewer than 2), `cancelled` (a person, or Brakeman turned off, which cancels the
 turn in progress and the queue) and `interrupted` (the server stopped
 while it was starting or running; a restart finds it so). A deadline, a
@@ -3725,7 +3880,11 @@ with `why` (the store's receipt's words, or the route's for a refusal
 before the store, cut to the room its other fields leave in the entry's
 600 bytes as encoded); a failure of the server leaves it `pending`. The
 answer is the route's status and its `receipt` and `error`, so a retry is
-answered by its receipt whatever the grant now; its `launch` or `plan`,
+answered by its receipt whatever the grant now, and beside a receipt
+`receiptRef`, the ref a brief cites that receipt by,
+`op:brakeman/<the receipt's opId>` (the derived op id: the receipt's own
+`id` is what the operation made, the launch's or the revision's, never a
+ref of the receipt); its `launch` or `plan`,
 Dispatch's records of the ticket, only while the configuration then and
 the turn's snapshot show `dispatch`, the ticket is in the scope and the
 turn has reads left, each noted in the read log at its state and rev and
@@ -3767,7 +3926,11 @@ granted operation as its `op`, with `expectedRevision` the ticket's
 revision read, and the `opId` of the act it ran in `args.opId`; the
 request's `acts` say which of them Brakeman ran, and the app shows a
 proposal as "Brakeman did this" with its receipt only when an act of the
-request has the `opId` it names, of its operation on its ticket. A server that stops between the operation and the copy, or before the operation,
+request has the `opId` it names, of its operation on its ticket; every
+other act of the request is shown apart, under "What Brakeman did", with
+its receipt, whether or not the brief names it. The act's words (the
+tool's text, the command's output) give the `receiptRef` and name the
+launch as the launch. A server that stops between the operation and the copy, or before the operation,
 leaves the entry `pending`: before Brakeman's routes serve again, the
 desk reads Dispatch's receipt for `(brakeman, op)`, or, the receipt
 pruned, the change its operation recorded, and copies it, or, with
@@ -3934,10 +4097,25 @@ request still queued (behind a person's turn) waits in the queue,
 starting once the role is resumed; the briefing times passed while
 paused fire nothing, whether or not the role stepped between;
 `unavailable` (a turn could not start: its launch refused, its agent
-exited before it read its request, or the day's turns or minutes spent)
-says why, keeps its batch (a turn that started none gives its wakes to
-the next batch, under a new id), and tries again on a person's request, the
-next briefing time, or, for a budget spent, the next local day. The
+exited before it read its request, was held at a startup question it
+may not pass, or made no call in its start bound, or the day's turns or
+minutes spent) says why, with its `reason` (`start`, `budget`, `off`,
+`stuck`), keeps its batch (a turn that started none gives its wakes to
+the next batch, under a new id), and tries again at `retryAt` and as its
+reason allows. For `start` the role waits 10 minutes, doubled for each
+such turn in a row (`tries`) up to 4 hours, and fires nothing into the
+same state meanwhile: a wake, a briefing time and a person's own
+request (which is its own try, and fails or starts on its own) leave the
+batch kept; a turn of the agent that reads its request, a person's
+included, ends it at once, and `tries` starts again from 0. For the
+others a person's request and the next briefing time try again, and for
+a budget spent the next local day. A save of the configuration
+(`PUT /api/brakeman/config`) tries again only for what it changed: the
+budget for `budget` (the batch kept fires within its rules, or one
+still spent says so again in words true now), the agent, its model, its
+account, its folder or its tools allowed for `start`, the role turned on
+or off for `off`, nothing for `stuck`; a save that changes none of what
+the reason weighs, the same body again included, fires nothing. The
 day's minutes, `budget.minutesPerDay` (10 to 1,440; 240), count every
 turn, whatever started it: a turn's reservation at its start is the
 least of `turnMinutes` and what the day has left, its deadline its start
@@ -3959,10 +4137,98 @@ state}`.
 
 | Route | Body and answer |
 |---|---|
-| `GET /api/brakeman/role?limit=` | `{role: {schema, identity, state, why?, retryAt?, last, open?, fired?, firing?, request?, coolUntil?, briefed?, notes?, updatedAt, minutesToday}, log: [{source, subject?, key?, at, batch?, request?, held?}]}`: the role, and its log newest first, `limit` rows (1 to 1,000; 200) |
+| `GET /api/brakeman/role?limit=` | `{role: {schema, identity, state, why?, retryAt?, reason?, tries?, lastStarted?, last, open?, fired?, firing?, request?, coolUntil?, briefed?, notes?, updatedAt, minutesToday}, log: [{source, subject?, key?, at, batch?, request?, held?}]}`: the role, and its log newest first, `limit` rows (1 to 1,000; 200) |
 | `POST /api/brakeman/role` | `{action}`, `pause` or `resume` → `{role}`; `400 invalid_request` for another action |
 | `POST /api/brakeman/role/notes` | `{request, item}` → `{role}`: the text of a kept brief's `fact/1` or `interpretation/1` kept as a note, `from` its `brief:` ref; `400 not_a_note` for another kind; `404` for no such request or item; `413 bound` past the notes' 64 KiB |
 | `DELETE /api/brakeman/role/notes` | → `{role}`, the notes cleared |
+
+### History
+
+Every session the server runs gets a **record** (`docs/plans/history.md`,
+Program item HS1; `internal/journal`): a JSON document of its own,
+`history/sessions/<id>.json` in the data directory (the directory 0700,
+each file 0600), begun and written as the session is made, before it can
+keep an entry, then written by the journal's writer as it changes, and
+at once at its end and when a crew is taken after its launch. A hosted
+session has no record yet. A server killed loses what was not yet
+written; no time bound is promised. The server holding `history/owner.lock` writes the
+records; another server on the same data directory reads them (its own
+sessions unrecorded, `readOnly` on the list) and takes the lock when the
+first lets it go. `history.sessions` (`CONDUCTOR_HISTORY_SESSIONS`, on by
+default) off begins no record; the records kept stay until forgotten. A
+server with no data directory, and a switchyard, keep none.
+
+A record holds the session's id, name and kind; its agent (`id`, `name`,
+`adapter`, `version` from the server's probe, its own `session` `{id,
+source, resumable}` as the session knows it); its host (`name`, `user`;
+`owner` and `hosted` are kept for a later version's hosted records,
+empty here); `where` it ran (its Runtime, always set); its `cwd`; for a native
+session the `repo` (the worktree's top), `repoCommon` (the
+repository's common git directory, absolute), `branch` and `startCommit`
+read in one `git rev-parse` in the folder opened and checked, the one its
+process starts in, before it starts (`startFrom: "launch"`; an attempt of
+a managed run has `startFrom: "attempt"`, its start being the ledger's),
+and `endCommit`, HEAD read once its process is gone in the session's own
+folder as it was opened (through its handle where the system has one), an
+observation kept only when the repository found there is the launch's by
+the file system's identity of its common directory, never by a path's
+text; its `launch` (`args` only when the launch
+fits 16 KiB, else `argCount` and `argsSha256` with `argsKept: false`; the
+variables' `envNames`, at most 64, `envCount` and one `envSha256` over the
+sorted `name=value` lines, never a value; `yolo`, `renamed`); its `crew`
+(`runId, crewId, member, task?, attempt?, brakeman?`); `resumedFrom`;
+`startedAt`; `endedAt` (an observed end: the session's process gone,
+with the status and exit code the session published, or `exited` with no
+exit code when the server's last look at a session leaving it found the
+process gone before its status was published; a stop that failed leaves
+the record open), or `lostAt` when the server stopped observing it
+(`ending` `lost`: a session removed from the listing, or still there at
+a shutdown, while its process ran; a record found open at the next
+start; a record whose delete failed while its file said open: whether
+its process ended is not known); the end is read from the session
+itself, not from the order its events arrive in, and once recorded it
+stands; `ending` (`exited (exit 0)`, `stopped`, `lost`, …); `reopened`,
+kept for a later version's hosted records, 0 here; and its evidence: `entries[{seq, at, kind, id?, ref?, event?,
+byName?, message?, path?, tool?, url?, to?, choices?, outcome?}]` in order
+of `at`, then `seq`: `typed` (a line Conductor typed: a crew's prompt, a
+broadcast, a handoff), `question` (the agent's question in the chat, `id`
+its id, `choices` its labels), `answer` (`ref` the question, `outcome`
+`answered` with the choice's label as the chat's `answered` line has it
+and none for a line typed, `answered_in_terminal` for keys typed in the
+terminal, `withdrawn` when the agent moved on, or when the session's end
+was recorded with the question still open), `chat` (a message posted,
+`id` its id; with `event: "sent_to_agent"` and `ref`, the mark that one
+was sent to the agent), `report` (`event` `progress`, `artifact`,
+`handoff`, `error` or `tool_denied`), `status`; `files[{path, op, count,
+last}]`, one row per path and op, at most 500, a path the server's deny
+list covers never written in a server session's record; `tools`, tool uses counted by tool, at most 64;
+`dropped`, the entries and files its bounds let go, oldest first, and
+those that arrived once its end was recorded, whatever their time says
+(what arrives before is kept in its place by its own time); `resumes`, the receipts of resumes from it.
+Never kept: what a person types into a terminal or a reply box, a typed
+answer's text (whoever passed it on: a reply box, a provider, a route),
+a variable's value, who joined, left or came through a
+link, an attention entry. A record is at most 64 KiB as written; a
+message at most 500 bytes, a chat line 2 KiB. The 2,000 records that
+ended (or were last observed) most recently are kept; a live one and one
+with a resume being started are never pruned. A record of a later version
+is listed (`newer: true`) and read as it is, never rewritten. A file in
+`history/sessions/` this version cannot decode is kept as it is: listed
+by its id alone (`unreadable: true`, `startedAt` its file's last write),
+counted toward the 2,000 by that time, forgettable, never written over. A server that does not hold
+the records reads a file again only when its size or time changed.
+
+| Route | Who | Answers |
+|---|---|---|
+| `GET /api/history/sessions?after=&limit=` | admin | `{records[{id, name, kind, agent, host, where?, cwd, repo?, branch?, crew?, startedAt, endedAt?, lostAt?, ending?, entries, files, dropped?, newer?, unreadable?}], next?, readOnly?}`, newest first by `startedAt`; `limit` 1 to 100, default 50 (`400 invalid_request` otherwise); `after` the `next` of the page before (at most 64 bytes; `400 bad_cursor` for one that is not) |
+| `GET /api/history/sessions/{id}` | admin | `{record, live, newer}`: the record whole (at most 64 KiB), `live` while the registry lists its session running; `404 not_found` |
+| `DELETE /api/history/sessions/{id}` | admin | `204`: the record forgotten, its file deleted; `409 live_session` for a session still running, `409 resume_pending` for a record whose resume is being started, `409 history_read_only` on a server that does not hold the records, `404 not_found`, `500 history_failed` when its file could not be deleted: the record stays as last written, listed and forgettable again, nothing its session says is written to it, and one whose file has no end is listed `lost` and written so |
+| `DELETE /api/history/sessions` | admin | `{forgotten, kept}`: every record neither live nor pending forgotten, those kept counted; `500 history_failed` when a file could not be deleted (those records stay, as above) |
+
+From a forget on, nothing the forgotten record's session says is written
+anywhere. A share link, a session's own token and
+Brakeman's principal reach none of them (`401`). A server with no data directory, and a switchyard,
+answer `404 history_unavailable`.
 
 ### Decisions
 
@@ -4045,9 +4311,9 @@ operation's receipt is `{decision, op, seq, at, rev, words, repeat?}`.
 when the request was made (the ref's record then): `{ref, seen, now,
 change?}`, `seen` the baseline's `{state, rev?, sha256?}`, `now` the
 record as it is (`{url, state, rev?, sha256?, at}`), and `change`
-`changed` (its state, revision or digest differ; a `run:` ref's state
-alone, as a run's revision moves with every transition of it, the
-decision's own opening among them), `deleted` (gone since) or `unread`
+`changed` (its state, revision or digest differ; a `run:` or a `task:`
+ref's state alone, as a run's revision, which is its tasks' too, moves
+with every transition of it, the decision's own opening among them), `deleted` (gone since) or `unread`
 (its store could not be read when the question was asked), absent when
 nothing changed. A resolution is at most 4 KiB as encoded, its escapes
 counted: past it its `now.url` is left out.
@@ -4089,4 +4355,33 @@ message, the run page's task with `&decision=dr-N` as URL, and the
 responder's actor as `by`): the webhooks that list `decision`
 (`config.ValidWebhookEvent` takes it) and the providers' sinks that take
 it receive it, queued without waiting. An agent's decision also shows as
-its session's question.
+its session's question, with the decision's id as its attention's
+`decision` (see Attention), which takes no reply but the decision's.
+
+**Routed decisions.** On a build with a decision router registered
+(`ext.DecisionRouter`), a decision's record is told to it as it opens, as
+`ext.Decision{id: dr-N, request: dr-N, session:
+the asking attempt's (an empty id for a plan's gate) with its run and
+task, message: the question cut where a character ends to 500 bytes, kind:
+decision, options: the labels, each picked by its place ("1" first),
+since}`, through the router's guard, never the session question that
+mirrors it. The ledger is the truth, only its owner tells the router, and
+the server keeps no account of what a router heard: a decision is told
+when it opens, as often as needed (whenever the server holds the ledger,
+at its start, at a takeover from another server holding its owner lock
+and after a tell that failed or was not made, one query of the ledger
+tells every decision it holds open, so a router may be told of a decision
+more than once and treats a repeat, the same `request`, as nothing new);
+told `Resolved` (with `request`) when it reaches a final state, when that
+can be done at once (best-effort, never owed); and its state can always
+be read through the provider's Host (`ext.Host.Decision`, a `dr-N` of at
+most 21 bytes: its state, whether final, its rev, when it closed). Each
+call about a decision runs on a goroutine of its own, at most 16 at once:
+a provider that hangs holds one and stalls nothing. A route's destinations become one
+`routed` history row (by `router:<name>`, its `to` and `rule`; a repeat
+writes none); an answer
+it holds is offered as a response under the actor `user:<subject>` with
+the authority `{via: router}` and no grant, which `local/1` refuses
+(`not_approver`, "refused under local/1") whatever principal the subject
+names: kept as a refused response with its `responded` row, never
+applied. The operator answers it as any other.

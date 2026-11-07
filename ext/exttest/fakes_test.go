@@ -103,6 +103,17 @@ func TestFakes(t *testing.T) {
 		if got := f.Resolutions(); len(got) != 1 || got[0].ID != d.ID {
 			t.Errorf("Resolutions = %+v", got)
 		}
+		// A durable decision's record is recorded with its Request, and
+		// so is its resolution.
+		rec := SampleDecisionRequest()
+		f.Route(context.Background(), rec)
+		f.Resolved(context.Background(), ext.Resolution{ID: rec.ID, Session: rec.Session, Request: rec.Request})
+		if got := f.Decisions(); len(got) != 4 || got[3].Request != "dr-7" || got[0].Request != "" {
+			t.Errorf("Decisions = %+v", got)
+		}
+		if got := f.Resolutions(); len(got) != 2 || got[1].Request != "dr-7" || got[0].Request != "" {
+			t.Errorf("Resolutions = %+v", got)
+		}
 		boom := errors.New("down")
 		f.SetErr(boom)
 		if _, err := f.Route(context.Background(), d); !errors.Is(err, boom) {

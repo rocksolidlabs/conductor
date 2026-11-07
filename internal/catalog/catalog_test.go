@@ -1229,7 +1229,7 @@ func TestStartupQuestions(t *testing.T) {
 // do.
 func TestClaudeCodesDialogQuestion(t *testing.T) {
 	claude, _ := Default().Get("claude")
-	if len(claude.Questions) != 2 {
+	if len(claude.Questions) != 3 {
 		t.Fatalf("claude: %+v", claude.Questions)
 	}
 	q, last := claude.Questions[0], claude.Questions[1]
@@ -1473,4 +1473,36 @@ func TestTheE2EClaudeCodeCarriesTheBuiltInQuestion(t *testing.T) {
 		return
 	}
 	t.Fatal("no claude in the e2e catalog")
+}
+
+// Claude Code signed out does not exit: it waits at its sign-in screen
+// (2.1.319, #659's live check). The catalog finds that screen as a
+// startup question with no answers, a screen no key of Conductor's
+// passes, its words the screen's own line and never the sign-in URL below
+// it; an ordinary start's words are no such screen.
+func TestClaudeCodesSignInScreenIsAStartupQuestionWithNoAnswers(t *testing.T) {
+	claude, _ := Default().Get("claude")
+	i := slices.IndexFunc(claude.Questions, func(q Question) bool { return strings.Contains(q.Prompt, "paste") })
+	if i < 0 {
+		t.Fatalf("claude: %+v", claude.Questions)
+	}
+	q := claude.Questions[i]
+	if q.Anytime || q.AnswersFromScreen || len(q.Answers) != 0 {
+		t.Fatalf("the sign-in screen: %+v", q)
+	}
+	screen := " Browser didn't open? Use the url below to sign in (c to copy)\n\nhttps://example.invalid/sign-in?code=true\n\n\n Paste code here if prompted >"
+	prompt, err := CompilePattern(q.Prompt)
+	if err != nil || !prompt.MatchString(screen) {
+		t.Fatalf("the prompt %q on the screen: %v", q.Prompt, err)
+	}
+	words, err := CompilePattern(q.Words)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := words.FindString(screen); got != "Browser didn't open? Use the url below to sign in" {
+		t.Fatalf("the words: %q", got)
+	}
+	if prompt.MatchString("Welcome to Claude Code v2.1.319\n> Try \"fix lint errors\"") {
+		t.Fatal("an ordinary start reads as the sign-in screen")
+	}
 }

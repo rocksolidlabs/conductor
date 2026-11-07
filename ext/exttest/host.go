@@ -39,6 +39,7 @@ type FakeHost struct {
 	submit   func(ext.SubmitRequest) (ext.SubmitResult, error)
 	notify   func(ext.Notification) error
 	approve  func(ext.ApprovedLaunch) (ext.RunRef, error)
+	decision func(string) (ext.DecisionState, error)
 }
 
 // NewFakeHost is an open FakeHost whose DataDir is t.TempDir(). When t
@@ -89,6 +90,13 @@ func (h *FakeHost) OnLaunchApproved(fn func(ext.ApprovedLaunch) (ext.RunRef, err
 func (h *FakeHost) OnSubmit(fn func(ext.SubmitRequest) (ext.SubmitResult, error)) {
 	h.mu.Lock()
 	h.submit = fn
+	h.mu.Unlock()
+}
+
+// OnDecision has Decision answer fn's answer for a decision's id.
+func (h *FakeHost) OnDecision(fn func(request string) (ext.DecisionState, error)) {
+	h.mu.Lock()
+	h.decision = fn
 	h.mu.Unlock()
 }
 
@@ -266,6 +274,22 @@ func (h *FakeHost) Submit(ctx context.Context, r ext.SubmitRequest) (ext.SubmitR
 		return fn(r)
 	}
 	return ext.SubmitResult{Status: "entered"}, nil
+}
+
+// Decision answers what OnDecision set, or ext.ErrNotFound: the fake
+// holds no ledger.
+func (h *FakeHost) Decision(ctx context.Context, request string) (ext.DecisionState, error) {
+	if err := h.enter(ctx); err != nil {
+		return ext.DecisionState{}, err
+	}
+	h.mu.Lock()
+	fn := h.decision
+	h.mu.Unlock()
+	h.tell()
+	if fn != nil {
+		return fn(request)
+	}
+	return ext.DecisionState{}, fmt.Errorf("%w: no decision %s", ext.ErrNotFound, request)
 }
 
 // Notify records n and answers nil, or what OnNotify set.

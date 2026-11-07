@@ -101,6 +101,21 @@ describe('rowPrompt', () => {
     expect(p?.placeholder).toBe(TERMINAL_FIRST)
   })
 
+  it("takes no reply to a durable decision's question: it says where the decision is answered, and offers no choice (DR1)", () => {
+    const mirror = { ...session('running'), attention: { state: 'needs_input', source: 'api', id: '0123456789abcdef', message: 'Ship it?', decision: 'dr-7' } } as SessionInfo
+    expect(rowPrompt({ session: mirror, prompt: { message: 'Ship it?', options: [], question: '0123456789abcdef' } })).toEqual({
+      message: 'Ship it?',
+      choices: [],
+      away: false,
+      held: true,
+      placeholder: 'The operator answers dr-7 in Conductor',
+      question: '0123456789abcdef',
+      decision: 'dr-7',
+    })
+    // Choices given all the same (an older owner's) are not offered.
+    expect(rowPrompt({ session: mirror, prompt: { message: 'Ship it?', options } })).toMatchObject({ choices: [], held: true, decision: 'dr-7' })
+  })
+
   it('takes no reply to a permission dialog whose choices it was not given: it is answered in the terminal (#288)', () => {
     const dialog = { ...session('running'), attention: { state: 'needs_input', source: 'api', kind: 'permission', message: 'Allow Bash?' } } as SessionInfo
     const p = rowPrompt({ session: dialog, prompt: { message: 'Allow Bash?', options: [], kind: 'permission' } })
