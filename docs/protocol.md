@@ -1280,9 +1280,20 @@ without the daemon, `3` cancels and Codex exits; Cancel is highlighted) and
 "Update available" (Update now highlighted, which runs `npm install -g`;
 Escape skips, `3` alone skips until the next version), both held the same
 way; the update question is found by its highlighted "Update now (runs" and
-its words are its heading, "Update available 0.161.0 → 0.162.1". An input
-that is exactly one of the showing question's choices answers it with or
-without an Enter.
+its words are its heading, "Update available 0.161.0 → 0.162.1". Claude
+Code's built-in entry has its sign-in screen (2.1.319 signed out: "Browser
+didn't open? Use the url below to sign in", the URL, "Paste code here if
+prompted >"), a startup question with no answers: no key of Conductor's
+passes it, and the person signs in through the browser, after which the
+program leaves the screen by itself. Such a question is withdrawn, with
+no answer recorded and no key typed, once the screen, after output since
+it was asked (output fed while it was being asked counts), shows no
+startup question (as one a key reached is), and a
+person's text is taken again. A person's text refused while a startup
+question shows says so: "the agent asks a startup question (whether to
+trust the folder, its sign-in, an update): answer with the question's
+choices, or in its terminal". An input that is exactly one of the showing
+question's choices answers it with or without an Enter.
 
 A question marked `anytime` (`{prompt, words?, anytime: true, answers}`) is
 one the agent asks during its work, not only as it starts. A server session
@@ -2047,7 +2058,7 @@ its run, and on no other.
 | `GET /api/runs/{run}/messages` | admin | a managed run's messages in sequence: `{messages}` |
 | `POST /api/sessions/{id}/task/blocked` | the session's agent token, or admin | report what blocks the session's attempt (#334, row 10): body `{reason, message?}` (a reason of one to 500 characters, a message of at most 4,000); reply `{task}` with its `blocker` (`{reason, message?, by, at}`); the session then asks the message (else the reason) as its own question; a `working` or `done` report of the attempt, or its result, clears the blocker; `409 not_running` for an attempt not running; `404 not_an_attempt` |
 | `POST /api/sessions/{id}/task/checkpoint` | the session's agent token, or admin | save where the session's attempt got to, tied to the commit its worktree is at: body `{done, remaining, notes?}` (each at most 4,000 characters, `done` and `remaining` given); reply `{attempt}` with its `checkpoint` (`{done, remaining, notes?, commit, at}`), kept in the ledger; the task's next attempt reads it in its task file, and one after an attempt that ended without a result, or a continuation's first, starts at that commit; `409 no_commit` for a worktree with none; `409 not_running` |
-| `POST /api/sessions/{id}/task/result` | the session's agent token only | submit the attempt's result: body `{summary?, commit?, issues?, verdict?, findings?}` (a work task: the commit, HEAD when not given, with a summary of at most 4,000 characters and at most 20 issues; a review: the verdict, `approved` or `needs_changes`, with at most 50 findings `{severity, path?, line?, message}`); reply `201 {task}` once recorded (the task `verifying`, or `succeeded` when it has no checks), `200 {task}` for the same commit submitted again while the first is verified; `409` with why otherwise, the attempt running on: `dirty_worktree` (the paths in the message), `off_branch`, `commit_mismatch` (the worktree is not at the commit named), `not_from_input`, `review_changed`, `reserved_path`, `submodules`, `stale_attempt` (not the task's active attempt, or another commit while one is verified), `not_running`, `decision_open` (a decision of the attempt's is open, or answered and not applied: see Decisions); `400 bad_result` for a result that does not fit the task's kind or its bounds; `403 agent_only` for the workbench token, as a result is always the agent's own; `404 not_an_attempt` |
+| `POST /api/sessions/{id}/task/result` | the session's agent token only | submit the attempt's result: body `{summary?, commit?, issues?, verdict?, findings?, addressed?}` (a work task: the commit, HEAD when not given, with a summary of at most 4,000 characters and at most 20 issues, and, for a repair a person asked for, `addressed`: at most 50 `{id, note?}`, each a change of the request by its id, once, with a note of at most 1,000 characters, which the attempt's row keeps with its result as its claim, never the change's resolution; a review: the verdict, `approved` or `needs_changes`, with at most 50 findings `{severity, path?, line?, message}`, and no `addressed`); reply `201 {task}` once recorded (the task `verifying`, or `succeeded` when it has no checks), `200 {task}` for the same commit submitted again while the first is verified; `409` with why otherwise, the attempt running on: `dirty_worktree` (the paths in the message), `off_branch`, `commit_mismatch` (the worktree is not at the commit named), `not_from_input`, `review_changed`, `reserved_path`, `submodules`, `stale_attempt` (not the task's active attempt, or another commit while one is verified), `not_running`, `decision_open` (a decision of the attempt's is open, or answered and not applied: see Decisions); `400 bad_result` for a result that does not fit the task's kind or its bounds, or whose `addressed` names a change the attempt's repair does not have (`addressed names a change the request does not have`); `403 agent_only` for the workbench token, as a result is always the agent's own; `404 not_an_attempt` |
 | `GET /api/sessions/{id}/ticket` | the session's agent token, or admin | the Dispatch ticket the session's run is linked to (see Dispatch, An attempt's ticket), for `conductor task ticket` and the MCP tool `ticket_read`: `{ticket, labels, milestone}`, `ticket` as `GET /api/dispatch/tickets/{key}` reads it (its last 50 comments among it), `labels` the rows of its live labels, by name, and `milestone` its live milestone's row or `null`, which the project's routes give the admin alone; for a run launched from a ticket that ticket, by the run's package, whatever links say (a continuation's sessions find it too), the reply gaining `launch` `{id, rev, plan: {id, n}, digest, changed}` (`rev` the ticket's revision it was launched at, `changed` `{fields, comments, rev}`, what changed of the ticket since, `null` when this store has no such launch); else the live ticket whose live `run` link names the session's run, one at most, a deleted ticket's link holding none; `404 no_ticket` for a session that is no member of a run, for a run no live ticket holds, and for a run whose launching ticket is deleted (saying the run follows its package); `400 invalid_request` for any parameter; under 3.5 MiB, as the ticket's own read; a switchyard's `403 switchyard` |
 | `POST /api/sessions/{id}/ticket/comments` | the session's agent token, or admin | comment on that ticket (`comment.add`, Dispatch operations), for `conductor task ticket comment` and the MCP tool `ticket_comment`: body `{opId, body}`, `body` Markdown of 1 to 16 KiB; the comment is the session's member's, `agent:<member>` its author and the actor its operation is kept under, whichever token sent it, with no display name; reply `201 {receipt, comment}`, `200` for the same `opId` sent again, as the admin's comment route; `404 no_ticket` as above; `400 invalid_request` for a body that is not `{opId, body}`, `413 bound` past 64 KiB, and the store's refusals as the admin's route answers them; an agent reads its ticket and comments on it, nothing more; a switchyard's `403 switchyard` |
 | `GET /api/sessions/{id}/run` | the session's agent token, or admin | the session's run with the last 50 log entries, and the session's member name: `{run, member}`; `404 no_run` |
@@ -2296,7 +2307,7 @@ overview at most 4 KiB, each section at most 64 KiB, the seven at most
 `500 guide_bound`, never a cut reply). The sections:
 
 - `overview`: `{caller: {kind, session?, kinds?, run?, member?, scopes},
-  sections: [{name, bytes}], rules}`. `kind` is `admin` or `session`; a
+  may, limits, sections: [{name, bytes}], rules}`. `kind` is `admin` or `session`; a
   session's `kinds` are `plain` (in no run) or `run_member`, `attempt` (of
   a managed run) and `ticket_member` (of a run a live ticket's run link
   names), or `brakeman` (a Brakeman turn's, which is never a ticket's
@@ -2304,7 +2315,27 @@ overview at most 4 KiB, each section at most 64 KiB, the seven at most
   `task` for an attempt, `ticket` for a ticket's member, `observe` for a
   Brakeman turn: its request and its brief, and `act` for a Brakeman turn
   the person granted an operation (What a turn may do); the admin's are
-  `admin`, `session`, `task`, `ticket`, `observe` and `act`). `bytes` is the size of that
+  `admin`, `session`, `task`, `ticket`, `observe` and `act`). `may` is
+  the names of the operations the caller may call, the `operations`
+  section's, in its order, so a caller told only to read the guide knows
+  what it may do without reading a section. Both are made by the check the
+  routes refuse by, for this caller now: an operation only a session's
+  own token calls (`task_result`, `brief_submit`, which answer the
+  admin's `403 agent_only`) is not listed to the admin, and a Brakeman
+  turn is not listed a read of a class it may not see, its snapshot and
+  the configuration now together (`observe_screen` with terminals off;
+  Dispatch's reads, the act tool and its operations with Dispatch hidden;
+  `observe_status` and `observe_overlaps` with neither runs nor sessions),
+  which its route answers `403 not_visible`. `limits` is the headline
+  bounds that bind it, one line of words each, from the `limits`
+  section's entries for its scopes (a crew's members, tasks and checks and
+  a ticket's title and description for the admin; a report's message and
+  the self-service hour's crews and day's links for a session; a message,
+  an inbox and a result for an attempt; a comment for a ticket's member;
+  a brief's bytes, items, refs and summary for a Brakeman turn), then a
+  Brakeman turn's reads and minutes from the configuration its turn
+  began under, its acts a request (at most 20) when it is granted one,
+  and a JSON body's bound for every caller. `bytes` is the size of that
   section's reply. `rules` are three lines for every caller: a fact needs
   evidence; nothing an agent writes becomes work by itself; a question
   goes to a person with `ask`.
@@ -3000,6 +3031,82 @@ findings. The run log says what was reopened and withdrawn, and the events
 `task.reopened`, `task.withdrawn` and `attempt.withdrawn` are recorded with
 the review's result.
 
+A person's Request changes (Program item RV1, `docs/plans/review-repair.md`)
+is the same repair transition with a person as its source, applied to a
+work task's standing candidate: its result (the task succeeded with that
+attempt and commit; in a continuation, named by its reference
+`<run>/<task>/<n>`), or its standing failed candidate (the last attempt a
+withdrawal has not taken back, or in a continuation with no attempt of its
+own the continued run's last, having submitted that commit). The result is
+dropped, the repair set, what rested on it withdrawn as above, a task whose
+attempts are spent granted one more (the request is its authority, as a
+retry's is), the decisions its attempts asked cancelled, a finished run
+open again, a task a decision holds left held. The request re-applies the
+task's gates as every reopen does; a gate may ask a decision (a plan's
+gate whose decision ended asks again, and a request whose reopen would ask
+more than the run has room for is refused `decision_limit` before anything
+is recorded, as a retry is). No decision is answered, and nothing is typed
+into any session but the repair attempt's task line. `task.reopened` names the Dispatch
+review (`review`) and who asked (`by`) beside `task`, `attempt` (the
+candidate's), `findings` (the changes counted) and `state`, and
+`imported` for a continuation's candidate. The repair attempt starts at the
+candidate, or, for a failed candidate refused before its checks (its
+checkout, its manifest, a setup, service or ready step), where that
+attempt started (`repair.start`), its task file naming the candidate's
+commit and branch and the refusal (`previous`). A task a review task's
+`needs_changes` had reopened (left failed with no attempt, or its repair
+attempt failed since) keeps that review's findings beside the request: the
+repair carries both, never the person's alone. `task.json`'s `repair` is
+then `{review, attempt, commit, start?, summary?, request, findings?,
+findingsFrom?}`, the summary the person's review's (at most 4,000
+characters, never cut), `findings` and `findingsFrom` `{review, attempt,
+commit, summary?}` the review task's findings kept and that review, and
+`request` `{review, by, via?, base?, changes}`: `review` the Dispatch
+review's id and `by` who asked (at most 64 bytes and 200 characters;
+these, `via`, each change's `id` and `path` and a check's identity are one
+line of valid UTF-8 with no control character), `base` the commit the
+candidate was read against, `changes` 1 to 50 (at least one a change asked
+for), each `{id, kind, intent, severity?, path?, side?, from?, to?, lines?,
+message?, resolution?, check?}`: `id` the finding's (at most 64 bytes, each
+once), `kind` `line`, `file`, `general` or `check`, `intent` `change`
+(with a `severity`, `blocker`, `major`, `minor` or `nit`), `question` or
+`note`, `path` at most 1,024 bytes on `side` `candidate` or `base`,
+`from`/`to` the lines, `lines` at most 12 of 200 bytes as the person saw
+them, `message` and `resolution` at most 1,000 characters each, and for a
+check `check` `{receipt, run?, task?, attempt?, phase?, id?, k?, subject?,
+exit?, signal?, timedOut?, stable, error?, logSha256?, logBytes?, tail?,
+class?, chosen?, quote?}` (the ledger's receipt identity at most 512 bytes,
+the server's class and the person's choice, `tail` and `quote` at most
+2 KiB each, `error` 500 bytes). `task.md`'s "Findings to address" says who
+asked for changes to which commit in which review against which base and
+where the attempt starts, their summary, then the changes asked for, the
+questions to answer in the summary and the notes, each with its id,
+severity, location, lines in a fence, words and "Asked:", a check's receipt
+with its class and its log (its file when `previous.check` wrote it), then
+the kept review's findings, and asks for `addressed`; the person's words of
+more than one line (the summary, a change's words, a resolution) are
+fenced under their item, so none of their lines reads as a section of the
+file. To fit 64 KiB, the kept review's findings are cut first, from the
+last, then the changes' lines (a check's tail and
+quote with them), then their resolutions, then their words past 200
+characters are cut, each from the last, into `task-more.json`'s `changes`
+(by `id`, with the parts cut), after the findings and before the checks'
+commands; ids, kinds, intents, severities, paths, sides and line numbers
+are never cut. A request is measured before anything is recorded
+(`FitChangeRequest`): its repair at its largest (its own review id, as
+JSON escapes it) within the ledger's 64 KiB payload, and its repair
+attempt's task files with the task's own text, the crew's people and the
+ticket within 64 KiB each, every part that is never cut at its widest
+(four bytes a character for `task.md`, six for `task.json`, as JSON
+escapes a control character or U+2028), or it is refused whole, so an
+accepted one never fails at its attempt's start for its size. A request
+whose repair, with the review's findings it keeps, the run could not keep
+is refused with a receipt (`task_state`), nothing changed. A row written
+before this (ledger version 9 or earlier) has none of `request`, `start`
+and `findingsFrom` and reads as before; the ledger's version 10 changes
+no table and is a barrier, so an older binary opens it read-only rather
+than dropping a request it does not know.
+
 **Commands with receipts.** A person's change to a managed run (pause,
 unpause, cancel, retry, accept) is a command: the client mints a `commandId`
 (1 to 32 of letters, digits, `.`, `_`, `~` and `-`), the run keeps the
@@ -3563,9 +3670,31 @@ crew a person names Brakeman is saved as `brakeman-2`.
 **A request's states.** `queued` → `starting` → `running` →
 `briefed`; the others close it: `timed_out` (its deadline, which covers
 `starting`), `ended` (its session ended with no brief, after it read its
-request), `failed` (the launch failed, with the engine's words, or the
+request), `failed` (the launch failed, with the engine's words; the
 agent exited before it read its request: "is it logged in?", with its
-exit and last line), `over_budget` (at the dequeue the day's turns were
+exit and last line; the agent made no call to the server with its own
+token, on any route (the guide, its MCP server's tool listing, a
+report, an observation, an act, its request's read), within a third of
+the turn's minutes of its launch's return (its process made; a launch
+still under way is covered by the deadline, as before), at least 2
+minutes, or by its deadline when that comes first, whatever its screen
+shows, ended then with words naming the bound ("did not start in 5
+minutes, no call to Conductor") and the last lines its screen shows
+(the rows a terminal shows, as `/api/brakeman/screen` reads them, a line
+wrapped across rows read whole, links left out, at most 220 bytes), a
+person's turn as a wake turn: a
+real agent calls within two minutes, and a turn whose agent has made any
+call runs to its deadline (a screen no catalog entry knows is not told
+from any other: once it is quiet the request's line is typed into it, as
+into every agent's); or, sooner, before it read its request, its agent shows a
+startup question the turn may not pass, ended at once with the words of
+what it shows and no key typed into it: a startup question with no
+answers, a screen no key of Conductor's passes (Claude Code's sign-in
+screen, "its login refused"), ends any turn, and any startup question (a
+trust question, an update dialog) ends a wake turn, whose questions page
+no one, saying to answer it in a session of that agent; a person's own
+turn shows one with answers under Needs you, as before; the turn is
+charged the minutes it ran), `over_budget` (at the dequeue the day's turns were
 spent, or the day's minutes left fewer than 2), `cancelled` (a person, or Brakeman turned off, which cancels the
 turn in progress and the queue) and `interrupted` (the server stopped
 while it was starting or running; a restart finds it so). A deadline, a
@@ -3746,7 +3875,11 @@ with `why` (the store's receipt's words, or the route's for a refusal
 before the store, cut to the room its other fields leave in the entry's
 600 bytes as encoded); a failure of the server leaves it `pending`. The
 answer is the route's status and its `receipt` and `error`, so a retry is
-answered by its receipt whatever the grant now; its `launch` or `plan`,
+answered by its receipt whatever the grant now, and beside a receipt
+`receiptRef`, the ref a brief cites that receipt by,
+`op:brakeman/<the receipt's opId>` (the derived op id: the receipt's own
+`id` is what the operation made, the launch's or the revision's, never a
+ref of the receipt); its `launch` or `plan`,
 Dispatch's records of the ticket, only while the configuration then and
 the turn's snapshot show `dispatch`, the ticket is in the scope and the
 turn has reads left, each noted in the read log at its state and rev and
@@ -3788,7 +3921,11 @@ granted operation as its `op`, with `expectedRevision` the ticket's
 revision read, and the `opId` of the act it ran in `args.opId`; the
 request's `acts` say which of them Brakeman ran, and the app shows a
 proposal as "Brakeman did this" with its receipt only when an act of the
-request has the `opId` it names, of its operation on its ticket. A server that stops between the operation and the copy, or before the operation,
+request has the `opId` it names, of its operation on its ticket; every
+other act of the request is shown apart, under "What Brakeman did", with
+its receipt, whether or not the brief names it. The act's words (the
+tool's text, the command's output) give the `receiptRef` and name the
+launch as the launch. A server that stops between the operation and the copy, or before the operation,
 leaves the entry `pending`: before Brakeman's routes serve again, the
 desk reads Dispatch's receipt for `(brakeman, op)`, or, the receipt
 pruned, the change its operation recorded, and copies it, or, with
@@ -3955,10 +4092,25 @@ request still queued (behind a person's turn) waits in the queue,
 starting once the role is resumed; the briefing times passed while
 paused fire nothing, whether or not the role stepped between;
 `unavailable` (a turn could not start: its launch refused, its agent
-exited before it read its request, or the day's turns or minutes spent)
-says why, keeps its batch (a turn that started none gives its wakes to
-the next batch, under a new id), and tries again on a person's request, the
-next briefing time, or, for a budget spent, the next local day. The
+exited before it read its request, was held at a startup question it
+may not pass, or made no call in its start bound, or the day's turns or
+minutes spent) says why, with its `reason` (`start`, `budget`, `off`,
+`stuck`), keeps its batch (a turn that started none gives its wakes to
+the next batch, under a new id), and tries again at `retryAt` and as its
+reason allows. For `start` the role waits 10 minutes, doubled for each
+such turn in a row (`tries`) up to 4 hours, and fires nothing into the
+same state meanwhile: a wake, a briefing time and a person's own
+request (which is its own try, and fails or starts on its own) leave the
+batch kept; a turn of the agent that reads its request, a person's
+included, ends it at once, and `tries` starts again from 0. For the
+others a person's request and the next briefing time try again, and for
+a budget spent the next local day. A save of the configuration
+(`PUT /api/brakeman/config`) tries again only for what it changed: the
+budget for `budget` (the batch kept fires within its rules, or one
+still spent says so again in words true now), the agent, its model, its
+account, its folder or its tools allowed for `start`, the role turned on
+or off for `off`, nothing for `stuck`; a save that changes none of what
+the reason weighs, the same body again included, fires nothing. The
 day's minutes, `budget.minutesPerDay` (10 to 1,440; 240), count every
 turn, whatever started it: a turn's reservation at its start is the
 least of `turnMinutes` and what the day has left, its deadline its start
@@ -3980,7 +4132,7 @@ state}`.
 
 | Route | Body and answer |
 |---|---|
-| `GET /api/brakeman/role?limit=` | `{role: {schema, identity, state, why?, retryAt?, last, open?, fired?, firing?, request?, coolUntil?, briefed?, notes?, updatedAt, minutesToday}, log: [{source, subject?, key?, at, batch?, request?, held?}]}`: the role, and its log newest first, `limit` rows (1 to 1,000; 200) |
+| `GET /api/brakeman/role?limit=` | `{role: {schema, identity, state, why?, retryAt?, reason?, tries?, lastStarted?, last, open?, fired?, firing?, request?, coolUntil?, briefed?, notes?, updatedAt, minutesToday}, log: [{source, subject?, key?, at, batch?, request?, held?}]}`: the role, and its log newest first, `limit` rows (1 to 1,000; 200) |
 | `POST /api/brakeman/role` | `{action}`, `pause` or `resume` → `{role}`; `400 invalid_request` for another action |
 | `POST /api/brakeman/role/notes` | `{request, item}` → `{role}`: the text of a kept brief's `fact/1` or `interpretation/1` kept as a note, `from` its `brief:` ref; `400 not_a_note` for another kind; `404` for no such request or item; `413 bound` past the notes' 64 KiB |
 | `DELETE /api/brakeman/role/notes` | → `{role}`, the notes cleared |

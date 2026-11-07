@@ -251,6 +251,12 @@ func TestAnActRunsTheOperationsOwnFunction(t *testing.T) {
 	// own grant (GET /api/runs/{run}).
 	admin := f.launch(t, f.testEnv, map[string]any{"byName": "Nate"}, http.StatusCreated, "")
 	delete(admin, "run")
+	// Beside it, the ref a brief cites the act's receipt by
+	// (TestAnActsReceiptRefIsCited).
+	if out["receiptRef"] != "op:brakeman/"+actOp(f.req, "a-1") {
+		t.Fatalf("the act's receiptRef: %v", out)
+	}
+	delete(out, "receiptRef")
 	if !sameKeys(out, admin) || !sameKeys(receiptOf(t, out), receiptOf(t, admin)) || !sameKeys(entityOf(t, out, "launch"), entityOf(t, admin, "launch")) {
 		t.Fatalf("the act's answer\n%v\nis not the route's\n%v", out, admin)
 	}
@@ -1519,5 +1525,48 @@ func TestAKeptRefusalIsAnsweredFromItsReceipt(t *testing.T) {
 	}
 	if acts := f.acts(t); len(acts) != 1 || acts[0].State != brakeman.ActRefused || !strings.Contains(acts[0].Why, "superseded") {
 		t.Fatalf("acts %+v", acts)
+	}
+}
+
+// TestAnActsReceiptRefIsCited: an act's answer gives receiptRef, the ref
+// a brief cites the act's receipt by (op:brakeman/<the receipt's opId>,
+// the act's derived key), never the id of what it made (the launch's,
+// which the receipt's id is); a brief whose outcome cites it is kept and
+// the ref resolves. A retry answered from the receipt kept gives the same
+// ref. The three spellings two real models tried (the actor's case, the
+// turn's opId for the receipt's, the launch's id as an op) are refused
+// (422 bad_refs), as before: the answer and the guide's ref forms now say
+// which one cites it.
+func TestAnActsReceiptRefIsCited(t *testing.T) {
+	f := newActFixture(t, everyGrant, nil)
+	status, out := f.launchAct(t, map[string]any{"opId": "a-1"})
+	if status != http.StatusCreated {
+		t.Fatalf("the act: %d %v", status, out)
+	}
+	op := actOp(f.req, "a-1")
+	ref, _ := out["receiptRef"].(string)
+	launch := entityOf(t, out, "launch")["id"].(string)
+	if ref != "op:brakeman/"+op || receiptOf(t, out)["opId"] != op || strings.Contains(ref, launch) {
+		t.Fatalf("the act's receiptRef %q: %v", ref, out)
+	}
+	if _, again := f.launchAct(t, map[string]any{"opId": "a-1"}); again["receiptRef"] != ref {
+		t.Fatalf("the act retried: %v", again)
+	}
+	outcome := func(receipt string) map[string]any {
+		return map[string]any{"schema": brakeman.BriefSchema, "title": "Launched", "summary": "The approved revision was launched.",
+			"items": []any{map[string]any{"kind": brakeman.ItemFact, "text": "CND-1's approved revision was launched.", "evidence": []any{"ticket:CND-1"}},
+				map[string]any{"kind": brakeman.ItemOutcome, "text": "Brakeman launched CND-1's approved revision.", "receipt": receipt}}}
+	}
+	for i, wrong := range []string{"op:Brakeman/" + op, "op:brakeman/a-1", "op:brakeman/" + launch} {
+		if status, out := f.bk.submit(t, f.sid, f.tok, fmt.Sprintf("w-%d", i), outcome(wrong)); status != http.StatusUnprocessableEntity || codeOf(out) != "bad_refs" {
+			t.Fatalf("a brief citing %s: %d %v", wrong, status, out)
+		}
+	}
+	if status, out := f.bk.submit(t, f.sid, f.tok, "b-1", outcome(ref)); status != http.StatusCreated {
+		t.Fatalf("a brief citing %s: %d %v", ref, status, out)
+	}
+	refs := f.expect(t, "GET", "/api/brakeman/requests/"+f.req+"/refs", nil, http.StatusOK, "")["refs"].([]any)
+	if len(refs) != 2 || refs[1].(map[string]any)["ref"] != ref {
+		t.Fatalf("the brief's refs: %v", refs)
 	}
 }

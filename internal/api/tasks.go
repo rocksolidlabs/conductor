@@ -108,7 +108,7 @@ func (s *Server) handleSessionTask(w http.ResponseWriter, r *http.Request) {
 // first is verified; 409 with why when the worktree or the commit is not
 // as a result must be, 404 not_an_attempt, 400 bad_result.
 func (s *Server) handleSessionTaskResult(w http.ResponseWriter, r *http.Request) {
-	d, ok := s.taskSession(w, r, true)
+	d, ok := s.taskSession(w, r, opAgentOnly("task_result"))
 	if !ok {
 		return
 	}

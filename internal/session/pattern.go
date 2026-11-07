@@ -487,6 +487,34 @@ func (w *PatternWatcher) Frame() (text string, settled, uncut bool, cols, rows i
 	return w.tracker.Last(), true, true, 0, 0
 }
 
+// Sight is a screen as one reading of it (PatternWatcher.Seen): its text
+// (Whole's), whether it shows everything the program drew as it drew it
+// (DrawnAt's uncut), how many Feeds it had seen (Fed), its size and the
+// size what it shows was laid out for.
+type Sight struct {
+	Text                 string
+	Uncut                bool
+	Fed                  uint64
+	Cols, Rows           int
+	DrawnCols, DrawnRows int
+}
+
+// Seen is the screen as one reading, under one lock, with how many Feeds
+// it had seen: what a mark taken with a reading is paired with. Read
+// apart (the text, then Fed), a Feed between them pairs the text with a
+// later screen's mark. The others' Last, uncut, 0 by 0.
+func (w *PatternWatcher) Seen() Sight {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if sc, ok := w.tracker.(*Screen); ok {
+		v := Sight{Text: sc.Lines(), Fed: w.feeds}
+		v.Cols, v.Rows = sc.Size()
+		v.Uncut, v.DrawnCols, v.DrawnRows = sc.DrawnAt()
+		return v
+	}
+	return Sight{Text: w.tracker.Last(), Uncut: true, Fed: w.feeds}
+}
+
 // Rows returns a screen watcher's screen as its rows (Screen.Rows) and
 // whether the program has finished drawing them (Screen.Drawn: no
 // synchronized update under way; a resize the program has not redrawn
