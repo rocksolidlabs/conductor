@@ -75,6 +75,10 @@ type Server struct {
 	viewerCloseWait time.Duration
 	// viewerSeam is nil but in tests (see viewerSeam).
 	viewerSeam *viewerSeam
+	// laneSeam is nil but in tests; lanes the decision links' desks and
+	// watches (lane.go).
+	laneSeam *laneSeams
+	lanes    laneState
 	// deliveryReplayed is nil but in tests: called once a delivery naming
 	// a candidate found no receipt in its first replay, before the ledger
 	// is read, so a test can commit a twin try of the operation there
@@ -450,6 +454,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	s.hostPingEvery = hostPingEvery
 	s.hostGoneWait = writeTimeout
 	s.viewerCloseWait = closeWait
+	// A revoke or an expiry that returns with acts of the link still
+	// under way says how many (share.Store.HoldWait).
+	s.links.Log = log
 	s.runSyncRetry = runSyncRetry
 	s.selfLimits = newSelfCounters()
 	s.opens = newOpenDesk()
@@ -718,6 +725,7 @@ func (s *Server) disconnectLinks(linkIDs []string) {
 		})
 	})
 	wg.Wait()
+	s.closeDesks(nil, linkIDs...)
 }
 
 // track runs f on a goroutine of its own that Shutdown waits for.
@@ -894,6 +902,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /api/join/{token}", s.handleJoin)
 	mux.HandleFunc("GET /ws/sessions/{id}", s.handleViewerWS)
+	mux.HandleFunc("GET /ws/runs/{run}/desk", s.handleRunDesk)
 	mux.HandleFunc("GET /ws/host", s.handleHostWS)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such route")
@@ -1203,6 +1212,7 @@ func (s *Server) Shutdown(ctx context.Context) {
 		s.brakeman.quiesce(ctx)
 	}
 	s.runs.Draining(ctx)
+	s.shutDesks()
 	s.webhooks.close(ctx)
 	// The providers' queues end as the webhooks' do: what waits in them is
 	// not delivered, and their goroutines are waited for with the others.

@@ -60,7 +60,8 @@ func TestGuideInASession(t *testing.T) {
 // that bind it, as the route's overview names them (#715: Codex, told
 // only to call the tool, read the sections and nothing it may do): for a
 // crew's member and for a session of no crew, the text holds the
-// overview's operations, in its order, and each of its limits.
+// overview's operations, in its order, and each of its limits, in its
+// first lines after the sentence asking for both (#726).
 func TestGuideToolTextSaysWhatTheCallerMayCallAndItsLimits(t *testing.T) {
 	a := newDispatchAPI(t)
 	_, member, memberToken := a.launchMember(t)
@@ -68,9 +69,12 @@ func TestGuideToolTextSaysWhatTheCallerMayCallAndItsLimits(t *testing.T) {
 	plainToken := a.agentToken(t, plain)
 	var mays [][]string
 	for _, c := range []struct{ sid, token string }{{member, memberToken}, {plain, plainToken}} {
-		var ov struct{ May, Limits []string }
+		var ov struct {
+			Report      string
+			May, Limits []string
+		}
 		b, err := json.Marshal(a.call(t, c.token, "GET", "/api/sessions/"+c.sid+"/guide", nil, http.StatusOK)["overview"])
-		if err != nil || json.Unmarshal(b, &ov) != nil || len(ov.May) == 0 || len(ov.Limits) == 0 {
+		if err != nil || json.Unmarshal(b, &ov) != nil || ov.Report == "" || len(ov.May) == 0 || len(ov.Limits) == 0 {
 			t.Fatalf("%s's overview: %v %s", c.sid, err, b)
 		}
 		mays = append(mays, ov.May)
@@ -89,6 +93,13 @@ func TestGuideToolTextSaysWhatTheCallerMayCallAndItsLimits(t *testing.T) {
 		}
 		if !hasAll(text, want...) {
 			t.Fatalf("%s's text, want %q:\n%s", c.sid, want, text)
+		}
+		// Its first lines, after the build and the caller: the sentence
+		// asking for both, then the operations and the limits together
+		// (#726).
+		lines := strings.SplitN(text, "\n", 6)
+		if len(lines) < 6 || lines[2] != ov.Report || lines[3] != "You may call: "+strings.Join(ov.May, ", ")+"." || lines[4] != "Your limits:" || lines[5] == "" {
+			t.Fatalf("%s's first lines:\n%s", c.sid, text)
 		}
 	}
 	// The member's text is its own: a crew's member may call its run's
