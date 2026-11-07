@@ -142,8 +142,9 @@ type Server struct {
 	commits      *commitFan // the commit hooks' observers (commits.go)
 	readRevision func(ctx context.Context, dir string) (gitcli.Revision, error)
 	// recordRepos is each native server session's launch repository, by
-	// the identity of its common git directory (os.FileInfo), until its
-	// end commit is read (recordEndCommit); recCur, under recMu, the
+	// the identity of its common git directory (*launchRepo, which holds
+	// it open where the system reuses identities), until its end commit is
+	// read (recordEndCommit) or none is to be read; recCur, under recMu, the
 	// registration each record follows (*recorder), by its id, until its
 	// last reconcile (history_journal.go); recordsStop, closed as the
 	// journal's close begins (closeSessionRecords), ends the waits for
@@ -153,9 +154,15 @@ type Server struct {
 	recCur         map[string]*recorder
 	recordsStop    chan struct{}
 	stopRecordsOne sync.Once
+	// recordsClosed, under recMu, is the final pass's mark: no recorder is
+	// put in place, settled or fed after it (closeSessionRecords).
+	recordsClosed bool
 	// recordDeliver, when a test sets it, is handed each hint and stream
-	// callback of a recorded session in place of running it (deliver).
-	recordDeliver atomic.Pointer[func(func())]
+	// callback of a recorded session in place of running it (deliver),
+	// with its session's id and what it carries; recordHook is run at each
+	// of the lifecycle's stages (recordSeam).
+	recordDeliver atomic.Pointer[func(id string, what any, run func())]
+	recordHook    atomic.Pointer[func(stage, id string)]
 	// planFacts keeps what the plan revisions' reads take from each
 	// revision's body, by its digest (dispatch_plans.go), so a list reads
 	// no body it has read before.
@@ -298,6 +305,9 @@ type Server struct {
 	// router is the decision router's seam over the sessions' questions
 	// (router.go).
 	router *decisionRouter
+	// hostedSeen is how the hosted sessions' questions went on, as their
+	// hosts synced them (the decision inbox's track, inbox.go).
+	hostedSeen hostedResumes
 	// launches admits and settles the launches from a ticket
 	// (dispatch_launch.go).
 	launches launchGate
@@ -408,6 +418,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	syncs.attach(s)
 	s.holdQueue(o.providers.Continuity, s.exts.sync.Name(), syncs.begin)
 	s.router = newDecisionRouter(s)
+	// The decision router reads the ledger's decisions once its provider
+	// answers (its Start succeeded, or it needs none: at New's end).
+	s.holdQueue(o.providers.Router, s.exts.router.Name(), s.router.begin)
 	s.relayBurstFloor = relayBurstFloor
 	s.hostPingEvery = hostPingEvery
 	s.hostGoneWait = writeTimeout
@@ -522,7 +535,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			// (another server holds the owner lock, for a while after a
 			// restart), or with none, managed launches are refused and
 			// legacy runs work.
-			s.runs.UseLedger(crew.SQLLedger(s.ledger))
+			s.runs.UseLedger(crew.SQLLedgerTold(s.ledger, s.decisionTold))
 		}
 		s.runs.SetCheckConcurrency(cfg.CheckConcurrency())
 		// The host's names a project manifest's env may pass on to its
@@ -548,9 +561,23 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	if cfg.MaxViewersPerSession > 0 {
 		s.hosts.MaxViewers = cfg.MaxViewersPerSession
 	}
-	// A hosted session's record, its own hooks feeding it (recorder).
-	s.hosts.OnAdded = s.beginHostedRecord
 	s.hosts.OnChange = func(info session.Info) {
+		// How a question went on is read from what the host said, never
+		// from a change the server forwarded and the host has not applied;
+		// noted before the change is published, so that a browser that
+		// reads the track as the change reaches it reads what it says.
+		if d, ok := s.registry.Get(info.ID); ok {
+			if hs, ok := d.(*signal.HostedSession); ok {
+				s.hostedSeen.change(hs.HostViewSeq())
+				// Removed while its change was noted, its OnRemove may
+				// have forgotten it before the note: what the note kept
+				// goes with it (the registry lets a session go before
+				// its OnRemove, so one of the two forgets it last).
+				if _, ok := s.registry.Get(info.ID); !ok {
+					s.hostedSeen.gone(info.ID)
+				}
+			}
+		}
 		s.events.publishIf(info, s.listed)
 		s.router.mark(info.ID)
 		// A hosted session that ended takes its links with it, as a server
@@ -586,6 +613,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.pastes.closeAll(id)
 		s.router.mark(id)
 		s.recordRemoved(id, d)
+		s.hostedSeen.gone(id)
 	}
 	if cfg.Switchyard.Enabled && s.store != nil {
 		s.openLinkKeeper(s.store)
@@ -722,6 +750,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/history/sessions/{id}", s.requireAdmin(s.handleForgetHistorySession))
 	mux.HandleFunc("DELETE /api/history/sessions", s.requireAdmin(s.handleForgetHistorySessions))
 	mux.HandleFunc("POST /api/history/reindex", s.requireAdmin(s.handleHistoryReindex))
+	// The decision inbox, read-only (inbox.go, inbox_track.go).
+	mux.HandleFunc("GET /api/inbox", s.inboxOnly(s.handleInbox))
+	mux.HandleFunc("GET /api/inbox/item", s.inboxOnly(s.handleInboxItem))
+	mux.HandleFunc("GET /api/inbox/track", s.inboxOnly(s.handleInboxTrack))
 	mux.HandleFunc("GET /api/catalog", s.launching(s.handleCatalog))
 	mux.HandleFunc("POST /api/catalog", s.launching(s.handleSaveAgent))
 	mux.HandleFunc("POST /api/catalog/check", s.launching(s.handleCheckCommand))
@@ -776,6 +808,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/inbox/ack", s.handleSessionInboxAck)
 	mux.HandleFunc("POST /api/sessions/{id}/task/blocked", s.handleSessionTaskBlocked)
 	mux.HandleFunc("POST /api/sessions/{id}/task/checkpoint", s.handleSessionTaskCheckpoint)
+	// Durable decisions: an attempt's, the operator's (decisions.go).
+	s.routeDecisions(mux)
 	mux.HandleFunc("GET /api/runs/{run}/messages", s.readable("GET /api/runs/{run}/messages", s.handleRunMessages))
 	mux.HandleFunc("GET /api/runs/{run}/links", s.launching(s.handleListRunLinks))
 	mux.HandleFunc("POST /api/runs/{run}/links", s.launching(s.handleCreateRunLink))

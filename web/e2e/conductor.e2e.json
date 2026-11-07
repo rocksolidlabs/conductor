@@ -16,7 +16,8 @@
         "trustPrompt": "Is\\s*this\\s*a\\s*project\\s*you\\s*created\\s*or\\s*one\\s*you\\s*trust\\?",
         "questions": [
           { "prompt": "(?m)^[ \\t]*❯[ \\t]*[1-9]\\.[ \\t].*(?:\\n.*){0,40}\\n[ \\t]*(?:Esc to cancel|Enter to select|ctrl\\+g to edit)[^\\n]*(?:\\n[ \\t]*[^\\s─❯][^\\n]*){0,3}\\s*\\z", "anytime": true, "answersFromScreen": true, "modeAnswers": "(?i)auto mode|accept edits|auto-accept|bypass permissions", "typedAnswers": "shift\\+tab to approve with this| ─$" },
-          { "prompt": "(?m)^[ \\t]*Ready to submit your answers\\?\\n(?:[ \\t]*\\n){0,2}[ \\t]*❯?[ \\t]*1\\.[ \\t][^\\n]*\\n[ \\t]*❯?[ \\t]*2\\.[ \\t][^\\n]*\\s*\\z", "anytime": true, "answersFromScreen": true }
+          { "prompt": "(?m)^[ \\t]*Ready to submit your answers\\?\\n(?:[ \\t]*\\n){0,2}[ \\t]*❯?[ \\t]*1\\.[ \\t][^\\n]*\\n[ \\t]*❯?[ \\t]*2\\.[ \\t][^\\n]*\\s*\\z", "anytime": true, "answersFromScreen": true },
+          { "prompt": "(?i)paste\\s*code\\s*here\\s*if\\s*prompted", "words": "(?i)browser\\s*didn.t\\s*open\\?\\s*use\\s*the\\s*url\\s*below\\s*to\\s*sign\\s*in" }
         ],
         "session": { "startArgs": ["--session-id", "{id}"], "idFrom": "hook", "resumeArgs": ["--resume", "{id}"], "idPattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
       },

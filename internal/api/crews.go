@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -50,6 +51,28 @@ type crewInput struct {
 	// outcomes (a task's owner is one of them): local labels, never
 	// started.
 	People []crew.Person `json:"people,omitempty"`
+}
+
+// crewUpdate is the body of PUT /api/crews/{id}: a crew as for a create,
+// and the revision of the stored copy the edit was made from, as a read of
+// the crew answered it (crewReply). With a revision, a save made from
+// another copy than the one stored now is refused (409 stale_revision) and
+// nothing is saved; without one the body replaces whatever is stored. Only
+// the update takes it: a create, or a Brakeman draft's crew, sending it is
+// refused like any unknown field.
+type crewUpdate struct {
+	crewInput
+	Revision string `json:"revision,omitempty"`
+}
+
+// crewRevisionPattern is a revision as crewReply answers it (crew.Revision):
+// what a crewUpdate's revision must look like, so its size is bounded.
+var crewRevisionPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// crewReply is a crew route's answer: the crew, and the revision of the copy
+// stored (crew.Revision), which an update made from it sends back.
+func crewReply(c crew.Crew) map[string]any {
+	return map[string]any{"crew": c, "revision": crew.Revision(c)}
 }
 
 // crew is the crew in is, its name trimmed as the store saves it: the one
@@ -120,7 +143,7 @@ func (s *Server) handleGetCrew(w http.ResponseWriter, r *http.Request) {
 		s.crewStoreError(w, id, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"crew": c})
+	writeJSON(w, http.StatusOK, crewReply(c))
 }
 
 // handleCreateCrew saves a new crew under an ID the store derives from its name.
@@ -135,24 +158,30 @@ func (s *Server) handleCreateCrew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("crew created", "crew", saved.ID)
-	writeJSON(w, http.StatusCreated, map[string]any{"crew": saved})
+	writeJSON(w, http.StatusCreated, crewReply(saved))
 }
 
 // handleUpdateCrew replaces a crew's fields with the body. Its ID and creation
-// time never change.
+// time never change. A body with a revision (crewUpdate) is saved only over
+// the copy it names.
 func (s *Server) handleUpdateCrew(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	c, ok := s.readCrew(w, r)
+	var in crewUpdate
+	c, ok := s.decodeCrew(w, r, &in, &in.crewInput)
 	if !ok {
 		return
 	}
-	saved, err := s.crews.Update(id, c)
+	if in.Revision != "" && !crewRevisionPattern.MatchString(in.Revision) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "revision must be the 64 lower-case hex digits a read of the crew answers")
+		return
+	}
+	saved, err := s.crews.UpdateFrom(id, in.Revision, c)
 	if err != nil {
 		s.crewStoreError(w, id, err)
 		return
 	}
 	s.log.Info("crew updated", "crew", id)
-	writeJSON(w, http.StatusOK, map[string]any{"crew": saved})
+	writeJSON(w, http.StatusOK, crewReply(saved))
 }
 
 // handleDeleteCrew deletes a crew.
@@ -198,7 +227,7 @@ func (s *Server) handleDuplicateCrew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("crew duplicated", "crew", id, "copy", saved.ID)
-	writeJSON(w, http.StatusCreated, map[string]any{"crew": saved})
+	writeJSON(w, http.StatusCreated, crewReply(saved))
 }
 
 // readCrew decodes the body of a create or an update into a crew
@@ -210,12 +239,18 @@ func (s *Server) handleDuplicateCrew(w http.ResponseWriter, r *http.Request) {
 // saves it, with its id and times. When readCrew reports false it has
 // answered the request.
 func (s *Server) readCrew(w http.ResponseWriter, r *http.Request) (crew.Crew, bool) {
+	var in crewInput
+	return s.decodeCrew(w, r, &in, &in)
+}
+
+// decodeCrew is readCrew for a body decoded into body, of which in is the
+// crew: a crewInput itself, or the one a crewUpdate holds.
+func (s *Server) decodeCrew(w http.ResponseWriter, r *http.Request, body any, in *crewInput) (crew.Crew, bool) {
 	if s.crews == nil {
 		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "no data directory is configured")
 		return crew.Crew{}, false
 	}
-	var in crewInput
-	if err := decodeJSONLimit(w, r, &in, maxCrewBody); err != nil {
+	if err := decodeJSONLimit(w, r, body, maxCrewBody); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return crew.Crew{}, false
 	}
@@ -240,6 +275,10 @@ func (s *Server) crewStoreError(w http.ResponseWriter, id string, err error) {
 		// Says what is wrong with the file, which it names, without the
 		// data directory's path.
 		writeError(w, http.StatusConflict, "crew_unreadable", err.Error())
+	case errors.Is(err, crew.ErrStale):
+		// Another save came between the copy the edit was made from and
+		// this one: nothing was saved, and the client reads the crew again.
+		writeError(w, http.StatusConflict, "stale_revision", err.Error())
 	case errors.Is(err, crew.ErrInvalid):
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
 	case errors.Is(err, crew.ErrNotFound):

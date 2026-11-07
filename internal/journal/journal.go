@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -52,8 +53,10 @@ var LockWait = 10 * time.Second
 
 const lockTick = 250 * time.Millisecond
 
-// flushEvery is how often a dirty record is written at most, and how long
-// after its end a record is kept in memory; a test makes it longer.
+// flushEvery is the time between the writer's periodic passes, and how
+// long after its end a record is kept in memory; a test makes it longer.
+// It is no promise of what a kill loses: a pass can be delayed by its end
+// commits' reads and by a write that fails.
 var flushEvery = 5 * time.Second
 
 // closeWait is how long Close gives the end commits still being read, all
@@ -73,20 +76,18 @@ const maxTouchPath = 8 << 10
 // counted.
 const maxHeld = 4096
 
-// idPattern is a session's id, a server session's and a hosted one's alike.
+// idPattern is a session's id (session.NewID's 16 hex digits).
 var idPattern = regexp.MustCompile(`^[0-9a-f]{16}$`)
 
 // The seams of the package's tests: takeLock is store.TakeOwnerLock;
 // beforeWrite, when set, runs before each document is written with its
 // name ("state.json", "sessions/<id>.json"), an error it answers the
-// write's; beforeDelete the same before a record's file is deleted, and
-// beforeLoad before a record's earlier file is read to be merged (merge),
-// with its id; beforeGet before Get reads a record's file.
+// write's; beforeDelete the same before a record's file is deleted;
+// beforeGet before Get reads a record's file.
 var (
 	takeLock     = store.TakeOwnerLock
 	beforeWrite  func(name string) error
 	beforeDelete func(name string) error
-	beforeLoad   func(id string) error
 	beforeGet    func(id string)
 )
 
@@ -122,15 +123,21 @@ type Options struct {
 	// (closeWait): an answer after that is not kept.
 	EndCommit func(ctx context.Context, r Record) string
 	// Denied says the server's deny list refuses path, which a server
-	// session's files are judged by (a hosted session's are another
-	// machine's, and none applies): such a file is never written. Called on
-	// the writer's goroutine.
+	// session's files are judged by: such a file is never written. Called
+	// on the writer's goroutine.
 	Denied func(path string) bool
+	// Removed is told the id of each record a removal (Forget, ForgetAll,
+	// Prune) took out of memory, whether its file's delete then succeeded
+	// or not: no end commit is asked of that record from then on (a read
+	// already begun aside), so what the server keeps for that read it lets
+	// go. Called by the removal with wmu held and no other lock of the
+	// journal's; it must not call the journal.
+	Removed func(id string)
 }
 
 // Journal is the session records, opened by Open. Every method is safe
 // for concurrent use; those a hook calls (Note, Chat, Touch, Tool, Settle
-// and a hosted Begin) never wait on a disk.
+// never wait on a disk.
 type Journal struct {
 	st, sess *store.Store
 	o        Options
@@ -195,19 +202,14 @@ type rec struct {
 	inst uint64
 	r    Record
 	// dirty: changed since its last write; urgent: to be written at once
-	// (a hosted record begun, an end, a crew taken); needEnd: its end
-	// commit to be read; load: its earlier file still to be read and what
-	// came meanwhile merged into it (merge): a hosted record its host took
-	// up again; released: its session's last State is in (State.Final), so
-	// it may leave memory once ended and written.
-	dirty, urgent, needEnd, load, released bool
-	// host is the registration a hosted record taken up again brings, kept
-	// for its merge; loadWarned says its failed read was logged.
-	host       *Record
-	loadWarned bool
-	touches    []touch
+	// (an end, a crew taken); needEnd: its end commit to be read, which
+	// keeps it in memory and never keeps its end from being written (the
+	// package's rule on end commits); released: its session's last State
+	// is in (State.Final), so it may leave memory once ended and written.
+	dirty, urgent, needEnd, released bool
+	touches                          []touch
 	// state is the last State settled (Settle): its metadata is the
-	// record's, taken again once a merge has read its earlier file.
+	// record's.
 	state *State
 	// endedAt is when its end was set here, for its eviction.
 	endedAt time.Time
@@ -574,15 +576,11 @@ func (j *Journal) Flush() {
 // written before Begin returns; should that write fail, the record is kept
 // all the same, its instance answered, and the writer tries it again as
 // any record it holds (Begin answers an error only for a record it did not
-// keep). A hosted one's (Host.Hosted) is handed to the writer, which writes
-// it before anything else it holds, since its caller reads the host's
-// connection. An id that has a record is refused (ErrExists) unless both
-// are the same host's hosted session (the same Host.Owner) and the record
-// is open or no longer observed (EndingHostAway, EndingLost), by its row
-// and by what memory holds of it, a merge under way included: that record
-// is taken up again, its entries, its Seq and its instance kept, a status
-// entry saying so. An id whose record a removal is deleting has none: a
-// hosted Begin of it begins a new record (the package's rule).
+// keep). An id that has a record is refused (ErrExists): a server
+// session's id is made once and never comes back. The journal records
+// server sessions alone; a record's hosted fields (Host.Hosted,
+// Host.Owner, Reopened) are kept as given, for the records a later
+// version writes.
 func (j *Journal) Begin(r Record) (Instance, error) {
 	if !idPattern.MatchString(r.ID) {
 		return Instance{}, ErrBadID
@@ -595,9 +593,6 @@ func (j *Journal) Begin(r Record) (Instance, error) {
 	}
 	r.StartedAt = r.StartedAt.UTC()
 	fitRecord(&r)
-	if r.Host.Hosted {
-		return j.beginHosted(r)
-	}
 	// wmu first: a removal of this id under way ends before (forgetLocked).
 	j.wmu.Lock()
 	defer j.wmu.Unlock()
@@ -622,85 +617,11 @@ func (j *Journal) Begin(r Record) (Instance, error) {
 	return in, nil
 }
 
-// beginHosted is Begin of a hosted session's record: its file is left to
-// the writer.
-func (j *Journal) beginHosted(r Record) (Instance, error) {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	if err := j.writable(); err != nil {
-		return Instance{}, err
-	}
-	ex, ok := j.index[r.ID]
-	if !ok {
-		// No record, or one a removal is deleting (wmu held, so nothing is
-		// written meanwhile): a record begun afresh, written once the
-		// delete is done, or over the file a failed delete left.
-		x := &rec{id: r.ID, inst: j.newInst(), r: r, dirty: true, urgent: true}
-		j.recs[r.ID] = x
-		j.index[r.ID] = j.row(x)
-		j.poke()
-		return Instance{id: r.ID, n: x.inst}, nil
-	}
-	x, in := j.recs[r.ID]
-	// An end observed while the record's earlier file is still being read
-	// (load) is in memory alone: the row says open until the merge.
-	ended := !ex.EndedAt.IsZero() || (in && !x.r.EndedAt.IsZero())
-	if ex.Unreadable || !ex.Host.Hosted || ex.owner != r.Host.Owner || ex.Newer || ended {
-		j.log.Warn("a hosted session's record was not begun: its id has another", "session", r.ID)
-		return Instance{}, ErrExists
-	}
-	// Taken up again: the instance kept, a row read from its file given one.
-	inst := ex.inst
-	if inst == 0 {
-		inst = j.newInst()
-	}
-	taken := Entry{At: j.o.Now().UTC(), Kind: KindStatus, Message: "taken up again by its host"}
-	j.seq++
-	taken.Seq = j.seq
-	host := r
-	host.Entries = nil
-	switch {
-	case in && !x.load:
-		reopen(&x.r, r)
-		x.r.Entries = insertEntry(x.r.Entries, taken)
-		x.inst = inst
-		x.dirty, x.urgent, x.released, x.endedAt = true, true, false, time.Time{}
-		j.index[r.ID] = j.row(x)
-		j.poke()
-		return Instance{id: r.ID, n: inst}, nil
-	case in:
-		// Its file is still to be read (the host registered before, and
-		// the merge is under way): taken up with it (merge).
-		x.host = &host
-		x.inst = inst
-		x.r.LostAt, x.r.Ending = time.Time{}, ""
-		x.r.Entries = insertEntry(x.r.Entries, taken)
-		x.dirty, x.urgent, x.released, x.endedAt = true, true, false, time.Time{}
-	default:
-		r.Entries = []Entry{taken}
-		j.recs[r.ID] = &rec{id: r.ID, inst: inst, r: r, dirty: true, urgent: true, load: true, host: &host}
-	}
-	row := *ex
-	row.inst, row.open, row.LostAt, row.Ending, row.stopped = inst, true, time.Time{}, "", time.Time{}
-	j.index[r.ID] = &row
-	j.poke()
-	return Instance{id: r.ID, n: inst}, nil
-}
-
-// reopen takes old up again for its host's new registration fresh: no
-// longer lost, counted, what the host says of it now.
-func reopen(old *Record, fresh Record) {
-	old.LostAt, old.Ending = time.Time{}, ""
-	old.Reopened++
-	old.Name, old.Host.Name, old.Host.User, old.Branch, old.Cwd = fresh.Name, fresh.Host.Name, fresh.Host.User, fresh.Branch, fresh.Cwd
-	if old.Agent.ID == "" {
-		old.Agent = fresh.Agent
-	}
-}
-
 // Abandon removes the record of a session that was never added (the
 // registry refused it): from memory and from the disk, while in is still
-// its record's instance.
+// its record's instance. It returns once the delete is made or has failed;
+// a failed one puts the row back from the file with no instance, as a
+// removal's does (restoreLocked): listed lost, forgettable.
 func (j *Journal) Abandon(in Instance) {
 	j.wmu.Lock()
 	defer j.wmu.Unlock()
@@ -712,8 +633,9 @@ func (j *Journal) Abandon(in Instance) {
 	delete(j.recs, in.id)
 	delete(j.index, in.id)
 	j.mu.Unlock()
-	if err := j.sess.Delete(in.id + ".json"); err != nil {
-		j.log.Warn("an abandoned session's record was not removed", "session", in.id, "err", err)
+	if err := j.remove(in.id); err != nil {
+		j.log.Warn("an abandoned session's record was not removed; it is listed lost", "session", in.id, "err", err)
+		j.restoreLocked(in.id)
 	}
 }
 
@@ -961,15 +883,16 @@ func (j *Journal) Tool(in Instance, name string) {
 
 // Settle makes the record of in say what st says of its session: its
 // name, its agent's own session and its crew as they are now (a crew taken
-// written at once), and its end once st has one (written at once, an
-// observed end with its end commit read first). It is idempotent: a State
+// written at once), and its end once st has one (written at once; an
+// observed end's commit is read by the writer and written when it is
+// read, never a condition of the end's write: the package's rule on end
+// commits). It is idempotent: a State
 // settled again, or an older one after a newer, changes nothing an end
 // recorded says, since an end, once recorded, stands (an observed end
 // replaces only a lost one); what it reads of the metadata is the
 // caller's to order. A State with Final is the instance's last: the
-// record may leave memory once ended and written. A record whose earlier
-// file is still being read (a hosted record taken up again) takes the
-// metadata once the merge is done. It never waits on a disk.
+// record may leave memory once ended and written. It never waits on a
+// disk.
 func (j *Journal) Settle(in Instance, st State) {
 	if e := st.End; e != nil {
 		end := *e
@@ -997,9 +920,7 @@ func (j *Journal) Settle(in Instance, st State) {
 		return
 	}
 	x.state = &st
-	if !x.load {
-		j.applyState(x)
-	}
+	j.applyState(x)
 	if st.End != nil {
 		j.endLocked(x, *st.End)
 	}
@@ -1047,29 +968,24 @@ func (j *Journal) applyState(x *rec) {
 	}
 }
 
-// endLocked records the end of x's session: an observed end once (it
-// replaces a lost one), a lost one only on a record that has no end at
-// all. An observed end also ends the questions still open in the record,
-// as the session's end withdrew them (closeQuestions). The caller holds
-// mu.
+// endLocked records the end of x's session once: an observed end or a
+// lost one, on a record that has no end; an end once recorded stands,
+// whichever it was. An observed end also ends the questions still open in
+// the record, as the session's end withdrew them (closeQuestions). The
+// caller holds mu.
 func (j *Journal) endLocked(x *rec, end Ending) {
-	if !x.r.EndedAt.IsZero() {
+	if !x.r.open() {
 		return
 	}
 	if end.Lost {
-		if !x.r.LostAt.IsZero() {
-			return
-		}
 		x.r.LostAt, x.r.Ending = end.At, cutBytes(end.How, maxField)
 	} else {
 		x.r.EndedAt, x.r.LostAt, x.r.Ending = end.At, time.Time{}, cutBytes(end.How, maxField)
 		x.needEnd = true
-		if !x.load {
-			j.closeQuestions(&x.r)
-		}
+		j.closeQuestions(&x.r)
 	}
 	x.dirty, x.urgent, x.endedAt = true, true, j.o.Now()
-	if !x.load && j.recs[x.id] == x {
+	if j.recs[x.id] == x {
 		j.index[x.id] = j.row(x)
 	}
 	j.poke()
@@ -1117,18 +1033,14 @@ func maxTime(a, b time.Time) time.Time {
 	return b
 }
 
-// pass is one turn of the writer: the records whose earlier files are to
-// be read merged with them, then the end commits read and the touches
+// pass is one turn of the writer: the end commits read and the touches
 // asked of Denied and folded, then the records written (every dirty one
 // with all, else the urgent ones), the ended ones whose sessions are done
 // with them (released, or none's: inst 0) let go of, and the ended records
 // past MaxRecords pruned.
 func (j *Journal) pass(all bool) {
-	for _, x := range j.collect(func(x *rec) bool { return x.load }) {
-		j.merge(x)
-	}
-	j.endCommits(j.collect(func(x *rec) bool { return x.needEnd && !x.load }))
-	for _, x := range j.collect(func(x *rec) bool { return len(x.touches) > 0 && !x.load }) {
+	j.endCommits(j.collect(func(x *rec) bool { return x.needEnd }))
+	for _, x := range j.collect(func(x *rec) bool { return len(x.touches) > 0 }) {
 		j.fold(x)
 	}
 	j.wmu.Lock()
@@ -1136,14 +1048,11 @@ func (j *Journal) pass(all bool) {
 	j.mu.Lock()
 	var due []*rec
 	for id, x := range j.recs {
-		if x.load || x.needEnd {
-			continue
-		}
 		if x.urgent || (all && x.dirty) {
 			due = append(due, x)
 			continue
 		}
-		if (x.released || x.inst == 0) && !x.dirty && len(x.touches) == 0 && !x.endedAt.IsZero() && j.o.Now().Sub(x.endedAt) >= flushEvery {
+		if (x.released || x.inst == 0) && !x.needEnd && !x.dirty && len(x.touches) == 0 && !x.endedAt.IsZero() && j.o.Now().Sub(x.endedAt) >= flushEvery {
 			delete(j.recs, id)
 		}
 	}
@@ -1171,128 +1080,13 @@ func (j *Journal) collect(pick func(*rec) bool) []*rec {
 	return out
 }
 
-// merge reads the earlier file of a record held with load: a hosted record
-// its host took up again (host). What the file held comes first and what
-// came meanwhile is put among it; an end observed meanwhile stands, and
-// the metadata last settled is taken. A file that is not there begins the
-// record afresh; one of a later version or one this version cannot decode
-// is never written over, its row says which; any other failure to read it
-// leaves the record to be read again at the next pass, unwritten.
-func (j *Journal) merge(x *rec) {
-	id := x.id
-	var old Record
-	var newer bool
-	var err error
-	if f := beforeLoad; f != nil {
-		err = f(id)
-	}
-	if err == nil {
-		old, newer, err = j.load(id)
-	}
-	var bad *store.ParseError
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	if j.recs[id] != x || !x.load {
-		return
-	}
-	switch {
-	case err == nil && newer:
-		j.log.Warn("a session's record is of a later version; it is not written over", "session", id)
-		delete(j.recs, id)
-		j.index[id] = summaryOf(&old, true)
-		return
-	case err == nil:
-		j.takeUp(x, old)
-		return
-	case errors.Is(err, ErrNotFound) && x.host != nil:
-		base := *x.host
-		base.Entries = []Entry{}
-		j.combine(x, base)
-		return
-	case errors.Is(err, ErrNotFound):
-		// Nothing holds a record with load but a hosted one taken up.
-		delete(j.recs, id)
-		delete(j.index, id)
-		return
-	case errors.As(err, &bad):
-		j.log.Warn("a session's record was not read; it is kept as it is, listed as unreadable", "session", id, "err", err)
-		delete(j.recs, id)
-		j.index[id] = unreadableRow(id, j.o.Now())
-		return
-	default:
-		if !x.loadWarned {
-			x.loadWarned = true
-			j.log.Warn("a session's earlier record was not read; it is read again before anything is written", "session", id, "err", err)
-		}
-		return
-	}
-}
-
-// takeUp puts what x holds among old, the record x was held for: a
-// hosted record taken up again (x.host) only when old is its host's and
-// not ended, else x is let go of and old kept as it is. The caller holds
-// mu.
-func (j *Journal) takeUp(x *rec, old Record) {
-	if x.host != nil {
-		if !old.EndedAt.IsZero() || !old.Host.Hosted || old.Host.Owner != x.host.Host.Owner {
-			j.log.Warn("a hosted session's record was not taken up again: it is another's or ended", "session", old.ID)
-			delete(j.recs, x.id)
-			j.index[x.id] = summaryOf(&old, false)
-			return
-		}
-		reopen(&old, *x.host)
-	}
-	j.combine(x, old)
-}
-
-// combine makes base, with what x holds put among it, x's record: what
-// base held first, x's entries in their places, its counts and files
-// added, an end x observed standing (the questions it leaves open ended
-// with it, closeQuestions), the metadata last settled taken. The caller
-// holds mu.
-func (j *Journal) combine(x *rec, base Record) {
-	id := x.id
-	fresh := x.r
-	for _, e := range fresh.Entries {
-		base.Entries = insertEntry(base.Entries, e)
-	}
-	base.Dropped += fresh.Dropped
-	for k, n := range fresh.Tools {
-		if base.Tools == nil {
-			base.Tools = map[string]int{}
-		}
-		if _, known := base.Tools[k]; known || len(base.Tools) < MaxTools {
-			base.Tools[k] += n
-		}
-	}
-	for _, f := range fresh.Files {
-		base.Files = foldFile(base.Files, f, &base.Dropped)
-	}
-	switch {
-	case !base.EndedAt.IsZero():
-	case !fresh.EndedAt.IsZero():
-		base.EndedAt, base.LostAt, base.Ending = fresh.EndedAt, time.Time{}, fresh.Ending
-	case !fresh.LostAt.IsZero() && base.LostAt.IsZero():
-		base.LostAt, base.Ending = fresh.LostAt, fresh.Ending
-	}
-	x.r = base
-	x.load, x.loadWarned = false, false
-	if x.host != nil {
-		x.dirty, x.urgent, x.host = true, true, nil
-	}
-	if !fresh.EndedAt.IsZero() {
-		j.closeQuestions(&x.r)
-	}
-	j.applyState(x)
-	if x.dirty {
-		j.index[id] = j.row(x)
-	}
-}
-
 // endCommits reads the end commits of the records ended, at most
-// endReaders at once. Once Close has given up on them (reads ended,
-// closeWait after it began) those not read are written without one, and
-// an answer that comes later is not kept.
+// endReaders at once, and returns once they are read or Close has given up
+// on them (reads ended, closeWait after it began). It changes no record's
+// end: each end was settled dirty and urgent, and the writes that follow
+// write it with the commit it has, none for a read not answered (the
+// package's rule on end commits). An answer that comes once Close has
+// given up is not kept (endCommit).
 func (j *Journal) endCommits(ends []*rec) {
 	if len(ends) == 0 {
 		return
@@ -1320,20 +1114,13 @@ func (j *Journal) endCommits(ends []*rec) {
 	select {
 	case <-read:
 	case <-ctx.Done():
-		j.mu.Lock()
-		for _, x := range ends {
-			if x.needEnd {
-				x.needEnd = false
-				x.dirty, x.urgent = true, true
-			}
-		}
-		j.mu.Unlock()
 	}
 }
 
-// endCommit reads the end commit of an ended record. An answer that comes
-// once Close has given up on it (needEnd let go, endCommits) changes
-// nothing: the read may outlast Close, but nothing it does is written.
+// endCommit reads the end commit of an ended record and marks the record
+// to be written with it. An answer that comes once Close has given up on
+// the reads (ctx ended, endCommits) changes nothing: the read may outlast
+// Close, but nothing it brings is kept.
 func (j *Journal) endCommit(ctx context.Context, x *rec) {
 	j.mu.Lock()
 	r := x.r
@@ -1345,7 +1132,7 @@ func (j *Journal) endCommit(ctx context.Context, x *rec) {
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if !x.needEnd {
+	if !x.needEnd || ctx.Err() != nil {
 		return
 	}
 	x.needEnd = false
@@ -1353,20 +1140,19 @@ func (j *Journal) endCommit(ctx context.Context, x *rec) {
 	x.dirty, x.urgent = true, true
 }
 
-// fold asks the server's deny list (Denied) of each touch a server record
-// holds, by the path as it came, and folds the rest into its files; a
-// hosted record's are folded as they came. What it judged is kept only
+// fold asks the server's deny list (Denied) of each touch a record holds,
+// by the path as it came, and folds the rest into its files. What it
+// judged is kept only
 // while x is still the record in memory (the package's rule): a record
 // removed while it folded takes nothing of it.
 func (j *Journal) fold(x *rec) {
 	j.mu.Lock()
 	touches := x.touches
 	x.touches = nil
-	hosted := x.r.Host.Hosted
 	j.mu.Unlock()
 	kept := touches[:0:0]
 	for _, t := range touches {
-		if !hosted && j.o.Denied != nil && j.o.Denied(t.path) {
+		if j.o.Denied != nil && j.o.Denied(t.path) {
 			continue
 		}
 		kept = append(kept, t)
@@ -1597,7 +1383,7 @@ func (j *Journal) Get(id string) (Record, bool, error) {
 	j.rmu.RLock()
 	defer j.rmu.RUnlock()
 	j.mu.Lock()
-	if x, ok := j.recs[id]; ok && !x.load {
+	if x, ok := j.recs[id]; ok {
 		r := cloneRecord(&x.r)
 		j.mu.Unlock()
 		bound(&r)
@@ -1744,23 +1530,22 @@ func (j *Journal) remove(id string) error {
 // which removes as they do) does in each; the package's doc says what
 // orders a removal against every writer.
 //
-//   - open: its session runs, or its host holds it (no end, not lost):
+//   - open: its session runs (no end, not lost):
 //     Forget refuses it (ErrLive), ForgetAll keeps it and counts it,
 //     Prune never chooses it. A record holding a resume's pending receipt
 //     is kept the same way (ErrResumePending).
-//   - ended, whatever the writer is doing with it (reading its file, its
-//     metadata or its end commit, folding its touches, writing it): chosen
+//   - ended, whatever the writer is doing with it (reading its end
+//     commit, folding its touches, writing it): chosen
 //     under mu, its instance ended at once (choose): out of memory and the
 //     index, so no reader is handed it and no hook or writer's work takes
 //     anything to it from then on; its file deleted after any write under
 //     way (wmu).
-//   - removed: no record. Forget answers ErrNotFound, and a hosted Begin
-//     of its id begins a record afresh.
+//   - removed: no record. Forget answers ErrNotFound.
 //   - not removed: its delete failed. The removal answers the error; its
-//     row is listed again, as it was, and it is read from its file, which
-//     holds what was last written; what its instance held unwritten is
-//     dropped. It is forgettable again, and a hosted Begin of the same
-//     host takes it up again from its file, as after a restart.
+//     row is put back from its file, which holds what was last written,
+//     with no instance (restoreLocked): a file with no end is listed lost
+//     and that end written at the next pass. What its instance held
+//     unwritten is dropped. It is forgettable again at once.
 
 // lockChoose and unlockChoose hold what a removal chooses its records
 // under: mu, and rmu taken first, so the reads under way (Get) end before
@@ -1785,23 +1570,62 @@ func (j *Journal) choose(id string) {
 }
 
 // forgetLocked deletes the file of the record id, which the caller chose
-// (choose). A file not deleted keeps its row, listed and read from the
-// file, forgettable again, and no instance: nothing that its instance held
-// or that a hook of it brings is written. A record a hosted Begin began of
-// the id meanwhile is left as it is: its first write follows (wmu), over
-// the file a failed delete left. The caller holds wmu.
+// (choose). A file not deleted is put back from the file with no instance
+// (restoreLocked): nothing that its instance held or that a hook of it
+// brings is written, and no end commit is read for it. Either way Removed
+// is told. The caller holds wmu.
 func (j *Journal) forgetLocked(id string) error {
 	err := j.remove(id)
 	j.mu.Lock()
-	defer j.mu.Unlock()
-	s := j.removing[id]
 	delete(j.removing, id)
-	if _, begun := j.index[id]; err != nil && s != nil && !begun {
-		row := *s
-		row.inst = 0
-		j.index[id] = &row
+	j.mu.Unlock()
+	if err != nil {
+		j.restoreLocked(id)
+	}
+	if j.o.Removed != nil {
+		j.o.Removed(id)
 	}
 	return err
+}
+
+// restoreLocked puts back the row of id from its file, a delete of it
+// having failed: with no instance, so by the rule for a record with no
+// instance a file with no end is listed lost (LostAt its file's last
+// write, Ending lost, no EndedAt), held in memory, dirty, and that end
+// written at the next pass; a file with an end is listed as it says. A
+// file that cannot be read is listed unreadable; one that is not there
+// any more, not at all. The caller holds wmu.
+func (j *Journal) restoreLocked(id string) {
+	r, newer, err := j.load(id)
+	var mod time.Time
+	if fi, serr := os.Stat(filepath.Join(j.sess.Dir(), id+".json")); serr == nil {
+		mod = fi.ModTime().UTC()
+	} else if err == nil {
+		mod = j.o.Now().UTC()
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if _, ok := j.index[id]; ok {
+		return
+	}
+	switch {
+	case errors.Is(err, ErrNotFound):
+	case err != nil:
+		if mod.IsZero() {
+			mod = j.o.Now().UTC()
+		}
+		j.index[id] = unreadableRow(id, mod)
+	case newer:
+		j.index[id] = summaryOf(&r, true)
+	case r.open():
+		r.LostAt, r.Ending = mod, EndingLost
+		x := &rec{id: id, r: r, dirty: true, urgent: true, endedAt: j.o.Now()}
+		j.recs[id] = x
+		j.index[id] = j.row(x)
+		j.poke()
+	default:
+		j.index[id] = summaryOf(&r, false)
+	}
 }
 
 // Forget deletes the record of id: refused for a live session (ErrLive)
@@ -1927,8 +1751,8 @@ func (j *Journal) recover() error {
 
 // recoverLocked reads every record and the state file, run once the lock
 // is held and before the first Begin: a record with no end is marked as no
-// longer observed (a server session's EndingLost, a hosted one's
-// EndingHostAway, LostAt its file's last write and EndedAt left empty),
+// longer observed (EndingLost, LostAt its file's last write and EndedAt
+// left empty),
 // never as ended; a resume's pending receipt is settled by what the data
 // directory shows (the allocated session's record there: started; none:
 // uncertain); the counter is taken past every Seq kept; then the ended
@@ -1984,9 +1808,6 @@ func (j *Journal) recoverLocked() error {
 		dirty := false
 		if r.open() {
 			r.LostAt, r.Ending = f.mod.UTC(), EndingLost
-			if r.Host.Hosted {
-				r.Ending = EndingHostAway
-			}
 			dirty = true
 		}
 		for i := range r.Resumes {

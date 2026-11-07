@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -65,7 +66,40 @@ var (
 	// A failure to read the crews directory or a file does not wrap it, so
 	// the API can say which of the two failed.
 	ErrWrite = errors.New("the crew's file could not be written")
+	// ErrStale answers an update made from a copy of the crew other than
+	// the one its file holds now (UpdateFrom): another save came between
+	// the read and this one. Nothing is saved.
+	ErrStale = errors.New("the crew was saved since the copy this edit was made from")
 )
+
+// Revision names one stored copy of a crew: the 64 lower-case hex digits of
+// the SHA-256 of its JSON as a read of its file gives it back (the crew
+// encoded, decoded and encoded again, canonical). It is computed from the
+// crew, never stored, so a crew saved by an older Conductor has one too.
+// Every save sets UpdatedAt and every change a read sees changes the JSON,
+// so two copies share a revision only when they are the same crew, field
+// for field: a clock that repeats within its resolution gives two saves of
+// different crews different revisions still, and two saves of the same
+// crew at the same instant one revision, which is that crew. "" only for a
+// crew that cannot be encoded, which the store never holds.
+func Revision(c Crew) string {
+	b, err := json.Marshal(c.canonical())
+	if err != nil {
+		return ""
+	}
+	// Decoded and encoded again, so a copy the store hands back from a save
+	// and the same copy read from its file name one revision: what a decode
+	// changes (a string's invalid UTF-8) it changes in both.
+	var back Crew
+	if err := json.Unmarshal(b, &back); err != nil {
+		return ""
+	}
+	if b, err = json.Marshal(back.canonical()); err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
 
 // Summary is a crew as GET /api/crews lists it: what the Crews page's list
 // and conductor crews show, without the prompts.
@@ -408,13 +442,26 @@ func (s *Store) byOrigin(origin string) (Crew, bool, error) {
 // as they were, whatever c holds, and UpdatedAt is now. ManifestRevision is
 // the stored crew's, one more when the project manifest changed (a removal
 // included), whatever c holds (manifestRevision). A file that cannot be used
-// is not replaced (ErrUnreadable).
+// is not replaced (ErrUnreadable). It replaces whatever the file holds:
+// UpdateFrom is the update made from a copy read before.
 func (s *Store) Update(id string, c Crew) (Crew, error) {
+	return s.UpdateFrom(id, "", c)
+}
+
+// UpdateFrom is Update made from the stored copy whose Revision is base:
+// when the file holds another copy now (a save came between), it answers
+// ErrStale and saves nothing. The check and the write are made under one
+// hold of s.mu, so of two updates from one base only the first is saved.
+// An empty base checks nothing (Update).
+func (s *Store) UpdateFrom(id, base string, c Crew) (Crew, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	old, err := s.read(id)
 	if err != nil {
 		return Crew{}, err
+	}
+	if base != "" && Revision(old) != base {
+		return Crew{}, fmt.Errorf("%w: read the crew again", ErrStale)
 	}
 	c.ID, c.CreatedAt, c.UpdatedAt = id, old.CreatedAt, s.now()
 	c.ManifestRevision = manifestRevision(&old, c)

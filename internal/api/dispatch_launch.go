@@ -231,6 +231,9 @@ func (s *Server) runTicket(run string) (string, bool) {
 // are launches admitted (ready), so none is committed, or replayed, while
 // the reconcile could read it before its run's first transaction.
 func (s *Server) ledgerRecovered(ld *ledger.Ledger) {
+	// The decision router tells what this ledger holds open from now on
+	// (router.go).
+	s.router.owned(ld)
 	if f := gateSeam(&s.launches, &s.launches.beforeReconcile); f != nil {
 		f()
 	}

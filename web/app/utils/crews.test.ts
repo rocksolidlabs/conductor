@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentInfo, CrewCheck, CrewInfo, CrewMember, CrewManifest, CrewStart, CrewTask, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { FeedEntry } from './events'
-import { argsFrom, broadcastByName, broadcastSelection, broadcastSummary, checkProblems, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, keepParked, liftSetup, manifestIds, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, manifestMarks, manifestProblems, runCounts, secondsText, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, typedSeconds, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, taskSaveProblems, draftTask, tasksFollowMembers, TASK_LIMITS } from './crews'
+import { argsFrom, changedBetween, refusedAsStale, revisionToSave, elsewhereWords, broadcastByName, broadcastSelection, broadcastSummary, checkProblems, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, keepParked, liftSetup, manifestIds, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, manifestMarks, manifestProblems, runCounts, secondsText, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, typedSeconds, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, taskSaveProblems, draftTask, tasksFollowMembers, TASK_LIMITS, ownerOf, ownerWords, ownersFollowPeople, peopleProblems, peopleRowProblems, responsibilityWords, taskPeopleBytes, ownerChoices, OWNER_GONE, OWNER_NONE } from './crews'
 import type { ManifestList, ManifestShape, TaskShape } from './crews'
 import { startSentence, startWords } from './crewWords'
 
@@ -208,6 +208,9 @@ describe('memberNameError', () => {
   it('refuses a name another member has', () => {
     expect(memberNameError('core', ['lead', 'core'])).toMatch(/another member/i)
     expect(memberNameError('core', ['lead'])).toBe('')
+    // A run's people's names: the server refuses a member that takes one (a person is never a member).
+    expect(memberNameError('nate', ['lead'], ['nate', 'ana'])).toBe("The name is a person's; a person is never a member, so the two names differ")
+    expect(memberNameError('core', ['lead'], ['nate'])).toBe('')
   })
 })
 
@@ -979,5 +982,294 @@ describe('project manifests', () => {
     expect(manifestIds(fullManifest())).toEqual(['node', 'deps', 'dbserver', 'webserver', 'dbready', 'webready', 'e2e', 'dropdb'])
     expect(manifestIds(undefined)).toEqual([])
     expect(manifestIds({ file: true, parked: { setup: [{ id: 'deps', argv: ['true'] }] } })).toEqual([])
+  })
+})
+
+// People in a crew (docs/plans/decisions.md, HM1): local labels, never started; a task's owner is one of them.
+describe('people', () => {
+  const managed: CrewInfo = {
+    ...info,
+    members: [
+      { name: 'builder', agentId: 'claude', prompt: '', start: { when: 'task' } },
+      { name: 'writer', agentId: 'codex', prompt: '', start: { when: 'task' } },
+    ],
+    tasks: [
+      { id: 'build', member: 'builder', kind: 'work', instructions: 'Build it.', owner: 'nate' },
+      { id: 'docs', member: 'writer', kind: 'work', instructions: 'Write it.', needs: ['build'] },
+    ],
+    people: [
+      { name: 'nate', responsibilities: ['architecture'], note: 'owns the schema' },
+      { name: 'ana', responsibilities: ['acceptance', 'product'] },
+    ],
+  }
+
+  describe('toCrewInput with people', () => {
+    it("carries the people and each task's owner, and nothing of a person but the server's fields", () => {
+      const body = wire(toCrewInput({ ...managed, people: [...managed.people!, { name: 'kai', responsibilities: [], note: '', extra: 1 } as never] }))
+      expect(body.people).toEqual([
+        { name: 'nate', responsibilities: ['architecture'], note: 'owns the schema' },
+        { name: 'ana', responsibilities: ['acceptance', 'product'] },
+        { name: 'kai' },
+      ])
+      expect(body.tasks.map((t: CrewTask) => [t.id, t.owner])).toEqual([
+        ['build', 'nate'],
+        ['docs', undefined],
+      ])
+    })
+
+    it('leaves people out of a crew without them: its body is the one it was before people', () => {
+      expect('people' in wire(toCrewInput(info))).toBe(false)
+      expect('people' in wire(toCrewInput({ ...info, people: [] }))).toBe(false)
+      expect(crewKey({ ...info, people: [] })).toBe(crewKey(info))
+    })
+
+    it('round-trips a crew with people through the draft, owners kept by their person', () => {
+      const d = toDraft(managed)
+      expect(d.people?.map((p) => p.name)).toEqual(['nate', 'ana'])
+      expect(d.tasks?.[0]?.ownerKey).toBe(d.people?.[0]?.key)
+      expect(d.tasks?.[1]?.ownerKey).toBeUndefined()
+      expect(crewKey(d)).toBe(crewKey(managed))
+      expect(wire(toCrewInput(d))).toEqual(wire(toCrewInput(managed)))
+    })
+  })
+
+  describe('ownersFollowPeople', () => {
+    it("renames a task's owner with its person, by key, through a blank on the way", () => {
+      const d = toDraft(managed)
+      const nate = d.people![0]!
+      const blank = ownersFollowPeople(d.tasks!, [{ ...nate, name: '' }, d.people![1]!])
+      expect(blank[0]?.owner).toBe('')
+      const renamed = ownersFollowPeople(blank, [{ ...nate, name: 'nathan' }, d.people![1]!])
+      expect(renamed.map((t) => t.owner)).toEqual(['nathan', undefined])
+      expect(renamed[0]?.ownerKey).toBe(nate.key)
+    })
+
+    it('keeps the last name of an owner whose person is gone, which the rules then name', () => {
+      const d = toDraft(managed)
+      const left = [d.people![1]!]
+      const tasks = ownersFollowPeople(d.tasks!, left)
+      expect(tasks[0]?.owner).toBe('nate')
+      expect(peopleProblems({ people: left, members: d.members, tasks })).toEqual(['Task build: its owner is gone (nate): choose one, or none'])
+    })
+  })
+
+  describe('ownerOf', () => {
+    it("is the task's own owner, else the crew's acceptance owner, else no one", () => {
+      expect(ownerOf(managed, managed.tasks![0]!)).toEqual({ name: 'nate', from: 'task' })
+      expect(ownerOf(managed, managed.tasks![1]!)).toEqual({ name: 'ana', from: 'acceptance' })
+      expect(ownerOf({ people: [{ name: 'nate', responsibilities: ['architecture'] }] }, {})).toBeUndefined()
+      expect(ownerOf({}, { owner: 'nate' })).toBeUndefined()
+    })
+
+    it('says it in words, the fallback with why', () => {
+      expect(ownerWords({ owner: 'nate', ownerFrom: 'task' })).toBe('owner nate')
+      expect(ownerWords({ owner: 'ana', ownerFrom: 'acceptance' })).toBe('owner ana, the acceptance owner')
+      expect(ownerWords({})).toBe('')
+      expect(responsibilityWords(['product', 'acceptance'])).toBe('product owner, acceptance owner')
+    })
+  })
+
+  describe('peopleProblems', () => {
+    const members = managed.members
+    const at = (people: CrewInfo['people'], tasks: CrewTask[] = []) => peopleProblems({ people, members, tasks })
+
+    it('passes the four responsibilities, a task owner, and a crew with start rules and people', () => {
+      expect(at([{ name: 'nate', responsibilities: ['architecture', 'product', 'security', 'acceptance'] }], [{ id: 'build', member: 'builder', kind: 'work', instructions: '', owner: 'nate' }])).toEqual([])
+      expect(peopleProblems({ people: [{ name: 'nate' }], members: [lead, tests] })).toEqual([])
+      expect(at(undefined)).toEqual([])
+    })
+
+    it("mirrors the server's rules (internal/crew checkPeople), each under the row it names", () => {
+      expect(at(Array.from({ length: 13 }, (_, i) => ({ name: `p${i}` })))).toEqual(['At most 12 people'])
+      expect(at([{ name: '' }])).toEqual(['Person 1: give the person a name'])
+      expect(at([{ name: 'x'.repeat(61) }])).toEqual(['Person 1: the name is at most 60 characters'])
+      expect(at([{ name: 'é'.repeat(60) }])).toEqual([])
+      expect(at([{ name: 'a\tb' }])).toEqual(['Person 1: the name must not contain control characters'])
+      expect(at([{ name: 'ana' }, { name: 'ana' }])).toEqual(['Person 2: ana is named twice'])
+      expect(at([{ name: 'builder' }])).toEqual(["Person 1: builder is a member's name; a person is never a member, so the two names differ"])
+      expect(at([{ name: 'ana', responsibilities: ['legal' as never] }])).toEqual(['Person 1: legal is not one of architecture, product, security, acceptance'])
+      expect(at([{ name: 'ana', responsibilities: ['product', 'product'] }])).toEqual(['Person 1: holds product owner twice'])
+      expect(at([{ name: 'ana', responsibilities: ['acceptance'] }, { name: 'nate', responsibilities: ['acceptance'] }])).toEqual([
+        'Person 2: the acceptance owner is ana already; one person of a crew is its acceptance owner',
+      ])
+      expect(at([{ name: 'ana', note: 'n'.repeat(501) }])).toEqual(['Person 1: the note is at most 500 characters'])
+      expect(at([{ name: 'ana', note: 'two\nlines' }])).toEqual(['Person 1: the note is one line, with no control characters'])
+      expect(at([{ name: 'ana' }], [{ id: 'build', member: 'builder', kind: 'work', instructions: '', owner: 'nate' }])).toEqual(['Task build: its owner nate is not a person of the crew'])
+      expect(peopleRowProblems(1, { people: [{ name: 'ana' }, { name: 'ana' }], members })).toEqual(['ana is named twice'])
+    })
+
+    it("holds a task's row to its owner, and a save to who answers for it in the task file", () => {
+      const shape: TaskShape = { ...managed, people: [{ name: 'ana' }], tasks: [{ ...managed.tasks![0]!, owner: 'nate' }, managed.tasks![1]!] }
+      expect(taskRowProblems({ id: 'build' }, shape)).toEqual(['Task build: its owner nate is not a person of the crew'])
+      // The never-cut part counts the people's lines: instructions that fit alone pass the bound with them.
+      const fits = TASK_LIMITS.taskText - 2 * 3 - 'Build it.'.length
+      const big: TaskShape = { ...managed, goal: '', members: managed.members.map((m) => ({ ...m, prompt: '' })), tasks: [{ ...managed.tasks![0]!, instructions: 'x'.repeat(fits) }] }
+      expect(taskSaveProblems({ ...big, people: [] })).toEqual([])
+      // 40951 for the goal, role and instructions, and 254 for nate, the owner by the task, and the two people, as internal/crew
+      // taskPeopleBytes counts them.
+      expect(taskSaveProblems(big)).toEqual(['Task build: its goal, role, instructions and people are 41205 bytes as its task file keeps them, more than 40960'])
+    })
+
+    it("counts who answers for a task in its task file byte for byte as internal/crew's taskPeopleBytes does", () => {
+      // Each count is what Go's taskPeopleBytes gives for the same crew and task (checked against it on 2026-11-06): a quote, a U+2028,
+      // a two-byte character and HTML's characters in names; a note, never counted; the owner by the task, by the acceptance owner, none.
+      const people = [
+        { name: 'na"te\u2028', responsibilities: ['architecture' as const] },
+        { name: 'ané', responsibilities: ['acceptance' as const, 'product' as const], note: 'never counted' },
+        { name: '<bo>&' },
+      ]
+      const c = { ...managed, people }
+      expect(taskPeopleBytes(c, { owner: 'na"te\u2028' })).toBe(300)
+      expect(taskPeopleBytes(c, {})).toBe(311)
+      expect(taskPeopleBytes({ ...managed, people: [people[0]!, people[2]!] }, {})).toBe(127)
+      expect(taskPeopleBytes({ ...managed, people: [] }, { owner: 'nate' })).toBe(0)
+      expect(taskPeopleBytes(managed, managed.tasks![0]!)).toBe(254)
+      expect(taskPeopleBytes(managed, managed.tasks![1]!)).toBe(272)
+    })
+  })
+
+  describe('ownerChoices', () => {
+    it('offers none, naming the acceptance owner, and each named person by key; a task follows its person', () => {
+      const d = toDraft(managed)
+      const [nate, ana] = [d.people![0]!, d.people![1]!]
+      expect(ownerChoices(d.tasks![0]!, d.people)).toEqual({
+        value: `#${nate.key}`,
+        items: [
+          { label: 'none: ana, the acceptance owner', value: OWNER_NONE },
+          { label: 'nate', value: `#${nate.key}` },
+          { label: 'ana', value: `#${ana.key}` },
+        ],
+        disabled: false,
+      })
+      expect(ownerChoices(d.tasks![1]!, d.people).value).toBe(OWNER_NONE)
+      expect(ownerChoices({}, [])).toEqual({ value: OWNER_NONE, items: [{ label: 'none', value: OWNER_NONE }], disabled: true })
+    })
+
+    it("stays enabled while a removed person's owner is left, so that none can be chosen in a crew left without people", () => {
+      const d = toDraft({ ...managed, people: [managed.people![0]!] })
+      const nate = d.people![0]!
+      // nate's name cleared, then nate removed: the crew has no people, and build's owner is gone with no name.
+      const blank = ownersFollowPeople(d.tasks!, [{ ...nate, name: '' }])
+      const tasks = ownersFollowPeople(blank, [])
+      expect(tasks[0]).toMatchObject({ owner: '', ownerKey: nate.key })
+      expect(peopleProblems({ people: [], members: d.members, tasks })).toEqual(['Task build: its owner is gone: choose one, or none'])
+      const gone = ownerChoices(tasks[0]!, [])
+      expect(gone).toEqual({
+        value: OWNER_GONE,
+        items: [
+          { label: 'none', value: OWNER_NONE },
+          { label: 'a removed person (not a person)', value: OWNER_GONE },
+        ],
+        disabled: false,
+      })
+      // Removed with their name: shown by it, enabled too.
+      expect(ownerChoices(ownersFollowPeople(d.tasks!, [])[0]!, [])).toMatchObject({ value: 'name:nate', disabled: false })
+      // none chosen (CrewTasksTable's pickOwner): the problem is gone, and the select is disabled until people are added.
+      const none = [{ ...tasks[0]!, owner: undefined, ownerKey: undefined }, tasks[1]!]
+      expect(peopleProblems({ people: [], members: d.members, tasks: none })).toEqual([])
+      expect(ownerChoices(none[0]!, []).disabled).toBe(true)
+    })
+  })
+
+  it("lists a crew's people without their notes", () => {
+    expect(summaryOf({ ...managed }).people).toEqual([{ name: 'nate', responsibilities: ['architecture'] }, { name: 'ana', responsibilities: ['acceptance', 'product'] }])
+    expect('people' in summaryOf(info)).toBe(false)
+  })
+})
+
+describe('a save refused because the crew was saved elsewhere', () => {
+  const R1 = 'a'.repeat(64)
+  const R2 = 'b'.repeat(64)
+  const read: CrewInfo = { ...info, revision: R1, people: [{ name: 'nate', responsibilities: ['architecture'] }] }
+  // What another page saved meanwhile: a person added.
+  const theirs: CrewInfo = { ...read, revision: R2, updatedAt: '2026-11-06T09:00:00Z', people: [...read.people!, { name: 'ana', responsibilities: ['acceptance'] }] }
+
+  it('makes the draft from a crew read whole with that copy as its base, which crewKey leaves out', () => {
+    const d = toDraft(read)
+    expect(d.base).toBe(read)
+    expect(d.base?.revision).toBe(R1)
+    expect(crewKey(d)).toBe(crewKey(read))
+    expect(toDraft(info).base).toBeUndefined()
+    expect(wire(toCrewInput(d))).not.toHaveProperty('revision')
+  })
+
+  it('leaves the draft exactly as typed, text still being typed included, with its base and the copy the server holds now beside it', () => {
+    const d = toDraft({ ...read, tasks: [{ id: 'build', member: 'lead', kind: 'work', instructions: 'build it' }], manifest: { setup: [{ id: 'deps', argv: ['npm', 'ci'] }] } })
+    const edited: DraftCrew = {
+      ...d,
+      goal: 'mine',
+      people: [...d.people!, { name: 'cy', key: 99 }],
+      tasks: [{ ...d.tasks![0]!, checks: [{ id: 'unit', argv: ['go', 'test'], pending: 'go vet "unclosed' }] }],
+      manifest: { ...d.manifest, setup: [{ ...d.manifest!.setup![0]!, pending: 'npm ci "half' }] },
+    }
+    for (const refused of [refusedAsStale(edited), refusedAsStale(edited, theirs)]) {
+      expect(refused.changedElsewhere).toBe(true)
+      expect(crewKey(refused)).toBe(crewKey(edited))
+      expect(wire(toCrewInput(refused))).toEqual(wire(toCrewInput(edited)))
+      expect(refused.people).toBe(edited.people)
+      expect(refused.tasks?.[0]?.checks?.[0]?.pending).toBe('go vet "unclosed')
+      expect(refused.manifest?.setup?.[0]?.pending).toBe('npm ci "half')
+      expect(refused.base?.revision).toBe(R1)
+    }
+    expect(refusedAsStale(edited).theirs).toBeUndefined()
+    expect(refusedAsStale(edited, theirs).theirs).toBe(theirs)
+  })
+
+  it('keeps a need on a task the other page renamed as the draft has it: the draft is never merged, so nothing drops it', () => {
+    const tasks = [
+      { id: 'build', member: 'lead', kind: 'work' as const, instructions: 'build it' },
+      { id: 'deploy', member: 'tests', kind: 'work' as const, instructions: 'ship it', needs: ['build'] },
+    ]
+    const d = toDraft({ ...read, tasks })
+    const renamed: CrewInfo = { ...read, revision: R2, tasks: [{ ...tasks[0]!, id: 'compile' }, { ...tasks[1]!, needs: ['compile'] }] }
+    const refused = refusedAsStale(d, renamed)
+    expect(toCrewInput(refused).tasks?.find((t) => t.id === 'deploy')?.needs).toEqual(['build'])
+    expect(elsewhereWords(refused)).toBe('1 task added (compile); 1 task removed (build); 1 task changed (deploy)')
+  })
+
+  it('says what changed there, from the copy the draft was made from and the one the server holds now', () => {
+    const d = toDraft(read)
+    expect(elsewhereWords(d)).toBe('')
+    // Before the server's copy is read, or when the read failed, it cannot say.
+    expect(elsewhereWords(refusedAsStale(d))).toBe('something else changed')
+    expect(elsewhereWords(refusedAsStale(d, theirs))).toBe('1 person added (ana); the acceptance owner (none, now ana)')
+    // Saved again with nothing a field shows changed: the revision moved, the words cannot say how.
+    expect(elsewhereWords(refusedAsStale(d, { ...read, revision: R2, updatedAt: '2026-11-06T09:00:00Z' }))).toBe('something else changed')
+  })
+
+  it('saves after a refusal from the base, so the plain Save is refused again, and Save mine anyway over the copy the server holds now, never without it', () => {
+    const d = toDraft(read)
+    expect(revisionToSave(d)).toBe(R1)
+    expect(revisionToSave(d, true)).toBeUndefined()
+    expect(revisionToSave(refusedAsStale(d))).toBe(R1)
+    expect(revisionToSave(refusedAsStale(d), true)).toBeUndefined()
+    expect(revisionToSave(refusedAsStale(d, theirs))).toBe(R1)
+    expect(revisionToSave(refusedAsStale(d, theirs), true)).toBe(R2)
+    expect(revisionToSave(toDraft(defaultCrew([])), true)).toBeUndefined()
+  })
+
+  it('reads the crew again as the server holds it: the draft replaced, unmarked, its base the copy read', () => {
+    const again = toDraft(theirs)
+    expect(again.people?.map((p) => p.name)).toEqual(['nate', 'ana'])
+    expect(again.changedElsewhere).toBeUndefined()
+    expect(again.theirs).toBeUndefined()
+    expect(revisionToSave(again)).toBe(R2)
+  })
+
+  it('says what changed between two reads, counted and named, three names at most', () => {
+    expect(changedBetween(read, read)).toEqual([])
+    expect(changedBetween(read, { ...read, name: 'x', people: [{ name: 'ana' }] })).toEqual(['the name', '1 person added (ana)', '1 person removed (nate)'])
+    const many = ['ana', 'bo', 'cy', 'dee', 'x'.repeat(60)].map((name) => ({ name }))
+    expect(changedBetween({ ...read, people: undefined }, { ...read, people: many })).toEqual(['5 people added (ana, bo, cy and 2 more)'])
+    expect(changedBetween(read, { ...read, people: [{ name: 'y'.repeat(60) }] })[0]).toBe(`1 person added (${'y'.repeat(39)}…)`)
+    expect(changedBetween(read, { ...read, goal: 'g', cwd: '/x', yolo: true, members: [{ ...lead, prompt: 'p' }, tests], manifest: { setup: [{ id: 'deps', argv: ['npm', 'ci'] }] } })).toEqual([
+      'the goal',
+      'the working directory',
+      'how each run starts',
+      '1 member changed (lead)',
+      'the project manifest',
+    ])
+    const owned: CrewInfo = { ...read, people: [{ name: 'nate' }, { name: 'ana' }], tasks: [{ id: 'build', member: 'lead', kind: 'work', instructions: 'i', owner: 'nate' }] }
+    expect(changedBetween(owned, { ...owned, tasks: [{ ...owned.tasks![0]!, owner: 'ana' }] })).toEqual(["1 task's owner changed (build)"])
   })
 })

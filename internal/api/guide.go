@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"reflect"
 	"regexp"
@@ -66,14 +67,19 @@ type Operation struct {
 	// dispatch (a Dispatch operation's), or "" for none.
 	Receipt string `json:"receipt,omitempty"`
 	// Revision names the precondition the route itself enforces: "run"
-	// (a command's expectedRevision, above 0) or "ticket" (Dispatch's
-	// expectedRev); "" for a route that decodes no revision (a run's stop
-	// and resume), which a proposal never gets a button for.
+	// (a command's expectedRevision, above 0), "ticket" (Dispatch's
+	// expectedRev) or "decision" (a decision's expectedRev); "" for a
+	// route that decodes no revision (a run's stop and resume), which a
+	// proposal never gets a button for.
 	Revision string `json:"revision,omitempty"`
 	// Bounds are the body's and the reply's limits, in bytes.
 	Bounds map[string]int `json:"bounds,omitempty"`
 	// needs is what the server must allow for the operation to be listed.
 	needs opNeeds
+	// agentOnly says only the session's own token calls it: the admin's
+	// answers 403 agent_only (a task's result, a brief). Its route asks
+	// it (opAgentOnly), and the guide lists the operation to no admin.
+	agentOnly bool
 	// guideInput is Input as the guide's operations section gives it,
 	// when another section carries the whole of it (brief_submit's
 	// brief, the briefs section); nil for Input itself.
@@ -130,7 +136,7 @@ var guideSections = []string{"operations", "limits", "host", "receipts", "provid
 var guideRules = []string{
 	"A fact needs evidence: name the record it rests on (a run, a task, a check receipt, a ticket, a session).",
 	"Nothing an agent writes becomes work by itself: a person makes it work.",
-	"A question goes to a person with ask.",
+	"A question goes to a person with ask; in a managed run, one whose answer the work must wait for goes with decision_request.",
 }
 
 // mcpObject and mcpString build the MCP tools' schemas, as tools/list
@@ -146,6 +152,12 @@ func mcpObject(props map[string]any, required ...string) map[string]any {
 func mcpString(desc string) map[string]any {
 	return map[string]any{"type": "string", "description": desc}
 }
+
+// DecisionListed bounds one record as the operator's decision lists give
+// it (GET /api/decisions, a ticket's decisions; listedOf): a page of n of
+// them is at most n times it and 1 KiB more (maxDecisionListPage), the
+// bound conductor decision list reads a page under.
+const DecisionListed = maxDecisionListed
 
 // Operations is the table: every agent route and tool, the admin's
 // operations a proposal may name, and the guide. The caller must not
@@ -219,7 +231,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			CLI:         []string{"conductor", "task", "context"},
 			Input:       obj(map[string]any{"page": map[string]any{"type": "integer", "minimum": 1, "description": "the page to read"}}),
 			Bounds:      map[string]int{"page": taskPage}},
-		{Name: "task_result", MCP: "task_result", Scope: "task", Method: http.MethodPost, Path: sessions + "/task/result", needs: needLauncher,
+		{Name: "task_result", MCP: "task_result", Scope: "task", Method: http.MethodPost, Path: sessions + "/task/result", needs: needLauncher, agentOnly: true,
 			Summary:     "Submit your attempt's result, once: a work task its clean commit and a summary; a review its verdict and findings. Conductor checks it and decides the task.",
 			Description: "Submit your attempt's result, once. A work task: commit your work first (the worktree must be clean apart from .conductor/), then give a summary, the issues you know of, and the commit (HEAD unless given). A review: do not commit; give the verdict, approved or needs_changes, with findings {severity: blocker|major|minor|nit, path, line, message}. Conductor checks the commit and decides the task; a refusal says what to fix before you submit again. The same commit submitted twice is taken once. A done or a handoff does not finish a task; only this does.",
 			CLI:         []string{"conductor", "task", "result", "--summary", "TEXT"},
@@ -260,6 +272,43 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			CLI:         []string{"conductor", "task", "checkpoint", "--done", "TEXT", "--remaining", "TEXT"},
 			Input:       obj(map[string]any{"done": str("what is done, at most 4000 characters"), "remaining": str("what remains"), "notes": str("anything the next attempt should know")}, "done", "remaining"),
 			Bounds:      map[string]int{"body": maxBody}},
+		{Name: "decision_request", MCP: "decision_request", Scope: "task", Method: http.MethodPost, Path: sessions + "/decisions", needs: needLauncher,
+			Summary:     "Ask the operator a decision your task must wait for: the reply comes at once with its id; end your turn or go on with other work, and submit no result until its answer is applied.",
+			Description: "In a managed run, ask the operator a decision your work must wait for: a clarification, an approval (with options and what a yes authorizes) or an assignment, with the context, the alternatives and their tradeoffs, your recommendation and its uncertainty, and evidence refs. Save a checkpoint first. It replies at once with the decision's id and open: end your turn, or go on with work that does not depend on it; do not submit your result, or act on the answer, until it is applied. A decision is open (waiting), answered (an answer recorded, not yet applied: Yardmaster validates it first, and it may still be superseded or cancelled instead) or applied (the answer is yours to act on). Yardmaster applies the answer by typing it into this session as \"Decision dr-N (...) answered by ...\", or, if this session has ended, by writing it into your task's next attempt's task file, which starts at your last checkpoint. The same requestId again replies with the same decision as it is now.",
+			CLI:         []string{"conductor", "task", "decide", "--type", "TYPE", "--question", "TEXT"},
+			Input: obj(map[string]any{
+				"requestId":      str("your id for this request, 1 to 32 of A-Z a-z 0-9 . _ ~ -: the same again answers the same decision"),
+				"type":           map[string]any{"type": "string", "enum": []string{"clarification", "approval", "assignment"}},
+				"question":       str("the question, one line of at most 500 characters"),
+				"context":        str("what happened and why a person is needed, Markdown, at most 4000 characters"),
+				"options":        map[string]any{"type": "array", "maxItems": 6, "items": obj(map[string]any{"label": str("at most 80 characters"), "tradeoffs": str("at most 1 KiB")}, "label"), "description": "the alternatives: 2 to 6 for an approval, none for an assignment"},
+				"recommendation": map[string]any{"type": "integer", "minimum": -1, "description": "the option you recommend, from 0; -1 for none"},
+				"uncertainty":    str("how sure you are, at most 1 KiB"),
+				"authorizes":     str("what a yes allows, at most 1 KiB; an approval's is required"),
+				"evidence":       map[string]any{"type": "array", "maxItems": 20, "items": map[string]any{"type": "string"}, "description": "refs to the records it rests on (run:, task:, ticket:, file:, ...), at most 300 bytes each"},
+				"expertise":      map[string]any{"type": "array", "maxItems": 4, "items": map[string]any{"type": "string"}, "description": "the expertise the answer needs, at most 40 characters each"},
+				"subject":        obj(map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"commit", "candidate", "artifact"}}, "commit": str("commit: your HEAD; candidate: its result commit, 7 hex digits at least"), "run": str("candidate: the run"), "task": str("candidate: the task"), "n": map[string]any{"type": "integer", "description": "candidate: the attempt"}, "path": str("artifact: the file, relative to your worktree, committed")}, "kind"),
+				"supersedes":     str("dr-N, an open decision of your task this one takes the place of"),
+			}, "type", "question"),
+			Bounds: map[string]int{"body": maxDecisionRequestBody}},
+		{Name: "decision_list", MCP: "decision_list", Scope: "task", Method: http.MethodGet, Path: sessions + "/decisions", needs: needLauncher,
+			Summary:     "Your task's decisions, newest first, each a summary: its id, state, question and answer.",
+			Description: "In a managed run, your task's decisions, newest first, at most 100 a page: each its id, type, state, rev, question and, once answered, the answer and why. Act on an answer only once its state is applied: answered is recorded, not yet applied. Pass after (the next a page gave) for the next page; decision_read reads one whole.",
+			CLI:         []string{"conductor", "task", "decision"},
+			Input:       obj(map[string]any{"after": str("dr-N: the page after it"), "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": maxDecisionsListed}}),
+			Bounds:      map[string]int{"reply": maxDecisionSummaryPage, "summary": maxDecisionSummary}},
+		{Name: "decision_read", MCP: "decision_read", Scope: "task", Method: http.MethodGet, Path: sessions + "/decisions/{did}", needs: needLauncher,
+			Summary:     "One of your task's decisions whole: the request, the responses, the history and the application.",
+			Description: "In a managed run, one of your task's decisions whole: what was asked, its state, the responses with their receipts, its history and how Yardmaster applied the answer. Act on the answer only once its state is applied: answered is recorded, not yet applied.",
+			CLI:         []string{"conductor", "task", "decision", "dr-N"},
+			Input:       obj(map[string]any{"id": str("the decision's id, dr-N")}, "id"),
+			Bounds:      map[string]int{"reply": maxDecisionReply}},
+		{Name: "decision_withdraw", MCP: "decision_withdraw", Scope: "task", Method: http.MethodPost, Path: sessions + "/decisions/{did}/withdraw", needs: needLauncher,
+			Summary:     "Withdraw an open decision you asked that you no longer need: your task waits for it no more.",
+			Description: "In a managed run, withdraw an open decision you asked that you no longer need: it is cancelled and your task waits for it no more. An answered one cannot be withdrawn, and none once your run is being continued (not_held: the decision stays open in the run that continues it, and this attempt's work is over).",
+			CLI:         []string{"conductor", "task", "withdraw", "dr-N"},
+			Input:       obj(map[string]any{"id": str("the decision's id, dr-N")}, "id"),
+			Bounds:      map[string]int{"body": maxDecisionAnswerBody}},
 		{Name: "ticket_read", MCP: "ticket_read", Scope: "ticket", Method: http.MethodGet, Path: sessions + "/ticket", needs: needLauncher,
 			Summary:     "The Dispatch ticket your run is linked to: what was asked and how it is accepted, with its last comments.",
 			Description: "The Dispatch ticket your run is linked to, when a person linked it to one: its key and title, status, priority, owner, labels, description, acceptance criteria, close policy, links and last comments. Read it for what was asked and how it is accepted. A run belongs to one ticket at most; with none, the tool says so.",
@@ -284,7 +333,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		// words are), a draft crew's crew the body crew_create takes;
 		// the operations section, which tools/list need not repeat,
 		// points to the briefs section for it.
-		{Name: "brief_submit", MCP: "brief_submit", Scope: "observe", Method: http.MethodPost, Path: sessions + "/brakeman/brief", needs: needLauncher, Receipt: "brakeman",
+		{Name: "brief_submit", MCP: "brief_submit", Scope: "observe", Method: http.MethodPost, Path: sessions + "/brakeman/brief", needs: needLauncher, Receipt: "brakeman", agentOnly: true,
 			Summary:     "Submit your turn's one brief (brakeman.brief/1): every fact names its evidence, every ref resolves in your scope; the same opId again answers it.",
 			Description: "Submit your Brakeman turn's one brief, schema brakeman.brief/1: a title, your reading (summary), and at least one item (facts with evidence refs, interpretations naming facts, proposals naming an operation of the guide, outcomes naming a receipt, decision cards, drafts); a briefing holds at least one fact. The brief's input schema gives every item kind with its fields, bounds and an example, and the ref forms; the guide's briefs section says the same in words. Every ref must resolve inside your scope and visibility, and a revision you name must be the one you read; a refusal names what to fix. The same opId and brief again answer the kept one. Your turn ends once it is kept.",
 			CLI:         []string{"conductor", "brakeman", "brief", "--file", "BRIEF.json"},
@@ -336,7 +385,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		// holds, the snapshot and the configuration now together.
 		{Name: "act", MCP: "act", Scope: "act", Method: http.MethodPost, Path: actRouteOf(brakeman.ActLaunchApprovedPlan), needs: needLauncher, Receipt: "dispatch",
 			Summary:     "Run an operation the person granted you, through its own route: checked against the grant, your scope and its target's state, it leaves its receipt.",
-			Description: "When this session is a Brakeman turn the person granted operations to: run one (operation names it: " + strings.Join(actOperations(), ", ") + ") through that operation's own route, with its path parameters in params and its body in body, as the guide's entry of that operation gives them; opId is minted when you give none, and the same opId again answers the receipt kept. It is refused unless the person grants it now and did when your turn began, its target is within your scope and visibility, and in the state the operation needs (an approved revision whose approval still holds; the ticket's revision you read as expectedRev). It runs as Brakeman and answers its route's own answer with the receipt; a brief's proposal of the act names its opId in args.opId, which the page shows done with that receipt. Approving, answering, accepting and closing stay the person's: no grant does them.",
+			Description: "When this session is a Brakeman turn the person granted operations to: run one (operation names it: " + strings.Join(actOperations(), ", ") + ") through that operation's own route, with its path parameters in params and its body in body, as the guide's entry of that operation gives them; opId is minted when you give none, and the same opId again answers the receipt kept. It is refused unless the person grants it now and did when your turn began, its target is within your scope and visibility, and in the state the operation needs (an approved revision whose approval still holds; the ticket's revision you read as expectedRev). It runs as Brakeman and answers its route's own answer: the receipt, whose id is what it made (the launch's, the revision's), and receiptRef, the ref a brief cites the receipt by (op:brakeman/<the receipt's opId>, an outcome/1's receipt). Approving, answering, accepting and closing stay the person's: no grant does them.",
 			CLI:         []string{"conductor", "brakeman", "act", "OPERATION", "--key", "KEY", "--body-file", "BODY.json"},
 			Input: obj(map[string]any{
 				"operation": map[string]any{"type": "string", "enum": actOperations(), "description": "the operation granted: the guide's entry of that name gives its route and its body"},
@@ -351,7 +400,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		// The guide itself.
 		{Name: "guide", MCP: "guide", Scope: "session", Method: http.MethodGet, Path: sessions + "/guide",
 			Summary:     "This guide, from the running server: the overview without a section, else the section named.",
-			Description: "What this Conductor server lets you do here, from the server itself: without a section, an overview (the server's version, who you are and what you may do, the sections and their sizes); with one, that section: operations (what you may call, with its tool, command, route and input), limits, host, receipts, providers, or briefs (a Brakeman brief's shape: its item kinds, their fields and bounds, the ref forms, an example).",
+			Description: "What this Conductor server lets you do here, from the server itself: without a section, an overview (the server's version, who you are, the operations you may call and the limits that bind you, the sections and their sizes); with one, that section: operations (what you may call, with its tool, command, route and input), limits, host, receipts, providers, or briefs (a Brakeman brief's shape: its item kinds, their fields and bounds, the ref forms, an example).",
 			CLI:         []string{"conductor", "guide", "--section", "SECTION"},
 			Input:       obj(map[string]any{"section": map[string]any{"type": "string", "enum": guideSections, "description": "the section to read; the overview when not given"}}),
 			Bounds:      map[string]int{"overview": maxGuideOverview, "section": maxGuideSection}},
@@ -379,6 +428,24 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		taskCommandOp("task_cancel", "Cancel a task of a managed run: its attempt stops and the task ends cancelled.", "/cancel"),
 		taskCommandOp("task_retry", "Retry a "+strings.Join(crew.RetryableStates(), " or ")+" task of a managed run: a new attempt starts.", "/retry"),
 		taskCommandOp("task_accept", "Accept a task's submitted result although its checks did not pass.", "/accept"),
+		{Name: "decision_respond", Scope: "admin", Method: http.MethodPost, Path: "/api/decisions/{did}/respond", needs: needLauncher, Receipt: "ledger", Revision: "decision",
+			Summary: "Answer a decision as the operator: an option's index, a text, or both for a clarification, with a rationale and the rev read. Recorded, then applied by Yardmaster.",
+			CLI:     []string{"conductor", "decision", "respond", "dr-N", "--choice", "N"},
+			Input:   bodySchema(crew.Response{}),
+			Bounds:  map[string]int{"body": maxDecisionAnswerBody, "reply": maxDecisionReply}},
+		{Name: "decision_cancel", Scope: "admin", Method: http.MethodPost, Path: "/api/decisions/{did}/cancel", needs: needLauncher, Receipt: "ledger", Revision: "decision",
+			Summary: "Cancel an open or answered decision with why: its tasks cancelled with it, or released when release says so.",
+			CLI:     []string{"conductor", "decision", "cancel", "dr-N", "--why", "TEXT"},
+			Input:   bodySchema(decisionCancelBody{}),
+			Bounds:  map[string]int{"body": maxDecisionAnswerBody}},
+		{Name: "decision_comment", Scope: "admin", Method: http.MethodPost, Path: "/api/decisions/{did}/comment", needs: needLauncher, Receipt: "ledger", Revision: "decision",
+			Summary: "Comment on a decision, or ask its live asking attempt for more information (more_info, typed into its session).",
+			Input:   bodySchema(decisionCommentBody{}),
+			Bounds:  map[string]int{"body": maxDecisionAnswerBody}},
+		{Name: "decision_route", Scope: "admin", Method: http.MethodPost, Path: "/api/decisions/{did}/route", needs: needLauncher, Receipt: "ledger", Revision: "decision",
+			Summary: "Route a decision to a destination: under local/1, the operator.",
+			Input:   bodySchema(decisionRouteBody{}),
+			Bounds:  map[string]int{"body": maxDecisionAnswerBody}},
 		{Name: "ticket_create", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/tickets", needs: needLauncher, Receipt: "dispatch",
 			Summary: "Make a Dispatch ticket in a project.",
 			CLI:     []string{"conductor", "dispatch", "create", "--project", "KEY", "--title", "TITLE"},
@@ -678,6 +745,16 @@ type guideCaller struct {
 	// began under and the configuration now together (grantedActs): the
 	// act scope lists the act tool and these alone.
 	acts []string
+	// budget is a Brakeman turn's, the snapshot its turn began under: the
+	// overview's limits name its reads and its minutes. Zero when the
+	// request cannot be read.
+	budget brakeman.Budget
+	// visible is what a Brakeman turn may see, its snapshot and the
+	// configuration now together, as its reads are checked (refGrant):
+	// an operation whose classes it sees none of is refused it (403
+	// not_visible), and the guide lists it not. Nothing when the records
+	// cannot be read.
+	visible brakeman.Visibility
 }
 
 // adminCaller is the workbench token's: every scope.
@@ -709,7 +786,7 @@ func (s *Server) sessionCaller(ctx context.Context, d session.Driver) guideCalle
 		c.Kinds = append(c.Kinds, "brakeman")
 		c.Scopes = append(c.Scopes, "observe")
 		c.brakeman = true
-		if c.acts = s.turnActs(ref.Brakeman.Request); len(c.acts) > 0 {
+		if c.acts, c.budget, c.visible = s.turnGrant(ref.Brakeman.Request); len(c.acts) > 0 {
 			c.Scopes = append(c.Scopes, "act")
 		}
 		return c
@@ -723,24 +800,97 @@ func (s *Server) sessionCaller(ctx context.Context, d session.Driver) guideCalle
 	return c
 }
 
-// turnActs is the operations the request id's turn is granted, its
-// snapshot and the configuration now together; nil when none, or when
-// the records cannot be read (the guide then lists no act, and the act
-// routes refuse it as ever).
-func (s *Server) turnActs(id string) []string {
+// turnGrant is the operations the request id's turn is granted and what
+// it may see, its snapshot and the configuration now together (as its
+// routes check them: grantedActs, refGrant); none of either when the
+// records cannot be read or the request is closed (the guide then lists
+// nothing they gate, and the routes refuse it as ever); and the budget
+// its snapshot holds, zero when the request cannot be read.
+func (s *Server) turnGrant(id string) ([]string, brakeman.Budget, brakeman.Visibility) {
 	d := s.brakeman
 	if d == nil {
-		return nil
+		return nil, brakeman.Budget{}, brakeman.Visibility{}
 	}
 	req, err := d.st.Get(id)
-	if err != nil || !req.Open() {
-		return nil
+	if err != nil {
+		return nil, brakeman.Budget{}, brakeman.Visibility{}
+	}
+	if !req.Open() {
+		return nil, req.Config.Budget, brakeman.Visibility{}
 	}
 	cfg, err := d.st.Config()
 	if err != nil {
+		return nil, req.Config.Budget, brakeman.Visibility{}
+	}
+	return grantedActs(req.Config.Permissions, cfg.Permissions), req.Config.Budget, bothVisible(req.Config.Visibility, cfg.Visibility)
+}
+
+// admits reports whether the caller c may call op on this server now:
+// the scope it reaches and what the server allows (reaches), then what
+// the operation's route refuses this caller for, from the same facts the
+// route reads: the admin an operation only a session's own token calls
+// (opAgentOnly: 403 agent_only), a Brakeman turn one whose classes it
+// sees none of (opClasses, seesAny: 403 not_visible). The guide's
+// operations section and the overview's may list are made by it, so an
+// operation a caller would be refused is never listed to it, and one it
+// may call never left out.
+func (s *Server) admits(c guideCaller, op Operation) bool {
+	if !s.reaches(c, op) {
+		return false
+	}
+	if c.Kind == "admin" && opAgentOnly(op.Name) {
+		return false
+	}
+	if c.brakeman && !seesAny(opClasses(op), c.visible.Has) {
+		return false
+	}
+	return true
+}
+
+// opAgentOnly reports whether the operation named takes only the
+// session's own token (Operation.agentOnly): its route asks this before
+// it refuses the admin's, as the guide does before it lists it.
+func opAgentOnly(name string) bool {
+	ops := operationsTable()
+	i := slices.IndexFunc(ops, func(o Operation) bool { return o.Name == name })
+	return i >= 0 && ops[i].agentOnly
+}
+
+// actClasses are what an act's route needs a turn to see (admitAct): a
+// grant gives no read.
+var actClasses = []string{brakeman.ClassDispatch}
+
+// ownReadClasses are the classes Brakeman's own reads (observeRoute) need
+// a turn to see one of, by path: turnRead refuses a turn that sees none
+// (403 not_visible) before the handler's own finer checks (a status of a
+// session needs sessions, of a run runs).
+var ownReadClasses = map[string][]string{
+	"/api/brakeman/screen":   {brakeman.ClassTerminals},
+	"/api/brakeman/status":   {brakeman.ClassRuns, brakeman.ClassSessions},
+	"/api/brakeman/overlaps": {brakeman.ClassRuns, brakeman.ClassSessions},
+}
+
+// opClasses are the visibility classes op reads, one of which a Brakeman
+// turn must see for its route to take it: a shared read's (its readSpec's
+// class), Brakeman's own reads' (ownReadClasses), an act's (actClasses);
+// nil for an operation no class gates.
+func opClasses(op Operation) []string {
+	switch {
+	case op.Scope == "act":
+		return actClasses
+	case op.Scope != "observe" || op.Method != http.MethodGet:
 		return nil
 	}
-	return grantedActs(req.Config.Permissions, cfg.Permissions)
+	if spec, ok := sharedReadSpec(op.Method + " " + op.Path); ok && spec.class != "" {
+		return []string{spec.class}
+	}
+	return ownReadClasses[op.Path]
+}
+
+// seesAny reports whether a turn that sees what sees answers sees one of
+// classes; true for none.
+func seesAny(classes []string, sees func(string) bool) bool {
+	return len(classes) == 0 || slices.ContainsFunc(classes, sees)
 }
 
 // reaches reports whether the caller is given op on this server.
@@ -946,7 +1096,7 @@ type guideReceipt struct {
 func guideReceipts() []guideReceipt {
 	return []guideReceipt{
 		{Name: "brakeman", About: "a Brakeman request's, kept under its opId: the same opId again answers the same request, and the same brief's opId again the kept brief", Fields: receiptFields(reflect.TypeFor[brakeman.Request]())},
-		{Name: "ledger", About: "a run command's (pause, unpause, cancel, retry, accept), kept in the ledger under its actor and commandId: the same command again answers the same receipt, repeat true", Fields: receiptFields(reflect.TypeFor[crew.Receipt]())},
+		{Name: "ledger", About: "a run command's (pause, unpause, cancel, retry, accept), kept in the ledger under its actor and commandId: the same command again answers the same receipt, repeat true; a decision's response and operation are kept there the same way, under responseId, commandId or opId", Fields: receiptFields(reflect.TypeFor[crew.Receipt]())},
 		{Name: "dispatch", About: "a Dispatch operation's, kept under its actor and opId: the same opId again answers it, repeat true", Fields: receiptFields(reflect.TypeFor[dispatch.Receipt]())},
 	}
 }
@@ -980,11 +1130,83 @@ func extensionKinds(caps capabilitiesReply) []string {
 	return out
 }
 
-// guideOverview is the overview's content.
+// guideOverview is the overview's content: who the caller is, what it
+// may call (the operations section's names, each whole there) and the
+// limits that bind it most (each whole in the limits section), the
+// sections and their sizes, and the rules. A caller told only to call the
+// guide learns there what it may do and within what, in a few lines.
 type guideOverview struct {
-	Caller   guideCaller        `json:"caller"`
+	Caller guideCaller `json:"caller"`
+	// May is the operations the caller may call, by name (an MCP tool's
+	// name where it has one), in the table's order.
+	May []string `json:"may"`
+	// Limits are the headline bounds that bind the caller, one a line,
+	// in words: its scopes' own, and a Brakeman turn's budget.
+	Limits   []string           `json:"limits"`
 	Sections []guideSectionSize `json:"sections"`
 	Rules    []string           `json:"rules"`
+}
+
+// overviewLimitNames are the limits section's entries the overview names
+// for a caller that reaches each scope, in this order, each once.
+var overviewLimitNames = []struct {
+	scope string
+	names []string
+}{
+	{"admin", []string{"crew_members", "crew_tasks", "task_checks", "check_timeout", "ticket_title", "ticket_description"}},
+	{"session", []string{"report_message", "self_crews", "self_links"}},
+	{"task", []string{"message", "inbox", "result_summary", "result_issues"}},
+	{"ticket", []string{"comment"}},
+	{"observe", []string{"brief", "brief_items", "brief_refs", "brief_summary"}},
+}
+
+// overviewLimits is the headline bounds that bind c, in words: its
+// scopes' entries of the limits section, a Brakeman turn's reads and
+// minutes from the snapshot its turn began under, its acts a request
+// with the act scope, and a JSON body's bound for everyone.
+func overviewLimits(c guideCaller) []string {
+	all := guideLimits()
+	var out, seen []string
+	add := func(name string) {
+		if slices.Contains(seen, name) {
+			return
+		}
+		if i := slices.IndexFunc(all, func(l guideLimit) bool { return l.Name == name }); i >= 0 {
+			seen = append(seen, name)
+			out = append(out, limitWords(all[i]))
+		}
+	}
+	for _, g := range overviewLimitNames {
+		if slices.Contains(c.Scopes, g.scope) {
+			for _, n := range g.names {
+				add(n)
+			}
+		}
+	}
+	if c.brakeman && c.budget.ReadsPerTurn > 0 {
+		out = append(out, fmt.Sprintf("this turn: at most %d reads and %d minutes, then it ends", c.budget.ReadsPerTurn, c.budget.TurnMinutes))
+	}
+	if slices.Contains(c.Scopes, "act") {
+		out = append(out, fmt.Sprintf("acts: at most %d a request, each only as the person granted it", brakeman.MaxActs))
+	}
+	add("body")
+	return out
+}
+
+// limitWords is a limit in one line: its name, its bound and what it
+// bounds.
+func limitWords(l guideLimit) string {
+	unit := ""
+	if l.Unit != "" {
+		unit = " " + l.Unit
+	}
+	switch {
+	case l.Pattern != "":
+		return fmt.Sprintf("%s: %s (%s)", l.Name, l.Pattern, l.About)
+	case l.Min > 0:
+		return fmt.Sprintf("%s: %d to %d%s (%s)", l.Name, l.Min, l.Max, unit, l.About)
+	}
+	return fmt.Sprintf("%s: at most %d%s (%s)", l.Name, l.Max, unit, l.About)
 }
 
 // guideSectionSize names a section and the size of its reply.
@@ -1005,7 +1227,7 @@ func (s *Server) guideContent(ctx context.Context, c guideCaller, ops []Operatio
 	caps := s.capabilities()
 	reached := []Operation{}
 	for _, op := range ops {
-		if s.reaches(c, op) {
+		if s.admits(c, op) {
 			op.Description = ""
 			if op.guideInput != nil {
 				op.Input = op.guideInput
@@ -1050,7 +1272,12 @@ func briefSubmitSchema() map[string]any {
 // sizes, for the caller.
 func encodeGuide(c guideCaller, content map[string]any) (map[string][]byte, error) {
 	out := make(map[string][]byte, len(content)+1)
-	ov := guideOverview{Caller: c, Rules: guideRules}
+	ov := guideOverview{Caller: c, May: []string{}, Limits: overviewLimits(c), Rules: guideRules}
+	if ops, ok := content["operations"].([]Operation); ok {
+		for _, op := range ops {
+			ov.May = append(ov.May, op.Name)
+		}
+	}
 	for _, name := range guideSections {
 		b, err := guideReply(name, content[name])
 		if err != nil {

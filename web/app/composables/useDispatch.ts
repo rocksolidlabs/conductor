@@ -1,6 +1,6 @@
 import { DispatchOrder, through, throughOrAbsent, type AbsentOptions } from '~/utils/dispatchOrder'
 import { ApiError, type ApiErrorBody } from './useApi'
-import type { CrewCheck, CrewManifest, Finding, RunAttempt, RunInfo, RunStep, RunTask, RunTicket } from './useSessions'
+import type { CrewCheck, CrewManifest, CrewPerson, Finding, RunAttempt, RunInfo, RunStep, RunTask, RunTicket } from './useSessions'
 
 // Dispatch's client (docs/plans/dispatch.md, "web/app"; the routes in docs/protocol.md, Dispatch): the types of every reply, as
 // useSessions.ts holds the crews' and the runs', the dispatch event's beside them, and the routes over useApi. Every page's state goes
@@ -441,8 +441,10 @@ export interface PlanCrew {
   yolo?: boolean
   updatedAt?: string
   members?: Array<{ name: string; agentId: string; args?: string[] }>
-  tasks?: Array<{ id: string; member: string; kind: 'work' | 'review'; needs?: string[]; checks?: CrewCheck[] }>
+  tasks?: Array<{ id: string; member: string; kind: 'work' | 'review'; needs?: string[]; checks?: CrewCheck[]; owner?: string }>
   manifest?: CrewManifest
+  /** The crew's people as the revision keeps them (HM1): who owns its decisions and its tasks' outcomes. */
+  people?: CrewPerson[]
 }
 
 /** A plan revision's body, immutable once made: what its approval covers and what a launch runs. */

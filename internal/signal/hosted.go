@@ -836,9 +836,7 @@ type HostedSession struct {
 	// connected, from the `file` entries it reports (HostActivity): what
 	// GET /api/touched lists for the session (#304). The host keeps the
 	// session's own index; this one begins with the connection.
-	touched session.TouchedIndex
-	// hooks are the session's own (OnAdded's answer). Guarded by mu.
-	hooks          SessionHooks
+	touched        session.TouchedIndex
 	relayOnly      bool
 	agentTokenHash [32]byte
 	hasAgentToken  bool
@@ -1347,15 +1345,8 @@ func OptionsFromProto(in []proto.AttentionOption) []session.Option {
 }
 
 func (h *HostedSession) notifyChange() {
-	info := h.Info()
 	if h.hub != nil && h.hub.OnChange != nil {
-		h.hub.OnChange(info)
-	}
-	h.mu.Lock()
-	own := h.hooks.Change
-	h.mu.Unlock()
-	if own != nil {
-		own(info)
+		h.hub.OnChange(h.Info())
 	}
 }
 
@@ -1847,13 +1838,9 @@ func (h *HostedSession) HostActivity(a proto.Activity, state string) {
 	if e.Type == session.ActivityFile && e.Op != "" && e.Path != "" {
 		h.touched.Note(HostAbs(h.info.Cwd, e.Path), e.Op, e.Tool, e.ByName, e.At)
 	}
-	own := h.hooks.Activity
 	h.mu.Unlock()
 	if h.hub != nil && h.hub.OnActivity != nil {
 		h.hub.OnActivity(id, e, recorded)
-	}
-	if own != nil {
-		own(e)
 	}
 }
 
@@ -1862,31 +1849,18 @@ func (h *HostedSession) HostActivity(a proto.Activity, state string) {
 // server does not know is dropped, the scope is this session's (a host has
 // no run), the ids are bounded, the names cleaned, the text cleaned and cut
 // to proto.MaxChatText, a missing or unreadable time becomes the time of
-// receipt, and `to` is the agent or nothing. The agent's question
-// (proto.ChatKindQuestion) is taken from the agent's role alone
-// (session.RoleAgent), which no other kind may carry, its choices cleaned
-// and bounded as a server session's (session.CleanOptions); a system line
-// keeps its event when it is join, leave, answered or withdrawn, the last
-// two with the question they name (ref), and a withdrawn line's text only
-// when it is one of the chat's own reasons (session.ChatLeftTerminal,
-// session.ChatLeftAgent). The message is attributed to this session
-// whatever session the host named. Nothing goes back to the host.
+// receipt, and `to` is the agent or nothing. The message is attributed to
+// this session whatever session the host named. Nothing goes back to the
+// host.
 func (h *HostedSession) HostChat(m proto.ChatMessage) {
 	switch m.Kind {
-	case proto.ChatKindMessage, proto.ChatKindSystem, proto.ChatKindSentToAgent, proto.ChatKindQuestion:
+	case proto.ChatKindMessage, proto.ChatKindSystem, proto.ChatKindSentToAgent:
 	default:
 		return
 	}
 	id := session.CleanID(m.ID, maxEntryBy)
 	role := session.Role(m.By.Role)
-	if m.Kind == proto.ChatKindQuestion {
-		if role != session.RoleAgent {
-			return
-		}
-	} else if !role.Valid() {
-		return
-	}
-	if id == "" {
+	if id == "" || !role.Valid() {
 		return
 	}
 	at, err := time.Parse(time.RFC3339Nano, m.At)
@@ -1910,31 +1884,14 @@ func (h *HostedSession) HostChat(m proto.ChatMessage) {
 	if m.To == proto.ChatToAgent {
 		out.To = m.To
 	}
-	switch m.Event {
-	case "join", "leave", "answered":
+	if m.Event == "join" || m.Event == "leave" {
 		out.Event = m.Event
-	case "withdrawn":
-		out.Event = m.Event
-		if out.Text != session.ChatLeftTerminal && out.Text != session.ChatLeftAgent {
-			out.Text = ""
-		}
-	}
-	if m.Kind == proto.ChatKindQuestion {
-		opts := make([]session.Option, 0, len(m.Options))
-		for _, o := range m.Options {
-			opts = append(opts, session.Option{Label: o.Label, Input: o.Input, Mode: o.Mode})
-		}
-		out.Options = session.CleanOptions(opts)
 	}
 	h.mu.Lock()
 	sid := h.info.ID
-	own := h.hooks.Chat
 	h.mu.Unlock()
 	if h.hub != nil && h.hub.OnChat != nil {
 		h.hub.OnChat(sid, out)
-	}
-	if own != nil {
-		own(out)
 	}
 }
 

@@ -47,12 +47,26 @@ test("the builder's message reaches the writer once it has its task, and its che
       return last.outcome ?? ''
     }, { timeout: 120_000, intervals: [500] })
     .toBe('succeeded')
-  // The message: kept, delivered to the writer after its task line, in its inbox.
-  const { messages } = await api.ok<{ messages: Array<{ seq: number; from: string; to: string; text: string; deliveredAt?: string }> }>('GET', `/api/runs/${encodeURIComponent(run.id)}/messages`)
+  // The message: kept, delivered to the writer after its task line, in its inbox. Its delivery is
+  // recorded once its line is entered, a submit pause after the writer's task line: a writer as quick
+  // as the stub has submitted, and the run has succeeded, before that (#281). So the spec waits for
+  // the delivery itself, and for the log line that says so, before it reads either.
+  type Message = { seq: number; from: string; to: string; text: string; deliveredAt?: string }
+  let messages: Message[] = []
+  await expect
+    .poll(async () => {
+      messages = (await api.ok<{ messages: Message[] }>('GET', `/api/runs/${encodeURIComponent(run.id)}/messages`)).messages
+      return messages.some((m) => m.seq === 1 && !!m.deliveredAt)
+    })
+    .toBe(true)
   expect(messages.map((m) => [m.seq, m.from, m.to, m.text])).toEqual([[1, 'builder', 'writer', 'stub builder says: build is submitted, attempt 1']])
-  expect(messages[0].deliveredAt).toBeTruthy()
+  await expect
+    .poll(async () => {
+      last = await api.run(run.id)
+      return logged(last, 'message 1 from builder delivered to writer')
+    })
+    .toBe(true)
   expect(logged(last, 'message 1 from builder to writer: stub builder says: build is submitted, attempt 1')).toBe(true)
-  expect(logged(last, 'message 1 from builder delivered to writer')).toBe(true)
   const writer = task(last, 'docs')
   const inbox = await api.ok<{ messages: Array<{ seq: number; text: string }> }>('GET', `/api/sessions/${writer.attempt?.sessionId}/inbox`)
   expect(inbox.messages.map((m) => m.seq)).toEqual([1])

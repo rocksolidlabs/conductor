@@ -939,3 +939,186 @@ func scanPlan(row interface{ Scan(...any) error }) (PlanSummary, error) {
 	p.CrewUpdatedAt, p.ApprovedAt, p.WithdrawnAt, p.CreatedAt = unstamp(crewUpdated), unstamp(approved), unstamp(withdrawn), unstamp(created)
 	return p, nil
 }
+
+// OpenPlan is a plan revision that needs the operator (OpenPlans): its
+// summary, with its number and its staleness, and its ticket's key, title
+// and revision as read with it.
+type OpenPlan struct {
+	PlanSummary
+	Key       string `json:"key"`
+	Title     string `json:"title"`
+	TicketRev int64  `json:"ticketRev"`
+}
+
+// PlanRef is the ref of the revision n of the ticket with the key,
+// plan:<KEY-n>/<n>: Brakeman's form of it, and the decision inbox's name.
+func PlanRef(key string, n int) string { return fmt.Sprintf("plan:%s/%d", key, n) }
+
+// Ref is the revision's ref (PlanRef).
+func (p OpenPlan) Ref() string { return PlanRef(p.Key, p.N) }
+
+// PlanCursor is where a page of OpenPlans begins: after the revision
+// proposed at Since whose ref is Ref, in the order (since, ref). The zero
+// cursor begins at the first.
+type PlanCursor struct {
+	Since time.Time
+	Ref   string
+}
+
+// planBefore orders open revisions by (since, ref): a revision's since is
+// the time it was proposed.
+func planBefore(since time.Time, ref string, c PlanCursor) int {
+	if n := since.Compare(c.Since); n != 0 {
+		return n
+	}
+	return strings.Compare(ref, c.Ref)
+}
+
+// How a receipt binds to a plan revision (PlanReceipt).
+const (
+	// BoundHere: the operation is an approval or a withdrawal of the
+	// revision.
+	BoundHere = "here"
+	// BoundElsewhere: it is another operation, or one of another
+	// revision.
+	BoundElsewhere = "elsewhere"
+	// BoundUnknown: the store keeps no subject of it (a refused
+	// approval: a refusal writes no change row, and an approval's
+	// fingerprint holds its note), so whose it is is not known; never
+	// read as this revision's or another's.
+	BoundUnknown = "unknown"
+)
+
+// PlanReceipt is the actor's operation with the id read as an approval or
+// a withdrawal of the plan revision planID: its receipt and how it binds
+// to that revision (Bound*), read in one transaction, so that no caller
+// reads a receipt without its binding. Its subject is what the store
+// keeps of it: a done operation's first change row (which every done
+// operation writes, naming the revision it set) or a withdrawal's
+// fingerprint (its revision's id alone); another intent is bound
+// elsewhere. found is false for an operation the store keeps no receipt
+// of (never given, or pruned).
+func (s *Store) PlanReceipt(ctx context.Context, actor, id, planID string) (rc Receipt, bound string, found bool, err error) {
+	err = s.read(ctx, func(q queryer) error {
+		var intent, fp, status, body string
+		switch err := q.QueryRowContext(ctx, "SELECT intent, fingerprint, status, receipt FROM ops WHERE actor = ? AND id = ?", actor, id).Scan(&intent, &fp, &status, &body); {
+		case isNoRows(err):
+			return nil
+		case err != nil:
+			return err
+		}
+		if err := json.Unmarshal([]byte(body), &rc); err != nil {
+			return fmt.Errorf("dispatch: the receipt of %s: %w", id, err)
+		}
+		found = true
+		bound = BoundUnknown
+		switch {
+		case intent != IntentPlanApprove && intent != IntentPlanWithdraw:
+			bound = BoundElsewhere
+		case status == StatusDone:
+			var entity, entityID string
+			switch err := q.QueryRowContext(ctx, "SELECT entity, entity_id FROM changes WHERE actor = ? AND op_id = ? AND n = 0", actor, id).Scan(&entity, &entityID); {
+			case isNoRows(err):
+			case err != nil:
+				return err
+			case entity == EntityPlan && entityID == planID:
+				bound = BoundHere
+			default:
+				bound = BoundElsewhere
+			}
+		case intent == IntentPlanWithdraw:
+			want, err := fingerprint(IntentPlanWithdraw, struct {
+				ID string `json:"id"`
+			}{planID})
+			if err != nil {
+				return err
+			}
+			bound = BoundElsewhere
+			if fp == want {
+				bound = BoundHere
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return Receipt{}, "", false, err
+	}
+	return rc, bound, found, nil
+}
+
+// OpenPlans reads the plan revisions that need the operator, of every
+// ticket not deleted: the proposed ones, and the approved ones of a ticket
+// not closed (neither done nor cancelled) whose approval no longer holds
+// (Stale set, judged as the ticket's read judges it), ordered by (since, ref), a revision's since the time it was
+// proposed and its ref PlanRef's. page is at most limit of them after
+// after; next says more follow it; total counts every open revision, not
+// the page's: nothing caps them in all (MaxPlans bounds a ticket's), so
+// none is left out of a page or of the count. A version 1 database has
+// none.
+func (s *Store) OpenPlans(ctx context.Context, after PlanCursor, limit int) (page []OpenPlan, next bool, total int, err error) {
+	var open []OpenPlan
+	err = s.read(ctx, func(q queryer) error {
+		if schemaOf(q) < 2 {
+			return nil
+		}
+		// The approved revisions of open tickets alone: an approval stays
+		// approved after its launch and its ticket's close, and judging
+		// every one ever made (its body read) would cost each read the
+		// whole history of approvals; on a closed ticket it needs nobody.
+		rows, err := q.QueryContext(ctx, "SELECT "+planColumns+" FROM plans WHERE (state = ? OR (state = ? AND ticket_id IN (SELECT id FROM tickets WHERE status NOT IN (?, ?)))) AND ticket_id IN (SELECT id FROM tickets WHERE deleted_at = '') ORDER BY created_at, id",
+			PlanProposed, PlanApproved, TicketDone, TicketCancelled)
+		if err != nil {
+			return err
+		}
+		var all []PlanSummary
+		for rows.Next() {
+			p, err := scanPlan(rows)
+			if err != nil {
+				rows.Close()
+				return err
+			}
+			all = append(all, p)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		tickets := map[string]Ticket{}
+		for _, p := range all {
+			tk, ok := tickets[p.TicketID]
+			if !ok {
+				if tk, err = readTicketByID(ctx, q, p.TicketID); err != nil {
+					return err
+				}
+				tickets[p.TicketID] = tk
+			}
+			// The number first: the staleness's words name it.
+			if p.N, err = planNumber(ctx, q, p); err != nil {
+				return err
+			}
+			if p.Stale, err = planStale(ctx, q, tk, p); err != nil {
+				return err
+			}
+			if p.State == PlanApproved && p.Stale == nil {
+				continue
+			}
+			open = append(open, OpenPlan{PlanSummary: p, Key: tk.Key, Title: tk.Title, TicketRev: tk.Rev})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, false, 0, err
+	}
+	slices.SortFunc(open, func(a, b OpenPlan) int { return planBefore(a.CreatedAt, a.Ref(), PlanCursor{b.CreatedAt, b.Ref()}) })
+	page = []OpenPlan{}
+	for _, p := range open {
+		if !after.Since.IsZero() && planBefore(p.CreatedAt, p.Ref(), after) <= 0 {
+			continue
+		}
+		if len(page) == limit {
+			return page, true, len(open), nil
+		}
+		page = append(page, p)
+	}
+	return page, false, len(open), nil
+}

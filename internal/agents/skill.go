@@ -38,8 +38,9 @@ With Conductor's MCP server registered (Claude Code and Codex get it at
 launch), the same reports and crew actions are tools: report, set_state,
 ask, form_crew, add_member, run_status, link, open_url, task_context, task_result,
 message_send, inbox_read, inbox_ack, task_blocked, task_checkpoint,
-ticket_read and ticket_comment. Call those when you have them; the
-commands below do the same.
+ticket_read, ticket_comment, and in a managed run decision_request,
+decision_list, decision_read and decision_withdraw. Call those when you
+have them; the commands below do the same.
 
 ## When to report
 
@@ -162,6 +163,108 @@ the end of your turn finishes nothing; only a submitted result does.
   a commit not from the inputs): fix it and submit again. The same commit
   submitted twice is taken once.
 
+## Decisions
+
+In a managed run, a question your work must wait for (a choice between
+designs, an approval before a step, something only a person can do) is a
+decision: ask it with decision_request or task decide, not with ask or task
+blocked, whose question lasts only as long as this session. Conductor keeps
+a decision through restarts, holds your task until the operator answers,
+and does not count an attempt that ends while it waits. What you do before
+you ask depends on your task's kind: a review is a task whose task.md says
+"Do not commit" under How to finish; any other is a work task.
+
+- A work task commits its work and saves a checkpoint first (task
+  checkpoint, below), so an attempt that ends while it waits loses
+  nothing, then asks:
+
+      "${CONDUCTOR_BIN:-conductor}" task decide --type approval --question "Drop the legacy table?" --option "Drop it: frees 2 GB" --option "Keep it" --recommend 0 --authorizes "running migration 42" --evidence "task:$CONDUCTOR_RUN/$CONDUCTOR_TASK"
+
+- A review commits nothing and saves no checkpoint (task checkpoint
+  refuses a review): it asks as it is, about the candidate it reviews,
+  which is its HEAD. No checkpoint is needed for a decision:
+
+      "${CONDUCTOR_BIN:-conductor}" task decide --type clarification --question "Must the v1 routes stay as they are?" --evidence "task:$CONDUCTOR_RUN/$CONDUCTOR_TASK"
+
+- --type is clarification (options optional, answered in words too),
+  approval (2 to 6 options and what a yes --authorizes) or assignment (no
+  options, answered Done or Not done, for work a person does). Options are
+  numbered from 0 in the order given; --recommend names one by its number.
+- It replies at once with the decision's id and its state: "dr-7 open.
+  Pending. ...". dr-7 is the decision's id, which task decision, task
+  withdraw and --supersedes take. Without an id, task decision lists your
+  task's decisions (id, type, state, rev, question, answer); rev counts the
+  decision's changes and is nothing you send. These commands take your
+  own task's decisions only: another task's id is answered exactly as an
+  id no decision has. Withdraw an open decision this attempt asked once you
+  no longer need it. A withdrawal refused not_held means your run was
+  continued: the decision stays open in the run that continues this one,
+  which waits on it. Stop there and end your turn, as this attempt's work
+  is over; submit nothing and ask nothing more.
+
+      "${CONDUCTOR_BIN:-conductor}" task decision dr-7
+      "${CONDUCTOR_BIN:-conductor}" task withdraw dr-7
+
+- Then end your turn, or go on with work that does not depend on it; never
+  submit your result until its answer is applied (a result is refused,
+  decision_open, while one waits). Go on only once a decision is applied:
+  open and answered (the response recorded, not yet applied: it may still
+  be superseded or cancelled instead) still wait; superseded, cancelled
+  and expired mean no answer will come. task decision says which of these
+  each is; its list shows an answer without the rationale it was given,
+  so read an applied decision whole (task decision dr-7) before you act
+  on it. A task decide that failed may still have opened its decision:
+  list them with task decision before you ask again, or you wait on two.
+  With --file, give a requestId of your own: the same request with it
+  again replies with the same decision, never a second.
+- --evidence cites a record by its ref, repeatable. Only refs to your own
+  work are taken: run:RUN, task:RUN/TASK, attempt:RUN/TASK/N and
+  check:RUN/TASK/N/CHECK/K (your task's), commit:RUN/SHA (the full id, git
+  rev-parse HEAD, of a commit in your run's repository), session:SESSION
+  and question:SESSION/ID (this session's), message:RUN/SEQ (a message to
+  you, #SEQ as task inbox numbers it), and, in a run launched from a
+  ticket, ticket:KEY-n, plan:KEY-n/REV (REV the number of the plan
+  revision that launched it, from the launch package, not an attempt's),
+  comment:KEY-n/ID and launch:ID (as the launch package in your task
+  folder names them). RUN, TASK and SESSION are CONDUCTOR_RUN,
+  CONDUCTOR_TASK and CONDUCTOR_SESSION_ID. N is the number of the attempt
+  the record belongs to: CONDUCTOR_ATTEMPT for your own, an earlier one's
+  as your task file names it; checks run after an attempt submits, so a
+  check's N is an earlier attempt's, CHECK the check's id and K which run
+  of it on that attempt, from 1. Any other ref (a file:, another task's
+  or run's) and one that names no record refuse the whole request as
+  "evidence[0]: REF resolves to nothing": drop it and ask again. --subject is what it is about: commit (your
+  HEAD, the default), artifact:PATH (a file committed in your worktree) or
+  candidate:RUN/TASK/N@COMMIT (a result attempt N submitted).
+
+What Conductor types into this session about a decision, and what you do:
+
+- "Decision dr-7 (approval) answered by NAME: ANSWER. Why: WHY. (receipt
+  dr-7/1)" (Why only when the operator gave one; dr-7/1 is the receipt of
+  the first response to dr-7, nothing you cite): the answer, applied. Do
+  what it says, even when it is not the option you recommended or adds
+  words of its own; it overrides your recommendation. Then go on and
+  submit.
+- "The operator asks about dr-7: TEXT": dr-7 is not answered. Ask again
+  with what was asked for in --context and --supersedes dr-7; dr-7 closes
+  and you wait for the new decision's answer.
+- "Decision dr-7 was cancelled by the operator, not approved: WHY": it is
+  never answered. Take it as a no: do not do what it asked about, finish
+  the rest and submit, naming what was not done with --issue.
+- "dr-7 was superseded: WHAT MOVED; ask again if you still need it", or
+  "Decision dr-7's answer was not applied: WHAT MOVED": what it was about
+  (your HEAD, the file, the candidate) changed since you asked. Never act
+  on its answer; ask again about what is there now if you still need it.
+- Nothing is typed for the operator's comment or a re-route: keep
+  waiting. A decision you superseded or withdrew is closed: nothing comes.
+- If the run stops or your session ends while you wait, the decision
+  waits with your task. Your task's next attempt starts once it is
+  applied or closed, in this run or the one that continues it (a work
+  task's at your checkpoint, a review's at its candidate), and its task
+  file's Decisions section says each decision's state: applied with the
+  answer (do it), superseded or cancelled with why (never act on an
+  answer it shows). A run that ends cancels the decisions it holds.
+
 ## Messages, blockers and checkpoints
 
 - What the next task needs to know beyond your result, send its member as
@@ -175,7 +278,7 @@ the end of your turn finishes nothing; only a submitted result does.
       "${CONDUCTOR_BIN:-conductor}" task ack 3
 
 - Something stops you that only a person can give (a credential, a
-  decision, a step by hand): say so. The task shows as blocked with the
+  step by hand) and that you wait for in this session: say so. The task shows as blocked with the
   reason, and your session asks the message as your question; report
   working, or submit, once you go on.
 

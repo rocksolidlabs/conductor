@@ -26,11 +26,17 @@ func TestARecordWhoseFirstWriteFailedFollowsItsSession(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(sessions, 0o700) })
 	id := e.createSession("cat")
+	// Judged while the folder still refuses the write: the writer's retry
+	// cannot have made the file yet.
+	if _, err := os.Stat(filepath.Join(sessions, id+".json")); !os.IsNotExist(err) {
+		t.Fatalf("the record's first write did not fail: %v", err)
+	}
 	if err := os.Chmod(sessions, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(sessions, id+".json")); !os.IsNotExist(err) {
-		t.Fatalf("the record's first write did not fail: %v", err)
+	e.srv.sessionRecords.Flush()
+	if _, err := os.Stat(filepath.Join(sessions, id+".json")); err != nil {
+		t.Fatalf("the record once the folder took writes again: %v", err)
 	}
 	e.stopAndWait(id)
 	if r := endedRecord(t, e, id); r.Ending == "" || !r.LostAt.IsZero() {

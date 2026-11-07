@@ -83,6 +83,13 @@ func actOp(request, opID string) string {
 	return deriveOp("act", request, opID)
 }
 
+// actReceiptRef is the ref a brief cites an act's receipt by: the
+// operation's receipt, kept by Dispatch under the actor brakeman and the
+// act's derived key op (brakeman.RefForms names the form).
+func actReceiptRef(op string) string {
+	return brakeman.Ref{Kind: brakeman.RefOp, Actor: brakemanActor, Op: op}.String()
+}
+
 // actSeam, when a test sets it, runs at each stage of an act ("waiting"
 // once its body is read, before it waits for the request's make mutex;
 // "pending" once it is written pending, or found committed, before its
@@ -278,7 +285,7 @@ func (s *Server) turnAct(w http.ResponseWriter, r *http.Request, tp *turnPrincip
 		return
 	}
 	s.copyActOutcome(d, req.ID, body.OpID, rec)
-	s.answerAct(ctx, w, tp, key, rec)
+	s.answerAct(ctx, w, tp, key, op, rec)
 }
 
 // answerAct answers the turn tp's act on the ticket key with what its
@@ -291,10 +298,14 @@ func (s *Server) turnAct(w http.ResponseWriter, r *http.Request, tp *turnPrincip
 // and rev and the answer counted as one read; never the run, which the
 // turn reads through its grant (GET /api/runs/{run}). dispatch is noted
 // as a class the turn's answers used (the receipt and the words are
-// Dispatch's) for its brief's footprint. All of it under the reads'
-// mutex, before the answer is written, so a brief kept after the answer
-// carries what it delivered.
-func (s *Server) answerAct(ctx context.Context, w http.ResponseWriter, tp *turnPrincipal, key string, rec *replyRecorder) {
+// Dispatch's) for its brief's footprint. Beside a receipt, receiptRef is
+// the ref a brief cites it by (op:brakeman/<op>, op the act's derived
+// key, under which Dispatch keeps the receipt): the receipt's own id is
+// what the operation made (a launch's, a revision's), which no ref of an
+// act's receipt names. All of it under the reads' mutex, before the
+// answer is written, so a brief kept after the answer carries what it
+// delivered.
+func (s *Server) answerAct(ctx context.Context, w http.ResponseWriter, tp *turnPrincipal, key, op string, rec *replyRecorder) {
 	d := s.brakeman
 	d.readMu.Lock()
 	defer d.readMu.Unlock()
@@ -310,6 +321,10 @@ func (s *Server) answerAct(ctx context.Context, w http.ResponseWriter, tp *turnP
 		if v, ok := m[k]; ok {
 			out[k] = v
 		}
+	}
+	if v, ok := out["receipt"]; ok && !isJSONNull(v) {
+		ref, _ := json.Marshal(actReceiptRef(op))
+		out["receiptRef"] = ref
 	}
 	if o := s.actReader(ctx, tp, key); o != nil {
 		given := map[string]json.RawMessage{}
@@ -505,7 +520,7 @@ func (s *Server) admitAct(ctx context.Context, ds *dispatch.Store, tp *turnPrinc
 	// What the turn may see, checked apart from the grant: a grant gives
 	// no read.
 	o := s.newObserver(tp)
-	if !o.grant.sees(brakeman.ClassDispatch) {
+	if !seesAny(actClasses, o.grant.sees) {
 		return newAPIError(http.StatusForbidden, "not_visible", "Brakeman may not see "+brakeman.ClassDispatch)
 	}
 	aerr := s.admitVisibleAct(ctx, ds, o, ar, key, body)

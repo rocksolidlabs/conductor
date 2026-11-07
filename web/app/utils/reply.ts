@@ -1,5 +1,6 @@
 import type { SessionInfo } from '~/composables/useSessions'
-import { MAX_ANSWER_REQ_ID, MAX_QUESTION_ID, QUESTION_ANSWERED, type AnswerMsg, type Attention } from './protocol'
+import { ANSWER_DECISION, MAX_ANSWER_REQ_ID, MAX_QUESTION_ID, QUESTION_ANSWERED, type AnswerMsg, type Attention } from './protocol'
+import { decisionAnsweredBy } from './attention'
 
 /**
  * A reply to an agent's question: a choice's keys (`input`), or a line (`text`). `question` is the id of the question the person was
@@ -144,6 +145,16 @@ export function replyFailure(e: unknown, name?: string): { title: string; descri
     return {
       title: 'Already answered',
       description: `${name ? `${name}'s` : 'This'} question ${what}. Nothing was sent. If the agent still asks, answer it in its terminal.`,
+      color: 'warning',
+    }
+  }
+  if (code === ANSWER_DECISION) {
+    // The question mirrors a durable decision: it is answered as that decision, by the operator, and the owner's words name it.
+    const words = (e as { message?: unknown } | null)?.message
+    const id = typeof words === 'string' ? /\b(dr-[1-9][0-9]*)\b/.exec(words)?.[1] : undefined
+    return {
+      title: 'Answered as a decision',
+      description: `${id ? decisionAnsweredBy(id) : 'The operator answers it in Conductor'}: ${name ? `${name}'s` : 'this'} question takes no reply. Nothing was sent.`,
       color: 'warning',
     }
   }
