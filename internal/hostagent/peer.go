@@ -84,6 +84,14 @@ type peer struct {
 	// nil before and for any other end: the credential check of each of
 	// the viewer's subscriptions (authorize) says so from then on.
 	letGo atomic.Pointer[error]
+
+	// lane is the viewer's decision link's lane (lane.go), nil for a
+	// viewer of no decision link; deskSink is a desk's viewer's transport
+	// as its last hello came over it (a desk holds no subscription), and
+	// deskMu orders what is written to it. Guarded by mu but deskMu.
+	lane     *laneConn
+	deskSink session.Sink
+	deskMu   sync.Mutex
 }
 
 var (
@@ -270,6 +278,8 @@ func (p *peer) startRelay() {
 		p.sub = nil
 	}
 	old := p.relay
+	// A desk's viewer's next hello comes over the relay.
+	p.deskSink = nil
 	p.relay = newRelaySink(p.a, p.id)
 	p.relay.room = &p.room
 	p.mu.Unlock()
@@ -306,6 +316,10 @@ func (p *peer) handle(f proto.Frame, via *dcSink) {
 	// A viewer being let go for a protocol error (refuse) is acted on no
 	// more while the close reaches it.
 	if closed || p.erred.Load() {
+		return
+	}
+	if p.a.desk != nil {
+		p.handleDesk(f, via)
 		return
 	}
 	if sub != nil {
@@ -467,7 +481,16 @@ func (p *peer) handle(f proto.Frame, via *dcSink) {
 				return
 			}
 			p.fileGetIn(sub, m)
+		default:
+			// A decision link's lane (lane.go): refused on a viewer of no
+			// decision link, and by a host that serves no decisions.
+			laneControl(p.laneOf(), p.a.opts.Decisions != nil, f.Payload, p.laneSend)
 		}
+	case proto.TypeDecide:
+		if sub == nil {
+			return
+		}
+		laneDecide(p.laneOf(), p.a.opts.Decisions != nil, f.Payload, p.laneSend)
 	case proto.TypeFileWrite:
 		// A save from the editor (design round 12, F6), written on this machine.
 		if sub == nil {
@@ -846,9 +869,10 @@ func (p *peer) attach(hello proto.Hello, via *dcSink) {
 	}
 	replaces := p.replaces
 	p.mu.Unlock()
+	decides := p.decides("")
 	sub, err := p.a.local.AttachWith(session.AttachOptions{
 		ID: p.id, Role: p.role, LinkID: p.linkID, LinkLabel: p.linkLabel, Name: hello.Name, Cols: hello.Cols, Rows: hello.Rows,
-		Owner: p.owner, Replaces: replaces, Authorize: p.authorize, Fresh: p.fresh,
+		Owner: p.owner, Replaces: replaces, Authorize: p.authorize, Fresh: p.fresh, Decisions: decides,
 	}, sink)
 	if err != nil {
 		p.a.sendViewerError(p.id, "attach_failed", err.Error())
@@ -868,6 +892,9 @@ func (p *peer) attach(hello proto.Hello, via *dcSink) {
 	p.sub = sub
 	// Handed over: a later attach of this viewer replaces this one.
 	p.replaces = nil
+	if decides && p.lane == nil {
+		p.lane = openLane(p.a.opts.Decisions, p.linkID, p.a.local.Info().ID, p.laneSend)
+	}
 	p.mu.Unlock()
 }
 
@@ -1008,9 +1035,15 @@ func (p *peer) closeFor(why error) {
 		return
 	}
 	p.closed = true
-	pc, sub, relay := p.pc, p.sub, p.relay
-	p.pc, p.sub = nil, nil
+	pc, sub, relay, lane := p.pc, p.sub, p.relay, p.lane
+	p.pc, p.sub, p.lane, p.deskSink = nil, nil, nil, nil
 	p.mu.Unlock()
+	if lane != nil {
+		// Nothing of the lane not begun is begun from now on; what is
+		// under way ends as its operation does, waited for off this path.
+		lane.cancel()
+		go lane.end()
+	}
 	close(p.left)
 	p.typing.close()
 	p.keys.close()

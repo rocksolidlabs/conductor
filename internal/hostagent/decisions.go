@@ -37,4 +37,13 @@ type Decisions interface {
 	// changed (its scope's items, their actions' revisions, the steps of
 	// what it acted on), until stop is called.
 	Watch(linkID, sessionID string, changed func()) (stop func())
+	// DecisionLink says whether linkID is a decision link the publisher
+	// minted at its switchyard that opens a lane here, as it stands: a
+	// published session's (sessionID, the server's own id of it: a link of
+	// that session, or of the run it is a member of), or a run desk's
+	// (sessionID "", runID the desk's run: a link of that run). The
+	// publisher's peers and desks ask it of every viewer they carry
+	// (PR-6), so a viewer of any other link, or a link of the server's
+	// own, has no lane through the switchyard.
+	DecisionLink(linkID, sessionID, runID string) bool
 }

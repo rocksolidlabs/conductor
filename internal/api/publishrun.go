@@ -72,6 +72,11 @@ func (s *Server) runGroup(run crew.Run) (proto.RunGroup, PublishedSession) {
 	if len(g.Members) > proto.MaxRunLinkMembers {
 		g.Members = g.Members[:proto.MaxRunLinkMembers]
 	}
+	// Its desk, while it has one, is named with its members: a sync that
+	// left it out would take it from the run's links there.
+	if d := s.liveDesk(run.ID); d != nil {
+		g.Desk = d.CurrentID()
+	}
 	return g, carrier
 }
 
@@ -114,8 +119,8 @@ func (s *Server) awaitRunPublished(ctx context.Context, runID string) (Published
 }
 
 // recordRemoteRunLink keeps a link minted at the rendezvous for a run.
-func (s *Server) recordRemoteRunLink(runID string, res proto.LinkCreated) {
-	rl := remoteLink{ID: res.LinkID, Role: session.Role(res.Role), Label: res.Label, CreatedAt: time.Now()}
+func (s *Server) recordRemoteRunLink(runID string, res proto.LinkCreated, decide bool) {
+	rl := remoteLink{ID: res.LinkID, Role: session.Role(res.Role), Label: res.Label, CreatedAt: time.Now(), Decide: decide}
 	if t, err := time.Parse(time.RFC3339, res.ExpiresAt); err == nil && res.ExpiresAt != "" {
 		rl.ExpiresAt = &t
 	}
@@ -205,7 +210,7 @@ func (s *Server) liveCarriers(run crew.Run) []PublishedSession {
 // while sessions were published) holds none of its links; a link every
 // carrier answers so is gone. A link no carrier revoked otherwise is logged
 // and left to its expiry there or to the switchyard's sweep.
-func (s *Server) revokeRemoteRunLinks(runID string, carriers []PublishedSession, links []remoteLink) {
+func (s *Server) revokeRemoteRunLinks(runID string, carriers []runCarrier, links []remoteLink) {
 	for _, rl := range links {
 		var last error
 		for _, carrier := range carriers {
@@ -333,7 +338,14 @@ func (s *Server) syncRunLinks(runID string) {
 	if !ok {
 		return
 	}
-	g, carrier := s.runGroup(run)
+	g, member := s.runGroup(run)
+	// A member's publication carries it, else the run's desk.
+	var carrier runCarrier = member
+	if carrier == nil {
+		if d := s.liveDesk(runID); d != nil {
+			carrier = d
+		}
+	}
 	if carrier == nil {
 		return
 	}

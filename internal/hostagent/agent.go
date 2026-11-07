@@ -150,6 +150,18 @@ type Options struct {
 	// managed run and a hosted session is a person's.
 	Runtime ext.Runtime
 
+	// Decisions serves the lane of each viewer that joined through a
+	// decision link the publisher minted at the switchyard (lane.go):
+	// the server's API, which the Uplink hands every publication and desk.
+	// nil, as `conductor host` leaves it, refuses every lane message
+	// unsupported and sends no TypeDecision frame.
+	Decisions Decisions
+	// LinkGone, when set, is told each link the server says no longer
+	// opens what it was minted for (link_gone), after its viewers' acts
+	// are withdrawn: the Uplink's, so the publisher's record of a decision
+	// link there ends with it.
+	LinkGone func(linkID string)
+
 	// transport, when set (tests), is the control connection's transport in
 	// place of the standard one: a test's names dialed to its own servers.
 	transport *http.Transport
@@ -460,6 +472,14 @@ type agent struct {
 	// beforeConnLost, when set (tests), runs as a control connection's
 	// end begins letting its writer and viewers go (connLost).
 	beforeConnLost atomic.Pointer[func()]
+	// desk is the run a desk carries (desk.go), nil for a session's
+	// agent: it registers with register_desk and serves a decision link's
+	// lane alone, with no session behind it.
+	desk *proto.DeskRun
+	// decisions is what the server's last registered said of decision
+	// links (proto.Registered.Decisions).
+	decisions atomic.Bool
+
 	// ticks counts keepHearing's ticks done, each counted after its ping
 	// is reserved, or not: two more ticks after a link went means one
 	// began after it went and reserved none (tests wait on that before
@@ -603,7 +623,7 @@ func (a *agent) controlLoop(ctx context.Context, first *websocket.Conn) {
 			return
 		}
 		select {
-		case <-a.local.Ended():
+		case <-a.sessionEnded():
 			return
 		default:
 		}
@@ -663,23 +683,31 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 		info := a.local.Info()
 		cols, rows = info.Cols, info.Rows
 	}
-	reg := a.registration(cols, rows)
+	var resume *proto.HostResume
 	if a.sessID != "" {
-		reg.Resume = &proto.HostResume{SessionID: a.sessID, Secret: a.secret}
+		resume = &proto.HostResume{SessionID: a.sessID, Secret: a.secret}
+	}
+	var hello any
+	if a.desk != nil {
+		hello = a.deskRegistration(resume)
+	} else {
+		reg := a.registration(cols, rows)
+		reg.Resume = resume
+		hello = reg
 	}
 	a.mu.Unlock()
 	fail := func(err error) (*websocket.Conn, proto.Registered, error) {
 		c.CloseNow()
 		return nil, proto.Registered{}, err
 	}
-	if err := writeJSON(ctx, c, reg); err != nil {
+	if err := writeJSON(ctx, c, hello); err != nil {
 		return fail(err)
 	}
 	rctx, rcancel := context.WithTimeout(ctx, 10*time.Second)
 	typ, data, err := c.Read(rctx)
 	rcancel()
 	if err != nil {
-		if reg.Resume != nil && websocket.CloseStatus(err) == websocket.StatusCode(proto.CloseNotFound) {
+		if resume != nil && websocket.CloseStatus(err) == websocket.StatusCode(proto.CloseNotFound) {
 			// The server no longer knows the session (it restarted and keeps
 			// hosted sessions in memory): resuming would fail forever, so the
 			// next attempt registers afresh, under the same instance and local
@@ -702,6 +730,7 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	a.sessID = registered.SessionID
 	a.secret = registered.Secret
 	a.ice = registered.ICEServers
+	a.decisions.Store(registered.Decisions)
 	if registered.Links != nil {
 		a.held, a.heldKnown = map[string]bool{}, true
 		for _, id := range registered.Links {
@@ -1197,12 +1226,13 @@ func (a *agent) serveConn(ctx context.Context, c *websocket.Conn) error {
 		a.connLost(c)
 		answersDone()
 	}()
-	// The server is told the session's attention as the connection starts,
-	// the empty state included (retellAttention).
-	a.retellAttention()
-
-	// Report the current status in case the process ended while disconnected.
-	go a.watchStatus(ctx, w)
+	if a.desk == nil {
+		// The server is told the session's attention as the connection
+		// starts, the empty state included (retellAttention).
+		a.retellAttention()
+		// Report the current status in case the process ended while disconnected.
+		go a.watchStatus(ctx, w)
+	}
 	// Ping the server while a link's viewer may need it.
 	go a.keepHearing(ctx, c, w.live, w.done)
 
@@ -1340,6 +1370,9 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 			return errors.New("invalid link_gone")
 		}
 		a.creds.gone(m.LinkID)
+		if a.opts.LinkGone != nil {
+			a.opts.LinkGone(m.LinkID)
+		}
 	case proto.HostOffer:
 		var m proto.ViewerSDP
 		if err := json.Unmarshal(data, &m); err != nil {

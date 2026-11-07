@@ -38,6 +38,14 @@ type Uplink struct {
 	ICE          ICE
 	ReconnectMax time.Duration
 	Log          *slog.Logger
+	// Decisions serves the lanes of the decision links minted at the
+	// switchyard (docs/plans/decision-inbox.md, PR-6): handed to each
+	// publication's viewers and to each run's desk (OpenDesk). The server
+	// sets its API's (internal/cli, serve.go); nil serves none.
+	Decisions Decisions
+	// LinkGone, when set, is told each link the switchyard says no longer
+	// opens what it was minted for (Options.LinkGone).
+	LinkGone func(linkID string)
 
 	// instance is this server's secret with the rendezvous: with each
 	// session's own id it gives a published session the same id after the
@@ -78,6 +86,28 @@ func (u *Uplink) noteStopped(id string) {
 		u.stopped = map[string]int{}
 	}
 	u.stopped[id]++
+}
+
+// options are the Options of a publication of the session info, or of a
+// desk (info.Name the run's): to the switchyard, with the uplink's
+// Decisions and LinkGone.
+func (u *Uplink) options(info session.Info) Options {
+	log := u.Log
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	opts := Options{
+		ServerURL: u.ServerURL, Token: u.Token, Name: info.Name, HostName: u.HostName, AgentID: info.AgentID,
+		Argv: info.Command, Dir: info.Cwd, RelayOnly: u.RelayOnly, Insecure: u.Insecure, ICEServers: u.ICEServers, ICE: u.ICE, ReconnectMax: u.ReconnectMax, Log: log,
+		Switchyard: true, Decisions: u.Decisions, LinkGone: u.LinkGone,
+	}
+	if opts.HostName == "" {
+		opts.HostName, _ = os.Hostname()
+	}
+	if opts.ReconnectMax <= 0 {
+		opts.ReconnectMax = 30 * time.Second
+	}
+	return opts
 }
 
 // Published is a session published to the rendezvous.
@@ -158,17 +188,7 @@ func (u *Uplink) Publish(ctx context.Context, local *session.Local) (*Published,
 		log = slog.New(slog.DiscardHandler)
 	}
 	info := local.Info()
-	opts := Options{
-		ServerURL: u.ServerURL, Token: u.Token, Name: info.Name, HostName: u.HostName, AgentID: info.AgentID,
-		Argv: info.Command, Dir: info.Cwd, RelayOnly: u.RelayOnly, Insecure: u.Insecure, ICEServers: u.ICEServers, ICE: u.ICE, ReconnectMax: u.ReconnectMax, Log: log,
-		Switchyard: true,
-	}
-	if opts.HostName == "" {
-		opts.HostName, _ = os.Hostname()
-	}
-	if opts.ReconnectMax <= 0 {
-		opts.ReconnectMax = 30 * time.Second
-	}
+	opts := u.options(info)
 	wsURL, err := controlURL(u.ServerURL)
 	if err != nil {
 		return nil, err
@@ -241,6 +261,11 @@ func (p *Published) OnChat(id string, m session.ChatMessage) { p.a.onLocalChat(i
 func (p *Published) OnActivity(id string, e session.ActivityEntry, state session.AttentionState) {
 	p.a.onLocalActivity(id, e, state)
 }
+
+// Decisions says the rendezvous's last registered said it carries
+// decisions (proto.Registered.Decisions): only then is a decision link of
+// the session minted there.
+func (p *Published) Decisions() bool { return p.a.decisions.Load() }
 
 // ID is the rendezvous's id for the session; Base the base its links take.
 func (p *Published) ID() string   { return p.SessionID }

@@ -244,6 +244,11 @@ type Server struct {
 	// runSyncing the runs whose members are about to be sent, runSent what was
 	// last sent of each (publishrun.go). Guarded by pubMu.
 	remoteRunLinks map[string]map[string]remoteLink
+	// desks are the runs' desks open at the rendezvous (desk_publish.go),
+	// by run; deskLingerSeam, in tests, is handed each desk's linger as it
+	// is armed. Guarded by pubMu.
+	desks          map[string]*runDesk
+	deskLingerSeam func(runID string, fire func())
 	runSyncing     map[string]bool
 	runSent        map[string]string
 	pubPending     map[string]chan struct{}
@@ -480,13 +485,27 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// the switchyard lets them expire or sweeps them with the host's others.
 	s.runs.OnForget = func(run crew.Run) {
 		remote := s.remoteRunLinksOf(run.ID)
-		carriers := s.liveCarriers(run)
+		var carriers []runCarrier
+		for _, pub := range s.liveCarriers(run) {
+			carriers = append(carriers, pub)
+		}
+		// The run's desk carries its links' revokes too, and ends after
+		// them: no decision of a forgotten run is answered.
+		desk := s.liveDesk(run.ID)
+		if desk != nil {
+			carriers = append(carriers, desk)
+		}
 		s.forgetRemoteRunLinks(run.ID, "")
 		if live := s.links.DeleteRun(run.ID); len(live) > 0 {
 			s.track(func() { s.disconnectLinks(live) })
 		}
-		if len(carriers) > 0 && len(remote) > 0 {
-			s.track(func() { s.revokeRemoteRunLinks(run.ID, carriers, remote) })
+		if (len(carriers) > 0 && len(remote) > 0) || desk != nil {
+			s.track(func() {
+				if len(remote) > 0 {
+					s.revokeRemoteRunLinks(run.ID, carriers, remote)
+				}
+				s.endRunDesk(run.ID)
+			})
 		}
 		s.events.run(run.ID, true)
 	}
@@ -494,6 +513,11 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// a run event, which they read the run again for.
 	s.runs.OnRunChange = func(runID string) {
 		s.events.run(runID, false)
+		// Its desk at the switchyard lives while the engine takes its
+		// commands (desk_publish.go), judged off the engine's call.
+		if s.liveDesk(runID) != nil {
+			s.track(func() { s.deskCheck(runID) })
+		}
 		// Its links at the switchyard follow its members (nothing for a run without any).
 		s.scheduleRunSync(runID)
 		// Its record follows it from its launch on (the journal).
@@ -649,12 +673,19 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	}
 	s.links.OnRevoke = func(sessionID, linkID string) {
 		s.dropLinkFile(linkID)
+		if l, ok := s.links.Get(linkID); ok && l.Remote {
+			s.remoteRevoked(l)
+		}
 		if d, ok := s.registry.Get(sessionID); ok {
 			d.DisconnectLink(linkID)
 		}
 	}
 	s.links.OnRevokeRun = func(runID, linkID string) {
 		s.dropLinkFile(linkID)
+		if l, ok := s.links.Get(linkID); ok && l.Remote {
+			s.remoteRevoked(l)
+			return
+		}
 		// A switchyard's group link holds viewers on its group's sessions
 		// alone (a session that leaves the group takes them along,
 		// hostRunLinkUpdate): those are asked, not every session, whoever
@@ -693,6 +724,9 @@ func (s *Server) closeLinkViewers(l *share.Link) {
 			if d, ok := s.registry.Get(m.SessionID); ok {
 				d.DisconnectLink(l.ID)
 			}
+		}
+		if l.Group.Desk != "" {
+			s.disconnectHosted(l.Group.Desk, l.ID)
 		}
 	default:
 		s.disconnectLinks([]string{l.ID})
@@ -1200,6 +1234,7 @@ func (s *Server) Shutdown(ctx context.Context) {
 	}
 	s.runs.Draining(ctx)
 	s.shutDesks()
+	s.stopRunDesks()
 	s.webhooks.close(ctx)
 	// The providers' queues end as the webhooks' do: what waits in them is
 	// not delivered, and their goroutines are waited for with the others.

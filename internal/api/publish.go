@@ -66,11 +66,14 @@ type remoteLink struct {
 	CreatedAt time.Time
 	ExpiresAt *time.Time
 	hostedID  string
+	// Decide says it is a decision link (desk_publish.go): this server
+	// holds it as a remote link for its lane.
+	Decide bool
 }
 
 // recordRemoteLink keeps a link minted at the rendezvous for session id.
-func (s *Server) recordRemoteLink(id string, res proto.LinkCreated, hostedID string) {
-	rl := remoteLink{ID: res.LinkID, Role: session.Role(res.Role), Label: res.Label, CreatedAt: time.Now(), hostedID: hostedID}
+func (s *Server) recordRemoteLink(id string, res proto.LinkCreated, hostedID string, decide bool) {
+	rl := remoteLink{ID: res.LinkID, Role: session.Role(res.Role), Label: res.Label, CreatedAt: time.Now(), hostedID: hostedID, Decide: decide}
 	if t, err := time.Parse(time.RFC3339, res.ExpiresAt); err == nil && res.ExpiresAt != "" {
 		rl.ExpiresAt = &t
 	}
