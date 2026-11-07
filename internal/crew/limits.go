@@ -9,6 +9,10 @@ type Bounds struct {
 	TaskIDPattern string
 	// Members and Tasks a crew; ChecksPerTask a task.
 	Members, Tasks, ChecksPerTask int
+	// MemberName is a member's name, in characters, and
+	// MemberNamePattern the whole of what it may be (memberNamePattern).
+	MemberName        int
+	MemberNamePattern string
 	// CheckTimeoutMin and CheckTimeoutMax bound a check's timeoutSeconds,
 	// whose 0 is CheckTimeoutDefault.
 	CheckTimeoutMin, CheckTimeoutMax, CheckTimeoutDefault int
@@ -27,6 +31,8 @@ func TheBounds() Bounds {
 		Members:             maxMembers,
 		Tasks:               maxTasks,
 		ChecksPerTask:       maxChecks,
+		MemberName:          maxMemberName,
+		MemberNamePattern:   memberNamePattern.String(),
 		CheckTimeoutMin:     1,
 		CheckTimeoutMax:     maxCheckTimeout,
 		CheckTimeoutDefault: defaultCheckTimeout,

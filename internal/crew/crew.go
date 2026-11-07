@@ -242,10 +242,14 @@ const MaxEncoded = 1 << 20
 // which lower it to reach it.
 var maxEncoded = MaxEncoded
 
-// memberNamePattern keeps member names short, lower case and free of path
-// separators: they become branch names and worktree paths. gitRefuses adds
-// what git refuses in a branch name that the pattern lets through.
-var memberNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,39}$`)
+// maxMemberName bounds a member's name, in characters.
+const maxMemberName = 40
+
+// memberNamePattern keeps member names short (maxMemberName), lower case
+// and free of path separators: they become branch names and worktree
+// paths. gitRefuses adds what git refuses in a branch name that the
+// pattern lets through.
+var memberNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,` + strconv.Itoa(maxMemberName-1) + `}$`)
 
 // gitRefuses reports whether git check-ref-format refuses a name that matches
 // memberNamePattern as a branch name.
