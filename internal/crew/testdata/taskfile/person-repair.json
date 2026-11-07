@@ -1,0 +1,130 @@
+{
+  "run": "r-0123456789ab",
+  "crew": "c-build",
+  "crewName": "Build crew",
+  "goal": "Ship the parser, tested.",
+  "task": "build",
+  "attempt": 3,
+  "maxAttempts": 3,
+  "member": "lead",
+  "role": "You lead the build.",
+  "kind": "work",
+  "instructions": "Write the parser in parse.go & test it: <input> yields a tree.",
+  "worktree": "/repo/.conductor/worktrees/r-0123456789ab/build.3",
+  "branch": "crew/r-0123456789ab/build.3",
+  "start": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "startFrom": "the commit Nate asked changes of, in review 4f1c2d3e5a6b7c8d",
+  "previous": {
+    "attempt": 2,
+    "state": "failed",
+    "stage": "check test",
+    "error": "test exited 1",
+    "check": {
+      "receipt": "r-0123456789ab/build/2/check/test/1",
+      "run": "r-0123456789ab",
+      "task": "build",
+      "attempt": 2,
+      "phase": "check",
+      "id": "test",
+      "k": 1,
+      "argv": [
+        "go",
+        "test",
+        "./..."
+      ],
+      "subject": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "exit": 1,
+      "timedOut": false,
+      "stable": true,
+      "tail": "--- FAIL: TestEmpty\n",
+      "logSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "logBytes": 120,
+      "log": ".conductor/previous/check-test.log"
+    }
+  },
+  "repair": {
+    "review": "4f1c2d3e5a6b7c8d",
+    "attempt": 2,
+    "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "summary": "Two gaps in the parser, and a failing test.",
+    "request": {
+      "review": "4f1c2d3e5a6b7c8d",
+      "by": "Nate",
+      "via": "web",
+      "base": "9999999999999999999999999999999999999999",
+      "changes": [
+        {
+          "id": "a1b2c3d4e5f60718",
+          "kind": "line",
+          "intent": "change",
+          "severity": "major",
+          "path": "parse.go",
+          "side": "candidate",
+          "from": 14,
+          "to": 16,
+          "lines": [
+            "func Parse(s string) *Tree {",
+            "\treturn parse(s, 0)",
+            "}"
+          ],
+          "message": "An empty input panics here.",
+          "resolution": "Return an error for an empty input."
+        },
+        {
+          "id": "b2c3d4e5f6071829",
+          "kind": "line",
+          "intent": "change",
+          "severity": "nit",
+          "path": "parse.go",
+          "side": "base",
+          "from": 3,
+          "to": 3,
+          "lines": [
+            "// Parse parses `s`."
+          ],
+          "message": "Keep this comment."
+        },
+        {
+          "id": "c3d4e5f60718293a",
+          "kind": "check",
+          "intent": "change",
+          "severity": "blocker",
+          "message": "The test fails on an empty input.",
+          "check": {
+            "receipt": "r-0123456789ab/build/2/check/test/1",
+            "run": "r-0123456789ab",
+            "task": "build",
+            "attempt": 2,
+            "phase": "check",
+            "id": "test",
+            "k": 1,
+            "subject": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "exit": 1,
+            "stable": true,
+            "logSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "logBytes": 120,
+            "tail": "--- FAIL: TestEmpty\npanic: index out of range\n",
+            "class": "code",
+            "chosen": "code",
+            "quote": "panic: index out of range"
+          }
+        },
+        {
+          "id": "d4e5f60718293a4b",
+          "kind": "file",
+          "intent": "question",
+          "path": "grammar.md",
+          "side": "candidate",
+          "message": "Is the grammar final?"
+        },
+        {
+          "id": "e5f60718293a4b5c",
+          "kind": "general",
+          "intent": "note",
+          "message": "The lexer lands next week."
+        }
+      ]
+    }
+  },
+  "writtenAt": "2026-10-31T12:00:00Z"
+}

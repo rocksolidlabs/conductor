@@ -359,6 +359,10 @@ type Result struct {
 	Issues   []string  `json:"issues,omitempty"`
 	Verdict  string    `json:"verdict,omitempty"` // a review's: approved | needs_changes
 	Findings []Finding `json:"findings,omitempty"`
+	// Addressed is what a repair attempt says it did of a person's
+	// requested changes (repair.go), each by its id: a claim, never the
+	// change's resolution.
+	Addressed []Addressed `json:"addressed,omitempty"`
 }
 
 // Finding is one thing a review found.
@@ -390,6 +394,9 @@ func (r Result) validate(kind string) error {
 	}
 	if r.Commit != "" && !fullCommit(r.Commit) {
 		return fmt.Errorf("%w: the commit is not a full commit id", ErrBadResult)
+	}
+	if err := validAddressed(kind, r.Addressed); err != nil {
+		return err
 	}
 	switch kind {
 	case TaskWork:
@@ -554,13 +561,33 @@ type refusal struct {
 	start, stage, err, result, branch string
 }
 
-// repair is what a review asks of the task it reviewed.
+// repair is what a review asks of the task it reviewed, or a person
+// (request, repair.go).
 type repair struct {
 	review   string
-	attempt  int // the review's attempt
+	attempt  int // the review's attempt; a person's: the candidate's
 	commit   string
 	summary  string
 	findings []Finding
+	// start is where the repair attempt starts when the candidate cannot
+	// be built on (refused before its checks): its attempt's start.
+	start string
+	// request is a person's change request, its summary in summary; nil
+	// for a review task's repair.
+	request *ChangeRequest
+	// from names the review task whose findings a person's request keeps
+	// (findings, keepReview); nil otherwise.
+	from *FindingsFrom
+}
+
+// taskRepair is rp as the task's row and its task file keep it.
+func (rp *repair) taskRepair() *TaskRepair {
+	tr := &TaskRepair{Review: rp.review, Attempt: rp.attempt, Commit: rp.commit, Start: rp.start, Summary: rp.summary, Findings: slices.Clone(rp.findings), Request: rp.request.clone()}
+	if rp.from != nil {
+		from := *rp.from
+		tr.FindingsFrom = &from
+	}
+	return tr
 }
 
 // taskResult is a task's accepted result.
@@ -1529,6 +1556,9 @@ func (r *run) inputs(t *task) []input {
 // result, else the run's base. An attempt a withdrawal took back is not
 // the last (lastKept): its work rested on an input since changed.
 func (r *run) startCommit(t *task) string {
+	if t.repair != nil && t.repair.start != "" {
+		return t.repair.start
+	}
 	if t.repair != nil && t.repair.commit != "" {
 		return t.repair.commit
 	}
@@ -1890,7 +1920,7 @@ func (r *run) taskRow(t *task) ledger.TaskRow {
 	}
 	row := ledger.TaskRow{RunID: r.id, ID: t.def.ID, Member: t.def.Member, Kind: t.def.Kind, State: t.state, Reason: t.reason, Attempts: n + t.prior, ImportedFrom: t.imported, Extra: t.extra, Withdrawn: t.withdrawn}
 	if rp := t.repair; rp != nil {
-		if b, err := json.Marshal(TaskRepair{Review: rp.review, Attempt: rp.attempt, Commit: rp.commit, Summary: rp.summary, Findings: rp.findings}); err == nil {
+		if b, err := json.Marshal(rp.taskRepair()); err == nil {
 			row.Repair = string(b)
 		}
 	}
@@ -2436,6 +2466,11 @@ func (e *Engine) Submit(ctx context.Context, sessionID string, res Result) (Task
 		}
 		return TaskState{}, false, refuse(CodeDecisionOpen, "%s is not answered yet: wait for its answer, or withdraw it with decision_withdraw", id)
 	}
+	if err := t.repair.names(res.Addressed); err != nil {
+		e.mu.Unlock()
+		r.txMu.Unlock()
+		return TaskState{}, false, err
+	}
 	a.state = ledger.AttemptSubmitting
 	a.submitSeq++
 	mine := a.submitSeq
@@ -2693,24 +2728,62 @@ func (e *Engine) reopen(r *run, review *task, a *attempt, res *Result) (*task, [
 	if sub == nil || sub.state != ledger.TaskSucceeded || sub.result == nil {
 		return nil, nil
 	}
-	sub.repair = &repair{review: review.def.ID, attempt: a.n, commit: sub.result.commit, summary: res.Summary, findings: slices.Clone(res.Findings)}
+	rp := &repair{review: review.def.ID, attempt: a.n, commit: sub.result.commit, summary: res.Summary, findings: slices.Clone(res.Findings)}
+	who := "review " + review.def.ID
+	return sub, e.reopenFor(r, sub, rp, who, who+" asked for changes: "+findingsWords(len(res.Findings)), false, map[string]any{"review": review.def.ID, "attempt": a.n})
+}
+
+// reopenFor is the repair transition, one for its two sources: a review
+// task's needs_changes (reopen) and a person's request (RequestChanges).
+// sub gets the repair rp and has no result again, its next attempt
+// starting where the repair says (startCommit); the decisions its
+// attempts asked are cancelled (cancelAsked); what rested on the result
+// is withdrawn (withdraw); the run is open again through the path every
+// reopen takes (reopenRun), which asks the plan's gates again (regate),
+// so a gate may ask a decision. A person's request checks the room those
+// gates need first (retryNeedsRoom), as Retry does. A task whose
+// attempts are spent fails, keeping the repair for a retry, unless grant
+// (a person's request, the authority for one more attempt as a Retry is)
+// allows one more. A task a decision holds stays held, its reason the
+// hold's. who names the source in the run's words, ready its reason; ev is
+// the task.reopened event's members beside the task, its findings and its
+// state. The caller holds e.mu, in a transaction's change.
+func (e *Engine) reopenFor(r *run, sub *task, rp *repair, who, ready string, grant bool, ev map[string]any) []event {
+	sub.repair = rp
 	sub.result, sub.imported = nil, ""
-	why := fmt.Sprintf("review %s asked for changes: %s", review.def.ID, findingsWords(len(res.Findings)))
-	if len(sub.attempts)+sub.prior >= maxAttemptsPerTask+sub.extra {
-		sub.state, sub.reason = ledger.TaskFailed, fmt.Sprintf("review %s asked for changes and no attempt is left; retry it to allow one more", review.def.ID)
-		r.note(session.ActivityStatus, "task %s: review %s asked for changes (%s), and no attempt is left", sub.def.ID, review.def.ID, findingsWords(len(res.Findings)))
+	n := len(rp.findings)
+	if rp.request != nil {
+		n = len(rp.request.Changes)
+	}
+	spent := len(sub.attempts)+sub.prior >= maxAttemptsPerTask+sub.extra
+	if spent && grant {
+		sub.extra++
+		spent = false
+	}
+	if spent {
+		sub.state, sub.reason = ledger.TaskFailed, fmt.Sprintf("%s asked for changes and no attempt is left; retry it to allow one more", who)
+		r.note(session.ActivityStatus, "task %s: %s asked for changes (%s), and no attempt is left", sub.def.ID, who, findingsWords(n))
 	} else {
-		sub.state, sub.reason = ledger.TaskReady, why
-		r.note(session.ActivityStatus, "task %s: review %s asked for changes (%s); attempt %d starts at the reviewed commit", sub.def.ID, review.def.ID, findingsWords(len(res.Findings)), len(sub.attempts)+1)
+		sub.state, sub.reason = ledger.TaskReady, ready
+		if len(sub.holds) > 0 {
+			sub.reason = holdWords(sub)
+		}
+		where := "at the reviewed commit"
+		if rp.start != "" {
+			where = "where the reviewed commit's attempt started, as it was refused before its checks"
+		}
+		r.note(session.ActivityStatus, "task %s: %s asked for changes (%s); attempt %d starts %s", sub.def.ID, who, findingsWords(n), len(sub.attempts)+1, where)
 	}
 	r.markTask(sub)
-	events := []event{{"task.reopened", map[string]any{"task": sub.def.ID, "review": review.def.ID, "attempt": a.n, "findings": len(res.Findings), "state": sub.state}}}
-	e.cancelAsked(r, sub, fmt.Sprintf("the review %s reopened %s", review.def.ID, sub.def.ID))
-	events = append(events, e.withdraw(r, sub, "needs "+sub.def.ID+", reopened by review "+review.def.ID)...)
+	ev["task"], ev["findings"], ev["state"] = sub.def.ID, n, sub.state
+	events := []event{{"task.reopened", ev}}
+	// What its attempts asked ends with the result they made (S3).
+	e.cancelAsked(r, sub, fmt.Sprintf("%s reopened %s", who, sub.def.ID))
+	events = append(events, e.withdraw(r, sub, "needs "+sub.def.ID+", reopened by "+who)...)
+	e.reopenRun(r, fmt.Sprintf("%s was reopened by %s", sub.def.ID, who))
 	r.ready()
 	e.settleRun(r)
-	e.regate(r, fmt.Sprintf("%s was reopened by review %s", sub.def.ID, review.def.ID))
-	return sub, events
+	return events
 }
 
 // withdraw takes back what rested on sub's result, as a review reopened
