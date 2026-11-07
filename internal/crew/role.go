@@ -773,8 +773,10 @@ func (r *Role) Asked(w RoleWake) error {
 // not start is ended, with its count of such turns in a row, by a save
 // that changed what the agent starts with (an account cleared) or turned
 // the role off or on, the role off too: the role turned on again starts
-// clean, never unavailable with the old agent's words (#715). Any other
-// reason waits for the role on.
+// clean, never unavailable with the old agent's words, and the batch the
+// failed turn kept is dropped with it when the role is off, never fired
+// by the role turned on again (#715). Any other reason waits for the
+// role on.
 func (r *Role) Reconfigured(ch RoleChange) error {
 	s, err := r.records.RoleSettings()
 	if err != nil {
@@ -788,6 +790,12 @@ func (r *Role) Reconfigured(ch RoleChange) error {
 		}
 		if c.Reason == ReasonStart {
 			c.Tries = 0
+		}
+		if !s.On {
+			// Off: the batch the failed turn kept is dropped in the save
+			// itself, as a step of the role off drops it, so the role
+			// turned on again before the loop steps cannot fire it.
+			c.Open = nil
 		}
 		c.available(now)
 		return nil

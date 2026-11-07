@@ -815,7 +815,8 @@ func TestASaveWeighsOnlyWhatItChanged(t *testing.T) {
 // TestASaveOfTheBackgroundOffAndTheAccountClearedStartsClean (#715): the
 // role unavailable because its agent, at an account folder, did not start
 // (signed out); one save clears the account and turns the background off:
-// the role is no longer unavailable with the sign-in's words, and with the
+// the role is no longer unavailable with the sign-in's words and the
+// failed turn's batch is dropped by the save itself, and with the
 // background on again it is idle, its count of turns not started gone,
 // no turn made by either save.
 func TestASaveOfTheBackgroundOffAndTheAccountClearedStartsClean(t *testing.T) {
@@ -833,13 +834,20 @@ func TestASaveOfTheBackgroundOffAndTheAccountClearedStartsClean(t *testing.T) {
 		cfg["account"] = ""
 		cfg["wake"].(map[string]any)["mode"] = brakeman.WakeInvoked
 	})
-	if r := b.ledgerRole(t); r.State == crew.RoleUnavailable || r.Why != "" || r.Reason != "" || r.Tries != 0 {
+	// The save itself ends it and drops the failed turn's batch: read at
+	// once, before the role's loop steps.
+	if r := b.ledgerRole(t); r.State != crew.RoleIdle || r.Open != nil || r.Why != "" || r.Reason != "" || r.Tries != 0 {
 		t.Fatalf("the background off and the account cleared: %+v", r)
 	}
 	b.configure(t, func(cfg map[string]any) { cfg["wake"].(map[string]any)["mode"] = brakeman.WakeBackground })
-	b.roleSettle(t)
-	if r := b.ledgerRole(t); r.State != crew.RoleIdle || r.Tries != 0 {
+	if r := b.ledgerRole(t); r.State != crew.RoleIdle || r.Open != nil || r.Tries != 0 {
 		t.Fatalf("the background on again: %+v", r)
+	}
+	// Nothing is left to fire: the loop's passes after the save make no
+	// turn.
+	b.roleSettle(t)
+	if r := b.ledgerRole(t); r.State != crew.RoleIdle || r.Open != nil || r.Tries != 0 {
+		t.Fatalf("the background on again, the loop passed: %+v", r)
 	}
 	if page, _, _ := b.desk.st.List("", 10); len(page) != 1 {
 		t.Fatalf("a save started a turn: %d requests", len(page))

@@ -782,7 +782,9 @@ func TestASaveEndsOnlyWhatItChanged(t *testing.T) {
 // account, or both: the role is not left unavailable with the old words,
 // and its count of turns not started is gone, so with the background on
 // again the next turn is fired by its wake and a failure of it counts
-// once. The same for a role turned off while its turn ran, by a save of
+// once. The batch the failed turn kept is dropped by the save itself:
+// turned on again before the role's loop steps, the role fires no turn
+// for it. The same for a role turned off while its turn ran, by a save of
 // the account cleared; a save of the role off that changed nothing it
 // weighs ends nothing.
 func TestASaveOfTheRoleOffEndsAnAgentNotStarted(t *testing.T) {
@@ -819,13 +821,23 @@ func TestASaveOfTheRoleOffEndsAnAgentNotStarted(t *testing.T) {
 				}
 				return
 			}
-			// Off: the batch the failed turn kept is dropped, never fired.
-			if r := f.state(RoleIdle); r.Why != "" || r.Reason != "" || r.Tries != 0 || !r.RetryAt.IsZero() || r.Open != nil {
+			// Off: the batch the failed turn kept is dropped by the save
+			// itself, read before any step.
+			if r := f.record(); r.State != RoleIdle || r.Why != "" || r.Reason != "" || r.Tries != 0 || !r.RetryAt.IsZero() || r.Open != nil {
 				t.Fatalf("after the save: %+v", r)
 			}
+			// On again with no step between: nothing is gathering, and past
+			// the old batch's window and the start retry no turn is fired.
 			f.rec.settings.On = true
 			if err := f.role.Reconfigured(RoleChange{On: true}); err != nil {
 				t.Fatal(err)
+			}
+			if r := f.record(); r.State != RoleIdle || r.Open != nil || r.Tries != 0 {
+				t.Fatalf("the background on again: %+v", r)
+			}
+			f.clock.add(RoleStartRetry + 2*time.Minute)
+			if r := f.state(RoleIdle); f.rec.fired() != 1 || r.Open != nil {
+				t.Fatalf("the old batch fired: %d turns, %+v", f.rec.fired(), r)
 			}
 			f.failed("lint", 1)
 			f.clock.add(2 * time.Minute)
