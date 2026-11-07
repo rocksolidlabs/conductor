@@ -176,7 +176,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			CLI:         []string{"conductor", "notify", "--event", "EVENT", "--message", "TEXT"},
 			Input: obj(map[string]any{
 				"event":   map[string]any{"type": "string", "enum": []string{"progress", "artifact", "handoff", "tool_use", "tool_denied", "error", "file"}},
-				"message": str("one line, at most 500 characters"),
+				"message": str("one line, at most " + strconv.Itoa(session.MaxAttentionMessage) + " bytes"),
 				"url":     str("artifact: where it lives"),
 				"to":      str("handoff: the member the work goes to"),
 				"tool":    str("tool_use, tool_denied, error, file: the tool involved"),
