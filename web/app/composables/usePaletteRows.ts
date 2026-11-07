@@ -7,6 +7,7 @@ import type { LaunchPrefill } from '~/composables/useLaunchModal'
 import { sameQuestions } from '~/utils/needsCursor'
 import { rowActions, sessionTarget, type Action } from '~/utils/actions'
 import { hostedReason } from '~/utils/clone'
+import { answerRows } from '~/utils/decisions'
 import { isActive, isEnded, needingInput, noReply, offeredChoices } from '~/utils/attention'
 import type { FeedEntry } from '~/utils/events'
 import { joinedDot, joinedPath } from '~/utils/joined'
@@ -92,6 +93,8 @@ export function usePaletteRows(ctx: PaletteContext) {
   const renameModal = useRenameModal()
   const cloneModal = useCloneModal()
   const brakeman = useBrakeman()
+  const decisions = useDecisions()
+  const decisionModal = useDecisionModal()
   const route = useRoute()
   const integrations = ref<Awaited<ReturnType<typeof api.integrations>>['integrations']>([])
   const showExited = ref(false)
@@ -848,6 +851,11 @@ export function usePaletteRows(ctx: PaletteContext) {
     }
   }
 
+  // The open durable decisions (Program item DR1): "Answer dr-7: …", Enter opening its card in the app's modal.
+  function decisionItems(): PaletteItem[] {
+    return answerRows(decisions.open.value, (id) => decisionModal.open(id))
+  }
+
   // ---------------------------------------------------------------------------
   // The groups for a query.
 
@@ -864,7 +872,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     const exited = everyRow.filter((r) => isEnded(r.session.status))
     const blocks = [...model.needs, ...model.running].filter((it): it is RunBlock => it.kind === 'run' && !it.stoppedAt && it.state !== 'exited')
     const groups: PaletteGroup<PaletteItem>[] = [
-      { id: 'needs', label: 'Needs you', pinned: true, rows: [...answerAllItems(), ...needs.map((s) => sessionItem(s, now))] },
+      { id: 'needs', label: 'Needs you', pinned: true, rows: [...answerAllItems(), ...needs.map((s) => sessionItem(s, now)), ...decisionItems()] },
       ...(page ? [{ id: 'page', label: page.label, pinned: true, rows: page.rows }] : []),
       { id: 'running', label: 'Running', rows: running.map((r) => sessionItem(r.session, now)) },
     ]

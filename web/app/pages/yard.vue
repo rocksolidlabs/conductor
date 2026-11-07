@@ -19,6 +19,8 @@ const admin = useWorkbenchToken()
 const api = useSessions()
 const toast = useToast()
 const quick = useQuickReply()
+// The question bar's Answer on a durable decision's question opens its card (Program item DR1).
+const decisionModal = useDecisionModal()
 const { create } = useTerminalTransport()
 const { httpBase } = useApiBase()
 useShortcutsModal().registerPage(WALL_SHORTCUTS)
@@ -295,7 +297,7 @@ usePalette().registerPage(() => {
             @open-url="openUrl"
           />
           <template #bar>
-            <QuickReplyBar :attention="focused.attention" :agent-name="focused.agentId" role="control" :busy="quick.sending.value.has(focused.id)" @reply="(text, q) => reply(focused!, text, q)" @option="(i, q) => option(focused!, i, q)" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
+            <QuickReplyBar :attention="focused.attention" :agent-name="focused.agentId" role="control" :busy="quick.sending.value.has(focused.id)" answers @answer="decisionModal.open" @reply="(text, q) => reply(focused!, text, q)" @option="(i, q) => option(focused!, i, q)" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
           </template>
         </EditorColumn>
         <div v-else class="flex flex-1 flex-col items-center justify-center gap-3 text-muted">

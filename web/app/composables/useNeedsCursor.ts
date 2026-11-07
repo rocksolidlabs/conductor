@@ -1,4 +1,5 @@
 import { needingInput } from '../utils/attention'
+import { unmirrored } from '../utils/decisions'
 import { nextNeeding, pillMs } from '../utils/needsCursor'
 
 /**
@@ -7,10 +8,16 @@ import { nextNeeding, pillMs } from '../utils/needsCursor'
  * of them. Each step shows the pill (NeedsYouPill.vue) for four seconds
  * with the question and its choices; the pill goes on its own, and
  * nothing navigates. From a terminal's Alt twins the pill takes the focus,
- * so the digits typed next are the pill's, never the terminal's.
+ * so the digits typed next are the pill's, never the terminal's. After the
+ * sessions come the open durable decisions no shown question mirrors (a
+ * gate's, Program item DR1), each once: the pill shows its question, and
+ * Enter opens its card.
  */
 export interface PillShown {
+  /** The session's id, or the decision's (`decision`) for a decision of its own. */
   id: string
+  /** A durable decision no session question mirrors: its id (`dr-7`). */
+  decision?: string
   /** 1-based, of `of`. */
   n: number
   of: number
@@ -24,6 +31,7 @@ export interface PillShown {
 
 export function useNeedsCursor() {
   const attention = useAttention()
+  const decisions = useDecisions()
   const palette = usePalette()
   const shown = useState<PillShown | null>('needsPill', () => null)
   const seq = useState<number>('needsPillSeq', () => 0)
@@ -37,14 +45,16 @@ export function useNeedsCursor() {
 
   /** One step: the next (1) or the previous (-1) session that needs you; nothing with none waiting. */
   function step(delta: 1 | -1, focus = false) {
-    const ids = needingInput(attention.sessions.value).map((s) => s.id)
+    const lone = unmirrored(decisions.open.value, attention.sessions.value).map((d) => d.id)
+    const ids = [...needingInput(attention.sessions.value).map((s) => s.id), ...lone]
     const page = palette.page.value?.sessionId
     const from = shown.value?.id ?? (page && ids.includes(page) ? page : null)
     const i = nextNeeding(ids, from, delta)
     if (i < 0) return
     seq.value++
-    const s = attention.sessions.value.find((x) => x.id === ids[i])
-    shown.value = { id: ids[i]!, n: i + 1, of: ids.length, question: s?.attention?.id, focus, seq: seq.value }
+    const id = ids[i]!
+    if (lone.includes(id)) shown.value = { id, decision: id, n: i + 1, of: ids.length, focus, seq: seq.value }
+    else shown.value = { id, n: i + 1, of: ids.length, question: attention.sessions.value.find((x) => x.id === id)?.attention?.id, focus, seq: seq.value }
     window.clearTimeout(timer)
     timer = window.setTimeout(hide, pillMs())
   }

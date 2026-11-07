@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { BrakemanAct, BrakemanConfig, BriefItem } from './brakeman'
 import { renderMarkdown } from './markdown'
-import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actFor, actsApart, readingBlocks, actReceiptRef, actShown, actShownFrom, actLaunchId, keepLaunch, MAX_KEPT_LAUNCHES, proposalOffered, actWords, followLaunch, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedSince, configProblems, displayBy, formField, formMove, grantHeld, grantLabel, groupItems, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
+import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actFor, actsApart, readingBlocks, actReceiptRef, actShown, actShownFrom, actLaunchId, keepLaunch, MAX_KEPT_LAUNCHES, proposalOffered, actWords, followLaunch, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedFromBaseline, changedSince, configProblems, displayBy, formField, formMove, grantHeld, grantLabel, groupItems, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
 
 // Brakeman's words, refs and checks on the app's pages (docs/plans/brakeman.md, PR-6).
 
@@ -166,6 +166,26 @@ describe('a ref, to its route and its label', () => {
     expect(changedSince({ state: 'running' }, { state: 'running', rev: '5' })).toBe(false)
     expect(changedSince(undefined, { state: 'stopped' })).toBe(false)
     expect(changedSince({ state: 'running' }, undefined)).toBe(false)
+  })
+})
+
+describe("a decision's evidence against its baseline (changedFromBaseline)", () => {
+  const at = (ref: string, seen: { state?: string; rev?: string; sha256?: string }, now: { state?: string; rev?: string; sha256?: string }) => changedFromBaseline({ ref, seen, now })
+  it('says changed when a state, a revision or a digest moved since the question, and nothing when each stayed', () => {
+    expect(at('ticket:CND-4', { state: 'open', rev: '3' }, { state: 'done', rev: '3' })).toBe('changed')
+    expect(at('ticket:CND-4', { state: 'open', rev: '3' }, { state: 'open', rev: '4' })).toBe('changed')
+    expect(at(`check:${RUN}/build/1/go/1`, { state: 'passed', sha256: 'a'.repeat(64) }, { state: 'passed', sha256: 'b'.repeat(64) })).toBe('changed')
+    expect(at('ticket:CND-4', { state: 'open', rev: '3' }, { state: 'open', rev: '3' })).toBe('')
+    expect(at(`check:${RUN}/build/1/go/1`, { state: 'passed', sha256: 'a'.repeat(64) }, { state: 'passed', sha256: 'a'.repeat(64) })).toBe('')
+  })
+  it("reads a run's and a task's state alone: their revision moves with every transition, the decision's own opening among them", () => {
+    expect(at(`run:${RUN}`, { state: 'running', rev: '4' }, { state: 'running', rev: '9' })).toBe('')
+    expect(at(`task:${RUN}/build`, { state: 'running', rev: '4' }, { state: 'succeeded', rev: '4' })).toBe('changed')
+  })
+  it('says a baseline read nothing when its store could not be read then, and a record gone since deleted', () => {
+    expect(at('ticket:CND-4', { state: 'unavailable' }, { state: 'open', rev: '3' })).toBe('unread')
+    expect(at('ticket:CND-4', { state: 'open', rev: '3' }, { state: 'deleted' })).toBe('deleted')
+    expect(at('ticket:CND-4', { state: 'deleted' }, { state: 'deleted' })).toBe('')
   })
 })
 

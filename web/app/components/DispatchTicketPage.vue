@@ -71,6 +71,8 @@ const deleteOpen = ref(false)
 const plan = useTicketPlans({ gate, key: () => (parseTicketKey(props.ticketKey) ? props.ticketKey : ''), ticket: () => ticket.value })
 /** The ticket's runs (DS2): its launches, hand-linked runs and their chains' runs, read with it. */
 const runs = useTicketRuns({ gate, key: () => (parseTicketKey(props.ticketKey) ? props.ticketKey : '') })
+/** The durable decisions of the ticket's runs (Program item DR1): its gates and its agents' requests, live. */
+const decisionRecords = useTicketDecisions(() => (parseTicketKey(props.ticketKey) ? props.ticketKey : ''))
 const attention = useAttention()
 /**
  * The candidates of the ticket's runs (DS2, PR-12): what a delivery may name, a delivered one withdrawn since, the Accept anyway receipts.
@@ -838,7 +840,7 @@ const askBrakeman = computed(() =>
             <DispatchPlan ref="planSection" :ticket="ticket" :plans="plan" :project="project" :archived="archived" :locked="locked" :agents="agents" :now="now" />
             <DispatchRuns :links="ticket.links ?? []" :runs="runs" :changes="changes" :names="historyNames" :history-more="!!historyNext" :locked="locked" :status="ticket.status" :now="now" :add="linkRun" :remove="removeLink" @revise="reviseFrom" @follow-up="planSection?.launch()" />
 
-            <DispatchDecisions :rows="decisions" :required="approvedPlan?.body.decisions" :revision="approvedPlan ? revisionTag(approvedPlan.n) : ''" :now="now" />
+            <DispatchDecisions :rows="decisions" :records="decisionRecords.decisions.value" :required="approvedPlan?.body.decisions" :revision="approvedPlan ? revisionTag(approvedPlan.n) : ''" :now="now" />
 
             <DispatchClosePolicy :ticket="ticket" :locked="locked" :now="now" :accept="accept" :unaccept="unaccept" :close="closeTicket" />
             <DispatchLinks :links="ticket.links ?? []" :locked="locked" :now="now" :add="addLink" :remove="removeLink" :candidates="deliveryChoices" :candidates-loading="candidates.loading.value" :candidates-error="candidates.error.value" :withdrawn="withdrawn" />

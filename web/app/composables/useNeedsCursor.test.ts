@@ -13,6 +13,8 @@ function asking(id: string, since: string): SessionInfo {
 }
 
 let states: Map<string, Ref<unknown>>
+/** The open durable decisions the store holds (Program item DR1): none unless a test puts some there. */
+const decisions = ref<Array<{ id: string; state: string }>>([])
 beforeEach(() => {
   vi.useFakeTimers()
   states = new Map()
@@ -23,8 +25,10 @@ beforeEach(() => {
   })
   vi.stubGlobal('useAttention', () => ({ sessions: ref([asking('a', '2026-10-31T00:00:02Z'), asking('b', '2026-10-31T00:00:01Z')]) }))
   vi.stubGlobal('usePalette', () => ({ page: ref(null) }))
+  vi.stubGlobal('useDecisions', () => ({ open: decisions }))
 })
 afterEach(() => {
+  decisions.value = []
   delete (globalThis as { conductorPillMs?: unknown }).conductorPillMs
   vi.unstubAllGlobals()
   vi.useRealTimers()
@@ -73,5 +77,20 @@ describe('the needs-you pill', () => {
       vi.advanceTimersByTime(1)
       expect(cursor.shown.value, String(bad)).toBeNull()
     }
+  })
+
+  it('steps after the sessions to each open decision no shown question mirrors, once, and to none that is not open', () => {
+    decisions.value = [
+      { id: 'dr-2', state: 'open' },
+      { id: 'dr-3', state: 'answered' },
+    ]
+    const cursor = useNeedsCursor()
+    cursor.step(1)
+    cursor.step(1)
+    cursor.step(1)
+    expect(cursor.shown.value).toMatchObject({ id: 'dr-2', decision: 'dr-2', n: 3, of: 3 })
+    cursor.step(1)
+    expect(cursor.shown.value).toMatchObject({ id: 'a', n: 1, of: 3 })
+    expect(cursor.shown.value?.decision).toBeUndefined()
   })
 })
