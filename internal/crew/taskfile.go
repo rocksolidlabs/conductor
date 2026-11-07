@@ -121,8 +121,11 @@ type TaskMore struct {
 	Checkpoint    *Checkpoint    `json:"checkpoint,omitempty"`
 	RepairSummary string         `json:"repairSummary,omitempty"`
 	Findings      []Finding      `json:"findings,omitempty"`
-	Checks        []Check        `json:"checks,omitempty"`
-	Previous      *TaskPrevious  `json:"previous,omitempty"`
+	// Changes is what was cut of a person's requested changes, each by its
+	// id with the parts cut (its lines, its resolution, its whole words).
+	Changes  []RequestedChange `json:"changes,omitempty"`
+	Checks   []Check           `json:"checks,omitempty"`
+	Previous *TaskPrevious     `json:"previous,omitempty"`
 }
 
 // TaskContext is one block of context a context provider gave an attempt:
@@ -154,13 +157,32 @@ func TaskContextBytes(c TaskContext) int {
 // it, in characters; task-more.json has it whole.
 const maxPreviousError = 2000
 
-// TaskRepair is what a review asked of the task.
+// TaskRepair is what a review asked of the task, or a person (Request):
+// the review (a review task's id, or Dispatch's review of a person's
+// request), the attempt (the review task's, or the candidate's), the
+// commit reviewed, where the repair attempt starts when that commit cannot
+// be built on (Start, the refused candidate's start), the summary, and a
+// review task's findings or a person's request. A person's request on a
+// task a review task's findings had reopened keeps those findings beside
+// it (Findings), FindingsFrom naming that review.
 type TaskRepair struct {
-	Review   string    `json:"review"`
-	Attempt  int       `json:"attempt"`
-	Commit   string    `json:"commit"`
-	Summary  string    `json:"summary,omitempty"`
-	Findings []Finding `json:"findings"`
+	Review       string         `json:"review"`
+	Attempt      int            `json:"attempt"`
+	Commit       string         `json:"commit"`
+	Start        string         `json:"start,omitempty"`
+	Summary      string         `json:"summary,omitempty"`
+	Findings     []Finding      `json:"findings,omitempty"`
+	Request      *ChangeRequest `json:"request,omitempty"`
+	FindingsFrom *FindingsFrom  `json:"findingsFrom,omitempty"`
+}
+
+// FindingsFrom is the review task whose findings a person's request keeps:
+// its id, its attempt, the commit it asked changes of, and its summary.
+type FindingsFrom struct {
+	Review  string `json:"review"`
+	Attempt int    `json:"attempt"`
+	Commit  string `json:"commit"`
+	Summary string `json:"summary,omitempty"`
 }
 
 // TaskInput is a result the task starts from or has at hand.
@@ -255,7 +277,7 @@ func (e *Engine) taskFile(ctx context.Context, r *run, a *attempt, tr *tree, blo
 	}
 	f.StartFrom = startFrom(r, t, a)
 	if rp := t.repair; rp != nil {
-		f.Repair = &TaskRepair{Review: rp.review, Attempt: rp.attempt, Commit: rp.commit, Summary: rp.summary, Findings: append([]Finding(nil), rp.findings...)}
+		f.Repair = rp.taskRepair()
 	}
 	if c := t.checkpoint; c != nil && (a.checkpoint == nil || a.checkpoint != c) && t.kept(c.n) {
 		f.Checkpoint = c.api()
@@ -334,7 +356,9 @@ func (t *task) unusableBefore(a *attempt) *unusable {
 // fitTaskFile renders f, cutting what is needed least until task.md and
 // task.json are within maxTaskFile: the context blocks, the last first,
 // then the inputs' summaries, then the
-// checkpoint, then the findings from the last, then the review's summary,
+// checkpoint, then the findings from the last, then a person's requested
+// changes' lines, resolutions and words past their first 200 characters
+// (cutChanges), then the review's summary (never a person's),
 // then the checks' commands, then the inputs after the first (the start's),
 // then the failed check's last output, the paths it changed and its
 // command (the attempt before's receipt, failedcheck.go), then the attempt
@@ -350,6 +374,11 @@ func fitTaskFile(f TaskFile) (md, js, more []byte, err error) {
 	if f.Repair != nil {
 		rp := *f.Repair
 		rp.Findings = slices.Clone(rp.Findings)
+		rp.Request = rp.Request.clone()
+		if rp.FindingsFrom != nil {
+			from := *rp.FindingsFrom
+			rp.FindingsFrom = &from
+		}
 		f.Repair = &rp
 	}
 	if f.Previous != nil {
@@ -443,11 +472,28 @@ func fitTaskFile(f TaskFile) (md, js, more []byte, err error) {
 			f.Cut = append(f.Cut, fmt.Sprintf("the last %d of the review's findings", len(m.Findings)))
 			return true
 		},
+		// A person's requested changes: their lines, then their
+		// resolutions, then their words past maxCutMessage characters, each
+		// from the last; their ids, kinds, locations and severities stay.
+		func() bool { return cutChanges(&f, &m, cutLines) },
+		func() bool { return cutChanges(&f, &m, cutResolution) },
+		func() bool { return cutChanges(&f, &m, cutMessage) },
 		func() bool {
-			if f.Repair == nil || f.Repair.Summary == "" {
+			// A person's summary is never cut: FitChangeRequest counted it.
+			// The summary of the review whose findings it keeps is.
+			switch {
+			case f.Repair == nil:
 				return false
+			case f.Repair.Request != nil:
+				if f.Repair.FindingsFrom == nil || f.Repair.FindingsFrom.Summary == "" {
+					return false
+				}
+				m.RepairSummary, f.Repair.FindingsFrom.Summary = f.Repair.FindingsFrom.Summary, ""
+			case f.Repair.Summary == "":
+				return false
+			default:
+				m.RepairSummary, f.Repair.Summary = f.Repair.Summary, ""
 			}
-			m.RepairSummary, f.Repair.Summary = f.Repair.Summary, ""
 			f.Cut = append(f.Cut, "the review's summary")
 			return true
 		},
@@ -548,7 +594,7 @@ func fitTaskFile(f TaskFile) (md, js, more []byte, err error) {
 			}
 		}
 		if !cut {
-			return nil, nil, nil, fmt.Errorf("the task files are %d and %d bytes with every part cut that can be, more than %d", len(md), len(js), maxTaskFile)
+			return nil, nil, nil, &taskFileTooLarge{md: len(md), js: len(js)}
 		}
 	}
 	if f.More != "" {
@@ -557,6 +603,28 @@ func fitTaskFile(f TaskFile) (md, js, more []byte, err error) {
 		}
 	}
 	return md, js, more, nil
+}
+
+// taskFileTooLarge is fitTaskFile's refusal: the task files' sizes with
+// every part cut that can be.
+type taskFileTooLarge struct{ md, js int }
+
+func (e *taskFileTooLarge) Error() string {
+	return fmt.Sprintf("the task files are %d and %d bytes with every part cut that can be, more than %d", e.md, e.js, maxTaskFile)
+}
+
+// writeFindings writes a review task's findings, one list item each.
+func writeFindings(b *strings.Builder, findings []Finding) {
+	for _, fd := range findings {
+		fmt.Fprintf(b, "- %s", fd.Severity)
+		if fd.Path != "" {
+			fmt.Fprintf(b, " %s", fd.Path)
+			if fd.Line > 0 {
+				fmt.Fprintf(b, ":%d", fd.Line)
+			}
+		}
+		fmt.Fprintf(b, ": %s\n", strings.TrimSpace(fd.Message))
+	}
 }
 
 // encodeTaskJSON is v as a task file keeps it: indented, and with "<",
@@ -661,22 +729,15 @@ func taskMarkdown(f TaskFile) string {
 		}
 		b.WriteString("\n")
 	}
-	if rp := f.Repair; rp != nil {
+	if rp := f.Repair; rp != nil && rp.Request != nil {
+		writeChangeRequest(&b, f)
+	} else if rp != nil {
 		fmt.Fprintf(&b, "## Findings to address\n\nReview %q (attempt %d) asked for changes to the commit %s, where this attempt starts", rp.Review, rp.Attempt, rp.Commit)
 		if s := strings.TrimSpace(rp.Summary); s != "" {
 			fmt.Fprintf(&b, ": %s", s)
 		}
 		b.WriteString(".\n\n")
-		for _, fd := range rp.Findings {
-			fmt.Fprintf(&b, "- %s", fd.Severity)
-			if fd.Path != "" {
-				fmt.Fprintf(&b, " %s", fd.Path)
-				if fd.Line > 0 {
-					fmt.Fprintf(&b, ":%d", fd.Line)
-				}
-			}
-			fmt.Fprintf(&b, ": %s\n", strings.TrimSpace(fd.Message))
-		}
+		writeFindings(&b, rp.Findings)
 		b.WriteString("\nAddress each finding, or say in your summary why not; the review runs again on your result.\n\n")
 	}
 	if c := f.Checkpoint; c != nil {
@@ -952,6 +1013,12 @@ func crewAsLaunched(c Crew) string {
 func startFrom(r *run, t *task, a *attempt) string {
 	if a.start == "" {
 		return ""
+	}
+	if rp := t.repair; rp != nil && rp.request != nil && rp.start == a.start {
+		return fmt.Sprintf("where attempt %d started: its result, which %s asked changes of, was refused before its checks", rp.attempt, rp.request.By)
+	}
+	if rp := t.repair; rp != nil && rp.request != nil && rp.commit == a.start {
+		return fmt.Sprintf("the commit %s asked changes of, in review %s", rp.request.By, rp.review)
 	}
 	if rp := t.repair; rp != nil && rp.commit == a.start {
 		return fmt.Sprintf("the commit review %q asked changes of", rp.review)

@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import type { BrakemanBrief, BrakemanRequest, BriefItem, RefResolution } from '~/utils/brakeman'
-import { groupItems, provenance, readsWords } from '~/utils/brakeman'
+import { actsApart, groupItems, provenance, readingBlocks, readsWords } from '~/utils/brakeman'
 
 /**
  * A brief as Conductor renders it (docs/plans/brakeman.md, PR-6): the provenance line (the agent, its model and version, the
  * request, when it was kept), the title, Brakeman's reading (its summary, marked as its interpretation), then the items in their
  * groups: facts with their evidence as chips, interpretations naming the facts they read, decision cards and proposals with
- * Conductor's controls (PR-7; a proposal Brakeman ran under a grant with its receipt, PR-13), verified outcomes with their receipt, the
+ * Conductor's controls (PR-7; a proposal Brakeman ran under a grant with its receipt, PR-13; every other act the request ran shown apart,
+ * under "What Brakeman did", with its receipt), verified outcomes with their receipt, the
  * drafts as forms the person makes work (a draft plan revision proposed through DS2's own route, PR-11), handoff packages,
  * and the comparison and evidence panels. Each item is anchored at `item-<index>`, where a `brief:` ref leads. The brief and its
  * refs are read once, as the brief is opened. A fact or an interpretation can be kept as one of the background role's notes (BK3),
@@ -42,6 +43,9 @@ const when = (iso: string) => new Date(iso).toLocaleString()
 const line = computed(() => provenance(props.request, props.request.agent?.agentId ? `${props.request.agent.agentId}${props.request.agent.adapter ? ` (${props.request.agent.adapter})` : ''}` : undefined, when))
 const groups = computed(() => groupItems(brief.value?.items ?? []))
 const items = computed<BriefItem[]>(() => brief.value?.items ?? [])
+/** The request as the page holds it now (its events fold the acts' outcomes in), and its acts no proposal of the brief shows. */
+const live = computed(() => bk.requests.value.find((r) => r.id === props.request.id) ?? props.request)
+const apart = computed(() => actsApart(items.value, live.value.acts))
 
 const toast = useToast()
 const keeping = ref(-1)
@@ -68,8 +72,18 @@ async function keep(index: number) {
       <h3 class="text-base font-semibold text-highlighted" data-brief-title>{{ brief.title }}</h3>
       <section class="flex flex-col gap-1 rounded-md border border-default bg-elevated/40 px-3 py-2" data-brief-reading>
         <span class="text-xs font-medium text-muted">Brakeman's reading <span class="font-normal">(its interpretation, not a fact)</span></span>
-        <MarkdownPreview :text="brief.summary" dir="" :relative-links="false" class="text-sm" />
-        <p v-if="brief.uncertainty" class="text-xs text-muted" data-brief-uncertainty>Uncertain: {{ brief.uncertainty }}</p>
+        <template v-for="b in readingBlocks(brief)" :key="b.key">
+          <div v-if="b.label" class="flex flex-col gap-0.5 text-muted" data-brief-uncertainty>
+            <span class="text-xs font-medium">{{ b.label }}</span>
+            <MarkdownPreview :text="b.text" dir="" :relative-links="false" class="text-xs" />
+          </div>
+          <MarkdownPreview v-else :text="b.text" dir="" :relative-links="false" class="text-sm" />
+        </template>
+      </section>
+      <section v-if="apart.length" class="flex flex-col gap-2" data-brief-acts>
+        <h4 class="text-xs font-semibold uppercase tracking-wide text-muted">What Brakeman did</h4>
+        <p class="text-xs text-muted">Each act this request ran under a grant you gave, with its receipt, whether or not the brief names it.</p>
+        <BrakemanActCard v-for="a in apart" :key="a.opId" :act="a" />
       </section>
       <section v-for="g in groups" :key="g.group" class="flex flex-col gap-2" :data-brief-group="g.group">
         <h4 class="text-xs font-semibold uppercase tracking-wide text-muted">{{ g.title }}</h4>

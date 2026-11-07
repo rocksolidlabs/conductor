@@ -448,8 +448,15 @@ type Local struct {
 	beforeShot      atomic.Pointer[func()]
 	beforeHold      atomic.Pointer[func()]
 	beforeHoldShown atomic.Pointer[func()]
-	agentTokenHash  [32]byte
-	hasAgentToken   bool
+	// afterAsked, a test's hook, runs as fireTrust has asked a startup
+	// question with no answers, before it holds it (holdAnswerless).
+	afterAsked     atomic.Pointer[func()]
+	agentTokenHash [32]byte
+	hasAgentToken  bool
+	// agentCalled says the session's agent token has been presented and
+	// taken (AgentTokenOK) at least once: its agent, or a tool it runs
+	// (its MCP server, its hooks), has called the server as itself.
+	agentCalled atomic.Bool
 
 	ended chan struct{}
 
@@ -1129,12 +1136,24 @@ func (s *Local) firePattern(line string) {
 // where 1 runs npm install). That is weighed under the lock that sets the
 // question (startupLook).
 func (s *Local) fireTrust(text string) {
-	if q, words := s.startupShown(text); q != nil {
+	if q, words, seen, shown := s.startupSeen(text); q != nil {
 		if s.heldGone(words) {
 			// An Escape typed at it before it was asked took it away.
 			return
 		}
+		if len(q.Answers) == 0 && !shown {
+			// The screen moved on after the look took its text: a
+			// question with no answers that the screen no longer shows
+			// is never asked.
+			return
+		}
 		s.setAttentionLooked(AttentionNeedsInput, words, SourceTrust, KindPrompt, CleanOptions(q.Answers), unlessWaiting|startupLook, anyTurn, s.trust.LookedAt(), "")
+		if len(q.Answers) == 0 {
+			if hook := s.afterAsked.Load(); hook != nil {
+				(*hook)()
+			}
+			s.holdAnswerless(words, seen)
+		}
 		// One held answered that the screen no longer shows (the program
 		// took the Escape) is cleared.
 		s.escGone()
@@ -2379,7 +2398,9 @@ func (s *Local) SetAgentToken(tok string) {
 	s.hasAgentToken = tok != ""
 }
 
-// AgentTokenOK compares a presented agent token in constant time.
+// AgentTokenOK compares a presented agent token in constant time. It is
+// the one check every route makes of the token, so a token taken here is
+// noted (AgentCalled): whichever route the agent called first.
 func (s *Local) AgentTokenOK(tok string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2387,7 +2408,18 @@ func (s *Local) AgentTokenOK(tok string) bool {
 		return false
 	}
 	h := sha256.Sum256([]byte(tok))
-	return subtle.ConstantTimeCompare(h[:], s.agentTokenHash[:]) == 1
+	if subtle.ConstantTimeCompare(h[:], s.agentTokenHash[:]) != 1 {
+		return false
+	}
+	s.agentCalled.Store(true)
+	return true
+}
+
+// AgentCalled reports whether the session's agent token has been taken
+// by AgentTokenOK: the agent has called the server as itself (a guide,
+// a report, a read), so it started.
+func (s *Local) AgentCalled() bool {
+	return s.agentCalled.Load()
 }
 
 // SetID assigns the session ID once it is known (hosts learn it from the
@@ -4208,6 +4240,43 @@ func (s *Local) lastStartupQ(text string) (*StartupQuestion, string) {
 	return last, words
 }
 
+// startupSeen is fireTrust's observation of the startup question a
+// look's text shows, for every startup question: the question found in
+// text (lastStartupQ, the look's), its words read off the screen the
+// questions asked during the work are read from when it shows them (as
+// startupShown reads them), and that screen as one reading (seen: its
+// Feeds, its size and the size it was laid out for, PatternWatcher.Seen,
+// under feedMu). The words and the mark a question with no answers is
+// held against (holdAnswerless) come from that one reading, never from
+// two: read apart, output fed between them (the screen cleared) paired
+// the screen before it with the mark after it, and the withdrawal, which
+// asks for output after the mark (escGone), never came. shown is false
+// when that reading shows everything drawn and no startup question, as
+// escGone withdraws on: the screen moved on after the look took its
+// text. A question with answers is asked all the same (it goes when it is
+// answered or the next takes its place, and the screen decides neither);
+// one with none is not (fireTrust). Without that screen, the look's words,
+// shown.
+func (s *Local) startupSeen(text string) (q *StartupQuestion, words string, seen heldStartup, shown bool) {
+	q, words = s.lastStartupQ(text)
+	if q == nil || s.asked == nil {
+		return q, words, seen, q != nil
+	}
+	s.feedMu.Lock()
+	v := s.asked.Seen()
+	s.feedMu.Unlock()
+	seen = heldStartup{fed: v.Fed, cols: v.Cols, rows: v.Rows, drawnCols: v.DrawnCols, drawnRows: v.DrawnRows}
+	if v.Uncut && s.lastStartup(v.Text) == "" {
+		return q, words, seen, false
+	}
+	if v.Text != "" {
+		if w := q.words(v.Text); w != "" {
+			words = w
+		}
+	}
+	return q, words, seen, true
+}
+
 // startupShown is the startup question the output shows and its words: the
 // question the output's tail finds (lastStartupQ over text, the startup
 // watcher's ScreenTail), its words read off the screen when that shows
@@ -4828,6 +4897,32 @@ func (s *Local) holdStartupAnswered(words, by, name string) {
 	}
 }
 
+// holdAnswerless holds the startup question with words, asked with no
+// answers, as one keys reached is held (heldAnswer, by no one): a screen no
+// key of Conductor's passes (Claude Code's sign-in, waiting for a browser's
+// sign-in or a pasted code) is left by the program on its own, a person
+// signing in through the browser, with no key typed in the terminal. Held
+// so, it goes as every startup question goes once its screen is behind:
+// withdrawn when the screen, after output fed since it was asked, shows no
+// startup question (escGone). seen is the screen the question was found
+// on, read with its mark in one reading (startupSeen): output fed since,
+// the screen cleared while the question was being asked, counts as after
+// it. Nothing is consumed: the question reads as waiting, not as
+// answered in the terminal.
+func (s *Local) holdAnswerless(words string, seen heldStartup) {
+	if s.asked == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	att := s.info.Attention
+	if att.State != AttentionNeedsInput || att.Source != SourceTrust || att.ID == "" || len(att.Options) != 0 || !sameWords(att.words(), words) || s.heldAnswer.id == att.ID {
+		return
+	}
+	seen.id = att.ID
+	s.heldAnswer = seen
+}
+
 // escGone withdraws the startup question keys reached (heldAnswer) once the
 // screen the questions asked during the work are read from shows no
 // startup question, as it is now and after output fed since the keys were
@@ -5431,6 +5526,13 @@ func (s *Local) LastLine() string {
 func (s *Local) ScreenLines(n int) []string {
 	rows, _ := s.ScreenRead(n)
 	return rows
+}
+
+// ScreenCols is the width of the screen ScreenRead reads, in cells: a row
+// that fills it may go on in the next row (a line the terminal wrapped).
+func (s *Local) ScreenCols() int {
+	cols, _ := s.shot.Size()
+	return cols
 }
 
 // ScreenRead is what a person reading the session's terminal sees: the

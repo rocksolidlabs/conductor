@@ -345,7 +345,10 @@ func (s *Server) newObserver(tp *turnPrincipal) *observer {
 // handler runs (nil for none), and the filter of its answer (nil to pass
 // it as it is).
 type readSpec struct {
-	class  string
+	class string
+	// anyOf are the classes one of which a turn must see, for a read that
+	// reads one or another (Brakeman's own reads: ownReadClasses).
+	anyOf  []string
 	admit  func(r *http.Request, o *observer) (ok bool, err error)
 	filter func(r *http.Request, o *observer, body []byte) ([]byte, error)
 }
@@ -401,7 +404,7 @@ func (s *Server) observeRoute(h func(w http.ResponseWriter, r *http.Request, o *
 			return
 		}
 		if tp != nil {
-			s.turnRead(w, r, tp, readSpec{}, nil, h)
+			s.turnRead(w, r, tp, readSpec{anyOf: ownReadClasses[r.URL.Path]}, nil, h)
 			return
 		}
 		if p := s.authenticate(r, false); p.admin {
@@ -439,6 +442,10 @@ func (s *Server) turnRead(w http.ResponseWriter, r *http.Request, tp *turnPrinci
 	o := s.newObserver(tp)
 	if spec.class != "" && !o.grant.sees(spec.class) {
 		writeError(w, http.StatusForbidden, "not_visible", "Brakeman may not see "+spec.class)
+		return
+	}
+	if !seesAny(spec.anyOf, o.grant.sees) {
+		writeError(w, http.StatusForbidden, "not_visible", "Brakeman may not see "+strings.Join(spec.anyOf, " or "))
 		return
 	}
 	if spec.admit != nil {

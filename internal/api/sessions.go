@@ -341,6 +341,13 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	if startCtx == nil {
 		startCtx = context.Background()
 	}
+	// Where the session runs, and, for a native one, what its folder is at
+	// before its process starts (its record's launch revision).
+	where := req.where
+	if where == "" {
+		where = ext.WhereNative
+	}
+	rev, repo := s.launchRevision(where, cwd, dirFile)
 	term, err := rt.StartTerminal(startCtx, ext.TerminalSpec{
 		Argv:    argv,
 		Dir:     cwd,
@@ -352,6 +359,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	})
 	dirFile.Close()
 	if err != nil {
+		repo.close()
 		s.log.Warn("session start failed", "agent", agent.ID, "err", err)
 		return nil, newAPIError(http.StatusBadGateway, "start_failed", "could not start the agent process")
 	}
@@ -375,7 +383,20 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		ref := *crewRef
 		info.Crew = &ref
 	}
-	local := session.NewLocal(info, session.RuntimeProcess(term), session.Options{
+	launched := session.Launched{AgentID: agent.ID, Name: name, Cwd: cwd, Args: slices.Clone(req.Args), Env: maps.Clone(req.Env), Yolo: yolo, Renamed: req.renamed}
+	// Its record exists before the session can keep an entry, and the
+	// session's hooks feed it (recordHooks).
+	var rc *recorder
+	if s.recording() {
+		version := ""
+		if id, ok := s.cachedIdentity(agent); ok && id.Identified {
+			version = id.Version
+		}
+		rc = s.beginServerRecord(info, launched, agent.Adapter, agent.Name, version, where, rev, repo)
+	} else {
+		repo.close()
+	}
+	opts := session.Options{
 		ScrollbackBytes: s.cfg.ScrollbackBytes,
 		MaxViewers:      s.cfg.MaxViewersPerSession,
 		FileView:        string(s.cfg.FileView),
@@ -394,24 +415,34 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		WorkingTitle:    watch.WorkingTitle,
 		ConfirmSubmit:   watch.ConfirmSubmit,
 		WatchGit:        true,
-		Launched:        session.Launched{AgentID: agent.ID, Name: name, Cwd: cwd, Args: slices.Clone(req.Args), Env: maps.Clone(req.Env), Yolo: yolo, Renamed: req.renamed},
+		Launched:        launched,
 		Folder:          folder,
 		// Where the agent keeps its plans outside the folder (#289), from
 		// its adapter and the environment the process was given: the
 		// directory the agent itself writes to.
 		Plans: agents.PlansDir(agent.Adapter, pty.Lookup(procEnv), cwd),
-	})
+	}
+	s.recordHooks(rc, &opts)
+	if rc != nil {
+		s.recordSeam("beforeMade", id)
+	}
+	local := session.NewLocal(info, session.RuntimeProcess(term), opts)
+	s.made(rc, local)
 	local.SetAgentToken(agentToken)
 	if req.spawned != nil {
 		req.spawned(local)
 	}
 	if err := s.registry.AddReserved(local, req.reservation); err != nil {
+		s.abandon(rc)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = local.Stop(ctx)
 		return nil, newAPIError(http.StatusConflict, "too_many_sessions", "session limit reached")
 	}
 	keepFolder = true
+	// Its registration complete, its record reconciled once: an exit
+	// before the registry held it is read now.
+	s.registered(rc)
 	s.log.Info("session started", "session", id, "agent", agent.ID, "pid", term.Process().PID, "yolo", applied)
 	if yolo && !applied {
 		local.Record(session.ActivityEntry{Type: session.ActivityStatus, Message: noYoloRecipe(agent)})

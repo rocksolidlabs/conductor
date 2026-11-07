@@ -443,19 +443,25 @@ func (c *brakemanClient) post(ctx context.Context, timeout time.Duration, path s
 }
 
 // actWords is an act's answer in one line: the operation, its id, its
-// receipt and what it made (a launch's run, a revision proposed). An
-// act's answer never carries the run (the turn reads it through its own
-// grant): a launch's run is named from Dispatch's launch, launched once
-// the launch is started; the run, when a reply has one, says the same.
+// receipt's status and the ref a brief cites the receipt by (the
+// answer's receiptRef, op:brakeman/<the receipt's opId>), then what it
+// made (a launch and its run, a revision proposed), each named as what it
+// is: the receipt's own id is what the operation made, never a ref of the
+// receipt. An act's answer never carries the run (the turn reads it
+// through its own grant): a launch's run is named from Dispatch's launch,
+// launched once the launch is started; the run, when a reply has one,
+// says the same.
 func actWords(operation, opID string, reply json.RawMessage) string {
 	var out struct {
 		Receipt *struct {
+			OpID       string `json:"opId"`
 			ID, Status string
 			Repeat     bool
 		} `json:"receipt"`
-		Launch *struct{ ID, RunID, State string } `json:"launch"`
-		Run    *struct{ ID string }               `json:"run"`
-		Plan   *struct {
+		ReceiptRef string                             `json:"receiptRef"`
+		Launch     *struct{ ID, RunID, State string } `json:"launch"`
+		Run        *struct{ ID string }               `json:"run"`
+		Plan       *struct {
 			ID    string
 			N     int
 			State string
@@ -464,27 +470,45 @@ func actWords(operation, opID string, reply json.RawMessage) string {
 	_ = json.Unmarshal(reply, &out)
 	line := fmt.Sprintf("%s ran (opId %s)", operation, opID)
 	if r := out.Receipt; r != nil {
-		line += fmt.Sprintf(": receipt %s, %s", r.ID, r.Status)
+		line += ": " + r.Status
 		if r.Repeat {
 			line += ", a repeat of the act already kept"
 		}
+		ref := out.ReceiptRef
+		if ref == "" && r.OpID != "" {
+			ref = "op:" + brakemanActor + "/" + r.OpID
+		}
+		if ref != "" {
+			line += "; its receipt is " + ref + ", the ref a brief cites it by (an outcome/1's receipt)"
+		}
+	}
+	run := ""
+	if l := out.Launch; l != nil && l.ID != "" {
+		line += "; launch " + l.ID
 	}
 	switch {
 	case out.Run != nil && out.Run.ID != "":
-		line += "; run " + out.Run.ID + " launched"
+		run = "run " + out.Run.ID + " launched"
 	case out.Launch != nil && out.Launch.RunID != "" && out.Launch.State == "started":
-		line += "; run " + out.Launch.RunID + " launched"
+		run = "run " + out.Launch.RunID + " launched"
 	case out.Launch != nil && out.Launch.RunID != "":
-		line += "; run " + out.Launch.RunID
+		run = "run " + out.Launch.RunID
 		if out.Launch.State != "" {
-			line += ", its launch " + out.Launch.State
+			run += ", its launch " + out.Launch.State
 		}
+	}
+	if run != "" {
+		line += "; " + run
 	}
 	if p := out.Plan; p != nil && p.ID != "" {
 		line += fmt.Sprintf("; revision %d (%s) %s, for the operator to approve or not", p.N, p.ID, p.State)
 	}
 	return line
 }
+
+// brakemanActor is the actor Dispatch keeps a Brakeman act's receipt
+// under, as an op ref names it (api's brakemanActor).
+const brakemanActor = "brakeman"
 
 // strictJSON decodes a tool's arguments, refusing a field it does not take.
 func strictJSON(raw json.RawMessage, out any) error {

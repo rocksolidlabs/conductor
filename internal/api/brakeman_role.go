@@ -134,11 +134,14 @@ func (d *brakemanDesk) runChanged(runID string) {
 }
 
 // activity is the role's activity sink: a question opened notes its
-// session. It runs where the entry was recorded, so it never waits.
+// session, and pokes the desk, whose turn may be the one asking (its
+// agent held at a startup question: heldAtStartup). It runs where the
+// entry was recorded, so it never waits.
 func (d *brakemanDesk) activity(sessionID string, e session.ActivityEntry, state session.AttentionState) {
 	if e.Type != session.ActivityAttention || state != session.AttentionNeedsInput {
 		return
 	}
+	d.poke()
 	d.src.mu.Lock()
 	if len(d.src.questions) < maxRoleSources {
 		d.src.questions[sessionID] = true
@@ -691,13 +694,13 @@ func (rr roleRecords) make(in brakeman.Request) (string, error) {
 		return "", err
 	}
 	if !cfg.Background() {
-		return "", &crew.RoleRefused{Why: "Brakeman is off, or not in the background"}
+		return "", &crew.RoleRefused{Why: "Brakeman is off, or not in the background", Reason: crew.ReasonOff}
 	}
 	now := d.now()
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.stuck {
-		return "", &crew.RoleRefused{Why: "the last turn's run did not stop: stop it from its run page"}
+		return "", &crew.RoleRefused{Why: "the last turn's run did not stop: stop it from its run page", Reason: crew.ReasonStuck}
 	}
 	if len(d.queue) >= brakemanQueue {
 		return "", fmt.Errorf("%d requests wait already", brakemanQueue)
@@ -707,14 +710,14 @@ func (rr roleRecords) make(in brakeman.Request) (string, error) {
 		return "", err
 	}
 	if turns+len(d.queue) >= cfg.Budget.TurnsPerDay {
-		return "", &crew.RoleRefused{Why: fmt.Sprintf("the day's budget is spent: %d of %d turns, those queued counted", turns+len(d.queue), cfg.Budget.TurnsPerDay), RetryAt: nextDay(now)}
+		return "", &crew.RoleRefused{Why: fmt.Sprintf("the day's budget is spent: %d of %d turns, those queued counted", turns+len(d.queue), cfg.Budget.TurnsPerDay), Reason: crew.ReasonBudget, RetryAt: nextDay(now)}
 	}
 	minutes, err := d.st.MinutesToday(now)
 	if err != nil {
 		return "", err
 	}
 	if left := cfg.Budget.MinutesPerDay - minutes; left < brakeman.MinReservation {
-		return "", &crew.RoleRefused{Why: fmt.Sprintf("the day's budget is spent: %d of %d minutes", minutes, cfg.Budget.MinutesPerDay), RetryAt: nextDay(now)}
+		return "", &crew.RoleRefused{Why: fmt.Sprintf("the day's budget is spent: %d of %d minutes", minutes, cfg.Budget.MinutesPerDay), Reason: crew.ReasonBudget, RetryAt: nextDay(now)}
 	}
 	req, created, err := d.st.Create(in)
 	if errors.Is(err, brakeman.ErrPruned) {
@@ -733,8 +736,10 @@ func (rr roleRecords) make(in brakeman.Request) (string, error) {
 
 // Outcome answers what became of a wake request: open; closed failed (its
 // launch refused, its agent exited before it read its request, as a
-// logged-out CLI does) or over budget, unavailable in words; else closed.
-// A request gone (pruned) is closed.
+// logged-out CLI does, or never read it: held at a screen), its agent not
+// started, or over budget, unavailable in words with the reason; else
+// closed. A request gone (pruned) is closed. A failure carries its turn's
+// number (the request's), which the role judges it by.
 func (rr roleRecords) Outcome(id string) (crew.RoleOutcome, error) {
 	r, err := rr.d.st.Get(id)
 	if errors.Is(err, brakeman.ErrNotFound) {
@@ -747,9 +752,9 @@ func (rr roleRecords) Outcome(id string) (crew.RoleOutcome, error) {
 	case r.Open():
 		return crew.RoleOutcome{Open: true}, nil
 	case r.State == brakeman.StateFailed:
-		return crew.RoleOutcome{Unavailable: "the turn could not start: " + r.Why}, nil
+		return crew.RoleOutcome{Unavailable: "the turn could not start: " + r.Why, Reason: crew.ReasonStart, Turn: brakeman.RequestNumber(r.ID)}, nil
 	case r.State == brakeman.StateOverBudget:
-		return crew.RoleOutcome{Unavailable: "the day's budget is spent: " + r.Why, RetryAt: nextDay(rr.d.now())}, nil
+		return crew.RoleOutcome{Unavailable: "the day's budget is spent: " + r.Why, Reason: crew.ReasonBudget, RetryAt: nextDay(rr.d.now()), Turn: brakeman.RequestNumber(r.ID)}, nil
 	}
 	return crew.RoleOutcome{}, nil
 }

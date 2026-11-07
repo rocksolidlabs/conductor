@@ -29,6 +29,7 @@ function budget(ms: number) {
 interface Act {
   opId: string
   operation: string
+  op: string
   target: string
   state: string
   receipt?: string
@@ -148,24 +149,34 @@ async function grant(act: string[]) {
  * answers the request once briefed. The act's id is `actId`, and the brief proposes the launch it acts on, at the ticket's revision the
  * turn reads, naming that act (args.opId), as the guide asks of a proposal of an act Brakeman ran.
  */
-async function turn(opId: string, actId: string): Promise<string> {
+async function turn(opId: string, actId: string, propose = true): Promise<string> {
   budget(120_000 + 60_000)
   rmSync(gate, { force: true })
   rmSync(`${actFile}.out`, { force: true })
   const rev = await ticketRev()
   writeFileSync(actFile, `launch_approved_plan ${KEY}\n`)
   writeFileSync(`${actFile}.body`, JSON.stringify({ plan: planId, expectedRev: rev, opId: actId }))
+  const fact = { kind: 'fact/1', text: `Revision 1 of ${KEY} is approved.`, evidence: [`ticket:${KEY}`] }
   writeFileSync(
     briefFile,
-    JSON.stringify({
-      schema: 'brakeman.brief/1',
-      title: `${KEY}'s approved revision`,
-      summary: 'Revision 1 is approved and its approval holds: it can be launched.',
-      items: [
-        { kind: 'fact/1', text: `Revision 1 of ${KEY} is approved.`, evidence: [`ticket:${KEY}`] },
-        { kind: 'proposal/1', text: 'Launch revision 1.', op: 'launch_approved_plan', target: `ticket:${KEY}`, expectedRevision: String(rev), args: { plan: planId, opId: actId }, facts: [0] },
-      ],
-    }),
+    JSON.stringify(
+      propose
+        ? {
+            schema: 'brakeman.brief/1',
+            title: `${KEY}'s approved revision`,
+            summary: 'Revision 1 is approved and its approval holds: it can be launched.',
+            items: [fact, { kind: 'proposal/1', text: 'Launch revision 1.', op: 'launch_approved_plan', target: `ticket:${KEY}`, expectedRevision: String(rev), args: { plan: planId, opId: actId }, facts: [0] }],
+          }
+        : {
+            // As the live check's models briefed an act they ran: a fact, no proposal naming the act, and what they were unsure of as a
+            // Markdown list.
+            schema: 'brakeman.brief/1',
+            title: `${KEY} launched`,
+            summary: 'Revision 1 was launched.',
+            uncertainty: '- Whether its run has finished.\n- Whether its checks pass.',
+            items: [fact],
+          },
+    ),
   )
   const asked = await api.ok<{ request: Request }>('POST', '/api/brakeman/requests', { opId, kind: 'explain', subjects: [`ticket:${KEY}`] })
   // One turn at a time: a turn before this one holds the slot until its run has stopped (the brief's grace, then the stop).
@@ -206,7 +217,7 @@ test('granted in Settings, Brakeman launches the approved revision, and the brie
   await expect.poll(async () => (await api.ok<{ config: { permissions: { act?: string[] } } }>('GET', '/api/brakeman')).config.permissions.act).toEqual(['launch_approved_plan'])
 
   const id = await turn('bka-ask-1', 'bka-act-1')
-  expect(await actOut()).toMatch(/^taken\nlaunch_approved_plan ran \(opId bka-act-1\): receipt [0-9a-f]{16}, done; run \S+ launched/)
+  expect(await actOut()).toMatch(/^taken\nlaunch_approved_plan ran \(opId bka-act-1\): done; its receipt is op:brakeman\/bk[0-9a-f]{30}, the ref a brief cites it by \(an outcome\/1's receipt\); launch [0-9a-f]{16}; run \S+ launched/)
   const acts = (await request(id)).acts ?? []
   expect(acts).toHaveLength(1)
   expect(acts[0]).toMatchObject({ opId: 'bka-act-1', operation: 'launch_approved_plan', target: `ticket:${KEY}`, state: 'done' })
@@ -239,9 +250,9 @@ test('granted in Settings, Brakeman launches the approved revision, and the brie
 
   // A launch is done by its launch, not by its receipt, which Dispatch keeps done before the run is started: with the launch's route
   // answering it pending, then failed (its answer rewritten in this page's reads alone), the brief says it is under way, then not done
-  // with the launch's words, and links no run either time. The brief reads a pending launch again by itself. Two waits of 30 s and
-  // eight steps.
-  budget(2 * 30_000 + 8 * STEP_MS)
+  // with the launch's words, and links no run either time. The brief reads a pending launch again by itself. Three waits of 30 s and
+  // eleven steps.
+  budget(3 * 30_000 + 11 * STEP_MS)
   let shownState = 'pending'
   const launchRoute = `**/api/dispatch/launches/${launch.id}`
   await page.route(launchRoute, async (route) => {
@@ -249,6 +260,21 @@ test('granted in Settings, Brakeman launches the approved revision, and the brie
     const body = (await r.json()) as { launch: Launch & { why?: string } }
     body.launch.state = shownState
     if (shownState === 'failed') body.launch.why = 'the agent could not be started'
+    await route.fulfill({ response: r, json: body })
+  })
+  // The page's event stream restarts again and again, each restart a snapshot after which the page reads its requests again (as the
+  // stream's restart does after a dropped connection): every read hands the request's act as a new object. Once `reread` is set, the
+  // reads name the request's agent version "re-read", which the brief's provenance line draws: the moment a read was taken in, read off
+  // the page rather than guessed.
+  let reread = false
+  const eventsRoute = '**/api/events'
+  await page.route(eventsRoute, (route) => route.fulfill({ status: 200, contentType: 'text/event-stream', body: 'event: snapshot\ndata: []\n\n' }))
+  const requestsRoute = (u: URL) => u.pathname.startsWith('/api/brakeman/requests')
+  await page.route(requestsRoute, async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback()
+    const r = await route.fetch()
+    const body = (await r.json()) as { request?: Request & { agent?: { version?: string } }; requests?: Array<Request & { agent?: { version?: string } }> }
+    for (const q of [body.request, ...(body.requests ?? [])]) if (reread && q?.id === id && q.agent) q.agent.version = 're-read'
     await route.fulfill({ response: r, json: body })
   })
   await open(page, `/brakeman?request=${id}`)
@@ -263,14 +289,50 @@ test('granted in Settings, Brakeman launches the approved revision, and the brie
   await expect(p.locator('[data-proposal-did-run]')).toHaveCount(0)
   // A launch that failed started nothing: the proposal is offered again, as text with its page.
   await expect(p.locator('[data-proposal-text]')).toBeVisible()
+  // And it stays offered once the request is read again: the same act, a new object, still failed (#691's review).
+  reread = true
+  await expect(page.locator(`[data-brief="${id}"] [data-brief-provenance]`)).toContainText('version re-read', { timeout: 30_000 })
+  await expect(p).toHaveAttribute('data-proposal-act', 'failed')
+  await expect(p.locator('[data-proposal-did]')).toHaveAttribute('data-act-shown', 'failed')
+  await expect(p.locator('[data-proposal-text]')).toBeVisible()
   await page.unroute(launchRoute)
+  await page.unroute(eventsRoute)
+  await page.unroute(requestsRoute)
+})
+
+test("an act the brief names in no proposal shows apart with its receipt, and the act's words give the ref that cites it", async ({ page }) => {
+  // The grant is still on from the test before (serial).
+  const id = await turn('bka-ask-apart', 'bka-act-apart', false)
+  const out = await actOut()
+  const acts = (await request(id)).acts ?? []
+  expect(acts).toHaveLength(1)
+  expect(acts[0]).toMatchObject({ opId: 'bka-act-apart', state: 'done' })
+  const launch = (await api.ok<{ launch: Launch }>('GET', `/api/dispatch/launches/${acts[0]!.receipt}`)).launch
+  runs.push(launch.runId)
+  // The words name the receipt by the ref a brief cites it by, and the launch as the launch.
+  expect(out).toContain(`its receipt is op:brakeman/${acts[0]!.op},`)
+  expect(out).toContain(`; launch ${launch.id};`)
+
+  // The brief: one wait of 30 s and six steps.
+  budget(30_000 + 6 * STEP_MS)
+  await open(page, `/brakeman?request=${id}`)
+  const apart = page.locator(`[data-brief="${id}"] [data-brief-acts]`)
+  const card = apart.locator('[data-act="bka-act-apart"]')
+  await expect(card).toHaveAttribute('data-act-shown', 'done', { timeout: 30_000 })
+  await expect(card.locator('[data-proposal-did-badge]')).toHaveText('Brakeman did this')
+  await expect(card.locator(`[data-ref-chip="launch:${launch.id}"]`)).toBeVisible()
+  await expect(card.locator(`[data-proposal-did-run="${launch.runId}"]`)).toHaveAttribute('href', `/runs/${launch.runId}`)
+  await expect(page.locator(`[data-brief="${id}"] [data-brief-proposal]`)).toHaveCount(0)
+  // What Brakeman is unsure of is Markdown, drawn as the summary is: its list a list.
+  await expect(page.locator(`[data-brief="${id}"] [data-brief-uncertainty] li`)).toHaveCount(2)
 })
 
 test('with the grant taken away, the act is refused and kept nowhere, and the proposal is a proposal only', async ({ page }) => {
   await grant([])
   const entries = async () => (await api.ok<{ entries?: unknown[] }>('GET', `/api/dispatch/tickets/${KEY}/runs`)).entries?.length ?? 0
   const before = await entries()
-  expect(before).toBe(1)
+  // The two launches of the tests before it, each granted.
+  expect(before).toBe(2)
   const id = await turn('bka-ask-2', 'bka-act-2')
   const out = await actOut()
   expect(out).toMatch(/^refused\n/)
