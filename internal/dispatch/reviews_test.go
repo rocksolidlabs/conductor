@@ -946,6 +946,44 @@ func TestRetryIsTheNextTryAndStopsAtFive(t *testing.T) {
 	}
 }
 
+// Request again holds the candidate to its ticket as a review and a mark
+// are, in its own transaction: a refused request whose run's chain became
+// contested since (another ticket links a run the chain now holds) is
+// refused run_linked, naming the holders, its try unchanged; the chain the
+// ticket's alone again, it is sent again.
+func TestRetryNeedsTheTicketsRunStill(t *testing.T) {
+	s, key, run := reviewTicket(t)
+	ctx := context.Background()
+	v := mustSubmit(t, s, "rv", key, request(candidateOf(run, 2, commitA), lineChange("Fix it.")))
+	rc, err := s.RefusedReview(ctx, testOp("x"), v.ID, 1, "no")
+	want(t, rc, err, StatusDone, "")
+	_, other := makeTicket(t, s, NewTicket{Project: "CND", Title: "Another"})
+	x := "legacy-000000d1"
+	s.SetRunExists(runs(run, x))
+	rc, err = addLink(s, "lx", other, NewLink{Kind: LinkRun, Ref: x})
+	want(t, rc, err, StatusDone, "")
+	s.SetRunChain(chains([]string{run, x}))
+	rc, _, err = s.ApplyingReview(ctx, testOp("contested"), v.ID)
+	want(t, rc, err, StatusFailed, RefusalRunLinked)
+	if !strings.Contains(rc.Error, "contested") {
+		t.Fatalf("the refusal's words: %+v", rc)
+	}
+	if a := reviewOf(t, s, v.ID).Application; a.State != ApplicationRefused || a.Try != 1 {
+		t.Fatalf("after a refused retry: %+v", a)
+	}
+	links, err := s.Links(ctx, other)
+	if err != nil || len(links) != 1 {
+		t.Fatalf("the other ticket's links: %+v %v", links, err)
+	}
+	rc, err = s.RemoveLink(ctx, testOp("unlink"), other, links[0].ID)
+	want(t, rc, err, StatusDone, "")
+	rc, got, err := s.ApplyingReview(ctx, testOp("again"), v.ID)
+	want(t, rc, err, StatusDone, "")
+	if a := got.Application; a.State != ApplicationPending || a.Try != 2 {
+		t.Fatalf("Request again of the ticket's own chain: %+v", a)
+	}
+}
+
 // reviewsOf is the ids of the ticket's reviews, newest first.
 func reviewsOf(t *testing.T, s *Store, key string) []string {
 	t.Helper()

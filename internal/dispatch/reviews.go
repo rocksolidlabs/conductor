@@ -1116,7 +1116,10 @@ type reviewIDArgs struct {
 // one not refused (invalid, in its state's words), one at MaxReviewTries
 // already (bound), a deleted ticket (not_found), an archived project
 // (archived), a closed ticket (invalid: "reopen the ticket to ask for
-// changes"). An expected revision is the review's. The review is read
+// changes"), a candidate of a run whose chain the ticket no longer holds
+// alone (run_linked or invalid, holdsCandidate, as a review and a mark
+// are: the run's link moved to another ticket, or its chain contested,
+// since the review was kept). An expected revision is the review's. The review is read
 // after the commit as it stands (none for a refusal). ErrNotFound for an
 // id not of an id's shape.
 func (s *Store) ApplyingReview(ctx context.Context, op Op, id string) (Receipt, Review, error) {
@@ -1150,6 +1153,13 @@ func (s *Store) ApplyingReview(ctx context.Context, op Op, id string) (Receipt, 
 			return refuse(RefusalBound, "the review %s was tried %d times, the most a review is: send a new review", id, rv.Application.Try)
 		case closed(tk.Status):
 			return refuse(RefusalInvalid, "%s is %s: reopen the ticket to ask for changes", tk.Key, tk.Status)
+		}
+		c, err := ParseCandidate(rv.Candidate)
+		if err != nil {
+			return refuse(RefusalInvalid, "the review %s's candidate: %v", id, err)
+		}
+		if err := t.holdsCandidate(tk, c.Run); err != nil {
+			return err
 		}
 		before, err := t.scalars("reviews", id, applicationColumns)
 		if err != nil {

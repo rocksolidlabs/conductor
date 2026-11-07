@@ -471,7 +471,37 @@ func TestApplicationWaitsForARetainedSettle(t *testing.T) {
 			t.Fatalf("%s: %+v", at, a)
 		}
 	}
-	l.srv.reviews.setSeams(func(rg *reviewGate) { rg.afterRegister, rg.afterReadBack = nil, nil })
+
+	// The run's commit and its release both land between the read-back's
+	// first read (accepted) and its look at the engine's hold: the command
+	// is read again after the hold is seen, so the release does not make
+	// the stale accepted row a refusal. The worker is held away from the
+	// run, so the read-back's own answer is the one recorded.
+	run, c1 := succeededCandidate(t, l, func(dir string) string { return commitFile(t, dir, "a.txt", "let go\n") })
+	release := make(chan struct{})
+	var let, once sync.Once
+	t.Cleanup(func() { let.Do(func() { close(release) }) })
+	l.srv.reviews.setSeams(func(rg *reviewGate) {
+		rg.afterRegister = nil
+		rg.beforeSettleRead = func(_ context.Context, r string) {
+			if r == run {
+				<-release
+			}
+		}
+		rg.afterReadBack = func(string) {
+			once.Do(func() {
+				commitRun(t, l.testEnv, run)
+				l.srv.runs.ForgetForTest(run)
+			})
+		}
+	})
+	g.arm(run, 1, 2)
+	out := sendReview(t, l.testEnv, "CND-1", reviewOf(candName(run, "build", 1, c1), l.head, "request_changes", changeOf("x")), http.StatusCreated, "")
+	if app := applicationOf(t, out); app["state"] != dispatch.ApplicationApplied || app["run"] != run {
+		t.Fatalf("committed and let go between the read-back's reads: %v", app)
+	}
+	l.srv.reviews.setSeams(func(rg *reviewGate) { rg.afterRegister, rg.afterReadBack, rg.beforeSettleRead = nil, nil, nil })
+	let.Do(func() { close(release) })
 }
 
 // The settlement runs on the worker, outside the engine's lock: its read
@@ -486,7 +516,7 @@ func TestSettlementRunsOutsideTheEngine(t *testing.T) {
 	reached, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	l.srv.reviews.setSeams(func(rg *reviewGate) {
-		rg.beforeSettleRead = func(r string) {
+		rg.beforeSettleRead = func(_ context.Context, r string) {
 			if r == run {
 				once.Do(func() { close(reached) })
 				<-release
@@ -1342,4 +1372,324 @@ func mapValues(m map[string]bool) []bool {
 		out = append(out, v)
 	}
 	return out
+}
+
+// A continuation's command is settled in the run that holds it: the
+// source, a stopped run the engine held, let go while the read-back waits
+// after its registration on it, and the worker, woken by that release,
+// settles the review first: applied in the continuation, never refused
+// because the source holds no such command.
+func TestAContinuationsCommandIsSettledInItsRun(t *testing.T) {
+	l := newLaunchTest(t, nil, nil)
+	run, c1 := succeededCandidate(t, l, func(dir string) string { return commitFile(t, dir, "a.txt", "a\n") })
+	l.expect(t, "POST", "/api/runs/"+run+"/stop", nil, http.StatusOK, "")
+	var first atomic.Value
+	var once sync.Once
+	l.srv.reviews.setSeams(func(rg *reviewGate) {
+		rg.afterRegister = func(review string) {
+			once.Do(func() {
+				l.srv.runs.ForgetForTest(run)
+				for end := time.Now().Add(testWait); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+					if v, err := l.srv.dispatch.Review(context.Background(), review); err == nil && v.Application.State != dispatch.ApplicationPending {
+						first.Store(v.Application)
+						return
+					}
+				}
+			})
+		}
+	})
+	body := reviewOf(candName(run, "build", 1, c1), l.head, "request_changes", changeOf("Again, please."))
+	body["continueRun"] = true
+	app := applicationOf(t, sendReview(t, l.testEnv, "CND-1", body, http.StatusCreated, ""))
+	l.srv.reviews.setSeams(func(rg *reviewGate) { rg.afterRegister = nil })
+	to, _ := app["run"].(string)
+	if app["state"] != dispatch.ApplicationApplied || to == "" || to == run {
+		t.Fatalf("the application: %v", app)
+	}
+	a, ok := first.Load().(dispatch.ReviewApplication)
+	if !ok || a.State != dispatch.ApplicationApplied || a.Run != to {
+		t.Fatalf("the worker settled the review first as %+v, not applied in %s", a, to)
+	}
+}
+
+// A read-back whose read failed leaves the review pending on the run it
+// went to, with the worker; the source let go then, the worker finds the
+// command along the chain, done in the continuation: applied, never
+// refused because the source holds no such command.
+func TestAFailedReadBackIsSettledInTheContinuation(t *testing.T) {
+	l := newLaunchTest(t, nil, nil)
+	run, c1 := succeededCandidate(t, l, func(dir string) string { return commitFile(t, dir, "a.txt", "a\n") })
+	l.expect(t, "POST", "/api/runs/"+run+"/stop", nil, http.StatusOK, "")
+	var armed atomic.Bool
+	fail := func(id string) error {
+		if armed.Load() && id == run {
+			return errors.New("the ledger could not be read")
+		}
+		return nil
+	}
+	chainWalkSeam.Store(&fail)
+	t.Cleanup(func() { chainWalkSeam.Store(nil) })
+	l.srv.reviews.setSeams(func(rg *reviewGate) {
+		// Looked at again only when the source goes, never on the clock.
+		rg.retryWait = time.Hour
+		rg.afterRegister = func(string) { armed.Store(true) }
+	})
+	body := reviewOf(candName(run, "build", 1, c1), l.head, "request_changes", changeOf("Again, please."))
+	body["continueRun"] = true
+	out := sendReview(t, l.testEnv, "CND-1", body, http.StatusCreated, "")
+	armed.Store(false)
+	l.srv.reviews.setSeams(func(rg *reviewGate) { rg.afterRegister = nil })
+	id := entityOf(t, out, "review")["id"].(string)
+	if app := applicationOf(t, out); app["state"] != dispatch.ApplicationPending {
+		t.Fatalf("a read-back that failed: %v", app)
+	}
+	row, found, err := l.srv.ledger.Run(t.Context(), run)
+	if err != nil || !found || row.ContinuedBy == "" {
+		t.Fatalf("the source's row: %+v %v %v", row, found, err)
+	}
+	l.srv.runs.ForgetForTest(run)
+	if a := waitApplication(t, l.srv, id, dispatch.ApplicationApplied); a.Run != row.ContinuedBy {
+		t.Fatalf("applied in %s, not in the continuation %s", a.Run, row.ContinuedBy)
+	}
+}
+
+// failRunLedger is the ledger the start's reconcile reads, failing the
+// read of one run's row.
+type failRunLedger struct {
+	reviewLedger
+	fail string
+}
+
+func (f failRunLedger) Run(ctx context.Context, id string) (ledger.RunRow, bool, error) {
+	if id == f.fail {
+		return ledger.RunRow{}, false, errors.New("the ledger could not read the run")
+	}
+	return f.reviewLedger.Run(ctx, id)
+}
+
+// The start's reconcile whose read of a continuation's row fails settles
+// nothing: the review stays pending (the continuation may hold its
+// command done), left to the worker, which reads it again and settles it
+// as the start would: applied in the continuation.
+func TestReconcileThatCouldNotReadLeavesItPending(t *testing.T) {
+	l := newLaunchTest(t, nil, nil)
+	run, c1 := succeededCandidate(t, l, func(dir string) string { return commitFile(t, dir, "a.txt", "a\n") })
+	v := submitPending(t, l.srv, candName(run, "build", 1, c1), l.head)
+	l.expect(t, "POST", "/api/runs/"+run+"/stop", nil, http.StatusOK, "")
+	rq := crew.RepairRequest{Task: "build", Attempt: 1, Commit: c1, Request: reviewRequest(v)}
+	cont, err := l.srv.runs.ContinueRunWith(t.Context(), run, "", crew.ContinueOptions{Repair: &rq, Actor: adminActor, Command: crew.Command{ID: reviewCommandID(v.ID, 1)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row, found := commandIn(t, l.srv, cont.ID, reviewCommandID(v.ID, 1)); !found || row.Status != ledger.CommandDone {
+		t.Fatalf("the continuation's command: %+v %v", row, found)
+	}
+	l.srv.reviews.setSeams(func(rg *reviewGate) { rg.retryWait = time.Hour })
+	l.srv.reconcileWith(t.Context(), failRunLedger{reviewLedger: l.srv.ledger, fail: cont.ID})
+	if a := reviewNow(t, l.srv, v.ID).Application; a.State != dispatch.ApplicationPending {
+		t.Fatalf("settled although the continuation could not be read: %+v", a)
+	}
+	// What the retry's wait would do: the worker looks again.
+	l.srv.reviews.runChanged(run)
+	if a := waitApplication(t, l.srv, v.ID, dispatch.ApplicationApplied); a.Run != cont.ID || a.Command != reviewCommandID(v.ID, 1) {
+		t.Fatalf("the application: %+v, want the continuation %s", a, cont.ID)
+	}
+}
+
+// An outcome Dispatch could not record stays with the worker, which
+// writes it again without a restart: the write of a repair applied at once
+// fails, and the review is still recorded applied.
+func TestAnOutcomeNotRecordedIsWrittenAgain(t *testing.T) {
+	l := newLaunchTest(t, nil, nil)
+	run, c1 := succeededCandidate(t, l, func(dir string) string { return commitFile(t, dir, "a.txt", "a\n") })
+	var failed atomic.Bool
+	l.srv.reviews.setSeams(func(rg *reviewGate) {
+		rg.retryWait = 10 * time.Millisecond
+		rg.recordFails = func(string) error {
+			if failed.CompareAndSwap(false, true) {
+				return errors.New("the store is busy")
+			}
+			return nil
+		}
+	})
+	out := sendReview(t, l.testEnv, "CND-1", reviewOf(candName(run, "build", 1, c1), l.head, "request_changes", changeOf("x")), http.StatusCreated, "")
+	if !failed.Load() {
+		t.Fatal("the outcome's write never failed")
+	}
+	id := entityOf(t, out, "review")["id"].(string)
+	if a := waitApplication(t, l.srv, id, dispatch.ApplicationApplied); a.Run != run || a.Attempt != 2 {
+		t.Fatalf("the application written again: %+v", a)
+	}
+	l.srv.reviews.setSeams(func(rg *reviewGate) { rg.recordFails = nil })
+}
+
+// A try's cleanup takes off only its own registration: Request again's
+// next try, registered between the earlier try's outcome and its cleanup,
+// stays on its run (a commit of the run still marks it for the worker),
+// and the earlier try, registered again (its outcome kept to be written
+// again), never takes its place.
+func TestATrysCleanupLeavesTheNextTry(t *testing.T) {
+	var g reviewGate
+	one := reviewSettle{review: "r1", try: 1, command: reviewCommandID("r1", 1), actor: adminActor, anchor: "run-a"}
+	two := one
+	two.try, two.command = 2, reviewCommandID("r1", 2)
+	g.register("run-a", one)
+	g.register("run-a", two)
+	g.unregister("run-a", one)
+	kept := one
+	kept.out = &applyOutcome{why: "late"}
+	g.register("run-a", kept)
+	g.register("run-b", one)
+	g.runChanged("run-a")
+	g.runChanged("run-b")
+	got := g.takeMarked()
+	if len(got) != 1 || len(got["run-a"]) != 1 || got["run-a"][0].try != 2 || got["run-a"][0].out != nil {
+		t.Fatalf("after try 1's cleanup: %+v", got)
+	}
+	g.unregister("run-a", two)
+	if len(g.settling) != 0 {
+		t.Fatalf("after try 2's cleanup: %+v", g.settling)
+	}
+}
+
+// A request resent with its opId and without continueRun is answered
+// from its receipt before the gate and before continuation_needed: its
+// run let go (a restart), the ledger not taken over, crews.managed off and
+// the ledger closed, the request and a Request again's opId are each
+// answered 200 with the review as it stands, repeat true, never 409
+// continuation_needed, managed_off or 503.
+func TestAResentRequestIsAnsweredBeforeTheGate(t *testing.T) {
+	l := newLaunchTest(t, nil, nil)
+	run, c1 := succeededCandidate(t, l, func(dir string) string { return commitFile(t, dir, "a.txt", "a\n") })
+	cand := candName(run, "build", 1, c1)
+	first := reviewOf(cand, l.head, "request_changes", changeOf("First."))
+	applied := entityOf(t, sendReview(t, l.testEnv, "CND-1", first, http.StatusCreated, ""), "review")["id"].(string)
+	out := sendReview(t, l.testEnv, "CND-1", reviewOf(cand, l.head, "request_changes", changeOf("Second.")), http.StatusCreated, "")
+	refused := entityOf(t, out, "review")["id"].(string)
+	if applicationOf(t, out)["state"] != dispatch.ApplicationRefused {
+		t.Fatalf("the second review: %v", out)
+	}
+	retry := map[string]any{"opId": opID()}
+	if app := applicationOf(t, retryReview(t, l.testEnv, refused, retry, http.StatusOK, "")); app["try"] != 2.0 {
+		t.Fatalf("Request again: %v", app)
+	}
+	again := l.restartAfterStop(t, run)
+	resent := func(when string) {
+		t.Helper()
+		out := sendReview(t, again, "CND-1", first, http.StatusOK, "")
+		if receiptOf(t, out)["repeat"] != true || entityOf(t, out, "review")["id"] != applied || applicationOf(t, out)["state"] != dispatch.ApplicationApplied {
+			t.Fatalf("%s: the request resent: %v", when, out)
+		}
+		out = retryReview(t, again, refused, map[string]any{"opId": retry["opId"]}, http.StatusOK, "")
+		if receiptOf(t, out)["repeat"] != true || applicationOf(t, out)["try"] != 2.0 {
+			t.Fatalf("%s: Request again resent: %v", when, out)
+		}
+	}
+	resent("the run let go")
+	again.srv.launches.ready.Store(false)
+	resent("the ledger not taken over")
+	again.srv.launches.ready.Store(true)
+	managed := again.srv.cfg.Crews.Managed
+	off := false
+	again.srv.cfg.Crews.Managed = &off
+	resent("crews.managed off")
+	again.srv.cfg.Crews.Managed = managed
+	if err := again.srv.ledger.Close(); err != nil {
+		t.Fatal(err)
+	}
+	resent("the ledger closed")
+	if reviewsOn(t, again.srv, "CND-1") != 2 {
+		t.Fatal("a resend recorded a review")
+	}
+	if a := reviewNow(t, again.srv, refused).Application; a.Try != 2 {
+		t.Fatalf("a resend made a try: %+v", a)
+	}
+}
+
+// The server's Shutdown ends the reviews' worker before it closes the
+// stores: the worker, held inside its settlement when Shutdown begins,
+// sees its context cut by the shutdown while Dispatch's store and the
+// ledger are still open, and Shutdown returns only after the worker has
+// ended. What the worker had not written is the next start's.
+func TestShutdownEndsTheWorkerBeforeTheStoresClose(t *testing.T) {
+	l := newLaunchTest(t, nil, nil)
+	g := &refuseAfterLedger{Ledger: crew.SQLLedger(l.srv.ledger)}
+	l.srv.runs.UseLedger(g)
+	run, _ := retainedReview(t, l, g)
+	type seen struct{ cut, dispatchErr, ledgerErr error }
+	reached, result := make(chan struct{}), make(chan seen, 1)
+	var once sync.Once
+	l.srv.reviews.setSeams(func(rg *reviewGate) {
+		rg.beforeSettleRead = func(ctx context.Context, r string) {
+			held := false
+			once.Do(func() { held = r == run })
+			if !held {
+				return
+			}
+			close(reached)
+			select {
+			case <-ctx.Done():
+			case <-time.After(testWait):
+			}
+			var sn seen
+			sn.cut = ctx.Err()
+			_, sn.dispatchErr = l.srv.dispatch.PendingReviews(context.Background())
+			_, _, sn.ledgerErr = l.srv.ledger.Run(context.Background(), run)
+			result <- sn
+		}
+	})
+	commitRun(t, l.testEnv, run)
+	select {
+	case <-reached:
+	case <-time.After(testWait):
+		t.Fatal("the worker never looked at the run")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	l.srv.Shutdown(ctx)
+	var sn seen
+	select {
+	case sn = <-result:
+	default:
+		t.Fatal("Shutdown returned before the worker it holds ended")
+	}
+	if !errors.Is(sn.cut, context.Canceled) {
+		t.Fatalf("the worker's context at the shutdown: %v, not cut by it", sn.cut)
+	}
+	if sn.dispatchErr != nil || sn.ledgerErr != nil {
+		t.Fatalf("a store closed before the worker ended: Dispatch %v, the ledger %v", sn.dispatchErr, sn.ledgerErr)
+	}
+	select {
+	case <-l.srv.reviews.done:
+	default:
+		t.Fatal("the worker outlived Shutdown")
+	}
+}
+
+// Request again holds the candidate to the review's ticket as the review
+// was: a refused request whose run's chain became contested since (CND-2
+// links a continuation of it) is 409 not_ticket_run, its try unchanged and
+// no command sent.
+func TestRequestAgainNeedsTheTicketsRunStill(t *testing.T) {
+	l := newLaunchTest(t, nil, nil)
+	l.newDispatchTicket(t, "CND", "Two", nil)
+	run, c1 := succeededCandidate(t, l, func(dir string) string { return commitFile(t, dir, "a.txt", "a\n") })
+	sendReview(t, l.testEnv, "CND-1", reviewOf(candName(run, "build", 1, c1), l.head, "request_changes", changeOf("First.")), http.StatusCreated, "")
+	out := sendReview(t, l.testEnv, "CND-1", reviewOf(candName(run, "build", 1, c1), l.head, "request_changes", changeOf("Second.")), http.StatusCreated, "")
+	id := entityOf(t, out, "review")["id"].(string)
+	if applicationOf(t, out)["state"] != dispatch.ApplicationRefused {
+		t.Fatalf("the second review: %v", out)
+	}
+	x := "legacy-000000d2"
+	saveRecord(t, l.srv, crew.Run{ID: x, StartedAt: time.Now().UTC()})
+	linkRun(t, l.testEnv, "CND-2", x, http.StatusCreated, "")
+	crewJSON, _ := json.Marshal(l.crew)
+	putLedgerRun(t, l.srv.ledger, ledger.RunRow{ID: x, CrewID: l.crew.ID, Crew: string(crewJSON), Base: l.head, State: ledger.RunFinished, ContinuedFrom: run})
+	retryReview(t, l.testEnv, id, nil, http.StatusConflict, "not_ticket_run")
+	if a := reviewNow(t, l.srv, id).Application; a.State != dispatch.ApplicationRefused || a.Try != 1 {
+		t.Fatalf("after not_ticket_run: %+v", a)
+	}
+	if _, found := commandIn(t, l.srv, run, reviewCommandID(id, 2)); found {
+		t.Fatal("a command was sent")
+	}
 }

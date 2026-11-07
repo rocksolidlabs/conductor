@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -46,15 +47,61 @@ func TestRelocateIsTheQuotesRelocate(t *testing.T) {
 	}
 }
 
+// A file whose lines end in CRLF is located as one whose lines end in LF:
+// a finding's lines hold no "\r" (the store refuses it), so its lines are
+// the same where they were, moved where they moved, and changed only when
+// they changed; a lone "\r" inside a line is the line's own.
+func TestLocateReadsACRLFFileAsItsLines(t *testing.T) {
+	want := []string{"one", "two"}
+	for _, tc := range []struct {
+		name    string
+		content string
+		got     locatedState
+	}{
+		{"unchanged", "one\r\ntwo\r\nthree\r\n", locatedState{State: locatedSame}},
+		{"moved", "new\r\nnewer\r\none\r\ntwo\r\n", locatedState{State: locatedMoved, From: 3, To: 4}},
+		{"mixed endings", "one\r\ntwo\nthree\n", locatedState{State: locatedSame}},
+		{"changed", "one\r\ntwo!\r\n", locatedState{State: locatedChanged}},
+		{"a carriage return within a line", "one\rtwo\n", locatedState{State: locatedChanged}},
+	} {
+		if got := relocate(want, 1, 2, fileLines([]byte(tc.content))); !reflect.DeepEqual(got, tc.got) {
+			t.Errorf("%s: %+v, want %+v", tc.name, got, tc.got)
+		}
+	}
+}
+
 // A located state kept with a mark is within dispatch.MaxMarkLocated, a
 // renamed path at its bound among it, and none when there is none.
 func TestLocatedJSONIsWithinTheMarksBound(t *testing.T) {
 	if locatedJSON(nil) != nil {
 		t.Fatal("a general finding's mark keeps a located state")
 	}
-	st := &locatedState{State: locatedRenamed, Path: strings.Repeat(string(rune(0x2028)), 1024/3), Located: &locatedState{State: locatedMoved, From: 9_999_999, To: 10_000_000}}
-	if b := locatedJSON(st); b == nil || !strings.Contains(string(b), `"renamed"`) {
+	moved := &locatedState{State: locatedMoved, From: 9_999_999, To: 10_000_000}
+	st := &locatedState{State: locatedRenamed, Path: strings.Repeat(string(rune(0x2028)), 1024/3), Located: moved}
+	if b := locatedJSON(st); b == nil || !strings.Contains(string(b), `"renamed"`) || len(b) > dispatch.MaxMarkLocated {
 		t.Fatalf("a renamed state at its bound: %s", b)
+	}
+	// Five segments of two hundred "<" (1,004 bytes, a path the store
+	// takes): six bytes each with HTML escaping, past the bound; one each
+	// as kept.
+	segs := make([]string, 5)
+	for i := range segs {
+		segs[i] = strings.Repeat("<", 200)
+	}
+	st = &locatedState{State: locatedRenamed, Path: strings.Join(segs, "/"), Located: moved}
+	b := locatedJSON(st)
+	var back locatedState
+	if err := json.Unmarshal(b, &back); err != nil || !reflect.DeepEqual(back, *st) || len(b) > dispatch.MaxMarkLocated {
+		t.Fatalf("a renamed path of angle brackets: %d bytes, %v", len(b), err)
+	}
+	// A path that no encoding keeps within the bound (1,024 control
+	// characters, six bytes each): kept as unknown, saying why, never
+	// dropped.
+	st = &locatedState{State: locatedRenamed, Path: strings.Repeat("\x01", dispatch.MaxFindingPath), Located: moved}
+	b = locatedJSON(st)
+	back = locatedState{}
+	if err := json.Unmarshal(b, &back); err != nil || back.State != locatedUnknown || back.Why == "" || len(b) > dispatch.MaxMarkLocated {
+		t.Fatalf("a renamed path past the bound: %s %v", b, err)
 	}
 }
 

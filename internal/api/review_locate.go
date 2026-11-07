@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -268,7 +269,7 @@ func (l *locator) locate(ctx context.Context, f dispatch.Finding, c dispatch.Can
 	}
 	in := locatedState{State: locatedSame}
 	if f.Kind == dispatch.FindingKindLine {
-		in = relocate(f.Lines, f.From, f.To, strings.Split(string(file.Content), "\n"))
+		in = relocate(f.Lines, f.From, f.To, fileLines(file.Content))
 	}
 	if renamed != "" {
 		return &locatedState{State: locatedRenamed, Path: renamed, Located: &in}
@@ -276,16 +277,39 @@ func (l *locator) locate(ctx context.Context, f dispatch.Finding, c dispatch.Can
 	return &in
 }
 
-// locatedJSON is a located state as a mark keeps it: nil for none.
+// fileLines is a file's content as lines, each without its terminator:
+// "\n", or "\r\n" (a finding's lines hold no "\r", which the store
+// refuses, so a CRLF file's lines are compared without it).
+func fileLines(content []byte) []string {
+	lines := strings.Split(string(content), "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimSuffix(l, "\r")
+	}
+	return lines
+}
+
+// locatedJSON is a located state as a mark keeps it, encoded with HTML
+// escaping off (a path's "<" one byte, not six): nil for none. A state
+// that still encodes past dispatch.MaxMarkLocated (a renamed path of
+// control characters or U+2028s, six bytes each as JSON writes them) is
+// kept as unknown, saying why, never dropped.
 func locatedJSON(st *locatedState) json.RawMessage {
 	if st == nil {
 		return nil
 	}
-	b, err := json.Marshal(st)
-	if err != nil || len(b) > dispatch.MaxMarkLocated {
-		return nil
+	encode := func(st *locatedState) []byte {
+		var buf bytes.Buffer
+		enc := json.NewEncoder(&buf)
+		enc.SetEscapeHTML(false)
+		if enc.Encode(st) != nil {
+			return nil
+		}
+		return bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
 	}
-	return b
+	if b := encode(st); b != nil && len(b) <= dispatch.MaxMarkLocated {
+		return b
+	}
+	return encode(&locatedState{State: locatedUnknown, Why: "where the lines are is longer than a mark keeps: the renamed path, as JSON writes it, is past the bound"})
 }
 
 // newestResult is the newest result commit of the task in the chain
