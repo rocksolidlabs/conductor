@@ -626,3 +626,39 @@ func TestRecordMarksNameEveryRecordsChain(t *testing.T) {
 		t.Fatalf("the marks with a record unreadable: %+v %v", marks, err)
 	}
 }
+
+// MemberOf finds the run whose record names a session as a member's; a
+// record that cannot be read could name it, so with none found it is the
+// error, never "not a member"; a readable record naming it wins over it.
+func TestMemberOfReadsEveryRecord(t *testing.T) {
+	rs, dir := newRecords(t)
+	r := Run{ID: "team-0badf00d", CrewID: "team", Name: "team", StartedAt: time.Now().UTC(), State: RunStopped,
+		Members: []MemberState{{Name: "lead", AgentID: "claude", SessionID: "s1", Status: MemberEnded}}}
+	if err := rs.Save(r); err != nil {
+		t.Fatal(err)
+	}
+	if run, member, err := rs.MemberOf("s1"); err != nil || run != r.ID || member != "lead" {
+		t.Fatalf("s1: %q %q %v", run, member, err)
+	}
+	if run, _, err := rs.MemberOf("s2"); err != nil || run != "" {
+		t.Fatalf("s2: %q %v", run, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "team-0dead0ff.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if run, _, err := rs.MemberOf("s2"); err == nil || run != "" || !strings.Contains(err.Error(), "team-0dead0ff.json") {
+		t.Fatalf("s2 beside an unreadable record: %q %v", run, err)
+	}
+	if run, _, err := rs.MemberOf("s1"); err != nil || run != r.ID {
+		t.Fatalf("s1 beside an unreadable record: %q %v", run, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notes.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "team-0dead0ff.json")); err != nil {
+		t.Fatal(err)
+	}
+	if run, _, err := rs.MemberOf("s2"); err != nil || run != "" {
+		t.Fatalf("s2 beside a file that is no record: %q %v", run, err)
+	}
+}

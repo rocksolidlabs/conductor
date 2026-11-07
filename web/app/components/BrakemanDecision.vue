@@ -73,25 +73,7 @@ function press(command: TaskCommand) {
 <template>
   <div class="flex flex-col gap-2 rounded-md border border-default p-3" data-brief-decision :data-decision-about="item.about">
     <p class="text-sm font-medium text-highlighted" data-decision-question>{{ item.question }}</p>
-    <dl class="grid gap-x-3 gap-y-1 text-sm sm:grid-cols-[max-content_1fr]">
-      <dt class="text-muted">What happened</dt>
-      <dd data-decision-happened>{{ item.happened }}</dd>
-      <dt class="text-muted">Why a person</dt>
-      <dd>{{ item.whyHuman }}</dd>
-      <dt class="text-muted">Who answers</dt>
-      <dd data-decision-answerer>{{ ANSWERER }}</dd>
-      <dt class="text-muted">Answering authorizes</dt>
-      <dd data-decision-authorizes>{{ item.authorizes }}</dd>
-    </dl>
-    <ol class="flex flex-col gap-1.5" data-decision-alternatives>
-      <li v-for="(a, i) in item.alternatives" :key="i" class="rounded-md bg-elevated/40 px-2 py-1.5 text-sm" :data-alternative="i">
-        <span class="font-medium">{{ a.label }}</span>
-        <UBadge v-if="recommended === i" label="Brakeman recommends" color="primary" variant="subtle" size="sm" class="ml-2" data-recommended />
-        <p class="text-xs text-muted">{{ a.tradeoffs }}</p>
-      </li>
-    </ol>
-    <p v-if="recommended < 0" class="text-xs text-muted">Brakeman recommends none of them.</p>
-    <p v-if="item.uncertainty" class="text-xs text-muted">Uncertain: {{ item.uncertainty }}</p>
+    <BrakemanDecisionText :happened="item.happened" :why-human="item.whyHuman" :answerer="ANSWERER" :authorizes="item.authorizes" :alternatives="item.alternatives" :recommended="recommended" :uncertainty="item.uncertainty" />
     <div v-if="item.blocked?.length" class="flex flex-wrap items-center gap-1.5 text-xs text-muted">
       <span>Blocked until it is decided:</span>
       <BrakemanRefChip v-for="r in item.blocked" :key="r" :ref-name="r" :resolution="refs.get(r)" />

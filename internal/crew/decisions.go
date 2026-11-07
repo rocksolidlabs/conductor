@@ -1981,7 +1981,7 @@ func (e *Engine) supersede(ctx context.Context, r *run, n int64, at subjectAt, w
 		return "", nil
 	}
 	done := ""
-	err = e.commitHeld(context.Background(), r, false, nil, func() tx {
+	err = e.commitHeld(context.Background(), r, notFirst, nil, func() tx {
 		d := r.decisionN(n)
 		if r.stopping || r.ctx.Err() != nil || d == nil || d.state != ledger.DecisionOpen || !e.sameSubject(r, d, at) {
 			return tx{}

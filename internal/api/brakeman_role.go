@@ -241,7 +241,7 @@ func (d *brakemanDesk) drainSources() {
 	for sid := range questions {
 		d.holdQuestion(ctx, adm, sid, time.Duration(cfg.Wake.QuestionMinutes)*time.Minute)
 	}
-	if tickets && !d.readTickets(ctx, adm) {
+	if tickets && !d.readTickets(ctx) {
 		failed = true
 	}
 	if failed {
@@ -469,11 +469,18 @@ var derivedOp = regexp.MustCompile(`^bk[0-9a-f]{30}$`)
 // moves past a change only once its wake is written: a read or a write
 // that fails leaves it there, noted for the next pass, and answers false.
 // A pass reads at most its pages; the changes past them are noted and
-// read on the next pass, which it asks for at once.
-func (d *brakemanDesk) readTickets(ctx context.Context, adm *refResolver) bool {
+// read on the next pass, which it asks for at once. Each page is judged
+// under the configuration read after it: a change in the page was
+// committed before that read, so a scope or visibility narrowed before
+// the change is the one it meets, never the pass's own configuration,
+// read before the feed was.
+func (d *brakemanDesk) readTickets(ctx context.Context) bool {
 	ds := d.s.dispatch
 	if ds == nil {
 		return true
+	}
+	if f := d.beforeFeed.Load(); f != nil {
+		(*f)()
 	}
 	d.src.mu.Lock()
 	after, size, pages := d.src.ticketSeq, d.src.ticketPage, d.src.ticketPages
@@ -491,6 +498,24 @@ func (d *brakemanDesk) readTickets(ctx context.Context, adm *refResolver) bool {
 			d.s.log.Warn("Brakeman's role could not read Dispatch's changes: it tries again", "err", err)
 			return stop()
 		}
+		if len(page) == 0 {
+			return true
+		}
+		cfg, err := d.st.Config()
+		if err != nil {
+			d.s.log.Warn("Brakeman's role could not read its configuration: it tries again", "err", err)
+			return stop()
+		}
+		if !cfg.Background() {
+			// Turned off since the pass began: as drainSources does when
+			// off, the feed is read on from its newest commit, and a ticket
+			// made ready meanwhile wakes nothing.
+			d.src.mu.Lock()
+			d.src.ticketSeq = max(d.src.ticketSeq, d.src.ticketTop, page[len(page)-1].Seq)
+			d.src.mu.Unlock()
+			return true
+		}
+		adm := d.s.wakeResolver(d.st, cfg)
 		for _, c := range page {
 			if c.Entity == "ticket" && c.Field == "status" && c.Ticket != "" && c.Actor != brakemanMember && !derivedOp.MatchString(c.OpID) {
 				status, err := ds.ChangeValue(ctx, c.Seq)

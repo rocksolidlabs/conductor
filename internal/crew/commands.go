@@ -580,9 +580,17 @@ func (e *Engine) TaskCommands(runID, taskID string) (TaskCommandSet, error) {
 	if t == nil {
 		return TaskCommandSet{}, ErrTaskNotFound
 	}
-	out := TaskCommandSet{Commands: []string{}, Revision: r.revision, Task: r.taskStateOf(t)}
+	out := e.commandsOf(r, t)
+	out.Task = r.taskStateOf(t)
+	return out, nil
+}
+
+// commandsOf is TaskCommands for r's task t, without the task's state.
+// The caller holds e.mu.
+func (e *Engine) commandsOf(r *run, t *task) TaskCommandSet {
+	out := TaskCommandSet{Commands: []string{}, Revision: r.revision}
 	if e.ledger == nil || !r.managed || r.unrecorded() || r.foreign || e.continued(r) != nil {
-		return out, nil
+		return out
 	}
 	for _, name := range []string{TaskRetry, TaskAccept, TaskCancel} {
 		a, err := taskCommandCheck(r, name, t)
@@ -597,7 +605,20 @@ func (e *Engine) TaskCommands(runID, taskID string) (TaskCommandSet, error) {
 			out.RetryStart = r.startCommit(t)
 		}
 	}
-	return out, nil
+	return out
+}
+
+// withCommands puts in the run's read out (Get, GetWithDiffs, List) the task commands each of r's
+// tasks allows (TaskState.Commands), as TaskCommands judges them, so the
+// run page offers what the engine takes. The caller holds e.mu.
+func (e *Engine) withCommands(r *run, out *Run) {
+	for i, t := range r.tasks {
+		if i < len(out.Tasks) {
+			if c := e.commandsOf(r, t).Commands; len(c) > 0 {
+				out.Tasks[i].Commands = c
+			}
+		}
+	}
 }
 
 // taskCommandCheck is the task command name's precondition on t of the
@@ -1044,6 +1065,9 @@ func (e *Engine) TaskOf(runID, taskID string) (TaskState, []AttemptState, error)
 		return TaskState{}, nil, ErrTaskNotFound
 	}
 	st := r.taskStateOf(t)
+	if c := e.commandsOf(r, t).Commands; len(c) > 0 {
+		st.Commands = c
+	}
 	attempts := make([]AttemptState, 0, len(t.attempts))
 	for _, a := range t.attempts {
 		as := r.attemptState(a)

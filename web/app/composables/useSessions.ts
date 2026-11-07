@@ -1,3 +1,4 @@
+import { itemOf, type InboxItem, type InboxPage, type InboxTrack } from '~/utils/inbox'
 import type { ChatMessage, ActivityEntry, AgentBrowser, Attention, AttentionKind, AttentionOption, OpenEvent, Role } from '~/utils/protocol'
 import type { Receipt } from '~/utils/tasks'
 import { toCrewInput, toCrewMember } from '~/utils/crews'
@@ -553,6 +554,11 @@ export interface RunTask {
   importedFrom?: string
   /** What the attempt in flight says stops it (#334, row 10), until it works on or ends. */
   blocker?: { reason: string; message?: string; by: string; at: string }
+  /**
+   * The task commands its state allows now, as the engine judges them (`crew.TaskCommands`, the decision inbox's too): retry, accept,
+   * cancel, in that order; absent for none and in a record. The run page offers these and no others (taskActions).
+   */
+  commands?: Array<'retry' | 'accept' | 'cancel'>
   /** The person accountable for its outcome in the crew as launched, and how: the task names them, or the crew's acceptance owner; absent for no one. */
   owner?: string
   ownerFrom?: 'task' | 'acceptance'
@@ -962,6 +968,13 @@ export function useSessions() {
      */
     pauseRun: (runId: string, paused: boolean, body: { commandId: string; expectedRevision?: number }) =>
       request<{ receipt: Receipt }>(`/api/runs/${encodeURIComponent(runId)}/${paused ? 'pause' : 'unpause'}`, { method: 'POST', body }),
+    /** The decision inbox (Program item MB0): a page of the open items, oldest first; `after` the cursor a page's `next` gave. */
+    inbox: (after?: string) => request<InboxPage>('/api/inbox', after ? { query: { after } } : {}),
+    /** One item of the inbox whole, with its actions; for one no longer open, as it is now, with its delivery. */
+    inboxItem: (ref: string) => request<{ item: InboxItem }>('/api/inbox/item', { query: { ref } }).then((r) => itemOf(r.item)),
+    /** The four steps of one action, from its receipt: a command's id, an operation's id, or a question's id with the answer's request id. */
+    inboxTrack: (ref: string, receipt: string, attempt?: string) =>
+      request<InboxTrack>('/api/inbox/track', { query: { ref, receipt, ...(attempt ? { attempt } : {}) } }),
     /** Cancels, retries or accepts a task of a managed run, as a command with a receipt; a refusal is a 409 carrying the receipt. */
     taskCommand: (runId: string, taskId: string, command: 'cancel' | 'retry' | 'accept', body: { commandId: string; expectedRevision?: number }) =>
       request<{ receipt: Receipt }>(`/api/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}/${command}`, { method: 'POST', body }),
