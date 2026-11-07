@@ -4,6 +4,9 @@ import { ApiError } from './useApi'
 import type { RunSummary, TicketRunEntry, TicketRunsPage } from './useDispatch'
 import type { RunInfo, SessionInfo } from './useSessions'
 import { DispatchOrder } from '../utils/dispatchOrder'
+// Imported with the file, not inside a test: a module loaded in a test is loaded on the test's 5 s, which a loaded machine spends on the
+// load alone. Its auto-imports are globals read when it is called, stubbed below.
+import { useTicketRuns } from './useTicketRuns'
 
 // A ticket page's Runs (Program item DS2, PR-11) wired to a live store and an API the test holds: what in the live store reads the
 // ticket's runs again (a shown run's change, gathered for the window; a live run that continues a record; never a member's question),
@@ -64,7 +67,6 @@ afterEach(() => {
 })
 
 async function section(key = vue.ref('EV-1')) {
-  const { useTicketRuns } = await import('./useTicketRuns')
   const gate = new DispatchOrder()
   const runs = useTicketRuns({ gate, key: () => key.value })
   return { gate, key, runs }
