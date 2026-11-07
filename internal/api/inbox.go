@@ -423,7 +423,11 @@ func keysWords(input string) string {
 // questionItem is the item of the question info shows, false when it
 // shows none an item is made of: not listed, no needs_input with an id,
 // or answered in the terminal. A turn held for the terminal is an item
-// with no answer: the session refuses every reply naming it.
+// with no answer: the session refuses every reply naming it. So is a
+// question that mirrors a durable decision (its attention's Decision,
+// Program item DR1): it is answered on the decision's card, through
+// POST /api/decisions/{did}/respond, and the session refuses every reply
+// naming it (session.ErrDecisionQuestion), so it offers none.
 func (rd *inboxRead) questionItem(info session.Info) (*inboxItem, bool) {
 	a := info.Attention
 	if a.State != session.AttentionNeedsInput || a.ID == "" || a.Answered == session.AnsweredTerminal || info.Status.Ended() {
@@ -458,10 +462,15 @@ func (rd *inboxRead) questionItem(info session.Info) (*inboxItem, bool) {
 	}
 	held := a.Source == session.SourceSubmit
 	it.addRef("session:"+info.ID, "the session "+info.Name+"'s terminal")
-	if held {
+	switch {
+	case held:
 		words := agent + "'s turn is held for keys typed in its terminal: open the terminal to go on"
 		it.Brief, it.Blocking.Words = fitText(words, 2<<10), fitText(words, 500)
-	} else {
+	case a.Decision != "":
+		// The decision's card answers it: no choice, no line.
+		it.Brief = fitText(brief+"; it asks "+a.Decision+", a durable decision, answered on its card, never in the terminal", 2<<10)
+		it.Blocking.Words = fitText(agent+" does nothing until "+a.Decision+" is answered on its card: Answer "+a.Decision+" in its session's bar, on its run page or in Needs you; nothing typed in the terminal answers it", 500)
+	default:
 		it.Brief = fitText(brief, 2<<10)
 		it.Blocking.Words = fitText(agent+" does nothing until it is answered", 500)
 		// The choices, a mode choice last as the reply bar orders them,
