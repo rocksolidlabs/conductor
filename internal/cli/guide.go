@@ -158,6 +158,7 @@ func guideText(raw []byte, how string) (string, error) {
 			// May is a pointer: a server older than the field (#691) sends
 			// none, which is not "nothing may be called".
 			May           *[]string
+			Report        string
 			Limits, Rules []string
 		}
 		if err := json.Unmarshal(env["overview"], &ov); err != nil {
@@ -172,6 +173,11 @@ func guideText(raw []byte, how string) (string, error) {
 			}
 		}
 		fmt.Fprintf(&b, "You are %s; your scopes: %s.\n", who, strings.Join(ov.Caller.Scopes, ", "))
+		// The sentence asking for both, ahead of them (#726); a server
+		// older than the field sends none.
+		if ov.Report != "" {
+			b.WriteString(ov.Report + "\n")
+		}
 		// What it may call now and within what, as the overview names them
 		// (each whole in the operations and limits sections): an agent told
 		// only to call the guide reads them here. An overview without the

@@ -446,6 +446,56 @@ func TestTheOverviewListsWhatTheCallerMayDoAndItsLimits(t *testing.T) {
 	}
 }
 
+// The overview leads with what the caller may call and the limits it
+// keeps, together, after the sentence that asks for both when the agent
+// is asked what it can do (#726: a real Codex told only to call the guide
+// named the operations and left the limits unsaid): report, may and
+// limits are the overview's first fields after the caller, ahead of the
+// sections and the rules, for a crew's member and a session of no crew.
+func TestTheOverviewLeadsWithWhatTheCallerMayCallAndItsLimits(t *testing.T) {
+	e := dispatchEnv(t)
+	_, member, memberTok := e.memberSession(t, "Led")
+	plain := e.createSession("cat")
+	for _, c := range []struct{ sid, tok, op string }{{member, memberTok, "run_status"}, {plain, e.agentToken(plain), "form_crew"}} {
+		status, raw, out := guideOf(t, e, c.tok, "/api/sessions/"+c.sid+"/guide")
+		if status != http.StatusOK {
+			t.Fatalf("%s's overview: %d %s", c.sid, status, raw)
+		}
+		ov := out["overview"].(map[string]any)
+		may, _ := ov["may"].([]any)
+		limits, _ := ov["limits"].([]any)
+		if ov["report"] != guideReport || !slices.Contains(may, any(c.op)) || len(limits) == 0 {
+			t.Fatalf("%s's overview: %v", c.sid, ov)
+		}
+		// The overview's fields in the order they are written.
+		var env struct{ Overview json.RawMessage }
+		if err := json.Unmarshal(raw, &env); err != nil {
+			t.Fatal(err)
+		}
+		var keys []string
+		dec := json.NewDecoder(bytes.NewReader(env.Overview))
+		if _, err := dec.Token(); err != nil {
+			t.Fatal(err)
+		}
+		for dec.More() {
+			k, err := dec.Token()
+			var v json.RawMessage
+			if err != nil || dec.Decode(&v) != nil {
+				t.Fatalf("%s's overview: %v %s", c.sid, err, env.Overview)
+			}
+			keys = append(keys, k.(string))
+		}
+		if want := []string{"caller", "report", "may", "limits", "sections", "rules"}; !slices.Equal(keys, want) {
+			t.Fatalf("%s's overview's fields %v, want %v", c.sid, keys, want)
+		}
+	}
+	for _, w := range []string{"what you can do", "both", "operations you may call", "limits you must keep"} {
+		if !strings.Contains(guideReport, w) {
+			t.Fatalf("the sentence %q says nothing of %q", guideReport, w)
+		}
+	}
+}
+
 // awaitRunMember waits until the run of the Brakeman turn's session sid
 // counts it a member. The session is registered (turnSession) before its
 // run counts it one, which is what run_status needs and the guide asks
