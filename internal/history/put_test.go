@@ -116,6 +116,34 @@ func TestReplaceIsAllOrNothing(t *testing.T) {
 	ftsOK(t, ix)
 }
 
+// A source read in a generation a Clear has since moved is refused
+// (ErrStale) with nothing written; read in the index's generation now, it
+// is written.
+func TestAReplaceAcrossAClearIsStale(t *testing.T) {
+	ctx := context.Background()
+	ix := openIndex(t, t.TempDir(), Options{})
+	gen, err := ix.Generation(ctx)
+	if err != nil || gen == 0 {
+		t.Fatalf("the generation: %d %v", gen, err)
+	}
+	if err := ix.Clear(ctx); err != nil {
+		t.Fatal(err)
+	}
+	wantErr(t, ix.Replace(ctx, Source{Key: "session:s1", Mark: "m1", Generation: gen}, []Entry{chat("session:s1#e1", "s1", "staleword", t0)}, nil), ErrStale)
+	if _, ok, _ := ix.Mark(ctx, "session:s1"); ok {
+		t.Fatal("a stale source's mark was written")
+	}
+	wantKeys(t, ix, "staleword")
+	now, err := ix.Generation(ctx)
+	if err != nil || now == gen {
+		t.Fatalf("the generation after the clear: %d (%d before) %v", now, gen, err)
+	}
+	if err := ix.Replace(ctx, Source{Key: "session:s1", Mark: "m1", Generation: now}, []Entry{chat("session:s1#e1", "s1", "staleword", t0)}, nil); err != nil {
+		t.Fatal(err)
+	}
+	wantKeys(t, ix, "staleword", "session:s1#e1")
+}
+
 // Remove takes a source's entries, links and search rows with it, and
 // leaves the other sources' as they were.
 func TestRemoveCascades(t *testing.T) {
