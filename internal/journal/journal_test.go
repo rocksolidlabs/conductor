@@ -898,7 +898,7 @@ func TestTheHeadAtEveryBoundLeavesRoom(t *testing.T) {
 		Launch: LaunchOf(args, env, true, true), Crew: &Crew{RunID: q, CrewID: q, Member: q, Task: q, Attempt: 1 << 30, Brakeman: q}, ResumedFrom: q,
 		StartedAt: time.Now(), EndedAt: time.Now(), LostAt: time.Now(), Ending: q, Reopened: 1 << 30, Dropped: 1 << 30, Tools: map[string]int{}}
 	for i := range MaxResumes + 4 {
-		r.Resumes = append(r.Resumes, Resume{CommandID: q, Actor: q, Session: q, State: q, Error: q, At: time.Now()})
+		r.Resumes = append(r.Resumes, Resume{CommandID: q, Actor: q, Session: q, State: q, Code: q, Error: q, At: time.Now()})
 		_ = i
 	}
 	fitRecord(&r)

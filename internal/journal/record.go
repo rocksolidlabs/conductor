@@ -143,7 +143,9 @@ const (
 	MaxArg      = 4096
 	maxField    = 200 // an agent's or a host's field, a session's name
 	maxResumeEr = 200
-	maxEnvName  = 128
+	// maxResumeCode bounds a failed receipt's code (Resume.Code).
+	maxResumeCode = 32
+	maxEnvName    = 128
 	// maxHead is what all of a record but its entries and files takes at
 	// most, every field at its bound (TestTheHeadAtEveryBoundLeavesRoom):
 	// the rest of MaxRecord is its entries' and files'.
@@ -321,12 +323,15 @@ type File struct {
 // Resume is the receipt of a resume from the record: its command id, its
 // actor, the session id allocated for it, its state and why it failed.
 type Resume struct {
-	CommandID string    `json:"commandId"`
-	Actor     string    `json:"actor,omitempty"`
-	Session   string    `json:"session,omitempty"`
-	State     string    `json:"state"`
-	Error     string    `json:"error,omitempty"`
-	At        time.Time `json:"at"`
+	CommandID string `json:"commandId"`
+	Actor     string `json:"actor,omitempty"`
+	Session   string `json:"session,omitempty"`
+	State     string `json:"state"`
+	// Code is a failed receipt's refusal, the code its route answered
+	// with; Error says why in words.
+	Code  string    `json:"code,omitempty"`
+	Error string    `json:"error,omitempty"`
+	At    time.Time `json:"at"`
 }
 
 // open says the record has no end, observed or not.
@@ -482,7 +487,7 @@ func fitRecord(r *Record) {
 	for i := range r.Resumes {
 		x := &r.Resumes[i]
 		x.CommandID, x.Actor, x.Session = fitPath(x.CommandID, 32), fitPath(x.Actor, MaxID), fitPath(x.Session, 16)
-		x.State, x.Error = fitPath(x.State, 16), fitPath(x.Error, maxResumeEr)
+		x.State, x.Code, x.Error = fitPath(x.State, 16), fitPath(x.Code, maxResumeCode), fitPath(x.Error, maxResumeEr)
 	}
 	if r.Entries == nil {
 		r.Entries = []Entry{}
