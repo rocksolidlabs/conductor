@@ -30,6 +30,7 @@ func keyedSource(e *testEnv) {
 	src["signal"] = map[string]any{"kind": "hook", "toolEvents": true, "workingTitle": "^Working"}
 	src["yolo"] = map[string]any{"args": []string{"--yes"}, "env": map[string]string{"YOLO": "1"}}
 	src["trustPrompt"] = `Trust\?`
+	src["promptShape"] = `(?m)^› .*\z`
 	src["trustAnswers"] = []map[string]any{{"label": "Yes", "input": "y"}, {"label": "No", "input": "n"}}
 	src["questions"] = []map[string]any{{"prompt": "Hooks need review", "answers": []map[string]any{{"label": "Allow", "input": "1"}}}}
 	src["session"] = map[string]any{"startArgs": []string{"--session-id", "{id}"}, "idFrom": "hook", "resumeArgs": []string{"--resume", "{id}"}, "idPattern": "^[0-9a-f-]+$"}
@@ -85,6 +86,7 @@ func TestCatalogCloneCopiesTheWholeAgent(t *testing.T) {
 		Signal:       &catalog.Signal{Kind: catalog.SignalHook, ToolEvents: true, WorkingTitle: "^Working"},
 		Yolo:         &catalog.Yolo{Args: []string{"--yes"}, Env: map[string]string{"YOLO": "1"}},
 		TrustPrompt:  `Trust\?`,
+		PromptShape:  `(?m)^› .*\z`,
 		TrustAnswers: []catalog.Answer{{Label: "Yes", Input: "y"}, {Label: "No", Input: "n"}},
 		Questions:    []catalog.Question{{Prompt: "Hooks need review", Answers: []catalog.Answer{{Label: "Allow", Input: "1"}}}},
 		Session:      &catalog.SessionRecipe{StartArgs: []string{"--session-id", "{id}"}, IDFrom: "hook", ResumeArgs: []string{"--resume", "{id}"}, IDPattern: "^[0-9a-f-]+$"},

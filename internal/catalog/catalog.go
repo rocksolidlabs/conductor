@@ -51,6 +51,16 @@ type Agent struct {
 	// most 200 bytes, never matching an empty text; empty in a saved
 	// override takes the replaced agent's.
 	TrustPrompt string `json:"trustPrompt,omitempty"`
+	// PromptShape matches the agent's own prompt at rest, by its shape, on
+	// its whole screen (rows joined by line breaks, a row autowrap went on
+	// from read with the next as one, every other Unicode space read as a
+	// plain one): a Brakeman turn's line, and its
+	// Enter, are typed only while the screen matches, never into anything
+	// else (#714); a screen that shows a dialog's numbered choice is never
+	// the prompt, shape or none. As TrustPrompt; empty, that rule alone
+	// keeps the line out, and empty in a saved override takes the replaced
+	// agent's.
+	PromptShape string `json:"promptShape,omitempty"`
 	// TrustAnswers are the answers to that question as the choices a page
 	// offers for it (the session page's reply bar, the sidebar's row, the
 	// chat): each a label and the keys that pick it, the trusting answer
@@ -395,6 +405,11 @@ func validate(a Agent) error {
 			return fmt.Errorf("agent %s: trustPrompt: %w", a.ID, err)
 		}
 	}
+	if a.PromptShape != "" {
+		if _, err := CompilePattern(a.PromptShape); err != nil {
+			return fmt.Errorf("agent %s: promptShape: %w", a.ID, err)
+		}
+	}
 	if err := validateTrustAnswers(a.TrustAnswers); err != nil {
 		return fmt.Errorf("agent %s: trustAnswers: %w", a.ID, err)
 	}
@@ -677,7 +692,7 @@ func (c *Catalog) ApplyOverlay(o Overlay) error {
 }
 
 // inherit returns a, an agent saved over prev (had says there was one), with
-// what it leaves to prev filled in: an adapter, a signal (or its working title), a site, a yolo recipe, a trust prompt or a browser it omits,
+// what it leaves to prev filled in: an adapter, a signal (or its working title), a site, a yolo recipe, a trust prompt, a prompt shape or a browser it omits,
 // and every env value it holds as RedactedValue. The Agents page stores the
 // mask for a key whose value the editor did not change, so a value changed in
 // the config reaches the agent. A value equal to prev's counts as the mask: it
@@ -708,6 +723,9 @@ func inherit(a, prev Agent, had bool) Agent {
 		}
 		if a.TrustPrompt == "" {
 			a.TrustPrompt = prev.TrustPrompt
+		}
+		if a.PromptShape == "" {
+			a.PromptShape = prev.PromptShape
 		}
 		if a.TrustAnswers == nil {
 			a.TrustAnswers = append([]Answer(nil), prev.TrustAnswers...)

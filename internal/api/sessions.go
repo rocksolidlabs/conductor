@@ -294,6 +294,15 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	if err != nil {
 		return nil, newAPIError(http.StatusInternalServerError, "invalid_agent", err.Error())
 	}
+	// Its prompt at rest, the one screen a Brakeman turn's line is typed
+	// into (session.Submission.OnlyAtPrompt). A server session's alone: no
+	// host types such a line, so the hosts' recipe does not carry it.
+	var promptShape *regexp.Regexp
+	if agent.PromptShape != "" {
+		if promptShape, err = catalog.CompilePattern(agent.PromptShape); err != nil {
+			return nil, newAPIError(http.StatusInternalServerError, "invalid_agent", "the agent's prompt shape is invalid")
+		}
+	}
 	id := req.id
 	if id == "" {
 		id = session.NewID()
@@ -422,6 +431,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		Pattern:         pattern,
 		TrustPattern:    watch.TrustPattern,
 		TrustAnswers:    watch.TrustAnswers,
+		PromptShape:     promptShape,
 		Questions:       watch.Questions,
 		WorkingTitle:    watch.WorkingTitle,
 		ConfirmSubmit:   watch.ConfirmSubmit,
