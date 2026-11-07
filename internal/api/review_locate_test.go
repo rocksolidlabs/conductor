@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/rocksolidlabs/conductor/internal/dispatch"
 )
 
 // relocate is utils/quote.ts's relocate, on its own fixtures
@@ -50,8 +52,20 @@ func TestLocatedJSONIsWithinTheMarksBound(t *testing.T) {
 	if locatedJSON(nil) != nil {
 		t.Fatal("a general finding's mark keeps a located state")
 	}
-	st := &locatedState{State: locatedRenamed, Path: strings.Repeat(" ", 1024/3), Located: &locatedState{State: locatedMoved, From: 9_999_999, To: 10_000_000}}
+	st := &locatedState{State: locatedRenamed, Path: strings.Repeat(string(rune(0x2028)), 1024/3), Located: &locatedState{State: locatedMoved, From: 9_999_999, To: 10_000_000}}
 	if b := locatedJSON(st); b == nil || !strings.Contains(string(b), `"renamed"`) {
 		t.Fatalf("a renamed state at its bound: %s", b)
+	}
+}
+
+// A finding's path that could name anything outside a commit's tree is
+// located unknown before git, or the repository, is asked.
+func TestLocateRefusesAPathOutsideTheTree(t *testing.T) {
+	l := (&Server{}).newLocator()
+	for _, p := range []string{"../x", "/etc/passwd", "a/../b", "a\x00b", "./a"} {
+		st := l.locate(t.Context(), dispatch.Finding{Kind: dispatch.FindingKindFile, Path: p, AnchorCommit: strings.Repeat("a", 40)}, dispatch.Candidate{Run: "r", Commit: strings.Repeat("b", 40)})
+		if st == nil || st.State != locatedUnknown {
+			t.Fatalf("%q: %+v", p, st)
+		}
 	}
 }

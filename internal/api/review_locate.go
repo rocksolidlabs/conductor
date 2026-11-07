@@ -232,6 +232,10 @@ func (l *locator) locate(ctx context.Context, f dispatch.Finding, c dispatch.Can
 	if f.AnchorCommit == c.Commit {
 		return &locatedState{State: locatedSame}
 	}
+	if !validTreePath(f.Path) {
+		// Refused before git sees it, as the diff routes refuse one.
+		return &locatedState{State: locatedUnknown, Why: "the path is none a commit's tree holds"}
+	}
 	repo, err := l.repoOf(ctx, c.Run)
 	if err != nil {
 		return &locatedState{State: locatedUnknown, Why: "the run's repository cannot be read here"}

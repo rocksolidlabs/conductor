@@ -1254,7 +1254,7 @@ func TestReviewRepliesAtTheCombinedBounds(t *testing.T) {
 	if err != nil || rc.Status != dispatch.StatusDone {
 		t.Fatalf("the review at its bounds: %+v %v", rc, err)
 	}
-	note := strings.Repeat(" ", dispatch.MaxMarkNote)
+	note := strings.Repeat(string(rune(0x2028)), dispatch.MaxMarkNote)
 	located := mustMarshal(t, locatedState{State: locatedRenamed, Path: strings.Repeat("p", dispatch.MaxMarkLocated-200), Located: &locatedState{State: locatedMoved, From: 1, To: 2}})
 	later := candName(run, "build", 2, strings.Repeat("e", 40))
 	for _, f := range v.Findings {
