@@ -130,6 +130,10 @@ type brakemanDesk struct {
 	// admit let go, before the save's step in the role (Reconfigured),
 	// with what the save changed: a test's gate, nil otherwise.
 	afterSave atomic.Pointer[func(crew.RoleChange)]
+	// beforeFeed runs in the role's pass once it has read its
+	// configuration and before it reads Dispatch's change feed
+	// (readTickets): a test's gate, nil otherwise.
+	beforeFeed atomic.Pointer[func()]
 	// recovered says the desk holds the records' queue as their owner: set
 	// once the store is this server's and the queue is read from it (at
 	// open for a store that took the owner lock then, in OnOwned's
@@ -829,10 +833,16 @@ func (d *brakemanDesk) heldAtStartup(t *deskTurn, req brakeman.Request) string {
 // server within waited: what its screen shows (screenWords), or that no
 // session of it was started. The turn ends and its run is stopped; what
 // was typed into the screen before (the request's line, once the screen
-// was quiet, as for any agent) is all it was given.
+// was quiet and its screen was its agent's prompt) is all it was given.
+//
+// A turn whose line was never typed because its agent's screen was not
+// recognised as its prompt (crew.UnknownScreen: a dialog the catalog does
+// not know) says so, with the screen's words: no key reached it, and a
+// person answers it in a session of that agent.
 func (d *brakemanDesk) notStarted(t *deskTurn, waited time.Duration) string {
 	d.mu.Lock()
 	locals := liveLocals(t.locals)
+	runID := t.runID
 	d.mu.Unlock()
 	shown := "no session of it had started"
 	if len(locals) > 0 {
@@ -844,11 +854,28 @@ func (d *brakemanDesk) notStarted(t *deskTurn, waited time.Duration) string {
 	}
 	mins := max(1, int(waited.Round(time.Minute)/time.Minute))
 	why := fmt.Sprintf("the agent did not start in %d minutes, no call to Conductor (signed out, or held at a screen Conductor does not know?); %s: sign it in or answer it in a session of that agent; Brakeman tries again by itself, or ask it now", mins, shown)
+	if len(locals) > 0 && d.atUnknownScreen(runID, locals[0]) {
+		why = fmt.Sprintf("the agent's screen was not recognised, neither its prompt nor a startup screen Conductor knows, so its request's line was not typed in %d minutes; %s: answer it in a session of that agent; Brakeman tries again by itself, or ask it now", mins, shown)
+	}
 	for len(why) > brakeman.MaxWhy {
 		_, n := utf8.DecodeLastRuneInString(why)
 		why = why[:len(why)-n]
 	}
 	return why
+}
+
+// atUnknownScreen reports whether the engine holds the line of the turn's
+// run runID at a screen not recognised as the agent's prompt
+// (crew.UnknownScreen, MemberState.Unrecognised), its member's session l
+// showing no startup question the catalog knows. A run the engine no
+// longer holds, or a member whose line was typed, is not.
+func (d *brakemanDesk) atUnknownScreen(runID string, l *session.Local) bool {
+	run, ok := d.s.runs.Get(runID)
+	if runID == "" || !ok || len(run.Members) == 0 || !run.Members[0].Unrecognised {
+		return false
+	}
+	att := l.Info().Attention
+	return att.State != session.AttentionNeedsInput || att.Source != session.SourceTrust
 }
 
 // screenLinks are the links a screen read shows, left out of a turn's

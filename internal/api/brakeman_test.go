@@ -50,8 +50,12 @@ type bkEnv struct {
 // logged-out CLI does), bkcodex (Codex's adapter: its read-only mode
 // does not hold), bkfixed (bkScript, an entry that takes no extra
 // arguments), bksignin (a signed-out Claude Code at its sign-in screen),
-// bkupdate (an agent at its update dialog) and bkunknown (an agent at a
-// full-screen prompt no catalog entry knows).
+// bkupdate (an agent at its update dialog), bkunknown (an agent at a
+// full-screen prompt no catalog entry knows), bkdialog (an agent at a
+// dialog no catalog entry knows), bkprompt and bkcodexprompt (Claude Code
+// and Codex at their prompts), bktheme and bklogin (Claude Code's
+// first-run theme and login screens). The scripted Claude Code and Codex carry their
+// built-ins' prompt shapes (builtInShape); bk has none.
 func brakemanEnv(t *testing.T, mutate func(*config.Config)) *bkEnv {
 	t.Helper()
 	e := newTestEnvAgents(t, mutate, slog.New(slog.NewTextHandler(io.Discard, nil)), bkAgents())
@@ -66,9 +70,14 @@ func bkAgents() []catalog.Agent {
 		{ID: "bkexit", Name: "bkexit", Command: []string{"/bin/sh", "-c", "echo 'Please run /login'; exit 3"}, Adapter: "claude", AllowArgs: true},
 		{ID: "bkcodex", Name: "bkcodex", Command: []string{"/bin/sh", "-c", "exec cat"}, Adapter: "codex", AllowArgs: true},
 		{ID: "bkfixed", Name: "bkfixed", Command: []string{"/bin/sh", "-c", bkScript}, Adapter: "claude"},
-		{ID: "bksignin", Name: "bksignin", Command: []string{"/bin/sh", "-c", bkSignInScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("claude")},
+		{ID: "bksignin", Name: "bksignin", Command: []string{"/bin/sh", "-c", bkSignInScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("claude"), PromptShape: builtInShape("claude")},
 		{ID: "bkupdate", Name: "bkupdate", Command: []string{"/bin/sh", "-c", bkUpdateScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("codex")},
-		{ID: "bkunknown", Name: "bkunknown", Command: []string{"/bin/sh", "-c", bkUnknownScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("claude")},
+		{ID: "bkunknown", Name: "bkunknown", Command: []string{"/bin/sh", "-c", bkUnknownScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("claude"), PromptShape: builtInShape("claude")},
+		{ID: "bkdialog", Name: "bkdialog", Command: []string{"/bin/sh", "-c", bkDialogScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("claude"), PromptShape: builtInShape("claude")},
+		{ID: "bkprompt", Name: "bkprompt", Command: []string{"/bin/sh", "-c", bkPromptScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("claude"), PromptShape: builtInShape("claude")},
+		{ID: "bktheme", Name: "bktheme", Command: []string{"/bin/sh", "-c", bkThemeScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("claude"), PromptShape: builtInShape("claude")},
+		{ID: "bklogin", Name: "bklogin", Command: []string{"/bin/sh", "-c", bkLoginScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("claude"), PromptShape: builtInShape("claude")},
+		{ID: "bkcodexprompt", Name: "bkcodexprompt", Command: []string{"/bin/sh", "-c", bkCodexPromptScript}, Adapter: "codex", AllowArgs: true, Questions: builtInQuestions("codex"), PromptShape: builtInShape("codex")},
 	}
 }
 
@@ -99,6 +108,41 @@ const bkUpdateScript = bkRecord + `printf "  Update available! 0.1.0 -> 0.2.0\r\
 // alternate screen, a box, a link, and it waits, never reading its
 // request, its terminal kept as bkSignInScript's is.
 const bkUnknownScript = bkRecord + `printf "\033[?1049h\033[2J\033[H  Acme Agent 9.0\r\n\r\n  You are not signed in.\r\n  Open https://example.invalid/device?code=ABCD to continue\r\n\r\n  [ Sign in ]   [ Quit ]"; ` + bkKeep
+
+// bkDialogScript is an agent that opens on a dialog no catalog entry
+// knows, its first choice highlighted as Claude Code highlights one (a
+// version's new sign-in menu): an Enter would pick it. It waits with its
+// terminal kept as bkSignInScript's is: no key may reach it.
+const bkDialogScript = bkRecord + `printf "  Select a sign-in method\r\n\r\n ❯ 1. Acme account with subscription\r\n   2. Acme Console account\r\n\r\n  Enter to confirm\r\n"; ` + bkKeep
+
+// bkPromptScript is an agent at its prompt as Claude Code 2.1.319 draws
+// it in a PTY (#714): its banner, a rule, a ❯ row with a no-break space
+// after the marker and a "Try …" placeholder, a rule, its footer. Its
+// terminal is kept as bkSignInScript's is.
+const bkPromptScript = bkRecord + `r=$(printf '─%.0s' $(seq 60)); printf " ▐▛███▛█   Claude Code v2.1.319\r\n\r\n%s\r\n❯\302\240Try \"create a util logging.py that...\"\r\n%s\r\n  ? for shortcuts\r\n" "$r" "$r"; ` + bkKeep
+
+// bkCodexPromptScript is Codex 0.163.0 at its composer as it draws it in a
+// PTY (#714): a › row with its placeholder, its status line and its
+// footer. Its terminal is kept as bkSignInScript's is.
+const bkCodexPromptScript = bkRecord + `printf "  >_ OpenAI Codex (v0.163.0)\r\n\r\n› Ask Codex to do anything\r\n\r\n  GPT-6 xhigh · Context 0%% used\r\n  ? for shortcuts\r\n"; ` + bkKeep
+
+// bkThemeScript and bkLoginScript are Claude Code 2.1.319's first two
+// screens on an account folder never used, as #659's third live check
+// captured them: its theme picker (no numbered row, a choice highlighted)
+// and its login-method screen. Each waits with its terminal kept as
+// bkSignInScript's is: no key may reach it.
+const bkThemeScript = bkRecord + `printf "Welcome to Claude Code v2.1.319\r\n Let's get started.\r\n Choose the text style that looks best with your terminal\r\n To change this later, run /theme\r\n     Auto (match terminal)\r\n ❯ ✔ Dark mode\r\n     Light mode\r\n     Dark mode (colorblind-friendly)\r\n"; ` + bkKeep
+
+const bkLoginScript = bkRecord + `printf "Welcome to Claude Code v2.1.319\r\n Claude Code can be used with your Claude subscription or billed based on API\r\n usage through your Console account.\r\n Select login method:\r\n ❯ 1. Claude account with subscription · Individual, Team, or Enterprise\r\n   2. Anthropic Console account · API usage billing\r\n"; ` + bkKeep
+
+// builtInShape is the built-in agent id's prompt shape, the catalog's own.
+func builtInShape(id string) string {
+	a, ok := catalog.Default().Get(id)
+	if !ok || a.PromptShape == "" {
+		panic("no prompt shape of a built-in " + id)
+	}
+	return a.PromptShape
+}
 
 // builtInQuestions is the built-in agent id's startup questions, the
 // catalog's own, so a scripted agent is held by the patterns that ship.

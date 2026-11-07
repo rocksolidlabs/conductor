@@ -290,6 +290,15 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	if err != nil {
 		return nil, newAPIError(http.StatusInternalServerError, "invalid_agent", err.Error())
 	}
+	// Its prompt at rest, the one screen a Brakeman turn's line is typed
+	// into (session.Submission.OnlyAtPrompt). A server session's alone: no
+	// host types such a line, so the hosts' recipe does not carry it.
+	var promptShape *regexp.Regexp
+	if agent.PromptShape != "" {
+		if promptShape, err = catalog.CompilePattern(agent.PromptShape); err != nil {
+			return nil, newAPIError(http.StatusInternalServerError, "invalid_agent", "the agent's prompt shape is invalid")
+		}
+	}
 	id := session.NewID()
 	agentToken, _ := share.NewToken()
 	notifyURL := s.notifyBase() + "/api/sessions/" + id + "/attention"
@@ -348,6 +357,9 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		where = ext.WhereNative
 	}
 	rev, repo := s.launchRevision(where, cwd, dirFile)
+	// From before its process starts until this returns, a report for id
+	// waits for the registry to hold it (launching.go).
+	defer s.starting.begin(id)()
 	term, err := rt.StartTerminal(startCtx, ext.TerminalSpec{
 		Argv:    argv,
 		Dir:     cwd,
@@ -363,6 +375,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		s.log.Warn("session start failed", "agent", agent.ID, "err", err)
 		return nil, newAPIError(http.StatusBadGateway, "start_failed", "could not start the agent process")
 	}
+	s.launchSeam("started", id)
 	info := session.Info{
 		ID:           id,
 		Name:         name,
@@ -411,6 +424,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		Pattern:         pattern,
 		TrustPattern:    watch.TrustPattern,
 		TrustAnswers:    watch.TrustAnswers,
+		PromptShape:     promptShape,
 		Questions:       watch.Questions,
 		WorkingTitle:    watch.WorkingTitle,
 		ConfirmSubmit:   watch.ConfirmSubmit,
@@ -543,6 +557,7 @@ func (s *Server) openCwd(cwd string) (*session.Folder, error) {
 	if err != nil {
 		return nil, err
 	}
+	var opened error // an open through a root that holds it, failed
 	launchHook("resolved")
 	for _, root := range s.cfg.AllowedRoots {
 		rootReal, err := filepath.EvalSymlinks(root)
@@ -559,12 +574,36 @@ func (s *Server) openCwd(cwd string) (*session.Folder, error) {
 			continue
 		}
 		launchHook("root")
-		if f, err := session.OpenFolderIn(rootReal, rel, want); err == nil {
+		f, err := session.OpenFolderIn(rootReal, rel, want)
+		if err == nil {
 			return f, nil
 		}
+		opened = err
 	}
-	return nil, errors.New("working directory is outside the allowed roots")
+	if opened == nil {
+		opened = errOutsideRoots
+	}
+	return nil, &cwdError{"working directory is outside the allowed roots", opened}
 }
+
+// errOutsideRoots and errNotADirectory are why resolveCwd and openCwd
+// refuse a folder that is there: one outside every allowed root, a path
+// that is not a directory.
+var (
+	errOutsideRoots  = errors.New("outside the allowed roots")
+	errNotADirectory = errors.New("not a directory")
+)
+
+// cwdError is resolveCwd's and openCwd's refusal: its words, and the error
+// of the look that made it (Unwrap), so a caller can tell a folder that is
+// not there from one that could not be read (availability, answerOf).
+type cwdError struct {
+	words string
+	err   error
+}
+
+func (e *cwdError) Error() string { return e.words }
+func (e *cwdError) Unwrap() error { return e.err }
 
 // resolveCwd makes cwd absolute, follows symlinks, and requires it to be an
 // existing directory under one of the allowed roots. A launch opens it
@@ -577,11 +616,14 @@ func (s *Server) resolveCwd(cwd string) (string, error) {
 	}
 	real, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		return "", errors.New("working directory does not exist")
+		return "", &cwdError{"working directory does not exist", err}
 	}
 	fi, err := os.Stat(real)
-	if err != nil || !fi.IsDir() {
-		return "", errors.New("working directory is not a directory")
+	if err == nil && !fi.IsDir() {
+		err = errNotADirectory
+	}
+	if err != nil {
+		return "", &cwdError{"working directory is not a directory", err}
 	}
 	for _, root := range s.cfg.AllowedRoots {
 		rootReal, err := filepath.EvalSymlinks(root)
@@ -592,7 +634,7 @@ func (s *Server) resolveCwd(cwd string) (string, error) {
 			return real, nil
 		}
 	}
-	return "", errors.New("working directory is outside the allowed roots")
+	return "", &cwdError{"working directory is outside the allowed roots", errOutsideRoots}
 }
 
 func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {

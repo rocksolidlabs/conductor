@@ -160,6 +160,11 @@ var (
 	errNotReady = errors.New("not ready")
 )
 
+// UnknownScreen is what a Brakeman turn's run log says of a member whose
+// screen is not recognised as its agent's prompt (promptWith): its line is
+// not typed. The Brakeman desk's words of such a turn say the same.
+const UnknownScreen = "shows a screen not recognised as its prompt (not its prompt's shape, a dialog's choices, or no readiness)"
+
 // Diff is what a member's worktree adds and removes against the commit it
 // began from, in lines: tracked changes against the base, uncommitted
 // included (DiffStat).
@@ -188,6 +193,11 @@ type MemberState struct {
 	// session waits on a prompt: a trust question before its prompt, or a
 	// question of its agent's.
 	NeedsInput bool `json:"needsInput,omitempty"`
+	// Unrecognised is set while a Brakeman turn's member's line waits at a
+	// screen not recognised as its agent's prompt (UnknownScreen), and
+	// cleared once the line is typed: what the Brakeman desk's words of
+	// a turn that did not start say. Not in the run's JSON.
+	Unrecognised bool `json:"-"`
 	// Task and Attempt are the member's latest attempt in a managed run.
 	Task    string `json:"task,omitempty"`
 	Attempt int    `json:"attempt,omitempty"`
@@ -574,6 +584,19 @@ type run struct {
 	// is written again, recorded or told as forgotten, and it is dropped
 	// (dropForeign) with the browsers told to read the id again.
 	foreign bool
+	// discarded says the run was a continuation whose first transaction
+	// did not commit (refused or failed): nothing of it is ever written,
+	// a stop of it included, and it is forgotten (discard) (#623, review
+	// round 1).
+	discarded bool
+	// continuation says the run is a continuation (ContinueRunWith), set
+	// before the engine holds it and never changed. Until its first
+	// transaction commits, it exists for no one else: that transaction,
+	// its own (startContinued), is the only change that writes it, and a
+	// Stop of it is refused as of no such run and unmakes it (Stop). A
+	// refusal before that commit leaves no row of it, by construction
+	// (#623, review round 2).
+	continuation bool
 	// pkg is the launch package of a run launched from a ticket
 	// (LaunchPlanned) or of a continuation of one; nil for any other run.
 	pkg *runPackage
@@ -889,6 +912,8 @@ type prepared struct {
 	man    resolvedManifest
 	// opts are the run's class and request (LaunchNamedWith).
 	opts LaunchOpts
+	// continuation makes the run a continuation (run.continuation).
+	continuation bool
 }
 
 // prepare checks c as LaunchHeld describes and, with worktrees, finds where
@@ -1216,7 +1241,7 @@ func (e *Engine) addRun(c Crew, p prepared, label, id string, pkg *runPackage) (
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &run{crewID: c.ID, name: c.Name, label: label, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation, prefix: p.prefix,
 		yolo: c.Yolo != nil && *c.Yolo, changed: e.OnRunChange, startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true, managed: c.Managed(),
-		class: p.opts.Class, request: p.opts.Request, people: c.clone().People}
+		class: p.opts.Class, request: p.opts.Request, people: c.clone().People, continuation: p.continuation}
 	if r.managed {
 		// The crew's project manifest as launched, a legacy setup lifted
 		// into it, and the manifest at the pinned base, whose prerequisites
@@ -1463,8 +1488,10 @@ func (e *Engine) launch(ctx context.Context, r *run, m *member) (*session.Local,
 // submitted (Submit refuses it, nothing typed), and the wait starts over.
 // m is prompted as the Enter is written, so a done the agent
 // reported before it never starts the members after m. A session that ends
-// first gets no prompt: m ends, with how its process ended. An error means
-// the start failed: ctx ended or the prompt could not be written.
+// first gets no prompt: m ends, with how its process ended. A Brakeman
+// turn's member is never prompted "anyway": its line waits while its
+// screen is not recognised as its agent's prompt (UnknownScreen). An error
+// means the start failed: ctx ended or the prompt could not be written.
 func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.Local) error {
 	return e.promptWith(ctx, r, m, local, typedPrompt(m.def.Prompt, r.goal))
 }
@@ -1479,6 +1506,35 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 	pending := false
 	if hasPrompt {
 		var res session.SubmitResult
+		// unrecognised holds a Brakeman turn's line, typed only into its
+		// agent's prompt (session.Submission.OnlyAtPrompt: its screen, as
+		// the writer takes the text and its Enter, matches the agent's
+		// prompt shape), never into a screen not recognised as one (a
+		// dialog the catalog does not know, a sign-in, half a frame), nor
+		// "anyway" once not ready by the cap: its Enter would pick the
+		// choice a dialog highlights. Noted once (UnknownScreen), the line
+		// waits and is tried again a poll later; the desk ends the turn at
+		// its start bound with the screen's words (notStarted). stop says
+		// the wait ended, with what promptWith returns.
+		noted := false
+		unrecognised := func() (stop bool, err error) {
+			if !noted {
+				noted = true
+				e.mu.Lock()
+				m.state.Unrecognised = true
+				r.note(session.ActivityStatus, "%s %s: its prompt waits", name, UnknownScreen)
+				e.mu.Unlock()
+			}
+			select {
+			case <-ctx.Done():
+				return true, ctx.Err()
+			case <-local.Ended():
+				e.endedEarly(r, m, local, "before its prompt was typed")
+				return true, nil
+			case <-time.After(readyPoll):
+			}
+			return false, nil
+		}
 		for {
 			err := e.await(ctx, local, func(question string) {
 				e.mu.Lock()
@@ -1486,6 +1542,8 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 				e.mu.Unlock()
 			})
 			switch {
+			case errors.Is(err, errNotReady) && r.class == ClassBrakeman:
+				// Not taken for its prompt: nothing is typed (unrecognised).
 			case errors.Is(err, errNotReady):
 				e.mu.Lock()
 				r.note(session.ActivityStatus, "%s was not ready after %v: typing its prompt anyway", name, readyCap)
@@ -1496,7 +1554,15 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 			case err != nil:
 				return err
 			}
-			res, err = local.Submit(ctx, session.Submission{Text: text, ByName: typedBy, Confirm: true, BeforeEnter: func() {
+			if err != nil && r.class == ClassBrakeman {
+				// A Brakeman turn's member not ready by the cap: its line
+				// is never typed anyway.
+				if stop, err := unrecognised(); stop {
+					return err
+				}
+				continue
+			}
+			res, err = local.Submit(ctx, session.Submission{Text: text, ByName: typedBy, Confirm: true, OnlyAtPrompt: r.class == ClassBrakeman, BeforeEnter: func() {
 				e.mu.Lock()
 				m.markPrompted()
 				e.mu.Unlock()
@@ -1516,6 +1582,12 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 				e.mu.Unlock()
 				m.poke()
 			}})
+			if errors.Is(err, session.ErrNotAtPrompt) {
+				if stop, err := unrecognised(); stop {
+					return err
+				}
+				continue
+			}
 			if errors.Is(err, session.ErrTrustQuestion) || errors.Is(err, session.ErrQuestion) {
 				// A question the wait had not seen yet (a dialog Submit
 				// found on the screen) holds the prompt: nothing was
@@ -1543,6 +1615,7 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 			return fmt.Errorf("typing its prompt: %w", err)
 		}
 		e.mu.Lock()
+		m.state.Unrecognised = false
 		switch {
 		case pending:
 			// Accepted: entered as the program reads, and marked
@@ -1907,14 +1980,52 @@ func (r *run) admit(m Member) error {
 // once the executor hands it over, the handoffs waiting are
 // dropped and the run is marked stopped. The worktrees stay. Stopping a
 // stopped run again changes nothing.
+//
+// A continuation whose first transaction has not committed is no run yet
+// for anyone else: its Stop is refused as of no such run, and the
+// continuation is then never made (unmake).
 func (e *Engine) Stop(ctx context.Context, runID string) error {
 	e.mu.Lock()
 	r, ok := e.runs[runID]
 	e.mu.Unlock()
-	if !ok {
+	if !ok || e.unmake(r) {
 		return ErrRunNotFound
 	}
 	return e.stop(ctx, r)
+}
+
+// unmake reports whether r is a continuation whose first transaction has
+// not committed, and marks such a one discarded: its first transaction,
+// when it comes, is refused (commit) and the continuation is refused as
+// stopped (ContinueRunWith), nothing of it written. Under r.txMu, so a
+// first transaction under way commits or fails first: one that committed
+// leaves a run that is stopped as any other. The caller holds neither
+// lock.
+//
+// A continuation already committed is told by e.mu alone (created is
+// never unset), before r.txMu: its Stop sets stopping, cancels the run's
+// context and stops its sessions before it waits for any transaction of
+// the run, as an original run's does, so a transaction the ledger holds up
+// does not hold up the stop of the work under way (#623, review round 3).
+func (e *Engine) unmake(r *run) bool {
+	if !r.continuation {
+		return false
+	}
+	e.mu.Lock()
+	made := r.created
+	e.mu.Unlock()
+	if made {
+		return false
+	}
+	r.txMu.Lock()
+	defer r.txMu.Unlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if r.created {
+		return false
+	}
+	r.discarded, r.stopping = true, true
+	return true
 }
 
 func (e *Engine) stop(ctx context.Context, r *run) error {
@@ -2010,6 +2121,27 @@ func (e *Engine) abort(r *run) {
 	e.endMu.Lock()
 	e.mu.Lock()
 	e.journalForgotten(r)
+	e.forget(r)
+	e.mu.Unlock()
+	e.endMu.Unlock()
+}
+
+// discard forgets r, a continuation whose first transaction did not
+// commit (refused, its id another run's, or failed), as if it had never
+// been made: nothing of it is written, neither the stop abort would record
+// (a stopped run naming the source as the one it continues) nor its record
+// (journalForgotten), so the ledger holds no run continuing the source,
+// no command of a repair it carried, and the source is as it was. Nothing
+// of it started: its tasks are dispatched, its prerequisites run and its
+// trees made only once that transaction commits, and nothing else wrote
+// it meanwhile (run.continuation): a Stop of it was refused. Marked
+// discarded, it writes nothing from now on (commit). The caller holds no
+// lock.
+func (e *Engine) discard(r *run) {
+	e.endMu.Lock()
+	e.mu.Lock()
+	r.discarded, r.stopping = true, true
+	r.pendingEvents, r.pendingMore, r.pendingLast, r.pendingDone = nil, nil, nil, nil
 	e.forget(r)
 	e.mu.Unlock()
 	e.endMu.Unlock()
@@ -2213,6 +2345,7 @@ func (e *Engine) Get(runID string) (Run, bool) {
 	var out Run
 	if ok {
 		out = r.snapshot(false, true)
+		e.withCommands(r, &out)
 	}
 	e.mu.Unlock()
 	if !ok {
@@ -2243,6 +2376,7 @@ func (e *Engine) List() []Run {
 	out := make([]Run, 0, len(e.order))
 	for i := len(e.order) - 1; i >= 0; i-- {
 		out = append(out, e.order[i].snapshot(false, false))
+		e.withCommands(e.order[i], &out[len(out)-1])
 	}
 	e.mu.Unlock()
 	for i := range out {
@@ -2301,6 +2435,7 @@ func (e *Engine) GetWithDiffs(ctx context.Context, runID string) (Run, bool) {
 	wg.Wait()
 	e.mu.Lock()
 	out := r.snapshot(true, true)
+	e.withCommands(r, &out)
 	e.mu.Unlock()
 	e.refresh(&out)
 	return out, true
@@ -2410,6 +2545,28 @@ func runState(r Run) (string, int) {
 // the session has ended it returns session.ErrSessionEnded.
 func awaitReady(ctx context.Context, l *session.Local, held func(question string)) error {
 	return productReady.await(ctx, l, held)
+}
+
+// SetNotReadyForTest makes the engine's readiness wait answer, once gate
+// is closed and every time it is asked from then on, that a member is not
+// ready by the cap (errNotReady), whatever its screen shows: a test of what
+// follows (a Brakeman turn's line never typed anyway) with no clock and no
+// output's pace deciding readiness. Until gate is closed the wait holds,
+// so the test closes it once the agent's screen is what it means to test
+// (its prompt drawn). It is called before the engine launches any run:
+// the wait is read without a lock.
+func (e *Engine) SetNotReadyForTest(gate <-chan struct{}) {
+	e.await = func(ctx context.Context, _ *session.Local, _ func(string)) error {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return errNotReady
+	}
 }
 
 // readyWait is how a readiness wait looks: every poll, and ready once the
