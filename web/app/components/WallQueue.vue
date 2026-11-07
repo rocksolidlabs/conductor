@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { SessionInfo } from '~/composables/useSessions'
-import { ANSWER_IN_TERMINAL, MODE_CHOICE, TERMINAL_FIRST, answersInTerminal, firstChoice, waitsForTerminal } from '~/utils/attention'
+import { MODE_CHOICE, decisionOf, firstChoice, noReply, offeredChoices } from '~/utils/attention'
 import { agentInitials, relativeTime } from '~/utils/sessions'
 import { draftQuestion, questionOf } from '~/utils/reply'
 
@@ -33,8 +33,8 @@ function inputRef(id: string) {
 
 function submit(s: SessionInfo) {
   const text = (drafts[s.id] ?? '').trim()
-  // A session that waits for its terminal takes no reply: it would only wait (TERMINAL_FIRST).
-  if (!text || waitsForTerminal(s.attention) || answersInTerminal(s.attention)) return
+  // A question that takes no typed reply (noReply: the terminal's, or a durable decision's) is sent none.
+  if (!text || noReply(s.attention) !== undefined) return
   emit('reply', s, text, draftQuestions[s.id])
   drafts[s.id] = ''
 }
@@ -75,14 +75,16 @@ defineExpose({ focusSelected })
       </div>
       <!-- The question whole (#187): a long token (a command, a URL) breaks rather than scrolls the queue sideways. -->
       <p class="break-words text-sm leading-snug" data-queue-message>{{ s.attention?.message || 'Waiting for input' }}</p>
-      <div v-if="s.attention?.options?.length" class="flex gap-1.5">
+      <!-- A durable decision's question takes no reply here: the card says where it is answered (noReply). -->
+      <p v-if="decisionOf(s.attention)" class="text-xs text-muted" data-queue-decision>{{ noReply(s.attention) }}</p>
+      <div v-else-if="offeredChoices(s.attention).length" class="flex gap-1.5">
         <UButton
-          v-for="(o, oi) in s.attention.options"
+          v-for="(o, oi) in offeredChoices(s.attention)"
           :key="oi"
           :label="o.label"
           size="xs"
-          :variant="oi === firstChoice(s.attention.options) ? 'solid' : 'outline'"
-          :color="oi === firstChoice(s.attention.options) ? 'primary' : o.mode ? 'warning' : 'neutral'"
+          :variant="oi === firstChoice(offeredChoices(s.attention)) ? 'solid' : 'outline'"
+          :color="oi === firstChoice(offeredChoices(s.attention)) ? 'primary' : o.mode ? 'warning' : 'neutral'"
           :title="o.mode ? MODE_CHOICE : undefined"
           :data-choice-mode="o.mode || undefined"
           class="flex-1 justify-center"
@@ -96,14 +98,14 @@ defineExpose({ focusSelected })
           :model-value="drafts[s.id]"
           size="sm"
           class="flex-1"
-          :placeholder="waitsForTerminal(s.attention) ? TERMINAL_FIRST : answersInTerminal(s.attention) ? ANSWER_IN_TERMINAL : `Reply to ${agentName(s)}…`"
-          :disabled="waitsForTerminal(s.attention) || answersInTerminal(s.attention)"
+          :placeholder="noReply(s.attention) ?? `Reply to ${agentName(s)}…`"
+          :disabled="noReply(s.attention) !== undefined"
           :loading="sending.has(s.id)"
           @update:model-value="(v: string | number) => setDraft(s, String(v ?? ''))"
           @click.stop
           @focus="emit('select', i)"
         />
-        <UButton type="submit" size="sm" icon="i-lucide-corner-down-left" color="neutral" variant="outline" aria-label="Send" :disabled="waitsForTerminal(s.attention) || answersInTerminal(s.attention) || !(drafts[s.id] ?? '').trim()" />
+        <UButton type="submit" size="sm" icon="i-lucide-corner-down-left" color="neutral" variant="outline" aria-label="Send" :disabled="noReply(s.attention) !== undefined || !(drafts[s.id] ?? '').trim()" />
       </form>
     </div>
 

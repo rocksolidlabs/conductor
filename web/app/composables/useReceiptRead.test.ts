@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as vue from 'vue'
 import type { CandidateReceipt } from './useDispatch'
 import type { RunStep } from './useSessions'
+// Imported with the file, not inside the test: a module loaded in a test is loaded on the test's 5 s, which a loaded machine spends on the
+// load alone. Its auto-imports are globals read when it is called, stubbed below.
+import { useReceiptRead } from './useReceiptRead'
 
 // A receipt opened in full (Program item DS2, PR-11): its step and its log read when it opens and again when the receipt moves (a check
 // that finishes), never when a candidates read hands over the same receipt as new objects, so the log shown and Save stay; against
@@ -39,7 +42,6 @@ const settle = () => new Promise((r) => setTimeout(r, 0))
 
 describe("a receipt's full view", () => {
   it('keep the log opened when the receipt is handed over again unchanged, and read again when it moves', async () => {
-    const { useReceiptRead } = await import('./useReceiptRead')
     const open = vue.ref(true)
     const shown = vue.ref<CandidateReceipt | null>(receipt({ state: 'running', finishedAt: undefined, logSha256: undefined, logBytes: 0 }))
     const r = useReceiptRead({ open: () => open.value, runId: () => 'crew-0000aaaa', task: () => 'build', attempt: () => 1, receipt: () => shown.value })

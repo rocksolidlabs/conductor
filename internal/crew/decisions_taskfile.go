@@ -145,7 +145,7 @@ func (e *Engine) taskDecisions(ctx context.Context, r *run, a *attempt) ([]TaskD
 					continue
 				}
 				d := decisionOfRecord(r, rec)
-				e.closeDecision(r, d, ledger.DecisionSuperseded, fmt.Sprintf("%s was superseded: %s; ask again if you still need it", rec.ID(), words), "yardmaster", decisionOp{}, map[string]any{"moved": words}, "")
+				e.closeDecision(r, d, ledger.DecisionSuperseded, supersededWords(rec.ID(), words), "yardmaster", decisionOp{}, map[string]any{"moved": words}, "")
 			}
 			// Each applied answer marked carried once, whatever the
 			// attempts that read it before the mark committed: the mark
@@ -196,7 +196,7 @@ func (e *Engine) taskDecisions(ctx context.Context, r *run, a *attempt) ([]TaskD
 			for i, rec := range recs {
 				if words, ok := moved[rec.N]; ok {
 					recs[i].State = ledger.DecisionSuperseded
-					recs[i].Why = fmt.Sprintf("%s was superseded: %s; ask again if you still need it", rec.ID(), words)
+					recs[i].Why = supersededWords(rec.ID(), words)
 				}
 			}
 		}

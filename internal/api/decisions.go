@@ -800,7 +800,9 @@ func (h *eventHub) decision(ev decisionEvent) {
 // decisionTold is told the decisions a committed transition of the
 // ledger changed, each as the transition left it (crew.SQLLedgerTold):
 // for each, the decision event, then one notification for the webhooks
-// and the providers' sinks, queued without waiting. It runs under the
+// and the providers' sinks, queued without waiting, and the decision
+// router told the decision changed (its workers read the record: routed
+// as it opens, resolved at its final state, router.go). It runs under the
 // ledger's lock once the commit is made, in the order of the commits, and
 // reads nothing.
 func (s *Server) decisionTold(changes []crew.DecisionChange) {
@@ -810,6 +812,7 @@ func (s *Server) decisionTold(changes []crew.DecisionChange) {
 		if s.notifier != nil {
 			s.notifier.decision(decisionNotification(row, c.By))
 		}
+		s.router.record(row.ID())
 	}
 }
 

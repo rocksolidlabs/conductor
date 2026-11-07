@@ -20,6 +20,21 @@ func SampleDecision() ext.Decision {
 	}
 }
 
+// SampleDecisionRequest is a durable decision's record as a router is
+// told it (Program item DR1): its id as ID and Request, kind decision, the
+// asking attempt's session, and its options picked by their places.
+func SampleDecisionRequest() ext.Decision {
+	return ext.Decision{
+		ID:      "dr-7",
+		Request: "dr-7",
+		Session: ext.SessionRef{ID: "exttest-session", Run: "exttest-run", Task: "build", Attempt: 1},
+		Message: "Ship the schema change?",
+		Kind:    "decision",
+		Options: []ext.DecisionOption{{Label: "Approve", Input: "1"}, {Label: "Reject", Input: "2"}},
+		Since:   time.Now().UTC(),
+	}
+}
+
 // SampleQuery is the attempt RunAll asks a context provider about, its
 // worktree dir (a t.TempDir(), since a provider may read it).
 func SampleQuery(dir string) ext.ContextQuery {

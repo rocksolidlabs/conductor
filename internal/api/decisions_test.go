@@ -665,11 +665,12 @@ func TestADecisionResolvesItsEvidence(t *testing.T) {
 	if ticket["ref"] != "ticket:CND-1" || seen["rev"] == nil || seen["rev"] != now["rev"] || ticket["change"] != nil || now["url"] == nil {
 		t.Fatalf("the ticket's ref: %v", ticket)
 	}
-	if task := refs[1].(map[string]any); task["ref"] != "task:"+run+"/build" || task["seen"].(map[string]any)["state"] == nil {
+	// The run's revision, and its task's, moved with the decision's own
+	// opening: each ref is unchanged while its state is (#637, review
+	// round 1; the task's, #689, review round 1).
+	if task := refs[1].(map[string]any); task["ref"] != "task:"+run+"/build" || task["seen"].(map[string]any)["state"] == nil || task["change"] != nil {
 		t.Fatalf("the task's ref: %v", task)
 	}
-	// The run's revision moved with the decision's own opening: its ref is
-	// unchanged while its state is (#637, review round 1).
 	if r := refs[2].(map[string]any); r["ref"] != "run:"+run || r["change"] != nil {
 		t.Fatalf("the run's ref: %v", r)
 	}
@@ -895,8 +896,43 @@ func TestAnAskersRefsAreResolvedUnderItsGrant(t *testing.T) {
 			t.Errorf("%s: %q, and for one that names nothing %q", c.kind, words[c.exists], words[c.absent])
 		}
 	}
+	// A plan revision is cited by its own number, never the attempt's:
+	// the run was launched from revision 2 (the fixture approved 1), so
+	// attempt 1 citing plan:CND-1/1 names a revision that did not launch
+	// it (#689, review round 2).
+	if pkg.Plan.N == 1 {
+		t.Fatalf("the plan revision's number is the attempt's: %d", pkg.Plan.N)
+	}
+	ask("attempt-n", []string{"plan:CND-1/1"}, http.StatusBadRequest, crew.CodeInvalid)
 	if ds := l.expectAs(t, tok, http.MethodGet, "/api/sessions/"+sid+"/decisions", nil, http.StatusOK, "")["decisions"].([]any); len(ds) != 1 {
 		t.Fatalf("decisions opened: %v", ds)
+	}
+}
+
+// A check is cited by the attempt it ran on, an earlier one's: checks
+// run after an attempt submits, so attempt 2 cites attempt 1's check run
+// (check:RUN/build/1/test/1), taken, while its own number names no check
+// yet, refused (#689, review round 2).
+func TestAnAttemptCitesAnEarlierAttemptsCheck(t *testing.T) {
+	l := newLaunchTest(t, nil, func(c *crew.Crew) {
+		c.Tasks[0].Checks = []crew.Check{{ID: "test", Argv: []string{"test", "-f", "fixed"}}}
+	})
+	run := entityOf(t, l.launch(t, l.testEnv, nil, http.StatusCreated, ""), "launch")["runId"].(string)
+	a1 := runningAttempt(t, l.testEnv, run, "build", 1)
+	commitFile(t, a1["worktree"].(string), "a.txt", "one\n")
+	l.submit(t, a1["sessionId"].(string))
+	ledgerAttemptIn(t, l.srv, run, "build", 1, ledger.AttemptFailed)
+	sid := runningAttempt(t, l.testEnv, run, "build", 2)["sessionId"].(string)
+	tok := l.agentToken(sid)
+	ask := func(id string, refs []string, status int, code string) map[string]any {
+		b := approvalBody(id)
+		b["evidence"] = refs
+		return l.expectAs(t, tok, http.MethodPost, "/api/sessions/"+sid+"/decisions", b, status, code)
+	}
+	ask("own-n", []string{"check:" + run + "/build/2/test/1"}, http.StatusBadRequest, crew.CodeInvalid)
+	d := entityOf(t, ask("earlier", []string{"attempt:" + run + "/build/1", "check:" + run + "/build/1/test/1", "attempt:" + run + "/build/2"}, http.StatusCreated, ""), "decision")
+	if ev := fmt.Sprint(d["evidence"]); !strings.Contains(ev, "check:"+run+"/build/1/test/1") {
+		t.Fatalf("the decision's evidence: %v", ev)
 	}
 }
 

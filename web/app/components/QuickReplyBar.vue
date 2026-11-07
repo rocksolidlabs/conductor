@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ANSWER_IN_TERMINAL, MODE_CHOICE, TERMINAL_FIRST, answersInTerminal, choiceKey, firstChoice, waitingHeading, waitsForTerminal } from '~/utils/attention'
+import { MODE_CHOICE, answersInTerminal, choiceKey, decisionAnsweredBy, decisionOf, firstChoice, noReply, offeredChoices, takesReply, waitingHeading, waitsForTerminal } from '~/utils/attention'
 import type { Attention, Role } from '~/utils/protocol'
 import { draftQuestion, questionOf } from '~/utils/reply'
 
@@ -17,13 +17,13 @@ const held = computed(() => waitsForTerminal(props.attention))
 const heading = computed(() => waitingHeading(props.attention, props.agentName))
 // A permission dialog whose choices are not given (#288): its Enter would pick what it highlights, so it is answered in the terminal.
 const terminal = computed(() => answersInTerminal(props.attention))
-const options = computed(() => (show.value ? (props.attention?.options ?? []) : []))
+// A question that mirrors a durable decision (decisionOf) is answered as the decision: no reply field, choice or number key.
+const decision = computed(() => decisionOf(props.attention))
+const options = computed(() => offeredChoices(props.attention))
 // The choice offered first, highlighted: never one that changes the permission mode.
 const first = computed(() => firstChoice(options.value))
-const canReply = computed(() => props.role === 'control' && !props.busy && !held.value && !terminal.value)
-const placeholder = computed(() =>
-  props.role !== 'control' ? 'View only' : held.value ? TERMINAL_FIRST : terminal.value ? ANSWER_IN_TERMINAL : `Reply to ${props.agentName}…`,
-)
+const canReply = computed(() => !props.busy && takesReply(props.attention, props.role))
+const placeholder = computed(() => (props.role !== 'control' ? 'View only' : (noReply(props.attention) ?? `Reply to ${props.agentName}…`)))
 /**
  * The question a line was begun for (as its first character was typed): it names that one when sent, whatever the bar shows by
  * then (someone else answered, the next question came), so that the owner refuses it rather than take it for the next.
@@ -71,6 +71,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
     data-quick-reply
     :data-held="held || undefined"
     :data-terminal-answer="terminal || undefined"
+    :data-decision="decision"
   >
     <span class="size-2 rounded-full bg-warning flex-none" aria-hidden="true" />
     <div class="min-w-0 flex flex-col gap-0.5">
@@ -85,8 +86,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
       <UButton label="Open plan" icon="i-lucide-file-text" size="sm" color="neutral" variant="soft" class="flex-none" :ui="{ label: 'hidden sm:inline' }" aria-label="Open plan" :title="attention.plan" data-quick-reply-plan @click="emit('openPlan', attention!.plan!)" />
       <UButton label="Preview plan" icon="i-lucide-eye" size="sm" color="neutral" variant="soft" class="flex-none" :ui="{ label: 'hidden sm:inline' }" aria-label="Preview plan" :title="attention.plan" data-quick-reply-plan-preview @click="emit('previewPlan', attention!.plan!)" />
     </template>
+    <!-- A durable decision's question takes no reply here: it is answered as the decision. -->
+    <span v-if="decision" class="ml-auto text-xs text-muted" data-quick-reply-decision>{{ decisionAnsweredBy(decision) }}</span>
     <!-- The choices shrink to the bar and wrap (#327): never wider than the window on a phone, every one on screen under a thumb. -->
-    <div v-if="options.length" class="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
+    <div v-else-if="options.length" class="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
       <UButton
         v-for="(o, i) in options"
         :key="i"
