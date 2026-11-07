@@ -1569,11 +1569,16 @@ Brakeman use them is Brakeman's.
   stay apart, and the list is their union.
 - `GET /api/people/{name}` (admin): a person's work: `{name, crews:
   [...], tasks: [{run, runLabel, task, state, member, ownerFrom}],
-  tickets: {owner, assignee, href}, decisions: []}`, the tasks from the
-  runs the engine holds and the managed runs' records, at most 200, the
-  newest first, with `more: true` past them; `tickets` the counts of
-  Dispatch's own query (`owner:` and `assignee:person:`) and the link to
-  that view; `decisions` empty until PR-12; `crews` at most 100, with
+  tickets: {owner, assignee, ownerHref, assigneeHref}, decisions: []}`,
+  the tasks from the runs the engine holds and the managed runs' records,
+  at most 200, the newest first, with `more: true` past them; `tickets`
+  the counts of Dispatch's own two lists (`owner=` and
+  `assignee=person:`) and each list's link, `GET /api/dispatch/tickets`
+  with that filter, which the person's page reads and pages through with
+  the list's cursor, so every ticket is reachable from the counts. Two
+  links, not one: every condition of Dispatch's filter must hold, so no
+  one list is the union of the two (amended by PR-11). `decisions`
+  empty until PR-12; `crews` at most 100, with
   `crewsMore`. `404 not_found` only for a name that no source of the page
   knows: neither store, nor a run the engine holds or a managed run's
   record (its `people` and its tasks' owners, as launched), nor, from
