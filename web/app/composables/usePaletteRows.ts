@@ -7,7 +7,7 @@ import type { LaunchPrefill } from '~/composables/useLaunchModal'
 import { sameQuestions } from '~/utils/needsCursor'
 import { rowActions, sessionTarget, type Action } from '~/utils/actions'
 import { hostedReason } from '~/utils/clone'
-import { answerRows } from '~/utils/decisions'
+import { answerRows, runRuns } from '~/utils/decisions'
 import { isActive, isEnded, needingInput, noReply, offeredChoices } from '~/utils/attention'
 import type { FeedEntry } from '~/utils/events'
 import { joinedDot, joinedPath } from '~/utils/joined'
@@ -851,9 +851,13 @@ export function usePaletteRows(ctx: PaletteContext) {
     }
   }
 
-  // The open durable decisions (Program item DR1): "Answer dr-7: …", Enter opening its card in the app's modal.
+  // The open durable decisions of runs that run (Program item DR1), as Needs you counts them: "Answer dr-7: …", Enter opening its card
+  // in the app's modal. A stopped run's is answered from its run page or its ticket's.
   function decisionItems(): PaletteItem[] {
-    return answerRows(decisions.open.value, (id) => decisionModal.open(id))
+    return answerRows(
+      decisions.open.value.filter((d) => runRuns(attention.runOf(d.run))),
+      (id) => decisionModal.open(id),
+    )
   }
 
   // ---------------------------------------------------------------------------
