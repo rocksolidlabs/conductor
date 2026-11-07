@@ -145,12 +145,19 @@ func run(ctx context.Context, loc, args []string) (string, error) {
 // than kept: a blob read whole (a decision's artifact, hashed) is never
 // held in memory.
 func RunTo(ctx context.Context, dir string, w io.Writer, args ...string) error {
+	return RunToEnv(ctx, dir, nil, w, args...)
+}
+
+// RunToEnv is RunTo with env set in git's environment beside the safe one:
+// GIT_NO_REPLACE_OBJECTS for a blob read by the id a tree records, which
+// must be that object and not one refs/replace puts in its place.
+func RunToEnv(ctx context.Context, dir string, env map[string]string, w io.Writer, args ...string) error {
 	argv, err := argvFor(ctx, []string{"-C", dir}, args)
 	if err != nil {
 		return err
 	}
 	var stderr bytes.Buffer
-	if err := execGitTo(ctx, argv, nil, w, &stderr); err != nil {
+	if err := execGitTo(ctx, argv, env, w, &stderr); err != nil {
 		return gitError(ctx, args[0], stderr.String(), err)
 	}
 	return nil

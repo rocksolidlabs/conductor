@@ -984,6 +984,8 @@ func TestRecheckLeavesAGatesHoldInPlace(t *testing.T) {
 // A Check again whose reopen would ask two gates again, in a run with
 // room for one, is refused decision_limit before anything is recorded, as
 // a Retry is: build stays failed with no new attempt, and no gate opens.
+// The prepared request's rule (RecheckTaken) refuses it first with the
+// command's own words, so the offer and the command agree.
 func TestRecheckNeedsRoomForEveryGate(t *testing.T) {
 	dir := newRepo(t)
 	e, _, ld := decisionEngine(t)
@@ -1004,10 +1006,18 @@ func TestRecheckNeedsRoomForEveryGate(t *testing.T) {
 	e.mu.Unlock()
 
 	mustMark(t, mark)
+	_, offer := e.RecheckTaken(run.ID, RecheckRequest{Task: "build", Attempt: 3, Commit: c3})
+	var od *DecisionError
+	if !errors.As(offer, &od) || od.Code != CodeDecisionLimit || !strings.Contains(od.Words, "ship, smoke") || !strings.Contains(od.Words, "room for 1 more") {
+		t.Fatalf("the prepared request's rule: %v", offer)
+	}
 	rc, err := recheck(e, run.ID, "r1", "build", 3, c3)
 	var de *DecisionError
 	if !errors.As(err, &de) || de.Code != CodeDecisionLimit || !strings.Contains(de.Words, "ship, smoke") || !strings.Contains(de.Words, "the check again is refused") || rc.Status != ledger.CommandFailed {
 		t.Fatalf("the Check again: %+v %v", rc, err)
+	}
+	if de.Words != od.Words {
+		t.Fatalf("the offer refused %q, the command %q", od.Words, de.Words)
 	}
 	if ts := taskOf(t, e, run.ID, "build"); ts.State != ledger.TaskFailed || ts.Attempts != 3 {
 		t.Fatalf("build after the refused Check again: %+v", ts)
