@@ -42,7 +42,15 @@ type Tx struct {
 	// marked is the run Continued marked, "" for none: its pointer
 	// changes in this transition too (OnCommit).
 	marked string
+	// after is what AfterCommit was given.
+	after []func()
 }
+
+// AfterCommit gives the transaction fn, called once it has committed,
+// under the ledger's lock, so in the order of the commits with every
+// other transaction's, and never for one that failed. fn must only
+// queue: every transition of the ledger waits for it.
+func (t *Tx) AfterCommit(fn func()) { t.after = append(t.after, fn) }
 
 // Now is the transaction's time, one for all it writes.
 func (t *Tx) Now() time.Time { return t.now }
@@ -112,6 +120,9 @@ func (l *Ledger) Transition(ctx context.Context, runID string, fn func(*Tx) erro
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, cancelledAs(ctx, err)
+	}
+	for _, fn := range t.after {
+		fn()
 	}
 	l.committed(told)
 	return told[0].Revision, nil

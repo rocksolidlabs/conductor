@@ -1679,8 +1679,12 @@ names one (as it does for a report without a message), and otherwise only an
 `attention` entry. That happens for two reasons: the host is older and sends no
 state, or it sent a state the server does not take (anything but `needs_input`,
 `working` or `done`), which the server drops. A `status` entry
-`exited (exit N)` with N other than 0 is `exit_nonzero`. Each webhook queues
-at most 256 entries and drops its oldest; a delivery is tried once, for at
+`exited (exit N)` with N other than 0 is `exit_nonzero`. A webhook that lists
+`decision` is POSTed each committed change of a durable decision (see
+Decisions), its entry `{type: "decision", message: the question, url: the run
+page's task with the decision, by: the responder's actor once one was
+accepted}` and its `sessionId` the asking session's, `""` for a plan's gate.
+Each webhook queues at most 256 entries and drops its oldest; a delivery is tried once, for at
 most 5 s, without following redirects.
 
 ## File reads
@@ -2021,7 +2025,7 @@ its run, and on no other.
 | `GET /api/runs/{run}/messages` | admin | a managed run's messages in sequence: `{messages}` |
 | `POST /api/sessions/{id}/task/blocked` | the session's agent token, or admin | report what blocks the session's attempt (#334, row 10): body `{reason, message?}` (a reason of one to 500 characters, a message of at most 4,000); reply `{task}` with its `blocker` (`{reason, message?, by, at}`); the session then asks the message (else the reason) as its own question; a `working` or `done` report of the attempt, or its result, clears the blocker; `409 not_running` for an attempt not running; `404 not_an_attempt` |
 | `POST /api/sessions/{id}/task/checkpoint` | the session's agent token, or admin | save where the session's attempt got to, tied to the commit its worktree is at: body `{done, remaining, notes?}` (each at most 4,000 characters, `done` and `remaining` given); reply `{attempt}` with its `checkpoint` (`{done, remaining, notes?, commit, at}`), kept in the ledger; the task's next attempt reads it in its task file, and one after an attempt that ended without a result, or a continuation's first, starts at that commit; `409 no_commit` for a worktree with none; `409 not_running` |
-| `POST /api/sessions/{id}/task/result` | the session's agent token only | submit the attempt's result: body `{summary?, commit?, issues?, verdict?, findings?, addressed?}` (a work task: the commit, HEAD when not given, with a summary of at most 4,000 characters and at most 20 issues, and, for a repair a person asked for, `addressed`: at most 50 `{id, note?}`, each a change of the request by its id, once, with a note of at most 1,000 characters, which the attempt's row keeps with its result as its claim, never the change's resolution; a review: the verdict, `approved` or `needs_changes`, with at most 50 findings `{severity, path?, line?, message}`, and no `addressed`); reply `201 {task}` once recorded (the task `verifying`, or `succeeded` when it has no checks), `200 {task}` for the same commit submitted again while the first is verified; `409` with why otherwise, the attempt running on: `dirty_worktree` (the paths in the message), `off_branch`, `commit_mismatch` (the worktree is not at the commit named), `not_from_input`, `review_changed`, `reserved_path`, `submodules`, `stale_attempt` (not the task's active attempt, or another commit while one is verified), `not_running`; `400 bad_result` for a result that does not fit the task's kind or its bounds, or whose `addressed` names a change the attempt's repair does not have (`addressed names a change the request does not have`); `403 agent_only` for the workbench token, as a result is always the agent's own; `404 not_an_attempt` |
+| `POST /api/sessions/{id}/task/result` | the session's agent token only | submit the attempt's result: body `{summary?, commit?, issues?, verdict?, findings?, addressed?}` (a work task: the commit, HEAD when not given, with a summary of at most 4,000 characters and at most 20 issues, and, for a repair a person asked for, `addressed`: at most 50 `{id, note?}`, each a change of the request by its id, once, with a note of at most 1,000 characters, which the attempt's row keeps with its result as its claim, never the change's resolution; a review: the verdict, `approved` or `needs_changes`, with at most 50 findings `{severity, path?, line?, message}`, and no `addressed`); reply `201 {task}` once recorded (the task `verifying`, or `succeeded` when it has no checks), `200 {task}` for the same commit submitted again while the first is verified; `409` with why otherwise, the attempt running on: `dirty_worktree` (the paths in the message), `off_branch`, `commit_mismatch` (the worktree is not at the commit named), `not_from_input`, `review_changed`, `reserved_path`, `submodules`, `stale_attempt` (not the task's active attempt, or another commit while one is verified), `not_running`, `decision_open` (a decision of the attempt's is open, or answered and not applied: see Decisions); `400 bad_result` for a result that does not fit the task's kind or its bounds, or whose `addressed` names a change the attempt's repair does not have (`addressed names a change the request does not have`); `403 agent_only` for the workbench token, as a result is always the agent's own; `404 not_an_attempt` |
 | `GET /api/sessions/{id}/ticket` | the session's agent token, or admin | the Dispatch ticket the session's run is linked to (see Dispatch, An attempt's ticket), for `conductor task ticket` and the MCP tool `ticket_read`: `{ticket, labels, milestone}`, `ticket` as `GET /api/dispatch/tickets/{key}` reads it (its last 50 comments among it), `labels` the rows of its live labels, by name, and `milestone` its live milestone's row or `null`, which the project's routes give the admin alone; for a run launched from a ticket that ticket, by the run's package, whatever links say (a continuation's sessions find it too), the reply gaining `launch` `{id, rev, plan: {id, n}, digest, changed}` (`rev` the ticket's revision it was launched at, `changed` `{fields, comments, rev}`, what changed of the ticket since, `null` when this store has no such launch); else the live ticket whose live `run` link names the session's run, one at most, a deleted ticket's link holding none; `404 no_ticket` for a session that is no member of a run, for a run no live ticket holds, and for a run whose launching ticket is deleted (saying the run follows its package); `400 invalid_request` for any parameter; under 3.5 MiB, as the ticket's own read; a switchyard's `403 switchyard` |
 | `POST /api/sessions/{id}/ticket/comments` | the session's agent token, or admin | comment on that ticket (`comment.add`, Dispatch operations), for `conductor task ticket comment` and the MCP tool `ticket_comment`: body `{opId, body}`, `body` Markdown of 1 to 16 KiB; the comment is the session's member's, `agent:<member>` its author and the actor its operation is kept under, whichever token sent it, with no display name; reply `201 {receipt, comment}`, `200` for the same `opId` sent again, as the admin's comment route; `404 no_ticket` as above; `400 invalid_request` for a body that is not `{opId, body}`, `413 bound` past 64 KiB, and the store's refusals as the admin's route answers them; an agent reads its ticket and comments on it, nothing more; a switchyard's `403 switchyard` |
 | `GET /api/sessions/{id}/run` | the session's agent token, or admin | the session's run with the last 50 log entries, and the session's member name: `{run, member}`; `404 no_run` |
@@ -2035,7 +2039,7 @@ its run, and on no other.
 | `GET /api/sessions/{id}/files` | admin or share token | read a file of a server session (`path`, `stat`, `raw` query), see File reads |
 | `POST /api/sessions/{id}/attention` | agent token or admin (not a switchyard's) | report an attention state, and with it the agent's own session id (`agentSession`, at most 128 bytes) and whether the report is of a turn (`turn`), see Attention |
 | `POST /api/sessions/{id}/events` | agent token or admin (not a switchyard's) | report an event or an attention word, reply `202 {accepted}`, see Events |
-| `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one), of chat messages (`chat`: the message as `chat` carries it, with `sessionId` for a session's chat or `runId` for a run's; as droppable as `activity`; for the browsers' unread counts; a `conductor host` session's chat arrives the same way, the host sending each message on its control connection), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), and of Dispatch's changes (`dispatch`: `{seq, entity, id, ticket, project}`, one per entity a commit changed, but one with `id` and `ticket` `""` for more than 64 of a kind in a project, a commit's arriving together and in order, at most 160 bytes; dropped with the client as a `run` event is, see Dispatch), and of Brakeman's requests (`brakeman`: `{id, state}`, at most 200 bytes, `id` `role` for a change of the background role, see Brakeman), and of the links agents open (`open`: `{id, sessionId, url, browser?, state}`, at most 15,200 bytes, as droppable as `activity`, see Opening a link); a desktop app's workbench that opens links sends `X-Conductor-Desktop: 1` with it, see Attention and Events |
+| `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one), of chat messages (`chat`: the message as `chat` carries it, with `sessionId` for a session's chat or `runId` for a run's; as droppable as `activity`; for the browsers' unread counts; a `conductor host` session's chat arrives the same way, the host sending each message on its control connection), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), and of Dispatch's changes (`dispatch`: `{seq, entity, id, ticket, project}`, one per entity a commit changed, but one with `id` and `ticket` `""` for more than 64 of a kind in a project, a commit's arriving together and in order, at most 160 bytes; dropped with the client as a `run` event is, see Dispatch), and of Brakeman's requests (`brakeman`: `{id, state}`, at most 200 bytes, `id` `role` for a change of the background role, see Brakeman), and of durable decisions (`decision`: `{id, run, task?, state, rev}`, at most 256 bytes, after each committed change of one, dropped with the client as a `run` event is, see Decisions), and of the links agents open (`open`: `{id, sessionId, url, browser?, state}`, at most 15,200 bytes, as droppable as `activity`, see Opening a link); a desktop app's workbench that opens links sends `X-Conductor-Desktop: 1` with it, see Attention and Events |
 | `GET /api/join/{token}` | share token in the path | resolve a share link for the join page (rate limited): `{session, role, label}` for a session link; `{run: {id, name, members}, role, label}` for a run link, each with `switchyard` (whether this server is one, which the join page names), each member `{name, sessionId?, agentId, status}` in the run's order, with `sessionId` only while its session runs (`agentId` and `status` then the session's) and otherwise its state in the run, `pending`, `starting` or `ended`; `404` with `invalid_link`, `revoked`, `expired`, `session_gone` or `run_gone`; on a switchyard, `503 host_offline` for a link it keeps whose host is not connected now (it works again once the host registers) |
 
 The catalog routes persist their changes as `catalog.json` in the data
@@ -4034,3 +4038,130 @@ state}`.
 | `POST /api/brakeman/role` | `{action}`, `pause` or `resume` → `{role}`; `400 invalid_request` for another action |
 | `POST /api/brakeman/role/notes` | `{request, item}` → `{role}`: the text of a kept brief's `fact/1` or `interpretation/1` kept as a note, `from` its `brief:` ref; `400 not_a_note` for another kind; `404` for no such request or item; `413 bound` past the notes' 64 KiB |
 | `DELETE /api/brakeman/role/notes` | → `{role}`, the notes cleared |
+
+### Decisions
+
+A decision request is a durable record (Program item DR1,
+`docs/plans/decisions.md`): a question an attempt's agent, or a ticket's
+approved plan revision (a **gate**), puts to a person, with its exact
+scope, the response the person gives and the receipt of Yardmaster
+applying it. It lives in the ledger, survives a restart, is answered once
+by the operator and holds only the tasks it is about: the asking task, or
+the tasks a gate names before. Its id is `dr-N`. A run launched from a
+ticket's approved revision opens one gate per decision the revision
+names in its first transaction, before any attempt; a gated task does not
+start until its gate is answered (its `holds` in the run's and task's
+reads name it), while the run's other tasks run.
+
+The states: `open` → `answered` (a response accepted: Recorded) →
+`applied` (Yardmaster validated it and applied it: typed into the asking
+attempt's live session, written into its task's next attempt's task
+file, a gate's tasks released, or a rejected gate's tasks cancelled);
+`open` or `answered` → `superseded` (its subject moved, another request
+took its place, or an identity's answer could not be rechecked) or
+`cancelled`; `applied` → `superseded` for an approval whose subject moved
+after it. A record's `rev` moves with each change a response must have
+read (an answer, a comment, a request for more information). An answer is
+the asking agent's to act on only once its decision is `applied`: an
+`answered` one is recorded, not yet validated, and may still be
+superseded or cancelled, so `decision_request`'s reply, the tools'
+descriptions and the result's refusal tell the agent to wait at
+`answered` and to go on only at `applied`. An operation's `expectedRev`
+is judged against the decision's row in the transaction that applies
+it, before anything changes, whatever the engine holds in memory.
+
+The routes. Each body is read with unknown fields refused and bounded;
+`responseId`, `commandId` and `opId` are 1 to 32 of `A-Z a-z 0-9 . _ ~ -`,
+and the same id again under the same actor answers the same receipt with
+`repeat: true` (another body: `response_conflict` or `op_conflict`). A
+refusal is `{error: {code, message}}`, its message the words of what to do,
+with the kept `receipt` beside it when the refusal was recorded (a
+response refused after it reached the record). The admin routes take the
+workbench token, or an identity provider's principal with the admin grant;
+a share link's controller, an agent's token and a Brakeman turn's token
+are refused (`401 unauthorized`): the operator is the free build's one
+approver.
+
+| Route | Who | Body → reply |
+|---|---|---|
+| `POST /api/sessions/{id}/decisions` | the attempt's own token | `{requestId, type, question, context?, options?, recommendation?, uncertainty?, authorizes?, evidence?, expertise?, subject?, supersedes?}` (at most 24 KiB) → `201 {decision}` at once, `200` the same for a repeat of its `requestId` by the same task (replied to first, its evidence not resolved again; a request id is the asking task's, so another task's request under the same id is a request of its own); `409 decision_conflict` (the same task's id with another body), `not_running`, `artifact_uncommitted`; `429 decision_limit`; `400 invalid` (a field out of its bounds, an evidence ref not in Brakeman's ref syntax or naming nothing; evidence refs are resolved under the asker's own grant, and a ref outside it is refused as an unknown ref) |
+| `GET /api/sessions/{id}/decisions` | the attempt's own token | `?after=dr-N&limit=` (1 to 100, 100 when absent) → `{decisions, next?}`: its task's decisions in the run that holds them, newest first, each a summary `{id, requestId?, type, origin, task?, gate?, state, rev, question, answer?, why?, supersededBy?, createdAt, answeredAt?, closedAt?, cut?}`, the question, the answer and `why` each cut at a character's end to 1 KiB as encoded (`cut: true` when one was); a summary at most 4 KiB, a page at most 400 KiB; `next` the last id when more follow |
+| `GET /api/sessions/{id}/decisions/{did}` | the attempt's own token | `{decision}`: one of its task's whole, in the run that holds the attempt; `404 not_found` for any other id, another task's answered exactly as one that does not exist |
+| `POST /api/sessions/{id}/decisions/{did}/withdraw` | the attempt's own token | `{}` → `{decision}`, cancelled; `404 not_found` for a decision this attempt did not ask (another task's answered exactly as one that does not exist); `409 decision_answered`, `decision_closed`; `409 not_held` once the run is being continued ("dr-N's run was continued: its attempt is no longer the one that asked it. dr-N stays as it is in the run that continues this one, which waits on it; stop here, as this attempt's work is over"): nothing changes, and the continuation moves the decision open with its hold. Taken before the continuation begins (the run running or stopped), the decision is cancelled, and no continuation moves it. The decision is judged by its row in the transaction that cancels it |
+| `GET /api/decisions` | admin | `?state=&run=&ticket=KEY&after=dr-N&limit=` (1 to 100) → `{decisions, next?}`, newest first, each the record without its `history` and its `responses` (its `answer` stays; `GET /api/decisions/{did}` reads one whole), at most 48 KiB, so a page is at most 4,801 KiB |
+| `GET /api/decisions/{did}` | admin | `{decision, refs}`: the record whole and its evidence refs' resolutions, at most 1 MiB |
+| `POST /api/decisions/{did}/respond` | admin | `{responseId, choice?, text?, rationale?, expectedRev, byName?}` (at most 8 KiB) → `201 {receipt, decision}`, `200` for a repeat; `409 decision_answered` (naming who answered and when), `decision_closed`, `stale_decision` (what changed since the rev read), `stale_policy`, `response_conflict`, `not_held`; `403 not_approver`; `503 decision_moved` (ask once more) |
+| `POST /api/decisions/{did}/cancel` | admin | `{commandId, why, release?, expectedRev}` → `{receipt, decision}`, `200` for a repeat; `409 op_conflict`, `stale_decision` (the operation's `expectedRev`, here and below, is judged in the transaction that applies it, after the look for a repeat of its id) |
+| `POST /api/decisions/{did}/comment` | admin | `{opId, kind: comment\|more_info, text, expectedRev}` (at most 8 KiB) → `{receipt, decision}`; `409 op_conflict`, `stale_decision`, `no_recipient` (a `more_info` without a live asking attempt); `429 decision_limit` |
+| `POST /api/decisions/{did}/route` | admin | `{opId, to: {kind: "operator"}, note?, expectedRev}` → `{receipt, decision}`; `409 op_conflict`, `stale_decision`; `429 decision_limit` |
+| `GET /api/dispatch/tickets/{key}/decisions` | admin | `{decisions}`: the decisions of the ticket's runs, newest first, at most 100, each as `GET /api/decisions` gives it (at most 4,801 KiB) |
+
+The record (`decision`): `{id, run (the run that holds it now), openedIn,
+origin (agent or plan), type (clarification, approval or assignment),
+gate?, asker? {task, attempt, live}, member?, ticket?, plan?, planDigest?,
+requestId?, request, evidence?, policy, state, rev, why?, supersededBy?,
+answer?, responses?, applied?, history?, createdAt, answeredAt?,
+closedAt?}`. `request` is what was asked (at most 16 KiB: the question,
+one line of at most 500 characters; the context, at most 4,000; 2 to 6
+options for an approval, none for an assignment, whose answers are Done
+and Not done, each a label of at most 80 characters and tradeoffs of at
+most 1 KiB; the recommendation; the uncertainty and what a yes
+authorizes, at most 1 KiB each; at most 20 evidence refs; the subject:
+the commit, a candidate, an artifact's blob or the plan revision it is
+about). `policy` is `local/1`: one response from the operator decides it.
+`answer` is the accepted response in words. Each response's receipt
+(`responses`) is `{decision, k, status: accepted|refused, code?, words,
+actor, byName?, choice?, text?, rationale?, at, rev, repeat?}`; `applied`
+is `{at, by: "yardmaster", run, task?, attempt?, response, validated,
+how: typed|task_file|released|cancelled|noted, tasks?, words}`. An
+operation's receipt is `{decision, op, seq, at, rev, words, repeat?}`.
+
+`refs` resolves each evidence ref against the baseline the record took
+when the request was made (the ref's record then): `{ref, seen, now,
+change?}`, `seen` the baseline's `{state, rev?, sha256?}`, `now` the
+record as it is (`{url, state, rev?, sha256?, at}`), and `change`
+`changed` (its state, revision or digest differ; a `run:` ref's state
+alone, as a run's revision moves with every transition of it, the
+decision's own opening among them), `deleted` (gone since) or `unread`
+(its store could not be read when the question was asked), absent when
+nothing changed. A resolution is at most 4 KiB as encoded, its escapes
+counted: past it its `now.url` is left out.
+
+The run's and the task's reads (`GET /api/runs/{run}`, also for a run
+answered from its record, and `GET /api/runs/{run}/tasks/{task}`) carry,
+for the admin, `decisions`: the summaries (as the attempt's list gives
+them) of the decisions the run or the task holds, newest first, at most
+100, absent when there is none; `decisionsNext`, the last id, when more
+follow (`GET /api/decisions?run=&after=` reads on); and
+`decisionsUnread: true`, with no list, when the ledger could not be read
+(the server logs why). A Brakeman turn's shared read of them carries none
+of the three.
+
+An identity provider's principal's accepted response is applied only
+once the provider admits its token again after the response committed
+(asked once, within `ext.IdentityWait`, the token kept in no row and no
+log): not admitted, or no answer in time, and the decision is superseded
+by a fresh one with its holds, which the operator answers again. A run
+the server does not hold (stopped, interrupted, not yet continued) takes
+only the workbench token's response (`409 not_held` for an identity's),
+applied when the run is continued.
+
+An attempt with a decision open, or answered and not applied, has its
+result refused: `POST /api/sessions/{id}/task/result` answers `409
+decision_open` ("dr-7 is not answered yet: wait for its answer, or
+withdraw it with decision_withdraw"; for an answered one, "dr-7 is
+answered and its answer is not applied yet: wait until Yardmaster types
+it into this session, then act on it").
+
+**The `decision` event.** After each committed change of a decision the
+server sends `event: decision` on `GET /api/events` with `{id, run,
+task?, state, rev}` (at most 256 bytes; `task` the asking task's), for a
+page to read the decision again; it is dropped with a client that cannot
+keep up, as a `run` event is. With it the server hands its notifier one
+notification (`ext.Notification` with event and type `decision`, the
+asking session with its run and task, the state, the question as
+message, the run page's task with `&decision=dr-N` as URL, and the
+responder's actor as `by`): the webhooks that list `decision`
+(`config.ValidWebhookEvent` takes it) and the providers' sinks that take
+it receive it, queued without waiting. An agent's decision also shows as
+its session's question.

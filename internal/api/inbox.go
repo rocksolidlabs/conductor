@@ -1122,11 +1122,13 @@ func (s *Server) inboxItemOf(ctx context.Context, ref brakeman.Ref) (*inboxItem,
 type hostedResumes struct {
 	mu       sync.Mutex
 	sessions map[string]*hostedSeen
-	// seam, when a test sets it, is called with the session's id before a
-	// change is noted, its view taken (noted false), and once it is
-	// (noted), outside the lock: the moments a page may read the track
-	// at, beside the change's event.
-	seam atomic.Pointer[func(sess string, noted bool)]
+	// seam, when a test sets it, is called with the change's view and its
+	// place in the order (HostViewSeq) before the change is noted, its
+	// view taken (noted false), and once it is (noted), outside the lock:
+	// the moments a page may read the track at, beside the change's
+	// event. The view and its place say which change it is: the host's
+	// own changes reach it from the hub's read loop as well as a test's.
+	seam atomic.Pointer[func(view session.Info, seq uint64, noted bool)]
 }
 
 // hostedSeen is what hostedResumes keeps of one session.
@@ -1144,11 +1146,11 @@ type hostedSeen struct {
 func (h *hostedResumes) change(info session.Info, seq uint64) {
 	f := h.seam.Load()
 	if f != nil {
-		(*f)(info.ID, false)
+		(*f)(info, seq, false)
 	}
 	h.note(info, seq)
 	if f != nil {
-		(*f)(info.ID, true)
+		(*f)(info, seq, true)
 	}
 }
 

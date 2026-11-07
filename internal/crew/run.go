@@ -478,10 +478,6 @@ type Engine struct {
 	// never refused in its transaction as another's with the same id,
 	// which a change kept for the next commit could not survive.
 	opMu sync.Mutex
-	// gatesAtLaunch opens a planned run's gates in its first transaction
-	// (openGates). Off until the response route ships with it
-	// (docs/plans/decisions.md, PR-4): a test turns it on.
-	gatesAtLaunch bool
 	// beforeMirror, when set, runs as a decision's question is about to be
 	// put to its session (askMirror), on the attempt's askMu, the decision
 	// read as open: a test holds the ask there. beforeRespond, when set, runs in RespondDecision
@@ -489,6 +485,10 @@ type Engine struct {
 	// transaction: a test lands a change there.
 	beforeMirror  func(n int64)
 	beforeRespond func(n int64)
+	// beforeOperate, when set, runs in an operator's operation once it has
+	// looked for a repeat of its id and before its transaction: a test
+	// commits an answer there, which the operation's rev read must meet.
+	beforeOperate func(n int64)
 	// beforeAnswer, when set, runs in a member's deliverer as it is about
 	// to take the next decision answer (nextAnswer): a test queues two
 	// answers there before either is typed. afterLook, when set, runs once

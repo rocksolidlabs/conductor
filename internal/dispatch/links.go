@@ -306,7 +306,8 @@ func chainRefusal(tk Ticket, run string, launched, linked []ChainHolder) error {
 // and the URL at most 2 KiB, the note at most MaxLinkNote characters); a
 // delivery or external link names its URL and takes it as its reference
 // when it names none, a run link names its reference (invalid
-// otherwise); a decision link is reserved for Program item DR1 (invalid).
+// otherwise); a decision link is reserved (invalid): a decision names its
+// ticket itself.
 // Its identity live on the ticket already is invalid. A run link's
 // reference names a run that exists (not_found otherwise) of a chain no
 // ticket holds (run_linked, the receipt's Key naming the holder:
@@ -333,7 +334,7 @@ func (s *Store) AddLink(ctx context.Context, op Op, key string, l NewLink, verif
 			return err
 		}
 		if l.Kind == LinkDecision {
-			return refuse(RefusalInvalid, "a decision link is reserved for durable decision records, which Program item DR1 adds")
+			return refuse(RefusalInvalid, "a decision link is reserved: a decision names its ticket itself, and the ticket's decisions are listed at /api/dispatch/tickets/{key}/decisions")
 		}
 		if !slices.Contains(LinkKinds, l.Kind) {
 			return refuse(RefusalInvalid, "the kind %q is none of %s", l.Kind, strings.Join(LinkKinds, ", "))

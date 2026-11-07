@@ -97,12 +97,13 @@ var migrations = map[int][]string{
 	// before this version, so a version 7 database's rows are all true as
 	// they are: nothing is derived.
 	7: decisionTables,
-	// Version 9 is DR1's (#637, pull request #683: a decision request's
-	// index gains its task), which lands before RV1's version 10: its
-	// merge puts its statements here. Until then, on this branch alone,
-	// 8 to 9 changes nothing, so that the barrier below is version 10
-	// and no number names two schemas.
-	8: {},
+	// Version 9 (DR1, #637): a request id is its asking task's. The
+	// index that keys it gains the task, so a request is found again
+	// only for the task that made it, and another task of the same
+	// member asks under any id of its own. The new key is finer than the
+	// old, so every row a version 8 database holds keeps it: nothing is
+	// derived.
+	8: decisionsRequestV9,
 	// Version 10 (RV1, a person's repair, #622): no table changes and no
 	// row is rewritten. A task's repair may now hold a person's request,
 	// a start of its own and the review task's findings the request
@@ -822,8 +823,9 @@ func (l *Ledger) release() {
 // schema is the database as Version has it, made whole for a new one (an
 // older one is brought to it by migrations). Times are RFC 3339 text in
 // UTC; JSON is text; a run's rows go with it (ON DELETE CASCADE) when the
-// owner prunes it. The decision tables (version 8) are decisionTables.
-var schema = append([]string{
+// owner prunes it. The decision tables (version 8) are decisionTables,
+// their request index as version 9 keys it decisionsRequestV9.
+var schema = append(append([]string{
 	`CREATE TABLE schema_version (version INTEGER NOT NULL)`,
 	`CREATE TABLE runs (
 		id TEXT PRIMARY KEY,
@@ -941,4 +943,4 @@ var schema = append([]string{
 	messagesTable,
 	prerequisitesTable,
 	treesTable,
-}, decisionTables...)
+}, decisionTables...), decisionsRequestV9...)
