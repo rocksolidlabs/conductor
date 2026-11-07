@@ -3864,6 +3864,18 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
     cleared the account and turned the background off had left the role
     unavailable with the sign-in's words, and on again it stayed so (#715). `TestASaveOfTheRoleOffEndsAnAgentNotStarted`,
     `TestASaveOfTheBackgroundOffAndTheAccountClearedStartsClean`.
+    A batch fires only under the configuration it was gathered under:
+    the role keeps a configuration generation that each save's step
+    advances under the role's lock, acting on what that save left (the
+    role off), never on the settings read when the step comes; a batch
+    records its generation, and one of another is dropped with a log
+    line, never fired or kept. Two overlapping saves, the background off
+    then on, whose steps reached the role after both were written had
+    both read "on", so the failed turn's batch still fired (#715, review
+    round 2). `TestOverlappingSavesOfTheRoleOffAndOnFireNoTurn`,
+    `TestABatchFiresOnlyUnderTheConfigurationItWasGatheredUnder`,
+    `TestOverlappingSavesOfTheBackgroundOffAndOnFireNoTurn` (the route's
+    two saves held at a gate, their steps let go in both orders).
   - A proposal's launch state is drawn from the request's acts and the
     launch they name each time, so a re-read of the request keeps a failed
     launch's "try again" and never shows a second control for one under

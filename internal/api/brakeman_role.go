@@ -81,6 +81,7 @@ func (d *brakemanDesk) openRole() {
 	d.src = &roleSources{runs: map[string]bool{}, questions: map[string]bool{}, paused: map[string]bool{}, made: map[string]bool{}, asked: map[string]bool{},
 		ticketPage: 500, ticketPages: 20}
 	d.role = crew.NewRole(brakemanMember, roleRecords{d: d}, d.now)
+	d.role.SetLogger(d.s.log)
 	if ds := d.s.dispatch; ds != nil {
 		// The feed is read from its head now, before the desk hears of a
 		// commit: every row of a commit announced after is read, its first
@@ -1001,6 +1002,9 @@ func (rr *refResolver) admitsSubject(ctx context.Context, subject string) (bool,
 // no subject, only when the grant narrows nothing a wake is of.
 func (rr *refResolver) visibleBatch(ctx context.Context, b crew.Batch) *crew.Batch {
 	out := b
+	// The configuration generation is the role's bookkeeping, not the
+	// turn's to read.
+	out.Gen = 0
 	out.Wakes, out.Overflow = []crew.BatchWake{}, nil
 	for _, w := range b.Wakes {
 		if ok, err := rr.admitsSubject(ctx, w.Subject); ok && err == nil {

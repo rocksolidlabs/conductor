@@ -854,6 +854,98 @@ func TestASaveOfTheBackgroundOffAndTheAccountClearedStartsClean(t *testing.T) {
 	}
 }
 
+// TestOverlappingSavesOfTheBackgroundOffAndOnFireNoTurn (#715, review
+// round 2): the role unavailable because its agent did not start, two
+// saves overlap through the route: the background off, then on, each
+// written and held at the gate before its step reaches the role
+// (afterSave), the steps let go in either order. The role is clean (idle,
+// no batch, no count of turns not started, no words) and, past the old
+// batch's window and the start retry, the loop's passes make no turn.
+func TestOverlappingSavesOfTheBackgroundOffAndOnFireNoTurn(t *testing.T) {
+	t.Parallel()
+	for name, offFirst := range map[string]bool{"the off save's step first": true, "the on save's step first": false} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			b := brakemanEnv(t, nil)
+			c := b.background(t, "bksignin", nil)
+			id := b.failTask(t, c, "build")
+			b.waitState(t, id, brakeman.StateFailed)
+			if r := b.waitRole(t, crew.RoleUnavailable); r.Reason != crew.ReasonStart || r.Tries != 1 || r.Open == nil {
+				t.Fatalf("%+v", r)
+			}
+			b.slotFree(t)
+			// Each save, written and admit let go, waits here, by what it
+			// left (off or on), until the test lets its step go.
+			arrived := make(chan bool, 2)
+			release := map[bool]chan struct{}{true: make(chan struct{}), false: make(chan struct{})}
+			let := map[bool]func(){true: sync.OnceFunc(func() { close(release[true]) }), false: sync.OnceFunc(func() { close(release[false]) })}
+			gate := func(ch crew.RoleChange) {
+				arrived <- ch.Off
+				<-release[ch.Off]
+			}
+			b.desk.afterSave.Store(&gate)
+			t.Cleanup(func() {
+				b.desk.afterSave.Store(nil)
+				let[true]()
+				let[false]()
+			})
+			wait := func(what string, ch <-chan bool) bool {
+				t.Helper()
+				select {
+				case v := <-ch:
+					return v
+				case <-time.After(30 * time.Second):
+					t.Fatalf("%s never came", what)
+				}
+				return false
+			}
+			save := func(mode string) <-chan int {
+				t.Helper()
+				cfg := b.config(t)
+				rev := cfg["rev"]
+				cfg["wake"].(map[string]any)["mode"] = mode
+				done := make(chan int, 1)
+				go func() { done <- b.post("PUT", "/api/brakeman/config", map[string]any{"rev": rev, "config": cfg}) }()
+				return done
+			}
+			done := map[bool]<-chan int{}
+			done[true] = save(brakeman.WakeInvoked)
+			if off := wait("the off save at the gate", arrived); !off {
+				t.Fatal("the off save reached the gate as on")
+			}
+			// Read after the off save was written: the on save's rev is its.
+			done[false] = save(brakeman.WakeBackground)
+			if off := wait("the on save at the gate", arrived); off {
+				t.Fatal("the on save reached the gate as off")
+			}
+			for _, off := range []bool{offFirst, !offFirst} {
+				let[off]()
+				select {
+				case status := <-done[off]:
+					if status != http.StatusOK {
+						t.Fatalf("the save (off %v): %d", off, status)
+					}
+				case <-time.After(30 * time.Second):
+					t.Fatalf("the save (off %v) never answered", off)
+				}
+			}
+			if r := b.ledgerRole(t); r.State != crew.RoleIdle || r.Open != nil || r.Why != "" || r.Reason != "" || r.Tries != 0 {
+				t.Fatalf("after both saves' steps: %+v", r)
+			}
+			// Past the old batch's window and the start retry: the loop's
+			// passes make no turn.
+			c.add(crew.RoleStartRetry + time.Duration(brakeman.MinWindowSeconds)*time.Second)
+			b.roleSettle(t)
+			if r := b.ledgerRole(t); r.State != crew.RoleIdle || r.Open != nil || r.Tries != 0 {
+				t.Fatalf("after the loop's passes: %+v", r)
+			}
+			if page, _, _ := b.desk.st.List("", 10); len(page) != 1 {
+				t.Fatalf("a save started a turn: %d requests", len(page))
+			}
+		})
+	}
+}
+
 // TestAnUnavailableRoleHoldsNothingElse: while the role is unavailable a
 // person's crew runs and a question its member asks is answered as ever:
 // nothing waits on Brakeman.

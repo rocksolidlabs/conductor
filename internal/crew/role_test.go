@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -794,10 +795,10 @@ func TestASaveOfTheRoleOffEndsAnAgentNotStarted(t *testing.T) {
 		ch        RoleChange
 		ends      bool
 	}{
-		"off and the account cleared": {ch: RoleChange{On: true, Start: true}, ends: true},
-		"off":                         {ch: RoleChange{On: true}, ends: true},
-		"the account cleared, off":    {offBefore: true, ch: RoleChange{Start: true}, ends: true},
-		"anything else, off":          {offBefore: true, ch: RoleChange{Other: true, Budget: true}},
+		"off and the account cleared": {ch: RoleChange{On: true, Start: true, Off: true}, ends: true},
+		"off":                         {ch: RoleChange{On: true, Off: true}, ends: true},
+		"the account cleared, off":    {offBefore: true, ch: RoleChange{Start: true, Off: true}, ends: true},
+		"anything else, off":          {offBefore: true, ch: RoleChange{Other: true, Budget: true, Off: true}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newRoleFixture(t)
@@ -850,6 +851,146 @@ func TestASaveOfTheRoleOffEndsAnAgentNotStarted(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestOverlappingSavesOfTheRoleOffAndOnFireNoTurn (#715, review round
+// 2): the role's agent did not start, and two saves overlap, the
+// background off and then on, both written before the step of either
+// reaches the role, in either order: the role is clean (idle, no batch,
+// no count of turns not started, no words) and fires no turn, past the
+// old batch's window and the start retry. The steps act on what each save
+// did, never on the settings read when they come, which are the later
+// save's (on) for both.
+func TestOverlappingSavesOfTheRoleOffAndOnFireNoTurn(t *testing.T) {
+	words := "the agent did not start in 5 minutes, no call to Conductor (signed out?)"
+	off, on := RoleChange{On: true, Off: true}, RoleChange{On: true}
+	for name, order := range map[string][]RoleChange{
+		"the off save's step first": {off, on},
+		"the on save's step first":  {on, off},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newRoleFixture(t)
+			f.failed("build", 1)
+			f.clock.add(2 * time.Minute)
+			f.state(RoleBriefing)
+			f.rec.close("br-1", RoleOutcome{Unavailable: words, Reason: ReasonStart})
+			if r := f.state(RoleUnavailable); r.Tries != 1 || r.Open == nil {
+				t.Fatalf("%+v", r)
+			}
+			// Both saves written: the settings are the on save's.
+			f.rec.mu.Lock()
+			f.rec.settings.On = true
+			f.rec.mu.Unlock()
+			gen := f.record().Gen
+			for _, ch := range order {
+				if err := f.role.Reconfigured(ch); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if r := f.record(); r.State != RoleIdle || r.Open != nil || r.Why != "" || r.Reason != "" || r.Tries != 0 || !r.RetryAt.IsZero() || r.Gen != gen+2 {
+				t.Fatalf("after both saves' steps: %+v", r)
+			}
+			f.clock.add(RoleStartRetry + 2*time.Minute)
+			if r := f.state(RoleIdle); f.rec.fired() != 1 || r.Open != nil {
+				t.Fatalf("a turn fired after the saves: %d turns, %+v", f.rec.fired(), r)
+			}
+		})
+	}
+}
+
+// TestABatchFiresOnlyUnderTheConfigurationItWasGatheredUnder (#715,
+// review round 2): a batch records the configuration generation it was
+// gathered under. A turn in flight across saves of the background off and
+// on (their steps in either order) whose agent then does not start keeps
+// no batch for the next turn: its batch is of the generation before the
+// off save, dropped with a log line, and no turn fires for it. A batch
+// frozen to fire across them is dropped unfired the same way. A save that
+// leaves the role on (a budget) carries the batch in flight, so a turn
+// that did not start keeps it, and it fires.
+func TestABatchFiresOnlyUnderTheConfigurationItWasGatheredUnder(t *testing.T) {
+	words := "the agent did not start in 5 minutes, no call to Conductor (signed out?)"
+	off, on := RoleChange{On: true, Off: true}, RoleChange{On: true}
+	for name, c := range map[string]struct {
+		saves  []RoleChange
+		frozen bool
+		kept   bool
+	}{
+		"off then on":           {saves: []RoleChange{off, on}},
+		"on then off":           {saves: []RoleChange{on, off}},
+		"frozen, off then on":   {saves: []RoleChange{off, on}, frozen: true},
+		"frozen, on then off":   {saves: []RoleChange{on, off}, frozen: true},
+		"a budget, the role on": {saves: []RoleChange{{Budget: true}}, kept: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newRoleFixture(t)
+			var logged strings.Builder
+			var logMu sync.Mutex
+			f.role.SetLogger(slog.New(slog.NewTextHandler(lockedWriter{&logMu, &logged}, nil)))
+			f.failed("build", 1)
+			f.clock.add(2 * time.Minute)
+			if c.frozen {
+				// The batch frozen to fire, its request not made: the
+				// store refused it for now.
+				f.rec.mu.Lock()
+				f.rec.fireErr = errors.New("the store is busy")
+				f.rec.mu.Unlock()
+				if _, err := f.role.Step(); err == nil {
+					t.Fatal("the fire did not fail")
+				}
+				if r := f.record(); !r.Firing || r.Fired == nil {
+					t.Fatalf("not frozen: %+v", r)
+				}
+			} else {
+				f.state(RoleBriefing)
+			}
+			for _, ch := range c.saves {
+				if err := f.role.Reconfigured(ch); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if c.frozen {
+				f.rec.mu.Lock()
+				f.rec.fireErr = nil
+				f.rec.mu.Unlock()
+				if r := f.state(RoleIdle); r.Fired != nil || r.Firing || r.Open != nil || f.rec.fired() != 0 {
+					t.Fatalf("the frozen batch fired: %d turns, %+v", f.rec.fired(), r)
+				}
+			} else {
+				f.rec.close("br-1", RoleOutcome{Unavailable: words, Reason: ReasonStart})
+				r := f.state(RoleUnavailable)
+				if c.kept != (r.Open != nil) {
+					t.Fatalf("the batch kept: %+v", r)
+				}
+				f.clock.add(RoleStartRetry + 2*time.Minute)
+				f.step()
+				want := 1
+				if c.kept {
+					want = 2
+				}
+				if f.rec.fired() != want {
+					t.Fatalf("%d turns, want %d: %+v", f.rec.fired(), want, f.record())
+				}
+			}
+			logMu.Lock()
+			said := logged.String()
+			logMu.Unlock()
+			if dropped := strings.Contains(said, "dropped a batch gathered under an earlier configuration"); dropped == c.kept {
+				t.Fatalf("the log line (dropped %v): %q", dropped, said)
+			}
+		})
+	}
+}
+
+// lockedWriter is a writer under a mutex, for a log the test reads.
+type lockedWriter struct {
+	mu *sync.Mutex
+	b  *strings.Builder
+}
+
+func (w lockedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.Write(p)
 }
 
 // TestTheLogKeepsItsNewest: the log keeps its newest MaxRoleLog rows.
