@@ -24,6 +24,8 @@ const (
 	TypeFile       byte = 0x06 // owner -> client: file read response
 	TypeChunk      byte = 0x07 // data channel only: fragment of a large frame
 	TypeFileWrite  byte = 0x08 // client -> owner: one part of a file save
+	TypeDecision   byte = 0x09 // owner -> client: a decision link's lane reply (decisions.go)
+	TypeDecide     byte = 0x0A // client -> owner: one action on a decision (decisions.go)
 	TypeRelay      byte = 0x10 // host <-> server: envelope for a relayed viewer
 )
 
@@ -133,6 +135,10 @@ func limitFor(t byte) (int, bool) {
 		return ChunkHeaderLen + ChunkSize, true
 	case TypeFileWrite:
 		return 12 + MaxWriteHeader + MaxWritePart, true
+	case TypeDecision:
+		return MaxDecision, true
+	case TypeDecide:
+		return MaxDecide, true
 	case TypeRelay:
 		return ViewerIDLen + 1 + MaxFileBytes + MaxFileHeader + 12, true
 	}

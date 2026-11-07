@@ -2468,8 +2468,14 @@ type AttachOptions struct {
 	LinkID    string
 	LinkLabel string
 	Name      string // cleaned with CleanName
-	Cols      uint16
-	Rows      uint16
+	// AnswerName, when set, is the name an answer through this client is
+	// kept under (a question's result, its activity), cleaned with
+	// CleanName, in place of Name: a decision link's label, so its answer
+	// is the link's however its client names itself. The roster still
+	// shows Name.
+	AnswerName string
+	Cols       uint16
+	Rows       uint16
 	// ChatOnly makes the connection quiet (hello.chatOnly): for a run's
 	// chat alone, with no scrollback or output, uncounted among the viewers.
 	ChatOnly bool
@@ -2506,6 +2512,17 @@ type AttachOptions struct {
 	// this client's and is not counted twice toward MaxViewers. Only a
 	// subscription of this session already ended counts.
 	Replaces *Subscription
+	// Decisions marks a decision link's client (docs/plans/decision-inbox.md,
+	// PR-5): its welcome says decisions, so it sends the lane's reads and
+	// decides, which its caller serves.
+	Decisions bool
+	// Hold, when set, is the client's credential held while one of its
+	// writes is under way (writeWait.hold): a decision link's, whose answer
+	// is begun only while the link stands, checked with the write and held
+	// until it has returned (its link's end waits for it, up to its bound).
+	// Hold must not call the
+	// session and must not wait.
+	Hold func() (Held, error)
 }
 
 // Attach registers a client without a display name. See AttachWith.
@@ -2624,10 +2641,14 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	sub := newSubscription(id, role, o.LinkID, sink)
 	sub.Name = CleanName(o.Name)
 	sub.LinkLabel = o.LinkLabel
+	if o.AnswerName != "" {
+		sub.answerName = CleanName(o.AnswerName)
+	}
 	sub.quiet = o.ChatOnly
 	sub.owner = o.Owner && o.LinkID == ""
 	sub.authorize = o.Authorize
 	sub.fresh = o.Fresh
+	sub.hold = o.Hold
 	if sized {
 		sub.want = [2]uint16{cols, rows}
 	}
@@ -2655,6 +2676,7 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		RunChat:         room != nil,
 		Answer:          true,
 		SubmitAck:       true,
+		Decisions:       o.Decisions,
 		Cwd:             welcomeCwd(s.info.Cwd, s.fileAllowed(role)),
 	}))
 	if !sub.quiet {
@@ -2974,6 +2996,9 @@ func (s *Local) input(ctx context.Context, who typist, question string, data []b
 	o.from, o.anyEnd = who.sub, true
 	if who.gone != nil {
 		o.gone = who.gone
+	}
+	if who.hold != nil {
+		o.hold = who.hold
 	}
 	// Whether a person typed anything here, or only the terminal reported
 	// (its replies, the pointer moved or clicked), as many reports as the
