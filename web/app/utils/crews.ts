@@ -1,4 +1,4 @@
-import type { AgentInfo, BroadcastResult, BroadcastSkipReason, CrewCheck, CrewInfo, CrewInput, CrewMember, CrewProbe, CrewManifest, CrewStart, CrewSummary, CrewTask, JoinRunMember, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
+import type { AgentInfo, BroadcastResult, BroadcastSkipReason, CrewCheck, CrewInfo, CrewInput, CrewMember, CrewPerson, CrewProbe, CrewManifest, CrewStart, CrewSummary, CrewTask, JoinRunMember, Responsibility, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { ActivityEntry } from './protocol'
 import { joinArgv, splitArgs } from './argv'
 import { isEnded } from './attention'
@@ -7,7 +7,8 @@ import { EVENT_INFO, feedTime, markOf, type EventColor, type FeedEntry } from '.
 /**
  * The body of POST /api/crews and PUT /api/crews/{id}: the fields the server accepts and nothing else, since it rejects unknown fields. A crew read
  * in full (a CrewInfo from GET /api/crews/{id}, with id, createdAt, updatedAt and manifestRevision) or members carrying page state can be passed as
- * they are. The project manifest goes when it holds something, and the legacy setup only while the crew still has one.
+ * they are. The project manifest goes when it holds something, the legacy setup only while the crew still has one, and the people only
+ * when there are some, so a crew without people is the body it was before them.
  */
 export function toCrewInput(c: Omit<CrewInput, 'tasks' | 'manifest'> & { tasks?: ReadonlyArray<CrewTask | DraftTask>; manifest?: DraftManifest }): CrewInput {
   const out: CrewInput = {
@@ -21,6 +22,7 @@ export function toCrewInput(c: Omit<CrewInput, 'tasks' | 'manifest'> & { tasks?:
     yolo: c.yolo,
     members: c.members.map(toCrewMember),
   }
+  if (c.people?.length) out.people = c.people.map(toCrewPerson)
   if (c.tasks) out.tasks = plainTasks(c.tasks).map(toCrewTask)
   if (c.setup?.length) out.setup = c.setup.map(toCrewCheck)
   if (c.manifest) {
@@ -73,12 +75,162 @@ export function liftSetup<T extends { setup?: CrewCheck[]; manifest?: CrewManife
   return { ...rest, manifest: { ...c.manifest, setup: setup.map((ch) => ({ ...ch, argv: [...ch.argv] })) } } as T
 }
 
-/** A task as the server accepts it: its fields and nothing else; empty needs and checks left out. */
+/** A task as the server accepts it: its fields and nothing else; empty needs and checks, and no owner, left out. */
 export function toCrewTask(t: CrewTask): CrewTask {
   const out: CrewTask = { id: t.id, member: t.member, kind: t.kind, instructions: t.instructions }
   if (t.needs?.length) out.needs = [...t.needs]
   if (t.checks?.length) out.checks = t.checks.map(toCrewCheck)
+  if (t.owner) out.owner = t.owner
   return out
+}
+
+/** The responsibilities a person may hold in a crew, in their order (internal/crew Responsibilities): each held by one person of it at most. */
+export const RESPONSIBILITIES: readonly Responsibility[] = ['architecture', 'product', 'security', 'acceptance']
+
+/** The responsibilities in plain words (internal/crew ResponsibilityWords). */
+export const RESPONSIBILITY_WORDS: Record<Responsibility, string> = {
+  architecture: 'architecture owner',
+  product: 'product owner',
+  security: 'security reviewer',
+  acceptance: 'acceptance owner',
+}
+
+/** The server's bounds on a crew's people (internal/crew checkPeople): a name is Dispatch's, 1 to 60 characters. */
+export const PEOPLE_LIMITS = { people: 12, name: 60, note: 500 } as const
+
+/** A person as the server accepts them: no responsibilities and an empty note left out. */
+export function toCrewPerson(p: CrewPerson): CrewPerson {
+  const out: CrewPerson = { name: p.name }
+  if (p.responsibilities?.length) out.responsibilities = [...p.responsibilities]
+  if (p.note) out.note = p.note
+  return out
+}
+
+/** A person in the editor: their fields and a key that stays while they are renamed, so the tasks they own follow the name (ownersFollowPeople). */
+export interface DraftPerson extends CrewPerson {
+  key: number
+}
+
+let personKeys = 0
+
+export function draftPerson(p: CrewPerson): DraftPerson {
+  return { ...toCrewPerson(p), key: ++personKeys }
+}
+
+/** The tasks with each one's owner as its draft person is named now, by key; a task whose owner is gone keeps the last name, a problem the rules name. */
+export function ownersFollowPeople(tasks: readonly DraftTask[], people: ReadonlyArray<Pick<DraftPerson, 'name' | 'key'>>): DraftTask[] {
+  const nameOf = new Map(people.map((p) => [p.key, p.name]))
+  return tasks.map((t) => {
+    const name = t.ownerKey === undefined ? undefined : nameOf.get(t.ownerKey)
+    return name === undefined || name === t.owner ? t : { ...t, owner: name }
+  })
+}
+
+/** The Owner select's value for a task naming no owner (ownerChoices). */
+export const OWNER_NONE = 'none'
+/** The Owner select's value for a task whose owner was a person removed while they had no name (ownerChoices). */
+export const OWNER_GONE = 'gone'
+
+/**
+ * A draft task's Owner select (CrewTasksTable): the value shown, the items (the "none" item naming the acceptance owner when there is one,
+ * then each named person by key) and whether it is disabled. A person is picked by key, so the task follows their name; an owner whose
+ * person is gone stays shown, as not a person ("a removed person" when they had no name), and the select stays enabled while it does,
+ * so the problem peopleProblems names ("its owner is gone: choose one, or none") can be answered with "none" in a crew left without people.
+ */
+export function ownerChoices(
+  t: Pick<DraftTask, 'owner' | 'ownerKey'>,
+  people: readonly DraftPerson[] = [],
+): { value: string; items: Array<{ label: string; value: string }>; disabled: boolean } {
+  const fallback = ownerOf({ people }, {})
+  const items = [{ label: fallback ? `none: ${fallback.name}, the acceptance owner` : 'none', value: OWNER_NONE }, ...people.filter((p) => p.name).map((p) => ({ label: p.name, value: `#${p.key}` }))]
+  const p = t.ownerKey === undefined ? undefined : people.find((x) => x.key === t.ownerKey)
+  if (p) return { value: `#${p.key}`, items, disabled: false }
+  if (t.owner) return { value: `name:${t.owner}`, items: [...items, { label: `${t.owner} (not a person)`, value: `name:${t.owner}` }], disabled: false }
+  if (t.ownerKey !== undefined) return { value: OWNER_GONE, items: [...items, { label: 'a removed person (not a person)', value: OWNER_GONE }], disabled: false }
+  return { value: OWNER_NONE, items, disabled: !people.length }
+}
+
+/**
+ * Who owns a task's outcome in a crew (internal/crew TaskOwner, the one rule): the person the task names, or else the crew's acceptance
+ * owner, with how; undefined for no one.
+ */
+export function ownerOf(c: { people?: readonly CrewPerson[] }, t: Pick<CrewTask, 'owner'>): { name: string; from: 'task' | 'acceptance' } | undefined {
+  const people = c.people ?? []
+  if (t.owner && people.some((p) => p.name === t.owner)) return { name: t.owner, from: 'task' }
+  const holder = people.find((p) => p.responsibilities?.includes('acceptance'))
+  return holder ? { name: holder.name, from: 'acceptance' } : undefined
+}
+
+/** A run's task's owner in words, as the run page says it: "owner nate", or "owner ana, the acceptance owner" for the fallback; '' for none. */
+export function ownerWords(t: { owner?: string; ownerFrom?: 'task' | 'acceptance' }): string {
+  if (!t.owner) return ''
+  return t.ownerFrom === 'acceptance' ? `owner ${t.owner}, the acceptance owner` : `owner ${t.owner}`
+}
+
+/** A person's responsibilities in words, in their order: "architecture owner, acceptance owner"; '' for none. */
+export function responsibilityWords(rs: readonly Responsibility[] | undefined): string {
+  return RESPONSIBILITIES.filter((r) => rs?.includes(r))
+    .map((r) => RESPONSIBILITY_WORDS[r])
+    .join(', ')
+}
+
+/** What a crew looks like to the people rules: its people, its members' names and its tasks (a saved crew's or the editor's). */
+export interface PeopleShape {
+  people?: ReadonlyArray<CrewPerson | DraftPerson>
+  members: ReadonlyArray<Pick<CrewMember, 'name'>>
+  tasks?: ReadonlyArray<CrewTask | DraftTask>
+}
+
+/** A control character as Go's unicode.IsControl has it (C0, DEL and C1). */
+const CONTROL = /\p{Cc}/u
+
+/**
+ * Why the server would refuse a crew's people (internal/crew checkPeople), every problem in the server's order; empty when it would accept
+ * them. A person's problems are `Person <n>: …` with n from 1 (peopleRowProblems reads them back), a task's owner's `Task <id>: …`, as the
+ * task rules name a task's (taskRowProblems). A draft task's owner is held by its person's key: one no person has any more (removed, even
+ * when another carries the name now) needs an owner chosen, so a save never hands the task to a namesake.
+ */
+export function peopleProblems(c: PeopleShape): string[] {
+  const out: string[] = []
+  const people = c.people ?? []
+  if (people.length > PEOPLE_LIMITS.people) out.push(`At most ${PEOPLE_LIMITS.people} people`)
+  const members = c.members.map((m) => m.name)
+  const names: string[] = []
+  const holder = new Map<Responsibility, string>()
+  for (const [i, p] of people.entries()) {
+    const what = `Person ${i + 1}`
+    if (!p.name) out.push(`${what}: give the person a name`)
+    else if (chars(p.name) > PEOPLE_LIMITS.name) out.push(`${what}: the name is at most ${PEOPLE_LIMITS.name} characters`)
+    else if (CONTROL.test(p.name)) out.push(`${what}: the name must not contain control characters`)
+    else if (names.includes(p.name)) out.push(`${what}: ${p.name} is named twice`)
+    else if (members.includes(p.name)) out.push(`${what}: ${p.name} is a member's name; a person is never a member, so the two names differ`)
+    names.push(p.name)
+    const rs = p.responsibilities ?? []
+    for (const [j, r] of rs.entries()) {
+      if (!RESPONSIBILITIES.includes(r)) out.push(`${what}: ${r} is not one of ${RESPONSIBILITIES.join(', ')}`)
+      else if (rs.slice(0, j).includes(r)) out.push(`${what}: holds ${RESPONSIBILITY_WORDS[r]} twice`)
+      else if (holder.has(r)) out.push(`${what}: the ${RESPONSIBILITY_WORDS[r]} is ${holder.get(r)} already; one person of a crew is its ${RESPONSIBILITY_WORDS[r]}`)
+      else holder.set(r, p.name)
+    }
+    if (p.note && chars(p.note) > PEOPLE_LIMITS.note) out.push(`${what}: the note is at most ${PEOPLE_LIMITS.note} characters`)
+    if (p.note && CONTROL.test(p.note)) out.push(`${what}: the note is one line, with no control characters`)
+  }
+  const keys = new Set(people.flatMap((p) => ('key' in p ? [p.key] : [])))
+  for (const t of c.tasks ?? []) {
+    const what = t.id ? `Task ${t.id}` : 'A task'
+    const gone = 'key' in t && t.ownerKey !== undefined && !keys.has(t.ownerKey)
+    if (gone) out.push(`${what}: its owner is gone${t.owner ? ` (${t.owner})` : ''}: choose one, or none`)
+    else if (t.owner && !names.includes(t.owner)) out.push(`${what}: its owner ${t.owner} is not a person of the crew`)
+  }
+  return out
+}
+
+/** The problems of one person's row (index i), for the mark under it, with `Person <n>: ` taken off. */
+export function peopleRowProblems(i: number, c: PeopleShape): string[] {
+  const what = `Person ${i + 1}: `
+  return peopleProblems(c)
+    .filter((p) => p.startsWith(what))
+    .map((p) => p.slice(what.length))
 }
 
 /** A check or setup command as the server accepts it; the text still being typed into its argv (DraftCheck.pending) is left out. */
@@ -146,25 +298,38 @@ export interface DraftTask extends Omit<CrewTask, 'needs' | 'checks'> {
   key: number
   needKeys: number[]
   memberKey?: number
+  /** The key of the draft person who owns it, whose name `owner` follows (ownersFollowPeople); undefined for no owner. */
+  ownerKey?: number
   checks?: DraftCheck[]
 }
 
 let taskKeys = 0
 
-/** The tasks of a saved crew as the editor holds them: keyed, their needs by key. */
-export function draftTasks(tasks: readonly CrewTask[], members: ReadonlyArray<Pick<DraftMember, 'name' | 'key'>> = []): DraftTask[] {
+/** The tasks of a saved crew as the editor holds them: keyed, their needs by key, their members and owners by their draft keys. */
+export function draftTasks(
+  tasks: readonly CrewTask[],
+  members: ReadonlyArray<Pick<DraftMember, 'name' | 'key'>> = [],
+  people: ReadonlyArray<Pick<DraftPerson, 'name' | 'key'>> = [],
+): DraftTask[] {
   const keyed = tasks.map((t) => ({ t, key: ++taskKeys }))
   const keyOf = new Map(keyed.map(({ t, key }) => [t.id, key]))
-  return keyed.map(({ t, key }) => ({
-    id: t.id,
-    member: t.member,
-    memberKey: members.find((m) => m.name === t.member)?.key,
-    kind: t.kind,
-    instructions: t.instructions,
-    key,
-    needKeys: (t.needs ?? []).map((n) => keyOf.get(n)).filter((k): k is number => k !== undefined),
-    checks: t.checks?.map((c) => ({ ...toCrewCheck(c) })),
-  }))
+  return keyed.map(({ t, key }) => {
+    const out: DraftTask = {
+      id: t.id,
+      member: t.member,
+      memberKey: members.find((m) => m.name === t.member)?.key,
+      kind: t.kind,
+      instructions: t.instructions,
+      key,
+      needKeys: (t.needs ?? []).map((n) => keyOf.get(n)).filter((k): k is number => k !== undefined),
+      checks: t.checks?.map((c) => ({ ...toCrewCheck(c) })),
+    }
+    if (t.owner) {
+      out.owner = t.owner
+      out.ownerKey = people.find((p) => p.name === t.owner)?.key
+    }
+    return out
+  })
 }
 
 /** The editor's tasks as the server takes them: needs by id, pending text left out. Tasks without keys pass as they are. */
@@ -177,6 +342,7 @@ export function plainTasks(tasks: ReadonlyArray<CrewTask | DraftTask>): CrewTask
     const needs = t.needKeys.map((k) => idOf.get(k)).filter((id): id is string => id !== undefined)
     if (needs.length) out.needs = needs
     if (t.checks?.length) out.checks = t.checks.map(toCrewCheck)
+    if (t.owner) out.owner = t.owner
     return out
   })
 }
@@ -195,12 +361,16 @@ export function toCrewMember(m: CrewMember): CrewMember {
 /** A member's name as the server accepts it (internal/crew memberNamePattern): it becomes a branch and a worktree name. */
 export const MEMBER_NAME = /^[a-z0-9][a-z0-9._-]{0,39}$/
 
-/** Why the server would refuse a member name, or '' when it is fine: its pattern, what git refuses in a branch name, and a name another member has. */
-export function memberNameError(name: string, taken: readonly string[] = []): string {
+/**
+ * Why the server would refuse a member name, or '' when it is fine: its pattern, what git refuses in a branch name, a name another member
+ * has, and a name one of `people` has (a member added to a run with people: internal/crew refuses a person's name, run.admit).
+ */
+export function memberNameError(name: string, taken: readonly string[] = [], people: readonly string[] = []): string {
   if (!name) return 'Give the member a name'
   if (!MEMBER_NAME.test(name)) return 'Lower-case letters, digits, ".", "_" and "-", starting with a letter or digit, at most 40'
   if (name.includes('..') || name.endsWith('.') || name.endsWith('.lock')) return 'git refuses this as a branch name: no "..", and no "." or ".lock" at the end'
   if (taken.includes(name)) return 'Another member has this name'
+  if (people.includes(name)) return "The name is a person's; a person is never a member, so the two names differ"
   return ''
 }
 
@@ -276,10 +446,11 @@ const bytes = (s: string) => new TextEncoder().encode(s).length
  * encodeManifest, and encodeTaskJSON, whose indent leaves a string as it is). JSON.stringify's own text is off both ways: the server escapes
  * U+2028 and U+2029, six bytes each where JSON.stringify keeps the three-byte character, and a lone surrogate, which JSON.stringify sends as a
  * six-byte escape, reaches the server as U+FFFD, three bytes. One pass over JSON.stringify's text corrects both without building a string:
- * the tasks table counts every task's text for each row it draws.
+ * the tasks table counts every task's text for each row it draws. With `indent`, as encodeTaskJSON writes it ("  " a level, which
+ * JSON.stringify's indent of 2 matches): who answers for a task (taskPeopleBytes).
  */
-function serverJsonBytes(v: unknown): number {
-  const text = JSON.stringify(v)
+function serverJsonBytes(v: unknown, indent?: number): number {
+  const text = JSON.stringify(v, null, indent)
   let n = bytes(text)
   for (let i = 0; i < text.length; i++) {
     const c = text.charCodeAt(i)
@@ -502,6 +673,21 @@ export type TaskShape = Pick<CrewInput, 'setup' | 'isolation'> & {
   manifest?: DraftManifest
   /** The legacy setup the editor lifted into the manifest (DraftCrew.liftedSetup). */
   liftedSetup?: readonly CrewCheck[]
+  /** The crew's people: who answers for a task counts in its task file, and a task's owner is one of them. */
+  people?: ReadonlyArray<CrewPerson | DraftPerson>
+}
+
+/**
+ * How many bytes who answers for t takes in its task.json (internal/crew taskPeopleBytes): how its owner came to own it, the owner and the
+ * crew's people, each as encodeTaskJSON writes it, a person by name and responsibilities, never the note; 0 for a crew without people.
+ */
+export function taskPeopleBytes(c: TaskShape, t: Pick<CrewTask, 'owner'>): number {
+  const people = c.people ?? []
+  if (!people.length) return 0
+  const named = (p: CrewPerson) => (p.responsibilities?.length ? { name: p.name, responsibilities: [...p.responsibilities] } : { name: p.name })
+  const o = ownerOf(c, t)
+  const owner = o ? people.find((p) => p.name === o.name) : undefined
+  return serverJsonBytes(o?.from ?? '', 2) + serverJsonBytes(owner ? named(owner) : null, 2) + serverJsonBytes(people.map(named), 2)
 }
 
 /**
@@ -612,7 +798,8 @@ export function taskProblems(c: TaskShape): string[] {
  * Why the server would refuse to save a crew's tasks beyond taskProblems (internal/crew ValidateSave): rules a crew is held to as it is
  * saved, not as one saved before is launched, so an unchanged crew from before them still launches. A task needs another once, and its
  * goal, role and instructions as its task.json keeps them (each string as the server writes it as JSON, quotes and escapes: internal/crew
- * taskTextBytes) leave room for the rest of a task file, which never cuts them. A legacy setup the editor lifted into the project manifest,
+ * taskTextBytes), with who answers for it in a crew with people (taskPeopleBytes), leave room for the rest of a task file, which never
+ * cuts them. A legacy setup the editor lifted into the project manifest,
  * unchanged, is held here to the manifest's rules (liftedAsStored), first, as the server checks a crew before these: saved, it is a manifest;
  * launched as it is, the crew as stored.
  */
@@ -625,16 +812,18 @@ export function taskSaveProblems(c: TaskShape): string[] {
     for (const n of t.needs ?? []) (seen.has(n) ? twice : seen).add(n)
     for (const n of twice) out.push(`${what}: needs ${n} twice`)
     const prompt = c.members.find((m) => m.name === t.member)?.prompt ?? ''
-    const text = [c.goal ?? '', prompt, t.instructions].reduce((n, s) => n + serverJsonBytes(s), 0)
-    if (text > TASK_LIMITS.taskText) out.push(`${what}: its goal, role and instructions are ${text} bytes as its task file keeps them, more than ${TASK_LIMITS.taskText}`)
+    const people = taskPeopleBytes(c, t)
+    const text = [c.goal ?? '', prompt, t.instructions].reduce((n, s) => n + serverJsonBytes(s), 0) + people
+    const words = people ? 'goal, role, instructions and people' : 'goal, role and instructions'
+    if (text > TASK_LIMITS.taskText) out.push(`${what}: its ${words} are ${text} bytes as its task file keeps them, more than ${TASK_LIMITS.taskText}`)
   }
   return out
 }
 
-/** The problems of one task's row, for the mark under it: those of taskProblems and taskSaveProblems that name it. */
+/** The problems of one task's row, for the mark under it: those of taskProblems, peopleProblems (its owner) and taskSaveProblems that name it. */
 export function taskRowProblems(t: Pick<CrewTask, 'id'>, c: TaskShape): string[] {
   const what = t.id ? `Task ${t.id}` : 'A task'
-  return [...taskProblems(c), ...taskSaveProblems(c)].filter((p) => p.startsWith(what + ':') || p.startsWith(what + ','))
+  return [...taskProblems(c), ...peopleProblems(c), ...taskSaveProblems(c)].filter((p) => p.startsWith(what + ':') || p.startsWith(what + ','))
 }
 
 /** A new task for the editor: done by `member`, its id from the member's name, not one of `taken`. */
@@ -694,9 +883,11 @@ export interface DraftMember extends CrewMember {
  * A crew in the editor; no id until it is saved. Its tasks are keyed (DraftTask) and its project manifest holds what is still being typed
  * (DraftManifest). A crew stored with a legacy setup has it lifted into the manifest's setup phase (toDraft), so the editor has one place for it.
  */
-export interface DraftCrew extends Omit<CrewInput, 'tasks' | 'manifest'> {
+export interface DraftCrew extends Omit<CrewInput, 'tasks' | 'manifest' | 'people'> {
   id?: string
   members: DraftMember[]
+  /** The crew's people, keyed (DraftPerson); absent or empty for a crew without, which saves as one. */
+  people?: DraftPerson[]
   tasks?: DraftTask[]
   manifest?: DraftManifest
   /**
@@ -704,6 +895,19 @@ export interface DraftCrew extends Omit<CrewInput, 'tasks' | 'manifest'> {
    * as it is stored and a manifest's rules hold only its save (taskSaveProblems).
    */
   liftedSetup?: CrewCheck[]
+  /**
+   * The crew as read when the draft was made from it (toDraft of a crew read whole), never sent: its revision is the copy a save is made from,
+   * so the server refuses the save once another came between (409 `stale_revision`).
+   */
+  base?: CrewInfo
+  /**
+   * Set when a save of the draft was refused because the crew was saved elsewhere since its base was read (refusedAsStale): nothing was saved
+   * and nothing typed changed. The page says what changed (elsewhereWords) and offers two choices, neither taken by itself: read the crew again,
+   * which replaces the draft, or save it anyway over the copy the server holds now (revisionToSave).
+   */
+  changedElsewhere?: boolean
+  /** The crew as the server holds it now, read after that refusal; absent until it is read, or when the read failed. */
+  theirs?: CrewInfo
 }
 
 let memberKeys = 0
@@ -722,15 +926,105 @@ export function keepParked(next: DraftCrew, prev: DraftCrew | undefined): DraftC
   return { ...next, manifest: { ...next.manifest, parked } }
 }
 
-/** A saved crew, or the new one, as the editor holds it: its members and tasks keyed, a legacy setup lifted into its project manifest (liftSetup). */
-export function toDraft(c: CrewInput & { id?: string }): DraftCrew {
+/**
+ * A saved crew, or the new one, as the editor holds it: its members and tasks keyed, a legacy setup lifted into its project manifest (liftSetup).
+ * A crew read whole (with the revision the server named it by) is the draft's base.
+ */
+export function toDraft(c: CrewInput & { id?: string; revision?: string }): DraftCrew {
   const lifted = liftSetup(c)
   const input = toCrewInput(lifted)
   const members = c.members.map(draftMember)
-  const out: DraftCrew = { ...input, id: c.id, members, tasks: input.tasks ? draftTasks(input.tasks, members) : undefined }
+  const people = c.people?.length ? c.people.map(draftPerson) : undefined
+  const out: DraftCrew = { ...input, id: c.id, members, people, tasks: input.tasks ? draftTasks(input.tasks, members, people) : undefined }
   // liftSetup hands back the crew itself when it lifts nothing.
   if (lifted !== c) out.liftedSetup = (c.setup ?? []).map(toCrewCheck)
+  if (c.id && c.revision) out.base = c as CrewInfo
   return out
+}
+
+/**
+ * The draft whose save the server refused with 409 `stale_revision`, marked so the page says so: every field as it was, text still being typed
+ * included, and its base kept. `theirs` is the crew as the server holds it now, once it is read.
+ */
+export function refusedAsStale(d: DraftCrew, theirs?: CrewInfo): DraftCrew {
+  return { ...d, changedElsewhere: true, theirs }
+}
+
+/**
+ * The revision a save of the draft is made from: its base's, so a save after a refusal is refused again; or, `anyway` (the person chose to
+ * save theirs over the change made elsewhere), the copy the server holds now, as read after the refusal. Undefined when there is none: a
+ * new crew, or `anyway` before that copy is read, which the page must not save.
+ */
+export function revisionToSave(d: DraftCrew, anyway = false): string | undefined {
+  return anyway ? (d.changedElsewhere ? d.theirs?.revision : undefined) : d.base?.revision
+}
+
+/** Whether two values are the same as JSON (the server's form of a crew's fields, built in one key order). */
+function same(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+/** Names a change shows at most, and characters of each name. */
+const CHANGED_NAMES = 3
+const CHANGED_NAME_CHARS = 40
+
+/** Names in words, bounded: the first three, cut to 40 characters, and how many more. */
+function namesWords(names: readonly string[]): string {
+  const cut = names.slice(0, CHANGED_NAMES).map((n) => (n.length > CHANGED_NAME_CHARS ? `${n.slice(0, CHANGED_NAME_CHARS - 1)}…` : n))
+  return names.length > CHANGED_NAMES ? `${cut.join(', ')} and ${names.length - CHANGED_NAMES} more` : cut.join(', ')
+}
+
+/** The entries added, removed and changed between two lists keyed by `key`, as "2 people added (ana, bo)". */
+function listChanges<T>(before: readonly T[] | undefined, after: readonly T[] | undefined, key: (x: T) => string, one: string, many: string, differs: (a: T, b: T) => boolean = (a, b) => !same(a, b)): string[] {
+  const was = new Map((before ?? []).map((x) => [key(x), x]))
+  const now = new Map((after ?? []).map((x) => [key(x), x]))
+  const out: string[] = []
+  const say = (names: string[], what: string) => {
+    if (names.length) out.push(`${names.length} ${names.length === 1 ? one : many} ${what} (${namesWords(names)})`)
+  }
+  say([...now.keys()].filter((k) => !was.has(k)), 'added')
+  say([...was.keys()].filter((k) => !now.has(k)), 'removed')
+  say([...now.keys()].filter((k) => was.has(k) && differs(was.get(k)!, now.get(k)!)), 'changed')
+  return out
+}
+
+/**
+ * What changed between two reads of a crew, in words, bounded: the crew's fields; the members, people and tasks added, removed or changed,
+ * counted and named (three names at most each); the acceptance owner, and the tasks whose owner changed; the project manifest; and
+ * "something else changed" for a change none of these names.
+ */
+export function changedBetween(before: CrewInput, after: CrewInput): string[] {
+  const a = toCrewInput(liftSetup(before))
+  const b = toCrewInput(liftSetup(after))
+  const out: string[] = []
+  if (a.name !== b.name) out.push('the name')
+  if (a.goal !== b.goal) out.push('the goal')
+  if (a.cwd !== b.cwd) out.push('the working directory')
+  if (a.where !== b.where || a.isolation !== b.isolation || a.openAfterLaunch !== b.openAfterLaunch || a.viewLinkTtlSeconds !== b.viewLinkTtlSeconds || a.yolo !== b.yolo) out.push('how each run starts')
+  out.push(...listChanges(a.members, b.members, (m) => m.name, 'member', 'members'))
+  out.push(...listChanges(a.people, b.people, (p) => p.name, 'person', 'people'))
+  const accepts = (c: CrewInput) => c.people?.find((p) => p.responsibilities?.includes('acceptance'))?.name
+  if (accepts(a) !== accepts(b)) out.push(`the acceptance owner (${accepts(a) ?? 'none'}, now ${accepts(b) ?? 'none'})`)
+  // A task's owner is said apart from the rest of the task: who owns it can change with the people alone (the acceptance owner).
+  const ownerless = ({ owner: _owner, ...t }: CrewTask) => t
+  out.push(...listChanges(a.tasks, b.tasks, (t) => t.id, 'task', 'tasks', (x, y) => !same(ownerless(x), ownerless(y))))
+  const wasTasks = new Map((a.tasks ?? []).map((t) => [t.id, t]))
+  const owners = (b.tasks ?? []).filter((t) => wasTasks.has(t.id) && ownerOf(a, wasTasks.get(t.id)!)?.name !== ownerOf(b, t)?.name).map((t) => t.id)
+  if (owners.length) out.push(`${owners.length} ${owners.length === 1 ? "task's owner" : "tasks' owners"} changed (${namesWords(owners)})`)
+  if (!same(a.manifest, b.manifest) || !same(a.setup, b.setup)) out.push('the project manifest')
+  if (!out.length && !same(a, b)) out.push('something else changed')
+  return out
+}
+
+/**
+ * What the page says changed elsewhere after a refused save (refusedAsStale), from the copy the draft was made from and the one the server
+ * holds now: "1 person added (ana); the goal". "something else changed" when it cannot say (the server's copy not read, or a change no field
+ * shows); '' for a draft not refused.
+ */
+export function elsewhereWords(d: DraftCrew): string {
+  if (!d.changedElsewhere) return ''
+  const words = d.base && d.theirs ? changedBetween(d.base, d.theirs) : []
+  return words.length ? words.join('; ') : 'something else changed'
 }
 
 /** The extra arguments typed for a member, split as the Launch dialog splits them; undefined when there are none. */
@@ -773,7 +1067,9 @@ export function pageAfterDelete(page: number, left: number): number {
 
 /** The summary GET /api/crews lists for `c`: what the list shows after a save, until the list is read again. */
 export function summaryOf(c: CrewInfo): CrewSummary {
-  return { id: c.id, name: c.name, goal: c.goal, cwd: c.cwd, where: c.where, isolation: c.isolation, members: c.members.map((m) => ({ name: m.name, agentId: m.agentId, start: m.start })), updatedAt: c.updatedAt }
+  const out: CrewSummary = { id: c.id, name: c.name, goal: c.goal, cwd: c.cwd, where: c.where, isolation: c.isolation, members: c.members.map((m) => ({ name: m.name, agentId: m.agentId, start: m.start })), updatedAt: c.updatedAt }
+  if (c.people?.length) out.people = c.people.map((p) => (p.responsibilities?.length ? { name: p.name, responsibilities: [...p.responsibilities] } : { name: p.name }))
+  return out
 }
 
 /** A member's state as the run view shows it (memberStatus). */

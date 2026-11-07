@@ -294,9 +294,10 @@ func fitRef(r decisionRef) decisionRef {
 // and now: unread when its store could not be read at the opening,
 // deleted when it is gone since, changed when its state, revision or
 // digest differ. A run's revision moves with every transition of the run,
-// the decision's own opening among them, so a run: ref is changed only
-// when its state is: what the asker cited is the run, not its ledger's
-// count of transitions (the plan's card shows a live run's chip
+// the decision's own opening among them, and so does a task's (its
+// revision is its run's, and the opening holds it), so a run: or a task:
+// ref is changed only when its state is: what the asker cited is the run
+// or the task, not its ledger's count of transitions (the plan's card shows a live run's chip
 // unchanged, decisions.spec.ts).
 func refChange(kind string, seen, now brakeman.RefState) string {
 	switch {
@@ -304,7 +305,7 @@ func refChange(kind string, seen, now brakeman.RefState) string {
 		return refUnread
 	case now.State == refDeleted && seen.State != refDeleted:
 		return refDeleted
-	case kind == brakeman.RefRun:
+	case kind == brakeman.RefRun || kind == brakeman.RefTask:
 		if now.State != seen.State {
 			return refChanged
 		}
