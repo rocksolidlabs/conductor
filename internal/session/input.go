@@ -87,19 +87,21 @@ type writeWait struct {
 	// the write, after every other check but guard, asked again at the
 	// write's commit boundary (Held.Stands, before the guard, the last
 	// check before the write is begun), and let go once the process write
-	// has returned or the write was cancelled (Held.Cancelled), so that a
-	// revoke or an expiry waiting on it (share.Store.Hold) comes after the
-	// write or refuses it, never between the check and the write's end.
-	// An error from it, taken or asked, refuses the write (a kind of
+	// has returned or the credential's end stopped waiting for it
+	// (Held.Cancelled): a revoke or an expiry that marks the credential
+	// before the write is begun refuses it; one after waits for it, up to
+	// its bound, and the write begun lands as the program reads it. An
+	// error from it, taken or asked, refuses the write (a kind of
 	// ErrRevoked), nothing written.
 	hold func() (Held, error)
 }
 
 // Held is a credential held while one write is under way (writeWait.hold):
 // a decision link's (share.Held, through the server's hold of the link).
-// A link's hold covers the write from its check until it has taken effect
-// (the process write returned) or is cancelled; a revoke and an expiry of
-// the link wait for it alike.
+// A link's hold covers the write from its check until the process write
+// has returned: a revoke and an expiry of the link wait for it alike, up
+// to their bound. Nothing is written once the link's end has marked it; a
+// write begun before lands as the program reads it.
 type Held interface {
 	// Stands is asked at the write's commit boundary, just before it is
 	// begun: an error (ErrRevoked, ErrExpired) and nothing of it is
@@ -107,22 +109,25 @@ type Held interface {
 	Stands() error
 	// Cancelled is closed once whoever ends the credential stops waiting
 	// for the write (a process write the program has not taken within the
-	// link's bound): the write is cancelled, its hold let go at once.
+	// link's bound): the hold is let go at once, and the write answers as
+	// the link's end and resolves nothing, though its bytes, begun, still
+	// land as the program reads them.
 	Cancelled() <-chan struct{}
 	// Release lets the credential go: once; again does nothing.
 	Release()
 }
 
-// cancelledBy is why a write whose credential's end cancelled it is
-// refused: why the credential no longer stands (a kind of ErrRevoked,
-// ErrExpired for an expiry), the write having begun and not returned
-// within the bound the credential's end waits for.
+// cancelledBy is why a write whose credential's end stopped waiting for
+// it is refused: why the credential no longer stands (a kind of
+// ErrRevoked, ErrExpired for an expiry), the write having begun and not
+// returned within the bound the credential's end waits for. Its bytes are
+// the program's to read; it is not the link's answer.
 func (w *procWrite) cancelledBy() error {
 	why := w.held.Stands()
 	if why == nil {
 		why = ErrRevoked
 	}
-	return fmt.Errorf("%w: the write was cancelled: the program had not taken it when its link ended", asRevoked(why))
+	return fmt.Errorf("%w: the program had not taken the write when its link ended: it answers nothing", asRevoked(why))
 }
 
 // withdrawn says why the write's connection withdraws it, nil while it
@@ -333,8 +338,8 @@ func (w *procWrite) stands() error {
 }
 
 // watchCancel watches the write's credential while the write is made:
-// once the credential's end cancels it (Held.Cancelled), its hold is let
-// go at once. done ends the watch and says whether it was cancelled.
+// once the credential's end stops waiting for it (Held.Cancelled), its
+// hold is let go at once. done ends the watch and says whether it was.
 func (w *procWrite) watchCancel() (done func() bool) {
 	if w.held == nil {
 		return func() bool { return false }
@@ -420,10 +425,10 @@ func (q *procWriter) run(to io.Writer) {
 		q.writing, q.current = time.Now(), w
 		q.mu.Unlock()
 		// The credential is held until the write has returned, or is let go
-		// as the credential's end cancels the write (a program that does
-		// not take it within the bound): what the program had taken stays
-		// taken, and the write is refused as cancelled, nothing after it
-		// written as its own (a reply's question not resolved by it).
+		// as the credential's end stops waiting for it (a program that does
+		// not take it within the bound): the write, begun, lands as the
+		// program reads it, and is refused as the link's end, nothing of
+		// it noted as its own (a reply's question not resolved by it).
 		cancelled := w.watchCancel()
 		var err error
 		select {

@@ -1110,20 +1110,28 @@ func flip(c byte) string {
 	return "A"
 }
 
-// An expired link's desk is closed as expired, and the link opens nothing
-// after; a link replayed after the server's restart opens nothing.
+// An expired link's viewer is closed by the sweep, and the link opens
+// nothing after; a link replayed after the server's restart opens nothing.
 func TestADecisionLinkExpiresAndDiesWithTheServer(t *testing.T) {
 	e := newTestEnv(t, nil)
 	id := sessionHex("expiry")
 	fs := newFakeSession(t, e, id, session.Options{})
 	fs.ask(t, "Which name?", threeChoices)
-	linkID, tok := e.decisionLink(t, "/api/sessions/"+id+"/links", "phone", 1)
+	// The deadline far off and the clock the test's, moved past it once
+	// the viewer is attached.
+	var cmu sync.Mutex
+	now := time.Now().UTC()
+	e.srv.links.SetNowForTest(func() time.Time { cmu.Lock(); defer cmu.Unlock(); return now })
+	linkID, tok := e.decisionLink(t, "/api/sessions/"+id+"/links", "phone", 3600)
 	w := dialLane(t, e, "/ws/sessions/"+id, tok)
-	until(t, "the link expired", func() bool {
-		_, err := e.srv.links.Live(linkID)
-		return errors.Is(err, share.ErrExpired)
-	})
-	e.srv.links.ExpireDue(time.Now())
+	cmu.Lock()
+	now = now.Add(2 * time.Hour)
+	later := now
+	cmu.Unlock()
+	if _, err := e.srv.links.Live(linkID); !errors.Is(err, share.ErrExpired) {
+		t.Fatalf("the link past its deadline: %v", err)
+	}
+	e.srv.links.ExpireDue(later)
 	w.expectClose(proto.CloseForbidden)
 	if code := closedWith(t, e, "/ws/sessions/"+id, tok); code != proto.CloseUnauthorized {
 		t.Fatalf("an expired link: %d", code)

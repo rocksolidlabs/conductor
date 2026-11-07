@@ -1,8 +1,11 @@
 package share
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"slices"
 	"strconv"
 	"strings"
@@ -605,6 +608,8 @@ func TestADecisionLinksRecent(t *testing.T) {
 // (End) does not wait, its session refusing what comes after on its own.
 func TestALinksActIsHeldAgainstItsRevoke(t *testing.T) {
 	s := NewStore()
+	// The bound far off: the revoke is judged waiting for the act.
+	s.HoldWait = time.Hour
 	now := time.Now()
 	s.now = func() time.Time { return now }
 	l, _, _ := s.CreateRunDecision("r1", session.RoleControl, "phone", time.Minute)
@@ -699,6 +704,7 @@ func TestAnExpiryWaitsAsARevokeDoes(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := NewStore()
+			s.HoldWait = time.Hour
 			var mu sync.Mutex
 			now := time.Now()
 			s.now = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
@@ -744,33 +750,49 @@ func TestAnExpiryWaitsAsARevokeDoes(t *testing.T) {
 	}
 }
 
-// An act that can be cancelled and has not taken effect within HoldWait
-// (a process write the program does not take) is cancelled: the barrier
-// waits HoldWait, closes the act's Cancelled, and returns once the act
-// has let go.
-func TestABarrierCancelsAStalledActPastItsBound(t *testing.T) {
+// The barrier waits for the acts begun before it up to HoldWait, and no
+// longer: past it the revoke returns with the act still held, the act told
+// (Cancelled) and still refused at its commit boundary, and the log line
+// says how many were pending. What the act had begun is its own.
+func TestABarrierReturnsPastItsBoundSayingWhatIsPending(t *testing.T) {
+	var logs bytes.Buffer
+	var lmu sync.Mutex
 	s := NewStore()
 	s.HoldWait = 50 * time.Millisecond
+	s.Log = slog.New(slog.NewTextHandler(lockedWriter{&lmu, &logs}, nil))
 	l, _, _ := s.CreateRunDecision("r1", session.RoleControl, "phone", 0)
 	stalled, _ := s.Hold(l.ID)
-	var order []string
-	var mu sync.Mutex
-	note := func(v string) { mu.Lock(); order = append(order, v); mu.Unlock() }
-	go func() {
-		<-stalled.Cancelled()
-		note("cancelled")
-		stalled.Release()
-	}()
+	defer stalled.Release()
 	s.RevokeRun("r1", l.ID)
-	note("revoked")
-	mu.Lock()
-	defer mu.Unlock()
-	if !slices.Equal(order, []string{"cancelled", "revoked"}) {
-		t.Fatalf("in order: %q", order)
+	select {
+	case <-stalled.Cancelled():
+	default:
+		t.Fatal("the act still held was not told")
+	}
+	if err := stalled.Stands(); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("the act still held at its commit boundary: %v", err)
+	}
+	lmu.Lock()
+	line := logs.String()
+	lmu.Unlock()
+	if !strings.Contains(line, "link="+l.ID) || !strings.Contains(line, "pending=1") {
+		t.Fatalf("the log: %q", line)
 	}
 	if _, err := s.Hold(l.ID); !errors.Is(err, ErrRevoked) {
 		t.Fatalf("a hold after the revoke: %v", err)
 	}
+}
+
+// lockedWriter writes to w under mu.
+type lockedWriter struct {
+	mu *sync.Mutex
+	w  io.Writer
+}
+
+func (l lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }
 
 // An opId names one operation of a link: the same request again finds the

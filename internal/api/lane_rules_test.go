@@ -288,15 +288,26 @@ func TestALinksAnswerIsWrittenOnlyWhileItStands(t *testing.T) {
 		id := sessionHex("own-expired")
 		fs := newFakeSession(t, e, id, session.Options{})
 		q := fs.ask(t, "Which name?", threeChoices)
+		// The deadline far off, the clock the test's, and the viewer's
+		// expiry made by the test once the answer is held.
+		var cmu sync.Mutex
+		now := time.Now().UTC()
+		e.srv.links.SetNowForTest(func() time.Time { cmu.Lock(); defer cmu.Unlock(); return now })
 		at, let, replies := held(e)
-		linkID, tok := e.decisionLink(t, "/api/sessions/"+id+"/links", "phone", 1)
+		fires := make(chan func(), 1)
+		e.srv.laneSeam.lapse = func(_ string, fire func()) { fires <- fire }
+		linkID, tok := e.decisionLink(t, "/api/sessions/"+id+"/links", "phone", 3600)
 		w := dialLane(t, e, "/ws/sessions/"+id, tok)
+		fire := <-fires
 		w.sendDecide(proto.Decide{Ref: questionRef(id, q), Action: "answer", Revision: q, Input: "1", OpID: "late-1"})
 		<-at
-		until(t, "the link expired", func() bool {
-			_, err := e.srv.links.Live(linkID)
-			return errors.Is(err, share.ErrExpired)
-		})
+		cmu.Lock()
+		now = now.Add(2 * time.Hour)
+		cmu.Unlock()
+		fire()
+		if _, err := e.srv.links.Live(linkID); !errors.Is(err, share.ErrExpired) {
+			t.Fatalf("the link after its expiry: %v", err)
+		}
 		close(let)
 		if r := replyOf(t, <-replies); !refusedWith(r, proto.DecideExpired) {
 			t.Fatalf("the answer taken after the expiry: %v", r)
@@ -355,6 +366,8 @@ func TestALinksCommandIsHeldAgainstItsRevoke(t *testing.T) {
 		})
 		t.Cleanup(func() { e.srv.runs.SetAfterTakenForTest(nil) })
 		replies := make(chan []byte, 1)
+		// The bound far off: the revoke is judged waiting for the command.
+		e.srv.links.HoldWait = time.Hour
 		e.srv.viewerCloseWait = 100 * time.Millisecond
 		e.srv.laneSeam = &laneSeams{beforeReply: func(_ string, f []byte) { replies <- f }}
 		linkID, tok := e.decisionLink(t, "/api/runs/"+run+"/links", "phone", 0)
@@ -442,17 +455,16 @@ func TestALaneEndsWhatItHasNotBegun(t *testing.T) {
 func TestADeskClosesWithItsLink(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
-		ttl   int64
-		end   func(e *testEnv, run, linkID string)
+		end   func(e *testEnv, run, linkID string, expire func())
 		close websocket.StatusCode
 		code  string
 	}{
-		{"revoked", 0, func(e *testEnv, run, linkID string) {
+		{"revoked", func(e *testEnv, run, linkID string, _ func()) {
 			e.do("DELETE", "/api/runs/"+run+"/links/"+linkID, adminToken, nil)
 		}, proto.CloseForbidden, proto.ErrCodeRevoked},
-		{"expired", 1, func(*testEnv, string, string) {}, proto.CloseForbidden, proto.ErrCodeExpired},
-		{"its run forgotten", 0, func(e *testEnv, run, _ string) { e.srv.runs.ForgetForTest(run) }, proto.CloseForbidden, proto.ErrCodeRevoked},
-		{"the server's shutdown", 0, func(e *testEnv, _, _ string) {
+		{"expired", func(_ *testEnv, _, _ string, expire func()) { expire() }, proto.CloseForbidden, proto.ErrCodeExpired},
+		{"its run forgotten", func(e *testEnv, run, _ string, _ func()) { e.srv.runs.ForgetForTest(run) }, proto.CloseForbidden, proto.ErrCodeRevoked},
+		{"the server's shutdown", func(e *testEnv, _, _ string, _ func()) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			e.srv.Shutdown(ctx)
@@ -468,13 +480,67 @@ func TestADeskClosesWithItsLink(t *testing.T) {
 			}
 			t.Cleanup(func() { e.do("POST", "/api/runs/"+run.ID+"/stop", adminToken, nil) })
 			e.srv.viewerCloseWait = 200 * time.Millisecond
-			linkID, tok := e.decisionLink(t, "/api/runs/"+run.ID+"/links", "phone", tc.ttl)
+			// The deadline far off and the clock the test's: the desk's
+			// expiry is made once the desk is open, the clock past it.
+			var cmu sync.Mutex
+			now := time.Now().UTC()
+			e.srv.links.SetNowForTest(func() time.Time { cmu.Lock(); defer cmu.Unlock(); return now })
+			fires := make(chan func(), 1)
+			e.srv.laneSeam = &laneSeams{lapse: func(_ string, fire func()) { fires <- fire }}
+			linkID, tok := e.decisionLink(t, "/api/runs/"+run.ID+"/links", "phone", 3600)
 			desk := dialLane(t, e, "/ws/runs/"+run.ID+"/desk", tok)
-			tc.end(e, run.ID, linkID)
+			fire := <-fires
+			tc.end(e, run.ID, linkID, func() {
+				cmu.Lock()
+				now = now.Add(2 * time.Hour)
+				cmu.Unlock()
+				fire()
+			})
 			if close, code := closedAs(desk.wsClient); close != tc.close || code != tc.code {
 				t.Fatalf("closed %d with %q, want %d with %q", close, code, tc.close, tc.code)
 			}
 		})
+	}
+}
+
+// A desk whose handler has read its hello and not yet registered as the
+// server shuts down is refused as it registers, its connection closed
+// (1001): the shutdown closes admission before it lists the desks it
+// closes, so no desk outlives it.
+func TestADeskRegisteringAsTheServerShutsDownIsRefused(t *testing.T) {
+	e := readyEnv(t, nil)
+	e.gitRepo(t)
+	run, release, err := e.srv.runs.LaunchNamed(t.Context(), managedCrew(e.root), "")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { e.do("POST", "/api/runs/"+run.ID+"/stop", adminToken, nil) })
+	e.srv.viewerCloseWait = 200 * time.Millisecond
+	at, let := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	e.srv.laneSeam = &laneSeams{beforeDeskAdd: func(string) { once.Do(func() { close(at); <-let }) }}
+	_, tok := e.decisionLink(t, "/api/runs/"+run.ID+"/links", "phone", 0)
+	c, err := dialWS(e, "/ws/runs/"+run.ID+"/desk", tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.CloseNow() })
+	w := &wsClient{t: t, c: c}
+	w.hello(0, 0)
+	<-at
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	e.srv.Shutdown(ctx)
+	close(let)
+	if close, _ := closedAs(w); close != websocket.StatusGoingAway {
+		t.Fatalf("the desk registering after the shutdown closed %d", close)
+	}
+	e.srv.lanes.mu.Lock()
+	n := len(e.srv.lanes.conns)
+	e.srv.lanes.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d links hold desks after the shutdown", n)
 	}
 }
 

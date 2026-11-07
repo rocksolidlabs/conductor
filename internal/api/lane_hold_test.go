@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -165,6 +166,8 @@ func TestALinksAnswerAtItsCommitIsRefusedByItsEnd(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newTestEnv(t, nil)
+			// The bound far off: the end is judged waiting for the act.
+			e.srv.links.HoldWait = time.Hour
 			e.srv.viewerCloseWait = 100 * time.Millisecond
 			var cmu sync.Mutex
 			now := time.Now().UTC()
@@ -229,6 +232,7 @@ func TestALinksCommandHeldAcrossItsExpiryCommitsNothing(t *testing.T) {
 	e := readyEnv(t, nil)
 	e.gitRepo(t)
 	run := failedRun(t, e)
+	e.srv.links.HoldWait = time.Hour
 	var cmu sync.Mutex
 	now := time.Now().UTC()
 	e.srv.links.SetNowForTest(func() time.Time { cmu.Lock(); defer cmu.Unlock(); return now })
@@ -270,11 +274,14 @@ func TestALinksCommandHeldAcrossItsExpiryCommitsNothing(t *testing.T) {
 }
 
 // A process write the program does not take within the link's bound
-// (HoldWait) is cancelled: the revoke returns while the write is still
-// being made, and once the program takes it the question is not resolved
-// by the link's answer.
-func TestALinksStalledWriteIsCancelledPastTheBound(t *testing.T) {
-	e := newTestEnv(t, nil)
+// (HoldWait) was begun before the revoke, and is not taken back: the
+// revoke returns once the bound has passed, the write still waiting for
+// the program, and its log line says one act was still under way; the
+// write then lands as the program reads it and resolves no question of
+// the revoked link.
+func TestALinksStalledWriteLandsAndAnswersNothingPastTheBound(t *testing.T) {
+	logs := &logBuffer{}
+	e := newTestEnvLogging(t, nil, slog.New(slog.NewTextHandler(logs, nil)))
 	e.srv.links.HoldWait = 100 * time.Millisecond
 	e.srv.viewerCloseWait = 100 * time.Millisecond
 	id := sessionHex("stalled")
@@ -289,20 +296,81 @@ func TestALinksStalledWriteIsCancelledPastTheBound(t *testing.T) {
 	if resp, _ := e.do("DELETE", "/api/sessions/"+id+"/links/"+linkID, adminToken, nil); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("revoke: %d", resp.StatusCode)
 	}
-	// Returned with the write still waiting for the program: cancelled.
+	// Returned within the bound, the write still waiting for the program,
+	// and said so.
 	select {
 	case <-gate:
 		t.Fatal("the gate opened")
 	default:
 	}
+	if l := logs.String(); !strings.Contains(l, "link="+linkID) || !strings.Contains(l, "pending=1") {
+		t.Fatalf("the revoke's log:\n%s", l)
+	}
 	close(gate)
-	until(t, "the program took the write", func() bool { return len(fs.written()) == 1 })
-	until(t, "the writer done with the cancelled write", func() bool { return goroutinesIn("session.(*procWriter).run(") == 0 })
+	until(t, "the stalled write landed", func() bool { return len(fs.written()) == 1 })
+	until(t, "the writer done with the write", func() bool { return goroutinesIn("session.(*procWriter).run(") == 0 })
 	if r, ok := fs.l.QuestionResult(q); ok {
-		t.Fatalf("a cancelled write resolved the question: %+v", r)
+		t.Fatalf("the write resolved the revoked link's question: %+v", r)
 	}
 	if a := fs.l.Info().Attention; a.ID != q || a.State != session.AttentionNeedsInput {
 		t.Fatalf("the question: %+v", a)
+	}
+}
+
+// A decision link's session viewer is closed at its link's deadline
+// through the link's barrier, as a desk is: the expiry marks the link,
+// waits for an answer whose write was begun before it (its link asked at
+// its commit boundary, the program not yet taking the keys), which lands,
+// and closes the viewer as expired only after it.
+func TestADecisionViewersExpiryWaitsForWhatWasBegun(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.srv.links.HoldWait = time.Hour
+	e.srv.viewerCloseWait = 100 * time.Millisecond
+	var cmu sync.Mutex
+	now := time.Now().UTC()
+	e.srv.links.SetNowForTest(func() time.Time { cmu.Lock(); defer cmu.Unlock(); return now })
+	id := sessionHex("viewer-lapse")
+	fs, gp := newGatedSession(t, e, id)
+	q := fs.ask(t, "Which name?", threeChoices)
+	fires := make(chan func(), 1)
+	got := replies(e, &laneSeams{lapse: func(_ string, fire func()) { fires <- fire }})
+	linkID, tok := e.decisionLink(t, "/api/sessions/"+id+"/links", "phone", 3600)
+	w := dialLane(t, e, "/ws/sessions/"+id, tok)
+	fire := <-fires
+	var mu sync.Mutex
+	var order []string
+	note := func(v string) { mu.Lock(); order = append(order, v); mu.Unlock() }
+	gp.written = func() { note("written") }
+	in, gate := gp.arm()
+	w.sendDecide(proto.Decide{Ref: questionRef(id, q), Action: "answer", Revision: q, Input: "1", OpID: "v-1"})
+	<-in
+	cmu.Lock()
+	now = now.Add(2 * time.Hour)
+	cmu.Unlock()
+	expired := make(chan struct{})
+	go func() {
+		fire()
+		note("expired")
+		close(expired)
+	}()
+	ending(t, e, linkID)
+	select {
+	case <-expired:
+		t.Fatal("the viewer's expiry returned while an answer begun before it was under way")
+	default:
+	}
+	close(gate)
+	<-expired
+	if r := replyOf(t, <-got); !isOK(r) {
+		t.Fatalf("the answer begun before the expiry: %v", r)
+	}
+	mu.Lock()
+	if !slices.Equal(order, []string{"written", "expired"}) {
+		t.Fatalf("in order: %q", order)
+	}
+	mu.Unlock()
+	if close, code := closedAs(w.wsClient); close != proto.CloseForbidden || code != proto.ErrCodeExpired {
+		t.Fatalf("the viewer closed %d with %q", close, code)
 	}
 }
 

@@ -385,6 +385,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	s.hostPingEvery = hostPingEvery
 	s.hostGoneWait = writeTimeout
 	s.viewerCloseWait = closeWait
+	// A revoke or an expiry that returns with acts of the link still
+	// under way says how many (share.Store.HoldWait).
+	s.links.Log = log
 	s.runSyncRetry = runSyncRetry
 	s.selfLimits = newSelfCounters()
 	s.opens = newOpenDesk()
@@ -1102,7 +1105,7 @@ func (s *Server) Shutdown(ctx context.Context) {
 		s.brakeman.quiesce(ctx)
 	}
 	s.runs.Draining(ctx)
-	s.closeDesks(errShuttingDown)
+	s.shutDesks()
 	s.webhooks.close(ctx)
 	// The providers' queues end as the webhooks' do: what waits in them is
 	// not delivered, and their goroutines are waited for with the others.

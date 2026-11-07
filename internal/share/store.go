@@ -2,6 +2,7 @@ package share
 
 import (
 	"errors"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -127,11 +128,15 @@ type Store struct {
 	OnRevoke func(sessionID, linkID string)
 	// OnRevokeRun is OnRevoke for a run's link.
 	OnRevokeRun func(runID, linkID string)
-	// HoldWait bounds how long a revoke or an expiry waits for an act
-	// under way that can be cancelled (a process write the program does
-	// not take) before it cancels it (Held.Cancelled); DefaultHoldWait
-	// when zero. Set before the store is used.
+	// HoldWait bounds how long a revoke or an expiry waits for the acts
+	// begun through the link before it (Hold); DefaultHoldWait when zero.
+	// Past it the revoke or the expiry returns, the acts still under way
+	// told (Held.Cancelled) and counted in a log line (Log); nothing begun
+	// is undone. Set before the store is used.
 	HoldWait time.Duration
+	// Log, when set, is told of a revoke or an expiry that returned with
+	// acts still under way, and how many. Set before the store is used.
+	Log *slog.Logger
 }
 
 // NewStore creates an empty store.
@@ -420,9 +425,10 @@ func (s *Store) RevokeRun(runID, linkID string) (found, revoked bool) {
 // comes first, so a viewer attaching meanwhile either sees it or is there
 // for notify's close to find. With wait (a revoke, not a session's end,
 // whose session refuses what comes after on its own) the link is ended
-// through its barrier first (end): no act is held after, and the acts
-// under way have taken effect or been cancelled before the mark, so none
-// of the link's acts takes effect after the revoke returns.
+// through its barrier first (end): nothing is begun for the link from
+// then on, and the acts begun before are waited for, up to HoldWait,
+// before the mark; one still under way then may land after the revoke
+// returns, and is logged.
 func (s *Store) revoke(linkID string, owned func(*Link) bool, wait bool, notify func()) (found, revoked bool) {
 	s.mu.Lock()
 	link, ok := s.byID[linkID]
@@ -433,7 +439,7 @@ func (s *Store) revoke(linkID string, owned func(*Link) bool, wait bool, notify 
 	acts := link.acts
 	s.mu.Unlock()
 	if wait {
-		s.end(acts, ErrRevoked)
+		s.end(linkID, acts, ErrRevoked)
 	}
 	s.mu.Lock()
 	already := link.Revoked
@@ -444,8 +450,8 @@ func (s *Store) revoke(linkID string, owned func(*Link) bool, wait bool, notify 
 }
 
 // ExpireDue ends each link that has expired by now through its barrier,
-// as a revoke does (end: no act held after, those under way taken effect
-// or cancelled), and then tells its hooks, once per link (OnRevoke for a
+// as a revoke does (end: nothing begun for it after, those begun before
+// waited for up to HoldWait), and then tells its hooks, once per link (OnRevoke for a
 // session's link, OnRevokeRun for a run's), so the viewers still attached
 // through it are closed. A link revoked before is not told again. It
 // returns how many it told.
@@ -462,7 +468,7 @@ func (s *Store) ExpireDue(now time.Time) int {
 	s.mu.Unlock()
 	var wg sync.WaitGroup
 	for _, l := range todo {
-		wg.Go(func() { s.end(l.acts, ErrExpired) })
+		wg.Go(func() { s.end(l.ID, l.acts, ErrExpired) })
 	}
 	wg.Wait()
 	for _, l := range todo {
@@ -474,10 +480,18 @@ func (s *Store) ExpireDue(now time.Time) int {
 // Expire is ExpireDue for the one link linkID as its own deadline comes
 // (a desk's timer at the link's ExpiresAt): once the store's clock has
 // passed the deadline, the link is ended through its barrier as an expiry
-// (end), and its hooks are told unless ExpireDue or Expire told them
-// before. It reports whether the link had expired; a link revoked, unknown
-// or not yet due is left as it is.
-func (s *Store) Expire(linkID string) bool {
+// (end: nothing begun for it after; the acts begun before waited for up
+// to HoldWait), and its hooks are told unless ExpireDue or Expire told
+// them before. It reports whether the link had expired; a link revoked,
+// unknown or not yet due is left as it is.
+func (s *Store) Expire(linkID string) bool { return s.ExpireThen(linkID, nil) }
+
+// ExpireThen is Expire with then, when set, run once the barrier has
+// returned and before the hooks are told, when the link had expired: a
+// connection that closes itself as expired (a decision link's session
+// viewer, which the hooks would close as revoked) is closed so then, after
+// the link's mark and wait, as every other is.
+func (s *Store) ExpireThen(linkID string, then func()) bool {
 	s.mu.Lock()
 	l, ok := s.byID[linkID]
 	if !ok || l.Revoked || l.ExpiresAt == nil || s.now().Before(*l.ExpiresAt) {
@@ -487,7 +501,10 @@ func (s *Store) Expire(linkID string) bool {
 	tell := !l.lapsed
 	l.lapsed = true
 	s.mu.Unlock()
-	s.end(l.acts, ErrExpired)
+	s.end(l.ID, l.acts, ErrExpired)
+	if then != nil {
+		then()
+	}
 	if tell {
 		s.tellExpired(l)
 	}

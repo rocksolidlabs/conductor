@@ -2486,8 +2486,9 @@ type AttachOptions struct {
 	Decisions bool
 	// Hold, when set, is the client's credential held while one of its
 	// writes is under way (writeWait.hold): a decision link's, whose answer
-	// is written only while the link stands, checked with the write and
-	// held until it has returned or was cancelled. Hold must not call the
+	// is begun only while the link stands, checked with the write and held
+	// until it has returned (its link's end waits for it, up to its bound).
+	// Hold must not call the
 	// session and must not wait.
 	Hold func() (Held, error)
 }

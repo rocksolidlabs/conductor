@@ -55,32 +55,37 @@ import (
 //
 // Three rules hold every path to them, and each is enforced in one place:
 //
-//  1. A link's hold covers an act until it has taken effect or is
-//     cancelled (share.Store.Hold): from the check that the link is not
-//     revoked or expired, made under the hold as the act is taken, to the
-//     moment the act has taken effect (an answer's process write returned;
-//     a task command committed by the engine) or has been cancelled,
-//     whichever comes first. A revoke and an expiry end the link through
-//     the same barrier, and an expiry waits as a revoke does (the sweep,
-//     share.Store.ExpireDue, and a desk's own deadline, Expire): from its
-//     start no act is held, and it returns only once each act held has
-//     taken effect or been cancelled. At its commit boundary an act asks
-//     once more whether its link stands, fail-closed (session.Held.Stands
-//     before a write is begun, crew.Command.Stands before a command's
-//     change): an act whose link ended while it was held takes no effect.
-//     A process write the program has not taken within the store's
-//     HoldWait is cancelled: refused as its link's end, nothing more of it
-//     written, no question resolved by it. The hold is taken as the
-//     session's writer takes an answer's keys or a line (session.Actor.Hold,
-//     Submission.Hold, AttachOptions.Hold: holdLink) and around the
-//     engine's command (laneCommand), never once before and used later. An
-//     answer queued, in flight or asked again when the link ends is
-//     refused, never written, on every path: the first try, a repeat
-//     answered from the link's record (replay, under the hold too), a twin
-//     from another connection, a queued send. An action whose connection
-//     closed before it began is never begun (the lane's context, checked
-//     under the hold, and an own-session answer's queued write withdrawn
-//     with it); one begun is the operation's, its receipt kept.
+//  1. Nothing is begun for a link after its revoke or its expiry has
+//     marked it; an act begun before may land (share.Store.Hold). An act
+//     is held from the check that the link is not revoked or expired,
+//     made under the hold as the act is taken, until it has returned (an
+//     answer's process write; a task command's commit by the engine). A
+//     revoke and an expiry end the link through the same barrier (the
+//     sweep, share.Store.ExpireDue; a desk's or a decision viewer's own
+//     deadline, Expire): from its start no act is held, and at its commit
+//     boundary, just before it is begun, an act asks once more whether
+//     its link stands, fail-closed (session.Held.Stands before a write is
+//     begun, crew.Command.Stands before a command's change), so one whose
+//     link ended while it was held is never begun. The barrier then waits
+//     for the acts begun before it, up to the store's HoldWait, and
+//     returns, logging how many were still under way; the viewers are
+//     closed after it. Nothing begun is undone: a process write the
+//     program has not taken by then resolves no question of the link, but
+//     its bytes land as the program reads them; a command the engine
+//     committed stays committed. A command's change is committed by the
+//     transaction that asked its link, or not at all: one the ledger
+//     refuses is put back and settles withdrawn, never carried by a later
+//     transaction. The hold is taken as the session's writer takes an
+//     answer's keys or a line (session.Actor.Hold, Submission.Hold,
+//     AttachOptions.Hold: holdLink) and around the engine's command
+//     (laneCommand), never once before and used later. An answer queued,
+//     in flight or asked again when the link ends is refused, never
+//     begun, on every path: the first try, a repeat answered from the
+//     link's record (replay, under the hold too), a twin from another
+//     connection, a queued send. An action whose connection closed before
+//     it began is never begun (the lane's context, checked under the
+//     hold, and an own-session answer's queued write withdrawn with it);
+//     one begun is the operation's, its receipt kept.
 //  2. An opId names one operation (share.Store.ClaimOp, Decide): the link
 //     keeps, by opId, the fingerprint of the whole request as it was sent
 //     (decideFingerprint: its item, action and every argument), and a
@@ -174,12 +179,20 @@ type laneSeams struct {
 	// the command begins (laneCommand), so a test can fail the engine's
 	// transactions after the taking.
 	commandCtx func(opID string, cancel context.CancelFunc)
+	// lapse is handed a desk's or a decision viewer's expiry as it is
+	// armed at its link's deadline (armLapse), so a test can make it come
+	// at a moment of its choosing.
+	lapse func(linkID string, fire func())
+	// beforeDeskAdd runs as a desk is about to be registered (laneState.add),
+	// its hello read.
+	beforeDeskAdd func(linkID string)
 }
 
 // holdLink is the hold a decision link's answer takes as the session's
 // writer takes its keys or line (rule 1): the link checked with the write
-// and held until the write has returned or was cancelled, its refusal said
-// as the session says a link's (ErrRevoked, ErrExpired).
+// and held until the write has returned (its end waits for it up to the
+// store's HoldWait), its refusal said as the session says a link's
+// (ErrRevoked, ErrExpired).
 func (s *Server) holdLink(linkID string) func() (session.Held, error) {
 	return func() (session.Held, error) {
 		if seam := s.laneSeam; seam != nil && seam.atHold != nil {
@@ -882,11 +895,13 @@ func (s *Server) laneAnswer(ctx context.Context, linkID, sessionID string, sc la
 // the decide carries, as the link: the engine judges it (stale_revision
 // for a run that moved on). One the item no longer offers is refused,
 // nothing done. The link is held from the check that it stands until the
-// engine has committed the command (rule 1), and asked once more at the
-// command's commit boundary (crew.Command.Stands): a revoke or an expiry
-// waits for a command past it, and one whose link ended while it was held
-// commits nothing (refused revoked or expired; once the engine had taken
-// it, its receipt settled withdrawn). A command whose connection closed
+// engine has returned (rule 1), and asked once more at the command's
+// commit boundary (crew.Command.Stands): a revoke or an expiry waits for a
+// command past it, up to the store's HoldWait, and one whose link ended
+// while it was held commits nothing (refused revoked or expired; once the
+// engine had taken it, its receipt settled withdrawn). A change the ledger
+// refuses is put back and its receipt settles withdrawn: it never lands
+// later through another transaction. A command whose connection closed
 // before it began is never begun. Once the engine has taken the command,
 // the operation is the link's whatever its outcome (an error after the
 // taking included): its opId stays bound to this request (rule 2), and a
@@ -983,10 +998,11 @@ func (s *Server) laneCommand(ctx context.Context, linkID string, sc laneScope, r
 
 // takenAnyway is the outcome of a command the engine answered with an
 // error and no receipt, when the engine had taken it all the same (its
-// change failed after the taking, the run paused for it): the ledger keeps
-// a row under the link's actor for the opId, for this task's command, so
-// the operation is the link's (rule 2), its opId bound to this request,
-// and its receipt says what becomes of it. A ledger that cannot be read
+// change's commit refused after the taking, the change put back and the
+// run paused for it): the ledger keeps a row under the link's actor for
+// the opId, for this task's command, so the operation is the link's (rule
+// 2), its opId bound to this request, and its receipt says what became of
+// it (withdrawn, once the ledger records it). A ledger that cannot be read
 // keeps it the link's as well, fail-closed: a later request under the
 // opId is op_conflict, never a fresh command. nil when the engine took
 // nothing (no row), or a row of another command holds the opId.
@@ -1008,7 +1024,7 @@ func (s *Server) takenAnyway(ctx context.Context, linkID, run, task, target stri
 	}
 	s.note(linkID, target, m.OpID, m.OpID)
 	return proto.MustControl(proto.DecideRefused{T: proto.CtlDecideRefused, ReqID: m.ReqID, Code: "unavailable",
-		Message: "the engine took the command and could not apply it yet: its receipt says what becomes of it", Ref: target, Receipt: m.OpID}), kept
+		Message: "the engine took the command and could not record its change: it was withdrawn, as its receipt says once the ledger records it", Ref: target, Receipt: m.OpID}), kept
 }
 
 // laneHash is what the link's viewer sees, hashed: its scope's open items
@@ -1278,6 +1294,9 @@ type laneState struct {
 	mu    sync.Mutex
 	conns map[string]map[*wsSink]struct{}
 	links map[string]*linkWatch
+	// shut is set as the server's shutdown closes every desk (shutDesks),
+	// before it lists them: no desk is registered after (add).
+	shut bool
 }
 
 // linkWatch is one link's watch: the connections it tells (their wakes,
@@ -1355,12 +1374,19 @@ func (d *laneState) poke(linkID string) {
 // bounds its viewers.
 const maxDesks = 8
 
-// add holds sink as one of linkID's desks; false past maxDesks.
-func (d *laneState) add(linkID string, sink *wsSink) bool {
+// errTooManyDesks refuses a desk past maxDesks.
+var errTooManyDesks = errors.New("too many desks for this link")
+
+// add holds sink as one of linkID's desks: errTooManyDesks past maxDesks,
+// errShuttingDown once the server's shutdown has closed the desks.
+func (d *laneState) add(linkID string, sink *wsSink) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.shut {
+		return errShuttingDown
+	}
 	if len(d.conns[linkID]) >= maxDesks {
-		return false
+		return errTooManyDesks
 	}
 	if d.conns == nil {
 		d.conns = map[string]map[*wsSink]struct{}{}
@@ -1369,7 +1395,7 @@ func (d *laneState) add(linkID string, sink *wsSink) bool {
 		d.conns[linkID] = map[*wsSink]struct{}{}
 	}
 	d.conns[linkID][sink] = struct{}{}
-	return true
+	return nil
 }
 
 func (d *laneState) remove(linkID string, sink *wsSink) {
@@ -1379,6 +1405,26 @@ func (d *laneState) remove(linkID string, sink *wsSink) {
 	if len(d.conns[linkID]) == 0 {
 		delete(d.conns, linkID)
 	}
+}
+
+// shutDesks closes every desk as the server shuts down: admission closed
+// first, under the lock add takes, so a desk is either among those closed
+// or refused as it registers.
+func (s *Server) shutDesks() {
+	s.lanes.mu.Lock()
+	s.lanes.shut = true
+	s.lanes.mu.Unlock()
+	s.closeDesks(errShuttingDown)
+}
+
+// armLapse arms fire at at, a desk's or a decision viewer's link's
+// deadline (handed to the lapse seam in tests); its stop disarms it.
+func (s *Server) armLapse(linkID string, at time.Time, fire func()) (stop func()) {
+	t := time.AfterFunc(time.Until(at), fire)
+	if seam := s.laneSeam; seam != nil && seam.lapse != nil {
+		seam.lapse(linkID, fire)
+	}
+	return func() { t.Stop() }
 }
 
 // closeDesks closes the desks of the links named, each as its link stands
@@ -1450,8 +1496,16 @@ func (s *Server) handleRunDesk(w http.ResponseWriter, r *http.Request) {
 	sink := s.viewerSink(c, hk.conn)
 	// Held before the link is read again: a revoke marks the link and then
 	// closes its desks, so either the read sees the mark or the close sees
-	// the desk.
-	if !s.lanes.add(linkID, sink) {
+	// the desk; the server's shutdown closes admission and then its desks,
+	// so either this desk is among them or it is refused here.
+	if seam := s.laneSeam; seam != nil && seam.beforeDeskAdd != nil {
+		seam.beforeDeskAdd(linkID)
+	}
+	if err := s.lanes.add(linkID, sink); err != nil {
+		if errors.Is(err, errShuttingDown) {
+			sink.Close(errShuttingDown)
+			return
+		}
 		c.Close(proto.CloseTooManyViewers, "too many desks for this link")
 		return
 	}
@@ -1462,16 +1516,16 @@ func (s *Server) handleRunDesk(w http.ResponseWriter, r *http.Request) {
 		s.closeDesks(nil, linkID)
 		return
 	}
-	// Closed at the link's expiry as a viewer is at its Grant's Until, not
-	// at the next sweep: the expiry made then, through the link's barrier
-	// as a revoke is (share.Store.Expire: the acts under way taken effect
-	// or cancelled first, rule 1).
+	// Closed at the link's expiry, not at the next sweep: the expiry made
+	// then, through the link's barrier as a revoke is (share.Store.Expire:
+	// nothing begun for the link after its mark, the acts begun before
+	// waited for up to HoldWait, rule 1), and the desk closed after it.
 	if at := sc.link.ExpiresAt; at != nil {
-		expiry := time.AfterFunc(time.Until(*at), func() {
-			s.links.Expire(linkID)
-			sink.Close(session.ErrExpired)
-		})
-		defer expiry.Stop()
+		defer s.armLapse(linkID, *at, func() {
+			if s.links.Expire(linkID) {
+				sink.Close(session.ErrExpired)
+			}
+		})()
 	}
 	send := func(f []byte) {
 		if sink.WriteFrame(f) != nil {

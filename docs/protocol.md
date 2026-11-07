@@ -1873,7 +1873,7 @@ is a `bad_frame` error and `4400`. A link revoked or expired closes its
 desks as it closes its viewers (an `error` naming it, then `4403`; an
 expiry at the link's own deadline, not at the next sweep), so does its
 run's forgetting (`revoked`), and the server's shutdown closes every desk
-(`1001`). Desks closed together are closed at once, each cut once the
+(`1001`), one whose hello came as it shut down included. Desks closed together are closed at once, each cut once the
 viewers' close wait (5 s) has passed, so a peer that reads nothing holds
 none of them past it. One link holds at most 8 desks open (`4409` past
 them).
@@ -1885,20 +1885,26 @@ no link's scope); the actions each item lists now, each through the
 item's own operation, which judges it as it judges the workbench's (the
 question's claim, first response wins; the engine's command at the
 action's revision); while the link stands, read again on every request
-and checked with the act itself: a link's hold covers an act until it
-has taken effect or is cancelled (an answer's keys or line from the
-check, as the session's writer takes them, until the process write has
-returned; a task command until the engine has committed it), and an
-expiry waits as a revoke does: from the start of either no act is held,
-and either returns only once each act held has taken effect or been
-cancelled. At its commit boundary an act asks once more whether its link
-stands, so one whose link ended while it was held takes no effect (a
-command the engine had taken settles failed, refusal `withdrawn`). A
-process write the program has not taken within 5 s of the link's end is
-cancelled: refused as the link's end, nothing more of it written, no
-question resolved by it. So an action queued, in flight or asked again
-when its link ends is refused, never written, and none of a link's acts
-takes effect after its revoke or expiry; an answer of the asking
+and checked with the act itself. Nothing is begun for a link after its
+revoke or its expiry has marked it; an act begun before may land. A
+link's hold covers an act from its check until it has returned (an
+answer's keys or line, as the session's writer takes them, until the
+process write has returned; a task command until the engine has
+returned), and an expiry, the sweep's or the link's own deadline's (a
+desk's, a decision link's viewer's), ends the link as a revoke does:
+from its start no act is held, and at its commit boundary, just before
+it is begun, an act asks once more whether its link stands, so one whose
+link ended while it was held is never begun (a command the engine had
+taken settles failed, refusal `withdrawn`). The revoke or the expiry
+then waits up to 5 s for the acts begun before it, returns, and closes
+the link's viewers and desks; one still under way then is counted in
+the server's log. What was begun is not taken back: a process write the
+program had not taken within those 5 s is refused as the link's end and
+resolves no question, though its bytes land as the program reads them;
+a command the engine committed stays committed, and one whose change the
+ledger refused is put back, settles `withdrawn` and never lands later.
+So an action queued, in flight or asked again when its link ends is
+refused, never begun; an answer of the asking
 session's own decision-link connection not yet begun when the connection
 closes is withdrawn with it. Each `opId` names one operation; as the
 link's actor, `link:<id>`, never the workbench's, with its label beside
@@ -3144,7 +3150,8 @@ repeat?, status, error?, refusal?, task?, paused?}}`: `status` is `done` or
 such as a cancel of a task already finished: `refusal` is the code the
 answer carries, `task_state`, `run_stopped`, `run_continued` or
 `not_found`, or `withdrawn` for a decision link's command whose link
-ended before its change was made (Decision links), on the first
+ended before its change was made, or whose change the ledger refused and
+which was put back (Decision links), on the first
 answer and on every repeat), `task` the task as it stands after the command
 (`{id, state, reason?, attempts, result?: {attempt, commit?}}`, the reason
 at most 2,000 characters; the run has the rest, so a receipt always fits

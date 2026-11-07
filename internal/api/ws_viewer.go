@@ -94,12 +94,30 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 	var hold func() (session.Held, error)
 	label := s.linkLabel(linkID)
 	answerName := ""
+	// lapse is a decision link's deadline, which the session is not given
+	// (its own timer would close the viewer without the link's barrier):
+	// the viewer is closed at it through the link's expiry instead.
+	var lapse time.Time
 	if decides {
 		hold = s.holdLink(linkID)
 		// Its answers are the link's, kept under its label as a decision
 		// link's answer to another session's question is (laneAnswer),
 		// whatever name its client says.
 		answerName = linkAnswerName(label)
+		if check != nil {
+			authorize, first := check, true
+			check = func() (session.Grant, error) {
+				g, err := authorize()
+				if first {
+					// The attach's own call, under the session's lock in
+					// AttachWith, before it returns; later ones (a write's
+					// look at the credential) only judge.
+					lapse, first = g.Until, false
+				}
+				g.Until = time.Time{}
+				return g, err
+			}
+		}
 	}
 	sub, err := local.AttachWith(session.AttachOptions{
 		Role: role, LinkID: linkID, LinkLabel: label, Name: hello.Name, Cols: hello.Cols, Rows: hello.Rows, ChatOnly: hello.ChatOnly,
@@ -123,6 +141,16 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 		return
 	}
 	defer local.Detach(sub)
+	if !lapse.IsZero() {
+		// A decision link's expiry, made at its deadline through the link's
+		// barrier as a revoke is (share.Store.ExpireThen: nothing begun for
+		// the link after its mark, the acts begun before waited for up to
+		// HoldWait, rule 1), and the viewer closed as expired after it, as a
+		// desk is; a link revoked or expired before is closed by its end.
+		defer s.armLapse(linkID, lapse, func() {
+			s.links.ExpireThen(linkID, func() { sub.Revoke(session.ErrExpired) })
+		})()
+	}
 	if watch != nil {
 		// Revoked as a revoked link's viewer is: its transport closed, and
 		// what it has under way (a submission waiting for its turn or its

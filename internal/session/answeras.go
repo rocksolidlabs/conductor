@@ -34,10 +34,10 @@ type Actor struct {
 	// as none.
 	ReqID string
 	// Hold, when set, is the actor's credential held while its keys are
-	// written (writeWait.hold): a decision link's, so they are written only
-	// while the link stands, checked as the writer takes them and again at
-	// the write's commit boundary, and held until the write has returned
-	// or was cancelled. An error from it (ErrRevoked, ErrExpired) and
+	// written (writeWait.hold): a decision link's, so their write is begun
+	// only while the link stands, checked as the writer takes them and
+	// again at the write's commit boundary, and held until it has returned
+	// (its link's end waits for it, up to its bound). An error from it (ErrRevoked, ErrExpired) and
 	// nothing is written. Hold must not call the session and must not wait.
 	Hold func() (Held, error)
 }

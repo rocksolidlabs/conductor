@@ -133,9 +133,10 @@ type Submission struct {
 	Withdrawn <-chan struct{}
 	// Hold, when set, is the sender's credential held while each of the
 	// submission's writes is under way (writeWait.hold): a decision link's,
-	// so its text and its Enter are written only while the link stands,
-	// checked as the writer takes each and again at each write's commit
-	// boundary, and held until that write has returned or was cancelled.
+	// so the write of its text and of its Enter is begun only while the
+	// link stands, checked as the writer takes each and again at each
+	// write's commit boundary, and held until that write has returned (its
+	// link's end waits for it, up to its bound).
 	// Hold must not call the session and must not wait.
 	Hold func() (Held, error)
 	// Decision, when set, names the durable decision whose answer the line
