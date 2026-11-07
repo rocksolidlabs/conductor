@@ -21,6 +21,7 @@ import {
   respondDecision,
   responseBody,
   runRuns,
+  staleNotice,
   subjectWords,
   unmirrored,
   type Decision,
@@ -211,6 +212,15 @@ describe("Needs you's and the palette's decisions", () => {
     expect(cutNotice(true, shown.length)).toBe('More decisions are open than could be read here: the oldest are on their run and ticket pages.')
     expect(cutNotice(true, 2)).toBe('More decisions are open than these: the oldest are on their run and ticket pages.')
     expect(cutNotice(false, 0)).toBe('')
+  })
+
+  // Codex's round 3 on #719: a list whose last read failed is said out of date since the failure, with why, until a read succeeds.
+  it('says the list is out of date since its first failed read, and nothing while the last read succeeded', () => {
+    const at = Date.parse('2026-11-07T10:04:05Z')
+    const clock = new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+    expect(staleNotice(at, 'the server is busy')).toBe(`Decisions out of date since ${clock} (the server is busy): read again until a read succeeds.`)
+    expect(staleNotice(at, '')).toBe(`Decisions out of date since ${clock}: read again until a read succeeds.`)
+    expect(staleNotice(null, 'the server is busy')).toBe('')
   })
 
   it("gives the palette a row per open decision, oldest first, Enter opening its card", () => {

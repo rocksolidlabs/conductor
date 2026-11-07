@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Decision } from '~/utils/decisions'
-import { DECISION_PAGES, DecisionRecordView, DecisionsLive, asDecisionEvent, readAll } from './useDecisions'
+import { staleNotice } from '~/utils/decisions'
+import { DECISION_PAGES, DECISION_RETRY_CAP_MS, DECISION_RETRY_FIRST_MS, DecisionRecordView, DecisionsLive, asDecisionEvent, readAll } from './useDecisions'
 
 // The app's store of open and answered decisions (Program item DR1, docs/plans/decisions.md, "web/app"): read again on a `decision`
 // event of the one events stream and on no other; on the stream's `snapshot` (it replays nothing it missed while away), and on the
@@ -172,10 +173,68 @@ describe('the decisions store', () => {
     const first = live.read()
     await s.drain()
     await first
+    // Its retry (the next test's) is not set off here.
+    live.schedule = () => () => {}
     fail = true
     await live.read()
     expect(live.error).toBe('the server is busy')
     expect(live.open().map((d) => d.id)).toEqual(['dr-1'])
+  })
+
+  // Codex's round 3 on #719: the last read failed and no event came after it (the stream connected, nothing else reads), so a gate
+  // whose opening event asked for it stayed missing from Needs you and the palette, with nothing said. It is read again by itself, with
+  // a capped backoff, and the list is said out of date since the failure until a read succeeds.
+  it('reads again by itself, with backoff, after the last read failed with no event after it, and says since when it is out of date', async () => {
+    const s = server()
+    s.now.push(decision('dr-1', 'open', '2026-11-07T10:00:00Z'))
+    const live = new DecisionsLive()
+    let fail = false
+    live.attach({ list: (state, after) => (fail ? Promise.reject(new Error('the server is busy')) : s.list(state, after)) })
+    const retries: Array<{ ms: number; go: () => void; cancelled: boolean }> = []
+    live.schedule = (go, ms) => {
+      const r = { ms, go, cancelled: false }
+      retries.push(r)
+      return () => (r.cancelled = true)
+    }
+    let clock = 1_000_000
+    live.clock = () => clock
+    const first = live.read()
+    await s.drain()
+    await first
+    expect([live.staleSince, retries]).toEqual([null, []])
+    // A gate opens; its event's read fails, and no event comes after it.
+    s.now.push(decision('dr-2', 'open', '2026-11-07T10:01:00Z'))
+    fail = true
+    live.stream('decision', ev('dr-2'))
+    await new Promise((r) => setTimeout(r, 0))
+    expect(live.open().map((d) => d.id)).toEqual(['dr-1'])
+    expect([live.error, live.staleSince]).toEqual(['the server is busy', 1_000_000])
+    expect(retries.map((r) => r.ms)).toEqual([1000])
+    // The retries fail too: each waits twice as long, up to the cap, and the list stays out of date since the first failure.
+    for (let i = 0; i < 6; i++) {
+      clock += 1000
+      retries.at(-1)!.go()
+      await new Promise((r) => setTimeout(r, 0))
+    }
+    expect(retries.map((r) => r.ms)).toEqual([1000, 2000, 4000, 8000, 16000, DECISION_RETRY_CAP_MS, DECISION_RETRY_CAP_MS])
+    expect(live.staleSince).toBe(1_000_000)
+    expect(staleNotice(live.staleSince, live.error)).toMatch(/^Decisions out of date since .+ \(the server is busy\): read again until a read succeeds\.$/)
+    // The server answers again: the next retry reads the gate, and the list is no longer said out of date.
+    fail = false
+    retries.at(-1)!.go()
+    await s.drain()
+    expect(live.open().map((d) => d.id)).toEqual(['dr-1', 'dr-2'])
+    expect([live.error, live.staleSince, retries.length]).toEqual(['', null, 7])
+    // A failure after it starts the backoff over, and a read that succeeds before its retry cancels it.
+    fail = true
+    await live.read()
+    expect(retries.at(-1)!.ms).toBe(DECISION_RETRY_FIRST_MS)
+    fail = false
+    const again = live.read()
+    await s.drain()
+    await again
+    expect(retries.at(-1)!.cancelled).toBe(true)
+    expect(live.staleSince).toBeNull()
   })
 
   it('tells the watchers which decision changed, and null when the stream came back (restarted) or is down', () => {
@@ -204,7 +263,7 @@ describe("the card's record", () => {
     expect(v.read(v.generation, 'dr-7', 'dr-7', { decision: at(1, 'open') })).toBe(true)
     // The event of the other tab's answer read the applied record; the comment's reply, sent at rev 1, answers with rev 2 after it.
     expect(v.read(v.generation, 'dr-7', 'dr-7', { decision: at(4, 'applied') })).toBe(true)
-    expect(v.write('dr-7', { ...at(2, 'open'), history: undefined })).toBe(false)
+    expect(v.write(v.generation, 'dr-7', { ...at(2, 'open'), history: undefined })).toBe(false)
     expect([v.decision?.rev, v.decision?.state]).toEqual([4, 'applied'])
   })
 
@@ -212,7 +271,7 @@ describe("the card's record", () => {
     const v = new DecisionRecordView()
     v.read(v.generation, 'dr-7', 'dr-7', { decision: at(1, 'open') })
     // The answer's reply (rev 2) came first; a read started before it answers with rev 1.
-    expect(v.write('dr-7', { ...at(2, 'answered'), history: undefined })).toBe(true)
+    expect(v.write(v.generation, 'dr-7', { ...at(2, 'answered'), history: undefined })).toBe(true)
     expect(v.decision?.history).toEqual(at(1, 'open').history)
     expect(v.read(v.generation, 'dr-7', 'dr-7', { decision: at(1, 'open') })).toBe(false)
     expect([v.decision?.rev, v.decision?.state]).toEqual([2, 'answered'])
@@ -224,23 +283,38 @@ describe("the card's record", () => {
   it("drops a read of another decision than the one asked for now, and a write's reply of another", () => {
     const v = new DecisionRecordView()
     expect(v.read(v.generation, 'dr-7', 'dr-8', { decision: at(1, 'open') })).toBe(false)
-    expect(v.write('dr-8', at(1, 'open'))).toBe(false)
+    expect(v.write(v.generation, 'dr-8', at(1, 'open'))).toBe(false)
     expect(v.decision).toBeNull()
   })
 
-  // Codex's round 2 on #719: a store restored from a backup answers below the revision shown; after the stream comes back (reset) the
-  // next read is taken whatever its revision, a read asked before the reset is dropped, and so is a write's reply until that read.
-  it('takes the next read whatever its revision after a reset, and drops what was asked before it', () => {
+  // Codex's rounds 2 and 3 on #719: a store restored from a backup answers below the revision shown; after the stream comes back (reset)
+  // the next reply is taken whatever its revision, and a read or a write started before the reset is dropped whenever it answers,
+  // before the restored store's first read or after it.
+  it('takes the next read whatever its revision after a reset, and drops what was started before it, before or after that read', () => {
     const v = new DecisionRecordView()
     v.read(v.generation, 'dr-7', 'dr-7', { decision: at(5, 'applied') })
     const before = v.generation
     v.reset()
     expect(v.read(before, 'dr-7', 'dr-7', { decision: at(6, 'applied') })).toBe(false)
-    expect(v.write('dr-7', { ...at(6, 'applied'), history: undefined })).toBe(false)
+    expect(v.write(before, 'dr-7', { ...at(6, 'applied'), history: undefined })).toBe(false)
     expect(v.read(v.generation, 'dr-7', 'dr-7', { decision: at(1, 'open') })).toBe(true)
     expect([v.decision?.rev, v.decision?.state]).toEqual([1, 'open'])
+    // The old store's write answers after the restored read, above its revision: dropped all the same.
+    expect(v.write(before, 'dr-7', { ...at(6, 'applied'), history: undefined })).toBe(false)
+    expect([v.decision?.rev, v.decision?.state]).toEqual([1, 'open'])
     // Ordered by revision again from there.
+    expect(v.read(v.generation, 'dr-7', 'dr-7', { decision: at(1, 'open') })).toBe(true)
     expect(v.read(v.generation, 'dr-7', 'dr-7', { decision: at(0, 'open') })).toBe(false)
-    expect(v.write('dr-7', { ...at(2, 'answered'), history: undefined })).toBe(true)
+    expect(v.write(v.generation, 'dr-7', { ...at(2, 'answered'), history: undefined })).toBe(true)
+  })
+
+  it("takes a write started after the reset as the restored store's first reply, and orders the read started before it by revision", () => {
+    const v = new DecisionRecordView()
+    v.read(v.generation, 'dr-7', 'dr-7', { decision: at(5, 'applied') })
+    v.reset()
+    expect(v.write(v.generation, 'dr-7', { ...at(2, 'answered'), history: undefined })).toBe(true)
+    expect([v.decision?.rev, v.decision?.state]).toEqual([2, 'answered'])
+    expect(v.read(v.generation, 'dr-7', 'dr-7', { decision: at(1, 'open') })).toBe(false)
+    expect(v.decision?.rev).toBe(2)
   })
 })

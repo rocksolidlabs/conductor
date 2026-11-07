@@ -118,7 +118,10 @@ describe("the card's record, read one at a time", () => {
     sent[0]!.ok({ decision: record(5, 'applied') })
     await settle()
     expect(r.decision.value?.rev).toBe(5)
-    // A read under way when the server goes down; the stream comes back to a store restored at revision 1, open.
+    // Two writes are sent to the old server, their replies held; a read is under way when it goes down; the stream comes back to a
+    // store restored at revision 1, open.
+    const early = r.begin()
+    const late = r.begin()
     decisionsLive().stream('decision', ev(5))
     await settle()
     expect(sent).toHaveLength(2)
@@ -127,21 +130,32 @@ describe("the card's record, read one at a time", () => {
     sent[1]!.ok({ decision: record(6, 'applied') })
     await settle()
     expect(r.decision.value?.rev).toBe(5)
-    // A write answered before the read of the restored store is dropped too: the store is not known yet.
-    r.apply(record(7, 'applied'))
+    // A write's reply from the old server, answered before the read of the restored store: dropped too.
+    early(record(7, 'applied'))
     expect(r.decision.value?.rev).toBe(5)
     expect(sent).toHaveLength(3)
     sent[2]!.ok({ decision: record(1, 'open') })
     await settle()
     expect([r.decision.value?.rev, r.decision.value?.state]).toEqual([1, 'open'])
-    // From there the revisions order it again: Read again takes the store's next one, a write's older reply does not land.
+    // Codex's round 3: the other write's reply, held across the restore, comes after that read, above its revision: dropped all the
+    // same, and the restored store's reads still land after it.
+    late(record(6, 'applied'))
+    expect([r.decision.value?.rev, r.decision.value?.state]).toEqual([1, 'open'])
     void r.read()
     await settle()
-    sent[3]!.ok({ decision: record(2, 'answered') })
+    sent[3]!.ok({ decision: record(1, 'open') })
+    await settle()
+    expect([r.decision.value?.rev, r.decision.value?.state]).toEqual([1, 'open'])
+    // From there the revisions order it again: Read again takes the store's next one, a write's older reply does not land, a newer does.
+    void r.read()
+    await settle()
+    sent[4]!.ok({ decision: record(2, 'answered') })
     await settle()
     expect(r.decision.value?.rev).toBe(2)
-    r.apply(record(1, 'open'))
+    r.begin()(record(1, 'open'))
     expect(r.decision.value?.rev).toBe(2)
+    r.begin()(record(3, 'applied'))
+    expect([r.decision.value?.rev, r.decision.value?.state]).toEqual([3, 'applied'])
   })
   it("keeps the read under way on the fallback's cadence while the stream is down: only its coming back starts a new generation", async () => {
     const r = useDecisionRecord(() => 'dr-7')

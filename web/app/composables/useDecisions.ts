@@ -92,6 +92,16 @@ export class SerialReads {
   }
 }
 
+/** A read of the list that failed is made again after this, doubled for each one more that fails, up to DECISION_RETRY_CAP_MS. */
+export const DECISION_RETRY_FIRST_MS = 1000
+export const DECISION_RETRY_CAP_MS = 30_000
+
+/**
+ * The app's store of the open and answered decisions. A read that fails keeps what was read before and is said (`error`, `staleSince`:
+ * Needs you and the palette say the list is out of date since then), and is made again by itself after a capped backoff until one
+ * succeeds (Codex's round 3 on #719): with the stream connected no other read may come, and the event that asked for the failed one (a
+ * gate's opening) is not sent again, so the list never stays silently short.
+ */
 export class DecisionsLive {
   /** The open and answered decisions, oldest first. */
   decisions: Decision[] = []
@@ -99,13 +109,34 @@ export class DecisionsLive {
   /** The open or the answered decisions were more than DECISION_PAGES pages: the oldest past them are not here. */
   cut = false
   error = ''
+  /** When the first read that failed since the last that succeeded was made (ms since the epoch); null while the last read succeeded. */
+  staleSince: number | null = null
   /** The pages' counter: bumped after every change of the store. */
   changed: () => void = () => {}
+  /** The clock, and the timer a failed read's retry is set on (it answers the timer's cancel): seams a test drives. */
+  clock: () => number = () => Date.now()
+  schedule: (f: () => void, ms: number) => () => void = (f, ms) => {
+    const t = setTimeout(f, ms)
+    return () => clearTimeout(t)
+  }
   private reads: DecisionReads | null = null
+  /** The reads in a row that failed, and the cancel of the retry set after the last of them. */
+  private misses = 0
+  private retry: (() => void) | null = null
   private readonly serial = new SerialReads(
     () => this.once(),
     (e) => {
       this.error = e.message
+      this.staleSince ??= this.clock()
+      this.misses++
+      this.retry?.()
+      this.retry = this.schedule(
+        () => {
+          this.retry = null
+          void this.read()
+        },
+        Math.min(DECISION_RETRY_CAP_MS, DECISION_RETRY_FIRST_MS * 2 ** (this.misses - 1)),
+      )
       this.changed()
     },
   )
@@ -167,6 +198,10 @@ export class DecisionsLive {
     this.cut = open.cut || answered.cut
     this.loaded = true
     this.error = ''
+    this.staleSince = null
+    this.misses = 0
+    this.retry?.()
+    this.retry = null
     this.changed()
   }
 
@@ -209,10 +244,15 @@ export function useDecisions() {
     void version.value
     return store.cut
   })
+  /** The last read failed: since when the list is out of date, and why; it is read again by itself until a read succeeds. */
+  const stale = computed(() => {
+    void version.value
+    return { since: store.staleSince, error: store.error }
+  })
   function start() {
     if (import.meta.client) void store.read()
   }
-  return { decisions, open, cut, start, read: () => store.read() }
+  return { decisions, open, cut, stale, start, read: () => store.read() }
 }
 
 /** The card the app shows in its modal: the decision's id, or '' for none. One for the app (DecisionModal.vue in the layout). */
@@ -235,15 +275,18 @@ export function useDecisionModal() {
  * resolution changed) is always the later one and is taken (Codex's round 2).
  *
  * The stream come back (Codex's round 2): the store may have been restored from a backup whose revisions are below the one shown, so
- * `reset` starts a new generation, as DispatchOrder.reset does on the same `snapshot`. A read asked before it is dropped, the next read is taken
- * whatever its revision, and a write's reply is dropped until that read is taken (the write's own event reads it again).
+ * `reset` starts a new generation, as DispatchOrder.reset does on the same `snapshot`. Every reply carries the generation its read or
+ * its write was started in (a write's from `begin`), and one of an older generation is dropped whenever it comes, before or after the
+ * restored store's first read (Codex's round 3: a write sent to the old store answered after that read, at a revision above the
+ * restored one, and was taken). The first reply of the new generation, a read's or a write's, is taken whatever its revision; the
+ * revisions order the rest.
  */
 export class DecisionRecordView {
   decision: Decision | null = null
   refs: DecisionRef[] = []
   /** Bumped by `reset` and `clear`: a read asked in an earlier generation is dropped. */
   generation = 0
-  /** Since `reset`, no read was taken: the record shown is not ordered against the store's revisions until one is. */
+  /** Since `reset`, no reply was taken: the record shown is not ordered against the store's revisions until one is. */
   private restored = false
 
   /** A read's reply, the record whole, asked in generation `gen`; false when it was dropped. */
@@ -256,9 +299,14 @@ export class DecisionRecordView {
     return true
   }
 
-  /** A write's reply (the record without its history and responses, which the shown one's fill); false when it was dropped. */
-  write(now: string, d: Decision): boolean {
-    if (this.restored || d.id !== now || !replaces(this.decision, d, false)) return false
+  /**
+   * A write's reply (the record without its history and responses, which the shown one's fill), the write started in generation `gen`;
+   * false when it was dropped.
+   */
+  write(gen: number, now: string, d: Decision): boolean {
+    if (gen !== this.generation || d.id !== now) return false
+    if (!this.restored && !replaces(this.decision, d, false)) return false
+    this.restored = false
     const same = this.decision?.id === d.id
     this.decision = { ...d, history: d.history ?? (same ? this.decision?.history : undefined), responses: d.responses ?? (same ? this.decision?.responses : undefined) }
     return true
@@ -283,7 +331,7 @@ export class DecisionRecordView {
  * One decision whole (`GET /api/decisions/{id}`, with its evidence's resolutions), read when the id is set, again on its own `decision`
  * event, when the stream comes back (a new generation: DecisionRecordView.reset) and on its fallback's cadence while it is down, and
  * after each of the card's writes
- * (`read`). The reads come one at a time (SerialReads); what is shown is what DecisionRecordView takes.
+ * (`read`); a write's reply is taken through `begin`, called as the write starts. The reads come one at a time (SerialReads); what is shown is what DecisionRecordView takes.
  */
 export function useDecisionRecord(id: () => string) {
   const { request } = useApi()
@@ -314,9 +362,15 @@ export function useDecisionRecord(id: () => string) {
   function read(): Promise<void> {
     return reads.run()
   }
-  /** Takes a decision a write answered with, unless a newer revision is shown already. */
-  function apply(d: Decision) {
-    if (view.write(id(), d)) show()
+  /**
+   * A write starts: what takes its reply, the decision it answered with, unless a newer revision is shown already or the stream came
+   * back since it started (its reply is then the old store's: DecisionRecordView.write).
+   */
+  function begin(): (d: Decision) => void {
+    const gen = view.generation
+    return (d) => {
+      if (view.write(gen, id(), d)) show()
+    }
   }
   const stop = decisionsLive().subscribe((e, restarted) => {
     if (restarted) view.reset()
@@ -335,7 +389,7 @@ export function useDecisionRecord(id: () => string) {
     { immediate: true },
   )
   onBeforeUnmount(stop)
-  return { decision, refs, error, loading, read, apply }
+  return { decision, refs, error, loading, read, begin }
 }
 
 /**

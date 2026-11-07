@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { cutNotice, runRuns, unmirrored } from '~/utils/decisions'
+import { cutNotice, runRuns, staleNotice, unmirrored } from '~/utils/decisions'
 import type { SessionInfo } from '~/composables/useSessions'
 import { choiceKey, newlyNeedingInput } from '~/utils/attention'
 import { sidebarRunFor } from '~/utils/crews'
@@ -46,6 +46,8 @@ const loneDecisions = computed(() => (query.value ? [] : unmirrored(decisions.op
 // The list read is cut: said even when none of what was read is listed (every one of them mirrored or of a stopped run), so Needs you
 // never reads as whole when it is not.
 const decisionsCut = computed(() => (query.value ? '' : cutNotice(decisions.cut.value, loneDecisions.value.length)))
+// The list's last read failed (Codex's round 3 on #719): said, with Read again, until a read succeeds; the store reads again by itself.
+const decisionsStale = computed(() => (query.value ? '' : staleNotice(decisions.stale.value.since, decisions.stale.value.error)))
 const empty = computed(() => attention.sessions.value.length === 0 && joined.list.value.length === 0)
 const folds = foldState.folds
 /** The run of the page open now: the run page, or a member's page. */
@@ -365,7 +367,7 @@ onBeforeUnmount(() => window.clearInterval(tick))
     <div ref="listEl" class="flex-1 min-h-0 overflow-y-auto px-1 flex flex-col gap-3" :data-session-list="props.page ? 'page' : 'sidebar'" @keydown="onKey" @focusin="onFocusIn" @focusout="onFocusOut">
       <p v-if="empty" class="px-2 py-4 text-xs text-muted leading-relaxed">No sessions yet. Launch an agent here or run <code>conductor host</code> from your machine.</p>
 
-      <SidebarSection v-if="model.needs.length || loneDecisions.length || decisionsCut" id="needs" title="Needs you" :count="model.counts.needs + loneDecisions.length" tone="warning" :preview="preview('needs')" :folded="folds.needs" @update:folded="foldState.fold('needs', $event)">
+      <SidebarSection v-if="model.needs.length || loneDecisions.length || decisionsCut || decisionsStale" id="needs" title="Needs you" :count="model.counts.needs + loneDecisions.length" tone="warning" :preview="preview('needs')" :folded="folds.needs" @update:folded="foldState.fold('needs', $event)">
         <ol class="flex flex-col gap-0.5">
           <template v-for="it in model.needs" :key="it.id">
             <SidebarRunBlock
@@ -421,6 +423,10 @@ onBeforeUnmount(() => window.clearInterval(tick))
             </button>
           </li>
           <li v-if="decisionsCut" class="px-2 py-1 text-xs text-muted" data-sidebar-decisions-cut>{{ decisionsCut }}</li>
+          <li v-if="decisionsStale" class="flex items-center gap-2 px-2 py-1 text-xs text-warning" data-sidebar-decisions-stale>
+            <span class="min-w-0 flex-1">{{ decisionsStale }}</span>
+            <UButton label="Read again" size="xs" color="neutral" variant="outline" class="flex-none" data-sidebar-decisions-read @click="decisions.read()" />
+          </li>
         </ol>
       </SidebarSection>
 

@@ -372,4 +372,14 @@ describe('a task a durable decision holds (Program item DR1)', () => {
     expect(taskBadges({ tasks }).map((b) => b.label)).toContain('2 decisions open')
     expect(taskBadges({ tasks: [task({})] }).map((b) => b.label)).not.toContain('1 decision open')
   })
+  // Codex's round 3 on #719: a plan's gate with `before: []` stays open while the run executes and holds no task; counted from the
+  // run's open decision records, with the holds (a record the store's list left out is still counted by its hold), each once.
+  it('counts an open decision that holds no task, from the run\'s records', () => {
+    const tasks = [task({ id: 'a', state: 'running' }), task({ id: 'b', holds: [hold('dr-1')] })]
+    expect(taskBadges({ tasks: [task({ state: 'running' })] }, ['dr-4']).map((b) => b.label)).toEqual(['0/1 tasks', '1 running', '1 decision open'])
+    expect(openDecisions(tasks, ['dr-4'])).toBe(2)
+    expect(openDecisions(tasks, ['dr-1', 'dr-4'])).toBe(2)
+    expect(openDecisions(tasks, [])).toBe(1)
+    expect(taskBadges({ tasks }, ['dr-1', 'dr-4']).map((b) => b.label)).toContain('2 decisions open')
+  })
 })

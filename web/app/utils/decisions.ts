@@ -489,6 +489,17 @@ export function cutNotice(cut: boolean, shown: number): string {
   return shown ? 'More decisions are open than these: the oldest are on their run and ticket pages.' : 'More decisions are open than could be read here: the oldest are on their run and ticket pages.'
 }
 
+/**
+ * Needs you's and the palette's words for a list whose last read failed (Codex's round 3 on #719): what they show may miss a decision
+ * opened or answered since `since` (ms since the epoch), and the list is read again by itself until a read succeeds. '' while the last
+ * read succeeded.
+ */
+export function staleNotice(since: number | null, error: string): string {
+  if (since === null) return ''
+  const at = new Date(since).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+  return `Decisions out of date since ${at}${error ? ` (${error})` : ''}: read again until a read succeeds.`
+}
+
 /** Whether a run, as the live store holds it, runs: the server holds it, and it is not stopped or continued by another. */
 export function runRuns(r: { stoppedAt?: string; record?: boolean; resumedBy?: string } | undefined): boolean {
   return !!r && !r.stoppedAt && !r.record && !r.resumedBy

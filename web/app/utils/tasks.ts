@@ -102,17 +102,18 @@ export interface TaskBadge {
 /**
  * The header's badges for a managed run: `3/7 tasks`, then what is wrong or moving (`1 failed`, `2 running`, `1 checking`), `paused`
  * (titled with why the run paused itself, when it did) and `cleaning up` while trees are being ended (EN1: their services stopped, their
- * cleanup steps run).
+ * cleanup steps run). `decisions` are the run's open decision records as the app's store read them (useDecisions): counted with the
+ * tasks' open holds, so a plan's gate that holds no task (`before: []`) is counted too (Codex's round 3 on #719).
  */
-export function taskBadges(run: Pick<RunInfo, 'tasks' | 'paused' | 'outcome' | 'pausedWhy' | 'cleaning'>): TaskBadge[] {
+export function taskBadges(run: Pick<RunInfo, 'tasks' | 'paused' | 'outcome' | 'pausedWhy' | 'cleaning'>, decisions: readonly string[] = []): TaskBadge[] {
   const c = taskCounts(run.tasks)
   const out: TaskBadge[] = [{ label: `${c.done}/${c.total} tasks`, color: run.outcome === 'succeeded' ? 'success' : 'neutral' }]
   if (c.failed) out.push({ label: `${c.failed} failed`, color: 'error' })
   if (c.cancelled) out.push({ label: `${c.cancelled} cancelled`, color: 'neutral' })
   if (c.running) out.push({ label: `${c.running} running`, color: 'success' })
   if (c.checking) out.push({ label: `${c.checking} checking`, color: 'info' })
-  const decisions = openDecisions(run.tasks)
-  if (decisions) out.push({ label: `${decisions} ${decisions === 1 ? 'decision' : 'decisions'} open`, color: 'warning', title: 'Tasks wait for the operator: Answer on the task opens the card' })
+  const open = openDecisions(run.tasks, decisions)
+  if (open) out.push({ label: `${open} ${open === 1 ? 'decision' : 'decisions'} open`, color: 'warning', title: 'Decisions wait for the operator: Answer on a held task, Needs you or the palette opens the card' })
   if (run.paused) out.push(run.pausedWhy ? { label: 'paused', color: 'warning', title: `Paused: ${run.pausedWhy}` } : { label: 'paused', color: 'warning', title: 'Paused by a person' })
   if ((run.cleaning ?? 0) > 0) out.push({ label: 'cleaning up', color: 'info', title: `${run.cleaning} ${run.cleaning === 1 ? 'tree is' : 'trees are'} being ended: services stopped, cleanup steps run` })
   return out
@@ -200,9 +201,12 @@ export function taskAnswer(t: Pick<RunTask, 'holds'>): string | undefined {
   return (t.holds ?? []).find((h) => h.state === 'open')?.id
 }
 
-/** How many distinct decisions of the run are open (the header's `1 decision open`), from its tasks' holds. */
-export function openDecisions(tasks: readonly Pick<RunTask, 'holds'>[] | undefined): number {
-  const ids = new Set<string>()
+/**
+ * How many distinct decisions of the run are open (the header's `1 decision open`): its open decision records (`records`, the store's,
+ * a gate's that holds no task among them) and its tasks' open holds (a record past the store's cut list is still counted by its hold).
+ */
+export function openDecisions(tasks: readonly Pick<RunTask, 'holds'>[] | undefined, records: readonly string[] = []): number {
+  const ids = new Set<string>(records)
   for (const t of tasks ?? []) for (const h of t.holds ?? []) if (h.state === 'open') ids.add(h.id)
   return ids.size
 }

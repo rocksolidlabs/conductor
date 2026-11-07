@@ -171,3 +171,43 @@ test("a revision's gate holds deploy until the operator approves it on the ticke
   expect((await decision(api, id)).history?.filter((h) => h.kind === 'applied')).toHaveLength(1)
   await page.context().close()
 })
+
+// Codex's round 3 on #719: the last read of the decisions list failed and no event came after it (the stream connected, nothing else
+// reads it), and the list stayed short with nothing said. Needs you and the palette say it is out of date since then, and the app reads
+// it again by itself, with a capped backoff, until a read succeeds; no decision event and no click is made here.
+test('says the decisions list out of date when its read fails, and reads it again by itself until one succeeds', async ({ browser }) => {
+  const page = await operatorPage(browser, srv.started)
+  let refused = 0
+  let blocked = true
+  await page.route(
+    (u) => u.pathname === '/api/decisions',
+    (route) => {
+      if (!blocked) return route.continue()
+      refused++
+      return route.abort('failed')
+    },
+  )
+  budget(4 * STEP_MS)
+  await page.goto(`${srv.started.baseURL}/`)
+  await expect(page.locator('#dashboard-sidebar-main')).toBeAttached()
+  const stale = page.locator('[data-session-list="sidebar"] [data-sidebar-decisions-stale]')
+  await expect(stale).toContainText(/^Decisions out of date since .+ \(Cannot reach the server\): read again until a read succeeds\./, { timeout: 30_000 })
+  // The palette says it too, by a row of its own.
+  await page.keyboard.press('Alt+/')
+  const palette = page.locator('[data-palette]')
+  await expect(palette).toBeVisible()
+  await expect(palette.locator('[data-palette-row="decisions-stale"]')).toContainText('Decisions out of date since')
+  await page.keyboard.press('Escape')
+  await expect(palette).toBeHidden()
+  // Read again reads it now, refused again: still said.
+  const before = refused
+  await stale.locator('[data-sidebar-decisions-read]').click()
+  await expect.poll(() => refused, { timeout: STEP_MS, intervals: [100] }).toBeGreaterThan(before)
+  await expect(stale).toBeVisible()
+  // The server answers again: the retry the store set after its last failure reads the list, within the backoff's cap (30 s), and the
+  // notice goes. The wait is that cap and a step's bound above it.
+  blocked = false
+  budget(30_000 + 2 * STEP_MS)
+  await expect(stale).toHaveCount(0, { timeout: 30_000 + STEP_MS })
+  await page.context().close()
+})

@@ -8,10 +8,11 @@ import { askForMore, commentDecision, confirmAuthorizes, optionsOf, recommended,
  * when no live agent asked it). An approval's and an assignment's answer is asked first: the choice, then Confirm, which sends it
  * against the rev the card showed when it was picked. The receipt is shown (Recorded); a refusal is shown in the server's words (who
  * answered first, what changed), with Read again. A choice picked stays to be confirmed even when the record moves meanwhile: the
- * server judges it, and its refusal says what happened.
+ * server judges it, and its refusal says what happened. A write's reply goes to what `begin` answered when the write started
+ * (useDecisionRecord's), so a reply from before the stream came back is dropped (Codex's round 3 on #719).
  */
-const props = defineProps<{ decision: Decision }>()
-const emit = defineEmits<{ changed: [decision: Decision]; read: [] }>()
+const props = defineProps<{ decision: Decision; begin: () => (decision: Decision) => void }>()
+const emit = defineEmits<{ read: [] }>()
 
 const { request } = useApi()
 const identity = useIdentity()
@@ -50,6 +51,7 @@ async function send(choice: number | undefined, rev: number) {
   if (busy.value) return
   busy.value = true
   refusal.value = ''
+  const take = props.begin()
   try {
     const body = responseBody({ choice, text: confirms.value ? '' : text.value, rationale: rationale.value, expectedRev: rev, byName: identity.name.value })
     const r = await respondDecision((path, b) => post<{ receipt: ResponseReceipt; decision: Decision }>(path, b), d.value.id, body)
@@ -58,7 +60,7 @@ async function send(choice: number | undefined, rev: number) {
     picked.value = undefined
     text.value = ''
     rationale.value = ''
-    emit('changed', r.decision)
+    take(r.decision)
   } catch (e) {
     const err = refusalOf(e)
     refusal.value = err.message
@@ -74,11 +76,12 @@ async function opSend(kind: 'comment' | 'more_info') {
   if (commentBusy.value || !comment.value.trim()) return
   commentBusy.value = true
   opWords.value = ''
+  const take = props.begin()
   try {
     const r = await commentDecision((path, b) => post<{ receipt: OpReceipt; decision: Decision }>(path, b), d.value.id, { kind, text: comment.value, expectedRev: d.value.rev })
     opWords.value = r.receipt.words
     comment.value = ''
-    emit('changed', r.decision)
+    take(r.decision)
   } catch (e) {
     opWords.value = refusalOf(e).message
   } finally {

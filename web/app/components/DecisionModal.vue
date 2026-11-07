@@ -34,7 +34,7 @@ const open = computed({
         <p v-if="!record.decision.value && !record.error.value" class="text-sm text-muted">Reading {{ modal.id.value }}…</p>
         <template v-if="record.decision.value">
           <DecisionCard :decision="record.decision.value" :refs="record.refs.value" :now="now" />
-          <DecisionRespond :decision="record.decision.value" @changed="record.apply" @read="record.read()" />
+          <DecisionRespond :decision="record.decision.value" :begin="record.begin" @read="record.read()" />
         </template>
       </div>
     </template>
