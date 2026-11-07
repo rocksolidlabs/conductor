@@ -2371,10 +2371,10 @@ overview at most 4 KiB, each section at most 64 KiB, the seven at most
 - `limits`: `[{name, min?, max?, default?, pattern?, unit?, about}]`,
   each read from the constant that refuses past it (`default` what 0
   takes, a check timeout's): a task id's pattern, a crew's
-  members and tasks, a task's checks, a check's timeout, a result's
-  summary, issues and findings, a message and an inbox, a report's
-  message, a comment, a ticket's title and description, a task file's
-  page, the self-service crews and links, a brief's size, items, refs,
+  members and tasks, a member's name, a task's checks, a check's timeout,
+  a result's summary, issues and findings, a message and an inbox, a
+  report's message, a comment, a ticket's title and description, a task
+  file's page, the self-service crews, links and opens, a brief's size, items, refs,
   title, summary and draft tickets, Brakeman's queue, a body.
 - `host`: `{os, arch, switchyard, managedCrews, selfService, ledger:
   {state, why?}, dispatch: {state, why?}, checksMaxConcurrent,
