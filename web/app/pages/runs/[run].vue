@@ -200,8 +200,23 @@ const shownView = computed(() => (view.value === 'tasks' && !run.value?.managed 
 
 // The task selected in the Tasks view (`?task=`), in the URL so a link opens on it (#334, row 7).
 const selectedTask = computed(() => (typeof route.query.task === 'string' ? route.query.task : ''))
+// A history row's link (Program item HS1, PR-6): `&attempt=<n>&step=<phase>/<id>/<k>` beside `?task=` opens that attempt's step and
+// its log with its SHA-256; `?command=<id>&actor=<actor>` that command's receipt. Read as `?task=` is, never written back.
+const wantedAttempt = computed(() => {
+  const n = typeof route.query.attempt === 'string' && /^[1-9]\d{0,5}$/.test(route.query.attempt) ? Number(route.query.attempt) : 0
+  return n || undefined
+})
+const wantedStep = computed(() => (typeof route.query.step === 'string' && route.query.step ? route.query.step : undefined))
+const wantedCommand = computed(() => (typeof route.query.command === 'string' && route.query.command ? route.query.command : ''))
+// A command ref names no actor where Brakeman's grammar names only the admin's receipt.
+const wantedActor = computed(() => (typeof route.query.actor === 'string' && route.query.actor ? route.query.actor : 'admin'))
 function selectTask(id: string, show = false) {
   const query: Record<string, string | undefined> = { ...(route.query as Record<string, string>), task: id || undefined }
+  // Another task, or none: the attempt and step a link named were the last task's.
+  if (id !== selectedTask.value) {
+    query.attempt = undefined
+    query.step = undefined
+  }
   if (show) {
     query.view = 'tasks'
     view.value = 'tasks'
@@ -455,6 +470,9 @@ palette.registerPage(() => {
       <div v-if="error" class="flex-none px-3 pt-3">
         <UAlert color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
       </div>
+      <div v-if="wantedCommand && !gone" class="flex-none px-3 pt-3">
+        <RunCommandReceipt :run-id="runId" :command="wantedCommand" :actor="wantedActor" :now="now" />
+      </div>
       <div v-if="launchLink" class="flex-none px-3 pt-3">
         <UAlert
           color="neutral"
@@ -501,7 +519,7 @@ palette.registerPage(() => {
           />
         </div>
         <div v-else-if="shownView === 'tasks' && run" class="min-h-0 flex-1 overflow-y-auto p-3" data-run-tasks-view>
-          <RunTasks :run="run" :selected="selectedTask" :now="now" @select="selectTask($event, true)" @open="router.push(`/sessions/${$event}`)" />
+          <RunTasks :run="run" :selected="selectedTask" :attempt="wantedAttempt" :step="wantedStep" :now="now" @select="selectTask($event, true)" @open="router.push(`/sessions/${$event}`)" />
         </div>
         <div v-else-if="shownView === 'timeline' && run" class="min-h-0 flex-1 overflow-y-auto p-3" data-run-timeline-view>
           <RunTimeline :run="run" :sessions="sessions" :feed="events.entries.value" :now="now" />

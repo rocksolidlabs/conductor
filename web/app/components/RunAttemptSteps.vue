@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { RunAttempt, RunStep, StepLog } from '~/composables/useSessions'
 import { stepCommand, stepHasLog, stepManifest, stepPorts, stepWhere, stepWords } from '~/utils/tasks'
+import { logMatches } from '~/utils/dispatchEvidence'
 
 /**
  * An attempt's receipts (EN1, project manifests), or a run's prerequisites':
@@ -13,7 +14,9 @@ import { stepCommand, stepHasLog, stepManifest, stepPorts, stepWhere, stepWords 
  * SHA-256 and a Save that downloads it from a blob URL: the log's bytes as
  * the server sent them, never its decoded text, so the file matches the hash
  * even where the log holds bytes that are no UTF-8. A run the server has let
- * go reads the same: the steps come from the ledger.
+ * go reads the same: the steps come from the ledger. The SHA-256 the route sent is compared with the one the receipt recorded, as
+ * the ticket page's receipt compares them (DispatchReceipt). `openStep`, a history row's link to one receipt (Program item HS1, PR-6),
+ * opens that step's log once it is among the steps, once for each link.
  */
 const props = defineProps<{
   steps: RunStep[]
@@ -26,6 +29,8 @@ const props = defineProps<{
   saveAs: (s: RunStep) => string
   /** What the list is, for its label: "Steps" or "Prerequisites". */
   title?: string
+  /** A receipt to open at once, `<phase>/<id>/<k>`: a link's. */
+  openStep?: string
 }>()
 
 const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted', default: 'text-default', success: 'text-success' }
@@ -52,6 +57,27 @@ async function showLog(s: RunStep) {
     shown.value = { step: s, text: '', sha256: s.logSha256 ?? '', error: words, loading: false }
   }
 }
+// The step a link names, opened once it is among the steps (a read of the attempt brings them), and once for each link: a later read
+// of the same attempt, or the log closed, opens nothing again.
+let openedFor = ''
+watch(
+  () => [props.openStep, props.steps] as const,
+  ([want, steps]) => {
+    if (!want) {
+      openedFor = ''
+      return
+    }
+    if (openedFor === want) return
+    const s = steps.find((x) => `${x.phase}/${x.id}/${x.k}` === want)
+    if (!s) return
+    openedFor = want
+    if (stepHasLog(s)) void showLog(s)
+    void nextTick(() => document.querySelector(`[data-step-row="${CSS.escape(key(s))}"]`)?.scrollIntoView({ block: 'center' }))
+  },
+  { immediate: true },
+)
+const match = computed(() => (shown.value && !shown.value.error ? logMatches(shown.value.sha256, shown.value.step.logSha256) : 'unknown'))
+
 function save() {
   const v = shown.value
   if (!v || v.error || !v.bytes) return
@@ -70,7 +96,15 @@ function save() {
   <div class="flex flex-col gap-1" data-steps :data-steps-of="attempt ? attempt.n : 'prerequisites'">
     <div v-if="title" class="text-xs font-medium text-muted">{{ title }}</div>
     <ol class="flex flex-col gap-1">
-      <li v-for="s in steps" :key="key(s)" class="flex flex-col gap-0.5 rounded border border-default/60 bg-elevated/20 px-2 py-1 text-xs" :data-step-row="key(s)" :data-step-state="s.state">
+      <li
+        v-for="s in steps"
+        :key="key(s)"
+        class="flex flex-col gap-0.5 rounded border px-2 py-1 text-xs"
+        :class="openStep === `${s.phase}/${s.id}/${s.k}` ? 'border-primary bg-primary/5' : 'border-default/60 bg-elevated/20'"
+        :data-step-row="key(s)"
+        :data-step-state="s.state"
+        :data-step-wanted="openStep === `${s.phase}/${s.id}/${s.k}` ? '' : undefined"
+      >
         <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
           <UBadge :label="s.phase" :color="phaseColor(s.phase)" variant="subtle" size="sm" class="flex-none" />
           <span class="font-mono font-medium text-highlighted">{{ s.id }}</span>
@@ -106,7 +140,17 @@ function save() {
           <p v-if="shown?.loading" class="text-sm text-muted">Reading the log…</p>
           <UAlert v-else-if="shown?.error" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="shown.error" data-step-log-error />
           <pre v-else class="max-h-[60vh] overflow-auto whitespace-pre-wrap break-words rounded bg-elevated/40 p-2 font-mono text-xs" data-step-log-text>{{ shown?.text }}</pre>
-          <p v-if="shown?.sha256" class="break-all font-mono text-[11px] text-muted">SHA-256 <span data-step-log-sha>{{ shown.sha256 }}</span></p>
+          <p v-if="shown?.sha256" class="flex flex-wrap items-center gap-2 break-all font-mono text-[11px] text-muted">
+            <span>SHA-256 <span data-step-log-sha>{{ shown.sha256 }}</span></span>
+            <UBadge
+              v-if="!shown.error"
+              :label="match === 'matches' ? 'matches the receipt' : match === 'differs' ? 'differs from the receipt' : 'not compared'"
+              :color="match === 'matches' ? 'success' : match === 'differs' ? 'error' : 'neutral'"
+              variant="subtle"
+              size="sm"
+              :data-step-log-sha-match="match"
+            />
+          </p>
         </div>
       </template>
       <template #footer>

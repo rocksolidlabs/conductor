@@ -37,6 +37,8 @@ const props = defineProps<{
   resets: number
   attachmentUrl?: (id: string) => Promise<string | null>
   now: number
+  /** A link's comment (`?comment=<n>`, Program item HS1, PR-6): fetched alone and shown marked at the head, with a way to those around it. */
+  at?: number
 }>()
 
 const api = useDispatchApi()
@@ -278,6 +280,36 @@ async function remove(c: TicketComment) {
   keep(reply?.comment, asked)
 }
 
+// The comment a link names, fetched alone wherever it falls among the ticket's comments (the comment route with after=n-1&limit=1, as
+// Brakeman's commentURL names it), or its tombstone; `none` when the ticket has no comment of that number. Read for each ticket and
+// number, the last asked the one shown.
+const atComment = ref<{ key: string; n: number; comment: TicketComment | null; error: string } | null>(null)
+let atAsked = 0
+watch(
+  () => [props.ticket.key, props.at] as const,
+  async ([key, n]) => {
+    const mine = ++atAsked
+    if (!n) {
+      atComment.value = null
+      return
+    }
+    if (atComment.value?.key !== key || atComment.value.n !== n) atComment.value = null
+    try {
+      const page = await api.comments(key, n - 1, 1)
+      if (mine === atAsked) atComment.value = { key, n, comment: page.find((c) => c.n === n) ?? null, error: '' }
+    } catch (e) {
+      if (mine === atAsked) atComment.value = { key, n, comment: null, error: (e as Error).message || 'The comment could not be read.' }
+    }
+  },
+  { immediate: true },
+)
+/** The comments from the linked one on, read as the earlier pages are, and the page brought to it. */
+async function showAround(n: number) {
+  if (!comments.value.some((c) => c.n === n)) await readFrom(n)
+  await nextTick()
+  document.querySelector(`[data-comment="${n}"]`)?.scrollIntoView({ block: 'center' })
+}
+
 const composer = useTemplateRef<{ insert: (text: string) => void }>('composer')
 defineExpose({ insert: (text: string) => composer.value?.insert(text) })
 </script>
@@ -285,6 +317,26 @@ defineExpose({ insert: (text: string) => composer.value?.insert(text) })
 <template>
   <section class="flex min-w-0 flex-col gap-3" data-ticket-comments :data-count="comments.filter((c) => !c.deletedAt).length">
     <h3 class="text-xs font-semibold uppercase tracking-wide text-muted">Comments</h3>
+
+    <!-- A link's comment, marked at the head: its number, who wrote it and when, its body or its tombstone, and the way to those around it. -->
+    <div v-if="at" class="flex min-w-0 flex-col gap-1.5 rounded-md bg-primary/5 p-3 ring ring-primary" data-comment-at :data-comment-at-n="at">
+      <p v-if="!atComment" class="text-sm text-muted">Reading comment #{{ at }}…</p>
+      <p v-else-if="atComment.error" class="text-sm text-warning" data-comment-at-error>{{ atComment.error }}</p>
+      <p v-else-if="!atComment.comment" class="text-sm text-dimmed" data-comment-at-none>{{ ticket.key }} has no comment #{{ at }}.</p>
+      <template v-else>
+        <p class="flex flex-wrap items-baseline gap-x-2 text-xs text-muted">
+          <span class="font-medium text-highlighted" data-comment-at-author>{{ commentAuthor(atComment.comment) }}</span>
+          <span class="font-mono text-dimmed" data-comment-at-number>#{{ atComment.comment.n }}</span>
+          <span :title="atComment.comment.createdAt">{{ relativeTime(atComment.comment.createdAt, now, { suffix: true }) }}</span>
+          <span v-if="atComment.comment.editedAt && !atComment.comment.deletedAt" :title="atComment.comment.editedAt">· edited</span>
+          <UButton label="Show it among the comments" icon="i-lucide-chevrons-up-down" color="neutral" variant="soft" size="xs" class="ml-auto" :loading="loadingEarlier" data-comment-at-around @click="showAround(atComment.comment.n)" />
+        </p>
+        <p v-if="atComment.comment.deletedAt" class="text-sm italic text-dimmed" data-comment-at-deleted>This comment was deleted.</p>
+        <div v-else class="min-w-0 rounded-md bg-default ring ring-default" data-comment-at-body>
+          <MarkdownPreview :text="atComment.comment.body" dir="" :relative-links="false" linkify :attachment-url="attachmentUrl" />
+        </div>
+      </template>
+    </div>
 
     <UButton v-if="before" :label="`Earlier comments (${before.after + before.limit} more)`" icon="i-lucide-chevrons-up" color="neutral" variant="soft" size="xs" class="w-fit" :loading="loadingEarlier" data-comments-earlier @click="more" />
     <p v-if="!comments.length" class="text-sm text-dimmed" data-comments-none>No comments yet.</p>

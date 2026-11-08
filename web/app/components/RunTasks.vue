@@ -27,7 +27,15 @@ import { personPath } from '~/utils/people'
  * loopback and not proxied, and an iframe of it would be mixed content
  * under TLS.
  */
-const props = defineProps<{ run: RunInfo; selected: string; now: number }>()
+const props = defineProps<{
+  run: RunInfo
+  selected: string
+  now: number
+  /** The attempt a link named (`&attempt=`, a history row's: Program item HS1, PR-6), shown marked, its `step` opened with its log. */
+  attempt?: number
+  /** The receipt a link named on that attempt, `<phase>/<id>/<k>`. */
+  step?: string
+}>()
 const emit = defineEmits<{ select: [id: string]; open: [sessionId: string] }>()
 
 const copy = useCopy()
@@ -97,6 +105,15 @@ const taskDecisions = computed(() => {
   return [...held.map((h) => ({ id: h.id, type: h.type, state: h.state, question: h.question, answer: undefined as string | undefined, why: undefined as string | undefined })), ...asked]
 })
 const attempts = computed(() => ownedBy(attemptsHeld.value, taskOwner(props.run.id, props.selected), []))
+/** A link's attempt or step the selected task's read does not hold (an attempt past its count, a receipt never made): said, never guessed. */
+const wantedMissing = computed(() => {
+  const n = props.attempt
+  if (!n || attemptsHeld.value?.owner !== taskOwner(props.run.id, props.selected)) return ''
+  const a = attempts.value.find((x) => x.n === n)
+  if (!a) return `${props.selected} has no attempt ${n}.`
+  if (props.step && !(a.steps ?? []).some((s) => stepKey(s) === props.step)) return `Attempt ${n} has no receipt ${props.step}.`
+  return ''
+})
 const loadError = computed(() => ownedBy(attemptsError.value, taskOwner(props.run.id, props.selected), ''))
 const attemptReads = latestReads()
 watch(
@@ -158,6 +175,8 @@ const manifestName = computed(() => {
   if (!m) return ''
   return m.source === 'file' ? `conductor.manifest.json, ${stepManifest(`file:${m.digest ?? ''}`)}` : `the crew's, crew:${m.revision ?? 0}`
 })
+/** A receipt as a link names it: `check/unit/1`. */
+const stepKey = (s: RunStep) => `${s.phase}/${s.id}/${s.k}`
 const logOf = (task: string, n: number) => (s: RunStep) => api.stepLog(props.run.id, task, n, s.id, s.k)
 const prereqLog = (s: RunStep) => api.prerequisiteLog(props.run.id, s.id, s.k)
 const saveName = (task: string, n: number) => (s: RunStep) => `${props.run.id}-${task}-${n}-${s.phase}-${s.id}-${s.k}`
@@ -273,8 +292,9 @@ async function confirm() {
         </ul>
       </div>
       <UAlert v-if="loadError" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="loadError" />
+      <UAlert v-if="wantedMissing" color="neutral" variant="subtle" icon="i-lucide-search-x" :title="wantedMissing" data-task-wanted-missing />
       <ol class="flex flex-col gap-1.5" data-task-attempts>
-        <li v-for="a in attempts" :key="a.n" class="flex flex-col gap-1 rounded-md border border-default px-2.5 py-1.5" :data-task-attempt-row="a.n" :data-attempt-state="a.state">
+        <li v-for="a in attempts" :key="a.n" class="flex flex-col gap-1 rounded-md border px-2.5 py-1.5" :class="attempt === a.n ? 'border-primary bg-primary/5' : 'border-default'" :data-task-attempt-row="a.n" :data-attempt-state="a.state" :data-attempt-wanted="attempt === a.n ? '' : undefined">
           <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
             <span class="font-medium">attempt {{ a.n }}</span>
             <UBadge :label="a.state" :color="attemptColor(a.state)" variant="subtle" size="sm" />
@@ -301,7 +321,7 @@ async function confirm() {
               </li>
             </ul>
           </template>
-          <RunAttemptSteps v-if="a.steps?.length" :steps="a.steps" :now="now" :attempt="a" :log="logOf(selectedTask.id, a.n)" :save-as="saveName(selectedTask.id, a.n)" />
+          <RunAttemptSteps v-if="a.steps?.length" :steps="a.steps" :now="now" :attempt="a" :log="logOf(selectedTask.id, a.n)" :save-as="saveName(selectedTask.id, a.n)" :open-step="attempt === a.n ? step : undefined" />
         </li>
       </ol>
     </section>
