@@ -156,6 +156,14 @@ func switchyardDesk(t *testing.T, ui http.Handler) (string, api.Desk) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The publisher's server ends with the test (its workers started with it): after the desk's stop, registered below and so run
+	// first, and before the folders it writes to are removed, registered above.
+	t.Cleanup(func() {
+		sctx, scancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer scancel()
+		srv.Shutdown(sctx)
+		srv.WaitBackground(sctx)
+	})
 	cfg.Rendezvous.Token = "host-token"
 	cfg.Rendezvous.Insecure = true
 	u := newUplink(cfg, yard, srv, slog.New(slog.DiscardHandler))
