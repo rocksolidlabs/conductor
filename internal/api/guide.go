@@ -122,7 +122,12 @@ const (
 	maxOpDescription = 1 << 10
 	maxGuideOverview = 4 << 10
 	maxGuideSection  = 64 << 10
-	maxGuideWhole    = 256 << 10
+	// maxGuideOperations bounds the operations section, which lists every
+	// operation of the table: twice a section's, since the admin's rows
+	// (RV1's seven review operations among them, with their CLI forms to
+	// come) filled the 64 KiB a section has.
+	maxGuideOperations = 128 << 10
+	maxGuideWhole      = 256 << 10
 	// maxGuideAgents bounds the host section's agents, the rest counted.
 	maxGuideAgents = 64
 	// guideLookupWait bounds how long the host section waits for the
@@ -410,7 +415,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			Description: "What this Conductor server lets you do here, from the server itself: without a section, an overview (the server's version, who you are, the operations you may call and the limits that bind you, the sections and their sizes); with one, that section: operations (what you may call, with its tool, command, route and input), limits, host, receipts, providers, or briefs (a Brakeman brief's shape: its item kinds, their fields and bounds, the ref forms, an example).",
 			CLI:         []string{"conductor", "guide", "--section", "SECTION"},
 			Input:       obj(map[string]any{"section": map[string]any{"type": "string", "enum": guideSections, "description": "the section to read; the overview when not given"}}),
-			Bounds:      map[string]int{"overview": maxGuideOverview, "section": maxGuideSection}},
+			Bounds:      map[string]int{"overview": maxGuideOverview, "section": maxGuideSection, "operations": maxGuideOperations}},
 		{Name: "open_url", MCP: "open_url", Scope: "session", Method: http.MethodPost, Path: sessions + "/open", needs: needSelfService,
 			Summary:     "Open a link meant for the person (an artifact, a pull request, a preview, a sign-in page) in the browser this agent's settings name: ten a minute.",
 			Description: "Open a link meant for the person, such as an artifact, a pull request, a preview or a sign-in page, in the browser this agent's settings name, on the computer the desktop app runs on; with no desktop app, the workbench offers it. Answers what happened. Ten a minute; not for a link you only read yourself.",
@@ -421,7 +426,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			Summary: "The guide for the workbench token: every operation, the server's limits, host, receipts, providers and a brief's shape.",
 			CLI:     []string{"conductor", "guide", "--server", "URL", "--section", "SECTION"},
 			Input:   map[string]any{"type": "object", "description": "no body; ?section= names the section"},
-			Bounds:  map[string]int{"overview": maxGuideOverview, "section": maxGuideSection}},
+			Bounds:  map[string]int{"overview": maxGuideOverview, "section": maxGuideSection, "operations": maxGuideOperations}},
 		// The admin's operations a proposal may name.
 		runCommandOp("run_pause", "Pause a managed run's dispatch: nothing new starts; what runs goes on.", "/pause"),
 		runCommandOp("run_unpause", "Let a paused managed run dispatch again.", "/unpause"),
@@ -488,6 +493,36 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			CLI:     []string{"conductor", "dispatch", "link", "KEY-n", "--kind", "delivery|run|external"},
 			Input:   bodySchema(linkBody{}),
 			Bounds:  map[string]int{"body": maxBody}},
+		// A person's reviews of a ticket's candidates (RV1,
+		// dispatch_reviews.go).
+		{Name: "review_submit", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/tickets/{key}/reviews", needs: needLauncher, Receipt: "dispatch", Revision: "ticket",
+			Summary: "Review a candidate (run/task/n@commit) against a base, as one batch: request_changes is applied as a repair (continueRun for a run not running); comment and approve apply nothing.",
+			Input:   bodySchema(reviewSubmitBody{}),
+			Bounds:  map[string]int{"body": maxReviewBody, "reply": dispatch.MaxReviewReply}},
+		{Name: "review_retry", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/reviews/{id}/retry", needs: needLauncher, Receipt: "dispatch",
+			Summary: "Request again: a refused request for changes applied as its next try (continueRun to continue a run not running).",
+			Input:   bodySchema(reviewRetryBody{}),
+			Bounds:  map[string]int{"body": maxReviewRetryBody, "reply": dispatch.MaxReviewReply}},
+		{Name: "reviews", Scope: "admin", Method: http.MethodGet, Path: "/api/dispatch/tickets/{key}/reviews", needs: needLauncher,
+			Summary: "A ticket's reviews, newest first, 20 a page (?before=), each with its findings counted and its application.",
+			Input:   map[string]any{"type": "object", "description": "no body"},
+			Bounds:  map[string]int{"reply": dispatch.MaxReviewsReply}},
+		{Name: "review", Scope: "admin", Method: http.MethodGet, Path: "/api/dispatch/reviews/{id}", needs: needLauncher,
+			Summary: "A review whole: its findings, each with its latest mark, and its application.",
+			Input:   map[string]any{"type": "object", "description": "no body"},
+			Bounds:  map[string]int{"reply": dispatch.MaxReviewReply}},
+		{Name: "findings", Scope: "admin", Method: http.MethodGet, Path: "/api/dispatch/tickets/{key}/findings", needs: needLauncher,
+			Summary: "A ticket's findings (?state=, ?candidate=, ?after=), each with its state, last mark, where its lines are and what repairs said of it.",
+			Input:   map[string]any{"type": "object", "description": "no body"},
+			Bounds:  map[string]int{"reply": dispatch.MaxFindingsReply}},
+		{Name: "finding_marks", Scope: "admin", Method: http.MethodGet, Path: "/api/dispatch/findings/{id}/marks", needs: needLauncher,
+			Summary: "A finding's marks, oldest first (?after=), each with where its lines were.",
+			Input:   map[string]any{"type": "object", "description": "no body"},
+			Bounds:  map[string]int{"reply": dispatch.MaxMarksReply}},
+		{Name: "finding_mark", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/findings/{id}/marks", needs: needLauncher, Receipt: "dispatch",
+			Summary: "Mark a finding against a later candidate of its task: resolved, open or withdrawn, with a note.",
+			Input:   bodySchema(findingMarkBody{}),
+			Bounds:  map[string]int{"body": maxMarkBody}},
 		{Name: "crew_create", Scope: "admin", Method: http.MethodPost, Path: "/api/crews", needs: needLauncher,
 			Summary: "Save a crew: its members, and for a managed run its tasks and checks. Saving launches nothing.",
 			Input:   bodySchema(crewInput{}),
@@ -1332,6 +1367,18 @@ func guideReply(name string, content any) ([]byte, error) {
 	return b.Bytes(), err
 }
 
+// guideBound is the section's bound: the overview's, the operations
+// section's, or every other section's.
+func guideBound(section string) int {
+	switch section {
+	case "overview":
+		return maxGuideOverview
+	case "operations":
+		return maxGuideOperations
+	}
+	return maxGuideSection
+}
+
 // handleGuide answers the admin's guide: GET /api/guide?section=.
 func (s *Server) handleGuide(w http.ResponseWriter, r *http.Request) {
 	s.serveGuide(w, r, adminCaller())
@@ -1375,11 +1422,7 @@ func (s *Server) serveGuide(w http.ResponseWriter, r *http.Request, c guideCalle
 		return
 	}
 	b := replies[section]
-	limit := maxGuideSection
-	if section == "overview" {
-		limit = maxGuideOverview
-	}
-	if len(b) > limit {
+	if len(b) > guideBound(section) {
 		// TestEachSectionIsBounded holds every section to its bound with
 		// every entry at its largest: this is a bug, said rather than sent.
 		s.log.Warn("guide section past its bound", "section", section, "bytes", len(b))
