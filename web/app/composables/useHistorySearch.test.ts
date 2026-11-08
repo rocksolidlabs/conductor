@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createHistorySearch, HISTORY_BUSY_RETRY_MS, HISTORY_CACHE_MS, HISTORY_CACHE_SIZE, HISTORY_DEBOUNCE_MS, type HistorySearchDeps } from './useHistorySearch'
-import type { HistoryReply } from '../utils/history'
+import { createHistorySearch, HISTORY_BUSY_RETRY_MS, HISTORY_BUSY_TRIES, HISTORY_CACHE_MS, HISTORY_CACHE_SIZE, HISTORY_DEBOUNCE_MS, type HistorySearchDeps } from './useHistorySearch'
+import type { HistoryItem, HistoryReply } from '../utils/history'
 
 // The history's search as typed (Program item HS1, PR-7): asked 200 ms after the last key, one request in flight (the one before
 // aborted), an answer applied only to the request that asked it (a slow answer to an earlier query dropped), the last 20 queries'
@@ -17,7 +17,15 @@ interface Held {
   reject: (e: unknown) => void
 }
 
+interface HeldEntry {
+  key: string
+  signal: AbortSignal
+  resolve: (e: HistoryItem) => void
+  reject: (e: unknown) => void
+}
+
 let held: Held[]
+let entries: HeldEntry[]
 let token: boolean
 let clock: number
 
@@ -27,15 +35,21 @@ function make(o: Partial<HistorySearchDeps> = {}) {
     now: () => clock,
     search: (q, x) => new Promise<HistoryReply>((resolve, reject) => held.push({ q, after: x.after, signal: x.signal, resolve, reject })),
     similar: () => Promise.resolve({ entries: [] }),
+    entry: (key, signal) => new Promise<HistoryItem>((resolve, reject) => entries.push({ key, signal, resolve, reject })),
     ...o,
   })
 }
+
+const busy = () => Object.assign(new Error('too many history reads in flight'), { code: 'history_busy' })
+const refused = () => Object.assign(new Error('workbench token required'), { code: 'unauthorized', status: 401 })
+const anEntry = (key: string, offered = 'yes') => ({ key, title: key, availability: { state: 'record', words: 'a record', resume: { offered } } }) as unknown as HistoryItem
 
 const flush = () => new Promise<void>((r) => queueMicrotask(r)).then(() => new Promise<void>((r) => queueMicrotask(r)))
 
 beforeEach(() => {
   vi.useFakeTimers()
   held = []
+  entries = []
   token = true
   clock = 1_000_000
 })
@@ -220,15 +234,209 @@ describe('the workbench token', () => {
     held[0]!.resolve(reply('stub'))
     await flush()
     s.searchNow('other')
+    // The token cleared: nothing asked again without one.
+    token = false
     s.forget()
     expect(held[1]!.signal.aborted).toBe(true)
     held[1]!.resolve(reply('other'))
     await flush()
     expect(s.result.value).toBeNull()
+    expect(held).toHaveLength(2)
     // Another token: the first one's answer is not served from the cache, it is asked again.
+    token = true
     s.searchNow('stub')
     expect(held.map((h) => h.q)).toEqual(['stub', 'other', 'stub'])
     expect(s.result.value).toBeNull()
+  })
+})
+
+// The read rule's paths, each its own case: a token replaced by another (A to B, the gate's recovery from a wrong token) asks again
+// what was shown with the old one, with no new call from the caller (whose watch sees `hasToken` stay true and does not fire); a
+// refusal counts only for the token it carried; the → entry read is bounded and cancelled by the next one; a busy refusal of a page,
+// of Find this elsewhere and of an entry is asked again.
+describe('a token replaced by another', () => {
+  it('asks the query shown again with the new token, no search called again, and shows its answer', async () => {
+    const s = make()
+    s.searchNow('kind:session')
+    held[0]!.resolve(reply('kind:session'))
+    await flush()
+    s.forget()
+    expect(s.result.value).toBeNull()
+    expect(held.map((h) => h.q)).toEqual(['kind:session', 'kind:session'])
+    expect(s.pending.value).toBe(true)
+    held[1]!.resolve(reply('kind:session'))
+    await flush()
+    expect(s.result.value?.q).toBe('kind:session')
+    expect(s.pending.value).toBe(false)
+  })
+
+  it("asks again a query the old token's refusal left on Loading, and the late refusal counts for nothing", async () => {
+    const s = make()
+    s.searchNow('stub')
+    s.forget()
+    expect(held[0]!.signal.aborted).toBe(true)
+    expect(held.map((h) => h.q)).toEqual(['stub', 'stub'])
+    // The old token's 401 lands after the change: not this search's error.
+    held[0]!.reject(refused())
+    await flush()
+    expect(s.error.value).toBeNull()
+    held[1]!.resolve(reply('stub'))
+    await flush()
+    expect(s.result.value?.q).toBe('stub')
+    expect(s.error.value).toBeNull()
+  })
+
+  it('asks a query typed while it was refused (due after the debounce) at once with the new token', () => {
+    const s = make()
+    s.search('stub')
+    s.forget()
+    expect(held.map((h) => h.q)).toEqual(['stub'])
+    vi.advanceTimersByTime(HISTORY_DEBOUNCE_MS)
+    expect(held).toHaveLength(1)
+  })
+
+  it('asks Find this elsewhere again in place of the answer', async () => {
+    const asked: Array<[string, string]> = []
+    const s = make({
+      similar: (key, scope) => {
+        asked.push([key, scope])
+        return new Promise(() => {})
+      },
+    })
+    s.searchNow('stub')
+    void s.findSimilar({ key: 'check:r/b/1/c/1', title: 'c on b #1' }, 'all')
+    s.forget()
+    expect(asked).toEqual([
+      ['check:r/b/1/c/1', 'all'],
+      ['check:r/b/1/c/1', 'all'],
+    ])
+    expect(s.similar.value).toMatchObject({ key: 'check:r/b/1/c/1', scope: 'all', reply: null })
+    expect(s.wanted.value).toBe('stub')
+  })
+
+  it("asks the → entry again, and the old token's answer is applied to nothing", async () => {
+    const s = make()
+    void s.readEntry('session:a')
+    s.forget()
+    expect(entries.map((e) => [e.key, e.signal.aborted])).toEqual([
+      ['session:a', true],
+      ['session:a', false],
+    ])
+    entries[0]!.resolve(anEntry('session:a', 'no'))
+    await flush()
+    expect(s.entryRead.value).toEqual({ key: 'session:a', entry: null })
+    entries[1]!.resolve(anEntry('session:a'))
+    await flush()
+    expect(s.entryRead.value?.entry?.availability.resume?.offered).toBe('yes')
+  })
+})
+
+describe('the → entry read', () => {
+  it('is cancelled by the next one, whose answer alone is applied', async () => {
+    const s = make()
+    void s.readEntry('session:a')
+    void s.readEntry('session:b')
+    void s.readEntry('session:c')
+    expect(entries.map((e) => [e.key, e.signal.aborted])).toEqual([
+      ['session:a', true],
+      ['session:b', true],
+      ['session:c', false],
+    ])
+    entries[2]!.resolve(anEntry('session:c'))
+    entries[0]!.resolve(anEntry('session:a'))
+    entries[1]!.reject(new Error('late'))
+    await flush()
+    expect(s.entryRead.value).toMatchObject({ key: 'session:c' })
+    expect(s.entryRead.value?.error).toBeUndefined()
+  })
+
+  it('asks nothing more for a → again on the row whose read is on its way', () => {
+    const s = make()
+    void s.readEntry('session:a')
+    void s.readEntry('session:a')
+    expect(entries).toHaveLength(1)
+  })
+
+  it('is cancelled as the palette closes (stop), its answer applied to nothing', async () => {
+    const s = make()
+    void s.readEntry('session:a')
+    s.stop()
+    expect(entries[0]!.signal.aborted).toBe(true)
+    entries[0]!.resolve(anEntry('session:a'))
+    await flush()
+    expect(s.entryRead.value).toBeNull()
+  })
+
+  it('asks a busy refusal again while it is the current read, and says a refusal past the tries', async () => {
+    const s = make()
+    void s.readEntry('session:a')
+    entries[0]!.reject(busy())
+    await flush()
+    vi.advanceTimersByTime(HISTORY_BUSY_RETRY_MS)
+    await flush()
+    expect(entries.map((e) => e.key)).toEqual(['session:a', 'session:a'])
+    entries[1]!.resolve(anEntry('session:a'))
+    await flush()
+    expect(s.entryRead.value?.entry?.key).toBe('session:a')
+    // Another read, busy every time: after HISTORY_BUSY_TRIES it is said, not asked forever.
+    void s.readEntry('session:b')
+    for (let i = 0; i < HISTORY_BUSY_TRIES; i++) {
+      entries.at(-1)!.reject(busy())
+      await flush()
+      vi.advanceTimersByTime(HISTORY_BUSY_RETRY_MS)
+      await flush()
+    }
+    expect(entries.filter((e) => e.key === 'session:b')).toHaveLength(HISTORY_BUSY_TRIES)
+    expect(s.entryRead.value).toEqual({ key: 'session:b', entry: null, error: 'too many history reads in flight' })
+  })
+
+  it('a busy refusal waited out is not asked again once a newer read replaced it', async () => {
+    const s = make()
+    void s.readEntry('session:a')
+    entries[0]!.reject(busy())
+    await flush()
+    void s.readEntry('session:b')
+    vi.advanceTimersByTime(HISTORY_BUSY_RETRY_MS)
+    await flush()
+    expect(entries.map((e) => e.key)).toEqual(['session:a', 'session:b'])
+  })
+})
+
+describe('a busy refusal of a page or of Find this elsewhere', () => {
+  it('asks the next page again', async () => {
+    const s = make()
+    s.searchNow('stub')
+    held[0]!.resolve(reply('stub', { next: 'c1', total: 2 }))
+    await flush()
+    void s.more()
+    held[1]!.reject(busy())
+    await flush()
+    expect(s.error.value).toBeNull()
+    vi.advanceTimersByTime(HISTORY_BUSY_RETRY_MS)
+    await flush()
+    expect(held.map((h) => [h.q, h.after])).toEqual([
+      ['stub', undefined],
+      ['stub', 'c1'],
+      ['stub', 'c1'],
+    ])
+    held[2]!.resolve({ entries: [{ key: 'k:2', title: 'two' } as HistoryReply['entries'][number]], total: 2, indexing: { state: 'ready' } })
+    await flush()
+    expect(s.result.value?.reply.entries.map((e) => e.key)).toEqual(['k:stub', 'k:2'])
+    expect(s.error.value).toBeNull()
+  })
+
+  it('asks Find this elsewhere again', async () => {
+    let n = 0
+    const s = make({
+      similar: () => (++n === 1 ? Promise.reject(busy()) : Promise.resolve({ entries: [{ key: 'check:r2/b/1/c/1', title: 'c' } as HistoryReply['entries'][number]] })),
+    })
+    void s.findSimilar({ key: 'check:r/b/1/c/1', title: 'c' })
+    await flush()
+    expect(s.similar.value?.error).toBeUndefined()
+    vi.advanceTimersByTime(HISTORY_BUSY_RETRY_MS)
+    await flush()
+    expect(n).toBe(2)
+    expect(s.similar.value?.reply?.entries.map((e) => e.key)).toEqual(['check:r2/b/1/c/1'])
   })
 })
 

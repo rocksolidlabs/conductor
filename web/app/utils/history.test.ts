@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest'
+import { CommandRefused } from './tasks'
 import {
   availabilityWords,
   byAnchor,
   classBadge,
+  cutWords,
+  HISTORY_MAX_RANKED,
+  HISTORY_MAX_SCANNED,
+  outcomeChips,
+  REJECTING_KINDS,
+  REJECTING_OUTCOMES,
+  resumeFailure,
   filterOf,
   historyIcon,
   historySession,
@@ -311,5 +319,44 @@ describe("the filters the chips write (PR-7)", () => {
   it("finds this machine's name in the records of its own sessions, never a hosted one's", () => {
     expect(machineOf([entry({ host: { name: 'mac', user: 'nate', hosted: true } }), entry({ host: { name: 'lab-box' } })])).toBe('lab-box')
     expect(machineOf([entry({ host: {} })])).toBe('')
+  })
+})
+
+describe("the Rejected chip and the Rejected designs question (PR-7, PR-9)", () => {
+  it('write the same rejecting outcomes, from one list', () => {
+    const rejected = historyQuestions().find((q) => q.id === 'rejected')!
+    const chip = outcomeChips().find((c) => c.label === 'Rejected')!
+    expect(chip.value).toBe(filterOf(rejected.query, 'outcome'))
+    expect(chip.value.split(',')).toEqual([...REJECTING_OUTCOMES])
+    expect(filterOf(rejected.query, 'kind').split(',')).toEqual([...REJECTING_KINDS])
+  })
+})
+
+describe('the bound a search stopped at, in words (PR-7)', () => {
+  it('says which bound: the ranked 2,000 or the scanned 10,000, and nothing for a search that read every match', () => {
+    expect(cutWords(undefined)).toBe('')
+    expect(cutWords('')).toBe('')
+    expect(HISTORY_MAX_RANKED).toBe(2_000)
+    expect(HISTORY_MAX_SCANNED).toBe(10_000)
+    expect(cutWords('ranked')).toBe('only the newest 2,000 of them are ranked and shown: add a word or a filter to reach the rest')
+    expect(cutWords('scanned')).toBe('only the newest 10,000 entries the words match were searched, newest first: add a word or a filter to reach older ones')
+    expect(cutWords('later')).toMatch(/stopped at its bound/)
+  })
+})
+
+describe("a resume's outcome when it did not answer started (PR-7, the record page's rule)", () => {
+  const where = { unknown: 'its receipts say', pending: 'Its receipt says.' }
+  const receipt = (state: string, code?: string) => new CommandRefused('refused', { commandId: 'c', state, code, at: '2026-11-08T00:00:00Z' } as never)
+  it('says an outcome unknown when both replies were lost, or its receipt is uncertain: never a failure', () => {
+    expect(resumeFailure(Object.assign(new Error('Cannot reach the server'), { status: 0, code: 'network' }), where)).toMatchObject({ outcome: 'unknown', title: 'Whether it resumed is not known', color: 'warning' })
+    expect(resumeFailure(Object.assign(new Error('Cannot reach the server'), { status: 0, code: 'network' }), where).description).toMatch(/The outcome is unknown; its receipts say\.$/)
+    expect(resumeFailure(receipt('uncertain'), where)).toMatchObject({ outcome: 'unknown', title: 'Whether it resumed is not known' })
+  })
+  it('says one still pending is being started', () => {
+    expect(resumeFailure(receipt('pending'), where)).toMatchObject({ outcome: 'pending', title: 'It is still being started', description: 'Its receipt says.' })
+  })
+  it('says a refusal and an error did not resume, with the refusal\'s code', () => {
+    expect(resumeFailure(receipt('failed', 'env_not_kept'), where)).toMatchObject({ outcome: 'refused', code: 'env_not_kept', title: 'It did not resume', color: 'warning' })
+    expect(resumeFailure(Object.assign(new Error('boom'), { status: 500, code: 'internal' }), where)).toMatchObject({ outcome: 'failed', code: 'internal', title: 'It did not resume', description: 'boom', color: 'error' })
   })
 })

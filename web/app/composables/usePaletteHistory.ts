@@ -1,10 +1,10 @@
 import type { PaletteItem } from '~/composables/usePalette'
 import type { Action } from '~/utils/actions'
 import { parsePrefix, type PaletteGroup } from '~/utils/palette'
-import { CommandRefused } from '~/utils/tasks'
 import {
   byAnchor,
   classBadge,
+  cutWords,
   historyDetail,
   historyIcon,
   historyQuestions,
@@ -16,6 +16,7 @@ import {
   machineOf,
   repeatWords,
   resumeDestination,
+  resumeFailure,
   type HistoryItem,
 } from '~/utils/history'
 
@@ -71,38 +72,24 @@ export function usePaletteHistory(o: { go: (to: string) => void; token: () => vo
   )
 
   // ---- Resume: whether it is offered is the entry route's to say (the search's rows carry no `resume`), read as → reveals a
-  // session's actions. One read at a time; its answer applied only while it is the newest asked and for the key it asked about.
-  const entryRead = shallowRef<{ key: string; entry: HistoryItem | null; error?: string } | null>(null)
-  let reads = 0
-  async function readEntry(key: string) {
-    const n = ++reads
-    entryRead.value = { key, entry: null }
-    try {
-      const entry = await history.entry(key)
-      if (n === reads) entryRead.value = { key, entry }
-    } catch (e) {
-      if (n === reads) entryRead.value = { key, entry: null, error: (e as Error).message || 'could not be read' }
-    }
-  }
-  watch(
-    () => [palette.open.value, admin.token.value],
-    () => {
-      reads++
-      entryRead.value = null
-    },
-  )
+  // session's actions, through the search's read rule (useHistorySearch's readEntry: one at a time, the next → aborting it, its answer
+  // applied only to the read that asked, a busy refusal asked again, asked again with a new token, cancelled as the palette closes).
+  const entryRead = search.entryRead
 
   async function resume(id: string, label: string) {
+    const record = `/history/sessions/${encodeURIComponent(id)}`
     try {
       const r = await history.resumeRecord(id)
       const to = resumeDestination(r)
       toast.add({ title: `${label} resumed`, description: r.notice, icon: 'i-lucide-history', color: 'success' })
       if (to) o.go(to.to)
     } catch (e) {
+      // An unknown or pending outcome is said as such, never as "did not resume", and its record opens: its receipts say how it ended.
       // A question only the record's page asks in full (the launch's variables, a lost record's second yes): that page, saying why.
-      const code = e instanceof CommandRefused ? ((e.receipt as { code?: string }).code ?? '') : ((e as { code?: string }).code ?? '')
-      toast.add({ title: `${label} did not resume`, description: (e as Error).message, icon: 'i-lucide-circle-alert', color: 'error' })
-      if (code === 'env_not_kept' || code === 'lost_unconfirmed') o.go(`/history/sessions/${encodeURIComponent(id)}`)
+      const f = resumeFailure(e, { unknown: 'its record, opened now, keeps the receipt that says whether it did', pending: 'Its record, opened now, keeps the receipt that says how it ends.' })
+      const title = f.outcome === 'refused' || f.outcome === 'failed' ? `${label} did not resume` : `${label}: ${f.title.charAt(0).toLowerCase()}${f.title.slice(1)}`
+      toast.add({ title, description: f.description, icon: f.icon, color: f.color })
+      if (f.outcome === 'unknown' || f.outcome === 'pending' || f.code === 'env_not_kept' || f.code === 'lost_unconfirmed') o.go(record)
     }
   }
 
@@ -144,7 +131,7 @@ export function usePaletteHistory(o: { go: (to: string) => void; token: () => vo
       run: () => to && o.go(to),
       href: to ?? undefined,
       actions,
-      reveal: e.kind === 'session' ? () => void readEntry(e.key) : undefined,
+      reveal: e.kind === 'session' ? () => void search.readEntry(e.key) : undefined,
     }
   }
 
@@ -155,18 +142,23 @@ export function usePaletteHistory(o: { go: (to: string) => void; token: () => vo
     return byAnchor(entries).map((g) => ({ id: `history:${g.anchor.ref}`, label: g.anchor.label, rows: g.entries.map((e) => item(e, now)) }))
   }
 
+  /** Find this elsewhere's answer, shown in place of the search's rows (in `~` and in the plain search alike), or null when none was asked. */
+  function similarGroup(now: number): PaletteGroup<PaletteItem> | null {
+    const sim = search.similar.value
+    if (!sim) return null
+    const where = sim.scope === 'all' ? 'in every repository' : 'in its repository'
+    const rows: PaletteItem[] = sim.reply ? sim.reply.entries.map((e) => item(e, now)) : [note('history:loading', 'Loading…', `The receipts of the same command ${where}`, 'i-lucide-loader')]
+    if (sim.reply && !sim.reply.entries.length) rows.push(note('history:similar-none', sim.error ? `Not found: ${sim.error}` : `The same command ran nowhere else ${where}`))
+    if (sim.scope === 'repo' && sim.reply) rows.push({ key: 'history:similar-all', label: 'Find this in every repository', icon: 'i-lucide-globe', keepOpen: true, run: () => void search.findSimilar({ key: sim.key, title: sim.title }, 'all') })
+    return { id: 'history-similar', label: `Elsewhere: ${sim.title}, ${where}`, rows }
+  }
+
   /** `~`'s groups: the four questions and the latest sessions with nothing typed, the answer grouped under its anchors otherwise. */
   function modeGroups(rest: string, now: number): PaletteGroup<PaletteItem>[] {
     if (!admin.hasToken.value) return [{ id: 'history', label: 'History', rows: [{ key: 'history:token', label: 'History needs the workbench token', detail: 'Enter asks for it', icon: 'i-lucide-key-round', run: () => o.token() }] }]
     const groups: PaletteGroup<PaletteItem>[] = []
-    const sim = search.similar.value
-    if (sim) {
-      const where = sim.scope === 'all' ? 'in every repository' : 'in its repository'
-      const rows: PaletteItem[] = sim.reply ? sim.reply.entries.map((e) => item(e, now)) : [note('history:loading', 'Loading…', `The receipts of the same command ${where}`, 'i-lucide-loader')]
-      if (sim.reply && !sim.reply.entries.length) rows.push(note('history:similar-none', sim.error ? `Not found: ${sim.error}` : `The same command ran nowhere else ${where}`))
-      if (sim.scope === 'repo' && sim.reply) rows.push({ key: 'history:similar-all', label: 'Find this in every repository', icon: 'i-lucide-globe', keepOpen: true, run: () => void search.findSimilar({ key: sim.key, title: sim.title }, 'all') })
-      return [{ id: 'history-similar', label: `Elsewhere: ${sim.title}, ${where}`, rows }]
-    }
+    const sim = similarGroup(now)
+    if (sim) return [sim]
     if (!rest) {
       const project = route.path.startsWith('/dispatch/') ? String(route.params.project ?? '').toUpperCase() : ''
       const rows = historyQuestions({ project: project || undefined, host: machine.value || undefined }).map<PaletteItem>((q) => ({
@@ -197,18 +189,23 @@ export function usePaletteHistory(o: { go: (to: string) => void; token: () => vo
       }
       if (rest && (shown.next || shown.total > shown.entries.length)) {
         const to = `/history?q=${encodeURIComponent(rest)}`
-        groups.push({ id: 'history-more', label: 'More', rows: [{ key: 'history:page', label: `All ${shown.total}${shown.totalCapped ? '+' : ''} matches on the History page`, icon: 'i-lucide-history', run: () => o.go(to), href: to }] })
+        // A search cut at a bound shows fewer than it counts: the page reaches what was searched, and the row says which bound.
+        const total = `${shown.total}${shown.totalCapped ? '+' : ''}`
+        const label = shown.cut ? `${total} matches, the searched ones on the History page` : `All ${total} matches on the History page`
+        groups.push({ id: 'history-more', label: 'More', rows: [{ key: 'history:page', label, detail: cutWords(shown.cut) || undefined, icon: 'i-lucide-history', run: () => o.go(to), href: to }] })
       }
     }
     return groups
   }
 
-  /** The plain search's History group: from three characters, the answer's five best rows, then "All history matches (~)". */
+  /** The plain search's History group: from three characters, the answer's five best rows, then "All history matches (~)"; Find this elsewhere's answer in its place once asked from one of them. */
   function searchGroup(rest: string, now: number): PaletteGroup<PaletteItem> {
+    const sim = admin.hasToken.value && rest.length >= HISTORY_MIN_CHARS ? similarGroup(now) : null
+    if (sim) return sim
     const shown = admin.hasToken.value && rest.length >= HISTORY_MIN_CHARS && search.result.value?.q === rest ? search.result.value.reply : null
     if (!shown?.entries.length) return { id: 'history', label: 'History', rows: [] }
     const rows = shown.entries.slice(0, HISTORY_IN_SEARCH).map((e) => item(e, now))
-    rows.push({ key: 'history:all', label: 'All history matches (~)', detail: `${shown.total}${shown.totalCapped ? '+' : ''} in the history`, icon: 'i-lucide-history', keepOpen: true, run: () => (palette.query.value = `~ ${rest}`) })
+    rows.push({ key: 'history:all', label: 'All history matches (~)', detail: [`${shown.total}${shown.totalCapped ? '+' : ''} in the history`, cutWords(shown.cut)].filter(Boolean).join('; '), icon: 'i-lucide-history', keepOpen: true, run: () => (palette.query.value = `~ ${rest}`) })
     return { id: 'history', label: 'History', rows }
   }
 

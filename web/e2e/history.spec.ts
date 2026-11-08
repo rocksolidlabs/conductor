@@ -37,9 +37,23 @@ const crew = (name: string) => ({
   tasks: [{ id: 'build', member: 'builder', kind: 'work', instructions: 'Build it.', checks: [{ id: 'fixed', argv: ['git', 'cat-file', '-e', 'HEAD:stub-fixed.txt'] }] }],
 })
 
+/**
+ * The test's timeout is the sum of its waits' caps, each added as its step is about to take it (AGENTS.md: a test's timeout bounds a
+ * hang, not its steps), the config's 120 s above them for the work between: a step whose waits each keep their bound never runs the
+ * test out on a loaded box.
+ */
+const STEP_MS = 15_000 // the config's expect bound, and an action's
+const SUCCEEDED_MS = 150_000
+const INDEXED_MS = 60_000
+function budget(ms: number) {
+  const info = test.info()
+  info.setTimeout(info.timeout + ms)
+}
+
 const search = (api: Api, q: string) => api.ok<{ entries: Entry[] }>('GET', `/api/history?q=${encodeURIComponent(q)}&limit=100`).then((r) => r.entries)
 
 async function succeeded(api: Api, id: string): Promise<Run> {
+  budget(SUCCEEDED_MS)
   let last!: Run
   await expect
     .poll(
@@ -47,7 +61,7 @@ async function succeeded(api: Api, id: string): Promise<Run> {
         last = await api.run(id)
         return last.outcome ?? ''
       },
-      { timeout: 150_000, intervals: [500] },
+      { timeout: SUCCEEDED_MS, intervals: [500] },
     )
     .toBe('succeeded')
   expect(task(last, 'build').attempts).toBe(2)
@@ -69,6 +83,7 @@ async function fixedStep(api: Api, run: string, n: number): Promise<{ k: number;
 
 /** The palette opened from a page whose layout is drawn (its sidebar root: the listener's own component), its query typed whole. */
 async function palette(page: Page, query: string): Promise<Locator> {
+  budget(30_000 + 4 * STEP_MS) // the sidebar, the goto, the focus, the fill
   await page.goto('/agents')
   await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
   await page.keyboard.press('Control+k')
@@ -80,9 +95,9 @@ async function palette(page: Page, query: string): Promise<Locator> {
   return p
 }
 
-test("which session investigated a failure is answered from the palette, and the row opens the evidence", async ({ page, api }, testInfo) => {
-  // Two crews of two attempts each, a session's chat, the index catching up with each: every wait below has its own bound.
-  testInfo.setTimeout(420_000)
+test("which session investigated a failure is answered from the palette, and the row opens the evidence", async ({ page, api }) => {
+  // Two crews of two attempts each, a session's chat, the index catching up with each: every wait below has its own bound, added to
+  // the test's timeout as its step takes it (budget).
   await stopStrays(api, [])
   const tag = `hs${Date.now().toString(36)}`
   const crewA = (await api.ok<{ crew: { id: string } }>('POST', '/api/crews', crew(`e2e history ${tag}`))).crew.id
@@ -101,6 +116,7 @@ test("which session investigated a failure is answered from the palette, and the
   await page.addInitScript(() => localStorage.setItem('conductor.displayName', 'Nate'))
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: `e2e history chat ${tag}` })
   try {
+    budget(30_000 + 5 * STEP_MS) // the goto, the tab, its click, the fill, the send, the marker
     await page.goto(`/sessions/${s.id}`)
     const tab = page.locator('[data-inspector] [data-chat-tab]')
     await expect(tab).toBeVisible({ timeout: 30_000 })
@@ -113,7 +129,8 @@ test("which session investigated a failure is answered from the palette, and the
     await expect(chat.locator('[data-chat-marker]').first()).toContainText('Sent to agent by Nate', { timeout: 15_000 })
 
     // The index has what the rows below are about: the failed receipt with the attempt it was handed to, the chat's line.
-    await expect.poll(async () => (await search(api, 'stub-fixed outcome:failed')).find((e) => e.key === failedKey)?.links.some((l) => l.rel === 'handed' && l.dir === 'out') ?? false, { timeout: 60_000, message: 'the failed receipt is indexed with its investigator' }).toBe(true)
+    budget(2 * INDEXED_MS)
+    await expect.poll(async () => (await search(api, 'stub-fixed outcome:failed')).find((e) => e.key === failedKey)?.links.some((l) => l.rel === 'handed' && l.dir === 'out') ?? false, { timeout: INDEXED_MS, message: 'the failed receipt is indexed with its investigator' }).toBe(true)
     let chatKey = ''
     await expect
       .poll(
@@ -121,7 +138,7 @@ test("which session investigated a failure is answered from the palette, and the
           chatKey = (await search(api, `stub-fixed ${tag}`)).find((e) => e.kind === 'session.chat' && e.anchor.ref === `session:${s.id}`)?.key ?? ''
           return chatKey
         },
-        { timeout: 60_000, message: "the session's chat line is indexed" },
+        { timeout: INDEXED_MS, message: "the session's chat line is indexed" },
       )
       .not.toBe('')
     const receipt = (await search(api, 'stub-fixed outcome:failed')).find((e) => e.key === failedKey)!
@@ -129,6 +146,7 @@ test("which session investigated a failure is answered from the palette, and the
     // `~ stub-fixed outcome:failed`: a word of git's refusal in the receipt's log, and the filter (attempt 2's passing receipt holds
     // the same word in its argv, and the ranking does not fix which of the two comes first).
     let p = await palette(page, '~ stub-fixed outcome:failed')
+    budget(30_000 + 5 * STEP_MS) // the mode, the row, its label, badge and third line
     await expect(p).toHaveAttribute('data-palette-mode', 'history')
     const row = p.locator(`[data-palette-row="${CSS_KEY(`history:${failedKey}`)}"]`)
     await expect(row).toBeVisible({ timeout: 30_000 })
@@ -146,6 +164,7 @@ test("which session investigated a failure is answered from the palette, and the
     await expect(row.locator('[data-palette-third]')).toContainText('Investigated by build #2')
 
     // Enter opens the run page at attempt 1's `fixed` step, its log's SHA-256 the step log route's.
+    budget(5 * STEP_MS) // the focus, Enter, the URL, the SHA, its match
     await row.focus()
     await expect(row).toHaveAttribute('data-palette-focused', '')
     await page.keyboard.press('Enter')
@@ -156,6 +175,7 @@ test("which session investigated a failure is answered from the palette, and the
 
     // The plain session's chat line, said there: Conversation, never Checked.
     p = await palette(page, `~ stub-fixed ${tag}`)
+    budget(30_000 + 2 * STEP_MS)
     const said = p.locator(`[data-palette-row="${CSS_KEY(`history:${chatKey}`)}"]`)
     await expect(said).toBeVisible({ timeout: 30_000 })
     await expect(said.locator('[data-palette-badge]')).toHaveText('Conversation')
@@ -163,6 +183,7 @@ test("which session investigated a failure is answered from the palette, and the
 
     // `~` alone: the four questions; "What was last verified here" lists attempt 2's passing receipt.
     p = await palette(page, '~')
+    budget(30_000 + 10 * STEP_MS) // four questions, the focus, Enter, the query, the row, its badge, Escape
     for (const id of ['failures', 'rejected', 'verified', 'sessions']) await expect(p.locator(`[data-palette-row="history-question:${id}"]`)).toBeVisible()
     const verified = p.locator('[data-palette-row="history-question:verified"]')
     await verified.focus()
@@ -178,8 +199,10 @@ test("which session investigated a failure is answered from the palette, and the
     await succeeded(api, runB.id)
     const elsewhere = await fixedStep(api, runB.id, 1)
     const elsewhereKey = `check:${runB.id}/build/1/fixed/${elsewhere.k}`
-    await expect.poll(async () => (await api.ok<{ entries: Entry[] }>('GET', `/api/history/similar?key=${encodeURIComponent(failedKey)}`)).entries.some((e) => e.key === elsewhereKey), { timeout: 60_000, message: "the second crew's receipt is indexed" }).toBe(true)
+    budget(INDEXED_MS)
+    await expect.poll(async () => (await api.ok<{ entries: Entry[] }>('GET', `/api/history/similar?key=${encodeURIComponent(failedKey)}`)).entries.some((e) => e.key === elsewhereKey), { timeout: INDEXED_MS, message: "the second crew's receipt is indexed" }).toBe(true)
     p = await palette(page, '~ stub-fixed outcome:failed')
+    budget(2 * 30_000 + 5 * STEP_MS) // the row, its focus, →, the action, the similar row, the receipt's absence
     const again = p.locator(`[data-palette-row="${CSS_KEY(`history:${failedKey}`)}"]`)
     await expect(again).toBeVisible({ timeout: 30_000 })
     await again.focus()

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { byAnchor, filterOf, historyQuestions, historyTarget, indexingWords, machineOf, withFilter, type HistoryFilter } from '~/utils/history'
+import { byAnchor, cutWords, filterOf, historyQuestions, historyTarget, indexingWords, machineOf, outcomeChips, withFilter, type HistoryFilter } from '~/utils/history'
 import { LATEST_SESSIONS } from '~/composables/usePaletteHistory'
 
 /**
@@ -80,7 +80,10 @@ interface Chip {
   value: string
   label: string
 }
-const machine = computed(() => (search.result.value?.q === LATEST_SESSIONS ? machineOf(search.result.value.reply.entries) : '') || hosts.value[0] || '')
+// This machine's name, from the latest sessions' records (machineOf: a session on this server, never a hosted one's host); until it is
+// known, "Sessions on this machine" asks for every session (`kind:session`) rather than name a host the records hold, which may be
+// another machine's (a hosted session's) or this one's before a rename.
+const machine = computed(() => (search.result.value?.q === LATEST_SESSIONS ? machineOf(search.result.value.reply.entries) : ''))
 const project = computed(() => (projects.value.length === 1 ? projects.value[0] : undefined))
 const chipRows = computed<Array<{ name: HistoryFilter; label: string; chips: Chip[] }>>(() =>
   [
@@ -97,11 +100,8 @@ const chipRows = computed<Array<{ name: HistoryFilter; label: string; chips: Chi
     {
       name: 'outcome' as const,
       label: 'Outcome',
-      chips: [
-        { value: 'passed', label: 'Passed' },
-        { value: 'failed', label: 'Failed' },
-        { value: 'withdrawn,superseded,needs_changes', label: 'Rejected' },
-      ],
+      // Rejected writes the rejecting outcomes the "Rejected designs" question asks for (utils/history.ts, REJECTING_OUTCOMES).
+      chips: outcomeChips(),
     },
     { name: 'project' as const, label: 'Project', chips: projects.value.map((k) => ({ value: k, label: k })) },
     { name: 'host' as const, label: 'Host', chips: hosts.value.map((h) => ({ value: h, label: h })) },
@@ -177,7 +177,7 @@ const questions = computed(() => historyQuestions({ project: project.value, host
             <p v-if="!shown && !error" class="text-sm text-muted" data-history-loading>Loading…</p>
             <template v-if="shown">
               <p class="text-xs text-muted" data-history-total>
-                <template v-if="query">{{ shown.total }}{{ shown.totalCapped ? '+' : '' }} {{ shown.total === 1 && !shown.totalCapped ? 'match' : 'matches' }}<template v-if="shown.cut"> · the newest 10,000 searched: add a word or a filter to reach older ones</template></template>
+                <template v-if="query">{{ shown.total }}{{ shown.totalCapped ? '+' : '' }} {{ shown.total === 1 && !shown.totalCapped ? 'match' : 'matches' }}<template v-if="shown.cut"> · <span data-history-cut>{{ cutWords(shown.cut) }}</span></template></template>
                 <template v-else>The latest sessions</template>
               </p>
               <p v-if="!shown.entries.length" class="py-6 text-center text-sm text-muted" data-history-none>Nothing in the history matches.</p>
