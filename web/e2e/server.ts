@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, openSync, readFileSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, openSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -114,10 +114,17 @@ export interface Started {
   pid: number
 }
 
+/** How many ports startServer tries before it gives up: each one another server took is said in the error. */
+const PORT_TRIES = 5
+
 /**
  * Starts `conductor serve` with config and a clean environment: PATH, LANG, the HOME given, and the CONDUCTOR_* values that place it
  * (data directory, public URL, allowed root, default working directory, workbench token); of the caller's own variables only the ones
- * passEnv names, never a CONDUCTOR_* one, so a CONDUCTOR_YOLO or a token set in the shell cannot reach it. It returns once /api/health answers, and kills the server when it does not.
+ * passEnv names, never a CONDUCTOR_* one, so a CONDUCTOR_YOLO or a token set in the shell cannot reach it. It returns once the server
+ * at the port is the child: /api/health answers and so does an authenticated /api/whoami with the child's own token. A port probed
+ * free can be taken before the child binds it (another run of the suite on the machine picks from the same hundred), and then a health
+ * answer there is another server's: a refusal of the token, or the child's exit on an address in use, makes it try another port.
+ * It kills the server when it does not answer.
  */
 export async function startServer(o: {
   config: string
@@ -132,11 +139,25 @@ export async function startServer(o: {
   env?: Record<string, string>
   /** A host token the server accepts (CONDUCTOR_HOST_TOKENS), for a `conductor host` a spec runs against it. */
   hostToken?: string
+  /** The first try's port instead of pickPort's (a test's seam: a port another server holds); later tries pick their own. */
+  port?: number
 }): Promise<Started> {
+  const lost: string[] = []
+  for (let i = 0; i < PORT_TRIES; i++) {
+    const port = i === 0 && o.port !== undefined ? o.port : await pickPort()
+    const started = await startOn(o, port)
+    if (typeof started !== 'string') return started
+    lost.push(started)
+  }
+  throw new Error(`the server found no port of its own in ${PORT_TRIES} tries: ${lost.join('; ')}`)
+}
+
+/** One try of startServer at port: the server, or why the port was not the child's (it is then dead). */
+async function startOn(o: Parameters<typeof startServer>[0], port: number): Promise<Started | string> {
   const bin = serverBinary()
-  const port = await pickPort()
   const baseURL = `http://127.0.0.1:${port}`
   const token = randomBytes(24).toString('hex')
+  const from = existsSync(o.log) ? statSync(o.log).size : 0
   const out = openSync(o.log, 'a')
   const bash = stubBash()
   const child = spawn(bin, ['serve', '--config', o.config, '--listen', `127.0.0.1:${port}`], {
@@ -160,19 +181,39 @@ export async function startServer(o: {
     },
     stdio: ['ignore', out, out],
   })
+  closeSync(out)
+  const exited = new Promise<void>((done) => child.once('exit', () => done()))
   const pid = child.pid
   if (pid === undefined) throw new Error(`${bin} did not start`)
+  // Dead before the next try starts over the same data directory.
+  const kill = async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+    await exited
+  }
   const deadline = Date.now() + HEALTH_WAIT_MS
   for (;;) {
-    if (child.exitCode !== null) throw new Error(`the server exited with ${child.exitCode}:\n${tail(o.log)}`)
+    if (child.exitCode !== null || child.signalCode !== null) {
+      const said = readFileSync(o.log, 'utf8').slice(from)
+      if (/address already in use/.test(said)) return `port ${port} was in use when the server bound it`
+      throw new Error(`the server exited with ${child.exitCode ?? child.signalCode}:\n${tail(o.log)}`)
+    }
+    let health = false
     try {
-      const res = await fetch(`${baseURL}/api/health`)
-      if (res.ok) return { baseURL, token, port, pid }
+      health = (await fetch(`${baseURL}/api/health`)).ok
     } catch {
       /* not listening yet */
     }
+    if (health) {
+      // Only the child knows its token: any other answer is another server's (401), or its limiter's (429).
+      const own = await fetch(`${baseURL}/api/whoami`, { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.status, () => 0)
+      if (own === 200) return { baseURL, token, port, pid }
+      if (own === 401 || own === 403 || own === 429) {
+        await kill()
+        return `port ${port} answered with another server's health (its /api/whoami refused the child's token: ${own})`
+      }
+    }
     if (Date.now() > deadline) {
-      child.kill('SIGKILL')
+      await kill()
       throw new Error(`the server did not answer /api/health within ${HEALTH_WAIT_MS / 1000} s:\n${tail(o.log)}`)
     }
     await new Promise((r) => setTimeout(r, 200))
