@@ -1,6 +1,7 @@
 import type { Ref } from 'vue'
 import type { ChatPost, ChatSend, ControlMessage, FileGetExtra, FileResponse, FileWriteOptions, NvimEvent, NvimSwapChoice, TransportKind, Welcome } from '../protocol'
 import type { QuestionReply } from '../reply'
+import type { LaneWire } from './decide'
 
 export type TransportState = 'idle' | 'connecting' | 'signaling' | 'open' | 'closed'
 
@@ -11,7 +12,7 @@ export interface CloseInfo {
   error?: { code: string; message: string }
 }
 
-export interface TerminalTransport {
+export interface TerminalTransport extends LaneWire {
   readonly kind: Ref<TransportKind>
   readonly state: Ref<TransportState>
   /** Last measured ping/pong round trip in ms; null until the first pong. */
@@ -44,6 +45,8 @@ export interface TerminalTransport {
   /** take: Fit to my window, this window takes the session's size (round 14); without it only the viewer that sizes it resizes it. */
   resize(cols: number, rows: number, take?: boolean): void
   ping(): void
+  /** The owner's last welcome said `decisions`, and the connection is open: the lane (laneRequest, decide) may be asked. */
+  readonly decisions: boolean
   requestFile(path: string, stat?: boolean, extra?: FileGetExtra): Promise<FileResponse>
   /** Saves a file in parts (F6); the FILE reply (kind `written` or `error`) settles it. */
   writeFile(path: string, data: Uint8Array, opts?: FileWriteOptions): Promise<FileResponse>
