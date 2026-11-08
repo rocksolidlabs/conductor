@@ -354,7 +354,7 @@ func (s *Server) handleHistorySearch(w http.ResponseWriter, r *http.Request) {
 		h.fail(err)
 		return
 	}
-	av := s.newAvailability(ctx, ix)
+	av := s.newAvailability(ctx, ix, s.ledger)
 	defer av.close()
 	entries, n := s.servePage(av, page.Entries)
 	next := page.Next
@@ -423,7 +423,7 @@ func (s *Server) handleHistoryEntry(w http.ResponseWriter, r *http.Request) {
 		h.refuse(http.StatusServiceUnavailable, "history_not_ready", "the history is not ready; try again")
 		return
 	}
-	av := s.newAvailability(ctx, ix)
+	av := s.newAvailability(ctx, ix, s.ledger)
 	defer av.close()
 	hit, err := ix.Entry(ctx, key)
 	if err == nil {
@@ -488,7 +488,7 @@ func (s *Server) handleHistorySimilar(w http.ResponseWriter, r *http.Request) {
 		h.refuse(http.StatusServiceUnavailable, "history_not_ready", "the history is not ready; try again")
 		return
 	}
-	av := s.newAvailability(ctx, ix)
+	av := s.newAvailability(ctx, ix, s.ledger)
 	defer av.close()
 	hit, err := ix.Entry(ctx, key)
 	if err == nil {
