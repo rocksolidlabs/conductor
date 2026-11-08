@@ -717,6 +717,36 @@ export interface HostRegisteredLinks {
 }
 
 /**
+ * The part of registered that says the switchyard carries a decision link's lane (docs/protocol.md, Decision links, Through
+ * a switchyard): it relays DECISION and DECIDE, keeps run desks and serves the join page's Decide tab. A publisher mints a
+ * decision link only at one that says so; absent from an older switchyard. The web never sees it.
+ */
+export interface HostRegisteredDecisions {
+  decisions?: boolean
+}
+
+/**
+ * host → switchyard, the first message of a run's desk's connection in place of register (docs/protocol.md, A run's desk):
+ * a connection with no session that carries a run decision link's lane, so the run's decisions are reached with no member
+ * alive. host.instance is required; localId is hostDeskLocalId(run.id); the whole message is at most 64 KiB (a host
+ * message's bound). The web never sends it.
+ */
+export interface HostRegisterDeskMessage {
+  t: 'register_desk'
+  proto: number
+  host: { name: string; version: string; instance: string }
+  localId: string
+  run: { id: string; name: string }
+  resume?: { sessionId: string; secret: string }
+}
+/** A desk's id where a message carries it (a run group's desk, a resume): a hosted session's id. */
+export const HOST_MAX_DESK_ID = 64
+/** The local id of the desk of the run runId. */
+export function hostDeskLocalId(runId: string): string {
+  return `desk:${runId}`
+}
+
+/**
  * The part of registered that says what the hosted session watches on its screen (#293): the catalog's recipe for the agent the
  * host registered, as a server session of it watches. Absent when the catalog has no such agent or nothing to watch, from an older
  * server, past HOST_MAX_RECIPE bytes encoded, and when registered with it would be past a host message (64 KiB); a host refuses one
@@ -754,11 +784,15 @@ export const HOST_MAX_RECIPE_ANSWER_INPUT = 48
 export const HOST_MAX_RECIPE_PATTERN = 200
 export const HOST_MAX_RECIPE = 24 << 10
 
-/** A crew run as a switchyard shows it: what a host sends with link_run and link_run_update. */
+/**
+ * A crew run as a switchyard shows it: what a host sends with link_run and link_run_update. desk is the run's desk there
+ * (at most HOST_MAX_DESK_ID bytes), which the run's links open for its decisions; with one, members may be empty.
+ */
 export interface HostRunGroup {
   id: string
   name: string
   members: Array<{ name: string; sessionId?: string; agentId: string; status: 'pending' | 'starting' | 'running' | 'ended' }>
+  desk?: string
 }
 /** host → server: one link to the sessions of a run's members; answered by link_created with runId. */
 export interface HostRunLinkMessage {
