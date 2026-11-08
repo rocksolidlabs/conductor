@@ -182,6 +182,10 @@ type Server struct {
 	// of the lifecycle's stages (recordSeam).
 	recordDeliver atomic.Pointer[func(id string, what any, run func())]
 	recordHook    atomic.Pointer[func(stage, id string)]
+	// resumeHook, when a test sets it, is run at each stage of a resume
+	// from a record ("reserved", "launched"; resumeStops): true says the
+	// server stops there, the receipt left as the stop would leave it.
+	resumeHook atomic.Pointer[func(stage, id string) bool]
 	// starting marks the server sessions whose process runs before the
 	// registry holds them, for a report in that window to wait for
 	// (launching.go); launchHook, when a test sets it, runs at a launch's
@@ -853,6 +857,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/history/sessions/{id}", s.requireAdmin(s.handleHistorySession))
 	mux.HandleFunc("DELETE /api/history/sessions/{id}", s.requireAdmin(s.handleForgetHistorySession))
 	mux.HandleFunc("DELETE /api/history/sessions", s.requireAdmin(s.handleForgetHistorySessions))
+	mux.HandleFunc("POST /api/history/sessions/{id}/resume", s.launching(s.handleResumeHistorySession))
 	mux.HandleFunc("POST /api/history/reindex", s.requireAdmin(s.handleHistoryReindex))
 	mux.HandleFunc("GET /api/history", historyRoute(s.requireAdmin(s.handleHistorySearch)))
 	mux.HandleFunc("GET /api/history/entry", historyRoute(s.requireAdmin(s.handleHistoryEntry)))
