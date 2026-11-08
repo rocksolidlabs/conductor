@@ -1314,7 +1314,11 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			if repeat {
 				return errOpRepeat{got}
 			}
-			out = OpReceipt{Decision: id, Op: op.kind, Seq: got.Seq, At: got.At, Rev: dt.Rev, Words: dt.Words}
+			// The receipt is the row's as kept, as a repeat's is
+			// (receiptOfRow): the first answer and every retry are one by
+			// construction, whatever bounding the row's detail took.
+			out = receiptOfRow(id, got)
+			out.Repeat = false
 			if op.kind == ledger.HistoryCancelled {
 				return nil // the cancel's event is its change's (closeDecisionOp)
 			}

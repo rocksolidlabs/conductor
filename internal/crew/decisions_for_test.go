@@ -314,6 +314,99 @@ func TestRouteDecisionToAPersonAndARole(t *testing.T) {
 	stopRun(t, e, run.ID)
 }
 
+// A route between the longest names, every character one JSON escapes
+// six bytes wide, by a user with a long subject: the history keeps its
+// detail whole (no "cut" of the bound's), the words naming the names cut
+// and saying so, and the first answer and the retry of its operation are
+// byte for byte one receipt, read back from the row (Codex round 3).
+func TestARouteOfLongNamesAnswersItsRowsReceipt(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	from, to := strings.Repeat(">", MaxPersonName), strings.Repeat("<", MaxPersonName)
+	c := peopleCrew(dir)
+	c.People = []Person{{Name: from, Responsibilities: []string{RespArchitecture}}, {Name: to}}
+	for i := range c.Tasks {
+		c.Tasks[i].Owner = from
+	}
+	run := launchManaged(t, e, c)
+	b, _, _ := attemptOn(t, e, fl, run.ID, "build")
+	req := clarification("q1", "Which index?")
+	req.For = "role:architecture"
+	d := ask(t, e, b.Attempt.SessionID, req)
+	actor := "user:" + strings.Repeat("s", 48)
+	send := func() OpReceipt {
+		t.Helper()
+		rc, err := e.RouteDecision(t.Context(), d.ID, "o1", 1, []Destination{{Kind: DestPerson, Name: to}}, "Over to them.", actor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rc
+	}
+	first, again := send(), send()
+	want := d.ID + " is now for " + cutName(to) + ": routed by " + cutName(actor) + " (names cut to fit the history)"
+	if first.Words != want || first.Rev != 2 || first.Repeat || !again.Repeat {
+		t.Fatalf("the route's receipt: %+v", first)
+	}
+	again.Repeat = false
+	a, _ := json.Marshal(first)
+	r, _ := json.Marshal(again)
+	if string(a) != string(r) {
+		t.Fatalf("the retry's receipt differs:\n%s\n%s", a, r)
+	}
+	rec := decisionWhen(t, ld, d.ID, "for "+to, func(rec ledger.DecisionRecord) bool { return rec.Rev == 2 })
+	if f := requestForOf(t, rec.Request); f == nil || f.Person != to {
+		t.Fatalf("for after the route: %+v", f)
+	}
+	rows := routedRows(t, rec)
+	if len(rows) != 2 || rows[1]["cut"] != nil || rows[1]["words"] != want || rows[1]["note"] != "Over to them." {
+		t.Fatalf("the route's row: %+v", rows)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A route's detail fits its row at the widest of everything: names and
+// labels of 60 characters JSON escapes six bytes wide, the widest actor
+// and id, a note at its bound; whole when it fits, its note cut first,
+// then its names, the same way each time, never by the bound's cut.
+func TestARoutesDetailFitsItsRow(t *testing.T) {
+	wide := strings.Repeat("<", MaxPersonName)
+	f := &DecisionFor{Label: "person:" + wide, Person: wide}
+	was := &DecisionFor{Label: "role:architecture", Person: strings.Repeat(">", MaxPersonName), Responsibility: RespArchitecture}
+	actor, id := strings.Repeat("&", ledger.MaxDecisionActor), "dr-9223372036854775807"
+	note := strings.Repeat("\u2028", (ledger.MaxHistoryDetail-256-2)/6)
+	if _, err := cleanOpText(note, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name          string
+		f, was        *DecisionFor
+		note, actor   string
+		cut, noteKept bool
+	}{
+		{"short", &DecisionFor{Label: "person:ana", Person: "ana"}, nil, "Over to her.", "admin", false, true},
+		{"a long note", &DecisionFor{Label: "person:ana", Person: "ana"}, nil, note, "admin", false, false},
+		{"long names", f, was, "Over to them.", "user:" + strings.Repeat("s", 48), true, true},
+		{"everything at its widest", f, was, note, actor, true, false},
+	} {
+		dt := forDetail(id, tc.f, tc.was, tc.note, tc.actor)
+		if !fitsDetail(dt) {
+			t.Fatalf("%s: does not fit: %+v", tc.name, dt)
+		}
+		if strings.HasSuffix(dt.Words, " (names cut to fit the history)") != tc.cut || (dt.Note == tc.note) != tc.noteKept {
+			t.Fatalf("%s: %q, note %q", tc.name, dt.Words, dt.Note)
+		}
+		if again := forDetail(id, tc.f, tc.was, tc.note, tc.actor); again.Words != dt.Words || again.Note != dt.Note {
+			t.Fatalf("%s: cut another way the second time", tc.name)
+		}
+		dt.Rev = maxRev
+		var back opDetail
+		kept := historyDetail(dt)
+		if err := json.Unmarshal([]byte(kept), &back); err != nil || strings.Contains(kept, `"cut"`) || back.Words != dt.Words {
+			t.Fatalf("%s: the row keeps %s", tc.name, kept)
+		}
+	}
+}
+
 // requestFingerprint is the decision's fingerprint as its row keeps it.
 func requestFingerprint(t *testing.T, ld *ledger.Ledger, id string) string {
 	t.Helper()

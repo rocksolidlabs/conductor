@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 )
@@ -224,9 +225,7 @@ func (e *Engine) forRoute(r *run, d *decision, rec ledger.DecisionRecord, id, la
 	if err != nil {
 		return opDetail{}, nil, err
 	}
-	was := requestFor(rec.Request)
-	dt := opDetail{Note: note, To: forTo(f), Rule: forRule(f), By: actor, For: f, ForWas: was,
-		Words: fmt.Sprintf("%s is now for %s: routed by %s", id, f.words(), actor)}
+	dt := forDetail(id, f, requestFor(rec.Request), note, actor)
 	edit := func(dtx decisionTx, row ledger.DecisionRow) error {
 		// Its row judges, as the transaction reads it: answered or closed
 		// since the look is refused in a response's words, and nothing of
@@ -244,6 +243,86 @@ func (e *Engine) forRoute(r *run, d *decision, rec ledger.DecisionRecord, id, la
 		return dtx.RouteFor(row.N, req)
 	}
 	return dt, edit, nil
+}
+
+// routeCut is the characters each name of a route's detail keeps when the
+// detail does not fit whole: the people's, the labels' and the actor's.
+const routeCut = 24
+
+// forDetail is the detail of a route that makes decision id for f (was
+// before it) by actor, bounded before anything is answered, its widest
+// rev in place, so that the history keeps all of it and the receipt read
+// back from the row (receiptOfRow) is the same the first time and every
+// time after: whole when it fits; else whole but its note, which no
+// receipt reads, cut to what fits; else every name in it (the people,
+// the labels, the actor) cut to routeCut characters, the same way every
+// time, the words saying so, and the note cut to what is left. Cut so,
+// its names always fit, however JSON escapes them.
+func forDetail(id string, f, was *DecisionFor, note, actor string) opDetail {
+	build := func(f, was *DecisionFor, by, cut string) opDetail {
+		return opDetail{To: forTo(f), Rule: forRule(f), By: by, For: f, ForWas: was,
+			Words: fmt.Sprintf("%s is now for %s: routed by %s%s", id, f.words(), by, cut)}
+	}
+	dt := build(f, was, actor, "")
+	if dt.Note = note; fitsDetail(dt) {
+		return dt
+	}
+	if dt.Note = ""; !fitsDetail(dt) {
+		cf, cw, by := cutFor(f), cutFor(was), cutName(actor)
+		cut := ""
+		if by != actor || *cf != *f || was != nil && *cw != *was {
+			cut = " (names cut to fit the history)"
+		}
+		dt = build(cf, cw, by, cut)
+	}
+	dt.Note = fitNote(dt, note)
+	return dt
+}
+
+// fitsDetail says dt encodes within a history row's bound at any rev.
+func fitsDetail(dt opDetail) bool {
+	dt.Rev = maxRev
+	b, err := json.Marshal(dt)
+	return err == nil && len(b) <= ledger.MaxHistoryDetail
+}
+
+// fitNote is the longest start of note that dt keeps within its bound,
+// with "…" when it is cut: the whole note when it fits, "" when none of
+// it does.
+func fitNote(dt opDetail, note string) string {
+	if dt.Note = note; note == "" || fitsDetail(dt) {
+		return note
+	}
+	runes := []rune(note)
+	lo, hi := 0, len(runes) // runes[:lo] fits, runes[:hi] does not
+	for hi-lo > 1 {
+		mid := (lo + hi) / 2
+		if dt.Note = string(runes[:mid]) + "…"; fitsDetail(dt) {
+			lo = mid
+		} else {
+			hi = mid
+		}
+	}
+	if lo == 0 {
+		return ""
+	}
+	return string(runes[:lo]) + "…"
+}
+
+// cutName is name in at most routeCut characters, "…" in place of the rest.
+func cutName(name string) string {
+	if utf8.RuneCountInString(name) <= routeCut {
+		return name
+	}
+	return string([]rune(name)[:routeCut]) + "…"
+}
+
+// cutFor is f with its names cut (cutName); nil for nil.
+func cutFor(f *DecisionFor) *DecisionFor {
+	if f == nil {
+		return nil
+	}
+	return &DecisionFor{Label: cutName(f.Label), Person: cutName(f.Person), Responsibility: cutName(f.Responsibility)}
 }
 
 // forSince is the newest change of whom a decision is for after the rev
