@@ -340,6 +340,9 @@ type Server struct {
 	// launches admits and settles the launches from a ticket
 	// (dispatch_launch.go).
 	launches launchGate
+	// reviews applies the reviews' requests for changes and settles those
+	// left to its worker (dispatch_reviews.go).
+	reviews reviewGate
 }
 
 // New wires the server. cat is the configured catalog; when st holds a
@@ -493,6 +496,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			s.track(func() { s.revokeRemoteRunLinks(run.ID, carriers, remote) })
 		}
 		s.events.run(run.ID, true)
+		// A review waiting on a command of the run is settled now: nothing
+		// left can commit it (dispatch_reviews.go).
+		s.reviews.runChanged(run.ID)
 	}
 	// What a session change does not carry of a run reaches the browsers as
 	// a run event, which they read the run again for.
@@ -506,6 +512,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		if s.brakeman != nil {
 			s.brakeman.runChanged(runID)
 		}
+		// A review waiting on its command's receipt is looked at by the
+		// reviews' worker, never here (dispatch_reviews.go).
+		s.reviews.runChanged(runID)
 	}
 	// A run's chat reaches the browsers' unread counts the same way a session's does.
 	s.runs.OnRunChat = func(runID string, m session.ChatMessage) {
@@ -676,6 +685,8 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	if s.history != nil {
 		s.history.start()
 	}
+	// The reviews' worker, ended before the stores close (stopReviews).
+	s.startReviews()
 	return s, nil
 }
 
@@ -751,7 +762,9 @@ func (s *Server) WaitBackground(ctx context.Context) {
 	case <-ctx.Done():
 	}
 	// No record lands after this: the directories may be going. The
-	// history's indexer ends first: it reads the stores closed after it.
+	// reviews' worker and the history's indexer end first: they write and
+	// read the stores closed after them.
+	s.stopReviews()
 	s.stopHistory()
 	if s.brakeman != nil {
 		s.brakeman.release(ctx)
@@ -1283,6 +1296,8 @@ func (s *Server) Shutdown(ctx context.Context) {
 	case <-done:
 	case <-ctx.Done():
 	}
+	// The reviews' worker ends before the stores it writes close.
+	s.stopReviews()
 	// The history's indexer ends before the stores it reads close, and
 	// closes its index (the next start then owes it no check).
 	s.stopHistory()

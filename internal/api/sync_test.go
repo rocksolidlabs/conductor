@@ -1393,3 +1393,56 @@ func TestSyncUnopenedStoreKeepsWhatTheSyncStoreHolds(t *testing.T) {
 		})
 	}
 }
+
+// A review's commit reaches the sync store as Dispatch's other entities
+// do, one doc per entity the commit changed: the review, each of its
+// findings, and a finding again for its mark, each naming its ticket and
+// project (the adapter's entities, RV1 PR-4).
+func TestSyncCarriesReviewsAndFindings(t *testing.T) {
+	f := newFakeSync()
+	e := syncEnv(t, syncDataDir(t), f)
+	f.until(t, "the start's replay", func(c []syncCall) bool { return replayedIn(c, 1) })
+	ds := e.srv.dispatch
+	ctx := t.Context()
+	doneOf(t)(ds.CreateProject(ctx, adminOp("Ada"), dispatch.NewProject{Key: "SYN", Name: "Sync"}))
+	tk := doneOf(t)(ds.CreateTicket(ctx, adminOp("Ada"), dispatch.NewTicket{Project: "SYN", Title: "Reviewed"}))
+	x := "legacy-000000f1"
+	saveRecord(t, e.srv, crew.Run{ID: x, StartedAt: time.Now().UTC()})
+	doneOf(t)(ds.AddLink(ctx, adminOp("Ada"), "SYN-1", dispatch.NewLink{Kind: dispatch.LinkRun, Ref: x}, nil))
+	rc, v, err := ds.SubmitReview(ctx, adminOp("Ada"), "SYN-1", dispatch.NewReview{Candidate: x + "/build/1@" + strings.Repeat("a", 40), Base: strings.Repeat("b", 40),
+		Verdict: dispatch.VerdictComment, Findings: []dispatch.NewFinding{{Kind: "general", Intent: "note", Message: "Seen."}}},
+		dispatch.ReviewEvidence{Findings: []dispatch.FindingEvidence{{K: 1}}})
+	if err != nil || rc.Status != dispatch.StatusDone {
+		t.Fatalf("the review: %+v %v", rc, err)
+	}
+	finding := v.Findings[0].ID
+	if rc, _, err := ds.MarkFinding(ctx, adminOp("Ada"), finding, dispatch.NewMark{Candidate: x + "/build/2@" + strings.Repeat("c", 40), Verdict: "withdrawn"}, nil); err != nil || rc.Status != dispatch.StatusDone {
+		t.Fatalf("the mark: %+v %v", rc, err)
+	}
+	head, err := ds.Head(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := f.until(t, "the review, its finding and its mark", func(c []syncCall) bool {
+		var review, mark bool
+		for _, call := range c {
+			switch {
+			case call.err != nil || call.d.Store != syncDispatch:
+			case call.d.Path == "review/"+v.ID:
+				review = true
+			case call.d.Path == "finding/"+finding && call.d.Rev >= head:
+				mark = true
+			}
+		}
+		return review && mark
+	})
+	for _, c := range calls {
+		if c.err != nil || c.d.Store != syncDispatch || (c.d.Path != "review/"+v.ID && c.d.Path != "finding/"+finding) {
+			continue
+		}
+		var ref syncRef
+		if err := json.Unmarshal(c.d.Data, &ref); err != nil || ref.Ticket != tk.ID || ref.Project != "SYN" || (ref.Kind != "review" && ref.Kind != "finding") {
+			t.Fatalf("%s: %s (%v)", c.d.Path, c.d.Data, err)
+		}
+	}
+}

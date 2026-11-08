@@ -346,7 +346,8 @@ func TestEventHubDispatchEvent(t *testing.T) {
 	id, ticket := strings.Repeat("f", dispatch.IDLen), strings.Repeat("e", dispatch.IDLen)
 	longest := 0
 	for _, entity := range []string{dispatch.EntityProject, dispatch.EntityTicket, dispatch.EntityComment, dispatch.EntityLabel,
-		dispatch.EntityMilestone, dispatch.EntityView, dispatch.EntityPerson, dispatch.EntityPlan, dispatch.EntityLaunch} {
+		dispatch.EntityMilestone, dispatch.EntityView, dispatch.EntityPerson, dispatch.EntityPlan, dispatch.EntityLaunch, dispatch.EntityReview,
+		dispatch.EntityFinding} {
 		c := dispatch.Change{Seq: math.MaxInt64, Entity: entity, ID: id, Ticket: ticket, Project: "ABCDEF"}
 		want := dispatchEvent{Seq: math.MaxInt64, Entity: entity, ID: id, Ticket: ticket, Project: "ABCDEF"}
 		if entity == dispatch.EntityPerson {
@@ -554,10 +555,16 @@ func TestEventHubDispatchEntryIsBounded(t *testing.T) {
 	h := newEventHub()
 	ch := h.subscribe()
 	kinds := []string{dispatch.EntityProject, dispatch.EntityTicket, dispatch.EntityComment, dispatch.EntityLabel,
-		dispatch.EntityMilestone, dispatch.EntityView, dispatch.EntityPerson}
+		dispatch.EntityMilestone, dispatch.EntityView, dispatch.EntityPerson, dispatch.EntityPlan, dispatch.EntityLaunch,
+		dispatch.EntityReview, dispatch.EntityFinding}
 	projects := []string{"ABCDEF", "GHIJKL"}
 	framing := len("event: dispatch\ndata: \n\n")
 	bound := len(projects) * len(kinds) * maxDispatchEach * (maxDispatchEvent + framing)
+	// events.go's arithmetic: 11,776 bytes a kind and project, eleven
+	// kinds an operation's one project, 129,536 bytes.
+	if each, op := maxDispatchEach*(maxDispatchEvent+framing), len(kinds)*maxDispatchEach*(maxDispatchEvent+framing); len(kinds) != 11 || each != 11776 || op != 129536 {
+		t.Fatalf("%d kinds, %d bytes a kind and project, %d an operation's: not events.go's 11, 11,776 and 129,536", len(kinds), each, op)
+	}
 	entry := func(what string, changes []dispatch.Change) []byte {
 		t.Helper()
 		h.dispatch(changes)

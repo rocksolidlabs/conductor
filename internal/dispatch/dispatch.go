@@ -163,6 +163,16 @@ type Store struct {
 	beforeOpen    func()
 	sweepErr      error
 	dirSynced     bool
+	// reviewReadFails, when set, runs before Review reads a review and
+	// fails the read when it answers an error: a test of the store's
+	// callers fails the read that follows a review's commit
+	// (SetReviewReadFailsForTest).
+	reviewReadFails func(id string) error
+	// claims is the store's claims on reviews' tries, by review, and
+	// claimSeq the last claim's token (review_claims.go): taken, checked
+	// and dropped under mu, beside the writes they order.
+	claims   map[string]*reviewClaim
+	claimSeq uint64
 }
 
 // Errors of a store that cannot serve.

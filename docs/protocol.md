@@ -2220,6 +2220,13 @@ its run, and on no other.
 | `POST /api/dispatch/plans/{id}/withdraw` | admin | withdraw a plan revision (`plan.withdraw`): `{opId, expectedRev?, byName?}`, `expectedRev` the revision's; reply `{receipt, plan}`; `409 invalid` for one withdrawn already; `404 not_found` |
 | `POST /api/dispatch/tickets/{key}/launch` | admin | launch a managed run from a ticket's approved plan revision (`ticket.launch`; see Launches below): `{opId, plan, expectedRev?, label?, byName?}`, at most 4 KiB, `plan` the revision's id, `expectedRev` the ticket's, `label` the run's own name (at most 60 characters; the ticket's key and title, cut at a word, when absent); reply `201 {receipt, launch, run}` once the run's first ledger transaction is committed and the launch recorded started, `launch` its summary `{id, ticketId, ticketKey, planId, planN, runId, label, ticketRev, intent, criteria, packageSha256, state, why?, agents, createdAt, createdBy, fingerprint, startedAt?, rev}` (never the package), `run` as `GET /api/runs/{run}` answers it; the same `opId` again answers the same launch, `200` with the receipt's `repeat`, never a second run; `409 launch_failed {error, receipt, launch}` when the run could not be started (an agent not installed or not the one it claims, a working directory outside the allowed roots, the engine's refusal), the launch kept, `failed`, with why; `409 stale_plan` when an agent of the revision resolves otherwise in the catalog now, naming the agent and the part ("…: revise it"), no receipt kept, or when the store finds the approval stale (the ticket's intent changed: "approve it again or revise it"; a handed-over comment or attachment edited or gone: "revise it"), its receipt kept; `409 invalid` for a ticket closed or a revision not approved; `409 managed_off`; `503 ledger_unavailable` without a ledger, with one another server owns, and while the server takes the ledger over ("the server is taking over the ledger"), no launch kept; a pending launch replayed on a server that may not advance it is answered `503 ledger_unavailable {error, receipt, launch}`, still pending, never recorded failed; once the server's shutdown begins stopping its runs, a launch not yet given to the engine starts no run (`409 launch_failed`, "the server is shutting down: the run was not started"), and the run of one the engine was still starting past the shutdown's wait is stopped as it starts |
 | `GET /api/dispatch/launches/{id}` | admin | a launch whole: `{launch}`, its summary as the launch answers it and `package`, the bytes it is kept as (Launches, below), under 1 MiB (`MaxLaunchReply`); `404 not_found` |
+| `POST /api/dispatch/tickets/{key}/reviews` | admin | send a review of one candidate (`review.submit`; see Reviews below): `{opId, candidate, base, verdict, summary?, findings, via?, byName?, expectedRev?, expectedRevision?, continueRun?}`, at most 192 KiB; `candidate` `<run>/<task>/<n>@<commit>` of a run whose chain the ticket holds alone, `base` a full commit the run names (its base, the attempt's start, or a result of the task in the chain), `verdict` `request_changes`, `comment` or `approve`, `summary` at most 4,000 characters, `findings` at most 50, each `{kind, intent, severity?, path?, side?, from?, to?, lines?, message?, resolution?, check?}` (`kind` `line`, `file`, `general` or `check`; `intent` `change`, `question` or `note`; `severity` `blocker`, `major`, `minor` or `nit` for a change alone; `path` at most 1,024 bytes and `side` `candidate` or `base` for a line or a file; `from` and `to` 1 to 10,000,000 and `lines` 1 to 12 of at most 200 bytes, as the person saw them, for a line; `message` and `resolution` at most 1,000 characters; `check` `{source: "ledger", receipt, chosen?, quote?}` for a check, `receipt` `<run>/<task>/<n>/<phase>/<id>/<k>`, any other member an unknown field), `via` `web` or `cli` (the client's label; `brakeman` is `400 invalid_request` from every body), `expectedRev` the ticket's, `expectedRevision` the run's for the request's command, `continueRun` the word to continue a run the server does not run; neither of the last two is recorded; reply `201 {receipt, review}` (`200` with `receipt.repeat` for the same `opId` again, answered before any evidence is read), `review` as `GET /api/dispatch/reviews/{id}` reads it, its `application` `{state, try?, run?, command?, revision?, attempt?, why?, at?}` `none` for a comment or an approval, else `applied` (the run the repair was made in, the command `rv.<id>.<try>`, the run's revision after it and the repair attempt's number), `refused` (why, in words) or `pending` (Yardmaster took the request and its change is not recorded yet: settled when it is); before anything is recorded: `409 not_ticket_run` (the ticket does not hold the run's chain: none, another ticket's, `key` naming it, or contested), `409 invalid` (a candidate whose commit is not the attempt's result, a base the run does not name, a check finding's receipt not of the candidate's attempt, not in the ledger, or not failed), `413 too_large` (a request the run could not keep, or whose repair attempt's task file could not hold it), `409 continuation_needed {error, run, words}` (a request of a run the server does not run, sent without `continueRun`: `run` the newest of the candidate's chain, `words` what continuing it starts), `409 managed_off` and `503 ledger_unavailable` for a request this server cannot apply; the store's refusals with their receipts (`invalid`, `bound`, `archived`, `not_found`); a review kept whose read after its commit failed is answered by its receipt, `{receipt, review: null}`, its request left pending for the server's worker, which settles it (not sent: `refused`) |
+| `POST /api/dispatch/reviews/{id}/retry` | admin | Request again (`review.retry`): `{opId, byName?, expectedRev?, expectedRevision?, continueRun?}`, at most 4 KiB, `expectedRev` the review's; a refused request applied again as its next try, at most 5; reply `{receipt, review}`; `409 managed_off`, `503 ledger_unavailable`, `409 not_ticket_run` (the candidate's run no longer its ticket's alone: its link moved, or its chain contested, checked again in the try's transaction) and `409 continuation_needed {error, run, words}` (its run not run by the server, sent without `continueRun`) with the try unchanged and nothing applied; `409 invalid` for a review not refused or not a request, `409 bound` past its fifth try; `503 unavailable` while another holds the store's claim on the review (a request or the server's worker settling its try; only the claim's holder settles a try) past the run's timeout, nothing applied; a try kept whose read after its commit failed is answered `{receipt, review: null}`, left pending for the server's worker, which settles it |
+| `GET /api/dispatch/tickets/{key}/reviews` | admin | a ticket's reviews, deleted or not: `{reviews, next?}`, twenty a page, newest first (`before` a page's `next`), each without its findings, counted by state (`counts {open, resolved, withdrawn}`), and its application; under 1 MiB |
+| `GET /api/dispatch/reviews/{id}` | admin | a review whole: `{review}`, `{id, ticketId, ticketKey, candidate, base, verdict, summary, createdAt, createdBy, actor, via, application, rev, counts, findings}`, each finding `{id, reviewId, ticketId, k, kind, intent, severity?, path?, side?, from?, to?, anchorCommit?, lines, message, resolution?, check?, createdAt, candidate, state, marks, latest?}`, `anchorCommit` the server's (the candidate's commit on its side, the base on its side), `check` the receipt as the ledger kept it (the prepared request's shape), `state` its latest mark's verdict, `open` with none, `latest` that mark without `located`; under 1 MiB |
+| `GET /api/dispatch/tickets/{key}/findings` | admin | a ticket's findings across its reviews: `{findings, next?}`, at most 100 a page and fewer at 1 MiB, `state` (`open`, `resolved`, `withdrawn`, `all`) narrowing them, `candidate` (`<run>/<task>/<n>@<commit>`) the one to locate them on (its task's findings alone then; by default the newest result of each finding's task in its chain), `after` a page's `next`; each finding as the review's read gives it with `locatedOn` the candidate it was located on, `located` where its lines are there (`{state, from?, to?, path?, located?, why?}`: `same`, `moved` with the nearest range, `changed`, `file_gone`, `renamed` with the new path and where in it, or `unknown` with why: the commit gone, the file binary or past 1 MiB, more than 50 files asked in one reply), and `addressed` `[{run, attempt, note?}]`, what the last three attempts that named it said of it (their claim, never its resolution) |
+| `GET /api/dispatch/findings/{id}/marks` | admin | a finding's marks, oldest first: `{marks, next?}`, at most 20 a page and fewer at 256 KiB (`after` a page's `next`), each `{id, findingId, ticketId, candidate, verdict, located?, note?, createdAt, createdBy, actor, via}` |
+| `POST /api/dispatch/findings/{id}/marks` | admin | mark a finding against a candidate (`finding.mark`): `{opId, candidate, verdict, note?, via?, byName?}`, at most 16 KiB, `verdict` `resolved`, `open` or `withdrawn`, `note` at most 1,000 characters; `candidate` a later attempt's result of the finding's task in the chain of the finding's own candidate (`409 invalid` otherwise, and for `resolved` on a candidate of the finding's own commit), of a chain the ticket holds alone (`409 not_ticket_run`); the server locates the finding's lines on it (a file's lines read without their `\n` or `\r\n`) and keeps that with the mark (`located`, at most 4 KiB as JSON with HTML escaping off; one that would be longer, a renamed path of characters JSON writes six bytes long, is kept as `{state: "unknown", why}`), which never changes the finding's state; reply `201 {receipt, mark}` |
 | `GET /api/dispatch/tickets/{key}/runs` | admin | a page of a ticket's runs, of a ticket deleted or not (see A ticket's runs below): `{entries, next?}`, at most 10 entries, newest first, every launch, run and continuation of the ticket on some page (no cap, no count in place of an entry); `?before=` takes the page's `next`, an opaque cursor, absent on the last page; each entry `{kind, launch?, link?, run?, changed?, contested?, continues?}`: `kind` `launch` (`launch` its summary as the launch answers it, `run` its run once it started, `changed` what changed of the ticket since, `{fields, comments, rev}`), `link` (a run linked by hand: `link` the link, `run` its run), a launch's or a link's `contested` `{keys, words}` when other tickets hold its run's chain too (by a launch or a hand link; its chain's other runs are then no entries), or `run` (another run of a chain the ticket holds: `launch` or `link` the one that holds it, `continues` the run it continues, absent for a run before the linked one); a run is `{id, label, state, outcome?, paused, startedAt, stoppedAt?, record, resumedFrom?, resumedBy?, ticket?, members, tasks, questions, blockers}`, `members` at most 12 `{name, sessionId?, status}`, `tasks` its tasks counted by state, `questions` how many of its members' sessions waited on a person when the reply was made, `blockers` at most 20 `{task, reason, by, at}`, a reason cut to 200 characters; a run only the ledger has, while the ledger cannot be read, is an entry without its `run`; under 1 MiB (`MaxTicketRunsReply`); `404 not_found`; `503 ledger_unavailable` when a run's chain cannot be walked, `503 run_changing` (`Retry-After: 1`) while a run of it is being resumed; `400 invalid_request` for a cursor `next` did not give, and any other parameter |
 | `GET /api/dispatch/links?run={id}` | admin | the ticket a run is linked to, for the run page's chip: `{ticket: {id, key, title, status, deletedAt?}}`, the live ticket whose live `run` link names the run (one at most); else, when only deleted tickets' links name it, the one whose link is latest, with `deletedAt`; `{ticket: null}` when no live link names the run; `400 invalid_request` for a run id that is not one |
 | `GET /api/dispatch/views` | admin | the live saved views, by name: `{views}`, each `{id, projectId, name, kind, query, createdAt, updatedAt, rev}`, `projectId` `""` for a view of every project and `query` the JSON it is; with `project` (a project's key), the views its pages offer, its own and every project's, else every live view; at most 200, under 3 MiB as a project's read is; `404 not_found` for a project missing |
@@ -2491,9 +2498,13 @@ no_section` for a name not below, `400 invalid_request` for any other
 parameter. Every reply is `{guide: 1, version, commit, section, <section>:
 …}`, `version` and `commit` the server's build, the content under the
 section's own name; encoded with HTML escaping off and measured so: the
-overview at most 4 KiB, each section at most 64 KiB, the seven at most
-256 KiB, which a test holds with every entry at its largest (a past bound is
-`500 guide_bound`, never a cut reply). The sections:
+overview at most 4 KiB, `operations` at most 128 KiB (it lists every
+operation of the table, and the admin's rows filled the 64 KiB it had
+until RV1's review operations), each other section at most 64 KiB, the
+seven at most 256 KiB, which a test holds with every entry at its largest
+(a past bound is `500 guide_bound`, never a cut reply). The two guide
+operations' `bounds` name all three: `overview`, `section` and
+`operations`. The sections:
 
 - `overview`: `{caller: {kind, session?, kinds?, run?, member?, scopes},
   report, may, limits, sections: [{name, bytes}], rules}`, its fields in
@@ -3661,6 +3672,63 @@ name), each comment `{id, n, author, by, at, body, sha256}`, and `launch`
 `{id, run, label, at, by}`. Their changes are `dispatch` events of the
 entity `launch`, naming the launch, its ticket and its project.
 
+**Reviews.** A review is a person's batch of notes on one candidate of
+a ticket's run, `<run>/<task>/<n>@<commit>`, against a base the run
+names (Program item RV1, `docs/plans/review-repair.md`): Dispatch keeps
+it, its findings and their marks, and Yardmaster applies a request for
+changes as a repair of the task that made the candidate. A review is
+sent in order, each step durable before the next: the operation is
+replayed first, so a resend answers the review as it stands whatever the
+ledger holds now; for a new request the server must own the ledger and
+have taken it over (`crews.managed` on, as a launch needs); the
+candidate is checked against the ledger (the attempt's result) and the
+ticket (its chain); each finding is bound by the server (a line's or a
+file's `anchorCommit` the candidate's commit or the base by its side; a
+check finding's receipt read from the ledger with its class, never taken
+from the body); a request is measured as the run would keep it and as
+its repair attempt's task file would hold it (`413 too_large`); and a
+run the server does not run (finished and let go, stopped, from before a
+restart) needs the word `continueRun` (`409 continuation_needed`).
+Nothing is recorded before all of that. Then Dispatch records the
+review, a request `pending` at try 1; one application at a time per
+review, its command `rv.<review id>.<try>` under the review's actor, goes
+to the newest run of the candidate's chain: the run's own repair
+(`request_changes`) when the server runs it, else the continuation that
+carries the repair, its first transaction holding the command and its
+receipt; then Dispatch records the outcome, `applied` (the run, the
+command, the revision, the repair attempt) or `refused` (the receipt's
+words: `stale_candidate`, `task_state`, `run_continued`, `stale_revision`).
+An answer that is not the command's receipt is read back from the ledger
+by the command's id, in the run and the runs that continue it, so an
+applied repair is never told as refused; a command read back `accepted`
+while the engine holds its run (its change and its settling write kept
+for the run's next commit) leaves the review `pending`, settled by the
+server's worker once the run commits again, or refused once the engine
+lets the run go or holds it settled with the command still `accepted`
+(the hold read before the command is read again). Wherever a try is
+settled (the read-back, the worker, the start) its command is judged in
+the run that holds it, found by its id along the candidate's chain,
+never only in the run the review waits on. A ledger read that fails
+settles nothing: the review stays `pending` and the worker reads it
+again; an outcome Dispatch could not record stays with the worker, which
+writes it again, without a restart.
+When the server starts, after the ledger's recovery and before any
+launch or review is admitted, every pending review whose run the ledger
+holds is settled by its command's row, along the run's continuations: `done` applied, `failed` refused
+with its words, `accepted` or `uncertain` refused ("the server stopped
+before it made the repair, so nothing changed: send it again"), none
+refused ("the server stopped before Yardmaster took the request: send it
+again"); a review of a run this ledger does not hold stays pending, for
+the ledger's owner; nothing is applied at the start. Request again is a
+new try with a command of its own, judged against the run as it is
+then, its candidate's run still its ticket's alone as at the review. A comment or an approval is applied to nothing. A finding's state
+is its latest mark's verdict, `open` with none; a mark names a later
+candidate of the finding's task in its chain, and where the finding's
+lines are on it is the server's, kept with the mark, never a
+resolution. Their changes are `dispatch` events of the entities `review`
+and `finding`, naming the review or the finding, its ticket and its
+project.
+
 **A ticket's runs.** `GET /api/dispatch/tickets/{key}/runs` lists, ten
 at a time and newest first, every launch the ticket made, every run
 linked to it by hand, and every other run of a chain the ticket holds: a
@@ -3767,8 +3835,10 @@ commit's events together and in the store's order, no other event
 between them: `{seq, entity, id, ticket, project}`, `seq` the commit's
 last change in the store's log (local to the database), `entity`
 `project`, `ticket`, `comment`, `label`, `milestone`, `view`,
-`person`, `plan` (a ticket's plan revision) or `launch` (a ticket's
-launch), `id` its id (`""` for a person, whose id is its name: the
+`person`, `plan` (a ticket's plan revision), `launch` (a ticket's
+launch), `review` (a person's review of a candidate: its submit and
+each change of its application) or `finding` (one of a review's
+findings: made with it, and again for each mark), `id` its id (`""` for a person, whose id is its name: the
 pickers read the directory again whole), `ticket` the id of the ticket
 it belongs to and `project` its project's key, `""` where there is
 none. A relation counts for both its tickets, and a label's or a
