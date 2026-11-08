@@ -298,6 +298,18 @@ test("findings across candidates: located on the repair, the agent's addressed n
   await markOnPage(findingRow(page, 'Say more on the first line.'), 'resolved', 'Done on attempt 3.')
   const last = await findingsOf(api, ticketKey, cand3)
   expect(last.find((f) => f.message === 'Say more on the first line.')?.state).toBe('resolved')
+
+  // The palette's page group: Review the latest candidate, Open findings, and Send review (1 note), which asks as the button does.
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.keyboard.press('Control+k')
+  const palette = page.locator('[data-palette]')
+  await expect(palette).toBeVisible(within(15_000))
+  await expect(palette.locator('[data-palette-row="page:review-latest"]')).toBeVisible()
+  await expect(palette.locator('[data-palette-row="page:review-findings"]')).toBeVisible()
+  await expect(palette.locator('[data-palette-row="page:review-send"]')).toContainText('Send review (1 note)')
+  await palette.locator('[data-palette-row="page:review-send"]').click()
+  await expect(palette).toBeHidden(within(15_000))
+  await expect(page.locator('[data-review-confirm-send]')).toBeVisible(within(15_000))
 })
 
 test("a failed check prepared for its repair, checked again at the same commit, Resolved refused on it, and a request refused since the task moved on, asked again", async ({ page, api, state }) => {
