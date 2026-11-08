@@ -733,6 +733,7 @@ func gateRequest(p Package, pd PackageDecision) (string, requestBody) {
 func (e *Engine) openGate(r *run, pd PackageDecision, tasks []*task, cause string) {
 	p := r.pkg.p
 	typ, body := gateRequest(p, pd)
+	body.For = r.gateFor(pd)
 	raw, _ := json.Marshal(body)
 	sum := sha256.Sum256(raw)
 	d := &decision{origin: ledger.OriginPlan, typ: typ, gate: pd.ID, question: body.Question, state: ledger.DecisionOpen, rev: 1, subject: body.Subject}
@@ -775,7 +776,7 @@ func (e *Engine) openGate(r *run, pd PackageDecision, tasks []*task, cause strin
 		if _, _, err := dtx.History(got.N, ledger.HistoryRow{Kind: ledger.HistoryOpened, By: "plan", Detail: historyDetail(map[string]any{"gate": pd.ID, "before": ids, "follows": prev.id, "why": cutWhy(why)})}); err != nil {
 			return err
 		}
-		if _, _, err := dtx.History(got.N, ledger.HistoryRow{Kind: ledger.HistoryRouted, By: policyLocal, Detail: routedOperator}); err != nil {
+		if _, _, err := dtx.History(got.N, ledger.HistoryRow{Kind: ledger.HistoryRouted, By: policyLocal, Detail: routedDetail(body.For)}); err != nil {
 			return err
 		}
 		for _, id := range ids {
@@ -1086,6 +1087,14 @@ type opDetail struct {
 	Note    string `json:"note,omitempty"`
 	To      []any  `json:"to,omitempty"`
 	Rule    string `json:"rule,omitempty"`
+	// For and ForWas are whom a route made the decision for, and whom it
+	// was for before (HM1): a route to a person's label.
+	For    *DecisionFor `json:"for,omitempty"`
+	ForWas *DecisionFor `json:"forWas,omitempty"`
+	// edit changes the decision in the operation's transaction, once its
+	// row is written with its rev bumped (a route's new for, written by
+	// Tx.RouteFor), or refuses it; nil for none.
+	edit func(decisionTx, ledger.DecisionRow) error
 }
 
 // errOpRepeat aborts an operation's transaction whose row its actor sent
@@ -1257,6 +1266,11 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			if op.rev {
 				row.Rev++
 				if err := dtx.PutDecision(row); err != nil {
+					return err
+				}
+			}
+			if dt.edit != nil {
+				if err := dt.edit(dtx, row); err != nil {
 					return err
 				}
 			}
@@ -1521,29 +1535,56 @@ func cmpState(d *decision, rec ledger.DecisionRecord) string {
 	return rec.State
 }
 
-// Destination is where a decision is routed: the operator alone in DR1.
+// Destination is where a decision is routed: the operator (DR1), or a
+// person's label (HM1): a person of the run's crew by name, or the holder
+// of a responsibility of it.
 type Destination struct {
 	Kind string `json:"kind"`
 	Name string `json:"name,omitempty"`
 }
 
-// RouteDecision records a re-route of decision id with a note: DR1's only
-// destination is the operator (what Brakeman's route_decision grant does);
-// any other is invalid until a person's label is one. It changes no
-// state.
+// RouteDecision records a re-route of decision id with a note (what
+// Brakeman's route_decision grant does). To the operator it changes no
+// state. To a person ({kind: person, name}) or a responsibility ({kind:
+// role, name}), resolved in the run's crew as launched, it changes whom
+// the decision is for (HM1): taken only while the decision is open
+// (decision_answered or decision_closed otherwise, a response's words, and
+// no row), at the rev the operator read (expectedRev, required), and only
+// through the run that holds it (not_held otherwise: continue it, then
+// route); in one transaction it rewrites the request's for, writes the
+// routed row with the label before and after, and bumps rev, so a
+// response made against the card before it is stale_decision. Who may
+// answer does not change: the operator, under local/1 (decision D4).
 func (e *Engine) RouteDecision(ctx context.Context, id, opID string, expectedRev int, to []Destination, note, actor string) (OpReceipt, error) {
 	if len(to) == 0 {
 		return OpReceipt{}, refuse(CodeInvalid, "a route names its destination")
 	}
-	for _, d := range to {
-		if d.Kind != "operator" || d.Name != "" {
-			return OpReceipt{}, refuse(CodeInvalid, "a decision is routed to the operator, not %q", shortText(d.Kind+" "+d.Name))
-		}
+	label, ok := routeLabel(to)
+	if !ok {
+		return OpReceipt{}, refuse(CodeInvalid, "a decision is routed to the operator, a person of its run's crew (person, by name) or a responsibility of it (role: architecture, product, security or acceptance), not %q", shortText(to[0].Kind+" "+to[0].Name))
 	}
 	fp := fingerprintOf([]any{"route", to, note})
 	note, err := cleanOpText(note, false)
 	if err != nil {
 		return OpReceipt{}, err
+	}
+	if label != "" {
+		if expectedRev < 1 {
+			return OpReceipt{}, refuse(CodeInvalid, "a route to a person names the rev it read, expectedRev")
+		}
+		return e.operate(ctx, id, operation{kind: ledger.HistoryRouted, opID: opID, fp: fp, actor: actor, rev: true, expectedRev: expectedRev,
+			held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
+				dt, edit, err := e.forRoute(r, d, rec, id, label, note, actor)
+				dt.edit = edit
+				return dt, nil, err
+			},
+			notHeld: func(rec ledger.DecisionRecord) (opDetail, error) {
+				if rec.State != ledger.DecisionOpen {
+					_, _, err := e.forRoute(nil, nil, rec, id, label, note, actor)
+					return opDetail{}, err
+				}
+				return opDetail{}, refuse(CodeNotHeld, "%s's run is not running: continue it, then route it to a person", id)
+			}})
 	}
 	dt := opDetail{Note: note, To: []any{map[string]string{"kind": "operator"}}, Rule: "local/1: the operator answers", By: actor, Words: fmt.Sprintf("%s is routed to the operator", id)}
 	return e.operate(ctx, id, operation{kind: ledger.HistoryRouted, opID: opID, fp: fp, actor: actor, expectedRev: expectedRev,

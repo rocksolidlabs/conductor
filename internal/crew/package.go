@@ -169,13 +169,15 @@ type PackageComment struct {
 	SHA256 string    `json:"sha256"`
 }
 
-// PackageDecision is a decision a person will make, and the tasks that
-// wait on it.
+// PackageDecision is a decision a person will make, the tasks that wait
+// on it, and whom it is for (HM1: role:<responsibility> or person:<name>,
+// "" for none).
 type PackageDecision struct {
 	ID       string   `json:"id"`
 	Question string   `json:"question"`
 	Kind     string   `json:"kind"`
 	Before   []string `json:"before,omitempty"`
+	For      string   `json:"for,omitempty"`
 }
 
 // PackageLaunch is the launch: its id, the run id Dispatch minted for it,

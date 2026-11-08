@@ -973,3 +973,58 @@ func TestProposeFollowupNeedsAnApprovedBase(t *testing.T) {
 		t.Fatalf("the resend: %+v", again)
 	}
 }
+
+// Whom a plan decision is for (docs/plans/decisions.md, HM1, PR-12): the
+// store checks the label's shape only, keeping no list of the
+// responsibilities (role:anything passes it; internal/api resolves the
+// label in the revision's crew); role: alone, a name past 60 characters,
+// a control character and another prefix are refused invalid, nothing
+// kept. A body with no for encodes as before, so an older revision's
+// digest is unchanged; the assignment kind is taken.
+func TestPlanDecisionFor(t *testing.T) {
+	s, _, key := planTicket(t)
+	ctx := context.Background()
+	for i, f := range []string{"role:", "person:", "role:" + strings.Repeat("a", MaxPersonName+1), "person:na\x07te", "team:api", "architecture"} {
+		d := PlanDecision{ID: "ship", Question: "Ship it?", Kind: DecisionApproval, Before: []string{"build"}, For: f}
+		req := PlanRequest{Crew: "crew", Decisions: []PlanDecision{d}}
+		body := testPlanBody("crew")
+		body.Decisions = req.Decisions
+		rc, err := s.ProposePlan(ctx, testOp(opID("bad", i)), key, req, body)
+		want(t, rc, err, StatusFailed, RefusalInvalid)
+		if !strings.Contains(rc.Error, "for") {
+			t.Errorf("for %q refused in words %q", f, rc.Error)
+		}
+	}
+	if n := count(t, s, "SELECT COUNT(*) FROM plans"); n != 0 {
+		t.Fatalf("%d revisions kept", n)
+	}
+	for i, f := range []string{"role:anything", "role:architecture", "person:ana", "person:" + strings.Repeat("é", MaxPersonName)} {
+		kind := DecisionApproval
+		if i == 2 {
+			kind = DecisionAssignment
+		}
+		d := PlanDecision{ID: "ship", Question: "Ship it?", Kind: kind, Before: []string{"build"}, For: f}
+		req := PlanRequest{Crew: "crew", Decisions: []PlanDecision{d}}
+		body := testPlanBody("crew")
+		body.Decisions = req.Decisions
+		id := propose(t, s, opID("good", i), key, req, body)
+		got := planOf(t, s, id)
+		if !strings.Contains(string(got.Body), `"for":`) {
+			t.Fatalf("the kept body has no for: %s", got.Body)
+		}
+	}
+	// An older body, no for, encodes byte for byte as it did: no "for" key.
+	body := testPlanBody("crew")
+	body.Decisions = []PlanDecision{{ID: "ship", Question: "Ship it?", Kind: DecisionApproval, Before: []string{"build"}}}
+	enc, err := encodeValue(body.normalized())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(enc), `"for"`) {
+		t.Fatalf("a body with no for encodes one: %s", enc)
+	}
+	old := `{"id":"ship","question":"Ship it?","kind":"approval","before":["build"]}`
+	if !strings.Contains(string(enc), old) {
+		t.Fatalf("a decision with no for is not encoded as before: %s", enc)
+	}
+}

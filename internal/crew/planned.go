@@ -89,6 +89,10 @@ func (e *Engine) LaunchPlanned(ctx context.Context, c Crew, label string, p Plan
 			return nil, noop, invalidf("the package's plan revision approves no selection of member %s's agent %s", quote(m.Name), quote(m.AgentID))
 		}
 	}
+	// Whom each gate is for resolves in the crew it launches (HM1).
+	if err := checkPackageFor(c, pkg.p); err != nil {
+		return nil, noop, err
+	}
 	// The base is the revision's: the one its package was built at, its
 	// references' objects resolved there.
 	if pkg.p.Plan.Base != p.Base {
