@@ -486,10 +486,10 @@ func TestAnActsOpIDNamesOneAct(t *testing.T) {
 
 // TestNoGrantApprovesAnswersOrAccepts: granted every operation it can be,
 // the turn approves no revision, withdraws none, accepts, closes or
-// deletes no ticket and changes no configuration; and the follow-up it
+// deletes no ticket, answers no decision and changes no configuration; and the follow-up it
 // proposes waits for the operator's approval.
 func TestNoGrantApprovesAnswersOrAccepts(t *testing.T) {
-	f := newActFixture(t, everyGrant, nil)
+	f := newActFixture(t, append(slices.Clone(everyGrant), brakeman.ActRouteDecision), nil)
 	proposed := f.proposed(t, f.crew.ID, nil)
 	for _, c := range []struct{ method, path string }{
 		{"POST", "/api/dispatch/plans/" + proposed + "/approve"},
@@ -498,6 +498,8 @@ func TestNoGrantApprovesAnswersOrAccepts(t *testing.T) {
 		{"POST", "/api/dispatch/tickets/CND-1/delete"},
 		{"POST", "/api/dispatch/tickets/CND-1/edit"},
 		{"PUT", "/api/brakeman/config"},
+		// Routing a decision is granted; answering one is not.
+		{"POST", "/api/decisions/dr-1/respond"},
 	} {
 		if status, out := f.asTurn(t, c.method, c.path, map[string]any{"opId": opID(), "note": "Go.", "set": map[string]any{"status": "done"}}); status != http.StatusUnauthorized {
 			t.Errorf("%s %s: %d %v", c.method, c.path, status, out)

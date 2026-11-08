@@ -1015,7 +1015,9 @@ func TestEachBodyBoundIsItsRoutes(t *testing.T) {
 	// A Brakeman turn's session, whose guide lists its brief, and, granted
 	// every operation this build serves, the act routes' own bodies.
 	bk := brakemanEnv(t, nil)
-	bk.enable(t, "bk", func(c map[string]any) { c["permissions"].(map[string]any)["act"] = everyGrant })
+	bk.enable(t, "bk", func(c map[string]any) {
+		c["permissions"].(map[string]any)["act"] = append(slices.Clone(everyGrant), brakeman.ActRouteDecision)
+	})
 	bsid, btok, _ := bk.turnSession(t, bk.briefing(t))
 
 	tried := map[string]bool{}
@@ -1035,7 +1037,7 @@ func TestEachBodyBoundIsItsRoutes(t *testing.T) {
 		if err := json.Unmarshal(raw, &g); status != http.StatusOK || err != nil {
 			t.Fatalf("%s: %d %v", guide, status, err)
 		}
-		paths := strings.NewReplacer("{id}", id, "{run}", run.ID, "{task}", "build", "{key}", key)
+		paths := strings.NewReplacer("{id}", id, "{run}", run.ID, "{task}", "build", "{key}", key, "{did}", "dr-1")
 		for _, op := range g.Operations {
 			n := op.Bounds["body"]
 			if op.Method != http.MethodPost || n == 0 || (c.sid == "" && op.Scope != "admin") {
