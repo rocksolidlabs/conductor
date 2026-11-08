@@ -124,8 +124,8 @@ const (
 	maxGuideSection  = 64 << 10
 	// maxGuideOperations bounds the operations section, which lists every
 	// operation of the table: twice a section's, since the admin's rows
-	// (RV1's seven review operations among them, with their CLI forms to
-	// come) filled the 64 KiB a section has.
+	// (RV1's seven review operations among them, with their CLI forms)
+	// filled the 64 KiB a section has.
 	maxGuideOperations = 128 << 10
 	maxGuideWhole      = 256 << 10
 	// maxGuideAgents bounds the host section's agents, the rest counted.
@@ -245,7 +245,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			Bounds:      map[string]int{"page": taskPage}},
 		{Name: "task_result", MCP: "task_result", Scope: "task", Method: http.MethodPost, Path: sessions + "/task/result", needs: needLauncher, agentOnly: true,
 			Summary:     "Submit your attempt's result, once: a work task its clean commit and a summary; a review its verdict and findings. Conductor checks it and decides the task.",
-			Description: "Submit your attempt's result, once. A work task: commit your work first (the worktree must be clean apart from .conductor/), then give a summary, the issues you know of, and the commit (HEAD unless given). A review: do not commit; give the verdict, approved or needs_changes, with findings {severity: blocker|major|minor|nit, path, line, message}. Conductor checks the commit and decides the task; a refusal says what to fix before you submit again. The same commit submitted twice is taken once. A done or a handoff does not finish a task; only this does.",
+			Description: "Submit your attempt's result, once. A work task: commit your work first (the worktree must be clean apart from .conductor/), then give a summary, the issues you know of, and the commit (HEAD unless given). A review: do not commit; give the verdict, approved or needs_changes, with findings {severity: blocker|major|minor|nit, path, line, message}. A repair of a person's requested changes: name each change you did by its id in addressed, with a note. Conductor checks the commit and decides the task; a refusal says what to fix before you submit again. The same commit submitted twice is taken once. A done or a handoff does not finish a task; only this does.",
 			CLI:         []string{"conductor", "task", "result", "--summary", "TEXT"},
 			Input: obj(map[string]any{
 				"summary":  str("what you did, one paragraph, at most 4000 characters"),
@@ -253,6 +253,9 @@ var operationsTable = sync.OnceValue(func() []Operation {
 				"issues":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 20, "description": "what is left or doubtful, one line each"},
 				"verdict":  map[string]any{"type": "string", "enum": []string{"approved", "needs_changes"}, "description": "a review's verdict"},
 				"findings": map[string]any{"type": "array", "maxItems": 50, "items": map[string]any{"type": "object", "properties": map[string]any{"severity": map[string]any{"type": "string", "enum": []string{"blocker", "major", "minor", "nit"}}, "path": str("the file"), "line": map[string]any{"type": "integer"}, "message": str("what to change")}, "required": []string{"severity", "message"}}, "description": "a review's findings"},
+
+				// A repair's claims (RV1).
+				"addressed": map[string]any{"type": "array", "maxItems": 50, "items": map[string]any{"type": "object", "properties": map[string]any{"id": str("the change's id, as the task names it"), "note": str("what you did of it, at most 1000 characters")}, "required": []string{"id"}}, "description": "a repair's: the person's requested changes you addressed, each once; a claim a person checks, never its resolution"},
 			}),
 			Bounds: map[string]int{"body": maxBody}},
 		{Name: "message_send", MCP: "message_send", Scope: "task", Method: http.MethodPost, Path: sessions + "/messages", needs: needLauncher,
@@ -442,6 +445,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		taskCommandOp("task_accept", "Accept a task's submitted result although its checks did not pass.", "/accept"),
 		{Name: "task_recheck", Scope: "admin", Method: http.MethodPost, Path: "/api/runs/{run}/tasks/{task}/recheck", Receipt: "ledger", Revision: "run", needs: needLauncher,
 			Summary: "Check again a failed task's standing failed candidate (attempt and commit, as its run names it): the same commit verified again as a new attempt, in the newest run of its chain.",
+			CLI:     []string{"conductor", "crew", "recheck", "RUN/TASK/N@COMMIT"},
 			Input:   bodySchema(recheckBody{}), Bounds: map[string]int{"body": maxBody}},
 		{Name: "diff", Scope: "admin", Method: http.MethodGet, Path: "/api/runs/{run}/tasks/{task}/attempts/{n}/diff", needs: needLauncher,
 			Summary: "A candidate's files against a base (?base=: the run's by default, the attempt's start, or a result of the task in the run's chain), with their counts.",
@@ -497,30 +501,37 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		// dispatch_reviews.go).
 		{Name: "review_submit", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/tickets/{key}/reviews", needs: needLauncher, Receipt: "dispatch", Revision: "ticket",
 			Summary: "Review a candidate (run/task/n@commit) against a base, as one batch: request_changes is applied as a repair (continueRun for a run not running); comment and approve apply nothing.",
+			CLI:     []string{"conductor", "dispatch", "review", "KEY-n", "--candidate", "RUN/TASK/N@COMMIT", "--verdict", "VERDICT", "--file", "NOTES.json"},
 			Input:   bodySchema(reviewSubmitBody{}),
 			Bounds:  map[string]int{"body": maxReviewBody, "reply": dispatch.MaxReviewReply}},
 		{Name: "review_retry", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/reviews/{id}/retry", needs: needLauncher, Receipt: "dispatch",
 			Summary: "Request again: a refused request for changes applied as its next try (continueRun to continue a run not running).",
+			CLI:     []string{"conductor", "dispatch", "review", "retry", "ID"},
 			Input:   bodySchema(reviewRetryBody{}),
 			Bounds:  map[string]int{"body": maxReviewRetryBody, "reply": dispatch.MaxReviewReply}},
 		{Name: "reviews", Scope: "admin", Method: http.MethodGet, Path: "/api/dispatch/tickets/{key}/reviews", needs: needLauncher,
 			Summary: "A ticket's reviews, newest first, 20 a page (?before=), each with its findings counted and its application.",
+			CLI:     []string{"conductor", "dispatch", "reviews", "KEY-n"},
 			Input:   map[string]any{"type": "object", "description": "no body"},
 			Bounds:  map[string]int{"reply": dispatch.MaxReviewsReply}},
 		{Name: "review", Scope: "admin", Method: http.MethodGet, Path: "/api/dispatch/reviews/{id}", needs: needLauncher,
 			Summary: "A review whole: its findings, each with its latest mark, and its application.",
+			CLI:     []string{"conductor", "dispatch", "review", "show", "ID"},
 			Input:   map[string]any{"type": "object", "description": "no body"},
 			Bounds:  map[string]int{"reply": dispatch.MaxReviewReply}},
 		{Name: "findings", Scope: "admin", Method: http.MethodGet, Path: "/api/dispatch/tickets/{key}/findings", needs: needLauncher,
 			Summary: "A ticket's findings (?state=, ?candidate=, ?after=), each with its state, last mark, where its lines are and what repairs said of it.",
+			CLI:     []string{"conductor", "dispatch", "findings", "KEY-n"},
 			Input:   map[string]any{"type": "object", "description": "no body"},
 			Bounds:  map[string]int{"reply": dispatch.MaxFindingsReply}},
 		{Name: "finding_marks", Scope: "admin", Method: http.MethodGet, Path: "/api/dispatch/findings/{id}/marks", needs: needLauncher,
 			Summary: "A finding's marks, oldest first (?after=), each with where its lines were.",
+			CLI:     []string{"conductor", "dispatch", "finding", "marks", "ID"},
 			Input:   map[string]any{"type": "object", "description": "no body"},
 			Bounds:  map[string]int{"reply": dispatch.MaxMarksReply}},
 		{Name: "finding_mark", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/findings/{id}/marks", needs: needLauncher, Receipt: "dispatch",
 			Summary: "Mark a finding against a later candidate of its task: resolved, open or withdrawn, with a note.",
+			CLI:     []string{"conductor", "dispatch", "finding", "mark", "ID", "--candidate", "RUN/TASK/N@COMMIT", "--verdict", "VERDICT"},
 			Input:   bodySchema(findingMarkBody{}),
 			Bounds:  map[string]int{"body": maxMarkBody}},
 		{Name: "crew_create", Scope: "admin", Method: http.MethodPost, Path: "/api/crews", needs: needLauncher,

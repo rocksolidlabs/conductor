@@ -386,7 +386,8 @@ func TestMcpTicketCommentResendsAfterAStalledReply(t *testing.T) {
 // them, then open_url (#436). Two words of it were changed since, to say
 // what the server enforces as the guide and the skill do (#703): form_crew's
 // limit (2 an hour, not 2 a session) and report's message (500 bytes, not
-// characters).
+// characters). task_result has gained a repair's addressed since, its
+// schema's property and its description's sentence (RV1 PR-5).
 func TestToolsListIsUnchanged(t *testing.T) {
 	golden, err := os.ReadFile("testdata/tools-list-main.json")
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/rocksolidlabs/conductor/internal/agents"
@@ -112,8 +113,9 @@ func completionSpec() []commandSpec {
 		{name: "notify", flags: notifyFlags},
 		{name: "mcp"},
 		{name: "open"},
-		{name: "crew", flags: []flagSpec{{name: "--self", kind: flagValue}, {name: "--open"}, {name: "--ttl", kind: flagValue}, {name: "--label", kind: flagValue}, {name: "--quiet"}}, words: []string{"create", "add", "status", "link"}},
-		{name: "task", flags: []flagSpec{{name: "--page", kind: flagValue}, {name: "--json"}, {name: "--summary", kind: flagValue}, {name: "--commit", kind: flagValue}, {name: "--issue", kind: flagValue}, {name: "--verdict", kind: flagEnum, values: []string{"approved", "needs_changes"}}, {name: "--finding", kind: flagValue}, {name: "--file", kind: flagFile},
+		// The session's commands' flags, and recheck's, the admin's.
+		{name: "crew", flags: api(flagSpec{name: "--self", kind: flagValue}, flagSpec{name: "--open"}, flagSpec{name: "--ttl", kind: flagValue}, flagSpec{name: "--label", kind: flagValue}, flagSpec{name: "--quiet"}), words: []string{"create", "add", "status", "link", "recheck"}},
+		{name: "task", flags: []flagSpec{{name: "--page", kind: flagValue}, {name: "--json"}, {name: "--summary", kind: flagValue}, {name: "--commit", kind: flagValue}, {name: "--issue", kind: flagValue}, {name: "--verdict", kind: flagEnum, values: []string{"approved", "needs_changes"}}, {name: "--finding", kind: flagValue}, {name: "--addressed", kind: flagValue}, {name: "--file", kind: flagFile},
 			{name: "--to", kind: flagValue}, {name: "--after", kind: flagValue}, {name: "--reason", kind: flagValue}, {name: "--message", kind: flagValue}, {name: "--done", kind: flagValue}, {name: "--remaining", kind: flagValue}, {name: "--notes", kind: flagValue},
 			{name: "--type", kind: flagEnum, values: []string{"clarification", "approval", "assignment"}}, {name: "--question", kind: flagValue}, {name: "--context", kind: flagValue}, {name: "--option", kind: flagValue}, {name: "--recommend", kind: flagValue},
 			{name: "--uncertainty", kind: flagValue}, {name: "--authorizes", kind: flagValue}, {name: "--evidence", kind: flagValue}, {name: "--subject", kind: flagValue}, {name: "--supersedes", kind: flagValue}},
@@ -136,9 +138,13 @@ func completionSpec() []commandSpec {
 			flagSpec{name: "--assignee", kind: flagValue}, flagSpec{name: "--milestone", kind: flagValue}, flagSpec{name: "--horizon", kind: flagEnum, values: dispatch.Horizons[1:]}, flagSpec{name: "--note", kind: flagValue},
 			flagSpec{name: "--kind", kind: flagEnum, values: dispatch.LinkKinds}, flagSpec{name: "--url", kind: flagValue}, flagSpec{name: "--ref", kind: flagValue}, flagSpec{name: "--candidate", kind: flagValue},
 			flagSpec{name: "--crew", kind: flagValue}, flagSpec{name: "--base", kind: flagValue}, flagSpec{name: "--based-on", kind: flagValue}, flagSpec{name: "--reference", kind: flagValue}, flagSpec{name: "--attachment", kind: flagValue},
-			flagSpec{name: "--comment", kind: flagValue}, flagSpec{name: "--constraints-file", kind: flagFile}, flagSpec{name: "--decision", kind: flagValue}, flagSpec{name: "--plan", kind: flagValue}, flagSpec{name: "--label", kind: flagValue}),
-			words: []string{"projects", "tickets", "show", "create", "edit", "comment", "accept", "link", "plans", "plan", "launch", "runs"},
-			after: map[string][]string{"plan": planVerbs}},
+			flagSpec{name: "--comment", kind: flagValue}, flagSpec{name: "--constraints-file", kind: flagFile}, flagSpec{name: "--decision", kind: flagValue}, flagSpec{name: "--plan", kind: flagValue}, flagSpec{name: "--label", kind: flagValue},
+			// The reviews' (dispatch_reviews.go): --verdict is a review's or
+			// a mark's, --state a finding's.
+			flagSpec{name: "--verdict", kind: flagEnum, values: append(slices.Clone(dispatch.ReviewVerdicts), dispatch.FindingStates...)}, flagSpec{name: "--summary", kind: flagValue}, flagSpec{name: "--continue"},
+			flagSpec{name: "--file", kind: flagFile}, flagSpec{name: "--state", kind: flagEnum, values: append(slices.Clone(dispatch.FindingStates), "all")}),
+			words: []string{"projects", "tickets", "show", "create", "edit", "comment", "accept", "link", "plans", "plan", "launch", "runs", "review", "reviews", "findings", "finding"},
+			after: map[string][]string{"plan": planVerbs, "review": reviewVerbs, "finding": findingVerbs}},
 		// Every flag of every decision command, the states as --state's values.
 		{name: "decision", flags: api(flagSpec{name: "--state", kind: flagEnum, values: decisionStates}, flagSpec{name: "--run", kind: flagValue}, flagSpec{name: "--ticket", kind: flagValue}, flagSpec{name: "--json"},
 			flagSpec{name: "--choice", kind: flagValue}, flagSpec{name: "--text", kind: flagValue}, flagSpec{name: "--why", kind: flagValue}, flagSpec{name: "--release"}),

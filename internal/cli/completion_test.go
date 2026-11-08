@@ -156,8 +156,36 @@ func TestCompletionCompletes(t *testing.T) {
 			if got := complete(t, sh, script, dir, bin, "completion", ""); !slices.Equal(got, []string{"zsh", "bash", "install"}) {
 				t.Fatalf("completion words: %v", got)
 			}
-			if got := complete(t, sh, script, dir, bin, "dispatch", ""); !slices.Equal(got, []string{"projects", "tickets", "show", "create", "edit", "comment", "accept", "link", "plans", "plan", "launch", "runs"}) {
+			if got := complete(t, sh, script, dir, bin, "dispatch", ""); !slices.Equal(got, []string{"projects", "tickets", "show", "create", "edit", "comment", "accept", "link", "plans", "plan", "launch", "runs", "review", "reviews", "findings", "finding"}) {
 				t.Fatalf("dispatch words: %v", got)
+			}
+			// The reviews' (RV1 PR-5): review's and finding's verbs, the
+			// verdicts of a review and of a mark, a finding's states, the
+			// notes' file; crew's recheck and its server's flags.
+			if got := complete(t, sh, script, dir, bin, "dispatch", "review", ""); !slices.Equal(got, []string{"show", "retry"}) {
+				t.Fatalf("dispatch review words: %v", got)
+			}
+			if got := complete(t, sh, script, dir, bin, "dispatch", "finding", ""); !slices.Equal(got, []string{"marks", "mark"}) {
+				t.Fatalf("dispatch finding words: %v", got)
+			}
+			if got := complete(t, sh, script, dir, bin, "dispatch", "--verdict", ""); !slices.Equal(got, []string{"request_changes", "comment", "approve", "open", "resolved", "withdrawn"}) {
+				t.Fatalf("dispatch verdicts: %v", got)
+			}
+			if got := complete(t, sh, script, dir, bin, "dispatch", "--state", ""); !slices.Equal(got, []string{"open", "resolved", "withdrawn", "all"}) {
+				t.Fatalf("dispatch finding states: %v", got)
+			}
+			got = complete(t, sh, script, dir, bin, "dispatch", "--file", "")
+			if (sh == "zsh" && !slices.Equal(got, []string{"<files>"})) || (sh == "bash" && !slices.Equal(slices.Sorted(slices.Values(got)), []string{"my config.json", "x.json"})) {
+				t.Fatalf("dispatch review's notes: %q", got)
+			}
+			if got := complete(t, sh, script, dir, bin, "crew", ""); !slices.Equal(got, []string{"create", "add", "status", "link", "recheck"}) {
+				t.Fatalf("crew words: %v", got)
+			}
+			if got := complete(t, sh, script, dir, bin, "crew", "--"); !has(got, "--server", "--token", "--insecure", "--self") {
+				t.Fatalf("crew flags: %v", got)
+			}
+			if got := complete(t, sh, script, dir, bin, "task", "--"); !has(got, "--addressed", "--finding") {
+				t.Fatalf("task flags: %v", got)
 			}
 			if got := complete(t, sh, script, dir, bin, "dispatch", "plan", ""); !slices.Equal(got, []string{"show", "propose", "approve", "withdraw"}) {
 				t.Fatalf("dispatch plan words: %v", got)
@@ -242,11 +270,12 @@ func TestCompletionSpecMatchesEveryFlag(t *testing.T) {
 	helps := map[string][][]string{
 		"serve": {{"serve", "-h"}}, "switchyard": {{"switchyard", "-h"}}, "host": {{"host", "-h"}}, "notify": {{"notify", "-h"}}, "up": {{"up", "-h"}}, "crews": {{"crews", "-h"}}, "guide": {{"guide", "-h"}},
 		"hooks": {{"hooks", "install", "-h"}, {"hooks", "status", "-h"}}, "completion": {{"completion", "install", "-h"}},
-		"skill": {{"skill", "-h"}}, "export": {{"export", "-h"}}, "restore": {{"restore", "-h"}}, "crew": {{"crew", "create", "-h"}}, "mcp": {{"mcp", "-h"}}, "task": {{"task", "context", "-h"}, {"task", "result", "-h"}, {"task", "send", "-h"}, {"task", "inbox", "-h"}, {"task", "ack", "-h"}, {"task", "blocked", "-h"}, {"task", "checkpoint", "-h"}, {"task", "ticket", "-h"}, {"task", "decide", "-h"}, {"task", "decision", "-h"}, {"task", "withdraw", "-h"}},
+		"skill": {{"skill", "-h"}}, "export": {{"export", "-h"}}, "restore": {{"restore", "-h"}}, "crew": {{"crew", "create", "-h"}, {"crew", "recheck", "-h"}}, "mcp": {{"mcp", "-h"}}, "task": {{"task", "context", "-h"}, {"task", "result", "-h"}, {"task", "send", "-h"}, {"task", "inbox", "-h"}, {"task", "ack", "-h"}, {"task", "blocked", "-h"}, {"task", "checkpoint", "-h"}, {"task", "ticket", "-h"}, {"task", "decide", "-h"}, {"task", "decision", "-h"}, {"task", "withdraw", "-h"}},
 		"decision": {{"decision", "list", "-h"}, {"decision", "show", "-h"}, {"decision", "respond", "-h"}, {"decision", "cancel", "-h"}},
 		"brakeman": {{"brakeman", "request", "-h"}, {"brakeman", "brief", "-h"}, {"brakeman", "ask", "-h"}, {"brakeman", "status", "-h"}, {"brakeman", "list", "-h"}, {"brakeman", "show", "-h"}},
 		"dispatch": {{"dispatch", "projects", "-h"}, {"dispatch", "tickets", "-h"}, {"dispatch", "show", "-h"}, {"dispatch", "create", "-h"}, {"dispatch", "edit", "-h"}, {"dispatch", "comment", "-h"}, {"dispatch", "accept", "-h"}, {"dispatch", "link", "-h"},
-			{"dispatch", "plans", "-h"}, {"dispatch", "plan", "show", "-h"}, {"dispatch", "plan", "propose", "-h"}, {"dispatch", "plan", "approve", "-h"}, {"dispatch", "plan", "withdraw", "-h"}, {"dispatch", "launch", "-h"}, {"dispatch", "runs", "-h"}},
+			{"dispatch", "plans", "-h"}, {"dispatch", "plan", "show", "-h"}, {"dispatch", "plan", "propose", "-h"}, {"dispatch", "plan", "approve", "-h"}, {"dispatch", "plan", "withdraw", "-h"}, {"dispatch", "launch", "-h"}, {"dispatch", "runs", "-h"},
+			{"dispatch", "review", "CND-1", "-h"}, {"dispatch", "review", "show", "-h"}, {"dispatch", "review", "retry", "-h"}, {"dispatch", "reviews", "-h"}, {"dispatch", "findings", "-h"}, {"dispatch", "finding", "marks", "-h"}, {"dispatch", "finding", "mark", "-h"}},
 	}
 	flagLine := regexp.MustCompile(`(?m)^  -([a-z][a-z0-9-]*)`)
 	for _, c := range completionSpec() {

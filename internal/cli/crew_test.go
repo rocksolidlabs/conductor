@@ -159,8 +159,13 @@ func TestCrewCommandsAreSilentOutsideASession(t *testing.T) {
 }
 
 // The skill teaches every crew subcommand there is, with the binary the
-// session names, and the completion table agrees on the subcommands.
+// session names, and the completion table agrees on the subcommands; crew
+// recheck, the operator's with the admin's token, which an agent's session
+// cannot call, it never teaches.
 func TestSkillNamesEveryCrewCommand(t *testing.T) {
+	if strings.Contains(agents.Skill, "crew recheck") {
+		t.Error("the skill teaches crew recheck, the operator's")
+	}
 	for _, tc := range []struct {
 		name  string
 		usage string
@@ -175,6 +180,12 @@ func TestSkillNamesEveryCrewCommand(t *testing.T) {
 			t.Fatalf("no %s words in the completion table", tc.name)
 		}
 		for _, w := range words {
+			if tc.name == "crew" && w == "recheck" {
+				if !strings.Contains(tc.usage, "conductor crew recheck") {
+					t.Error("the usage does not list crew recheck")
+				}
+				continue
+			}
 			if !strings.Contains(agents.Skill, `"${CONDUCTOR_BIN:-conductor}" `+tc.name+" "+w) {
 				t.Errorf("the skill does not teach %s %s", tc.name, w)
 			}
