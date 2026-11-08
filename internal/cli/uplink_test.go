@@ -74,7 +74,55 @@ func TestUplinkPassesDecisions(t *testing.T) {
 // a decision link is minted over it, and the switchyard's join of that link
 // names the desk its Decide tab joins.
 func TestTheSwitchyardSaysDecisions(t *testing.T) {
+	yard, desk := switchyardDesk(t, http.NotFoundHandler())
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	if !desk.Decisions() {
+		t.Fatalf("the switchyard's registered says nothing of decisions")
+	}
+	made, err := desk.RunLink(ctx, "control", time.Hour, "phone", proto.RunGroup{ID: "run-1", Name: "Run", Members: []proto.RunMember{}, Desk: desk.CurrentID()})
+	if err != nil || made.LinkID == "" || !strings.HasPrefix(made.URL, yard+"/join/") {
+		t.Fatalf("the decision link minted over the desk: %+v %v", made, err)
+	}
+	token := strings.TrimPrefix(made.URL, yard+"/join/")
+	resp, err := http.Get(yard + "/api/join/" + token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var joined struct {
+		Run struct {
+			ID   string `json:"id"`
+			Desk string `json:"desk"`
+		} `json:"run"`
+		Role string `json:"role"`
+	}
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&joined) != nil || joined.Run.ID != "run-1" || joined.Run.Desk != desk.CurrentID() || joined.Role != "control" {
+		t.Fatalf("the switchyard's join of the link: %d %+v (desk %s)", resp.StatusCode, joined, desk.CurrentID())
+	}
+}
+
+// A build with no embedded join page (API only) serves no Decide tab, so
+// the switchyard it is says nothing of decisions in its registered, and a
+// publisher mints no decision link there (docs/plans/decision-inbox.md,
+// Version skew: no build advertises what its served page lacks).
+func TestAnAPIOnlySwitchyardSaysNoDecisions(t *testing.T) {
+	_, desk := switchyardDesk(t, nil)
+	if desk.Decisions() {
+		t.Fatal("a switchyard with no join page says it carries decisions")
+	}
+}
+
+// switchyardDesk starts the serve command as a switchyard whose embedded web
+// build is ui (nil: none, API only) and opens a publisher's run desk there,
+// stopped at the test's end. It returns the switchyard's address and the
+// desk.
+func switchyardDesk(t *testing.T, ui http.Handler) (string, api.Desk) {
+	t.Helper()
 	clearConductorEnv(t)
+	old := webUI
+	t.Cleanup(func() { webUI = old })
+	webUI = func() http.Handler { return ui }
 	dir := realTempDir(t)
 	yardCfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "yard-admin", "hostTokens": ["host-token"], "dataDir": %q}`, filepath.Join(dir, "yard")))
 	t.Cleanup(agents.ForgetBinary())
@@ -122,27 +170,5 @@ func TestTheSwitchyardSaysDecisions(t *testing.T) {
 		defer scancel()
 		_ = desk.Stop(sctx)
 	})
-	if !desk.Decisions() {
-		t.Fatalf("the switchyard's registered says nothing of decisions")
-	}
-	made, err := desk.RunLink(ctx, "control", time.Hour, "phone", proto.RunGroup{ID: "run-1", Name: "Run", Members: []proto.RunMember{}, Desk: desk.CurrentID()})
-	if err != nil || made.LinkID == "" || !strings.HasPrefix(made.URL, yard+"/join/") {
-		t.Fatalf("the decision link minted over the desk: %+v %v", made, err)
-	}
-	token := strings.TrimPrefix(made.URL, yard+"/join/")
-	resp, err := http.Get(yard + "/api/join/" + token)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	var joined struct {
-		Run struct {
-			ID   string `json:"id"`
-			Desk string `json:"desk"`
-		} `json:"run"`
-		Role string `json:"role"`
-	}
-	if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&joined) != nil || joined.Run.ID != "run-1" || joined.Run.Desk != desk.CurrentID() || joined.Role != "control" {
-		t.Fatalf("the switchyard's join of the link: %d %+v (desk %s)", resp.StatusCode, joined, desk.CurrentID())
-	}
+	return yard, desk
 }
