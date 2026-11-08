@@ -1026,7 +1026,7 @@ export const GRANTS: ReadonlyArray<{ value: string; label: string; words: string
   {
     value: 'route_decision',
     label: 'Route a decision',
-    words: 'Send a decision record to you, the operator, to answer. It never answers one.',
+    words: "Send an open decision record to you, the operator, or to a person of its run's crew, by name or by the responsibility they hold. It never answers one: you answer it, for them.",
   },
 ]
 
@@ -1050,10 +1050,28 @@ export function refTicket(ref: string): string {
  * proposal's: the card says so.
  */
 export function actFor(p: Extract<BriefItem, { kind: 'proposal/1' }>, acts: readonly BrakemanAct[] | undefined): BrakemanAct | undefined {
-  const ticket = refTicket(p.target)
   const opId = typeof p.args?.opId === 'string' ? p.args.opId : ''
-  if (!ticket || !opId || !acts?.length) return undefined
+  if (!opId || !acts?.length) return undefined
+  if (p.op === 'route_decision') {
+    // A route's act names the decision's run (run:<run>); its proposal, the run or a task of it.
+    const run = refRun(p.target)
+    return run ? acts.find((a) => a.opId === opId && a.operation === p.op && refRun(a.target) === run) : undefined
+  }
+  const ticket = refTicket(p.target)
+  if (!ticket) return undefined
   return acts.find((a) => a.opId === opId && a.operation === p.op && refTicket(a.target) === ticket)
+}
+
+/** The run a run: or task: ref names; "" for any other. */
+export function refRun(ref: string): string {
+  const r = parseRef(ref)
+  return r && (r.kind === 'run' || r.kind === 'task') ? r.run! : ''
+}
+
+/** The decision a done route_decision act routed, from its receipt (DR1's, dr-<n>#<seq>); "" for any other act. */
+export function actDecision(a: BrakemanAct): string {
+  const m = a.state === 'done' && a.operation === 'route_decision' ? /^(dr-[1-9][0-9]*)#[1-9][0-9]*$/.exec(a.receipt ?? '') : null
+  return m ? m[1]! : ''
 }
 
 /**
@@ -1171,7 +1189,8 @@ export function actWords(a: BrakemanAct, launch?: ActLaunch | null): string {
  * what the operation made, a launch's or a revision's, never named the receipt (actMade).
  */
 export function actReceiptRef(a: BrakemanAct): string | null {
-  return a.state === 'done' && OP.test(a.op ?? '') ? `op:brakeman/${a.op}` : null
+  // A route's receipt is DR1's, in the decision's history: no op: ref names it.
+  return a.state === 'done' && a.operation !== 'route_decision' && OP.test(a.op ?? '') ? `op:brakeman/${a.op}` : null
 }
 
 /** The ref of the launch a done launch_approved_plan act made, for its launch chip and the launch it is read by; else null. */
@@ -1189,6 +1208,10 @@ export function actMade(a: BrakemanAct): string {
       return `the launch ${a.receipt}${of}`
     case 'prepare_followup':
       return `the plan revision ${a.receipt}${of}`
+    case 'route_decision': {
+      const [d, seq] = a.receipt.split('#')
+      return `${d} routed: row ${seq} of its history`
+    }
   }
   return `${a.receipt}, what it made`
 }

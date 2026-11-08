@@ -563,11 +563,32 @@ export function rowDecision(key: string, sessions: ReadonlyArray<{ id: string; a
   return s?.attention?.state === 'needs_input' && s.attention.id === m[2] && s.attention.decision ? s.attention.decision : undefined
 }
 
-/** The words a history row is shown with: its kind in words, and its text when it has one. */
+/** The words a history row is shown with: its kind in words, and its text when it has one; a route to a person names them. */
 export function historyWords(h: DecisionEntry): string {
   const text = typeof h.detail?.text === 'string' ? h.detail.text : typeof h.detail?.why === 'string' ? h.detail.why : typeof h.detail?.note === 'string' ? h.detail.note : ''
-  const kind = HISTORY_KINDS[h.kind] ?? h.kind
+  let kind = HISTORY_KINDS[h.kind] ?? h.kind
+  const person = h.kind === 'routed' ? routedPerson(h) : ''
+  if (person) kind = `routed to ${person}`
   return text ? `${kind}: ${text}` : kind
+}
+
+/** The person a routed row names beside the operator (`to`'s `{kind: person, name}`, HM1's label resolved); "" for none. */
+function routedPerson(h: DecisionEntry): string {
+  const to = Array.isArray(h.detail?.to) ? (h.detail.to as Array<Record<string, unknown>>) : []
+  const p = to.find((d) => d?.kind === 'person' && typeof d.name === 'string' && d.name)
+  return p ? String(p.name) : ''
+}
+
+/**
+ * Whom the decision was last routed to by one of the operator's routes (the operator's own, or Brakeman's under its grant), as its
+ * history says: the person and who routed it; null for none, or when the last such route was to the operator alone. The operator
+ * still answers it (local/1): the card says for whom. A decision router's row (`router:`) is Switchman's history, not this.
+ */
+export function routedFor(d: Pick<Decision, 'history'>): { person: string; by: string } | null {
+  const rows = (d.history ?? []).filter((h) => h.kind === 'routed' && h.by && !h.by.startsWith('router:'))
+  const last = rows[rows.length - 1]
+  const person = last ? routedPerson(last) : ''
+  return last && person ? { person, by: last.by! } : null
 }
 
 const HISTORY_KINDS: Record<string, string> = {

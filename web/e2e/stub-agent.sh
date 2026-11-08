@@ -41,8 +41,9 @@
 #                   its question (notify --state needs_input), before the gate.
 #                   Before the brief, once the gate is open, it runs the act
 #                   STUB_BRAKEMAN_ACT's file names when it holds one
-#                   ("OPERATION KEY", its body the JSON file beside it,
-#                   <file>.body): conductor brakeman act, or the act tool;
+#                   ("OPERATION KEY [PARAM]", its body the JSON file beside
+#                   it, <file>.body; a run id in <file>.run is read first):
+#                   conductor brakeman act, or the act tool;
 #                   what the server answered, taken or refused, is written to
 #                   <file>.out and the brief is submitted either way
 # $HOME/.codex/stub-hooks-review present: "Hooks need review" is drawn at
@@ -876,6 +877,14 @@ brakeman_turn() {
 		esac
 		printf 'brakeman: %s: read the ticket %s\n' "$req" "$STUB_BRAKEMAN_TICKET" >>"$transcript"
 	fi
+	if [[ -n ${STUB_BRAKEMAN_ACT:-} && -s $STUB_BRAKEMAN_ACT.run ]]; then
+		# The run a spec's act changes (a decision's route), read with its
+		# revision before the act, as the turn's read of what it proposes.
+		local actrun
+		actrun=$(<"$STUB_BRAKEMAN_ACT.run")
+		"$conductor" brakeman observe run --run "$actrun" >/dev/null 2>&1
+		printf 'brakeman: %s: read the run %s\n' "$req" "$actrun" >>"$transcript"
+	fi
 	if [[ -n ${STUB_BRAKEMAN_ACT:-} && -s $STUB_BRAKEMAN_ACT ]]; then
 		brakeman_act "$req"
 	fi
@@ -906,23 +915,26 @@ brakeman_turn() {
 }
 
 # brakeman_act runs the act STUB_BRAKEMAN_ACT's file names for request $1:
-# its one line is "OPERATION KEY", its body the JSON in <file>.body. The
+# its one line is "OPERATION KEY [PARAM]" (PARAM the route's path parameter
+# KEY fills, key unless named: did for a decision's route), its body the
+# JSON in <file>.body. The
 # answer (the command's words, or the tool's reply line), taken or refused,
 # goes to <file>.out, written whole by a rename, and into the transcript; a
 # refusal does not end the turn: a spec's brief says what happened.
 brakeman_act() {
-	local req=$1 op key body out status=taken
-	read -r op key <"$STUB_BRAKEMAN_ACT"
+	local req=$1 op key param body out status=taken
+	read -r op key param <"$STUB_BRAKEMAN_ACT"
+	param=${param:-key}
 	body='{}'
 	[[ -s $STUB_BRAKEMAN_ACT.body ]] && body=$(<"$STUB_BRAKEMAN_ACT.body")
 	case ${STUB_WORKER:-} in
 	mcp)
-		out=$(mcp_call act "{\"operation\":$(json_str "$op"),\"params\":{\"key\":$(json_str "$key")},\"body\":$body}")
+		out=$(mcp_call act "{\"operation\":$(json_str "$op"),\"params\":{$(json_str "$param"):$(json_str "$key")},\"body\":$body}")
 		mcp_ok "$out" || status=refused
 		;;
 	*)
 		printf '%s\n' "$body" >"$transcripts/$id.act.json"
-		out=$("$conductor" brakeman act "$op" --key "$key" --body-file "$transcripts/$id.act.json" 2>&1) || status=refused
+		out=$("$conductor" brakeman act "$op" "--$param" "$key" --body-file "$transcripts/$id.act.json" 2>&1) || status=refused
 		;;
 	esac
 	printf '%s\n%s\n' "$status" "$out" >"$STUB_BRAKEMAN_ACT.out.new"

@@ -20,6 +20,8 @@ import {
   refusalOf,
   respondDecision,
   responseBody,
+  routedFor,
+  historyWords,
   runRuns,
   staleNotice,
   subjectWords,
@@ -56,6 +58,24 @@ function decision(p: Partial<Decision> = {}): Decision {
 
 const recorded = { decision: 'dr-7', k: 1, status: 'accepted' as const, words: 'Recorded: dr-7 answered by Nate', actor: 'admin', byName: 'Nate', choice: 0, at: T1, rev: 2 }
 const typed = { at: T2, by: 'yardmaster', run: RUN, task: 'build', attempt: 1, response: 1, validated: true, how: 'typed' as const, words: "typed into build's attempt 1" }
+
+describe('a decision routed to a person', () => {
+  const row = (seq: number, by: string, to: unknown[], note?: string) => ({ seq, at: '2026-11-08T10:00:00Z', kind: 'routed', by, detail: { to, ...(note ? { note } : {}) } })
+  const operator = { kind: 'operator' }
+  it('names the person a route names beside the operator, the last route deciding, and leaves a router\'s rows to it', () => {
+    const opened = row(2, 'local/1', [operator])
+    expect(routedFor({ history: [opened] })).toBeNull()
+    const toAna = row(3, 'brakeman', [operator, { kind: 'person', name: 'ana' }], 'Brakeman read the attempt.')
+    expect(routedFor({ history: [opened, toAna] })).toEqual({ person: 'ana', by: 'brakeman' })
+    expect(historyWords(toAna)).toBe('routed to ana: Brakeman read the attempt.')
+    expect(historyWords(opened)).toBe('routed')
+    // Routed back to the operator: for no one.
+    expect(routedFor({ history: [opened, toAna, row(4, 'admin', [operator])] })).toBeNull()
+    // Switchman's routing history is its own.
+    expect(routedFor({ history: [opened, row(3, 'router:switchman', [{ kind: 'person', name: 'ada' }])] })).toBeNull()
+    expect(routedFor({})).toBeNull()
+  })
+})
 
 describe("a decision's words", () => {
   it('says every state, each in its words', () => {

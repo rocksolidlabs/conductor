@@ -68,7 +68,9 @@ func (s *Server) routeDecisions(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/decisions/{did}/respond", s.launching(s.handleDecisionRespond))
 	mux.HandleFunc("POST /api/decisions/{did}/cancel", s.launching(s.handleDecisionCancel))
 	mux.HandleFunc("POST /api/decisions/{did}/comment", s.launching(s.handleDecisionComment))
-	mux.HandleFunc("POST /api/decisions/{did}/route", s.launching(s.handleDecisionRoute))
+	// A Brakeman turn granted route_decision is taken here too (actable):
+	// its act runs this route's one operation under the actor brakeman.
+	mux.HandleFunc(decisionRoutePattern, s.actable(decisionRoutePattern, s.launching(s.handleDecisionRoute)))
 	mux.HandleFunc("GET /api/dispatch/tickets/{key}/decisions", s.launching(s.handleTicketDecisions))
 }
 

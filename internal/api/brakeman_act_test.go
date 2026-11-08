@@ -168,8 +168,8 @@ func TestAnUngrantedActIsRefused(t *testing.T) {
 	if status, out := f.launchAct(t, map[string]any{"opId": "a-3"}); status != http.StatusForbidden || codeOf(out) != "not_granted" {
 		t.Fatalf("a grant taken away: %d %v", status, out)
 	}
-	// The grants this build cannot serve are refused at the save.
-	for _, op := range []string{brakeman.ActRequestRepair, brakeman.ActRouteDecision} {
+	// The grant this build cannot serve is refused at the save.
+	for _, op := range []string{brakeman.ActRequestRepair} {
 		c := f.bk.config(t)
 		c["permissions"].(map[string]any)["act"] = []any{op}
 		f.expect(t, "PUT", "/api/brakeman/config", map[string]any{"rev": c["rev"], "config": c}, http.StatusBadRequest, brakeman.CodeInvalidConfig)
@@ -217,7 +217,7 @@ func TestAReadGivesNoGrant(t *testing.T) {
 		t.Fatalf("the read: %d %v", status, out)
 	}
 	for pattern := range actRoutes {
-		path := strings.Replace(strings.TrimPrefix(pattern, "POST "), "{key}", "CND-1", 1)
+		path := strings.NewReplacer("{key}", "CND-1", "{did}", "dr-1").Replace(strings.TrimPrefix(pattern, "POST "))
 		body := map[string]any{"opId": "a-1", "plan": f.plan, "basedOn": f.plan, "crew": f.crew.ID}
 		if strings.HasSuffix(path, "/launch") {
 			delete(body, "basedOn")

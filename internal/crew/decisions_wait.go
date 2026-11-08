@@ -1521,29 +1521,83 @@ func cmpState(d *decision, rec ledger.DecisionRecord) string {
 	return rec.State
 }
 
-// Destination is where a decision is routed: the operator alone in DR1.
+// Destination is where a decision is routed: the operator (DR1), or a
+// person's label (HM1): a person of the run's crew by name ({kind:
+// person, name}), or the holder of one of its responsibilities ({kind:
+// role, name}).
 type Destination struct {
 	Kind string `json:"kind"`
 	Name string `json:"name,omitempty"`
 }
 
-// RouteDecision records a re-route of decision id with a note: DR1's only
-// destination is the operator (what Brakeman's route_decision grant does);
-// any other is invalid until a person's label is one. It changes no
-// state.
+// RouteDecision records a re-route of decision id with a note (what
+// Brakeman's route_decision grant does): to the operator, or to a person
+// of the run's crew as launched, by name or by the responsibility they
+// hold (Holder). A route to a person is taken only while the decision is
+// open (decision_answered or decision_closed otherwise) and only through
+// the run that holds it (not_held otherwise: continue it, then route);
+// its routed row names the person beside the operator. It changes no
+// state, and never who answers: the operator, under local/1 (decision
+// D4).
 func (e *Engine) RouteDecision(ctx context.Context, id, opID string, expectedRev int, to []Destination, note, actor string) (OpReceipt, error) {
 	if len(to) == 0 {
 		return OpReceipt{}, refuse(CodeInvalid, "a route names its destination")
 	}
+	// The label a route to a person names (Holder's form), "" for the
+	// operator's.
+	label := ""
+	if len(to) == 1 && to[0].Name != "" {
+		switch to[0].Kind {
+		case "person":
+			label = labelPerson + to[0].Name
+		case "role":
+			label = labelRole + to[0].Name
+		}
+	}
 	for _, d := range to {
-		if d.Kind != "operator" || d.Name != "" {
-			return OpReceipt{}, refuse(CodeInvalid, "a decision is routed to the operator, not %q", shortText(d.Kind+" "+d.Name))
+		if label == "" && (d.Kind != "operator" || d.Name != "") {
+			return OpReceipt{}, refuse(CodeInvalid, "a decision is routed to the operator, a person of its run's crew (person, by name) or a responsibility of it (role: architecture, product, security or acceptance), not %q", shortText(d.Kind+" "+d.Name))
 		}
 	}
 	fp := fingerprintOf([]any{"route", to, note})
 	note, err := cleanOpText(note, false)
 	if err != nil {
 		return OpReceipt{}, err
+	}
+	if label != "" {
+		open := func(state string) error {
+			switch state {
+			case ledger.DecisionOpen:
+				return nil
+			case ledger.DecisionAnswered:
+				return refuse(CodeDecisionAnswered, "%s is answered: it is routed to a person only while it is open", id)
+			}
+			return refuse(CodeDecisionClosed, "%s is %s: it is routed to a person only while it is open", id, state)
+		}
+		return e.operate(ctx, id, operation{kind: ledger.HistoryRouted, opID: opID, fp: fp, actor: actor, expectedRev: expectedRev,
+			held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
+				if err := open(cmpState(d, rec)); err != nil {
+					return opDetail{}, nil, err
+				}
+				// The run's crew as launched: its people never change while
+				// the run is held.
+				p, resp, err := Holder(Crew{ID: r.crewID, Name: r.name, People: r.people}, label)
+				if err != nil {
+					return opDetail{}, nil, refuse(CodeInvalid, "%s: a decision is routed to a person of its run's crew", err.Error())
+				}
+				who, rule := p.Name, fmt.Sprintf("local/1: the operator answers, for %s (%s)", p.Name, label)
+				if w, ok := ResponsibilityWords[resp]; ok {
+					who, rule = p.Name+", the "+w, fmt.Sprintf("local/1: the operator answers, for the %s (%s)", w, label)
+				}
+				return opDetail{Note: note, To: []any{map[string]string{"kind": "operator"}, map[string]string{"kind": "person", "name": p.Name}}, Rule: rule, By: actor,
+					Words: fmt.Sprintf("%s is routed to %s by %s: the operator answers it", id, who, actor)}, nil, nil
+			},
+			notHeld: func(rec ledger.DecisionRecord) (opDetail, error) {
+				if err := open(rec.State); err != nil {
+					return opDetail{}, err
+				}
+				return opDetail{}, refuse(CodeNotHeld, "%s's run is not running: continue it, then route it to a person", id)
+			}})
 	}
 	dt := opDetail{Note: note, To: []any{map[string]string{"kind": "operator"}}, Rule: "local/1: the operator answers", By: actor, Words: fmt.Sprintf("%s is routed to the operator", id)}
 	return e.operate(ctx, id, operation{kind: ledger.HistoryRouted, opID: opID, fp: fp, actor: actor, expectedRev: expectedRev,

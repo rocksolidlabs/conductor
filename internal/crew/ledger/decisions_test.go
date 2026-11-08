@@ -1101,6 +1101,31 @@ func TestAnOperationIDIsUniquePerDecision(t *testing.T) {
 	}
 }
 
+// HistoryByOp finds the row an author wrote under an op id, whichever
+// decision holds it, and nothing for another author's id or none.
+func TestHistoryByOpFindsItsRow(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	const run = "team-00000001"
+	newRun(t, l, run)
+	open(t, l, gateDecision(run, "g1"))
+	n2 := open(t, l, gateDecision(run, "g2"))
+	var want HistoryRow
+	in(t, l, run, func(tx *Tx) error {
+		var err error
+		want, _, err = tx.History(n2, HistoryRow{Kind: HistoryRouted, By: "brakeman", Detail: `{"to":[{"kind":"operator"}]}`, OpID: "bk0123", Fingerprint: "fp"})
+		return err
+	})
+	got, ok, err := l.HistoryByOp(t.Context(), "brakeman", "bk0123")
+	if err != nil || !ok || got.Decision != n2 || got.Seq != want.Seq || got.Kind != HistoryRouted {
+		t.Fatalf("found %+v %v %v, want %+v", got, ok, err, want)
+	}
+	for _, c := range [][2]string{{"admin", "bk0123"}, {"brakeman", "bk9999"}, {"brakeman", ""}} {
+		if _, ok, err := l.HistoryByOp(t.Context(), c[0], c[1]); ok || err != nil {
+			t.Fatalf("%v: %v %v", c, ok, err)
+		}
+	}
+}
+
 // Every kind is written to its own bound and refused past it; the
 // notified rows take the rest of 256 and past it are not written,
 // counted as dropped in the next row written that has room for the count

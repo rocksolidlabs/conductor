@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Decision, DecisionRef } from '~/utils/decisions'
-import { acceptedAnswer, approverWords, askedWhere, decisionWords, historyWords, optionsOf, recommended, subjectWords } from '~/utils/decisions'
+import { acceptedAnswer, approverWords, askedWhere, decisionWords, historyWords, optionsOf, recommended, routedFor, subjectWords } from '~/utils/decisions'
 import { relativeTime } from '~/utils/sessions'
 
 /**
@@ -41,7 +41,7 @@ const showHistory = ref(false)
     <p class="text-xs text-muted">
       Asked by {{ askedWhere(decision) }} in
       <NuxtLink :to="`/runs/${encodeURIComponent(decision.run)}?view=tasks${decision.asker ? `&task=${encodeURIComponent(decision.asker.task)}` : ''}`" class="font-mono hover:underline" data-decision-run>{{ decision.run }}</NuxtLink>
-      {{ relativeTime(decision.createdAt, now, { suffix: true }) }} · answered by {{ approverWords(decision) }}
+      {{ relativeTime(decision.createdAt, now, { suffix: true }) }} · answered by {{ approverWords(decision) }}<span v-if="routedFor(decision)" :data-decision-routed-for="routedFor(decision)!.person">, for {{ routedFor(decision)!.person }} (routed by {{ routedFor(decision)!.by }})</span>
     </p>
 
     <MarkdownPreview v-if="decision.request.context" :text="decision.request.context" dir="" :relative-links="false" class="text-sm" data-decision-context />

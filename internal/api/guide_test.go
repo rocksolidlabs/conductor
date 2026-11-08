@@ -1324,10 +1324,13 @@ func TestATurnsGuideListsItsGrantedOperations(t *testing.T) {
 			t.Errorf("the admin's %s: %v", name, op)
 		}
 	}
-	for _, name := range []string{brakeman.ActRequestRepair, brakeman.ActRouteDecision} {
-		if ops[name] != nil {
-			t.Errorf("%s, which this build serves no route of, is listed", name)
-		}
+	// route_decision is DR1's routing route, with the ledger's receipt and
+	// the decision's rev.
+	if op := ops[brakeman.ActRouteDecision]; op == nil || op["scope"] != "act" || op["path"] != "/api/decisions/{did}/route" || op["receipt"] != "ledger" || op["revision"] != "decision" {
+		t.Errorf("the admin's %s: %v", brakeman.ActRouteDecision, op)
+	}
+	if ops[brakeman.ActRequestRepair] != nil {
+		t.Errorf("%s, which this build serves no route of, is listed", brakeman.ActRequestRepair)
 	}
 }
 

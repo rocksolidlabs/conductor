@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { BrakemanAct, BrakemanConfig, BriefItem } from './brakeman'
 import { renderMarkdown } from './markdown'
-import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actFor, actsApart, readingBlocks, actLaunchRef, actMade, actReceiptRef, actShown, actShownFrom, actLaunchId, keepLaunch, MAX_KEPT_LAUNCHES, proposalOffered, actWords, followLaunch, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedFromBaseline, changedSince, configProblems, displayBy, formField, formMove, grantHeld, grantLabel, groupItems, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
+import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actDecision, actFor, refRun, actsApart, readingBlocks, actLaunchRef, actMade, actReceiptRef, actShown, actShownFrom, actLaunchId, keepLaunch, MAX_KEPT_LAUNCHES, proposalOffered, actWords, followLaunch, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedFromBaseline, changedSince, configProblems, displayBy, formField, formMove, grantHeld, grantLabel, groupItems, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
 
 // Brakeman's words, refs and checks on the app's pages (docs/plans/brakeman.md, PR-6).
 
@@ -529,6 +529,29 @@ describe("the grants in Settings and what Brakeman did under them (PR-13)", () =
     expect(actFor(proposal('run_pause', `run:${RUN}`, { opId: 'a1' }), acts)).toBeUndefined()
     expect(refTicket('comment:CND-4/00112233aabbccdd')).toBe('CND-4')
     expect(refTicket(`run:${RUN}`)).toBe('')
+  })
+
+  it("ties a route Brakeman ran to its proposal by the decision's run, and shows DR1's receipt, never an op: ref", () => {
+    const routed = act({ opId: 'r1', operation: 'route_decision', target: `run:${RUN}`, run: RUN, receipt: 'dr-7#4' })
+    const acts = [routed, act({ opId: 'a1' })]
+    // The proposal names the run, or a task of it; another run, another opId or another operation is not the act's.
+    expect(actFor(proposal('route_decision', `task:${RUN}/build`, { opId: 'r1' }), acts)).toBe(routed)
+    expect(actFor(proposal('route_decision', `run:${RUN}`, { opId: 'r1' }), acts)).toBe(routed)
+    expect(actFor(proposal('route_decision', 'run:other-0a1b2c3d', { opId: 'r1' }), acts)).toBeUndefined()
+    expect(actFor(proposal('route_decision', `run:${RUN}`, { opId: 'a1' }), acts)).toBeUndefined()
+    expect(actFor(proposal('route_decision', 'ticket:CND-4', { opId: 'r1' }), acts)).toBeUndefined()
+    expect(refRun(`check:${RUN}/build/1/tests/1`)).toBe('')
+    // Its receipt is DR1's: the decision routed, opened from the card; no op: chip, which names a Dispatch receipt.
+    expect(actDecision(routed)).toBe('dr-7')
+    expect(actReceiptRef(routed)).toBeNull()
+    expect(actWords(routed)).toBe('Brakeman did this, under the grant "Route a decision" you gave it; dr-7 routed: row 4 of its history.')
+    expect(actDecision({ ...routed, state: 'refused' })).toBe('')
+    expect(actDecision({ ...routed, receipt: 'dr-7' })).toBe('')
+    expect(actDecision(act({ opId: 'a1' }))).toBe('')
+    // Settings' words say it may route to a person, and that it never answers.
+    expect(GRANTS.find((g) => g.value === 'route_decision')?.words).toBe(
+      "Send an open decision record to you, the operator, or to a person of its run's crew, by name or by the responsibility they hold. It never answers one: you answer it, for them.",
+    )
   })
 
   it('tells two proposals of one operation on one ticket apart: only the one Brakeman ran is done', () => {

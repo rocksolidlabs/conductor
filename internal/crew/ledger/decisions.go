@@ -1461,6 +1461,38 @@ func (t *Tx) Record(n int64) (DecisionRecord, bool, error) {
 	return rec, true, nil
 }
 
+// HistoryByOp reads the history row actor by wrote under the op id opID,
+// of whichever decision holds it, ok false for none: what a recovery asks
+// of an operation it cannot tell committed or not (Brakeman's acts, each
+// keyed by a derived op id that names one act alone, never another
+// decision's).
+func (l *Ledger) HistoryByOp(ctx context.Context, by, opID string) (HistoryRow, bool, error) {
+	var h HistoryRow
+	found := false
+	if by == "" || opID == "" {
+		return h, false, nil
+	}
+	err := l.readSnapshot(ctx, func(q querier, version int) error {
+		if version < versionDecisions {
+			return nil
+		}
+		var err error
+		h, err = scanHistory(q.QueryRowContext(ctx, "SELECT "+historyCols+" FROM decision_history WHERE by = ? AND op_id = ? ORDER BY decision, seq LIMIT 1", by, opID))
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return nil
+		case err != nil:
+			return err
+		}
+		found = true
+		return nil
+	})
+	if err != nil || !found {
+		return HistoryRow{}, false, err
+	}
+	return h, true, nil
+}
+
 // DecisionByRequest reads the decision run's member opened for task under
 // request id requestID (OpenDecision's repeat), ok false for none, the
 // same id another task's included: the request sent again is answered
