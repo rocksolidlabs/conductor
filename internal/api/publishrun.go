@@ -53,14 +53,19 @@ func (s *Server) nextRunRevision() int64 {
 }
 
 // runGroup is the run as the switchyard should show it, and a publication to
-// carry requests about it (nil when no member is published).
+// carry requests about it (nil when no member is published). A member's
+// publication that has ended (its session's end, and the while it lingers
+// after; it stays in the published map until its session leaves the
+// server) is neither: it would carry nothing but a wait for its answer,
+// where the run's desk would carry it, and the switchyard, which forgets
+// the session, refuses a group that names it.
 func (s *Server) runGroup(run crew.Run) (proto.RunGroup, PublishedSession) {
 	g := proto.RunGroup{ID: run.ID, Name: cmpLabel(run.Label, run.Name)}
 	var carrier PublishedSession
 	for _, m := range run.Members {
 		pm := proto.RunMember{Name: m.Name, AgentID: m.AgentID, Status: m.Status}
 		if m.SessionID != "" {
-			if pub := s.publishedOf(m.SessionID); pub != nil {
+			if pub := s.publishedOf(m.SessionID); pub != nil && !ended(pub.Done()) {
 				pm.SessionID = pub.CurrentID()
 				if carrier == nil {
 					carrier = pub
@@ -71,6 +76,11 @@ func (s *Server) runGroup(run crew.Run) (proto.RunGroup, PublishedSession) {
 	}
 	if len(g.Members) > proto.MaxRunLinkMembers {
 		g.Members = g.Members[:proto.MaxRunLinkMembers]
+	}
+	// Its desk, while it has one, is named with its members: a sync that
+	// left it out would take it from the run's links there.
+	if d := s.liveDesk(run.ID); d != nil {
+		g.Desk = d.CurrentID()
 	}
 	return g, carrier
 }
@@ -114,8 +124,8 @@ func (s *Server) awaitRunPublished(ctx context.Context, runID string) (Published
 }
 
 // recordRemoteRunLink keeps a link minted at the rendezvous for a run.
-func (s *Server) recordRemoteRunLink(runID string, res proto.LinkCreated) {
-	rl := remoteLink{ID: res.LinkID, Role: session.Role(res.Role), Label: res.Label, CreatedAt: time.Now()}
+func (s *Server) recordRemoteRunLink(runID string, res proto.LinkCreated, decide bool) {
+	rl := remoteLink{ID: res.LinkID, Role: session.Role(res.Role), Label: res.Label, CreatedAt: time.Now(), Decide: decide}
 	if t, err := time.Parse(time.RFC3339, res.ExpiresAt); err == nil && res.ExpiresAt != "" {
 		rl.ExpiresAt = &t
 	}
@@ -142,17 +152,11 @@ func (s *Server) remoteRunLinksOf(runID string) []remoteLink {
 	return out
 }
 
-// forgetRemoteRunLinks drops one record of a run's, or all of them ("").
+// forgetRemoteRunLinks drops one record of a run's, or all of them (""),
+// unsettled (forgetRemote): a decision link's still owed its revoke at the
+// rendezvous is kept.
 func (s *Server) forgetRemoteRunLinks(runID, linkID string) {
-	s.pubMu.Lock()
-	defer s.pubMu.Unlock()
-	if linkID == "" {
-		delete(s.remoteRunLinks, runID)
-		delete(s.runSent, runID)
-		delete(s.runSyncFails, runID)
-		return
-	}
-	delete(s.remoteRunLinks[runID], linkID)
+	s.forgetRemote("", runID, linkID, false)
 }
 
 // liveCarriers are the publications that can carry a request about run to
@@ -205,7 +209,7 @@ func (s *Server) liveCarriers(run crew.Run) []PublishedSession {
 // while sessions were published) holds none of its links; a link every
 // carrier answers so is gone. A link no carrier revoked otherwise is logged
 // and left to its expiry there or to the switchyard's sweep.
-func (s *Server) revokeRemoteRunLinks(runID string, carriers []PublishedSession, links []remoteLink) {
+func (s *Server) revokeRemoteRunLinks(runID string, carriers []runCarrier, links []remoteLink) {
 	for _, rl := range links {
 		var last error
 		for _, carrier := range carriers {
@@ -333,7 +337,14 @@ func (s *Server) syncRunLinks(runID string) {
 	if !ok {
 		return
 	}
-	g, carrier := s.runGroup(run)
+	g, member := s.runGroup(run)
+	// A member's publication carries it, else the run's desk.
+	var carrier runCarrier = member
+	if carrier == nil {
+		if d := s.liveDesk(runID); d != nil {
+			carrier = d
+		}
+	}
 	if carrier == nil {
 		return
 	}

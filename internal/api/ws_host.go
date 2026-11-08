@@ -72,10 +72,21 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		c.Close(proto.CloseProtocolError, "register expected")
 		return
 	}
-	var reg proto.Register
-	if json.Unmarshal(data, &reg) != nil || reg.T != proto.HostRegister {
-		c.Close(proto.CloseProtocolError, "register expected")
-		return
+	// A register, or a run's desk's register_desk (desk.go in signal),
+	// which an older switchyard closes here. A register_desk is a host
+	// message, bounded as one (proto.MaxHostMessage) before it is decoded:
+	// the socket's read limit is past it, for the frames a host relays.
+	var (
+		reg  proto.Register
+		desk proto.RegisterDesk
+	)
+	isDesk := false
+	if err := json.Unmarshal(data, &reg); err != nil || reg.T != proto.HostRegister {
+		if len(data) > proto.MaxHostMessage || json.Unmarshal(data, &desk) != nil || desk.T != proto.HostRegisterDesk {
+			c.Close(proto.CloseProtocolError, "register expected")
+			return
+		}
+		isDesk = true
 	}
 	if reg.Session.RelayOnly && s.cfg.Switchyard.Enabled && !s.cfg.SwitchyardRelay() {
 		c.Close(proto.CloseProtocolError, "relay_off: this switchyard does not relay")
@@ -86,7 +97,22 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	if s.viewerSeam != nil && s.viewerSeam.waited != nil {
 		conn.OnWait = s.viewerSeam.waited
 	}
-	hs, resumed, err := s.hosts.Register(reg, conn)
+	var (
+		hs      *signal.HostedSession
+		resumed bool
+	)
+	if isDesk {
+		hs, resumed, err = s.hosts.RegisterDesk(desk, conn)
+		if err == nil {
+			// The desk is in no link's file (share.Group.Desk): its owner's
+			// links of its run name it again as it registers (after this
+			// switchyard restarted, the links restored from their files),
+			// before its registered lists the links naming it.
+			s.links.NameDesk(hs.Owner(), desk.Run.ID, hs.Info().ID)
+		}
+	} else {
+		hs, resumed, err = s.hosts.Register(reg, conn)
+	}
 	if err != nil {
 		msg := "registration rejected"
 		code := websocket.StatusCode(proto.CloseProtocolError)
@@ -94,6 +120,8 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 			msg, code = "session limit reached", proto.CloseTooManyViewers
 		} else if errors.Is(err, signal.ErrBadResume) {
 			msg, code = "cannot resume session", proto.CloseNotFound
+		} else if errors.Is(err, signal.ErrNoInstance) {
+			msg = "no_instance: a desk needs a host that registers with an instance"
 		}
 		c.Close(code, msg)
 		return
@@ -128,8 +156,13 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	// An open host, which presented no token, is handed the configured
 	// servers alone: no media provider is asked for it (iceServersFor).
 	ice := s.iceServersFor(ctx, ext.ICERequest{Purpose: icePurposeHost, Session: info.ID}, open)
+	// A desk is sent no recipe: it watches no screen.
+	var recipe *proto.HostRecipe
+	if !isDesk {
+		recipe = s.hostRecipe(reg.Session.AgentID)
+	}
 	registered, dropped := registeredMessage(proto.Registered{T: proto.HostRegistered, SessionID: info.ID, Secret: hs.Secret(), ShareBaseURL: s.publicBase(r), Resumed: resumed, ICEServers: ice, Links: s.liveLinkIDs(info.ID),
-		Recipe: s.hostRecipe(reg.Session.AgentID)})
+		Recipe: recipe, Decisions: s.hosts.Decisions()})
 	if dropped {
 		s.log.Warn("registered with the agent's recipe is past a host message; the hosted session watches no questions", "session", info.ID, "agent", reg.Session.AgentID)
 	}
@@ -196,14 +229,23 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			s.relayed.add(len(data))
-			if inner.Type == proto.TypeInput {
-				continue // hosts never send input to viewers
+			if inner.Type == proto.TypeInput || inner.Type == proto.TypeDecide {
+				continue // hosts never send input, nor an action on a decision, to viewers
 			}
 			hs.HostRelayFrame(viewerID, inner)
 			continue
 		}
+		if isDesk && !deskMessage(data) {
+			c.Close(proto.CloseProtocolError, "a desk sends the messages of a desk alone")
+			return
+		}
 		if !s.handleHostMessage(hs, hc, data) {
 			c.Close(proto.CloseProtocolError, "bad host message")
+			return
+		}
+		if isDesk && hs.Info().Status.Ended() {
+			// Its host ended it: it is forgotten here, its viewers closed.
+			hs.EndDesk()
 			return
 		}
 	}
@@ -634,7 +676,19 @@ func (s *Server) groupOf(hs *signal.HostedSession, g proto.RunGroup) (share.Grou
 	if err := g.Validate(); err != nil {
 		return share.Group{}, "invalid_request", err.Error()
 	}
-	out := share.Group{Name: g.Name, Revision: g.Revision}
+	// A desk's connection speaks for its own run alone, and names itself.
+	if run := hs.DeskRun(); run != "" && (g.ID != run || g.Desk != hs.Info().ID) {
+		return share.Group{}, "invalid_request", "a desk sends its own run's group, naming itself"
+	}
+	// The run's desk is this host's, of this run: the same instance's, as
+	// every member is, so no host names or reaches another's.
+	if g.Desk != "" {
+		d, ok := s.hosts.Desk(g.Desk)
+		if !ok || d.Owner() != hs.Owner() || d.DeskRun() != g.ID {
+			return share.Group{}, "invalid_request", "desk " + g.Desk + " is not this host's desk of the run"
+		}
+	}
+	out := share.Group{Name: g.Name, Revision: g.Revision, Desk: g.Desk}
 	for _, m := range g.Members {
 		if m.SessionID != "" {
 			other, ok := s.hosts.Get(m.SessionID)
@@ -732,10 +786,8 @@ func (s *Server) hostRunLinkUpdate(hs *signal.HostedSession, hc *hostConnState, 
 	// whoever is attached to it through one of them goes. The links name
 	// the new group first, so one attaching meanwhile is refused.
 	for _, sid := range left {
-		if d, ok := s.registry.Get(sid); ok {
-			for _, lid := range changed {
-				d.DisconnectLink(lid)
-			}
+		for _, lid := range changed {
+			s.disconnectHosted(sid, lid)
 		}
 	}
 	s.keepGroup(hs.Owner(), m.Run.ID)
