@@ -361,6 +361,14 @@ add its rule here.
   runs; and a server read that meets a repack opens the repository again
   and reads once more (`read` in `internal/gitrepo`), since a run's
   repository is repacked by the agent's own git.
+- A reply is judged by what its request carried, not by the moment it
+  lands. A page opened with a wrong token sends every read with it; the
+  gate opened on the first refusal and closed on the right token's save,
+  and a refusal of the wrong one still on its way opened it again over
+  the right one, on a loaded box only (`brakeman-act.spec.ts`, #281). The
+  token a request was sent with goes with its refusal
+  (`useWorkbenchToken().refused`), and a test holds one such reply with
+  `page.route` until after the change, so the old code fails every run.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
