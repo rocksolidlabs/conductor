@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as vue from 'vue'
 import { ApiError } from './useApi'
-import { ContinuationNeeded, useReview, type CandidateDiff, type Review } from './useReview'
+import { ContinuationNeeded, MAX_REVIEWS, openFindingsOf, useCandidateDiff, useReview, type CandidateDiff, type Review, type ReviewSummary } from './useReview'
 import { DispatchOrder } from '../utils/dispatchOrder'
 import { CommandRefused } from '../utils/tasks'
 import { reviewBody } from '../utils/review'
@@ -48,6 +48,7 @@ beforeEach(() => {
   sent = []
   vi.stubGlobal('useApi', () => ({ request, requestText: (path: string) => request(path) }))
   vi.stubGlobal('useIdentity', () => ({ name: vue.ref(' Nate ') }))
+  vi.stubGlobal('ref', vue.ref)
 })
 
 describe('the reads, through the ordering gate', () => {
@@ -134,5 +135,106 @@ describe('the writes', () => {
     const q = r.submit('CND-12', body, {})
     sent[1]!.h.fail(new ApiError(413, 'too_large', 'with build\'s own instructions the task file would be 74 KiB, more than 64 KiB: shorten the notes or their paths'))
     await expect(q).rejects.toMatchObject({ status: 413, code: 'too_large' })
+  })
+})
+
+describe('the reads of every page', () => {
+  const summary = (id: string, candidate: string, open: number) => ({ ...review(1, 'applied'), id, candidate, counts: { open, resolved: 0, withdrawn: 0 } }) as ReviewSummary
+
+  it("follow the reviews' next cursor and apply every page at once", async () => {
+    const gate = new DispatchOrder()
+    const r = useReview(gate)
+    let shown: ReviewSummary[] | null = null
+    const p = r.readReviews('CND-12', (v) => (shown = v))
+    expect(sent[0]!.path).toBe('/api/dispatch/tickets/CND-12/reviews')
+    sent[0]!.h.ok({ reviews: [summary('r3', cand, 1)], next: 'cur-1' })
+    await settle()
+    expect(shown).toBeNull()
+    expect(sent[1]!.path).toBe('/api/dispatch/tickets/CND-12/reviews?before=cur-1')
+    sent[1]!.h.ok({ reviews: [summary('r2', cand, 0), summary('r1', `run-1/build/2@${C}`, 2)] })
+    expect(await p).toBe(true)
+    expect(shown!.map((x) => x.id)).toEqual(['r3', 'r2', 'r1'])
+  })
+
+  it("stop at the store's bound of a ticket's reviews", async () => {
+    const r = useReview(new DispatchOrder())
+    let shown: ReviewSummary[] = []
+    const p = r.readReviews('CND-12', (v) => (shown = v))
+    for (let i = 0; i < MAX_REVIEWS / 20; i++) {
+      await settle()
+      sent[i]!.h.ok({ reviews: Array.from({ length: 20 }, (_, j) => summary(`r${i}-${j}`, cand, 0)), next: `cur-${i}` })
+    }
+    expect(await p).toBe(true)
+    expect(sent).toHaveLength(MAX_REVIEWS / 20)
+    expect(shown).toHaveLength(MAX_REVIEWS)
+  })
+
+  it("count a task's open findings from its reviews' counts, whatever page they came on", () => {
+    const rs = [summary('r3', cand, 1), summary('r2', `run-1/build/2@${C}`, 2), summary('r1', `run-1/test/1@${C}`, 4), summary('r0', `run-2/build/1@${C}`, 8)]
+    expect(openFindingsOf(rs, 'run-1', 'build')).toBe(3)
+    expect(openFindingsOf(rs, 'run-1', 'test')).toBe(4)
+    expect(openFindingsOf(rs, 'run-3', 'build')).toBe(0)
+  })
+})
+
+describe('the diff shown, bound to the candidate and the base wanted', () => {
+  const Y = 'y'.repeat(40)
+  const Z = 'z'.repeat(40)
+  const at = (base: string) => `/api/runs/run-1/tasks/build/attempts/1/diff${base ? `?base=${base}` : ''}`
+
+  it('drops a reply for a base left (Y, then Z, then Y again) and shows only the base wanted', async () => {
+    const known: string[] = []
+    const d = useCandidateDiff(useReview(new DispatchOrder()), { known: (b) => known.push(b) })
+    const first = d.read(cand, '')
+    sent[0]!.h.ok(diff(Y))
+    await first
+    expect(d.shown.value).toMatchObject({ key: cand, at: '', diff: { base: Y } })
+    expect(known).toEqual([Y])
+    // The draft's base is Y now: read at it, the diff shown is it already.
+    await d.read(cand, Y)
+    expect(sent).toHaveLength(1)
+    expect(d.at(cand, Y)).toBe(true)
+
+    const toZ = d.read(cand, Z)
+    expect(d.shown.value).toBeNull()
+    expect(d.at(cand, Y)).toBe(false)
+    const back = d.read(cand, Y)
+    expect(sent.map((s) => s.path)).toEqual([at(''), at(Z), at(Y)])
+    sent[1]!.h.ok(diff(Z))
+    await toZ
+    expect(d.shown.value).toBeNull()
+    expect(d.at(cand, Z)).toBe(false)
+    expect(d.loading.value).toBe(true)
+    sent[2]!.h.ok(diff(Y))
+    await back
+    expect(d.shown.value!.diff.base).toBe(Y)
+    expect(d.at(cand, Y)).toBe(true)
+    expect(d.loading.value).toBe(false)
+    expect(known).toEqual([Y, Y])
+  })
+
+  it('shows nothing of the base left while a read fails, and nothing of another candidate', async () => {
+    const d = useCandidateDiff(useReview(new DispatchOrder()))
+    const first = d.read(cand, Y)
+    sent[0]!.h.ok(diff(Y))
+    await first
+    const toZ = d.read(cand, Z)
+    sent[1]!.h.fail(new ApiError(410, 'commit_gone', 'a commit of the diff is no longer in the repository'))
+    await toZ
+    expect(d.shown.value).toBeNull()
+    expect(d.error.value).toMatch(/no longer in the repository/)
+    expect(d.at(cand, Y)).toBe(false)
+    expect(d.at(cand, Z)).toBe(false)
+
+    const other = `run-1/build/2@${'c'.repeat(40)}`
+    const toOther = d.read(other, Y)
+    const again = d.read(cand, Y)
+    sent[3]!.h.ok(diff(Y))
+    await again
+    sent[2]!.h.ok({ ...diff(Y), candidate: 'c'.repeat(40) })
+    await toOther
+    expect(d.shown.value).toMatchObject({ key: cand, diff: { candidate: C } })
+    expect(d.at(other, Y)).toBe(false)
+    expect(d.error.value).toBe('')
   })
 })

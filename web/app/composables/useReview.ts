@@ -3,7 +3,7 @@ import { ApiError } from './useApi'
 import type { DispatchReceipt, OpBody } from './useDispatch'
 import { through, type DispatchOrder } from '~/utils/dispatchOrder'
 import { mintCommandId, sendCommand } from '~/utils/tasks'
-import type { CandidateRef } from '~/utils/dispatch'
+import { allPages, parseCandidate, type CandidateRef } from '~/utils/dispatch'
 import type { Located, NewFinding, ReviewApplication, ReviewBody, Side } from '~/utils/review'
 
 /**
@@ -162,6 +162,19 @@ export function useReviewApi() {
   }
 }
 
+/** The most reviews a ticket holds (the store's dispatch.MaxReviews): a whole read of them stops there, 25 pages of 20. */
+export const MAX_REVIEWS = 500
+
+/** The open findings of a run's task among a ticket's reviews: each review counts its own by state (its findings' latest marks), as the store does. */
+export function openFindingsOf(reviews: readonly ReviewSummary[], run: string, task: string): number {
+  let n = 0
+  for (const r of reviews) {
+    const c = parseCandidate(r.candidate)
+    if (c?.run === run && c.task === task) n += r.counts?.open ?? 0
+  }
+  return n
+}
+
 /** What the ticket page gives the candidates it lists (DispatchCandidates): the open findings of a run's task, and the Review view's link. */
 export interface ReviewEntry {
   openFindings: (run: string, task: string) => number
@@ -194,12 +207,11 @@ export function useReview(gate: DispatchOrder) {
     /** One side of a file of the diff; applied when the gate takes it. */
     readSide: (c: CandidateRef, candidate: string, base: string, path: string, side: Side, apply: (s: DiffSide) => void) =>
       through(gate, `review-file:${candidate}:${base}:${side}:${path}`, () => api.diffFile(c, path, side, base || undefined), apply),
-    /** The ticket's newest reviews, a page of 20. */
-    readReviews: (key: string, apply: (r: ReviewSummary[]) => void) => through(gate, `reviews:${key}`, () => api.ticketReviews(key).then((p) => p.reviews ?? []), apply),
+    /** The ticket's reviews, newest first, every page (at most MAX_REVIEWS, the store's bound), applied together when the gate takes the whole read. */
+    readReviews: (key: string, apply: (r: ReviewSummary[]) => void) =>
+      through(gate, `reviews:${key}`, () => allPages((before) => api.ticketReviews(key, before).then((p) => ({ items: p.reviews ?? [], next: p.next })), MAX_REVIEWS), apply),
     /** A review whole, ordered by its revision. */
     readReview: (id: string, apply: (r: Review) => void) => through(gate, `review:${id}`, () => api.review(id), apply, (r) => r.rev),
-    /** The ticket's open findings, a page. */
-    readOpenFindings: (key: string, apply: (f: ReviewFinding[]) => void) => through(gate, `findings-open:${key}`, () => api.findings(key, { state: 'open' }).then((p) => p.findings ?? []), apply),
 
     /**
      * Sends a review; its reply's review through the gate as `review:<id>`, applied by `apply`. A lost reply is asked once more with
@@ -231,4 +243,65 @@ export function useReview(gate: DispatchOrder) {
       }
     },
   }
+}
+
+/** The diff a Review view shows: the candidate it is of (its reference), the base asked ('' for the run's), and the reply. */
+export interface ShownDiff {
+  key: string
+  at: string
+  diff: CandidateDiff
+}
+
+/**
+ * The diff a Review view shows, bound to the selection it was read for: `read(candidate, base)` names the candidate and the base wanted
+ * now, and a reply is shown only while they are still the ones wanted, so a slow reply for a base or a candidate left (Y, then Z, then Y
+ * again) never stands beside a draft on another. A move clears what was shown at once: nothing of the candidate or the base left can be
+ * noted while the new one is read, or after its read failed. `known` is told the base a reply was read against (the run's, for none
+ * asked), the draft's base while it has none. `at(candidate, base)` says whether the diff shown is the candidate's at that base, which a
+ * note on its lines or its files is made only on.
+ */
+export function useCandidateDiff(r: Pick<ReturnType<typeof useReview>, 'readDiff'>, o: { known?: (base: string) => void } = {}) {
+  const shown = ref<ShownDiff | null>(null)
+  const error = ref('')
+  const loading = ref(false)
+  /** The candidate and the base wanted now. */
+  let wanted = ''
+
+  async function read(key: string, at: string): Promise<void> {
+    const want = `${key}|${at}`
+    wanted = want
+    const s = shown.value
+    // Shown already: this candidate at this base, or read with none asked at the base it named.
+    if (s && s.key === key && (s.at === at || s.diff.base === at)) {
+      error.value = ''
+      loading.value = false
+      return
+    }
+    shown.value = null
+    error.value = ''
+    const c = parseCandidate(key)
+    if (!c) {
+      loading.value = false
+      return
+    }
+    loading.value = true
+    try {
+      await r.readDiff(c, key, at, (d) => {
+        if (wanted !== want) return
+        shown.value = { key, at, diff: d }
+        o.known?.(d.base)
+      })
+    } catch (e) {
+      if (wanted === want) error.value = (e as Error).message
+    } finally {
+      if (wanted === want) loading.value = false
+    }
+  }
+
+  const at = (key: string, base: string): boolean => {
+    const s = shown.value
+    return !!s && !!base && s.key === key && s.diff.base === base
+  }
+
+  return { shown, error, loading, read, at }
 }

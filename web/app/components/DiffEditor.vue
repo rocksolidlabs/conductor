@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { editor as MonacoEditor } from 'monaco-editor'
-import type { DiffMark, DiffSelection, Side } from '~/utils/review'
+import { heldUntilReady, type DiffMark, type DiffSelection, type Side } from '~/utils/review'
 
 /**
  * A file's changes in Monaco's diff editor (design 4d): the base's version beside the working directory's, side by side or inline,
@@ -79,13 +79,18 @@ function paint() {
   }
 }
 
-/** Shows lines from..to of a side in the middle, the cursor on the first: a note of the draft opened at its lines. */
-function show(side: Side, from: number, to: number) {
-  const sub = sideEditor(side)
-  if (!sub) return
+/**
+ * Shows lines from..to of a side in the middle, the cursor on the first: a note of the draft opened at its lines. Asked before Monaco
+ * has mounted (it loads asynchronously, after the component), it is held until the editor is there, not lost.
+ */
+const shower = heldUntilReady((ed: MonacoEditor.IStandaloneDiffEditor, side: Side, from: number, to: number) => {
+  const sub = side === 'base' ? ed.getOriginalEditor() : ed.getModifiedEditor()
   sub.revealLinesInCenter(from, Math.max(from, to))
   sub.setPosition({ lineNumber: from, column: 1 })
   sub.focus()
+})
+function show(side: Side, from: number, to: number) {
+  shower.call(side, from, to)
 }
 
 async function mount() {
@@ -114,8 +119,12 @@ async function mount() {
   if (props.selectable) {
     editor.getOriginalEditor().onDidChangeCursorSelection(() => tell('base'))
     editor.getModifiedEditor().onDidChangeCursorSelection(() => tell('candidate'))
+    // A selection scrolled moves its bar with it: told again where its last line is now.
+    editor.getOriginalEditor().onDidScrollChange(() => toldSide === 'base' && tell('base'))
+    editor.getModifiedEditor().onDidScrollChange(() => toldSide === 'candidate' && tell('candidate'))
   }
   paint()
+  shower.ready(editor)
 }
 
 watch(theme, (t) => monacoRef?.editor.setTheme(t))
@@ -133,6 +142,7 @@ defineExpose({ show })
 
 onMounted(mount)
 onBeforeUnmount(() => {
+  shower.gone()
   decorations.base?.clear()
   decorations.candidate?.clear()
   editor?.dispose()

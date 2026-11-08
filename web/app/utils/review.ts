@@ -303,11 +303,13 @@ export interface BaseChoice {
 /**
  * The bases the server takes for a candidate's diff (the diff route's rule): the run's base, where the attempt started, and the result
  * of each other attempt of the same task the page lists, each once (the first attempt of a task with no input starts at the run's base).
+ * A base that is the candidate's own commit is offered too: a task may submit the commit it started at, and the server then answers an
+ * empty diff and takes a review against it, a general note's or a file's.
  */
 export function offeredBases(runBase: string | undefined, c: { attempt: number; start?: string; commit?: string }, sameTask: ReadonlyArray<{ attempt: number; commit?: string }>): BaseChoice[] {
   const out: BaseChoice[] = []
   const add = (commit: string | undefined, label: string) => {
-    if (!commit || commit === c.commit) return
+    if (!commit) return
     const had = out.find((b) => b.commit === commit)
     if (had) had.label += `, ${label}`
     else out.push({ commit, label })
@@ -316,4 +318,42 @@ export function offeredBases(runBase: string | undefined, c: { attempt: number; 
   add(c.start, `where attempt ${c.attempt} started`)
   for (const o of sameTask) if (o.attempt !== c.attempt) add(o.commit, `attempt ${o.attempt}'s result`)
   return out
+}
+
+/** The height of the bar under a selection (Add a note), in pixels: what barTop keeps inside the editor's box. */
+export const SELECTION_BAR_HEIGHT = 32
+
+/**
+ * Where the bar under a selection goes in the editor's box `height` pixels tall: just below the selection's last line at `top`, but never
+ * past the box's edges, which clip it: a selection on the last visible line, or scrolled out of sight, keeps its bar at the bottom.
+ */
+export function barTop(top: number, height: number): number {
+  const most = Math.max(4, height - SELECTION_BAR_HEIGHT - 4)
+  return Math.min(Math.max(4, top + 4), most)
+}
+
+/**
+ * A call that waits for its target: `call(...)` acts on the target at once when there is one, else is held (the latest only) until
+ * `ready(target)` gives one; `gone()` forgets the target and what was held. A diff editor's `show` before its editor has mounted (Monaco
+ * loads asynchronously) so opens the note's lines once it has, rather than being lost.
+ */
+export function heldUntilReady<T, A extends unknown[]>(act: (target: T, ...args: A) => void) {
+  let target: T | null = null
+  let held: A | null = null
+  return {
+    call(...args: A): void {
+      if (target !== null) act(target, ...args)
+      else held = args
+    },
+    ready(t: T): void {
+      target = t
+      const a = held
+      held = null
+      if (a) act(t, ...a)
+    },
+    gone(): void {
+      target = null
+      held = null
+    },
+  }
 }

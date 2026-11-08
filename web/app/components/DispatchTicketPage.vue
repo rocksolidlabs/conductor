@@ -12,8 +12,7 @@ import type { PaletteItem } from '~/composables/usePalette'
 import { TICKET_PLAN_ROWS } from '~/composables/useTicketPlans'
 import { approvable, launchBlockers, revisionTag } from '~/utils/dispatchPlans'
 import { heldRuns } from '~/composables/useTicketCandidates'
-import { REVIEW_ENTRY, useReview, type ReviewFinding } from '~/composables/useReview'
-import { parseCandidate } from '~/utils/dispatch'
+import { REVIEW_ENTRY, openFindingsOf, useReview, type ReviewSummary } from '~/composables/useReview'
 
 /**
  * A ticket's page (docs/plans/dispatch.md, PR-8): its key and title, its description and acceptance criteria as Markdown with a
@@ -40,8 +39,8 @@ import { parseCandidate } from '~/utils/dispatch'
  * the candidate it delivers with its verification), and its People (DispatchPeople: owner, assignees, approvers, launchers, commenters,
  * the plan's agents and each launch's with their versions). The runs' candidates they read are read once for all three (useTicketCandidates).
  * Its Review view (Program item RV1, DispatchReview), `?view=review&candidate=…`, shows in place of the sections: a candidate's diff,
- * the notes of a draft and the review sent; each standing candidate under Runs offers Review, with the open findings of its task, read
- * with the ticket.
+ * the notes of a draft and the review sent; each standing candidate under Runs offers Review, with the open findings of its task, counted
+ * from the ticket's reviews (every page), read with the ticket.
  */
 const props = defineProps<{ project: string; ticketKey: string }>()
 
@@ -698,28 +697,25 @@ const reviewCandidate = computed(() => (typeof route.query.candidate === 'string
 function pickReviewCandidate(c: string) {
   void router.replace({ query: { ...route.query, view: 'review', candidate: c } })
 }
-// The open findings of the ticket's reviews, read with the ticket, for the count beside each candidate's Review: a hint, so a read
-// that fails leaves the count it had, and the next read of the ticket asks again.
+// The open findings beside each candidate's Review, counted from the ticket's reviews (each counts its findings by state, every page
+// read), read with the ticket: a hint, so a read that fails leaves the count it had, and the next read of the ticket asks again. The
+// Review view reads the same reviews itself, so this read waits while it is shown and runs again when the sections are.
 const reviews = useReview(gate)
-const openFindings = ref<ReviewFinding[]>([])
+const ticketReviews = ref<ReviewSummary[]>([])
 watch(
-  () => [props.ticketKey, reads.value] as const,
-  ([key]) => {
-    if (!parseTicketKey(key)) return
+  () => [props.ticketKey, reads.value, reviewView.value] as const,
+  ([key, , inView]) => {
+    if (inView || !parseTicketKey(key)) return
     reviews
-      .readOpenFindings(key, (f) => {
-        if (key === props.ticketKey) openFindings.value = f
+      .readReviews(key, (r) => {
+        if (key === props.ticketKey) ticketReviews.value = r
       })
       .catch(() => {})
   },
   { immediate: true },
 )
 provide(REVIEW_ENTRY, {
-  openFindings: (run, task) =>
-    openFindings.value.filter((f) => {
-      const c = parseCandidate(f.candidate)
-      return c?.run === run && c.task === task
-    }).length,
+  openFindings: (run, task) => openFindingsOf(ticketReviews.value, run, task),
   href: (candidate) => ({ query: { view: 'review', candidate } }),
 })
 const planRows = inject(TICKET_PLAN_ROWS, null)

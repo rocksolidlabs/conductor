@@ -15,6 +15,9 @@ import {
   noteFromSelection,
   noteWhere,
   offeredBases,
+  barTop,
+  heldUntilReady,
+  SELECTION_BAR_HEIGHT,
   repairBytes,
   reviewBody,
   type ChangeRequest,
@@ -172,5 +175,46 @@ describe('the bases offered', () => {
     ])
     expect(offeredBases(B, { attempt: 1, start: B, commit: C }, [])).toEqual([{ commit: B, label: "the run's base, where attempt 1 started" }])
     expect(offeredBases(undefined, { attempt: 1, commit: C }, [])).toEqual([])
+  })
+
+  it("keep a base that is the candidate's own commit: a task that submitted the commit it started at is reviewed against an empty diff", () => {
+    expect(offeredBases(C, { attempt: 1, start: C, commit: C }, [{ attempt: 1, commit: C }])).toEqual([{ commit: C, label: "the run's base, where attempt 1 started" }])
+    expect(offeredBases(B, { attempt: 2, start: C, commit: C }, [])).toEqual([
+      { commit: B, label: "the run's base" },
+      { commit: C, label: 'where attempt 2 started' },
+    ])
+  })
+})
+
+describe('the bar under a selection', () => {
+  it('goes just below the selection, and inside the editor box when the selection is on its last line or scrolled past it', () => {
+    expect(barTop(100, 480)).toBe(104)
+    expect(barTop(470, 480)).toBe(480 - SELECTION_BAR_HEIGHT - 4)
+    expect(barTop(2000, 480)).toBe(480 - SELECTION_BAR_HEIGHT - 4)
+    expect(barTop(-60, 480)).toBe(4)
+    expect(barTop(10, 0)).toBe(4)
+  })
+})
+
+describe('a call held until its target is ready', () => {
+  it('acts at once on a target there, holds the latest call until one is, and forgets it when the target goes', () => {
+    const done: string[] = []
+    const h = heldUntilReady((t: string, from: number, to: number) => done.push(`${t}:${from}-${to}`))
+    h.call(3, 4)
+    h.call(7, 9)
+    expect(done).toEqual([])
+    h.ready('editor')
+    expect(done).toEqual(['editor:7-9'])
+    h.call(1, 1)
+    expect(done).toEqual(['editor:7-9', 'editor:1-1'])
+    h.gone()
+    h.call(5, 5)
+    h.ready('again')
+    expect(done).toEqual(['editor:7-9', 'editor:1-1', 'again:5-5'])
+    h.gone()
+    h.call(2, 2)
+    h.gone()
+    h.ready('third')
+    expect(done).toHaveLength(3)
   })
 })

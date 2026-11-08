@@ -88,6 +88,27 @@ export function noteKey(): string {
   return `${Date.now().toString(36)}-${(++noteSeq).toString(36)}`
 }
 
+/**
+ * A Send review under way: the key of the draft it sent, its op id, and the draft as sent. Its answer settles that draft, by this, whichever
+ * draft the page shows when the answer lands (another candidate's, or this one edited meanwhile).
+ */
+export interface Sending {
+  key: string
+  opId: string
+  sent: StoredDraft
+}
+
+/**
+ * The draft `d` once the review `s` sent from it was recorded: the notes sent, and the summary sent, gone; a note added or edited since,
+ * or a summary changed since, stays to be sent on its own. The base is kept for the diff shown; the op id goes, the send answered.
+ */
+export function afterSent(d: StoredDraft, s: StoredDraft): StoredDraft {
+  const was = new Set(s.notes.map((n) => JSON.stringify(n)))
+  const notes = d.notes.filter((n) => !was.has(JSON.stringify(n)))
+  const summary = d.summary === s.summary ? '' : d.summary
+  return { ...emptyDraft(), base: d.base, notes, summary, ...(notes.length || summary ? { verdict: d.verdict } : {}) }
+}
+
 /** The base-side notes' lock: the base they are on, and how many hold it; null while the draft has none. */
 export interface BaseLock {
   base: string
@@ -149,10 +170,11 @@ export function useReviewDraft(o: { ticket: () => string; candidate: () => strin
     save()
     return note
   }
-  function update(key: string, n: Partial<Omit<DraftNote, 'key'>>): void {
+  /** Replaces the note whole with what its form saved: a field the form cleared (a resolution) is gone, not kept from before. */
+  function update(key: string, n: Omit<DraftNote, 'key'>): void {
     const i = draft.value.notes.findIndex((x) => x.key === key)
     if (i < 0) return
-    draft.value.notes[i] = { ...draft.value.notes[i]!, ...n, key }
+    draft.value.notes[i] = { ...n, key }
     save()
   }
   function drop(key: string): void {
@@ -169,21 +191,45 @@ export function useReviewDraft(o: { ticket: () => string; candidate: () => strin
     draft.value.summary = s
     save()
   }
-  /** The op id of the Send review about to go: kept with the draft, so a resend after a lost answer is the same operation. */
-  function sending(opId: string): void {
+  /**
+   * The Send review about to go, with its op id: the id kept with the draft, so a resend after a lost answer is the same operation; what
+   * it answers (`sent`, `unsent`) settles the draft it was sent from, by the key and the draft as sent that this returns.
+   */
+  function sending(opId: string): Sending {
     draft.value.opId = opId
     save(false)
+    return { key: key.value, opId, sent: JSON.parse(JSON.stringify(draft.value)) as StoredDraft }
   }
-  /** The review was sent and recorded: the draft is emptied, its base kept for the diff shown. */
-  function sent(): void {
-    draft.value = { ...emptyDraft(), base: draft.value.base }
-    save(false)
+  /** Settles the draft under the key `k`: the one shown, or else the one the storage keeps (a draft of the page alone is gone with it). */
+  function settle(k: string, f: (d: StoredDraft) => StoredDraft): void {
+    if (k === key.value) {
+      draft.value = f(draft.value)
+      unsaved.value = !writeDraft(storage, k, draft.value)
+      return
+    }
+    const d = readDraft(storage, k)
+    if (d) writeDraft(storage, k, f(d))
   }
-  /** Drops every note and the summary, keeping nothing; a base the page no longer offers goes with them. */
-  function discard(): void {
-    draft.value = { ...emptyDraft(), base: stale.value ? '' : draft.value.base }
+  /** The review `s` sent was recorded: what it sent leaves its draft (afterSent), the base kept for the diff shown. */
+  function sent(s: Sending): void {
+    settle(s.key, (d) => afterSent(d, s.sent))
+  }
+  /** The server answered `s` without keeping it: its op id leaves its draft, the next send an operation of its own. */
+  function unsent(s: Sending): void {
+    settle(s.key, (d) => {
+      if (d.opId !== s.opId) return d
+      const { opId: _, ...rest } = d
+      return rest
+    })
+  }
+  /**
+   * Drops every note and the summary, keeping nothing. A base the page no longer offers goes with them, for `fallback`: the base the diff
+   * shown was read against with none asked (the run's), which the new draft is then made on, as knowBase would have made it.
+   */
+  function discard(fallback = ''): void {
+    draft.value = { ...emptyDraft(), base: stale.value ? fallback : draft.value.base }
     save()
   }
 
-  return { draft, unsaved, lock, stale, load, knowBase, setBase, add, update, drop, setVerdict, setSummary, sending, sent, discard }
+  return { draft, unsaved, lock, stale, load, knowBase, setBase, add, update, drop, setVerdict, setSummary, sending, sent, unsent, discard }
 }
