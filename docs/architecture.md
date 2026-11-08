@@ -281,6 +281,51 @@ carries the members' durable messages, typed after the recipient's task line,
 and `checkpoints.go` an attempt's blocker and checkpoints, where the next
 attempt starts after a session is lost.
 
+A managed run's work that waits on a person waits on a **durable
+decision** (DR1, `docs/plans/decisions.md`; `docs/protocol.md`,
+Decisions), Yardmaster's record in the ledger (`decisions`, `dr-<n>`,
+never reused, with its responses, history, holds and refunds) rather
+than the session's question. An attempt's agent asks one with the
+`decision_request` tool or `conductor task decide`, over its own token:
+`decisions.go` (`RequestDecision`) commits it bound to its subject (the
+commit at the attempt's HEAD, a candidate, a file's blob, or the run's
+plan revision) and answers `open` at once, and the agent ends its turn
+or goes on with work that does not depend on it; the session shows a
+question that mirrors the record (`Local.TryAskDecision`), which only
+the decision's application answers, so no viewer's reply, a guest's
+with control included, can answer it. A ticket's approved plan revision
+that names decisions opens one gate per decision in the run's first
+transaction, before any attempt (`openGates`), and `pump` starts no
+task a gate holds; the run's other tasks go on. The operator responds
+through `POST /api/decisions/{id}/respond` (the card on the run page,
+the session's bar, Needs you, the palette, the ticket page, or
+`conductor decision respond`): the response is committed first, under
+a client-minted id and the revision the person saw (`Tx.Answer` is
+conditional), so a resend gets its receipt and a second response is
+told who answered; then Yardmaster checks the subject, the policy and
+the asker again and applies it, recording how: typed into the asking
+attempt's live session by its member's deliverer, ahead of its
+handoffs; read by the task's next attempt in its task file (the
+Decisions section of `.conductor/task.md` and `task.json`,
+`decisions_taskfile.go`); a gate's tasks released, or cancelled with
+the rejection's words. An attempt that ends while its decision is open
+is given back (`decisions_wait.go`): it is not counted against its
+task's three attempts (`decision_refunds`, the record's `refunded`
+row), and one whose agent has ended its turn is parked when its member
+or its slot is what keeps a ready task from starting. A subject that
+moves supersedes the approval of it (a new candidate, another blob of
+the file), and the transaction that gives a run its outcome cancels
+every decision of it not final; a stop cancels none. Across a restart
+nothing is lost or done twice: the records are the ledger's, an answer
+recorded while the run is not running waits for the run to be
+continued, the continuation takes the decisions and their holds
+(`decisions_continue.go`, `Tx.MoveDecisions`) and applies the answer
+once, through the task file, and a typing a crash cut is marked
+uncertain, never typed again. The free build's one approver is the
+operator; after each commit the server sends the `decision` event and
+notification and tells the decision router (`ext.DecisionRouter`) of
+the record.
+
 A managed crew may carry a **project manifest** (EN1, `manifest.go`): what
 makes a fresh tree of the project usable, how it is checked and how it is
 cleaned up. It is not an agent's recipes, which are the catalog's. It is
