@@ -5,6 +5,8 @@ import {
   historyDetail,
   historyDetailParts,
   historyQuestions,
+  REJECTING_KINDS,
+  REJECTING_OUTCOMES,
   linkLine,
   lostQuestion,
   recordEnding,
@@ -133,11 +135,19 @@ describe('repeatWords', () => {
   })
 })
 
+describe('the Rejected designs question (PR-9)', () => {
+  it("asks for a DR1 gate's rejected decision beside a plan's withdrawal or supersession and a review's needs_changes", () => {
+    expect(REJECTING_KINDS).toContain('decision.response')
+    expect(REJECTING_OUTCOMES).toContain('rejected')
+    expect(historyQuestions().find((q) => q.id === 'rejected')?.query).toBe(`kind:${REJECTING_KINDS.join(',')} outcome:${REJECTING_OUTCOMES.join(',')}`)
+  })
+})
+
 describe('historyQuestions', () => {
   it('asks the four questions as ready queries', () => {
     expect(historyQuestions({ project: 'CND', host: 'lab-box' }).map((q) => [q.id, q.query])).toEqual([
       ['failures', 'class:checked outcome:failed'],
-      ['rejected', 'kind:plan.withdrawn,plan.superseded,review.verdict outcome:withdrawn,superseded,needs_changes'],
+      ['rejected', 'kind:plan.withdrawn,plan.superseded,review.verdict,decision.response outcome:withdrawn,superseded,needs_changes,rejected'],
       ['verified', 'class:checked outcome:passed project:CND'],
       ['sessions', 'host:lab-box kind:session'],
     ])

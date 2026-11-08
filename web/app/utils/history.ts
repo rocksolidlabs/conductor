@@ -310,11 +310,19 @@ function filter(name: string, value?: string): string {
   return value && !/\s/.test(value) ? ` ${name}:${value}` : ''
 }
 
+/**
+ * What a rejected design is, in one place: the kinds that can reject one and the outcomes that do. The "Rejected designs" question
+ * narrows by both, and the History page's Rejected chip writes the outcomes; a kind or an outcome added here (DR1's decision records,
+ * the plan's PR-9) reaches both.
+ */
+export const REJECTING_KINDS: readonly string[] = ['plan.withdrawn', 'plan.superseded', 'review.verdict', 'decision.response']
+export const REJECTING_OUTCOMES: readonly string[] = ['withdrawn', 'superseded', 'needs_changes', 'rejected']
+
 /** The four questions, each a query: what failed and who investigated it, rejected designs, what was last verified here, this machine's sessions. */
 export function historyQuestions(o: { project?: string; host?: string } = {}): HistoryQuestion[] {
   return [
     { id: 'failures', label: 'Failures and who investigated them', query: 'class:checked outcome:failed' },
-    { id: 'rejected', label: 'Rejected designs', query: 'kind:plan.withdrawn,plan.superseded,review.verdict outcome:withdrawn,superseded,needs_changes' },
+    { id: 'rejected', label: 'Rejected designs', query: `kind:${REJECTING_KINDS.join(',')} outcome:${REJECTING_OUTCOMES.join(',')}` },
     { id: 'verified', label: 'What was last verified here', query: `class:checked outcome:passed${filter('project', o.project)}` },
     { id: 'sessions', label: 'Sessions on this machine', query: `${filter('host', o.host).trimStart()}${filter('host', o.host) ? ' ' : ''}kind:session` },
   ]
