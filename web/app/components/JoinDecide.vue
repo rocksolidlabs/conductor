@@ -10,13 +10,14 @@ import type { JoinDecideState, JoinRecent } from '~/composables/useJoinDecide'
  * action closed stays readable with its steps. Evidence is read through the lane (a check's log's end; a session in the scope opens
  * in its terminal tab, `openSession`); anything else is opened on the desktop or the LAN. What it shows is the page's (`state`,
  * useJoinDecide), kept through a reconnect: `offline` says the lane is being joined again meanwhile. While an action of an item is
- * still owed a word, the item's other actions wait (`busy`): only a reply to that one, or a refusal of it, ends it.
+ * owed, the item's other actions wait (`busy`): only a reply to that one, or a refusal of it, ends it; what an evidence entry or
+ * a terminal could not open is said apart from it (`shownNotice`).
  */
 const props = defineProps<{ state: JoinDecideState; title?: string; offline?: boolean }>()
 const emit = defineEmits<{ openSession: [session: string] }>()
 
 // The page's state for its whole life: its refs drawn as the template's own.
-const { items, next, loaded, error, showing, actions, titles, seenTitles, tracks, openRef, item, missing, delivery, shownFeedback, more, open, back, act, reread, readEvidence } = props.state
+const { items, next, loaded, error, showing, actions, titles, seenTitles, tracks, openRef, item, missing, delivery, shownFeedback, shownNotice, more, open, back, act, reread, readEvidence } = props.state
 
 /** A session in the scope, in its terminal tab. */
 async function openTerminal(ref: string) {
@@ -78,13 +79,14 @@ const recentWord = (e: JoinRecent) => recentBadge({ ref: e.ref, receipt: e.recei
 
     <template v-else>
       <UButton label="Back to the list" icon="i-lucide-arrow-left" color="neutral" variant="ghost" size="lg" class="min-h-11 self-start" data-inbox-back @click="back" />
+      <UAlert v-if="shownNotice" color="neutral" variant="subtle" icon="i-lucide-info" :title="shownNotice" data-decide-notice />
       <InboxItem
         v-if="item"
         :key="item.ref"
         :item="item"
         :route-of="() => null"
         :delivery="delivery"
-        :busy="shownFeedback?.busy ?? (shownFeedback?.again ? 'owed' : undefined)"
+        :busy="shownFeedback?.busy"
         :refusal="shownFeedback?.words"
         :unknown="shownFeedback?.unknown"
         :read-evidence="readEvidence"

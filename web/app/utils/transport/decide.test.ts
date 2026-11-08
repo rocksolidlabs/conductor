@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { DecideOkMsg, DecisionReply } from '../protocol'
 import type { InboxAction } from '../inbox'
-import { DecisionLane, LaneError, decideOf, decideUnconfirmed, pageOf, refusedWords, type LaneAsk, type LaneDecide, type LaneWire } from './decide'
+import { DecisionLane, LaneError, decideOf, decideOutcome, decideUnconfirmed, pageOf, refusedWords, type LaneAsk, type LaneDecide, type LaneWire } from './decide'
 
 /** A wire whose replies the test gives, one by one, in any order. */
 function fakeWire() {
@@ -96,6 +96,20 @@ describe('what a refusal or a lost reply says', () => {
     expect(decideUnconfirmed(new LaneError('no_word', 'x'))).toBe(true)
     expect(decideUnconfirmed(new LaneError('stale_revision', 'x'))).toBe(false)
     expect(decideUnconfirmed(new Error('x'))).toBe(false)
+  })
+
+  it('settles an action only on a reply to it: confirmed, refused, or else owed', () => {
+    expect(decideOutcome(null, false)).toBe('confirmed')
+    for (const c of ['closed', 'no_word', 'not_sent', 'too_many_requests', 'unavailable']) {
+      expect(decideOutcome(new LaneError(c, 'x'), false), c).toBe('owed')
+      expect(decideOutcome(new LaneError(c, 'x'), true), c).toBe('owed')
+    }
+    expect(decideOutcome(new Error('x'), false), 'no word of the owner').toBe('owed')
+    for (const c of ['stale_revision', 'question_answered', 'not_in_scope', 'op_conflict', 'task_state', 'invalid']) expect(decideOutcome(new LaneError(c, 'x'), true), c).toBe('refused')
+    // A replay holds the link before it reads the opId: its refusal of the link says nothing of an earlier send.
+    expect(decideOutcome(new LaneError('revoked', 'x'), false)).toBe('refused')
+    expect(decideOutcome(new LaneError('revoked', 'x'), true)).toBe('owed')
+    expect(decideOutcome(new LaneError('expired', 'x'), true)).toBe('owed')
   })
   it("words each of the lane's codes, and keeps an operation's own words", () => {
     expect(refusedWords(new LaneError('stale_revision', 'x'), 'task')).toBe('The run moved on. Nothing was done.')

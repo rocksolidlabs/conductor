@@ -11,6 +11,7 @@ import { chatThreadKey, scopeItems } from '~/utils/chat'
 import { skipWords, type MemberStatus } from '~/utils/crews'
 import { repliedQuestions, ReplyError, replyFailure, type QuestionReply } from '~/utils/reply'
 import { DecisionLane, type LaneWire } from '~/utils/transport/decide'
+import { newestRead } from '~/composables/useRunDesk'
 
 // The workbench (the desktop app, or a browser holding the workbench token) shows the page beside its sidebar, so a shared session
 // never takes the window over and its own sessions stay one click away; a guest gets the bare page. Decided once: a layout that
@@ -277,13 +278,19 @@ const hostedBy = computed(() => {
 
 // The join API returns only metadata; nothing connects until the guest
 // presses Join, so a fetched link never exposes terminal content.
-async function fetchInfo() {
+/** The join's reads land in the order they were asked: a late one never overwrites a newer one, and a cancelled one lands nowhere. */
+const infoReads = newestRead()
+async function fetchInfo(signal?: AbortSignal) {
+  const read = infoReads.ask()
   try {
-    info.value = await api.join(token.value, server.value)
+    const got = await api.join(token.value, server.value, signal)
+    if (signal?.aborted || !read.land()) return
+    info.value = got
     if (info.value.session) status.value = info.value.session.status
     error.value = ''
     kept.noteInfo(server.value, token.value, info.value)
   } catch (e) {
+    if (signal?.aborted || read.stale()) return
     error.value = (e as Error).message
   }
 }

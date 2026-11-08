@@ -54,6 +54,32 @@ export function decideUnconfirmed(e: unknown): boolean {
   return e instanceof LaneError && (e.code === LaneLocal.Closed || e.code === LaneLocal.NoWord)
 }
 
+/** An operation's own refusal (docs/protocol.md, Decision links): the owner could not read what it needed, a receipt it kept among them. */
+export const OWNER_UNAVAILABLE = 'unavailable'
+
+/** Owner refusals that say nothing of the action asked under the opId: not looked at (too many), or what was kept of it unread. */
+const SAYS_NOTHING = new Set<string>([DecideCode.TooManyRequests, OWNER_UNAVAILABLE])
+/** Refusals of the link a replay gives before it reads what the link kept of the opId (Server.replay holds the link first). */
+const LINK_FIRST = new Set<string>([DecideCode.Revoked, DecideCode.Expired])
+const LOCAL = new Set<string>(Object.values(LaneLocal))
+
+/** What one send of an action makes of it: a reply naming its request confirmed it, or refused it; anything else leaves it owed. */
+export type DecideOutcome = 'confirmed' | 'refused' | 'owed'
+
+/**
+ * The one rule of an action taken through a link (docs/plans/decision-inbox.md, PR-7): `decide_ok` confirms it and the owner's
+ * refusal of it refuses it; everything else leaves it owed, to be asked again under its own opId: no reply (`closed`, `no_word`),
+ * nothing sent (`not_sent`), a refusal that says nothing of it (too many under way, `unavailable`: a kept receipt the owner could
+ * not read), and, once an earlier send of it may have been taken (`went`), the link's refusal a replay gives before it looks. `e`
+ * is null for a `decide_ok`.
+ */
+export function decideOutcome(e: unknown, went: boolean): DecideOutcome {
+  if (e === null) return 'confirmed'
+  if (!(e instanceof LaneError) || LOCAL.has(e.code) || SAYS_NOTHING.has(e.code)) return 'owed'
+  if (went && LINK_FIRST.has(e.code)) return 'owed'
+  return 'refused'
+}
+
 /** A page of the scope's items, as `decisions_list` answers it; the first page carries the link's Recent. */
 export interface LanePage {
   items: InboxSummary[]

@@ -1046,7 +1046,8 @@ export function useSessions() {
     revokeLink: (id: string, linkId: string) =>
       request<void>(`/api/sessions/${encodeURIComponent(id)}/links/${encodeURIComponent(linkId)}`, { method: 'DELETE' }),
     /** The link's session or run, from this server, or from `server` (a switchyard, utils/invite.ts joinServer) with no workbench token. */
-    join: (token: string, server = '') => request<JoinInfo>(`/api/join/${encodeURIComponent(token)}`, { token, base: server || undefined }),
+    /** A link's join; `signal` cancels it (the run desk's bounded read). */
+    join: (token: string, server = '', signal?: AbortSignal) => request<JoinInfo>(`/api/join/${encodeURIComponent(token)}`, { token, base: server || undefined, signal }),
     /**
      * Sets a session's attention state as the admin. 429 `rate_limited` means the session's limit of 20 reports a second, 40 at once, which its
      * events share, is used up: nothing changed.

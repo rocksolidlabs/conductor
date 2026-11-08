@@ -9,7 +9,9 @@ import { useJoinDecide } from './useJoinDecide'
 // the order it chooses: a More asked of a list read again since lands on no list; a blocker's Cancel, tracked as its task's, shows
 // its steps on the question's card; and an action whose connection closed before its reply is owed until a reply confirms or
 // refuses it: kept through a reconnect and asked again under its own opId with the welcome, kept when its ask again cannot be sent
-// (no connection now), and no other action on its item replaces it meanwhile.
+// (no connection now), and no other action on its item replaces it meanwhile. Codex round 3's reproductions: an evidence read that
+// failed while the action was owed, and an ask again answered `unavailable` (a kept receipt the owner could not read), leave it
+// owed and asked again with the next welcome; nothing but a reply to it settles it.
 
 type Asked = { m: LaneAsk; settle: (r: DecisionReply) => void; fail: (e: unknown) => void }
 type Decided = { m: LaneDecide; settle: (r: DecideOkMsg) => void; fail: (e: unknown) => void }
@@ -213,5 +215,121 @@ describe('useJoinDecide', () => {
     expect(d.shownFeedback.value?.again).toBeUndefined()
     expect(d.shownFeedback.value?.unknown).toBeUndefined()
     expect(d.actions.value.map((e) => [e.ref, e.attempt])).toEqual([[q, first.m.opId]])
+  })
+
+  /** A page with q open (its actions `acts`), the list read, over a wire the test can take away. */
+  async function opened(acts: InboxAction[]) {
+    const f = fakeWire()
+    const w = { now: f.wire as LaneWire | null }
+    const seq = ref(0)
+    const d = useJoinDecide(new DecisionLane(() => w.now), seq)
+    seq.value++
+    await flush()
+    f.take('decisions_list').settle(page(1, 1, 1))
+    await flush()
+    d.open(Q)
+    await flush()
+    f.take('decision_read').settle({ reqId: 'x', item: { ...question(Q, acts), evidence: [{ ref: 'session:s9', label: 'The terminal' }] } as InboxItem })
+    await flush()
+    return { f, w, seq, d }
+  }
+  const Q = 'question:s1/q-1'
+  const RIGHT: InboxAction = { name: 'answer', label: 'Right', input: 'Right\r', expect: 'q-1', scope: 'Types Right', route: '/ws/sessions/s1' }
+
+  it('keeps an action owed through an evidence read that failed while it was, and asks it again with the next welcome (Codex round 3, 1)', async () => {
+    const { f, w, seq, d } = await opened([RIGHT])
+    void d.act(Q, RIGHT)
+    await flush()
+    const first = f.decided[0]!
+    w.now = null
+    first.fail(new LaneError(LaneLocal.Closed, 'closed'))
+    await flush()
+
+    // The session entry's id is not in the item's read: the lane is asked, and nothing is connected.
+    expect(await d.sessionOf('session:s9')).toBe('')
+    await flush()
+    expect(d.shownNotice.value).toContain('Not connected')
+    expect(d.shownFeedback.value?.again, 'the action still owed, its decide kept').toEqual(first.m)
+    expect(d.shownFeedback.value?.unknown).toContain('no word came back')
+
+    w.now = f.wire
+    seq.value++
+    await flush()
+    expect(f.decided).toHaveLength(2)
+    expect(f.decided[1]!.m).toEqual(first.m)
+    f.decided[1]!.settle({ t: 'decide_ok', reqId: 'x', ref: Q, receipt: 'q-1', repeat: true })
+    await flush()
+    expect(d.shownFeedback.value).toBeUndefined()
+    expect(d.actions.value.map((e) => e.attempt)).toEqual([first.m.opId])
+  })
+
+  it('keeps an action owed when its ask again is answered unavailable, and asks it again with the next welcome (Codex round 3, 2)', async () => {
+    const { f, seq, d } = await opened([RIGHT])
+    void d.act(Q, RIGHT)
+    await flush()
+    const first = f.decided[0]!
+    first.fail(new LaneError(LaneLocal.NoWord, 'no word'))
+    await flush()
+
+    // The ask again: the owner kept the action, and could not read its receipt now.
+    void d.reread()
+    await flush()
+    expect(f.decided).toHaveLength(2)
+    f.decided[1]!.fail(new LaneError('unavailable', 'the receipt could not be read'))
+    await flush()
+    expect(d.shownFeedback.value?.again).toEqual(first.m)
+    expect(d.shownFeedback.value?.words).toBeUndefined()
+    expect(d.shownFeedback.value?.unknown).toContain('still owed')
+
+    seq.value++
+    await flush()
+    expect(f.decided).toHaveLength(3)
+    expect(f.decided[2]!.m).toEqual(first.m)
+    f.decided[2]!.settle({ t: 'decide_ok', reqId: 'x', ref: Q, receipt: 'q-1', repeat: true })
+    await flush()
+    expect(d.shownFeedback.value).toBeUndefined()
+  })
+
+  it('keeps an action owed that could not be sent at all, and sends it under its own opId once connected', async () => {
+    const { f, w, seq, d } = await opened([RIGHT])
+    w.now = null
+    await d.act(Q, RIGHT)
+    await flush()
+    expect(f.decided).toHaveLength(0)
+    const m = d.shownFeedback.value?.again
+    expect(m?.opId).toBeTruthy()
+    expect(d.shownFeedback.value?.unknown).toContain('Your action is kept')
+    w.now = f.wire
+    seq.value++
+    await flush()
+    expect(f.decided.map((x) => x.m)).toEqual([m])
+  })
+
+  it('asks an owed action again at once when a welcome came while its ask was under way', async () => {
+    const { f, seq, d } = await opened([RIGHT])
+    void d.act(Q, RIGHT)
+    await flush()
+    // A welcome while the decide is out: nothing sent twice now; its reply is lost, so it is asked again at its end.
+    seq.value++
+    await flush()
+    expect(f.decided).toHaveLength(1)
+    f.decided[0]!.fail(new LaneError(LaneLocal.Closed, 'closed'))
+    await flush()
+    expect(f.decided).toHaveLength(2)
+    expect(f.decided[1]!.m).toEqual(f.decided[0]!.m)
+  })
+
+  it('settles an action on a refusal of it, and takes the next', async () => {
+    const { f, d } = await opened([RIGHT])
+    void d.act(Q, RIGHT)
+    await flush()
+    f.decided[0]!.fail(new LaneError('question_answered', 'another answer came first'))
+    await flush()
+    expect(d.shownFeedback.value?.again).toBeUndefined()
+    expect(d.shownFeedback.value?.words).toContain('no longer waits')
+    void d.act(Q, RIGHT)
+    await flush()
+    expect(f.decided).toHaveLength(2)
+    expect(f.decided[1]!.m.opId).not.toBe(f.decided[0]!.m.opId)
   })
 })
