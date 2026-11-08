@@ -1,3 +1,4 @@
+import type { Ref } from 'vue'
 import type { RunInfo, SessionInfo } from './useSessions'
 import { ApiError } from './useApi'
 import { liveSession, attentionFavicon, alerting, needingInput, newlyNeedingInput, playChime } from '~/utils/attention'
@@ -75,6 +76,21 @@ interface AttentionStore {
   /** The first snapshot of the sessions has been applied: an empty map means no sessions, not none read yet (#359). */
   loaded: boolean
   error: string
+}
+
+/**
+ * The events stream's request, sent with the workbench token held as it is made; null when it is refused (401). The refusal is that
+ * token's, judged by `admin.refused` when it lands, so a reply for a token since replaced does not ask for the token again (#281). A
+ * page in a desktop app that opens agents' links says so (#436): while it streams, an agent's link waits for its claim.
+ */
+export async function openEvents(url: string, admin: { token: Ref<string>; refused: (sent: string) => void }, desktop: boolean, signal: AbortSignal): Promise<Response | null> {
+  const sent = admin.token.value
+  const headers: Record<string, string> = { Authorization: `Bearer ${sent}` }
+  if (desktop) headers['X-Conductor-Desktop'] = '1'
+  const res = await fetch(url, { headers, signal })
+  if (res.status !== 401) return res
+  admin.refused(sent)
+  return null
 }
 
 /** The live session store behind useAttention, for readers that must not start it (useEvents). */
@@ -247,12 +263,8 @@ export function useAttention() {
     abort = new AbortController()
     const signal = abort.signal
     try {
-      // A page in a desktop app that opens agents' links says so (#436): while it streams, an agent's link waits for its claim.
-      const headers: Record<string, string> = { Authorization: `Bearer ${admin.token.value}` }
-      if (desktopBridge()?.openUrl) headers['X-Conductor-Desktop'] = '1'
-      const res = await fetch(`${httpBase.value}/api/events`, { headers, signal })
-      if (res.status === 401) {
-        admin.needsToken.value = true
+      const res = await openEvents(`${httpBase.value}/api/events`, admin, !!desktopBridge()?.openUrl, signal)
+      if (!res) {
         store.value.error = 'Workbench token required'
         return
       }
