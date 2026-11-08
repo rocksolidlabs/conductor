@@ -509,10 +509,16 @@ const findingsSection = useTemplateRef<HTMLElement>('findingsSection')
 function showFindings() {
   void nextTick(() => findingsSection.value?.scrollIntoView({ block: 'start' }))
 }
+// A link's `&focus=findings` shows them once they are drawn (the view draws them once the ticket's candidates are read), once a link.
+let focused = ''
 watch(
-  () => props.focus,
-  (f) => {
-    if (f === 'findings') showFindings()
+  () => [props.focus, findingsSection.value] as const,
+  ([f, el]) => {
+    if (f !== 'findings') focused = ''
+    else if (el && focused !== f) {
+      focused = f
+      showFindings()
+    }
   },
   { immediate: true },
 )
