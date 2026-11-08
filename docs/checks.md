@@ -40,6 +40,9 @@ module on the 64-core Linux box at a load average of 77 to 160
 no defect. `make test`, `ci.yml` and `scripts/preflight.py` pass the same
 bound, and `scripts/preflight_test.py` holds them to it.
 
+A file CI's jobs fetch from a release mirror is cached by its version (`actions/cache`) and its download retried for minutes: Neovim's tarball through `curl --retry-all-errors`, refetched when it is not a gzip, and Electron's binary through
+`desktop/scripts/install-electron.mjs` (the desktop tests' `pretest`, six tries of electron's own installer), so a mirror's bad half hour fails one try, not the run (#281).
+
 `make lint` ends with the open-core rules (`internal/opencore`,
 `TestModuleKeepsTheRules`; CONTRIBUTING.md, The open-core rules): no import
 of a module of the `rocksolidlabs` organization other than this one
