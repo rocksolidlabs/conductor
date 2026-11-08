@@ -637,8 +637,14 @@ func TestABriefingWithoutAFactIsRefused(t *testing.T) {
 			t.Fatalf("%v: %d %v", c.brief, status, out)
 		}
 	}
-	if r, err := b.desk.st.Get(id); err != nil || r.HasBrief || r.State != brakeman.StateRunning {
+	// The refusals keep nothing and close nothing. The session exists
+	// before the turn's launch has returned, so they may land while the
+	// request is still starting: running is waited for, not assumed.
+	if r, err := b.desk.st.Get(id); err != nil || r.HasBrief || (r.State != brakeman.StateStarting && r.State != brakeman.StateRunning) {
 		t.Fatalf("after the refusals: %+v %v", r, err)
+	}
+	if r := b.waitState(t, id, brakeman.StateRunning); r.HasBrief {
+		t.Fatalf("once running: %+v", r)
 	}
 	if status, out := b.submit(t, sid, tok, "brief-fact", factBrief("session:"+sid, "run:"+run)); status != http.StatusCreated {
 		t.Fatalf("the brief with a fact: %d %v", status, out)
