@@ -214,6 +214,10 @@ you ask depends on your task's kind: a review is a task whose task.md says
   approval (2 to 6 options and what a yes --authorizes) or assignment (no
   options, answered Done or Not done, for work a person does). Options are
   numbered from 0 in the order given; --recommend names one by its number.
+  Your task file's "Who answers for this work" names who holds each
+  responsibility; --for (for, in decision_request) names the one the
+  decision is for, role:architecture or person:nate, and the operator
+  answers it for them.
 - It replies at once with the decision's id and its state: "dr-7 open.
   Pending. ...". dr-7 is the decision's id, which task decision, task
   withdraw and --supersedes take. Without an id, task decision lists your
