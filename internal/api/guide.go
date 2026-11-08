@@ -22,6 +22,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/gitcli"
+	"github.com/rocksolidlabs/conductor/internal/journal"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/version"
 )
@@ -532,6 +533,53 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			CLI:     []string{"conductor", "up", "CREW"},
 			Input:   bodySchema(launchBody{}),
 			Bounds:  map[string]int{"body": maxLaunchBody}},
+		// The history, the admin's (docs/plans/history.md: history_*.go):
+		// no MCP tool, so tools/list is as it was.
+		{Name: "history_search", Scope: "admin", Method: http.MethodGet, Path: "/api/history", needs: needLauncher,
+			Summary: "Search the history: sessions, runs' receipts, tickets and briefs whose text holds the words (?q=, filters such as class:checked outcome:failed), each with its class, its six fields and its links.",
+			CLI:     []string{"conductor", "history", "search", "WORDS"},
+			Input:   map[string]any{"type": "object", "description": "no body; ?q=, ?limit=, ?after="},
+			Bounds:  map[string]int{"reply": maxHistoryReply}},
+		{Name: "history_entry", Scope: "admin", Method: http.MethodGet, Path: "/api/history/entry", needs: needLauncher,
+			Summary: "One history entry by its key, with its links each way and its availability: for a session's record whether Resume is offered, and why not.",
+			CLI:     []string{"conductor", "history", "show", "KEY"},
+			Input:   map[string]any{"type": "object", "description": "no body; ?key="},
+			Bounds:  map[string]int{"reply": maxHistoryReply}},
+		{Name: "history_similar", Scope: "admin", Method: http.MethodGet, Path: "/api/history/similar", needs: needLauncher,
+			Summary: "The receipts of an entry's command in other runs: in its repository, or every one with ?scope=all.",
+			CLI:     []string{"conductor", "history", "similar", "KEY"},
+			Input:   map[string]any{"type": "object", "description": "no body; ?key=, ?scope=, ?limit="},
+			Bounds:  map[string]int{"reply": maxHistoryReply}},
+		{Name: "history_command", Scope: "admin", Method: http.MethodGet, Path: "/api/history/command", needs: needLauncher,
+			Summary: "One command receipt of a run by its actor and id, as the ledger holds it: the actor the query names, never the caller's.",
+			Input:   map[string]any{"type": "object", "description": "no body; ?run=, ?actor=, ?id="},
+			Bounds:  map[string]int{"actor": maxHistoryActor, "reply": maxHistoryReply}},
+		{Name: "history_sessions", Scope: "admin", Method: http.MethodGet, Path: "/api/history/sessions", needs: needLauncher,
+			Summary: "The session records, newest first, a page at a time: every session this server ran, after a restart too.",
+			CLI:     []string{"conductor", "history", "sessions"},
+			Input:   map[string]any{"type": "object", "description": "no body; ?after=, ?limit="}},
+		{Name: "history_session", Scope: "admin", Method: http.MethodGet, Path: "/api/history/sessions/{id}", needs: needLauncher,
+			Summary: "A session's record whole: its agent and conversation, its host, folder and commits, its launch, and what Conductor saw pass through it.",
+			CLI:     []string{"conductor", "history", "session", "ID"},
+			Input:   map[string]any{"type": "object", "description": "no body"},
+			Bounds:  map[string]int{"reply": journal.MaxRecord}},
+		{Name: "history_resume", Scope: "admin", Method: http.MethodPost, Path: "/api/history/sessions/{id}/resume", needs: needLauncher,
+			Summary: "Resume a session's agent conversation from its record, after a restart too, by the resume routes' rules; the same commandId again answers its receipt and starts nothing.",
+			CLI:     []string{"conductor", "history", "resume", "ID"},
+			Input:   bodySchema(historyResumeBody{}),
+			Bounds:  map[string]int{"body": maxHistoryResumeBody, "receipts": journal.MaxResumes}},
+		{Name: "history_forget", Scope: "admin", Method: http.MethodDelete, Path: "/api/history/sessions/{id}", needs: needLauncher,
+			Summary: "Forget a session's record: its file deleted and its rows dropped from the history; refused while the session runs or a resume of it is being started.",
+			CLI:     []string{"conductor", "history", "forget", "ID"},
+			Input:   map[string]any{"type": "object", "description": "no body"}},
+		{Name: "history_forget_all", Scope: "admin", Method: http.MethodDelete, Path: "/api/history/sessions", needs: needLauncher,
+			Summary: "Forget every session record neither live nor being resumed; those kept are counted.",
+			CLI:     []string{"conductor", "history", "forget", "--all"},
+			Input:   map[string]any{"type": "object", "description": "no body"}},
+		{Name: "history_reindex", Scope: "admin", Method: http.MethodPost, Path: "/api/history/reindex", needs: needLauncher,
+			Summary: "Rebuild the history's index from the stores; the records, the ledger and Dispatch are not changed.",
+			CLI:     []string{"conductor", "history", "reindex"},
+			Input:   map[string]any{"type": "object", "description": "no body"}},
 		// Brakeman's desk, the admin's (brakeman.go).
 		{Name: "brakeman_status", Scope: "admin", Method: http.MethodGet, Path: "/api/brakeman", needs: needLauncher,
 			Summary: "Brakeman's configuration, the turn in progress, the queue and today's turns.",

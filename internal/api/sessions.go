@@ -40,6 +40,14 @@ type createSessionRequest struct {
 	// resume, set by Resume, is the agent session id the launch resumes with
 	// the agent's recipe; resumedFrom the session it resumes or relaunches.
 	resume, resumedFrom string
+	// id, set by a resume from a record, is the new session's id, allocated
+	// with its receipt before the launch (journal.ReserveResume); "" makes
+	// one now.
+	id string
+	// atLaunch, set by a resume from a record, is its last read, made as
+	// the launch takes the conversation (takeConversation) and after it:
+	// a refusal ends the launch.
+	atLaunch func() *apiError
 	// renamed, set by a resume, says Name is one a person renamed the
 	// session it resumes to, or its own resumed from (session.Launched.Renamed).
 	renamed bool
@@ -244,10 +252,18 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		// One live session per agent conversation: the conversation is
 		// taken now, before the process starts, and let go as this returns
 		// (registered, the session itself holds it; failed, a retry may).
-		if !s.takeResume(req.resume) {
-			return nil, newAPIError(http.StatusConflict, "already_resumed", "a running session holds that conversation, or one is being made for it")
+		if aerr := s.takeConversation(req.resume, req.resumedFrom); aerr != nil {
+			return nil, aerr
 		}
 		defer s.releaseResume(req.resume)
+		// Read after the conversation's holders, so that whatever they
+		// let go of before it is seen by it (a resume from a record:
+		// whether the record's end was observed).
+		if req.atLaunch != nil {
+			if aerr := req.atLaunch(); aerr != nil {
+				return nil, aerr
+			}
+		}
 		argv = append(argv, catalog.Expand(r.ResumeArgs, req.resume)...)
 		agentSession = &session.AgentSession{ID: req.resume, Resumable: true, Source: session.AgentSessionResumed}
 	case !r.Empty() && len(r.StartArgs) > 0:
@@ -299,7 +315,10 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 			return nil, newAPIError(http.StatusInternalServerError, "invalid_agent", "the agent's prompt shape is invalid")
 		}
 	}
-	id := session.NewID()
+	id := req.id
+	if id == "" {
+		id = session.NewID()
+	}
 	agentToken, _ := share.NewToken()
 	notifyURL := s.notifyBase() + "/api/sessions/" + id + "/attention"
 	// The binary the hooks run, for what the agent runs itself (the skill).
