@@ -44,6 +44,11 @@ const task: { it: InboxItem; a: InboxAction } = {
   it: { ref: 'task:r1/build', subject: 'task:r1/build', kind: 'task', since: '', title: 'build failed', brief: '', briefBy: 'conductor', question: '', answerer: 'you', revision: '7', blocking: { words: '', refs: [] }, actions: [], recommended: -1 },
   a: { name: 'retry', label: 'Retry', expect: '7', scope: '', route: '/api/runs/r1/tasks/build/retry' },
 }
+// Check again of a continuation's task: its route is the candidate's own run (r0), its steps the item's (r1).
+const recheck: { it: InboxItem; a: InboxAction } = {
+  it: task.it,
+  a: { name: 'recheck', label: 'Check again', expect: '7', scope: "Checks attempt 3 of run r0's commit 0123456789ab again", route: 'POST /api/runs/r0/tasks/build/recheck', attempt: 3, commit: '0123456789abcdef0123456789abcdef01234567' },
+}
 const plan: { it: InboxItem; a: InboxAction } = {
   it: { ref: 'plan:DEC-1/1', subject: 'plan:DEC-1/1', kind: 'plan', since: '', title: 'its plan', brief: '', briefBy: 'conductor', question: '', answerer: 'you', revision: '3', blocking: { words: '', refs: [] }, actions: [], recommended: -1 },
   a: { name: 'approve', label: 'Approve', expect: '3', scope: '', route: '/api/dispatch/plans/pl-1/approve' },
@@ -51,7 +56,12 @@ const plan: { it: InboxItem; a: InboxAction } = {
 
 /** The page's sends, each a held promise the test settles, with what each was called with. */
 function sendsOf(o: { listed?: SessionKnown[]; read?: (id: string) => Promise<SessionKnown> } = {}) {
-  const calls: { answer: Array<{ s: SessionKnown; reqId: string }>; command: string[]; plan: string[] } = { answer: [], command: [], plan: [] }
+  const calls: { answer: Array<{ s: SessionKnown; reqId: string }>; command: string[]; recheck: Array<{ run: string; task: string; attempt: number; commit: string; expectedRevision?: number; commandId: string }>; plan: string[] } = {
+    answer: [],
+    command: [],
+    recheck: [],
+    plan: [],
+  }
   let next: ReturnType<typeof held<unknown>> = held()
   const sends: ActSends = {
     session: (id) => sessionFor(o.listed ?? [{ id: 's1', kind: 'server', name: 'one' }], id, o.read ?? (() => Promise.reject(new Error('no such session')))),
@@ -61,6 +71,10 @@ function sendsOf(o: { listed?: SessionKnown[]; read?: (id: string) => Promise<Se
     },
     command: (_run, _task, _name, x) => {
       calls.command.push(x.commandId)
+      return next.p
+    },
+    recheck: (run, task, x) => {
+      calls.recheck.push({ run, task, ...x })
       return next.p
     },
     plan: (_a, _id, x) => {
@@ -120,6 +134,19 @@ const paths = [
     refusal: new CommandRefused('the run moved on', { status: 'failed', refusal: 'stale_revision' } as never),
   },
   {
+    name: 'a Check again',
+    item: recheck,
+    receipt: (e: RecentEntry) => e.receipt,
+    before: steps('done', 'unknown', 'unknown', 'unknown'),
+    taken: steps('done', 'done', 'done', 'done'),
+    refusedTrack: steps('done', 'done', 'refused', 'not_applicable'),
+    confirm: undefined,
+    refusal: new CommandRefused("the candidate is no longer the task's standing one: attempt 4 failed since, at 0123456789ab: check that one again", {
+      status: 'failed',
+      refusal: 'stale_candidate',
+    } as never),
+  },
+  {
     name: "a plan's approval",
     item: plan,
     receipt: (e: RecentEntry) => e.receipt,
@@ -154,7 +181,7 @@ describe('every send of the decision page', () => {
         await pg.l.changed()
         expect(stateOf(pg.track(e))).toEqual(stateOf(p.taken))
         expect(unknownWords(pg.entry(p.item.it.ref), pg.track(e), false)).toBe('')
-        expect(pg.s.calls.answer.length + pg.s.calls.command.length + pg.s.calls.plan.length).toBe(1)
+        expect(pg.s.calls.answer.length + pg.s.calls.command.length + pg.s.calls.recheck.length + pg.s.calls.plan.length).toBe(1)
       })
 
       it('refused by its receipt is refused with its words, the steps ended there, read before or after the refusal commits', async () => {
@@ -197,6 +224,37 @@ describe('every send of the decision page', () => {
       })
     })
   }
+})
+
+describe('a Check again (#713)', () => {
+  it("names its candidate to the candidate's run's route at the run's revision, its steps kept under the item's ref", async () => {
+    const pg = await page()
+    pg.s.hold()
+    const out = pg.acts.act(recheck.it, recheck.a)
+    await settle()
+    expect(pg.s.calls.recheck).toEqual([{ run: 'r0', task: 'build', attempt: 3, commit: recheck.a.commit, expectedRevision: 7, commandId: pg.entry(recheck.it.ref).receipt }])
+    expect(pg.s.calls.command).toEqual([])
+    expect(pg.entry(recheck.it.ref)).toMatchObject({ ref: 'task:r1/build', label: 'Check again' })
+    pg.s.reply.done(undefined)
+    expect(await out).toEqual({ how: 'confirmed' })
+  })
+
+  it('whose candidate no longer stands is refused in the words that say what stands now, shown where a refused command is', async () => {
+    const pg = await page()
+    pg.s.hold()
+    const out = pg.acts.act(recheck.it, recheck.a)
+    await settle()
+    pg.s.reply.fail(paths.find((p) => p.name === 'a Check again')!.refusal)
+    expect(await out).toMatchObject({ how: 'refused' })
+    expect(pg.feedback()[recheck.it.ref]!.words).toContain('attempt 4 failed since, at 0123456789ab: check that one again')
+    expect(pg.entry(recheck.it.ref).outcome).toContain('attempt 4 failed since')
+  })
+
+  it('that names no candidate sends nothing', async () => {
+    const pg = await page()
+    expect(await pg.acts.act(recheck.it, { ...recheck.a, attempt: undefined })).toBeNull()
+    expect(pg.s.calls.recheck).toEqual([])
+  })
 })
 
 describe("an answer's session", () => {

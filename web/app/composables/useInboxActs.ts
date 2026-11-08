@@ -1,13 +1,14 @@
 import { isStale } from '~/utils/brakemanCards'
 import { DispatchOrder } from '~/utils/dispatchOrder'
 import { replyFailure, ReplyError } from '~/utils/reply'
-import { mintCommandId, type TaskCommand } from '~/utils/tasks'
+import { commandBody, mintCommandId, sendCommand, type TaskCommand } from '~/utils/tasks'
 import {
   answerFailure,
   mintRequestId,
   movedOnWords,
   planIdOf,
   receiptFailure,
+  recheckStands,
   refParts,
   UNCONFIRMED,
   whereToAnswer,
@@ -49,6 +50,8 @@ export interface ActSends {
   session: (id: string) => Promise<SessionKnown | null>
   answer: (s: SessionKnown, what: { input: string } | { text: string }, o: { question: string; reqId: string }) => Promise<AnswerOutcome>
   command: (run: string, task: string, name: TaskCommand, o: { expectedRevision?: number; commandId: string }) => Promise<unknown>
+  /** Check again of the candidate (its attempt and commit) through the recheck route of `run`, the candidate's own. */
+  recheck: (run: string, task: string, o: { expectedRevision?: number; commandId: string; attempt: number; commit: string }) => Promise<unknown>
   plan: (a: InboxAction, id: string, o: { what: string; expectedRev?: number; opId: string }) => Promise<unknown>
   comment: (ticket: string, body: string, opId: string) => Promise<unknown>
   /** The words of a stale refusal (the run, the revision moved on), read from what the item is now. */
@@ -108,7 +111,7 @@ export class InboxActs {
   act(it: InboxItem, a: InboxAction, text?: string): Promise<ActCame | null> {
     if (this.pending(it.ref)) return Promise.resolve(null)
     if (a.name === 'answer') return this.answer(it, a, text)
-    if (a.name === 'retry' || a.name === 'accept' || a.name === 'cancel') return this.command(it, a)
+    if (a.name === 'retry' || a.name === 'accept' || a.name === 'cancel' || a.name === 'recheck') return this.command(it, a)
     if (a.name === 'approve' || a.name === 'withdraw') return this.plan(it, a)
     return Promise.resolve(null)
   }
@@ -161,15 +164,16 @@ export class InboxActs {
   }
 
   private command(it: InboxItem, a: InboxAction): Promise<ActCame | null> {
-    const m = /\/api\/runs\/([^/]+)\/tasks\/([^/]+)\/(retry|accept|cancel)$/.exec(a.route)
-    if (!m) return Promise.resolve(null)
-    const [, run, task, name] = m as unknown as [string, string, string, TaskCommand]
+    const m = /\/api\/runs\/([^/]+)\/tasks\/([^/]+)\/(retry|accept|cancel|recheck)$/.exec(a.route)
+    if (!m || (m[3] === 'recheck' && (!a.attempt || !a.commit))) return Promise.resolve(null)
+    const [, run, task, name] = m as unknown as [string, string, string, TaskCommand | 'recheck']
     const commandId = this.ids.command()
     const entry: RecentEntry = { ref: it.ref, receipt: commandId, at: this.now(), title: it.title, label: a.label, ...(a.track && a.track !== it.ref ? { track: a.track } : {}) }
     return this.send(entry, it.ref, entry, a.label, async (sent) => {
       sent()
       try {
-        await this.sends.command(run, task, name, { expectedRevision: Number(a.expect) || undefined, commandId })
+        const o = { expectedRevision: Number(a.expect) || undefined, commandId }
+        await (name === 'recheck' ? this.sends.recheck(run, task, { ...o, attempt: a.attempt!, commit: a.commit! }) : this.sends.command(run, task, name, o))
         return { how: 'confirmed' }
       } catch (e) {
         if (receiptFailure(e) !== 'refused') return { how: 'unconfirmed' }
@@ -273,6 +277,7 @@ export function useInboxActs() {
         const ok = await commands.send({ id: task }, name, { ...o, run, refused: (e) => (failed = e) })
         if (!ok) throw failed
       },
+      recheck: (run, task, o) => sendCommand((body) => api.recheckTask(run, task, body), { ...commandBody(o.expectedRevision, o.commandId), attempt: o.attempt, commit: o.commit }),
       plan: (a, id, o) =>
         ops.run((body) => (a.name === 'approve' ? dispatch.approvePlan(id, { ...body, ticketRev: a.ticketRev }) : dispatch.withdrawPlan(id, body)), {
           thing: `plan:${id}`,
@@ -285,10 +290,13 @@ export function useInboxActs() {
       comment: (ticket, body, opId) => ops.run((b) => dispatch.addComment(ticket, { ...b, body }), { thing: `ticket:${ticket}`, what: ticket, opId, raise: true, done: `Commented on ${ticket}` }),
       movedOn: async (it, a) => {
         if (it.kind === 'plan') return movedOnWords('plan', await api.inboxItem(it.ref).catch(() => null))
-        const m = /\/api\/runs\/([^/]+)\/tasks\/([^/]+)\//.exec(a.route)
+        // The run the task is in: the item's (or its track's), which a Check again's route, its candidate's run, may not be.
+        const m = /^task:([^/]+)\/(.+)$/.exec(a.track || it.ref) ?? /\/api\/runs\/([^/]+)\/tasks\/([^/]+)\//.exec(a.route)
         const r = m ? await live.refreshRun(m[1]!).catch(() => null) : null
         const t = r?.tasks?.find((x) => x.id === m?.[2])
-        return `The run moved on${r?.managed ? ` (revision ${r.managed.revision} now, the choice was read at ${a.expect})` : ''}${t ? `: ${t.id} is ${t.state} now` : ''}. Nothing was done.`
+        // A Check again says what stands now: the candidate its item, read again, names.
+        const stands = a.name === 'recheck' ? recheckStands(await api.inboxItem(a.track || it.ref).catch(() => null)) : ''
+        return `The run moved on${r?.managed ? ` (revision ${r.managed.revision} now, the choice was read at ${a.expect})` : ''}${t ? `: ${t.id} is ${t.state} now` : ''}${stands}. Nothing was done.`
       },
     },
     (f) => (feedback.value = f),
