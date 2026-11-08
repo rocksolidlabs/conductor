@@ -423,7 +423,7 @@ test("granted Route a decision, Brakeman routes a gate's decision to the crew's 
       title: `${did} waits on the security reviewer`,
       summary: 'The gate before build is a security question: it is routed to the crew\'s security reviewer, for the operator to answer.',
       items: [
-        { kind: 'fact/1', text: `${did} holds build.`, evidence: [`run:${runId}`] },
+        { kind: 'fact/1', text: `${did} holds build.`, evidence: [`run:${runId}`, `decision:${did}`] },
         { kind: 'proposal/1', text: `Route ${did} to the security reviewer.`, op: 'route_decision', target: `decision:${did}`, expectedRevision: '@REV', args: { opId: 'bka-route-1' }, facts: [0] },
       ],
     }),
@@ -452,11 +452,17 @@ test("granted Route a decision, Brakeman routes a gate's decision to the crew's 
   expect(after.decision.state).toBe('open')
   expect(after.decision.history.filter((h) => h.kind === 'routed' && h.by === 'brakeman')).toHaveLength(1)
 
-  // The brief and the decision's card: two waits of 30 s and nine steps.
-  budget(2 * 30_000 + 9 * STEP_MS)
+  // The brief and the decision's card: two waits of 30 s and thirteen steps.
+  budget(2 * 30_000 + 13 * STEP_MS)
   await open(page, `/brakeman?request=${id}`)
   const p = page.locator(`[data-brief="${id}"] [data-proposal-op="route_decision"]`)
   await expect(p).toHaveAttribute('data-proposal-act', 'done', { timeout: 30_000 })
+  // The fact's evidence names the decision: its chip opens the record in the decision's card, with no act of its own (#539, review
+  // round 2); closed, the card is gone before the act's own button opens it again.
+  await page.locator(`[data-brief="${id}"] [data-brief-fact] [data-ref-decision="${did}"]`).click()
+  await expect(page.locator(`[data-decision-modal-id="${did}"]`)).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.locator('[data-decision-modal]')).toHaveCount(0)
   await expect(p.locator('[data-proposal-did-badge]')).toHaveText('Brakeman did this')
   const seq = acts[0]!.receipt!.split('#')[1]
   await expect(p.locator('[data-proposal-did-words]')).toHaveText(`Brakeman did this, under the grant "Route a decision" you gave it; ${did} routed: row ${seq} of its history.`)
