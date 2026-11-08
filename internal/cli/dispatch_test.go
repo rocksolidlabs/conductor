@@ -539,10 +539,12 @@ func TestDispatchUsageErrors(t *testing.T) {
 // maxDispatchReply is the smallest whole number of MiB above the largest
 // reply conductor dispatch's reads can carry, a ticket's, a project's, a
 // plan revision's with its body, a ticket's revisions, a launch's with its
-// package and a page of a ticket's runs, and the session client's limit
-// holds a ticket's.
+// package, a page of a ticket's runs, a review's, a page of reviews, of
+// findings or of marks and a candidate's diff, and the session client's
+// limit holds a ticket's.
 func TestDispatchReplyLimitsAreDerivedFromTheServersBounds(t *testing.T) {
-	largest := max(api.MaxTicketReply, api.MaxProjectReply, api.MaxPlanReply, api.MaxPlansReply, api.MaxLaunchReply, api.MaxTicketRunsReply)
+	largest := max(api.MaxTicketReply, api.MaxProjectReply, api.MaxPlanReply, api.MaxPlansReply, api.MaxLaunchReply, api.MaxTicketRunsReply,
+		dispatch.MaxReviewReply, dispatch.MaxReviewsReply, dispatch.MaxFindingsReply, dispatch.MaxMarksReply, api.MaxDiffReply)
 	if maxDispatchReply%(1<<20) != 0 || maxDispatchReply <= largest || maxDispatchReply-(1<<20) > largest {
 		t.Fatalf("maxDispatchReply is %d, the largest reply %d", maxDispatchReply, largest)
 	}
