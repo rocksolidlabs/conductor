@@ -241,6 +241,11 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		defer cancel()
 		srv.Shutdown(sctx)
 	}()
+	// The join page this binary serves (its embedded web build) has the
+	// Decide tab, so its host connections say it carries a decision
+	// link's lane (docs/plans/decision-inbox.md, PR-7): a publisher mints
+	// decision links here.
+	srv.SetSwitchyardDecisions(true)
 	if cfg.Switchyard.Enabled {
 		log.Info("switchyard: coordinating hosted sessions and launching nothing", "relay", cfg.SwitchyardRelay(), "origins", strings.Join(cfg.SwitchyardOrigins(), ","))
 	}
