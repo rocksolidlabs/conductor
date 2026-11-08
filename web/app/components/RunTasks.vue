@@ -44,7 +44,8 @@ const api = useSessions()
 
 const tasks = computed(() => props.run.tasks ?? [])
 const selectedTask = computed(() => tasks.value.find((t) => t.id === props.selected))
-const live = computed(() => ({ stoppedAt: props.run.stoppedAt, paused: props.run.paused, pausedWhy: props.run.pausedWhy, record: props.run.record, resumedBy: props.run.resumedBy }))
+// The run's state too: a task of an interrupted run says what its continuation takes up (taskWords), a held one among them (DR1).
+const live = computed(() => ({ state: props.run.state, stoppedAt: props.run.stoppedAt, paused: props.run.paused, pausedWhy: props.run.pausedWhy, record: props.run.record, resumedBy: props.run.resumedBy }))
 function agentOf(member: string): string {
   return props.run.members.find((m) => m.name === member)?.agentId ?? ''
 }

@@ -509,6 +509,8 @@ palette.registerPage(() => {
             :now="now"
             :tasks="run?.tasks ?? []"
             :paused="!!run?.paused"
+            :run-state="run?.state"
+            :paused-why="run?.pausedWhy"
             :selected-task="selectedTask"
             fill
             @select="selectedMember = $event"
