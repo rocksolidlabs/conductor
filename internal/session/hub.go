@@ -359,10 +359,15 @@ func (s *Subscription) Reason() error {
 type Hub struct {
 	mu   sync.RWMutex
 	subs map[string]*Subscription
+	// entering holds the subscriptions an attach has sent ready and not yet
+	// added (enter, add): listed on the roster, sent no broadcast.
+	entering map[string]*Subscription
 }
 
 // NewHub creates an empty hub.
-func NewHub() *Hub { return &Hub{subs: map[string]*Subscription{}} }
+func NewHub() *Hub {
+	return &Hub{subs: map[string]*Subscription{}, entering: map[string]*Subscription{}}
+}
 
 // namePresent reports whether a live subscription other than `except` carries
 // the name: the same person on another tab, for the chat's join and leave lines.
@@ -377,9 +382,20 @@ func (h *Hub) namePresent(name, except string) bool {
 	return false
 }
 
+// enter lists s on the roster before its attach sends it ready; add then
+// puts it on the hub. A roster read without the session's lock between the
+// two (a run's chat, ChatRoom.Roster) still names it, so whoever has been
+// sent ready is on every roster read after.
+func (h *Hub) enter(s *Subscription) {
+	h.mu.Lock()
+	h.entering[s.ID] = s
+	h.mu.Unlock()
+}
+
 func (h *Hub) add(s *Subscription) {
 	h.mu.Lock()
 	h.subs[s.ID] = s
+	delete(h.entering, s.ID)
 	h.mu.Unlock()
 }
 
@@ -467,12 +483,22 @@ func (h *Hub) LoudCount() int {
 	return n
 }
 
-// Roster lists every live subscription, oldest first, the quiet ones marked.
+// Roster lists every live subscription, oldest first, the quiet ones marked,
+// with those entering (enter): one replacing a live client under its id is
+// listed once.
 func (h *Hub) Roster() []proto.ViewerInfo {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	out := make([]proto.ViewerInfo, 0, len(h.subs))
+	out := make([]proto.ViewerInfo, 0, len(h.subs)+len(h.entering))
 	for _, s := range h.subs {
+		if s.Reason() == nil {
+			out = append(out, s.Info())
+		}
+	}
+	for id, s := range h.entering {
+		if held, ok := h.subs[id]; ok && held.Reason() == nil {
+			continue
+		}
 		if s.Reason() == nil {
 			out = append(out, s.Info())
 		}

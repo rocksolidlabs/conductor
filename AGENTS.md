@@ -294,6 +294,10 @@ add its rule here.
   gap. Feed the state that routes a viewer's answer before the viewer has
   the output, prove it with a stall after the send (`afterBroadcast`),
   and when one state is kept twice, wait on the copy the code decides by.
+  A viewer's `ready` is shown too: it went out before the hub held the
+  viewer, and a run's roster built in between left out a person who had
+  it (2026-11-08, #281). Keep the entry before `ready` (`Hub.enter`), and
+  wait for the roster that names everyone, not the first one sent.
 - A control that only hurries what the page does by itself races it.
   Read it again beside a read the page asks again on its own (a failed
   re-read, retried with backoff) can vanish before the click lands, and
