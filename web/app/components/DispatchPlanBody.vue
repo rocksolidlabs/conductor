@@ -9,7 +9,7 @@ import { argvLine, expectedChecks, resolvedArgv, shortCommit, yoloWords } from '
  * approval covers and what a launch runs. The yolo choice said plainly first; the commit it starts from; the crew with each member's agent
  * and arguments and the command each agent runs as the catalog resolved it when the revision was made; the tasks with who does each, its
  * kind, what it needs and its checks; the checks expected; the source references at the base; what the package hands over (the
- * attachments, the comments); the constraints; the decisions a person makes, recorded and not held yet; the note. One column.
+ * attachments, the comments); the constraints; the decisions a person makes, which hold the tasks they name in a run launched from it (Program item DR1); the note. One column.
  */
 const props = defineProps<{
   body: PlanBody
@@ -130,7 +130,7 @@ const manifestWords = computed(() => {
           <span v-if="d.before.length" class="text-xs text-dimmed"> · before {{ d.before.join(', ') }}</span>
         </li>
       </ul>
-      <p class="text-xs text-dimmed">Recorded and shown, not held: the run does not wait on them yet. Durable decisions, still to come, will hold the tasks before them.</p>
+      <p class="text-xs text-dimmed">A run launched from this revision holds the tasks each names until the operator answers it.</p>
     </div>
 
     <div v-if="body.note" class="flex flex-col gap-1">

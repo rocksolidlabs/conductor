@@ -17,6 +17,16 @@ export function nextNeeding(ids: readonly string[], from: string | null, delta: 
 
 /** How long the pill shows after a press, in milliseconds. */
 export const PILL_MS = 4000
+
+/**
+ * Whether the pill goes because the session it shows moved on (#303, Codex's round): the session answered, gone or asking another
+ * question. A durable decision's pill shows no session (the reviews of #719): the session it stepped from moving on is nothing of
+ * its own, and it goes only when its decision stops being open (NeedsYouPill's own watch).
+ */
+export function pillGoes(shown: { decision?: string; question?: string } | null, state: string | undefined, question: string | undefined): boolean {
+  if (!shown || shown.decision) return false
+  return state !== 'needs_input' || question !== shown.question
+}
 /** The longest delay setTimeout keeps: one longer fires at once. */
 const TIMER_MAX_MS = 2_147_483_647
 

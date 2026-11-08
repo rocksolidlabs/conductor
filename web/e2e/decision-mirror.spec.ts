@@ -44,6 +44,13 @@ test.beforeAll(async ({ api }) => {
 })
 
 test.afterAll(async ({ api }) => {
+  // End what the spec started: its runs' decisions, cancelled, then its runs (a stopped run keeps an open decision open).
+  for (const id of runs) {
+    const { decisions } = await api.ok<{ decisions: Array<{ id: string; state: string; rev: number }> }>('GET', `/api/decisions?run=${encodeURIComponent(id)}`)
+    for (const d of decisions.filter((x) => x.state === 'open' || x.state === 'answered')) {
+      await api.call('POST', `/api/decisions/${d.id}/cancel`, { commandId: `mirror-${d.id}`, why: 'the spec is done', expectedRev: d.rev })
+    }
+  }
   for (const id of runs) await api.stopRun(id)
   if (crewId) await api.call('DELETE', `/api/crews/${encodeURIComponent(crewId)}`)
 })
