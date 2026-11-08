@@ -26,13 +26,19 @@ import (
 // an act as the others are (turnAct's order: the grant, then the act's
 // entry, the checks, pending, the operation, its receipt copied), with
 // DR1's record in Dispatch's place: what the turn must see is the runs
-// (the decision is its run's), its scope the run's, the state the
-// decision's (open, at the rev read, a label the run's crew holds), the
-// operation crew.Engine.RouteDecision under the actor brakeman with the
-// derived op id, which DR1's history keeps, so a repeat is answered by
-// DR1's own receipt and a recovery reads the entry's outcome back by its
-// op (ledger.HistoryByOp). It never answers the decision: DR1 takes an
-// answer from the operator alone, and no grant reaches its respond route.
+// (the decision is its run's, and the turn reads it, its rev and its ref
+// decision:<dr-n>, in its run's read), its scope the run's, the state the
+// decision's (open, at the rev read, a label the run's crew holds, a
+// person routed to only while it is for no one), the operation
+// crew.Engine.RouteDecision under the actor brakeman with the derived op
+// id, held to the run admitted (crew.WithAdmittedRun), which DR1's
+// history keeps, so a repeat is answered by DR1's own receipt and a
+// recovery reads the entry's outcome back by the decision and its op
+// (ledger.HistoryByOp). The act's target is the decision's ref. The turn's
+// routes count in their own bound in DR1's history, never in the
+// operator's operations (ledger.MaxDecisionTurnOps). It never answers the
+// decision: DR1 takes an answer from the operator alone, and no grant
+// reaches its respond route.
 
 // decisionRoutePattern is DR1's routing route, route_decision's own.
 const decisionRoutePattern = "POST /api/decisions/{did}/route"
@@ -133,14 +139,12 @@ func (s *Server) turnRoute(w http.ResponseWriter, r *http.Request, tp *turnPrinc
 	}
 	tp.req = req
 	op := actOp(req.ID, body.OpID)
+	target := brakeman.Ref{Kind: brakeman.RefDecision, Decision: ledger.DecisionID(n)}
 	admit := true
 	if i := slices.IndexFunc(req.Acts, func(a brakeman.Act) bool { return a.OpID == body.OpID }); i >= 0 {
-		// The decision's run is the entry's target, which a continuation
-		// moves: the operation and its arguments (the decision's id among
-		// them) name the act.
 		a := req.Acts[i]
 		switch {
-		case a.Operation != ar.op || a.Args != args:
+		case a.Operation != ar.op || a.Target != target || a.Args != args:
 			writeError(w, http.StatusConflict, "op_conflict", "the opId names another act of the request: mint a new one")
 			return
 		case a.State == brakeman.ActNotRun:
@@ -150,7 +154,7 @@ func (s *Server) turnRoute(w http.ResponseWriter, r *http.Request, tp *turnPrinc
 		// A route DR1 kept is answered by DR1, whatever the decision's
 		// state now; DR1 keeps no refusal, so one refused runs anew, held
 		// to the checks again and written pending again.
-		switch _, found, err := s.ledger.HistoryByOp(ctx, brakemanActor, op); {
+		switch _, found, err := s.ledger.HistoryByOp(ctx, n, brakemanActor, op); {
 		case err != nil:
 			s.decisionError(w, "route", did, err, nil)
 			return
@@ -160,8 +164,13 @@ func (s *Server) turnRoute(w http.ResponseWriter, r *http.Request, tp *turnPrinc
 	}
 	if admit {
 		var ae *apiError
-		switch err := s.pendRoute(ctx, tp, n, did, op, args, body); {
+		run, err := s.pendRoute(ctx, tp, n, did, target, op, args, body)
+		switch {
 		case err == nil:
+			// The route is held to the run its scope was judged by: a
+			// continuation since moves the decision, and the route is
+			// refused, never made on the run it moved to.
+			ctx = crew.WithAdmittedRun(ctx, run)
 		case errors.As(err, &ae):
 			writeAPIError(w, ae)
 			return
@@ -180,7 +189,14 @@ func (s *Server) turnRoute(w http.ResponseWriter, r *http.Request, tp *turnPrinc
 	}
 	rec := newReplyRecorder()
 	rc, err := s.runs.RouteDecision(ctx, did, op, body.ExpectedRev, []crew.Destination{body.To}, body.Note, brakemanActor)
-	s.writeDecisionOp(rec, r, "route", did, rc, err)
+	// The receipt as DR1's route answers it, without the decision record,
+	// which the turn's answer never carries: nothing read after the
+	// commit can lose a route that committed.
+	if err != nil {
+		s.decisionError(rec, "route", did, err, nil)
+	} else {
+		writeJSON(rec, http.StatusOK, map[string]any{"receipt": rc})
+	}
 	d.actDone()
 	if err := atActSeam("committed", req.ID, body.OpID); err != nil {
 		writeError(w, http.StatusServiceUnavailable, "shutting_down", err.Error())
@@ -190,28 +206,29 @@ func (s *Server) turnRoute(w http.ResponseWriter, r *http.Request, tp *turnPrinc
 	s.answerRoute(w, tp, rec)
 }
 
-// pendRoute admits the route act of the turn tp on decision n (did) and
-// writes it pending, as pendAct does a ticket's act: under the desk's
-// admit, with the configuration read again, the checks of admitRoute
-// under it, then in one Update the request still the turn's and at most
-// brakeman.MaxActs acts.
-func (s *Server) pendRoute(ctx context.Context, tp *turnPrincipal, n int64, did, op, args string, body routeActBody) error {
+// pendRoute admits the route act of the turn tp on decision n (did, its
+// ref target) and writes it pending, as pendAct does a ticket's act:
+// under the desk's admit, with the configuration read again, the checks
+// of admitRoute under it, then in one Update the request still the turn's
+// and at most brakeman.MaxActs acts. It answers the run the decision was
+// admitted on, the entry's run.
+func (s *Server) pendRoute(ctx context.Context, tp *turnPrincipal, n int64, did string, target brakeman.Ref, op, args string, body routeActBody) (string, error) {
 	d := s.brakeman
 	d.admit.Lock()
 	defer d.admit.Unlock()
 	if d.closing.Load() {
-		return errDeskClosing
+		return "", errDeskClosing
 	}
 	cfg, err := d.st.Config()
 	if err != nil {
-		return err
+		return "", err
 	}
 	tp.cfg = cfg
 	run, aerr := s.admitRoute(ctx, tp, n, did, body)
 	if aerr != nil {
-		return aerr
+		return "", aerr
 	}
-	act := brakeman.Act{OpID: body.OpID, Operation: brakeman.ActRouteDecision, Target: brakeman.Ref{Kind: brakeman.RefRun, Run: run}, Run: run,
+	act := brakeman.Act{OpID: body.OpID, Operation: brakeman.ActRouteDecision, Target: target, Run: run,
 		Op: op, Args: args, State: brakeman.ActPending, At: d.now().UTC()}
 	_, err = d.update(tp.req.ID, func(q *brakeman.Request) error {
 		if q.State != brakeman.StateStarting && q.State != brakeman.StateRunning {
@@ -227,17 +244,19 @@ func (s *Server) pendRoute(ctx context.Context, tp *turnPrincipal, n int64, did,
 		q.Acts = append(q.Acts, act)
 		return nil
 	})
-	return err
+	return run, err
 }
 
 // admitRoute checks a route act of the turn tp on decision n, in order:
 // the grant; what the turn sees (the runs: a grant gives no read); the
-// decision there; its run in the scope; its state as DR1's routing
-// requires of Brakeman (open, at the rev the act read) and, for a route to
-// a person, the label held in the run's crew as launched (crew.Holder).
-// It answers the decision's run, which the act's entry names as its
-// target, or the refusal. A refusal past the visibility check is in the
-// runs' words, so runs is noted as a class the turn's answers used.
+// decision there, with its run in the scope (one outside it as one not
+// there); its state as DR1's routing requires of Brakeman (open, at the
+// rev the act read) and, for a route to a person, a decision for no one
+// yet (the plan's or a person's for is not Brakeman's to change) and the
+// label held in the run's crew as launched (crew.Holder). It answers the
+// decision's run, which the act's entry names as its run, or the
+// refusal. A refusal past the visibility check is in the runs' words, so
+// runs is noted as a class the turn's answers used.
 func (s *Server) admitRoute(ctx context.Context, tp *turnPrincipal, n int64, did string, body routeActBody) (string, *apiError) {
 	if aerr := actGrant(tp, brakeman.ActRouteDecision); aerr != nil {
 		return "", aerr
@@ -258,20 +277,22 @@ func (s *Server) admitRoute(ctx context.Context, tp *turnPrincipal, n int64, did
 
 // admitVisibleRoute is admitRoute's checks once the runs are visible.
 func (s *Server) admitVisibleRoute(ctx context.Context, o *observer, n int64, did string, body routeActBody) (string, *apiError) {
+	missing := newAPIError(http.StatusNotFound, crew.CodeNotFound, "no decision "+did)
 	rec, found, err := s.ledger.Decision(ctx, n)
 	switch {
 	case err != nil:
 		return "", newAPIError(http.StatusInternalServerError, "store_failed", "the decision could not be read")
 	case !found:
-		return "", newAPIError(http.StatusNotFound, crew.CodeNotFound, "no decision "+did)
+		return "", missing
 	}
 	rr, ok, err := o.runAdmitted(ctx, rec.CurrentRun)
 	switch {
 	case err != nil:
 		return "", newAPIError(http.StatusInternalServerError, "store_failed", "the decision's run could not be read")
 	case !ok:
-		// Not in the scope: as a decision that is not there.
-		return "", newAPIError(http.StatusForbidden, "outside_scope", "outside the request's scope")
+		// Not in the scope: as a decision that is not there, so the
+		// answer says nothing of one the turn may not see.
+		return "", missing
 	}
 	switch {
 	case rec.State != ledger.DecisionOpen:
@@ -286,6 +307,11 @@ func (s *Server) admitVisibleRoute(ctx context.Context, o *observer, n int64, di
 	case "role":
 		label = "role:" + body.To.Name
 	}
+	if who := decisionFor(rec.Request); label != "" && who != "" {
+		// Whom a decision is for (HM1) is its plan's or a person's to
+		// change: Brakeman routes to a person only one for no one yet.
+		return "", newAPIError(http.StatusConflict, "stale_target", fmt.Sprintf("%s is for %s already: Brakeman routes to a person only a decision for no one; the operator may route it", did, who))
+	}
 	if label != "" && body.To.Name != "" {
 		people := rr.run.People
 		if _, _, err := crew.Holder(crew.Crew{ID: cmp.Or(rr.crewID, rr.run.CrewID), Name: rr.run.Name, People: people}, label); err != nil {
@@ -293,6 +319,21 @@ func (s *Server) admitVisibleRoute(ctx context.Context, o *observer, n int64, di
 		}
 	}
 	return rec.CurrentRun, nil
+}
+
+// decisionFor is the person a decision's request, as the ledger keeps
+// it, is for (HM1's request for: {for: {label, person, responsibility}}),
+// "" for none.
+func decisionFor(request string) string {
+	var body struct {
+		For *struct {
+			Person string `json:"person"`
+		} `json:"for"`
+	}
+	if json.Unmarshal([]byte(request), &body) != nil || body.For == nil {
+		return ""
+	}
+	return body.For.Person
 }
 
 // copyRouteOutcome copies what DR1's route answered into the act's entry:
@@ -379,14 +420,16 @@ func (s *Server) answerRoute(w http.ResponseWriter, tp *turnPrincipal, rec *repl
 }
 
 // completeRoute completes a route act the last owner left pending, from
-// DR1's history by the entry's op: the row brakeman wrote under it, the
-// route done with its receipt; none, the route never committed, and the
-// entry is marked not_run, never run by the recovery.
+// DR1's history by the entry's decision (its target) and op: the row
+// brakeman wrote under it, the route done with its receipt; none, the
+// route never committed, and the entry is marked not_run, never run by
+// the recovery.
 func (s *Server) completeRoute(ctx context.Context, d *brakemanDesk, request string, a brakeman.Act) error {
 	if s.ledger == nil {
 		return &errRefStore{what: "the ledger"}
 	}
-	h, found, err := s.ledger.HistoryByOp(ctx, brakemanActor, a.Op)
+	n, _ := ledger.ParseDecisionID(a.Target.Decision)
+	h, found, err := s.ledger.HistoryByOp(ctx, n, brakemanActor, a.Op)
 	if err != nil {
 		return err
 	}

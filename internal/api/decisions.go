@@ -750,14 +750,15 @@ func (s *Server) handleDecisionRoute(w http.ResponseWriter, r *http.Request) {
 
 // addRunDecisions adds to the reply of a run's read (task "") or a
 // task's the summaries of the decisions the run or the task holds, newest
-// first, at most maxDecisionsListed, for the admin alone (a Brakeman
-// turn's shared read of the run carries none: its decisions are BK2's):
-// decisionsNext, the last id, when more follow (GET /api/decisions?run=
-// &after= reads on), and decisionsUnread, with no list, when the ledger
-// could not be read, which is logged. Nothing without a ledger or with no
-// decision.
+// first, at most maxDecisionsListed, for the admin and for a Brakeman
+// turn's shared read of the run, which turnRead admitted by its scope and
+// whose filter gives each its ref (decisionRefs: what a route_decision act
+// reads its decision's rev from, BK2): decisionsNext, the last id, when
+// more follow (GET /api/decisions?run=&after= reads on, the admin's), and
+// decisionsUnread, with no list, when the ledger could not be read, which
+// is logged. Nothing without a ledger or with no decision.
 func (s *Server) addRunDecisions(r *http.Request, reply map[string]any, run, task string) {
-	if p, _ := r.Context().Value(principalKey{}).(principal); s.ledger == nil || !p.admin {
+	if p, _ := r.Context().Value(principalKey{}).(principal); s.ledger == nil || !p.admin && !turnReading(r) {
 		return
 	}
 	ctx := r.Context()

@@ -1166,6 +1166,31 @@ type operation struct {
 	ahead bool
 }
 
+// admittedRunKey keys the run an operation on a decision was admitted
+// against (WithAdmittedRun).
+type admittedRunKey struct{}
+
+// WithAdmittedRun is ctx carrying the run an operation on a decision was
+// admitted against: a Brakeman route's scope is judged by the run its
+// decision is on at the act's admission. The operation is then refused
+// (stale_decision) when the decision is on another run at its look or in
+// the transaction that applies it, a continuation having moved it since,
+// never followed there as an operation of the operator's is.
+func WithAdmittedRun(ctx context.Context, run string) context.Context {
+	return context.WithValue(ctx, admittedRunKey{}, run)
+}
+
+// movedSinceAdmitted refuses an operation admitted against the run
+// admitted (WithAdmittedRun) on decision id, which is on the run now: nil
+// when they agree or no run was admitted.
+func movedSinceAdmitted(ctx context.Context, id, now string) error {
+	admitted, _ := ctx.Value(admittedRunKey{}).(string)
+	if admitted == "" || admitted == now {
+		return nil
+	}
+	return refuse(CodeStaleDecision, "%s moved to another run since the route was admitted: route it again", id)
+}
+
 // errOpMoved is an operation's transaction that found its decision held
 // by another run than the one it chose: it is made again there.
 var errOpMoved = errors.New("the decision moved to another run")
@@ -1196,6 +1221,9 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 		if rc, found, err := opOf(rec, op); found {
 			return rc, err
 		}
+		if why := movedSinceAdmitted(ctx, id, rec.CurrentRun); why != nil {
+			return OpReceipt{}, why
+		}
 		if op.expectedRev < 0 {
 			return OpReceipt{}, refuse(CodeInvalid, "an operation names the rev it read, expectedRev")
 		}
@@ -1224,6 +1252,11 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			row, ok, err := dtx.Decision(n)
 			if err != nil || !ok {
 				return cmpErr(err, fmt.Errorf("%w: %s", ledger.ErrNoDecision, id))
+			}
+			// Admitted against a run (a Brakeman route): judged against
+			// the run the row is on at the commit, never followed.
+			if why := movedSinceAdmitted(ctx, id, row.CurrentRun); why != nil {
+				return why
 			}
 			if row.CurrentRun != rec.CurrentRun {
 				return errOpMoved
@@ -1590,7 +1623,7 @@ func (e *Engine) RouteDecision(ctx context.Context, id, opID string, expectedRev
 					who, rule = p.Name+", the "+w, fmt.Sprintf("local/1: the operator answers, for the %s (%s)", w, label)
 				}
 				return opDetail{Note: note, To: []any{map[string]string{"kind": "operator"}, map[string]string{"kind": "person", "name": p.Name}}, Rule: rule, By: actor,
-					Words: fmt.Sprintf("%s is routed to %s by %s: the operator answers it", id, who, actor)}, nil, nil
+					Words: fmt.Sprintf("%s is now for %s: routed by %s", id, who, actor)}, nil, nil
 			},
 			notHeld: func(rec ledger.DecisionRecord) (opDetail, error) {
 				if err := open(rec.State); err != nil {

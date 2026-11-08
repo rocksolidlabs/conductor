@@ -3736,17 +3736,32 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   (`POST /api/decisions/{did}/route`) under the actor `brakeman`, to the
   operator or to a person of the decision's run's crew, by name or by the
   responsibility they hold (HM1's labels, resolved in the crew as
-  launched). The act's checks are DR1's in Dispatch's place: the runs
-  visible, the run in the scope, the decision open at the rev read, the
-  label held; DR1's history keeps the route, which answers a repeat and
+  launched). The turn reads the decision in its run's read, which lists
+  the run's decisions with their rev and their ref, `decision:<dr-n>`,
+  the act's target and its proposal's. The act's checks are DR1's in
+  Dispatch's place: the runs visible, the run in the scope (a decision
+  outside it answered as one not there), the decision open at the rev
+  read, the label held, a person routed to only while the decision is
+  for no one; the route's scope is checked again inside the routing
+  transaction, against the run the decision is on at commit; a
+  continuation between the two is refused. A turn's routes count in
+  their own group with their own bound, apart from the operator's
+  operations. DR1's history keeps the route, which answers a repeat and
   settles a route a stop cut short. The decision stays the operator's to
   answer: its card says for whom it was routed, its history "routed to
   ana". The brief shows the act's receipt (`dr-n#seq`) and opens the
   decision. `request_repair` still waits for RV1 (#658). Tests:
   `TestRouteToALabel`, `TestARouteIsHeldToTheGrantAndTheRuns`,
   `TestARouteCommittedBeforeItsCopyIsCompletedAfterARestart`,
-  `TestActWordsNameADecisionsRoute`; vitest in `brakeman.test.ts` and
-  `decisions.test.ts`; Playwright in `brakeman-act.spec.ts`.
+  `TestARouteRetriedAfterALostReplyIsOneRoute`,
+  `TestARouteIsRefusedOnADecisionNotRoutable`,
+  `TestARouteIsHeldToTheRunItWasAdmittedOn`,
+  `TestATurnsRoutesKeepTheirOwnBound`, `TestATurnRoutesTheDecisionItRead`,
+  `TestACommittedRouteIsCopiedWhenItsCallerIsGone`,
+  `TestATurnsRunReadCarriesItsDecisions`, `TestActWordsNameADecisionsRoute`,
+  `TestATurnsOperationsKeepTheirOwnBound` (`internal/crew/ledger`);
+  vitest in `brakeman.test.ts` and `decisions.test.ts`; Playwright in
+  `brakeman-act.spec.ts`.
 
   What was missing, slow or wrong. PR-12's prerequisites were not all
   there: RV1 and DR1 have plans but no routes, so the closed list of four

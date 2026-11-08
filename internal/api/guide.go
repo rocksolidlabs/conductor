@@ -376,7 +376,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		observeOp("overlaps", "/api/brakeman/overlaps", "Paths changed in two or more live attempts' or sessions' work trees of one repository, with the trees' refs."),
 		observeOp("briefs", "/api/brakeman/briefs", "Earlier briefs, newest first: title, summary and refs; one made under a wider scope or visibility is withheld.", "q", "after"),
 		observeOp("runs", "/api/runs", "The runs in your scope, newest first, each with its ref, a page at a time: after (the page before's next) and limit (at most 100). A run past the page's bound alone comes short, its cut naming what it leaves out (tasks: read each with observe_task).", "after", "limit"),
-		observeOp("run", "/api/runs/{run}", "A run whole, with its tasks, each with its ref; a run past the bound comes short, its cut naming what it leaves out (tasks: read each with observe_task)."),
+		observeOp("run", "/api/runs/{run}", "A run whole, with its tasks and its decisions (each id, state and rev), each with its ref; a run past the bound comes short, its cut naming what it leaves out (tasks: read each with observe_task)."),
 		observeOp("task", "/api/runs/{run}/tasks/{task}", "A managed task with its attempts and their receipts."),
 		observeOp("steps", "/api/runs/{run}/tasks/{task}/attempts/{n}/steps", "An attempt's receipts: each check's exit, subject and log SHA-256."),
 		observeOp("log", "/api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/log", "A check's log as text, its SHA-256 in X-Conductor-Log-SHA256; only with logs visible."),
@@ -699,7 +699,7 @@ func actEntry(op string, body any, summary string) Operation {
 // decision's rev it checks.
 func routeActEntry() Operation {
 	return Operation{Name: brakeman.ActRouteDecision, Scope: "act", Method: http.MethodPost, Path: actRouteOf(brakeman.ActRouteDecision), needs: needLauncher, Receipt: "ledger", Revision: "decision",
-		Summary: "Route an open decision (did; expectedRev: its rev you read) to the operator ({kind: operator}) or a person of its run's crew: by name ({kind: person, name}) or by responsibility ({kind: role, name: architecture, product, security, acceptance}). The operator still answers it.",
+		Summary: "Route an open decision (did; expectedRev: its rev as your read of its run lists it, ref decision:<did>) to the operator ({kind: operator}) or a person of its run's crew ({kind: person, name}, or {kind: role, name: architecture, product, security, acceptance}). The operator answers it.",
 		Input:   bodySchema(decisionRouteBody{}), Bounds: map[string]int{"body": maxDecisionAnswerBody}}
 }
 

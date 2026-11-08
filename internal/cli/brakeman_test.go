@@ -559,8 +559,8 @@ func TestActWordsNameTheRunFromTheLaunch(t *testing.T) {
 // receipt, which the words name by its decision and history row, with
 // DR1's words, and no op: ref, which names a Dispatch receipt.
 func TestActWordsNameADecisionsRoute(t *testing.T) {
-	reply := `{"receipt":{"decision":"dr-7","op":"bk0123456789abcdef0123456789abcd","seq":4,"rev":2,"words":"dr-7 is routed to ana, the security reviewer by brakeman: the operator answers it"}}`
-	want := "route_decision ran (opId r1): done; its receipt is row 4 of dr-7's history: dr-7 is routed to ana, the security reviewer by brakeman: the operator answers it"
+	reply := `{"receipt":{"decision":"dr-7","op":"bk0123456789abcdef0123456789abcd","seq":4,"rev":2,"words":"dr-7 is now for ana, the security reviewer: routed by brakeman"}}`
+	want := "route_decision ran (opId r1): done; its receipt is row 4 of dr-7's history: dr-7 is now for ana, the security reviewer: routed by brakeman"
 	if got := actWords("route_decision", "r1", json.RawMessage(reply)); got != want {
 		t.Errorf("got %q\nwant %q", got, want)
 	}
