@@ -81,7 +81,8 @@ export function useApi() {
     return new ApiError(status, code, message, data?.error ?? {}, data ?? fe.data)
   }
 
-  async function request<T>(path: string, opts: { method?: string; body?: unknown; token?: string; query?: Record<string, string>; base?: string } = {}): Promise<T> {
+  /** `signal` aborts the request (a search overtaken by the next key): it then throws as a network error does, which its caller drops. */
+  async function request<T>(path: string, opts: { method?: string; body?: unknown; token?: string; query?: Record<string, string>; base?: string; signal?: AbortSignal } = {}): Promise<T> {
     const token = opts.token ?? admin.token.value
     try {
       return await $fetch<T>((opts.base ?? httpBase.value) + path, {
@@ -89,6 +90,7 @@ export function useApi() {
         body: opts.body as Record<string, unknown> | undefined,
         query: opts.query,
         headers: token ? { Authorization: `Bearer ${token}` } : {},
+        signal: opts.signal,
       })
     } catch (e) {
       throw normalise(e, opts.token !== undefined, token)

@@ -412,3 +412,154 @@ export function lostQuestion(r: Pick<SessionRecord, 'lostAt' | 'where'>): { titl
     detail: `The server stopped while this session ran${r.where ? ` on ${r.where}` : ''}${r.lostAt ? ` (not observed since ${r.lostAt})` : ''}; whether its process ended is not known. Resume anyway only if you know it ended.`,
   }
 }
+
+// ---- the search, as the palette's `~` and the History page show it (PR-7)
+
+/** The search's indexing state (`GET /api/history`'s `indexing`). */
+export interface Indexing {
+  state: 'opening' | 'catching_up' | 'checking' | 'ready' | 'read_only' | 'unavailable' | 'other_version' | string
+  behind?: number
+  ledger?: string
+  oldest?: string
+  dropped?: number
+}
+
+/** `GET /api/history`'s reply: a page of entries, the cursor after it, the total and the index's state. */
+export interface HistoryReply {
+  entries: HistoryItem[]
+  next?: string
+  total: number
+  totalCapped?: boolean
+  cut?: 'ranked' | 'scanned' | string
+  truncated?: boolean
+  indexing: Indexing
+  readOnly?: boolean
+}
+
+/** `GET /api/history/similar`'s reply: the receipts of the same command elsewhere. */
+export interface SimilarReply {
+  entries: HistoryItem[]
+  truncated?: boolean
+}
+
+/** The index's state in words, or '' when it is ready and nothing is behind: "Indexing: 3 sources behind". */
+export function indexingWords(x?: Indexing | null): string {
+  if (!x) return ''
+  const behind = x.behind ?? 0
+  const n = behind > 0 ? `: ${behind} ${behind === 1 ? 'source' : 'sources'} behind` : ''
+  switch (x.state) {
+    case 'ready':
+      return behind > 0 ? `Indexing${n}` : ''
+    case 'catching_up':
+      return `Indexing${n || ': catching up'}`
+    case 'opening':
+      return 'Indexing: opening the history'
+    case 'checking':
+      return 'Indexing: checking the history after an unclean stop'
+    case 'read_only':
+      return `Read only: another server keeps this history${n}`
+    case 'other_version':
+      return 'Indexing: rebuilding the history for this version'
+    case 'unavailable':
+      return 'The history index is unavailable'
+  }
+  return `Indexing: ${x.state}${n}`
+}
+
+/** A path in the app the router can open: a page, never an API route (a raw log is never a row's destination). */
+function appPage(u?: string): string | null {
+  if (!u || !u.startsWith('/') || u.startsWith('//')) return null
+  if (u === '/api' || u.startsWith('/api/') || u.startsWith('/api?')) return null
+  return u
+}
+
+/** Where Enter on a row goes: the page that shows its evidence, else its anchor's page; null for neither. */
+export function historyTarget(e: Pick<HistoryItem, 'url' | 'anchor'>): string | null {
+  return appPage(e.url) ?? appPage(e.anchor?.url)
+}
+
+/** The session an entry belongs to: its anchor when that is a session, else a link to one; with the page it opens (its session's or its record's). */
+export function historySession(e: Pick<HistoryItem, 'anchor' | 'links'>): { id: string; url: string | null; listed: boolean } | null {
+  const ends = [{ ref: e.anchor?.ref ?? '', url: e.anchor?.url }, ...(e.links ?? []).map((l) => ({ ref: l.ref, url: l.url }))]
+  const s = ends.find((x) => x.ref.startsWith('session:'))
+  if (!s) return null
+  const id = s.ref.slice('session:'.length)
+  const url = appPage(s.url) ?? `/history/sessions/${encodeURIComponent(id)}`
+  return { id, url, listed: url.startsWith('/sessions/') }
+}
+
+/** Whether an entry is a receipt of a command run (a check's or a verify step's), the entries "Find this elsewhere" asks about. */
+export function isReceipt(e: Pick<HistoryItem, 'kind'>): boolean {
+  return e.kind === 'check' || e.kind === 'verify'
+}
+
+/** One anchor's rows: the session or the task the entries belong to, in the order its first entry came. */
+export interface AnchorGroup {
+  anchor: HistoryItem['anchor']
+  entries: HistoryItem[]
+}
+
+/** Entries grouped under their anchors, each group where its first entry ranked, the entries in their order within it; a key seen twice (two pages) kept once. */
+export function byAnchor(entries: readonly HistoryItem[]): AnchorGroup[] {
+  const out: AnchorGroup[] = []
+  const at = new Map<string, AnchorGroup>()
+  const seen = new Set<string>()
+  for (const e of entries) {
+    if (seen.has(e.key)) continue
+    seen.add(e.key)
+    const ref = e.anchor?.ref || e.key
+    let g = at.get(ref)
+    if (!g) {
+      g = { anchor: e.anchor?.ref ? e.anchor : { ref, label: e.title }, entries: [] }
+      at.set(ref, g)
+      out.push(g)
+    }
+    g.entries.push(e)
+  }
+  return out
+}
+
+/** The filters a query takes (`GET /api/history`'s `q`), in the grammar's names. */
+export const HISTORY_FILTERS = ['class', 'kind', 'outcome', 'project', 'repo', 'host', 'agent', 'crew', 'run', 'ticket', 'session', 'since', 'until'] as const
+export type HistoryFilter = (typeof HISTORY_FILTERS)[number]
+
+/** The query's words split as the grammar splits them: a quoted phrase is one word, quotes kept. */
+function words(q: string): string[] {
+  return q.match(/"[^"]*"?|\S+/g) ?? []
+}
+
+/** A filter's value in a query, '' when it has none (the last one written wins, as the chips write one). */
+export function filterOf(q: string, name: HistoryFilter): string {
+  let v = ''
+  for (const w of words(q)) if (w.toLowerCase().startsWith(`${name}:`)) v = w.slice(name.length + 1)
+  return v
+}
+
+/**
+ * The query with one filter written: every `name:` word of it dropped, then `name:value` added at the end; none added for an empty
+ * value (the chip cleared). The query's other words keep their order. A value with a space in it is no one token, and is not written.
+ */
+export function withFilter(q: string, name: HistoryFilter, value: string): string {
+  const kept = words(q).filter((w) => !w.toLowerCase().startsWith(`${name}:`))
+  if (value && !/\s/.test(value)) kept.push(`${name}:${value}`)
+  return kept.join(' ')
+}
+
+/** A row's icon, by its class and kind: a session, a receipt passed or failed, a decision, words. */
+export function historyIcon(e: Pick<HistoryItem, 'class' | 'kind' | 'outcome'>): string {
+  if (e.kind === 'session') return 'i-lucide-terminal'
+  switch (e.class) {
+    case 'checked':
+      return e.outcome === 'passed' ? 'i-lucide-circle-check' : e.outcome === 'failed' ? 'i-lucide-circle-x' : 'i-lucide-circle-dot'
+    case 'decided':
+      return 'i-lucide-gavel'
+    case 'said':
+      return 'i-lucide-message-circle'
+  }
+  return 'i-lucide-file-text'
+}
+
+/** The machine's own name, from the records of its sessions (a server session's host, never a hosted one's): what "Sessions on this machine" asks for. */
+export function machineOf(entries: readonly Pick<HistoryItem, 'host'>[]): string {
+  return entries.find((e) => e.host?.name && !e.host.hosted)?.host.name ?? ''
+}

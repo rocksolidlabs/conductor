@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { capGroup, dropPrefix, frecency, matchRange, noteUse, PAGES, parsePrefix, parseVerb, rank, readRecent, RECENT_KEY, RECENT_MAX, rowExact, rowMatches, VERBS, writeRecent, type Named, type PaletteGroup } from './palette'
+import { capGroup, dropPrefix, frecency, matchRange, MODE_PREFIX, noteUse, PAGES, parsePrefix, parseVerb, placeAfter, rank, readRecent, RECENT_KEY, RECENT_MAX, rowExact, rowMatches, VERBS, writeRecent, type Named, type PaletteGroup } from './palette'
 
 const names: Named[] = [
   { kind: 'session', id: 's1', name: 'api sweep', words: ['/home/dev/conductor', 'claude'] },
@@ -174,5 +174,41 @@ describe('a long group cut to its first rows', () => {
   it('leaves a group of n rows or fewer as it is', () => {
     expect(capGroup(groups, 'tickets', 12)[1]).toEqual(groups[1])
     expect(capGroup(groups, 'none', 1)).toEqual(groups)
+  })
+})
+
+describe("history's prefix (Program item HS1, docs/plans/history.md, PR-7)", () => {
+  it('parses ~ as the history mode, its rest trimmed, and drops it as every prefix is dropped', () => {
+    expect(parsePrefix('~')).toEqual({ mode: 'history', rest: '' })
+    expect(parsePrefix('~ stub-fixed outcome:failed')).toEqual({ mode: 'history', rest: 'stub-fixed outcome:failed' })
+    expect(parsePrefix('  ~TestLoginRedirect ')).toEqual({ mode: 'history', rest: 'TestLoginRedirect' })
+    expect(dropPrefix('~ stub-fixed')).toBe('')
+    expect(dropPrefix('~')).toBe('')
+    // A ~ inside a query is no prefix.
+    expect(parsePrefix('a ~b')).toEqual({ mode: 'search', rest: 'a ~b' })
+  })
+
+  it('changes no other prefix: the six before it read as they did', () => {
+    expect(MODE_PREFIX).toEqual({ actions: '>', runs: '#', files: ':', people: '@', events: '!', shortcuts: '?', history: '~' })
+    expect(parsePrefix('> stop')).toEqual({ mode: 'actions', rest: 'stop' })
+    expect(parsePrefix('#')).toEqual({ mode: 'runs', rest: '' })
+    expect(parsePrefix(':src/main.go:12')).toEqual({ mode: 'files', rest: 'src/main.go:12' })
+    expect(parsePrefix('@nate')).toEqual({ mode: 'people', rest: 'nate' })
+    expect(parsePrefix('! done')).toEqual({ mode: 'events', rest: 'done' })
+    expect(parsePrefix('? ~')).toEqual({ mode: 'shortcuts', rest: '~' })
+    expect(parsePrefix('api')).toEqual({ mode: 'search', rest: 'api' })
+    expect(dropPrefix('> x')).toBe('')
+    expect(dropPrefix('x')).toBe('x')
+  })
+
+  it('places the History group after the last of the groups it follows, and not at all when it has no rows', () => {
+    const g = (id: string, n = 1): PaletteGroup => ({ id, label: id, rows: Array.from({ length: n }, (_, i) => ({ key: `${id}:${i}`, label: `${id} ${i}` })) })
+    const ids = (gs: PaletteGroup[]) => gs.map((x) => x.id)
+    const after = ['needs', 'page', 'running', 'exited', 'decide', 'runs', 'tickets']
+    expect(ids(placeAfter([g('needs'), g('running'), g('tickets'), g('shared'), g('goto')], g('history'), after))).toEqual(['needs', 'running', 'tickets', 'history', 'shared', 'goto'])
+    // Tickets matched nothing: after the runs, still before Shared with you.
+    expect(ids(placeAfter([g('runs'), g('shared')], g('history'), after))).toEqual(['runs', 'history', 'shared'])
+    expect(ids(placeAfter([g('shared'), g('goto')], g('history'), after))).toEqual(['history', 'shared', 'goto'])
+    expect(ids(placeAfter([g('tickets'), g('shared')], g('history', 0), after))).toEqual(['tickets', 'shared'])
   })
 })

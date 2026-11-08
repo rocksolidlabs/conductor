@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
   availabilityWords,
+  byAnchor,
   classBadge,
+  filterOf,
+  historyIcon,
+  historySession,
+  historyTarget,
+  indexingWords,
+  isReceipt,
+  machineOf,
+  withFilter,
   historyDetail,
   historyDetailParts,
   historyQuestions,
@@ -229,5 +238,78 @@ describe('resumeDestination', () => {
     // A command id sent again is answered from its receipt; the session is in the reply only while the registry lists it.
     expect(resumeDestination({ receipt })).toEqual({ to: '/history/sessions/fedcba9876543210', listed: false })
     expect(resumeDestination({ receipt: { ...receipt, session: undefined } })).toBeNull()
+  })
+})
+
+// ---- PR-7: the search's words, where a row opens, its grouping, and the filters the History page's chips write.
+
+describe("a row's destination (PR-7)", () => {
+  it('opens the page of its evidence, never an API route: the anchor when its own is one', () => {
+    expect(historyTarget(entry())).toBe('/runs/todo-3f2a91c0?view=tasks&task=build&attempt=1&step=check/unit/1')
+    const anchor = { ref: 'task:todo-3f2a91c0/build', label: 'build · todo-3f2a91c0', url: '/runs/todo-3f2a91c0?view=tasks&task=build' }
+    expect(historyTarget(entry({ url: '/api/runs/todo-3f2a91c0/tasks/build/attempts/1/steps/unit/1/log', anchor }))).toBe(anchor.url)
+    expect(historyTarget(entry({ url: '/api?x', anchor: { ...anchor, url: '' } }))).toBeNull()
+    expect(historyTarget(entry({ url: 'https://elsewhere.example/x', anchor: { ...anchor, url: '//elsewhere.example' } }))).toBeNull()
+  })
+
+  it("names the session a row belongs to: its anchor, else a link's end, with its page or its record's", () => {
+    expect(historySession(entry())).toBeNull()
+    expect(historySession(entry({ anchor: { ref: 'session:0123456789abcdef', label: 'session 0123456789abcdef', url: '/sessions/0123456789abcdef' } }))).toEqual({ id: '0123456789abcdef', url: '/sessions/0123456789abcdef', listed: true })
+    expect(historySession(entry({ links: [{ rel: 'session_of', dir: 'out', ref: 'session:fedcba9876543210', label: 'session fedcba9876543210' }] }))).toEqual({ id: 'fedcba9876543210', url: '/history/sessions/fedcba9876543210', listed: false })
+    expect(isReceipt(entry())).toBe(true)
+    expect(isReceipt(entry({ kind: 'session.chat' }))).toBe(false)
+  })
+
+  it('draws a session, a receipt passed or failed, a decision and words each with its own icon', () => {
+    expect(historyIcon(entry())).toBe('i-lucide-circle-x')
+    expect(historyIcon(entry({ outcome: 'passed' }))).toBe('i-lucide-circle-check')
+    expect(historyIcon(entry({ kind: 'session', class: 'record' }))).toBe('i-lucide-terminal')
+    expect(historyIcon(entry({ kind: 'plan.withdrawn', class: 'decided' }))).toBe('i-lucide-gavel')
+    expect(historyIcon(entry({ kind: 'session.chat', class: 'said', outcome: 'passed' }))).toBe('i-lucide-message-circle')
+  })
+})
+
+describe('the answer grouped under its anchors (PR-7)', () => {
+  it('keeps each group where its first row ranked, the rows in their order, a key seen twice once', () => {
+    const t = { ref: 'task:r/build', label: 'build · r' }
+    const s = { ref: 'session:0123456789abcdef', label: 'session 0123456789abcdef' }
+    const a = entry({ key: 'a', anchor: t })
+    const b = entry({ key: 'b', anchor: s })
+    const c = entry({ key: 'c', anchor: t })
+    const groups = byAnchor([a, b, c, a])
+    expect(groups.map((g) => [g.anchor.ref, g.entries.map((e) => e.key)])).toEqual([
+      ['task:r/build', ['a', 'c']],
+      ['session:0123456789abcdef', ['b']],
+    ])
+    // An entry with no anchor is its own group, under its title.
+    expect(byAnchor([entry({ key: 'x', title: 'x on y #1', anchor: { ref: '', label: '' } })]).map((g) => g.anchor)).toEqual([{ ref: 'x', label: 'x on y #1' }])
+  })
+})
+
+describe("the index's state in words (PR-7)", () => {
+  it('says nothing when it is ready, and how many sources are behind otherwise', () => {
+    expect(indexingWords({ state: 'ready' })).toBe('')
+    expect(indexingWords(null)).toBe('')
+    expect(indexingWords({ state: 'ready', behind: 3 })).toBe('Indexing: 3 sources behind')
+    expect(indexingWords({ state: 'catching_up', behind: 1 })).toBe('Indexing: 1 source behind')
+    expect(indexingWords({ state: 'catching_up' })).toBe('Indexing: catching up')
+    expect(indexingWords({ state: 'read_only' })).toBe('Read only: another server keeps this history')
+  })
+})
+
+describe("the filters the chips write (PR-7)", () => {
+  it('writes one value per filter at the end, keeps every other word in its order, and takes it out when cleared', () => {
+    expect(withFilter('stub-fixed', 'class', 'checked')).toBe('stub-fixed class:checked')
+    expect(withFilter('class:said stub-fixed outcome:failed', 'class', 'checked')).toBe('stub-fixed outcome:failed class:checked')
+    expect(withFilter('stub-fixed class:checked', 'class', '')).toBe('stub-fixed')
+    expect(withFilter('"a phrase:with colon" x', 'outcome', 'passed')).toBe('"a phrase:with colon" x outcome:passed')
+    expect(withFilter('x', 'host', 'two words')).toBe('x')
+    expect(filterOf('stub-fixed CLASS:said class:checked', 'class')).toBe('checked')
+    expect(filterOf('stub-fixed', 'since')).toBe('')
+  })
+
+  it("finds this machine's name in the records of its own sessions, never a hosted one's", () => {
+    expect(machineOf([entry({ host: { name: 'mac', user: 'nate', hosted: true } }), entry({ host: { name: 'lab-box' } })])).toBe('lab-box')
+    expect(machineOf([entry({ host: {} })])).toBe('')
   })
 })

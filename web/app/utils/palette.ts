@@ -3,10 +3,10 @@
 // highlight. Nothing here fetches or acts; the composable (usePalette)
 // reads the live stores and the component renders what these return.
 
-export type PaletteMode = 'search' | 'actions' | 'runs' | 'files' | 'people' | 'events' | 'shortcuts'
+export type PaletteMode = 'search' | 'actions' | 'runs' | 'files' | 'people' | 'events' | 'shortcuts' | 'history'
 
-/** The prefix a mode is typed with; the search has none. */
-export const MODE_PREFIX: Record<Exclude<PaletteMode, 'search'>, string> = { actions: '>', runs: '#', files: ':', people: '@', events: '!', shortcuts: '?' }
+/** The prefix a mode is typed with; the search has none. `~` is history (Program item HS1): what was said, decided and checked, from the server. */
+export const MODE_PREFIX: Record<Exclude<PaletteMode, 'search'>, string> = { actions: '>', runs: '#', files: ':', people: '@', events: '!', shortcuts: '?', history: '~' }
 
 /** What a query's first character picks: the mode, and the rest of the query, trimmed. */
 export function parsePrefix(query: string): { mode: PaletteMode; rest: string } {
@@ -277,4 +277,17 @@ export function rank<R extends PaletteRow>(groups: readonly PaletteGroup<R>[], q
  */
 export function capGroup<R extends PaletteRow>(groups: readonly PaletteGroup<R>[], id: string, n: number): PaletteGroup<R>[] {
   return groups.map((g) => (g.id === id && g.rows.length > n ? { ...g, label: `${g.label} · ${n} of ${g.rows.length}, type to find the rest`, rows: g.rows.slice(0, n) } : g))
+}
+
+/**
+ * `group` placed in `groups` (ranked) right after the last group whose id is one of `after`, else first: the History group goes after
+ * Tickets and before Shared with you, wherever ranking left the groups before it. A group with no rows is not placed.
+ */
+export function placeAfter<R extends PaletteRow>(groups: readonly PaletteGroup<R>[], group: PaletteGroup<R>, after: readonly string[]): PaletteGroup<R>[] {
+  if (!group.rows.length) return [...groups]
+  let at = 0
+  groups.forEach((g, i) => {
+    if (after.includes(g.id)) at = i + 1
+  })
+  return [...groups.slice(0, at), group, ...groups.slice(at)]
 }
