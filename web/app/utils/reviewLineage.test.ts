@@ -44,11 +44,11 @@ describe("a candidate's lineage", () => {
       attempts: [
         { run: 'r1', task: 'build', attempt: 1, start: S, commit: A, state: 'failed', failed: 'check test' },
         { run: 'r1', task: 'build', attempt: 2, start: A, commit: B, state: 'succeeded' },
-        { run: 'r1', task: 'build', attempt: 3, start: A, commit: A, state: 'succeeded' },
+        { run: 'r1', task: 'build', attempt: 3, start: S, commit: A, state: 'succeeded' },
       ],
     })
     expect(lineageWords(lineageOf({ run: 'r1', task: 'build', attempt: 2, commit: B, start: A }, i))).toBe('attempt 2 of build, after check test failed on attempt 1 (111111111111)')
-    const again = lineageOf({ run: 'r1', task: 'build', attempt: 3, commit: A, start: A }, i)
+    const again = lineageOf({ run: 'r1', task: 'build', attempt: 3, commit: A, start: S }, i)
     expect(again.cause).toEqual({ kind: 'recheck', from: { run: 'r1', attempt: 1, commit: A } })
     expect(lineageWords(again)).toBe('attempt 3 of build, attempt 1 (111111111111) checked again, the same commit')
   })

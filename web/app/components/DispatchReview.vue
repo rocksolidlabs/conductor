@@ -392,6 +392,24 @@ const launch = computed<LaunchSummary | null>(() => {
   return null
 })
 const launchPlan = computed(() => (launch.value ? (props.plans?.find((p) => p.id === launch.value!.planId) ?? null) : null))
+/** The ticket's acceptance criteria as the launch's package froze them (a launch never changes), read once per launch. */
+const dispatchApi = useDispatchApi()
+const launchedCriteria = ref<{ id: string; text: string } | null>(null)
+watch(
+  () => launch.value?.id,
+  (id) => {
+    if (!id || launchedCriteria.value?.id === id) return
+    dispatchApi
+      .launchRead(id)
+      .then((l) => {
+        const pkg = l.package as { ticket?: { acceptance?: string } } | null
+        if (launch.value?.id === id) launchedCriteria.value = { id, text: pkg?.ticket?.acceptance ?? '' }
+      })
+      .catch(() => {})
+  },
+  { immediate: true },
+)
+const criteriaThen = computed(() => (launchedCriteria.value && launchedCriteria.value.id === launch.value?.id ? launchedCriteria.value.text : null))
 const expectedChecks = computed(() => {
   const l = launch.value
   const task = cref.value?.task
@@ -516,8 +534,9 @@ defineExpose({ notes: computed(() => draft.value.notes.length), send: () => draf
           Launched from plan r{{ launch.planN }}<template v-if="launchPlan"> · {{ launchPlan.crewName }} · {{ launchPlan.state }}<template v-if="launchPlan.approvedBy"> by {{ launchPlan.approvedBy }}</template></template>, at the ticket's revision {{ launch.ticketRev }}.
         </p>
         <span class="font-medium text-muted">The acceptance criteria as launched</span>
-        <pre class="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-elevated/40 p-2 font-sans" data-review-criteria-launched>{{ launch.criteria || '(none)' }}</pre>
-        <template v-if="(acceptance ?? '') !== launch.criteria">
+        <pre v-if="criteriaThen !== null" class="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-elevated/40 p-2 font-sans" data-review-criteria-launched>{{ criteriaThen || '(none)' }}</pre>
+        <span v-else class="text-dimmed">Reading the launch's package…</span>
+        <template v-if="criteriaThen !== null && (acceptance ?? '') !== criteriaThen">
           <span class="font-medium text-warning" data-review-criteria-changed>Changed since the launch: now</span>
           <pre class="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-elevated/40 p-2 font-sans" data-review-criteria-now>{{ acceptance || '(none)' }}</pre>
         </template>

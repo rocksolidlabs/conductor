@@ -139,7 +139,7 @@
       {
         "id": "worker-review",
         "name": "Worker, review edits (e2e stub)",
-        "description": "The CLI worker with fixed edits for a person's review (RV1): its first attempt writes stub-review.txt, eight numbered lines; a repair a person asked for inserts two lines at its top, rewrites the first line of stub-<member>.txt, and names each change asked for as addressed.",
+        "description": "The CLI worker under STUB_REVIEW_EDITS=1 (RV1): fixed edits for a person's review's located states, and each change asked for named as addressed.",
         "command": ["@BASH@", "@STUB@"],
         "allowArgs": true,
         "env": { "STUB_IDENTITY": "claude", "STUB_REPORT": "plain", "STUB_WORKER": "cli", "STUB_REVIEW_EDITS": "1" },

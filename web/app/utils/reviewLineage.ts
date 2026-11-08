@@ -102,7 +102,9 @@ export function lineageOf(c: { run: string; task: string; attempt: number; commi
     if (!own || own.task !== c.task) continue
     return { ...base, cause: { kind: 'review', review: r.id, by: r.createdBy || 'admin', from: { run: own.run, attempt: own.attempt, commit: own.commit } } }
   }
-  if (c.start && c.start === c.commit) {
+  {
+    // Check again: the result is the commit an earlier attempt failed a check on (the engine records the candidate's commit as the
+    // new attempt's result, whatever it names as its start).
     const p = earlier.filter((a) => a.commit === c.commit && a.failed).sort((x, y) => y.attempt - x.attempt)[0]
     if (p) return { ...base, cause: { kind: 'recheck', from: { run: p.run, attempt: p.attempt, commit: p.commit! } } }
   }
