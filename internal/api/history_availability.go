@@ -148,6 +148,7 @@ type availability struct {
 	s        *Server
 	ctx      context.Context
 	ix       *history.Index
+	ld       *ledger.Ledger // the ledger read, nil for none open: passed in, never the server's field read again
 	attempts map[string]attemptsRead
 	checks   map[attemptID]checksRead
 	folders  map[string]*runFolder
@@ -178,8 +179,8 @@ type runFolder struct {
 	err error
 }
 
-func (s *Server) newAvailability(ctx context.Context, ix *history.Index) *availability {
-	return &availability{s: s, ctx: ctx, ix: ix, attempts: map[string]attemptsRead{}, checks: map[attemptID]checksRead{},
+func (s *Server) newAvailability(ctx context.Context, ix *history.Index, ld *ledger.Ledger) *availability {
+	return &availability{s: s, ctx: ctx, ix: ix, ld: ld, attempts: map[string]attemptsRead{}, checks: map[attemptID]checksRead{},
 		folders: map[string]*runFolder{}, records: map[string]answer{}, briefs: map[string]availabilityOf{},
 		launches: map[string]string{}}
 }
@@ -326,7 +327,7 @@ func (av *availability) attemptRows(run string) ([]ledger.AttemptRow, error) {
 		return a.rows, a.err
 	}
 	a := attemptsRead{err: errNoLedger}
-	if ld := av.s.ledger; ld != nil {
+	if ld := av.ld; ld != nil {
 		a.rows, a.err = ld.Attempts(av.ctx, run)
 	}
 	av.attempts[run] = a
@@ -353,8 +354,8 @@ func (av *availability) runFolder(run string) *runFolder {
 		}
 		readErr = err
 	}
-	if rf.cwd == "" && av.s.ledger != nil {
-		row, ok, err := av.s.ledger.Run(av.ctx, run)
+	if rf.cwd == "" && av.ld != nil {
+		row, ok, err := av.ld.Run(av.ctx, run)
 		if ok && err == nil {
 			var c crew.Crew
 			if err = json.Unmarshal([]byte(row.Crew), &c); err == nil {
@@ -490,7 +491,7 @@ func (av *availability) attempt(r brakeman.Ref, e history.Entry, full bool) avai
 // check is a receipt's: its log held, dropped by the run's bound, or the
 // run's rows gone; unknown when they could not be read.
 func (av *availability) check(r brakeman.Ref, full bool) availabilityOf {
-	ld := av.s.ledger
+	ld := av.ld
 	if ld == nil {
 		return availabilityOf{State: availUnknown, Words: "the ledger is not open"}
 	}
