@@ -1,5 +1,6 @@
 import type { DispatchChange, DispatchReceipt, DispatchTicket, HistoryPage, LaunchSummary, NewPlanReference, PlanAgent, PlanBody, PlanDecision, PlanSummary } from '~/composables/useDispatch'
-import type { RunInfo } from '~/composables/useSessions'
+import type { CrewPerson, Responsibility, RunInfo } from '~/composables/useSessions'
+import { RESPONSIBILITIES, RESPONSIBILITY_WORDS } from '~/utils/crews'
 
 // A ticket's Plan section in words (Program item DS2, docs/plans/dispatch-evidence.md, "web/app"): a plan revision's state and why its
 // approval no longer holds, with the one remedy that cures it; the checks a revision expects; why Launch is not offered; the reference
@@ -381,16 +382,82 @@ export function nextDecisionId(decisions: readonly Pick<PlanDecision, 'id'>[]): 
   for (let k = 1; ; k++) if (!taken.has(`d${k}`)) return `d${k}`
 }
 
-/** Why the decisions cannot be sent, in words, as the store would refuse them: an id not of its shape, a question empty, an id twice. '' when they can. */
-export function decisionsProblem(decisions: readonly Pick<PlanDecision, 'id' | 'question'>[]): string {
+/**
+ * Why the decisions cannot be sent, in words, as the server would refuse them: an id not of its shape, a question empty, an id twice, and
+ * (HM1) a `for` the picked crew does not resolve (its people handed over once the crew is read; `null` while it is not, when only the
+ * shape is the server's to judge), in the words of the server's check (`crew.Holder`). '' when they can.
+ */
+export function decisionsProblem(decisions: readonly Pick<PlanDecision, 'id' | 'question' | 'for'>[], people: readonly CrewPerson[] | null = null, crew = 'the crew'): string {
   const seen = new Set<string>()
   for (const d of decisions) {
     const id = d.id.trim()
     if (!d.question.trim() || !/^[a-z0-9][a-z0-9_-]{0,39}$/.test(id)) return 'Each decision has an id (a-z, 0-9, _ and -) and a question'
     if (seen.has(id)) return `The decision ${id} is named twice`
     seen.add(id)
+    if (d.for && people) {
+      const held = holderOf(people, d.for, crew)
+      if ('error' in held) return `The decision ${id} is for ${d.for}: ${held.error}`
+    }
   }
   return ''
+}
+
+/**
+ * The person a decision's label names in a crew's people, as the server's `crew.Holder` resolves it: `role:<responsibility>` its one
+ * holder, `person:<name>` that person; else why not, in the server's words.
+ */
+export function holderOf(people: readonly CrewPerson[], label: string, crew = 'the crew'): { person: string; responsibility?: Responsibility } | { error: string } {
+  if (label.startsWith('role:')) {
+    const r = label.slice(5) as Responsibility
+    if (!RESPONSIBILITIES.includes(r)) return { error: `"${label}" is not one of ${RESPONSIBILITIES.join(', ')}` }
+    const p = people.find((x) => x.responsibilities?.includes(r))
+    return p ? { person: p.name, responsibility: r } : { error: `no person of crew ${crew} holds ${r}` }
+  }
+  if (label.startsWith('person:')) {
+    const name = label.slice(7)
+    return people.some((x) => x.name === name) ? { person: name } : { error: `no person of crew ${crew} is named "${name}"` }
+  }
+  return { error: `label "${label}" must be role:<responsibility> or person:<name>` }
+}
+
+/** The For select's value for no label: a select's item cannot hold '', and no label is this word. */
+export const FOR_NONE = 'none'
+
+/**
+ * The For select's items for a crew's people (HM1): none (the operator alone), then each responsibility held, with its holder
+ * ("architecture owner: nate"), then each person by name. A label kept from a revision that the crew no longer resolves is offered too,
+ * said so, so the select shows what the decision holds and Save says why it cannot go.
+ */
+export function forItems(people: readonly CrewPerson[], kept: readonly string[] = []): Array<{ label: string; value: string }> {
+  const items: Array<{ label: string; value: string }> = [{ label: 'The operator alone', value: FOR_NONE }]
+  for (const r of RESPONSIBILITIES) {
+    const p = people.find((x) => x.responsibilities?.includes(r))
+    if (p) items.push({ label: `${RESPONSIBILITY_WORDS[r]}: ${p.name}`, value: `role:${r}` })
+  }
+  for (const p of people) items.push({ label: p.name, value: `person:${p.name}` })
+  for (const k of kept) if (k && !items.some((i) => i.value === k)) items.push({ label: `${k} (not in this crew)`, value: k })
+  return items
+}
+
+/** Whom a revision's decision is for, in words, from the revision's crew: "nate (architecture owner)", "ana", or the label as kept. */
+export function planForWords(label: string | undefined, people: readonly CrewPerson[] | undefined): string {
+  if (!label) return ''
+  const held = holderOf(people ?? [], label)
+  if ('error' in held) return label
+  return held.responsibility ? `${held.person} (${RESPONSIBILITY_WORDS[held.responsibility]})` : held.person
+}
+
+/**
+ * The decisions a proposal sends, each whole as the form holds it (HM1): `{id, question, kind, before, for?}`, trimmed, `for` only when
+ * set. One function, so a revision that copies its base's decisions (the dialog's fill) sends every field it carried, never a field
+ * dropped by a copy made field by field.
+ */
+export function planDecisionsOut(decisions: readonly PlanDecision[]): PlanDecision[] {
+  return decisions.map((d) => {
+    const out: PlanDecision = { id: d.id.trim(), question: d.question.trim(), kind: d.kind, before: [...d.before] }
+    if (d.for) out.for = d.for
+    return out
+  })
 }
 
 /** A launch's state as its row says it. */

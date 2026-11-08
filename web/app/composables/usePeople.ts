@@ -1,4 +1,5 @@
 import type { Responsibility } from './useSessions'
+import type { Decision } from '~/utils/decisions'
 import { PEOPLE_LIMITS } from '~/utils/crews'
 import { oneReadAtATime, personSegment } from '~/utils/people'
 
@@ -44,8 +45,11 @@ export interface PersonWork {
   more?: boolean
   /** Dispatch's tickets they own and are assigned: the counts and Dispatch's own two lists, paged by their cursor; null while Dispatch is unavailable. */
   tickets: { owner: number; assignee: number; ownerHref: string; assigneeHref: string } | null
-  /** Empty until whom a decision is for exists (HM1, PR-12). */
-  decisions: unknown[]
+  /** The decisions for them, open and answered, the newest first, at most 100, each as the operator's lists give it (HM1, PR-12). */
+  decisions: Decision[]
+  decisionsMore?: boolean
+  /** The ledger could not be read: their decisions are not shown. */
+  decisionsUnavailable?: boolean
   /** Dispatch is off or could not be read: no tickets, and `dispatch` true only when its directory was read and lists them. */
   dispatchUnavailable?: boolean
   /** The saved crews, or some of them, could not be read: the crews listed are those read, and may not be all. */
