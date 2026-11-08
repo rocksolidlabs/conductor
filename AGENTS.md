@@ -369,6 +369,15 @@ add its rule here.
   token a request was sent with goes with its refusal
   (`useWorkbenchToken().refused`), and a test holds one such reply with
   `page.route` until after the change, so the old code fails every run.
+- A test's knob is a field of the thing it configures, never a package
+  variable a running goroutine reads. A test that lowered the journal's
+  bound of records kept, a package variable, after its journal had opened
+  wrote it while the journal's writer, in a pass of its own, read it; and
+  the cleanup that put it back ran before the journal's Close, registered
+  ahead of it (`TestARemovalTellsRemoved`, a DATA RACE, #281). Set the
+  knob as the thing starts (an option it reads at its start,
+  `Options.maxRecords`), and where a test must change it on the way,
+  change it under the lock its readers hold (`setMaxRecords`).
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
