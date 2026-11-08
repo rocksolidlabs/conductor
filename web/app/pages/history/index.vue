@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { byAnchor, cutWords, filterOf, historyQuestions, historyTarget, indexingWords, machineOf, outcomeChips, withFilter, type HistoryFilter } from '~/utils/history'
 import { LATEST_SESSIONS } from '~/composables/usePaletteHistory'
+import type { HistoryOptions } from '~/composables/useHistorySearch'
+import type { ProjectsPage } from '~/composables/useDispatch'
 
 /**
  * The History page (Program item HS1, docs/plans/history.md, "web/app", PR-7): the palette's `~` search with room. The search box
@@ -14,10 +16,25 @@ useHead({ title: 'History' })
 const route = useRoute()
 const router = useRouter()
 const admin = useWorkbenchToken()
-const search = useHistorySearch()
 const { request } = useApi()
-const dispatch = useDispatchApi()
-const sessions = useSessions()
+
+// The chips' values: the projects Dispatch keeps, the hosts the records name, the agents of the catalog. Read under the history's read
+// rule (useHistorySearch: bounded, cancelled by the next, cleared and asked again when the token changes); a source that fails leaves
+// its row out.
+async function readOptions(signal: AbortSignal): Promise<HistoryOptions> {
+  const [p, r, a] = await Promise.allSettled([
+    request<ProjectsPage>('/api/dispatch/projects', { signal }),
+    request<{ records: Array<{ host?: { name?: string } }> }>('/api/history/sessions', { query: { limit: '100' }, signal }),
+    request<{ agents?: Array<{ id: string; name: string }> }>('/api/catalog', { signal }),
+  ])
+  return {
+    projects: p.status === 'fulfilled' ? (p.value.projects ?? []).filter((x) => !x.archivedAt).map((x) => x.key) : [],
+    hosts: r.status === 'fulfilled' ? [...new Set(r.value.records.map((x) => x.host?.name ?? '').filter(Boolean))].sort() : [],
+    agents: a.status === 'fulfilled' ? (a.value.agents ?? []).map((x) => ({ id: x.id, name: x.name })) : [],
+  }
+}
+const search = useHistorySearch(undefined, readOptions)
+void search.readOptions()
 
 const text = ref(typeof route.query.q === 'string' ? route.query.q : '')
 // The URL follows the box, and the box the URL (Back, Forward, a link opened): one query either way.
@@ -55,26 +72,10 @@ const error = computed(() => (search.error.value?.q === asked.value ? search.err
 const groups = computed(() => byAnchor(shown.value?.entries ?? []))
 const indexing = computed(() => indexingWords(shown.value?.indexing))
 
-// ---- The chips' values: the projects Dispatch keeps, the hosts the records name, the agents of the catalog; read once with the token.
-const projects = ref<string[]>([])
-const hosts = ref<string[]>([])
-const agents = ref<Array<{ id: string; name: string }>>([])
-async function loadChips() {
-  if (!admin.hasToken.value) return
-  const [p, r, a] = await Promise.allSettled([
-    dispatch.projects(),
-    request<{ records: Array<{ host?: { name?: string; hosted?: boolean; user?: string } }> }>('/api/history/sessions', { query: { limit: '100' } }),
-    sessions.catalog(),
-  ])
-  if (p.status === 'fulfilled') projects.value = (p.value.projects ?? []).filter((x) => !x.archivedAt).map((x) => x.key)
-  if (r.status === 'fulfilled') hosts.value = [...new Set(r.value.records.map((x) => x.host?.name ?? '').filter(Boolean))].sort()
-  if (a.status === 'fulfilled') agents.value = a.value.map((x) => ({ id: x.id, name: x.name }))
-}
-watch(
-  () => admin.token.value,
-  () => void loadChips(),
-  { immediate: true },
-)
+// ---- The chips' values, as read above: none until read, and none again once the token is forgotten.
+const projects = computed(() => search.options.value?.projects ?? [])
+const hosts = computed(() => search.options.value?.hosts ?? [])
+const agents = computed(() => search.options.value?.agents ?? [])
 
 interface Chip {
   value: string

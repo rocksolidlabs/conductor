@@ -2,19 +2,22 @@ import { getCurrentScope, onScopeDispose, ref, shallowRef, watch } from 'vue'
 import type { HistoryItem, HistoryReply, SimilarReply } from '~/utils/history'
 
 // The history's reads (Program item HS1, docs/plans/history.md, "web/app", PR-7): the search as typed (the palette's `~` and its
-// History group, the History page, each with a search of its own), its next page, Find this elsewhere, and the palette's read of an
-// entry's Resume offer as → reveals a row. One rule governs every read, held in one place (`slot` and `read` below; the record page's
-// `holds` is the same rule):
-// - a read is bounded and cancelled by the next one for the same thing: each thing read (the answer shown, the → entry) has one read
-//   in flight at most, the next aborts the one before, and a `429 history_busy` (an aborted read the server has not let go yet) is
-//   asked again a bounded number of times while the read is still the current one;
+// History group, the History page, each with a search of its own), its next page, Find this elsewhere, the palette's read of an
+// entry's Resume offer as → reveals a row, and the History page's filter values. One rule governs every read, held in one place (`slot`
+// and `read` below; the record page's `holds` is the same rule):
+// - a read is bounded and cancelled by the next one for the same thing: each thing read (the answer shown, the → entry, the filter
+//   values) has one read in flight at most, the next aborts the one before, and a `429 history_busy` (an aborted read the server has
+//   not let go yet) is asked again a bounded number of times while the read is still the current one;
+// - a read that has not answered within HISTORY_READ_MS (its busy pauses included) is aborted and ends as a refusal with words
+//   (`history_timeout`), its pending state cleared, so the same search or → asked again is asked anew, never left on Loading;
 // - a reply is applied only to the request that asked for it: by its number in its slot and the token's generation, compared at the
 //   moment it is applied (in `read`, which applies it in the same step, never after another await), so an answer that lands after a
 //   newer request was asked (a slow answer to an earlier query) or after a forget is dropped, a failure too;
 // - a refusal counts only for the token it carried: a token forgotten or replaced moves the generation on, so nothing asked with the
 //   old token (its 401 included) is applied after it, and useApi asks for the token only while the refused one is still held;
-// - a token change asks again what was shown or asked with the old one (the search, Find this elsewhere, the → entry), with the new
-//   token, so a token replaced by another (the gate's recovery from a wrong one) never leaves a page on Loading.
+// - a token change clears and asks again what was shown or asked with the old one (the search, Find this elsewhere, the → entry, the
+//   filter values), with the new token, so a token replaced by another (the gate's recovery from a wrong one) never leaves a page on
+//   Loading, and nothing the old token read stays shown after a forget.
 
 /** How long after the last key a search is asked. */
 export const HISTORY_DEBOUNCE_MS = 200
@@ -26,6 +29,13 @@ export const HISTORY_PAGE = 20
 /** `429 history_busy` (two reads in flight from this client: an aborted one the server has not let go yet) is asked again, a few times. */
 export const HISTORY_BUSY_RETRY_MS = 300
 export const HISTORY_BUSY_TRIES = 3
+/**
+ * A read's one bound, its busy pauses included: above the server's own (the route's read of the index, 15 s, and the write of its
+ * reply, 15 s, internal/api/history_search.go), so it only ends a read that hangs (a stalled connection, a proxy that holds it).
+ */
+export const HISTORY_READ_MS = 40_000
+/** The refusal a read past HISTORY_READ_MS ends with. */
+export const HISTORY_TIMEOUT = 'history_timeout'
 
 /** What the search reads with: `GET /api/history`, `/api/history/similar` and `/api/history/entry`, the workbench token, the clock. */
 export interface HistorySearchDeps {
@@ -33,8 +43,17 @@ export interface HistorySearchDeps {
   similar: (key: string, scope: 'repo' | 'all', signal: AbortSignal) => Promise<SimilarReply>
   entry: (key: string, signal: AbortSignal) => Promise<HistoryItem>
   hasToken: () => boolean
+  /** The History page's filter values (Dispatch's projects, the records' hosts, the catalog's agents); the palette reads none. */
+  options?: (signal: AbortSignal) => Promise<HistoryOptions>
   now?: () => number
   limit?: number
+}
+
+/** The History page's filter values, read with the token and forgotten with it. */
+export interface HistoryOptions {
+  projects: string[]
+  hosts: string[]
+  agents: Array<{ id: string; name: string }>
 }
 
 /** The answer shown: the query it is for and the reply, its later pages appended. */
@@ -66,14 +85,19 @@ export interface EntryRead {
   error?: string
 }
 
-/** A read's ticket: its number in its slot, the token's generation when it was asked, and the signal that cancels it. */
+/** A read's ticket: its number in its slot, the token's generation when it was asked, the signal that cancels it, and its abort. */
 interface Ticket {
   seq: number
   generation: number
   signal: AbortSignal
+  abort: () => void
 }
 
 const codeOf = (e: unknown) => (e as { code?: string })?.code ?? 'error'
+/** What a read past its bound ends with. */
+const timedOut = () => Object.assign(new Error('The history did not answer in time. Ask again.'), { code: HISTORY_TIMEOUT })
+/** The deadline's own rejection, told apart from any refusal the read itself ends with. */
+const LATE = Symbol('late')
 
 export function createHistorySearch(deps: HistorySearchDeps) {
   const now = deps.now ?? (() => Date.now())
@@ -87,6 +111,10 @@ export function createHistorySearch(deps: HistorySearchDeps) {
   const error = shallowRef<HistoryError | null>(null)
   const similar = shallowRef<SimilarState | null>(null)
   const entryRead = shallowRef<EntryRead | null>(null)
+  /** The filter values (`readOptions`), null until read and again once the token is forgotten. */
+  const options = shallowRef<HistoryOptions | null>(null)
+  /** The filter values were asked for: a token change asks them again. */
+  let optionsWanted = false
 
   const cache = new Map<string, { reply: HistoryReply; at: number }>()
   let generation = 0
@@ -101,8 +129,9 @@ export function createHistorySearch(deps: HistorySearchDeps) {
     return {
       take(): Ticket {
         controller?.abort()
-        controller = new AbortController()
-        return { seq: ++seq, generation, signal: controller.signal }
+        const c = new AbortController()
+        controller = c
+        return { seq: ++seq, generation, signal: c.signal, abort: () => c.abort() }
       },
       holds: (t: Ticket) => t.seq === seq && t.generation === generation,
       cancel() {
@@ -118,22 +147,37 @@ export function createHistorySearch(deps: HistorySearchDeps) {
    * A read under the rule, and the one place a reply is applied: its answer goes to `ok`, its failure to `fail`, each called in the
    * same step as the ticket is compared, so nothing (a newer read of the same thing, a stop, a token change) can come between the
    * check and the apply. A read that no longer holds applies nothing. A `history_busy` refusal is asked again after a pause, at most
-   * HISTORY_BUSY_TRIES in all, while the read holds.
+   * HISTORY_BUSY_TRIES in all, while the read holds. The whole read is bounded by HISTORY_READ_MS: past it, the request is aborted and
+   * the read, while it holds, fails with `history_timeout`.
    */
   async function read<T>(s: Slot, t: Ticket, fn: (signal: AbortSignal) => Promise<T>, ok: (value: T) => void, fail: (error: unknown) => void): Promise<void> {
-    for (let tries = 1; ; tries++) {
-      let value: T
-      try {
-        value = await fn(t.signal)
-      } catch (e) {
-        if (!s.holds(t) || t.signal.aborted) return
-        if (codeOf(e) !== 'history_busy' || tries >= HISTORY_BUSY_TRIES) return fail(e)
-        await new Promise((r) => setTimeout(r, HISTORY_BUSY_RETRY_MS))
-        if (!s.holds(t)) return
-        continue
+    let deadline: ReturnType<typeof setTimeout> | undefined
+    const late = new Promise<never>((_, reject) => (deadline = setTimeout(() => reject(LATE), HISTORY_READ_MS)))
+    late.catch(() => {})
+    const within = <V>(p: Promise<V>) => Promise.race([p, late])
+    try {
+      for (let tries = 1; ; tries++) {
+        let value: T
+        try {
+          value = await within(fn(t.signal))
+        } catch (e) {
+          if (e === LATE) throw e
+          if (!s.holds(t) || t.signal.aborted) return
+          if (codeOf(e) !== 'history_busy' || tries >= HISTORY_BUSY_TRIES) return fail(e)
+          await within(new Promise((r) => setTimeout(r, HISTORY_BUSY_RETRY_MS)))
+          if (!s.holds(t)) return
+          continue
+        }
+        if (s.holds(t)) ok(value)
+        return
       }
-      if (s.holds(t)) ok(value)
-      return
+    } catch (e) {
+      if (e !== LATE) throw e
+      if (!s.holds(t)) return
+      t.abort()
+      fail(timedOut())
+    } finally {
+      clearTimeout(deadline)
     }
   }
 
@@ -143,6 +187,8 @@ export function createHistorySearch(deps: HistorySearchDeps) {
   let inflight: { t: Ticket; q: string; page: boolean } | null = null
   /** The → entry: the next → (another row's) replaces it. */
   const entrySlot = slot()
+  /** The filter values: the next read of them (a token change) replaces it. */
+  const optionsSlot = slot()
 
   /** A read for the answer shown begins: the one before aborted, `pending` until this one ends while it holds. */
   function begin(q: string, page: boolean): Ticket {
@@ -292,12 +338,32 @@ export function createHistorySearch(deps: HistorySearchDeps) {
     )
   }
 
+  /**
+   * The History page's filter values, read with the token held now (none without one: the next token asks them); a token change
+   * clears them and asks again. A failed or late read leaves none: the rows they fill are not shown.
+   */
+  async function readOptions(): Promise<void> {
+    if (!deps.options) return
+    optionsWanted = true
+    if (!deps.hasToken()) return
+    const t = optionsSlot.take()
+    const fn = deps.options
+    await read(
+      optionsSlot,
+      t,
+      (signal) => fn(signal),
+      (o) => (options.value = o),
+      () => (options.value = null),
+    )
+  }
+
   /** Every read cancelled, nothing applied after (the palette closed, the page left); `wanted` kept or not as the caller says. */
   function halt() {
     clearTimeout(timer)
     timer = undefined
     shownSlot.cancel()
     entrySlot.cancel()
+    optionsSlot.cancel()
     inflight = null
     pending.value = false
     similar.value = null
@@ -308,6 +374,7 @@ export function createHistorySearch(deps: HistorySearchDeps) {
   function stop() {
     halt()
     wanted.value = null
+    optionsWanted = false
   }
 
   /**
@@ -321,21 +388,23 @@ export function createHistorySearch(deps: HistorySearchDeps) {
     cache.clear()
     result.value = null
     error.value = null
+    options.value = null
     wanted.value = again.q
     if (!deps.hasToken()) return
+    if (optionsWanted) void readOptions()
     // Find this elsewhere is shown in place of the answer: asked again in its place; otherwise the query wanted.
     if (again.similar) void findSimilar(again.similar, again.similar.scope)
     else if (again.q !== null) searchNow(again.q)
     if (again.entry) void readEntry(again.entry)
   }
 
-  return { wanted, result, pending, error, similar, entryRead, search, searchNow, more, findSimilar, readEntry, stop, forget }
+  return { wanted, result, pending, error, similar, entryRead, options, search, searchNow, more, findSimilar, readEntry, readOptions, stop, forget }
 }
 
 export type HistorySearch = ReturnType<typeof createHistorySearch>
 
 /** A search of its own for a component (the palette, the History page), with the workbench token; forgotten and asked again with the token. */
-export function useHistorySearch(limit = HISTORY_PAGE): HistorySearch {
+export function useHistorySearch(limit = HISTORY_PAGE, options?: HistorySearchDeps['options']): HistorySearch {
   const { request } = useApi()
   const history = useHistory()
   const admin = useWorkbenchToken()
@@ -345,6 +414,7 @@ export function useHistorySearch(limit = HISTORY_PAGE): HistorySearch {
     search: (q, o) => request<HistoryReply>('/api/history', { query: { q, limit: String(o.limit), ...(o.after ? { after: o.after } : {}) }, signal: o.signal }),
     similar: (key, scope, signal) => request<SimilarReply>('/api/history/similar', { query: { key, scope }, signal }),
     entry: (key, signal) => history.entry(key, signal),
+    options,
   })
   watch(
     () => admin.token.value,
