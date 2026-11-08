@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -428,6 +429,67 @@ func TestATurnRoutesTheDecisionItRead(t *testing.T) {
 	}
 	if status, out := f.bk.submit(t, f.sid, f.tok, "b-1", brief(strconv.Itoa(rev))); status != http.StatusCreated {
 		t.Fatalf("the proposal at the rev read: %d %v", status, out)
+	}
+}
+
+// TestATurnReadsAnOpenDecisionBehindClosedOnes: an open decision older
+// than a page of cancelled ones on the same task is listed in the turn's
+// run read and task read, which list the decisions open only, and routed
+// at the rev read there; the turn reads on with decisionsAfter, as the
+// admin's read, which lists every state, reads on to it past its first
+// page (#539, review round 2).
+func TestATurnReadsAnOpenDecisionBehindClosedOnes(t *testing.T) {
+	f := newRouteFixture(t, []string{brakeman.ActRouteDecision}, nil)
+	var newest string
+	if _, err := f.srv.ledger.Transition(t.Context(), f.run, func(tx *ledger.Tx) error {
+		for i := range maxDecisionsListed {
+			row, _, err := tx.OpenDecision(ledger.DecisionRow{Origin: ledger.OriginAgent, Type: ledger.DecisionClarification, TaskID: "build", Attempt: 1,
+				Member: "lead", Fingerprint: fmt.Sprintf("fp-%d", i), Request: `{"question":"Which index?","subject":{"kind":"commit","commit":"` + strings.Repeat("a", 40) + `"}}`,
+				Policy: `{"revision":"local/1","approver":"operator","quorum":1,"authority":[{"kind":"operator"}]}`})
+			if err != nil {
+				return err
+			}
+			row.State, row.Rev = ledger.DecisionCancelled, 2
+			if err := tx.PutDecision(row); err != nil {
+				return err
+			}
+			newest = row.ID()
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ids := func(out map[string]any) []string {
+		var got []string
+		for _, d := range out["decisions"].([]any) {
+			got = append(got, d.(map[string]any)["id"].(string))
+		}
+		return got
+	}
+	for _, path := range []string{"/api/runs/" + f.run, "/api/runs/" + f.run + "/tasks/build"} {
+		admin := f.expect(t, http.MethodGet, path, nil, http.StatusOK, "")
+		next, _ := admin["decisionsNext"].(string)
+		if got := ids(admin); len(got) != maxDecisionsListed || got[0] != newest || slices.Contains(got, f.did) || next == "" {
+			t.Fatalf("the admin's %s: %v next %q", path, got, next)
+		}
+		if got := ids(f.expect(t, http.MethodGet, path+"?decisionsAfter="+next, nil, http.StatusOK, "")); !slices.Contains(got, f.did) {
+			t.Fatalf("the admin's %s after %s: %v", path, next, got)
+		}
+		for _, after := range []string{"", "?decisionsAfter=" + newest} {
+			status, out := f.asTurn(t, http.MethodGet, path+after, nil)
+			if status != http.StatusOK {
+				t.Fatalf("the turn's %s%s: %d %v", path, after, status, out)
+			}
+			if got := ids(out); len(got) != 1 || got[0] != f.did || out["decisionsNext"] != nil {
+				t.Fatalf("the turn's %s%s lists %v (next %v)", path, after, got, out["decisionsNext"])
+			}
+		}
+		if status, out := f.asTurn(t, http.MethodGet, path+"?decisionsAfter=x", nil); status != http.StatusBadRequest {
+			t.Fatalf("the turn's %s after x: %d %v", path, status, out)
+		}
+	}
+	if status, out := f.route(t, "r-1", map[string]any{"kind": "operator"}); status != http.StatusOK {
+		t.Fatalf("the route of the decision read: %d %v", status, out)
 	}
 }
 

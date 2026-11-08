@@ -4297,7 +4297,8 @@ expectedRev, to, note?}`, at most 8 KiB): `to` is `{kind: "operator"}`,
 (`architecture`, `product`, `security`, `acceptance`). It is an act as
 the others are, in the same order, with DR1's record in Dispatch's place:
 the turn reads the decision, its `rev` and its ref `decision:<dr-n>`, in
-its run's read (`observe_run`, `observe_task`). `403 not_granted` first;
+its run's read (`observe_run`, `observe_task`), which lists it while it is
+open, whatever closed ones are newer. `403 not_granted` first;
 `404 not_found` for an id that is no decision's; `400 invalid_request`
 for a body its route would not decode,
 an `opId` not 1 to 32 of `A-Z a-z 0-9 . _ ~ -` or an `expectedRev` under
@@ -4869,13 +4870,18 @@ answered from its record, and `GET /api/runs/{run}/tasks/{task}`) carry,
 for the admin, `decisions`: the summaries (as the attempt's list gives
 them) of the decisions the run or the task holds, newest first, at most
 100, absent when there is none; `decisionsNext`, the last id, when more
-follow (`GET /api/decisions?run=&after=` reads on); and
-`decisionsUnread: true`, with no list, when the ledger could not be read
-(the server logs why). A Brakeman turn's shared read of them carries the
-same, each decision with its `ref`, `decision:<dr-n>`, noted in the
-turn's read log at its state and `rev`: what a `route_decision` act's
-`expectedRev` and its proposal's target and `expectedRevision` are read
-from (BK2).
+follow (the same read with `?decisionsAfter=<decisionsNext>` reads on,
+the page of those older than it; `400 invalid_request` for a value that
+is not one decision's id); and `decisionsUnread: true`, with no list,
+when the ledger could not be read (the server logs why). A Brakeman
+turn's shared read of them carries the same for the decisions open
+only, the ones it may route, so no page of closed ones hides an older
+open one from it, and reads on the same way (`decisionsAfter`, a
+parameter of `observe_run` and `observe_task`, each page one of the
+turn's reads); each decision with its `ref`, `decision:<dr-n>`, noted in
+the turn's read log at its state and `rev`: what a `route_decision`
+act's `expectedRev` and its proposal's target and `expectedRevision` are
+read from (BK2).
 
 An identity provider's principal's accepted response is applied only
 once the provider admits its token again after the response committed
