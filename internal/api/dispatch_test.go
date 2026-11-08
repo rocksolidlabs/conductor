@@ -237,14 +237,22 @@ var dispatchRequests = map[string]struct {
 	"POST /api/dispatch/tickets/{key}/launch":                  {"/api/dispatch/tickets/CND-1/launch", map[string]any{"opId": "c4", "plan": "0123456789abcdef"}},
 	"GET /api/dispatch/launches/{id}":                          {"/api/dispatch/launches/0123456789abcdef", nil},
 	"GET /api/dispatch/tickets/{key}/runs":                     {"/api/dispatch/tickets/CND-1/runs", nil},
-	"GET /api/dispatch/tickets/{key}/comments":                 {"/api/dispatch/tickets/CND-1/comments", nil},
-	"POST /api/dispatch/tickets/{key}/comments":                {"/api/dispatch/tickets/CND-1/comments", map[string]any{"opId": "b7", "body": "x"}},
-	"POST /api/dispatch/tickets/{key}/comments/{id}/edit":      {"/api/dispatch/tickets/CND-1/comments/0123456789abcdef/edit", map[string]any{"opId": "b8", "body": "y"}},
-	"POST /api/dispatch/tickets/{key}/comments/{id}/delete":    {"/api/dispatch/tickets/CND-1/comments/0123456789abcdef/delete", map[string]any{"opId": "b9"}},
-	"POST /api/dispatch/tickets/{key}/relations":               {"/api/dispatch/tickets/CND-1/relations", map[string]any{"opId": "b10", "kind": "relates", "to": "CND-2"}},
-	"POST /api/dispatch/tickets/{key}/relations/{id}/delete":   {"/api/dispatch/tickets/CND-1/relations/0123456789abcdef/delete", map[string]any{"opId": "b11"}},
-	"POST /api/dispatch/tickets/{key}/links":                   {"/api/dispatch/tickets/CND-1/links", map[string]any{"opId": "b12", "kind": "delivery", "url": "https://example.com/pull/1"}},
-	"POST /api/dispatch/tickets/{key}/links/{id}/delete":       {"/api/dispatch/tickets/CND-1/links/0123456789abcdef/delete", map[string]any{"opId": "b13"}},
+	"POST /api/dispatch/tickets/{key}/reviews": {"/api/dispatch/tickets/CND-1/reviews", map[string]any{"opId": "d1", "candidate": "team-0000aaaa/build/1@" + strings.Repeat("a", 40),
+		"base": strings.Repeat("b", 40), "verdict": "comment", "summary": "x", "findings": []any{}}},
+	"GET /api/dispatch/tickets/{key}/reviews":                {"/api/dispatch/tickets/CND-1/reviews", nil},
+	"POST /api/dispatch/reviews/{id}/retry":                  {"/api/dispatch/reviews/0123456789abcdef/retry", map[string]any{"opId": "d2"}},
+	"GET /api/dispatch/reviews/{id}":                         {"/api/dispatch/reviews/0123456789abcdef", nil},
+	"GET /api/dispatch/tickets/{key}/findings":               {"/api/dispatch/tickets/CND-1/findings", nil},
+	"GET /api/dispatch/findings/{id}/marks":                  {"/api/dispatch/findings/0123456789abcdef/marks", nil},
+	"POST /api/dispatch/findings/{id}/marks":                 {"/api/dispatch/findings/0123456789abcdef/marks", map[string]any{"opId": "d3", "candidate": "team-0000aaaa/build/2@" + strings.Repeat("c", 40), "verdict": "open"}},
+	"GET /api/dispatch/tickets/{key}/comments":               {"/api/dispatch/tickets/CND-1/comments", nil},
+	"POST /api/dispatch/tickets/{key}/comments":              {"/api/dispatch/tickets/CND-1/comments", map[string]any{"opId": "b7", "body": "x"}},
+	"POST /api/dispatch/tickets/{key}/comments/{id}/edit":    {"/api/dispatch/tickets/CND-1/comments/0123456789abcdef/edit", map[string]any{"opId": "b8", "body": "y"}},
+	"POST /api/dispatch/tickets/{key}/comments/{id}/delete":  {"/api/dispatch/tickets/CND-1/comments/0123456789abcdef/delete", map[string]any{"opId": "b9"}},
+	"POST /api/dispatch/tickets/{key}/relations":             {"/api/dispatch/tickets/CND-1/relations", map[string]any{"opId": "b10", "kind": "relates", "to": "CND-2"}},
+	"POST /api/dispatch/tickets/{key}/relations/{id}/delete": {"/api/dispatch/tickets/CND-1/relations/0123456789abcdef/delete", map[string]any{"opId": "b11"}},
+	"POST /api/dispatch/tickets/{key}/links":                 {"/api/dispatch/tickets/CND-1/links", map[string]any{"opId": "b12", "kind": "delivery", "url": "https://example.com/pull/1"}},
+	"POST /api/dispatch/tickets/{key}/links/{id}/delete":     {"/api/dispatch/tickets/CND-1/links/0123456789abcdef/delete", map[string]any{"opId": "b13"}},
 	// The upload's body is multipart (uploadOf, dispatch_attachments_test.go):
 	// every walk here is answered before a body is read, but the bounds'
 	// walk, which sends one of its shape.
@@ -1447,8 +1455,20 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 	// launched through the store (pending: nothing starts it here).
 	doneOf(t)(e.srv.dispatch.ApprovePlan(context.Background(), adminOp(""), rc.ID, 0, ""))
 	launch := "/api/dispatch/launches/" + doneOf(t)(e.srv.dispatch.Launch(context.Background(), adminOp(""), "CND-1", rc.ID, "")).ID
+	// A review's reads read a review of the ticket's, of a run it links by
+	// hand, made through the store, and its finding's marks.
+	x := "legacy-000000c1"
+	saveRecord(t, e.srv, crew.Run{ID: x, StartedAt: time.Now().UTC()})
+	linkRun(t, e, "CND-1", x, http.StatusCreated, "")
+	rrc, rv, err := e.srv.dispatch.SubmitReview(context.Background(), adminOp(""), "CND-1", dispatch.NewReview{Candidate: x + "/build/1@" + strings.Repeat("a", 40),
+		Base: strings.Repeat("b", 40), Verdict: dispatch.VerdictComment, Findings: []dispatch.NewFinding{{Kind: "general", Intent: "note", Message: "x"}}},
+		dispatch.ReviewEvidence{Findings: []dispatch.FindingEvidence{{K: 1}}})
+	if err != nil || rrc.Status != dispatch.StatusDone {
+		t.Fatalf("the review: %+v %v", rrc, err)
+	}
+	review, marks := "/api/dispatch/reviews/"+rv.ID, "/api/dispatch/findings/"+rv.Findings[0].ID+"/marks"
 	takeNone := []string{"/api/dispatch/people", "/api/dispatch/projects/CND", "/api/dispatch/tickets/CND-1", "/api/dispatch/ops/a1", attachment,
-		"/api/dispatch/tickets/CND-1/plans", plan, launch}
+		"/api/dispatch/tickets/CND-1/plans", plan, launch, review}
 	reads := 0
 	eachDispatchRoute(t, e.srv, func(method, path string, _ any) {
 		if method != http.MethodGet {
@@ -1468,6 +1488,12 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 			if strings.HasPrefix(path, "/api/dispatch/launches/") {
 				path = launch
 			}
+			if strings.HasPrefix(path, "/api/dispatch/reviews/") {
+				path = review
+			}
+			if strings.HasPrefix(path, "/api/dispatch/findings/") {
+				path = marks
+			}
 			e.expect(t, method, path, nil, http.StatusOK, "")
 		}
 		sep := "?"
@@ -1482,7 +1508,7 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 			e.expect(t, method, path+sep+q, nil, http.StatusBadRequest, "invalid_request")
 		}
 	})
-	if reads != 15 {
+	if reads != 19 {
 		t.Fatalf("%d reads", reads)
 	}
 }
@@ -1584,11 +1610,14 @@ func TestDispatchEveryWriteBodyIsBounded(t *testing.T) {
 	e := dispatchEnv(t)
 	const upload = "POST /api/dispatch/tickets/{key}/attachments"
 	bounds := map[string]int{
-		"POST /api/dispatch/tickets":              maxTicketBody,
-		"POST /api/dispatch/tickets/{key}/edit":   maxTicketBody,
-		"POST /api/dispatch/tickets/{key}/plans":  maxTicketBody,
-		"POST /api/dispatch/tickets/{key}/launch": maxTicketLaunchBody,
-		upload: maxAttachmentBody,
+		"POST /api/dispatch/tickets":               maxTicketBody,
+		"POST /api/dispatch/tickets/{key}/edit":    maxTicketBody,
+		"POST /api/dispatch/tickets/{key}/plans":   maxTicketBody,
+		"POST /api/dispatch/tickets/{key}/launch":  maxTicketLaunchBody,
+		"POST /api/dispatch/tickets/{key}/reviews": maxReviewBody,
+		"POST /api/dispatch/reviews/{id}/retry":    maxReviewRetryBody,
+		"POST /api/dispatch/findings/{id}/marks":   maxMarkBody,
+		upload:                                     maxAttachmentBody,
 	}
 	// A ticket's create checks its project's key before the store sees
 	// the body.
@@ -1641,7 +1670,7 @@ func TestDispatchEveryWriteBodyIsBounded(t *testing.T) {
 			}
 		}
 	}
-	if writes != 33 {
+	if writes != 36 {
 		t.Fatalf("%d writes", writes)
 	}
 }

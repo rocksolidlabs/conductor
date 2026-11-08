@@ -284,10 +284,7 @@ func TestEachSectionIsBounded(t *testing.T) {
 		whole := 0
 		for name, b := range replies {
 			whole += len(b)
-			limit := maxGuideSection
-			if name == "overview" {
-				limit = maxGuideOverview
-			}
+			limit := guideBound(name)
 			if len(b) > limit {
 				t.Errorf("%s's %s: %d bytes, over %d", c.Kind, name, len(b), limit)
 			}
@@ -822,6 +819,8 @@ func TestEachBodySchemaIsWhatItsRouteDecodes(t *testing.T) {
 		"launch_approved_plan": ticketLaunchBody{}, "prepare_followup": planProposeBody{},
 		// The operator's operations on a decision.
 		"decision_respond": crew.Response{}, "decision_cancel": decisionCancelBody{}, "decision_comment": decisionCommentBody{}, "decision_route": decisionRouteBody{},
+		// A person's reviews.
+		"review_submit": reviewSubmitBody{}, "review_retry": reviewRetryBody{}, "finding_mark": findingMarkBody{},
 	}
 	seen := 0
 	for _, op := range Operations() {
