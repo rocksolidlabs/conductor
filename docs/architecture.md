@@ -559,6 +559,47 @@ engine still holds the run. The ticket page reads both again on the
 `dispatch` events of its ticket and the `run` events of the runs it shows,
 and counts a run's questions from the live sessions, never by polling.
 
+A person's review of a candidate (Program item RV1,
+`docs/plans/review-repair.md`) is Dispatch's record and Yardmaster's
+repair, joined by the API as a launch is. A review (`dispatch/reviews.go`,
+schema version 3) names one candidate, `<run>/<task>/<n>@<commit>`, and
+the base its diff was read against, and holds up to fifty findings (on
+lines of either side of a file, a whole file, the candidate as a whole,
+or a failed check's receipt) and a verdict: Comment and Approve are
+recorded and change nothing; Request changes is recorded `pending` and
+then applied. The API (`api/dispatch_reviews.go`) checks first that the
+ticket holds the run's chain (`ChainHolders`), that the commit is the
+attempt's result and that the request fits what the run keeps
+(`crew.FitChangeRequest`), commits the review, and sends the request to
+Yardmaster as a command with a receipt (`rv.<review>.<try>`): on a run
+the engine holds, `Engine.RequestChanges` reopens the task at the
+candidate as a review task's `needs_changes` does (one shared transition,
+`reopenFor`), and the repair attempt reads the person's findings, with
+their ids, lines and the resolution asked, in its task file; on a run the
+server no longer runs, only when the person said so (`continueRun`), a
+continuation carries the repair (`ContinueRunWith`). The review is then
+recorded applied, with the run, the command, the revision and the
+attempt, or refused in the receipt's words; a request taken but not yet
+settled is left to a worker that `OnRunChange` wakes, and one pending at
+a restart is recorded refused by the reconcile, never applied silently:
+Request again is a new try, judged against the run as it is then. A
+finding's state is never stored: it is its latest mark's, a person's
+Resolved, Still open or Withdraw made against a later candidate of its
+task (Resolved never on the commit it was made on), with where its lines
+are there located by the server (`api/review_locate.go`: same, moved,
+changed, gone, renamed) and recorded beside the mark; what a repair
+attempt says it addressed (`addressed` in its result) is shown as its
+claim. A failed check's receipt is prepared for its repair
+(`api/review_repair.go`): the receipt read from the ledger, its class
+(`crew.ClassifyFailure`), the attempt before and the criteria, and
+whether Check again would be taken now on the newest run of its chain;
+Check again (`Engine.Recheck`) verifies that same commit again as an
+attempt of its own, with its own receipts, through the run's Runtime like
+every check. The ticket page's Review view (`DispatchReview.vue`) puts
+the criteria and the plan, the candidate's lineage, its diff, its checks,
+the findings, the draft, the reviews sent, the decisions and the
+delivery side by side; nothing in it merges, pushes or closes.
+
 ## Brakeman
 
 Brakeman is the sidekick agent (`docs/plans/brakeman.md`, Program items BK0

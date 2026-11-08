@@ -1563,6 +1563,40 @@ A run is linked by hand from the form (picked or named by its id): one
 ticket a run and its continuations, and a run launched from a ticket is that
 ticket's already.
 
+**Review.** Each standing candidate under Runs offers **Review** (with the
+open findings of its task counted), and the run page's task panel the same
+for a run a ticket holds: the ticket's **Review view**
+(`/dispatch/CND/12?view=review&candidate=…`). It shows the acceptance
+criteria as the run was launched with them and as they are now, the plan
+revision and the task's expected checks; a picker of the candidates with how
+each came to be ("attempt 3 of build, the repair of review 1a2b3c4 by Nate on
+attempt 2", "after check test failed on attempt 1", "checked again"); the
+candidate's diff against the run's base, where the attempt started or
+another result of the task, file by file in Monaco. Select lines on either
+side and **Add a note** (or Ctrl+Shift+M; on a phone, **Note on lines** with
+the lines typed), note a whole file or the candidate as a whole: the notes
+gather in a draft kept in this browser, and **Send review** sends them as one
+batch, **Request changes** (asked first: Yardmaster reopens the task at this
+candidate, its next attempt reads the notes in its task file), **Comment** or
+**Approve** (recorded, changing nothing). A sent review says that it was
+recorded, then that Yardmaster applied it (the run, the attempt that takes
+it up) or refused it and why, with **Request again**. **Findings** lists
+every finding of the task's reviews across its candidates, open first, where
+its lines are on the candidate shown (same lines, moved: now 41–44, the
+lines changed, the file is gone, renamed), what the repair attempt said it
+addressed (its claim, never the resolution), and **Resolved**, **Still
+open** and **Withdraw** with an optional note, made against a later
+candidate; only a mark changes a finding's state. On a failed receipt
+**Prepare a repair** shows the tested commit, the receipt, the last of its
+output, the log's hash, the attempt before, the criteria and the class the
+server worked out (code defect, infrastructure failure, possibly flaky,
+cancelled, evidence unavailable), which you may change; **Check again**
+(the same commit checked again, as an attempt of its own) when Yardmaster
+would take it, first for a machine's failure, else why not ("continue run
+A first"); **Add to the draft** makes it a note of the review. The ticket's
+decisions and delivery follow. Nothing merges, pushes, delivers or closes
+by itself.
+
 **Decisions and people.** **Decisions** lists the approvals with their notes,
 the acceptance, the results accepted anyway, and the approved revision's
 decisions a person makes; **People** the owner, the assignees, who approved,
@@ -1602,6 +1636,13 @@ conductor dispatch plan approve CND-12 3 --note "the operator's rationale"
 conductor dispatch plan withdraw CND-12 2
 conductor dispatch launch CND-12 [--plan 3] [--label "CND-12 Fix the login loop"]  # a managed run from the approved revision
 conductor dispatch runs CND-12              # every launch, run and continuation, with what changed since each launch
+conductor dispatch review CND-12 --candidate <run>/build/2@<commit> --verdict request_changes --file notes.json [--base <commit>] [--summary "…"] [--continue]
+conductor dispatch reviews CND-12           # the reviews, newest first, with what Yardmaster did with each
+conductor dispatch review show <id>         # a review whole, each finding with its latest mark
+conductor dispatch review retry <id> [--continue]   # Request again: a refused request's next try
+conductor dispatch findings CND-12 [--state open] [--candidate <run>/build/3@<commit>]  # located on the candidate, with what the repair said
+conductor dispatch finding mark <id> --candidate <run>/build/3@<commit> --verdict resolved [--note "renamed"]
+conductor crew recheck <run>/build/3@<commit>   # Check again: the failed candidate verified again, nothing changed
 ```
 
 They take `--server`, `--token` and `--insecure` as `conductor crews` does

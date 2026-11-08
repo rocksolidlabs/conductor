@@ -4184,6 +4184,120 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   share link with control on `build`'s session showing the question and
   no way to answer it; and Codex as the asking agent in one of the runs.
   A defect it finds is fixed in the stream.
+- **Review and repair: a person's batched review of a candidate, one
+  traceable repair round, findings checked against the new candidate
+  (RV1, #618 to #633, 2026-11-06 to 2026-11-08).** Program item RV1,
+  planned in `docs/plans/review-repair.md` (PR #607) and shipped as nine
+  PRs. A person reviews one candidate of a ticket's run (a task's result
+  commit, `<run>/<task>/<n>@<commit>`) against a named base, gathers
+  notes on lines of either side, whole files, the candidate as a whole
+  and failed checks in a draft kept in the browser, and sends them as one
+  review: Request changes is recorded in Dispatch and applied by
+  Yardmaster as the task's repair transition (the one a review task's
+  `needs_changes` makes), or by the continuation that carries it for a
+  run the server no longer runs, only when the person says so; Comment
+  and Approve are recorded and change nothing. The repair attempt reads
+  the person's findings, with their ids, lines and the resolution asked,
+  in its task file and says which it addressed in its result. Each
+  finding keeps its identity across candidates and its state is its
+  latest mark's: a person marks it Resolved, Still open or Withdrawn
+  against a later candidate, where the server locates its lines (same,
+  moved, changed, gone, renamed), never by itself. A failed check's
+  receipt is prepared for its repair with its class worked out from the
+  ledger (code, infrastructure, flaky, cancelled, unavailable), and Check
+  again verifies the same commit again as an attempt of its own. Nothing
+  merges, pushes, delivers or closes by itself. See
+  `docs/architecture.md` (Dispatch) and `docs/protocol.md` (Crew runs,
+  Dispatch). No new dependency, no feature tag, no frame. What each PR
+  shipped and the tests it added:
+
+  PR-1 (#618, PR #665): Dispatch's reviews, findings and marks (schema
+  version 3), their bounds, the operations and their replays, a
+  finding's state from its marks. `internal/dispatch`'s reviews tests.
+  PR-2a (#620, PR #697): Check again (`Engine.Recheck`, `Recheckable`)
+  and a failed check's class (`ClassifyFailure`). PR-2b (#622, PR #710): a person's
+  repair (`ChangeRequest`, `FitChangeRequest` and its fixture,
+  `Engine.RequestChanges`, the task file's request, the result's
+  `addressed`, the ledger's version 10 barrier). PR-2c (#623, PR #717):
+  the continuation that carries a person's repair (`ContinueRunWith`).
+  PR-3 (#625, PR #711): a candidate's diff (`gitrepo.Compare`), the
+  prepared failed-check request and the recheck route. PR-4 (#627, PR
+  #722): reviews sent, applied, reconciled and marked, the located
+  states (`review_locate.go`), the `review` and `finding` events. PR-5
+  (#629, PR #729): `conductor dispatch review`, `reviews`, `review show`,
+  `review retry`, `findings`, `finding marks`, `finding mark`, `conductor
+  crew recheck`, `conductor task result --addressed`, the skill's text.
+  PR-6 (#631, PR #734): the Review view, its diff in Monaco with
+  selections and margin marks, the draft and the batch sent
+  (`review.spec.ts`, `review.test.ts`, `useReviewDraft.test.ts`,
+  `useReview.test.ts`). PR-7 (#633): findings across candidates with
+  their located words, the agent's addressed notes and the marks
+  (`ReviewFindings`); the failed-check panel with Prepare a repair and
+  Check again (`ReviewCheckFailure`, offered exactly when the prepared
+  request's `recheck.allowed` says so, first for an infrastructure or a
+  possibly flaky failure); the candidates' lineage (`ReviewLineage`,
+  `utils/reviewLineage.ts`); the criteria as launched and now, the plan
+  revision, the expected checks, the decisions and the delivery in the
+  view; a person's repairs in `DispatchRepairs`; Review and Prepare a
+  repair on the run page ("Link this run to a ticket to review it"
+  otherwise) and on the ticket's receipts; the palette's Review the
+  latest candidate, Send review (n notes) and Open findings; a note on
+  typed lines for a phone; the stub's `addressed` and its fixed edits
+  (the `worker-review` agent, `STUB_REVIEW_EDITS=1`).
+  `reviewLineage.test.ts`, more of `review.test.ts`,
+  `review-repair.spec.ts`, and this entry.
+
+  The acceptance (the plan's Acceptance: a person sends several findings
+  on one candidate as one review, Yardmaster makes one traceable repair
+  round of it, and the person checks each finding against the new
+  candidate; nothing merges by itself), what is observed and what is
+  not. Observed, with the stub worker, by the specs CI runs: a review of
+  four notes on both sides, a file and the whole, its base kept through a
+  reload, sent as Request changes and applied, the repair's candidate
+  with its own receipts and the first's unchanged, a batch past the task
+  file's room refused with nothing kept (`review.spec.ts`); a review's
+  findings on the repair's candidate, "moved: now 5–6" and "the lines
+  changed", each change with the agent's addressed note, one marked
+  resolved, one still open, a question withdrawn, none changed without a
+  mark; a second round sent from the page and applied; the lineage; the
+  person's repairs under the ticket's runs; the run page's Review; the
+  phone width, one column, a note by typed lines and a mark; a check
+  failing on all three attempts, Prepare a repair with its receipt, its
+  class `code`, the log's hash and the criteria, Check again offered
+  after Add to the draft and first once the class is changed to possibly
+  flaky, pressed, and the task succeeding at the same commit as attempt
+  4 with its own passing receipt, attempt 3's failing one unchanged;
+  Resolved refused on that same commit, by the page and by the server; a
+  request to attempt 3 refused since the task moved on, and Request
+  again its next try; and on a run stopped and continued from the run
+  page, Check again from the first run's receipt made in the
+  continuation (`review-repair.spec.ts`). Not yet made: the plan's
+  by-hand observation, the maintainers' check, made after this entry's
+  PR merges and recorded here (what ran, against which `main`, what it
+  did not exercise): on the owner's `conductor serve` with a real agent
+  on the owner's own subscription (Claude Code or Codex), a scratch
+  repository the agent trusts and a ticket with acceptance criteria, a
+  managed crew with a work task, a check and a review task by an agent,
+  a plan revision approved and launched; on the first candidate the
+  Review view showing the criteria, the plan revision, the diff against
+  the run's base and the receipts, four notes (a blocker on a range, a
+  minor on one line, a question on a file, a general note) sent as
+  Request changes, shown recorded and then applied with the run, the
+  command and the repair attempt's number; the ledger's command receipt,
+  the `task.reopened` event naming the review, the task file's request
+  with the four ids and the repair attempt starting at the candidate's
+  commit, read and agreeing; the real agent reading the findings from
+  its task file and addressing them, its addressed notes shown; the new
+  candidate's own receipts, the agent review task run again, each
+  finding marked against the new candidate, nothing merged, pushed,
+  delivered or closed by itself, and a delivery link added by hand
+  naming the final candidate; a failing check's Prepare a repair with
+  the log's hash equal to the step log route's `X-Conductor-Log-SHA256`;
+  Monaco's selection and the margin marks in Chromium, Safari and the
+  Electron app; and the Review view on a phone on the LAN, from a
+  machine that is not WSL or through the desktop app's own forwarding
+  (no networking configured by anyone). A defect it finds is fixed in
+  the stream.
 - **Project manifests: a fresh attempt worktree made usable, predictably
   (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
   `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the
