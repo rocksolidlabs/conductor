@@ -943,14 +943,22 @@ func TestTheGuideListsHistoryForTheAdminOnly(t *testing.T) {
 	e := newTestEnv(t, nil)
 	_, _, out := guideOf(t, e, adminToken, "/api/guide?section=operations")
 	names := opNames(t, out)
-	for _, want := range []string{"history_search", "history_entry", "history_similar", "history_sessions", "history_session", "history_resume", "history_forget", "history_forget_all", "history_reindex"} {
+	for _, want := range []string{"history_search", "history_entry", "history_similar", "history_command", "history_sessions", "history_session", "history_resume", "history_forget", "history_forget_all", "history_reindex"} {
 		if !slices.Contains(names, want) {
 			t.Errorf("the admin's guide lists no %s", want)
 		}
 	}
 	for _, op := range Operations() {
-		if strings.HasPrefix(op.Name, "history_") && (op.Scope != "admin" || op.MCP != "" || len(op.CLI) < 3 || op.CLI[1] != "history") {
+		if !strings.HasPrefix(op.Name, "history_") {
+			continue
+		}
+		// The receipt read is the History page's own and has no CLI form.
+		cliless := op.Name == "history_command"
+		if op.Scope != "admin" || op.MCP != "" || (cliless && len(op.CLI) != 0) || (!cliless && (len(op.CLI) < 3 || op.CLI[1] != "history")) {
 			t.Errorf("%s: %+v", op.Name, op)
+		}
+		if op.Name == "history_command" && (op.Method != http.MethodGet || op.Path != "/api/history/command" || op.Bounds["actor"] != maxHistoryActor || op.Bounds["reply"] != maxHistoryReply) {
+			t.Errorf("history_command: %+v", op)
 		}
 		if op.Name == "history_resume" && (op.Bounds["body"] != maxHistoryResumeBody || op.Bounds["receipts"] != journal.MaxResumes) {
 			t.Errorf("history_resume's bounds: %v", op.Bounds)
