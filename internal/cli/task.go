@@ -22,7 +22,8 @@ const taskUsage = `Usage:
   conductor task context [--page N] [--json]   print this attempt's task (.conductor/task.md), or its JSON
   conductor task result [--summary TEXT] [--commit SHA] [--issue TEXT]...
                         [--verdict approved|needs_changes] [--finding "SEVERITY[:PATH[:LINE]] MESSAGE"]...
-                        [--file result.json|-]  submit this attempt's result, once
+                        [--addressed ID[=NOTE]]... [--file result.json|-]
+                                               submit this attempt's result, once
   conductor task send --to MEMBER TEXT...     send another member a message (typed into its session once it has its task)
   conductor task inbox [--after N] [--json]    your messages from the other members, after a sequence number
   conductor task ack N                         acknowledge your messages up to N
@@ -46,10 +47,14 @@ A work task's result is its commit (HEAD unless --commit names it): commit
 first, the worktree must be clean apart from .conductor/; say what you did
 with --summary and what is left with --issue. A review's result is its
 verdict with --finding (severity blocker, major, minor or nit); it commits
-nothing. --file reads the result as JSON instead: {"summary", "commit",
-"issues": [], "verdict", "findings": [{"severity", "path", "line",
-"message"}]}; "-" reads stdin. A refused result says what to fix; the same
-commit submitted twice is taken once.
+nothing. A repair of a person's requested changes names each change it
+addressed with --addressed, the change's id as task.md gives it and a note
+of what was done: a claim a person checks against your result, never the
+change's resolution. --file reads the result as JSON instead: {"summary",
+"commit", "issues": [], "verdict", "findings": [{"severity", "path",
+"line", "message"}], "addressed": [{"id", "note"}]}; "-" reads stdin. A
+refused result says what to fix; the same commit submitted twice is taken
+once.
 
 A decision is a question a person must answer before your work goes on
 (docs/protocol.md, Decisions). dr-N is its id: task decision, task withdraw
@@ -138,8 +143,9 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	commit := fs.String("commit", "", "result: the result commit (HEAD unless given)")
 	verdict := fs.String("verdict", "", "result: a review's verdict, approved or needs_changes")
 	file := fs.String("file", "", "result, decide: read the result, or the decision's request, as JSON from this file, or - for stdin")
-	var issues, findings multiFlag
+	var issues, findings, addressed multiFlag
 	fs.Var(&issues, "issue", "result: an issue left or doubtful (repeatable)")
+	fs.Var(&addressed, "addressed", "result: a person's requested change you addressed, ID[=NOTE], its id as task.md gives it (repeatable)")
 	fs.Var(&findings, "finding", `result: a review's finding, "SEVERITY[:PATH[:LINE]] MESSAGE" (repeatable)`)
 	to := fs.String("to", "", "send: the member the message goes to")
 	after := fs.Int64("after", 0, "inbox: the last sequence number read")
@@ -321,7 +327,7 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	default:
 		var res crew.Result
 		if *file != "" {
-			if *summary != "" || *commit != "" || *verdict != "" || len(issues) > 0 || len(findings) > 0 {
+			if *summary != "" || *commit != "" || *verdict != "" || len(issues) > 0 || len(findings) > 0 || len(addressed) > 0 {
 				return 2, errors.New("task result: give --file or the flags, not both")
 			}
 			if err := readOneJSON(*file, stdin, maxResultFile, &res); err != nil {
@@ -335,6 +341,13 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 					return 2, fmt.Errorf("task result: %w", err)
 				}
 				res.Findings = append(res.Findings, fd)
+			}
+			for _, a := range addressed {
+				id, note, _ := strings.Cut(a, "=")
+				if id = strings.TrimSpace(id); id == "" {
+					return 2, fmt.Errorf("task result: --addressed is ID[=NOTE], the change's id first: %q", a)
+				}
+				res.Addressed = append(res.Addressed, crew.Addressed{ID: id, Note: strings.TrimSpace(note)})
 			}
 		}
 		out, err := c.call(ctx, http.MethodPost, "/task/result", res)

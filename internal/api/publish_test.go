@@ -919,7 +919,7 @@ func TestARunsUpdatesLandInTurn(t *testing.T) {
 	local.srv.pubMu.Lock()
 	local.srv.published = map[string]PublishedSession{core: slow}
 	local.srv.pubMu.Unlock()
-	local.srv.recordRemoteRunLink(runID, proto.LinkCreated{LinkID: "l1", Role: "view"})
+	local.srv.recordRemoteRunLink(runID, proto.LinkCreated{LinkID: "l1", Role: "view"}, false)
 
 	// The lead is not published: the update omits it and goes through the core's connection, slowly.
 	first := make(chan struct{})
@@ -1136,7 +1136,7 @@ func TestARunSyncThatFailedIsMadeAgain(t *testing.T) {
 	runID := local.launchCrew(t, "Solo", catMember("lead", "immediately"))
 	waitMembersPublished(t, local, runID, 1)
 	local.waitRunning(t, runID, "lead")
-	local.srv.recordRemoteRunLink(runID, proto.LinkCreated{LinkID: "l1", Role: "view"})
+	local.srv.recordRemoteRunLink(runID, proto.LinkCreated{LinkID: "l1", Role: "view"}, false)
 	resend := func() {
 		local.srv.pubMu.Lock()
 		delete(local.srv.runSent, runID)
@@ -1473,7 +1473,7 @@ func TestARevokeGoesOnPastACarrierThatHoldsNoSuchLink(t *testing.T) {
 		return &scriptedRevokes{gatedPublication: gatedPublication{id: id, done: make(chan struct{})}, answers: answers, mu: &mu, asked: &asked}
 	}
 	notFound := errors.New("not_found: no such link")
-	e.srv.revokeRemoteRunLinks("run", []PublishedSession{carrier("other", notFound), carrier("owner"), carrier("spare")}, []remoteLink{{ID: "l1"}})
+	e.srv.revokeRemoteRunLinks("run", []runCarrier{carrier("other", notFound), carrier("owner"), carrier("spare")}, []remoteLink{{ID: "l1"}})
 	mu.Lock()
 	got := fmt.Sprint(asked)
 	asked = nil
@@ -1482,7 +1482,7 @@ func TestARevokeGoesOnPastACarrierThatHoldsNoSuchLink(t *testing.T) {
 		t.Fatalf("asked %s, want the other publisher's carrier passed and the owner's revoke to end it", got)
 	}
 	// Every carrier holding none: the link is gone, and no carrier is asked twice.
-	e.srv.revokeRemoteRunLinks("run", []PublishedSession{carrier("a", notFound, notFound), carrier("b", notFound, notFound)}, []remoteLink{{ID: "l2"}, {ID: "l3"}})
+	e.srv.revokeRemoteRunLinks("run", []runCarrier{carrier("a", notFound, notFound), carrier("b", notFound, notFound)}, []remoteLink{{ID: "l2"}, {ID: "l3"}})
 	mu.Lock()
 	got = fmt.Sprint(asked)
 	mu.Unlock()

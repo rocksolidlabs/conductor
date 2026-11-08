@@ -40,6 +40,9 @@ const (
 	HostRunLink        = "link_run"
 	HostRunLinkUpdate  = "link_run_update"
 	HostRunLinkUpdated = "link_run_updated"
+	// HostRegisterDesk is the first message of a run's desk's connection
+	// (RegisterDesk), in place of register.
+	HostRegisterDesk = "register_desk"
 
 	// server -> host
 	HostRegistered  = "registered"
@@ -144,7 +147,79 @@ type Registered struct {
 	// MaxHostMessage; a host that is not given one, or is given one it
 	// refuses (HostRecipe.Check), works as it did without.
 	Recipe *HostRecipe `json:"recipe,omitempty"`
+	// Decisions says the switchyard carries a decision link's lane
+	// (docs/protocol.md, Decision links): it relays TypeDecision and
+	// TypeDecide, keeps a run's desk (RegisterDesk) and serves the join
+	// page's Decide tab. Only then does a publisher mint a decision link
+	// there; absent from an older switchyard and from one built without
+	// the tab, at which the publisher refuses one (switchyard_too_old).
+	Decisions bool `json:"decisions,omitempty"`
 }
+
+// RegisterDesk is the first message of a run's desk's connection, in
+// place of register (docs/plans/decision-inbox.md, PR-6): one more host
+// connection of the publisher's, for a run with a live decision link at
+// the switchyard, with no PTY and no terminal frames, only the lane, so a
+// run's decisions are reached with no member alive. It is the
+// publisher's by the identity a hosted session has: Host is the uplink's
+// HostInfo, whose Instance it requires, and LocalID is DeskLocalID of the
+// run, so the desk's id is the same after its connection drops (Resume,
+// with the secret its registered gave) and after the switchyard
+// restarts (a fresh register_desk). An older switchyard closes the
+// connection: its first message must be a register.
+type RegisterDesk struct {
+	T       string      `json:"t"`
+	Proto   int         `json:"proto"`
+	Host    HostInfo    `json:"host"`
+	LocalID string      `json:"localId"`
+	Run     DeskRun     `json:"run"`
+	Resume  *HostResume `json:"resume,omitempty"`
+}
+
+// DeskRun is the run a desk carries: its id on the publisher (opaque to
+// the switchyard) and its name, within a run group's bounds.
+type DeskRun struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// DeskLocalID is the local id of the desk of the run runID: "desk:" and
+// the run's id.
+func DeskLocalID(runID string) string { return "desk:" + runID }
+
+// Validate checks a register_desk: its type and protocol, the host's
+// bounds with an instance (ErrNoInstance without one), a run with an id
+// and a name within a run group's bounds, and the local id the run's
+// (DeskLocalID), so one run has one desk per publisher.
+func (m RegisterDesk) Validate() error {
+	if m.T != HostRegisterDesk || m.Proto != ProtoVersion {
+		return errors.New("register_desk: type or protocol")
+	}
+	if m.Host.Instance == "" {
+		return ErrNoInstance
+	}
+	if len(m.Host.Name) > 120 || len(m.Host.User) > MaxHostUser || len(m.Host.Instance) > MaxHostInstance {
+		return errors.New("register_desk: host out of bounds")
+	}
+	if m.Run.ID == "" || len(m.Run.ID) > MaxRunID || m.Run.Name == "" || len(m.Run.Name) > MaxRunName {
+		return errors.New("register_desk: run id and name required, within bounds")
+	}
+	if m.LocalID != DeskLocalID(m.Run.ID) {
+		return errors.New("register_desk: localId is desk: and the run's id")
+	}
+	if m.Resume != nil && (m.Resume.SessionID == "" || len(m.Resume.SessionID) > MaxDeskID || m.Resume.Secret == "" || len(m.Resume.Secret) > 128) {
+		return errors.New("register_desk: resume out of bounds")
+	}
+	return nil
+}
+
+// ErrNoInstance refuses a register_desk without a host instance: a desk
+// is its publisher's by that instance (no_instance, as a run link is).
+var ErrNoInstance = errors.New("register_desk: a desk needs a host that registers with an instance")
+
+// MaxDeskID bounds a desk's id where a message carries it (RunGroup.Desk,
+// a resume): a hosted session's id.
+const MaxDeskID = 64
 
 // HostRecipe is the part of an agent's catalog entry a session watches its
 // screen by (#293): the trust question and its answers, the other
@@ -589,6 +664,12 @@ type RunGroup struct {
 	Name     string      `json:"name"`
 	Members  []RunMember `json:"members"`
 	Revision int64       `json:"revision,omitempty"`
+	// Desk is the id of the run's desk there (RegisterDesk), sent in the
+	// run's sync as the members are, absent with no desk: a run link's
+	// viewer joins it for the run's decisions. A switchyard takes only a
+	// desk of the same publisher for the same run; an older one ignores
+	// the field.
+	Desk string `json:"desk,omitempty"`
 }
 
 // RunMember is a member of a RunGroup.
@@ -601,7 +682,9 @@ type RunMember struct {
 
 // Validate checks a group against the bounds above: an id and a name, at
 // most MaxRunLinkMembers members with unique names, each with an agent and
-// one of the four statuses, and a revision from 0 to MaxRunRevision.
+// one of the four statuses, and a revision from 0 to MaxRunRevision; at
+// least one member, unless the group names its desk (a run reached for its
+// decisions before any member is), whose id is at most MaxDeskID bytes.
 func (g RunGroup) Validate() error {
 	if g.ID == "" || len(g.ID) > MaxRunID || g.Name == "" || len(g.Name) > MaxRunName {
 		return errors.New("run: id and name required, within bounds")
@@ -609,7 +692,10 @@ func (g RunGroup) Validate() error {
 	if g.Revision < 0 || g.Revision > MaxRunRevision {
 		return fmt.Errorf("run: a revision from 0 to %d", int64(MaxRunRevision))
 	}
-	if len(g.Members) == 0 || len(g.Members) > MaxRunLinkMembers {
+	if len(g.Desk) > MaxDeskID {
+		return fmt.Errorf("run: a desk id of at most %d bytes", MaxDeskID)
+	}
+	if (len(g.Members) == 0 && g.Desk == "") || len(g.Members) > MaxRunLinkMembers {
 		return fmt.Errorf("run: 1 to %d members", MaxRunLinkMembers)
 	}
 	names := map[string]bool{}

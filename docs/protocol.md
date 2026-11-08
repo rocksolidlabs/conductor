@@ -516,8 +516,14 @@ started cannot reach it after. A server that knows no revision ignores the
 field (it decodes host messages without refusing unknown fields), and an
 older host sends none.
 
-Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links, recipe?}`
-(`iceServers`: the configured ones, then the media provider's for the
+Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links, recipe?, decisions?}`
+(`decisions: true` from a switchyard that carries a decision link's lane,
+relaying DECISION and DECIDE, keeping run desks and serving the join
+page's Decide tab, below, Decision links: a publisher mints a decision link
+only at one that says so; absent from an older switchyard, and from a
+switchyard built before its join page has the Decide tab (it relays the
+lane and keeps desks all the same, but says nothing), a boolean in the
+64 KiB host message; `iceServers`: the configured ones, then the media provider's for the
 host's session, as the viewer's welcome carries them, none dropped for
 the frame: a host message holds 64 KiB; an open host, registered with no
 token, is handed the configured ones alone; `links`: the ids of the live links the server holds for the session, `[]`
@@ -676,7 +682,8 @@ each pattern at most 200 bytes. A host publishing to a switchyard (the
 server's uplink) watches nothing of one; an older host ignores the field.
 
 A run link minted by `link_run` resolves on the join page as a run link does
-(`{run: {id, name, members}, role, label, switchyard}`), each member with
+(`{run: {id, name, members, desk?}, role, label, switchyard}`, `desk` the
+run's desk while it is registered, below), each member with
 `kind: "hosted"`; a member whose session is not registered now reads `ended`,
 and none registered at all answers `503 host_offline`. The publishing server
 mints it when its run's Share asks (`POST /api/runs/{run}/links` answers
@@ -695,6 +702,54 @@ sent last: five seconds later, twice as long after each failure in a row,
 a minute at most, until one lands or the run has no link there; the one
 that got no answer, should it land after, is refused as stale. A change
 of the run is still sent two seconds after it, whatever try is waiting.
+
+**A run's desk** (docs/plans/decision-inbox.md, PR-6) is a host
+connection that carries no session, only a run decision link's lane, so
+a run's decisions are reached through a switchyard with no member alive.
+Its first message is `register_desk{proto, host{name, version, instance},
+localId, run{id, name}, resume?{sessionId, secret}}` in place of
+`register`: `host.instance` is required (a desk without one is closed,
+`no_instance`), `localId` is `desk:` and the run's id, `run.id` ≤ 64
+bytes and its name ≤ 120 (a run group's bounds), a resume's id ≤ 64
+bytes, the whole message ≤ 64 KiB (a host message's bound); a message
+out of these bounds closes the connection, and an older
+switchyard closes it (`register expected`). The desk's id is the one a
+hosted session of that instance and local id has, so its publisher's desk
+gets the same id again: after its connection drops, by a `resume` with
+the secret its `registered` gave; after the switchyard restarts, by a
+fresh `register_desk`, which takes back a desk held under that id while
+its host was away and is refused while another connection holds it live
+(or another instance's: two publishers with one run id have two desks,
+of two owners). Its `registered` carries the ids of the live links
+naming it (`links`) and `decisions`, no recipe. A desk is never listed
+as a session, and holds a place among the switchyard's sessions while it
+lives (the session limit counts it). It sends a desk's messages alone:
+`answer`, `ice`, `viewer_error`, `viewer_closed` for its viewers,
+`link_run`, `link_run_update` and `link_revoke` for its run's links, and
+`status`, whose ended status (`stopped`) ends it there at once, its
+viewers closed; anything else (`attention`, `activity`, `chat`, `resize`,
+a session's `link`) closes the connection. A desk whose host has been
+away past the 60 s grace is forgotten as a session is.
+
+A run's group names its desk, `run.desk` (≤ 64 bytes, absent with none)
+in `link_run` and `link_run_update`: a group with a desk may have no
+member yet. The switchyard takes only a desk of the same instance as the
+connection that sends the group, and of the same run (`error{invalid_request}`
+otherwise); a desk's own connection sends its own run's group alone,
+naming itself. A link of the group opens the desk as it opens a member's
+session: its control viewer joins it at `/ws/sessions/{desk}` through the
+same signalling, `viewer_join` carrying the link's id, to whom the
+publisher sends its own `welcome` (`decisions: true`, no terminal fields)
+and serves the lane; a view link's viewer is refused there (`4401`), and
+a link the group no longer names closes its viewers as a member's do. The
+group's desk is held in memory alone, never in the file a switchyard
+keeps the link in (the file keeps the shape an older switchyard reads
+strictly, so a switchyard rolled back keeps every run link of the run):
+after a restart the links restored from their files name no desk until
+the desk is back, and its `register_desk` names it again in its owner's
+links of its run, before its `registered` lists them. The publisher sends
+the desk in every group of the run while it has one, so its syncs never
+take the desk from the run's links.
 
 `activity` carries one activity-log entry, the fields of the `activity`
 control message above (`entry` has its own `t`), in both directions. Host to
@@ -2066,12 +2121,81 @@ longer lists is `stale_revision`, nothing done. Any other action is
 closes is not taken back; one not begun is never begun: the connection's
 end cancels it, looked at as the operation is taken.
 
-**Relayed connections.** Neither frame is carried by a relay yet (the
-switchyard's side of the lane is a later row's): a relay envelope with a
-DECISION or DECIDE inside is refused as any type it does not carry is
-(`DecodeRelay`), and a hosted session's viewer that sends a DECIDE to the
-server is closed `4400`, nothing sent to its host. A hosted session's
-welcome never says `decisions`, so a client sends none there.
+**Through a switchyard** (docs/plans/decision-inbox.md, PR-6). A
+session's or a run's decision link of a server that publishes to a
+switchyard is minted there, over the session's publication or the run's
+desk (Host control connection, A run's desk), only when the switchyard's
+`registered` said `decisions` (`409 switchyard_too_old` otherwise, a
+switchyard that closes `register_desk` among them, nothing minted). The
+switchyard mints an ordinary control link and knows nothing of its being
+a decision link: the publisher keeps that, and holds the link for its
+lane, under the switchyard's id, with no token (it opens nothing on the
+server itself); the lane's rules above hold it as they hold a link made
+on the server, its acts as the link's actor `link:<id>`. A run decision
+link is minted over the run's desk, which the publisher opens for the
+run's first decision link there, and lives while the engine still takes
+the run's commands (a run that finished, `failed` or `cancelled`, among
+them: a Retry reopens it) and one of the run's decision links stands: it
+ends at the first of the run stopped, continued or forgotten (5 s after,
+as a publication lingers past its session's end), its last decision link
+revoked or expired, and the server's stop. A revoke from the server ends
+the link there first, through its barrier, then at the switchyard (over a
+member's publication still up, or the desk). It fails closed: until the
+switchyard confirms it (revoked, or `not_found`), the link stays in the
+links' list with `revokePending: true`, its record and the run's desk are
+kept (the desk may carry the revoke; one the switchyard ended is opened
+again for it), the revoke is tried again (2 s, then twice as long after
+each failure, a minute at most) and a revoke again from the list tries at
+once; the route answers `502 rendezvous_unavailable` meanwhile, and a
+revoke again once the switchyard has confirmed it answers `204`. A run's
+concurrent first decision links open one desk: the others wait for its
+opening and are minted over it. A publication's or a desk's viewers'
+lanes live under that connection, which ends them with itself: from its
+end's start (or a viewer's going) a lane message is refused `unavailable`
+("this connection is ending"), and the operations under way are waited
+for before it tells the switchyard or ends. The server's stop gives its
+desks a quarter of what is left of its budget, 2.5 s at most (of the
+serve command's 10 s), and goes on to stop its runs and sessions past it,
+each desk then ending by itself, what was left of it logged. A link
+the switchyard says is gone (`link_gone`) ends here too, where the word
+is the link's own end: a session link's from its session's connection, a
+run link's from the run's desk (a member's says only that the member left
+the run's group). The word forgets nothing: the switchyard sends it as it
+closes the link's viewers, before it has deleted what it keeps of the
+link (a revoke whose file it could not delete is answered
+`store_unavailable` after it, and a restart there would bring the link
+back), so the link is owed its revoke there, listed with `revokePending:
+true` and keeping the run's desk, until the switchyard confirms it. One
+rule holds in every path: the publisher forgets the record of a decision
+link revoked here only once the switchyard has confirmed the revoke or
+answered `not_found`, whatever happened to the link, its viewers or its
+desk meanwhile, or once what holds the record is gone (the run
+forgotten, the session's publication gone, whose end there takes its
+links). The viewer joins at the switchyard as any
+viewer of the link does; the publisher's own connection to the switchyard
+welcomes it with `decisions: true`, while the switchyard's last
+`registered` said `decisions` (after a reconnect that did not, no viewer
+is welcomed with them and every lane message is refused `unsupported`),
+and serves the lane end to end, every
+answer through the question's claim as the link (`AnswerAs` for keys,
+`Submit` naming the question for a line), whichever session asked; an
+action is taken only while the viewer's link is held on the publisher's
+connection and the publisher vouches for the switchyard (it heard it
+within the bound a terminal line needs), checked at the operation's
+commit, as its terminal writes are. A session evidence entry read
+through it names the session by its published id, the one the
+switchyard knows (not found while it is not published there). A desk
+writes its replies to its viewer from a queue of the viewer's own (64
+frames; a viewer that lets it fill is closed `slow_consumer`), never on
+the connection's read loop. Over
+WebRTC the switchyard sees nothing of it; through its relay, when ICE
+fails, it carries DECISION and DECIDE in RELAY envelopes as it carries
+terminal bytes, and drops a view-role viewer's DECIDE and lane reads
+(`read_only`), as it drops its input. It stores nothing of a decision. A
+publisher that serves no decisions (`conductor host`) welcomes no viewer
+with them and refuses every lane message `unsupported`; a hosted
+session's viewer at the server itself is welcomed without them, so a
+client sends none there.
 
 ## HTTP API
 
@@ -2190,8 +2314,8 @@ its run, and on no other.
 | `POST /api/runs/{run}/tasks/{task}/retry` | admin | allow a failed or cancelled task one more attempt: it is `blocked` or `ready` again (a repair it carries stays), the run open again; `200 {receipt}`; `409 task_state` with the receipt otherwise |
 | `POST /api/runs/{run}/tasks/{task}/accept` | admin | take a failed task's last submitted commit as its result all the same ("Accept anyway", a person's decision over a failed check): the task `succeeded` with it, what needs it goes on; `200 {receipt}`; `409 task_state` with the receipt for a task not failed, or one no attempt of which submitted a commit |
 | `POST /api/runs/{run}/tasks/{task}/recheck` | admin | Check again (RV1): a failed task's standing failed candidate verified again as it is, the same commit, as a new attempt not counted (no session, its receipts its own; the candidate's stay as they were), a finished run open again; body `{commandId, attempt, commit, expectedRevision?}`, `attempt` and `commit` the candidate as its own run `{run}` names it, `expectedRevision` the revision of the run it goes to (the prepared request's `recheck.revision`); sent to the newest run of `{run}`'s chain, with the candidate's reference when that is a continuation; `200 {receipt, run, attempt}`, `run` and `attempt` where it is checked again (attempt n+1 there); a resend is found by its command id along the chain from `{run}` and answered from the run that took it (`receipt.repeat`), another content under the id `409 command_conflict`; one Check again at a time from the chain's read to its answer, so one command id is taken in one run of the chain; `409 {error, receipt, run}` for a refusal recorded: `stale_candidate` when it is no longer the task's standing failed candidate there, `stale_revision` when `expectedRevision` is not the run's (a prepared request read before the run moved), `run_continued` when the run was continued between the chain's read and the command (recorded in that run, nothing checked; a resend under the id answers the same refusal, so Check again again takes a new id), `task_state` otherwise (not failed, failed outside its verification, a stopped run); `409 task_state` "continue run X first" when the server runs no run of the chain, nothing checked; `404 not_found` for a run the ledger has not; `400 invalid_request` for a body that is not one; `503 run_changing` (Retry-After 1) while a continuation of the chain is made, or when another Check again held the server for the request's whole time, nothing taken |
-| `POST /api/runs/{run}/links` | admin | create a run link: `{role, label?, ttlSeconds?, decide?}`, reply `201 {link, token, url}` as for a session link (its `url` on the same base); it grants its role on the session of every member of the run, a member added later included (see Crew runs); `decide: true` makes it a decision link (see Decision links: control only, `400 bad_request` with a view role; the link says `decide: true`; `409 switchyard_too_old` where the link would be minted at a switchyard, none of which carries decisions yet); `409 too_many_links` past 100 links for the run; `404` when unknown |
-| `DELETE /api/runs/{run}/links/{linkId}` | admin | revoke a run link, which closes every viewer attached through it (`4403`); `204`, `404` when the link is not the run's |
+| `POST /api/runs/{run}/links` | admin | create a run link: `{role, label?, ttlSeconds?, decide?}`, reply `201 {link, token, url}` as for a session link (its `url` on the same base); it grants its role on the session of every member of the run, a member added later included (see Crew runs); `decide: true` makes it a decision link (see Decision links: control only, `400 bad_request` with a view role; the link says `decide: true`; `409 switchyard_too_old` where the link would be minted at a switchyard whose `registered` does not say `decisions`, or that keeps no desks; at one that does, minted there over the run's desk: see Decision links, Through a switchyard; `502 rendezvous_unavailable` when the desk cannot be opened); `409 too_many_links` past 100 links for the run; `404` when unknown |
+| `DELETE /api/runs/{run}/links/{linkId}` | admin | revoke a run link, which closes every viewer attached through it (`4403`); `204`, `404` when the link is not the run's; a link minted at a switchyard is revoked there over a member's publication or the run's desk, `502 rendezvous_unavailable` when it is not (a decision link then stays listed with `revokePending: true` and is tried again until the switchyard confirms: Decision links, Through a switchyard); a revoke again of a decision link the switchyard has confirmed revoked answers `204` |
 | `GET /api/dispatch/projects` | admin | Dispatch's projects (see Dispatch below): `{projects, next?}`, a page of at most `limit` (1 to 200, 200 when absent) summaries by key after `cursor` (a page's opaque `next`), each `{id, key, name, tracker, archivedAt?, open, done, rev, updatedAt}`, `open` counting its live tickets neither done nor cancelled and `done` those done, without its description, folder, tracker URL and close policy, which its read carries, so a page is under 128 KiB (a name of 60 characters encodes to at most 360 bytes); the archived ones only with `archived=1`; `400 invalid_request` for a bad value |
 | `POST /api/dispatch/projects` | admin | make a project (`project.create`, Dispatch operations below): `{opId, byName?, key, name, description?, cwd?, tracker?, trackerUrl?, closeRequires?}`, `key` one upper-case letter then one to five upper-case letters or digits, chosen now and never changed, `name` 1 to 60 characters, `description` Markdown of at most 16 KiB, `cwd` a folder kept as text (at most 4096 bytes), `tracker` `native` (the default) or `external` with an `http` or `https` `trackerUrl` (at most 2 KiB), `closeRequires` any of `acceptance`, `delivery` and `verified` (A delivery's candidate, below), each at most once, kept in that order (`["acceptance"]` for a native project and `[]` for an external one when absent); reply `201 {receipt, project}`; `409 key_taken` for a key another project holds, archived or not |
 | `GET /api/dispatch/projects/{key}` | admin | a project, archived or not, with what its pages offer: `{project, labels, milestones, views}`, its live labels by name, its live milestones by target, and the live saved views of the project and of every project, a view's `query` the JSON it is; at most 3 MiB with every field and set at its bound (`maxProjectReply`); `404 not_found` |
@@ -2265,7 +2389,7 @@ its run, and on no other.
 | `POST /api/opens/{id}/claim` | admin | a desktop app's workbench claims a link it was told of (`open`, `pending`), see Opening a link: no body; `200 {open}` for the first claim while the link waits, `409 open_taken` after it, `404` for a link the server no longer holds (offered, answered or gone) |
 | `POST /api/opens/{id}/result` | admin | what the desktop app did with the link it claimed: body `{outcome}` (at most 1 KiB), one of `browser`, `default`, `missing`, `failed` and `offered` (the app could not open it: the server sends the link `offered` to every workbench and answers the agent so); `missing` and `failed` only for a link whose agent names a browser (`400 invalid_request` otherwise); `204`, once, the outcome the agent's call answers, the wait for it ending however it may; `409 open_taken` for a link not claimed or told already, `404` as for the claim, and for a result told once the link's wait for it is over (`handed`), which the page then offers itself |
 | `GET /api/sessions/{id}/links` | admin | share links of a session (`{links, published?, republish?}`), each with `active` viewers; with a switchyard configured, `published` says the session is published there now, and `republish: true` that the publication the switchyard ended has not been made again, which the next link does (the Share dialog makes a link anew then, and in place of one it made here while the session was not published, once it is); for a session published to a rendezvous, the links minted there too, with `remote: true` and no `active` (their viewers are counted there); a rendezvous restart that re-registered the session drops those records; an ended session lists none |
-| `POST /api/sessions/{id}/links` | admin | create a share link (`403 switchyard` on a switchyard, where the publishing machine mints a session's links over its own connection, `link`): `{role, label?, ttlSeconds?, decide?}` (`decide: true`, a decision link: see Decision links; control only, `400 bad_request` with a view role; `409 unsupported` for a hosted session, whose decisions are answered where it runs; `409 switchyard_too_old` for a session published to a switchyard, none of which carries decisions yet), reply `201 {link, token, url, invite}` (`invite` is the same link as `conductor://<host>/join/<token>`, which the desktop app opens itself); for a session published to a rendezvous the link is minted there over the host connection and the reply is `201 {link{id, role, label, expiresAt, sessionId, remote: true}, url, invite, remote: true}` with the rendezvous's URL and no `token` (`502 rendezvous_unavailable` when it does not answer within 15 s); while that session's publication is still being made the request waits up to 10 s for it, and when it failed or is not there the link is made here and the reply adds `rendezvous: {server, error}` (why the session is not at the switchyard); `url` is `<base>/join/<token>`, where the base is `publicUrl` when it names another machine, and otherwise (unset, or localhost, as the default is) the address the request came through: `X-Forwarded-Proto` and `X-Forwarded-Host` when a reverse proxy sets them, else the request's scheme and `Host` (a malformed host falls back to `publicUrl`) |
+| `POST /api/sessions/{id}/links` | admin | create a share link (`403 switchyard` on a switchyard, where the publishing machine mints a session's links over its own connection, `link`): `{role, label?, ttlSeconds?, decide?}` (`decide: true`, a decision link: see Decision links; control only, `400 bad_request` with a view role; `409 unsupported` for a hosted session, whose decisions are answered where it runs; `409 switchyard_too_old` for a session published to a switchyard whose `registered` does not say `decisions`; at one that does, minted there: see Decision links, Through a switchyard), reply `201 {link, token, url, invite}` (`invite` is the same link as `conductor://<host>/join/<token>`, which the desktop app opens itself); for a session published to a rendezvous the link is minted there over the host connection and the reply is `201 {link{id, role, label, expiresAt, sessionId, remote: true}, url, invite, remote: true}` with the rendezvous's URL and no `token` (`502 rendezvous_unavailable` when it does not answer within 15 s); while that session's publication is still being made the request waits up to 10 s for it, and when it failed or is not there the link is made here and the reply adds `rendezvous: {server, error}` (why the session is not at the switchyard); `url` is `<base>/join/<token>`, where the base is `publicUrl` when it names another machine, and otherwise (unset, or localhost, as the default is) the address the request came through: `X-Forwarded-Proto` and `X-Forwarded-Host` when a reverse proxy sets them, else the request's scheme and `Host` (a malformed host falls back to `publicUrl`) |
 | `DELETE /api/sessions/{id}/links/{linkId}` | admin | revoke a share link, which closes every viewer attached through it (`4403`); `204`; revoking a revoked link answers `204`, records nothing and closes any viewer still attached through it; a session that ended took its links with it (local ones revoked and dropped, their viewers closed as the session's end, `4410`; those minted at the rendezvous forgotten here and ended there by the session's end, which the rendezvous hears from the publication; a hosted session's at its end too), so they are no longer listed and a revoke of one answers `204`, and stops what the session's end still writes their viewers (here, and at the rendezvous over the publication, which outlasts the session's end by 5 s for it: `502 rendezvous_unavailable` when the rendezvous does not answer then); a link minted at the rendezvous is revoked there over the host connection (`link_revoke`), `204` also when the rendezvous no longer holds it, `502 rendezvous_unavailable` when it does not answer|
 | `GET /api/sessions/{id}/files` | admin or share token | read a file of a server session (`path`, `stat`, `raw` query), see File reads |
 | `POST /api/sessions/{id}/attention` | agent token or admin (not a switchyard's) | report an attention state, and with it the agent's own session id (`agentSession`, at most 128 bytes) and whether the report is of a turn (`turn`), see Attention |

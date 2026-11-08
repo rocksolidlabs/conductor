@@ -97,6 +97,38 @@ const dispatchUsage = `Usage:
       the ticket's launches, the runs linked to it by hand and their
       continuations, newest first, each run's state, tasks, questions and
       blockers, and what changed of the ticket since each launch
+  conductor dispatch review KEY-n --candidate RUN/TASK/N@COMMIT [--base COMMIT]
+                            --verdict request_changes|comment|approve [--summary TEXT]
+                            [--continue] [--file NOTES.json]
+      review a candidate of the ticket, an attempt's result commit in full,
+      against a base (the run's when not given), as one batch: NOTES.json is
+      a JSON array of the notes as the route takes them, {"kind", "intent",
+      "severity", "path", "side", "from", "to", "lines", "message",
+      "resolution", "check"}, - for stdin; a request for changes is applied
+      by Yardmaster as a repair of the candidate's task; one to a run the
+      server does not run prints what continuing it starts and sends
+      nothing again unless --continue says to continue it
+  conductor dispatch reviews KEY-n
+      the ticket's reviews, newest first: id, verdict, candidate, findings
+      by state, who and when, and what Yardmaster did with each
+  conductor dispatch review show ID
+      a review whole: its candidate, base, verdict, application, summary
+      and findings, each with its latest mark
+  conductor dispatch review retry ID [--continue]
+      Request again: a refused request for changes applied as its next try,
+      with the same rule for a run the server does not run
+  conductor dispatch findings KEY-n [--state open|resolved|withdrawn|all]
+                              [--candidate RUN/TASK/N@COMMIT]
+      the ticket's findings across its reviews: each with its state, where
+      its lines are on the candidate (the newest result of its task unless
+      given, which narrows them to its task), what the repair attempts said
+      of it (a claim, never its resolution) and its last mark
+  conductor dispatch finding marks ID
+      a finding's marks, oldest first, every page
+  conductor dispatch finding mark ID --candidate RUN/TASK/N@COMMIT
+                                     --verdict resolved|open|withdrawn [--note TEXT]
+      mark a finding against a later candidate of its task; where its lines
+      are there is the server's, kept with the mark
 
 Statuses: backlog, ready, in_progress, in_review, done, cancelled. Priorities:
 none, low, medium, high, urgent, or 0 to 4. Horizons: now, next, later. Labels
@@ -116,11 +148,15 @@ without a second change.
 // among them), a project's (api.MaxProjectReply, read for the names of
 // its labels and milestones), a plan revision's with its body
 // (api.MaxPlanReply), a ticket's revisions (api.MaxPlansReply), a
-// launch's with its package (api.MaxLaunchReply) and a page of a
-// ticket's runs (api.MaxTicketRunsReply), which internal/api's tests
-// measure; a page of 200 projects or tickets is far under it. Derived, never
-// guessed: a reply bound raised there raises this.
-const maxDispatchReply = (max(api.MaxTicketReply, api.MaxProjectReply, api.MaxPlanReply, api.MaxPlansReply, api.MaxLaunchReply, api.MaxTicketRunsReply)>>20 + 1) << 20
+// launch's with its package (api.MaxLaunchReply), a page of a
+// ticket's runs (api.MaxTicketRunsReply), a review's, a page of reviews,
+// of findings or of marks (dispatch.MaxReviewReply, MaxReviewsReply,
+// MaxFindingsReply, MaxMarksReply) and a candidate's diff (api.MaxDiffReply,
+// read for the run's base), which internal/api's tests measure; a page of
+// 200 projects or tickets is far under it. Derived, never guessed: a reply
+// bound raised there raises this.
+const maxDispatchReply = (max(api.MaxTicketReply, api.MaxProjectReply, api.MaxPlanReply, api.MaxPlansReply, api.MaxLaunchReply, api.MaxTicketRunsReply,
+	dispatch.MaxReviewReply, dispatch.MaxReviewsReply, dispatch.MaxFindingsReply, dispatch.MaxMarksReply, api.MaxDiffReply)>>20 + 1) << 20
 
 // dispatchPage is how many projects or tickets conductor dispatch asks
 // for a page at a time: the routes' most. A variable so that a test can
@@ -213,6 +249,9 @@ func runDispatch(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	sub, rest := args[0], args[1:]
 	if _, planned := dispatchPlannedArgs[sub]; planned {
 		return runDispatchPlanned(ctx, sub, rest, stdin, stdout, stderr)
+	}
+	if dispatchReviewArgs[sub] {
+		return runDispatchReviews(ctx, sub, rest, stdin, stdout, stderr)
 	}
 	takes, known := dispatchArgs[sub]
 	if !known {
