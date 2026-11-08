@@ -4177,7 +4177,10 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   dr-2 open, dr-2 answered from the run page (Recorded, waiting for the
   run to be continued), Continue, `build`'s next attempt starting at its
   checkpoint with the answer in its task file, one `applied` row, and
-  `build` succeeding; a second Approve of dr-2 from another tab given the
+  `build` succeeding; dr-2 seen the same everywhere while it waits and
+  once it is answered: the task, Needs your decision's row, the asking
+  session's attention and the desktop app's notification, none left
+  asking after the answer; a second Approve of dr-2 from another tab given the
   first's receipt or "answered by"; dr-1 approved, `deploy` run and the
   run succeeding, and a second run of the revision rejecting dr-1,
   `deploy` cancelled with the words, `build` and `lint` unaffected; a
