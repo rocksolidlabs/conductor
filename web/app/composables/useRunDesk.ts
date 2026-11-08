@@ -12,9 +12,9 @@ const RETRY_MAX_MS = 15_000
  * with no member alive. At a switchyard it is the run's desk there (the join's `run.desk`, a hosted session's id reached as a member
  * is, through its relay when ICE fails); at the server itself, `GET /ws/runs/{run}/desk`. It is joined once the page is, and only
  * a welcome that says `decisions` makes it the lane (`decisions`): a link that is no decision link's is closed by the owner (4403)
- * and leaves the page as it was. A close the link did not cause (the network, the owner's restart) connects again, after 1 s and
- * twice as long each time, 15 s at most, reading the link's join again first; `seq` counts what the lane must list again for (each
- * welcome, each `decisions_changed`).
+ * and leaves the page as it was. A desk that has served the lane and closes for a reason other than the link's (the network, the
+ * owner's restart) is joined again, after 1 s and twice as long each time, 15 s at most, reading the link's join again first; `seq`
+ * counts what the lane must list again for (each welcome, each `decisions_changed`).
  */
 export function useRunDesk(opts: { info: Ref<JoinInfo | null>; token: Ref<string>; server: Ref<string>; joined: Ref<boolean>; refresh: () => Promise<void> }) {
   const { create, desk } = useTerminalTransport()
@@ -24,6 +24,8 @@ export function useRunDesk(opts: { info: Ref<JoinInfo | null>; token: Ref<string
   let timer: ReturnType<typeof setTimeout> | undefined
   let wait = RETRY_FIRST_MS
   let on = false
+  /** A welcome of the desk has said `decisions` since the page joined: only then is a lost desk joined again. */
+  let served = false
   /** The lane over the desk while its welcome said `decisions`. */
   const lane = new DecisionLane(() => (t?.decisions ? t : null))
 
@@ -49,8 +51,8 @@ export function useRunDesk(opts: { info: Ref<JoinInfo | null>; token: Ref<string
       decisions.value = false
       t = null
       if (!on) return
-      // The link is no decision link's, or is gone: nothing to join again.
-      if (info.code === CloseCode.Forbidden || info.code === CloseCode.Unauthorized || info.code === CloseCode.NotFound) return
+      // The link is no decision link's, or is gone, or the desk never served it: nothing to join again.
+      if (!served || info.code === CloseCode.Forbidden || info.code === CloseCode.Unauthorized || info.code === CloseCode.NotFound) return
       timer = setTimeout(() => {
         timer = undefined
         void opts
@@ -69,6 +71,7 @@ export function useRunDesk(opts: { info: Ref<JoinInfo | null>; token: Ref<string
         return
       }
       wait = RETRY_FIRST_MS
+      served = true
       decisions.value = true
       seq.value++
     } catch {
@@ -93,6 +96,7 @@ export function useRunDesk(opts: { info: Ref<JoinInfo | null>; token: Ref<string
       stop()
       if (joined && run) {
         on = true
+        served = false
         wait = RETRY_FIRST_MS
         void connect()
       }
