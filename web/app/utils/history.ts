@@ -607,13 +607,20 @@ export function filterOf(q: string, name: HistoryFilter): string {
   return v
 }
 
+/** A quoted phrase not closed: the grammar takes it to the end of the query, so it can only be the last word. */
+const unfinished = (w: string) => w.startsWith('"') && (w.length === 1 || !w.endsWith('"'))
+
 /**
- * The query with one filter written: every `name:` word of it dropped, then `name:value` added at the end; none added for an empty
- * value (the chip cleared). The query's other words keep their order. A value with a space in it is no one token, and is not written.
+ * The query with one filter written: every `name:` word of it dropped, then `name:value` added at the end, or before a quoted phrase
+ * not yet closed (which runs to the end of the query, and would take the filter into its words); none added for an empty value (the
+ * chip cleared). The query's other words keep their order. A value with a space in it is no one token, and is not written.
  */
 export function withFilter(q: string, name: HistoryFilter, value: string): string {
   const kept = words(q).filter((w) => !w.toLowerCase().startsWith(`${name}:`))
-  if (value && !/\s/.test(value)) kept.push(`${name}:${value}`)
+  if (value && !/\s/.test(value)) {
+    const at = kept.length && unfinished(kept[kept.length - 1]!) ? kept.length - 1 : kept.length
+    kept.splice(at, 0, `${name}:${value}`)
+  }
   return kept.join(' ')
 }
 

@@ -156,6 +156,16 @@ describe("Dispatch's tickets in the palette (docs/plans/dispatch.md, Owner decis
     expect(VERBS).toHaveLength(12)
     expect(parsePrefix('E2E-1')).toEqual({ mode: 'search', rest: 'E2E-1' })
   })
+
+  it('goes to History with go history, under no prefix and under `>` (Program item HS1, PR-7)', () => {
+    expect(PAGES).toContain('history')
+    expect(parseVerb('go history', names)).toEqual({ verb: 'go', page: 'history' })
+    expect(parseVerb('go History', names)).toEqual({ verb: 'go', page: 'history' })
+    // `> go history`: the actions mode reads the rest as the verb, as under no prefix.
+    const { mode, rest } = parsePrefix('> go history')
+    expect(mode).toBe('actions')
+    expect(parseVerb(rest, names)).toEqual({ verb: 'go', page: 'history' })
+  })
 })
 
 describe('a long group cut to its first rows', () => {

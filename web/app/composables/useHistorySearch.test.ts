@@ -331,6 +331,75 @@ describe('a token replaced by another', () => {
   })
 })
 
+// Codex round 2's ordering: a reply that has arrived (its read resumed) but not yet been applied when the token is forgotten. The
+// ticket is compared where the reply is applied, in the same step, so the forget between arrival and apply leaves nothing of the old
+// reply: not the answer, not the cache, not a page, not Find this elsewhere, not the → entry. Each case lets the reply's own step run
+// (one microtask: the read resumes), forgets, then lets the rest run.
+const arrived = () => Promise.resolve()
+
+describe('a forget between a reply arriving and its being applied', () => {
+  it('leaves the search cleared and its cache empty, the new request on its way', async () => {
+    const s = make()
+    s.searchNow('stub')
+    held[0]!.resolve(reply('stub'))
+    await arrived()
+    s.forget()
+    await flush()
+    expect(s.result.value).toBeNull()
+    expect(s.pending.value).toBe(true)
+    expect(held.map((h) => h.q)).toEqual(['stub', 'stub'])
+    // The cache holds nothing asked with the old token: the same query asks again rather than serving the old reply.
+    token = false
+    s.forget()
+    token = true
+    s.searchNow('stub')
+    expect(held).toHaveLength(3)
+    expect(s.result.value).toBeNull()
+  })
+
+  it('leaves the next page unappended', async () => {
+    const s = make()
+    s.searchNow('stub')
+    held[0]!.resolve(reply('stub', { next: 'c1' }))
+    await flush()
+    void s.more()
+    expect(held[1]!.after).toBe('c1')
+    held[1]!.resolve(reply('page2'))
+    await arrived()
+    s.forget()
+    await flush()
+    expect(s.result.value).toBeNull()
+    expect(held.map((h) => [h.q, h.after])).toEqual([
+      ['stub', undefined],
+      ['stub', 'c1'],
+      ['stub', undefined],
+    ])
+  })
+
+  it('leaves Find this elsewhere asked again, the old answer not shown', async () => {
+    const similar: Array<(r: { entries: HistoryItem[] }) => void> = []
+    const s = make({ similar: () => new Promise((resolve) => similar.push(resolve)) })
+    void s.findSimilar({ key: 'check:r/b/1/c/1', title: 'c on b #1' })
+    similar[0]!({ entries: [anEntry('check:old')] })
+    await arrived()
+    s.forget()
+    await flush()
+    expect(similar).toHaveLength(2)
+    expect(s.similar.value).toMatchObject({ key: 'check:r/b/1/c/1', reply: null })
+  })
+
+  it('leaves the → entry asked again, the old answer not applied', async () => {
+    const s = make()
+    void s.readEntry('session:a')
+    entries[0]!.resolve(anEntry('session:a', 'no'))
+    await arrived()
+    s.forget()
+    await flush()
+    expect(entries).toHaveLength(2)
+    expect(s.entryRead.value).toEqual({ key: 'session:a', entry: null })
+  })
+})
+
 describe('the → entry read', () => {
   it('is cancelled by the next one, whose answer alone is applied', async () => {
     const s = make()

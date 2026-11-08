@@ -8,8 +8,9 @@ import type { HistoryItem, HistoryReply, SimilarReply } from '~/utils/history'
 // - a read is bounded and cancelled by the next one for the same thing: each thing read (the answer shown, the → entry) has one read
 //   in flight at most, the next aborts the one before, and a `429 history_busy` (an aborted read the server has not let go yet) is
 //   asked again a bounded number of times while the read is still the current one;
-// - a reply is applied only to the request that asked for it: by its number in its slot and the token's generation, so an answer that
-//   lands after a newer request was asked (a slow answer to an earlier query) is dropped, a failure too;
+// - a reply is applied only to the request that asked for it: by its number in its slot and the token's generation, compared at the
+//   moment it is applied (in `read`, which applies it in the same step, never after another await), so an answer that lands after a
+//   newer request was asked (a slow answer to an earlier query) or after a forget is dropped, a failure too;
 // - a refusal counts only for the token it carried: a token forgotten or replaced moves the generation on, so nothing asked with the
 //   old token (its 401 included) is applied after it, and useApi asks for the token only while the refused one is still held;
 // - a token change asks again what was shown or asked with the old one (the search, Find this elsewhere, the → entry), with the new
@@ -114,21 +115,25 @@ export function createHistorySearch(deps: HistorySearchDeps) {
   type Slot = ReturnType<typeof slot>
 
   /**
-   * A read under the rule: its answer or its failure, or null once it no longer holds (a newer read of the same thing, a stop, a token
-   * change), so nothing is applied for it. A `history_busy` refusal is asked again after a pause, at most HISTORY_BUSY_TRIES in all,
-   * while the read holds.
+   * A read under the rule, and the one place a reply is applied: its answer goes to `ok`, its failure to `fail`, each called in the
+   * same step as the ticket is compared, so nothing (a newer read of the same thing, a stop, a token change) can come between the
+   * check and the apply. A read that no longer holds applies nothing. A `history_busy` refusal is asked again after a pause, at most
+   * HISTORY_BUSY_TRIES in all, while the read holds.
    */
-  async function read<T>(s: Slot, t: Ticket, fn: (signal: AbortSignal) => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; error: unknown } | null> {
+  async function read<T>(s: Slot, t: Ticket, fn: (signal: AbortSignal) => Promise<T>, ok: (value: T) => void, fail: (error: unknown) => void): Promise<void> {
     for (let tries = 1; ; tries++) {
+      let value: T
       try {
-        const value = await fn(t.signal)
-        return s.holds(t) ? { ok: true, value } : null
+        value = await fn(t.signal)
       } catch (e) {
-        if (!s.holds(t) || t.signal.aborted) return null
-        if (codeOf(e) !== 'history_busy' || tries >= HISTORY_BUSY_TRIES) return { ok: false, error: e }
+        if (!s.holds(t) || t.signal.aborted) return
+        if (codeOf(e) !== 'history_busy' || tries >= HISTORY_BUSY_TRIES) return fail(e)
         await new Promise((r) => setTimeout(r, HISTORY_BUSY_RETRY_MS))
-        if (!s.holds(t)) return null
+        if (!s.holds(t)) return
+        continue
       }
+      if (s.holds(t)) ok(value)
+      return
     }
   }
 
@@ -192,13 +197,21 @@ export function createHistorySearch(deps: HistorySearchDeps) {
 
   async function ask(q: string): Promise<void> {
     const t = begin(q, false)
-    const r = await read(shownSlot, t, (signal) => deps.search(q, { limit, signal }))
-    if (r?.ok) {
-      keep(q, r.value)
-      result.value = { q, reply: r.value }
-      error.value = null
-    } else if (r) error.value = { q, code: codeOf(r.error), message: wordsOf(r.error) }
-    end(t)
+    await read(
+      shownSlot,
+      t,
+      (signal) => deps.search(q, { limit, signal }),
+      (reply) => {
+        keep(q, reply)
+        result.value = { q, reply }
+        error.value = null
+        end(t)
+      },
+      (e) => {
+        error.value = { q, code: codeOf(e), message: wordsOf(e) }
+        end(t)
+      },
+    )
   }
 
   /** The search as typed: asked HISTORY_DEBOUNCE_MS after the last call; a cached answer is shown at once. */
@@ -221,12 +234,20 @@ export function createHistorySearch(deps: HistorySearchDeps) {
     const shown = result.value
     if (!shown?.reply.next || shown.q !== wanted.value || !deps.hasToken()) return
     const t = begin(shown.q, true)
-    const r = await read(shownSlot, t, (signal) => deps.search(shown.q, { after: shown.reply.next, limit, signal }))
-    if (r?.ok) {
-      result.value = { q: shown.q, reply: { ...r.value, entries: [...shown.reply.entries, ...r.value.entries] } }
-      error.value = null
-    } else if (r) error.value = { q: shown.q, code: codeOf(r.error), message: wordsOf(r.error) }
-    end(t)
+    await read(
+      shownSlot,
+      t,
+      (signal) => deps.search(shown.q, { after: shown.reply.next, limit, signal }),
+      (reply) => {
+        result.value = { q: shown.q, reply: { ...reply, entries: [...shown.reply.entries, ...reply.entries] } }
+        error.value = null
+        end(t)
+      },
+      (e) => {
+        error.value = { q: shown.q, code: codeOf(e), message: wordsOf(e) }
+        end(t)
+      },
+    )
   }
 
   /** Find this elsewhere: the receipts of the same command in the entry's repository (`repo`) or every one (`all`), shown in place of the answer. */
@@ -237,10 +258,19 @@ export function createHistorySearch(deps: HistorySearchDeps) {
     const t = begin('', true)
     const state: SimilarState = { key: e.key, title: e.title, scope, reply: null }
     similar.value = state
-    const r = await read(shownSlot, t, (signal) => deps.similar(e.key, scope, signal))
-    if (r?.ok) similar.value = { ...state, reply: r.value }
-    else if (r) similar.value = { ...state, reply: { entries: [] }, error: wordsOf(r.error) }
-    end(t)
+    await read(
+      shownSlot,
+      t,
+      (signal) => deps.similar(e.key, scope, signal),
+      (reply) => {
+        similar.value = { ...state, reply }
+        end(t)
+      },
+      (err) => {
+        similar.value = { ...state, reply: { entries: [] }, error: wordsOf(err) }
+        end(t)
+      },
+    )
   }
 
   /**
@@ -253,9 +283,13 @@ export function createHistorySearch(deps: HistorySearchDeps) {
     if (cur?.key === key && !cur.entry && !cur.error) return
     const t = entrySlot.take()
     entryRead.value = { key, entry: null }
-    const r = await read(entrySlot, t, (signal) => deps.entry(key, signal))
-    if (r?.ok) entryRead.value = { key, entry: r.value }
-    else if (r) entryRead.value = { key, entry: null, error: wordsOf(r.error, 'could not be read') }
+    await read(
+      entrySlot,
+      t,
+      (signal) => deps.entry(key, signal),
+      (entry) => (entryRead.value = { key, entry }),
+      (e) => (entryRead.value = { key, entry: null, error: wordsOf(e, 'could not be read') }),
+    )
   }
 
   /** Every read cancelled, nothing applied after (the palette closed, the page left); `wanted` kept or not as the caller says. */

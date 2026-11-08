@@ -312,6 +312,15 @@ describe("the filters the chips write (PR-7)", () => {
     expect(withFilter('stub-fixed class:checked', 'class', '')).toBe('stub-fixed')
     expect(withFilter('"a phrase:with colon" x', 'outcome', 'passed')).toBe('"a phrase:with colon" x outcome:passed')
     expect(withFilter('x', 'host', 'two words')).toBe('x')
+    // A quoted phrase not yet closed runs to the end of the query (the server's grammar): the filter goes before it, never into it.
+    const open = withFilter('"failing test', 'class', 'checked')
+    expect(open).toBe('class:checked "failing test')
+    expect(filterOf(open, 'class')).toBe('checked')
+    expect(withFilter('stub "failing test', 'class', 'checked')).toBe('stub class:checked "failing test')
+    expect(withFilter('class:said "failing', 'class', 'checked')).toBe('class:checked "failing')
+    expect(withFilter('x "', 'outcome', 'passed')).toBe('x outcome:passed "')
+    // A closed phrase is a word like any other: the filter goes after it.
+    expect(withFilter('"failing test"', 'class', 'checked')).toBe('"failing test" class:checked')
     expect(filterOf('stub-fixed CLASS:said class:checked', 'class')).toBe('checked')
     expect(filterOf('stub-fixed', 'since')).toBe('')
   })

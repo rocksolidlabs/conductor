@@ -48,7 +48,7 @@ const VERB_KINDS: Record<Verb, Array<'session' | 'run' | 'crew' | 'agent'>> = {
   go: [],
 }
 
-export const PAGES = ['yard', 'roundhouse', 'crews', 'dispatch', 'agents', 'events', 'settings', 'paste'] as const
+export const PAGES = ['yard', 'roundhouse', 'crews', 'dispatch', 'agents', 'events', 'history', 'settings', 'paste'] as const
 export type Page = (typeof PAGES)[number]
 
 export interface Named {
