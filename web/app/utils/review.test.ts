@@ -20,6 +20,11 @@ import {
   SELECTION_BAR_HEIGHT,
   repairBytes,
   reviewBody,
+  latest,
+  noteIsOn,
+  notesPerFile,
+  requestWords,
+  withDraftBase,
   type ChangeRequest,
   type DraftNote,
 } from './review'
@@ -183,6 +188,78 @@ describe('the bases offered', () => {
       { commit: B, label: "the run's base" },
       { commit: C, label: 'where attempt 2 started' },
     ])
+  })
+})
+
+describe("the draft's base beyond the candidates listed", () => {
+  const S = 'c'.repeat(40)
+  const OLD = 'd'.repeat(40)
+  const listed = [{ commit: B, label: "the run's base" }]
+
+  it('is offered beside the bases listed until the server refuses it: an older result of the task paged out of the list is still one', () => {
+    expect(withDraftBase(listed, OLD, false)).toEqual([...listed, { commit: OLD, label: "the draft's base" }])
+    expect(withDraftBase(listed, OLD, true)).toEqual(listed)
+    expect(withDraftBase(listed, B, false)).toEqual(listed)
+    expect(withDraftBase(listed, '', false)).toEqual(listed)
+    expect(withDraftBase(null, S, false)).toBeNull()
+  })
+})
+
+describe("a renamed file's notes", () => {
+  const renamed = { path: 'renamed.txt', from: 'old.txt' }
+  const plain = { path: 'a.txt' }
+
+  it("are matched by their side's path: a base-side note by the old one, a candidate-side note by the new one", () => {
+    expect(noteIsOn({ path: 'old.txt', side: 'base' }, renamed)).toBe(true)
+    expect(noteIsOn({ path: 'renamed.txt', side: 'candidate' }, renamed)).toBe(true)
+    expect(noteIsOn({ path: 'renamed.txt', side: 'base' }, renamed)).toBe(false)
+    expect(noteIsOn({ path: 'old.txt', side: 'candidate' }, renamed)).toBe(false)
+    expect(noteIsOn({ path: 'a.txt', side: 'base' }, plain)).toBe(true)
+    expect(noteIsOn({ side: 'candidate' }, plain)).toBe(false)
+  })
+
+  it("count both sides' notes for the file the list shows", () => {
+    const notes = [
+      { path: 'old.txt', side: 'base' as const },
+      { path: 'renamed.txt', side: 'candidate' as const },
+      { path: 'a.txt', side: 'candidate' as const },
+      { path: 'gone.txt', side: 'candidate' as const },
+      {},
+    ]
+    expect(notesPerFile(notes, [renamed, plain])).toEqual({ 'renamed.txt': 2, 'a.txt': 1 })
+  })
+})
+
+describe('what Request changes asks', () => {
+  const S = 'c'.repeat(40)
+
+  it('says the next attempt starts at the reviewed commit', () => {
+    expect(requestWords('build', { attempt: 2, commit: C, start: S, state: 'succeeded' }, 3)).toBe('Yardmaster reopens build at aaaaaaaaaaaa: its next attempt starts there with 3 notes, and what rests on it runs again.')
+    expect(requestWords('build', { attempt: 2, commit: C, start: S, state: 'failed', stage: 'check go-test' }, 1)).toMatch(/its next attempt starts there with 1 note,/)
+  })
+
+  it('says it starts where the attempt started for a candidate refused before its checks, as the engine starts it', () => {
+    for (const stage of ['checkout', 'setup', 'setup npm ci', 'manifest', 'service db', 'ready', 'ready http']) {
+      expect(requestWords('build', { attempt: 2, commit: C, start: S, state: 'failed', stage }, 2)).toBe(
+        'Yardmaster reopens build at aaaaaaaaaaaa with 2 notes: attempt 2 was refused before its checks, so its next attempt starts where it started, at cccccccccccc, and what rests on it runs again.',
+      )
+    }
+    // Not refused (a succeeded candidate's stage says nothing), or no start known: the reviewed commit.
+    expect(requestWords('build', { attempt: 2, commit: C, start: S, state: 'succeeded', stage: 'setup' }, 2)).toMatch(/starts there/)
+    expect(requestWords('build', { attempt: 2, commit: C, state: 'failed', stage: 'setup' }, 2)).toMatch(/starts there/)
+  })
+})
+
+describe('the late-answer rule', () => {
+  it('holds a request current until a later one is asked', () => {
+    const l = latest()
+    const first = l.ask()
+    expect(first()).toBe(true)
+    const second = l.ask()
+    expect(first()).toBe(false)
+    expect(second()).toBe(true)
+    expect(latest().ask()()).toBe(true)
+    expect(second()).toBe(true)
   })
 })
 

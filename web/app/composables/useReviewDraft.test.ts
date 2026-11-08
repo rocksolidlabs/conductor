@@ -33,12 +33,12 @@ const candidateLine: Omit<DraftNote, 'key'> = { kind: 'line', intent: 'change', 
 const baseLine: Omit<DraftNote, 'key'> = { ...candidateLine, side: 'base', path: 'b.txt', message: 'why was this removed?' }
 
 beforeEach(() => {
-  for (const k of ['ref', 'computed', 'watch'] as const) vi.stubGlobal(k, vue[k])
+  for (const k of ['ref', 'computed', 'watch', 'reactive'] as const) vi.stubGlobal(k, vue[k])
 })
 
 /** A draft of the candidate the test points `on` at, the bases offered as `bases` holds them. */
-function open(storage: DraftStorage | null, on = vue.ref(C1), bases = vue.ref<string[] | null>([RUN_BASE, START])) {
-  return { d: useReviewDraft({ ticket: () => 'CND-12', candidate: () => on.value, offered: () => bases.value, storage }), on, bases }
+function open(storage: DraftStorage | null, on = vue.ref(C1), bases = vue.ref<string[] | null>([RUN_BASE, START]), ticket = 'CND-12') {
+  return { d: useReviewDraft({ ticket: () => ticket, candidate: () => on.value, offered: () => bases.value, storage }), on, bases }
 }
 
 describe('the draft kept in this browser', () => {
@@ -127,6 +127,45 @@ describe('the draft kept in this browser', () => {
     expect(JSON.parse(s.map.get(draftKey('CND-12', C2))!).opId).toBeUndefined()
     d.unsent(third)
     expect(d.draft.value.opId).toBeUndefined()
+  })
+
+  it('settles a send whose view was closed against the draft as the page has it now: a note added after the view was opened again stays', () => {
+    const s = memory()
+    const closed = vue.effectScope()
+    const first = closed.run(() => open(s).d)!
+    first.knowBase(RUN_BASE)
+    first.add(candidateLine)
+    const sending = first.sending('op-1')
+    // Review left while the send is under way, then the same candidate opened again and a note added before the answer lands.
+    closed.stop()
+    const reopened = open(s).d
+    expect(reopened.draft.value.opId).toBe('op-1')
+    reopened.add({ ...candidateLine, message: 'added after reopening' })
+    first.sent(sending)
+    expect(reopened.draft.value.notes.map((n) => n.message)).toEqual(['added after reopening'])
+    expect(reopened.draft.value.opId).toBeUndefined()
+    // What a reload would read.
+    expect(readDraft(s, draftKey('CND-12', C1))!.notes.map((n) => n.message)).toEqual(['added after reopening'])
+  })
+
+  it("keeps each candidate's draft in the page while the storage refuses it, through a move to another candidate and back", async () => {
+    for (const storage of [null, { ...throwing }]) {
+      const { d, on } = open(storage, vue.ref(C1), undefined, `CND-${storage ? 'refusing' : 'none'}`)
+      d.knowBase(RUN_BASE)
+      d.add(candidateLine)
+      expect(d.unsaved.value).toBe(true)
+      on.value = C2
+      await vue.nextTick()
+      expect(d.draft.value.notes).toEqual([])
+      d.add({ ...candidateLine, message: 'on the second' })
+      on.value = C1
+      await vue.nextTick()
+      expect(d.draft.value.notes.map((n) => n.message)).toEqual(['fix it'])
+      expect(d.unsaved.value).toBe(true)
+      on.value = C2
+      await vue.nextTick()
+      expect(d.draft.value.notes.map((n) => n.message)).toEqual(['on the second'])
+    }
   })
 
   it('keeps what was added or edited while a send was under way', () => {

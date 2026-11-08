@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as vue from 'vue'
 import { ApiError } from './useApi'
-import { ContinuationNeeded, MAX_REVIEWS, openFindingsOf, useCandidateDiff, useReview, type CandidateDiff, type Review, type ReviewSummary } from './useReview'
+import { ContinuationNeeded, MAX_REVIEWS, openFindingsOf, useCandidateDiff, useFileSides, useReview, useSentReviews, type CandidateDiff, type Review, type ReviewSummary } from './useReview'
 import { DispatchOrder } from '../utils/dispatchOrder'
 import { CommandRefused } from '../utils/tasks'
 import { reviewBody } from '../utils/review'
@@ -236,5 +236,83 @@ describe('the diff shown, bound to the candidate and the base wanted', () => {
     expect(d.shown.value).toMatchObject({ key: cand, diff: { candidate: C } })
     expect(d.at(other, Y)).toBe(false)
     expect(d.error.value).toBe('')
+  })
+})
+
+describe("a stream's reset under the Review view", () => {
+  it('reads again the diff whose reply the reset dropped, which nothing else would ask for', async () => {
+    const gate = new DispatchOrder()
+    const d = useCandidateDiff(useReview(gate))
+    const first = d.read(cand, B)
+    gate.reset()
+    sent[0]!.h.ok(diff(B))
+    await first
+    expect(d.shown.value).toBeNull()
+    expect(d.loading.value).toBe(false)
+    const again = d.again()
+    expect(sent).toHaveLength(2)
+    expect(d.loading.value).toBe(true)
+    sent[1]!.h.ok(diff(B))
+    await again
+    expect(d.shown.value).toMatchObject({ key: cand, at: B, diff: { base: B } })
+    // Shown: nothing is read again.
+    await d.again()
+    expect(sent).toHaveLength(2)
+  })
+
+  it("reads again a file's sides whose replies the reset dropped, and an older read's late answer applies nothing", async () => {
+    const gate = new DispatchOrder()
+    const fs = useFileSides(useReview(gate))
+    const t = { key: `${cand}:${B}:a.txt`, candidate: cand, base: B, file: { path: 'a.txt', status: 'M' as const, added: 1, removed: 0, binary: false } }
+    const first = fs.read(t)
+    expect(sent).toHaveLength(2)
+    gate.reset()
+    sent[0]!.h.ok({ text: 'old', headers: new Headers({ 'X-Conductor-Commit': B }) })
+    await settle()
+    expect(fs.sides.value).toMatchObject({ base: null, candidate: null })
+    const again = fs.again()
+    expect(sent).toHaveLength(4)
+    sent[2]!.h.ok({ text: 'base text', headers: new Headers({ 'X-Conductor-Commit': B }) })
+    sent[3]!.h.ok({ text: 'candidate text', headers: new Headers({ 'X-Conductor-Commit': C }) })
+    await again
+    sent[1]!.h.fail(new ApiError(500, 'internal', 'the first read failed late'))
+    await first
+    expect(fs.sides.value).toMatchObject({ key: t.key, base: { text: 'base text' }, candidate: { text: 'candidate text' }, error: '' })
+    expect(fs.again()).toBeUndefined()
+  })
+
+  it("says nothing of an older read of the reviews failing after a newer one answered, and keeps the reviews read beside a failure", async () => {
+    const gate = new DispatchOrder()
+    const rv = useSentReviews(useReview(gate), () => 'CND-12')
+    const older = rv.read()
+    const newer = rv.read()
+    sent[1]!.h.ok({ reviews: [review(1, 'applied')] })
+    await newer
+    sent[0]!.h.fail(new ApiError(500, 'internal', 'the older read failed'))
+    await older
+    expect(rv.error.value).toBe('')
+    expect(rv.list.value.map((r) => r.id)).toEqual(['r1'])
+    // The latest read failing is said, the reviews read before still listed.
+    const third = rv.read()
+    sent[2]!.h.fail(new ApiError(500, 'internal', 'the store is away'))
+    await third
+    expect(rv.error.value).toBe('the store is away')
+    expect(rv.list.value.map((r) => r.id)).toEqual(['r1'])
+  })
+})
+
+describe('a draft base the server refuses', () => {
+  it('is told, so the page stops offering it, and only for a base asked', async () => {
+    const refused: string[] = []
+    const d = useCandidateDiff(useReview(new DispatchOrder()), { refused: (k, b) => refused.push(`${k}|${b}`) })
+    const OLD = 'd'.repeat(40)
+    const p = d.read(cand, OLD)
+    sent[0]!.h.fail(new ApiError(400, 'invalid_request', 'the base is none the run names'))
+    await p
+    expect(refused).toEqual([`${cand}|${OLD}`])
+    const q = d.read(cand, '')
+    sent[1]!.h.fail(new ApiError(400, 'invalid_request', 'nope'))
+    await q
+    expect(refused).toHaveLength(1)
   })
 })

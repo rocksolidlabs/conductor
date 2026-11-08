@@ -865,7 +865,7 @@ const askBrakeman = computed(() =>
         </div>
 
         <!-- The Review view (RV1) in place of the sections. -->
-        <DispatchReview v-if="reviewView" :ticket-key="ticket.key" :candidate="reviewCandidate" :candidates="candidates" :gate="gate" :reads="reads" :now="now" @candidate="pickReviewCandidate" />
+        <DispatchReview v-if="reviewView" :ticket-key="ticket.key" :candidate="reviewCandidate" :candidates="candidates" :gate="gate" :reads="reads" :resets="resets" :now="now" @candidate="pickReviewCandidate" />
 
         <!-- Its text and history, its properties beside them on a wide screen; on a phone one column, the properties first. -->
         <div v-else class="flex flex-col gap-6 lg:flex-row lg:items-start">

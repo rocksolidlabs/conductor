@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { RunCandidate } from '~/composables/useDispatch'
 import { ApiError } from '~/composables/useApi'
-import { ContinuationNeeded, useCandidateDiff, useReview, type DiffSide, type ReviewSummary } from '~/composables/useReview'
+import { ContinuationNeeded, useCandidateDiff, useFileSides, useReview, useSentReviews, type ReviewSummary, type SideText } from '~/composables/useReview'
 import { useReviewDraft } from '~/composables/useReviewDraft'
 import type { useTicketCandidates } from '~/composables/useTicketCandidates'
 import { candidateRef, parseCandidate } from '~/utils/dispatch'
@@ -13,9 +13,12 @@ import {
   batchProblems,
   changeRequestOf,
   noteFromSelection,
+  noteIsOn,
+  notesPerFile,
   offeredBases,
   repairBytes,
   reviewBody,
+  withDraftBase,
   type BaseChoice,
   type ReviewCandidateOption,
   type DiffMark,
@@ -31,7 +34,8 @@ import {
  * from its header, or on the candidate as a whole; the notes gathered in this browser's draft (ReviewDraft) and sent as one review with
  * a verdict and a summary; and the reviews of the candidate already sent, with what became of each (ReviewApplication). The draft's
  * base is the review's: a reload opens the diff at it, and a base-side note locks it. Every read goes through the page's ordering gate,
- * and the reviews are read again whenever the page reads the ticket again (its live events name the ticket). Findings across
+ * and the reviews are read again whenever the page reads the ticket again (its live events name the ticket); a stream's reset, which
+ * drops every reply on its way, reads again whatever had not come in. Findings across
  * candidates, their marks and a failed check's repair are a later part of this view, which says so. One column on a phone.
  */
 const props = defineProps<{
@@ -42,6 +46,8 @@ const props = defineProps<{
   gate: DispatchOrder
   /** Counts the page's reads of the ticket: each reads the reviews again. */
   reads: number
+  /** Counts the stream's starts the page saw (a snapshot, which resets the gate): each reads again what had not come in. */
+  resets: number
   now: number
 }>()
 const emit = defineEmits<{ candidate: [ref: string] }>()
@@ -81,8 +87,8 @@ watch(
   { immediate: true },
 )
 
-/** The bases the server takes for the candidate, null until the page has read its run's candidates. */
-const offered = computed<BaseChoice[] | null>(() => {
+/** The bases the page lists for the candidate (from the candidates it has read), null until it has read its run's candidates. */
+const listed = computed<BaseChoice[] | null>(() => {
   const e = entry.value
   const base = e ? props.candidates.bases.get(e.run) : undefined
   if (!e || !base) return null
@@ -90,6 +96,13 @@ const offered = computed<BaseChoice[] | null>(() => {
   return offeredBases(base, e.c, same)
 })
 
+/** The candidate and base pairs the server refused a diff of (none of the run's chain): a draft on one is stale. */
+const refused = ref(new Set<string>())
+/**
+ * The bases offered: those listed, and the draft's own while the server has not refused it, a result of the task the candidates read
+ * (six a task) no longer list being still one the server takes; the diff is read at it, and a refusal makes the draft stale.
+ */
+const offered = computed<BaseChoice[] | null>(() => withDraftBase(listed.value, draft.value.base, refused.value.has(`${chosen.value}|${draft.value.base}`)))
 const drafts = useReviewDraft({ ticket: () => props.ticketKey, candidate: () => chosen.value, offered: () => offered.value?.map((b) => b.commit) ?? null })
 const draft = drafts.draft
 const lockWords = computed(() => {
@@ -106,6 +119,9 @@ const diffs = useCandidateDiff(review, {
   known: (b) => {
     if (!drafts.stale.value) drafts.knowBase(b)
   },
+  refused: (k, b) => {
+    refused.value = new Set(refused.value).add(`${k}|${b}`)
+  },
 })
 const diff = computed(() => diffs.shown.value?.diff ?? null)
 /** The candidate the diff shown is of. */
@@ -120,37 +136,14 @@ watch(diff, (d) => {
   if (d && !d.files.some((f) => f.path === file.value)) file.value = d.files[0]?.path ?? ''
 })
 const shownFile = computed(() => diff.value?.files.find((f) => f.path === file.value) ?? null)
-type SideText = DiffSide | 'absent' | 'binary'
-const sides = ref<{ key: string; base: SideText | null; candidate: SideText | null; error: string }>({ key: '', base: null, candidate: null, error: '' })
+const fileSides = useFileSides(review)
+const sides = fileSides.sides
 const sidesKey = computed(() => (diff.value && shownFile.value ? `${diffKey.value}:${diff.value.base}:${shownFile.value.path}` : ''))
-async function readSides() {
-  const ck = diffKey.value
-  const c = parseCandidate(ck)
-  const d = diff.value
-  const f = shownFile.value
-  const key = sidesKey.value
-  if (!c || !d || !f) return
-  sides.value = { key, base: null, candidate: null, error: '' }
-  if (f.binary) {
-    sides.value = { key, base: 'binary', candidate: 'binary', error: '' }
-    return
-  }
-  const one = async (side: Side, path: string, absent: boolean) => {
-    if (absent) return void (sides.value = { ...sides.value, [side]: 'absent' })
-    try {
-      await review.readSide(c, ck, d.base, path, side, (s) => {
-        if (sides.value.key === key) sides.value = { ...sides.value, [side]: s }
-      })
-    } catch (e) {
-      if (sides.value.key !== key) return
-      if (e instanceof ApiError && e.status === 404) sides.value = { ...sides.value, [side]: 'absent' }
-      else if (e instanceof ApiError && e.status === 415) sides.value = { ...sides.value, [side]: 'binary' }
-      else sides.value = { ...sides.value, error: (e as Error).message }
-    }
-  }
-  await Promise.all([one('base', f.from ?? f.path, f.status === 'A'), one('candidate', f.path, f.status === 'D')])
-}
-watch(sidesKey, () => void readSides(), { immediate: true })
+watch(
+  sidesKey,
+  (key) => void fileSides.read(key && diff.value && shownFile.value ? { key, candidate: diffKey.value, base: diff.value.base, file: shownFile.value } : null),
+  { immediate: true },
+)
 const textOf = (s: SideText | null) => (s && typeof s === 'object' ? s.text : '')
 const ready = computed(() => sides.value.key === sidesKey.value && sides.value.base !== null && sides.value.candidate !== null)
 const binary = computed(() => sides.value.base === 'binary' || sides.value.candidate === 'binary')
@@ -162,15 +155,14 @@ const truncatedSide = computed(() => [sides.value.base, sides.value.candidate].s
 const notable = computed(() => !drafts.stale.value && diffs.at(chosen.value, draft.value.base))
 const notableKey = computed(() => (notable.value ? `${chosen.value}|${draft.value.base}` : ''))
 
-/** The draft's notes on the file shown, in its margin. */
-const marks = computed<DiffMark[]>(() =>
-  draft.value.notes.filter((n) => n.kind === 'line' && n.path === file.value && n.side && n.from && n.to).map((n) => ({ side: n.side!, from: n.from!, to: n.to!, label: n.message })),
-)
-const notesByPath = computed(() => {
-  const out: Record<string, number> = {}
-  for (const n of draft.value.notes) if (n.path) out[n.path] = (out[n.path] ?? 0) + 1
-  return out
+/** The draft's notes on the file shown, in its margin: a base-side note by the path the base has the file at (a rename's old one). */
+const marks = computed<DiffMark[]>(() => {
+  const f = shownFile.value
+  if (!f) return []
+  return draft.value.notes.filter((n) => n.kind === 'line' && noteIsOn(n, f) && n.side && n.from && n.to).map((n) => ({ side: n.side!, from: n.from!, to: n.to!, label: n.message }))
 })
+/** The notes on each file of the diff, both sides together. */
+const notesByPath = computed(() => notesPerFile(draft.value.notes, diff.value?.files ?? []))
 
 // A selection: the bar under it, and the note's form.
 const selection = ref<DiffSelection | null>(null)
@@ -294,21 +286,20 @@ async function send(continueRun: boolean): Promise<ContinuationNeeded | string |
 }
 
 // The reviews of the candidate already sent: the ticket's, every page, those of the candidate shown.
-const sent = ref<ReviewSummary[]>([])
-const sentError = ref('')
-async function readReviews() {
-  const key = props.ticketKey
-  try {
-    await review.readReviews(key, (rs) => {
-      if (key !== props.ticketKey) return
-      sent.value = rs
-      sentError.value = ''
-    })
-  } catch (e) {
-    sentError.value = (e as Error).message
-  }
-}
+const sentReviews = useSentReviews(review, () => props.ticketKey)
+const sent = sentReviews.list
+const sentError = sentReviews.error
+const readReviews = sentReviews.read
 watch(() => [props.ticketKey, props.reads], () => void readReviews(), { immediate: true })
+// A stream's reset dropped every reply on its way: what had not come in is read again (nothing else would ask), and the reviews.
+watch(
+  () => props.resets,
+  () => {
+    void diffs.again()
+    void fileSides.again()
+    void readReviews()
+  },
+)
 const sentHere = computed(() => sent.value.filter((r) => r.candidate === chosen.value))
 async function retry(r: ReviewSummary, continueRun: boolean): Promise<ContinuationNeeded | string | null> {
   try {
@@ -390,6 +381,7 @@ async function retry(r: ReviewSummary, continueRun: boolean): Promise<Continuati
           :bytes="bytes"
           :task="entry?.task ?? cref?.task ?? ''"
           :commit="cref?.commit ?? ''"
+          :attempt="entry?.c"
           :stale="staleWords"
           :unsaved="drafts.unsaved.value"
           :send="send"
@@ -405,9 +397,9 @@ async function retry(r: ReviewSummary, continueRun: boolean): Promise<Continuati
 
       <section class="flex flex-col gap-2" data-review-sent-list :data-review-sent-count="sentHere.length">
         <h3 class="text-sm font-semibold text-highlighted">Reviews of this candidate</h3>
-        <p v-if="sentError" class="text-xs text-warning">The reviews could not be read: {{ sentError }}</p>
-        <p v-else-if="!sentHere.length" class="text-xs text-dimmed">None sent yet.</p>
-        <ul v-else class="flex flex-col gap-1.5">
+        <p v-if="sentError" class="text-xs text-warning" data-review-sent-error>The reviews could not be read: {{ sentError }}</p>
+        <p v-if="!sentHere.length && !sentError" class="text-xs text-dimmed">None sent yet.</p>
+        <ul v-if="sentHere.length" class="flex flex-col gap-1.5">
           <ReviewApplication v-for="r in sentHere" :key="r.id" :review="r" :task="entry?.task ?? cref?.task ?? ''" :commit="cref?.commit ?? ''" :now="now" :retry="(c: boolean) => retry(r, c)" />
         </ul>
       </section>

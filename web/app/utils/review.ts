@@ -357,3 +357,70 @@ export function heldUntilReady<T, A extends unknown[]>(act: (target: T, ...args:
     },
   }
 }
+
+/**
+ * The Review view's late-answer rule: an answer (a reply, a completion, a failure) is applied only to the request that asked for it,
+ * never to whatever the view shows when it lands. `ask()` is called as a request is sent and gives its `current()`, true until a later
+ * `ask()` of the same `latest()`: a reply or a failure of a read superseded since (the reviews read again, a diff's read restarted after
+ * a stream's reset) applies nothing.
+ */
+export function latest() {
+  let n = 0
+  return {
+    ask(): () => boolean {
+      const mine = ++n
+      return () => mine === n
+    },
+  }
+}
+
+/**
+ * Whether the note `n` is on the file `f` of a diff: a base-side note by the path the base has the file at (a rename's old path, as the
+ * note keeps it), a candidate-side note by the candidate's.
+ */
+export function noteIsOn(n: Pick<DraftNote, 'path' | 'side'>, f: { path: string; from?: string }): boolean {
+  if (!n.path) return false
+  return n.path === (n.side === 'base' ? (f.from ?? f.path) : f.path)
+}
+
+/** The notes on each file of a diff, both sides together, by the file's path in the candidate (what the files' list shows). */
+export function notesPerFile(notes: readonly Pick<DraftNote, 'path' | 'side'>[], files: readonly { path: string; from?: string }[]): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const n of notes) {
+    const f = files.find((x) => noteIsOn(n, x))
+    if (f) out[f.path] = (out[f.path] ?? 0) + 1
+  }
+  return out
+}
+
+/**
+ * The bases a draft may be compared with: those the page offers (offeredBases, from the candidates it has read, six a task), and the
+ * draft's own base beside them while the server has not refused it (`refused`): the server takes a result of the task anywhere in the
+ * run's chain, beyond the attempts the page lists, so a base no longer listed is the server's to judge, when the diff is read at it.
+ */
+export function withDraftBase(offered: readonly BaseChoice[] | null, base: string, refused: boolean): BaseChoice[] | null {
+  if (!offered) return null
+  if (!base || refused || offered.some((b) => b.commit === base)) return [...offered]
+  return [...offered, { commit: base, label: "the draft's base" }]
+}
+
+/**
+ * Whether an attempt that stopped at `stage` was refused before its checks ran (its checkout, setup, a service, the ready probe or the
+ * crew's manifest), the engine's rule (crew's refusedBeforeChecks): its result was never built on.
+ */
+export function refusedBeforeChecks(stage: string | undefined): boolean {
+  if (!stage) return false
+  return ['checkout', 'setup', 'manifest', 'ready'].includes(stage) || stage.startsWith('setup ') || stage.startsWith('service ') || stage.startsWith('ready ')
+}
+
+/**
+ * What Request changes asks before it sends, in words: the task reopened at the reviewed commit, and where its next attempt starts, the
+ * engine's rule (crew.RepairStart): at the candidate, or, for a failed candidate refused before its checks, where its attempt started.
+ */
+export function requestWords(task: string, c: { attempt?: number; commit: string; start?: string; state?: string; stage?: string }, notes: number): string {
+  const count = notes === 1 ? '1 note' : `${notes} notes`
+  if (c.state === 'failed' && refusedBeforeChecks(c.stage) && c.start && c.start !== c.commit) {
+    return `Yardmaster reopens ${task} at ${shortCommit(c.commit)} with ${count}: attempt ${c.attempt} was refused before its checks, so its next attempt starts where it started, at ${shortCommit(c.start)}, and what rests on it runs again.`
+  }
+  return `Yardmaster reopens ${task} at ${shortCommit(c.commit)}: its next attempt starts there with ${count}, and what rests on it runs again.`
+}

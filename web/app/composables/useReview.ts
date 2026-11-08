@@ -4,7 +4,7 @@ import type { DispatchReceipt, OpBody } from './useDispatch'
 import { through, type DispatchOrder } from '~/utils/dispatchOrder'
 import { mintCommandId, sendCommand } from '~/utils/tasks'
 import { allPages, parseCandidate, type CandidateRef } from '~/utils/dispatch'
-import type { Located, NewFinding, ReviewApplication, ReviewBody, Side } from '~/utils/review'
+import { latest, type Located, type NewFinding, type ReviewApplication, type ReviewBody, type Side } from '~/utils/review'
 
 /**
  * A person's reviews of a ticket's candidates (Program item RV1, docs/plans/review-repair.md, "web/app"): a candidate's diff and its
@@ -254,22 +254,25 @@ export interface ShownDiff {
 
 /**
  * The diff a Review view shows, bound to the selection it was read for: `read(candidate, base)` names the candidate and the base wanted
- * now, and a reply is shown only while they are still the ones wanted, so a slow reply for a base or a candidate left (Y, then Z, then Y
- * again) never stands beside a draft on another. A move clears what was shown at once: nothing of the candidate or the base left can be
- * noted while the new one is read, or after its read failed. `known` is told the base a reply was read against (the run's, for none
- * asked), the draft's base while it has none. `at(candidate, base)` says whether the diff shown is the candidate's at that base, which a
- * note on its lines or its files is made only on.
+ * now, and a reply is shown only while its read is the latest asked (the late-answer rule, `latest`), so a slow reply for a base or a
+ * candidate left (Y, then Z, then Y again) never stands beside a draft on another. A move clears what was shown at once: nothing of the
+ * candidate or the base left can be noted while the new one is read, or after its read failed. `known` is told the base a reply was read
+ * against (the run's, for none asked), the draft's base while it has none; `refused` that the server refused the base asked (400: none
+ * of the run's chain), so the page stops offering it. `at(candidate, base)` says whether the diff shown is the candidate's at that base,
+ * which a note on its lines or its files is made only on. `again()` reads the diff wanted again when it is not shown: a stream's reset
+ * drops the replies on their way (DispatchOrder.reset), and nothing else would ask again.
  */
-export function useCandidateDiff(r: Pick<ReturnType<typeof useReview>, 'readDiff'>, o: { known?: (base: string) => void } = {}) {
+export function useCandidateDiff(r: Pick<ReturnType<typeof useReview>, 'readDiff'>, o: { known?: (base: string) => void; refused?: (key: string, base: string) => void } = {}) {
   const shown = ref<ShownDiff | null>(null)
   const error = ref('')
   const loading = ref(false)
+  const asks = latest()
   /** The candidate and the base wanted now. */
-  let wanted = ''
+  let wanted: { key: string; at: string } | null = null
 
   async function read(key: string, at: string): Promise<void> {
-    const want = `${key}|${at}`
-    wanted = want
+    const current = asks.ask()
+    wanted = { key, at }
     const s = shown.value
     // Shown already: this candidate at this base, or read with none asked at the base it named.
     if (s && s.key === key && (s.at === at || s.diff.base === at)) {
@@ -287,15 +290,23 @@ export function useCandidateDiff(r: Pick<ReturnType<typeof useReview>, 'readDiff
     loading.value = true
     try {
       await r.readDiff(c, key, at, (d) => {
-        if (wanted !== want) return
+        if (!current()) return
         shown.value = { key, at, diff: d }
         o.known?.(d.base)
       })
     } catch (e) {
-      if (wanted === want) error.value = (e as Error).message
+      if (!current()) return
+      error.value = (e as Error).message
+      if (at && e instanceof ApiError && e.status === 400) o.refused?.(key, at)
     } finally {
-      if (wanted === want) loading.value = false
+      if (current()) loading.value = false
     }
+  }
+
+  /** Reads the diff wanted again unless it is shown (or its read failed, which says so): after a stream's reset. */
+  function again(): Promise<void> | undefined {
+    if (!wanted || error.value) return
+    return read(wanted.key, wanted.at)
   }
 
   const at = (key: string, base: string): boolean => {
@@ -303,5 +314,90 @@ export function useCandidateDiff(r: Pick<ReturnType<typeof useReview>, 'readDiff
     return !!s && !!base && s.key === key && s.diff.base === base
   }
 
-  return { shown, error, loading, read, at }
+  return { shown, error, loading, read, again, at }
+}
+
+/** One side of a file as the Review view shows it: its text, or that it is absent there, or binary (or past 1 MiB). */
+export type SideText = DiffSide | 'absent' | 'binary'
+
+/** A file of a diff whose two sides are read: the candidate it is of, the base, the file, and the key the view shows them by. */
+export interface SidesTarget {
+  key: string
+  candidate: string
+  base: string
+  file: DiffFile
+}
+
+/**
+ * The two sides of the file a Review view shows: `read(target)` reads both (a base-side by the path the base has it at, a rename's old
+ * path), each applied only while its read is the latest asked (the late-answer rule, `latest`); a 404 is the side absent, a 415 binary.
+ * `again()` reads the target again while a side has not come in, after a stream's reset dropped its reply.
+ */
+export function useFileSides(r: Pick<ReturnType<typeof useReview>, 'readSide'>) {
+  const sides = ref<{ key: string; base: SideText | null; candidate: SideText | null; error: string }>({ key: '', base: null, candidate: null, error: '' })
+  const asks = latest()
+  let target: SidesTarget | null = null
+
+  async function read(t: SidesTarget | null): Promise<void> {
+    const current = asks.ask()
+    target = t
+    const c = t ? parseCandidate(t.candidate) : null
+    if (!t || !c) return
+    const f = t.file
+    sides.value = { key: t.key, base: null, candidate: null, error: '' }
+    if (f.binary) {
+      sides.value = { key: t.key, base: 'binary', candidate: 'binary', error: '' }
+      return
+    }
+    const one = async (side: Side, path: string, absent: boolean) => {
+      if (absent) return void (sides.value = { ...sides.value, [side]: 'absent' })
+      try {
+        await r.readSide(c, t.candidate, t.base, path, side, (s) => {
+          if (current()) sides.value = { ...sides.value, [side]: s }
+        })
+      } catch (e) {
+        if (!current()) return
+        if (e instanceof ApiError && e.status === 404) sides.value = { ...sides.value, [side]: 'absent' }
+        else if (e instanceof ApiError && e.status === 415) sides.value = { ...sides.value, [side]: 'binary' }
+        else sides.value = { ...sides.value, error: (e as Error).message }
+      }
+    }
+    await Promise.all([one('base', f.from ?? f.path, f.status === 'A'), one('candidate', f.path, f.status === 'D')])
+  }
+
+  /** Reads the target again while a side of it has not come in and no read of it failed: after a stream's reset. */
+  function again(): Promise<void> | undefined {
+    const s = sides.value
+    if (!target || s.error || (s.key === target.key && s.base !== null && s.candidate !== null)) return
+    return read(target)
+  }
+
+  return { sides, read, again }
+}
+
+/**
+ * The reviews of a ticket a Review view lists: `read()` reads every page of them (useReview.readReviews), a reply applied as the gate
+ * orders replies; a failure is said only when its read is the latest asked (the late-answer rule, `latest`), so an older read failing
+ * after a newer one answered says nothing, and the reviews last read stay listed beside a failure.
+ */
+export function useSentReviews(r: Pick<ReturnType<typeof useReview>, 'readReviews'>, ticket: () => string) {
+  const list = ref<ReviewSummary[]>([])
+  const error = ref('')
+  const asks = latest()
+
+  async function read(): Promise<void> {
+    const key = ticket()
+    const current = asks.ask()
+    try {
+      await r.readReviews(key, (rs) => {
+        if (key !== ticket()) return
+        list.value = rs
+        error.value = ''
+      })
+    } catch (e) {
+      if (current() && key === ticket()) error.value = (e as Error).message
+    }
+  }
+
+  return { list, error, read }
 }

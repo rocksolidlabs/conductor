@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { ContinuationNeeded } from '~/composables/useReview'
-import { shortCommit } from '~/utils/dispatchPlans'
-import { MAX_REPAIR_PAYLOAD, MAX_REVIEW_SUMMARY, kib, noteWhere, type DraftNote, type Verdict } from '~/utils/review'
+import { MAX_REPAIR_PAYLOAD, MAX_REVIEW_SUMMARY, kib, noteWhere, requestWords, type DraftNote, type Verdict } from '~/utils/review'
 
 /**
  * The draft of a review (Program item RV1, PR-6): the notes gathered, each opened at its lines, edited or dropped; a general note; the
  * verdict and the summary; what stops it from being sent, the batch's size as the run would keep it among them; and Send review, which
- * asks first for Request changes ("Yardmaster reopens build at a1b2c3d…") and, when the server answers that the run must be continued
+ * asks first for Request changes ("Yardmaster reopens build at a1b2c3d…", and where its next attempt starts: there, or where a candidate
+ * refused before its checks started, requestWords) and, when the server answers that the run must be continued
  * first (continuation_needed), asks a second time in the server's words before it sends again with `continueRun`. The draft is this
  * browser's until it is sent; a failure keeps it as it is.
  */
@@ -20,6 +20,8 @@ const props = defineProps<{
   bytes?: number
   task: string
   commit: string
+  /** The candidate's attempt as its run lists it: where it started and how it ended, which say where a repair starts. */
+  attempt?: { attempt: number; start?: string; state?: string; stage?: string }
   /** The draft's base is none the page offers now: why, in words; the draft is shown and not sent. */
   stale?: string
   /** The storage refused it: kept in this page alone. */
@@ -41,7 +43,7 @@ const failure = ref('')
 
 const blocked = computed(() => !!props.stale || props.problems.length > 0)
 const count = computed(() => (props.notes.length === 1 ? '1 note' : `${props.notes.length} notes`))
-const confirmWords = computed(() => `Yardmaster reopens ${props.task} at ${shortCommit(props.commit)}: its next attempt starts there with ${count.value}, and what rests on it runs again.`)
+const confirmWords = computed(() => requestWords(props.task, { ...props.attempt, commit: props.commit }, props.notes.length))
 
 function intentWords(n: DraftNote): string {
   return n.intent === 'change' ? (n.severity ?? 'change') : n.intent
