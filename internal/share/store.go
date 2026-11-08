@@ -27,6 +27,12 @@ type Link struct {
 	// decisions in its scope over its connection's lane. Only CreateDecision
 	// and CreateRunDecision set it, and only on a control link.
 	Decide bool `json:"decide,omitempty"`
+	// Remote marks a decision link minted at a switchyard, held by the
+	// publisher that minted it for its lane's state alone (AddRemote): its
+	// Recent, its operations and the holds of its acts, under the
+	// switchyard's id for it. It has no token here, so it opens nothing
+	// on this server; its viewers come through the switchyard.
+	Remote bool `json:"-"`
 	// Owner, on a switchyard, is the hash of the host instance a durable
 	// link was minted for (kept on disk, outliving the host's absences);
 	// Addr the open host's address it counts against. Never in a reply.
@@ -74,6 +80,15 @@ type Group struct {
 	Name     string
 	Members  []GroupMember
 	Revision int64 `json:"-"`
+	// Desk is the run's desk there (proto.RunGroup.Desk), "" with none:
+	// the link opens it as it opens a member's session (Names). It is held
+	// in memory alone, never in the link's file (a switchyard's link file
+	// keeps the shape an older switchyard reads strictly, and an older one
+	// rolled back to would leave out every run link of a run with a desk):
+	// after a restart the desk's own register_desk names it again in its
+	// owner's links of its run (NameDesk), as the publisher's next sync
+	// would.
+	Desk string `json:"-"`
 }
 
 // GroupMember is a member of a Group: its session there, "" while it has none.
@@ -81,10 +96,14 @@ type GroupMember struct {
 	Name, SessionID, AgentID, Status string
 }
 
-// Names says whether the group names the session.
+// Names says whether the group names the session, or names it as the
+// run's desk.
 func (g *Group) Names(sessionID string) bool {
 	if g == nil || sessionID == "" {
 		return false
+	}
+	if g.Desk == sessionID {
+		return true
 	}
 	for _, m := range g.Members {
 		if m.SessionID == sessionID {
@@ -175,6 +194,48 @@ func (s *Store) CreateRunDecision(runID string, role session.Role, label string,
 		return nil, "", ErrDecideNeedsControl
 	}
 	return s.create(&Link{RunID: runID, Decide: true}, s.byRun, runID, role, label, ttl, nil)
+}
+
+// ErrLinkExists refuses a remote link under an id the store holds.
+var ErrLinkExists = errors.New("share: a link with that id is held")
+
+// AddRemote holds a decision link the switchyard minted (Link.Remote),
+// under its id there: a session's (sessionID) or a run's (runID), a
+// control link, created and expiring as the switchyard said. It is not
+// indexed by any token, so it never resolves here; it is revoked,
+// expires and is forgotten with its session or run as the links made
+// here are. ErrTooManyLinks past MaxLinksPerSession, ErrLinkExists for
+// an id held.
+func (s *Store) AddRemote(id, sessionID, runID, label string, createdAt time.Time, expiresAt *time.Time) error {
+	if id == "" || (sessionID == "") == (runID == "") {
+		return ErrUnknownLink
+	}
+	if len(label) > 120 {
+		label = label[:120]
+	}
+	link := &Link{ID: id, SessionID: sessionID, RunID: runID, Label: label, Role: session.RoleControl, CreatedAt: createdAt, Decide: true, Remote: true, acts: newActs()}
+	if expiresAt != nil {
+		exp := *expiresAt
+		link.ExpiresAt = &exp
+	}
+	scopes, key := s.bySession, sessionID
+	if runID != "" {
+		scopes, key = s.byRun, runID
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, held := s.byID[id]; held {
+		return ErrLinkExists
+	}
+	if len(scopes[key]) >= MaxLinksPerSession {
+		return ErrTooManyLinks
+	}
+	s.byID[id] = link
+	if scopes[key] == nil {
+		scopes[key] = map[string]*Link{}
+	}
+	scopes[key][id] = link
+	return nil
 }
 
 // NoteRecent keeps r in the decision link linkID's Recent, the newest
@@ -677,7 +738,7 @@ func copyLink(l *Link) *Link {
 
 // clone copies g, with members of its own.
 func (g *Group) clone() Group {
-	return Group{Name: g.Name, Members: append([]GroupMember(nil), g.Members...), Revision: g.Revision}
+	return Group{Name: g.Name, Members: append([]GroupMember(nil), g.Members...), Revision: g.Revision, Desk: g.Desk}
 }
 
 // staleFor says whether a group of revision rev comes too late for the
@@ -747,6 +808,11 @@ func (s *Store) SetGroup(owner, runID string, g Group) (changed, left []string, 
 				left = append(left, m.SessionID)
 			}
 		}
+		// A desk the group no longer names is left as a member is.
+		if d := l.Group.Desk; d != "" && !g.Names(d) && !gone[d] {
+			gone[d] = true
+			left = append(left, d)
+		}
 		next := g.clone()
 		next.Revision = max(next.Revision, l.Group.Revision)
 		l.Group = &next
@@ -755,6 +821,32 @@ func (s *Store) SetGroup(owner, runID string, g Group) (changed, left []string, 
 	sort.Strings(changed)
 	sort.Strings(left)
 	return changed, left, nil
+}
+
+// NameDesk names the desk deskID in each live link of owner's run runID
+// (a switchyard's run links), as the desk registers: the desk is never in
+// a link's file (Group.Desk), so after a restart the links restored from
+// their files name it again only as it is back, the same id under the same
+// owner, which the publisher's syncs name while it has the desk. Its
+// revision is left as it is. It returns the links it changed.
+func (s *Store) NameDesk(owner, runID, deskID string) []string {
+	if owner == "" || runID == "" || deskID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var changed []string
+	for _, l := range s.byRun[groupKey(owner, runID)] {
+		if l.Revoked || l.Group == nil || l.Group.Desk == deskID {
+			continue
+		}
+		next := l.Group.clone()
+		next.Desk = deskID
+		l.Group = &next
+		changed = append(changed, l.ID)
+	}
+	sort.Strings(changed)
+	return changed
 }
 
 // RevokeGroup revokes owner's run link linkID, notifying OnRevokeRun.

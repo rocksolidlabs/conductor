@@ -705,11 +705,12 @@ func TestADecisionLinkIsRefusedWhereItIsNotServed(t *testing.T) {
 	}
 }
 
-// A relayed connection does not carry the lane yet (the switchyard's side
-// is a later row's): a hosted session's viewer that sends a DECIDE is
-// closed 4400 at the server, nothing sent to its host, whose session stays
-// listed.
-func TestARelayedViewerIsRefusedTheLane(t *testing.T) {
+// A hosted session's relayed viewer carries the lane to its host as it
+// carries its terminal frames (docs/plans/decision-inbox.md, PR-6): the
+// host answers it (this publisher serves no decisions: unsupported). The
+// viewer is welcomed without decisions, and the connection and the
+// host's session stay.
+func TestARelayedViewersLaneReachesItsHost(t *testing.T) {
 	rendezvous := newTestEnv(t, func(c *config.Config) { c.PublicURL = "https://rendezvous.example.net" })
 	local := newTestEnv(t, nil)
 	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true}})
@@ -724,19 +725,32 @@ func TestARelayedViewerIsRefusedTheLane(t *testing.T) {
 		return hosted != ""
 	})
 	v := dialViewer(t, rendezvous, hosted, adminToken)
-	v.hello(80, 24)
-	if w := v.expectControl(proto.CtlWelcome); w["decisions"] != nil {
-		t.Fatalf("a hosted session's welcome: %v", w)
-	}
 	f, err := proto.EncodeDecide(proto.Decide{ReqID: "r1", Ref: "task:a/b", Action: "retry", Revision: "1", OpID: "o1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	v.send(f)
-	v.expectClose(proto.CloseProtocolError)
-	if _, ok := rendezvous.srv.Registry().Get(hosted); !ok {
-		t.Fatal("the host's session went with the refused frame")
+	if w := joinedRelay(t, v); w["decisions"] != nil {
+		t.Fatalf("a hosted session's welcome: %v", w)
 	}
+	v.send(f)
+	for {
+		g, err := v.read()
+		if err != nil {
+			t.Fatalf("waiting for the host's refusal: %v", err)
+		}
+		var m map[string]any
+		if g.Type == proto.TypeControl && json.Unmarshal(g.Payload, &m) == nil && m["t"] == proto.CtlDecideRefused {
+			if m["reqId"] != "r1" || m["code"] != proto.DecideUnsupported {
+				t.Fatalf("the refusal %v", m)
+			}
+			break
+		}
+	}
+	if _, ok := rendezvous.srv.Registry().Get(hosted); !ok {
+		t.Fatal("the host's session went with the frame")
+	}
+	v.send(proto.Encode(proto.TypeInput, []byte("still here\n")))
+	v.expectOutput("still here")
 }
 
 // A link's connections share one watch, which reads the scope once per

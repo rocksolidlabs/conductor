@@ -264,7 +264,15 @@ type summary struct {
 	stopped time.Time
 }
 
-// Summary is a record's row in a list.
+// MaxSummary is the most a Summary takes as encoding/json writes it, HTML
+// characters escaped as the API's replies escape them (six bytes for a
+// '<' its bounds count as one), every field at its bound
+// (TestASummaryAtEveryBoundFits): a page of a list is at most MaxPage of
+// them.
+const MaxSummary = 72 << 10
+
+// Summary is a record's row in a list, its strings at the record's bounds
+// (summaryOf).
 type Summary struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
@@ -290,9 +298,14 @@ type Summary struct {
 	Unreadable bool `json:"unreadable,omitempty"`
 }
 
+// summaryOf is r's row, its strings cut to the record's bounds (fitRecord)
+// whatever file it was read from (a later version's is read as it is), so
+// that a row is at most MaxSummary bytes in a reply.
 func summaryOf(r *Record, newer bool) *summary {
-	s := &summary{Summary: Summary{ID: r.ID, Name: r.Name, Kind: r.Kind, Agent: r.Agent, Host: r.Host, Where: r.Where, Cwd: r.Cwd, Repo: r.Repo, Branch: r.Branch,
-		Crew: r.Crew, StartedAt: r.StartedAt, EndedAt: r.EndedAt, LostAt: r.LostAt, Ending: r.Ending, Entries: len(r.Entries), Files: len(r.Files), Dropped: r.Dropped, Newer: newer},
+	h := Record{Name: r.Name, Kind: r.Kind, Agent: r.Agent, Host: r.Host, Where: r.Where, Cwd: r.Cwd, Repo: r.Repo, Branch: r.Branch, Crew: r.Crew, Ending: r.Ending}
+	fitRecord(&h)
+	s := &summary{Summary: Summary{ID: fitPath(r.ID, MaxID), Name: h.Name, Kind: h.Kind, Agent: h.Agent, Host: h.Host, Where: h.Where, Cwd: h.Cwd, Repo: h.Repo, Branch: h.Branch,
+		Crew: h.Crew, StartedAt: r.StartedAt, EndedAt: r.EndedAt, LostAt: r.LostAt, Ending: h.Ending, Entries: len(r.Entries), Files: len(r.Files), Dropped: r.Dropped, Newer: newer},
 		open: r.open() && !newer, pending: r.pending(), owner: r.Host.Owner, stopped: endOf(r)}
 	s.Host.Owner = ""
 	return s
@@ -1209,7 +1222,7 @@ func (j *Journal) write(x *rec) error {
 	}
 	// Measured with the Seq it is written with, which may be longer.
 	j.seq++
-	x.r.Seq = j.seq
+	x.r.Seq, x.r.V = j.seq, versionOf(&x.r)
 	bound(&x.r)
 	r := cloneRecord(&x.r)
 	x.dirty, x.urgent = false, false
@@ -1355,7 +1368,7 @@ func loadFrom(sess *store.Store, name string) (Record, bool, error) {
 		return Record{}, false, &store.ParseError{Name: name, Err: err}
 	}
 	var r Record
-	if head.V > V {
+	if head.V > maxV {
 		if err := json.Unmarshal(raw, &r); err != nil {
 			return Record{}, false, &store.ParseError{Name: name, Err: err}
 		}

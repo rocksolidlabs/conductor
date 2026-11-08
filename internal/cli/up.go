@@ -400,6 +400,9 @@ func (c *apiClient) doWithin(ctx context.Context, timeout time.Duration, method,
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return replyRefusal{status: resp.StatusCode, body: reply, err: c.statusError(resp.Status, reply)}
 	}
+	if out == nil && resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
 	if err := json.Unmarshal(reply, out); err != nil {
 		return fmt.Errorf("unreadable reply from %s: %w", c.host, err)
 	}

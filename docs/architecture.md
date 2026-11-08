@@ -753,6 +753,53 @@ are Go templates with the brand tokens inlined, so a switchyard built
 without the UI still answers. A `relayMeter` counts the bytes the relay
 carried over the last hour for the operator's card.
 
+### Answering from a phone
+
+Needs your decision (docs/plans/decision-inbox.md) is answered from a phone
+one of two ways. **On the LAN**, the phone opens the server's own page,
+`/decisions`, with the workbench token, and acts through each operation's
+own route. **Away from the LAN**, it holds a decision link: a control link
+of a session or a run the operator minted with `decide: true`, whose
+connection carries the decision lane (`internal/api/lane.go`; the frames
+and messages in docs/protocol.md, Decision links). On the server itself
+the lane rides the session's viewer connection, or for a run its desk
+route, `/ws/runs/{run}/desk`. Through a switchyard the person runs (the
+free self-hosted tier), it rides the publisher's own connections there: a
+session decision link's viewer joins the session's publication, a run
+decision link's joins the run's **desk** (`internal/hostagent/desk.go`),
+a host connection of the uplink's with no PTY and no terminal, registered
+with `register_desk` under the uplink's instance so it is the
+publisher's alone, that carries the run's decisions whether or not a
+member lives. The publisher opens the desk with the run's first decision
+link there and ends it once nothing needs it (the run stopped, continued
+or forgotten, after a linger; its last decision link revoked or expired;
+the server's stop): a run that finished failed keeps it, since a Retry
+reopens the run. A decision link revoked on the publisher whose revoke the
+switchyard has not confirmed keeps its record (listed as owing it) and the
+desk, and the revoke is tried again until the switchyard confirms it: a
+revoke never leaves a link standing there that the publisher no longer
+lists.
+
+What the switchyard sees: a control link it minted (it does not know the
+link answers decisions; the publisher keeps that, and holds the link for
+the lane's rules under the switchyard's id, with no token), the desk's
+registration (counted among its sessions, never listed as one, its id in
+the run's group so a run link's viewer can join it), and, only when ICE
+fails, the lane's DECISION and DECIDE frames in relay envelopes, which it
+carries as it carries terminal bytes and drops from a view-role viewer. It
+stores nothing of a decision, runs no crew and answers nothing: every read
+and every action is the publisher's, through the item's own operation
+(the question's claim, the engine's command at its revision), as the
+link's actor, `link:<id>`. A switchyard says it carries the lane in its
+`registered` (`decisions`) only when its join page has the Decide tab;
+at one that does not, the publisher mints no decision link
+(`switchyard_too_old`).
+
+A decision link's scope is the link's: a session link covers that
+session's question and the task its attempt runs; a run link every item
+of the run, its members' questions and its tasks. A plan revision before
+any run is in no link's scope, and is answered on the LAN or the desktop.
+
 ## Desktop shell
 
 `desktop/` is an Electron shell around the same binary: it starts

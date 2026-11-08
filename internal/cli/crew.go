@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,10 +10,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/api"
+	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/notify"
 )
 
@@ -22,11 +27,17 @@ import (
 // session's URL and token come from the environment Conductor injects, as
 // conductor notify's do; outside a session the commands exit 0 silently
 // (--quiet=false says why), so a skill that runs them elsewhere does no harm.
+// recheck alone is the operator's, from anywhere, with the admin's server
+// and token as conductor crews takes them (runCrewRecheck).
 const crewUsage = `Usage:
   conductor crew create <crew.json|-> [--self NAME] [--open]   form a crew around this session and launch it
   conductor crew add <member.json|->                          add a member to this session's run
   conductor crew status                                        this session's run and its members
   conductor crew link [--ttl 2h] [--label TEXT]                a view-only link to this session (a day at most)
+  conductor crew recheck RUN/TASK/N@COMMIT [--server URL] [--token T] [--insecure]
+      the operator's Check again, from anywhere: the failed candidate, as its
+      own run names it, verified again unchanged as a new attempt in the
+      newest run of its chain; prints the run and the attempt it was checked in
 
 crew.json: {"name", "goal", "members": [{"name", "agentId", "prompt", "start": {"when": "immediately|after|manual", "member"?}}], "self"?, "isolation"?}
 member.json: one member of the list above. "-" reads stdin.
@@ -149,6 +160,9 @@ func runCrew(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		return 0, nil
 	}
 	sub, rest := args[0], args[1:]
+	if sub == "recheck" {
+		return runCrewRecheck(ctx, rest, stdout, stderr)
+	}
 	fs := flag.NewFlagSet("crew "+sub, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	self := fs.String("self", "", "create: the member this session becomes (else the file's \"self\")")
@@ -261,4 +275,68 @@ func printMembers(w io.Writer, run map[string]any) {
 		}
 		fmt.Fprintf(w, "  %-20s %-22s %v\n", mm["name"], status, mm["agentId"])
 	}
+}
+
+// recheckRequestTimeout bounds a Check again's request: the server bounds
+// it by its run's command time (runContext), which api.ReviewTimeout
+// holds, and a request's time beside it for the reply to come back.
+var recheckRequestTimeout = api.ReviewTimeout + requestTimeout
+
+// runCrewRecheck is conductor crew recheck: the admin's Check again of a
+// failed candidate (POST /api/runs/{run}/tasks/{task}/recheck), named in
+// the run that made it, with a minted command id that a lost reply is
+// sent again with (the server finds it along the run's chain and answers
+// from its receipt). It prints the run and the attempt the server
+// checked it in: the newest run of the chain, a continuation of the
+// candidate's when it was continued since. Exit 2 for a usage error,
+// before any request; 1 when the server refuses or cannot be asked.
+func runCrewRecheck(ctx context.Context, args []string, stdout, stderr io.Writer) (int, error) {
+	fs := flag.NewFlagSet("crew recheck", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	server := addAPIFlags(fs)
+	fs.Usage = func() {
+		fmt.Fprint(stderr, crewUsage, "\nFlags of crew recheck:\n")
+		fs.PrintDefaults()
+	}
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0, nil
+		}
+		return 2, err
+	}
+	if len(pos) != 1 {
+		return 2, errors.New("crew recheck takes the failed candidate, RUN/TASK/N@COMMIT")
+	}
+	cand, err := dispatch.ParseCandidate(pos[0])
+	if err != nil {
+		return 2, fmt.Errorf("crew recheck: the candidate is RUN/TASK/N@COMMIT, the commit in full: %q", pos[0])
+	}
+	c, err := server.client(stderr)
+	if err != nil {
+		return 2, err
+	}
+	body := map[string]any{"commandId": newOpID(), "attempt": cand.Attempt, "commit": cand.Commit}
+	path := "/api/runs/" + url.PathEscape(cand.Run) + "/tasks/" + url.PathEscape(cand.Task) + "/recheck"
+	var out struct {
+		Receipt crew.Receipt `json:"receipt"`
+		Run     string       `json:"run"`
+		Attempt int          `json:"attempt"`
+	}
+	if err := askTwice(ctx, func(ctx context.Context) error {
+		return c.doWithin(ctx, recheckRequestTimeout, http.MethodPost, path, body, &out, maxReply)
+	}); err != nil {
+		return 1, err
+	}
+	run := cmp.Or(out.Run, cand.Run)
+	of := ""
+	if run != cand.Run {
+		of = ", a continuation of " + cand.Run
+	}
+	if out.Attempt < 1 {
+		fmt.Fprintf(stdout, "%s: Check again %s in run %s%s\n", cand.Name(), oneLine(out.Receipt.Status), oneLine(run), of)
+		return 0, nil
+	}
+	fmt.Fprintf(stdout, "%s checked again as attempt %d of run %s%s\n", cand.Name(), out.Attempt, oneLine(run), of)
+	return 0, nil
 }

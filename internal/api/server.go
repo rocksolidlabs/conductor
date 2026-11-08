@@ -182,6 +182,10 @@ type Server struct {
 	// of the lifecycle's stages (recordSeam).
 	recordDeliver atomic.Pointer[func(id string, what any, run func())]
 	recordHook    atomic.Pointer[func(stage, id string)]
+	// resumeHook, when a test sets it, is run at each stage of a resume
+	// from a record ("reserved", "launched"; resumeStops): true says the
+	// server stops there, the receipt left as the stop would leave it.
+	resumeHook atomic.Pointer[func(stage, id string) bool]
 	// starting marks the server sessions whose process runs before the
 	// registry holds them, for a report in that window to wait for
 	// (launching.go); launchHook, when a test sets it, runs at a launch's
@@ -244,10 +248,39 @@ type Server struct {
 	// runSyncing the runs whose members are about to be sent, runSent what was
 	// last sent of each (publishrun.go). Guarded by pubMu.
 	remoteRunLinks map[string]map[string]remoteLink
-	runSyncing     map[string]bool
-	runSent        map[string]string
-	pubPending     map[string]chan struct{}
-	pubErr         map[string]string
+	// desks are the runs' desks open at the rendezvous (desk_publish.go),
+	// by run; deskLingerSeam, in tests, is handed each desk's linger as it
+	// is armed. Guarded by pubMu.
+	desks          map[string]*runDesk
+	deskLingerSeam func(runID string, fire func())
+	// deskOpenings are the runs' desks being opened (openRunDesk), one per
+	// run, desksStopped set once the server's stop has stopped the desks
+	// (stopRunDesks: none is opened after); deskOpenSeam, in tests, runs as an opening is about to ask the
+	// rendezvous, deskAwaitSeam as a request begins to wait for another's
+	// opening, and deskStopSeam is handed the context of the desks' stop
+	// as the server stops (stopRunDesks). Guarded by pubMu.
+	deskOpenings  map[string]*deskOpening
+	desksStopped  bool
+	deskOpenSeam  func(runID string)
+	deskAwaitSeam func(runID string)
+	deskStopSeam  func(ctx context.Context)
+	// deskCheckSeam, in tests, runs as a desk's judgement is about to be
+	// made (deskCheck), its desk seen live.
+	deskCheckSeam func(runID string)
+	// revokeRetries are the decision links whose revoke at the rendezvous
+	// is being tried again (retryRevokeThere), revokesCtx ends them as the
+	// server stops (revokesStopped: none begun after); revokeRetrySeam, in
+	// tests, is handed each retry's next try to start when it chooses.
+	// Guarded by pubMu.
+	revokeRetries   map[string]bool
+	revokesStopped  bool
+	revokesCtx      context.Context
+	revokesCancel   context.CancelFunc
+	revokeRetrySeam func(linkID string, next func())
+	runSyncing      map[string]bool
+	runSent         map[string]string
+	pubPending      map[string]chan struct{}
+	pubErr          map[string]string
 	// pubStopped are the sessions whose publication the rendezvous ended
 	// with a stop of its own: the next Share publishes them again.
 	pubStopped map[string]bool
@@ -483,13 +516,29 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// the switchyard lets them expire or sweeps them with the host's others.
 	s.runs.OnForget = func(run crew.Run) {
 		remote := s.remoteRunLinksOf(run.ID)
-		carriers := s.liveCarriers(run)
-		s.forgetRemoteRunLinks(run.ID, "")
+		var carriers []runCarrier
+		for _, pub := range s.liveCarriers(run) {
+			carriers = append(carriers, pub)
+		}
+		// The run's desk carries its links' revokes too, and ends after
+		// them: no decision of a forgotten run is answered.
+		desk := s.liveDesk(run.ID)
+		if desk != nil {
+			carriers = append(carriers, desk)
+		}
+		// The run is gone here: its records go with it, settled
+		// (forgetRemote), their revokes carried once more below.
+		s.forgetRemote("", run.ID, "", true)
 		if live := s.links.DeleteRun(run.ID); len(live) > 0 {
 			s.track(func() { s.disconnectLinks(live) })
 		}
-		if len(carriers) > 0 && len(remote) > 0 {
-			s.track(func() { s.revokeRemoteRunLinks(run.ID, carriers, remote) })
+		if (len(carriers) > 0 && len(remote) > 0) || desk != nil {
+			s.track(func() {
+				if len(remote) > 0 {
+					s.revokeRemoteRunLinks(run.ID, carriers, remote)
+				}
+				s.endRunDesk(run.ID)
+			})
 		}
 		s.events.run(run.ID, true)
 		// A review waiting on a command of the run is settled now: nothing
@@ -500,6 +549,11 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// a run event, which they read the run again for.
 	s.runs.OnRunChange = func(runID string) {
 		s.events.run(runID, false)
+		// Its desk at the switchyard lives while the engine takes its
+		// commands (desk_publish.go), judged off the engine's call.
+		if s.liveDesk(runID) != nil {
+			s.track(func() { s.deskCheck(runID) })
+		}
 		// Its links at the switchyard follow its members (nothing for a run without any).
 		s.scheduleRunSync(runID)
 		// Its record follows it from its launch on (the journal).
@@ -658,12 +712,19 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	}
 	s.links.OnRevoke = func(sessionID, linkID string) {
 		s.dropLinkFile(linkID)
+		if l, ok := s.links.Get(linkID); ok && l.Remote {
+			s.remoteRevoked(l)
+		}
 		if d, ok := s.registry.Get(sessionID); ok {
 			d.DisconnectLink(linkID)
 		}
 	}
 	s.links.OnRevokeRun = func(runID, linkID string) {
 		s.dropLinkFile(linkID)
+		if l, ok := s.links.Get(linkID); ok && l.Remote {
+			s.remoteRevoked(l)
+			return
+		}
 		// A switchyard's group link holds viewers on its group's sessions
 		// alone (a session that leaves the group takes them along,
 		// hostRunLinkUpdate): those are asked, not every session, whoever
@@ -705,6 +766,9 @@ func (s *Server) closeLinkViewers(l *share.Link) {
 				d.DisconnectLink(l.ID)
 			}
 		}
+		if l.Group.Desk != "" {
+			s.disconnectHosted(l.Group.Desk, l.ID)
+		}
 	default:
 		s.disconnectLinks([]string{l.ID})
 	}
@@ -745,6 +809,7 @@ func (s *Server) track(f func()) {
 // at its end; tests call it before their directories go.
 func (s *Server) WaitBackground(ctx context.Context) {
 	s.stopExtensions()
+	s.stopRevokeRetries()
 	s.bgMu.Lock()
 	s.bgDone = true
 	s.bgMu.Unlock()
@@ -792,6 +857,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/history/sessions/{id}", s.requireAdmin(s.handleHistorySession))
 	mux.HandleFunc("DELETE /api/history/sessions/{id}", s.requireAdmin(s.handleForgetHistorySession))
 	mux.HandleFunc("DELETE /api/history/sessions", s.requireAdmin(s.handleForgetHistorySessions))
+	mux.HandleFunc("POST /api/history/sessions/{id}/resume", s.launching(s.handleResumeHistorySession))
 	mux.HandleFunc("POST /api/history/reindex", s.requireAdmin(s.handleHistoryReindex))
 	mux.HandleFunc("GET /api/history", historyRoute(s.requireAdmin(s.handleHistorySearch)))
 	mux.HandleFunc("GET /api/history/entry", historyRoute(s.requireAdmin(s.handleHistoryEntry)))
@@ -1213,6 +1279,8 @@ func (s *Server) Shutdown(ctx context.Context) {
 	}
 	s.runs.Draining(ctx)
 	s.shutDesks()
+	s.stopRevokeRetries()
+	s.stopRunDesks(ctx)
 	s.webhooks.close(ctx)
 	// The providers' queues end as the webhooks' do: what waits in them is
 	// not delivered, and their goroutines are waited for with the others.

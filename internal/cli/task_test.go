@@ -387,3 +387,60 @@ func TestTaskTicketSaysWhatItWasLaunchedAt(t *testing.T) {
 		t.Fatalf("task ticket --json: %d %v %q", code, err, out)
 	}
 }
+
+// A repair's result names the person's requested changes it addressed:
+// --addressed ID[=NOTE], repeatable, or addressed in --file, and the MCP
+// tool task_result takes addressed in its schema and sends it as given.
+// --addressed with --file, or with no id, is a usage error.
+func TestTaskResultAddressed(t *testing.T) {
+	srv, seen := fakeTaskServer(t)
+	inSession(t, srv)
+	code, out, err := task(t, "", "result", "--summary", "renamed; the retry is for the race", "--addressed", "0123456789abcdef=renamed the field = n", "--addressed", " fedcba9876543210 ")
+	if code != 0 || err != nil || out != "submitted: task build is verifying\n" {
+		t.Fatalf("result: %d %v %q", code, err, out)
+	}
+	b, _ := json.Marshal((*seen)[0]["body"].(map[string]any)["addressed"])
+	if string(b) != `[{"id":"0123456789abcdef","note":"renamed the field = n"},{"id":"fedcba9876543210"}]` {
+		t.Fatalf("addressed: %s", b)
+	}
+	if code, _, err := task(t, `{"summary":"x","addressed":[{"id":"0123456789abcdef","note":"done"}]}`, "result", "--file", "-"); code != 0 || err != nil {
+		t.Fatalf("from the file: %d %v", code, err)
+	}
+	if b, _ := json.Marshal((*seen)[1]["body"].(map[string]any)["addressed"]); string(b) != `[{"id":"0123456789abcdef","note":"done"}]` {
+		t.Fatalf("addressed from the file: %s", b)
+	}
+	for _, args := range [][]string{
+		{"result", "--file", "-", "--addressed", "0123456789abcdef"},
+		{"result", "--summary", "x", "--addressed", "=a note with no id"},
+	} {
+		if code, _, err := task(t, `{"summary":"x"}`, args...); code != 2 || err == nil {
+			t.Errorf("%q: exit %d %v, want 2", args, code, err)
+		}
+	}
+	if n := len(*seen); n != 2 {
+		t.Fatalf("%d requests after the usage errors, want 2", n)
+	}
+	// The MCP tool: its schema names addressed, and a call sends it.
+	env := sessionEnv(srv.URL, "s1", "agent-tok")
+	replies := mcpRun(t, env, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"task_result","arguments":{"summary":"did it","addressed":[{"id":"0123456789abcdef","note":"renamed"}]}}}`)
+	tools, _ := replies[0]["result"].(map[string]any)["tools"].([]any)
+	var schema map[string]any
+	for _, tl := range tools {
+		if m := tl.(map[string]any); m["name"] == "task_result" {
+			schema, _ = m["inputSchema"].(map[string]any)
+		}
+	}
+	props, _ := schema["properties"].(map[string]any)
+	addressed, _ := props["addressed"].(map[string]any)
+	items, _ := addressed["items"].(map[string]any)
+	if addressed["type"] != "array" || addressed["maxItems"] != 50.0 || fmt.Sprint(items["required"]) != "[id]" {
+		t.Fatalf("task_result's addressed: %v", addressed)
+	}
+	if res, _ := replies[1]["result"].(map[string]any); res == nil || res["isError"] == true {
+		t.Fatalf("the call: %v", replies[1])
+	}
+	if b, _ := json.Marshal((*seen)[2]["body"].(map[string]any)["addressed"]); string(b) != `[{"id":"0123456789abcdef","note":"renamed"}]` {
+		t.Fatalf("the tool's addressed: %s", b)
+	}
+}

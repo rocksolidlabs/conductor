@@ -21,6 +21,8 @@ Usage:
   conductor notify [flags]     report "needs input" from inside a session
   conductor crew create|add|status|link
                                form a crew around this session, from inside it
+  conductor crew recheck RUN/TASK/N@COMMIT [--server URL] [--token T]
+                               check a failed candidate again, the same commit, as a new attempt
   conductor open <url>         open a link for the person in the browser this session's agent names
   conductor task context|result|ticket|decide|decision|withdraw
                                read this session's task in a managed run, submit its result,
@@ -37,11 +39,16 @@ Usage:
                                launch a saved crew as a run and print its URL
   conductor crews [--server URL] [--token T] [--ids]
                                list the saved crews (--ids: ids only, for completion)
-  conductor dispatch projects|tickets|show|create|edit|comment|accept|link|plans|plan|launch|runs [--server URL] [--token T]
-                               Dispatch's projects and tickets from the shell, their plan revisions
-                               and the runs launched from them
+  conductor dispatch projects|tickets|show|create|edit|comment|accept|link|plans|plan|launch|runs|
+                    review|reviews|findings|finding [--server URL] [--token T]
+                               Dispatch's projects and tickets from the shell, their plan revisions,
+                               the runs launched from them, and a person's reviews of their
+                               candidates, findings and marks
   conductor decision list|show|respond|cancel [--server URL] [--token T]
                                the decisions managed runs wait for: read, answer and cancel them
+  conductor history search|show|similar|sessions|session|forget|resume|reindex [--server URL] [--token T]
+                               search the history, read and forget session records, and resume a
+                               session's agent conversation from its record
   conductor export [--server URL] [--token T] [--out FILE]
                                write the running server's data directory as one zip archive
   conductor export --data-dir DIR [--config FILE] [--out FILE]
@@ -105,6 +112,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return runDispatch(ctx, args[1:], stdin, stdout, stderr)
 	case "decision":
 		return runDecision(ctx, args[1:], stdout, stderr)
+	case "history":
+		return runHistory(ctx, args[1:], stdout, stderr)
 	case "export":
 		return runExport(ctx, args[1:], stdout, stderr)
 	case "restore":

@@ -309,7 +309,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	// provider's Start launches at once is published as any other is.
 	if server := cfg.RendezvousServer(); server != "" {
 		rv := cfg.Rendezvous
-		srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: server, Token: rv.Token, HostName: rv.HostName, RelayOnly: rv.RelayOnly, Insecure: rv.Insecure, ICE: hostagent.ICE{UDPPort: cfg.ICE.UDPPort, PublicIP: cfg.ICE.PublicIP}, Log: log}})
+		srv.SetPublisher(uplinkPublisher{newUplink(cfg, server, srv, log)})
 		log.Info("sessions are published to the switchyard", "server", config.ShownURL(server), "hostToken", rv.Token != "")
 		if rv.Insecure && config.PlainOffMachine(server) {
 			// Once per start: the config allowed it (rendezvous.insecure).
@@ -395,11 +395,37 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	return 0, nil
 }
 
-// uplinkPublisher adapts hostagent.Uplink to api.Publisher.
+// newUplink is the uplink that publishes the server's sessions to the
+// switchyard server: the rendezvous's settings, and the server's lane
+// (api.Lane), which serves the decision links minted there over each
+// publication and each run's desk (docs/plans/decision-inbox.md, PR-6),
+// told of each link the switchyard says is gone.
+func newUplink(cfg *config.Config, server string, srv *api.Server, log *slog.Logger) *hostagent.Uplink {
+	rv := cfg.Rendezvous
+	return &hostagent.Uplink{ServerURL: server, Token: rv.Token, HostName: rv.HostName, RelayOnly: rv.RelayOnly, Insecure: rv.Insecure,
+		ICE: hostagent.ICE{UDPPort: cfg.ICE.UDPPort, PublicIP: cfg.ICE.PublicIP}, Log: log,
+		Decisions: srv.Lane(), LinkGone: srv.RemoteLinkGone}
+}
+
+// uplinkPublisher adapts hostagent.Uplink to api.Publisher and
+// api.DeskOpener.
 type uplinkPublisher struct{ u *hostagent.Uplink }
 
 func (p uplinkPublisher) Publish(ctx context.Context, local *session.Local) (api.PublishedSession, error) {
 	return p.u.Publish(ctx, local)
+}
+
+// OpenDesk opens a run's desk at the switchyard (hostagent.Uplink.OpenDesk);
+// an older switchyard, which keeps none, answers api.ErrNoDesks.
+func (p uplinkPublisher) OpenDesk(ctx context.Context, run proto.DeskRun) (api.Desk, error) {
+	d, err := p.u.OpenDesk(ctx, run)
+	if errors.Is(err, hostagent.ErrNoDesks) {
+		return nil, api.ErrNoDesks
+	}
+	if err != nil {
+		return nil, err
+	}
+	return d, nil
 }
 
 // Server is the switchyard as a reply shows it (the links' fallback): its
