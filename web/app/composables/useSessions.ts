@@ -993,6 +993,9 @@ export function useSessions() {
     /** Cancels, retries or accepts a task of a managed run, as a command with a receipt; a refusal is a 409 carrying the receipt. */
     taskCommand: (runId: string, taskId: string, command: 'cancel' | 'retry' | 'accept', body: { commandId: string; expectedRevision?: number }) =>
       request<{ receipt: Receipt }>(`/api/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}/${command}`, { method: 'POST', body }),
+    /** Check again: the failed candidate (its attempt and commit, as `runId` names it) checked again as it is; a refusal is a 409 carrying the receipt. */
+    recheckTask: (runId: string, taskId: string, body: { commandId: string; expectedRevision?: number; attempt: number; commit: string }) =>
+      request<{ receipt: Receipt; run: string; attempt?: number }>(`/api/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}/recheck`, { method: 'POST', body }),
     /** A run's share links, each with the viewers attached through it to the sessions of its members. */
     listRunLinks: (runId: string) => request<{ links: ShareLink[] }>(`/api/runs/${encodeURIComponent(runId)}/links`).then((r) => r.links ?? []),
     /** The run's links, whether a member is published to the switchyard now, and whether a member's publication there was ended, which a run link made now makes again. */

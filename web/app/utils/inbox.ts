@@ -25,7 +25,7 @@ export interface InboxSummary {
 
 /** One thing a person may do with an item, through its own operation's route, at the revision that operation checks. */
 export interface InboxAction {
-  /** answer | retry | accept | cancel | approve | withdraw */
+  /** answer | retry | accept | cancel | recheck | approve | withdraw */
   name: string
   label: string
   /** A question's choice: its keys, exact. */
@@ -44,6 +44,9 @@ export interface InboxAction {
   route: string
   /** The ref the action's steps are read under, when not the item's own: a blocker's question tracks its task's Cancel as the task's. */
   track?: string
+  /** Check again only: the candidate it checks, its attempt and its commit, as the route's run names it. */
+  attempt?: number
+  commit?: string
 }
 
 export type StepName = 'available' | 'recorded' | 'validated' | 'resumed'
@@ -562,6 +565,16 @@ export function movedOnWords(kind: string, now: Pick<InboxItem, 'now' | 'title'>
   const what = kind === 'plan' ? 'The revision or its ticket moved on' : kind === 'question' ? 'The question moved on' : 'The run moved on'
   const state = now?.now ? `: ${now.now}` : ''
   return `${what}${state}. Nothing was done.`
+}
+
+/**
+ * What a Check again refused because the run moved on (stale_revision) says stands now, from its item read again: the candidate the
+ * item's Check again names now, the engine's own rule judging it, or that none stands it takes; '' when the item could not be read.
+ */
+export function recheckStands(now: Pick<InboxItem, 'actions'> | null): string {
+  if (!now) return ''
+  const c = now.actions.find((a) => a.name === 'recheck')
+  return c?.attempt && c.commit ? `; the candidate that stands is attempt ${c.attempt} at ${c.commit.slice(0, 12)}, which Check again offers now` : '; no candidate stands that Check again takes'
 }
 
 /** The ticket a run of the item was launched from, as its evidence names it (`ticket:<KEY-n>`), for Comment on the ticket. */

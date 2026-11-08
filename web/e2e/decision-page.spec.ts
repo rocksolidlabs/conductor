@@ -11,7 +11,9 @@ import { renderConfig, scratchRepo, startServer, stopServer, type Started } from
 // its failed task and its plan revision stay open items, which no other spec's phone should land on). On a phone (390 x 844, touch):
 // the first load of / with a question waiting lands on the page and the Sessions tab then stays on the sessions; the question
 // answered from the Decide tab with its four steps; a managed task that failed its check, retried from its card with its steps, and
-// a retry at a revision the run has left (moved by a retry through the API first) refused with words, nothing done; a plan revision
+// a retry at a revision the run has left (moved by a retry through the API first) refused with words, nothing done; a failed task's
+// Check again of its standing candidate, refused at a desktop's width once that candidate moved on (in words naming the one that
+// stands now) and taken from the phone's Decide tab with its steps (#713); a plan revision
 // approved, its yolo words shown first; a turn held for the terminal shown with no choice and no line and its terminal one tap away;
 // the evidence unfolded (a check's log, the session's terminal); a Recent row opening its own action, and one whose item is gone
 // showing its steps; the events stream cut while one question goes and another comes, then let back. At a desktop's width: the
@@ -211,7 +213,7 @@ test("a managed task that failed its check is retried from its card with its ste
   budget(4)
   const item = phone.locator(`[data-inbox-item="${ref}"]`)
   await expect(item).toBeVisible()
-  await expect(item.locator('[data-inbox-action]')).toHaveText(['Retry', 'Accept anyway…'])
+  await expect(item.locator('[data-inbox-action]')).toHaveText(['Retry', 'Accept anyway…', 'Check again'])
   await expect(item.locator('[data-inbox-blocking]')).toContainText(`task:${run.id}/docs`)
   await expect(item.locator('[data-inbox-action="retry"] ~ [data-action-scope]')).toContainText('attempt 4')
 
@@ -259,6 +261,60 @@ test("a managed task that failed its check is retried from its card with its ste
   await refusedRow.tap()
   await expect(item).toBeVisible()
   await expect.poll(async () => (await stepStates(phone)).validated, { timeout: STEP_MS }).toBe('refused')
+})
+
+test("a failed task's Check again names its candidate; refused once the candidate moved on, in words naming the one that stands; taken from the phone's tab", async ({ browser }) => {
+  const run = await api.launchCrew(crewId)
+  runs.push(run.id)
+  const ref = `task:${run.id}/build`
+  const at = `/decisions?item=${encodeURIComponent(ref)}`
+  budget(1, 180_000)
+  await expect.poll(async () => task(await api.run(run.id), 'build').state, { timeout: 180_000, intervals: [500], message: 'build fails its check three times' }).toBe('failed')
+  type Action = { name: string; expect: string; attempt?: number; commit?: string }
+  const shown = await api.ok<{ item: { actions: Action[] } }>('GET', `/api/inbox/item?ref=${encodeURIComponent(ref)}`)
+  const recheck = shown.item.actions.find((a) => a.name === 'recheck')!
+  expect(recheck.attempt).toBe(3)
+
+  // At a desktop's width the page holds the item as it read it (its re-reads answer that copy) while a Check again through the API
+  // checks attempt 3 again and fails, so attempt 4 is the candidate that stands; the hold ends as the page's own Check again is
+  // answered, before the page reads the item again for its words.
+  const desk = await (await context(browser, false)).newPage()
+  let hold = true
+  await desk.route('**/api/inbox/item?**', async (route) => (hold ? route.fulfill({ json: shown }) : route.continue()))
+  await desk.route('**/tasks/build/recheck', async (route) => {
+    const r = await route.fetch()
+    hold = false
+    await route.fulfill({ response: r })
+  })
+  budget(3)
+  await desk.goto(at)
+  const item = desk.locator(`[data-inbox-item="${ref}"]`)
+  await expect(item.locator('[data-inbox-action]')).toHaveText(['Retry', 'Accept anyway…', 'Check again'])
+  await expect(item.locator('[data-inbox-action="recheck"] ~ [data-action-scope]')).toContainText(`attempt 3's commit ${recheck.commit!.slice(0, 12)}`)
+  await api.ok('POST', `/api/runs/${encodeURIComponent(run.id)}/tasks/build/recheck`, { commandId: 'e2e-api-recheck-1', attempt: 3, commit: recheck.commit, expectedRevision: Number(recheck.expect) })
+  budget(1)
+  await expect.poll(async () => { const t = task(await api.run(run.id), 'build'); return `${t.state} ${t.attempts}` }, { timeout: 2 * STEP_MS, intervals: [500], message: 'attempt 4 fails its check' }).toBe('failed 4')
+  budget(4)
+  const refused = desk.waitForResponse((r) => r.url().includes('/tasks/build/recheck') && r.request().method() === 'POST')
+  await item.locator('[data-inbox-action="recheck"]').click()
+  expect((await refused).status()).toBe(409)
+  await expect(item.locator('[data-inbox-refusal]')).toContainText(`the candidate that stands is attempt 4 at ${recheck.commit!.slice(0, 12)}`)
+  await expect(item.locator('[data-inbox-refusal]')).toContainText('Nothing was done')
+  await expect.poll(async () => (await stepStates(desk)).validated, { timeout: STEP_MS }).toBe('refused')
+  expect(task(await api.run(run.id), 'build').attempts).toBe(4)
+
+  // From the phone's Decide tab: the card names attempt 4 now; its Check again taken, its steps through to attempt 5 checking it.
+  const phone = await (await context(browser, true)).newPage()
+  await phoneAt(phone, '/decisions')
+  budget(5)
+  await phone.locator(`[data-inbox-row="${ref}"]`).tap()
+  const card = phone.locator(`[data-inbox-item="${ref}"]`)
+  await expect(card.locator('[data-inbox-action="recheck"] ~ [data-action-scope]')).toContainText(`attempt 4's commit ${recheck.commit!.slice(0, 12)}`)
+  await card.locator('[data-inbox-action="recheck"]').tap()
+  await expect.poll(async () => (await stepStates(phone)).validated, { timeout: STEP_MS }).toBe('done')
+  await expect.poll(async () => (await stepStates(phone)).resumed, { timeout: STEP_MS }).toBe('done')
+  await expect(card.locator('[data-step="resumed"] [data-step-words]')).toContainText('attempt 5 checks the candidate again')
+  await expect.poll(async () => task(await api.run(run.id), 'build').attempts, { timeout: STEP_MS, intervals: [500] }).toBe(5)
 })
 
 test('a plan revision is approved from its card, its yolo words shown before the Approve', async ({ browser }) => {
