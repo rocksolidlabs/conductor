@@ -719,6 +719,8 @@ provide(REVIEW_ENTRY, {
   href: (candidate) => ({ query: { view: 'review', candidate } }),
 })
 const planRows = inject(TICKET_PLAN_ROWS, null)
+// A link to one comment (`?comment=<n>`, a history row's: Program item HS1, PR-6) shows it marked at the head of the comments. Read, never written back.
+const commentAt = computed(() => (typeof route.query.comment === 'string' && /^[1-9]\d{0,8}$/.test(route.query.comment) ? Number(route.query.comment) : undefined))
 async function afterPalette(f: () => void) {
   palette.close()
   await nextTick()
@@ -883,7 +885,7 @@ const askBrakeman = computed(() =>
 
             <DispatchRelations :ticket="ticket" :project="project" :locked="locked" :add="addRelation" :remove="removeRelation" />
             <DispatchAttachments :attachments="ticket.attachments ?? []" :locked="locked" :now="now" :upload="upload" :remove="removeAttachment" :image="files.image" :download="files.download" @insert="(md: string) => comments?.insert(md)" />
-            <DispatchComments ref="comments" :ticket="ticket" :gate="gate" :locked="locked" :reads="reads" :resets="resets" :attachment-url="files.resolver.value" :now="now" />
+            <DispatchComments ref="comments" :ticket="ticket" :gate="gate" :locked="locked" :reads="reads" :resets="resets" :attachment-url="files.resolver.value" :now="now" :at="commentAt" />
 
             <DispatchHistory :entries="entries" :now="now" :more="!!historyNext" :loading="historyLoading" @more="moreHistory" />
           </div>

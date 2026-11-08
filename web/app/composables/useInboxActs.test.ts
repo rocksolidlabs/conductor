@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { InboxActs, sessionFor, type ActSends, type ActsFeedback, type SessionKnown } from './useInboxActs'
+import { InboxActs, RecheckRefused, sendRecheck, sessionFor, taskMovedOn, type ActSends, type ActsFeedback, type MovedOnReads, type SessionKnown } from './useInboxActs'
 import { InboxLive, type InboxReads, type InboxState } from './useInbox'
 import { ReplyError } from '~/utils/reply'
 import { CommandRefused } from '~/utils/tasks'
@@ -44,6 +44,11 @@ const task: { it: InboxItem; a: InboxAction } = {
   it: { ref: 'task:r1/build', subject: 'task:r1/build', kind: 'task', since: '', title: 'build failed', brief: '', briefBy: 'conductor', question: '', answerer: 'you', revision: '7', blocking: { words: '', refs: [] }, actions: [], recommended: -1 },
   a: { name: 'retry', label: 'Retry', expect: '7', scope: '', route: '/api/runs/r1/tasks/build/retry' },
 }
+// Check again of a continuation's task: its route is the candidate's own run (r0), its steps the item's (r1).
+const recheck: { it: InboxItem; a: InboxAction } = {
+  it: task.it,
+  a: { name: 'recheck', label: 'Check again', expect: '7', scope: "Checks attempt 3 of run r0's commit 0123456789ab again", route: 'POST /api/runs/r0/tasks/build/recheck', attempt: 3, commit: '0123456789abcdef0123456789abcdef01234567' },
+}
 const plan: { it: InboxItem; a: InboxAction } = {
   it: { ref: 'plan:DEC-1/1', subject: 'plan:DEC-1/1', kind: 'plan', since: '', title: 'its plan', brief: '', briefBy: 'conductor', question: '', answerer: 'you', revision: '3', blocking: { words: '', refs: [] }, actions: [], recommended: -1 },
   a: { name: 'approve', label: 'Approve', expect: '3', scope: '', route: '/api/dispatch/plans/pl-1/approve' },
@@ -51,7 +56,12 @@ const plan: { it: InboxItem; a: InboxAction } = {
 
 /** The page's sends, each a held promise the test settles, with what each was called with. */
 function sendsOf(o: { listed?: SessionKnown[]; read?: (id: string) => Promise<SessionKnown> } = {}) {
-  const calls: { answer: Array<{ s: SessionKnown; reqId: string }>; command: string[]; plan: string[] } = { answer: [], command: [], plan: [] }
+  const calls: { answer: Array<{ s: SessionKnown; reqId: string }>; command: string[]; recheck: Array<{ run: string; task: string; attempt: number; commit: string; expectedRevision?: number; commandId: string }>; plan: string[] } = {
+    answer: [],
+    command: [],
+    recheck: [],
+    plan: [],
+  }
   let next: ReturnType<typeof held<unknown>> = held()
   const sends: ActSends = {
     session: (id) => sessionFor(o.listed ?? [{ id: 's1', kind: 'server', name: 'one' }], id, o.read ?? (() => Promise.reject(new Error('no such session')))),
@@ -61,6 +71,10 @@ function sendsOf(o: { listed?: SessionKnown[]; read?: (id: string) => Promise<Se
     },
     command: (_run, _task, _name, x) => {
       calls.command.push(x.commandId)
+      return next.p
+    },
+    recheck: (run, task, x) => {
+      calls.recheck.push({ run, task, ...x })
       return next.p
     },
     plan: (_a, _id, x) => {
@@ -120,6 +134,19 @@ const paths = [
     refusal: new CommandRefused('the run moved on', { status: 'failed', refusal: 'stale_revision' } as never),
   },
   {
+    name: 'a Check again',
+    item: recheck,
+    receipt: (e: RecentEntry) => e.receipt,
+    before: steps('done', 'unknown', 'unknown', 'unknown'),
+    taken: steps('done', 'done', 'done', 'done'),
+    refusedTrack: steps('done', 'done', 'refused', 'not_applicable'),
+    confirm: undefined,
+    refusal: new CommandRefused("the candidate is no longer the task's standing one: attempt 4 failed since, at 0123456789ab: check that one again", {
+      status: 'failed',
+      refusal: 'stale_candidate',
+    } as never),
+  },
+  {
     name: "a plan's approval",
     item: plan,
     receipt: (e: RecentEntry) => e.receipt,
@@ -154,7 +181,7 @@ describe('every send of the decision page', () => {
         await pg.l.changed()
         expect(stateOf(pg.track(e))).toEqual(stateOf(p.taken))
         expect(unknownWords(pg.entry(p.item.it.ref), pg.track(e), false)).toBe('')
-        expect(pg.s.calls.answer.length + pg.s.calls.command.length + pg.s.calls.plan.length).toBe(1)
+        expect(pg.s.calls.answer.length + pg.s.calls.command.length + pg.s.calls.recheck.length + pg.s.calls.plan.length).toBe(1)
       })
 
       it('refused by its receipt is refused with its words, the steps ended there, read before or after the refusal commits', async () => {
@@ -197,6 +224,125 @@ describe('every send of the decision page', () => {
       })
     })
   }
+})
+
+describe('a Check again (#713)', () => {
+  it("names its candidate to the candidate's run's route at the run's revision, its steps kept under the item's ref", async () => {
+    const pg = await page()
+    pg.s.hold()
+    const out = pg.acts.act(recheck.it, recheck.a)
+    await settle()
+    expect(pg.s.calls.recheck).toEqual([{ run: 'r0', task: 'build', attempt: 3, commit: recheck.a.commit, expectedRevision: 7, commandId: pg.entry(recheck.it.ref).receipt }])
+    expect(pg.s.calls.command).toEqual([])
+    expect(pg.entry(recheck.it.ref)).toMatchObject({ ref: 'task:r1/build', label: 'Check again' })
+    pg.s.reply.done(undefined)
+    expect(await out).toEqual({ how: 'confirmed' })
+  })
+
+  it('whose candidate no longer stands is refused in the words that say what stands now, shown where a refused command is', async () => {
+    const pg = await page()
+    pg.s.hold()
+    const out = pg.acts.act(recheck.it, recheck.a)
+    await settle()
+    pg.s.reply.fail(paths.find((p) => p.name === 'a Check again')!.refusal)
+    expect(await out).toMatchObject({ how: 'refused' })
+    expect(pg.feedback()[recheck.it.ref]!.words).toContain('attempt 4 failed since, at 0123456789ab: check that one again')
+    expect(pg.entry(recheck.it.ref).outcome).toContain('attempt 4 failed since')
+  })
+
+  it('that names no candidate sends nothing', async () => {
+    const pg = await page()
+    expect(await pg.acts.act(recheck.it, { ...recheck.a, attempt: undefined })).toBeNull()
+    expect(pg.s.calls.recheck).toEqual([])
+  })
+  describe('refused because the run moved on, says what stands now (review round 2)', () => {
+    const commit = '0123456789abcdef0123456789abcdef01234567'
+    const offer = (run: string, attempt: number): InboxAction => ({ ...recheck.a, route: `POST /api/runs/${run}/tasks/build/recheck`, attempt, commit })
+    /** Runs by id (each with the run that continued it) and items by ref, recording the refs read. */
+    function reads(runs: Record<string, { resumedBy?: string; revision: number; state: string }>, items: Record<string, InboxAction[]>) {
+      const asked: { runs: string[]; items: string[] } = { runs: [], items: [] }
+      const read: MovedOnReads = {
+        run: (id) => {
+          asked.runs.push(id)
+          const r = runs[id]
+          return Promise.resolve(r ? { resumedBy: r.resumedBy, managed: { revision: r.revision }, tasks: [{ id: 'build', state: r.state }] as never } : null)
+        },
+        item: (ref) => {
+          asked.items.push(ref)
+          return Promise.resolve(items[ref] ? { actions: items[ref]! } : null)
+        },
+      }
+      return { read, asked }
+    }
+
+    it('in the run continued since the item was read: the candidate the run the route refused it in offers, read there alone', async () => {
+      // r1 was continued as r2, r2 as r3, ...: the route walked the chain (the server's walk, which has no cap) to r70, the newest
+      // when it read it, and its refusal names r70. The page reads r70 and its item, and follows no continuation itself.
+      const { read, asked } = reads({ r1: { resumedBy: 'r2', revision: 9, state: 'failed' }, r70: { revision: 3, state: 'failed' } }, { 'task:r1/build': [], 'task:r70/build': [offer('r70', 4)] })
+      const words = await taskMovedOn(recheck.it, recheck.a, read, 'r70')
+      expect(words).toBe(
+        'The run moved on (continued as run r70, at revision 3 now; the choice was read in run r1 at revision 7): build is failed now; the candidate that stands is attempt 4 at 0123456789ab, which Check again offers now. Nothing was done.',
+      )
+      expect(words).not.toContain('no candidate stands')
+      expect(asked).toEqual({ runs: ['r70'], items: ['task:r70/build'] })
+    })
+
+    it('in the run not continued: its own item read again', async () => {
+      const { read, asked } = reads({ r1: { revision: 9, state: 'failed' } }, { 'task:r1/build': [offer('r0', 4)] })
+      expect(await taskMovedOn(recheck.it, recheck.a, read, 'r1')).toBe(
+        'The run moved on (revision 9 now, the choice was read at 7): build is failed now; the candidate that stands is attempt 4 at 0123456789ab, which Check again offers now. Nothing was done.',
+      )
+      expect(asked).toEqual({ runs: ['r1'], items: ['task:r1/build'] })
+    })
+
+    it('that names no run, in a run continued since, fails closed: the newest run is named as the place to look, never "no candidate"', async () => {
+      // A chain longer than any page would walk (100 runs): the page walks none of it, and says it does not.
+      const chain = Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`r${i + 1}`, { resumedBy: i < 99 ? `r${i + 2}` : undefined, revision: 9, state: 'failed' }]))
+      const { read, asked } = reads(chain, { 'task:r1/build': [], 'task:r100/build': [offer('r100', 4)] })
+      const words = await taskMovedOn(recheck.it, recheck.a, read)
+      expect(words).toBe(
+        "The run moved on (run r1 was continued as run r2; the choice was read at revision 7): build is failed now; this page does not follow the run's continuations: open the newest run of its chain for the candidate that stands. Nothing was done.",
+      )
+      expect(words).not.toContain('no candidate stands')
+      expect(asked).toEqual({ runs: ['r1'], items: [] })
+    })
+
+    it('in the run the route refused it in, continued again since: fails closed the same way', async () => {
+      const { read, asked } = reads({ r70: { resumedBy: 'r71', revision: 4, state: 'failed' } }, { 'task:r70/build': [] })
+      expect(await taskMovedOn(recheck.it, recheck.a, read, 'r70')).toContain('run r70 was continued as run r71')
+      expect(asked).toEqual({ runs: ['r70'], items: [] })
+    })
+
+    it("reaches the words with the run its refusal names, through the page's send", async () => {
+      const at: Array<string | undefined> = []
+      const pg = await page()
+      pg.s.sends.movedOn = (_it, _a, run) => (at.push(run), Promise.resolve('moved on'))
+      pg.s.hold()
+      const out = pg.acts.act(recheck.it, recheck.a)
+      await settle()
+      pg.s.reply.fail(new RecheckRefused(new CommandRefused('the run moved on', { status: 'failed', refusal: 'stale_revision' } as never), 'r70'))
+      expect(await out).toEqual({ how: 'refused', words: 'moved on' })
+      expect(pg.feedback()[recheck.it.ref]!.words).toBe('Moved on')
+      expect(at).toEqual(['r70'])
+    })
+
+    it("is sent so that a refusal keeps the run the route names (the 409's run)", async () => {
+      const receipt = { commandId: 'c1', intent: 'recheck', revision: 3, status: 'failed', refusal: 'stale_revision', error: 'the run moved on' } as const
+      const e = await sendRecheck(() => Promise.reject(Object.assign(new Error('409'), { status: 409, body: { receipt, run: 'r70' } })), {}).catch((x: unknown) => x)
+      expect(e).toBeInstanceOf(RecheckRefused)
+      expect(e).toMatchObject({ run: 'r70', receipt, message: 'the run moved on' })
+      // One without the run is the plain refusal: the words then fail closed (above).
+      const plain = await sendRecheck(() => Promise.reject(Object.assign(new Error('409'), { status: 409, body: { receipt } })), {}).catch((x: unknown) => x)
+      expect(plain).toBeInstanceOf(CommandRefused)
+      expect(plain).not.toBeInstanceOf(RecheckRefused)
+    })
+
+    it("of a retry is not followed forward: the retry's route is its own run's", async () => {
+      const { read, asked } = reads({ r1: { resumedBy: 'r2', revision: 9, state: 'failed' } }, {})
+      expect(await taskMovedOn(task.it, task.a, read)).toBe('The run moved on (revision 9 now, the choice was read at 7): build is failed now. Nothing was done.')
+      expect(asked).toEqual({ runs: ['r1'], items: [] })
+    })
+  })
 })
 
 describe("an answer's session", () => {

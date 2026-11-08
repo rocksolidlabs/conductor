@@ -841,7 +841,9 @@ func TestARecordOnlyChangeIsSeenAfterARestart(t *testing.T) {
 }
 
 // noTick gives e an indexer whose reconcile runs only when the test asks
-// (reconcileNow), never on its period.
+// (reconcileNow), never on its period, and returns once its start's
+// catch-up is done: that first pass lists every store, so one still to
+// come would read whatever the test writes next, on its own.
 func noTick(t *testing.T, e *testEnv) {
 	t.Helper()
 	freshIndexer(t, e, func(h *historyIndexer) {
@@ -852,6 +854,7 @@ func noTick(t *testing.T, e *testEnv) {
 			return time.After(d)
 		}
 	})
+	histSettle(t, e)
 }
 
 // otherServer is a second server on e's data directory, through a store
@@ -867,7 +870,8 @@ func otherServer(t *testing.T, e *testEnv) *testEnv {
 
 // A run record the other server writes reaches no hook of this one's; one
 // reconcile indexes it, read back through the index's own Entry, with no
-// restart.
+// restart. The record is written after the fresh indexer's catch-up
+// (noTick waits for it), so nothing but the reconcile asked for reads it.
 func TestARunRecordByTheOtherServerIsIndexed(t *testing.T) {
 	e := newTestEnv(t, nil)
 	noTick(t, e)

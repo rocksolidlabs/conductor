@@ -75,6 +75,17 @@ func holdRechecks(t *testing.T, e *Engine) (held chan struct{}, release func()) 
 	return held, release
 }
 
+// offered is the Check again TaskCommands offers on the run's task (#713):
+// nil for none.
+func offered(t *testing.T, e *Engine, runID, taskID string) *RecheckRequest {
+	t.Helper()
+	set, err := e.TaskCommands(runID, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return set.Recheck
+}
+
 // mustMark makes the file a marked check waits for.
 func mustMark(t *testing.T, mark string) {
 	t.Helper()
@@ -99,6 +110,9 @@ func TestRecheckVerifiesTheFailedCandidateAgain(t *testing.T) {
 	l.attemptWhen(t, run.ID, "build", 3, failedRow)
 	third := receiptWords(l, run.ID, "build", 3)
 	sessions := len(fl.launched())
+	if rq := offered(t, e, run.ID, "build"); rq == nil || *rq != (RecheckRequest{Task: "build", Attempt: 3, Commit: c3}) {
+		t.Fatalf("the Check again offered: %+v", rq)
+	}
 
 	// Failing again: attempt 4 at c3, failed at the check, its receipt its own.
 	rc, err := recheck(e, run.ID, "r1", "build", 3, c3)
@@ -118,6 +132,9 @@ func TestRecheckVerifiesTheFailedCandidateAgain(t *testing.T) {
 	if row := l.taskWhen(t, run.ID, "build", "failed at 4", func(r ledger.TaskRow) bool { return r.State == ledger.TaskFailed && r.Attempts == 4 }); row.Extra != 1 {
 		t.Fatalf("the task's row: %+v", row)
 	}
+	if rq := offered(t, e, run.ID, "build"); rq == nil || *rq != (RecheckRequest{Task: "build", Attempt: 4, Commit: c3}) {
+		t.Fatalf("the Check again offered after attempt 4: %+v", rq)
+	}
 
 	// Passing: attempt 5 at c3 is the task's result; what attempts 3 and 4 kept is theirs.
 	mustMark(t, mark)
@@ -129,6 +146,9 @@ func TestRecheckVerifiesTheFailedCandidateAgain(t *testing.T) {
 		t.Fatalf("the result: %+v", passed.Result)
 	}
 	waitOutcome(t, e, run.ID, ledger.OutcomeSucceeded)
+	if rq := offered(t, e, run.ID, "build"); rq != nil {
+		t.Fatalf("a succeeded task offers Check again: %+v", rq)
+	}
 	l.attemptWhen(t, run.ID, "build", 5, succeededRow)
 	if got, want := receiptWords(l, run.ID, "build", 5), fmt.Sprintf("%s/5/check/test/1 %s finished exit 0", run.ID, c3); got != want {
 		t.Fatalf("attempt 5's receipts:\n%s\nwant:\n%s", got, want)
@@ -346,6 +366,9 @@ func TestRecheckRefusesATaskThatDidNotFailInItsVerification(t *testing.T) {
 		p.End(0)
 	}
 	waitTask(t, e, run.ID, "build", ledger.TaskFailed, maxAttemptsPerTask)
+	if rq := offered(t, e, run.ID, "build"); rq != nil {
+		t.Fatalf("a task failed before any result offers Check again: %+v", rq)
+	}
 	rc, err := recheck(e, run.ID, "r3", "build", 3, "")
 	if !errors.Is(err, ErrTaskState) || rc.Refusal != RefusalTaskState || !strings.Contains(err.Error(), "not in its verification") {
 		t.Fatalf("a task failed before any result: %+v %v", rc, err)
@@ -397,6 +420,12 @@ func TestRecheckInAContinuation(t *testing.T) {
 		t.Fatalf("the continuation's task has an attempt of its own: %+v", b.Attempt)
 	}
 	waitOutcome(t, e, next.ID, ledger.OutcomeFailed)
+	if rq := offered(t, e, next.ID, "build"); rq == nil || *rq != (RecheckRequest{Task: "build", Attempt: 3, Commit: c3, Imported: run.ID + "/build/3"}) {
+		t.Fatalf("the continuation's Check again offered: %+v", rq)
+	}
+	if rq := offered(t, e, run.ID, "build"); rq != nil {
+		t.Fatalf("the continued run offers Check again: %+v", rq)
+	}
 	if _, err := recheck(e, run.ID, "r0", "build", 3, c3); !errors.Is(err, ErrRunContinued) {
 		t.Fatalf("Check again of the continued run: %v", err)
 	}

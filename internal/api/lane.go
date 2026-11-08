@@ -367,7 +367,7 @@ func (s *Server) laneItems(ctx context.Context, sc laneScope) []*inboxItem {
 	for _, info := range infos {
 		if s.coversSession(sc, info.ID) {
 			if it, ok := rd.questionItem(info); ok {
-				out = append(out, it)
+				out = append(out, laneTakes(it))
 			}
 		}
 	}
@@ -378,7 +378,7 @@ func (s *Server) laneItems(ctx context.Context, sc laneScope) []*inboxItem {
 					continue
 				}
 				if it, ok := rd.taskItem(run, t); ok {
-					out = append(out, it)
+					out = append(out, laneTakes(it))
 				}
 			}
 		}
@@ -471,6 +471,7 @@ func (l *Lane) Read(ctx context.Context, linkID, sessionID string, m proto.Decis
 	} else if err != nil {
 		return refusal(m.ReqID, "unavailable", "the item could not be read")
 	}
+	laneTakes(it)
 	for i, e := range it.Evidence {
 		if r, err := brakeman.ParseRef(e.Ref); err == nil && r.Kind == brakeman.RefSession && s.coversSession(sc, r.Session) {
 			it.Evidence[i].Session = s.laneSessionID(sc, r.Session)
@@ -693,6 +694,13 @@ func (s *Server) commandTarget(ref brakeman.Ref) (run, task string, ok bool) {
 // isCommand says whether name is a task command the lane takes.
 func isCommand(name string) bool {
 	return name == crew.TaskRetry || name == crew.TaskAccept || name == crew.TaskCancel
+}
+
+// laneTakes leaves on it the actions a link's lane takes (an answer and
+// the task commands): Check again is the workbench's.
+func laneTakes(it *inboxItem) *inboxItem {
+	it.Actions = slices.DeleteFunc(it.Actions, func(a inboxAction) bool { return a.Name != "answer" && !isCommand(a.Name) })
+	return it
 }
 
 // note keeps an action taken through the link in its Recent.
@@ -1076,7 +1084,7 @@ func (s *Server) takenAnyway(ctx context.Context, linkID, run, task, target stri
 	case err != nil:
 		return proto.MustControl(proto.DecideRefused{T: proto.CtlDecideRefused, ReqID: m.ReqID, Code: "unavailable",
 			Message: "whether the engine took the command could not be read: this opId stays this request's", Ref: target, Receipt: m.OpID}), kept
-	case !found || row.Intent != m.Action || !crew.TaskCommandOn(row, task):
+	case !found || row.Intent != m.Action || !crew.TaskCommandOn(row, nil, task):
 		return nil, nil
 	}
 	s.note(linkID, target, m.OpID, m.OpID)

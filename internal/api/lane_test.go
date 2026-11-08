@@ -506,7 +506,9 @@ func TestADecisionLinkPagesItsScope(t *testing.T) {
 // its receipt under link:<id>, the lane's track reads that receipt, and
 // the admin's track, under its own actor, keeps none of it; the run's
 // activity maps link:<id> to the link's label. The same opId again is
-// answered with that receipt, repeat, nothing done twice.
+// answered with that receipt, repeat, nothing done twice. The link's read
+// and list of the failed task leave out Check again, which the
+// workbench's item offers (#713).
 func TestDecideRetryRecordsTheLinkAsActor(t *testing.T) {
 	e := readyEnv(t, nil)
 	e.gitRepo(t)
@@ -514,6 +516,24 @@ func TestDecideRetryRecordsTheLinkAsActor(t *testing.T) {
 	linkID, tok := e.decisionLink(t, "/api/runs/"+run+"/links", "phone", 0)
 	desk := dialLane(t, e, "/ws/runs/"+run+"/desk", tok)
 	ref := "task:" + run + "/build"
+	// The lane takes an answer and the three task commands (laneTakes):
+	// the workbench's item offers Check again of the failed build, the
+	// link's read and its list's summary leave it out.
+	if names := actionNames(e.itemOf(t, ref)); !slices.Equal(names, []string{crew.TaskRetry, crew.TaskAccept, crew.TaskRecheck}) {
+		t.Fatalf("the workbench's actions: %v", names)
+	}
+	read := desk.read(ref)
+	if names := actionNames(read); !slices.Equal(names, []string{crew.TaskRetry, crew.TaskAccept}) {
+		t.Fatalf("the link's read: %v", names)
+	}
+	var labels []string
+	for _, a := range read.Actions {
+		labels = append(labels, a.Label)
+	}
+	list := desk.list("")
+	if i := slices.IndexFunc(list.Items, func(s inboxSummary) bool { return s.Ref == ref }); i < 0 || !slices.Equal(list.Items[i].Actions, labels) {
+		t.Fatalf("the link's list, its read's actions %v: %+v", labels, list.Items)
+	}
 	op, expect := desk.retried(ref, "retry")
 	row, found, err := e.srv.ledger.Receipt(t.Context(), run, "link:"+linkID, op)
 	if err != nil || !found || row.Intent != crew.TaskRetry {
