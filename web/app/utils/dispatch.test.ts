@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { DispatchChange } from '~/composables/useDispatch'
+import type { DispatchChange, TicketComment } from '~/composables/useDispatch'
 import {
   AssigneePicks,
   HORIZONS,
@@ -42,6 +42,7 @@ import {
 import { PICK_KEYS, allPages, boardStep, milestoneProgress, moveEdit, newestRows, paletteListed, patchRows, pickAdds, pickEdit, pickHeld, roadmapStep, targetWords, ticketSummaryOf, typedPick, withMoves, withPatched } from './dispatch'
 import type { DispatchTicket, TicketSummary } from '~/composables/useDispatch'
 import { candidateName, candidateOptions, candidateRef, candidateSummary, candidateWithdrawn, parseCandidate, ticketDecisions, ticketPeople, verificationWords, verifiedShortfall } from './dispatch'
+import { readLinkedComment, type LinkedComment } from './dispatch'
 import type { CandidateReceipt, LinkVerified, PlanSummary, RunCandidate, TaskCandidates, TicketLink } from '~/composables/useDispatch'
 import { launchBlockers, planRemedy } from './dispatchPlans'
 
@@ -998,3 +999,60 @@ describe("a ticket's decisions and people (DS2, PR-12)", () => {
     ])
   })
 })
+
+// Codex's round 3 on #731 (Program item HS1, PR-6): a link's comment read again after the ticket's event, deleted elsewhere meanwhile.
+describe('a link’s comment, read again', () => {
+  const c = (o: Partial<TicketComment> = {}): TicketComment => ({ id: 'c7', ticketId: 't1', n: 7, author: 'admin', by: 'nate', body: 'an old comment', createdAt: '2026-11-07T10:00:00Z', rev: 1, ...o })
+  it('keeps the copy shown when a read again fails, and asks again with the backoff until the deletion is shown', async () => {
+    let shown: LinkedComment | null = { key: 'CND-1', n: 7, comment: c(), error: '' }
+    const waits: number[] = []
+    let reads = 0
+    const ok = await readLinkedComment({
+      key: 'CND-1',
+      n: 7,
+      read: async () => {
+        // The comment was deleted elsewhere; the first two reads of it fail.
+        if (++reads <= 2) throw new Error('Cannot reach the server')
+        return [c({ deletedAt: '2026-11-07T11:00:00Z', body: '', rev: 2 })]
+      },
+      shown: () => shown,
+      set: (v) => {
+        // While the reads fail, the copy shown is kept as it was: no error over it, no tombstone yet.
+        expect(reads).toBe(3)
+        shown = v
+      },
+      stop: () => false,
+      wait: async (ms) => void waits.push(ms),
+      firstMs: 250,
+      maxMs: 8000,
+    })
+    expect(ok).toBe(true)
+    expect(waits).toEqual([250, 500])
+    expect(shown).toEqual({ key: 'CND-1', n: 7, comment: expect.objectContaining({ deletedAt: '2026-11-07T11:00:00Z', rev: 2 }), error: '' })
+  })
+
+  it('says its failure when no copy is shown, and reads no more once a later read took its place', async () => {
+    let shown: LinkedComment | null = null
+    let wanted = true
+    let reads = 0
+    const ok = await readLinkedComment({
+      key: 'CND-1',
+      n: 7,
+      read: async () => {
+        reads++
+        throw new Error('Cannot reach the server')
+      },
+      shown: () => shown,
+      set: (v) => (shown = v),
+      stop: () => !wanted,
+      wait: async () => {
+        wanted = false
+      },
+      firstMs: 250,
+      maxMs: 8000,
+    })
+    expect([ok, reads]).toEqual([false, 1])
+    expect(shown).toEqual({ key: 'CND-1', n: 7, comment: null, error: 'Cannot reach the server' })
+  })
+})
+
