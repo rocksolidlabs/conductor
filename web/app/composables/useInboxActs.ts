@@ -20,7 +20,7 @@ import {
 import { dispatchFailureWords } from './useDispatchOps'
 import type { InboxLive } from './useInbox'
 import type { AnswerOutcome } from './useQuickReply'
-import type { SessionInfo } from './useSessions'
+import type { RunInfo, SessionInfo } from './useSessions'
 
 /**
  * What the decision page shows of the action under way or last taken on one item, kept by the item's ref and naming the action it
@@ -252,6 +252,47 @@ export class InboxActs {
   }
 }
 
+/** What taskMovedOn reads: a run by its id and an item by its ref, each null (or a rejection) when it cannot be read. */
+export interface MovedOnReads {
+  run: (id: string) => Promise<Pick<RunInfo, 'resumedBy' | 'managed' | 'tasks'> | null>
+  item: (ref: string) => Promise<Pick<InboxItem, 'actions'> | null>
+}
+
+/** At most this many runs are followed forward from a Check again's run: a chain longer than any a person makes, so a loop ends. */
+const CHAIN_MAX = 64
+
+/**
+ * The words of a task command's stale refusal (the run, the revision moved on), read from what the task is now. The run is the item's
+ * (or its track's), which a Check again's route, its candidate's run, may not be. A Check again goes to the newest run of the chain
+ * (the recheck route), so its words follow the runs that continue that one forward (each run's resumedBy, each run once), as the route
+ * and the track do, and say what stands there: the candidate the newest run's item offers to Check again, or that none stands.
+ */
+export async function taskMovedOn(it: InboxItem, a: InboxAction, read: MovedOnReads): Promise<string> {
+  const m = /^task:([^/]+)\/(.+)$/.exec(a.track || it.ref) ?? /\/api\/runs\/([^/]+)\/tasks\/([^/]+)\//.exec(a.route)
+  const runOf = (id: string) => read.run(id).catch(() => null)
+  let r = m ? await runOf(m[1]!) : null
+  let run = m?.[1] ?? ''
+  if (m && a.name === 'recheck') {
+    const seen = new Set([run])
+    while (r?.resumedBy && !seen.has(r.resumedBy) && seen.size < CHAIN_MAX) {
+      run = r.resumedBy
+      seen.add(run)
+      r = await runOf(run)
+    }
+  }
+  const continued = m && run !== m[1]
+  const t = r?.tasks?.find((x) => x.id === m?.[2])
+  // A Check again says what stands now: the candidate its item, read again in the newest run, names.
+  const stands = a.name === 'recheck' ? recheckStands(await read.item(continued ? `task:${run}/${m[2]}` : a.track || it.ref).catch(() => null)) : ''
+  const now = r?.managed ? `revision ${r.managed.revision} now` : ''
+  const how = continued
+    ? ` (continued as run ${run}${now ? `, at ${now}` : ''}; the choice was read in run ${m[1]} at revision ${a.expect})`
+    : now
+      ? ` (${now}, the choice was read at ${a.expect})`
+      : ''
+  return `The run moved on${how}${t ? `: ${t.id} is ${t.state} now` : ''}${stands}. Nothing was done.`
+}
+
 /**
  * The decision page's sends, wired: the session from the stream's listing or read by its id, an answer through useQuickReply (the
  * transport the session's kind needs), a command through useTaskCommands, a plan's operation and a comment through
@@ -290,13 +331,7 @@ export function useInboxActs() {
       comment: (ticket, body, opId) => ops.run((b) => dispatch.addComment(ticket, { ...b, body }), { thing: `ticket:${ticket}`, what: ticket, opId, raise: true, done: `Commented on ${ticket}` }),
       movedOn: async (it, a) => {
         if (it.kind === 'plan') return movedOnWords('plan', await api.inboxItem(it.ref).catch(() => null))
-        // The run the task is in: the item's (or its track's), which a Check again's route, its candidate's run, may not be.
-        const m = /^task:([^/]+)\/(.+)$/.exec(a.track || it.ref) ?? /\/api\/runs\/([^/]+)\/tasks\/([^/]+)\//.exec(a.route)
-        const r = m ? await live.refreshRun(m[1]!).catch(() => null) : null
-        const t = r?.tasks?.find((x) => x.id === m?.[2])
-        // A Check again says what stands now: the candidate its item, read again, names.
-        const stands = a.name === 'recheck' ? recheckStands(await api.inboxItem(a.track || it.ref).catch(() => null)) : ''
-        return `The run moved on${r?.managed ? ` (revision ${r.managed.revision} now, the choice was read at ${a.expect})` : ''}${t ? `: ${t.id} is ${t.state} now` : ''}${stands}. Nothing was done.`
+        return taskMovedOn(it, a, { run: (id) => live.refreshRun(id), item: (ref) => api.inboxItem(ref) })
       },
     },
     (f) => (feedback.value = f),

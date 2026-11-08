@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { InboxActs, sessionFor, type ActSends, type ActsFeedback, type SessionKnown } from './useInboxActs'
+import { InboxActs, sessionFor, taskMovedOn, type ActSends, type ActsFeedback, type MovedOnReads, type SessionKnown } from './useInboxActs'
 import { InboxLive, type InboxReads, type InboxState } from './useInbox'
 import { ReplyError } from '~/utils/reply'
 import { CommandRefused } from '~/utils/tasks'
@@ -254,6 +254,60 @@ describe('a Check again (#713)', () => {
     const pg = await page()
     expect(await pg.acts.act(recheck.it, { ...recheck.a, attempt: undefined })).toBeNull()
     expect(pg.s.calls.recheck).toEqual([])
+  })
+  describe('refused because the run moved on, says what stands now (review round 2)', () => {
+    const commit = '0123456789abcdef0123456789abcdef01234567'
+    const offer = (run: string, attempt: number): InboxAction => ({ ...recheck.a, route: `POST /api/runs/${run}/tasks/build/recheck`, attempt, commit })
+    /** Runs by id (each with the run that continued it) and items by ref, recording the refs read. */
+    function reads(runs: Record<string, { resumedBy?: string; revision: number; state: string }>, items: Record<string, InboxAction[]>) {
+      const asked: { runs: string[]; items: string[] } = { runs: [], items: [] }
+      const read: MovedOnReads = {
+        run: (id) => {
+          asked.runs.push(id)
+          const r = runs[id]
+          return Promise.resolve(r ? { resumedBy: r.resumedBy, managed: { revision: r.revision }, tasks: [{ id: 'build', state: r.state }] as never } : null)
+        },
+        item: (ref) => {
+          asked.items.push(ref)
+          return Promise.resolve(items[ref] ? { actions: items[ref]! } : null)
+        },
+      }
+      return { read, asked }
+    }
+
+    it('in the run continued since the item was read: the candidate the continuation offers, read in the newest run of the chain', async () => {
+      // r1 was continued as r2, r2 as r3: r1's item offers nothing now, r3's offers attempt 4 of its chain.
+      const { read, asked } = reads(
+        { r1: { resumedBy: 'r2', revision: 9, state: 'failed' }, r2: { resumedBy: 'r3', revision: 2, state: 'failed' }, r3: { revision: 3, state: 'failed' } },
+        { 'task:r1/build': [], 'task:r3/build': [offer('r3', 4)] },
+      )
+      const words = await taskMovedOn(recheck.it, recheck.a, read)
+      expect(words).toBe(
+        'The run moved on (continued as run r3, at revision 3 now; the choice was read in run r1 at revision 7): build is failed now; the candidate that stands is attempt 4 at 0123456789ab, which Check again offers now. Nothing was done.',
+      )
+      expect(words).not.toContain('no candidate stands')
+      expect(asked).toEqual({ runs: ['r1', 'r2', 'r3'], items: ['task:r3/build'] })
+    })
+
+    it('in the run not continued: its own item read again', async () => {
+      const { read, asked } = reads({ r1: { revision: 9, state: 'failed' } }, { 'task:r1/build': [offer('r0', 4)] })
+      expect(await taskMovedOn(recheck.it, recheck.a, read)).toBe(
+        'The run moved on (revision 9 now, the choice was read at 7): build is failed now; the candidate that stands is attempt 4 at 0123456789ab, which Check again offers now. Nothing was done.',
+      )
+      expect(asked).toEqual({ runs: ['r1'], items: ['task:r1/build'] })
+    })
+
+    it('whose chain loops is followed each run once', async () => {
+      const { read, asked } = reads({ r1: { resumedBy: 'r2', revision: 9, state: 'failed' }, r2: { resumedBy: 'r1', revision: 2, state: 'failed' } }, { 'task:r2/build': [] })
+      expect(await taskMovedOn(recheck.it, recheck.a, read)).toContain('continued as run r2')
+      expect(asked.runs).toEqual(['r1', 'r2'])
+    })
+
+    it("of a retry is not followed forward: the retry's route is its own run's", async () => {
+      const { read, asked } = reads({ r1: { resumedBy: 'r2', revision: 9, state: 'failed' } }, {})
+      expect(await taskMovedOn(task.it, task.a, read)).toBe('The run moved on (revision 9 now, the choice was read at 7): build is failed now. Nothing was done.')
+      expect(asked).toEqual({ runs: ['r1'], items: [] })
+    })
   })
 })
 
