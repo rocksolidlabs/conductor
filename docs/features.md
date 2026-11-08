@@ -4058,6 +4058,97 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   receipt, BK3's logged-out role, BK0's Codex half) were observed again
   on the fixed builds: BK2's and BK3's passed (their observations
   above); BK0's is recorded in the first slice's entry.
+- **Durable decisions: a question to a person that survives a restart
+  and costs no attempt (DR1, #634 to #641, 2026-11-06 to
+  2026-11-08).** Program item DR1, planned with HM1 in
+  `docs/plans/decisions.md` (PR #608) and shipped as eight PRs. A
+  decision request is a record in the ledger, not a session's question:
+  an attempt's agent asks one (`decision_request`, or `conductor task
+  decide`) with its type (clarification, approval or assignment), the
+  question, the alternatives and their tradeoffs, a recommendation, the
+  evidence and what a yes authorizes, bound to its subject (the commit at
+  the attempt's HEAD, a candidate, a file's blob, the run's plan
+  revision); the tool answers `dr-7` and `open` at once and the agent
+  ends its turn. A ticket's approved plan revision that names decisions
+  opens one gate per decision with the run, and the tasks a gate names
+  start only once the operator's answer is applied; the run's other
+  tasks go on. The operator answers where the question is (the run
+  page's task, the session's question bar, Needs you, the palette, the
+  ticket page's Decisions, `conductor decision respond`), in one card
+  with the question, the alternatives, the recommendation, the evidence
+  (a ref that changed since the request says so) and four states told
+  apart: open, recorded (with its receipt), validated, applied (typed
+  into the asking attempt, read by the next attempt in its task file, a
+  gate's tasks released or cancelled). A resend gets the same receipt;
+  a response after another's is told who answered. An attempt that ends
+  while its decision is open is given back, not one of its task's three;
+  a subject that moves supersedes the approval of it; a restart keeps
+  every record, and an answer recorded while the run is not running is
+  applied once when the run is continued. A guest on a share link, even
+  with control, sees the question and cannot answer it: the free build's
+  one approver is the operator. Questions outside a managed run, a
+  bell, a trust question and the agent's own `ask` work as before. See
+  `docs/architecture.md` (Crew runs) and `docs/protocol.md` (Decisions).
+  No new dependency, no feature tag. What each PR shipped and the tests
+  it added:
+
+  PR-1 (#634, PR #664): the ledger's decision tables (`decisions`,
+  `decision_responses`, `decision_history`, `decision_holds`,
+  `decision_refunds`; schema version 8), their writers, reads, bounds,
+  `Prune`'s refusal of a run with a decision not final and the
+  migration; no caller yet. `internal/crew/ledger`'s
+  `decisions_test.go`. PR-2 (#635, PR #672): Yardmaster's request, the
+  gates' opener, the holds `pump` honours, the response and its
+  application to a live attempt, the authority's recheck, and the
+  session's mirrored question that only the application answers.
+  `internal/crew`'s `decisions_test.go`, `internal/session`'s
+  `decision_test.go`. PR-3 (#636, PR #678): an attempt that ends while it
+  waits given back, a waiting attempt parked for a ready task, the
+  cancellations at the run's end, continuations and recovery,
+  supersession, the operator's comment, route and cancel, the agent's
+  withdrawal, and the task file's Decisions section.
+  `decisions_wait_test.go`, `decisions_restart_test.go`,
+  `decisions_subject_test.go`, `decisions_ops_test.go`,
+  `decisions_refused_test.go`, the task file golden. PR-4 (#637, PR
+  #683): the routes, the guide's operations and the four MCP tools, the
+  `decision` event in the three places, the notification, a ticket's
+  decisions, the evidence's refs and baseline, the identity's recheck,
+  the run's holds, and the gates opened at launch. `internal/api`'s
+  `decisions_test.go`, `internal/cli`'s `mcp_test.go`. PR-5 (#638, PR
+  #688): the attention's `decision` and the `answer` refusal code
+  (`internal/proto`, `protocol.ts`, `docs/protocol.md`), the router told
+  of decision records and never of their mirrored questions.
+  `decisions_router_test.go` (crew and api), `ext/exttest`,
+  `attention.test.ts`, `decision-mirror.spec.ts`. PR-6 (#639, PR #689):
+  `conductor task decide`, `decision` and `withdraw`, `conductor
+  decision`, the skill's paragraph. `internal/cli`'s `decision_test.go`,
+  `internal/agents`' `skill_test.go`. PR-7 (#640, PR #719): the card
+  (`DecisionCard.vue`, `DecisionRespond.vue`) on the run page, the
+  session's bar, Needs you, the palette and the ticket page; the stub
+  worker's `STUB_DECISION`. `decisions.test.ts`, `useDecisions.test.ts`,
+  `decisions.spec.ts`, the approve half of `decisions-gate.spec.ts`.
+  PR-8 (#641): `decisions-restart.spec.ts` (the stub's
+  `STUB_DECISION_EXIT`: the attempt ends while it waits, at the stage
+  `decision`, given back; the server killed and started again on the
+  same data; the decision answered while the run is interrupted,
+  Recorded, waiting for the run to be continued; Continue applies it
+  once, and the next attempt, attempt 2 of 4, starts with the answer in
+  its task file and succeeds), the reject half of
+  `decisions-gate.spec.ts` (a second run of the revision: Reject cancels
+  `deploy` with "rejected in dr-2 by Nate: …", `build` untouched), the
+  run page saying a cancelled task's reason and, on an interrupted run,
+  that a held task is taken up when the run is continued (its task list
+  had not been given the run's state), the architecture's paragraph and
+  this entry.
+
+  The acceptance (the plan's Acceptance, DR1: one authorized person
+  answers a decision bound to a revision; the response survives a
+  restart, is applied once and releases only the work that depended on
+  it; an unanswered decision consumes no retry) is observed by hand
+  after this entry's PR merges, with real Claude Code and Codex on a
+  server of its own and the desktop app; when this entry was written it
+  had not been made. Its result, against which `main`, and what it did
+  not exercise go here.
 - **Project manifests: a fresh attempt worktree made usable, predictably
   (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
   `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the
