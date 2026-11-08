@@ -5,7 +5,12 @@ import { expect, test, type Session } from './fixtures'
 // the session page's menu, through the one dialog. The name shows at once wherever the session does (the events stream), a name
 // with nothing left or past 120 bytes is not sent, a rename made elsewhere reaches an open page, and a resume starts under the
 // new name.
-test.describe.configure({ mode: 'serial' })
+// The test's timeout is above the first read's bound (below) and every other step's.
+test.describe.configure({ mode: 'serial', timeout: 180_000 })
+
+// A page's first read of the sessions (its events stream's snapshot, or the poll while the stream is down) has no cap in the
+// product: a loaded machine takes longer than an expect's 15 s to load the page and draw the row (#281). This bound only bounds a hang.
+const FIRST_READ = 60_000
 
 const sessions: string[] = []
 
@@ -22,7 +27,7 @@ async function launch(api: { ok: <T>(method: string, path: string, body?: unknow
 /** Opens the Rename dialog from the session's sidebar row's More menu and returns the dialog, its field and its save button. */
 async function renameFromRow(page: Page, s: Session) {
   const row = page.locator(`[data-session-list] [data-sidebar-row="s:${s.id}"]`).first()
-  await expect(row).toContainText(s.name)
+  await expect(row).toContainText(s.name, { timeout: FIRST_READ })
   await row.hover()
   await row.locator('[data-row-more]').click()
   await page.getByRole('menuitem', { name: /^Rename/ }).click()
@@ -30,6 +35,19 @@ async function renameFromRow(page: Page, s: Session) {
   const field = dialog.getByRole('textbox', { name: 'Session name' })
   await expect(field).toHaveValue(s.name)
   return { dialog, field, save: dialog.locator('[data-rename-save]') }
+}
+
+/**
+ * Holds a closing menu mounted (its closing animation paused) until the returned function lets it go and it has gone. Picking
+ * Rename… closes the row's menu as the dialog opens, and the menu, gone, gives its More button the focus back: a loaded machine
+ * leaves that until after the dialog's save has started (#281).
+ */
+async function holdMenuExit(page: Page): Promise<() => Promise<void>> {
+  const paused = await page.addStyleTag({ content: '[role="menu"][data-state="closed"] { animation-play-state: paused !important }' })
+  return async () => {
+    await paused.evaluate((el) => (el as Element).remove())
+    await expect(page.locator('[role="menu"]')).toHaveCount(0)
+  }
 }
 
 test('a sidebar row renames its session through the dialog, which sends only a name the server keeps whole', async ({ page, api }) => {
@@ -178,10 +196,17 @@ test("a save's reply after its dialog was dismissed leaves the dialog opened sin
     await route.continue()
   })
   await page.goto('/crews')
+  const letMenuGo = await holdMenuExit(page)
   const first = await renameFromRow(page, a)
+  await expect(page.locator('[role="menu"][data-state="closed"]')).toHaveCount(1)
   await first.field.fill('e2e renamed slow')
   await first.save.click()
   await held
+  // The dialog saving, its Rename button disabled; then the row's menu goes, giving its More button the focus. The dialog keeps
+  // the focus, in its field, and Escape there closes it, the save still on its way.
+  await expect(first.save).toBeDisabled()
+  await letMenuGo()
+  await expect(first.field).toBeFocused()
   await page.keyboard.press('Escape')
   await expect(first.dialog).toHaveCount(0)
   const second = await renameFromRow(page, b)

@@ -4298,6 +4298,69 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   machine that is not WSL or through the desktop app's own forwarding
   (no networking configured by anyone). A defect it finds is fixed in
   the stream.
+- **Needs your decision: the decision inbox, on the desktop and from a
+  phone (MB0, #646 to #650, 2026-11-06 to 2026-11-08).** Program item
+  MB0, planned in `docs/plans/decision-inbox.md` (PR #610). The page is
+  one list of what waits on the operator (a member's question, a failed
+  or held task, a plan revision, a Brakeman card), each item with its
+  brief, the question, the alternatives, the evidence one tap away and
+  the four steps of an action told apart: available, recorded,
+  validated, resumed. PR-1 (#646, PR #679): the inbox's server side and
+  the steps an action leaves. PR-2 (#647, PR #684): Needs your decision,
+  the phone's Decide tab and landing, the palette's rows, the card's
+  shared words. PR-5 (#648, PR #698): decision links and their lane at
+  the server, the server's run desk route. PR-6 (#649, PR #724): the lane
+  through a switchyard, and a run's desk there, so a run's items answer
+  with no member alive. PR-7 (#650, PR #737): the join page's Decide for
+  a decision link (a session's, over its connection; a run's, over the
+  run's desk), the share switch "Answer decisions from this link", Open
+  on your phone's decision link and QR code, and the switchyard's
+  `registered` saying `decisions` from a build that serves the Decide
+  tab (an API-only build says nothing of decisions). Its review rounds
+  left two rules on the join page: an action is confirmed (`decide_ok`),
+  refused (the owner's `decide_refused`) or owed, and an owed action is
+  asked again under its own `opId` until a reply settles it; and once the
+  page has a hosted desk's identity it keeps it, joining it again on the
+  backoff, until this link itself is refused (4403). The share switch
+  learns that a switchyard is too old from the server's `409
+  switchyard_too_old` and stays off with its words. Each PR's checks are
+  in its body.
+
+  The acceptance (a decision is resolved from a phone on the LAN or a
+  self-hosted switchyard, and the page says whether it was recorded or
+  applied), what is proved and what is not. Proved by the specs CI
+  runs, in a browser at a phone's width against the stub agent:
+  through a `conductor switchyard` the test starts, a run's decision
+  link answering a member's question and retrying a failed task with no
+  member alive, over the run's desk, each action's steps read through to
+  resumed and a second page that took no action reading the same in the
+  link's Recent (`switchyard.spec.ts`); a session decision link at the
+  server itself, a member's turn held for the terminal shown on it
+  (`decision-page.spec.ts`);
+  the share switch, its refusal by a switchyard too old, and the
+  loopback origin's decision link and QR code (`share.spec.ts`); the
+  switchyard saying `decisions` only from a build with the join page
+  (`TestTheSwitchyardSaysDecisions`,
+  `TestAnAPIOnlySwitchyardSaysNoDecisions`). Not yet made: the
+  maintainers' by-hand check on the owner's real phone, which needs
+  PR-3 and PR-4 (#651, #652: DR1's records as items, a gate's decision
+  answered on the page) and is recorded here by PR-8 (#653), with what
+  ran, against which `main` and what it did not exercise. Its steps: on
+  the LAN, a `conductor serve` on a machine the phone reaches that is not
+  WSL (the LAN Linux box or the Mac), Claude Code in a managed run from a
+  Dispatch ticket's approved revision with a gate before a task, a check
+  that fails once and a member that asks a permission question; on iOS
+  Safari, then Android Chrome, the Decide tab showing the three items,
+  the gate answered (recorded, applied, resumed as the task starts), the
+  failed task retried, the question answered with a choice, a response
+  at a revision made stale on the desktop refused with words, and the
+  server restarted with the gate's receipt the same. Through a
+  self-hosted switchyard (`conductor switchyard` on the LAN box or a
+  host of the owner's, the owner's server or the desktop app publishing
+  to it, so nothing is configured on Windows): a run's decision link
+  minted and opened on the phone, one item answered through to resumed,
+  the gate answered before the run's first attempt with no member alive,
+  the link revoked on the desktop and the phone's next action refused.
 - **Project manifests: a fresh attempt worktree made usable, predictably
   (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
   `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the

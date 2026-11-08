@@ -291,6 +291,18 @@ export interface ShareLink {
   active?: number
   /** Minted at the switchyard the session is published to: listed and revoked from here, viewers counted there. */
   remote?: boolean
+  /** A decision link (docs/protocol.md, Decision links): its holder answers the decisions in its scope, on the join page's Decide tab. */
+  decide?: boolean
+  /** A decision link revoked here whose revoke the switchyard has not confirmed yet: tried again until it does. */
+  revokePending?: boolean
+}
+
+/** A link to make: its role, label and lifetime; `decide` makes it a decision link (control only; 409 switchyard_too_old at a switchyard that carries none). */
+export interface LinkRequest {
+  role: Role
+  label?: string
+  ttlSeconds?: number
+  decide?: boolean
 }
 
 /** A member of a run as the join page sees it. */
@@ -308,8 +320,8 @@ export interface JoinRunMember {
 export interface JoinInfo {
   /** The session a session link opens; missing for a run link, whose reply has `run` in its place. */
   session?: Pick<SessionInfo, 'id' | 'name' | 'agentId' | 'kind' | 'status' | 'cols' | 'rows' | 'hostName' | 'hostUser'> & { cwd?: string }
-  /** The run a run link opens, with every member in the run's order. */
-  run?: { id: string; name: string; members: JoinRunMember[] }
+  /** The run a run link opens, with every member in the run's order; `desk`, at a switchyard, the run's desk a decision link's Decide joins. */
+  run?: { id: string; name: string; members: JoinRunMember[]; desk?: string }
   role: Role
   label?: string
   /** Whether the server answering is a switchyard (a coordinator that launches nothing), which the join page names. */
@@ -990,7 +1002,7 @@ export function useSessions() {
     runLinkList: (runId: string) =>
       request<{ links: ShareLink[]; republish?: boolean; published?: boolean }>(`/api/runs/${encodeURIComponent(runId)}/links`).then((r) => ({ links: r.links ?? [], republish: r.republish === true, published: r.published === true })),
     /** Creates a run link: its role on the session of every member of the run, those added later included. The token is shown this once. */
-    createRunLink: (runId: string, body: { role: Role; label?: string; ttlSeconds?: number }) =>
+    createRunLink: (runId: string, body: LinkRequest) =>
       request<{ link: ShareLink; token?: string; url: string; invite?: string; remote?: boolean; rendezvous?: { server: string; error: string } }>(`/api/runs/${encodeURIComponent(runId)}/links`, { method: 'POST', body }),
     /** Revokes a run link, closing every viewer attached through it. */
     revokeRunLink: (runId: string, linkId: string) =>
@@ -1032,12 +1044,13 @@ export function useSessions() {
      * The token is shown this once; `invite` is the same link for the desktop app; `remote` says the switchyard minted it (no token here);
      * `rendezvous` says, for a link made here although a switchyard is configured, which one and why the session is not there.
      */
-    createLink: (id: string, body: { role: Role; label?: string; ttlSeconds?: number }) =>
+    createLink: (id: string, body: LinkRequest) =>
       request<{ link: ShareLink; token?: string; url: string; invite?: string; remote?: boolean; rendezvous?: { server: string; error: string } }>(`/api/sessions/${encodeURIComponent(id)}/links`, { method: 'POST', body }),
     revokeLink: (id: string, linkId: string) =>
       request<void>(`/api/sessions/${encodeURIComponent(id)}/links/${encodeURIComponent(linkId)}`, { method: 'DELETE' }),
     /** The link's session or run, from this server, or from `server` (a switchyard, utils/invite.ts joinServer) with no workbench token. */
-    join: (token: string, server = '') => request<JoinInfo>(`/api/join/${encodeURIComponent(token)}`, { token, base: server || undefined }),
+    /** A link's join; `signal` cancels it (the run desk's bounded read). */
+    join: (token: string, server = '', signal?: AbortSignal) => request<JoinInfo>(`/api/join/${encodeURIComponent(token)}`, { token, base: server || undefined, signal }),
     /**
      * Sets a session's attention state as the admin. 429 `rate_limited` means the session's limit of 20 reports a second, 40 at once, which its
      * events share, is used up: nothing changed.

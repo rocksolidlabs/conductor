@@ -47,6 +47,10 @@ var writeAssets = agents.WriteAssets
 // it instead of registering into the process's registry.
 var extensions = ext.Freeze
 
+// webUI is the embedded web build's handler, nil for a build without one
+// (API only); a test hands in either.
+var webUI = web.Handler
+
 // newServer is api.New given the providers and the notices text the
 // composition root read: a test replaces it to see what runServe hands the
 // server, as it replaces extensions.
@@ -209,7 +213,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		log.Warn("the data directory overlaps an allowed root: agents working there can read it and commit its secrets, and the file viewer refuses it; keep it outside allowedRoots (the default is ~/.conductor), or set dataDir or CONDUCTOR_DATA_DIR to a directory outside them", "dataDir", cfg.DataDir, "allowedRoot", root)
 	}
 
-	ui := web.Handler()
+	ui := webUI()
 	if ui == nil {
 		log.Warn("web UI is not embedded; run `make web-build` before building, API only")
 	}
@@ -241,6 +245,12 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		defer cancel()
 		srv.Shutdown(sctx)
 	}()
+	// The join page this binary serves (its embedded web build) has the
+	// Decide tab, so its host connections say it carries a decision
+	// link's lane (docs/plans/decision-inbox.md, PR-7): a publisher mints
+	// decision links here. A build with no embedded page (API only) serves
+	// no Decide tab, so it says nothing of decisions and gets none.
+	srv.SetSwitchyardDecisions(ui != nil)
 	if cfg.Switchyard.Enabled {
 		log.Info("switchyard: coordinating hosted sessions and launching nothing", "relay", cfg.SwitchyardRelay(), "origins", strings.Join(cfg.SwitchyardOrigins(), ","))
 	}
