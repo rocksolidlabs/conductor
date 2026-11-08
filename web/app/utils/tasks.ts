@@ -159,7 +159,8 @@ export function taskWords(t: RunTask, run: Pick<RunInfo, 'stoppedAt' | 'paused'>
     case 'failed':
       return { text: t.reason || 'failed', tone: 'error' }
     case 'cancelled':
-      return { text: 'cancelled', tone: 'muted' }
+      // Why, when the engine says more than the word (a gate's rejection, Program item DR1: "rejected in dr-4 by Nate: …").
+      return { text: t.reason && t.reason !== 'cancelled' ? `cancelled: ${t.reason}` : 'cancelled', tone: 'muted' }
   }
   return { text: t.state, tone: 'muted' }
 }
