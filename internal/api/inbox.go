@@ -129,6 +129,9 @@ type inboxItem struct {
 	CardNote    string             `json:"cardNote,omitempty"`    // 200: the card read at another revision
 	Evidence    []inboxRef         `json:"evidence,omitempty"`
 	Delivery    []deliveryStep     `json:"delivery,omitempty"`
+	// mark is a DR1 record's mark as a link's scope read it (recordMarkOf), for
+	// the lane's notification hash alone: never sent.
+	mark string
 }
 
 // inboxAction is one thing a person may do with an item, through its own
@@ -326,6 +329,9 @@ type inboxRead struct {
 	// decisionRuns are the runs DR1's records name, read once
 	// (inbox_decisions.go).
 	decisionRuns map[string]inboxRun
+	// askerLive, when a test sets it, says whether a record's asking
+	// attempt lives; nil asks the engine (crew.Engine.AskerLive).
+	askerLive func(ledger.DecisionRow) bool
 }
 
 // inboxCard is a Brakeman decision card and where it is kept.

@@ -32,6 +32,17 @@ import (
 // change of the record's state or its operations, but writes a refused
 // response and its delivery's rows (delivery.typing, delivery.entered)
 // without moving it, so the rev alone does not mark the record whole.
+//
+// One rule keeps a link's view of a record of one moment: what the lane
+// serves of a record, and what its notification hash is made of, are
+// each of ONE read of the ledger. The scope's records and their marks are
+// one read (ledger.ScopeDecisions), and the hash carries each one's mark,
+// so any change of a record in the scope (a comment, a request for more
+// information, a refused response, a delivery's row) sends
+// decisions_changed; a part is cut from the very read its scope was
+// judged on, never from a second one. A read that fails serves nothing
+// and changes no hash: the lane answers unavailable, and its watch keeps
+// the last hash it saw.
 
 // linkCannotAnswer are the words of a record on a link.
 const linkCannotAnswer = "Answer it on the LAN or the desktop: a link cannot answer a durable decision yet"
@@ -42,37 +53,29 @@ const (
 	recordHistoryPage   = 32
 )
 
-// laneDecisionRows are DR1's records in the scope, open or answered: a
-// run link's run's, a session link's attempt's task's.
-func (s *Server) laneDecisionRows(ctx context.Context, sc laneScope) []ledger.DecisionRow {
+// laneDecisionItems are DR1's records in the scope, open or answered (a
+// run link's run's, a session link's attempt's task's), as the lane's
+// items: no action, the words why, and each one's mark (its rev, its
+// responses and its history counted), all of one read of the ledger. A
+// failed read is an error, never a scope with fewer records.
+func (s *Server) laneDecisionItems(ctx context.Context, rd *inboxRead, sc laneScope) ([]*inboxItem, error) {
 	if s.ledger == nil || sc.run == "" || (sc.session != "" && sc.task == "") {
-		return nil
+		return nil, nil
 	}
-	var out []ledger.DecisionRow
-	f := ledger.DecisionFilter{States: inboxStates, CurrentRun: sc.run, Task: sc.task, Limit: ledger.MaxDecisionsPage}
-	for range ledger.MaxDecisionsPerRun/ledger.MaxDecisionsPage + 1 {
-		rows, err := s.ledger.Decisions(ctx, f)
-		if err != nil {
-			s.log.Warn("lane: a run's decisions could not be read", "run", sc.run, "err", err)
-			return out
-		}
-		out = append(out, rows...)
-		if len(rows) < f.Limit {
-			break
-		}
-		f.Before = rows[len(rows)-1].N
+	rows, err := s.ledger.ScopeDecisions(ctx, sc.run, sc.task, inboxStates)
+	if err != nil {
+		return nil, fmt.Errorf("the decisions of run %s: %w", sc.run, err)
 	}
-	return out
-}
-
-// laneDecisionItems are the scope's records as the lane's items: no
-// action, and the words why.
-func (s *Server) laneDecisionItems(ctx context.Context, rd *inboxRead, sc laneScope) []*inboxItem {
 	var out []*inboxItem
-	for _, row := range s.laneDecisionRows(ctx, sc) {
-		out = append(out, laneRecordItem(rd.decisionItem(row, nil)))
+	for _, row := range rows {
+		it, err := rd.decisionItem(row.DecisionRow, nil)
+		if err != nil {
+			return nil, err
+		}
+		it.mark = recordMarkOf(row.Rev, row.Responses, row.History)
+		out = append(out, laneRecordItem(it))
 	}
-	return out
+	return out, nil
 }
 
 // laneRecordItem is a record's item as a link shows it: its actions taken
@@ -136,7 +139,12 @@ func (s *Server) laneDecisionRef(ctx context.Context, sc laneScope, reqID, v str
 
 // readRecordItem answers a decision_read of a record in the scope.
 func (s *Server) readRecordItem(ctx context.Context, sc laneScope, reqID string, rec ledger.DecisionRecord) []byte {
-	it := laneRecordItem(s.newInboxRead(ctx).decisionItem(rec.DecisionRow, &rec))
+	item, err := s.newInboxRead(ctx).decisionItem(rec.DecisionRow, &rec)
+	if err != nil {
+		s.log.Warn("lane: a decision's item could not be read", "decision", rec.ID(), "err", err)
+		return refusal(reqID, "unavailable", "the decision could not be read")
+	}
+	it := laneRecordItem(item)
 	for i, e := range it.Evidence {
 		if id, ok := sessionOfRef(e.Ref); ok && s.coversSession(sc, id) {
 			it.Evidence[i].Session = s.laneSessionID(sc, id)
@@ -155,8 +163,12 @@ func sessionOfRef(ref string) (string, bool) {
 // responses' count in two digits and its history rows' in three (at most
 // MaxDecisionResponses and MaxDecisionHistory, each only ever added to),
 // digits only, as a decision_record's rev is.
-func recordMark(d crew.Decision) string {
-	return fmt.Sprintf("%d%02d%03d", d.Rev, len(d.Responses), len(d.History))
+func recordMark(d crew.Decision) string { return recordMarkOf(d.Rev, len(d.Responses), len(d.History)) }
+
+// recordMarkOf is the mark of a record at rev keeping that many responses and
+// history rows.
+func recordMarkOf(rev, responses, history int) string {
+	return fmt.Sprintf("%d%02d%03d", rev, responses, history)
 }
 
 // laneRecordPart is a decision_record's reply: one part of a record at
@@ -241,27 +253,25 @@ func mustN(id string) int64 {
 	return n
 }
 
-// laneRecordFrame answers a decision_record: the part of record n cut
-// from one read of it (DR1's, as its route reads it), the head's refs
-// resolved in the same request as the route resolves them.
-func (s *Server) laneRecordFrame(ctx context.Context, m proto.DecisionRecord, n int64) []byte {
+// laneRecordFrame answers a decision_record: the part of rec, the record
+// read whole once and judged in the scope on that same read
+// (laneDecisionRef), reported as DR1's route reports it, the head's refs
+// resolved in the same request as the route resolves them. No second
+// read is made: a record that moves out of the scope after the read is
+// served as it was when it was in it, and the next part asked at its mark
+// is record_moved or not_in_scope.
+func (s *Server) laneRecordFrame(ctx context.Context, m proto.DecisionRecord, rec ledger.DecisionRecord) []byte {
 	if s.runs == nil {
 		return refusal(m.ReqID, proto.DecideNotFound, "this server runs no crews, so no decisions")
 	}
-	d, err := s.runs.Decision(ctx, ledger.DecisionID(n))
-	var de *crew.DecisionError
-	switch {
-	case errors.As(err, &de) && de.Code == crew.CodeNotFound:
-		return refusal(m.ReqID, proto.DecideNotFound, "no such decision")
-	case err != nil:
-		return refusal(m.ReqID, "unavailable", "the decision could not be read")
+	d := s.runs.DecisionOf(rec)
+	var refs []decisionRef
+	if m.Part == proto.RecordHead {
+		// Resolved at once after the read, as the route resolves them.
+		refs = s.decisionRefs(ctx, d.Evidence)
 	}
 	if seam := s.laneSeam; seam != nil && seam.recordRead != nil {
 		seam.recordRead(m.Part, d.Rev)
-	}
-	var refs []decisionRef
-	if m.Part == proto.RecordHead {
-		refs = s.decisionRefs(ctx, d.Evidence)
 	}
 	part, code, words := recordPart(d, refs, m.Part, m.Rev, m.After)
 	if code != "" {

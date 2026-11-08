@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -534,7 +535,13 @@ func TestTheFullestDecisionRecordThroughTheLane(t *testing.T) {
 	row := ledger.DecisionRow{N: 1<<62 - 1, RunID: strings.Repeat("c", 55) + "-0123abcd", CurrentRun: strings.Repeat("c", 55) + "-0123abcd", Origin: ledger.OriginAgent,
 		Type: ledger.DecisionClarification, TaskID: strings.Repeat("t", 40), Attempt: 1 << 30, SessionID: sessionHex("big"), Request: string(raw), State: ledger.DecisionOpen, Rev: 1 << 30,
 		CreatedAt: time.Now()}
-	it := e.srv.newInboxRead(t.Context()).decisionItem(row, &ledger.DecisionRecord{DecisionRow: row})
+	rd := e.srv.newInboxRead(t.Context())
+	// Its asker live, so it offers more information too.
+	rd.askerLive = func(ledger.DecisionRow) bool { return true }
+	it, err := rd.decisionItem(row, &ledger.DecisionRecord{DecisionRow: row})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if n := len(decisionJSON(t, it)); n > maxInboxItem || it.Question != big || len(it.Actions) != 9 {
 		t.Fatalf("the fullest item: %d bytes, %d actions", n, len(it.Actions))
 	}
@@ -543,20 +550,36 @@ func TestTheFullestDecisionRecordThroughTheLane(t *testing.T) {
 	}
 }
 
-// A record read across a change: the head at rev 1, then a response
-// recorded and applied before the history's first page, which, asked at
-// the head's rev, is refused record_moved with the new rev; read again
-// from the head, the record assembled is the route's at the new rev, its
-// refs the head's, never a mix.
+// A record read across a change, its evidence naming the session and
+// the run: a head whose read the lane holds at its seam (recordRead,
+// after the one read its scope is judged on and its refs resolved) while
+// a response is recorded and applied is cut whole from that read, the
+// record open at rev 1 with the refs the route gave at that rev; the next part asked at its mark is refused record_moved with
+// the new mark; read again from the head, the record assembled is the
+// route's at the new mark and its refs are the route's, never a mix.
 func TestADecisionRecordReadAcrossAChange(t *testing.T) {
 	f := newDecisionFixture(t, nil, nil)
-	f.ask(t, approvalBody("r1"), http.StatusCreated, "")
+	body := approvalBody("r1")
+	body["evidence"] = []string{"session:" + f.sid, "run:" + f.run}
+	f.ask(t, body, http.StatusCreated, "")
 	f.mirrored(t, "dr-1")
+	armed, held, release := make(chan struct{}, 1), make(chan int), make(chan struct{})
+	f.srv.laneSeam = &laneSeams{recordRead: func(part string, rev int) {
+		select {
+		case <-armed:
+			held <- rev
+			<-release
+		default:
+		}
+	}}
 	_, tok := f.decisionLink(t, "/api/sessions/"+f.sid+"/links", "phone", 0)
 	w := dialLane(t, f.testEnv, "/ws/sessions/"+f.sid, tok)
-	read := func(part, rev, after string) (laneRecordPart, []byte, map[string]any) {
+	ask := func(part, rev, after string) string {
 		id := w.reqID()
 		w.send(proto.MustControl(proto.DecisionRecord{T: proto.CtlDecisionRecord, ReqID: id, Ref: "decision:dr-1", Part: part, Rev: rev, After: after}))
+		return id
+	}
+	answer := func(id string) (laneRecordPart, []byte, map[string]any) {
 		d, ctl := w.reply(id)
 		if d == nil {
 			return laneRecordPart{}, nil, ctl
@@ -568,9 +591,31 @@ func TestADecisionRecordReadAcrossAChange(t *testing.T) {
 		b, _ := json.Marshal(d)
 		return p, b, nil
 	}
-	head, _, no := read(proto.RecordHead, "", "")
-	if no != nil || head.Rev != "100002" || head.Decision.Rev != 1 || head.Decision.State != ledger.DecisionOpen {
-		t.Fatalf("the head: %+v %v", head, no)
+	read := func(part, rev, after string) (laneRecordPart, []byte, map[string]any) {
+		return answer(ask(part, rev, after))
+	}
+	// The route's refs as the lane's head must carry them: the same refs,
+	// seen and now, but for the moment each was resolved at.
+	refsOf := func(refs []decisionRef) string {
+		out := slices.Clone(refs)
+		for i := range out {
+			out[i].Now.At, out[i].Now.Rev = time.Time{}, ""
+		}
+		return string(decisionJSON(t, out))
+	}
+	routeRefs := func() (map[string]any, []decisionRef) {
+		route := f.expect(t, http.MethodGet, "/api/decisions/dr-1", nil, http.StatusOK, "")
+		var refs []decisionRef
+		if err := json.Unmarshal(decisionJSON(t, route["refs"]), &refs); err != nil {
+			t.Fatal(err)
+		}
+		return route, refs
+	}
+	_, before := routeRefs()
+	armed <- struct{}{}
+	id := ask(proto.RecordHead, "", "")
+	if rev := <-held; rev != 1 {
+		t.Fatalf("the head was read at rev %d", rev)
 	}
 	f.respond(t, adminToken, "dr-1", "a1", 0, 1, http.StatusCreated, "")
 	// Applied, and its line's delivery settled: nothing changes it after.
@@ -579,10 +624,16 @@ func TestADecisionRecordReadAcrossAChange(t *testing.T) {
 		last, _ := h[len(h)-1].(map[string]any)
 		return d["state"] == ledger.DecisionApplied && slices.Contains([]any{ledger.HistoryDeliveryEntered, ledger.HistoryDeliveryUntyped, ledger.HistoryDeliveryUncertain}, last["kind"])
 	})
+	close(release)
+	head, _, no := answer(id)
+	if no != nil || head.Rev != "100002" || head.Decision.Rev != 1 || head.Decision.State != ledger.DecisionOpen || len(head.Refs) != 2 || refsOf(head.Refs) != refsOf(before) {
+		t.Fatalf("the head held across the change: %+v %v\nthe route's refs before it %s", head, no, refsOf(before))
+	}
 	mark := fmt.Sprintf("%v01%03d", now["rev"], len(now["history"].([]any)))
-	_, _, no = read(proto.RecordHistory, head.Rev, "")
-	if !refusedWith(no, proto.DecideRecordMoved) || no["rev"] != mark {
-		t.Fatalf("the history at the head's mark: %v, now %s", no, mark)
+	for _, part := range []string{proto.RecordResponses, proto.RecordHistory} {
+		if _, _, no = read(part, head.Rev, ""); !refusedWith(no, proto.DecideRecordMoved) || no["rev"] != mark {
+			t.Fatalf("the %s at the held head's mark: %v, now %s", part, no, mark)
+		}
 	}
 	got, refs := assemble(t, func(part, rev, after string) (laneRecordPart, []byte) {
 		p, b, no := read(part, rev, after)
@@ -591,13 +642,139 @@ func TestADecisionRecordReadAcrossAChange(t *testing.T) {
 		}
 		return p, b
 	})
-	route := f.expect(t, http.MethodGet, "/api/decisions/dr-1", nil, http.StatusOK, "")
+	route, after := routeRefs()
 	var want crew.Decision
 	if err := json.Unmarshal(decisionJSON(t, route["decision"]), &want); err != nil {
 		t.Fatal(err)
 	}
-	if !sameJSON(t, got, want) || got.State != ledger.DecisionApplied || len(refs) != 0 {
-		t.Fatalf("assembled %s\nthe route's %s", decisionJSON(t, got), decisionJSON(t, want))
+	if !sameJSON(t, got, want) || got.State != ledger.DecisionApplied || len(refs) != 2 || refsOf(refs) != refsOf(after) {
+		t.Fatalf("assembled %s\nthe route's %s\nrefs %s\nthe route's %s", decisionJSON(t, got), decisionJSON(t, want), refsOf(refs), refsOf(after))
+	}
+}
+
+// A decision link is told of every change of a record in its scope, not
+// only of its state: a comment from the workbench (the rev moves, nothing
+// the item summarizes does) and a stale response refused (the rev stays,
+// its responses grow) each change the link's hash, made of one read of
+// the scope, and send decisions_changed.
+func TestALinkIsToldOfARecordsChange(t *testing.T) {
+	f := newDecisionFixture(t, nil, nil)
+	f.ask(t, approvalBody("r1"), http.StatusCreated, "")
+	f.mirrored(t, "dr-1")
+	link, tok := f.decisionLink(t, "/api/sessions/"+f.sid+"/links", "phone", 0)
+	w := dialLane(t, f.testEnv, "/ws/sessions/"+f.sid, tok)
+	if page := w.list(""); page.Total != 1 || page.Items[0].Ref != "decision:dr-1" {
+		t.Fatalf("the link's list: %+v", page)
+	}
+	hash := func() string {
+		h, ok := f.srv.laneHash(t.Context(), link)
+		if !ok {
+			t.Fatal("the scope could not be read")
+		}
+		return h
+	}
+	first := hash()
+	f.expect(t, http.MethodPost, "/api/decisions/dr-1/comment", map[string]any{"opId": "k1", "kind": crew.CommentKind, "text": "Noted.", "expectedRev": 1}, http.StatusOK, "")
+	f.decisionWhen(t, "dr-1", "commented", func(d map[string]any) bool { return d["rev"] == float64(2) })
+	second := hash()
+	if second == first {
+		t.Fatal("a comment left the link's hash as it was")
+	}
+	w.waitChanged()
+	f.respond(t, adminToken, "dr-1", "s1", 0, 1, http.StatusConflict, crew.CodeStaleDecision)
+	f.decisionWhen(t, "dr-1", "refused", func(d map[string]any) bool {
+		rs, _ := d["responses"].([]any)
+		return len(rs) == 1 && d["rev"] == float64(2)
+	})
+	if hash() == second {
+		t.Fatal("a refused response left the link's hash as it was")
+	}
+	w.waitChanged()
+}
+
+// A scope whose records cannot be read is no scope without them: the
+// lane's list is refused unavailable and its hash says it read nothing;
+// an item whose run's holds cannot be read is none (unavailable), never
+// one saying nothing is held.
+func TestAFailedReadOfDecisionsIsNoAnswer(t *testing.T) {
+	f := newDecisionFixture(t, nil, nil)
+	f.ask(t, approvalBody("r1"), http.StatusCreated, "")
+	f.mirrored(t, "dr-1")
+	link, _ := f.decisionLink(t, "/api/sessions/"+f.sid+"/links", "phone", 0)
+	gone, cancel := context.WithCancel(t.Context())
+	cancel()
+	got := f.srv.Lane().List(gone, link, f.sid, proto.DecisionsList{T: proto.CtlDecisionsList, ReqID: "r1"})
+	var m map[string]any
+	fr, err := proto.Decode(got)
+	if err == nil {
+		err = json.Unmarshal(fr.Payload, &m)
+	}
+	if err != nil || fr.Type != proto.TypeControl || !refusedWith(m, "unavailable") {
+		t.Fatalf("the list of a scope not read: %s %v", got, err)
+	}
+	if _, ok := f.srv.laneHash(gone, link); ok {
+		t.Fatal("a hash of a scope not read")
+	}
+	rec, found, err := f.srv.ledger.Decision(t.Context(), 1)
+	if err != nil || !found {
+		t.Fatal(found, err)
+	}
+	if it, err := f.srv.newInboxRead(gone).decisionItem(rec.DecisionRow, &rec); err == nil {
+		t.Fatalf("an item whose holds were not read: %+v", it)
+	}
+}
+
+// An agent's record whose asking attempt has ended (the server ended and
+// came up again: the attempt interrupted, the record kept open) offers no
+// request for more information, which DR1 would refuse no_recipient, and
+// its answer says the task's next attempt reads it in its task file.
+func TestAnEndedAskerIsAskedNoMore(t *testing.T) {
+	f := newDecisionFixture(t, nil, nil)
+	f.ask(t, clarificationBody("c1"), http.StatusCreated, "")
+	f.mirrored(t, "dr-1")
+	if got := actionNames(f.itemOf(t, "decision:dr-1")); !slices.Contains(got, crew.MoreInfoKind) {
+		t.Fatalf("a live asker's record: %v", got)
+	}
+	again := restarted(t, f.testEnv)
+	it := again.itemOf(t, "decision:dr-1")
+	if it.State != ledger.DecisionOpen || slices.Contains(actionNames(it), crew.MoreInfoKind) {
+		t.Fatalf("an ended asker's record: %s %v", it.State, actionNames(it))
+	}
+	if a := actionOf(t, it, "answer"); !strings.Contains(a.Scope, "build's next attempt reads the answer in its task file") {
+		t.Fatalf("its answer's scope: %s", a.Scope)
+	}
+	rev, _ := strconv.Atoi(it.Revision)
+	more := map[string]any{"opId": "m1", "kind": crew.MoreInfoKind, "text": "Which?", "expectedRev": rev}
+	again.expect(t, http.MethodPost, "/api/decisions/dr-1/comment", more, http.StatusConflict, crew.CodeNoRecipient)
+}
+
+// Whom a record is for, in the answerer's words, as DR1's card says it
+// (approverWords): each responsibility in HM1's words, a person by name,
+// and a label that named no one (or none) the operator alone.
+func TestADecisionsAnswererSaysWhomItIsFor(t *testing.T) {
+	for _, c := range []struct {
+		label, person, resp, want string
+	}{
+		{"role:architecture", "nate", crew.RespArchitecture, "you, the operator, for nate (architecture owner)"},
+		{"role:product", "ana", crew.RespProduct, "you, the operator, for ana (product owner)"},
+		{"role:security", "ana", crew.RespSecurity, "you, the operator, for ana (security reviewer)"},
+		{"role:acceptance", "kim", crew.RespAcceptance, "you, the operator, for kim (acceptance owner)"},
+		{"person:nate", "nate", "", "you, the operator, for nate"},
+		{"role:x", "nate", "x", "you, the operator, for nate"},
+		{"role:architecture", "", crew.RespArchitecture, "you, the operator"},
+		{"", "", "", "you, the operator"},
+	} {
+		var r recordRequest
+		raw := fmt.Sprintf(`{"for":{"label":%q,"person":%q,"responsibility":%q}}`, c.label, c.person, c.resp)
+		if err := json.Unmarshal([]byte(raw), &r); err != nil {
+			t.Fatal(err)
+		}
+		if got := answererOf(r); got != c.want {
+			t.Errorf("%s: %q, want %q", raw, got, c.want)
+		}
+	}
+	if got := answererOf(recordRequest{}); got != inboxAnswerer {
+		t.Errorf("no for: %q", got)
 	}
 }
 

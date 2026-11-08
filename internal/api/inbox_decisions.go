@@ -83,21 +83,20 @@ func requestOf(row ledger.DecisionRow) recordRequest {
 }
 
 // answererOf is who answers a record: the operator (decision D4), for
-// the person it names when it names one.
+// the person it names when it names one, with that person's
+// responsibility in HM1's words (crew.ResponsibilityWords; one not of the
+// four is left out), as DR1's card says it (approverWords,
+// web/app/utils/decisions.ts): a label that named no one is the operator
+// alone.
 func answererOf(r recordRequest) string {
 	f := r.For
-	if f == nil {
+	if f == nil || f.Person == "" {
 		return inboxAnswerer
 	}
-	switch {
-	case f.Person != "" && f.Responsibility != "":
-		return fitText(fmt.Sprintf("%s, for %s (%s owner)", inboxAnswerer, f.Person, f.Responsibility), 120)
-	case f.Person != "":
-		return fitText(inboxAnswerer+", for "+f.Person, 120)
-	case f.Label != "":
-		return fitText(inboxAnswerer+", for "+f.Label, 120)
+	if w, ok := crew.ResponsibilityWords[f.Responsibility]; ok {
+		return fitText(fmt.Sprintf("%s, for %s (%s)", inboxAnswerer, f.Person, w), 120)
 	}
-	return inboxAnswerer
+	return fitText(inboxAnswerer+", for "+f.Person, 120)
 }
 
 // optionLabels are a record's options as a response names them by
@@ -124,11 +123,13 @@ func typeWord(typ string) string {
 	return "Clarification"
 }
 
-// inboxRun is a run as one read of the inbox found it: false for none.
+// inboxRun is a run as one read of the inbox found it: false for none;
+// err a failed read of its holds.
 type inboxRun struct {
 	run   crew.Run
 	ok    bool
 	holds []ledger.HoldRow
+	err   error
 }
 
 // runOf is the run id as this read found it, read once: from the engine
@@ -143,7 +144,7 @@ func (rd *inboxRead) runOf(id string) inboxRun {
 	var r inboxRun
 	r.run, r.ok = rd.s.runOrRecord(id)
 	if rd.s.ledger != nil {
-		r.holds, _ = rd.s.ledger.Holds(rd.ctx, id)
+		r.holds, r.err = rd.s.ledger.Holds(rd.ctx, id)
 	}
 	rd.decisionRuns[id] = r
 	return r
@@ -194,11 +195,16 @@ func (rd *inboxRead) askedWhere(row ledger.DecisionRow, run inboxRun) string {
 // a response through respond, more information and a comment through
 // comment, each at the record's rev; only an open record is answered,
 // and an answered one takes a comment alone. A card of Brakeman's about
-// the item's ref fills what it fills of any item.
-func (rd *inboxRead) decisionItem(row ledger.DecisionRow, rec *ledger.DecisionRecord) *inboxItem {
+// the item's ref fills what it fills of any item. The holds of its run
+// that could not be read leave no item (an error): what a response
+// authorizes and what waits for it are said from them, never guessed.
+func (rd *inboxRead) decisionItem(row ledger.DecisionRow, rec *ledger.DecisionRecord) (*inboxItem, error) {
 	req := requestOf(row)
 	id, ref, rev := row.ID(), ledger.DecisionRef(row.N), strconv.Itoa(row.Rev)
 	run := rd.runOf(row.CurrentRun)
+	if run.err != nil {
+		return nil, fmt.Errorf("the holds of %s's run: %w", id, run.err)
+	}
 	it := &inboxItem{Ref: ref, Subject: ref, Kind: inboxDecision, Since: row.CreatedAt, Question: req.Question, Answerer: answererOf(req),
 		Revision: rev, State: row.State, BriefBy: "conductor", Actions: []inboxAction{}}
 	runName := row.CurrentRun
@@ -228,7 +234,7 @@ func (rd *inboxRead) decisionItem(row ledger.DecisionRow, rec *ledger.DecisionRe
 		it.Delivery = recordSteps(*rec, rd.s.runHeld(row.CurrentRun))
 	}
 	rd.withCard(it)
-	return it
+	return it, nil
 }
 
 // capitalize is s with its first letter upper case.
@@ -319,10 +325,18 @@ func (rd *inboxRead) decisionActions(it *inboxItem, row ledger.DecisionRow, req 
 	id, rev := row.ID(), strconv.Itoa(row.Rev)
 	route := http.MethodPost + " /api/decisions/" + id + "/respond"
 	authorizes := cmpPrefix("; what it authorizes: ", req.Authorizes)
+	live := rd.s.runs != nil && rd.s.runs.AskerLive(row)
+	if rd.askerLive != nil {
+		live = rd.askerLive(row)
+	}
 	applies := func(choice *int) string {
 		switch {
-		case row.Origin == ledger.OriginAgent && row.TaskID != "":
+		case row.Origin == ledger.OriginAgent && row.TaskID != "" && live:
 			return fmt.Sprintf("Yardmaster then types the answer into attempt %s.%d's session", row.TaskID, row.Attempt)
+		case row.Origin == ledger.OriginAgent && row.TaskID != "":
+			// The asking attempt has ended: DR1 carries the answer in the
+			// task's next attempt's task file.
+			return fmt.Sprintf("attempt %s.%d has ended, so %s's next attempt reads the answer in its task file", row.TaskID, row.Attempt, row.TaskID)
 		case len(held) == 0:
 			return "Yardmaster then notes it; nothing is held for it"
 		case choice != nil && *choice == 1 && (row.Type == ledger.DecisionApproval || row.Type == ledger.DecisionAssignment):
@@ -343,7 +357,9 @@ func (rd *inboxRead) decisionActions(it *inboxItem, row ledger.DecisionRow, req 
 		it.addAction(inboxAction{Name: "answer", Label: "Reply with words", Text: true, Expect: rev, Route: route,
 			Scope: fmt.Sprintf("Answers %s with the words you write at its rev %s, as the operator: %s%s", id, rev, applies(nil), authorizes)})
 	}
-	if row.Origin == ledger.OriginAgent {
+	if live {
+		// Only the asking attempt's live session takes it (DR1 refuses it
+		// no_recipient once that attempt has ended).
 		it.addAction(inboxAction{Name: "more_info", Label: "Ask for more information", Text: true, Expect: rev, Route: http.MethodPost + " /api/decisions/" + id + "/comment",
 			Scope: fmt.Sprintf("Types your question into %s's session and keeps %s open; its rev moves past %s, so an answer made before it is refused stale", where, id, rev)})
 	}
@@ -437,17 +453,20 @@ func (rd *inboxRead) openDecisions(after inboxCursor, limit int) ([]*inboxItem, 
 	if ld == nil {
 		return nil, 0, 0, nil
 	}
-	page, _, total, err := ld.InboxDecisions(rd.ctx, inboxStates, ledger.InboxCursor{Since: after.since, Ref: after.ref}, limit)
-	if err != nil {
-		return nil, 0, 0, err
-	}
-	_, _, answered, err := ld.InboxDecisions(rd.ctx, []string{ledger.DecisionAnswered}, ledger.InboxCursor{}, 1)
+	// The page, its total and the answered among them are of one read, so
+	// a record answered meanwhile is counted open in both or answered in
+	// both, never open in one and answered in the other.
+	page, _, total, answered, err := ld.InboxDecisions(rd.ctx, inboxStates, ledger.InboxCursor{Since: after.since, Ref: after.ref}, limit)
 	if err != nil {
 		return nil, 0, 0, err
 	}
 	out := make([]*inboxItem, 0, len(page))
 	for _, row := range page {
-		out = append(out, rd.decisionItem(row, nil))
+		it, err := rd.decisionItem(row, nil)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		out = append(out, it)
 	}
 	return out, total, answered, nil
 }
@@ -464,7 +483,11 @@ func (rd *inboxRead) recentDecisions() ([]inboxSummary, error) {
 	}
 	out := make([]inboxSummary, 0, len(rows))
 	for _, row := range rows {
-		s := rd.decisionItem(row, nil).summary()
+		it, err := rd.decisionItem(row, nil)
+		if err != nil {
+			return nil, err
+		}
+		s := it.summary()
 		s.Closed = timeOf(row.ClosedAt)
 		out = append(out, s)
 	}
@@ -484,7 +507,7 @@ func (s *Server) decisionItemOf(ctx context.Context, n int64) (*inboxItem, error
 	if !found {
 		return nil, errNoItem
 	}
-	return s.newInboxRead(ctx).decisionItem(rec.DecisionRow, &rec), nil
+	return s.newInboxRead(ctx).decisionItem(rec.DecisionRow, &rec)
 }
 
 // decisionTrack is the four steps of the action actor took on record n
