@@ -98,13 +98,25 @@ test("an approval asked by an attempt that ended survives the server's end, is a
   const reopened = await decision(api, id)
   expect([reopened.state, reopened.rev, reopened.run]).toEqual(['open', kept.rev, runId])
 
-  // The operator answers it on the run page: Recorded, waiting for the run to be continued (it is not running), and nothing applied.
+  // The run page's graph says it as its task list does (#641, review round 1): held, taken up when the run is continued; drawn again
+  // after a switch to the members and back, the same.
   const page = await operatorPage(browser, srv.started)
   const base = srv.started.baseURL
+  const held = `waits for decision ${id}; taken up when the run is continued`
+  budget(5 * STEP_MS)
+  await page.goto(`${base}/runs/${runId}?view=graph`)
+  const node = page.locator('[data-graph-canvas] [data-graph-task="build"]')
+  await expect(node).toHaveAttribute('aria-label', `build: ${held}`, { timeout: 30_000 })
+  await page.locator('[data-graph-mode-switch]').getByRole('tab', { name: 'Members' }).click()
+  await expect(node).toHaveCount(0)
+  await page.locator('[data-graph-mode-switch]').getByRole('tab', { name: 'Tasks' }).click()
+  await expect(node).toHaveAttribute('aria-label', `build: ${held}`)
+
+  // The operator answers it on the run page: Recorded, waiting for the run to be continued (it is not running), and nothing applied.
   budget(10 * STEP_MS)
   await page.goto(`${base}/runs/${runId}?view=tasks`)
   const row = page.locator('[data-task-row="build"]')
-  await expect(row.locator('[data-task-words]')).toHaveText(`waits for decision ${id}; taken up when the run is continued`, { timeout: 30_000 })
+  await expect(row.locator('[data-task-words]')).toHaveText(held, { timeout: 30_000 })
   await row.locator('[data-task-answer="build"]').click()
   const modal = page.locator(`[data-decision-modal][data-decision-modal-id="${id}"]`)
   await expect(modal.locator('[data-decision-question]')).toHaveText(question)

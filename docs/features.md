@@ -4137,18 +4137,53 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `decisions-gate.spec.ts` (a second run of the revision: Reject cancels
   `deploy` with "rejected in dr-2 by Nate: …", `build` untouched), the
   run page saying a cancelled task's reason and, on an interrupted run,
-  that a held task is taken up when the run is continued (its task list
-  had not been given the run's state), the architecture's paragraph and
-  this entry.
+  that a held task is taken up when the run is continued (neither its
+  task list nor its graph had been given the run's state), a
+  continuation keeping a cancelled task's reason, the rejection's words
+  among them (it had imported the bare word;
+  `TestARejectionKeepsItsWordsInAContinuation`), the architecture's
+  paragraph and this entry.
 
   The acceptance (the plan's Acceptance, DR1: one authorized person
   answers a decision bound to a revision; the response survives a
   restart, is applied once and releases only the work that depended on
-  it; an unanswered decision consumes no retry) is observed by hand
-  after this entry's PR merges, with real Claude Code and Codex on a
-  server of its own and the desktop app; when this entry was written it
-  had not been made. Its result, against which `main`, and what it did
-  not exercise go here.
+  it; an unanswered decision consumes no retry), what is observed and
+  what is not. Observed, with the stub worker, by the specs CI runs:
+  a gate on a plan revision holding `deploy` while `build` runs, approved
+  on the ticket page and `deploy` released, and in a second run rejected
+  on the run page, `deploy` cancelled with the rejection's words and
+  `build` untouched (`decisions-gate.spec.ts`); an attempt's approval
+  answered in its card, typed into the attempt, a second tab told who
+  answered first, a share link's viewer with control shown the question
+  and no Answer (`decisions.spec.ts`); an attempt that ends while it
+  waits given back, the server killed and started again with the
+  decision open, the answer recorded while the run is interrupted and
+  applied once by Continue, the next attempt attempt 2 of 4
+  (`decisions-restart.spec.ts`); a waiting attempt parked for a ready
+  task of the same member (`internal/crew`'s
+  `decisions_wait_test.go`). Not yet made: the plan's by-hand
+  observation with real agents, which is the maintainers' check, made
+  after this entry's PR merges and recorded here (what ran, against which
+  `main`, what it did not exercise); no issue tracks it but this entry
+  and #641's acceptance. Its steps, on a `conductor serve` of its own on
+  the WSL box (no networking configured by anyone) and the desktop app,
+  in a scratch repository both agents trust: a ticket's plan revision
+  with `build` and `lint` by one Claude Code member, `deploy` after
+  `build` and the gate `deploy-approval` before it, launched, `deploy`
+  waiting for dr-1 from the start; `build`'s agent commits a file, saves
+  a checkpoint and asks an approval of it from the skill alone (dr-2,
+  `open` at once, its turn ended), its attempt parked with a `refunded`
+  row while `lint` runs and succeeds; the server stopped and started with
+  dr-2 open, dr-2 answered from the run page (Recorded, waiting for the
+  run to be continued), Continue, `build`'s next attempt starting at its
+  checkpoint with the answer in its task file, one `applied` row, and
+  `build` succeeding; a second Approve of dr-2 from another tab given the
+  first's receipt or "answered by"; dr-1 approved, `deploy` run and the
+  run succeeding, and a second run of the revision rejecting dr-1,
+  `deploy` cancelled with the words, `build` and `lint` unaffected; a
+  share link with control on `build`'s session showing the question and
+  no way to answer it; and Codex as the asking agent in one of the runs.
+  A defect it finds is fixed in the stream.
 - **Project manifests: a fresh attempt worktree made usable, predictably
   (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
   `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the

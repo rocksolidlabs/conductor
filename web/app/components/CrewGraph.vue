@@ -6,7 +6,7 @@ import type { CrewStart, RunTask } from '~/composables/useSessions'
 import type { MemberStatus } from '~/utils/crews'
 import { connectError, connectionAllowed, crewGraph, type GraphDirection, type GraphMember, type HandoffSeen } from '~/utils/crewGraph'
 import { taskLayout, taskListRows } from '~/utils/taskGraph'
-import { taskDot, taskWords } from '~/utils/tasks'
+import { taskDot, taskWords, type TaskRun } from '~/utils/tasks'
 import type { MemberNodeData } from '~/components/CrewGraphNode.vue'
 import type { TaskNodeData } from '~/components/CrewGraphTaskNode.vue'
 import type { CrewEdgeData } from '~/components/CrewGraphEdge.vue'
@@ -39,10 +39,13 @@ const props = withDefaults(
     /** A managed run's tasks (#334): with any, the graph has a Tasks mode, one node per task and an edge for each need. */
     tasks?: RunTask[]
     paused?: boolean
+    /** The run's state and why it paused, for the tasks' words: they read as in the run page's task list (an interrupted run's held task). */
+    runState?: string
+    pausedWhy?: string
     /** The task selected in Tasks mode. */
     selectedTask?: string
   }>(),
-  { editable: false, runId: '', stopped: false, selected: '', now: 0, fill: false, agentNames: () => ({}), tasks: () => [], paused: false, selectedTask: '' },
+  { editable: false, runId: '', stopped: false, selected: '', now: 0, fill: false, agentNames: () => ({}), tasks: () => [], paused: false, runState: '', pausedWhy: '', selectedTask: '' },
 )
 const emit = defineEmits<{
   select: [name: string]
@@ -102,8 +105,9 @@ const taskRows = computed(() => taskListRows(taskGraph.value))
 function agentOf(member: string): string {
   return props.members.find((m) => m.name === member)?.agentId ?? ''
 }
+const taskRun = computed<TaskRun>(() => ({ state: props.runState, stoppedAt: props.stopped ? 'stopped' : undefined, paused: props.paused, pausedWhy: props.pausedWhy }))
 function taskWordsOf(t: RunTask) {
-  return taskWords(t, { stoppedAt: props.stopped ? 'stopped' : undefined, paused: props.paused })
+  return taskWords(t, taskRun.value)
 }
 
 const flowNodes = computed<Node<MemberNodeData | TaskNodeData>[]>(() =>
@@ -112,7 +116,7 @@ const flowNodes = computed<Node<MemberNodeData | TaskNodeData>[]>(() =>
         id: n.id,
         type: 'task',
         position: { x: n.x, y: n.y },
-        data: { node: n, direction: prefs.value.direction, stopped: props.stopped, paused: props.paused, agentId: agentOf(n.task.member) },
+        data: { node: n, direction: prefs.value.direction, run: taskRun.value, agentId: agentOf(n.task.member) },
         connectable: false,
         draggable: false,
         selected: n.id === props.selectedTask,
