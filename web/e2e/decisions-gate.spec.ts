@@ -1,11 +1,12 @@
 import { expect, stopStrays, task, test, type Session } from './fixtures'
 import { budget, decision, decisionServer, decisionUntil, decisionsOf, makeTicket, operatorPage, propose, runUntil, type DecisionServer } from './decisions-helpers'
 
-// A ticket's plan revision gating a task (Program item DR1, docs/plans/decisions.md, PR-7: the approve half; the reject half is PR-8's),
-// on a server of its own: revision 1 names a decision `ship` before `deploy`; approved and launched through the ticket page's Plan, the
+// A ticket's plan revision gating a task (Program item DR1, docs/plans/decisions.md, PR-7 the approve half, PR-8 the reject half), on
+// a server of its own: revision 1 names a decision `ship` before `deploy`; approved and launched through the ticket page's Plan, the
 // run opens the gate before any attempt; `build` runs and succeeds while `deploy` waits with its words; the ticket page's Decisions
-// lists the gate open; the operator approves it from there; `deploy` is released, starts, and the run succeeds. Every wait is on the
-// record through the API or on what the page draws.
+// lists the gate open; the operator approves it from there; `deploy` is released, starts, and the run succeeds. A second run of the
+// same revision opens its own gate, which the operator rejects on the run page: `deploy` is cancelled with the rejection's words, and
+// `build` is not touched. Every wait is on the record through the API or on what the page draws.
 test.describe.configure({ mode: 'serial' })
 
 const PROJECT = 'DRG'
@@ -16,6 +17,8 @@ let srv: DecisionServer
 let ticket = ''
 let crewId = ''
 let runId = ''
+let planId = ''
+let secondRun = ''
 
 test.beforeAll(async () => {
   srv = await decisionServer('decisions-gate')
@@ -44,7 +47,7 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   if (!srv) return
-  if (runId) await srv.api.stopRun(runId)
+  for (const id of [secondRun, runId]) if (id) await srv.api.stopRun(id)
   await srv.stop()
 })
 
@@ -54,7 +57,7 @@ test("a revision's gate holds deploy until the operator approves it on the ticke
   const base = srv.started.baseURL
   // Proposed through its route, with the gate (the propose form's rows are DS2's, dispatch-plan.spec.ts); approved and launched
   // through the page.
-  await propose(api, ticket, crewId, [{ id: 'ship', question: 'May deploy go out?', kind: 'approval', before: ['deploy'] }])
+  planId = await propose(api, ticket, crewId, [{ id: 'ship', question: 'May deploy go out?', kind: 'approval', before: ['deploy'] }])
 
   const page = await operatorPage(browser, srv.started)
   // The pill ] shows lives as long as the test may (PILL_MS is the product's bound, not this test's: palette-reach.spec.ts).
@@ -169,6 +172,57 @@ test("a revision's gate holds deploy until the operator approves it on the ticke
   const done = await runUntil(api, runId, (r) => r.outcome === 'succeeded', 'the run succeeds once deploy is released')
   expect(task(done, 'deploy').state).toBe('succeeded')
   expect((await decision(api, id)).history?.filter((h) => h.kind === 'applied')).toHaveLength(1)
+  await page.context().close()
+})
+
+test("a second run of the revision: the operator rejects its gate on the run page, deploy is cancelled with the words, build untouched", async ({ browser }) => {
+  test.slow()
+  expect(planId).not.toBe('')
+  const api = srv.api
+  const base = srv.started.baseURL
+  await stopStrays(api, [])
+  // A second launch of the approved revision, through Dispatch's route: its own run, and its own gate, opened with it.
+  budget(130_000)
+  secondRun = (await api.ok<{ launch: { runId: string } }>('POST', `/api/dispatch/tickets/${ticket}/launch`, { opId: 'drg-l2', plan: planId })).launch.runId
+  expect(secondRun).not.toBe(runId)
+  const gates = await decisionsOf(api, secondRun)
+  expect(gates.map((d) => [d.origin, d.gate, d.state])).toEqual([['plan', 'ship', 'open']])
+  const id = gates[0]!.id
+  expect((await decisionsOf(api, runId)).map((d) => d.id)).not.toContain(id)
+
+  // build runs and succeeds; deploy waits for the gate.
+  const run = await runUntil(api, secondRun, (r) => task(r, 'build').state === 'succeeded', "the second run's build succeeds")
+  const built = task(run, 'build').result
+  expect(task(run, 'deploy').attempts).toBe(0)
+
+  // The operator rejects it from the run page's Answer, with a rationale.
+  const page = await operatorPage(browser, srv.started)
+  budget(8 * STEP_MS)
+  await page.goto(`${base}/runs/${secondRun}?view=tasks`)
+  const row = page.locator('[data-task-row="deploy"]')
+  await expect(row.locator('[data-task-words]')).toHaveText(`waits for decision ${id}`, { timeout: 30_000 })
+  await row.locator('[data-task-answer="deploy"]').click()
+  const modal = page.locator(`[data-decision-modal][data-decision-modal-id="${id}"]`)
+  await expect(modal.locator('[data-decision-question]')).toHaveText('May deploy go out?')
+  await modal.locator('[data-decision-choice-label="Reject"]').click()
+  await modal.locator('[data-decision-rationale]').fill('Not this week.')
+  await modal.locator('[data-decision-confirm]').click()
+  await expect(modal.locator('[data-decision-receipt]')).toContainText(`Recorded: ${id} answered by Nate`)
+  const applied = await decisionUntil(api, id, 'applied')
+  expect(applied.applied).toMatchObject({ how: 'cancelled', tasks: ['deploy'], words: 'cancelled deploy' })
+  await expect(modal.locator('[data-decision-state-words]')).toHaveText('Applied: cancelled deploy', { timeout: 30_000 })
+  await page.getByRole('dialog', { name: /^Decision dr-/ }).getByRole('button', { name: 'Close' }).click()
+  await expect(page.locator('[data-decision-modal]')).toHaveCount(0)
+
+  // deploy is cancelled with the rejection's words, never started; build keeps its result; the run ends cancelled.
+  const words = `rejected in ${id} by Nate: Not this week.`
+  const done = await runUntil(api, secondRun, (r) => !!r.outcome, 'the second run ends once deploy is cancelled')
+  expect([done.outcome, task(done, 'deploy').state, task(done, 'deploy').reason, task(done, 'deploy').attempts]).toEqual(['cancelled', 'cancelled', words, 0])
+  expect([task(done, 'build').state, task(done, 'build').result?.commit]).toEqual(['succeeded', built?.commit])
+  await expect(row.locator('[data-task-words]')).toHaveText(`cancelled: ${words}`, { timeout: 30_000 })
+  expect((await decision(api, id)).history?.filter((h) => h.kind === 'applied')).toHaveLength(1)
+  // The first run's gate is as it was: applied, released.
+  expect((await decision(api, 'dr-1')).applied).toMatchObject({ how: 'released', tasks: ['deploy'] })
   await page.context().close()
 })
 

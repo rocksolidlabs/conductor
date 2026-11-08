@@ -271,6 +271,38 @@ func equalStrings(a, b []string) bool {
 	return strings.Join(a, "\x00") == strings.Join(b, "\x00") && len(a) == len(b)
 }
 
+// A gate's rejection keeps its words in a continuation (#641, review round
+// 1): the task it cancelled is imported cancelled with "rejected in dr-N by
+// NAME: why", the reason the ledger holds, not the bare word; a task
+// cancelled with no reason of its own reads "cancelled" as before.
+func TestARejectionKeepsItsWordsInAContinuation(t *testing.T) {
+	dir, ldir := newRepo(t), t.TempDir()
+	e, _, ld := decisionEngineAt(t, ldir)
+	run := launchGated(t, e, dir, "api-sweep-000000e3", repoCrew(dir, work("build", "lead"), work("deploy", "ops"), work("docs", "ops")), shipGate("deploy"))
+	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	g := gateOf(t, e, ld, run.ID)
+	answer(t, e, g.ID, Response{ResponseID: "r1", Choice: choice(1), Rationale: "not this week", ExpectedRev: 1})
+	decisionWhen(t, ld, g.ID, "applied", inState(ledger.DecisionApplied))
+	want := "rejected in " + g.ID + " by Nate: not this week"
+	waitTrue(t, "deploy's row cancelled with its words", func() bool {
+		row := ledgerTask(t, ld, run.ID, "deploy")
+		return row.State == ledger.TaskCancelled && row.Reason == want
+	})
+	if err := e.CancelTask(t.Context(), run.ID, "docs"); err != nil {
+		t.Fatal(err)
+	}
+	waitTrue(t, "docs's row cancelled", func() bool { return ledgerTask(t, ld, run.ID, "docs").State == ledger.TaskCancelled })
+	e2, _, _ := restart(t, e, ld, ldir, run.ID)
+	next := continueRun(t, e2, run.ID)
+	if ts := taskOf(t, e2, next.ID, "deploy"); ts.State != ledger.TaskCancelled || ts.Reason != want {
+		t.Fatalf("deploy in the continuation: %+v, want cancelled with %q", ts, want)
+	}
+	if ts := taskOf(t, e2, next.ID, "docs"); ts.State != ledger.TaskCancelled || ts.Reason != "cancelled" {
+		t.Fatalf("docs in the continuation: %+v, want cancelled with the bare word", ts)
+	}
+	stopRun(t, e2, next.ID)
+}
+
 // An interrupted waiting attempt is given back once: continued, stopped
 // before any dispatch (its task held), continued again, the task has one
 // attempt more, not two.

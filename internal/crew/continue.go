@@ -723,7 +723,12 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 			case row.State == ledger.TaskFailed:
 				t.state, t.reason = ledger.TaskFailed, row.Reason
 			case row.State == ledger.TaskCancelled:
-				t.state, t.reason = ledger.TaskCancelled, "cancelled"
+				// Its words kept (a gate's rejection, Program item DR1:
+				// "rejected in dr-4 by Nate: …"), the bare word for none.
+				t.state, t.reason = ledger.TaskCancelled, row.Reason
+				if t.reason == "" {
+					t.reason = "cancelled"
+				}
 			default:
 				switch {
 				case hasLast && la.State == ledger.AttemptUncertain:
