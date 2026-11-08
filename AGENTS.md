@@ -378,6 +378,11 @@ add its rule here.
   knob as the thing starts (an option it reads at its start,
   `Options.maxRecords`), and where a test must change it on the way,
   change it under the lock its readers hold (`setMaxRecords`).
+- A check's own setup is part of the check. A file it fetches is cached
+  and its download retried, so a mirror's bad half hour fails nothing but
+  itself: GitHub's release downloads answered 504 for thirty minutes and
+  one try of Neovim's tarball and Electron's binary failed four jobs of an
+  hour-long run, twice (2026-11-08, #281; `docs/checks.md` says how).
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
