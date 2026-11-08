@@ -44,6 +44,15 @@ func (s *Server) handleViewerWS(w http.ResponseWriter, r *http.Request) {
 	// while the session was on the server is told what became of it (4410
 	// once it has left), never that there is no such session.
 	d, ok := s.registry.Get(id)
+	// A run's desk at a switchyard is joined as a session is, by a run
+	// link's control viewer alone (its group names the desk): it carries
+	// nothing but a decision link's lane, which the publisher serves.
+	if desk, isDesk := s.hosts.Desk(id); !ok && isDesk {
+		d, ok = desk, true
+		if p.link == nil || role != session.RoleControl {
+			role = ""
+		}
+	}
 	hk := &hijackKeeper{ResponseWriter: w}
 	c, err := websocket.Accept(hk, r, s.acceptOptions())
 	if err != nil {
@@ -773,7 +782,7 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, raw n
 			if !s.handleViewerSignal(sink, pumped, hs, v, f.Payload, cut) {
 				return
 			}
-		case proto.TypeInput, proto.TypeControl, proto.TypeFileWrite:
+		case proto.TypeInput, proto.TypeControl, proto.TypeFileWrite, proto.TypeDecide:
 			if !v.Relay() {
 				_ = sink.WriteFrame(proto.NewError(proto.ErrCodeBadFrame, "terminal frames require relay mode on this connection"))
 				continue

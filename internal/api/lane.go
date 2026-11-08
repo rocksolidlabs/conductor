@@ -194,6 +194,14 @@ type laneSeams struct {
 // store's HoldWait), its refusal said as the session says a link's
 // (ErrRevoked, ErrExpired).
 func (s *Server) holdLink(linkID string) func() (session.Held, error) {
+	return s.holdLinkWith(linkID, nil)
+}
+
+// holdLinkWith is holdLink with the connection's own check of its viewer
+// (stands, nil for none: a publisher's peer's credential and vouch, which
+// Decisions.Decide carries) asked with the link's at the write's commit
+// boundary: either refusing, nothing is written.
+func (s *Server) holdLinkWith(linkID string, stands func() error) func() (session.Held, error) {
 	return func() (session.Held, error) {
 		if seam := s.laneSeam; seam != nil && seam.atHold != nil {
 			seam.atHold(linkID)
@@ -205,7 +213,7 @@ func (s *Server) holdLink(linkID string) func() (session.Held, error) {
 		if seam := s.laneSeam; seam != nil && seam.afterHold != nil {
 			seam.afterHold(linkID)
 		}
-		return &linkHeld{s: s, h: h}, nil
+		return &linkHeld{s: s, h: h, stands: stands}, nil
 	}
 }
 
@@ -224,11 +232,20 @@ func sessionRefusal(err error) error {
 // linkHeld is a link's hold as the session's writer holds it
 // (session.Held): share.Held, its refusals said as the session's.
 type linkHeld struct {
-	s *Server
-	h *share.Held
+	s      *Server
+	h      *share.Held
+	stands func() error
 }
 
-func (l *linkHeld) Stands() error { return sessionRefusal(l.h.Stands()) }
+func (l *linkHeld) Stands() error {
+	if err := sessionRefusal(l.h.Stands()); err != nil {
+		return err
+	}
+	if l.stands != nil {
+		return l.stands()
+	}
+	return nil
+}
 
 func (l *linkHeld) Cancelled() <-chan struct{} { return l.h.Cancelled() }
 func (l *linkHeld) Release()                   { l.h.Release() }
@@ -456,12 +473,30 @@ func (l *Lane) Read(ctx context.Context, linkID, sessionID string, m proto.Decis
 	}
 	for i, e := range it.Evidence {
 		if r, err := brakeman.ParseRef(e.Ref); err == nil && r.Kind == brakeman.RefSession && s.coversSession(sc, r.Session) {
-			if _, ok := s.registry.Get(r.Session); ok {
-				it.Evidence[i].Session = r.Session
-			}
+			it.Evidence[i].Session = s.laneSessionID(sc, r.Session)
 		}
 	}
 	return decisionFrame(m.ReqID, func(d *proto.Decision, b json.RawMessage) { d.Item = b }, it)
+}
+
+// laneSessionID is the id a link's holder opens the session id by, ""
+// for none: on this server its own id, while it is listed; through a
+// switchyard (a decision link minted there, share.Link.Remote) the id the
+// switchyard knows it by, its publication's (PublishedSession.CurrentID),
+// while that publication stands, for this server's own id opens nothing
+// there.
+func (s *Server) laneSessionID(sc laneScope, id string) string {
+	if _, ok := s.registry.Get(id); !ok {
+		return ""
+	}
+	if sc.link == nil || !sc.link.Remote {
+		return id
+	}
+	pub := s.publishedOf(id)
+	if pub == nil || ended(pub.Done()) {
+		return ""
+	}
+	return pub.CurrentID()
 }
 
 // unknownSteps are four steps of which nothing is known but that the
@@ -624,7 +659,11 @@ func (l *Lane) Evidence(ctx context.Context, linkID, sessionID string, m proto.D
 		if _, ok := s.registry.Get(ev.Session); !ok {
 			return refusal(m.ReqID, proto.DecideNotFound, "the session is no longer listed")
 		}
-		return decisionFrame(m.ReqID, func(d *proto.Decision, b json.RawMessage) { d.Evidence = b }, laneEvidence{Ref: ev.String(), Kind: "session", Session: ev.Session})
+		id := s.laneSessionID(sc, ev.Session)
+		if id == "" {
+			return refusal(m.ReqID, proto.DecideNotFound, "the session is not published at the switchyard now")
+		}
+		return decisionFrame(m.ReqID, func(d *proto.Decision, b json.RawMessage) { d.Evidence = b }, laneEvidence{Ref: ev.String(), Kind: "session", Session: id})
 	}
 	return refusal(m.ReqID, proto.DecideUnsupported, "open it on the desktop or the LAN")
 }
@@ -718,7 +757,7 @@ func (s *Server) replay(ctx context.Context, linkID string, m proto.Decide, raw 
 // request the link took before is answered from it (replay), one under way
 // on another connection is waited for, and another request under it is
 // op_conflict, nothing done.
-func (l *Lane) Decide(ctx context.Context, linkID, sessionID string, m proto.Decide, answer func(context.Context, proto.Answer) error) []byte {
+func (l *Lane) Decide(ctx context.Context, linkID, sessionID string, m proto.Decide, answer func(context.Context, proto.Answer) error, stands func() error) []byte {
 	s := l.s
 	if seam := s.laneSeam; seam != nil && seam.beforeDecide != nil {
 		seam.beforeDecide(linkID, m.OpID)
@@ -742,7 +781,7 @@ func (l *Lane) Decide(ctx context.Context, linkID, sessionID string, m proto.Dec
 		case err != nil:
 			return linkRefusal(m.ReqID, err)
 		case mine:
-			return s.decideNew(ctx, linkID, sessionID, sc, ref, m, answer)
+			return s.decideNew(ctx, linkID, sessionID, sc, ref, m, answer, stands)
 		case op.Settled:
 			return s.replay(ctx, linkID, m, op.Outcome)
 		}
@@ -761,7 +800,7 @@ func (l *Lane) Decide(ctx context.Context, linkID, sessionID string, m proto.Dec
 // once the operation was asked and gave an outcome, let go when nothing was
 // begun (refused before the operation, the connection gone), so the opId
 // is free again.
-func (s *Server) decideNew(ctx context.Context, linkID, sessionID string, sc laneScope, ref brakeman.Ref, m proto.Decide, answer func(context.Context, proto.Answer) error) []byte {
+func (s *Server) decideNew(ctx context.Context, linkID, sessionID string, sc laneScope, ref brakeman.Ref, m proto.Decide, answer func(context.Context, proto.Answer) error, stands func() error) []byte {
 	var kept *laneOutcome
 	defer func() {
 		raw := ""
@@ -780,9 +819,9 @@ func (s *Server) decideNew(ctx context.Context, linkID, sessionID string, sc lan
 	var f []byte
 	switch {
 	case m.Action == "answer" && ref.Kind == brakeman.RefQuestion:
-		f, kept = s.laneAnswer(ctx, linkID, sessionID, sc, ref, it, m, answer)
+		f, kept = s.laneAnswer(ctx, linkID, sessionID, sc, ref, it, m, answer, stands)
 	case isCommand(m.Action):
-		f, kept = s.laneCommand(ctx, linkID, sc, ref, it, m)
+		f, kept = s.laneCommand(ctx, linkID, sc, ref, it, m, stands)
 	default:
 		f = refusal(m.ReqID, proto.DecideInvalid, "no such action on this item")
 	}
@@ -812,7 +851,7 @@ func begunGone(reqID string) []byte {
 // session's writer takes them (holdLink, rule 1). An answer another answer
 // came before is kept and noted in the link's Recent as the losing attempt
 // it is, so its steps read "another answer first".
-func (s *Server) laneAnswer(ctx context.Context, linkID, sessionID string, sc laneScope, ref brakeman.Ref, it *inboxItem, m proto.Decide, own func(context.Context, proto.Answer) error) ([]byte, *laneOutcome) {
+func (s *Server) laneAnswer(ctx context.Context, linkID, sessionID string, sc laneScope, ref brakeman.Ref, it *inboxItem, m proto.Decide, own func(context.Context, proto.Answer) error, stands func() error) ([]byte, *laneOutcome) {
 	if m.Revision != ref.Question || m.Choice != nil || m.Rationale != "" || (m.Input == "") == (m.Text == "") {
 		return refusal(m.ReqID, proto.DecideInvalid, "an answer names its question's id as its revision and carries a choice's keys or a line"), nil
 	}
@@ -847,6 +886,11 @@ func (s *Server) laneAnswer(ctx context.Context, linkID, sessionID string, sc la
 	if _, no := s.scope(linkID, m.ReqID); no != nil {
 		return no, nil
 	}
+	if stands != nil {
+		if err := stands(); err != nil {
+			return linkRefusal(m.ReqID, err), nil
+		}
+	}
 	if ctx.Err() != nil {
 		return begunGone(m.ReqID), nil
 	}
@@ -860,7 +904,7 @@ func (s *Server) laneAnswer(ctx context.Context, linkID, sessionID string, sc la
 		opCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), submitTimeout)
 		defer cancel()
 		name := linkAnswerName(sc.link.Label)
-		hold := s.holdLink(linkID)
+		hold := s.holdLinkWith(linkID, stands)
 		if m.Input != "" {
 			err = local.AnswerAs(opCtx, ref.Question, m.Input, session.Actor{Name: name, ReqID: reqID, Withdrawn: ctx.Done(), Hold: hold})
 		} else {
@@ -906,7 +950,7 @@ func (s *Server) laneAnswer(ctx context.Context, linkID, sessionID string, sc la
 // the operation is the link's whatever its outcome (an error after the
 // taking included): its opId stays bound to this request (rule 2), and a
 // repeat reads its receipt.
-func (s *Server) laneCommand(ctx context.Context, linkID string, sc laneScope, ref brakeman.Ref, it *inboxItem, m proto.Decide) ([]byte, *laneOutcome) {
+func (s *Server) laneCommand(ctx context.Context, linkID string, sc laneScope, ref brakeman.Ref, it *inboxItem, m proto.Decide, stands func() error) ([]byte, *laneOutcome) {
 	if m.Input != "" || m.Text != "" || m.Choice != nil || m.Rationale != "" {
 		return refusal(m.ReqID, proto.DecideInvalid, "a task command carries its revision alone"), nil
 	}
@@ -931,6 +975,11 @@ func (s *Server) laneCommand(ctx context.Context, linkID string, sc laneScope, r
 		return linkRefusal(m.ReqID, err), nil
 	}
 	defer held.Release()
+	if stands != nil {
+		if err := stands(); err != nil {
+			return linkRefusal(m.ReqID, err), nil
+		}
+	}
 	if ctx.Err() != nil {
 		return begunGone(m.ReqID), nil
 	}
@@ -946,6 +995,14 @@ func (s *Server) laneCommand(ctx context.Context, linkID string, sc laneScope, r
 		if err := held.Stands(); err != nil {
 			ended = err
 			return err
+		}
+		// The connection's own check (a publisher's peer: its link held
+		// there and its switchyard heard), at the same boundary.
+		if stands != nil {
+			if err := stands(); err != nil {
+				ended = err
+				return err
+			}
 		}
 		return nil
 	}}
@@ -1245,7 +1302,7 @@ func (c *laneConn) decide(payload []byte, send func([]byte)) {
 	}
 	c.wg.Go(func() {
 		defer c.decides.Add(-1)
-		f := c.lane.Decide(c.ctx, c.linkID, c.sessionID, m, c.answer)
+		f := c.lane.Decide(c.ctx, c.linkID, c.sessionID, m, c.answer, nil)
 		if seam := c.lane.s.laneSeam; seam != nil && seam.beforeReply != nil {
 			seam.beforeReply(m.ReqID, f)
 		}
