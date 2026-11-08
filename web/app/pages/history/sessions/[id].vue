@@ -99,6 +99,8 @@ const runLink = computed(() => {
   return `/runs/${encodeURIComponent(c.runId)}${q}`
 })
 const tools = computed(() => Object.entries(record.value?.tools ?? {}).sort((a, b) => b[1] - a[1]))
+/** How each question ended: the answer entry that names it (`ref`), by the question's id. */
+const endings = computed(() => new Map((record.value?.entries ?? []).filter((e) => e.kind === 'answer' && e.ref).map((e) => [e.ref!, e])))
 
 // ---- Resume: asked first; a lost record asked a second time before the route is told the person confirmed it.
 
@@ -296,6 +298,12 @@ async function forget() {
                 <ul v-if="e.choices?.length" class="flex flex-wrap gap-1">
                   <li v-for="c in e.choices" :key="c"><UBadge :label="c" color="neutral" variant="outline" size="sm" /></li>
                 </ul>
+                <p v-if="e.kind === 'question'" class="text-xs text-muted" data-record-question-ended>
+                  <template v-if="e.id && endings.get(e.id)">
+                    <a :href="`#e${endings.get(e.id)!.seq}`" class="hover:underline">{{ recordEntryWords(endings.get(e.id)!).label }}</a><template v-if="endings.get(e.id)!.outcome === 'answered' && endings.get(e.id)!.message">: {{ endings.get(e.id)!.message }}</template>
+                  </template>
+                  <template v-else>Not answered in this record.</template>
+                </p>
               </li>
             </ol>
           </section>
