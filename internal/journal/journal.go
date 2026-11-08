@@ -133,6 +133,9 @@ type Options struct {
 	// go. Called by the removal with wmu held and no other lock of the
 	// journal's; it must not call the journal.
 	Removed func(id string)
+	// maxRecords is the ended records kept, MaxRecords when nil: a test's
+	// bound, the journal's own from Open.
+	maxRecords *int
 }
 
 // Journal is the session records, opened by Open. Every method is safe
@@ -142,6 +145,9 @@ type Journal struct {
 	st, sess *store.Store
 	o        Options
 	log      *slog.Logger
+	// maxRecords is the ended records kept (Prune), set before the writer
+	// starts; read with wmu held.
+	maxRecords int
 
 	// wmu orders the disk's writes (a record and the state file before
 	// it, a delete), taken before mu.
@@ -349,6 +355,10 @@ func Open(st *store.Store, o Options) (*Journal, error) {
 	}
 	if j.log == nil {
 		j.log = slog.Default()
+	}
+	j.maxRecords = MaxRecords
+	if o.maxRecords != nil {
+		j.maxRecords = *o.maxRecords
 	}
 	lockPath := filepath.Join(h.Dir(), Lock)
 	lock, why, held, err := takeLock(lockPath)
@@ -1716,9 +1726,6 @@ func (j *Journal) Prune() {
 	j.pruneLocked()
 }
 
-// maxRecords is MaxRecords; a test makes it smaller.
-var maxRecords = MaxRecords
-
 // pruneLocked is Prune. The caller holds wmu.
 func (j *Journal) pruneLocked() {
 	j.lockChoose()
@@ -1732,7 +1739,7 @@ func (j *Journal) pruneLocked() {
 			ended = append(ended, s)
 		}
 	}
-	if len(ended) <= maxRecords {
+	if len(ended) <= j.maxRecords {
 		j.unlockChoose()
 		return
 	}
@@ -1743,7 +1750,7 @@ func (j *Journal) pruneLocked() {
 		return ended[a].ID > ended[b].ID
 	})
 	var gone []string
-	for _, s := range ended[maxRecords:] {
+	for _, s := range ended[j.maxRecords:] {
 		gone = append(gone, s.ID)
 		j.choose(s.ID)
 	}
