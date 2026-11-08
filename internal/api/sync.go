@@ -123,6 +123,9 @@ type syncAdapter struct {
 	// afterReset, when a test sets it, runs as a replay has emptied the
 	// set and put its marker in, before it lists anything.
 	afterReset func()
+	// taken, when a test sets it, runs as the delivery has taken an entry
+	// from the set, before it reads the entry's document.
+	taken func(syncEntry)
 	// missing names the stores whose Open failed (unopened): a replay
 	// cannot list them, so none ends with `replayed`.
 	missing []string
@@ -307,8 +310,11 @@ func (a *syncAdapter) run(ctx context.Context) {
 			continue
 		}
 		e := *el.Value.(*syncEntry)
-		epoch := a.epoch
+		epoch, taken := a.epoch, a.taken
 		a.mu.Unlock()
+		if taken != nil {
+			taken(e)
+		}
 		if err := a.deliver(ctx, epoch, e); err != nil {
 			if !a.backoff(ctx, &delay) {
 				return
