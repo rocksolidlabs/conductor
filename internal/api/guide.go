@@ -464,7 +464,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			Summary: "Answer a decision as the operator: an option's index, a text, or both for a clarification, with a rationale and the rev read. Recorded, then applied by Yardmaster.",
 			CLI:     []string{"conductor", "decision", "respond", "dr-N", "--choice", "N"},
 			Input:   bodySchema(crew.Response{}),
-			Bounds:  map[string]int{"body": maxDecisionAnswerBody, "reply": maxDecisionReply}},
+			Bounds:  map[string]int{"body": maxDecisionRespondBody, "reply": maxDecisionReply}},
 		{Name: "decision_cancel", Scope: "admin", Method: http.MethodPost, Path: "/api/decisions/{did}/cancel", needs: needLauncher, Receipt: "ledger", Revision: "decision",
 			Summary: "Cancel an open or answered decision with why: its tasks cancelled with it, or released when release says so.",
 			CLI:     []string{"conductor", "decision", "cancel", "dr-N", "--why", "TEXT"},

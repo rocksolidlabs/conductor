@@ -4771,13 +4771,13 @@ approver.
 | `GET /api/sessions/{id}/decisions` | the attempt's own token | `?after=dr-N&limit=` (1 to 100, 100 when absent) → `{decisions, next?}`: its task's decisions in the run that holds them, newest first, each a summary `{id, requestId?, type, origin, task?, gate?, state, rev, question, answer?, why?, supersededBy?, createdAt, answeredAt?, closedAt?, cut?}`, the question, the answer and `why` each cut at a character's end to 1 KiB as encoded (`cut: true` when one was); a summary at most 4 KiB, a page at most 400 KiB; `next` the last id when more follow |
 | `GET /api/sessions/{id}/decisions/{did}` | the attempt's own token | `{decision}`: one of its task's whole, in the run that holds the attempt; `404 not_found` for any other id, another task's answered exactly as one that does not exist |
 | `POST /api/sessions/{id}/decisions/{did}/withdraw` | the attempt's own token | `{}` → `{decision}`, cancelled; `404 not_found` for a decision this attempt did not ask (another task's answered exactly as one that does not exist); `409 decision_answered`, `decision_closed`; `409 not_held` once the run is being continued ("dr-N's run was continued: its attempt is no longer the one that asked it. dr-N stays as it is in the run that continues this one, which waits on it; stop here, as this attempt's work is over"): nothing changes, and the continuation moves the decision open with its hold. Taken before the continuation begins (the run running or stopped), the decision is cancelled, and no continuation moves it. The decision is judged by its row in the transaction that cancels it |
-| `GET /api/decisions` | admin | `?state=&run=&ticket=KEY&after=dr-N&limit=` (1 to 100) → `{decisions, next?}`, newest first, each the record without its `history` and its `responses` (its `answer` stays; `GET /api/decisions/{did}` reads one whole), at most 48 KiB, so a page is at most 4,801 KiB |
-| `GET /api/decisions/{did}` | admin | `{decision, refs}`: the record whole and its evidence refs' resolutions, at most 1 MiB |
-| `POST /api/decisions/{did}/respond` | admin | `{responseId, choice?, text?, rationale?, expectedRev, byName?}` (at most 8 KiB) → `201 {receipt, decision}`, `200` for a repeat; `409 decision_answered` (naming who answered and when), `decision_closed`, `stale_decision` (what changed since the rev read), `stale_policy`, `response_conflict`, `not_held`; `403 not_approver`; `503 decision_moved` (ask once more) |
+| `GET /api/decisions` | admin | `?state=&run=&ticket=KEY&after=dr-N&limit=` (1 to 100) → `{decisions, next?}`, newest first, each the record without its `history` and its `responses` (its `answer` stays; `GET /api/decisions/{did}` reads one whole), at most 64 KiB, so a page is at most 6,401 KiB |
+| `GET /api/decisions/{did}` | admin | `{decision, refs}`: the record whole and its evidence refs' resolutions, at most 2 MiB |
+| `POST /api/decisions/{did}/respond` | admin | `{responseId, choice?, text?, rationale?, expectedRev, byName?}` (at most 32 KiB: `text` at most 4,096 bytes, `rationale` at most 2 KiB as encoded, `byName` cut to 64 characters, each as encoding/json sends it, escapes and all) → `201 {receipt, decision}`, `200` for a repeat; `409 decision_answered` (naming who answered and when), `decision_closed`, `stale_decision` (what changed since the rev read), `stale_policy`, `response_conflict`, `not_held`; `403 not_approver`; `503 decision_moved` (ask once more) |
 | `POST /api/decisions/{did}/cancel` | admin | `{commandId, why, release?, expectedRev}` → `{receipt, decision}`, `200` for a repeat; `409 op_conflict`, `stale_decision` (the operation's `expectedRev`, here and below, is judged in the transaction that applies it, after the look for a repeat of its id) |
 | `POST /api/decisions/{did}/comment` | admin | `{opId, kind: comment\|more_info, text, expectedRev}` (at most 8 KiB) → `{receipt, decision}`; `409 op_conflict`, `stale_decision`, `no_recipient` (a `more_info` without a live asking attempt); `429 decision_limit` |
 | `POST /api/decisions/{did}/route` | admin | `{opId, to: {kind: "operator"}, note?, expectedRev}` → `{receipt, decision}`; `409 op_conflict`, `stale_decision`; `429 decision_limit` |
-| `GET /api/dispatch/tickets/{key}/decisions` | admin | `{decisions}`: the decisions of the ticket's runs, newest first, at most 100, each as `GET /api/decisions` gives it (at most 4,801 KiB) |
+| `GET /api/dispatch/tickets/{key}/decisions` | admin | `{decisions}`: the decisions of the ticket's runs, newest first, at most 100, each as `GET /api/decisions` gives it (at most 6,401 KiB) |
 
 The record (`decision`): `{id, run (the run that holds it now), openedIn,
 origin (agent or plan), type (clarification, approval or assignment),
@@ -4794,7 +4794,12 @@ the commit, a candidate, an artifact's blob or the plan revision it is
 about). `policy` is `local/1`: one response from the operator decides it.
 `answer` is the accepted response in words. Each response's receipt
 (`responses`) is `{decision, k, status: accepted|refused, code?, words,
-actor, byName?, choice?, text?, rationale?, at, rev, repeat?}`; `applied`
+actor, byName?, choice?, text?, rationale?, at, rev, repeat?}`, at most
+32 KiB as encoded, the sum of its fields' worst cases (a text of 4,096
+bytes that escape to six each, the rationale, the actor and the name,
+`words` cut where a character ends to 3 KiB as encoded): a response
+whose fields are within their bounds is always kept, never refused for
+its receipt's size; `applied`
 is `{at, by: "yardmaster", run, task?, attempt?, response, validated,
 how: typed|task_file|released|cancelled|noted, tasks?, words}`. An
 operation's receipt is `{decision, op, seq, at, rev, words, repeat?}`.
