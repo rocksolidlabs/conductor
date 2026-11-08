@@ -4,7 +4,7 @@ import type { BrakemanConfig, BrakemanScope, BrakemanVisibility } from '~/utils/
 import { BOUNDS, BRAKEMAN_ADAPTERS, GRANTS, agentChoice, agentIdOf, agentItems as agentChoices, briefingLine, briefingList, configProblems, formField, sameConfig, grantHeld, observesOnly, scopeLines, scopeList, servedGrants, withGrant } from '~/utils/brakeman'
 import { ApiError } from '~/composables/useApi'
 import { SETTINGS_FIELD_UI as fieldUi } from '~/utils/settingsSections'
-import { followSaved, formMove, type BrakemanPart } from '~/utils/settingsSave'
+import { StaleRefusal, configForm, type BrakemanPart } from '~/utils/settingsSave'
 
 /**
  * Brakeman's card in Settings (docs/plans/brakeman.md, PR-6): its configuration, saved on the server (PUT /api/brakeman/config, at
@@ -36,13 +36,28 @@ function grant(op: string, on: boolean) {
 }
 
 const agents = ref<AgentInfo[]>([])
-const form = ref<BrakemanConfig | null>(null)
-/** The configuration the form was last set from: a form that still holds it is untouched, and follows the one saved. */
-const base = ref<BrakemanConfig | null>(null)
-/** The store's generation the form was set under: a reset (a new token, perhaps another server) leaves it another token's. */
-const formGen = ref(-1)
-/** What this form's save sent, while it is out: the form is then answered by that save alone (utils/settingsSave.ts, the one rule). */
-const sending = ref<BrakemanConfig | null>(null)
+const saved = computed(() => bk.state.value?.config ?? null)
+/**
+ * The form and what answers it (utils/settingsSave.ts, the one rule): a reply to an operation started here is applied only when its
+ * revision is newer than the form's, and only over the fields not edited since that operation began; the watcher below is off while
+ * one is in flight.
+ */
+const ctl = configForm<BrakemanConfig>({
+  generation: () => bk.generation.value,
+  saved: () => saved.value,
+  save: (c) => bk.saveConfig(c),
+  read: (gen) => bk.readConfig(gen),
+  isStale: (e) => e instanceof ApiError && e.code === 'stale_revision',
+  current: () => body.value,
+  same: sameConfig,
+  shown,
+})
+const form = ctl.form
+/** A save was refused: the configuration was saved elsewhere since the form was read (the form keeps its edits). */
+const stale = ctl.stale
+/** A choice's read of what is saved now failed: its words, the form and the refusal kept. */
+const staleError = ctl.staleError
+const choosing = ctl.choosing
 const scopeText = reactive<Record<keyof BrakemanScope, string>>({ projects: '', repos: '', crews: '', runs: '', sessions: '' })
 /** The briefing times as the form's field holds them, comma or space apart. */
 const briefingText = ref('')
@@ -51,26 +66,16 @@ const briefingText = ref('')
 function setBackground(on: boolean) {
   if (form.value) form.value.wake.mode = on ? 'background' : 'invoked'
 }
-/** A save was refused: the configuration was saved elsewhere since the form was read (the form keeps its edits). */
-const stale = ref(false)
 const readAgainOpen = ref(false)
-/** A choice's read of what is saved now failed: its words, the form and the refusal kept. */
-const staleError = ref('')
-const choosing = ref(false)
 const serverError = ref<{ field?: string; message: string } | null>(null)
 
-const saved = computed(() => bk.state.value?.config ?? null)
 const available = computed(() => bk.available.value)
 
-function reset(c: BrakemanConfig) {
-  formGen.value = bk.generation.value
-  base.value = JSON.parse(JSON.stringify(c)) as BrakemanConfig
-  form.value = JSON.parse(JSON.stringify(c)) as BrakemanConfig
-  for (const k of Object.keys(scopeText) as Array<keyof BrakemanScope>) scopeText[k] = scopeLines(c.scope[k])
-  briefingText.value = briefingLine(c.wake.briefings)
-  serverError.value = null
-  stale.value = false
-  staleError.value = ''
+/** Fields of the form were set, by a read or a reply (`all`: the form whole): the text fields follow them. */
+function shown(c: BrakemanConfig, fields: Array<keyof BrakemanConfig> | 'all') {
+  if (fields === 'all' || fields.includes('scope')) for (const k of Object.keys(scopeText) as Array<keyof BrakemanScope>) scopeText[k] = scopeLines(c.scope[k])
+  if (fields === 'all' || fields.includes('wake')) briefingText.value = briefingLine(c.wake.briefings)
+  if (fields === 'all') serverError.value = null
 }
 
 onMounted(async () => {
@@ -90,30 +95,19 @@ const body = computed<BrakemanConfig | null>(() => {
     if (list.length) scope[k] = list
   }
   const briefings = briefingList(briefingText.value)
-  const c = { ...form.value, scope, wake: { ...form.value.wake, briefings: briefings.length ? briefings : undefined }, account: form.value.account?.trim() || undefined, model: form.value.model?.trim() || undefined, cwd: form.value.cwd.trim() }
+  const c: BrakemanConfig = { ...form.value, scope, wake: { ...form.value.wake, briefings: briefings.length ? briefings : undefined }, account: form.value.account?.trim() || undefined, model: form.value.model?.trim() || undefined, cwd: form.value.cwd.trim() }
   return c
 })
-/** Whether the form holds what is not saved: Save is offered for it. */
-const dirty = computed(() => !!saved.value && !!body.value && !sameConfig(body.value, saved.value))
-/** Whether the form was changed here since it was set: compared with what it was set from, not with what is saved now. */
-const edited = computed(() => !!base.value && !!body.value && !sameConfig(body.value, base.value))
+const dirty = ctl.dirty
 
-// The form follows the configuration saved until it is changed here: a save from elsewhere replaces a form left untouched, and
-// leaves one being edited as it is (its save then meets the newer revision and is refused stale). A form set under the token
-// before is never kept (formMove): the new server's revision may be the same number as the one it was read at. While the form's own
-// save is out, that save's answer decides (send), never this watcher.
+// The form follows the configuration saved until it is changed here: a save from elsewhere replaces a form left untouched and older,
+// and leaves one being edited as it is (its save then meets the newer revision and is refused stale). A form set under the token
+// before is never kept (formMove): the new server's revision may be the same number as the one it was read at. While an operation
+// started here is in flight, or a stale refusal waits for its choice, this watcher keeps the form; it looks again as one ends.
 watch(
-  () => [bk.generation.value, saved.value?.rev],
+  () => [bk.generation.value, saved.value?.rev, ctl.busy.value],
   () => {
-    const move = formMove(form.value ? { gen: formGen.value, edited: edited.value, saving: !!sending.value } : null, bk.generation.value, !!saved.value)
-    if (move === 'set') reset(saved.value!)
-    else if (move === 'drop') {
-      form.value = null
-      base.value = null
-      serverError.value = null
-      stale.value = false
-      staleError.value = ''
-    }
+    if (ctl.follow() === 'drop') serverError.value = null
   },
   { immediate: true },
 )
@@ -181,67 +175,26 @@ function take(): BrakemanPart | null {
 async function send(c: BrakemanConfig, gen: number) {
   if (bk.generation.value !== gen) throw new Error("The token changed before the save was sent: the configuration shown is this server's.")
   serverError.value = null
-  sending.value = c
   try {
-    const out = await bk.saveConfig(c)
-    // What was typed while the save was out is kept for the next Save, against the revision saved now (followSaved): a field
-    // changed back to what it was read as among them. The rest follows what was saved.
-    const now = body.value ? (JSON.parse(JSON.stringify(body.value)) as BrakemanConfig) : null
-    if (!form.value || !now) reset(out.config)
-    else {
-      const followed = followSaved(form.value, c, out.config, now)
-      if (followed.includes('scope')) for (const k of Object.keys(scopeText) as Array<keyof BrakemanScope>) scopeText[k] = scopeLines(form.value.scope[k])
-      if (followed.includes('wake')) briefingText.value = briefingLine(form.value.wake.briefings)
-      base.value = JSON.parse(JSON.stringify(out.config)) as BrakemanConfig
-      stale.value = false
-      staleError.value = ''
-    }
+    // An operation that began at the click (utils/settingsSave.ts, the one rule): what was typed since is kept for the next Save.
+    await ctl.save(c, gen)
   } catch (e) {
-    // Answered after a new token: the form is this server's now (formMove), and the answer is the token before's.
-    if (bk.generation.value !== gen) throw e
-    if (e instanceof ApiError && e.code === 'stale_revision') {
-      // The form is left as it is (formMove keeps an edited one), and nothing is awaited before the flag is set: the two choices
-      // each read what is saved now, for this form only (choose).
-      stale.value = true
-      throw new Error('they were changed elsewhere since this form was read', { cause: e })
-    }
+    // Answered after a new token: the form is this server's now (formMove), and the answer is the token before's. Refused stale:
+    // the form is left as it is, and the two choices each read what is saved now, for this form only.
+    if (bk.generation.value !== gen || e instanceof StaleRefusal) throw e
     const field = e instanceof ApiError && typeof e.details.field === 'string' ? e.details.field : undefined
     serverError.value = { field, message: (e as Error).message }
     throw e
-  } finally {
-    sending.value = null
   }
 }
-/**
- * A choice of the stale refusal: reads what is saved now, fresh, and hands it to `then` only while the form is the one the choice
- * was made on (the same object, under the same generation). A read that fails leaves the form and the refusal as they are, with the
- * failure said beside them.
- */
-async function choose(then: (now: BrakemanConfig) => void) {
-  const f = form.value
-  const gen = formGen.value
-  staleError.value = ''
-  choosing.value = true
-  try {
-    const now = await bk.readConfig(gen)
-    if (form.value === f && formGen.value === gen) then(now)
-  } catch (e) {
-    if (form.value === f && formGen.value === gen) staleError.value = `Not read: ${(e as Error).message}`
-  } finally {
-    choosing.value = false
-  }
-}
-/** The first choice: the configuration saved now replaces the form, its edits dropped (the person confirmed). */
-function readAgain() {
+/** The first choice of the stale refusal: what is saved now replaces the form, its edits made before the choice dropped (confirmed). */
+async function readAgain() {
   readAgainOpen.value = false
-  return choose((now) => reset(now))
+  if (await ctl.readAgain()) serverError.value = null
 }
 /** The second: the form keeps its edits and takes the revision saved now, so the next Save replaces the other change. */
 function keepMine() {
-  return choose((now) => {
-    if (form.value) form.value.rev = now.rev
-    stale.value = false
-  })
+  return ctl.keepMine()
 }
 defineExpose({ dirty, blocked: computed(() => Object.keys(problems.value).length > 0), take })
 </script>

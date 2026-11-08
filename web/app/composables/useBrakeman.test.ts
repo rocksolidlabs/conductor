@@ -5,7 +5,8 @@ import { makeAgain } from '../utils/brakemanCards'
 import { ApiError } from './useApi'
 import { BrakemanLive, asBrakemanEvent, brakemanLive, keepOpened, sendTwice, useBrakeman, type BrakemanReads } from './useBrakeman'
 import { DispatchLive } from './useDispatchLive'
-import { requestNumber } from '../utils/brakeman'
+import { requestNumber, sameConfig } from '../utils/brakeman'
+import { StaleRefusal, configForm } from '../utils/settingsSave'
 
 // Brakeman's live store and its writes (docs/plans/brakeman.md, PR-6): an id kept across a lost reply, and the `brakeman` events
 // folded into the list.
@@ -859,6 +860,145 @@ describe('the makes kept, across a new token', () => {
       before(() => Promise.resolve(stateOf(conf({ rev: 5 }))))
       await out
       expect(bk.state.value?.config).toMatchObject({ rev: 6, cwd: '/saved' })
+    })
+  })
+
+  // Settings' Brakeman form (utils/settingsSave.ts, the one rule) on this store: a reply is applied only when its revision is newer
+  // than the form's, and only over the fields not edited since its operation began; the watcher is off while one is out. The two
+  // sequences of Codex's third round, each of which ended with the form wrong and Save not offered.
+  describe("and Settings' form, answered by revision (Codex's third round)", () => {
+    const conf = (reads: number, rev: number, over: Partial<BrakemanConfig> = {}) => ({ enabled: true, agentId: 'claude', cwd: '/srv', allowConductorTools: false, visibility: {} as never, scope: {}, permissions: { observe: true, draft: true, propose: true }, wake: { mode: 'invoked' }, budget: { turnMinutes: 15, readsPerTurn: reads, turnsPerDay: 40 }, rev, ...over }) as BrakemanConfig
+    const stateOf = (c: BrakemanConfig): BrakemanState => ({ config: c, current: null, queue: [], turnsToday: 0 })
+    const copy = <T>(v: T) => JSON.parse(JSON.stringify(v)) as T
+    const unreachable = () => Promise.reject(new ApiError(0, 'network', 'Cannot reach the server'))
+    let stops: Array<() => void> = []
+    afterEach(() => {
+      for (const stop of stops) stop()
+      stops = []
+    })
+    /** The card's form on the store, its watcher run at once on every change (a sync flush: the harshest order). */
+    function formOn(bk: ReturnType<typeof useBrakeman>) {
+      const ctl = configForm<BrakemanConfig>({
+        generation: () => bk.generation.value,
+        saved: () => bk.state.value?.config ?? null,
+        save: (c) => bk.saveConfig(c),
+        read: (gen) => bk.readConfig(gen),
+        isStale: (e) => e instanceof ApiError && e.code === 'stale_revision',
+        current: (f) => (f ? copy(f) : null),
+        same: sameConfig,
+        shown: () => {},
+      })
+      stops.push(watch(() => [bk.generation.value, bk.state.value?.config?.rev, ctl.busy.value], () => void ctl.follow(), { immediate: true, flush: 'sync' }))
+      return ctl
+    }
+
+    it('save 400, 300 typed back while it is out, an old read answers 300, the PUT completes: the store holds 400 and Save is offered', async () => {
+      const bk = useBrakeman()
+      const live = brakemanLive()
+      answers.push(() => Promise.resolve(stateOf(conf(300, 2))))
+      await live.readState()
+      const ctl = formOn(bk)
+      expect(ctl.form.value).toMatchObject({ rev: 2, budget: { readsPerTurn: 300 } })
+      ctl.form.value!.budget.readsPerTurn = 400
+      const put = held()
+      const saving = ctl.save(copy(ctl.form.value!), bk.generation.value)
+      // A read of the state that left after the PUT, before the server wrote it, and answers first with what was saved before.
+      const get = held()
+      const reading = live.readState()
+      ctl.form.value!.budget.readsPerTurn = 300
+      get(() => Promise.resolve(stateOf(conf(300, 2))))
+      await reading
+      // The PUT completes; the read the save asks after it fails, so nothing repairs the store but the revisions compared.
+      answers.push(unreachable)
+      put(() => Promise.resolve({ config: conf(400, 3) }))
+      await saving
+      await settle()
+      expect(bk.state.value?.config).toMatchObject({ rev: 3, budget: { readsPerTurn: 400 } })
+      // The 300 typed while the save was out is the person's, against revision 3: the form differs from what is saved, Save offered.
+      expect(ctl.form.value).toMatchObject({ rev: 3, budget: { readsPerTurn: 300 } })
+      expect(ctl.dirty.value).toBe(true)
+      expect(ctl.edited.value).toBe(true)
+
+      // The same order with nothing typed meanwhile: the form shows the 400 saved, and nothing is left to save.
+      ctl.form.value!.budget.readsPerTurn = 400
+      expect(ctl.dirty.value).toBe(false)
+      ctl.form.value!.budget.readsPerTurn = 500
+      const put2 = held()
+      const saving2 = ctl.save(copy(ctl.form.value!), bk.generation.value)
+      const get2 = held()
+      const reading2 = live.readState()
+      get2(() => Promise.resolve(stateOf(conf(400, 3))))
+      await reading2
+      answers.push(unreachable)
+      put2(() => Promise.resolve({ config: conf(500, 4) }))
+      await saving2
+      await settle()
+      expect(bk.state.value?.config).toMatchObject({ rev: 4, budget: { readsPerTurn: 500 } })
+      expect(ctl.form.value).toMatchObject({ rev: 4, budget: { readsPerTurn: 500 } })
+      expect(ctl.dirty.value).toBe(false)
+      expect(sent.filter((x) => x.path === '/api/brakeman/config').map((x) => (x.body as { rev: number }).rev)).toEqual([2, 3])
+    })
+
+    it("Keep mine: read 300, 400 typed, 500 saved elsewhere, refused stale, 300 typed back, Keep mine: the form keeps 300 and the next Save replaces the other's", async () => {
+      const bk = useBrakeman()
+      const live = brakemanLive()
+      answers.push(() => Promise.resolve(stateOf(conf(300, 2))))
+      await live.readState()
+      const ctl = formOn(bk)
+      ctl.form.value!.budget.readsPerTurn = 400
+      answers.push(() => Promise.reject(new ApiError(409, 'stale_revision', 'Saved elsewhere meanwhile.')))
+      await expect(ctl.save(copy(ctl.form.value!), bk.generation.value)).rejects.toBeInstanceOf(StaleRefusal)
+      expect(ctl.stale.value).toBe(true)
+      ctl.form.value!.budget.readsPerTurn = 300
+      expect(ctl.edited.value).toBe(false)
+      // Keep mine: its read publishes the other writer's 500 in the store before it resolves; the watcher, off, keeps the form.
+      answers.push(() => Promise.resolve(stateOf(conf(500, 3))))
+      expect(await ctl.keepMine()).toBe(true)
+      await settle()
+      expect(bk.state.value?.config).toMatchObject({ rev: 3, budget: { readsPerTurn: 500 } })
+      expect(ctl.form.value).toMatchObject({ rev: 3, budget: { readsPerTurn: 300 } })
+      expect(ctl.stale.value).toBe(false)
+      expect(ctl.dirty.value).toBe(true)
+      // The next Save sends the 300 kept, at the revision read, and replaces the other change.
+      answers.push(() => Promise.resolve({ config: conf(300, 4) }))
+      answers.push(() => Promise.resolve(stateOf(conf(300, 4))))
+      await ctl.save(copy(ctl.form.value!), bk.generation.value)
+      await settle()
+      expect(sent.at(-2)).toMatchObject({ path: '/api/brakeman/config', body: { rev: 3, config: { budget: { readsPerTurn: 300 } } } })
+      expect(ctl.form.value).toMatchObject({ rev: 4, budget: { readsPerTurn: 300 } })
+      expect(ctl.dirty.value).toBe(false)
+    })
+
+    it('Read again: what is saved now replaces the edits made before the choice, but not a field typed while its read is out', async () => {
+      const bk = useBrakeman()
+      const live = brakemanLive()
+      answers.push(() => Promise.resolve(stateOf(conf(300, 2))))
+      await live.readState()
+      const ctl = formOn(bk)
+      ctl.form.value!.budget.readsPerTurn = 400
+      answers.push(() => Promise.reject(new ApiError(409, 'stale_revision', 'Saved elsewhere meanwhile.')))
+      await expect(ctl.save(copy(ctl.form.value!), bk.generation.value)).rejects.toBeInstanceOf(StaleRefusal)
+      const read = held()
+      const choice = ctl.readAgain()
+      ctl.form.value!.cwd = '/typed'
+      read(() => Promise.resolve(stateOf(conf(500, 3, { cwd: '/theirs' }))))
+      expect(await choice).toBe(true)
+      expect(ctl.form.value).toMatchObject({ rev: 3, cwd: '/typed', budget: { readsPerTurn: 500 } })
+      expect(ctl.stale.value).toBe(false)
+      expect(ctl.dirty.value).toBe(true)
+      // A read that fails says so, and leaves the form and the refusal as they are; the watcher, back on, does not set the form.
+      ctl.form.value!.cwd = '/theirs'
+      ctl.form.value!.budget.readsPerTurn = 600
+      answers.push(() => Promise.reject(new ApiError(409, 'stale_revision', 'Saved elsewhere meanwhile.')))
+      await expect(ctl.save(copy(ctl.form.value!), bk.generation.value)).rejects.toBeInstanceOf(StaleRefusal)
+      ctl.form.value!.budget.readsPerTurn = 500
+      answers.push(unreachable)
+      expect(await ctl.keepMine()).toBe(false)
+      answers.push(() => Promise.resolve(stateOf(conf(700, 4, { cwd: '/theirs' }))))
+      await live.readState()
+      expect(ctl.staleError.value).toBe('Not read: Cannot reach the server')
+      expect(ctl.stale.value).toBe(true)
+      expect(ctl.form.value).toMatchObject({ rev: 3, budget: { readsPerTurn: 500 } })
     })
   })
 })

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { DesktopSettings } from './desktop'
-import { ReplyOrder, followSaved, formMove, holds, holdsFields, saveParts, saveWords, together, type AppPart } from './settingsSave'
+import { answer, followSaved, formMove, newer, holds, holdsFields, saveParts, saveWords, together, type AppPart } from './settingsSave'
 
 /** A part that records its call in `calls` and answers `value`, or throws `fail`. */
 function part<T>(calls: string[], name: string, value: T, fail?: string) {
@@ -147,37 +147,51 @@ describe('what answers an edit', () => {
     expect(holdsFields(null)).toBe(false)
   })
 
-  it("the configuration's watcher: a form is kept while its own save is out, changed back or not (Codex's second round)", () => {
-    // Changed back to what it was set from while its save was out: the store's answer, taken first, would otherwise set it.
-    expect(formMove({ gen: 1, edited: false, saving: true }, 1, true)).toBe('keep')
-    expect(formMove({ gen: 1, edited: false, saving: false }, 1, true)).toBe('set')
-    // A new token's form is the new server's, whatever save is out.
-    expect(formMove({ gen: 0, edited: false, saving: true }, 1, true)).toBe('set')
-    expect(formMove({ gen: 0, edited: true, saving: true }, 1, false)).toBe('drop')
+  it('a reply is applied only when its revision is newer than the form\'s, and only over the fields not edited since the operation began (Codex\'s third round)', () => {
+    // The one comparison: a later revision is newer; the same one, an older one, or none is not.
+    expect(newer({ rev: 3 }, { rev: 2 })).toBe(true)
+    expect(newer({ rev: 2 }, { rev: 2 })).toBe(false)
+    expect(newer({ rev: 1 }, { rev: 2 })).toBe(false)
+    expect(newer({ rev: 1 }, null)).toBe(true)
+    expect(newer(null, { rev: 1 })).toBe(false)
+    // Saved at 400 from revision 1; 300 typed again while the save was out: the answer takes the rest and the revision, not that field.
+    const form = conf(300, 1)
+    expect(answer(form, conf(400, 1), conf(400, 2), conf(300, 1))).toEqual(['rev', 'cwd', 'scope'])
+    expect(form).toEqual(conf(300, 2))
+    // A reply no newer than the form (an older read that answers late, or the same revision again) is discarded whole.
+    expect(answer(form, conf(300, 2), conf(500, 1), conf(300, 2))).toBeNull()
+    expect(answer(form, conf(300, 2), { ...conf(300, 2), cwd: '/other' }, conf(300, 2))).toBeNull()
+    expect(form).toEqual(conf(300, 2))
+    // Keep mine's: the revision alone, the edits kept.
+    const mine = conf(300, 2)
+    expect(answer(mine, conf(300, 2), { ...conf(500, 3), cwd: '/theirs' }, conf(300, 2), ['rev'])).toEqual(['rev'])
+    expect(mine).toEqual(conf(300, 3))
+  })
+
+  it("the configuration's watcher: off while an operation is out or a stale refusal waits, and it follows only a newer revision (Codex's third round)", () => {
+    // Held: an operation started here is in flight, or a refusal waits for its choice; that reply, or that choice, decides.
+    expect(formMove({ gen: 1, rev: 2, edited: false, held: true }, 1, { rev: 3 })).toBe('keep')
+    expect(formMove({ gen: 1, rev: 2, edited: false, held: false }, 1, { rev: 3 })).toBe('set')
+    // Not newer than the form: kept, so a form answered by its own save is not set again from the same revision.
+    expect(formMove({ gen: 1, rev: 3, edited: false }, 1, { rev: 3 })).toBe('keep')
+    expect(formMove({ gen: 1, rev: 3, edited: false }, 1, { rev: 2 })).toBe('keep')
+    // A new token's form is the new server's, whatever is out.
+    expect(formMove({ gen: 0, rev: 2, edited: false, held: true }, 1, { rev: 2 })).toBe('set')
+    expect(formMove({ gen: 0, rev: 2, edited: true, held: true }, 1, null)).toBe('drop')
   })
 
   it("never keeps a form set under the token before, though the new server's revision is the same", () => {
     // Settings' form, edited, read at revision 2 of the first server; a reset, then the second server's configuration, also revision 2.
-    expect(formMove({ gen: 0, edited: true }, 1, true)).toBe('set')
-    expect(formMove({ gen: 0, edited: false }, 1, true)).toBe('set')
+    expect(formMove({ gen: 0, rev: 2, edited: true }, 1, { rev: 2 })).toBe('set')
+    expect(formMove({ gen: 0, rev: 2, edited: false }, 1, { rev: 2 })).toBe('set')
     // Before the second server has answered, the first one's form is not left to save.
-    expect(formMove({ gen: 0, edited: true }, 1, false)).toBe('drop')
+    expect(formMove({ gen: 0, rev: 2, edited: true }, 1, null)).toBe('drop')
     // Under one token, a form follows what is saved until it is changed here.
-    expect(formMove(null, 1, true)).toBe('set')
-    expect(formMove({ gen: 1, edited: false }, 1, true)).toBe('set')
-    expect(formMove({ gen: 1, edited: true }, 1, true)).toBe('keep')
-    expect(formMove(null, 1, false)).toBe('keep')
-    expect(formMove({ gen: 1, edited: true }, 1, false)).toBe('keep')
-  })
-
-  it("a reply that arrives after one asked later is dropped (Codex's second round)", () => {
-    const order = new ReplyOrder()
-    const older = order.ask()
-    const fresh = order.ask()
-    expect(order.take(fresh)).toBe(true)
-    expect(order.take(older)).toBe(false)
-    // Asked after the one taken: taken.
-    expect(order.take(order.ask())).toBe(true)
+    expect(formMove(null, 1, { rev: 2 })).toBe('set')
+    expect(formMove({ gen: 1, rev: 2, edited: false }, 1, { rev: 3 })).toBe('set')
+    expect(formMove({ gen: 1, rev: 2, edited: true }, 1, { rev: 3 })).toBe('keep')
+    expect(formMove(null, 1, null)).toBe('keep')
+    expect(formMove({ gen: 1, rev: 2, edited: true }, 1, null)).toBe('keep')
   })
 })
 

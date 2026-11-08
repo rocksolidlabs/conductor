@@ -1,3 +1,4 @@
+import { computed, ref, type Ref } from 'vue'
 import type { DesktopSettings } from './desktop'
 
 /**
@@ -95,33 +96,49 @@ export function together(before: DesktopSettings, next: DesktopSettings, brakema
 }
 
 /*
- * What answers the person's edits: the page's one rule, for both parts of its form (#707's review). What the person typed after the
- * click is theirs: a save's answer, a re-read the configuration's watcher makes and a reply that arrives late never write over it.
- * Each path that answers a form goes through this rule:
+ * What answers the person's edits: the page's one rule (#707's review). What the person typed after an operation began is theirs:
+ * no reply, and no move of the configuration saved under the form, writes over it.
  *
- * - a save's answer (`followSaved`): the fields still holding what was sent follow what was saved; a field changed since the click
- *   keeps its edit, for the next Save, even when it was changed back to what it was before;
- * - a save the app answers by moving the page (`holdsFields`): the app may restart the server and load this page on the new one's
- *   port, another origin, where nothing typed meanwhile could follow, so the page's fields are held from the click until it answers;
- * - the configuration saved moving under the form (`formMove`): a form of this token's follows it until it is changed here, and
- *   never while its own save is out, whose answer decides;
- * - a reply that arrives after one asked later (`ReplyOrder`): it is dropped, so the store never goes back to an older read.
+ * - Brakeman's form holds a server revision (its `rev`). A reply to an operation the page started (a save's, a read's, the stale
+ *   refusal's Read again and Keep mine) is applied only when the revision it carries is newer than the one the form holds (`newer`,
+ *   the one comparison), and only over the fields the person has not edited since that operation began (`answer`, the one guard).
+ *   The store takes a configuration by the same comparison: never over a newer one, whatever order the replies came in.
+ * - While any operation the page started is in flight, the watcher that mirrors the store into the form is off (`formMove`'s
+ *   `held`), and it looks again only once that operation has applied or discarded its result (`configForm`'s `op`).
+ * - A save the app answers by moving the page (`holdsFields`): the app may restart the server and load this page on the new one's
+ *   port, another origin, where nothing typed meanwhile could follow, so the page's fields are held from the click until it answers.
+ *   The app's settings carry no revision: a save's answer follows the fields still holding what was sent (`followSaved`).
  */
 
 /**
  * The form after a save of `sent` answered `now`: a field whose value `current` (the form as it is, by default the form itself)
  * still holds what was sent (or, before anything was read, every field) follows what is saved now, a copy of it; a field changed
- * while the save was out keeps its edit, for the next Save. Returns the fields that followed.
+ * while the save was out keeps its edit, for the next Save. `keys` limits the fields that may follow. Returns the fields that followed.
  */
-export function followSaved<T extends object>(form: T, sent: T | null, now: T, current: T = form): Array<keyof T> {
+export function followSaved<T extends object>(form: T, sent: T | null, now: T, current: T = form, keys?: ReadonlyArray<keyof T>): Array<keyof T> {
   const followed: Array<keyof T> = []
-  const keys = new Set([...Object.keys(now), ...(sent ? Object.keys(sent) : [])]) as Set<keyof T>
-  for (const k of keys) {
+  const all = keys ?? ([...new Set([...Object.keys(now), ...(sent ? Object.keys(sent) : [])])] as Array<keyof T>)
+  for (const k of all) {
     if (sent && stable(current[k]) !== stable(sent[k])) continue
     form[k] = (now[k] === undefined ? undefined : JSON.parse(JSON.stringify(now[k]))) as T[keyof T]
     followed.push(k)
   }
   return followed
+}
+
+/** The one comparison: whether `a` carries a revision newer than `b`'s (no `b`: none is held). */
+export function newer(a: { rev: number } | null | undefined, b: { rev: number } | null | undefined): boolean {
+  return !!a && (!b || a.rev > b.rev)
+}
+
+/**
+ * The one guard: `reply` is applied to `form` only when its revision is newer than the form's (`newer`), and only over the fields
+ * that `current` (the form as it is now) holds as the operation took them (`began`); `keys` limits the fields it may set (Keep
+ * mine's: the revision alone). Returns the fields set, or null when the reply was discarded.
+ */
+export function answer<T extends { rev: number }>(form: T, began: T, reply: T, current: T, keys?: ReadonlyArray<keyof T>): Array<keyof T> | null {
+  if (!newer(reply, form)) return null
+  return followSaved(form, began, reply, current, keys)
 }
 
 /** Whether a save holds the page's fields until it is answered: one that sends the app's settings, which the app may answer by moving the page. */
@@ -130,34 +147,193 @@ export function holdsFields(app: DesktopSettings | null): boolean {
 }
 
 /**
- * What Settings' Brakeman form does when the token or the configuration saved moves: `set` it from the configuration saved, `drop`
- * it, or `keep` it. A form set under another token (the store's generation, which a reset moves) is never kept, edited or not: the
+ * What the watcher does when the token or the configuration saved moves: `set` the form from the configuration saved, `drop` it,
+ * or `keep` it. A form set under another token (the store's generation, which a reset moves) is never kept, edited or not: the
  * server may be another one, whose revision 2 is not the revision the form was read at, so its settings would be saved over
- * another's. A form of this token's follows the configuration saved until it is changed here, and is kept while its own save is out
- * (`saving`): the store takes that save's answer before the form does, and a form changed back meanwhile to what it was set from
- * would otherwise be set from it, its edit lost (#707's review); the save's answer follows it (`followSaved`).
+ * another's. A form of this token's is kept while it is `held` (an operation the page started is in flight, or a stale refusal
+ * waits for its choice: that operation's reply, or that choice, decides), and otherwise follows the configuration saved when it was
+ * not changed here and the configuration saved is newer than the form's (`newer`).
  */
-export function formMove(form: { gen: number; edited: boolean; saving?: boolean } | null, gen: number, saved: boolean): 'set' | 'drop' | 'keep' {
+export function formMove(form: { gen: number; rev: number; edited: boolean; held?: boolean } | null, gen: number, saved: { rev: number } | null): 'set' | 'drop' | 'keep' {
   if (form && form.gen !== gen) return saved ? 'set' : 'drop'
-  if (!saved || form?.saving) return 'keep'
-  return !form || !form.edited ? 'set' : 'keep'
+  if (!saved) return 'keep'
+  if (!form) return 'set'
+  if (form.held) return 'keep'
+  return !form.edited && newer(saved, form) ? 'set' : 'keep'
+}
+
+/** What a configuration form needs of its page: the store, the save and read routes, and the form's own text fields. */
+export interface ConfigFormDeps<T extends { rev: number }> {
+  /** The store's generation now (a reset, a new token, moves it). */
+  generation: () => number
+  /** The configuration the store holds now, null before it was read. */
+  saved: () => T | null
+  /** Saves a configuration at its revision: what was saved, or the refusal thrown. */
+  save: (c: T) => Promise<{ config: T }>
+  /** Reads the configuration saved now, fresh, for a form set under the generation given (throws when the token moved). */
+  read: (gen: number) => Promise<T>
+  /** Whether a save's refusal says the configuration was saved elsewhere since the form's revision. */
+  isStale: (e: unknown) => boolean
+  /** The form as the server takes it (its text fields folded in), null without a form. */
+  current: (form: T | null) => T | null
+  /** Whether two configurations hold the same, their revisions aside. */
+  same: (a: T, b: T) => boolean
+  /** Fields of the form were set (`all`: the form was set whole): its text fields follow them. */
+  shown: (form: T, fields: Array<keyof T> | 'all') => void
 }
 
 /**
- * The order of the replies to one kind of read (Brakeman's state, its configuration among it): each request takes a number as it is
- * asked (`ask`), and its reply is taken (`take` true) only when no request asked after it has had its reply taken. A reply that
- * arrives after a later one's is older than what is held, and is dropped.
+ * Brakeman's form on Settings and the rule above, in one place, so that each path that answers it goes through `answer` and the
+ * watcher through `formMove`: `form`, what the person edits; `base`, what it was set from, by a read or a reply (a form that still
+ * holds it is not edited); `gen`, the generation it was set under; `busy`, the operations the page started that are in flight;
+ * `stale`, a save refused since the configuration was saved elsewhere, until a choice answers it.
  */
-export class ReplyOrder {
-  private asked = 0
-  private taken = 0
-  ask(): number {
-    return ++this.asked
+export function configForm<T extends { rev: number }>(deps: ConfigFormDeps<T>) {
+  const form = ref(null) as Ref<T | null>
+  const base = ref(null) as Ref<T | null>
+  const gen = ref(-1)
+  const busy = ref(0)
+  const stale = ref(false)
+  /** A choice's read of what is saved now failed: its words, the form and the refusal kept. */
+  const staleError = ref('')
+  const choosing = ref(false)
+  const current = () => deps.current(form.value)
+  /** Whether the form was changed here since it was set: compared with what it was set from, not with what is saved now. */
+  const edited = computed(() => {
+    const c = current()
+    return !!base.value && !!c && !deps.same(c, base.value)
+  })
+  /** Whether the form holds what is not saved: Save is offered for it. */
+  const dirty = computed(() => {
+    const c = current()
+    const s = deps.saved()
+    return !!s && !!c && !deps.same(c, s)
+  })
+  const copy = (c: T) => JSON.parse(JSON.stringify(c)) as T
+  const snap = () => {
+    const c = current()
+    return c ? copy(c) : null
   }
-  take(n: number): boolean {
-    if (n < this.taken) return false
-    this.taken = n
-    return true
+
+  function reset(c: T) {
+    gen.value = deps.generation()
+    base.value = copy(c)
+    form.value = copy(c)
+    stale.value = false
+    staleError.value = ''
+    deps.shown(form.value, 'all')
+  }
+  function drop() {
+    form.value = null
+    base.value = null
+    stale.value = false
+    staleError.value = ''
+  }
+  /** The watcher's step: the move `formMove` decides, made. */
+  function follow() {
+    const s = deps.saved()
+    const f = form.value
+    const move = formMove(f ? { gen: gen.value, rev: f.rev, edited: edited.value, held: busy.value > 0 || stale.value } : null, deps.generation(), s)
+    if (move === 'set') reset(s!)
+    else if (move === 'drop') drop()
+    return move
+  }
+  /**
+   * An operation the page started: the watcher is off while it is out, and looks again once it has applied or discarded its result
+   * (`follow`, as `busy` falls). `run` hands each reply to the guard (`answered`), which applies it by `answer` over the fields
+   * still holding what `began` holds (what a save took at the click; by default, the form as the operation starts) and sets what
+   * the form was set from to the reply. Whether it was applied.
+   */
+  async function op<R>(run: (answered: (reply: T, keys?: ReadonlyArray<keyof T>) => boolean) => Promise<R>, from?: T): Promise<R> {
+    const f = form.value
+    const at = gen.value
+    // Copies: the form as the server takes it shares the form's nested objects, which the person edits in place.
+    const began = from ? copy(from) : snap()
+    busy.value++
+    try {
+      return await run((reply, keys) => {
+        const now = snap()
+        // The form the operation began on, under its generation: a reset meanwhile made the form another's.
+        if (!f || !began || !now || form.value !== f || gen.value !== at) return false
+        const fields = answer(f, began, reply, now, keys)
+        if (!fields) return false
+        base.value = copy(reply)
+        deps.shown(f, fields)
+        return true
+      })
+    } finally {
+      busy.value--
+    }
+  }
+
+  /**
+   * Saves `sent`, the form as the page's Save took it at the click, under the generation `at`: an operation that began at the click,
+   * so what was typed since is kept for the next Save against the revision saved (`answered`). A stale refusal sets `stale` and
+   * throws a `StaleRefusal`; the form is left as it is, held while the refusal waits for its choice.
+   */
+  async function save(sent: T, at: number): Promise<void> {
+    await op(async (answered) => {
+      try {
+        const out = await deps.save(sent)
+        if (answered(out.config)) {
+          stale.value = false
+          staleError.value = ''
+        }
+      } catch (e) {
+        if (deps.generation() === at && deps.isStale(e)) {
+          stale.value = true
+          throw new StaleRefusal(e)
+        }
+        throw e
+      }
+    }, sent)
+  }
+  /**
+   * A choice of the stale refusal: reads what is saved now, fresh, as an operation of its own, and hands the reply to `apply`, whose
+   * guard applies it only to the form the choice was made on, under its generation, when it is newer. A read that fails leaves the
+   * form and the refusal as they are, the failure said. Whether the reply was applied.
+   */
+  async function choose(apply: (now: T, answered: (reply: T, keys?: ReadonlyArray<keyof T>) => boolean) => boolean): Promise<boolean> {
+    const f = form.value
+    const at = gen.value
+    staleError.value = ''
+    choosing.value = true
+    try {
+      return await op(async (answered) => {
+        try {
+          return apply(await deps.read(at), answered)
+        } catch (e) {
+          if (form.value === f && gen.value === at) staleError.value = `Not read: ${(e as Error).message}`
+          return false
+        }
+      })
+    } finally {
+      choosing.value = false
+    }
+  }
+  /** The first choice: what is saved now replaces the form, but for what was typed since the choice (the person confirmed). */
+  function readAgain(): Promise<boolean> {
+    return choose((now, answered) => {
+      if (!answered(now)) return false
+      stale.value = false
+      return true
+    })
+  }
+  /** The second: the form keeps its edits and takes the revision saved now (and is set from it), so the next Save replaces the other. */
+  function keepMine(): Promise<boolean> {
+    return choose((now, answered) => {
+      if (!answered(now, ['rev'])) return false
+      stale.value = false
+      return true
+    })
+  }
+  return { form, base, gen, busy, stale, staleError, choosing, edited, dirty, reset, drop, follow, op, save, readAgain, keepMine }
+}
+
+/** A save refused since the configuration was saved elsewhere since the form's revision (its cause the server's refusal). */
+export class StaleRefusal extends Error {
+  constructor(cause: unknown) {
+    super('they were changed elsewhere since this form was read', { cause })
   }
 }
 
