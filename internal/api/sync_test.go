@@ -1273,54 +1273,95 @@ func TestSyncReplaysWhenTheLedgerIsOwnedLate(t *testing.T) {
 // A pruned run's delete is newer than every pointer the store was told of
 // it: a store that orders a run's docs by revision (syncModel does) drops
 // the run, never keeping it as the newer state (Codex round 2 on #553).
+// What the store is sent on the way is not the promise: a delivery that
+// took the run's entry before the prune and reads it after sends a delete
+// at the row's last revision, which such a store ignores, and the prune's
+// mark then sends the newer one. "held" drives that order through the
+// adapter's taken seam: the first delivery reads the run once it is
+// finished, the next is taken before the prune and reads after it.
 func TestSyncPrunedRunDeletedAtANewerRevision(t *testing.T) {
-	f := newFakeSync()
-	e := syncEnv(t, syncDataDir(t), f)
-	ld := e.srv.ledger
-	ctx := t.Context()
-	const runID = "team-00000001"
-	run := syncKey{syncLedger, runID}
-	newLedgerRun(t, ld, runID, ledger.RunRunning)
-	if _, err := ld.Transition(ctx, runID, func(tx *ledger.Tx) error {
-		r, _, err := tx.Run()
-		if err != nil {
-			return err
-		}
-		r.State, r.Outcome, r.ClosedAt = ledger.RunFinished, ledger.OutcomeSucceeded, tx.Now()
-		return tx.PutRun(r)
-	}); err != nil {
-		t.Fatal(err)
-	}
-	f.until(t, "the closed run's pointer", func(c []syncCall) bool {
-		var p syncPointer
-		return replayedIn(c, 1) && json.Unmarshal(syncModel(c)[run], &p) == nil && p.State == ledger.RunFinished
-	})
-	if err := ld.Prune(ctx, runID); err != nil {
-		t.Fatal(err)
-	}
-	calls := f.until(t, "the pruned run's delete", func(c []syncCall) bool {
-		for _, c := range callsOf(c, run) {
-			if c.op == "deleted" && c.err == nil {
-				return true
+	for _, held := range []bool{false, true} {
+		t.Run(map[bool]string{false: "at once", true: "held"}[held], func(t *testing.T) {
+			f := newFakeSync()
+			e := syncEnv(t, syncDataDir(t), f)
+			ld := e.srv.ledger
+			ctx := t.Context()
+			const runID = "team-00000001"
+			run := syncKey{syncLedger, runID}
+			takes, release := make(chan struct{}), make(chan struct{})
+			step := func(ch chan struct{}, what string) {
+				t.Helper()
+				select {
+				case ch <- struct{}{}:
+				case <-time.After(testWait):
+					t.Fatalf("the delivery never %s: %s", what, describeCalls(f.all()))
+				}
 			}
-		}
-		return false
-	})
-	var saved, deleted int64
-	for _, c := range callsOf(calls, run) {
-		switch {
-		case c.err != nil:
-		case c.op == "saved":
-			saved = max(saved, c.d.Rev)
-		case deleted == 0:
-			deleted = c.d.Rev
-		}
-	}
-	if saved < 2 || deleted <= saved {
-		t.Fatalf("the run saved at revision %d, deleted at %d: %s", saved, deleted, describeCalls(calls))
-	}
-	if _, ok := syncModel(calls)[run]; ok {
-		t.Fatalf("an ordering store kept the pruned run: %s", describeCalls(calls))
+			if held {
+				n := 0
+				e.srv.syncs.mu.Lock()
+				e.srv.syncs.taken = func(en syncEntry) {
+					if en.key != run || n == 2 {
+						return
+					}
+					n++
+					for _, ch := range []chan struct{}{takes, release} {
+						select {
+						case <-ch:
+						case <-ctx.Done():
+							return
+						}
+					}
+				}
+				e.srv.syncs.mu.Unlock()
+			}
+			newLedgerRun(t, ld, runID, ledger.RunRunning)
+			if held {
+				step(takes, "took the run's entry")
+			}
+			if _, err := ld.Transition(ctx, runID, func(tx *ledger.Tx) error {
+				r, _, err := tx.Run()
+				if err != nil {
+					return err
+				}
+				r.State, r.Outcome, r.ClosedAt = ledger.RunFinished, ledger.OutcomeSucceeded, tx.Now()
+				return tx.PutRun(r)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if held {
+				step(release, "read the run")
+				step(takes, "took the finished run's entry again")
+			}
+			var finished syncPointer
+			f.until(t, "the closed run's pointer", func(c []syncCall) bool {
+				return replayedIn(c, 1) && json.Unmarshal(syncModel(c)[run], &finished) == nil && finished.State == ledger.RunFinished
+			})
+			if err := ld.Prune(ctx, runID); err != nil {
+				t.Fatal(err)
+			}
+			if held {
+				step(release, "read the pruned run")
+			}
+			// The delete the promise is about: one above every save of the
+			// run, the finished pointer's among them.
+			calls := f.until(t, "a delete newer than every save", func(c []syncCall) bool {
+				saved, deleted := finished.Revision, int64(0)
+				for _, c := range callsOf(c, run) {
+					switch {
+					case c.err != nil:
+					case c.op == "saved":
+						saved = max(saved, c.d.Rev)
+					default:
+						deleted = max(deleted, c.d.Rev)
+					}
+				}
+				return deleted > saved
+			})
+			if _, ok := syncModel(calls)[run]; ok {
+				t.Fatalf("an ordering store kept the pruned run: %s", describeCalls(calls))
+			}
+		})
 	}
 }
 
