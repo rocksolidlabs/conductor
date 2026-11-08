@@ -4247,6 +4247,25 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   minted and opened on the phone, one item answered through to resumed,
   the gate answered before the run's first attempt with no member alive,
   the link revoked on the desktop and the phone's next action refused.
+- **Searchable history: DR1's decisions in it (HS1 PR-9, #626,
+  2026-11-08).** Program item HS1, planned in `docs/plans/history.md`
+  (PR #609); PR-8 (#624) writes the item's entry, with each PR's checks
+  and the by-hand record, around this paragraph. PR-9 (#626, PR #755):
+  DR1's decision records in the History. Each request is a `decision`
+  entry (a record: its question, its subject's revision and commit, who
+  asked and whom it is for, what a yes authorizes), under its asking task
+  (a gate's under its run); each response the decision accepted is a
+  `decision.response` (decided: who answered and for whom, the rationale,
+  the option chosen as its outcome, `approved` or `rejected` for a gate,
+  `done` or `not_done` for an assignment, else `answered`), linked
+  `answers` to the request and `applied` to what Yardmaster applied it
+  to; a refused response is not indexed. A result opens the decision's
+  card over the run that holds it, and its availability is the decision's
+  state now, read from the ledger (open, answered, applied, superseded
+  with its successor and why, cancelled, expired, pruned). The palette's
+  "Rejected designs" finds a gate's rejection. An entry follows its
+  decision along a run's continuations and leaves when the ledger prunes
+  it, the run's record kept or not. Its checks are in its body.
 - **Project manifests: a fresh attempt worktree made usable, predictably
   (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
   `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the
