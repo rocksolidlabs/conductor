@@ -1,4 +1,5 @@
 import type { CandidateReceipt, CloseRequirement, CloseState, DispatchChange, DispatchSort, DispatchTicket, Horizon, LabelColor, LaunchSummary, LinkVerified, PlanSummary, RelatedTicket, RunCandidate, TaskCandidates, TicketAttachment, TicketComment, TicketEdit, TicketLink, TicketRelation, TicketStatus, TicketSummary, Tracker, VerifiedReceipt } from '~/composables/useDispatch'
+import { retried } from './dispatchOrder'
 import { planReasons } from './dispatchPlans'
 import type { Tone } from './tasks'
 
@@ -1079,6 +1080,49 @@ export function commentsRereadFrom(shown: readonly TicketComment[], readFirst: n
   const first = shown[0]?.n
   if (first && readFirst && first < readFirst) return Math.min(first, earlierFirst ?? first)
   return earlierFirst ?? 0
+}
+
+/** A link's comment as the ticket page shows it at the head: the one numbered `n` of the ticket `key`, none when it has no such comment. */
+export interface LinkedComment {
+  key: string
+  n: number
+  comment: TicketComment | null
+  /** The first read's failure, shown while no copy of the comment is: a read again that fails keeps the copy shown instead. */
+  error: string
+}
+
+/**
+ * Reads a link's comment (`?comment=<n>`, Program item HS1, PR-6) by `read` (the comment route's page after n-1, limit 1) and hands it
+ * to `set`, asked again as a re-read is (retried: after `firstMs`, doubled up to `maxMs`) until one answers or `stop` says a later read
+ * took its place or the page went. A read that fails keeps the copy already shown (`shown`) and is asked again, so a comment deleted or
+ * edited elsewhere is not left as it was for want of another event; with no copy shown its failure is said. Answers whether one answered.
+ */
+export function readLinkedComment(o: {
+  key: string
+  n: number
+  read: () => Promise<readonly TicketComment[]>
+  shown: () => LinkedComment | null
+  set: (c: LinkedComment) => void
+  stop: () => boolean
+  wait: (ms: number) => Promise<void>
+  firstMs: number
+  maxMs: number
+}): Promise<boolean> {
+  return retried({
+    read: async () => {
+      try {
+        const page = await o.read()
+        if (!o.stop()) o.set({ key: o.key, n: o.n, comment: page.find((c) => c.n === o.n) ?? null, error: '' })
+      } catch (e) {
+        if (!o.stop() && !o.shown()?.comment) o.set({ key: o.key, n: o.n, comment: null, error: (e as Error).message || 'The comment could not be read.' })
+        throw e
+      }
+    },
+    stop: o.stop,
+    wait: o.wait,
+    firstMs: o.firstMs,
+    maxMs: o.maxMs,
+  })
 }
 
 /** Who wrote a comment, in words: the display name it recorded, else its actor (an agent's by its member's name). */

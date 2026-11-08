@@ -19,6 +19,7 @@ import {
   inboxOrder,
   keptRecent,
   movedOnWords,
+  recheckStands,
   notificationTarget,
   phoneLanding,
   phoneOffer,
@@ -81,6 +82,12 @@ describe('the steps in words', () => {
   it("says a stale refusal's words with what the item is now and that nothing was done", () => {
     expect(movedOnWords('task', null)).toBe('The run moved on. Nothing was done.')
     expect(movedOnWords('plan', { now: 'revision 2 is approved', title: '' })).toBe('The revision or its ticket moved on: revision 2 is approved. Nothing was done.')
+  })
+  it("says what stands now for a Check again the run moved on from: the candidate its item read again names, or none (#713)", () => {
+    const recheck = { name: 'recheck', label: 'Check again', expect: '9', scope: '', route: 'POST /api/runs/r1/tasks/build/recheck', attempt: 4, commit: '0123456789abcdef0123456789abcdef01234567' }
+    expect(recheckStands({ actions: [recheck] })).toBe('; the candidate that stands is attempt 4 at 0123456789ab, which Check again offers now')
+    expect(recheckStands({ actions: [{ ...recheck, name: 'retry' }] })).toBe('; no candidate stands that Check again takes')
+    expect(recheckStands(null)).toBe('')
   })
 })
 

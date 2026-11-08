@@ -1,0 +1,318 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import * as vue from 'vue'
+import { SEND_UNDER_WAY, draftKey, readDraft, useReviewDraft, writeDraft, type DraftStorage, type Sending } from './useReviewDraft'
+import type { DraftNote } from '~/utils/review'
+
+// The draft of a review (Program item RV1, PR-6): kept per ticket and candidate in this browser's storage, every access in try/catch;
+// its base is the review's, moved by the picker while no note is on the base side and locked by one; a stored base the page no longer
+// offers is not sent. useReviewDraft reads Vue's ref, computed and watch as Nuxt's auto-imports: each is stubbed with Vue's own.
+
+const RUN_BASE = 'b'.repeat(40)
+const START = 's'.repeat(40)
+const OTHER = 'o'.repeat(40)
+const C1 = `run-1/build/1@${'a'.repeat(40)}`
+const C2 = `run-1/build/2@${'c'.repeat(40)}`
+
+function memory(): DraftStorage & { map: Map<string, string> } {
+  const map = new Map<string, string>()
+  return { map, getItem: (k) => map.get(k) ?? null, setItem: (k, v) => void map.set(k, v), removeItem: (k) => void map.delete(k) }
+}
+const throwing: DraftStorage = {
+  getItem: () => {
+    throw new Error('SecurityError')
+  },
+  setItem: () => {
+    throw new Error('QuotaExceededError')
+  },
+  removeItem: () => {
+    throw new Error('SecurityError')
+  },
+}
+
+const candidateLine: Omit<DraftNote, 'key'> = { kind: 'line', intent: 'change', severity: 'major', path: 'a.txt', side: 'candidate', from: 1, to: 1, lines: ['x'], message: 'fix it' }
+const baseLine: Omit<DraftNote, 'key'> = { ...candidateLine, side: 'base', path: 'b.txt', message: 'why was this removed?' }
+
+beforeEach(() => {
+  for (const k of ['ref', 'computed', 'watch', 'reactive'] as const) vi.stubGlobal(k, vue[k])
+})
+
+/** A draft of the candidate the test points `on` at, the bases offered as `bases` holds them. */
+function open(storage: DraftStorage | null, on = vue.ref(C1), bases = vue.ref<string[] | null>([RUN_BASE, START]), ticket = 'CND-12') {
+  return { d: useReviewDraft({ ticket: () => ticket, candidate: () => on.value, offered: () => bases.value, storage }), on, bases }
+}
+
+describe('the draft kept in this browser', () => {
+  it('is kept per ticket and candidate, and read back by a page opened later', async () => {
+    const s = memory()
+    const { d, on } = open(s)
+    d.knowBase(RUN_BASE)
+    d.add(candidateLine)
+    d.setSummary('Two things.')
+    expect(JSON.parse(s.map.get(draftKey('CND-12', C1))!)).toMatchObject({ v: 1, base: RUN_BASE, summary: 'Two things.', notes: [{ ...candidateLine }] })
+
+    on.value = C2
+    await vue.nextTick()
+    expect(d.draft.value.notes).toEqual([])
+    d.add({ ...candidateLine, message: 'on the second' })
+    on.value = C1
+    await vue.nextTick()
+    expect(d.draft.value.notes.map((n) => n.message)).toEqual(['fix it'])
+
+    const again = open(s).d
+    expect(again.draft.value).toMatchObject({ base: RUN_BASE, summary: 'Two things.', verdict: 'request_changes' })
+    expect(again.draft.value.notes).toHaveLength(1)
+  })
+
+  it('works in the page alone when the storage throws, and says it is not kept', () => {
+    const { d } = open(throwing)
+    expect(d.draft.value.notes).toEqual([])
+    d.add(candidateLine)
+    expect(d.draft.value.notes).toHaveLength(1)
+    expect(d.unsaved.value).toBe(true)
+    expect(readDraft(throwing, 'k')).toBeNull()
+    expect(writeDraft(throwing, 'k', d.draft.value)).toBe(false)
+    expect(open(null).d.draft.value.notes).toEqual([])
+  })
+
+  it('forgets a draft that holds nothing, and one it cannot read', () => {
+    const s = memory()
+    const { d } = open(s)
+    d.add(candidateLine)
+    d.drop(d.draft.value.notes[0]!.key)
+    expect(s.map.size).toBe(0)
+    s.map.set(draftKey('CND-12', C1), '{"v":2}')
+    expect(open(s).d.draft.value.notes).toEqual([])
+    s.map.set(draftKey('CND-12', C1), 'not json')
+    expect(open(s).d.draft.value.notes).toEqual([])
+  })
+
+  it('is emptied once sent, its base kept for the diff shown; a send whose answer was lost is sent again as it was, under its id', () => {
+    const s = memory()
+    const { d } = open(s)
+    d.knowBase(START)
+    d.add(candidateLine)
+    const first = d.sending('op-1') as Sending
+    expect(open(s).d.draft.value.pending?.opId).toBe('op-1')
+    d.lost(first)
+    // An edit made after the answer was lost stays in the draft and leaves the send as it was: the same body, the same id.
+    d.setSummary('more')
+    expect(d.draft.value.pending?.opId).toBe('op-1')
+    expect(d.resend.value?.sent).toMatchObject({ summary: '', notes: [{ message: 'fix it' }] })
+    const again = d.sending('op-2') as Sending
+    expect(again).toMatchObject({ opId: 'op-1', sent: { summary: '', notes: [{ message: 'fix it' }] } })
+    d.sent(again)
+    expect(d.draft.value).toMatchObject({ base: START, notes: [], summary: 'more' })
+    expect(d.draft.value.pending).toBeUndefined()
+    d.setSummary('')
+    expect(s.map.size).toBe(0)
+  })
+
+  it("settles the draft a send was made from when its answer lands, not the one shown then", async () => {
+    const s = memory()
+    const { d, on } = open(s)
+    d.knowBase(RUN_BASE)
+    d.add(candidateLine)
+    const sending = d.sending('op-1') as Sending
+    on.value = C2
+    await vue.nextTick()
+    d.knowBase(RUN_BASE)
+    d.add({ ...candidateLine, message: 'on the second, unsent' })
+    d.sent(sending)
+    expect(d.draft.value.notes.map((n) => n.message)).toEqual(['on the second, unsent'])
+    expect(s.map.has(draftKey('CND-12', C1))).toBe(false)
+    expect(JSON.parse(s.map.get(draftKey('CND-12', C2))!).notes).toHaveLength(1)
+
+    // A refusal clears the pending send of the draft it was sent from alone.
+    const second = d.sending('op-2') as Sending
+    on.value = C1
+    await vue.nextTick()
+    d.add(candidateLine)
+    const third = d.sending('op-3') as Sending
+    d.unsent(second)
+    expect(d.draft.value.pending?.opId).toBe('op-3')
+    expect(JSON.parse(s.map.get(draftKey('CND-12', C2))!).pending).toBeUndefined()
+    d.unsent(third)
+    expect(d.draft.value.pending).toBeUndefined()
+  })
+
+  it('settles a send whose view was closed against the draft as the page has it now: a note added after the view was opened again stays', () => {
+    const s = memory()
+    const closed = vue.effectScope()
+    const first = closed.run(() => open(s).d)!
+    first.knowBase(RUN_BASE)
+    first.add(candidateLine)
+    const sending = first.sending('op-1') as Sending
+    // Review left while the send is under way, then the same candidate opened again and a note added before the answer lands.
+    closed.stop()
+    const reopened = open(s).d
+    expect(reopened.draft.value.pending?.opId).toBe('op-1')
+    reopened.add({ ...candidateLine, message: 'added after reopening' })
+    first.sent(sending)
+    expect(reopened.draft.value.notes.map((n) => n.message)).toEqual(['added after reopening'])
+    expect(reopened.draft.value.pending).toBeUndefined()
+    // What a reload would read.
+    expect(readDraft(s, draftKey('CND-12', C1))!.notes.map((n) => n.message)).toEqual(['added after reopening'])
+  })
+
+  it("keeps each candidate's draft in the page while the storage refuses it, through a move to another candidate and back", async () => {
+    for (const storage of [null, { ...throwing }]) {
+      const { d, on } = open(storage, vue.ref(C1), undefined, `CND-${storage ? 'refusing' : 'none'}`)
+      d.knowBase(RUN_BASE)
+      d.add(candidateLine)
+      expect(d.unsaved.value).toBe(true)
+      on.value = C2
+      await vue.nextTick()
+      expect(d.draft.value.notes).toEqual([])
+      d.add({ ...candidateLine, message: 'on the second' })
+      on.value = C1
+      await vue.nextTick()
+      expect(d.draft.value.notes.map((n) => n.message)).toEqual(['fix it'])
+      expect(d.unsaved.value).toBe(true)
+      on.value = C2
+      await vue.nextTick()
+      expect(d.draft.value.notes.map((n) => n.message)).toEqual(['on the second'])
+    }
+  })
+
+  it('keeps what was added or edited while a send was under way', () => {
+    const s = memory()
+    const { d } = open(s)
+    d.knowBase(RUN_BASE)
+    d.add(candidateLine)
+    d.add({ ...candidateLine, message: 'second' })
+    d.setSummary('Two things.')
+    d.setVerdict('comment')
+    const sending = d.sending('op-1') as Sending
+    const [one, two] = d.draft.value.notes
+    d.update(two!.key, { ...candidateLine, message: 'second, edited' })
+    d.add({ kind: 'general', intent: 'note', message: 'later' })
+    d.sent(sending)
+    expect(d.draft.value.notes.map((n) => n.message)).toEqual(['second, edited', 'later'])
+    expect(d.draft.value.notes.some((n) => n.key === one!.key)).toBe(false)
+    expect(d.draft.value).toMatchObject({ summary: '', verdict: 'comment', base: RUN_BASE })
+    expect(d.draft.value.pending).toBeUndefined()
+    expect(JSON.parse(s.map.get(draftKey('CND-12', C1))!).notes).toHaveLength(2)
+  })
+
+  it("holds one send at a time, and settles each send by its own op id: Codex round 3's sequence", () => {
+    const s = memory()
+    // Send A, then leave Review while it is under way.
+    const closed = vue.effectScope()
+    const first = closed.run(() => open(s).d)!
+    first.knowBase(RUN_BASE)
+    first.add(candidateLine)
+    const a = first.sending('op-A') as Sending
+    closed.stop()
+    // Reopen it, add a note and send B: refused in words while A is under way, the reopened view told it is.
+    const reopened = open(s).d
+    expect(reopened.flying.value).toBe(true)
+    reopened.add({ ...candidateLine, message: 'B' })
+    expect(reopened.sending('op-B')).toBe(SEND_UNDER_WAY)
+    expect(reopened.draft.value.pending?.opId).toBe('op-A')
+    // A succeeds: its notes go, B's note stays, nothing pending.
+    first.sent(a)
+    expect(reopened.flying.value).toBe(false)
+    expect(reopened.draft.value.notes.map((n) => n.message)).toEqual(['B'])
+    expect(reopened.draft.value.pending).toBeUndefined()
+    // B is sent and loses both replies: sending it again is the same operation, its body as it was sent, also after a reload.
+    const b = reopened.sending('op-B') as Sending
+    expect(b).toMatchObject({ opId: 'op-B', sent: { notes: [{ message: 'B' }] } })
+    reopened.lost(b)
+    reopened.add({ ...candidateLine, message: 'after B was lost' })
+    const reloaded = open(s).d
+    expect(reloaded.resend.value).toMatchObject({ opId: 'op-B', sent: { notes: [{ message: 'B' }] } })
+    const b2 = reloaded.sending('op-C') as Sending
+    expect(b2).toMatchObject({ opId: 'op-B', sent: { notes: [{ message: 'B' }] } })
+    // A late answer of A settles nothing of B's; B's own answer settles B.
+    first.sent(a)
+    first.unsent(a)
+    expect(reloaded.draft.value.pending?.opId).toBe('op-B')
+    expect(reloaded.flying.value).toBe(true)
+    reloaded.sent(b2)
+    expect(reloaded.draft.value.notes.map((n) => n.message)).toEqual(['after B was lost'])
+    expect(reloaded.draft.value.pending).toBeUndefined()
+    expect(readDraft(s, draftKey('CND-12', C1))).toMatchObject({ notes: [{ message: 'after B was lost' }] })
+  })
+
+  it('keeps a pending send through Drop the draft, to be settled by its own answer', () => {
+    const s = memory()
+    const { d } = open(s)
+    d.knowBase(RUN_BASE)
+    d.add(candidateLine)
+    const a = d.sending('op-A') as Sending
+    d.lost(a)
+    d.discard()
+    expect(d.draft.value.notes).toEqual([])
+    expect(readDraft(s, draftKey('CND-12', C1))?.pending?.opId).toBe('op-A')
+    d.unsent(d.sending() as Sending)
+    expect(s.map.size).toBe(0)
+  })
+
+  it('replaces a note whole when its form saves it: a resolution cleared is gone', () => {
+    const { d } = open(memory())
+    const n = d.add({ ...candidateLine, resolution: 'Say what it prepared.' })
+    d.update(n.key, { ...candidateLine, message: 'fix it, no resolution' })
+    expect(d.draft.value.notes[0]).not.toHaveProperty('resolution')
+    expect(d.draft.value.notes[0]).toMatchObject({ key: n.key, message: 'fix it, no resolution' })
+  })
+})
+
+describe("the draft's base", () => {
+  it('opens at the base the draft was made against, not the default', () => {
+    const s = memory()
+    const { d } = open(s)
+    d.knowBase(RUN_BASE)
+    expect(d.setBase(START)).toBe('')
+    d.add(baseLine)
+    const reloaded = open(s).d
+    reloaded.knowBase(RUN_BASE)
+    expect(reloaded.draft.value.base).toBe(START)
+  })
+
+  it('moves with the picker while every note is on the candidate side, and is locked by a base-side note', () => {
+    const { d } = open(memory())
+    d.knowBase(RUN_BASE)
+    d.add(candidateLine)
+    expect(d.lock.value).toBeNull()
+    expect(d.setBase(START)).toBe('')
+    expect(d.draft.value.base).toBe(START)
+    d.add(baseLine)
+    expect(d.lock.value).toEqual({ base: START, count: 1 })
+    expect(d.setBase(RUN_BASE)).toBe('1 note is on the base sssssss: send or drop it to compare against another.')
+    expect(d.draft.value.base).toBe(START)
+    d.add({ ...baseLine, kind: 'file', from: undefined, to: undefined, lines: undefined })
+    expect(d.setBase(RUN_BASE)).toMatch(/^2 notes are on the base sssssss: send or drop them/)
+    // A general note names no side: it never holds the base.
+    d.drop(d.draft.value.notes[1]!.key)
+    d.drop(d.draft.value.notes[1]!.key)
+    d.add({ kind: 'general', intent: 'note', message: 'overall' })
+    expect(d.setBase(RUN_BASE)).toBe('')
+  })
+
+  it('is shown and not sent when the page no longer offers it', async () => {
+    const s = memory()
+    const { d, bases } = open(s)
+    d.knowBase(OTHER)
+    d.add(baseLine)
+    expect(d.stale.value).toBe(true)
+    bases.value = null
+    expect(d.stale.value).toBe(false)
+    bases.value = [RUN_BASE, OTHER]
+    expect(d.stale.value).toBe(false)
+    bases.value = [RUN_BASE]
+    d.discard()
+    expect(d.draft.value).toMatchObject({ base: '', notes: [] })
+    expect(s.map.size).toBe(0)
+  })
+
+  it("is made on the base of the diff shown once a stale draft is dropped, so new notes can be made at once", () => {
+    const { d } = open(memory(), vue.ref(C1), vue.ref<string[] | null>([RUN_BASE]))
+    d.knowBase(OTHER)
+    d.add(baseLine)
+    expect(d.stale.value).toBe(true)
+    d.discard(RUN_BASE)
+    expect(d.draft.value).toMatchObject({ base: RUN_BASE, notes: [] })
+    expect(d.stale.value).toBe(false)
+    expect(d.setBase(RUN_BASE)).toBe('')
+  })
+})

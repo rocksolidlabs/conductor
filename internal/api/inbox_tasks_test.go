@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -86,7 +87,7 @@ func TestInboxTaskItemsFollowTheEngine(t *testing.T) {
 		t.Fatalf("the list: %+v", page)
 	}
 	it := e.itemOf(t, ref)
-	if !slices.Equal(actionNames(it), []string{crew.TaskRetry, crew.TaskAccept}) || it.Revision == "" {
+	if !slices.Equal(actionNames(it), []string{crew.TaskRetry, crew.TaskAccept, crew.TaskRecheck}) || it.Revision == "" {
 		t.Fatalf("the actions: %v at %q", actionNames(it), it.Revision)
 	}
 	for _, a := range it.Actions {
@@ -118,6 +119,248 @@ func TestInboxTaskItemsFollowTheEngine(t *testing.T) {
 	}
 	if done := e.itemOf(t, ref); len(done.Actions) != 0 || !strings.Contains(done.Now, "succeeded") {
 		t.Fatalf("the accepted task's item: %+v", done)
+	}
+}
+
+// A failed task whose standing failed candidate failed in its checks
+// offers Check again of it (#713), named by its attempt and commit, at the
+// run's revision, through the recheck route: taken at its Expect, tracked
+// through to the attempt that checks it again; the item as read before,
+// its candidate moved on since (that attempt failed too), refused
+// stale_candidate in words naming the one that stands, which the read
+// again offers. A Check again refused before its change (a stale
+// revision) and one taken and not settled yet name no task in their
+// receipts: each reads as build's under build and as another task's
+// command under docs, bound by the arguments it was taken with. A task
+// whose attempts all ended before a result offers Retry alone.
+func TestInboxOffersCheckAgain(t *testing.T) {
+	l, run, _, commits := failingLaunch(t)
+	e := l.testEnv
+	ref := "task:" + run + "/build"
+	old := e.itemOf(t, ref)
+	a := actionOf(t, old, crew.TaskRecheck)
+	if a.Attempt != 3 || a.Commit != commits[2] || a.Expect != old.Revision || a.Route != "POST /api/runs/"+run+"/tasks/build/recheck" || a.Confirm || a.Label != "Check again" ||
+		!strings.Contains(a.Scope, "attempt 3's commit "+short(commits[2])) || !strings.Contains(a.Scope, "run revision "+old.Revision) {
+		t.Fatalf("Check again: %+v", a)
+	}
+	rev, _ := strconv.ParseInt(a.Expect, 10, 64)
+	if status, out := recheckOn(t, e, run, map[string]any{"commandId": "in1", "attempt": a.Attempt, "commit": a.Commit, "expectedRevision": rev}); status != http.StatusOK || out["attempt"] != 4.0 {
+		t.Fatalf("Check again at its Expect: %d %v", status, out)
+	}
+	// Resumed once attempt 4's verification has begun (its first receipt),
+	// waiting until then.
+	var steps map[string]deliveryStep
+	waitUntil(t, "attempt 4's verification began", func() bool {
+		steps = e.trackOf(t, ref, "in1", "")
+		return steps[stepResumed].State != stepWaiting
+	})
+	if steps[stepRecorded].State != stepDone || steps[stepValidated].State != stepDone || steps[stepResumed].State != stepDone || !strings.Contains(steps[stepResumed].Words, "attempt 4 checks the candidate again") {
+		t.Fatalf("the track of Check again: %+v", steps)
+	}
+	if got := e.trackOf(t, "task:"+run+"/docs", "in1", ""); got[stepRecorded].State != stepRefused {
+		t.Fatalf("build's Check again read under docs: %+v", got)
+	}
+	ledgerAttemptIn(t, l.srv, run, "build", 4, ledger.AttemptFailed)
+	taskVia(t, e, run, "build", "failed again", func(task map[string]any) bool { return task["state"] == ledger.TaskFailed })
+	status, out := recheckOn(t, e, run, map[string]any{"commandId": "in2", "attempt": a.Attempt, "commit": a.Commit})
+	if status != http.StatusConflict || errorCode(out) != crew.RefusalStaleCandidate || !strings.Contains(apiMessage(out), "attempt 4 failed since") {
+		t.Fatalf("the candidate read before: %d %v", status, out)
+	}
+	if got := e.trackOf(t, ref, "in2", ""); got[stepValidated].State != stepRefused || !strings.Contains(got[stepValidated].Words, "attempt 4 failed since") {
+		t.Fatalf("the track of the refusal: %+v", got)
+	}
+	b := actionOf(t, e.itemOf(t, ref), crew.TaskRecheck)
+	if b.Attempt != 4 || b.Commit != commits[2] {
+		t.Fatalf("read again: %+v", b)
+	}
+
+	// Refused before its change (a stale revision), its receipt naming no
+	// task: build's still, read under docs as another task's command.
+	brev, _ := strconv.ParseInt(b.Expect, 10, 64)
+	if status, out := recheckOn(t, e, run, map[string]any{"commandId": "in3", "attempt": b.Attempt, "commit": b.Commit, "expectedRevision": brev + 5}); status != http.StatusConflict || errorCode(out) != crew.RefusalStaleRevision {
+		t.Fatalf("Check again at a revision the run never had: %d %v", status, out)
+	}
+	if got := e.trackOf(t, ref, "in3", ""); got[stepRecorded].State != stepDone || got[stepValidated].State != stepRefused || !strings.Contains(got[stepValidated].Words, "stale_revision") {
+		t.Fatalf("the track of the stale Check again: %+v", got)
+	}
+	if got := e.trackOf(t, "task:"+run+"/docs", "in3", ""); got[stepRecorded].State != stepRefused || got[stepValidated].State != stepNotApplicable {
+		t.Fatalf("build's stale Check again read under docs: %+v", got)
+	}
+	// Taken and not settled (held between its two transactions): build's,
+	// waiting under build and another task's command under docs.
+	taken, letGo := make(chan struct{}), make(chan struct{})
+	e.srv.runs.SetAfterTakenForTest(func(_, id string) {
+		if id == "in4" {
+			close(taken)
+			<-letGo
+		}
+	})
+	t.Cleanup(func() { e.srv.runs.SetAfterTakenForTest(nil) })
+	sent := make(chan int, 1)
+	go func() {
+		status, _ := recheckOn(t, e, run, map[string]any{"commandId": "in4", "attempt": b.Attempt, "commit": b.Commit})
+		sent <- status
+	}()
+	<-taken
+	if got := e.trackOf(t, ref, "in4", ""); got[stepRecorded].State != stepDone || got[stepValidated].State != stepWaiting {
+		t.Fatalf("the track of a Check again held between its transactions: %+v", got)
+	}
+	if got := e.trackOf(t, "task:"+run+"/docs", "in4", ""); got[stepRecorded].State != stepRefused {
+		t.Fatalf("build's held Check again read under docs: %+v", got)
+	}
+	close(letGo)
+	if status := <-sent; status != http.StatusOK {
+		t.Fatalf("the held Check again: %d", status)
+	}
+	ledgerAttemptIn(t, l.srv, run, "build", 5, ledger.AttemptFailed)
+
+	// Without: every attempt's session ends before a result.
+	w := readyEnv(t, nil)
+	w.gitRepo(t)
+	wrun, release, err := w.srv.runs.LaunchNamed(t.Context(), failingCrew(w.root), "")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { w.do("POST", "/api/runs/"+wrun.ID+"/stop", adminToken, nil) })
+	for n := 1; n <= 3; n++ {
+		sid := runningAttempt(t, w, wrun.ID, "build", n)["sessionId"].(string)
+		if resp, out := w.do("DELETE", "/api/sessions/"+sid, adminToken, nil); resp.StatusCode != http.StatusOK {
+			t.Fatalf("end attempt %d's session: %d %v", n, resp.StatusCode, out)
+		}
+	}
+	taskVia(t, w, wrun.ID, "build", "failed", func(task map[string]any) bool { return task["state"] == ledger.TaskFailed })
+	if it := w.itemOf(t, "task:"+wrun.ID+"/build"); !slices.Equal(actionNames(it), []string{crew.TaskRetry}) {
+		t.Fatalf("a task failed before any result: %v", actionNames(it))
+	}
+}
+
+// sendAsGiven sends the item's Check again as it gives it (its route, its
+// candidate, its Expect) under the command id, as the admin, and answers
+// the status and the reply.
+func sendAsGiven(t *testing.T, e *testEnv, a inboxAction, id string) (int, map[string]any) {
+	t.Helper()
+	method, path, ok := strings.Cut(a.Route, " ")
+	rev, err := strconv.ParseInt(a.Expect, 10, 64)
+	if !ok || err != nil {
+		t.Fatalf("the action: %+v", a)
+	}
+	status, _, out := e.call(t, method, path, map[string]any{"commandId": id, "attempt": a.Attempt, "commit": a.Commit, "expectedRevision": rev})
+	return status, out
+}
+
+// The inbox's Check again in a continuation, end to end (#713): run A's
+// build failed in its check and A was let go; continued as B, whose
+// manifest's prerequisite is then held at its gate, B's item offers Check
+// again of A's attempt 3 through A's route at B's revision, its scope
+// naming A. Sent as the item gives it, it is taken in B as attempt 4,
+// and the track under the item's ref reads it through: resumed waiting
+// while the prerequisite holds the verification (the attempt recorded,
+// nothing checked), done at attempt 4's first receipt once it passes.
+func TestInboxCheckAgainInAContinuation(t *testing.T) {
+	gate := filepath.Join(t.TempDir(), "gate")
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	if err := os.WriteFile(gate, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.WriteFile(gate, nil, 0o644) })
+	l, runA, mark, commits := failingLaunchWith(t, func(c *crew.Crew) {
+		c.Manifest = &crew.Manifest{Prerequisites: []crew.Check{{ID: "tools", Argv: []string{"sh", "-c", `echo $$ > "` + pidFile + `"; while [ ! -e "` + gate + `" ]; do sleep 0.05; done`}}}}
+	})
+	e := l.restartAfterStop(t, runA)
+	for _, f := range []string{gate, pidFile} {
+		if err := os.Remove(f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resp, out := e.do("POST", "/api/runs/"+runA+"/resume", adminToken, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("continue: %d %v", resp.StatusCode, out)
+	}
+	runB := out["run"].(map[string]any)["id"].(string)
+	taskVia(t, e, runB, "build", "failed, carried", func(task map[string]any) bool { return task["state"] == ledger.TaskFailed })
+	waitUntil(t, "B settled failed", func() bool {
+		r := runOf(t, e, runB)
+		return r["outcome"] == ledger.OutcomeFailed && r["cleaning"] == nil
+	})
+	ref := "task:" + runB + "/build"
+	it := e.itemOf(t, ref)
+	a := actionOf(t, it, crew.TaskRecheck)
+	if a.Route != "POST /api/runs/"+runA+"/tasks/build/recheck" || a.Attempt != 3 || a.Commit != commits[2] || a.Expect != it.Revision ||
+		!strings.Contains(a.Scope, "attempt 3 of run "+runA+"'s commit "+short(commits[2])) {
+		t.Fatalf("Check again in the continuation: %+v", a)
+	}
+	mustMark(t, mark)
+	if status, out := sendAsGiven(t, e, a, "cont"); status != http.StatusOK || out["run"] != runB || out["attempt"] != 4.0 {
+		t.Fatalf("Check again as the item gives it: %d %v", status, out)
+	}
+	waitUntil(t, "B's prerequisite held at its gate", func() bool {
+		b, err := os.ReadFile(pidFile)
+		return err == nil && strings.TrimSpace(string(b)) != ""
+	})
+	ledgerAttemptIn(t, e.srv, runB, "build", 4, ledger.AttemptVerifying)
+	held := e.trackOf(t, ref, "cont", "")
+	if held[stepRecorded].State != stepDone || held[stepValidated].State != stepDone || held[stepResumed].State != stepWaiting || !strings.Contains(held[stepResumed].Words, "prerequisites") {
+		t.Fatalf("the track while the prerequisite holds the verification: %+v", held)
+	}
+	if err := os.WriteFile(gate, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if row := ledgerAttemptIn(t, e.srv, runB, "build", 4, ledger.AttemptSucceeded); row.ResultCommit != commits[2] {
+		t.Fatalf("B's attempt 4: %+v", row)
+	}
+	if got := e.trackOf(t, ref, "cont", ""); got[stepResumed].State != stepDone || !strings.Contains(got[stepResumed].Words, "attempt 4 checks the candidate again") {
+		t.Fatalf("the track once the verification ran: %+v", got)
+	}
+}
+
+// A Check again read on run A and sent once A was continued as B goes to
+// B, where the route sends it, and is refused there for A's revision
+// (stale_revision, recorded in B): the track under the item's own ref,
+// A's task, finds that receipt along the chain and reads it, as it would
+// with the reply lost.
+func TestInboxTracksACheckAgainInTheRunThatTookIt(t *testing.T) {
+	l, runA, _, commits := failingLaunch(t)
+	e := l.testEnv
+	ref := "task:" + runA + "/build"
+	a := actionOf(t, e.itemOf(t, ref), crew.TaskRecheck)
+	if a.Attempt != 3 || a.Commit != commits[2] {
+		t.Fatalf("Check again: %+v", a)
+	}
+	resp, out := e.do("POST", "/api/runs/"+runA+"/resume", adminToken, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("continue: %d %v", resp.StatusCode, out)
+	}
+	runB := out["run"].(map[string]any)["id"].(string)
+	waitUntil(t, "A names B", func() bool {
+		p, ok, err := e.srv.ledger.Pointer(context.Background(), runA)
+		return err == nil && ok && p.ContinuedBy == runB
+	})
+	status, out := sendAsGiven(t, e, a, "late")
+	if out["run"] != runB {
+		t.Fatalf("Check again after the Continue went to %v, not B: %d %v", out["run"], status, out)
+	}
+	if _, found, _ := e.srv.ledger.Receipt(context.Background(), runA, adminActor, "late"); found {
+		t.Fatal("a receipt in A")
+	}
+	got := e.trackOf(t, ref, "late", "")
+	if got[stepRecorded].State != stepDone || !strings.Contains(got[stepValidated].Receipt, "command:"+runB+"/late") {
+		t.Fatalf("the track under A's task: %+v", got)
+	}
+	switch status {
+	case http.StatusConflict: // A's revision, not B's
+		if errorCode(out) != crew.RefusalStaleRevision || got[stepValidated].State != stepRefused || !strings.Contains(got[stepValidated].Words, "stale_revision") {
+			t.Fatalf("refused %v, tracked %+v", out, got)
+		}
+	case http.StatusOK: // B's revision happened to be A's
+		if got[stepValidated].State != stepDone {
+			t.Fatalf("taken, tracked %+v", got)
+		}
+	default:
+		t.Fatalf("Check again after the Continue: %d %v", status, out)
+	}
+	if got := e.trackOf(t, "task:"+runA+"/docs", "late", ""); got[stepRecorded].State != stepRefused {
+		t.Fatalf("read under another task: %+v", got)
 	}
 }
 
