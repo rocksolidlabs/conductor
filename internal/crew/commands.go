@@ -697,24 +697,41 @@ const (
 )
 
 // TaskCommandOn reports whether the ledger's command row is one of the
-// three task commands sent for the task taskID: its intent Retry, Accept
-// or Cancel, and its fingerprint the one act keeps for that command on
-// that task (TaskCommandFingerprint), or a Check again of it. A run's
-// pause or another task's command is not, whatever its id.
-func TaskCommandOn(row ledger.CommandRow, taskID string) bool {
+// task commands sent for the task taskID: its intent Retry, Accept or
+// Cancel, and its fingerprint the one act keeps for that command on that
+// task (TaskCommandFingerprint); or a Check again, whose fingerprint
+// holds its candidate too, taken with args (CommandArgs) that name
+// taskID and give its fingerprint: whatever its receipt says, so one
+// refused before its change (a stale revision, a continuation) or never
+// settled, its receipt naming no task, is bound to its own task as every
+// other. A run's pause or another task's command is not, whatever its id.
+func TaskCommandOn(row ledger.CommandRow, args []string, taskID string) bool {
 	switch row.Intent {
 	case TaskRetry, TaskAccept, TaskCancel:
 		return row.Fingerprint == TaskCommandFingerprint(row.Intent, taskID)
 	case TaskRecheck:
-		// Its fingerprint holds its candidate too: its receipt names the
-		// task its change was judged on, and one refused before the
-		// change (a stale revision, a continuation) names none and
-		// changed nothing.
-		var rc Receipt
-		_ = json.Unmarshal([]byte(row.Receipt), &rc)
-		return rc.Task == nil || rc.Task.ID == taskID
+		return len(args) == len(recheckArgs(RecheckRequest{})) && args[0] == taskID && row.Fingerprint == fingerprint(TaskRecheck, args...)
 	}
 	return false
+}
+
+// CommandArgs are the arguments the command row was taken with, as the
+// command.accepted event act writes in the transaction that takes it
+// keeps them (the row keeps their fingerprint alone); nil when the run
+// keeps no such event.
+func CommandArgs(ctx context.Context, l *ledger.Ledger, row ledger.CommandRow) ([]string, error) {
+	payload, found, err := l.CommandEvent(ctx, row.RunID, "command.accepted", row.Actor, row.ID)
+	if err != nil || !found {
+		return nil, err
+	}
+	var ev struct {
+		Intent string   `json:"intent"`
+		Args   []string `json:"args"`
+	}
+	if json.Unmarshal([]byte(payload), &ev) != nil || ev.Intent != row.Intent {
+		return nil, nil
+	}
+	return ev.Args, nil
 }
 
 // TaskCommandFingerprint is the fingerprint act keeps in the ledger for

@@ -1027,7 +1027,7 @@ func (s *Server) takenAnyway(ctx context.Context, linkID, run, task, target stri
 	case err != nil:
 		return proto.MustControl(proto.DecideRefused{T: proto.CtlDecideRefused, ReqID: m.ReqID, Code: "unavailable",
 			Message: "whether the engine took the command could not be read: this opId stays this request's", Ref: target, Receipt: m.OpID}), kept
-	case !found || row.Intent != m.Action || !crew.TaskCommandOn(row, task):
+	case !found || row.Intent != m.Action || !crew.TaskCommandOn(row, nil, task):
 		return nil, nil
 	}
 	s.note(linkID, target, m.OpID, m.OpID)
