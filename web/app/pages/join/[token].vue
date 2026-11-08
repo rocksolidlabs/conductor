@@ -494,9 +494,6 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
       <SessionStatusBadge v-if="status" :status="status as any" />
       <AttentionBadge :attention="attention" />
       <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" />
-      <div v-if="sessionDecides" class="flex gap-0.5 rounded-md bg-elevated p-0.5" role="tablist" aria-label="Decide or the terminal" data-join-tabs>
-        <UButton v-for="t in (['decide', 'terminal'] as const)" :key="t" role="tab" :aria-selected="tab === t" :label="t === 'decide' ? 'Decide' : 'Terminal'" :icon="t === 'decide' ? 'i-lucide-list-checks' : 'i-lucide-square-terminal'" size="sm" class="min-h-9" :color="tab === t ? 'primary' : 'neutral'" :variant="tab === t ? 'solid' : 'ghost'" :data-join-tab="t" @click="tab = t" />
-      </div>
       <UBadge :label="`${viewers} here`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" />
       <UBadge v-if="current.kind === 'hosted'" :label="`hosted on ${current.hostName || 'dev machine'}`" icon="i-lucide-laptop" color="neutral" variant="subtle" size="sm" />
       <div class="flex-1" />
@@ -515,6 +512,11 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
       <UButton icon="i-lucide-log-out" color="neutral" variant="outline" size="sm" aria-label="Leave" data-join-leave @click="leave"><span class="hidden sm:inline">Leave</span></UButton>
       <FullscreenButton size="sm" />
     </header>
+
+    <!-- A decision link's two tabs, under the header so a phone's narrow header keeps its badges: Decide first, the terminal one tap away. -->
+    <nav v-if="sessionDecides" class="flex gap-1 border-b border-default px-2 py-1.5 sm:px-3" role="tablist" aria-label="Decide or the terminal" data-join-tabs>
+      <UButton v-for="t in (['decide', 'terminal'] as const)" :key="t" role="tab" :aria-selected="tab === t" :label="t === 'decide' ? 'Decide' : 'Terminal'" :icon="t === 'decide' ? 'i-lucide-list-checks' : 'i-lucide-square-terminal'" size="md" class="min-h-11 flex-1 justify-center sm:flex-none" :color="tab === t ? 'primary' : 'neutral'" :variant="tab === t ? 'soft' : 'ghost'" :data-join-tab="t" @click="tab = t" />
+    </nav>
 
     <main class="flex-1 min-h-0 p-2 sm:p-3 flex gap-3">
       <section v-if="sessionDecides" v-show="tab === 'decide'" class="mx-auto w-full max-w-2xl min-h-0 overflow-y-auto" data-join-session-decide>
