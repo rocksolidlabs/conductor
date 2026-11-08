@@ -19,6 +19,7 @@ concurrency:
 env:
   GOFLAGS: -mod=readonly
   GOTOOLCHAIN: auto # go.mod pins the patch toolchain; the go command fetches it
+  NVIM_VERSION: v0.10.4 # the go and e2e jobs' Neovim, its cache key too
 
 jobs:
   web:
@@ -60,10 +61,26 @@ jobs:
           # fixes (govulncheck) land in patches.
           go-version: '~1.26.0'
           check-latest: true
+      # A file a check fetches is cached, and its download retried for minutes: a release
+      # mirror's 504s fail nothing but the try (#281). A cached or half-written tarball that
+      # is not a gzip is fetched again, never extracted.
+      - uses: actions/cache@v4
+        with:
+          path: ~/nvim-cache
+          key: nvim-${{ env.NVIM_VERSION }}-linux-x86_64
       - name: Install Neovim (the editor bridge's tests run against the real one)
         run: |
-          curl -fsSL -o /tmp/nvim.tgz https://github.com/neovim/neovim/releases/download/v0.10.4/nvim-linux-x86_64.tar.gz
-          sudo tar -C /usr/local --strip-components=1 -xzf /tmp/nvim.tgz
+          tgz=~/nvim-cache/nvim.tar.gz
+          mkdir -p ~/nvim-cache
+          if tar -tzf "$tgz" >/dev/null 2>&1; then
+            echo "Neovim $NVIM_VERSION from the cache"
+          else
+            curl -fL --no-progress-meter --retry 8 --retry-all-errors --retry-delay 15 --retry-max-time 300 \
+              -o "$tgz.part" "https://github.com/neovim/neovim/releases/download/$NVIM_VERSION/nvim-linux-x86_64.tar.gz"
+            tar -tzf "$tgz.part" >/dev/null
+            mv "$tgz.part" "$tgz"
+          fi
+          sudo tar -C /usr/local --strip-components=1 -xzf "$tgz"
           nvim --version | head -1
       - uses: actions/download-artifact@v4
         with:
@@ -154,10 +171,26 @@ jobs:
           # fixes (govulncheck) land in patches.
           go-version: '~1.26.0'
           check-latest: true
+      # A file a check fetches is cached, and its download retried for minutes: a release
+      # mirror's 504s fail nothing but the try (#281). A cached or half-written tarball that
+      # is not a gzip is fetched again, never extracted.
+      - uses: actions/cache@v4
+        with:
+          path: ~/nvim-cache
+          key: nvim-${{ env.NVIM_VERSION }}-linux-x86_64
       - name: Install Neovim (the editor bridge's tests run against the real one)
         run: |
-          curl -fsSL -o /tmp/nvim.tgz https://github.com/neovim/neovim/releases/download/v0.10.4/nvim-linux-x86_64.tar.gz
-          sudo tar -C /usr/local --strip-components=1 -xzf /tmp/nvim.tgz
+          tgz=~/nvim-cache/nvim.tar.gz
+          mkdir -p ~/nvim-cache
+          if tar -tzf "$tgz" >/dev/null 2>&1; then
+            echo "Neovim $NVIM_VERSION from the cache"
+          else
+            curl -fL --no-progress-meter --retry 8 --retry-all-errors --retry-delay 15 --retry-max-time 300 \
+              -o "$tgz.part" "https://github.com/neovim/neovim/releases/download/$NVIM_VERSION/nvim-linux-x86_64.tar.gz"
+            tar -tzf "$tgz.part" >/dev/null
+            mv "$tgz.part" "$tgz"
+          fi
+          sudo tar -C /usr/local --strip-components=1 -xzf "$tgz"
           nvim --version | head -1
       - uses: actions/setup-node@v4
         with:
@@ -220,12 +253,23 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: desktop/package-lock.json
+      # npm caches packages, not Electron's binary: its pretest (scripts/install-electron.mjs)
+      # fetches it, with retries, into this cache, keyed by the locked version (#281).
+      - id: electron
+        shell: bash
+        run: echo "version=$(node -p "require('./desktop/package-lock.json').packages['node_modules/electron'].version")" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/electron-cache
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.electron.outputs.version }}
       - run: npm ci
         working-directory: desktop
       - run: npm run typecheck
         working-directory: desktop
       - run: npm test
         working-directory: desktop
+        env:
+          electron_config_cache: ${{ runner.temp }}/electron-cache
 
   desktop-smoke:
     # The shell against the built server, in Electron under a virtual display.
@@ -251,6 +295,17 @@ jobs:
         working-directory: desktop
       - run: npm run build
         working-directory: desktop
+      - id: electron
+        run: echo "version=$(node -p "require('./desktop/package-lock.json').packages['node_modules/electron'].version")" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/electron-cache
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.electron.outputs.version }}
+      - name: Fetch Electron's binary (retried, cached; desktop-test's comment says why)
+        run: npm run pretest
+        working-directory: desktop
+        env:
+          electron_config_cache: ${{ runner.temp }}/electron-cache
       - run: xvfb-run --auto-servernum npm run test:e2e
         working-directory: desktop
 
