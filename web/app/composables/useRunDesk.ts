@@ -41,8 +41,12 @@ export function deskRefused(info: CloseInfo): boolean {
  *
  * - A close that refuses the link (deskRefused) or a welcome without `decisions` (an older owner) ends it: the page stays as it
  *   was, and nothing joins it again.
+ * - A connection the page gives up is closed by the page before it is let go, whatever closed it (a WebRTC transport that says it
+ *   closed when its peer connection only disconnected keeps its socket and peer open otherwise), so no abandoned one outlives it.
  * - Any other close, before the first welcome too (a network that failed the first try), is joined again after 1 s, twice as long
- *   each time, 15 s at most, the link's join read again first; `retry` joins it again at once (the page's Refresh).
+ *   each time, 15 s at most, the link's join read again first; `retry` joins it again at once (the page's Refresh). So is a join
+ *   read again that names no desk for a run whose join named one (a switchyard that restarted, its members back before their
+ *   desk): the wait goes on, and the desk is joined once a join names it again.
  * - `shown` holds from the first welcome that said `decisions` until the page leaves or the link names another run, through every
  *   reconnect, so what the page keeps of the lane (useJoinDecide: an action not yet confirmed, the item open) is kept with it;
  *   `live` says whether the desk carries the lane now. `seq` counts what the lane must list again for (each welcome, each
@@ -57,6 +61,8 @@ export function useRunDesk(opts: { info: Ref<JoinInfo | null>; token: Ref<string
   let timer: ReturnType<typeof setTimeout> | undefined
   let wait = DESK_RETRY_FIRST_MS
   let on = false
+  /** Whether a join of this run has named a desk since the page joined it: a join that then names none is waited out. */
+  let named = false
   /** The lane over the desk while its welcome said `decisions`. */
   const lane = new DecisionLane(() => (t?.decisions ? t : null))
 
@@ -69,7 +75,12 @@ export function useRunDesk(opts: { info: Ref<JoinInfo | null>; token: Ref<string
   async function connect() {
     if (!on || t) return
     const to = deskTarget(opts.info.value)
-    if (!to) return
+    if (!to) {
+      // A desk this run's join named, missing from it for now: read the join again on the wait, not given up.
+      if (named) again()
+      return
+    }
+    named = true
     const c = open(to)
     t = c
     c.onControl((m) => {
@@ -79,6 +90,8 @@ export function useRunDesk(opts: { info: Ref<JoinInfo | null>; token: Ref<string
       if (t !== c) return
       t = null
       live.value = false
+      // Closed here too: a transport's close can leave what it holds open (WebRTC's on a peer that only disconnected).
+      c.close()
       if (!on) return
       if (deskRefused(info)) {
         end()
@@ -152,6 +165,7 @@ export function useRunDesk(opts: { info: Ref<JoinInfo | null>; token: Ref<string
       if (!joined || !run || !wasJoined || run !== wasRun) {
         shown.value = false
         wait = DESK_RETRY_FIRST_MS
+        named = false
       }
       on = !!(joined && run)
       if (on) void connect()

@@ -1,19 +1,36 @@
 import { computed, nextTick, ref, watch, type Ref } from 'vue'
 import { itemOf, mintRequestId, reconcileDelivery, showingWords, stepsFinal, trackKey, type DeliveryStep, type InboxAction, type InboxItem, type InboxSummary } from '~/utils/inbox'
 import { DecideCode } from '~/utils/protocol'
-import { decideOf, decideUnconfirmed, LaneError, refusedWords, type DecisionLane, type LaneDecide, type LaneRecent } from '~/utils/transport/decide'
+import { decideOf, decideUnconfirmed, LaneError, LaneLocal, refusedWords, type DecisionLane, type LaneDecide, type LaneRecent } from '~/utils/transport/decide'
 
 /** One action taken through the link, as the page keeps it: `from`, the item it was taken on when its steps are read under another. */
 export type JoinRecent = LaneRecent & { from?: string }
 
-/** Per item: the action under way, its refusal's words, a decide no word came back for (asked again under the same opId), a note. */
-export type JoinFeedback = { busy?: string; words?: string; unknown?: string; again?: LaneDecide; label?: string }
+/**
+ * Per item: the action under way, its refusal's words, and an action still owed a word (`again`, the decide no word came back for,
+ * asked again under its own opId; `kind`, the item's, for the words of its answer), with what the page says of it (`unknown`).
+ */
+export type JoinFeedback = { busy?: string; words?: string; unknown?: string; again?: LaneDecide; label?: string; kind?: string }
+
+/** Refusals of a request that say nothing of an action asked before under its opId: nothing was sent, or the owner looked no further. */
+const SAYS_NOTHING = new Set<string>([LaneLocal.NotSent, DecideCode.TooManyRequests])
+
+/** Local codes of a request that got no reply of the owner's. */
+const NO_REPLY = new Set<string>([LaneLocal.NotSent, LaneLocal.Closed, LaneLocal.NoWord])
+
+const UNCONFIRMED_WORDS =
+  'Your action went, and no word came back to say whether it was taken. It is asked again under its own id when the link is connected again, or when you read again, and the owner, which takes it once, says what came of it.'
 
 /**
  * What the join page's Decide keeps of a decision link's lane (docs/plans/decision-inbox.md, PR-7), owned by the page for its whole
  * life, not by the tab that draws it: a reconnect of the lane, or the run's members' grid left for a member in full, keeps the item
  * open, the link's actions taken here and an action not yet confirmed (its feedback, with the decide to ask again under its own
  * opId), so nothing the person did is dropped with a connection.
+ *
+ * An action not yet confirmed is owed until a reply of the owner's confirms or refuses it, and only that ends it: it is asked again
+ * under its own opId with each welcome and `decisions_changed` (`seq`) and when Read again is pressed; an ask again that could not
+ * be sent (no connection now) or that the owner refused without looking at it (too many under way) keeps it owed, with words that
+ * say so; and while it is owed no other action is taken on its item, so none replaces it.
  *
  * The scope is listed from the top when `seq` moves (a welcome, `decisions_changed`): one list under way, one queued behind it,
  * and every action not final tracked again with it. More asks the page after the list's cursor; a reply to a More asked of a list
@@ -108,7 +125,11 @@ export function useJoinDecide(lane: DecisionLane, seq: Ref<number>) {
       if (g === generation) error.value = (e as Error).message
     }
   }
-  watch(seq, () => void relist())
+  watch(seq, () => {
+    void relist()
+    // Every action still owed is asked again under its own opId over the connection that moved seq.
+    for (const f of Object.values(feedback.value)) if (f.again && !f.busy) void send(f.kind ?? '', f.again, f.label ?? '')
+  })
 
   async function trackOne(e: LaneRecent) {
     try {
@@ -131,6 +152,8 @@ export function useJoinDecide(lane: DecisionLane, seq: Ref<number>) {
       missing.value = ''
     } catch (e) {
       if (openRef.value !== r) return
+      // No reply (no connection now): the item stays drawn as last read, with what is owed on it.
+      if (e instanceof LaneError && NO_REPLY.has(e.code) && item.value?.ref === r) return
       item.value = null
       missing.value = e instanceof LaneError && e.code === DecideCode.NotFound ? 'This link no longer finds that item.' : (e as Error).message
     }
@@ -171,13 +194,21 @@ export function useJoinDecide(lane: DecisionLane, seq: Ref<number>) {
   /** One action on the item drawn, through the lane: a `decide` under a fresh opId. */
   async function act(r: string, a: InboxAction, text?: string) {
     const it = item.value
-    if (!it || it.ref !== r || feedback.value[r]?.busy) return
+    const f = feedback.value[r]
+    // An action still owed a word is answered first: no other action replaces it.
+    if (!it || it.ref !== r || f?.busy || f?.again) return
     pick.value = null
     await send(it.kind, decideOf(it, a, mintRequestId(), text), a.label)
   }
-  /** Sends m (again, under its own opId, when no word came the first time: the owner answers a repeat from its record). */
+  /**
+   * Sends m (again, under its own opId, when no word came the first time: the owner answers a repeat from its record). An action owed
+   * stays owed through its ask again until a reply confirms or refuses it.
+   */
   async function send(kind: string, m: LaneDecide, label: string) {
-    note(m.ref, { busy: label })
+    const was = feedback.value[m.ref]
+    const owed = was?.again?.opId === m.opId ? was : undefined
+    const keepOwed = (unknown: string) => note(m.ref, { unknown, again: m, label, kind })
+    note(m.ref, owed ? { ...owed, busy: label } : { busy: label })
     try {
       const ok = await lane.decide(m)
       const e = keep(m.ref, ok.ref || m.ref, ok.receipt, m.opId)
@@ -185,7 +216,10 @@ export function useJoinDecide(lane: DecisionLane, seq: Ref<number>) {
       await trackOne(e)
     } catch (err) {
       if (decideUnconfirmed(err)) {
-        note(m.ref, { unknown: 'Your action went, and no word came back to say whether it was taken. Read again: it is asked again under its own id, and the owner, which takes it once, says what came of it.', again: m, label })
+        keepOwed(UNCONFIRMED_WORDS)
+      } else if (owed && err instanceof LaneError && SAYS_NOTHING.has(err.code)) {
+        // The ask again said nothing of the action: it is still owed, and asked again with the next connection.
+        keepOwed(`${refusedWords(err, kind)} Your earlier action is still owed a word: it is asked again under its own id when the link is connected again, or when you read again.`)
       } else {
         note(m.ref, { words: refusedWords(err, kind) })
         const x = err instanceof LaneError ? err.extra : {}
@@ -200,7 +234,8 @@ export function useJoinDecide(lane: DecisionLane, seq: Ref<number>) {
   async function reread() {
     const f = shownFeedback.value
     const it = item.value
-    if (f?.again && it) return send(it.kind, f.again, f.label ?? '')
+    if (f?.busy) return
+    if (f?.again) return send(f.kind ?? it?.kind ?? '', f.again, f.label ?? '')
     const e = shownAction.value
     if (e) await trackOne(e)
     await readItem()

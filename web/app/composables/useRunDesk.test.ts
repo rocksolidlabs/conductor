@@ -7,7 +7,8 @@ import { deskRefused, deskTarget, DESK_RETRY_FIRST_MS, useRunDesk } from './useR
 
 // A run decision link's desk on the join page (docs/plans/decision-inbox.md, PR-7), over fake connections the test opens and
 // closes: the connection is the hosted desk wherever the join names one (a switchyard, or a server a publisher publishes to); a
-// failed first try is joined again, as is a desk that served the lane and dropped, the page's Decide shown throughout; a refusal of
+// failed first try is joined again, as is a desk that served the lane and dropped, the page's Decide shown throughout, and a desk
+// a join read again omits for a while; a connection that says it closed is closed by the page before it is let go; a refusal of
 // the link, or an owner that serves it no decisions, ends it. The wait before a join again is the fake clock's.
 
 class FakeDesk {
@@ -39,7 +40,7 @@ class FakeDesk {
     this.decisions = decisions
     this.settle({ t: 'welcome', decisions } as Welcome)
   }
-  /** The connection's end, as the transport tells it: its welcome refused first when it had none. */
+  /** The connection's end, as the transport tells it (its own close not called, as WebRTC's ICE disconnect): its welcome refused first when it had none. */
   ends(info: CloseInfo) {
     this.decisions = false
     this.fail(new Error(info.reason))
@@ -172,6 +173,61 @@ describe('useRunDesk', () => {
     opened[1]!.welcomes(true)
     await flush()
     expect([d.shown.value, d.live.value, d.seq.value]).toEqual([true, true, 2])
+  })
+
+  it('closes a connection that told of its close, before and after its welcome, so none it gave up stays open', async () => {
+    start()
+    joined.value = true
+    await flush()
+    opened[0]!.ends({ code: 1006, reason: 'the peers could not connect' })
+    await flush()
+    expect(opened[0]!.closed, 'the first try, closed by the page').toBe(true)
+    await vi.advanceTimersByTimeAsync(DESK_RETRY_FIRST_MS)
+    await flush()
+    opened[1]!.welcomes(true)
+    await flush()
+    opened[1]!.ends({ code: 1006, reason: 'peer connection lost' })
+    await flush()
+    expect(opened[1]!.closed, 'the desk that served, closed by the page').toBe(true)
+    await vi.advanceTimersByTimeAsync(DESK_RETRY_FIRST_MS * 2)
+    await flush()
+    expect(opened).toHaveLength(3)
+    expect(opened[2]!.closed).toBe(false)
+  })
+
+  it('goes on waiting when a join read again omits the desk it named (a switchyard whose desk is not back yet), and joins it once named again', async () => {
+    const withDesk = { run: { id: 'run-1', name: 'Run', members: [], desk: 'h-desk' }, role: 'control', switchyard: true } as JoinInfo
+    const noDesk = { run: { id: 'run-1', name: 'Run', members: [] }, role: 'control', switchyard: true } as JoinInfo
+    info.value = withDesk
+    const d = start()
+    joined.value = true
+    await flush()
+    opened[0]!.welcomes(true)
+    await flush()
+    opened[0]!.ends({ code: 1006, reason: 'peer connection lost' })
+    await flush()
+
+    // The first wait's read of the join names no desk: nothing to join, and the wait goes on, twice as long.
+    refresh.mockImplementationOnce(async () => {
+      info.value = noDesk
+    })
+    await vi.advanceTimersByTimeAsync(DESK_RETRY_FIRST_MS)
+    await flush()
+    expect(refresh).toHaveBeenCalledTimes(1)
+    expect(opened).toHaveLength(1)
+    expect([d.shown.value, d.live.value], 'shown, not live').toEqual([true, false])
+
+    // The next names it again: joined, and live.
+    refresh.mockImplementationOnce(async () => {
+      info.value = withDesk
+    })
+    await vi.advanceTimersByTimeAsync(DESK_RETRY_FIRST_MS * 2)
+    await flush()
+    expect(refresh).toHaveBeenCalledTimes(2)
+    expect(opened.map((x) => x.to)).toEqual(['hosted:h-desk', 'hosted:h-desk'])
+    opened[1]!.welcomes(true)
+    await flush()
+    expect([d.shown.value, d.live.value]).toEqual([true, true])
   })
 
   it('ends at a refusal of the link, or at an owner that serves it no decisions, and joins nothing again', async () => {

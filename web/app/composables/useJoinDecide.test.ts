@@ -7,8 +7,9 @@ import { useJoinDecide } from './useJoinDecide'
 
 // What the join page's Decide keeps (docs/plans/decision-inbox.md, PR-7), over a wire whose replies the test gives one by one, in
 // the order it chooses: a More asked of a list read again since lands on no list; a blocker's Cancel, tracked as its task's, shows
-// its steps on the question's card; and an action whose connection closed before its reply is kept through a reconnect, asked
-// again under its own opId when read again.
+// its steps on the question's card; and an action whose connection closed before its reply is owed until a reply confirms or
+// refuses it: kept through a reconnect and asked again under its own opId with the welcome, kept when its ask again cannot be sent
+// (no connection now), and no other action on its item replaces it meanwhile.
 
 type Asked = { m: LaneAsk; settle: (r: DecisionReply) => void; fail: (e: unknown) => void }
 type Decided = { m: LaneDecide; settle: (r: DecideOkMsg) => void; fail: (e: unknown) => void }
@@ -115,7 +116,7 @@ describe('useJoinDecide', () => {
     expect(d.actions.value[0]).toMatchObject({ ref: 'task:r/build', from: q })
   })
 
-  it('keeps an action whose connection closed before its reply through a reconnect, and asks it again under its own opId', async () => {
+  it('keeps an action whose connection closed before its reply through a reconnect, and asks it again under its own opId with the welcome', async () => {
     const f = fakeWire()
     let wire: LaneWire | null = f.wire
     const seq = ref(0)
@@ -141,7 +142,8 @@ describe('useJoinDecide', () => {
     expect(d.shownFeedback.value?.unknown).toContain('no word came back')
     expect(d.shownFeedback.value?.again?.opId).toBe(first.m.opId)
 
-    // The lane joined again (its welcome moves seq): the list read again, the item still open, the action still owed.
+    // The lane joined again (its welcome moves seq): the list read again, the item still open, and the action, still owed, asked
+    // again at once: the same decide, under the same opId.
     wire = f.wire
     seq.value++
     await flush()
@@ -152,14 +154,63 @@ describe('useJoinDecide', () => {
     expect(d.openRef.value).toBe(q)
     expect(d.item.value?.ref).toBe(q)
     expect(d.shownFeedback.value?.again?.opId).toBe(first.m.opId)
+    expect(f.decided).toHaveLength(2)
+    expect(f.decided[1]!.m).toEqual(first.m)
 
-    // Read again: the same decide, under the same opId; the owner's repeat confirms it.
-    void d.reread()
+    // The owner's repeat confirms it.
+    f.decided[1]!.settle({ t: 'decide_ok', reqId: 'x', ref: q, receipt: 'q-1', repeat: true })
+    await flush()
+    expect(d.shownFeedback.value?.unknown).toBeUndefined()
+    expect(d.actions.value.map((e) => [e.ref, e.attempt])).toEqual([[q, first.m.opId]])
+  })
+
+  it('keeps an action owed when its ask again cannot be sent, takes no other action on its item meanwhile, and asks it with the next connection', async () => {
+    const f = fakeWire()
+    let wire: LaneWire | null = f.wire
+    const seq = ref(0)
+    const d = useJoinDecide(new DecisionLane(() => wire), seq)
+    const q = 'question:s1/q-1'
+    const right: InboxAction = { name: 'answer', label: 'Right', input: 'Right\r', expect: 'q-1', scope: 'Types Right', route: '/ws/sessions/s1' }
+    const left: InboxAction = { name: 'answer', label: 'Left', input: 'Left\r', expect: 'q-1', scope: 'Types Left', route: '/ws/sessions/s1' }
+    d.open(q)
+    await flush()
+    f.take('decision_read').settle({ reqId: 'x', item: question(q, [right, left]) })
+    await flush()
+
+    // The decide goes, and its connection closes before its reply: owed.
+    void d.act(q, right)
+    await flush()
+    const first = f.decided[0]!
+    wire = null
+    first.fail(new LaneError(LaneLocal.Closed, 'closed'))
+    await flush()
+    expect(d.shownFeedback.value?.again?.opId).toBe(first.m.opId)
+
+    // Read again with no connection: nothing is sent, and the action is still owed, with words that say so.
+    await d.reread()
+    await flush()
+    expect(f.decided).toHaveLength(1)
+    expect(d.shownFeedback.value?.again).toEqual(first.m)
+    expect(d.shownFeedback.value?.unknown).toContain('Not connected: nothing was sent.')
+    expect(d.shownFeedback.value?.unknown).toContain('still owed')
+    expect(d.shownFeedback.value?.words).toBeUndefined()
+    expect(d.item.value?.ref, 'the item drawn as last read, its owed action with it').toBe(q)
+
+    // Another action on the item, the item drawn: not taken while the first is owed, so it cannot replace it.
+    await d.act(q, left)
+    await flush()
+    expect(f.decided).toHaveLength(1)
+    expect(d.shownFeedback.value?.again).toEqual(first.m)
+
+    // The next connection's welcome: the owed action asked again under its own opId; the owner's repeat confirms it.
+    wire = f.wire
+    seq.value++
     await flush()
     expect(f.decided).toHaveLength(2)
     expect(f.decided[1]!.m).toEqual(first.m)
     f.decided[1]!.settle({ t: 'decide_ok', reqId: 'x', ref: q, receipt: 'q-1', repeat: true })
     await flush()
+    expect(d.shownFeedback.value?.again).toBeUndefined()
     expect(d.shownFeedback.value?.unknown).toBeUndefined()
     expect(d.actions.value.map((e) => [e.ref, e.attempt])).toEqual([[q, first.m.opId]])
   })

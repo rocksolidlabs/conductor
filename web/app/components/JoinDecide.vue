@@ -9,7 +9,8 @@ import type { JoinDecideState, JoinRecent } from '~/composables/useJoinDecide'
  * with More ("Showing 25 of 60"), each item read whole before it is acted on, its four steps, and the link's Recent, so an item an
  * action closed stays readable with its steps. Evidence is read through the lane (a check's log's end; a session in the scope opens
  * in its terminal tab, `openSession`); anything else is opened on the desktop or the LAN. What it shows is the page's (`state`,
- * useJoinDecide), kept through a reconnect: `offline` says the lane is being joined again meanwhile.
+ * useJoinDecide), kept through a reconnect: `offline` says the lane is being joined again meanwhile. While an action of an item is
+ * still owed a word, the item's other actions wait (`busy`): only a reply to that one, or a refusal of it, ends it.
  */
 const props = defineProps<{ state: JoinDecideState; title?: string; offline?: boolean }>()
 const emit = defineEmits<{ openSession: [session: string] }>()
@@ -29,7 +30,7 @@ const recentWord = (e: JoinRecent) => recentBadge({ ref: e.ref, receipt: e.recei
 
 <template>
   <div class="flex min-w-0 flex-col gap-4" data-join-decide>
-    <UAlert v-if="offline" color="neutral" variant="subtle" icon="i-lucide-loader-circle" title="Connecting again" description="The connection that carries this link's decisions dropped. What you did here is kept, and an action no word came back for is asked again when you read it again." data-decide-offline />
+    <UAlert v-if="offline" color="neutral" variant="subtle" icon="i-lucide-loader-circle" title="Connecting again" description="The connection that carries this link's decisions dropped. What you did here is kept, and an action no word came back for is asked again under its own id once the link is connected again." data-decide-offline />
     <template v-if="!openRef">
       <h2 v-if="title" class="text-sm font-semibold text-highlighted">{{ title }}</h2>
       <UAlert v-if="error" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" :description="loaded ? 'The list below is as it was last read.' : undefined" data-decisions-error />
@@ -83,7 +84,7 @@ const recentWord = (e: JoinRecent) => recentBadge({ ref: e.ref, receipt: e.recei
         :item="item"
         :route-of="() => null"
         :delivery="delivery"
-        :busy="shownFeedback?.busy"
+        :busy="shownFeedback?.busy ?? (shownFeedback?.again ? 'owed' : undefined)"
         :refusal="shownFeedback?.words"
         :unknown="shownFeedback?.unknown"
         :read-evidence="readEvidence"
