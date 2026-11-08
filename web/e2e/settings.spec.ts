@@ -637,9 +637,10 @@ test("the page's one Save saves Brakeman's section with the app's settings, and 
     await expect.poll(savedReads).toBe(reads + 2)
     await expect(page.locator('[data-yolo-switch]')).toHaveAttribute('aria-checked', 'false')
     await expect(save).toHaveText('Save and restart the server')
+    // Saved this time (the toast of the save before may still show its same words: the app's record says it).
     await save.click()
-    await expect(toast('Saved; the server restarted')).toBeVisible()
-    expect((await sets()).length).toBe(3)
+    await expect.poll(async () => (await sets()).length).toBe(3)
+    await expect(save).toBeDisabled()
 
     // Brakeman's part refused (saved elsewhere meanwhile): the app's is held back, the edits stay, and Keep mine saves them over it.
     await page.locator('[data-tray-switch]').click()
