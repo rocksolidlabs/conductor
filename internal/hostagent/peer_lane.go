@@ -202,7 +202,7 @@ func (p *peer) deskAttach(payload []byte, via *dcSink) {
 	p.deskSend(proto.MustControl(proto.Welcome{T: proto.CtlWelcome, Proto: proto.ProtoVersion, Role: string(session.RoleControl), Transport: transport, Decisions: true}))
 	p.mu.Lock()
 	if p.lane == nil && !p.closed {
-		p.lane = openLane(p.a.opts.Decisions, p.linkID, "", p.deskSend, p.laneStands)
+		p.lane = openLane(&p.a.lanes, p.a.opts.Decisions, p.linkID, "", p.deskSend, p.laneStands)
 	}
 	p.mu.Unlock()
 }

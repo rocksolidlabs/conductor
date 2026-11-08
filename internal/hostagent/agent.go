@@ -483,6 +483,10 @@ type agent struct {
 	// decisions is what the server's last registered said of decision
 	// links (proto.Registered.Decisions).
 	decisions atomic.Bool
+	// lanes is the tree every viewer's lane lives under (lane.go): the
+	// publication's or the desk's end waits for its workers before it is
+	// done.
+	lanes laneGroup
 
 	// ticks counts keepHearing's ticks done, each counted after its ping
 	// is reserved, or not: two more ticks after a link went means one

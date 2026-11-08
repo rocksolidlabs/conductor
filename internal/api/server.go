@@ -249,6 +249,17 @@ type Server struct {
 	// is armed. Guarded by pubMu.
 	desks          map[string]*runDesk
 	deskLingerSeam func(runID string, fire func())
+	// deskOpenings are the runs' desks being opened (openRunDesk), one per
+	// run, desksStopped set once the server's stop has stopped the desks
+	// (stopRunDesks: none is opened after); deskOpenSeam, in tests, runs as an opening is about to ask the
+	// rendezvous, deskAwaitSeam as a request begins to wait for another's
+	// opening, and deskStopSeam is handed the context of the desks' stop
+	// as the server stops (stopRunDesks). Guarded by pubMu.
+	deskOpenings  map[string]*deskOpening
+	desksStopped  bool
+	deskOpenSeam  func(runID string)
+	deskAwaitSeam func(runID string)
+	deskStopSeam  func(ctx context.Context)
 	// deskCheckSeam, in tests, runs as a desk's judgement is about to be
 	// made (deskCheck), its desk seen live.
 	deskCheckSeam func(runID string)
@@ -1262,7 +1273,7 @@ func (s *Server) Shutdown(ctx context.Context) {
 	s.runs.Draining(ctx)
 	s.shutDesks()
 	s.stopRevokeRetries()
-	s.stopRunDesks()
+	s.stopRunDesks(ctx)
 	s.webhooks.close(ctx)
 	// The providers' queues end as the webhooks' do: what waits in them is
 	// not delivered, and their goroutines are waited for with the others.

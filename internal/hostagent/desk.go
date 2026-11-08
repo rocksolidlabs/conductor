@@ -3,7 +3,9 @@ package hostagent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -43,13 +45,44 @@ func (a *agent) deskRegistration(resume *proto.HostResume) proto.RegisterDesk {
 // closes a register_desk.
 var ErrNoDesks = errors.New("the switchyard keeps no desks")
 
-// Desk is a run's desk at the switchyard.
+// Desk is a run's desk at the switchyard. Its viewers' lanes live under
+// its agent's laneGroup, and its end (end) waits for their workers before
+// it tells the switchyard, lets the viewers go and is done.
 type Desk struct {
 	a      *agent
 	cancel context.CancelFunc
 	done   chan struct{}
 	stop   chan struct{}
 	once   sync.Once
+	// told is set once the switchyard has been told the desk ended (or
+	// that word could not wait longer: flushControl's bound).
+	told atomic.Bool
+}
+
+// newDesk is the desk of the agent a, whose connection's context cancel
+// ends; its end runs once started (end), after its stop.
+func (a *agent) newDesk(cancel context.CancelFunc) *Desk {
+	k := &Desk{a: a, cancel: cancel, done: make(chan struct{}), stop: make(chan struct{})}
+	// A stop from the switchyard ends the desk here too.
+	a.unpublish = func() { k.once.Do(func() { close(k.stop) }) }
+	return k
+}
+
+// end is the desk's end, once it is stopped: its lanes first (nothing
+// begun from now on, those under way waited for), then the switchyard
+// told, and the viewers let go.
+func (k *Desk) end(runCtx context.Context) {
+	defer close(k.done)
+	<-k.stop
+	a := k.a
+	a.lanes.end()
+	// Told it ended, the switchyard forgets the desk at once and lets its
+	// viewers go, rather than hold it for a host that will not return.
+	a.send(proto.HostStatusMsg{T: proto.HostStatus, SessionID: k.CurrentID(), Status: string(session.StatusStopped)})
+	a.flushControl(runCtx)
+	k.told.Store(true)
+	k.cancel()
+	a.closeAllPeers()
 }
 
 // OpenDesk registers the desk of the run with the switchyard (ctx bounds
@@ -80,21 +113,9 @@ func (u *Uplink) OpenDesk(ctx context.Context, run proto.DeskRun) (*Desk, error)
 		return nil, err
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
-	k := &Desk{a: a, cancel: cancel, done: make(chan struct{}), stop: make(chan struct{})}
-	// A stop from the switchyard ends the desk here too.
-	a.unpublish = func() { k.once.Do(func() { close(k.stop) }) }
+	k := a.newDesk(cancel)
 	go a.controlLoop(runCtx, conn)
-	go func() {
-		defer close(k.done)
-		<-k.stop
-		// Told it ended, the switchyard forgets the desk at once and lets
-		// its viewers go, rather than hold it for a host that will not
-		// return.
-		a.send(proto.HostStatusMsg{T: proto.HostStatus, SessionID: k.CurrentID(), Status: string(session.StatusStopped)})
-		a.flushControl(runCtx)
-		cancel()
-		a.closeAllPeers()
-	}()
+	go k.end(runCtx)
 	return k, nil
 }
 
@@ -124,10 +145,30 @@ func (k *Desk) Revoke(ctx context.Context, linkID string) error {
 // Done is closed once the desk has ended, Stop or the switchyard's stop.
 func (k *Desk) Done() <-chan struct{} { return k.done }
 
-// Stop ends the desk: the switchyard is told, and its viewers let go.
-func (k *Desk) Stop() {
+// Stop ends the desk (the switchyard is told, its viewers let go), and
+// waits for its end until ctx is done: past that the end goes on by
+// itself, and the error says what of it was left (lane operations still
+// under way, the switchyard not yet told).
+func (k *Desk) Stop(ctx context.Context) error {
 	k.once.Do(func() { close(k.stop) })
-	<-k.done
+	select {
+	case <-k.done:
+		return nil
+	case <-ctx.Done():
+	}
+	select {
+	case <-k.done:
+		return nil
+	default:
+	}
+	switch n := k.a.lanes.pending(); {
+	case n > 0:
+		return fmt.Errorf("the desk's end goes on by itself: %d lane operations under way, the switchyard not yet told", n)
+	case !k.told.Load():
+		return errors.New("the desk's end goes on by itself: the switchyard not yet told")
+	default:
+		return errors.New("the desk's end goes on by itself: its viewers being let go")
+	}
 }
 
 // flushControl waits, at most endDrain, for what the control connection

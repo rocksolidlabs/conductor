@@ -18,9 +18,66 @@ import (
 // Decisions' watch says. A host that serves no decisions (`conductor
 // host`, Options.Decisions nil) refuses every lane message unsupported.
 
+// laneGroup is the one context tree of a publisher's connection (a
+// published session's agent, or a run's desk) that its viewers' lanes
+// live under: every lane's worker starts under its context and is counted
+// in its WaitGroup, and the connection's end (end) waits for them all
+// before it reports itself ended (Published.Done, Desk.Done). Admission
+// and teardown are decided under its one lock: a lane closed (its viewer
+// gone, closeFor) or a group ending begins nothing more, and the request
+// is refused with words, so no worker is added to a WaitGroup already
+// being waited for. The zero value is ready.
+type laneGroup struct {
+	mu     sync.Mutex
+	ctx    context.Context
+	cancel context.CancelFunc
+	ending bool
+	under  int
+	wg     sync.WaitGroup
+	// beforeAdmit, when set (tests), runs as a request about to be
+	// admitted has its lane, before the group's lock is taken.
+	beforeAdmit func()
+	// waiting, when set (tests), is told how many workers the end waits
+	// for, as it begins to wait.
+	waiting func(n int)
+}
+
+// rootLocked is the group's context, made at the first lane; the caller
+// holds g.mu.
+func (g *laneGroup) rootLocked() context.Context {
+	if g.ctx == nil {
+		g.ctx, g.cancel = context.WithCancel(context.Background())
+	}
+	return g.ctx
+}
+
+// end refuses every request from now on, withdraws those not begun (the
+// group's context), and waits for the workers under way: one begun ends as
+// its operation does.
+func (g *laneGroup) end() {
+	g.mu.Lock()
+	g.ending = true
+	g.rootLocked()
+	cancel, n, seam := g.cancel, g.under, g.waiting
+	g.mu.Unlock()
+	cancel()
+	if seam != nil {
+		seam(n)
+	}
+	g.wg.Wait()
+}
+
+// pending is how many workers are under way.
+func (g *laneGroup) pending() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.under
+}
+
 // laneConn is one viewer's side of the lane; nil for a viewer of no
 // decision link.
 type laneConn struct {
+	g                 *laneGroup
 	d                 Decisions
 	ctx               context.Context
 	cancel            context.CancelFunc
@@ -30,35 +87,85 @@ type laneConn struct {
 	// decide's commit boundary (Decisions.Decide); nil for none.
 	stands         func() error
 	decides, reads atomic.Int32
-	wg             sync.WaitGroup
-	stopWatch      func()
-	seq            atomic.Int64
+	// closed is set as the viewer goes (close); guarded by g.mu.
+	closed    bool
+	stopWatch func()
+	seq       atomic.Int64
 }
 
-// openLane opens the lane of the decision link linkID for a viewer: its
-// requests are answered through d, sessionID the server's own id of the
-// session the viewer holds ("" for a desk), and its replies sent with send;
-// stands is the viewer's own check, which each decide's operation asks at
-// its commit boundary (the peer's credential and the host's vouch, as a
-// terminal write asks them).
-func openLane(d Decisions, linkID, sessionID string, send func([]byte), stands func() error) *laneConn {
-	ctx, cancel := context.WithCancel(context.Background())
-	c := &laneConn{d: d, ctx: ctx, cancel: cancel, linkID: linkID, sessionID: sessionID, send: send, stands: stands}
+// openLane opens, under the group g, the lane of the decision link linkID
+// for a viewer: its requests are answered through d, sessionID the
+// server's own id of the session the viewer holds ("" for a desk), and
+// its replies sent with send; stands is the viewer's own check, which
+// each decide's operation asks at its commit boundary (the peer's
+// credential and the host's vouch, as a terminal write asks them). A lane
+// opened as its group ends is closed from the start: it refuses
+// everything, and watches nothing.
+func openLane(g *laneGroup, d Decisions, linkID, sessionID string, send func([]byte), stands func() error) *laneConn {
+	g.mu.Lock()
+	ctx, cancel := context.WithCancel(g.rootLocked())
+	c := &laneConn{g: g, d: d, ctx: ctx, cancel: cancel, linkID: linkID, sessionID: sessionID, send: send, stands: stands, closed: g.ending}
+	g.mu.Unlock()
+	if c.closed {
+		cancel()
+		c.stopWatch = func() {}
+		return c
+	}
 	c.stopWatch = d.Watch(linkID, sessionID, func() {
 		send(proto.MustControl(proto.DecisionsChanged{T: proto.CtlDecisionsChanged, Seq: c.seq.Add(1)}))
 	})
 	return c
 }
 
-// end withdraws the requests not begun, stops the watch and waits for
-// those under way: one begun ends as its operation does.
-func (c *laneConn) end() {
+// close ends the lane as its viewer goes: nothing of it is begun from now
+// on, those not begun are withdrawn and its watch stops; those under way
+// end as their operations do, and the group's end waits for them.
+func (c *laneConn) close() {
 	if c == nil {
 		return
 	}
+	c.g.mu.Lock()
+	c.closed = true
+	c.g.mu.Unlock()
 	c.cancel()
 	c.stopWatch()
-	c.wg.Wait()
+}
+
+// laneEnding are the words of a request refused because its lane, or its
+// connection's, is ending, under the code an operation that cannot be done
+// now refuses with (unavailable, as the server's lane says it:
+// docs/protocol.md, decide_refused).
+const (
+	laneEnding      = "this connection is ending: nothing more is begun on it"
+	laneUnavailable = "unavailable"
+)
+
+// start runs work as one of the lane's workers, admitted under the
+// group's lock: false, and nothing run, once the lane is closed or its
+// group ending.
+func (c *laneConn) start(work func()) bool {
+	g := c.g
+	if g.beforeAdmit != nil {
+		g.beforeAdmit()
+	}
+	g.mu.Lock()
+	if c.closed || g.ending {
+		g.mu.Unlock()
+		return false
+	}
+	g.under++
+	g.wg.Add(1)
+	g.mu.Unlock()
+	go func() {
+		defer func() {
+			g.mu.Lock()
+			g.under--
+			g.mu.Unlock()
+			g.wg.Done()
+		}()
+		work()
+	}()
+	return true
 }
 
 // laneRefusal is a decide_refused naming reqID.
@@ -100,7 +207,7 @@ func laneControl(c *laneConn, served bool, payload []byte, send func([]byte)) bo
 		c.send(laneRefusal(reqID, proto.DecideTooMany, "four reads are under way on this connection"))
 		return true
 	}
-	c.wg.Go(func() {
+	if !c.start(func() {
 		defer c.reads.Add(-1)
 		var f []byte
 		switch m := msg.(type) {
@@ -116,7 +223,10 @@ func laneControl(c *laneConn, served bool, payload []byte, send func([]byte)) bo
 			f = c.d.Evidence(c.ctx, c.linkID, c.sessionID, *m)
 		}
 		c.send(f)
-	})
+	}) {
+		c.reads.Add(-1)
+		c.send(laneRefusal(reqID, laneUnavailable, laneEnding))
+	}
 	return true
 }
 
@@ -143,8 +253,11 @@ func laneDecide(c *laneConn, served bool, payload []byte, send func([]byte)) {
 		c.send(laneRefusal(m.ReqID, proto.DecideTooMany, "four decisions are under way on this connection"))
 		return
 	}
-	c.wg.Go(func() {
+	if !c.start(func() {
 		defer c.decides.Add(-1)
 		c.send(c.d.Decide(c.ctx, c.linkID, c.sessionID, m, nil, c.stands))
-	})
+	}) {
+		c.decides.Add(-1)
+		c.send(laneRefusal(m.ReqID, laneUnavailable, laneEnding))
+	}
 }

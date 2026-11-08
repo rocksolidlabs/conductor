@@ -631,3 +631,212 @@ func TestLinkGoneSaysWhatItsConnectionCarries(t *testing.T) {
 		t.Fatalf("a desk's link_gone: %q", got)
 	}
 }
+
+// decodeControl is the control a lane reply f carries.
+func decodeControl(t *testing.T, f []byte) map[string]any {
+	t.Helper()
+	fr, err := proto.Decode(f)
+	if err != nil || fr.Type != proto.TypeControl {
+		t.Fatalf("the reply %q: %v", f, err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(fr.Payload, &m); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+// decidePayload is the payload of a decide reqID.
+func decidePayload(t *testing.T, reqID string) []byte {
+	t.Helper()
+	f, err := proto.EncodeDecide(proto.Decide{ReqID: reqID, Ref: "task:run-1/build", Action: "retry", Revision: "7", OpID: "op-" + reqID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fr, err := proto.Decode(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fr.Payload
+}
+
+// isClosed says whether done is closed.
+func isClosed(done <-chan struct{}) bool {
+	select {
+	case <-done:
+		return true
+	default:
+		return false
+	}
+}
+
+// nextReply is the next reply on replies.
+func nextReply(t *testing.T, replies <-chan []byte) map[string]any {
+	t.Helper()
+	select {
+	case f := <-replies:
+		return decodeControl(t, f)
+	case <-time.After(10 * time.Second):
+		t.Fatal("no reply")
+		return nil
+	}
+}
+
+// A lane's request that has its lane but is admitted only after the
+// lane's teardown began (its viewer gone, or its connection ending: the
+// group's end already past its wait, with no worker) is refused
+// unavailable with words, begins nothing, and adds no worker to the
+// group: the admission and the teardown are decided under one lock
+// (laneGroup), held here between the two through its seam.
+func TestALaneRequestPastItsTeardownIsRefused(t *testing.T) {
+	teardowns := map[string]func(*laneGroup, *laneConn){
+		"the viewer gone":       func(_ *laneGroup, c *laneConn) { c.close() },
+		"the connection ending": func(g *laneGroup, _ *laneConn) { g.end() },
+	}
+	requests := map[string]func(c *laneConn, t *testing.T){
+		"a read": func(c *laneConn, _ *testing.T) {
+			fr, err := proto.Decode(proto.MustControl(proto.DecisionsList{T: proto.CtlDecisionsList, ReqID: "r1"}))
+			if err != nil {
+				panic(err)
+			}
+			laneControl(c, true, fr.Payload, nil)
+		},
+		"a decide": func(c *laneConn, t *testing.T) { laneDecide(c, true, decidePayload(t, "r1"), nil) },
+	}
+	for tname, teardown := range teardowns {
+		for rname, request := range requests {
+			t.Run(tname+", "+rname, func(t *testing.T) {
+				d := &fakeDecisions{}
+				g := &laneGroup{}
+				replies := make(chan []byte, 4)
+				c := openLane(g, d, "dl1", "s", func(f []byte) { replies <- f }, func() error { return nil })
+				paused, resume := make(chan struct{}), make(chan struct{})
+				g.beforeAdmit = func() { close(paused); <-resume }
+				go request(c, t)
+				<-paused
+				teardown(g, c)
+				close(resume)
+				r := nextReply(t, replies)
+				if r["t"] != proto.CtlDecideRefused || r["reqId"] != "r1" || r["code"] != laneUnavailable || r["message"] != laneEnding {
+					t.Fatalf("the late request's reply %v", r)
+				}
+				for _, s := range d.seen() {
+					if !strings.HasPrefix(s, "watch ") {
+						t.Fatalf("Decisions was asked %q after the teardown", s)
+					}
+				}
+				if n := g.pending(); n != 0 {
+					t.Fatalf("%d workers under way", n)
+				}
+				g.end()
+			})
+		}
+	}
+}
+
+// heldDecisions is a fakeDecisions whose decides wait for release once
+// they have begun (entered).
+type heldDecisions struct {
+	fakeDecisions
+	entered, release chan struct{}
+}
+
+func (h *heldDecisions) Decide(ctx context.Context, linkID, sessionID string, m proto.Decide, answer func(context.Context, proto.Answer) error, stands func() error) []byte {
+	close(h.entered)
+	<-h.release
+	return h.fakeDecisions.Decide(ctx, linkID, sessionID, m, answer, stands)
+}
+
+// deskUnderTest is a run's desk with no connection: what it sends the
+// switchyard goes to sent (through hook when set), its end started.
+func deskUnderTest(t *testing.T, d Decisions, hook func(v any)) (*agent, *Desk) {
+	t.Helper()
+	a := &agent{opts: Options{Decisions: d, Switchyard: true}, peers: map[string]*peer{}, log: discardLog, desk: &proto.DeskRun{ID: "run-1", Name: "Run"}}
+	a.decisions.Store(true)
+	a.sendHook = hook
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	k := a.newDesk(cancel)
+	go k.end(ctx)
+	return a, k
+}
+
+// A desk's end waits for its lane's operation under way, accepted before
+// the stop and held between its acceptance and its settlement: the desk
+// is not done, nor the switchyard told, while it is held; a request after
+// the stop is refused with words; a caller whose bound passes is told
+// what was left and goes on; released, the operation's answer reaches its
+// viewer, then the switchyard is told, and the desk is done.
+func TestADesksEndWaitsForItsLaneOperations(t *testing.T) {
+	h := &heldDecisions{entered: make(chan struct{}), release: make(chan struct{})}
+	told := make(chan any, 8)
+	a, k := deskUnderTest(t, h, func(v any) { told <- v })
+	waiting := make(chan int, 1)
+	a.lanes.waiting = func(n int) { waiting <- n }
+	replies := make(chan []byte, 8)
+	c := openLane(&a.lanes, h, "dl1", "", func(f []byte) { replies <- f }, func() error { return nil })
+	laneDecide(c, true, decidePayload(t, "r1"), nil)
+	<-h.entered
+
+	stopCtx, stopCancel := context.WithCancel(context.Background())
+	stopped := make(chan error, 1)
+	go func() { stopped <- k.Stop(stopCtx) }()
+	if n := <-waiting; n != 1 {
+		t.Fatalf("the end waits for %d workers", n)
+	}
+	laneDecide(c, true, decidePayload(t, "r2"), nil)
+	if r := nextReply(t, replies); r["reqId"] != "r2" || r["code"] != laneUnavailable {
+		t.Fatalf("a decide after the stop: %v", r)
+	}
+	if isClosed(k.Done()) {
+		t.Fatal("the desk was done with its lane's operation under way")
+	}
+	select {
+	case v := <-told:
+		t.Fatalf("the switchyard was told %#v with the operation under way", v)
+	default:
+	}
+	stopCancel()
+	if err := <-stopped; err == nil || !strings.Contains(err.Error(), "1 lane operations under way") {
+		t.Fatalf("the bounded stop: %v", err)
+	}
+
+	close(h.release)
+	if r := nextReply(t, replies); r["t"] != proto.CtlDecideOK || r["reqId"] != "r1" {
+		t.Fatalf("the held decide's answer %v", r)
+	}
+	<-k.Done()
+	if st, ok := (<-told).(proto.HostStatusMsg); !ok || st.Status != string(session.StatusStopped) {
+		t.Fatalf("the switchyard was told %#v", st)
+	}
+	if err := k.Stop(context.Background()); err != nil {
+		t.Fatalf("a stop of the ended desk: %v", err)
+	}
+}
+
+// A desk's stop is bounded by its caller's context while the switchyard's
+// word waits on a stalled control writer: the caller is told the
+// switchyard was not yet told and goes on (the server's shutdown stops
+// its runs and sessions meanwhile); the writer released, the desk ends.
+func TestADesksStopIsBoundedOnAStalledWriter(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	_, k := deskUnderTest(t, &fakeDecisions{}, func(v any) {
+		if _, ok := v.(proto.HostStatusMsg); ok {
+			close(entered)
+			<-release
+		}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan error, 1)
+	go func() { stopped <- k.Stop(ctx) }()
+	<-entered
+	cancel()
+	if err := <-stopped; err == nil || !strings.Contains(err.Error(), "the switchyard not yet told") {
+		t.Fatalf("the bounded stop: %v", err)
+	}
+	if isClosed(k.Done()) {
+		t.Fatal("the desk was done before its word to the switchyard")
+	}
+	close(release)
+	<-k.Done()
+}

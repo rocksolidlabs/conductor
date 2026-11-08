@@ -896,7 +896,7 @@ func (p *peer) attach(hello proto.Hello, via *dcSink) {
 	// Handed over: a later attach of this viewer replaces this one.
 	p.replaces = nil
 	if decides && p.lane == nil {
-		p.lane = openLane(p.a.opts.Decisions, p.linkID, p.a.local.Info().ID, p.laneSend, p.laneStands)
+		p.lane = openLane(&p.a.lanes, p.a.opts.Decisions, p.linkID, p.a.local.Info().ID, p.laneSend, p.laneStands)
 	}
 	p.mu.Unlock()
 }
@@ -1041,12 +1041,10 @@ func (p *peer) closeFor(why error) {
 	pc, sub, relay, lane := p.pc, p.sub, p.relay, p.lane
 	p.pc, p.sub, p.lane, p.deskSink = nil, nil, nil, nil
 	p.mu.Unlock()
-	if lane != nil {
-		// Nothing of the lane not begun is begun from now on; what is
-		// under way ends as its operation does, waited for off this path.
-		lane.cancel()
-		go lane.end()
-	}
+	// Nothing of the lane is begun from now on; what is under way ends as
+	// its operation does, and the connection's end waits for it (the
+	// agent's laneGroup).
+	lane.close()
 	close(p.left)
 	p.typing.close()
 	p.keys.close()

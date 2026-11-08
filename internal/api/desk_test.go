@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -297,6 +298,146 @@ func TestADeskEndsWithItsLastDecisionLink(t *testing.T) {
 		t.Fatalf("the second revoke: %d", resp.StatusCode)
 	}
 	deskGone(t, yard, local, run.ID, deskID)
+	// A revoke again, its first answer lost, after the switchyard confirmed
+	// it and the last desk ended: done, as the first was, with nothing
+	// left to carry it.
+	for _, id := range []string{second, first} {
+		if resp, out := local.do("DELETE", "/api/runs/"+run.ID+"/links/"+id, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("a revoke again of %s: %d %v", id, resp.StatusCode, out)
+		}
+	}
+	if local.srv.liveDesk(run.ID) != nil {
+		t.Fatal("a revoke again opened a desk")
+	}
+}
+
+// mintAsync mints a run decision link at local off the test's goroutine:
+// its status and reply on the channel.
+func mintAsync(local *testEnv, runID, label string) <-chan map[string]any {
+	out := make(chan map[string]any, 1)
+	go func() {
+		b, _ := json.Marshal(map[string]any{"role": "control", "decide": true, "label": label})
+		req, _ := http.NewRequest("POST", local.http.URL+"/api/runs/"+runID+"/links", bytes.NewReader(b))
+		req.Header.Set("Authorization", "Bearer "+adminToken)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := local.client.Do(req)
+		if err != nil {
+			out <- map[string]any{"err": err.Error()}
+			return
+		}
+		defer resp.Body.Close()
+		m := map[string]any{}
+		_ = json.NewDecoder(resp.Body).Decode(&m)
+		m["status"] = resp.StatusCode
+		out <- m
+	}()
+	return out
+}
+
+// Two first decision-link mints of a run at once open one desk: the
+// second, arriving while the first opens it (held through its seam until
+// the second waits on it), takes the first's desk rather than register a
+// second the switchyard refuses; both links are minted, over one desk.
+func TestConcurrentFirstMintsOpenOneDesk(t *testing.T) {
+	yard, local := deskPair(t, true)
+	run, _ := heldRun(t, local)
+	awaiting := make(chan struct{})
+	var once sync.Once
+	var opens atomic.Int32
+	local.srv.pubMu.Lock()
+	local.srv.deskOpenSeam = func(string) {
+		opens.Add(1)
+		<-awaiting
+	}
+	local.srv.deskAwaitSeam = func(string) { once.Do(func() { close(awaiting) }) }
+	local.srv.pubMu.Unlock()
+	t.Cleanup(func() { once.Do(func() { close(awaiting) }) })
+	first := mintAsync(local, run.ID, "phone")
+	until(t, "the first mint opening the desk", func() bool { return opens.Load() == 1 })
+	second := mintAsync(local, run.ID, "tablet")
+	var tokens []string
+	for _, ch := range []<-chan map[string]any{first, second} {
+		var m map[string]any
+		select {
+		case m = <-ch:
+		case <-time.After(testWait):
+			t.Fatal("a mint never answered")
+		}
+		if m["status"] != http.StatusCreated || m["remote"] != true {
+			t.Fatalf("a concurrent first mint: %v", m)
+		}
+		u := m["url"].(string)
+		tokens = append(tokens, u[strings.LastIndex(u, "/")+1:])
+	}
+	if n := opens.Load(); n != 1 {
+		t.Fatalf("%d openings of the run's desk", n)
+	}
+	if a, b := deskOf(t, yard, tokens[0]), deskOf(t, yard, tokens[1]); a != b || a != local.srv.liveDesk(run.ID).CurrentID() {
+		t.Fatalf("the two links name desks %s and %s", a, b)
+	}
+}
+
+// stalledDesk is a run's desk whose end does not come within its
+// stop's bound (its control writer stalled at the switchyard): its Stop
+// notes the bound it was given and says what was left.
+type stalledDesk struct {
+	Desk
+	done    chan struct{}
+	stopped chan context.Context
+	before  func()
+}
+
+func (d *stalledDesk) CurrentID() string     { return "desk-1" }
+func (d *stalledDesk) Done() <-chan struct{} { return d.done }
+func (d *stalledDesk) Stop(ctx context.Context) error {
+	d.before()
+	d.stopped <- ctx
+	return errors.New("the desk's end goes on by itself: 1 lane operations under way, the switchyard not yet told")
+}
+
+// The server's stop gives the runs' desks their own share of its budget
+// (deskStopBy, at most deskStopMax): a desk whose end does not come
+// within it is left to end by itself, what was left of it logged, and the
+// shutdown goes on to stop the sessions, which no desk's stop held up.
+func TestTheShutdownGoesOnPastADesksStop(t *testing.T) {
+	logs := &logBuffer{}
+	e := newTestEnvLogging(t, nil, slog.New(slog.NewTextHandler(logs, nil)))
+	id := e.createSession("cat")
+	d, _ := e.srv.registry.Get(id)
+	var endedBefore atomic.Bool
+	desk := &stalledDesk{done: make(chan struct{}), stopped: make(chan context.Context, 1), before: func() { endedBefore.Store(d.Info().Status.Ended()) }}
+	e.srv.pubMu.Lock()
+	e.srv.desks = map[string]*runDesk{"run-1": {desk: desk}}
+	e.srv.pubMu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	budget, _ := ctx.Deadline()
+	e.srv.Shutdown(ctx)
+	var dctx context.Context
+	select {
+	case dctx = <-desk.stopped:
+	default:
+		t.Fatal("the desk was not stopped")
+	}
+	dl, ok := dctx.Deadline()
+	if !ok || !dl.Before(budget) || time.Until(dl) > deskStopMax {
+		t.Fatalf("the desk's stop had the deadline %v (%v), the shutdown's %v", dl, ok, budget)
+	}
+	if endedBefore.Load() {
+		t.Fatal("the sessions were stopped before the desks")
+	}
+	if !d.Info().Status.Ended() {
+		t.Fatal("the shutdown stopped no session after the desk's stop")
+	}
+	if l := logs.String(); !strings.Contains(l, "a run's desk did not end in time") || !strings.Contains(l, "1 lane operations under way") {
+		t.Fatalf("the log says nothing of what was left:\n%s", l)
+	}
+	if ctx.Err() != nil {
+		t.Fatal("the shutdown spent its whole budget")
+	}
+	if _, _, code, _ := e.srv.openRunDesk(t.Context(), "run-1"); code != "shutting_down" {
+		t.Fatalf("a desk opened after the shutdown's stop: %q", code)
+	}
 }
 
 // At a switchyard whose registered says nothing of decisions (this build,

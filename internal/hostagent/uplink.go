@@ -243,6 +243,9 @@ func (u *Uplink) Publish(ctx context.Context, local *session.Local) (*Published,
 		}
 		cancel()
 		a.closeAllPeers()
+		// The lanes' workers under way end before the publication is
+		// done: none outlasts it (the server's stop waits on Done).
+		a.lanes.end()
 	}()
 	return p, nil
 }

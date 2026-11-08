@@ -43,7 +43,10 @@ type Desk interface {
 	RunLinkUpdate(ctx context.Context, run proto.RunGroup) error
 	Revoke(ctx context.Context, linkID string) error
 	Done() <-chan struct{}
-	Stop()
+	// Stop ends it, and waits for its end (its lanes' operations under
+	// way, the rendezvous told) until ctx is done: past that its end goes
+	// on by itself, and the error says what was left.
+	Stop(ctx context.Context) error
 }
 
 // DeskOpener is a Publisher that opens runs' desks at its rendezvous.
@@ -78,6 +81,19 @@ type runDesk struct {
 	stopLinger func()
 }
 
+// deskOpening is a run's desk being opened (openRunDesk): the requests
+// that want it meanwhile wait for done and take its result, so a run's
+// concurrent first mints open one desk, which the rendezvous registers
+// once.
+type deskOpening struct {
+	done chan struct{}
+	// ok says the desk was opened (and is in Server.desks); otherwise the
+	// refusal's status, code and words.
+	ok          bool
+	status      int
+	code, words string
+}
+
 // carriesDecisions says whether a publication's rendezvous carries
 // decisions; one that cannot say carries none.
 func carriesDecisions(pub any) bool {
@@ -99,22 +115,99 @@ func (s *Server) liveDesk(runID string) Desk {
 // openRunDesk is the run's desk, opened when it has none, for a decision
 // link to be minted over it (deskMinted ends that, whatever came of it):
 // a refusal's status, code and words when the rendezvous keeps none or
-// carries no decisions (switchyard_too_old) or could not be reached.
+// carries no decisions (switchyard_too_old) or could not be reached. One
+// opening per run at a time (deskOpenings): a request that finds the run's
+// desk being opened waits for that opening (or its own ctx) and takes its
+// result, never registering a second desk the rendezvous would refuse.
 func (s *Server) openRunDesk(ctx context.Context, runID string) (Desk, int, string, string) {
-	s.pubMu.Lock()
-	if rd := s.desks[runID]; rd != nil && !ended(rd.desk.Done()) {
-		if !rd.desk.Decisions() {
+	for {
+		s.pubMu.Lock()
+		if s.desksStopped {
+			// The server's stop has stopped the desks: none is opened after.
 			s.pubMu.Unlock()
-			return nil, http.StatusConflict, "switchyard_too_old", tooOldWords
+			return nil, http.StatusServiceUnavailable, "shutting_down", errShuttingDown.Error()
 		}
-		rd.minting++
+		if rd := s.desks[runID]; rd != nil && !ended(rd.desk.Done()) {
+			if !rd.desk.Decisions() {
+				s.pubMu.Unlock()
+				return nil, http.StatusConflict, "switchyard_too_old", tooOldWords
+			}
+			rd.minting++
+			s.pubMu.Unlock()
+			return rd.desk, 0, "", ""
+		}
+		if o := s.deskOpenings[runID]; o != nil {
+			seam := s.deskAwaitSeam
+			s.pubMu.Unlock()
+			if seam != nil {
+				seam(runID)
+			}
+			select {
+			case <-o.done:
+			case <-ctx.Done():
+				return nil, http.StatusBadGateway, "rendezvous_unavailable", "the rendezvous did not open the run's desk: " + ctx.Err().Error()
+			}
+			if !o.ok {
+				return nil, o.status, o.code, o.words
+			}
+			// Opened: counted on it above, unless it has ended meanwhile
+			// (then opened again).
+			continue
+		}
+		o := &deskOpening{done: make(chan struct{})}
+		if s.deskOpenings == nil {
+			s.deskOpenings = map[string]*deskOpening{}
+		}
+		s.deskOpenings[runID] = o
+		opener, ok := s.publisher.(DeskOpener)
+		seam := s.deskOpenSeam
 		s.pubMu.Unlock()
-		return rd.desk, 0, "", ""
+		if seam != nil {
+			seam(runID)
+		}
+		d, status, code, words := s.openDeskOnce(ctx, runID, opener, ok)
+		s.pubMu.Lock()
+		delete(s.deskOpenings, runID)
+		var late Desk
+		if d != nil && s.desksStopped {
+			// Opened as the server's stop stopped the others: stopped too.
+			late = d
+			d, status, code, words = nil, http.StatusServiceUnavailable, "shutting_down", errShuttingDown.Error()
+		}
+		if d != nil {
+			if s.desks == nil {
+				s.desks = map[string]*runDesk{}
+			}
+			s.desks[runID] = &runDesk{desk: d, minting: 1}
+		}
+		o.ok, o.status, o.code, o.words = d != nil, status, code, words
+		close(o.done)
+		s.pubMu.Unlock()
+		if late != nil {
+			go s.stopDesk(context.Background(), runID, late)
+		}
+		if d == nil {
+			return nil, status, code, words
+		}
+		go func() {
+			// Ended there (the switchyard's stop), it is forgotten here.
+			<-d.Done()
+			s.pubMu.Lock()
+			if rd := s.desks[runID]; rd != nil && rd.desk == d {
+				if rd.stopLinger != nil {
+					rd.stopLinger()
+				}
+				delete(s.desks, runID)
+			}
+			s.pubMu.Unlock()
+		}()
+		return d, 0, "", ""
 	}
-	s.pubMu.Unlock()
-	s.pubMu.Lock()
-	opener, ok := s.publisher.(DeskOpener)
-	s.pubMu.Unlock()
+}
+
+// openDeskOnce asks the rendezvous for the run's desk, the run's one
+// opening (openRunDesk): the desk, or a refusal's status, code and words.
+func (s *Server) openDeskOnce(ctx context.Context, runID string, opener DeskOpener, ok bool) (Desk, int, string, string) {
 	run, kept := s.runs.Get(runID)
 	switch {
 	case !kept:
@@ -133,35 +226,18 @@ func (s *Server) openRunDesk(ctx context.Context, runID string) (Desk, int, stri
 	case err != nil:
 		return nil, http.StatusBadGateway, "rendezvous_unavailable", "the rendezvous did not open the run's desk: " + err.Error()
 	case !d.Decisions():
-		d.Stop()
+		s.stopDesk(context.Background(), runID, d)
 		return nil, http.StatusConflict, "switchyard_too_old", tooOldWords
 	}
-	s.pubMu.Lock()
-	if rd := s.desks[runID]; rd != nil && !ended(rd.desk.Done()) {
-		// Another request opened it first: that one is the run's.
-		rd.minting++
-		s.pubMu.Unlock()
-		go d.Stop()
-		return rd.desk, 0, "", ""
-	}
-	if s.desks == nil {
-		s.desks = map[string]*runDesk{}
-	}
-	s.desks[runID] = &runDesk{desk: d, minting: 1}
-	s.pubMu.Unlock()
-	go func() {
-		// Ended there (the switchyard's stop), it is forgotten here.
-		<-d.Done()
-		s.pubMu.Lock()
-		if rd := s.desks[runID]; rd != nil && rd.desk == d {
-			if rd.stopLinger != nil {
-				rd.stopLinger()
-			}
-			delete(s.desks, runID)
-		}
-		s.pubMu.Unlock()
-	}()
 	return d, 0, "", ""
+}
+
+// stopDesk stops the run's desk d, waiting for its end until ctx is done;
+// what was left of it then is logged.
+func (s *Server) stopDesk(ctx context.Context, runID string, d Desk) {
+	if err := d.Stop(ctx); err != nil {
+		s.log.Warn("a run's desk did not end in time; it ends by itself", "run", runID, "err", err)
+	}
 }
 
 // holdDesk keeps the run's desk, if it has one, from ending until the
@@ -203,7 +279,7 @@ func (s *Server) endRunDesk(runID string) {
 	}
 	s.pubMu.Unlock()
 	if rd != nil {
-		rd.desk.Stop()
+		s.stopDesk(context.Background(), runID, rd.desk)
 	}
 }
 
@@ -219,19 +295,48 @@ func (s *Server) dropDeskLocked(runID string, rd *runDesk) {
 	}
 }
 
-// stopRunDesks stops every desk, as the server stops: together, so the
-// whole takes one desk's last word at most.
-func (s *Server) stopRunDesks() {
+// deskStopShare is the share of what is left of the shutdown's budget
+// the runs' desks may take to end (stopRunDesks): a quarter, 2.5 s of the
+// serve command's 10 s; deskStopMax bounds it, and is the bound of a
+// shutdown with no deadline. Past it the shutdown goes on to stop the
+// runs and sessions, each desk's end going on by itself, and what was left
+// of it is logged.
+const (
+	deskStopShare = 4
+	deskStopMax   = 2500 * time.Millisecond
+)
+
+// deskStopBy is the deadline of the desks' stop within the shutdown's ctx.
+func deskStopBy(ctx context.Context) (context.Context, context.CancelFunc) {
+	wait := deskStopMax
+	if dl, ok := ctx.Deadline(); ok {
+		wait = min(wait, time.Until(dl)/deskStopShare)
+	}
+	return context.WithTimeout(ctx, wait)
+}
+
+// stopRunDesks stops every desk, as the server stops: together, within
+// their share of the shutdown's budget (deskStopBy).
+func (s *Server) stopRunDesks(ctx context.Context) {
 	s.pubMu.Lock()
 	desks := s.desks
 	s.desks = nil
+	s.desksStopped = true
 	s.pubMu.Unlock()
+	if len(desks) == 0 {
+		return
+	}
+	dctx, cancel := deskStopBy(ctx)
+	defer cancel()
+	if s.deskStopSeam != nil {
+		s.deskStopSeam(dctx)
+	}
 	var wg sync.WaitGroup
-	for _, rd := range desks {
+	for runID, rd := range desks {
 		if rd.stopLinger != nil {
 			rd.stopLinger()
 		}
-		wg.Go(rd.desk.Stop)
+		wg.Go(func() { s.stopDesk(dctx, runID, rd.desk) })
 	}
 	wg.Wait()
 }
@@ -295,7 +400,7 @@ func (s *Server) deskCheck(runID string) {
 	if rd.minting == 0 && !s.deskNeededLocked(runID) {
 		s.dropDeskLocked(runID, rd)
 		s.pubMu.Unlock()
-		rd.desk.Stop()
+		s.stopDesk(context.Background(), runID, rd.desk)
 		return
 	}
 	defer s.pubMu.Unlock()
@@ -323,7 +428,7 @@ func (s *Server) deskCheck(runID string) {
 			}
 			s.dropDeskLocked(runID, rd)
 			s.pubMu.Unlock()
-			rd.desk.Stop()
+			s.stopDesk(context.Background(), runID, rd.desk)
 		}
 		t := time.AfterFunc(deskLinger, func() { s.track(fire) })
 		rd.stopLinger = func() { t.Stop() }
