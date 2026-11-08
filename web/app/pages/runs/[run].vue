@@ -521,7 +521,7 @@ palette.registerPage(() => {
           />
         </div>
         <div v-else-if="shownView === 'tasks' && run" class="min-h-0 flex-1 overflow-y-auto p-3" data-run-tasks-view>
-          <RunTasks :run="run" :selected="selectedTask" :attempt="wantedAttempt" :step="wantedStep" :now="now" @select="selectTask($event, true)" @open="router.push(`/sessions/${$event}`)" />
+          <RunTasks :run="run" :ticket="run.ticket?.key || runTicket?.key || ''" :selected="selectedTask" :attempt="wantedAttempt" :step="wantedStep" :now="now" @select="selectTask($event, true)" @open="router.push(`/sessions/${$event}`)" />
         </div>
         <div v-else-if="shownView === 'timeline' && run" class="min-h-0 flex-1 overflow-y-auto p-3" data-run-timeline-view>
           <RunTimeline :run="run" :sessions="sessions" :feed="events.entries.value" :now="now" />

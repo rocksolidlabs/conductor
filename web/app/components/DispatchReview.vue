@@ -1,14 +1,19 @@
 <script setup lang="ts">
-import type { RunCandidate } from '~/composables/useDispatch'
+import type { CandidateReceipt, LaunchSummary, PlanBody, PlanSummary, RunCandidate } from '~/composables/useDispatch'
 import { ApiError } from '~/composables/useApi'
-import { ContinuationNeeded, useCandidateDiff, useFileSides, useReview, useSentReviews, useShowWhenReady, type ReviewSummary, type SideText } from '~/composables/useReview'
+import { ContinuationNeeded, useCandidateDiff, useFileSides, useReview, useSentReviews, useShowWhenReady, type ReviewFinding, type ReviewSummary, type SideText } from '~/composables/useReview'
 import { useReviewDraft } from '~/composables/useReviewDraft'
 import type { useTicketCandidates } from '~/composables/useTicketCandidates'
 import { candidateRef, parseCandidate } from '~/utils/dispatch'
 import type { DispatchOrder } from '~/utils/dispatchOrder'
 import { shortCommit } from '~/utils/dispatchPlans'
 import { CommandRefused } from '~/utils/tasks'
+import { receiptChips, receiptFailed, receiptKey, receiptName } from '~/utils/dispatchEvidence'
+import { lineageOf, type LineageAttempt, type LineageReviewTask } from '~/utils/reviewLineage'
 import {
+  latest,
+  recheckWords,
+  type PreparedRepair,
   barTop,
   batchProblems,
   changeRequestOf,
@@ -36,8 +41,13 @@ import {
  * a verdict and a summary; and the reviews of the candidate already sent, with what became of each (ReviewApplication). The draft's
  * base is the review's: a reload opens the diff at it, and a base-side note locks it. Every read goes through the page's ordering gate,
  * and the reviews are read again whenever the page reads the ticket again (its live events name the ticket); a stream's reset, which
- * drops every reply on its way, reads again whatever had not come in. Findings across
- * candidates, their marks and a failed check's repair are a later part of this view, which says so. One column on a phone.
+ * drops every reply on its way, reads again whatever had not come in. Beside them (PR-7): the ticket's acceptance criteria as the run
+ * was launched with them and as they are now, the plan revision that launched it and the task's expected checks; how the task's
+ * candidates came to be (ReviewLineage); the candidate's checks, a failed one's Prepare a repair (ReviewCheckFailure: its receipt, its
+ * class, Check again when Yardmaster takes it, a check note added to the draft); every finding of the task's reviews across its
+ * candidates, located on the one shown, with the agent's addressed notes and the marks a person makes (ReviewFindings); and the ticket's
+ * decisions and delivery (the page's own sections, in the `decisions` slot). One column on a phone, where a note on lines is made by
+ * typing them (Note on lines), since Monaco's selection is a desktop gesture.
  */
 const props = defineProps<{
   ticketKey: string
@@ -50,6 +60,18 @@ const props = defineProps<{
   /** Counts the stream's starts the page saw (a snapshot, which resets the gate): each reads again what had not come in. */
   resets: number
   now: number
+  /** The ticket's acceptance criteria now. */
+  acceptance?: string
+  /** The launches the page knows, the plan revisions and the bodies read: what launched the candidate's run. */
+  launches?: readonly LaunchSummary[]
+  plans?: readonly PlanSummary[]
+  bodies?: ReadonlyMap<string, PlanBody>
+  /** By run: the run it continues (the ticket's Runs entries). */
+  continues?: ReadonlyMap<string, string>
+  /** A failed receipt of the candidate to prepare a repair from at once, `<id>/<k>` (a link's: the ticket's receipt, the run page). */
+  repair?: string
+  /** A section to scroll to at once: `findings` (the palette's Open findings). */
+  focus?: string
 }>()
 const emit = defineEmits<{ candidate: [ref: string] }>()
 
@@ -315,6 +337,169 @@ async function retry(r: ReviewSummary, continueRun: boolean): Promise<Continuati
     return (e as Error).message
   }
 }
+// The task's findings across its candidates, located on the one shown: read when it moves and whenever the ticket is read again.
+const findings = ref<ReviewFinding[]>([])
+const findingsError = ref('')
+const findingsLoading = ref(false)
+const findingAsks = latest()
+let viewClosed = false
+onScopeDispose(() => (viewClosed = true))
+async function readFindings(): Promise<void> {
+  const key = props.ticketKey
+  const at = chosen.value
+  if (viewClosed || !at || !cref.value) return
+  const current = findingAsks.ask()
+  findingsLoading.value = true
+  try {
+    await review.readFindings(key, at, (fs) => {
+      if (!current() || key !== props.ticketKey || at !== chosen.value) return
+      findings.value = fs
+      findingsError.value = ''
+    })
+  } catch (e) {
+    if (current()) findingsError.value = (e as Error).message
+  } finally {
+    if (current()) findingsLoading.value = false
+  }
+}
+watch(chosen, () => (findings.value = []))
+watch(() => [props.ticketKey, chosen.value, props.reads, props.resets], () => void readFindings(), { immediate: true })
+async function markFinding(f: ReviewFinding, verdict: 'resolved' | 'open' | 'withdrawn', note: string): Promise<string> {
+  try {
+    await review.mark(f.id, chosen.value, verdict, note)
+    void readFindings()
+    return ''
+  } catch (e) {
+    return (e as Error).message || 'The mark was not made.'
+  }
+}
+function openFinding(f: ReviewFinding) {
+  if (f.kind !== 'line' && f.kind !== 'file') return
+  const path = f.locatedOn === chosen.value && f.located?.state === 'renamed' ? f.located.path : f.path
+  const from = f.locatedOn === chosen.value && f.located?.state === 'moved' ? f.located.from : f.from
+  const to = f.locatedOn === chosen.value && f.located?.state === 'moved' ? f.located.to : f.to
+  openNote({ key: f.id, kind: f.kind, intent: f.intent, side: f.side, path, from, to, message: f.message })
+}
+
+// The ticket's criteria as the run was launched with them and now, the plan revision that launched it, the task's expected checks.
+const launch = computed<LaunchSummary | null>(() => {
+  const run = cref.value?.run
+  if (!run) return null
+  for (let r: string | undefined = run, n = 0; r && n < 64; r = props.continues?.get(r), n++) {
+    const l = props.launches?.find((x) => x.runId === r)
+    if (l) return l
+  }
+  return null
+})
+const launchPlan = computed(() => (launch.value ? (props.plans?.find((p) => p.id === launch.value!.planId) ?? null) : null))
+const expectedChecks = computed(() => {
+  const l = launch.value
+  const task = cref.value?.task
+  if (!l || !task) return null
+  return props.bodies?.get(l.planId)?.crew.tasks?.find((t) => t.id === task)?.checks ?? null
+})
+
+// How the task's candidates came to be, oldest first.
+const lineage = computed(() => {
+  const task = entry.value?.task ?? cref.value?.task
+  if (!task) return []
+  const attempts: LineageAttempt[] = []
+  const reviewTasks: LineageReviewTask[] = []
+  for (const r of props.candidates.runs.value) {
+    for (const t of r.tasks) {
+      for (const c of t.candidates) {
+        if (t.kind === 'review') reviewTasks.push({ run: r.run, task: t.task, attempt: c.attempt, reviewed: c.start, verdict: c.verdict })
+        else if (t.task === task && c.commit) {
+          const bad = c.receipts.find((x) => receiptFailed(x))
+          attempts.push({ run: r.run, task, attempt: c.attempt, start: c.start, commit: c.commit, state: c.state, ...(bad ? { failed: receiptName(bad) } : {}) })
+        }
+      }
+    }
+  }
+  const input = { attempts, reviews: sent.value, reviewTasks, continues: props.continues ?? new Map<string, string>() }
+  return [...attempts].sort((a, b) => a.attempt - b.attempt).map((a) => lineageOf({ run: a.run, task, attempt: a.attempt, commit: a.commit!, start: a.start }, input))
+})
+
+// The candidate's checks, and a failed one's repair prepared.
+const receipts = computed<CandidateReceipt[]>(() => entry.value?.c.receipts ?? [])
+/** The task failed: its candidate shown failed and no later one of it is listed. */
+const taskFailed = computed(() => {
+  const e = entry.value
+  return !!e && e.c.state === 'failed' && !options.value.some((o) => o.task === e.task && o.c.attempt > e.c.attempt)
+})
+const repairOpen = ref(false)
+const prepared = ref<PreparedRepair | null>(null)
+const prepareError = ref('')
+const preparing = ref(false)
+const prepareAsks = latest()
+async function prepare(id: string, k: number) {
+  const c = cref.value
+  if (!c) return
+  const current = prepareAsks.ask()
+  repairOpen.value = true
+  prepared.value = null
+  prepareError.value = ''
+  preparing.value = true
+  try {
+    const p = await review.prepare(c, id, k)
+    if (current()) prepared.value = p
+  } catch (e) {
+    if (current()) prepareError.value = (e as Error).message
+  } finally {
+    if (current()) preparing.value = false
+  }
+}
+async function recheck(): Promise<string> {
+  const c = cref.value
+  const p = prepared.value
+  if (!c || !p) throw new Error('Nothing to check again.')
+  const reply = await review.recheck(c, p.recheck.revision)
+  return recheckWords(c, { run: reply.run || p.recheck.run, attempt: reply.attempt })
+}
+function addCheckNote(n: Omit<DraftNote, 'key'>) {
+  drafts.add(n)
+}
+// A link's receipt (`&repair=<id>/<k>`) prepared once its candidate is shown, once for each link.
+let preparedFor = ''
+watch(
+  () => [props.repair, cref.value] as const,
+  ([want, c]) => {
+    const m = /^([a-z0-9][a-z0-9_-]{0,39})\/([1-9][0-9]*)$/.exec(want ?? '')
+    if (!m || !c || preparedFor === `${chosen.value}|${want}`) return
+    preparedFor = `${chosen.value}|${want}`
+    void prepare(m[1]!, Number(m[2]))
+  },
+  { immediate: true },
+)
+
+// A note on lines typed (a phone's way, Monaco's selection being a desktop gesture): the side and the lines of the file shown.
+const typed = ref<{ side: Side; from: number; to: number } | null>(null)
+function noteOnTyped() {
+  const t = typed.value
+  const f = shownFile.value
+  if (!t || !f || !notable.value || !ready.value) return
+  const path = t.side === 'base' ? (f.from ?? f.path) : f.path
+  const at = noteFromSelection(path, t.side, lineOf(t.side === 'base' ? sides.value.base : sides.value.candidate), t.from, t.to)
+  composer.value = { note: { ...at, intent: 'change', severity: 'major', message: '' }, inline: true, at: notableKey.value }
+  typed.value = null
+}
+watch(sidesKey, () => (typed.value = null))
+
+// The palette's rows: Send review (n notes) asks as the button does; Open findings scrolls to them.
+const draftPanel = useTemplateRef<{ ask: () => void }>('draftPanel')
+const findingsSection = useTemplateRef<HTMLElement>('findingsSection')
+function showFindings() {
+  void nextTick(() => findingsSection.value?.scrollIntoView({ block: 'start' }))
+}
+watch(
+  () => props.focus,
+  (f) => {
+    if (f === 'findings') showFindings()
+  },
+  { immediate: true },
+)
+defineExpose({ notes: computed(() => draft.value.notes.length), send: () => draftPanel.value?.ask(), showFindings })
+
 </script>
 
 <template>
@@ -323,15 +508,37 @@ async function retry(r: ReviewSummary, continueRun: boolean): Promise<Continuati
       <h2 class="text-base font-semibold text-highlighted">Review</h2>
       <UButton label="Back to the ticket" icon="i-lucide-arrow-left" size="xs" color="neutral" variant="ghost" :to="{ query: {} }" data-review-back />
     </div>
-    <p class="text-xs text-muted" data-review-later>
-      Not in this view yet: the findings of every review across the ticket's candidates with their marks, the candidate's lineage and checks, and a failed check's repair. The
-      ticket's sections show the receipts and the repairs meanwhile.
-    </p>
+    <!-- The requirements and the plan: the ticket's criteria as launched and now, the revision that launched the run, the task's checks. -->
+    <section class="flex flex-col gap-1.5 rounded-lg p-3 text-xs ring ring-default" data-review-requirements>
+      <h3 class="text-sm font-semibold text-highlighted">Requirements and plan</h3>
+      <template v-if="launch">
+        <p class="text-muted" data-review-plan :data-review-plan-n="launch.planN">
+          Launched from plan r{{ launch.planN }}<template v-if="launchPlan"> · {{ launchPlan.crewName }} · {{ launchPlan.state }}<template v-if="launchPlan.approvedBy"> by {{ launchPlan.approvedBy }}</template></template>, at the ticket's revision {{ launch.ticketRev }}.
+        </p>
+        <span class="font-medium text-muted">The acceptance criteria as launched</span>
+        <pre class="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-elevated/40 p-2 font-sans" data-review-criteria-launched>{{ launch.criteria || '(none)' }}</pre>
+        <template v-if="(acceptance ?? '') !== launch.criteria">
+          <span class="font-medium text-warning" data-review-criteria-changed>Changed since the launch: now</span>
+          <pre class="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-elevated/40 p-2 font-sans" data-review-criteria-now>{{ acceptance || '(none)' }}</pre>
+        </template>
+      </template>
+      <template v-else>
+        <p class="text-dimmed">This run was not launched from a plan revision of the ticket (it was linked by hand): its criteria are the ticket's now.</p>
+        <pre class="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-elevated/40 p-2 font-sans" data-review-criteria-now>{{ acceptance || '(none)' }}</pre>
+      </template>
+      <template v-if="expectedChecks">
+        <span class="font-medium text-muted">{{ cref?.task }}'s expected checks</span>
+        <ul class="flex flex-col gap-0.5" data-review-expected-checks>
+          <li v-for="c in expectedChecks" :key="c.id"><span class="font-mono">{{ c.id }}</span>: <code class="font-mono text-dimmed">{{ c.argv.join(' ') }}</code></li>
+          <li v-if="!expectedChecks.length" class="text-dimmed">None: the task names no check.</li>
+        </ul>
+      </template>
+    </section>
 
     <p v-if="!options.length && candidates.loading.value" class="text-sm text-dimmed">Reading the ticket's candidates…</p>
     <p v-else-if="!options.length && !cref" class="text-sm text-muted" data-review-none>None of the ticket's runs has a candidate to review yet.</p>
     <template v-else>
-      <ReviewCandidate :options="options" :candidate="chosen" :bases="offered" :base="draft.base" :locked="lockWords" @candidate="(v: string) => emit('candidate', v)" @base="drafts.setBase" />
+      <ReviewCandidate :options="options" :candidate="chosen" :bases="offered" :base="draft.base" :locked="lockWords" :lineage="lineage" @candidate="(v: string) => emit('candidate', v)" @base="drafts.setBase" />
       <UAlert v-if="diffError" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="`The diff could not be read: ${diffError}`" data-review-diff-error />
 
       <div class="flex flex-col gap-4 lg:flex-row lg:items-start">
@@ -343,7 +550,21 @@ async function retry(r: ReviewSummary, continueRun: boolean): Promise<Continuati
             <div class="flex min-w-0 flex-wrap items-center gap-2 text-xs">
               <span class="min-w-0 break-all font-mono text-highlighted">{{ shownFile.path }}</span>
               <span class="text-dimmed">{{ shortCommit(diff!.base) }} → {{ shortCommit(diff!.candidate) }}</span>
-              <UButton label="Note on this file" icon="i-lucide-file-pen-line" size="xs" color="neutral" variant="ghost" class="ml-auto" :disabled="!notable" data-review-note-file @click="noteOnFile" />
+              <UButton label="Note on lines" icon="i-lucide-list-ordered" size="xs" color="neutral" variant="ghost" class="ml-auto" :disabled="!notable || !ready || binary" data-review-note-lines @click="typed = { side: 'candidate', from: 1, to: 1 }" />
+              <UButton label="Note on this file" icon="i-lucide-file-pen-line" size="xs" color="neutral" variant="ghost" :disabled="!notable" data-review-note-file @click="noteOnFile" />
+            </div>
+            <div v-if="typed" class="flex flex-wrap items-end gap-2 rounded-md p-2 text-xs ring ring-default" data-review-typed>
+              <UFormField label="Side" size="xs">
+                <USelect v-model="typed.side" :items="[{ label: 'candidate', value: 'candidate' }, { label: 'base', value: 'base' }]" size="xs" class="w-28" data-review-typed-side />
+              </UFormField>
+              <UFormField label="From line" size="xs">
+                <UInput v-model.number="typed.from" type="number" min="1" size="xs" class="w-20" data-review-typed-from />
+              </UFormField>
+              <UFormField label="To line" size="xs">
+                <UInput v-model.number="typed.to" type="number" min="1" size="xs" class="w-20" data-review-typed-to />
+              </UFormField>
+              <UButton label="Add a note" size="xs" :disabled="!typed.from || !typed.to" data-review-typed-add @click="noteOnTyped" />
+              <UButton label="Cancel" size="xs" color="neutral" variant="ghost" @click="typed = null" />
             </div>
             <p v-if="sides.error" class="text-xs text-warning">The file could not be read: {{ sides.error }}</p>
             <p v-else-if="binary" class="text-xs text-dimmed" data-review-binary>A binary file, or one past 1 MiB: its lines are not shown. A note on the whole file still may be made.</p>
@@ -376,6 +597,7 @@ async function retry(r: ReviewSummary, continueRun: boolean): Promise<Continuati
         </div>
 
         <ReviewDraft
+          ref="draftPanel"
           :key="chosen"
           class="lg:w-96 lg:flex-none"
           :notes="draft.notes"
@@ -401,6 +623,24 @@ async function retry(r: ReviewSummary, continueRun: boolean): Promise<Continuati
         />
       </div>
 
+      <!-- The candidate's checks: its own receipts; a failed one's repair prepared. -->
+      <section class="flex flex-col gap-2" data-review-checks :data-review-checks-count="receipts.length">
+        <h3 class="text-sm font-semibold text-highlighted">Checks of this candidate</h3>
+        <p v-if="!receipts.length" class="text-xs text-dimmed">No check ran against this commit.</p>
+        <ul v-else class="flex flex-wrap gap-1.5">
+          <li v-for="r in receipts" :key="receiptKey(r)" class="flex items-center gap-1 rounded border border-default/60 px-1.5 py-0.5 text-xs" data-review-check :data-review-check-key="receiptKey(r)" :data-review-check-failed="receiptFailed(r) ? 'true' : 'false'">
+            <span class="font-mono">{{ receiptName(r) }}</span>
+            <UBadge v-for="x in receiptChips(r)" :key="x.label" :label="x.label" :color="x.color" variant="subtle" size="sm" />
+            <span class="text-dimmed">{{ r.where }}</span>
+            <UButton v-if="receiptFailed(r)" label="Prepare a repair" icon="i-lucide-wrench" size="xs" color="neutral" variant="outline" :data-review-prepare="`${r.id}/${r.k}`" @click="prepare(r.id, r.k)" />
+          </li>
+        </ul>
+      </section>
+
+      <section ref="findingsSection" class="flex flex-col gap-2">
+        <ReviewFindings :findings="findings" :candidate="chosen" :error="findingsError" :loading="findingsLoading" :now="now" :mark="markFinding" @open="openFinding" />
+      </section>
+
       <section class="flex flex-col gap-2" data-review-sent-list :data-review-sent-count="sentHere.length">
         <h3 class="text-sm font-semibold text-highlighted">Reviews of this candidate</h3>
         <p v-if="sentError" class="text-xs text-warning" data-review-sent-error>The reviews could not be read: {{ sentError }}</p>
@@ -410,7 +650,14 @@ async function retry(r: ReviewSummary, continueRun: boolean): Promise<Continuati
         </ul>
       </section>
     </template>
+
+    <!-- The ticket's decisions and delivery: the page's own sections. -->
+    <div class="flex flex-col gap-4" data-review-decisions>
+      <slot name="decisions" />
+    </div>
   </section>
+
+  <ReviewCheckFailure v-model:open="repairOpen" :prepared="prepared" :error="prepareError" :loading="preparing" :task-failed="taskFailed" :recheck="recheck" @add="addCheckNote" />
 
   <UModal :open="!!modalNote" :title="modalNote?.editing ? 'Edit the note' : 'A note'" :ui="{ content: 'max-w-xl' }" @update:open="(o: boolean) => !o && (composer = null)">
     <template #body>

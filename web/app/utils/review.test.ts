@@ -6,6 +6,13 @@ import {
   MAX_ANCHOR_LINES,
   MAX_REPAIR_PAYLOAD,
   applicationWords,
+  FAILURE_CLASSES,
+  checkNote,
+  classWords,
+  failedReceiptActions,
+  findingsInOrder,
+  markBlocked,
+  recheckWords,
   batchProblems,
   changeRequestOf,
   composerOnFileMove,
@@ -306,5 +313,58 @@ describe('the note form when the file shown moves', () => {
     expect(composerOnFileMove({ ...general, inline: true, at: 'c|b' })).toBeNull()
     expect(composerOnFileMove({ ...general, at: 'c|b' })).toBeNull()
     expect(composerOnFileMove(null)).toBeNull()
+  })
+})
+
+describe('a failed receipt', () => {
+  const allowed = { allowed: true }
+  const refused = { allowed: false, why: 'continue run A first' }
+  it('offers Check again exactly when the prepared request says the engine takes it, first for a machine failure, whatever the class', () => {
+    expect(failedReceiptActions(allowed, 'infrastructure', false)).toEqual({ actions: ['recheck', 'request'], why: '' })
+    expect(failedReceiptActions(allowed, 'flaky', true)).toEqual({ actions: ['recheck', 'request', 'retry'], why: '' })
+    expect(failedReceiptActions(allowed, 'code', false)).toEqual({ actions: ['request', 'recheck'], why: '' })
+    expect(failedReceiptActions(allowed, 'unavailable', true)).toEqual({ actions: ['request', 'recheck', 'retry'], why: '' })
+  })
+  it("says why in its place when the engine would not take it, whatever the class: Request changes stays", () => {
+    expect(failedReceiptActions(refused, 'infrastructure', false)).toEqual({ actions: ['request'], why: 'continue run A first' })
+    expect(failedReceiptActions({ allowed: false }, 'code', true).actions).toEqual(['request', 'retry'])
+    expect(failedReceiptActions({ allowed: false }, 'code', true).why).not.toBe('')
+  })
+  it('names the run a Check again was made in: the candidate\'s, or a continuation of it', () => {
+    expect(recheckWords({ run: 'rA', attempt: 1 }, { run: 'rA', attempt: 2 })).toBe('Checked again as attempt 2, the same commit as attempt 1.')
+    expect(recheckWords({ run: 'rA', attempt: 1 }, { run: 'rB', attempt: 4 })).toBe('Checked again as attempt 4 of run rB, a continuation of rA.')
+  })
+  it("says each class in words", () => {
+    for (const c of FAILURE_CLASSES) expect(classWords(c).label).not.toBe('')
+    expect(classWords('code').label).toBe('code defect')
+    expect(classWords('flaky').label).toBe('possibly flaky')
+  })
+  it('makes a check note the route takes: the receipt, the class chosen and the quote, no path, side or lines', () => {
+    const p = {
+      finding: { kind: 'check' as const, intent: 'change' as const, message: 'The check test failed on 1111111 (attempt 1): exit 1.', check: { source: 'ledger' as const, receipt: 'r/build/1/check/test/1', run: 'r', task: 'build', attempt: 1, phase: 'check', id: 'test', k: 1, subject: '1'.repeat(40), argv: ['false'], exit: 1, timedOut: false, killed: false, stable: true, state: 'finished', where: 'native', logBytes: 3, tail: 'no\n', class: 'code' as const } },
+      criteria: { source: 'ticket' as const, acceptance: 'It is built.' },
+      recheck: { allowed: true, run: 'r', revision: 4, attempt: 1, commit: '1'.repeat(40) },
+    }
+    const n = checkNote(p, 'infrastructure', '  no  ', '')
+    expect(findingOf({ ...n, key: 'k' })).toEqual({ kind: 'check', intent: 'change', severity: 'major', message: p.finding.message, check: { source: 'ledger', receipt: 'r/build/1/check/test/1', chosen: 'infrastructure', quote: '  no  ' } })
+    expect(noteWhere(n)).toBe('check test failed (r/build/1/check/test/1)')
+  })
+})
+
+describe('findings across candidates', () => {
+  it('list the open first, then the resolved, then the withdrawn, the newest review first, each in its order', () => {
+    const f = (id: string, state: 'open' | 'resolved' | 'withdrawn', createdAt: string, k: number) => ({ id, state, createdAt, k })
+    const got = findingsInOrder([f('a', 'resolved', '2026-01-02', 1), f('b', 'open', '2026-01-01', 2), f('c', 'withdrawn', '2026-01-03', 1), f('d', 'open', '2026-01-02', 1), f('e', 'open', '2026-01-01', 1)])
+    expect(got.map((x) => x.id)).toEqual(['d', 'e', 'b', 'a', 'c'])
+  })
+  it("are marked against a later candidate of their task, and never resolved on the commit they were made on", () => {
+    const x = '1'.repeat(40)
+    const y = '2'.repeat(40)
+    expect(markBlocked(`r/build/1@${x}`, `r/build/2@${y}`, 'resolved')).toBe('')
+    expect(markBlocked(`r/build/1@${x}`, `r/build/1@${x}`, 'withdrawn')).toContain('later candidate')
+    expect(markBlocked(`r/build/1@${x}`, `r/build/2@${x}`, 'resolved')).toContain('the commit the finding was made on')
+    expect(markBlocked(`r/build/1@${x}`, `r/build/2@${x}`, 'open')).toBe('')
+    expect(markBlocked(`r/build/1@${x}`, `r2/build/3@${y}`, 'withdrawn')).toBe('')
+    expect(markBlocked(`r/build/1@${x}`, `r/prep/2@${y}`, 'resolved')).toContain('a finding of build')
   })
 })

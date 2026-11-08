@@ -8,7 +8,7 @@ import { shortCommit } from './dispatchPlans'
  * of where a finding's lines are, a finding's state from its marks, and the bases a candidate's diff may be read against. Pure.
  */
 
-export type NoteKind = 'line' | 'file' | 'general'
+export type NoteKind = 'line' | 'file' | 'general' | 'check'
 export type NoteIntent = 'change' | 'question' | 'note'
 export type Severity = 'blocker' | 'major' | 'minor' | 'nit'
 export type Side = 'candidate' | 'base'
@@ -47,6 +47,23 @@ export interface DraftNote {
   lines?: string[]
   message: string
   resolution?: string
+  /** A check note's receipt (kind `check`), as the route takes it: the server fills the rest from the ledger. */
+  check?: CheckChoice
+  /** A check note's receipt in words ("check test"), for the draft alone; never sent. */
+  checkName?: string
+}
+
+/** The classes of a failed check (crew's ClassifyFailure): the server's hint, which a person may change. */
+export type FailureClass = 'code' | 'infrastructure' | 'flaky' | 'cancelled' | 'unavailable'
+export const FAILURE_CLASSES: readonly FailureClass[] = ['code', 'infrastructure', 'flaky', 'cancelled', 'unavailable']
+
+/** What a check note sends of its receipt (dispatch.CheckRequest): its source, its identity, the class chosen and the quote. */
+export interface CheckChoice {
+  source: 'ledger'
+  /** `<run>/<task>/<n>/<phase>/<id>/<k>`. */
+  receipt: string
+  chosen?: FailureClass
+  quote?: string
 }
 
 /** What the route takes of a note (`findings[]` of POST /api/dispatch/tickets/{key}/reviews): its empty members left out. */
@@ -61,6 +78,7 @@ export interface NewFinding {
   lines?: string[]
   message?: string
   resolution?: string
+  check?: CheckChoice
 }
 
 /** A selection in the diff (DiffEditor's `select`): the side, the lines from..to (1-based, whole lines), their text, and where to put the bar. */
@@ -109,7 +127,7 @@ export function noteFromSelection(path: string, side: Side, fileLines: readonly 
 export function findingOf(n: DraftNote): NewFinding {
   const f: NewFinding = { kind: n.kind, intent: n.intent }
   if (n.intent === 'change' && n.severity) f.severity = n.severity
-  if (n.kind !== 'general') {
+  if (n.kind !== 'general' && n.kind !== 'check') {
     if (n.path) f.path = n.path
     if (n.side) f.side = n.side
   }
@@ -122,6 +140,12 @@ export function findingOf(n: DraftNote): NewFinding {
   if (message) f.message = message
   const resolution = n.intent === 'change' ? (n.resolution ?? '').trim() : ''
   if (resolution) f.resolution = resolution
+  if (n.kind === 'check' && n.check) {
+    const c: CheckChoice = { source: n.check.source, receipt: n.check.receipt }
+    if (n.check.chosen) c.chosen = n.check.chosen
+    if (n.check.quote) c.quote = n.check.quote
+    f.check = c
+  }
   return f
 }
 
@@ -191,8 +215,9 @@ export function repairBytes(cr: ChangeRequest): number {
 export const kib = (n: number) => Math.ceil(n / 1024)
 
 /** Where a note is, in words: "stub.txt:3–4 (base)", "stub.txt (the whole file)", "the candidate as a whole". */
-export function noteWhere(n: Pick<DraftNote, 'kind' | 'path' | 'side' | 'from' | 'to'>): string {
+export function noteWhere(n: Pick<DraftNote, 'kind' | 'path' | 'side' | 'from' | 'to' | 'check' | 'checkName'>): string {
   if (n.kind === 'general') return 'the candidate as a whole'
+  if (n.kind === 'check') return `${n.checkName || 'the check'} failed (${n.check?.receipt ?? 'its receipt'})`
   const side = n.side === 'base' ? ' (base)' : ''
   if (n.kind === 'file') return `${n.path} (the whole file)${side}`
   const range = (n.to ?? 0) > (n.from ?? 0) ? `${n.from}–${n.to}` : `${n.from}`
@@ -432,4 +457,130 @@ export function requestWords(task: string, c: { attempt?: number; commit: string
  */
 export function composerOnFileMove<T extends { note: unknown; at?: string }>(c: T | null): T | null {
   return c && c.at === undefined ? c : null
+}
+
+/** A failed check's receipt as the server read it from the ledger for a check note (dispatch.CheckRef). */
+export interface CheckRef extends CheckChoice {
+  run: string
+  task: string
+  attempt: number
+  phase: string
+  id: string
+  k: number
+  subject: string
+  argv: string[]
+  exit?: number
+  signal?: string
+  timedOut: boolean
+  killed: boolean
+  stable: boolean
+  state: string
+  error?: string
+  where: string
+  logSha256?: string
+  logBytes: number
+  tail: string
+  class: FailureClass
+  previous?: { attempt: number; state: string; stage?: string; commit?: string }
+}
+
+/**
+ * The prepared failed-check request (GET …/attempts/{n}/steps/{id}/{k}/repair): a draft note of kind check, its receipt filled from the
+ * ledger with the server's class; what the candidate was to meet (the ticket's criteria as launched, else the task's checks); the launch's
+ * plan revision and ticket; and whether Check again would be taken now, judged on the run it would go to (the newest of the chain).
+ */
+export interface PreparedRepair {
+  finding: { kind: 'check'; intent: 'change'; message: string; check: CheckRef }
+  criteria: { source: 'ticket' | 'checks'; acceptance?: string; checks?: Array<{ id: string; argv: string[] }> }
+  plan?: { id: string; n: number }
+  ticket?: { id: string; key: string }
+  recheck: { allowed: boolean; run: string; revision: number; attempt: number; commit: string; why?: string }
+}
+
+/** A failure's class in words: what it says and what it suggests. */
+export function classWords(c: FailureClass | string): { label: string; detail: string } {
+  switch (c) {
+    case 'infrastructure':
+      return { label: 'infrastructure failure', detail: 'The machine or the tools failed, not the code: checking the same commit again may pass.' }
+    case 'flaky':
+      return { label: 'possibly flaky', detail: 'Another receipt of the same check on the same commit passed: checking it again may pass.' }
+    case 'cancelled':
+      return { label: 'cancelled', detail: 'The check was stopped before it could pass or fail.' }
+    case 'unavailable':
+      return { label: 'evidence unavailable', detail: 'Nothing the receipt kept says why it failed.' }
+    default:
+      return { label: 'code defect', detail: 'The check ran and the commit failed it: the code needs a change.' }
+  }
+}
+
+/** An action a failed receipt offers, in the order the panel shows them. */
+export type FailedAction = 'recheck' | 'request' | 'retry'
+
+/**
+ * What a failed receipt offers (ReviewCheckFailure): Check again exactly when the prepared request's `recheck.allowed` says the engine
+ * takes it, whatever the class, put first when the class chosen is `infrastructure` or `flaky`; else its `why` in its place. Request
+ * changes always (a check note added to the draft); Retry when the task failed (the run page's command, one more attempt).
+ */
+export function failedReceiptActions(recheck: Pick<PreparedRepair['recheck'], 'allowed' | 'why'>, chosen: FailureClass | string, taskFailed: boolean): { actions: FailedAction[]; why: string } {
+  const actions: FailedAction[] = []
+  const machine = chosen === 'infrastructure' || chosen === 'flaky'
+  if (recheck.allowed && machine) actions.push('recheck')
+  actions.push('request')
+  if (recheck.allowed && !machine) actions.push('recheck')
+  if (taskFailed) actions.push('retry')
+  return { actions, why: recheck.allowed ? '' : recheck.why || 'Yardmaster would not take a Check again of this candidate now.' }
+}
+
+/**
+ * Where a Check again was made, in words, from its reply: the run and the attempt the server checked the candidate in. A continuation's
+ * ("checked again as attempt 4 of run B, a continuation of A") when the run is not the candidate's own.
+ */
+export function recheckWords(candidate: { run: string; attempt: number }, reply: { run: string; attempt: number }): string {
+  if (reply.run && reply.run !== candidate.run) return `Checked again as attempt ${reply.attempt} of run ${reply.run}, a continuation of ${candidate.run}.`
+  return `Checked again as attempt ${reply.attempt}, the same commit as attempt ${candidate.attempt}.`
+}
+
+/** A check note for the draft from a prepared request: its words, the receipt's identity, the class chosen and the quote. */
+export function checkNote(p: PreparedRepair, chosen: FailureClass, quote: string, message: string): Omit<DraftNote, 'key'> {
+  const ch = p.finding.check
+  const q = quote.trim() ? cutBytes(quote, 2048) : ''
+  return {
+    kind: 'check',
+    intent: 'change',
+    severity: 'major',
+    message: message.trim() || p.finding.message,
+    check: { source: 'ledger', receipt: ch.receipt, ...(chosen ? { chosen } : {}), ...(q ? { quote: q } : {}) },
+    checkName: `${ch.phase} ${ch.id}${ch.k > 1 ? ` #${ch.k}` : ''}`,
+  }
+}
+
+/** A finding's state in words and tone, for its badge. */
+export function findingStateWords(s: 'open' | 'resolved' | 'withdrawn'): { label: string; color: 'warning' | 'success' | 'neutral' } {
+  return s === 'resolved' ? { label: 'resolved', color: 'success' } : s === 'withdrawn' ? { label: 'withdrawn', color: 'neutral' } : { label: 'open', color: 'warning' }
+}
+
+/** The findings as the Review view lists them: open first, then resolved, then withdrawn; in each, the newest review first, in its order. */
+export function findingsInOrder<T extends { state: 'open' | 'resolved' | 'withdrawn'; createdAt: string; k: number }>(fs: readonly T[]): T[] {
+  const rank = { open: 0, resolved: 1, withdrawn: 2 }
+  return [...fs].sort((a, b) => rank[a.state] - rank[b.state] || b.createdAt.localeCompare(a.createdAt) || a.k - b.k)
+}
+
+/**
+ * Why a mark cannot be made against the candidate shown, in words, '' when it can: a finding is marked against a later attempt's result of
+ * its task (attempts are numbered along the run's chain), and Resolved never against the commit the finding was made on (a Check again's
+ * attempt has it), the server's rule, which judges it again. `finding` and `shown` are candidates as links name them.
+ */
+export function markBlocked(finding: string, shown: string, verdict: 'resolved' | 'open' | 'withdrawn'): string {
+  const f = parseRef(finding)
+  const c = parseRef(shown)
+  if (!f || !c) return 'Pick a candidate to mark it against.'
+  if (f.task !== c.task) return `It is a finding of ${f.task}: mark it against one of ${f.task}'s candidates.`
+  if (c.attempt <= f.attempt) return `Mark it against a later candidate than attempt ${f.attempt}, the one it was made on.`
+  if (verdict === 'resolved' && f.commit === c.commit) return `This candidate is the commit the finding was made on (${shortCommit(c.commit)}): nothing in it changed.`
+  return ''
+}
+
+function parseRef(s: string): { run: string; task: string; attempt: number; commit: string } | null {
+  const m = /^([^/@]+)\/([^/@]+)\/([1-9][0-9]*)@([0-9a-f]{40}|[0-9a-f]{64})$/.exec(s)
+  return m ? { run: m[1]!, task: m[2]!, attempt: Number(m[3]), commit: m[4]! } : null
 }

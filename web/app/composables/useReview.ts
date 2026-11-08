@@ -4,7 +4,7 @@ import type { DispatchReceipt, OpBody } from './useDispatch'
 import { through, type DispatchOrder } from '~/utils/dispatchOrder'
 import { mintCommandId, sendCommand } from '~/utils/tasks'
 import { allPages, parseCandidate, type CandidateRef } from '~/utils/dispatch'
-import { latest, type Located, type NewFinding, type ReviewApplication, type ReviewBody, type Side } from '~/utils/review'
+import { latest, type CheckRef, type Located, type NewFinding, type PreparedRepair, type ReviewApplication, type ReviewBody, type Side } from '~/utils/review'
 
 /**
  * A person's reviews of a ticket's candidates (Program item RV1, docs/plans/review-repair.md, "web/app"): a candidate's diff and its
@@ -51,6 +51,8 @@ export interface ReviewFinding extends NewFinding {
   anchorCommit?: string
   lines: string[]
   message: string
+  /** A check finding's receipt, as the server read it from the ledger. */
+  check?: CheckRef
   createdAt: string
   candidate: string
   state: 'open' | 'resolved' | 'withdrawn'
@@ -142,7 +144,7 @@ export function useReviewApi() {
       const r = await requestText(`${attemptPath(c)}/diff/file?path=${enc(path)}&side=${side}` + (base ? `&base=${enc(base)}` : ''))
       return { text: r.text, truncated: r.headers.get('X-Conductor-Truncated') === '1', commit: r.headers.get('X-Conductor-Commit') ?? '' }
     },
-    prepareRepair: (c: CandidateRef, step: string, k: number) => request<unknown>(`${attemptPath(c)}/steps/${enc(step)}/${k}/repair`),
+    prepareRepair: (c: Pick<CandidateRef, 'run' | 'task' | 'attempt'>, step: string, k: number) => request<PreparedRepair>(`${attemptPath(c)}/steps/${enc(step)}/${k}/repair`),
     recheck: (run: string, task: string, body: { commandId: string; attempt: number; commit: string; expectedRevision?: number }) =>
       request<{ receipt: DispatchReceipt; run: string; attempt: number }>(`/api/runs/${enc(run)}/tasks/${enc(task)}/recheck`, { method: 'POST', body }),
     submitReview: (key: string, body: OpBody & ReviewBody & Omit<ApplyOptions, 'opId'>) => request<ReviewReply>(`/api/dispatch/tickets/${enc(key)}/reviews`, { method: 'POST', body }),
@@ -164,6 +166,8 @@ export function useReviewApi() {
 
 /** The most reviews a ticket holds (the store's dispatch.MaxReviews): a whole read of them stops there, 25 pages of 20. */
 export const MAX_REVIEWS = 500
+/** The most findings a ticket holds: fifty a review (dispatch.MaxReviewFindings), MAX_REVIEWS reviews. */
+export const MAX_FINDINGS = 50 * MAX_REVIEWS
 
 /** The open findings of a run's task among a ticket's reviews: each review counts its own by state (its findings' latest marks), as the store does. */
 export function openFindingsOf(reviews: readonly ReviewSummary[], run: string, task: string): number {
@@ -175,10 +179,14 @@ export function openFindingsOf(reviews: readonly ReviewSummary[], run: string, t
   return n
 }
 
-/** What the ticket page gives the candidates it lists (DispatchCandidates): the open findings of a run's task, and the Review view's link. */
+/**
+ * What the ticket page gives the candidates it lists (DispatchCandidates): the open findings of a run's task, the Review view's link (at
+ * a failed receipt to prepare a repair from, `<id>/<k>`), and the ticket's reviews, whose applied requests are a person's repairs.
+ */
 export interface ReviewEntry {
   openFindings: (run: string, task: string) => number
-  href: (candidate: string) => { query: Record<string, string> }
+  href: (candidate: string, repair?: string) => { query: Record<string, string> }
+  reviews: () => readonly ReviewSummary[]
 }
 export const REVIEW_ENTRY: InjectionKey<ReviewEntry> = Symbol('review-entry')
 
@@ -210,6 +218,33 @@ export function useReview(gate: DispatchOrder) {
     /** The ticket's reviews, newest first, every page (at most MAX_REVIEWS, the store's bound), applied together when the gate takes the whole read. */
     readReviews: (key: string, apply: (r: ReviewSummary[]) => void) =>
       through(gate, `reviews:${key}`, () => allPages((before) => api.ticketReviews(key, before).then((p) => ({ items: p.reviews ?? [], next: p.next })), MAX_REVIEWS), apply),
+    /**
+     * The ticket's findings of the candidate's task, every page, each located on that candidate (the server's `located`, against
+     * `candidate`), with its state, its last mark and what the repair attempts said they addressed; applied when the gate takes the read.
+     */
+    readFindings: (key: string, candidate: string, apply: (f: ReviewFinding[]) => void) =>
+      through(gate, `findings:${key}:${candidate}`, () => allPages((after) => api.findings(key, { state: 'all', candidate, after }).then((p) => ({ items: p.findings ?? [], next: p.next })), MAX_FINDINGS), apply),
+    /** A failed receipt's prepared repair request (read whole, never cut). */
+    prepare: (c: Pick<CandidateRef, 'run' | 'task' | 'attempt'>, step: string, k: number) => api.prepareRepair(c, step, k),
+    /**
+     * A finding marked against a candidate: its op id minted, asked once more with it on a lost reply; a refusal is a CommandRefused in
+     * the store's words, a 409 invalid (not a later candidate, Resolved on the finding's own commit) an ApiError in the server's.
+     */
+    mark: (id: string, candidate: string, verdict: FindingMark['verdict'], note: string) => {
+      const n = note.trim()
+      return sendCommand((b: OpBody & { candidate: string; verdict: FindingMark['verdict']; note?: string; via: 'web' }) => api.markFinding(id, b), { ...op(), candidate, verdict, via: 'web' as const, ...(n ? { note: n } : {}) })
+    },
+    /**
+     * Check again: the failed candidate named in its own run (`c`), sent to `run`, the run the prepared request says it goes to, at its
+     * revision; a command id minted, asked once more with it on a lost reply. The reply names the run and the attempt it was checked in.
+     */
+    recheck: (c: CandidateRef, revision: number | undefined) =>
+      sendCommand((b: { commandId: string; attempt: number; commit: string; expectedRevision?: number }) => api.recheck(c.run, c.task, b), {
+        commandId: mintCommandId(),
+        attempt: c.attempt,
+        commit: c.commit,
+        ...(revision ? { expectedRevision: revision } : {}),
+      }),
     /** A review whole, ordered by its revision. */
     readReview: (id: string, apply: (r: Review) => void) => through(gate, `review:${id}`, () => api.review(id), apply, (r) => r.rev),
 

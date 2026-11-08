@@ -38,9 +38,12 @@ import { REVIEW_ENTRY, openFindingsOf, useReview, type ReviewSummary } from '~/c
  * acceptance, Accept anyway receipts, decision records), its Delivery (the close card, with `verified`, and the links, a delivery naming
  * the candidate it delivers with its verification), and its People (DispatchPeople: owner, assignees, approvers, launchers, commenters,
  * the plan's agents and each launch's with their versions). The runs' candidates they read are read once for all three (useTicketCandidates).
- * Its Review view (Program item RV1, DispatchReview), `?view=review&candidate=…`, shows in place of the sections: a candidate's diff,
- * the notes of a draft and the review sent; each standing candidate under Runs offers Review, with the open findings of its task, counted
- * from the ticket's reviews (every page), read with the ticket.
+ * Its Review view (Program item RV1, DispatchReview), `?view=review&candidate=…`, shows in place of the sections: the criteria and the
+ * plan, a candidate's lineage, diff, checks and findings, the notes of a draft and the review sent, and the ticket's decisions and
+ * delivery; `&repair=<id>/<k>` prepares a repair from a failed receipt of the candidate, `&focus=findings` shows the findings. Each
+ * standing candidate under Runs offers Review, with the open findings of its task, counted from the ticket's reviews (every page), read
+ * with the ticket, and each failed receipt Prepare a repair; the palette's page group gains Review the latest candidate, Send review (n
+ * notes) and Open findings.
  */
 const props = defineProps<{ project: string; ticketKey: string }>()
 
@@ -695,8 +698,32 @@ const router = useRouter()
 const reviewView = computed(() => route.query.view === 'review')
 const reviewCandidate = computed(() => (typeof route.query.candidate === 'string' ? route.query.candidate : ''))
 function pickReviewCandidate(c: string) {
-  void router.replace({ query: { ...route.query, view: 'review', candidate: c } })
+  // Another candidate: a receipt the link named was the last one's.
+  const { repair: _repair, ...rest } = route.query
+  void router.replace({ query: { ...(c === reviewCandidate.value ? route.query : rest), view: 'review', candidate: c } })
 }
+/** A failed receipt the link names to prepare a repair from (`&repair=<id>/<k>`), and a section to show (`&focus=findings`). */
+const reviewRepair = computed(() => (typeof route.query.repair === 'string' ? route.query.repair : ''))
+const reviewFocus = computed(() => (typeof route.query.focus === 'string' ? route.query.focus : ''))
+/** By run: the run it continues, from the ticket's Runs entries (each continuation's). */
+const continues = computed(() => {
+  const out = new Map<string, string>()
+  for (const e of runs.entries.value) {
+    const id = e.run?.id ?? e.launch?.runId ?? e.link?.ref
+    if (id && e.continues) out.set(id, e.continues)
+  }
+  return out
+})
+// The Review view's plan section names the task's expected checks: the bodies of the revisions that launched the ticket's runs.
+watch(
+  () => [reviewView.value, knownLaunches.value.map((l) => l.planId).join(',')] as const,
+  ([inView]) => {
+    if (!inView) return
+    for (const id of new Set(knownLaunches.value.map((l) => l.planId))) void plan.readBody(id).catch(() => {})
+  },
+  { immediate: true },
+)
+const reviewPanel = useTemplateRef<{ notes: number; send: () => void; showFindings: () => void }>('reviewPanel')
 // The open findings beside each candidate's Review, counted from the ticket's reviews (each counts its findings by state, every page
 // read), read with the ticket: a hint, so a read that fails leaves the count it had, and the next read of the ticket asks again. The
 // Review view reads the same reviews itself, so this read waits while it is shown and runs again when the sections are.
@@ -716,7 +743,8 @@ watch(
 )
 provide(REVIEW_ENTRY, {
   openFindings: (run, task) => openFindingsOf(ticketReviews.value, run, task),
-  href: (candidate) => ({ query: { view: 'review', candidate } }),
+  href: (candidate, repair) => ({ query: { view: 'review', candidate, ...(repair ? { repair } : {}) } }),
+  reviews: () => ticketReviews.value,
 })
 const planRows = inject(TICKET_PLAN_ROWS, null)
 // A link to one comment (`?comment=<n>`, a history row's: Program item HS1, PR-6) shows it marked at the head of the comments. Read, never written back.
@@ -742,6 +770,22 @@ watchEffect(() => {
     const why = launchBlockers(a, { ticket: t, project: props.project, archived: archived.value, server: plan.server })
     rows.push({ key: `page:plan-launch:${a.n}`, label: `Launch from revision ${a.n}`, detail: why[0] ?? `${a.crewName}: asks first`, icon: 'i-lucide-play', disabled: !!why.length, run: () => void afterPalette(() => planSection.value?.launch()) })
   }
+  // The Review view's rows (RV1): Review the latest candidate, Send review (n notes) while a draft holds notes, Open findings.
+  const latest = deliveryChoices.value[0]
+  rows.push({ key: 'page:review-latest', label: 'Review the latest candidate', detail: latest ? latest.label : 'No candidate to review yet', icon: 'i-lucide-scan-eye', disabled: !latest, run: () => void afterPalette(() => pickReviewCandidate(latest!.value)) })
+  const notes = reviewView.value ? (reviewPanel.value?.notes ?? 0) : 0
+  if (notes) rows.push({ key: 'page:review-send', label: `Send review (${notes} ${notes === 1 ? 'note' : 'notes'})`, detail: 'Of the candidate shown: asks first for Request changes', icon: 'i-lucide-send', run: () => void afterPalette(() => reviewPanel.value?.send()) })
+  rows.push({
+    key: 'page:review-findings',
+    label: 'Open findings',
+    detail: `${ticketReviews.value.reduce((n, r) => n + (r.counts?.open ?? 0), 0)} open in the ticket's reviews`,
+    icon: 'i-lucide-list-checks',
+    run: () =>
+      void afterPalette(() => {
+        if (reviewView.value) reviewPanel.value?.showFindings()
+        else void router.push({ query: { view: 'review', focus: 'findings' } })
+      }),
+  })
   for (const l of plan.shown.value) {
     if (plan.launches.get(l.id)?.state !== 'started') continue
     const n = plan.plans.value.find((p) => p.id === l.planId)?.n
@@ -867,7 +911,30 @@ const askBrakeman = computed(() =>
         </div>
 
         <!-- The Review view (RV1) in place of the sections. -->
-        <DispatchReview v-if="reviewView" :ticket-key="ticket.key" :candidate="reviewCandidate" :candidates="candidates" :gate="gate" :reads="reads" :resets="resets" :now="now" @candidate="pickReviewCandidate" />
+        <DispatchReview
+          v-if="reviewView"
+          ref="reviewPanel"
+          :ticket-key="ticket.key"
+          :candidate="reviewCandidate"
+          :candidates="candidates"
+          :gate="gate"
+          :reads="reads"
+          :resets="resets"
+          :now="now"
+          :acceptance="ticket.acceptance"
+          :launches="knownLaunches"
+          :plans="plan.plans.value"
+          :bodies="plan.bodies"
+          :continues="continues"
+          :repair="reviewRepair"
+          :focus="reviewFocus"
+          @candidate="pickReviewCandidate"
+        >
+          <template #decisions>
+            <DispatchDecisions :rows="decisions" :records="decisionRecords.decisions.value" :required="approvedPlan?.body.decisions" :revision="approvedPlan ? revisionTag(approvedPlan.n) : ''" :plan-id="approvedPlan?.id" :now="now" />
+            <DispatchLinks :links="ticket.links ?? []" :locked="locked" :now="now" :add="addLink" :remove="removeLink" :candidates="deliveryChoices" :candidates-loading="candidates.loading.value" :candidates-error="candidates.error.value" :withdrawn="withdrawn" />
+          </template>
+        </DispatchReview>
 
         <!-- Its text and history, its properties beside them on a wide screen; on a phone one column, the properties first. -->
         <div v-else class="flex flex-col gap-6 lg:flex-row lg:items-start">

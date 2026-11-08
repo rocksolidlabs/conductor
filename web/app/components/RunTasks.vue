@@ -1,5 +1,7 @@
 <script setup lang="ts">
+import type { RouteLocationRaw } from 'vue-router'
 import type { RunAttempt, RunInfo, RunStep, RunTask } from '~/composables/useSessions'
+import { candidateRef, ticketPath } from '~/utils/dispatch'
 import { relativeTime } from '~/utils/sessions'
 import { latestReads, ownedBy, type Owned } from '~/utils/latestReads'
 import { prerequisitesRefused, stepManifest, taskActions, taskAnswer, taskDot, taskWords } from '~/utils/tasks'
@@ -25,7 +27,9 @@ import { personPath } from '~/utils/people'
  * modal (useDecisionModal); the selected task lists its decisions. The
  * preview opens in a new tab: it is on the server's
  * loopback and not proxied, and an iframe of it would be mixed content
- * under TLS.
+ * under TLS. For a run a ticket holds (RV1), the selected work task offers
+ * Review, the ticket's Review view at its candidate, and a failed receipt
+ * Prepare a repair there; a run no ticket holds says to link it first.
  */
 const props = defineProps<{
   run: RunInfo
@@ -33,6 +37,8 @@ const props = defineProps<{
   now: number
   /** The attempt a link named (`&attempt=`, a history row's: Program item HS1, PR-6), shown marked, its `step` opened with its log. */
   attempt?: number
+  /** The ticket whose chain holds the run (its key), '' for none: a task's Review and Prepare a repair go to its Review view (RV1). */
+  ticket?: string
   /** The receipt a link named on that attempt, `<phase>/<id>/<k>`. */
   step?: string
 }>()
@@ -44,6 +50,19 @@ const api = useSessions()
 
 const tasks = computed(() => props.run.tasks ?? [])
 const selectedTask = computed(() => tasks.value.find((t) => t.id === props.selected))
+/** The ticket's Review view at a candidate of the run (RV1), preparing a repair from a receipt when one is named. */
+function reviewAt(task: string, attempt: number, commit: string | undefined, repair?: string): RouteLocationRaw | undefined {
+  if (!props.ticket || !commit) return undefined
+  return { path: ticketPath(props.ticket), query: { view: 'review', candidate: candidateRef({ run: props.run.id, task, attempt, commit }), ...(repair ? { repair } : {}) } }
+}
+/** The selected work task's candidate to review: its result, else its latest attempt that submitted one. */
+const reviewTarget = computed(() => {
+  const t = selectedTask.value
+  if (!t || t.kind !== 'work') return null
+  if (t.result?.commit) return { attempt: t.result.attempt, commit: t.result.commit }
+  const a = [...attempts.value].reverse().find((x) => x.result)
+  return a ? { attempt: a.n, commit: a.result! } : null
+})
 // The run's state too: a task of an interrupted run says what its continuation takes up (taskWords), a held one among them (DR1).
 const live = computed(() => ({ state: props.run.state, stoppedAt: props.run.stoppedAt, paused: props.run.paused, pausedWhy: props.run.pausedWhy, record: props.run.record, resumedBy: props.run.resumedBy }))
 function agentOf(member: string): string {
@@ -257,6 +276,13 @@ async function confirm() {
         <span class="truncate text-muted">{{ selectedTask.kind }} · {{ selectedTask.member }}<span v-if="selectedTask.owner" data-task-detail-owner> · <NuxtLink :to="personPath(selectedTask.owner)" class="hover:underline" data-task-detail-owner-link>{{ ownerWords(selectedTask) }}</NuxtLink></span>{{ selectedTask.needs?.length ? ` · needs ${selectedTask.needs.join(', ')}` : '' }}</span>
         <UButton icon="i-lucide-x" size="xs" variant="ghost" color="neutral" class="ml-auto" aria-label="Close" data-task-detail-close @click="emit('select', '')" />
       </div>
+      <!-- Its candidate reviewed on the ticket that holds the run (RV1), or why not. -->
+      <div v-if="selectedTask.kind === 'work' && reviewTarget" class="flex flex-wrap items-center gap-2" data-task-review-entry>
+        <UButton v-if="ticket" :label="`Review on ${ticket}`" icon="i-lucide-scan-eye" size="xs" color="neutral" variant="outline" :to="reviewAt(selectedTask.id, reviewTarget.attempt, reviewTarget.commit)" data-task-review />
+        <span v-else class="text-xs text-muted" data-task-review-unlinked>
+          Link this run to a ticket to review it: a ticket's Runs section links a run by its id (<NuxtLink to="/dispatch" class="underline">Dispatch</NuxtLink>).
+        </span>
+      </div>
       <p v-if="selectedTask.blocker" class="rounded-md bg-warning/10 p-2 text-warning" data-task-blocker>
         Blocked by {{ selectedTask.blocker.by }}: {{ selectedTask.blocker.reason }}<template v-if="selectedTask.blocker.message"> — {{ selectedTask.blocker.message }}</template>
       </p>
@@ -322,7 +348,16 @@ async function confirm() {
               </li>
             </ul>
           </template>
-          <RunAttemptSteps v-if="a.steps?.length" :steps="a.steps" :now="now" :attempt="a" :log="logOf(selectedTask.id, a.n)" :save-as="saveName(selectedTask.id, a.n)" :open-step="attempt === a.n ? step : undefined" />
+          <RunAttemptSteps
+            v-if="a.steps?.length"
+            :steps="a.steps"
+            :now="now"
+            :attempt="a"
+            :log="logOf(selectedTask.id, a.n)"
+            :save-as="saveName(selectedTask.id, a.n)"
+            :open-step="attempt === a.n ? step : undefined"
+            :prepare="ticket && a.result ? (s: RunStep) => reviewAt(selectedTask!.id, a.n, a.result, `${s.id}/${s.k}`) : undefined"
+          />
         </li>
       </ol>
     </section>
