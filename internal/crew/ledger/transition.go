@@ -1038,6 +1038,29 @@ func (l *Ledger) Receipt(ctx context.Context, runID, actor, id string) (CommandR
 	return r, true, nil
 }
 
+// CommandEvent reads the payload of the run's first event of kind that
+// names actor's command id (its payload's actor and command): the
+// arguments a command was taken with, from the event the engine writes
+// in the transaction that takes it, where the command's row keeps only
+// their fingerprint. found is false when the run keeps no such event.
+func (l *Ledger) CommandEvent(ctx context.Context, runID, kind, actor, id string) (payload string, found bool, err error) {
+	db, err := l.conn()
+	if err != nil {
+		return "", false, err
+	}
+	// A payload that is no JSON object names no command (CASE is lazy,
+	// where AND's order is the planner's).
+	err = db.QueryRowContext(ctx, `SELECT payload FROM (SELECT seq, payload, CASE WHEN json_valid(payload) THEN payload ELSE '{}' END AS p
+		FROM events WHERE run_id = ? AND kind = ?) WHERE json_extract(p, '$.actor') = ? AND json_extract(p, '$.command') = ? ORDER BY seq LIMIT 1`, runID, kind, actor, id).Scan(&payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return payload, true, nil
+}
+
 // Commands reads a run's commands, oldest first.
 func (l *Ledger) Commands(ctx context.Context, runID string) ([]CommandRow, error) {
 	db, err := l.conn()

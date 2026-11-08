@@ -125,7 +125,7 @@ type inboxItem struct {
 // inboxAction is one thing a person may do with an item, through its own
 // operation's route, at the revision that operation checks (Expect).
 type inboxAction struct {
-	Name      string `json:"name"`            // answer | retry | accept | cancel | approve | withdraw
+	Name      string `json:"name"`            // answer | retry | accept | cancel | recheck | approve | withdraw
 	Label     string `json:"label"`           // 80
 	Input     string `json:"input,omitempty"` // exact: a choice's keys
 	Text      bool   `json:"text,omitempty"`  // a line is typed
@@ -138,6 +138,10 @@ type inboxAction struct {
 	// (GET /api/inbox/track), when it is not the item's own: a task's
 	// command carried by a blocker's question is tracked as the task's.
 	Track string `json:"track,omitempty"`
+	// Attempt and Commit are the candidate a Check again names, as its
+	// own run (the route's) names it: exact.
+	Attempt int    `json:"attempt,omitempty"`
+	Commit  string `json:"commit,omitempty"`
 }
 
 // deliveryStep is one of an action's four steps.
@@ -567,9 +571,9 @@ func (rd *inboxRead) commandsOf(runID, taskID string) (crew.TaskCommandSet, bool
 	return set, err == nil
 }
 
-// taskActions adds the commands set allows to it, each with the run's
-// revision as judged as its Expect, described from the task the set was
-// judged on; labelled with suffix, and tracked as the task's when the item
+// taskActions adds the commands set allows to it, and Check again of the
+// candidate set names (set.Recheck), each with the run's revision as
+// judged as its Expect, described from the task the set was judged on; labelled with suffix, and tracked as the task's when the item
 // is not the task's own.
 func (rd *inboxRead) taskActions(it *inboxItem, run crew.Run, set crew.TaskCommandSet, suffix string) {
 	task := set.Task
@@ -609,6 +613,22 @@ func (rd *inboxRead) taskActions(it *inboxItem, run crew.Run, set crew.TaskComma
 			a.Scope = fmt.Sprintf("Cancels %s: its attempt in flight is stopped and %s; at run revision %s", task.ID, blocked, rev)
 		}
 		it.addAction(a)
+	}
+	if rq := set.Recheck; rq != nil {
+		// Sent to the candidate's own run, which the route walks forward
+		// from to the run that holds the task (here, run).
+		from, of, next := run.ID, "", "nothing else waits for it"
+		if len(deps) > 0 {
+			next = strings.Join(deps, ", ") + " start from it"
+		}
+		if rq.Imported != "" {
+			from, _, _ = strings.Cut(rq.Imported, "/")
+			of = " of run " + from
+		}
+		it.addAction(inboxAction{Name: crew.TaskRecheck, Label: "Check again" + suffix, Expect: rev, Track: track, Attempt: rq.Attempt, Commit: rq.Commit,
+			Route: http.MethodPost + " /api/runs/" + from + "/tasks/" + task.ID + "/recheck",
+			Scope: fmt.Sprintf("Checks attempt %d%s's commit %s again as it is, nothing changed, in a new attempt not counted against %s; if it passes it is %s's result and %s; at run revision %s",
+				rq.Attempt, of, short(rq.Commit), task.ID, task.ID, next, rev)})
 	}
 }
 
