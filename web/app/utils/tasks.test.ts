@@ -82,6 +82,8 @@ describe('taskWords', () => {
     [task({ state: 'succeeded', kind: 'review', result: { attempt: 1, verdict: 'approved', findings: [{ severity: 'nit', message: 'x' }, { severity: 'nit', message: 'y' }, { severity: 'minor', message: 'z' }], at: '' } }), 'approved with 3 notes', 'success'],
     [task({ state: 'failed', reason: 'attempt 3 failed at check go: exited 1' }), 'attempt 3 failed at check go: exited 1', 'error'],
     [task({ state: 'cancelled' }), 'cancelled', 'muted'],
+    [task({ state: 'cancelled', reason: 'cancelled' }), 'cancelled', 'muted'],
+    [task({ state: 'cancelled', reason: 'rejected in dr-4 by Nate: not this week' }), 'cancelled: rejected in dr-4 by Nate: not this week', 'muted'],
   ] as const)('%o → %s', (t, text, tone) => {
     expect(taskWords(t, run)).toEqual({ text, tone })
   })

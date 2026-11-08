@@ -121,8 +121,11 @@ export function taskBadges(run: Pick<RunInfo, 'tasks' | 'paused' | 'outcome' | '
 
 export type Tone = 'warning' | 'error' | 'muted' | 'default' | 'success'
 
+/** What of its run a task's words read: stopped, paused and why, and the run's state (interrupted: what its continuation takes up). */
+export type TaskRun = Pick<RunInfo, 'stoppedAt' | 'paused'> & { state?: string; pausedWhy?: string }
+
 /** A task's state in words: what it waits for, which attempt runs, how it ended; on an interrupted run, what its continuation takes up. */
-export function taskWords(t: RunTask, run: Pick<RunInfo, 'stoppedAt' | 'paused'> & { state?: string; pausedWhy?: string }): { text: string; tone: Tone } {
+export function taskWords(t: RunTask, run: TaskRun): { text: string; tone: Tone } {
   const n = t.attempt?.n ?? t.attempts
   switch (t.state) {
     case 'blocked':
@@ -159,7 +162,8 @@ export function taskWords(t: RunTask, run: Pick<RunInfo, 'stoppedAt' | 'paused'>
     case 'failed':
       return { text: t.reason || 'failed', tone: 'error' }
     case 'cancelled':
-      return { text: 'cancelled', tone: 'muted' }
+      // Why, when the engine says more than the word (a gate's rejection, Program item DR1: "rejected in dr-4 by Nate: …").
+      return { text: t.reason && t.reason !== 'cancelled' ? `cancelled: ${t.reason}` : 'cancelled', tone: 'muted' }
   }
   return { text: t.state, tone: 'muted' }
 }

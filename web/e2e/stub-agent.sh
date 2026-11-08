@@ -648,6 +648,10 @@ holds() { git cat-file -e "$1:stub-$2.txt" 2>/dev/null; }
 # on the line Conductor types once it is answered ("Decision dr-N (TYPE)
 # answered by …") it writes that line into stub-answer.txt and goes on:
 # both files are committed with stub-<member>.txt and the result submitted.
+# STUB_DECISION_EXIT=1 makes it exit right after asking, so its attempt
+# ends while it waits; an attempt after it (a continuation's) whose task
+# carries the decision's answer as applied asks nothing: it writes that
+# line of its task into stub-answer.txt and goes on as above.
 # STUB_DECISION_EVIDENCE is the request's evidence refs, space-separated,
 # each `{run}` in them the run's id.
 
@@ -689,9 +693,25 @@ task_attempt() {
 	ctx=$(task_read)
 	printf 'task: %s %s attempt %s: read %s bytes\n' "$kind" "$task" "$n" "${#ctx}" >>"$transcript"
 	if [[ $kind == task && -n ${STUB_DECISION:-} && -z $decided ]]; then
-		# STUB_DECISION: ask the operator first, end the turn, and go on once the answer is typed (answer, below).
-		stub_decision "$task" "$n"
-		return
+		local applied
+		applied=$(decision_in_task "$task" "$ctx")
+		if [[ -n $applied ]]; then
+			# An attempt after the one that asked (a continuation's): the answer is in its task, as read through the task route; it is
+			# kept, and the attempt goes on to commit and submit.
+			printf '%s\n' "$applied" >stub-answer.txt
+			printf '%s\n' "${applied%% *}" >stub-decision.txt
+			printf 'decision: in the task: %s\n' "${applied:0:300}" >>"$transcript"
+			decided=1
+		else
+			# STUB_DECISION: ask the operator first, end the turn, and go on once the answer is typed (answer, below); with
+			# STUB_DECISION_EXIT=1 the stub exits instead, so its attempt ends while it waits.
+			stub_decision "$task" "$n"
+			if [[ ${STUB_DECISION_EXIT:-} == 1 ]]; then
+				printf 'decision: asked; exiting while it waits\n' >>"$transcript"
+				exit 0
+			fi
+			return
+		fi
 	fi
 	if [[ $kind == task && $ctx == *"STUB DECIDE"* ]]; then
 		# Its instructions ask the operator first: a durable decision, and nothing submitted while it waits.
@@ -730,6 +750,21 @@ task_attempt() {
 		task_submit '{"verdict":"approved","summary":"fine now"}' --verdict approved --summary "fine now"
 	else
 		task_submit "{\"verdict\":\"needs_changes\",\"summary\":\"one thing\",\"findings\":[{\"severity\":\"major\",\"path\":\"stub-$member.txt\",\"line\":1,\"message\":\"add stub-fixed.txt\"}]}" --verdict needs_changes --summary "one thing" --finding "major:stub-$member.txt:1 add stub-fixed.txt"
+	fi
+}
+
+# decision_in_task prints the line of task $1's read task $2 (the CLI's
+# text, or the tool's reply, JSON-escaped) that carries the answer of the
+# decision the stub asks (STUB_DECISION) as applied: "dr-N (TYPE), applied:
+# QUESTION NAME answered: ANSWER." (the task file's Decisions); nothing
+# when it carries none.
+decision_in_task() {
+	local re='(dr-[1-9][0-9]* [(][a-z]+[)], applied: [^\\]*)' line
+	[[ $2 =~ $re ]] || return 0
+	line=${BASH_REMATCH[1]}
+	line=${line%%$'\n'*}
+	if [[ $line == *" $1 "* && $line == *" answered: "* ]]; then
+		printf '%s\n' "$line"
 	fi
 }
 
