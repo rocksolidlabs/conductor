@@ -380,9 +380,29 @@ test('with the events stream cut, a question answered and another asked meanwhil
     return route.continue()
   })
   await phone.route('**/api/sessions', (route) => (route.request().method() === 'GET' ? route.abort() : route.continue()))
+  // The page's reads of the inbox, through a gate: closed while the server changes, a read asked meanwhile waits behind it, and a read
+  // already under way (the page's first reads, one queued behind another) is waited out first (inFlight). Without it a read asked
+  // before the change and answered after it shows the change with the stream still cut (#281).
+  let gate: Promise<void> | null = null
+  let open = () => {}
+  let inFlight = 0
+  await phone.route(
+    (u) => u.pathname === '/api/inbox',
+    async (route) => {
+      if (gate) await gate
+      inFlight++
+      try {
+        await route.fulfill({ response: await route.fetch() })
+      } finally {
+        inFlight--
+      }
+    },
+  )
   await phoneAt(phone, '/decisions')
-  budget(1)
+  budget(2)
   await expect(phone.locator(`[data-inbox-row="question:${s.id}/${first}"]`)).toBeVisible()
+  gate = new Promise((resolve) => (open = resolve))
+  await expect.poll(() => inFlight, { timeout: STEP_MS }).toBe(0)
   // Meanwhile on the server: the first answered (the agent works on), another asked; the page, reading nothing, still shows the first.
   await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'working' })
   const second = await ask('Second way?')
@@ -394,11 +414,11 @@ test('with the events stream cut, a question answered and another asked meanwhil
   budget(3, 2 * STEP_MS)
   const reread = phone.waitForRequest((r) => returned && new URL(r.url()).pathname === '/api/inbox', { timeout: 2 * STEP_MS })
   back = true
+  open()
   await reread
   await expect(phone.locator(`[data-inbox-row="question:${s.id}/${second}"]`)).toBeVisible({ timeout: 2 * STEP_MS })
   await expect(phone.locator(`[data-inbox-row="question:${s.id}/${first}"]`)).toHaveCount(0, { timeout: 2 * STEP_MS })
-  await phone.unroute('**/api/events')
-  await phone.unroute('**/api/sessions')
+  await phone.unrouteAll({ behavior: 'ignoreErrors' })
 })
 
 /** Presses lowercase letters in turn as a person does, each handed to the page once it has taken the one before (shortcuts.spec.ts). */
