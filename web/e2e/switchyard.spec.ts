@@ -420,12 +420,14 @@ test("a run decision link through the switchyard: a phone answers a member's que
   const budget = (waits: number, ms = STEP) => test.info().setTimeout(test.info().timeout + waits * ms)
   budget(2)
   const here = dirname(fileURLToPath(import.meta.url))
-  const home4 = join(state.root, 'publisher4-home')
-  const data4 = join(state.root, 'publisher4-data')
-  const repo4 = join(state.root, 'publisher4-repo')
+  // Its own folders each time it runs (a repeat of it included): the scratch repository is made once per folder.
+  const tag = randomBytes(4).toString('hex')
+  const home4 = join(state.root, `publisher4-${tag}-home`)
+  const data4 = join(state.root, `publisher4-${tag}-data`)
+  const repo4 = join(state.root, `publisher4-${tag}-repo`)
   for (const d of [home4, data4, repo4]) mkdirSync(d, { recursive: true })
   scratchRepo(repo4)
-  const config = join(state.root, 'publisher4.json')
+  const config = join(state.root, `publisher4-${tag}.json`)
   renderConfig(join(here, 'conductor.e2e.json'), config)
   publisher = await startServer({
     config,
@@ -433,7 +435,7 @@ test("a run decision link through the switchyard: a phone answers a member's que
     data: data4,
     allowedRoot: state.root,
     defaultCwd: repo4,
-    log: join(state.root, 'publisher4.log'),
+    log: join(state.root, `publisher4-${tag}.log`),
     env: { CONDUCTOR_RENDEZVOUS: '1', CONDUCTOR_RENDEZVOUS_SERVER: syURL, CONDUCTOR_RENDEZVOUS_TOKEN: hostToken, CONDUCTOR_RENDEZVOUS_RELAY_ONLY: '1', CONDUCTOR_RENDEZVOUS_HOST_NAME: 'publisher4' },
   })
   const pub = async <T>(method: string, path: string, body?: unknown): Promise<{ status: number; body: T }> => {
