@@ -316,7 +316,7 @@ func TestHistoryURLsAgreeWithBrakemans(t *testing.T) {
 		t.Errorf("a record's entry: %q", got)
 	}
 	e := newTestEnv(t, nil)
-	av := e.srv.newAvailability(t.Context(), nil)
+	av := e.srv.newAvailability(t.Context(), nil, e.srv.ledger)
 	launch := e.srv.serveEntry(av, history.Entry{Key: "launch:0123456789abcdef", Kind: "launch", Ref: "launch:0123456789abcdef", Ticket: "CND-12", Run: "hist-00000024", At: histNow, Title: "launch"}, "", history.Repeats{}, history.Links{}, false)
 	if launch.URL != "/runs/hist-00000024" || strings.HasPrefix(refURL(ref(t, "launch:0123456789abcdef")), "/api/") == false {
 		t.Errorf("a launch: %q", launch.URL)
@@ -344,7 +344,7 @@ func TestAvailabilityOfASession(t *testing.T) {
 	if a := availOf(hsEntryOf(t, e2, hSessionRef(id))); a["state"] != availRecord {
 		t.Fatalf("after a restart: %v", a)
 	}
-	av := e2.srv.newAvailability(t.Context(), nil)
+	av := e2.srv.newAvailability(t.Context(), nil, e2.srv.ledger)
 	if a := av.session(id, true, history.Entry{Outcome: journal.EndingLost}); a.State != availLost {
 		t.Fatalf("lost: %v", a)
 	}
@@ -371,7 +371,7 @@ func TestAvailabilityOfACheck(t *testing.T) {
 	if a := availOf(hsEntryOf(t, e, hCheckRef("hist-00000025", "build", 1, "unit", 2))); a["state"] != availLogDropped {
 		t.Fatalf("dropped: %v", a)
 	}
-	av := e.srv.newAvailability(t.Context(), nil)
+	av := e.srv.newAvailability(t.Context(), nil, e.srv.ledger)
 	if a := av.check(ref(t, hCheckRef("hist-00000099", "build", 1, "unit", 1)), false); a.State != availPruned {
 		t.Fatalf("pruned: %v", a)
 	}
@@ -830,7 +830,7 @@ func TestTheCommandReaderOpensTheIndexedActorsReceipt(t *testing.T) {
 	ix := histSettle(t, e)
 	h := histEntry(t, ix, "run:"+run.ID+"#command/admin/c1")
 	histGone(t, ix, "run:"+run.ID+"#command/user:u1/c1")
-	served := e.srv.serveEntry(e.srv.newAvailability(t.Context(), ix), h.Entry, "", h.Repeats, h.Links, false)
+	served := e.srv.serveEntry(e.srv.newAvailability(t.Context(), ix, e.srv.ledger), h.Entry, "", h.Repeats, h.Links, false)
 	if served.URL != "/runs/"+run.ID+"?command=c1&actor=admin" {
 		t.Fatalf("the command's URL: %s", served.URL)
 	}
@@ -1331,7 +1331,7 @@ func TestAFailedAvailabilityReadIsUnknown(t *testing.T) {
 	e := newTestEnv(t, nil)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	av := e.srv.newAvailability(ctx, nil)
+	av := e.srv.newAvailability(ctx, nil, e.srv.ledger)
 	defer av.close()
 	if a := av.check(ref(t, hCheckRef("hist-00000032", "build", 1, "unit", 1)), false); a.State != availUnknown {
 		t.Fatalf("a receipt whose rows were not read: %v", a)
@@ -1339,14 +1339,13 @@ func TestAFailedAvailabilityReadIsUnknown(t *testing.T) {
 	if a := av.attempt(ref(t, attemptKey("hist-00000032", "build", 1)), history.Entry{Where: ledger.WhereNative}, false); a.State != availUnknown {
 		t.Fatalf("an attempt whose rows were not read: %v", a)
 	}
-	ld := e.srv.ledger
-	e.srv.ledger = nil
-	t.Cleanup(func() { e.srv.ledger = ld })
-	av = e.srv.newAvailability(t.Context(), nil)
+	// No ledger open: asked of an availability given none, never by
+	// writing the server's field, which its workers read as they run.
+	av = e.srv.newAvailability(t.Context(), nil, nil)
 	if a := av.check(ref(t, hCheckRef("hist-00000032", "build", 1, "unit", 1)), false); a.State != availUnknown {
 		t.Fatalf("a receipt with no ledger open: %v", a)
 	}
-	e.srv.ledger = ld
+	ld := e.srv.ledger
 
 	// The run's folder: a worktree's place that cannot be looked at (a
 	// step of it unreadable) is unknown, one removed is gone; a run whose
@@ -1371,7 +1370,7 @@ func TestAFailedAvailabilityReadIsUnknown(t *testing.T) {
 		return nil
 	})
 	at := func(n int) availabilityOf {
-		av := e.srv.newAvailability(t.Context(), nil)
+		av := e.srv.newAvailability(t.Context(), nil, e.srv.ledger)
 		defer av.close()
 		return av.attempt(ref(t, attemptKey(run, "build", n)), history.Entry{Where: ledger.WhereNative}, false)
 	}
@@ -1396,7 +1395,7 @@ func TestAFailedAvailabilityReadIsUnknown(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(e.srv.cfg.DataDir, "runs", lost+".json"), []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	av = e.srv.newAvailability(t.Context(), nil)
+	av = e.srv.newAvailability(t.Context(), nil, e.srv.ledger)
 	defer av.close()
 	for _, r := range []string{lost, "hist-00000037"} {
 		row := histAttempt("build", 1, ledger.AttemptFailed, "", commitID(0), "")
