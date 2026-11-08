@@ -5,6 +5,9 @@ import {
   DECISION_PAGE,
   DecideCode,
   FrameType,
+  HOST_MAX_DESK_ID,
+  HOST_MAX_LOCAL_ID,
+  HOST_MAX_RUN_ID,
   MAX_DECIDE,
   MAX_DECIDE_IN_FLIGHT,
   MAX_DECISION,
@@ -22,12 +25,15 @@ import {
   encodeDecide,
   encodeJSONFrame,
   goJSONLength,
+  hostDeskLocalId,
   parseJSON,
   type DecideMsg,
   type DecideOkMsg,
   type DecideRefusedMsg,
   type DecisionEvent,
   type DecisionsChangedMsg,
+  type HostRegisterDeskMessage,
+  type HostRunGroup,
   type Welcome,
 } from './protocol'
 
@@ -155,5 +161,19 @@ describe('the decision event', () => {
     }
     expect(new TextEncoder().encode(JSON.stringify(largest)).length).toBeLessThanOrEqual(MAX_DECISION_EVENT)
     expect(MAX_DECISION_EVENT).toBe(256)
+  })
+})
+
+// A run's desk (internal/proto RegisterDesk, RunGroup.Desk; docs/protocol.md, A run's desk): its local id is the run's, and
+// a group may name it with no member yet.
+describe('a run desk', () => {
+  it('registers under the local id of its run and is named by its group', () => {
+    const runId = 'r'.repeat(HOST_MAX_RUN_ID)
+    const m: HostRegisterDeskMessage = { t: 'register_desk', proto: 1, host: { name: 'box', version: 'v', instance: 'i' }, localId: hostDeskLocalId(runId), run: { id: runId, name: 'Run' } }
+    expect(m.localId).toBe(`desk:${runId}`)
+    // The desk's local id is checked as the run's, not against a session's local id bound, which it may pass.
+    expect(m.localId.length).toBeGreaterThan(HOST_MAX_LOCAL_ID)
+    const g: HostRunGroup = { id: runId, name: 'Run', members: [], desk: 'd'.repeat(HOST_MAX_DESK_ID) }
+    expect(JSON.parse(JSON.stringify(g)).desk).toHaveLength(64)
   })
 })

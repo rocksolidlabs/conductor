@@ -884,6 +884,10 @@ type HostedSession struct {
 	// it and tells it back: with info.Kept, the host's one snapshot
 	// (HostView). Guarded by mu.
 	reported session.Attention
+	// desk is the run a desk carries (desk.go), "" for a session; place
+	// its place among the registry's sessions while it lives.
+	desk  string
+	place *session.Reservation
 }
 
 // Owner is the hash of the host instance that registered the session, "" when none.
@@ -1345,6 +1349,10 @@ func OptionsFromProto(in []proto.AttentionOption) []session.Option {
 }
 
 func (h *HostedSession) notifyChange() {
+	// A desk is no session anyone lists: nothing of it is told.
+	if h.desk != "" {
+		return
+	}
 	if h.hub != nil && h.hub.OnChange != nil {
 		h.hub.OnChange(h.Info())
 	}
@@ -1695,12 +1703,14 @@ func (h *HostedSession) RelayToHost(v *Viewer, inner proto.Frame) error {
 	}
 	if v.Role != session.RoleControl {
 		switch inner.Type {
-		case proto.TypeInput, proto.TypeFileWrite:
+		case proto.TypeInput, proto.TypeFileWrite, proto.TypeDecide:
 			return session.ErrReadOnly
 		case proto.TypeControl:
 			// A chat post passes for every role (the host refuses one that is
-			// also for the agent); typing a message into the agent does not.
-			if t, _ := proto.ParseHeader(inner.Payload); t == proto.CtlResize || t == proto.CtlSubmit || t == proto.CtlAnswer || t == proto.CtlChatSend || t == proto.CtlNvimOpen || t == proto.CtlNvimInput || t == proto.CtlNvimClose || t == proto.CtlNvimSwap {
+			// also for the agent); typing a message into the agent does not,
+			// nor any of a decision link's lane, which only a control link
+			// can be.
+			if t, _ := proto.ParseHeader(inner.Payload); t == proto.CtlResize || t == proto.CtlSubmit || t == proto.CtlAnswer || t == proto.CtlChatSend || t == proto.CtlNvimOpen || t == proto.CtlNvimInput || t == proto.CtlNvimClose || t == proto.CtlNvimSwap || laneRequest(t) {
 				return session.ErrReadOnly
 			}
 		}

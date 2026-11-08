@@ -27,16 +27,7 @@ func TestDecisionFrameBounded(t *testing.T) {
 	if err != nil || f[0] != TypeDecision {
 		t.Fatalf("a small decision: %v %x", err, f[:1])
 	}
-	// A relay does not carry the lane yet, either way: the switchyard's
-	// side is PR-6's, and until then both frames are refused in an
-	// envelope as any type it does not carry is.
-	for _, typ := range []byte{TypeDecision, TypeDecide} {
-		inner := Encode(typ, []byte(`{}`))
-		env, _ := EncodeRelay(strings.Repeat("v", ViewerIDLen), inner)
-		if _, _, err := DecodeRelay(env[1:]); !errors.Is(err, ErrBadEnvelope) {
-			t.Fatalf("a relayed 0x%02x: %v", typ, err)
-		}
-	}
+	// A relay carries both frames (TestRelayCarriesDecisionFrames, desk_test.go).
 	// A DECIDE at its bound and one byte past it.
 	if _, err := Decode(Encode(TypeDecide, make([]byte, MaxDecide))); err != nil {
 		t.Fatalf("a decide at its bound: %v", err)
