@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import type { AgentInfo } from '~/composables/useSessions'
 import type { BrakemanConfig, BrakemanScope, BrakemanVisibility } from '~/utils/brakeman'
-import { BOUNDS, BRAKEMAN_ADAPTERS, GRANTS, agentChoice, agentIdOf, agentItems as agentChoices, briefingLine, briefingList, configProblems, formField, formMove, sameConfig, grantHeld, observesOnly, scopeLines, scopeList, servedGrants, withGrant } from '~/utils/brakeman'
+import { BOUNDS, BRAKEMAN_ADAPTERS, GRANTS, agentChoice, agentIdOf, agentItems as agentChoices, briefingLine, briefingList, configProblems, formField, sameConfig, grantHeld, observesOnly, scopeLines, scopeList, servedGrants, withGrant } from '~/utils/brakeman'
 import { ApiError } from '~/composables/useApi'
 import { SETTINGS_FIELD_UI as fieldUi } from '~/utils/settingsSections'
-import type { BrakemanPart } from '~/utils/settingsSave'
+import { followSaved, formMove, type BrakemanPart } from '~/utils/settingsSave'
 
 /**
  * Brakeman's card in Settings (docs/plans/brakeman.md, PR-6): its configuration, saved on the server (PUT /api/brakeman/config, at
@@ -41,6 +41,8 @@ const form = ref<BrakemanConfig | null>(null)
 const base = ref<BrakemanConfig | null>(null)
 /** The store's generation the form was set under: a reset (a new token, perhaps another server) leaves it another token's. */
 const formGen = ref(-1)
+/** What this form's save sent, while it is out: the form is then answered by that save alone (utils/settingsSave.ts, the one rule). */
+const sending = ref<BrakemanConfig | null>(null)
 const scopeText = reactive<Record<keyof BrakemanScope, string>>({ projects: '', repos: '', crews: '', runs: '', sessions: '' })
 /** The briefing times as the form's field holds them, comma or space apart. */
 const briefingText = ref('')
@@ -98,11 +100,12 @@ const edited = computed(() => !!base.value && !!body.value && !sameConfig(body.v
 
 // The form follows the configuration saved until it is changed here: a save from elsewhere replaces a form left untouched, and
 // leaves one being edited as it is (its save then meets the newer revision and is refused stale). A form set under the token
-// before is never kept (formMove): the new server's revision may be the same number as the one it was read at.
+// before is never kept (formMove): the new server's revision may be the same number as the one it was read at. While the form's own
+// save is out, that save's answer decides (send), never this watcher.
 watch(
   () => [bk.generation.value, saved.value?.rev],
   () => {
-    const move = formMove(form.value ? { gen: formGen.value, edited: edited.value } : null, bk.generation.value, !!saved.value)
+    const move = formMove(form.value ? { gen: formGen.value, edited: edited.value, saving: !!sending.value } : null, bk.generation.value, !!saved.value)
     if (move === 'set') reset(saved.value!)
     else if (move === 'drop') {
       form.value = null
@@ -178,14 +181,21 @@ function take(): BrakemanPart | null {
 async function send(c: BrakemanConfig, gen: number) {
   if (bk.generation.value !== gen) throw new Error("The token changed before the save was sent: the configuration shown is this server's.")
   serverError.value = null
+  sending.value = c
   try {
     const out = await bk.saveConfig(c)
-    // What was typed while the save was out is kept for the next Save, against the revision saved now.
-    if (body.value && !sameConfig(body.value, c) && form.value) {
+    // What was typed while the save was out is kept for the next Save, against the revision saved now (followSaved): a field
+    // changed back to what it was read as among them. The rest follows what was saved.
+    const now = body.value ? (JSON.parse(JSON.stringify(body.value)) as BrakemanConfig) : null
+    if (!form.value || !now) reset(out.config)
+    else {
+      const followed = followSaved(form.value, c, out.config, now)
+      if (followed.includes('scope')) for (const k of Object.keys(scopeText) as Array<keyof BrakemanScope>) scopeText[k] = scopeLines(form.value.scope[k])
+      if (followed.includes('wake')) briefingText.value = briefingLine(form.value.wake.briefings)
       base.value = JSON.parse(JSON.stringify(out.config)) as BrakemanConfig
-      form.value.rev = out.config.rev
       stale.value = false
-    } else reset(out.config)
+      staleError.value = ''
+    }
   } catch (e) {
     // Answered after a new token: the form is this server's now (formMove), and the answer is the token before's.
     if (bk.generation.value !== gen) throw e
@@ -198,6 +208,8 @@ async function send(c: BrakemanConfig, gen: number) {
     const field = e instanceof ApiError && typeof e.details.field === 'string' ? e.details.field : undefined
     serverError.value = { field, message: (e as Error).message }
     throw e
+  } finally {
+    sending.value = null
   }
 }
 /**

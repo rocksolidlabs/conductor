@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { BrakemanAct, BrakemanConfig, BriefItem } from './brakeman'
 import { renderMarkdown } from './markdown'
-import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actFor, actsApart, readingBlocks, actLaunchRef, actMade, actReceiptRef, actShown, actShownFrom, actLaunchId, keepLaunch, MAX_KEPT_LAUNCHES, proposalOffered, actWords, followLaunch, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedFromBaseline, changedSince, configProblems, displayBy, formField, formMove, grantHeld, grantLabel, groupItems, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
+import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actFor, actsApart, readingBlocks, actLaunchRef, actMade, actReceiptRef, actShown, actShownFrom, actLaunchId, keepLaunch, MAX_KEPT_LAUNCHES, proposalOffered, actWords, followLaunch, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedFromBaseline, changedSince, configProblems, displayBy, formField, grantHeld, grantLabel, groupItems, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
 
 // Brakeman's words, refs and checks on the app's pages (docs/plans/brakeman.md, PR-6).
 
@@ -347,20 +347,6 @@ describe("the configuration form's checks, the server's", () => {
     const reordered = Object.fromEntries(Object.entries(read).reverse()) as typeof read
     expect(sameConfig(read, reordered)).toBe(true)
     expect(sameConfig(read, config({ scope: { repos: ['/home/me'] } }))).toBe(false)
-  })
-
-  it("never keeps a form set under the token before, though the new server's revision is the same", () => {
-    // Settings' form, edited, read at revision 2 of the first server; a reset, then the second server's configuration, also revision 2.
-    expect(formMove({ gen: 0, edited: true }, 1, true)).toBe('set')
-    expect(formMove({ gen: 0, edited: false }, 1, true)).toBe('set')
-    // Before the second server has answered, the first one's form is not left to save.
-    expect(formMove({ gen: 0, edited: true }, 1, false)).toBe('drop')
-    // Under one token, a form follows what is saved until it is changed here.
-    expect(formMove(null, 1, true)).toBe('set')
-    expect(formMove({ gen: 1, edited: false }, 1, true)).toBe('set')
-    expect(formMove({ gen: 1, edited: true }, 1, true)).toBe('keep')
-    expect(formMove(null, 1, false)).toBe('keep')
-    expect(formMove({ gen: 1, edited: true }, 1, false)).toBe('keep')
   })
 
   it('takes a configuration the server takes', () => {

@@ -3,7 +3,7 @@ import { pickerStart, type PickerField } from '~/utils/dirPicker'
 import type { AgentInfo, ReachInfo } from '~/composables/useSessions'
 import { identity, notInstalledBadge } from '~/utils/agents'
 import { plainCopy, switchyardProblem, type DesktopIceStatus, type DesktopSettings } from '~/utils/desktop'
-import { followSaved, holds, saveParts, saveWords, together, type BrakemanPart, type SaveOutcome } from '~/utils/settingsSave'
+import { followSaved, holds, holdsFields, saveParts, saveWords, together, type BrakemanPart, type SaveOutcome } from '~/utils/settingsSave'
 import { SETTINGS_FIELD_UI, sectionFromQuery, sectionInView, shownSections, type SectionBox, type SettingsSectionId } from '~/utils/settingsSections'
 
 // The desktop app's settings: what its shell starts the server with. In a
@@ -23,6 +23,11 @@ const navbarButtonUi = { label: 'hidden sm:inline' }
 const settings = ref<DesktopSettings | null>(null)
 const form = reactive<DesktopSettings>({ dataDir: '', allowedRoots: [], defaultCwd: '', yolo: false, reach: 'auto', closeToTray: true, wslDistro: '', wslWindowsHome: false, switchyardEnabled: true, switchyardServer: '', switchyardToken: '', switchyardName: '' })
 const saving = ref(false)
+/**
+ * The page's fields are held while a save that sends the app's settings is out (holdsFields): the app may answer it by loading the
+ * page on the restarted server's port, where nothing typed meanwhile could follow (#707's review).
+ */
+const holding = ref(false)
 const error = ref('')
 const reach = ref<ReachInfo | null>(null)
 /** Windows: what the app forwards for WebRTC from WSL (null elsewhere). */
@@ -118,6 +123,7 @@ async function save() {
   }
   // Taken at once, before anything is awaited, so the button and the guard above hold from the first click (#433's review).
   saving.value = true
+  holding.value = holdsFields(sent)
   // What this page can tell on its own, for an app that cannot say what became
   // of the save (older apps): taken before the save, since once the saved
   // settings are copied into the form nothing differs any more (#214).
@@ -158,6 +164,7 @@ async function save() {
     if (out.app === 'saved' || out.app === 'restarted') await load()
   } finally {
     saving.value = false
+    holding.value = false
   }
 }
 
@@ -412,7 +419,8 @@ usePalette().registerPage(() => {
             @click="scrollToSection(s.id)"
           />
         </nav>
-        <div class="@container flex min-w-0 flex-1 flex-col gap-5" data-settings-sections>
+        <!-- A fieldset, so a save that may move the page holds every field of the sections at once (holding). -->
+        <fieldset :disabled="holding" class="@container m-0 flex min-w-0 flex-1 flex-col gap-5 border-0 p-0" data-settings-sections>
         <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" data-settings-error />
         <UAlert
           v-if="desktop.serverState.value"
@@ -517,7 +525,7 @@ usePalette().registerPage(() => {
         <AboutCard :versions="versions" :class="sectionClass" data-settings-section="app">
           <USwitch v-model="form.closeToTray" label="Closing the window keeps Conductor in the tray; the server goes on" data-tray-switch />
         </AboutCard>
-        </div>
+        </fieldset>
 
         <DirPickerModal v-if="picker" v-model:open="pickerOpen" :start="picker.start" :title="picker.title" anywhere :roots="form.allowedRoots" :expect="picker.expect" @pick="onPick" />
       </div>

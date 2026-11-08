@@ -87,17 +87,91 @@ export function together(before: DesktopSettings, next: DesktopSettings, brakema
   if (brakeman.cwdChanged && changed('allowedRoots')) {
     return "Brakeman's folder is checked against the allowed roots the server has now, and this Save changes them: save the allowed roots alone first, then Brakeman's folder"
   }
+  // The Windows profile under /mnt is a root of its own on WSL (the launcher adds it), though it is not in the list (#707's review).
+  if (brakeman.cwdChanged && changed('wslWindowsHome')) {
+    return "Brakeman's folder is checked against the roots the server allows now, and this Save adds or takes away your Windows profile under /mnt among them: save that switch alone first, then Brakeman's folder"
+  }
   return ''
 }
 
-/**
- * The form after a save of `sent` answered `now`: a field still holding what was sent (or, before anything was read, every field)
- * follows what the app holds now; a field changed while the save was out keeps its edit, for the next Save.
+/*
+ * What answers the person's edits: the page's one rule, for both parts of its form (#707's review). What the person typed after the
+ * click is theirs: a save's answer, a re-read the configuration's watcher makes and a reply that arrives late never write over it.
+ * Each path that answers a form goes through this rule:
+ *
+ * - a save's answer (`followSaved`): the fields still holding what was sent follow what was saved; a field changed since the click
+ *   keeps its edit, for the next Save, even when it was changed back to what it was before;
+ * - a save the app answers by moving the page (`holdsFields`): the app may restart the server and load this page on the new one's
+ *   port, another origin, where nothing typed meanwhile could follow, so the page's fields are held from the click until it answers;
+ * - the configuration saved moving under the form (`formMove`): a form of this token's follows it until it is changed here, and
+ *   never while its own save is out, whose answer decides;
+ * - a reply that arrives after one asked later (`ReplyOrder`): it is dropped, so the store never goes back to an older read.
  */
-export function followSaved<T extends object>(form: T, sent: T | null, now: T): void {
-  for (const k of Object.keys(now) as Array<keyof T>) {
-    if (!sent || JSON.stringify(form[k]) === JSON.stringify(sent[k])) form[k] = now[k]
+
+/**
+ * The form after a save of `sent` answered `now`: a field whose value `current` (the form as it is, by default the form itself)
+ * still holds what was sent (or, before anything was read, every field) follows what is saved now, a copy of it; a field changed
+ * while the save was out keeps its edit, for the next Save. Returns the fields that followed.
+ */
+export function followSaved<T extends object>(form: T, sent: T | null, now: T, current: T = form): Array<keyof T> {
+  const followed: Array<keyof T> = []
+  const keys = new Set([...Object.keys(now), ...(sent ? Object.keys(sent) : [])]) as Set<keyof T>
+  for (const k of keys) {
+    if (sent && stable(current[k]) !== stable(sent[k])) continue
+    form[k] = (now[k] === undefined ? undefined : JSON.parse(JSON.stringify(now[k]))) as T[keyof T]
+    followed.push(k)
   }
+  return followed
+}
+
+/** Whether a save holds the page's fields until it is answered: one that sends the app's settings, which the app may answer by moving the page. */
+export function holdsFields(app: DesktopSettings | null): boolean {
+  return app !== null
+}
+
+/**
+ * What Settings' Brakeman form does when the token or the configuration saved moves: `set` it from the configuration saved, `drop`
+ * it, or `keep` it. A form set under another token (the store's generation, which a reset moves) is never kept, edited or not: the
+ * server may be another one, whose revision 2 is not the revision the form was read at, so its settings would be saved over
+ * another's. A form of this token's follows the configuration saved until it is changed here, and is kept while its own save is out
+ * (`saving`): the store takes that save's answer before the form does, and a form changed back meanwhile to what it was set from
+ * would otherwise be set from it, its edit lost (#707's review); the save's answer follows it (`followSaved`).
+ */
+export function formMove(form: { gen: number; edited: boolean; saving?: boolean } | null, gen: number, saved: boolean): 'set' | 'drop' | 'keep' {
+  if (form && form.gen !== gen) return saved ? 'set' : 'drop'
+  if (!saved || form?.saving) return 'keep'
+  return !form || !form.edited ? 'set' : 'keep'
+}
+
+/**
+ * The order of the replies to one kind of read (Brakeman's state, its configuration among it): each request takes a number as it is
+ * asked (`ask`), and its reply is taken (`take` true) only when no request asked after it has had its reply taken. A reply that
+ * arrives after a later one's is older than what is held, and is dropped.
+ */
+export class ReplyOrder {
+  private asked = 0
+  private taken = 0
+  ask(): number {
+    return ++this.asked
+  }
+  take(n: number): boolean {
+    if (n < this.taken) return false
+    this.taken = n
+    return true
+  }
+}
+
+/** JSON with every object's keys in order, so two values are compared by what they hold. */
+function stable(v: unknown): string | undefined {
+  if (Array.isArray(v)) return `[${v.map((x) => stable(x) ?? 'null').join(',')}]`
+  if (v && typeof v === 'object') {
+    return `{${Object.entries(v as Record<string, unknown>)
+      .filter(([, x]) => x !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([k, x]) => `${JSON.stringify(k)}:${stable(x)}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(v)
 }
 
 /** What the page says of a save: which part was saved and which was not, and that the edits are kept. */

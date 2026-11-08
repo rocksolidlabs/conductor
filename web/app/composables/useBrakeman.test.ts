@@ -821,15 +821,44 @@ describe('the makes kept, across a new token', () => {
       answers.push(() => Promise.resolve(stateOf(conf({ rev: 9 }))))
       expect((await bk.readConfig(bk.generation.value)).rev).toBe(9)
       expect(bk.state.value?.config.rev).toBe(9)
-      // The older read answers after it: the store reads once more, so it ends on what is saved now, never on the older answer.
-      answers.push(() => Promise.resolve(stateOf(conf({ rev: 9 }))))
+      // The older read answers after it (Codex's second round): it is dropped as it comes, asked before the read the store holds, so
+      // the store ends on what is saved now with no read after it to repair it, and with one that would fail.
       older(() => Promise.resolve(stateOf(conf({ rev: 8 }))))
       await out
       expect(bk.state.value?.config.rev).toBe(9)
-      expect(sent.map((x) => x.path)).toEqual(['/api/brakeman', '/api/brakeman', '/api/brakeman'])
+      expect(sent.map((x) => x.path)).toEqual(['/api/brakeman', '/api/brakeman'])
       // A read that fails says so: the choice keeps the form and the refusal.
       answers.push(() => Promise.reject(new ApiError(0, 'network', 'Cannot reach the server')))
       await expect(bk.readConfig(bk.generation.value)).rejects.toThrow('Cannot reach the server')
+      expect(bk.state.value?.config.rev).toBe(9)
+    })
+
+    it('answers with the newer configuration when a read asked after it was taken first, and a save is never undone by a read asked before it', async () => {
+      const bk = useBrakeman()
+      const live = brakemanLive()
+      answers.push(() => Promise.resolve(stateOf(conf({ rev: 3 }))))
+      await live.readState()
+      // The choice's read out, then a read of the state asked after it and answered first: the choice is answered with the newer.
+      const mine = held()
+      const read = bk.readConfig(bk.generation.value)
+      answers.push(() => Promise.resolve(stateOf(conf({ rev: 5 }))))
+      await live.readState()
+      mine(() => Promise.resolve(stateOf(conf({ rev: 4 }))))
+      expect((await read).rev).toBe(5)
+      expect(bk.state.value?.config.rev).toBe(5)
+      // A read of the state out, then a save: the read answers after the save, with what was saved before it, and is dropped.
+      const before = held()
+      const out = live.readState()
+      const saving = held()
+      const save = bk.saveConfig(conf({ rev: 5, cwd: '/saved' }))
+      // The read the save asks after it fails: nothing repairs the store but the order its replies are taken in.
+      answers.push(() => Promise.reject(new ApiError(0, 'network', 'Cannot reach the server')))
+      saving(() => Promise.resolve({ config: conf({ rev: 6, cwd: '/saved' }) }))
+      await save
+      expect(bk.state.value?.config).toMatchObject({ rev: 6, cwd: '/saved' })
+      before(() => Promise.resolve(stateOf(conf({ rev: 5 }))))
+      await out
+      expect(bk.state.value?.config).toMatchObject({ rev: 6, cwd: '/saved' })
     })
   })
 })

@@ -1,6 +1,7 @@
 import type { BrakemanBrief, BrakemanConfig, BrakemanRequest, BrakemanRole, BrakemanState, RefResolution, RoleLogRow } from '../utils/brakeman'
 import { closed, keptBrief, openedMark, requestNumber, stateRank, stopAction, unopened } from '../utils/brakeman'
 import { dropKeptMake, readKeptMakes, reconcileActs, reconcileMade, sendKept, storeKeptMake, type KeptMake } from '../utils/brakemanCards'
+import { ReplyOrder } from '../utils/settingsSave'
 import { mintCommandId } from '../utils/tasks'
 import { ApiError } from './useApi'
 import type { DispatchWatch } from './useDispatchLive'
@@ -69,6 +70,11 @@ export class BrakemanLive {
   private reads: BrakemanReads | undefined
   private stateBusy = false
   private stateAgain = false
+  /**
+   * The order the state's reads and the configuration's saves were asked in: a reply is taken only when none asked after it was taken
+   * (utils/settingsSave.ts, the one rule), so a read sent before a fresh one, answered after it, never takes the store back.
+   */
+  private stateOrder = new ReplyOrder()
   /** Whether pages after the first were read: `next` is then theirs. */
   private paged = false
   /** The number of the newest request the pages read hold (the first page's newest as it was read), 0 before one. */
@@ -262,13 +268,16 @@ export class BrakemanLive {
       do {
         this.stateAgain = false
         try {
+          const n = this.stateOrder.ask()
           const s = await this.reads.state()
           if (at !== this.gen) return
-          this.state = s
-          this.available = true
-          this.problem = ''
-          if (s.current) this.apply(s.current)
-          for (const q of s.queue) this.apply(q)
+          if (this.stateOrder.take(n)) {
+            this.state = s
+            this.available = true
+            this.problem = ''
+            if (s.current) this.apply(s.current)
+            for (const q of s.queue) this.apply(q)
+          }
         } catch (e) {
           if (at !== this.gen) return
           this.unavailable(e)
@@ -281,18 +290,30 @@ export class BrakemanLive {
     }
   }
 
+  /** A number for a read of the state, or a save of the configuration, asked on its own (readConfig, saveConfig): its reply's order. */
+  askState(): number {
+    return this.stateOrder.ask()
+  }
+
   /**
-   * Takes a state read on its own (the composable's readConfig, whose caller checked the generation): a read of the state already
-   * out may have been sent before it, so that read goes once more after it, and the state the store ends on is never the older one.
+   * Takes a state read on its own (the composable's readConfig, whose caller checked the generation), asked as `n`: unless a reply
+   * asked after it was taken first, whose state is the newer. A read of the state already out, asked before it, is then dropped as
+   * it comes (readState), so the store never ends on the older answer. Whether it was taken.
    */
-  takeState(s: BrakemanState) {
+  takeState(s: BrakemanState, n: number): boolean {
+    if (!this.stateOrder.take(n)) return false
     this.state = s
     this.available = true
     this.problem = ''
     if (s.current) this.apply(s.current)
     for (const q of s.queue) this.apply(q)
-    if (this.stateBusy) this.stateAgain = true
     this.changed()
+    return true
+  }
+
+  /** Takes a save's answer, asked as `n` (saveConfig, whose caller checked the generation), on the same terms as takeState. */
+  takeConfig(out: { config: BrakemanConfig; warnings?: string[] }, n: number) {
+    if (this.state && this.stateOrder.take(n)) this.state = { ...this.state, config: out.config, warnings: out.warnings }
   }
 
   private unavailable(e: unknown) {
@@ -511,9 +532,10 @@ export function useBrakeman() {
    */
   async function saveConfig(config: BrakemanConfig) {
     const at = store.generation
+    const n = store.askState()
     const out = await request<{ config: BrakemanConfig; warnings?: string[] }>('/api/brakeman/config', { method: 'PUT', body: { rev: config.rev, config } })
     if (store.generation !== at) throw new Error("The token changed before the save was answered: the configuration shown is this server's.")
-    if (store.state) store.state = { ...store.state, config: out.config, warnings: out.warnings }
+    store.takeConfig(out, n)
     version.value++
     void store.readState()
     return out
@@ -522,15 +544,16 @@ export function useBrakeman() {
   /**
    * The configuration saved now, read fresh for a choice made under the store's generation `at` (Settings' stale refusal): a read of
    * its own, never folded into one already out (which may have been sent before the save it answers) nor swallowed when it fails,
-   * and taken by the store. Refused when the token moved before it was asked or before it was answered: the reply is the form's
-   * that asked, and a new token's form is another server's (#707's review).
+   * and taken by the store unless a read asked after it was taken first, whose configuration is then the one answered. Refused when
+   * the token moved before it was asked or before it was answered: the reply is the form's that asked, and a new token's form is
+   * another server's (#707's review).
    */
   async function readConfig(at: number): Promise<BrakemanConfig> {
     if (store.generation !== at) throw new Error(TOKEN_MOVED_READ)
+    const n = store.askState()
     const s = await request<BrakemanState>('/api/brakeman')
     if (store.generation !== at) throw new Error(TOKEN_MOVED_READ)
-    store.takeState(s)
-    return s.config
+    return store.takeState(s, n) ? s.config : (store.state?.config ?? s.config)
   }
 
   /** Asks Brakeman: the request kept (201) or the one this id asked already (200). */

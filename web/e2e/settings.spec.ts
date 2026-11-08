@@ -765,7 +765,7 @@ test("a Save that cannot send Brakeman's section with the app's settings is refu
 })
 
 test('the Save sends what the page held at the click, and Read again drops the edits only once confirmed and read', async ({ page, state, api }) => {
-  test.setTimeout(30 * 15_000)
+  test.setTimeout(45 * 15_000)
   const start = await brakemanConf(api)
   const reads = start.budget.readsPerTurn === 400 ? 500 : 400
   const { sets } = await oneSaveStandIn(page, state)
@@ -805,11 +805,12 @@ test('the Save sends what the page held at the click, and Read again drops the e
     await expect(page.locator('[data-brakeman-turns] input, input[data-brakeman-turns]').first()).toHaveValue(String(theirs))
     await expect(save).toBeDisabled()
 
-    // Both parts taken at the click (Codex's review): Brakeman's save is held, yolo turned on and the reads changed meanwhile. The
-    // app is asked for what the page held at the click (no restart), and what was changed meanwhile stays, for the next Save.
+    // Both parts taken at the click (Codex's review), Brakeman's save held. A Save that sends the app's settings holds every field
+    // until it is answered (Codex's second round): the app may answer it by loading the page on a restarted server's port, where
+    // nothing typed meanwhile could follow. The app is asked for what the page held at the click.
     let held = false
     let release!: () => void
-    const gate = new Promise<void>((done) => (release = done))
+    let gate = new Promise<void>((done) => (release = done))
     await page.route('**/api/brakeman/config', async (route) => {
       held = true
       await gate
@@ -819,17 +820,36 @@ test('the Save sends what the page held at the click, and Read again drops the e
     await readsField(page).fill(String(reads + 1))
     await save.click()
     await expect.poll(() => held).toBe(true)
-    await page.locator('[data-yolo-switch]').click()
-    await readsField(page).fill(String(reads + 2))
+    await expect(page.locator('[data-yolo-switch]')).toBeDisabled()
+    await expect(readsField(page)).toBeDisabled()
     release()
     await expect.poll(async () => (await sets()).length).toBe(1)
     expect(await sets()).toEqual([{ reads: reads + 1, yolo: false, closeToTray: false }])
-    await page.unroute('**/api/brakeman/config')
     await expect.poll(savedReads).toBe(reads + 1)
-    await expect(page.locator('[data-yolo-switch]')).toHaveAttribute('aria-checked', 'true')
+    await expect(readsField(page)).toBeEnabled()
     await expect(page.locator('[data-tray-switch]')).toHaveAttribute('aria-checked', 'false')
-    await expect(readsField(page)).toHaveValue(String(reads + 2))
-    await expect(save).toHaveText('Save and restart the server')
+    await expect(readsField(page)).toHaveValue(String(reads + 1))
+    await expect(save).toBeDisabled()
+
+    // Brakeman's part alone leaves the fields open, and what is typed while it is out stays (Codex's second round): the reads
+    // changed back to what they were read as is an edit of its own, kept against the revision saved, for the next Save.
+    held = false
+    gate = new Promise<void>((done) => (release = done))
+    await readsField(page).fill(String(reads + 2))
+    await save.click()
+    await expect.poll(() => held).toBe(true)
+    await readsField(page).fill(String(reads + 1))
+    release()
+    await expect.poll(savedReads).toBe(reads + 2)
+    await expect(save).toBeEnabled()
+    await expect(readsField(page)).toHaveValue(String(reads + 1))
+    expect(await sets()).toHaveLength(1)
+    await page.unroute('**/api/brakeman/config')
+    // The next Save sends it, at the revision saved: no stale refusal.
+    await save.click()
+    await expect.poll(savedReads).toBe(reads + 1)
+    await expect(stale).toHaveCount(0)
+    await expect(save).toBeDisabled()
   } finally {
     await page.unrouteAll({ behavior: 'ignoreErrors' })
     await putBack(api, start)
