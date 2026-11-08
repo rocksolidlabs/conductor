@@ -278,22 +278,26 @@ func sendReview(ctx context.Context, c *apiClient, path string, body any) (revie
 }
 
 // dispatchReview sends a review of the ticket's candidate, its base the
-// run's (the diff route's default) unless one was given, and prints what
-// became of it.
+// run's unless one was given, and prints what became of it. The run's
+// base is read from the run's candidates of the task (the ledger's run
+// row, no git): the review route takes what the ledger holds, and so its
+// default is read from where the ledger is answered, never from the diff,
+// which needs the run's repository and a whole comparison. A request for
+// changes that Yardmaster refused exits 1, its words and the retry named.
 func dispatchReview(ctx context.Context, c *apiClient, key string, rv dispatch.NewReview, cont, readBase bool, stdout io.Writer) (int, error) {
 	if readBase {
 		cand, _ := dispatch.ParseCandidate(rv.Candidate)
-		var diff struct {
+		var page struct {
 			Base string `json:"base"`
 		}
-		path := "/api/runs/" + url.PathEscape(cand.Run) + "/tasks/" + url.PathEscape(cand.Task) + "/attempts/" + strconv.Itoa(cand.Attempt) + "/diff"
-		if err := c.doLimit(ctx, http.MethodGet, path, nil, &diff, maxDispatchReply); err != nil {
-			return 1, fmt.Errorf("the run's base, from %s's diff: %w", cand.Name(), err)
+		path := "/api/runs/" + url.PathEscape(cand.Run) + "/candidates?task=" + url.QueryEscape(cand.Task)
+		if err := c.doLimit(ctx, http.MethodGet, path, nil, &page, maxDispatchReply); err != nil {
+			return 1, fmt.Errorf("the run's base, from run %s's candidates: %w", cand.Run, err)
 		}
-		if !commitPattern.MatchString(diff.Base) {
-			return 1, fmt.Errorf("the run's base, from %s's diff: %q is no commit", cand.Name(), oneLine(diff.Base))
+		if !commitPattern.MatchString(page.Base) {
+			return 1, fmt.Errorf("the run's base, from run %s's candidates: %q is no commit: give the base with --base", cand.Run, oneLine(page.Base))
 		}
-		rv.Base = diff.Base
+		rv.Base = page.Base
 	}
 	body := struct {
 		OpID string `json:"opId"`
@@ -308,11 +312,11 @@ func dispatchReview(ctx context.Context, c *apiClient, key string, rv dispatch.N
 		return 1, err
 	}
 	printReviewReply(stdout, key, "", out)
-	return 0, nil
+	return refusedExit(out)
 }
 
 // dispatchReviewRetry is Request again: a refused request for changes
-// applied as its next try.
+// applied as its next try; refused again, it exits 1 as a review does.
 func dispatchReviewRetry(ctx context.Context, c *apiClient, id string, cont bool, stdout io.Writer) (int, error) {
 	body := map[string]any{"opId": newOpID()}
 	if cont {
@@ -326,7 +330,18 @@ func dispatchReviewRetry(ctx context.Context, c *apiClient, id string, cont bool
 		return 1, err
 	}
 	printReviewReply(stdout, "", " sent again", out)
-	return 0, nil
+	return refusedExit(out)
+}
+
+// refusedExit is a review's write's exit: 1 when Yardmaster refused the
+// request for changes (recorded, not applied), with the refusal's words
+// and how to ask again; 0 otherwise.
+func refusedExit(out reviewReply) (int, error) {
+	v := out.Review
+	if v == nil || v.Application.State != dispatch.ApplicationRefused {
+		return 0, nil
+	}
+	return 1, fmt.Errorf("refused: review %s is recorded, but Yardmaster did not apply it: %s; conductor dispatch review retry %s asks again", oneLine(v.ID), oneLine(v.Application.Why), oneLine(v.ID))
 }
 
 // printReviewReply prints a review's write's reply: the review and what
@@ -456,7 +471,8 @@ func dispatchReviewShow(ctx context.Context, c *apiClient, id string, stdout io.
 }
 
 // writeFinding prints a finding's line, its words and the resolution
-// asked for.
+// asked for; a check finding's class the reviewer chose and what they
+// quoted of its output, each said as theirs beside the server's class.
 func writeFinding(w io.Writer, f dispatch.Finding) {
 	kind := oneLine(f.Intent)
 	if f.Severity != "" {
@@ -469,20 +485,49 @@ func writeFinding(w io.Writer, f dispatch.Finding) {
 	if r := strings.TrimSpace(f.Resolution); r != "" {
 		fmt.Fprintf(w, "  asked: %s\n", oneLine(r))
 	}
+	if ck := f.Check; ck != nil {
+		if ck.Class != "" || ck.Chosen != "" {
+			fmt.Fprintf(w, "  class: %s\n", checkClassWords(*ck))
+		}
+		if q := strings.TrimRight(ck.Quote, "\n"); strings.TrimSpace(q) != "" {
+			fmt.Fprintln(w, "  quoted by the reviewer:")
+			for _, l := range strings.Split(q, "\n") {
+				fmt.Fprintf(w, "    | %s\n", oneLine(l))
+			}
+		}
+	}
+}
+
+// checkClassWords is a check finding's class: the server's, from the
+// receipt, and the one the reviewer chose when they chose one.
+func checkClassWords(ck dispatch.CheckRef) string {
+	var parts []string
+	if ck.Class != "" {
+		parts = append(parts, oneLine(ck.Class)+" (the server's, from the receipt)")
+	}
+	if ck.Chosen != "" {
+		parts = append(parts, oneLine(ck.Chosen)+" (the reviewer's)")
+	}
+	return strings.Join(parts, "; ")
 }
 
 // findingWhere says where a finding is: a path's lines on a side, a whole
-// file, a check's receipt, or the candidate as a whole.
+// file on a side, each at the commit it was anchored to when the server
+// gave one, a check's receipt, or the candidate as a whole.
 func findingWhere(f dispatch.Finding) string {
+	on := oneLine(cmp.Or(f.Side, dispatch.SideCandidate)) + " side"
+	if f.AnchorCommit != "" {
+		on += ", at " + short(oneLine(f.AnchorCommit))
+	}
 	switch f.Kind {
 	case dispatch.FindingKindLine:
 		lines := strconv.Itoa(f.From)
 		if f.To > f.From {
 			lines += "-" + strconv.Itoa(f.To)
 		}
-		return fmt.Sprintf("%s:%s (%s side)", oneLine(f.Path), lines, oneLine(cmp.Or(f.Side, dispatch.SideCandidate)))
+		return fmt.Sprintf("%s:%s (%s)", oneLine(f.Path), lines, on)
 	case dispatch.FindingKindFile:
-		return oneLine(f.Path) + " (the file)"
+		return fmt.Sprintf("%s (the file, %s)", oneLine(f.Path), on)
 	case dispatch.FindingKindCheck:
 		if f.Check != nil {
 			return "check " + oneLine(f.Check.Receipt)

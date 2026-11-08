@@ -199,16 +199,26 @@ func notesFile(t *testing.T, v any) string {
 	return p
 }
 
-// reviewStandIn is the review routes of CND-1's candidate: the diff, which
-// names the run's base; the submit, which answers a request for changes
-// applied (or continuation_needed unless running or continueRun says to)
-// and anything else none; Request again, applied as try 2 (or
-// continuation_needed, the same way). Every body is decoded as the route
-// does.
+// reviewStandIn is the review routes of CND-1's candidate: the run's
+// candidates, which name the run's base from the ledger; the diff, which
+// refuses as it does when the run's repository is gone (the review route,
+// which reads the ledger alone, takes the review all the same); the
+// submit, which answers a request for changes applied (or
+// continuation_needed unless running or continueRun says to) and anything
+// else none; Request again, applied as try 2 (or continuation_needed, the
+// same way). Every body is decoded as the route does.
 func reviewStandIn(t *testing.T, running bool) *standIn {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/runs/{run}/candidates", func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("run") == rvRunB {
+			// A run that is not managed: the route names no base.
+			answer(w, 200, map[string]any{"run": rvRunB, "managed": false, "base": "", "candidates": []any{}})
+			return
+		}
+		answer(w, 200, map[string]any{"run": r.PathValue("run"), "managed": true, "base": rvBase, "candidates": []any{}})
+	})
 	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}/attempts/{n}/diff", func(w http.ResponseWriter, r *http.Request) {
-		answer(w, 200, map[string]any{"candidate": rvCommit, "base": rvBase, "files": []any{}, "truncated": false})
+		answer(w, 409, map[string]any{"error": map[string]any{"code": "repo_unavailable", "message": "the run's repository cannot be read"}})
 	})
 	continuation := func(w http.ResponseWriter) {
 		answer(w, 409, map[string]any{"error": map[string]any{"code": "continuation_needed", "message": "Yardmaster continues run A"}, "run": rvRunA,
@@ -249,8 +259,9 @@ func reviewStandIn(t *testing.T, running bool) *standIn {
 	return newStandIn(t, mux)
 }
 
-// A review from a file of notes: its base read from the candidate's diff
-// when not given, its notes sent as the route takes them with via cli and
+// A review from a file of notes: its base read from the run's candidates
+// of its task when not given (never the diff, which needs the run's
+// repository), its notes sent as the route takes them with via cli and
 // a minted operation, a reply lost asked for once more with the same one;
 // what became of it printed as two facts; from stdin and with a base
 // given, no diff read. What is wrong in the flags is refused before
@@ -269,7 +280,7 @@ func TestDispatchReviewFromAFile(t *testing.T) {
 		t.Fatalf("review:\n%q\nwant\n%q", out, want)
 	}
 	seen := s.requests()
-	if len(seen) != 3 || seen[0].method != "GET" || seen[0].path != "/api/runs/"+rvRunA+"/tasks/build/attempts/1/diff" || seen[1].reply != -1 || seen[2].reply == -1 {
+	if len(seen) != 3 || seen[0].method != "GET" || seen[0].path != "/api/runs/"+rvRunA+"/candidates" || seen[0].query != "task=build" || seen[1].reply != -1 || seen[2].reply == -1 {
 		t.Fatalf("the requests: %+v", seen)
 	}
 	if seen[1].body["opId"] != seen[2].body["opId"] || !rvOpID.MatchString(fmt.Sprint(seen[1].body["opId"])) {
@@ -284,20 +295,30 @@ func TestDispatchReviewFromAFile(t *testing.T) {
 		!slices.EqualFunc(sent.Findings, rvNotes, func(a, b dispatch.NewFinding) bool { return fmt.Sprint(a) == fmt.Sprint(b) }) {
 		t.Fatalf("the review sent: %+v", sent)
 	}
-	// From stdin, a base given: no diff read; a comment applies nothing.
+	// A run whose candidates name no base: refused before the review is
+	// sent, --base named.
+	before := len(s.requests())
+	code, _, _, err = s.run(t, "", "dispatch", "review", "CND-1", "--candidate", rvRunB+"/build/1@"+rvCommit, "--verdict", "comment", "--summary", "x")
+	if code != 1 || err == nil || !strings.Contains(err.Error(), "--base") {
+		t.Fatalf("a run with no base: %d %v", code, err)
+	}
+	if seen := s.requests()[before:]; len(seen) != 1 || seen[0].method != "GET" {
+		t.Fatalf("a run with no base's requests: %+v", seen)
+	}
+	// From stdin, a base given: no base read; a comment applies nothing.
 	b, _ = json.Marshal(rvNotes[1:])
 	code, out, _, err = s.run(t, string(b), "dispatch", "review", "CND-1", "--candidate", rvCand, "--base", rvBase, "--verdict", "comment", "--file", "-")
 	if code != 0 || err != nil || out != "review "+rvID+" of CND-1: comment of "+rvCand+" against "+rvBase[:12]+", 1 note\nrecorded; a comment applies nothing\n" {
 		t.Fatalf("a comment from stdin: %d %v %q", code, err, out)
 	}
-	if seen := s.requests()[3:]; len(seen) != 1 || seen[0].method != "POST" || seen[0].body["base"] != rvBase {
+	if seen := s.requests()[4:]; len(seen) != 1 || seen[0].method != "POST" || seen[0].body["base"] != rvBase {
 		t.Fatalf("the comment's requests: %+v", seen)
 	}
 	// An approval of its summary alone.
 	if code, out, _, err := s.run(t, "", "dispatch", "review", "CND-1", "--candidate", rvCand, "--base", rvBase, "--verdict", "approve", "--summary", "good"); code != 0 || err != nil || !strings.HasSuffix(out, ", 0 notes\nrecorded; an approval applies nothing: it accepts, delivers and closes nothing\n") {
 		t.Fatalf("an approval: %d %v %q", code, err, out)
 	}
-	before := len(s.requests())
+	before = len(s.requests())
 	for _, args := range [][]string{
 		{"review", "CND-1", "--verdict", "comment", "--summary", "x"},                                         // no candidate
 		{"review", "CND-1", "--candidate", rvRunA + "/build/1@abc", "--verdict", "comment", "--summary", "x"}, // a commit cut short
@@ -372,6 +393,13 @@ func TestDispatchReviewsAndShow(t *testing.T) {
 			dispatch.ReviewApplication{State: "applied", Try: 1, Run: rvRunB, Command: "rv." + rvID + ".1", Revision: 7, Attempt: 2})
 		v.Findings[0].State, v.Findings[0].Marks = "resolved", 2
 		v.Findings[0].Latest = &dispatch.Mark{ID: "5555555555555555", Candidate: rvCand2, Verdict: "resolved", Located: json.RawMessage(`{"state":"moved","from":5,"to":6}`), Note: "renamed", CreatedBy: "Nate", Actor: "admin", Via: "cli"}
+		// A whole file on the base side, anchored to the base; a check
+		// finding whose words are its class and its quote alone.
+		v.Findings = append(v.Findings,
+			dispatch.Finding{ID: "0000000000000003", ReviewID: rvID, K: 3, Kind: dispatch.FindingKindFile, Intent: dispatch.FindingIntentQuestion, Path: "old/gone.go", Side: dispatch.SideBase, AnchorCommit: rvBase,
+				Message: "why removed?", Candidate: rvCand, State: dispatch.FindingOpen},
+			dispatch.Finding{ID: "0000000000000004", ReviewID: rvID, K: 4, Kind: dispatch.FindingKindCheck, Intent: dispatch.FindingIntentChange, Severity: "major", Candidate: rvCand, State: dispatch.FindingOpen,
+				Check: &dispatch.CheckRef{Source: "ledger", Receipt: rvRunA + "/build/1/check/test/1", Class: "infrastructure", Chosen: "code", Quote: "--- FAIL: TestX\n\tx_test.go:9: got 2\n"}})
 		answer(w, 200, map[string]any{"review": v})
 	})
 	s := newStandIn(t, mux)
@@ -403,6 +431,10 @@ func TestDispatchReviewsAndShow(t *testing.T) {
 		"## Findings\n\n- 0000000000000001\tresolved\tchange major\tinternal/api/users.go:3-4 (candidate side)\ton " + rvCand + "\n  name them\n  asked: n and m\n",
 		"  latest of 2 marks: resolved on " + rvCand2 + ", 0001-01-01 00:00 UTC by Nate via cli; its lines there: moved: now 5-6; renamed\n",
 		"- 0000000000000002\topen\tquestion\tthe candidate\ton " + rvCand + "\n  why the retry?\n",
+		"- 0000000000000003\topen\tquestion\told/gone.go (the file, base side, at " + rvBase[:12] + ")\ton " + rvCand + "\n  why removed?\n",
+		"- 0000000000000004\topen\tchange major\tcheck " + rvRunA + "/build/1/check/test/1\ton " + rvCand + "\n" +
+			"  class: infrastructure (the server's, from the receipt); code (the reviewer's)\n" +
+			"  quoted by the reviewer:\n    | --- FAIL: TestX\n    |  x_test.go:9: got 2\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("review show does not say %q:\n%s", want, out)
@@ -595,6 +627,54 @@ func TestDispatchReviewContinue(t *testing.T) {
 	}
 }
 
+// A request for changes that Yardmaster refused is recorded, not applied:
+// review and review retry print what became of it and exit 1, the
+// refusal's words and the retry named; a comment, which applies nothing,
+// exits 0.
+func TestDispatchReviewRefusedExitsOne(t *testing.T) {
+	why := "the task's result is now attempt 4: review that candidate"
+	refused := func(try int) dispatch.ReviewApplication {
+		return dispatch.ReviewApplication{State: dispatch.ApplicationRefused, Try: try, Run: rvRunA, Why: why}
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/dispatch/tickets/{key}/reviews", func(w http.ResponseWriter, r *http.Request) {
+		var body submitBody
+		if !strictBody(t, w, r, &body) {
+			return
+		}
+		app := dispatch.ReviewApplication{State: dispatch.ApplicationNone}
+		if body.Verdict == dispatch.VerdictRequestChanges {
+			app = refused(1)
+		}
+		answer(w, 201, map[string]any{"receipt": dispatch.Receipt{OpID: body.OpID, Intent: "review.submit", Status: "done", ID: rvID}, "review": reviewOf(body.NewReview, app)})
+	})
+	mux.HandleFunc("POST /api/dispatch/reviews/{id}/retry", func(w http.ResponseWriter, r *http.Request) {
+		var body retryBody
+		if !strictBody(t, w, r, &body) {
+			return
+		}
+		rv := dispatch.NewReview{Candidate: rvCand, Base: rvBase, Verdict: dispatch.VerdictRequestChanges, Findings: rvNotes, Via: dispatch.ViaCLI}
+		answer(w, 200, map[string]any{"receipt": dispatch.Receipt{OpID: body.OpID, Intent: "review.retry", Status: "done", ID: rvID}, "review": reviewOf(rv, refused(2))})
+	})
+	s := newStandIn(t, mux)
+	notes := notesFile(t, rvNotes)
+	wantErr := "refused: review " + rvID + " is recorded, but Yardmaster did not apply it: " + why + "; conductor dispatch review retry " + rvID + " asks again"
+	code, out, _, err := s.run(t, "", "dispatch", "review", "CND-1", "--candidate", rvCand, "--base", rvBase, "--verdict", "request_changes", "--file", notes)
+	if code != 1 || err == nil || err.Error() != wantErr || !strings.HasSuffix(out, "\nrecorded; refused: "+why+"; conductor dispatch review retry "+rvID+" asks again\n") {
+		t.Fatalf("a refused review: %d %v %q", code, err, out)
+	}
+	code, out, _, err = s.run(t, "", "dispatch", "review", "retry", rvID)
+	if code != 1 || err == nil || err.Error() != wantErr || !strings.HasSuffix(out, "\nrecorded; refused (try 2): "+why+"; conductor dispatch review retry "+rvID+" asks again\n") {
+		t.Fatalf("a refused retry: %d %v %q", code, err, out)
+	}
+	if code, _, _, err := s.run(t, "", "dispatch", "review", "CND-1", "--candidate", rvCand, "--base", rvBase, "--verdict", "comment", "--file", notes); code != 0 || err != nil {
+		t.Fatalf("a comment: %d %v", code, err)
+	}
+	if n := len(s.requests()); n != 3 {
+		t.Fatalf("%d requests, want 3: a refusal is never sent again by itself", n)
+	}
+}
+
 // crew recheck names the failed candidate in its own run: the route of
 // that run and task, the attempt and the commit, a minted command id that
 // a lost reply is sent again with; it prints the run and the attempt the
@@ -686,6 +766,12 @@ func TestDispatchReviewCommandsReachTheRoutes(t *testing.T) {
 		if code != 1 || err == nil || !strings.HasPrefix(err.Error(), c.code+": ") {
 			t.Errorf("%q: exit %d %v, want %s", c.args, code, err, c.code)
 		}
+	}
+	// Without --base, the run's base is asked of the run's candidates
+	// route, which knows no such run.
+	if code, _, _, err := a.dispatchCmd(t, "", "review", "CND-1", "--candidate", rvCand, "--verdict", "comment", "--summary", "s"); code != 1 || err == nil ||
+		!strings.Contains(err.Error(), "candidates: not_found: no such run") {
+		t.Errorf("a review without --base: exit %d %v", code, err)
 	}
 	var out, errb bytes.Buffer
 	if code, err := Run(t.Context(), []string{"crew", "recheck", rvCand, "--server", a.hs.URL, "--token", dispatchToken}, strings.NewReader(""), &out, &errb); code != 1 || err == nil || !strings.HasPrefix(err.Error(), "not_found: ") {
