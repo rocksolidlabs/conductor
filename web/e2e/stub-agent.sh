@@ -636,7 +636,9 @@ holds() { git cat-file -e "$1:stub-$2.txt" 2>/dev/null; }
 # task_result). A work task commits stub-<member>.txt (with the first line
 # of .conductor/ticket.md in it when the run was launched from a ticket),
 # and stub-fixed.txt too once a finding or an attempt before asks for a
-# change; a review says
+# change, a person's request among them (a repair whose task file says
+# who "asked for changes to the commit", RV1), as a review task's findings
+# do; a review says
 # needs_changes with one finding on its first attempt and approved after.
 # What it reads and what the server answered go into the transcript.
 # With STUB_DECISION=approval or clarification, a work task's first
@@ -727,7 +729,10 @@ task_attempt() {
 		if [[ -n $decided ]]; then
 			git add -- stub-decision.txt stub-answer.txt >/dev/null 2>&1 || true
 		fi
-		if [[ $ctx == *"Findings to address"* || $ctx == *"The attempt before"* || $n -ge 2 ]]; then
+		if [[ $ctx == *"asked for changes to the commit"* ]]; then
+			printf 'repair: %s attempt %s takes up a request for changes\n' "$task" "$n" >>"$transcript"
+		fi
+		if [[ $ctx == *"Findings to address"* || $ctx == *"asked for changes to the commit"* || $ctx == *"The attempt before"* || $n -ge 2 ]]; then
 			printf 'fixed in attempt %s\n' "$n" >stub-fixed.txt
 			git add -- stub-fixed.txt >/dev/null 2>&1 || true
 		fi
