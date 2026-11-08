@@ -10,6 +10,7 @@ import {
   recordEnding,
   recordEntryWords,
   repeatWords,
+  resumeDestination,
   resumeQuestion,
   resumeReceiptWords,
   type HistoryItem,
@@ -207,5 +208,15 @@ describe('a record in words', () => {
     expect([unsure.withoutEnv, unsure.detail.includes('unless its session is still listed')]).toEqual([true, true])
     expect(resumeQuestion(record({ lostAt: '2026-11-05T15:00:00Z' })).lost).toBe(true)
     expect(lostQuestion(record({ lostAt: '2026-11-05T15:00:00Z' })).detail).toContain('whether its process ended is not known')
+  })
+})
+
+describe('resumeDestination', () => {
+  it("opens the new session while it is listed, and its record when only the receipt names it", () => {
+    const receipt = { commandId: 'c1', state: 'started' as const, session: 'fedcba9876543210', at: '' }
+    expect(resumeDestination({ session: { id: 'fedcba9876543210' }, receipt })).toEqual({ to: '/sessions/fedcba9876543210', listed: true })
+    // A command id sent again is answered from its receipt; the session is in the reply only while the registry lists it.
+    expect(resumeDestination({ receipt })).toEqual({ to: '/history/sessions/fedcba9876543210', listed: false })
+    expect(resumeDestination({ receipt: { ...receipt, session: undefined } })).toBeNull()
   })
 })

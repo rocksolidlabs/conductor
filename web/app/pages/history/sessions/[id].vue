@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { CommandRefused } from '~/utils/tasks'
 import { relativeTime, shortCwd } from '~/utils/sessions'
-import { lostQuestion, recordAgent, recordEnding, recordEntryWords, recordLost, resumeQuestion, resumeReceiptWords, type Availability, type RecordReply, type ResumeReceipt } from '~/utils/history'
+import { recordAgent, recordEnding, recordEntryWords, resumeReceiptWords } from '~/utils/history'
 
 // A session's record (Program item HS1, docs/plans/history.md, "web/app", PR-6): what the server kept of a session it ran, after the
 // session is gone from the list as much as while it is listed. Its header (the agent with its version and its own session, the host,
@@ -11,54 +10,13 @@ import { lostQuestion, recordAgent, recordEnding, recordEntryWords, recordLost, 
 // record and asks first. Nothing on this page starts or ends anything without a person's yes.
 
 const route = useRoute()
-const router = useRouter()
-const admin = useWorkbenchToken()
-const history = useHistory()
-const toast = useToast()
 
 const id = computed(() => String(route.params.id))
-const reply = ref<RecordReply | null>(null)
-const record = computed(() => reply.value?.record ?? null)
-const error = ref('')
-const missing = ref(false)
-const forgotten = ref(false)
-/** The record's entry in the history's index, for whether Resume is offered and why not; absent while the index has not read it. */
-const availability = ref<Availability | null>(null)
+// What the page shows and the requests that change it; a reply lands only while the page still shows what it asked for.
+const { reply, record, error, missing, forgotten, availability, live, lost, step, lostWords, resuming, question, forgetting, forgetOpen, load, askResume, firstYes, resume, forget } = useSessionRecord(id)
 const now = ref(Date.now())
 
 useHead({ title: computed(() => (record.value ? `${record.value.name || record.value.id} · record` : 'Session record')) })
-
-async function load() {
-  if (!admin.hasToken.value) {
-    admin.needsToken.value = true
-    return
-  }
-  const want = id.value
-  try {
-    const r = await history.record(want)
-    if (want !== id.value) return
-    reply.value = r
-    error.value = ''
-    missing.value = false
-  } catch (e) {
-    if (want !== id.value) return
-    const err = e as { status?: number; message?: string }
-    if (err.status === 404) {
-      missing.value = true
-      reply.value = null
-    } else error.value = err.message || 'The record could not be read.'
-    return
-  }
-  // The offer is computed as it is asked (docs/protocol.md, History: GET /api/history/entry); the route judges again when Resume is sent.
-  history
-    .entry(`session:${want}`)
-    .then((e) => {
-      if (want === id.value) availability.value = e.availability
-    })
-    .catch(() => {
-      if (want === id.value) availability.value = null
-    })
-}
 
 // A link to an entry (`#e<seq>`) opens on it once the record is drawn.
 const marked = computed(() => (/^#e\d+$/.test(route.hash) ? route.hash.slice(1) : ''))
@@ -72,13 +30,6 @@ watch(
   { flush: 'post' },
 )
 
-watch(id, () => {
-  reply.value = null
-  availability.value = null
-  forgotten.value = false
-  load()
-})
-watch(() => admin.token.value, load)
 let tick: number | undefined
 onMounted(() => {
   load()
@@ -86,8 +37,6 @@ onMounted(() => {
 })
 onBeforeUnmount(() => window.clearInterval(tick))
 
-const live = computed(() => !!reply.value?.live)
-const lost = computed(() => (record.value ? recordLost(record.value) : false))
 const offer = computed(() => availability.value?.resume)
 /** Resume is offered unless the record's entry says no; a check that could not be made (`unknown`) is left to the route, which judges. */
 const resumable = computed(() => !!record.value && !live.value && !reply.value?.newer && offer.value?.offered !== 'no')
@@ -102,95 +51,14 @@ const tools = computed(() => Object.entries(record.value?.tools ?? {}).sort((a, 
 /** How each question ended: the answer entry that names it (`ref`), by the question's id. */
 const endings = computed(() => new Map((record.value?.entries ?? []).filter((e) => e.kind === 'answer' && e.ref).map((e) => [e.ref!, e])))
 
-// ---- Resume: asked first; a lost record asked a second time before the route is told the person confirmed it.
+// ---- Resume and Forget are asked first (useSessionRecord).
 
-type Step = 'ask' | 'lost' | null
-const step = ref<Step>(null)
-/** The second question's words: the record's, or the route's when it found the record open with its session gone. */
-const lostWords = ref<{ title: string; detail: string }>({ title: '', detail: '' })
-const resuming = ref(false)
-// Whether the session is still listed decides its variables (the route resumes a listed session with its own launch): the entry says.
-const question = computed(() => (record.value ? resumeQuestion(record.value, availability.value ? availability.value.state === 'listed' : undefined) : null))
 const modalOpen = computed({
   get: () => step.value !== null,
   set: (v: boolean) => {
     if (!v) step.value = null
   },
 })
-
-function askResume() {
-  if (record.value) step.value = 'ask'
-}
-
-async function firstYes() {
-  const r = record.value
-  if (!r) return
-  if (lost.value) {
-    lostWords.value = lostQuestion(r)
-    step.value = 'lost'
-    return
-  }
-  await resume(false)
-}
-
-async function resume(confirmLost: boolean) {
-  const r = record.value
-  const q = question.value
-  if (!r || !q) return
-  resuming.value = true
-  let left = false
-  try {
-    const res = await history.resumeRecord(r.id, { withoutEnv: q.withoutEnv, confirmLost })
-    step.value = null
-    if (res.notice) toast.add({ title: `${r.name || 'The session'} resumed`, description: res.notice, icon: 'i-lucide-history', color: 'neutral' })
-    else toast.add({ title: `${r.name || 'The session'} resumed`, icon: 'i-lucide-history', color: 'success' })
-    const next = res.session?.id ?? res.receipt.session
-    if (next) {
-      left = true
-      await router.push(`/sessions/${encodeURIComponent(next)}`)
-    }
-  } catch (e) {
-    const code = e instanceof CommandRefused ? (e.receipt as ResumeReceipt).code : (e as { code?: string }).code
-    if (code === 'lost_unconfirmed' && !confirmLost) {
-      // The route found the record open with its session no longer listed: its process may still run. Asked a second time.
-      lostWords.value = { title: lostQuestion(r).title, detail: (e as Error).message }
-      step.value = 'lost'
-      return
-    }
-    step.value = null
-    const receipt = e instanceof CommandRefused ? (e.receipt as ResumeReceipt) : null
-    const state = receipt?.state ?? ''
-    // An uncertain receipt is no refusal: the server stopped while starting it, and its process may have started (its receipt says so).
-    if (receipt && state === 'uncertain') toast.add({ title: 'Whether it resumed is not known', description: resumeReceiptWords(receipt), icon: 'i-lucide-circle-help', color: 'warning' })
-    else if (state === 'pending') toast.add({ title: 'It is still being started', description: 'Its receipt below says how it ends.', icon: 'i-lucide-loader', color: 'neutral' })
-    else toast.add({ title: 'It did not resume', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: e instanceof CommandRefused ? 'warning' : 'error' })
-  } finally {
-    resuming.value = false
-    // The receipts read again, the new one among them, unless the page has left for the new session.
-    if (!left) void load()
-  }
-}
-
-// ---- Forget: asked first.
-
-const forgetting = ref(false)
-const forgetOpen = ref(false)
-async function forget() {
-  const r = record.value
-  if (!r) return
-  forgetting.value = true
-  try {
-    await history.forgetRecord(r.id)
-    forgetOpen.value = false
-    forgotten.value = true
-    reply.value = null
-    toast.add({ title: 'Record forgotten', description: `${r.name || r.id}'s record is deleted from this server.`, icon: 'i-lucide-trash-2', color: 'neutral' })
-  } catch (e) {
-    toast.add({ title: 'Not forgotten', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
-  } finally {
-    forgetting.value = false
-  }
-}
 </script>
 
 <template>

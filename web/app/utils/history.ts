@@ -140,6 +140,18 @@ export interface ResumeReply {
   receipt: ResumeReceipt
 }
 
+/**
+ * Where a resume that started leads: the new session's page while the server lists it (`session` in the reply), else the new session's
+ * record. A command id sent again is answered from its receipt, which names the session it started, and that session is in the reply
+ * only while the registry lists it (after a restart it is not): its page would answer 404, its record is what the server kept. Null
+ * for a receipt that names no session.
+ */
+export function resumeDestination(res: Pick<ResumeReply, 'session' | 'receipt'>): { to: string; listed: boolean } | null {
+  if (res.session?.id) return { to: `/sessions/${encodeURIComponent(res.session.id)}`, listed: true }
+  if (res.receipt.session) return { to: `/history/sessions/${encodeURIComponent(res.receipt.session)}`, listed: false }
+  return null
+}
+
 /** A command's receipt as `GET /api/history/command` reads it, by the actor its URL names. */
 export interface HistoryCommand {
   id: string

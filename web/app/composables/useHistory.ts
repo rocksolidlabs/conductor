@@ -2,9 +2,17 @@ import { CommandRefused, mintCommandId, sendCommand } from '~/utils/tasks'
 import type { HistoryCommand, HistoryItem, RecordReply, ResumeReceipt, ResumeReply } from '~/utils/history'
 
 /** What a resume from a record may add to its command id: resume without the launch's variables; a lost record's second yes. */
-export interface ResumeOptions {
+export interface ResumeFlags {
   withoutEnv?: boolean
   confirmLost?: boolean
+}
+
+/**
+ * A resume's flags, and the lifetime of the page that asked it (`signal`): once it aborts, a receipt still `pending` is asked no more
+ * and the resume ends with the signal's reason. A send already made is never withdrawn: the server keeps its receipt.
+ */
+export interface ResumeOptions extends ResumeFlags {
+  signal?: AbortSignal
 }
 
 /**
@@ -16,7 +24,7 @@ export const RESUME_PENDING_EVERY_MS = 1000
 export const RESUME_PENDING_TRIES = 120
 
 /** POST /api/history/sessions/{id}/resume's body. */
-export interface ResumeBody extends ResumeOptions {
+export interface ResumeBody extends ResumeFlags {
   commandId: string
 }
 
@@ -40,14 +48,26 @@ export function useHistory() {
       const body: ResumeBody = { commandId }
       if (o.withoutEnv) body.withoutEnv = true
       if (o.confirmLost) body.confirmLost = true
+      const signal = o.signal
       return (async () => {
         for (let tries = 1; ; tries++) {
           try {
             return await sendCommand<ResumeBody, ResumeReply>((b) => request<ResumeReply>(`/api/history/sessions/${enc(id)}/resume`, { method: 'POST', body: b }), body)
           } catch (e) {
-            // Still being started: not a refusal. The same id asked again until its receipt settles (started, failed or uncertain).
+            // Still being started: not a refusal. The same id asked again until its receipt settles (started, failed or uncertain),
+            // while the page that asked is still there.
             if (!(e instanceof CommandRefused) || (e.receipt as ResumeReceipt).state !== 'pending' || tries >= RESUME_PENDING_TRIES) throw e
-            await new Promise((r) => setTimeout(r, RESUME_PENDING_EVERY_MS))
+            if (signal?.aborted) throw signal.reason
+            await new Promise<void>((r) => {
+              const done = () => {
+                clearTimeout(t)
+                signal?.removeEventListener('abort', done)
+                r()
+              }
+              const t = setTimeout(done, RESUME_PENDING_EVERY_MS)
+              signal?.addEventListener('abort', done)
+            })
+            if (signal?.aborted) throw signal.reason
           }
         }
       })()

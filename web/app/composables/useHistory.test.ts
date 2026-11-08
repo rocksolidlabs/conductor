@@ -63,6 +63,30 @@ describe('resumeRecord', () => {
     }
   })
 
+  it('asks a pending resume no more once the page that asked it is gone, the send made kept', async () => {
+    vi.useFakeTimers()
+    try {
+      const pending = () => new ApiError(409, 'resume_pending', 'this resume is being started; ask again', {}, { error: { code: 'resume_pending', message: 'this resume is being started; ask again' }, receipt: { commandId: 'x', state: 'pending', at: '' } })
+      request.mockRejectedValue(pending())
+      const life = new AbortController()
+      const p = useHistory()
+        .resumeRecord('0123456789abcdef', { signal: life.signal })
+        .catch((e) => e)
+      await vi.advanceTimersByTimeAsync(RESUME_PENDING_EVERY_MS / 2)
+      expect(request).toHaveBeenCalledTimes(1)
+      // The page leaves while it waits to ask again: the wait ends at once, nothing more is sent, and the resume ends with the reason.
+      life.abort(new DOMException('The page was left', 'AbortError'))
+      const err = await p
+      expect((err as DOMException).name).toBe('AbortError')
+      await vi.advanceTimersByTimeAsync(5 * RESUME_PENDING_EVERY_MS)
+      expect(request).toHaveBeenCalledTimes(1)
+      // Its flags went with it, never the signal.
+      expect(request.mock.calls[0]![1].body).toEqual({ commandId: request.mock.calls[0]![1].body.commandId })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('answers an uncertain receipt as a CommandRefused with its state, asked once', async () => {
     const receipt = { commandId: 'x', state: 'uncertain', error: 'the server stopped while starting the session', at: '' }
     request.mockRejectedValueOnce(new ApiError(409, 'resume_uncertain', receipt.error, {}, { error: { code: 'resume_uncertain', message: receipt.error }, receipt }))
