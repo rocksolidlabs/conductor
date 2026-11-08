@@ -15,9 +15,9 @@ import { renderConfig, scratchRepo, startServer, stopServer, type Started } from
 // approved, its yolo words shown first; a turn held for the terminal shown with no choice and no line and its terminal one tap away;
 // the evidence unfolded (a check's log, the session's terminal); a Recent row opening its own action, and one whose item is gone
 // showing its steps; the events stream cut while one question goes and another comes, then let back. At a desktop's width: the
-// sidebar's Decide row, G then N, the palette's item row, Open on your phone (the page's address alone), and a line typed on one
-// item that never reaches the next. Every item is found by its ref, never by the list's length. Each step raises the test's timeout
-// by its own waits' caps as it takes them (budget).
+// sidebar's Decide row, G then N, the palette's item row, Open on your phone (the page's address alone, or from a loopback origin
+// a decision link), and a line typed on one item that never reaches the next. Every item is found by its ref, never by the list's
+// length. Each step raises the test's timeout by its own waits' caps as it takes them (budget).
 test.describe.configure({ mode: 'serial' })
 
 /** The cap of one step's wait (an expect's, a poll's); budget raises a test's timeout by it per wait it takes. */
@@ -377,7 +377,7 @@ async function pressInTurn(page: Page, ...keys: string[]) {
   }
 }
 
-test("at a desktop's width: the sidebar's Decide row, G then N, the palette's item row, and Open on your phone's address alone", async ({ browser }) => {
+test("at a desktop's width: the sidebar's Decide row, G then N, the palette's item row, and Open on your phone's address alone or a decision link", async ({ browser }) => {
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'asker', name: 'decide desk' })
   sessions.push(s.id)
   const q = await asking(s.id)
@@ -419,6 +419,21 @@ test("at a desktop's width: the sidebar's Decide row, G then N, the palette's it
   budget(2)
   await page.locator('[data-open-on-phone]').click()
   await expect(page.locator('[data-phone-offer="loopback"]')).toContainText('A phone cannot reach')
+
+  // A decision link instead, from this loopback origin (MB0 PR-7): for what is picked (the first offered), a control link that
+  // answers decisions, its QR code the link's own address, which is this computer's own too (this server publishes nowhere).
+  budget(2)
+  await page.locator('[data-phone-make-link]').click()
+  const made = page.locator('[data-phone-link]')
+  await expect(made).toBeVisible({ timeout: STEP_MS })
+  const linkURL = (await made.getAttribute('data-phone-url')) ?? ''
+  expect(linkURL).toMatch(/\/join\/[^/]+$/)
+  await expect(made.locator('[data-phone-link-qr]')).toHaveAttribute('aria-label', linkURL)
+  await expect(made).toContainText("This link's address is this computer's own too")
+  const joins = await api.ok<{ session?: { id: string }; run?: { id: string } }>('GET', `/api/join/${linkURL.slice(linkURL.indexOf('/join/') + 6)}`)
+  const listed = joins.run ? `/api/runs/${joins.run.id}/links` : `/api/sessions/${joins.session?.id}/links`
+  const { links } = await api.ok<{ links: Array<{ label?: string; role: string; decide?: boolean }> }>('GET', listed)
+  expect(links.filter((l) => l.label === 'Decisions on a phone').map((l) => [l.role, l.decide]), 'the link the code holds answers decisions').toContainEqual(['control', true])
   await page.keyboard.press('Escape')
   await expect(page.locator('[data-phone-offer]')).toHaveCount(0)
 

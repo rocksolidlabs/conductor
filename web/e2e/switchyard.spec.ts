@@ -1,7 +1,7 @@
 import { hostname } from 'node:os'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, openSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -409,12 +409,14 @@ test('a session a Conductor publishes is listed there by little, a guest\'s File
 // A decision link through the switchyard (docs/plans/decision-inbox.md, MB0 PR-7): a server publishing to the spec's switchyard
 // (relay-only, as the host above: a CI box may have no route for ICE, so every connection goes through the switchyard's relay) runs
 // a managed run of one member whose task fails its check; its member's session, which outlives the failed attempt, then asks a
-// question (through the attention route: the stub asks only before its task line, which answers it). The owner's Share makes a
-// control link that answers decisions, minted there over the run's desk. A phone opens it at the switchyard's own join page and,
-// over the desk: sees both items; opens the member's terminal from the question's evidence, one tap; answers the question, its
-// steps through to resumed; then, the member's session ended (no member of the run lives), unfolds the failed check's log, retries
-// the task, its steps through to resumed, and reads them again from the link's Recent once the item has left the open list. Each
-// item is found by its ref. Each step raises the test's timeout by its own waits' caps as it takes them (budget).
+// question once its turn is done (through the attention route: the stub asks only before its task line, which answers it). The
+// owner's Share makes a control link that answers decisions, minted there over the run's desk. A phone opens it at the
+// switchyard's own join page and, over the desk: sees both items; opens the member's terminal from the question's evidence, one
+// tap; answers the question, its steps through to resumed; then, the member's session ended (no member of the run lives), unfolds
+// the failed check's log, retries the task (whose check passes from then on), its steps through to resumed, and sees the item
+// leave the open list. A second phone, which took no action, reads both actions from the link's Recent, the owner's alone, and
+// the retry's steps from it. Each item is found by its ref. Each step raises the test's timeout by its own waits' caps as it takes
+// them (budget).
 test("a run decision link through the switchyard: a phone answers a member's question and retries a failed task with no member alive, over the run's desk", async ({ browser, state }) => {
   const STEP = 30_000
   const budget = (waits: number, ms = STEP) => test.info().setTimeout(test.info().timeout + waits * ms)
@@ -425,6 +427,8 @@ test("a run decision link through the switchyard: a phone answers a member's que
   const home4 = join(state.root, `publisher4-${tag}-home`)
   const data4 = join(state.root, `publisher4-${tag}-data`)
   const repo4 = join(state.root, `publisher4-${tag}-repo`)
+  // The check fails until this file is there: the spec writes it before the retry, so the retry's attempt passes and the item closes.
+  const passes = join(state.root, `publisher4-${tag}-passes`)
   for (const d of [home4, data4, repo4]) mkdirSync(d, { recursive: true })
   scratchRepo(repo4)
   const config = join(state.root, `publisher4-${tag}.json`)
@@ -453,7 +457,7 @@ test("a run decision link through the switchyard: a phone answers a member's que
     openAfterLaunch: false,
     yolo: null,
     members: [{ name: 'builder', agentId: 'worker-cli', prompt: '', start: { when: 'task' } }],
-    tasks: [{ id: 'build', member: 'builder', kind: 'work', instructions: 'Build it.', checks: [{ id: 'never', argv: ['sh', '-c', 'echo the check looked; exit 1'] }] }],
+    tasks: [{ id: 'build', member: 'builder', kind: 'work', instructions: 'Build it.', checks: [{ id: 'until', argv: ['sh', '-c', 'echo the check looked; test -e "$1"', 'sh', passes] }] }],
   })
   expect(crew.status).toBe(201)
   const launched = await pub<{ run: { id: string } }>('POST', `/api/crews/${crew.body.crew.id}/launch`)
@@ -462,13 +466,15 @@ test("a run decision link through the switchyard: a phone answers a member's que
   const failed = `task:${runId}/build`
   const contexts: Array<{ close: () => Promise<void> }> = []
   try {
-    // Three attempts, each failing its check; the last attempt's session lives on, its turn done, and asks.
+    // Three attempts, each failing its check; the last attempt's session lives on, its turn done, and asks. The turn is done when
+    // the stub's Stop has landed (its state done), which follows the attempt's submit and so may come after the task is judged
+    // failed: a question asked before it would be taken away by it.
     budget(1, 180_000)
     await expect.poll(async () => task(await runOf(runId), 'build').state, { timeout: 180_000, intervals: [500], message: 'build fails its check three times' }).toBe('failed')
     const member = task(await runOf(runId), 'build').attempt?.sessionId ?? ''
     expect(member).not.toBe('')
     budget(1)
-    await expect.poll(async () => (await pub<{ session: Session }>('GET', `/api/sessions/${member}`)).body.session?.attention?.state ?? '', { timeout: STEP, message: "the member's turn is done" }).not.toBe('needs_input')
+    await expect.poll(async () => (await pub<{ session: Session }>('GET', `/api/sessions/${member}`)).body.session?.attention?.state ?? '', { timeout: STEP, message: "the member's turn is done" }).toBe('done')
     const asks = await pub<{ attention: { id: string } }>('POST', `/api/sessions/${member}/attention`, { state: 'needs_input', message: 'Which way?', options: [{ label: 'Left', input: 'Left\r' }, { label: 'Right', input: 'Right\r' }] })
     expect(asks.status).toBe(200)
     const question = `question:${member}/${asks.body.attention.id}`
@@ -535,8 +541,9 @@ test("a run decision link through the switchyard: a phone answers a member's que
     await expect.poll(async () => (await runOf(runId)).members.every((m) => m.status !== 'running' && m.status !== 'starting'), { timeout: STEP, message: 'no member lives' }).toBe(true)
     const attemptsBefore = task(await runOf(runId), 'build').attempts
 
-    // The failed task over the desk: its check's log unfolded, retried, its steps through to the next attempt running.
-    budget(6)
+    // The failed task over the desk: its check's log unfolded, retried (its check passes from now on), its steps through to the
+    // next attempt running, and the item gone from the open list once that attempt passed.
+    budget(8)
     await decide.locator('[data-inbox-back]').tap()
     await decide.locator(`[data-inbox-row="${failed}"]`).tap()
     const item = decide.locator(`[data-inbox-item="${failed}"]`)
@@ -545,20 +552,34 @@ test("a run decision link through the switchyard: a phone answers a member's que
     const check = item.locator('[data-evidence-ref^="check:"]').first()
     await check.locator('[data-evidence-log-toggle]').tap()
     await expect(check.locator('[data-evidence-log]')).toContainText('the check looked', { timeout: STEP })
+    writeFileSync(passes, '')
     await item.locator('[data-inbox-action="retry"]').tap()
     await expect.poll(async () => (await steps()).validated, { timeout: STEP }).toBe('done')
     await expect.poll(async () => (await steps()).resumed, { timeout: STEP, message: 'the next attempt runs' }).toBe('done')
     expect(task(await runOf(runId), 'build').attempts).toBeGreaterThan(attemptsBefore)
-
-    // Read again from the link's Recent: the retry's steps, kept by the link after the item left the open list.
-    budget(4)
+    await expect.poll(async () => task(await runOf(runId), 'build').state, { timeout: STEP, message: "the retry's attempt passes its check" }).toBe('succeeded')
     await decide.locator('[data-inbox-back]').tap()
-    const row = decide.locator(`[data-recent-row="${failed}"]`)
+    await expect(decide.locator(`[data-inbox-row="${failed}"]`), 'the item has left the open list').toHaveCount(0, { timeout: STEP })
+
+    // A second phone on the link, which took no action: what it lists as Recent is the owner's alone (the link's Recent), and the
+    // retry's steps are read from it with the item closed.
+    budget(6)
+    const otherCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+    contexts.push(otherCtx)
+    const other = await otherCtx.newPage()
+    await other.goto(url)
+    await other.getByRole('textbox', { name: 'Your name' }).fill('e2e other phone')
+    await other.getByRole('button', { name: 'Join crew' }).tap()
+    const decide2 = other.locator('[data-join-run-decide]')
+    const row = decide2.locator(`[data-recent-row="${failed}"]`)
     await expect(row.locator('[data-recent-word]')).toHaveText('Work resumed', { timeout: STEP })
-    await expect(decide.locator(`[data-recent-row="${question}"] [data-recent-word]`)).toHaveText('Work resumed')
+    await expect(decide2.locator(`[data-recent-row="${question}"] [data-recent-word]`)).toHaveText('Work resumed')
+    await expect(decide2.locator(`[data-inbox-row="${failed}"]`)).toHaveCount(0)
     await row.tap()
-    await expect.poll(async () => (await steps()).resumed, { timeout: STEP }).toBe('done')
-    await expect(item.locator('[data-step="recorded"] [data-step-words]')).toContainText("ledger keeps the command's receipt")
+    const steps2 = (): Promise<Record<string, string>> =>
+      decide2.locator('[data-inbox-delivery] [data-step]').evaluateAll((els) => Object.fromEntries(els.map((e) => [e.getAttribute('data-step'), e.getAttribute('data-step-state')])))
+    await expect.poll(steps2, { timeout: STEP }).toEqual({ available: 'done', recorded: 'done', validated: 'done', resumed: 'done' })
+    await expect(decide2.locator('[data-inbox-delivery] [data-step="recorded"] [data-step-words]')).toContainText("ledger keeps the command's receipt")
   } finally {
     for (const c of contexts) await c.close().catch(() => {})
     await pub('POST', `/api/runs/${runId}/stop`).catch(() => {})
