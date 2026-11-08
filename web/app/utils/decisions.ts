@@ -582,9 +582,12 @@ function routedPerson(h: DecisionEntry): string {
 /**
  * Whom the decision was last routed to by one of the operator's routes (the operator's own, or Brakeman's under its grant), as its
  * history says: the person and who routed it; null for none, or when the last such route was to the operator alone. The operator
- * still answers it (local/1): the card says for whom. A decision router's row (`router:`) is Switchman's history, not this.
+ * still answers it (local/1): the card says for whom. A decision router's row (`router:`) is Switchman's history, not this. Null
+ * too for a decision whose request names whom it is for (HM1's `for`, which a route to a person rewrites): the card's approver line
+ * names that person then (approverWords), and says it once.
  */
-export function routedFor(d: Pick<Decision, 'history'>): { person: string; by: string } | null {
+export function routedFor(d: Pick<Decision, 'history'> & { request?: unknown }): { person: string; by: string } | null {
+  if ((d.request as { for?: { person?: string } } | undefined)?.for?.person) return null
   const rows = (d.history ?? []).filter((h) => h.kind === 'routed' && h.by && !h.by.startsWith('router:'))
   const last = rows[rows.length - 1]
   const person = last ? routedPerson(last) : ''

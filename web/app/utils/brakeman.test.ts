@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { BrakemanAct, BrakemanConfig, BriefItem } from './brakeman'
 import { renderMarkdown } from './markdown'
-import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actDecision, actFor, refRun, actsApart, readingBlocks, actLaunchRef, actMade, actReceiptRef, actShown, actShownFrom, actLaunchId, keepLaunch, MAX_KEPT_LAUNCHES, proposalOffered, actWords, followLaunch, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedFromBaseline, changedSince, configProblems, displayBy, formField, formMove, grantHeld, grantLabel, groupItems, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
+import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actDecision, actFor, refDecision, actsApart, readingBlocks, actLaunchRef, actMade, actReceiptRef, actShown, actShownFrom, actLaunchId, keepLaunch, MAX_KEPT_LAUNCHES, proposalOffered, actWords, followLaunch, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedFromBaseline, changedSince, configProblems, displayBy, formField, formMove, grantHeld, grantLabel, groupItems, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
 
 // Brakeman's words, refs and checks on the app's pages (docs/plans/brakeman.md, PR-6).
 
@@ -86,6 +86,8 @@ describe('a ref, to its route and its label', () => {
     ['plan:CND-4/2', '/dispatch/CND/4', 'plan revision 2 of CND-4'],
     ['launch:00112233aabbccdd', null, 'launch 00112233aabbccdd'],
     [`candidate:${RUN}/build/2`, `/runs/${RUN}?view=tasks&task=build`, 'candidate build, attempt 2'],
+    // DR1's record: served by its API route, opened in its card, no page of its own.
+    ['decision:dr-7', null, 'decision dr-7'],
   ]
   it.each(cases)('%s', (ref, route, label) => {
     expect(parseRef(ref)).not.toBeNull()
@@ -96,7 +98,7 @@ describe('a ref, to its route and its label', () => {
   it('covers every kind of ref the server names', () => {
     const src = readFileSync(new URL('../../../internal/brakeman/refs.go', import.meta.url), 'utf8')
     const kinds = [...src.matchAll(/\bRef[A-Z][a-z]+\s*=\s*"([a-z]+)"/g)].map((m) => m[1])
-    expect(kinds.length).toBe(18)
+    expect(kinds.length).toBe(19)
     expect([...new Set(cases.map(([ref]) => ref.slice(0, ref.indexOf(':'))))].sort()).toEqual([...kinds].sort())
   })
 
@@ -153,7 +155,7 @@ describe('a ref, to its route and its label', () => {
   })
 
   it('takes no ref the server would refuse', () => {
-    for (const bad of ['', 'run', 'run:', 'run:Nope-0a1b2c3d', `task:${RUN}`, `attempt:${RUN}/build/0`, `attempt:${RUN}/build/01`, 'session:0123', 'ticket:cnd-4', `file:${SESSION}/relative`, `file:${SESSION}//a/../b`, 'brief:br-1/100', 'brief:br-0/1', 'plan:CND-4/0', 'plan:CND-4', 'launch:0011', `candidate:${RUN}/build`, `candidate:${RUN}/build/0`, `run:${RUN}\n`, 'nope:x', `run:${'a'.repeat(600)}-0a1b2c3d`]) {
+    for (const bad of ['', 'run', 'run:', 'run:Nope-0a1b2c3d', `task:${RUN}`, `attempt:${RUN}/build/0`, `attempt:${RUN}/build/01`, 'session:0123', 'ticket:cnd-4', `file:${SESSION}/relative`, `file:${SESSION}//a/../b`, 'brief:br-1/100', 'brief:br-0/1', 'plan:CND-4/0', 'plan:CND-4', 'launch:0011', 'decision:dr-0', 'decision:7', `candidate:${RUN}/build`, `candidate:${RUN}/build/0`, `run:${RUN}\n`, 'nope:x', `run:${'a'.repeat(600)}-0a1b2c3d`]) {
       expect(parseRef(bad), bad).toBeNull()
     }
     expect(parseRef('op:a/b/c.1')).toEqual({ kind: 'op', actor: 'a/b', op: 'c.1' })
@@ -531,16 +533,19 @@ describe("the grants in Settings and what Brakeman did under them (PR-13)", () =
     expect(refTicket(`run:${RUN}`)).toBe('')
   })
 
-  it("ties a route Brakeman ran to its proposal by the decision's run, and shows DR1's receipt, never an op: ref", () => {
-    const routed = act({ opId: 'r1', operation: 'route_decision', target: `run:${RUN}`, run: RUN, receipt: 'dr-7#4' })
+  it("ties a route Brakeman ran to its proposal by the decision's ref, and shows DR1's receipt, never an op: ref", () => {
+    const routed = act({ opId: 'r1', operation: 'route_decision', target: 'decision:dr-7', run: RUN, receipt: 'dr-7#4' })
     const acts = [routed, act({ opId: 'a1' })]
-    // The proposal names the run, or a task of it; another run, another opId or another operation is not the act's.
-    expect(actFor(proposal('route_decision', `task:${RUN}/build`, { opId: 'r1' }), acts)).toBe(routed)
-    expect(actFor(proposal('route_decision', `run:${RUN}`, { opId: 'r1' }), acts)).toBe(routed)
-    expect(actFor(proposal('route_decision', 'run:other-0a1b2c3d', { opId: 'r1' }), acts)).toBeUndefined()
-    expect(actFor(proposal('route_decision', `run:${RUN}`, { opId: 'a1' }), acts)).toBeUndefined()
+    // The proposal names the decision; another decision, its run, another opId or another operation is not the act's.
+    expect(actFor(proposal('route_decision', 'decision:dr-7', { opId: 'r1' }), acts)).toBe(routed)
+    expect(actFor(proposal('route_decision', 'decision:dr-8', { opId: 'r1' }), acts)).toBeUndefined()
+    expect(actFor(proposal('route_decision', `run:${RUN}`, { opId: 'r1' }), acts)).toBeUndefined()
+    expect(actFor(proposal('route_decision', 'decision:dr-7', { opId: 'a1' }), acts)).toBeUndefined()
     expect(actFor(proposal('route_decision', 'ticket:CND-4', { opId: 'r1' }), acts)).toBeUndefined()
-    expect(refRun(`check:${RUN}/build/1/tests/1`)).toBe('')
+    expect(refDecision(`run:${RUN}`)).toBe('')
+    expect(parseRef('decision:dr-7')).toEqual({ kind: 'decision', decision: 'dr-7' })
+    expect(parseRef('decision:dr-07')).toBeNull()
+    expect(refLabel('decision:dr-7')).toBe('decision dr-7')
     // Its receipt is DR1's: the decision routed, opened from the card; no op: chip, which names a Dispatch receipt.
     expect(actDecision(routed)).toBe('dr-7')
     expect(actReceiptRef(routed)).toBeNull()

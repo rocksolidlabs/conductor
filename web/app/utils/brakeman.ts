@@ -375,6 +375,7 @@ export interface ParsedRef {
   request?: string
   item?: number
   launch?: string
+  decision?: string
 }
 
 const RUN = /^[a-z0-9][a-z0-9-]{0,63}-[0-9a-f]{8}$/
@@ -384,6 +385,7 @@ const HEX = /^[0-9a-f]{16}$/
 const TICKET = /^[A-Z][A-Z0-9]{1,5}-[1-9][0-9]{0,17}$/
 const COMMIT = /^[0-9a-f]{40}([0-9a-f]{24})?$/
 const REQUEST = /^br-[1-9][0-9]{0,17}$/
+const DECISION = /^dr-[1-9][0-9]{0,17}$/
 const NUMBER = /^(0|[1-9][0-9]{0,17})$/
 
 /** The ref's bound, in bytes (brakeman.MaxRef). */
@@ -460,6 +462,9 @@ export function parseRef(s: string): ParsedRef | null {
       const n = num(p[2], 1)
       return p.length === 3 && RUN.test(p[0]!) && TASK.test(p[1]!) && n ? { kind, run: p[0], task: p[1], n } : null
     }
+    case 'decision':
+      // decision:<dr-n>, DR1's record, as its run's read lists it.
+      return p.length === 1 && DECISION.test(p[0]!) ? { kind, decision: p[0] } : null
   }
   return null
 }
@@ -595,6 +600,8 @@ export function refLabel(ref: string, names: { session?: (id: string) => string 
       return `launch ${r.launch}`
     case 'candidate':
       return `candidate ${r.task}, attempt ${r.n}`
+    case 'decision':
+      return `decision ${r.decision}`
   }
   return ref
 }
@@ -1053,19 +1060,19 @@ export function actFor(p: Extract<BriefItem, { kind: 'proposal/1' }>, acts: read
   const opId = typeof p.args?.opId === 'string' ? p.args.opId : ''
   if (!opId || !acts?.length) return undefined
   if (p.op === 'route_decision') {
-    // A route's act names the decision's run (run:<run>); its proposal, the run or a task of it.
-    const run = refRun(p.target)
-    return run ? acts.find((a) => a.opId === opId && a.operation === p.op && refRun(a.target) === run) : undefined
+    // A route's act and its proposal name the decision: decision:<dr-n>.
+    const d = refDecision(p.target)
+    return d ? acts.find((a) => a.opId === opId && a.operation === p.op && refDecision(a.target) === d) : undefined
   }
   const ticket = refTicket(p.target)
   if (!ticket) return undefined
   return acts.find((a) => a.opId === opId && a.operation === p.op && refTicket(a.target) === ticket)
 }
 
-/** The run a run: or task: ref names; "" for any other. */
-export function refRun(ref: string): string {
+/** The decision a decision: ref names; "" for any other. */
+export function refDecision(ref: string): string {
   const r = parseRef(ref)
-  return r && (r.kind === 'run' || r.kind === 'task') ? r.run! : ''
+  return r?.kind === 'decision' ? r.decision! : ''
 }
 
 /** The decision a done route_decision act routed, from its receipt (DR1's, dr-<n>#<seq>); "" for any other act. */

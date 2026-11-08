@@ -74,6 +74,9 @@ describe('a decision routed to a person', () => {
     // Switchman's routing history is its own.
     expect(routedFor({ history: [opened, row(3, 'router:switchman', [{ kind: 'person', name: 'ada' }])] })).toBeNull()
     expect(routedFor({})).toBeNull()
+    // Whom it is for in its request (HM1's for, which a route to a person rewrites): the approver line names them, this says nothing.
+    expect(routedFor({ history: [opened, toAna], request: { question: 'q', for: { label: 'role:security', person: 'ana', responsibility: 'security' } } })).toBeNull()
+    expect(routedFor({ history: [opened, toAna], request: { question: 'q' } })).toEqual({ person: 'ana', by: 'brakeman' })
   })
 })
 

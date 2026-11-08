@@ -407,15 +407,15 @@ test("granted Route a decision, Brakeman routes a gate's decision to the crew's 
   const did = gateDecision!.id
   await grant(['route_decision'])
 
-  // The turn: it reads the run, routes the decision to role:security with conductor brakeman act through DR1's own route, then submits
-  // a brief proposing that route, at the run's revision it read, naming the act (args.opId). Its gate shut until all of it is written.
+  // The turn: it reads the run, whose decisions list the gate's with its ref and rev, routes it to role:security at that rev with
+  // conductor brakeman act through DR1's own route, then submits a brief proposing that route on the decision's ref at the rev it read
+  // (the stub's @REV, from its own read with its own token), naming the act (args.opId). Its gate shut until all of it is written.
   budget(120_000 + 60_000)
   rmSync(gate, { force: true })
   rmSync(`${actFile}.out`, { force: true })
-  const runRev = (await api.run(runId)).managed!.revision
   writeFileSync(`${actFile}.run`, `${runId}\n`)
   writeFileSync(actFile, `route_decision ${did} did\n`)
-  writeFileSync(`${actFile}.body`, JSON.stringify({ to: { kind: 'role', name: 'security' }, expectedRev: gateDecision!.rev, note: 'ana reviews what build touches.', opId: 'bka-route-1' }))
+  writeFileSync(`${actFile}.body`, `{"to":{"kind":"role","name":"security"},"expectedRev":@REV,"note":"ana reviews what build touches.","opId":"bka-route-1"}`)
   writeFileSync(
     briefFile,
     JSON.stringify({
@@ -424,7 +424,7 @@ test("granted Route a decision, Brakeman routes a gate's decision to the crew's 
       summary: 'The gate before build is a security question: it is routed to the crew\'s security reviewer, for the operator to answer.',
       items: [
         { kind: 'fact/1', text: `${did} holds build.`, evidence: [`run:${runId}`] },
-        { kind: 'proposal/1', text: `Route ${did} to the security reviewer.`, op: 'route_decision', target: `run:${runId}`, expectedRevision: String(runRev), args: { opId: 'bka-route-1' }, facts: [0] },
+        { kind: 'proposal/1', text: `Route ${did} to the security reviewer.`, op: 'route_decision', target: `decision:${did}`, expectedRevision: '@REV', args: { opId: 'bka-route-1' }, facts: [0] },
       ],
     }),
   )
@@ -439,10 +439,13 @@ test("granted Route a decision, Brakeman routes a gate's decision to the crew's 
     rmSync(`${actFile}.run`, { force: true })
   }
   const out = await actOut()
-  expect(out).toMatch(new RegExp(`^taken\\nroute_decision ran \\(opId bka-route-1\\): done; its receipt is row [0-9]+ of ${did}'s history: ${did} is routed to ana, the security reviewer by brakeman`))
+  // What the receipt says: the decision, the person and the responsibility, and Brakeman, in whichever words DR1 writes them.
+  expect(out).toMatch(new RegExp(`^taken\\nroute_decision ran \\(opId bka-route-1\\): done; its receipt is row [0-9]+ of ${did}'s history: ${did} `))
+  expect(out).toContain('ana, the security reviewer')
+  expect(out).toContain('brakeman')
   const acts = (await request(id)).acts ?? []
   expect(acts).toHaveLength(1)
-  expect(acts[0]).toMatchObject({ opId: 'bka-route-1', operation: 'route_decision', target: `run:${runId}`, state: 'done' })
+  expect(acts[0]).toMatchObject({ opId: 'bka-route-1', operation: 'route_decision', target: `decision:${did}`, run: runId, state: 'done' })
   expect(acts[0]!.receipt).toMatch(new RegExp(`^${did}#[0-9]+$`))
   // Routed, never answered: the decision is still open, the operator's to answer.
   const after = await api.ok<{ decision: { state: string; history: Array<{ kind: string; by?: string }> } }>('GET', `/api/decisions/${did}`)
