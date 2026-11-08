@@ -1419,8 +1419,10 @@ func DecisionOf(rec ledger.DecisionRecord) Decision {
 	for _, rr := range rec.Responses {
 		var rc ResponseReceipt
 		if json.Unmarshal([]byte(rr.Receipt), &rc) == nil {
-			// The receipt is kept as made before its row was numbered.
-			rc.K = rr.K
+			// The receipt is kept as made before its row was numbered;
+			// its number and its actor are the row's, which the ledger
+			// requires.
+			rc.K, rc.Actor = rr.K, rr.Actor
 			d.Responses = append(d.Responses, rc)
 		}
 	}

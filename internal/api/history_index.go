@@ -1249,9 +1249,10 @@ func (h *historyIndexer) indexRun(ctx context.Context, ix *history.Index, id str
 		marks = append(marks, "U")
 	}
 	mark := strings.Join(marks, "/")
-	if old, ok, err := ix.Mark(ctx, key); err != nil {
+	old, had, err := ix.Mark(ctx, key)
+	if err != nil {
 		return err
-	} else if ok && old == mark {
+	} else if had && old == mark {
 		return nil
 	}
 	h.afterMark(key)
@@ -1293,16 +1294,25 @@ func (h *historyIndexer) indexRun(ctx context.Context, ix *history.Index, id str
 			return err
 		}
 	}
-	h.beforeRunReplace(key)
-	if err := ix.Replace(ctx, history.Source{Key: key, Mark: mark, Generation: h.gen}, entries, links); err != nil {
-		return err
-	}
-	// The decisions the run holds, each whose row or place moved: a
-	// decision changes only in a transition of the run that holds it.
-	if inLedger {
+	// The decisions the run holds, each whose row or place moved (a
+	// decision changes only in a transition of the run that holds it),
+	// found before the run's mark is committed, so a scan that fails is
+	// made again by this pass retried. A run the ledger no longer has, its
+	// record kept, was pruned: every decision it held or opened is read
+	// again, taken with it or handed back.
+	switch {
+	case inLedger:
 		if err := h.markDecisions(ctx, ix, ld, p); err != nil {
 			return err
 		}
+	case ld != nil && (!had || markInLedger(old)):
+		if err := h.markRunsDecisions(ctx, ix, id); err != nil {
+			return err
+		}
+	}
+	h.beforeRunReplace(key)
+	if err := ix.Replace(ctx, history.Source{Key: key, Mark: mark, Generation: h.gen}, entries, links); err != nil {
+		return err
 	}
 	// The members' sessions, each when what its entry takes from the run
 	// changed: its attempt's start commit, or the run first seen by this
@@ -1516,6 +1526,12 @@ func receiptMark(p runPlace) string {
 		m += "/U"
 	}
 	return m
+}
+
+// markInLedger says a run's mark carries L: the run was indexed from its
+// ledger rows.
+func markInLedger(mark string) bool {
+	return slices.ContainsFunc(strings.Split(mark, "/"), func(part string) bool { return strings.HasPrefix(part, "L") })
 }
 
 // repoNotKnown says a mark carries U: its source was indexed without its

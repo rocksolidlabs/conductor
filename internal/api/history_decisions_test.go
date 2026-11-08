@@ -1,11 +1,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -49,6 +52,13 @@ func histAsk(t *testing.T, ld *ledger.Ledger, run string, gate bool) string {
 // answered with it) or refused, choosing choice, by Nate.
 func histRespond(t *testing.T, ld *ledger.Ledger, run, id string, k, choice int, accepted bool, rationale string) {
 	t.Helper()
+	histRespondWith(t, ld, run, id, k, choice, accepted, rationale, nil)
+}
+
+// histRespondWith is histRespond with its receipt, as the ledger keeps
+// it, changed by edit first (nil for none).
+func histRespondWith(t *testing.T, ld *ledger.Ledger, run, id string, k, choice int, accepted bool, rationale string, edit func(rc map[string]any)) {
+	t.Helper()
 	n, _ := ledger.ParseDecisionID(id)
 	status := ledger.ResponseAccepted
 	if !accepted {
@@ -56,6 +66,12 @@ func histRespond(t *testing.T, ld *ledger.Ledger, run, id string, k, choice int,
 	}
 	rc := crew.ResponseReceipt{Decision: id, Status: status, Words: "recorded", Actor: adminActor, ByName: "Nate", Choice: &choice, Rationale: rationale, At: histNow.Add(time.Duration(k) * time.Minute)}
 	b, _ := json.Marshal(rc)
+	if edit != nil {
+		var m map[string]any
+		_ = json.Unmarshal(b, &m)
+		edit(m)
+		b, _ = json.Marshal(m)
+	}
 	histTx(t, ld, run, func(tx *ledger.Tx) error {
 		d, _, err := tx.Decision(n)
 		if err != nil {
@@ -245,57 +261,274 @@ func TestASupersededRequestSaysSoInItsAvailability(t *testing.T) {
 	}
 }
 
-// A decision moved to a run's continuation is indexed under the run that
-// holds it; one whose run is pruned leaves the index.
+// histFinish finishes run, failed, so it may be pruned.
+func histFinish(t *testing.T, ld *ledger.Ledger, run string) {
+	t.Helper()
+	histTx(t, ld, run, func(tx *ledger.Tx) error {
+		row, _, err := tx.Run()
+		if err != nil {
+			return err
+		}
+		row.State, row.Outcome, row.ClosedAt = ledger.RunFinished, ledger.OutcomeFailed, histNow
+		return tx.PutRun(row)
+	})
+}
+
+// A decision moved along a run's continuations is indexed under the run
+// that holds it. A run pruned takes with it the decisions it opened and
+// hands back those it held to the run it continued, under which they are
+// indexed again, its record kept or not: the last of a chain of three,
+// whose record is kept, hands its decision to the middle one, not to the
+// run that opened it; the middle one, no record, to the first; and the
+// first takes it with it.
 func TestADecisionFollowsItsRunAndLeavesWithIt(t *testing.T) {
 	e := newTestEnv(t, nil)
 	ld := e.srv.ledger
-	const from, to = "hist-000000d5", "hist-000000d6"
-	histCreate(t, ld, from, "", histCrew(e.root))
-	id := histAsk(t, ld, from, true)
-	finish := func(run string) {
-		histTx(t, ld, run, func(tx *ledger.Tx) error {
-			row, _, err := tx.Run()
-			if err != nil {
-				return err
-			}
-			row.State, row.Outcome, row.ClosedAt = ledger.RunFinished, ledger.OutcomeFailed, histNow
-			return tx.PutRun(row)
-		})
-	}
-	finish(from)
+	const first, mid, last = "hist-000000d5", "hist-000000d6", "hist-000000d8"
+	histCreate(t, ld, first, "", histCrew(e.root))
+	id := histAsk(t, ld, first, true)
+	histFinish(t, ld, first)
 	ix := histSettle(t, e)
-	if h := histEntry(t, ix, hDecisionRef(id)); h.Run != from {
+	if h := histEntry(t, ix, hDecisionRef(id)); h.Run != first {
 		t.Fatalf("before the continuation: %+v", h.Entry)
 	}
-	histCreate(t, ld, to, from, histCrew(e.root))
-	histTx(t, ld, to, func(tx *ledger.Tx) error {
-		_, err := tx.MoveDecisions(from, to)
-		return err
-	})
-	ix = histSettle(t, e)
-	if h := histEntry(t, ix, hDecisionRef(id)); h.Run != to || h.Anchor != hRunRef(to) {
-		t.Fatalf("after the continuation: %+v", h.Entry)
+	for _, c := range [][2]string{{first, mid}, {mid, last}} {
+		histCreate(t, ld, c[1], c[0], histCrew(e.root))
+		histTx(t, ld, c[1], func(tx *ledger.Tx) error {
+			_, err := tx.MoveDecisions(c[0], c[1])
+			return err
+		})
+		if c[1] == mid {
+			histFinish(t, ld, mid)
+		}
 	}
-	// Cancelled (final), its run finished and pruned: the record goes with
-	// it, and so does its entry.
-	histSettleDecision(t, ld, to, id, ledger.DecisionCancelled, nil, "cancelled by the operator", "")
-	finish(to)
+	own := histAsk(t, ld, last, false)
 	ix = histSettle(t, e)
-	histEntry(t, ix, hDecisionRef(id))
-	if err := ld.Prune(t.Context(), to); err != nil {
+	if h := histEntry(t, ix, hDecisionRef(id)); h.Run != last || h.Anchor != hRunRef(last) {
+		t.Fatalf("after the continuations: %+v", h.Entry)
+	}
+	// Both cancelled (final), the last run finished, its record kept and
+	// its rows pruned: the decision it opened goes with it, and the one it
+	// held is indexed under the run it continued.
+	for _, d := range []string{id, own} {
+		histSettleDecision(t, ld, last, d, ledger.DecisionCancelled, nil, "cancelled by the operator", "")
+	}
+	histFinish(t, ld, last)
+	saveRecord(t, e.srv, crew.Run{ID: last, StartedAt: histNow})
+	ix = histSettle(t, e)
+	histEntry(t, ix, hDecisionRef(own))
+	if err := ld.Prune(t.Context(), last); err != nil {
 		t.Fatal(err)
 	}
 	ix = histSettle(t, e)
-	// Handed back to the run that opened it, it is indexed there again.
-	if h := histEntry(t, ix, hDecisionRef(id)); h.Run != from {
-		t.Fatalf("handed back: %+v", h.Entry)
+	histEntry(t, ix, hRunRef(last)) // its record is still indexed
+	histGone(t, ix, hDecisionRef(own))
+	if h := histEntry(t, ix, hDecisionRef(id)); h.Run != mid || h.Anchor != hRunRef(mid) {
+		t.Fatalf("handed back by the last: %+v", h.Entry)
 	}
-	if err := ld.Prune(t.Context(), from); err != nil {
+	if err := ld.Prune(t.Context(), mid); err != nil {
+		t.Fatal(err)
+	}
+	ix = histSettle(t, e)
+	if h := histEntry(t, ix, hDecisionRef(id)); h.Run != first || h.Anchor != hRunRef(first) {
+		t.Fatalf("handed back by the middle: %+v", h.Entry)
+	}
+	if err := ld.Prune(t.Context(), first); err != nil {
 		t.Fatal(err)
 	}
 	ix = histSettle(t, e)
 	histGone(t, ix, hDecisionRef(id))
+}
+
+// failingScan is the ledger as the indexer reads it, its scan of one
+// run's decisions failing once when armed.
+type failingScan struct {
+	indexLedger
+	run    string
+	armed  atomic.Bool
+	failed atomic.Int32
+}
+
+func (f *failingScan) Decisions(ctx context.Context, q ledger.DecisionFilter) ([]ledger.DecisionRow, error) {
+	if q.CurrentRun == f.run && f.armed.CompareAndSwap(true, false) {
+		f.failed.Add(1)
+		return nil, errors.New("the decisions could not be read")
+	}
+	return f.indexLedger.Decisions(ctx, q)
+}
+
+// A run's scan of its decisions that fails is made again by its pass
+// retried, with no other transition of the run: the run's mark is
+// committed only once its decisions were compared, so the retry does not
+// find the run as indexed and stop.
+func TestAFailedScanOfARunsDecisionsIsMadeAgain(t *testing.T) {
+	e := newTestEnv(t, nil)
+	ld := e.srv.ledger
+	const run = "hist-000000d9"
+	histCreate(t, ld, run, "", histCrew(e.root))
+	f := &failingScan{indexLedger: ld, run: run}
+	freshIndexer(t, e, func(h *historyIndexer) { h.ledger = func() indexLedger { return f } })
+	histSettle(t, e)
+	f.armed.Store(true)
+	id := histAsk(t, ld, run, false)
+	ix := histSettle(t, e)
+	if f.failed.Load() != 1 {
+		t.Fatalf("the scans that failed: %d", f.failed.Load())
+	}
+	if h := histEntry(t, ix, hDecisionRef(id)); h.Run != run {
+		t.Fatalf("the decision after the scan failed: %+v", h.Entry)
+	}
+}
+
+// A decision takes what its entries carry from its run's record when the
+// record arrives after it was indexed: a gate's, opened before the run's
+// record was written, gains the record's ticket.
+func TestADecisionTakesItsRunsRecordWhenItArrives(t *testing.T) {
+	e := newTestEnv(t, nil)
+	ld := e.srv.ledger
+	const run = "hist-000000da"
+	histCreate(t, ld, run, "", histCrew(e.root))
+	id := histAsk(t, ld, run, true)
+	ix := histSettle(t, e)
+	if h := histEntry(t, ix, hDecisionRef(id)); h.Ticket != "" {
+		t.Fatalf("before the record: %+v", h.Entry)
+	}
+	saveRecord(t, e.srv, crew.Run{ID: run, StartedAt: histNow, Ticket: &crew.RunTicket{ID: "t-1", Key: "CON-7"}})
+	ix = histSettle(t, e)
+	if h := histEntry(t, ix, hDecisionRef(id)); h.Ticket != "CON-7" {
+		t.Fatalf("after the record: %+v", h.Entry)
+	}
+	if keys := hsKeys(hsSearch(t, e, "ticket:CON-7 kind:decision")); !slices.Equal(keys, []string{hDecisionRef(id)}) {
+		t.Fatalf("the ticket's decisions: %v", keys)
+	}
+}
+
+// An assignment's response is done or not_done by the option it chose,
+// in DR1's order (Done, then Not done), its title the option's label.
+func TestAnAssignmentsResponseIsDoneOrNotDone(t *testing.T) {
+	e := newTestEnv(t, nil)
+	ld := e.srv.ledger
+	const run = "hist-000000db"
+	histCreate(t, ld, run, "", histCrew(e.root))
+	ids := make([]string, 2)
+	for i := range ids {
+		histTx(t, ld, run, func(tx *ledger.Tx) error {
+			d, _, err := tx.OpenDecision(ledger.DecisionRow{Origin: ledger.OriginAgent, Type: ledger.DecisionAssignment, TaskID: "build", Attempt: i + 1, SessionID: fmt.Sprintf("s-build-%d", i+1),
+				Member: "lead", RequestID: fmt.Sprintf("q-assign-%d", i), Fingerprint: fmt.Sprintf("fp-assign-%d", i), Policy: histPolicy,
+				Request: fmt.Sprintf(`{"question":"Rotate the staging keys?","subject":{"kind":"commit","commit":%q}}`, commitID(1))})
+			ids[i] = d.ID()
+			return err
+		})
+		histRespond(t, ld, run, ids[i], 1, i, true, "")
+	}
+	ix := histSettle(t, e)
+	for i, want := range []struct{ outcome, label string }{{"done", "Done"}, {"not_done", "Not done"}} {
+		if h := histEntry(t, ix, hResponseRef(ids[i], 1)); h.Outcome != want.outcome || h.Title != ids[i]+": "+want.label+", by Nate" {
+			t.Fatalf("the assignment answered %s: %+v", want.label, h.Entry)
+		}
+	}
+}
+
+// A decision's availability is pruned once the ledger no longer keeps it
+// and unknown when the ledger is not open or cannot be read, never said
+// as gone: read through availability.decision itself, after the prune and
+// before the index has read it again.
+func TestADecisionsAvailabilityIsPrunedOrUnknown(t *testing.T) {
+	e := newTestEnv(t, nil)
+	ld := e.srv.ledger
+	const run = "hist-000000dc"
+	histCreate(t, ld, run, "", histCrew(e.root))
+	id := histAsk(t, ld, run, false)
+	histSettleDecision(t, ld, run, id, ledger.DecisionCancelled, nil, "cancelled by the operator", "")
+	histFinish(t, ld, run)
+	ix := histSettle(t, e)
+	if err := ld.Prune(t.Context(), run); err != nil {
+		t.Fatal(err)
+	}
+	ref := hDecisionRef(id)
+	if a := e.srv.newAvailability(t.Context(), ix, ld).decision(ref); a.State != availPruned || a.Words != "pruned: the ledger no longer keeps "+id {
+		t.Fatalf("a pruned decision: %+v", a)
+	}
+	if a := e.srv.newAvailability(t.Context(), ix, nil).decision(ref); a.State != availUnknown || a.Words != "the ledger is not open here" {
+		t.Fatalf("no ledger: %+v", a)
+	}
+	closed, err := ledger.Open(filepath.Join(t.TempDir(), "runs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if a := e.srv.newAvailability(t.Context(), ix, closed).decision(ref); a.State != availUnknown || a.Words != "the ledger could not be read; try again" {
+		t.Fatalf("a ledger that cannot be read: %+v", a)
+	}
+}
+
+// Whom a decision is for, as its record keeps it (HM1): the person an
+// accepted response answered for, its receipt's, in the response's title
+// beside who answered, and a search for the person finds it; the request's
+// for, the person its opening resolved (an object in the request the
+// ledger keeps, never the label as sent), in the request's summary. The
+// ledger on this branch refuses a request with a for until HM1's PR
+// (#741) adds it, so the request's is read from a record built here.
+func TestADecisionSaysWhomItIsFor(t *testing.T) {
+	e := newTestEnv(t, nil)
+	ld := e.srv.ledger
+	const run = "hist-000000dd"
+	histCreate(t, ld, run, "", histCrew(e.root))
+	id := histAsk(t, ld, run, true)
+	histRespondWith(t, ld, run, id, 1, 1, true, "", func(rc map[string]any) {
+		rc["for"] = map[string]any{"person": "ana", "responsibility": crew.RespArchitecture}
+	})
+	ix := histSettle(t, e)
+	if h := histEntry(t, ix, hResponseRef(id, 1)); h.Title != id+": Reject, by Nate for ana, the architecture owner" {
+		t.Fatalf("the response: %+v", h.Entry)
+	}
+	if keys := hsKeys(hsSearch(t, e, "ana")); !slices.Equal(keys, []string{hResponseRef(id, 1)}) {
+		t.Fatalf("a search for the person: %v", keys)
+	}
+
+	one := 1
+	entries, _ := decisionEntries(runPlace{run: run}, crew.Decision{ID: "dr-9", Run: run, Origin: ledger.OriginPlan, Type: ledger.DecisionApproval, Gate: "g1",
+		Request: json.RawMessage(`{"question":"Ship the login redesign?","options":[{"label":"Approve"},{"label":"Reject"}],"subject":{"kind":"plan","plan":"pl-1","digest":"d1"},` +
+			`"for":{"label":"role:architecture","person":"ana","responsibility":"architecture"}}`),
+		Responses: []crew.ResponseReceipt{{Decision: "dr-9", K: 1, Status: ledger.ResponseAccepted, Actor: adminActor, ByName: "Nate", Choice: &one}}},
+		map[int]*recordFor{1: {Person: "ana"}})
+	if len(entries) != 2 {
+		t.Fatalf("the entries: %+v", entries)
+	}
+	if r := entries[0]; r.Title != "Ship the login redesign?" || r.Revision != "pl-1" || !strings.Contains(r.Summary, "for ana, the architecture owner") {
+		t.Fatalf("the request: %+v", r)
+	}
+	if r := entries[1]; r.Title != "dr-9: Reject, by Nate for ana" {
+		t.Fatalf("the response for a person named by name: %+v", r)
+	}
+}
+
+// A response is indexed as its ledger row's actor, which the ledger
+// requires, whatever its receipt's copy says; a response with no actor is
+// indexed with none and named by no one, never as the operator's.
+func TestAResponseIsIndexedAsItsRowsActor(t *testing.T) {
+	e := newTestEnv(t, nil)
+	ld := e.srv.ledger
+	const run = "hist-000000de"
+	histCreate(t, ld, run, "", histCrew(e.root))
+	id := histAsk(t, ld, run, true)
+	histRespondWith(t, ld, run, id, 1, 0, true, "", func(rc map[string]any) {
+		delete(rc, "byName")
+		rc["actor"] = ""
+	})
+	ix := histSettle(t, e)
+	if h := histEntry(t, ix, hResponseRef(id, 1)); h.Actor != adminActor || h.Title != id+": Approve, by "+adminActor {
+		t.Fatalf("the response: %+v", h.Entry)
+	}
+	zero := 0
+	entries, _ := decisionEntries(runPlace{run: run}, crew.Decision{ID: "dr-9", Run: run, Origin: ledger.OriginPlan, Type: ledger.DecisionApproval, Gate: "g1",
+		Request:   json.RawMessage(`{"question":"Ship it?","options":[{"label":"Approve"},{"label":"Reject"}]}`),
+		Responses: []crew.ResponseReceipt{{Decision: "dr-9", K: 1, Status: ledger.ResponseAccepted, Choice: &zero}}}, nil)
+	if len(entries) != 2 || entries[1].Actor != "" || entries[1].Title != "dr-9: Approve" {
+		t.Fatalf("a response with no actor: %+v", entries)
+	}
 }
 
 // A decision another process's engine answered, the ledger's owner,

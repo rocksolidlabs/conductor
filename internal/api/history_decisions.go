@@ -33,11 +33,18 @@ import (
 // reasons) or cancelled is its availability, read from the ledger when a
 // page is answered.
 //
-// A decision changes only inside a transition of the run that holds it
-// (its current run), so the run's pass, which every such commit asks
-// for, finds the decisions whose row changed (markDecisions); a run
-// pruned asks again of the decisions it held or opened (removeRun), and
-// the catch-up lists every decision the ledger keeps.
+// What is indexed of a decision is what the ledger held at one read of
+// it, and its mark is a digest of what its entries were built from (its
+// row and its run's place, as read for them), so an entry is never older
+// than its mark. A decision changes only inside a transition of the run
+// that holds it (its current run), and what its entries take from that
+// run changes only with the run's own record or rows, so the run's pass,
+// which every such change asks for, compares each of the run's decisions'
+// marks with what it reads now (markDecisions) before it commits its own
+// mark: a scan that fails is made again by the pass retried. A run whose
+// ledger rows are gone, its record kept or not, asks again of the
+// decisions it held or opened (markRunsDecisions), each read again or
+// removed, and the catch-up lists every decision the ledger keeps.
 
 // The links of a decision's entries.
 const (
@@ -82,16 +89,31 @@ func decisionStamp(d ledger.DecisionRow) string {
 	return hex.EncodeToString(sum.Sum(nil)[:16])
 }
 
-// decisionMark is a decision source's mark: S<stamp>/C<current run>/O<run
-// it was opened in>, then J<project> for the project its current run is
-// placed in and U when that run's repository was not known. The runs are
-// named so that a run pruned finds the decisions it held or opened.
-func decisionMark(d ledger.DecisionRow, project string, repoUnknown bool) string {
-	m := "S" + decisionStamp(d) + "/C" + d.CurrentRun + "/O" + d.RunID
-	if project != "" {
-		m += "/J" + project
+// placeStamp is what a decision's entries take from the place of the run
+// that holds it, as they are built from it (decisionEntries): the run's
+// six fields (its machine, project, repository, tree, crew and ticket),
+// the asking task's agent and the time an entry falls back to.
+func placeStamp(p runPlace, d ledger.DecisionRow) string {
+	agent := ""
+	if d.Origin == ledger.OriginAgent {
+		agent = p.agents[d.TaskID]
 	}
-	if repoUnknown {
+	sum := sha256.New()
+	for _, f := range []string{p.run, p.host, p.project, p.repo, p.tree, p.crew, p.ticket, agent, p.fallback.UTC().Format(time.RFC3339Nano)} {
+		sum.Write([]byte(f))
+		sum.Write([]byte{0})
+	}
+	return hex.EncodeToString(sum.Sum(nil)[:16])
+}
+
+// decisionMark is a decision source's mark, of what its entries are built
+// from: S<stamp of its row>/P<stamp of its run's place>/C<current run>/O<run
+// it was opened in>, then U when that run's repository was not known. The
+// runs are named so that a run pruned finds the decisions it held or
+// opened.
+func decisionMark(d ledger.DecisionRow, p runPlace) string {
+	m := "S" + decisionStamp(d) + "/P" + placeStamp(p, d) + "/C" + d.CurrentRun + "/O" + d.RunID
+	if p.repoUnknown {
 		m += "/U"
 	}
 	return m
@@ -137,13 +159,13 @@ func (h *historyIndexer) indexDecision(ctx context.Context, ix *history.Index, i
 	if err != nil {
 		return err
 	}
-	mark := decisionMark(rec.DecisionRow, p.project, p.repoUnknown)
+	mark := decisionMark(rec.DecisionRow, p)
 	if old, ok, err := ix.Mark(ctx, key); err != nil {
 		return err
 	} else if ok && old == mark {
 		return nil
 	}
-	entries, links := decisionEntries(p, crew.DecisionOf(rec))
+	entries, links := decisionEntries(p, crew.DecisionOf(rec), receiptFors(rec))
 	return ix.Replace(ctx, history.Source{Key: key, Mark: mark, Generation: h.gen}, entries, links)
 }
 
@@ -190,7 +212,8 @@ func (h *historyIndexer) decisionPlace(ctx context.Context, ld indexLedger, key,
 
 // markDecisions marks dirty each decision the run holds whose mark the
 // index does not hold as it is now: its row changed, or the run's place
-// did. Called from the run's pass, which every commit of the run asks for.
+// did. Called from the run's pass, which every commit of the run and every
+// change of its record asks for, before the pass commits the run's mark.
 func (h *historyIndexer) markDecisions(ctx context.Context, ix *history.Index, ld indexLedger, p runPlace) error {
 	for before := int64(0); ; {
 		rows, err := ld.Decisions(ctx, ledger.DecisionFilter{CurrentRun: p.run, Before: before, Limit: ledger.MaxDecisionsPage})
@@ -206,7 +229,7 @@ func (h *historyIndexer) markDecisions(ctx context.Context, ix *history.Index, l
 			if err != nil {
 				return err
 			}
-			if !ok || old != decisionMark(d, p.project, p.repoUnknown) {
+			if !ok || old != decisionMark(d, p) {
 				h.mark(key)
 			}
 		}
@@ -219,8 +242,8 @@ func (h *historyIndexer) markDecisions(ctx context.Context, ix *history.Index, l
 
 // markRunsDecisions marks dirty every decision the index holds that run
 // held or opened, by their marks: a run pruned took the final decisions it
-// opened with it and handed back those an ancestor opened, and each pass
-// reads which.
+// opened with it and handed back those an ancestor opened to the run it
+// continued, and each pass reads which.
 func (h *historyIndexer) markRunsDecisions(ctx context.Context, ix *history.Index, run string) error {
 	for after := "decision:"; ; {
 		page, err := ix.Sources(ctx, after, history.MaxSourcesPage)
@@ -270,10 +293,54 @@ func decisionAnchor(d crew.Decision) string {
 	return hRunRef(d.Run)
 }
 
+// recordFor is whom a decision is for as its record keeps it (HM1): the
+// person its request named when it opened and the responsibility they
+// hold for it, or the person an accepted response answered for, its
+// receipt's.
+type recordFor struct {
+	Person         string `json:"person"`
+	Responsibility string `json:"responsibility,omitempty"`
+}
+
+// words is whom f is for in DR1's words: "ana, the architecture owner",
+// or "ana" for a person named by name; "" for none.
+func (f *recordFor) words() string {
+	if f == nil || f.Person == "" {
+		return ""
+	}
+	if w, ok := crew.ResponsibilityWords[f.Responsibility]; ok {
+		return f.Person + ", the " + w
+	}
+	return f.Person
+}
+
+// keptRequest is a request as the ledger keeps it: DR1's request, its for
+// the person the opening resolved (an object), never the label as sent.
+type keptRequest struct {
+	crew.DecisionRequest
+	For *recordFor `json:"for,omitempty"`
+}
+
+// receiptFors is whom each response answered for, by its number, as its
+// receipt in the ledger keeps it.
+func receiptFors(rec ledger.DecisionRecord) map[int]*recordFor {
+	out := map[int]*recordFor{}
+	for _, rr := range rec.Responses {
+		var b struct {
+			For *recordFor `json:"for"`
+		}
+		if json.Unmarshal([]byte(rr.Receipt), &b) == nil && b.For != nil && b.For.Person != "" {
+			out[rr.K] = b.For
+		}
+	}
+	return out
+}
+
 // decisionEntries is a decision's entries: its request, as a record, and
-// each response it accepted, as a decision, with their links.
-func decisionEntries(p runPlace, d crew.Decision) ([]history.Entry, []history.Link) {
-	var req crew.DecisionRequest
+// each response it accepted, as a decision, with their links; fors is whom
+// each response answered for, by its number.
+func decisionEntries(p runPlace, d crew.Decision, fors map[int]*recordFor) ([]history.Entry, []history.Link) {
+	var req keptRequest
 	_ = json.Unmarshal(d.Request, &req)
 	ref := hDecisionRef(d.ID)
 	base := p.base()
@@ -285,8 +352,8 @@ func decisionEntries(p runPlace, d crew.Decision) ([]history.Entry, []history.Li
 	e := base
 	e.Key, e.Ref, e.Kind, e.At, e.Outcome, e.Actor = ref, ref, "decision", hAt(d.CreatedAt, p.fallback), d.State, hField(d.Member)
 	e.Title = hTitle(cmp.Or(req.Question, d.ID))
-	e.Summary = hSummary(strings.Join(hNonEmpty(d.ID+" "+d.Type, askedWords(d), subjectWords(req.Subject), authorizesWords(req.Authorizes)), " · "))
-	e.Body = history.Clip(requestBody(req, crew.DecisionOptions(d.Type, string(d.Request))), history.MaxLongBody)
+	e.Summary = hSummary(strings.Join(hNonEmpty(d.ID+" "+d.Type, askedWords(d), prefixed("for ", req.For.words()), subjectWords(req.Subject), authorizesWords(req.Authorizes)), " · "))
+	e.Body = history.Clip(requestBody(req.DecisionRequest, crew.DecisionOptions(d.Type, string(d.Request))), history.MaxLongBody)
 	out := []history.Entry{e}
 	var links []history.Link
 	options := crew.DecisionOptions(d.Type, string(d.Request))
@@ -296,10 +363,11 @@ func decisionEntries(p runPlace, d crew.Decision) ([]history.Entry, []history.Li
 		}
 		rref := hResponseRef(d.ID, rc.K)
 		x := base
-		x.Key, x.Ref, x.Kind, x.At, x.Actor = rref, rref, "decision.response", hAt(rc.At, e.At), hField(cmp.Or(rc.Actor, "admin"))
+		// The actor is the response row's (DecisionOf), never one the index
+		// supplies.
+		x.Key, x.Ref, x.Kind, x.At, x.Actor = rref, rref, "decision.response", hAt(rc.At, e.At), hField(rc.Actor)
 		x.Outcome = responseOutcome(d, rc)
-		answer := answerOfReceipt(rc, options)
-		x.Title = hTitle(fmt.Sprintf("%s: %s, by %s", d.ID, cmp.Or(answer, "answered"), cmp.Or(rc.ByName, rc.Actor)))
+		x.Title = hTitle(responseTitle(d.ID, answerOfReceipt(rc, options), cmp.Or(rc.ByName, rc.Actor), fors[rc.K].words()))
 		x.Summary = hSummary(d.ID + " asked: " + req.Question)
 		x.Body = history.Clip(strings.Join(hNonEmpty(rc.Text, prefixed("Why: ", rc.Rationale)), "\n"), history.MaxLongBody)
 		out = append(out, x)
@@ -311,6 +379,24 @@ func decisionEntries(p runPlace, d crew.Decision) ([]history.Entry, []history.Li
 		}
 	}
 	return out, dedupLinks(links)
+}
+
+// responseTitle is a response in DR1's words: "dr-1: Reject, by Nate for
+// ana, the architecture owner", each part said only when its record holds
+// it.
+func responseTitle(id, answer, by, forWords string) string {
+	who := ""
+	if by != "" {
+		who = "by " + by
+	}
+	if forWords != "" {
+		who = strings.TrimSpace(who + " for " + forWords)
+	}
+	t := id + ": " + cmp.Or(answer, "answered")
+	if who != "" {
+		t += ", " + who
+	}
+	return t
 }
 
 // responseOutcome is a response's outcome, the option it chose in the
