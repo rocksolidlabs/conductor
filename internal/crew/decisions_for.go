@@ -91,7 +91,7 @@ func holdersWords(c Crew) string {
 	var held, names []string
 	for _, resp := range Responsibilities {
 		if p, ok := c.holderOf(resp); ok {
-			held = append(held, fmt.Sprintf("%s %s", resp, p.Name))
+			held = append(held, fmt.Sprintf("%s (%s)", resp, p.Name))
 		}
 	}
 	for _, p := range c.People {

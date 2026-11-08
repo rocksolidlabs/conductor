@@ -128,7 +128,7 @@ func TestAnAgentsLabelNoPersonHoldsIsRefused(t *testing.T) {
 		req.For = label
 		_, _, err := e.RequestDecision(t.Context(), b.Attempt.SessionID, req)
 		var de *DecisionError
-		if !errors.As(err, &de) || de.Code != CodeInvalid || !strings.Contains(de.Words, "they hold architecture nate") {
+		if !errors.As(err, &de) || de.Code != CodeInvalid || !strings.Contains(de.Words, "they hold architecture (nate), product (nate), acceptance (ana)") {
 			t.Fatalf("a request for %s: %v", label, err)
 		}
 	}
