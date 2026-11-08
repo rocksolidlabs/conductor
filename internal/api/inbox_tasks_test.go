@@ -86,7 +86,7 @@ func TestInboxTaskItemsFollowTheEngine(t *testing.T) {
 		t.Fatalf("the list: %+v", page)
 	}
 	it := e.itemOf(t, ref)
-	if !slices.Equal(actionNames(it), []string{crew.TaskRetry, crew.TaskAccept}) || it.Revision == "" {
+	if !slices.Equal(actionNames(it), []string{crew.TaskRetry, crew.TaskAccept, crew.TaskRecheck}) || it.Revision == "" {
 		t.Fatalf("the actions: %v at %q", actionNames(it), it.Revision)
 	}
 	for _, a := range it.Actions {
@@ -118,6 +118,69 @@ func TestInboxTaskItemsFollowTheEngine(t *testing.T) {
 	}
 	if done := e.itemOf(t, ref); len(done.Actions) != 0 || !strings.Contains(done.Now, "succeeded") {
 		t.Fatalf("the accepted task's item: %+v", done)
+	}
+}
+
+// A failed task whose standing failed candidate failed in its checks
+// offers Check again of it (#713), named by its attempt and commit, at the
+// run's revision, through the recheck route: taken at its Expect, tracked
+// through to the attempt that checks it again; the item as read before,
+// its candidate moved on since (that attempt failed too), refused
+// stale_candidate in words naming the one that stands, which the read
+// again offers. A task whose attempts all ended before a result offers
+// Retry alone.
+func TestInboxOffersCheckAgain(t *testing.T) {
+	l, run, _, commits := failingLaunch(t)
+	e := l.testEnv
+	ref := "task:" + run + "/build"
+	old := e.itemOf(t, ref)
+	a := actionOf(t, old, crew.TaskRecheck)
+	if a.Attempt != 3 || a.Commit != commits[2] || a.Expect != old.Revision || a.Route != "POST /api/runs/"+run+"/tasks/build/recheck" || a.Confirm || a.Label != "Check again" ||
+		!strings.Contains(a.Scope, "attempt 3's commit "+short(commits[2])) || !strings.Contains(a.Scope, "run revision "+old.Revision) {
+		t.Fatalf("Check again: %+v", a)
+	}
+	rev, _ := strconv.ParseInt(a.Expect, 10, 64)
+	if status, out := recheckOn(t, e, run, map[string]any{"commandId": "in1", "attempt": a.Attempt, "commit": a.Commit, "expectedRevision": rev}); status != http.StatusOK || out["attempt"] != 4.0 {
+		t.Fatalf("Check again at its Expect: %d %v", status, out)
+	}
+	steps := e.trackOf(t, ref, "in1", "")
+	if steps[stepRecorded].State != stepDone || steps[stepValidated].State != stepDone || steps[stepResumed].State != stepDone || !strings.Contains(steps[stepResumed].Words, "attempt 4 checks the candidate again") {
+		t.Fatalf("the track of Check again: %+v", steps)
+	}
+	if got := e.trackOf(t, "task:"+run+"/docs", "in1", ""); got[stepRecorded].State != stepRefused {
+		t.Fatalf("build's Check again read under docs: %+v", got)
+	}
+	ledgerAttemptIn(t, l.srv, run, "build", 4, ledger.AttemptFailed)
+	taskVia(t, e, run, "build", "failed again", func(task map[string]any) bool { return task["state"] == ledger.TaskFailed })
+	status, out := recheckOn(t, e, run, map[string]any{"commandId": "in2", "attempt": a.Attempt, "commit": a.Commit})
+	if status != http.StatusConflict || errorCode(out) != crew.RefusalStaleCandidate || !strings.Contains(apiMessage(out), "attempt 4 failed since") {
+		t.Fatalf("the candidate read before: %d %v", status, out)
+	}
+	if got := e.trackOf(t, ref, "in2", ""); got[stepValidated].State != stepRefused || !strings.Contains(got[stepValidated].Words, "attempt 4 failed since") {
+		t.Fatalf("the track of the refusal: %+v", got)
+	}
+	if b := actionOf(t, e.itemOf(t, ref), crew.TaskRecheck); b.Attempt != 4 || b.Commit != commits[2] {
+		t.Fatalf("read again: %+v", b)
+	}
+
+	// Without: every attempt's session ends before a result.
+	w := readyEnv(t, nil)
+	w.gitRepo(t)
+	wrun, release, err := w.srv.runs.LaunchNamed(t.Context(), failingCrew(w.root), "")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { w.do("POST", "/api/runs/"+wrun.ID+"/stop", adminToken, nil) })
+	for n := 1; n <= 3; n++ {
+		sid := runningAttempt(t, w, wrun.ID, "build", n)["sessionId"].(string)
+		if resp, out := w.do("DELETE", "/api/sessions/"+sid, adminToken, nil); resp.StatusCode != http.StatusOK {
+			t.Fatalf("end attempt %d's session: %d %v", n, resp.StatusCode, out)
+		}
+	}
+	taskVia(t, w, wrun.ID, "build", "failed", func(task map[string]any) bool { return task["state"] == ledger.TaskFailed })
+	if it := w.itemOf(t, "task:"+wrun.ID+"/build"); !slices.Equal(actionNames(it), []string{crew.TaskRetry}) {
+		t.Fatalf("a task failed before any result: %v", actionNames(it))
 	}
 }
 

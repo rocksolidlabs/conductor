@@ -350,7 +350,7 @@ func (s *Server) laneItems(ctx context.Context, sc laneScope) []*inboxItem {
 	for _, info := range infos {
 		if s.coversSession(sc, info.ID) {
 			if it, ok := rd.questionItem(info); ok {
-				out = append(out, it)
+				out = append(out, laneTakes(it))
 			}
 		}
 	}
@@ -361,7 +361,7 @@ func (s *Server) laneItems(ctx context.Context, sc laneScope) []*inboxItem {
 					continue
 				}
 				if it, ok := rd.taskItem(run, t); ok {
-					out = append(out, it)
+					out = append(out, laneTakes(it))
 				}
 			}
 		}
@@ -454,6 +454,7 @@ func (l *Lane) Read(ctx context.Context, linkID, sessionID string, m proto.Decis
 	} else if err != nil {
 		return refusal(m.ReqID, "unavailable", "the item could not be read")
 	}
+	laneTakes(it)
 	for i, e := range it.Evidence {
 		if r, err := brakeman.ParseRef(e.Ref); err == nil && r.Kind == brakeman.RefSession && s.coversSession(sc, r.Session) {
 			if _, ok := s.registry.Get(r.Session); ok {
@@ -654,6 +655,13 @@ func (s *Server) commandTarget(ref brakeman.Ref) (run, task string, ok bool) {
 // isCommand says whether name is a task command the lane takes.
 func isCommand(name string) bool {
 	return name == crew.TaskRetry || name == crew.TaskAccept || name == crew.TaskCancel
+}
+
+// laneTakes leaves on it the actions a link's lane takes (an answer and
+// the task commands): Check again is the workbench's.
+func laneTakes(it *inboxItem) *inboxItem {
+	it.Actions = slices.DeleteFunc(it.Actions, func(a inboxAction) bool { return a.Name != "answer" && !isCommand(a.Name) })
+	return it
 }
 
 // note keeps an action taken through the link in its Recent.

@@ -691,17 +691,28 @@ const (
 	TaskRetry  = "retry"
 	TaskAccept = "accept"
 	TaskCancel = "cancel"
+	// TaskRecheck is Check again's intent (Recheck): no TaskCommands
+	// name, its candidate there in Recheck.
+	TaskRecheck = "recheck"
 )
 
 // TaskCommandOn reports whether the ledger's command row is one of the
 // three task commands sent for the task taskID: its intent Retry, Accept
 // or Cancel, and its fingerprint the one act keeps for that command on
-// that task (TaskCommandFingerprint). A run's pause or another task's
-// command is not, whatever its id.
+// that task (TaskCommandFingerprint), or a Check again of it. A run's
+// pause or another task's command is not, whatever its id.
 func TaskCommandOn(row ledger.CommandRow, taskID string) bool {
 	switch row.Intent {
 	case TaskRetry, TaskAccept, TaskCancel:
 		return row.Fingerprint == TaskCommandFingerprint(row.Intent, taskID)
+	case TaskRecheck:
+		// Its fingerprint holds its candidate too: its receipt names the
+		// task its change was judged on, and one refused before the
+		// change (a stale revision, a continuation) names none and
+		// changed nothing.
+		var rc Receipt
+		_ = json.Unmarshal([]byte(row.Receipt), &rc)
+		return rc.Task == nil || rc.Task.ID == taskID
 	}
 	return false
 }
@@ -729,6 +740,10 @@ type TaskCommandSet struct {
 	// Task is the task as it stood when the commands were judged, read
 	// under the same lock as them: what a page describes them by.
 	Task TaskState `json:"task"`
+	// Recheck is the Check again Recheck would take now, by its own rule
+	// (recheckOf): the task's standing failed candidate, named as its own
+	// run names it (Imported in a continuation); nil when it would refuse.
+	Recheck *RecheckRequest `json:"recheck,omitempty"`
 }
 
 // TaskCommands is what the run's task allows of Retry, Accept and Cancel,
@@ -773,6 +788,15 @@ func (e *Engine) commandsOf(r *run, t *task) TaskCommandSet {
 		}
 		if name == TaskRetry {
 			out.RetryStart = r.startCommit(t)
+		}
+	}
+	if fc, ok := r.standingFailed(t); ok && t.state == ledger.TaskFailed {
+		rq := RecheckRequest{Task: t.def.ID, Attempt: fc.N, Commit: fc.ResultCommit}
+		if fc.RunID != r.id {
+			rq.Imported = fmt.Sprintf("%s/%s/%d", fc.RunID, fc.TaskID, fc.N)
+		}
+		if _, _, err := r.recheckOf(t, rq); err == nil {
+			out.Recheck = &rq
 		}
 	}
 	return out
@@ -983,7 +1007,7 @@ func (e *Engine) Recheck(ctx context.Context, runID, actor string, cmd Command, 
 		state, reason, outcome string
 		pause                  pauseMark
 	}
-	return e.act(ctx, runID, actor, cmd, "recheck", recheckArgs(rq), func(r *run) (*task, []event, error) {
+	return e.act(ctx, runID, actor, cmd, TaskRecheck, recheckArgs(rq), func(r *run) (*task, []event, error) {
 		t := r.task(rq.Task)
 		if t == nil {
 			return nil, nil, ErrTaskNotFound
@@ -1111,7 +1135,7 @@ func recheckArgs(rq RecheckRequest) []string {
 // (act). The API reads the row along a run's chain, where a continuation
 // took the command (the recheck route).
 func RecheckRepeat(row ledger.CommandRow, rq RecheckRequest) (Receipt, error) {
-	return priorReceipt(row, "recheck", fingerprint("recheck", recheckArgs(rq)...))
+	return priorReceipt(row, TaskRecheck, fingerprint(TaskRecheck, recheckArgs(rq)...))
 }
 
 // staleCandidate is the refusal of a Check again whose candidate is not

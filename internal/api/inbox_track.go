@@ -308,7 +308,7 @@ func startedSince(attempts []crew.AttemptState, since time.Time) *crew.AttemptSt
 }
 
 // doneResumed is the resumed step of a command the engine took: a retry's
-// next attempt running, an accept's dependents dispatched (the first
+// next attempt running, a Check again's attempt checking its candidate, an accept's dependents dispatched (the first
 // attempt of any of them that started since, read from every attempt it
 // keeps, so that a later attempt reserved and not started yet, or one
 // that failed, does not hide the start that resumed the work), a
@@ -323,6 +323,11 @@ func doneResumed(row ledger.CommandRow, rc crew.Receipt, task *crew.TaskState, a
 			return step(stepResumed, stepDone, a.StartedAt, fmt.Sprintf("attempt %d started", a.N), "")
 		}
 		return step(stepResumed, stepWaiting, nil, "the next attempt has not started yet", "")
+	case crew.TaskRecheck:
+		if a := startedSince(attempts, row.CreatedAt); a != nil {
+			return step(stepResumed, stepDone, a.StartedAt, fmt.Sprintf("attempt %d checks the candidate again", a.N), "")
+		}
+		return step(stepResumed, stepUnknown, nil, "the attempt that checks it again is not held here", "")
 	case crew.TaskAccept:
 		if !depsKnown {
 			return step(stepResumed, stepUnknown, nil, "the run is not held here; what followed is not known", "")
