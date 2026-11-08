@@ -3,6 +3,8 @@ import type { CandidateReceipt, RunCandidate } from '~/composables/useDispatch'
 import { candidateKey } from '~/composables/useRunCandidates'
 import { type ReceiptPick, candidateWords, findingsCount, findingsWords, followPick, pickReceipt, receiptChips, receiptKey, receiptName, receiptState, repairs } from '~/utils/dispatchEvidence'
 import { shortCommit } from '~/utils/dispatchPlans'
+import { REVIEW_ENTRY } from '~/composables/useReview'
+import { candidateRef } from '~/utils/dispatch'
 
 /**
  * A run's candidates (Program item DS2, docs/plans/dispatch-evidence.md, "web/app", PR-11), read from the ledger (GET
@@ -13,7 +15,8 @@ import { shortCommit } from '~/utils/dispatchPlans'
  * review is opened (GET /api/runs/{run}/tasks/{task}, which has them whole); then the run's repairs (DispatchRepairs), who took each up
  * read from the same route, every attempt with when it started, one that never submitted included, a record's too. The pages shown
  * are read again from the start, gathered for the window, when the run's revision moves (its run events, through the live store): the
- * reads are useRunCandidates'. A list, never a table: one column on a phone.
+ * reads are useRunCandidates'. A list, never a table: one column on a phone. On a ticket's page (RV1), each standing work candidate
+ * offers Review, the ticket's Review view at it, with the open findings of its task counted.
  */
 const props = defineProps<{
   runId: string
@@ -25,6 +28,9 @@ const copy = useCopy()
 const { pages, tasks, managed, next, error, loading, more, opened, findings, findingsError, toggleFindings, details, detailsError } = useRunCandidates({ runId: () => props.runId, revision: () => props.revision })
 const fixes = computed(() => repairs(tasks.value, details))
 const ckey = candidateKey
+/** The ticket page's Review entry: absent anywhere else. */
+const review = inject(REVIEW_ENTRY, null)
+const reviewRef = (c: RunCandidate) => candidateRef({ run: props.runId, task: c.task, attempt: c.attempt, commit: c.commit ?? '' })
 
 function severityColor(s: string): 'error' | 'warning' | 'neutral' | 'info' {
   return s === 'blocker' ? 'error' : s === 'major' ? 'warning' : s === 'minor' ? 'info' : 'neutral'
@@ -92,6 +98,18 @@ const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted'
                 data-candidate-accepted-anyway
               />
               <span :class="tone[candidateWords(c).tone]" data-candidate-words>{{ candidateWords(c).text }}</span>
+              <span v-if="review && c.kind === 'work' && c.commit && c.standing" class="ml-auto flex flex-none items-center gap-1">
+                <UBadge
+                  v-if="review.openFindings(runId, t.task)"
+                  :label="`${review.openFindings(runId, t.task)} open`"
+                  color="warning"
+                  variant="subtle"
+                  size="sm"
+                  :title="`Open findings of ${t.task}'s reviews`"
+                  data-candidate-open-findings
+                />
+                <UButton label="Review" icon="i-lucide-scan-eye" size="xs" color="neutral" variant="outline" :to="review.href(reviewRef(c))" data-candidate-review />
+              </span>
             </div>
             <div v-if="c.kind === 'review' && c.verdict" class="flex flex-wrap items-center gap-2">
               <UBadge :label="c.verdict === 'approved' ? 'approved' : 'needs changes'" :color="c.verdict === 'approved' ? 'success' : 'warning'" variant="subtle" size="sm" data-candidate-verdict />

@@ -75,6 +75,8 @@ export function useTicketCandidates(o: { gate: DispatchOrder; key: () => string;
   const api = useDispatchApi()
   /** Each run's tasks with their candidates, as last read. */
   const byRun = shallowReactive(new Map<string, TaskCandidates[]>())
+  /** Each run's base, as its candidates' first page names it: the Review view's default base (RV1). */
+  const bases = shallowReactive(new Map<string, string>())
   /** By run: why its last read failed, until one answers. */
   const errors = shallowReactive(new Map<string, string>())
   /** The signature each run was last asked to be read at. */
@@ -156,20 +158,23 @@ export function useTicketCandidates(o: { gate: DispatchOrder; key: () => string;
         `delivery-candidates:${id}`,
         async () => {
           const tasks: TaskCandidates[] = []
+          let base = ''
           let after = ''
           for (let i = 0; i < MAX_PAGES; i++) {
             const p = await api.runCandidates(id, after)
+            base ||= p.base ?? ''
             for (const t of p.candidates ?? []) if (!tasks.some((x) => x.task === t.task)) tasks.push(t)
             if (!p.next) break
             after = p.next
           }
           for (const [i, t] of tasks.entries()) if ((t.acceptedOlder ?? 0) > 0 && t.candidates.length) tasks[i] = await readOlder(id, t)
-          return tasks
+          return { tasks, base }
         },
         {
-          apply: (tasks) => {
+          apply: ({ tasks, base }) => {
             if (k !== o.key()) return
             byRun.set(id, tasks)
+            if (base) bases.set(id, base)
             answered(id, n)
           },
           absent: (e) => e instanceof ApiError && e.status === 404,
@@ -275,5 +280,5 @@ export function useTicketCandidates(o: { gate: DispatchOrder; key: () => string;
     return ''
   })
 
-  return { byRun, runs, loading, error, reset }
+  return { byRun, bases, runs, loading, error, reset }
 }
