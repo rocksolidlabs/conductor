@@ -106,9 +106,31 @@ import (
 	"unicode/utf8"
 )
 
-// V is the version of the records this package writes. A record of a
-// later version is read as it is and never rewritten.
-const V = 1
+// The versions of the records this package writes. A record is written at
+// the lowest version that holds it (versionOf): V while none of its
+// resumes' receipts carries a Code, VCode, the version that added
+// Resume.Code, once one does. So a server that knows version 1 alone still
+// reads strictly every record without a failed receipt's code, and reads
+// one with it as a later version's: as it is, never rewritten. This
+// package reads both versions strictly, a version 1 record as before; a
+// record of a version past VCode is read as it is and never rewritten.
+const (
+	V     = 1
+	VCode = 2
+	// maxV is the latest version this package reads strictly.
+	maxV = VCode
+)
+
+// versionOf is the version r is written at: VCode when a receipt of its
+// carries a Code, else V.
+func versionOf(r *Record) int {
+	for _, x := range r.Resumes {
+		if x.Code != "" {
+			return VCode
+		}
+	}
+	return V
+}
 
 // The record's bounds. A record is at most MaxRecord bytes as store.Encode
 // writes it: past that its oldest entries go first, then its oldest files,
@@ -143,7 +165,9 @@ const (
 	MaxArg      = 4096
 	maxField    = 200 // an agent's or a host's field, a session's name
 	maxResumeEr = 200
-	maxEnvName  = 128
+	// maxResumeCode bounds a failed receipt's code (Resume.Code).
+	maxResumeCode = 32
+	maxEnvName    = 128
 	// maxHead is what all of a record but its entries and files takes at
 	// most, every field at its bound (TestTheHeadAtEveryBoundLeavesRoom):
 	// the rest of MaxRecord is its entries' and files'.
@@ -321,12 +345,16 @@ type File struct {
 // Resume is the receipt of a resume from the record: its command id, its
 // actor, the session id allocated for it, its state and why it failed.
 type Resume struct {
-	CommandID string    `json:"commandId"`
-	Actor     string    `json:"actor,omitempty"`
-	Session   string    `json:"session,omitempty"`
-	State     string    `json:"state"`
-	Error     string    `json:"error,omitempty"`
-	At        time.Time `json:"at"`
+	CommandID string `json:"commandId"`
+	Actor     string `json:"actor,omitempty"`
+	Session   string `json:"session,omitempty"`
+	State     string `json:"state"`
+	// Code is a failed receipt's refusal, the code its route answered
+	// with; Error says why in words.
+	// A record that holds one is written at VCode (versionOf).
+	Code  string    `json:"code,omitempty"`
+	Error string    `json:"error,omitempty"`
+	At    time.Time `json:"at"`
 }
 
 // open says the record has no end, observed or not.
@@ -424,6 +452,25 @@ func fitPath(s string, n int) string {
 	return s
 }
 
+// maxEscape is the most bytes one character takes in a JSON string
+// (escapedLen): a control character's \u escape.
+const maxEscape = 6
+
+// CwdMayBeCut says a record's working directory may be the cut that
+// fitRecord made of a longer one at MaxCwd, its JSON form, escapes
+// included, being within maxEscape of the bound: fitPath stops only where
+// the next character would pass it, so every cut one is, those of the
+// records an earlier version wrote among them. Such a folder is not the
+// session's: it may be its parent, or another folder. One that is whole
+// and that long is judged cut all the same.
+func CwdMayBeCut(cwd string) bool {
+	size := 0
+	for _, r := range cwd {
+		size += escapedLen(r)
+	}
+	return size > MaxCwd-maxEscape
+}
+
 // escapedLen is how many bytes r takes in a JSON string as store.Encode
 // writes one (HTML characters as they are).
 func escapedLen(r rune) int {
@@ -482,7 +529,7 @@ func fitRecord(r *Record) {
 	for i := range r.Resumes {
 		x := &r.Resumes[i]
 		x.CommandID, x.Actor, x.Session = fitPath(x.CommandID, 32), fitPath(x.Actor, MaxID), fitPath(x.Session, 16)
-		x.State, x.Error = fitPath(x.State, 16), fitPath(x.Error, maxResumeEr)
+		x.State, x.Code, x.Error = fitPath(x.State, 16), fitPath(x.Code, maxResumeCode), fitPath(x.Error, maxResumeEr)
 	}
 	if r.Entries == nil {
 		r.Entries = []Entry{}

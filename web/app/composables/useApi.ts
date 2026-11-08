@@ -66,14 +66,18 @@ export function useApi() {
   const { httpBase } = useApiBase()
   const admin = useWorkbenchToken()
 
-  /** The error a failed request throws: the server's code and message, or `network` when it could not be reached. */
-  function normalise(e: unknown, explicitToken: boolean): ApiError {
+  /**
+   * The error a failed request throws: the server's code and message, or `network` when it could not be reached. A 401 asks for the
+   * workbench token only when the request carried it, as `sent` (admin.refused judges it by that token, not by the one held when the
+   * reply lands); a token of the caller's own (`explicitToken`) asks for nothing.
+   */
+  function normalise(e: unknown, explicitToken: boolean, sent: string): ApiError {
     const fe = e as FetchError<unknown>
     const status = fe.statusCode ?? 0
     const data = errorBody(fe.data)
     const code = data?.error?.code ?? (status === 0 ? 'network' : 'http_error')
     const message = data?.error?.message ?? (status === 0 ? 'Cannot reach the server' : fe.message)
-    if (status === 401 && !explicitToken) admin.needsToken.value = true
+    if (status === 401 && !explicitToken) admin.refused(sent)
     return new ApiError(status, code, message, data?.error ?? {}, data ?? fe.data)
   }
 
@@ -87,7 +91,7 @@ export function useApi() {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       })
     } catch (e) {
-      throw normalise(e, opts.token !== undefined)
+      throw normalise(e, opts.token !== undefined, token)
     }
   }
 
@@ -108,7 +112,7 @@ export function useApi() {
       const bytes = data ? new Uint8Array(data) : new Uint8Array()
       return { text: new TextDecoder().decode(bytes), bytes, headers: res.headers }
     } catch (e) {
-      throw normalise(e, opts.token !== undefined)
+      throw normalise(e, opts.token !== undefined, token)
     }
   }
 
@@ -125,7 +129,7 @@ export function useApi() {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       })
     } catch (e) {
-      throw normalise(e, opts.token !== undefined)
+      throw normalise(e, opts.token !== undefined, token)
     }
   }
 

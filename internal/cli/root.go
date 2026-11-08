@@ -42,6 +42,9 @@ Usage:
                                and the runs launched from them
   conductor decision list|show|respond|cancel [--server URL] [--token T]
                                the decisions managed runs wait for: read, answer and cancel them
+  conductor history search|show|similar|sessions|session|forget|resume|reindex [--server URL] [--token T]
+                               search the history, read and forget session records, and resume a
+                               session's agent conversation from its record
   conductor export [--server URL] [--token T] [--out FILE]
                                write the running server's data directory as one zip archive
   conductor export --data-dir DIR [--config FILE] [--out FILE]
@@ -105,6 +108,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return runDispatch(ctx, args[1:], stdin, stdout, stderr)
 	case "decision":
 		return runDecision(ctx, args[1:], stdout, stderr)
+	case "history":
+		return runHistory(ctx, args[1:], stdout, stderr)
 	case "export":
 		return runExport(ctx, args[1:], stdout, stderr)
 	case "restore":

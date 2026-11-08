@@ -59,11 +59,21 @@ export function useWorkbenchToken() {
     set('')
   }
 
+  /**
+   * A refusal (401) of a request sent with `sent`, the token the browser held as it sent it: the gate asks for the token only while that
+   * is still the one held. A reply to a request made with the token before, landing after another was saved, asks for nothing: the
+   * token held now has not been refused (#281). A request no token went with is refused for the one held when none is.
+   */
+  function refused(sent: string) {
+    if (sent === token.value) needsToken.value = true
+  }
+
   return {
     token,
     hasToken: computed(() => token.value.length > 0),
     needsToken,
     set,
     clear,
+    refused,
   }
 }

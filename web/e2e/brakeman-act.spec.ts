@@ -357,22 +357,49 @@ test('with the grant taken away, the act is refused and kept nowhere, and the pr
 
 test('Settings opened before the right token was saved offers the grants once it is, with no reload', async ({ page }) => {
   // The guide's read is refused with the token the browser holds, and asked again when the gate saves the right one: Settings is not
-  // mounted again, so the read that failed as it mounted is the only one the old code made (#538's review). Two waits of 30 s, then
-  // five steps.
-  budget(2 * 30_000 + 5 * STEP_MS)
-  await page.addInitScript(() => {
-    localStorage.setItem('conductor.workbenchToken', 'not-the-workbench-token')
-    localStorage.setItem('conductor.displayName', 'Nate')
+  // mounted again, so the read that failed as it mounted is the only one the old code made (#538's review). A refusal of the token
+  // before that lands after the save does not ask for the token again (#281): the first guide read, sent with the wrong token, is held
+  // until the gate has closed and answered then, and the read for the right token is held until that refusal is in, so the gate is
+  // judged after a late 401 every run, not when a loaded machine happens to make one. Two waits of 30 s, then eight steps.
+  budget(2 * 30_000 + 8 * STEP_MS)
+  const wrong = 'not-the-workbench-token'
+  let releaseWrong!: () => void
+  const wrongHeld = new Promise<void>((r) => (releaseWrong = r))
+  let releaseRight!: () => void
+  const rightHeld = new Promise<void>((r) => (releaseRight = r))
+  let heldWrong = 0
+  await page.route('**/api/guide?*', async (route) => {
+    if (route.request().headers()['authorization'] === `Bearer ${wrong}`) {
+      heldWrong++
+      await wrongHeld
+    } else await rightHeld
+    await route.continue()
   })
+  await page.addInitScript((t) => {
+    localStorage.setItem('conductor.workbenchToken', t)
+    localStorage.setItem('conductor.displayName', 'Nate')
+  }, wrong)
   await page.goto(`${server!.baseURL}/settings`)
   const gate = page.getByRole('dialog', { name: 'Workbench token' })
   await expect(gate).toBeVisible({ timeout: 30_000 })
+  await expect.poll(() => heldWrong).toBeGreaterThanOrEqual(1)
   const field = gate.getByPlaceholder('paste the workbench token')
   await field.fill(server!.token)
   await expect(field).toHaveValue(server!.token)
   await gate.getByRole('button', { name: 'Save' }).click()
   await expect(gate).toHaveCount(0)
+  // The wrong token's refusal, answered after the save: the page has its whole body before the right token's read is let go.
+  const late = page.waitForResponse((r) => r.url().includes('/api/guide?') && r.request().headers()['authorization'] === `Bearer ${wrong}`)
+  releaseWrong()
+  const refusal = await late
+  expect(refusal.status()).toBe(401)
+  await refusal.finished()
+  releaseRight()
   const g = page.locator('[data-brakeman-grant="launch_approved_plan"]')
   await expect(g).toHaveAttribute('data-grant-served', 'true', { timeout: 30_000 })
+  // The late refusal was the token before's: the gate stays closed (it opened again here before #281's fix, the page behind it hidden
+  // from the switch below), the right token kept.
+  await expect(gate).toHaveCount(0)
+  expect(await page.evaluate(() => localStorage.getItem('conductor.workbenchToken'))).toBe(server!.token)
   await expect(page.locator('[data-brakeman-grants]').getByRole('switch', { name: 'Launch an approved plan' })).toBeEnabled()
 })
