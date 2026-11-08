@@ -1,24 +1,34 @@
 import { $fetch as ofetch } from 'ofetch'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { computed, ref } from 'vue'
+import { computed, ref, type Ref } from 'vue'
 import { ApiError, useApi } from './useApi'
+import { useWorkbenchToken } from './useWorkbenchToken'
 
-// useApi reads Nuxt's auto-imports (useRuntimeConfig, computed, useWorkbenchToken, $fetch) as globals: each is stubbed here.
-describe('requestText', () => {
-  const raw = vi.fn()
-  const fetchFn = Object.assign(vi.fn(), { raw })
-  const needsToken = ref(false)
+const raw = vi.fn()
+const fetchFn = Object.assign(vi.fn(), { raw })
+/** The workbench token as the app keeps it (useWorkbenchToken itself, over a stubbed useState), holding `workbench-token`. */
+let admin: ReturnType<typeof useWorkbenchToken>
 
-  beforeEach(() => {
-    raw.mockReset()
-    fetchFn.mockReset()
-    needsToken.value = false
-    vi.stubGlobal('useRuntimeConfig', () => ({ public: { apiBase: 'http://api.test' } }))
-    vi.stubGlobal('computed', computed)
-    vi.stubGlobal('useWorkbenchToken', () => ({ token: ref('workbench-token'), needsToken }))
-    vi.stubGlobal('$fetch', fetchFn)
+// useApi reads Nuxt's auto-imports (useRuntimeConfig, computed, useWorkbenchToken, $fetch) as globals: each is stubbed here, and
+// useWorkbenchToken is the app's own over a useState of this test's.
+beforeEach(() => {
+  raw.mockReset()
+  fetchFn.mockReset()
+  const state = new Map<string, Ref<unknown>>()
+  vi.stubGlobal('useState', (key: string, init: () => unknown) => {
+    if (!state.has(key)) state.set(key, ref(init()))
+    return state.get(key)
   })
-  afterEach(() => vi.unstubAllGlobals())
+  vi.stubGlobal('useRuntimeConfig', () => ({ public: { apiBase: 'http://api.test' } }))
+  vi.stubGlobal('computed', computed)
+  vi.stubGlobal('useWorkbenchToken', useWorkbenchToken)
+  vi.stubGlobal('$fetch', fetchFn)
+  admin = useWorkbenchToken()
+  admin.set('workbench-token')
+})
+afterEach(() => vi.unstubAllGlobals())
+
+describe('requestText', () => {
 
   it('returns the body as text and as its bytes with the reply headers, the bearer header sent', async () => {
     raw.mockResolvedValue({ _data: new TextEncoder().encode('set-up\n').buffer, headers: new Headers({ 'X-Conductor-Log-SHA256': 'ab12' }) })
@@ -84,9 +94,61 @@ describe('requestText', () => {
     const unauthorized = Object.assign(new Error('Unauthorized'), { statusCode: 401, data: { error: { code: 'unauthorized', message: 'workbench token required' } } })
     raw.mockRejectedValueOnce(unauthorized)
     await useApi().requestText('/log', { token: 'a-link-token' }).catch(() => {})
-    expect(needsToken.value).toBe(false)
+    expect(admin.needsToken.value).toBe(false)
     raw.mockRejectedValueOnce(unauthorized)
     await useApi().requestText('/log').catch(() => {})
-    expect(needsToken.value).toBe(true)
+    expect(admin.needsToken.value).toBe(true)
+  })
+})
+
+// A 401 is the refusal of the token the request carried, not of the one held when its reply lands (#281): a page opened with a wrong
+// token sends its reads with it, the gate opens on the first refusal, the right token is saved, and a refusal still on its way for the
+// wrong one must not open the gate again over the right one.
+describe('a 401', () => {
+  const unauthorized = () => Object.assign(new Error('Unauthorized'), { statusCode: 401, data: { error: { code: 'unauthorized', message: 'workbench token required' } } })
+  /** A reply held until the test answers it. */
+  function held() {
+    let refuse!: () => void
+    const reply = new Promise<never>((_, reject) => (refuse = () => reject(unauthorized())))
+    return { reply, refuse }
+  }
+  const requests = {
+    request: (path: string, opts?: { token?: string }) => useApi().request(path, opts),
+    requestText: (path: string, opts?: { token?: string }) => useApi().requestText(path, opts),
+    requestBlob: (path: string, opts?: { token?: string }) => useApi().requestBlob(path, opts),
+  }
+  const send = (kind: keyof typeof requests, reply: Promise<never>) => (kind === 'requestText' ? raw : fetchFn).mockReturnValueOnce(reply)
+
+  it.each(Object.keys(requests) as Array<keyof typeof requests>)('%s answered after another token was saved asks for nothing', async (kind) => {
+    const { reply, refuse } = held()
+    send(kind, reply)
+    const out = requests[kind]('/api/guide').catch((e: unknown) => e)
+    const sentWith = (kind === 'requestText' ? raw : fetchFn).mock.calls[0]![1].headers
+    expect(sentWith).toEqual({ Authorization: 'Bearer workbench-token' })
+    // The gate opened on another refusal and the right token was saved: the gate closes.
+    admin.needsToken.value = true
+    admin.set('the-right-token')
+    expect(admin.needsToken.value).toBe(false)
+    refuse()
+    expect(await out).toMatchObject({ status: 401, code: 'unauthorized' })
+    expect(admin.needsToken.value).toBe(false)
+    expect(admin.token.value).toBe('the-right-token')
+  })
+
+  it.each(Object.keys(requests) as Array<keyof typeof requests>)('%s answered with the token it carried still held asks for it', async (kind) => {
+    const { reply, refuse } = held()
+    send(kind, reply)
+    const out = requests[kind]('/api/guide').catch((e: unknown) => e)
+    refuse()
+    expect(await out).toMatchObject({ status: 401 })
+    expect(admin.needsToken.value).toBe(true)
+  })
+
+  it('of a token of the caller\'s own never asks for the workbench token, even when it is the one held', async () => {
+    for (const token of ['a-link-token', 'workbench-token']) {
+      fetchFn.mockRejectedValueOnce(unauthorized())
+      await useApi().request('/api/guide', { token }).catch(() => {})
+      expect(admin.needsToken.value).toBe(false)
+    }
   })
 })
