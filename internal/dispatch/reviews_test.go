@@ -946,6 +946,44 @@ func TestRetryIsTheNextTryAndStopsAtFive(t *testing.T) {
 	}
 }
 
+// Request again holds the candidate to its ticket as a review and a mark
+// are, in its own transaction: a refused request whose run's chain became
+// contested since (another ticket links a run the chain now holds) is
+// refused run_linked, naming the holders, its try unchanged; the chain the
+// ticket's alone again, it is sent again.
+func TestRetryNeedsTheTicketsRunStill(t *testing.T) {
+	s, key, run := reviewTicket(t)
+	ctx := context.Background()
+	v := mustSubmit(t, s, "rv", key, request(candidateOf(run, 2, commitA), lineChange("Fix it.")))
+	rc, err := s.RefusedReview(ctx, testOp("x"), v.ID, 1, "no")
+	want(t, rc, err, StatusDone, "")
+	_, other := makeTicket(t, s, NewTicket{Project: "CND", Title: "Another"})
+	x := "legacy-000000d1"
+	s.SetRunExists(runs(run, x))
+	rc, err = addLink(s, "lx", other, NewLink{Kind: LinkRun, Ref: x})
+	want(t, rc, err, StatusDone, "")
+	s.SetRunChain(chains([]string{run, x}))
+	rc, _, err = s.ApplyingReview(ctx, testOp("contested"), v.ID)
+	want(t, rc, err, StatusFailed, RefusalRunLinked)
+	if !strings.Contains(rc.Error, "contested") {
+		t.Fatalf("the refusal's words: %+v", rc)
+	}
+	if a := reviewOf(t, s, v.ID).Application; a.State != ApplicationRefused || a.Try != 1 {
+		t.Fatalf("after a refused retry: %+v", a)
+	}
+	links, err := s.Links(ctx, other)
+	if err != nil || len(links) != 1 {
+		t.Fatalf("the other ticket's links: %+v %v", links, err)
+	}
+	rc, err = s.RemoveLink(ctx, testOp("unlink"), other, links[0].ID)
+	want(t, rc, err, StatusDone, "")
+	rc, got, err := s.ApplyingReview(ctx, testOp("again"), v.ID)
+	want(t, rc, err, StatusDone, "")
+	if a := got.Application; a.State != ApplicationPending || a.Try != 2 {
+		t.Fatalf("Request again of the ticket's own chain: %+v", a)
+	}
+}
+
 // reviewsOf is the ids of the ticket's reviews, newest first.
 func reviewsOf(t *testing.T, s *Store, key string) []string {
 	t.Helper()
@@ -1623,5 +1661,87 @@ func TestAReviewsReadStaysUnderItsBoundWhateverMarksFollow(t *testing.T) {
 	per := len(b) + len(`,"marks":50,"latest":`)
 	if got := MaxReviewDetail + MaxReviewFindings*per; got > MaxReviewReply {
 		t.Fatalf("a review at its bound with its latest marks is %d bytes, more than %d", got, MaxReviewReply)
+	}
+}
+
+// A review's try is settled only by whoever holds the store's claim on
+// that exact try: a submit's request comes with its try 1 claimed in its
+// commit; nobody else claims it, records it or makes it pending again
+// while it is held (an outcome recorded without the claim is answered
+// failed, no receipt kept, and Request again is ErrReviewClaimed);
+// released, Request again's try 2 comes claimed in its commit, try 1 is
+// stale to a claim, and a release of the old claim drops nothing of the
+// new one; the claim's waiters are woken by its release alone.
+func TestAReviewsTryIsSettledByItsClaimAlone(t *testing.T) {
+	s, key, run := reviewTicket(t)
+	ctx := context.Background()
+	r := request(candidateOf(run, 2, commitA), lineChange("Fix it."))
+	rc, v, c1, err := s.SubmitReviewClaimed(ctx, testOp("rv"), key, r, evidenceOf(r))
+	want(t, rc, err, StatusDone, "")
+	if !c1.Held() || c1.Review != v.ID || c1.Try != 1 {
+		t.Fatalf("the submit's claim: %+v", c1)
+	}
+	if _, _, ok, err := s.ClaimReview(ctx, v.ID, 1); ok || err != nil {
+		t.Fatalf("a claimed try claimed again: %v %v", ok, err)
+	}
+	free := s.ReviewFree(v.ID)
+	if free == nil {
+		t.Fatal("no wait for a claimed review")
+	}
+	rc, err = s.RefusedReview(ctx, testOp("x"), v.ID, 1, "no")
+	want(t, rc, err, StatusFailed, RefusalInvalid)
+	if a := reviewOf(t, s, v.ID).Application; a.State != ApplicationPending {
+		t.Fatalf("settled without the claim: %+v", a)
+	}
+	rc, err = s.RefusedReviewClaimed(ctx, testOp("x"), c1, "no")
+	want(t, rc, err, StatusDone, "")
+	if _, _, _, err := s.ApplyingReviewClaimed(ctx, testOp("again"), v.ID); !errors.Is(err, ErrReviewClaimed) {
+		t.Fatalf("Request again while the claim is held: %v", err)
+	}
+	select {
+	case <-free:
+		t.Fatal("the claim's waiters woken before its release")
+	default:
+	}
+	s.ReleaseReview(c1)
+	select {
+	case <-free:
+	default:
+		t.Fatal("the release did not wake the claim's waiters")
+	}
+	rc, got, c2, err := s.ApplyingReviewClaimed(ctx, testOp("again"), v.ID)
+	want(t, rc, err, StatusDone, "")
+	if !c2.Held() || c2.Try != 2 || got.Application.Try != 2 || got.Application.State != ApplicationPending {
+		t.Fatalf("Request again's claim: %+v %+v", c2, got.Application)
+	}
+	if _, _, ok, err := s.ClaimReview(ctx, v.ID, 2); ok || err != nil {
+		t.Fatalf("Request again's try claimed by another: %v %v", ok, err)
+	}
+	s.ReleaseReview(c1)
+	if s.ReviewFree(v.ID) == nil {
+		t.Fatal("an old claim's release dropped the new one")
+	}
+	rc, err = s.AppliedReviewClaimed(ctx, testOp("x"), c1, Applied{Run: run, Command: "rv." + v.ID + ".1", Revision: 3, Attempt: 2})
+	want(t, rc, err, StatusFailed, RefusalInvalid)
+	s.ReleaseReview(c2)
+	if _, now, ok, err := s.ClaimReview(ctx, v.ID, 1); ok || err != nil || now.Application.Try != 2 {
+		t.Fatalf("a stale try claimed: %v %+v %v", ok, now.Application, err)
+	}
+	c3, now, ok, err := s.ClaimReview(ctx, v.ID, 2)
+	if !ok || err != nil || now.Application.Try != 2 || c3.Try != 2 {
+		t.Fatalf("a pending try, free: %v %+v %v", ok, now.Application, err)
+	}
+	rc, err = s.AppliedReviewClaimed(ctx, testOp("x"), c3, Applied{Run: run, Command: "rv." + v.ID + ".2", Revision: 3, Attempt: 2})
+	want(t, rc, err, StatusDone, "")
+	s.ReleaseReview(c3)
+	if _, _, ok, _ := s.ClaimReview(ctx, v.ID, 2); ok {
+		t.Fatal("a settled try claimed")
+	}
+	// A comment is claimed by nothing: it is applied to nothing.
+	cm := NewReview{Candidate: candidateOf(run, 2, commitA), Base: commitBase, Verdict: VerdictComment, Summary: "Nice.", Via: ViaWeb}
+	rc, _, c4, err := s.SubmitReviewClaimed(ctx, testOp("cm"), key, cm, evidenceOf(cm))
+	want(t, rc, err, StatusDone, "")
+	if c4.Held() {
+		t.Fatalf("a comment claimed: %+v", c4)
 	}
 }

@@ -631,8 +631,8 @@ func (r *run) standingCandidate(t *task, rq RepairRequest) (start string, err er
 			}
 			return "", fmt.Errorf("%w: attempt %d failed since, at %s: request changes of its result %s", ErrStaleCandidate, fc.N, cmp.Or(fc.Stage, fc.State), short(fc.ResultCommit))
 		}
-		if refusedBeforeChecks(fc.Stage) && fc.StartCommit != "" {
-			return fc.StartCommit, nil
+		if start := RepairStart(fc); start != fc.ResultCommit {
+			return start, nil
 		}
 		return "", nil
 	}
@@ -640,6 +640,19 @@ func (r *run) standingCandidate(t *task, rq RepairRequest) (start string, err er
 		return "", fmt.Errorf("%w: attempt %d is %s: request changes of its result when it ends, or cancel it", ErrStaleCandidate, a.n, a.state)
 	}
 	return "", fmt.Errorf("%w: the task is %s, with no result to request changes of", ErrStaleCandidate, t.state)
+}
+
+// RepairStart is where a person's repair of the failed candidate a (its
+// attempt's row, the task's standing failed candidate) starts, the rule
+// standingCandidate applies: the attempt's own start when it was refused
+// before its checks (refusedBeforeChecks: its result was never built on,
+// so the repair starts where the attempt did), else its result, the
+// candidate's commit. A succeeded candidate's repair starts at its result.
+func RepairStart(a ledger.AttemptRow) string {
+	if refusedBeforeChecks(a.Stage) && a.StartCommit != "" {
+		return a.StartCommit
+	}
+	return a.ResultCommit
 }
 
 // The parts of a person's requested changes fitTaskFile cuts, in order.

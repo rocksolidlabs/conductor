@@ -240,7 +240,12 @@ func (s *Server) ledgerRecovered(ld *ledger.Ledger) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	s.reconcileLaunches(ctx, ld)
+	// The pending reviews too, before a review is admitted
+	// (dispatch_reviews.go); what that pass leaves pending, the worker's
+	// next pass takes up, woken now.
+	s.reconcileReviews(ctx, ld)
 	s.launches.ready.Store(true)
+	s.reviews.poke()
 }
 
 // reconcileLaunches settles every launch still pending by what the
