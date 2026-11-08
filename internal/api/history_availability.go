@@ -528,9 +528,11 @@ func (av *availability) check(r brakeman.Ref, full bool) availabilityOf {
 // the resume routes' rules (resumeCheck) and the record's own: never a
 // hosted session (its machine resumes it), a crew member (its run does),
 // a managed attempt (its run continues) or a Brakeman turn; never a
-// launch whose arguments were too long to keep; only in a Runtime this
-// server still has; a lost record (its process's state unknown) only
-// with the person's second yes.
+// launch whose arguments were too long to keep, nor a folder its record
+// may have cut; never while a session of its conversation has a process
+// that outlived its stop (conversationHolder);
+// only in a Runtime this server still has; a lost record (its process's
+// state unknown) only with the person's second yes.
 func (s *Server) resumeOfRecord(id string) *resumeOffer {
 	if s.sessionRecords == nil {
 		return &resumeOffer{Offered: answerNo, Why: "this server keeps no history"}
@@ -545,83 +547,49 @@ func (s *Server) resumeOfRecord(id string) *resumeOffer {
 	return s.resumeOffered(rec)
 }
 
-// resumeOffered is resumeOfRecord's answer for the record rec: offered
-// (with Confirm for a lost record), not offered with why (and URL where
-// the resume is instead), or unknown when whether it is a crew member, or
-// whether the folder it needs is there, could not be read.
+// resumeOffered is resumeOfRecord's answer for the record rec, by the
+// record route's own judgement (recordResume): offered (with Confirm for
+// a lost record), not offered with why (and URL where the resume is
+// instead), or unknown when whether it is a crew member, or whether the
+// folder it needs is there, could not be read.
 func (s *Server) resumeOffered(rec journal.Record) *resumeOffer {
-	id := rec.ID
-	no := func(why string) *resumeOffer { return &resumeOffer{Offered: answerNo, Why: why} }
-	if rec.Host.Hosted {
-		return no(fmt.Sprintf("resume it on %s: `conductor host` resumes it there", cmpOr(rec.Host.Name, "its host")))
+	p, aerr := s.recordResume(rec)
+	switch {
+	case aerr == nil && p.lost:
+		return &resumeOffer{Offered: answerYes, Confirm: true, Why: lostWords(rec)}
+	case aerr == nil:
+		return &resumeOffer{Offered: answerYes}
+	case p.unknown:
+		return &resumeOffer{Offered: answerUnknown, Why: aerr.Message}
+	case p.cwdErr != nil && answerOf(false, p.cwdErr) == answerUnknown:
+		return &resumeOffer{Offered: answerUnknown, Why: "whether the session's working directory is there could not be read; try again"}
+	case p.run != "":
+		return &resumeOffer{Offered: answerNo, Why: cmpOr(p.offer, aerr.Message), URL: "/runs/" + p.run}
 	}
-	run, member, err := s.memberOf(rec)
-	if err != nil {
-		return &resumeOffer{Offered: answerUnknown, Why: "whether it was a crew member's session could not be read; try again"}
-	}
-	if member {
-		switch {
-		case rec.Crew != nil && rec.Crew.Brakeman != "":
-			return no("a Brakeman turn is never resumed: ask Brakeman again")
-		case rec.Crew != nil && rec.Crew.Task != "":
-			return &resumeOffer{Offered: answerNo, Why: "a managed run continues from its run page", URL: "/runs/" + run}
-		}
-		return &resumeOffer{Offered: answerNo, Why: "resume it as the run's member, from its run", URL: "/runs/" + run}
-	}
-	if rec.Launch == nil || !rec.Launch.ArgsKept {
-		return no("its arguments were too long to keep")
-	}
-	if rec.Where != "" {
-		if _, ok := s.runtimeAt(ext.Where(rec.Where)); !ok {
-			return no(fmt.Sprintf("its Runtime %s is not on this server", rec.Where))
-		}
-	}
-	if d, ok := s.registry.Get(id); ok && !d.Info().Status.Ended() {
-		return no("the session is still running")
-	}
-	var as *session.AgentSession
-	if rec.Agent.Session != nil {
-		as = &session.AgentSession{ID: rec.Agent.Session.ID, Source: rec.Agent.Session.Source, Resumable: rec.Agent.Session.Resumable}
-	}
-	plan, aerr := s.resumeCheck(rec.Agent.ID, as, rec.Cwd)
-	if aerr != nil {
-		if plan.cwdErr != nil && answerOf(false, plan.cwdErr) == answerUnknown {
-			return &resumeOffer{Offered: answerUnknown, Why: "whether the session's working directory is there could not be read; try again"}
-		}
-		return no(aerr.Message)
-	}
-	if plan.id == "" {
-		if plan.agent.Session.Empty() {
-			return no(plan.agent.Name + " has no session recipe: nothing of its conversation can be resumed")
-		}
-		return no("nothing to resume yet: the agent had no turn")
-	}
-	if rec.Ending == journal.EndingLost || (!rec.LostAt.IsZero() && rec.EndedAt.IsZero()) {
-		return &resumeOffer{Offered: answerYes, Confirm: true, Why: fmt.Sprintf("the server stopped while this session ran on %s; its process may still be running", cmpOr(rec.Where, string(ext.WhereNative)))}
-	}
-	return &resumeOffer{Offered: answerYes}
+	return &resumeOffer{Offered: answerNo, Why: aerr.Message}
 }
 
-// memberOf is the run a session is a member of: by its record's crew, by
-// the engine's runs, else by the run records, a member's state naming the
+// memberOf is the run a session is a member of, and its member's name
+// ("" when only its record's run is known): by its record's crew, by the
+// engine's runs, else by the run records, a member's state naming the
 // session (a record whose adoption the journal had not written when the
 // server stopped), read through crew.Records. err when the run records
 // could not all be read: whether it is a member is then not known.
-func (s *Server) memberOf(rec journal.Record) (string, bool, error) {
+func (s *Server) memberOf(rec journal.Record) (run, name string, member bool, err error) {
 	if rec.Crew != nil && rec.Crew.RunID != "" {
-		return rec.Crew.RunID, true, nil
+		return rec.Crew.RunID, rec.Crew.Member, true, nil
 	}
 	if s.runs != nil {
-		if run, _, ok := s.runs.MemberOf(rec.ID); ok {
-			return run, true, nil
+		if run, name, ok := s.runs.MemberOf(rec.ID); ok {
+			return run, name, true, nil
 		}
 	}
 	if s.records == nil {
-		return "", false, errors.New("this server keeps no run records")
+		return "", "", false, errors.New("this server keeps no run records")
 	}
-	run, _, err := s.records.MemberOf(rec.ID)
+	run, name, err = s.records.MemberOf(rec.ID)
 	if err != nil {
-		return "", false, err
+		return "", "", false, err
 	}
-	return run, run != "", nil
+	return run, name, run != "", nil
 }

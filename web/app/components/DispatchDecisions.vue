@@ -1,21 +1,28 @@
 <script setup lang="ts">
 import type { PlanDecision } from '~/composables/useDispatch'
 import type { DecisionRow } from '~/utils/dispatch'
+import type { Decision } from '~/utils/decisions'
+import { decisionWords, requiredRecord } from '~/utils/decisions'
 import { relativeTime } from '~/utils/sessions'
 
 /**
  * A ticket's Decisions (Program item DS2, docs/plans/dispatch-evidence.md, "web/app", PR-12): what people decided about it, newest first,
  * each with who, when and its note: the approvals of its plan revisions (the one each revision holds now; one made again is in the
  * history beside the one before), the owner's acceptance on record, the results a person accepted anyway in its runs, and the decision
- * records a merge brought (their link kind reserved for durable decisions, Program item DR1). Below them, the decisions the approved
- * revision says a person will make: recorded and shown, not held, which the section says beside them. Read from what the page reads (the
- * revisions, the ticket, the runs' candidates), never a copy of its own. One column on a phone.
+ * records a merge brought (their link kind reserved for durable decisions, Program item DR1). Then the durable decision records of the
+ * ticket's runs (Program item DR1: a gate of the approved revision, an agent's request), each with its state and its receipts in words,
+ * and Answer (or Show) opening its card. Below them, the decisions the approved revision says a person will make, each with its latest
+ * record's state: Conductor holds the tasks they name until the operator answers. Read from what the page reads (the revisions, the
+ * ticket, the runs' candidates, the ticket's decisions), never a copy of its own. One column on a phone.
  */
-defineProps<{
+const props = defineProps<{
   rows: readonly DecisionRow[]
-  /** The approved revision's required decisions, and its tag (r2), when its body is read. */
+  /** The durable decisions of the ticket's runs, newest first; null before the first read answered. */
+  records?: readonly Decision[] | null
+  /** The approved revision's required decisions, its tag (r2) and its id, when its body is read. */
   required?: readonly PlanDecision[]
   revision?: string
+  planId?: string
   now: number
 }>()
 
@@ -26,6 +33,9 @@ const ICONS: Record<DecisionRow['kind'], string> = {
   record: 'i-lucide-scale',
 }
 const tones = { warning: 'text-warning', error: 'text-error', muted: 'text-muted', default: 'text-default', success: 'text-success' }
+const decisionModal = useDecisionModal()
+/** A required decision's latest record: the newest gate of that plan decision opened under the approved revision, none of another's. */
+const recordOf = (gate: string) => requiredRecord(props.records, gate, props.planId)
 </script>
 
 <template>
@@ -53,15 +63,34 @@ const tones = { warning: 'text-warning', error: 'text-error', muted: 'text-muted
         </div>
       </li>
     </ul>
+    <ul v-if="records?.length" class="flex flex-col gap-1.5" data-ticket-decision-records>
+      <li v-for="r in records" :key="r.id" class="flex min-w-0 items-start gap-2 rounded-md px-3 py-2 text-sm ring ring-default" :data-ticket-decision-record="r.id" :data-decision-state="r.state">
+        <UIcon name="i-lucide-scale" class="mt-0.5 size-4 flex-none" :class="tones[decisionWords(r).tone]" />
+        <div class="flex min-w-0 flex-1 flex-col gap-0.5">
+          <div class="flex min-w-0 flex-wrap items-baseline gap-x-2">
+            <span class="font-mono text-xs font-semibold">{{ r.id }}</span>
+            <span class="min-w-0 break-words font-medium text-highlighted">{{ r.request.question }}</span>
+          </div>
+          <p class="break-words text-xs" :class="tones[decisionWords(r).tone]" data-ticket-decision-state>{{ decisionWords(r).state }}</p>
+          <p v-if="r.answer" class="break-words text-xs text-muted">answered: {{ r.answer }}</p>
+          <p class="text-xs text-dimmed">
+            {{ r.origin === 'plan' ? `the plan's gate ${r.gate ?? ''}` : `asked by ${r.asker?.task ?? 'an agent'}` }} {{ relativeTime(r.createdAt, now, { suffix: true }) }} ·
+            <NuxtLink :to="`/runs/${encodeURIComponent(r.run)}?view=tasks`" class="hover:underline">open the run</NuxtLink>
+          </p>
+        </div>
+        <UButton :label="r.state === 'open' ? 'Answer' : 'Show'" size="xs" :color="r.state === 'open' ? 'warning' : 'neutral'" variant="soft" class="flex-none" :data-ticket-decision-open="r.id" @click="decisionModal.open(r.id)" />
+      </li>
+    </ul>
     <div v-if="required?.length" class="flex flex-col gap-1 rounded-md px-3 py-2 ring ring-default" data-decisions-required>
       <span class="text-xs font-medium text-muted">To be decided, as {{ revision || 'the approved revision' }} says</span>
       <ul class="flex flex-col gap-0.5 text-sm">
         <li v-for="d in required" :key="d.id" class="min-w-0 break-words" :data-decision-required="d.id">
           <span class="font-mono text-xs text-muted">{{ d.id }}</span> {{ d.question }}
           <span class="text-xs text-dimmed">({{ d.kind }}<template v-if="d.before.length">, before {{ d.before.join(', ') }}</template>)</span>
+          <span v-if="recordOf(d.id)" class="text-xs" :data-decision-required-record="recordOf(d.id)!.id"> · {{ recordOf(d.id)!.id }} {{ recordOf(d.id)!.state }}</span>
         </li>
       </ul>
-      <p class="text-xs text-dimmed">Recorded and shown, not held: the run does not wait on them yet. Durable decisions, still to come, will hold the tasks before them.</p>
+      <p class="text-xs text-dimmed" data-decisions-held>Conductor holds the tasks they name until the operator answers: each run launched from it opens one decision per row.</p>
     </div>
   </section>
 </template>

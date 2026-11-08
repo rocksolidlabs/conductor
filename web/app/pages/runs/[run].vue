@@ -208,6 +208,15 @@ function selectTask(id: string, show = false) {
   }
   router.replace({ query })
 }
+// A decision's link (`&decision=dr-7`, the notification's URL: docs/protocol.md, Decisions) opens its card over the run.
+const decisionModal = useDecisionModal()
+watch(
+  () => route.query.decision,
+  (d) => {
+    if (typeof d === 'string') decisionModal.open(d)
+  },
+  { immediate: true },
+)
 /** A task opened from the graph: its attempt's session when it has one, else the task in the Tasks view. */
 function openTask(id: string) {
   const t = run.value?.tasks?.find((x) => x.id === id)

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { cutNotice, runRuns, staleNotice, unmirrored } from '~/utils/decisions'
 import type { SessionInfo } from '~/composables/useSessions'
 import { choiceKey, newlyNeedingInput } from '~/utils/attention'
 import { sidebarRunFor } from '~/utils/crews'
@@ -37,6 +38,16 @@ let tick: number | undefined
 
 const model = computed(() => sidebarModel(filterSessions(attention.sessions.value, query.value), attention.runOf))
 const needsDot = computed(() => needsDotShown(events.routes.value))
+// The open durable decisions no shown session question mirrors (a gate's, Program item DR1), of runs that run: Needs you counts and lists each once,
+// and its row opens the decision's card.
+const decisions = useDecisions()
+const decisionModal = useDecisionModal()
+const loneDecisions = computed(() => (query.value ? [] : unmirrored(decisions.open.value, attention.sessions.value, (id) => runRuns(attention.runOf(id)))))
+// The list read is cut: said even when none of what was read is listed (every one of them mirrored or of a stopped run), so Needs you
+// never reads as whole when it is not.
+const decisionsCut = computed(() => (query.value ? '' : cutNotice(decisions.cut.value, loneDecisions.value.length)))
+// The list's last read failed (Codex's round 3 on #719): said, with Read again, until a read succeeds; the store reads again by itself.
+const decisionsStale = computed(() => (query.value ? '' : staleNotice(decisions.stale.value.since, decisions.stale.value.error)))
 const empty = computed(() => attention.sessions.value.length === 0 && joined.list.value.length === 0)
 const folds = foldState.folds
 /** The run of the page open now: the run page, or a member's page. */
@@ -161,7 +172,7 @@ const listEl = useTemplateRef<HTMLElement>('listEl')
 const focused = ref<string | null>(null)
 /** The row asking whether to stop (`s:<id>`, `r:<runId>`): one at a time, from the keys or a hover Stop. */
 const confirmingId = ref<string | null>(null)
-const rows = computed(() => focusRows(model.value, joined.list.value, folds.value))
+const rows = computed(() => focusRows(model.value, joined.list.value, folds.value, loneDecisions.value.map((d) => d.id)))
 const byId = computed(() => {
   const m = new Map<string, SessionRow | RunBlock>()
   for (const key of ['needs', 'running', 'exited'] as const) {
@@ -175,7 +186,9 @@ const byId = computed(() => {
   return m
 })
 function rowEl(id: string, within = 'a[href]'): HTMLElement | null {
-  return listEl.value?.querySelector<HTMLElement>(`[data-sidebar-row="${CSS.escape(id)}"] ${within}`) ?? null
+  // A decision's row is a button: the card opens in place, nothing navigates.
+  const what = id.startsWith('d:') && within === 'a[href]' ? 'button' : within
+  return listEl.value?.querySelector<HTMLElement>(`[data-sidebar-row="${CSS.escape(id)}"] ${what}`) ?? null
 }
 function focusRow(id: string | null) {
   focused.value = id
@@ -212,6 +225,7 @@ function openRow(id: string) {
   if (!f) return
   if (f.kind === 'session') router.push(`/sessions/${f.sessionId}`)
   else if (f.kind === 'run') router.push(`/runs/${encodeURIComponent(f.runId)}`)
+  else if (f.kind === 'decision') decisionModal.open(f.decision)
   else {
     const e = joined.list.value.find((x) => x.id === f.entryId)
     if (e) router.push(joinedPath(e))
@@ -353,7 +367,7 @@ onBeforeUnmount(() => window.clearInterval(tick))
     <div ref="listEl" class="flex-1 min-h-0 overflow-y-auto px-1 flex flex-col gap-3" :data-session-list="props.page ? 'page' : 'sidebar'" @keydown="onKey" @focusin="onFocusIn" @focusout="onFocusOut">
       <p v-if="empty" class="px-2 py-4 text-xs text-muted leading-relaxed">No sessions yet. Launch an agent here or run <code>conductor host</code> from your machine.</p>
 
-      <SidebarSection v-if="model.needs.length" id="needs" title="Needs you" :count="model.counts.needs" tone="warning" :preview="preview('needs')" :folded="folds.needs" @update:folded="foldState.fold('needs', $event)">
+      <SidebarSection v-if="model.needs.length || loneDecisions.length || decisionsCut || decisionsStale" id="needs" title="Needs you" :count="model.counts.needs + loneDecisions.length" tone="warning" :preview="preview('needs')" :folded="folds.needs" @update:folded="foldState.fold('needs', $event)">
         <ol class="flex flex-col gap-0.5">
           <template v-for="it in model.needs" :key="it.id">
             <SidebarRunBlock
@@ -396,6 +410,23 @@ onBeforeUnmount(() => window.clearInterval(tick))
               @sheet="openSheet"
             />
           </template>
+          <li v-for="d in loneDecisions" :key="d.id" :data-sidebar-row="`d:${d.id}`">
+            <button
+              type="button"
+              class="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none hover:bg-elevated/60 focus-visible:ring-2 focus-visible:ring-primary"
+              :class="focused === `d:${d.id}` ? 'bg-elevated/60' : ''"
+              :data-sidebar-decision="d.id"
+              @click="decisionModal.open(d.id)"
+            >
+              <UIcon name="i-lucide-scale" class="size-4 flex-none text-warning" />
+              <span class="min-w-0 flex-1 truncate"><span class="font-mono text-xs">{{ d.id }}</span> {{ d.request.question }}</span>
+            </button>
+          </li>
+          <li v-if="decisionsCut" class="px-2 py-1 text-xs text-muted" data-sidebar-decisions-cut>{{ decisionsCut }}</li>
+          <li v-if="decisionsStale" class="flex items-center gap-2 px-2 py-1 text-xs text-warning" data-sidebar-decisions-stale>
+            <span class="min-w-0 flex-1">{{ decisionsStale }}</span>
+            <UButton label="Read again" size="xs" color="neutral" variant="outline" class="flex-none" data-sidebar-decisions-read @click="decisions.read()" />
+          </li>
         </ol>
       </SidebarSection>
 

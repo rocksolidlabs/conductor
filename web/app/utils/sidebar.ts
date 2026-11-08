@@ -359,12 +359,17 @@ export type FocusRow =
   | { id: string; kind: 'session'; sessionId: string; runId?: string; options: number }
   | { id: string; kind: 'run'; runId: string }
   | { id: string; kind: 'shared'; entryId: string }
+  | { id: string; kind: 'decision'; decision: string }
 
 function sessionFocus(row: SessionRow, runId?: string): FocusRow {
   return { id: `s:${row.id}`, kind: 'session', sessionId: row.id, runId, options: row.prompt?.options.length ?? 0 }
 }
 
-export function focusRows(model: SidebarModel, shared: readonly Pick<JoinedEntry, 'id'>[], folds: Folds): FocusRow[] {
+/**
+ * The rows a key can land on, in the list's order. `decisions` are Needs you's open durable decisions no shown question mirrors
+ * (Program item DR1), drawn after its sessions: a row each (`d:dr-7`), which Enter opens the card of (Codex's round 1 on #719).
+ */
+export function focusRows(model: SidebarModel, shared: readonly Pick<JoinedEntry, 'id'>[], folds: Folds, decisions: readonly string[] = []): FocusRow[] {
   const out: FocusRow[] = []
   const add = (items: readonly SidebarItem[]) => {
     for (const it of items) {
@@ -374,7 +379,10 @@ export function focusRows(model: SidebarModel, shared: readonly Pick<JoinedEntry
       } else out.push(sessionFocus(it))
     }
   }
-  if (!folds.needs) add(model.needs)
+  if (!folds.needs) {
+    add(model.needs)
+    for (const d of decisions) out.push({ id: `d:${d}`, kind: 'decision', decision: d })
+  }
   if (!folds.running) add(model.running)
   if (!folds.shared) for (const e of shared) out.push({ id: `j:${e.id}`, kind: 'shared', entryId: e.id })
   if (!folds.exited) add(model.exited)

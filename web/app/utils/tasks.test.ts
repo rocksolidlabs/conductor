@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import type { RunStep, RunTask } from '~/composables/useSessions'
+import { holdsWords, openDecisions, taskAnswer } from './tasks'
 import {
   CommandRefused,
   commandBody,
@@ -344,5 +345,41 @@ describe('a Dispatch operation sent as a command', () => {
       expect((err as CommandRefused<DispatchReceipt>).message).toBe(words)
       expect((err as CommandRefused<DispatchReceipt>).receipt.refusal).toBe(refusal)
     }
+  })
+})
+
+describe('a task a durable decision holds (Program item DR1)', () => {
+  const hold = (id: string, state: 'open' | 'answered' | 'applied' | 'cancelled' = 'open') => ({ id, type: 'approval' as const, state, question: `May it go, ${id}?` })
+  it("says what its attempt waits for, a gate's held task what it waits for instead of ready to start", () => {
+    expect(taskWords(task({ state: 'running', attempts: 1, attempt: { n: 1, state: 'running' }, holds: [hold('dr-1')] }), {})).toEqual({ text: 'attempt 1 waits for decision dr-1', tone: 'warning' })
+    expect(taskWords(task({ state: 'ready', reason: 'waits for decision dr-4', holds: [hold('dr-4')] }), {})).toEqual({ text: 'waits for decision dr-4', tone: 'warning' })
+    expect(taskWords(task({ state: 'ready', holds: [hold('dr-3'), hold('dr-4', 'answered')] }), {}).text).toBe('waits for decisions dr-3, dr-4')
+    expect(taskWords(task({ state: 'ready', holds: [hold('dr-4')] }), { state: 'interrupted' }).text).toBe('waits for decision dr-4; taken up when the run is continued')
+    expect(taskWords(task({ state: 'blocked', needs: ['build'], holds: [hold('dr-4')] }), {}).text).toBe('waits for decision dr-4')
+    // A hold applied or ended holds nothing: the task reads as before.
+    expect(taskWords(task({ state: 'ready', holds: [hold('dr-4', 'applied')] }), {}).text).toBe('ready to start')
+    expect(holdsWords(task({ holds: [hold('dr-2', 'cancelled')] }))).toBe('')
+  })
+  it('offers Answer on the decision still open, none once it is answered (Yardmaster applies it) or for no hold', () => {
+    expect(taskAnswer(task({ holds: [hold('dr-1', 'answered'), hold('dr-2')] }))).toBe('dr-2')
+    expect(taskAnswer(task({ holds: [hold('dr-1', 'answered')] }))).toBeUndefined()
+    expect(taskAnswer(task({}))).toBeUndefined()
+  })
+  it("counts each open decision once in the header, held by two tasks or one", () => {
+    const tasks = [task({ id: 'a', holds: [hold('dr-1')] }), task({ id: 'b', holds: [hold('dr-1'), hold('dr-2')] }), task({ id: 'c', holds: [hold('dr-3', 'answered')] })]
+    expect(openDecisions(tasks)).toBe(2)
+    expect(taskBadges({ tasks: [task({ state: 'running', holds: [hold('dr-1')] })] }).map((b) => b.label)).toEqual(['0/1 tasks', '1 running', '1 decision open'])
+    expect(taskBadges({ tasks }).map((b) => b.label)).toContain('2 decisions open')
+    expect(taskBadges({ tasks: [task({})] }).map((b) => b.label)).not.toContain('1 decision open')
+  })
+  // Codex's round 3 on #719: a plan's gate with `before: []` stays open while the run executes and holds no task; counted from the
+  // run's open decision records, with the holds (a record the store's list left out is still counted by its hold), each once.
+  it('counts an open decision that holds no task, from the run\'s records', () => {
+    const tasks = [task({ id: 'a', state: 'running' }), task({ id: 'b', holds: [hold('dr-1')] })]
+    expect(taskBadges({ tasks: [task({ state: 'running' })] }, ['dr-4']).map((b) => b.label)).toEqual(['0/1 tasks', '1 running', '1 decision open'])
+    expect(openDecisions(tasks, ['dr-4'])).toBe(2)
+    expect(openDecisions(tasks, ['dr-1', 'dr-4'])).toBe(2)
+    expect(openDecisions(tasks, [])).toBe(1)
+    expect(taskBadges({ tasks }, ['dr-1', 'dr-4']).map((b) => b.label)).toContain('2 decisions open')
   })
 })
