@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { expect, test } from './fixtures'
+import { expect, test, type Api } from './fixtures'
 import type { Locator, Page, Request } from '@playwright/test'
 import type { E2EState } from './state'
 
@@ -540,6 +540,150 @@ test('the save toast says what became of the save, on the page that saved or the
   await save.click()
   await expect(toast('Saved')).toBeVisible()
   await expect(toast('Saved; the server restarted')).toHaveCount(0)
+})
+
+// One Save (#707). Brakeman's section has no button of its own: the page's Save saves it with the app's settings, Brakeman's part
+// first (the app's may restart the server and move the page to its new port), and a change to Brakeman's alone neither sets the
+// app's settings nor restarts the server. A part refused says which part was saved and which was not, and every edit is kept. The
+// stand-in is the app, as above: it records what the server held of Brakeman's settings when the app's were set, and fails a save
+// when told to. Brakeman's settings are this run's shared server's: the test puts back what it found.
+type BrakemanConf = { rev: number; budget: { readsPerTurn: number; turnsPerDay: number } } & Record<string, unknown>
+const brakemanConf = (api: Api) => api.ok<{ config: BrakemanConf }>('GET', '/api/brakeman').then((r) => r.config)
+async function putBack(api: Api, start: BrakemanConf) {
+  const now = await brakemanConf(api)
+  await api.ok('PUT', '/api/brakeman/config', { rev: now.rev, config: { ...start, rev: now.rev } })
+}
+/** The Reads a turn field of Brakeman's section, and a value of it that is not the one saved. */
+const readsField = (page: Page) => page.locator('[data-brakeman-reads] input, input[data-brakeman-reads]').first()
+
+test("the page's one Save saves Brakeman's section with the app's settings, and a part refused keeps every edit", async ({ page, state, api }) => {
+  // Some thirty waits, each within the expect's bound (15 s): the timeout bounds a hang, above their sum.
+  test.setTimeout(32 * 15_000)
+  const start = await brakemanConf(api)
+  const reads = start.budget.readsPerTurn === 400 ? 500 : 400
+  const form = { dataDir: state.data, allowedRoots: [state.root], defaultCwd: state.root, yolo: false, reach: 'off', closeToTray: true, wslDistro: '', wslWindowsHome: false, switchyardEnabled: false, switchyardServer: '', switchyardToken: '', switchyardName: '', noticed: ['publishing'] }
+  await page.addInitScript(
+    ({ token, form, url }) => {
+      const settings: Record<string, unknown> = { ...form }
+      const w = window as unknown as { conductorDesktop: unknown; e2eSets: Array<{ reads: number }> }
+      w.e2eSets = []
+      let outcome = ''
+      w.conductorDesktop = {
+        version: 'e2e',
+        platform: 'linux',
+        token: async () => token,
+        openExternal: async () => {},
+        settings: {
+          get: async () => ({ ...settings }),
+          set: async (p: Record<string, unknown>) => {
+            const r = await fetch('/api/brakeman', { headers: { Authorization: `Bearer ${token}` } }).then((x) => x.json())
+            w.e2eSets.push({ reads: r.config.budget.readsPerTurn })
+            if (sessionStorage.getItem('e2e.fail')) {
+              sessionStorage.removeItem('e2e.fail')
+              throw new Error('the server did not start')
+            }
+            outcome = p.yolo !== settings.yolo ? 'restarted' : 'saved'
+            return Object.assign(settings, p)
+          },
+          outcome: async () => outcome,
+        },
+        restartServer: async () => {},
+        openInBrowser: async () => {},
+        showLog: async () => {},
+        serverState: async () => ({ state: 'running', url, failures: 0 }),
+        notice: async () => '',
+        ice: async () => ({ forwarding: false, port: 0, publicIp: '', wslAddress: '', firewall: 'unknown' }),
+        allowIceFirewall: async () => 'unknown',
+        versions: async () => ({ app: 'e2e', electron: '', node: '', chrome: '', server: '' }),
+        onServerState: () => () => {},
+      }
+    },
+    { token: state.token, form, url: state.baseURL },
+  )
+  const sets = () => page.evaluate(() => (window as unknown as { e2eSets: Array<{ reads: number }> }).e2eSets)
+  const savedReads = () => brakemanConf(api).then((c) => c.budget.readsPerTurn)
+  try {
+    await page.goto('/settings')
+    await settled(page, 'linux')
+    const save = page.locator('[data-save-settings]')
+    const toast = (words: string) => page.getByText(words, { exact: true })
+    await expect(page.locator('[data-brakeman-save]')).toHaveCount(0)
+    await expect(save).toBeDisabled()
+
+    // Brakeman's alone: saved on the server, the app's settings never set, no restart.
+    await readsField(page).fill(String(reads))
+    await expect(save).toHaveText('Save')
+    await save.click()
+    await expect(toast('Saved')).toBeVisible()
+    await expect.poll(savedReads).toBe(reads)
+    await expect(save).toBeDisabled()
+    expect(await sets()).toEqual([])
+
+    // Both: Brakeman's is on the server by the time the app's are set (and the server restarts).
+    await page.locator('[data-yolo-switch]').click()
+    await readsField(page).fill(String(reads + 1))
+    await expect(save).toHaveText('Save and restart the server')
+    await save.click()
+    await expect(toast('Saved; the server restarted')).toBeVisible()
+    await expect(save).toBeDisabled()
+    expect(await sets()).toEqual([{ reads: reads + 1 }])
+
+    // The app's part refused after Brakeman's was saved: the page says which, and the app's edit stays for the next Save.
+    await page.evaluate(() => sessionStorage.setItem('e2e.fail', '1'))
+    await page.locator('[data-yolo-switch]').click()
+    await readsField(page).fill(String(reads + 2))
+    await save.click()
+    await expect(page.locator('[data-settings-error]')).toHaveText("Brakeman's settings were saved. The app's settings were not: the server did not start. Your edits are kept.")
+    await expect.poll(savedReads).toBe(reads + 2)
+    await expect(page.locator('[data-yolo-switch]')).toHaveAttribute('aria-checked', 'false')
+    await expect(save).toHaveText('Save and restart the server')
+    await save.click()
+    await expect(toast('Saved; the server restarted')).toBeVisible()
+    expect((await sets()).length).toBe(3)
+
+    // Brakeman's part refused (saved elsewhere meanwhile): the app's is held back, the edits stay, and Keep mine saves them over it.
+    await page.locator('[data-tray-switch]').click()
+    await readsField(page).fill(String(reads + 3))
+    const elsewhere = await brakemanConf(api)
+    await api.ok('PUT', '/api/brakeman/config', { rev: elsewhere.rev, config: { ...elsewhere, budget: { ...elsewhere.budget, turnsPerDay: elsewhere.budget.turnsPerDay === 7 ? 8 : 7 } } })
+    await save.click()
+    await expect(page.locator('[data-settings-error]')).toHaveText(
+      "Brakeman's settings were not saved: they were changed elsewhere since this form was read. The app's settings were held back with them, so nothing changed. Your edits are kept.",
+    )
+    expect((await sets()).length).toBe(3)
+    await expect(readsField(page)).toHaveValue(String(reads + 3))
+    await expect(page.locator('[data-tray-switch]')).toHaveAttribute('aria-checked', 'false')
+    await page.locator('[data-brakeman-stale]').getByRole('button', { name: 'Keep mine' }).click()
+    await save.click()
+    await expect.poll(savedReads).toBe(reads + 3)
+    expect(await sets()).toEqual([{ reads: reads + 1 }, { reads: reads + 2 }, { reads: reads + 2 }, { reads: reads + 3 }])
+  } finally {
+    await putBack(api, start)
+  }
+})
+
+test("in a browser, Brakeman's section is saved by the page's one Save", async ({ page, api }) => {
+  const start = await brakemanConf(api)
+  const reads = start.budget.readsPerTurn === 400 ? 500 : 400
+  try {
+    await page.goto('/settings')
+    await expect(page.locator('[data-brakeman-enabled]')).toBeVisible()
+    const save = page.locator('[data-save-settings]')
+    await expect(page.locator('[data-brakeman-save]')).toHaveCount(0)
+    await expect(save).toBeDisabled()
+    // A value Brakeman refuses holds the Save, and the bar says why.
+    await readsField(page).fill('5')
+    await expect(page.locator('[data-settings-blocked]')).toBeVisible()
+    await expect(save).toBeDisabled()
+    await readsField(page).fill(String(reads))
+    await expect(save).toHaveText('Save')
+    await save.click()
+    await expect(page.getByText('Saved', { exact: true })).toBeVisible()
+    await expect.poll(() => brakemanConf(api).then((c) => c.budget.readsPerTurn)).toBe(reads)
+    await expect(save).toBeDisabled()
+  } finally {
+    await putBack(api, start)
+  }
 })
 
 // Settings on a wide window and a phone (#433): a navigation beside one column of sections (#366: never two side by side), the

@@ -113,12 +113,12 @@ test('Settings saves Brakeman with the stub as its agent and terminal screens of
   await agent.click()
   await page.getByRole('option', { name: 'Brakeman (e2e stub)' }).click()
   await expect(card.locator('[data-brakeman-model]')).toBeVisible()
-  await card.locator('[data-brakeman-save]').click()
+  await page.locator('[data-save-settings]').click()
   await expect.poll(async () => {
     const c = (await api.ok<{ config: { enabled: boolean; agentId: string; visibility: { terminals: boolean; runs: boolean }; rev: number } }>('GET', '/api/brakeman')).config
     return [c.enabled, c.agentId, c.visibility.terminals, c.visibility.runs, c.rev]
   }, { timeout: 15_000 }).toEqual([true, 'brakeman-stub', false, true, before.rev + 1])
-  await expect(card.locator('[data-brakeman-save]')).toBeDisabled()
+  await expect(page.locator('[data-save-settings]')).toBeDisabled()
 })
 
 test('a briefing waits behind the turn in progress, then runs in its session, and its brief takes neither the focus nor the page', async ({ page }) => {
