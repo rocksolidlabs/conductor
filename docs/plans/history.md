@@ -236,7 +236,7 @@ store's own modes):
 
 ```go
 type Record struct {
-	V        int        `json:"v"`        // 1
+	V        int        `json:"v"`        // 1; 2 once a receipt carries a code
 	ID       string     `json:"id"`       // the session's id
 	Seq      int64      `json:"seq"`      // bumped on every write: the index's mark
 	Name     string     `json:"name"`
@@ -272,7 +272,7 @@ type Launch struct { Args []string; ArgCount int; ArgsSHA256 string; ArgsKept bo
 type Crew struct { RunID, CrewID, Member, Task string; Attempt int; Brakeman string }
 type Entry struct { Seq int64; At time.Time; Kind, ID, Ref, Event, ByName, Message, Op, Path, Tool, URL, To string; Choices []string; Outcome string }
 type File struct { Path, Op string; Count int; Last time.Time }
-type Resume struct { CommandID, Actor, Session, State, Error string; At time.Time } // pending | started | failed | uncertain; Session preallocated
+type Resume struct { CommandID, Actor, Session, State, Code, Error string; At time.Time } // pending | started | failed | uncertain; Session preallocated; Code a failed one's refusal
 ```
 
 An `Entry` keeps the identity its source gave it: `ID` a chat message's id
@@ -1445,13 +1445,32 @@ outcome it cannot know into a false one. Its order:
    it, through the engine), `400 invalid_agent`, `409 already_resumed`, `400 invalid_cwd`), a record
    whose arguments were not kept answers `409 args_not_kept`, a record
    whose `where` names a Runtime this server does not have answers `409
-   runtime_gone`, and a record whose launch had variables answers `409
+   runtime_gone`, a session still running answers `409 still_running`, a record whose
+   working directory may be a cut of a longer one (its JSON form within
+   one escape of the record's bound, `journal.CwdMayBeCut`) answers `409
+   cwd_not_kept` (the record cannot say which folder it was; a listed
+   session starts in its own, whole), and a record whose launch had
+   variables answers `409
    env_not_kept` naming them, unless `withoutEnv: true`, which resumes
-   without them and says so in the reply's notice, and a `lost` record
-   answers `409 lost_unconfirmed` with the words above unless
-   `confirmLost: true`, which the record page sends only once the person
-   has read them and asked again; a refusal settles the receipt `failed`
-   with its code;
+   without them and says so in the reply's notice; a refusal settles the
+   receipt `failed` with its code. The launch then reads one rule again,
+   at the moment it takes the conversation (`takeConversation`, under
+   the lock every resume's launch holds until its session is
+   registered), and launches only on that read: no local session of the
+   conversation (one holding its id, the record's own, any it resumed
+   from, any resumed from it, up the `resumedFrom` chain) has a process
+   that is not done (`Registry.Holders`: listed, running or ended by a
+   stop that failed, or removed while its process ran: `409
+   still_running`, or `409 already_resumed` for another running one),
+   and the record's end was observed (an observed end in the record as
+   the journal holds it then, or the session listed with its process
+   done) or the person confirmed it lost: else `409 lost_unconfirmed`
+   with the words above unless `confirmLost: true`, which the record page
+   sends only once the person has read them and asked again. Nothing read
+   earlier (the reservation's record, the judgement) decides there: a
+   removal, a stop that failed or a resume of the chain in between
+   changes what the launch reads. The history's offer judges by the same
+   rule;
 3. the launch is one function both routes share, `resumeLaunch` (factored
    out of `handleResumeSession` in PR-5, the route's answers and tests
    unchanged): it takes what to launch (a listed session's `Launched`, or
@@ -2051,7 +2070,11 @@ retried after a backoff (1 s doubling to 1 min).
 Brakeman's and the run records' schemas and files are unchanged, and each is
 only read (the conservative-migration rule holds by touching none). The
 journal's records carry `v: 1`; a later version adds fields with defaults
-and reads every older record as it is. The index has no migration: another
+and reads every older record as it is. A record is written at the lowest
+version that holds it: version 2 added a failed receipt's `code`
+(`Resume.Code`), so a record is written at `v: 2` only once one of its
+receipts carries one, and a server that knows version 1 alone reads it as
+a later version's (as it is, never rewritten) rather than as unreadable. The index has no migration: another
 version is rebuilt.
 
 **Two servers on one data directory.** The holder of `history/owner.lock`
@@ -2525,10 +2548,27 @@ nothing launched, the run's member state unchanged), a `lost` record
 without `confirmLost` (`409 lost_unconfirmed`); each refusal settling its
 receipt `failed`);
 `TestARuntimeTerminalThatOutlivesTheServer` (a `sessiontest.FakeRuntime`
-whose terminal keeps running when the server stops: after the restart the
+whose terminal keeps running when it is stopped and when the server
+stops: listed after a failed stop, Resume is refused `409 still_running`
+and not offered, nothing started; after the restart the
 record is `lost` with no `EndedAt`, its availability and record page say
 its process's state is not known, Resume is refused `409
 lost_unconfirmed`, and with `confirmLost` it launches);
+`TestASuccessorWhoseStopFailedHoldsItsPredecessorsConversation` (A
+resumed as B, which names a conversation of its own; a resume of A held
+after its reservation while B's stop fails, B's process running: `409
+still_running` naming B, nothing started, not offered; once B's process
+ended, A resumes);
+`TestASourceRemovedAfterItsReservationIsReadAtTheLaunch` (a session
+whose stop failed, removed while its resume is held after the
+reservation, whose snapshot read the record open: `409 still_running`,
+nothing started; once its process ended, the record the removal left
+`lost` needs `confirmLost`, and launches with it);
+`TestAFolderTheRecordCutIsNeverResumedIn` (a folder whose path's JSON
+form is past the record's bound, its parent at the bound and on disk:
+the record keeps the parent, and Resume is refused `409 cwd_not_kept`,
+not offered, for an agent that resumes only where it ran; the journal's
+`TestACutWorkingDirectoryIsKnownCut` judges every cut cut);
 `TestTheSeventeenthResumeIsRefusedAndTheOldestStillAnswers` (16 receipts,
 refused ones among them; a 17th command id `409 resume_limit`, nothing
 reserved or launched; the server restarted; the oldest id sent again

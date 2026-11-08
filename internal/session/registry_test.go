@@ -167,3 +167,53 @@ func TestAReservationHoldsAPlaceUntilASessionTakesItOrItIsLetGo(t *testing.T) {
 		t.Fatalf("a zero reservation counted: %v", err)
 	}
 }
+
+// procDriver is a session with a process of its own, which ends when done
+// is closed.
+type procDriver struct {
+	stubDriver
+	done chan struct{}
+}
+
+func (d *procDriver) ProcessDone() <-chan struct{} { return d.done }
+
+// Holders are the sessions whose process has not ended: listed (running,
+// or ended by a stop that failed) or removed while their process ran,
+// which leave it once their process ends; never one without a process of
+// its own, nor one whose process ended.
+func TestHoldersKeepARemovedSessionUntilItsProcessEnds(t *testing.T) {
+	r := NewRegistry(10)
+	now := time.Now()
+	running := &procDriver{*stub("running", now), make(chan struct{})}
+	failed := &procDriver{*stub("failed", now), make(chan struct{})}
+	failed.info.Status = StatusStopped
+	gone := &procDriver{*stub("gone", now), make(chan struct{})}
+	close(gone.done)
+	for _, d := range []Driver{running, failed, gone, stub("hosted", now)} {
+		if err := r.Add(d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids := func() map[string]bool {
+		out := map[string]bool{}
+		for _, d := range r.Holders() {
+			out[d.Info().ID] = true
+		}
+		return out
+	}
+	if got := ids(); len(got) != 2 || !got["running"] || !got["failed"] {
+		t.Fatalf("listed holders: %v", got)
+	}
+	r.Remove("failed")
+	r.Remove("gone")
+	if _, ok := r.Get("failed"); ok {
+		t.Fatal("removed, still listed")
+	}
+	if got := ids(); len(got) != 2 || !got["failed"] {
+		t.Fatalf("after the removal: %v", got)
+	}
+	close(failed.done)
+	if got := ids(); len(got) != 1 || !got["running"] {
+		t.Fatalf("once its process ended: %v", got)
+	}
+}

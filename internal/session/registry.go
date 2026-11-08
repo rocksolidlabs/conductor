@@ -29,6 +29,10 @@ type Registry struct {
 	OnRemove func(id string, d Driver)
 	// reserved counts the places held (Reserve) and not yet taken.
 	reserved int
+	// lingering holds the sessions removed while their process ran (a
+	// stop that failed), until it ends: no longer listed, they are still
+	// what a resume must not run beside (Holders). Under mu.
+	lingering map[string]Driver
 }
 
 // NewRegistry creates a registry holding at most max sessions.
@@ -140,11 +144,15 @@ func (r *Registry) List() []Info {
 	return out
 }
 
-// Remove deletes a session from the index.
+// Remove deletes a session from the index; one whose process still runs
+// is kept among Holders until it ends.
 func (r *Registry) Remove(id string) {
 	r.mu.Lock()
 	d, ok := r.items[id]
 	delete(r.items, id)
+	if ok {
+		r.lingerLocked(id, d)
+	}
 	r.mu.Unlock()
 	if ok && r.OnRemove != nil {
 		r.OnRemove(id, d)
@@ -157,12 +165,64 @@ func (r *Registry) removeIf(id string, d Driver) bool {
 	ok := r.items[id] == d
 	if ok {
 		delete(r.items, id)
+		r.lingerLocked(id, d)
 	}
 	r.mu.Unlock()
 	if ok && r.OnRemove != nil {
 		r.OnRemove(id, d)
 	}
 	return ok
+}
+
+// lingerLocked keeps d, removed as id, among Holders while its process
+// runs. The caller holds mu.
+func (r *Registry) lingerLocked(id string, d Driver) {
+	if !processRuns(d) {
+		return
+	}
+	if r.lingering == nil {
+		r.lingering = map[string]Driver{}
+	}
+	r.lingering[id] = d
+}
+
+// processRuns reports whether d is a session with a process of its own
+// (a Local) that has not ended.
+func processRuns(d Driver) bool {
+	p, ok := d.(interface{ ProcessDone() <-chan struct{} })
+	if !ok {
+		return false
+	}
+	select {
+	case <-p.ProcessDone():
+		return false
+	default:
+		return true
+	}
+}
+
+// Holders answers, as one read under the index's lock, every session
+// whose own process has not ended: those listed (running, or ended by a
+// stop that failed) and those removed while their process ran. A resume
+// reads it as it launches: none of them may hold the conversation it
+// takes up. A removed session leaves it once its process has ended.
+func (r *Registry) Holders() []Driver {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []Driver
+	for id, d := range r.lingering {
+		if !processRuns(d) {
+			delete(r.lingering, id)
+			continue
+		}
+		out = append(out, d)
+	}
+	for _, d := range r.items {
+		if processRuns(d) {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // Count returns the number of indexed sessions.
