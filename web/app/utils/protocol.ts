@@ -728,7 +728,8 @@ export interface HostRegisteredDecisions {
 /**
  * host → switchyard, the first message of a run's desk's connection in place of register (docs/protocol.md, A run's desk):
  * a connection with no session that carries a run decision link's lane, so the run's decisions are reached with no member
- * alive. host.instance is required; localId is hostDeskLocalId(run.id). The web never sends it.
+ * alive. host.instance is required; localId is hostDeskLocalId(run.id); the whole message is at most 64 KiB (a host
+ * message's bound). The web never sends it.
  */
 export interface HostRegisterDeskMessage {
   t: 'register_desk'

@@ -73,14 +73,16 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A register, or a run's desk's register_desk (desk.go in signal),
-	// which an older switchyard closes here.
+	// which an older switchyard closes here. A register_desk is a host
+	// message, bounded as one (proto.MaxHostMessage) before it is decoded:
+	// the socket's read limit is past it, for the frames a host relays.
 	var (
 		reg  proto.Register
 		desk proto.RegisterDesk
 	)
 	isDesk := false
 	if err := json.Unmarshal(data, &reg); err != nil || reg.T != proto.HostRegister {
-		if json.Unmarshal(data, &desk) != nil || desk.T != proto.HostRegisterDesk {
+		if len(data) > proto.MaxHostMessage || json.Unmarshal(data, &desk) != nil || desk.T != proto.HostRegisterDesk {
 			c.Close(proto.CloseProtocolError, "register expected")
 			return
 		}

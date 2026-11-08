@@ -645,18 +645,18 @@ func (s *Server) carryRevoke(ctx context.Context, sessionID, runID, linkID strin
 	return nil
 }
 
-// revokeConfirmed ends the record of a decision link the rendezvous has
-// revoked, noted in its run's or session's log, and judges the run's desk
-// again.
+// revokeConfirmed ends the record of a link the rendezvous has revoked
+// (or answered not_found for), the one settled forgetting of a record
+// owed its revoke (forgetRemote), noted in its run's or session's log, and
+// judges the run's desk again.
 func (s *Server) revokeConfirmed(sessionID, runID, linkID string) {
 	rl, _ := s.revokeOwed(sessionID, runID, linkID)
+	s.forgetRemote(sessionID, runID, linkID, true)
 	if runID != "" {
-		s.forgetRemoteRunLinks(runID, linkID)
 		s.runs.Note(runID, session.ActivityLink, "link revoked at the rendezvous: "+linkLabelOr(rl.Label))
 		s.deskCheck(runID)
 		return
 	}
-	s.forgetRemoteLink(sessionID, linkID)
 	s.recordLink(sessionID, "link revoked at the rendezvous: "+linkLabelOr(rl.Label))
 }
 
@@ -676,11 +676,17 @@ func (s *Server) stopRevokeRetries() {
 // one of the publisher's connections carries (hostagent.Uplink.LinkGone):
 // the server's own id of a published session, or the run of a desk. A
 // decision link of this server's there ends here too, through its barrier,
-// and its record with it, the switchyard having let it go, where that word
-// is the link's own end: a session link's, from its session's connection;
-// a run link's, from the run's desk alone. A member's connection is told
-// so when the member only left the run's group (the run's next attempt
-// replacing it), which ends nothing of the link.
+// where that word is the link's own end: a session link's, from its
+// session's connection; a run link's, from the run's desk alone. A
+// member's connection is told so when the member only left the run's
+// group (the run's next attempt replacing it), which ends nothing of the
+// link. Its record is not forgotten here (forgetRemote): the switchyard
+// sends link_gone as it closes the link's viewers, before it has deleted
+// what it keeps of the link (a revoke whose file is not deleted yet is
+// answered store_unavailable after it), so the link is owed its revoke
+// there (the store's hook marks it so) and keeps its record, listed and
+// holding the run's desk, until the switchyard confirms the revoke or
+// answers not_found (retryRevokeThere, or a revoke again from here).
 func (s *Server) RemoteLinkGone(linkID, sessionID, runID string) {
 	l, ok := s.links.Get(linkID)
 	if !ok || !l.Remote {
@@ -691,7 +697,9 @@ func (s *Server) RemoteLinkGone(linkID, sessionID, runID string) {
 			return
 		}
 		s.links.RevokeRun(l.RunID, linkID)
-		s.forgetRemoteRunLinks(l.RunID, linkID)
+		if _, owed := s.revokeOwed("", l.RunID, linkID); owed {
+			s.retryRevokeThere("", l.RunID, linkID)
+		}
 		s.track(func() { s.deskCheck(l.RunID) })
 		return
 	}
@@ -699,7 +707,54 @@ func (s *Server) RemoteLinkGone(linkID, sessionID, runID string) {
 		return
 	}
 	s.links.Revoke(l.SessionID, linkID)
-	s.forgetRemoteLink(l.SessionID, linkID)
+	if _, owed := s.revokeOwed(l.SessionID, "", linkID); owed {
+		s.retryRevokeThere(l.SessionID, "", linkID)
+	}
+}
+
+// forgetRemote is the one place a record of a link minted at the
+// rendezvous is forgotten: a session's (sessionID) or a run's (runID), one
+// (linkID) or every one of the run's (""). One rule holds in every path:
+// the record of a decision link revoked here and still owed its revoke
+// there (revokePending) is forgotten only when settled, that is once the
+// rendezvous has confirmed the revoke or answered not_found
+// (revokeConfirmed), whatever else happened to the link, its viewers
+// (link_gone) or its desk, or once what holds the record is itself gone
+// here (the run forgotten, the session's publication gone, whose own end
+// at the rendezvous takes its links). Unsettled, such a record is kept,
+// listed as owing its revoke and holding the run's desk, and its retry
+// goes on. A record owed nothing goes either way.
+func (s *Server) forgetRemote(sessionID, runID, linkID string, settled bool) {
+	s.pubMu.Lock()
+	defer s.pubMu.Unlock()
+	s.forgetRemoteLocked(sessionID, runID, linkID, settled)
+}
+
+// forgetRemoteLocked is forgetRemote with pubMu held.
+func (s *Server) forgetRemoteLocked(sessionID, runID, linkID string, settled bool) {
+	m := s.remoteLinks[sessionID]
+	if runID != "" {
+		m = s.remoteRunLinks[runID]
+	}
+	for lid, rl := range m {
+		if (linkID == "" || lid == linkID) && (settled || !rl.revokePending) {
+			delete(m, lid)
+		}
+	}
+	if linkID != "" {
+		return
+	}
+	if runID != "" {
+		if len(m) == 0 {
+			delete(s.remoteRunLinks, runID)
+		}
+		delete(s.runSent, runID)
+		delete(s.runSyncFails, runID)
+		return
+	}
+	if len(m) == 0 {
+		delete(s.remoteLinks, sessionID)
+	}
 }
 
 // DecisionLink says whether linkID is a decision link this server minted

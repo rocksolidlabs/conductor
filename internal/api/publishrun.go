@@ -152,17 +152,11 @@ func (s *Server) remoteRunLinksOf(runID string) []remoteLink {
 	return out
 }
 
-// forgetRemoteRunLinks drops one record of a run's, or all of them ("").
+// forgetRemoteRunLinks drops one record of a run's, or all of them (""),
+// unsettled (forgetRemote): a decision link's still owed its revoke at the
+// rendezvous is kept.
 func (s *Server) forgetRemoteRunLinks(runID, linkID string) {
-	s.pubMu.Lock()
-	defer s.pubMu.Unlock()
-	if linkID == "" {
-		delete(s.remoteRunLinks, runID)
-		delete(s.runSent, runID)
-		delete(s.runSyncFails, runID)
-		return
-	}
-	delete(s.remoteRunLinks[runID], linkID)
+	s.forgetRemote("", runID, linkID, false)
 }
 
 // liveCarriers are the publications that can carry a request about run to

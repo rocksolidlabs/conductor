@@ -522,7 +522,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		if desk != nil {
 			carriers = append(carriers, desk)
 		}
-		s.forgetRemoteRunLinks(run.ID, "")
+		// The run is gone here: its records go with it, settled
+		// (forgetRemote), their revokes carried once more below.
+		s.forgetRemote("", run.ID, "", true)
 		if live := s.links.DeleteRun(run.ID); len(live) > 0 {
 			s.track(func() { s.disconnectLinks(live) })
 		}

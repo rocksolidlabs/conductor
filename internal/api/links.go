@@ -554,8 +554,7 @@ func (s *Server) handleRevokeRunLink(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadGateway, "rendezvous_unavailable", "the rendezvous did not revoke the link: "+err.Error())
 				return
 			}
-			s.forgetRemoteRunLinks(id, linkID)
-			s.runs.Note(id, session.ActivityLink, "link revoked at the rendezvous: "+linkLabelOr(label))
+			s.revokeConfirmed("", id, linkID)
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -584,8 +583,8 @@ func (s *Server) handleRevokeLink(w http.ResponseWriter, r *http.Request) {
 		found, revoked = s.links.Revoke(id, linkID)
 	}
 	if !found && remote && s.publishedOf(id) == nil {
-		// Its publication is gone, and the link with it there.
-		s.forgetRemoteLink(id, linkID)
+		// Its publication is gone, and the link with it there: settled.
+		s.forgetRemote(id, "", linkID, true)
 		s.recordLink(id, "link revoked: "+linkLabelOr(label))
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -605,8 +604,7 @@ func (s *Server) handleRevokeLink(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadGateway, "rendezvous_unavailable", "the rendezvous did not revoke the link: "+err.Error())
 				return
 			}
-			s.forgetRemoteLink(id, linkID)
-			s.recordLink(id, "link revoked at the rendezvous: "+linkLabelOr(label))
+			s.revokeConfirmed(id, "", linkID)
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}

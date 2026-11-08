@@ -711,7 +711,8 @@ localId, run{id, name}, resume?{sessionId, secret}}` in place of
 `register`: `host.instance` is required (a desk without one is closed,
 `no_instance`), `localId` is `desk:` and the run's id, `run.id` ≤ 64
 bytes and its name ≤ 120 (a run group's bounds), a resume's id ≤ 64
-bytes; a message out of these bounds closes the connection, and an older
+bytes, the whole message ≤ 64 KiB (a host message's bound); a message
+out of these bounds closes the connection, and an older
 switchyard closes it (`register expected`). The desk's id is the one a
 hosted session of that instance and local id has, so its publisher's desk
 gets the same id again: after its connection drops, by a `resume` with
@@ -2154,10 +2155,21 @@ for before it tells the switchyard or ends. The server's stop gives its
 desks a quarter of what is left of its budget, 2.5 s at most (of the
 serve command's 10 s), and goes on to stop its runs and sessions past it,
 each desk then ending by itself, what was left of it logged. A link
-the switchyard says is gone (`link_gone`) ends there too, where the word
+the switchyard says is gone (`link_gone`) ends here too, where the word
 is the link's own end: a session link's from its session's connection, a
 run link's from the run's desk (a member's says only that the member left
-the run's group). The viewer joins at the switchyard as any
+the run's group). The word forgets nothing: the switchyard sends it as it
+closes the link's viewers, before it has deleted what it keeps of the
+link (a revoke whose file it could not delete is answered
+`store_unavailable` after it, and a restart there would bring the link
+back), so the link is owed its revoke there, listed with `revokePending:
+true` and keeping the run's desk, until the switchyard confirms it. One
+rule holds in every path: the publisher forgets the record of a decision
+link revoked here only once the switchyard has confirmed the revoke or
+answered `not_found`, whatever happened to the link, its viewers or its
+desk meanwhile, or once what holds the record is gone (the run
+forgotten, the session's publication gone, whose end there takes its
+links). The viewer joins at the switchyard as any
 viewer of the link does; the publisher's own connection to the switchyard
 welcomes it with `decisions: true`, while the switchyard's last
 `registered` said `decisions` (after a reconnect that did not, no viewer

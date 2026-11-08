@@ -116,7 +116,8 @@ func (s *Server) remoteLinksOf(id string) []remoteLink {
 			gone = rl.hostedID != pub.CurrentID()
 		}
 		if gone {
-			delete(s.remoteLinks[id], lid)
+			// The rendezvous holds it no more: settled.
+			s.forgetRemoteLocked(id, "", lid, true)
 			continue
 		}
 		out = append(out, rl)
@@ -125,11 +126,11 @@ func (s *Server) remoteLinksOf(id string) []remoteLink {
 	return out
 }
 
-// forgetRemoteLink drops the record of a remote link.
+// forgetRemoteLink drops the record of a remote link, unsettled
+// (forgetRemote): a decision link's still owed its revoke at the
+// rendezvous is kept.
 func (s *Server) forgetRemoteLink(id, linkID string) {
-	s.pubMu.Lock()
-	defer s.pubMu.Unlock()
-	delete(s.remoteLinks[id], linkID)
+	s.forgetRemote(id, "", linkID, false)
 }
 
 // SetPublisher makes every server session created from now on published
@@ -265,7 +266,7 @@ func (s *Server) watchPublication(local *session.Local, pub PublishedSession) {
 	ours := s.published[id] == pub
 	if ours {
 		delete(s.published, id)
-		delete(s.remoteLinks, id)
+		s.forgetRemoteLocked(id, "", "", true)
 		if s.pubErr == nil {
 			s.pubErr = map[string]string{}
 		}
@@ -380,7 +381,7 @@ func (s *Server) unpublish(id string) {
 	s.pubMu.Lock()
 	pub := s.published[id]
 	delete(s.published, id)
-	delete(s.remoteLinks, id)
+	s.forgetRemoteLocked(id, "", "", true)
 	delete(s.pubErr, id)
 	delete(s.pubStopped, id)
 	if s.publisher != nil {
@@ -426,7 +427,7 @@ func (s *Server) endLinks(id string) {
 		s.dropLinkFile(lid)
 	}
 	s.pubMu.Lock()
-	delete(s.remoteLinks, id)
+	s.forgetRemoteLocked(id, "", "", true)
 	delete(s.pubStopped, id)
 	s.pubMu.Unlock()
 }

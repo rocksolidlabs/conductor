@@ -946,6 +946,230 @@ func TestAFailedRevokeThereKeepsTheSessionLinkOwed(t *testing.T) {
 	}
 }
 
+// keptDeskPair is deskPair with a switchyard that keeps its links in
+// files under dir, whose publisher hands the test each link_gone it was
+// told once it has taken it (RemoteLinkGone).
+func keptDeskPair(t *testing.T) (yard, local *testEnv, dir string, gone <-chan string) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("root writes to a directory of mode 0500")
+	}
+	dir = filepath.Join(t.TempDir(), "data")
+	yard = keptSwitchyard(t, dir, func(c *config.Config) { c.PublicURL = "https://rendezvous.example.net" })
+	yard.srv.hosts.SetDecisions(true)
+	local = readyEnv(t, nil)
+	local.gitRepo(t)
+	told := make(chan string, 8)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: yard.http.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true,
+		Decisions: local.srv.Lane(), LinkGone: func(linkID, sessionID, runID string) {
+			local.srv.RemoteLinkGone(linkID, sessionID, runID)
+			told <- linkID
+		}}})
+	return yard, local, dir, told
+}
+
+// undeletable makes the switchyard's link files under dir undeletable
+// (their directory read-only, until the test's end): the file of linkID,
+// which it keeps, and the directory.
+func undeletable(t *testing.T, dir, linkID string) (file, links string) {
+	t.Helper()
+	links = filepath.Join(dir, "links")
+	file = filepath.Join(links, linkID+".json")
+	if _, err := os.Stat(file); err != nil {
+		t.Fatalf("the switchyard keeps no file of the link: %v", err)
+	}
+	if err := os.Chmod(links, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(links, 0o700) })
+	return file, links
+}
+
+// toldGone waits for the publisher to have taken the switchyard's
+// link_gone of linkID.
+func toldGone(t *testing.T, gone <-chan string, linkID string) {
+	t.Helper()
+	select {
+	case id := <-gone:
+		if id != linkID {
+			t.Fatalf("link_gone for %s", id)
+		}
+	case <-time.After(testWait):
+		t.Fatal("the publisher was never told link_gone")
+	}
+}
+
+// A run decision link's revoke the switchyard takes but cannot finish,
+// with a viewer joined: the switchyard revokes the link and closes its
+// viewer, so the desk is told link_gone, before it answers
+// store_unavailable, for the link's file there is not deleted (its
+// directory read-only), and a restart of the switchyard would bring the
+// link back. The publisher forgets nothing on the link_gone (forgetRemote:
+// a record owed its revoke is forgotten only once the switchyard has
+// confirmed it, or answered not_found): the link stays listed, owing its
+// revoke, the desk stays, a revoke again is refused as the first was (not
+// 204), and the retry, once the file can go, confirms it and ends both.
+func TestALinkGoneBeforeAFailedRevokeKeepsTheRunLinkOwed(t *testing.T) {
+	yard, local, dir, gone := keptDeskPair(t)
+	next := retries(local)
+	run, _ := heldRun(t, local)
+	linkID, token := remoteDecisionLink(t, local, "/api/runs/"+run.ID+"/links", "phone")
+	deskID := deskOf(t, yard, token)
+	joinDesk(t, yard, token).list("")
+	file, links := undeletable(t, dir, linkID)
+
+	resp, out := local.do("DELETE", "/api/runs/"+run.ID+"/links/"+linkID, adminToken, nil)
+	if resp.StatusCode != http.StatusBadGateway || errCodeOf(out) != "rendezvous_unavailable" || !strings.Contains(fmt5(out), "store_unavailable") {
+		t.Fatalf("a revoke whose file stays at the switchyard: %d %v", resp.StatusCode, out)
+	}
+	// The desk was told link_gone (its viewer closed): the path the rule
+	// is for.
+	toldGone(t, gone, linkID)
+	owed := func(when string) {
+		t.Helper()
+		l := linksOf(t, local, "/api/runs/"+run.ID+"/links")
+		if len(l) != 1 || l[0]["id"] != linkID || l[0]["revokePending"] != true {
+			t.Fatalf("%s: the run's links %v", when, l)
+		}
+		if local.srv.liveDesk(run.ID) == nil {
+			t.Fatalf("%s: the desk ended with a revoke owed", when)
+		}
+		if _, err := os.Stat(file); err != nil {
+			t.Fatalf("%s: the link's file: %v", when, err)
+		}
+	}
+	owed("after the link_gone and the failed revoke")
+	if local.srv.Lane().DecisionLink(linkID, "", run.ID) {
+		t.Fatal("the revoked link still opens a lane here")
+	}
+	// A revoke again while the file still stays: refused as the first was.
+	if resp, out := local.do("DELETE", "/api/runs/"+run.ID+"/links/"+linkID, adminToken, nil); resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("a revoke again while the switchyard keeps the file: %d %v", resp.StatusCode, out)
+	}
+	owed("after the revoke again")
+	var try func()
+	select {
+	case try = <-next:
+	case <-time.After(testWait):
+		t.Fatal("no retry was armed")
+	}
+	// A retry while the file still stays: owed still.
+	try()
+	select {
+	case try = <-next:
+	case <-time.After(testWait):
+		t.Fatal("the retry gave up")
+	}
+	owed("after a retry that failed")
+	if err := os.Chmod(links, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	try()
+	until(t, "the retry confirmed the revoke", func() bool {
+		_, err := os.Stat(file)
+		return errors.Is(err, os.ErrNotExist) && len(linksOf(t, local, "/api/runs/"+run.ID+"/links")) == 0
+	})
+	until(t, "the desk ended", func() bool { return local.srv.liveDesk(run.ID) == nil })
+	until(t, "the switchyard let the desk go", func() bool {
+		_, there := yard.srv.hosts.Desk(deskID)
+		return !there
+	})
+	if code, _ := joinStatus(t, yard, token); code != http.StatusNotFound {
+		t.Fatalf("the link still joins at the switchyard: %d", code)
+	}
+	// Confirmed, a revoke again is done.
+	if resp, out := local.do("DELETE", "/api/runs/"+run.ID+"/links/"+linkID, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("a revoke again once confirmed: %d %v", resp.StatusCode, out)
+	}
+}
+
+// The same for a session's decision link, its viewer joined at the
+// switchyard: the session's connection is told link_gone before the
+// revoke's store_unavailable, and the record stays, owing its revoke,
+// until the retry confirms it; a revoke again meanwhile is refused.
+func TestALinkGoneBeforeAFailedRevokeKeepsTheSessionLinkOwed(t *testing.T) {
+	yard, local, dir, gone := keptDeskPair(t)
+	next := retries(local)
+	id := sessionHex("published")
+	fs := newFakeSession(t, local, id, session.Options{})
+	local.srv.publish(fs.l)
+	until(t, "the session published", func() bool { return local.srv.publishedOf(id) != nil })
+	linkID, token := remoteDecisionLink(t, local, "/api/sessions/"+id+"/links", "phone")
+	w := &laneClient{wsClient: dialViewer(t, yard, local.srv.publishedOf(id).CurrentID(), token)}
+	w.welcome = joinedRelay(t, w.wsClient)
+	w.list("")
+	file, links := undeletable(t, dir, linkID)
+
+	resp, out := local.do("DELETE", "/api/sessions/"+id+"/links/"+linkID, adminToken, nil)
+	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(fmt5(out), "store_unavailable") {
+		t.Fatalf("a revoke whose file stays at the switchyard: %d %v", resp.StatusCode, out)
+	}
+	toldGone(t, gone, linkID)
+	owed := func(when string) {
+		t.Helper()
+		l := linksOf(t, local, "/api/sessions/"+id+"/links")
+		if len(l) != 1 || l[0]["id"] != linkID || l[0]["revokePending"] != true {
+			t.Fatalf("%s: the session's links %v", when, l)
+		}
+	}
+	owed("after the link_gone and the failed revoke")
+	if resp, out := local.do("DELETE", "/api/sessions/"+id+"/links/"+linkID, adminToken, nil); resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("a revoke again while the switchyard keeps the file: %d %v", resp.StatusCode, out)
+	}
+	owed("after the revoke again")
+	var try func()
+	select {
+	case try = <-next:
+	case <-time.After(testWait):
+		t.Fatal("no retry was armed")
+	}
+	if err := os.Chmod(links, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	try()
+	until(t, "the retry confirmed the revoke", func() bool {
+		_, err := os.Stat(file)
+		return errors.Is(err, os.ErrNotExist) && len(linksOf(t, local, "/api/sessions/"+id+"/links")) == 0
+	})
+	if code, _ := joinStatus(t, yard, token); code != http.StatusNotFound {
+		t.Fatalf("the link still joins at the switchyard: %d", code)
+	}
+}
+
+// A register_desk is a host message, bounded as one: past 64 KiB
+// (proto.MaxHostMessage; here a host version that fills it, which no
+// field bound of its own catches) the connection is closed and no desk
+// registered, though the socket reads more for the frames a host relays;
+// the same message within the bound registers.
+func TestAnOversizedRegisterDeskIsRefused(t *testing.T) {
+	yard := keptSwitchyard(t, filepath.Join(t.TempDir(), "data"), nil)
+	big := deskReg("instance-a-0123456789", "run-1")
+	big.Host.Version = strings.Repeat("v", 70_000)
+	b, _ := json.Marshal(big)
+	if len(b) <= proto.MaxHostMessage || len(b) > proto.MaxHostMessage+proto.MaxFrame {
+		t.Fatalf("the message is %d bytes", len(b))
+	}
+	c, _, err := websocket.Dial(t.Context(), strings.Replace(yard.http.URL, "http://", "ws://", 1)+"/ws/host", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	if err := c.Write(t.Context(), websocket.MessageText, b); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c.Read(t.Context()); websocket.CloseStatus(err) != websocket.StatusCode(proto.CloseProtocolError) {
+		t.Fatalf("an oversized register_desk: %v", err)
+	}
+	if n := yard.srv.hosts.DeskCount(); n != 0 {
+		t.Fatalf("%d desks registered", n)
+	}
+	small := deskReg("instance-a-0123456789", "run-1")
+	small.Host.Version = strings.Repeat("v", 1000)
+	if h, _ := dialFakeDesk(t, yard, small); h.sessionID == "" {
+		t.Fatal("a register_desk within the bound is not registered")
+	}
+}
+
 // olderLinkFile is a switchyard's link file as a build before run desks
 // reads it (linkFile, its run a share.Group of a name and members),
 // strictly: a field it does not know leaves the link out at its start.
@@ -1065,10 +1289,13 @@ func TestADeskCheckKeepsADeskAMintTook(t *testing.T) {
 // A member's link_gone says only that the member left the run's group (the
 // run's next attempt replacing it): the run decision link stands here and
 // is listed; the run's desk's says the link itself is gone there, and it
-// ends here too, its record with it. A session link's from another
-// session's connection is no word of its own.
+// ends here too, its record kept, owing its revoke there, until the
+// switchyard confirms it (the retry; forgetRemote), and then the desk
+// ends. A session link's from another session's connection is no word of
+// its own.
 func TestAMembersLinkGoneIsNoRunLinksEnd(t *testing.T) {
 	_, local := deskPair(t, true)
+	next := retries(local)
 	run, _ := heldRun(t, local)
 	linkID, _ := remoteDecisionLink(t, local, "/api/runs/"+run.ID+"/links", "phone")
 	local.srv.RemoteLinkGone(linkID, sessionHex("member"), "")
@@ -1086,9 +1313,16 @@ func TestAMembersLinkGoneIsNoRunLinksEnd(t *testing.T) {
 	if local.srv.Lane().DecisionLink(linkID, "", run.ID) {
 		t.Fatal("the desk's link_gone left the link standing")
 	}
-	if l := linksOf(t, local, "/api/runs/"+run.ID+"/links"); len(l) != 0 {
-		t.Fatalf("the run's links after the desk's link_gone: %v", l)
+	if l := linksOf(t, local, "/api/runs/"+run.ID+"/links"); len(l) != 1 || l[0]["revokePending"] != true || local.srv.liveDesk(run.ID) == nil {
+		t.Fatalf("the run's links after the desk's link_gone, before the switchyard confirmed: %v", l)
 	}
+	select {
+	case try := <-next:
+		try()
+	case <-time.After(testWait):
+		t.Fatal("no revoke there was armed")
+	}
+	until(t, "the switchyard confirmed", func() bool { return len(linksOf(t, local, "/api/runs/"+run.ID+"/links")) == 0 })
 	until(t, "the desk ended", func() bool { return local.srv.liveDesk(run.ID) == nil })
 
 	id := sessionHex("published")
