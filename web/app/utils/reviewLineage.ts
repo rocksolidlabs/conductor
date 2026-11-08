@@ -87,7 +87,8 @@ function parseRef(s: string): { run: string; task: string; attempt: number; comm
 /**
  * The lineage of one candidate, judged in this order: the repair of a person's review (an applied review names this run and attempt);
  * a Check again (its start and its result those of an earlier attempt of the task that failed a check); the repair of a review
- * task's needs_changes (a review of this run's chain reviewed the commit this attempt started at, a result of the same task); the repair
+ * task's needs_changes (a review of this run's chain asked for changes on the commit this attempt started at, a result of the same
+ * task, paired in order with the reopenings it made: reopeningReviewTask); the repair
  * of a failed check (an earlier attempt failed a check on the commit it started at); else its task's first attempt, or one more.
  */
 export function lineageOf(c: { run: string; task: string; attempt: number; commit: string; start?: string }, input: LineageInput): Lineage {
@@ -112,12 +113,37 @@ export function lineageOf(c: { run: string; task: string; attempt: number; commi
   if (c.start) {
     const p = earlier.filter((a) => a.commit === c.start).sort((x, y) => y.attempt - x.attempt)[0]
     if (p) {
-      const rt = input.reviewTasks.filter((t) => chain.includes(t.run) && t.verdict === 'needs_changes' && t.reviewed === c.start).sort((x, y) => y.attempt - x.attempt)[0]
+      const rt = reopeningReviewTask(c, c.start, chain, input)
       if (rt) return { ...base, cause: { kind: 'review_task', task: rt.task, attempt: rt.attempt, from: { run: p.run, attempt: p.attempt, commit: p.commit! } } }
       if (p.failed) return { ...base, cause: { kind: 'check', check: p.failed, from: { run: p.run, attempt: p.attempt, commit: p.commit! } } }
     }
   }
   return { ...base, cause: { kind: earlier.length ? 'again' : 'first' } }
+}
+
+/**
+ * The review task's attempt whose needs_changes reopened the attempt `c` at `start`, by the order of both within the chain: the review
+ * attempts of the chain that asked for changes on `start` and the work attempts of the task the reopenings made (started at `start`,
+ * neither a person's repair, nor a Check again, nor one after an attempt that failed a check) are paired first with first, so the k-th
+ * reopening is the repair of the k-th request. A review that ran later, of the same commit submitted again unchanged, is the next
+ * reopening's, never this one's. Null when `c` is no such reopening, or no request is left for it.
+ */
+function reopeningReviewTask(c: { run: string; task: string; attempt: number }, start: string, chain: readonly string[], input: LineageInput): LineageReviewTask | null {
+  const place = (run: string) => chain.length - 1 - chain.indexOf(run)
+  const order = (x: { run: string; attempt: number }, y: { run: string; attempt: number }) => place(x.run) - place(y.run) || x.attempt - y.attempt
+  const own = input.attempts.filter((a) => a.task === c.task && chain.includes(a.run)).sort(order)
+  const personal = (a: LineageAttempt) => input.reviews.some((r) => r.application.state === 'applied' && r.application.run === a.run && r.application.attempt === a.attempt)
+  const reopenings = own.filter((a, i) => {
+    if (a.start !== start || personal(a)) return false
+    const before = own.slice(0, i)
+    if (before.some((b) => b.commit === a.commit && b.start === a.start && b.failed)) return false
+    const prev = before[before.length - 1]
+    return !prev?.failed
+  })
+  const k = reopenings.findIndex((a) => a.run === c.run && a.attempt === c.attempt)
+  if (k < 0) return null
+  const asked = input.reviewTasks.filter((t) => chain.includes(t.run) && t.verdict === 'needs_changes' && t.reviewed === start).sort(order)
+  return asked[k] ?? null
 }
 
 /**

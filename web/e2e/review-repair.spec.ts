@@ -387,6 +387,17 @@ test("a failed check prepared for its repair, checked again at the same commit, 
   await expect(panel.locator('[data-repair-log-sha]')).toContainText(bad.logSha256!)
   await expect(panel.locator('[data-repair-previous]')).toContainText('attempt 2 failed')
   await expect(panel.locator('[data-repair-acceptance]')).toHaveText('It is built, and its lines are numbered.')
+  // The receipt opened from the panel: DS2's dialog, its argv and its whole log, the served SHA-256 the same as the recorded one.
+  await panel.locator('[data-repair-open-receipt]').click()
+  const receipt = page.locator(`[data-receipt-modal][data-receipt-key="check:${bad.id}:${bad.k}"]`)
+  await expect(receipt).toBeVisible(within(30_000))
+  await expect(receipt.locator('[data-receipt-argv]')).toHaveText(/\S/, within(30_000))
+  await expect(receipt.locator('[data-receipt-recorded-sha]')).toHaveText(bad.logSha256!)
+  await expect(receipt.locator('[data-receipt-sha-match]')).toHaveAttribute('data-receipt-sha-match', 'matches', within(30_000))
+  await page.keyboard.press('Escape')
+  await expect(receipt).toHaveCount(0, within(15_000))
+  await prepare.click()
+  await expect(panel).toBeVisible(within(30_000))
   // Check again is offered because the prepared request says Yardmaster takes it: after Add to the draft for a code defect, first for a
   // possibly flaky check; Retry beside them, the task having failed.
   await expect(panel).toHaveAttribute('data-repair-recheck-allowed', 'true')
@@ -413,6 +424,13 @@ test("a failed check prepared for its repair, checked again at the same commit, 
   await page.goto(`/dispatch/${key}/1?view=review&candidate=${encodeURIComponent(cand4)}`)
   await expect(page.locator(`[data-review-view][data-review-candidate="${cand4}"]`)).toBeVisible(within(60_000))
   await expect(page.locator('[data-review-lineage-step][data-lineage-attempt="4"]')).toHaveAttribute('data-lineage-cause', 'recheck', within(30_000))
+  // Its passing receipt opened from the checks of the candidate: the dialog with its log, the hash compared.
+  const good = fourth.receipts.find((r) => r.phase === 'check' && r.exit === 0)!
+  await page.locator(`[data-review-check-open="check/${good.id}/${good.k}"]`).click()
+  const passing = page.locator(`[data-receipt-modal][data-receipt-key="check:${good.id}:${good.k}"]`)
+  await expect(passing.locator('[data-receipt-sha-match]')).toHaveAttribute('data-receipt-sha-match', 'matches', within(30_000))
+  await page.keyboard.press('Escape')
+  await expect(passing).toHaveCount(0, within(15_000))
   const note = findingRow(page, 'The first line, as attempt 3 had it.')
   await expect(note).toBeVisible(within(30_000))
   await note.locator('[data-finding-mark="resolved"]').click()

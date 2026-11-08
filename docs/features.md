@@ -4243,7 +4243,21 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   otherwise) and on the ticket's receipts; the palette's Review the
   latest candidate, Send review (n notes) and Open findings; a note on
   typed lines for a phone; the stub's `addressed` and its fixed edits
-  (the `worker-review` agent, `STUB_REVIEW_EDITS=1`).
+  (the `worker-review` agent, `STUB_REVIEW_EDITS=1`). Two rules hold the
+  view's candidates: the one shown is read by its id from its own run
+  (`useNamedCandidate`), never looked for among the ticket's pages, so a
+  run past the first page of Runs or an attempt past its task's six
+  newest has its checks and its bases; and candidates are ranked by one
+  ordering (`rankCandidates`: time, then the attempt, then the crew's
+  order; a continuation is newer than the run it continues because it
+  starts after it, and independent launches go by time) wherever they
+  are ranked. A check of the candidate, and the failed-check panel's
+  receipt, open DS2's receipt dialog with the whole log and its hash; the
+  findings are read again when a run moves, so a repair's addressed
+  notes come in while the reviewed candidate stays shown; a review
+  task's request is paired in order with the reopening it made; and the
+  run page finds the ticket of a continuation of a run linked by hand
+  back along its chain.
   `reviewLineage.test.ts`, more of `review.test.ts`,
   `review-repair.spec.ts`, and this entry.
 

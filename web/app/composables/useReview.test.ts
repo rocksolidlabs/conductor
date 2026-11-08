@@ -9,13 +9,15 @@ import {
   useCandidateDiff,
   useFileSides,
   useLaunchedCriteria,
-  useOlderCandidate,
+  useNamedCandidate,
   usePreparedRepair,
   useRecheckAsk,
   useReview,
   useSentReviews,
   useShowWhenReady,
+  useTaskFindings,
   type CandidateDiff,
+  type ReviewFinding,
   type Review,
   type ReviewSummary,
 } from './useReview'
@@ -525,39 +527,106 @@ describe("the criteria as a launch's package froze them", () => {
   })
 })
 
-describe('a candidate older than its task\'s six newest', () => {
-  it('is read from its run once its run\'s candidates are read without it, its failure said and asked again', async () => {
-    const reads: Array<{ args: [string, string, number]; h: ReturnType<typeof held<{ candidates?: Array<{ task: string; kind: 'work' | 'review'; candidates: RunCandidate[] }> }>> }> = []
-    const listed = vue.ref<boolean | null>(null)
-    const tick = vue.ref(0)
-    const o = useOlderCandidate({
-      read: (run, task, before) => {
-        const h = held<{ candidates?: Array<{ task: string; kind: 'work' | 'review'; candidates: RunCandidate[] }> }>()
+describe('the candidate shown, read by its id', () => {
+  type Page = { base?: string; candidates?: Array<{ task: string; kind: 'work' | 'review'; candidates: RunCandidate[] }> }
+  const cand = (attempt: number, commit: string, o: Partial<RunCandidate> = {}): RunCandidate => ({ task: 'build', kind: 'work', attempt, commit, state: 'failed', standing: false, withdrawn: false, receipts: [], ...o })
+  function named(want: () => typeof ref | null, tick: () => unknown) {
+    const reads: Array<{ args: [string, string, number]; h: ReturnType<typeof held<Page>> }> = []
+    const o = useNamedCandidate({
+      read: (run: string, task: string, before: number) => {
+        const h = held<Page>()
         reads.push({ args: [run, task, before], h })
         return h.p
       },
-      want: () => ref,
-      listed: () => listed.value,
-      ticks: () => tick.value,
+      want,
+      ticks: tick,
     })
-    expect(reads).toHaveLength(0)
-    listed.value = false
-    await vue.nextTick()
-    expect(reads.map((r) => r.args)).toEqual([['run-1', 'build', 2]])
+    return { o, reads }
+  }
+  it("is read from its own run whatever the ticket's pages hold: a run past the first page of Runs, an attempt past its task's six newest", async () => {
+    // Nothing of the ticket's runs is consulted: the read is asked at once, of the run, the task and the attempt the route names.
+    const old = { run: 'run-11', task: 'build', attempt: 9, commit: C }
+    const tick = vue.ref(0)
+    const { o, reads } = named(() => old, () => tick.value)
+    expect(reads.map((r) => r.args)).toEqual([['run-11', 'build', 10]])
     reads[0]!.h.fail(new Error('offline'))
     await settle()
     expect(o.error.value).toBe('offline')
     expect(o.candidate.value).toBeNull()
     tick.value++
     await vue.nextTick()
-    const c: RunCandidate = { task: 'build', kind: 'work', attempt: 1, commit: C, state: 'failed', standing: false, withdrawn: false, receipts: [] }
-    reads[1]!.h.ok({ candidates: [{ task: 'build', kind: 'work', candidates: [c] }] })
+    const c = cand(9, C, { receipts: [{ phase: 'check', id: 'test', k: 1, where: 'native', state: 'finished', exit: 1, timedOut: false, killed: false, stable: true, startedAt: '', logBytes: 0, logDropped: false }] })
+    reads[1]!.h.ok({ base: S, candidates: [{ task: 'build', kind: 'work', candidates: [c, cand(8, B), cand(7, S)] }] })
     await settle()
     expect(o.candidate.value).toEqual(c)
+    expect(o.base.value).toBe(S)
+    expect(o.earlier.value.map((x) => x.attempt)).toEqual([8, 7])
     expect(o.error.value).toBe('')
+    // Read again at each tick (a run's change), what was read staying shown meanwhile.
     tick.value++
     await vue.nextTick()
-    expect(reads).toHaveLength(2)
+    expect(reads).toHaveLength(3)
+    expect(o.candidate.value).toEqual(c)
+    reads[2]!.h.ok({ base: S, candidates: [{ task: 'build', kind: 'work', candidates: [{ ...c, state: 'succeeded' }] }] })
+    await settle()
+    expect(o.candidate.value?.state).toBe('succeeded')
+  })
+  it("says a page that does not hold it and a run the server knows nowhere, and drops a reply for a candidate no longer named", async () => {
+    const want = vue.ref<typeof ref | null>(ref)
+    const { o, reads } = named(() => want.value, () => 0)
+    reads[0]!.h.ok({ candidates: [{ task: 'build', kind: 'work', candidates: [cand(1, B)] }] })
+    await settle()
+    expect(o.error.value).toBe(`attempt 1 of build in run run-1 has no candidate at ${C.slice(0, 12)}`)
+    want.value = { run: 'run-2', task: 'build', attempt: 1, commit: C }
+    await vue.nextTick()
+    reads[1]!.h.fail(new ApiError(404, 'not_found', 'no such run'))
+    await settle()
+    expect(o.error.value).toBe('the server knows no run run-2')
+    want.value = { run: 'run-3', task: 'build', attempt: 1, commit: C }
+    await vue.nextTick()
+    want.value = { run: 'run-4', task: 'build', attempt: 1, commit: C }
+    await vue.nextTick()
+    reads[2]!.h.ok({ candidates: [{ task: 'build', kind: 'work', candidates: [cand(1, C)] }] })
+    await settle()
+    expect(o.candidate.value).toBeNull()
+  })
+})
+
+describe("the task's findings under the Review view", () => {
+  it("are read again when a run changes while the same candidate stays shown: a repair's addressed notes come in", async () => {
+    const asks: Array<{ key: string; at: string; apply: (f: ReviewFinding[]) => void; h: ReturnType<typeof held<void>> }> = []
+    const r = {
+      readFindings: (key: string, at: string, apply: (f: ReviewFinding[]) => void) => {
+        const h = held<void>()
+        asks.push({ key, at, apply, h })
+        return h.p
+      },
+    } as unknown as Parameters<typeof useTaskFindings>[0]
+    const runs = vue.ref<unknown[]>([])
+    const shown = vue.ref(cand)
+    const f = useTaskFindings(r, { ticket: () => 'CND-12', candidate: () => shown.value, ticks: () => [0, 0, runs.value] })
+    expect(asks.map((a) => [a.key, a.at])).toEqual([['CND-12', cand]])
+    const before = { id: 'f1', addressed: [] } as unknown as ReviewFinding
+    asks[0]!.apply([before])
+    asks[0]!.h.ok()
+    await settle()
+    expect(f.list.value).toEqual([before])
+    // The repair attempt's result names f1 addressed: its run moves, the ticket's candidates are read again, and the findings with them.
+    runs.value = [{ run: 'run-1' }]
+    await vue.nextTick()
+    expect(asks).toHaveLength(2)
+    expect(asks[1]!.at).toBe(cand)
+    const after = { id: 'f1', addressed: [{ run: 'run-1', attempt: 2, note: 'done' }] } as unknown as ReviewFinding
+    asks[1]!.apply([after])
+    asks[1]!.h.ok()
+    await settle()
+    expect(f.list.value).toEqual([after])
+    // A reply for a candidate no longer shown is dropped, and the list is cleared at the move.
+    shown.value = `run-1/build/2@${B}`
+    await vue.nextTick()
+    expect(f.list.value).toEqual([])
+    asks[1]!.apply([before])
+    expect(f.list.value).toEqual([])
   })
 })
 

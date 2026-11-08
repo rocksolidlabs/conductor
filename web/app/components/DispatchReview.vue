@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { CandidateReceipt, LaunchSummary, PlanBody, PlanSummary, RunCandidate } from '~/composables/useDispatch'
 import { ApiError } from '~/composables/useApi'
-import { ContinuationNeeded, useCandidateDiff, useFileSides, useLaunchedCriteria, useOlderCandidate, usePreparedRepair, useReview, useSentReviews, useShowWhenReady, type ReviewFinding, type ReviewSummary, type SideText } from '~/composables/useReview'
+import { ContinuationNeeded, useCandidateDiff, useFileSides, useLaunchedCriteria, useNamedCandidate, usePreparedRepair, useReview, useSentReviews, useShowWhenReady, useTaskFindings, type ReviewFinding, type ReviewSummary, type SideText } from '~/composables/useReview'
 import { useReviewDraft } from '~/composables/useReviewDraft'
 import type { useTicketCandidates } from '~/composables/useTicketCandidates'
 import { candidateRef, parseCandidate } from '~/utils/dispatch'
@@ -24,6 +24,7 @@ import {
   noteIsOn,
   notesPerFile,
   offeredBases,
+  rankCandidates,
   repairBytes,
   reviewBody,
   withDraftBase,
@@ -49,7 +50,16 @@ import {
  * class, Check again when Yardmaster takes it, a check note added to the draft); every finding of the task's reviews across its
  * candidates, located on the one shown, with the agent's addressed notes and the marks a person makes (ReviewFindings); and the ticket's
  * decisions and delivery (the page's own sections, in the `decisions` slot). One column on a phone, where a note on lines is made by
- * typing them (Note on lines), since Monaco's selection is a desktop gesture.
+ * typing them (Note on lines), since Monaco's selection is a desktop gesture. A check of the candidate, and the failed-check panel's
+ * receipt, open DS2's receipt dialog (DispatchReceipt: the argv, the whole log, the served SHA-256 against the recorded one).
+ *
+ * Two rules hold the view's candidates. The candidate shown is read by its id from its own run (useNamedCandidate), never looked for
+ * among the ticket's pages of runs and candidates: whatever run and attempt the route names, its receipts, its state, its run's base and
+ * its task's earlier results are its own read's, read again at each tick (the ticket read again, the stream's reset, the runs'
+ * candidates read again). And candidates are ranked by one ordering, rankCandidates (time: a run's start, its receipts' starts, a
+ * task's earlier attempts; then the attempt; then the crew's order), wherever they are ranked: the one opened when the route names
+ * none, the palette's Review the latest candidate, the picker, the lineage and whether the task failed. The findings are read again at
+ * the same ticks, so a repair's addressed notes come in while the reviewed candidate stays shown.
  */
 const props = defineProps<{
   ticketKey: string
@@ -85,41 +95,43 @@ interface Option extends ReviewCandidateOption {
   task: string
   c: RunCandidate
 }
-/** The candidates of the ticket's runs: every work attempt that submitted a commit, newest first per task, in the runs' order. */
-const options = computed<Option[]>(() => {
-  const out: Option[] = []
-  for (const r of props.candidates.runs.value) {
-    for (const t of r.tasks) {
-      if (t.kind !== 'work') continue
-      for (const c of t.candidates) {
-        if (!c.commit) continue
-        out.push({ value: candidateRef({ run: r.run, task: t.task, attempt: c.attempt, commit: c.commit }), label: `${t.task} · attempt ${c.attempt} · ${shortCommit(c.commit)} · ${r.label || r.run}`, standing: c.standing, run: r.run, task: t.task, c })
-      }
-    }
-  }
-  // The candidate the route names when the reads list it not (older than its task's six newest): read from its run (useOlderCandidate).
-  const o = older.candidate.value
-  const want = cref.value
-  if (o && want && !out.some((x) => x.value === chosen.value)) {
-    const r = props.candidates.runs.value.find((x) => x.run === want.run)
-    out.push({ value: chosen.value, label: `${want.task} · attempt ${o.attempt} · ${shortCommit(want.commit)} · ${r?.label || want.run}`, standing: o.standing, run: want.run, task: want.task, c: o })
-  }
-  return out
-})
 const chosen = computed(() => props.candidate || firstReviewCandidate(props.candidates.runs.value))
 const cref = computed(() => parseCandidate(chosen.value))
-/**
- * The candidate named, among the ticket's candidates read: null before its run's are read, false when they do not list it (older than
- * its task's six newest), so it is read from its run, once, and its checks are never taken for none.
- */
-const listedNamed = computed<boolean | null>(() => {
-  const c = cref.value
-  if (!c || !props.candidates.byRun.has(c.run)) return null
-  return props.candidates.byRun.get(c.run)!.some((t) => t.task === c.task && t.candidates.some((x) => x.attempt === c.attempt && x.commit === c.commit))
-})
 const dispatchApi = useDispatchApi()
-const older = useOlderCandidate({ read: dispatchApi.olderCandidates, want: () => cref.value, listed: () => listedNamed.value, ticks: () => [props.reads, props.resets] })
-const entry = computed(() => options.value.find((o) => o.value === chosen.value))
+/** What moves what the view reads of the candidate and its findings: the ticket read again, the stream's reset, the runs' candidates read again (a run's change). */
+const ticks = () => [props.reads, props.resets, props.candidates.runs.value]
+/**
+ * The candidate shown, read by its id from its own run (useNamedCandidate), never looked for among the ticket's pages: its receipts, its
+ * state, its run's base and its task's earlier results, whichever run and attempt the route names.
+ */
+const named = useNamedCandidate({ read: dispatchApi.olderCandidates, want: () => cref.value, ticks })
+/**
+ * The ticket's runs read, and the shown candidate's run with what its own read gave (it and its task's earlier attempts) when they are
+ * not among them: a run past the pages of Runs read, or a candidate older than its task's six newest.
+ */
+const runsShown = computed(() => {
+  const runs = props.candidates.runs.value
+  const w = cref.value
+  const c = named.candidate.value
+  if (!w || !c) return runs
+  const run = runs.find((r) => r.run === w.run)
+  const listed = run?.tasks.find((t) => t.task === w.task)?.candidates.some((x) => x.attempt === c.attempt && x.commit === c.commit)
+  if (listed) return runs
+  const own = [c, ...named.earlier.value]
+  if (run) return runs.map((r) => (r !== run ? r : { ...r, tasks: [...r.tasks.filter((t) => t.task !== w.task), { task: w.task, kind: 'work' as const, more: 0, candidates: [...(r.tasks.find((t) => t.task === w.task)?.candidates ?? []).filter((x) => !own.some((o) => o.attempt === x.attempt)), ...own] }] }))
+  return [...runs, { run: w.run, label: '', tasks: [{ task: w.task, kind: 'work' as const, more: 0, candidates: own }] }]
+})
+/** Every candidate the view knows, in the one ordering (rankCandidates, newest first): the picker's, the lineage's, whether the task failed. */
+const ranked = computed(() => rankCandidates(runsShown.value))
+const options = computed<Option[]>(() => ranked.value.map((x) => ({ value: x.value, label: `${x.task} · attempt ${x.c.attempt} · ${shortCommit(x.c.commit!)} · ${x.label}`, standing: x.c.standing, run: x.run, task: x.task, c: x.c })))
+/** The candidate shown, as its own read gives it: null until that read answers. */
+const entry = computed<Option | null>(() => {
+  const w = cref.value
+  const c = named.candidate.value
+  if (!w || !c) return null
+  const label = props.candidates.runs.value.find((r) => r.run === w.run)?.label || w.run
+  return { value: chosen.value, label: `${w.task} · attempt ${c.attempt} · ${shortCommit(w.commit)} · ${label}`, standing: c.standing, run: w.run, task: w.task, c }
+})
 // The candidate resolved for a route that names none goes into the route: the view stays on it when another comes to stand (a request
 // applied makes the repair's), and with it the draft being edited and a send's answer.
 watch(
@@ -130,13 +142,12 @@ watch(
   { immediate: true },
 )
 
-/** The bases the page lists for the candidate (from the candidates it has read), null until it has read its run's candidates. */
+/** The bases offered for the candidate (its run's base, its start, its task's earlier results: its own read's), null until that read answers. */
 const listed = computed<BaseChoice[] | null>(() => {
   const e = entry.value
-  const base = e ? props.candidates.bases.get(e.run) : undefined
+  const base = named.base.value || (e ? props.candidates.bases.get(e.run) : undefined)
   if (!e || !base) return null
-  const same = props.candidates.runs.value.find((r) => r.run === e.run)?.tasks.find((t) => t.task === e.task)?.candidates ?? []
-  return offeredBases(base, e.c, same)
+  return offeredBases(base, e.c, named.earlier.value)
 })
 
 /** The candidate and base pairs the server refused a diff of (none of the run's chain): a draft on one is stale. */
@@ -363,33 +374,12 @@ async function retry(r: ReviewSummary, continueRun: boolean): Promise<Continuati
     return (e as Error).message
   }
 }
-// The task's findings across its candidates, located on the one shown: read when it moves and whenever the ticket is read again.
-const findings = ref<ReviewFinding[]>([])
-const findingsError = ref('')
-const findingsLoading = ref(false)
-const findingAsks = latest()
-let viewClosed = false
-onScopeDispose(() => (viewClosed = true))
-async function readFindings(): Promise<void> {
-  const key = props.ticketKey
-  const at = chosen.value
-  if (viewClosed || !at || !cref.value) return
-  const current = findingAsks.ask()
-  findingsLoading.value = true
-  try {
-    await review.readFindings(key, at, (fs) => {
-      if (!current() || key !== props.ticketKey || at !== chosen.value) return
-      findings.value = fs
-      findingsError.value = ''
-    })
-  } catch (e) {
-    if (current()) findingsError.value = (e as Error).message
-  } finally {
-    if (current()) findingsLoading.value = false
-  }
-}
-watch(chosen, () => (findings.value = []))
-watch(() => [props.ticketKey, chosen.value, props.reads, props.resets], () => void readFindings(), { immediate: true })
+// The task's findings across its candidates, located on the one shown: read when it moves and at each tick (useTaskFindings).
+const taskFindings = useTaskFindings(review, { ticket: () => props.ticketKey, candidate: () => chosen.value, ticks })
+const findings = taskFindings.list
+const findingsError = taskFindings.error
+const findingsLoading = taskFindings.loading
+const readFindings = taskFindings.read
 async function markFinding(f: ReviewFinding, verdict: 'resolved' | 'open' | 'withdrawn', note: string): Promise<string> {
   try {
     await review.mark(f.id, chosen.value, verdict, note)
@@ -437,19 +427,24 @@ const lineage = computed(() => {
   if (!task) return []
   const attempts: LineageAttempt[] = []
   const reviewTasks: LineageReviewTask[] = []
-  for (const r of props.candidates.runs.value) {
+  const attemptOf = (run: string, c: RunCandidate): LineageAttempt => {
+    const bad = c.receipts.find((x) => receiptFailed(x))
+    return { run, task, attempt: c.attempt, start: c.start, commit: c.commit, state: c.state, ...(bad ? { failed: receiptName(bad) } : {}) }
+  }
+  for (const r of runsShown.value) {
     for (const t of r.tasks) {
       for (const c of t.candidates) {
         if (t.kind === 'review') reviewTasks.push({ run: r.run, task: t.task, attempt: c.attempt, reviewed: c.start, verdict: c.verdict })
-        else if (t.task === task && c.commit) {
-          const bad = c.receipts.find((x) => receiptFailed(x))
-          attempts.push({ run: r.run, task, attempt: c.attempt, start: c.start, commit: c.commit, state: c.state, ...(bad ? { failed: receiptName(bad) } : {}) })
-        }
+        else if (t.task === task && c.commit) attempts.push(attemptOf(r.run, c))
       }
     }
   }
   const input = { attempts, reviews: sent.value, reviewTasks, continues: props.continues ?? new Map<string, string>() }
-  return [...attempts].sort((a, b) => a.attempt - b.attempt).map((a) => lineageOf({ run: a.run, task, attempt: a.attempt, commit: a.commit!, start: a.start }, input))
+  // Oldest first, in the one ordering (rankCandidates).
+  return ranked.value
+    .filter((x) => x.task === task)
+    .reverse()
+    .map((x) => lineageOf({ run: x.run, task, attempt: x.c.attempt, commit: x.c.commit!, start: x.c.start }, input))
 })
 
 // The candidate's checks, and a failed one's repair prepared.
@@ -457,15 +452,20 @@ const receipts = computed<CandidateReceipt[]>(() => entry.value?.c.receipts ?? [
 /** The candidate's checks not read yet, or not read: their words in place of "No check ran", which only a read candidate says. */
 const checksUnread = computed(() => {
   if (entry.value) return ''
-  if (older.error.value) return `The checks of this candidate could not be read (${older.error.value}); asked again on the ticket's next read.`
-  const run = cref.value?.run
-  if (run && !props.candidates.loading.value && !props.candidates.runs.value.some((r) => r.run === run)) return `Run ${run} is not one of the ticket's runs: its checks are not read here.`
+  if (named.error.value) return `The checks of this candidate could not be read (${named.error.value}); asked again on the ticket's next read.`
   return "Reading this candidate's checks…"
 })
-/** The task failed: its candidate shown failed and no later one of it is listed. */
+/** The task failed: its candidate shown failed and no candidate of its task in its run's chain is newer in the one ordering (rankCandidates). */
 const taskFailed = computed(() => {
   const e = entry.value
-  return !!e && e.c.state === 'failed' && !options.value.some((o) => o.task === e.task && o.c.attempt > e.c.attempt)
+  if (!e || e.c.state !== 'failed') return false
+  const root = (run: string) => {
+    let r = run
+    for (let n = 0; props.continues?.get(r) && n < 64; n++) r = props.continues.get(r)!
+    return r
+  }
+  const i = ranked.value.findIndex((x) => x.value === e.value)
+  return !ranked.value.slice(0, Math.max(i, 0)).some((x) => x.task === e.task && root(x.run) === root(e.run))
 })
 // The prepared request, applied only while the candidate it was asked for is shown; Check again of the candidate it names.
 const prep = usePreparedRepair(review, () => chosen.value)
@@ -480,6 +480,24 @@ function prepare(id: string, k: number) {
 }
 function addCheckNote(n: Omit<DraftNote, 'key'>) {
   drafts.add(n)
+}
+/**
+ * A receipt opened in full (DS2's dialog, DispatchReceipt: its argv, its whole log and the served SHA-256 against the recorded one): a
+ * check of the candidate shown, or the failed-check panel's receipt, found among the candidate's checks by its identity.
+ */
+const inspected = ref<{ run: string; task: string; attempt: number; commit: string; receipt: CandidateReceipt } | null>(null)
+const inspectOpen = ref(false)
+function inspect(r: CandidateReceipt) {
+  const e = entry.value
+  if (!e || !e.c.commit) return
+  inspected.value = { run: e.run, task: e.task, attempt: e.c.attempt, commit: e.c.commit, receipt: r }
+  inspectOpen.value = true
+}
+function inspectPrepared(ch: { phase: string; id: string; k: number }) {
+  const r = receipts.value.find((x) => x.phase === ch.phase && x.id === ch.id && x.k === ch.k)
+  if (!r) return
+  repairOpen.value = false
+  inspect(r)
 }
 // A link's receipt (`&repair=<id>/<k>`) prepared once its candidate is shown, once for each link.
 let preparedFor = ''
@@ -663,11 +681,11 @@ defineExpose({
       <!-- The candidate's checks: its own receipts; a failed one's repair prepared. -->
       <section class="flex flex-col gap-2" data-review-checks :data-review-checks-count="receipts.length">
         <h3 class="text-sm font-semibold text-highlighted">Checks of this candidate</h3>
-        <p v-if="checksUnread" class="text-xs" :class="older.error.value ? 'text-warning' : 'text-dimmed'" data-review-checks-unread>{{ checksUnread }}</p>
+        <p v-if="checksUnread" class="text-xs" :class="named.error.value ? 'text-warning' : 'text-dimmed'" data-review-checks-unread>{{ checksUnread }}</p>
         <p v-else-if="!receipts.length" class="text-xs text-dimmed">No check ran against this commit.</p>
         <ul v-else class="flex flex-wrap gap-1.5">
           <li v-for="r in receipts" :key="receiptKey(r)" class="flex items-center gap-1 rounded border border-default/60 px-1.5 py-0.5 text-xs" data-review-check :data-review-check-key="receiptKey(r)" :data-review-check-failed="receiptFailed(r) ? 'true' : 'false'">
-            <span class="font-mono">{{ receiptName(r) }}</span>
+            <UButton :label="receiptName(r)" size="xs" color="neutral" variant="link" class="p-0 font-mono" :data-review-check-open="`${r.phase}/${r.id}/${r.k}`" @click="inspect(r)" />
             <UBadge v-for="x in receiptChips(r)" :key="x.label" :label="x.label" :color="x.color" variant="subtle" size="sm" />
             <span class="text-dimmed">{{ r.where }}</span>
             <UButton v-if="receiptFailed(r)" label="Prepare a repair" icon="i-lucide-wrench" size="xs" color="neutral" variant="outline" :data-review-prepare="`${r.id}/${r.k}`" @click="prepare(r.id, r.k)" />
@@ -695,7 +713,25 @@ defineExpose({
     </div>
   </section>
 
-  <ReviewCheckFailure v-model:open="repairOpen" :prepared="prepared" :error="prepareError" :loading="preparing" :task-failed="taskFailed" :recheck="recheck" @add="addCheckNote" />
+  <ReviewCheckFailure
+    v-model:open="repairOpen"
+    :prepared="prepared"
+    :error="prepareError"
+    :loading="preparing"
+    :task-failed="taskFailed"
+    :recheck="recheck"
+    :inspectable="!!prepared && receipts.some((x) => x.phase === prepared!.finding.check.phase && x.id === prepared!.finding.check.id && x.k === prepared!.finding.check.k)"
+    @add="addCheckNote"
+    @receipt="inspectPrepared"
+  />
+  <DispatchReceipt
+    v-model:open="inspectOpen"
+    :run-id="inspected?.run ?? ''"
+    :task="inspected?.task ?? ''"
+    :attempt="inspected?.attempt ?? 0"
+    :commit="inspected?.commit ?? ''"
+    :receipt="inspected?.receipt ?? null"
+  />
 
   <UModal :open="!!modalNote" :title="modalNote?.editing ? 'Edit the note' : 'A note'" :ui="{ content: 'max-w-xl' }" @update:open="(o: boolean) => !o && (composer = null)">
     <template #body>

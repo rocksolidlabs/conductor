@@ -13,6 +13,7 @@ import { handoffsOf } from '~/utils/crewGraph'
 import { bestGrid, lastItemSpan } from '~/utils/wall'
 import { replyFailure } from '~/utils/reply'
 import type { RelatedTicket } from '~/composables/useDispatch'
+import { chainLinkedTicket, latest } from '~/utils/review'
 import { runLinkWatch, runTicketRead } from '~/composables/useDispatchLive'
 
 // The run page: a tile for every member of one run, its activity and a
@@ -71,14 +72,39 @@ async function load() {
 // as a re-read is. A server with no Dispatch store (no data directory, a store that could not open, a switchyard) answers no chip.
 const dispatch = useDispatch()
 const runTicket = ref<RelatedTicket | null>(null)
+/** Counts the answers of the run's link read: each looks for the ticket of a continuation's chain again (chainTicket). */
+const runTicketReads = ref(0)
 async function readRunTicket(): Promise<void> {
   if (!admin.hasToken.value) return
   const id = runId.value
   await runTicketRead(dispatch.gate, id, () => dispatch.api.runTicket(id), (t) => {
-    if (id === runId.value) runTicket.value = t
+    if (id !== runId.value) return
+    runTicket.value = t
+    runTicketReads.value++
   })
 }
 const chip = useDispatchLive({ ...runLinkWatch(readRunTicket), reset: () => dispatch.gate.reset() }, () => chip.ask(readRunTicket))
+
+// The ticket a task's Review and Prepare a repair go to (RV1): the one the run was launched from, else the one whose run link names it,
+// else, for a continuation of a run linked by hand (no link names the continuation, no package binds it), the ticket whose link names a
+// run back along its chain (chainLinkedTicket): Dispatch gives the whole chain to that ticket. Looked for again whenever the run's link
+// is read again (a link added, removed) and when the run it continues moves.
+const chainTicket = ref('')
+const chainAsks = latest()
+watch(
+  () => [runId.value, run.value?.ticket?.key ?? '', runTicket.value, run.value?.resumedFrom ?? '', runTicketReads.value] as const,
+  async ([id, launched, linked, from]) => {
+    const current = chainAsks.ask()
+    if (launched || linked || !from || !admin.hasToken.value) {
+      chainTicket.value = ''
+      return
+    }
+    const key = await chainLinkedTicket(from, { ticket: (r) => dispatch.api.runTicket(r), resumedFrom: async (r) => (await api.getRun(r)).resumedFrom })
+    if (current() && id === runId.value) chainTicket.value = key
+  },
+  { immediate: true },
+)
+const reviewTicket = computed(() => run.value?.ticket?.key || runTicket.value?.key || chainTicket.value)
 
 /** An action (add, start, stop) answered with the run as it is now. */
 function changed(r: RunInfo) {
@@ -521,7 +547,7 @@ palette.registerPage(() => {
           />
         </div>
         <div v-else-if="shownView === 'tasks' && run" class="min-h-0 flex-1 overflow-y-auto p-3" data-run-tasks-view>
-          <RunTasks :run="run" :ticket="run.ticket?.key || runTicket?.key || ''" :selected="selectedTask" :attempt="wantedAttempt" :step="wantedStep" :now="now" @select="selectTask($event, true)" @open="router.push(`/sessions/${$event}`)" />
+          <RunTasks :run="run" :ticket="reviewTicket" :selected="selectedTask" :attempt="wantedAttempt" :step="wantedStep" :now="now" @select="selectTask($event, true)" @open="router.push(`/sessions/${$event}`)" />
         </div>
         <div v-else-if="shownView === 'timeline' && run" class="min-h-0 flex-1 overflow-y-auto p-3" data-run-timeline-view>
           <RunTimeline :run="run" :sessions="sessions" :feed="events.entries.value" :now="now" />

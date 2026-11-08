@@ -13,6 +13,8 @@ import {
   findingMarks,
   firstReviewCandidate,
   latestReviewable,
+  rankCandidates,
+  chainLinkedTicket,
   openFindingsPerFile,
   requestedCheckOf,
   taskReviewTarget,
@@ -480,23 +482,64 @@ describe("the ticket's candidates to review", () => {
       { task: 'prep', kind: 'work', candidates: [cnd(1, A, { standing: true, receipts: at('2026-11-08T10:00:00Z') })] },
       { task: 'build', kind: 'work', candidates: [cnd(1, B, { standing: true, receipts: at('2026-11-08T10:05:00Z') })] },
     ] }]
-    expect(latestReviewable(runs, new Map())?.value).toBe(`r1/build/1@${B}`)
+    expect(latestReviewable(runs)?.value).toBe(`r1/build/1@${B}`)
     // The crew's order the other way round: still the one submitted last.
-    expect(latestReviewable([{ run: 'r1', tasks: [...runs[0]!.tasks].reverse() }], new Map())?.value).toBe(`r1/build/1@${B}`)
+    expect(latestReviewable([{ run: 'r1', tasks: [...runs[0]!.tasks].reverse() }])?.value).toBe(`r1/build/1@${B}`)
   })
   it('takes a failed candidate, a continuation over the run it continues, never a withdrawn one', () => {
     const failed = [{ run: 'r1', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(3, C, { state: 'failed', receipts: at('2026-11-08T10:00:00Z') }), cnd(2, B, { state: 'failed' })] }] }]
-    expect(latestReviewable(failed, new Map())).toEqual({ value: `r1/build/3@${C}`, label: `build · attempt 3 · ${C.slice(0, 12)} · failed · r1` })
+    expect(latestReviewable(failed)).toEqual({ value: `r1/build/3@${C}`, label: `build · attempt 3 · ${C.slice(0, 12)} · failed · r1` })
+    // The continuation started after the run it continues had ended: its candidate refused before its checks (no receipt) is still the newer.
     const chain = [
-      { run: 'r2', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(4, B)] }] },
-      { run: 'r1', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(3, C, { receipts: at('2026-11-09T00:00:00Z') })] }] },
+      { run: 'r2', startedAt: '2026-11-09T01:00:00Z', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(4, B)] }] },
+      { run: 'r1', startedAt: '2026-11-08T09:00:00Z', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(3, C, { receipts: at('2026-11-09T00:00:00Z') })] }] },
     ]
-    expect(latestReviewable(chain, new Map([['r2', 'r1']]))?.value).toBe(`r2/build/4@${B}`)
-    expect(latestReviewable([{ run: 'r1', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(1, A, { withdrawn: true })] }] }], new Map())).toBeNull()
+    expect(latestReviewable(chain)?.value).toBe(`r2/build/4@${B}`)
+    expect(latestReviewable([{ run: 'r1', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(1, A, { withdrawn: true })] }] }])).toBeNull()
   })
-  it("opens the first standing candidate when the route names none, else the first", () => {
+  it("ranks a fresh launch beside an older continuation by time, never by the continuation's depth", () => {
+    // A week-old continuation (r2 continues r1) and today's independent launch r3: r3's candidate is the latest, whichever order the runs come in.
+    const runs = [
+      { run: 'r2', startedAt: '2026-11-01T10:00:00Z', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(2, B, { receipts: at('2026-11-01T10:30:00Z') })] }] },
+      { run: 'r1', startedAt: '2026-10-31T10:00:00Z', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(1, A, { receipts: at('2026-10-31T10:30:00Z') })] }] },
+      { run: 'r3', startedAt: '2026-11-08T09:00:00Z', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(1, C, { receipts: at('2026-11-08T09:30:00Z') })] }] },
+    ]
+    expect(latestReviewable(runs)?.value).toBe(`r3/build/1@${C}`)
+    expect(latestReviewable([...runs].reverse())?.value).toBe(`r3/build/1@${C}`)
+    expect(rankCandidates(runs).map((x) => x.value)).toEqual([`r3/build/1@${C}`, `r2/build/2@${B}`, `r1/build/1@${A}`])
+    // The same ordering opens the view and ranks its picker: the newest standing candidate first.
+    expect(firstReviewCandidate(runs.map((r) => ({ ...r, tasks: r.tasks.map((t) => ({ ...t, candidates: t.candidates.map((c) => ({ ...c, standing: true })) })) })))).toBe(`r3/build/1@${C}`)
+  })
+  it("keeps a task's later attempt newer than an earlier one in its run when it has no receipt", () => {
+    const runs = [{ run: 'r1', startedAt: '2026-11-08T09:00:00Z', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(2, B), cnd(1, A, { receipts: at('2026-11-08T09:30:00.5Z') })] }] }]
+    expect(rankCandidates(runs).map((x) => x.value)).toEqual([`r1/build/2@${B}`, `r1/build/1@${A}`])
+  })
+  it("opens the newest standing candidate when the route names none, else the newest", () => {
     const runs = [{ run: 'r1', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(2, B, { state: 'failed' }), cnd(1, A, { standing: true })] }] }]
     expect(firstReviewCandidate(runs)).toBe(`r1/build/1@${A}`)
     expect(firstReviewCandidate([{ run: 'r1', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(2, B, { state: 'failed' })] }] }])).toBe(`r1/build/2@${B}`)
+  })
+})
+
+describe("a continuation's ticket on the run page", () => {
+  const runs: Record<string, { resumedFrom?: string; link?: { key: string; deletedAt?: string } }> = {
+    C: { resumedFrom: 'B' },
+    B: { resumedFrom: 'A' },
+    A: { link: { key: 'CND-12' } },
+  }
+  const read = {
+    ticket: async (r: string) => runs[r]?.link ?? null,
+    resumedFrom: async (r: string) => runs[r]?.resumedFrom,
+  }
+  it('is the ticket whose run link names a run back along its chain, for a continuation of a run linked by hand', async () => {
+    expect(await chainLinkedTicket('A', read)).toBe('CND-12')
+    // The run page of C asks from the run C continues: B, then A.
+    expect(await chainLinkedTicket(runs.C!.resumedFrom, read)).toBe('CND-12')
+  })
+  it('is none for a chain no live link names, past its bound, or when a read fails', async () => {
+    expect(await chainLinkedTicket('B', { ...read, ticket: async (r) => (r === 'A' ? { key: 'CND-12', deletedAt: '2026-11-08T00:00:00Z' } : null) })).toBe('')
+    expect(await chainLinkedTicket('B', read, 1)).toBe('')
+    expect(await chainLinkedTicket('B', { ...read, resumedFrom: async () => Promise.reject(new Error('offline')) })).toBe('')
+    expect(await chainLinkedTicket(undefined, read)).toBe('')
   })
 })

@@ -774,7 +774,7 @@ watchEffect(() => {
   // The Review view's rows (RV1): Review the latest candidate (a failed one too: its commit is reviewed, and its checks repaired),
   // Send review (n notes) while a draft holds notes, Open findings, counted as the view lists them: the findings of the task of the
   // candidate it shows, or would open (every run's reviews of that task).
-  const latest = latestReviewable(candidates.runs.value, continues.value)
+  const latest = latestReviewable(candidates.runs.value)
   rows.push({ key: 'page:review-latest', label: 'Review the latest candidate', detail: latest ? latest.label : 'No candidate to review yet', icon: 'i-lucide-scan-eye', disabled: !latest, run: () => void afterPalette(() => pickReviewCandidate(latest!.value)) })
   const notes = reviewView.value ? (reviewPanel.value?.notes ?? 0) : 0
   if (notes) rows.push({ key: 'page:review-send', label: `Send review (${notes} ${notes === 1 ? 'note' : 'notes'})`, detail: 'Of the candidate shown: asks first for Request changes', icon: 'i-lucide-send', run: () => void afterPalette(() => reviewPanel.value?.send()) })

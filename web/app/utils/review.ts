@@ -765,55 +765,93 @@ export function taskReviewTarget(
   return a ? { run, attempt: a.n, commit: a.result! } : null
 }
 
+/**
+ * The ticket that holds a run's chain by a run link, for a run no link names and no launch package binds (a continuation of a run linked
+ * by hand: the link names the first run, and Dispatch gives the chain to its ticket, ChainHolders): the first run back along the chain
+ * (`resumedFrom`, from `from` on) that a live ticket's run link names. '' for none, for a chain past `most` runs, or when a read fails.
+ */
+export async function chainLinkedTicket(
+  from: string | undefined,
+  read: { ticket: (run: string) => Promise<{ key: string; deletedAt?: string } | null>; resumedFrom: (run: string) => Promise<string | undefined> },
+  most = 64,
+): Promise<string> {
+  const seen = new Set<string>()
+  try {
+    for (let r = from; r && !seen.has(r) && seen.size < most; r = await read.resumedFrom(r)) {
+      seen.add(r)
+      const t = await read.ticket(r)
+      if (t && !t.deletedAt) return t.key
+    }
+  } catch {
+    // A run or a link that could not be read: no ticket is offered, as for a run no ticket holds.
+  }
+  return ''
+}
+
 interface ReviewableRun {
   run: string
   label?: string
+  /** When the run started (its summary's), absent when the page has none: a continuation starts after every receipt of the run it continues. */
+  startedAt?: string
   tasks: ReadonlyArray<{ task: string; kind: string; candidates: ReadonlyArray<{ attempt: number; commit?: string; state: string; standing: boolean; withdrawn: boolean; receipts: ReadonlyArray<{ startedAt: string }> }> }>
 }
 
-/** The candidate the Review view opens when the route names none: the first standing work candidate in the runs' order, else the first. */
-export function firstReviewCandidate(runs: readonly ReviewableRun[]): string {
-  let first = ''
-  for (const r of runs) {
-    for (const t of r.tasks) {
-      if (t.kind !== 'work') continue
-      for (const c of t.candidates) {
-        if (!c.commit) continue
-        const v = `${r.run}/${t.task}/${c.attempt}@${c.commit}`
-        if (c.standing) return v
-        first ||= v
-      }
-    }
-  }
-  return first
+/** A work candidate as rankCandidates orders it: its route form, its run and task, the candidate, the run's name, and its time. */
+export interface RankedCandidate<C> {
+  value: string
+  run: string
+  task: string
+  label: string
+  c: C
+  /** When it is taken to have been submitted, in ms: see rankCandidates. */
+  at: number
+}
+
+const ms = (t: string | undefined) => {
+  const n = t ? Date.parse(t) : NaN
+  return Number.isFinite(n) ? n : 0
 }
 
 /**
- * The latest candidate of a ticket's runs that the Review view can show, failed ones among them (a withdrawn one is not): each work
- * task's newest attempt that submitted a commit, and of those the newest by the run's place in its chain (a continuation after the run
- * it continues), then by when its checks started (a candidate's receipts start once it is submitted), then by the crew's order. Null for
- * none.
+ * The one ordering of a ticket's candidates, newest first, used wherever the Review view and the ticket page rank them (the candidate
+ * opened when the route names none, Review the latest candidate, the picker, the lineage, whether the task failed). A candidate's time is
+ * the latest of its run's start, the starts of its own receipts (a candidate's checks start once it is submitted) and the time of every
+ * earlier attempt of its task in its run: so within one run a task's later attempt is never older than an earlier one, even with no
+ * receipt; a continuation, which starts after the run it continues has ended, is newer than all of that run's candidates; and across
+ * independent launches the order is chronology, never a chain's depth. Ties go to the higher attempt, then to the crew's order. Only
+ * work candidates that submitted a commit are ranked.
  */
-export function latestReviewable(runs: readonly ReviewableRun[], continues: ReadonlyMap<string, string>): { value: string; label: string } | null {
-  const depth = (run: string) => {
-    let n = 0
-    for (let r = continues.get(run); r && n < 64; r = continues.get(r)) n++
-    return n
-  }
-  let best: { key: [number, string, number]; value: string; label: string } | null = null
-  const later = (a: [number, string, number], b: [number, string, number]) => a[0] - b[0] || (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0) || a[2] - b[2]
+export function rankCandidates<C extends ReviewableRun['tasks'][number]['candidates'][number]>(
+  runs: ReadonlyArray<Omit<ReviewableRun, 'tasks'> & { tasks: ReadonlyArray<{ task: string; kind: string; candidates: ReadonlyArray<C> }> }>,
+): RankedCandidate<C>[] {
+  const out: Array<RankedCandidate<C> & { order: number }> = []
   for (const r of runs) {
-    r.tasks.forEach((t, i) => {
+    const start = ms(r.startedAt)
+    r.tasks.forEach((t, order) => {
       if (t.kind !== 'work') return
-      const c = t.candidates.filter((x) => x.commit && !x.withdrawn).sort((x, y) => y.attempt - x.attempt)[0]
-      if (!c) return
-      const at = c.receipts.reduce((m, x) => (x.startedAt > m ? x.startedAt : m), '')
-      const key: [number, string, number] = [depth(r.run), at, i]
-      if (!best || later(key, best.key) > 0) {
-        best = { key, value: `${r.run}/${t.task}/${c.attempt}@${c.commit}`, label: `${t.task} · attempt ${c.attempt} · ${shortCommit(c.commit!)}${c.state === 'failed' ? ' · failed' : ''} · ${r.label || r.run}` }
+      let floor = start
+      for (const c of [...t.candidates].sort((x, y) => x.attempt - y.attempt)) {
+        floor = Math.max(floor, ...c.receipts.map((x) => ms(x.startedAt)))
+        if (!c.commit) continue
+        out.push({ value: `${r.run}/${t.task}/${c.attempt}@${c.commit}`, run: r.run, task: t.task, label: r.label || r.run, c, at: floor, order })
       }
     })
   }
-  const b = best as { value: string; label: string } | null
-  return b ? { value: b.value, label: b.label } : null
+  out.sort((a, b) => b.at - a.at || b.c.attempt - a.c.attempt || a.order - b.order)
+  return out.map(({ order: _order, ...x }) => x)
+}
+
+/** The candidate the Review view opens when the route names none: the newest standing work candidate (rankCandidates), else the newest. */
+export function firstReviewCandidate(runs: readonly ReviewableRun[]): string {
+  const ranked = rankCandidates(runs)
+  return (ranked.find((x) => x.c.standing) ?? ranked[0])?.value ?? ''
+}
+
+/**
+ * The latest candidate of a ticket's runs that the Review view can show, failed ones among them (a withdrawn one is not): the newest by
+ * rankCandidates, the one ordering. Null for none.
+ */
+export function latestReviewable(runs: readonly ReviewableRun[]): { value: string; label: string } | null {
+  const b = rankCandidates(runs).find((x) => !x.c.withdrawn)
+  return b ? { value: b.value, label: `${b.task} · attempt ${b.c.attempt} · ${shortCommit(b.c.commit!)}${b.c.state === 'failed' ? ' · failed' : ''} · ${b.label}` } : null
 }

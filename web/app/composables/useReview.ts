@@ -588,53 +588,94 @@ export function useLaunchedCriteria(read: (id: string) => Promise<{ package?: un
 }
 
 /**
- * The candidate a link names when the ticket's candidates read do not list it (a task's six newest): read from its run's older
- * candidates (`?task=&before=`), once for each candidate named, after its run's candidates were read (`listed` null before, true when
- * they list it); a failure said, and asked again at the page's next tick. A reply is applied only to the latest ask, for the candidate
- * still named.
+ * The candidate the Review view shows, read by its id (`<run>/<task>/<n>@<commit>`) from its own run: GET /api/runs/{run}/candidates
+ * ?task=&before=n+1, that task's attempts up to n (six at most, newest first) and the run's base. It is never looked for among the
+ * ticket's pages of runs and candidates, so whichever run and attempt the route names, however old, the view has its receipts, its state,
+ * its run's base and its task's earlier results. Read when it is named and again at each tick the page gives (`ticks`: its reads of the
+ * ticket, the stream's resets, the ticket's candidates read again), what was read staying shown meanwhile; a page that does not hold it
+ * (no such attempt at that commit), a run the server knows nowhere and any failure are said (`error`) and asked again at the next tick.
+ * A reply is applied only to the latest ask, for the candidate still named.
  */
-export function useOlderCandidate(o: {
-  read: (run: string, task: string, before: number) => Promise<{ candidates?: Array<{ task: string; kind: 'work' | 'review'; candidates: RunCandidate[] }> }>
+export function useNamedCandidate(o: {
+  read: (run: string, task: string, before: number) => Promise<{ base?: string; candidates?: Array<{ task: string; kind: 'work' | 'review'; candidates: RunCandidate[] }> }>
   want: () => CandidateRef | null
-  listed: () => boolean | null
   ticks: () => unknown
 }) {
-  const found = ref<{ key: string; c: RunCandidate } | null>(null)
+  const found = ref<{ key: string; c: RunCandidate; base: string; earlier: RunCandidate[] } | null>(null)
   const error = ref('')
   const loading = ref(false)
   const asks = latest()
+  const named = () => (o.want() ? candidateRef(o.want()!) : '')
   async function read(): Promise<void> {
     const w = o.want()
-    if (!w || o.listed() !== false) return
+    if (!w) return
     const key = candidateRef(w)
-    if (found.value?.key === key) return
     const current = asks.ask()
     const holds = () => current() && named() === key
     loading.value = true
-    error.value = ''
     try {
       const page = await o.read(w.run, w.task, w.attempt + 1)
       if (!holds()) return
-      const c = page.candidates?.find((t) => t.task === w.task)?.candidates.find((x) => x.attempt === w.attempt && x.commit === w.commit)
-      if (c) found.value = { key, c }
-      else error.value = `attempt ${w.attempt} of ${w.task} in run ${w.run} has no candidate at ${w.commit.slice(0, 12)}`
+      const all = page.candidates?.find((t) => t.task === w.task)?.candidates ?? []
+      const c = all.find((x) => x.attempt === w.attempt && x.commit === w.commit)
+      if (c) {
+        found.value = { key, c, base: page.base ?? '', earlier: all.filter((x) => x.attempt < w.attempt) }
+        error.value = ''
+      } else error.value = `attempt ${w.attempt} of ${w.task} in run ${w.run} has no candidate at ${w.commit.slice(0, 12)}`
     } catch (e) {
-      if (holds()) error.value = (e as Error).message || 'the read failed'
+      if (holds()) error.value = e instanceof ApiError && e.status === 404 ? `the server knows no run ${w.run}` : (e as Error).message || 'the read failed'
     } finally {
       if (current()) loading.value = false
     }
   }
-  const named = () => (o.want() ? candidateRef(o.want()!) : '')
   watch(named, () => (error.value = ''))
-  watch(
-    () => [named(), o.listed(), o.ticks()],
-    () => void read(),
-    { immediate: true },
-  )
-  /** The candidate named, read: null when it is not the one named now. */
-  const candidate = computed(() => {
-    const w = o.want()
-    return w && found.value?.key === candidateRef(w) ? found.value.c : null
-  })
-  return { candidate, error, loading }
+  watch(() => [named(), o.ticks()], () => void read(), { immediate: true })
+  const shown = computed(() => (found.value && found.value.key === named() ? found.value : null))
+  return {
+    /** The candidate named, as last read: null before its first read answers, or when it is not the one named now. */
+    candidate: computed(() => shown.value?.c ?? null),
+    /** Its run's base, '' until read. */
+    base: computed(() => shown.value?.base ?? ''),
+    /** Its task's earlier attempts in its run, read with it (six at most with it): the earlier results a diff may be read against. */
+    earlier: computed(() => shown.value?.earlier ?? []),
+    error,
+    loading,
+  }
+}
+
+/**
+ * The ticket's findings of the shown candidate's task, located on it (useReview's readFindings): read when the candidate moves and at
+ * each tick the page gives (`ticks`: its reads of the ticket, the stream's resets, and the ticket's candidates read again, which a run's
+ * change makes: a repair's result that says what it addressed is one), so the agent's claims and the located words come in while the
+ * same candidate stays shown. Cleared at a move of the candidate; a reply is applied only to the latest ask, for the candidate still
+ * shown and the view still open.
+ */
+export function useTaskFindings(r: Pick<ReturnType<typeof useReview>, 'readFindings'>, o: { ticket: () => string; candidate: () => string; ticks: () => unknown }) {
+  const list = ref<ReviewFinding[]>([])
+  const error = ref('')
+  const loading = ref(false)
+  const asks = latest()
+  let closed = false
+  if (getCurrentScope()) onScopeDispose(() => (closed = true))
+  async function read(): Promise<void> {
+    const key = o.ticket()
+    const at = o.candidate()
+    if (closed || !at || !parseCandidate(at)) return
+    const current = asks.ask()
+    loading.value = true
+    try {
+      await r.readFindings(key, at, (fs) => {
+        if (!current() || key !== o.ticket() || at !== o.candidate()) return
+        list.value = fs
+        error.value = ''
+      })
+    } catch (e) {
+      if (current()) error.value = (e as Error).message
+    } finally {
+      if (current()) loading.value = false
+    }
+  }
+  watch(o.candidate, () => (list.value = []))
+  watch(() => [o.ticket(), o.candidate(), o.ticks()], () => void read(), { immediate: true })
+  return { list, error, loading, read }
 }

@@ -39,6 +39,28 @@ describe("a candidate's lineage", () => {
     expect(lineageWords(l)).toBe('attempt 2 of build, the repair the review task check (attempt 1) asked for on attempt 1 (111111111111)')
   })
 
+  it("pairs each reopening with the review that asked for it when the same commit is submitted again unchanged, never a later review", () => {
+    // Review attempt 1 asks for changes on A; work attempt 2 starts at A and submits A unchanged; review attempt 2 asks again on A; work
+    // attempt 3 starts at A. Attempt 2 is review 1's repair: review 2 ran after it.
+    const i = input({
+      attempts: [
+        { run: 'r1', task: 'build', attempt: 1, start: S, commit: A, state: 'succeeded' },
+        { run: 'r1', task: 'build', attempt: 2, start: A, commit: A, state: 'succeeded' },
+        { run: 'r1', task: 'build', attempt: 3, start: A, commit: B, state: 'succeeded' },
+      ],
+      reviewTasks: [
+        { run: 'r1', task: 'check', attempt: 2, reviewed: A, verdict: 'needs_changes' },
+        { run: 'r1', task: 'check', attempt: 1, reviewed: A, verdict: 'needs_changes' },
+      ],
+    })
+    expect(lineageOf({ run: 'r1', task: 'build', attempt: 2, commit: A, start: A }, i).cause).toEqual({ kind: 'review_task', task: 'check', attempt: 1, from: { run: 'r1', attempt: 1, commit: A } })
+    expect(lineageOf({ run: 'r1', task: 'build', attempt: 3, commit: B, start: A }, i).cause).toEqual({ kind: 'review_task', task: 'check', attempt: 2, from: { run: 'r1', attempt: 2, commit: A } })
+    // With only the first review sent, attempt 3 (were it there) is no review's repair: the second request has not been made.
+    const one = { ...i, reviewTasks: [i.reviewTasks[1]!] }
+    expect(lineageOf({ run: 'r1', task: 'build', attempt: 2, commit: A, start: A }, one).cause.kind).toBe('review_task')
+    expect(lineageOf({ run: 'r1', task: 'build', attempt: 3, commit: B, start: A }, one).cause.kind).toBe('again')
+  })
+
   it('names a failed check when the attempt started at the result that failed it, and a Check again when it is that same result', () => {
     const i = input({
       attempts: [

@@ -7,9 +7,10 @@ import { FAILURE_CLASSES, checkNote, classWords, failedReceiptActions, type Draf
  * A failed check prepared for its repair (Program item RV1, docs/plans/review-repair.md, PR-7), from the server's prepared request
  * (GET …/steps/{id}/{k}/repair): the tested commit, the receipt's identity and how it ended, the last of its output, the log's size and
  * hash, the attempt before, what the candidate was to meet (the ticket's criteria as launched, else the task's checks), and the class
- * the server worked out from the receipt, which the person may change. Its actions are failedReceiptActions': Check again exactly when
- * the prepared request says Yardmaster takes it (first for an infrastructure failure or a possibly flaky check), its why in its place
- * otherwise; Add to the draft, a check note the review sends as Request changes; Retry on the run's page when the task failed.
+ * the server worked out from the receipt, which the person may change; Open the receipt, DS2's dialog with its argv and its whole log,
+ * the served hash compared with the recorded one. Its actions are failedReceiptActions': Check again exactly when the prepared request
+ * says Yardmaster takes it (first for an infrastructure failure or a possibly flaky check), its why in its place otherwise; Add to the
+ * draft, a check note the review sends as Request changes; Retry on the run's page when the task failed.
  */
 const props = defineProps<{
   prepared: PreparedRepair | null
@@ -19,9 +20,11 @@ const props = defineProps<{
   taskFailed: boolean
   /** Checks again the candidate the prepared request names: the words of where it was, or throws. */
   recheck: (p: PreparedRepair) => Promise<string>
+  /** The receipt is among the candidate's checks shown: Open the receipt offers its dialog (its argv, its whole log, the served hash). */
+  inspectable?: boolean
 }>()
 const open = defineModel<boolean>('open', { default: false })
-const emit = defineEmits<{ add: [note: Omit<DraftNote, 'key'>] }>()
+const emit = defineEmits<{ add: [note: Omit<DraftNote, 'key'>]; receipt: [ch: { phase: string; id: string; k: number }] }>()
 
 const chosen = ref<FailureClass>('code')
 const quote = ref('')
@@ -79,7 +82,10 @@ function add() {
           <dt class="text-muted">Ended</dt>
           <dd data-repair-ended>{{ ended }}<template v-if="ch.error">: {{ ch.error }}</template> · where it ran: {{ ch.where }}</dd>
           <dt class="text-muted">Log</dt>
-          <dd class="break-all font-mono text-[11px]" data-repair-log-sha>{{ ch.logBytes }} bytes · SHA-256 {{ ch.logSha256 || '—' }}</dd>
+          <dd class="flex min-w-0 flex-wrap items-center gap-2">
+            <span class="break-all font-mono text-[11px]" data-repair-log-sha>{{ ch.logBytes }} bytes · SHA-256 {{ ch.logSha256 || '—' }}</span>
+            <UButton v-if="inspectable" label="Open the receipt and its whole log" icon="i-lucide-file-text" size="xs" color="neutral" variant="link" class="p-0" data-repair-open-receipt @click="emit('receipt', { phase: ch.phase, id: ch.id, k: ch.k })" />
+          </dd>
           <template v-if="ch.previous">
             <dt class="text-muted">The attempt before</dt>
             <dd data-repair-previous>attempt {{ ch.previous.attempt }} {{ ch.previous.state }}<template v-if="ch.previous.stage"> at {{ ch.previous.stage }}</template><template v-if="ch.previous.commit"> ({{ shortCommit(ch.previous.commit) }})</template></dd>
