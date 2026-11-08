@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { encodeControl, FrameType, parseJSON, type FileHeader, type FileResponse, type Welcome } from '../protocol'
+import { encodeControl, encodeJSONFrame, FrameType, MAX_SUBMIT, parseJSON, type FileHeader, type FileResponse, type Welcome } from '../protocol'
 import { ReplyError } from '../reply'
-import { ANSWER_TIMEOUT_MS, BaseTransport } from './base'
+import { ANSWER_TIMEOUT_MS, BaseTransport, DECIDE_TIMEOUT_MS, LANE_READ_TIMEOUT_MS } from './base'
+import { LaneError } from './decide'
 
 /** A transport whose wire is a list: what it sends is kept, and a test hands it frames from the other end. */
 class TestTransport extends BaseTransport {
@@ -276,5 +277,124 @@ describe('BaseTransport.submitAcked (#322)', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(sent.value).toBe(false)
     expect(control(old, 0)).toEqual({ t: 'submit', text: 'plain' })
+  })
+})
+
+// A decision link's lane over the transport (docs/plans/decision-inbox.md, PR-7; docs/protocol.md, Decision links): reads as controls
+// naming a reqId, settled by the DECISION frame naming it (fragmented by CHUNK on a data channel); a decide as a DECIDE frame,
+// settled by decide_ok; a decide_refused naming either refuses it with the owner's code; and only to an owner whose welcome said
+// decisions.
+describe('BaseTransport, a decision link\'s lane', () => {
+  beforeEach(() => {
+    vi.stubGlobal('window', globalThis)
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+  function welcomedBy(decisions: boolean): TestTransport {
+    const t = new TestTransport()
+    t.receive(encodeControl({ t: 'welcome', proto: 1, sessionId: '', role: 'control', cols: 0, rows: 0, status: '', scrollbackBytes: 0, transport: 'ws', fileView: false, ...(decisions ? { decisions: true } : {}) }))
+    return t
+  }
+  function sentJSON(t: TestTransport, n: number): { type: number; body: Record<string, unknown> } {
+    const f = t.sent[n]!
+    return { type: f[0]!, body: parseJSON<Record<string, unknown>>(f.subarray(1))! }
+  }
+
+  it('a read goes as a control naming its reqId and is settled by the DECISION frame naming it, whole or in chunks', async () => {
+    const t = welcomedBy(true)
+    expect(t.decisions).toBe(true)
+    const list = track(t.laneRequest({ t: 'decisions_list' }))
+    const read = track(t.laneRequest({ t: 'decision_read', ref: 'task:run-1/build' }))
+    const a = sentJSON(t, 0)
+    const b = sentJSON(t, 1)
+    expect(a).toMatchObject({ type: FrameType.Control, body: { t: 'decisions_list' } })
+    expect(b.body).toMatchObject({ t: 'decision_read', ref: 'task:run-1/build' })
+    expect(a.body.reqId).not.toBe(b.body.reqId)
+    // The second's reply first: each settles its own.
+    t.receive(encodeJSONFrame(FrameType.Decision, { reqId: b.body.reqId, item: { ref: 'task:run-1/build' } }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(read.value).toMatchObject({ item: { ref: 'task:run-1/build' } })
+    expect(list).toEqual({})
+    // The first's reply in two chunks, as a data channel carries a frame past its message size.
+    const whole = encodeJSONFrame(FrameType.Decision, { reqId: a.body.reqId, list: { items: [], total: 0, at: 'now' } })
+    const half = Math.floor(whole.length / 2)
+    for (const [off, part] of [
+      [0, whole.subarray(0, half)],
+      [half, whole.subarray(half)],
+    ] as const) {
+      const c = new Uint8Array(1 + 10 + part.length)
+      c[0] = FrameType.Chunk
+      const v = new DataView(c.buffer)
+      v.setUint16(1, 7)
+      v.setUint32(3, whole.length)
+      v.setUint32(7, off)
+      c.set(part, 11)
+      t.receive(c)
+    }
+    await vi.advanceTimersByTimeAsync(0)
+    expect(list.value).toMatchObject({ list: { total: 0 } })
+  })
+
+  it('a decide goes as a DECIDE frame, a line of any permitted text whole, and is settled by its decide_ok, which goes no further', async () => {
+    const t = welcomedBy(true)
+    const seen = vi.fn()
+    t.onControl(seen)
+    const text = '"'.repeat(MAX_SUBMIT)
+    const ok = track(t.decide({ ref: 'question:s/q', action: 'answer', revision: 'q', text, opId: 'op-1' }))
+    const d = sentJSON(t, 0)
+    expect(d.type).toBe(FrameType.Decide)
+    expect(d.body).toMatchObject({ ref: 'question:s/q', action: 'answer', revision: 'q', opId: 'op-1' })
+    expect(d.body.text).toBe(text)
+    t.receive(encodeControl({ t: 'decide_ok', reqId: d.body.reqId as string, ref: 'question:s/q', receipt: 'q', repeat: true }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(ok.value).toMatchObject({ receipt: 'q', repeat: true })
+    expect(seen).not.toHaveBeenCalled()
+    // decisions_changed is the page's: it goes on to the listeners.
+    t.receive(encodeControl({ t: 'decisions_changed', seq: 3 }))
+    expect(seen).toHaveBeenCalledWith({ t: 'decisions_changed', seq: 3 })
+  })
+
+  it('a decide_refused naming a request refuses it with the owner\'s code, its words and its kept receipt', async () => {
+    const t = welcomedBy(true)
+    const done = track(t.decide({ ref: 'task:r/build', action: 'retry', revision: '12', opId: 'op-2' }))
+    const read = track(t.laneRequest({ t: 'decision_evidence', ref: 'task:r/build', evidence: 'ticket:CND-1' }))
+    t.receive(encodeControl({ t: 'decide_refused', reqId: sentJSON(t, 0).body.reqId as string, code: 'stale_revision', message: 'the run moved on', ref: 'task:r/build', receipt: 'op-2' }))
+    t.receive(encodeControl({ t: 'decide_refused', reqId: sentJSON(t, 1).body.reqId as string, code: 'unsupported', message: 'open it on the desktop or the LAN' }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(done.error).toBeInstanceOf(LaneError)
+    expect(done.error).toMatchObject({ code: 'stale_revision', message: 'the run moved on', extra: { ref: 'task:r/build', receipt: 'op-2' } })
+    expect(read.error).toMatchObject({ code: 'unsupported' })
+  })
+
+  it('nothing is sent to an owner whose welcome did not say decisions, nor past the bounds; a close or no reply in time ends the wait', async () => {
+    const old = welcomedBy(false)
+    expect(old.decisions).toBe(false)
+    const refused = track(old.laneRequest({ t: 'decisions_list' }))
+    const notSent = track(old.decide({ ref: 'r', action: 'retry', revision: '1', opId: 'x' }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(refused.error).toMatchObject({ code: 'not_sent' })
+    expect(notSent.error).toMatchObject({ code: 'not_sent' })
+    expect(old.sent).toHaveLength(0)
+
+    const t = welcomedBy(true)
+    const big = track(t.laneRequest({ t: 'decision_read', ref: 'r'.repeat(513) }))
+    const badOp = track(t.decide({ ref: 'r', action: 'retry', revision: '1', opId: 'not an op id' }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(big.error).toMatchObject({ code: 'invalid' })
+    expect(badOp.error).toMatchObject({ code: 'invalid' })
+    expect(t.sent).toHaveLength(0)
+
+    const slow = track(t.laneRequest({ t: 'decisions_list' }))
+    const act = track(t.decide({ ref: 'r', action: 'retry', revision: '1', opId: 'op-3' }))
+    await vi.advanceTimersByTimeAsync(LANE_READ_TIMEOUT_MS + 1)
+    expect(slow.error).toMatchObject({ code: 'no_word' })
+    expect(act).toEqual({})
+    t.close()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(act.error).toMatchObject({ code: 'closed' })
+    expect(DECIDE_TIMEOUT_MS).toBeGreaterThan(LANE_READ_TIMEOUT_MS)
   })
 })
