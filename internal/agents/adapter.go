@@ -99,6 +99,15 @@ type Adapter struct {
 	// where that warning starts, so refusing such an agent instead is one
 	// case in brakeman.Validate.
 	ReadOnlyGap string
+	// ReadDirArgs, when set, returns the arguments that let the agent read
+	// each of dirs, absolute folders besides the one it runs in, for one
+	// launch, through its own switch (Claude Code's --add-dir): a Brakeman
+	// turn that runs in the desk's own folder reads the folders it observes
+	// this way (#705). A dir that is not absolute gives nothing. nil for an
+	// agent without such a switch: Codex's --add-dir makes a folder
+	// writable, not readable (`codex --help`, 0.163.0), so a turn of such an
+	// agent runs in its configured folder.
+	ReadDirArgs func(dirs []string) []string
 	// ModelArgs, when set, returns the arguments that choose model for one
 	// launch, through the agent's own flag, the model its value and never an
 	// argument of its own; "" is the agent's default, and gives none. nil for

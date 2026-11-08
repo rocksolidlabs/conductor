@@ -3997,7 +3997,9 @@ Brakeman is Conductor's sidekick agent (`docs/plans/brakeman.md`): an
 agent of the person's own choosing that Yardmaster runs for bounded
 turns, each a **request** a person made, each turn handing back one
 **brief**. Its records are JSON documents under the data directory's
-`brakeman/` (`internal/brakeman`); the server's desk (`internal/api`,
+`brakeman/` (`internal/brakeman`: `config.json`, `state.json`,
+`requests/br-<n>.json` and what each keeps beside it, and `folders/<account>/`,
+the folder a turn runs in in place of the home folder, kept); the server's desk (`internal/api`,
 `brakeman.go`) owns them while it holds `brakeman/owner.lock`, the
 ledger's lock. A second server on the same data directory opens them
 read-only: its reads are served, every write answers `503
@@ -4020,9 +4022,18 @@ folder for the account, `brakeman/folders/<account>` in the data
 directory, `default` for the agent's default login and else 32 hex
 characters of the account's SHA-256, made 0700 once and kept, so a person
 trusts it once; the configured folder still when that one lies outside
-the allowed roots), the folder named in the request's `agent.folder` (at
-most 4096 bytes) as the request starts, the
+the allowed roots, and for an agent with no switch for reading another
+folder: Codex, whose `--add-dir` makes a folder writable), the folder
+named in the request's `agent.folder` (at most 4096 bytes) as the request
+starts, the
 member the configured agent with its adapter's read-only arguments,
+then the folders it reads besides its own (Claude Code's `--add-dir=`, one
+a folder: the configured folder, then the working folders of the saved
+crews and of the runs the engine holds, Brakeman's own left out, within
+the scope's crews, runs and repositories when it names them; each through
+`resolveCwd` as the launch takes it, one outside the allowed roots or
+within another left out, at most 16, the configured folder first; none
+for an agent without the switch),
 then its model flag, then, when `allowConductorTools` is set, the rule
 that lets Conductor's MCP tools run without asking; never yolo, whatever
 the server's default says; never a managed run. The run's `class` is
@@ -4108,8 +4119,8 @@ cancel is recorded as the request's `strayRun` and stopped at once.
 
 | Route | Body and answer |
 |---|---|
-| `GET /api/brakeman` | `{config, current, queue, turnsToday, minutesToday, role?, warnings?, readOnly?, why?, stuck?}`: the configuration (the defaults, written on the first read: off, no agent, the server's default folder, every visibility but terminals, all of scope, observe, draft and propose, 15 minutes and 300 reads a turn, 40 turns and 240 minutes a day, mode `invoked` with a window of 120 s, a cooldown of 30 minutes, a question threshold of 15 minutes and no briefing time; a configuration written before the background role reads back with those wake fields and minutes), the request holding the slot or `null`, the queued requests oldest first, the turns and the minutes charged to today, `role` the background role as `GET /api/brakeman/role` answers it without its log and notes, `warnings` as the configuration's save answers them; on a server that does not own the records (`readOnly`), `current` and `queue` are read from the records: the owner's request starting or running, and those queued |
-| `PUT /api/brakeman/config` | `{rev, config}` → `{config, warnings?}`, its `rev` bumped and `updatedAt` stamped; `config.permissions.act` the operations granted, from the closed list (What a turn may do); `warnings` the words Settings shows beside the agent chosen, for an agent whose read-only mode does not hold (Codex 0.163.0's leaves the person's own MCP servers and exec-policy allow rules: Codex is taken, with that limit said); `409 stale_revision` for a `rev` not the stored one; `400 invalid_config` with `field` and the words (an agent without an MCP registration or a read-only mode); `503 shutting_down` once the server is shutting down (nothing saved, nothing cancelled); at most 64 KiB |
+| `GET /api/brakeman` | `{config, current, queue, turnsToday, minutesToday, role?, warnings?, folders?, readOnly?, why?, stuck?}`: the configuration (the defaults, written on the first read: off, no agent, the server's default folder, every visibility but terminals, all of scope, observe, draft and propose, 15 minutes and 300 reads a turn, 40 turns and 240 minutes a day, mode `invoked` with a window of 120 s, a cooldown of 30 minutes, a question threshold of 15 minutes and no briefing time; a configuration written before the background role reads back with those wake fields and minutes), the request holding the slot or `null`, the queued requests oldest first, the turns and the minutes charged to today, `role` the background role as `GET /api/brakeman/role` answers it without its log and notes, `warnings` as the configuration's save answers them, `folders` `{turn, reads}` the folder a turn under the configuration runs in and the folders it reads besides (at most 16, each at most 4096 bytes), as its launch would take them now (absent with no agent set); on a server that does not own the records (`readOnly`), `current` and `queue` are read from the records: the owner's request starting or running, and those queued |
+| `PUT /api/brakeman/config` | `{rev, config}` → `{config, warnings?, folders?}`, its `rev` bumped and `updatedAt` stamped; `config.permissions.act` the operations granted, from the closed list (What a turn may do); `warnings` the words Settings shows beside the agent chosen, for an agent whose read-only mode does not hold (Codex 0.163.0's leaves the person's own MCP servers and exec-policy allow rules: Codex is taken, with that limit said); `409 stale_revision` for a `rev` not the stored one; `400 invalid_config` with `field` and the words (an agent without an MCP registration or a read-only mode); `503 shutting_down` once the server is shutting down (nothing saved, nothing cancelled); at most 64 KiB |
 | `POST /api/brakeman/requests` | `{opId, kind, subjects?, note?, since?, by?}` → `201 {request}` (a kind of `wake`, or an `opId` beginning `wake-`, is refused `400 invalid_request`: they are the background role's own); `200` for the same `opId` and content, `409 op_conflict` for other content, whatever stands since; `409 brakeman_off`; `503 brakeman_stuck`; `429 queue_full` (8 waiting); `429 budget_spent` (the turns charged today and those queued reach `turnsPerDay`); `400 invalid_request` with `field` for a bad kind, subject or note |
 | `GET /api/brakeman/requests?after=&limit=` | `{requests, next}`, newest first, at most 100 a page; `next` the id to ask after, `""` for none |
 | `GET /api/brakeman/requests/{id}` | `{request, brief}`, `brief` `null` until one is kept; at most 512 KiB |

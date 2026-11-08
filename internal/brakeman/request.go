@@ -339,8 +339,11 @@ const (
 	MaxActBytes  = 600
 	// MaxRequestRest bounds the request without its three lists, as
 	// written; with the lists at their largest the whole stays under
-	// MaxRequestDoc, so a request's later updates always fit.
-	MaxRequestRest = 96 << 10
+	// MaxRequestDoc, so a request's later updates always fit. 104 KiB
+	// since the stamp's folder (#705): a path of MaxPath bytes that each
+	// encode as two took a request with every other field at its largest
+	// past 96.
+	MaxRequestRest = 104 << 10
 	MaxRequestDoc  = 256 << 10
 )
 

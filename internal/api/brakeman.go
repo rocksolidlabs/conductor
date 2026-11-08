@@ -1084,7 +1084,7 @@ func (d *brakemanDesk) entry(cfg brakeman.Config) *catalog.Agent {
 // probedVersion), the model, whether an account is set and the folder it
 // runs in (turnFolder), which its launch takes from the stamp.
 func (d *brakemanDesk) stamp(cfg brakeman.Config, a *catalog.Agent) brakeman.Stamp {
-	st := brakeman.Stamp{AgentID: cfg.AgentID, Model: cfg.Model, Account: cfg.Account != "", Folder: d.turnFolder(cfg)}
+	st := brakeman.Stamp{AgentID: cfg.AgentID, Model: cfg.Model, Account: cfg.Account != "", Folder: d.turnFolder(cfg, a)}
 	if a != nil {
 		st.Adapter = a.Adapter
 		if id, ok := d.s.cachedIdentity(*a); ok && id.Identified && len(id.Version) <= maxStampVersion {
@@ -1094,16 +1094,37 @@ func (d *brakemanDesk) stamp(cfg brakeman.Config, a *catalog.Agent) brakeman.Sta
 	return st
 }
 
-// turnFolder is the folder a turn under cfg runs in: the configured one,
-// unless that is the home folder, whose trust an agent may never keep
-// (Claude Code records none for it: its trust question's answer holds for
-// that session alone, so every turn asked again, #705). A turn there runs
-// in the desk's own folder for the account (brakeman.Store.Folder), made
-// once and kept, so the trust a person gives it the first time holds for
-// the turns after. One the desk cannot make, outside the allowed roots
-// (a data directory placed outside them) or longer than a configured
-// folder may be leaves the configured folder.
-func (d *brakemanDesk) turnFolder(cfg brakeman.Config) string {
+// turnFolder is the folder a turn under cfg of the entry a runs in: the
+// configured one, unless that is the home folder, whose trust an agent may
+// never keep (Claude Code records none for it: its trust question's answer
+// holds for that session alone, so every turn asked again, #705). A turn
+// there runs in the desk's own folder for the account
+// (brakeman.Store.Folder), made once and kept, so the trust a person gives
+// it the first time holds for the turns after, and reads the home folder
+// besides (readFolders), as it did when it ran there. That needs the
+// agent's own switch for reading another folder (Adapter.ReadDirArgs,
+// Claude Code's --add-dir): an agent without one (Codex) runs in the
+// configured folder, its trust question the person's as before. One the
+// desk cannot make, outside the allowed roots (a data directory placed
+// outside them) or longer than a configured folder may be leaves the
+// configured folder, with a warning in the log.
+func (d *brakemanDesk) turnFolder(cfg brakeman.Config, a *catalog.Agent) string {
+	dir, err := d.folderOf(cfg, a)
+	if err != nil {
+		d.s.log.Warn("Brakeman's turn runs in the home folder: its own folder could not be used", "err", err)
+	}
+	return dir
+}
+
+// folderOf is turnFolder's folder, and why the desk's own could not be
+// used in place of the home folder (the configured folder answered then).
+func (d *brakemanDesk) folderOf(cfg brakeman.Config, a *catalog.Agent) (string, error) {
+	if a == nil {
+		return cfg.Cwd, nil
+	}
+	if ad, ok := agents.Get(a.Adapter); !ok || ad.ReadDirArgs == nil {
+		return cfg.Cwd, nil
+	}
 	home := ""
 	if h := d.homeDir.Load(); h != nil {
 		home = *h
@@ -1111,7 +1132,7 @@ func (d *brakemanDesk) turnFolder(cfg brakeman.Config) string {
 		home = h
 	}
 	if home == "" || !sameFolder(cfg.Cwd, home) {
-		return cfg.Cwd
+		return cfg.Cwd, nil
 	}
 	dir, err := d.st.Folder(cfg.Account)
 	if err == nil {
@@ -1121,10 +1142,86 @@ func (d *brakemanDesk) turnFolder(cfg brakeman.Config) string {
 		err = fmt.Errorf("its path is longer than %d bytes", brakeman.MaxPath)
 	}
 	if err != nil {
-		d.s.log.Warn("Brakeman's turn runs in the home folder: its own folder could not be used", "err", err)
-		return cfg.Cwd
+		return cfg.Cwd, err
 	}
-	return dir
+	return dir, nil
+}
+
+// readFolders is what a turn under cfg of the entry a, run in folder,
+// may read besides folder, through the agent's own switch
+// (Adapter.ReadDirArgs; none for an agent without one): the configured
+// folder, then the working folders of the crews it observes, the saved
+// crews' and the runs' the engine holds, Brakeman's own left out, those
+// the scope names when it names crews, runs or repositories (a folder
+// within one of them). Each is resolved as a session's folder is
+// (resolveCwd: one outside the allowed roots, or gone, is left out), one
+// within folder or within another kept is left out, and at most
+// ext.MaxTurnReads are kept, the configured folder first, the rest in
+// path order. Brakeman's scope bounds what Conductor's routes answer; the
+// folders are what its agent's file reads reach, as the configured folder
+// alone did when a turn ran there.
+func (d *brakemanDesk) readFolders(cfg brakeman.Config, a *catalog.Agent, folder string) []string {
+	if a == nil {
+		return nil
+	}
+	if ad, ok := agents.Get(a.Adapter); !ok || ad.ReadDirArgs == nil {
+		return nil
+	}
+	if f, err := d.s.resolveCwd(folder); err == nil {
+		folder = f
+	}
+	sc := cfg.Scope
+	admitted := func(crewID, runID, dir string) bool {
+		switch {
+		case crewID == brakemanMember:
+			return false
+		case len(sc.Crews) > 0 && !slices.Contains(sc.Crews, crewID):
+			return false
+		case len(sc.Runs) > 0 && (runID == "" || !slices.Contains(sc.Runs, runID)):
+			return false
+		case len(sc.Repos) > 0 && !slices.ContainsFunc(sc.Repos, func(r string) bool { return folderWithin(dir, r) }):
+			return false
+		}
+		return true
+	}
+	var crews []string
+	if d.s.crews != nil {
+		if all, _, err := d.s.crews.Summaries(); err == nil {
+			for _, c := range all {
+				if c.Where != crew.WhereHost && admitted(c.ID, "", c.Cwd) {
+					crews = append(crews, c.Cwd)
+				}
+			}
+		}
+	}
+	for _, r := range d.s.runs.List() {
+		if admitted(r.CrewID, r.ID, r.Cwd) {
+			crews = append(crews, r.Cwd)
+		}
+	}
+	slices.Sort(crews)
+	var out []string
+	for _, dir := range append([]string{cfg.Cwd}, slices.Compact(crews)...) {
+		if dir == "" || len(out) == ext.MaxTurnReads {
+			continue
+		}
+		real, err := d.s.resolveCwd(dir)
+		if err != nil || len(real) > ext.MaxFolder || folderWithin(real, folder) || slices.ContainsFunc(out, func(k string) bool { return folderWithin(real, k) }) {
+			continue
+		}
+		out = append(out, real)
+	}
+	return out
+}
+
+// folderWithin reports whether dir is the folder parent or one within it,
+// both as given (no link followed).
+func folderWithin(dir, parent string) bool {
+	if dir == "" || parent == "" {
+		return false
+	}
+	rel, err := filepath.Rel(parent, dir)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
 // sameFolder reports whether a and b name one folder, links followed.
@@ -1302,7 +1399,7 @@ func (d *brakemanDesk) turnRequest(req brakeman.Request, cfg brakeman.Config, a 
 	}
 	tl := ext.TurnLaunch{
 		Agent: cfg.AgentID, Model: cfg.Model, AllowTools: cfg.AllowConductorTools,
-		Folder: folder, Line: brakemanLine(req), Label: brakemanLabel(req), Request: req.ID,
+		Folder: folder, Reads: d.readFolders(cfg, a, folder), Line: brakemanLine(req), Label: brakemanLabel(req), Request: req.ID,
 	}
 	if _, err := turnCrew(*a, tl); err != nil {
 		return ext.TurnLaunch{}, "", err
@@ -1311,12 +1408,12 @@ func (d *brakemanDesk) turnRequest(req brakeman.Request, cfg brakeman.Config, a 
 }
 
 // turnCrew is the crew a turn launches: one member, the agent of the
-// entry a in its adapter's read-only mode, then its model and, when
-// allowed, Conductor's tools, nothing a person typed; never yolo, never
-// managed, in the turn's folder without a worktree, its line the member's
-// prompt.
+// entry a in its adapter's read-only mode, then the folders it may read
+// besides its own, its model and, when allowed, Conductor's tools,
+// nothing a person typed; never yolo, never managed, in the turn's folder
+// without a worktree, its line the member's prompt.
 func turnCrew(a catalog.Agent, tl ext.TurnLaunch) (crew.Crew, error) {
-	args, err := turnArgs(a, tl.Agent, tl.Model, tl.AllowTools)
+	args, err := turnArgs(a, tl.Agent, tl.Model, tl.AllowTools, tl.Reads)
 	if err != nil {
 		return crew.Crew{}, err
 	}
@@ -1335,14 +1432,21 @@ func turnCrew(a catalog.Agent, tl ext.TurnLaunch) (crew.Crew, error) {
 }
 
 // turnArgs is a turn's member's arguments for the agent's entry a: its
-// adapter's ReadOnlyArgs, then ModelArgs(model), then
-// AllowTools("conductor") when allowed.
-func turnArgs(a catalog.Agent, agentID, model string, allowTools bool) ([]string, error) {
+// adapter's ReadOnlyArgs, then ReadDirArgs(reads) for the folders it may
+// read besides its own (refused for an agent without the switch), then
+// ModelArgs(model), then AllowTools("conductor") when allowed.
+func turnArgs(a catalog.Agent, agentID, model string, allowTools bool, reads []string) ([]string, error) {
 	ad, ok := agents.Get(a.Adapter)
 	if !ok || ad.ReadOnlyArgs == nil {
 		return nil, fmt.Errorf("the agent %s has no read-only mode", agentID)
 	}
 	args := slices.Clone(ad.ReadOnlyArgs())
+	if len(reads) > 0 {
+		if ad.ReadDirArgs == nil {
+			return nil, fmt.Errorf("the agent %s reads no folder besides its own", agentID)
+		}
+		args = append(args, ad.ReadDirArgs(reads)...)
+	}
 	if model != "" {
 		if ad.ModelArgs == nil {
 			return nil, fmt.Errorf("the agent %s takes no model", agentID)
@@ -1749,6 +1853,10 @@ type brakemanState struct {
 	// Warnings are what Settings shows beside the agent chosen
 	// (brakeman.Warnings: a read-only mode that does not hold).
 	Warnings []string `json:"warnings,omitempty"`
+	// Folders is where a turn under the configuration would run and what
+	// it would read besides, as its launch would take them now (absent
+	// with no agent set): Settings shows them.
+	Folders *brakemanFolders `json:"folders,omitempty"`
 	// ReadOnly says another server owns Brakeman's records, with why;
 	// Stuck that the last turn's run did not stop.
 	ReadOnly bool   `json:"readOnly,omitempty"`
@@ -1758,6 +1866,29 @@ type brakemanState struct {
 	// stands, without its log (GET /api/brakeman/role).
 	MinutesToday int              `json:"minutesToday"`
 	Role         *crew.RoleRecord `json:"role,omitempty"`
+}
+
+// brakemanFolders is the folder a turn runs in (turnFolder) and the
+// folders it may read besides (readFolders, at most ext.MaxTurnReads).
+type brakemanFolders struct {
+	Turn  string   `json:"turn"`
+	Reads []string `json:"reads"`
+}
+
+// folders is where a turn under cfg would run and what it would read
+// besides, as its launch would take them now; nil with no agent or folder
+// set.
+func (d *brakemanDesk) folders(cfg brakeman.Config) *brakemanFolders {
+	if cfg.AgentID == "" || cfg.Cwd == "" {
+		return nil
+	}
+	a := d.entry(cfg)
+	turn, _ := d.folderOf(cfg, a)
+	f := &brakemanFolders{Turn: turn, Reads: d.readFolders(cfg, a, turn)}
+	if f.Reads == nil {
+		f.Reads = []string{}
+	}
+	return f
 }
 
 // handleBrakeman answers {config, current, queue, turnsToday}: the
@@ -1774,6 +1905,7 @@ func (s *Server) handleBrakeman(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := brakemanState{Config: cfg, Queue: []brakeman.Request{}, Warnings: brakeman.Warnings(cfg, brakemanFacts{s: s})}
+	out.Folders = d.folders(cfg)
 	out.ReadOnly, out.Why = d.st.ReadOnly()
 	if out.ReadOnly {
 		// Another server owns the records and runs their turns: what it is
@@ -1951,6 +2083,9 @@ func (s *Server) handleBrakemanConfig(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{"config": saved}
 	if warn := brakeman.Warnings(saved, brakemanFacts{s: s}); len(warn) > 0 {
 		out["warnings"] = warn
+	}
+	if f := d.folders(saved); f != nil {
+		out["folders"] = f
 	}
 	writeJSON(w, http.StatusOK, out)
 }

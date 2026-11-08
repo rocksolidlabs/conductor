@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -116,6 +117,11 @@ func TestATrustedFolderIsNotAskedAgain(t *testing.T) {
 	if info := l.Info(); info.Cwd != want {
 		t.Fatalf("the first turn's session runs in %s, want %s", info.Cwd, want)
 	}
+	// It reads the home folder still, as it did when it ran there: Claude
+	// Code's --add-dir makes it one of its working folders.
+	if argv := l.Info().Command; !slices.Contains(argv, "--add-dir="+home) {
+		t.Fatalf("the turn does not read the home folder: %q", argv)
+	}
 	a := trustQuestion(t, l)
 	if _, err := os.Stat(filepath.Join(want, "answer-"+first+".txt")); !os.IsNotExist(err) {
 		t.Fatalf("the agent read an answer before anyone gave one: %v", err)
@@ -147,6 +153,28 @@ func TestATrustedFolderIsNotAskedAgain(t *testing.T) {
 	}
 	if a := l.Info().Attention; a.Source == session.SourceTrust {
 		t.Fatalf("the next turn shows a trust question: %+v", a)
+	}
+}
+
+// TestAnAgentWithNoReadSwitchRunsInItsFolder: an agent with no switch to
+// read a folder besides its own (Codex: its --add-dir makes one writable)
+// runs in the configured folder, the home folder included, reading
+// nothing else through its argv; its trust question is the person's.
+func TestAnAgentWithNoReadSwitchRunsInItsFolder(t *testing.T) {
+	t.Parallel()
+	b, home := trustEnv(t)
+	b.enable(t, "bkcodex", func(c map[string]any) { c["cwd"] = home })
+	id := b.briefing(t)
+	_, _, l := b.turnSession(t, id)
+	if got := b.request(t, id)["agent"].(map[string]any)["folder"]; got != home || l.Info().Cwd != home {
+		t.Fatalf("the turn runs in %s, stamped %v, want the home folder %s", l.Info().Cwd, got, home)
+	}
+	if argv := l.Info().Command; slices.ContainsFunc(argv, func(a string) bool { return strings.HasPrefix(a, "--add-dir") }) {
+		t.Fatalf("the turn was handed a folder through Codex's --add-dir, which makes it writable: %q", argv)
+	}
+	folders, _ := b.expect(t, "GET", "/api/brakeman", nil, http.StatusOK, "")["folders"].(map[string]any)
+	if folders["turn"] != home || fmt.Sprint(folders["reads"]) != "[]" {
+		t.Fatalf("the state's folders %v, want %s reading nothing besides", folders, home)
 	}
 }
 

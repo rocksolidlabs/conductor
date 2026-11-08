@@ -746,7 +746,7 @@ func TestARequestWithEveryListFullStillLoads(t *testing.T) {
 	if c.Scope.validate() != nil {
 		c.Scope.Sessions = c.Scope.Sessions[:10]
 	}
-	stamp := Stamp{AgentID: pad("a", 32), Adapter: pad("b", 32), Version: strings.Repeat(`"`, 128), Model: pad("m", 100), Account: true}
+	stamp := Stamp{AgentID: pad("a", 32), Adapter: pad("b", 32), Version: strings.Repeat(`"`, 128), Model: pad("m", 100), Account: true, Folder: "/" + strings.Repeat(`"`, MaxPath-1)}
 	if _, err := f.s.Start(r.ID, c, stamp); err != nil {
 		t.Fatal(err)
 	}
