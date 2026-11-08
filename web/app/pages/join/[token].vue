@@ -146,9 +146,11 @@ const laneSeq = ref(0)
 const tab = ref<'decide' | 'terminal'>('terminal')
 let decideShown = false
 const sessionLane = new DecisionLane(() => terminal.value?.lane() ?? null)
+/** What the session's Decide keeps, the page's for its whole life: a reconnect keeps the item open and an action not confirmed. */
+const sessionDecide = useJoinDecide(sessionLane, laneSeq)
 const sessionDecides = computed(() => decisions.value && !run.value)
 function onDecisionsChanged() {
-  laneSeq.value++
+  if (sessionDecides.value) laneSeq.value++
 }
 
 function onWelcome(w: Welcome) {
@@ -157,8 +159,9 @@ function onWelcome(w: Welcome) {
     decideShown = true
     tab.value = 'decide'
   }
-  // A welcome again (a reconnect): what the lane showed is read again, its Recent tracked again.
-  if (decisions.value) laneSeq.value++
+  // A welcome again (a reconnect): what the lane showed is read again, its Recent tracked again. A run link's member says
+  // nothing here: the run's decisions are its desk's.
+  if (sessionDecides.value) laneSeq.value++
   activity.value = []
   ownerCwd.value = w.cwd ?? ''
   editor.onWelcome(w)
@@ -303,10 +306,15 @@ function join() {
 /** What the person left, said on the card they come back to; the link still works, so Join again is one click. */
 const left = ref(false)
 
-// A run decision link's desk: the run's decisions with no member alive, above the members' grid.
+// A run decision link's desk: the run's decisions with no member alive, above the members' grid. What its Decide keeps is the
+// page's, so a reconnect of the desk, or a member opened in full from it and left, keeps the item open and an action not confirmed.
 const runDesk = useRunDesk({ info, token, server, joined, refresh: fetchInfo })
-/** The run's item open on its Decide, kept while a member is open in full from it. */
-const runDecideOpen = ref('')
+const runDecide = useJoinDecide(runDesk.lane, runDesk.seq)
+/** Refresh: the members read again, and the run's desk joined again at once when it is not joined. */
+async function refreshRun() {
+  await fetchInfo()
+  runDesk.retry()
+}
 /** A session of the run in the link's scope, opened from a decision's evidence: the member whose session it is, in full. */
 async function openRunSession(id: string) {
   let m = runMembers.value.find((x) => x.sessionId === id)
@@ -330,7 +338,8 @@ function leave() {
   decisions.value = false
   tab.value = 'terminal'
   decideShown = false
-  runDecideOpen.value = ''
+  sessionDecide.back()
+  runDecide.back()
   left.value = true
 }
 
@@ -442,7 +451,7 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
       <UBadge :label="`${run.members.length} ${run.members.length === 1 ? 'agent' : 'agents'}`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" />
       <div class="flex-1" />
       <span v-if="!inWorkbench" class="text-xs text-muted hidden md:inline">you are <b class="text-default">{{ identity.name.value }}</b></span>
-      <UButton icon="i-lucide-refresh-cw" color="neutral" variant="ghost" size="sm" aria-label="Refresh the members" @click="fetchInfo" />
+      <UButton icon="i-lucide-refresh-cw" color="neutral" variant="ghost" size="sm" aria-label="Refresh the members" @click="refreshRun" />
       <UButton icon="i-lucide-message-circle" color="neutral" variant="outline" size="sm" aria-label="Run chat" :class="runChatOpen && 'ring-2 ring-primary/40'" data-run-chat-button :data-run-chat-offline="runChat.offline.value ? '' : undefined" @click="runChatOpen = true">
         <span class="hidden sm:inline">Chat</span>
         <ChatUnreadPill :count="runChatUnread" />
@@ -453,8 +462,8 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
 
     <main class="flex-1 min-h-0 overflow-y-auto p-2 sm:p-3">
       <UAlert v-if="error" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" class="mb-3" />
-      <section v-if="runDesk.decisions.value" class="mx-auto mb-4 w-full max-w-2xl rounded-lg border border-default bg-default p-3" data-join-run-decide>
-        <JoinDecide v-model:open="runDecideOpen" :lane="runDesk.lane" :seq="runDesk.seq.value" title="Needs your decision" @open-session="openRunSession" />
+      <section v-if="runDesk.shown.value" class="mx-auto mb-4 w-full max-w-2xl rounded-lg border border-default bg-default p-3" data-join-run-decide>
+        <JoinDecide :state="runDecide" :offline="!runDesk.live.value" title="Needs your decision" @open-session="openRunSession" />
       </section>
       <JoinCrewGrid v-model:heard="tileState" :members="run.members" :role="info!.role" :transport-for="tileTransport" :agent-name="agentName" @open="openMember" />
     </main>
@@ -520,7 +529,7 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
 
     <main class="flex-1 min-h-0 p-2 sm:p-3 flex gap-3">
       <section v-if="sessionDecides" v-show="tab === 'decide'" class="mx-auto w-full max-w-2xl min-h-0 overflow-y-auto" data-join-session-decide>
-        <JoinDecide :lane="sessionLane" :seq="laneSeq" @open-session="tab = 'terminal'" />
+        <JoinDecide :state="sessionDecide" @open-session="tab = 'terminal'" />
       </section>
       <EditorColumn
         v-show="!sessionDecides || tab === 'terminal'" v-model:tabs="tabs" :request="requestFile" :nvim="editor.nvim.value" :write="editor.writeFile" :can-edit="editor.canEdit.value" :cwd="current.cwd" :host-away="status === 'host_disconnected' ? current.hostName || 'The host' : undefined" :bar-text="attention.message || agentLabel" :read-only-badge="info.role !== 'control'" commenting :can-ask="info.role === 'control' && !ended" @comment="onComment">
