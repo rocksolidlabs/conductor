@@ -3,7 +3,7 @@ import { createServer, type Server } from 'node:net'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, test } from './fixtures'
-import { HEALTH_WAIT_MS, renderConfig, startServer, STOP_WAIT_MS, stopServer, type Started } from './server'
+import { HEALTH_WAIT_MS, PORT_TRIES, renderConfig, startServer, STOP_WAIT_MS, stopServer, type Started } from './server'
 
 // A port probed free is not a port owned (#281): another run of the suite on
 // the machine can bind it before startServer's child does, and a health answer
@@ -32,8 +32,15 @@ const at = (state: { root: string }, name: string) => {
   return { config, home, data, allowedRoot: root, defaultCwd: root, log: join(root, 'server.log') }
 }
 const whoami = async (s: Started, token: string) => (await fetch(`${s.baseURL}/api/whoami`, { headers: { Authorization: `Bearer ${token}` } })).status
-// Each startServer below: its tries' health waits, and the lost try's stop.
-const budget = (starts: number) => starts * 2 * HEALTH_WAIT_MS + STOP_WAIT_MS + 30_000
+// Each startServer below: every try it may make, each a health wait and a stop. A later try can lose its port to another run of the
+// suite as well, so the tests assert the rule (the held port among the lost, the returned server the child's), not a count of losses.
+const budget = (starts: number) => starts * PORT_TRIES * (HEALTH_WAIT_MS + STOP_WAIT_MS) + 30_000
+// The try that lost the held port: there is one, and it is the first, the try handed that port.
+const lostAt = (s: Started, port: number) => {
+  expect(s.lost?.length ?? 0).toBeGreaterThanOrEqual(1)
+  expect(s.lost![0]).toMatch(new RegExp(`^port ${port} `))
+  return s.lost![0]
+}
 
 test('startServer handed a port another server holds returns its own server, on another port', async ({ state }) => {
   test.setTimeout(budget(2))
@@ -45,9 +52,9 @@ test('startServer handed a port another server holds returns its own server, on 
   expect(mine.port).not.toBe(stranger.port)
   // The lost try's child ended on SIGTERM (or had ended on its own, on the address in use) before the retry over its data
   // directory, which then started: never killed mid-start.
-  expect(mine.lost).toHaveLength(1)
-  expect(mine.lost![0]).toMatch(new RegExp(`^port ${stranger.port} .*the child (ended on SIGTERM|had ended)`))
-  expect(mine.lost![0]).not.toMatch(/killed|SIGKILL/)
+  const held = lostAt(mine, stranger.port)
+  expect(held).toMatch(/the child (ended on SIGTERM|had ended)/)
+  expect(held).not.toMatch(/killed|SIGKILL/)
   expect(mine.pid).not.toBe(stranger.pid)
   expect(await whoami(mine, mine.token)).toBe(200)
   // The stranger still holds its port and refuses the token startServer made for the child.
@@ -71,7 +78,6 @@ test('a child that exits on the address in use is read from the bytes it appende
   servers.push(mine)
 
   expect(mine.port).not.toBe(held)
-  expect(mine.lost).toHaveLength(1)
-  expect(mine.lost![0]).toMatch(new RegExp(`^port ${held} was in use when the server bound it`))
+  expect(lostAt(mine, held)).toMatch(new RegExp(`^port ${held} was in use when the server bound it`))
   expect(await whoami(mine, mine.token)).toBe(200)
 })

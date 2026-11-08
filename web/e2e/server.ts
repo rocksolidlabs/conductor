@@ -122,7 +122,7 @@ export interface Started {
 }
 
 /** How many ports startServer tries before it gives up: each one another server took is said in the error. */
-const PORT_TRIES = 5
+export const PORT_TRIES = 5
 
 /**
  * Starts `conductor serve` with config and a clean environment: PATH, LANG, the HOME given, and the CONDUCTOR_* values that place it
