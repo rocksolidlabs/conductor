@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import type { ReachInfo, ShareLink } from '~/composables/useSessions'
+import type { LinkRequest, ReachInfo, ShareLink } from '~/composables/useSessions'
+import { ApiError } from '~/composables/useApi'
 import type { Role } from '~/utils/protocol'
 import { qrSvg } from '~/utils/qr'
 import { reuseHeld, shareReach, type ShareReach } from '~/utils/share'
@@ -15,6 +16,12 @@ import { reuseHeld, shareReach, type ShareReach } from '~/utils/share'
  *
  * A session's links, or a crew run's: those open every member of the run,
  * one added later included. Exactly one of the two is given.
+ *
+ * Another link may answer decisions (docs/plans/decision-inbox.md, PR-7):
+ * a control link with Answer decisions from this link on opens on the join
+ * page's Decide tab, where its holder answers what the link covers. At a
+ * switchyard that carries no decisions the server refuses it
+ * (`switchyard_too_old`), and the switch then stays off with the words why.
  */
 type Target = { sessionId: string; runId?: undefined } | { runId: string; sessionId?: undefined }
 /** `role`: the role asked for by whoever opened the dialog (the palette's `share <name> control`), used for this opening's link. */
@@ -29,14 +36,14 @@ function routes() {
     const run = props.runId
     return {
       list: () => api.runLinkList(run),
-      create: (body: { role: Role; label?: string; ttlSeconds?: number }) => api.createRunLink(run, body),
+      create: (body: LinkRequest) => api.createRunLink(run, body),
       revoke: (linkId: string) => api.revokeRunLink(run, linkId),
     }
   }
   const id = props.sessionId
   return {
     list: () => api.linkList(id),
-    create: (body: { role: Role; label?: string; ttlSeconds?: number }) => api.createLink(id, body),
+    create: (body: LinkRequest) => api.createLink(id, body),
     revoke: (linkId: string) => api.revokeLink(id, linkId),
   }
 }
@@ -55,7 +62,7 @@ const loading = ref(false)
 const creating = ref(false)
 const error = ref('')
 
-type Created = { linkId: string; url: string; role: Role; label?: string; invite?: string; remote?: boolean; rendezvous?: { server: string; error: string } }
+type Created = { linkId: string; url: string; role: Role; label?: string; invite?: string; remote?: boolean; rendezvous?: { server: string; error: string }; decide?: boolean }
 /** The link made for the current target, kept while the dialog is closed so the next open shows it again. */
 const created = ref<Created | null>(null)
 const createdFor = ref('')
@@ -73,7 +80,15 @@ const reachIcon = computed(() => {
   return r.level === 'public' ? 'i-lucide-globe' : r.level === 'pending' ? 'i-lucide-hourglass' : 'i-lucide-house'
 })
 
-const form = reactive<{ role: Role; label: string; ttl: string }>({ role: 'view', label: '', ttl: '7200' })
+const form = reactive<{ role: Role; label: string; ttl: string; decide: boolean }>({ role: 'view', label: '', ttl: '7200', decide: false })
+/** The words of the server's refusal of a decision link here (`switchyard_too_old`): the switch stays off with them. */
+const decideRefused = ref('')
+watch(
+  () => form.role,
+  (r) => {
+    if (r !== 'control') form.decide = false
+  },
+)
 
 // The role of the one-click link: view until the person picks control on a
 // link, then that, remembered in this browser.
@@ -190,7 +205,7 @@ watch(open, async (v) => {
   await create({ role: props.role ?? quickRole.value, ttlSeconds: 7200 })
 })
 
-async function create(body: { role: Role; label?: string; ttlSeconds?: number }) {
+async function create(body: LinkRequest) {
   creating.value = true
   error.value = ''
   try {
@@ -203,19 +218,24 @@ async function create(body: { role: Role; label?: string; ttlSeconds?: number })
       invite: res.invite,
       remote: 'remote' in res && res.remote === true,
       rendezvous: 'rendezvous' in res ? res.rendezvous : undefined,
+      decide: res.link.decide === true,
     }
     createdFor.value = targetKey.value
     await refresh()
     await copy(res.url)
   } catch (e) {
-    error.value = (e as Error).message
+    if (body.decide && e instanceof ApiError && e.code === 'switchyard_too_old') {
+      decideRefused.value = e.message
+      form.decide = false
+    } else error.value = (e as Error).message
   } finally {
     creating.value = false
   }
 }
 
 async function createAnother() {
-  await create({ role: form.role, label: form.label || undefined, ttlSeconds: Number(form.ttl) || undefined })
+  const decide = form.role === 'control' && form.decide && !decideRefused.value
+  await create({ role: form.role, label: form.label || undefined, ttlSeconds: Number(form.ttl) || undefined, ...(decide ? { decide: true } : {}) })
   form.label = ''
 }
 
@@ -291,6 +311,9 @@ const live = computed(() => links.value.filter((l) => !l.revoked))
             <span class="text-xs text-muted">{{ roles.find((r) => r.value === created!.role)?.description }}</span>
             <UIcon v-if="switching" name="i-lucide-loader-circle" class="size-3.5 animate-spin text-muted" />
           </div>
+          <p v-if="created.decide" class="flex items-center gap-1.5 text-xs text-muted" data-created-decide>
+            <UIcon name="i-lucide-list-checks" class="size-3.5" /> Answers decisions: the link opens on its Decide tab.
+          </p>
           <div v-if="created.invite" class="flex items-center gap-2.5" data-created-invite>
             <span class="flex-1 truncate font-mono text-xs text-muted" :title="created.invite">{{ created.invite }}</span>
             <UButton label="Copy invite" size="sm" color="neutral" variant="outline" @click="copyText(created!.invite!, 'Invite copied', 'It opens in the Conductor app; the link opens in a browser.')" />
@@ -325,6 +348,10 @@ const live = computed(() => links.value.filter((l) => !l.revoked))
                 <span class="text-sm font-semibold">{{ r.label }}</span>
                 <span class="text-xs leading-snug text-muted">{{ r.description }}</span>
               </button>
+            </div>
+            <div v-if="form.role === 'control'" class="flex flex-col gap-1" data-share-decide>
+              <USwitch v-model="form.decide" :disabled="!!decideRefused" label="Answer decisions from this link" description="It opens on a Decide tab: whoever holds it answers the questions and the tasks' choices it covers, each recorded as the link's." data-share-decide-switch />
+              <p v-if="decideRefused" class="text-xs text-warning" data-share-decide-refused>{{ decideRefused }}</p>
             </div>
             <div class="grid grid-cols-2 gap-3">
               <UFormField label="Label" name="label">
@@ -367,6 +394,8 @@ const live = computed(() => links.value.filter((l) => !l.revoked))
                 <span class="text-sm font-medium truncate">{{ link.label || 'unlabelled' }}</span>
                 <UBadge :label="link.role === 'control' ? 'Control' : 'View'" :color="link.role === 'control' ? 'primary' : 'neutral'" :variant="link.role === 'control' ? 'subtle' : 'outline'" size="sm" />
                 <UBadge v-if="link.remote" label="switchyard" color="info" variant="subtle" size="sm" icon="i-lucide-globe" />
+                <UBadge v-if="link.decide" label="answers decisions" color="primary" variant="outline" size="sm" icon="i-lucide-list-checks" data-share-link-decide />
+                <UBadge v-if="link.revokePending" label="revoke pending" color="warning" variant="subtle" size="sm" />
                 <UButton label="Revoke" size="xs" variant="link" color="secondary" class="ml-auto" @click="revoke(link)" />
               </div>
               <span class="font-mono text-[11px] text-muted">

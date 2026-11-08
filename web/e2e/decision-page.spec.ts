@@ -299,6 +299,27 @@ test("a turn held for the terminal shows no choice and no line, its words, and i
     await expect(item.locator('[data-inbox-line]')).toHaveCount(0)
     await item.locator('[data-inbox-terminal]').tap()
     await expect(phone).toHaveURL(new RegExp(`/sessions/${s.id}$`))
+
+    // The same turn through a session decision link opened on a phone at this server (MB0 PR-7): the join page opens on its Decide
+    // tab, the held item shows no choice and no line, and the terminal is one tab away. Through a switchyard the page is the same
+    // (switchyard.spec.ts); the held turn's setup needs a link this server holds, which one publishing to a switchyard does not mint.
+    budget(6)
+    const { token } = await api.ok<{ token: string }>('POST', `/api/sessions/${s.id}/links`, { role: 'control', decide: true, label: 'e2e decide phone' })
+    const linkCtx = await browser.newContext({ baseURL: server!.baseURL, viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+    contexts.push(linkCtx)
+    const holder = await linkCtx.newPage()
+    await holder.goto(`/join/${token}`)
+    await holder.getByRole('textbox', { name: 'Your name' }).fill('e2e holder')
+    await holder.getByRole('button', { name: 'Join session' }).tap()
+    await expect(holder.locator('[data-join-tab="decide"]')).toHaveAttribute('aria-selected', 'true', { timeout: STEP_MS })
+    await holder.locator(`[data-join-session-decide] [data-inbox-row="${ref}"]`).tap()
+    const onLink = holder.locator(`[data-join-session-decide] [data-inbox-item="${ref}"]`)
+    await expect(onLink.locator('[data-inbox-held]')).toContainText('held for keys typed in its terminal')
+    await expect(onLink.locator('[data-inbox-action]')).toHaveCount(0)
+    await expect(onLink.locator('[data-inbox-line]')).toHaveCount(0)
+    await onLink.locator('[data-inbox-terminal]').tap()
+    await expect(holder.locator('[data-join-tab="terminal"]')).toHaveAttribute('aria-selected', 'true')
+    await expect(holder.locator('.terminal-host .xterm-screen').first()).toBeVisible()
   } finally {
     await guestCtx.close()
     await api.stopSession(s.id)

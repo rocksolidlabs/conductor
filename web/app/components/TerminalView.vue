@@ -11,6 +11,7 @@ import { ALT_PASSTHROUGH_CODES, usePageAltCodes } from '~/composables/useShortcu
 import { NEWLINE_IN_PROMPT, newlineChord } from '~/utils/terminalKeys'
 import { closeReason, encodeText, FOLLOW_SIZE, type ActivityEntry, type ChatHistory, type ChatMessage, type ChatPost, type ChatRoster, type ChatSend, type ControlMessage, type FileGetExtra, type FileResponse, type FileWriteOptions, type NvimSwapChoice, type Role, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
 import type { CloseInfo, TerminalTransport, TransportState } from '~/utils/transport/types'
+import type { LaneWire } from '~/utils/transport/decide'
 import { ReplyError, type QuestionReply } from '~/utils/reply'
 import { FIT_DEBOUNCE_MS, helloSize, tileFit, tileScale } from '~/utils/tile'
 
@@ -61,6 +62,8 @@ const emit = defineEmits<{
   requestError: [err: { code: string; message: string; requestId: string }]
   /** What the editor's Neovim reports (design round 12, F8). */
   nvim: [ev: NvimEvent]
+  /** A decision link's connection: the scope's items changed (the lane's `decisions_changed`; the join page's Decide tab lists again). */
+  decisionsChanged: []
 }>()
 
 const host = ref<HTMLDivElement>()
@@ -544,6 +547,9 @@ function handleControl(msg: ControlMessage) {
     case 'chat':
       emit('chat', msg)
       break
+    case 'decisions_changed':
+      emit('decisionsChanged')
+      break
     case 'chat_history':
       emit('chatHistory', msg)
       break
@@ -679,6 +685,14 @@ function answer(reply: QuestionReply): Promise<boolean> {
   return transport.answer(reply)
 }
 
+/**
+ * The lane of a decision link's connection (utils/transport/decide.ts): this view's transport while its owner's welcome says
+ * `decisions`, null otherwise (no connection, or a link that is no decision link's).
+ */
+function lane(): LaneWire | null {
+  return transport?.decisions ? transport : null
+}
+
 /** Posts to the chat; false when the transport is not open (the caller queues it). */
 function chat(post: ChatPost): boolean {
   if (!transport || transport.state.value !== 'open') return false
@@ -701,7 +715,7 @@ function snapshot(): string[] | null {
   for (let y = 0; y < term.rows; y++) lines.push(b.getLine(b.viewportY + y)?.translateToString(true) ?? '')
   return lines
 }
-defineExpose({ connect, disconnect, requestFile, writeFile, nvimOpen, nvimInput, nvimClose, nvimSwap, sendInput, submit, answer, chat, chatSend, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom(), takeSize, sizerShown: () => !!sizerChip.value, snapshot })
+defineExpose({ connect, disconnect, requestFile, writeFile, nvimOpen, nvimInput, nvimClose, nvimSwap, sendInput, submit, answer, chat, chatSend, lane, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom(), takeSize, sizerShown: () => !!sizerChip.value, snapshot })
 
 onMounted(() => {
   term = new Terminal({

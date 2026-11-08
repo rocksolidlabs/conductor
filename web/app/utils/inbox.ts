@@ -89,7 +89,8 @@ export interface InboxItem {
   authorizes?: string
   cardRev?: string
   cardNote?: string
-  evidence?: Array<{ ref: string; label: string }>
+  /** `session` on a decision link's read: the id a session entry in the link's scope is opened by there (its published id). */
+  evidence?: Array<{ ref: string; label: string; session?: string }>
   delivery?: DeliveryStep[]
 }
 
@@ -444,7 +445,7 @@ export type PhoneOffer = { kind: 'qr'; url: string } | { kind: 'loopback'; words
 /**
  * Open on your phone (Owner decisions, 7): the page's address as the browser has it, its origin and `/decisions` alone (never a
  * token, a query or a fragment), as a QR code; on a loopback origin (the desktop app listens on 127.0.0.1) a phone cannot reach it,
- * and the offer says that alone, asking no step of the person (the decision link a phone opens arrives with MB0's PR-7).
+ * and the offer says that, asking no step of the person, and offers a decision link instead (decisionLinkTargets, MB0's PR-7).
  */
 export function phoneOffer(origin: string): PhoneOffer {
   let u: URL
@@ -568,4 +569,29 @@ export function ticketOf(item: Pick<InboxItem, 'kind' | 'evidence'>): string {
   if (item.kind !== 'task' && item.kind !== 'question') return ''
   const t = item.evidence?.find((e) => e.ref.startsWith('ticket:'))
   return t ? t.ref.slice('ticket:'.length) : ''
+}
+
+/** What a decision link may cover, for Open on your phone on a loopback origin: a run or a session the person picks. */
+export interface DecisionLinkTarget {
+  /** `run:<id>` or `session:<id>`. */
+  value: string
+  label: string
+}
+
+/**
+ * The runs and sessions a decision link can be made for (Open on your phone, on a loopback origin, MB0's PR-7): the runs the engine
+ * still holds (running, or finished and still retried: a failed run's tasks are its decisions), newest first, then this server's own
+ * sessions still running (a hosted session's decisions are answered where it runs). A run's members are covered by the run's link.
+ */
+export function decisionLinkTargets(
+  sessions: ReadonlyArray<{ id: string; name: string; kind: string; status: string; crew?: { runId: string } }>,
+  runs: ReadonlyArray<{ id: string; name: string; label?: string; state: string }>,
+): DecisionLinkTarget[] {
+  const out: DecisionLinkTarget[] = []
+  for (const r of runs) if (r.state !== 'stopped') out.push({ value: `run:${r.id}`, label: `Run: ${r.label || r.name}` })
+  for (const s of sessions) {
+    if (s.kind !== 'server' || s.crew?.runId || s.status === 'exited' || s.status === 'stopped') continue
+    out.push({ value: `session:${s.id}`, label: `Session: ${s.name}` })
+  }
+  return out
 }

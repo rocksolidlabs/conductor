@@ -10,6 +10,7 @@ import { filesRoot, joinedFromInfo } from '~/utils/joined'
 import { chatThreadKey, scopeItems } from '~/utils/chat'
 import { skipWords, type MemberStatus } from '~/utils/crews'
 import { repliedQuestions, ReplyError, replyFailure, type QuestionReply } from '~/utils/reply'
+import { DecisionLane, type LaneWire } from '~/utils/transport/decide'
 
 // The workbench (the desktop app, or a browser holding the workbench token) shows the page beside its sidebar, so a shared session
 // never takes the window over and its own sessions stay one click away; a guest gets the bare page. Decided once: a layout that
@@ -53,7 +54,7 @@ const transport = ref<{ kind: TransportKind; state: TransportState; rtt: number 
 // The editor area (design 4g): files open above the terminal, the Files pane beside it where there is room.
 const { tabs, openFile, previewFile, openUrl, openDiff, openCommitDiff } = useEditorTabs()
 const filesPanel = ref(true)
-const terminal = ref<EditorTerminal & { requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; sendInput: (t: string) => boolean; submit: (t: string) => boolean; answer: (r: QuestionReply) => Promise<boolean>; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean } | null>(null)
+const terminal = ref<EditorTerminal & { requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; sendInput: (t: string) => boolean; submit: (t: string) => boolean; answer: (r: QuestionReply) => Promise<boolean>; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; lane: () => LaneWire | null } | null>(null)
 const attention = ref<Attention>({ state: '' })
 function onAttention(msg: { state: string; message?: string; source?: string }) {
   attention.value = { ...(msg as Attention), since: new Date().toISOString() }
@@ -137,7 +138,27 @@ const activity = ref<ActivityEntry[]>([])
 function onActivity(e: ActivityEntry) {
   activity.value = [...activity.value.slice(-199), e]
 }
+// A session decision link (docs/plans/decision-inbox.md, PR-7): the session's own connection carries the link's lane once its
+// welcome says `decisions` (an older owner never does, and the page shows the session as before), and the page opens on its Decide
+// tab, the terminal one tab away. A run link's decisions come over the run's desk instead (runDesk, below).
+const decisions = ref(false)
+const laneSeq = ref(0)
+const tab = ref<'decide' | 'terminal'>('terminal')
+let decideShown = false
+const sessionLane = new DecisionLane(() => terminal.value?.lane() ?? null)
+const sessionDecides = computed(() => decisions.value && !run.value)
+function onDecisionsChanged() {
+  laneSeq.value++
+}
+
 function onWelcome(w: Welcome) {
+  decisions.value = !!w.decisions
+  if (decisions.value && !run.value && !decideShown) {
+    decideShown = true
+    tab.value = 'decide'
+  }
+  // A welcome again (a reconnect): what the lane showed is read again, its Recent tracked again.
+  if (decisions.value) laneSeq.value++
   activity.value = []
   ownerCwd.value = w.cwd ?? ''
   editor.onWelcome(w)
@@ -282,6 +303,21 @@ function join() {
 /** What the person left, said on the card they come back to; the link still works, so Join again is one click. */
 const left = ref(false)
 
+// A run decision link's desk: the run's decisions with no member alive, above the members' grid.
+const runDesk = useRunDesk({ info, token, server, joined, refresh: fetchInfo })
+/** The run's item open on its Decide, kept while a member is open in full from it. */
+const runDecideOpen = ref('')
+/** A session of the run in the link's scope, opened from a decision's evidence: the member whose session it is, in full. */
+async function openRunSession(id: string) {
+  let m = runMembers.value.find((x) => x.sessionId === id)
+  if (!m) {
+    await fetchInfo()
+    m = runMembers.value.find((x) => x.sessionId === id)
+  }
+  if (m) openMember(m)
+  else toast.add({ title: 'That session is not open now', description: 'Its member may have ended: open it on the desktop or the LAN.', color: 'neutral' })
+}
+
 /** Leaves the share: the terminals go (their connections close with them) and the card comes back, the name kept. */
 function leave() {
   joined.value = false
@@ -291,6 +327,10 @@ function leave() {
   tabs.value = emptyTabs()
   chatSheet.value = false
   runChatOpen.value = false
+  decisions.value = false
+  tab.value = 'terminal'
+  decideShown = false
+  runDecideOpen.value = ''
   left.value = true
 }
 
@@ -413,6 +453,9 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
 
     <main class="flex-1 min-h-0 overflow-y-auto p-2 sm:p-3">
       <UAlert v-if="error" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" class="mb-3" />
+      <section v-if="runDesk.decisions.value" class="mx-auto mb-4 w-full max-w-2xl rounded-lg border border-default bg-default p-3" data-join-run-decide>
+        <JoinDecide v-model:open="runDecideOpen" :lane="runDesk.lane" :seq="runDesk.seq.value" title="Needs your decision" @open-session="openRunSession" />
+      </section>
       <JoinCrewGrid v-model:heard="tileState" :members="run.members" :role="info!.role" :transport-for="tileTransport" :agent-name="agentName" @open="openMember" />
     </main>
     <ChatSheet
@@ -451,6 +494,9 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
       <SessionStatusBadge v-if="status" :status="status as any" />
       <AttentionBadge :attention="attention" />
       <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" />
+      <div v-if="sessionDecides" class="flex gap-0.5 rounded-md bg-elevated p-0.5" role="tablist" aria-label="Decide or the terminal" data-join-tabs>
+        <UButton v-for="t in (['decide', 'terminal'] as const)" :key="t" role="tab" :aria-selected="tab === t" :label="t === 'decide' ? 'Decide' : 'Terminal'" :icon="t === 'decide' ? 'i-lucide-list-checks' : 'i-lucide-square-terminal'" size="sm" class="min-h-9" :color="tab === t ? 'primary' : 'neutral'" :variant="tab === t ? 'solid' : 'ghost'" :data-join-tab="t" @click="tab = t" />
+      </div>
       <UBadge :label="`${viewers} here`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" />
       <UBadge v-if="current.kind === 'hosted'" :label="`hosted on ${current.hostName || 'dev machine'}`" icon="i-lucide-laptop" color="neutral" variant="subtle" size="sm" />
       <div class="flex-1" />
@@ -471,7 +517,11 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
     </header>
 
     <main class="flex-1 min-h-0 p-2 sm:p-3 flex gap-3">
-      <EditorColumn v-model:tabs="tabs" :request="requestFile" :nvim="editor.nvim.value" :write="editor.writeFile" :can-edit="editor.canEdit.value" :cwd="current.cwd" :host-away="status === 'host_disconnected' ? current.hostName || 'The host' : undefined" :bar-text="attention.message || agentLabel" :read-only-badge="info.role !== 'control'" commenting :can-ask="info.role === 'control' && !ended" @comment="onComment">
+      <section v-if="sessionDecides" v-show="tab === 'decide'" class="mx-auto w-full max-w-2xl min-h-0 overflow-y-auto" data-join-session-decide>
+        <JoinDecide :lane="sessionLane" :seq="laneSeq" @open-session="tab = 'terminal'" />
+      </section>
+      <EditorColumn
+        v-show="!sessionDecides || tab === 'terminal'" v-model:tabs="tabs" :request="requestFile" :nvim="editor.nvim.value" :write="editor.writeFile" :can-edit="editor.canEdit.value" :cwd="current.cwd" :host-away="status === 'host_disconnected' ? current.hostName || 'The host' : undefined" :bar-text="attention.message || agentLabel" :read-only-badge="info.role !== 'control'" commenting :can-ask="info.role === 'control' && !ended" @comment="onComment">
         <TerminalView
           :key="current.id"
           ref="terminal"
@@ -490,19 +540,20 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
           @request-error="onRequestError"
           @open-file="openFile"
           @open-url="openUrl"
+          @decisions-changed="onDecisionsChanged"
         />
         <template #bar>
           <QuickReplyBar :attention="attention" :agent-name="agentLabel" :role="info.role" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
         </template>
       </EditorColumn>
-      <aside v-if="filesPanel" class="hidden md:flex w-[332px] flex-none flex-col overflow-hidden rounded-lg border border-default bg-default" data-files-aside>
+      <aside v-if="filesPanel" v-show="!sessionDecides || tab === 'terminal'" class="hidden md:flex w-[332px] flex-none flex-col overflow-hidden rounded-lg border border-default bg-default" data-files-aside>
         <div class="flex h-9 flex-none items-center gap-2 border-b border-default px-3 text-xs font-semibold text-highlighted">
           <UIcon name="i-lucide-folder-open" class="size-4 text-muted" /> Files
           <UBadge v-if="info.role !== 'control'" label="read only" icon="i-lucide-lock" color="neutral" variant="subtle" size="sm" class="ml-auto" data-files-readonly />
         </div>
         <FilesPane :request="requestFile" :cwd="current.cwd" :activity="activity" class="flex-1 min-h-0" @open="openFile" @open-diff="openDiff" @open-commit-diff="openCommitDiff" />
       </aside>
-      <aside v-if="chatPanel && chat.thread.value.capable" class="hidden md:flex w-[332px] flex-none" data-chat-aside>
+      <aside v-if="chatPanel && chat.thread.value.capable" v-show="!sessionDecides || tab === 'terminal'" class="hidden md:flex w-[332px] flex-none" data-chat-aside>
         <ChatPanel class="w-full overflow-hidden rounded-lg border border-default" :thread="chat.thread.value" :role="info.role" :ended="ended" :offline="chatOffline" :viewers="viewerList" :note="chatNote" @send="chatSend" @send-to-agent="chatSendToAgent" @retry="chatRetry" @answer="chatAnswer" />
       </aside>
     </main>

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { ReplyError } from './reply'
 import { CommandRefused } from './tasks'
 import {
+  decisionLinkTargets,
   addRecent,
   answerFailure,
   receiptFailure,
@@ -353,5 +354,24 @@ describe('an item as the page draws it', () => {
     expect(it.blocking.refs).toEqual([])
     expect(it.actions).toEqual([])
     expect(it.evidence).toEqual([])
+  })
+})
+
+describe('decisionLinkTargets', () => {
+  it("offers the runs the engine holds and this server's own sessions still running, never a hosted, ended or member session", () => {
+    const sessions = [
+      { id: 's1', name: 'api-fix', kind: 'server', status: 'running' },
+      { id: 's2', name: 'hosted', kind: 'hosted', status: 'running' },
+      { id: 's3', name: 'done', kind: 'server', status: 'exited' },
+      { id: 's4', name: 'member', kind: 'server', status: 'running', crew: { runId: 'r1' } },
+    ]
+    const runs = [
+      { id: 'r1', name: 'release', label: 'release 7', state: 'finished' },
+      { id: 'r2', name: 'old', state: 'stopped' },
+    ]
+    expect(decisionLinkTargets(sessions, runs)).toEqual([
+      { value: 'run:r1', label: 'Run: release 7' },
+      { value: 'session:s1', label: 'Session: api-fix' },
+    ])
   })
 })

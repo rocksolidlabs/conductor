@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, openSync, readdirSync, readFileSync } from 'node
 import { createServer } from 'node:net'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { expect, test } from './fixtures'
+import { expect, task, test, type Run, type Session } from './fixtures'
 import { renderConfig, scratchRepo, serverBinary, stubBash, startServer, stopServer, stubPath, type Started } from './server'
 
 // A switchyard: a second Conductor in switchyard mode, a conductor host
@@ -404,4 +404,163 @@ test('a session a Conductor publishes is listed there by little, a guest\'s File
   await pub('DELETE', `/api/sessions/${made.body.id}`)
   await stopServer(publisher.pid)
   publisher = null
+})
+
+// A decision link through the switchyard (docs/plans/decision-inbox.md, MB0 PR-7): a server publishing to the spec's switchyard
+// (relay-only, as the host above: a CI box may have no route for ICE, so every connection goes through the switchyard's relay) runs
+// a managed run of one member whose task fails its check; its member's session, which outlives the failed attempt, then asks a
+// question (through the attention route: the stub asks only before its task line, which answers it). The owner's Share makes a
+// control link that answers decisions, minted there over the run's desk. A phone opens it at the switchyard's own join page and,
+// over the desk: sees both items; opens the member's terminal from the question's evidence, one tap; answers the question, its
+// steps through to resumed; then, the member's session ended (no member of the run lives), unfolds the failed check's log, retries
+// the task, its steps through to resumed, and reads them again from the link's Recent once the item has left the open list. Each
+// item is found by its ref. Each step raises the test's timeout by its own waits' caps as it takes them (budget).
+test("a run decision link through the switchyard: a phone answers a member's question and retries a failed task with no member alive, over the run's desk", async ({ browser, state }) => {
+  const STEP = 30_000
+  const budget = (waits: number, ms = STEP) => test.info().setTimeout(test.info().timeout + waits * ms)
+  budget(2)
+  const here = dirname(fileURLToPath(import.meta.url))
+  const home4 = join(state.root, 'publisher4-home')
+  const data4 = join(state.root, 'publisher4-data')
+  const repo4 = join(state.root, 'publisher4-repo')
+  for (const d of [home4, data4, repo4]) mkdirSync(d, { recursive: true })
+  scratchRepo(repo4)
+  const config = join(state.root, 'publisher4.json')
+  renderConfig(join(here, 'conductor.e2e.json'), config)
+  publisher = await startServer({
+    config,
+    home: home4,
+    data: data4,
+    allowedRoot: state.root,
+    defaultCwd: repo4,
+    log: join(state.root, 'publisher4.log'),
+    env: { CONDUCTOR_RENDEZVOUS: '1', CONDUCTOR_RENDEZVOUS_SERVER: syURL, CONDUCTOR_RENDEZVOUS_TOKEN: hostToken, CONDUCTOR_RENDEZVOUS_RELAY_ONLY: '1', CONDUCTOR_RENDEZVOUS_HOST_NAME: 'publisher4' },
+  })
+  const pub = async <T>(method: string, path: string, body?: unknown): Promise<{ status: number; body: T }> => {
+    const r = await fetch(publisher!.baseURL + path, { method, headers: { Authorization: `Bearer ${publisher!.token}`, 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
+    const text = await r.text()
+    return { status: r.status, body: (text ? JSON.parse(text) : undefined) as T }
+  }
+  const runOf = async (id: string) => (await pub<{ run: Run }>('GET', `/api/runs/${id}`)).body.run
+  const crew = await pub<{ crew: { id: string } }>('POST', '/api/crews', {
+    name: 'e2e decide link',
+    goal: 'fail a check',
+    cwd: '',
+    where: 'server',
+    isolation: 'worktree',
+    openAfterLaunch: false,
+    yolo: null,
+    members: [{ name: 'builder', agentId: 'worker-cli', prompt: '', start: { when: 'task' } }],
+    tasks: [{ id: 'build', member: 'builder', kind: 'work', instructions: 'Build it.', checks: [{ id: 'never', argv: ['sh', '-c', 'echo the check looked; exit 1'] }] }],
+  })
+  expect(crew.status).toBe(201)
+  const launched = await pub<{ run: { id: string } }>('POST', `/api/crews/${crew.body.crew.id}/launch`)
+  expect(launched.status).toBe(201)
+  const runId = launched.body.run.id
+  const failed = `task:${runId}/build`
+  const contexts: Array<{ close: () => Promise<void> }> = []
+  try {
+    // Three attempts, each failing its check; the last attempt's session lives on, its turn done, and asks.
+    budget(1, 180_000)
+    await expect.poll(async () => task(await runOf(runId), 'build').state, { timeout: 180_000, intervals: [500], message: 'build fails its check three times' }).toBe('failed')
+    const member = task(await runOf(runId), 'build').attempt?.sessionId ?? ''
+    expect(member).not.toBe('')
+    budget(1)
+    await expect.poll(async () => (await pub<{ session: Session }>('GET', `/api/sessions/${member}`)).body.session?.attention?.state ?? '', { timeout: STEP, message: "the member's turn is done" }).not.toBe('needs_input')
+    const asks = await pub<{ attention: { id: string } }>('POST', `/api/sessions/${member}/attention`, { state: 'needs_input', message: 'Which way?', options: [{ label: 'Left', input: 'Left\r' }, { label: 'Right', input: 'Right\r' }] })
+    expect(asks.status).toBe(200)
+    const question = `question:${member}/${asks.body.attention.id}`
+
+    // The owner's Share on the run page: another link, control, answering decisions, minted at the switchyard over the run's desk.
+    budget(5)
+    const ownerCtx = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+    contexts.push(ownerCtx)
+    await ownerCtx.addInitScript((t) => localStorage.setItem('conductor.workbenchToken', t), publisher.token)
+    const owner = await ownerCtx.newPage()
+    await owner.goto(`${publisher.baseURL}/runs/${runId}`)
+    await owner.getByRole('button', { name: 'Share', exact: true }).first().click()
+    const dialog = owner.getByRole('dialog')
+    await expect(dialog.locator('[data-created-url], [data-share-making]').first()).toBeVisible({ timeout: STEP })
+    await dialog.getByText('Another link').click()
+    await dialog.locator('[data-another-link]').getByRole('radio', { name: /Control/ }).click()
+    const sw = dialog.getByRole('switch', { name: 'Answer decisions from this link' })
+    await sw.click()
+    await expect(sw).toHaveAttribute('aria-checked', 'true')
+    await dialog.getByRole('button', { name: 'Create link' }).click()
+    await expect(dialog.locator('[data-created-decide]')).toBeVisible({ timeout: STEP })
+    const url = (await dialog.locator('[data-created-url]').getAttribute('title')) ?? ''
+    expect(url.startsWith(`${syURL}/join/`), url).toBe(true)
+    await expect(dialog.locator('[data-share-link-decide]').first()).toBeVisible()
+
+    // A phone opens the link at the switchyard's own join page: the run's items above its members, over the run's desk.
+    budget(4)
+    const phoneCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+    contexts.push(phoneCtx)
+    const phone = await phoneCtx.newPage()
+    await phone.goto(url)
+    await expect(phone.getByRole('heading', { name: 'Join e2e decide link' })).toBeVisible({ timeout: STEP })
+    await phone.getByRole('textbox', { name: 'Your name' }).fill('e2e phone')
+    await phone.getByRole('button', { name: 'Join crew' }).tap()
+    const decide = phone.locator('[data-join-run-decide]')
+    await expect(decide.locator(`[data-inbox-row="${question}"]`)).toBeVisible({ timeout: STEP })
+    await expect(decide.locator(`[data-inbox-row="${failed}"]`)).toBeVisible()
+    const steps = (): Promise<Record<string, string>> =>
+      decide.locator('[data-inbox-item] [data-inbox-delivery] [data-step]').evaluateAll((els) => Object.fromEntries(els.map((e) => [e.getAttribute('data-step'), e.getAttribute('data-step-state')])))
+
+    // The member's terminal from the question's evidence, one tap; then back to the crew, and the question again.
+    budget(5)
+    await decide.locator(`[data-inbox-row="${question}"]`).tap()
+    const asked = decide.locator(`[data-inbox-item="${question}"]`)
+    await expect(asked.locator('[data-inbox-question]')).toHaveText('Which way?')
+    await expect(asked.locator('[data-inbox-action="answer"]')).toHaveText(['Left', 'Right'])
+    await asked.locator('[data-inbox-evidence-toggle]').tap()
+    await asked.locator(`[data-evidence-ref="session:${member}"] [data-evidence-terminal]`).tap()
+    await expect(phone.locator('.terminal-host .xterm-screen').first()).toBeVisible({ timeout: STEP })
+    await phone.getByRole('button', { name: 'Back to the crew' }).tap()
+    await expect(asked.locator('[data-inbox-action="answer"]')).toHaveText(['Left', 'Right'], { timeout: STEP })
+
+    // The question answered through the link: typed into the member, its steps through to resumed.
+    budget(3)
+    await asked.locator('[data-inbox-action="answer"][data-action-label="Right"]').tap()
+    const agent = (await pub<{ session: Session }>('GET', `/api/sessions/${member}`)).body.session.agentSession?.id ?? ''
+    const transcript = join(home4, '.stub-sessions', `${agent}.txt`)
+    await expect.poll(() => (existsSync(transcript) ? readFileSync(transcript, 'utf8') : ''), { timeout: STEP, message: 'the choice was typed into the member' }).toContain('Right')
+    await expect.poll(steps, { timeout: STEP }).toEqual({ available: 'done', recorded: 'done', validated: 'done', resumed: 'done' })
+
+    // The member's session ended: no member of the run lives, and the run's desk still carries its decisions.
+    budget(1)
+    expect((await pub('DELETE', `/api/sessions/${member}`)).status).toBeLessThan(300)
+    await expect.poll(async () => (await runOf(runId)).members.every((m) => m.status !== 'running' && m.status !== 'starting'), { timeout: STEP, message: 'no member lives' }).toBe(true)
+    const attemptsBefore = task(await runOf(runId), 'build').attempts
+
+    // The failed task over the desk: its check's log unfolded, retried, its steps through to the next attempt running.
+    budget(6)
+    await decide.locator('[data-inbox-back]').tap()
+    await decide.locator(`[data-inbox-row="${failed}"]`).tap()
+    const item = decide.locator(`[data-inbox-item="${failed}"]`)
+    await expect(item.locator('[data-inbox-action]')).toHaveText(['Retry', 'Accept anyway…'])
+    await item.locator('[data-inbox-evidence-toggle]').tap()
+    const check = item.locator('[data-evidence-ref^="check:"]').first()
+    await check.locator('[data-evidence-log-toggle]').tap()
+    await expect(check.locator('[data-evidence-log]')).toContainText('the check looked', { timeout: STEP })
+    await item.locator('[data-inbox-action="retry"]').tap()
+    await expect.poll(async () => (await steps()).validated, { timeout: STEP }).toBe('done')
+    await expect.poll(async () => (await steps()).resumed, { timeout: STEP, message: 'the next attempt runs' }).toBe('done')
+    expect(task(await runOf(runId), 'build').attempts).toBeGreaterThan(attemptsBefore)
+
+    // Read again from the link's Recent: the retry's steps, kept by the link after the item left the open list.
+    budget(4)
+    await decide.locator('[data-inbox-back]').tap()
+    const row = decide.locator(`[data-recent-row="${failed}"]`)
+    await expect(row.locator('[data-recent-word]')).toHaveText('Work resumed', { timeout: STEP })
+    await expect(decide.locator(`[data-recent-row="${question}"] [data-recent-word]`)).toHaveText('Work resumed')
+    await row.tap()
+    await expect.poll(async () => (await steps()).resumed, { timeout: STEP }).toBe('done')
+    await expect(item.locator('[data-step="recorded"] [data-step-words]')).toContainText("ledger keeps the command's receipt")
+  } finally {
+    for (const c of contexts) await c.close().catch(() => {})
+    await pub('POST', `/api/runs/${runId}/stop`).catch(() => {})
+    await stopServer(publisher.pid)
+    publisher = null
+  }
 })
