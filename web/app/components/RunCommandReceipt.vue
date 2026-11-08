@@ -7,18 +7,22 @@ import { relativeTime } from '~/utils/sessions'
  * a history row's link, shows that command as the ledger keeps it: its intent, its actor, when it was made, its state and the answer
  * its receipt holds. It is read from the history's evidence reader by the actor the link names (GET /api/history/command), never the
  * caller's own receipt of the same id, which the run's command route finds (the read a client that lost a reply makes). Read when the
- * link names it, never written back; Close hides it on this page alone.
+ * link names it and again with a new workbench token, never written back; Close hides it on this page alone.
  */
 const props = defineProps<{ runId: string; command: string; actor: string; now: number }>()
 
 const history = useHistory()
+const admin = useWorkbenchToken()
 const shown = ref<HistoryCommand | null>(null)
 const error = ref('')
 const closed = ref(false)
 let asked = 0
 
+// Read again when the workbench token changes (the gate saved the right one after this read was refused): the run page around it reads
+// again then, and this panel stays mounted. A reply to the read made with the token before is dropped (`asked`), and its refusal does
+// not ask for the token again (admin.refused judges it by the token it carried).
 watch(
-  () => [props.runId, props.command, props.actor] as const,
+  () => [props.runId, props.command, props.actor, admin.token.value] as const,
   async ([run, id, actor]) => {
     const mine = ++asked
     shown.value = null

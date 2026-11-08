@@ -157,6 +157,33 @@ test("the run page at a check's step shows its log and hash, and at a command it
   await expect(modal.locator('[data-step-log-sha]')).toHaveText(served)
   await expect(modal.locator('[data-step-log-sha-match]')).toHaveAttribute('data-step-log-sha-match', 'matches')
   await expect(modal.locator('[data-step-log-text]')).not.toBeEmpty()
+  // Attempt 2's receipt of the same check, by a link the app follows itself (the router, as Back and Forward do): its own log alone
+  // opens, attempt 1's closed with its link, and the row brought into view is attempt 2's, though phase, id and k recur in attempt 1.
+  const steps2 = (await api.ok<{ steps: Array<{ phase: string; id: string; k: number }> }>('GET', `${runPath}/tasks/build/attempts/2/steps`)).steps
+  const check2 = steps2.find((s) => s.phase === 'check' && s.id === 'fixed')
+  expect(check2).toBeTruthy()
+  const res2 = await fetch(`${api.server.baseURL}${runPath}/tasks/build/attempts/2/steps/fixed/${check2!.k}/log`, { headers: { Authorization: `Bearer ${api.server.token}` } })
+  const served2 = res2.headers.get('X-Conductor-Log-SHA256') ?? ''
+  expect(served2).toMatch(/^[0-9a-f]{64}$/)
+  expect(served2).not.toBe(served)
+  // A short window, so the row a link scrolls to is the only one in view of the two attempts' rows of this check.
+  await page.setViewportSize({ width: 1280, height: 360 })
+  const stepLink = (n: number, k: number) => `/runs/${encodeURIComponent(run.id)}?view=tasks&task=build&attempt=${n}&step=${encodeURIComponent(`check/fixed/${k}`)}`
+  await page.evaluate((u) => (document.querySelector('#__nuxt') as unknown as { __vue_app__: { config: { globalProperties: { $router: { push: (u: string) => Promise<unknown> } } } } }).__vue_app__.config.globalProperties.$router.push(u), stepLink(2, check2!.k))
+  await expect(page.locator('[data-task-attempt-row="2"][data-attempt-wanted]')).toBeVisible()
+  await expect(page.locator('[data-step-log-modal]')).toHaveCount(1)
+  await expect(page.locator('[data-step-log-modal] [data-step-log-sha]')).toHaveText(served2)
+  await expect(page.locator('[data-steps-of="2"] [data-step-wanted]')).toBeInViewport({ ratio: 1 })
+  // Back: attempt 1's link again, its log alone; Forward: attempt 2's.
+  await page.goBack()
+  await expect(page.locator('[data-task-attempt-row="1"][data-attempt-wanted]')).toBeVisible()
+  await expect(page.locator('[data-step-log-modal]')).toHaveCount(1)
+  await expect(page.locator('[data-step-log-modal] [data-step-log-sha]')).toHaveText(served)
+  await page.goForward()
+  await expect(page.locator('[data-task-attempt-row="2"][data-attempt-wanted]')).toBeVisible()
+  await expect(page.locator('[data-step-log-modal]')).toHaveCount(1)
+  await expect(page.locator('[data-step-log-modal] [data-step-log-sha]')).toHaveText(served2)
+
 
   // The command's link: its intent, its actor and its time.
   const receipt = await api.ok<{ command: { intent: string; actor: string; createdAt: string } }>('GET', `/api/history/command?run=${encodeURIComponent(run.id)}&actor=admin&id=${pauseId}`)
@@ -166,6 +193,20 @@ test("the run page at a check's step shows its log and hash, and at a command it
   await expect(panel.locator('[data-run-command-intent]')).toContainText('pause')
   await expect(panel.locator('[data-run-command-actor]')).toHaveText('admin')
   await expect(panel.locator('[data-run-command-at]')).toContainText(receipt.command.createdAt)
+
+  // Opened with a token the server refuses: the read is refused and the gate asks; the right token saved, the panel, still mounted,
+  // reads the receipt again (no reload: this script would set the wrong token again).
+  await page.addInitScript(() => localStorage.setItem('conductor.workbenchToken', 'not-the-workbench-token'))
+  await page.goto(`/runs/${encodeURIComponent(run.id)}?command=${pauseId}&actor=admin`)
+  const gate = page.getByRole('dialog', { name: 'Workbench token' })
+  await expect(gate).toBeVisible()
+  await expect(panel.locator('[data-run-command-error]')).toBeVisible()
+  const field = gate.getByPlaceholder('paste the workbench token')
+  await field.fill(api.server.token)
+  await expect(field).toHaveValue(api.server.token)
+  await gate.getByRole('button', { name: 'Save' }).click()
+  await expect(gate).toHaveCount(0)
+  await expect(panel.locator('[data-run-command-intent]')).toHaveText(receipt.command.intent)
 })
 
 test("a ticket's page at a comment its first read does not hold shows that comment marked", async ({ page, api }) => {
@@ -174,7 +215,11 @@ test("a ticket's page at a comment its first read does not hold shows that comme
   await makeProject(api, key)
   const ticket = await makeTicket(api, key, '1', { title: 'Many comments' })
   // 51 comments: the ticket's read carries the last 50, so the first is on no page the ticket's page reads at first.
-  for (let i = 1; i <= 51; i++) await api.ok('POST', `/api/dispatch/tickets/${ticket}/comments`, { opId: opOf(key, `c${i}`), byName: 'Priya', body: `Comment number ${i}` })
+  let first = ''
+  for (let i = 1; i <= 51; i++) {
+    const r = await api.ok<{ comment: { id: string } }>('POST', `/api/dispatch/tickets/${ticket}/comments`, { opId: opOf(key, `c${i}`), byName: 'Priya', body: `Comment number ${i}` })
+    if (i === 1) first = r.comment.id
+  }
   const n = ticket.split('-').pop()
   await page.goto(`/dispatch/${key}/${n}?comment=1`)
   const comments = page.locator('[data-ticket-comments]')
@@ -183,7 +228,27 @@ test("a ticket's page at a comment its first read does not hold shows that comme
   await expect(at.locator('[data-comment-at-body]')).toContainText('Comment number 1')
   await expect(comments.locator('[data-comment="51"]')).toBeVisible()
   await expect(comments.locator('[data-comment="1"]')).toHaveCount(0)
+  // Edited elsewhere while no page the list shows holds it: the ticket's read again reads the linked one again, and the head follows.
+  await api.ok('POST', `/api/dispatch/tickets/${ticket}/comments/${first}/edit`, { opId: opOf(key, 'e1'), byName: 'Priya', body: 'Comment number 1, edited' })
+  await expect(at.locator('[data-comment-at-body]')).toContainText('Comment number 1, edited')
   // The way to the comments around it: read from it on, and shown in its place.
   await at.locator('[data-comment-at-around]').click()
-  await expect(comments.locator('[data-comment="1"] [data-comment-body]')).toContainText('Comment number 1')
+  await expect(comments.locator('[data-comment="1"] [data-comment-body]')).toContainText('Comment number 1, edited')
+  // Deleted in the list on this page: the head shows its tombstone, never the body it showed, from the delete's own answer, with the
+  // linked comment's read again held back (it would otherwise hide a head that waits for it).
+  let release!: () => void
+  const held = new Promise<void>((r) => (release = r))
+  const own = (u: URL) => u.pathname.endsWith('/comments') && u.searchParams.get('after') === '0' && u.searchParams.get('limit') === '1'
+  await page.route(own, async (route) => {
+    await held
+    await route.continue()
+  })
+  const listed = comments.locator('[data-comment="1"]')
+  await listed.locator('[data-comment-delete]').click()
+  await listed.locator('[data-comment-delete-confirm]').click()
+  await expect(listed).toHaveAttribute('data-comment-deleted', '')
+  await expect(at.locator('[data-comment-at-deleted]')).toBeVisible()
+  await expect(at.locator('[data-comment-at-body]')).toHaveCount(0)
+  release()
+  await page.unrouteAll({ behavior: 'ignoreErrors' })
 })

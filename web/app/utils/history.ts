@@ -157,9 +157,12 @@ export interface DetailPart {
   title?: string
 }
 
-/** A repository's name for the detail line: the last folder of its worktree, else of its common directory without its `.git`. */
+/**
+ * A repository's name for the detail line: the last folder of its common directory without its `.git`, so sibling worktrees of one
+ * repository (a crew attempt's `.conductor/worktrees/<run>/<task>.<n>`) are named as the repository; else of its worktree.
+ */
 export function repoName(p: HistoryItem['project']): string {
-  const path = (p.tree || p.repo || '').replace(/\/+$/, '').replace(/\/\.git$/, '')
+  const path = (p.repo || p.tree || '').replace(/\/+$/, '').replace(/\/\.git$/, '')
   return path.split('/').filter(Boolean).pop() ?? ''
 }
 
@@ -366,17 +369,23 @@ export function resumeReceiptWords(r: ResumeReceipt): string {
 }
 
 /**
- * What Resume asks before it sends: always a first yes; for a launch with variables, their names, since no record keeps a value (so it
- * resumes without them, said so); for a lost record, that its process may still be running, asked a second time before `confirmLost`.
+ * What Resume asks before it sends: always a first yes; for a launch with variables, their names: a session still listed (`listed`, its
+ * entry's `availability.state`) resumes with its own launch, variables among it, and a record alone without them, since no record keeps a
+ * value (sent as `withoutEnv`); while the page does not know which, both are said. For a lost record, that its process may still be
+ * running, asked a second time before `confirmLost`.
  */
-export function resumeQuestion(r: Pick<SessionRecord, 'name' | 'agent' | 'launch' | 'endedAt' | 'lostAt' | 'where'>): { title: string; detail: string; env: string[]; withoutEnv: boolean; lost: boolean } {
+export function resumeQuestion(r: Pick<SessionRecord, 'name' | 'agent' | 'launch' | 'endedAt' | 'lostAt' | 'where'>, listed?: boolean): { title: string; detail: string; env: string[]; withoutEnv: boolean; lost: boolean } {
   const env = r.launch?.envNames ?? []
-  const withoutEnv = env.length > 0 || (r.launch?.envCount ?? 0) > 0
+  const n = r.launch?.envCount ?? 0
+  const withoutEnv = listed !== true && (env.length > 0 || n > 0)
   const lost = recordLost(r)
   const who = recordAgent(r)
   const parts = [`A new session takes up ${who}'s own conversation${r.agent.session?.id ? ` (${r.agent.session.id})` : ''} in the record's folder.`]
-  if (env.length) parts.push(`Its launch had variables (${env.join(', ')}); no record keeps their values, so it resumes without them.`)
-  else if ((r.launch?.envCount ?? 0) > 0) parts.push(`Its launch had ${r.launch!.envCount} variables; no record keeps their values, so it resumes without them.`)
+  const vars = env.length ? `variables (${env.join(', ')})` : `${n} variables`
+  if (env.length || n > 0) {
+    if (listed) parts.push(`Its launch had ${vars}; its session is still listed, so it resumes with its own launch, its variables among it.`)
+    else parts.push(`Its launch had ${vars}; no record keeps their values, so it resumes without them${listed === undefined ? ' (unless its session is still listed: then it resumes with its own launch, its variables among it)' : ''}.`)
+  }
   return { title: `Resume ${r.name || who}?`, detail: parts.join(' '), env, withoutEnv, lost }
 }
 

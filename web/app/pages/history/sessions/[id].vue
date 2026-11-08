@@ -109,7 +109,8 @@ const step = ref<Step>(null)
 /** The second question's words: the record's, or the route's when it found the record open with its session gone. */
 const lostWords = ref<{ title: string; detail: string }>({ title: '', detail: '' })
 const resuming = ref(false)
-const question = computed(() => (record.value ? resumeQuestion(record.value) : null))
+// Whether the session is still listed decides its variables (the route resumes a listed session with its own launch): the entry says.
+const question = computed(() => (record.value ? resumeQuestion(record.value, availability.value ? availability.value.state === 'listed' : undefined) : null))
 const modalOpen = computed({
   get: () => step.value !== null,
   set: (v: boolean) => {
@@ -157,7 +158,12 @@ async function resume(confirmLost: boolean) {
       return
     }
     step.value = null
-    toast.add({ title: 'It did not resume', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: e instanceof CommandRefused ? 'warning' : 'error' })
+    const receipt = e instanceof CommandRefused ? (e.receipt as ResumeReceipt) : null
+    const state = receipt?.state ?? ''
+    // An uncertain receipt is no refusal: the server stopped while starting it, and its process may have started (its receipt says so).
+    if (receipt && state === 'uncertain') toast.add({ title: 'Whether it resumed is not known', description: resumeReceiptWords(receipt), icon: 'i-lucide-circle-help', color: 'warning' })
+    else if (state === 'pending') toast.add({ title: 'It is still being started', description: 'Its receipt below says how it ends.', icon: 'i-lucide-loader', color: 'neutral' })
+    else toast.add({ title: 'It did not resume', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: e instanceof CommandRefused ? 'warning' : 'error' })
   } finally {
     resuming.value = false
     // The receipts read again, the new one among them, unless the page has left for the new session.
@@ -343,7 +349,7 @@ async function forget() {
         <UButton label="Keep it" color="neutral" variant="ghost" @click="step = null" />
         <UButton
           v-if="step === 'ask'"
-          :label="question?.withoutEnv ? 'Resume without them' : 'Resume'"
+          :label="question?.withoutEnv && availability ? 'Resume without them' : 'Resume'"
           icon="i-lucide-history"
           color="primary"
           :loading="resuming"

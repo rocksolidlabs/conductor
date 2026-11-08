@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from './useApi'
-import { useHistory } from './useHistory'
+import { RESUME_PENDING_EVERY_MS, useHistory } from './useHistory'
 import { CommandRefused } from '../utils/tasks'
 
 // A resume from a record (Program item HS1, PR-6) is a command with a receipt: a reply lost to the network is asked for once more
@@ -44,6 +44,30 @@ describe('resumeRecord', () => {
     expect(err).toBeInstanceOf(CommandRefused)
     expect((err as CommandRefused).message).toBe('its launch had API_URL')
     expect((err as CommandRefused<typeof receipt>).receipt.code).toBe('env_not_kept')
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+
+  it('asks a pending resume again with the same id until its receipt settles, then answers the session it started', async () => {
+    vi.useFakeTimers()
+    try {
+      const pending = () => new ApiError(409, 'resume_pending', 'this resume is being started; ask again', {}, { error: { code: 'resume_pending', message: 'this resume is being started; ask again' }, receipt: { commandId: 'x', state: 'pending', at: '' } })
+      request.mockRejectedValueOnce(lost()).mockRejectedValueOnce(pending()).mockRejectedValueOnce(pending()).mockResolvedValueOnce({ receipt: started.receipt, session: started.session })
+      const p = useHistory().resumeRecord('0123456789abcdef')
+      await vi.advanceTimersByTimeAsync(2 * RESUME_PENDING_EVERY_MS)
+      const r = await p
+      expect(r.session?.id).toBe('fedcba9876543210')
+      expect(request).toHaveBeenCalledTimes(4)
+      expect(new Set(request.mock.calls.map((c) => c[1].body.commandId)).size).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('answers an uncertain receipt as a CommandRefused with its state, asked once', async () => {
+    const receipt = { commandId: 'x', state: 'uncertain', error: 'the server stopped while starting the session', at: '' }
+    request.mockRejectedValueOnce(new ApiError(409, 'resume_uncertain', receipt.error, {}, { error: { code: 'resume_uncertain', message: receipt.error }, receipt }))
+    const err = await useHistory().resumeRecord('0123456789abcdef').catch((e) => e)
+    expect((err as CommandRefused<typeof receipt>).receipt.state).toBe('uncertain')
     expect(request).toHaveBeenCalledTimes(1)
   })
 

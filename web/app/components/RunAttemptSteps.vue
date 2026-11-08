@@ -58,21 +58,29 @@ async function showLog(s: RunStep) {
   }
 }
 // The step a link names, opened once it is among the steps (a read of the attempt brings them), and once for each link: a later read
-// of the same attempt, or the log closed, opens nothing again.
+// of the same attempt, or the log closed, opens nothing again. The link gone from this attempt (Back, Forward, another attempt's link)
+// closes the log it opened, so no other attempt's log stays under the URL; one the person opened stays. Its row is found among this
+// list's own rows: a phase, id and k recur in every attempt.
+const root = useTemplateRef<HTMLElement>('root')
 let openedFor = ''
+let opened: RunStep | null = null
 watch(
   () => [props.openStep, props.steps] as const,
   ([want, steps]) => {
-    if (!want) {
+    if (openedFor && openedFor !== want) {
+      if (opened && shown.value?.step === opened) shown.value = null
       openedFor = ''
-      return
+      opened = null
     }
-    if (openedFor === want) return
+    if (!want || openedFor === want) return
     const s = steps.find((x) => `${x.phase}/${x.id}/${x.k}` === want)
     if (!s) return
     openedFor = want
-    if (stepHasLog(s)) void showLog(s)
-    void nextTick(() => document.querySelector(`[data-step-row="${CSS.escape(key(s))}"]`)?.scrollIntoView({ block: 'center' }))
+    if (stepHasLog(s)) {
+      opened = s
+      void showLog(s)
+    }
+    void nextTick(() => root.value?.querySelector(`[data-step-row="${CSS.escape(key(s))}"]`)?.scrollIntoView({ block: 'center' }))
   },
   { immediate: true },
 )
@@ -93,7 +101,7 @@ function save() {
 </script>
 
 <template>
-  <div class="flex flex-col gap-1" data-steps :data-steps-of="attempt ? attempt.n : 'prerequisites'">
+  <div ref="root" class="flex flex-col gap-1" data-steps :data-steps-of="attempt ? attempt.n : 'prerequisites'">
     <div v-if="title" class="text-xs font-medium text-muted">{{ title }}</div>
     <ol class="flex flex-col gap-1">
       <li

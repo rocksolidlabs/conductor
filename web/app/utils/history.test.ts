@@ -62,7 +62,10 @@ describe('historyDetail', () => {
 
   it("names a project by its repository's folder when no Dispatch project holds it", () => {
     expect(historyDetail(entry({ project: { repo: '/home/nate/code/todo/.git' } }), now)).toContain(' · todo · ')
-    expect(historyDetail(entry({ project: { repo: '/home/nate/code/todo/.git', tree: '/home/nate/code/todo/.conductor/worktrees/r/build.1' } }), now)).toContain(' · build.1 · ')
+    // A linked worktree's entry (a crew attempt's) is named as its repository, never as the attempt's folder.
+    const linked = historyDetail(entry({ project: { repo: '/home/nate/code/todo/.git', tree: '/home/nate/code/todo/.conductor/worktrees/r/build.1' } }), now)
+    expect([linked.includes(' · todo · '), linked.includes('build.1')]).toEqual([true, false])
+    expect(historyDetail(entry({ project: { tree: '/home/nate/code/todo' } }), now)).toContain(' · todo · ')
   })
 
   it('says a hosted host with its user, through conductor host', () => {
@@ -191,6 +194,17 @@ describe('a record in words', () => {
     expect([q.env, q.withoutEnv, q.lost]).toEqual([['API_URL', 'TOKEN'], true, false])
     expect(q.detail).toContain('API_URL, TOKEN')
     expect(resumeQuestion(record({ launch: { argCount: 0, argsKept: true } })).withoutEnv).toBe(false)
+    // The route resumes a still-listed session with its own launch, its variables among it: the words say so and no withoutEnv is sent.
+    const vars = { launch: { argCount: 0, argsKept: true, envNames: ['API_URL', 'TOKEN'], envCount: 2 } }
+    const listed = resumeQuestion(record(vars), true)
+    expect(listed.withoutEnv).toBe(false)
+    expect(listed.detail).toContain('its session is still listed, so it resumes with its own launch, its variables among it')
+    expect(listed.detail).not.toContain('without them')
+    // A record alone resumes without them, said plainly; while the page does not know which, both are said.
+    const alone = resumeQuestion(record(vars), false)
+    expect([alone.withoutEnv, alone.detail.includes('so it resumes without them.'), alone.detail.includes('still listed')]).toEqual([true, true, false])
+    const unsure = resumeQuestion(record(vars))
+    expect([unsure.withoutEnv, unsure.detail.includes('unless its session is still listed')]).toEqual([true, true])
     expect(resumeQuestion(record({ lostAt: '2026-11-05T15:00:00Z' })).lost).toBe(true)
     expect(lostQuestion(record({ lostAt: '2026-11-05T15:00:00Z' })).detail).toContain('whether its process ended is not known')
   })
