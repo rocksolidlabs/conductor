@@ -1,5 +1,6 @@
 import type { Ref } from 'vue'
 import { INTENTS, SEVERITIES, VERDICTS, type DraftNote, type Verdict } from '~/utils/review'
+import { mintCommandId } from '~/utils/tasks'
 
 /**
  * The draft of one review (Program item RV1, docs/plans/review-repair.md, "web/app"): the notes on one candidate, the verdict, the
@@ -11,18 +12,34 @@ import { INTENTS, SEVERITIES, VERDICTS, type DraftNote, type Verdict } from '~/u
  * one commit. A stored base the page no longer offers is shown with its notes, and not sent. The page keeps every draft it opened too,
  * by its key (`pageDrafts`), whichever view opened it: a candidate left and opened again finds its draft where the storage refused it,
  * and a send's answer settles the draft of its key as the page has it now, not a copy held by a view closed since.
+ *
+ * Sending is one rule, kept here alone: a draft has at most one Send review at a time. A send keeps the draft as it was sent and its op
+ * id with the draft (`pending`) until its own answer settles it, matched by that id: recorded, what it sent leaves the draft; refused,
+ * the pending send goes and the draft stays. While it is under way (`flying`, the page's, so a view closed and opened again sees it) a
+ * second send is refused in words; when its answer was lost, Send review sends that same body again under that same id, never the draft
+ * as edited since, so the store answers the first and records it once. An edit made meanwhile stays in the draft for the send after.
  */
 
-/** What the browser keeps of a draft. */
-export interface StoredDraft {
-  v: 1
+/** A draft's text: what a Send review sends. */
+export interface DraftText {
   /** The full commit the diff was read against: '' until the page knows the run's base. */
   base: string
   verdict: Verdict
   summary: string
   notes: DraftNote[]
-  /** The op id of a Send review whose answer was not seen: sent again with it, the store answers the first. Any edit drops it. */
-  opId?: string
+}
+
+/** A Send review of the draft whose answer has not settled it: its op id and the draft as it was sent. */
+export interface Pending {
+  opId: string
+  sent: DraftText
+}
+
+/** What the browser keeps of a draft. */
+export interface StoredDraft extends DraftText {
+  v: 1
+  /** The draft's one send not yet settled by its answer: sent again as it was, with its id, until its answer settles it. Edits leave it. */
+  pending?: Pending
 }
 
 /** The part of a Storage the draft uses. */
@@ -50,24 +67,33 @@ function isNote(n: unknown): n is DraftNote {
   )
 }
 
+function textOf(d: unknown): DraftText | null {
+  const x = d as DraftText
+  if (!x || typeof x.base !== 'string' || !VERDICTS.includes(x.verdict) || typeof x.summary !== 'string' || !Array.isArray(x.notes) || !x.notes.every(isNote)) return null
+  return { base: x.base, verdict: x.verdict, summary: x.summary, notes: x.notes }
+}
+
 /** The draft stored under the key, or null for none, one this page cannot read (another version's), or a storage that refuses. */
 export function readDraft(storage: DraftStorage | null, key: string): StoredDraft | null {
   try {
     const raw = storage?.getItem(key)
     if (!raw) return null
     const d = JSON.parse(raw) as StoredDraft
-    if (d?.v !== 1 || typeof d.base !== 'string' || !VERDICTS.includes(d.verdict) || typeof d.summary !== 'string' || !Array.isArray(d.notes) || !d.notes.every(isNote)) return null
-    return { v: 1, base: d.base, verdict: d.verdict, summary: d.summary, notes: d.notes, ...(typeof d.opId === 'string' && d.opId ? { opId: d.opId } : {}) }
+    const text = d?.v === 1 ? textOf(d) : null
+    if (!text) return null
+    // A pending send this page cannot read is none to repeat: the draft is read without it, and its next send is an operation of its own.
+    const sent = d.pending && typeof d.pending.opId === 'string' && d.pending.opId ? textOf(d.pending.sent) : null
+    return { v: 1, ...text, ...(sent ? { pending: { opId: d.pending!.opId, sent } } : {}) }
   } catch {
     return null
   }
 }
 
-/** Keeps the draft, or forgets it when it holds nothing; whether the storage took it. */
+/** Keeps the draft, or forgets it when it holds nothing (no text and no send to settle); whether the storage took it. */
 export function writeDraft(storage: DraftStorage | null, key: string, d: StoredDraft): boolean {
   try {
     if (!storage) return false
-    if (!d.notes.length && !d.summary.trim()) storage.removeItem(key)
+    if (!d.notes.length && !d.summary.trim() && !d.pending) storage.removeItem(key)
     else storage.setItem(key, JSON.stringify(d))
     return true
   } catch {
@@ -92,19 +118,23 @@ export function noteKey(): string {
 
 /**
  * A Send review under way: the key of the draft it sent, its op id, and the draft as sent. Its answer settles that draft, by this, whichever
- * draft the page shows when the answer lands (another candidate's, or this one edited meanwhile).
+ * draft the page shows when the answer lands (another candidate's, or this one edited meanwhile), and only while that draft's pending
+ * send is this one (the same op id).
  */
 export interface Sending {
   key: string
   opId: string
-  sent: StoredDraft
+  sent: DraftText
 }
+
+/** The words for a send asked while the draft's one send is under way. */
+export const SEND_UNDER_WAY = "This draft's review is being sent: it can be sent again once that send's answer has come."
 
 /**
  * The draft `d` once the review `s` sent from it was recorded: the notes sent, and the summary sent, gone; a note added or edited since,
- * or a summary changed since, stays to be sent on its own. The base is kept for the diff shown; the op id goes, the send answered.
+ * or a summary changed since, stays to be sent on its own. The base is kept for the diff shown; the pending send goes, answered.
  */
-export function afterSent(d: StoredDraft, s: StoredDraft): StoredDraft {
+export function afterSent(d: StoredDraft, s: DraftText): StoredDraft {
   const was = new Set(s.notes.map((n) => JSON.stringify(n)))
   const notes = d.notes.filter((n) => !was.has(JSON.stringify(n)))
   const summary = d.summary === s.summary ? '' : d.summary
@@ -122,10 +152,14 @@ export function baseLockOf(d: StoredDraft): BaseLock | null {
   return count ? { base: d.base, count } : null
 }
 
-/** The drafts a page holds, by key, and the keys whose last write the storage refused: one per storage, so every view shares them. */
+/**
+ * The drafts a page holds, by key, the keys whose last write the storage refused, and the op id of each key's send under way: one per
+ * storage, so every view shares them, a view closed with its send under way among them.
+ */
 interface PageDrafts {
   drafts: Map<string, StoredDraft>
   refused: Set<string>
+  flying: Map<string, string>
 }
 const pages = new WeakMap<object, PageDrafts>()
 /** The page's drafts where there is no storage at all. */
@@ -133,7 +167,7 @@ const NO_STORAGE = {}
 function pageDrafts(storage: DraftStorage | null): PageDrafts {
   const at = storage ?? NO_STORAGE
   let p = pages.get(at)
-  if (!p) pages.set(at, (p = { drafts: reactive(new Map()), refused: reactive(new Set()) }))
+  if (!p) pages.set(at, (p = { drafts: reactive(new Map()), refused: reactive(new Set()), flying: reactive(new Map()) }))
   return p
 }
 
@@ -174,10 +208,13 @@ export function useReviewDraft(o: { ticket: () => string; candidate: () => strin
     if (writeDraft(storage, k, d)) page.refused.delete(k)
     else page.refused.add(k)
   }
-  function save(edited = true): void {
-    if (edited) delete draft.value.opId
+  function save(): void {
     keep(key.value)
   }
+  /** A send of this draft is under way (from this view or one closed since): Send review waits for its answer. */
+  const flying = computed(() => page.flying.has(key.value))
+  /** The send whose answer was lost, not under way: what Send review sends again, as it was and with its id; null for none. */
+  const resend = computed<Pending | null>(() => (flying.value ? null : (draft.value.pending ?? null)))
 
   const lock = computed(() => baseLockOf(draft.value))
   /** The stored base is none the page offers now: the draft is shown, to drop or copy, and not sent. */
@@ -229,44 +266,58 @@ export function useReviewDraft(o: { ticket: () => string; candidate: () => strin
     save()
   }
   /**
-   * The Send review about to go, with its op id: the id kept with the draft, so a resend after a lost answer is the same operation; what
-   * it answers (`sent`, `unsent`) settles the draft it was sent from, by the key and the draft as sent that this returns.
+   * The Send review about to go, or SEND_UNDER_WAY while the draft's one send has not been answered. It is the draft's pending send when
+   * one was not settled (its answer lost: the same body under the same id), else the draft as it is now under `newId` (minted when not
+   * given), kept as the draft's pending send. Its answer (`sent`, `unsent`, `lost`) settles it by the key and the id this returns.
    */
-  function sending(opId: string): Sending {
-    draft.value.opId = opId
-    save(false)
-    return { key: key.value, opId, sent: JSON.parse(JSON.stringify(draft.value)) as StoredDraft }
+  function sending(newId?: string): Sending | string {
+    const k = key.value
+    if (page.flying.has(k)) return SEND_UNDER_WAY
+    const d = draft.value
+    const p = d.pending ?? { opId: newId ?? mintCommandId(), sent: JSON.parse(JSON.stringify({ base: d.base, verdict: d.verdict, summary: d.summary, notes: d.notes })) as DraftText }
+    d.pending = p
+    keep(k)
+    page.flying.set(k, p.opId)
+    return { key: k, opId: p.opId, sent: JSON.parse(JSON.stringify(p.sent)) as DraftText }
   }
   /**
-   * Settles the draft under the key `k` as the page has it now, whichever view shows it (this one, another candidate's, or one opened
-   * since this one was closed), so what was added since the send stays: never a copy this view held when it sent.
+   * Settles the send `s`: it is no longer under way, and the draft under its key as the page has it now (whichever view shows it: this
+   * one, another candidate's, or one opened since this one was closed) is changed by `f` only while its pending send is `s`, by the op id.
+   * Nothing of another send is touched, and what was added since the send stays: never a copy this view held when it sent.
    */
-  function settle(k: string, f: (d: StoredDraft) => StoredDraft): void {
-    const d = page.drafts.get(k) ?? readDraft(storage, k)
-    if (!d) return
-    page.drafts.set(k, f(d))
-    keep(k)
+  function settle(s: Sending, f?: (d: StoredDraft) => StoredDraft): void {
+    if (page.flying.get(s.key) === s.opId) page.flying.delete(s.key)
+    if (!f) return
+    const d = page.drafts.get(s.key) ?? readDraft(storage, s.key)
+    if (!d || d.pending?.opId !== s.opId) return
+    page.drafts.set(s.key, f(d))
+    keep(s.key)
   }
   /** The review `s` sent was recorded: what it sent leaves its draft (afterSent), the base kept for the diff shown. */
   function sent(s: Sending): void {
-    settle(s.key, (d) => afterSent(d, s.sent))
+    settle(s, (d) => afterSent(d, d.pending!.sent))
   }
-  /** The server answered `s` without keeping it: its op id leaves its draft, the next send an operation of its own. */
+  /** The server answered `s` without keeping it: the pending send goes, the draft stays, and the next send is an operation of its own. */
   function unsent(s: Sending): void {
-    settle(s.key, (d) => {
-      if (d.opId !== s.opId) return d
-      const { opId: _, ...rest } = d
+    settle(s, (d) => {
+      const { pending: _, ...rest } = d
       return rest
     })
+  }
+  /** The answer to `s` was lost: it is no longer under way and stays pending, so Send review asks it again as it was, with its id. */
+  function lost(s: Sending): void {
+    settle(s)
   }
   /**
    * Drops every note and the summary, keeping nothing. A base the page no longer offers goes with them, for `fallback`: the base the diff
    * shown was read against with none asked (the run's), which the new draft is then made on, as knowBase would have made it.
    */
   function discard(fallback = ''): void {
-    draft.value = { ...emptyDraft(), base: stale.value ? fallback : draft.value.base }
+    // A pending send is not the draft's text: it stays, to be settled by its own answer.
+    const pending = draft.value.pending
+    draft.value = { ...emptyDraft(), base: stale.value ? fallback : draft.value.base, ...(pending ? { pending } : {}) }
     save()
   }
 
-  return { draft, unsaved, lock, stale, load, knowBase, setBase, add, update, drop, setVerdict, setSummary, sending, sent, unsent, discard }
+  return { draft, unsaved, lock, stale, flying, resend, load, knowBase, setBase, add, update, drop, setVerdict, setSummary, sending, sent, unsent, lost, discard }
 }

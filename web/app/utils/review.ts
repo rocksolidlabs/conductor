@@ -424,3 +424,12 @@ export function requestWords(task: string, c: { attempt?: number; commit: string
   }
   return `Yardmaster reopens ${task} at ${shortCommit(c.commit)}: its next attempt starts there with ${count}, and what rests on it runs again.`
 }
+
+/**
+ * The note form left open when the file shown moves (the first diff coming in among such moves): a form on the diff (`at`, a selection's
+ * lines or a file's note) is of the file left and goes; a general note's, or a saved note's being edited, is of none and stays, its text
+ * kept (#631, review round 3).
+ */
+export function composerOnFileMove<T extends { note: unknown; at?: string }>(c: T | null): T | null {
+  return c && c.at === undefined ? c : null
+}

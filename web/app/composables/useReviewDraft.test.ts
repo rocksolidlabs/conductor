@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as vue from 'vue'
-import { draftKey, readDraft, useReviewDraft, writeDraft, type DraftStorage } from './useReviewDraft'
+import { SEND_UNDER_WAY, draftKey, readDraft, useReviewDraft, writeDraft, type DraftStorage, type Sending } from './useReviewDraft'
 import type { DraftNote } from '~/utils/review'
 
 // The draft of a review (Program item RV1, PR-6): kept per ticket and candidate in this browser's storage, every access in try/catch;
@@ -86,18 +86,24 @@ describe('the draft kept in this browser', () => {
     expect(open(s).d.draft.value.notes).toEqual([])
   })
 
-  it('is emptied once sent, its base kept for the diff shown; an edit drops the op id of a send not answered', () => {
+  it('is emptied once sent, its base kept for the diff shown; a send whose answer was lost is sent again as it was, under its id', () => {
     const s = memory()
     const { d } = open(s)
     d.knowBase(START)
     d.add(candidateLine)
-    d.sending('op-1')
-    expect(open(s).d.draft.value.opId).toBe('op-1')
+    const first = d.sending('op-1') as Sending
+    expect(open(s).d.draft.value.pending?.opId).toBe('op-1')
+    d.lost(first)
+    // An edit made after the answer was lost stays in the draft and leaves the send as it was: the same body, the same id.
     d.setSummary('more')
-    expect(d.draft.value.opId).toBeUndefined()
-    const s2 = d.sending('op-2')
-    d.sent(s2)
-    expect(d.draft.value).toMatchObject({ base: START, notes: [], summary: '' })
+    expect(d.draft.value.pending?.opId).toBe('op-1')
+    expect(d.resend.value?.sent).toMatchObject({ summary: '', notes: [{ message: 'fix it' }] })
+    const again = d.sending('op-2') as Sending
+    expect(again).toMatchObject({ opId: 'op-1', sent: { summary: '', notes: [{ message: 'fix it' }] } })
+    d.sent(again)
+    expect(d.draft.value).toMatchObject({ base: START, notes: [], summary: 'more' })
+    expect(d.draft.value.pending).toBeUndefined()
+    d.setSummary('')
     expect(s.map.size).toBe(0)
   })
 
@@ -106,7 +112,7 @@ describe('the draft kept in this browser', () => {
     const { d, on } = open(s)
     d.knowBase(RUN_BASE)
     d.add(candidateLine)
-    const sending = d.sending('op-1')
+    const sending = d.sending('op-1') as Sending
     on.value = C2
     await vue.nextTick()
     d.knowBase(RUN_BASE)
@@ -116,17 +122,17 @@ describe('the draft kept in this browser', () => {
     expect(s.map.has(draftKey('CND-12', C1))).toBe(false)
     expect(JSON.parse(s.map.get(draftKey('CND-12', C2))!).notes).toHaveLength(1)
 
-    // A refusal clears the op id of the draft it was sent from alone.
-    const second = d.sending('op-2')
+    // A refusal clears the pending send of the draft it was sent from alone.
+    const second = d.sending('op-2') as Sending
     on.value = C1
     await vue.nextTick()
     d.add(candidateLine)
-    const third = d.sending('op-3')
+    const third = d.sending('op-3') as Sending
     d.unsent(second)
-    expect(d.draft.value.opId).toBe('op-3')
-    expect(JSON.parse(s.map.get(draftKey('CND-12', C2))!).opId).toBeUndefined()
+    expect(d.draft.value.pending?.opId).toBe('op-3')
+    expect(JSON.parse(s.map.get(draftKey('CND-12', C2))!).pending).toBeUndefined()
     d.unsent(third)
-    expect(d.draft.value.opId).toBeUndefined()
+    expect(d.draft.value.pending).toBeUndefined()
   })
 
   it('settles a send whose view was closed against the draft as the page has it now: a note added after the view was opened again stays', () => {
@@ -135,15 +141,15 @@ describe('the draft kept in this browser', () => {
     const first = closed.run(() => open(s).d)!
     first.knowBase(RUN_BASE)
     first.add(candidateLine)
-    const sending = first.sending('op-1')
+    const sending = first.sending('op-1') as Sending
     // Review left while the send is under way, then the same candidate opened again and a note added before the answer lands.
     closed.stop()
     const reopened = open(s).d
-    expect(reopened.draft.value.opId).toBe('op-1')
+    expect(reopened.draft.value.pending?.opId).toBe('op-1')
     reopened.add({ ...candidateLine, message: 'added after reopening' })
     first.sent(sending)
     expect(reopened.draft.value.notes.map((n) => n.message)).toEqual(['added after reopening'])
-    expect(reopened.draft.value.opId).toBeUndefined()
+    expect(reopened.draft.value.pending).toBeUndefined()
     // What a reload would read.
     expect(readDraft(s, draftKey('CND-12', C1))!.notes.map((n) => n.message)).toEqual(['added after reopening'])
   })
@@ -176,7 +182,7 @@ describe('the draft kept in this browser', () => {
     d.add({ ...candidateLine, message: 'second' })
     d.setSummary('Two things.')
     d.setVerdict('comment')
-    const sending = d.sending('op-1')
+    const sending = d.sending('op-1') as Sending
     const [one, two] = d.draft.value.notes
     d.update(two!.key, { ...candidateLine, message: 'second, edited' })
     d.add({ kind: 'general', intent: 'note', message: 'later' })
@@ -184,8 +190,62 @@ describe('the draft kept in this browser', () => {
     expect(d.draft.value.notes.map((n) => n.message)).toEqual(['second, edited', 'later'])
     expect(d.draft.value.notes.some((n) => n.key === one!.key)).toBe(false)
     expect(d.draft.value).toMatchObject({ summary: '', verdict: 'comment', base: RUN_BASE })
-    expect(d.draft.value.opId).toBeUndefined()
+    expect(d.draft.value.pending).toBeUndefined()
     expect(JSON.parse(s.map.get(draftKey('CND-12', C1))!).notes).toHaveLength(2)
+  })
+
+  it("holds one send at a time, and settles each send by its own op id: Codex round 3's sequence", () => {
+    const s = memory()
+    // Send A, then leave Review while it is under way.
+    const closed = vue.effectScope()
+    const first = closed.run(() => open(s).d)!
+    first.knowBase(RUN_BASE)
+    first.add(candidateLine)
+    const a = first.sending('op-A') as Sending
+    closed.stop()
+    // Reopen it, add a note and send B: refused in words while A is under way, the reopened view told it is.
+    const reopened = open(s).d
+    expect(reopened.flying.value).toBe(true)
+    reopened.add({ ...candidateLine, message: 'B' })
+    expect(reopened.sending('op-B')).toBe(SEND_UNDER_WAY)
+    expect(reopened.draft.value.pending?.opId).toBe('op-A')
+    // A succeeds: its notes go, B's note stays, nothing pending.
+    first.sent(a)
+    expect(reopened.flying.value).toBe(false)
+    expect(reopened.draft.value.notes.map((n) => n.message)).toEqual(['B'])
+    expect(reopened.draft.value.pending).toBeUndefined()
+    // B is sent and loses both replies: sending it again is the same operation, its body as it was sent, also after a reload.
+    const b = reopened.sending('op-B') as Sending
+    expect(b).toMatchObject({ opId: 'op-B', sent: { notes: [{ message: 'B' }] } })
+    reopened.lost(b)
+    reopened.add({ ...candidateLine, message: 'after B was lost' })
+    const reloaded = open(s).d
+    expect(reloaded.resend.value).toMatchObject({ opId: 'op-B', sent: { notes: [{ message: 'B' }] } })
+    const b2 = reloaded.sending('op-C') as Sending
+    expect(b2).toMatchObject({ opId: 'op-B', sent: { notes: [{ message: 'B' }] } })
+    // A late answer of A settles nothing of B's; B's own answer settles B.
+    first.sent(a)
+    first.unsent(a)
+    expect(reloaded.draft.value.pending?.opId).toBe('op-B')
+    expect(reloaded.flying.value).toBe(true)
+    reloaded.sent(b2)
+    expect(reloaded.draft.value.notes.map((n) => n.message)).toEqual(['after B was lost'])
+    expect(reloaded.draft.value.pending).toBeUndefined()
+    expect(readDraft(s, draftKey('CND-12', C1))).toMatchObject({ notes: [{ message: 'after B was lost' }] })
+  })
+
+  it('keeps a pending send through Drop the draft, to be settled by its own answer', () => {
+    const s = memory()
+    const { d } = open(s)
+    d.knowBase(RUN_BASE)
+    d.add(candidateLine)
+    const a = d.sending('op-A') as Sending
+    d.lost(a)
+    d.discard()
+    expect(d.draft.value.notes).toEqual([])
+    expect(readDraft(s, draftKey('CND-12', C1))?.pending?.opId).toBe('op-A')
+    d.unsent(d.sending() as Sending)
+    expect(s.map.size).toBe(0)
   })
 
   it('replaces a note whole when its form saves it: a resolution cleared is gone', () => {

@@ -1,4 +1,4 @@
-import type { InjectionKey } from 'vue'
+import { getCurrentScope, nextTick, onScopeDispose, watch, type InjectionKey } from 'vue'
 import { ApiError } from './useApi'
 import type { DispatchReceipt, OpBody } from './useDispatch'
 import { through, type DispatchOrder } from '~/utils/dispatchOrder'
@@ -378,14 +378,18 @@ export function useFileSides(r: Pick<ReturnType<typeof useReview>, 'readSide'>) 
 /**
  * The reviews of a ticket a Review view lists: `read()` reads every page of them (useReview.readReviews), a reply applied as the gate
  * orders replies; a failure is said only when its read is the latest asked (the late-answer rule, `latest`), so an older read failing
- * after a newer one answered says nothing, and the reviews last read stay listed beside a failure.
+ * after a newer one answered says nothing, and the reviews last read stay listed beside a failure. A view closed asks nothing: a read it
+ * would start then (a send of it answered after it closed) would take the page's `reviews:<ticket>` turn from the view shown.
  */
 export function useSentReviews(r: Pick<ReturnType<typeof useReview>, 'readReviews'>, ticket: () => string) {
   const list = ref<ReviewSummary[]>([])
   const error = ref('')
   const asks = latest()
+  let closed = false
+  if (getCurrentScope()) onScopeDispose(() => (closed = true))
 
   async function read(): Promise<void> {
+    if (closed) return
     const key = ticket()
     const current = asks.ask()
     try {
@@ -400,4 +404,34 @@ export function useSentReviews(r: Pick<ReturnType<typeof useReview>, 'readReview
   }
 
   return { list, error, read }
+}
+
+/**
+ * A note's lines shown in its file once the file's sides are in: `show(want, f)` calls `f` while the view shows the file `want` (its
+ * sides' key) and they are ready, at once or when they come in; leaving that file first cancels it, as does a later `show` or the view
+ * closing, so a note's lines are never revealed in another file (#631, review round 3).
+ */
+export function useShowWhenReady(o: { key: () => string; ready: () => boolean }) {
+  let cancel: (() => void) | null = null
+  const end = () => {
+    cancel?.()
+    cancel = null
+  }
+  if (getCurrentScope()) onScopeDispose(end)
+  function show(want: string, f: () => void): void {
+    end()
+    if (!want) return
+    const here = () => o.key() === want && o.ready()
+    if (here()) return f()
+    const stop = watch([o.key, o.ready], ([k, r]) => {
+      if (k !== want) return end()
+      if (!r) return
+      end()
+      void nextTick(() => {
+        if (here()) f()
+      })
+    })
+    cancel = stop
+  }
+  return { show, cancel: end }
 }

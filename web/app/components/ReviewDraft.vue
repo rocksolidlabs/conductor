@@ -8,7 +8,8 @@ import { MAX_REPAIR_PAYLOAD, MAX_REVIEW_SUMMARY, kib, noteWhere, requestWords, t
  * asks first for Request changes ("Yardmaster reopens build at a1b2c3d…", and where its next attempt starts: there, or where a candidate
  * refused before its checks started, requestWords) and, when the server answers that the run must be continued
  * first (continuation_needed), asks a second time in the server's words before it sends again with `continueRun`. The draft is this
- * browser's until it is sent; a failure keeps it as it is.
+ * browser's until it is sent; a failure keeps it as it is. A draft has one send at a time (useReviewDraft): while it is under way, from
+ * this view or one closed since, Send review waits; when its answer was lost, Send review sends that same review again, as it was sent.
  */
 const props = defineProps<{
   notes: DraftNote[]
@@ -26,6 +27,10 @@ const props = defineProps<{
   stale?: string
   /** The storage refused it: kept in this page alone. */
   unsaved?: boolean
+  /** The draft's send is under way (maybe from a view closed since): Send review waits for its answer. */
+  flying?: boolean
+  /** The draft's send whose answer was lost: what Send review sends again, as it was sent. */
+  resend?: { notes: number; verdict: Verdict }
   /** Sends the draft: null once recorded, a ContinuationNeeded to ask about, else why not in words. */
   send: (continueRun: boolean) => Promise<ContinuationNeeded | string | null>
 }>()
@@ -41,9 +46,18 @@ const continuation = ref<ContinuationNeeded | null>(null)
 const sending = ref(false)
 const failure = ref('')
 
-const blocked = computed(() => !!props.stale || props.problems.length > 0)
+const blocked = computed(() => !!props.flying || (!props.resend && !!props.stale) || props.problems.length > 0)
 const count = computed(() => (props.notes.length === 1 ? '1 note' : `${props.notes.length} notes`))
-const confirmWords = computed(() => requestWords(props.task, { ...props.attempt, commit: props.commit }, props.notes.length))
+/** What Send review sends: the lost send again, else the draft. */
+const sendVerdict = computed(() => props.resend?.verdict ?? props.verdict)
+const sendNotes = computed(() => props.resend?.notes ?? props.notes.length)
+const confirmWords = computed(() => requestWords(props.task, { ...props.attempt, commit: props.commit }, sendNotes.value))
+const resendWords = computed(() => {
+  const r = props.resend
+  if (!r) return ''
+  const v = verdicts.find((x) => x.value === r.verdict)?.label ?? r.verdict
+  return `Its answer did not come, so it may be recorded. Send review asks for that same review again (${r.notes === 1 ? '1 note' : `${r.notes} notes`}, ${v}), as it was sent and under the same operation, so it is recorded once; a change made to the draft since stays here to send after it.`
+})
 
 function intentWords(n: DraftNote): string {
   return n.intent === 'change' ? (n.severity ?? 'change') : n.intent
@@ -56,7 +70,7 @@ function intentColor(n: DraftNote): 'error' | 'warning' | 'info' | 'neutral' {
 function ask() {
   failure.value = ''
   if (blocked.value) return
-  if (props.verdict === 'request_changes') confirmOpen.value = true
+  if (sendVerdict.value === 'request_changes') confirmOpen.value = true
   else void go(false)
 }
 async function go(continueRun: boolean) {
@@ -109,6 +123,9 @@ async function go(continueRun: boolean) {
     <UTextarea :model-value="summary" :rows="2" autoresize :maxrows="8" placeholder="A summary (optional)" aria-label="Summary" :maxlength="MAX_REVIEW_SUMMARY" data-review-summary @update:model-value="(v: unknown) => emit('summary', String(v ?? ''))" />
     <p v-if="verdict === 'request_changes' && bytes !== undefined" class="text-[11px] text-dimmed" data-review-draft-bytes :data-bytes="bytes">{{ kib(bytes) }} of {{ MAX_REPAIR_PAYLOAD >> 10 }} KiB as the run keeps it; the server also measures the repair attempt's task file.</p>
 
+    <UAlert v-if="flying" color="neutral" variant="subtle" icon="i-lucide-loader" title="This review is being sent" description="Send review waits for its answer." data-review-draft-flying />
+    <UAlert v-else-if="resend" color="warning" variant="subtle" icon="i-lucide-triangle-alert" title="The last Send review had no answer" :description="resendWords" data-review-draft-resend />
+
     <ul v-if="problems.length" class="flex flex-col gap-0.5 text-xs text-warning" data-review-draft-problems>
       <li v-for="p in problems" :key="p">{{ p }}</li>
     </ul>
@@ -116,7 +133,7 @@ async function go(continueRun: boolean) {
 
     <div class="flex items-center justify-end gap-2">
       <UButton v-if="notes.length && !stale" label="Drop the draft" size="sm" color="neutral" variant="ghost" @click="emit('discard')" />
-      <UButton label="Send review" icon="i-lucide-send" size="sm" :disabled="blocked" :loading="sending" data-review-send @click="ask" />
+      <UButton label="Send review" icon="i-lucide-send" size="sm" :disabled="blocked" :loading="sending || flying" data-review-send @click="ask" />
     </div>
   </section>
 

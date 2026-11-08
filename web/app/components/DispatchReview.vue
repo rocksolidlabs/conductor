@@ -1,17 +1,18 @@
 <script setup lang="ts">
 import type { RunCandidate } from '~/composables/useDispatch'
 import { ApiError } from '~/composables/useApi'
-import { ContinuationNeeded, useCandidateDiff, useFileSides, useReview, useSentReviews, type ReviewSummary, type SideText } from '~/composables/useReview'
+import { ContinuationNeeded, useCandidateDiff, useFileSides, useReview, useSentReviews, useShowWhenReady, type ReviewSummary, type SideText } from '~/composables/useReview'
 import { useReviewDraft } from '~/composables/useReviewDraft'
 import type { useTicketCandidates } from '~/composables/useTicketCandidates'
 import { candidateRef, parseCandidate } from '~/utils/dispatch'
 import type { DispatchOrder } from '~/utils/dispatchOrder'
 import { shortCommit } from '~/utils/dispatchPlans'
-import { CommandRefused, mintCommandId } from '~/utils/tasks'
+import { CommandRefused } from '~/utils/tasks'
 import {
   barTop,
   batchProblems,
   changeRequestOf,
+  composerOnFileMove,
   noteFromSelection,
   noteIsOn,
   notesPerFile,
@@ -168,9 +169,10 @@ const notesByPath = computed(() => notesPerFile(draft.value.notes, diff.value?.f
 const selection = ref<DiffSelection | null>(null)
 /** A note being made or edited: `at`, for a note on the diff, the candidate and the base it was made on; `inline` for a selection's form. */
 const composer = ref<{ note: Omit<DraftNote, 'key'>; editing?: string; inline?: boolean; at?: string } | null>(null)
+// A move of the file shown (the first diff coming in among them) drops a form on the diff left; a general note's, or an edit's, stays.
 watch(sidesKey, () => {
   selection.value = null
-  composer.value = null
+  composer.value = composerOnFileMove(composer.value)
 })
 // A move of the candidate or the base drops a note being made on the diff left.
 watch(notableKey, () => {
@@ -226,6 +228,8 @@ function saveNote(n: Omit<DraftNote, 'key'>) {
   selection.value = null
 }
 const editor = useTemplateRef<{ show: (side: Side, from: number, to: number) => void }>('editor')
+/** A note's lines shown once its own file is ready: cancelled when another file is shown first. */
+const shower = useShowWhenReady({ key: () => sidesKey.value, ready: () => ready.value })
 function openNote(n: DraftNote) {
   if (!n.path) return
   const f = diff.value?.files.find((x) => x.path === n.path || x.from === n.path)
@@ -234,17 +238,8 @@ function openNote(n: DraftNote) {
     return
   }
   file.value = f.path
-  if (n.kind === 'line' && n.side && n.from) {
-    const show = () => editor.value?.show(n.side!, n.from!, n.to ?? n.from!)
-    if (ready.value && sidesKey.value.endsWith(`:${f.path}`)) show()
-    else {
-      const stop = watch(ready, (r) => {
-        if (!r) return
-        stop()
-        void nextTick(show)
-      })
-    }
-  }
+  if (n.kind === 'line' && n.side && n.from) shower.show(sidesKey.value, () => editor.value?.show(n.side!, n.from!, n.to ?? n.from!))
+  else shower.cancel()
 }
 
 /**
@@ -256,19 +251,27 @@ function discard() {
   drafts.discard(s && s.key === chosen.value && s.at === '' ? s.diff.base : '')
 }
 
-// The batch: its body, what stops it, its size as the run keeps it.
-const body = computed(() => reviewBody(chosen.value, draft.value.base, draft.value.verdict, draft.value.summary, draft.value.notes))
+// The batch Send review sends: the draft's pending send whose answer was lost, as it was sent, else the draft. Its body, what stops it,
+// its size as the run keeps it.
+const toSend = computed(() => draft.value.pending?.sent ?? draft.value)
+const body = computed(() => reviewBody(chosen.value, toSend.value.base, toSend.value.verdict, toSend.value.summary, toSend.value.notes))
 const problems = computed(() => {
   const p = batchProblems(body.value, review.by())
-  if (!draft.value.base) p.unshift('The base is not known yet: the diff is being read.')
+  if (!toSend.value.base) p.unshift('The base is not known yet: the diff is being read.')
   return p
 })
-const bytes = computed(() => (draft.value.verdict === 'request_changes' ? repairBytes(changeRequestOf(body.value, review.by())) : undefined))
+const bytes = computed(() => (toSend.value.verdict === 'request_changes' ? repairBytes(changeRequestOf(body.value, review.by())) : undefined))
+const resend = computed(() => {
+  const p = drafts.resend.value
+  return p ? { notes: p.sent.notes.length, verdict: p.sent.verdict } : undefined
+})
 
 async function send(continueRun: boolean): Promise<ContinuationNeeded | string | null> {
-  // The draft sent, as it is now: its answer settles that draft, whichever the page shows when it lands.
-  const what = body.value
-  const s = drafts.sending(draft.value.opId || mintCommandId())
+  // The draft's one send (useReviewDraft): refused in words while one is under way; else its pending send again, or the draft as it is.
+  // Its answer settles that send alone, by its op id, whichever draft the page shows when it lands.
+  const s = drafts.sending()
+  if (typeof s === 'string') return s
+  const what = reviewBody(chosen.value, s.sent.base, s.sent.verdict, s.sent.summary, s.sent.notes)
   try {
     const reply = await review.submit(props.ticketKey, what, { opId: s.opId, continueRun })
     drafts.sent(s)
@@ -277,8 +280,9 @@ async function send(continueRun: boolean): Promise<ContinuationNeeded | string |
     return null
   } catch (e) {
     // The server answered: nothing was kept under that op id but a refusal's receipt, so the next send is an operation of its own. A
-    // reply lost twice keeps the id, and the next send asks the same operation again.
-    if (!(e instanceof ApiError && e.status === 0)) drafts.unsent(s)
+    // reply lost twice keeps the send pending, and the next Send review asks the same operation again, as it was sent.
+    if (e instanceof ApiError && e.status === 0) drafts.lost(s)
+    else drafts.unsent(s)
     if (e instanceof ContinuationNeeded) return e
     if (e instanceof CommandRefused) return e.message
     return (e as Error).message
@@ -384,6 +388,8 @@ async function retry(r: ReviewSummary, continueRun: boolean): Promise<Continuati
           :attempt="entry?.c"
           :stale="staleWords"
           :unsaved="drafts.unsaved.value"
+          :flying="drafts.flying.value"
+          :resend="resend"
           :send="send"
           @open="openNote"
           @edit="editNote"

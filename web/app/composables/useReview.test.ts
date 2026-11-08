@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as vue from 'vue'
 import { ApiError } from './useApi'
-import { ContinuationNeeded, MAX_REVIEWS, openFindingsOf, useCandidateDiff, useFileSides, useReview, useSentReviews, type CandidateDiff, type Review, type ReviewSummary } from './useReview'
+import { ContinuationNeeded, MAX_REVIEWS, openFindingsOf, useCandidateDiff, useFileSides, useReview, useSentReviews, useShowWhenReady, type CandidateDiff, type Review, type ReviewSummary } from './useReview'
 import { DispatchOrder } from '../utils/dispatchOrder'
 import { CommandRefused } from '../utils/tasks'
 import { reviewBody } from '../utils/review'
@@ -298,6 +298,87 @@ describe("a stream's reset under the Review view", () => {
     await third
     expect(rv.error.value).toBe('the store is away')
     expect(rv.list.value.map((r) => r.id)).toEqual(['r1'])
+  })
+})
+
+describe('a Review view closed', () => {
+  it("asks no read of the reviews, so the view shown keeps its own: a send answered after its view closed", async () => {
+    const gate = new DispatchOrder()
+    const closedScope = vue.effectScope()
+    const closed = closedScope.run(() => useSentReviews(useReview(gate), () => 'CND-12'))!
+    const shown = useSentReviews(useReview(gate), () => 'CND-12')
+    const visible = shown.read()
+    closedScope.stop()
+    // What the closed view's send would ask once its answer came: nothing, the gate's turn left to the view shown.
+    await closed.read()
+    expect(sent).toHaveLength(1)
+    sent[0]!.h.ok({ reviews: [review(1, 'applied')] })
+    await visible
+    expect(shown.list.value.map((r) => r.id)).toEqual(['r1'])
+    expect(shown.error.value).toBe('')
+  })
+})
+
+describe("a note's lines shown once its file is ready", () => {
+  function view() {
+    const key = vue.ref('')
+    const ready = vue.ref(false)
+    const shown: string[] = []
+    const w = useShowWhenReady({ key: () => key.value, ready: () => ready.value })
+    return { key, ready, shown, w }
+  }
+
+  it('are shown at once when the file is ready, or when its sides come in', async () => {
+    const { key, ready, shown, w } = view()
+    key.value = 'c:b:a.txt'
+    ready.value = true
+    w.show('c:b:a.txt', () => shown.push('a.txt'))
+    expect(shown).toEqual(['a.txt'])
+    key.value = 'c:b:b.txt'
+    ready.value = false
+    w.show('c:b:b.txt', () => shown.push('b.txt'))
+    await vue.nextTick()
+    expect(shown).toEqual(['a.txt'])
+    ready.value = true
+    await vue.nextTick()
+    await vue.nextTick()
+    expect(shown).toEqual(['a.txt', 'b.txt'])
+  })
+
+  it("are never shown in another file: leaving the note's file before it is ready cancels them", async () => {
+    const { key, ready, shown, w } = view()
+    key.value = 'c:b:b.txt'
+    w.show('c:b:b.txt', () => shown.push('b.txt lines'))
+    key.value = 'c:b:c.txt'
+    await vue.nextTick()
+    ready.value = true
+    await vue.nextTick()
+    await vue.nextTick()
+    expect(shown).toEqual([])
+    // Back on b.txt and ready: the cancelled one stays cancelled.
+    key.value = 'c:b:b.txt'
+    await vue.nextTick()
+    await vue.nextTick()
+    expect(shown).toEqual([])
+  })
+
+  it('are cancelled by a later note opened, and by the view closing', async () => {
+    const scope = vue.effectScope()
+    const { key, ready, shown, w } = scope.run(view)!
+    key.value = 'c:b:b.txt'
+    w.show('c:b:b.txt', () => shown.push('first'))
+    w.show('c:b:b.txt', () => shown.push('second'))
+    ready.value = true
+    await vue.nextTick()
+    await vue.nextTick()
+    expect(shown).toEqual(['second'])
+    ready.value = false
+    w.show('c:b:b.txt', () => shown.push('third'))
+    scope.stop()
+    ready.value = true
+    await vue.nextTick()
+    await vue.nextTick()
+    expect(shown).toEqual(['second'])
   })
 })
 

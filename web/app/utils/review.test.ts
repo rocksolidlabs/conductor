@@ -8,6 +8,7 @@ import {
   applicationWords,
   batchProblems,
   changeRequestOf,
+  composerOnFileMove,
   findingOf,
   findingState,
   goJSONBytes,
@@ -293,5 +294,17 @@ describe('a call held until its target is ready', () => {
     h.gone()
     h.ready('third')
     expect(done).toHaveLength(3)
+  })
+})
+
+describe('the note form when the file shown moves', () => {
+  it("drops a form on the diff left, and keeps a general note's and an edit's with their text (the first diff coming in among such moves)", () => {
+    const general = { note: { kind: 'general' as const, intent: 'change' as const, message: 'typed before the diff came' } }
+    const editing = { note: { kind: 'line' as const, intent: 'change' as const, message: 'edited' }, editing: 'k1' }
+    expect(composerOnFileMove(general)).toBe(general)
+    expect(composerOnFileMove(editing)).toBe(editing)
+    expect(composerOnFileMove({ ...general, inline: true, at: 'c|b' })).toBeNull()
+    expect(composerOnFileMove({ ...general, at: 'c|b' })).toBeNull()
+    expect(composerOnFileMove(null)).toBeNull()
   })
 })
