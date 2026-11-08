@@ -550,6 +550,42 @@ func TestTheFullestDecisionRecordThroughTheLane(t *testing.T) {
 	}
 }
 
+// A page of a record's responses at its worst fits its frame, whatever
+// ledger.MaxDecisionReceipt is: recordResponsesPage receipts each kept at
+// that bound (their number set after, as the read sets it) beside the
+// answer of an escaping label and text, the page full and its frame
+// within proto.MaxDecision.
+func TestARecordsResponsesPageFitsItsFrame(t *testing.T) {
+	if recordResponsesPage < 1 || ledger.MaxDecisionResponses < recordResponsesPage+1 {
+		t.Fatalf("a page of %d receipts of %d", recordResponsesPage, ledger.MaxDecisionResponses)
+	}
+	d := fullestDecision(t)
+	at := time.Date(2026, 11, 5, 23, 59, 59, 999999999, time.UTC)
+	choice := 5
+	d.Responses = nil
+	for range ledger.MaxDecisionResponses {
+		rc := crew.ResponseReceipt{Decision: d.ID, Status: "refused", Code: crew.CodeStaleDecision, Actor: strings.Repeat("a", ledger.MaxDecisionActor), Choice: &choice, At: at, Rev: 1 << 30}
+		rc.Words = strings.Repeat("a", ledger.MaxDecisionReceipt-len(decisionJSON(t, rc)))
+		if n := len(decisionJSON(t, rc)); n != ledger.MaxDecisionReceipt {
+			t.Fatalf("a receipt kept at %d bytes, not %d", n, ledger.MaxDecisionReceipt)
+		}
+		rc.K = 1<<63 - 1
+		d.Responses = append(d.Responses, rc)
+	}
+	d.Answer = strings.Repeat("<", ledger.MaxOptionLabel) + ": " + strings.Repeat("\x01", proto.MaxSubmit)
+	p, code, words := recordPart(d, nil, proto.RecordResponses, recordMark(d), "")
+	if code != "" || len(p.Responses) != recordResponsesPage || p.Answer != d.Answer || p.Next == "" {
+		t.Fatalf("the first page: %s %s, %d receipts", code, words, len(p.Responses))
+	}
+	if f := recordFrame(t, p); len(f) > 1+proto.MaxDecision {
+		t.Fatalf("a page of %d receipts: %d bytes", recordResponsesPage, len(f))
+	}
+	f, err := proto.EncodeDecision(proto.Decision{ReqID: strings.Repeat("r", proto.MaxDecisionReqID), Record: decisionJSON(t, p)})
+	if err != nil || len(f) > 1+proto.MaxDecision {
+		t.Fatalf("a page of %d receipts with the longest request id: %d bytes, %v", recordResponsesPage, len(f), err)
+	}
+}
+
 // A record read across a change, its evidence naming the session and
 // the run: a head whose read the lane holds at its seam (recordRead,
 // after the one read its scope is judged on and its refs resolved) while

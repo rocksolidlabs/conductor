@@ -47,9 +47,28 @@ import (
 // linkCannotAnswer are the words of a record on a link.
 const linkCannotAnswer = "Answer it on the LAN or the desktop: a link cannot answer a durable decision yet"
 
-// The lane's pages of a record's parts.
+// The lane's pages of a record's parts. A responses part holds as many
+// receipts as fit proto.MaxDecision beside the rest of its frame, each at
+// ledger.MaxDecisionReceipt, so the page follows the receipt's bound
+// (8 KiB receipts give 12 a page, 32 KiB ones 3) rather than a number
+// that holds at one bound alone.
 const (
-	recordResponsesPage = 8
+	// recordAnswerRoom bounds the answer the first responses page
+	// carries, encoded: an option's label of ledger.MaxOptionLabel
+	// characters, ": " and a text of proto.MaxSubmit bytes, each escaping
+	// to at most six bytes.
+	recordAnswerRoom = 6 * (ledger.MaxOptionLabel + len(": ") + proto.MaxSubmit)
+	// recordPartRoom bounds the rest of a responses part's frame: the
+	// answer, and 1 KiB for the frame's envelope (its request's id of
+	// proto.MaxDecisionReqID) and the part's ref, name, mark, next and
+	// total.
+	recordPartRoom = recordAnswerRoom + 1<<10
+	// recordReceiptRoom is one receipt as the part carries it: the
+	// ledger's bound, its number (k, set as it is read: `,"k":` and 19
+	// digits) and the comma after it.
+	recordReceiptRoom = ledger.MaxDecisionReceipt + 32
+	// recordResponsesPage is how many receipts a responses part holds.
+	recordResponsesPage = (proto.MaxDecision - recordPartRoom) / recordReceiptRoom
 	recordHistoryPage   = 32
 )
 

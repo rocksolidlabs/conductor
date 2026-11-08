@@ -2086,8 +2086,10 @@ not mark a record whole: DR1 adds a refused response and its delivery's
 history rows (`delivery.typing`, `delivery.entered`) without moving it.
 `{ref, part, rev, decision?, refs?, answer?, responses?, history?,
 next?, total}`: the `head` is the record without its responses, its
-history and its answer, with `refs`; `responses` (8 a page, newest
-first; the first page with `answer`, the accepted response in words)
+history and its answer, with `refs`; `responses` (newest
+first, as many a page as fit the frame at the receipt's bound beside the
+answer: 12 at 8 KiB receipts; the first page with `answer`, the accepted
+response in words)
 and `history` (32 a page, newest first) page by `next`, the offset of
 the next page, `total` how many the part holds. A part asked at another
 mark than the record's now is refused `record_moved`, its `rev` the new
