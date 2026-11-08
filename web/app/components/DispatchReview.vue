@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { CandidateReceipt, LaunchSummary, PlanBody, PlanSummary, RunCandidate } from '~/composables/useDispatch'
 import { ApiError } from '~/composables/useApi'
-import { ContinuationNeeded, useCandidateDiff, useFileSides, useReview, useSentReviews, useShowWhenReady, type ReviewFinding, type ReviewSummary, type SideText } from '~/composables/useReview'
+import { ContinuationNeeded, useCandidateDiff, useFileSides, useLaunchedCriteria, useOlderCandidate, usePreparedRepair, useReview, useSentReviews, useShowWhenReady, type ReviewFinding, type ReviewSummary, type SideText } from '~/composables/useReview'
 import { useReviewDraft } from '~/composables/useReviewDraft'
 import type { useTicketCandidates } from '~/composables/useTicketCandidates'
 import { candidateRef, parseCandidate } from '~/utils/dispatch'
@@ -12,9 +12,11 @@ import { receiptChips, receiptFailed, receiptKey, receiptName } from '~/utils/di
 import { lineageOf, type LineageAttempt, type LineageReviewTask } from '~/utils/reviewLineage'
 import {
   latest,
-  recheckWords,
-  type PreparedRepair,
   barTop,
+  findingAt,
+  findingMarks,
+  firstReviewCandidate,
+  openFindingsPerFile,
   batchProblems,
   changeRequestOf,
   composerOnFileMove,
@@ -95,10 +97,28 @@ const options = computed<Option[]>(() => {
       }
     }
   }
+  // The candidate the route names when the reads list it not (older than its task's six newest): read from its run (useOlderCandidate).
+  const o = older.candidate.value
+  const want = cref.value
+  if (o && want && !out.some((x) => x.value === chosen.value)) {
+    const r = props.candidates.runs.value.find((x) => x.run === want.run)
+    out.push({ value: chosen.value, label: `${want.task} · attempt ${o.attempt} · ${shortCommit(want.commit)} · ${r?.label || want.run}`, standing: o.standing, run: want.run, task: want.task, c: o })
+  }
   return out
 })
-const chosen = computed(() => props.candidate || options.value.find((o) => o.standing)?.value || options.value[0]?.value || '')
+const chosen = computed(() => props.candidate || firstReviewCandidate(props.candidates.runs.value))
 const cref = computed(() => parseCandidate(chosen.value))
+/**
+ * The candidate named, among the ticket's candidates read: null before its run's are read, false when they do not list it (older than
+ * its task's six newest), so it is read from its run, once, and its checks are never taken for none.
+ */
+const listedNamed = computed<boolean | null>(() => {
+  const c = cref.value
+  if (!c || !props.candidates.byRun.has(c.run)) return null
+  return props.candidates.byRun.get(c.run)!.some((t) => t.task === c.task && t.candidates.some((x) => x.attempt === c.attempt && x.commit === c.commit))
+})
+const dispatchApi = useDispatchApi()
+const older = useOlderCandidate({ read: dispatchApi.olderCandidates, want: () => cref.value, listed: () => listedNamed.value, ticks: () => [props.reads, props.resets] })
 const entry = computed(() => options.value.find((o) => o.value === chosen.value))
 // The candidate resolved for a route that names none goes into the route: the view stays on it when another comes to stand (a request
 // applied makes the repair's), and with it the draft being edited and a send's answer.
@@ -178,14 +198,20 @@ const truncatedSide = computed(() => [sides.value.base, sides.value.candidate].s
 const notable = computed(() => !drafts.stale.value && diffs.at(chosen.value, draft.value.base))
 const notableKey = computed(() => (notable.value ? `${chosen.value}|${draft.value.base}` : ''))
 
-/** The draft's notes on the file shown, in its margin: a base-side note by the path the base has the file at (a rename's old one). */
+/**
+ * The draft's notes on the file shown, in its margin: a base-side note by the path the base has the file at (a rename's old one); and
+ * the open findings located on the candidate shown, at their located lines on the candidate side.
+ */
 const marks = computed<DiffMark[]>(() => {
   const f = shownFile.value
   if (!f) return []
-  return draft.value.notes.filter((n) => n.kind === 'line' && noteIsOn(n, f) && n.side && n.from && n.to).map((n) => ({ side: n.side!, from: n.from!, to: n.to!, label: n.message }))
+  const notes = draft.value.notes.filter((n) => n.kind === 'line' && noteIsOn(n, f) && n.side && n.from && n.to).map((n) => ({ side: n.side!, from: n.from!, to: n.to!, label: n.message }))
+  return [...notes, ...findingMarks(findings.value, chosen.value, f.path)]
 })
 /** The notes on each file of the diff, both sides together. */
 const notesByPath = computed(() => notesPerFile(draft.value.notes, diff.value?.files ?? []))
+/** The open findings on each file of the diff, located on the candidate shown. */
+const findingsByPath = computed(() => openFindingsPerFile(findings.value, chosen.value, diff.value?.files ?? []))
 
 // A selection: the bar under it, and the note's form.
 const selection = ref<DiffSelection | null>(null)
@@ -278,11 +304,11 @@ function discard() {
 const toSend = computed(() => draft.value.pending?.sent ?? draft.value)
 const body = computed(() => reviewBody(chosen.value, toSend.value.base, toSend.value.verdict, toSend.value.summary, toSend.value.notes))
 const problems = computed(() => {
-  const p = batchProblems(body.value, review.by())
+  const p = batchProblems(body.value, review.by(), toSend.value.notes)
   if (!toSend.value.base) p.unshift('The base is not known yet: the diff is being read.')
   return p
 })
-const bytes = computed(() => (toSend.value.verdict === 'request_changes' ? repairBytes(changeRequestOf(body.value, review.by())) : undefined))
+const bytes = computed(() => (toSend.value.verdict === 'request_changes' ? repairBytes(changeRequestOf(body.value, review.by(), toSend.value.notes)) : undefined))
 const resend = computed(() => {
   const p = drafts.resend.value
   return p ? { notes: p.sent.notes.length, verdict: p.sent.verdict } : undefined
@@ -373,12 +399,11 @@ async function markFinding(f: ReviewFinding, verdict: 'resolved' | 'open' | 'wit
     return (e as Error).message || 'The mark was not made.'
   }
 }
+/** A finding opened where it is on the candidate shown (findingAt: the candidate side, its located path and lines), else where it was made. */
 function openFinding(f: ReviewFinding) {
   if (f.kind !== 'line' && f.kind !== 'file') return
-  const path = f.locatedOn === chosen.value && f.located?.state === 'renamed' ? f.located.path : f.path
-  const from = f.locatedOn === chosen.value && f.located?.state === 'moved' ? f.located.from : f.from
-  const to = f.locatedOn === chosen.value && f.located?.state === 'moved' ? f.located.to : f.to
-  openNote({ key: f.id, kind: f.kind, intent: f.intent, side: f.side, path, from, to, message: f.message })
+  const at = findingAt(f, chosen.value) ?? { side: f.side ?? 'candidate', path: f.path ?? '', from: f.from, to: f.to }
+  openNote({ key: f.id, kind: at.from ? f.kind : 'file', intent: f.intent, side: at.side, path: at.path, from: at.from, to: at.to, message: f.message })
 }
 
 // The ticket's criteria as the run was launched with them and now, the plan revision that launched it, the task's expected checks.
@@ -392,24 +417,13 @@ const launch = computed<LaunchSummary | null>(() => {
   return null
 })
 const launchPlan = computed(() => (launch.value ? (props.plans?.find((p) => p.id === launch.value!.planId) ?? null) : null))
-/** The ticket's acceptance criteria as the launch's package froze them (a launch never changes), read once per launch. */
-const dispatchApi = useDispatchApi()
-const launchedCriteria = ref<{ id: string; text: string } | null>(null)
-watch(
-  () => launch.value?.id,
-  (id) => {
-    if (!id || launchedCriteria.value?.id === id) return
-    dispatchApi
-      .launchRead(id)
-      .then((l) => {
-        const pkg = l.package as { ticket?: { acceptance?: string } } | null
-        if (launch.value?.id === id) launchedCriteria.value = { id, text: pkg?.ticket?.acceptance ?? '' }
-      })
-      .catch(() => {})
-  },
-  { immediate: true },
-)
-const criteriaThen = computed(() => (launchedCriteria.value && launchedCriteria.value.id === launch.value?.id ? launchedCriteria.value.text : null))
+/**
+ * The ticket's acceptance criteria as the launch's package froze them (a launch never changes): read once per launch, a failure said and
+ * asked again on the ticket's next read and the stream's next reset until one answers.
+ */
+const launched = useLaunchedCriteria(dispatchApi.launchRead, () => launch.value?.id, () => [props.reads, props.resets])
+const criteriaThen = launched.text
+const criteriaError = launched.error
 const expectedChecks = computed(() => {
   const l = launch.value
   const task = cref.value?.task
@@ -440,39 +454,29 @@ const lineage = computed(() => {
 
 // The candidate's checks, and a failed one's repair prepared.
 const receipts = computed<CandidateReceipt[]>(() => entry.value?.c.receipts ?? [])
+/** The candidate's checks not read yet, or not read: their words in place of "No check ran", which only a read candidate says. */
+const checksUnread = computed(() => {
+  if (entry.value) return ''
+  if (older.error.value) return `The checks of this candidate could not be read (${older.error.value}); asked again on the ticket's next read.`
+  const run = cref.value?.run
+  if (run && !props.candidates.loading.value && !props.candidates.runs.value.some((r) => r.run === run)) return `Run ${run} is not one of the ticket's runs: its checks are not read here.`
+  return "Reading this candidate's checks…"
+})
 /** The task failed: its candidate shown failed and no later one of it is listed. */
 const taskFailed = computed(() => {
   const e = entry.value
   return !!e && e.c.state === 'failed' && !options.value.some((o) => o.task === e.task && o.c.attempt > e.c.attempt)
 })
-const repairOpen = ref(false)
-const prepared = ref<PreparedRepair | null>(null)
-const prepareError = ref('')
-const preparing = ref(false)
-const prepareAsks = latest()
-async function prepare(id: string, k: number) {
+// The prepared request, applied only while the candidate it was asked for is shown; Check again of the candidate it names.
+const prep = usePreparedRepair(review, () => chosen.value)
+const repairOpen = prep.open
+const prepared = prep.prepared
+const prepareError = prep.error
+const preparing = prep.loading
+const recheck = prep.recheck
+function prepare(id: string, k: number) {
   const c = cref.value
-  if (!c) return
-  const current = prepareAsks.ask()
-  repairOpen.value = true
-  prepared.value = null
-  prepareError.value = ''
-  preparing.value = true
-  try {
-    const p = await review.prepare(c, id, k)
-    if (current()) prepared.value = p
-  } catch (e) {
-    if (current()) prepareError.value = (e as Error).message
-  } finally {
-    if (current()) preparing.value = false
-  }
-}
-async function recheck(): Promise<string> {
-  const c = cref.value
-  const p = prepared.value
-  if (!c || !p) throw new Error('Nothing to check again.')
-  const reply = await review.recheck(c, p.recheck.revision)
-  return recheckWords(c, { run: reply.run || p.recheck.run, attempt: reply.attempt })
+  if (c) void prep.prepare(c, id, k)
 }
 function addCheckNote(n: Omit<DraftNote, 'key'>) {
   drafts.add(n)
@@ -522,7 +526,14 @@ watch(
   },
   { immediate: true },
 )
-defineExpose({ notes: computed(() => draft.value.notes.length), send: () => draftPanel.value?.ask(), showFindings })
+defineExpose({
+  notes: computed(() => draft.value.notes.length),
+  /** The open findings the view lists (the task's, located on the candidate shown) and that task: the palette's Open findings. */
+  openFindings: computed(() => findings.value.filter((f) => f.state === 'open').length),
+  task: computed(() => cref.value?.task ?? ''),
+  send: () => draftPanel.value?.ask(),
+  showFindings,
+})
 
 </script>
 
@@ -541,6 +552,7 @@ defineExpose({ notes: computed(() => draft.value.notes.length), send: () => draf
         </p>
         <span class="font-medium text-muted">The acceptance criteria as launched</span>
         <pre v-if="criteriaThen !== null" class="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-elevated/40 p-2 font-sans" data-review-criteria-launched>{{ criteriaThen || '(none)' }}</pre>
+        <span v-else-if="criteriaError" class="text-warning" data-review-criteria-error>The launch's package could not be read ({{ criteriaError }}); asked again on the ticket's next read.</span>
         <span v-else class="text-dimmed">Reading the launch's package…</span>
         <template v-if="criteriaThen !== null && (acceptance ?? '') !== criteriaThen">
           <span class="font-medium text-warning" data-review-criteria-changed>Changed since the launch: now</span>
@@ -568,7 +580,7 @@ defineExpose({ notes: computed(() => draft.value.notes.length), send: () => draf
 
       <div class="flex flex-col gap-4 lg:flex-row lg:items-start">
         <div class="flex min-w-0 flex-1 flex-col gap-3 lg:flex-row lg:items-start">
-          <ReviewFiles v-if="diff" class="lg:w-64 lg:flex-none" :files="diff.files" :selected="file" :notes="notesByPath" :truncated="diff.truncated" @select="(p: string) => (file = p)" />
+          <ReviewFiles v-if="diff" class="lg:w-64 lg:flex-none" :files="diff.files" :selected="file" :notes="notesByPath" :findings="findingsByPath" :truncated="diff.truncated" @select="(p: string) => (file = p)" />
           <p v-else-if="diffLoading" class="text-xs text-dimmed">Reading the diff…</p>
 
           <div v-if="shownFile" class="flex min-w-0 flex-1 flex-col gap-1.5" data-review-diff :data-review-diff-path="shownFile.path">
@@ -651,7 +663,8 @@ defineExpose({ notes: computed(() => draft.value.notes.length), send: () => draf
       <!-- The candidate's checks: its own receipts; a failed one's repair prepared. -->
       <section class="flex flex-col gap-2" data-review-checks :data-review-checks-count="receipts.length">
         <h3 class="text-sm font-semibold text-highlighted">Checks of this candidate</h3>
-        <p v-if="!receipts.length" class="text-xs text-dimmed">No check ran against this commit.</p>
+        <p v-if="checksUnread" class="text-xs" :class="older.error.value ? 'text-warning' : 'text-dimmed'" data-review-checks-unread>{{ checksUnread }}</p>
+        <p v-else-if="!receipts.length" class="text-xs text-dimmed">No check ran against this commit.</p>
         <ul v-else class="flex flex-wrap gap-1.5">
           <li v-for="r in receipts" :key="receiptKey(r)" class="flex items-center gap-1 rounded border border-default/60 px-1.5 py-0.5 text-xs" data-review-check :data-review-check-key="receiptKey(r)" :data-review-check-failed="receiptFailed(r) ? 'true' : 'false'">
             <span class="font-mono">{{ receiptName(r) }}</span>

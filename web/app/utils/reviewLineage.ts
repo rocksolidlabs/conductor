@@ -86,7 +86,7 @@ function parseRef(s: string): { run: string; task: string; attempt: number; comm
 
 /**
  * The lineage of one candidate, judged in this order: the repair of a person's review (an applied review names this run and attempt);
- * a Check again (it started at its own result, the commit an earlier attempt of the task failed a check on); the repair of a review
+ * a Check again (its start and its result those of an earlier attempt of the task that failed a check); the repair of a review
  * task's needs_changes (a review of this run's chain reviewed the commit this attempt started at, a result of the same task); the repair
  * of a failed check (an earlier attempt failed a check on the commit it started at); else its task's first attempt, or one more.
  */
@@ -102,10 +102,11 @@ export function lineageOf(c: { run: string; task: string; attempt: number; commi
     if (!own || own.task !== c.task) continue
     return { ...base, cause: { kind: 'review', review: r.id, by: r.createdBy || 'admin', from: { run: own.run, attempt: own.attempt, commit: own.commit } } }
   }
-  {
-    // Check again: the result is the commit an earlier attempt failed a check on (the engine records the candidate's commit as the
-    // new attempt's result, whatever it names as its start).
-    const p = earlier.filter((a) => a.commit === c.commit && a.failed).sort((x, y) => y.attempt - x.attempt)[0]
+  if (c.start && c.start !== c.commit) {
+    // Check again, as the engine records one (crew's recheckTask): the new attempt is the failed one's again, both its start and its
+    // result, with no agent between. An ordinary attempt after a failed check starts at the commit that failed (startCommit), so one
+    // that submits that commit unchanged has a start equal to its result, and is never taken for a Check again here.
+    const p = earlier.filter((a) => a.commit === c.commit && a.start === c.start && a.failed).sort((x, y) => y.attempt - x.attempt)[0]
     if (p) return { ...base, cause: { kind: 'recheck', from: { run: p.run, attempt: p.attempt, commit: p.commit! } } }
   }
   if (c.start) {

@@ -7,7 +7,17 @@ import {
   MAX_REPAIR_PAYLOAD,
   applicationWords,
   FAILURE_CLASSES,
+  MAX_CHECK_EXCERPT,
   checkNote,
+  findingAt,
+  findingMarks,
+  firstReviewCandidate,
+  latestReviewable,
+  openFindingsPerFile,
+  requestedCheckOf,
+  taskReviewTarget,
+  type CheckRef,
+  type PreparedRepair,
   classWords,
   failedReceiptActions,
   findingsInOrder,
@@ -366,5 +376,127 @@ describe('findings across candidates', () => {
     expect(markBlocked(`r/build/1@${x}`, `r/build/2@${x}`, 'open')).toBe('')
     expect(markBlocked(`r/build/1@${x}`, `r2/build/3@${y}`, 'withdrawn')).toBe('')
     expect(markBlocked(`r/build/1@${x}`, `r/prep/2@${y}`, 'resolved')).toContain('a finding of build')
+  })
+})
+
+describe('a check note measured as the server fills it', () => {
+  const tail = 'x'.repeat(MAX_CHECK_EXCERPT)
+  const ref: CheckRef = {
+    source: 'ledger', receipt: `run-1/build/3/check/test/1`, run: 'run-1', task: 'build', attempt: 3, phase: 'check', id: 'test', k: 1, subject: C, argv: ['false'], exit: 1,
+    timedOut: false, killed: false, stable: true, state: 'finished', error: 'exit status 1', where: 'native', logSha256: 'e'.repeat(64), logBytes: 123456, tail, class: 'code',
+  }
+  const p: PreparedRepair = { finding: { kind: 'check', intent: 'change', message: 'The check test failed.', check: ref }, criteria: { source: 'checks' }, recheck: { allowed: false, run: 'run-1', revision: 1, attempt: 3, commit: C } }
+
+  it("carries the receipt's fields into the request as crew.RequestedCheck has them, the class chosen and the quote, never the route's source", () => {
+    const n = note(checkNote(p, 'flaky', 'the quote', ''))
+    const body = reviewBody(cand, B, 'request_changes', '', [n])
+    const cr = changeRequestOf(body, 'Nate', [n])
+    expect(cr.changes[0]!.check).toEqual({
+      receipt: ref.receipt, run: 'run-1', task: 'build', attempt: 3, phase: 'check', id: 'test', k: 1, subject: C, exit: 1, stable: true, error: 'exit status 1',
+      logSha256: 'e'.repeat(64), logBytes: 123456, tail, class: 'code', chosen: 'flaky', quote: 'the quote',
+    })
+    // Go's omitempty: an exit of 0 is written (a pointer), false and empty members are not; `stable` always is.
+    expect(requestedCheckOf({ ...ref, exit: 0, error: undefined, logBytes: 0, stable: false })).toMatchObject({ exit: 0, stable: false })
+    expect(requestedCheckOf({ ...ref, exit: 0, error: undefined, logBytes: 0, stable: false })).not.toHaveProperty('logBytes')
+  })
+
+  it("adds what the server fills to the fixture's request byte for byte", () => {
+    const edge = fixture.cases.find((c) => c.name === 'at the edge')!
+    const n = note(checkNote(p, 'code', '', ''))
+    const filled = changeRequestOf(reviewBody(cand, B, 'request_changes', '', [n]), 'Nate', [n]).changes[0]!.check!
+    const last = edge.request.changes.length - 1
+    const withCheck = { ...edge.request, changes: edge.request.changes.map((c, i) => (i === last ? { ...c, check: filled } : c)) }
+    expect(repairBytes(withCheck) - edge.bytes).toBe(goJSONBytes(filled) + ',"check":'.length)
+    expect(repairBytes(withCheck) > MAX_REPAIR_PAYLOAD).toBe(true)
+  })
+
+  it('refuses a batch the receipt takes past 64 KiB, which counting the route\'s few members alone let through', () => {
+    const n = note(checkNote(p, 'code', '', ''))
+    const filler = (len: number) => note({ intent: 'change', severity: 'nit', message: 'y'.repeat(len) })
+    // The filler sized so that the request as the page counted it before (the check note's route members alone) is at the bound.
+    const routeOnly = (len: number) => {
+      const body = reviewBody(cand, B, 'request_changes', '', [filler(len), n])
+      const cr = changeRequestOf(body, 'admin', [{}, { measured: { receipt: n.check!.receipt, stable: true } }])
+      return repairBytes({ ...cr, changes: cr.changes.map((c, i) => (i === 1 ? { ...c, check: { ...n.check!, stable: true } } : c)) })
+    }
+    const len = MAX_REPAIR_PAYLOAD - routeOnly(1) + 1
+    expect(routeOnly(len)).toBe(MAX_REPAIR_PAYLOAD)
+    const notes = [filler(len), n]
+    const body = reviewBody(cand, B, 'request_changes', '', notes)
+    expect(batchProblems(body, 'admin', notes).at(-1)).toMatch(/^The notes are \d+ KiB as the run keeps them, more than 64 KiB: shorten them\.$/)
+    // A check note whose receipt the draft does not hold is counted at its largest: never less than the receipt itself.
+    const { measured: _m, ...bare } = n
+    const worst = repairBytes(changeRequestOf(reviewBody(cand, B, 'request_changes', '', [bare]), 'admin', [{}]))
+    expect(worst).toBeGreaterThanOrEqual(repairBytes(changeRequestOf(reviewBody(cand, B, 'request_changes', '', [n]), 'admin', [n])))
+  })
+})
+
+describe('a finding on the candidate shown', () => {
+  const shown = `run-1/build/2@${B}`
+  const f = (o: Record<string, unknown>) => ({ kind: 'line' as const, side: 'base' as const, path: 'a.txt', from: 3, to: 4, locatedOn: shown, state: 'open' as const, message: 'm', ...o })
+  it("is at its located lines on the candidate side, whatever side it was made on, a rename's lines within the renamed file", () => {
+    expect(findingAt(f({ located: { state: 'moved', from: 5, to: 6 } }), shown)).toEqual({ side: 'candidate', path: 'a.txt', from: 5, to: 6 })
+    expect(findingAt(f({ located: { state: 'same' } }), shown)).toEqual({ side: 'candidate', path: 'a.txt', from: 3, to: 4 })
+    expect(findingAt(f({ located: { state: 'renamed', path: 'b.txt', located: { state: 'moved', from: 7, to: 8 } } }), shown)).toEqual({ side: 'candidate', path: 'b.txt', from: 7, to: 8 })
+    expect(findingAt(f({ located: { state: 'renamed', path: 'b.txt', located: { state: 'same' } } }), shown)).toEqual({ side: 'candidate', path: 'b.txt', from: 3, to: 4 })
+    expect(findingAt(f({ kind: 'file', from: undefined, to: undefined, located: { state: 'renamed', path: 'b.txt' } }), shown)).toEqual({ side: 'candidate', path: 'b.txt' })
+    expect(findingAt(f({ located: { state: 'changed' } }), shown)).toEqual({ side: 'candidate', path: 'a.txt' })
+  })
+  it('is where it was made when it was not located on the candidate shown, or its file is gone', () => {
+    expect(findingAt(f({ located: { state: 'moved', from: 5, to: 6 }, locatedOn: `run-1/build/3@${C}` }), shown)).toBeNull()
+    expect(findingAt(f({ located: { state: 'file_gone' } }), shown)).toBeNull()
+    expect(findingAt(f({ located: { state: 'unknown', why: 'binary' } }), shown)).toBeNull()
+    expect(findingAt({ kind: 'general', locatedOn: shown, located: { state: 'same' } }, shown)).toBeNull()
+  })
+  it("marks the open ones in the candidate side's margin of their file, and counts them by the diff's paths", () => {
+    const fs = [
+      f({ located: { state: 'moved', from: 5, to: 6 }, message: 'one' }),
+      f({ located: { state: 'same' }, state: 'resolved', message: 'resolved' }),
+      f({ located: { state: 'changed' }, message: 'changed' }),
+      f({ kind: 'file', from: undefined, to: undefined, path: 'c.txt', located: { state: 'same' }, message: 'file' }),
+      f({ located: { state: 'moved', from: 1, to: 1 }, locatedOn: `run-1/build/3@${C}`, message: 'elsewhere' }),
+    ]
+    expect(findingMarks(fs, shown, 'a.txt')).toEqual([{ side: 'candidate', from: 5, to: 6, label: 'one' }])
+    expect(openFindingsPerFile(fs, shown, [{ path: 'a.txt' }, { path: 'c.txt' }])).toEqual({ 'a.txt': 2, 'c.txt': 1 })
+    expect(openFindingsPerFile(fs, shown, [{ path: 'z.txt' }])).toEqual({})
+  })
+})
+
+describe("a run page's task to review", () => {
+  it('names its result in the run it came from when a continuation imported it, else in the run itself', () => {
+    expect(taskReviewTarget('run-B', { kind: 'work', result: { attempt: 2, commit: C }, importedFrom: 'run-A/build/2' }, [])).toEqual({ run: 'run-A', attempt: 2, commit: C })
+    expect(taskReviewTarget('run-B', { kind: 'work', result: { attempt: 4, commit: C } }, [])).toEqual({ run: 'run-B', attempt: 4, commit: C })
+    expect(taskReviewTarget('run-B', { kind: 'work' }, [{ n: 3, result: B }, { n: 4 }])).toEqual({ run: 'run-B', attempt: 3, commit: B })
+    expect(taskReviewTarget('run-B', { kind: 'review', result: { attempt: 1, commit: C } }, [])).toBeNull()
+  })
+})
+
+describe("the ticket's candidates to review", () => {
+  const A = 'd'.repeat(40)
+  const cnd = (attempt: number, commit: string, o: Record<string, unknown> = {}) => ({ attempt, commit, state: 'succeeded', standing: false, withdrawn: false, receipts: [] as { startedAt: string }[], ...o })
+  const at = (t: string) => [{ startedAt: t }]
+  it("opens the latest: prep then build, build's checks later, build's", () => {
+    const runs = [{ run: 'r1', tasks: [
+      { task: 'prep', kind: 'work', candidates: [cnd(1, A, { standing: true, receipts: at('2026-11-08T10:00:00Z') })] },
+      { task: 'build', kind: 'work', candidates: [cnd(1, B, { standing: true, receipts: at('2026-11-08T10:05:00Z') })] },
+    ] }]
+    expect(latestReviewable(runs, new Map())?.value).toBe(`r1/build/1@${B}`)
+    // The crew's order the other way round: still the one submitted last.
+    expect(latestReviewable([{ run: 'r1', tasks: [...runs[0]!.tasks].reverse() }], new Map())?.value).toBe(`r1/build/1@${B}`)
+  })
+  it('takes a failed candidate, a continuation over the run it continues, never a withdrawn one', () => {
+    const failed = [{ run: 'r1', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(3, C, { state: 'failed', receipts: at('2026-11-08T10:00:00Z') }), cnd(2, B, { state: 'failed' })] }] }]
+    expect(latestReviewable(failed, new Map())).toEqual({ value: `r1/build/3@${C}`, label: `build · attempt 3 · ${C.slice(0, 12)} · failed · r1` })
+    const chain = [
+      { run: 'r2', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(4, B)] }] },
+      { run: 'r1', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(3, C, { receipts: at('2026-11-09T00:00:00Z') })] }] },
+    ]
+    expect(latestReviewable(chain, new Map([['r2', 'r1']]))?.value).toBe(`r2/build/4@${B}`)
+    expect(latestReviewable([{ run: 'r1', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(1, A, { withdrawn: true })] }] }], new Map())).toBeNull()
+  })
+  it("opens the first standing candidate when the route names none, else the first", () => {
+    const runs = [{ run: 'r1', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(2, B, { state: 'failed' }), cnd(1, A, { standing: true })] }] }]
+    expect(firstReviewCandidate(runs)).toBe(`r1/build/1@${A}`)
+    expect(firstReviewCandidate([{ run: 'r1', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(2, B, { state: 'failed' })] }] }])).toBe(`r1/build/2@${B}`)
   })
 })

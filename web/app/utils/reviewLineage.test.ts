@@ -57,16 +57,32 @@ describe("a candidate's lineage", () => {
     const i = input({
       attempts: [
         { run: 'rA', task: 'build', attempt: 1, start: S, commit: A, state: 'failed', failed: 'check test' },
-        { run: 'rB', task: 'build', attempt: 2, start: A, commit: A, state: 'succeeded' },
+        // Check again in B: the engine records the failed attempt's start and result as the new attempt's.
+        { run: 'rB', task: 'build', attempt: 2, start: S, commit: A, state: 'succeeded' },
         { run: 'rB', task: 'build', attempt: 3, start: A, commit: C, state: 'succeeded' },
       ],
       reviews: [{ id: 'fedcba9876543210', candidate: `rA/build/1@${A}`, createdBy: 'admin', verdict: 'request_changes', application: { state: 'applied', run: 'rB', attempt: 3 } }],
       continues: new Map([['rB', 'rA']]),
     })
-    expect(lineageWords(lineageOf({ run: 'rB', task: 'build', attempt: 2, commit: A, start: A }, i))).toBe('attempt 2 of build, attempt 1 of run rA (111111111111) checked again, the same commit, in run rB, a continuation of rA')
+    expect(lineageWords(lineageOf({ run: 'rB', task: 'build', attempt: 2, commit: A, start: S }, i))).toBe('attempt 2 of build, attempt 1 of run rA (111111111111) checked again, the same commit, in run rB, a continuation of rA')
     expect(lineageWords(lineageOf({ run: 'rB', task: 'build', attempt: 3, commit: C, start: A }, i))).toBe(
       'attempt 3 of build, the repair of review fedcba9 by admin on attempt 1 of run rA (111111111111), in run rB, a continuation of rA',
     )
+  })
+
+  it('never takes an ordinary attempt after a failed check that submitted the same commit for a Check again', () => {
+    // The retry starts at the commit that failed (the engine's startCommit) and submits it unchanged: its start is its result.
+    const i = input({
+      attempts: [
+        { run: 'r1', task: 'build', attempt: 1, start: S, commit: A, state: 'failed', failed: 'check test' },
+        { run: 'r1', task: 'build', attempt: 2, start: A, commit: A, state: 'failed', failed: 'check test' },
+      ],
+    })
+    const l = lineageOf({ run: 'r1', task: 'build', attempt: 2, commit: A, start: A }, i)
+    expect(l.cause).toEqual({ kind: 'check', check: 'check test', from: { run: 'r1', attempt: 1, commit: A } })
+    expect(lineageWords(l)).toBe('attempt 2 of build, after check test failed on attempt 1 (111111111111)')
+    // Nor one whose start is not the failed attempt's: a Check again repeats both.
+    expect(lineageOf({ run: 'r1', task: 'build', attempt: 3, commit: A, start: B }, i).cause.kind).not.toBe('recheck')
   })
 
   it("never takes another task's attempts or a refused review for a cause", () => {

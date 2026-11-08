@@ -4,7 +4,7 @@ import type { AgentInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
 import { DISPATCH_RETRY_MAX_MS, ticketWatch } from '~/composables/useDispatchLive'
 import { refusalWords } from '~/composables/useDispatchOps'
-import { AssigneePicks, HORIZONS, PRIORITIES, TICKET_STATUSES, acceptChangedWords, candidateOptions, candidateWithdrawn, ticketDecisions, ticketPeople, historyEntries, horizonWord, parseTicketKey, priorityWord, projectPath, relationAdd, statusWord, ticketPath, ticketWords, validProjectKey, type AcceptSeen, type ChangeNames, type RelationChoice, type UploadOutcome } from '~/utils/dispatch'
+import { AssigneePicks, HORIZONS, PRIORITIES, TICKET_STATUSES, acceptChangedWords, candidateOptions, candidateWithdrawn, parseCandidate, ticketDecisions, ticketPeople, historyEntries, horizonWord, parseTicketKey, priorityWord, projectPath, relationAdd, statusWord, ticketPath, ticketWords, validProjectKey, type AcceptSeen, type ChangeNames, type RelationChoice, type UploadOutcome } from '~/utils/dispatch'
 import { RUN_EVENT_WINDOW_MS } from '~/utils/runs'
 import { relativeTime } from '~/utils/sessions'
 import { catchUp, serially } from '~/utils/dispatchOrder'
@@ -12,7 +12,8 @@ import type { PaletteItem } from '~/composables/usePalette'
 import { TICKET_PLAN_ROWS } from '~/composables/useTicketPlans'
 import { approvable, launchBlockers, revisionTag } from '~/utils/dispatchPlans'
 import { heldRuns } from '~/composables/useTicketCandidates'
-import { REVIEW_ENTRY, openFindingsOf, useReview, type ReviewSummary } from '~/composables/useReview'
+import { REVIEW_ENTRY, openFindingsOf, openFindingsOfTask, useReview, type ReviewSummary } from '~/composables/useReview'
+import { firstReviewCandidate, latestReviewable } from '~/utils/review'
 
 /**
  * A ticket's page (docs/plans/dispatch.md, PR-8): its key and title, its description and acceptance criteria as Markdown with a
@@ -723,7 +724,7 @@ watch(
   },
   { immediate: true },
 )
-const reviewPanel = useTemplateRef<{ notes: number; send: () => void; showFindings: () => void }>('reviewPanel')
+const reviewPanel = useTemplateRef<{ notes: number; openFindings: number; task: string; send: () => void; showFindings: () => void }>('reviewPanel')
 // The open findings beside each candidate's Review, counted from the ticket's reviews (each counts its findings by state, every page
 // read), read with the ticket: a hint, so a read that fails leaves the count it had, and the next read of the ticket asks again. The
 // Review view reads the same reviews itself, so this read waits while it is shown and runs again when the sections are.
@@ -770,15 +771,21 @@ watchEffect(() => {
     const why = launchBlockers(a, { ticket: t, project: props.project, archived: archived.value, server: plan.server })
     rows.push({ key: `page:plan-launch:${a.n}`, label: `Launch from revision ${a.n}`, detail: why[0] ?? `${a.crewName}: asks first`, icon: 'i-lucide-play', disabled: !!why.length, run: () => void afterPalette(() => planSection.value?.launch()) })
   }
-  // The Review view's rows (RV1): Review the latest candidate, Send review (n notes) while a draft holds notes, Open findings.
-  const latest = deliveryChoices.value[0]
+  // The Review view's rows (RV1): Review the latest candidate (a failed one too: its commit is reviewed, and its checks repaired),
+  // Send review (n notes) while a draft holds notes, Open findings, counted as the view lists them: the findings of the task of the
+  // candidate it shows, or would open (every run's reviews of that task).
+  const latest = latestReviewable(candidates.runs.value, continues.value)
   rows.push({ key: 'page:review-latest', label: 'Review the latest candidate', detail: latest ? latest.label : 'No candidate to review yet', icon: 'i-lucide-scan-eye', disabled: !latest, run: () => void afterPalette(() => pickReviewCandidate(latest!.value)) })
   const notes = reviewView.value ? (reviewPanel.value?.notes ?? 0) : 0
   if (notes) rows.push({ key: 'page:review-send', label: `Send review (${notes} ${notes === 1 ? 'note' : 'notes'})`, detail: 'Of the candidate shown: asks first for Request changes', icon: 'i-lucide-send', run: () => void afterPalette(() => reviewPanel.value?.send()) })
+  // In the view, its own list (the ticket's reviews are not read while it is shown); else the reviews' counts of the task it would show.
+  const inView = reviewView.value ? reviewPanel.value : null
+  const findingsTask = inView?.task || (parseCandidate(firstReviewCandidate(candidates.runs.value))?.task ?? '')
+  const openCount = inView ? inView.openFindings : openFindingsOfTask(ticketReviews.value, findingsTask)
   rows.push({
     key: 'page:review-findings',
     label: 'Open findings',
-    detail: `${ticketReviews.value.reduce((n, r) => n + (r.counts?.open ?? 0), 0)} open in the ticket's reviews`,
+    detail: findingsTask ? `${openCount} open in ${findingsTask}'s reviews` : 'No candidate to review yet',
     icon: 'i-lucide-list-checks',
     run: () =>
       void afterPalette(() => {

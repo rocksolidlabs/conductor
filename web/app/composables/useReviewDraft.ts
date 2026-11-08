@@ -61,6 +61,7 @@ function isNote(n: unknown): n is DraftNote {
     typeof x.key === 'string' &&
     ['line', 'file', 'general', 'check'].includes(x.kind) &&
     (x.kind !== 'check' || (!!x.check && x.check.source === 'ledger' && typeof x.check.receipt === 'string')) &&
+    (x.measured === undefined || (!!x.measured && typeof x.measured === 'object' && typeof x.measured.receipt === 'string' && typeof x.measured.stable === 'boolean')) &&
     INTENTS.includes(x.intent) &&
     typeof x.message === 'string' &&
     (x.severity === undefined || SEVERITIES.includes(x.severity)) &&

@@ -2,6 +2,7 @@
 import type { RouteLocationRaw } from 'vue-router'
 import type { RunAttempt, RunInfo, RunStep, RunTask } from '~/composables/useSessions'
 import { candidateRef, ticketPath } from '~/utils/dispatch'
+import { taskReviewTarget } from '~/utils/review'
 import { relativeTime } from '~/utils/sessions'
 import { latestReads, ownedBy, type Owned } from '~/utils/latestReads'
 import { prerequisitesRefused, stepManifest, taskActions, taskAnswer, taskDot, taskWords } from '~/utils/tasks'
@@ -50,19 +51,16 @@ const api = useSessions()
 
 const tasks = computed(() => props.run.tasks ?? [])
 const selectedTask = computed(() => tasks.value.find((t) => t.id === props.selected))
-/** The ticket's Review view at a candidate of the run (RV1), preparing a repair from a receipt when one is named. */
-function reviewAt(task: string, attempt: number, commit: string | undefined, repair?: string): RouteLocationRaw | undefined {
+/** The ticket's Review view at a candidate (RV1) of `run` (this run's, or the run a continuation's result came from), preparing a repair from a receipt when one is named. */
+function reviewAt(run: string, task: string, attempt: number, commit: string | undefined, repair?: string): RouteLocationRaw | undefined {
   if (!props.ticket || !commit) return undefined
-  return { path: ticketPath(props.ticket), query: { view: 'review', candidate: candidateRef({ run: props.run.id, task, attempt, commit }), ...(repair ? { repair } : {}) } }
+  return { path: ticketPath(props.ticket), query: { view: 'review', candidate: candidateRef({ run, task, attempt, commit }), ...(repair ? { repair } : {}) } }
 }
-/** The selected work task's candidate to review: its result, else its latest attempt that submitted one. */
-const reviewTarget = computed(() => {
-  const t = selectedTask.value
-  if (!t || t.kind !== 'work') return null
-  if (t.result?.commit) return { attempt: t.result.attempt, commit: t.result.commit }
-  const a = [...attempts.value].reverse().find((x) => x.result)
-  return a ? { attempt: a.n, commit: a.result! } : null
-})
+/**
+ * The selected work task's candidate to review: its result, in the run that made it (a result a continuation imported is its first
+ * run's attempt, taskReviewTarget), else its latest attempt that submitted one.
+ */
+const reviewTarget = computed(() => (selectedTask.value ? taskReviewTarget(props.run.id, selectedTask.value, attempts.value) : null))
 // The run's state too: a task of an interrupted run says what its continuation takes up (taskWords), a held one among them (DR1).
 const live = computed(() => ({ state: props.run.state, stoppedAt: props.run.stoppedAt, paused: props.run.paused, pausedWhy: props.run.pausedWhy, record: props.run.record, resumedBy: props.run.resumedBy }))
 function agentOf(member: string): string {
@@ -278,7 +276,7 @@ async function confirm() {
       </div>
       <!-- Its candidate reviewed on the ticket that holds the run (RV1), or why not. -->
       <div v-if="selectedTask.kind === 'work' && reviewTarget" class="flex flex-wrap items-center gap-2" data-task-review-entry>
-        <UButton v-if="ticket" :label="`Review on ${ticket}`" icon="i-lucide-scan-eye" size="xs" color="neutral" variant="outline" :to="reviewAt(selectedTask.id, reviewTarget.attempt, reviewTarget.commit)" data-task-review />
+        <UButton v-if="ticket" :label="`Review on ${ticket}`" icon="i-lucide-scan-eye" size="xs" color="neutral" variant="outline" :to="reviewAt(reviewTarget.run, selectedTask.id, reviewTarget.attempt, reviewTarget.commit)" data-task-review />
         <span v-else class="text-xs text-muted" data-task-review-unlinked>
           Link this run to a ticket to review it: a ticket's Runs section links a run by its id (<NuxtLink to="/dispatch" class="underline">Dispatch</NuxtLink>).
         </span>
@@ -356,7 +354,7 @@ async function confirm() {
             :log="logOf(selectedTask.id, a.n)"
             :save-as="saveName(selectedTask.id, a.n)"
             :open-step="attempt === a.n ? step : undefined"
-            :prepare="ticket && a.result ? (s: RunStep) => reviewAt(selectedTask!.id, a.n, a.result, `${s.id}/${s.k}`) : undefined"
+            :prepare="ticket && a.result ? (s: RunStep) => reviewAt(run.id, selectedTask!.id, a.n, a.result, `${s.id}/${s.k}`) : undefined"
           />
         </li>
       </ol>

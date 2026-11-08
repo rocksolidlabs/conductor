@@ -1,7 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as vue from 'vue'
 import { ApiError } from './useApi'
-import { ContinuationNeeded, MAX_REVIEWS, openFindingsOf, useCandidateDiff, useFileSides, useReview, useSentReviews, useShowWhenReady, type CandidateDiff, type Review, type ReviewSummary } from './useReview'
+import {
+  ContinuationNeeded,
+  MAX_REVIEWS,
+  openFindingsOf,
+  openFindingsOfTask,
+  useCandidateDiff,
+  useFileSides,
+  useLaunchedCriteria,
+  useOlderCandidate,
+  usePreparedRepair,
+  useRecheckAsk,
+  useReview,
+  useSentReviews,
+  useShowWhenReady,
+  type CandidateDiff,
+  type Review,
+  type ReviewSummary,
+} from './useReview'
+import type { PreparedRepair } from '../utils/review'
+import type { RunCandidate } from './useDispatch'
 import { DispatchOrder } from '../utils/dispatchOrder'
 import { CommandRefused } from '../utils/tasks'
 import { reviewBody } from '../utils/review'
@@ -395,5 +414,159 @@ describe('a draft base the server refuses', () => {
     sent[1]!.h.fail(new ApiError(400, 'invalid_request', 'nope'))
     await q
     expect(refused).toHaveLength(1)
+  })
+})
+
+// The Review view's panel of a failed check (Program item RV1, PR-7, review round 1): each reply applied only to the request that asked
+// for it, by its generation and its identity, checked when it lands.
+function preparedOf(receipt: string, run = 'run-1', attempt = 3): PreparedRepair {
+  return {
+    finding: { kind: 'check', intent: 'change', message: 'it failed', check: { source: 'ledger', receipt, run, task: 'build', attempt, phase: 'check', id: 'test', k: 1, subject: C, argv: ['false'], exit: 1, timedOut: false, killed: false, stable: true, state: 'finished', where: 'native', logBytes: 1, tail: 'no', class: 'code' } },
+    criteria: { source: 'checks' },
+    recheck: { allowed: true, run: 'run-2', revision: 7, attempt, commit: C },
+  }
+}
+
+describe("a failed check's prepared repair", () => {
+  it("drops a prepared request that lands once another candidate is shown, and says so", async () => {
+    const r = useReview(new DispatchOrder())
+    const shown = vue.ref(cand)
+    const p = usePreparedRepair(r, () => shown.value)
+    const asked = p.prepare(ref, 'test', 1)
+    expect(sent[0]!.path).toBe('/api/runs/run-1/tasks/build/attempts/1/steps/test/1/repair')
+    shown.value = `run-1/build/2@${B}`
+    sent[0]!.h.ok(preparedOf('run-1/build/1/check/test/1'))
+    await asked
+    expect(p.prepared.value).toBeNull()
+    expect(p.error.value).toContain('Another candidate is shown now')
+    expect(p.loading.value).toBe(false)
+  })
+
+  it('drops an earlier prepare\'s reply once a later one was asked, whichever lands first', async () => {
+    const r = useReview(new DispatchOrder())
+    const p = usePreparedRepair(r, () => cand)
+    const first = p.prepare(ref, 'test', 1)
+    const second = p.prepare(ref, 'test', 2)
+    sent[1]!.h.ok(preparedOf('run-1/build/1/check/test/2'))
+    await second
+    sent[0]!.h.ok(preparedOf('run-1/build/1/check/test/1'))
+    await first
+    expect(p.prepared.value?.finding.check.receipt).toBe('run-1/build/1/check/test/2')
+  })
+
+  it('sends Check again of the candidate the prepared request names, at its revision, not the one shown', async () => {
+    const r = useReview(new DispatchOrder())
+    const p = usePreparedRepair(r, () => `run-9/build/8@${B}`)
+    const words = p.recheck(preparedOf('run-1/build/3/check/test/1'))
+    expect(sent[0]!.path).toBe('/api/runs/run-1/tasks/build/recheck')
+    expect(sent[0]!.body).toMatchObject({ attempt: 3, commit: C, expectedRevision: 7 })
+    sent[0]!.h.ok({ receipt, run: 'run-2', attempt: 4 })
+    expect(await words).toBe('Checked again as attempt 4 of run run-2, a continuation of run-1.')
+  })
+
+  it("never writes a slow Check again's reply into the panel of the receipt prepared after it", async () => {
+    const shown = vue.ref<PreparedRepair | null>(preparedOf('run-1/build/3/check/test/1'))
+    const a = useRecheckAsk(() => shown.value)
+    const slow = held<string>()
+    const asked = a.again(() => slow.p)
+    expect(a.busy.value).toBe(true)
+    // The panel closed and Prepare a repair asked of another receipt: the panel resets for it.
+    shown.value = preparedOf('run-1/build/3/check/other/1')
+    a.reset()
+    slow.ok('Checked again as attempt 4, the same commit as attempt 3.')
+    await asked
+    expect(a.rechecked.value).toBe('')
+    expect(a.busy.value).toBe(false)
+    // Its failure too.
+    const failing = held<string>()
+    const b = a.again(() => failing.p)
+    shown.value = preparedOf('run-1/build/3/check/third/1')
+    failing.fail(new Error('refused'))
+    await b
+    expect(a.failure.value).toBe('')
+    // And the panel's own Check again is applied.
+    const own = a.again(async () => 'Checked again as attempt 5, the same commit as attempt 3.')
+    await own
+    expect(a.rechecked.value).toBe('Checked again as attempt 5, the same commit as attempt 3.')
+    expect(a.busy.value).toBe(false)
+  })
+})
+
+describe("the criteria as a launch's package froze them", () => {
+  it('say a failed read in words and are asked again at the next tick until one answers', async () => {
+    const reads: Array<ReturnType<typeof held<{ package?: unknown }>>> = []
+    const launch = vue.ref<string | undefined>('l1')
+    const tick = vue.ref(0)
+    const c = useLaunchedCriteria(
+      () => {
+        const h = held<{ package?: unknown }>()
+        reads.push(h)
+        return h.p
+      },
+      () => launch.value,
+      () => tick.value,
+    )
+    expect(reads).toHaveLength(1)
+    expect(c.text.value).toBeNull()
+    reads[0]!.fail(new ApiError(503, 'ledger_unavailable', 'the ledger is unavailable'))
+    await settle()
+    expect(c.error.value).toBe('the ledger is unavailable')
+    tick.value++
+    await vue.nextTick()
+    expect(reads).toHaveLength(2)
+    reads[1]!.ok({ package: { ticket: { acceptance: 'It is built.' } } })
+    await settle()
+    expect(c.text.value).toBe('It is built.')
+    expect(c.error.value).toBe('')
+    // Taken: not read again for the same launch.
+    tick.value++
+    await vue.nextTick()
+    expect(reads).toHaveLength(2)
+  })
+})
+
+describe('a candidate older than its task\'s six newest', () => {
+  it('is read from its run once its run\'s candidates are read without it, its failure said and asked again', async () => {
+    const reads: Array<{ args: [string, string, number]; h: ReturnType<typeof held<{ candidates?: Array<{ task: string; kind: 'work' | 'review'; candidates: RunCandidate[] }> }>> }> = []
+    const listed = vue.ref<boolean | null>(null)
+    const tick = vue.ref(0)
+    const o = useOlderCandidate({
+      read: (run, task, before) => {
+        const h = held<{ candidates?: Array<{ task: string; kind: 'work' | 'review'; candidates: RunCandidate[] }> }>()
+        reads.push({ args: [run, task, before], h })
+        return h.p
+      },
+      want: () => ref,
+      listed: () => listed.value,
+      ticks: () => tick.value,
+    })
+    expect(reads).toHaveLength(0)
+    listed.value = false
+    await vue.nextTick()
+    expect(reads.map((r) => r.args)).toEqual([['run-1', 'build', 2]])
+    reads[0]!.h.fail(new Error('offline'))
+    await settle()
+    expect(o.error.value).toBe('offline')
+    expect(o.candidate.value).toBeNull()
+    tick.value++
+    await vue.nextTick()
+    const c: RunCandidate = { task: 'build', kind: 'work', attempt: 1, commit: C, state: 'failed', standing: false, withdrawn: false, receipts: [] }
+    reads[1]!.h.ok({ candidates: [{ task: 'build', kind: 'work', candidates: [c] }] })
+    await settle()
+    expect(o.candidate.value).toEqual(c)
+    expect(o.error.value).toBe('')
+    tick.value++
+    await vue.nextTick()
+    expect(reads).toHaveLength(2)
+  })
+})
+
+describe('the open findings of a task', () => {
+  it("count every run's reviews of the task, as the Review view lists them", () => {
+    const rv = (candidate: string, open: number) => ({ candidate, counts: { open, resolved: 0, withdrawn: 0 } }) as ReviewSummary
+    const reviews = [rv(`run-1/build/1@${C}`, 2), rv(`run-2/build/4@${B}`, 1), rv(`run-1/prep/1@${C}`, 3)]
+    expect(openFindingsOfTask(reviews, 'build')).toBe(3)
+    expect(openFindingsOfTask(reviews, 'prep')).toBe(3)
+    expect(openFindingsOf(reviews, 'run-1', 'build')).toBe(2)
   })
 })

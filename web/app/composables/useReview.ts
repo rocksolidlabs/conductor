@@ -1,10 +1,10 @@
-import { getCurrentScope, nextTick, onScopeDispose, watch, type InjectionKey } from 'vue'
+import { computed, getCurrentScope, nextTick, onScopeDispose, watch, type InjectionKey } from 'vue'
 import { ApiError } from './useApi'
-import type { DispatchReceipt, OpBody } from './useDispatch'
+import type { DispatchReceipt, OpBody, RunCandidate } from './useDispatch'
 import { through, type DispatchOrder } from '~/utils/dispatchOrder'
 import { mintCommandId, sendCommand } from '~/utils/tasks'
-import { allPages, parseCandidate, type CandidateRef } from '~/utils/dispatch'
-import { latest, type CheckRef, type Located, type NewFinding, type PreparedRepair, type ReviewApplication, type ReviewBody, type Side } from '~/utils/review'
+import { allPages, candidateRef, parseCandidate, type CandidateRef } from '~/utils/dispatch'
+import { latest, recheckWords, type CheckRef, type Located, type NewFinding, type PreparedRepair, type ReviewApplication, type ReviewBody, type Side } from '~/utils/review'
 
 /**
  * A person's reviews of a ticket's candidates (Program item RV1, docs/plans/review-repair.md, "web/app"): a candidate's diff and its
@@ -176,6 +176,13 @@ export function openFindingsOf(reviews: readonly ReviewSummary[], run: string, t
     const c = parseCandidate(r.candidate)
     if (c?.run === run && c.task === task) n += r.counts?.open ?? 0
   }
+  return n
+}
+
+/** The open findings of a task among a ticket's reviews, every run's: the findings the Review view lists for a candidate of that task. */
+export function openFindingsOfTask(reviews: readonly ReviewSummary[], task: string): number {
+  let n = 0
+  for (const r of reviews) if (parseCandidate(r.candidate)?.task === task) n += r.counts?.open ?? 0
   return n
 }
 
@@ -469,4 +476,165 @@ export function useShowWhenReady(o: { key: () => string; ready: () => boolean })
     cancel = stop
   }
   return { show, cancel: end }
+}
+
+/**
+ * A failed receipt's repair prepared, as the Review view's panel shows it (ReviewCheckFailure): the request read for the candidate shown
+ * when it was asked (`shown`), its failure, and Check again of the candidate the prepared request names. The late-answer rule: a reply
+ * is applied only to the request that asked for it, by its generation (a later prepare) and its identity (the candidate it was asked
+ * for still shown), checked as it is applied.
+ */
+export function usePreparedRepair(r: Pick<ReturnType<typeof useReview>, 'prepare' | 'recheck'>, shown: () => string) {
+  const open = ref(false)
+  const prepared = ref<PreparedRepair | null>(null)
+  const error = ref('')
+  const loading = ref(false)
+  const asks = latest()
+  async function prepare(c: CandidateRef, id: string, k: number): Promise<void> {
+    const at = shown()
+    const current = asks.ask()
+    open.value = true
+    prepared.value = null
+    error.value = ''
+    loading.value = true
+    try {
+      const p = await r.prepare(c, id, k)
+      if (!current()) return
+      if (shown() === at) prepared.value = p
+      else error.value = 'Another candidate is shown now: prepare the repair from its checks.'
+    } catch (e) {
+      if (current()) error.value = shown() === at ? (e as Error).message : 'Another candidate is shown now: prepare the repair from its checks.'
+    } finally {
+      if (current()) loading.value = false
+    }
+  }
+  /**
+   * Check again of the candidate the prepared request `p` names, as it names it: its receipt's run and task, the attempt and the commit
+   * of its `recheck`, at its revision (of the run it goes to); the words of where it was checked.
+   */
+  async function recheck(p: PreparedRepair): Promise<string> {
+    const c = { run: p.finding.check.run, task: p.finding.check.task, attempt: p.recheck.attempt, commit: p.recheck.commit }
+    const reply = await r.recheck(c, p.recheck.revision)
+    return recheckWords(c, { run: reply.run || p.recheck.run, attempt: reply.attempt })
+  }
+  return { open, prepared, error, loading, prepare, recheck }
+}
+
+/**
+ * Check again as one panel of a prepared request asks it: busy while on its way, its words once answered, its failure. A reply is
+ * applied only while the panel shows the prepared request it was asked of (by identity) and no reset came since (a request prepared
+ * again, another receipt's): a slow Check again of receipt A never writes into receipt B's panel, nor leaves B's button busy.
+ */
+export function useRecheckAsk(shown: () => PreparedRepair | null) {
+  const busy = ref(false)
+  const rechecked = ref('')
+  const failure = ref('')
+  const asks = latest()
+  function reset(): void {
+    asks.ask()
+    busy.value = false
+    rechecked.value = ''
+    failure.value = ''
+  }
+  async function again(recheck: (p: PreparedRepair) => Promise<string>): Promise<void> {
+    const p = shown()
+    if (!p) return
+    const current = asks.ask()
+    const holds = () => current() && shown() === p
+    busy.value = true
+    failure.value = ''
+    try {
+      const words = await recheck(p)
+      if (holds()) rechecked.value = words
+    } catch (e) {
+      if (holds()) failure.value = (e as Error).message
+    } finally {
+      if (holds()) busy.value = false
+    }
+  }
+  return { busy, rechecked, failure, reset, again }
+}
+
+/**
+ * The ticket's acceptance criteria as a launch's package froze them (a launch never changes): read for the launch shown, and while no
+ * text was taken for it, asked again at each tick the page gives (`ticks`: its reads of the ticket, the stream's resets), so a failed
+ * read is said in words (`error`) and asked again rather than left reading. A reply is applied only to the latest ask, for the launch
+ * still shown.
+ */
+export function useLaunchedCriteria(read: (id: string) => Promise<{ package?: unknown }>, launch: () => string | undefined, ticks: () => unknown) {
+  const taken = ref<{ id: string; text: string } | null>(null)
+  const error = ref('')
+  const asks = latest()
+  function ask(): void {
+    const id = launch()
+    if (!id || taken.value?.id === id) return
+    const current = asks.ask()
+    read(id)
+      .then((l) => {
+        if (!current() || launch() !== id) return
+        const pkg = l.package as { ticket?: { acceptance?: string } } | null | undefined
+        taken.value = { id, text: pkg?.ticket?.acceptance ?? '' }
+        error.value = ''
+      })
+      .catch((e) => {
+        if (current() && launch() === id) error.value = (e as Error).message || 'the read failed'
+      })
+  }
+  watch(launch, () => (error.value = ''))
+  watch([launch, ticks], ask, { immediate: true })
+  /** The criteria as launched, null until read for the launch shown. */
+  const text = computed(() => (taken.value && taken.value.id === launch() ? taken.value.text : null))
+  return { text, error }
+}
+
+/**
+ * The candidate a link names when the ticket's candidates read do not list it (a task's six newest): read from its run's older
+ * candidates (`?task=&before=`), once for each candidate named, after its run's candidates were read (`listed` null before, true when
+ * they list it); a failure said, and asked again at the page's next tick. A reply is applied only to the latest ask, for the candidate
+ * still named.
+ */
+export function useOlderCandidate(o: {
+  read: (run: string, task: string, before: number) => Promise<{ candidates?: Array<{ task: string; kind: 'work' | 'review'; candidates: RunCandidate[] }> }>
+  want: () => CandidateRef | null
+  listed: () => boolean | null
+  ticks: () => unknown
+}) {
+  const found = ref<{ key: string; c: RunCandidate } | null>(null)
+  const error = ref('')
+  const loading = ref(false)
+  const asks = latest()
+  async function read(): Promise<void> {
+    const w = o.want()
+    if (!w || o.listed() !== false) return
+    const key = candidateRef(w)
+    if (found.value?.key === key) return
+    const current = asks.ask()
+    const holds = () => current() && named() === key
+    loading.value = true
+    error.value = ''
+    try {
+      const page = await o.read(w.run, w.task, w.attempt + 1)
+      if (!holds()) return
+      const c = page.candidates?.find((t) => t.task === w.task)?.candidates.find((x) => x.attempt === w.attempt && x.commit === w.commit)
+      if (c) found.value = { key, c }
+      else error.value = `attempt ${w.attempt} of ${w.task} in run ${w.run} has no candidate at ${w.commit.slice(0, 12)}`
+    } catch (e) {
+      if (holds()) error.value = (e as Error).message || 'the read failed'
+    } finally {
+      if (current()) loading.value = false
+    }
+  }
+  const named = () => (o.want() ? candidateRef(o.want()!) : '')
+  watch(named, () => (error.value = ''))
+  watch(
+    () => [named(), o.listed(), o.ticks()],
+    () => void read(),
+    { immediate: true },
+  )
+  /** The candidate named, read: null when it is not the one named now. */
+  const candidate = computed(() => {
+    const w = o.want()
+    return w && found.value?.key === candidateRef(w) ? found.value.c : null
+  })
+  return { candidate, error, loading }
 }

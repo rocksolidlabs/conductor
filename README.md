@@ -1586,7 +1586,9 @@ its lines are on the candidate shown (same lines, moved: now 41–44, the
 lines changed, the file is gone, renamed), what the repair attempt said it
 addressed (its claim, never the resolution), and **Resolved**, **Still
 open** and **Withdraw** with an optional note, made against a later
-candidate; only a mark changes a finding's state. On a failed receipt
+candidate; only a mark changes a finding's state. The open ones located on
+the candidate shown are marked in the diff's margin at their lines there and
+counted beside their files. On a failed receipt
 **Prepare a repair** shows the tested commit, the receipt, the last of its
 output, the log's hash, the attempt before, the criteria and the class the
 server worked out (code defect, infrastructure failure, possibly flaky,

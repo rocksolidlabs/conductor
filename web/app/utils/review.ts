@@ -51,6 +51,11 @@ export interface DraftNote {
   check?: CheckChoice
   /** A check note's receipt in words ("check test"), for the draft alone; never sent. */
   checkName?: string
+  /**
+   * A check note's receipt as the server fills it into the request it measures and keeps (crew.RequestedCheck), from the prepared
+   * request: the batch's size counts it (changeRequestOf). For the draft alone; never sent.
+   */
+  measured?: RequestedCheck
 }
 
 /** The classes of a failed check (crew's ClassifyFailure): the server's hint, which a person may change. */
@@ -171,18 +176,110 @@ export interface ChangeRequest {
   via?: string
   base?: string
   summary?: string
-  changes: Array<NewFinding & { id: string }>
+  changes: Array<Omit<NewFinding, 'check'> & { id: string; check?: RequestedCheck }>
 }
 
-/** The request the review makes of the engine, as the server measures it before anything is kept: its ids placeholders of an id's length. */
-export function changeRequestOf(body: ReviewBody, by: string): ChangeRequest {
+/**
+ * A check finding's receipt as the engine's request carries it (crew.RequestedCheck), the server filling it from the ledger: its
+ * identity and parts, the tested commit, how it ended, its log's hash and size, the last of its output, the server's class, and the
+ * person's class and quote. The members Go's omitempty leaves out are optional here; `stable` is always written.
+ */
+export interface RequestedCheck {
+  receipt: string
+  run?: string
+  task?: string
+  attempt?: number
+  phase?: string
+  id?: string
+  k?: number
+  subject?: string
+  exit?: number
+  signal?: string
+  timedOut?: boolean
+  stable: boolean
+  error?: string
+  logSha256?: string
+  logBytes?: number
+  tail?: string
+  class?: string
+  chosen?: string
+  quote?: string
+}
+
+/** The most bytes of a check's output a check finding keeps (dispatch.MaxCheckExcerpt), and of its failure's words (crew's maxCheckWords). */
+export const MAX_CHECK_EXCERPT = 2 << 10
+const MAX_CHECK_WORDS = 500
+
+/** A receipt as the server fills it into the request (requestedChange in internal/api), from the prepared request's CheckRef. */
+export function requestedCheckOf(c: CheckRef): RequestedCheck {
+  const r: RequestedCheck = { receipt: c.receipt, stable: c.stable }
+  if (c.run) r.run = c.run
+  if (c.task) r.task = c.task
+  if (c.attempt) r.attempt = c.attempt
+  if (c.phase) r.phase = c.phase
+  if (c.id) r.id = c.id
+  if (c.k) r.k = c.k
+  if (c.subject) r.subject = c.subject
+  if (c.exit !== undefined) r.exit = c.exit
+  if (c.signal) r.signal = c.signal
+  if (c.timedOut) r.timedOut = true
+  if (c.error) r.error = c.error
+  if (c.logSha256) r.logSha256 = c.logSha256
+  if (c.logBytes) r.logBytes = c.logBytes
+  if (c.tail) r.tail = c.tail
+  if (c.class) r.class = c.class
+  return r
+}
+
+/**
+ * A check note's receipt at its largest, for a note whose receipt the draft does not hold (a draft kept before it did): the parts its
+ * identity names, a 64-hex subject and log hash, an exit, a signal, the failure's words and the output's tail at their bounds, the class.
+ */
+function worstCheck(receipt: string): RequestedCheck {
+  const [run, task, n, phase, id, k] = receipt.split('/')
+  const hex = 'f'.repeat(64)
+  return {
+    receipt,
+    run,
+    task,
+    attempt: Number(n) || 1 << 20,
+    phase,
+    id,
+    k: Number(k) || 1 << 20,
+    subject: hex,
+    exit: -1 << 20,
+    signal: 'SIGKILL',
+    timedOut: true,
+    stable: false,
+    error: 'x'.repeat(MAX_CHECK_WORDS),
+    logSha256: hex,
+    logBytes: 1e18,
+    tail: 'x'.repeat(MAX_CHECK_EXCERPT),
+    class: 'infrastructure',
+  }
+}
+
+/**
+ * The request the review makes of the engine, as the server measures it before anything is kept: its ids placeholders of an id's length,
+ * a check note's receipt as the server fills it (`notes`, the draft's notes in the body's order: each check note's `measured`, else the
+ * receipt at its largest), with the class chosen and the quote.
+ */
+export function changeRequestOf(body: ReviewBody, by: string, notes: readonly Pick<DraftNote, 'measured'>[] = []): ChangeRequest {
   return {
     review: '0'.repeat(ID_LEN),
     by,
     via: body.via,
     ...(body.base ? { base: body.base } : {}),
     ...(body.summary ? { summary: body.summary } : {}),
-    changes: body.findings.map((f, i) => ({ id: (i + 1).toString(16).padStart(ID_LEN, '0'), ...f })),
+    changes: body.findings.map((f, i) => {
+      const { check, ...rest } = f
+      const id = (i + 1).toString(16).padStart(ID_LEN, '0')
+      if (!check) return { id, ...rest }
+      const filled = { ...(notes[i]?.measured ?? worstCheck(check.receipt)), receipt: check.receipt }
+      delete filled.chosen
+      delete filled.quote
+      return { id, ...rest, check: { ...filled, ...(check.chosen ? { chosen: check.chosen } : {}), ...(check.quote ? { quote: check.quote } : {}) } }
+    }),
   }
 }
 
@@ -229,7 +326,7 @@ export function noteWhere(n: Pick<DraftNote, 'kind' | 'path' | 'side' | 'from' |
  * fifty notes, a request with a change in it, each text within its bound, and a request within what the run keeps (64 KiB). Empty when
  * it may be sent; the server checks all of it again, and the task file's size, which only it can measure.
  */
-export function batchProblems(body: ReviewBody, by: string): string[] {
+export function batchProblems(body: ReviewBody, by: string, notes: readonly Pick<DraftNote, 'measured'>[] = []): string[] {
   const out: string[] = []
   if (!body.findings.length && !body.summary) out.push('Add a note or a summary first.')
   if (body.findings.length > MAX_REVIEW_FINDINGS) out.push(`A review holds at most ${MAX_REVIEW_FINDINGS} notes: this one has ${body.findings.length}.`)
@@ -243,7 +340,7 @@ export function batchProblems(body: ReviewBody, by: string): string[] {
     if (f.path && bytes(f.path) > MAX_FINDING_PATH) out.push(`${what}'s path is more than ${MAX_FINDING_PATH} bytes.`)
   })
   if (body.verdict === 'request_changes') {
-    const n = repairBytes(changeRequestOf(body, by))
+    const n = repairBytes(changeRequestOf(body, by, notes))
     if (n > MAX_REPAIR_PAYLOAD) out.push(`The notes are ${kib(n)} KiB as the run keeps them, more than ${MAX_REPAIR_PAYLOAD >> 10} KiB: shorten them.`)
   }
   return out
@@ -551,6 +648,7 @@ export function checkNote(p: PreparedRepair, chosen: FailureClass, quote: string
     message: message.trim() || p.finding.message,
     check: { source: 'ledger', receipt: ch.receipt, ...(chosen ? { chosen } : {}), ...(q ? { quote: q } : {}) },
     checkName: `${ch.phase} ${ch.id}${ch.k > 1 ? ` #${ch.k}` : ''}`,
+    measured: requestedCheckOf(ch),
   }
 }
 
@@ -583,4 +681,139 @@ export function markBlocked(finding: string, shown: string, verdict: 'resolved' 
 function parseRef(s: string): { run: string; task: string; attempt: number; commit: string } | null {
   const m = /^([^/@]+)\/([^/@]+)\/([1-9][0-9]*)@([0-9a-f]{40}|[0-9a-f]{64})$/.exec(s)
   return m ? { run: m[1]!, task: m[2]!, attempt: Number(m[3]), commit: m[4]! } : null
+}
+
+/** Where a finding is on the candidate shown: the side, the path, and its lines when it has them there. */
+export interface FindingPlace {
+  side: Side
+  path: string
+  from?: number
+  to?: number
+}
+
+/**
+ * Where a finding is on the candidate shown (`shown`), when the server located it there: the candidate side, which the located lines
+ * are of whatever side the finding was made on, the renamed file's path, the moved lines (a rename's own located lines within it); a
+ * finding whose lines changed is on its file, without lines. Null when it was not located on the candidate shown, or its file is gone or
+ * it could not be located: the finding is then where it was made (its own side, path and lines).
+ */
+export function findingAt(f: { kind: NoteKind; side?: Side; path?: string; from?: number; to?: number; locatedOn?: string; located?: Located }, shown: string): FindingPlace | null {
+  if (f.kind !== 'line' && f.kind !== 'file') return null
+  if (!f.path || !shown || f.locatedOn !== shown || !f.located) return null
+  let l: Located | undefined = f.located
+  let path = f.path
+  if (l.state === 'renamed') {
+    if (!l.path) return null
+    path = l.path
+    l = l.located
+    // A file finding renamed: on the renamed file.
+    if (!l) return { side: 'candidate', path }
+  }
+  switch (l.state) {
+    case 'same':
+      return f.kind === 'line' && f.from ? { side: 'candidate', path, from: f.from, to: f.to ?? f.from } : { side: 'candidate', path }
+    case 'moved':
+      return f.kind === 'line' && l.from ? { side: 'candidate', path, from: l.from, to: l.to ?? l.from } : { side: 'candidate', path }
+    case 'changed':
+      return { side: 'candidate', path }
+    default:
+      return null
+  }
+}
+
+type PlacedFinding = Parameters<typeof findingAt>[0] & { state: 'open' | 'resolved' | 'withdrawn'; message: string }
+
+/** The open findings located on the candidate shown, as marks in the candidate side's margin of the file `path` at their located lines. */
+export function findingMarks(fs: readonly PlacedFinding[], shown: string, path: string): DiffMark[] {
+  const out: DiffMark[] = []
+  for (const f of fs) {
+    if (f.state !== 'open') continue
+    const at = findingAt(f, shown)
+    if (at && at.path === path && at.from && at.to) out.push({ side: 'candidate', from: at.from, to: at.to, label: f.message })
+  }
+  return out
+}
+
+/** The open findings located on the candidate shown, by the path of the diff's file they are on (the candidate's path). */
+export function openFindingsPerFile(fs: readonly PlacedFinding[], shown: string, files: readonly { path: string }[]): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const f of fs) {
+    if (f.state !== 'open') continue
+    const at = findingAt(f, shown)
+    if (at && files.some((x) => x.path === at.path)) out[at.path] = (out[at.path] ?? 0) + 1
+  }
+  return out
+}
+
+/**
+ * The candidate a run page's work task offers to review: its result, in the run that made it (a continuation's result imported by
+ * reference keeps the attempt of the run it came from, `importedFrom`'s `<run>/<task>/<n>`, whose candidate that is), else its latest
+ * attempt that submitted one, in the run itself.
+ */
+export function taskReviewTarget(
+  run: string,
+  t: { kind: string; result?: { attempt: number; commit?: string }; importedFrom?: string },
+  attempts: readonly { n: number; result?: string }[],
+): { run: string; attempt: number; commit: string } | null {
+  if (t.kind !== 'work') return null
+  if (t.result?.commit) {
+    const m = /^([^/@]+)\/([^/@]+)\/([1-9][0-9]*)$/.exec(t.importedFrom ?? '')
+    if (m) return { run: m[1]!, attempt: Number(m[3]), commit: t.result.commit }
+    return { run, attempt: t.result.attempt, commit: t.result.commit }
+  }
+  const a = [...attempts].reverse().find((x) => x.result)
+  return a ? { run, attempt: a.n, commit: a.result! } : null
+}
+
+interface ReviewableRun {
+  run: string
+  label?: string
+  tasks: ReadonlyArray<{ task: string; kind: string; candidates: ReadonlyArray<{ attempt: number; commit?: string; state: string; standing: boolean; withdrawn: boolean; receipts: ReadonlyArray<{ startedAt: string }> }> }>
+}
+
+/** The candidate the Review view opens when the route names none: the first standing work candidate in the runs' order, else the first. */
+export function firstReviewCandidate(runs: readonly ReviewableRun[]): string {
+  let first = ''
+  for (const r of runs) {
+    for (const t of r.tasks) {
+      if (t.kind !== 'work') continue
+      for (const c of t.candidates) {
+        if (!c.commit) continue
+        const v = `${r.run}/${t.task}/${c.attempt}@${c.commit}`
+        if (c.standing) return v
+        first ||= v
+      }
+    }
+  }
+  return first
+}
+
+/**
+ * The latest candidate of a ticket's runs that the Review view can show, failed ones among them (a withdrawn one is not): each work
+ * task's newest attempt that submitted a commit, and of those the newest by the run's place in its chain (a continuation after the run
+ * it continues), then by when its checks started (a candidate's receipts start once it is submitted), then by the crew's order. Null for
+ * none.
+ */
+export function latestReviewable(runs: readonly ReviewableRun[], continues: ReadonlyMap<string, string>): { value: string; label: string } | null {
+  const depth = (run: string) => {
+    let n = 0
+    for (let r = continues.get(run); r && n < 64; r = continues.get(r)) n++
+    return n
+  }
+  let best: { key: [number, string, number]; value: string; label: string } | null = null
+  const later = (a: [number, string, number], b: [number, string, number]) => a[0] - b[0] || (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0) || a[2] - b[2]
+  for (const r of runs) {
+    r.tasks.forEach((t, i) => {
+      if (t.kind !== 'work') return
+      const c = t.candidates.filter((x) => x.commit && !x.withdrawn).sort((x, y) => y.attempt - x.attempt)[0]
+      if (!c) return
+      const at = c.receipts.reduce((m, x) => (x.startedAt > m ? x.startedAt : m), '')
+      const key: [number, string, number] = [depth(r.run), at, i]
+      if (!best || later(key, best.key) > 0) {
+        best = { key, value: `${r.run}/${t.task}/${c.attempt}@${c.commit}`, label: `${t.task} · attempt ${c.attempt} · ${shortCommit(c.commit!)}${c.state === 'failed' ? ' · failed' : ''} · ${r.label || r.run}` }
+      }
+    })
+  }
+  const b = best as { value: string; label: string } | null
+  return b ? { value: b.value, label: b.label } : null
 }

@@ -57,9 +57,24 @@ interface Finding {
   message: string
   state: string
   candidate: string
+  marks: number
+  latest?: { verdict: string; candidate: string; note?: string }
   locatedOn?: string
   located?: { state: string; from?: number; to?: number }
   addressed?: Array<{ run: string; attempt: number; note?: string }>
+}
+
+/**
+ * The page's script errors as they happen: an uncaught one, and one Vue's handler logs (a component's setup that throws, as the
+ * failed-check panel's did reading its state before it was declared, logs and goes on in a production build). Read at the test's end.
+ */
+function scriptErrors(page: Page): string[] {
+  const errors: string[] = []
+  page.on('pageerror', (e) => errors.push(e.message))
+  page.on('console', (m) => {
+    if (m.type() === 'error' && /ReferenceError|TypeError|before initialization/.test(m.text())) errors.push(m.text())
+  })
+  return errors
 }
 
 /** Raises the running test's timeout by the cap of a wait as the step is about to make it (AGENTS.md, Tests that do not flake). */
@@ -182,6 +197,7 @@ const countingCheck = (counter: string) => ['sh', '-c', 'n=$(cat "$1" 2>/dev/nul
 test("findings across candidates: located on the repair, the agent's addressed notes, marked, a question withdrawn, a second round, the lineage, the run page's Review and the phone", async ({ page, api, state }) => {
   test.slow()
   await stopStrays(api, [])
+  const errors = scriptErrors(page)
   const { key, ticketKey, run, runBase } = await launched(api, state.root, 'findings', ['sh', '-c', 'test -s stub-review.txt'])
 
   // build's first candidate, its check passed; a review of it sent through the route the page sends with (review.spec.ts sends one from
@@ -225,6 +241,14 @@ test("findings across candidates: located on the repair, the agent's addressed n
   await expect(question.locator('[data-finding-addressed]')).toHaveCount(0)
   // Every one is still open: an addressed note and a located state are never a resolution.
   for (const f of await findingsOf(api, ticketKey, cand2)) expect(f.state).toBe('open')
+  // The open findings in the file list, by the file each is on on this candidate (the moved lines and the question on stub-review.txt,
+  // the changed line on stub-builder.txt), and in the diff's margin at their located lines: stub-review.txt's 5–6, on the candidate side.
+  await expect(page.locator('[data-review-file-path="stub-review.txt"] [data-review-file-findings]')).toHaveAttribute('data-review-file-findings-count', '2', within(30_000))
+  await expect(page.locator('[data-review-file-path="stub-builder.txt"] [data-review-file-findings]')).toHaveAttribute('data-review-file-findings-count', '1')
+  await page.locator('[data-review-file-path="stub-review.txt"]').click()
+  await expect(page.locator('[data-review-diff]')).toHaveAttribute('data-review-diff-path', 'stub-review.txt', within(15_000))
+  await expect(page.locator('[data-review-diff] .editor.modified .conductor-review-mark-gutter')).toHaveCount(2, within(30_000))
+  await expect(page.locator('[data-review-diff] .editor.original .conductor-review-mark-gutter')).toHaveCount(0)
 
   // The candidate's lineage: attempt 2 the repair of the review, attempt 1 build's first.
   await expect(page.locator('[data-review-lineage-step][data-lineage-attempt="2"]')).toHaveAttribute('data-lineage-cause', 'review')
@@ -237,7 +261,13 @@ test("findings across candidates: located on the repair, the agent's addressed n
 
   // Marked against the repair's candidate: one resolved, one still open, the question withdrawn; as the store keeps them.
   await markOnPage(moved, 'resolved', 'Renumbered.')
+  // Still open leaves the state as it was: what proves the mark is the mark itself, shown and kept, against this candidate with its note.
   await markOnPage(changed, 'open', 'Not yet.')
+  await expect(changed.locator('[data-finding-latest]')).toContainText('Marked still open', within(30_000))
+  await expect(changed.locator('[data-finding-latest]')).toContainText('Not yet.')
+  const stillOpen = (await findingsOf(api, ticketKey, cand2)).find((f) => f.message === 'Say more on the first line.')!
+  expect(stillOpen.marks).toBe(1)
+  expect(stillOpen.latest).toMatchObject({ verdict: 'open', candidate: cand2, note: 'Not yet.' })
   await markOnPage(question, 'withdrawn', '')
   await expect(page.locator('[data-review-findings]')).toHaveAttribute('data-review-findings-open', '1')
   const kept = await findingsOf(api, ticketKey, cand2)
@@ -306,10 +336,14 @@ test("findings across candidates: located on the repair, the agent's addressed n
   await expect(palette).toBeVisible(within(15_000))
   await expect(palette.locator('[data-palette-row="page:review-latest"]')).toBeVisible()
   await expect(palette.locator('[data-palette-row="page:review-findings"]')).toBeVisible()
+  // Open findings counts what the view lists: build's, the second round's general note the one still open.
+  await expect(page.locator('[data-review-findings]')).toHaveAttribute('data-review-findings-open', '1')
+  await expect(palette.locator('[data-palette-row="page:review-findings"]')).toContainText("1 open in build's reviews")
   await expect(palette.locator('[data-palette-row="page:review-send"]')).toContainText('Send review (1 note)')
   await palette.locator('[data-palette-row="page:review-send"]').click()
   await expect(palette).toBeHidden(within(15_000))
   await expect(page.locator('[data-review-confirm-send]')).toBeVisible(within(15_000))
+  expect(errors).toEqual([])
 })
 
 test("a failed check prepared for its repair, checked again at the same commit, Resolved refused on it, and a request refused since the task moved on, asked again", async ({ page, api, state }) => {
@@ -317,6 +351,7 @@ test("a failed check prepared for its repair, checked again at the same commit, 
   await stopStrays(api, [])
   const counter = join(state.root, `review-repair-counter-${Date.now().toString(36)}`)
   cleanup.push(() => rmSync(counter, { force: true }))
+  const errors = scriptErrors(page)
   const { key, ticketKey, run, runBase } = await launched(api, state.root, 'recheck', countingCheck(counter))
 
   // build fails: its check fails on each of its three attempts.
@@ -409,6 +444,7 @@ test("a failed check prepared for its repair, checked again at the same commit, 
     .toMatchObject({ state: 'refused', try: 2 })
   await expect(lateRow.locator('[data-review-retry]')).toBeVisible(within(30_000))
   await expect(lateRow).toContainText('try 2 of 5', within(30_000))
+  expect(errors).toEqual([])
 })
 
 test("a failed check of a run stopped and continued, checked again in the continuation from the first run's receipt", async ({ page, api, state }) => {
@@ -416,6 +452,7 @@ test("a failed check of a run stopped and continued, checked again in the contin
   await stopStrays(api, [])
   const counter = join(state.root, `review-repair-counter-${Date.now().toString(36)}`)
   cleanup.push(() => rmSync(counter, { force: true }))
+  const errors = scriptErrors(page)
   const { key, run } = await launched(api, state.root, 'continued', countingCheck(counter))
 
   const failed = await candidateUntil(api, run, 'build', 3, failedCheck, "build's attempt 3 failed its check")
@@ -449,4 +486,20 @@ test("a failed check of a run stopped and continued, checked again in the contin
   expect(again.commit).toBe(c3)
   const firstNow = (await candidatesOf(api, run, 'build')).find((c) => c.attempt === 3)!
   expect(firstNow.receipts.map((r) => [r.phase, r.id, r.k, r.state, r.exit])).toEqual(failed.receipts.map((r) => [r.phase, r.id, r.k, r.state, r.exit]))
+
+  // On the page, at the new candidate: the view, its lineage through the continuation (built from the ticket's Runs entries) naming the
+  // Check again of the first run's attempt 3, and its own passing receipt in its checks.
+  await page.keyboard.press('Escape')
+  const candN = `${next}/build/${n}@${c3}`
+  await page.goto(`/dispatch/${key}/1?view=review&candidate=${encodeURIComponent(candN)}`)
+  await expect(page.locator(`[data-review-view][data-review-candidate="${candN}"]`)).toBeVisible(within(60_000))
+  const step = page.locator(`[data-review-lineage-step][data-lineage-run="${next}"][data-lineage-attempt="${n}"]`)
+  await expect(step).toHaveAttribute('data-lineage-cause', 'recheck', within(60_000))
+  await expect(step.locator('[data-lineage-words]')).toHaveText(`attempt ${n} of build, attempt 3 of run ${run} (${c3.slice(0, 12)}) checked again, the same commit, in run ${next}, a continuation of ${run}`)
+  await expect(page.locator(`[data-review-lineage-step][data-lineage-run="${run}"][data-lineage-attempt="3"]`)).toBeVisible()
+  const checks = page.locator('[data-review-check]')
+  await expect(checks).toHaveCount(again.receipts.length, within(30_000))
+  const ok = again.receipts.find((r) => r.phase === 'check' && r.exit === 0)!
+  await expect(page.locator(`[data-review-check][data-review-check-key="${ok.phase}:${ok.id}:${ok.k}"]`)).toHaveAttribute('data-review-check-failed', 'false')
+  expect(errors).toEqual([])
 })

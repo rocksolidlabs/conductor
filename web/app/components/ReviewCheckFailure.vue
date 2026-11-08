@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { shortCommit } from '~/utils/dispatchPlans'
+import { useRecheckAsk } from '~/composables/useReview'
 import { FAILURE_CLASSES, checkNote, classWords, failedReceiptActions, type DraftNote, type FailureClass, type PreparedRepair } from '~/utils/review'
 
 /**
@@ -16,8 +17,8 @@ const props = defineProps<{
   loading: boolean
   /** The task failed: Retry is the run page's. */
   taskFailed: boolean
-  /** Checks the candidate again: the words of where it was, or throws. */
-  recheck: () => Promise<string>
+  /** Checks again the candidate the prepared request names: the words of where it was, or throws. */
+  recheck: (p: PreparedRepair) => Promise<string>
 }>()
 const open = defineModel<boolean>('open', { default: false })
 const emit = defineEmits<{ add: [note: Omit<DraftNote, 'key'>] }>()
@@ -25,14 +26,19 @@ const emit = defineEmits<{ add: [note: Omit<DraftNote, 'key'>] }>()
 const chosen = ref<FailureClass>('code')
 const quote = ref('')
 const message = ref('')
+// Check again's state, its reply applied only while this panel shows the prepared request it was asked of (useRecheckAsk); declared
+// before the watch below, which resets it at once.
+const asked = useRecheckAsk(() => props.prepared)
+const busy = asked.busy
+const rechecked = asked.rechecked
+const failure = asked.failure
 watch(
   () => props.prepared,
   (p) => {
     chosen.value = (p?.finding.check.chosen as FailureClass) || p?.finding.check.class || 'code'
     quote.value = p?.finding.check.quote ?? p?.finding.check.tail ?? ''
     message.value = p?.finding.message ?? ''
-    rechecked.value = ''
-    failure.value = ''
+    asked.reset()
   },
   { immediate: true },
 )
@@ -47,19 +53,8 @@ const ended = computed(() => {
   if (c.killed) return 'interrupted'
   return c.exit !== undefined ? `exit ${c.exit}` : c.state
 })
-const busy = ref(false)
-const rechecked = ref('')
-const failure = ref('')
-async function again() {
-  busy.value = true
-  failure.value = ''
-  try {
-    rechecked.value = await props.recheck()
-  } catch (e) {
-    failure.value = (e as Error).message
-  } finally {
-    busy.value = false
-  }
+function again() {
+  void asked.again(props.recheck)
 }
 function add() {
   if (!props.prepared) return
