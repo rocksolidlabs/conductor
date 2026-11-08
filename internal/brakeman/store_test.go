@@ -1758,3 +1758,43 @@ func TestAnEntryIsMeasuredAsItIsWritten(t *testing.T) {
 		t.Fatal("a refused entry was written")
 	}
 }
+
+// Folder is one folder per account, made 0700 under brakeman/folders and
+// kept: the same path for the same account, after a restart too, another
+// for another account, "default" for the agent's default login (#705).
+func TestFolderIsOnePerAccountAndKept(t *testing.T) {
+	f := newFixture(t)
+	def, err := f.s.Folder("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(f.data.Dir(), Dir, FoldersDir, "default"); def != want {
+		t.Fatalf("the default login's folder is %s, want %s", def, want)
+	}
+	a, err := f.s.Folder("/home/me/.claude-work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := f.s.Folder("/home/me/.claude-home")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a == b || a == def || filepath.Dir(a) != filepath.Dir(def) || len(filepath.Base(a)) != 32 {
+		t.Fatalf("the folders: %s %s %s", def, a, b)
+	}
+	if fi, err := os.Stat(a); err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("the folder %s: %v %v", a, fi, err)
+	}
+	marker := filepath.Join(a, "kept")
+	if err := os.WriteFile(marker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.reopen()
+	again, err := f.s.Folder("/home/me/.claude-work")
+	if err != nil || again != a {
+		t.Fatalf("after a restart: %s %v, want %s", again, err, a)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("the folder was not kept: %v", err)
+	}
+}

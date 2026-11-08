@@ -4011,7 +4011,15 @@ answers `403 switchyard`.
 turn holds the slot, writes the day's charge and then the request
 `starting` (its deadline `budget.turnMinutes` on, its configuration
 snapshot), and launches through the engine an unsaved one-member crew:
-crew id `brakeman`, isolation `none`, in the configured folder, the
+crew id `brakeman`, isolation `none`, in the configured folder (or, when
+that is the home folder, whose trust an agent may never keep: Claude Code
+records none for it, so every turn asked again, #705, in the desk's own
+folder for the account, `brakeman/folders/<account>` in the data
+directory, `default` for the agent's default login and else 32 hex
+characters of the account's SHA-256, made 0700 once and kept, so a person
+trusts it once; the configured folder still when that one lies outside
+the allowed roots), the folder named in the request's `agent.folder` (at
+most 4096 bytes) as the request starts, the
 member the configured agent with its adapter's read-only arguments,
 then its model flag, then, when `allowConductorTools` is set, the rule
 that lets Conductor's MCP tools run without asking; never yolo, whatever

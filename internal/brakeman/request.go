@@ -55,13 +55,16 @@ type Request struct {
 }
 
 // Stamp is the agent a turn ran: its id, its adapter, the probed version,
-// the model, and whether an account was set.
+// the model, whether an account was set, and the folder it ran in (at
+// most MaxPath bytes; the configured folder, or the desk's own for the
+// account in place of the home folder, Store.Folder).
 type Stamp struct {
 	AgentID string `json:"agentId,omitempty"`
 	Adapter string `json:"adapter,omitempty"`
 	Version string `json:"version,omitempty"`
 	Model   string `json:"model,omitempty"`
 	Account bool   `json:"account,omitempty"`
+	Folder  string `json:"folder,omitempty"`
 }
 
 // Snapshot is the configuration a turn began under: what its reads may

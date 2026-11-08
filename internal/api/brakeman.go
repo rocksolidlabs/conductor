@@ -8,6 +8,8 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -116,6 +118,9 @@ type brakemanDesk struct {
 	// before the engine is asked for its run. Each desk's own, so tests
 	// that gate run beside each other.
 	afterLaunch, beforeLaunch atomic.Pointer[func(requestID string)]
+	// homeDir, when a test sets it, is the home folder turnFolder knows
+	// (os.UserHomeDir otherwise).
+	homeDir atomic.Pointer[string]
 	// beforeRecover runs as the store becomes this server's (OnOwned),
 	// before the queue is read again; beforeAdmit in an ask before it
 	// takes admit; beforeCheck in a brief's route before it checks a new
@@ -1076,9 +1081,10 @@ func (d *brakemanDesk) entry(cfg brakeman.Config) *catalog.Agent {
 // stamp is the agent a turn under cfg runs from its entry a: its id,
 // adapter, the version the probe cache knows of a (nothing is run for it
 // here, under admit: a cold cache is probed by the turn's launch,
-// probedVersion), the model and whether an account is set.
+// probedVersion), the model, whether an account is set and the folder it
+// runs in (turnFolder), which its launch takes from the stamp.
 func (d *brakemanDesk) stamp(cfg brakeman.Config, a *catalog.Agent) brakeman.Stamp {
-	st := brakeman.Stamp{AgentID: cfg.AgentID, Model: cfg.Model, Account: cfg.Account != ""}
+	st := brakeman.Stamp{AgentID: cfg.AgentID, Model: cfg.Model, Account: cfg.Account != "", Folder: d.turnFolder(cfg)}
 	if a != nil {
 		st.Adapter = a.Adapter
 		if id, ok := d.s.cachedIdentity(*a); ok && id.Identified && len(id.Version) <= maxStampVersion {
@@ -1086,6 +1092,49 @@ func (d *brakemanDesk) stamp(cfg brakeman.Config, a *catalog.Agent) brakeman.Sta
 		}
 	}
 	return st
+}
+
+// turnFolder is the folder a turn under cfg runs in: the configured one,
+// unless that is the home folder, whose trust an agent may never keep
+// (Claude Code records none for it: its trust question's answer holds for
+// that session alone, so every turn asked again, #705). A turn there runs
+// in the desk's own folder for the account (brakeman.Store.Folder), made
+// once and kept, so the trust a person gives it the first time holds for
+// the turns after. One the desk cannot make, outside the allowed roots
+// (a data directory placed outside them) or longer than a configured
+// folder may be leaves the configured folder.
+func (d *brakemanDesk) turnFolder(cfg brakeman.Config) string {
+	home := ""
+	if h := d.homeDir.Load(); h != nil {
+		home = *h
+	} else if h, err := os.UserHomeDir(); err == nil {
+		home = h
+	}
+	if home == "" || !sameFolder(cfg.Cwd, home) {
+		return cfg.Cwd
+	}
+	dir, err := d.st.Folder(cfg.Account)
+	if err == nil {
+		dir, err = d.s.resolveCwd(dir)
+	}
+	if err == nil && len(dir) > brakeman.MaxPath {
+		err = fmt.Errorf("its path is longer than %d bytes", brakeman.MaxPath)
+	}
+	if err != nil {
+		d.s.log.Warn("Brakeman's turn runs in the home folder: its own folder could not be used", "err", err)
+		return cfg.Cwd
+	}
+	return dir
+}
+
+// sameFolder reports whether a and b name one folder, links followed.
+func sameFolder(a, b string) bool {
+	ra, err := filepath.EvalSymlinks(a)
+	if err != nil {
+		return false
+	}
+	rb, err := filepath.EvalSymlinks(b)
+	return err == nil && ra == rb
 }
 
 // probedVersion is the version the identity probe of the entry a reports:
@@ -1233,9 +1282,9 @@ func brakemanLine(req brakeman.Request) string {
 
 // turnRequest is the turn a request launches, as the desk asks its Host
 // for it: the configured agent, its model and whether Conductor's tools
-// are allowed, the configured folder, the line, the label and the
-// request. The configuration is held to Validate again against the
-// catalog and the folders as they are now (an agent hidden, its adapter
+// are allowed, the folder its stamp names (turnFolder), the line, the
+// label and the request. The configuration is held to Validate again
+// against the catalog and the folders as they are now (an agent hidden, its adapter
 // changed since the save), and the crew the Host makes of it checked
 // (turnCrew) for the entry a the turn was stamped from, whose
 // agentSelection's SHA256 is answered, which the member's session must
@@ -1247,9 +1296,13 @@ func (d *brakemanDesk) turnRequest(req brakeman.Request, cfg brakeman.Config, a 
 	if a == nil {
 		return ext.TurnLaunch{}, "", fmt.Errorf("no agent %s in the catalog", cfg.AgentID)
 	}
+	folder := req.Agent.Folder
+	if folder == "" {
+		folder = cfg.Cwd
+	}
 	tl := ext.TurnLaunch{
 		Agent: cfg.AgentID, Model: cfg.Model, AllowTools: cfg.AllowConductorTools,
-		Folder: cfg.Cwd, Line: brakemanLine(req), Label: brakemanLabel(req), Request: req.ID,
+		Folder: folder, Line: brakemanLine(req), Label: brakemanLabel(req), Request: req.ID,
 	}
 	if _, err := turnCrew(*a, tl); err != nil {
 		return ext.TurnLaunch{}, "", err

@@ -64,13 +64,15 @@ export interface BrakemanConfig {
   updatedAt?: string
 }
 
-/** The agent a turn ran: its id, adapter, probed version, model, and whether an account was set. */
+/** The agent a turn ran: its id, adapter, probed version, model, whether an account was set, and the folder it ran in. */
 export interface BrakemanStamp {
   agentId?: string
   adapter?: string
   version?: string
   model?: string
   account?: boolean
+  /** The configured folder, or the desk's own for the account in place of the home folder (#705). */
+  folder?: string
 }
 
 /** A draft made work by a person, or its claim (PR-7 shows them): pending, made, refused or deleted. */
