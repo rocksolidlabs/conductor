@@ -89,7 +89,7 @@ export function useApi() {
         body: opts.body as Record<string, unknown> | undefined,
         query: opts.query,
         headers: token ? { Authorization: `Bearer ${token}` } : {},
-        signal: opts.signal,
+        ...(opts.signal ? { signal: opts.signal } : {}),
       })
     } catch (e) {
       throw normalise(e, opts.token !== undefined, token)

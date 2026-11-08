@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { relativeTime } from '~/utils/sessions'
 import { ticketOf, type DeliveryStep, type InboxAction, type InboxItem } from '~/utils/inbox'
+import type { LaneEvidence } from '~/utils/transport/decide'
 
 /**
  * One item of the decision page, whole (docs/plans/decision-inbox.md, PR-2): its brief (Brakeman's card, named as Brakeman's, or
@@ -28,6 +29,12 @@ const props = defineProps<{
   askBrakeman?: string
   /** The question Accept anyway and Cancel ask, the run page's (useTaskCommands.question). */
   confirmQuestion?: (a: InboxAction) => { title: string; detail: string }
+  /** A decision link's page (the join page's Decide tab): an evidence entry read through the link's lane. */
+  readEvidence?: (evidence: string) => Promise<LaneEvidence>
+  /** A decision link's page: a session's terminal, one tab away, in place of the workbench's route. */
+  openTerminal?: (ref: string) => void
+  /** Comment on the ticket is not offered: a decision link has no comment operation (the workbench's page offers it). */
+  noComments?: boolean
 }>()
 const emit = defineEmits<{ act: [ref: string, action: InboxAction, text?: string]; comment: [ref: string, ticket: string, text: string, taken: (sent: boolean) => void]; reread: [] }>()
 
@@ -39,7 +46,13 @@ const commands = computed(() => props.item.actions.filter((a) => a.name !== 'ans
 /** A question whose turn is held for the terminal: no answer at all, the terminal first in its evidence. */
 const held = computed(() => props.item.kind === 'question' && !props.item.actions.length && !props.item.delivery?.length)
 const terminal = computed(() => props.item.evidence?.find((e) => e.ref.startsWith('session:')))
-const ticket = computed(() => ticketOf(props.item))
+const ticket = computed(() => (props.noComments ? '' : ticketOf(props.item)))
+/** The terminal of the session the item is about, by this page's route or a link's tab; null when neither has it. */
+const terminalTo = computed(() => (terminal.value && props.routeOf(terminal.value.ref)) || null)
+const terminalOpens = computed(() => !!terminal.value && (!!terminalTo.value || !!props.openTerminal))
+function openTheTerminal() {
+  if (terminal.value && props.openTerminal) props.openTerminal(terminal.value.ref)
+}
 
 const text = ref('')
 const asking = ref<InboxAction | null>(null)
@@ -167,7 +180,8 @@ function sendComment() {
       <!-- A turn held for the terminal: the session refuses every reply naming it, so none is offered; its terminal goes on. -->
       <div v-if="held" class="flex flex-col gap-2" data-inbox-held>
         <p class="text-sm text-pretty">{{ item.blocking.words }}</p>
-        <UButton v-if="terminal && routeOf(terminal.ref)" :to="routeOf(terminal.ref)!" label="Open the terminal" icon="i-lucide-square-terminal" size="lg" class="min-h-11 self-start" data-inbox-terminal />
+        <UButton v-if="terminalTo" :to="terminalTo" label="Open the terminal" icon="i-lucide-square-terminal" size="lg" class="min-h-11 self-start" data-inbox-terminal />
+        <UButton v-else-if="terminalOpens" label="Open the terminal" icon="i-lucide-square-terminal" size="lg" class="min-h-11 self-start" data-inbox-terminal @click="openTheTerminal" />
       </div>
       <UAlert
         v-if="refusal"
@@ -175,7 +189,7 @@ function sendComment() {
         variant="subtle"
         icon="i-lucide-triangle-alert"
         :title="refusal"
-        :actions="item.kind === 'question' && terminal && routeOf(terminal.ref) ? [{ label: 'Open the terminal', icon: 'i-lucide-square-terminal', color: 'neutral', variant: 'outline', class: 'min-h-11', to: routeOf(terminal.ref)! }] : undefined"
+        :actions="item.kind === 'question' && terminalOpens ? [{ label: 'Open the terminal', icon: 'i-lucide-square-terminal', color: 'neutral', variant: 'outline', class: 'min-h-11', ...(terminalTo ? { to: terminalTo } : { onClick: openTheTerminal }) }] : undefined"
         data-inbox-refusal
       />
       <UAlert
@@ -205,7 +219,7 @@ function sendComment() {
       <UAlert v-else color="neutral" variant="subtle" icon="i-lucide-info" :title="`Now: ${item.now}`" data-inbox-now />
     </section>
 
-    <InboxEvidence v-if="item.evidence?.length" :evidence="item.evidence" :route-of="routeOf" />
+    <InboxEvidence v-if="item.evidence?.length" :evidence="item.evidence" :route-of="routeOf" :read="readEvidence" :open-terminal="openTerminal" />
 
     <UModal v-model:open="askOpen" :title="question.title" :description="question.detail">
       <template #footer>

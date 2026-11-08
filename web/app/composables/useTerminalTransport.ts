@@ -31,5 +31,15 @@ export function useTerminalTransport() {
     return new WebSocketTransport(url, { name, chatOnly: spec.chatOnly })
   }
 
-  return { create }
+  /**
+   * The connection of a run's desk at this server, or at `server` (`GET /ws/runs/{run}/desk`, docs/protocol.md, Decision links): a
+   * run decision link's lane, whether or not a member of the run lives. At a switchyard the desk is a hosted session's id there,
+   * which `create` reaches as it reaches a member's.
+   */
+  function desk(runId: string, token: string, server = '', name?: string): TerminalTransport {
+    const base = server ? wsBaseOf(server) : wsBase.value
+    return new WebSocketTransport(`${base}/ws/runs/${encodeURIComponent(runId)}/desk?token=${encodeURIComponent(token)}`, { name: name ?? identity.name.value })
+  }
+
+  return { create, desk }
 }
