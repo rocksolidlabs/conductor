@@ -190,14 +190,20 @@ func resumedStep(r session.Resumption) deliveryStep {
 
 // commandSteps are the four steps of the command id of actor on the task
 // of the run: the ledger's receipt, whatever its status (accepted, done,
-// failed, or uncertain after a stop), then the task as it stands.
+// failed, or uncertain after a stop), then the task as it stands. A
+// Check again goes to the newest run of the chain (the recheck route), so
+// its receipt is looked for in the runs that continue this one too
+// (laterReceipt): the run continued after the page read it, its reply
+// lost or not, the receipt is where the route took it.
 func (s *Server) commandSteps(ctx context.Context, runID, taskID, actor, id string) ([]deliveryStep, error) {
-	receipt := "command:" + runID + "/" + id
 	avail := step(stepAvailable, stepDone, nil, "asked of task "+taskID+" of run "+runID, "")
 	if s.ledger == nil {
 		return nil, crew.ErrNoLedger
 	}
 	row, found, err := s.ledger.Receipt(ctx, runID, actor, id)
+	if err == nil && !found {
+		row, found, err = s.laterReceipt(ctx, runID, actor, id)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +211,18 @@ func (s *Server) commandSteps(ctx context.Context, runID, taskID, actor, id stri
 		none := "no receipt of this command is kept here"
 		return []deliveryStep{avail, step(stepRecorded, stepUnknown, nil, none, ""), step(stepValidated, stepUnknown, nil, none, ""), step(stepResumed, stepUnknown, nil, none, "")}, nil
 	}
-	if !crew.TaskCommandOn(row, taskID) {
+	runID = row.RunID
+	receipt := "command:" + runID + "/" + id
+	var args []string
+	if row.Intent == crew.TaskRecheck {
+		// Its fingerprint holds its candidate: the task is read from what
+		// it was taken with, whatever its receipt says (none, refused
+		// before its change or not settled).
+		if args, err = crew.CommandArgs(ctx, s.ledger, row); err != nil {
+			return nil, err
+		}
+	}
+	if !crew.TaskCommandOn(row, args, taskID) {
 		// The id names another command (a run's pause, another task's):
 		// none with it was taken for this task, whatever that one became.
 		return otherReceiptSteps(avail, "the command id names another command of the run, not one for task "+taskID+": none with it was taken for this task"), nil
@@ -231,6 +248,13 @@ func (s *Server) commandSteps(ctx context.Context, runID, taskID, actor, id stri
 		return []deliveryStep{avail, recorded, step(stepValidated, stepUnknown, nil, w, receipt), uncertainResumed()}, nil
 	}
 	validated := step(stepValidated, stepDone, nil, fmt.Sprintf("the engine took it at the run's revision; revision %d after it", rc.Revision), receipt)
+	if row.Intent == crew.TaskRecheck {
+		resumed, err := s.recheckResumed(ctx, runID, taskID, rc, attempts)
+		if err != nil {
+			return nil, err
+		}
+		return []deliveryStep{avail, recorded, validated, resumed}, nil
+	}
 	var deps []dependent
 	depsKnown := false
 	if row.Intent == crew.TaskAccept {
@@ -245,6 +269,71 @@ func (s *Server) commandSteps(ctx context.Context, runID, taskID, actor, id stri
 		}
 	}
 	return []deliveryStep{avail, recorded, validated, doneResumed(row, rc, task, attempts, deps, depsKnown)}, nil
+}
+
+// laterReceipt is actor's receipt of the Check again id in a run that
+// continues runID, directly or not, walking forward as the recheck route
+// does (runNode's marks, each run once); found false for none, and for an
+// id a later run keeps as another command, which is not this one.
+func (s *Server) laterReceipt(ctx context.Context, runID, actor, id string) (ledger.CommandRow, bool, error) {
+	if s.runs == nil {
+		return ledger.CommandRow{}, false, nil
+	}
+	seen := map[string]bool{runID: true}
+	for at := runID; ; {
+		nd, ok, err := s.runNode(ctx, at)
+		if err != nil || !ok || nd.by == "" || seen[nd.by] {
+			return ledger.CommandRow{}, false, err
+		}
+		at = nd.by
+		seen[at] = true
+		row, found, err := s.ledger.Receipt(ctx, at, actor, id)
+		if err != nil || found {
+			return row, found && row.Intent == crew.TaskRecheck, err
+		}
+	}
+}
+
+// recheckResumed is the resumed step of a Check again the engine took:
+// its attempt (the receipt's task's last, the one its change recorded)
+// checking the candidate again, from the first receipt of its
+// verification the ledger keeps (its checkout's steps, its checks), or
+// its end when it decided without one. The change records the attempt
+// verifying and its verification starts only once the run's
+// prerequisites have passed (Engine.startRechecks), so until then it is
+// waiting, never done; closed before (a stop, a cancel) it is not
+// applicable; unknown when the attempt is not held here.
+func (s *Server) recheckResumed(ctx context.Context, runID, taskID string, rc crew.Receipt, attempts []crew.AttemptState) (deliveryStep, error) {
+	var a *crew.AttemptState
+	for i := range attempts {
+		if rc.Task != nil && attempts[i].N == rc.Task.Attempts {
+			a = &attempts[i]
+		}
+	}
+	if a == nil {
+		return step(stepResumed, stepUnknown, nil, "the attempt that checks it again is not held here", ""), nil
+	}
+	// The attempt as read first, its receipts after: a verification that
+	// started between the two reads as started.
+	rows, err := s.ledger.Checks(ctx, runID, taskID, a.N, false)
+	if err != nil {
+		return deliveryStep{}, err
+	}
+	var first *time.Time
+	for _, r := range rows {
+		if at := r.StartedAt; !at.IsZero() && (first == nil || at.Before(*first)) {
+			first = &at
+		}
+	}
+	switch {
+	case first != nil:
+		return step(stepResumed, stepDone, first, fmt.Sprintf("attempt %d checks the candidate again", a.N), ""), nil
+	case a.State == ledger.AttemptSucceeded || a.State == ledger.AttemptFailed:
+		return step(stepResumed, stepDone, a.EndedAt, fmt.Sprintf("attempt %d checked the candidate again", a.N), ""), nil
+	case a.EndedAt == nil:
+		return step(stepResumed, stepWaiting, nil, fmt.Sprintf("attempt %d waits to check the candidate again: its verification starts once the run's prerequisites have passed", a.N), ""), nil
+	}
+	return step(stepResumed, stepNotApplicable, a.EndedAt, fmt.Sprintf("attempt %d was %s before it checked the candidate again", a.N, a.State), ""), nil
 }
 
 // otherReceiptSteps are the steps of an action whose id names a receipt
@@ -312,7 +401,7 @@ func startedSince(attempts []crew.AttemptState, since time.Time) *crew.AttemptSt
 // attempt of any of them that started since, read from every attempt it
 // keeps, so that a later attempt reserved and not started yet, or one
 // that failed, does not hide the start that resumed the work), a
-// cancel's nothing.
+// cancel's nothing (a Check again's is recheckResumed).
 func doneResumed(row ledger.CommandRow, rc crew.Receipt, task *crew.TaskState, attempts []crew.AttemptState, deps []dependent, depsKnown bool) deliveryStep {
 	switch row.Intent {
 	case crew.TaskRetry:
