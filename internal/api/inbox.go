@@ -16,6 +16,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
@@ -44,10 +45,11 @@ const (
 	// inboxPage is how many summaries a page of GET /api/inbox holds.
 	inboxPage = 150
 	// maxInboxSummary, maxInboxItem, maxInboxReply and maxInboxTrack bound
-	// a summary, an item, the list's reply and a track's reply.
+	// a summary, an item, the list's reply (a page of inboxPage summaries
+	// and, on the first, Recent's inboxRecent) and a track's reply.
 	maxInboxSummary = 4 << 10
 	maxInboxItem    = 96 << 10
-	maxInboxReply   = 640 << 10
+	maxInboxReply   = 840 << 10
 	maxInboxTrack   = 8 << 10
 	// maxInboxRef bounds a ref, encoded (Brakeman's MaxRef raw).
 	maxInboxRef = brakeman.MaxRef
@@ -88,6 +90,12 @@ type inboxSummary struct {
 	Blocks   int       `json:"blocks,omitempty"`
 	Actions  []string  `json:"actions"` // at most 10 labels of 80
 	Card     bool      `json:"card,omitempty"`
+	// State is a DR1 record's state (a decision item's), Tracking true for
+	// one answered and not yet applied, listed and counted but not in the
+	// bar's number, and Closed the time a record in Recent was closed.
+	State    string     `json:"state,omitempty"`
+	Tracking bool       `json:"tracking,omitempty"`
+	Closed   *time.Time `json:"closed,omitempty"`
 }
 
 // inboxItem is one thing a person must decide, whole: at most 96 KiB
@@ -98,6 +106,7 @@ type inboxItem struct {
 	Ref         string             `json:"ref"`
 	Subject     string             `json:"subject"`
 	Kind        string             `json:"kind"`
+	State       string             `json:"state,omitempty"` // a DR1 record's
 	Since       time.Time          `json:"since"`
 	Title       string             `json:"title"`   // 200
 	Brief       string             `json:"brief"`   // 2 KiB
@@ -125,11 +134,12 @@ type inboxItem struct {
 // inboxAction is one thing a person may do with an item, through its own
 // operation's route, at the revision that operation checks (Expect).
 type inboxAction struct {
-	Name      string `json:"name"`            // answer | retry | accept | cancel | recheck | approve | withdraw
-	Label     string `json:"label"`           // 80
-	Input     string `json:"input,omitempty"` // exact: a choice's keys
-	Text      bool   `json:"text,omitempty"`  // a line is typed
-	Expect    string `json:"expect"`          // exact
+	Name      string `json:"name"`             // answer | retry | accept | cancel | recheck | approve | withdraw; a DR1 record's answer | approve | reject | more_info | comment
+	Label     string `json:"label"`            // 80
+	Input     string `json:"input,omitempty"`  // exact: a choice's keys
+	Text      bool   `json:"text,omitempty"`   // a line is typed
+	Choice    *int   `json:"choice,omitempty"` // a DR1 record's option, by index: exact
+	Expect    string `json:"expect"`           // exact
 	TicketRev int64  `json:"ticketRev,omitempty"`
 	Scope     string `json:"scope"` // 1 KiB
 	Confirm   bool   `json:"confirm,omitempty"`
@@ -260,7 +270,7 @@ func (it *inboxItem) addAction(a inboxAction) {
 func (it *inboxItem) summary() inboxSummary {
 	s := inboxSummary{Ref: it.Ref, Kind: it.Kind, Since: it.Since, Title: fitText(it.Title, 200), Brief: fitText(it.Brief, 280),
 		Question: fitText(it.Question, 280), Answerer: fitText(it.Answerer, 120), Routed: len(it.RoutedTo),
-		Blocks: len(it.Blocking.Refs) + it.Blocking.More, Actions: []string{}, Card: it.Card != ""}
+		Blocks: len(it.Blocking.Refs) + it.Blocking.More, Actions: []string{}, Card: it.Card != "", State: it.State, Tracking: it.State == ledger.DecisionAnswered}
 	for _, a := range it.Actions {
 		s.Actions = append(s.Actions, fitText(a.Label, 80))
 	}
@@ -313,6 +323,9 @@ type inboxRead struct {
 	// planRefs, when a test sets it, says whether Brakeman's resolver
 	// takes the plan kind (brakeman.ParseRef); nil asks it.
 	planRefs func() bool
+	// decisionRuns are the runs DR1's records name, read once
+	// (inbox_decisions.go).
+	decisionRuns map[string]inboxRun
 }
 
 // inboxCard is a Brakeman decision card and where it is kept.
@@ -899,7 +912,8 @@ func fitList(items []string, room int) string {
 func (rd *inboxRead) openQuestions() []*inboxItem {
 	var out []*inboxItem
 	rd.s.registry.Each(func(d session.Driver) {
-		if it, ok := rd.questionItem(d.Info()); ok {
+		info := d.Info()
+		if it, ok := rd.questionItem(info); ok && !rd.mirrorsRecord(info.Attention.Decision) {
 			out = append(out, it)
 		}
 	})
@@ -928,10 +942,12 @@ func (rd *inboxRead) openTasks() []*inboxItem {
 }
 
 // inboxOpen is a page of the open items after after, oldest first: at
-// most limit, whether more follow, and how many are open in all. Each
-// source gives its items after the cursor (Dispatch a page and one), they
-// are merged by (since, ref), and the sources' totals added.
-func (s *Server) inboxOpen(ctx context.Context, after inboxCursor, limit int) ([]*inboxItem, bool, int, error) {
+// most limit, whether more follow, how many are open in all, and how many
+// of those are DR1's records answered and not yet applied (tracking). Each
+// source gives its items after the cursor (Dispatch and DR1's records a
+// page and one), they are merged by (since, ref), and the sources' totals
+// added. A question that mirrors a record is that record's item.
+func (s *Server) inboxOpen(ctx context.Context, after inboxCursor, limit int) ([]*inboxItem, bool, int, int, error) {
 	rd := s.newInboxRead(ctx)
 	var all []*inboxItem
 	all = append(all, rd.openQuestions()...)
@@ -941,18 +957,24 @@ func (s *Server) inboxOpen(ctx context.Context, after inboxCursor, limit int) ([
 	if s.dispatch != nil {
 		page, _, n, err := s.dispatch.OpenPlans(ctx, dispatch.PlanCursor{Since: after.since, Ref: after.ref}, limit+1)
 		if err != nil {
-			return nil, false, 0, err
+			return nil, false, 0, 0, err
 		}
 		total += n
 		for _, p := range page {
 			all = append(all, rd.planItem(p, true))
 		}
 	}
+	records, n, tracking, err := rd.openDecisions(after, limit+1)
+	if err != nil {
+		return nil, false, 0, 0, err
+	}
+	total += n
+	all = append(all, records...)
 	slices.SortFunc(all, func(a, b *inboxItem) int { return a.before(inboxCursor{b.Since, b.Ref}) })
 	if len(all) > limit {
-		return all[:limit], true, total, nil
+		return all[:limit], true, total, tracking, nil
 	}
-	return all, false, total, nil
+	return all, false, total, tracking, nil
 }
 
 // inboxQuery reads the parameters of an inbox route, each at most once:
@@ -999,18 +1021,29 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	items, more, total, err := s.inboxOpen(r.Context(), after, inboxPage)
+	items, more, total, tracking, err := s.inboxOpen(r.Context(), after, inboxPage)
 	if err != nil {
-		s.log.Warn("inbox: the plan revisions could not be read", "err", err)
+		s.log.Warn("inbox: the plan revisions or the decisions could not be read", "err", err)
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "the inbox could not be read")
 		return
 	}
 	out := struct {
-		Items []inboxSummary `json:"items"`
-		Next  string         `json:"next,omitempty"`
-		Total int            `json:"total"`
-		At    time.Time      `json:"at"`
-	}{Items: []inboxSummary{}, Total: total, At: time.Now().UTC()}
+		Items    []inboxSummary `json:"items"`
+		Next     string         `json:"next,omitempty"`
+		Total    int            `json:"total"`
+		Tracking int            `json:"tracking,omitempty"`
+		Recent   []inboxSummary `json:"recent,omitempty"`
+		At       time.Time      `json:"at"`
+	}{Items: []inboxSummary{}, Total: total, Tracking: tracking, At: time.Now().UTC()}
+	if after.since.IsZero() {
+		// The first page carries Recent: DR1's records closed in the last
+		// day, for every viewer.
+		if out.Recent, err = s.newInboxRead(r.Context()).recentDecisions(); err != nil {
+			s.log.Warn("inbox: the decisions closed of late could not be read", "err", err)
+			writeError(w, http.StatusServiceUnavailable, "unavailable", "the inbox could not be read")
+			return
+		}
+	}
 	for _, it := range items {
 		out.Items = append(out.Items, it.summary())
 	}
@@ -1028,9 +1061,17 @@ func (s *Server) handleInboxItem(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if n, is, err := decisionRefN(q["ref"]); is {
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		s.handleDecisionItem(w, r, n)
+		return
+	}
 	ref, err := brakeman.ParseRef(q["ref"])
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "ref is a question:, task: or plan: ref")
+		writeError(w, http.StatusBadRequest, "invalid_request", "ref is a question:, task:, plan: or decision: ref")
 		return
 	}
 	it, err := s.inboxItemOf(r.Context(), ref)

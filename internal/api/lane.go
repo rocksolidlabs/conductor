@@ -186,6 +186,9 @@ type laneSeams struct {
 	// beforeDeskAdd runs as a desk is about to be registered (laneState.add),
 	// its hello read.
 	beforeDeskAdd func(linkID string)
+	// recordRead runs once a decision_record has read its record whole,
+	// with the part asked and the rev read, before the part is cut.
+	recordRead func(part string, rev int)
 }
 
 // holdLink is the hold a decision link's answer takes as the session's
@@ -366,11 +369,13 @@ func (s *Server) laneItems(ctx context.Context, sc laneScope) []*inboxItem {
 	s.registry.Each(func(d session.Driver) { infos = append(infos, d.Info()) })
 	for _, info := range infos {
 		if s.coversSession(sc, info.ID) {
-			if it, ok := rd.questionItem(info); ok {
+			// A question that mirrors a record is the record's item.
+			if it, ok := rd.questionItem(info); ok && !rd.mirrorsRecord(info.Attention.Decision) {
 				out = append(out, laneTakes(it))
 			}
 		}
 	}
+	out = append(out, s.laneDecisionItems(ctx, rd, sc)...)
 	if sc.run != "" && s.runs != nil {
 		if run, ok := s.runs.Get(sc.run); ok && run.Managed != nil {
 			for _, t := range run.Tasks {
@@ -460,6 +465,12 @@ func (l *Lane) Read(ctx context.Context, linkID, sessionID string, m proto.Decis
 	sc, no := s.scope(linkID, m.ReqID)
 	if no != nil {
 		return no
+	}
+	if rec, is, no := s.laneDecisionRef(ctx, sc, m.ReqID, m.Ref); is {
+		if no != nil {
+			return no
+		}
+		return s.readRecordItem(ctx, sc, m.ReqID, rec)
 	}
 	ref, no := s.itemRef(sc, m.ReqID, m.Ref)
 	if no != nil {
@@ -561,6 +572,14 @@ func (l *Lane) Track(ctx context.Context, linkID, sessionID string, m proto.Deci
 	if no != nil {
 		return no
 	}
+	if _, is, no := s.laneDecisionRef(ctx, sc, m.ReqID, m.Ref); is {
+		if no != nil {
+			return no
+		}
+		// Nothing is done to a record through a link: its four states are
+		// the record's, read with it (decision_read, decision_record).
+		return refusal(m.ReqID, proto.DecideUnsupported, "a durable decision's four states are its record's: read its item or its record")
+	}
 	ref, no := s.itemRef(sc, m.ReqID, m.Ref)
 	if no != nil {
 		return no
@@ -575,13 +594,22 @@ func (l *Lane) Track(ctx context.Context, linkID, sessionID string, m proto.Deci
 	return decisionFrame(m.ReqID, func(d *proto.Decision, b json.RawMessage) { d.Track = b }, laneTrack{Ref: ref.String(), Receipt: m.Receipt, Attempt: m.Attempt, Steps: st})
 }
 
-// Record answers a part of a DR1 record: none is an item before DR1's
-// records join the inbox (the plan's PR-3).
+// Record answers a part of a DR1 record in the scope, cut from one whole
+// read of it at the rev the part names (lane_decisions.go).
 func (l *Lane) Record(ctx context.Context, linkID, sessionID string, m proto.DecisionRecord) []byte {
-	if _, no := l.s.scope(linkID, m.ReqID); no != nil {
+	s := l.s
+	sc, no := s.scope(linkID, m.ReqID)
+	if no != nil {
 		return no
 	}
-	return refusal(m.ReqID, proto.DecideUnsupported, "durable decision records arrive with DR1")
+	rec, is, no := s.laneDecisionRef(ctx, sc, m.ReqID, m.Ref)
+	switch {
+	case !is:
+		return refusal(m.ReqID, proto.DecideInvalid, "ref is a durable decision's, decision:dr-N")
+	case no != nil:
+		return no
+	}
+	return s.laneRecordFrame(ctx, m, rec.N)
 }
 
 // laneLogTail bounds a check log's tail an evidence read gives.
@@ -623,7 +651,11 @@ func (l *Lane) Evidence(ctx context.Context, linkID, sessionID string, m proto.D
 	if no != nil {
 		return no
 	}
-	if _, no := s.itemRef(sc, m.ReqID, m.Ref); no != nil {
+	if _, is, no := s.laneDecisionRef(ctx, sc, m.ReqID, m.Ref); is {
+		if no != nil {
+			return no
+		}
+	} else if _, no := s.itemRef(sc, m.ReqID, m.Ref); no != nil {
 		return no
 	}
 	ev, err := brakeman.ParseRef(m.Evidence)
@@ -773,6 +805,12 @@ func (l *Lane) Decide(ctx context.Context, linkID, sessionID string, m proto.Dec
 	sc, no := s.scope(linkID, m.ReqID)
 	if no != nil {
 		return no
+	}
+	if _, is, no := s.laneDecisionRef(ctx, sc, m.ReqID, m.Ref); is {
+		if no != nil {
+			return no
+		}
+		return refuseRecordDecide(m)
 	}
 	ref, no := s.itemRef(sc, m.ReqID, m.Ref)
 	if no != nil {
