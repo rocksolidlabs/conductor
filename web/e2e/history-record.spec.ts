@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Page } from '@playwright/test'
@@ -18,14 +18,17 @@ interface RecordReply {
   live: boolean
 }
 
+// The first test's own server, ended after the test that started it (a test run again starts its own, on data of its own).
 let server: Started | null = null
 let serverLog = ''
-test.afterAll(async () => {
+test.afterEach(async () => {
   if (server) await stopServer(server.pid)
+  server = null
   if (serverLog) {
     mkdirSync('test-results', { recursive: true })
     copyFileSync(serverLog, 'test-results/history-record-server.log')
   }
+  serverLog = ''
 })
 
 async function typeLine(page: Page, baseURL: string, sessionId: string, line: string) {
@@ -40,7 +43,7 @@ async function typeLine(page: Page, baseURL: string, sessionId: string, line: st
 test("a session's record after a restart: Resume takes up its conversation, and Forget removes the record", async ({ state, page }) => {
   test.setTimeout(240_000)
   const here = dirname(fileURLToPath(import.meta.url))
-  const root = join(state.root, 'history-record')
+  const root = mkdtempSync(join(state.root, 'history-record-'))
   const home = join(root, 'home')
   const data = join(root, 'data')
   const repo = join(root, 'repo')
