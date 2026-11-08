@@ -36,7 +36,27 @@ export interface DecisionServer {
   api: Api
   root: string
   repo: string
+  /**
+   * Ends the server at once, as a crash or a kill does (nothing of its state written on the way out: tasks-resume.spec.ts's pattern),
+   * and starts another on the same configuration, HOME and data directory; `started` and `api` are the new server's from then on (a
+   * new port and workbench token).
+   */
+  restart: () => Promise<void>
   stop: () => Promise<void>
+}
+
+/** Ends the process at once (SIGKILL) and waits for it to be gone (reaped: it is this worker's child). By pid, never by name. */
+async function crash(pid: number): Promise<void> {
+  const alive = () => {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
+  process.kill(pid, 'SIGKILL')
+  while (alive()) await new Promise((r) => setTimeout(r, 50))
 }
 
 /**
@@ -60,20 +80,26 @@ export async function decisionServer(name: string, agents: Array<{ id: string; f
   }
   writeFileSync(config, JSON.stringify(cfg, null, 2) + '\n')
   const log = join(root, 'server.log')
-  const started = await startServer({ config, home, data, allowedRoot: root, defaultCwd: repo, log })
-  const api = new Api(started)
-  return {
+  const start = () => startServer({ config, home, data, allowedRoot: root, defaultCwd: repo, log })
+  const started = await start()
+  const srv: DecisionServer = {
     started,
-    api,
+    api: new Api(started),
     root,
     repo,
+    restart: async () => {
+      await crash(srv.started.pid)
+      srv.started = await start()
+      srv.api = new Api(srv.started)
+    },
     stop: async () => {
-      await stopServer(started.pid)
+      await stopServer(srv.started.pid)
       mkdirSync('test-results', { recursive: true })
       copyFileSync(log, `test-results/${name}-server.log`)
       rmSync(root, { recursive: true, force: true })
     },
   }
+  return srv
 }
 
 /** A page of the spec's server, as the operator: its workbench token where the workbench keeps it, and a display name. */
