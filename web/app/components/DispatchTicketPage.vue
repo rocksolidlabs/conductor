@@ -933,6 +933,7 @@ const askBrakeman = computed(() =>
           :plans="plan.plans.value"
           :bodies="plan.bodies"
           :continues="continues"
+          :links="ticket.links ?? []"
           :repair="reviewRepair"
           :focus="reviewFocus"
           @candidate="pickReviewCandidate"

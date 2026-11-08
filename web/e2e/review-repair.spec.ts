@@ -191,8 +191,11 @@ async function addNote(form: Locator, words: string) {
   await expect(form).toHaveCount(0, within(15_000))
 }
 
-/** The check that fails until the counter file `counter`, outside the repository, has been bumped three times, then passes. */
-const countingCheck = (counter: string) => ['sh', '-c', 'n=$(cat "$1" 2>/dev/null || echo 0); echo $((n+1)) >"$1"; test "$n" -ge 3', 'check', counter]
+/**
+ * The check that fails until the counter file `counter`, outside the repository, has been bumped three times, then passes. It says which
+ * run it is in color, with a CRLF, as a terminal's tools do: a failed-check panel's quote is sent without them (quotable).
+ */
+const countingCheck = (counter: string) => ['sh', '-c', 'n=$(cat "$1" 2>/dev/null || echo 0); echo $((n+1)) >"$1"; printf \'\\033[31mcheck run %s\\033[0m\\r\\n\' "$n"; test "$n" -ge 3', 'check', counter]
 
 test("findings across candidates: located on the repair, the agent's addressed notes, marked, a question withdrawn, a second round, the lineage, the run page's Review and the phone", async ({ page, api, state }) => {
   test.slow()
@@ -256,6 +259,7 @@ test("findings across candidates: located on the repair, the agent's addressed n
   await expect(page.locator('[data-review-lineage-step][data-lineage-attempt="1"]')).toHaveAttribute('data-lineage-cause', 'first')
   // The requirements as launched and the plan revision that launched the run; the task's expected check.
   await expect(page.locator('[data-review-criteria-launched]')).toHaveText('It is built, and its lines are numbered.')
+  await expect(page.locator('[data-review-requirements]')).toHaveAttribute('data-review-launch', 'launched')
   await expect(page.locator('[data-review-plan]')).toHaveAttribute('data-review-plan-n', '1')
   await expect(page.locator('[data-review-expected-checks]')).toContainText('ok')
 
@@ -387,6 +391,11 @@ test("a failed check prepared for its repair, checked again at the same commit, 
   await expect(panel.locator('[data-repair-log-sha]')).toContainText(bad.logSha256!)
   await expect(panel.locator('[data-repair-previous]')).toContainText('attempt 2 failed')
   await expect(panel.locator('[data-repair-acceptance]')).toHaveText('It is built, and its lines are numbered.')
+  // The quote starts as the receipt's tail as a finding holds it: the color and the carriage return gone, the tail itself unchanged.
+  const quote = panel.locator('textarea[data-repair-quote], [data-repair-quote] textarea')
+  await expect(quote).toHaveValue(/check run 2/, within(15_000))
+  expect(await quote.inputValue()).not.toMatch(new RegExp(`[${String.fromCharCode(0x0d, 0x1b)}]`))
+  expect(await panel.locator('[data-repair-tail]').textContent()).toContain(String.fromCharCode(0x1b))
   // The receipt opened from the panel: DS2's dialog, its argv and its whole log, the served SHA-256 the same as the recorded one.
   await panel.locator('[data-repair-open-receipt]').click()
   const receipt = page.locator(`[data-receipt-modal][data-receipt-key="check:${bad.id}:${bad.k}"]`)

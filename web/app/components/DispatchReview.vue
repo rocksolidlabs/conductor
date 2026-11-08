@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { CandidateReceipt, LaunchSummary, PlanBody, PlanSummary, RunCandidate } from '~/composables/useDispatch'
+import type { CandidateReceipt, LaunchSummary, PlanBody, PlanSummary, RunCandidate, TicketLink } from '~/composables/useDispatch'
 import { ApiError } from '~/composables/useApi'
 import { ContinuationNeeded, useCandidateDiff, useFileSides, useLaunchedCriteria, useNamedCandidate, usePreparedRepair, useReview, useSentReviews, useShowWhenReady, useTaskFindings, type ReviewFinding, type ReviewSummary, type SideText } from '~/composables/useReview'
 import { useReviewDraft } from '~/composables/useReviewDraft'
@@ -26,6 +26,8 @@ import {
   offeredBases,
   rankCandidates,
   repairBytes,
+  runLaunch,
+  untimedWords,
   reviewBody,
   withDraftBase,
   type BaseChoice,
@@ -60,6 +62,12 @@ import {
  * task's earlier attempts; then the attempt; then the crew's order), wherever they are ranked: the one opened when the route names
  * none, the palette's Review the latest candidate, the picker, the lineage and whether the task failed. The findings are read again at
  * the same ticks, so a repair's addressed notes come in while the reviewed candidate stays shown.
+ *
+ * What the view does not promise. The launch that made the candidate's run is the one the page read with the ticket (its Runs pages and
+ * the Plan's recent launches, back along the run's chain: runLaunch); a run a live run link of the ticket names is said to be linked by
+ * hand; any other run's launch is said to be not read, and its plan revision, criteria as launched and expected checks are not shown
+ * (never another launch's, never today's criteria in their place). A candidate with no receipt of its own has no time the page reads:
+ * rankCandidates ranks it at the latest time known before it, and the picker and the palette say "time not known" beside it.
  */
 const props = defineProps<{
   ticketKey: string
@@ -80,6 +88,8 @@ const props = defineProps<{
   bodies?: ReadonlyMap<string, PlanBody>
   /** By run: the run it continues (the ticket's Runs entries). */
   continues?: ReadonlyMap<string, string>
+  /** The ticket's links (its record): a live run link names a run linked by hand. */
+  links?: readonly TicketLink[]
   /** A failed receipt of the candidate to prepare a repair from at once, `<id>/<k>` (a link's: the ticket's receipt, the run page). */
   repair?: string
   /** A section to scroll to at once: `findings` (the palette's Open findings). */
@@ -123,7 +133,7 @@ const runsShown = computed(() => {
 })
 /** Every candidate the view knows, in the one ordering (rankCandidates, newest first): the picker's, the lineage's, whether the task failed. */
 const ranked = computed(() => rankCandidates(runsShown.value))
-const options = computed<Option[]>(() => ranked.value.map((x) => ({ value: x.value, label: `${x.task} · attempt ${x.c.attempt} · ${shortCommit(x.c.commit!)} · ${x.label}`, standing: x.c.standing, run: x.run, task: x.task, c: x.c })))
+const options = computed<Option[]>(() => ranked.value.map((x) => ({ value: x.value, label: `${x.task} · attempt ${x.c.attempt} · ${shortCommit(x.c.commit!)} · ${x.label}${untimedWords(x)}`, standing: x.c.standing, run: x.run, task: x.task, c: x.c })))
 /** The candidate shown, as its own read gives it: null until that read answers. */
 const entry = computed<Option | null>(() => {
   const w = cref.value
@@ -396,16 +406,13 @@ function openFinding(f: ReviewFinding) {
   openNote({ key: f.id, kind: at.from ? f.kind : 'file', intent: f.intent, side: at.side, path: at.path, from: at.from, to: at.to, message: f.message })
 }
 
-// The ticket's criteria as the run was launched with them and now, the plan revision that launched it, the task's expected checks.
-const launch = computed<LaunchSummary | null>(() => {
+// The ticket's criteria as the run was launched with them and now, the plan revision that launched it, the task's expected checks: of
+// the launch the page read (runLaunch), else the words of a run linked by hand (a live run link of the ticket names it), else "not read".
+const launchOf = computed(() => {
   const run = cref.value?.run
-  if (!run) return null
-  for (let r: string | undefined = run, n = 0; r && n < 64; r = props.continues?.get(r), n++) {
-    const l = props.launches?.find((x) => x.runId === r)
-    if (l) return l
-  }
-  return null
+  return run ? runLaunch(run, { launches: props.launches ?? [], links: props.links ?? [], continues: props.continues ?? new Map<string, string>() }) : null
 })
+const launch = computed<LaunchSummary | null>(() => (launchOf.value?.state === 'launched' ? launchOf.value.launch : null))
 const launchPlan = computed(() => (launch.value ? (props.plans?.find((p) => p.id === launch.value!.planId) ?? null) : null))
 /**
  * The ticket's acceptance criteria as the launch's package froze them (a launch never changes): read once per launch, a failure said and
@@ -562,7 +569,7 @@ defineExpose({
       <UButton label="Back to the ticket" icon="i-lucide-arrow-left" size="xs" color="neutral" variant="ghost" :to="{ query: {} }" data-review-back />
     </div>
     <!-- The requirements and the plan: the ticket's criteria as launched and now, the revision that launched the run, the task's checks. -->
-    <section class="flex flex-col gap-1.5 rounded-lg p-3 text-xs ring ring-default" data-review-requirements>
+    <section class="flex flex-col gap-1.5 rounded-lg p-3 text-xs ring ring-default" data-review-requirements :data-review-launch="launchOf?.state ?? ''">
       <h3 class="text-sm font-semibold text-highlighted">Requirements and plan</h3>
       <template v-if="launch">
         <p class="text-muted" data-review-plan :data-review-plan-n="launch.planN">
@@ -577,8 +584,12 @@ defineExpose({
           <pre class="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-elevated/40 p-2 font-sans" data-review-criteria-now>{{ acceptance || '(none)' }}</pre>
         </template>
       </template>
-      <template v-else>
-        <p class="text-dimmed">This run was not launched from a plan revision of the ticket (it was linked by hand): its criteria are the ticket's now.</p>
+      <template v-else-if="launchOf?.state === 'linked'">
+        <p class="text-dimmed" data-review-launch-words>This run was not launched from a plan revision of the ticket (it was linked by hand): its criteria are the ticket's now.</p>
+        <pre class="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-elevated/40 p-2 font-sans" data-review-criteria-now>{{ acceptance || '(none)' }}</pre>
+      </template>
+      <template v-else-if="launchOf">
+        <p class="text-dimmed" data-review-launch-words>The launch of this run is not among those read with the ticket: its plan revision, its criteria as launched and its expected checks are not shown. The ticket's criteria now:</p>
         <pre class="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-elevated/40 p-2 font-sans" data-review-criteria-now>{{ acceptance || '(none)' }}</pre>
       </template>
       <template v-if="expectedChecks">

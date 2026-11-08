@@ -30,7 +30,8 @@ import { personPath } from '~/utils/people'
  * loopback and not proxied, and an iframe of it would be mixed content
  * under TLS. For a run a ticket holds (RV1), the selected work task offers
  * Review, the ticket's Review view at its candidate, and a failed receipt
- * Prepare a repair there; a run no ticket holds says to link it first.
+ * Prepare a repair there; a run whose ticket the page did not find (no
+ * launch, no run link to a run of its chain) says so and to link one.
  */
 const props = defineProps<{
   run: RunInfo
@@ -278,7 +279,7 @@ async function confirm() {
       <div v-if="selectedTask.kind === 'work' && reviewTarget" class="flex flex-wrap items-center gap-2" data-task-review-entry>
         <UButton v-if="ticket" :label="`Review on ${ticket}`" icon="i-lucide-scan-eye" size="xs" color="neutral" variant="outline" :to="reviewAt(reviewTarget.run, selectedTask.id, reviewTarget.attempt, reviewTarget.commit)" data-task-review />
         <span v-else class="text-xs text-muted" data-task-review-unlinked>
-          Link this run to a ticket to review it: a ticket's Runs section links a run by its id (<NuxtLink to="/dispatch" class="underline">Dispatch</NuxtLink>).
+          No ticket holds this run as far as the page read: no launch, and no run link to it or to a run of its chain. Link a run of its chain to a ticket to review it: a ticket's Runs section links a run by its id (<NuxtLink to="/dispatch" class="underline">Dispatch</NuxtLink>).
         </span>
       </div>
       <p v-if="selectedTask.blocker" class="rounded-md bg-warning/10 p-2 text-warning" data-task-blocker>

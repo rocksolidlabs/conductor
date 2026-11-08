@@ -4239,8 +4239,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `utils/reviewLineage.ts`); the criteria as launched and now, the plan
   revision, the expected checks, the decisions and the delivery in the
   view; a person's repairs in `DispatchRepairs`; Review and Prepare a
-  repair on the run page ("Link this run to a ticket to review it"
-  otherwise) and on the ticket's receipts; the palette's Review the
+  repair on the run page (otherwise "No ticket holds this run as far as
+  the page read", with how to link a run of its chain) and on the
+  ticket's receipts; the palette's Review the
   latest candidate, Send review (n notes) and Open findings; a note on
   typed lines for a phone; the stub's `addressed` and its fixed edits
   (the `worker-review` agent, `STUB_REVIEW_EDITS=1`). Two rules hold the
@@ -4255,9 +4256,22 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   receipt, open DS2's receipt dialog with the whole log and its hash; the
   findings are read again when a run moves, so a repair's addressed
   notes come in while the reviewed candidate stays shown; a review
-  task's request is paired in order with the reopening it made; and the
-  run page finds the ticket of a continuation of a run linked by hand
-  back along its chain.
+  task's request is paired in order with the reopening it made (a
+  person's repair known by its run, task and attempt); the run page
+  finds the ticket of a run of a chain linked by hand back along its
+  chain and forward through its continuations; and a failed check's
+  quote is sent as a finding holds it (`quotable`: no terminal escape,
+  no carriage return), the receipt's tail and log unchanged. What the
+  view does not promise: the launch of the candidate's run is the one
+  the page read with the ticket (its Runs pages and the Plan's recent
+  launches, back along the chain: `runLaunch`); a run a live run link
+  of the ticket names is said to be linked by hand, and any other's
+  launch is said to be not read, its plan revision, criteria as
+  launched and expected checks not shown. And a candidate with no
+  receipt of its own has no time the page reads: it is ranked at the
+  latest time known before it (its run's start, its task's earlier
+  checks), which can put it below another task's candidate it came
+  after, and the picker and the palette say "time not known" beside it.
   `reviewLineage.test.ts`, more of `review.test.ts`,
   `review-repair.spec.ts`, and this entry.
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { shortCommit } from '~/utils/dispatchPlans'
 import { useRecheckAsk } from '~/composables/useReview'
-import { FAILURE_CLASSES, checkNote, classWords, failedReceiptActions, type DraftNote, type FailureClass, type PreparedRepair } from '~/utils/review'
+import { FAILURE_CLASSES, checkNote, classWords, failedReceiptActions, quotable, type DraftNote, type FailureClass, type PreparedRepair } from '~/utils/review'
 
 /**
  * A failed check prepared for its repair (Program item RV1, docs/plans/review-repair.md, PR-7), from the server's prepared request
@@ -39,7 +39,8 @@ watch(
   () => props.prepared,
   (p) => {
     chosen.value = (p?.finding.check.chosen as FailureClass) || p?.finding.check.class || 'code'
-    quote.value = p?.finding.check.quote ?? p?.finding.check.tail ?? ''
+    // The quote as a finding holds it (quotable: no terminal escape, no CR); the tail above stays the receipt's own.
+    quote.value = quotable(p?.finding.check.quote ?? p?.finding.check.tail ?? '')
     message.value = p?.finding.message ?? ''
     asked.reset()
   },

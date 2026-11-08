@@ -124,7 +124,8 @@ export function lineageOf(c: { run: string; task: string; attempt: number; commi
 /**
  * The review task's attempt whose needs_changes reopened the attempt `c` at `start`, by the order of both within the chain: the review
  * attempts of the chain that asked for changes on `start` and the work attempts of the task the reopenings made (started at `start`,
- * neither a person's repair, nor a Check again, nor one after an attempt that failed a check) are paired first with first, so the k-th
+ * neither a person's repair (an applied review of the same task names its run and attempt), nor a Check again, nor one after an attempt
+ * that failed a check) are paired first with first, so the k-th
  * reopening is the repair of the k-th request. A review that ran later, of the same commit submitted again unchanged, is the next
  * reopening's, never this one's. Null when `c` is no such reopening, or no request is left for it.
  */
@@ -132,7 +133,9 @@ function reopeningReviewTask(c: { run: string; task: string; attempt: number }, 
   const place = (run: string) => chain.length - 1 - chain.indexOf(run)
   const order = (x: { run: string; attempt: number }, y: { run: string; attempt: number }) => place(x.run) - place(y.run) || x.attempt - y.attempt
   const own = input.attempts.filter((a) => a.task === c.task && chain.includes(a.run)).sort(order)
-  const personal = (a: LineageAttempt) => input.reviews.some((r) => r.application.state === 'applied' && r.application.run === a.run && r.application.attempt === a.attempt)
+  // A person's repair is known by its run, its task and its attempt: attempts are numbered per task, so build's attempt 2 is never prep's.
+  const personal = (a: LineageAttempt) =>
+    input.reviews.some((r) => r.application.state === 'applied' && r.application.run === a.run && r.application.attempt === a.attempt && parseRef(r.candidate)?.task === a.task)
   const reopenings = own.filter((a, i) => {
     if (a.start !== start || personal(a)) return false
     const before = own.slice(0, i)

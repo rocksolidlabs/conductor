@@ -86,20 +86,24 @@ async function readRunTicket(): Promise<void> {
 const chip = useDispatchLive({ ...runLinkWatch(readRunTicket), reset: () => dispatch.gate.reset() }, () => chip.ask(readRunTicket))
 
 // The ticket a task's Review and Prepare a repair go to (RV1): the one the run was launched from, else the one whose run link names it,
-// else, for a continuation of a run linked by hand (no link names the continuation, no package binds it), the ticket whose link names a
-// run back along its chain (chainLinkedTicket): Dispatch gives the whole chain to that ticket. Looked for again whenever the run's link
-// is read again (a link added, removed) and when the run it continues moves.
+// else, for a run of a chain linked by hand (no link names this run, no package binds it), the ticket whose link names a run of its
+// chain, back along it and then forward, the continuations that continue it (chainLinkedTicket): Dispatch gives the whole chain to that
+// ticket. Looked for again whenever the run's link is read again (a link added, removed) and when the runs it continues or that continue
+// it move. A ticket none of these reads finds is not shown: the task says to link a run of its chain.
 const chainTicket = ref('')
 const chainAsks = latest()
 watch(
-  () => [runId.value, run.value?.ticket?.key ?? '', runTicket.value, run.value?.resumedFrom ?? '', runTicketReads.value] as const,
-  async ([id, launched, linked, from]) => {
+  () => [runId.value, run.value?.ticket?.key ?? '', runTicket.value, run.value?.resumedFrom ?? '', run.value?.resumedBy ?? '', runTicketReads.value] as const,
+  async ([id, launched, linked, from, by]) => {
     const current = chainAsks.ask()
-    if (launched || linked || !from || !admin.hasToken.value) {
+    if (launched || linked || (!from && !by) || !admin.hasToken.value) {
       chainTicket.value = ''
       return
     }
-    const key = await chainLinkedTicket(from, { ticket: (r) => dispatch.api.runTicket(r), resumedFrom: async (r) => (await api.getRun(r)).resumedFrom })
+    const key = await chainLinkedTicket(
+      { from, by },
+      { ticket: (r) => dispatch.api.runTicket(r), resumedFrom: async (r) => (await api.getRun(r)).resumedFrom, resumedBy: async (r) => (await api.getRun(r)).resumedBy },
+    )
     if (current() && id === runId.value) chainTicket.value = key
   },
   { immediate: true },

@@ -637,10 +637,26 @@ export function recheckWords(candidate: { run: string; attempt: number }, reply:
   return `Checked again as attempt ${reply.attempt}, the same commit as attempt ${candidate.attempt}.`
 }
 
-/** A check note for the draft from a prepared request: its words, the receipt's identity, the class chosen and the quote. */
+/**
+ * A check's output as a check finding's quote holds it (the server's finding.quote: no control character but a newline and a tab): a
+ * terminal's escapes dropped (CSI, OSC, the short ones), a CRLF or a lone CR made a newline, any other control character dropped. The
+ * panel's quote starts as this of the receipt's tail, and checkNote sends this of what the person typed; the receipt's tail and log
+ * stay as they were, the evidence.
+ */
+export function quotable(s: string): string {
+  return s
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g, '')
+    .replace(/(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\x1b[ -/]*[0-~]/g, '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '')
+}
+
+/** A check note for the draft from a prepared request: its words, the receipt's identity, the class chosen and the quote (quotable). */
 export function checkNote(p: PreparedRepair, chosen: FailureClass, quote: string, message: string): Omit<DraftNote, 'key'> {
   const ch = p.finding.check
-  const q = quote.trim() ? cutBytes(quote, 2048) : ''
+  const clean = quotable(quote)
+  const q = clean.trim() ? cutBytes(clean, 2048) : ''
   return {
     kind: 'check',
     intent: 'change',
@@ -766,26 +782,57 @@ export function taskReviewTarget(
 }
 
 /**
- * The ticket that holds a run's chain by a run link, for a run no link names and no launch package binds (a continuation of a run linked
- * by hand: the link names the first run, and Dispatch gives the chain to its ticket, ChainHolders): the first run back along the chain
- * (`resumedFrom`, from `from` on) that a live ticket's run link names. '' for none, for a chain past `most` runs, or when a read fails.
+ * The ticket that holds a run's chain by a run link, for a run no link names and no launch package binds (a run of a chain linked by
+ * hand: Dispatch gives the whole chain to the ticket whose live run link names any run of it, ChainHolders): the first run back along
+ * the chain (`resumedFrom`, from `chain.from` on), then forward (`resumedBy`, from `chain.by` on: a continuation linked after it was
+ * made), that a live ticket's run link names. '' for none, for a chain past `most` runs, or when a read fails.
  */
 export async function chainLinkedTicket(
-  from: string | undefined,
-  read: { ticket: (run: string) => Promise<{ key: string; deletedAt?: string } | null>; resumedFrom: (run: string) => Promise<string | undefined> },
+  chain: { from?: string; by?: string },
+  read: {
+    ticket: (run: string) => Promise<{ key: string; deletedAt?: string } | null>
+    resumedFrom: (run: string) => Promise<string | undefined>
+    resumedBy: (run: string) => Promise<string | undefined>
+  },
   most = 64,
 ): Promise<string> {
   const seen = new Set<string>()
   try {
-    for (let r = from; r && !seen.has(r) && seen.size < most; r = await read.resumedFrom(r)) {
-      seen.add(r)
-      const t = await read.ticket(r)
-      if (t && !t.deletedAt) return t.key
+    for (const [first, next] of [[chain.from, read.resumedFrom], [chain.by, read.resumedBy]] as const) {
+      for (let r = first; r && !seen.has(r) && seen.size < most; r = await next(r)) {
+        seen.add(r)
+        const t = await read.ticket(r)
+        if (t && !t.deletedAt) return t.key
+      }
     }
   } catch {
     // A run or a link that could not be read: no ticket is offered, as for a run no ticket holds.
   }
   return ''
+}
+
+/** What launched a candidate's run, as far as the page read it: a launch of the ticket, a run link made by hand, or not read. */
+export type RunLaunch<L> = { state: 'launched'; launch: L } | { state: 'linked' } | { state: 'unread' }
+
+/**
+ * What launched the run `run` (the Review view's Requirements and plan), from what the ticket page read and nothing else: back along the
+ * run's chain (`continues`, from the ticket's Runs entries), the first run that is a launch the page knows (`launches`: the Runs pages
+ * read and the Plan's recent launches) is `launched`; the first that a live run link of the ticket names (the ticket's own record) is
+ * `linked`, a run linked by hand. Anything else is `unread`: its launch is past what the page read, and the view says so instead of
+ * taking the run for one linked by hand or putting today's criteria in the launch's place.
+ */
+export function runLaunch<L extends { runId: string }>(
+  run: string,
+  read: { launches: readonly L[]; links: ReadonlyArray<{ kind: string; ref: string; deletedAt?: string }>; continues: ReadonlyMap<string, string> },
+): RunLaunch<L> {
+  const seen = new Set<string>()
+  for (let r: string | undefined = run; r && !seen.has(r) && seen.size < 64; r = read.continues.get(r)) {
+    seen.add(r)
+    const l = read.launches.find((x) => x.runId === r)
+    if (l) return { state: 'launched', launch: l }
+    if (read.links.some((x) => x.kind === 'run' && x.ref === r && !x.deletedAt)) return { state: 'linked' }
+  }
+  return { state: 'unread' }
 }
 
 interface ReviewableRun {
@@ -805,6 +852,13 @@ export interface RankedCandidate<C> {
   c: C
   /** When it is taken to have been submitted, in ms: see rankCandidates. */
   at: number
+  /** A receipt of its own gives its time; false when `at` is only a bound from before it (its run's start, an earlier attempt's checks). */
+  timed: boolean
+}
+
+/** What a candidate ranked without a time of its own says beside its name (the picker's, the palette's): '' for one with its time. */
+export function untimedWords(x: { timed: boolean }): string {
+  return x.timed ? '' : ' · time not known (no check of it)'
 }
 
 const ms = (t: string | undefined) => {
@@ -820,6 +874,11 @@ const ms = (t: string | undefined) => {
  * receipt; a continuation, which starts after the run it continues has ended, is newer than all of that run's candidates; and across
  * independent launches the order is chronology, never a chain's depth. Ties go to the higher attempt, then to the crew's order. Only
  * work candidates that submitted a commit are ranked.
+ *
+ * What it does not promise: the candidates carry no attempt's own times, only their receipts', so a candidate with no receipt of its own
+ * is ranked at the latest time known before it (its run's start, its task's earlier attempts' checks), which can put it below a candidate
+ * of another task of its run that it came after (prep checked, then build with no check: prep ranks first). Such a candidate is marked
+ * (`timed` false), and the picker and the palette say so beside it (untimedWords); no other ordering is put in its place.
  */
 export function rankCandidates<C extends ReviewableRun['tasks'][number]['candidates'][number]>(
   runs: ReadonlyArray<Omit<ReviewableRun, 'tasks'> & { tasks: ReadonlyArray<{ task: string; kind: string; candidates: ReadonlyArray<C> }> }>,
@@ -833,7 +892,8 @@ export function rankCandidates<C extends ReviewableRun['tasks'][number]['candida
       for (const c of [...t.candidates].sort((x, y) => x.attempt - y.attempt)) {
         floor = Math.max(floor, ...c.receipts.map((x) => ms(x.startedAt)))
         if (!c.commit) continue
-        out.push({ value: `${r.run}/${t.task}/${c.attempt}@${c.commit}`, run: r.run, task: t.task, label: r.label || r.run, c, at: floor, order })
+        const timed = c.receipts.some((x) => ms(x.startedAt) > 0)
+        out.push({ value: `${r.run}/${t.task}/${c.attempt}@${c.commit}`, run: r.run, task: t.task, label: r.label || r.run, c, at: floor, timed, order })
       }
     })
   }
@@ -849,9 +909,9 @@ export function firstReviewCandidate(runs: readonly ReviewableRun[]): string {
 
 /**
  * The latest candidate of a ticket's runs that the Review view can show, failed ones among them (a withdrawn one is not): the newest by
- * rankCandidates, the one ordering. Null for none.
+ * rankCandidates, the one ordering, its label saying so when that candidate has no time of its own (untimedWords). Null for none.
  */
 export function latestReviewable(runs: readonly ReviewableRun[]): { value: string; label: string } | null {
   const b = rankCandidates(runs).find((x) => !x.c.withdrawn)
-  return b ? { value: b.value, label: `${b.task} · attempt ${b.c.attempt} · ${shortCommit(b.c.commit!)}${b.c.state === 'failed' ? ' · failed' : ''} · ${b.label}` } : null
+  return b ? { value: b.value, label: `${b.task} · attempt ${b.c.attempt} · ${shortCommit(b.c.commit!)}${b.c.state === 'failed' ? ' · failed' : ''} · ${b.label}${untimedWords(b)}` } : null
 }

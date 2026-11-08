@@ -61,6 +61,22 @@ describe("a candidate's lineage", () => {
     expect(lineageOf({ run: 'r1', task: 'build', attempt: 3, commit: B, start: A }, one).cause.kind).toBe('again')
   })
 
+  it("keeps a review task's reopening of build when a person's review of prep's attempt of the same number was applied", () => {
+    // Attempts are numbered per task: prep's attempt 2, a person's repair, is not build's attempt 2, the review task's reopening.
+    const i = input({
+      attempts: [
+        { run: 'r1', task: 'build', attempt: 1, start: S, commit: A, state: 'succeeded' },
+        { run: 'r1', task: 'build', attempt: 2, start: A, commit: B, state: 'succeeded' },
+      ],
+      reviewTasks: [{ run: 'r1', task: 'check', attempt: 1, reviewed: A, verdict: 'needs_changes' }],
+      reviews: [{ id: '0000000000000002', candidate: `r1/prep/1@${C}`, createdBy: 'Nate', verdict: 'request_changes', application: { state: 'applied', run: 'r1', attempt: 2 } }],
+    })
+    expect(lineageOf({ run: 'r1', task: 'build', attempt: 2, commit: B, start: A }, i).cause).toEqual({ kind: 'review_task', task: 'check', attempt: 1, from: { run: 'r1', attempt: 1, commit: A } })
+    // The same review of build's own attempt 1 makes build's attempt 2 its repair, the review task's request then left for the next.
+    const own = { ...i, reviews: [{ ...i.reviews[0]!, candidate: `r1/build/1@${A}` }] }
+    expect(lineageOf({ run: 'r1', task: 'build', attempt: 2, commit: B, start: A }, own).cause.kind).toBe('review')
+  })
+
   it('names a failed check when the attempt started at the result that failed it, and a Check again when it is that same result', () => {
     const i = input({
       attempts: [

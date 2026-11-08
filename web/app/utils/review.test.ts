@@ -15,6 +15,9 @@ import {
   latestReviewable,
   rankCandidates,
   chainLinkedTicket,
+  quotable,
+  runLaunch,
+  untimedWords,
   openFindingsPerFile,
   requestedCheckOf,
   taskReviewTarget,
@@ -361,6 +364,27 @@ describe('a failed receipt', () => {
     expect(findingOf({ ...n, key: 'k' })).toEqual({ kind: 'check', intent: 'change', severity: 'major', message: p.finding.message, check: { source: 'ledger', receipt: 'r/build/1/check/test/1', chosen: 'infrastructure', quote: '  no  ' } })
     expect(noteWhere(n)).toBe('check test failed (r/build/1/check/test/1)')
   })
+  it("quotes a check's output as a finding holds it: no terminal escape, no carriage return, no control but a newline and a tab", () => {
+    const esc = String.fromCharCode(0x1b)
+    const bel = String.fromCharCode(0x07)
+    const colored = `${esc}[31mFAIL${esc}[0m TestX\r\n${esc}]0;title${bel}--- ok\r\n${esc}(Bdone\tnow${String.fromCharCode(0x9b)}2K\rprogress 100%${String.fromCharCode(0x7f, 0x00)}\n`
+    expect(quotable(colored)).toBe('FAIL TestX\n--- ok\ndone\tnow\nprogress 100%\n')
+    // What the server's rule for finding.quote refuses (unicode.IsControl but a newline and a tab) is never left in.
+    const refused = (q: string) => [...q].some((ch) => { const c = ch.codePointAt(0)!; return (c < 0x20 && c !== 0x0a && c !== 0x09) || (c >= 0x7f && c <= 0x9f) })
+    const every = Array.from({ length: 0xa0 }, (_, i) => String.fromCharCode(i)).join('')
+    expect(refused(quotable(every))).toBe(false)
+    expect(quotable('plain text\n\tindented')).toBe('plain text\n\tindented')
+    // The check note sends the quote so, whatever the person left in the field; the receipt's tail is the evidence, unchanged.
+    const p = {
+      finding: { kind: 'check' as const, intent: 'change' as const, message: 'm', check: { source: 'ledger' as const, receipt: 'r/build/1/check/test/1', run: 'r', task: 'build', attempt: 1, phase: 'check', id: 'test', k: 1, subject: '1'.repeat(40), argv: ['false'], exit: 1, timedOut: false, killed: false, stable: true, state: 'finished', where: 'native', logBytes: 3, tail: colored, class: 'code' as const } },
+      criteria: { source: 'ticket' as const },
+      recheck: { allowed: true, run: 'r', revision: 4, attempt: 1, commit: '1'.repeat(40) },
+    }
+    const n = checkNote(p, 'code', colored, '')
+    expect(n.check?.quote).toBe('FAIL TestX\n--- ok\ndone\tnow\nprogress 100%\n')
+    expect(n.measured?.tail).toBe(colored)
+    expect(checkNote(p, 'code', `${esc}[0m\r\n`, '').check).not.toHaveProperty('quote')
+  })
 })
 
 describe('findings across candidates', () => {
@@ -514,6 +538,21 @@ describe("the ticket's candidates to review", () => {
     const runs = [{ run: 'r1', startedAt: '2026-11-08T09:00:00Z', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(2, B), cnd(1, A, { receipts: at('2026-11-08T09:30:00.5Z') })] }] }]
     expect(rankCandidates(runs).map((x) => x.value)).toEqual([`r1/build/2@${B}`, `r1/build/1@${A}`])
   })
+  it("ranks a candidate with no receipt of its own at the latest time known before it, and says so: no other ordering", () => {
+    // prep checked, then build, which needs it, with no check: the candidates carry no attempt's times, so build ranks at its run's start,
+    // below prep. The promise is narrowed to that: build is marked, and the palette's and the picker's words say its time is not known.
+    const runs = [{ run: 'r1', startedAt: '2026-11-08T09:00:00Z', tasks: [
+      { task: 'prep', kind: 'work', candidates: [cnd(1, A, { standing: true, receipts: at('2026-11-08T09:10:00Z') })] },
+      { task: 'build', kind: 'work', candidates: [cnd(1, B, { standing: true })] },
+    ] }]
+    const ranked = rankCandidates(runs)
+    expect(ranked.map((x) => [x.value, x.timed])).toEqual([[`r1/prep/1@${A}`, true], [`r1/build/1@${B}`, false]])
+    expect(untimedWords(ranked[0]!)).toBe('')
+    expect(untimedWords(ranked[1]!)).toBe(' · time not known (no check of it)')
+    expect(firstReviewCandidate(runs)).toBe(`r1/prep/1@${A}`)
+    // Alone, the untimed candidate is the latest, and its label says how it was ranked.
+    expect(latestReviewable([{ ...runs[0]!, tasks: [runs[0]!.tasks[1]!] }])?.label).toBe(`build · attempt 1 · ${B.slice(0, 12)} · r1 · time not known (no check of it)`)
+  })
   it("opens the newest standing candidate when the route names none, else the newest", () => {
     const runs = [{ run: 'r1', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(2, B, { state: 'failed' }), cnd(1, A, { standing: true })] }] }]
     expect(firstReviewCandidate(runs)).toBe(`r1/build/1@${A}`)
@@ -522,24 +561,55 @@ describe("the ticket's candidates to review", () => {
 })
 
 describe("a continuation's ticket on the run page", () => {
-  const runs: Record<string, { resumedFrom?: string; link?: { key: string; deletedAt?: string } }> = {
+  const runs: Record<string, { resumedFrom?: string; resumedBy?: string; link?: { key: string; deletedAt?: string } }> = {
     C: { resumedFrom: 'B' },
-    B: { resumedFrom: 'A' },
-    A: { link: { key: 'CND-12' } },
+    B: { resumedFrom: 'A', resumedBy: 'C' },
+    A: { link: { key: 'CND-12' }, resumedBy: 'B' },
   }
   const read = {
     ticket: async (r: string) => runs[r]?.link ?? null,
     resumedFrom: async (r: string) => runs[r]?.resumedFrom,
+    resumedBy: async (r: string) => runs[r]?.resumedBy,
   }
   it('is the ticket whose run link names a run back along its chain, for a continuation of a run linked by hand', async () => {
-    expect(await chainLinkedTicket('A', read)).toBe('CND-12')
+    expect(await chainLinkedTicket({ from: 'A' }, read)).toBe('CND-12')
     // The run page of C asks from the run C continues: B, then A.
-    expect(await chainLinkedTicket(runs.C!.resumedFrom, read)).toBe('CND-12')
+    expect(await chainLinkedTicket({ from: runs.C!.resumedFrom }, read)).toBe('CND-12')
+  })
+  it('is the ticket whose run link names a continuation linked after it was made, for the run it continues', async () => {
+    // Standalone A continued as B, then B linked to CND-12: Dispatch gives the whole chain to CND-12, A's page among it.
+    const later: Record<string, { resumedFrom?: string; resumedBy?: string; link?: { key: string } }> = { A: { resumedBy: 'B' }, B: { resumedFrom: 'A', resumedBy: 'C' }, C: { resumedFrom: 'B', link: { key: 'CND-12' } } }
+    const r = { ticket: async (x: string) => later[x]?.link ?? null, resumedFrom: async (x: string) => later[x]?.resumedFrom, resumedBy: async (x: string) => later[x]?.resumedBy }
+    expect(await chainLinkedTicket({ by: later.A!.resumedBy }, r)).toBe('CND-12')
+    // B, in the middle: back to A (no link), then forward to C.
+    expect(await chainLinkedTicket({ from: 'A', by: 'C' }, r)).toBe('CND-12')
   })
   it('is none for a chain no live link names, past its bound, or when a read fails', async () => {
-    expect(await chainLinkedTicket('B', { ...read, ticket: async (r) => (r === 'A' ? { key: 'CND-12', deletedAt: '2026-11-08T00:00:00Z' } : null) })).toBe('')
-    expect(await chainLinkedTicket('B', read, 1)).toBe('')
-    expect(await chainLinkedTicket('B', { ...read, resumedFrom: async () => Promise.reject(new Error('offline')) })).toBe('')
-    expect(await chainLinkedTicket(undefined, read)).toBe('')
+    expect(await chainLinkedTicket({ from: 'B' }, { ...read, ticket: async (r) => (r === 'A' ? { key: 'CND-12', deletedAt: '2026-11-08T00:00:00Z' } : null) })).toBe('')
+    expect(await chainLinkedTicket({ from: 'B' }, read, 1)).toBe('')
+    expect(await chainLinkedTicket({ from: 'B' }, { ...read, resumedFrom: async () => Promise.reject(new Error('offline')) })).toBe('')
+    expect(await chainLinkedTicket({ by: 'B' }, { ...read, ticket: async () => null, resumedBy: async () => Promise.reject(new Error('offline')) })).toBe('')
+    expect(await chainLinkedTicket({}, read)).toBe('')
+  })
+})
+
+describe("what launched a candidate's run", () => {
+  const l = (id: string, runId: string) => ({ id, runId })
+  const link = (ref: string, o: Record<string, string> = {}) => ({ kind: 'run', ref, ...o })
+  it('is the launch the page read, back along the run\'s chain', () => {
+    const continues = new Map([['rB', 'rA']])
+    expect(runLaunch('rB', { launches: [l('L1', 'rA')], links: [], continues })).toEqual({ state: 'launched', launch: l('L1', 'rA') })
+    expect(runLaunch('rA', { launches: [l('L1', 'rA')], links: [link('rA')], continues })).toEqual({ state: 'launched', launch: l('L1', 'rA') })
+  })
+  it("is a run linked by hand only when a live run link of the ticket names a run of its chain", () => {
+    const continues = new Map([['rB', 'rA']])
+    expect(runLaunch('rB', { launches: [], links: [link('rA')], continues })).toEqual({ state: 'linked' })
+    expect(runLaunch('rB', { launches: [], links: [link('rA', { deletedAt: '2026-11-08T00:00:00Z' })], continues })).toEqual({ state: 'unread' })
+    expect(runLaunch('rB', { launches: [], links: [{ kind: 'delivery', ref: 'rA' }], continues })).toEqual({ state: 'unread' })
+  })
+  it('is not read for a launch past what the page read: never another launch, never a run taken for one linked by hand', () => {
+    // An older launch past the Runs pages read and the Plan's recent launches: the page holds other launches, none of this run.
+    expect(runLaunch('rOld', { launches: [l('L9', 'rNew')], links: [], continues: new Map() })).toEqual({ state: 'unread' })
+    expect(runLaunch('rX', { launches: [], links: [], continues: new Map([['rX', 'rY'], ['rY', 'rX']]) })).toEqual({ state: 'unread' })
   })
 })
