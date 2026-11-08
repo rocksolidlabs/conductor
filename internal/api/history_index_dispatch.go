@@ -53,7 +53,7 @@ func briefDocID(p string) (string, bool) {
 // indexedSource says a source key is one the stores hold (a catch-up
 // compares and removes it): a session, a run, a ticket or a brief.
 func indexedSource(k string) bool {
-	for _, p := range []string{"session:", "run:", "ticket:", "brief:"} {
+	for _, p := range []string{"session:", "run:", "ticket:", "brief:", "decision:"} {
 		if strings.HasPrefix(k, p) {
 			return true
 		}

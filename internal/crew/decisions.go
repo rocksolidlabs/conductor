@@ -1372,8 +1372,29 @@ func (e *Engine) TaskDecision(ctx context.Context, sessionID, id string) (Decisi
 	return e.decisionOf(rec), nil
 }
 
-// decisionOf is a decision's record as the engine reports it.
+// decisionOf is a decision's record as the engine reports it: DecisionOf,
+// with the asking attempt's liveness, which only the engine knows.
 func (e *Engine) decisionOf(rec ledger.DecisionRecord) Decision {
+	d := DecisionOf(rec)
+	if d.Asker != nil {
+		e.mu.Lock()
+		if r := e.runs[rec.CurrentRun]; r != nil {
+			if t := r.task(rec.TaskID); t != nil {
+				if a := t.active(); a != nil && a.n == rec.Attempt && a.sessionID == rec.SessionID && e.sessionLive(a.sessionID) {
+					d.Asker.Live = true
+				}
+			}
+		}
+		e.mu.Unlock()
+	}
+	return d
+}
+
+// DecisionOf is a decision's record as the routes report it, read from
+// the ledger's rows alone: its asking attempt never said live (the
+// engine's decisionOf knows that). The history's indexer reads a decision
+// through it, so the index shows what DR1 serves and adds no field to it.
+func DecisionOf(rec ledger.DecisionRecord) Decision {
 	d := Decision{ID: rec.ID(), Run: rec.CurrentRun, OpenedIn: rec.RunID, Origin: rec.Origin, Type: rec.Type, Gate: rec.Gate, Member: rec.Member,
 		Ticket: rec.Ticket, Plan: rec.Plan, PlanDigest: rec.PlanDigest, RequestID: rec.RequestID, Request: json.RawMessage(rec.Request),
 		Policy: json.RawMessage(rec.Policy), State: rec.State, Rev: rec.Rev, Why: rec.Why, SupersededBy: rec.SupersededBy, CreatedAt: rec.CreatedAt}
@@ -1412,15 +1433,6 @@ func (e *Engine) decisionOf(rec ledger.DecisionRecord) Decision {
 	}
 	if rec.Origin == ledger.OriginAgent {
 		d.Asker = &DecisionAsker{Task: rec.TaskID, Attempt: rec.Attempt}
-		e.mu.Lock()
-		if r := e.runs[rec.CurrentRun]; r != nil {
-			if t := r.task(rec.TaskID); t != nil {
-				if a := t.active(); a != nil && a.n == rec.Attempt && a.sessionID == rec.SessionID && e.sessionLive(a.sessionID) {
-					d.Asker.Live = true
-				}
-			}
-		}
-		e.mu.Unlock()
 	}
 	return d
 }
@@ -1490,6 +1502,11 @@ func answerFits(typ string, options int, resp Response) error {
 	}
 	return nil
 }
+
+// DecisionOptions is a decision's options' labels by its type and its
+// request as the ledger keeps it, in order (a response's choice indexes
+// them): optionsOf.
+func DecisionOptions(typ, request string) []string { return optionsOf(typ, request) }
 
 // optionsOf is the labels of a decision's options as its request keeps
 // them: an assignment's two fixed answers.

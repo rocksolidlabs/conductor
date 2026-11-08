@@ -104,6 +104,9 @@ type indexLedger interface {
 	Messages(ctx context.Context, runID string) ([]ledger.MessageRow, error)
 	Checks(ctx context.Context, runID, taskID string, n int, withLog bool) ([]ledger.CheckRow, error)
 	Check(ctx context.Context, runID, taskID string, n int, id string, k int) (ledger.CheckRow, bool, error)
+	// DR1's decision records (PR-9): one read whole, and a page of rows.
+	Decision(ctx context.Context, n int64) (ledger.DecisionRecord, bool, error)
+	Decisions(ctx context.Context, f ledger.DecisionFilter) ([]ledger.DecisionRow, error)
 }
 
 // historyIndexer feeds the index. Its fields after mu are the hooks'
@@ -755,6 +758,8 @@ func (h *historyIndexer) pass(ctx context.Context, key string) {
 			err = h.indexTicket(ctx, ix, id)
 		case "brief":
 			err = h.indexBrief(ctx, ix, id)
+		case "decision":
+			err = h.indexDecision(ctx, ix, id)
 		}
 	}
 	if err == nil {
@@ -1292,6 +1297,13 @@ func (h *historyIndexer) indexRun(ctx context.Context, ix *history.Index, id str
 	if err := ix.Replace(ctx, history.Source{Key: key, Mark: mark, Generation: h.gen}, entries, links); err != nil {
 		return err
 	}
+	// The decisions the run holds, each whose row or place moved: a
+	// decision changes only in a transition of the run that holds it.
+	if inLedger {
+		if err := h.markDecisions(ctx, ix, ld, p); err != nil {
+			return err
+		}
+	}
 	// The members' sessions, each when what its entry takes from the run
 	// changed: its attempt's start commit, or the run first seen by this
 	// process (its folder, and so its project, may be new to the member).
@@ -1361,6 +1373,12 @@ func (h *historyIndexer) setNoLedger(gone bool) {
 	h.mu.Lock()
 	h.noLedger = gone
 	h.mu.Unlock()
+}
+
+func (h *historyIndexer) noLedgerNow() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.noLedger
 }
 
 // errNoRun is a run the ledger has no row of.
@@ -1598,10 +1616,14 @@ func checkSources(ctx context.Context, ix *history.Index, run string) (map[strin
 }
 
 // removeRun removes a run that is gone (pruned, its record deleted) with
-// every receipt it owned.
+// every receipt it owned, and asks again of every decision it held or
+// opened (the prune took or handed back each).
 func (h *historyIndexer) removeRun(ctx context.Context, ix *history.Index, id string) error {
 	held, err := checkSources(ctx, ix, id)
 	if err != nil {
+		return err
+	}
+	if err := h.markRunsDecisions(ctx, ix, id); err != nil {
 		return err
 	}
 	for key := range held {
@@ -1745,6 +1767,16 @@ func (h *historyIndexer) storeSources(ctx context.Context) ([]string, bool, *int
 			}
 			after = ps[len(ps)-1].ID
 		}
+	}
+	if ld != nil && !h.noLedgerNow() {
+		ds, err := decisionSources(ctx, ld)
+		switch {
+		case errors.Is(err, ledger.ErrUnavailable):
+			h.setNoLedger(true)
+		case err != nil:
+			return nil, false, nil, err
+		}
+		keys = append(keys, ds...)
 	}
 	docs, err := h.data.ListDocs("runs")
 	if err != nil {
