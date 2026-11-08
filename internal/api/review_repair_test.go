@@ -32,9 +32,19 @@ import (
 // commit, once the ledger has attempt 3 failed and the task failed.
 func failingLaunch(t *testing.T) (l *launchTest, run, mark string, commits []string) {
 	t.Helper()
+	return failingLaunchWith(t, nil)
+}
+
+// failingLaunchWith is failingLaunch with the crew shaped by shape too
+// (nil for none), after build's check is set.
+func failingLaunchWith(t *testing.T, shape func(*crew.Crew)) (l *launchTest, run, mark string, commits []string) {
+	t.Helper()
 	mark = filepath.Join(t.TempDir(), "passes")
 	l = newLaunchTest(t, nil, func(c *crew.Crew) {
 		c.Tasks[0].Checks = []crew.Check{{ID: "test", Argv: []string{"sh", "-c", "test -e " + mark}}}
+		if shape != nil {
+			shape(c)
+		}
 	})
 	run = entityOf(t, l.launch(t, l.testEnv, nil, http.StatusCreated, ""), "launch")["runId"].(string)
 	commits = spendBuild(t, l.testEnv, run, "built.txt")
