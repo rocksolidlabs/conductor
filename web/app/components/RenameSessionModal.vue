@@ -13,6 +13,7 @@ const api = useSessions()
 const draft = ref('')
 const saving = ref(false)
 const refused = ref('')
+const form = ref<HTMLFormElement>()
 
 // The name as it is, selected as the field first takes the focus: typing replaces it, a click after places the caret.
 let selectNext = false
@@ -48,6 +49,11 @@ async function save() {
   // a dialog opened since (the save's dialog dismissed while it was under way, then Rename… on another session).
   const sentFrom = rename.opening.value
   const current = () => rename.open.value && rename.opening.value === sentFrom
+  // The Rename button goes disabled as it saves and can hold the focus no longer: the field takes it, so the dialog keeps it all
+  // through the save. Its focus trap gives a focus taken from it back to the last thing focused in it, and a disabled button takes
+  // none: the row's menu, unmounting late on a loaded machine, gave its More button the focus behind the dialog, and the list there
+  // took Escape for its own.
+  form.value?.querySelector<HTMLInputElement>('[data-rename-input]')?.focus()
   saving.value = true
   try {
     await api.rename(t.id, state.value.name)
@@ -63,7 +69,7 @@ async function save() {
 <template>
   <UModal v-model:open="rename.open.value" title="Rename session" description="The name it shows everywhere; a resume starts under it.">
     <template #body>
-      <form class="flex flex-col gap-3" data-rename-dialog @submit.prevent="save">
+      <form ref="form" class="flex flex-col gap-3" data-rename-dialog @submit.prevent="save">
         <UFormField label="Name" name="name" :error="error">
           <UInput
             v-model="draft"
