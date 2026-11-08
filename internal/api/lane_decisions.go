@@ -89,6 +89,11 @@ func laneRecordItem(it *inboxItem) *inboxItem {
 // it is a run link's, or a session link's attempt's run with the record
 // its task's. A refusal (naming reqID) for one out of the scope or none.
 func (s *Server) laneRecord(ctx context.Context, sc laneScope, reqID string, n int64) (ledger.DecisionRecord, []byte) {
+	out := refusal(reqID, proto.DecideNotInScope, "this link does not cover "+ledger.DecisionRef(n))
+	if sc.run == "" || (sc.session != "" && sc.task == "") {
+		// A session link whose session runs no attempt covers no record.
+		return ledger.DecisionRecord{}, out
+	}
 	if s.ledger == nil {
 		return ledger.DecisionRecord{}, refusal(reqID, proto.DecideNotFound, "this server keeps no ledger, so no decisions")
 	}
@@ -100,7 +105,6 @@ func (s *Server) laneRecord(ctx context.Context, sc laneScope, reqID string, n i
 	} else {
 		rec, found, err = s.ledger.Decision(ctx, n)
 	}
-	out := refusal(reqID, proto.DecideNotInScope, "this link does not cover "+ledger.DecisionRef(n))
 	switch {
 	case err != nil:
 		return ledger.DecisionRecord{}, refusal(reqID, "unavailable", "the decision could not be read")
@@ -109,7 +113,7 @@ func (s *Server) laneRecord(ctx context.Context, sc laneScope, reqID string, n i
 		return ledger.DecisionRecord{}, out
 	case !found:
 		return ledger.DecisionRecord{}, refusal(reqID, proto.DecideNotFound, "no such decision")
-	case sc.run == "" || rec.CurrentRun != sc.run || (sc.session != "" && sc.task == ""):
+	case rec.CurrentRun != sc.run:
 		return ledger.DecisionRecord{}, out
 	}
 	return rec, nil

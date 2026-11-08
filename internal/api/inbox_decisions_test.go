@@ -236,7 +236,7 @@ func keptResponse(t *testing.T, e *testEnv, did string, k int) crew.ResponseRece
 // opId with another text is response_conflict; an input on a record is
 // invalid, here and on a link. A decide of 4,096 escaping characters
 // maps whole (recordResponse); DR1 keeps a response's receipt within 8
-// KiB as encoded, so the text it records here escapes in part.
+// KiB as encoded, so the text it records here escapes in part (#751).
 func TestDecideCarriesADR1ResponseWhole(t *testing.T) {
 	f := newDecisionFixture(t, nil, nil)
 	f.ask(t, clarificationBody("c1"), http.StatusCreated, "")
