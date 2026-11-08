@@ -4245,7 +4245,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestALabelResolvesFromTheCrewAsLaunched`,
   `TestAnAgentsLabelNoPersonHoldsIsRefused`,
   `TestAnAssignmentGateForAPerson`, `TestRouteDecisionToAPersonAndARole`,
-  `TestARouteChangesForOnlyWhileOpen`); `internal/crew/ledger`'s
+  `TestARouteChangesForOnlyWhileOpen`, `TestAGateAsksAgainForItsLabel`);
+  `internal/dispatch`'s `TestThePackageCarriesNoFor` (an older build's
+  strict reader of the package); `internal/crew/ledger`'s
   `TestDecisionsFilterByPerson`, `TestRouteForChangesOnlyFor`;
   `internal/api`'s `decisions_for_test.go`
   (`TestTheOperatorAnswersForALabel`,
@@ -4259,13 +4261,25 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   that lists people as unreadable and leaves it out of its lists (the
   store never writes over a file it cannot read, and a newer build reads
   it again); a managed run's record with people is written again from
-  the ledger at the newer build's next start; an older build reads a
-  launch package strictly, so it refuses to launch a revision whose
-  decision names `for` and to continue a run launched from one, and its
-  ledger refuses to open a decision whose request keeps `for` (a
-  replacement of such a decision); it reads such a record, answers it
-  and applies it as any other. A revision that names whom a decision is
-  for is launched and continued by this build or a later one.
+  the ledger at the newer build's next start. Whom a decision is for
+  never travels in a launch's package: the package is version 1's shape,
+  which every older build reads, and the engine is handed each label from
+  the revision's body beside it (`crew.Planned.For`); a gate's request
+  in the ledger keeps it from then on, and a gate asked again reads it
+  from the record of the decision it follows. So an older build that
+  continues a run this build launched reads its package whole, carries
+  its decisions with their `for` as written, answers and applies them as
+  any other, and asks a gate again for the operator alone (it knows no
+  label); its ledger refuses to open a decision whose request keeps
+  `for` (a replacement of such a decision). An older build that launches
+  a revision whose decision names `for` cannot be stopped by any guard a
+  build already shipped holds: it decodes the body without `for` and
+  opens the gates for the operator alone, and nothing restores their
+  labels afterwards (this build's later continuation finds none in their
+  records and asks again for the operator alone). Who may answer is the
+  same either way, the operator (decision D4); only the label is
+  missing. A revision that names whom a decision is for is launched by
+  this build or a later one.
 
   The acceptance (the plan's Acceptance, HM1: a crew lists an
   architecture owner who is a person; a gate names that label and the

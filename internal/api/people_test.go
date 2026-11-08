@@ -1024,6 +1024,24 @@ func TestAPersonsWorkWhenASourceCannotBeRead(t *testing.T) {
 	}
 	e.expect(t, "GET", "/api/people/nobody", nil, http.StatusNotFound, "not_found")
 
+	// No ledger (openLedger gives none when it cannot open it): the
+	// decisions are not read, which the reply says, never an empty list
+	// read; and a name only a decision might name is not refused for it.
+	if e.srv.ledger == nil {
+		t.Fatal("the server opened no ledger")
+	}
+	ld := e.srv.ledger
+	e.srv.ledger = nil
+	kai, nobody = work("kai"), work("nobody")
+	e.srv.ledger = ld
+	if kai["decisionsUnavailable"] != true || count(kai, "decisions") != 0 || count(kai, "tasks") != 1 || nobody["decisionsUnavailable"] != true {
+		t.Fatalf("no ledger: kai %v, nobody %v", kai, nobody)
+	}
+	if kai := work("kai"); kai["decisionsUnavailable"] != nil {
+		t.Fatalf("the ledger back: kai %v", kai)
+	}
+	e.expect(t, "GET", "/api/people/nobody", nil, http.StatusNotFound, "not_found")
+
 	if os.Geteuid() == 0 {
 		t.Log("root reads a directory whatever its mode: the unreadable directories are not tried")
 	} else {

@@ -373,7 +373,13 @@ func (s *Server) handlePerson(w http.ResponseWriter, r *http.Request) {
 			out.Tasks = append(out.Tasks, personTask{Run: run.ID, RunLabel: cmp.Or(run.Label, run.Name), Task: t.ID, State: t.State, Member: t.Member, OwnerFrom: t.OwnerFrom})
 		}
 	}
-	if s.ledger != nil {
+	if s.ledger == nil {
+		// No ledger (it could not be opened, or this server keeps none, as
+		// GET /api/decisions answers 503): their decisions are not known,
+		// which is not "none", and a name only a decision names is not
+		// refused for it.
+		out.DecisionsUnavailable = true
+	} else {
 		decisions, more, mentioned, err := s.personDecisions(r.Context(), name)
 		if err != nil {
 			s.log.Warn("the decisions could not be read for a person's work", "err", err)

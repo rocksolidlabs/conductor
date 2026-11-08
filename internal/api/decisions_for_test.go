@@ -57,12 +57,23 @@ func TestProposalRefusesALabelTheCrewLacks(t *testing.T) {
 }
 
 // The operator answers a gate for its label: the decision's request names
-// nate, the architecture owner; the receipt's actor is admin (who
-// answered) and its for nate, architecture (for whom), side by side; the
-// gate's task then starts.
+// nate, the architecture owner, the holder in the revision's crew, though
+// the saved crew was edited after the approval and before the launch to
+// give architecture to ana (a label resolves against the crew the
+// revision was approved with, never the saved crew now); the receipt's
+// actor is admin (who answered) and its for nate, architecture (for
+// whom), side by side; the gate's task then starts.
 func TestTheOperatorAnswersForALabel(t *testing.T) {
 	l := newLaunchTest(t, nil, peopledTeam)
 	plan := l.approved(t, map[string]any{"decisions": []any{forGate("schema", "approval", "role:architecture")}})
+	edited := l.crew
+	edited.People = []crew.Person{{Name: "nate"}, {Name: "ana", Responsibilities: []string{crew.RespArchitecture}}}
+	if _, err := l.srv.crews.Update(edited.ID, edited); err != nil {
+		t.Fatal(err)
+	}
+	if saved, err := l.srv.crews.Get(edited.ID); err != nil || len(saved.People) != 2 || len(saved.People[1].Responsibilities) != 1 || saved.People[1].Responsibilities[0] != crew.RespArchitecture {
+		t.Fatalf("the saved crew: %+v", saved.People)
+	}
 	run := entityOf(t, l.launch(t, l.testEnv, map[string]any{"plan": plan}, http.StatusCreated, ""), "run")["id"].(string)
 	ds := l.expect(t, "GET", "/api/decisions?run="+run, nil, http.StatusOK, "")["decisions"].([]any)
 	if len(ds) != 1 {
@@ -92,8 +103,13 @@ func TestTheOperatorAnswersForALabel(t *testing.T) {
 
 // A person's decisions: GET /api/decisions?for= lists those whose for
 // named them, and their page lists the open and answered ones with the
-// record, the newest first; once applied it lists none, and a name a
-// decision named still has a page; a name of no shape is refused.
+// record, the newest first; once applied it lists none; a name of no shape
+// is refused. A name only a decision's for still names has a page: after
+// a restart, the run's record deleted (as a prune would) and the crew
+// saved without its people, no run, record, crew or Dispatch list names
+// ana or nate, and ana's page stands on her applied decision alone
+// (listing none), nate's on his open one (listing it), while a name
+// nothing names is 404.
 func TestAPersonsDecisions(t *testing.T) {
 	l := newLaunchTest(t, nil, peopledTeam)
 	plan := l.approved(t, map[string]any{"decisions": []any{forGate("schema", "approval", "role:architecture"), forGate("migrate", "assignment", "person:ana")}})
@@ -126,15 +142,27 @@ func TestAPersonsDecisions(t *testing.T) {
 	if ds, _ := work("ana")["decisions"].([]any); len(ds) != 0 {
 		t.Fatalf("ana's page after Done: %v", ds)
 	}
-	_ = run
-	// The crew saved without ana: her page stands on the run's and the
-	// decision's names.
-	c := l.crew
-	c.People = c.People[:1]
-	if _, err := l.srv.crews.Update(c.ID, c); err != nil {
+	again := l.restartAfterStop(t, run)
+	if err := again.srv.records.Delete(run); err != nil {
 		t.Fatal(err)
 	}
-	if w := work("ana"); w["name"] != "ana" {
-		t.Fatalf("ana's page: %v", w)
+	c := l.crew
+	c.People = nil
+	if _, err := again.srv.crews.Update(c.ID, c); err != nil {
+		t.Fatal(err)
 	}
+	if _, found, err := again.srv.records.Get(run); err != nil || found || len(again.srv.runs.List()) != 0 {
+		t.Fatalf("the run still named: record %v %v, held %d", found, err, len(again.srv.runs.List()))
+	}
+	page := func(name string, status int) map[string]any {
+		t.Helper()
+		return again.expect(t, "GET", "/api/people/"+personSegment(name), nil, status, "")
+	}
+	if w := page("ana", http.StatusOK); w["name"] != "ana" || len(w["decisions"].([]any)) != 0 || len(w["tasks"].([]any)) != 0 || len(w["crews"].([]any)) != 0 {
+		t.Fatalf("ana's page from her applied decision alone: %v", w)
+	}
+	if w := page("nate", http.StatusOK); len(w["decisions"].([]any)) != 1 || w["decisions"].([]any)[0].(map[string]any)["gate"] != "schema" || len(w["tasks"].([]any)) != 0 {
+		t.Fatalf("nate's page from his open decision alone: %v", w)
+	}
+	page("bo", http.StatusNotFound)
 }

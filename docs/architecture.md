@@ -335,8 +335,11 @@ acceptance owner (`TaskOwner`). A run keeps its people as its chain's
 launch row keeps the crew, and an attempt's task file says who answers
 for the work. A decision names whom it is for, `role:<responsibility>`
 or `person:<name>`: a plan revision's decision in its body, which the
-proposal resolves against the crew it takes, and an agent's in its
-request. `Holder` resolves the label over the run's crew as launched in
+proposal resolves against the crew it takes and the launch hands the
+engine beside the package, never in it (`crew.Planned.For`, so the
+package stays the version every build reads; a gate asked again reads
+the label from the record of the decision it follows), and an agent's
+in its request. `Holder` resolves the label over the run's crew as launched in
 the transaction that opens the decision, and the request keeps the
 person it named (`for`), so a later edit of the saved crew changes
 nothing about it; a route to a person or a responsibility

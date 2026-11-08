@@ -90,19 +90,77 @@ func TestAGateNamesItsLabel(t *testing.T) {
 			t.Fatalf("a gate for %s launched: %v", label, err)
 		}
 	}
+	// The labels travel beside the package, never in it: one naming no
+	// decision of the package is refused.
+	p := gatedPlan(t, "api-sweep-000000f2", head(t, dir), gateFor("schema", "", "build"))
+	if strings.Contains(string(p.Package), `"for"`) {
+		t.Fatalf("the package carries for: %s", p.Package)
+	}
+	p.For = map[string]string{"nope": "role:architecture"}
+	_, release, err := e.LaunchPlanned(t.Context(), peopleCrew(dir), "CND-12 Fix the login loop", p)
+	release()
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), `"nope"`) {
+		t.Fatalf("a label of no decision launched: %v", err)
+	}
 }
 
-// A label resolves from the crew as launched: the saved crew edited after
-// the launch, and the run continued, the record still names the person the
-// launch's crew named; the continuation resolves nothing again.
+// A gate asks again for whom the decision it follows was for, read from
+// that decision's record in the ledger: in the run that launched it (the
+// launch's label, nate), and in a continuation, whose package carries no
+// label, after a route moved its decision to ana (the record's, ana).
+func TestAGateAsksAgainForItsLabel(t *testing.T) {
+	dir, ldir := newRepo(t), t.TempDir()
+	e, _, ld := decisionEngineAt(t, ldir)
+	run := launchGated(t, e, dir, "api-sweep-000000f6", peopleCrew(dir), gateFor("schema", "role:architecture", "build"))
+	reject := func(e *Engine, ld *ledger.Ledger, runID, id string, rev int) {
+		t.Helper()
+		answer(t, e, id, Response{ResponseID: "r-" + id, Choice: choice(1), ExpectedRev: rev})
+		decisionWhen(t, ld, id, "applied", inState(ledger.DecisionApplied))
+		waitTask(t, e, runID, "build", ledger.TaskCancelled, 0)
+		waitOutcome(t, e, runID, ledger.OutcomeCancelled)
+	}
+	g := gateOf(t, e, ld, run.ID)
+	reject(e, ld, run.ID, g.ID, 1)
+	if err := e.RetryTask(t.Context(), run.ID, "build"); err != nil {
+		t.Fatal(err)
+	}
+	fresh := gateOf(t, e, ld, run.ID)
+	if f := requestForOf(t, string(fresh.Request)); fresh.ID == g.ID || f == nil || *f != (DecisionFor{Label: "role:architecture", Person: "nate", Responsibility: RespArchitecture}) {
+		t.Fatalf("the gate asked again in the run: %s for %+v", fresh.ID, f)
+	}
+	if _, err := route(e, fresh.ID, "o1", 1, DestPerson, "ana"); err != nil {
+		t.Fatal(err)
+	}
+	decisionWhen(t, ld, fresh.ID, "for ana", func(rec ledger.DecisionRecord) bool { return rec.Rev == 2 })
+	reject(e, ld, run.ID, fresh.ID, 2)
+	e2, _, ld2 := restart(t, e, ld, ldir, run.ID)
+	next := continueRun(t, e2, run.ID)
+	if err := e2.RetryTask(t.Context(), next.ID, "build"); err != nil {
+		t.Fatal(err)
+	}
+	again := gateOf(t, e2, ld2, next.ID)
+	if f := requestForOf(t, string(again.Request)); again.ID == fresh.ID || f == nil || *f != (DecisionFor{Label: "person:ana", Person: "ana"}) {
+		t.Fatalf("the gate asked again in the continuation: %s for %+v", again.ID, f)
+	}
+	rec := decisionWhen(t, ld2, again.ID, "open", inState(ledger.DecisionOpen))
+	if rows := routedRows(t, rec); len(rows) != 1 || rows[0]["rule"] != "local/1: the operator answers, for ana (person:ana)" {
+		t.Fatalf("the routed rows: %+v", rows)
+	}
+	stopRun(t, e2, next.ID)
+}
+
+// A label resolves once, when its decision opens: the run continued, the
+// record still names the person the launch's crew named, and the
+// continuation resolves nothing again (one routed row). The engine never
+// reads a saved crew: a continuation takes the crew from the chain's
+// launch row, so the saved crew edited after the approval is
+// internal/api's to test (TestTheOperatorAnswersForALabel), where a saved
+// crew exists.
 func TestALabelResolvesFromTheCrewAsLaunched(t *testing.T) {
 	dir, ldir := newRepo(t), t.TempDir()
 	e, _, ld := decisionEngineAt(t, ldir)
-	c := peopleCrew(dir)
-	run := launchGated(t, e, dir, "api-sweep-000000f3", c, gateFor("accept", "role:acceptance", "docs"))
+	run := launchGated(t, e, dir, "api-sweep-000000f3", peopleCrew(dir), gateFor("accept", "role:acceptance", "docs"))
 	g := gateOf(t, e, ld, run.ID)
-	// The saved crew edited: bo takes acceptance from ana.
-	c.People[1].Responsibilities, c.People[2].Responsibilities = nil, []string{RespAcceptance}
 	e2, _, ld2 := restart(t, e, ld, ldir, run.ID)
 	next := continueRun(t, e2, run.ID)
 	rec := decisionWhen(t, ld2, g.ID, "carried", func(rec ledger.DecisionRecord) bool { return rec.CurrentRun == next.ID })
@@ -203,6 +261,8 @@ func TestRouteDecisionToAPersonAndARole(t *testing.T) {
 	req := clarification("q1", "Which index?")
 	req.For = "role:architecture"
 	d := ask(t, e, b.Attempt.SessionID, req)
+	// The fingerprint as the opening kept it, read before any route.
+	opened := requestFingerprint(t, ld, d.ID)
 	rc, err := route(e, d.ID, "o1", 1, DestPerson, "ana")
 	if err != nil || rc.Rev != 2 || rc.Words != d.ID+" is now for ana: routed by admin" {
 		t.Fatalf("the route to ana: %+v %v", rc, err)
@@ -220,8 +280,13 @@ func TestRouteDecisionToAPersonAndARole(t *testing.T) {
 	if string(was) != `{"label":"role:architecture","person":"nate","responsibility":"architecture"}` || string(now) != `{"label":"person:ana","person":"ana"}` {
 		t.Fatalf("the route's row: %s %s", was, now)
 	}
-	if rec.Fingerprint != requestFingerprint(t, ld, d.ID) {
-		t.Fatal("the route changed the request's fingerprint")
+	if rec.Fingerprint != opened {
+		t.Fatalf("the route changed the request's fingerprint: %s, %s at the opening", rec.Fingerprint, opened)
+	}
+	// The request sent again, as the agent sent it, is still the same
+	// request: answered by its decision, none opened.
+	if again, created, err := e.RequestDecision(t.Context(), b.Attempt.SessionID, req); err != nil || created || again.ID != d.ID {
+		t.Fatalf("the request sent again after the route: %+v created %v %v", again, created, err)
 	}
 	if rc, err := route(e, d.ID, "o2", 2, DestRole, RespProduct); err != nil || rc.Rev != 3 || rc.Words != d.ID+" is now for nate, the product owner: routed by admin" {
 		t.Fatalf("the route to the product owner: %+v %v", rc, err)

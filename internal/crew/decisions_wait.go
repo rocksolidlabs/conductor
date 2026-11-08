@@ -728,14 +728,17 @@ func gateRequest(p Package, pd PackageDecision) (string, requestBody) {
 }
 
 // openGate opens a fresh decision of plan decision pd holding tasks, in
-// the change under way: what regate asks again. The caller holds e.mu, in
-// a transaction's change.
+// the change under way: what regate asks again. Whom it is for is read in
+// its transaction from the ledger's record of the decision it follows
+// (that decision's request's for, HM1): the label a continuation's
+// package never carries (PackageDecision.For) is the record's, so a gate
+// asks again for the same label in the run that launched it and in every
+// continuation of it, a route's included. With no decision to follow, it
+// is the launch's label (gateFor), none in a continuation. The caller
+// holds e.mu, in a transaction's change.
 func (e *Engine) openGate(r *run, pd PackageDecision, tasks []*task, cause string) {
 	p := r.pkg.p
 	typ, body := gateRequest(p, pd)
-	body.For = r.gateFor(pd)
-	raw, _ := json.Marshal(body)
-	sum := sha256.Sum256(raw)
 	d := &decision{origin: ledger.OriginPlan, typ: typ, gate: pd.ID, question: body.Question, state: ledger.DecisionOpen, rev: 1, subject: body.Subject}
 	for _, o := range body.Options {
 		d.options = append(d.options, o.Label)
@@ -746,8 +749,7 @@ func (e *Engine) openGate(r *run, pd PackageDecision, tasks []*task, cause strin
 	}
 	r.dec.opened++
 	prev := r.dec.lastGate[pd.ID]
-	row := ledger.DecisionRow{Origin: ledger.OriginPlan, Type: typ, Gate: pd.ID, Ticket: p.Ticket.ID, Plan: p.Plan.ID, PlanDigest: p.Plan.Digest,
-		Fingerprint: hex.EncodeToString(sum[:]), Request: string(raw), Policy: policyJSON}
+	label := pd.For
 	ids := make([]string, 0, len(tasks))
 	for _, t := range tasks {
 		ids = append(ids, t.def.ID)
@@ -759,6 +761,21 @@ func (e *Engine) openGate(r *run, pd PackageDecision, tasks []*task, cause strin
 		if err != nil {
 			return err
 		}
+		if n, ok := ledger.ParseDecisionID(prev.id); ok {
+			was, found, err := dtx.Decision(n)
+			if err != nil {
+				return err
+			}
+			label = ""
+			if f := requestFor(was.Request); found && f != nil {
+				label = f.Label
+			}
+		}
+		body.For = r.gateFor(PackageDecision{ID: pd.ID, For: label})
+		raw, _ := json.Marshal(body)
+		sum := sha256.Sum256(raw)
+		row := ledger.DecisionRow{Origin: ledger.OriginPlan, Type: typ, Gate: pd.ID, Ticket: p.Ticket.ID, Plan: p.Plan.ID, PlanDigest: p.Plan.Digest,
+			Fingerprint: hex.EncodeToString(sum[:]), Request: string(raw), Policy: policyJSON}
 		got, _, err := dtx.OpenDecision(row)
 		if err != nil {
 			return err

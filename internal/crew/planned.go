@@ -33,13 +33,19 @@ var ErrRunExists = ledger.ErrRunExists
 const maxMints = 3
 
 // Planned is what a planned launch is given: the run id Dispatch minted,
-// the revision's base (a full commit id of the crew's repository), and the
-// package with its SHA-256 (hex), which the engine checks.
+// the revision's base (a full commit id of the crew's repository), the
+// package with its SHA-256 (hex), which the engine checks, and whom each
+// of the package's decisions is for (For: its id to its label, from the
+// revision's body, HM1). The labels travel beside the package, never in
+// it: the package keeps the shape every build reads, so an older build
+// that continues the run is never handed one it would drop, and the
+// gate's request in the ledger keeps each label once it is opened.
 type Planned struct {
 	RunID   string
 	Base    string
 	Digest  string
 	Package []byte
+	For     map[string]string
 }
 
 // LaunchPlanned launches c, a crew with tasks, as LaunchNamed does, under
@@ -90,6 +96,9 @@ func (e *Engine) LaunchPlanned(ctx context.Context, c Crew, label string, p Plan
 		}
 	}
 	// Whom each gate is for resolves in the crew it launches (HM1).
+	if err := pkg.takeFor(p.For); err != nil {
+		return nil, noop, err
+	}
 	if err := checkPackageFor(c, pkg.p); err != nil {
 		return nil, noop, err
 	}

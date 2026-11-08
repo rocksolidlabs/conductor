@@ -285,6 +285,29 @@ func (r *run) gateFor(pd PackageDecision) *DecisionFor {
 	return f
 }
 
+// takeFor gives the package's decisions whom each is for, from the
+// labels a planned launch is handed beside it (Planned.For, the
+// revision's decisions'): a label naming no decision of the package is
+// refused (ErrInvalid), as a package naming more decisions than it has.
+func (rp *runPackage) takeFor(labels map[string]string) error {
+	if len(labels) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(labels))
+	for id := range labels {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	for _, id := range ids {
+		i := slices.IndexFunc(rp.p.Decisions, func(pd PackageDecision) bool { return pd.ID == id })
+		if i < 0 {
+			return invalidf("the launch names whom decision %s is for, and the package names no such decision", quote(id))
+		}
+		rp.p.Decisions[i].For = labels[id]
+	}
+	return nil
+}
+
 // checkPackageFor holds a planned launch's gates to the crew it launches:
 // every label a decision of the package names resolves in it (Holder),
 // as the proposal's check did against the revision's crew, which is this
