@@ -172,6 +172,15 @@ the end of your turn finishes nothing; only a submitted result does.
 
       "${CONDUCTOR_BIN:-conductor}" task result --verdict needs_changes --finding "major internal/api/users.go:42 the handler ignores the error"
 
+- The findings to address may come from a person, who reviewed your
+  task's candidate: each has its id, its lines as they saw them and the
+  resolution asked for. Do the changes asked for, answer each question in
+  your summary, and say which changes you addressed, each by its id with
+  a note (addressed in task_result, or --addressed). It is a claim a
+  person checks against your result, never the change's resolution:
+
+      "${CONDUCTOR_BIN:-conductor}" task result --summary "what you did; the answers" --addressed "<id>=renamed the field"
+
 - Conductor runs the task's checks against your commit; a check that
   fails starts a fresh attempt at your commit with the log in its task
   file. A refused submit says why (uncommitted changes, the wrong branch,

@@ -518,3 +518,28 @@ func TestTheSkillsBrakemanSectionIsShort(t *testing.T) {
 		t.Errorf("Brakeman is named outside its section (%d times in the skill)", n)
 	}
 }
+
+// The skill's "Your task" section says the findings to address may come
+// from a person, with their ids, lines and the resolution asked for; that
+// addressed says which changes were done, by id, as a claim; and that a
+// question is answered in the summary (RV1 PR-5).
+func TestSkillSaysFindingsMayComeFromAPerson(t *testing.T) {
+	start := strings.Index(Skill, "\n## Your task\n")
+	end := strings.Index(Skill, "\n## Decisions\n")
+	if start < 0 || end < start {
+		t.Fatal("no Your task section ahead of Decisions")
+	}
+	section := strings.Join(strings.Fields(Skill[start:end]), " ")
+	for _, want := range []string{
+		"The findings to address may come from a person",
+		"each has its id, its lines as they saw them and the resolution asked for",
+		"answer each question in your summary",
+		"say which changes you addressed, each by its id with a note (addressed in task_result, or --addressed)",
+		"a claim a person checks against your result, never the change's resolution",
+		`"${CONDUCTOR_BIN:-conductor}" task result --summary "what you did; the answers" --addressed "<id>=renamed the field"`,
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("the section does not say %q", want)
+		}
+	}
+}
