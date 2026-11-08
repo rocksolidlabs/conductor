@@ -149,7 +149,10 @@ async function resumeRun() {
 }
 
 // A managed run: its task badges, and Pause / Resume of its dispatch.
-const badges = computed(() => (props.run?.managed ? taskBadges(props.run) : null))
+// The run's open decisions, as the app's store read them: a gate that holds no task is counted too (taskBadges).
+const decisionStore = useDecisions()
+const runDecisions = computed(() => decisionStore.open.value.filter((d) => d.run === props.runId).map((d) => d.id))
+const badges = computed(() => (props.run?.managed ? taskBadges(props.run, runDecisions.value) : null))
 const pausing = ref(false)
 async function togglePause() {
   const r = props.run
