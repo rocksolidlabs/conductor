@@ -12,6 +12,7 @@ import type { PaletteItem } from '~/composables/usePalette'
 import { TICKET_PLAN_ROWS } from '~/composables/useTicketPlans'
 import { approvable, launchBlockers, revisionTag } from '~/utils/dispatchPlans'
 import { heldRuns } from '~/composables/useTicketCandidates'
+import { REVIEW_ENTRY, openFindingsOf, useReview, type ReviewSummary } from '~/composables/useReview'
 
 /**
  * A ticket's page (docs/plans/dispatch.md, PR-8): its key and title, its description and acceptance criteria as Markdown with a
@@ -37,6 +38,9 @@ import { heldRuns } from '~/composables/useTicketCandidates'
  * acceptance, Accept anyway receipts, decision records), its Delivery (the close card, with `verified`, and the links, a delivery naming
  * the candidate it delivers with its verification), and its People (DispatchPeople: owner, assignees, approvers, launchers, commenters,
  * the plan's agents and each launch's with their versions). The runs' candidates they read are read once for all three (useTicketCandidates).
+ * Its Review view (Program item RV1, DispatchReview), `?view=review&candidate=…`, shows in place of the sections: a candidate's diff,
+ * the notes of a draft and the review sent; each standing candidate under Runs offers Review, with the open findings of its task, counted
+ * from the ticket's reviews (every page), read with the ticket.
  */
 const props = defineProps<{ project: string; ticketKey: string }>()
 
@@ -686,6 +690,34 @@ function reviseFrom(planId: string) {
 const palette = usePalette()
 const route = useRoute()
 const router = useRouter()
+
+// The Review view (RV1): ?view=review, at the candidate ?candidate= names (the first standing one when none).
+const reviewView = computed(() => route.query.view === 'review')
+const reviewCandidate = computed(() => (typeof route.query.candidate === 'string' ? route.query.candidate : ''))
+function pickReviewCandidate(c: string) {
+  void router.replace({ query: { ...route.query, view: 'review', candidate: c } })
+}
+// The open findings beside each candidate's Review, counted from the ticket's reviews (each counts its findings by state, every page
+// read), read with the ticket: a hint, so a read that fails leaves the count it had, and the next read of the ticket asks again. The
+// Review view reads the same reviews itself, so this read waits while it is shown and runs again when the sections are.
+const reviews = useReview(gate)
+const ticketReviews = ref<ReviewSummary[]>([])
+watch(
+  () => [props.ticketKey, reads.value, reviewView.value] as const,
+  ([key, , inView]) => {
+    if (inView || !parseTicketKey(key)) return
+    reviews
+      .readReviews(key, (r) => {
+        if (key === props.ticketKey) ticketReviews.value = r
+      })
+      .catch(() => {})
+  },
+  { immediate: true },
+)
+provide(REVIEW_ENTRY, {
+  openFindings: (run, task) => openFindingsOf(ticketReviews.value, run, task),
+  href: (candidate) => ({ query: { view: 'review', candidate } }),
+})
 const planRows = inject(TICKET_PLAN_ROWS, null)
 // A link to one comment (`?comment=<n>`, a history row's: Program item HS1, PR-6) shows it marked at the head of the comments. Read, never written back.
 const commentAt = computed(() => (typeof route.query.comment === 'string' && /^[1-9]\d{0,8}$/.test(route.query.comment) ? Number(route.query.comment) : undefined))
@@ -834,8 +866,11 @@ const askBrakeman = computed(() =>
           </p>
         </div>
 
+        <!-- The Review view (RV1) in place of the sections. -->
+        <DispatchReview v-if="reviewView" :ticket-key="ticket.key" :candidate="reviewCandidate" :candidates="candidates" :gate="gate" :reads="reads" :resets="resets" :now="now" @candidate="pickReviewCandidate" />
+
         <!-- Its text and history, its properties beside them on a wide screen; on a phone one column, the properties first. -->
-        <div class="flex flex-col gap-6 lg:flex-row lg:items-start">
+        <div v-else class="flex flex-col gap-6 lg:flex-row lg:items-start">
           <div class="flex min-w-0 flex-1 flex-col gap-6">
             <TicketMarkdown :text="ticket.description" label="Description" empty="Add a description…" :max-bytes="MAX_DESCRIPTION" :save="(text, base) => saveText('description', text, base)" :disabled="locked" name="description" :attachment-url="files.resolver.value" />
             <TicketMarkdown :text="ticket.acceptance" label="Acceptance criteria" empty="Add what must hold for it to be done…" :max-bytes="MAX_ACCEPTANCE" :save="(text, base) => saveText('acceptance', text, base)" :disabled="locked" name="acceptance" :attachment-url="files.resolver.value" />
