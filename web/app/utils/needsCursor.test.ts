@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
-import { nextNeeding, PILL_MS, pillMs, sameQuestions } from './needsCursor'
+import { nextNeeding, PILL_MS, pillGoes, pillMs, sameQuestions } from './needsCursor'
 
 function asking(id: string, message: string, labels: string[], extra: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -63,5 +63,24 @@ describe('the pill’s life (#281)', () => {
     for (const bad of [0, -0, -5, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, '600000', null, undefined, true, {}]) {
       expect(pillMs({ conductorPillMs: bad }), String(bad)).toBe(PILL_MS)
     }
+  })
+})
+
+describe('pillGoes', () => {
+  it("hides a session's pill when its session answered, went or asks another question", () => {
+    const shown = { question: 'q1' }
+    expect(pillGoes(shown, 'needs_input', 'q1')).toBe(false)
+    expect(pillGoes(shown, 'working', 'q1')).toBe(true)
+    expect(pillGoes(shown, undefined, undefined)).toBe(true)
+    expect(pillGoes(shown, 'needs_input', 'q2')).toBe(true)
+    expect(pillGoes(null, undefined, undefined)).toBe(false)
+  })
+
+  // The reviews of #719: ] from a session's pill to a lone decision's left the watched session undefined, and the pill was hidden at
+  // once. A decision's pill shows no session: nothing a session does hides it (its own watch hides it when the decision closes).
+  it("never hides a decision's pill for the session it stepped from", () => {
+    const decision = { decision: 'dr-1' }
+    expect(pillGoes(decision, undefined, undefined)).toBe(false)
+    expect(pillGoes(decision, 'working', 'q1')).toBe(false)
   })
 })

@@ -3,12 +3,18 @@ import { MODE_CHOICE, answersInTerminal, choiceKey, decisionAnsweredBy, decision
 import type { Attention, Role } from '~/utils/protocol'
 import { draftQuestion, questionOf } from '~/utils/reply'
 
-const props = defineProps<{ attention?: Attention; agentName: string; role: Role; busy?: boolean }>()
+/**
+ * `answers`: the viewer is the operator (the session page, the Yard's focused panel), who answers a question that mirrors a durable
+ * decision as the decision: Answer opens its card. Without it (a shared session's viewer, whose link no decision route takes) the bar
+ * says where the decision is answered, and emits nothing for it.
+ */
+const props = defineProps<{ attention?: Attention; agentName: string; role: Role; busy?: boolean; answers?: boolean }>()
 /**
  * Each reply names the question the bar showed as it was clicked, typed or keyed (its id; none from an older owner). `openPlan` is
- * the plan a plan approval is about (#289), to open in the editor; `previewPlan` the same plan, to open rendered (#432).
+ * the plan a plan approval is about (#289), to open in the editor; `previewPlan` the same plan, to open rendered (#432); `answer` the
+ * durable decision the question mirrors (`dr-7`), to open its card.
  */
-const emit = defineEmits<{ reply: [text: string, question: string | undefined]; option: [index: number, question: string | undefined]; openPlan: [path: string]; previewPlan: [path: string] }>()
+const emit = defineEmits<{ reply: [text: string, question: string | undefined]; option: [index: number, question: string | undefined]; openPlan: [path: string]; previewPlan: [path: string]; answer: [decision: string] }>()
 
 const text = ref('')
 const show = computed(() => props.attention?.state === 'needs_input')
@@ -86,8 +92,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
       <UButton label="Open plan" icon="i-lucide-file-text" size="sm" color="neutral" variant="soft" class="flex-none" :ui="{ label: 'hidden sm:inline' }" aria-label="Open plan" :title="attention.plan" data-quick-reply-plan @click="emit('openPlan', attention!.plan!)" />
       <UButton label="Preview plan" icon="i-lucide-eye" size="sm" color="neutral" variant="soft" class="flex-none" :ui="{ label: 'hidden sm:inline' }" aria-label="Preview plan" :title="attention.plan" data-quick-reply-plan-preview @click="emit('previewPlan', attention!.plan!)" />
     </template>
-    <!-- A durable decision's question takes no reply here: it is answered as the decision. -->
-    <span v-if="decision" class="ml-auto text-xs text-muted" data-quick-reply-decision>{{ decisionAnsweredBy(decision) }}</span>
+    <!-- A durable decision's question takes no reply here: it is answered as the decision, in its card (the operator's Answer). -->
+    <UButton v-if="decision && answers" :label="`Answer ${decision}`" icon="i-lucide-scale" size="sm" color="primary" class="ml-auto flex-none" data-quick-reply-answer @click="emit('answer', decision)" />
+    <span v-else-if="decision" class="ml-auto text-xs text-muted" data-quick-reply-decision>{{ decisionAnsweredBy(decision) }}</span>
     <!-- The choices shrink to the bar and wrap (#327): never wider than the window on a phone, every one on screen under a thumb. -->
     <div v-else-if="options.length" class="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
       <UButton

@@ -40,7 +40,10 @@ const state = computed(() => {
   if (props.summary) return summaryState(props.summary, questions.value.count)
   return null
 })
-const badges = computed(() => (props.run?.managed ? taskBadges(props.run) : props.summary ? summaryBadges(props.summary) : []))
+// The run's open decisions, as the app's store read them: a gate that holds no task is counted too (taskBadges).
+const decisionStore = useDecisions()
+const runDecisions = computed(() => decisionStore.open.value.filter((d) => d.run === props.runId).map((d) => d.id))
+const badges = computed(() => (props.run?.managed ? taskBadges(props.run, runDecisions.value) : props.summary ? summaryBadges(props.summary) : []))
 const blockers = computed(() => runBlockers(props.summary, liveRun.value))
 const managed = computed(() => !!props.run?.managed || Object.keys(props.summary?.tasks ?? {}).length > 0)
 const ticket = computed(() => props.summary?.ticket ?? props.run?.ticket)

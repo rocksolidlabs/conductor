@@ -8,6 +8,7 @@ import type { LaunchPrefill } from '~/composables/useLaunchModal'
 import { sameQuestions } from '~/utils/needsCursor'
 import { rowActions, sessionTarget, type Action } from '~/utils/actions'
 import { hostedReason } from '~/utils/clone'
+import { answerRows, cutNotice, mirroringSessions, oneRowPerDecision, rowDecision, runRuns, staleNotice } from '~/utils/decisions'
 import { isActive, isEnded, needingInput, noReply, offeredChoices } from '~/utils/attention'
 import type { FeedEntry } from '~/utils/events'
 import { joinedDot, joinedPath } from '~/utils/joined'
@@ -107,6 +108,8 @@ export function usePaletteRows(ctx: PaletteContext) {
   const renameModal = useRenameModal()
   const cloneModal = useCloneModal()
   const brakeman = useBrakeman()
+  const decisions = useDecisions()
+  const decisionModal = useDecisionModal()
   const route = useRoute()
   const people = usePeople()
   const integrations = ref<Awaited<ReturnType<typeof api.integrations>>['integrations']>([])
@@ -883,13 +886,42 @@ export function usePaletteRows(ctx: PaletteContext) {
     }
   }
 
+  // The open durable decisions of runs that run (Program item DR1): "Answer dr-7: …", Enter opening its card in the app's modal, one
+  // row per decision. A decision a session's shown question mirrors is that row too (its detail names the session), so the session is
+  // listed among the running ones, not again in Needs you (searchGroups). A stopped run's is answered from its run page or its ticket's.
+  function liveDecisions() {
+    return decisions.open.value.filter((d) => runRuns(attention.runOf(d.run)))
+  }
+  function decisionItems(): PaletteItem[] {
+    const mirrored = new Map([...mirroringSessions(attention.sessions.value, liveDecisions())].map(([sid, d]) => [d, sid]))
+    const rows: PaletteItem[] = answerRows(
+      liveDecisions(),
+      (id) => decisionModal.open(id),
+      (id) => {
+        const sid = mirrored.get(id)
+        return sid ? attention.sessions.value.find((s) => s.id === sid)?.name : undefined
+      },
+    )
+    // The store's list is cut (Codex's round 2 on #719): said by a row of its own, whether or not a row of the list read is here.
+    const cut = cutNotice(decisions.cut.value, rows.length)
+    if (cut) rows.push({ key: 'decisions-cut', label: cut, detail: 'Enter opens Dispatch', icon: 'i-lucide-info', run: () => go('/dispatch') })
+    // Its last read failed (Codex's round 3 on #719): said by a row of its own until a read succeeds; Enter reads it again now.
+    const stale = staleNotice(decisions.stale.value.since, decisions.stale.value.error)
+    if (stale) rows.push({ key: 'decisions-stale', label: stale, detail: 'Enter reads the decisions again', icon: 'i-lucide-triangle-alert', run: () => void decisions.read() })
+    return rows
+  }
+
   // ---------------------------------------------------------------------------
   // The groups for a query.
 
   function searchGroups(query: string, now: number): PaletteGroup<PaletteItem>[] {
     const page = palette.page.value
     const model = sidebarModel(attention.sessions.value, attention.runOf)
-    const needs = needingInput(attention.sessions.value).sort((a, b) => (a.attention?.since ?? '').localeCompare(b.attention?.since ?? ''))
+    // A session whose shown question mirrors an open decision listed below is that decision's row in Needs you, and running here.
+    const asDecision = mirroringSessions(attention.sessions.value, liveDecisions())
+    const needs = needingInput(attention.sessions.value)
+      .filter((s) => !asDecision.has(s.id))
+      .sort((a, b) => (a.attention?.since ?? '').localeCompare(b.attention?.since ?? ''))
     const needsIds = new Set(needs.map((s) => s.id))
     // Every session in the sidebar's order, its run's section aside (a run sits where its most urgent member is: a working
     // member of a run that needs you is Running here, an exited member of a live run Exited), then each by its own state.
@@ -899,7 +931,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     const exited = everyRow.filter((r) => isEnded(r.session.status))
     const blocks = [...model.needs, ...model.running].filter((it): it is RunBlock => it.kind === 'run' && !it.stoppedAt && it.state !== 'exited')
     const groups: PaletteGroup<PaletteItem>[] = [
-      { id: 'needs', label: 'Needs you', pinned: true, rows: [...answerAllItems(), ...needs.map((s) => sessionItem(s, now))] },
+      { id: 'needs', label: 'Needs you', pinned: true, rows: [...answerAllItems(), ...needs.map((s) => sessionItem(s, now)), ...decisionItems()] },
       ...(page ? [{ id: 'page', label: page.label, pinned: true, rows: page.rows }] : []),
       { id: 'running', label: 'Running', rows: running.map((r) => sessionItem(r.session, now)) },
     ]
@@ -918,7 +950,8 @@ export function usePaletteRows(ctx: PaletteContext) {
     groups.push({ id: 'goto', label: 'Go to', rows: [...pageItems(), ...settingsItem()] })
     groups.push({ id: 'brakeman', label: 'Brakeman', rows: brakemanItems() })
     groups.push({ id: 'actions', label: 'Actions', rows: actionItems() })
-    return groups
+    // One row per durable decision, whatever group gives it: Needs you's "Answer dr-7" first, which opens its card.
+    return oneRowPerDecision(groups, (key) => rowDecision(key, attention.sessions.value))
   }
 
   /** The groups for the query as typed: the mode by its prefix, a verb when the line reads as one, ranked. */

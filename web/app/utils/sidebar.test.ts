@@ -361,6 +361,16 @@ describe('focusRows and moveFocus', () => {
     expect(focusRows(m, shared, { needs: true, running: true, shared: true, exited: true })).toEqual([])
   })
 
+  // Codex's round 1 on #719: Needs you's lone decisions are rows a key lands on, after its sessions, so Tab or ↓ onto one moves the
+  // list's focus there and Enter opens its card, not the session before it.
+  it("lists Needs you's lone decisions after its sessions, and none from a folded Needs you", () => {
+    const rows = focusRows(m, shared, DEFAULT_FOLDS, ['dr-1', 'dr-2'])
+    expect(rows.map((r) => r.id)).toEqual(['s:a', 'd:dr-1', 'd:dr-2', 'r:r1', 's:b', 's:c', 'j:j1'])
+    expect(rows[1]).toEqual({ id: 'd:dr-1', kind: 'decision', decision: 'dr-1' })
+    expect(moveFocus(rows, 's:a', 1)).toBe('d:dr-1')
+    expect(focusRows(m, shared, { ...DEFAULT_FOLDS, needs: true }, ['dr-1']).map((r) => r.id)).not.toContain('d:dr-1')
+  })
+
   it('moves between rows, clamped at the ends, and enters the list at the first or the last', () => {
     const rows = focusRows(m, shared, DEFAULT_FOLDS)
     expect(moveFocus(rows, null, 1)).toBe('s:a')
