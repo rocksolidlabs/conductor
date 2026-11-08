@@ -3,7 +3,7 @@ import { pickerStart, type PickerField } from '~/utils/dirPicker'
 import type { AgentInfo, ReachInfo } from '~/composables/useSessions'
 import { identity, notInstalledBadge } from '~/utils/agents'
 import { plainCopy, switchyardProblem, type DesktopIceStatus, type DesktopSettings } from '~/utils/desktop'
-import { saveParts, saveWords } from '~/utils/settingsSave'
+import { followSaved, holds, saveParts, saveWords, together, type BrakemanPart, type SaveOutcome } from '~/utils/settingsSave'
 import { SETTINGS_FIELD_UI, sectionFromQuery, sectionInView, shownSections, type SectionBox, type SettingsSectionId } from '~/utils/settingsSections'
 
 // The desktop app's settings: what its shell starts the server with. In a
@@ -53,7 +53,7 @@ const reachItems = [
 ]
 const appDirty = computed(() => !!settings.value && JSON.stringify({ ...settings.value }) !== JSON.stringify({ ...form }))
 /** Brakeman's section, saved by the page's one Save with the rest (#707); in a browser, alone. */
-const brakemanCard = useTemplateRef<{ dirty: boolean; blocked: boolean; save: () => Promise<void> }>('brakemanCard')
+const brakemanCard = useTemplateRef<{ dirty: boolean; blocked: boolean; take: () => BrakemanPart | null }>('brakemanCard')
 /** Brakeman's form holds a change the form's own checks refuse: nothing is saved until it is fixed, where it says. */
 const blocked = computed(() => !!brakemanCard.value?.dirty && !!brakemanCard.value?.blocked)
 const dirty = computed(() => appDirty.value || !!brakemanCard.value?.dirty)
@@ -75,8 +75,9 @@ async function load() {
   if (!b) return
   try {
     const s = await b.settings.get()
+    // A field changed while a save was out keeps its edit (followSaved); the first read sets every field.
+    followSaved(form, settings.value, s)
     settings.value = s
-    Object.assign(form, s)
     switchyardChecked.value = switchyardKey()
     versions.value = await b.versions()
     if (b.platform === 'win32') ice.value = await b.ice()
@@ -89,19 +90,29 @@ async function load() {
   ])
 }
 
+/** A Save refused before anything was sent: the words at the top, and where the button is too (#348) when Brakeman's is held with it. */
+function refuse(out: SaveOutcome) {
+  const words = saveWords(out)
+  error.value = words.description ?? words.title
+  if (out.brakeman === 'held') toast.add({ title: words.title, description: words.description, icon: 'i-lucide-triangle-alert', color: 'error' })
+}
+
 async function save() {
   const b = desktop.bridge.value
   // One save at a time: a second click before the first is under way would set the settings and restart the server twice.
   if (saving.value || blocked.value) return
-  const app = !!b && appDirty.value
-  const card = brakemanCard.value?.dirty ? brakemanCard.value : null
-  if (!app && !card) return
+  // Both parts as they are at the click (#707's review): what is typed while the save is out is kept for the next Save, never sent
+  // by this one, and what the page tells (a restart, the order) is told of what is sent.
+  const sent = b && appDirty.value && settings.value ? plainCopy(form) : null
+  const before = settings.value
+  const card = brakemanCard.value?.take() ?? null
+  if (!sent && !card) return
   error.value = ''
-  if (app) {
+  if (sent && before) {
     switchyardChecked.value = switchyardKey()
-    const refused = switchyardProblem(form)
+    const refused = switchyardProblem(sent) || together(before, sent, card)
     if (refused) {
-      error.value = refused
+      refuse({ brakeman: card ? 'held' : 'unchanged', app: 'refused', error: refused })
       return
     }
   }
@@ -110,26 +121,30 @@ async function save() {
   // What this page can tell on its own, for an app that cannot say what became
   // of the save (older apps): taken before the save, since once the saved
   // settings are copied into the form nothing differs any more (#214).
-  const restarting = app && restarts.value
+  const restarting = !!sent && restarts.value
   try {
     // Brakeman's part first, on this server: the app's may restart it (utils/settingsSave.ts).
     const out = await saveParts({
-      brakeman: card ? () => card.save() : null,
-      app: app
-        ? async () => {
-            // A restart moves the server to a fresh port and the app loads this page there with its path and query (desktop/src/window.ts,
-            // followOrigin): the section in view goes in the query first, so the page that follows opens on it (#433).
-            if (restarting) await keepSectionInQuery()
-            // A plain copy: the form is reactive, and a Vue proxy cannot cross the
-            // bridge ("An object could not be cloned", #348).
-            const next = await b!.settings.set(plainCopy(form))
-            settings.value = next
-            Object.assign(form, next)
-            // The app says what became of it: the server restarted, or the settings
-            // were saved alone (a retry after a restart that failed changes nothing the
-            // server reads, since the settings were kept).
-            const told = await b!.settings.outcome?.().catch(() => undefined)
-            return told === undefined ? (restarting ? 'restarted' : 'saved') : told === 'restarted' ? 'restarted' : 'saved'
+      brakeman: card ? card.send : null,
+      app: sent
+        ? {
+            send: async () => {
+              // A restart moves the server to a fresh port and the app loads this page there with its path and query (desktop/src/window.ts,
+              // followOrigin): the section in view goes in the query first, so the page that follows opens on it (#433).
+              if (restarting) await keepSectionInQuery()
+              // The copy taken at the click: plain, since the form is reactive and a Vue proxy cannot cross the bridge ("An object could
+              // not be cloned", #348).
+              const next = await b!.settings.set(sent)
+              followSaved(form, sent, next)
+              settings.value = next
+              // The app says what became of it: the server restarted, or the settings
+              // were saved alone (a retry after a restart that failed changes nothing the
+              // server reads, since the settings were kept).
+              const told = await b!.settings.outcome?.().catch(() => undefined)
+              return told === undefined ? (restarting ? 'restarted' : 'saved') : told === 'restarted' ? 'restarted' : 'saved'
+            },
+            // The app keeps the settings before it restarts the server (desktop/src/save.ts): refused, it may hold them all the same.
+            kept: async () => holds(await b!.settings.get(), sent),
           }
         : null,
     })

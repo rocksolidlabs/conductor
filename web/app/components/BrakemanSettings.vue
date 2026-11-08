@@ -4,6 +4,7 @@ import type { BrakemanConfig, BrakemanScope, BrakemanVisibility } from '~/utils/
 import { BOUNDS, BRAKEMAN_ADAPTERS, GRANTS, agentChoice, agentIdOf, agentItems as agentChoices, briefingLine, briefingList, configProblems, formField, formMove, sameConfig, grantHeld, observesOnly, scopeLines, scopeList, servedGrants, withGrant } from '~/utils/brakeman'
 import { ApiError } from '~/composables/useApi'
 import { SETTINGS_FIELD_UI as fieldUi } from '~/utils/settingsSections'
+import type { BrakemanPart } from '~/utils/settingsSave'
 
 /**
  * Brakeman's card in Settings (docs/plans/brakeman.md, PR-6): its configuration, saved on the server (PUT /api/brakeman/config, at
@@ -15,10 +16,10 @@ import { SETTINGS_FIELD_UI as fieldUi } from '~/utils/settingsSections'
  * read-only mode does not hold (its warnings). What is refused of a field the form draws no control for (the scope as a whole, an
  * operation's grant, the wake mode, a model while the agent shows no model field) is said at the section's foot.
  *
- * It has no Save of its own (#707): the page's one Save calls `save` (exposed with `dirty` and `blocked`) when the form holds a change,
- * and only then, since every save of the configuration drops Brakeman's pending work (#721). Refused, the form keeps every edit: a
- * revision saved elsewhere meanwhile offers two choices, read what is saved now (the edits dropped) or keep these (the next Save
- * replaces the other change).
+ * It has no Save of its own (#707): the page's one Save takes the form at the click (`take`, exposed with `dirty` and `blocked`) when
+ * it holds a change, and only then, since every save of the configuration drops Brakeman's pending work (#721). Refused, the form
+ * keeps every edit: a revision saved elsewhere meanwhile offers two choices, each on a fresh read of what is saved now: read it (the
+ * edits dropped) or keep these (the next Save replaces the other change).
  *
  * What it may run (PR-13): the four operations a person may grant Brakeman (BK2's closed list), each with what it authorizes in words,
  * a switch each. A grant this server serves no route of is shown as not in this build and cannot be turned on (the admin's guide lists
@@ -51,6 +52,9 @@ function setBackground(on: boolean) {
 /** A save was refused: the configuration was saved elsewhere since the form was read (the form keeps its edits). */
 const stale = ref(false)
 const readAgainOpen = ref(false)
+/** A choice's read of what is saved now failed: its words, the form and the refusal kept. */
+const staleError = ref('')
+const choosing = ref(false)
 const serverError = ref<{ field?: string; message: string } | null>(null)
 
 const saved = computed(() => bk.state.value?.config ?? null)
@@ -64,6 +68,7 @@ function reset(c: BrakemanConfig) {
   briefingText.value = briefingLine(c.wake.briefings)
   serverError.value = null
   stale.value = false
+  staleError.value = ''
 }
 
 onMounted(async () => {
@@ -104,6 +109,7 @@ watch(
       base.value = null
       serverError.value = null
       stale.value = false
+      staleError.value = ''
     }
   },
   { immediate: true },
@@ -159,21 +165,33 @@ const scopeFields: Array<{ key: keyof BrakemanScope; label: string; placeholder:
   { key: 'sessions', label: 'Sessions', placeholder: 'a session id' },
 ]
 
-/** Saves the form for the page's Save: resolves once saved; throws the refusal's words, the form and its edits kept. */
-async function save() {
+/**
+ * Brakeman's part of the page's Save, taken at the click (#707's review): the form as it is now and the store's generation, or null
+ * when there is nothing to save. Its `send` saves what was taken: resolves once saved, throws the refusal's words, every edit kept.
+ */
+function take(): BrakemanPart | null {
   const c = body.value
-  if (!c || !dirty.value || Object.keys(problems.value).length) return
+  if (!c || !dirty.value || Object.keys(problems.value).length) return null
+  const sent = JSON.parse(JSON.stringify(c)) as BrakemanConfig
+  return { cwdChanged: sent.cwd !== (saved.value?.cwd ?? ''), send: () => send(sent, bk.generation.value) }
+}
+async function send(c: BrakemanConfig, gen: number) {
+  if (bk.generation.value !== gen) throw new Error("The token changed before the save was sent: the configuration shown is this server's.")
   serverError.value = null
-  const gen = bk.generation.value
   try {
     const out = await bk.saveConfig(c)
-    reset(out.config)
+    // What was typed while the save was out is kept for the next Save, against the revision saved now.
+    if (body.value && !sameConfig(body.value, c) && form.value) {
+      base.value = JSON.parse(JSON.stringify(out.config)) as BrakemanConfig
+      form.value.rev = out.config.rev
+      stale.value = false
+    } else reset(out.config)
   } catch (e) {
     // Answered after a new token: the form is this server's now (formMove), and the answer is the token before's.
     if (bk.generation.value !== gen) throw e
     if (e instanceof ApiError && e.code === 'stale_revision') {
-      // The form is left as it is (formMove keeps an edited one); the configuration saved now is read for the two choices.
-      await bk.load()
+      // The form is left as it is (formMove keeps an edited one), and nothing is awaited before the flag is set: the two choices
+      // each read what is saved now, for this form only (choose).
       stale.value = true
       throw new Error('they were changed elsewhere since this form was read', { cause: e })
     }
@@ -182,18 +200,38 @@ async function save() {
     throw e
   }
 }
+/**
+ * A choice of the stale refusal: reads what is saved now, fresh, and hands it to `then` only while the form is the one the choice
+ * was made on (the same object, under the same generation). A read that fails leaves the form and the refusal as they are, with the
+ * failure said beside them.
+ */
+async function choose(then: (now: BrakemanConfig) => void) {
+  const f = form.value
+  const gen = formGen.value
+  staleError.value = ''
+  choosing.value = true
+  try {
+    const now = await bk.readConfig(gen)
+    if (form.value === f && formGen.value === gen) then(now)
+  } catch (e) {
+    if (form.value === f && formGen.value === gen) staleError.value = `Not read: ${(e as Error).message}`
+  } finally {
+    choosing.value = false
+  }
+}
 /** The first choice: the configuration saved now replaces the form, its edits dropped (the person confirmed). */
-async function readAgain() {
+function readAgain() {
   readAgainOpen.value = false
-  await bk.load()
-  if (saved.value) reset(saved.value)
+  return choose((now) => reset(now))
 }
 /** The second: the form keeps its edits and takes the revision saved now, so the next Save replaces the other change. */
 function keepMine() {
-  if (form.value && saved.value) form.value.rev = saved.value.rev
-  stale.value = false
+  return choose((now) => {
+    if (form.value) form.value.rev = now.rev
+    stale.value = false
+  })
 }
-defineExpose({ dirty, blocked: computed(() => Object.keys(problems.value).length > 0), save })
+defineExpose({ dirty, blocked: computed(() => Object.keys(problems.value).length > 0), take })
 </script>
 
 <template>
@@ -317,11 +355,12 @@ defineExpose({ dirty, blocked: computed(() => Object.keys(problems.value).length
         title="Brakeman's settings were changed elsewhere since this form was read"
         description="Your edits here are kept and were not saved. Read again to see what is saved now, or keep yours: the next Save replaces the other change."
         :actions="[
-          { label: 'Read again', icon: 'i-lucide-refresh-cw', color: 'neutral', variant: 'outline', onClick: () => (readAgainOpen = true) },
-          { label: 'Keep mine', icon: 'i-lucide-check', color: 'warning', variant: 'solid', onClick: keepMine },
+          { label: 'Read again', icon: 'i-lucide-refresh-cw', color: 'neutral', variant: 'outline', disabled: choosing, onClick: () => (readAgainOpen = true) },
+          { label: 'Keep mine', icon: 'i-lucide-check', color: 'warning', variant: 'solid', loading: choosing, disabled: choosing, onClick: keepMine },
         ]"
         data-brakeman-stale
       />
+      <p v-if="stale && staleError" class="text-xs text-error" data-brakeman-stale-error>{{ staleError }}</p>
       <NuxtLink v-if="saved?.enabled" to="/brakeman" class="text-sm underline">Open Brakeman</NuxtLink>
     </form>
     <UModal v-model:open="readAgainOpen" title="Read Brakeman's settings again?" description="What is saved now replaces this form: the edits made here will be lost.">

@@ -281,6 +281,20 @@ export class BrakemanLive {
     }
   }
 
+  /**
+   * Takes a state read on its own (the composable's readConfig, whose caller checked the generation): a read of the state already
+   * out may have been sent before it, so that read goes once more after it, and the state the store ends on is never the older one.
+   */
+  takeState(s: BrakemanState) {
+    this.state = s
+    this.available = true
+    this.problem = ''
+    if (s.current) this.apply(s.current)
+    for (const q of s.queue) this.apply(q)
+    if (this.stateBusy) this.stateAgain = true
+    this.changed()
+  }
+
   private unavailable(e: unknown) {
     if (e instanceof ApiError && (e.status === 503 || e.status === 403)) {
       this.available = e.code === 'brakeman_recovering' || e.code === 'brakeman_not_owner' ? this.available : false
@@ -288,6 +302,9 @@ export class BrakemanLive {
     }
   }
 }
+
+/** The words of a configuration read answered, or asked, after the token changed. */
+export const TOKEN_MOVED_READ = "The token changed before Brakeman's settings were read: the form shown is this server's."
 
 let live: BrakemanLive | undefined
 /** The app's one live store of Brakeman's requests; useAttention hands it every `brakeman` event and every `snapshot`. */
@@ -502,6 +519,20 @@ export function useBrakeman() {
     return out
   }
 
+  /**
+   * The configuration saved now, read fresh for a choice made under the store's generation `at` (Settings' stale refusal): a read of
+   * its own, never folded into one already out (which may have been sent before the save it answers) nor swallowed when it fails,
+   * and taken by the store. Refused when the token moved before it was asked or before it was answered: the reply is the form's
+   * that asked, and a new token's form is another server's (#707's review).
+   */
+  async function readConfig(at: number): Promise<BrakemanConfig> {
+    if (store.generation !== at) throw new Error(TOKEN_MOVED_READ)
+    const s = await request<BrakemanState>('/api/brakeman')
+    if (store.generation !== at) throw new Error(TOKEN_MOVED_READ)
+    store.takeState(s)
+    return s.config
+  }
+
   /** Asks Brakeman: the request kept (201) or the one this id asked already (200). */
   async function ask(body: { kind: string; subjects?: string[]; note?: string; since?: string; by?: string }) {
     const at = store.generation
@@ -704,5 +735,5 @@ export function useBrakeman() {
     return store.generation
   })
 
-  return { state, requests, available, problem, hasMore, generation, unopened: unopenedIds, markOpened, load, reset, more: () => store.readMore(), readRequest: (id: string) => store.readRequest(id), readNamed: (id: string) => store.readNamed(id), saveConfig, ask, cancel, stop, make, keptMake, forgetMake, finishMake, readTicketTitle, ticketTitle, ticketTitlesWatch, brief, refs, closed, role, roleAction, keepNote, clearNotes, roleSeq }
+  return { state, requests, available, problem, hasMore, generation, unopened: unopenedIds, markOpened, load, readConfig, reset, more: () => store.readMore(), readRequest: (id: string) => store.readRequest(id), readNamed: (id: string) => store.readNamed(id), saveConfig, ask, cancel, stop, make, keptMake, forgetMake, finishMake, readTicketTitle, ticketTitle, ticketTitlesWatch, brief, refs, closed, role, roleAction, keepNote, clearNotes, roleSeq }
 }

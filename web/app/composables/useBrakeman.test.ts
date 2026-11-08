@@ -789,4 +789,47 @@ describe('the makes kept, across a new token', () => {
       expect(sent).toHaveLength(1)
     })
   })
+
+  describe("and the configuration read for a stale refusal's choice (#707's review)", () => {
+    const conf = (over: Partial<BrakemanConfig>) => ({ enabled: true, agentId: 'claude', cwd: '/srv', allowConductorTools: false, visibility: {} as never, scope: {}, permissions: { observe: true, draft: true, propose: true }, wake: { mode: 'invoked' }, budget: { turnMinutes: 15, readsPerTurn: 300, turnsPerDay: 40 }, rev: 2, ...over }) as BrakemanConfig
+    const stateOf = (c: BrakemanConfig): BrakemanState => ({ config: c, current: null, queue: [], turnsToday: 0 })
+
+    it("is this server's only: a reset while it is out, or before it is asked, refuses it, and the store keeps the new server's", async () => {
+      const bk = useBrakeman()
+      const live = brakemanLive()
+      const at = bk.generation.value
+      const reading = held()
+      const read = bk.readConfig(at)
+      // A new token while the read is out: the new server's form is its own, whatever this reply says.
+      bk.reset()
+      const second = stateOf(conf({ rev: 7, cwd: '/second' }))
+      live.state = second
+      reading(() => Promise.resolve(stateOf(conf({ rev: 5, cwd: '/first' }))))
+      await expect(read).rejects.toThrow("The token changed before Brakeman's settings were read")
+      expect(live.state).toEqual(second)
+      // Asked under the generation before: refused unsent.
+      await expect(bk.readConfig(at)).rejects.toThrow("The token changed before Brakeman's settings were read")
+      expect(sent).toHaveLength(1)
+    })
+
+    it('is a read of its own, answered fresh while another read of the state is out, and a failure is the caller\'s, never swallowed', async () => {
+      const bk = useBrakeman()
+      const live = brakemanLive()
+      // A read of the state out (sent before the save elsewhere): the choice's read is not folded into it.
+      const older = held()
+      const out = live.readState()
+      answers.push(() => Promise.resolve(stateOf(conf({ rev: 9 }))))
+      expect((await bk.readConfig(bk.generation.value)).rev).toBe(9)
+      expect(bk.state.value?.config.rev).toBe(9)
+      // The older read answers after it: the store reads once more, so it ends on what is saved now, never on the older answer.
+      answers.push(() => Promise.resolve(stateOf(conf({ rev: 9 }))))
+      older(() => Promise.resolve(stateOf(conf({ rev: 8 }))))
+      await out
+      expect(bk.state.value?.config.rev).toBe(9)
+      expect(sent.map((x) => x.path)).toEqual(['/api/brakeman', '/api/brakeman', '/api/brakeman'])
+      // A read that fails says so: the choice keeps the form and the refusal.
+      answers.push(() => Promise.reject(new ApiError(0, 'network', 'Cannot reach the server')))
+      await expect(bk.readConfig(bk.generation.value)).rejects.toThrow('Cannot reach the server')
+    })
+  })
 })
