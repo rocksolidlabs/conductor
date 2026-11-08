@@ -52,7 +52,7 @@ type Hub struct {
 // and keeps desks (RegisterDesk) whatever it says; it is said where the
 // switchyard's join page has the Decide tab it serves
 // (docs/plans/decision-inbox.md, PR-7), so no build advertises what its
-// page lacks. Only tests say it before then.
+// page lacks: the serve command says it (api.Server.SetSwitchyardDecisions).
 func (hub *Hub) SetDecisions(on bool) { hub.decisions.Store(on) }
 
 // Decisions is what SetDecisions last said.
