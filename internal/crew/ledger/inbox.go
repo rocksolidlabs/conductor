@@ -54,15 +54,16 @@ const decisionRefSQL = "('" + DecisionRefPrefix + "dr-' || d.n)"
 // InboxDecisions reads the decisions in the given states, oldest first by
 // (created_at, ref), at most limit of them after the cursor (limit at most
 // MaxInboxDecisions, 0 for that); next says more follow the page; total
-// counts every decision in those states, not the page's. The page and the
-// count are of one read. A database older than the decision tables has
+// counts every decision in those states, not the page's, and answered
+// those of them answered (the inbox's tracking items). The page and the
+// counts are of one read. A database older than the decision tables has
 // none.
-func (l *Ledger) InboxDecisions(ctx context.Context, states []string, after InboxCursor, limit int) (page []DecisionRow, next bool, total int, err error) {
+func (l *Ledger) InboxDecisions(ctx context.Context, states []string, after InboxCursor, limit int) (page []DecisionRow, next bool, total, answered int, err error) {
 	if limit <= 0 || limit > MaxInboxDecisions {
 		limit = MaxInboxDecisions
 	}
 	if len(states) == 0 {
-		return []DecisionRow{}, false, 0, nil
+		return []DecisionRow{}, false, 0, 0, nil
 	}
 	marks := strings.TrimSuffix(strings.Repeat("?, ", len(states)), ", ")
 	var args []any
@@ -83,7 +84,7 @@ func (l *Ledger) InboxDecisions(ctx context.Context, states []string, after Inbo
 		if version < versionDecisions {
 			return nil
 		}
-		if err := q.QueryRowContext(ctx, "SELECT COUNT(*) FROM decisions d WHERE d.state IN ("+marks+")", args...).Scan(&total); err != nil {
+		if err := q.QueryRowContext(ctx, "SELECT COUNT(*), COALESCE(SUM(d.state = ?), 0) FROM decisions d WHERE d.state IN ("+marks+")", append([]any{DecisionAnswered}, args...)...).Scan(&total, &answered); err != nil {
 			return err
 		}
 		rows, err := q.QueryContext(ctx, query, pageArgs...)
@@ -101,12 +102,81 @@ func (l *Ledger) InboxDecisions(ctx context.Context, states []string, after Inbo
 		return cmp.Or(rows.Err(), rows.Close())
 	})
 	if err != nil {
-		return nil, false, 0, err
+		return nil, false, 0, 0, err
 	}
 	if len(page) > limit {
-		return page[:limit], true, total, nil
+		return page[:limit], true, total, answered, nil
 	}
-	return page, false, total, nil
+	return page, false, total, answered, nil
+}
+
+// ScopedDecision is a decision's row with how many responses and history
+// rows it keeps, all three of one read: what marks the record whole
+// beside its rev, which a refused response and a delivery's rows do not
+// move.
+type ScopedDecision struct {
+	DecisionRow
+	Responses, History int
+}
+
+// ScopeDecisions reads the decisions run holds in the given states (with
+// task, those of task: asked by it or holding it, as DecisionFilter's
+// Task reads), oldest first, each with its counts, every row of one read
+// transaction, so a change committed meanwhile is seen whole or not at
+// all: a decision link's scope. At most MaxDecisionsPerRun and a page are
+// read, past what a run may hold. A database older than the decision
+// tables has none.
+func (l *Ledger) ScopeDecisions(ctx context.Context, run, task string, states []string) ([]ScopedDecision, error) {
+	out := []ScopedDecision{}
+	if run == "" || len(states) == 0 {
+		return out, nil
+	}
+	args := []any{run}
+	where := "d.current_run = ? AND d.state IN (" + strings.TrimSuffix(strings.Repeat("?, ", len(states)), ", ") + ")"
+	for _, s := range states {
+		args = append(args, s)
+	}
+	if task != "" {
+		where += " AND (d.task_id = ? OR EXISTS (SELECT 1 FROM decision_holds h WHERE h.decision = d.n AND h.task_id = ?))"
+		args = append(args, task, task)
+	}
+	query := "SELECT " + decisionCols + ", (SELECT COUNT(*) FROM decision_responses r WHERE r.decision = d.n), (SELECT COUNT(*) FROM decision_history h WHERE h.decision = d.n) FROM decisions d WHERE " +
+		where + " ORDER BY d.n LIMIT ?"
+	args = append(args, MaxDecisionsPerRun+MaxDecisionsPage)
+	err := l.readSnapshot(ctx, func(q querier, version int) error {
+		if version < versionDecisions {
+			return nil
+		}
+		rows, err := q.QueryContext(ctx, query, args...)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var sd ScopedDecision
+			d, err := scanDecision(countsScanner{rows, &sd.Responses, &sd.History})
+			if err != nil {
+				rows.Close()
+				return err
+			}
+			sd.DecisionRow = d
+			out = append(out, sd)
+		}
+		return cmp.Or(rows.Err(), rows.Close())
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// countsScanner scans a decision's columns, then its two counts.
+type countsScanner struct {
+	sc                 scanner
+	responses, history *int
+}
+
+func (c countsScanner) Scan(dest ...any) error {
+	return c.sc.Scan(append(dest, c.responses, c.history)...)
 }
 
 // ClosedDecisions reads the decisions closed (applied, superseded,

@@ -69,12 +69,12 @@ func TestInboxDecisions(t *testing.T) {
 	var got []DecisionRow
 	after := InboxCursor{}
 	for pages := 0; ; pages++ {
-		page, next, total, err := l.InboxDecisions(ctx, states, after, 50)
+		page, next, total, tracking, err := l.InboxDecisions(ctx, states, after, 50)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if total != 230 {
-			t.Fatalf("page %d: total %d", pages, total)
+		if total != 230 || tracking != 230-3*(MaxOpenPerRun-4) {
+			t.Fatalf("page %d: total %d, %d answered", pages, total, tracking)
 		}
 		got = append(got, page...)
 		if !next {
@@ -111,17 +111,72 @@ func TestInboxDecisions(t *testing.T) {
 		ref  string
 		with bool
 	}{{"brief:br-1/0", true}, {"question:0123456789abcdef/q1", false}} {
-		page, _, _, err := l.InboxDecisions(ctx, states, InboxCursor{Since: at.Add(-time.Nanosecond), Ref: "zzz"}, 1)
+		page, _, _, _, err := l.InboxDecisions(ctx, states, InboxCursor{Since: at.Add(-time.Nanosecond), Ref: "zzz"}, 1)
 		if err != nil || len(page) != 1 || page[0].N != rows[5].N {
 			t.Fatalf("just before %s: %v %v", rows[5].ID(), page, err)
 		}
-		page, _, _, err = l.InboxDecisions(ctx, states, InboxCursor{Since: at, Ref: c.ref}, 1)
+		page, _, _, _, err = l.InboxDecisions(ctx, states, InboxCursor{Since: at, Ref: c.ref}, 1)
 		if err != nil || (len(page) == 1 && page[0].N == rows[5].N) != c.with {
 			t.Fatalf("after %s at its time: %v %v", c.ref, page, err)
 		}
 	}
-	if page, next, total, err := l.InboxDecisions(ctx, []string{DecisionCancelled}, InboxCursor{}, 0); err != nil || len(page) != 1 || next || total != 1 {
-		t.Fatalf("the cancelled: %v %v %d %v", page, next, total, err)
+	if page, next, total, tracking, err := l.InboxDecisions(ctx, []string{DecisionCancelled}, InboxCursor{}, 0); err != nil || len(page) != 1 || next || total != 1 || tracking != 0 {
+		t.Fatalf("the cancelled: %v %v %d %d %v", page, next, total, tracking, err)
+	}
+}
+
+// A decision link's scope: the run's decisions in the states asked, a
+// task's (asked by it or holding it) when one is named, each with its
+// responses and history counted in the same read; a comment and a refused
+// response, which a rev does not always mark, move the counts.
+func TestScopeDecisions(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	ctx := context.Background()
+	const run, other = "team-00000001", "team-00000002"
+	newRun(t, l, run)
+	newRun(t, l, other)
+	tasksOf(t, l, run, "build", "deploy")
+	asked := open(t, l, agentDecision(run, "build", 1, "q1"))
+	gate := open(t, l, gateDecision(run, "g1"))
+	in(t, l, run, func(tx *Tx) error { return tx.Hold(run, "deploy", gate) })
+	closed := open(t, l, gateDecision(run, "g2"))
+	setState(t, l, run, closed, DecisionCancelled, "")
+	open(t, l, gateDecision(other, "g1"))
+	states := []string{DecisionOpen, DecisionAnswered}
+	ns := func(got []ScopedDecision) []int64 {
+		var out []int64
+		for _, d := range got {
+			out = append(out, d.N)
+		}
+		return out
+	}
+	if got, err := l.ScopeDecisions(ctx, run, "", states); err != nil || !slices.Equal(ns(got), []int64{asked, gate}) {
+		t.Fatalf("the run's: %v %v", ns(got), err)
+	}
+	if got, err := l.ScopeDecisions(ctx, run, "build", states); err != nil || !slices.Equal(ns(got), []int64{asked}) {
+		t.Fatalf("build's: %v %v", ns(got), err)
+	}
+	if got, err := l.ScopeDecisions(ctx, run, "deploy", states); err != nil || !slices.Equal(ns(got), []int64{gate}) {
+		t.Fatalf("deploy's, by its hold: %v %v", ns(got), err)
+	}
+	before, err := l.ScopeDecisions(ctx, run, "deploy", states)
+	if err != nil || before[0].Responses != 0 || before[0].History != 0 {
+		t.Fatalf("before: %+v %v", before, err)
+	}
+	in(t, l, run, func(tx *Tx) error {
+		if _, _, err := tx.History(gate, HistoryRow{Kind: HistoryCommented, By: "admin", Detail: `{"text":"noted"}`, OpID: "c1", Fingerprint: "fp-c1"}); err != nil {
+			return err
+		}
+		_, err := tx.Respond(gate, ResponseRow{Actor: "admin", Authority: workbenchAuth, ResponseID: "r1", Fingerprint: "fp-r1", Status: ResponseRefused, Receipt: `{"words":"stale"}`})
+		return err
+	})
+	after, err := l.ScopeDecisions(ctx, run, "deploy", states)
+	rec := record(t, l, gate)
+	if err != nil || after[0].Responses != len(rec.Responses) || after[0].History != len(rec.History) || after[0].Responses != 1 || after[0].History != 1 {
+		t.Fatalf("after a comment and a refusal: %+v, the record %d %d, %v", after, len(rec.Responses), len(rec.History), err)
+	}
+	if got, err := l.ScopeDecisions(ctx, "", "", states); err != nil || len(got) != 0 {
+		t.Fatalf("no run: %v %v", got, err)
 	}
 }
 
