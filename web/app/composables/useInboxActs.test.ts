@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { InboxActs, sessionFor, taskMovedOn, type ActSends, type ActsFeedback, type MovedOnReads, type SessionKnown } from './useInboxActs'
+import { InboxActs, RecheckRefused, sendRecheck, sessionFor, taskMovedOn, type ActSends, type ActsFeedback, type MovedOnReads, type SessionKnown } from './useInboxActs'
 import { InboxLive, type InboxReads, type InboxState } from './useInbox'
 import { ReplyError } from '~/utils/reply'
 import { CommandRefused } from '~/utils/tasks'
@@ -275,32 +275,66 @@ describe('a Check again (#713)', () => {
       return { read, asked }
     }
 
-    it('in the run continued since the item was read: the candidate the continuation offers, read in the newest run of the chain', async () => {
-      // r1 was continued as r2, r2 as r3: r1's item offers nothing now, r3's offers attempt 4 of its chain.
-      const { read, asked } = reads(
-        { r1: { resumedBy: 'r2', revision: 9, state: 'failed' }, r2: { resumedBy: 'r3', revision: 2, state: 'failed' }, r3: { revision: 3, state: 'failed' } },
-        { 'task:r1/build': [], 'task:r3/build': [offer('r3', 4)] },
-      )
-      const words = await taskMovedOn(recheck.it, recheck.a, read)
+    it('in the run continued since the item was read: the candidate the run the route refused it in offers, read there alone', async () => {
+      // r1 was continued as r2, r2 as r3, ...: the route walked the chain (the server's walk, which has no cap) to r70, the newest
+      // when it read it, and its refusal names r70. The page reads r70 and its item, and follows no continuation itself.
+      const { read, asked } = reads({ r1: { resumedBy: 'r2', revision: 9, state: 'failed' }, r70: { revision: 3, state: 'failed' } }, { 'task:r1/build': [], 'task:r70/build': [offer('r70', 4)] })
+      const words = await taskMovedOn(recheck.it, recheck.a, read, 'r70')
       expect(words).toBe(
-        'The run moved on (continued as run r3, at revision 3 now; the choice was read in run r1 at revision 7): build is failed now; the candidate that stands is attempt 4 at 0123456789ab, which Check again offers now. Nothing was done.',
+        'The run moved on (continued as run r70, at revision 3 now; the choice was read in run r1 at revision 7): build is failed now; the candidate that stands is attempt 4 at 0123456789ab, which Check again offers now. Nothing was done.',
       )
       expect(words).not.toContain('no candidate stands')
-      expect(asked).toEqual({ runs: ['r1', 'r2', 'r3'], items: ['task:r3/build'] })
+      expect(asked).toEqual({ runs: ['r70'], items: ['task:r70/build'] })
     })
 
     it('in the run not continued: its own item read again', async () => {
       const { read, asked } = reads({ r1: { revision: 9, state: 'failed' } }, { 'task:r1/build': [offer('r0', 4)] })
-      expect(await taskMovedOn(recheck.it, recheck.a, read)).toBe(
+      expect(await taskMovedOn(recheck.it, recheck.a, read, 'r1')).toBe(
         'The run moved on (revision 9 now, the choice was read at 7): build is failed now; the candidate that stands is attempt 4 at 0123456789ab, which Check again offers now. Nothing was done.',
       )
       expect(asked).toEqual({ runs: ['r1'], items: ['task:r1/build'] })
     })
 
-    it('whose chain loops is followed each run once', async () => {
-      const { read, asked } = reads({ r1: { resumedBy: 'r2', revision: 9, state: 'failed' }, r2: { resumedBy: 'r1', revision: 2, state: 'failed' } }, { 'task:r2/build': [] })
-      expect(await taskMovedOn(recheck.it, recheck.a, read)).toContain('continued as run r2')
-      expect(asked.runs).toEqual(['r1', 'r2'])
+    it('that names no run, in a run continued since, fails closed: the newest run is named as the place to look, never "no candidate"', async () => {
+      // A chain longer than any page would walk (100 runs): the page walks none of it, and says it does not.
+      const chain = Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`r${i + 1}`, { resumedBy: i < 99 ? `r${i + 2}` : undefined, revision: 9, state: 'failed' }]))
+      const { read, asked } = reads(chain, { 'task:r1/build': [], 'task:r100/build': [offer('r100', 4)] })
+      const words = await taskMovedOn(recheck.it, recheck.a, read)
+      expect(words).toBe(
+        "The run moved on (run r1 was continued as run r2; the choice was read at revision 7): build is failed now; this page does not follow the run's continuations: open the newest run of its chain for the candidate that stands. Nothing was done.",
+      )
+      expect(words).not.toContain('no candidate stands')
+      expect(asked).toEqual({ runs: ['r1'], items: [] })
+    })
+
+    it('in the run the route refused it in, continued again since: fails closed the same way', async () => {
+      const { read, asked } = reads({ r70: { resumedBy: 'r71', revision: 4, state: 'failed' } }, { 'task:r70/build': [] })
+      expect(await taskMovedOn(recheck.it, recheck.a, read, 'r70')).toContain('run r70 was continued as run r71')
+      expect(asked).toEqual({ runs: ['r70'], items: [] })
+    })
+
+    it("reaches the words with the run its refusal names, through the page's send", async () => {
+      const at: Array<string | undefined> = []
+      const pg = await page()
+      pg.s.sends.movedOn = (_it, _a, run) => (at.push(run), Promise.resolve('moved on'))
+      pg.s.hold()
+      const out = pg.acts.act(recheck.it, recheck.a)
+      await settle()
+      pg.s.reply.fail(new RecheckRefused(new CommandRefused('the run moved on', { status: 'failed', refusal: 'stale_revision' } as never), 'r70'))
+      expect(await out).toEqual({ how: 'refused', words: 'moved on' })
+      expect(pg.feedback()[recheck.it.ref]!.words).toBe('Moved on')
+      expect(at).toEqual(['r70'])
+    })
+
+    it("is sent so that a refusal keeps the run the route names (the 409's run)", async () => {
+      const receipt = { commandId: 'c1', intent: 'recheck', revision: 3, status: 'failed', refusal: 'stale_revision', error: 'the run moved on' } as const
+      const e = await sendRecheck(() => Promise.reject(Object.assign(new Error('409'), { status: 409, body: { receipt, run: 'r70' } })), {}).catch((x: unknown) => x)
+      expect(e).toBeInstanceOf(RecheckRefused)
+      expect(e).toMatchObject({ run: 'r70', receipt, message: 'the run moved on' })
+      // One without the run is the plain refusal: the words then fail closed (above).
+      const plain = await sendRecheck(() => Promise.reject(Object.assign(new Error('409'), { status: 409, body: { receipt } })), {}).catch((x: unknown) => x)
+      expect(plain).toBeInstanceOf(CommandRefused)
+      expect(plain).not.toBeInstanceOf(RecheckRefused)
     })
 
     it("of a retry is not followed forward: the retry's route is its own run's", async () => {
