@@ -44,6 +44,14 @@ func openAt(t *testing.T, dir string, o Options) *Journal {
 	return j
 }
 
+// setMaxRecords changes j's bound of ended records kept, holding wmu as
+// every prune does that reads it: a writer running is never raced.
+func (j *Journal) setMaxRecords(n int) {
+	j.wmu.Lock()
+	defer j.wmu.Unlock()
+	j.maxRecords = n
+}
+
 func newJournal(t *testing.T, o Options) (*Journal, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -497,9 +505,7 @@ func exists(dir, id string) bool {
 // Past MaxRecords the oldest ended records go; a live one and one holding
 // a pending receipt stay, whatever their age, and are not counted.
 func TestPruneKeepsLiveAndPendingRecords(t *testing.T) {
-	maxRecords = 3
-	t.Cleanup(func() { maxRecords = MaxRecords })
-	j, dir := newJournal(t, Options{})
+	j, dir := newJournal(t, Options{maxRecords: new(3)})
 	live := serverRecord(sid(0))
 	live.StartedAt = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	begin(t, j, live)
@@ -517,9 +523,7 @@ func TestPruneKeepsLiveAndPendingRecords(t *testing.T) {
 // When live records alone pass MaxRecords, every ended one past the bound
 // goes and none of the live ones.
 func TestLiveRecordsPastMaxRecords(t *testing.T) {
-	maxRecords = 2
-	t.Cleanup(func() { maxRecords = MaxRecords })
-	j, dir := newJournal(t, Options{})
+	j, dir := newJournal(t, Options{maxRecords: new(2)})
 	for i := range 4 {
 		begin(t, j, serverRecord(sid(10+i)))
 	}
@@ -1041,7 +1045,6 @@ func TestAnEndedRecordStaysUntilItsSessionIsDone(t *testing.T) {
 // nothing writes over it), counted toward MaxRecords by its last write,
 // and forgettable.
 func TestAnUnreadableRecordIsListedBoundedAndForgettable(t *testing.T) {
-	t.Cleanup(func() { maxRecords = MaxRecords })
 	dir := t.TempDir()
 	sess := filepath.Join(dir, Dir, SessionsDir)
 	if err := os.MkdirAll(sess, 0o700); err != nil {
@@ -1082,7 +1085,7 @@ func TestAnUnreadableRecordIsListedBoundedAndForgettable(t *testing.T) {
 	}
 	// One ended record past a bound of one: the unreadable one, last
 	// written before it ended, goes.
-	maxRecords = 1
+	j.setMaxRecords(1)
 	endedRecords(t, j, 3, 1)
 	j.Prune()
 	if exists(dir, sid(2)) || !exists(dir, sid(3)) {
@@ -1094,9 +1097,7 @@ func TestAnUnreadableRecordIsListedBoundedAndForgettable(t *testing.T) {
 // and ran longest, ended after two later ones, is kept as the newest ended
 // one, and the one that ended first goes.
 func TestPruneKeepsTheLastToEnd(t *testing.T) {
-	maxRecords = 2
-	t.Cleanup(func() { maxRecords = MaxRecords })
-	j, dir := newJournal(t, Options{})
+	j, dir := newJournal(t, Options{maxRecords: new(2)})
 	long := serverRecord(sid(0))
 	long.StartedAt = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	begin(t, j, long)
@@ -1421,6 +1422,7 @@ func TestOpenSaysReadOnlyBeforeItsWaiterRuns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { j.Close() })
 	<-tried
 	j.Close()
 	if ro, why := j.ReadOnly(); !ro || why != "a lock that failed" {
@@ -1522,8 +1524,7 @@ func TestARemovalTellsRemoved(t *testing.T) {
 		t.Fatalf("a failed Forget told %v", got)
 	}
 	beforeDelete = nil
-	maxRecords = 2
-	t.Cleanup(func() { maxRecords = MaxRecords })
+	j.setMaxRecords(2)
 	j.Prune()
 	if got := took(); !slices.Equal(got, []string{sid(2)}) {
 		t.Fatalf("Prune told %v", got)
@@ -1741,21 +1742,20 @@ func gateDenied(t *testing.T, answer func(path string) bool) (o Options, entered
 func TestARemovalAgainstTheFold(t *testing.T) {
 	removals := []struct {
 		name   string
-		setup  func(t *testing.T)
+		setup  func(o *Options)
 		remove func(j *Journal, id string) (removed bool, err error)
 	}{
-		{"forget", func(*testing.T) {}, func(j *Journal, id string) (bool, error) {
+		{"forget", func(*Options) {}, func(j *Journal, id string) (bool, error) {
 			err := j.Forget(id)
 			return err == nil, err
 		}},
-		{"forget all", func(*testing.T) {}, func(j *Journal, _ string) (bool, error) {
+		{"forget all", func(*Options) {}, func(j *Journal, _ string) (bool, error) {
 			n, _, err := j.ForgetAll()
 			return n == 1, err
 		}},
-		{"prune", func(t *testing.T) {
-			// Set before the journal opens: its writer prunes too.
-			maxRecords = 0
-			t.Cleanup(func() { maxRecords = MaxRecords })
+		{"prune", func(o *Options) {
+			// Set as the journal opens: its writer prunes too.
+			o.maxRecords = new(0)
 		}, func(j *Journal, id string) (bool, error) {
 			j.Prune()
 			j.mu.Lock()
@@ -1768,8 +1768,8 @@ func TestARemovalAgainstTheFold(t *testing.T) {
 	for _, rm := range removals {
 		t.Run(rm.name+", open, folding", func(t *testing.T) {
 			slowFlush(t)
-			rm.setup(t)
 			o, entered, release := gateDenied(t, func(string) bool { return false })
+			rm.setup(&o)
 			j, dir := newJournal(t, o)
 			id := sid(1)
 			begin(t, j, serverRecord(id))
@@ -1788,8 +1788,8 @@ func TestARemovalAgainstTheFold(t *testing.T) {
 		})
 		t.Run(rm.name+", ended, folding", func(t *testing.T) {
 			slowFlush(t)
-			rm.setup(t)
 			o, entered, release := gateDenied(t, func(string) bool { return false })
+			rm.setup(&o)
 			j, dir := newJournal(t, o)
 			id := sid(1)
 			begin(t, j, serverRecord(id))
@@ -1810,8 +1810,9 @@ func TestARemovalAgainstTheFold(t *testing.T) {
 		})
 		t.Run(rm.name+", ended, folded", func(t *testing.T) {
 			slowFlush(t)
-			rm.setup(t)
-			j, dir := newJournal(t, Options{})
+			var o Options
+			rm.setup(&o)
+			j, dir := newJournal(t, o)
 			id := sid(1)
 			begin(t, j, serverRecord(id))
 			j.Touch(j.at(id), File{Path: "/w/main.go", Op: "edit", Last: at})
@@ -2208,11 +2209,10 @@ func TestAFailedDeleteOfAnUnwrittenEndIsListedLost(t *testing.T) {
 	for _, remover := range []string{"Forget", "ForgetAll", "Prune", "Close"} {
 		t.Run(remover, func(t *testing.T) {
 			slowFlush(t)
-			if remover == "Prune" {
-				maxRecords = 0
-				t.Cleanup(func() { maxRecords = MaxRecords })
-			}
 			o, reached, release := heldEndCommit(t)
+			if remover == "Prune" {
+				o.maxRecords = new(0)
+			}
 			j, dir := newJournal(t, o)
 			id := sid(1)
 			in := begin(t, j, serverRecord(id))
@@ -2236,7 +2236,7 @@ func TestAFailedDeleteOfAnUnwrittenEndIsListedLost(t *testing.T) {
 			case "Prune":
 				j.Prune()
 				// The pass the held end commit is in prunes too once let go.
-				maxRecords = MaxRecords
+				j.setMaxRecords(MaxRecords)
 			default:
 				if err := j.Forget(id); err == nil {
 					t.Fatal("a forget whose delete failed answered nil")

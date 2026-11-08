@@ -2,7 +2,7 @@
 import { Handle, Position, type NodeProps } from '@vue-flow/core'
 import type { GraphDirection } from '~/utils/crewGraph'
 import type { TaskNode } from '~/utils/taskGraph'
-import { taskDot, taskWords } from '~/utils/tasks'
+import { taskDot, taskWords, type TaskRun } from '~/utils/tasks'
 
 /**
  * One task on a managed run's graph (#334, row 7): its kind, id and state
@@ -13,8 +13,8 @@ import { taskDot, taskWords } from '~/utils/tasks'
 export interface TaskNodeData {
   node: TaskNode
   direction: GraphDirection
-  stopped: boolean
-  paused: boolean
+  /** Its run as its words read it: the same as the run page's task list (RunTasks), an interrupted run's held task among them. */
+  run: TaskRun
   /** The member's agent, for its avatar. */
   agentId: string
 }
@@ -26,7 +26,7 @@ const n = computed(() => props.data.node)
 const t = computed(() => n.value.task)
 const targetPos = computed(() => (props.data.direction === 'LR' ? Position.Left : Position.Top))
 const sourcePos = computed(() => (props.data.direction === 'LR' ? Position.Right : Position.Bottom))
-const words = computed(() => taskWords(t.value, { stoppedAt: props.data.stopped ? 'stopped' : undefined, paused: props.data.paused }))
+const words = computed(() => taskWords(t.value, props.data.run))
 const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted', default: 'text-default', success: 'text-success' }
 </script>
 
