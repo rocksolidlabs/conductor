@@ -17,7 +17,12 @@ export const stubPath = join(here, 'stub-agent.sh')
 export const PORT_MIN = 18400
 export const PORT_MAX = 18499
 /** How long the server has to answer /api/health. */
-const HEALTH_WAIT_MS = 20_000
+export const HEALTH_WAIT_MS = 20_000
+/**
+ * How long a try's child has to end on SIGTERM before it is killed: the rest of its start-up (HEALTH_WAIT_MS is what one is given)
+ * and then the 10 s serve's shutdown gives itself. It only bounds a hang.
+ */
+export const STOP_WAIT_MS = HEALTH_WAIT_MS + 10_000
 
 /** The server binary: CONDUCTOR_E2E_BIN, else bin/conductor of this checkout. */
 export function serverBinary(): string {
@@ -112,6 +117,8 @@ export interface Started {
   token: string
   port: number
   pid: number
+  /** The tries before this one, each a port that was not the child's and how that try's child ended. */
+  lost?: string[]
 }
 
 /** How many ports startServer tries before it gives up: each one another server took is said in the error. */
@@ -146,7 +153,7 @@ export async function startServer(o: {
   for (let i = 0; i < PORT_TRIES; i++) {
     const port = i === 0 && o.port !== undefined ? o.port : await pickPort()
     const started = await startOn(o, port)
-    if (typeof started !== 'string') return started
+    if (typeof started !== 'string') return { ...started, lost }
     lost.push(started)
   }
   throw new Error(`the server found no port of its own in ${PORT_TRIES} tries: ${lost.join('; ')}`)
@@ -185,16 +192,29 @@ async function startOn(o: Parameters<typeof startServer>[0], port: number): Prom
   const exited = new Promise<void>((done) => child.once('exit', () => done()))
   const pid = child.pid
   if (pid === undefined) throw new Error(`${bin} did not start`)
-  // Dead before the next try starts over the same data directory.
-  const kill = async () => {
-    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+  // A try owns what it starts, and ends it the way the product is ended: SIGTERM, then its exit awaited. The next try starts over the
+  // same data directory, which the child may hold mid-start (restore.lock, made by export.Reserve and only then stamped): a SIGKILL
+  // there can leave the file empty, which no later serve takes over. Serve catches SIGTERM from before it reserves (app.Main's
+  // NotifyContext) and lets the reservation go on every way out of its start, so a child that ended on SIGTERM left the directory as
+  // it found it. SIGKILL comes only after STOP_WAIT_MS, for a hang, and said in the try's words.
+  const stop = async (): Promise<string> => {
+    const ended = () => (child.signalCode !== null ? `on ${child.signalCode}` : `with exit ${child.exitCode}`)
+    if (child.exitCode !== null || child.signalCode !== null) return `the child had ended ${ended()}`
+    child.kill('SIGTERM')
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const hung = await Promise.race([exited.then(() => false), new Promise<boolean>((r) => (timer = setTimeout(() => r(true), STOP_WAIT_MS)))])
+    clearTimeout(timer)
+    if (!hung) return `the child ended on SIGTERM ${ended()}`
+    child.kill('SIGKILL')
     await exited
+    return `the child did not end within ${STOP_WAIT_MS / 1000} s of SIGTERM and was killed`
   }
   const deadline = Date.now() + HEALTH_WAIT_MS
   for (;;) {
     if (child.exitCode !== null || child.signalCode !== null) {
-      const said = readFileSync(o.log, 'utf8').slice(from)
-      if (/address already in use/.test(said)) return `port ${port} was in use when the server bound it`
+      // from is a byte offset: the log is cut as bytes, then decoded, so text before it in another script cannot shift the cut.
+      const said = readFileSync(o.log).subarray(from).toString('utf8')
+      if (/address already in use/.test(said)) return `port ${port} was in use when the server bound it (${await stop()})`
       throw new Error(`the server exited with ${child.exitCode ?? child.signalCode}:\n${tail(o.log)}`)
     }
     let health = false
@@ -208,12 +228,11 @@ async function startOn(o: Parameters<typeof startServer>[0], port: number): Prom
       const own = await fetch(`${baseURL}/api/whoami`, { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.status, () => 0)
       if (own === 200) return { baseURL, token, port, pid }
       if (own === 401 || own === 403 || own === 429) {
-        await kill()
-        return `port ${port} answered with another server's health (its /api/whoami refused the child's token: ${own})`
+        return `port ${port} answered with another server's health (its /api/whoami refused the child's token: ${own}; ${await stop()})`
       }
     }
     if (Date.now() > deadline) {
-      await kill()
+      await stop()
       throw new Error(`the server did not answer /api/health within ${HEALTH_WAIT_MS / 1000} s:\n${tail(o.log)}`)
     }
     await new Promise((r) => setTimeout(r, 200))
