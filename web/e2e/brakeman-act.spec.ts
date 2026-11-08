@@ -199,7 +199,7 @@ test('granted in Settings, Brakeman launches the approved revision, and the brie
   await expect(page.locator('[data-brakeman-grant="request_repair"]')).toHaveAttribute('data-grant-served', 'false')
   // Routing a decision is served, to a person of its run's crew too, and never answers one.
   await expect(page.locator('[data-brakeman-grant="route_decision"]')).toHaveAttribute('data-grant-served', 'true')
-  await expect(page.locator('[data-brakeman-grant="route_decision"]')).toContainText("or to a person of its run's crew")
+  await expect(page.locator('[data-brakeman-grants]')).toContainText("or to a person of its run's crew, by name or by the responsibility they hold. It never answers one")
   const sw = page.locator('[data-brakeman-grants]').getByRole('switch', { name: 'Launch an approved plan' })
   await expect(sw).toHaveAttribute('aria-checked', 'false')
   // With drafting and proposing off Brakeman observes only, until a grant is on: a grant runs by itself, whatever those two say. Both
@@ -449,8 +449,8 @@ test("granted Route a decision, Brakeman routes a gate's decision to the crew's 
   expect(after.decision.state).toBe('open')
   expect(after.decision.history.filter((h) => h.kind === 'routed' && h.by === 'brakeman')).toHaveLength(1)
 
-  // The brief and the decision's card: two waits of 30 s and seven steps.
-  budget(2 * 30_000 + 7 * STEP_MS)
+  // The brief and the decision's card: two waits of 30 s and nine steps.
+  budget(2 * 30_000 + 9 * STEP_MS)
   await open(page, `/brakeman?request=${id}`)
   const p = page.locator(`[data-brief="${id}"] [data-proposal-op="route_decision"]`)
   await expect(p).toHaveAttribute('data-proposal-act', 'done', { timeout: 30_000 })
@@ -463,7 +463,9 @@ test("granted Route a decision, Brakeman routes a gate's decision to the crew's 
   // The decision's card: the operator answers it, for ana, as its history says.
   const card = page.locator(`[data-decision-routed-for="ana"]`)
   await expect(card).toHaveText(', for ana (routed by brakeman)', { timeout: 30_000 })
-  await expect(page.getByText('routed to ana: ana reviews what build touches.')).toBeVisible()
+  // Its history, unfolded: the route Brakeman made, to ana.
+  await page.locator('[data-decision-history-toggle]').click()
+  await expect(page.locator('[data-decision-history] [data-history-kind="routed"]').filter({ hasText: 'routed to ana: ana reviews what build touches. · brakeman' })).toHaveCount(1)
 })
 
 test('Settings opened before the right token was saved offers the grants once it is, with no reload', async ({ page }) => {
