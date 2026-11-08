@@ -284,12 +284,16 @@ export function linkLine(e: Pick<HistoryItem, 'links'>): string {
   return out.join(' · ')
 }
 
-/** A row that stands for the same words in several places: "said in 3 sessions". Still what it is: a repeat is never promoted. */
+/**
+ * A row that stands for the same words in several places: "said in 3 places". Still what it is: a repeat is never promoted. The places
+ * are the distinct anchors of the entries with the same digest and class, and a Conversation entry's anchor may be a session, a ticket's
+ * comment, a run's message or a briefing's item: `repeats` counts them without saying which, so the words never call them sessions.
+ */
 export function repeatWords(e: Pick<HistoryItem, 'class' | 'repeats'>): string {
   const r = e.repeats
   if (!r) return ''
   const said = e.class === 'said'
-  if (r.anchors > 1) return said ? `said in ${r.anchors} sessions` : `in ${r.anchors} places`
+  if (r.anchors > 1) return said ? `said in ${r.anchors} places` : `in ${r.anchors} places`
   if (r.count > 1) return said ? `said ${r.count} times` : `${r.count} times`
   return ''
 }

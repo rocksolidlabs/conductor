@@ -114,11 +114,22 @@ describe('linkLine', () => {
 })
 
 describe('repeatWords', () => {
-  it('says a sentence said in several sessions, and stays silent for one', () => {
-    expect(repeatWords({ class: 'said', repeats: { count: 3, anchors: 3 } })).toBe('said in 3 sessions')
+  it('says a sentence said in several places, and stays silent for one', () => {
+    expect(repeatWords({ class: 'said', repeats: { count: 3, anchors: 3 } })).toBe('said in 3 places')
     expect(repeatWords({ class: 'said', repeats: { count: 2, anchors: 1 } })).toBe('said 2 times')
     expect(repeatWords({ class: 'said', repeats: { count: 1, anchors: 1 } })).toBe('')
     expect(repeatWords({ class: 'checked', repeats: { count: 4, anchors: 2 } })).toBe('in 2 places')
+  })
+
+  // Codex's round 3 on #731: Conversation's anchors are sessions, tickets' comments, runs' messages and briefings' items, and `repeats`
+  // counts them without saying which. The same comment on three tickets, or said once in a session and twice on tickets, is in places.
+  it('never calls the places sessions: not for tickets\' comments, nor for a mix', () => {
+    const rows = [
+      entry({ class: 'said', kind: 'ticket.comment', anchor: { ref: 'ticket:CND-1', label: 'CND-1 comment #2' }, repeats: { count: 3, anchors: 3 } }),
+      entry({ class: 'said', kind: 'session.typed', anchor: { ref: 'session:0123456789abcdef', label: 'fix-tests' }, repeats: { count: 3, anchors: 3 } }),
+    ]
+    for (const r of rows) expect(repeatWords(r)).toBe('said in 3 places')
+    expect(rows.map(repeatWords).join(' ')).not.toMatch(/session/)
   })
 })
 

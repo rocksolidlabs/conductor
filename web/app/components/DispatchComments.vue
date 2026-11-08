@@ -2,7 +2,7 @@
 import type { CommentReply, DispatchTicket, TicketComment } from '~/composables/useDispatch'
 import type { DispatchOrder } from '~/utils/dispatchOrder'
 import { retried, through } from '~/utils/dispatchOrder'
-import { COMMENT_PAGE, commentAuthor, commentGaps, commentsRereadFrom, earlierComments, shownComments, type CommentGap } from '~/utils/dispatch'
+import { COMMENT_PAGE, commentAuthor, commentGaps, commentsRereadFrom, earlierComments, readLinkedComment, shownComments, type CommentGap, type LinkedComment } from '~/utils/dispatch'
 import { DISPATCH_RETRY_MAX_MS } from '~/composables/useDispatchLive'
 import { RUN_EVENT_WINDOW_MS } from '~/utils/runs'
 import { avatarTone } from '~/utils/avatar'
@@ -284,7 +284,8 @@ async function remove(c: TicketComment) {
 // Brakeman's commentURL names it), or its tombstone; `none` when the ticket has no comment of that number. Read for each ticket and
 // number and again whenever the page reads the ticket again (`reads`, `resets`), the last asked the one shown; and the shown list's
 // copy of it when that one is newer (an edit or a delete on this page, or a read that holds it), so the head never keeps an old body.
-const atComment = ref<{ key: string; n: number; comment: TicketComment | null; error: string } | null>(null)
+// A read that fails is asked again as a re-read is (readLinkedComment), until one answers or a later one takes its place.
+const atComment = ref<LinkedComment | null>(null)
 const atShown = computed(() => {
   const a = atComment.value
   const listed = a ? comments.value.find((c) => c.n === a.n) : undefined
@@ -300,13 +301,17 @@ watch(
       return
     }
     if (atComment.value?.key !== key || atComment.value.n !== n) atComment.value = null
-    try {
-      const page = await api.comments(key, n - 1, 1)
-      if (mine === atAsked) atComment.value = { key, n, comment: page.find((c) => c.n === n) ?? null, error: '' }
-    } catch (e) {
-      // A read again that fails keeps the copy already shown: the ticket's next read asks again.
-      if (mine === atAsked && !atComment.value?.comment) atComment.value = { key, n, comment: null, error: (e as Error).message || 'The comment could not be read.' }
-    }
+    await readLinkedComment({
+      key,
+      n,
+      read: () => api.comments(key, n - 1, 1),
+      shown: () => atComment.value,
+      set: (c) => (atComment.value = c),
+      stop: () => gone || mine !== atAsked,
+      wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      firstMs: RUN_EVENT_WINDOW_MS,
+      maxMs: DISPATCH_RETRY_MAX_MS,
+    })
   },
   { immediate: true },
 )

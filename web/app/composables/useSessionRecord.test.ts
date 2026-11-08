@@ -12,6 +12,8 @@ import { useSessionRecord } from './useSessionRecord'
 // page still shows what it asked for. A record read overtaken by Forget does not bring the record back; a resume answered after the
 // page was left, or after another record was opened, takes nobody anywhere, and one still pending is asked no more. And a resume
 // answered from its receipt alone (its session no longer listed) opens the new session's record, never a session page that answers 404.
+// Codex's round 3: of two reads of the same record, only the newest one's answers are applied, the record's and the entry's; and a
+// resume whose reply was lost twice is said to have an unknown outcome, never to have failed.
 
 function held<T>() {
   let ok!: (v: T) => void
@@ -75,6 +77,8 @@ const last = (method: string, path: string) => {
   return r
 }
 const count = (method: string, path: string) => sent.filter((s) => s.method === method && s.path === path).length
+const all = (method: string, path: string) => sent.filter((s) => s.method === method && s.path === path)
+const receipt = (commandId: string, state: 'started' | 'failed' = 'failed') => ({ commandId, state, at: '2026-11-07T12:00:00Z', ...(state === 'started' ? { session: NEW } : { code: 'env_not_kept' }) })
 const refusal = (code: string, state = 'failed') => new ApiError(409, code, `refused: ${code}`, {}, { error: { code, message: `refused: ${code}` }, receipt: { commandId: 'x', state, code, at: '' } })
 
 /** A page on the record, drawn: its record read and its entry read answered. */
@@ -208,5 +212,76 @@ describe('the session record page', () => {
     await resumed
     expect(push).toHaveBeenCalledWith(`/sessions/${NEW}`)
     expect(toasts).toEqual([expect.objectContaining({ title: 'fix-tests resumed' })])
+  })
+
+  it("applies only the newest read's answers when two reads of the same record land out of order", async () => {
+    const page = await drawn()
+    // Two resumes refused one after the other: each reads the record again, for its receipts.
+    for (const _ of [1, 2]) {
+      page.step.value = 'ask'
+      const resumed = page.resume(false)
+      await settle()
+      last('POST', `/api/history/sessions/${ID}/resume`).fail(refusal('env_not_kept'))
+      await resumed
+      await settle()
+    }
+    const [, older, newer] = all('GET', `/api/history/sessions/${ID}`)
+    expect([older, newer].every(Boolean)).toBe(true)
+    const at = (seq: number, resumes: ReturnType<typeof receipt>[]): RecordReply => ({ ...reply(), record: { ...reply().record, seq, resumes } })
+    // The newer read lands first, with both receipts, and its entry read answers.
+    newer!.ok(at(3, [receipt('a'), receipt('b')]))
+    await settle()
+    expect(page.record.value?.seq).toBe(3)
+    expect(count('GET', '/api/history/entry')).toBe(2)
+    last('GET', '/api/history/entry').ok({ entry: { ...entry.entry, availability: { state: 'listed', words: 'listed', resume: { offered: 'no' } } } })
+    await settle()
+    // The older lands last: neither its record nor an entry read of its own is applied.
+    older!.ok(at(2, [receipt('a')]))
+    await settle()
+    expect([page.record.value?.seq, page.record.value?.resumes?.length, page.availability.value?.state]).toEqual([3, 2, 'listed'])
+    expect(count('GET', '/api/history/entry')).toBe(2)
+  })
+
+  it("does not apply an older read's entry answer once a newer read was asked", async () => {
+    const page = useSessionRecord(vue.ref(ID))
+    void page.load()
+    await settle()
+    last('GET', `/api/history/sessions/${ID}`).ok(reply())
+    await settle()
+    const olderEntry = last('GET', '/api/history/entry')
+    // A newer read is asked while the older read's entry is on its way; the older entry lands first, then the newer read's.
+    void page.load()
+    await settle()
+    olderEntry.ok({ entry: { ...entry.entry, availability: { state: 'listed', words: 'listed', resume: { offered: 'no' } } } })
+    await settle()
+    expect(page.availability.value).toBe(null)
+    last('GET', `/api/history/sessions/${ID}`).ok(reply())
+    await settle()
+    last('GET', '/api/history/entry').ok(entry)
+    await settle()
+    expect(page.availability.value?.state).toBe('record')
+  })
+
+  it('says the outcome is unknown when the server started the session but both replies were lost', async () => {
+    const page = await drawn()
+    page.step.value = 'ask'
+    const resumed = page.resume(false)
+    await settle()
+    // The first send starts the session on the server; its reply is lost, and so is the reply to the same id sent again.
+    last('POST', `/api/history/sessions/${ID}/resume`).fail(new ApiError(0, 'network', 'Cannot reach the server'))
+    await settle()
+    expect(count('POST', `/api/history/sessions/${ID}/resume`)).toBe(2)
+    last('POST', `/api/history/sessions/${ID}/resume`).fail(new ApiError(0, 'network', 'Cannot reach the server'))
+    await resumed
+    await settle()
+    expect(push).not.toHaveBeenCalled()
+    expect(toasts.map((t) => t.title)).toEqual(['Whether it resumed is not known'])
+    expect(toasts[0]!.description).toMatch(/The outcome is unknown/)
+    // The record is read again: its receipts, the started one among them, say what happened.
+    expect(count('GET', `/api/history/sessions/${ID}`)).toBe(2)
+    last('GET', `/api/history/sessions/${ID}`).ok({ ...reply(), record: { ...reply().record, seq: 2, resumes: [receipt('x', 'started')] } })
+    await settle()
+    expect(page.record.value?.resumes?.[0]?.state).toBe('started')
+    expect([page.step.value, page.resuming.value]).toEqual([null, false])
   })
 })
