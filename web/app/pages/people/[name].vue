@@ -5,7 +5,7 @@ import { SerialReads, decisionsLive } from '~/composables/useDecisions'
 import { avatarTone } from '~/utils/avatar'
 import { responsibilityWords } from '~/utils/crews'
 import { statusWord, ticketPath } from '~/utils/dispatch'
-import { ownedHow, personFromSegment, personLists, readTicketsPage, type PersonTicketList } from '~/utils/people'
+import { boundedRead, freshTicketLists, keepsTicketLists, ownedHow, PERSON_READ_MS, personFromSegment, personLists, readTicketsPage, type PersonTicketList } from '~/utils/people'
 import { initials } from '~/utils/sessions'
 
 /**
@@ -38,22 +38,36 @@ const loading = ref(false)
 const lists = ref<PersonTicketList[]>([])
 const reading = ref<Record<string, boolean>>({})
 
+/** The reads of the work: a reply to one older than the last started is dropped. */
 let seq = 0
+/** The ticket lists' generation, and whom and which tickets they were started from: a read that keeps them leaves their pages alone. */
+let listSeq = 0
+let listsFor: string | null = null
+let listsFrom: PersonWork['tickets'] | undefined
+/** The read of the work under way, aborted when a newer one starts or the page goes. */
+let inflight: AbortController | null = null
 
-/** Reads the next page of one list (again, after a failed read), while the page still shows the work it was read for. */
+/** Reads the next page of one list (again, after a failed read), while the page still shows the lists it was read for. */
 async function more(list: PersonTicketList): Promise<void> {
-  const n = seq
+  const n = listSeq
   reading.value = { ...reading.value, [list.id]: true }
-  await readTicketsPage(list, (q) => api.tickets(q), () => n === seq)
-  if (n === seq) reading.value = { ...reading.value, [list.id]: false }
+  await readTicketsPage(list, (q) => api.tickets(q), () => n === listSeq)
+  if (n === listSeq) reading.value = { ...reading.value, [list.id]: false }
 }
 
-async function load(): Promise<void> {
+/**
+ * Reads the person's work, bounded (`PERSON_READ_MS`, `boundedRead`): a read that gets no reply is aborted and says so, so the reads a
+ * decision's change queues after it (`SerialReads`) are made. One made for a decision's change (`decisionsOnly`) keeps the ticket lists
+ * and the pages read of them (`keepsTicketLists`); any other starts them again.
+ */
+async function load(decisionsOnly = false): Promise<void> {
   if (!admin.hasToken.value) {
     admin.needsToken.value = true
     return
   }
   const n = ++seq
+  inflight?.abort()
+  inflight = null
   const who = named.value
   if (who === null) {
     missing.value = true
@@ -63,19 +77,19 @@ async function load(): Promise<void> {
     return
   }
   loading.value = true
+  const ctl = new AbortController()
+  inflight = ctl
   try {
-    const w = await people.person(who)
+    const w = await boundedRead((signal) => people.person(who, signal), PERSON_READ_MS, ctl)
     if (n !== seq) return
     work.value = w
     missing.value = false
     error.value = ''
-    const t = w.tickets
-    lists.value = t
-      ? [
-          { id: 'owner' as const, label: 'Owned', href: t.ownerHref, total: t.owner, tickets: [], read: false, error: '' },
-          { id: 'assignee' as const, label: 'Assigned', href: t.assigneeHref, total: t.assignee, tickets: [], read: false, error: '' },
-        ].filter((l) => l.total)
-      : []
+    if (keepsTicketLists(decisionsOnly, listsFor, who, listsFrom, w.tickets)) return
+    listSeq++
+    listsFor = who
+    listsFrom = w.tickets
+    lists.value = freshTicketLists(w.tickets)
     reading.value = {}
     // Each list on its own, after the work is shown: one that fails says so in its place.
     for (const list of lists.value) void more(list)
@@ -89,17 +103,25 @@ async function load(): Promise<void> {
       error.value = (e as Error).message
     }
   } finally {
-    if (n === seq) loading.value = false
+    if (n === seq) {
+      loading.value = false
+      if (inflight === ctl) inflight = null
+    }
   }
 }
 
-onMounted(load)
-watch([() => admin.token.value, name], load)
+onMounted(() => load())
+watch([() => admin.token.value, name], () => load())
 // A decision changed (answered, applied, routed, opened): their page is read again, one read at a time, so a decision answered for them
-// leaves it and one opened for them comes (the app's one events stream, useDecisions).
-const decisionReads = new SerialReads(load)
+// leaves it and one opened for them comes (the app's one events stream, useDecisions); the ticket lists, which no decision changes,
+// keep the pages read of them.
+const decisionReads = new SerialReads(() => load(true))
 const stopDecisions = decisionsLive().subscribe(() => void decisionReads.run())
-onBeforeUnmount(stopDecisions)
+onBeforeUnmount(() => {
+  stopDecisions()
+  seq++
+  inflight?.abort()
+})
 
 function stateColor(state: string): 'success' | 'error' | 'neutral' | 'info' | 'primary' {
   switch (state) {

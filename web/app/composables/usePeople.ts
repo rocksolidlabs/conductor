@@ -109,9 +109,9 @@ export function usePeople() {
     },
   )
 
-  /** A person's work, by their name exactly (its segment by `personSegment`, the rule every link to their page uses). */
-  function person(name: string): Promise<PersonWork> {
-    return request<PersonWork>(`/api/people/${personSegment(name)}`).then((r) => ({ ...r, crews: r.crews ?? [], tasks: r.tasks ?? [], decisions: r.decisions ?? [] }))
+  /** A person's work, by their name exactly (its segment by `personSegment`, the rule every link to their page uses); `signal` aborts it. */
+  function person(name: string, signal?: AbortSignal): Promise<PersonWork> {
+    return request<PersonWork>(`/api/people/${personSegment(name)}`, { signal }).then((r) => ({ ...r, crews: r.crews ?? [], tasks: r.tasks ?? [], decisions: r.decisions ?? [] }))
   }
 
   return { names, known, load, search, page, person }
