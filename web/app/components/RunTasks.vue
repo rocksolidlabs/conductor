@@ -2,7 +2,8 @@
 import type { RunAttempt, RunInfo, RunStep, RunTask } from '~/composables/useSessions'
 import { relativeTime } from '~/utils/sessions'
 import { latestReads, ownedBy, type Owned } from '~/utils/latestReads'
-import { prerequisitesRefused, stepManifest, taskActions, taskDot, taskWords } from '~/utils/tasks'
+import { prerequisitesRefused, stepManifest, taskActions, taskAnswer, taskDot, taskWords } from '~/utils/tasks'
+import type { DecisionSummary } from '~/utils/decisions'
 import { ownerWords } from '~/utils/crews'
 import { personPath } from '~/utils/people'
 
@@ -19,7 +20,10 @@ import { personPath } from '~/utils/people'
  * each attempt with what it submitted and its receipts (RunAttemptSteps).
  * A run with a project manifest shows its prerequisites' receipts above the
  * rows. Cancel and Accept anyway ask first; every command carries a receipt
- * (useTaskCommands). The preview opens in a new tab: it is on the server's
+ * (useTaskCommands). A task a durable decision holds (Program item DR1) says
+ * what it waits for, and Answer opens the decision's card in the app's
+ * modal (useDecisionModal); the selected task lists its decisions. The
+ * preview opens in a new tab: it is on the server's
  * loopback and not proxied, and an iframe of it would be mixed content
  * under TLS.
  */
@@ -41,6 +45,7 @@ const words = (t: RunTask) => taskWords(t, live.value)
 const acts = (t: RunTask) => taskActions(t, live.value)
 // Ask Brakeman why: the Brakeman page's composer, asking it to explain the task (shown where the server has Brakeman).
 const brakeman = useBrakeman()
+const decisionModal = useDecisionModal()
 const askWhy = (t: RunTask) => `/brakeman?kind=explain&subject=${encodeURIComponent(`task:${props.run.id}/${t.id}`)}`
 const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted', default: 'text-default', success: 'text-success' }
 function stateColor(state: RunTask['state']): 'success' | 'warning' | 'error' | 'neutral' | 'info' | 'primary' {
@@ -84,6 +89,13 @@ function severityColor(s: string): 'error' | 'warning' | 'neutral' | 'info' {
 const taskOwner = (run: string, task: string) => JSON.stringify([run, task])
 const attemptsHeld = ref<Owned<RunAttempt[]> | null>(null)
 const attemptsError = ref<Owned<string> | null>(null)
+const decisionsHeld = ref<Owned<DecisionSummary[]> | null>(null)
+/** The selected task's decisions, as its read lists them (those it asked), with the ones that hold it and it did not ask (a gate's). */
+const taskDecisions = computed(() => {
+  const asked = ownedBy(decisionsHeld.value, taskOwner(props.run.id, props.selected), [])
+  const held = (selectedTask.value?.holds ?? []).filter((h) => !asked.some((d) => d.id === h.id))
+  return [...held.map((h) => ({ id: h.id, type: h.type, state: h.state, question: h.question, answer: undefined as string | undefined, why: undefined as string | undefined })), ...asked]
+})
 const attempts = computed(() => ownedBy(attemptsHeld.value, taskOwner(props.run.id, props.selected), []))
 const loadError = computed(() => ownedBy(attemptsError.value, taskOwner(props.run.id, props.selected), ''))
 const attemptReads = latestReads()
@@ -94,6 +106,7 @@ watch(
       attemptReads.drop()
       attemptsHeld.value = null
       attemptsError.value = null
+      decisionsHeld.value = null
       return
     }
     const owner = taskOwner(run, id)
@@ -101,6 +114,7 @@ watch(
       () => api.runTask(run, id),
       (r) => {
         attemptsHeld.value = { owner, value: r.attempts }
+        decisionsHeld.value = { owner, value: r.decisions ?? [] }
         attemptsError.value = null
       },
       (e) => (attemptsError.value = { owner, value: (e as Error).message }),
@@ -203,6 +217,7 @@ async function confirm() {
           <span class="min-w-[12rem] flex-1 truncate" :class="tone[words(t).tone]" :title="words(t).text" data-task-words>{{ words(t).text }}</span>
           <span v-if="t.result?.commit" class="flex-none font-mono text-xs text-muted" :title="t.result.commit" data-task-commit>{{ short(t.result.commit) }}</span>
           <div class="ml-auto flex flex-none items-center gap-1" @click.stop>
+            <UButton v-if="taskAnswer(t)" :label="`Answer ${taskAnswer(t)}`" icon="i-lucide-scale" size="xs" color="warning" variant="soft" :data-task-answer="t.id" :data-decision="taskAnswer(t)" @click="decisionModal.open(taskAnswer(t)!)" />
             <UButton v-if="acts(t).open" label="Open" icon="i-lucide-terminal" size="xs" color="neutral" variant="ghost" :data-task-open="t.id" @click="emit('open', t.attempt!.sessionId!)" />
             <UButton v-if="acts(t).preview" label="Open preview" icon="i-lucide-external-link" size="xs" color="neutral" variant="ghost" :to="acts(t).preview" target="_blank" external :title="acts(t).preview" :data-task-preview="t.id" />
             <UButton v-if="acts(t).retry" label="Retry" icon="i-lucide-rotate-ccw" size="xs" color="neutral" variant="outline" :loading="commands.busy.value === `${t.id}:retry`" :data-task-retry="t.id" @click="commands.send(t, 'retry')" />
@@ -225,6 +240,17 @@ async function confirm() {
       <p v-if="selectedTask.blocker" class="rounded-md bg-warning/10 p-2 text-warning" data-task-blocker>
         Blocked by {{ selectedTask.blocker.by }}: {{ selectedTask.blocker.reason }}<template v-if="selectedTask.blocker.message"> — {{ selectedTask.blocker.message }}</template>
       </p>
+      <!-- Its durable decisions: those that hold it and those it asked, each with its state and, open, Answer. -->
+      <ul v-if="taskDecisions.length" class="flex flex-col gap-1" data-task-decisions>
+        <li v-for="d in taskDecisions" :key="d.id" class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 rounded-md px-2.5 py-1.5 ring ring-default" :data-task-decision="d.id" :data-decision-state="d.state">
+          <span class="font-mono text-xs font-semibold">{{ d.id }}</span>
+          <UBadge :label="d.state" :color="d.state === 'open' ? 'warning' : d.state === 'applied' ? 'success' : 'neutral'" variant="subtle" size="sm" />
+          <span class="min-w-0 flex-1 break-words">{{ d.question }}</span>
+          <span v-if="d.answer" class="text-xs text-muted">answered: {{ d.answer }}</span>
+          <span v-else-if="d.why" class="text-xs text-muted">{{ d.why }}</span>
+          <UButton :label="d.state === 'open' ? 'Answer' : 'Show'" size="xs" :color="d.state === 'open' ? 'warning' : 'neutral'" variant="ghost" :data-task-decision-open="d.id" @click="decisionModal.open(d.id)" />
+        </li>
+      </ul>
       <div v-if="selectedTask.result" class="flex flex-col gap-1 rounded-md bg-elevated/40 p-2" data-task-result>
         <div class="font-medium">
           Result

@@ -280,6 +280,32 @@ func TestInboxHeldTurnOffersNoAnswer(t *testing.T) {
 	}
 }
 
+// A question that mirrors a durable decision (Program item DR1) is an item
+// with no answer: the session refuses every reply naming it, so the inbox
+// offers none, and its words name the decision and where it is answered
+// (its card), never the terminal.
+func TestInboxDecisionQuestionOffersNoReply(t *testing.T) {
+	e := newTestEnv(t, nil)
+	fs := newFakeSession(t, e, sessionHex("mirror"), session.Options{})
+	q, err := fs.l.TryAskDecision("dr-7", "May build ship?")
+	if err != nil || q == "" {
+		t.Fatalf("the decision's question: %q %v", q, err)
+	}
+	ref := questionRef(sessionHex("mirror"), q)
+	page, _ := e.inboxList(t, "")
+	if page.Total != 1 || !listed(page, ref) || len(page.Items[0].Actions) != 0 {
+		t.Fatalf("the list: %+v", page)
+	}
+	it := e.itemOf(t, ref)
+	if len(it.Actions) != 0 || !strings.Contains(it.Brief, "dr-7, a durable decision, answered on its card") || !strings.Contains(it.Blocking.Words, "Answer dr-7") {
+		t.Fatalf("the decision's question's item: %+v", it)
+	}
+	sub := fs.owner(t, "Nate")
+	if err := fs.l.AnswerInput(context.Background(), sub, q, []byte("yes\r")); !errors.Is(err, session.ErrDecisionQuestion) {
+		t.Fatalf("a reply naming it: %v", err)
+	}
+}
+
 // A question's track: answered through the claim, recorded and validated
 // done at the answer's time and resumed done once the agent works; two
 // answers with two request ids, the loser's reading another answer

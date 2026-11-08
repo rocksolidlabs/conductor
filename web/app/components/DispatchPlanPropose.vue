@@ -252,7 +252,7 @@ async function submit() {
         <div class="flex flex-col gap-1.5">
           <div class="flex items-center gap-2">
             <span class="text-xs font-medium text-muted">Decisions a person makes</span>
-            <span class="text-xs text-dimmed">recorded and shown, not held yet</span>
+            <span class="text-xs text-dimmed">each holds the tasks it names until the operator answers</span>
             <div class="flex-1" />
             <UButton v-if="decisions.length < PLAN_BOUNDS.decisions" label="Add" icon="i-lucide-plus" size="xs" color="neutral" variant="ghost" data-plan-propose-decision-add @click="addDecision" />
           </div>

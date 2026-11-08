@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { choiceKey } from '~/utils/attention'
+import { pillGoes } from '~/utils/needsCursor'
 import { replyFailure } from '~/utils/reply'
 import { rowPrompt } from '~/utils/sidebarActions'
 import { sessionRow } from '~/utils/sidebar'
@@ -11,7 +12,9 @@ import { sessionRow } from '~/utils/sidebar'
  * leaving the page, Enter opens the session, Escape dismisses it. A
  * component of its own, not a toast. Its keys are read on the document
  * while it shows, from anywhere but a text field or a terminal, and from
- * the pill itself when the Alt twins gave it the focus.
+ * the pill itself when the Alt twins gave it the focus. A durable decision
+ * no session question mirrors (a gate's) takes its turn after the sessions:
+ * its id and question, Enter opening its card (Program item DR1).
  */
 const cursor = useNeedsCursor()
 const attention = useAttention()
@@ -20,14 +23,23 @@ const toast = useToast()
 const router = useRouter()
 const root = useTemplateRef<HTMLElement>('root')
 
-const session = computed(() => (cursor.shown.value ? attention.sessions.value.find((s) => s.id === cursor.shown.value!.id) : undefined))
+const session = computed(() => (cursor.shown.value && !cursor.shown.value.decision ? attention.sessions.value.find((s) => s.id === cursor.shown.value!.id) : undefined))
+const decisions = useDecisions()
+const decisionModal = useDecisionModal()
+/** The decision the pill shows, while it is still open. */
+const lone = computed(() => (cursor.shown.value?.decision ? decisions.open.value.find((d) => d.id === cursor.shown.value!.decision) : undefined))
+watch(lone, (d) => {
+  if (cursor.shown.value?.decision && !d) cursor.hide()
+})
 const prompt = computed(() => (session.value ? rowPrompt(sessionRow(session.value)) : null))
-/** The session answered, gone, or asking another question: the pill goes with the question it showed (Codex's round on #303). */
+/**
+ * The session answered, gone, or asking another question: the pill goes with the question it showed (Codex's round on #303). A
+ * decision's pill shows no session, so a step from a session's pill to a decision's is no session moving on (pillGoes).
+ */
 watch(
   () => [session.value?.attention?.state, session.value?.attention?.id] as const,
   ([state, id]) => {
-    const shown = cursor.shown.value
-    if (shown && (state !== 'needs_input' || id !== shown.question)) cursor.hide()
+    if (pillGoes(cursor.shown.value, state, id)) cursor.hide()
   },
 )
 /** Where the focus was when the Alt twins gave it to the pill: given back when the pill goes while it still holds it. */
@@ -43,6 +55,12 @@ watch(
 )
 
 function open() {
+  if (lone.value) {
+    const id = lone.value.id
+    cursor.hide()
+    decisionModal.open(id)
+    return
+  }
   const s = session.value
   if (!s) return
   cursor.hide()
@@ -142,6 +160,27 @@ watch(
         </div>
         <p v-else-if="prompt && (prompt.held || prompt.away)" class="mt-1 text-xs text-muted">{{ prompt.placeholder }}</p>
         <p v-else-if="prompt" class="mt-1 text-xs text-muted">A line to type: open it (Enter) and reply there.</p>
+      </div>
+    </div>
+    <div
+      v-else-if="cursor.shown.value && lone"
+      ref="root"
+      class="fixed inset-x-0 top-3 z-50 mx-auto flex w-[min(40rem,calc(100vw-2rem))] items-start gap-3 rounded-md border border-warning/40 bg-default/95 px-3.5 py-2.5 shadow-lg outline-none backdrop-blur-sm focus-visible:ring-2 focus-visible:ring-primary"
+      role="dialog"
+      aria-live="polite"
+      :aria-label="`${lone.id} needs you, ${cursor.shown.value.n} of ${cursor.shown.value.of}`"
+      tabindex="-1"
+      data-needs-pill
+      :data-pill-decision="lone.id"
+    >
+      <UIcon name="i-lucide-scale" class="mt-0.5 size-5 flex-none text-warning" />
+      <div class="min-w-0 flex-1">
+        <div class="flex items-center gap-2">
+          <span class="truncate font-mono text-sm font-semibold text-highlighted">{{ lone.id }}</span>
+          <span class="flex-none font-mono text-[11px] text-muted" data-pill-count>{{ cursor.shown.value.n }} of {{ cursor.shown.value.of }}</span>
+          <span class="ml-auto flex flex-none items-center gap-1 font-mono text-[11px] text-muted"><UKbd value="enter" size="sm" /> answer <UKbd value="escape" size="sm" /></span>
+        </div>
+        <p class="break-words text-xs text-muted" data-pill-message>{{ lone.request.question }}</p>
       </div>
     </div>
   </Transition>
