@@ -12,6 +12,8 @@ import type { PaletteItem } from '~/composables/usePalette'
 import { TICKET_PLAN_ROWS } from '~/composables/useTicketPlans'
 import { approvable, launchBlockers, revisionTag } from '~/utils/dispatchPlans'
 import { heldRuns } from '~/composables/useTicketCandidates'
+import { REVIEW_ENTRY, useReview, type ReviewFinding } from '~/composables/useReview'
+import { parseCandidate } from '~/utils/dispatch'
 
 /**
  * A ticket's page (docs/plans/dispatch.md, PR-8): its key and title, its description and acceptance criteria as Markdown with a
@@ -37,6 +39,9 @@ import { heldRuns } from '~/composables/useTicketCandidates'
  * acceptance, Accept anyway receipts, decision records), its Delivery (the close card, with `verified`, and the links, a delivery naming
  * the candidate it delivers with its verification), and its People (DispatchPeople: owner, assignees, approvers, launchers, commenters,
  * the plan's agents and each launch's with their versions). The runs' candidates they read are read once for all three (useTicketCandidates).
+ * Its Review view (Program item RV1, DispatchReview), `?view=review&candidate=…`, shows in place of the sections: a candidate's diff,
+ * the notes of a draft and the review sent; each standing candidate under Runs offers Review, with the open findings of its task, read
+ * with the ticket.
  */
 const props = defineProps<{ project: string; ticketKey: string }>()
 
@@ -686,6 +691,37 @@ function reviseFrom(planId: string) {
 const palette = usePalette()
 const route = useRoute()
 const router = useRouter()
+
+// The Review view (RV1): ?view=review, at the candidate ?candidate= names (the first standing one when none).
+const reviewView = computed(() => route.query.view === 'review')
+const reviewCandidate = computed(() => (typeof route.query.candidate === 'string' ? route.query.candidate : ''))
+function pickReviewCandidate(c: string) {
+  void router.replace({ query: { ...route.query, view: 'review', candidate: c } })
+}
+// The open findings of the ticket's reviews, read with the ticket, for the count beside each candidate's Review: a hint, so a read
+// that fails leaves the count it had, and the next read of the ticket asks again.
+const reviews = useReview(gate)
+const openFindings = ref<ReviewFinding[]>([])
+watch(
+  () => [props.ticketKey, reads.value] as const,
+  ([key]) => {
+    if (!parseTicketKey(key)) return
+    reviews
+      .readOpenFindings(key, (f) => {
+        if (key === props.ticketKey) openFindings.value = f
+      })
+      .catch(() => {})
+  },
+  { immediate: true },
+)
+provide(REVIEW_ENTRY, {
+  openFindings: (run, task) =>
+    openFindings.value.filter((f) => {
+      const c = parseCandidate(f.candidate)
+      return c?.run === run && c.task === task
+    }).length,
+  href: (candidate) => ({ query: { view: 'review', candidate } }),
+})
 const planRows = inject(TICKET_PLAN_ROWS, null)
 async function afterPalette(f: () => void) {
   palette.close()
@@ -832,8 +868,11 @@ const askBrakeman = computed(() =>
           </p>
         </div>
 
+        <!-- The Review view (RV1) in place of the sections. -->
+        <DispatchReview v-if="reviewView" :ticket-key="ticket.key" :candidate="reviewCandidate" :candidates="candidates" :gate="gate" :reads="reads" :now="now" @candidate="pickReviewCandidate" />
+
         <!-- Its text and history, its properties beside them on a wide screen; on a phone one column, the properties first. -->
-        <div class="flex flex-col gap-6 lg:flex-row lg:items-start">
+        <div v-else class="flex flex-col gap-6 lg:flex-row lg:items-start">
           <div class="flex min-w-0 flex-1 flex-col gap-6">
             <TicketMarkdown :text="ticket.description" label="Description" empty="Add a description…" :max-bytes="MAX_DESCRIPTION" :save="(text, base) => saveText('description', text, base)" :disabled="locked" name="description" :attachment-url="files.resolver.value" />
             <TicketMarkdown :text="ticket.acceptance" label="Acceptance criteria" empty="Add what must hold for it to be done…" :max-bytes="MAX_ACCEPTANCE" :save="(text, base) => saveText('acceptance', text, base)" :disabled="locked" name="acceptance" :attachment-url="files.resolver.value" />

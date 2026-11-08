@@ -287,6 +287,13 @@ export function findingState(marks: ReadonlyArray<{ verdict: 'resolved' | 'open'
   return marks.length ? marks[marks.length - 1]!.verdict : 'open'
 }
 
+/** A candidate the Review view's picker offers: its reference, its words, whether it stands as its task's result. */
+export interface ReviewCandidateOption {
+  value: string
+  label: string
+  standing: boolean
+}
+
 /** A base a candidate's diff may be read against: the commit, and what it is in words. */
 export interface BaseChoice {
   commit: string

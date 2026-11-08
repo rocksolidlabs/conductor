@@ -75,12 +75,14 @@ describe("a ticket's runs' candidates", () => {
     const { c, shown } = await candidates()
     expect(sent.map((s) => [s.run, s.after])).toEqual([['team-0000aaaa', '']])
     expect(c.loading.value).toBe(true)
-    sent[0]!.ok(page('team-0000aaaa', 'build', 'build'))
+    sent[0]!.ok({ ...page('team-0000aaaa', 'build', 'build'), base: 'b'.repeat(40) })
     await tick()
     expect(sent.map((s) => s.after)).toEqual(['', 'build'])
     sent[1]!.ok(page('team-0000aaaa', 'docs'))
     await tick()
     expect(tasksOf(c, 'team-0000aaaa')).toEqual(['build', 'docs'])
+    // The run's base, the Review view's default (RV1), as its first page names it.
+    expect(c.bases.get('team-0000aaaa')).toBe('b'.repeat(40))
     expect([c.loading.value, c.error.value]).toEqual([false, ''])
     // The run moved twice inside the window: one read.
     shown.value = [held1('team-0000aaaa', 's2')]
