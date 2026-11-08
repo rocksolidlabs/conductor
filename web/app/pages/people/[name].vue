@@ -119,6 +119,9 @@ const decisionReads = new SerialReads(() => load(true))
 const stopDecisions = decisionsLive().subscribe(() => void decisionReads.run())
 onBeforeUnmount(() => {
   stopDecisions()
+  // Stopped before the read under way is aborted: its settling would otherwise start the read a decision's change queued behind it,
+  // after the page is gone (Codex's round 2 on #741).
+  decisionReads.stop()
   seq++
   inflight?.abort()
 })

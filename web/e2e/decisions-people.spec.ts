@@ -4,8 +4,9 @@ import { budget, decision, decisionServer, decisionUntil, decisionsOf, makeTicke
 
 // Whom a decision is for (docs/plans/decisions.md, HM1, PR-12), on a server of its own: a crew whose architecture owner is nate and
 // whose acceptance owner is ana; a plan revision proposed through the ticket page with an approval `schema` for the architecture owner
-// before `build` and an assignment `migrate` for ana before `docs` (the For select and the Assignment kind), then revised through the
-// page with only its note changed, the revision read through the API still holding both `for`s; approved and launched; the gates hold
+// before `build` and an assignment `migrate` for ana before `docs` (the For select and the Assignment kind), then, the crew given a
+// security reviewer meanwhile, revised through the page with only its note changed: the reopened dialog reads the crew again, its For
+// select offering the new holder, and the revision read through the API still holds both `for`s; approved and launched; the gates hold
 // both tasks; the card says the operator answers for nate, the architecture owner; the operator approves and the receipt says for whom;
 // `build` starts; ana's page lists her assignment until it is answered Done, and `docs` then starts. Every wait is on the record
 // through the API or on what the page draws.
@@ -20,33 +21,33 @@ let ticket = ''
 let crewId = ''
 let runId = ''
 
+const crewBody = {
+  name: 'e2e decisions people',
+  goal: 'change the schema, once its owner approves',
+  cwd: '',
+  where: 'server',
+  isolation: 'worktree',
+  openAfterLaunch: false,
+  yolo: null,
+  members: [
+    { name: 'builder', agentId: 'worker', prompt: '', start: { when: 'task' } },
+    { name: 'writer', agentId: 'worker-cli', prompt: '', start: { when: 'task' } },
+  ],
+  tasks: [
+    { id: 'build', member: 'builder', kind: 'work', instructions: 'Build it.' },
+    { id: 'docs', member: 'writer', kind: 'work', instructions: 'Write the docs.' },
+  ],
+  people: [
+    { name: 'nate', responsibilities: ['architecture'] },
+    { name: 'ana', responsibilities: ['acceptance'] },
+  ],
+}
+
 test.beforeAll(async () => {
   srv = await decisionServer('decisions-people')
   await stopStrays(srv.api, [])
   ticket = await makeTicket(srv.api, PROJECT, 'Change the schema')
-  crewId = (
-    await srv.api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
-      name: 'e2e decisions people',
-      goal: 'change the schema, once its owner approves',
-      cwd: '',
-      where: 'server',
-      isolation: 'worktree',
-      openAfterLaunch: false,
-      yolo: null,
-      members: [
-        { name: 'builder', agentId: 'worker', prompt: '', start: { when: 'task' } },
-        { name: 'writer', agentId: 'worker-cli', prompt: '', start: { when: 'task' } },
-      ],
-      tasks: [
-        { id: 'build', member: 'builder', kind: 'work', instructions: 'Build it.' },
-        { id: 'docs', member: 'writer', kind: 'work', instructions: 'Write the docs.' },
-      ],
-      people: [
-        { name: 'nate', responsibilities: ['architecture'] },
-        { name: 'ana', responsibilities: ['acceptance'] },
-      ],
-    })
-  ).crew.id
+  crewId = (await srv.api.ok<{ crew: { id: string } }>('POST', '/api/crews', crewBody)).crew.id
 })
 
 test.afterAll(async () => {
@@ -76,7 +77,7 @@ test('a gate for the architecture owner and an assignment for ana: proposed, rev
   const api = srv.api
   const base = srv.started.baseURL
   const page = await operatorPage(browser, srv.started)
-  budget(12 * STEP_MS)
+  budget(17 * STEP_MS)
   await page.goto(`${base}/dispatch/${PROJECT}/1`)
   await expect(page.locator('[data-ticket-title]')).toHaveText('Change the schema', { timeout: 30_000 })
   const plan = page.locator('[data-plan-section]')
@@ -125,11 +126,21 @@ test('a gate for the architecture owner and an assignment for ana: proposed, rev
   const r1 = (await listed()).find((p) => p.n === 1)!.id
   expect(fors(await api.ok<PlanBodyRead>('GET', `/api/dispatch/plans/${r1}`))).toEqual(want)
 
+  // The crew gains a security reviewer while the dialog is closed (as another tab's crew editor would give it one): the same crew,
+  // reopened, is read again, so its For select offers lee, whom the people read when it was first picked did not hold.
+  await api.ok('PUT', `/api/crews/${encodeURIComponent(crewId)}`, { ...crewBody, people: [...crewBody.people, { name: 'lee', responsibilities: ['security'] }] })
+
   // Revised through the page with only its note: the form is filled from revision 1, every decision whole, both fors kept.
   await featured.locator('[data-plan-revise]').click()
   await expect(propose.locator('[data-plan-propose-crew]')).toContainText('e2e decisions people')
   await expect(propose.locator('[data-plan-propose-decision-for="0"]')).toContainText('architecture owner: nate')
   await expect(propose.locator('[data-plan-propose-decision-for="1"]')).toContainText('ana')
+  await propose.locator('[data-plan-propose-decision-for="0"]').click()
+  await expect(page.getByRole('option').filter({ hasText: /^\s*security reviewer: lee\s*$/ })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('listbox')).toHaveCount(0)
+  await expect(propose).toBeVisible()
+  await expect(propose.locator('[data-plan-propose-decision-for="0"]')).toContainText('architecture owner: nate')
   const note = propose.locator('[data-plan-propose-note]')
   await note.fill('Only the note changes.')
   await expect(note).toHaveValue('Only the note changes.')

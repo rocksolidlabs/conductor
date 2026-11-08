@@ -104,7 +104,11 @@ function fill() {
 
 watch(open, (o) => {
   if (!o) return
+  const was = crew.value
   fill()
+  // The same crew as when the dialog last closed: its watch does not fire, so it is read again here, as it is now (its people may have
+  // changed meanwhile, in another tab; Codex's round 2 on #741). Another crew is read by its watch.
+  if (crew.value === was) void readCrew(crew.value)
   void loadCrews()
 })
 // The revised revision's body read while the dialog is open (it was not when it opened): the form is filled from it.
@@ -115,21 +119,26 @@ watch(
   },
 )
 
-// The picked crew's tasks, for the decisions' "before": read in full, since a list's summary carries none.
-watch(crew, async (id) => {
+/** The reads of the picked crew: a reply to one older than the last started is dropped. */
+let crewRead = 0
+// The picked crew's tasks, for the decisions' "before", and its people, for their For: read in full, since a list's summary carries
+// none; read when the crew is picked and on every opening, and used only while the dialog still shows the read that asked for it.
+async function readCrew(id: string | undefined) {
+  const n = ++crewRead
   crewTasks.value = []
   crewPeople.value = null
   if (!id) return
   try {
     const c = await sessions.getCrew(id)
-    if (crew.value === id) {
+    if (n === crewRead && crew.value === id) {
       crewTasks.value = (c.tasks ?? []).map((t) => t.id)
       crewPeople.value = c.people ?? []
     }
   } catch {
     // The proposal says what is wrong with the crew.
   }
-})
+}
+watch(crew, (id) => void readCrew(id))
 
 const parsed = computed(() => refs.value.map((r) => (r.trim() ? parseReference(r) : null)))
 const refErrors = computed(() => parsed.value.map((p) => (p && 'error' in p ? p.error : '')))

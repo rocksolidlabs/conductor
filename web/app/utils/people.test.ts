@@ -361,6 +361,28 @@ describe('boundedRead', () => {
     }
   })
 
+  // The page going while one read is under way and one more queued behind it (two decision events, then unmount): the reads are stopped
+  // before the read under way is aborted, so its settling starts nothing, and no event after it asks for one (Codex's round 2 on #741).
+  it('makes no queued read after the page goes, its read under way aborted', async () => {
+    const ctl = new AbortController()
+    const failed: string[] = []
+    let calls = 0
+    const once = async () => {
+      calls++
+      await boundedRead(() => new Promise<string>(() => {}), PERSON_READ_MS, calls === 1 ? ctl : new AbortController())
+    }
+    const reads = new SerialReads(once, (e) => failed.push(e.message))
+    const first = reads.run()
+    void reads.run()
+    reads.stop()
+    ctl.abort()
+    await first
+    expect(calls).toBe(1)
+    expect(failed).toHaveLength(1)
+    await reads.run()
+    expect(calls).toBe(1)
+  })
+
   it('is given up at once when its caller aborts it, and returns a reply that comes in time', async () => {
     const ctl = new AbortController()
     let seen: AbortSignal | undefined
