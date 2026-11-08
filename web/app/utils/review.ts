@@ -240,7 +240,7 @@ export interface ReviewApplication {
 export function applicationWords(a: ReviewApplication, task: string, commit: string): { title: string; detail: string; tone: 'success' | 'warning' | 'error' | 'muted' } {
   switch (a.state) {
     case 'applied':
-      return { title: 'Applied by Yardmaster', detail: `In run ${a.run}: ${task} reopened, its attempt ${a.attempt} starts at ${shortCommit(commit)} (command ${a.command}, revision ${a.revision}).`, tone: 'success' }
+      return { title: 'Applied by Yardmaster', detail: `In run ${a.run}: ${task} reopened at ${shortCommit(commit)}, its attempt ${a.attempt} takes up the request (command ${a.command}, revision ${a.revision}).`, tone: 'success' }
     case 'refused':
       return { title: 'Refused by Yardmaster', detail: a.why || 'Nothing was changed.', tone: 'error' }
     case 'pending':

@@ -137,7 +137,7 @@ describe('words', () => {
   it("say a review's application as separate facts", () => {
     expect(applicationWords({ state: 'applied', run: 'r1', command: 'rv.x.1', revision: 9, attempt: 2 }, 'build', C)).toEqual({
       title: 'Applied by Yardmaster',
-      detail: 'In run r1: build reopened, its attempt 2 starts at aaaaaaaaaaaa (command rv.x.1, revision 9).',
+      detail: 'In run r1: build reopened at aaaaaaaaaaaa, its attempt 2 takes up the request (command rv.x.1, revision 9).',
       tone: 'success',
     })
     expect(applicationWords({ state: 'refused', why: 'the result is now attempt 4' }, 'build', C)).toMatchObject({ title: 'Refused by Yardmaster', detail: 'the result is now attempt 4', tone: 'error' })
