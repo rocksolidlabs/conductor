@@ -706,10 +706,23 @@ const (
 var PlanStates = []string{PlanProposed, PlanApproved, PlanSuperseded, PlanWithdrawn}
 
 // The kinds of a decision a revision names: an approval a person gives
-// before the tasks that wait on it, or a clarification a person answers.
+// before the tasks that wait on it, a clarification a person answers, or
+// an assignment, work a person does by hand before the tasks it names,
+// answered Done or Not done (docs/plans/decisions.md, HM1).
 const (
 	DecisionApproval      = "approval"
 	DecisionClarification = "clarification"
+	DecisionAssignment    = "assignment"
+)
+
+// The two kinds of label a decision's For names a person by: a
+// responsibility of the revision's crew (role:architecture) or a person of
+// it (person:nate). The store checks the shape only: internal/api resolves
+// the label in the revision's crew (crew.Holder), the one list of the
+// responsibilities.
+const (
+	DecisionForRole   = "role:"
+	DecisionForPerson = "person:"
 )
 
 // The kinds of the git object a reference names at a revision's base.
@@ -833,14 +846,18 @@ type PlanComment struct {
 }
 
 // PlanDecision is a decision a person will make: an id of a task id's
-// shape, the question, its kind (DecisionApproval, DecisionClarification)
-// and the tasks of the crew that wait on it. Recorded and shown; Program
-// item DR1's durable decisions will hold the work.
+// shape, the question, its kind (DecisionApproval, DecisionClarification,
+// DecisionAssignment), the tasks of the crew that wait on it, and whom it
+// is for (For: role:<responsibility> or person:<name>, empty for the
+// operator alone; omitted when empty, so an older body's digest is
+// unchanged). A launch's run holds the tasks until the operator answers it
+// (Program item DR1), for whom For names (HM1).
 type PlanDecision struct {
 	ID       string   `json:"id"`
 	Question string   `json:"question"`
 	Kind     string   `json:"kind"`
 	Before   []string `json:"before"`
+	For      string   `json:"for,omitempty"`
 }
 
 // PlanSummary is a plan revision as a list shows it, never with its body:

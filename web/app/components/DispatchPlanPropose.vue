@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import type { DispatchTicket, NewPlan, NewPlanReference, PlanBody, PlanDecision, PlanSummary } from '~/composables/useDispatch'
-import type { CrewSummary } from '~/composables/useSessions'
+import type { CrewPerson, CrewSummary } from '~/composables/useSessions'
 import type { TicketPlans } from '~/composables/useTicketPlans'
 import { commentAuthor } from '~/utils/dispatch'
-import { PLAN_BOUNDS, decisionsProblem, keptComments, nextDecisionId, parseReference, referenceText, revisionTag, shortCommit } from '~/utils/dispatchPlans'
+import { FOR_NONE, PLAN_BOUNDS, decisionsProblem, forItems, keptComments, nextDecisionId, parseReference, planDecisionsOut, referenceText, revisionTag, shortCommit } from '~/utils/dispatchPlans'
 
 /**
  * Proposing a plan revision of a ticket (Program item DS2, docs/plans/dispatch-evidence.md, "web/app"): a saved crew with tasks, taken
@@ -32,6 +32,8 @@ const crewsError = ref('')
 const crew = ref<string | undefined>(undefined)
 /** The picked crew's task ids, for the decisions' "before". */
 const crewTasks = ref<string[]>([])
+/** The picked crew's people, for the decisions' For (HM1); null until the crew is read. */
+const crewPeople = ref<CrewPerson[] | null>(null)
 const base = ref('')
 const refs = ref<string[]>([])
 const attachments = ref<string[]>([])
@@ -102,7 +104,11 @@ function fill() {
 
 watch(open, (o) => {
   if (!o) return
+  const was = crew.value
   fill()
+  // The same crew as when the dialog last closed: its watch does not fire, so it is read again here, as it is now (its people may have
+  // changed meanwhile, in another tab; Codex's round 2 on #741). Another crew is read by its watch.
+  if (crew.value === was) void readCrew(crew.value)
   void loadCrews()
 })
 // The revised revision's body read while the dialog is open (it was not when it opened): the form is filled from it.
@@ -113,17 +119,26 @@ watch(
   },
 )
 
-// The picked crew's tasks, for the decisions' "before": read in full, since a list's summary carries none.
-watch(crew, async (id) => {
+/** The reads of the picked crew: a reply to one older than the last started is dropped. */
+let crewRead = 0
+// The picked crew's tasks, for the decisions' "before", and its people, for their For: read in full, since a list's summary carries
+// none; read when the crew is picked and on every opening, and used only while the dialog still shows the read that asked for it.
+async function readCrew(id: string | undefined) {
+  const n = ++crewRead
   crewTasks.value = []
+  crewPeople.value = null
   if (!id) return
   try {
     const c = await sessions.getCrew(id)
-    if (crew.value === id) crewTasks.value = (c.tasks ?? []).map((t) => t.id)
+    if (n === crewRead && crew.value === id) {
+      crewTasks.value = (c.tasks ?? []).map((t) => t.id)
+      crewPeople.value = c.people ?? []
+    }
   } catch {
     // The proposal says what is wrong with the crew.
   }
-})
+}
+watch(crew, (id) => void readCrew(id))
 
 const parsed = computed(() => refs.value.map((r) => (r.trim() ? parseReference(r) : null)))
 const refErrors = computed(() => parsed.value.map((p) => (p && 'error' in p ? p.error : '')))
@@ -148,7 +163,14 @@ function toggle(which: 'attachments' | 'comments', id: string, on: boolean | 'in
 const kindItems = [
   { label: 'Approval', value: 'approval' },
   { label: 'Clarification', value: 'clarification' },
+  { label: 'Assignment', value: 'assignment' },
 ]
+/** Whom each decision may be for: the picked crew's responsibilities and people, and any label a row holds that it does not resolve. */
+const forOptions = computed(() => forItems(crewPeople.value ?? [], decisions.value.map((d) => d.for ?? '')))
+function setFor(d: PlanDecision, v: string) {
+  if (v === FOR_NONE || !v) delete d.for
+  else d.for = v
+}
 
 const blocked = computed(() => {
   if (waiting.value) return `Revision ${props.from!.revision.n} is not read yet`
@@ -156,7 +178,7 @@ const blocked = computed(() => {
   if (refErrors.value.some((e) => e)) return 'A reference is not one'
   if (attachments.value.length > PLAN_BOUNDS.attachments) return `At most ${PLAN_BOUNDS.attachments} attachments`
   if (comments.value.length > PLAN_BOUNDS.comments) return `At most ${PLAN_BOUNDS.comments} comments`
-  return decisionsProblem(decisions.value)
+  return decisionsProblem(decisions.value, crewPeople.value, crew.value)
 })
 
 async function submit() {
@@ -169,7 +191,7 @@ async function submit() {
   if (attachments.value.length) req.attachments = [...attachments.value]
   if (comments.value.length) req.comments = [...comments.value]
   if (constraints.value.trim()) req.constraints = constraints.value
-  if (decisions.value.length) req.decisions = decisions.value.map((d) => ({ id: d.id.trim(), question: d.question.trim(), kind: d.kind, before: [...d.before] }))
+  if (decisions.value.length) req.decisions = planDecisionsOut(decisions.value)
   if (note.value.trim()) req.note = note.value
   sending.value = true
   error.value = ''
@@ -252,7 +274,7 @@ async function submit() {
         <div class="flex flex-col gap-1.5">
           <div class="flex items-center gap-2">
             <span class="text-xs font-medium text-muted">Decisions a person makes</span>
-            <span class="text-xs text-dimmed">each holds the tasks it names until the operator answers</span>
+            <span class="text-xs text-dimmed">each holds the tasks it names until the operator answers, for whom it names</span>
             <div class="flex-1" />
             <UButton v-if="decisions.length < PLAN_BOUNDS.decisions" label="Add" icon="i-lucide-plus" size="xs" color="neutral" variant="ghost" data-plan-propose-decision-add @click="addDecision" />
           </div>
@@ -261,6 +283,7 @@ async function submit() {
             <USelect v-model="d.kind" :items="kindItems" size="sm" class="sm:w-36" aria-label="Its kind" />
             <UInput v-model="d.question" :maxlength="PLAN_BOUNDS.decisionQuestion" placeholder="The question…" class="min-w-0 flex-1" size="sm" aria-label="The question" />
             <USelectMenu v-model="d.before" :items="crewTasks" multiple placeholder="Before tasks…" size="sm" class="sm:w-40" aria-label="The tasks that wait on it" />
+            <USelect :model-value="d.for || FOR_NONE" :items="forOptions" size="sm" class="sm:w-44" aria-label="Whom it is for" :data-plan-propose-decision-for="i" @update:model-value="(v) => setFor(d, String(v))" />
             <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" :aria-label="`Remove decision ${i + 1}`" @click="removeDecision(i)" />
           </div>
         </div>

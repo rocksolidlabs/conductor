@@ -326,6 +326,31 @@ operator; after each commit the server sends the `decision` event and
 notification and tells the decision router (`ext.DecisionRouter`) of
 the record.
 
+A crew may list **people** beside its members (HM1, `people.go`): local
+labels, never started (no session, worktree, launch slot or agent token),
+each holding at most one of four responsibilities in the crew
+(architecture owner, product owner, security reviewer, acceptance
+owner), and a task may name its accountable owner, falling back to the
+acceptance owner (`TaskOwner`). A run keeps its people as its chain's
+launch row keeps the crew, and an attempt's task file says who answers
+for the work. A decision names whom it is for, `role:<responsibility>`
+or `person:<name>`: a plan revision's decision in its body, which the
+proposal resolves against the crew it takes and the launch hands the
+engine beside the package, never in it (`crew.Planned.For`, so the
+package stays the version every build reads; a gate asked again reads
+the label from the record of the decision it follows), and an agent's
+in its request. `Holder` resolves the label over the run's crew as launched in
+the transaction that opens the decision, and the request keeps the
+person it named (`for`), so a later edit of the saved crew changes
+nothing about it; a route to a person or a responsibility
+(`RouteDecision`) changes it only while the decision is open, at the rev
+read, bumping the rev, so a response is always for the person the rev
+it read named. The operator still answers every decision under
+`local/1` (decision D4); the receipt keeps whom it answered for beside
+who answered, and the typed line and the task file say both. A person's
+page lists the decisions for them (the ledger's filter on
+`$.for.person`).
+
 A managed crew may carry a **project manifest** (EN1, `manifest.go`): what
 makes a fresh tree of the project usable, how it is checked and how it is
 cleaned up. It is not an agent's recipes, which are the catalog's. It is

@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ApiError } from '~/composables/useApi'
 import type { PersonWork } from '~/composables/usePeople'
+import { SerialReads, decisionsLive } from '~/composables/useDecisions'
 import { avatarTone } from '~/utils/avatar'
 import { responsibilityWords } from '~/utils/crews'
 import { statusWord, ticketPath } from '~/utils/dispatch'
-import { ownedHow, personFromSegment, personLists, readTicketsPage, type PersonTicketList } from '~/utils/people'
+import { boundedRead, freshTicketLists, keepsTicketLists, ownedHow, PERSON_READ_MS, personFromSegment, personLists, readTicketsPage, type PersonTicketList } from '~/utils/people'
 import { initials } from '~/utils/sessions'
 
 /**
@@ -12,7 +13,8 @@ import { initials } from '~/utils/sessions'
  * answer for. The crews where they hold a responsibility, the tasks they own in the runs the server holds and the managed runs' records
  * (as each run's crew was launched, so a person removed from the saved crew since keeps that run's tasks here), and Dispatch's tickets
  * they own or are assigned (the counts, then each list a page at a time, "Show more" reading the next by its cursor). The work is shown
- * as soon as it is read, and each ticket list is read on its own after it. Every list is read and holding rows, read and empty, or not
+ * as soon as it is read, and each ticket list is read on its own after it. The decisions for them (PR-12), open and answered, each with
+ * its card and Answer opening the app's decision modal. Every list is read and holding rows, read and empty, or not
  * read, wholly or in part (`personLists`): one not read whole says so in its place, its rows read kept, and the rest of the page stays.
  * Read as the page opens and when the workbench token changes; nothing polls. One column on a phone.
  */
@@ -36,22 +38,36 @@ const loading = ref(false)
 const lists = ref<PersonTicketList[]>([])
 const reading = ref<Record<string, boolean>>({})
 
+/** The reads of the work: a reply to one older than the last started is dropped. */
 let seq = 0
+/** The ticket lists' generation, and whom and which tickets they were started from: a read that keeps them leaves their pages alone. */
+let listSeq = 0
+let listsFor: string | null = null
+let listsFrom: PersonWork['tickets'] | undefined
+/** The read of the work under way, aborted when a newer one starts or the page goes. */
+let inflight: AbortController | null = null
 
-/** Reads the next page of one list (again, after a failed read), while the page still shows the work it was read for. */
+/** Reads the next page of one list (again, after a failed read), while the page still shows the lists it was read for. */
 async function more(list: PersonTicketList): Promise<void> {
-  const n = seq
+  const n = listSeq
   reading.value = { ...reading.value, [list.id]: true }
-  await readTicketsPage(list, (q) => api.tickets(q), () => n === seq)
-  if (n === seq) reading.value = { ...reading.value, [list.id]: false }
+  await readTicketsPage(list, (q) => api.tickets(q), () => n === listSeq)
+  if (n === listSeq) reading.value = { ...reading.value, [list.id]: false }
 }
 
-async function load(): Promise<void> {
+/**
+ * Reads the person's work, bounded (`PERSON_READ_MS`, `boundedRead`): a read that gets no reply is aborted and says so, so the reads a
+ * decision's change queues after it (`SerialReads`) are made. One made for a decision's change (`decisionsOnly`) keeps the ticket lists
+ * and the pages read of them (`keepsTicketLists`); any other starts them again.
+ */
+async function load(decisionsOnly = false): Promise<void> {
   if (!admin.hasToken.value) {
     admin.needsToken.value = true
     return
   }
   const n = ++seq
+  inflight?.abort()
+  inflight = null
   const who = named.value
   if (who === null) {
     missing.value = true
@@ -61,19 +77,19 @@ async function load(): Promise<void> {
     return
   }
   loading.value = true
+  const ctl = new AbortController()
+  inflight = ctl
   try {
-    const w = await people.person(who)
+    const w = await boundedRead((signal) => people.person(who, signal), PERSON_READ_MS, ctl)
     if (n !== seq) return
     work.value = w
     missing.value = false
     error.value = ''
-    const t = w.tickets
-    lists.value = t
-      ? [
-          { id: 'owner' as const, label: 'Owned', href: t.ownerHref, total: t.owner, tickets: [], read: false, error: '' },
-          { id: 'assignee' as const, label: 'Assigned', href: t.assigneeHref, total: t.assignee, tickets: [], read: false, error: '' },
-        ].filter((l) => l.total)
-      : []
+    if (keepsTicketLists(decisionsOnly, listsFor, who, listsFrom, w.tickets)) return
+    listSeq++
+    listsFor = who
+    listsFrom = w.tickets
+    lists.value = freshTicketLists(w.tickets)
     reading.value = {}
     // Each list on its own, after the work is shown: one that fails says so in its place.
     for (const list of lists.value) void more(list)
@@ -87,12 +103,28 @@ async function load(): Promise<void> {
       error.value = (e as Error).message
     }
   } finally {
-    if (n === seq) loading.value = false
+    if (n === seq) {
+      loading.value = false
+      if (inflight === ctl) inflight = null
+    }
   }
 }
 
-onMounted(load)
-watch([() => admin.token.value, name], load)
+onMounted(() => load())
+watch([() => admin.token.value, name], () => load())
+// A decision changed (answered, applied, routed, opened): their page is read again, one read at a time, so a decision answered for them
+// leaves it and one opened for them comes (the app's one events stream, useDecisions); the ticket lists, which no decision changes,
+// keep the pages read of them.
+const decisionReads = new SerialReads(() => load(true))
+const stopDecisions = decisionsLive().subscribe(() => void decisionReads.run())
+onBeforeUnmount(() => {
+  stopDecisions()
+  // Stopped before the read under way is aborted: its settling would otherwise start the read a decision's change queued behind it,
+  // after the page is gone (Codex's round 2 on #741).
+  decisionReads.stop()
+  seq++
+  inflight?.abort()
+})
 
 function stateColor(state: string): 'success' | 'error' | 'neutral' | 'info' | 'primary' {
   switch (state) {
@@ -108,6 +140,12 @@ function stateColor(state: string): 'success' | 'error' | 'neutral' | 'info' | '
   return 'neutral'
 }
 const read = computed(() => (work.value ? personLists(work.value) : null))
+const decisionModal = useDecisionModal()
+/** The cards' clock: their times are relative ("5 minutes ago"). */
+const now = ref(Date.now())
+let tick: number | undefined
+onMounted(() => (tick = window.setInterval(() => (now.value = Date.now()), 5000)))
+onBeforeUnmount(() => window.clearInterval(tick))
 const taskPath = (run: string, task: string) => `/runs/${encodeURIComponent(run)}?view=tasks&task=${encodeURIComponent(task)}`
 </script>
 
@@ -157,6 +195,20 @@ const taskPath = (run: string, task: string) => `/runs/${encodeURIComponent(run)
             <p v-else-if="read.tasks.state === 'empty'" class="text-sm text-dimmed">They own no task of a run the server holds.</p>
             <p v-if="read.tasks.unread" class="text-sm text-warning" data-person-list-unread="tasks">{{ read.tasks.unread }}</p>
             <p v-if="work.more" class="text-xs text-dimmed">The newest 200 are shown.</p>
+          </section>
+
+          <section class="flex flex-col gap-2" data-person-decisions>
+            <h2 class="text-xs font-semibold uppercase tracking-wide text-muted">Decisions for them</h2>
+            <p class="text-xs text-dimmed">The operator answers each for them; the answer's receipt keeps who answered and for whom.</p>
+            <ul v-if="work.decisions.length" class="flex flex-col gap-3">
+              <li v-for="d in work.decisions" :key="d.id" class="flex min-w-0 flex-col gap-2 rounded-md border border-default p-3" :data-person-decision="d.id">
+                <DecisionCard :decision="d" :now="now" />
+                <UButton :label="d.state === 'open' ? 'Answer' : 'Show'" size="xs" :color="d.state === 'open' ? 'warning' : 'neutral'" variant="soft" class="w-fit" :data-person-decision-open="d.id" @click="decisionModal.open(d.id)" />
+              </li>
+              <li v-if="work.decisionsMore" class="text-xs text-dimmed">The newest 100 are shown.</li>
+            </ul>
+            <p v-else-if="!work.decisionsUnavailable" class="text-sm text-dimmed" data-person-decisions-none>No decision waits for them.</p>
+            <p v-if="work.decisionsUnavailable" class="text-sm text-warning" data-person-list-unread="decisions">The decisions could not be read: one for them may not be shown.</p>
           </section>
 
           <section class="flex flex-col gap-2" data-person-tickets>
