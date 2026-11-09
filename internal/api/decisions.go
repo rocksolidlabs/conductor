@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/crew"
@@ -30,9 +30,13 @@ import (
 // The decisions' bounds (docs/protocol.md, Decisions).
 const (
 	// maxDecisionRequestBody bounds a request's body, maxDecisionAnswerBody
-	// a response's and an operation's.
+	// an operation's, and maxDecisionRespondBody a response's: its fields
+	// at their bounds as encoding/json sends them, a text of 4,096 bytes
+	// that escape to six each among them, as proto.MaxDecide bounds the
+	// same fields on a link (#751).
 	maxDecisionRequestBody = 24 << 10
 	maxDecisionAnswerBody  = 8 << 10
+	maxDecisionRespondBody = 32 << 10
 	// maxDecisionSummaryText bounds a summary's question, answer and why,
 	// each as encoded, maxDecisionSummary a summary, and
 	// maxDecisionSummaryPage a page of them (maxDecisionsListed), under
@@ -43,15 +47,20 @@ const (
 	maxDecisionsListed     = ledger.MaxDecisionsPage
 	// maxDecisionReply bounds GET /api/decisions/{did}: the record whole
 	// (its request, baseline, receipts, history and application at their
-	// bounds) and its refs, each at most maxDecisionRef as encoded, its
-	// escapes counted (fitRef).
-	maxDecisionReply = 1 << 20
+	// bounds, its 32 receipts at ledger.MaxDecisionReceipt) and its refs,
+	// each at most maxDecisionRef as encoded, its escapes counted (fitRef).
+	maxDecisionReply = 2 << 20
 	maxDecisionRef   = 4 << 10
 	// maxDecisionListed bounds a record as the operator's lists give it
-	// (listedOf: its request, baseline, policy, application, why and
-	// answer at their bounds), and maxDecisionListPage a page of them
-	// (GET /api/decisions, a ticket's decisions; TestTheOperatorsDecisionListFitsItsBound).
-	maxDecisionListed   = 48 << 10
+	// (listedOf), the sum of its parts at their encoded worst cases: its
+	// request, baseline, policy and application as encoded, its why
+	// (bounded in bytes) and its answer (a label of 80 characters, ": "
+	// and a text of 4,096 bytes) of characters that escape to six bytes
+	// each (#751), and its other fields, 914 bytes at their widths; and
+	// maxDecisionListPage a page of them (GET /api/decisions, a ticket's
+	// decisions; TestTheOperatorsDecisionListFitsItsBound).
+	maxDecisionListed = ledger.MaxDecisionRequest + ledger.MaxDecisionBaseline + ledger.MaxDecisionPolicy + ledger.MaxDecisionApplied +
+		6*(ledger.MaxDecisionWhy+ledger.MaxOptionLabel+ext.MaxAnswerText) + len(": ") + 914
 	maxDecisionListPage = maxDecisionsListed*maxDecisionListed + 1<<10
 	// maxDecisionEvent bounds a decision event's data.
 	maxDecisionEvent = 256
@@ -68,7 +77,9 @@ func (s *Server) routeDecisions(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/decisions/{did}/respond", s.launching(s.handleDecisionRespond))
 	mux.HandleFunc("POST /api/decisions/{did}/cancel", s.launching(s.handleDecisionCancel))
 	mux.HandleFunc("POST /api/decisions/{did}/comment", s.launching(s.handleDecisionComment))
-	mux.HandleFunc("POST /api/decisions/{did}/route", s.launching(s.handleDecisionRoute))
+	// A Brakeman turn granted route_decision is taken here too (actable):
+	// its act runs this route's one operation under the actor brakeman.
+	mux.HandleFunc(decisionRoutePattern, s.actable(decisionRoutePattern, s.launching(s.handleDecisionRoute)))
 	mux.HandleFunc("GET /api/dispatch/tickets/{key}/decisions", s.launching(s.handleTicketDecisions))
 }
 
@@ -478,37 +489,11 @@ func summaryOf(row ledger.DecisionRow, answer string) decisionSummary {
 		sum.ClosedAt = &at
 	}
 	for _, f := range []*string{&sum.Question, &sum.Answer, &sum.Why} {
-		if c := cutEncoded(*f, maxDecisionSummaryText); c != *f {
+		if c := crew.CutEncoded(*f, maxDecisionSummaryText); c != *f {
 			*f, sum.Cut = c, true
 		}
 	}
 	return sum
-}
-
-// cutEncoded is s cut where a character ends to at most n bytes as
-// writeJSON encodes it: a character JSON escapes counts as its escape
-// (a control character, <, > and & six bytes, " and \ two, U+2028 and
-// U+2029 six, a byte that is not UTF-8 six, as �).
-func cutEncoded(s string, n int) string {
-	size := 0
-	for i := 0; i < len(s); {
-		c, w := utf8.DecodeRuneInString(s[i:])
-		enc := w
-		switch {
-		case c == utf8.RuneError && w == 1:
-			enc = 6
-		case c == '"' || c == '\\' || c == '\n' || c == '\r' || c == '\t':
-			enc = 2
-		case c < 0x20 || c == '<' || c == '>' || c == '&' || c == '\u2028' || c == '\u2029':
-			enc = 6
-		}
-		if size+enc > n {
-			return s[:i]
-		}
-		size += enc
-		i += w
-	}
-	return s
 }
 
 // handleDecisions lists the decisions the query names, newest first,
@@ -595,7 +580,7 @@ func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDecisionRespond(w http.ResponseWriter, r *http.Request) {
 	did := r.PathValue("did")
 	var resp crew.Response
-	if err := decodeJSONLimit(w, r, &resp, maxDecisionAnswerBody); err != nil {
+	if err := decodeJSONLimit(w, r, &resp, maxDecisionRespondBody); err != nil {
 		writeError(w, http.StatusBadRequest, crew.CodeInvalid, err.Error())
 		return
 	}
@@ -756,18 +741,29 @@ func (s *Server) handleDecisionRoute(w http.ResponseWriter, r *http.Request) {
 
 // addRunDecisions adds to the reply of a run's read (task "") or a
 // task's the summaries of the decisions the run or the task holds, newest
-// first, at most maxDecisionsListed, for the admin alone (a Brakeman
-// turn's shared read of the run carries none: its decisions are BK2's):
-// decisionsNext, the last id, when more follow (GET /api/decisions?run=
-// &after= reads on), and decisionsUnread, with no list, when the ledger
-// could not be read, which is logged. Nothing without a ledger or with no
-// decision.
-func (s *Server) addRunDecisions(r *http.Request, reply map[string]any, run, task string) {
-	if p, _ := r.Context().Value(principalKey{}).(principal); s.ledger == nil || !p.admin {
+// first, at most maxDecisionsListed, older than before when it is not 0
+// (the read's ?decisionsAfter=, decisionsAfter), for the admin and for a
+// Brakeman turn's shared read of the run, which turnRead admitted by its
+// scope and whose filter gives each its ref (decisionRefs: what a
+// route_decision act reads its decision's rev from, BK2). A turn's read
+// lists only the decisions open, the ones it may route (admitRoute), so
+// no page of closed ones hides an older open one from it; the admin's
+// lists them all. decisionsNext, the last id, when more follow (the same
+// read with ?decisionsAfter= reads on, the turn's as the admin's), and
+// decisionsUnread, with no list, when the ledger could not be read, which
+// is logged. Nothing without a ledger or with no decision.
+func (s *Server) addRunDecisions(r *http.Request, reply map[string]any, run, task string, before int64) {
+	p, _ := r.Context().Value(principalKey{}).(principal)
+	turn := turnReading(r)
+	if s.ledger == nil || !p.admin && !turn {
 		return
 	}
 	ctx := r.Context()
-	rows, next, err := decisionRows(ctx, s.ledger, ledger.DecisionFilter{CurrentRun: run, Task: task, Limit: maxDecisionsListed})
+	f := ledger.DecisionFilter{CurrentRun: run, Task: task, Before: before, Limit: maxDecisionsListed}
+	if turn {
+		f.States = []string{ledger.DecisionOpen}
+	}
+	rows, next, err := decisionRows(ctx, s.ledger, f)
 	var out []decisionSummary
 	if err == nil {
 		out, err = s.decisionSummaries(ctx, rows)
@@ -782,6 +778,34 @@ func (s *Server) addRunDecisions(r *http.Request, reply map[string]any, run, tas
 			reply["decisionsNext"] = next
 		}
 	}
+}
+
+// decisionsAfter is a run's or a task's read's ?decisionsAfter=, the
+// decisionsNext of the page before: 0 when the query names none, false
+// once it has answered 400 for one that is not a decision's id. The
+// read's other parameters are not its to judge.
+func decisionsAfter(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	if !strings.Contains(r.URL.RawQuery, "decisionsAfter") {
+		return 0, true
+	}
+	q, err := parseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return 0, false
+	}
+	v, ok := q["decisionsAfter"]
+	if !ok {
+		return 0, true
+	}
+	n, valid := int64(0), len(v) == 1
+	if valid {
+		n, valid = ledger.ParseDecisionID(v[0])
+	}
+	if !valid {
+		writeError(w, http.StatusBadRequest, "invalid_request", "decisionsAfter is a decision's id, dr-N, once")
+		return 0, false
+	}
+	return n, true
 }
 
 // decisionEvent is the data of a `decision` event: a decision changed,

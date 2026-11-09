@@ -55,24 +55,23 @@ type actRoute struct {
 }
 
 // actRoutes is the routes each granted operation is sent to, by pattern.
-// request_repair (RV1's request changes on a candidate) and
-// route_decision (DR1's routing of a decision record) have no route in
-// this build: neither can be granted (actServed).
+// request_repair (RV1's request changes on a candidate) has no route in
+// this build: it cannot be granted (actServed). route_decision is DR1's
+// routing route (brakeman_act_decision.go).
 var actRoutes = map[string]actRoute{
 	"POST /api/dispatch/tickets/{key}/launch": {op: brakeman.ActLaunchApprovedPlan, bound: maxTicketLaunchBody},
 	"POST /api/dispatch/tickets/{key}/plans":  {op: brakeman.ActPrepareFollowup, bound: maxTicketBody},
+	decisionRoutePattern:                      {op: brakeman.ActRouteDecision, bound: maxDecisionAnswerBody},
 }
 
 // actServed answers nil for a granted operation whose route this build
 // serves, else why not (brakeman.Facts.ServesAct).
 func actServed(op string) error {
 	switch op {
-	case brakeman.ActLaunchApprovedPlan, brakeman.ActPrepareFollowup:
+	case brakeman.ActLaunchApprovedPlan, brakeman.ActPrepareFollowup, brakeman.ActRouteDecision:
 		return nil
 	case brakeman.ActRequestRepair:
 		return errors.New("RV1's request for changes on a candidate is not served by this build")
-	case brakeman.ActRouteDecision:
-		return errors.New("DR1's decision records, whose routing it is, are not served by this build")
 	}
 	return fmt.Errorf("no operation %s", op)
 }
@@ -163,6 +162,11 @@ type actBody struct {
 // only while the desk is open (beginAct, 503 shutting_down otherwise), and
 // the shutdown waits for it before the server's runs are stopped.
 func (s *Server) turnAct(w http.ResponseWriter, r *http.Request, tp *turnPrincipal, ar actRoute) {
+	if ar.op == brakeman.ActRouteDecision {
+		// DR1's record in Dispatch's place (brakeman_act_decision.go).
+		s.turnRoute(w, r, tp, ar)
+		return
+	}
 	d := s.brakeman
 	ds, ok := s.dispatchWriter(w)
 	if !ok {
@@ -798,6 +802,9 @@ func cutWhy(why string) string {
 // the operation never committed, and the entry is marked not_run, never
 // run by the recovery (its turn has ended, and the grant was that turn's).
 func (s *Server) completeAct(ctx context.Context, d *brakemanDesk, request string, a brakeman.Act) error {
+	if a.Operation == brakeman.ActRouteDecision {
+		return s.completeRoute(ctx, d, request, a)
+	}
 	ds := s.dispatch
 	if ds == nil {
 		return &errRefStore{what: "Dispatch's store"}

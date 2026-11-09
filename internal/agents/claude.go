@@ -131,6 +131,19 @@ func claudeAdapter() Adapter {
 		ReadOnlyArgs: func() []string {
 			return []string{"--tools=" + strings.Join(claudeReadTools, ","), "--disallowedTools=" + strings.Join(claudeWriteTools, ","), "--strict-mcp-config"}
 		},
+		// Checked against `claude --help` (2.1.319: "--add-dir
+		// <directories...> Additional directories to allow tool access to")
+		// and by the recipes tier; one = form a folder, as the option takes a
+		// list and would read a following word as one of its folders.
+		ReadDirArgs: func(dirs []string) []string {
+			var args []string
+			for _, d := range dirs {
+				if filepath.IsAbs(d) {
+					args = append(args, "--add-dir="+d)
+				}
+			}
+			return args
+		},
 		ModelArgs: func(model string) []string {
 			if model == "" {
 				return nil

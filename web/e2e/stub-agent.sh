@@ -41,8 +41,11 @@
 #                   its question (notify --state needs_input), before the gate.
 #                   Before the brief, once the gate is open, it runs the act
 #                   STUB_BRAKEMAN_ACT's file names when it holds one
-#                   ("OPERATION KEY", its body the JSON file beside it,
-#                   <file>.body): conductor brakeman act, or the act tool;
+#                   ("OPERATION KEY [PARAM]", its body the JSON file beside
+#                   it, <file>.body; a run id in <file>.run is read first,
+#                   and @REV in the body and the brief is the rev that read
+#                   lists for the decision KEY names):
+#                   conductor brakeman act, or the act tool;
 #                   what the server answered, taken or refused, is written to
 #                   <file>.out and the brief is submitted either way
 # $HOME/.codex/stub-hooks-review present: "Hooks need review" is drawn at
@@ -835,7 +838,7 @@ stub_decision() {
 # fails ends the turn with status 1 and its words in brakeman_why. What it
 # read and what the server answered go into the transcript.
 brakeman_turn() {
-	local req=$1 got changes brief reply evidence n=0 ok=1
+	local req=$1 got changes brief reply evidence n=0 ok=1 actrev=
 	case ${STUB_WORKER:-} in
 	mcp)
 		got=$(mcp_call brakeman_request '{}')
@@ -881,6 +884,19 @@ brakeman_turn() {
 		esac
 		printf 'brakeman: %s: read the ticket %s\n' "$req" "$STUB_BRAKEMAN_TICKET" >>"$transcript"
 	fi
+	if [[ -n ${STUB_BRAKEMAN_ACT:-} && -s $STUB_BRAKEMAN_ACT.run ]]; then
+		# The run a spec's act changes (a decision's route), read before the
+		# act as the turn's read of what it proposes: its decisions, each
+		# with its ref and rev, give the rev the act and the proposal name
+		# (@REV) for the decision the act's KEY names.
+		local actrun actop actkey runread re
+		actrun=$(<"$STUB_BRAKEMAN_ACT.run")
+		read -r actop actkey _ <"$STUB_BRAKEMAN_ACT"
+		runread=$("$conductor" brakeman observe run --run "$actrun" 2>&1)
+		re="\"ref\":\"decision:${actkey}\",\"rev\":([0-9]+)"
+		[[ $runread =~ $re ]] && actrev=${BASH_REMATCH[1]}
+		printf 'brakeman: %s: read the run %s: %s at rev %s\n' "$req" "$actrun" "$actkey" "${actrev:-none}" >>"$transcript"
+	fi
 	if [[ -n ${STUB_BRAKEMAN_ACT:-} && -s $STUB_BRAKEMAN_ACT ]]; then
 		brakeman_act "$req"
 	fi
@@ -889,6 +905,7 @@ brakeman_turn() {
 	[[ -n ${STUB_BRAKEMAN_CHECK:-} ]] && evidence+=",$(json_str "$STUB_BRAKEMAN_CHECK")"
 	if [[ -n ${STUB_BRAKEMAN_BRIEF:-} && -s $STUB_BRAKEMAN_BRIEF ]]; then
 		brief=$(<"$STUB_BRAKEMAN_BRIEF")
+		[[ -n $actrev ]] && brief=${brief//@REV/$actrev}
 	else
 		brief="{\"schema\":\"brakeman.brief/1\",\"title\":\"Stub brief for $req\",\"summary\":\"The stub read its request and what changed, and found its own turn.\",\"items\":[{\"kind\":\"fact/1\",\"text\":\"This turn runs as its own session and run.\",\"evidence\":[$evidence]},{\"kind\":\"interpretation/1\",\"text\":\"Nothing else happened that the stub was asked about.\",\"facts\":[0]}]}"
 	fi
@@ -911,23 +928,27 @@ brakeman_turn() {
 }
 
 # brakeman_act runs the act STUB_BRAKEMAN_ACT's file names for request $1:
-# its one line is "OPERATION KEY", its body the JSON in <file>.body. The
+# its one line is "OPERATION KEY [PARAM]" (PARAM the route's path parameter
+# KEY fills, key unless named: did for a decision's route), its body the
+# JSON in <file>.body. The
 # answer (the command's words, or the tool's reply line), taken or refused,
 # goes to <file>.out, written whole by a rename, and into the transcript; a
 # refusal does not end the turn: a spec's brief says what happened.
 brakeman_act() {
-	local req=$1 op key body out status=taken
-	read -r op key <"$STUB_BRAKEMAN_ACT"
+	local req=$1 op key param body out status=taken
+	read -r op key param <"$STUB_BRAKEMAN_ACT"
+	param=${param:-key}
 	body='{}'
 	[[ -s $STUB_BRAKEMAN_ACT.body ]] && body=$(<"$STUB_BRAKEMAN_ACT.body")
+	[[ -n ${actrev:-} ]] && body=${body//@REV/$actrev}
 	case ${STUB_WORKER:-} in
 	mcp)
-		out=$(mcp_call act "{\"operation\":$(json_str "$op"),\"params\":{\"key\":$(json_str "$key")},\"body\":$body}")
+		out=$(mcp_call act "{\"operation\":$(json_str "$op"),\"params\":{$(json_str "$param"):$(json_str "$key")},\"body\":$body}")
 		mcp_ok "$out" || status=refused
 		;;
 	*)
 		printf '%s\n' "$body" >"$transcripts/$id.act.json"
-		out=$("$conductor" brakeman act "$op" --key "$key" --body-file "$transcripts/$id.act.json" 2>&1) || status=refused
+		out=$("$conductor" brakeman act "$op" "--$param" "$key" --body-file "$transcripts/$id.act.json" 2>&1) || status=refused
 		;;
 	esac
 	printf '%s\n%s\n' "$status" "$out" >"$STUB_BRAKEMAN_ACT.out.new"
