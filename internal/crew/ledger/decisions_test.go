@@ -624,6 +624,60 @@ func TestPruningAContinuationHandsItsDecisionsBack(t *testing.T) {
 	})
 }
 
+// A prune that hands decisions back is a change of the run it hands them
+// to: that run's revision moves with the hand-back, and the observer is
+// told of its pointer as a commit, after the removal, so a reader that
+// compares revisions (the history's reconcile) reads it again. A prune
+// that hands nothing back moves no other run's revision.
+func TestAHandBackMovesTheReceivingRunsRevision(t *testing.T) {
+	ctx := context.Background()
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	const a, b, c = "team-00000001", "team-00000002", "team-00000003"
+	newRun(t, l, a)
+	tasksOf(t, l, a, "deploy")
+	n := open(t, l, gateDecision(a, "g1"))
+	finish(t, l, a)
+	continuation(t, l, a, b, "deploy")
+	in(t, l, b, func(tx *Tx) error {
+		_, err := tx.MoveDecisions(a, b)
+		return err
+	})
+	setState(t, l, b, n, DecisionCancelled, "")
+	finish(t, l, b)
+	continuation(t, l, b, c, "deploy")
+	finish(t, l, c)
+	var w told
+	l.OnCommit(w.commit)
+	l.OnPrune(w.prune)
+	before, _, err := l.Pointer(ctx, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Prune(ctx, c); err != nil { // holds none of the decisions
+		t.Fatal(err)
+	}
+	if after, _, _ := l.Pointer(ctx, b); after.Revision != before.Revision || len(w.commits) != 0 {
+		t.Fatalf("a prune that handed nothing back: B at %d (was %d), commits told %+v", after.Revision, before.Revision, w.commits)
+	}
+	before, _, _ = l.Pointer(ctx, a)
+	if err := l.Prune(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	if rec := record(t, l, n); rec.CurrentRun != a {
+		t.Fatalf("after B's prune: held by %s", rec.CurrentRun)
+	}
+	after, _, err := l.Pointer(ctx, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Revision != before.Revision+1 {
+		t.Fatalf("A's revision after the hand-back: %d, was %d", after.Revision, before.Revision)
+	}
+	if !slices.Equal(w.prunes, []string{c, b}) || len(w.commits) != 1 || w.commits[0].ID != a || w.commits[0].Revision != after.Revision {
+		t.Fatalf("told prunes %v and commits %+v", w.prunes, w.commits)
+	}
+}
+
 // Every bound of the store, checked in the transaction that would pass
 // it: 4 open per attempt, 64 open per run, 1,000 per run in all, 32
 // responses, 32 operations, the receipts' and the request's bounds; an

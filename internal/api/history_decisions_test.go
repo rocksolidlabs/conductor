@@ -15,6 +15,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/gitcli"
 	"github.com/rocksolidlabs/conductor/internal/history"
 )
 
@@ -139,7 +140,7 @@ func TestADecisionAndItsResponseAreIndexedByTheirKeys(t *testing.T) {
 	}
 	resp := histEntry(t, ix, hResponseRef(id, 2))
 	if resp.Kind != "decision.response" || resp.Class != history.ClassDecided || resp.Actor != adminActor || resp.Outcome != "answered" ||
-		resp.Title != id+": Use SQLite, by Nate" || resp.Commit != commitID(1) || resp.Anchor != hTaskRef(run, "build") {
+		resp.Title != id+": Use SQLite" || !strings.HasPrefix(resp.Summary, "by Nate · "+id+" asked: ") || resp.Commit != commitID(1) || resp.Anchor != hTaskRef(run, "build") {
 		t.Fatalf("the response: %+v", resp.Entry)
 	}
 	histGone(t, ix, hResponseRef(id, 1))
@@ -206,7 +207,7 @@ func TestAGatesRejectionIsARejectedDesign(t *testing.T) {
 	histRespond(t, ld, approved, yes, 1, 0, true, "")
 	ix := histSettle(t, e)
 
-	if r := histEntry(t, ix, hResponseRef(no, 1)); r.Outcome != "rejected" || r.Title != no+": Reject, by Nate" || r.Anchor != hRunRef(rejected) || r.Revision != "pl-1" {
+	if r := histEntry(t, ix, hResponseRef(no, 1)); r.Outcome != "rejected" || r.Title != no+": Reject" || r.Anchor != hRunRef(rejected) || r.Revision != "pl-1" {
 		t.Fatalf("the rejection: %+v", r.Entry)
 	}
 	if r := histEntry(t, ix, hResponseRef(yes, 1)); r.Outcome != "approved" {
@@ -340,6 +341,215 @@ func TestADecisionFollowsItsRunAndLeavesWithIt(t *testing.T) {
 	histGone(t, ix, hDecisionRef(id))
 }
 
+// A decision handed back by a prune to a run whose move no pass indexed
+// is indexed again under it: indexed under the first of a chain of three,
+// moved to the middle and on to the last before any pass read either
+// move, the middle's pass scanning while the last holds it, and the last
+// cancelled, finished and pruned (by the ledger's owner, which tells no
+// hook of this server's) before the last's pass. Its mark still names the
+// first, so the last's pass, finding the run gone, does not find it; the
+// prune moved the middle's revision, so the reconcile reads the middle
+// again, and its pass finds the decision it now holds.
+func TestADecisionHandedBackPastAnUnindexedMoveIsIndexedAgain(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+	seedDispatch(t, dir)
+	ld, err := ledger.Open(filepath.Join(dir, "runs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ld.Close()
+	const first, mid, last = "hist-000000e1", "hist-000000e2", "hist-000000e3"
+	histCreate(t, ld, first, "", histCrew(dir))
+	id := histAsk(t, ld, first, true)
+	histFinish(t, ld, first)
+	e := newTestEnv(t, func(c *config.Config) { c.DataDir = dir })
+	if ro, _ := e.srv.ledger.ReadOnly(); !ro {
+		t.Fatal("the server holds the ledger's lock")
+	}
+	n, _ := ledger.ParseDecisionID(id)
+	var armed atomic.Bool
+	pruned := make(chan error, 1)
+	freshIndexer(t, e, func(h *historyIndexer) {
+		h.after = func(d time.Duration) <-chan time.Time {
+			if d == h.reconcileTick {
+				return nil
+			}
+			return time.After(d)
+		}
+		// The middle's pass has scanned its decisions (none: the last holds
+		// it); before it commits, the owner cancels the decision, finishes
+		// the last run and prunes it.
+		h.beforeRunReplace = func(key string) {
+			if key != hRunRef(mid) || !armed.CompareAndSwap(true, false) {
+				return
+			}
+			pruned <- func() error {
+				if _, err := ld.Transition(context.Background(), last, func(tx *ledger.Tx) error {
+					d, _, err := tx.Decision(n)
+					if err != nil {
+						return err
+					}
+					d.State, d.Rev, d.Why = ledger.DecisionCancelled, d.Rev+1, "cancelled by the operator"
+					if err := tx.PutDecision(d); err != nil {
+						return err
+					}
+					row, _, err := tx.Run()
+					if err != nil {
+						return err
+					}
+					row.State, row.Outcome, row.ClosedAt = ledger.RunFinished, ledger.OutcomeFailed, histNow
+					return tx.PutRun(row)
+				}); err != nil {
+					return err
+				}
+				return ld.Prune(context.Background(), last)
+			}()
+		}
+	})
+	ix := histReconcile(t, e)
+	if h := histEntry(t, ix, hDecisionRef(id)); h.Run != first {
+		t.Fatalf("before the moves: %+v", h.Entry)
+	}
+	for _, c := range [][2]string{{first, mid}, {mid, last}} {
+		histCreate(t, ld, c[1], c[0], histCrew(dir))
+		histTx(t, ld, c[1], func(tx *ledger.Tx) error {
+			_, err := tx.MoveDecisions(c[0], c[1])
+			return err
+		})
+		if c[1] == mid {
+			histFinish(t, ld, mid)
+		}
+	}
+	armed.Store(true)
+	histReconcile(t, e)
+	select {
+	case err := <-pruned:
+		if err != nil {
+			t.Fatal(err)
+		}
+	default:
+		t.Fatal("the middle run's pass never ran")
+	}
+	if rec, ok, err := ld.Decision(t.Context(), n); err != nil || !ok || rec.CurrentRun != mid {
+		t.Fatalf("the ledger after the prune: %+v %v %v", rec.DecisionRow, ok, err)
+	}
+	ix = histReconcile(t, e)
+	if h := histEntry(t, ix, hDecisionRef(id)); h.Run != mid || h.Anchor != hRunRef(mid) || h.Outcome != ledger.DecisionCancelled {
+		t.Fatalf("handed back to the middle run: %+v", h.Entry)
+	}
+}
+
+// A decision indexed without its repository (its reads past their
+// retries) is read again by the reconcile like every other such source,
+// though its run's mark holds the repository and its run's pass compares
+// nothing: after a restart, the decision's read failing just before its
+// run's succeeds, the reconcile finds the decision by its mark (U) and
+// writes it whole.
+func TestADecisionIndexedWithoutItsRepositoryIsReadAgain(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.gitRepo(t)
+	var failNext atomic.Bool
+	set := func(h *historyIndexer) {
+		h.repoRetries = 0
+		h.after = func(d time.Duration) <-chan time.Time {
+			if d == h.reconcileTick {
+				return nil
+			}
+			return time.After(d)
+		}
+		h.repoOf = func(ctx context.Context, dir string) (string, string, error) {
+			if dir == e.root && failNext.CompareAndSwap(true, false) {
+				return "", "", errors.New("git rev-parse: timed out")
+			}
+			return gitcli.RepoOf(ctx, dir)
+		}
+	}
+	freshIndexer(t, e, set)
+	ld := e.srv.ledger
+	const run = "hist-000000e4"
+	histCreate(t, ld, run, "", histCrew(e.root))
+	id := histAsk(t, ld, run, false)
+	ix := histSettle(t, e)
+	key := hDecisionRef(id)
+	if h := histEntry(t, ix, key); h.Repo == "" || repoNotKnown(histMark(t, ix, key)) {
+		t.Fatalf("before the restart: repo %q, mark %s", h.Repo, histMark(t, ix, key))
+	}
+	// A restart, its catch-up reading the decision (decision: sorts before
+	// run:) as the repository fails once, then the run, whose mark is as
+	// it was.
+	failNext.Store(true)
+	freshIndexer(t, e, set)
+	ix = histSettle(t, e)
+	if h := histEntry(t, ix, key); h.Repo != "" || !repoNotKnown(histMark(t, ix, key)) {
+		t.Fatalf("the decision read as the repository failed: repo %q, mark %s", h.Repo, histMark(t, ix, key))
+	}
+	if m := histMark(t, ix, hRunRef(run)); repoNotKnown(m) {
+		t.Fatalf("the run's mark: %s", m)
+	}
+	ix = histReconcile(t, e)
+	if h := histEntry(t, ix, key); h.Repo == "" || repoNotKnown(histMark(t, ix, key)) {
+		t.Fatalf("after the reconcile: repo %q, mark %s", h.Repo, histMark(t, ix, key))
+	}
+}
+
+// A decision's words are searched past its entries' titles, each cut at
+// its first line and MaxTitle: a request's question whole (DR1 allows 500
+// characters) is in its body, and who answered a response and whom for
+// lead its summary, its title cut from the answer alone, so a long or
+// many-lined answer keeps them searchable.
+func TestADecisionsWordsAreSearchedPastItsTitles(t *testing.T) {
+	e := newTestEnv(t, nil)
+	ld := e.srv.ledger
+	const run = "hist-000000e5"
+	histCreate(t, ld, run, "", histCrew(e.root))
+	question := "Which store keeps the sessions " + strings.Repeat("once the replicas are measured under load ", 5) + "and the zebrafinch dashboard reads it?"
+	if strings.Index(question, "zebrafinch") <= history.MaxTitle {
+		t.Fatalf("the question's word at byte %d", strings.Index(question, "zebrafinch"))
+	}
+	// Two requests of the question, one answered in two lines, the other
+	// at length.
+	ids := make([]string, 2)
+	answers := []string{"Yes\nProceed with the migration", strings.Repeat("the replicas take the load in turn ", 8)}
+	for i := range ids {
+		histTx(t, ld, run, func(tx *ledger.Tx) error {
+			d, _, err := tx.OpenDecision(ledger.DecisionRow{Origin: ledger.OriginAgent, Type: ledger.DecisionApproval, TaskID: "build", Attempt: 1, SessionID: "s-build-1",
+				Member: "lead", RequestID: fmt.Sprintf("q-long-%d", i), Fingerprint: fmt.Sprintf("fp-long-%d", i), Policy: histPolicy,
+				Request: fmt.Sprintf(`{"question":%q,"options":[{"label":"Use Postgres"},{"label":"Use SQLite"}],"subject":{"kind":"commit","commit":%q}}`, question, commitID(1))})
+			ids[i] = d.ID()
+			return err
+		})
+		histRespondWith(t, ld, run, ids[i], 1, 1, true, "", func(rc map[string]any) {
+			rc["text"] = answers[i]
+			rc["byName"] = fmt.Sprintf("Quinlan%d", i)
+			rc["for"] = map[string]any{"person": fmt.Sprintf("ana%d", i), "responsibility": crew.RespArchitecture}
+		})
+	}
+	ix := histSettle(t, e)
+	for _, id := range ids {
+		if h := histEntry(t, ix, hDecisionRef(id)); !strings.HasPrefix(h.Body, question+"\n") || len(h.Title) > history.MaxTitle {
+			t.Fatalf("the request: title %q, body %q", h.Title, h.Body)
+		}
+	}
+	if keys := hsKeys(hsSearch(t, e, "zebrafinch kind:decision")); len(keys) != 2 || !slices.Contains(keys, hDecisionRef(ids[0])) || !slices.Contains(keys, hDecisionRef(ids[1])) {
+		t.Fatalf("a word of the question past its title: %v", keys)
+	}
+	for i, id := range ids {
+		ref := hResponseRef(id, 1)
+		h := histEntry(t, ix, ref)
+		if strings.Contains(h.Title, "Quinlan") || !strings.HasPrefix(h.Summary, fmt.Sprintf("by Quinlan%d for ana%d, the architecture owner · ", i, i)) {
+			t.Fatalf("response %d: title %q, summary %q", i, h.Title, h.Summary)
+		}
+		for _, word := range []string{fmt.Sprintf("Quinlan%d", i), fmt.Sprintf("ana%d", i)} {
+			if keys := hsKeys(hsSearch(t, e, word)); !slices.Equal(keys, []string{ref}) {
+				t.Fatalf("a search for %s: %v", word, keys)
+			}
+		}
+	}
+	if h := histEntry(t, ix, hResponseRef(ids[0], 1)); h.Title != ids[0]+": Use SQLite: Yes" {
+		t.Fatalf("a many-lined answer's title: %q", h.Title)
+	}
+}
+
 // failingScan is the ledger as the indexer reads it, its scan of one
 // run's decisions failing once when armed.
 type failingScan struct {
@@ -423,7 +633,7 @@ func TestAnAssignmentsResponseIsDoneOrNotDone(t *testing.T) {
 	}
 	ix := histSettle(t, e)
 	for i, want := range []struct{ outcome, label string }{{"done", "Done"}, {"not_done", "Not done"}} {
-		if h := histEntry(t, ix, hResponseRef(ids[i], 1)); h.Outcome != want.outcome || h.Title != ids[i]+": "+want.label+", by Nate" {
+		if h := histEntry(t, ix, hResponseRef(ids[i], 1)); h.Outcome != want.outcome || h.Title != ids[i]+": "+want.label || !strings.HasPrefix(h.Summary, "by Nate · ") {
 			t.Fatalf("the assignment answered %s: %+v", want.label, h.Entry)
 		}
 	}
@@ -465,8 +675,8 @@ func TestADecisionsAvailabilityIsPrunedOrUnknown(t *testing.T) {
 }
 
 // Whom a decision is for, as its record keeps it (HM1): the person an
-// accepted response answered for, its receipt's, in the response's title
-// beside who answered, and a search for the person finds it; the request's
+// accepted response answered for, its receipt's, in the response's
+// summary beside who answered, and a search for the person finds it; the request's
 // for, the person its opening resolved (an object in the request the
 // ledger keeps, never the label as sent), in the request's summary. The
 // ledger on this branch refuses a request with a for until HM1's PR
@@ -481,7 +691,7 @@ func TestADecisionSaysWhomItIsFor(t *testing.T) {
 		rc["for"] = map[string]any{"person": "ana", "responsibility": crew.RespArchitecture}
 	})
 	ix := histSettle(t, e)
-	if h := histEntry(t, ix, hResponseRef(id, 1)); h.Title != id+": Reject, by Nate for ana, the architecture owner" {
+	if h := histEntry(t, ix, hResponseRef(id, 1)); h.Title != id+": Reject" || !strings.HasPrefix(h.Summary, "by Nate for ana, the architecture owner · ") {
 		t.Fatalf("the response: %+v", h.Entry)
 	}
 	if keys := hsKeys(hsSearch(t, e, "ana")); !slices.Equal(keys, []string{hResponseRef(id, 1)}) {
@@ -500,7 +710,7 @@ func TestADecisionSaysWhomItIsFor(t *testing.T) {
 	if r := entries[0]; r.Title != "Ship the login redesign?" || r.Revision != "pl-1" || !strings.Contains(r.Summary, "for ana, the architecture owner") {
 		t.Fatalf("the request: %+v", r)
 	}
-	if r := entries[1]; r.Title != "dr-9: Reject, by Nate for ana" {
+	if r := entries[1]; r.Title != "dr-9: Reject" || !strings.HasPrefix(r.Summary, "by Nate for ana · ") {
 		t.Fatalf("the response for a person named by name: %+v", r)
 	}
 }
@@ -519,14 +729,14 @@ func TestAResponseIsIndexedAsItsRowsActor(t *testing.T) {
 		rc["actor"] = ""
 	})
 	ix := histSettle(t, e)
-	if h := histEntry(t, ix, hResponseRef(id, 1)); h.Actor != adminActor || h.Title != id+": Approve, by "+adminActor {
+	if h := histEntry(t, ix, hResponseRef(id, 1)); h.Actor != adminActor || h.Title != id+": Approve" || !strings.HasPrefix(h.Summary, "by "+adminActor+" · ") {
 		t.Fatalf("the response: %+v", h.Entry)
 	}
 	zero := 0
 	entries, _ := decisionEntries(runPlace{run: run}, crew.Decision{ID: "dr-9", Run: run, Origin: ledger.OriginPlan, Type: ledger.DecisionApproval, Gate: "g1",
 		Request:   json.RawMessage(`{"question":"Ship it?","options":[{"label":"Approve"},{"label":"Reject"}]}`),
 		Responses: []crew.ResponseReceipt{{Decision: "dr-9", K: 1, Status: ledger.ResponseAccepted, Choice: &zero}}}, nil)
-	if len(entries) != 2 || entries[1].Actor != "" || entries[1].Title != "dr-9: Approve" {
+	if len(entries) != 2 || entries[1].Actor != "" || entries[1].Title != "dr-9: Approve" || entries[1].Summary != "dr-9 asked: Ship it?" {
 		t.Fatalf("a response with no actor: %+v", entries)
 	}
 }
@@ -557,7 +767,7 @@ func TestADecisionAnsweredByTheLedgersOwnerIsReconciled(t *testing.T) {
 	ix = histSettle(t, e)
 	histGone(t, ix, hResponseRef(id, 1))
 	ix = histReconcile(t, e)
-	if h := histEntry(t, ix, hResponseRef(id, 1)); h.Title != id+": Use Postgres, by Nate" {
+	if h := histEntry(t, ix, hResponseRef(id, 1)); h.Title != id+": Use Postgres" || !strings.HasPrefix(h.Summary, "by Nate · ") {
 		t.Fatalf("the answer the owner recorded: %+v", h.Entry)
 	}
 }

@@ -889,7 +889,7 @@ func (h *historyIndexer) repoIdent(ctx context.Context, dir string) (repoIdent, 
 // without the repository and a mark that says so (unknown true: the mark
 // carries U), and every reconcile reads again each source whose mark in
 // the index carries U, so the first read that succeeds writes it whole:
-// the run and its receipts alike.
+// the run and its receipts alike, a decision and a session by their own.
 func (h *historyIndexer) repoFor(ctx context.Context, key, dir string) (id repoIdent, unknown bool, err error) {
 	id, err = h.repoIdent(ctx, dir)
 	if err == nil {
@@ -1900,32 +1900,16 @@ func (h *historyIndexer) reconcile(ctx context.Context) {
 	h.reconcileBriefs()
 	// The sources indexed without their repository, found by their marks
 	// (U) in the index, read again: the runs (whose passes place their
-	// receipts again) and the sessions.
+	// receipts again), the decisions and the sessions. A decision's is
+	// read again by its own pass: its run's mark may hold its repository
+	// already, and the run's pass then compares nothing.
 	for key, m := range marks {
 		if repoNotKnown(m) {
 			h.mark(key)
 		}
 	}
-	for after := "session:"; ; {
-		page, err := ix.Sources(ctx, after, history.MaxSourcesPage)
-		if err != nil {
-			h.log.Warn("the history's reconcile could not read the index", "err", err)
-			break
-		}
-		done := len(page) < history.MaxSourcesPage
-		for _, src := range page {
-			if !strings.HasPrefix(src.Key, "session:") {
-				done = true
-				break
-			}
-			if repoNotKnown(src.Mark) {
-				h.mark(src.Key)
-			}
-		}
-		if done {
-			break
-		}
-		after = page[len(page)-1].Key
+	for _, prefix := range []string{"decision:", "session:"} {
+		h.markRepoNotKnown(ctx, ix, prefix)
 	}
 	old := ""
 	if h.pm != nil {
@@ -1941,6 +1925,30 @@ func (h *historyIndexer) reconcile(ctx context.Context) {
 		h.mu.Lock()
 		h.placed = true
 		h.mu.Unlock()
+	}
+}
+
+// markRepoNotKnown marks dirty each source under prefix whose mark in the
+// index says it was indexed without its repository (U).
+func (h *historyIndexer) markRepoNotKnown(ctx context.Context, ix *history.Index, prefix string) {
+	for after := prefix; ; {
+		page, err := ix.Sources(ctx, after, history.MaxSourcesPage)
+		if err != nil {
+			h.log.Warn("the history's reconcile could not read the index", "err", err)
+			return
+		}
+		for _, src := range page {
+			if !strings.HasPrefix(src.Key, prefix) {
+				return
+			}
+			if repoNotKnown(src.Mark) {
+				h.mark(src.Key)
+			}
+		}
+		if len(page) < history.MaxSourcesPage {
+			return
+		}
+		after = page[len(page)-1].Key
 	}
 }
 

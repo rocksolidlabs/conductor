@@ -37,11 +37,15 @@ import (
 // it, and its mark is a digest of what its entries were built from (its
 // row and its run's place, as read for them), so an entry is never older
 // than its mark. A decision changes only inside a transition of the run
-// that holds it (its current run), and what its entries take from that
-// run changes only with the run's own record or rows, so the run's pass,
-// which every such change asks for, compares each of the run's decisions'
-// marks with what it reads now (markDecisions) before it commits its own
-// mark: a scan that fails is made again by the pass retried. A run whose
+// that holds it (its current run), or in the prune that hands it back to
+// the run the pruned one continued, which moves that run's revision and
+// tells it as that run's commit (ledger.Prune), and what its entries take
+// from that run changes only with the run's own record or rows, so the
+// run's pass, which every such change asks for, compares each of the
+// run's decisions' marks with what it reads now (markDecisions) before it
+// commits its own mark: a scan that fails is made again by the pass
+// retried, and a decision handed back past a move no pass indexed differs
+// from its mark there. A run whose
 // ledger rows are gone, its record kept or not, asks again of the
 // decisions it held or opened (markRunsDecisions), each read again or
 // removed, and the catch-up lists every decision the ledger keeps.
@@ -367,8 +371,10 @@ func decisionEntries(p runPlace, d crew.Decision, fors map[int]*recordFor) ([]hi
 		// supplies.
 		x.Key, x.Ref, x.Kind, x.At, x.Actor = rref, rref, "decision.response", hAt(rc.At, e.At), hField(rc.Actor)
 		x.Outcome = responseOutcome(d, rc)
-		x.Title = hTitle(responseTitle(d.ID, answerOfReceipt(rc, options), cmp.Or(rc.ByName, rc.Actor), fors[rc.K].words()))
-		x.Summary = hSummary(d.ID + " asked: " + req.Question)
+		// The title is cut from the answer alone; who answered and whom for
+		// lead the summary, so a long or many-lined answer never cuts them.
+		x.Title = hTitle(d.ID + ": " + cmp.Or(answerOfReceipt(rc, options), "answered"))
+		x.Summary = hSummary(strings.Join(hNonEmpty(responseWho(cmp.Or(rc.ByName, rc.Actor), fors[rc.K].words()), d.ID+" asked: "+req.Question), " · "))
 		x.Body = history.Clip(strings.Join(hNonEmpty(rc.Text, prefixed("Why: ", rc.Rationale)), "\n"), history.MaxLongBody)
 		out = append(out, x)
 		links = append(links, history.Link{From: rref, Rel: relAnswers, To: ref})
@@ -381,10 +387,10 @@ func decisionEntries(p runPlace, d crew.Decision, fors map[int]*recordFor) ([]hi
 	return out, dedupLinks(links)
 }
 
-// responseTitle is a response in DR1's words: "dr-1: Reject, by Nate for
-// ana, the architecture owner", each part said only when its record holds
-// it.
-func responseTitle(id, answer, by, forWords string) string {
+// responseWho is who answered a response and whom for, in DR1's words:
+// "by Nate for ana, the architecture owner", each part said only when its
+// record holds it; "" for neither.
+func responseWho(by, forWords string) string {
 	who := ""
 	if by != "" {
 		who = "by " + by
@@ -392,11 +398,7 @@ func responseTitle(id, answer, by, forWords string) string {
 	if forWords != "" {
 		who = strings.TrimSpace(who + " for " + forWords)
 	}
-	t := id + ": " + cmp.Or(answer, "answered")
-	if who != "" {
-		t += ", " + who
-	}
-	return t
+	return who
 }
 
 // responseOutcome is a response's outcome, the option it chose in the
@@ -516,6 +518,7 @@ func prefixed(prefix, s string) string {
 }
 
 // requestBody is a request's words as the index searches them: its
+// question whole (its title is cut at its first line and MaxTitle), its
 // context, its options with their tradeoffs (the recommended one said),
 // its uncertainty, what a yes authorizes and the expertise it asks for.
 func requestBody(req crew.DecisionRequest, options []string) string {
@@ -526,6 +529,7 @@ func requestBody(req crew.DecisionRequest, options []string) string {
 			b.WriteByte('\n')
 		}
 	}
+	line(req.Question)
 	line(req.Context)
 	for i, label := range options {
 		o := fmt.Sprintf("%d. %s", i+1, label)

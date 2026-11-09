@@ -1582,31 +1582,44 @@ func (l *Ledger) Holds(ctx context.Context, run string) ([]HoldRow, error) {
 // handed back to the run the pruned one continued, so no decision names a
 // run the ledger no longer has. The final decisions the run opened go
 // with its row (run_id's cascade), their hold rows with them; its hold
-// rows of the decisions handed back go with its tasks.
-func pruneDecisions(ctx context.Context, tx *sql.Tx, runID string) error {
+// rows of the decisions handed back go with its tasks. A hand-back is a
+// change of the run it hands to, as every other change of a decision is a
+// transition of the run that holds it: that run's revision is bumped with
+// it and its pointer, read here, is returned for Prune to tell (OnCommit);
+// none when nothing was handed back.
+func pruneDecisions(ctx context.Context, tx *sql.Tx, runID string) ([]RunPointer, error) {
 	var n int64
 	var state string
 	err := tx.QueryRowContext(ctx, `SELECT n, state FROM decisions WHERE (run_id = ? OR current_run = ?) AND state IN ('open', 'answered') ORDER BY n LIMIT 1`, runID, runID).Scan(&n, &state)
 	switch {
 	case err == nil:
-		return fmt.Errorf("%w: decision %s is %s", ErrNotPrunable, DecisionID(n), state)
+		return nil, fmt.Errorf("%w: decision %s is %s", ErrNotPrunable, DecisionID(n), state)
 	case !errors.Is(err, sql.ErrNoRows):
-		return err
+		return nil, err
 	}
 	var from string
 	if err := tx.QueryRowContext(ctx, "SELECT continued_from FROM runs WHERE id = ?", runID).Scan(&from); err != nil {
-		return err
+		return nil, err
 	}
 	var handed int
 	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM decisions WHERE current_run = ? AND run_id != ?", runID, runID).Scan(&handed); err != nil {
-		return err
+		return nil, err
 	}
 	if handed == 0 {
-		return nil
+		return nil, nil
 	}
 	if from == "" {
-		return fmt.Errorf("%w: it holds %d decisions of other runs and continues none", ErrNotPrunable, handed)
+		return nil, fmt.Errorf("%w: it holds %d decisions of other runs and continues none", ErrNotPrunable, handed)
 	}
-	_, err = tx.ExecContext(ctx, "UPDATE decisions SET current_run = ? WHERE current_run = ? AND run_id != ?", from, runID, runID)
-	return err
+	if _, err := tx.ExecContext(ctx, "UPDATE decisions SET current_run = ? WHERE current_run = ? AND run_id != ?", from, runID, runID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE runs SET revision = revision + 1 WHERE id = ?", from); err != nil {
+		return nil, err
+	}
+	p, err := scanPointer(tx.QueryRowContext(ctx, `SELECT `+pointerCols+` FROM runs WHERE id = ?`, from))
+	if err != nil {
+		return nil, err
+	}
+	return []RunPointer{p}, nil
 }

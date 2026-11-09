@@ -4668,7 +4668,8 @@ runs and sessions are indexed under the crew `brakeman` and left out of a
 search unless it names a crew (`crew:`) or the kind `brief.item`. A
 **decision** (`decision:dr-<n>`, DR1's request) is read through the
 ledger's own read of its record: the request as `decision` (a record: its
-question, its subject's revision and commit, its scope: its type, who
+question, whole in its body, its title cut from it, its subject's revision
+and commit, its scope: its type, who
 asked, whom it is for as its request keeps the person its opening
 resolved, what it is about, what a yes authorizes), grouped under its
 asking task in the run that holds it (a gate's under that run); each
@@ -4676,8 +4677,9 @@ response the decision accepted as `decision.response` (decided: its
 response row's actor as the actor, none when the row names none, its
 rationale, `outcome` the option chosen: `approved` or `rejected` for a
 gate's approval, `done` or `not_done` for an assignment, else `answered`,
-its title the option's label, who answered and whom for, as its receipt
-keeps them), keyed `decision:dr-<n>/<k>` as DR1 numbers its receipt,
+its title the option's label and its words, cut from the answer alone,
+its summary who answered and whom for, as its receipt keeps them, then
+the question it answers), keyed `decision:dr-<n>/<k>` as DR1 numbers its receipt,
 `answers` to the request and, once Yardmaster applied it, `applied` to the
 attempt, task or run it was applied to. A refused response decided
 nothing and is not indexed. What is indexed of a decision is what the
@@ -4686,14 +4688,20 @@ with a digest of what its entries were built from (its row, and its run's
 place: machine, project, repository, tree, crew, ticket and asking
 agent) and the runs that hold it and opened it, so an entry is never
 older than its mark. A decision changes only in a transition of the run
-that holds it, and its place only with that run's record or rows, so the
-run's pass, which each of those asks for, compares each of the run's
-decisions' marks with what it reads before it commits its own (a scan
-that fails is made again by the pass retried); a run whose ledger rows
+that holds it, or in the prune that hands it back to the run the pruned
+one continued, which moves that run's revision with it (the ledger tells
+it as that run's commit, and the reconcile finds it by the revision), and
+its place only with that run's record or rows, so the run's pass, which
+each of those asks for, compares each of the run's decisions' marks with
+what it reads before it commits its own (a scan that fails is made again
+by the pass retried): a decision handed back past a move no pass indexed
+differs from its mark there and is indexed again. A run whose ledger rows
 are gone, its record kept or not, reads again every decision it held or
 opened: the ones it opened went with it and their entries go, and the
 ones it held the ledger handed to the run the pruned one continued,
-under which they are indexed.
+under which they are indexed. A decision indexed without its repository
+(its reads past their retries, its mark ending `/U`) is read again by
+every reconcile, as a run or a session is, until a read succeeds.
 
 The search routes read only their query string (every parameter named,
 each once, the whole at most 12 KiB: `400 invalid_request` otherwise),
