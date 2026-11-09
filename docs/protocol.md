@@ -4635,8 +4635,12 @@ server reads it. `indexing` is `{state, behind?, ledger?}`: `state`
 indexed from their records alone). Each source is read with its mark
 taken first: a run's `L<revision>/R<sha256>` (the ledger's revision and
 its record file's hash), a session record's `S<seq>/P<projects>`, and
-`/L<revision>` for a crew member's; a finished check receipt is a source
-of its own, read once. A run is read at most once every 2 s; what another
+`/C<start commit>/J<project>` for a crew member's (its attempt's start
+commit and its run's project); a finished check receipt is a source of
+its own, read once, its mark `finished`. A run's and a receipt's mark
+gain `/J<project>` when the run is placed in a Dispatch project, and any
+mark `/U` while its repository could not be read, which every reconcile
+reads again. A run is read at most once every 2 s; what another
 server writes to the ledger and the run records is found by a reconcile
 every 30 s.
 
