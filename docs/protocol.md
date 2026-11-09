@@ -4386,9 +4386,10 @@ launch_failed`, "the server is shutting down: the run was not started").
 /api/dispatch/tickets/{key}/reviews`, with that route's body (at most 192
 KiB), a request for changes: `verdict` `request_changes` alone (a
 `comment` or an `approve` is `403 not_granted`: the person's), no `via`
-(`400 invalid_request`: the server records `brakeman`) and no
+(`400 invalid_request`: the server records `brakeman`), no
 `continueRun` (`403 not_granted`: continuing a run the server no longer
-runs takes the person's word). It is an act as the launch and the
+runs takes the person's word) and an `expectedRevision` of 0 or more
+(`400 invalid_request` otherwise, as RV1's route answers). It is an act as the launch and the
 follow-up are, in the same order, its entry's `target` the ticket, its
 `run` the candidate's run, its `args` the SHA-256 of the body as decoded
 but its `opId` and `byName`, with the ticket's key; `400 invalid_request`

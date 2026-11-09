@@ -24,6 +24,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/version"
 )
@@ -1341,8 +1342,11 @@ func TestATurnsGuideListsItsGrantedOperations(t *testing.T) {
 // Dispatch hidden), each operation listed is one its route takes past its
 // gates, and each left out that the caller's scopes reach is one its
 // route refuses: the admin an agent's own (403 agent_only), a turn a read
-// of a class it may not see (403 not_visible). The routes are called, not
-// the list compared with itself.
+// of a class it may not see (403 not_visible). A turn granted only
+// request_repair, which needs both Dispatch and the runs, is listed it and
+// the act tool with both visible, neither with either hidden, and its route
+// refuses it not_visible then. The routes are called, not the list
+// compared with itself.
 func TestTheOverviewListsWhatTheRoutesAdmit(t *testing.T) {
 	fill := strings.NewReplacer("{run}", "run-none", "{task}", "t", "{n}", "1", "{id}", "1", "{k}", "1", "{command}", "c", "{key}", "CND-1")
 	mayOf := func(t *testing.T, e *testEnv, token, path string) []string {
@@ -1403,29 +1407,53 @@ func TestTheOverviewListsWhatTheRoutesAdmit(t *testing.T) {
 	for _, c := range []struct {
 		name                         string
 		granted, terminals, dispatch bool
+		// repair grants request_repair alone in launch_approved_plan's
+		// place; runs is the runs' visibility.
+		repair, runs bool
 	}{
-		{"a turn granted, terminals on", true, true, true},
-		{"a turn granted nothing", false, true, true},
-		{"a turn granted, terminals off", true, false, true},
-		{"a turn granted, Dispatch hidden", true, false, false},
+		{"a turn granted, terminals on", true, true, true, false, true},
+		{"a turn granted nothing", false, true, true, false, true},
+		{"a turn granted, terminals off", true, false, true, false, true},
+		{"a turn granted, Dispatch hidden", true, false, false, false, true},
+		{"a turn granted request_repair, both visible", true, true, true, true, true},
+		{"a turn granted request_repair, the runs hidden", true, true, true, true, false},
+		{"a turn granted request_repair, Dispatch hidden", true, true, false, true, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			bk := brakemanEnv(t, nil)
 			bk.enable(t, "bk", func(cfg map[string]any) {
 				act := []any{}
-				if c.granted {
+				switch {
+				case c.granted && c.repair:
+					act = []any{brakeman.ActRequestRepair}
+				case c.granted:
 					act = []any{brakeman.ActLaunchApprovedPlan}
 				}
 				cfg["permissions"].(map[string]any)["act"] = act
 				v := cfg["visibility"].(map[string]any)
-				v["terminals"], v["dispatch"] = c.terminals, c.dispatch
+				v["terminals"], v["dispatch"], v[brakeman.ClassRuns] = c.terminals, c.dispatch, c.runs
 			})
 			req := bk.briefing(t)
 			sid, tok, _ := bk.turnSession(t, req)
 			awaitRunMember(t, bk, sid)
 			may := mayOf(t, bk.testEnv, tok, "/api/sessions/"+sid+"/guide")
-			if want := c.granted && c.dispatch; slices.Contains(may, "act") != want || slices.Contains(may, brakeman.ActLaunchApprovedPlan) != want {
-				t.Errorf("act listed %v, want %v: %v", slices.Contains(may, "act"), want, may)
+			granted := brakeman.ActLaunchApprovedPlan
+			if c.repair {
+				granted = brakeman.ActRequestRepair
+			}
+			want := c.granted && c.dispatch && (c.runs || !c.repair)
+			if slices.Contains(may, "act") != want || slices.Contains(may, granted) != want {
+				t.Errorf("act and %s listed %v %v, want %v: %v", granted, slices.Contains(may, "act"), slices.Contains(may, granted), want, may)
+			}
+			if c.repair {
+				// The route: refused not_visible when not listed, past
+				// that gate when listed (the run is none: refused later).
+				body, _ := json.Marshal(map[string]any{"opId": "g-1", "candidate": candName("demo-0123abcd", "build", 1, strings.Repeat("a", 40)),
+					"verdict": dispatch.VerdictRequestChanges, "summary": "Handle the error.", "findings": []any{changeOf("Handle the error.")}})
+				status, _, out := bk.callAsTurn(t, tok, sid, http.MethodPost, "/api/dispatch/tickets/CND-1/reviews", body)
+				if refused := gated(status, out, "not_visible"); want == refused {
+					t.Errorf("request_repair listed %v, its route: %d %v", want, status, out)
+				}
 			}
 			if !slices.Contains(may, "brakeman_request") || !slices.Contains(may, "brief_submit") {
 				t.Errorf("the turn's own: %v", may)

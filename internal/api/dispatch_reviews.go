@@ -708,6 +708,17 @@ func viaRefused(w http.ResponseWriter, via string) bool {
 	return true
 }
 
+// runRevisionRefused refuses the run's revision a request's application
+// is held to (expectedRevision) when it is none: a revision is 1 or
+// more, 0 for none. RV1's route and Brakeman's request_repair (repairArgs)
+// ask it before anything is recorded. nil admits it.
+func runRevisionRefused(rev int64) *apiError {
+	if rev < 0 {
+		return newAPIError(http.StatusBadRequest, "invalid_request", "expectedRevision is a revision of the run")
+	}
+	return nil
+}
+
 // handleDispatchSubmitReview is POST /api/dispatch/tickets/{key}/reviews:
 // a review of one candidate, in the order this file's comment gives;
 // 201 {receipt, review} (200 for the same opId again), review.application
@@ -728,8 +739,8 @@ func (s *Server) handleDispatchSubmitReview(w http.ResponseWriter, r *http.Reque
 	if viaRefused(w, body.Via) {
 		return
 	}
-	if body.ExpectedRevision < 0 {
-		writeError(w, http.StatusBadRequest, "invalid_request", "expectedRevision is a revision of the run")
+	if aerr := runRevisionRefused(body.ExpectedRevision); aerr != nil {
+		writeAPIError(w, aerr)
 		return
 	}
 	// A review runs to its end when the client goes away: its store

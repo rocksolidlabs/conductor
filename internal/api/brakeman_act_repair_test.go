@@ -160,10 +160,11 @@ func TestARepairRetryAfterALostReplyIsOneOperation(t *testing.T) {
 
 // TestARepairOfATargetInTheWrongStateIsRefused: what is not a request for
 // changes Brakeman may send is refused (a comment, an approval, via, the
-// word to continue); a ticket that moved since the turn read it, a commit
-// that is not the attempt's result, a candidate whose task began a later
-// attempt and a run the server no longer runs are refused before anything
-// is recorded: one review, the first.
+// word to continue, a run's revision that is none); a ticket that moved
+// since the turn read it, a commit that is not the attempt's result, a
+// candidate whose task began a later attempt (in the ledger before the
+// act is sent) and that candidate's run stopped are refused before
+// anything is recorded: one review, the first.
 func TestARepairOfATargetInTheWrongStateIsRefused(t *testing.T) {
 	f := newRepairFixture(t, []string{brakeman.ActRequestRepair}, nil)
 	for i, c := range []struct {
@@ -175,6 +176,7 @@ func TestARepairOfATargetInTheWrongStateIsRefused(t *testing.T) {
 		{map[string]any{"verdict": dispatch.VerdictApprove, "findings": []any{}}, http.StatusForbidden, "not_granted", "an approval"},
 		{map[string]any{"via": dispatch.ViaBrakeman}, http.StatusBadRequest, "invalid_request", "via"},
 		{map[string]any{"continueRun": true}, http.StatusForbidden, "not_granted", "the word to continue"},
+		{map[string]any{"expectedRevision": -1}, http.StatusBadRequest, "invalid_request", "a run's revision that is none"},
 		{map[string]any{"expectedRev": f.ticketRev(t) + 1}, http.StatusConflict, dispatch.RefusalStaleRevision, "a ticket's rev it left"},
 		{map[string]any{"candidate": candName(f.run, "build", 1, f.head)}, http.StatusConflict, dispatch.RefusalInvalid, "a commit not the result"},
 	} {
@@ -185,7 +187,11 @@ func TestARepairOfATargetInTheWrongStateIsRefused(t *testing.T) {
 	if status, out := f.repair(t, "q-1", nil); status != http.StatusCreated {
 		t.Fatalf("the first: %d %v", status, out)
 	}
-	// Attempt 2 began: the candidate moved.
+	// Attempt 2 began, in the ledger the check reads: the candidate moved.
+	waitUntil(t, "attempt build.2 in the ledger", func() bool {
+		_, ok := ledgerAttemptRow(t, f.srv, f.run, "build", 2)
+		return ok
+	})
 	if status, out := f.repair(t, "q-2", nil); status != http.StatusConflict || codeOf(out) != "stale_target" || !strings.Contains(out["error"].(map[string]any)["message"].(string), "moved") {
 		t.Fatalf("a moved candidate: %d %v", status, out)
 	}
@@ -194,6 +200,32 @@ func TestARepairOfATargetInTheWrongStateIsRefused(t *testing.T) {
 		t.Fatalf("a stopped run: %d %v", status, out)
 	}
 	if acts, n := f.acts(t), reviewsOn(t, f.srv, "CND-1"); len(acts) != 1 || acts[0].OpID != "q-1" || n != 1 {
+		t.Fatalf("acts %+v, %d reviews", acts, n)
+	}
+}
+
+// TestARepairOfARunNotRunOrContinuedIsRefused: a candidate that has not
+// moved, of a run the server stopped, is refused as not running; once
+// that run is continued, as continued, naming the continuation. Neither
+// is recorded: no act, no review.
+func TestARepairOfARunNotRunOrContinuedIsRefused(t *testing.T) {
+	f := newRepairFixture(t, []string{brakeman.ActRequestRepair}, nil)
+	message := func(out map[string]any) string {
+		e, _ := out["error"].(map[string]any)
+		m, _ := e["message"].(string)
+		return m
+	}
+	f.expect(t, "POST", "/api/runs/"+f.run+"/stop", nil, http.StatusOK, "")
+	if status, out := f.repair(t, "s-1", nil); status != http.StatusConflict || codeOf(out) != "stale_target" || !strings.Contains(message(out), "not running") {
+		t.Fatalf("a stopped run: %d %v", status, out)
+	}
+	out := f.expect(t, "POST", "/api/runs/"+f.run+"/resume", nil, http.StatusCreated, "")
+	next := out["run"].(map[string]any)["id"].(string)
+	t.Cleanup(func() { f.do("POST", "/api/runs/"+next+"/stop", adminToken, nil) })
+	if status, out := f.repair(t, "s-2", nil); status != http.StatusConflict || codeOf(out) != "stale_target" || !strings.Contains(message(out), "continued as "+next) {
+		t.Fatalf("a continued run: %d %v", status, out)
+	}
+	if acts, n := f.acts(t), reviewsOn(t, f.srv, "CND-1"); len(acts) != 0 || n != 0 {
 		t.Fatalf("acts %+v, %d reviews", acts, n)
 	}
 }
