@@ -3,8 +3,11 @@ package api
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"slices"
 	"strconv"
@@ -50,7 +53,10 @@ import (
 //     entry of its own; one whose receipt is still on its way marks the
 //     ticket U, so every reconcile reads it again until it is judged. A
 //     finding reopened or withdrawn since has none: an entry whose fact is
-//     gone leaves with it.
+//     gone leaves with it. What the ledger held of each resolution is part
+//     of the ticket's mark (resolutionsMark), and a run whose ledger rows
+//     are gone asks again for the tickets that mark names, as for its
+//     decisions: a receipt pruned leaves the resolution said, not checked.
 //
 // RV1 owns a finding's identity across revisions and its state; the
 // history shows them and adds no field.
@@ -213,6 +219,83 @@ func readResolutions(ctx context.Context, ld indexLedger, reviews []dispatch.Rev
 		}
 	}
 	return out, waiting, nil
+}
+
+// resolutionsMark is the part of a ticket's mark that what the ledger
+// held of its resolutions makes, "" for none judged: /E<digest of each
+// judgement: the candidate, so its run and attempt, and its receipt
+// verified with its count, or why not> then /C<run> for each run those
+// candidates are of, or /C* when they would not fit the mark's bound
+// (history.MaxRef). A resolution's entry is built from those facts, so a
+// prune that takes a receipt changes the mark the ticket's pass compares,
+// and the runs named find the tickets a pruned run's receipts checked
+// (markRunsResolutions).
+func resolutionsMark(rs map[string]resolutionCheck) string {
+	if len(rs) == 0 {
+		return ""
+	}
+	keys := slices.Sorted(maps.Keys(rs))
+	sum := sha256.New()
+	var runs []string
+	for _, k := range keys {
+		rc := rs[k]
+		for _, f := range []string{k, strconv.FormatBool(rc.verified), strconv.Itoa(rc.receipts), rc.why} {
+			sum.Write([]byte(f))
+			sum.Write([]byte{0})
+		}
+		if c, err := dispatch.ParseCandidate(k); err == nil && !slices.Contains(runs, c.Run) {
+			runs = append(runs, c.Run)
+		}
+	}
+	m := "/E" + hex.EncodeToString(sum.Sum(nil)[:16])
+	slices.Sort(runs)
+	named := ""
+	for _, r := range runs {
+		named += "/C" + r
+	}
+	// The ticket's own part (Q<seq>/V<n>) and /U take at most 30 bytes.
+	if len(m)+len(named) > history.MaxRef-32 {
+		named = "/C*"
+	}
+	return m + named
+}
+
+// markNamesRun says a ticket's mark was made of resolutions judged from
+// run's ledger rows (or of too many runs to name).
+func markNamesRun(mark, run string) bool {
+	for _, part := range strings.Split(mark, "/") {
+		if part == "C"+run || part == "C*" {
+			return true
+		}
+	}
+	return false
+}
+
+// markRunsResolutions marks dirty every ticket the index holds whose
+// resolutions were judged from run's ledger rows, by their marks: a run
+// whose rows are gone took its receipts with it, and each ticket's pass
+// says its resolutions as the ledger now holds them (resolved, not
+// checked, their entries gone). Called wherever a pruned run's decisions
+// are asked for again (markRunsDecisions).
+func (h *historyIndexer) markRunsResolutions(ctx context.Context, ix *history.Index, run string) error {
+	for after := "ticket:"; ; {
+		page, err := ix.Sources(ctx, after, history.MaxSourcesPage)
+		if err != nil {
+			return err
+		}
+		for _, s := range page {
+			if !strings.HasPrefix(s.Key, "ticket:") {
+				return nil
+			}
+			if markNamesRun(s.Mark, run) {
+				h.mark(s.Key)
+			}
+		}
+		if len(page) < history.MaxSourcesPage {
+			return nil
+		}
+		after = page[len(page)-1].Key
+	}
 }
 
 // verdictWords is a review's verdict in RV1's words.

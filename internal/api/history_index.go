@@ -1300,7 +1300,8 @@ func (h *historyIndexer) indexRun(ctx context.Context, ix *history.Index, id str
 	// again by this pass retried (a decision another run's transition
 	// changed is found by the reconcile, markMovedDecisions). A run the
 	// ledger no longer has, its record kept, was pruned: every decision it
-	// held or opened is read again, taken with it or handed back.
+	// held or opened is read again, taken with it or handed back, and every
+	// ticket whose resolutions were judged from its receipts.
 	switch {
 	case inLedger:
 		if err := h.markDecisions(ctx, ix, ld, p); err != nil {
@@ -1308,6 +1309,9 @@ func (h *historyIndexer) indexRun(ctx context.Context, ix *history.Index, id str
 		}
 	case ld != nil && (!had || markInLedger(old)):
 		if err := h.markRunsDecisions(ctx, ix, id); err != nil {
+			return err
+		}
+		if err := h.markRunsResolutions(ctx, ix, id); err != nil {
 			return err
 		}
 	}
@@ -1635,13 +1639,17 @@ func checkSources(ctx context.Context, ix *history.Index, run string) (map[strin
 
 // removeRun removes a run that is gone (pruned, its record deleted) with
 // every receipt it owned, and asks again of every decision it held or
-// opened (the prune took or handed back each).
+// opened (the prune took or handed back each) and of every ticket whose
+// resolutions its receipts were judged from.
 func (h *historyIndexer) removeRun(ctx context.Context, ix *history.Index, id string) error {
 	held, err := checkSources(ctx, ix, id)
 	if err != nil {
 		return err
 	}
 	if err := h.markRunsDecisions(ctx, ix, id); err != nil {
+		return err
+	}
+	if err := h.markRunsResolutions(ctx, ix, id); err != nil {
 		return err
 	}
 	for key := range held {

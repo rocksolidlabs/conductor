@@ -4853,8 +4853,17 @@ to the finding, which stays said, and `cites` the candidate's
 receipt (a check that failed, none, an attempt the ledger does not hold)
 is said in the finding's summary, resolved and not checked, and is no
 entry; one whose attempt has not ended, or whose receipt is still on its
-way, waits under the ticket's `/U`. A finding marked open or withdrawn
-since has none. A **brief** (`brief:<br-n>`) is read
+way, waits under the ticket's `/U`. What the ledger held of each
+resolution is part of the ticket's mark, `/E<digest>/C<run>...` before
+the `/U` (a digest of each judgement: the candidate, so its run and
+attempt, and its receipt verified or why not; then the runs those
+candidates are of, `/C*` when they would not fit the mark's 512 bytes):
+a ticket whose mark carries one is read again whenever its pass runs (a
+restart's catch-up among them) and kept only when the digest still
+agrees, and a run whose ledger rows are gone reads again every ticket
+whose mark names it, as it does its decisions, so a resolution whose
+receipt went with a pruned run is said resolved and not checked and its
+entry leaves. A finding marked open or withdrawn since has none. A **brief** (`brief:<br-n>`) is read
 through Brakeman's store, its mark the brief's time and op id, and found
 by the reconcile from its request's file as well as its brief's (the
 brief is written before the request that says it keeps one; the files

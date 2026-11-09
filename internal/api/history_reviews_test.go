@@ -3,8 +3,11 @@ package api
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/url"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -407,6 +410,108 @@ func TestAResolutionWaitsForItsReceipt(t *testing.T) {
 	}
 	if mk := histMark(t, ix, "ticket:CND-1"); repoNotKnown(mk) {
 		t.Fatalf("judged, the mark %q still waits", mk)
+	}
+}
+
+// histPrunedResolution checks that the resolution m of finding f, once
+// checked by build #2's receipt, is said on the finding resolved and not
+// checked now that its run's ledger rows are gone, and is no entry.
+func histPrunedResolution(t *testing.T, e *testEnv, ix *history.Index, run, f string, m dispatch.Mark, before string) {
+	t.Helper()
+	histGone(t, ix, hResolvedRef("CND-1", m.ID))
+	x := histEntry(t, ix, hFindingRef("CND-1", f))
+	if want := "now resolved on build#2 by Nate, not checked: the ledger holds no receipt of build#2"; x.Class != history.ClassSaid ||
+		x.Outcome != dispatch.FindingResolved || !strings.Contains(x.Summary, want) {
+		t.Fatalf("the finding once %s was pruned: %+v, want %q", run, x.Entry, want)
+	}
+	if keys := hsKeys(hsSearch(t, e, "ticket:CND-1 class:checked")); len(keys) != 0 {
+		t.Fatalf("checked by a pruned receipt: %v", keys)
+	}
+	if mk := histMark(t, ix, "ticket:CND-1"); mk == before || repoNotKnown(mk) {
+		t.Fatalf("the ticket's mark %q once %s was pruned, %q before", mk, run, before)
+	}
+}
+
+// histCheckedResolution resolves the line finding of Nate's review on
+// build #2, whose receipt passed, and checks that the resolution is
+// checked and that the ticket's mark names the run its receipt is of.
+func histCheckedResolution(t *testing.T, e *testEnv, run string) (f string, m dispatch.Mark, mark string) {
+	t.Helper()
+	v := histReview(t, e, run)
+	f = v.Findings[0].ID
+	m = histMarkFinding(t, e, run, f, 2, dispatch.FindingResolved, "the shrike is gone")
+	ix := histSettle(t, e)
+	if r := histEntry(t, ix, hResolvedRef("CND-1", m.ID)); r.Class != history.ClassChecked {
+		t.Fatalf("the resolution: %+v", r.Entry)
+	}
+	mark = histMark(t, ix, "ticket:CND-1")
+	if !markNamesRun(mark, run) {
+		t.Fatalf("the ticket's mark %q names no run its resolution was judged from", mark)
+	}
+	return f, m, mark
+}
+
+// A checked resolution whose run is pruned is checked no longer: what the
+// ledger held of its receipt is part of the ticket's mark, and the run's
+// pass, finding its rows gone, reads again the ticket whose mark names
+// it, though nothing of the ticket changed in Dispatch. The finding is
+// then said resolved and not checked, and the resolution's entry leaves.
+func TestAPrunedReceiptLeavesItsResolutionUnchecked(t *testing.T) {
+	e := newTestEnv(t, nil)
+	run := histReviewed(t, e)
+	f, m, before := histCheckedResolution(t, e, run)
+	ld := e.srv.ledger
+	histFinish(t, ld, run)
+	if err := ld.Prune(t.Context(), run); err != nil {
+		t.Fatal(err)
+	}
+	histPrunedResolution(t, e, histReconcile(t, e), run, f, m, before)
+}
+
+// The same prune made while the server was down, by a ledger that tells
+// no hook of the server's: the restart's catch-up reads again the ticket
+// whose mark carries a judgement from the ledger, compares it, and the
+// resolution is checked no longer.
+func TestAReceiptPrunedWhileDownLeavesItsResolutionUnchecked(t *testing.T) {
+	e := newTestEnv(t, nil)
+	run := histReviewed(t, e)
+	f, m, before := histCheckedResolution(t, e, run)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	e.srv.Shutdown(ctx)
+	ld, err := ledger.Open(filepath.Join(e.srv.cfg.DataDir, "runs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	histFinish(t, ld, run)
+	if err := ld.Prune(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := ld.Close(); err != nil {
+		t.Fatal(err)
+	}
+	e2 := e.restart()
+	histPrunedResolution(t, e2, histSettle(t, e2), run, f, m, before)
+}
+
+// The resolutions' part of a ticket's mark names the runs its judgements
+// were read from while they fit the mark's bound, and any run (C*) past
+// it, so a prune of any of them still reads the ticket again.
+func TestAResolutionsMarkFitsItsBound(t *testing.T) {
+	few := map[string]resolutionCheck{candName("hist-000000a1", "build", 2, commitID(2)): {verified: true, receipts: 1}}
+	if m := resolutionsMark(few); !markNamesRun(m, "hist-000000a1") || markNamesRun(m, "hist-000000a2") {
+		t.Fatalf("one run: %q", m)
+	}
+	many := map[string]resolutionCheck{}
+	for i := range 40 {
+		many[candName(fmt.Sprintf("a-long-run-name-%02d-%08x", i, i), "build", 2, commitID(2))] = resolutionCheck{why: "build#2 has no receipt"}
+	}
+	m := "Q" + strconv.FormatInt(math.MaxInt64, 10) + "/" + ticketShape + resolutionsMark(many) + "/U"
+	if len(m) > history.MaxRef || !markNamesRun(m, "a-long-run-name-07-00000007") || !markNamesRun(m, "any-00000001") {
+		t.Fatalf("40 runs: %d bytes, %q", len(m), m)
+	}
+	if resolutionsMark(nil) != "" {
+		t.Fatal("no judgement makes a part")
 	}
 }
 
