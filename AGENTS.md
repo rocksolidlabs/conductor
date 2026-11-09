@@ -119,7 +119,9 @@ add its rule here.
   wait is right for the product and wrong for a test that only needs the
   thing to happen: give the test its own wait where the product's is not
   what is tested, or make the product's bound generous where it only bounds
-  a hang.
+  a hang (2026-11-08: internal/api's race run reached go test's 30 m bound
+  on CI; the bound is 60 m now, and the package's own length is a separate
+  row).
 - Order what must be ordered. Keys that must stay unconfirmed go in after
   the process is stopped (SIGSTOP), not raced against a kill. A check made
   at once after an action ("nothing served yet") holds the step the action
