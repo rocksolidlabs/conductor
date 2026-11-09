@@ -466,6 +466,54 @@ describe("a failed check's prepared repair", () => {
     expect(await words).toBe('Checked again as attempt 4 of run run-2, a continuation of run-1.')
   })
 
+  it('reads the request again when the run refuses Check again as moved on, and asks at the new revision, the edits kept', async () => {
+    const r = useReview(new DispatchOrder())
+    const p = usePreparedRepair(r, () => cand)
+    const asked = p.prepare(ref, 'test', 1)
+    sent[0]!.h.ok(preparedOf('run-1/build/3/check/test/1'))
+    await asked
+    const shown = p.prepared.value!
+    const panel = useRecheckAsk(() => p.prepared.value)
+    // The continuation moved on between the read and the press (it had just started): refused, nothing done.
+    const first = panel.again(p.recheck)
+    expect(sent[1]!.body).toMatchObject({ expectedRevision: 7 })
+    sent[1]!.h.fail(new ApiError(409, 'stale_revision', 'moved on', {}, { receipt: { ...receipt, status: 'failed', refusal: 'stale_revision', error: 'the run has moved on since the revision expected: expected 7, the run was at 8 when the command was taken and is at 9' } }))
+    await settle()
+    expect(sent[2]!.path).toBe('/api/runs/run-1/tasks/build/attempts/1/steps/test/1/repair')
+    sent[2]!.h.ok({ ...preparedOf('run-1/build/3/check/test/1'), recheck: { allowed: true, run: 'run-2', revision: 9, attempt: 3, commit: C } })
+    await first
+    // The same request shown (its class, quote and words kept by the panel), its Check again at the run as it is now.
+    expect(p.prepared.value).toBe(shown)
+    expect(p.prepared.value!.recheck.revision).toBe(9)
+    expect(panel.failure.value).toBe('The run moved on since the repair was prepared: nothing was done. It is read again: Check again asks the run as it is now.')
+    expect(panel.rechecked.value).toBe('')
+    const second = panel.again(p.recheck)
+    expect(sent[3]!.body).toMatchObject({ attempt: 3, commit: C, expectedRevision: 9 })
+    sent[3]!.h.ok({ receipt, run: 'run-2', attempt: 4 })
+    await second
+    expect(panel.rechecked.value).toBe('Checked again as attempt 4 of run run-2, a continuation of run-1.')
+    expect(panel.failure.value).toBe('')
+  })
+
+  it('leaves a request prepared since alone when the moved-on read lands late', async () => {
+    const r = useReview(new DispatchOrder())
+    const p = usePreparedRepair(r, () => cand)
+    const asked = p.prepare(ref, 'test', 1)
+    sent[0]!.h.ok(preparedOf('run-1/build/3/check/test/1'))
+    await asked
+    const words = p.recheck(p.prepared.value!)
+    sent[1]!.h.fail(new ApiError(409, 'stale_revision', 'moved on', {}, { receipt: { ...receipt, status: 'failed', refusal: 'stale_revision', error: 'moved on' } }))
+    await settle()
+    // Another receipt prepared while the request was read again.
+    const later = p.prepare(ref, 'test', 2)
+    sent[3]!.h.ok(preparedOf('run-1/build/3/check/test/2'))
+    await later
+    sent[2]!.h.ok({ ...preparedOf('run-1/build/3/check/test/1'), recheck: { allowed: false, run: 'run-2', revision: 9, attempt: 3, commit: C } })
+    await expect(words).rejects.toThrow('The run moved on')
+    expect(p.prepared.value!.finding.check.receipt).toBe('run-1/build/3/check/test/2')
+    expect(p.prepared.value!.recheck).toMatchObject({ allowed: true, revision: 7 })
+  })
+
   it("never writes a slow Check again's reply into the panel of the receipt prepared after it", async () => {
     const shown = vue.ref<PreparedRepair | null>(preparedOf('run-1/build/3/check/test/1'))
     const a = useRecheckAsk(() => shown.value)

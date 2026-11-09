@@ -2,7 +2,7 @@ import { computed, getCurrentScope, nextTick, onScopeDispose, watch, type Inject
 import { ApiError } from './useApi'
 import type { DispatchReceipt, OpBody, RunCandidate } from './useDispatch'
 import { through, type DispatchOrder } from '~/utils/dispatchOrder'
-import { mintCommandId, sendCommand } from '~/utils/tasks'
+import { CommandRefused, mintCommandId, sendCommand } from '~/utils/tasks'
 import { allPages, candidateRef, parseCandidate, type CandidateRef } from '~/utils/dispatch'
 import { latest, recheckWords, type CheckRef, type Located, type NewFinding, type PreparedRepair, type ReviewApplication, type ReviewBody, type Side } from '~/utils/review'
 
@@ -490,9 +490,12 @@ export function usePreparedRepair(r: Pick<ReturnType<typeof useReview>, 'prepare
   const error = ref('')
   const loading = ref(false)
   const asks = latest()
+  // What the request shown was prepared from, to read it again when the run refuses its Check again as moved on.
+  let from: { c: CandidateRef; id: string; k: number; at: string } | null = null
   async function prepare(c: CandidateRef, id: string, k: number): Promise<void> {
     const at = shown()
     const current = asks.ask()
+    from = { c, id, k, at }
     open.value = true
     prepared.value = null
     error.value = ''
@@ -510,12 +513,27 @@ export function usePreparedRepair(r: Pick<ReturnType<typeof useReview>, 'prepare
   }
   /**
    * Check again of the candidate the prepared request `p` names, as it names it: its receipt's run and task, the attempt and the commit
-   * of its `recheck`, at its revision (of the run it goes to); the words of where it was checked.
+   * of its `recheck`, at its revision (of the run it goes to); the words of where it was checked. A refusal because the run moved on
+   * since the request was read (stale_revision: a continuation just started, a task that moved) did nothing: the request is read again
+   * and, while `p` is still the one shown, its `recheck` (the run, its revision, whether Check again stands) takes the new one's, the
+   * person's class, quote and words kept; the refusal says so, and Check again, if it still stands, asks the run as it is now.
    */
   async function recheck(p: PreparedRepair): Promise<string> {
     const c = { run: p.finding.check.run, task: p.finding.check.task, attempt: p.recheck.attempt, commit: p.recheck.commit }
-    const reply = await r.recheck(c, p.recheck.revision)
-    return recheckWords(c, { run: reply.run || p.recheck.run, attempt: reply.attempt })
+    try {
+      const reply = await r.recheck(c, p.recheck.revision)
+      return recheckWords(c, { run: reply.run || p.recheck.run, attempt: reply.attempt })
+    } catch (e) {
+      const at = from
+      if (!(e instanceof CommandRefused) || e.receipt.refusal !== 'stale_revision' || !at) throw e
+      const fresh = await r.prepare(at.c, at.id, at.k).catch(() => null)
+      if (!fresh) throw new Error(`${e.message}. Nothing was done; prepare the repair again to read the run as it is now.`, { cause: e })
+      if (prepared.value === p && from === at && shown() === at.at) p.recheck = fresh.recheck
+      throw new Error(
+        `The run moved on since the repair was prepared: nothing was done. It is read again: ${fresh.recheck.allowed ? 'Check again asks the run as it is now.' : 'Check again is not offered now.'}`,
+        { cause: e },
+      )
+    }
   }
   return { open, prepared, error, loading, prepare, recheck }
 }

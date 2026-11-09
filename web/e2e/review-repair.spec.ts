@@ -504,9 +504,21 @@ test("a failed check of a run stopped and continued, checked again in the contin
   await expect(panel).toBeVisible(within(60_000))
   await expect(panel).toHaveAttribute('data-repair-receipt', `${run}/build/3/check/ok/${bad.k}`)
   await expect(panel).toHaveAttribute('data-repair-recheck-allowed', 'true', within(30_000))
-  await page.locator('[data-repair-recheck]').click()
   const words = panel.locator('[data-repair-rechecked]')
-  await expect(words).toContainText(`of run ${next}, a continuation of ${run}.`, within(60_000))
+  const refused = panel.locator('[data-repair-recheck-error]')
+  await page.locator('[data-repair-recheck]').click()
+  // The continuation had just started and may move on between the panel's read and the press: the run refuses that Check again
+  // (stale_revision), nothing done, and the panel reads the request again and says so; pressed again, it asks the run as it is now.
+  await expect(async () => {
+    if (await words.count()) return
+    if (await refused.count()) {
+      await expect(refused).toHaveText('The run moved on since the repair was prepared: nothing was done. It is read again: Check again asks the run as it is now.')
+      await page.locator('[data-repair-recheck]').click({ timeout: 5_000 })
+    }
+    await expect(words).toBeVisible({ timeout: 5_000 })
+  }).toPass(within(60_000))
+  await expect(refused).toHaveCount(0)
+  await expect(words).toContainText(`of run ${next}, a continuation of ${run}.`, within(30_000))
   const n = Number(/attempt (\d+) of run/.exec((await words.textContent()) ?? '')?.[1])
   expect(n).toBeGreaterThan(3)
   const again = await candidateUntil(api, next, 'build', n, passed, "the continuation's check again stands with its own passing receipt")
