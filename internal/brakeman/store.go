@@ -21,6 +21,7 @@
 //	requests/br-<n>-refs.json      the brief's resolutions, 4 MiB
 //	requests/br-<n>-reads.json     the turn's read log, 2 MiB
 //	requests/br-<n>-make-<i>.json  a pending make's input, 4 MiB
+//	folders/<account>/             a folder turns run in in place of the home folder (Folder)
 //
 // A request's siblings are written before the request write that names
 // them, and removed after the request when it is pruned; at Open, siblings
@@ -55,6 +56,7 @@ const (
 	ConfigFile   = "config.json"
 	StateFile    = "state.json"
 	RoleFile     = "role.json"
+	FoldersDir   = "folders"
 	MaxRoleDoc   = 1 << 20
 	Lock         = "owner.lock"
 	MaxConfigDoc = 64 << 10
@@ -147,6 +149,31 @@ var keepNewest = Keep
 
 // takeLock is store.TakeOwnerLock; the tests make it fail.
 var takeLock = store.TakeOwnerLock
+
+// Folder is the desk's own folder for the turns of account, made 0700
+// when missing and kept across turns and restarts:
+// brakeman/folders/default for the agent's default login (account ""),
+// else brakeman/folders/<the first 16 bytes of the account's SHA-256, in
+// hex>. A turn whose configured folder is the home folder runs here
+// instead (#705): an agent keeps what a person trusts per folder and
+// account, and Claude Code never records the home folder's trust, so one
+// stable folder per account is asked about once.
+func (s *Store) Folder(account string) (string, error) {
+	key := "default"
+	if account != "" {
+		sum := sha256.Sum256([]byte(account))
+		key = hex.EncodeToString(sum[:16])
+	}
+	f, err := s.st.Sub(FoldersDir)
+	if err != nil {
+		return "", err
+	}
+	d, err := f.Sub(key)
+	if err != nil {
+		return "", err
+	}
+	return d.Dir(), nil
+}
 
 // beforeWrite, when a test sets it, runs before each document is written
 // with its name ("state.json", "requests/br-1.json"); an error it

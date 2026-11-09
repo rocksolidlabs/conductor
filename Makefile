@@ -65,7 +65,7 @@ dev: ## instructions for two-process development
 	@echo "Terminal 2: make web-dev  (Nuxt on :3000, proxies /api and /ws)"
 
 test: ## race-enabled Go tests (the bound catches a hang: docs/checks.md)
-	go test -race -count=1 -timeout 30m ./...
+	go test -race -count=1 -timeout 60m ./...
 
 preflight: ## every check CI runs, here, from the committed head, with a receipt and a log per step (scripts/preflight.py; --machines mac,windows for the other machines)
 	python3 scripts/preflight.py

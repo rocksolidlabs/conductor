@@ -140,6 +140,47 @@ export function oneReadAtATime<T>(read: (q: string) => Promise<T>, apply: (value
   }
 }
 
+/** How long a read of a person's work may take before it is given up: its fetch aborted, the page saying so, the next read free to start. */
+export const PERSON_READ_MS = 15_000
+
+/** The words a read given up after `ms` fails with. */
+export function noReplyWords(ms: number): string {
+  return `the server sent no reply in ${Math.round(ms / 1000)} s`
+}
+
+/**
+ * A read bounded in time and cancellable: `read` is handed `ctl`'s signal, which is aborted when `ms` pass without its reply (the promise
+ * rejecting with `noReplyWords`) or when the caller aborts `ctl` (rejecting at once). A reply that comes after either is never returned,
+ * so a stalled read never holds the reads queued after it (`SerialReads`) and a late one never puts back what a newer read replaced.
+ */
+export function boundedRead<T>(read: (signal: AbortSignal) => Promise<T>, ms: number, ctl: AbortController = new AbortController()): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let done = false
+    const settle = (f: () => void) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      ctl.signal.removeEventListener('abort', aborted)
+      f()
+    }
+    const timer = setTimeout(() => {
+      const why = new Error(noReplyWords(ms))
+      settle(() => reject(why))
+      ctl.abort(why)
+    }, ms)
+    const aborted = () => settle(() => reject(ctl.signal.reason instanceof Error ? ctl.signal.reason : new Error('the read was given up')))
+    if (ctl.signal.aborted) {
+      aborted()
+      return
+    }
+    ctl.signal.addEventListener('abort', aborted)
+    read(ctl.signal).then(
+      (v) => settle(() => resolve(v)),
+      (e) => settle(() => reject(e)),
+    )
+  })
+}
+
 /** The tickets one page of a person's list reads (`ticketsPageQuery`). */
 export const TICKETS_PAGE = 20
 
@@ -156,6 +197,27 @@ export interface PersonTicketList {
   next?: string
   read: boolean
   error: string
+}
+
+/** A person's two ticket lists as a read of their work starts them: each with tickets, its first page not read yet. */
+export function freshTicketLists(tickets: PersonWork['tickets']): PersonTicketList[] {
+  return tickets
+    ? [
+        { id: 'owner' as const, label: 'Owned', href: tickets.ownerHref, total: tickets.owner, tickets: [], read: false, error: '' },
+        { id: 'assignee' as const, label: 'Assigned', href: tickets.assigneeHref, total: tickets.assignee, tickets: [], read: false, error: '' },
+      ].filter((l) => l.total)
+    : []
+}
+
+/**
+ * Whether a read of a person's work keeps the ticket lists the page shows, every page read through Show more with them: only a read made
+ * for a decision's change (`decisionsOnly`) of the person the lists were read for (`listsFor`), whose tickets' lists and counts are the
+ * ones the lists were started from (`from`). Any other read starts them again from their first page.
+ */
+export function keepsTicketLists(decisionsOnly: boolean, listsFor: string | null, who: string, from: PersonWork['tickets'] | undefined, now: PersonWork['tickets']): boolean {
+  if (!decisionsOnly || listsFor !== who || from === undefined) return false
+  if (from === null || now === null) return from === now
+  return from.owner === now.owner && from.assignee === now.assignee && from.ownerHref === now.ownerHref && from.assigneeHref === now.assigneeHref
 }
 
 /** The query of a page of a person's list: the list's own filter, a page of `TICKETS_PAGE`, after `cursor` when one is given. */

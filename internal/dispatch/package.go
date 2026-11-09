@@ -37,8 +37,23 @@ type Package struct {
 	Attachments []PackageAttachment `json:"attachments"`
 	Comments    []PackageComment    `json:"comments"`
 	Constraints string              `json:"constraints"`
-	Decisions   []PlanDecision      `json:"decisions"`
+	Decisions   []PackageDecision   `json:"decisions"`
 	Launch      PackageLaunch       `json:"launch"`
+}
+
+// PackageDecision is a decision of the revision as its package names it:
+// its id, question, kind and the tasks it comes before, encoded as
+// PlanDecision is without its for (as the package was before HM1). Whom it is for
+// (PlanDecision.For, HM1) is not in the package: the engine is handed it
+// from the revision's body beside the package (crew.Planned.For), so the
+// package keeps version 1's shape, which every build reads, and an older
+// build that continues a run of this one is never handed a label it would
+// drop or refuse.
+type PackageDecision struct {
+	ID       string   `json:"id"`
+	Question string   `json:"question"`
+	Kind     string   `json:"kind"`
+	Before   []string `json:"before"`
 }
 
 // PackageTicket is the ticket as it stood at the launch: its row's fields
@@ -222,14 +237,14 @@ func (t *tx) buildPackage(tk Ticket, p PlanSummary, body PlanBody, crew planCrew
 		Attachments: make([]PackageAttachment, 0, len(attachments)),
 		Comments:    make([]PackageComment, 0, len(comments)),
 		Constraints: body.Constraints,
-		Decisions:   body.Decisions,
+		Decisions:   make([]PackageDecision, 0, len(body.Decisions)),
 		Launch:      launch,
 	}
 	if pkg.References == nil {
 		pkg.References = []PlanReference{}
 	}
-	if pkg.Decisions == nil {
-		pkg.Decisions = []PlanDecision{}
+	for _, d := range body.Decisions {
+		pkg.Decisions = append(pkg.Decisions, PackageDecision{ID: d.ID, Question: d.Question, Kind: d.Kind, Before: d.Before})
 	}
 	for i, a := range attachments {
 		pkg.Attachments = append(pkg.Attachments, PackageAttachment{ID: a.ID, Name: a.Name, File: attachmentFile(i, a.Name), Size: a.Size, SHA256: a.SHA256, ContentType: a.ContentType})

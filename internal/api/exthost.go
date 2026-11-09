@@ -392,6 +392,17 @@ func (h *extHost) LaunchTurn(ctx context.Context, r ext.TurnLaunch) (ext.RunRef,
 	if !ok {
 		return ext.RunRef{}, fmt.Errorf("%w: no agent %s in the catalog", ext.ErrNotFound, r.Agent)
 	}
+	// The folders it may read are resolved as its own is (launchTurn's
+	// openCwd): each within the allowed roots, as it is now.
+	reads := make([]string, 0, len(r.Reads))
+	for _, dir := range r.Reads {
+		real, err := h.s.resolveCwd(dir)
+		if err != nil {
+			return ext.RunRef{}, refused("a folder the turn reads: %v", err)
+		}
+		reads = append(reads, real)
+	}
+	r.Reads = reads
 	c, err := turnCrew(a, r)
 	if err != nil {
 		return ext.RunRef{}, hostRefusal{err}

@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -13,7 +13,9 @@ import { renderConfig, scratchRepo, startServer, stopServer, type Started } from
 // Brakeman's reading, the fact with its evidence linking to the run and the session, and the interpretation naming the fact; the
 // turn's run is stopped after it and the request leaves In progress; the page links Settings while Brakeman is on; the server
 // started again on the same data shows the same brief; a brief kept with its summary alone shows its reading; a `brief:` link to an
-// item of a brief opened before scrolls to the item once it is drawn; and a brief opened in one tab is opened in the others.
+// item of a brief opened before scrolls to the item once it is drawn; a brief opened in one tab is opened in the others; and
+// Settings says where a turn runs and what it reads besides: the configured folder, and with the home folder configured, the desk's
+// own folder, reading the home folder (#705); the brief's provenance names the folder its turn ran in.
 test.describe.configure({ mode: 'serial' })
 
 /** The cap of every wait a step makes without a bound of its own: the config's expect bound, an action's and the navigation's. */
@@ -35,6 +37,7 @@ interface Request {
   sessionId?: string
   hasBrief?: boolean
   reads?: number
+  agent?: { folder?: string }
 }
 
 let server: Started | null = null
@@ -44,6 +47,8 @@ let root = ''
 let gate = ''
 let start: () => Promise<Started>
 let briefed: Request
+/** The server's home folder (its HOME). */
+let homeDir = ''
 
 test.beforeAll(async () => {
   const here = dirname(fileURLToPath(import.meta.url))
@@ -51,6 +56,7 @@ test.beforeAll(async () => {
   // the suite's scratch root: a folder there is one more entry in the listings other specs' pickers read (settings.spec.ts).
   root = mkdtempSync(join(tmpdir(), 'conductor-e2e-brakeman-'))
   const home = join(root, 'home')
+  homeDir = home
   const data = join(root, 'data')
   const repo = join(root, 'repo')
   for (const d of [home, data, repo]) mkdirSync(d, { recursive: true })
@@ -119,6 +125,9 @@ test('Settings saves Brakeman with the stub as its agent and terminal screens of
     return [c.enabled, c.agentId, c.visibility.terminals, c.visibility.runs, c.rev]
   }, { timeout: 15_000 }).toEqual([true, 'brakeman-stub', false, true, before.rev + 1])
   await expect(page.locator('[data-save-settings]')).toBeDisabled()
+  // Where its turns run (#705): the configured folder, which is not the home folder, reading nothing else.
+  const { config } = await api.ok<{ config: { cwd: string } }>('GET', '/api/brakeman')
+  await expect(card.locator('[data-brakeman-folders]')).toHaveText(`Its turns run in ${config.cwd}.`)
 })
 
 test('a briefing waits behind the turn in progress, then runs in its session, and its brief takes neither the focus nor the page', async ({ page }) => {
@@ -177,6 +186,9 @@ test('a briefing waits behind the turn in progress, then runs in its session, an
   await page.locator('[data-brakeman-briefs] [data-request="br-2"] [data-request-open]').click()
   const brief = page.locator('[data-brief="br-2"]')
   await expect(brief.locator('[data-brief-provenance]')).toContainText('brakeman-stub (claude) · its default model · version 2.1.287 · request br-2 · as of')
+  // And the folder its turn ran in, as its stamp names it (#705).
+  expect(briefed.agent?.folder).toBeTruthy()
+  await expect(brief.locator('[data-brief-provenance]')).toContainText(` · ran in ${briefed.agent!.folder}`)
   await expect(brief.locator('[data-brief-title]')).toHaveText('Stub brief for br-2')
   await expect(brief.locator('[data-brief-reading]')).toContainText("Brakeman's reading")
   await expect(brief.locator('[data-brief-reading]')).toContainText('The stub read its request and what changed, and found its own turn.')
@@ -277,4 +289,16 @@ test('a brief opened in one tab is opened in the others, and stays opened', asyn
   const marks = () => Object.keys(localStorage).filter((k) => k.startsWith('conductor.brakeman.opened/'))
   expect(await other.evaluate(marks)).toEqual([`conductor.brakeman.opened/br-2@${request.createdAt}`])
   await other.close()
+})
+
+test('with the home folder as its folder, its turns run in a folder of their own, which Settings names, and read the home folder', async ({ page }) => {
+  // The home folder is the desktop app's default folder, whose trust Claude Code never keeps (#705).
+  const { config: c } = await api.ok<{ config: Record<string, unknown> & { rev: number } }>('GET', '/api/brakeman')
+  await api.ok('PUT', '/api/brakeman/config', { rev: c.rev, config: { ...c, cwd: homeDir } })
+  const { folders } = await api.ok<{ folders: { turn: string; reads: string[] } }>('GET', '/api/brakeman')
+  expect(folders.turn).toBe(join(realpathSync(join(root, 'data')), 'brakeman', 'folders', 'default'))
+  expect(folders.reads).toEqual([realpathSync(homeDir)])
+  await open(page, '/settings')
+  const card = page.locator('[data-brakeman-settings]')
+  await expect(card.locator('[data-brakeman-folders]')).toHaveText(`Its turns run in ${folders.turn}, a folder of their own you trust once, and read ${folders.reads[0]} besides.`)
 })

@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest'
 import {
   DecisionRefused,
   acceptedAnswer,
+  answerAsWords,
   answerRows,
+  approverWords,
+  assignmentWords,
+  forWords,
   confirmAuthorizes,
   cutNotice,
   mirroringSessions,
@@ -331,5 +335,33 @@ describe('one palette row per decision', () => {
   it("names the session a mirrored decision's row stands for", () => {
     const rows = answerRows([decision({ id: 'dr-1' })], () => {}, (id) => (id === 'dr-1' ? 'build' : undefined))
     expect(rows[0]!.detail).toBe("asked by build's attempt 1 in build")
+  })
+})
+
+// Whom a decision is for (docs/plans/decisions.md, HM1, PR-12): who may answer stays the operator, for the person the label named; the
+// confirm says whom the operator answers for; an assignment says what the person is to do; the accepted answer keeps for whom.
+describe('whom a decision is for', () => {
+  const forNate = { label: 'role:architecture', person: 'nate', responsibility: 'architecture' }
+  it('says the operator answers, for the person', () => {
+    expect(approverWords(decision())).toBe('the operator')
+    expect(approverWords(decision({ request: { ...decision().request, for: forNate } }))).toBe('the operator, for nate (architecture owner)')
+    expect(approverWords(decision({ request: { ...decision().request, for: { label: 'person:ana', person: 'ana' } } }))).toBe('the operator, for ana')
+    // A label that resolved to no one is the operator's alone.
+    expect(approverWords(decision({ request: { ...decision().request, for: { label: 'role:security', person: '' } } }))).toBe('the operator')
+  })
+  it('says it in words, the confirm and the assignment', () => {
+    expect(forWords(forNate)).toBe('nate, the architecture owner')
+    expect(forWords({ person: 'ana' })).toBe('ana')
+    expect(forWords(null)).toBe('')
+    expect(answerAsWords(decision({ request: { ...decision().request, for: forNate } }))).toBe('You answer as the operator, for nate')
+    expect(answerAsWords(decision())).toBe('')
+    const assign = decision({ type: 'assignment', origin: 'plan', request: { question: 'Run the migration on staging', for: { label: 'person:ana', person: 'ana' } } })
+    expect(assignmentWords(assign)).toBe('ana is to do this by hand; the operator answers Done or Not done for them')
+    expect(assignmentWords(decision({ request: { ...decision().request, for: forNate } }))).toBe('')
+  })
+  it("keeps the receipt's for beside who answered", () => {
+    const d = decision({ state: 'answered', request: { ...decision().request, for: forNate }, responses: [{ ...recorded, for: { person: 'nate', responsibility: 'architecture' } }] })
+    expect(acceptedAnswer(d)).toEqual({ choice: 'Approve', by: 'Nate', for: 'nate, the architecture owner' })
+    expect(acceptedAnswer(decision({ state: 'answered', responses: [recorded] }))?.for).toBeUndefined()
   })
 })

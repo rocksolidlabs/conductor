@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo } from '~/composables/useSessions'
 import type { BrakemanConfig, BrakemanScope, BrakemanVisibility } from '~/utils/brakeman'
-import { BOUNDS, BRAKEMAN_ADAPTERS, GRANTS, agentChoice, agentIdOf, agentItems as agentChoices, briefingLine, briefingList, configProblems, formField, sameConfig, grantHeld, observesOnly, scopeLines, scopeList, servedGrants, withGrant } from '~/utils/brakeman'
+import { BOUNDS, BRAKEMAN_ADAPTERS, GRANTS, agentChoice, agentIdOf, agentItems as agentChoices, briefingLine, briefingList, configProblems, foldersLine, formField, sameConfig, grantHeld, observesOnly, scopeLines, scopeList, servedGrants, withGrant } from '~/utils/brakeman'
 import { ApiError } from '~/composables/useApi'
 import { SETTINGS_FIELD_UI as fieldUi } from '~/utils/settingsSections'
 import { StaleRefusal, configForm, type BrakemanPart } from '~/utils/settingsSave'
@@ -10,7 +10,8 @@ import { StaleRefusal, configForm, type BrakemanPart } from '~/utils/settingsSav
  * Brakeman's card in Settings (docs/plans/brakeman.md, PR-6): its configuration, saved on the server (PUT /api/brakeman/config, at
  * the revision read): the agent (one whose adapter registers Conductor's tools and has a read-only mode: a turn never runs with yolo),
  * the account (the folder the agent's login lives in, or its default login), the model (for an agent with a model flag), the folder
- * its turns run in, what it may see (terminal screens off until turned on), its scope, whether it may draft and propose, and its
+ * it reads, with where its turns run and what they read as the server would launch them (a turn whose folder is the home folder runs in
+ * the desk's own folder, trusted once, and reads the home folder and the crews' folders besides, #705), what it may see (terminal screens off until turned on), its scope, whether it may draft and propose, and its
  * budget, and whether the background role wakes it (BK3: its window, cooldown, a question's wait and briefing times, and the day's
  * minutes). The form checks what the server checks; the server's own words are shown for what it refuses, and beside an agent whose
  * read-only mode does not hold (its warnings). What is refused of a field the form draws no control for (the scope as a whole, an
@@ -128,6 +129,13 @@ const caps = computed(() => (adapter.value ? BRAKEMAN_ADAPTERS[adapter.value] : 
 const problems = computed(() => (body.value ? configProblems(body.value, agents.value.length ? (adapter.value ?? '') : null) : {}))
 /** The server's words for the agent saved (Codex's read-only mode leaves its own MCP servers and exec-policy allow rules). */
 const warnings = computed(() => (form.value?.agentId && form.value.agentId === saved.value?.agentId ? (bk.state.value?.warnings ?? []) : []))
+/** Where a turn under the saved configuration runs and what it reads besides, while the form holds the saved agent, folder and account. */
+const folders = computed(() => {
+  const f = form.value
+  const s = saved.value
+  if (!f || !s || f.agentId !== s.agentId || f.cwd.trim() !== s.cwd || (f.account?.trim() || '') !== (s.account || '')) return null
+  return bk.state.value?.folders ?? null
+})
 /** The fields the form draws a control for, by the names the server gives them; `scope` is the scope's fieldset. */
 const controls = computed(() => {
   const out = new Set(['agentId', 'account', 'cwd', 'scope', 'permissions.act', 'budget.turnMinutes', 'budget.readsPerTurn', 'budget.turnsPerDay', 'budget.minutesPerDay', 'wake.windowSeconds', 'wake.cooldownMinutes', 'wake.questionMinutes', 'wake.briefings'])
@@ -216,9 +224,10 @@ defineExpose({ dirty, blocked: computed(() => Object.keys(problems.value).length
       <UFormField v-if="caps?.model" label="Model" description="Empty for the agent's default." :error="fieldError('model')" :ui="fieldUi">
         <UInput v-model="form.model" class="w-full font-mono text-xs" placeholder="the agent's default" data-brakeman-model />
       </UFormField>
-      <UFormField label="Folder" description="Where its turns run; it reads there and changes nothing." :error="fieldError('cwd')" :ui="fieldUi">
-        <DirInput v-model="form.cwd" picker-title="The folder Brakeman's turns run in" data-brakeman-cwd />
+      <UFormField label="Folder" description="The folder it reads, and changes nothing in. With your home folder its turns run in a folder of their own, which you trust once, and read this one." :error="fieldError('cwd')" :ui="fieldUi">
+        <DirInput v-model="form.cwd" picker-title="The folder Brakeman reads" data-brakeman-cwd />
       </UFormField>
+      <p v-if="folders" class="text-xs break-all text-muted" data-brakeman-folders>{{ foldersLine(folders, saved?.cwd ?? '') }}</p>
       <UFormField v-if="caps?.allowTools" label="Conductor's tools" :error="fieldError('allowConductorTools')" :ui="fieldUi">
         <USwitch v-model="form.allowConductorTools" label="Run Conductor's tools without asking" description="Without it the agent asks before each of Conductor's tools, and the turn waits on you in Needs you." data-brakeman-allow-tools />
       </UFormField>

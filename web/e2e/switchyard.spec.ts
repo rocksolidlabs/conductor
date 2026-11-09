@@ -22,8 +22,13 @@ let host: ChildProcess | null = null
 let syURL = ''
 const syAdmin = randomBytes(16).toString('hex')
 const hostToken = 'sy-host-' + randomBytes(8).toString('hex')
-const agentSession = randomUUID()
+let agentSession = ''
 let home = ''
+/**
+ * This start's own folder under the suite's state root: its switchyard's home, data and log, and the publishers' folders.
+ * A repeat of the spec (--repeat-each) starts in a new one, so it reads only what its own start wrote.
+ */
+let root = ''
 /** The link the conductor host had minted at the switchyard (--link control), from its terminal output. */
 let hostLink = ''
 /** A second server of the suite's shape, publishing to the switchyard: the crew run link test's. */
@@ -50,13 +55,17 @@ async function until(what: string, cond: () => Promise<boolean>, ms = 30_000) {
 }
 
 test.beforeAll(async ({ state }) => {
+  switchyard = host = publisher = null
+  hostLink = ''
+  agentSession = randomUUID()
+  root = join(state.root, `switchyard-${randomBytes(4).toString('hex')}`)
   const port = await pickPort()
   syURL = `http://127.0.0.1:${port}`
-  home = join(state.root, 'switchyard-home')
-  const data = join(state.root, 'switchyard-data')
+  home = join(root, 'switchyard-home')
+  const data = join(root, 'switchyard-data')
   mkdirSync(home, { recursive: true })
   mkdirSync(data, { recursive: true })
-  const log = openSync(join(state.root, 'switchyard.log'), 'a')
+  const log = openSync(join(root, 'switchyard.log'), 'a')
   switchyard = spawn(serverBinary(), ['switchyard', '--listen', `127.0.0.1:${port}`], {
     env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'C.UTF-8', HOME: home, CONDUCTOR_DATA_DIR: data, CONDUCTOR_PUBLIC_URL: syURL, CONDUCTOR_WORKBENCH_TOKEN: syAdmin, CONDUCTOR_HOST_TOKENS: hostToken, CONDUCTOR_ALLOWED_ROOTS: home, CONDUCTOR_REACH: 'off', CONDUCTOR_RENDEZVOUS: '0' },
     stdio: ['ignore', log, log],
@@ -79,18 +88,19 @@ test.beforeAll(async ({ state }) => {
     return sessions.some((s) => s.name === 'hosted-stub')
   })
   await until('the host prints its link', async () => {
-    const m = /conductor: share link control (\S+)/.exec(readFileSync(join(state.root, 'switchyard.log'), 'utf8'))
+    const m = /conductor: share link control (\S+)/.exec(readFileSync(join(root, 'switchyard.log'), 'utf8'))
     hostLink = m?.[1] ?? ''
     return hostLink !== ''
   })
 })
 
-test.afterAll(async ({ state }) => {
+test.afterAll(async () => {
   if (publisher) await stopServer(publisher.pid)
   host?.kill('SIGKILL')
   switchyard?.kill('SIGKILL')
+  switchyard = host = publisher = null
   // The log stays readable in the run's output: the scratch root goes with the teardown.
-  const log = join(state.root, 'switchyard.log')
+  const log = join(root, 'switchyard.log')
   if (existsSync(log)) console.log('switchyard log:\n' + readFileSync(log, 'utf8').split('\n').slice(-40).join('\n'))
 })
 
@@ -211,12 +221,12 @@ test('the switchyard launches nothing, and its join route answers no stranger or
 test('a crew run published to the switchyard is shared through it: Share says works from anywhere, the link lists the members there, and a revoke ends it', async ({ page, browser, state }) => {
   test.setTimeout(150_000)
   const here = dirname(fileURLToPath(import.meta.url))
-  const home2 = join(state.root, 'publisher-home')
-  const data2 = join(state.root, 'publisher-data')
-  const repo2 = join(state.root, 'publisher-repo')
+  const home2 = join(root, 'publisher-home')
+  const data2 = join(root, 'publisher-data')
+  const repo2 = join(root, 'publisher-repo')
   for (const d of [home2, data2, repo2]) mkdirSync(d, { recursive: true })
   scratchRepo(repo2)
-  const config = join(state.root, 'publisher.json')
+  const config = join(root, 'publisher.json')
   renderConfig(join(here, 'conductor.e2e.json'), config)
   publisher = await startServer({
     config,
@@ -224,7 +234,7 @@ test('a crew run published to the switchyard is shared through it: Share says wo
     data: data2,
     allowedRoot: state.root,
     defaultCwd: repo2,
-    log: join(state.root, 'publisher.log'),
+    log: join(root, 'publisher.log'),
     env: { CONDUCTOR_RENDEZVOUS: '1', CONDUCTOR_RENDEZVOUS_SERVER: syURL, CONDUCTOR_RENDEZVOUS_TOKEN: hostToken, CONDUCTOR_RENDEZVOUS_RELAY_ONLY: '1', CONDUCTOR_RENDEZVOUS_HOST_NAME: 'publisher' },
   })
   const pub = async <T>(method: string, path: string, body?: unknown): Promise<{ status: number; body: T }> => {
@@ -316,12 +326,12 @@ test('a crew run published to the switchyard is shared through it: Share says wo
 test('a session a Conductor publishes is listed there by little, a guest\'s Files pane roots at its folder, and a stop there ends only the publication', async ({ page, browser, state }) => {
   test.setTimeout(150_000)
   const here = dirname(fileURLToPath(import.meta.url))
-  const home3 = join(state.root, 'publisher3-home')
-  const data3 = join(state.root, 'publisher3-data')
-  const repo3 = join(state.root, 'publisher3-repo')
+  const home3 = join(root, 'publisher3-home')
+  const data3 = join(root, 'publisher3-data')
+  const repo3 = join(root, 'publisher3-repo')
   for (const d of [home3, data3, repo3]) mkdirSync(d, { recursive: true })
   scratchRepo(repo3)
-  const config = join(state.root, 'publisher3.json')
+  const config = join(root, 'publisher3.json')
   renderConfig(join(here, 'conductor.e2e.json'), config)
   publisher = await startServer({
     config,
@@ -329,7 +339,7 @@ test('a session a Conductor publishes is listed there by little, a guest\'s File
     data: data3,
     allowedRoot: state.root,
     defaultCwd: repo3,
-    log: join(state.root, 'publisher3.log'),
+    log: join(root, 'publisher3.log'),
     env: { CONDUCTOR_RENDEZVOUS: '1', CONDUCTOR_RENDEZVOUS_SERVER: syURL, CONDUCTOR_RENDEZVOUS_TOKEN: hostToken, CONDUCTOR_RENDEZVOUS_RELAY_ONLY: '1', CONDUCTOR_RENDEZVOUS_HOST_NAME: 'publisher3' },
   })
   const pub = async <T>(method: string, path: string, body?: unknown): Promise<{ status: number; body: T }> => {

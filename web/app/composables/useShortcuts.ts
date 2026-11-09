@@ -37,6 +37,8 @@ export const GLOBAL_SHORTCUTS: ShortcutGroup = {
     { keys: ['G', 'D'], label: 'Go to Dispatch', terminal: ['alt', 'D'] },
     { keys: ['G', 'A'], label: 'Go to Agents', terminal: ['alt', 'A'] },
     { keys: ['G', 'E'], label: 'Go to Events', terminal: ['alt', 'E'] },
+    // No terminal twin: Alt+H is the shortcuts' own (chords.ts), so History has the plain chord alone.
+    { keys: ['G', 'H'], label: 'Go to History' },
     { keys: ['F'], label: 'Toggle fullscreen', terminal: ['alt', 'F'] },
     { keys: [']'], label: 'The next session that needs you, in a pill with its choices: 1–9 answer, Enter opens, Escape dismisses', terminal: ['alt', ']'] },
     { keys: ['['], label: 'The one before', terminal: ['alt', '['] },
@@ -58,7 +60,7 @@ export const PALETTE_SHORTCUTS: ShortcutGroup = {
     { keys: ['R'], label: "Open a member's run, or focus a free-text prompt's reply field" },
     { keys: ['meta', 'enter'], label: 'Open in a new tab; Shift+Enter shows it in the Yard' },
     { keys: ['escape'], label: 'From a row, back to the input; from the input, close' },
-    { keys: ['>'], label: '> actions · # runs and crews · : files · @ people · ! events · ? shortcuts, typed first' },
+    { keys: ['>'], label: '> actions · # runs and crews · : files · @ people · ! events · ? shortcuts · ~ history, typed first' },
   ],
 }
 

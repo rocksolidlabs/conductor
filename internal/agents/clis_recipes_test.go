@@ -164,7 +164,10 @@ func TestCodexToolApprovalMatchesTheCLI(t *testing.T) {
 
 func TestReadOnlyArgsMatchTheCLIs(t *testing.T) {
 	t.Run("claude", func(t *testing.T) {
-		inHelp(t, "claude", helpOf(t, "claude"), adapter(t, "claude").ReadOnlyArgs())
+		help := helpOf(t, "claude")
+		inHelp(t, "claude", help, adapter(t, "claude").ReadOnlyArgs())
+		// The folders a turn in the desk's own folder reads (#705).
+		inHelp(t, "claude", help, adapter(t, "claude").ReadDirArgs([]string{"/tmp"}))
 	})
 	t.Run("codex", func(t *testing.T) {
 		args := adapter(t, "codex").ReadOnlyArgs()
