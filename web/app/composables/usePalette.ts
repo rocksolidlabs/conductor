@@ -47,6 +47,12 @@ export interface PaletteItem extends PaletteRow {
   note?: string
   /** A run's member: `R` opens its run. */
   runId?: string
+  /** A history row's class (Program item HS1): Conversation, Decision, Checked ✓ or ✗, in the brand palette; a record has none. */
+  badge?: { label: string; color: 'neutral' | 'primary' | 'success' | 'error' | 'warning' }
+  /** A third line under the detail: a history row's links ("Investigated by build #2 · passed on build #2"). */
+  third?: string
+  /** Called as → reveals the row's actions: a history row reads what they depend on (whether Resume is offered). */
+  reveal?: () => void
 }
 
 /** What a page registers (`usePalette().registerPage`): its own group, first after Needs you and first under `>`. */
