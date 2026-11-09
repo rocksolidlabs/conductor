@@ -51,11 +51,15 @@ const (
 	maxDecisionReply = 2 << 20
 	maxDecisionRef   = 4 << 10
 	// maxDecisionListed bounds a record as the operator's lists give it
-	// (listedOf: its request, baseline, policy, application, why and
-	// answer at their bounds, the answer's text of 4,096 bytes that
-	// escape to six each among them: #751), and maxDecisionListPage a page
-	// of them (GET /api/decisions, a ticket's decisions; TestTheOperatorsDecisionListFitsItsBound).
-	maxDecisionListed   = 64 << 10
+	// (listedOf), the sum of its parts at their encoded worst cases: its
+	// request, baseline, policy and application as encoded, its why
+	// (bounded in bytes) and its answer (a label of 80 characters, ": "
+	// and a text of 4,096 bytes) of characters that escape to six bytes
+	// each (#751), and its other fields, 914 bytes at their widths; and
+	// maxDecisionListPage a page of them (GET /api/decisions, a ticket's
+	// decisions; TestTheOperatorsDecisionListFitsItsBound).
+	maxDecisionListed = ledger.MaxDecisionRequest + ledger.MaxDecisionBaseline + ledger.MaxDecisionPolicy + ledger.MaxDecisionApplied +
+		6*(ledger.MaxDecisionWhy+ledger.MaxOptionLabel+ext.MaxAnswerText) + len(": ") + 914
 	maxDecisionListPage = maxDecisionsListed*maxDecisionListed + 1<<10
 	// maxDecisionEvent bounds a decision event's data.
 	maxDecisionEvent = 256

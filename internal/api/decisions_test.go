@@ -577,7 +577,9 @@ func TestTheOperatorsDecisionListFitsItsBound(t *testing.T) {
 	}
 }
 
-// fullestDecision is the fullest record: every part at its bound.
+// fullestDecision is the fullest record: every part at its bound, its
+// free text (why, the answer) of characters JSON escapes to six bytes,
+// its identifiers at their patterns' widths (#751, review round 1).
 func fullestDecision(t *testing.T) crew.Decision {
 	t.Helper()
 	text := func(n int) string { return strings.Repeat("a", n) }
@@ -588,7 +590,7 @@ func fullestDecision(t *testing.T) crew.Decision {
 		Origin: ledger.OriginAgent, Type: ledger.DecisionApproval, Gate: text(40), Asker: &crew.DecisionAsker{Task: text(40), Attempt: 1 << 30, Live: true},
 		Member: text(64), Ticket: text(16), Plan: text(16), PlanDigest: text(64), RequestID: text(32),
 		Request: raw(ledger.MaxDecisionRequest), Evidence: raw(ledger.MaxDecisionBaseline), Policy: raw(ledger.MaxDecisionPolicy),
-		State: ledger.DecisionSuperseded, Rev: 1 << 30, Why: text(ledger.MaxDecisionWhy), SupersededBy: ledger.DecisionID(1<<63 - 1),
+		State: ledger.DecisionSuperseded, Rev: 1 << 30, Why: strings.Repeat("<", ledger.MaxDecisionWhy), SupersededBy: ledger.DecisionID(1<<63 - 1),
 		Answer: strings.Repeat("<", ledger.MaxOptionLabel) + ": " + strings.Repeat("<", ext.MaxAnswerText), CreatedAt: at, AnsweredAt: &at, ClosedAt: &at}
 	for range ledger.MaxDecisionResponses {
 		rc := crew.ResponseReceipt{Decision: d.ID, K: 1 << 30, Status: "refused", Code: crew.CodeStaleDecision, Actor: text(ledger.MaxDecisionActor), Choice: &choice, At: at, Rev: 1 << 30}
