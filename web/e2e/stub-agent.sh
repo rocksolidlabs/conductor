@@ -662,7 +662,9 @@ holds() { git cat-file -e "$1:stub-$2.txt" 2>/dev/null; }
 # carries the decision's answer as applied asks nothing: it writes that
 # line of its task into stub-answer.txt and goes on as above.
 # STUB_DECISION_EVIDENCE is the request's evidence refs, space-separated,
-# each `{run}` in them the run's id.
+# each `{run}` in them the run's id and `{session}` the attempt's session's.
+# STUB_DECISION_FROM=N asks it only from attempt N on: the attempts before
+# commit and submit as a worker does, so a check of theirs can be cited.
 
 # mcp_call runs one tool through conductor mcp and prints its reply line.
 mcp_call() {
@@ -701,7 +703,7 @@ task_attempt() {
 	local kind=$1 task=$2 n=$3 ctx
 	ctx=$(task_read)
 	printf 'task: %s %s attempt %s: read %s bytes\n' "$kind" "$task" "$n" "${#ctx}" >>"$transcript"
-	if [[ $kind == task && -n ${STUB_DECISION:-} && -z $decided ]]; then
+	if [[ $kind == task && -n ${STUB_DECISION:-} && -z $decided && $n -ge ${STUB_DECISION_FROM:-1} ]]; then
 		local applied
 		applied=$(decision_in_task "$task" "$ctx")
 		if [[ -n $applied ]]; then
@@ -824,7 +826,8 @@ stub_decide() {
 # for task $1, attempt $2, before anything is committed (so the commit it is
 # about, HEAD, stays where it was asked), through decision_request
 # (STUB_WORKER=mcp) or conductor task decide --file - (cli); its evidence is
-# STUB_DECISION_EVIDENCE's refs, `{run}` the run's id. The decision's id goes
+# STUB_DECISION_EVIDENCE's refs, `{run}` the run's id and `{session}` the
+# attempt's session's. The decision's id goes
 # into stub-decision.txt, and the task and attempt are kept for the answer's
 # line (answer). What the server answered goes into the transcript.
 decision_task=''
@@ -834,6 +837,7 @@ stub_decision() {
 	local task=$1 n=$2 body reply ref evidence='' options
 	for ref in ${STUB_DECISION_EVIDENCE:-}; do
 		ref=${ref//\{run\}/$run}
+		ref=${ref//\{session\}/${CONDUCTOR_SESSION_ID:-}}
 		evidence+="${evidence:+,}$(json_str "$ref")"
 	done
 	case $STUB_DECISION in

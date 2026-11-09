@@ -9,9 +9,9 @@ import { CommandRefused } from './tasks'
 
 /** One item as the list shows it, folded: no action's input or scope (the page reads the item before it acts). */
 export interface InboxSummary {
-  /** Brakeman's ref of what the item is about: question:<session>/<question>, task:<run>/<task>, plan:<KEY-n>/<n>. */
+  /** Brakeman's ref of what the item is about: question:<session>/<question>, task:<run>/<task>, plan:<KEY-n>/<n>, decision:dr-<n>. */
   ref: string
-  kind: 'question' | 'task' | 'plan' | string
+  kind: 'question' | 'task' | 'plan' | 'decision' | string
   since: string
   title: string
   brief: string
@@ -21,6 +21,12 @@ export interface InboxSummary {
   blocks?: number
   actions: string[]
   card?: boolean
+  /** A DR1 record's state (`decision` items). */
+  state?: string
+  /** A DR1 record answered and not yet applied: listed under "Answered, not yet applied", left out of the bar's number. */
+  tracking?: boolean
+  /** When a DR1 record closed (the server's Recent). */
+  closed?: string
 }
 
 /** One thing a person may do with an item, through its own operation's route, at the revision that operation checks. */
@@ -101,6 +107,10 @@ export interface InboxPage {
   items: InboxSummary[]
   next?: string
   total: number
+  /** How many of `total` are DR1 records answered and not yet applied (tracking): the bar's number leaves them out. */
+  tracking?: number
+  /** The first page's: DR1's records closed in the last day, at most 50, the latest first, for every viewer (the server's Recent). */
+  recent?: InboxSummary[]
   at: string
 }
 
@@ -287,10 +297,14 @@ function entryOf(v: unknown): RecentEntry | null {
   return out
 }
 
-/** The list kept: none older than a day, the newest RECENT_MAX, newest first. */
+/**
+ * The list kept: none older than a day, the newest RECENT_MAX, newest first; and only actions on items DR1 does not hold (questions,
+ * tasks, plan revisions): a DR1 record is answered through DR1's card, and its Recent is the server's, for every viewer
+ * (docs/plans/decision-inbox.md, PR-4).
+ */
 export function keptRecent(list: readonly RecentEntry[], now = Date.now()): RecentEntry[] {
   return list
-    .filter((e) => now - e.at < RECENT_MS && e.at <= now + 60_000)
+    .filter((e) => now - e.at < RECENT_MS && e.at <= now + 60_000 && !isDecisionRef(e.ref))
     .sort((a, b) => b.at - a.at)
     .slice(0, RECENT_MAX)
 }
@@ -363,11 +377,13 @@ export function trackKey(e: Pick<RecentEntry, 'ref' | 'receipt' | 'attempt'>): s
 }
 
 /**
- * Whether the list may say that nothing needs a decision: only when its last read answered, with no item. A read that failed says
- * nothing of what is open now, so after it the page shows the failure, never an empty list.
+ * Whether the list may say that nothing needs a decision: only when its last read answered, and the server counts nothing open that a
+ * person decides (its `total` less the DR1 records answered and not yet applied, barCount), whatever page the list holds: a first
+ * page of such records alone, with an open item on the next, is not empty. A read that failed says nothing of what is open now, so
+ * after it the page shows the failure, never an empty list.
  */
-export function inboxEmpty(s: { loaded: boolean; items: readonly unknown[]; unavailable: string; error: string }): boolean {
-  return s.loaded && !s.items.length && !s.unavailable && !s.error
+export function inboxEmpty(s: { loaded: boolean; total: number; tracking?: number; unavailable: string; error: string }): boolean {
+  return s.loaded && barCount(s) === 0 && !s.unavailable && !s.error
 }
 
 // ---------------------------------------------------------------------------
@@ -376,9 +392,45 @@ export function inboxEmpty(s: { loaded: boolean; items: readonly unknown[]; unav
 /** Tailwind's lg, where the sidebar shows and the bar at the foot does not. */
 export const LG = 1024
 
-/** The bar's number: every open item, whatever page the list holds (the inbox's total); none before the first read. */
-export function barCount(page: Pick<InboxPage, 'total'> | null | undefined): number {
-  return page ? Math.max(0, page.total) : 0
+/**
+ * The bar's number: every open item, whatever page the list holds (the inbox's total), less the DR1 records answered and not yet
+ * applied (`tracking`), which wait on Yardmaster, not on a person; none before the first read.
+ */
+export function barCount(page: Pick<InboxPage, 'total' | 'tracking'> | null | undefined): number {
+  return page ? Math.max(0, page.total - Math.max(0, page.tracking ?? 0)) : 0
+}
+
+/** Whether a ref names a DR1 record: `decision:dr-<n>`. */
+export function isDecisionRef(ref: string): boolean {
+  return /^decision:dr-[1-9][0-9]{0,17}$/.test(ref)
+}
+
+/** The DR1 record's id a ref names (`dr-<n>`), or ''. */
+export function decisionIdOf(ref: string): string {
+  return isDecisionRef(ref) ? ref.slice('decision:'.length) : ''
+}
+
+/**
+ * The list's two parts, in the list's order: what needs a person now, and the DR1 records answered and not yet applied ("Answered, not
+ * yet applied", from the server's list: they stay there until DR1 gives them a final state, whatever any browser keeps).
+ */
+export function inboxSections<T extends Pick<InboxSummary, 'tracking'>>(items: readonly T[]): { open: T[]; tracking: T[] } {
+  return { open: items.filter((s) => !s.tracking), tracking: items.filter((s) => !!s.tracking) }
+}
+
+/** An item's kind in words, as its card heads it. */
+export function inboxKindWords(kind: string): string {
+  switch (kind) {
+    case 'question':
+      return 'A question'
+    case 'task':
+      return 'A failed task'
+    case 'plan':
+      return 'A plan revision'
+    case 'decision':
+      return 'A durable decision'
+  }
+  return kind
 }
 
 /**

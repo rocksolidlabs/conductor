@@ -262,3 +262,29 @@ describe("a blocker's Cancel", () => {
     stop()
   })
 })
+
+// DR1's records (docs/plans/decision-inbox.md, PR-4): the server's count of the records answered and not yet applied, which the bar
+// leaves out, and its Recent of the records closed in the last day, kept from the first page whatever page the list holds, the same
+// for every viewer; neither is this browser's.
+describe("the live inbox's DR1 records", () => {
+  it("keeps the server's tracking count and the first page's Recent, and reads them again with the list", async () => {
+    const pages: InboxPage[] = [
+      { items: [{ ...summary('decision:dr-1'), tracking: true }, summary('task:crew-0000aaaa-11112222/build')], total: 3, tracking: 1, next: 'c2', recent: [{ ...summary('decision:dr-0'), state: 'applied', closed: '2026-11-06T09:00:00Z' }], at: '' },
+      { items: [summary('decision:dr-2')], total: 3, tracking: 1, at: '' },
+    ]
+    let reads = 0
+    const l = new InboxLive()
+    let state: InboxState | null = null
+    l.attach({ list: async (after) => (reads++, after ? pages[1]! : pages[0]!), track: async (e) => ({ ref: e.ref, receipt: e.receipt, steps: [] }) }, { apply: (s) => (state = s) })
+    await l.changed()
+    await l.more()
+    expect(reads).toBe(3)
+    expect(state!.items.map((s) => s.ref)).toEqual(['decision:dr-1', 'decision:dr-2', 'task:crew-0000aaaa-11112222/build'])
+    expect([state!.total, state!.tracking]).toEqual([3, 1])
+    expect(state!.closed.map((s) => [s.ref, s.state])).toEqual([['decision:dr-0', 'applied']])
+    // The record applied since: the next read's first page has no tracking item and a Recent of two.
+    pages[0] = { items: [summary('task:crew-0000aaaa-11112222/build')], total: 1, tracking: 0, recent: [summary('decision:dr-1'), summary('decision:dr-0')], at: '' }
+    await l.changed()
+    expect([state!.total, state!.tracking, state!.closed.length]).toEqual([1, 0, 2])
+  })
+})
