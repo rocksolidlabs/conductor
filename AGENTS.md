@@ -208,7 +208,11 @@ add its rule here.
   launcher ends its engine's runs, recording nothing, before the first of
   its processes (`endRuns` in `internal/crew`); anything else a test leaves
   running is ended the same way, before the cleanup that removes what it
-  writes to.
+  writes to, or before a test's own removal of a directory a server
+  writes to (2026-11-08: the history's indexer, opening its index on a
+  goroutine of its own, made `data/history` again during the catalog
+  test's removal of the data directory, `directory not empty`, or just
+  after it, so the saves meant to fail succeeded; #281).
 - Servers over one data directory hand its owner lock on: a later one
   waits for it and takes it when the first ends. End the later ones first
   (cleanups run last in, first out, so `serve` registers each one's end
