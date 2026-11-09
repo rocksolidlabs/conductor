@@ -67,7 +67,7 @@ type plannedFlags struct {
 	crew, base, basedOn, constraintsFile, note *string
 	plan, label                                *string
 	references, attachments, comments          multiFlag
-	decisions                                  multiFlag
+	decisions, decisionFor                     multiFlag
 }
 
 // revisionRef names a plan revision: by its number among its ticket's
@@ -154,7 +154,8 @@ func runDispatchPlanned(ctx context.Context, sub string, rest []string, stdin io
 		fs.Var(&f.attachments, "attachment", "an attachment of the ticket to hand over, by its name or its id (repeatable)")
 		fs.Var(&f.comments, "comment", "a comment of the ticket to hand over, by its number (repeatable)")
 		f.constraintsFile = fs.String("constraints-file", "", "a file of Markdown for the constraints, - for stdin")
-		fs.Var(&f.decisions, "decision", "a decision a person will make, ID:KIND:QUESTION[@TASK,...], KIND approval or clarification (repeatable)")
+		fs.Var(&f.decisions, "decision", "a decision a person will make, ID:KIND:QUESTION[@TASK,...], KIND approval, clarification or assignment (repeatable)")
+		fs.Var(&f.decisionFor, "decision-for", "whom a decision is for, ID=role:RESP (architecture, product, security, acceptance) or ID=person:NAME of the crew (repeatable)")
 		f.note = fs.String("note", "", "why this revision, Markdown")
 	case "plan approve":
 		f.note = fs.String("note", "", "the approval's note, the rationale, Markdown")
@@ -607,10 +608,13 @@ func writePlan(w io.Writer, key string, plans []planEntry, p planEntry, b planBo
 		if len(d.Before) > 0 {
 			fmt.Fprintf(&lines, "; before %s", oneLine(strings.Join(d.Before, ", ")))
 		}
+		if d.For != "" {
+			fmt.Fprintf(&lines, "; for %s", oneLine(d.For))
+		}
 		lines.WriteString("\n")
 	}
 	if lines.Len() > 0 {
-		lines.WriteString("\nRecorded and shown; nothing holds the work for them yet.\n")
+		lines.WriteString("\nA run launched from this revision holds the tasks each names until the operator answers it.\n")
 	}
 	section("Decisions a person makes", lines.String())
 	section("Note", b.Note)
@@ -779,8 +783,8 @@ func parseDecision(text string) (dispatch.PlanDecision, error) {
 	if !ok || !ok2 || id == "" {
 		return dispatch.PlanDecision{}, fmt.Errorf("a decision is ID:KIND:QUESTION[@TASK,...]: %q", text)
 	}
-	if kind != dispatch.DecisionApproval && kind != dispatch.DecisionClarification {
-		return dispatch.PlanDecision{}, fmt.Errorf("a decision's kind is approval or clarification: %q", kind)
+	if kind != dispatch.DecisionApproval && kind != dispatch.DecisionClarification && kind != dispatch.DecisionAssignment {
+		return dispatch.PlanDecision{}, fmt.Errorf("a decision's kind is approval, clarification or assignment: %q", kind)
 	}
 	d := dispatch.PlanDecision{ID: id, Kind: kind, Before: []string{}}
 	if i := strings.LastIndexByte(question, '@'); i >= 0 {
@@ -798,6 +802,28 @@ func parseDecision(text string) (dispatch.PlanDecision, error) {
 		return dispatch.PlanDecision{}, fmt.Errorf("decision %s asks no question", id)
 	}
 	return d, nil
+}
+
+// decisionFor sets whom a decision is for from ID=LABEL: the decision
+// named ID among ds (a --decision), the label role:RESP or person:NAME,
+// once per decision. The server judges whether the crew resolves it.
+func decisionFor(ds []dispatch.PlanDecision, text string) error {
+	id, label, ok := strings.Cut(text, "=")
+	if !ok || id == "" || label == "" {
+		return fmt.Errorf("whom a decision is for is ID=role:RESP or ID=person:NAME: %q", text)
+	}
+	if !strings.HasPrefix(label, dispatch.DecisionForRole) && !strings.HasPrefix(label, dispatch.DecisionForPerson) {
+		return fmt.Errorf("decision %s's label is role:RESP or person:NAME: %q", id, label)
+	}
+	i := slices.IndexFunc(ds, func(d dispatch.PlanDecision) bool { return d.ID == id })
+	switch {
+	case i < 0:
+		return fmt.Errorf("no --decision is named %s", id)
+	case ds[i].For != "":
+		return fmt.Errorf("decision %s is for %s already", id, ds[i].For)
+	}
+	ds[i].For = label
+	return nil
 }
 
 // proposal is a plan revision to propose: the request with what the flags
@@ -850,6 +876,11 @@ func (f plannedFlags) proposal(stdin io.Reader) (*proposal, error) {
 			return nil, fmt.Errorf("--decision: %w", err)
 		}
 		p.req.Decisions = append(p.req.Decisions, d)
+	}
+	for _, text := range f.decisionFor {
+		if err := decisionFor(p.req.Decisions, text); err != nil {
+			return nil, fmt.Errorf("--decision-for: %w", err)
+		}
 	}
 	if *f.constraintsFile != "" {
 		text, err := readMarkdownFile(*f.constraintsFile, stdin, dispatch.MaxPlanConstraints, "the constraints")

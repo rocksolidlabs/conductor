@@ -1,7 +1,24 @@
 import { describe, expect, it } from 'vitest'
+import { CommandRefused } from './tasks'
 import {
   availabilityWords,
+  byAnchor,
   classBadge,
+  cutWords,
+  HISTORY_MAX_RANKED,
+  HISTORY_MAX_SCANNED,
+  outcomeChips,
+  REJECTING_KINDS,
+  REJECTING_OUTCOMES,
+  resumeFailure,
+  filterOf,
+  historyIcon,
+  historySession,
+  historyTarget,
+  indexingWords,
+  isReceipt,
+  machineOf,
+  withFilter,
   historyDetail,
   historyDetailParts,
   historyQuestions,
@@ -229,5 +246,126 @@ describe('resumeDestination', () => {
     // A command id sent again is answered from its receipt; the session is in the reply only while the registry lists it.
     expect(resumeDestination({ receipt })).toEqual({ to: '/history/sessions/fedcba9876543210', listed: false })
     expect(resumeDestination({ receipt: { ...receipt, session: undefined } })).toBeNull()
+  })
+})
+
+// ---- PR-7: the search's words, where a row opens, its grouping, and the filters the History page's chips write.
+
+describe("a row's destination (PR-7)", () => {
+  it('opens the page of its evidence, never an API route: the anchor when its own is one', () => {
+    expect(historyTarget(entry())).toBe('/runs/todo-3f2a91c0?view=tasks&task=build&attempt=1&step=check/unit/1')
+    const anchor = { ref: 'task:todo-3f2a91c0/build', label: 'build · todo-3f2a91c0', url: '/runs/todo-3f2a91c0?view=tasks&task=build' }
+    expect(historyTarget(entry({ url: '/api/runs/todo-3f2a91c0/tasks/build/attempts/1/steps/unit/1/log', anchor }))).toBe(anchor.url)
+    expect(historyTarget(entry({ url: '/api?x', anchor: { ...anchor, url: '' } }))).toBeNull()
+    expect(historyTarget(entry({ url: 'https://elsewhere.example/x', anchor: { ...anchor, url: '//elsewhere.example' } }))).toBeNull()
+  })
+
+  it("names the session a row belongs to: its anchor, else a link's end, with its page or its record's", () => {
+    expect(historySession(entry())).toBeNull()
+    expect(historySession(entry({ anchor: { ref: 'session:0123456789abcdef', label: 'session 0123456789abcdef', url: '/sessions/0123456789abcdef' } }))).toEqual({ id: '0123456789abcdef', url: '/sessions/0123456789abcdef', listed: true })
+    expect(historySession(entry({ links: [{ rel: 'session_of', dir: 'out', ref: 'session:fedcba9876543210', label: 'session fedcba9876543210' }] }))).toEqual({ id: 'fedcba9876543210', url: '/history/sessions/fedcba9876543210', listed: false })
+    expect(isReceipt(entry())).toBe(true)
+    expect(isReceipt(entry({ kind: 'session.chat' }))).toBe(false)
+  })
+
+  it('draws a session, a receipt passed or failed, a decision and words each with its own icon', () => {
+    expect(historyIcon(entry())).toBe('i-lucide-circle-x')
+    expect(historyIcon(entry({ outcome: 'passed' }))).toBe('i-lucide-circle-check')
+    expect(historyIcon(entry({ kind: 'session', class: 'record' }))).toBe('i-lucide-terminal')
+    expect(historyIcon(entry({ kind: 'plan.withdrawn', class: 'decided' }))).toBe('i-lucide-gavel')
+    expect(historyIcon(entry({ kind: 'session.chat', class: 'said', outcome: 'passed' }))).toBe('i-lucide-message-circle')
+  })
+})
+
+describe('the answer grouped under its anchors (PR-7)', () => {
+  it('keeps each group where its first row ranked, the rows in their order, a key seen twice once', () => {
+    const t = { ref: 'task:r/build', label: 'build · r' }
+    const s = { ref: 'session:0123456789abcdef', label: 'session 0123456789abcdef' }
+    const a = entry({ key: 'a', anchor: t })
+    const b = entry({ key: 'b', anchor: s })
+    const c = entry({ key: 'c', anchor: t })
+    const groups = byAnchor([a, b, c, a])
+    expect(groups.map((g) => [g.anchor.ref, g.entries.map((e) => e.key)])).toEqual([
+      ['task:r/build', ['a', 'c']],
+      ['session:0123456789abcdef', ['b']],
+    ])
+    // An entry with no anchor is its own group, under its title.
+    expect(byAnchor([entry({ key: 'x', title: 'x on y #1', anchor: { ref: '', label: '' } })]).map((g) => g.anchor)).toEqual([{ ref: 'x', label: 'x on y #1' }])
+  })
+})
+
+describe("the index's state in words (PR-7)", () => {
+  it('says nothing when it is ready, and how many sources are behind otherwise', () => {
+    expect(indexingWords({ state: 'ready' })).toBe('')
+    expect(indexingWords(null)).toBe('')
+    expect(indexingWords({ state: 'ready', behind: 3 })).toBe('Indexing: 3 sources behind')
+    expect(indexingWords({ state: 'catching_up', behind: 1 })).toBe('Indexing: 1 source behind')
+    expect(indexingWords({ state: 'catching_up' })).toBe('Indexing: catching up')
+    expect(indexingWords({ state: 'read_only' })).toBe('Read only: another server keeps this history')
+  })
+})
+
+describe("the filters the chips write (PR-7)", () => {
+  it('writes one value per filter at the end, keeps every other word in its order, and takes it out when cleared', () => {
+    expect(withFilter('stub-fixed', 'class', 'checked')).toBe('stub-fixed class:checked')
+    expect(withFilter('class:said stub-fixed outcome:failed', 'class', 'checked')).toBe('stub-fixed outcome:failed class:checked')
+    expect(withFilter('stub-fixed class:checked', 'class', '')).toBe('stub-fixed')
+    expect(withFilter('"a phrase:with colon" x', 'outcome', 'passed')).toBe('"a phrase:with colon" x outcome:passed')
+    expect(withFilter('x', 'host', 'two words')).toBe('x')
+    // A quoted phrase not yet closed runs to the end of the query (the server's grammar): the filter goes before it, never into it.
+    const open = withFilter('"failing test', 'class', 'checked')
+    expect(open).toBe('class:checked "failing test')
+    expect(filterOf(open, 'class')).toBe('checked')
+    expect(withFilter('stub "failing test', 'class', 'checked')).toBe('stub class:checked "failing test')
+    expect(withFilter('class:said "failing', 'class', 'checked')).toBe('class:checked "failing')
+    expect(withFilter('x "', 'outcome', 'passed')).toBe('x outcome:passed "')
+    // A closed phrase is a word like any other: the filter goes after it.
+    expect(withFilter('"failing test"', 'class', 'checked')).toBe('"failing test" class:checked')
+    expect(filterOf('stub-fixed CLASS:said class:checked', 'class')).toBe('checked')
+    expect(filterOf('stub-fixed', 'since')).toBe('')
+  })
+
+  it("finds this machine's name in the records of its own sessions, never a hosted one's", () => {
+    expect(machineOf([entry({ host: { name: 'mac', user: 'nate', hosted: true } }), entry({ host: { name: 'lab-box' } })])).toBe('lab-box')
+    expect(machineOf([entry({ host: {} })])).toBe('')
+  })
+})
+
+describe("the Rejected chip and the Rejected designs question (PR-7, PR-9)", () => {
+  it('write the same rejecting outcomes, from one list', () => {
+    const rejected = historyQuestions().find((q) => q.id === 'rejected')!
+    const chip = outcomeChips().find((c) => c.label === 'Rejected')!
+    expect(chip.value).toBe(filterOf(rejected.query, 'outcome'))
+    expect(chip.value.split(',')).toEqual([...REJECTING_OUTCOMES])
+    expect(filterOf(rejected.query, 'kind').split(',')).toEqual([...REJECTING_KINDS])
+  })
+})
+
+describe('the bound a search stopped at, in words (PR-7)', () => {
+  it('says which bound: the ranked 2,000 or the scanned 10,000, and nothing for a search that read every match', () => {
+    expect(cutWords(undefined)).toBe('')
+    expect(cutWords('')).toBe('')
+    expect(HISTORY_MAX_RANKED).toBe(2_000)
+    expect(HISTORY_MAX_SCANNED).toBe(10_000)
+    expect(cutWords('ranked')).toBe('only the newest 2,000 of them are ranked and shown: add a word or a filter to reach the rest')
+    expect(cutWords('scanned')).toBe('only the newest 10,000 entries the words match were searched, newest first: add a word or a filter to reach older ones')
+    expect(cutWords('later')).toMatch(/stopped at its bound/)
+  })
+})
+
+describe("a resume's outcome when it did not answer started (PR-7, the record page's rule)", () => {
+  const where = { unknown: 'its receipts say', pending: 'Its receipt says.' }
+  const receipt = (state: string, code?: string) => new CommandRefused('refused', { commandId: 'c', state, code, at: '2026-11-08T00:00:00Z' } as never)
+  it('says an outcome unknown when both replies were lost, or its receipt is uncertain: never a failure', () => {
+    expect(resumeFailure(Object.assign(new Error('Cannot reach the server'), { status: 0, code: 'network' }), where)).toMatchObject({ outcome: 'unknown', title: 'Whether it resumed is not known', color: 'warning' })
+    expect(resumeFailure(Object.assign(new Error('Cannot reach the server'), { status: 0, code: 'network' }), where).description).toMatch(/The outcome is unknown; its receipts say\.$/)
+    expect(resumeFailure(receipt('uncertain'), where)).toMatchObject({ outcome: 'unknown', title: 'Whether it resumed is not known' })
+  })
+  it('says one still pending is being started', () => {
+    expect(resumeFailure(receipt('pending'), where)).toMatchObject({ outcome: 'pending', title: 'It is still being started', description: 'Its receipt says.' })
+  })
+  it('says a refusal and an error did not resume, with the refusal\'s code', () => {
+    expect(resumeFailure(receipt('failed', 'env_not_kept'), where)).toMatchObject({ outcome: 'refused', code: 'env_not_kept', title: 'It did not resume', color: 'warning' })
+    expect(resumeFailure(Object.assign(new Error('boom'), { status: 500, code: 'internal' }), where)).toMatchObject({ outcome: 'failed', code: 'internal', title: 'It did not resume', description: 'boom', color: 'error' })
   })
 })

@@ -30,7 +30,10 @@ type TaskDecision struct {
 	Answer    string `json:"answer,omitempty"`
 	Rationale string `json:"rationale,omitempty"`
 	By        string `json:"by,omitempty"`
-	Words     string `json:"words,omitempty"`
+	// For is whom it is for in words (HM1): an answer's from its receipt,
+	// else the request's.
+	For   string `json:"for,omitempty"`
+	Words string `json:"words,omitempty"`
 }
 
 // maxTaskDecisions bounds the decisions a task file carries that ended
@@ -76,8 +79,12 @@ func taskDecisionOf(rec ledger.DecisionRecord) TaskDecision {
 	var body requestBody
 	_ = json.Unmarshal([]byte(rec.Request), &body)
 	td := TaskDecision{ID: rec.ID(), Type: rec.Type, Origin: rec.Origin, Gate: rec.Gate, Question: body.Question, State: rec.State, Words: rec.Why}
+	td.For = body.For.words()
 	if rec.State == ledger.DecisionApplied || rec.State == ledger.DecisionAnswered || rec.State == ledger.DecisionSuperseded && rec.Applied != "" {
 		td.Answer, td.Rationale, td.By = answerOf(rec)
+		if ans := acceptedOf(rec); ans != nil {
+			td.For = ans.forWho.words()
+		}
 	}
 	return td
 }
@@ -353,12 +360,19 @@ func writeDecisions(b *strings.Builder, ds []TaskDecision) {
 		fmt.Fprintf(b, "), %s: %s", d.State, flatLine(d.Question))
 		switch d.State {
 		case ledger.DecisionApplied:
-			fmt.Fprintf(b, " %s answered: %s.", d.By, strings.TrimSuffix(flatLine(d.Answer), "."))
+			by := d.By
+			if d.For != "" {
+				by += " for " + d.For
+			}
+			fmt.Fprintf(b, " %s answered: %s.", by, strings.TrimSuffix(flatLine(d.Answer), "."))
 			if d.Rationale != "" {
 				fmt.Fprintf(b, " Why: %s.", strings.TrimSuffix(flatLine(d.Rationale), "."))
 			}
 		case ledger.DecisionOpen, ledger.DecisionAnswered:
 			b.WriteString(" Conductor holds this task until the operator's answer is applied.")
+			if d.For != "" {
+				fmt.Fprintf(b, " It is for %s: the operator answers for them.", d.For)
+			}
 		default:
 			if d.Words != "" {
 				fmt.Fprintf(b, " %s.", strings.TrimSuffix(flatLine(d.Words), "."))

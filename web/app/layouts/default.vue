@@ -232,6 +232,7 @@ const nav = computed<NavigationMenuItem[]>(() => [
   },
   { label: 'Dispatch', icon: 'i-lucide-ticket', to: '/dispatch', active: dispatchRoute.value },
   { label: 'Events', icon: 'i-lucide-radio-tower', to: '/events' },
+  { label: 'History', icon: 'i-lucide-history', to: '/history', active: route.path.startsWith('/history') },
   ...(brakeman.available.value
     ? [{ label: 'Brakeman', icon: 'i-lucide-notebook-pen', to: '/brakeman', 'data-sidebar-brakeman': '', badge: brakemanCount.value ? { label: String(brakemanCount.value), color: 'primary' as const, variant: 'subtle' as const } : undefined }]
     : []),
@@ -273,6 +274,7 @@ defineShortcuts({
   'g-r': chord(() => router.push('/roundhouse')),
   'g-a': chord(() => router.push('/agents')),
   'g-e': chord(() => router.push('/events')),
+  'g-h': chord(() => router.push('/history')),
   'g-c': chord(() => router.push('/crews')),
   'g-d': chord(() => router.push('/dispatch')),
   'g-s': chord(goSettings),
