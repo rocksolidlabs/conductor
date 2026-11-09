@@ -341,6 +341,14 @@ func decisionPage(w http.ResponseWriter, r *http.Request, names ...string) (ledg
 	if f.Ticket, err = q.one("ticket"); err != nil {
 		return bad(err.Error())
 	}
+	// for: the person a decision is for, matched exactly (HM1), a name
+	// Dispatch's person.name rule allows.
+	if f.For, err = q.one("for"); err != nil {
+		return bad(err.Error())
+	}
+	if f.For != "" && !personName(f.For) {
+		return bad("for is a person's name, 1 to " + strconv.Itoa(crew.MaxPersonName) + " characters with no control character")
+	}
 	return f, true
 }
 
@@ -488,7 +496,7 @@ func summaryOf(row ledger.DecisionRow, answer string) decisionSummary {
 // handleDecisions lists the decisions the query names, newest first,
 // each without its history: {decisions, next?}.
 func (s *Server) handleDecisions(w http.ResponseWriter, r *http.Request) {
-	f, ok := decisionPage(w, r, "after", "limit", "state", "run", "ticket")
+	f, ok := decisionPage(w, r, "after", "limit", "state", "run", "ticket", "for")
 	if !ok {
 		return
 	}

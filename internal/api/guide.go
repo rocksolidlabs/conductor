@@ -305,6 +305,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 				"expertise":      map[string]any{"type": "array", "maxItems": 4, "items": map[string]any{"type": "string"}, "description": "the expertise the answer needs, at most 40 characters each"},
 				"subject":        obj(map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"commit", "candidate", "artifact"}}, "commit": str("commit: your HEAD; candidate: its result commit, 7 hex digits at least"), "run": str("candidate: the run"), "task": str("candidate: the task"), "n": map[string]any{"type": "integer", "description": "candidate: the attempt"}, "path": str("artifact: the file, relative to your worktree, committed")}, "kind"),
 				"supersedes":     str("dr-N, an open decision of your task this one takes the place of"),
+				"for":            str("whom it is for, role:RESP or person:NAME, as your task file's \"Who answers for this work\" names them; the operator answers for that person"),
 			}, "type", "question"),
 			Bounds: map[string]int{"body": maxDecisionRequestBody}},
 		{Name: "decision_list", MCP: "decision_list", Scope: "task", Method: http.MethodGet, Path: sessions + "/decisions", needs: needLauncher,

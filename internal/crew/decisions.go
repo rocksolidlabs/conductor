@@ -141,6 +141,9 @@ type DecisionRequest struct {
 	Expertise      []string         `json:"expertise,omitempty"`
 	Subject        *DecisionSubject `json:"subject,omitempty"`
 	Supersedes     string           `json:"supersedes,omitempty"`
+	// For is whom the decision is for (HM1): role:<responsibility> or
+	// person:<name> of the run's crew as launched, "" for none.
+	For string `json:"for,omitempty"`
 	// Baseline is the evidence's baseline the server made at the request
 	// (one {ref, seen} per evidence ref, in order: The changes, evidence),
 	// never the requester's; nil for none.
@@ -159,6 +162,9 @@ type requestBody struct {
 	Expertise      []string         `json:"expertise,omitempty"`
 	Subject        *DecisionSubject `json:"subject"`
 	Supersedes     string           `json:"supersedes,omitempty"`
+	// For is whom it is for, resolved when it opened (HM1); omitted for
+	// none, so a request without one is kept as before.
+	For *DecisionFor `json:"for,omitempty"`
 }
 
 // Authority is what a response's principal authenticated as, which the
@@ -204,6 +210,10 @@ type ResponseReceipt struct {
 	Rev       int       `json:"rev"`
 	Repeat    bool      `json:"repeat,omitempty"`
 	Kept      *bool     `json:"kept,omitempty"`
+	// For is whom an accepted response answered for (HM1): the request's
+	// for at the rev it was accepted at, beside Actor and ByName, who
+	// answered.
+	For *ReceiptFor `json:"for,omitempty"`
 }
 
 // The ways an answer is applied (Application.How).
@@ -315,6 +325,7 @@ type accepted struct {
 	text, rationale, byName string
 	actor                   string
 	auth                    Authority
+	forWho                  *ReceiptFor // whom it answered for (HM1)
 }
 
 // id is the decision's id, "dr-<n>".
@@ -335,6 +346,7 @@ func (d *decision) waits() bool {
 type decisionTx interface {
 	OpenDecision(ledger.DecisionRow) (ledger.DecisionRow, bool, error)
 	PutDecision(ledger.DecisionRow) error
+	RouteFor(n int64, request string) error
 	Answer(n int64, run string, rev int) (bool, error)
 	Respond(n int64, r ledger.ResponseRow) (ledger.Responded, error)
 	History(n int64, h ledger.HistoryRow) (ledger.HistoryRow, bool, error)
@@ -966,6 +978,11 @@ func (e *Engine) RequestDecision(ctx context.Context, sessionID string, req Deci
 	if body.Subject, err = e.subjectOf(ctx, r, worktree, req.Subject); err != nil {
 		return Decision{}, false, err
 	}
+	// Whom it is for, resolved in the run's crew as launched (HM1), kept
+	// in the request the opening writes.
+	if body.For, err = r.resolveFor(req.For); err != nil {
+		return Decision{}, false, err
+	}
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return Decision{}, false, err
@@ -1062,7 +1079,7 @@ func (e *Engine) RequestDecision(ctx context.Context, sessionID string, req Deci
 			if _, _, err := dtx.History(got.N, ledger.HistoryRow{Kind: ledger.HistoryOpened, By: by, Detail: historyDetail(map[string]any{"task": t.def.ID, "attempt": a.n})}); err != nil {
 				return err
 			}
-			if _, _, err := dtx.History(got.N, ledger.HistoryRow{Kind: ledger.HistoryRouted, By: policyLocal, Detail: routedOperator}); err != nil {
+			if _, _, err := dtx.History(got.N, ledger.HistoryRow{Kind: ledger.HistoryRouted, By: policyLocal, Detail: routedDetail(body.For)}); err != nil {
 				return err
 			}
 			if err := dtx.Hold(r.id, t.def.ID, got.N); err != nil {
@@ -1247,6 +1264,7 @@ type gate struct {
 	d   *decision
 	row ledger.DecisionRow
 	pd  PackageDecision
+	who *DecisionFor // whom it is for, resolved at the opening (HM1)
 }
 
 // openGates opens one decision per decision the run's launch package
@@ -1268,13 +1286,14 @@ func (e *Engine) openGates(r *run) (tx, func()) {
 	for _, pd := range p.Decisions {
 		r.dec.gates[pd.ID] = false
 		typ, body := gateRequest(p, pd)
+		body.For = r.gateFor(pd)
 		raw, _ := json.Marshal(body)
 		sum := sha256.Sum256(raw)
 		d := &decision{origin: ledger.OriginPlan, typ: typ, gate: pd.ID, question: body.Question, state: ledger.DecisionOpen, rev: 1, subject: body.Subject}
 		for _, o := range body.Options {
 			d.options = append(d.options, o.Label)
 		}
-		g := &gate{d: d, pd: pd, row: ledger.DecisionRow{Origin: ledger.OriginPlan, Type: typ, Gate: pd.ID, Ticket: p.Ticket.ID, Plan: p.Plan.ID, PlanDigest: p.Plan.Digest,
+		g := &gate{who: body.For, d: d, pd: pd, row: ledger.DecisionRow{Origin: ledger.OriginPlan, Type: typ, Gate: pd.ID, Ticket: p.Ticket.ID, Plan: p.Plan.ID, PlanDigest: p.Plan.Digest,
 			Fingerprint: hex.EncodeToString(sum[:]), Request: string(raw), Policy: policyJSON}}
 		r.decisions = append(r.decisions, d)
 		for _, id := range pd.Before {
@@ -1300,7 +1319,7 @@ func (e *Engine) openGates(r *run) (tx, func()) {
 			if _, _, err := dtx.History(got.N, ledger.HistoryRow{Kind: ledger.HistoryOpened, By: "plan", Detail: historyDetail(map[string]any{"gate": g.pd.ID, "before": g.pd.Before})}); err != nil {
 				return err
 			}
-			if _, _, err := dtx.History(got.N, ledger.HistoryRow{Kind: ledger.HistoryRouted, By: policyLocal, Detail: routedOperator}); err != nil {
+			if _, _, err := dtx.History(got.N, ledger.HistoryRow{Kind: ledger.HistoryRouted, By: policyLocal, Detail: routedDetail(g.who)}); err != nil {
 				return err
 			}
 			for _, t := range g.d.holds {
@@ -1605,6 +1624,12 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 		rc.Code, rc.Words = CodeDecisionClosed, fmt.Sprintf("%s is %s: %s", id, d.State, why)
 	case resp.ExpectedRev < d.Rev:
 		rc.Code, rc.Words = CodeStaleDecision, staleWords(id, resp.ExpectedRev, rec)
+		if moved := forSince(rec, resp.ExpectedRev); moved != "" {
+			// Whom it is for changed since the card was read (HM1): said
+			// first, so no answer is recorded for a person its responder
+			// did not see.
+			rc.Words = moved + ": " + rc.Words
+		}
 	case mem.known && !mem.member:
 		rc.Code, rc.Words = CodeStaleDecision, fmt.Sprintf("%s's asking attempt is no longer its task's in this run", id)
 	}
@@ -1615,6 +1640,11 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 	} else {
 		rc.Status = "accepted"
 		rc.Words = fmt.Sprintf("Recorded: %s answered by %s", id, nameOf(resp.ByName, actor))
+		// Whom it answered for: the request's for at the rev it is accepted
+		// at, which no route changes once it is answered (HM1).
+		if rc.For = receiptFor(d.Request); rc.For != nil {
+			rc.Words += " for " + rc.For.words()
+		}
 		rc.Rev = d.Rev + 1
 	}
 	rc.Words = cutReceiptWords(rc.Words)
@@ -1990,7 +2020,7 @@ func (e *Engine) respondHeld(ctx context.Context, r *run, n int64, resp Response
 				return
 			}
 			d.state, d.rev = ledger.DecisionAnswered, out.rev
-			d.answer = &accepted{k: out.receipt.K, choice: resp.Choice, text: resp.Text, rationale: resp.Rationale, byName: resp.ByName, actor: actor, auth: auth}
+			d.answer = &accepted{k: out.receipt.K, choice: resp.Choice, text: resp.Text, rationale: resp.Rationale, byName: resp.ByName, actor: actor, auth: auth, forWho: out.receipt.For}
 			r.note(session.ActivityStatus, "decision %s answered by %s", d.id(), nameOf(resp.ByName, actor))
 		}}
 	}, func() {})
@@ -2349,7 +2379,11 @@ func answerWords(d *decision, ans *accepted) string {
 		}
 		answer += ans.text
 	}
-	line := fmt.Sprintf("Decision %s (%s) answered by %s: %s.", d.id(), d.typ, nameOf(ans.byName, ans.actor), strings.TrimSuffix(answer, "."))
+	by := nameOf(ans.byName, ans.actor)
+	if ans.forWho != nil {
+		by += " for " + ans.forWho.words()
+	}
+	line := fmt.Sprintf("Decision %s (%s) answered by %s: %s.", d.id(), d.typ, by, strings.TrimSuffix(answer, "."))
 	if ans.rationale != "" {
 		line += " Why: " + strings.TrimSuffix(ans.rationale, ".") + "."
 	}
@@ -2413,7 +2447,7 @@ func (e *Engine) replaceDecision(r *run, d *decision, why string) (*decision, tx
 		if _, _, err := dtx.History(got.N, ledger.HistoryRow{Kind: ledger.HistoryOpened, By: "yardmaster", Detail: historyDetail(map[string]any{"follows": old.ID(), "why": words})}); err != nil {
 			return err
 		}
-		if _, _, err := dtx.History(got.N, ledger.HistoryRow{Kind: ledger.HistoryRouted, By: policyLocal, Detail: routedOperator}); err != nil {
+		if _, _, err := dtx.History(got.N, ledger.HistoryRow{Kind: ledger.HistoryRouted, By: policyLocal, Detail: routedDetail(requestFor(row.Request))}); err != nil {
 			return err
 		}
 		old.Why, old.SupersededBy = words, got.ID()
