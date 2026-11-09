@@ -286,6 +286,8 @@ func TestDispatchPlanUsageErrors(t *testing.T) {
 		propose("--reference", "/etc/passwd"), propose("--reference", "a/../../b"), propose("--reference", `C:\x`), propose("--reference", "a:0"),
 		propose("--reference", "a:5-3"), propose("--reference", ":3"), propose("--reference", ""), propose("--reference", "a="+strings.Repeat("n", dispatch.MaxReferenceNote+1)),
 		propose("--decision", "x"), propose("--decision", "d:other:q"), propose("--decision", "d:approval:"), propose("--decision", "d:approval:q@Build"),
+		propose("--decision", "d:approval:q", "--decision-for", "e=role:architecture"), propose("--decision", "d:approval:q", "--decision-for", "d=architecture"),
+		propose("--decision", "d:approval:q", "--decision-for", "d"), propose("--decision", "d:approval:q", "--decision-for", "d=person:a", "--decision-for", "d=person:b"),
 		propose("--comment", "x"), propose("--comment", "0"), propose("--based-on", "x"), propose("--attachment", " "), propose("--constraints-file", long),
 		{"link", "CND-1", "--kind", "external", "--url", "https://example.com", "--candidate", "team-0123abcd/build/1@" + strings.Repeat("a", 40)},
 		{"link", "CND-1", "--kind", "delivery", "--url", "https://example.com", "--candidate", "build/1@abc"},
@@ -329,10 +331,32 @@ func TestParseDecision(t *testing.T) {
 		"ship:approval:Ship it?":               {ID: "ship", Kind: "approval", Question: "Ship it?", Before: []string{}},
 		"ask:clarification:Which: A or B?@a,b": {ID: "ask", Kind: "clarification", Question: "Which: A or B?", Before: []string{"a", "b"}},
 		"mail:approval:Write to x@y.com?@":     {ID: "mail", Kind: "approval", Question: "Write to x@y.com?", Before: []string{}},
+		"stage:assignment:Run it on staging@a": {ID: "stage", Kind: "assignment", Question: "Run it on staging", Before: []string{"a"}},
 	} {
 		got, err := parseDecision(in)
 		if err != nil || got.ID != want.ID || got.Kind != want.Kind || got.Question != want.Question || !slices.Equal(got.Before, want.Before) {
 			t.Errorf("%q: %+v %v, want %+v", in, got, err, want)
+		}
+	}
+}
+
+// --decision-for sets whom a --decision is for, by its id, once.
+func TestDecisionFor(t *testing.T) {
+	ds := []dispatch.PlanDecision{{ID: "schema"}, {ID: "stage"}}
+	if err := decisionFor(ds, "schema=role:architecture"); err != nil || ds[0].For != "role:architecture" {
+		t.Fatalf("schema: %+v %v", ds[0], err)
+	}
+	if err := decisionFor(ds, "stage=person:Ana Lima"); err != nil || ds[1].For != "person:Ana Lima" {
+		t.Fatalf("stage: %+v %v", ds[1], err)
+	}
+	for in, words := range map[string]string{
+		"schema=person:nate": "decision schema is for role:architecture already",
+		"none=role:security": "no --decision is named none",
+		"stage=ana":          "decision stage's label is role:RESP or person:NAME",
+		"=role:security":     "ID=role:RESP or ID=person:NAME",
+	} {
+		if err := decisionFor(ds, in); err == nil || !strings.Contains(err.Error(), words) {
+			t.Errorf("%q: %v, want %q", in, err, words)
 		}
 	}
 }

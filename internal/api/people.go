@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 )
 
@@ -33,6 +34,8 @@ const (
 	// the tasks it lists; crewsMore and more say there are more.
 	maxWorkCrews = 100
 	maxWorkTasks = 200
+	// maxWorkDecisions bounds the decisions of a person's page.
+	maxWorkDecisions = 100
 )
 
 // personCrew is a crew a person is in, with the responsibilities they
@@ -192,10 +195,14 @@ type personWork struct {
 	Tasks     []personTask   `json:"tasks"`
 	More      bool           `json:"more,omitempty"`
 	Tickets   *personTickets `json:"tickets"`
-	// Decisions are the decisions for the person: none until whom a
-	// decision is for exists (docs/plans/decisions.md, HM1, PR-12).
-	Decisions           []any `json:"decisions"`
-	DispatchUnavailable bool  `json:"dispatchUnavailable,omitempty"`
+	// Decisions are the decisions for the person, open and answered, the
+	// newest first, at most maxWorkDecisions, each as the operator's lists
+	// give it (docs/plans/decisions.md, HM1, PR-12); decisionsMore past
+	// them, decisionsUnavailable when the ledger could not be read.
+	Decisions            []crew.Decision `json:"decisions"`
+	DecisionsMore        bool            `json:"decisionsMore,omitempty"`
+	DecisionsUnavailable bool            `json:"decisionsUnavailable,omitempty"`
+	DispatchUnavailable  bool            `json:"dispatchUnavailable,omitempty"`
 	// CrewsUnavailable says the saved crews, or some of them, could not
 	// be read: the crews listed are those read, and may not be all.
 	CrewsUnavailable bool `json:"crewsUnavailable,omitempty"`
@@ -293,11 +300,11 @@ func (s *Server) handlePerson(w http.ResponseWriter, r *http.Request) {
 	}
 	// A segment that is no name's, and a name no store could hold
 	// (Dispatch's person.name rule), are no one's.
-	if !ok || name == "" || !utf8.ValidString(name) || utf8.RuneCountInString(name) > crew.MaxPersonName || strings.ContainsFunc(name, unicode.IsControl) {
+	if !ok || !personName(name) {
 		writeError(w, http.StatusNotFound, "not_found", "no such person")
 		return
 	}
-	out := personWork{Name: name, Crews: []personCrew{}, Tasks: []personTask{}, Decisions: []any{}}
+	out := personWork{Name: name, Crews: []personCrew{}, Tasks: []personTask{}, Decisions: []crew.Decision{}}
 	known := false
 	// Every read below has its place in the reply: a list is read and holds
 	// rows, read and empty, or not read, wholly or for some of its records,
@@ -366,6 +373,21 @@ func (s *Server) handlePerson(w http.ResponseWriter, r *http.Request) {
 			out.Tasks = append(out.Tasks, personTask{Run: run.ID, RunLabel: cmp.Or(run.Label, run.Name), Task: t.ID, State: t.State, Member: t.Member, OwnerFrom: t.OwnerFrom})
 		}
 	}
+	if s.ledger == nil {
+		// No ledger (it could not be opened, or this server keeps none, as
+		// GET /api/decisions answers 503): their decisions are not known,
+		// which is not "none", and a name only a decision names is not
+		// refused for it.
+		out.DecisionsUnavailable = true
+	} else {
+		decisions, more, mentioned, err := s.personDecisions(r.Context(), name)
+		if err != nil {
+			s.log.Warn("the decisions could not be read for a person's work", "err", err)
+			out.DecisionsUnavailable = true
+		}
+		out.Decisions, out.DecisionsMore = decisions, more
+		known = known || mentioned
+	}
 	ds := s.ticketReads()
 	out.DispatchUnavailable = ds == nil
 	if ds != nil {
@@ -382,11 +404,42 @@ func (s *Server) handlePerson(w http.ResponseWriter, r *http.Request) {
 			known = known || tickets.Owner > 0 || tickets.Assignee > 0
 		}
 	}
-	if !known && !out.DispatchUnavailable && !out.RecordsUnavailable && !out.CrewsUnavailable {
+	if !known && !out.DispatchUnavailable && !out.RecordsUnavailable && !out.CrewsUnavailable && !out.DecisionsUnavailable {
 		writeError(w, http.StatusNotFound, "not_found", "no such person")
 		return
 	}
 	writeDispatch(w, http.StatusOK, out)
+}
+
+// personDecisions are the decisions for name, open and answered, the
+// newest first, at most maxWorkDecisions, each as the operator's lists give
+// it, with more past them; mentioned says a decision of any state is for
+// them, so a person only a decision's for names still has a page.
+func (s *Server) personDecisions(ctx context.Context, name string) (out []crew.Decision, more, mentioned bool, err error) {
+	out = []crew.Decision{}
+	rows, next, err := decisionRows(ctx, s.ledger, ledger.DecisionFilter{For: name, States: []string{ledger.DecisionOpen, ledger.DecisionAnswered}, Limit: maxWorkDecisions})
+	if err != nil {
+		return out, false, false, err
+	}
+	for _, row := range rows {
+		d, err := s.runs.Decision(ctx, row.ID())
+		if err != nil {
+			return out, false, len(rows) > 0, err
+		}
+		out = append(out, listedOf(d))
+	}
+	if len(rows) > 0 {
+		return out, next != "", true, nil
+	}
+	older, err := s.ledger.Decisions(ctx, ledger.DecisionFilter{For: name, Limit: 1})
+	return out, false, len(older) > 0, err
+}
+
+// personName reports whether name is a person's by Dispatch's person.name
+// rule: 1 to crew.MaxPersonName characters of valid UTF-8 with no control
+// character.
+func personName(name string) bool {
+	return name != "" && utf8.ValidString(name) && utf8.RuneCountInString(name) <= crew.MaxPersonName && !strings.ContainsFunc(name, unicode.IsControl)
 }
 
 // ticketDirectory is what a person's work reads of Dispatch's store: its
