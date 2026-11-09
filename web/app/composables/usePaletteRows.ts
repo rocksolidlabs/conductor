@@ -13,7 +13,7 @@ import { isActive, isEnded, needingInput, noReply, offeredChoices } from '~/util
 import type { FeedEntry } from '~/utils/events'
 import { joinedDot, joinedPath } from '~/utils/joined'
 import { resolveTyped } from '~/utils/fileTree'
-import { capGroup, parsePrefix, parseVerb, rank, readRecent, type Named, type PaletteGroup, type ParsedVerb, type Recent } from '~/utils/palette'
+import { capGroup, parsePrefix, parseVerb, placeAfter, rank, readRecent, type Named, type PaletteGroup, type ParsedVerb, type Recent } from '~/utils/palette'
 import { agentInitials, sessionMeta, shortCwd } from '~/utils/sessions'
 import { blockSubtitle, rowState, sessionRow, sidebarModel, type RunBlock, type SessionRow } from '~/utils/sidebar'
 import { rowPrompt, sessionLive } from '~/utils/sidebarActions'
@@ -57,6 +57,7 @@ const PAGES: Array<{ id: string; label: string; to: string; kbds: string[]; icon
   { id: 'dispatch', label: 'Dispatch', to: '/dispatch', kbds: ['G', 'D'], icon: 'i-lucide-ticket' },
   { id: 'agents', label: 'Agents', to: '/agents', kbds: ['G', 'A'], icon: 'i-lucide-bot' },
   { id: 'events', label: 'Events', to: '/events', kbds: ['G', 'E'], icon: 'i-lucide-radio-tower' },
+  { id: 'history', label: 'History', to: '/history', kbds: ['G', 'H'], icon: 'i-lucide-history' },
   { id: 'events-routing', label: 'Events · Routing', to: '/events?tab=routing', kbds: [], icon: 'i-lucide-route' },
   { id: 'events-integrations', label: 'Events · Integrations', to: '/events?tab=integrations', kbds: [], icon: 'i-lucide-plug' },
   { id: 'paste', label: 'Paste invite', to: '/paste', kbds: [], icon: 'i-lucide-clipboard-paste' },
@@ -76,6 +77,8 @@ export function decisionRows(items: ReadonlyArray<Pick<InboxSummary, 'ref' | 'ti
 /** The Tickets group's rows shown with nothing typed, and with something typed (capGroup). */
 const TICKETS_IDLE = 10
 const TICKETS_MATCHED = 50
+/** The groups the plain search's History group follows: it goes after Tickets, before Shared with you. */
+const HISTORY_AFTER = ['needs', 'page', 'running', 'exited', 'decide', 'runs', 'tickets']
 
 /** The row's second line, in the sidebar's grammar: `agent · where · how long`. */
 function sessionDetail(s: SessionInfo, now: number): string {
@@ -138,6 +141,8 @@ export function usePaletteRows(ctx: PaletteContext) {
     ctx.close()
     void router.push(to)
   }
+  // History (Program item HS1): the `~` mode's groups and the plain search's History group, from the server per query.
+  const historyRows = usePaletteHistory({ go, token: ctx.token })
   function fail(name: string) {
     return (e: unknown) => toast.add({ title: `${name} failed`, description: (e as Error).message, color: 'error' })
   }
@@ -967,7 +972,9 @@ export function usePaletteRows(ctx: PaletteContext) {
       }
       // The Tickets group shows its first rows as ranked: a few with nothing typed (those used lately, then the latest updated), more
       // once something is; the rest are found by typing.
-      return { mode, verb: null, groups: capGroup(rank(searchGroups(rest, now), rest, r, now), 'tickets', rest ? TICKETS_MATCHED : TICKETS_IDLE) }
+      // History's five best rows from three characters, after Tickets and before Shared with you, as the server ranked them.
+      const ranked = capGroup(rank(searchGroups(rest, now), rest, r, now), 'tickets', rest ? TICKETS_MATCHED : TICKETS_IDLE)
+      return { mode, verb: null, groups: placeAfter(ranked, historyRows.searchGroup(rest, now), HISTORY_AFTER) }
     }
     if (mode === 'actions') {
       const page = palette.page.value
@@ -986,6 +993,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     // The People group shows its first rows as ranked, as Tickets does; the rest are found by typing.
     if (mode === 'people') return { mode, verb: null, groups: capPeople(rank(peopleGroups(rest), rest, r, now), rest) }
     if (mode === 'events') return { mode, verb: null, groups: rank(eventModeGroups(), rest, r, now) }
+    if (mode === 'history') return { mode, verb: null, groups: historyRows.modeGroups(rest, now) }
     return { mode, verb: null, groups: rank(shortcutGroups(), rest, r, now) }
   }
 

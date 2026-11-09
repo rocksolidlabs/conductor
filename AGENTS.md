@@ -385,6 +385,14 @@ add its rule here.
   itself: GitHub's release downloads answered 504 for thirty minutes and
   one try of Neovim's tarball and Electron's binary failed four jobs of an
   hour-long run, twice (2026-11-08, #281; `docs/checks.md` says how).
+- A spec's setup owns what it starts and reads only what its own start
+  wrote. A `beforeAll` that writes to fixed names under the suite's root
+  meets, on a repeat (`--repeat-each`), the last start's log, repository
+  and transcripts: `switchyard.spec.ts` took the first share link of a log
+  every start appended to and talked to the ended switchyard's port, so the
+  spec could not repeat and no flake in it could be proved fixed
+  (2026-11-08, #281). Give each start a folder of its own and reset in it
+  every module variable a test reads.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.

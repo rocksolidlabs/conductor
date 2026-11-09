@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"sync"
 	"testing"
@@ -63,7 +64,7 @@ func TestTheDeskLaunchesThroughTheHost(t *testing.T) {
 	req := b.waitState(t, id, brakeman.StateRunning)
 	got := h.launched()
 	want := ext.TurnLaunch{Agent: "bk", Model: "sonnet", Folder: b.root, Line: brakemanLine(req), Label: "Brakeman · briefing " + id, Request: id}
-	if len(got) != 1 || got[0] != want {
+	if len(got) != 1 || !reflect.DeepEqual(got[0], want) {
 		t.Fatalf("the host was asked %+v, want one %+v", got, want)
 	}
 	if req.SessionID != sid || req.RunID == "" || req.RunID != b.runOf(t, sid) {

@@ -151,7 +151,7 @@ test('More holds the other pages, the alerts and your menu', async () => {
   await phone.locator('[data-bottom-tab="more"]').tap()
   const more = phone.locator('[data-bottom-more]')
   await expect(more).toBeVisible()
-  await expect(more.getByRole('link')).toHaveText([/Roundhouse/, /Agents/, /Dispatch/, /Events/])
+  await expect(more.getByRole('link')).toHaveText([/Roundhouse/, /Agents/, /Dispatch/, /Events/, /History/])
   await expect(more.getByText('Browser notification')).toBeVisible()
   await expect(more.getByRole('button')).toHaveText([/Your name/, /Keyboard shortcuts/, /Toggle theme/, /Workbench token/, /Forget token/])
   await more.getByRole('button', { name: /Your name/ }).tap()
