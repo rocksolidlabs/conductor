@@ -129,9 +129,6 @@ type inboxItem struct {
 	CardNote    string             `json:"cardNote,omitempty"`    // 200: the card read at another revision
 	Evidence    []inboxRef         `json:"evidence,omitempty"`
 	Delivery    []deliveryStep     `json:"delivery,omitempty"`
-	// mark is a DR1 record's mark as a link's scope read it (recordMarkOf), for
-	// the lane's notification hash alone: never sent.
-	mark string
 }
 
 // inboxAction is one thing a person may do with an item, through its own

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -134,7 +135,7 @@ func TestADecisionRecordReplacesItsQuestion(t *testing.T) {
 	if stateOf(steps) != "done done done done" || steps[stepRecorded].Receipt != "dr-1/1" {
 		t.Fatalf("its four states applied: %+v", steps)
 	}
-	if got := f.decisionTrackOf(t, "dr-1", "a1"); !reflect.DeepEqual(got, steps) {
+	if got := f.decisionTrackOf(t, "dr-1", "response:a1"); !reflect.DeepEqual(got, steps) {
 		t.Fatalf("the response's track: %+v", got)
 	}
 }
@@ -172,7 +173,7 @@ func TestInboxDecisionActionsUseDR1sRoutes(t *testing.T) {
 		t.Fatalf("the comment after: %+v", c)
 	}
 	f.expect(t, http.MethodPost, "/api/decisions/dr-1/comment", map[string]any{"opId": "k1", "kind": crew.CommentKind, "text": "Noted.", "expectedRev": 2}, http.StatusOK, "")
-	for id, words := range map[string]string{"m1": "keeps dr-1 open", "k1": "a comment changes nothing"} {
+	for id, words := range map[string]string{"comment:m1": "keeps dr-1 open", "comment:k1": "a comment changes nothing"} {
 		got := f.decisionTrackOf(t, "dr-1", id)
 		if stateOf(got) != "done done not_applicable not_applicable" || !strings.Contains(got[stepValidated].Words, words) {
 			t.Fatalf("%s's steps: %+v", id, got)
@@ -181,7 +182,7 @@ func TestInboxDecisionActionsUseDR1sRoutes(t *testing.T) {
 	// A response at the rev the item read before the comments is refused,
 	// kept, and its steps say so.
 	f.respond(t, adminToken, "dr-1", "s1", 1, 1, http.StatusConflict, crew.CodeStaleDecision)
-	if got := f.decisionTrackOf(t, "dr-1", "s1"); stateOf(got) != "done refused not_applicable not_applicable" || !strings.Contains(got[stepRecorded].Words, crew.CodeStaleDecision) {
+	if got := f.decisionTrackOf(t, "dr-1", "response:s1"); stateOf(got) != "done refused not_applicable not_applicable" || !strings.Contains(got[stepRecorded].Words, crew.CodeStaleDecision) {
 		t.Fatalf("the stale response's steps: %+v", got)
 	}
 	choice := actionOf(t, f.itemOf(t, "decision:dr-1"), "answer")
@@ -191,7 +192,7 @@ func TestInboxDecisionActionsUseDR1sRoutes(t *testing.T) {
 	f.respond(t, adminToken, "dr-1", "a1", 0, 3, http.StatusCreated, "")
 	f.respond(t, adminToken, "dr-1", "a1", 0, 3, http.StatusOK, "")
 	f.decisionWhen(t, "dr-1", "applied", inState(ledger.DecisionApplied))
-	if got := f.decisionTrackOf(t, "dr-1", "a1"); stateOf(got) != "done done done done" {
+	if got := f.decisionTrackOf(t, "dr-1", "response:a1"); stateOf(got) != "done done done done" {
 		t.Fatalf("the answer's steps: %+v", got)
 	}
 	// An approval's Approve and Reject, each its option by index.
@@ -206,7 +207,7 @@ func TestInboxDecisionActionsUseDR1sRoutes(t *testing.T) {
 			t.Fatalf("%s answered %v", name, d["answer"])
 		}
 	}
-	if got := f.decisionTrackOf(t, "dr-1", "nobody"); got[stepRecorded].State != stepUnknown {
+	if got := f.decisionTrackOf(t, "dr-1", "response:nobody"); got[stepRecorded].State != stepUnknown {
 		t.Fatalf("an id nothing was kept under: %+v", got)
 	}
 }
@@ -256,7 +257,7 @@ func TestDecideCarriesADR1ResponseWhole(t *testing.T) {
 	f.expect(t, http.MethodPost, "/api/decisions/dr-1/respond", map[string]any{"responseId": "op-1", "choice": 1, "text": text, "rationale": rationale, "expectedRev": 1}, http.StatusCreated, "")
 	auth := crew.Authority{Grant: "admin", Via: crew.ViaWorkbench}
 	receipt, repeat, err := f.srv.decideRecord(t.Context(), "dr-2", m, adminActor, auth)
-	if err != nil || receipt != "op-1" || repeat {
+	if err != nil || receipt != "response:op-1" || repeat {
 		t.Fatalf("the decide: %q %v %v", receipt, repeat, err)
 	}
 	route, lane := keptResponse(t, f.testEnv, "dr-1", 1), keptResponse(t, f.testEnv, "dr-2", 1)
@@ -538,10 +539,7 @@ func TestTheFullestDecisionRecordThroughTheLane(t *testing.T) {
 	rd := e.srv.newInboxRead(t.Context())
 	// Its asker live, so it offers more information too.
 	rd.askerLive = func(ledger.DecisionRow) bool { return true }
-	it, err := rd.decisionItem(row, &ledger.DecisionRecord{DecisionRow: row})
-	if err != nil {
-		t.Fatal(err)
-	}
+	it := rd.decisionItem(row, nil, &ledger.DecisionRecord{DecisionRow: row})
 	if n := len(decisionJSON(t, it)); n > maxInboxItem || it.Question != big || len(it.Actions) != 9 {
 		t.Fatalf("the fullest item: %d bytes, %d actions", n, len(it.Actions))
 	}
@@ -728,10 +726,157 @@ func TestALinkIsToldOfARecordsChange(t *testing.T) {
 	w.waitChanged()
 }
 
+// A decision link is told of a change of a record in its scope after the
+// record has left its list: a comment on a record already applied (DR1
+// takes one in every state), which the link still reads through
+// decision_record, changes the link's hash, whose read covers every
+// record of the scope whatever its state.
+func TestALinkIsToldOfAFinalRecordsChange(t *testing.T) {
+	f := newDecisionFixture(t, nil, nil)
+	f.ask(t, approvalBody("r1"), http.StatusCreated, "")
+	f.mirrored(t, "dr-1")
+	link, _ := f.decisionLink(t, "/api/sessions/"+f.sid+"/links", "phone", 0)
+	hash := func() string {
+		h, ok := f.srv.laneHash(t.Context(), link)
+		if !ok {
+			t.Fatal("the scope could not be read")
+		}
+		return h
+	}
+	f.respond(t, adminToken, "dr-1", "a1", 0, 1, http.StatusCreated, "")
+	// Applied, and its line's delivery settled: nothing changes it after
+	// but what the test does.
+	now := f.decisionWhen(t, "dr-1", "applied and delivered", func(d map[string]any) bool {
+		h, _ := d["history"].([]any)
+		last, _ := h[len(h)-1].(map[string]any)
+		return d["state"] == ledger.DecisionApplied && slices.Contains([]any{ledger.HistoryDeliveryEntered, ledger.HistoryDeliveryUntyped, ledger.HistoryDeliveryUncertain}, last["kind"])
+	})
+	if items, _, err := f.srv.laneItems(t.Context(), mustScope(t, f.srv, link)); err != nil || slices.ContainsFunc(items, func(it *inboxItem) bool { return it.Ref == "decision:dr-1" }) {
+		t.Fatalf("the applied record is still an item of the link: %v", err)
+	}
+	first := hash()
+	rev := int(now["rev"].(float64))
+	f.expect(t, http.MethodPost, "/api/decisions/dr-1/comment", map[string]any{"opId": "k1", "kind": crew.CommentKind, "text": "Shipped, thanks.", "expectedRev": rev}, http.StatusOK, "")
+	f.decisionWhen(t, "dr-1", "commented", func(d map[string]any) bool { return d["rev"] == float64(rev+1) })
+	if hash() == first {
+		t.Fatal("a comment on an applied record in the scope left the link's hash as it was")
+	}
+}
+
+// mustScope is the scope of the link, failing t for one that no longer
+// stands.
+func mustScope(t *testing.T, s *Server, link string) laneScope {
+	t.Helper()
+	sc, no := s.scope(link, "")
+	if no != nil {
+		t.Fatalf("the link's scope: %s", no)
+	}
+	return sc
+}
+
+// A record's item says what it holds of the same read as the record: a
+// continuation that moves the record and its holds to the next run after
+// the record is read (the seam, between the read and the item's making)
+// leaves an item of the run it was read under that still names what it
+// held there, never one that says nothing is held for a record whose
+// unchanged rev the next run still answers; read again, the item names
+// the continuation, holding the same.
+func TestADecisionIsReadWithWhatItHolds(t *testing.T) {
+	f := newDecisionFixture(t, nil, nil)
+	f.ask(t, approvalBody("r1"), http.StatusCreated, "")
+	taskVia(t, f.testEnv, f.run, "build", "held by dr-1", func(task map[string]any) bool {
+		holds, _ := task["holds"].([]any)
+		return len(holds) == 1
+	})
+	f.expect(t, http.MethodPost, "/api/runs/"+f.run+"/stop", nil, http.StatusOK, "")
+	armed, reached, release := make(chan struct{}, 1), make(chan int64), make(chan struct{})
+	f.srv.decisionItemSeam = func(n int64) {
+		select {
+		case <-armed:
+			reached <- n
+			<-release
+		default:
+		}
+	}
+	armed <- struct{}{}
+	type read struct {
+		status int
+		body   []byte
+		err    error
+	}
+	done := make(chan read, 1)
+	go func() {
+		// Off the test's goroutine: what fails is reported by the test.
+		req, _ := http.NewRequest(http.MethodGet, f.http.URL+"/api/inbox/item?ref="+url.QueryEscape("decision:dr-1"), nil)
+		req.Header.Set("Authorization", "Bearer "+adminToken)
+		resp, err := f.client.Do(req)
+		if err != nil {
+			done <- read{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		b, err := io.ReadAll(resp.Body)
+		done <- read{resp.StatusCode, b, err}
+	}()
+	n := <-reached
+	// Between the record's read and its item's making, the run is
+	// continued: dr-1 and its hold on build move to the next run, its rev
+	// as it was.
+	next := f.expect(t, http.MethodPost, "/api/runs/"+f.run+"/resume", nil, http.StatusCreated, "")["run"].(map[string]any)["id"].(string)
+	waitUntil(t, "dr-1 moved to the continuation", func() bool {
+		rec, found, err := f.srv.ledger.Decision(t.Context(), n)
+		return err == nil && found && rec.CurrentRun == next && rec.Rev == 1 && slices.Equal(rec.Held, []string{"build"})
+	})
+	close(release)
+	got := <-done
+	var out struct {
+		Item inboxItem `json:"item"`
+	}
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	if err := json.Unmarshal(got.body, &out); err != nil || got.status != http.StatusOK {
+		t.Fatalf("the item: %d %s %v", got.status, got.body, err)
+	}
+	it := out.Item
+	if it.Revision != "1" || !strings.Contains(it.Blocking.Words, "Yardmaster holds build until dr-1") || !slices.Contains(it.Blocking.Refs, "task:"+f.run+"/build") || !slices.Contains(it.Blocking.Refs, "run:"+f.run) {
+		t.Fatalf("the item read before the continuation: %+v", it.Blocking)
+	}
+	again := f.itemOf(t, "decision:dr-1")
+	if again.Revision != "1" || !strings.Contains(again.Blocking.Words, "Yardmaster holds build until dr-1") || !slices.Contains(again.Blocking.Refs, "task:"+next+"/build") || !slices.Contains(again.Blocking.Refs, "run:"+next) {
+		t.Fatalf("the item read after it: %+v", again.Blocking)
+	}
+}
+
+// A record's tracking key names its kind: DR1 keeps a response's id and a
+// comment's apart, so a comment kept under k1 and a stale response
+// refused under the same k1 are each tracked as what they are, and a
+// key without its kind is refused.
+func TestATrackingKeyNamesItsKind(t *testing.T) {
+	f := newDecisionFixture(t, nil, nil)
+	f.ask(t, approvalBody("r1"), http.StatusCreated, "")
+	f.expect(t, http.MethodPost, "/api/decisions/dr-1/comment", map[string]any{"opId": "k1", "kind": crew.CommentKind, "text": "Noted.", "expectedRev": 1}, http.StatusOK, "")
+	f.respond(t, adminToken, "dr-1", "k1", 0, 1, http.StatusConflict, crew.CodeStaleDecision)
+	if got := f.decisionTrackOf(t, "dr-1", "comment:k1"); stateOf(got) != "done done not_applicable not_applicable" || !strings.Contains(got[stepValidated].Words, "a comment changes nothing") {
+		t.Fatalf("the comment's steps: %+v", got)
+	}
+	if got := f.decisionTrackOf(t, "dr-1", "response:k1"); stateOf(got) != "done refused not_applicable not_applicable" || !strings.Contains(got[stepRecorded].Words, crew.CodeStaleDecision) {
+		t.Fatalf("the response's steps: %+v", got)
+	}
+	if got := f.decisionTrackOf(t, "dr-1", "comment:r9"); got[stepRecorded].State != stepUnknown {
+		t.Fatalf("a comment never made: %+v", got)
+	}
+	for _, key := range []string{"k1", "op:k1", "response:", "comment:a b", "response:" + strings.Repeat("a", 33)} {
+		if status, body := f.get(t, "/api/inbox/track?"+url.Values{"ref": {"decision:dr-1"}, "receipt": {key}}.Encode()); status != http.StatusBadRequest {
+			t.Fatalf("the key %q: %d %s", key, status, body)
+		}
+	}
+}
+
 // A scope whose records cannot be read is no scope without them: the
 // lane's list is refused unavailable and its hash says it read nothing;
-// an item whose run's holds cannot be read is none (unavailable), never
-// one saying nothing is held.
+// an item whose record and holds cannot be read is none (unavailable),
+// never one saying nothing is held.
 func TestAFailedReadOfDecisionsIsNoAnswer(t *testing.T) {
 	f := newDecisionFixture(t, nil, nil)
 	f.ask(t, approvalBody("r1"), http.StatusCreated, "")
@@ -751,12 +896,8 @@ func TestAFailedReadOfDecisionsIsNoAnswer(t *testing.T) {
 	if _, ok := f.srv.laneHash(gone, link); ok {
 		t.Fatal("a hash of a scope not read")
 	}
-	rec, found, err := f.srv.ledger.Decision(t.Context(), 1)
-	if err != nil || !found {
-		t.Fatal(found, err)
-	}
-	if it, err := f.srv.newInboxRead(gone).decisionItem(rec.DecisionRow, &rec); err == nil {
-		t.Fatalf("an item whose holds were not read: %+v", it)
+	if it, err := f.srv.decisionItemOf(gone, 1); err == nil || errors.Is(err, errNoItem) {
+		t.Fatalf("an item whose record and holds were not read: %+v %v", it, err)
 	}
 }
 
@@ -928,7 +1069,7 @@ func TestAnAnsweredDecisionStaysTracked(t *testing.T) {
 	if listed(page, "decision:"+did) || page.Tracking != 0 || !slices.ContainsFunc(page.Recent, func(s inboxSummary) bool { return s.Ref == "decision:"+did }) {
 		t.Fatalf("after the continuation %s: %+v", next, page)
 	}
-	if got := third.decisionTrackOf(t, did, "a1"); stateOf(got) != "done done done done" {
+	if got := third.decisionTrackOf(t, did, "response:a1"); stateOf(got) != "done done done done" {
 		t.Fatalf("its steps applied: %+v", got)
 	}
 }

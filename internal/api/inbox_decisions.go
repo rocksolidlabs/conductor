@@ -123,17 +123,15 @@ func typeWord(typ string) string {
 	return "Clarification"
 }
 
-// inboxRun is a run as one read of the inbox found it: false for none;
-// err a failed read of its holds.
+// inboxRun is a run as one read of the inbox found it: false for none.
 type inboxRun struct {
-	run   crew.Run
-	ok    bool
-	holds []ledger.HoldRow
-	err   error
+	run crew.Run
+	ok  bool
 }
 
 // runOf is the run id as this read found it, read once: from the engine
-// or its record, with its holds.
+// or its record. What a record holds is never read here: it is read with
+// the record (ledger.InboxDecision's and DecisionRecord's Held).
 func (rd *inboxRead) runOf(id string) inboxRun {
 	if r, seen := rd.decisionRuns[id]; seen {
 		return r
@@ -143,22 +141,8 @@ func (rd *inboxRead) runOf(id string) inboxRun {
 	}
 	var r inboxRun
 	r.run, r.ok = rd.s.runOrRecord(id)
-	if rd.s.ledger != nil {
-		r.holds, r.err = rd.s.ledger.Holds(rd.ctx, id)
-	}
 	rd.decisionRuns[id] = r
 	return r
-}
-
-// heldTasks are the tasks of run the record n holds now.
-func (r inboxRun) heldTasks(n int64) []string {
-	var out []string
-	for _, h := range r.holds {
-		if h.Decision == n && h.ReleasedAt.IsZero() {
-			out = append(out, h.TaskID)
-		}
-	}
-	return out
 }
 
 // runHeld says whether the engine holds the run and it goes on (not
@@ -189,22 +173,23 @@ func (rd *inboxRead) askedWhere(row ledger.DecisionRow, run inboxRun) string {
 	return fmt.Sprintf("%s in attempt %s.%d", agent, row.TaskID, row.Attempt)
 }
 
-// decisionItem is the item of DR1's record row, as one read found it;
-// rec, when given, is the whole record of the same read, whose four
-// states the item carries (its delivery). Its actions name DR1's routes:
-// a response through respond, more information and a comment through
-// comment, each at the record's rev; only an open record is answered,
-// and an answered one takes a comment alone. A card of Brakeman's about
-// the item's ref fills what it fills of any item. The holds of its run
-// that could not be read leave no item (an error): what a response
-// authorizes and what waits for it are said from them, never guessed.
-func (rd *inboxRead) decisionItem(row ledger.DecisionRow, rec *ledger.DecisionRecord) (*inboxItem, error) {
+// decisionItem is the item of DR1's record row and held, the tasks it
+// holds, both as one read of the ledger found them (one read, so what a
+// response authorizes and what waits for it are said of the rev it is
+// taken at: a continuation that moves the record and its holds is seen
+// whole or not at all); rec, when given, is the whole record of the same
+// read, whose four states the item carries (its delivery). Its actions
+// name DR1's routes: a response through respond, more information and a
+// comment through comment, each at the record's rev; only an open record
+// is answered, and an answered one takes a comment alone. A card of
+// Brakeman's about the item's ref fills what it fills of any item.
+func (rd *inboxRead) decisionItem(row ledger.DecisionRow, held []string, rec *ledger.DecisionRecord) *inboxItem {
+	if seam := rd.s.decisionItemSeam; seam != nil {
+		seam(row.N)
+	}
 	req := requestOf(row)
 	id, ref, rev := row.ID(), ledger.DecisionRef(row.N), strconv.Itoa(row.Rev)
 	run := rd.runOf(row.CurrentRun)
-	if run.err != nil {
-		return nil, fmt.Errorf("the holds of %s's run: %w", id, run.err)
-	}
 	it := &inboxItem{Ref: ref, Subject: ref, Kind: inboxDecision, Since: row.CreatedAt, Question: req.Question, Answerer: answererOf(req),
 		Revision: rev, State: row.State, BriefBy: "conductor", Actions: []inboxAction{}}
 	runName := row.CurrentRun
@@ -218,7 +203,6 @@ func (rd *inboxRead) decisionItem(row ledger.DecisionRow, rec *ledger.DecisionRe
 		brief += " for " + run.run.Ticket.Key
 	}
 	it.Brief = fitText(brief, 2<<10)
-	held := run.heldTasks(row.N)
 	rd.decisionBlocking(it, row, run, held, where)
 	rd.decisionEvidence(it, row, run, req)
 	switch row.State {
@@ -234,7 +218,7 @@ func (rd *inboxRead) decisionItem(row ledger.DecisionRow, rec *ledger.DecisionRe
 		it.Delivery = recordSteps(*rec, rd.s.runHeld(row.CurrentRun))
 	}
 	rd.withCard(it)
-	return it, nil
+	return it
 }
 
 // capitalize is s with its first letter upper case.
@@ -462,11 +446,7 @@ func (rd *inboxRead) openDecisions(after inboxCursor, limit int) ([]*inboxItem, 
 	}
 	out := make([]*inboxItem, 0, len(page))
 	for _, row := range page {
-		it, err := rd.decisionItem(row, nil)
-		if err != nil {
-			return nil, 0, 0, err
-		}
-		out = append(out, it)
+		out = append(out, rd.decisionItem(row.DecisionRow, row.Held, nil))
 	}
 	return out, total, answered, nil
 }
@@ -483,11 +463,7 @@ func (rd *inboxRead) recentDecisions() ([]inboxSummary, error) {
 	}
 	out := make([]inboxSummary, 0, len(rows))
 	for _, row := range rows {
-		it, err := rd.decisionItem(row, nil)
-		if err != nil {
-			return nil, err
-		}
-		s := it.summary()
+		s := rd.decisionItem(row.DecisionRow, row.Held, nil).summary()
 		s.Closed = timeOf(row.ClosedAt)
 		out = append(out, s)
 	}
@@ -507,16 +483,39 @@ func (s *Server) decisionItemOf(ctx context.Context, n int64) (*inboxItem, error
 	if !found {
 		return nil, errNoItem
 	}
-	return s.newInboxRead(ctx).decisionItem(rec.DecisionRow, &rec)
+	return s.newInboxRead(ctx).decisionItem(rec.DecisionRow, rec.Held, &rec), nil
+}
+
+// A record's tracking key names what it tracks by its kind and id: DR1
+// keeps a response's responseId and a comment's opId (a comment's or a
+// request for more information's) apart, each unique in its own space, so
+// the one id may name a response and a comment both, and a key never
+// reads one as the other.
+const (
+	trackResponse = "response:"
+	trackComment  = "comment:"
+)
+
+// decisionReceipt reads a record's tracking key, "response:<responseId>"
+// or "comment:<opId>": the kind's prefix and the id, ok false for any
+// other.
+func decisionReceipt(v string) (kind, id string, ok bool) {
+	for _, k := range []string{trackResponse, trackComment} {
+		if id, is := strings.CutPrefix(v, k); is && crew.CommandIDPattern.MatchString(id) {
+			return k, id, true
+		}
+	}
+	return "", "", false
 }
 
 // decisionTrack is the four steps of the action actor took on record n
-// under the id: a response's (accepted, the record's four states; refused,
-// recorded refused with DR1's words), a comment's or a request for more
-// information's (recorded at its history row; nothing to validate or
-// apply: the record stays as it was). An id the record keeps nothing of
-// under actor reads recorded unknown.
-func (s *Server) decisionTrack(ctx context.Context, n int64, actor, id string) ([]deliveryStep, error) {
+// under the key's kind and id: a response's (accepted, the record's four
+// states; refused, recorded refused with DR1's words), a comment's or a
+// request for more information's (recorded at its history row; nothing
+// to validate or apply: the record stays as it was), each looked for
+// among its kind alone. An id the record keeps nothing of under actor, of
+// that kind, reads recorded unknown.
+func (s *Server) decisionTrack(ctx context.Context, n int64, actor, kind, id string) ([]deliveryStep, error) {
 	if s.ledger == nil {
 		return nil, errNoItem
 	}
@@ -530,7 +529,7 @@ func (s *Server) decisionTrack(ctx context.Context, n int64, actor, id string) (
 	all := recordSteps(rec, s.runHeld(rec.CurrentRun))
 	avail := all[0]
 	for _, r := range rec.Responses {
-		if r.Actor != actor || r.ResponseID != id {
+		if kind != trackResponse || r.Actor != actor || r.ResponseID != id {
 			continue
 		}
 		if r.Status == ledger.ResponseAccepted {
@@ -547,7 +546,7 @@ func (s *Server) decisionTrack(ctx context.Context, n int64, actor, id string) (
 			step(stepValidated, stepNotApplicable, nil, "refused: nothing to validate", ""), step(stepApplied, stepNotApplicable, nil, "refused: nothing was applied", "")}, nil
 	}
 	for _, h := range rec.History {
-		if h.By != actor || h.OpID != id {
+		if kind != trackComment || h.By != actor || h.OpID != id || (h.Kind != ledger.HistoryCommented && h.Kind != ledger.HistoryInfoRequested) {
 			continue
 		}
 		var dt struct {
@@ -562,7 +561,10 @@ func (s *Server) decisionTrack(ctx context.Context, n int64, actor, id string) (
 		return []deliveryStep{avail, step(stepRecorded, stepDone, timeOf(h.At), cmpOr(dt.Words, h.Kind), receipt),
 			step(stepValidated, stepNotApplicable, nil, then, ""), step(stepApplied, stepNotApplicable, nil, then, "")}, nil
 	}
-	none := "the record keeps no response or comment of yours under this id"
+	none := "the record keeps no response of yours under this id"
+	if kind == trackComment {
+		none = "the record keeps no comment of yours under this id"
+	}
 	return []deliveryStep{avail, step(stepRecorded, stepUnknown, nil, none, ""), step(stepValidated, stepUnknown, nil, none, ""), step(stepApplied, stepUnknown, nil, none, "")}, nil
 }
 
@@ -582,14 +584,15 @@ func (s *Server) handleDecisionItem(w http.ResponseWriter, r *http.Request, n in
 }
 
 // handleDecisionTrack answers the steps of an action on a decision
-// (handleInboxTrack's part for DR1's records): receipt the response's or
-// the operation's id, read under the caller's actor.
+// (handleInboxTrack's part for DR1's records): receipt the tracking key,
+// response:<responseId> or comment:<opId>, read under the caller's actor.
 func (s *Server) handleDecisionTrack(w http.ResponseWriter, r *http.Request, n int64, receipt string) {
-	if !crew.CommandIDPattern.MatchString(receipt) {
-		writeError(w, http.StatusBadRequest, "invalid_request", "receipt is the response's or the comment's id")
+	kind, id, ok := decisionReceipt(receipt)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid_request", "receipt is response:<responseId> or comment:<opId>")
 		return
 	}
-	steps, err := s.decisionTrack(r.Context(), n, actorOf(r), receipt)
+	steps, err := s.decisionTrack(r.Context(), n, actorOf(r), kind, id)
 	switch {
 	case errors.Is(err, errNoItem):
 		writeError(w, http.StatusNotFound, "not_found", "no such decision")

@@ -520,7 +520,7 @@ func (s *Server) handleInboxTrack(w http.ResponseWriter, r *http.Request) {
 	}
 	if n, is, err := decisionRefN(q["ref"]); is {
 		if err != nil || q["attempt"] != "" {
-			writeError(w, http.StatusBadRequest, "invalid_request", "ref is a decision's ref and receipt its response's or comment's id, with no attempt")
+			writeError(w, http.StatusBadRequest, "invalid_request", "ref is a decision's ref and receipt response:<responseId> or comment:<opId>, with no attempt")
 			return
 		}
 		s.handleDecisionTrack(w, r, n, q["receipt"])

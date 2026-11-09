@@ -66,7 +66,7 @@ func TestInboxDecisions(t *testing.T) {
 		t.Fatalf("the order the inbox needs begins %s %s %s %s", rows[0].ID(), rows[1].ID(), rows[2].ID(), rows[3].ID())
 	}
 	states := []string{DecisionOpen, DecisionAnswered}
-	var got []DecisionRow
+	var got []InboxDecision
 	after := InboxCursor{}
 	for pages := 0; ; pages++ {
 		page, next, total, tracking, err := l.InboxDecisions(ctx, states, after, 50)
@@ -125,10 +125,10 @@ func TestInboxDecisions(t *testing.T) {
 	}
 }
 
-// A decision link's scope: the run's decisions in the states asked, a
-// task's (asked by it or holding it) when one is named, each with its
-// responses and history counted in the same read; a comment and a refused
-// response, which a rev does not always mark, move the counts.
+// A decision link's scope: the run's decisions in every state, a task's
+// (asked by it or holding it) when one is named, each with what it holds
+// and its responses and history counted in the same read; a comment and a
+// refused response, which a rev does not always mark, move the counts.
 func TestScopeDecisions(t *testing.T) {
 	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
 	ctx := context.Background()
@@ -142,24 +142,27 @@ func TestScopeDecisions(t *testing.T) {
 	closed := open(t, l, gateDecision(run, "g2"))
 	setState(t, l, run, closed, DecisionCancelled, "")
 	open(t, l, gateDecision(other, "g1"))
-	states := []string{DecisionOpen, DecisionAnswered}
-	ns := func(got []ScopedDecision) []int64 {
+	ns := func(got []InboxDecision) []int64 {
 		var out []int64
 		for _, d := range got {
 			out = append(out, d.N)
 		}
 		return out
 	}
-	if got, err := l.ScopeDecisions(ctx, run, "", states); err != nil || !slices.Equal(ns(got), []int64{asked, gate}) {
+	got, err := l.ScopeDecisions(ctx, run, "")
+	if err != nil || !slices.Equal(ns(got), []int64{asked, gate, closed}) || got[2].State != DecisionCancelled {
 		t.Fatalf("the run's: %v %v", ns(got), err)
 	}
-	if got, err := l.ScopeDecisions(ctx, run, "build", states); err != nil || !slices.Equal(ns(got), []int64{asked}) {
+	if got[0].Held != nil || !slices.Equal(got[1].Held, []string{"deploy"}) || got[2].Held != nil {
+		t.Fatalf("what each holds: %+v", got)
+	}
+	if got, err := l.ScopeDecisions(ctx, run, "build"); err != nil || !slices.Equal(ns(got), []int64{asked}) {
 		t.Fatalf("build's: %v %v", ns(got), err)
 	}
-	if got, err := l.ScopeDecisions(ctx, run, "deploy", states); err != nil || !slices.Equal(ns(got), []int64{gate}) {
+	if got, err := l.ScopeDecisions(ctx, run, "deploy"); err != nil || !slices.Equal(ns(got), []int64{gate}) {
 		t.Fatalf("deploy's, by its hold: %v %v", ns(got), err)
 	}
-	before, err := l.ScopeDecisions(ctx, run, "deploy", states)
+	before, err := l.ScopeDecisions(ctx, run, "deploy")
 	if err != nil || before[0].Responses != 0 || before[0].History != 0 {
 		t.Fatalf("before: %+v %v", before, err)
 	}
@@ -170,12 +173,12 @@ func TestScopeDecisions(t *testing.T) {
 		_, err := tx.Respond(gate, ResponseRow{Actor: "admin", Authority: workbenchAuth, ResponseID: "r1", Fingerprint: "fp-r1", Status: ResponseRefused, Receipt: `{"words":"stale"}`})
 		return err
 	})
-	after, err := l.ScopeDecisions(ctx, run, "deploy", states)
+	after, err := l.ScopeDecisions(ctx, run, "deploy")
 	rec := record(t, l, gate)
 	if err != nil || after[0].Responses != len(rec.Responses) || after[0].History != len(rec.History) || after[0].Responses != 1 || after[0].History != 1 {
 		t.Fatalf("after a comment and a refusal: %+v, the record %d %d, %v", after, len(rec.Responses), len(rec.History), err)
 	}
-	if got, err := l.ScopeDecisions(ctx, "", "", states); err != nil || len(got) != 0 {
+	if got, err := l.ScopeDecisions(ctx, "", ""); err != nil || len(got) != 0 {
 		t.Fatalf("no run: %v %v", got, err)
 	}
 }

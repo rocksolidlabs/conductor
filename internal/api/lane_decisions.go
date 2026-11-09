@@ -33,16 +33,19 @@ import (
 // response and its delivery's rows (delivery.typing, delivery.entered)
 // without moving it, so the rev alone does not mark the record whole.
 //
-// One rule keeps a link's view of a record of one moment: what the lane
-// serves of a record, and what its notification hash is made of, are
-// each of ONE read of the ledger. The scope's records and their marks are
-// one read (ledger.ScopeDecisions), and the hash carries each one's mark,
-// so any change of a record in the scope (a comment, a request for more
-// information, a refused response, a delivery's row) sends
-// decisions_changed; a part is cut from the very read its scope was
-// judged on, never from a second one. A read that fails serves nothing
-// and changes no hash: the lane answers unavailable, and its watch keeps
-// the last hash it saw.
+// One rule keeps a link's view of a record of one moment: a record, what
+// it holds and its mark, as the lane serves them and as its notification
+// hash is made of them, come from ONE read of the ledger. The scope's
+// records, every one whatever its state, with what each holds and its
+// mark, are one read (ledger.ScopeDecisions): the open and answered are
+// the items, and the hash carries every record's state and mark, so any
+// change of a record in the scope, final ones included (a comment, a
+// request for more information, a refused or late response, a delivery's
+// row), sends decisions_changed; an item's record and what it holds are
+// of one read (ledger.Decision's Held), never a second read of the holds;
+// a part is cut from the very read its scope was judged on, never from a
+// second one. A read that fails serves nothing and changes no hash: the
+// lane answers unavailable, and its watch keeps the last hash it saw.
 
 // linkCannotAnswer are the words of a record on a link.
 const linkCannotAnswer = "Answer it on the LAN or the desktop: a link cannot answer a durable decision yet"
@@ -72,29 +75,29 @@ const (
 	recordHistoryPage   = 32
 )
 
-// laneDecisionItems are DR1's records in the scope, open or answered (a
-// run link's run's, a session link's attempt's task's), as the lane's
-// items: no action, the words why, and each one's mark (its rev, its
-// responses and its history counted), all of one read of the ledger. A
-// failed read is an error, never a scope with fewer records.
-func (s *Server) laneDecisionItems(ctx context.Context, rd *inboxRead, sc laneScope) ([]*inboxItem, error) {
+// laneDecisionItems are DR1's records in the scope (a run link's run's, a
+// session link's attempt's task's), every one whatever its state, all of
+// one read of the ledger: the open and answered ones as the lane's items
+// (no action, the words why, what each holds of the same read), and
+// marks, each record's ref, state and mark (its rev, its responses and
+// its history counted), for the link's notification hash: a final record,
+// which the link still reads (decision_record), changes it as an open one
+// does. A failed read is an error, never a scope with fewer records.
+func (s *Server) laneDecisionItems(ctx context.Context, rd *inboxRead, sc laneScope) (items []*inboxItem, marks []string, err error) {
 	if s.ledger == nil || sc.run == "" || (sc.session != "" && sc.task == "") {
-		return nil, nil
+		return nil, nil, nil
 	}
-	rows, err := s.ledger.ScopeDecisions(ctx, sc.run, sc.task, inboxStates)
+	rows, err := s.ledger.ScopeDecisions(ctx, sc.run, sc.task)
 	if err != nil {
-		return nil, fmt.Errorf("the decisions of run %s: %w", sc.run, err)
+		return nil, nil, fmt.Errorf("the decisions of run %s: %w", sc.run, err)
 	}
-	var out []*inboxItem
 	for _, row := range rows {
-		it, err := rd.decisionItem(row.DecisionRow, nil)
-		if err != nil {
-			return nil, err
+		marks = append(marks, ledger.DecisionRef(row.N)+" "+row.State+" "+recordMarkOf(row.Rev, row.Responses, row.History))
+		if slices.Contains(inboxStates, row.State) {
+			items = append(items, laneRecordItem(rd.decisionItem(row.DecisionRow, row.Held, nil)))
 		}
-		it.mark = recordMarkOf(row.Rev, row.Responses, row.History)
-		out = append(out, laneRecordItem(it))
 	}
-	return out, nil
+	return items, marks, nil
 }
 
 // laneRecordItem is a record's item as a link shows it: its actions taken
@@ -156,14 +159,10 @@ func (s *Server) laneDecisionRef(ctx context.Context, sc laneScope, reqID, v str
 	return rec, true, no
 }
 
-// readRecordItem answers a decision_read of a record in the scope.
+// readRecordItem answers a decision_read of a record in the scope, read
+// with what it holds (laneDecisionRef's one read).
 func (s *Server) readRecordItem(ctx context.Context, sc laneScope, reqID string, rec ledger.DecisionRecord) []byte {
-	item, err := s.newInboxRead(ctx).decisionItem(rec.DecisionRow, &rec)
-	if err != nil {
-		s.log.Warn("lane: a decision's item could not be read", "decision", rec.ID(), "err", err)
-		return refusal(reqID, "unavailable", "the decision could not be read")
-	}
-	it := laneRecordItem(item)
+	it := laneRecordItem(s.newInboxRead(ctx).decisionItem(rec.DecisionRow, rec.Held, &rec))
 	for i, e := range it.Evidence {
 		if id, ok := sessionOfRef(e.Ref); ok && s.coversSession(sc, id) {
 			it.Evidence[i].Session = s.laneSessionID(sc, id)
@@ -338,8 +337,9 @@ func recordResponse(m proto.Decide) (crew.Response, error) {
 // decideRecord takes a decide on DR1's record did through DR1's own
 // operation for its action, as actor with auth, the same the routes call:
 // answer, approve and reject a response (RespondDecision), more_info and
-// comment a comment's (CommentDecision). Its receipt is the opId the
-// action's steps are read by (decisionTrack); repeat says DR1 held it
+// comment a comment's (CommentDecision). Its receipt is the tracking key
+// the action's steps are read by (decisionTrack), the opId under its
+// kind: response:<opId> or comment:<opId>; repeat says DR1 held it
 // already. A refusal is DR1's (crew.DecisionError, response_conflict
 // among them), or errRecordDecide for a decide that does not map.
 func (s *Server) decideRecord(ctx context.Context, did string, m proto.Decide, actor string, auth crew.Authority) (receipt string, repeat bool, err error) {
@@ -353,7 +353,7 @@ func (s *Server) decideRecord(ctx context.Context, did string, m proto.Decide, a
 		if err != nil {
 			return "", false, err
 		}
-		return m.OpID, rc.Repeat, nil
+		return trackResponse + m.OpID, rc.Repeat, nil
 	case crew.MoreInfoKind, crew.CommentKind:
 		rev, err := strconv.Atoi(m.Revision)
 		if err != nil || rev < 1 || m.Input != "" || m.Choice != nil || m.Rationale != "" || m.TicketRev != 0 {
@@ -363,7 +363,7 @@ func (s *Server) decideRecord(ctx context.Context, did string, m proto.Decide, a
 		if err != nil {
 			return "", false, err
 		}
-		return m.OpID, rc.Repeat, nil
+		return trackComment + m.OpID, rc.Repeat, nil
 	}
 	return "", false, errors.Join(errRecordDecide, errors.New("no such action on a durable decision"))
 }

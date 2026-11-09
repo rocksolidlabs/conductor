@@ -53,17 +53,17 @@ const decisionRefSQL = "('" + DecisionRefPrefix + "dr-' || d.n)"
 
 // InboxDecisions reads the decisions in the given states, oldest first by
 // (created_at, ref), at most limit of them after the cursor (limit at most
-// MaxInboxDecisions, 0 for that); next says more follow the page; total
-// counts every decision in those states, not the page's, and answered
-// those of them answered (the inbox's tracking items). The page and the
-// counts are of one read. A database older than the decision tables has
-// none.
-func (l *Ledger) InboxDecisions(ctx context.Context, states []string, after InboxCursor, limit int) (page []DecisionRow, next bool, total, answered int, err error) {
+// MaxInboxDecisions, 0 for that), each with what it holds and its counts;
+// next says more follow the page; total counts every decision in those
+// states, not the page's, and answered those of them answered (the
+// inbox's tracking items). The page, what each holds and the counts are
+// of one read. A database older than the decision tables has none.
+func (l *Ledger) InboxDecisions(ctx context.Context, states []string, after InboxCursor, limit int) (page []InboxDecision, next bool, total, answered int, err error) {
 	if limit <= 0 || limit > MaxInboxDecisions {
 		limit = MaxInboxDecisions
 	}
 	if len(states) == 0 {
-		return []DecisionRow{}, false, 0, 0, nil
+		return []InboxDecision{}, false, 0, 0, nil
 	}
 	marks := strings.TrimSuffix(strings.Repeat("?, ", len(states)), ", ")
 	var args []any
@@ -77,9 +77,9 @@ func (l *Ledger) InboxDecisions(ctx context.Context, states []string, after Inbo
 		where += " AND (" + orderSQL("d.created_at") + " > ? OR (" + orderSQL("d.created_at") + " = ? AND " + decisionRefSQL + " > ?))"
 		pageArgs = append(pageArgs, key, key, after.Ref)
 	}
-	query := "SELECT " + decisionCols + " FROM decisions d WHERE " + where + " ORDER BY " + orderSQL("d.created_at") + ", " + decisionRefSQL + " LIMIT ?"
+	query := "SELECT " + inboxCols + " FROM decisions d WHERE " + where + " ORDER BY " + orderSQL("d.created_at") + ", " + decisionRefSQL + " LIMIT ?"
 	pageArgs = append(pageArgs, limit+1)
-	page = []DecisionRow{}
+	page = []InboxDecision{}
 	err = l.readSnapshot(ctx, func(q querier, version int) error {
 		if version < versionDecisions {
 			return nil
@@ -87,19 +87,8 @@ func (l *Ledger) InboxDecisions(ctx context.Context, states []string, after Inbo
 		if err := q.QueryRowContext(ctx, "SELECT COUNT(*), COALESCE(SUM(d.state = ?), 0) FROM decisions d WHERE d.state IN ("+marks+")", append([]any{DecisionAnswered}, args...)...).Scan(&total, &answered); err != nil {
 			return err
 		}
-		rows, err := q.QueryContext(ctx, query, pageArgs...)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			d, err := scanDecision(rows)
-			if err != nil {
-				rows.Close()
-				return err
-			}
-			page = append(page, d)
-		}
-		return cmp.Or(rows.Err(), rows.Close())
+		page, err = readInbox(ctx, q, query, pageArgs...)
+		return err
 	})
 	if err != nil {
 		return nil, false, 0, 0, err
@@ -110,58 +99,113 @@ func (l *Ledger) InboxDecisions(ctx context.Context, states []string, after Inbo
 	return page, false, total, answered, nil
 }
 
-// ScopedDecision is a decision's row with how many responses and history
-// rows it keeps, all three of one read: what marks the record whole
-// beside its rev, which a refused response and a delivery's rows do not
-// move.
-type ScopedDecision struct {
+// InboxDecision is a decision's row with what the inbox says of it beside
+// the row, all of one read: the tasks it holds now (its active holds under
+// its current run, by task), and how many responses and history rows it
+// keeps, which mark the record whole beside its rev (a refused response
+// and a delivery's rows do not move the rev).
+type InboxDecision struct {
 	DecisionRow
+	Held               []string
 	Responses, History int
 }
 
-// ScopeDecisions reads the decisions run holds in the given states (with
+// inboxCols are a decision's columns, then its two counts.
+const inboxCols = decisionCols + ", (SELECT COUNT(*) FROM decision_responses r WHERE r.decision = d.n), (SELECT COUNT(*) FROM decision_history h WHERE h.decision = d.n)"
+
+// readInbox runs query, a select of inboxCols, through q, then reads what
+// each decision found holds through the same q: called within one read
+// transaction, the rows and their holds are of one commit.
+func readInbox(ctx context.Context, q querier, query string, args ...any) ([]InboxDecision, error) {
+	out := []InboxDecision{}
+	rows, err := q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var id InboxDecision
+		d, err := scanDecision(countsScanner{rows, &id.Responses, &id.History})
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		id.DecisionRow = d
+		out = append(out, id)
+	}
+	if err := cmp.Or(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	ns := make([]int64, 0, len(out))
+	for _, d := range out {
+		ns = append(ns, d.N)
+	}
+	held, err := readHeld(ctx, q, ns)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].Held = held[out[i].N]
+	}
+	return out, nil
+}
+
+// readHeld reads the tasks each of the decisions ns holds now, through q:
+// its active holds under its current run (the run that holds it), by
+// task. A decision that holds nothing has no entry.
+func readHeld(ctx context.Context, q querier, ns []int64) (map[int64][]string, error) {
+	out := map[int64][]string{}
+	if len(ns) == 0 {
+		return out, nil
+	}
+	args := make([]any, 0, len(ns))
+	for _, n := range ns {
+		args = append(args, n)
+	}
+	rows, err := q.QueryContext(ctx, "SELECT h.decision, h.task_id FROM decision_holds h JOIN decisions d ON d.n = h.decision WHERE h.run_id = d.current_run AND h.released_at = '' AND h.decision IN ("+
+		strings.TrimSuffix(strings.Repeat("?, ", len(ns)), ", ")+") ORDER BY h.decision, h.task_id", args...)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var n int64
+		var task string
+		if err := rows.Scan(&n, &task); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out[n] = append(out[n], task)
+	}
+	return out, cmp.Or(rows.Err(), rows.Close())
+}
+
+// ScopeDecisions reads every decision run holds, whatever its state (with
 // task, those of task: asked by it or holding it, as DecisionFilter's
-// Task reads), oldest first, each with its counts, every row of one read
-// transaction, so a change committed meanwhile is seen whole or not at
-// all: a decision link's scope. At most MaxDecisionsPerRun and a page are
-// read, past what a run may hold. A database older than the decision
+// Task reads), oldest first, each with what it holds and its counts, every
+// row of one read transaction, so a change committed meanwhile is seen
+// whole or not at all: a decision link's scope, its open items and the
+// final records a link still reads. At most MaxDecisionsPerRun and a page
+// are read, past what a run may hold. A database older than the decision
 // tables has none.
-func (l *Ledger) ScopeDecisions(ctx context.Context, run, task string, states []string) ([]ScopedDecision, error) {
-	out := []ScopedDecision{}
-	if run == "" || len(states) == 0 {
+func (l *Ledger) ScopeDecisions(ctx context.Context, run, task string) ([]InboxDecision, error) {
+	out := []InboxDecision{}
+	if run == "" {
 		return out, nil
 	}
 	args := []any{run}
-	where := "d.current_run = ? AND d.state IN (" + strings.TrimSuffix(strings.Repeat("?, ", len(states)), ", ") + ")"
-	for _, s := range states {
-		args = append(args, s)
-	}
+	where := "d.current_run = ?"
 	if task != "" {
 		where += " AND (d.task_id = ? OR EXISTS (SELECT 1 FROM decision_holds h WHERE h.decision = d.n AND h.task_id = ?))"
 		args = append(args, task, task)
 	}
-	query := "SELECT " + decisionCols + ", (SELECT COUNT(*) FROM decision_responses r WHERE r.decision = d.n), (SELECT COUNT(*) FROM decision_history h WHERE h.decision = d.n) FROM decisions d WHERE " +
-		where + " ORDER BY d.n LIMIT ?"
+	query := "SELECT " + inboxCols + " FROM decisions d WHERE " + where + " ORDER BY d.n LIMIT ?"
 	args = append(args, MaxDecisionsPerRun+MaxDecisionsPage)
 	err := l.readSnapshot(ctx, func(q querier, version int) error {
 		if version < versionDecisions {
 			return nil
 		}
-		rows, err := q.QueryContext(ctx, query, args...)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var sd ScopedDecision
-			d, err := scanDecision(countsScanner{rows, &sd.Responses, &sd.History})
-			if err != nil {
-				rows.Close()
-				return err
-			}
-			sd.DecisionRow = d
-			out = append(out, sd)
-		}
-		return cmp.Or(rows.Err(), rows.Close())
+		var err error
+		out, err = readInbox(ctx, q, query, args...)
+		return err
 	})
 	if err != nil {
 		return nil, err
@@ -181,30 +225,21 @@ func (c countsScanner) Scan(dest ...any) error {
 
 // ClosedDecisions reads the decisions closed (applied, superseded,
 // cancelled or expired) at since or later, the latest closed first, at
-// most limit (at most MaxInboxDecisions, 0 for that): the inbox's Recent.
-func (l *Ledger) ClosedDecisions(ctx context.Context, since time.Time, limit int) ([]DecisionRow, error) {
+// most limit (at most MaxInboxDecisions, 0 for that), each with what it
+// holds and its counts, of one read: the inbox's Recent.
+func (l *Ledger) ClosedDecisions(ctx context.Context, since time.Time, limit int) ([]InboxDecision, error) {
 	if limit <= 0 || limit > MaxInboxDecisions {
 		limit = MaxInboxDecisions
 	}
-	out := []DecisionRow{}
-	err := l.readAt(ctx, func(q querier, version int) error {
+	out := []InboxDecision{}
+	err := l.readSnapshot(ctx, func(q querier, version int) error {
 		if version < versionDecisions {
 			return nil
 		}
-		rows, err := q.QueryContext(ctx, "SELECT "+decisionCols+" FROM decisions d WHERE d.state IN (?, ?, ?, ?) AND d.closed_at != '' AND "+orderSQL("d.closed_at")+" >= ? ORDER BY "+orderSQL("d.closed_at")+" DESC, d.n DESC LIMIT ?",
+		var err error
+		out, err = readInbox(ctx, q, "SELECT "+inboxCols+" FROM decisions d WHERE d.state IN (?, ?, ?, ?) AND d.closed_at != '' AND "+orderSQL("d.closed_at")+" >= ? ORDER BY "+orderSQL("d.closed_at")+" DESC, d.n DESC LIMIT ?",
 			DecisionApplied, DecisionSuperseded, DecisionCancelled, DecisionExpired, orderKey(since), limit)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			d, err := scanDecision(rows)
-			if err != nil {
-				rows.Close()
-				return err
-			}
-			out = append(out, d)
-		}
-		return cmp.Or(rows.Err(), rows.Close())
+		return err
 	})
 	return out, err
 }

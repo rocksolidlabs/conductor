@@ -362,9 +362,11 @@ func (s *Server) itemRef(sc laneScope, reqID, v string) (brakeman.Ref, []byte) {
 	return ref, nil
 }
 
-// laneItems is every open item in the scope, oldest first by (since, ref):
-// an error for DR1's records that could not be read.
-func (s *Server) laneItems(ctx context.Context, sc laneScope) ([]*inboxItem, error) {
+// laneItems is every open item in the scope, oldest first by (since, ref),
+// and the marks of every DR1 record in the scope whatever its state (for
+// the hash, laneDecisionItems): an error for DR1's records that could not
+// be read.
+func (s *Server) laneItems(ctx context.Context, sc laneScope) ([]*inboxItem, []string, error) {
 	rd := s.newInboxRead(ctx)
 	var out []*inboxItem
 	var infos []session.Info
@@ -377,9 +379,9 @@ func (s *Server) laneItems(ctx context.Context, sc laneScope) ([]*inboxItem, err
 			}
 		}
 	}
-	records, err := s.laneDecisionItems(ctx, rd, sc)
+	records, marks, err := s.laneDecisionItems(ctx, rd, sc)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	out = append(out, records...)
 	if sc.run != "" && s.runs != nil {
@@ -395,7 +397,7 @@ func (s *Server) laneItems(ctx context.Context, sc laneScope) ([]*inboxItem, err
 		}
 	}
 	slices.SortFunc(out, func(a, b *inboxItem) int { return a.before(inboxCursor{b.Since, b.Ref}) })
-	return out, nil
+	return out, marks, nil
 }
 
 // decisionFrame is a TypeDecision frame of reqID with v as its field; a
@@ -450,7 +452,7 @@ func (l *Lane) List(ctx context.Context, linkID, sessionID string, m proto.Decis
 	if err != nil {
 		return refusal(m.ReqID, proto.DecideInvalid, err.Error())
 	}
-	all, err := s.laneItems(ctx, sc)
+	all, _, err := s.laneItems(ctx, sc)
 	if err != nil {
 		s.log.Warn("lane: the scope's items could not be read", "err", err)
 		return refusal(m.ReqID, "unavailable", "the decisions could not be read")
@@ -1141,10 +1143,11 @@ func (s *Server) takenAnyway(ctx context.Context, linkID, run, task, target stri
 }
 
 // laneHash is what the link's viewer sees, hashed: its scope's open items
-// as summarized, their actions' revisions, a DR1 record's mark (of the
-// read its item is of: lane_decisions.go), and the steps of each entry of
-// the link's Recent; "" for a link that no longer stands. ok is false for
-// a scope that could not be read, whose hash says nothing.
+// as summarized, their actions' revisions, every DR1 record's state and
+// mark in the scope whatever its state (of the read its items are of:
+// lane_decisions.go), and the steps of each entry of the link's Recent;
+// "" for a link that no longer stands. ok is false for a scope that could
+// not be read, whose hash says nothing.
 func (s *Server) laneHash(ctx context.Context, linkID string) (hash string, ok bool) {
 	if seam := s.laneSeam; seam != nil && seam.hashing != nil {
 		seam.hashing(linkID)
@@ -1153,7 +1156,7 @@ func (s *Server) laneHash(ctx context.Context, linkID string) (hash string, ok b
 	if no != nil {
 		return "", true
 	}
-	items, err := s.laneItems(ctx, sc)
+	items, marks, err := s.laneItems(ctx, sc)
 	if err != nil {
 		s.log.Warn("lane: the scope's items could not be read for its watch", "err", err)
 		return "", false
@@ -1165,9 +1168,9 @@ func (s *Server) laneHash(ctx context.Context, linkID string) (hash string, ok b
 		for _, a := range it.Actions {
 			_ = enc.Encode([]string{a.Name, a.Expect, a.Input})
 		}
-		if it.mark != "" {
-			_ = enc.Encode(it.mark)
-		}
+	}
+	for _, m := range marks {
+		_ = enc.Encode(m)
 	}
 	for _, r := range s.links.RecentOf(linkID) {
 		if ref, err := brakeman.ParseRef(r.Ref); err == nil {
