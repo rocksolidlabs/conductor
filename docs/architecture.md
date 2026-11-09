@@ -760,6 +760,139 @@ arriving adds a count to the sidebar's Brakeman row and nothing else; a
 question Brakeman's own session asks shows in Needs you as "Brakeman ·
 br-n".
 
+## History
+
+History (`docs/plans/history.md`, Program item HS1) is a durable record of
+every session the server runs and one index over that record and the
+stores Conductor already keeps, searched from the palette (`~`), the
+History page and `conductor history`. It answers from what is kept; it
+decides nothing, and nothing reads the index to decide anything. It is
+told apart from three things already called history: a Dispatch ticket's
+field history (its `changes` log), a session's activity log and a shell's
+history. Every
+route is the admin's (`requireAdmin`); a share link, a session's token
+and Brakeman's principal reach none of them. A switchyard, and a server
+with no data directory, have none.
+
+**The journal** (`internal/journal`) holds the session records, one JSON
+document each in `history/sessions/<id>.json` under its own owner lock,
+`history/owner.lock`; a second server on the directory reads them and
+writes none. A server session's record is begun as the session is made,
+before it can keep an entry (`Begin`, written before it returns), with
+its agent's version from the server's probe and, for a native session,
+the repository, branch and start commit read in one `git rev-parse`
+(`gitcli.RevisionOf`, argv, the C locale) in the folder `openCwd` opened,
+before `StartTerminal`; a session of another Runtime gets its `where` and
+no git read on the server. `internal/api` keeps one recorder per
+recorded session (`history_journal.go`), and a record follows its
+session's state rather than the order of its callbacks: one function,
+`reconcile`, reads the recorder, the registry's membership, the session's
+`Info` and `ProcessDone`, and settles the difference through
+`Journal.Settle`. It runs once the registration is complete, on a hint
+(the session's `OnChange`, which carries no truth of its own), at the
+registry's removal (final), at the shutdown's last pass and at the next
+start, which marks a record still open `lost`. An end once recorded
+stands; a question still open at the end reads withdrawn; a line that
+arrives after the end is dropped and counted. The end commit is read once
+the process is gone, kept only while the folder's repository is the
+launch's by the file system's identity of its common directory. The
+streams (the lines Conductor typed, questions and their outcomes, the
+chat, the agent's reports, files touched, tool counts) are folded into
+evidence entries by the journal itself; what a person typed, a typed
+answer's text and a variable's value never reach it (`typedEntry` in
+`internal/session/submit.go`). A record is at most 64 KiB, the newest
+2,000 ended ones kept; Forget, Forget all and the prune take a record
+out of every read before its file goes. A hosted session has no record
+until PR-12 (`internal/signal` is unchanged).
+
+**The index** (`internal/history`, `history/index.sqlite`) is a cache:
+derived from the stores, rebuilt when missing or of another version,
+cleared in place by a reindex, moved aside when damaged, left out of an
+export and refused in a restore. Its owner, the holder of
+`history/owner.lock`, opens it off the server's start path and writes
+through one connection while two read beside it, so in WAL a search never
+holds a write back; an index its last owner did not close answers
+`checking` until `Check` has read it whole on a goroutine of its own. An
+entry's class (`said`, `decided`, `checked`, or `record` for the stores'
+own objects) is set by its kind alone, from the one table in `kinds.go`,
+and a caller's class is refused: an agent saying it finished is said, a
+person's act with its receipt is decided, a receipt of something the
+server ran on an exact commit is checked, and repetition never promotes a
+row. A search ranks by bm25, then time, then key, never by class, reads
+at most 10,000 matches and ranks 2,000 (`Page.Cut` says where it
+stopped), and pages with a cursor bound to the query and the index's
+generation. The budget is 200,000 entries and 256 MiB of text, the oldest
+dropped first; a failed check's log is indexed by its first 4 KiB and
+last 12 KiB, a passed one's by its tail.
+
+**The indexer** (`internal/api/history_index.go`) fills the index from
+the stores and never writes them. The stores' commit hooks go through one
+fan-out (`commits.go`: the data directory's observer, the ledger's
+`OnCommit` and `OnPrune`, Dispatch's `OnCommit`), which calls the sync
+adapter first, unchanged, then the indexer; the journal's writes mark a
+session. A bounded dirty set (10,000 keys, past it a full catch-up) is
+read one source at a time on the indexer's goroutine. Each source has a
+**mark**, taken before it is read and recorded only with what that read
+saw: a run's `L<revision>/R<sha256>` (the ledger's revision, its record
+file's hash) and a finished receipt's `finished`, each with `/J<project>`
+when its run is placed in one and `/U` while its repository is not known;
+a session record's `S<seq>/P<projects digest>`, a crew member's with
+`/C<start commit>/J<project>` (its run's project) and `/U` while its
+repository is not known; a ticket's `Q<seq>` (its changes' last), with no
+suffix.
+Every write of a pass carries the index's generation as the pass began,
+so a pass across a clear is refused (`ErrStale`) and read again. A
+catch-up at open, after an overflow and after a reindex compares every
+store with the marks and removes what no store holds; a reconcile every
+30 s finds what another server wrote (the ledger's revisions, the run
+records, Dispatch's change feed, Brakeman's request and brief files). A
+run is read at most once every 2 s and its receipts an attempt at a
+time, so a transition never waits long on the ledger's connection; each
+finished receipt is a source of its own whose log is read once. The
+links are the engine's own: `handed` (the attempt after one that failed
+at a check, through `crew.FailedAtCheck`, `FailingReceipt` and
+`UncountedAttempt`) is what "investigated" means, beside `passed_after`,
+`continues`, `session_of`, `launched_from`, `reviews` and `reopened`. A
+Forget's rows are dropped from the index before the route answers, and
+an index that owes a removal is not read until it has made it.
+
+**Availability and the routes.** `GET /api/history` (search),
+`/api/history/entry`, `/api/history/similar` and `/api/history/command`
+read the index (`history_search.go`); whether a row's thing can still be
+opened is read from each store when the reply is made
+(`history_availability.go`: the registry, the ledger without logs, the
+journal, Brakeman's requests), each answer `yes`, `no` or `unknown`, never
+a guess; an attempt's worktree is looked at only where its run puts it,
+through the run's folder as `openCwd` opened it. `historyURL` gives each
+row a page, never an API route: the run page at a step (`?task=&attempt=
+&step=`) or a command, a ticket at a comment, a session's page while it
+is listed and its record page after. The routes bound what they read
+and return (12 KiB of query, 2 MiB of reply, 15 s a read, two reads in
+flight a client and four in all, `429 history_busy` past them) and never
+log the query.
+
+**Resume from a record** (`history_resume.go`) is a command with a
+receipt in the record: reserved `pending` with the session id the route
+allocates and written before the launch, settled `started` or `failed`
+after it, settled at the next start by whether the new session's record
+exists; the same command id answers its receipt and starts nothing. It
+is judged by the session route's own rules (`resumeCheck`) and the
+record's (never a hosted session, a crew member, a managed attempt, a
+Brakeman turn, a launch whose arguments were not kept), and launches
+through `resumeLaunch`, the path `handleResumeSession` takes, so the new
+session starts through `createLocalSession` and the record's Runtime; it
+launches only on one read made as it takes the conversation, that no
+live process in the conversation's chain holds it.
+
+In the web app, `utils/history.ts` holds the replies' types and the
+words (the detail line's six fields, the class badge, the link line, the
+four questions); `useHistorySearch.ts` asks the search under one reply
+rule (a reply applied only while it is the newest asked, with the token
+it was asked with; one bound for every read); `usePaletteHistory.ts`
+draws the palette's `~` and the plain search's History group;
+`pages/history/index.vue` is the History page and
+`pages/history/sessions/[id].vue` a record's page (`useSessionRecord`).
+
 ## Switchyard
 
 A switchyard is the server in a mode (`config.Switchyard`): the signaling
@@ -1197,7 +1330,7 @@ still resolved. A switchyard routes and answers none.
 
 | Package | Responsibility |
 |---|---|
-| `cmd/conductor` | the free build's entry point, `app.Main` with no provider registered; `serve`, `host`, `notify`, `hooks`, `skill`, `up`, `crews`, `completion`, `version` |
+| `cmd/conductor` | the free build's entry point, `app.Main` with no provider registered; `serve`, `host`, `notify`, `hooks`, `skill`, `up`, `crews`, `history`, `completion`, `version` |
 | `app` | the public entry point: `Run` (`cli.Run`) and `Main` (signals, the error, the exit code), for this module's `main` and for one in another module that compiles providers in |
 | `ext` | the public extension API, standard library only: the eight interfaces (identity, decisions, context, notifications, sync through `ContinuityStore`, entitlements, media, runtime), their records with their bounds, waits and `Valid` methods, `Starter` and `Host`, and the registry a provider's `init` registers into and `Freeze` closes; a plain build registers nothing |
 | `ext/local` | the free defaults, standard library and `ext` only: `Identity`, `Router`, `Continuity`, `AllowAll` and `Media`, each what main does without a provider (no principal, the empty route, nothing kept, everything allowed, no ICE server or room), and `Fill`, the one place that asks, which puts the default in the identity, router, sync and media slots nothing is registered in; `AllowAll` is the entitlement source's default, which no slot holds; and `Native`, the native Runtime (`internal/pty` and `internal/proc`, the two packages of this module it may import), which `Fill` puts in the runtime slot |
@@ -1209,6 +1342,8 @@ still resolved. A switchyard routes and answers none.
 | `internal/crew` | saved crews, one file each in `dataDir/crews/`: members, role prompts, start conditions, validation; runs: member sessions through the server's launch path, git worktrees, readiness and the trust hold, prompts, start conditions, handoffs between members (an activity sink and a change hook of `internal/api`), run state, change reports, member resume |
 | `internal/crew/ledger` | the managed runs' ledger (#334): `runs/managed.sqlite` in the data directory, opened beside the records with the owner lock `runs/owner.lock`; one connection, every transition one transaction committed before the side effect it precedes; the rows of runs, tasks, attempts, checks (with their logs), commands (receipts) and events, each attempt, check and prerequisite row saying where it ran (`where_ran`, schema version 7); recovery of what the last owner left open; read-only, with managed launches refused, when another server holds the lock, the filesystem has no locks, the server may not write the database file, or the database is damaged or newer |
 | `internal/dispatch` | Dispatch's store: projects, tickets, their discussion and history in `dataDir/dispatch/dispatch.sqlite`; every write a typed operation with a kept receipt and its rows in the `changes` log; no HTTP, no session, no process |
+| `internal/journal` | the session records (History): one JSON document per server session in `dataDir/history/sessions/` under the owner lock `history/owner.lock`, its evidence folded from the session's activity and chat, bounded, settled from the session's state, its resume receipts; standard library and `internal/store` only |
+| `internal/history` | the index of history (History): `dataDir/history/index.sqlite`, a cache rebuilt from the stores; entries and links per source, the class from the kind alone, the budget, the search, `Similar`, `Check`; the third importer of `modernc.org/sqlite` |
 | `internal/brakeman` | Brakeman's records: its configuration, the requests people make of it, the briefs its turns hand back and their evidence refs, as JSON documents in `dataDir/brakeman/` under its own owner lock; no HTTP, no session, no process |
 | `internal/proto` | frame codec and message structs (mirrored in `web/app/utils/protocol.ts`) |
 | `internal/pty` | process start, resize, stop; environment allowlist; the native Runtime's terminal |
@@ -1216,7 +1351,7 @@ still resolved. A switchyard routes and answers none.
 | `internal/session` | ring buffer, fan-out hub, `Local` session (submissions, attention, trust watcher, the agent's own session) over a `Process` (a Runtime's terminal through `RuntimeProcess`), registry, bounded file reads |
 | `internal/share` | share tokens (random, hashed at rest) and revocation |
 | `internal/signal` | hosted sessions: host connections, viewer brokering, relay |
-| `internal/api` | HTTP routes, admin/share/host authentication, viewer and host WebSockets; the operating guide (`guide.go`) and Brakeman's desk (`brakeman*.go`); every server session started through a Runtime (the native one, or the one offered managed runs, `extruntime.go`) |
+| `internal/api` | HTTP routes, admin/share/host authentication, viewer and host WebSockets; the operating guide (`guide.go`), Brakeman's desk (`brakeman*.go`) and History's recorders, indexer, sources and routes (`history_*.go`, `commits.go`); every server session started through a Runtime (the native one, or the one offered managed runs, `extruntime.go`) |
 | `internal/hostagent` | `conductor host`: control connection, pion peers, relay, local terminal; its command started through `Options.Runtime`, the native one |
 | `internal/notify` | `conductor notify`: reports from inside a session; hook payload mappers, the agent's own session id among what they read |
 | `internal/web` | embedded SPA with index fallback |
@@ -1307,7 +1442,9 @@ the records of runs that ended (`runs/<id>.json`, the run as the API answers
 it, 500 at most), which `GET /api/crews/{id}/runs` lists after the live runs. A
 server restart ends server sessions and forgets links and runs (worktrees and
 their branches stay on disk), and with them what Resume needs: an ended session
-can be resumed while it is listed, a crew member while its run is kept. Hosted
+can be resumed while it is listed, a crew member while its run is kept. A
+server session's record (`history/sessions/<id>.json`, History) outlasts
+the restart, and the agent's conversation can be resumed from it. Hosted
 sessions survive a brief server outage
 through the host's reconnect-and-resume secret only while the server process is
 alive.
@@ -1334,6 +1471,13 @@ still queued is launched by the next server's desk once it listens, and a
 make a stop cut short is settled from Dispatch's receipts and the crew
 store before Brakeman's routes serve. An export carries them as plain
 files and leaves `brakeman/owner.lock` out, as it does the ledger's.
+
+History's session records, `history/sessions/` beside them, outlast a
+restart: a record found open at the next start reads `lost`, and a resume
+receipt left pending is settled by whether its session's record exists.
+The index, `history/index.sqlite`, is a cache of every store and is never
+the truth: it is rebuilt when it is missing, damaged or of another
+version, and an export leaves it out (`derived`) with `history/owner.lock`.
 
 Export and restore (`internal/export`, Program item C6) move the data
 directory to another machine as one zip archive. `GET /api/export` writes it

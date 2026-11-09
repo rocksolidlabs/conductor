@@ -14,7 +14,7 @@
 | github.com/go-acme/lego/v5 (core, tls-alpn-01, http-01, dns-01 with cloudflare, exec, httpreq) | v5.5.2 |
 | github.com/neovim/go-client (the editor's Neovim bridge: `nvim --embed` over msgpack-rpc) | v1.2.1 |
 | github.com/go-git/go-git/v5 (the Files tab's Commits: the log and a commit's files; status and show stay with the git binary, which is faster for them) | v5.19.3 |
-| modernc.org/sqlite (the managed runs' ledger, `internal/crew/ledger`, and Dispatch's store, `internal/dispatch`, the two importers: SQLite translated to Go, so `CGO_ENABLED=0` stays; the owner chose it on 2026-10-22, #334; FTS5 and JSON1 are compiled in, checked 2026-10-28 for Dispatch's search) | v1.61.0 |
+| modernc.org/sqlite (the managed runs' ledger, `internal/crew/ledger`, Dispatch's store, `internal/dispatch`, and the history's index, `internal/history` (HS1, a cache rebuilt from the stores), the three importers: SQLite translated to Go, so `CGO_ENABLED=0` stays; the owner chose it on 2026-10-22, #334; FTS5 and JSON1 are compiled in, checked 2026-10-28 for Dispatch's search) | v1.61.0 |
 | Neovim (`nvim`, found on PATH at runtime; CI installs it for the bridge's tests) | v0.10.4 in CI; 0.10 or later on a machine |
 | github.com/letsencrypt/pebble/v2 (test CA, `make test-pebble`; not a module dependency) | v2.10.1 |
 | nuxt / @nuxt/ui / vue | 4.5.2 / 4.11.2 / 3.5.43 |

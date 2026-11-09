@@ -186,6 +186,14 @@ type laneSeams struct {
 	// beforeDeskAdd runs as a desk is about to be registered (laneState.add),
 	// its hello read.
 	beforeDeskAdd func(linkID string)
+	// recordRead runs once a decision_record has read its record whole
+	// (the read its scope was judged on) and resolved a head's refs, with
+	// the part asked and the rev read, before the part is cut.
+	recordRead func(part string, rev int)
+	// scopeLimit, when above 0, is the most DR1 records a scope's read
+	// takes in place of ledger.MaxScopeDecisions, so a test reaches the
+	// bound with a few.
+	scopeLimit int
 }
 
 // holdLink is the hold a decision link's answer takes as the session's
@@ -365,19 +373,29 @@ func (s *Server) itemRef(sc laneScope, reqID, v string) (brakeman.Ref, []byte) {
 	return ref, nil
 }
 
-// laneItems is every open item in the scope, oldest first by (since, ref).
-func (s *Server) laneItems(ctx context.Context, sc laneScope) []*inboxItem {
+// laneItems is every open item in the scope, oldest first by (since, ref),
+// and the marks of every DR1 record in the scope whatever its state (for
+// the hash, laneDecisionItems), with cut the words of a scope whose DR1
+// records passed the read's bound ("" for none): an error for DR1's
+// records that could not be read.
+func (s *Server) laneItems(ctx context.Context, sc laneScope) (_ []*inboxItem, _ []string, cut string, _ error) {
 	rd := s.newInboxRead(ctx)
 	var out []*inboxItem
 	var infos []session.Info
 	s.registry.Each(func(d session.Driver) { infos = append(infos, d.Info()) })
 	for _, info := range infos {
 		if s.coversSession(sc, info.ID) {
-			if it, ok := rd.questionItem(info); ok {
+			// A question that mirrors a record is the record's item.
+			if it, ok := rd.questionItem(info); ok && !rd.mirrorsRecord(info.Attention.Decision) {
 				out = append(out, laneTakes(it))
 			}
 		}
 	}
+	records, marks, cut, err := s.laneDecisionItems(ctx, rd, sc)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	out = append(out, records...)
 	if sc.run != "" && s.runs != nil {
 		if run, ok := s.runs.Get(sc.run); ok && run.Managed != nil {
 			for _, t := range run.Tasks {
@@ -391,7 +409,7 @@ func (s *Server) laneItems(ctx context.Context, sc laneScope) []*inboxItem {
 		}
 	}
 	slices.SortFunc(out, func(a, b *inboxItem) int { return a.before(inboxCursor{b.Since, b.Ref}) })
-	return out
+	return out, marks, cut, nil
 }
 
 // decisionFrame is a TypeDecision frame of reqID with v as its field; a
@@ -413,13 +431,17 @@ func decisionFrame(reqID string, set func(*proto.Decision, json.RawMessage), v a
 
 // laneList is a page of the lane's list: at most proto.DecisionPage
 // summaries after the cursor, next and total, and on the first page the
-// link's Recent.
+// link's Recent. Truncated, with Cut its words, says the scope's DR1
+// records passed the read's bound (laneDecisionItems): total then counts
+// what was read, and the scope holds more.
 type laneList struct {
-	Items  []inboxSummary `json:"items"`
-	Next   string         `json:"next,omitempty"`
-	Total  int            `json:"total"`
-	At     time.Time      `json:"at"`
-	Recent []share.Recent `json:"recent,omitempty"`
+	Items     []inboxSummary `json:"items"`
+	Next      string         `json:"next,omitempty"`
+	Total     int            `json:"total"`
+	Truncated bool           `json:"truncated,omitempty"`
+	Cut       string         `json:"cut,omitempty"`
+	At        time.Time      `json:"at"`
+	Recent    []share.Recent `json:"recent,omitempty"`
 }
 
 // lanePage is the page of all, in (since, ref) order, after the cursor:
@@ -446,8 +468,12 @@ func (l *Lane) List(ctx context.Context, linkID, sessionID string, m proto.Decis
 	if err != nil {
 		return refusal(m.ReqID, proto.DecideInvalid, err.Error())
 	}
-	all := s.laneItems(ctx, sc)
-	out := laneList{Items: []inboxSummary{}, Total: len(all), At: time.Now().UTC()}
+	all, _, cut, err := s.laneItems(ctx, sc)
+	if err != nil {
+		s.log.Warn("lane: the scope's items could not be read", "err", err)
+		return refusal(m.ReqID, "unavailable", "the decisions could not be read")
+	}
+	out := laneList{Items: []inboxSummary{}, Total: len(all), Truncated: cut != "", Cut: cut, At: time.Now().UTC()}
 	page, next := lanePage(all, after)
 	out.Next = next
 	for _, it := range page {
@@ -467,6 +493,12 @@ func (l *Lane) Read(ctx context.Context, linkID, sessionID string, m proto.Decis
 	sc, no := s.scope(linkID, m.ReqID)
 	if no != nil {
 		return no
+	}
+	if rec, is, no := s.laneDecisionRef(ctx, sc, m.ReqID, m.Ref); is {
+		if no != nil {
+			return no
+		}
+		return s.readRecordItem(ctx, sc, m.ReqID, rec)
 	}
 	ref, no := s.itemRef(sc, m.ReqID, m.Ref)
 	if no != nil {
@@ -568,6 +600,14 @@ func (l *Lane) Track(ctx context.Context, linkID, sessionID string, m proto.Deci
 	if no != nil {
 		return no
 	}
+	if _, is, no := s.laneDecisionRef(ctx, sc, m.ReqID, m.Ref); is {
+		if no != nil {
+			return no
+		}
+		// Nothing is done to a record through a link: its four states are
+		// the record's, read with it (decision_read, decision_record).
+		return refusal(m.ReqID, proto.DecideUnsupported, "a durable decision's four states are its record's: read its item or its record")
+	}
 	ref, no := s.itemRef(sc, m.ReqID, m.Ref)
 	if no != nil {
 		return no
@@ -582,13 +622,22 @@ func (l *Lane) Track(ctx context.Context, linkID, sessionID string, m proto.Deci
 	return decisionFrame(m.ReqID, func(d *proto.Decision, b json.RawMessage) { d.Track = b }, laneTrack{Ref: ref.String(), Receipt: m.Receipt, Attempt: m.Attempt, Steps: st})
 }
 
-// Record answers a part of a DR1 record: none is an item before DR1's
-// records join the inbox (the plan's PR-3).
+// Record answers a part of a DR1 record in the scope, cut from one whole
+// read of it at the rev the part names (lane_decisions.go).
 func (l *Lane) Record(ctx context.Context, linkID, sessionID string, m proto.DecisionRecord) []byte {
-	if _, no := l.s.scope(linkID, m.ReqID); no != nil {
+	s := l.s
+	sc, no := s.scope(linkID, m.ReqID)
+	if no != nil {
 		return no
 	}
-	return refusal(m.ReqID, proto.DecideUnsupported, "durable decision records arrive with DR1")
+	rec, is, no := s.laneDecisionRef(ctx, sc, m.ReqID, m.Ref)
+	switch {
+	case !is:
+		return refusal(m.ReqID, proto.DecideInvalid, "ref is a durable decision's, decision:dr-N")
+	case no != nil:
+		return no
+	}
+	return s.laneRecordFrame(ctx, m, rec)
 }
 
 // laneLogTail bounds a check log's tail an evidence read gives.
@@ -630,7 +679,11 @@ func (l *Lane) Evidence(ctx context.Context, linkID, sessionID string, m proto.D
 	if no != nil {
 		return no
 	}
-	if _, no := s.itemRef(sc, m.ReqID, m.Ref); no != nil {
+	if _, is, no := s.laneDecisionRef(ctx, sc, m.ReqID, m.Ref); is {
+		if no != nil {
+			return no
+		}
+	} else if _, no := s.itemRef(sc, m.ReqID, m.Ref); no != nil {
 		return no
 	}
 	ev, err := brakeman.ParseRef(m.Evidence)
@@ -780,6 +833,12 @@ func (l *Lane) Decide(ctx context.Context, linkID, sessionID string, m proto.Dec
 	sc, no := s.scope(linkID, m.ReqID)
 	if no != nil {
 		return no
+	}
+	if _, is, no := s.laneDecisionRef(ctx, sc, m.ReqID, m.Ref); is {
+		if no != nil {
+			return no
+		}
+		return refuseRecordDecide(m)
 	}
 	ref, no := s.itemRef(sc, m.ReqID, m.Ref)
 	if no != nil {
@@ -1100,23 +1159,34 @@ func (s *Server) takenAnyway(ctx context.Context, linkID, run, task, target stri
 }
 
 // laneHash is what the link's viewer sees, hashed: its scope's open items
-// as summarized, their actions' revisions, and the steps of each entry of
-// the link's Recent; "" for a link that no longer stands.
-func (s *Server) laneHash(ctx context.Context, linkID string) string {
+// as summarized, their actions' revisions, every DR1 record's state and
+// mark in the scope whatever its state (of the read its items are of:
+// lane_decisions.go), and the steps of each entry of the link's Recent;
+// "" for a link that no longer stands. ok is false for a scope that could
+// not be read, whose hash says nothing.
+func (s *Server) laneHash(ctx context.Context, linkID string) (hash string, ok bool) {
 	if seam := s.laneSeam; seam != nil && seam.hashing != nil {
 		seam.hashing(linkID)
 	}
 	sc, no := s.scope(linkID, "")
 	if no != nil {
-		return ""
+		return "", true
+	}
+	items, marks, _, err := s.laneItems(ctx, sc)
+	if err != nil {
+		s.log.Warn("lane: the scope's items could not be read for its watch", "err", err)
+		return "", false
 	}
 	h := sha256.New()
 	enc := json.NewEncoder(h)
-	for _, it := range s.laneItems(ctx, sc) {
+	for _, it := range items {
 		_ = enc.Encode(it.summary())
 		for _, a := range it.Actions {
 			_ = enc.Encode([]string{a.Name, a.Expect, a.Input})
 		}
+	}
+	for _, m := range marks {
+		_ = enc.Encode(m)
 	}
 	for _, r := range s.links.RecentOf(linkID) {
 		if ref, err := brakeman.ParseRef(r.Ref); err == nil {
@@ -1124,7 +1194,7 @@ func (s *Server) laneHash(ctx context.Context, linkID string) string {
 			_ = enc.Encode(st)
 		}
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	return hex.EncodeToString(h.Sum(nil)), true
 }
 
 // laneSettle is how long a watch collects the events that follow one
@@ -1168,7 +1238,12 @@ func (l *Lane) Watch(linkID, sessionID string, changed func()) (stop func()) {
 func (s *Server) startWatch(linkID string, lw *linkWatch) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := s.events.subscribe()
-	last := s.laneHash(ctx, linkID)
+	// A first read that failed is no baseline: the first that reads is
+	// told as a change.
+	last, ok := s.laneHash(ctx, linkID)
+	if !ok {
+		last = "unread"
+	}
 	s.lanes.mu.Lock()
 	lw.stop = cancel
 	s.lanes.mu.Unlock()
@@ -1200,7 +1275,9 @@ func (s *Server) startWatch(linkID string, lw *linkWatch) {
 				}
 			case <-settle.C:
 				pending = false
-				if h := s.laneHash(ctx, linkID); h != last {
+				// A read that failed keeps the last hash: the next event
+				// reads again, and tells any change since that one.
+				if h, ok := s.laneHash(ctx, linkID); ok && h != last {
 					last = h
 					s.lanes.fan(lw)
 				}

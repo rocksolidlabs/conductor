@@ -1435,18 +1435,34 @@ func (e *Engine) decisionOf(rec ledger.DecisionRecord) Decision {
 		d.History = append(d.History, entry)
 	}
 	if rec.Origin == ledger.OriginAgent {
-		d.Asker = &DecisionAsker{Task: rec.TaskID, Attempt: rec.Attempt}
-		e.mu.Lock()
-		if r := e.runs[rec.CurrentRun]; r != nil {
-			if t := r.task(rec.TaskID); t != nil {
-				if a := t.active(); a != nil && a.n == rec.Attempt && a.sessionID == rec.SessionID && e.sessionLive(a.sessionID) {
-					d.Asker.Live = true
-				}
-			}
-		}
-		e.mu.Unlock()
+		d.Asker = &DecisionAsker{Task: rec.TaskID, Attempt: rec.Attempt, Live: e.AskerLive(rec.DecisionRow)}
 	}
 	return d
+}
+
+// DecisionOf is the record rec, read whole once, as Decision reports it:
+// for a reader that has judged that read (a decision link's scope) and
+// must report the same, not a read made after it.
+func (e *Engine) DecisionOf(rec ledger.DecisionRecord) Decision { return e.decisionOf(rec) }
+
+// AskerLive says whether an agent's decision's asking attempt is its
+// task's active one, in the session that asked, and that session lives:
+// the one a request for more information reaches (Decision's
+// Asker.Live). False for a plan's.
+func (e *Engine) AskerLive(row ledger.DecisionRow) bool {
+	if row.Origin != ledger.OriginAgent {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if r := e.runs[row.CurrentRun]; r != nil {
+		if t := r.task(row.TaskID); t != nil {
+			if a := t.active(); a != nil && a.n == row.Attempt && a.sessionID == row.SessionID && e.sessionLive(a.sessionID) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // sessionLive reports whether the session is the server's and has not

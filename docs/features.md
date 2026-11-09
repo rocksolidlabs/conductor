@@ -4406,6 +4406,240 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   minted and opened on the phone, one item answered through to resumed,
   the gate answered before the run's first attempt with no member alive,
   the link revoked on the desktop and the phone's next action refused.
+- **Searchable history: what was said, decided and checked, found from the
+  palette with its source (HS1, #613 to #617, #619, #621 and #624,
+  2026-11-06 to 2026-11-08).** Program item HS1, planned in
+  `docs/plans/history.md` (PR #609) and shipped as eight PRs, PR-1 to
+  PR-8; PR-9 to PR-12 come later (below). Every session the server runs
+  now leaves a **record** in the data directory
+  (`history/sessions/<id>.json`): its agent with its version and its own
+  session id, its host and where it ran, its folder, repository, branch
+  and commits before and after, its launch (the variables' names, never a
+  value), its crew, run, task and attempt, and what passed through
+  Conductor: the lines Conductor typed, the questions it asked and how
+  each ended, its chat, its agent's reports and the files it touched. What
+  a person types into a terminal or a reply box is never kept. One
+  **index** (`history/index.sqlite`, a cache rebuilt from the stores)
+  holds those records, the ledger's runs, attempts and check receipts,
+  Dispatch's tickets, comments, plan revisions and acts, and Brakeman's
+  briefs, and it is searched from the command palette with the seventh
+  prefix, `~`, from the plain search (a History group from three
+  characters), from the History page (`/history`, `G H`) and from
+  `conductor history`. Every row is one of Conversation (said), Decision
+  (decided), Checked ✓ or ✗ (a receipt) or a plain record, a class set by
+  its kind alone; it gives its source, host, project, revision, time and
+  availability; a failed receipt says which attempt was handed it
+  ("Investigated by build #2") and where it passed after; Enter opens the
+  evidence itself (the run page at the step's log with its SHA-256, a
+  ticket at a comment, a session or its record). A session's record
+  resumes the agent's conversation after a restart (Resume on its record
+  page, `POST /api/history/sessions/{id}/resume`), where the agent's
+  session recipe allows it. `history.sessions` (on by default) turns the
+  records off; each can be forgotten. See the README (History),
+  `docs/architecture.md` (History) and `docs/protocol.md` (History). No
+  new dependency (`internal/history` is the third importer of
+  `modernc.org/sqlite`), no feature tag, no protocol message changed
+  (routes only; PR-12 changes the host's messages). What each PR shipped,
+  its tests and its checks:
+
+  PR-1 (#613, PR #673): `internal/journal` (the record, its bounds, the
+  writer, recovery, forget and prune, `history/owner.lock` and
+  `history/state.json`), `history.sessions` in `internal/config`,
+  `gitcli.RepoOf` and `RevisionOf`, and in `internal/api` one recorder per
+  server session, reconciled from the session's own state rather than from
+  the order of its callbacks (`reconcile`, `journal.Settle`), the
+  shutdown's final pass, and the four record routes. Tests: the journal's
+  own, the API's lifecycle tests at seams (`recordHook`), and a property
+  test of the design's steps (`TestTheRecordFollowsTheSession`, 300 seeds
+  a run). Checks: the whole module's race tests, `make lint`, `make
+  lint-static`, `make build-go` and `make check-version` at each round;
+  the Mac rows at `009dbb83` and after each merge of `main`, where they
+  found a bug of the stream's own (`TestRevisionOfAndRepoOf`: a common
+  directory kept its `/var` spelling while git said `/private/var`), fixed
+  in the PR. By hand: one Claude Code 2.1.318 session through the branch's
+  binary, launched as a one-member crew, left a record of 2,128 bytes of
+  the 64 KiB bound (the prompt typed, the end's status, three file rows,
+  its version and own session, both commits, nothing dropped).
+
+  PR-2 (#614, PR #669): `internal/history` (the schema, the kinds table
+  that alone decides a class, `Replace`, `Remove`, `Mark`, `Sources`, the
+  bounds and the budget of 200,000 entries and 256 MiB, `ParseQuery` with
+  Dispatch's word rules, phrases and thirteen filters, `Search`,
+  `Similar`, `Entry`, `Links`, `Stats`, `Check` off the start path, an
+  index of another version cleared in place and a damaged one moved
+  aside). Tests: the package's, with `life_test.go` holding every pair of
+  calls that may run together at a seam, and `BenchmarkSearch`. Checks:
+  the whole module's race tests, `make lint`, `make lint-static`; the Mac
+  rows at the merge gate.
+
+  PR-3 (#615, PR #681): the indexer (`history_index.go`: the dirty set,
+  marks taken before each read, backoff, catch-up, a reconcile every 30 s,
+  `POST /api/history/reindex`), the session-record and run sources
+  (`history_sources.go`) with their links (`session_of`, `continues`,
+  `launched_from`, `handed`, `passed_after`, `reviews`, `reopened`), each
+  finished check receipt a source of its own, the commit fan-out
+  (`commits.go`), `crew.FailedAtCheck`, `FailingReceipt`, `FailedOutcome`
+  and `UncountedAttempt` exported so that "handed" is the engine's own
+  rule, and the export's `derived` row for the index. Tests:
+  `internal/api`'s indexer tests (a forget gone from the index at once, a
+  clear inside a pass, a repository not known read again, the handed and
+  review links) and `BenchmarkTransitionWhileIndexing`, which found a bug
+  of the stream's own: a run's pass read every receipt in one query and
+  held the ledger's connection for about a quarter of a second, a
+  transition's 99th percentile 49 to 83 ms above idle; fixed in the PR by
+  reading an attempt at a time (afterwards -0.5 to +16 ms). Checks: the
+  whole module's race tests, `make lint`, `make lint-static`, `make
+  build-go`, `make check-version`; the Mac rows at the merge gate.
+
+  PR-4 (#616, PR #694): the ticket and brief sources (Dispatch's change
+  feed read on the indexer's goroutine; a deleted comment's place kept,
+  never its words; a plan revision's body, a Brakeman request's note and a
+  terminal-reading brief's words never indexed), `historyURL`,
+  availability read from each store when a reply is made (`yes`, `no` or
+  `unknown`, never a guess; a worktree looked at only where its run puts
+  it, through `openCwd`), `resumeCheck` factored out of the session's
+  resume, and `GET /api/history`, `/entry`, `/similar` and `/command`
+  (admin only, the query never logged, 12 KiB of query, 2 MiB of reply, 15
+  s a read, two reads in flight a client and four in all). Tests:
+  `TestAForgottenRecordIsInNoSearch`,
+  `TestHistorySearchRoutesAreAdminOnly`,
+  `TestASearchNeverReturnsATypedAnswer`,
+  `TestAWorktreeOutsideItsRunIsNeverLookedAt`, the read slots' tests. It
+  also fixed a race in Brakeman's role that its sources widened
+  (`TestATicketReadyPastANarrowingIsJudgedByIt`). Checks: the whole
+  module's race tests, `make lint`, `make lint-static`; the Mac rows at
+  the merge gate.
+
+  PR-5 (#617, PR #723): `POST /api/history/sessions/{id}/resume` (a
+  receipt reserved before the launch and settled after it, so the same
+  command id answers once and never starts a second session; the launch
+  shared with the session route, `resumeLaunch`), `conductor history
+  search|show|similar|sessions|session|forget|resume|reindex` and its
+  completion, and the guide's ten History operations for the admin. Tests:
+  `TestResumeFromARecordAfterARestart`, `TestResumeFromARecordRefuses`,
+  `TestTheSameCommandIDAnswersItsReceipt`,
+  `TestASuccessorWhoseStopFailedHoldsItsPredecessorsConversation`,
+  `TestTheGuideListsHistoryForTheAdminOnly`, the CLI's. Checks: the whole
+  module's race tests, `make lint`, `make lint-static`, `make build-go`,
+  `make check-version`; the Mac rows at the merge gate.
+
+  PR-6 (#619, PR #731): `utils/history.ts` (the detail line's six fields,
+  the class badge, the link line, the four questions), `useHistory`,
+  `useSessionRecord`, the record page (`/history/sessions/<id>`, with
+  Resume asked in words that match what the route will do, and Forget),
+  the run page at `?attempt=&step=` (the step's log and its SHA-256
+  compared with the receipt's) and at `?command=&actor=`, and a ticket's
+  page at `?comment=<n>`. Tests: vitest (`history.test.ts`,
+  `useHistory.test.ts`, `useSessionRecord.test.ts`) and
+  `history-record.spec.ts` (a record after a restart resumed with the
+  recorded id, then forgotten; the run page at a step and at a command; a
+  ticket at a comment). Checks: typecheck, vitest, the whole Playwright
+  suite (`make test-e2e`), the spec `--repeat-each 10`; Go not affected.
+
+  PR-7 (#621, PR #746): the palette's `~` (the four questions with nothing
+  typed, then the rows grouped under their session or run, with their
+  badge and third line, → for Open, Resume, Find this elsewhere and Copy
+  reference), the plain search's History group, the History page (filter
+  chips that write the query, `?q=` in the URL, Show more, one column on a
+  phone), History in Go to, the sidebar and the bottom bar with `G H`.
+  Tests: vitest (`palette.test.ts`, `useHistorySearch.test.ts`,
+  `usePaletteHistory.test.ts`, `history.test.ts`), `history.spec.ts` and
+  `history-page.spec.ts`. Checks: typecheck, vitest, the whole Playwright
+  suite at 1630dd74 and the specs it touches at each round, the two new
+  specs `--repeat-each 10`; Go not affected.
+
+  PR-8 (#624): this entry, the README's History section,
+  `docs/architecture.md`'s History, `docs/repository-map.md`'s rows for
+  the History files and `docs/dependencies.md`'s three importers of
+  `modernc.org/sqlite`. Docs only.
+
+  Where the PRs departed from the plan, each written into the plan or the
+  PR's body: a hosted session has no record until PR-12 (a hosted id comes
+  back after a reconnect, and the host's own report is the truth of its
+  lifecycle); a record is reconciled from its session's state, so a
+  question still open when the end is recorded reads withdrawn and a line
+  that arrives after the end is dropped and counted; no availability says
+  "forgotten", because a forgotten record is never served at all; a search
+  of words is bounded (it reads at most 10,000 matches and ranks 2,000,
+  and says `cut` when it stopped); a failure's link line says "passed on
+  build #2", not a commit, and a repeat "said in 3 places"; History has `G
+  H` and no terminal chord (`Alt+H` opens the keyboard shortcuts).
+  Defaults the PRs took that the owner may overturn: a typed answer passed
+  on by a provider or a host is kept by no record (PR-1, one line in
+  `internal/session`), and the search's bounds (PR-2).
+
+  What was slow, missing or wrong. **Slow**: the plan's 50 ms for a search
+  of 100,000 entries holds for a filtered page and, on a quiet box, for
+  two words and a phrase; the most frequent word took 71 ms on a quiet box
+  and 138 to 201 ms on four cores of a loaded one (`BenchmarkSearch`,
+  PR-2's body). Three ways to bring it under (the last word read whole
+  once it is complete, a longer prefix index, a lower scan bound) each
+  change what a search means or costs, and are the owner's to choose.
+  **Missing**: a hosted session's record and what its host reports of it
+  (PR-12). **Wrong, outside the stream**: the hub can remove a hosted
+  session its host has just registered again (#701, filed, a maintainer
+  decides when). Every bug the stream's own code caused that its checks
+  found was fixed in its PR.
+
+  The acceptance (the plan's Acceptance, HS1: a person asks the palette
+  which session looked into a given failure, and the row it gives opens
+  the evidence itself), what is observed and what is not. Observed, with
+  the stub agents, by the specs CI runs: a crew's check fails on attempt 1
+  and passes on attempt 2; in the palette `~` and a word of the failure
+  finds the failed receipt, Checked ✗ with its six fields and
+  "Investigated by build #2", and Enter opens the run page at that step's
+  log, its SHA-256 the step log route's; a plain session's chat line with
+  the same word is Conversation; `~` alone shows the four questions, "What
+  was last verified here" lists attempt 2's passing receipt, and Find this
+  elsewhere lists a second crew's run of the same command
+  (`history.spec.ts`, with no restart and no Dispatch project); a session
+  ended before a restart reached from the palette to its record, which
+  offers Resume (`history-page.spec.ts`), and Resume from the record
+  taking up the agent's own conversation with the recorded id
+  (`history-record.spec.ts`). Not yet made: the plan's observation, which
+  is the maintainers' check, made after this entry's PR merges and
+  recorded here with what was missing, slow or wrong; HS1 is Done when it
+  is. Its steps, on the owner's machine or the WSL box with the owner's
+  agents, on the open-source build with no account: a Dispatch project
+  over a repository, a managed crew whose work task's check fails on its
+  first run (a script outside the worktree), Claude Code the worker and
+  Codex the reviewer, attempt 1 failing the check and attempt 2, handed
+  the receipt, passing; beside it a plain Claude Code session in the same
+  repository asked about the failure through its chat; the server
+  restarted; in the palette `~` and a word of the failing test's output
+  (with `outcome:failed` if the passing receipt shares the word): the
+  failed receipt by its title, Checked ✗, its six fields true (the source,
+  this machine, the project's key, attempt 1's result commit, the time,
+  "log kept"), "Investigated by build #2" naming Claude Code and its own
+  session, and where it passed; Enter at that step's log, its SHA-256 the
+  step log route's; the plain session's chat line as Conversation, its
+  record opened after the restart and Resume taking up the Claude Code
+  conversation; then the three other questions: a plan revision withdrawn
+  for the ticket found as a Decision, the passing receipt under "What was
+  last verified here", and a second crew's run of the same command by Find
+  this elsewhere. And the by-hand record the stub cannot give, the
+  maintainers' too: real Claude Code and Codex sessions recorded with
+  their versions and own session ids (Codex's lowest-id policy); a plain
+  Claude Code session resumed from its record after a restart (`--resume
+  <id>`) and a Codex one (`resume <id>`, its folder needed); a hosted
+  session from `conductor host` on the Mac once PR-12 lands (its host and
+  user, "not reported by the host" for what an old host does not report,
+  "host away" once the host stops, the same record taken up again when it
+  comes back, no Resume from the server); the four questions asked of a
+  real evening's runs; the History page on a phone on the LAN; the index
+  rebuilt on a data directory with a few hundred runs, with the time it
+  took; and a look at the History page on the Windows desktop app. The
+  owner judges whether the rows answered the four questions truthfully (no
+  Conversation row read as a result). A defect any of it finds is fixed in
+  the stream.
+
+  Later PRs, each adding its paragraph and its own short observation here;
+  none of them holds HS1's Done. PR-9 (#626): DR1's decision records in
+  the history, follows in #755. PR-10 (#628): RV1's review batches and
+  findings, waiting on RV1's PRs that serve them. PR-11 (#630): Brakeman
+  reads history within its grant, waiting on Brakeman's PR-9 to PR-13.
+  PR-12 (#632): what a host reports of its sessions, and a hosted
+  session's record.
 - **Project manifests: a fresh attempt worktree made usable, predictably
   (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
   `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the
