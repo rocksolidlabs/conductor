@@ -1867,8 +1867,9 @@ chat message, an agent's report, a ticket comment, a brief's words),
 withdrawn, an acceptance, a close), **Checked ✓** or **Checked ✗** (a
 receipt the server made by running something, passed or failed), or none
 for a plain record (a run, a task, an attempt, a session). The same
-sentence said in several places is one row, "said in 3 places", and is
-still Conversation. Under the title, six fields: the source ("Claude Code
+sentence said in several places stays a row in each, with its own source
+and place, and each row says how often: "said in 3 places", still
+Conversation. Under the title, six fields: the source ("Claude Code
 session", "check receipt", "plan revision"), the host, the project (its
 key, or the repository's folder), the revision (a commit and branch,
 `r2`), when, and whether the thing can still be opened ("live", "ended,

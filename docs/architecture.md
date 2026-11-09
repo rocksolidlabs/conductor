@@ -819,10 +819,12 @@ session. A bounded dirty set (10,000 keys, past it a full catch-up) is
 read one source at a time on the indexer's goroutine. Each source has a
 **mark**, taken before it is read and recorded only with what that read
 saw: a run's `L<revision>/R<sha256>` (the ledger's revision, its record
-file's hash), a session record's `S<seq>/P<projects digest>` (a crew
-member's with `/C<start commit>/J<project>`), a finished receipt's
-`finished`, a ticket's `Q<seq>` (its changes' last), each with `/J<project>`
-when it is placed in one and `/U` while its repository is not known.
+file's hash) and a finished receipt's `finished`, each with `/J<project>`
+when its run is placed in one and `/U` while its repository is not known;
+a session record's `S<seq>/P<projects digest>`, a crew member's with
+`/C<start commit>/J<project>` (its run's project) and `/U` while its
+repository is not known; a ticket's `Q<seq>` (its changes' last), with no
+suffix.
 Every write of a pass carries the index's generation as the pass began,
 so a pass across a clear is refused (`ErrStale`) and read again. A
 catch-up at open, after an overflow and after a reindex compares every
