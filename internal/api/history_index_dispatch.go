@@ -126,11 +126,22 @@ func (h *historyIndexer) dispatchSources(ctx context.Context) (tickets, briefs [
 var ticketFields = map[string]bool{"approved_at": true, "approved_note": true, "withdrawn_at": true, "state": true,
 	"accepted_at": true, "accepted_note": true, "status": true}
 
-// indexTicket reads a ticket: its mark Q<seq> (its changes' last, read
-// first), then the ticket, its comments, its plan revisions, its launches
-// and its reviews, each through Dispatch's own read (a review's and a
-// finding's rows and every mark are changes of the ticket, so they move
-// the mark too). A ticket Dispatch no longer holds is removed.
+// ticketShape is the version of what a ticket's source makes of what it
+// reads, part of its mark: a build that changes the ticket's entries (PR-10
+// added its reviews) changes it, so a mark an earlier build made is stale
+// and every ticket is read again at the catch-up, as a digest of what the
+// entries were built from would be (decisionMark).
+const ticketShape = "V2"
+
+// indexTicket reads a ticket: its mark Q<seq>/<shape> (its changes' last,
+// read first, and ticketShape), then the ticket, its comments, its plan
+// revisions, its launches and its newest reviews, each through Dispatch's
+// own read (a review's and a finding's rows and every mark are changes of
+// the ticket, so they move the mark too), and from the ledger the
+// verification receipt of each candidate a resolved finding names. The
+// mark gains U while one of those could not be judged yet: such a mark
+// never equals the one read first, and every reconcile reads the ticket
+// again (markRepoNotKnown). A ticket Dispatch no longer holds is removed.
 func (h *historyIndexer) indexTicket(ctx context.Context, ix *history.Index, key string) error {
 	ds := h.dispatch
 	if ds == nil {
@@ -158,7 +169,7 @@ func (h *historyIndexer) indexTicket(ctx context.Context, ix *history.Index, key
 		}
 		after = page.Next
 	}
-	mark := "Q" + strconv.FormatInt(last, 10)
+	mark := "Q" + strconv.FormatInt(last, 10) + "/" + ticketShape
 	if old, ok, err := ix.Mark(ctx, src); err != nil {
 		return err
 	} else if ok && old == mark {
@@ -188,10 +199,17 @@ func (h *historyIndexer) indexTicket(ctx context.Context, ix *history.Index, key
 	if r.launches, err = ds.Launches(ctx, key, dispatch.MaxLaunches); err != nil {
 		return err
 	}
-	if r.reviews, err = readReviews(ctx, ds, key); errors.Is(err, dispatch.ErrNotFound) {
+	if r.reviews, r.reviewsCut, err = readReviews(ctx, ds, key); errors.Is(err, dispatch.ErrNotFound) {
 		return ix.Remove(ctx, src)
 	} else if err != nil {
 		return err
+	}
+	waiting := false
+	if r.resolutions, waiting, err = readResolutions(ctx, h.currentLedger(), r.reviews); err != nil {
+		return err
+	}
+	if waiting {
+		mark += "/U"
 	}
 	entries, links := ticketEntries(r)
 	return ix.Replace(ctx, history.Source{Key: src, Mark: mark, Generation: h.gen}, entries, links)

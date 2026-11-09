@@ -162,6 +162,13 @@ describe("an RV1 review's rows (PR-10)", () => {
     expect(REJECTING_KINDS).toContain('review.batch')
     expect(REJECTING_OUTCOMES).toContain('request_changes')
   })
+
+  it("leaves a finding the reviewer withdrew out of the Rejected chip: its outcome is its own, never a plan's withdrawal", () => {
+    const rejected = outcomeChips().find((c) => c.label === 'Rejected')!.value.split(',')
+    expect(rejected).not.toContain('finding_withdrawn')
+    expect(rejected).toEqual([...REJECTING_OUTCOMES])
+    expect(REJECTING_KINDS).not.toContain('review.finding')
+  })
 })
 
 describe('the Rejected designs question (PR-9)', () => {

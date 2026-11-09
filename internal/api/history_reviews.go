@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/history"
 )
@@ -19,28 +21,54 @@ import (
 // of the ticket's source. Every review, finding and mark is a row of
 // Dispatch's changes log naming its ticket, so the ticket's mark, its
 // changes' last seq read before anything else, moves with each of them,
-// and an entry is never older than its mark.
+// and an entry is never older than its mark. The source holds the
+// ticket's newest MaxTicketReviews reviews, one page of RV1's: an older
+// review stays in the ticket's Review view, and the ticket's entry says
+// the history holds only the newest (reviewsCut).
 //
 //   - A batch is review.batch (decided: the reviewer's Request changes,
 //     Comment or Approve, recorded with its receipt), bound to its
 //     candidate (its run, its commit, the candidate's name as the
-//     revision) and its base (said in its summary), its words its summary
-//     whole; reviews to the attempt it reviewed, and reopened to the
-//     repair attempt once Yardmaster applied it.
+//     revision) and its base (its full commit, in its summary), its words
+//     its summary whole; reviews to the attempt it reviewed, and reopened
+//     to the repair attempt once Yardmaster applied it.
 //   - Each finding is review.finding (said: the person's words as RV1
 //     keeps them, with the lines they saw and the resolution they asked
 //     for), on the same candidate, its outcome its state now (its latest
-//     mark's verdict, RV1's rule); reviews to the attempt it was made on, a
-//     check finding cites its receipt.
+//     mark's verdict, RV1's rule; a withdrawn one finding_withdrawn, an
+//     outcome of its own, never a plan's withdrawal); reviews to the
+//     attempt it was made on, a check finding cites its receipt.
 //   - A finding whose state is resolved has an entry of its own,
-//     review.resolved (checked), from the mark that resolved it: the later
-//     candidate of another commit it was verified on, as RV1's mark says
-//     (a resolved mark is refused on the finding's own commit), linked
-//     resolves to the finding, which stays said. A finding reopened or
-//     withdrawn since has none: an entry whose fact is gone leaves with it.
+//     review.resolved (checked), only when the ledger holds the
+//     verification receipt of the candidate its resolving mark names: the
+//     later candidate of another commit (a resolved mark is refused on the
+//     finding's own commit), an ended attempt whose result it is, every
+//     receipt of it passed, as candidate.verified holds it (hVerified).
+//     It is linked resolves to the finding, which stays said, and cites
+//     the candidate's verification. A person's resolved mark without that
+//     receipt is said on the finding (resolved, not checked) and is no
+//     entry of its own; one whose receipt is still on its way marks the
+//     ticket U, so every reconcile reads it again until it is judged. A
+//     finding reopened or withdrawn since has none: an entry whose fact is
+//     gone leaves with it.
 //
 // RV1 owns a finding's identity across revisions and its state; the
 // history shows them and adds no field.
+
+// MaxTicketReviews is the most reviews of a ticket its source indexes,
+// the newest: one page of RV1's (dispatch.ReviewsPerPage). At RV1's
+// bounds (50 findings of a review, each resolved and verified) their
+// entries are under MaxTicketReviewBytes, so a ticket's reviews never
+// take the index's budget (TestATicketsReviewsAreBounded).
+const (
+	MaxTicketReviews     = dispatch.ReviewsPerPage
+	MaxTicketReviewBytes = 24 << 20
+)
+
+// findingWithdrawnOutcome is a withdrawn finding's outcome: RV1's
+// withdrawn, which a plan's withdrawal also is, said apart so that the
+// rejected designs' outcomes (web/app/utils/history.ts) never take it.
+const findingWithdrawnOutcome = "finding_withdrawn"
 
 // The links of a review's entries beside reviews, reopened and cites.
 const relResolves = "resolves" // a finding's verified resolution to the finding
@@ -64,32 +92,127 @@ func isReviewKind(e history.Entry) bool {
 	return false
 }
 
-// readReviews reads every review of the ticket, newest first, each whole
-// (its findings, each with its state and its latest mark), through
-// Dispatch's own reads. A review gone between the page and its read is
+// readReviews reads the ticket's newest MaxTicketReviews reviews, each
+// whole (its findings, each with its state and its latest mark), through
+// Dispatch's own reads; cut says the ticket has older ones, which the
+// history does not hold. A review gone between the page and its read is
 // left out.
-func readReviews(ctx context.Context, ds *dispatch.Store, key string) ([]dispatch.Review, error) {
-	var out []dispatch.Review
-	for before := ""; ; {
-		page, err := ds.Reviews(ctx, key, before)
-		if err != nil {
-			return nil, err
+func readReviews(ctx context.Context, ds *dispatch.Store, key string) (out []dispatch.Review, cut bool, err error) {
+	page, err := ds.Reviews(ctx, key, "")
+	if err != nil {
+		return nil, false, err
+	}
+	for _, s := range page.Reviews {
+		if len(out) == MaxTicketReviews {
+			return out, true, nil
 		}
-		for _, s := range page.Reviews {
-			r, err := ds.Review(ctx, s.ID)
-			if errors.Is(err, dispatch.ErrNotFound) {
+		r, err := ds.Review(ctx, s.ID)
+		if errors.Is(err, dispatch.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, r)
+	}
+	return out, page.Next != "", nil
+}
+
+// resolutionCheck is what the ledger holds of the candidate a resolved
+// mark names: its verification receipt (verified, its receipts' count),
+// or why it holds none.
+type resolutionCheck struct {
+	verified bool
+	receipts int
+	why      string
+}
+
+// resolvedOn is the candidate a finding's resolving mark names: ok only
+// for a finding resolved now by a mark on another commit than its own
+// candidate's (RV1 refuses one on its own commit).
+func resolvedOn(f dispatch.Finding, own dispatch.Candidate) (dispatch.Candidate, bool) {
+	m := f.Latest
+	if f.State != dispatch.FindingResolved || m == nil || m.Verdict != dispatch.FindingResolved {
+		return dispatch.Candidate{}, false
+	}
+	mc, err := dispatch.ParseCandidate(m.Candidate)
+	if err != nil || mc.Commit == own.Commit {
+		return dispatch.Candidate{}, false
+	}
+	return mc, true
+}
+
+// readResolutions reads from the ledger the verification receipt of each
+// candidate a resolved finding of the reviews names, as candidate.verified
+// judges one (hVerified) and the delivery reads it (candidateVerified):
+// the attempt read before its receipts, an ended attempt whose result is
+// the candidate's commit, every receipt finished. waiting says one could
+// not be judged yet (no ledger to read, its attempt not ended, a receipt
+// still started or running): the ticket's mark then carries U.
+func readResolutions(ctx context.Context, ld indexLedger, reviews []dispatch.Review) (out map[string]resolutionCheck, waiting bool, err error) {
+	out = map[string]resolutionCheck{}
+	attempts := map[string][]ledger.AttemptRow{}
+	for _, r := range reviews {
+		own, err := dispatch.ParseCandidate(r.Candidate)
+		if err != nil {
+			continue
+		}
+		for _, f := range r.Findings {
+			mc, ok := resolvedOn(f, own)
+			if _, seen := out[mc.String()]; !ok || seen {
 				continue
 			}
-			if err != nil {
-				return nil, err
+			if ld == nil {
+				waiting = true
+				continue
 			}
-			out = append(out, r)
+			as, read := attempts[mc.Run]
+			if !read {
+				if as, err = ld.Attempts(ctx, mc.Run); errors.Is(err, ledger.ErrUnavailable) {
+					waiting = true
+					continue
+				} else if err != nil {
+					return nil, false, err
+				}
+				attempts[mc.Run] = as
+			}
+			i := slices.IndexFunc(as, func(a ledger.AttemptRow) bool { return a.TaskID == mc.Task && a.N == mc.Attempt })
+			if i < 0 {
+				out[mc.String()] = resolutionCheck{why: "the ledger holds no receipt of " + mc.Name()}
+				continue
+			}
+			a := as[i]
+			if !slices.Contains(attemptEnded, a.State) {
+				waiting = true
+				continue
+			}
+			checks, err := ld.Checks(ctx, mc.Run, mc.Task, mc.Attempt, false)
+			if errors.Is(err, ledger.ErrUnavailable) {
+				waiting = true
+				continue
+			} else if err != nil {
+				return nil, false, err
+			}
+			cand := candidateOf("", ledger.TaskRow{}, a, checks, nil)
+			if slices.ContainsFunc(cand.Receipts, func(c candidateReceipt) bool {
+				return c.State == ledger.CheckStarted || c.State == ledger.CheckRunning
+			}) {
+				waiting = true
+				continue
+			}
+			switch {
+			case cand.Commit != mc.Commit:
+				out[mc.String()] = resolutionCheck{why: mc.Name() + " is not that attempt's result"}
+			case len(cand.Receipts) == 0:
+				out[mc.String()] = resolutionCheck{why: mc.Name() + " has no receipt"}
+			case !hVerified(a, cand, checks):
+				out[mc.String()] = resolutionCheck{why: mc.Name() + "'s checks did not all pass"}
+			default:
+				out[mc.String()] = resolutionCheck{verified: true, receipts: len(cand.Receipts)}
+			}
 		}
-		if page.Next == "" {
-			return out, nil
-		}
-		before = page.Next
 	}
+	return out, waiting, nil
 }
 
 // verdictWords is a review's verdict in RV1's words.
@@ -100,8 +223,9 @@ var verdictWords = map[string]string{
 }
 
 // reviewEntries is a ticket's reviews' entries and links, base the ticket's
-// entries' (its anchor, project and key).
-func reviewEntries(base history.Entry, key string, reviews []dispatch.Review) ([]history.Entry, []history.Link) {
+// entries' (its anchor, project and key), resolutions what the ledger
+// holds of each candidate a resolved finding names (readResolutions).
+func reviewEntries(base history.Entry, key string, reviews []dispatch.Review, resolutions map[string]resolutionCheck) ([]history.Entry, []history.Link) {
 	var out []history.Entry
 	var links []history.Link
 	for _, r := range reviews {
@@ -121,7 +245,7 @@ func reviewEntries(base history.Entry, key string, reviews []dispatch.Review) ([
 		// The title is cut from the batch alone: its verdict, its
 		// candidate and its summary; who sent it leads the summary.
 		b.Title = hTitle(verdict + " on " + c.Name() + prefixed(": ", r.Summary))
-		b.Summary = hSummary(strings.Join(hNonEmpty(prefixed("by ", who), fmt.Sprintf("%s (%s) against base %s", c.Name(), hShort(c.Commit), hShort(r.Base)),
+		b.Summary = hSummary(strings.Join(hNonEmpty(prefixed("by ", who), fmt.Sprintf("%s (%s) against base %s", c.Name(), hShort(c.Commit), r.Base),
 			countsWords(len(r.Findings), r.Counts), applicationWords(c, r.Application), key), " · "))
 		b.Body = history.Clip(r.Summary, history.MaxLongBody)
 		out = append(out, b)
@@ -134,8 +258,17 @@ func reviewEntries(base history.Entry, key string, reviews []dispatch.Review) ([
 			x := on
 			x.Key = hFindingRef(key, f.ID)
 			x.Ref, x.Kind, x.At, x.Actor, x.Outcome = x.Key, "review.finding", hAt(f.CreatedAt, b.At), b.Actor, hField(f.State)
+			if f.State == dispatch.FindingWithdrawn {
+				x.Outcome = findingWithdrawnOutcome
+			}
+			mc, resolved := resolvedOn(f, c)
+			rc, judged := resolutions[mc.String()]
+			now := prefixed("now ", f.State)
+			if resolved && judged && !rc.verified {
+				now = fmt.Sprintf("now resolved on %s by %s, not checked: %s", mc.Name(), cmp.Or(f.Latest.CreatedBy, f.Latest.Actor), rc.why)
+			}
 			x.Title = hTitle(findingHead(f, c))
-			x.Summary = hSummary(strings.Join(hNonEmpty(findingWhere(f), prefixed("by ", who), "in "+verdict+" of "+c.Name(), prefixed("now ", f.State), key), " · "))
+			x.Summary = hSummary(strings.Join(hNonEmpty(findingWhere(f), prefixed("by ", who), "in "+verdict+" of "+c.Name(), now, key), " · "))
 			x.Body = history.Clip(findingBody(f), history.MaxLongBody)
 			out = append(out, x)
 			links = append(links, history.Link{From: x.Key, Rel: relReviews, To: reviewed})
@@ -143,24 +276,21 @@ func reviewEntries(base history.Entry, key string, reviews []dispatch.Review) ([
 				links = append(links, history.Link{From: x.Key, Rel: relCites, To: hCheckRef(ch.Run, ch.Task, ch.Attempt, ch.ID, ch.K)})
 			}
 
+			if !resolved || !rc.verified {
+				continue // none resolved on other code, or no receipt of it the ledger holds
+			}
 			m := f.Latest
-			if f.State != dispatch.FindingResolved || m == nil || m.Verdict != dispatch.FindingResolved {
-				continue
-			}
-			mc, err := dispatch.ParseCandidate(m.Candidate)
-			if err != nil || mc.Commit == c.Commit {
-				continue // RV1 refuses a resolution on the finding's own code: none is verified
-			}
 			v := base
 			v.Key = hResolvedRef(key, m.ID)
 			v.Ref, v.Kind, v.At, v.Actor, v.Outcome = v.Key, "review.resolved", hAt(m.CreatedAt, x.At), hField(m.Actor), dispatch.FindingResolved
 			v.Run, v.Commit, v.Revision = hField(mc.Run), mc.Commit, hField(mc.Name())
 			v.Title = hTitle("Resolved on " + mc.Name() + ": " + findingHead(f, c))
 			v.Summary = hSummary(strings.Join(hNonEmpty(prefixed("by ", cmp.Or(m.CreatedBy, m.Actor)),
-				fmt.Sprintf("%s (%s), made on %s (%s)", mc.Name(), hShort(mc.Commit), c.Name(), hShort(c.Commit)), findingWhere(f), key), " · "))
+				fmt.Sprintf("%s (%s) verified, %d receipts passed, made on %s (%s)", mc.Name(), hShort(mc.Commit), rc.receipts, c.Name(), hShort(c.Commit)), findingWhere(f), key), " · "))
 			v.Body = hShortBody(m.Note)
 			out = append(out, v)
-			links = append(links, history.Link{From: v.Key, Rel: relResolves, To: x.Key})
+			links = append(links, history.Link{From: v.Key, Rel: relResolves, To: x.Key},
+				history.Link{From: v.Key, Rel: relCites, To: hCandidateRef(mc.Run, mc.Task, mc.Attempt)})
 		}
 	}
 	return out, dedupLinks(links)

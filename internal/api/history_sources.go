@@ -286,6 +286,22 @@ func stepFailed(r ledger.CheckRow) bool {
 	return false
 }
 
+// hCandidateRef is a work attempt's verified candidate's key
+// (candidate.verified): candidate:<run>/<task>/<n>.
+func hCandidateRef(run, task string, n int) string {
+	return fmt.Sprintf("candidate:%s/%s/%d", run, task, n)
+}
+
+// hVerified is candidate.verified's predicate: the attempt's candidate has
+// a commit, the delivery's predicate holds (verifiedOf) and no receipt of
+// that commit is one the engine fails (crew.FailedOutcome). A finding's
+// resolution is checked by it too (readResolutions).
+func hVerified(a ledger.AttemptRow, cand runCandidate, checks []ledger.CheckRow) bool {
+	return cand.Commit != "" && verifiedOf(a, cand.Receipts) && !slices.ContainsFunc(checks, func(r ledger.CheckRow) bool {
+		return r.TaskID == a.TaskID && r.N == a.N && r.Subject == cand.Commit && hIsReceipt(r) && crew.FailedOutcome(r)
+	})
+}
+
 // isReceipt says a row is a check's or a verify step's receipt.
 func hIsReceipt(r ledger.CheckRow) bool {
 	return r.Phase == "" || r.Phase == ledger.PhaseCheck || r.Phase == ledger.PhaseVerify
@@ -418,13 +434,11 @@ func runSource(p runPlace, rec *crew.Run, rows *runRows, chain []runRows, kept [
 		// A work attempt's result, Checked only by the delivery's own
 		// predicate and with no receipt the engine fails.
 		cand := candidateOf(kind, taskRow(a.TaskID), a, rows.checks, nil)
-		if cand.Commit == "" || !verifiedOf(a, cand.Receipts) || slices.ContainsFunc(rows.checks, func(r ledger.CheckRow) bool {
-			return r.TaskID == a.TaskID && r.N == a.N && r.Subject == cand.Commit && hIsReceipt(r) && crew.FailedOutcome(r)
-		}) {
+		if !hVerified(a, cand, rows.checks) {
 			continue
 		}
 		v := p.base()
-		v.Key = fmt.Sprintf("candidate:%s/%s/%d", p.run, a.TaskID, a.N)
+		v.Key = hCandidateRef(p.run, a.TaskID, a.N)
 		v.Ref, v.Anchor, v.Kind, v.Outcome = v.Key, hTaskRef(p.run, a.TaskID), "candidate.verified", "passed"
 		v.At, v.Where, v.Commit, v.Revision, v.Agent = hAt(a.ClosedAt, p.fallback), hField(a.Where), cand.Commit, hField(a.Branch), hField(p.agents[a.TaskID])
 		v.Title = hTitle(fmt.Sprintf("%s #%d verified at %s", a.TaskID, a.N, hShort(cand.Commit)))

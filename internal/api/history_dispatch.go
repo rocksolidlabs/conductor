@@ -63,7 +63,12 @@ type ticketRead struct {
 	plans    []dispatch.PlanSummary
 	launches []dispatch.LaunchSummary
 	changes  []dispatch.ChangeRow
-	reviews  []dispatch.Review
+	// reviews is the ticket's newest reviews (readReviews), reviewsCut
+	// that it has older ones; resolutions what the ledger holds of each
+	// candidate a resolved finding of them names (readResolutions).
+	reviews     []dispatch.Review
+	reviewsCut  bool
+	resolutions map[string]resolutionCheck
 }
 
 // isPerson says an actor is a person's: the operator (the workbench token)
@@ -93,7 +98,11 @@ func ticketEntries(r ticketRead) ([]history.Entry, []history.Link) {
 		e.Outcome = "deleted"
 	}
 	e.Title = hTitle(key + " " + tk.Title)
-	e.Summary = hSummary(strings.Join(hNonEmpty(tk.Status, tk.Owner, project), " · "))
+	cut := ""
+	if r.reviewsCut {
+		cut = fmt.Sprintf("its %d newest reviews in the history, the older in its Review view", MaxTicketReviews)
+	}
+	e.Summary = hSummary(strings.Join(hNonEmpty(tk.Status, tk.Owner, project, cut), " · "))
 	e.Body = history.Clip(strings.Join(hNonEmpty(tk.Description, tk.Acceptance), "\n\n"), history.MaxLongBody)
 	out = append(out, e)
 
@@ -243,7 +252,7 @@ func ticketEntries(r ticketRead) ([]history.Entry, []history.Link) {
 	}
 
 	base.At = e.At
-	re, rl := reviewEntries(base, key, r.reviews)
+	re, rl := reviewEntries(base, key, r.reviews, r.resolutions)
 	return append(out, re...), append(links, rl...)
 }
 

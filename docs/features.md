@@ -4809,18 +4809,27 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   their ticket through Dispatch's own reads. Each batch is a
   `review.batch` (decided: Request changes, Comment or Approve by the
   reviewer, bound to its candidate, whose page is the ticket's Review
-  view at that candidate, and to its base; linked `reviews` to the
-  attempt it reviewed and `reopened` to the repair Yardmaster applied);
-  each finding a `review.finding` (said: the person's words, the
+  view at that candidate, and to its base's full commit; linked `reviews`
+  to the attempt it reviewed and `reopened` to the repair Yardmaster
+  applied); each finding a `review.finding` (said: the person's words, the
   resolution asked for, the lines they saw, a check finding's quote and
-  classes, never the receipt's log), its outcome its state now; and a
-  finding resolved on a later candidate of another commit has a
+  classes, never the receipt's log), its outcome its state now (a
+  withdrawn one `finding_withdrawn`, which the Rejected chip leaves out);
+  and a finding resolved on a later candidate of another commit has a
   `review.resolved` entry of its own (checked, `resolves` to the finding,
-  drawn Checked ✓), which leaves when the finding is marked open again,
-  while the finding itself stays Conversation. A batch that requested
-  changes is among the palette's "Rejected designs". A finding's body is
-  bounded at 16 KiB, not the plan's 4 KiB, so its words, resolution,
-  lines and quote are searched whole. Its checks are in its body.
+  `cites` the candidate's verification, drawn Checked ✓) only when the
+  ledger holds that candidate's verification receipt, every check passed;
+  a resolution without one is said on the finding, resolved and not
+  checked, and one whose checks are still running waits for them. It
+  leaves when the finding is marked open again, while the finding itself
+  stays Conversation. A batch that requested changes is among the
+  palette's "Rejected designs". A ticket indexes its 20 newest reviews
+  (under 24 MiB at RV1's bounds), the older in its Review view, and a
+  ticket's mark carries its entries' version, so the tickets an earlier
+  build indexed without their reviews are read again at the start. A
+  finding's body is bounded at 16 KiB, not the plan's 4 KiB, so its
+  words, resolution, lines and quote are searched whole. Its checks are in
+  its body.
 - **Project manifests: a fresh attempt worktree made usable, predictably
   (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
   `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the

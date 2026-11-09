@@ -321,7 +321,8 @@ function filter(name: string, value?: string): string {
 /**
  * What a rejected design is, in one place: the kinds that can reject one and the outcomes that do. The "Rejected designs" question
  * narrows by both, and the History page's Rejected chip writes the outcomes; a kind or an outcome added here (DR1's decision records,
- * the plan's PR-9; a person's review batch that requested changes, PR-10) reaches both.
+ * the plan's PR-9; a person's review batch that requested changes, PR-10) reaches both. `withdrawn` is a plan revision's withdrawal: a
+ * review finding its reviewer withdrew is `finding_withdrawn`, an outcome of its own that neither list takes.
  */
 export const REJECTING_KINDS: readonly string[] = ['plan.withdrawn', 'plan.superseded', 'review.verdict', 'decision.response', 'review.batch']
 export const REJECTING_OUTCOMES: readonly string[] = ['withdrawn', 'superseded', 'needs_changes', 'rejected', 'request_changes']
