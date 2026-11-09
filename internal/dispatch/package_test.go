@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -204,5 +205,64 @@ func TestPackageFileNames(t *testing.T) {
 	// The eighth place, and a name cut so it ends in a dot, trimmed.
 	if got := attachmentFile(7, strings.Repeat("x", 63)+"..png"); got != "08-"+strings.Repeat("x", 63) {
 		t.Fatalf("the eighth place: %q", got)
+	}
+}
+
+// v1Decision and v1Package are the package's shape as every build before
+// HM1 reads it (PackageVersion 1: a decision's id, question, kind and
+// before, no for), the rest of it unchanged since; read strictly, as such
+// a build's engine reads a package (crew's readPackage, DecodeStrict).
+type v1Decision struct {
+	ID       string   `json:"id"`
+	Question string   `json:"question"`
+	Kind     string   `json:"kind"`
+	Before   []string `json:"before"`
+}
+
+type v1Package struct {
+	Version     int                 `json:"version"`
+	Ticket      PackageTicket       `json:"ticket"`
+	Plan        PackagePlan         `json:"plan"`
+	References  []PlanReference     `json:"references"`
+	Attachments []PackageAttachment `json:"attachments"`
+	Comments    []PackageComment    `json:"comments"`
+	Constraints string              `json:"constraints"`
+	Decisions   []v1Decision        `json:"decisions"`
+	Launch      PackageLaunch       `json:"launch"`
+}
+
+// Whom a decision is for never travels in the launch's package (HM1): the
+// revision's body keeps it and the engine is handed it from there, so the
+// package of a revision whose decisions name for is version 1 and is read
+// by an older build's strict reader whole, every decision's id, question,
+// kind and before as the body has them, with no field it does not know.
+func TestThePackageCarriesNoFor(t *testing.T) {
+	s, _, key := planTicket(t)
+	ds := []PlanDecision{
+		{ID: "ship", Question: "Ship it?", Kind: DecisionApproval, Before: []string{"build"}, For: "role:architecture"},
+		{ID: "migrate", Question: "Run the migration on staging", Kind: DecisionAssignment, Before: []string{"build"}, For: "person:ana"},
+	}
+	body := testPlanBody("crew")
+	body.Decisions = ds
+	plan := approvedPlan(t, s, key, PlanRequest{Crew: "crew", Decisions: ds}, body, "go")
+	if kept := planOf(t, s, plan); !strings.Contains(string(kept.Body), `"for":"role:architecture"`) {
+		t.Fatalf("the revision's body does not keep for: %s", kept.Body)
+	}
+	v := mustLaunch(t, s, "l1", key, plan, "")
+	if strings.Contains(string(v.Package), `"for"`) {
+		t.Fatalf("the package carries for: %s", v.Package)
+	}
+	var old v1Package
+	dec := json.NewDecoder(bytes.NewReader(v.Package))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&old); err != nil {
+		t.Fatalf("an older build's reader refuses the package: %v", err)
+	}
+	if old.Version != 1 || PackageVersion != 1 {
+		t.Fatalf("the package is version %d (this build's %d)", old.Version, PackageVersion)
+	}
+	want := []v1Decision{{ID: "ship", Question: "Ship it?", Kind: DecisionApproval, Before: []string{"build"}}, {ID: "migrate", Question: "Run the migration on staging", Kind: DecisionAssignment, Before: []string{"build"}}}
+	if !reflect.DeepEqual(old.Decisions, want) {
+		t.Fatalf("the decisions an older build reads: %+v", old.Decisions)
 	}
 }

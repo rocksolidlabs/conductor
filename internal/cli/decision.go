@@ -104,6 +104,20 @@ type decisionView struct {
 	Expertise      []string              `json:"expertise"`
 	Subject        *crew.DecisionSubject `json:"subject"`
 	Supersedes     string                `json:"supersedes"`
+	For            *crew.DecisionFor     `json:"for"`
+}
+
+// forText is whom a request is for in words: "nate, the architecture
+// owner (role:architecture)"; "" for none.
+func forText(f *crew.DecisionFor) string {
+	if f == nil || f.Person == "" {
+		return ""
+	}
+	who := f.Person
+	if w, ok := crew.ResponsibilityWords[f.Responsibility]; ok {
+		who += ", the " + w
+	}
+	return who + " (" + f.Label + ")"
 }
 
 // decisionRef is one evidence ref of the admin's read, resolved: what its
@@ -198,7 +212,10 @@ func decideRequest(f decideFlags, stdin io.Reader) (crew.DecisionRequest, error)
 		return req, errors.New("--type (clarification, approval or assignment) and --question say what you ask")
 	}
 	req = crew.DecisionRequest{Type: *f.typ, Question: *f.question, Context: *f.context, Uncertainty: *f.uncertainty,
-		Authorizes: *f.authorizes, Evidence: []string(*f.evidence), Supersedes: *f.supersedes}
+		Authorizes: *f.authorizes, Evidence: []string(*f.evidence), Supersedes: *f.supersedes, For: *f.forLabel}
+	if req.For != "" && !strings.HasPrefix(req.For, "role:") && !strings.HasPrefix(req.For, "person:") {
+		return req, fmt.Errorf("--for is role:RESP or person:NAME, as your task file's \"Who answers for this work\" names them: %q", req.For)
+	}
 	for _, o := range *f.options {
 		opt, err := parseOption(o)
 		if err != nil {
@@ -229,15 +246,15 @@ func decideRequest(f decideFlags, stdin io.Reader) (crew.DecisionRequest, error)
 
 // decideFlags is task decide's flags, on the task command's flag set.
 type decideFlags struct {
-	typ, question, context, uncertainty, authorizes, subject, supersedes, file *string
-	recommend                                                                  *int
-	options, evidence                                                          *multiFlag
+	typ, question, context, uncertainty, authorizes, subject, supersedes, file, forLabel *string
+	recommend                                                                            *int
+	options, evidence                                                                    *multiFlag
 }
 
 // given reports whether any flag of a request was given beside --file.
 func (f decideFlags) given() bool {
 	return *f.typ != "" || *f.question != "" || *f.context != "" || *f.uncertainty != "" || *f.authorizes != "" || *f.subject != "" ||
-		*f.supersedes != "" || *f.recommend != -1 || len(*f.options) > 0 || len(*f.evidence) > 0
+		*f.supersedes != "" || *f.forLabel != "" || *f.recommend != -1 || len(*f.options) > 0 || len(*f.evidence) > 0
 }
 
 // taskDecide sends the attempt's decision request, its requestId minted
@@ -452,6 +469,9 @@ func decisionText(d crew.Decision, refs []decisionRef, history bool) string {
 		fmt.Fprintf(&b, "ticket: %s\n", d.Ticket)
 	}
 	fmt.Fprintf(&b, "question: %s\n", oneLine(v.Question))
+	if who := forText(v.For); who != "" {
+		fmt.Fprintf(&b, "for: %s: the operator answers for them\n", oneLine(who))
+	}
 	if v.Context != "" {
 		fmt.Fprintf(&b, "context:\n%s\n", indent(v.Context))
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"time"
 	"unicode/utf8"
 )
@@ -64,16 +65,18 @@ type Host interface {
 // TurnLaunch is a Brakeman turn to launch: the catalog agent, its model
 // ("" for its default), whether Conductor's tools are allowed without
 // asking (where its adapter can say so), the folder the turn runs in, the
-// line typed once its session is ready, the run's label and the request
-// the turn is.
+// folders it may read besides that one (through its adapter's own switch;
+// none for an agent without one), the line typed once its session is
+// ready, the run's label and the request the turn is.
 type TurnLaunch struct {
-	Agent      string `json:"agent"`
-	Model      string `json:"model,omitempty"`
-	AllowTools bool   `json:"allowTools,omitempty"`
-	Folder     string `json:"folder"`
-	Line       string `json:"line"`
-	Label      string `json:"label"`
-	Request    string `json:"request"`
+	Agent      string   `json:"agent"`
+	Model      string   `json:"model,omitempty"`
+	AllowTools bool     `json:"allowTools,omitempty"`
+	Folder     string   `json:"folder"`
+	Reads      []string `json:"reads,omitempty"`
+	Line       string   `json:"line"`
+	Label      string   `json:"label"`
+	Request    string   `json:"request"`
 }
 
 // ApprovedLaunch is a launch from a ticket's approved plan revision: the
@@ -144,6 +147,8 @@ const (
 	MaxModel = 100
 	// MaxFolder bounds a folder's absolute path, in bytes.
 	MaxFolder = 4096
+	// MaxTurnReads bounds the folders a turn may read besides its own.
+	MaxTurnReads = 16
 	// MaxTurnLine bounds the line typed into a turn's session, in bytes.
 	MaxTurnLine = 300
 	// MaxRequestRef bounds a Brakeman request's id (br-<n>), in bytes.
@@ -213,7 +218,8 @@ func (r SubmitRequest) Valid() error {
 // Valid checks r against its bounds: an agent id of 1 to MaxAgentID of
 // a-z, 0-9 and '-'; a model of at most MaxModel of letters, digits and
 // ._:/@- beginning with a letter or a digit, or none; an absolute folder
-// of at most MaxFolder bytes on one line; a line of 1 to MaxTurnLine
+// of at most MaxFolder bytes on one line; at most MaxTurnReads folders to
+// read, each as the folder is; a line of 1 to MaxTurnLine
 // bytes on one line; a label of 1 to MaxRunLabel characters on one line;
 // and a request id br-<n>, n from 1 with no leading zero. Whether the
 // agent can be Brakeman's and the request holds the slot is the server's
@@ -227,6 +233,8 @@ func (r TurnLaunch) Valid() error {
 		return invalid(rec, "model %q is not a model's name", r.Model)
 	case r.Folder == "" || len(r.Folder) > MaxFolder || !oneLine(r.Folder) || !filepath.IsAbs(r.Folder):
 		return invalid(rec, "folder is not an absolute path of at most %d bytes", MaxFolder)
+	case len(r.Reads) > MaxTurnReads || slices.ContainsFunc(r.Reads, func(d string) bool { return d == "" || len(d) > MaxFolder || !oneLine(d) || !filepath.IsAbs(d) }):
+		return invalid(rec, "reads is not at most %d absolute paths of at most %d bytes", MaxTurnReads, MaxFolder)
 	case r.Line == "" || len(r.Line) > MaxTurnLine || !oneLine(r.Line):
 		return invalid(rec, "line is not one line of 1 to %d bytes", MaxTurnLine)
 	case r.Label == "" || !oneLine(r.Label) || utf8.RuneCountInString(r.Label) > MaxRunLabel:

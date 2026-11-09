@@ -720,3 +720,27 @@ func TestCancelsHelpTellsAgentsFromGates(t *testing.T) {
 		t.Fatalf("cancel's help still says every decision's tasks are cancelled:\n%s", errb.String())
 	}
 }
+
+// task decide --for names whom a decision is for (docs/plans/decisions.md,
+// HM1, PR-12): sent as the request's for, the server's refusal of a label
+// the run's crew does not resolve said in its words; a label of neither
+// shape is a usage error, nothing sent.
+func TestTaskDecideFor(t *testing.T) {
+	d := newDecisionAPI(t)
+	posts := "/api/sessions/" + d.sid + "/decisions"
+	before := d.count()
+	code, _, err := task(t, "", "decide", "--type", "clarification", "--question", "Which schema?", "--for", "role:architecture")
+	if code != 1 || err == nil || !strings.Contains(err.Error(), "the run's crew lists no people (invalid)") {
+		t.Fatalf("a label the crew lacks: %d %v", code, err)
+	}
+	if sent := d.posts(before, posts); len(sent) != 1 || sent[0].body["for"] != "role:architecture" {
+		t.Fatalf("decide --for's body: %v", sent)
+	}
+	before = d.count()
+	if code, out, err := task(t, "", "decide", "--type", "clarification", "--question", "Q", "--for", "architecture"); code != 2 || err == nil || out != "" {
+		t.Fatalf("--for of no shape: %d %q %v", code, out, err)
+	}
+	if n := d.count(); n != before {
+		t.Fatalf("a usage error sent %d requests", n-before)
+	}
+}

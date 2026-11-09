@@ -2,7 +2,7 @@
 import type { DispatchTicket, PlanBody } from '~/composables/useDispatch'
 import type { AgentInfo } from '~/composables/useSessions'
 import { handedCommentWords } from '~/utils/dispatch'
-import { argvLine, expectedChecks, resolvedArgv, shortCommit, yoloWords } from '~/utils/dispatchPlans'
+import { argvLine, expectedChecks, planForWords, resolvedArgv, shortCommit, yoloWords } from '~/utils/dispatchPlans'
 
 /**
  * A plan revision's body as the ticket page shows it (Program item DS2, docs/plans/dispatch-evidence.md, "web/app"): exactly what its
@@ -128,6 +128,7 @@ const manifestWords = computed(() => {
         <li v-for="d in body.decisions" :key="d.id" class="min-w-0 break-words" :data-plan-decision="d.id">
           <UBadge :label="d.kind" color="neutral" variant="subtle" size="sm" class="mr-1" />{{ d.question }}
           <span v-if="d.before.length" class="text-xs text-dimmed"> · before {{ d.before.join(', ') }}</span>
+          <span v-if="d.for" class="text-xs text-muted" data-plan-decision-for> · for {{ planForWords(d.for, body.crew.people) }}</span>
         </li>
       </ul>
       <p class="text-xs text-dimmed">A run launched from this revision holds the tasks each names until the operator answers it.</p>

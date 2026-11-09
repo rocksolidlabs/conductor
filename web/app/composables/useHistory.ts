@@ -42,7 +42,7 @@ export function useHistory() {
   const enc = encodeURIComponent
   return {
     record: (id: string) => request<RecordReply>(`/api/history/sessions/${enc(id)}`),
-    entry: (key: string) => request<{ entry: HistoryItem }>('/api/history/entry', { query: { key } }).then((r) => r.entry),
+    entry: (key: string, signal?: AbortSignal) => request<{ entry: HistoryItem }>('/api/history/entry', { query: { key }, signal }).then((r) => r.entry),
     command: (run: string, actor: string, id: string) => request<{ command: HistoryCommand }>('/api/history/command', { query: { run, actor, id } }).then((r) => r.command),
     resumeRecord: (id: string, o: ResumeOptions = {}, commandId = mintCommandId()) => {
       const body: ResumeBody = { commandId }
