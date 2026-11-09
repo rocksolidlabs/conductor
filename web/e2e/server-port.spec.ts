@@ -3,7 +3,7 @@ import { createServer, type Server } from 'node:net'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, test } from './fixtures'
-import { HEALTH_WAIT_MS, PORT_TRIES, renderConfig, startServer, STOP_WAIT_MS, stopServer, type Started } from './server'
+import { renderConfig, START_WAIT_MS, startServer, stopServer, type Started } from './server'
 
 // A port probed free is not a port owned (#281): another run of the suite on
 // the machine can bind it before startServer's child does, and a health answer
@@ -34,7 +34,7 @@ const at = (state: { root: string }, name: string) => {
 const whoami = async (s: Started, token: string) => (await fetch(`${s.baseURL}/api/whoami`, { headers: { Authorization: `Bearer ${token}` } })).status
 // Each startServer below: every try it may make, each a health wait and a stop. A later try can lose its port to another run of the
 // suite as well, so the tests assert the rule (the held port among the lost, the returned server the child's), not a count of losses.
-const budget = (starts: number) => starts * PORT_TRIES * (HEALTH_WAIT_MS + STOP_WAIT_MS) + 30_000
+const budget = (starts: number) => starts * START_WAIT_MS + 30_000
 // The try that lost the held port: there is one, and it is the first, the try handed that port.
 const lostAt = (s: Started, port: number) => {
   expect(s.lost?.length ?? 0).toBeGreaterThanOrEqual(1)

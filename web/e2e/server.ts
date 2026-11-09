@@ -123,6 +123,11 @@ export interface Started {
 
 /** How many ports startServer tries before it gives up: each one another server took is said in the error. */
 export const PORT_TRIES = 5
+/**
+ * The longest one startServer can take: every try it may make, each a health wait and a stop. A spec that starts a server gives
+ * that step this bound (a lost port is rare, but it is the case the tries exist for).
+ */
+export const START_WAIT_MS = PORT_TRIES * (HEALTH_WAIT_MS + STOP_WAIT_MS)
 
 /**
  * Starts `conductor serve` with config and a clean environment: PATH, LANG, the HOME given, and the CONDUCTOR_* values that place it
