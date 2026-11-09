@@ -1815,7 +1815,10 @@ func TestCatalogFailedSaveChangesNothing(t *testing.T) {
 	}
 	before := e.catalogIDs()
 
-	// The data directory disappears, so no save can succeed.
+	// The data directory disappears, so no save can succeed. The history's
+	// indexer, which opens its index under it on a goroutine of its own
+	// (making history/ again), is ended first.
+	e.srv.stopHistory()
 	dir := e.srv.store.Dir()
 	if err := os.RemoveAll(dir); err != nil {
 		t.Fatal(err)

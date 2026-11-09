@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { RouteLocationRaw } from 'vue-router'
 import type { RunAttempt, RunStep, StepLog } from '~/composables/useSessions'
 import { stepCommand, stepHasLog, stepManifest, stepPorts, stepWhere, stepWords } from '~/utils/tasks'
 import { logMatches } from '~/utils/dispatchEvidence'
@@ -16,7 +17,8 @@ import { logMatches } from '~/utils/dispatchEvidence'
  * even where the log holds bytes that are no UTF-8. A run the server has let
  * go reads the same: the steps come from the ledger. The SHA-256 the route sent is compared with the one the receipt recorded, as
  * the ticket page's receipt compares them (DispatchReceipt). `openStep`, a history row's link to one receipt (Program item HS1, PR-6),
- * opens that step's log once it is among the steps, once for each link.
+ * opens that step's log once it is among the steps, once for each link. A failed receipt of a run a ticket holds offers Prepare a repair
+ * (Program item RV1, PR-7): the ticket's Review view at the attempt's candidate, the repair prepared from it.
  */
 const props = defineProps<{
   steps: RunStep[]
@@ -31,7 +33,13 @@ const props = defineProps<{
   title?: string
   /** A receipt to open at once, `<phase>/<id>/<k>`: a link's. */
   openStep?: string
+  /** Where Prepare a repair goes for a failed receipt (the ticket's Review view at the attempt's candidate, RV1); absent for none. */
+  prepare?: (s: RunStep) => RouteLocationRaw | undefined
 }>()
+/** A receipt whose failure fails an attempt, so whose repair a review can ask for: a check's, a verify step's or a tree step's. */
+function failedReceipt(s: RunStep): boolean {
+  return ['check', 'verify', 'setup', 'service', 'ready'].includes(s.phase) && (s.state === 'finished' || s.state === 'interrupted') && (s.exit !== 0 || !!s.timedOut || !!s.error)
+}
 
 const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted', default: 'text-default', success: 'text-success' }
 const phaseColor = (p: RunStep['phase']): 'neutral' | 'info' | 'primary' | 'warning' => (p === 'check' || p === 'verify' ? 'primary' : p === 'service' || p === 'ready' ? 'info' : p === 'cleanup' ? 'warning' : 'neutral')
@@ -130,6 +138,17 @@ function save() {
             :title="s.logDropped ? 'The log was not kept: the run\'s logs were at their bound' : `${s.logBytes} bytes`"
             :data-step-log="key(s)"
             @click="showLog(s)"
+          />
+          <UButton
+            v-if="prepare && failedReceipt(s) && prepare(s)"
+            label="Prepare a repair"
+            icon="i-lucide-wrench"
+            size="xs"
+            color="neutral"
+            variant="ghost"
+            :class="stepHasLog(s) ? '' : 'ml-auto'"
+            :to="prepare(s)"
+            :data-step-prepare="key(s)"
           />
         </div>
         <p v-if="s.error" class="whitespace-pre-wrap break-words text-error" data-step-error>{{ s.error }}</p>

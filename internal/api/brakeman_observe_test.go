@@ -2429,11 +2429,12 @@ func TestTheGuideListsEachReadsOwnBound(t *testing.T) {
 }
 
 // A turn's shared read of a run, and of its task, holding a decision
-// carries none of it: no decisions, no decisionsNext, no decisionsUnread
-// (the decisions are BK2's observe_decisions), for a run the engine holds
-// and for a record it does not; the admin's reads of the same list it,
-// the record's from the ledger (#637, review round 1).
-func TestATurnsRunReadCarriesNoDecisions(t *testing.T) {
+// lists it as the admin's does (BK2: what a route_decision act reads its
+// decision's rev from), each with its ref, decision:<dr-n>, noted in the
+// turn's read log at its state and rev, for a run the engine holds and
+// for a record it does not; the admin's reads list it with no ref, the
+// record's from the ledger (#637, review round 1).
+func TestATurnsRunReadCarriesItsDecisions(t *testing.T) {
 	f := newObsFixture(t)
 	f.gitRepo(t)
 	if _, err := f.srv.ledger.Transition(t.Context(), f.run, func(tx *ledger.Tx) error {
@@ -2474,10 +2475,27 @@ func TestATurnsRunReadCarriesNoDecisions(t *testing.T) {
 	f.turn(t, func(map[string]any) {})
 	for _, path := range paths {
 		out := f.expectRead(t, path, http.StatusOK, "")
-		for _, key := range []string{"decisions", "decisionsNext", "decisionsUnread"} {
-			if _, ok := out[key]; ok {
-				t.Fatalf("the turn's %s carries %s: %v", path, key, out)
-			}
+		ds, _ := out["decisions"].([]any)
+		if len(ds) != 1 {
+			t.Fatalf("the turn's %s: %v", path, out)
+		}
+		d := ds[0].(map[string]any)
+		if d["ref"] != "decision:"+d["id"].(string) || d["question"] != "Which index?" || d["rev"] != float64(1) {
+			t.Fatalf("the turn's %s lists %v", path, d)
+		}
+	}
+	noted := map[string]brakeman.Read{}
+	for _, rd := range f.readLog(t).Reads {
+		if rd.Ref.Kind == brakeman.RefDecision {
+			noted[rd.Ref.String()] = rd
+		}
+	}
+	if len(noted) != 2 {
+		t.Fatalf("the decisions noted: %v", noted)
+	}
+	for ref, rd := range noted {
+		if rd.Class != brakeman.ClassRuns || rd.State != ledger.DecisionOpen || rd.Rev != "1" {
+			t.Fatalf("%s noted as %+v", ref, rd)
 		}
 	}
 }

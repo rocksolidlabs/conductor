@@ -158,7 +158,7 @@ test('a candidate reviewed: notes on both sides, a file and the whole, the draft
   await entry.locator('[data-candidate-review]').click()
   const view = page.locator(`[data-review-view][data-review-candidate="${cand1}"]`)
   await expect(view).toHaveAttribute('data-review-diff-base', runBase, within(30_000))
-  await expect(page.locator('[data-review-later]')).toBeVisible()
+  await expect(page.locator('[data-review-requirements] [data-review-plan]')).toHaveAttribute('data-review-plan-n', '1')
   await expect(page.locator('[data-review-files]')).toHaveAttribute('data-review-files-count', '2', within(15_000))
 
   // A note on lines of the candidate side of stub-prepper.txt, added since the run's base.

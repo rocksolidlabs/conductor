@@ -624,6 +624,101 @@ func TestPruningAContinuationHandsItsDecisionsBack(t *testing.T) {
 	})
 }
 
+// A prune that hands decisions back is a change of the run it hands them
+// to: that run's revision moves with the hand-back, and the observer is
+// told of its pointer as a commit, after the removal, so a reader that
+// compares revisions (the history's reconcile) reads it again. A prune
+// that hands nothing back moves no other run's revision.
+func TestAHandBackMovesTheReceivingRunsRevision(t *testing.T) {
+	ctx := context.Background()
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	const a, b, c = "team-00000001", "team-00000002", "team-00000003"
+	newRun(t, l, a)
+	tasksOf(t, l, a, "deploy")
+	n := open(t, l, gateDecision(a, "g1"))
+	finish(t, l, a)
+	continuation(t, l, a, b, "deploy")
+	in(t, l, b, func(tx *Tx) error {
+		_, err := tx.MoveDecisions(a, b)
+		return err
+	})
+	setState(t, l, b, n, DecisionCancelled, "")
+	finish(t, l, b)
+	continuation(t, l, b, c, "deploy")
+	finish(t, l, c)
+	var w told
+	l.OnCommit(w.commit)
+	l.OnPrune(w.prune)
+	before, _, err := l.Pointer(ctx, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Prune(ctx, c); err != nil { // holds none of the decisions
+		t.Fatal(err)
+	}
+	if after, _, _ := l.Pointer(ctx, b); after.Revision != before.Revision || len(w.commits) != 0 {
+		t.Fatalf("a prune that handed nothing back: B at %d (was %d), commits told %+v", after.Revision, before.Revision, w.commits)
+	}
+	before, _, _ = l.Pointer(ctx, a)
+	if err := l.Prune(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	if rec := record(t, l, n); rec.CurrentRun != a {
+		t.Fatalf("after B's prune: held by %s", rec.CurrentRun)
+	}
+	after, _, err := l.Pointer(ctx, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Revision != before.Revision+1 {
+		t.Fatalf("A's revision after the hand-back: %d, was %d", after.Revision, before.Revision)
+	}
+	if !slices.Equal(w.prunes, []string{c, b}) || len(w.commits) != 1 || w.commits[0].ID != a || w.commits[0].Revision != after.Revision {
+		t.Fatalf("told prunes %v and commits %+v", w.prunes, w.commits)
+	}
+}
+
+// DecisionRevisions lists every decision by its number, in pages, with
+// the run that holds it and its rev as they are now: a change written in
+// another run's transition than the holder's (a continuation's) moves the
+// rev and keeps the holder, and a continuation's move changes the holder.
+func TestDecisionRevisionsListEveryDecisionsPlaceAndRev(t *testing.T) {
+	ctx := context.Background()
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	const a, b = "team-00000001", "team-00000002"
+	newRun(t, l, a)
+	tasksOf(t, l, a, "deploy")
+	settled, moving := open(t, l, gateDecision(a, "g1")), open(t, l, gateDecision(a, "g2"))
+	setState(t, l, a, settled, DecisionCancelled, "")
+	finish(t, l, a)
+	continuation(t, l, a, b, "deploy")
+	in(t, l, b, func(tx *Tx) error {
+		_, err := tx.MoveDecisions(a, b)
+		return err
+	})
+	own := open(t, l, gateDecision(b, "g3"))
+	setState(t, l, b, settled, DecisionCancelled, "") // B's transition, A's decision
+	var got []DecisionRevision
+	for after := int64(0); ; {
+		page, err := l.DecisionRevisions(ctx, after, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page) > 2 {
+			t.Fatalf("a page of %d", len(page))
+		}
+		got = append(got, page...)
+		if len(page) < 2 {
+			break
+		}
+		after = page[len(page)-1].N
+	}
+	want := []DecisionRevision{{N: settled, CurrentRun: a, Rev: 3}, {N: moving, CurrentRun: b, Rev: 1}, {N: own, CurrentRun: b, Rev: 1}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("the revisions: %+v, want %+v", got, want)
+	}
+}
+
 // Every bound of the store, checked in the transaction that would pass
 // it: 4 open per attempt, 64 open per run, 1,000 per run in all, 32
 // responses, 32 operations, the receipts' and the request's bounds; an
@@ -1112,6 +1207,70 @@ func TestAnOperationIDIsUniquePerDecision(t *testing.T) {
 	}
 }
 
+// HistoryByOp finds the row an author wrote under an op id, whichever
+// decision holds it, and nothing for another author's id or none.
+func TestHistoryByOpFindsItsRow(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	const run = "team-00000001"
+	newRun(t, l, run)
+	open(t, l, gateDecision(run, "g1"))
+	n2 := open(t, l, gateDecision(run, "g2"))
+	var want HistoryRow
+	in(t, l, run, func(tx *Tx) error {
+		var err error
+		want, _, err = tx.History(n2, HistoryRow{Kind: HistoryRouted, By: "brakeman", Detail: `{"to":[{"kind":"operator"}]}`, OpID: "bk0123", Fingerprint: "fp"})
+		return err
+	})
+	got, ok, err := l.HistoryByOp(t.Context(), n2, "brakeman", "bk0123")
+	if err != nil || !ok || got.Decision != n2 || got.Seq != want.Seq || got.Kind != HistoryRouted {
+		t.Fatalf("found %+v %v %v, want %+v", got, ok, err, want)
+	}
+	for _, c := range []struct {
+		n      int64
+		by, op string
+	}{{n2, "admin", "bk0123"}, {n2, "brakeman", "bk9999"}, {n2, "brakeman", ""}, {n2 - 1, "brakeman", "bk0123"}, {0, "brakeman", "bk0123"}} {
+		if _, ok, err := l.HistoryByOp(t.Context(), c.n, c.by, c.op); ok || err != nil {
+			t.Fatalf("%v: %v %v", c, ok, err)
+		}
+	}
+}
+
+// A Brakeman turn's operations on a decision count in their own group:
+// past MaxDecisionTurnOps the turn's next is refused, while the
+// operator's comment, in a group the turn's rows never fill, is still
+// written; and the operator's operations spent leave the turn's room.
+func TestATurnsOperationsKeepTheirOwnBound(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	const run = "team-00000001"
+	newRun(t, l, run)
+	n := open(t, l, gateDecision(run, "g1"))
+	write := func(h HistoryRow) error {
+		return try(l, run, func(tx *Tx) error {
+			_, _, err := tx.History(n, h)
+			return err
+		})
+	}
+	turn := func(i int) HistoryRow {
+		return HistoryRow{Kind: HistoryRouted, By: TurnActor, Detail: `{"to":[{"kind":"operator"}]}`, OpID: fmt.Sprintf("bk%d", i), Fingerprint: "fp"}
+	}
+	for i := range MaxDecisionTurnOps {
+		if err := write(turn(i)); err != nil {
+			t.Fatalf("the turn's route %d: %v", i, err)
+		}
+	}
+	if err := write(turn(MaxDecisionTurnOps)); !errors.Is(err, ErrDecisionLimit) || !strings.Contains(err.Error(), "operations by brakeman") {
+		t.Fatalf("the turn's route past its bound: %v", err)
+	}
+	for i := range MaxDecisionOperations {
+		if err := write(HistoryRow{Kind: HistoryCommented, By: "admin", Detail: `{"text":"x"}`, OpID: fmt.Sprintf("c%d", i), Fingerprint: "fp"}); err != nil {
+			t.Fatalf("the operator's comment %d beside the turn's routes: %v", i, err)
+		}
+	}
+	if err := write(HistoryRow{Kind: HistoryRouted, By: "admin", Detail: `{"to":[{"kind":"operator"}]}`, OpID: "c-last", Fingerprint: "fp"}); !errors.Is(err, ErrDecisionLimit) {
+		t.Fatalf("the operator's operation past its own bound: %v", err)
+	}
+}
+
 // Every kind is written to its own bound and refused past it; the
 // notified rows take the rest of 256 and past it are not written,
 // counted as dropped in the next row written that has room for the count
@@ -1167,33 +1326,36 @@ func TestTheHistoryCapHolds(t *testing.T) {
 	bounds := []struct {
 		kinds []string
 		max   int
-		op    bool
+		by    string // an operation's actor, "" for no operation
 	}{
-		{[]string{HistoryRouted}, 1, false}, // the second of two: the first took the count
-		{[]string{HistoryCommented, HistoryInfoRequested, HistoryRouted}, MaxDecisionOperations, true},
-		{[]string{HistoryResponded}, MaxDecisionResponses, false},
-		{[]string{HistoryApplied}, 1, false},
-		{[]string{HistorySuperseded, HistoryCancelled}, 1, false},
-		{[]string{HistoryRefunded}, 1, false},
-		{[]string{HistoryDeliveryTyping, HistoryDeliveryEntered, HistoryDeliveryUntyped, HistoryDeliveryUncertain, HistoryDeliveryTaskFile}, 3, false},
+		{[]string{HistoryRouted}, 1, ""}, // the second of two: the first took the count
+		{[]string{HistoryCommented, HistoryInfoRequested, HistoryRouted}, MaxDecisionOperations, "admin"},
+		// A Brakeman turn's routes: their own bound, after the operator's
+		// are spent and apart from them.
+		{[]string{HistoryRouted}, MaxDecisionTurnOps, TurnActor},
+		{[]string{HistoryResponded}, MaxDecisionResponses, ""},
+		{[]string{HistoryApplied}, 1, ""},
+		{[]string{HistorySuperseded, HistoryCancelled}, 1, ""},
+		{[]string{HistoryRefunded}, 1, ""},
+		{[]string{HistoryDeliveryTyping, HistoryDeliveryEntered, HistoryDeliveryUntyped, HistoryDeliveryUncertain, HistoryDeliveryTaskFile}, 3, ""},
 	}
 	k := 0
-	row := func(kind string, op bool) HistoryRow {
+	row := func(kind, by string) HistoryRow {
 		k++
 		h := HistoryRow{Kind: kind}
-		if op {
-			h.By, h.OpID, h.Fingerprint = "admin", fmt.Sprintf("op%d", k), "fp"
+		if by != "" {
+			h.By, h.OpID, h.Fingerprint = by, fmt.Sprintf("op%d", k), "fp"
 		}
 		return h
 	}
 	for _, b := range bounds {
 		for i := range b.max {
-			if _, err := write(row(b.kinds[i%len(b.kinds)], b.op)); err != nil {
+			if _, err := write(row(b.kinds[i%len(b.kinds)], b.by)); err != nil {
 				t.Fatalf("%v %d: %v", b.kinds, i, err)
 			}
 		}
 		for _, kind := range b.kinds {
-			if _, err := write(row(kind, b.op)); !errors.Is(err, ErrDecisionLimit) {
+			if _, err := write(row(kind, b.by)); !errors.Is(err, ErrDecisionLimit) {
 				t.Fatalf("%s past its bound: %v", kind, err)
 			}
 		}

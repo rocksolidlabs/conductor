@@ -38,13 +38,17 @@ const (
 
 // bodyBound is the bound of an entry's body by its kind: 16 KiB for a
 // submitted result, a ticket's description and criteria, a comment, a
-// brief's item and a plan revision; a check's, a verify step's and a
-// failed step's log at MaxCheckBody; 4 KiB for the rest (a session's
-// entry, a message, a checkpoint, a blocker, a finding, a verdict, an
-// act's note).
+// brief's item, a plan revision, a decision request (its context, its
+// options with their tradeoffs, its uncertainty and what a yes
+// authorizes: the ledger keeps the request in at most 16 KiB) and a
+// decision's response (its text of at most 4 KiB and its rationale of at
+// most 2 KiB, which a short body would cut); a check's, a verify step's
+// and a failed step's log at MaxCheckBody; 4 KiB for the rest (a
+// session's entry, a message, a checkpoint, a blocker, a finding, a
+// verdict, an act's note).
 func bodyBound(kind string) int {
 	switch kind {
-	case "attempt.result", "ticket", "comment", "brief.item", "plan":
+	case "attempt.result", "ticket", "comment", "brief.item", "plan", "decision", "decision.response":
 		return MaxLongBody
 	case "check", "verify", "step":
 		return MaxCheckBody

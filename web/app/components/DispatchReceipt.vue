@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { CandidateReceipt } from '~/composables/useDispatch'
-import { durationWords, logMatches, receiptChips, receiptDuration, receiptName } from '~/utils/dispatchEvidence'
+import { durationWords, logMatches, receiptChips, receiptDuration, receiptFailed, receiptName } from '~/utils/dispatchEvidence'
 import { shortCommit } from '~/utils/dispatchPlans'
 import { stepCommand } from '~/utils/tasks'
 
@@ -11,7 +11,8 @@ import { stepCommand } from '~/utils/tasks'
  * token from the step log route, never as a link the browser follows; the SHA-256 the route sent beside it (`X-Conductor-Log-SHA256`)
  * shown and compared with the one the receipt recorded. Save downloads the log's bytes as the server sent them. Never a pid or a
  * process group: a receipt says what ran and how it ended, never how its process was made. The reads are useReceiptRead's: read again
- * when the receipt moves (a check that finishes), never for the same receipt handed over again unchanged.
+ * when the receipt moves (a check that finishes), never for the same receipt handed over again unchanged. On a ticket's page a failed
+ * receipt offers Prepare a repair (Program item RV1, PR-7): the Review view at its candidate, the repair prepared from it.
  */
 const props = defineProps<{
   runId: string
@@ -20,6 +21,8 @@ const props = defineProps<{
   /** The commit the receipt ran against: the candidate's. */
   commit: string
   receipt: CandidateReceipt | null
+  /** The ticket's Review view at this candidate, preparing a repair from this receipt (RV1): offered for a failed receipt. */
+  prepare?: { query: Record<string, string> }
 }>()
 const open = defineModel<boolean>('open', { default: false })
 
@@ -98,6 +101,7 @@ function save() {
     <template #footer>
       <div class="flex w-full justify-end gap-2">
         <UButton label="Close" color="neutral" variant="ghost" @click="open = false" />
+        <UButton v-if="prepare && receipt && receiptFailed(receipt)" label="Prepare a repair" icon="i-lucide-wrench" color="neutral" variant="outline" :to="prepare" data-receipt-prepare @click="open = false" />
         <UButton label="Save" icon="i-lucide-download" color="neutral" variant="outline" :disabled="!log" data-receipt-log-save @click="save" />
       </div>
     </template>
