@@ -59,7 +59,10 @@ func scanPointer(sc scanner) (RunPointer, error) {
 // transitions too. Each pointer is read in the transaction. fn must only
 // queue what it is told: it holds every writer of the ledger while it
 // runs, and it must not call the ledger. Set it before the first
-// transition it is to be told of; a later call replaces it.
+// transition it is to be told of; a later call replaces it. A prune
+// that hands decisions back to the run the pruned one continued tells
+// fn of that run too, its revision bumped with the hand-back, after
+// OnPrune's fn is told of the removal.
 func (l *Ledger) OnCommit(fn func(RunPointer)) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -111,13 +114,20 @@ func (l *Ledger) committed(ps []RunPointer) {
 }
 
 // pruned tells the observer of a run a committed prune removed, at the
-// revision its row had. The caller holds mu.
-func (l *Ledger) pruned(runID string, revision int64) {
+// revision its row had, then of the run its decisions were handed back
+// to, at the revision the hand-back gave it (handed, its pointer read in
+// the prune's transaction). The caller holds mu.
+func (l *Ledger) pruned(runID string, revision int64, handed []RunPointer) {
 	if l.afterCommit != nil {
 		l.afterCommit()
 	}
 	if l.onPrune != nil {
 		l.onPrune(runID, revision)
+	}
+	if l.onCommit != nil {
+		for _, p := range handed {
+			l.onCommit(p)
+		}
 	}
 }
 

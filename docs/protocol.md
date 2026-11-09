@@ -4817,7 +4817,54 @@ outcome (said: Brakeman's words), each `cites` the refs it names; what a
 person asked Brakeman is never read, and a brief whose turn could see the
 terminals' screens keeps its items' words out of the index. Brakeman's own
 runs and sessions are indexed under the crew `brakeman` and left out of a
-search unless it names a crew (`crew:`) or the kind `brief.item`.
+search unless it names a crew (`crew:`) or the kind `brief.item`. A
+**decision** (`decision:dr-<n>`, DR1's request) is read through the
+ledger's own read of its record: the request as `decision` (a record: its
+question, whole in its body, its title cut from it, its subject's revision
+and commit, its scope: its type, who
+asked, whom it is for as its request keeps the person its opening
+resolved, what it is about, what a yes authorizes), grouped under its
+asking task in the run that holds it (a gate's under that run); each
+response the decision accepted as `decision.response` (decided: its
+response row's actor as the actor, none when the row names none, its
+rationale, `outcome` the option chosen: `approved` or `rejected` for a
+gate's approval, `done` or `not_done` for an assignment, else `answered`,
+its title the option's label and its words, cut from the answer alone,
+its body the option chosen, whole (a label is at most 80 characters,
+far inside the body's bound), then its words and rationale, its summary
+who answered and whom for, as its receipt keeps them, then the question
+it answers), keyed `decision:dr-<n>/<k>` as DR1 numbers its receipt,
+`answers` to the request and, once Yardmaster applied it, `applied` to
+what its application receipt says it reached: the asking attempt when
+typed into it, its task when put in the task's next file (the receipt's
+attempt is the one that asked), a gate's tasks, else its run. A refused
+response decided nothing and is not indexed. What is indexed of a
+decision is what the ledger held at one read of it, marked
+`S<stamp>/P<stamp>/C<run>/O<run>/R<rev>` with a digest of what its
+entries were built from (its row, and its run's place: machine, project,
+repository, tree, crew, ticket and asking agent), the runs that hold it
+and opened it, and its rev, so an entry is never older than its mark.
+The mark covers the decision's place and its revision as the ledger
+holds them: every change of a decision moves its rev or the run that
+holds it, whatever wrote it (a transition of the run that holds it, one
+of a continuation that supersedes an applied approval its ancestor
+holds, a prune's hand-back, another server), and every reconcile compares
+each decision the ledger keeps with its mark by those two and reads again
+each that differs or that the index does not hold. Its place changes
+only with its run's record or rows, so the run's pass, which each of
+those asks for, compares each of the run's decisions' whole marks with
+what it reads before it commits its own (a scan that fails is made again
+by the pass retried): a change in that run's own transition, or of its
+place, is indexed with the run's pass, any other at the next reconcile
+(every 30 s) at the latest. A prune that hands a decision back moves the
+receiving run's revision with it too (the ledger tells it as that run's
+commit). A run whose ledger rows
+are gone, its record kept or not, reads again every decision it held or
+opened: the ones it opened went with it and their entries go, and the
+ones it held the ledger handed to the run the pruned one continued,
+under which they are indexed. A decision indexed without its repository
+(its reads past their retries, its mark ending `/U`) is read again by
+every reconcile, as a run or a session is, until a read succeeds.
 
 The search routes read only their query string (every parameter named,
 each once, the whole at most 12 KiB: `400 invalid_request` otherwise),
@@ -4847,7 +4894,10 @@ that shows the evidence, never an API route: a check receipt the run page
 at its step (`/runs/<run>?view=tasks&task=&attempt=&step=<phase>/<id>/<k>`),
 a command receipt the run page at the receipt (`?command=&actor=`), a
 comment its ticket's page at it (`?comment=<n>`), a launch (an entry or a
-link's end) its run's page (its ticket's before it has a run), a session `/sessions/<id>` while the server lists it and
+link's end) its run's page (its ticket's before it has a run), a decision's
+request or response (an entry or a link's end) the decision's card over
+the run that holds it (`/runs/<run>?view=tasks&task=<task>&decision=dr-<n>`,
+its notification's URL), a session `/sessions/<id>` while the server lists it and
 `/history/sessions/<id>#e<seq>` after; every other ref the page Brakeman's
 references open. `availability.state` is `live`, `listed`, `record`,
 `lost` or `host_away` for a session, `worktree`, `worktree_gone` or
@@ -4855,7 +4905,11 @@ references open. `availability.state` is `live`, `listed`, `record`,
 for an attempt or a receipt whose run's rows are gone, `log`,
 `log_dropped` or `pruned` for a receipt, `deleted` for a ticket's or a
 comment's tombstone, `kept` or `pruned` for a brief (by Brakeman's store's
-own read), else `kept`; `unknown` wherever the store could not be read
+own read), the decision's state now for a decision's request and its
+responses, by the ledger's own read (`open`, `answered`, `applied`,
+`superseded` with its successor and DR1's words of why, a stale subject
+among them, `cancelled` or `expired`, the words at most 300 bytes;
+`pruned` once the ledger no longer keeps it), else `kept`; `unknown` wherever the store could not be read
 (the ledger not open, a read that failed, a run's folder not known or a
 step of a worktree's place that could not be looked at): never said as
 gone. Every yes-or-no answer of availability and eligibility is `yes`,

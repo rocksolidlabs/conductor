@@ -4552,7 +4552,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   palette with its source (HS1, #613 to #617, #619, #621 and #624,
   2026-11-06 to 2026-11-08).** Program item HS1, planned in
   `docs/plans/history.md` (PR #609) and shipped as eight PRs, PR-1 to
-  PR-8; PR-9 to PR-12 come later (below). Every session the server runs
+  PR-8; PR-9 (#626, PR #755) has its own entry below, PR-10 to PR-12 come
+  later (below). Every session the server runs
   now leaves a **record** in the data directory
   (`history/sessions/<id>.json`): its agent with its version and its own
   session id, its host and where it ran, its folder, repository, branch
@@ -4776,12 +4777,31 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   the stream.
 
   Later PRs, each adding its paragraph and its own short observation here;
-  none of them holds HS1's Done. PR-9 (#626): DR1's decision records in
-  the history, follows in #755. PR-10 (#628): RV1's review batches and
+  none of them holds HS1's Done. PR-9 (#626, PR #755): DR1's decision records in
+  the history, in its own entry below. PR-10 (#628): RV1's review batches and
   findings, waiting on RV1's PRs that serve them. PR-11 (#630): Brakeman
   reads history within its grant, waiting on Brakeman's PR-9 to PR-13.
   PR-12 (#632): what a host reports of its sessions, and a hosted
   session's record.
+- **Searchable history: DR1's decisions in it (HS1 PR-9, #626,
+  2026-11-08).** Program item HS1, planned in `docs/plans/history.md`
+  (PR #609); PR-8 (#624) writes the item's entry, with each PR's checks
+  and the by-hand record, around this paragraph. PR-9 (#626, PR #755):
+  DR1's decision records in the History. Each request is a `decision`
+  entry (a record: its question, its subject's revision and commit, who
+  asked and whom it is for, what a yes authorizes), under its asking task
+  (a gate's under its run); each response the decision accepted is a
+  `decision.response` (decided: who answered and for whom, the rationale,
+  the option chosen as its outcome, `approved` or `rejected` for a gate,
+  `done` or `not_done` for an assignment, else `answered`), linked
+  `answers` to the request and `applied` to what Yardmaster applied it
+  to; a refused response is not indexed. A result opens the decision's
+  card over the run that holds it, and its availability is the decision's
+  state now, read from the ledger (open, answered, applied, superseded
+  with its successor and why, cancelled, expired, pruned). The palette's
+  "Rejected designs" finds a gate's rejection. An entry follows its
+  decision along a run's continuations and leaves when the ledger prunes
+  it, the run's record kept or not. Its checks are in its body.
 - **Project manifests: a fresh attempt worktree made usable, predictably
   (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
   `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the

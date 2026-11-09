@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -857,11 +856,7 @@ func decisionNotification(row ledger.DecisionRow, by string) ext.Notification {
 		Question string `json:"question"`
 	}
 	_ = json.Unmarshal([]byte(row.Request), &body)
-	u := "/runs/" + url.PathEscape(row.CurrentRun) + "?view=tasks"
-	if row.TaskID != "" {
-		u += "&task=" + url.QueryEscape(row.TaskID)
-	}
-	u += "&decision=" + row.ID()
+	u := decisionPageURL(row.CurrentRun, row.TaskID, row.ID())
 	return ext.Notification{Event: "decision", Type: "decision", At: time.Now().UTC(), State: row.State, Message: body.Question, URL: u, By: by,
 		Session: ext.SessionRef{ID: row.SessionID, Run: row.CurrentRun, Task: row.TaskID, Attempt: row.Attempt}}
 }

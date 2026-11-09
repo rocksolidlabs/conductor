@@ -29,6 +29,9 @@ var kinds = map[string]string{
 	"plan":    ClassRecord,
 	"launch":  ClassRecord,
 	"step":    ClassRecord, // a project manifest's setup or service step that failed
+	// A DR1 decision request (docs/plans/decisions.md): its question,
+	// its subject and its scope, as the ledger keeps it.
+	"decision": ClassRecord,
 
 	// Words, as Conductor received them.
 	"session.typed":      ClassSaid,
@@ -54,6 +57,9 @@ var kinds = map[string]string{
 	"ticket.accepted":   ClassDecided,
 	"ticket.unaccepted": ClassDecided,
 	"ticket.closed":     ClassDecided,
+	// A response a DR1 decision accepted, with its responder and
+	// rationale: the ledger's receipt of it.
+	"decision.response": ClassDecided,
 
 	// Receipts of what the server ran.
 	"check":              ClassChecked, // a task's check
