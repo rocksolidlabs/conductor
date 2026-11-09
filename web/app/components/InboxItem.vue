@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { relativeTime } from '~/utils/sessions'
-import { ticketOf, type DeliveryStep, type InboxAction, type InboxItem } from '~/utils/inbox'
+import { inboxKindWords, ticketOf, type DeliveryStep, type InboxAction, type InboxItem } from '~/utils/inbox'
 import type { LaneEvidence } from '~/utils/transport/decide'
 
 /**
@@ -10,6 +10,11 @@ import type { LaneEvidence } from '~/utils/transport/decide'
  * is blocked, who answers and whom a router named, the evidence folded, the actions, and after an action its four steps. The card
  * acts through its parent (`act`): the workbench's page through each operation's route, a decision link's page through its lane
  * (MB0's PR-7). Accept anyway, Cancel and Withdraw are asked first, with the run page's question. Its routes come from `routeOf`.
+ *
+ * A DR1 record (`decision`, docs/plans/decision-inbox.md PR-4) is drawn by DR1's own card in the `record` slot (DecisionCard: the
+ * question, the alternatives, the recommendation, the evidence it cites, the four states, the history; DecisionRespond on the
+ * workbench: the controls by its type), the inbox's brief, what waits and its own evidence around it, and nothing of the record twice:
+ * no question, choices, answerer or steps of the inbox's, and none of the evidence the card draws (`drawn`).
  *
  * One card is one item: the page keys it by the item's ref, so a typed line, a comment's draft or a question asked first never
  * carries over to another item, and every action it emits names the item it was drawn for (the page acts on that item or on none).
@@ -35,10 +40,15 @@ const props = defineProps<{
   openTerminal?: (ref: string) => void
   /** Comment on the ticket is not offered: a decision link has no comment operation (the workbench's page offers it). */
   noComments?: boolean
+  /** A DR1 record's evidence refs its card draws (its request's): left out of the inbox's evidence, never drawn twice. */
+  drawn?: readonly string[]
 }>()
 const emit = defineEmits<{ act: [ref: string, action: InboxAction, text?: string]; comment: [ref: string, ticket: string, text: string, taken: (sent: boolean) => void]; reread: [] }>()
 
 const brakeman = computed(() => props.item.briefBy === 'brakeman')
+/** A DR1 record: its record, alternatives, controls and four states are DR1's card's (the `record` slot). */
+const durable = computed(() => props.item.kind === 'decision')
+const evidence = computed(() => (props.drawn?.length ? (props.item.evidence ?? []).filter((e) => !props.drawn!.includes(e.ref)) : (props.item.evidence ?? [])))
 const steps = computed(() => (props.delivery?.length ? props.delivery : props.item.delivery) ?? [])
 const answers = computed(() => props.item.actions.filter((a) => a.name === 'answer' && !a.text))
 const line = computed(() => props.item.actions.find((a) => a.name === 'answer' && a.text))
@@ -104,7 +114,7 @@ function sendComment() {
     <header class="flex flex-col gap-1">
       <h2 class="text-base font-semibold text-highlighted text-pretty" data-inbox-title>{{ item.title }}</h2>
       <p class="text-xs text-muted">
-        <span>{{ item.kind === 'question' ? 'A question' : item.kind === 'task' ? 'A failed task' : item.kind === 'plan' ? 'A plan revision' : item.kind }}</span>
+        <span>{{ inboxKindWords(item.kind) }}</span>
         <span v-if="item.since"> · waiting {{ relativeTime(item.since) }}</span>
       </p>
     </header>
@@ -120,17 +130,22 @@ function sendComment() {
     </section>
     <section v-else class="flex flex-col gap-1" data-inbox-brief="conductor">
       <p class="text-sm text-pretty" data-inbox-brief-text>{{ item.brief }}</p>
-      <p class="text-xs text-muted" data-inbox-recommendation>No recommendation</p>
+      <p v-if="!durable" class="text-xs text-muted" data-inbox-recommendation>No recommendation</p>
     </section>
 
-    <section v-if="item.question" class="flex flex-col gap-1">
+    <!-- A DR1 record, whole: DR1's card (and its controls, on the workbench), drawn by the page that reads the record. -->
+    <section v-if="durable" class="flex flex-col gap-3" data-inbox-record>
+      <slot name="record" />
+    </section>
+
+    <section v-if="item.question && !durable" class="flex flex-col gap-1">
       <h3 class="text-xs font-semibold uppercase tracking-wide text-muted">The question</h3>
       <p class="whitespace-pre-wrap break-words text-sm font-medium text-highlighted" data-inbox-question>{{ item.question }}</p>
     </section>
 
     <dl class="grid gap-x-3 gap-y-1 text-sm sm:grid-cols-[max-content_1fr]">
-      <dt class="text-muted">Who answers</dt>
-      <dd data-inbox-answerer>
+      <dt v-if="!durable" class="text-muted">Who answers</dt>
+      <dd v-if="!durable" data-inbox-answerer>
         {{ item.answerer }}
         <span v-if="item.routedTo?.length" class="text-muted" data-inbox-routed>· routed to {{ item.routedTo.map((d) => d.name).join(', ') }}<template v-if="item.routedRule"> ({{ item.routedRule }})</template></span>
       </dd>
@@ -148,7 +163,7 @@ function sendComment() {
     </dl>
 
     <!-- The choices, from the live record: each with exactly what it authorizes, in Conductor's words. -->
-    <section class="flex flex-col gap-2" data-inbox-actions>
+    <section v-if="!durable" class="flex flex-col gap-2" data-inbox-actions>
       <h3 class="text-xs font-semibold uppercase tracking-wide text-muted">{{ item.actions.length ? 'Your choices' : 'Nothing to choose here' }}</h3>
       <div v-for="a in answers" :key="`${a.name}:${a.input}`" class="flex flex-col gap-1">
         <UButton :label="a.label" color="primary" variant="soft" size="lg" block class="min-h-11 justify-start text-left" :loading="busy === a.label" :disabled="!!busy" :data-inbox-action="a.name" :data-action-label="a.label" @click="press(a)" />
@@ -210,16 +225,15 @@ function sendComment() {
         <UTextarea v-model="comment" :rows="3" autoresize placeholder="A comment on the ticket" data-inbox-comment-input />
         <UButton type="submit" :label="`Comment on ${ticket}`" icon="i-lucide-send" size="md" class="min-h-11 self-start" :loading="busy === 'Comment'" :disabled="!!busy || !comment.trim()" data-inbox-comment-send />
       </form>
-      <p class="text-xs text-muted" data-inbox-dr1>Durable decisions arrive with DR1: asking for more information and commenting on a decision come with them.</p>
     </section>
 
-    <section v-if="steps.length || item.now" class="flex flex-col gap-2">
-      <h3 class="text-xs font-semibold uppercase tracking-wide text-muted">{{ delivery?.length ? 'What became of your action' : 'Where it is' }}</h3>
-      <InboxDelivery v-if="steps.length" :steps="steps" :now="item.now" :route-of="routeOf" />
+    <section v-if="(steps.length && !durable) || item.now" class="flex flex-col gap-2">
+      <h3 class="text-xs font-semibold uppercase tracking-wide text-muted">{{ delivery?.length && !durable ? 'What became of your action' : 'Where it is' }}</h3>
+      <InboxDelivery v-if="steps.length && !durable" :steps="steps" :now="item.now" :route-of="routeOf" />
       <UAlert v-else color="neutral" variant="subtle" icon="i-lucide-info" :title="`Now: ${item.now}`" data-inbox-now />
     </section>
 
-    <InboxEvidence v-if="item.evidence?.length" :evidence="item.evidence" :route-of="routeOf" :read="readEvidence" :open-terminal="openTerminal" />
+    <InboxEvidence v-if="evidence.length" :evidence="evidence" :route-of="routeOf" :read="readEvidence" :open-terminal="openTerminal" />
 
     <UModal v-model:open="askOpen" :title="question.title" :description="question.detail">
       <template #footer>

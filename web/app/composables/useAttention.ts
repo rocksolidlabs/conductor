@@ -314,6 +314,8 @@ export function useAttention() {
       const payload = JSON.parse(data.join('\n'))
       // A durable decision changed, or the stream came back: the decisions' store reads again (useDecisions; Program item DR1).
       decisionsLive().stream(event, payload)
+      // The decision page lists DR1's records too (docs/plans/decision-inbox.md, PR-3): it reads again on their event.
+      if (event === 'decision') void inboxLive().event()
       if (event === 'snapshot') {
         replaceAll(payload as SessionInfo[])
         // What changed while the stream was away: every run, once, and every Dispatch page open.

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { relativeTime } from '~/utils/sessions'
+import { provide } from 'vue'
 import { recentBadge, trackKey } from '~/utils/inbox'
+import { linkRefAccess, REF_ACCESS } from '~/utils/refAccess'
 import type { JoinDecideState, JoinRecent } from '~/composables/useJoinDecide'
 
 /**
@@ -12,18 +14,31 @@ import type { JoinDecideState, JoinRecent } from '~/composables/useJoinDecide'
  * useJoinDecide), kept through a reconnect: `offline` says the lane is being joined again meanwhile. While an action of an item is
  * owed, the item's other actions wait (`busy`): only a reply to that one, or a refusal of it, ends it; what an evidence entry or
  * a terminal could not open is said apart from it (`shownNotice`).
+ *
+ * A DR1 record is drawn by DR1's own card (DecisionCard) from the record assembled over the lane (useJoinDecide's `record`), with no
+ * controls: a link cannot answer one yet, and its item's `now` says where it is answered. Its evidence chips read through the link
+ * (REF_ACCESS, provided here: a session's chip opens that member's terminal tab, a check's reads its log's end through the lane, any
+ * other says where it is opened), and nothing on this page reads the server's API.
  */
 const props = defineProps<{ state: JoinDecideState; title?: string; offline?: boolean }>()
 const emit = defineEmits<{ openSession: [session: string] }>()
 
 // The page's state for its whole life: its refs drawn as the template's own.
-const { items, next, loaded, error, showing, actions, titles, seenTitles, tracks, openRef, item, missing, delivery, shownFeedback, shownNotice, more, open, back, act, reread, readEvidence } = props.state
+const { items, next, loaded, error, showing, actions, titles, seenTitles, tracks, openRef, item, missing, record, recordWords, delivery, shownFeedback, shownNotice, more, open, back, act, reread, readEvidence } = props.state
 
 /** A session in the scope, in its terminal tab. */
 async function openTerminal(ref: string) {
   const id = await props.state.sessionOf(ref)
   if (id) emit('openSession', id)
 }
+
+// What DR1's card draws reads through the link: its chips, and whether its run runs here (not known on a link).
+provide(REF_ACCESS, linkRefAccess({ evidence: (r) => readEvidence(r), openSession: (r) => void openTerminal(r) }))
+/** The clock DR1's card reads its times by. */
+const now = ref(Date.now())
+let tick: number | undefined
+onMounted(() => (tick = window.setInterval(() => (now.value = Date.now()), 5000)))
+onBeforeUnmount(() => window.clearInterval(tick))
 
 /** A Recent row's word: Refused, Work resumed, Taken or what the resumed step says (recentBadge). */
 const recentWord = (e: JoinRecent) => recentBadge({ ref: e.ref, receipt: e.receipt, attempt: e.attempt, outcome: 'accepted', at: Date.parse(e.at) || 0 }, tracks.value[trackKey(e)], false)
@@ -50,7 +65,8 @@ const recentWord = (e: JoinRecent) => recentBadge({ ref: e.ref, receipt: e.recei
             <span class="line-clamp-2 text-xs text-muted">{{ s.question || s.brief }}</span>
             <span class="flex flex-wrap gap-1">
               <UBadge v-if="s.blocks" :label="`${s.blocks} waiting on it`" color="neutral" variant="subtle" size="sm" />
-              <UBadge v-if="!s.actions.length" label="Open the terminal" color="warning" variant="subtle" size="sm" />
+              <UBadge v-if="s.kind === 'decision'" :label="s.tracking ? 'Answered, not yet applied' : 'A durable decision'" color="neutral" variant="subtle" size="sm" data-inbox-row-durable />
+              <UBadge v-else-if="!s.actions.length" label="Open the terminal" color="warning" variant="subtle" size="sm" />
               <UBadge v-else :label="`${s.actions.length} ${s.actions.length === 1 ? 'choice' : 'choices'}`" color="neutral" variant="outline" size="sm" />
             </span>
           </button>
@@ -92,9 +108,16 @@ const recentWord = (e: JoinRecent) => recentBadge({ ref: e.ref, receipt: e.recei
         :read-evidence="readEvidence"
         :open-terminal="openTerminal"
         no-comments
+        :drawn="record?.ref === item.ref ? record.decision.request.evidence : undefined"
         @act="act"
         @reread="reread"
-      />
+      >
+        <template #record>
+          <UAlert v-if="recordWords" color="neutral" variant="subtle" icon="i-lucide-info" :title="recordWords" data-inbox-record-words />
+          <DecisionCard v-if="record && record.ref === item.ref" :decision="record.decision" :refs="record.refs" :now="now" />
+          <p v-else-if="!recordWords" class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Reading the decision…</p>
+        </template>
+      </InboxItem>
       <div v-else-if="missing" class="flex flex-col gap-4">
         <UAlert color="neutral" variant="subtle" icon="i-lucide-info" :title="missing" data-inbox-missing />
         <section v-if="delivery?.length" class="flex flex-col gap-2" data-inbox-missing-delivery>

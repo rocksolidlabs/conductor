@@ -15,6 +15,7 @@ import {
   type DecisionRequest,
 } from '../protocol'
 import type { DeliveryStep, InboxAction, InboxItem, InboxSummary } from '../inbox'
+import type { CommentBody, Decision, DecisionEntry, DecisionRef, DecisionType, ResponseBody, ResponseReceipt } from '../decisions'
 
 /** A lane request as the client asks it: the transport names it (`reqId`). */
 export type LaneAsk = DecisionRequest extends infer R ? (R extends DecisionRequest ? Omit<R, 'reqId'> : never) : never
@@ -140,6 +141,28 @@ export function decideOf(item: Pick<InboxItem, 'ref'>, a: InboxAction, opId: str
 }
 
 /**
+ * A durable decision's response as DecisionRespond.vue builds it (ResponseBody, DR1's respond body), as the frame carries it
+ * (docs/plans/decision-inbox.md, PR-4; docs/protocol.md, Decision links, Decide): field for field, nothing dropped or merged but the
+ * name a person typed (`byName`), which a link never sends, its actor and name being the link's. `responseId` is the decide's `opId`
+ * (DR1 keys the response by it, so a repeat is its receipt), `expectedRev` its `revision`, `choice`, `text` and `rationale` as they
+ * are; the action is `approve` for an approval's first option and `reject` for its second (the owner holds an approve to choice 0
+ * and a reject to choice 1), `answer` for any other. No `input`: terminal keys are a question's alone.
+ */
+export function decideOfResponse(item: Pick<InboxItem, 'ref'>, type: DecisionType, body: ResponseBody): LaneDecide {
+  const action = type === 'approval' && body.choice === 0 ? 'approve' : type === 'approval' && body.choice === 1 ? 'reject' : 'answer'
+  const m: LaneDecide = { ref: item.ref, action, revision: String(body.expectedRev), opId: body.responseId }
+  if (body.choice !== undefined) m.choice = body.choice
+  if (body.text !== undefined) m.text = body.text
+  if (body.rationale !== undefined) m.rationale = body.rationale
+  return m
+}
+
+/** A comment on a durable decision, or a request for more information (CommentBody, DR1's comment body), as the frame carries it. */
+export function decideOfComment(item: Pick<InboxItem, 'ref'>, body: CommentBody): LaneDecide {
+  return { ref: item.ref, action: body.kind, revision: String(body.expectedRev), opId: body.opId, text: body.text }
+}
+
+/**
  * The words a refused action shows on its card, from the owner's code and message: what moved on, that nothing was done, and where
  * to go on. The owner's own words come with any code it names alone (an operation's), so nothing it said is lost.
  */
@@ -163,6 +186,111 @@ export function refusedWords(e: unknown, kind: string): string {
       return 'Not connected: nothing was sent.'
   }
   return e.message || e.code
+}
+
+/** One part of a DR1 record as `decision_record` answers it (docs/protocol.md, Decision links, Record). */
+export interface LaneRecordPart {
+  ref: string
+  part: 'head' | 'responses' | 'history'
+  /** The record's mark when the part was cut: its rev, its responses' count and its history rows', digits only. */
+  rev: string
+  /** The head's: the record without its responses, history and answer. */
+  decision?: Decision
+  refs?: DecisionRef[]
+  /** The responses' first page's: the accepted response in words. */
+  answer?: string
+  /** Newest first, a page of them. */
+  responses?: ResponseReceipt[]
+  history?: DecisionEntry[]
+  /** The offset of the next page, when more follow. */
+  next?: string
+  /** How many the part holds. */
+  total: number
+}
+
+/** A DR1 record assembled from the parts of one mark: the record and refs `GET /api/decisions/{did}` gives at that mark. */
+export interface AssembledRecord {
+  ref: string
+  rev: string
+  decision: Decision
+  refs: DecisionRef[]
+}
+
+/** How many times in a row an assembly starts again from the head on `record_moved` before it gives up until the next change. */
+export const RECORD_RESTARTS = 4
+/**
+ * The most pages one part is read in: the derived pages hold at least 3 receipts (at the 32 KiB receipt bound) of a record's 32 and 32
+ * history rows of its 256, so a part of more pages than this is no record's; it bounds a reply that would page for ever.
+ */
+export const RECORD_PAGES = 64
+
+/** The words the card shows beside a record that changed faster than it was read (the last one assembled whole, or none). */
+export const RECORD_MOVED_WORDS = 'This decision changed while it was read; reading again on its next change.'
+
+/** What an assembly came to: the record whole at one mark; `moved`, after RECORD_RESTARTS restarts; `dropped`, a later one began. */
+export type Assembly = { whole: AssembledRecord } | { moved: true } | { dropped: true }
+
+const DROPPED = Symbol('dropped')
+
+/**
+ * Assembles DR1's record `ref` from its parts over the lane (docs/plans/decision-inbox.md, PR-3 and PR-4, "One record, one revision"):
+ * the head, then every page of the responses and of the history, each asked at the mark the head carried, so DR1's card is handed only a
+ * record every part of which was cut at one mark, never an open head beside an applied history. A part at another mark (`record_moved`
+ * from the owner, or a part whose own mark or name is not the one asked) drops what was assembled and starts again from the head; after
+ * RECORD_RESTARTS restarts in a row it gives up (`moved`) until the next change. `live` says whether this assembly is still the one
+ * wanted (another item opened, or a later change asked a new one): once it says no, nothing more is asked and nothing it read is
+ * handed on. Any other refusal or failure is thrown.
+ */
+export async function assembleRecord(ref: string, read: (part: LaneRecordPart['part'], rev?: string, after?: string) => Promise<LaneRecordPart>, live: () => boolean = () => true): Promise<Assembly> {
+  const want = (p: LaneRecordPart, part: LaneRecordPart['part'], rev: string) => {
+    if (!live()) throw DROPPED
+    if (p.part !== part || p.ref !== ref || p.rev !== rev) throw new LaneError(DecideCode.RecordMoved, 'the part was cut at another mark', { rev: p.rev })
+  }
+  async function pages<T>(part: 'responses' | 'history', rev: string, items: (p: LaneRecordPart) => T[] | undefined): Promise<{ items: T[]; answer?: string }> {
+    const out: T[] = []
+    let answer: string | undefined
+    let after: string | undefined
+    let total = 0
+    for (let i = 0; ; i++) {
+      if (i >= RECORD_PAGES) throw new LaneError(DecideCode.Invalid, `the record's ${part} has more pages than a record holds`)
+      const p = await read(part, rev, after)
+      want(p, part, rev)
+      if (i === 0) {
+        answer = p.answer
+        total = p.total
+      }
+      out.push(...(items(p) ?? []))
+      if (!p.next) break
+      const n = Number(p.next)
+      if (!Number.isInteger(n) || n <= Number(after ?? 0) || n > total || String(n) !== p.next) throw new LaneError(DecideCode.Invalid, `the record's ${part} gave a page cursor that is no offset past the last`)
+      after = p.next
+    }
+    if (out.length !== total) throw new LaneError(DecideCode.RecordMoved, `the record's ${part} were read as ${out.length} of ${total}`)
+    return { items: out, answer }
+  }
+  try {
+    for (let restarts = 0; ; restarts++) {
+      try {
+        const head = await read('head')
+        if (!live()) throw DROPPED
+        if (head.part !== 'head' || head.ref !== ref || !head.decision || !head.rev || `decision:${head.decision.id}` !== ref) throw new LaneError(DecideCode.Invalid, 'the head names another record')
+        const rev = head.rev
+        const responses = await pages('responses', rev, (p) => p.responses)
+        const history = await pages('history', rev, (p) => p.history)
+        // Newest first on the lane; the route gives them in the order they were kept.
+        const decision: Decision = { ...head.decision, responses: [...responses.items].reverse(), history: [...history.items].reverse() }
+        if (responses.answer) decision.answer = responses.answer
+        else delete decision.answer
+        return { whole: { ref, rev, decision, refs: head.refs ?? [] } }
+      } catch (e) {
+        if (!(e instanceof LaneError) || e.code !== DecideCode.RecordMoved) throw e
+        if (restarts >= RECORD_RESTARTS) return { moved: true }
+      }
+    }
+  } catch (e) {
+    if (e === DROPPED) return { dropped: true }
+    throw e
+  }
 }
 
 type Waiting<T> = { run: () => Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void }
@@ -231,6 +359,14 @@ export class DecisionLane {
     const r = await this.ask({ t: 'decision_track', ref, receipt, attempt })
     const t = (r.track ?? {}) as Partial<LaneTrack>
     return { ref: t.ref ?? ref, receipt: t.receipt ?? receipt, attempt: t.attempt ?? attempt, steps: asArray<DeliveryStep>(t.steps) }
+  }
+
+  /** One part of DR1's record `ref` (assembleRecord reads them all): `rev` the mark its head carried, `after` a page's `next`. */
+  async record(ref: string, part: LaneRecordPart['part'], rev?: string, after?: string): Promise<LaneRecordPart> {
+    const r = await this.ask({ t: 'decision_record', ref, part, ...(rev ? { rev } : {}), ...(after ? { after } : {}) })
+    const p = r.record as LaneRecordPart | undefined
+    if (!p || typeof p !== 'object' || typeof p.rev !== 'string') throw new LaneError(DecideCode.Invalid, 'no record part in the reply')
+    return { ...p, total: typeof p.total === 'number' ? p.total : 0 }
   }
 
   /** A bounded read of the evidence entry `evidence` of the item `ref`; its reply names the entry it answers, checked here. */

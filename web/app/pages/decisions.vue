@@ -3,8 +3,10 @@ import { refRoute } from '~/utils/brakeman'
 import { relativeTime } from '~/utils/sessions'
 import { qrSvg } from '~/utils/qr'
 import {
+  decisionIdOf,
   decisionLinkTargets,
   inboxEmpty,
+  inboxSections,
   phoneOffer,
   recentBadge,
   recentFor,
@@ -22,6 +24,11 @@ import {
 // (the list carries no action's input or scope); each action goes through its own operation's route at the revision that operation
 // checks, and the operation, not the page, judges whether that still holds. `?item=<ref>` opens one; a Recent row adds its own
 // action (`receipt`, `attempt`), whose steps the item then shows.
+//
+// A DR1 record (docs/plans/decision-inbox.md, PR-4) is read from DR1's own route and drawn by DR1's card and controls (DecisionCard,
+// DecisionRespond) inside the item, its brief, what waits and its evidence around it; one answered and not yet applied stays under
+// "Answered, not yet applied" from the server's list, and the records closed in the last day are the server's Recent, the same for
+// every viewer. This browser's Recent keeps only its actions on the items DR1 does not hold.
 useHead({ title: 'Needs your decision' })
 
 const inbox = useInbox()
@@ -45,6 +52,8 @@ onBeforeUnmount(() => stopTracking?.())
 
 const state = computed(() => inbox.state.value)
 const showing = computed(() => showingWords(state.value.items.length, state.value.total))
+/** What needs a person now, and the DR1 records answered and not yet applied, each in the list's order. */
+const sections = computed(() => inboxSections(state.value.items))
 /** The open item: the query's. */
 const openRef = computed(() => (typeof route.query.item === 'string' ? route.query.item : ''))
 /** The action a Recent row opened, when one did: its receipt and its attempt. */
@@ -52,7 +61,27 @@ const openAction = computed(() => ({
   receipt: typeof route.query.receipt === 'string' ? route.query.receipt : '',
   attempt: typeof route.query.attempt === 'string' ? route.query.attempt : '',
 }))
-const empty = computed(() => inboxEmpty(state.value))
+const empty = computed(() => inboxEmpty({ ...state.value, items: sections.value.open }))
+
+/**
+ * The open item's DR1 record, when it names one: read whole from DR1's route (useDecisionRecord: one read at a time, ordered by the
+ * record's rev, again on its own event and after each of its card's writes), drawn by DR1's card. Its rev moving (an answer recorded,
+ * applied) reads the item and the list again, so what waits and where it stands follow.
+ */
+const record = useDecisionRecord(() => decisionIdOf(openRef.value))
+watch(
+  () => [record.decision.value?.id, record.decision.value?.rev, record.decision.value?.state],
+  (now, was) => {
+    if (!was?.[0] || now[0] !== was[0]) return
+    void readItem()
+    void inbox.changed()
+  },
+)
+/** The clock DR1's card reads its times by. */
+const now = ref(Date.now())
+let tick: number | undefined
+onMounted(() => (tick = window.setInterval(() => (now.value = Date.now()), 5000)))
+onBeforeUnmount(() => window.clearInterval(tick))
 
 /** The open item as last read whole; null before it is read, or when it names nothing the server holds (`missing`). */
 const item = ref<InboxItem | null>(null)
@@ -281,8 +310,8 @@ const recentWord = (e: RecentEntry) => recentBadge(e, state.value.tracks[trackKe
             <UIcon name="i-lucide-circle-check" class="size-8" />
             <p class="text-sm">Nothing needs your decision now.</p>
           </div>
-          <ul v-else class="flex flex-col gap-2">
-            <li v-for="s in state.items" :key="s.ref">
+          <ul v-else-if="sections.open.length" class="flex flex-col gap-2">
+            <li v-for="s in sections.open" :key="s.ref">
               <button
                 type="button"
                 class="flex min-h-11 w-full flex-col gap-1 rounded-md border px-3 py-2 text-left transition-colors hover:bg-elevated/50"
@@ -305,14 +334,54 @@ const recentWord = (e: RecentEntry) => recentBadge(e, state.value.tracks[trackKe
               </button>
             </li>
           </ul>
+          <!-- DR1's records answered and not yet applied: from the server's list, until DR1 gives each a final state. -->
+          <section v-if="sections.tracking.length" class="flex flex-col gap-2" data-decisions-tracking>
+            <h2 class="text-xs font-semibold uppercase tracking-wide text-muted">Answered, not yet applied</h2>
+            <ul class="flex flex-col gap-2">
+              <li v-for="s in sections.tracking" :key="s.ref">
+                <button
+                  type="button"
+                  class="flex min-h-11 w-full flex-col gap-1 rounded-md border px-3 py-2 text-left transition-colors hover:bg-elevated/50"
+                  :class="openRef === s.ref ? 'border-primary bg-elevated/50' : 'border-default'"
+                  :aria-current="openRef === s.ref ? 'true' : undefined"
+                  :data-inbox-row="s.ref"
+                  data-inbox-tracking
+                  @click="open(s.ref)"
+                >
+                  <span class="flex items-baseline justify-between gap-2">
+                    <span class="truncate text-sm font-medium text-highlighted" data-inbox-row-title>{{ s.title }}</span>
+                    <span class="shrink-0 text-xs text-muted">{{ relativeTime(s.since) }}</span>
+                  </span>
+                  <span class="line-clamp-2 text-xs text-muted">{{ s.question || s.brief }}</span>
+                  <span class="flex flex-wrap gap-1"><UBadge label="Recorded" color="neutral" variant="subtle" size="sm" /></span>
+                </button>
+              </li>
+            </ul>
+          </section>
           <div v-if="showing" class="flex items-center justify-between gap-2 text-xs text-muted">
             <span data-decisions-showing>{{ showing }}</span>
             <UButton v-if="state.next" label="More" color="neutral" variant="outline" size="sm" class="min-h-11" data-decisions-more @click="inbox.more()" />
           </div>
 
-          <section v-if="recent.length" class="flex flex-col gap-2" data-decisions-recent>
-            <h2 class="text-xs font-semibold uppercase tracking-wide text-muted">Recent <span class="font-normal normal-case tracking-normal">· acted on from this browser, the last day</span></h2>
-            <ul class="flex flex-col gap-1">
+          <section v-if="recent.length || state.closed.length" class="flex flex-col gap-2" data-decisions-recent>
+            <h2 class="text-xs font-semibold uppercase tracking-wide text-muted">Recent</h2>
+            <!-- DR1's records closed in the last day: the server's, the same for every viewer. -->
+            <template v-if="state.closed.length">
+              <p class="text-xs text-muted">Durable decisions closed in the last day</p>
+              <ul class="flex flex-col gap-1">
+                <li v-for="s in state.closed" :key="s.ref">
+                  <button type="button" class="flex min-h-11 w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left hover:bg-elevated/50" :data-recent-decision="s.ref" @click="open(s.ref)">
+                    <span class="min-w-0">
+                      <span class="block truncate text-sm">{{ s.title || s.ref }}</span>
+                      <span class="block truncate text-xs text-muted">{{ s.closed ? `${relativeTime(s.closed)} ago` : '' }}</span>
+                    </span>
+                    <UBadge :label="s.state || 'closed'" :color="s.state === 'applied' ? 'success' : 'neutral'" variant="subtle" size="sm" data-recent-word />
+                  </button>
+                </li>
+              </ul>
+            </template>
+            <p v-if="recent.length" class="text-xs text-muted">Acted on from this browser, the last day</p>
+            <ul v-if="recent.length" class="flex flex-col gap-1">
               <li v-for="e in recent" :key="trackKey(e)">
                 <button type="button" class="flex min-h-11 w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left hover:bg-elevated/50" :data-recent-row="e.ref" :data-recent-receipt="e.receipt" @click="openRecent(e)">
                   <span class="min-w-0">
@@ -340,10 +409,22 @@ const recentWord = (e: RecentEntry) => recentBadge(e, state.value.tracks[trackKe
             :unknown="unknown"
             :ask-brakeman="askBrakeman"
             :confirm-question="confirmQuestion"
+            :drawn="record.decision.value?.request.evidence"
             @act="act"
             @comment="comment"
             @reread="reread"
-          />
+          >
+            <template #record>
+              <UAlert v-if="record.error.value" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="record.error.value" data-inbox-record-error>
+                <template #actions><UButton label="Read again" size="xs" color="neutral" variant="outline" class="min-h-11" @click="record.read()" /></template>
+              </UAlert>
+              <p v-if="!record.decision.value && !record.error.value" class="text-sm text-muted">Reading {{ decisionIdOf(item.ref) }}…</p>
+              <template v-if="record.decision.value && record.decision.value.id === decisionIdOf(item.ref)">
+                <DecisionCard :decision="record.decision.value" :refs="record.refs.value" :now="now" />
+                <DecisionRespond :decision="record.decision.value" :begin="record.begin" @read="record.read()" />
+              </template>
+            </template>
+          </InboxItem>
           <div v-else-if="missing" class="flex flex-col gap-4">
             <UAlert color="neutral" variant="subtle" icon="i-lucide-info" :title="missing" data-inbox-missing />
             <!-- The item is gone, and what this browser did to it is what is left: its steps, as the server's track keeps them. -->
