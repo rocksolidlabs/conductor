@@ -4778,8 +4778,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
 
   Later PRs, each adding its paragraph and its own short observation here;
   none of them holds HS1's Done. PR-9 (#626, PR #755): DR1's decision records in
-  the history, in its own entry below. PR-10 (#628): RV1's review batches and
-  findings, waiting on RV1's PRs that serve them. PR-11 (#630): Brakeman
+  the history, in its own entry below. PR-10 (#628, PR #763): RV1's review
+  batches and findings, in its own entry below. PR-11 (#630): Brakeman
   reads history within its grant, waiting on Brakeman's PR-9 to PR-13.
   PR-12 (#632): what a host reports of its sessions, and a hosted
   session's record.
@@ -4802,6 +4802,25 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   "Rejected designs" finds a gate's rejection. An entry follows its
   decision along a run's continuations and leaves when the ledger prunes
   it, the run's record kept or not. Its checks are in its body.
+- **Searchable history: RV1's reviews in it (HS1 PR-10, #628,
+  2026-11-09).** Program item HS1, planned in `docs/plans/history.md`
+  (PR #609); PR-10 (#628, PR #763): a person's review batches and their
+  findings (RV1, `docs/plans/review-repair.md`) in the History, read with
+  their ticket through Dispatch's own reads. Each batch is a
+  `review.batch` (decided: Request changes, Comment or Approve by the
+  reviewer, bound to its candidate, whose page is the ticket's Review
+  view at that candidate, and to its base; linked `reviews` to the
+  attempt it reviewed and `reopened` to the repair Yardmaster applied);
+  each finding a `review.finding` (said: the person's words, the
+  resolution asked for, the lines they saw, a check finding's quote and
+  classes, never the receipt's log), its outcome its state now; and a
+  finding resolved on a later candidate of another commit has a
+  `review.resolved` entry of its own (checked, `resolves` to the finding,
+  drawn Checked ✓), which leaves when the finding is marked open again,
+  while the finding itself stays Conversation. A batch that requested
+  changes is among the palette's "Rejected designs". A finding's body is
+  bounded at 16 KiB, not the plan's 4 KiB, so its words, resolution,
+  lines and quote are searched whole. Its checks are in its body.
 - **Project manifests: a fresh attempt worktree made usable, predictably
   (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
   `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the
