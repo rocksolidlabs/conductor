@@ -1313,3 +1313,44 @@ func TestDecisionRequestToolAnswersPending(t *testing.T) {
 		}
 	}
 }
+
+// decision_request takes for (docs/plans/decisions.md, HM1, PR-12): its
+// schema names it, a string, and a call sends it as given, whom the
+// decision is for; the server resolves it.
+func TestDecisionRequestToolTakesFor(t *testing.T) {
+	env := func(k string) string {
+		if k == "CONDUCTOR_TASK" {
+			return "build"
+		}
+		return ""
+	}
+	res, _ := mcpRun(t, env, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)[0]["result"].(map[string]any)
+	var schema map[string]any
+	for _, x := range res["tools"].([]any) {
+		if tool := x.(map[string]any); tool["name"] == "decision_request" {
+			schema = tool["inputSchema"].(map[string]any)
+		}
+	}
+	prop, _ := schema["properties"].(map[string]any)["for"].(map[string]any)
+	if prop["type"] != "string" || !strings.Contains(fmt.Sprint(prop["description"]), "role:RESP or person:NAME") {
+		t.Fatalf("decision_request's for: %v", prop)
+	}
+	var sent atomic.Value
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		sent.Store(fmt.Sprint(body["for"]))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"decision":{"id":"dr-7","state":"open","question":"Ship it?"}}`))
+	}))
+	defer hs.Close()
+	vars := map[string]string{"CONDUCTOR_SESSION_ID": "s1", "CONDUCTOR_NOTIFY_URL": hs.URL + "/api/sessions/s1/attention", "CONDUCTOR_NOTIFY_TOKEN": "tok", "CONDUCTOR_TASK": "build"}
+	s := &mcpServer{getenv: func(k string) string { return vars[k] }}
+	if _, err := s.call(t.Context(), "decision_request", json.RawMessage(`{"type":"clarification","question":"Which schema?","for":"role:architecture"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if got := sent.Load(); got != "role:architecture" {
+		t.Fatalf("the body's for: %v", got)
+	}
+}

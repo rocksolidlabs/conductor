@@ -1,5 +1,6 @@
 import { mintCommandId } from './tasks'
 import type { RefState } from './brakeman'
+import { RESPONSIBILITY_WORDS } from './crews'
 
 // Durable decisions (Program item DR1, docs/plans/decisions.md, "web/app"; docs/protocol.md, "Decisions"): the record as the operator's
 // routes give it, its four states in words (open, response recorded, validated by Yardmaster, applied or why not), and the operator's
@@ -42,6 +43,15 @@ export interface DecisionRequest {
   expertise?: string[]
   subject?: DecisionSubject | null
   supersedes?: string
+  /** Whom it is for (HM1): the label as given, the person it named when it opened, and the responsibility (absent for a person by name). */
+  for?: DecisionFor
+}
+
+/** Whom a decision is for, as its request keeps it (HM1); the operator answers it for that person. */
+export interface DecisionFor {
+  label: string
+  person: string
+  responsibility?: string
 }
 
 /** A response's receipt, kept with it: accepted (Recorded), or refused with its code and words. */
@@ -61,6 +71,8 @@ export interface ResponseReceipt {
   repeat?: boolean
   /** False for a refusal past the decision's bound, which keeps no row and binds nothing. */
   kept?: boolean
+  /** Whom an accepted response answered for (HM1), beside who answered (actor, byName). */
+  for?: { person: string; responsibility?: string }
 }
 
 /** Yardmaster's receipt of an answer applied. */
@@ -185,8 +197,37 @@ export function recommended(d: Pick<Decision, 'type' | 'request'>): number {
 }
 
 /** Who may answer it, from its policy: the operator, the free build's one approver. */
-export function approverWords(d: Pick<Decision, 'policy'>): string {
-  return d.policy?.approver === 'operator' || !d.policy?.approver ? 'the operator' : d.policy.approver
+export function approverWords(d: Pick<Decision, 'policy'> & { request?: Pick<DecisionRequest, 'for'> }): string {
+  const who = d.policy?.approver === 'operator' || !d.policy?.approver ? 'the operator' : d.policy.approver
+  const f = d.request?.for
+  if (!f?.person) return who
+  const w = respWords(f.responsibility)
+  return w ? `${who}, for ${f.person} (${w})` : `${who}, for ${f.person}`
+}
+
+/** Whom a decision is for, or a receipt answered for, in words (HM1): "nate, the architecture owner", or "ana" for a person by name. '' for none. */
+export function forWords(f: { person?: string; responsibility?: string } | null | undefined): string {
+  if (!f?.person) return ''
+  const w = respWords(f.responsibility)
+  return w ? `${f.person}, the ${w}` : f.person
+}
+
+/** A responsibility in words, '' for none or one not of the four. */
+function respWords(r: string | undefined): string {
+  return r && r in RESPONSIBILITY_WORDS ? RESPONSIBILITY_WORDS[r as keyof typeof RESPONSIBILITY_WORDS] : ''
+}
+
+/** What the confirm step says of whom the operator answers for (HM1): "You answer as the operator, for nate"; '' for a decision for no one. */
+export function answerAsWords(d: { request?: Pick<DecisionRequest, 'for'> }): string {
+  const f = d.request?.for
+  return f?.person ? `You answer as the operator, for ${f.person}` : ''
+}
+
+/** What an assignment's card says the person is to do (HM1): "nate is to do this by hand; the operator answers Done or Not done for them". */
+export function assignmentWords(d: Pick<Decision, 'type'> & { request?: Pick<DecisionRequest, 'for'> }): string {
+  const f = d.request?.for
+  if (d.type !== 'assignment' || !f?.person) return ''
+  return `${f.person} is to do this by hand; the operator answers Done or Not done for them`
 }
 
 /** Where a decision was asked, in words: `build's attempt 1` for an agent's, `the plan's gate deploy-ok` for a gate. */
@@ -227,15 +268,16 @@ export function acceptedReceipt(d: Pick<Decision, 'responses'>): ResponseReceipt
  * the accepted receipt when the record carries its responses, else from the record's `answer` (the lists' words) alone. Null while
  * nothing was accepted.
  */
-export function acceptedAnswer(d: Pick<Decision, 'type' | 'request' | 'responses' | 'answer'>): { choice?: string; text?: string; rationale?: string; by?: string; words?: string } | null {
+export function acceptedAnswer(d: Pick<Decision, 'type' | 'request' | 'responses' | 'answer'>): { choice?: string; text?: string; rationale?: string; by?: string; for?: string; words?: string } | null {
   const rc = acceptedReceipt(d)
   if (rc) {
-    const out: { choice?: string; text?: string; rationale?: string; by?: string } = {}
+    const out: { choice?: string; text?: string; rationale?: string; by?: string; for?: string } = {}
     if (typeof rc.choice === 'number' && rc.choice >= 0) out.choice = optionsOf(d)[rc.choice]?.label ?? `option ${rc.choice + 1}`
     if (rc.text) out.text = rc.text
     if (rc.rationale) out.rationale = rc.rationale
     const by = rc.byName || rc.actor
     if (by) out.by = by
+    if (rc.for?.person) out.for = forWords(rc.for)
     return out
   }
   return d.answer ? { words: d.answer } : null

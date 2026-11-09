@@ -36,7 +36,8 @@ const taskUsage = `Usage:
   conductor task decide --type clarification|approval|assignment --question TEXT [--context TEXT]
                         [--option "LABEL[: TRADEOFFS]"]... [--recommend N] [--uncertainty TEXT]
                         [--authorizes TEXT] [--evidence REF]... [--subject SUBJECT]
-                        [--supersedes dr-N] [--file request.json|-]
+                        [--supersedes dr-N] [--for role:RESP|person:NAME]
+                        [--file request.json|-]
                                                ask the operator a decision your task waits for;
                                                answered at once with its id, dr-N, and open
   conductor task decision [dr-N] [--json]      your task's decisions, newest first, or one whole
@@ -166,6 +167,7 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		authorizes:  fs.String("authorizes", "", "decide: what a yes allows (an approval's is required)"),
 		subject:     fs.String("subject", "", "decide: commit (your HEAD, the default), artifact:PATH or candidate:RUN/TASK/N@COMMIT"),
 		supersedes:  fs.String("supersedes", "", "decide: dr-N, an open decision of your task this one takes the place of"),
+		forLabel:    fs.String("for", "", `decide: whom it is for, role:RESP or person:NAME, as your task file's "Who answers for this work" names them`),
 		file:        file, options: &options, evidence: &evidence,
 	}
 	fs.Usage = func() {
