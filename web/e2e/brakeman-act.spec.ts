@@ -219,7 +219,7 @@ test('granted in Settings, Brakeman launches the approved revision, and the brie
   await propose.click()
   await expect(draft).toHaveAttribute('aria-checked', 'true')
   await expect(propose).toHaveAttribute('aria-checked', 'true')
-  await page.locator('[data-brakeman-save]').click()
+  await page.locator('[data-save-settings]').click()
   await expect.poll(async () => (await api.ok<{ config: { permissions: { act?: string[] } } }>('GET', '/api/brakeman')).config.permissions.act).toEqual(['launch_approved_plan'])
 
   const id = await turn('bka-ask-1', 'bka-act-1')
