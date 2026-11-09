@@ -688,7 +688,18 @@ func (s *Server) launchPlanned(ctx context.Context, ds *dispatch.Store, l dispat
 		return nil, noop, errRunsClosed
 	}
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), runTimeout)
-	run, release, err := s.runs.LaunchPlanned(rctx, c, l.Label, crew.Planned{RunID: l.RunID, Base: body.Base, Digest: l.PackageSHA256, Package: []byte(l.Package)})
+	// Whom each decision is for comes from the revision's body, beside the
+	// package, never in it (crew.Planned.For, HM1).
+	var labels map[string]string
+	for _, d := range body.Decisions {
+		if d.For != "" {
+			if labels == nil {
+				labels = map[string]string{}
+			}
+			labels[d.ID] = d.For
+		}
+	}
+	run, release, err := s.runs.LaunchPlanned(rctx, c, l.Label, crew.Planned{RunID: l.RunID, Base: body.Base, Digest: l.PackageSHA256, Package: []byte(l.Package), For: labels})
 	if s.launches.startDone() && run != nil {
 		sctx, scancel := context.WithTimeout(context.Background(), runTimeout)
 		if serr := s.runs.Stop(sctx, run.ID); serr != nil && !errors.Is(serr, crew.ErrRunNotFound) {

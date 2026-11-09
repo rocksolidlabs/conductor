@@ -170,12 +170,19 @@ type PackageComment struct {
 }
 
 // PackageDecision is a decision a person will make, and the tasks that
-// wait on it.
+// wait on it. For is whom it is for (HM1: role:<responsibility> or
+// person:<name>, "" for none), and it is never in the package's bytes: a
+// planned launch is handed it from the revision's decision beside the
+// package (Planned.For), and its gate's request in the ledger keeps it
+// from then on, which a gate asked again reads (openGate). So the
+// package keeps version 1's shape, which every older build reads, and no
+// older build drops a label it was handed in a package it accepts.
 type PackageDecision struct {
 	ID       string   `json:"id"`
 	Question string   `json:"question"`
 	Kind     string   `json:"kind"`
 	Before   []string `json:"before,omitempty"`
+	For      string   `json:"-"`
 }
 
 // PackageLaunch is the launch: its id, the run id Dispatch minted for it,
@@ -229,7 +236,9 @@ func packageDigest(raw []byte) string {
 // refused, so a field Dispatch's builder names otherwise is a refused
 // launch, never a part read as empty; a field added later comes with a
 // new PackageVersion, which a version this engine does not read is
-// refused as. An error matches ErrInvalid.
+// refused as, or travels beside the package instead, as a decision's for
+// does (Planned.For), so that the package stays the version every build
+// reads. An error matches ErrInvalid.
 func readPackage(raw []byte) (*runPackage, error) {
 	if len(raw) == 0 {
 		return nil, invalidf("the package is empty")

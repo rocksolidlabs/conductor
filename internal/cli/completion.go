@@ -118,7 +118,7 @@ func completionSpec() []commandSpec {
 		{name: "task", flags: []flagSpec{{name: "--page", kind: flagValue}, {name: "--json"}, {name: "--summary", kind: flagValue}, {name: "--commit", kind: flagValue}, {name: "--issue", kind: flagValue}, {name: "--verdict", kind: flagEnum, values: []string{"approved", "needs_changes"}}, {name: "--finding", kind: flagValue}, {name: "--addressed", kind: flagValue}, {name: "--file", kind: flagFile},
 			{name: "--to", kind: flagValue}, {name: "--after", kind: flagValue}, {name: "--reason", kind: flagValue}, {name: "--message", kind: flagValue}, {name: "--done", kind: flagValue}, {name: "--remaining", kind: flagValue}, {name: "--notes", kind: flagValue},
 			{name: "--type", kind: flagEnum, values: []string{"clarification", "approval", "assignment"}}, {name: "--question", kind: flagValue}, {name: "--context", kind: flagValue}, {name: "--option", kind: flagValue}, {name: "--recommend", kind: flagValue},
-			{name: "--uncertainty", kind: flagValue}, {name: "--authorizes", kind: flagValue}, {name: "--evidence", kind: flagValue}, {name: "--subject", kind: flagValue}, {name: "--supersedes", kind: flagValue}},
+			{name: "--uncertainty", kind: flagValue}, {name: "--authorizes", kind: flagValue}, {name: "--evidence", kind: flagValue}, {name: "--subject", kind: flagValue}, {name: "--supersedes", kind: flagValue}, {name: "--for", kind: flagValue}},
 			words: []string{"context", "result", "send", "inbox", "ack", "blocked", "checkpoint", "ticket", "decide", "decision", "withdraw"},
 			after: map[string][]string{"ticket": {"comment"}}},
 		{name: "guide", flags: api(flagSpec{name: "--section", kind: flagEnum, values: []string{"operations", "limits", "host", "receipts", "providers", "briefs"}}, flagSpec{name: "--json"})},
@@ -138,7 +138,7 @@ func completionSpec() []commandSpec {
 			flagSpec{name: "--assignee", kind: flagValue}, flagSpec{name: "--milestone", kind: flagValue}, flagSpec{name: "--horizon", kind: flagEnum, values: dispatch.Horizons[1:]}, flagSpec{name: "--note", kind: flagValue},
 			flagSpec{name: "--kind", kind: flagEnum, values: dispatch.LinkKinds}, flagSpec{name: "--url", kind: flagValue}, flagSpec{name: "--ref", kind: flagValue}, flagSpec{name: "--candidate", kind: flagValue},
 			flagSpec{name: "--crew", kind: flagValue}, flagSpec{name: "--base", kind: flagValue}, flagSpec{name: "--based-on", kind: flagValue}, flagSpec{name: "--reference", kind: flagValue}, flagSpec{name: "--attachment", kind: flagValue},
-			flagSpec{name: "--comment", kind: flagValue}, flagSpec{name: "--constraints-file", kind: flagFile}, flagSpec{name: "--decision", kind: flagValue}, flagSpec{name: "--plan", kind: flagValue}, flagSpec{name: "--label", kind: flagValue},
+			flagSpec{name: "--comment", kind: flagValue}, flagSpec{name: "--constraints-file", kind: flagFile}, flagSpec{name: "--decision", kind: flagValue}, flagSpec{name: "--decision-for", kind: flagValue}, flagSpec{name: "--plan", kind: flagValue}, flagSpec{name: "--label", kind: flagValue},
 			// The reviews' (dispatch_reviews.go): --verdict is a review's or
 			// a mark's, --state a finding's.
 			flagSpec{name: "--verdict", kind: flagEnum, values: append(slices.Clone(dispatch.ReviewVerdicts), dispatch.FindingStates...)}, flagSpec{name: "--summary", kind: flagValue}, flagSpec{name: "--continue"},
