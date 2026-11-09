@@ -2,7 +2,7 @@ import { copyFileSync, mkdirSync, mkdtempSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Api, expect, test, type Session } from './fixtures'
-import { HEALTH_WAIT_MS, renderConfig, scratchRepo, startServer, stopServer, type Started } from './server'
+import { renderConfig, scratchRepo, START_WAIT_MS, startServer, stopServer, type Started } from './server'
 
 // The History page and a record reached from the palette (Program item HS1, docs/plans/history.md, PR-7). A session ended before
 // the server restarted is no longer listed: `~` alone lists it among the latest sessions, its row opening its record page, and →
@@ -48,7 +48,7 @@ test("the record of a session ended before a restart is reached from the palette
   renderConfig(join(here, 'conductor.e2e.json'), config)
   serverLog = join(root, 'server.log')
   const start = () => startServer({ config, home, data, allowedRoot: root, defaultCwd: repo, log: serverLog })
-  budget(HEALTH_WAIT_MS)
+  budget(START_WAIT_MS)
   server = await start()
   let api = new Api(server)
 
@@ -68,7 +68,7 @@ test("the record of a session ended before a restart is reached from the palette
   await expect.poll(async () => (await api.ok<{ record: { endedAt?: string } }>('GET', `/api/history/sessions/${created.id}`)).record.endedAt ?? '', { timeout: 15_000 }).not.toBe('')
 
   // Restarted on its data: the session is no longer listed, and the index, caught up again, holds its record as a record only.
-  budget(STOP_MS + HEALTH_WAIT_MS + 60_000) // the stop, the start, the index caught up
+  budget(STOP_MS + START_WAIT_MS + 60_000) // the stop, the start, the index caught up
   await stopServer(server.pid)
   server = null
   server = await start()
