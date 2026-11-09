@@ -64,13 +64,32 @@ export interface BrakemanConfig {
   updatedAt?: string
 }
 
-/** The agent a turn ran: its id, adapter, probed version, model, and whether an account was set. */
+/** The agent a turn ran: its id, adapter, probed version, model, whether an account was set, and the folder it ran in. */
 export interface BrakemanStamp {
   agentId?: string
   adapter?: string
   version?: string
   model?: string
   account?: boolean
+  /** The configured folder, or the desk's own for the account in place of the home folder (#705). */
+  folder?: string
+}
+
+/** Where a turn under the configuration runs, and the folders it reads besides (at most 16), as its launch would take them now. */
+export interface BrakemanFolders {
+  turn: string
+  reads: string[]
+}
+
+/**
+ * Settings' words for where a turn runs and what it reads besides (#705), given the configured folder `cwd`: a turn run elsewhere runs
+ * in the desk's own folder, which a person trusts once.
+ */
+export function foldersLine(f: BrakemanFolders, cwd: string): string {
+  const where = f.turn === cwd ? `Its turns run in ${f.turn}` : `Its turns run in ${f.turn}, a folder of their own you trust once`
+  if (!f.reads.length) return `${where}.`
+  const list = f.reads.length === 1 ? f.reads[0] : `${f.reads.slice(0, -1).join(', ')} and ${f.reads[f.reads.length - 1]}`
+  return `${where}, and read ${list} besides.`
 }
 
 /** A draft made work by a person, or its claim (PR-7 shows them): pending, made, refused or deleted. */
@@ -153,6 +172,8 @@ export interface BrakemanState {
   role?: BrakemanRole
   /** The server's words for the agent saved, when its read-only mode does not hold (brakeman.Warnings). */
   warnings?: string[]
+  /** Where a turn under the configuration saved runs and what it reads besides; absent with no agent set. */
+  folders?: BrakemanFolders
   readOnly?: boolean
   why?: string
   stuck?: boolean
@@ -677,13 +698,14 @@ export function readsWords(facts: readonly number[] | undefined, items: readonly
   return `reads facts ${named.slice(0, -1).join(', ')} and ${named[named.length - 1]}`
 }
 
-/** A brief's provenance line: the agent, its model, its version, the request and when the brief was kept. */
+/** A brief's provenance line: the agent, its model, its version, the request, when the brief was kept and the folder the turn ran in. */
 export function provenance(r: Pick<BrakemanRequest, 'id' | 'agent' | 'briefAt'>, agentName?: string, at?: (iso: string) => string): string {
   const a = r.agent ?? {}
   const parts = [agentName || a.agentId || 'an agent', a.model ? `model ${a.model}` : 'its default model']
   if (a.version) parts.push(`version ${a.version}`)
   parts.push(`request ${r.id}`)
   if (r.briefAt) parts.push(`as of ${at ? at(r.briefAt) : r.briefAt}`)
+  if (a.folder) parts.push(`ran in ${a.folder}`)
   return parts.join(' · ')
 }
 
