@@ -11,7 +11,9 @@ import { renderConfig, scratchRepo, startServer, stopServer, type Started } from
 // ticket, launches the approved revision with conductor brakeman act through DS2's own launch route, and submits a brief proposing that
 // launch: the brief shows "Brakeman did this" with the launch's receipt and the run it started, and the run page says who launched it,
 // with the receipt. With the grant taken away, the same act is refused before anything is kept, the stub says so, and the brief's
-// proposal is a proposal only. Each turn holds at its own gate until this spec has written what it does; the launch and the requests are
+// proposal is a proposal only. Granted "Route a decision" (PR-18), the stub routes a plan gate's open decision to the crew's security
+// reviewer through DR1's own route: the brief shows DR1's receipt, the decision stays open, and its card says the operator answers it for
+// ana. Each turn holds at its own gate until this spec has written what it does; the launch and the requests are
 // read by their ids, every wait on what the page or the store must reach.
 test.describe.configure({ mode: 'serial' })
 
@@ -195,6 +197,9 @@ test('granted in Settings, Brakeman launches the approved revision, and the brie
   await expect(page.locator('[data-brakeman-grants]')).toContainText('never approves one')
   // A grant this build serves no route of cannot be turned on.
   await expect(page.locator('[data-brakeman-grant="request_repair"]')).toHaveAttribute('data-grant-served', 'false')
+  // Routing a decision is served, to a person of its run's crew too, and never answers one.
+  await expect(page.locator('[data-brakeman-grant="route_decision"]')).toHaveAttribute('data-grant-served', 'true')
+  await expect(page.locator('[data-brakeman-grants]')).toContainText("or to a person of its run's crew, by name or by the responsibility they hold. It never answers one")
   const sw = page.locator('[data-brakeman-grants]').getByRole('switch', { name: 'Launch an approved plan' })
   await expect(sw).toHaveAttribute('aria-checked', 'false')
   // With drafting and proposing off Brakeman observes only, until a grant is on: a grant runs by itself, whatever those two say. Both
@@ -353,6 +358,123 @@ test('with the grant taken away, the act is refused and kept nowhere, and the pr
   await expect(p).toHaveAttribute('data-proposal-act', '')
   await expect(p.locator('[data-proposal-did]')).toHaveCount(0)
   await expect(p.locator('[data-proposal-link]')).toHaveAttribute('href', `/dispatch/${PROJECT}/1`)
+})
+
+test("granted Route a decision, Brakeman routes a gate's decision to the crew's security reviewer: the brief shows DR1's receipt and the card says for whom", async ({ page }) => {
+  // A crew with people (nate the architecture owner, ana the security reviewer) and a ticket whose approved revision gates build: launched
+  // by the operator, the run opens the gate's decision, which holds build, so the run stays held with it open. The spec's API calls.
+  budget(120_000)
+  await api.ok('POST', '/api/dispatch/tickets', { opId: 'bka-t2', project: PROJECT, title: 'Route the gate' })
+  const key = `${PROJECT}-2`
+  const crewId = (
+    await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+      name: 'e2e brakeman route',
+      goal: 'build it once approved',
+      cwd: '',
+      where: 'server',
+      isolation: 'worktree',
+      openAfterLaunch: false,
+      yolo: null,
+      members: [{ name: 'builder', agentId: 'worker', prompt: '', start: { when: 'task' } }],
+      people: [
+        { name: 'nate', responsibilities: ['architecture'] },
+        { name: 'ana', responsibilities: ['security'] },
+      ],
+      tasks: [{ id: 'build', member: 'builder', kind: 'work', instructions: 'Build it.' }],
+    })
+  ).crew.id
+  const tk = async () => (await api.ok<{ ticket: { rev: number } }>('GET', `/api/dispatch/tickets/${key}`)).ticket.rev
+  const proposed = await api.ok<{ plan: { id: string; rev: number } }>('POST', `/api/dispatch/tickets/${key}/plans`, {
+    opId: 'bka-r2',
+    crew: crewId,
+    decisions: [{ id: 'ship', question: 'May build start?', kind: 'approval', before: ['build'] }],
+  })
+  await api.ok('POST', `/api/dispatch/plans/${proposed.plan.id}/approve`, { opId: 'bka-a2', expectedRev: proposed.plan.rev, ticketRev: await tk() })
+  const runId = (await api.ok<{ launch: { runId: string } }>('POST', `/api/dispatch/tickets/${key}/launch`, { opId: 'bka-l2', plan: proposed.plan.id })).launch.runId
+  runs.push(runId)
+  type Listed = { id: string; origin: string; state: string; rev: number }
+  let gateDecision: Listed | undefined
+  await expect
+    .poll(
+      async () => {
+        const r = await api.ok<{ decisions: Listed[] }>('GET', `/api/decisions?run=${encodeURIComponent(runId)}`)
+        gateDecision = r.decisions.find((d) => d.origin === 'plan' && d.state === 'open')
+        return Boolean(gateDecision)
+      },
+      { timeout: 60_000 },
+    )
+    .toBe(true)
+  const did = gateDecision!.id
+  await grant(['route_decision'])
+
+  // The turn: it reads the run, whose decisions list the gate's with its ref and rev, routes it to role:security at that rev with
+  // conductor brakeman act through DR1's own route, then submits a brief proposing that route on the decision's ref at the rev it read
+  // (the stub's @REV, from its own read with its own token), naming the act (args.opId). Its gate shut until all of it is written.
+  budget(120_000 + 60_000)
+  rmSync(gate, { force: true })
+  rmSync(`${actFile}.out`, { force: true })
+  writeFileSync(`${actFile}.run`, `${runId}\n`)
+  writeFileSync(actFile, `route_decision ${did} did\n`)
+  writeFileSync(`${actFile}.body`, `{"to":{"kind":"role","name":"security"},"expectedRev":@REV,"note":"ana reviews what build touches.","opId":"bka-route-1"}`)
+  writeFileSync(
+    briefFile,
+    JSON.stringify({
+      schema: 'brakeman.brief/1',
+      title: `${did} waits on the security reviewer`,
+      summary: 'The gate before build is a security question: it is routed to the crew\'s security reviewer, for the operator to answer.',
+      items: [
+        { kind: 'fact/1', text: `${did} holds build.`, evidence: [`run:${runId}`, `decision:${did}`] },
+        { kind: 'proposal/1', text: `Route ${did} to the security reviewer.`, op: 'route_decision', target: `decision:${did}`, expectedRevision: '@REV', args: { opId: 'bka-route-1' }, facts: [0] },
+      ],
+    }),
+  )
+  let id = ''
+  try {
+    const asked = await api.ok<{ request: Request }>('POST', '/api/brakeman/requests', { opId: 'bka-ask-route', kind: 'explain', subjects: [`run:${runId}`] })
+    id = asked.request.id
+    await expect.poll(async () => (await request(id)).state, { timeout: 120_000 }).toBe('running')
+    writeFileSync(gate, 'open\n')
+    await expect.poll(async () => (await request(id)).state, { timeout: 60_000 }).toBe('briefed')
+  } finally {
+    rmSync(`${actFile}.run`, { force: true })
+  }
+  const out = await actOut()
+  // What the receipt says: the decision, the person and the responsibility, and Brakeman, in whichever words DR1 writes them.
+  expect(out).toMatch(new RegExp(`^taken\\nroute_decision ran \\(opId bka-route-1\\): done; its receipt is row [0-9]+ of ${did}'s history: ${did} `))
+  expect(out).toContain('ana, the security reviewer')
+  expect(out).toContain('brakeman')
+  const acts = (await request(id)).acts ?? []
+  expect(acts).toHaveLength(1)
+  expect(acts[0]).toMatchObject({ opId: 'bka-route-1', operation: 'route_decision', target: `decision:${did}`, run: runId, state: 'done' })
+  expect(acts[0]!.receipt).toMatch(new RegExp(`^${did}#[0-9]+$`))
+  // Routed, never answered: the decision is still open, the operator's to answer.
+  const after = await api.ok<{ decision: { state: string; history: Array<{ kind: string; by?: string }> } }>('GET', `/api/decisions/${did}`)
+  expect(after.decision.state).toBe('open')
+  expect(after.decision.history.filter((h) => h.kind === 'routed' && h.by === 'brakeman')).toHaveLength(1)
+
+  // The brief and the decision's card: two waits of 30 s and thirteen steps.
+  budget(2 * 30_000 + 13 * STEP_MS)
+  await open(page, `/brakeman?request=${id}`)
+  const p = page.locator(`[data-brief="${id}"] [data-proposal-op="route_decision"]`)
+  await expect(p).toHaveAttribute('data-proposal-act', 'done', { timeout: 30_000 })
+  // The fact's evidence names the decision: its chip opens the record in the decision's card, with no act of its own (#539, review
+  // round 2); closed, the card is gone before the act's own button opens it again.
+  await page.locator(`[data-brief="${id}"] [data-brief-fact] [data-ref-decision="${did}"]`).click()
+  await expect(page.locator(`[data-decision-modal-id="${did}"]`)).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.locator('[data-decision-modal]')).toHaveCount(0)
+  await expect(p.locator('[data-proposal-did-badge]')).toHaveText('Brakeman did this')
+  const seq = acts[0]!.receipt!.split('#')[1]
+  await expect(p.locator('[data-proposal-did-words]')).toHaveText(`Brakeman did this, under the grant "Route a decision" you gave it; ${did} routed: row ${seq} of its history.`)
+  // DR1's receipt is the decision's history: no op: chip, which names a Dispatch receipt.
+  await expect(p.locator('[data-proposal-did-receipt]')).toHaveCount(0)
+  await p.locator(`[data-proposal-did-decision="${did}"]`).click()
+  // The decision's card: the operator answers it, for ana, as the request's for now says (HM1's route rewrites it), named once.
+  await expect(page.locator(`[data-decision-modal-id="${did}"] [data-decision-approver]`)).toHaveText('the operator, for ana (security reviewer)', { timeout: 30_000 })
+  await expect(page.locator('[data-decision-routed-for]')).toHaveCount(0)
+  // Its history, unfolded: the route Brakeman made, to ana.
+  await page.locator('[data-decision-history-toggle]').click()
+  await expect(page.locator('[data-decision-history] [data-history-kind="routed"]').filter({ hasText: 'routed to ana: ana reviews what build touches. · brakeman' })).toHaveCount(1)
 })
 
 test('Settings opened before the right token was saved offers the grants once it is, with no reload', async ({ page }) => {

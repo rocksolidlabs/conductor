@@ -41,8 +41,11 @@
 #                   its question (notify --state needs_input), before the gate.
 #                   Before the brief, once the gate is open, it runs the act
 #                   STUB_BRAKEMAN_ACT's file names when it holds one
-#                   ("OPERATION KEY", its body the JSON file beside it,
-#                   <file>.body): conductor brakeman act, or the act tool;
+#                   ("OPERATION KEY [PARAM]", its body the JSON file beside
+#                   it, <file>.body; a run id in <file>.run is read first,
+#                   and @REV in the body and the brief is the rev that read
+#                   lists for the decision KEY names):
+#                   conductor brakeman act, or the act tool;
 #                   what the server answered, taken or refused, is written to
 #                   <file>.out and the brief is submitted either way
 # $HOME/.codex/stub-hooks-review present: "Hooks need review" is drawn at
@@ -638,7 +641,13 @@ holds() { git cat-file -e "$1:stub-$2.txt" 2>/dev/null; }
 # and stub-fixed.txt too once a finding or an attempt before asks for a
 # change, a person's request among them (a repair whose task file says
 # who "asked for changes to the commit", RV1), as a review task's findings
-# do; a review says
+# do, and then names each change asked for (by its id) as addressed in its
+# result. Under STUB_REVIEW_EDITS=1 its edits are fixed for the located
+# states a person's review reads: the first attempt also writes
+# stub-review.txt, eight numbered lines, and an attempt that takes up a
+# person's request inserts two lines at the top of stub-review.txt and
+# rewrites the first line of stub-<member>.txt, nothing else of either; a
+# review says
 # needs_changes with one finding on its first attempt and approved after.
 # What it reads and what the server answered go into the transcript.
 # With STUB_DECISION=approval or clarification, a work task's first
@@ -729,8 +738,34 @@ task_attempt() {
 		if [[ -n $decided ]]; then
 			git add -- stub-decision.txt stub-answer.txt >/dev/null 2>&1 || true
 		fi
+		if [[ -n ${STUB_REVIEW_EDITS:-} && $n == 1 && ! -f stub-review.txt ]]; then
+			# The fixed edits a person's review reads (STUB_REVIEW_EDITS=1, RV1): eight numbered lines to put notes on.
+			printf 'review line %s\n' 1 2 3 4 5 6 7 8 >stub-review.txt
+			git add -- stub-review.txt >/dev/null 2>&1 || true
+		fi
+		local addressed=() changes=() id
 		if [[ $ctx == *"asked for changes to the commit"* ]]; then
 			printf 'repair: %s attempt %s takes up a request for changes\n' "$task" "$n" >>"$transcript"
+			if [[ -n ${STUB_REVIEW_EDITS:-} ]]; then
+				# Two lines at the top of stub-review.txt (a note on its lines 3-4 is then "moved: now 5-6") and the first line of
+				# stub-<member>.txt rewritten (a note on it is then "the lines changed"), and nothing else of either file.
+				if [[ -f stub-review.txt ]]; then
+					{ printf 'inserted by attempt %s\n' "$n" "$n"; cat stub-review.txt; } >stub-review.txt.new && mv stub-review.txt.new stub-review.txt
+					git add -- stub-review.txt >/dev/null 2>&1 || true
+				fi
+				{ printf 'the first line, rewritten by attempt %s\n' "$n"; tail -n +2 "stub-$member.txt"; } >"stub-$member.txt.new" && mv "stub-$member.txt.new" "stub-$member.txt"
+				git add -- "stub-$member.txt" >/dev/null 2>&1 || true
+			fi
+			# Each change asked for, by its id (a change has a severity; a question or a note has none), named as addressed.
+			local re='`([0-9a-f]{16})` [(](blocker|major|minor|nit)[)]' rest=$ctx
+			while [[ $rest =~ $re ]]; do
+				id=${BASH_REMATCH[1]}
+				[[ " ${changes[*]} " == *" $id "* ]] || changes+=("$id")
+				rest=${rest#*"${BASH_REMATCH[0]}"}
+			done
+			for id in ${changes[@]+"${changes[@]}"}; do
+				addressed+=(--addressed "$id=done in attempt $n")
+			done
 		fi
 		if [[ $ctx == *"Findings to address"* || $ctx == *"asked for changes to the commit"* || $ctx == *"The attempt before"* || $n -ge 2 ]]; then
 			printf 'fixed in attempt %s\n' "$n" >stub-fixed.txt
@@ -741,7 +776,12 @@ task_attempt() {
 			# Where it got to, tied to the commit just made (STUB_CHECKPOINT=1).
 			"$conductor" task checkpoint --done "stub-$member.txt written" --remaining "nothing" --notes "attempt $n" >/dev/null 2>&1 || true
 		fi
-		task_submit "{\"summary\":\"stub $member did $task, attempt $n\",\"issues\":[\"none\"]}" --summary "stub $member did $task, attempt $n" --issue none
+		local addressedJSON='' sep=''
+		for id in ${changes[@]+"${changes[@]}"}; do
+			addressedJSON+="$sep{\"id\":\"$id\",\"note\":\"done in attempt $n\"}"
+			sep=,
+		done
+		task_submit "{\"summary\":\"stub $member did $task, attempt $n\",\"issues\":[\"none\"]${addressedJSON:+,\"addressed\":[$addressedJSON]}}" --summary "stub $member did $task, attempt $n" --issue none ${addressed[@]+"${addressed[@]}"}
 		if [[ -n ${STUB_MESSAGE_TO:-} ]]; then
 			# A message to the member named (STUB_MESSAGE_TO), as a worker tells the next what it needs to know.
 			"$conductor" task send --to "$STUB_MESSAGE_TO" "stub $member says: $task is submitted, attempt $n" >/dev/null 2>&1 || true
@@ -835,7 +875,7 @@ stub_decision() {
 # fails ends the turn with status 1 and its words in brakeman_why. What it
 # read and what the server answered go into the transcript.
 brakeman_turn() {
-	local req=$1 got changes brief reply evidence n=0 ok=1
+	local req=$1 got changes brief reply evidence n=0 ok=1 actrev=
 	case ${STUB_WORKER:-} in
 	mcp)
 		got=$(mcp_call brakeman_request '{}')
@@ -881,6 +921,19 @@ brakeman_turn() {
 		esac
 		printf 'brakeman: %s: read the ticket %s\n' "$req" "$STUB_BRAKEMAN_TICKET" >>"$transcript"
 	fi
+	if [[ -n ${STUB_BRAKEMAN_ACT:-} && -s $STUB_BRAKEMAN_ACT.run ]]; then
+		# The run a spec's act changes (a decision's route), read before the
+		# act as the turn's read of what it proposes: its decisions, each
+		# with its ref and rev, give the rev the act and the proposal name
+		# (@REV) for the decision the act's KEY names.
+		local actrun actop actkey runread re
+		actrun=$(<"$STUB_BRAKEMAN_ACT.run")
+		read -r actop actkey _ <"$STUB_BRAKEMAN_ACT"
+		runread=$("$conductor" brakeman observe run --run "$actrun" 2>&1)
+		re="\"ref\":\"decision:${actkey}\",\"rev\":([0-9]+)"
+		[[ $runread =~ $re ]] && actrev=${BASH_REMATCH[1]}
+		printf 'brakeman: %s: read the run %s: %s at rev %s\n' "$req" "$actrun" "$actkey" "${actrev:-none}" >>"$transcript"
+	fi
 	if [[ -n ${STUB_BRAKEMAN_ACT:-} && -s $STUB_BRAKEMAN_ACT ]]; then
 		brakeman_act "$req"
 	fi
@@ -889,6 +942,7 @@ brakeman_turn() {
 	[[ -n ${STUB_BRAKEMAN_CHECK:-} ]] && evidence+=",$(json_str "$STUB_BRAKEMAN_CHECK")"
 	if [[ -n ${STUB_BRAKEMAN_BRIEF:-} && -s $STUB_BRAKEMAN_BRIEF ]]; then
 		brief=$(<"$STUB_BRAKEMAN_BRIEF")
+		[[ -n $actrev ]] && brief=${brief//@REV/$actrev}
 	else
 		brief="{\"schema\":\"brakeman.brief/1\",\"title\":\"Stub brief for $req\",\"summary\":\"The stub read its request and what changed, and found its own turn.\",\"items\":[{\"kind\":\"fact/1\",\"text\":\"This turn runs as its own session and run.\",\"evidence\":[$evidence]},{\"kind\":\"interpretation/1\",\"text\":\"Nothing else happened that the stub was asked about.\",\"facts\":[0]}]}"
 	fi
@@ -911,23 +965,27 @@ brakeman_turn() {
 }
 
 # brakeman_act runs the act STUB_BRAKEMAN_ACT's file names for request $1:
-# its one line is "OPERATION KEY", its body the JSON in <file>.body. The
+# its one line is "OPERATION KEY [PARAM]" (PARAM the route's path parameter
+# KEY fills, key unless named: did for a decision's route), its body the
+# JSON in <file>.body. The
 # answer (the command's words, or the tool's reply line), taken or refused,
 # goes to <file>.out, written whole by a rename, and into the transcript; a
 # refusal does not end the turn: a spec's brief says what happened.
 brakeman_act() {
-	local req=$1 op key body out status=taken
-	read -r op key <"$STUB_BRAKEMAN_ACT"
+	local req=$1 op key param body out status=taken
+	read -r op key param <"$STUB_BRAKEMAN_ACT"
+	param=${param:-key}
 	body='{}'
 	[[ -s $STUB_BRAKEMAN_ACT.body ]] && body=$(<"$STUB_BRAKEMAN_ACT.body")
+	[[ -n ${actrev:-} ]] && body=${body//@REV/$actrev}
 	case ${STUB_WORKER:-} in
 	mcp)
-		out=$(mcp_call act "{\"operation\":$(json_str "$op"),\"params\":{\"key\":$(json_str "$key")},\"body\":$body}")
+		out=$(mcp_call act "{\"operation\":$(json_str "$op"),\"params\":{$(json_str "$param"):$(json_str "$key")},\"body\":$body}")
 		mcp_ok "$out" || status=refused
 		;;
 	*)
 		printf '%s\n' "$body" >"$transcripts/$id.act.json"
-		out=$("$conductor" brakeman act "$op" --key "$key" --body-file "$transcripts/$id.act.json" 2>&1) || status=refused
+		out=$("$conductor" brakeman act "$op" "--$param" "$key" --body-file "$transcripts/$id.act.json" 2>&1) || status=refused
 		;;
 	esac
 	printf '%s\n%s\n' "$status" "$out" >"$STUB_BRAKEMAN_ACT.out.new"

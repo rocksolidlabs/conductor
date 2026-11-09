@@ -506,8 +506,36 @@ func (rr *refResolver) lookup(ctx context.Context, ref brakeman.Ref) (refFound, 
 		return rr.lookupDispatch(ctx, ref)
 	case brakeman.RefPlan, brakeman.RefLaunch:
 		return rr.lookupEvidence(ctx, ref)
+	case brakeman.RefDecision:
+		return rr.lookupDecision(ctx, ref)
 	}
 	return refFound{}, nil
+}
+
+// lookupDecision reads a decision record from the ledger (DR1): its state
+// and rev, admitted as the run it is on now is, which a continuation
+// moves it to.
+func (rr *refResolver) lookupDecision(ctx context.Context, ref brakeman.Ref) (refFound, error) {
+	ld, err := rr.ledger()
+	if err != nil {
+		return refFound{}, fmt.Errorf("%s: %w", ref, err)
+	}
+	n, ok := ledger.ParseDecisionID(ref.Decision)
+	if ld == nil || !ok {
+		return refFound{}, nil
+	}
+	rec, found, err := ld.Decision(ctx, n)
+	if err != nil {
+		return refFound{}, fmt.Errorf("the decision %s: %w", ref.Decision, err)
+	}
+	if !found {
+		return refFound{}, nil
+	}
+	r, err := rr.run(ctx, rec.CurrentRun)
+	if err != nil {
+		return refFound{}, err
+	}
+	return refFound{found: true, item: r.item, now: brakeman.RefState{State: rec.State, Rev: strconv.Itoa(rec.Rev)}}, nil
 }
 
 // refRun is a run as the resolver reads it: from the engine, its record
@@ -1478,6 +1506,9 @@ func refURL(ref brakeman.Ref) string {
 		return ticketURL(ref.Ticket)
 	case brakeman.RefLaunch:
 		return "/api/dispatch/launches/" + esc(ref.Launch)
+	case brakeman.RefDecision:
+		// Served by DR1's route; the app opens it in its card.
+		return "/api/decisions/" + esc(ref.Decision)
 	}
 	return ""
 }

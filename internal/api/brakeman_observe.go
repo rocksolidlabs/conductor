@@ -468,7 +468,9 @@ func (s *Server) turnRead(w http.ResponseWriter, r *http.Request, tp *turnPrinci
 	}
 	rec := newReplyRecorder()
 	if next != nil {
-		next(rec, r)
+		// The shared route's handler knows the read is a turn's: a run's
+		// read then gives its decisions too (addRunDecisions).
+		next(rec, r.WithContext(context.WithValue(r.Context(), turnReadKey{}, true)))
 	} else {
 		own[0](rec, r, o)
 	}
@@ -513,6 +515,17 @@ func (s *Server) turnRead(w http.ResponseWriter, r *http.Request, tp *turnPrinci
 	}
 	w.WriteHeader(rec.status)
 	_, _ = w.Write(body)
+}
+
+// turnReadKey marks a shared read's request as a Brakeman turn's, for
+// the route's own handler (turnReading).
+type turnReadKey struct{}
+
+// turnReading reports whether r is a Brakeman turn's shared read, which
+// turnRead has admitted and filters.
+func turnReading(r *http.Request) bool {
+	ok, _ := r.Context().Value(turnReadKey{}).(bool)
+	return ok
 }
 
 // observeError answers an error of a read: a store the server could not
@@ -781,6 +794,10 @@ func filterRuns(r *http.Request, o *observer, body []byte) ([]byte, error) {
 // (fitRun).
 func filterRun(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	id := r.PathValue("run")
+	body, err := decisionRefs(o, body)
+	if err != nil {
+		return nil, err
+	}
 	var in struct {
 		Run json.RawMessage `json:"run"`
 	}
@@ -843,6 +860,42 @@ func filterRun(r *http.Request, o *observer, body []byte) ([]byte, error) {
 		return nil, err
 	}
 	return refreshed(body, "run", fit)
+}
+
+// decisionRefs is a run's or a task's read with each of its decisions
+// (addRunDecisions' summaries, the run's own) carrying its ref,
+// decision:<dr-n>, noted at its state and rev: the read a route_decision
+// act's expectedRev and its proposal's target and revision come from. A
+// read with none is as it was.
+func decisionRefs(o *observer, body []byte) ([]byte, error) {
+	var in struct {
+		Decisions []json.RawMessage `json:"decisions"`
+	}
+	if err := json.Unmarshal(body, &in); err != nil {
+		return nil, err
+	}
+	if len(in.Decisions) == 0 {
+		return body, nil
+	}
+	out := make([]json.RawMessage, 0, len(in.Decisions))
+	for _, raw := range in.Decisions {
+		var head struct {
+			ID    string `json:"id"`
+			State string `json:"state"`
+			Rev   int    `json:"rev"`
+		}
+		if err := json.Unmarshal(raw, &head); err != nil {
+			return nil, err
+		}
+		ref := "decision:" + head.ID
+		o.noteRef(ref, brakeman.ClassRuns, head.State, strconv.Itoa(head.Rev))
+		raw, err := withRef(raw, ref)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, raw)
+	}
+	return refreshed(body, "decisions", out)
 }
 
 // runCuts are what fitRun leaves out of a run past its room, in order:
@@ -968,9 +1021,17 @@ func newestThatFit(m map[string]json.RawMessage, field string, room int) (json.R
 // its attempts and their receipts, each with its ref and noted.
 func filterTask(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	runID, taskID := r.PathValue("run"), r.PathValue("task")
+	body, err := decisionRefs(o, body)
+	if err != nil {
+		return nil, err
+	}
 	var in struct {
 		Task     json.RawMessage   `json:"task"`
 		Attempts []json.RawMessage `json:"attempts"`
+		// The task's decisions (addRunDecisions), each with its ref.
+		Decisions       json.RawMessage `json:"decisions"`
+		DecisionsNext   json.RawMessage `json:"decisionsNext"`
+		DecisionsUnread json.RawMessage `json:"decisionsUnread"`
 	}
 	if err := json.Unmarshal(body, &in); err != nil {
 		return nil, err
@@ -1025,6 +1086,11 @@ func filterTask(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	m := map[string]json.RawMessage{"task": task}
 	if m["attempts"], err = marshalNoEscape(attempts); err != nil {
 		return nil, err
+	}
+	for k, v := range map[string]json.RawMessage{"decisions": in.Decisions, "decisionsNext": in.DecisionsNext, "decisionsUnread": in.DecisionsUnread} {
+		if len(v) > 0 {
+			m[k] = v
+		}
 	}
 	out, err := marshalNoEscape(m)
 	return append(out, '\n'), err

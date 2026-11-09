@@ -233,15 +233,26 @@ const (
 	// MaxDecisionOperations bounds the operator's operations on a
 	// decision (comments, requests for information, re-routes).
 	MaxDecisionOperations = 32
+	// MaxDecisionTurnOps bounds the operations a Brakeman turn (the actor
+	// TurnActor) writes on a decision, all its turns together: its routes,
+	// a group of their own, never counted among the operator's
+	// operations.
+	MaxDecisionTurnOps = 4
 	// MaxDecisionHistory bounds a decision's history rows.
 	MaxDecisionHistory = 256
 	// MaxDecisionsPage bounds a page of Decisions.
 	MaxDecisionsPage = 100
 )
 
+// TurnActor is the actor a Brakeman turn's acts run under: an operation
+// it writes (a route_decision act's routed row) counts in its own group,
+// MaxDecisionTurnOps, apart from the operator's.
+const TurnActor = "brakeman"
+
 // historyBounds is how many rows each kind may hold; the kinds that share
 // a bound share a group. Operations (an operator's comment, request for
-// information or re-route, each with its op id) share MaxDecisionOperations.
+// information or re-route, each with its op id) share MaxDecisionOperations;
+// a Brakeman turn's (TurnActor's) share MaxDecisionTurnOps.
 // The groups' sum is the mandatory rows' room (mandatoryHistory); notified
 // rows, and a provider's, take the rest of MaxDecisionHistory.
 var historyBounds = map[string]struct {
@@ -270,9 +281,10 @@ var historyBounds = map[string]struct {
 }
 
 // mandatoryHistory is the room the bounded kinds keep: one opened, two
-// routed, the operations, the responses, one applied, one supersession or
-// cancellation, one refund and three deliveries.
-const mandatoryHistory = 1 + 2 + MaxDecisionOperations + MaxDecisionResponses + 1 + 1 + 1 + 3
+// routed, the operator's operations and a Brakeman turn's, the responses,
+// one applied, one supersession or cancellation, one refund and three
+// deliveries.
+const mandatoryHistory = 1 + 2 + MaxDecisionOperations + MaxDecisionTurnOps + MaxDecisionResponses + 1 + 1 + 1 + 3
 
 // Errors of the decision writers.
 var (
@@ -1258,12 +1270,18 @@ func (t *Tx) History(n int64, h HistoryRow) (HistoryRow, bool, error) {
 	group, max := bound.group, bound.max
 	if op && h.Kind != HistoryCancelled {
 		group, max = "ops", MaxDecisionOperations
+		if h.By == TurnActor {
+			// A Brakeman turn's: its own bound, never the operator's.
+			group, max = "turn", MaxDecisionTurnOps
+		}
 	}
 	var have int
 	var err error
 	switch group {
 	case "ops":
-		have, err = t.count(`SELECT COUNT(*) FROM decision_history WHERE decision = ? AND (kind IN ('commented', 'info_requested') OR (kind = 'routed' AND op_id != ''))`, n)
+		have, err = t.count(`SELECT COUNT(*) FROM decision_history WHERE decision = ? AND (kind IN ('commented', 'info_requested') OR (kind = 'routed' AND op_id != '')) AND by != ?`, n, TurnActor)
+	case "turn":
+		have, err = t.count(`SELECT COUNT(*) FROM decision_history WHERE decision = ? AND by = ? AND op_id != '' AND kind != 'cancelled'`, n, TurnActor)
 	case "rest":
 		max = MaxDecisionHistory - mandatoryHistory
 		have, err = t.count(`SELECT COUNT(*) FROM decision_history WHERE decision = ? AND kind IN ('notified', 'assigned', 'delegated', 'escalated', 'expired')`, n)
@@ -1288,6 +1306,9 @@ func (t *Tx) History(n int64, h HistoryRow) (HistoryRow, bool, error) {
 		if h.Kind == HistoryNotified {
 			_, err := t.tx.ExecContext(t.ctx, "UPDATE decisions SET dropped = dropped + 1 WHERE n = ?", n)
 			return HistoryRow{Decision: n, Kind: h.Kind, At: t.now}, false, err
+		}
+		if group == "turn" {
+			return HistoryRow{}, false, fmt.Errorf("%w: %s has %d operations by %s, its bound: the operator routes it further", ErrDecisionLimit, DecisionID(n), have, TurnActor)
 		}
 		return HistoryRow{}, false, fmt.Errorf("%w: %s has %d %s rows", ErrDecisionLimit, DecisionID(n), have, h.Kind)
 	}
@@ -1561,6 +1582,38 @@ func (t *Tx) Record(n int64) (DecisionRecord, bool, error) {
 		return DecisionRecord{}, false, err
 	}
 	return rec, true, nil
+}
+
+// HistoryByOp reads the history row actor by wrote under the op id opID
+// on decision n, ok false for none: what a recovery asks of an operation
+// it cannot tell committed or not (Brakeman's acts, each keyed by a
+// derived op id and by the decision it acts on), by the index of a
+// decision's operations.
+func (l *Ledger) HistoryByOp(ctx context.Context, n int64, by, opID string) (HistoryRow, bool, error) {
+	var h HistoryRow
+	found := false
+	if n < 1 || by == "" || opID == "" {
+		return h, false, nil
+	}
+	err := l.readSnapshot(ctx, func(q querier, version int) error {
+		if version < versionDecisions {
+			return nil
+		}
+		var err error
+		h, err = scanHistory(q.QueryRowContext(ctx, "SELECT "+historyCols+" FROM decision_history WHERE decision = ? AND by = ? AND op_id = ? AND op_id != ''", n, by, opID))
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return nil
+		case err != nil:
+			return err
+		}
+		found = true
+		return nil
+	})
+	if err != nil || !found {
+		return HistoryRow{}, false, err
+	}
+	return h, true, nil
 }
 
 // DecisionByRequest reads the decision run's member opened for task under

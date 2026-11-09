@@ -120,8 +120,9 @@ add its rule here.
   thing to happen: give the test its own wait where the product's is not
   what is tested, or make the product's bound generous where it only bounds
   a hang (2026-11-08: internal/api's race run reached go test's 30 m bound
-  on CI; the bound is 60 m now, and the package's own length is a separate
-  row).
+  on CI; the bound is 60 m now; the package's length is CPU work under the
+  race detector across its 1,365 tests, not waits, and CI's longest job is
+  e2e at 49 minutes, so no row makes it faster).
 - Order what must be ordered. Keys that must stay unconfirmed go in after
   the process is stopped (SIGSTOP), not raced against a kill. A check made
   at once after an action ("nothing served yet") holds the step the action
@@ -392,6 +393,15 @@ add its rule here.
   itself: GitHub's release downloads answered 504 for thirty minutes and
   one try of Neovim's tarball and Electron's binary failed four jobs of an
   hour-long run, twice (2026-11-08, #281; `docs/checks.md` says how).
+- A port probed free is not a port owned, and a health answer at it is
+  not the child's: readiness is the answer the child alone can give, its
+  own token accepted. Every worktree's e2e suite on a machine picks from
+  the same hundred ports, and a server another run started there between
+  the probe and the bind answered `/api/health` for a child that never got
+  the port; the spec's first authenticated request met that stranger's
+  token, a 401 (`switchyard.spec.ts`, 2026-11-08, #281). `startServer`
+  asks `/api/whoami` with the child's token, and a refusal moves it to
+  another port (`server-port.spec.ts` hands it a held one).
 - A spec's setup owns what it starts and reads only what its own start
   wrote. A `beforeAll` that writes to fixed names under the suite's root
   meets, on a repeat (`--repeat-each`), the last start's log, repository
