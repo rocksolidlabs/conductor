@@ -1371,7 +1371,8 @@ func TestAReleasedHoldKeepsItsRow(t *testing.T) {
 
 // MoveHolds writes the run continued's holds under the continuation as
 // they are and releases the active ones of the run continued, at the
-// move's time: one active row, under the decision's current run.
+// move's time: one active row, under the decision's current run, and the
+// record read with what it holds there.
 func TestMoveHoldsLeavesOneActiveRow(t *testing.T) {
 	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
 	ctx := context.Background()
@@ -1389,6 +1390,9 @@ func TestMoveHoldsLeavesOneActiveRow(t *testing.T) {
 		_, err := tx.Release(a, "deploy", n)
 		return err
 	})
+	if rec := record(t, l, n); rec.CurrentRun != a || !slices.Equal(rec.Held, []string{"build"}) {
+		t.Fatalf("the record before the move holds %v under %s", rec.Held, rec.CurrentRun)
+	}
 	released := map[string]time.Time{}
 	hs, _ := l.Holds(ctx, a)
 	for _, h := range hs {
@@ -1420,6 +1424,9 @@ func TestMoveHoldsLeavesOneActiveRow(t *testing.T) {
 	}
 	if c := countRows(t, l, "SELECT COUNT(*) FROM decision_holds WHERE decision = ? AND released_at = ''", n); c != 1 {
 		t.Fatalf("%d active holds", c)
+	}
+	if rec := record(t, l, n); rec.CurrentRun != b || !slices.Equal(rec.Held, []string{"build"}) {
+		t.Fatalf("the record after the move holds %v under %s", rec.Held, rec.CurrentRun)
 	}
 	in(t, l, a, func(tx *Tx) error {
 		if err := tx.Hold(a, "build", n); !errors.Is(err, ErrNotCurrent) {
