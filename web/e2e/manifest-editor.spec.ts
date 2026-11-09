@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 import { expect, stopStrays, test, type Api } from './fixtures'
 
 // The crew editor's Project manifest section (EN1 PR-6, #398): under the
@@ -58,11 +58,27 @@ function crewOf(api: Api, id: string): Promise<ManifestCrew> {
   return api.ok<{ crew: ManifestCrew }>('GET', `/api/crews/${encodeURIComponent(id)}`).then((r) => r.crew)
 }
 
-/** Types an argv into the chip input labelled `label` and commits it with Enter. */
+/** Types an argv into the chip input labelled `label`, commits it with Enter, and waits for each word to be a chip. */
 async function typeArgv(page: Page, label: string, text: string) {
-  const input = page.getByLabel(label).locator('input')
+  const field = page.getByLabel(label)
+  const input = field.locator('input')
   await input.fill(text)
   await input.press('Enter')
+  await expect(input).toHaveValue('')
+  for (const word of text.split(' ')) await expect(field.getByRole('button', { name: `Remove ${word}`, exact: true })).toBeVisible()
+}
+
+/**
+ * Opens the select `trigger` and picks `option`, then waits for its menu to be gone. Closing, the menu stays mounted through its
+ * animation with the rest of the page hidden from getByRole, and as it goes it hands the focus back to its trigger: a key pressed
+ * in that window (the Enter that commits the next field's argv) lands on the trigger and opens the menu again, and the page stays
+ * hidden from then on (#281). The menu gone, the focus is already back, so what is typed next stays where it was typed.
+ */
+async function pickOption(page: Page, trigger: Locator, option: string | RegExp) {
+  await trigger.click()
+  await page.getByRole('option', { name: option }).click()
+  await expect(page.getByRole('listbox')).toHaveCount(0)
+  await expect(trigger).toContainText(option)
 }
 
 /** Adds a step to a phase's list (its first row) with an id and a command, and finds the row by its id. */
@@ -139,13 +155,14 @@ test('a crew with tasks takes a project manifest with every phase under its task
   await page.getByLabel('Id of ready probe 2', { exact: true }).fill('statedir')
   // A URL typed first: switched to a command, the probe keeps the command alone (saved below with no url).
   await page.getByLabel('URL of ready probe 2', { exact: true }).fill('http://127.0.0.1:${CONDUCTOR_PORT_WEB}/state')
-  await page.getByLabel('Kind of ready probe 2', { exact: true }).click()
-  await page.getByRole('option', { name: 'command' }).click()
+  await pickOption(page, page.getByLabel('Kind of ready probe 2', { exact: true }), 'command')
   await typeArgv(page, 'Command of ready probe 2', 'test -d ${CONDUCTOR_STATE_DIR}')
   await expect(ready.locator('[data-probe-id="up"]')).toBeVisible()
   await expect(ready.locator('[data-probe-id="statedir"]')).toBeVisible()
 
-  await page.getByLabel('Preview URL', { exact: true }).fill('http://127.0.0.1:${CONDUCTOR_PORT_WEB}/')
+  const preview = page.getByLabel('Preview URL', { exact: true })
+  await preview.fill('http://127.0.0.1:${CONDUCTOR_PORT_WEB}/')
+  await expect(preview).toHaveValue('http://127.0.0.1:${CONDUCTOR_PORT_WEB}/')
   const lint = await addStep(page, 'verify', 'verify step', 'lint', 'true')
   // A step's timeout as typed too.
   await lint.getByLabel('Timeout in seconds of verify step 1', { exact: true }).fill('-1')
@@ -391,8 +408,7 @@ test("a task's new check is given an id no step of the manifest has", async ({ p
 test('a crew switched back to start rules drops its project manifest, and saves with none', async ({ page, api }) => {
   const id = await managedCrew(api, 'e2e manifest dropped', { manifest: { setup: [{ id: 'deps', argv: ['true'] }] } })
   await openCrew(page, id)
-  await page.locator('[data-crew-coordination]').click()
-  await page.getByRole('option', { name: /by start rules/ }).click()
+  await pickOption(page, page.locator('[data-crew-coordination]'), /by start rules/)
   await expect(page.locator('[data-crew-manifest]')).toHaveCount(0)
   await expect(page.locator('[data-crew-tasks-section]')).toHaveCount(0)
   // Nothing holds the save: no manifest is left behind that the page no longer shows.

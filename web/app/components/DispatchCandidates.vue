@@ -4,7 +4,7 @@ import { candidateKey } from '~/composables/useRunCandidates'
 import { type ReceiptPick, candidateWords, findingsCount, findingsWords, followPick, pickReceipt, receiptChips, receiptKey, receiptName, receiptState, repairs } from '~/utils/dispatchEvidence'
 import { shortCommit } from '~/utils/dispatchPlans'
 import { REVIEW_ENTRY } from '~/composables/useReview'
-import { candidateRef } from '~/utils/dispatch'
+import { candidateRef, parseCandidate } from '~/utils/dispatch'
 
 /**
  * A run's candidates (Program item DS2, docs/plans/dispatch-evidence.md, "web/app", PR-11), read from the ledger (GET
@@ -16,7 +16,8 @@ import { candidateRef } from '~/utils/dispatch'
  * read from the same route, every attempt with when it started, one that never submitted included, a record's too. The pages shown
  * are read again from the start, gathered for the window, when the run's revision moves (its run events, through the live store): the
  * reads are useRunCandidates'. A list, never a table: one column on a phone. On a ticket's page (RV1), each standing work candidate
- * offers Review, the ticket's Review view at it, with the open findings of its task counted.
+ * offers Review, the ticket's Review view at it, with the open findings of its task counted; a failed receipt opened offers Prepare a
+ * repair there; and a person's repairs (the ticket's reviews that asked for changes) are listed with the run's (PR-7).
  */
 const props = defineProps<{
   runId: string
@@ -31,6 +32,10 @@ const ckey = candidateKey
 /** The ticket page's Review entry: absent anywhere else. */
 const review = inject(REVIEW_ENTRY, null)
 const reviewRef = (c: RunCandidate) => candidateRef({ run: props.runId, task: c.task, attempt: c.attempt, commit: c.commit ?? '' })
+/** The person's repairs of this run: the ticket's reviews that asked for changes to one of its candidates, or were applied in it. */
+const people = computed(() =>
+  (review?.reviews() ?? []).filter((r) => r.verdict === 'request_changes' && (parseCandidate(r.candidate)?.run === props.runId || r.application.run === props.runId)),
+)
 
 function severityColor(s: string): 'error' | 'warning' | 'neutral' | 'info' {
   return s === 'blocker' ? 'error' : s === 'major' ? 'warning' : s === 'minor' ? 'info' : 'neutral'
@@ -165,7 +170,15 @@ const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted'
     </ul>
     <UButton v-if="next" label="More tasks" icon="i-lucide-chevrons-down" size="xs" color="neutral" variant="ghost" class="self-start" :loading="loading" data-candidates-more @click="more" />
 
-    <DispatchRepairs :repairs="fixes" :errors="detailsError" />
-    <DispatchReceipt v-model:open="receiptOpen" :run-id="runId" :task="shown?.task ?? ''" :attempt="shown?.attempt ?? 0" :commit="shown?.commit ?? ''" :receipt="shown?.receipt ?? null" />
+    <DispatchRepairs :repairs="fixes" :errors="detailsError" :people="people" />
+    <DispatchReceipt
+      v-model:open="receiptOpen"
+      :run-id="runId"
+      :task="shown?.task ?? ''"
+      :attempt="shown?.attempt ?? 0"
+      :commit="shown?.commit ?? ''"
+      :receipt="shown?.receipt ?? null"
+      :prepare="review && shown?.commit && shown.receipt ? review.href(candidateRef({ run: runId, task: shown.task, attempt: shown.attempt, commit: shown.commit }), `${shown.receipt.id}/${shown.receipt.k}`) : undefined"
+    />
   </div>
 </template>

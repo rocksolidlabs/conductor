@@ -457,6 +457,10 @@ func actWords(operation, opID string, reply json.RawMessage) string {
 			OpID       string `json:"opId"`
 			ID, Status string
 			Repeat     bool
+			// A decision's route answers DR1's receipt: the decision,
+			// the history row's seq and its words.
+			Decision, Words string
+			Seq             int
 		} `json:"receipt"`
 		ReceiptRef string                             `json:"receiptRef"`
 		Launch     *struct{ ID, RunID, State string } `json:"launch"`
@@ -469,6 +473,13 @@ func actWords(operation, opID string, reply json.RawMessage) string {
 	}
 	_ = json.Unmarshal(reply, &out)
 	line := fmt.Sprintf("%s ran (opId %s)", operation, opID)
+	if r := out.Receipt; r != nil && r.Decision != "" {
+		line += fmt.Sprintf(": done; its receipt is row %d of %s's history: %s", r.Seq, r.Decision, oneLine(r.Words))
+		if r.Repeat {
+			line += " (a repeat of the act already kept)"
+		}
+		return line
+	}
 	if r := out.Receipt; r != nil {
 		line += ": " + r.Status
 		if r.Repeat {

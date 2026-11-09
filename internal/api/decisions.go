@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
@@ -76,7 +76,9 @@ func (s *Server) routeDecisions(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/decisions/{did}/respond", s.launching(s.handleDecisionRespond))
 	mux.HandleFunc("POST /api/decisions/{did}/cancel", s.launching(s.handleDecisionCancel))
 	mux.HandleFunc("POST /api/decisions/{did}/comment", s.launching(s.handleDecisionComment))
-	mux.HandleFunc("POST /api/decisions/{did}/route", s.launching(s.handleDecisionRoute))
+	// A Brakeman turn granted route_decision is taken here too (actable):
+	// its act runs this route's one operation under the actor brakeman.
+	mux.HandleFunc(decisionRoutePattern, s.actable(decisionRoutePattern, s.launching(s.handleDecisionRoute)))
 	mux.HandleFunc("GET /api/dispatch/tickets/{key}/decisions", s.launching(s.handleTicketDecisions))
 }
 
@@ -738,18 +740,29 @@ func (s *Server) handleDecisionRoute(w http.ResponseWriter, r *http.Request) {
 
 // addRunDecisions adds to the reply of a run's read (task "") or a
 // task's the summaries of the decisions the run or the task holds, newest
-// first, at most maxDecisionsListed, for the admin alone (a Brakeman
-// turn's shared read of the run carries none: its decisions are BK2's):
-// decisionsNext, the last id, when more follow (GET /api/decisions?run=
-// &after= reads on), and decisionsUnread, with no list, when the ledger
-// could not be read, which is logged. Nothing without a ledger or with no
-// decision.
-func (s *Server) addRunDecisions(r *http.Request, reply map[string]any, run, task string) {
-	if p, _ := r.Context().Value(principalKey{}).(principal); s.ledger == nil || !p.admin {
+// first, at most maxDecisionsListed, older than before when it is not 0
+// (the read's ?decisionsAfter=, decisionsAfter), for the admin and for a
+// Brakeman turn's shared read of the run, which turnRead admitted by its
+// scope and whose filter gives each its ref (decisionRefs: what a
+// route_decision act reads its decision's rev from, BK2). A turn's read
+// lists only the decisions open, the ones it may route (admitRoute), so
+// no page of closed ones hides an older open one from it; the admin's
+// lists them all. decisionsNext, the last id, when more follow (the same
+// read with ?decisionsAfter= reads on, the turn's as the admin's), and
+// decisionsUnread, with no list, when the ledger could not be read, which
+// is logged. Nothing without a ledger or with no decision.
+func (s *Server) addRunDecisions(r *http.Request, reply map[string]any, run, task string, before int64) {
+	p, _ := r.Context().Value(principalKey{}).(principal)
+	turn := turnReading(r)
+	if s.ledger == nil || !p.admin && !turn {
 		return
 	}
 	ctx := r.Context()
-	rows, next, err := decisionRows(ctx, s.ledger, ledger.DecisionFilter{CurrentRun: run, Task: task, Limit: maxDecisionsListed})
+	f := ledger.DecisionFilter{CurrentRun: run, Task: task, Before: before, Limit: maxDecisionsListed}
+	if turn {
+		f.States = []string{ledger.DecisionOpen}
+	}
+	rows, next, err := decisionRows(ctx, s.ledger, f)
 	var out []decisionSummary
 	if err == nil {
 		out, err = s.decisionSummaries(ctx, rows)
@@ -764,6 +777,34 @@ func (s *Server) addRunDecisions(r *http.Request, reply map[string]any, run, tas
 			reply["decisionsNext"] = next
 		}
 	}
+}
+
+// decisionsAfter is a run's or a task's read's ?decisionsAfter=, the
+// decisionsNext of the page before: 0 when the query names none, false
+// once it has answered 400 for one that is not a decision's id. The
+// read's other parameters are not its to judge.
+func decisionsAfter(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	if !strings.Contains(r.URL.RawQuery, "decisionsAfter") {
+		return 0, true
+	}
+	q, err := parseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return 0, false
+	}
+	v, ok := q["decisionsAfter"]
+	if !ok {
+		return 0, true
+	}
+	n, valid := int64(0), len(v) == 1
+	if valid {
+		n, valid = ledger.ParseDecisionID(v[0])
+	}
+	if !valid {
+		writeError(w, http.StatusBadRequest, "invalid_request", "decisionsAfter is a decision's id, dr-N, once")
+		return 0, false
+	}
+	return n, true
 }
 
 // decisionEvent is the data of a `decision` event: a decision changed,
@@ -815,11 +856,7 @@ func decisionNotification(row ledger.DecisionRow, by string) ext.Notification {
 		Question string `json:"question"`
 	}
 	_ = json.Unmarshal([]byte(row.Request), &body)
-	u := "/runs/" + url.PathEscape(row.CurrentRun) + "?view=tasks"
-	if row.TaskID != "" {
-		u += "&task=" + url.QueryEscape(row.TaskID)
-	}
-	u += "&decision=" + row.ID()
+	u := decisionPageURL(row.CurrentRun, row.TaskID, row.ID())
 	return ext.Notification{Event: "decision", Type: "decision", At: time.Now().UTC(), State: row.State, Message: body.Question, URL: u, By: by,
 		Session: ext.SessionRef{ID: row.SessionID, Run: row.CurrentRun, Task: row.TaskID, Attempt: row.Attempt}}
 }

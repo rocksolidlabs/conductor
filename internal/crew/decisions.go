@@ -1396,8 +1396,21 @@ func (e *Engine) TaskDecision(ctx context.Context, sessionID, id string) (Decisi
 	return e.decisionOf(rec), nil
 }
 
-// decisionOf is a decision's record as the engine reports it.
+// decisionOf is a decision's record as the engine reports it: DecisionOf,
+// with the asking attempt's liveness, which only the engine knows.
 func (e *Engine) decisionOf(rec ledger.DecisionRecord) Decision {
+	d := DecisionOf(rec)
+	if d.Asker != nil {
+		d.Asker.Live = e.AskerLive(rec.DecisionRow)
+	}
+	return d
+}
+
+// DecisionOf is a decision's record as the routes report it, read from
+// the ledger's rows alone: its asking attempt never said live (the
+// engine's decisionOf knows that). The history's indexer reads a decision
+// through it, so the index shows what DR1 serves and adds no field to it.
+func DecisionOf(rec ledger.DecisionRecord) Decision {
 	d := Decision{ID: rec.ID(), Run: rec.CurrentRun, OpenedIn: rec.RunID, Origin: rec.Origin, Type: rec.Type, Gate: rec.Gate, Member: rec.Member,
 		Ticket: rec.Ticket, Plan: rec.Plan, PlanDigest: rec.PlanDigest, RequestID: rec.RequestID, Request: json.RawMessage(rec.Request),
 		Policy: json.RawMessage(rec.Policy), State: rec.State, Rev: rec.Rev, Why: rec.Why, SupersededBy: rec.SupersededBy, CreatedAt: rec.CreatedAt}
@@ -1422,8 +1435,10 @@ func (e *Engine) decisionOf(rec ledger.DecisionRecord) Decision {
 	for _, rr := range rec.Responses {
 		var rc ResponseReceipt
 		if json.Unmarshal([]byte(rr.Receipt), &rc) == nil {
-			// The receipt is kept as made before its row was numbered.
-			rc.K = rr.K
+			// The receipt is kept as made before its row was numbered;
+			// its number and its actor are the row's, which the ledger
+			// requires.
+			rc.K, rc.Actor = rr.K, rr.Actor
 			d.Responses = append(d.Responses, rc)
 		}
 	}
@@ -1436,17 +1451,33 @@ func (e *Engine) decisionOf(rec ledger.DecisionRecord) Decision {
 	}
 	if rec.Origin == ledger.OriginAgent {
 		d.Asker = &DecisionAsker{Task: rec.TaskID, Attempt: rec.Attempt}
-		e.mu.Lock()
-		if r := e.runs[rec.CurrentRun]; r != nil {
-			if t := r.task(rec.TaskID); t != nil {
-				if a := t.active(); a != nil && a.n == rec.Attempt && a.sessionID == rec.SessionID && e.sessionLive(a.sessionID) {
-					d.Asker.Live = true
-				}
-			}
-		}
-		e.mu.Unlock()
 	}
 	return d
+}
+
+// DecisionOf is the record rec, read whole once, as Decision reports it:
+// for a reader that has judged that read (a decision link's scope) and
+// must report the same, not a read made after it.
+func (e *Engine) DecisionOf(rec ledger.DecisionRecord) Decision { return e.decisionOf(rec) }
+
+// AskerLive says whether an agent's decision's asking attempt is its
+// task's active one, in the session that asked, and that session lives:
+// the one a request for more information reaches (Decision's
+// Asker.Live). False for a plan's.
+func (e *Engine) AskerLive(row ledger.DecisionRow) bool {
+	if row.Origin != ledger.OriginAgent {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if r := e.runs[row.CurrentRun]; r != nil {
+		if t := r.task(row.TaskID); t != nil {
+			if a := t.active(); a != nil && a.n == row.Attempt && a.sessionID == row.SessionID && e.sessionLive(a.sessionID) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // sessionLive reports whether the session is the server's and has not
@@ -1514,6 +1545,11 @@ func answerFits(typ string, options int, resp Response) error {
 	}
 	return nil
 }
+
+// DecisionOptions is a decision's options' labels by its type and its
+// request as the ledger keeps it, in order (a response's choice indexes
+// them): optionsOf.
+func DecisionOptions(typ, request string) []string { return optionsOf(typ, request) }
 
 // optionsOf is the labels of a decision's options as its request keeps
 // them: an assignment's two fixed answers.

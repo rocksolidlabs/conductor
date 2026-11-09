@@ -67,7 +67,7 @@ Owner → client:
 | `chat` | `id, at, scope, kind, by{id, name, role}, text?, ref?, to?, on?, event?, nonce?, options?, quote?` — one message of the chat (see Chat), live: `kind` `message` with `text` and, for a comment on lines, `quote`; `system` with `event` `join` or `leave` about `by`, `answered` with `ref` the question `by` answered and `text` the label of the choice whose keys the reply typed, when it was one (absent for a digit that is no choice's keys, for keys that say nothing readable, an Enter alone, and always for a line typed: the agent may have asked for a credential, the terminal may not echo it, and the chat goes to every viewer, so a typed line is shown to its own person by their browser alone; #364), or `withdrawn` with `ref` a question that left without an answer through Conductor and `text` why: `terminal` (keys typed in the terminal answered it) or `agent` (the agent moved on), so that its card offers its choices no longer (#358); `sent_to_agent` with `ref` (the message typed) and `to` (a run's member, else the session's agent); `question` from the agent (`by` `{id: "agent", name: the agent id, role: "agent"}`) as the session goes `needs_input`, its `text` the question and `options[{label, input}]` its choices (at most 6), `on` the member in a run's chat. `by` is otherwise the sender's subscription as the roster lists it; `nonce` the sender's own id, echoed |
 | `chat_history` | `scope, messages[], more?` — the kept chat replayed to a new viewer right after the activity replay, oldest first, in frames of at most 8 KiB; `more` on every frame but the last; the session's series, then the run's (scope `run`) when the session is a member |
 | `nvim_event` | `id, kind, …` | What editor `id` reports. `kind` says the fields: `opened` (`reqId` on the first, `path`), `lines` (the buffer lines `[first, last)` become `lines`, `last` -1 meaning to the end, each event under the control bound, `truncated` when a line past 4 KiB was cut), `cursor` (`line`, `col`, 1-based, `mode`, `visualLine`/`visualCol` the other end of a visual selection), `mode`, `cmdline` (`show`, `content`, `pos`, `prompt`), `message` (`text`, `messageKind`), `written` (`path`; the write is also a `file` event `write` by the person with tool `nvim`), `closed` (`reason`), `error` (`reqId`, `code`, `message`), `swap` (`swap` `{file, pid?, running, user?, host?, modified?, mtime?}`: another editor's swap file for the file opened, which Neovim then opened read-only instead of asking; `running` when its writer still runs on the session's machine, a zombie not counted; `modified` when it holds changes not written; round 13), `modified` (`modified`: the buffer began to hold changes not written, or no longer does: written, undone back, or another file shown; the field is absent when false), `settled` (`ack`: Neovim has done the keys numbered up to it, nothing left pending: every change they made has been sent before it; a `cursor`'s `ack` can come before those changes, since Neovim answers requests in the middle of a key, a plugin's `vim.wait`; the editor keeps a tab's Neovim while its keys are not settled). The editor keeps a tab's Neovim while another tab is in front as long as its buffer holds changes not written, which is why a connection may keep 4. Neovim's own questions (`:confirm q`, a write over a file changed outside) come as a `message` of kind `confirm` whose last line holds the choices (`[Y]es, (N)o, (C)ancel: `), which the editor shows as buttons sending the key; a substitute's question at each match (its `c` flag) is a `message` of kind `confirm_sub` (`replace with b (y/n/a/q/l/^E/^Y)?`), answered with typed keys. Neovim leaves a question shown once answered, so a `message` of kind `clear` comes before the next acknowledgement (`ack`) after one: Neovim acknowledges no keys while it asks. The `lines` are the buffer's alone: Neovim's live preview of a substitute is off ('inccommand' is emptied after the person's config loads), and a preview turned on again later (Neovim reports it with no changedtick, and undoes it without a word) is never sent. The bridge passes over a notification of a shape it does not expect rather than lose Neovim over it; a Neovim that dies is told as soon as the bridge's reading of it ends (or at the next key, when its output is held open), `closed` with a `reason` beginning `error:`, and the changes it sent before may still follow that `closed` (the client delivers them on a goroutine of its own); its own quit is told before its output ends; an end before `opened` is told right after it; nothing follows an `nvim_close`. `closed` with `reason` `quit` is the person's own quit (`:q`), which closes the tab; any other is Neovim lost: the tab stays with the text Neovim last held, its later `lines` applied, read only, and Reopen starts Neovim again, which offers the lost one's swap file. A tab not in front follows its Neovim's `lines` too. A buffer Neovim reloads (`:e!`) is followed again and sent whole |
-| `chat_roster` | `scope: "run", count, list[{id, name, role, on?}]` — who is on the run's chat: every connection to any member, one row per name, `on` the member a person looks at (a connection that is not quiet); sent to every member's viewers whenever any member's roster changes; `count` counts everyone, `list` the first 32 |
+| `chat_roster` | `scope: "run", count, list[{id, name, role, on?}]` — who is on the run's chat: every connection to any member, one row per name, `on` the member a person looks at (a connection that is not quiet); sent to every member's viewers whenever any member's roster changes, and naming a connection from the moment it is sent `ready`; `count` counts everyone, `list` the first 32 |
 
 Error codes: `read_only`, `slow_consumer`, `bad_frame`, `hello_timeout`,
 `revoked`, `expired` (the link reached its expiry; both also refuse what a
@@ -2041,21 +2041,26 @@ refused `invalid`, naming its `reqId` when it has one within its bound.
 | control `decisions_list` | client → owner | `{t, reqId, after?}`: a page of the scope's items after `after` (the `next` the page before gave) | `MaxControl`; `after` at most 600 bytes |
 | control `decision_read` | client → owner | `{t, reqId, ref}`: one item with its detail, open or as it is now | `ref` at most 512 bytes |
 | control `decision_track` | client → owner | `{t, reqId, ref, receipt, attempt}`: the four steps of one action taken through this link; `receipt` what its steps are read by (a question's id, a task command's id), `attempt` the action's own identity (its decide's `opId`) | `receipt` 512, `attempt` an `opId` |
-| control `decision_record` | client → owner | `{t, reqId, ref, part, rev?, after?}`: one part (`head`, `responses`, `history`) of a DR1 record, `rev` required after `head`; answered `unsupported` until DR1's records are items | `rev` at most 20 digits, `after` 64 |
+| control `decision_record` | client → owner | `{t, reqId, ref, part, rev?, after?}`: one part (`head`, `responses`, `history`) of a DR1 record in the scope (`decision:dr-N`), `rev` the mark the head carried, required after `head`; `after` the `next` a page of the part gave (Record, below) | `rev` at most 20 digits, `after` 64 |
 | control `decision_evidence` | client → owner | `{t, reqId, ref, evidence}`: a bounded read of the evidence entry `evidence` (its own ref, never its place in a list) of the item `ref` | 512 each |
-| frame DECIDE | client → owner | `{reqId, ref, action, revision, ticketRev?, input?, choice?, text?, rationale?, opId}`: one action; `revision` the action's `expect`, `input` a choice's keys exactly, `text` a line; `choice` and `rationale` are DR1's, refused `invalid` before DR1; `opId` (1 to 32 of `A-Z a-z 0-9 . _ ~ -`) the receipt's key | 32 KiB encoded: `input` 48 raw bytes, `text` 4096, `rationale` 2 KiB encoded, `choice` 0 to 5, `action` 32, `revision` 64, `ref` 512 |
+| frame DECIDE | client → owner | `{reqId, ref, action, revision, ticketRev?, input?, choice?, text?, rationale?, opId}`: one action; `revision` the action's `expect`, `input` a choice's keys exactly, `text` a line; `choice` and `rationale` are DR1's (a decide on a DR1 record is refused, Decide below); `opId` (1 to 32 of `A-Z a-z 0-9 . _ ~ -`) the receipt's key | 32 KiB encoded: `input` 48 raw bytes, `text` 4096, `rationale` 2 KiB encoded, `choice` 0 to 5, `action` 32, `revision` 64, `ref` 512 |
 | frame DECISION | owner → client | `{reqId, list? \| item? \| track? \| evidence? \| record?}` | 128 KiB; over a data channel fragmented by CHUNK |
-| control `decisions_changed` | owner → client | `{t, seq}`: what the link's viewer sees changed (its scope's items, their actions' revisions, the steps of what it acted on): list again, track again what is not final | `MaxControl` |
+| control `decisions_changed` | owner → client | `{t, seq}`: what the link's viewer sees changed (its scope's items, their actions' revisions, every DR1 record's state and mark in its scope, a final record's too, the steps of what it acted on): list again, track again what is not final | `MaxControl` |
 | control `decide_ok` | owner → client | `{t, reqId, ref, receipt, repeat?}`: the action taken; `ref` and `receipt` are what its steps are read by; `repeat` when the operation already held its `opId` | `MaxControl` |
 | control `decide_refused` | owner → client | `{t, reqId, code, message, rev?, ref?, receipt?}`: `code` one of `stale_revision`, `not_in_scope`, `not_decision_link`, `not_found`, `question_answered`, `too_many_requests`, `unsupported`, `invalid`, `record_moved` (with `rev`), `revoked`, `expired`, `op_conflict` (the `opId` named another request), or an operation's own (`task_state`, `input_failed`, `session_ended`, `unavailable`); `ref` and `receipt` when the operation kept its refusal as a receipt (a command refused `stale_revision`, an answer another answer came before) | `message` at most 500 bytes encoded; `MaxControl` |
 | `welcome`, field `decisions` | owner → client | `true` to a decision link's connection; absent otherwise and from an older owner, to which a client sends no lane message | |
 
 **List.** The scope's open items as the inbox's summaries (`GET
-/api/inbox`'s), oldest first by `(since, ref)`, at most 25 a page:
-`{items, next?, total, at, recent?}`, `next` the cursor after the last
+/api/inbox`'s), DR1's records in the scope among them (a run link's,
+those its run holds; a session link's, those of its attempt's task,
+asked by it or holding it; open, or answered and `tracking`; a question
+that mirrors one is not listed beside it), oldest first by `(since, ref)`, at most 25 a page:
+`{items, next?, total, at, truncated?, cut?, recent?}`, `next` the cursor after the last
 when more follow, `total` every item in scope, so nothing is cut
 silently; an item that left between pages is not on the next, one that
-came is in its place. The first page carries the link's **Recent**: the
+came is in its place. `truncated` (with `cut`, its words, at most 500
+bytes) says the scope's DR1 records passed the read's bound (One read,
+below): `total` then counts the items read, and the scope holds more. The first page carries the link's **Recent**: the
 last 50 actions taken through it, `{ref, receipt, attempt, at}`, oldest
 first, kept in memory with the link (gone with it), one per item and
 attempt, so an item closed by its action stays readable with its steps
@@ -2067,10 +2072,71 @@ actions the lane takes (an answer and the three task commands: Check
 again is the workbench's); an evidence entry
 naming a session in the scope that is still listed carries `session`,
 the id the holder opens it by. A ref outside the scope is
-`not_in_scope`, one that names nothing `not_found`.
+`not_in_scope`, one that names nothing `not_found`. A DR1 record's item
+has its four states (`delivery`) and no action: DR1's policy, `local/1`,
+takes a response from a principal with the admin grant alone, so its
+`now` begins "Answer it on the LAN or the desktop: a link cannot answer
+a durable decision yet", until DR1's plan accepts a decision link's
+actor.
+
+**Record.** A DR1 record in the scope, read in parts, each cut from one
+whole read of the record (`GET /api/decisions/{did}`'s, its refs
+resolved in the same request for the head) and carrying its **mark**,
+`rev`: the record's rev, then how many responses (two digits) and
+history rows (three digits) it keeps, digits only. The rev alone does
+not mark a record whole: DR1 adds a refused response and its delivery's
+history rows (`delivery.typing`, `delivery.entered`) without moving it.
+`{ref, part, rev, decision?, refs?, answer?, responses?, history?,
+next?, total}`: the `head` is the record without its responses, its
+history and its answer, with `refs`; `responses` (newest
+first, as many a page as fit the frame at the receipt's bound beside the
+answer: 12 at 8 KiB receipts; the first page with `answer`, the accepted
+response in words)
+and `history` (32 a page, newest first) page by `next`, the offset of
+the next page, `total` how many the part holds. A part asked at another
+mark than the record's now is refused `record_moved`, its `rev` the new
+mark: the client drops what it assembled and reads again from the head.
+Assembled at one mark, the parts are the record and refs `GET
+/api/decisions/{did}` gives. Each part's frame is within 128 KiB at the
+fullest record's bounds. A ref of another kind is `invalid`.
+
+**One read.** A DR1 record, what it holds and its mark come from one
+read of the ledger (one read transaction), as the lane serves them and
+as its notification is made of them, and fail closed. An item says what
+its record holds (its blocking, what an answer then lets start or
+cancels) from the same read as the record and its `rev`, never from a
+second read of the holds: a continuation that moves a record and its
+holds to the next run is seen whole or not at all. A part is cut from
+the very read its scope was judged on, never from a second: a record
+that leaves the scope after that read (a continuation moving it to the
+next run) is served as it was when it was in it, and the next part asked
+at its mark is `record_moved` or `not_in_scope`. The notification is
+made of every record in the link's scope whatever its state, read once
+with their marks: the open and answered are the list's items, and a
+final one, which `decision_record` still reads, counts as they do, so
+`decisions_changed` is sent when any record's state or mark changes, not
+only an item's: a comment, a request for more information, a refused or
+late response and a delivery's history row each tell the viewer, after
+the record's application as before it. A read that fails is refused
+`unavailable` (the list, an item, a part), never answered with fewer
+records, and changes nothing the watch compares. The scope's read takes
+at most 1,100 DR1 records, the sum of the 1,000 a run may open and a
+page of 100 past them; a continuation holds the open and answered
+records it took over beside the ones it opened, so a scope can hold
+more. The promise is narrowed there, fail-closed and never silent: a
+read that reaches the bound takes the open and answered records first,
+then the newest of the rest, so an open record is never the one left
+out while the open and answered fit; the list carries `truncated` and
+`cut` ("More than 1100 durable decisions are in this link's scope…",
+pointing to the LAN or the desktop for every record), and the
+notification's hash carries the cut as a mark of its own. A final
+record left out of such a read is not listed and its changes are not
+told; `decision_record` still reads it, by its ref.
 
 **Track.** `{ref, receipt, attempt, steps}`, the four steps of `GET
-/api/inbox/track`, read under this link's actor: a task command's
+/api/inbox/track`, read under this link's actor (a DR1 record's is
+`unsupported`: nothing is done to one through a link, and its four
+states are its record's, read with it): a task command's
 receipt is the ledger's under `link:<id>`, never the workbench's, and
 its `attempt` is its receipt (the decide's `opId`), any other refused
 `invalid`; a receipt of another task's command reads as none of this
@@ -2116,8 +2182,16 @@ answer), is `question_answered`, nothing typed. `retry`, `accept` and
 `cancel` go to the engine's commands with `revision` as the expected
 revision and `opId` as the command id: a run that moved on is
 `stale_revision`, kept as the command's receipt; a command the item no
-longer lists is `stale_revision`, nothing done. Any other action is
-`invalid`. A decide whose operation has begun when its connection
+longer lists is `stale_revision`, nothing done. A decide on a DR1 record
+in the scope is refused, nothing done: `invalid` when it carries `input`
+(terminal keys, a question's alone), else `unsupported` until DR1's plan
+accepts a decision link's actor; the operation it maps onto then is
+DR1's, field for field (`answer`, `approve` and `reject` onto `POST
+/api/decisions/{did}/respond`'s `{responseId: opId, choice, text,
+rationale, expectedRev: revision}`, an `approve` choice 0 and a `reject`
+choice 1; `more_info` and `comment` onto `POST
+/api/decisions/{did}/comment`'s `{opId, kind, text, expectedRev}`). Any
+other action is `invalid`. A decide whose operation has begun when its connection
 closes is not taken back; one not begun is never begun: the connection's
 end cancels it, looked at as the operation is taken.
 
@@ -2362,9 +2436,9 @@ its run, and on no other.
 | `POST /api/integrations/{id}/install` | admin | install the adapter's hooks (and, for Claude Code, Codex, pi and Goose, the Conductor skill) into the agent's own config in the server user's home, and nowhere else; reply `{changed}`, the files written, `[]` when all was in place; `400 no_file_route` when there is no file to install into or a step is left to do by hand, the error carrying `changed` (files already written) and `snippet`, which is present only when what is left by hand is the agent's hooks, not a skill file (the message says what to do about a `SKILL.md` of the user's own); `500 install_failed` with `changed`; `404` for an unknown `id` |
 | `GET /api/sessions` | admin | list sessions |
 | `GET /api/touched` | admin | the files every listed session's agent touched (#304), from the index each session keeps (`op: touched` above): `{sessions[{id, name, agentId, kind, status, cwd, touched[{path, op, ops, count, tool?, by?, first, last}], truncated?}], truncated?}`, the sessions in the list's order (the newest first), each session's files the most recently touched first, a server session's deny list applied; a session with nothing touched is left out; a hosted session's index holds the `file` entries its host reported since it connected (the host's own index, which the Files tab reads, begins with the session). `?limit=` is the files per session (default 500, at most 2,000, `400 invalid_request` otherwise), a session cut to it marked `truncated`; the whole reply is held to about 2 MiB of JSON, the session that would pass it cut short and marked, and the reply marked too |
-| `GET /api/inbox?after=<cursor>` | admin | the decision inbox (`docs/plans/decision-inbox.md`, Program item MB0): the open items a person must decide, as summaries, oldest first by `(since, ref)`: `{items[{ref, kind, since, title, brief, question, answerer, routed?, blocks?, actions[label], card?}], next?, total, at}`, at most 150 a page, `next` the cursor after the last when more follow (`?after=` takes it; `400 invalid_request` for any other value, any other parameter, or one given twice, on all three inbox routes), `total` every open item, not the page's. An item is named by Brakeman's ref of what it is about: `question:<session>/<question>` (a listed session's attention `needs_input` with that id, not answered in the terminal; a turn held for the terminal is an item with no answer, and so is a question that mirrors a durable decision, its attention's `decision`: it is answered through `POST /api/decisions/{did}/respond` on the decision's card, its brief and `blocking.words` naming the decision and where, and the session refuses every reply naming it), `task:<run>/<task>` (a managed run's failed task that `crew.TaskCommands` allows a command on; a blocker an attempt reports is its session's question, naming the task and carrying its Cancel), `plan:<KEY-n>/<n>` (a ticket's proposed revision, or, while the ticket is neither done nor cancelled, its approved one whose approval no longer holds, `dispatch.Store.OpenPlans`). A summary is at most 4 KiB, the reply at most 640 KiB; it carries no action's input or scope. Nothing is written: the page acts through each action's own route. On a switchyard `403 switchyard` (decisions are answered where the work runs) |
-| `GET /api/inbox/item?ref=<ref>` | admin | one item whole, at most 96 KiB: `{item: {ref, subject, kind, since, title, brief, briefBy, card?, question, answerer, routedTo?[{kind, name}], routedRule?, revision, now?, blocking{words, refs, more?}, actions[{name, label, input?, text?, expect, ticketRev?, scope, confirm?, route, track?, attempt?, commit?}], whyHuman?, considered?[{label, tradeoffs}], recommended, uncertainty?, authorizes?, cardRev?, cardNote?, evidence?[{ref, label}], delivery?}}`. Each action carries the revision its own operation checks (`expect`: the question's id for an `answer`, the run's revision for `retry`, `accept`, `cancel` and `recheck`, the plan revision's `rev` for `approve` and `withdraw`, and `ticketRev`, the ticket's, beside it for `approve`) and its `route` (`/ws/sessions/{id}`'s `answer`, `POST /api/runs/{run}/tasks/{task}/{command}`, `POST /api/dispatch/plans/{id}/{approve,withdraw}`); a failed task offers `recheck`, Check again, beside them when the engine would take it now (`crew.TaskCommands`' `recheck`, by `Engine.Recheck`'s own rule): its `attempt` and `commit` name the standing failed candidate as its own run names it, and its route is that run's recheck route (in a continuation, the continued run's, which the route walks forward from); a run that moved on refuses it `stale_revision`, the page's words then naming the candidate the item read again offers, and a candidate that no longer stands is refused `stale_candidate` in the engine's words; `track`, when set, is the ref its steps are read under (`GET /api/inbox/track`), when not the item's own: a task command a blocker's question carries is tracked as `task:<run>/<task>`. `scope` says exactly what it does, at which revision (an Approve's names the yolo choice read from the revision's body and the approval it supersedes, kept whole within the scope's 1 KiB, the crew's tasks and agents shortened first; a body not read gives no Approve; a Retry's names the commit the engine would start it at). A task's item describes the task as the engine judged its commands, in one read. An exact field (`question`, at most 500 raw bytes; an `input`, at most 48; the refs; `expect`) is never cut; a display field is cut on a rune boundary until its encoded form fits. Brakeman's newest `decision/1` card about the item's `subject` fills the brief, `whyHuman`, `considered`, `recommended` (-1 for none: Conductor recommends nothing), `uncertainty` and `authorizes` (Brakeman's, beside each scope), with `cardNote` when it was read at another revision. `routedTo` is the route a registered decision router gave for that question, kept by question id (the last 256, in memory). A ref of something no longer open answers the item as it is now (no actions, `now` saying why, a question's `delivery`: "not open now" for a question kept to show again, "no longer open" with how it left otherwise), a task of a run the engine let go read from the run's record; `404 not_found` for one that names nothing the server holds; `400 invalid_request` for a ref that does not parse. On a switchyard `403 switchyard` |
-| `GET /api/inbox/track?ref=<ref>&receipt=<id>&attempt=<reqId>` | admin | the four steps of one action, from its durable receipt, at most 8 KiB: `{ref, receipt, steps[{step, state, at?, words, receipt?}]}`, the steps `available`, `recorded`, `validated` and `resumed`, each `done`, `waiting`, `refused`, `not_applicable` or `unknown`, never merged. `receipt` is a task command's id (the ledger's receipt of the caller's actor: `accepted` is validated waiting, `done` done, `failed` refused with its code, `uncertain` validated unknown and resumed not applicable: a command's change commits with its receipt's settlement, so a receipt left unsettled at a stop made nothing; then the task since: a retry's next attempt, an accept's dependents (the first attempt of any of them that started since, from every attempt each keeps), a Check again's attempt checking its candidate (waiting while the attempt its change recorded waits for its verification, which starts once the run's prerequisites have passed; done at the first receipt of that verification, or at the attempt's end when it decided without one; not applicable when it was closed before), read from the run's record for a run the engine let go and `unknown` for one found nowhere, a cancel's nothing; an id whose receipt is another command's, a run's pause or another task's, is recorded refused, nothing taken for this task, a Check again's task read from the arguments it was taken with whatever its receipt names (one refused before its change, or not settled, names none); a Check again's receipt not in the ref's run is looked for in the runs that continue it, where its route sends it), a plan revision's Dispatch op id (the operation's receipt and its own outcome; resumed does not apply: a launch from the ticket page starts it; an id whose receipt is not an approval or withdrawal of this revision, as far as the store keeps the operation's subject, is recorded refused), or a question's id with `attempt` the request id the answer was sent with. A question reads, by how it left: shown, or kept to show again (the agent's own set aside, the one a held turn holds over), waiting; answered through its claim, the winner's id done, another's refused "another answer first", then its resumption as the session kept it at the first change after the answer, `working` or a next question done, the end not applicable; answered by keys typed in the terminal (a person's Enter at a wait with no words among them), while it still shows and once it left (whatever let it go after, the process's end among them), recorded refused "keys typed in the terminal answered it first"; gone for good without an answer, recorded refused at the time it went, saying how: the session ended, another question shown in its place, or withdrawn by the agent (by what it reported next, or by its id while it was set aside or held over, with nothing else changing); forgotten past the session's 64, or the session no longer listed, `unknown`. A hosted session's question reads recorded and validated `unknown` (the host holds the answer) and resumed from what the server saw as its host synced the attention (what the host said, never a change the server forwarded and the host has not applied), its last 64 questions: a question leaves when the host's session neither shows nor keeps it, and its resumption is the first change from then, waiting until it comes, `unknown` when the server did not see it leave; the server notes it before it publishes the change's `session` event. A question's `receipt` is its own id; a task command carried by its item is tracked under the action's `track`, and its command id under the question's ref is `400 invalid_request`. A step is a historical fact, read the same by every browser; what changed of the subject since is the item's `now`. On a switchyard `403 switchyard` |
+| `GET /api/inbox?after=<cursor>` | admin | the decision inbox (`docs/plans/decision-inbox.md`, Program item MB0): the open items a person must decide, as summaries, oldest first by `(since, ref)`: `{items[{ref, kind, since, title, brief, question, answerer, routed?, blocks?, actions[label], card?, state?, tracking?, closed?}], next?, total, tracking?, recent?, at}`, at most 150 a page, `next` the cursor after the last when more follow (`?after=` takes it; `400 invalid_request` for any other value, any other parameter, or one given twice, on all three inbox routes), `total` every open item, not the page's. An item is named by Brakeman's ref of what it is about: `question:<session>/<question>` (a listed session's attention `needs_input` with that id, not answered in the terminal; a turn held for the terminal is an item with no answer, and so is a question that mirrors a durable decision, its attention's `decision`: it is answered through `POST /api/decisions/{did}/respond` on the decision's card, its brief and `blocking.words` naming the decision and where, and the session refuses every reply naming it), `task:<run>/<task>` (a managed run's failed task that `crew.TaskCommands` allows a command on; a blocker an attempt reports is its session's question, naming the task and carrying its Cancel), `plan:<KEY-n>/<n>` (a ticket's proposed revision, or, while the ticket is neither done nor cancelled, its approved one whose approval no longer holds, `dispatch.Store.OpenPlans`), `decision:dr-<n>` (a DR1 record, `open`, or `answered` and not yet applied: the latter `tracking: true`, listed and counted in `total` until DR1 gives it a final state, and counted in `tracking`, which the bar's number leaves out, the records' page, their count and `tracking` of one read; its `since` the record's `createdAt`, `ledger.InboxDecisions`). A question that mirrors a DR1 record (its attention's `decision`) is not listed: the record is its item. A decision's summary carries `state`, the record's. The first page carries `recent?`, DR1's records closed (applied, superseded, cancelled or expired) in the last 24 hours, at most 50, the latest first, each a summary with `closed`, for every viewer. A summary is at most 4 KiB, the reply at most 840 KiB; it carries no action's input or scope. Nothing is written: the page acts through each action's own route. On a switchyard `403 switchyard` (decisions are answered where the work runs) |
+| `GET /api/inbox/item?ref=<ref>` | admin | one item whole, at most 96 KiB: `{item: {ref, subject, kind, state?, since, title, brief, briefBy, card?, question, answerer, routedTo?[{kind, name}], routedRule?, revision, now?, blocking{words, refs, more?}, actions[{name, label, input?, text?, choice?, expect, ticketRev?, scope, confirm?, route, track?, attempt?, commit?}], whyHuman?, considered?[{label, tradeoffs}], recommended, uncertainty?, authorizes?, cardRev?, cardNote?, evidence?[{ref, label}], delivery?}}`. A DR1 record's item (`decision:dr-<n>`, `kind` `decision`, `state` the record's) does not carry the record (its read, `GET /api/decisions/{did}`, is up to 1 MiB): its question exactly as the record keeps it (at most 500 characters), its answerer the operator (with whom the record is for when it names a person, in DR1's card's words: "you, the operator, for nate (architecture owner)", the responsibility in HM1's words, a label that named no one the operator alone), its `revision` the record's `rev`, its blocking the tasks the record holds and their dependents, the asking attempt and the run's end, its evidence the run, the asking task, attempt and session, the ticket and the evidence the request cites, and its `delivery` DR1's four states as the record reports them, each its own step: `available` (opened), `recorded` (the accepted response, its receipt `dr-N/<k>`; not applicable for one closed unanswered), `validated` (Yardmaster's application checked the subject, the policy and the asker again; waiting while answered: "Yardmaster applies it next", or, its run not held by the engine, "it waits for its run to be continued"), and `applied` (the application's words, or why not). Its actions, open, by its type, each through DR1's route at the record's `rev` (`expect`): its options by index (`choice`; an approval's first two named `approve` and `reject`, asked first; an assignment's `Done` and `Not done`), a clarification's line (`answer` with `text`), each to `POST /api/decisions/{did}/respond`, then `more_info` (an agent's record, open, while its asking attempt is live, as DR1's `asker.live` says: DR1 refuses it `no_recipient` after) and `comment` (open or answered), each with `text`, to `POST /api/decisions/{did}/comment`; each `scope` says what Yardmaster then does (types the answer into the asking attempt's session, or, that attempt ended, says the task's next attempt reads it in its task file; lets the held tasks start, cancels them) and what the request authorizes. A record and what it holds (its active holds under its current run) are of one read of the ledger, so its blocking and its actions' scopes are of the `rev` they are answered at (a continuation that moves both is seen whole or not at all); a read that fails is no item (`503 unavailable`, and the list's too): what it holds is never guessed. Each action carries the revision its own operation checks (`expect`: the question's id for an `answer`, the run's revision for `retry`, `accept`, `cancel` and `recheck`, the plan revision's `rev` for `approve` and `withdraw`, and `ticketRev`, the ticket's, beside it for `approve`) and its `route` (`/ws/sessions/{id}`'s `answer`, `POST /api/runs/{run}/tasks/{task}/{command}`, `POST /api/dispatch/plans/{id}/{approve,withdraw}`); a failed task offers `recheck`, Check again, beside them when the engine would take it now (`crew.TaskCommands`' `recheck`, by `Engine.Recheck`'s own rule): its `attempt` and `commit` name the standing failed candidate as its own run names it, and its route is that run's recheck route (in a continuation, the continued run's, which the route walks forward from); a run that moved on refuses it `stale_revision`, the page's words then naming the candidate the item read again offers, and a candidate that no longer stands is refused `stale_candidate` in the engine's words; `track`, when set, is the ref its steps are read under (`GET /api/inbox/track`), when not the item's own: a task command a blocker's question carries is tracked as `task:<run>/<task>`. `scope` says exactly what it does, at which revision (an Approve's names the yolo choice read from the revision's body and the approval it supersedes, kept whole within the scope's 1 KiB, the crew's tasks and agents shortened first; a body not read gives no Approve; a Retry's names the commit the engine would start it at). A task's item describes the task as the engine judged its commands, in one read. An exact field (`question`, at most 500 raw bytes; an `input`, at most 48; the refs; `expect`) is never cut; a display field is cut on a rune boundary until its encoded form fits. Brakeman's newest `decision/1` card about the item's `subject` fills the brief, `whyHuman`, `considered`, `recommended` (-1 for none: Conductor recommends nothing), `uncertainty` and `authorizes` (Brakeman's, beside each scope), with `cardNote` when it was read at another revision. `routedTo` is the route a registered decision router gave for that question, kept by question id (the last 256, in memory). A ref of something no longer open answers the item as it is now (no actions, `now` saying why, a question's `delivery`: "not open now" for a question kept to show again, "no longer open" with how it left otherwise), a task of a run the engine let go read from the run's record; `404 not_found` for one that names nothing the server holds; `400 invalid_request` for a ref that does not parse. On a switchyard `403 switchyard` |
+| `GET /api/inbox/track?ref=<ref>&receipt=<id>&attempt=<reqId>` | admin | the four steps of one action, from its durable receipt, at most 8 KiB: `{ref, receipt, steps[{step, state, at?, words, receipt?}]}`, the steps `available`, `recorded`, `validated` and `resumed` (for a DR1 record, `applied`: DR1's fourth state), each `done`, `waiting`, `refused`, `not_applicable` or `unknown`, never merged. For `decision:dr-<n>`, `receipt` is the tracking key, which names what it tracks by its kind and id: `response:<responseId>` for a response, `comment:<opId>` for a comment or a request for more information (DR1 keeps the two ids apart, so one id may name a response and a comment both, and neither is read as the other; a key without its kind, `400 invalid_request`), read under the caller's actor, with no `attempt`: a response accepted reads the record's four states, one refused reads recorded refused with DR1's words and code; a comment or a request for more information reads recorded done at its history row and the rest not applicable (a comment changes nothing; more information keeps the record open); an id the record keeps nothing of under the caller reads recorded `unknown`. `receipt` is a task command's id (the ledger's receipt of the caller's actor: `accepted` is validated waiting, `done` done, `failed` refused with its code, `uncertain` validated unknown and resumed not applicable: a command's change commits with its receipt's settlement, so a receipt left unsettled at a stop made nothing; then the task since: a retry's next attempt, an accept's dependents (the first attempt of any of them that started since, from every attempt each keeps), a Check again's attempt checking its candidate (waiting while the attempt its change recorded waits for its verification, which starts once the run's prerequisites have passed; done at the first receipt of that verification, or at the attempt's end when it decided without one; not applicable when it was closed before), read from the run's record for a run the engine let go and `unknown` for one found nowhere, a cancel's nothing; an id whose receipt is another command's, a run's pause or another task's, is recorded refused, nothing taken for this task, a Check again's task read from the arguments it was taken with whatever its receipt names (one refused before its change, or not settled, names none); a Check again's receipt not in the ref's run is looked for in the runs that continue it, where its route sends it), a plan revision's Dispatch op id (the operation's receipt and its own outcome; resumed does not apply: a launch from the ticket page starts it; an id whose receipt is not an approval or withdrawal of this revision, as far as the store keeps the operation's subject, is recorded refused), or a question's id with `attempt` the request id the answer was sent with. A question reads, by how it left: shown, or kept to show again (the agent's own set aside, the one a held turn holds over), waiting; answered through its claim, the winner's id done, another's refused "another answer first", then its resumption as the session kept it at the first change after the answer, `working` or a next question done, the end not applicable; answered by keys typed in the terminal (a person's Enter at a wait with no words among them), while it still shows and once it left (whatever let it go after, the process's end among them), recorded refused "keys typed in the terminal answered it first"; gone for good without an answer, recorded refused at the time it went, saying how: the session ended, another question shown in its place, or withdrawn by the agent (by what it reported next, or by its id while it was set aside or held over, with nothing else changing); forgotten past the session's 64, or the session no longer listed, `unknown`. A hosted session's question reads recorded and validated `unknown` (the host holds the answer) and resumed from what the server saw as its host synced the attention (what the host said, never a change the server forwarded and the host has not applied), its last 64 questions: a question leaves when the host's session neither shows nor keeps it, and its resumption is the first change from then, waiting until it comes, `unknown` when the server did not see it leave; the server notes it before it publishes the change's `session` event. A question's `receipt` is its own id; a task command carried by its item is tracked under the action's `track`, and its command id under the question's ref is `400 invalid_request`. A step is a historical fact, read the same by every browser; what changed of the subject since is the item's `now`. On a switchyard `403 switchyard` |
 | `POST /api/sessions` | admin | launch a server session: `{agentId, name?, cwd?, args?, cols?, rows?, yolo?}`, reply `201` with the session `Info`; `yolo` overrides the server's `yolo` for this launch: with it on, the agent's yolo recipe is applied (its `args` after the command and `args`, its `env` over the agent's own, through the filtered environment; for Codex also `-c projects={"<dir>"={trust_level="trusted"}}` naming the launch directory's repository and, for a worktree, its main repository), and `Info.yolo` says so; an agent with no recipe is launched without one and its activity says so; an agent with a `session` recipe and `startArgs` gets a fresh id there, right after its command (`Info.agentSession`, `source:"set"`); `400 not_the_agent` when the identity probe's cached answer names the agent's program a known other one (`identity.impostor`; nothing is run at launch, so an answer not yet cached refuses nothing), the message naming the program, the agent and what it printed; `probe: false` on the agent launches it anyway; a verified probe that matched nothing does not refuse (the launch goes ahead, with an `error` entry in the activity) |
 | `GET /api/sessions/{id}` | admin or share token | one session with the caller's `role`; admins also get its `links`, and for a server session its `launch`, `{agentId, cwd, args, yolo}`: what it was launched with and what a clone takes by default (`POST /api/sessions/{id}/clone`), its agent, its resolved working directory, the arguments the launch gave, as given, and its yolo choice (not whether a recipe was applied: `Info.yolo` says that); never the launch's environment, and never to a share link's holder; on a switchyard the workbench token's `role` is `""` |
 | `DELETE /api/sessions/{id}` | admin | stop a running session; on an ended session, remove it from the list; on a switchyard, a session a Conductor published there ends its publication, its process running on at home |
@@ -4231,9 +4305,10 @@ approved and whose approval still holds), `prepare_followup` (DS2's
 proposal of a revision `basedOn` the approved one, which the operator
 still approves), `request_repair` (RV1's request for changes on a
 candidate) and `route_decision` (DR1's routing of a decision record to
-the operator, never its answer); the last two have no route in this build
-and are refused at the save (`400 invalid_config`, `field`
-`permissions.act`), as is any other name and a name twice. Approving a
+the operator or to a person of its run's crew, never its answer);
+`request_repair` has no route in this build and is refused at the save
+(`400 invalid_config`, `field` `permissions.act`), as is any other name
+and a name twice. Approving a
 revision, answering a question, changing a gate, accepting a task,
 editing the configuration and closing or deleting a ticket are none of
 them. There is no act route of Brakeman's own: each operation is sent to
@@ -4307,10 +4382,62 @@ after it; one that has not begun runs nothing (`503 shutting_down`), and
 a launch still under way once the stops begin starts no run (`409
 launch_failed`, "the server is shutting down: the run was not started").
 
+`route_decision` (PR-18) is sent to DR1's own route, `POST
+/api/decisions/{did}/route`, with that route's body (`{opId,
+expectedRev, to, note?}`, at most 8 KiB): `to` is `{kind: "operator"}`,
+`{kind: "person", name}` for a person of the decision's run's crew, or
+`{kind: "role", name}` for the holder of one of its responsibilities
+(`architecture`, `product`, `security`, `acceptance`). It is an act as
+the others are, in the same order, with DR1's record in Dispatch's place:
+the turn reads the decision, its `rev` and its ref `decision:<dr-n>`, in
+its run's read (`observe_run`, `observe_task`), which lists it while it is
+open, whatever closed ones are newer. `403 not_granted` first;
+`404 not_found` for an id that is no decision's; `400 invalid_request`
+for a body its route would not decode,
+an `opId` not 1 to 32 of `A-Z a-z 0-9 . _ ~ -` or an `expectedRev` under
+1; an `opId` the request holds answers `409 op_conflict` for another
+operation or body (the decision's id among it) and `409 act_not_run` as
+above, and one whose route DR1's history holds (the row `brakeman` wrote
+under the derived op id) is run again, DR1 answering its receipt with
+`repeat`. Then, refused in this order, nothing kept: `403 not_visible`
+unless `runs` is visible (a decision is its run's); `404 not_found` for a
+decision not there or one whose run is outside the scope, in the same
+words ("no decision dr-7"); `409 stale_target` for one not `open`, and,
+for a route to a person, for one whose request already names whom it is
+for (HM1's `for`: the plan's or a person's to change; the operator may
+route it); `409 stale_decision` for an `expectedRev` that is not its rev
+now; `400 invalid` for a person or a responsibility its run's crew as
+launched does not have, in the crew's words ("no person of crew api
+holds product"); then `turn_over` and `acts_spent` as above. The entry's
+`target` is the decision's ref (`decision:<dr-n>`), its `run` the run it
+was admitted on, its `args` the SHA-256 of the decision's id and the body
+as decoded but its `opId`; the route runs under the actor `brakeman` with
+the derived op id, which DR1's history keeps. The route's scope is
+checked again inside the routing transaction, against the run the
+decision is on at commit; a continuation between the two is refused
+(`409 stale_decision`, "moved to another run since the route was
+admitted: route it again"). A turn's routes count in their own group
+with their own bound, apart from the operator's operations: at most 4
+routed rows by `brakeman` per decision, all its turns together, past
+which DR1 answers `429 decision_limit`. Its outcome is copied from the
+route's receipt as committed, read again from nothing: `done` with
+`receipt` `<dr-n>#<seq>`, the decision and the history row DR1 wrote,
+`refused` with DR1's words. The answer is the route's status and DR1's
+`receipt` (`{decision, op, seq, at, rev, words, repeat?}`) and `error`,
+never the decision record, and no `receiptRef` (DR1's receipt is a row
+of the decision's history, which no ref names); `runs` is noted among the
+classes the turn's answers used. A route left `pending` by a stop is
+settled at the next start from DR1's history by its decision and op
+(`done` with that row), or marked `not_run`. Routing never answers: the
+operator answers every decision under `local/1`, the person routed to
+named on its card, and no grant reaches `POST /api/decisions/{did}/respond`.
+
 The guide's table lists each operation a grant may name that this build
 serves, under the grant's name with the scope `act` (`launch_approved_plan`
 and `prepare_followup`: its route, the body that route decodes, its body
-bound, `receipt: dispatch` and `revision: ticket`), and the MCP tool `act`
+bound, `receipt: dispatch` and `revision: ticket`; `route_decision`: DR1's
+route, `receipt: ledger` and `revision: decision`, given to a turn that
+sees `runs`), and the MCP tool `act`
 (`{operation, params?, body?, opId?}`: the operation by its name, its
 route's path parameters, its body without `opId`), which `conductor mcp`
 and `conductor brakeman act OPERATION --key KEY --body-file F [--op-id
@@ -4424,10 +4551,12 @@ permission and proposals and decisions `propose`.
 holds, and its `rev`), `launch:<id>` (a launch from an approved
 revision: its state and `rev`) and `candidate:<run>/<task>/<n>` (an
 attempt that submitted something: `standing`, `withdrawn` or its
-attempt's state, at the commit it submitted), each at most 512 bytes,
-resolved as the brief is kept against the record it names (a plan
-revision and a launch admitted by their ticket, as a ticket is; a
-candidate by its run).
+attempt's state, at the commit it submitted), and DR1's
+`decision:<dr-n>` (a decision record: its state and `rev`, as its run's
+read lists it), each at most 512 bytes, resolved as the brief is kept
+against the record it names (a plan revision and a launch admitted by
+their ticket, as a ticket is; a candidate by its run; a decision by the
+run it is on now).
 
 **The `brakeman` event.** After each change of a request's state the
 server sends `brakeman` on `GET /api/events`: `{id, state}`, at most 200
@@ -4654,8 +4783,12 @@ server reads it. `indexing` is `{state, behind?, ledger?}`: `state`
 indexed from their records alone). Each source is read with its mark
 taken first: a run's `L<revision>/R<sha256>` (the ledger's revision and
 its record file's hash), a session record's `S<seq>/P<projects>`, and
-`/L<revision>` for a crew member's; a finished check receipt is a source
-of its own, read once. A run is read at most once every 2 s; what another
+`/C<start commit>/J<project>` for a crew member's (its attempt's start
+commit and its run's project); a finished check receipt is a source of
+its own, read once, its mark `finished`. A run's and a receipt's mark
+gain `/J<project>` when the run is placed in a Dispatch project, and any
+mark `/U` while its repository could not be read, which every reconcile
+reads again. A run is read at most once every 2 s; what another
 server writes to the ledger and the run records is found by a reconcile
 every 30 s.
 
@@ -4684,7 +4817,54 @@ outcome (said: Brakeman's words), each `cites` the refs it names; what a
 person asked Brakeman is never read, and a brief whose turn could see the
 terminals' screens keeps its items' words out of the index. Brakeman's own
 runs and sessions are indexed under the crew `brakeman` and left out of a
-search unless it names a crew (`crew:`) or the kind `brief.item`.
+search unless it names a crew (`crew:`) or the kind `brief.item`. A
+**decision** (`decision:dr-<n>`, DR1's request) is read through the
+ledger's own read of its record: the request as `decision` (a record: its
+question, whole in its body, its title cut from it, its subject's revision
+and commit, its scope: its type, who
+asked, whom it is for as its request keeps the person its opening
+resolved, what it is about, what a yes authorizes), grouped under its
+asking task in the run that holds it (a gate's under that run); each
+response the decision accepted as `decision.response` (decided: its
+response row's actor as the actor, none when the row names none, its
+rationale, `outcome` the option chosen: `approved` or `rejected` for a
+gate's approval, `done` or `not_done` for an assignment, else `answered`,
+its title the option's label and its words, cut from the answer alone,
+its body the option chosen, whole (a label is at most 80 characters,
+far inside the body's bound), then its words and rationale, its summary
+who answered and whom for, as its receipt keeps them, then the question
+it answers), keyed `decision:dr-<n>/<k>` as DR1 numbers its receipt,
+`answers` to the request and, once Yardmaster applied it, `applied` to
+what its application receipt says it reached: the asking attempt when
+typed into it, its task when put in the task's next file (the receipt's
+attempt is the one that asked), a gate's tasks, else its run. A refused
+response decided nothing and is not indexed. What is indexed of a
+decision is what the ledger held at one read of it, marked
+`S<stamp>/P<stamp>/C<run>/O<run>/R<rev>` with a digest of what its
+entries were built from (its row, and its run's place: machine, project,
+repository, tree, crew, ticket and asking agent), the runs that hold it
+and opened it, and its rev, so an entry is never older than its mark.
+The mark covers the decision's place and its revision as the ledger
+holds them: every change of a decision moves its rev or the run that
+holds it, whatever wrote it (a transition of the run that holds it, one
+of a continuation that supersedes an applied approval its ancestor
+holds, a prune's hand-back, another server), and every reconcile compares
+each decision the ledger keeps with its mark by those two and reads again
+each that differs or that the index does not hold. Its place changes
+only with its run's record or rows, so the run's pass, which each of
+those asks for, compares each of the run's decisions' whole marks with
+what it reads before it commits its own (a scan that fails is made again
+by the pass retried): a change in that run's own transition, or of its
+place, is indexed with the run's pass, any other at the next reconcile
+(every 30 s) at the latest. A prune that hands a decision back moves the
+receiving run's revision with it too (the ledger tells it as that run's
+commit). A run whose ledger rows
+are gone, its record kept or not, reads again every decision it held or
+opened: the ones it opened went with it and their entries go, and the
+ones it held the ledger handed to the run the pruned one continued,
+under which they are indexed. A decision indexed without its repository
+(its reads past their retries, its mark ending `/U`) is read again by
+every reconcile, as a run or a session is, until a read succeeds.
 
 The search routes read only their query string (every parameter named,
 each once, the whole at most 12 KiB: `400 invalid_request` otherwise),
@@ -4714,7 +4894,10 @@ that shows the evidence, never an API route: a check receipt the run page
 at its step (`/runs/<run>?view=tasks&task=&attempt=&step=<phase>/<id>/<k>`),
 a command receipt the run page at the receipt (`?command=&actor=`), a
 comment its ticket's page at it (`?comment=<n>`), a launch (an entry or a
-link's end) its run's page (its ticket's before it has a run), a session `/sessions/<id>` while the server lists it and
+link's end) its run's page (its ticket's before it has a run), a decision's
+request or response (an entry or a link's end) the decision's card over
+the run that holds it (`/runs/<run>?view=tasks&task=<task>&decision=dr-<n>`,
+its notification's URL), a session `/sessions/<id>` while the server lists it and
 `/history/sessions/<id>#e<seq>` after; every other ref the page Brakeman's
 references open. `availability.state` is `live`, `listed`, `record`,
 `lost` or `host_away` for a session, `worktree`, `worktree_gone` or
@@ -4722,7 +4905,11 @@ references open. `availability.state` is `live`, `listed`, `record`,
 for an attempt or a receipt whose run's rows are gone, `log`,
 `log_dropped` or `pruned` for a receipt, `deleted` for a ticket's or a
 comment's tombstone, `kept` or `pruned` for a brief (by Brakeman's store's
-own read), else `kept`; `unknown` wherever the store could not be read
+own read), the decision's state now for a decision's request and its
+responses, by the ledger's own read (`open`, `answered`, `applied`,
+`superseded` with its successor and DR1's words of why, a stale subject
+among them, `cancelled` or `expired`, the words at most 300 bytes;
+`pruned` once the ledger no longer keeps it), else `kept`; `unknown` wherever the store could not be read
 (the ledger not open, a read that failed, a run's folder not known or a
 step of a worktree's place that could not be looked at): never said as
 gone. Every yes-or-no answer of availability and eligibility is `yes`,
@@ -4795,7 +4982,7 @@ approver.
 | `POST /api/decisions/{did}/respond` | admin | `{responseId, choice?, text?, rationale?, expectedRev, byName?}` (at most 32 KiB: `text` at most 4,096 bytes, `rationale` at most 2 KiB as encoded, `byName` cut to 64 characters, each as encoding/json sends it, escapes and all) → `201 {receipt, decision}`, `200` for a repeat; `409 decision_answered` (naming who answered and when), `decision_closed`, `stale_decision` (what changed since the rev read), `stale_policy`, `response_conflict`, `not_held`; `403 not_approver`; `503 decision_moved` (ask once more) |
 | `POST /api/decisions/{did}/cancel` | admin | `{commandId, why, release?, expectedRev}` → `{receipt, decision}`, `200` for a repeat; `409 op_conflict`, `stale_decision` (the operation's `expectedRev`, here and below, is judged in the transaction that applies it, after the look for a repeat of its id) |
 | `POST /api/decisions/{did}/comment` | admin | `{opId, kind: comment\|more_info, text, expectedRev}` (at most 8 KiB) → `{receipt, decision}`; `409 op_conflict`, `stale_decision`, `no_recipient` (a `more_info` without a live asking attempt); `429 decision_limit` |
-| `POST /api/decisions/{did}/route` | admin | `{opId, to: {kind: "operator"} \| {kind: "person", name} \| {kind: "role", name: <responsibility>}, note?, expectedRev}` → `{receipt, decision}`; `409 op_conflict`, `stale_decision`; `429 decision_limit`. To the operator it changes no state. To a person or a responsibility (HM1), resolved in the run's crew as launched (`400 invalid` for one it does not resolve), it changes whom the decision is for: only while it is `open` (`409 decision_answered`, `decision_closed` otherwise, a response's words), at the `expectedRev` read (at least 1), through the run that holds it (`409 not_held` otherwise: continue it, then route); it rewrites the request's `for`, writes the `routed` row with `for` and `forWas`, and bumps `rev`, so a response at the older rev is `stale_decision` naming the new person first. Who answers does not change: the operator |
+| `POST /api/decisions/{did}/route` | admin, or a Brakeman turn granted `route_decision` | `{opId, to: {kind: "operator"} \| {kind: "person", name} \| {kind: "role", name: <responsibility>}, note?, expectedRev}` → `{receipt, decision}` (a turn: `{receipt, error}`); `409 op_conflict`, `stale_decision`; `429 decision_limit` (the operator's operations, comments, requests for more and routes together, at most 32 per decision; a Brakeman turn's routes, at most 4, apart from them). To the operator it changes no state. To a person or a responsibility (HM1), resolved in the run's crew as launched (`400 invalid` for one it does not resolve), it changes whom the decision is for: only while it is `open` (`409 decision_answered`, `decision_closed` otherwise, a response's words), at the `expectedRev` read (at least 1), through the run that holds it (`409 not_held` otherwise: continue it, then route); it rewrites the request's `for`, writes the `routed` row with `for` and `forWas`, and bumps `rev`, so a response at the older rev is `stale_decision` naming the new person first. Who answers does not change: the operator |
 | `GET /api/dispatch/tickets/{key}/decisions` | admin | `{decisions}`: the decisions of the ticket's runs, newest first, at most 100, each as `GET /api/decisions` gives it (at most 7,001,424 bytes) |
 
 The record (`decision`): `{id, run (the run that holds it now), openedIn,
@@ -4845,10 +5032,18 @@ answered from its record, and `GET /api/runs/{run}/tasks/{task}`) carry,
 for the admin, `decisions`: the summaries (as the attempt's list gives
 them) of the decisions the run or the task holds, newest first, at most
 100, absent when there is none; `decisionsNext`, the last id, when more
-follow (`GET /api/decisions?run=&after=` reads on); and
-`decisionsUnread: true`, with no list, when the ledger could not be read
-(the server logs why). A Brakeman turn's shared read of them carries none
-of the three.
+follow (the same read with `?decisionsAfter=<decisionsNext>` reads on,
+the page of those older than it; `400 invalid_request` for a value that
+is not one decision's id); and `decisionsUnread: true`, with no list,
+when the ledger could not be read (the server logs why). A Brakeman
+turn's shared read of them carries the same for the decisions open
+only, the ones it may route, so no page of closed ones hides an older
+open one from it, and reads on the same way (`decisionsAfter`, a
+parameter of `observe_run` and `observe_task`, each page one of the
+turn's reads); each decision with its `ref`, `decision:<dr-n>`, noted in
+the turn's read log at its state and `rev`: what a `route_decision`
+act's `expectedRev` and its proposal's target and `expectedRevision` are
+read from (BK2).
 
 An identity provider's principal's accepted response is applied only
 once the provider admits its token again after the response committed

@@ -1685,15 +1685,23 @@ func TestRunChatReachesEveryMembersViewers(t *testing.T) {
 	priya := dialViewer(t, e, testsID, lo["token"].(string))
 	priya.send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Client: "test", Name: "Priya"}))
 	priya.expectControl(proto.CtlReady)
-	// Priya's arrival sends everyone on the run the roster: who is on which member.
-	roster := priya.expectControl(proto.CtlChatRoster)
-	names := map[string]string{}
-	for _, raw := range roster["list"].([]any) {
-		p := raw.(map[string]any)
-		names[p["name"].(string)], _ = p["on"].(string)
-	}
-	if roster["scope"] != "run" || names["Nate"] != "core" || names["Priya"] != "tests" {
-		t.Fatalf("roster %v", roster)
+	// Priya's arrival sends everyone on the run the roster: who is on which
+	// member. Nate, sent ready before she came, is on every roster she is
+	// sent; one built for his own arrival may reach her before hers, so
+	// her own row is waited for (#281).
+	for {
+		roster := priya.expectControl(proto.CtlChatRoster)
+		names := map[string]string{}
+		for _, raw := range roster["list"].([]any) {
+			p := raw.(map[string]any)
+			names[p["name"].(string)], _ = p["on"].(string)
+		}
+		if roster["scope"] != "run" || names["Nate"] != "core" {
+			t.Fatalf("roster %v", roster)
+		}
+		if names["Priya"] == "tests" {
+			break
+		}
 	}
 
 	nate.send(proto.MustControl(proto.ChatPost{T: proto.CtlChat, Scope: proto.ChatScopeRun, Text: "core is green", On: "core", Nonce: "r1"}))

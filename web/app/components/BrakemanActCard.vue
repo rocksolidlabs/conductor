@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { BrakemanAct } from '~/utils/brakeman'
-import { LAUNCH_FOLLOW_FIRST_MS, LAUNCH_FOLLOW_MAX_MS, actLaunchId, actLaunchRef, actReceiptRef, actShownFrom, actWords, followLaunch, keepLaunch, refRoute, refTicket } from '~/utils/brakeman'
+import { LAUNCH_FOLLOW_FIRST_MS, LAUNCH_FOLLOW_MAX_MS, actDecision, actLaunchId, actLaunchRef, actReceiptRef, actShownFrom, actWords, followLaunch, keepLaunch, refRoute, refTicket } from '~/utils/brakeman'
 import type { LaunchSummary } from '~/composables/useDispatch'
 
 /**
@@ -21,6 +21,9 @@ const dispatch = useDispatchApi()
 const receiptRef = computed(() => actReceiptRef(props.act))
 const launchRef = computed(() => actLaunchRef(props.act))
 const actTicket = computed(() => refTicket(props.act.target))
+/** The decision a route routed (DR1's receipt), opened in the decision's card, where its history shows the route. */
+const actRouted = computed(() => actDecision(props.act))
+const decisionModal = useDecisionModal()
 /** The launch an act's receipt names (GET /api/dispatch/launches/{id}), read until it has started or failed (followLaunch), kept by its id. */
 const launches = useActLaunches()
 const launchId = computed(() => actLaunchId(props.act))
@@ -61,6 +64,7 @@ const launchedRun = computed(() => (shown.value === 'done' && launch.value?.stat
       <BrakemanRefChip v-if="receiptRef" :ref-name="receiptRef" data-proposal-did-receipt />
       <BrakemanRefChip v-if="launchRef" :ref-name="launchRef" data-proposal-did-launch />
       <UButton v-if="launchedRun" :to="`/runs/${encodeURIComponent(launchedRun)}`" label="The run it launched" icon="i-lucide-arrow-up-right" size="xs" color="neutral" variant="ghost" :data-proposal-did-run="launchedRun" />
+      <UButton v-if="actRouted" :label="`${actRouted}, the decision it routed`" icon="i-lucide-scale" size="xs" color="neutral" variant="ghost" :data-proposal-did-decision="actRouted" @click="decisionModal.open(actRouted)" />
       <UButton v-if="actTicket" :to="refRoute(`ticket:${actTicket}`) ?? undefined" :label="`${actTicket}, the ticket it changed`" icon="i-lucide-ticket" size="xs" color="neutral" variant="ghost" data-proposal-did-ticket />
     </div>
   </div>

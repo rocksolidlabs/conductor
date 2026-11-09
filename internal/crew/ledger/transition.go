@@ -1389,7 +1389,7 @@ var ErrNotPrunable = errors.New("ledger: the run is still needed")
 // rows are what the end and the recovery write. A run that holds or
 // opened a decision that is not final stays; the final decisions it
 // opened go with it, and those an ancestor opened are handed back to the
-// run it continued (pruneDecisions).
+// run it continued (pruneDecisions), whose revision moves with them.
 func (l *Ledger) Prune(ctx context.Context, runID string) error {
 	if l.readOnly {
 		return fmt.Errorf("%w: %s", ErrReadOnly, l.why)
@@ -1434,7 +1434,8 @@ func (l *Ledger) Prune(ctx context.Context, runID string) error {
 	if cited > 0 {
 		return fmt.Errorf("%w: %d runs cite it", ErrNotPrunable, cited)
 	}
-	if err := pruneDecisions(ctx, tx, runID); err != nil {
+	handed, err := pruneDecisions(ctx, tx, runID)
+	if err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM runs WHERE id = ?", runID); err != nil {
@@ -1443,6 +1444,6 @@ func (l *Ledger) Prune(ctx context.Context, runID string) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	l.pruned(runID, revision)
+	l.pruned(runID, revision, handed)
 	return nil
 }

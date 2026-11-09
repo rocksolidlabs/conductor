@@ -208,6 +208,10 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "a run id and a task id")
 		return
 	}
+	after, ok := decisionsAfter(w, r)
+	if !ok {
+		return
+	}
 	st, attempts, err := s.runs.TaskOf(runID, taskID)
 	if errors.Is(err, crew.ErrRunNotFound) {
 		st, attempts, err = s.taskFromLedger(r.Context(), runID, taskID)
@@ -223,7 +227,7 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 		attempts = []crew.AttemptState{}
 	}
 	reply := map[string]any{"task": st, "attempts": attempts}
-	s.addRunDecisions(r, reply, runID, taskID)
+	s.addRunDecisions(r, reply, runID, taskID, after)
 	writeJSON(w, http.StatusOK, reply)
 }
 

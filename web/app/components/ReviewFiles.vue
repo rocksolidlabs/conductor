@@ -3,16 +3,18 @@ import type { DiffFile } from '~/composables/useReview'
 
 /**
  * The files of a candidate's diff (Program item RV1, PR-6): each with its status (added, changed, deleted, renamed from), its lines
- * added and removed, whether it is binary, and the draft's notes on it; one picked shows its diff. A list, never a table: one column
- * on a phone.
+ * added and removed, whether it is binary, the draft's notes on it, and the open findings located on it on the candidate shown (PR-7);
+ * one picked shows its diff. A list, never a table: one column on a phone.
  */
-defineProps<{
+withDefaults(defineProps<{
   files: DiffFile[]
   selected: string
   /** By path: the draft's notes on the file. */
   notes: Record<string, number>
+  /** By path: the open findings located on the file on the candidate shown. */
+  findings?: Record<string, number>
   truncated?: boolean
-}>()
+}>(), { findings: () => ({}), truncated: false })
 const emit = defineEmits<{ select: [path: string] }>()
 
 const statusWords: Record<DiffFile['status'], { label: string; color: 'success' | 'warning' | 'error' | 'info' }> = {
@@ -43,6 +45,7 @@ const statusWords: Record<DiffFile['status'], { label: string; color: 'success' 
           <span class="min-w-0 flex-1 truncate font-mono" :title="f.from ? `${f.from} → ${f.path}` : f.path">{{ f.from ? `${f.from} → ` : '' }}{{ f.path }}</span>
           <span v-if="f.binary" class="flex-none text-dimmed">binary</span>
           <span v-else class="flex-none font-mono text-[11px]"><span class="text-success">+{{ f.added }}</span> <span class="text-error">−{{ f.removed }}</span></span>
+          <UBadge v-if="findings[f.path]" :label="`${findings[f.path]} open`" color="error" variant="outline" size="sm" class="flex-none" :title="`${findings[f.path]} open findings on this file`" data-review-file-findings :data-review-file-findings-count="findings[f.path]" />
           <UBadge v-if="notes[f.path]" :label="String(notes[f.path])" color="warning" variant="subtle" size="sm" class="flex-none" :title="`${notes[f.path]} notes of the draft`" data-review-file-notes />
         </button>
       </li>

@@ -3732,6 +3732,37 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   local labels, `docs/plans/decisions.md`) and is not in this wave; and
   the two grants waiting for RV1's and DR1's routes (#658).
 
+  PR-18 (#539), later: `route_decision` is served, through DR1's own route
+  (`POST /api/decisions/{did}/route`) under the actor `brakeman`, to the
+  operator or to a person of the decision's run's crew, by name or by the
+  responsibility they hold (HM1's labels, resolved in the crew as
+  launched). The turn reads the decision in its run's read, which lists
+  the run's decisions with their rev and their ref, `decision:<dr-n>`,
+  the act's target and its proposal's. The act's checks are DR1's in
+  Dispatch's place: the runs visible, the run in the scope (a decision
+  outside it answered as one not there), the decision open at the rev
+  read, the label held, a person routed to only while the decision is
+  for no one; the route's scope is checked again inside the routing
+  transaction, against the run the decision is on at commit; a
+  continuation between the two is refused. A turn's routes count in
+  their own group with their own bound, apart from the operator's
+  operations. DR1's history keeps the route, which answers a repeat and
+  settles a route a stop cut short. The decision stays the operator's to
+  answer: its card says for whom it was routed, its history "routed to
+  ana". The brief shows the act's receipt (`dr-n#seq`) and opens the
+  decision. `request_repair` still waits for RV1 (#658). Tests:
+  `TestRouteToALabel`, `TestARouteIsHeldToTheGrantAndTheRuns`,
+  `TestARouteCommittedBeforeItsCopyIsCompletedAfterARestart`,
+  `TestARouteRetriedAfterALostReplyIsOneRoute`,
+  `TestARouteIsRefusedOnADecisionNotRoutable`,
+  `TestARouteIsHeldToTheRunItWasAdmittedOn`,
+  `TestATurnsRoutesKeepTheirOwnBound`, `TestATurnRoutesTheDecisionItRead`,
+  `TestACommittedRouteIsCopiedWhenItsCallerIsGone`,
+  `TestATurnsRunReadCarriesItsDecisions`, `TestActWordsNameADecisionsRoute`,
+  `TestATurnsOperationsKeepTheirOwnBound` (`internal/crew/ledger`);
+  vitest in `brakeman.test.ts` and `decisions.test.ts`; Playwright in
+  `brakeman-act.spec.ts`.
+
   What was missing, slow or wrong. PR-12's prerequisites were not all
   there: RV1 and DR1 have plans but no routes, so the closed list of four
   ships with two operations served. Bugs of the stream, each fixed in the
@@ -4312,6 +4343,148 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   and a real agent asking for the architecture owner's decision by its
   responsibility after reading "Who answers for this work". A defect it
   finds is fixed in the stream.
+- **Review and repair: a person's batched review of a candidate, one
+  traceable repair round, findings checked against the new candidate
+  (RV1, #618 to #633, 2026-11-06 to 2026-11-08).** Program item RV1,
+  planned in `docs/plans/review-repair.md` (PR #607) and shipped as nine
+  PRs. A person reviews one candidate of a ticket's run (a task's result
+  commit, `<run>/<task>/<n>@<commit>`) against a named base, gathers
+  notes on lines of either side, whole files, the candidate as a whole
+  and failed checks in a draft kept in the browser, and sends them as one
+  review: Request changes is recorded in Dispatch and applied by
+  Yardmaster as the task's repair transition (the one a review task's
+  `needs_changes` makes), or by the continuation that carries it for a
+  run the server no longer runs, only when the person says so; Comment
+  and Approve are recorded and change nothing. The repair attempt reads
+  the person's findings, with their ids, lines and the resolution asked,
+  in its task file and says which it addressed in its result. Each
+  finding keeps its identity across candidates and its state is its
+  latest mark's: a person marks it Resolved, Still open or Withdrawn
+  against a later candidate, where the server locates its lines (same,
+  moved, changed, gone, renamed), never by itself. A failed check's
+  receipt is prepared for its repair with its class worked out from the
+  ledger (code, infrastructure, flaky, cancelled, unavailable), and Check
+  again verifies the same commit again as an attempt of its own. Nothing
+  merges, pushes, delivers or closes by itself. See
+  `docs/architecture.md` (Dispatch) and `docs/protocol.md` (Crew runs,
+  Dispatch). No new dependency, no feature tag, no frame. What each PR
+  shipped and the tests it added:
+
+  PR-1 (#618, PR #665): Dispatch's reviews, findings and marks (schema
+  version 3), their bounds, the operations and their replays, a
+  finding's state from its marks. `internal/dispatch`'s reviews tests.
+  PR-2a (#620, PR #697): Check again (`Engine.Recheck`, `Recheckable`)
+  and a failed check's class (`ClassifyFailure`). PR-2b (#622, PR #710): a person's
+  repair (`ChangeRequest`, `FitChangeRequest` and its fixture,
+  `Engine.RequestChanges`, the task file's request, the result's
+  `addressed`, the ledger's version 10 barrier). PR-2c (#623, PR #717):
+  the continuation that carries a person's repair (`ContinueRunWith`).
+  PR-3 (#625, PR #711): a candidate's diff (`gitrepo.Compare`), the
+  prepared failed-check request and the recheck route. PR-4 (#627, PR
+  #722): reviews sent, applied, reconciled and marked, the located
+  states (`review_locate.go`), the `review` and `finding` events. PR-5
+  (#629, PR #729): `conductor dispatch review`, `reviews`, `review show`,
+  `review retry`, `findings`, `finding marks`, `finding mark`, `conductor
+  crew recheck`, `conductor task result --addressed`, the skill's text.
+  PR-6 (#631, PR #734): the Review view, its diff in Monaco with
+  selections and margin marks, the draft and the batch sent
+  (`review.spec.ts`, `review.test.ts`, `useReviewDraft.test.ts`,
+  `useReview.test.ts`). PR-7 (#633): findings across candidates with
+  their located words, the agent's addressed notes and the marks
+  (`ReviewFindings`); the failed-check panel with Prepare a repair and
+  Check again (`ReviewCheckFailure`, offered exactly when the prepared
+  request's `recheck.allowed` says so, first for an infrastructure or a
+  possibly flaky failure); the candidates' lineage (`ReviewLineage`,
+  `utils/reviewLineage.ts`); the criteria as launched and now, the plan
+  revision, the expected checks, the decisions and the delivery in the
+  view; a person's repairs in `DispatchRepairs`; Review and Prepare a
+  repair on the run page (otherwise "No ticket holds this run as far as
+  the page read", with how to link a run of its chain) and on the
+  ticket's receipts; the palette's Review the
+  latest candidate, Send review (n notes) and Open findings; a note on
+  typed lines for a phone; the stub's `addressed` and its fixed edits
+  (the `worker-review` agent, `STUB_REVIEW_EDITS=1`). Two rules hold the
+  view's candidates: the one shown is read by its id from its own run
+  (`useNamedCandidate`), never looked for among the ticket's pages, so a
+  run past the first page of Runs or an attempt past its task's six
+  newest has its checks and its bases; and candidates are ranked by one
+  ordering (`rankCandidates`: time, then the attempt, then the crew's
+  order; a continuation is newer than the run it continues because it
+  starts after it, and independent launches go by time) wherever they
+  are ranked. A check of the candidate, and the failed-check panel's
+  receipt, open DS2's receipt dialog with the whole log and its hash; the
+  findings are read again when a run moves, so a repair's addressed
+  notes come in while the reviewed candidate stays shown; a review
+  task's request is paired in order with the reopening it made (a
+  person's repair known by its run, task and attempt); the run page
+  finds the ticket of a run of a chain linked by hand back along its
+  chain and forward through its continuations; and a failed check's
+  quote is sent as a finding holds it (`quotable`: no terminal escape,
+  no carriage return), the receipt's tail and log unchanged. What the
+  view does not promise: the launch of the candidate's run is the one
+  the page read with the ticket (its Runs pages and the Plan's recent
+  launches, back along the chain: `runLaunch`); a run a live run link
+  of the ticket names is said to be linked by hand, and any other's
+  launch is said to be not read, its plan revision, criteria as
+  launched and expected checks not shown. And a candidate with no
+  receipt of its own has no time the page reads: it is ranked at the
+  latest time known before it (its run's start, its task's earlier
+  checks), which can put it below another task's candidate it came
+  after, and the picker and the palette say "time not known" beside it.
+  `reviewLineage.test.ts`, more of `review.test.ts`,
+  `review-repair.spec.ts`, and this entry.
+
+  The acceptance (the plan's Acceptance: a person sends several findings
+  on one candidate as one review, Yardmaster makes one traceable repair
+  round of it, and the person checks each finding against the new
+  candidate; nothing merges by itself), what is observed and what is
+  not. Observed, with the stub worker, by the specs CI runs: a review of
+  four notes on both sides, a file and the whole, its base kept through a
+  reload, sent as Request changes and applied, the repair's candidate
+  with its own receipts and the first's unchanged, a batch past the task
+  file's room refused with nothing kept (`review.spec.ts`); a review's
+  findings on the repair's candidate, "moved: now 5–6" and "the lines
+  changed", each change with the agent's addressed note, one marked
+  resolved, one still open, a question withdrawn, none changed without a
+  mark; a second round sent from the page and applied; the lineage; the
+  person's repairs under the ticket's runs; the run page's Review; the
+  phone width, one column, a note by typed lines and a mark; a check
+  failing on all three attempts, Prepare a repair with its receipt, its
+  class `code`, the log's hash and the criteria, Check again offered
+  after Add to the draft and first once the class is changed to possibly
+  flaky, pressed, and the task succeeding at the same commit as attempt
+  4 with its own passing receipt, attempt 3's failing one unchanged;
+  Resolved refused on that same commit, by the page and by the server; a
+  request to attempt 3 refused since the task moved on, and Request
+  again its next try; and on a run stopped and continued from the run
+  page, Check again from the first run's receipt made in the
+  continuation (`review-repair.spec.ts`). Not yet made: the plan's
+  by-hand observation, the maintainers' check, made after this entry's
+  PR merges and recorded here (what ran, against which `main`, what it
+  did not exercise): on the owner's `conductor serve` with a real agent
+  on the owner's own subscription (Claude Code or Codex), a scratch
+  repository the agent trusts and a ticket with acceptance criteria, a
+  managed crew with a work task, a check and a review task by an agent,
+  a plan revision approved and launched; on the first candidate the
+  Review view showing the criteria, the plan revision, the diff against
+  the run's base and the receipts, four notes (a blocker on a range, a
+  minor on one line, a question on a file, a general note) sent as
+  Request changes, shown recorded and then applied with the run, the
+  command and the repair attempt's number; the ledger's command receipt,
+  the `task.reopened` event naming the review, the task file's request
+  with the four ids and the repair attempt starting at the candidate's
+  commit, read and agreeing; the real agent reading the findings from
+  its task file and addressing them, its addressed notes shown; the new
+  candidate's own receipts, the agent review task run again, each
+  finding marked against the new candidate, nothing merged, pushed,
+  delivered or closed by itself, and a delivery link added by hand
+  naming the final candidate; a failing check's Prepare a repair with
+  the log's hash equal to the step log route's `X-Conductor-Log-SHA256`;
+  Monaco's selection and the margin marks in Chromium, Safari and the
+  Electron app; and the Review view on a phone on the LAN, from a
+  machine that is not WSL or through the desktop app's own forwarding
+  (no networking configured by anyone). A defect it finds is fixed in
+  the stream.
 - **Needs your decision: the decision inbox, on the desktop and from a
   phone (MB0, #646 to #650, 2026-11-06 to 2026-11-08).** Program item
   MB0, planned in `docs/plans/decision-inbox.md` (PR #610). The page is
@@ -4375,6 +4548,260 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   minted and opened on the phone, one item answered through to resumed,
   the gate answered before the run's first attempt with no member alive,
   the link revoked on the desktop and the phone's next action refused.
+- **Searchable history: what was said, decided and checked, found from the
+  palette with its source (HS1, #613 to #617, #619, #621 and #624,
+  2026-11-06 to 2026-11-08).** Program item HS1, planned in
+  `docs/plans/history.md` (PR #609) and shipped as eight PRs, PR-1 to
+  PR-8; PR-9 (#626, PR #755) has its own entry below, PR-10 to PR-12 come
+  later (below). Every session the server runs
+  now leaves a **record** in the data directory
+  (`history/sessions/<id>.json`): its agent with its version and its own
+  session id, its host and where it ran, its folder, repository, branch
+  and commits before and after, its launch (the variables' names, never a
+  value), its crew, run, task and attempt, and what passed through
+  Conductor: the lines Conductor typed, the questions it asked and how
+  each ended, its chat, its agent's reports and the files it touched. What
+  a person types into a terminal or a reply box is never kept. One
+  **index** (`history/index.sqlite`, a cache rebuilt from the stores)
+  holds those records, the ledger's runs, attempts and check receipts,
+  Dispatch's tickets, comments, plan revisions and acts, and Brakeman's
+  briefs, and it is searched from the command palette with the seventh
+  prefix, `~`, from the plain search (a History group from three
+  characters), from the History page (`/history`, `G H`) and from
+  `conductor history`. Every row is one of Conversation (said), Decision
+  (decided), Checked ✓ or ✗ (a receipt) or a plain record, a class set by
+  its kind alone; it gives its source, host, project, revision, time and
+  availability; a failed receipt says which attempt was handed it
+  ("Investigated by build #2") and where it passed after; Enter opens the
+  evidence itself (the run page at the step's log with its SHA-256, a
+  ticket at a comment, a session or its record). A session's record
+  resumes the agent's conversation after a restart (Resume on its record
+  page, `POST /api/history/sessions/{id}/resume`), where the agent's
+  session recipe allows it. `history.sessions` (on by default) turns the
+  records off; each can be forgotten. See the README (History),
+  `docs/architecture.md` (History) and `docs/protocol.md` (History). No
+  new dependency (`internal/history` is the third importer of
+  `modernc.org/sqlite`), no feature tag, no protocol message changed
+  (routes only; PR-12 changes the host's messages). What each PR shipped,
+  its tests and its checks:
+
+  PR-1 (#613, PR #673): `internal/journal` (the record, its bounds, the
+  writer, recovery, forget and prune, `history/owner.lock` and
+  `history/state.json`), `history.sessions` in `internal/config`,
+  `gitcli.RepoOf` and `RevisionOf`, and in `internal/api` one recorder per
+  server session, reconciled from the session's own state rather than from
+  the order of its callbacks (`reconcile`, `journal.Settle`), the
+  shutdown's final pass, and the four record routes. Tests: the journal's
+  own, the API's lifecycle tests at seams (`recordHook`), and a property
+  test of the design's steps (`TestTheRecordFollowsTheSession`, 300 seeds
+  a run). Checks: the whole module's race tests, `make lint`, `make
+  lint-static`, `make build-go` and `make check-version` at each round;
+  the Mac rows at `009dbb83` and after each merge of `main`, where they
+  found a bug of the stream's own (`TestRevisionOfAndRepoOf`: a common
+  directory kept its `/var` spelling while git said `/private/var`), fixed
+  in the PR. By hand: one Claude Code 2.1.318 session through the branch's
+  binary, launched as a one-member crew, left a record of 2,128 bytes of
+  the 64 KiB bound (the prompt typed, the end's status, three file rows,
+  its version and own session, both commits, nothing dropped).
+
+  PR-2 (#614, PR #669): `internal/history` (the schema, the kinds table
+  that alone decides a class, `Replace`, `Remove`, `Mark`, `Sources`, the
+  bounds and the budget of 200,000 entries and 256 MiB, `ParseQuery` with
+  Dispatch's word rules, phrases and thirteen filters, `Search`,
+  `Similar`, `Entry`, `Links`, `Stats`, `Check` off the start path, an
+  index of another version cleared in place and a damaged one moved
+  aside). Tests: the package's, with `life_test.go` holding every pair of
+  calls that may run together at a seam, and `BenchmarkSearch`. Checks:
+  the whole module's race tests, `make lint`, `make lint-static`; the Mac
+  rows at the merge gate.
+
+  PR-3 (#615, PR #681): the indexer (`history_index.go`: the dirty set,
+  marks taken before each read, backoff, catch-up, a reconcile every 30 s,
+  `POST /api/history/reindex`), the session-record and run sources
+  (`history_sources.go`) with their links (`session_of`, `continues`,
+  `launched_from`, `handed`, `passed_after`, `reviews`, `reopened`), each
+  finished check receipt a source of its own, the commit fan-out
+  (`commits.go`), `crew.FailedAtCheck`, `FailingReceipt`, `FailedOutcome`
+  and `UncountedAttempt` exported so that "handed" is the engine's own
+  rule, and the export's `derived` row for the index. Tests:
+  `internal/api`'s indexer tests (a forget gone from the index at once, a
+  clear inside a pass, a repository not known read again, the handed and
+  review links) and `BenchmarkTransitionWhileIndexing`, which found a bug
+  of the stream's own: a run's pass read every receipt in one query and
+  held the ledger's connection for about a quarter of a second, a
+  transition's 99th percentile 49 to 83 ms above idle; fixed in the PR by
+  reading an attempt at a time (afterwards -0.5 to +16 ms). Checks: the
+  whole module's race tests, `make lint`, `make lint-static`, `make
+  build-go`, `make check-version`; the Mac rows at the merge gate.
+
+  PR-4 (#616, PR #694): the ticket and brief sources (Dispatch's change
+  feed read on the indexer's goroutine; a deleted comment's place kept,
+  never its words; a plan revision's body, a Brakeman request's note and a
+  terminal-reading brief's words never indexed), `historyURL`,
+  availability read from each store when a reply is made (`yes`, `no` or
+  `unknown`, never a guess; a worktree looked at only where its run puts
+  it, through `openCwd`), `resumeCheck` factored out of the session's
+  resume, and `GET /api/history`, `/entry`, `/similar` and `/command`
+  (admin only, the query never logged, 12 KiB of query, 2 MiB of reply, 15
+  s a read, two reads in flight a client and four in all). Tests:
+  `TestAForgottenRecordIsInNoSearch`,
+  `TestHistorySearchRoutesAreAdminOnly`,
+  `TestASearchNeverReturnsATypedAnswer`,
+  `TestAWorktreeOutsideItsRunIsNeverLookedAt`, the read slots' tests. It
+  also fixed a race in Brakeman's role that its sources widened
+  (`TestATicketReadyPastANarrowingIsJudgedByIt`). Checks: the whole
+  module's race tests, `make lint`, `make lint-static`; the Mac rows at
+  the merge gate.
+
+  PR-5 (#617, PR #723): `POST /api/history/sessions/{id}/resume` (a
+  receipt reserved before the launch and settled after it, so the same
+  command id answers once and never starts a second session; the launch
+  shared with the session route, `resumeLaunch`), `conductor history
+  search|show|similar|sessions|session|forget|resume|reindex` and its
+  completion, and the guide's ten History operations for the admin. Tests:
+  `TestResumeFromARecordAfterARestart`, `TestResumeFromARecordRefuses`,
+  `TestTheSameCommandIDAnswersItsReceipt`,
+  `TestASuccessorWhoseStopFailedHoldsItsPredecessorsConversation`,
+  `TestTheGuideListsHistoryForTheAdminOnly`, the CLI's. Checks: the whole
+  module's race tests, `make lint`, `make lint-static`, `make build-go`,
+  `make check-version`; the Mac rows at the merge gate.
+
+  PR-6 (#619, PR #731): `utils/history.ts` (the detail line's six fields,
+  the class badge, the link line, the four questions), `useHistory`,
+  `useSessionRecord`, the record page (`/history/sessions/<id>`, with
+  Resume asked in words that match what the route will do, and Forget),
+  the run page at `?attempt=&step=` (the step's log and its SHA-256
+  compared with the receipt's) and at `?command=&actor=`, and a ticket's
+  page at `?comment=<n>`. Tests: vitest (`history.test.ts`,
+  `useHistory.test.ts`, `useSessionRecord.test.ts`) and
+  `history-record.spec.ts` (a record after a restart resumed with the
+  recorded id, then forgotten; the run page at a step and at a command; a
+  ticket at a comment). Checks: typecheck, vitest, the whole Playwright
+  suite (`make test-e2e`), the spec `--repeat-each 10`; Go not affected.
+
+  PR-7 (#621, PR #746): the palette's `~` (the four questions with nothing
+  typed, then the rows grouped under their session or run, with their
+  badge and third line, → for Open, Resume, Find this elsewhere and Copy
+  reference), the plain search's History group, the History page (filter
+  chips that write the query, `?q=` in the URL, Show more, one column on a
+  phone), History in Go to, the sidebar and the bottom bar with `G H`.
+  Tests: vitest (`palette.test.ts`, `useHistorySearch.test.ts`,
+  `usePaletteHistory.test.ts`, `history.test.ts`), `history.spec.ts` and
+  `history-page.spec.ts`. Checks: typecheck, vitest, the whole Playwright
+  suite at 1630dd74 and the specs it touches at each round, the two new
+  specs `--repeat-each 10`; Go not affected.
+
+  PR-8 (#624): this entry, the README's History section,
+  `docs/architecture.md`'s History, `docs/repository-map.md`'s rows for
+  the History files and `docs/dependencies.md`'s three importers of
+  `modernc.org/sqlite`. Docs only.
+
+  Where the PRs departed from the plan, each written into the plan or the
+  PR's body: a hosted session has no record until PR-12 (a hosted id comes
+  back after a reconnect, and the host's own report is the truth of its
+  lifecycle); a record is reconciled from its session's state, so a
+  question still open when the end is recorded reads withdrawn and a line
+  that arrives after the end is dropped and counted; no availability says
+  "forgotten", because a forgotten record is never served at all; a search
+  of words is bounded (it reads at most 10,000 matches and ranks 2,000,
+  and says `cut` when it stopped); a failure's link line says "passed on
+  build #2", not a commit, and a repeat "said in 3 places"; History has `G
+  H` and no terminal chord (`Alt+H` opens the keyboard shortcuts).
+  Defaults the PRs took that the owner may overturn: a typed answer passed
+  on by a provider or a host is kept by no record (PR-1, one line in
+  `internal/session`), and the search's bounds (PR-2).
+
+  What was slow, missing or wrong. **Slow**: the plan's 50 ms for a search
+  of 100,000 entries holds for a filtered page and, on a quiet box, for
+  two words and a phrase; the most frequent word took 71 ms on a quiet box
+  and 138 to 201 ms on four cores of a loaded one (`BenchmarkSearch`,
+  PR-2's body). Three ways to bring it under (the last word read whole
+  once it is complete, a longer prefix index, a lower scan bound) each
+  change what a search means or costs, and are the owner's to choose.
+  **Missing**: a hosted session's record and what its host reports of it
+  (PR-12). **Wrong, outside the stream**: the hub can remove a hosted
+  session its host has just registered again (#701, filed, a maintainer
+  decides when). Every bug the stream's own code caused that its checks
+  found was fixed in its PR.
+
+  The acceptance (the plan's Acceptance, HS1: a person asks the palette
+  which session looked into a given failure, and the row it gives opens
+  the evidence itself), what is observed and what is not. Observed, with
+  the stub agents, by the specs CI runs: a crew's check fails on attempt 1
+  and passes on attempt 2; in the palette `~` and a word of the failure
+  finds the failed receipt, Checked ✗ with its six fields and
+  "Investigated by build #2", and Enter opens the run page at that step's
+  log, its SHA-256 the step log route's; a plain session's chat line with
+  the same word is Conversation; `~` alone shows the four questions, "What
+  was last verified here" lists attempt 2's passing receipt, and Find this
+  elsewhere lists a second crew's run of the same command
+  (`history.spec.ts`, with no restart and no Dispatch project); a session
+  ended before a restart reached from the palette to its record, which
+  offers Resume (`history-page.spec.ts`), and Resume from the record
+  taking up the agent's own conversation with the recorded id
+  (`history-record.spec.ts`). Not yet made: the plan's observation, which
+  is the maintainers' check, made after this entry's PR merges and
+  recorded here with what was missing, slow or wrong; HS1 is Done when it
+  is. Its steps, on the owner's machine or the WSL box with the owner's
+  agents, on the open-source build with no account: a Dispatch project
+  over a repository, a managed crew whose work task's check fails on its
+  first run (a script outside the worktree), Claude Code the worker and
+  Codex the reviewer, attempt 1 failing the check and attempt 2, handed
+  the receipt, passing; beside it a plain Claude Code session in the same
+  repository asked about the failure through its chat; the server
+  restarted; in the palette `~` and a word of the failing test's output
+  (with `outcome:failed` if the passing receipt shares the word): the
+  failed receipt by its title, Checked ✗, its six fields true (the source,
+  this machine, the project's key, attempt 1's result commit, the time,
+  "log kept"), "Investigated by build #2" naming Claude Code and its own
+  session, and where it passed; Enter at that step's log, its SHA-256 the
+  step log route's; the plain session's chat line as Conversation, its
+  record opened after the restart and Resume taking up the Claude Code
+  conversation; then the three other questions: a plan revision withdrawn
+  for the ticket found as a Decision, the passing receipt under "What was
+  last verified here", and a second crew's run of the same command by Find
+  this elsewhere. And the by-hand record the stub cannot give, the
+  maintainers' too: real Claude Code and Codex sessions recorded with
+  their versions and own session ids (Codex's lowest-id policy); a plain
+  Claude Code session resumed from its record after a restart (`--resume
+  <id>`) and a Codex one (`resume <id>`, its folder needed); a hosted
+  session from `conductor host` on the Mac once PR-12 lands (its host and
+  user, "not reported by the host" for what an old host does not report,
+  "host away" once the host stops, the same record taken up again when it
+  comes back, no Resume from the server); the four questions asked of a
+  real evening's runs; the History page on a phone on the LAN; the index
+  rebuilt on a data directory with a few hundred runs, with the time it
+  took; and a look at the History page on the Windows desktop app. The
+  owner judges whether the rows answered the four questions truthfully (no
+  Conversation row read as a result). A defect any of it finds is fixed in
+  the stream.
+
+  Later PRs, each adding its paragraph and its own short observation here;
+  none of them holds HS1's Done. PR-9 (#626, PR #755): DR1's decision records in
+  the history, in its own entry below. PR-10 (#628): RV1's review batches and
+  findings, waiting on RV1's PRs that serve them. PR-11 (#630): Brakeman
+  reads history within its grant, waiting on Brakeman's PR-9 to PR-13.
+  PR-12 (#632): what a host reports of its sessions, and a hosted
+  session's record.
+- **Searchable history: DR1's decisions in it (HS1 PR-9, #626,
+  2026-11-08).** Program item HS1, planned in `docs/plans/history.md`
+  (PR #609); PR-8 (#624) writes the item's entry, with each PR's checks
+  and the by-hand record, around this paragraph. PR-9 (#626, PR #755):
+  DR1's decision records in the History. Each request is a `decision`
+  entry (a record: its question, its subject's revision and commit, who
+  asked and whom it is for, what a yes authorizes), under its asking task
+  (a gate's under its run); each response the decision accepted is a
+  `decision.response` (decided: who answered and for whom, the rationale,
+  the option chosen as its outcome, `approved` or `rejected` for a gate,
+  `done` or `not_done` for an assignment, else `answered`), linked
+  `answers` to the request and `applied` to what Yardmaster applied it
+  to; a refused response is not indexed. A result opens the decision's
+  card over the run that holds it, and its availability is the decision's
+  state now, read from the ledger (open, answered, applied, superseded
+  with its successor and why, cancelled, expired, pruned). The palette's
+  "Rejected designs" finds a gate's rejection. An entry follows its
+  decision along a run's continuations and leaves when the ledger prunes
+  it, the run's record kept or not. Its checks are in its body.
 - **Project manifests: a fresh attempt worktree made usable, predictably
   (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
   `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the

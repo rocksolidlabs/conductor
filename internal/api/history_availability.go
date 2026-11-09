@@ -154,6 +154,10 @@ type availability struct {
 	folders  map[string]*runFolder
 	briefs   map[string]availabilityOf
 	launches map[string]string
+	// decisions is each decision's availability, read once for the reply
+	// (its request's and its responses').
+	decisions    map[int64]availabilityOf
+	decisionURLs map[string]string // a link's end's page, by its entry's key
 	// records is the journal's answer for each session record an entry
 	// read asked of it (recordAnswer).
 	records map[string]answer
@@ -182,7 +186,7 @@ type runFolder struct {
 func (s *Server) newAvailability(ctx context.Context, ix *history.Index, ld *ledger.Ledger) *availability {
 	return &availability{s: s, ctx: ctx, ix: ix, ld: ld, attempts: map[string]attemptsRead{}, checks: map[attemptID]checksRead{},
 		folders: map[string]*runFolder{}, records: map[string]answer{}, briefs: map[string]availabilityOf{},
-		launches: map[string]string{}}
+		launches: map[string]string{}, decisions: map[int64]availabilityOf{}, decisionURLs: map[string]string{}}
 }
 
 // close closes the run folders the reply opened.
@@ -272,6 +276,8 @@ func (av *availability) of(e history.Entry, full bool) availabilityOf {
 		return availabilityOf{State: availKept, Words: "in Dispatch"}
 	case kind == "brief.item" && err == nil:
 		return av.brief(r.Request)
+	case isDecisionKind(kind):
+		return av.decision(e.Ref)
 	}
 	return availabilityOf{State: availKept, Words: "kept"}
 }

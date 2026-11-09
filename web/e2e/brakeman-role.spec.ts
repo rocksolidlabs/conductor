@@ -135,9 +135,9 @@ test('Settings turns the background role on with its window, cooldown, briefing 
   // A time the server would refuse is said before the save.
   await card.locator('[data-brakeman-minutes] input, input[data-brakeman-minutes]').first().fill('5')
   await expect(card).toContainText('Minutes a day are 10 to 1440.')
-  await expect(card.locator('[data-brakeman-save]')).toBeDisabled()
+  await expect(page.locator('[data-save-settings]')).toBeDisabled()
   await card.locator('[data-brakeman-minutes] input, input[data-brakeman-minutes]').first().fill('240')
-  await card.locator('[data-brakeman-save]').click()
+  await page.locator('[data-save-settings]').click()
   await expect
     .poll(async () => {
       const c = (await api.ok<{ config: { wake: Record<string, unknown>; budget: { minutesPerDay: number } } }>('GET', '/api/brakeman')).config

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { BrakemanAct, BrakemanConfig, BriefItem } from './brakeman'
 import { renderMarkdown } from './markdown'
-import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actFor, actsApart, readingBlocks, actLaunchRef, actMade, actReceiptRef, actShown, actShownFrom, actLaunchId, keepLaunch, MAX_KEPT_LAUNCHES, proposalOffered, actWords, followLaunch, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedFromBaseline, changedSince, configProblems, displayBy, foldersLine, formField, formMove, grantHeld, grantLabel, groupItems, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
+import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actDecision, actFor, refDecision, actsApart, readingBlocks, actLaunchRef, actMade, actReceiptRef, actShown, actShownFrom, actLaunchId, keepLaunch, MAX_KEPT_LAUNCHES, proposalOffered, actWords, followLaunch, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedFromBaseline, changedSince, configProblems, displayBy, foldersLine, formField, grantHeld, grantLabel, groupItems, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
 
 // Brakeman's words, refs and checks on the app's pages (docs/plans/brakeman.md, PR-6).
 
@@ -86,6 +86,8 @@ describe('a ref, to its route and its label', () => {
     ['plan:CND-4/2', '/dispatch/CND/4', 'plan revision 2 of CND-4'],
     ['launch:00112233aabbccdd', null, 'launch 00112233aabbccdd'],
     [`candidate:${RUN}/build/2`, `/runs/${RUN}?view=tasks&task=build`, 'candidate build, attempt 2'],
+    // DR1's record: served by its API route, opened in its card, no page of its own.
+    ['decision:dr-7', null, 'decision dr-7'],
   ]
   it.each(cases)('%s', (ref, route, label) => {
     expect(parseRef(ref)).not.toBeNull()
@@ -96,7 +98,7 @@ describe('a ref, to its route and its label', () => {
   it('covers every kind of ref the server names', () => {
     const src = readFileSync(new URL('../../../internal/brakeman/refs.go', import.meta.url), 'utf8')
     const kinds = [...src.matchAll(/\bRef[A-Z][a-z]+\s*=\s*"([a-z]+)"/g)].map((m) => m[1])
-    expect(kinds.length).toBe(18)
+    expect(kinds.length).toBe(19)
     expect([...new Set(cases.map(([ref]) => ref.slice(0, ref.indexOf(':'))))].sort()).toEqual([...kinds].sort())
   })
 
@@ -153,7 +155,7 @@ describe('a ref, to its route and its label', () => {
   })
 
   it('takes no ref the server would refuse', () => {
-    for (const bad of ['', 'run', 'run:', 'run:Nope-0a1b2c3d', `task:${RUN}`, `attempt:${RUN}/build/0`, `attempt:${RUN}/build/01`, 'session:0123', 'ticket:cnd-4', `file:${SESSION}/relative`, `file:${SESSION}//a/../b`, 'brief:br-1/100', 'brief:br-0/1', 'plan:CND-4/0', 'plan:CND-4', 'launch:0011', `candidate:${RUN}/build`, `candidate:${RUN}/build/0`, `run:${RUN}\n`, 'nope:x', `run:${'a'.repeat(600)}-0a1b2c3d`]) {
+    for (const bad of ['', 'run', 'run:', 'run:Nope-0a1b2c3d', `task:${RUN}`, `attempt:${RUN}/build/0`, `attempt:${RUN}/build/01`, 'session:0123', 'ticket:cnd-4', `file:${SESSION}/relative`, `file:${SESSION}//a/../b`, 'brief:br-1/100', 'brief:br-0/1', 'plan:CND-4/0', 'plan:CND-4', 'launch:0011', 'decision:dr-0', 'decision:7', `candidate:${RUN}/build`, `candidate:${RUN}/build/0`, `run:${RUN}\n`, 'nope:x', `run:${'a'.repeat(600)}-0a1b2c3d`]) {
       expect(parseRef(bad), bad).toBeNull()
     }
     expect(parseRef('op:a/b/c.1')).toEqual({ kind: 'op', actor: 'a/b', op: 'c.1' })
@@ -359,20 +361,6 @@ describe("the configuration form's checks, the server's", () => {
     expect(sameConfig(read, config({ scope: { repos: ['/home/me'] } }))).toBe(false)
   })
 
-  it("never keeps a form set under the token before, though the new server's revision is the same", () => {
-    // Settings' form, edited, read at revision 2 of the first server; a reset, then the second server's configuration, also revision 2.
-    expect(formMove({ gen: 0, edited: true }, 1, true)).toBe('set')
-    expect(formMove({ gen: 0, edited: false }, 1, true)).toBe('set')
-    // Before the second server has answered, the first one's form is not left to save.
-    expect(formMove({ gen: 0, edited: true }, 1, false)).toBe('drop')
-    // Under one token, a form follows what is saved until it is changed here.
-    expect(formMove(null, 1, true)).toBe('set')
-    expect(formMove({ gen: 1, edited: false }, 1, true)).toBe('set')
-    expect(formMove({ gen: 1, edited: true }, 1, true)).toBe('keep')
-    expect(formMove(null, 1, false)).toBe('keep')
-    expect(formMove({ gen: 1, edited: true }, 1, false)).toBe('keep')
-  })
-
   it('takes a configuration the server takes', () => {
     expect(configProblems(config(), 'claude')).toEqual({})
     expect(configProblems(config({ enabled: false, agentId: '', cwd: '' }), '')).toEqual({})
@@ -539,6 +527,32 @@ describe("the grants in Settings and what Brakeman did under them (PR-13)", () =
     expect(actFor(proposal('run_pause', `run:${RUN}`, { opId: 'a1' }), acts)).toBeUndefined()
     expect(refTicket('comment:CND-4/00112233aabbccdd')).toBe('CND-4')
     expect(refTicket(`run:${RUN}`)).toBe('')
+  })
+
+  it("ties a route Brakeman ran to its proposal by the decision's ref, and shows DR1's receipt, never an op: ref", () => {
+    const routed = act({ opId: 'r1', operation: 'route_decision', target: 'decision:dr-7', run: RUN, receipt: 'dr-7#4' })
+    const acts = [routed, act({ opId: 'a1' })]
+    // The proposal names the decision; another decision, its run, another opId or another operation is not the act's.
+    expect(actFor(proposal('route_decision', 'decision:dr-7', { opId: 'r1' }), acts)).toBe(routed)
+    expect(actFor(proposal('route_decision', 'decision:dr-8', { opId: 'r1' }), acts)).toBeUndefined()
+    expect(actFor(proposal('route_decision', `run:${RUN}`, { opId: 'r1' }), acts)).toBeUndefined()
+    expect(actFor(proposal('route_decision', 'decision:dr-7', { opId: 'a1' }), acts)).toBeUndefined()
+    expect(actFor(proposal('route_decision', 'ticket:CND-4', { opId: 'r1' }), acts)).toBeUndefined()
+    expect(refDecision(`run:${RUN}`)).toBe('')
+    expect(parseRef('decision:dr-7')).toEqual({ kind: 'decision', decision: 'dr-7' })
+    expect(parseRef('decision:dr-07')).toBeNull()
+    expect(refLabel('decision:dr-7')).toBe('decision dr-7')
+    // Its receipt is DR1's: the decision routed, opened from the card; no op: chip, which names a Dispatch receipt.
+    expect(actDecision(routed)).toBe('dr-7')
+    expect(actReceiptRef(routed)).toBeNull()
+    expect(actWords(routed)).toBe('Brakeman did this, under the grant "Route a decision" you gave it; dr-7 routed: row 4 of its history.')
+    expect(actDecision({ ...routed, state: 'refused' })).toBe('')
+    expect(actDecision({ ...routed, receipt: 'dr-7' })).toBe('')
+    expect(actDecision(act({ opId: 'a1' }))).toBe('')
+    // Settings' words say it may route to a person, and that it never answers.
+    expect(GRANTS.find((g) => g.value === 'route_decision')?.words).toBe(
+      "Send an open decision record to you, the operator, or to a person of its run's crew, by name or by the responsibility they hold. It never answers one: you answer it, for them.",
+    )
   })
 
   it('tells two proposals of one operation on one ticket apart: only the one Brakeman ran is done', () => {

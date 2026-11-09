@@ -73,6 +73,8 @@ function ask() {
   if (sendVerdict.value === 'request_changes') confirmOpen.value = true
   else void go(false)
 }
+// The palette's Send review (n notes) asks as the button does.
+defineExpose({ ask })
 async function go(continueRun: boolean) {
   confirmOpen.value = false
   continuation.value = null
@@ -106,7 +108,7 @@ async function go(continueRun: boolean) {
       <li v-for="n in notes" :key="n.key" class="flex flex-col gap-1 rounded border border-default/60 bg-elevated/20 px-2 py-1.5 text-xs" data-review-draft-note :data-review-note-kind="n.kind" :data-review-note-side="n.side ?? ''" :data-review-note-path="n.path ?? ''">
         <div class="flex min-w-0 flex-wrap items-center gap-1.5">
           <UBadge :label="intentWords(n)" :color="intentColor(n)" variant="subtle" size="sm" />
-          <button v-if="n.kind !== 'general'" type="button" class="min-w-0 break-all text-left font-mono text-muted hover:underline" data-review-draft-open @click="emit('open', n)">{{ noteWhere(n) }}</button>
+          <button v-if="n.kind !== 'general' && n.kind !== 'check'" type="button" class="min-w-0 break-all text-left font-mono text-muted hover:underline" data-review-draft-open @click="emit('open', n)">{{ noteWhere(n) }}</button>
           <span v-else class="text-muted">{{ noteWhere(n) }}</span>
           <span class="ml-auto flex flex-none items-center">
             <UButton icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" aria-label="Edit the note" data-review-draft-edit @click="emit('edit', n)" />
