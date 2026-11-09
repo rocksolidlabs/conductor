@@ -22,13 +22,13 @@ func TestClassComesFromTheKindAlone(t *testing.T) {
 	ix := openIndex(t, t.TempDir(), Options{})
 	want := map[string]string{
 		"session": ClassRecord, "run": ClassRecord, "task": ClassRecord, "attempt": ClassRecord,
-		"ticket": ClassRecord, "plan": ClassRecord, "launch": ClassRecord, "step": ClassRecord,
+		"ticket": ClassRecord, "plan": ClassRecord, "launch": ClassRecord, "step": ClassRecord, "decision": ClassRecord,
 		"session.typed": ClassSaid, "session.answer": ClassSaid, "session.question": ClassSaid, "session.report": ClassSaid,
 		"session.file": ClassSaid, "session.chat": ClassSaid, "attempt.result": ClassSaid, "review.verdict": ClassSaid,
 		"review.finding": ClassSaid, "attempt.checkpoint": ClassSaid, "attempt.blocker": ClassSaid, "message": ClassSaid,
 		"comment": ClassSaid, "brief.item": ClassSaid,
 		"command": ClassDecided, "plan.approved": ClassDecided, "plan.withdrawn": ClassDecided, "plan.superseded": ClassDecided,
-		"ticket.accepted": ClassDecided, "ticket.unaccepted": ClassDecided, "ticket.closed": ClassDecided,
+		"ticket.accepted": ClassDecided, "ticket.unaccepted": ClassDecided, "ticket.closed": ClassDecided, "decision.response": ClassDecided,
 		"check": ClassChecked, "verify": ClassChecked, "candidate.verified": ClassChecked, "delivery.verified": ClassChecked,
 	}
 	if got := Kinds(); len(got) != len(want) {
@@ -353,6 +353,23 @@ func TestReplaceRefusesPastABound(t *testing.T) {
 	if err := ix.Replace(ctx, Source{Key: "s"}, []Entry{long}, nil); err != nil {
 		t.Errorf("a comment at its bound: %v", err)
 	}
+	// A decision request and its response at theirs (PR-9), one byte past
+	// refused.
+	for _, kind := range []string{"decision", "decision.response"} {
+		e := ok
+		e.Kind, e.Actor, e.Body = kind, "admin", strings.Repeat("b", MaxLongBody)
+		if err := ix.Replace(ctx, Source{Key: "s"}, []Entry{e}, nil); err != nil {
+			t.Errorf("a %s at its bound: %v", kind, err)
+		}
+		e.Body += "b"
+		if err := ix.Replace(ctx, Source{Key: "s"}, []Entry{e}, nil); !errors.Is(err, ErrBound) {
+			t.Errorf("a %s past its bound: %v, want a bound", kind, err)
+		}
+	}
+	// A response is a person's act: it names its actor.
+	noActor := ok
+	noActor.Kind = "decision.response"
+	wantErr(t, ix.Replace(ctx, Source{Key: "s"}, []Entry{noActor}, nil), ErrBound)
 	wantErr(t, ix.Replace(ctx, Source{Key: "s"}, []Entry{ok, ok}, nil), ErrBound)
 	wantErr(t, ix.Replace(ctx, Source{Key: "s"}, nil, []Link{{From: "a", Rel: "Bad Rel", To: "b"}}), ErrBound)
 }

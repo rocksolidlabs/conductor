@@ -104,6 +104,10 @@ type indexLedger interface {
 	Messages(ctx context.Context, runID string) ([]ledger.MessageRow, error)
 	Checks(ctx context.Context, runID, taskID string, n int, withLog bool) ([]ledger.CheckRow, error)
 	Check(ctx context.Context, runID, taskID string, n int, id string, k int) (ledger.CheckRow, bool, error)
+	// DR1's decision records (PR-9): one read whole, and a page of rows.
+	Decision(ctx context.Context, n int64) (ledger.DecisionRecord, bool, error)
+	Decisions(ctx context.Context, f ledger.DecisionFilter) ([]ledger.DecisionRow, error)
+	DecisionRevisions(ctx context.Context, after int64, limit int) ([]ledger.DecisionRevision, error)
 }
 
 // historyIndexer feeds the index. Its fields after mu are the hooks'
@@ -755,6 +759,8 @@ func (h *historyIndexer) pass(ctx context.Context, key string) {
 			err = h.indexTicket(ctx, ix, id)
 		case "brief":
 			err = h.indexBrief(ctx, ix, id)
+		case "decision":
+			err = h.indexDecision(ctx, ix, id)
 		}
 	}
 	if err == nil {
@@ -884,7 +890,7 @@ func (h *historyIndexer) repoIdent(ctx context.Context, dir string) (repoIdent, 
 // without the repository and a mark that says so (unknown true: the mark
 // carries U), and every reconcile reads again each source whose mark in
 // the index carries U, so the first read that succeeds writes it whole:
-// the run and its receipts alike.
+// the run and its receipts alike, a decision and a session by their own.
 func (h *historyIndexer) repoFor(ctx context.Context, key, dir string) (id repoIdent, unknown bool, err error) {
 	id, err = h.repoIdent(ctx, dir)
 	if err == nil {
@@ -1244,9 +1250,10 @@ func (h *historyIndexer) indexRun(ctx context.Context, ix *history.Index, id str
 		marks = append(marks, "U")
 	}
 	mark := strings.Join(marks, "/")
-	if old, ok, err := ix.Mark(ctx, key); err != nil {
+	old, had, err := ix.Mark(ctx, key)
+	if err != nil {
 		return err
-	} else if ok && old == mark {
+	} else if had && old == mark {
 		return nil
 	}
 	h.afterMark(key)
@@ -1285,6 +1292,22 @@ func (h *historyIndexer) indexRun(ctx context.Context, ix *history.Index, id str
 	entries, links := runSource(p, rec, rows, chain, kept)
 	if rows != nil {
 		if err := h.indexReceipts(ctx, ix, ld, p, rows); err != nil {
+			return err
+		}
+	}
+	// The decisions the run holds, each whose row or place moved, found
+	// before the run's mark is committed, so a scan that fails is made
+	// again by this pass retried (a decision another run's transition
+	// changed is found by the reconcile, markMovedDecisions). A run the
+	// ledger no longer has, its record kept, was pruned: every decision it
+	// held or opened is read again, taken with it or handed back.
+	switch {
+	case inLedger:
+		if err := h.markDecisions(ctx, ix, ld, p); err != nil {
+			return err
+		}
+	case ld != nil && (!had || markInLedger(old)):
+		if err := h.markRunsDecisions(ctx, ix, id); err != nil {
 			return err
 		}
 	}
@@ -1361,6 +1384,12 @@ func (h *historyIndexer) setNoLedger(gone bool) {
 	h.mu.Lock()
 	h.noLedger = gone
 	h.mu.Unlock()
+}
+
+func (h *historyIndexer) noLedgerNow() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.noLedger
 }
 
 // errNoRun is a run the ledger has no row of.
@@ -1500,6 +1529,12 @@ func receiptMark(p runPlace) string {
 	return m
 }
 
+// markInLedger says a run's mark carries L: the run was indexed from its
+// ledger rows.
+func markInLedger(mark string) bool {
+	return slices.ContainsFunc(strings.Split(mark, "/"), func(part string) bool { return strings.HasPrefix(part, "L") })
+}
+
 // repoNotKnown says a mark carries U: its source was indexed without its
 // repository.
 func repoNotKnown(mark string) bool {
@@ -1598,10 +1633,14 @@ func checkSources(ctx context.Context, ix *history.Index, run string) (map[strin
 }
 
 // removeRun removes a run that is gone (pruned, its record deleted) with
-// every receipt it owned.
+// every receipt it owned, and asks again of every decision it held or
+// opened (the prune took or handed back each).
 func (h *historyIndexer) removeRun(ctx context.Context, ix *history.Index, id string) error {
 	held, err := checkSources(ctx, ix, id)
 	if err != nil {
+		return err
+	}
+	if err := h.markRunsDecisions(ctx, ix, id); err != nil {
 		return err
 	}
 	for key := range held {
@@ -1746,6 +1785,16 @@ func (h *historyIndexer) storeSources(ctx context.Context) ([]string, bool, *int
 			after = ps[len(ps)-1].ID
 		}
 	}
+	if ld != nil && !h.noLedgerNow() {
+		ds, err := decisionSources(ctx, ld)
+		switch {
+		case errors.Is(err, ledger.ErrUnavailable):
+			h.setNoLedger(true)
+		case err != nil:
+			return nil, false, nil, err
+		}
+		keys = append(keys, ds...)
+	}
 	docs, err := h.data.ListDocs("runs")
 	if err != nil {
 		return nil, false, nil, err
@@ -1825,6 +1874,11 @@ func (h *historyIndexer) reconcile(ctx context.Context) {
 				}
 			}
 		}
+		// Every decision the ledger keeps, compared with its mark by the run
+		// that holds it and its rev, whatever moved it.
+		if err := h.markMovedDecisions(ctx, ix, ld); err != nil && !errors.Is(err, ledger.ErrUnavailable) {
+			h.log.Warn("the history's reconcile could not compare the decisions", "err", err)
+		}
 	}
 	if docs, err := h.data.ListDocs("runs"); err == nil {
 		seen := map[string]bool{}
@@ -1852,32 +1906,16 @@ func (h *historyIndexer) reconcile(ctx context.Context) {
 	h.reconcileBriefs()
 	// The sources indexed without their repository, found by their marks
 	// (U) in the index, read again: the runs (whose passes place their
-	// receipts again) and the sessions.
+	// receipts again), the decisions and the sessions. A decision's is
+	// read again by its own pass: its run's mark may hold its repository
+	// already, and the run's pass then compares nothing.
 	for key, m := range marks {
 		if repoNotKnown(m) {
 			h.mark(key)
 		}
 	}
-	for after := "session:"; ; {
-		page, err := ix.Sources(ctx, after, history.MaxSourcesPage)
-		if err != nil {
-			h.log.Warn("the history's reconcile could not read the index", "err", err)
-			break
-		}
-		done := len(page) < history.MaxSourcesPage
-		for _, src := range page {
-			if !strings.HasPrefix(src.Key, "session:") {
-				done = true
-				break
-			}
-			if repoNotKnown(src.Mark) {
-				h.mark(src.Key)
-			}
-		}
-		if done {
-			break
-		}
-		after = page[len(page)-1].Key
+	for _, prefix := range []string{"decision:", "session:"} {
+		h.markRepoNotKnown(ctx, ix, prefix)
 	}
 	old := ""
 	if h.pm != nil {
@@ -1893,6 +1931,30 @@ func (h *historyIndexer) reconcile(ctx context.Context) {
 		h.mu.Lock()
 		h.placed = true
 		h.mu.Unlock()
+	}
+}
+
+// markRepoNotKnown marks dirty each source under prefix whose mark in the
+// index says it was indexed without its repository (U).
+func (h *historyIndexer) markRepoNotKnown(ctx context.Context, ix *history.Index, prefix string) {
+	for after := prefix; ; {
+		page, err := ix.Sources(ctx, after, history.MaxSourcesPage)
+		if err != nil {
+			h.log.Warn("the history's reconcile could not read the index", "err", err)
+			return
+		}
+		for _, src := range page {
+			if !strings.HasPrefix(src.Key, prefix) {
+				return
+			}
+			if repoNotKnown(src.Mark) {
+				h.mark(src.Key)
+			}
+		}
+		if len(page) < history.MaxSourcesPage {
+			return
+		}
+		after = page[len(page)-1].Key
 	}
 }
 
