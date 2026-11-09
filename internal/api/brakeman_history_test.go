@@ -362,3 +362,60 @@ func TestAnEntryIsOfItsRecord(t *testing.T) {
 		t.Error("an entry of no record a turn can be admitted to")
 	}
 }
+
+// A turn's history read is bounded and reads on: at most limit entries
+// and maxObserveReply bytes a page, next reading on with nothing given
+// twice and nothing skipped (a search of filters alone, newest first: a
+// search of words is ranked, and a source indexed between two pages may
+// move a row's score, as the plan says of the search's own pages); and a
+// read whose rows the grant admits none of looks at maxHistoryTurnScan of
+// them and answers next, never the whole index at once.
+func TestAHistoryReadIsBoundedAndReadsOn(t *testing.T) {
+	f := newObsFixture(t)
+	const n = maxHistoryTurnScan + 50
+	for i := range n {
+		doneOf(t)(f.srv.dispatch.AddComment(t.Context(), adminOp("Ann"), f.ticket, fmt.Sprintf("turnstile note %d", i)))
+	}
+	histSettle(t, f.testEnv)
+	// The ticket's own comment and the n added.
+	until(t, "the comments indexed", func() bool {
+		total, _ := hsSearch(t, f.testEnv, "kind:comment project:CND")["total"].(float64)
+		return int(total) == n+1
+	})
+	f.turn(t, func(c map[string]any) { c["budget"].(map[string]any)["readsPerTurn"] = brakeman.MaxReadsPerTurn })
+	seen := map[string]bool{}
+	for after := ""; ; {
+		extra := []string{"limit", fmt.Sprint(maxHistoryTurnPage)}
+		if after != "" {
+			extra = append(extra, "after", after)
+		}
+		resp, body := f.readRaw(t, searchPath("kind:comment project:CND", extra...))
+		if resp.StatusCode != http.StatusOK || len(body) > maxObserveReply {
+			t.Fatalf("a page: %d, %d bytes", resp.StatusCode, len(body))
+		}
+		_, out := f.read(t, searchPath("kind:comment project:CND", extra...))
+		refs := historyRefs(out)
+		if len(refs) > maxHistoryTurnPage {
+			t.Fatalf("a page of %d", len(refs))
+		}
+		for _, r := range refs {
+			if seen[r] {
+				t.Fatalf("%s given twice", r)
+			}
+			seen[r] = true
+		}
+		next, _ := out["next"].(string)
+		if next == "" {
+			break
+		}
+		after = next
+	}
+	if len(seen) != n+1 {
+		t.Fatalf("%d comments read, want %d", len(seen), n+1)
+	}
+	f.again(t, func(c map[string]any) { c["scope"] = map[string]any{"projects": []string{"OTH"}} })
+	out := f.expectRead(t, searchPath("kind:comment project:CND"), http.StatusOK, "")
+	if refs := historyRefs(out); len(refs) != 0 || out["next"] == nil {
+		t.Fatalf("a read the grant admits none of: %v, next %v", refs, out["next"])
+	}
+}
