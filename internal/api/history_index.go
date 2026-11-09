@@ -1300,7 +1300,8 @@ func (h *historyIndexer) indexRun(ctx context.Context, ix *history.Index, id str
 	// again by this pass retried (a decision another run's transition
 	// changed is found by the reconcile, markMovedDecisions). A run the
 	// ledger no longer has, its record kept, was pruned: every decision it
-	// held or opened is read again, taken with it or handed back.
+	// held or opened is read again, taken with it or handed back, and every
+	// ticket whose resolutions were judged from its receipts.
 	switch {
 	case inLedger:
 		if err := h.markDecisions(ctx, ix, ld, p); err != nil {
@@ -1308,6 +1309,9 @@ func (h *historyIndexer) indexRun(ctx context.Context, ix *history.Index, id str
 		}
 	case ld != nil && (!had || markInLedger(old)):
 		if err := h.markRunsDecisions(ctx, ix, id); err != nil {
+			return err
+		}
+		if err := h.markRunsResolutions(ctx, ix, id); err != nil {
 			return err
 		}
 	}
@@ -1536,7 +1540,8 @@ func markInLedger(mark string) bool {
 }
 
 // repoNotKnown says a mark carries U: its source was indexed without its
-// repository.
+// repository, or (a ticket's) without the judgement of a resolution's
+// receipt.
 func repoNotKnown(mark string) bool {
 	return slices.Contains(strings.Split(mark, "/"), "U")
 }
@@ -1634,13 +1639,17 @@ func checkSources(ctx context.Context, ix *history.Index, run string) (map[strin
 
 // removeRun removes a run that is gone (pruned, its record deleted) with
 // every receipt it owned, and asks again of every decision it held or
-// opened (the prune took or handed back each).
+// opened (the prune took or handed back each) and of every ticket whose
+// resolutions its receipts were judged from.
 func (h *historyIndexer) removeRun(ctx context.Context, ix *history.Index, id string) error {
 	held, err := checkSources(ctx, ix, id)
 	if err != nil {
 		return err
 	}
 	if err := h.markRunsDecisions(ctx, ix, id); err != nil {
+		return err
+	}
+	if err := h.markRunsResolutions(ctx, ix, id); err != nil {
 		return err
 	}
 	for key := range held {
@@ -1904,17 +1913,19 @@ func (h *historyIndexer) reconcile(ctx context.Context) {
 		}
 	}
 	h.reconcileBriefs()
-	// The sources indexed without their repository, found by their marks
-	// (U) in the index, read again: the runs (whose passes place their
-	// receipts again), the decisions and the sessions. A decision's is
-	// read again by its own pass: its run's mark may hold its repository
-	// already, and the run's pass then compares nothing.
+	// The sources indexed without something their entries need, found by
+	// their marks (U) in the index, read again: the runs (whose passes
+	// place their receipts again), the decisions and the sessions without
+	// their repository, and the tickets with a resolution whose receipt
+	// the ledger could not judge yet. A decision's is read again by its
+	// own pass: its run's mark may hold its repository already, and the
+	// run's pass then compares nothing.
 	for key, m := range marks {
 		if repoNotKnown(m) {
 			h.mark(key)
 		}
 	}
-	for _, prefix := range []string{"decision:", "session:"} {
+	for _, prefix := range []string{"decision:", "session:", "ticket:"} {
 		h.markRepoNotKnown(ctx, ix, prefix)
 	}
 	old := ""
@@ -1935,7 +1946,8 @@ func (h *historyIndexer) reconcile(ctx context.Context) {
 }
 
 // markRepoNotKnown marks dirty each source under prefix whose mark in the
-// index says it was indexed without its repository (U).
+// index says it was indexed without its repository or a receipt's
+// judgement (U).
 func (h *historyIndexer) markRepoNotKnown(ctx context.Context, ix *history.Index, prefix string) {
 	for after := prefix; ; {
 		page, err := ix.Sources(ctx, after, history.MaxSourcesPage)

@@ -126,10 +126,29 @@ func (h *historyIndexer) dispatchSources(ctx context.Context) (tickets, briefs [
 var ticketFields = map[string]bool{"approved_at": true, "approved_note": true, "withdrawn_at": true, "state": true,
 	"accepted_at": true, "accepted_note": true, "status": true}
 
-// indexTicket reads a ticket: its mark Q<seq> (its changes' last, read
-// first), then the ticket, its comments, its plan revisions and its
-// launches, each through Dispatch's own read. A ticket Dispatch no longer
-// holds is removed.
+// ticketShape is the version of what a ticket's source makes of what it
+// reads, part of its mark: a build that changes the ticket's entries (PR-10
+// added its reviews, then its resolutions' judgements to its mark) changes
+// it, so a mark an earlier build made is stale and every ticket is read
+// again at the catch-up, as a digest of what the entries were built from
+// would be (decisionMark).
+const ticketShape = "V3"
+
+// indexTicket reads a ticket: its mark Q<seq>/<shape> (its changes' last,
+// read first, and ticketShape), then the ticket, its comments, its plan
+// revisions, its launches and its newest reviews, each through Dispatch's
+// own read (a review's and a finding's rows and every mark are changes of
+// the ticket, so they move the mark too), and from the ledger the
+// verification receipt of each candidate a resolved finding names. What
+// the ledger held of those is part of the mark (resolutionsMark: a digest
+// of each judgement and the runs it was read from), so a ticket whose mark
+// carries one is read again whenever its pass runs, its Dispatch's part
+// unchanged or not, and its entries replaced only when the mark differs;
+// a run whose ledger rows are gone asks for the tickets its mark names
+// (markRunsResolutions). The mark gains U while one of those could not be
+// judged yet: such a mark never equals the one read first, and every
+// reconcile reads the ticket again (markRepoNotKnown). A ticket Dispatch
+// no longer holds is removed.
 func (h *historyIndexer) indexTicket(ctx context.Context, ix *history.Index, key string) error {
 	ds := h.dispatch
 	if ds == nil {
@@ -157,14 +176,15 @@ func (h *historyIndexer) indexTicket(ctx context.Context, ix *history.Index, key
 		}
 		after = page.Next
 	}
-	mark := "Q" + strconv.FormatInt(last, 10)
-	if old, ok, err := ix.Mark(ctx, src); err != nil {
+	mark := "Q" + strconv.FormatInt(last, 10) + "/" + ticketShape
+	old, had, err := ix.Mark(ctx, src)
+	if err != nil {
 		return err
-	} else if ok && old == mark {
-		return nil
+	}
+	if had && old == mark {
+		return nil // nothing of its entries was read from the ledger
 	}
 	h.afterMark(src)
-	var err error
 	if r.v, err = ds.Ticket(ctx, key); errors.Is(err, dispatch.ErrNotFound) {
 		return ix.Remove(ctx, src)
 	} else if err != nil {
@@ -186,6 +206,22 @@ func (h *historyIndexer) indexTicket(ctx context.Context, ix *history.Index, key
 	}
 	if r.launches, err = ds.Launches(ctx, key, dispatch.MaxLaunches); err != nil {
 		return err
+	}
+	if r.reviews, r.reviewsCut, err = readReviews(ctx, ds, key); errors.Is(err, dispatch.ErrNotFound) {
+		return ix.Remove(ctx, src)
+	} else if err != nil {
+		return err
+	}
+	waiting := false
+	if r.resolutions, waiting, err = readResolutions(ctx, h.currentLedger(), r.reviews); err != nil {
+		return err
+	}
+	mark += resolutionsMark(r.resolutions)
+	if waiting {
+		mark += "/U"
+	}
+	if had && old == mark {
+		return nil // what the ledger holds of its resolutions is as it was
 	}
 	entries, links := ticketEntries(r)
 	return ix.Replace(ctx, history.Source{Key: src, Mark: mark, Generation: h.gen}, entries, links)

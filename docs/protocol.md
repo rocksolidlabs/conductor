@@ -4832,22 +4832,77 @@ server writes to the ledger and the run records is found by a reconcile
 every 30 s.
 
 A **ticket** (`ticket:<KEY-n>`) is read through Dispatch's own reads, its
-mark `Q<seq>` (its changes' last, read first): its record, each comment
+mark `Q<seq>/V<n>` (its changes' last, read first, and the version of what
+the ticket's source makes of what it reads, so that a mark an earlier
+build made, `Q<seq>` before PR-10, is stale and the catch-up reads every
+ticket again; `/U` added while a resolution's receipt could not be judged
+yet, which every reconcile reads again): its record, each comment
 (said; a deleted one its place and number, never its words), each plan
 revision (its crew, base and number, never its body), the approvals,
 withdrawals and supersessions of its revisions, its acceptances and
 their withdrawals and a close by a person (decided, each keyed by the op
 id of the change that recorded it, with the operator), its launches, and
 each delivery whose candidate's verification receipt is kept (checked,
-`delivers` to the candidate's attempt). A ticket's history is read for
-those acts alone: no field's earlier value, nothing of a review or a
-finding. A plan revision's ref is Brakeman's, `plan:<KEY-n>/<n>`, so a
+`delivers` to the candidate's attempt), and its reviews (RV1's, below).
+A ticket's history is read for those acts alone: no field's earlier
+value. A plan revision's ref is Brakeman's, `plan:<KEY-n>/<n>`, so a
 brief that cites one is joined to it. An act's note is the one in effect
 at the act (Dispatch writes a note only when it changes). Dispatch's hook
 names a changed ticket by its id, so it only asks for the change feed,
 which is read on the indexer's goroutine from the position the index
 keeps (`dispatch:feed`); the same read is the reconcile's, so another
-server's edit is found within 30 s. A **brief** (`brief:<br-n>`) is read
+server's edit is found within 30 s. A ticket's **reviews** (RV1's batches,
+`docs/plans/review-repair.md`) are read with it, its newest 20 (one page
+of RV1's), each whole, through Dispatch's own reads (the reads RV1's
+routes serve): at RV1's bounds (50 findings of a review, each resolved and
+verified) their entries are under 24 MiB, a tenth of the index's budget;
+an older review stays in the ticket's Review view, not in the history, and
+the ticket's entry says the history holds its 20 newest. A review's, a
+finding's and a mark's rows are changes of the ticket, so each moves the
+ticket's mark and the ticket is read again. A batch is `review.batch`
+(decided: the reviewer's `request_changes`, `comment` or `approve` as its
+outcome, its actor the review's), keyed `ticket:<KEY-n>#review/<id>`,
+bound to its candidate (`run`, `commit`, its revision the candidate's
+name `<task>#<n>`) and its base (its full commit, said in its summary
+with who sent it, so a search by the base's commit finds it,
+its findings by state and what Yardmaster did with a request), its body
+its summary whole (at most 4,000 characters), its title cut from its
+verdict, its candidate and its summary; `reviews` to the attempt it
+reviewed and, applied, `reopened` to the repair attempt. Each finding is
+`review.finding` (said), keyed `ticket:<KEY-n>#finding/<id>`, on the
+same candidate, its `outcome` its state now (`open`, `resolved` or
+`finding_withdrawn`: its latest mark's verdict, RV1's rule, a withdrawn
+one an outcome of its own that a plan's withdrawal never shares, so the
+History page's Rejected chip leaves it out), its body whole within
+16 KiB (its words and the resolution asked for, at most 1,000 characters
+each, the lines as the person saw them, at most 12 of 200 bytes, and for a
+check finding its receipt's identity, the server's class and the person's,
+and the person's quote of at most 2 KiB, never the ledger's tail, which
+the receipt's own entry holds); `reviews` to the attempt, a check finding
+`cites` its receipt. A finding whose state is `resolved` has an entry of
+its own, `review.resolved` (checked), from the mark that resolved it,
+keyed `ticket:<KEY-n>#resolved/<mark id>`, only when the ledger holds the
+verification receipt of the later candidate of another commit the mark
+names (RV1 refuses a resolved mark on the finding's own commit): an ended
+attempt whose result is that commit, with a receipt, every one passed, as
+`candidate.verified` judges one; its summary says how many receipts
+passed, its body the mark's note (at most 1,000 characters), `resolves`
+to the finding, which stays said, and `cites` the candidate's
+`candidate:<run>/<task>/<n>`. A person's resolved mark without that
+receipt (a check that failed, none, an attempt the ledger does not hold)
+is said in the finding's summary, resolved and not checked, and is no
+entry; one whose attempt has not ended, or whose receipt is still on its
+way, waits under the ticket's `/U`. What the ledger held of each
+resolution is part of the ticket's mark, `/E<digest>/C<run>...` before
+the `/U` (a digest of each judgement: the candidate, so its run and
+attempt, and its receipt verified or why not; then the runs those
+candidates are of, `/C*` when they would not fit the mark's 512 bytes):
+a ticket whose mark carries one is read again whenever its pass runs (a
+restart's catch-up among them) and kept only when the digest still
+agrees, and a run whose ledger rows are gone reads again every ticket
+whose mark names it, as it does its decisions, so a resolution whose
+receipt went with a pruned run is said resolved and not checked and its
+entry leaves. A finding marked open or withdrawn since has none. A **brief** (`brief:<br-n>`) is read
 through Brakeman's store, its mark the brief's time and op id, and found
 by the reconcile from its request's file as well as its brief's (the
 brief is written before the request that says it keeps one; the files
@@ -4936,7 +4991,11 @@ comment its ticket's page at it (`?comment=<n>`), a launch (an entry or a
 link's end) its run's page (its ticket's before it has a run), a decision's
 request or response (an entry or a link's end) the decision's card over
 the run that holds it (`/runs/<run>?view=tasks&task=<task>&decision=dr-<n>`,
-its notification's URL), a session `/sessions/<id>` while the server lists it and
+its notification's URL), a review's batch (an entry or a link's end) its
+ticket's Review view at its candidate
+(`/dispatch/<project>/<n>?view=review&candidate=<run>/<task>/<n>@<commit>`)
+and a finding or a resolution the same with `&focus=findings` (a
+resolution at the candidate it was verified on), a session `/sessions/<id>` while the server lists it and
 `/history/sessions/<id>#e<seq>` after; every other ref the page Brakeman's
 references open. `availability.state` is `live`, `listed`, `record`,
 `lost` or `host_away` for a session, `worktree`, `worktree_gone` or
@@ -4948,7 +5007,8 @@ own read), the decision's state now for a decision's request and its
 responses, by the ledger's own read (`open`, `answered`, `applied`,
 `superseded` with its successor and DR1's words of why, a stale subject
 among them, `cancelled` or `expired`, the words at most 300 bytes;
-`pruned` once the ledger no longer keeps it), else `kept`; `unknown` wherever the store could not be read
+`pruned` once the ledger no longer keeps it), `kept` ("in Dispatch") for
+a review's entries, which Dispatch never deletes, else `kept`; `unknown` wherever the store could not be read
 (the ledger not open, a read that failed, a run's folder not known or a
 step of a worktree's place that could not be looked at): never said as
 gone. Every yes-or-no answer of availability and eligibility is `yes`,
