@@ -613,7 +613,8 @@ describe("the grants in Settings and what Brakeman did under them (PR-13)", () =
     expect(actWords(a, { state: 'started', runId: 'r-1' })).not.toContain('receipt 0123456789abcdef')
     expect(refLabel(actLaunchRef(a)!)).toBe('launch 0123456789abcdef')
     expect(actMade(a)).toBe('the launch 0123456789abcdef of CND-4')
-    expect(actMade(act({ operation: 'request_repair', target: `run:${RUN}`, receipt: 'r-1' }))).toBe('r-1, what it made')
+    expect(actMade(act({ operation: 'request_repair', receipt: 'fedcba9876543210' }))).toBe('the review fedcba9876543210 of CND-4')
+    expect(actMade(act({ operation: 'some_later_op', target: `run:${RUN}`, receipt: 'r-1' }))).toBe('r-1, what it made')
     // Not done, or with an op that is no op ref: no receipt.
     for (const x of [act({ state: 'refused' }), act({ state: 'pending', receipt: undefined }), act({ op: 'no/op' }), act({ op: '' })]) expect(actReceiptRef(x)).toBeNull()
     expect(actMade(act({ state: 'refused' }))).toBe('')

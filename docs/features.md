@@ -3763,6 +3763,28 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   vitest in `brakeman.test.ts` and `decisions.test.ts`; Playwright in
   `brakeman-act.spec.ts`.
 
+  #658, later: `request_repair` is served, through RV1's own review route
+  (`POST /api/dispatch/tickets/{key}/reviews`), so all four grants are.
+  The act is a request for changes: never a comment or an approval, never
+  `via` from the body (the server records `brakeman`), never the word to
+  continue a run the server no longer runs, which stays the person's. Its
+  checks are the launch's, with the candidate in the plan revision's
+  place: Dispatch and the runs both visible, the ticket and then the
+  candidate's run in the scope, the ticket at the rev read, and the
+  candidate its attempt's result in a run the server runs now, with no
+  later attempt of its task begun. The review is RV1's, recorded as
+  Brakeman's and applied by Yardmaster under the actor `brakeman`. Its
+  application is held to the run it was admitted on, so a continuation
+  made between the two is refused and never sent the request. Settings
+  offers the grant now that the admin's guide lists it, and the brief
+  names the act's review. `route_decision` to the operator was PR-18's,
+  unchanged. Tests: `TestARepairIsHeldToTheGrantAndWhatTheTurnSees`,
+  `TestARepairRequestsChangesAsBrakeman`,
+  `TestARepairRetryAfterALostReplyIsOneOperation`,
+  `TestARepairOfATargetInTheWrongStateIsRefused`,
+  `TestARepairIsHeldToTheRunItWasAdmittedOn`, `TestActWordsNameAReview`;
+  vitest in `brakeman.test.ts`; Playwright in `brakeman-act.spec.ts`.
+
   What was missing, slow or wrong. PR-12's prerequisites were not all
   there: RV1 and DR1 have plans but no routes, so the closed list of four
   ships with two operations served. Bugs of the stream, each fixed in the

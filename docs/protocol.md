@@ -2420,7 +2420,7 @@ its run, and on no other.
 | `POST /api/dispatch/plans/{id}/withdraw` | admin | withdraw a plan revision (`plan.withdraw`): `{opId, expectedRev?, byName?}`, `expectedRev` the revision's; reply `{receipt, plan}`; `409 invalid` for one withdrawn already; `404 not_found` |
 | `POST /api/dispatch/tickets/{key}/launch` | admin | launch a managed run from a ticket's approved plan revision (`ticket.launch`; see Launches below): `{opId, plan, expectedRev?, label?, byName?}`, at most 4 KiB, `plan` the revision's id, `expectedRev` the ticket's, `label` the run's own name (at most 60 characters; the ticket's key and title, cut at a word, when absent); reply `201 {receipt, launch, run}` once the run's first ledger transaction is committed and the launch recorded started, `launch` its summary `{id, ticketId, ticketKey, planId, planN, runId, label, ticketRev, intent, criteria, packageSha256, state, why?, agents, createdAt, createdBy, fingerprint, startedAt?, rev}` (never the package), `run` as `GET /api/runs/{run}` answers it; the same `opId` again answers the same launch, `200` with the receipt's `repeat`, never a second run; `409 launch_failed {error, receipt, launch}` when the run could not be started (an agent not installed or not the one it claims, a working directory outside the allowed roots, the engine's refusal), the launch kept, `failed`, with why; `409 stale_plan` when an agent of the revision resolves otherwise in the catalog now, naming the agent and the part ("…: revise it"), no receipt kept, or when the store finds the approval stale (the ticket's intent changed: "approve it again or revise it"; a handed-over comment or attachment edited or gone: "revise it"), its receipt kept; `409 invalid` for a ticket closed or a revision not approved; `409 managed_off`; `503 ledger_unavailable` without a ledger, with one another server owns, and while the server takes the ledger over ("the server is taking over the ledger"), no launch kept; a pending launch replayed on a server that may not advance it is answered `503 ledger_unavailable {error, receipt, launch}`, still pending, never recorded failed; once the server's shutdown begins stopping its runs, a launch not yet given to the engine starts no run (`409 launch_failed`, "the server is shutting down: the run was not started"), and the run of one the engine was still starting past the shutdown's wait is stopped as it starts |
 | `GET /api/dispatch/launches/{id}` | admin | a launch whole: `{launch}`, its summary as the launch answers it and `package`, the bytes it is kept as (Launches, below), under 1 MiB (`MaxLaunchReply`); `404 not_found` |
-| `POST /api/dispatch/tickets/{key}/reviews` | admin | send a review of one candidate (`review.submit`; see Reviews below): `{opId, candidate, base, verdict, summary?, findings, via?, byName?, expectedRev?, expectedRevision?, continueRun?}`, at most 192 KiB; `candidate` `<run>/<task>/<n>@<commit>` of a run whose chain the ticket holds alone, `base` a full commit the run names (its base, the attempt's start, or a result of the task in the chain), `verdict` `request_changes`, `comment` or `approve`, `summary` at most 4,000 characters, `findings` at most 50, each `{kind, intent, severity?, path?, side?, from?, to?, lines?, message?, resolution?, check?}` (`kind` `line`, `file`, `general` or `check`; `intent` `change`, `question` or `note`; `severity` `blocker`, `major`, `minor` or `nit` for a change alone; `path` at most 1,024 bytes and `side` `candidate` or `base` for a line or a file; `from` and `to` 1 to 10,000,000 and `lines` 1 to 12 of at most 200 bytes, as the person saw them, for a line; `message` and `resolution` at most 1,000 characters; `check` `{source: "ledger", receipt, chosen?, quote?}` for a check, `receipt` `<run>/<task>/<n>/<phase>/<id>/<k>`, any other member an unknown field), `via` `web` or `cli` (the client's label; `brakeman` is `400 invalid_request` from every body), `expectedRev` the ticket's, `expectedRevision` the run's for the request's command, `continueRun` the word to continue a run the server does not run; neither of the last two is recorded; reply `201 {receipt, review}` (`200` with `receipt.repeat` for the same `opId` again, answered before any evidence is read), `review` as `GET /api/dispatch/reviews/{id}` reads it, its `application` `{state, try?, run?, command?, revision?, attempt?, why?, at?}` `none` for a comment or an approval, else `applied` (the run the repair was made in, the command `rv.<id>.<try>`, the run's revision after it and the repair attempt's number), `refused` (why, in words) or `pending` (Yardmaster took the request and its change is not recorded yet: settled when it is); before anything is recorded: `409 not_ticket_run` (the ticket does not hold the run's chain: none, another ticket's, `key` naming it, or contested), `409 invalid` (a candidate whose commit is not the attempt's result, a base the run does not name, a check finding's receipt not of the candidate's attempt, not in the ledger, or not failed), `413 too_large` (a request the run could not keep, or whose repair attempt's task file could not hold it), `409 continuation_needed {error, run, words}` (a request of a run the server does not run, sent without `continueRun`: `run` the newest of the candidate's chain, `words` what continuing it starts), `409 managed_off` and `503 ledger_unavailable` for a request this server cannot apply; the store's refusals with their receipts (`invalid`, `bound`, `archived`, `not_found`); a review kept whose read after its commit failed is answered by its receipt, `{receipt, review: null}`, its request left pending for the server's worker, which settles it (not sent: `refused`) |
+| `POST /api/dispatch/tickets/{key}/reviews` | admin | send a review of one candidate (`review.submit`; see Reviews below): `{opId, candidate, base, verdict, summary?, findings, via?, byName?, expectedRev?, expectedRevision?, continueRun?}`, at most 192 KiB; `candidate` `<run>/<task>/<n>@<commit>` of a run whose chain the ticket holds alone, `base` a full commit the run names (its base, the attempt's start, or a result of the task in the chain), `verdict` `request_changes`, `comment` or `approve`, `summary` at most 4,000 characters, `findings` at most 50, each `{kind, intent, severity?, path?, side?, from?, to?, lines?, message?, resolution?, check?}` (`kind` `line`, `file`, `general` or `check`; `intent` `change`, `question` or `note`; `severity` `blocker`, `major`, `minor` or `nit` for a change alone; `path` at most 1,024 bytes and `side` `candidate` or `base` for a line or a file; `from` and `to` 1 to 10,000,000 and `lines` 1 to 12 of at most 200 bytes, as the person saw them, for a line; `message` and `resolution` at most 1,000 characters; `check` `{source: "ledger", receipt, chosen?, quote?}` for a check, `receipt` `<run>/<task>/<n>/<phase>/<id>/<k>`, any other member an unknown field), `via` `web` or `cli` (the client's label; `brakeman` is `400 invalid_request` from every body, and recorded by the server for a Brakeman turn's `request_repair`, What a turn may do), `expectedRev` the ticket's, `expectedRevision` the run's for the request's command, `continueRun` the word to continue a run the server does not run; neither of the last two is recorded; reply `201 {receipt, review}` (`200` with `receipt.repeat` for the same `opId` again, answered before any evidence is read), `review` as `GET /api/dispatch/reviews/{id}` reads it, its `application` `{state, try?, run?, command?, revision?, attempt?, why?, at?}` `none` for a comment or an approval, else `applied` (the run the repair was made in, the command `rv.<id>.<try>`, the run's revision after it and the repair attempt's number), `refused` (why, in words) or `pending` (Yardmaster took the request and its change is not recorded yet: settled when it is); before anything is recorded: `409 not_ticket_run` (the ticket does not hold the run's chain: none, another ticket's, `key` naming it, or contested), `409 invalid` (a candidate whose commit is not the attempt's result, a base the run does not name, a check finding's receipt not of the candidate's attempt, not in the ledger, or not failed), `413 too_large` (a request the run could not keep, or whose repair attempt's task file could not hold it), `409 continuation_needed {error, run, words}` (a request of a run the server does not run, sent without `continueRun`: `run` the newest of the candidate's chain, `words` what continuing it starts), `409 managed_off` and `503 ledger_unavailable` for a request this server cannot apply; the store's refusals with their receipts (`invalid`, `bound`, `archived`, `not_found`); a review kept whose read after its commit failed is answered by its receipt, `{receipt, review: null}`, its request left pending for the server's worker, which settles it (not sent: `refused`) |
 | `POST /api/dispatch/reviews/{id}/retry` | admin | Request again (`review.retry`): `{opId, byName?, expectedRev?, expectedRevision?, continueRun?}`, at most 4 KiB, `expectedRev` the review's; a refused request applied again as its next try, at most 5; reply `{receipt, review}`; `409 managed_off`, `503 ledger_unavailable`, `409 not_ticket_run` (the candidate's run no longer its ticket's alone: its link moved, or its chain contested, checked again in the try's transaction) and `409 continuation_needed {error, run, words}` (its run not run by the server, sent without `continueRun`) with the try unchanged and nothing applied; `409 invalid` for a review not refused or not a request, `409 bound` past its fifth try; `503 unavailable` while another holds the store's claim on the review (a request or the server's worker settling its try; only the claim's holder settles a try) past the run's timeout, nothing applied; a try kept whose read after its commit failed is answered `{receipt, review: null}`, left pending for the server's worker, which settles it |
 | `GET /api/dispatch/tickets/{key}/reviews` | admin | a ticket's reviews, deleted or not: `{reviews, next?}`, twenty a page, newest first (`before` a page's `next`), each without its findings, counted by state (`counts {open, resolved, withdrawn}`), and its application; under 1 MiB |
 | `GET /api/dispatch/reviews/{id}` | admin | a review whole: `{review}`, `{id, ticketId, ticketKey, candidate, base, verdict, summary, createdAt, createdBy, actor, via, application, rev, counts, findings}`, each finding `{id, reviewId, ticketId, k, kind, intent, severity?, path?, side?, from?, to?, anchorCommit?, lines, message, resolution?, check?, createdAt, candidate, state, marks, latest?}`, `anchorCommit` the server's (the candidate's commit on its side, the base on its side), `check` the receipt as the ledger kept it (the prepared request's shape), `state` its latest mark's verdict, `open` with none, `latest` that mark without `located`; under 1 MiB |
@@ -4305,15 +4305,15 @@ approved and whose approval still holds), `prepare_followup` (DS2's
 proposal of a revision `basedOn` the approved one, which the operator
 still approves), `request_repair` (RV1's request for changes on a
 candidate) and `route_decision` (DR1's routing of a decision record to
-the operator or to a person of its run's crew, never its answer);
-`request_repair` has no route in this build and is refused at the save
-(`400 invalid_config`, `field` `permissions.act`), as is any other name
-and a name twice. Approving a
+the operator or to a person of its run's crew, never its answer); this
+build serves all four, and any other name, or a name twice, is refused at
+the save (`400 invalid_config`, `field` `permissions.act`). Approving a
 revision, answering a question, changing a gate, accepting a task,
 editing the configuration and closing or deleting a ticket are none of
 them. There is no act route of Brakeman's own: each operation is sent to
-its own route, `POST /api/dispatch/tickets/{key}/launch` and `POST
-/api/dispatch/tickets/{key}/plans`, as the principal `brakeman` (the
+its own route, `POST /api/dispatch/tickets/{key}/launch`, `POST
+/api/dispatch/tickets/{key}/plans` and `POST
+/api/dispatch/tickets/{key}/reviews` (below), as the principal `brakeman` (the
 turn's token, its session named in `X-Conductor-Session`), with the body
 that route takes and an `opId` of the turn's. First of all, whatever the
 body, `403 not_granted` unless both the configuration the turn began
@@ -4382,6 +4382,42 @@ after it; one that has not begun runs nothing (`503 shutting_down`), and
 a launch still under way once the stops begin starts no run (`409
 launch_failed`, "the server is shutting down: the run was not started").
 
+`request_repair` (#658) is sent to RV1's own review route, `POST
+/api/dispatch/tickets/{key}/reviews`, with that route's body (at most 192
+KiB), a request for changes: `verdict` `request_changes` alone (a
+`comment` or an `approve` is `403 not_granted`: the person's), no `via`
+(`400 invalid_request`: the server records `brakeman`) and no
+`continueRun` (`403 not_granted`: continuing a run the server no longer
+runs takes the person's word). It is an act as the launch and the
+follow-up are, in the same order, its entry's `target` the ticket, its
+`run` the candidate's run, its `args` the SHA-256 of the body as decoded
+but its `opId` and `byName`, with the ticket's key; `400 invalid_request`
+for a `candidate` that is not `<run>/<task>/<n>@<commit>`. Refused in this
+order, nothing kept: `403 not_visible` unless `dispatch` and `runs` are
+both visible (the review is the ticket's, its candidate a run's); `403
+outside_scope` for a ticket outside the scope, then for the candidate's
+run outside it (`404 not_found` for a run that is not there); `409
+stale_revision` for an `expectedRev` that is not the ticket's now; `409
+stale_target` for a candidate whose run has been continued (the newest
+of its chain is another) or that the server does not run now (stopped,
+let go, or from before a restart); `409 invalid` for a commit that is
+not the attempt's result, in RV1's words; `409 stale_target` for a
+candidate that moved (a later attempt of its task has begun); then
+`turn_over`, `acts_spent` and `shutting_down` as above. The review is
+then RV1's: recorded with `actor` and `via` `brakeman` and `createdBy`
+`Brakeman` under the derived op id, its request applied by Yardmaster
+under the actor `brakeman` (the command `rv.<review>.1`), RV1's own
+checks and refusals answering as they do the admin's. Its application
+is held to the run it was admitted on: a continuation made between the
+admission and the application refuses it ("run R was continued as S
+since the request was admitted, so nothing was sent"), the review kept
+`refused`, never sent to the continuation. The entry is `done` with
+`receipt` the review's id once Dispatch keeps it (its application, applied
+or refused, is the review's, read on the ticket's Review view); the
+answer is the route's status, its `receipt`, `error` and `receiptRef`,
+never the review; `dispatch` and `runs` are noted among the classes the
+turn's answers used.
+
 `route_decision` (PR-18) is sent to DR1's own route, `POST
 /api/decisions/{did}/route`, with that route's body (`{opId,
 expectedRev, to, note?}`, at most 8 KiB): `to` is `{kind: "operator"}`,
@@ -4433,11 +4469,12 @@ operator answers every decision under `local/1`, the person routed to
 named on its card, and no grant reaches `POST /api/decisions/{did}/respond`.
 
 The guide's table lists each operation a grant may name that this build
-serves, under the grant's name with the scope `act` (`launch_approved_plan`
-and `prepare_followup`: its route, the body that route decodes, its body
-bound, `receipt: dispatch` and `revision: ticket`; `route_decision`: DR1's
-route, `receipt: ledger` and `revision: decision`, given to a turn that
-sees `runs`), and the MCP tool `act`
+serves, under the grant's name with the scope `act` (`launch_approved_plan`,
+`request_repair` and `prepare_followup`: its route, the body that route
+decodes, its body bound, `receipt: dispatch` and `revision: ticket`,
+`request_repair` given to a turn that sees both `dispatch` and `runs`;
+`route_decision`: DR1's route, `receipt: ledger` and `revision:
+decision`, given to a turn that sees `runs`), and the MCP tool `act`
 (`{operation, params?, body?, opId?}`: the operation by its name, its
 route's path parameters, its body without `opId`), which `conductor mcp`
 and `conductor brakeman act OPERATION --key KEY --body-file F [--op-id
@@ -4450,7 +4487,8 @@ minted when the turn gives none and sent again with the same body, as
 lost, after a wait when the launch is answered still being started (503
 `ledger_unavailable` naming it pending), within three sends in all, each
 request waiting its route's own bound (a launch's, `api.LaunchTimeout`
-and a request's beside it), never the session client's; an act left
+and a request's beside it; a review's, `api.ReviewTimeout` and a
+request's), never the session client's; an act left
 unsettled names its `opId` to send again. A turn's guide lists the tool and the operations
 its request's `permissions.act` names, and `conductor mcp` lists the tool
 in a Brakeman turn's session only while that guide lists one (it reads

@@ -731,8 +731,10 @@ launch only as a link to the page that does them.
 operations in `permissions.act` from a closed list (`brakeman.Grantable`):
 `launch_approved_plan` and `prepare_followup`, DS2's launch and proposal,
 and `route_decision`, DR1's routing of a decision record to the operator or
-to a person of its run's crew (`brakeman_act_decision.go`, PR-18), are
-served; `request_repair` waits for RV1's route and is refused at the save. There is no act route of Brakeman's:
+to a person of its run's crew (`brakeman_act_decision.go`, PR-18), and
+`request_repair`, RV1's request for changes on a candidate through its
+review route, held to the run it was admitted on (`brakeman_act_repair.go`,
+#658), are served. There is no act route of Brakeman's:
 each operation's own route takes the principal `brakeman` and checks the
 grant (the turn's snapshot and the configuration now), the visibility, the
 scope, the target's state and the request's 20 acts, under the lock a
