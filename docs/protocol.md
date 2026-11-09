@@ -4305,9 +4305,10 @@ approved and whose approval still holds), `prepare_followup` (DS2's
 proposal of a revision `basedOn` the approved one, which the operator
 still approves), `request_repair` (RV1's request for changes on a
 candidate) and `route_decision` (DR1's routing of a decision record to
-the operator, never its answer); the last two have no route in this build
-and are refused at the save (`400 invalid_config`, `field`
-`permissions.act`), as is any other name and a name twice. Approving a
+the operator or to a person of its run's crew, never its answer);
+`request_repair` has no route in this build and is refused at the save
+(`400 invalid_config`, `field` `permissions.act`), as is any other name
+and a name twice. Approving a
 revision, answering a question, changing a gate, accepting a task,
 editing the configuration and closing or deleting a ticket are none of
 them. There is no act route of Brakeman's own: each operation is sent to
@@ -4381,10 +4382,62 @@ after it; one that has not begun runs nothing (`503 shutting_down`), and
 a launch still under way once the stops begin starts no run (`409
 launch_failed`, "the server is shutting down: the run was not started").
 
+`route_decision` (PR-18) is sent to DR1's own route, `POST
+/api/decisions/{did}/route`, with that route's body (`{opId,
+expectedRev, to, note?}`, at most 8 KiB): `to` is `{kind: "operator"}`,
+`{kind: "person", name}` for a person of the decision's run's crew, or
+`{kind: "role", name}` for the holder of one of its responsibilities
+(`architecture`, `product`, `security`, `acceptance`). It is an act as
+the others are, in the same order, with DR1's record in Dispatch's place:
+the turn reads the decision, its `rev` and its ref `decision:<dr-n>`, in
+its run's read (`observe_run`, `observe_task`), which lists it while it is
+open, whatever closed ones are newer. `403 not_granted` first;
+`404 not_found` for an id that is no decision's; `400 invalid_request`
+for a body its route would not decode,
+an `opId` not 1 to 32 of `A-Z a-z 0-9 . _ ~ -` or an `expectedRev` under
+1; an `opId` the request holds answers `409 op_conflict` for another
+operation or body (the decision's id among it) and `409 act_not_run` as
+above, and one whose route DR1's history holds (the row `brakeman` wrote
+under the derived op id) is run again, DR1 answering its receipt with
+`repeat`. Then, refused in this order, nothing kept: `403 not_visible`
+unless `runs` is visible (a decision is its run's); `404 not_found` for a
+decision not there or one whose run is outside the scope, in the same
+words ("no decision dr-7"); `409 stale_target` for one not `open`, and,
+for a route to a person, for one whose request already names whom it is
+for (HM1's `for`: the plan's or a person's to change; the operator may
+route it); `409 stale_decision` for an `expectedRev` that is not its rev
+now; `400 invalid` for a person or a responsibility its run's crew as
+launched does not have, in the crew's words ("no person of crew api
+holds product"); then `turn_over` and `acts_spent` as above. The entry's
+`target` is the decision's ref (`decision:<dr-n>`), its `run` the run it
+was admitted on, its `args` the SHA-256 of the decision's id and the body
+as decoded but its `opId`; the route runs under the actor `brakeman` with
+the derived op id, which DR1's history keeps. The route's scope is
+checked again inside the routing transaction, against the run the
+decision is on at commit; a continuation between the two is refused
+(`409 stale_decision`, "moved to another run since the route was
+admitted: route it again"). A turn's routes count in their own group
+with their own bound, apart from the operator's operations: at most 4
+routed rows by `brakeman` per decision, all its turns together, past
+which DR1 answers `429 decision_limit`. Its outcome is copied from the
+route's receipt as committed, read again from nothing: `done` with
+`receipt` `<dr-n>#<seq>`, the decision and the history row DR1 wrote,
+`refused` with DR1's words. The answer is the route's status and DR1's
+`receipt` (`{decision, op, seq, at, rev, words, repeat?}`) and `error`,
+never the decision record, and no `receiptRef` (DR1's receipt is a row
+of the decision's history, which no ref names); `runs` is noted among the
+classes the turn's answers used. A route left `pending` by a stop is
+settled at the next start from DR1's history by its decision and op
+(`done` with that row), or marked `not_run`. Routing never answers: the
+operator answers every decision under `local/1`, the person routed to
+named on its card, and no grant reaches `POST /api/decisions/{did}/respond`.
+
 The guide's table lists each operation a grant may name that this build
 serves, under the grant's name with the scope `act` (`launch_approved_plan`
 and `prepare_followup`: its route, the body that route decodes, its body
-bound, `receipt: dispatch` and `revision: ticket`), and the MCP tool `act`
+bound, `receipt: dispatch` and `revision: ticket`; `route_decision`: DR1's
+route, `receipt: ledger` and `revision: decision`, given to a turn that
+sees `runs`), and the MCP tool `act`
 (`{operation, params?, body?, opId?}`: the operation by its name, its
 route's path parameters, its body without `opId`), which `conductor mcp`
 and `conductor brakeman act OPERATION --key KEY --body-file F [--op-id
@@ -4498,10 +4551,12 @@ permission and proposals and decisions `propose`.
 holds, and its `rev`), `launch:<id>` (a launch from an approved
 revision: its state and `rev`) and `candidate:<run>/<task>/<n>` (an
 attempt that submitted something: `standing`, `withdrawn` or its
-attempt's state, at the commit it submitted), each at most 512 bytes,
-resolved as the brief is kept against the record it names (a plan
-revision and a launch admitted by their ticket, as a ticket is; a
-candidate by its run).
+attempt's state, at the commit it submitted), and DR1's
+`decision:<dr-n>` (a decision record: its state and `rev`, as its run's
+read lists it), each at most 512 bytes, resolved as the brief is kept
+against the record it names (a plan revision and a launch admitted by
+their ticket, as a ticket is; a candidate by its run; a decision by the
+run it is on now).
 
 **The `brakeman` event.** After each change of a request's state the
 server sends `brakeman` on `GET /api/events`: `{id, state}`, at most 200
@@ -4873,7 +4928,7 @@ approver.
 | `POST /api/decisions/{did}/respond` | admin | `{responseId, choice?, text?, rationale?, expectedRev, byName?}` (at most 32 KiB: `text` at most 4,096 bytes, `rationale` at most 2 KiB as encoded, `byName` cut to 64 characters, each as encoding/json sends it, escapes and all) → `201 {receipt, decision}`, `200` for a repeat; `409 decision_answered` (naming who answered and when), `decision_closed`, `stale_decision` (what changed since the rev read), `stale_policy`, `response_conflict`, `not_held`; `403 not_approver`; `503 decision_moved` (ask once more) |
 | `POST /api/decisions/{did}/cancel` | admin | `{commandId, why, release?, expectedRev}` → `{receipt, decision}`, `200` for a repeat; `409 op_conflict`, `stale_decision` (the operation's `expectedRev`, here and below, is judged in the transaction that applies it, after the look for a repeat of its id) |
 | `POST /api/decisions/{did}/comment` | admin | `{opId, kind: comment\|more_info, text, expectedRev}` (at most 8 KiB) → `{receipt, decision}`; `409 op_conflict`, `stale_decision`, `no_recipient` (a `more_info` without a live asking attempt); `429 decision_limit` |
-| `POST /api/decisions/{did}/route` | admin | `{opId, to: {kind: "operator"} \| {kind: "person", name} \| {kind: "role", name: <responsibility>}, note?, expectedRev}` → `{receipt, decision}`; `409 op_conflict`, `stale_decision`; `429 decision_limit`. To the operator it changes no state. To a person or a responsibility (HM1), resolved in the run's crew as launched (`400 invalid` for one it does not resolve), it changes whom the decision is for: only while it is `open` (`409 decision_answered`, `decision_closed` otherwise, a response's words), at the `expectedRev` read (at least 1), through the run that holds it (`409 not_held` otherwise: continue it, then route); it rewrites the request's `for`, writes the `routed` row with `for` and `forWas`, and bumps `rev`, so a response at the older rev is `stale_decision` naming the new person first. Who answers does not change: the operator |
+| `POST /api/decisions/{did}/route` | admin, or a Brakeman turn granted `route_decision` | `{opId, to: {kind: "operator"} \| {kind: "person", name} \| {kind: "role", name: <responsibility>}, note?, expectedRev}` → `{receipt, decision}` (a turn: `{receipt, error}`); `409 op_conflict`, `stale_decision`; `429 decision_limit` (the operator's operations, comments, requests for more and routes together, at most 32 per decision; a Brakeman turn's routes, at most 4, apart from them). To the operator it changes no state. To a person or a responsibility (HM1), resolved in the run's crew as launched (`400 invalid` for one it does not resolve), it changes whom the decision is for: only while it is `open` (`409 decision_answered`, `decision_closed` otherwise, a response's words), at the `expectedRev` read (at least 1), through the run that holds it (`409 not_held` otherwise: continue it, then route); it rewrites the request's `for`, writes the `routed` row with `for` and `forWas`, and bumps `rev`, so a response at the older rev is `stale_decision` naming the new person first. Who answers does not change: the operator |
 | `GET /api/dispatch/tickets/{key}/decisions` | admin | `{decisions}`: the decisions of the ticket's runs, newest first, at most 100, each as `GET /api/decisions` gives it (at most 7,001,424 bytes) |
 
 The record (`decision`): `{id, run (the run that holds it now), openedIn,
@@ -4923,10 +4978,18 @@ answered from its record, and `GET /api/runs/{run}/tasks/{task}`) carry,
 for the admin, `decisions`: the summaries (as the attempt's list gives
 them) of the decisions the run or the task holds, newest first, at most
 100, absent when there is none; `decisionsNext`, the last id, when more
-follow (`GET /api/decisions?run=&after=` reads on); and
-`decisionsUnread: true`, with no list, when the ledger could not be read
-(the server logs why). A Brakeman turn's shared read of them carries none
-of the three.
+follow (the same read with `?decisionsAfter=<decisionsNext>` reads on,
+the page of those older than it; `400 invalid_request` for a value that
+is not one decision's id); and `decisionsUnread: true`, with no list,
+when the ledger could not be read (the server logs why). A Brakeman
+turn's shared read of them carries the same for the decisions open
+only, the ones it may route, so no page of closed ones hides an older
+open one from it, and reads on the same way (`decisionsAfter`, a
+parameter of `observe_run` and `observe_task`, each page one of the
+turn's reads); each decision with its `ref`, `decision:<dr-n>`, noted in
+the turn's read log at its state and `rev`: what a `route_decision`
+act's `expectedRev` and its proposal's target and `expectedRevision` are
+read from (BK2).
 
 An identity provider's principal's accepted response is applied only
 once the provider admits its token again after the response committed

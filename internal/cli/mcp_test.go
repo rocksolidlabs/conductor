@@ -906,7 +906,7 @@ func TestTheActToolIsListedOnlyWithAGrant(t *testing.T) {
 		t.Fatalf("the act tool is not the table's: %+v", tl)
 	}
 	enum := op.Input["properties"].(map[string]any)["operation"].(map[string]any)["enum"]
-	if fmt.Sprint(enum) != fmt.Sprint(actOperations()) || fmt.Sprint(actOperations()) != "[launch_approved_plan prepare_followup]" {
+	if fmt.Sprint(enum) != fmt.Sprint(actOperations()) || fmt.Sprint(actOperations()) != "[launch_approved_plan prepare_followup route_decision]" {
 		t.Fatalf("the operations: %v, the table's %v", enum, actOperations())
 	}
 }

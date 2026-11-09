@@ -168,8 +168,8 @@ func TestAnUngrantedActIsRefused(t *testing.T) {
 	if status, out := f.launchAct(t, map[string]any{"opId": "a-3"}); status != http.StatusForbidden || codeOf(out) != "not_granted" {
 		t.Fatalf("a grant taken away: %d %v", status, out)
 	}
-	// The grants this build cannot serve are refused at the save.
-	for _, op := range []string{brakeman.ActRequestRepair, brakeman.ActRouteDecision} {
+	// The grant this build cannot serve is refused at the save.
+	for _, op := range []string{brakeman.ActRequestRepair} {
 		c := f.bk.config(t)
 		c["permissions"].(map[string]any)["act"] = []any{op}
 		f.expect(t, "PUT", "/api/brakeman/config", map[string]any{"rev": c["rev"], "config": c}, http.StatusBadRequest, brakeman.CodeInvalidConfig)
@@ -217,7 +217,7 @@ func TestAReadGivesNoGrant(t *testing.T) {
 		t.Fatalf("the read: %d %v", status, out)
 	}
 	for pattern := range actRoutes {
-		path := strings.Replace(strings.TrimPrefix(pattern, "POST "), "{key}", "CND-1", 1)
+		path := strings.NewReplacer("{key}", "CND-1", "{did}", "dr-1").Replace(strings.TrimPrefix(pattern, "POST "))
 		body := map[string]any{"opId": "a-1", "plan": f.plan, "basedOn": f.plan, "crew": f.crew.ID}
 		if strings.HasSuffix(path, "/launch") {
 			delete(body, "basedOn")
@@ -486,10 +486,10 @@ func TestAnActsOpIDNamesOneAct(t *testing.T) {
 
 // TestNoGrantApprovesAnswersOrAccepts: granted every operation it can be,
 // the turn approves no revision, withdraws none, accepts, closes or
-// deletes no ticket and changes no configuration; and the follow-up it
+// deletes no ticket, answers no decision and changes no configuration; and the follow-up it
 // proposes waits for the operator's approval.
 func TestNoGrantApprovesAnswersOrAccepts(t *testing.T) {
-	f := newActFixture(t, everyGrant, nil)
+	f := newActFixture(t, append(slices.Clone(everyGrant), brakeman.ActRouteDecision), nil)
 	proposed := f.proposed(t, f.crew.ID, nil)
 	for _, c := range []struct{ method, path string }{
 		{"POST", "/api/dispatch/plans/" + proposed + "/approve"},
@@ -498,6 +498,8 @@ func TestNoGrantApprovesAnswersOrAccepts(t *testing.T) {
 		{"POST", "/api/dispatch/tickets/CND-1/delete"},
 		{"POST", "/api/dispatch/tickets/CND-1/edit"},
 		{"PUT", "/api/brakeman/config"},
+		// Routing a decision is granted; answering one is not.
+		{"POST", "/api/decisions/dr-1/respond"},
 	} {
 		if status, out := f.asTurn(t, c.method, c.path, map[string]any{"opId": opID(), "note": "Go.", "set": map[string]any{"status": "done"}}); status != http.StatusUnauthorized {
 			t.Errorf("%s %s: %d %v", c.method, c.path, status, out)
