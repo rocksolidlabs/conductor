@@ -1816,6 +1816,8 @@ conversation: resuming it a second time while that one runs is refused. Resume
 is there while the ended session is listed (`exitedRetention`, 10 minutes by
 default) and, for a crew member, while the server keeps the run; a member of a
 stopped run, and a hosted session, cannot be resumed in this version.
+Once the session is no longer listed, or after a restart, its record in
+History resumes the conversation (History, below).
 
 A stopped run can go on in two ways. **Resume** on an ended member of a run
 whose stop completed resumes that member in place and reopens the run: the
@@ -1826,6 +1828,118 @@ crew in which every member whose conversation is resumable continues it in
 its kept worktree and branch, without a new prompt (its next done starts the
 members after it), while the others start afresh under their start rules;
 the new run names the old one it resumed, and the old one names it.
+
+## History
+
+History answers what happened before: which session investigated a
+failure, which design was rejected, what was last verified here, whether
+another crew solved this. It is one search over what Conductor already
+keeps (the managed runs' ledger with its check receipts, the run records,
+Dispatch's tickets, comments and plan revisions, Brakeman's briefs) and
+over a **record** of every session the server runs, which outlasts a
+restart. It is local to the server's machine, needs no account, and only
+the workbench token reads it (see `docs/protocol.md`, History, and
+`docs/architecture.md`, History).
+
+**Searching.** In the command palette, `~` searches history: `~
+TestLoginRedirect` lists every row whose text holds those words, most
+relevant first, grouped under the session or run each belongs to. `~`
+alone offers four ready questions: **Failures and who investigated
+them**, **Rejected designs**, **What was last verified here** and
+**Sessions on this machine**, and the latest sessions. The plain search
+shows a History group of the five best rows from three characters typed,
+after Tickets, with **All history matches (~)** to switch. The words
+follow Dispatch's search (the last word a prefix, `"a phrase"` in
+quotes), and filters narrow it: `class:` (`said`, `decided`, `checked`,
+`record`), `kind:`, `outcome:` (`failed`, `passed`, …), `project:`,
+`repo:`, `host:`, `agent:`, `crew:`, `run:`, `ticket:`, `session:`,
+`since:` and `until:` (`since:7d`). A search of common words is bounded:
+it reads at most the 10,000 matches indexed most recently and ranks at
+most 2,000 of them, and says so when it stopped. **History** in the sidebar's foot (or Go to, `G H`)
+opens `/history`: the same search with filter chips that write those
+filters, every result paged with Show more, the query in the URL so a
+search is a link, one column on a phone.
+
+**What a row says.** A badge for what kind of evidence it is, and the
+kinds never mix: **Conversation** (something said: a session's line, a
+chat message, an agent's report, a ticket comment, a brief's words),
+**Decision** (a person's recorded act: a plan revision approved or
+withdrawn, an acceptance, a close), **Checked ✓** or **Checked ✗** (a
+receipt the server made by running something, passed or failed), or none
+for a plain record (a run, a task, an attempt, a session). The same
+sentence said in several places is one row, "said in 3 places", and is
+still Conversation. Under the title, six fields: the source ("Claude Code
+session", "check receipt", "plan revision"), the host, the project (its
+key, or the repository's folder), the revision (a commit and branch,
+`r2`), when, and whether the thing can still be opened ("live", "ended,
+listed", "record only", "log kept", "worktree removed"). A failed check's
+receipt also says which attempt was handed it and where it passed after:
+"Investigated by build #2 · passed on build #2". A session
+"investigated" a failure only when Yardmaster handed its attempt that
+receipt; a session that merely mentions the failure is Conversation.
+
+**Opening it.** Enter opens the evidence itself: a check receipt opens the
+run page at its task, its attempt and that step's log, with the log's
+SHA-256; a session opens its page while it is listed and its record
+after; a ticket, a comment, a plan revision or a brief opens where its
+own page shows it. → offers Open the session or its record, **Resume**
+(below), **Find this elsewhere** on a receipt (the same command's
+receipts in other crews' runs of the repository, those that hold the
+failure's own line first, passed before failed; **Find this in every
+repository** to widen it) and **Copy reference**.
+
+**Session records.** Each record is a JSON file,
+`history/sessions/<id>.json` in the data directory (0600): the agent with
+its version and its own session id, the host and where it ran, the
+folder, the repository, the branch and the commit before the process
+started and at its end, the launch (its arguments, the yolo choice and
+the variables' names, never a value), its crew, run, task and attempt,
+and what passed through Conductor: the lines Conductor typed into it, the
+questions it asked with their choices and how each ended, its chat, its
+agent's reports and the files it touched. Never kept: what a person types
+into a terminal or a reply box (it may be a credential), a typed answer's
+text, a variable's value, a terminal's output, who joined or left.
+Conductor never opens an agent's own transcript files. A record is at
+most 64 KiB, and the newest 2,000 ended ones are kept. A session's record
+page (`/history/sessions/<id>`) shows it, with **Forget** to delete it.
+A session that `conductor host` runs has no record in this version.
+
+**Resume from a record.** The record page's **Resume**, and → Resume in
+the palette, start a new session that takes up the agent's own
+conversation, after a restart as much as while the session is listed
+(Claude Code's `--resume <id>`, Codex's `resume <id>`, as in Resume and
+relaunch above). It is offered where the agent's session recipe allows
+it, and says why not otherwise: never for a hosted session (its machine
+resumes it), a crew member (resume it from its run), a managed attempt,
+a Brakeman turn, or a launch whose arguments were too long to keep. No
+record keeps a variable's value, so a record of a launch that had
+variables resumes only without them, and says which were left out (a
+session still listed resumes with its own launch, variables and all); a session the server
+stopped observing while it ran asks a second time, since its process may
+still be running. Each resume is a command with a receipt: asking again
+with the same command id answers its receipt and never starts a second
+session.
+
+**Turning it off.** `history.sessions` (`CONDUCTOR_HISTORY_SESSIONS`, on
+by default; Configuration below) off begins no record; the records kept
+stay until forgotten. The index (`history/index.sqlite`) is a cache built
+from the stores: it is never in an export, a restore refuses it, and
+`conductor history reindex` rebuilds it. The session records are plain
+files that `conductor export` carries.
+
+**From a shell**, with the workbench token (`--server`, `--token` and
+`--insecure` as `conductor dispatch` takes them):
+
+```bash
+conductor history search TestLoginRedirect outcome:failed       # the six fields, a row a line
+conductor history show '<key>'                                  # one entry by the key Copy reference copies, its links and availability
+conductor history similar '<key>'                               # a receipt's command in other runs of its repository (--everywhere)
+conductor history sessions                                      # the records, newest first
+conductor history session <id>                                  # one record whole
+conductor history resume <id> [--without-env] [--confirm-lost]
+conductor history forget <id> | --all
+conductor history reindex                                       # rebuild the index from the stores
+```
 
 ## Desktop app
 
@@ -2042,8 +2156,9 @@ runs with. The archive goes to `--out`, by default
 never over an existing file and, with `--data-dir`, never inside the
 directory it reads. It leaves out the
 workbench token, the locks, the temporary files, `tls/` (a new machine
-gets its own certificates) and `ext/`, and lists what it left out in its
-manifest. **The archive holds your agents' env values in full**, the
+gets its own certificates), `ext/` and the history's index (a cache the
+next server rebuilds from the stores; the session records go in), and
+lists what it left out in its manifest. **The archive holds your agents' env values in full**, the
 configured ones they inherit among them, so that the restored agents
 launch as they did with no config at all: keep it as you keep the config.
 
