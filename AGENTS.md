@@ -304,9 +304,12 @@ add its rule here.
   mounted through its closing animation and keeps the focus in its
   search field: text filled into the next field in that window lands in
   the menu's search and opens it again, and the field stays empty
-  (`dispatch-plan.spec.ts`, #467). After picking an option, wait for the
-  listbox to be gone (`toHaveCount(0)`) before typing, and assert the
-  field holds what was typed (`toHaveValue`) before submitting.
+  (`dispatch-plan.spec.ts`, #467); a select with no search hands the
+  focus back to its trigger as it goes, and a key pressed then opens it
+  again (`pickOption`, `manifest-editor.spec.ts`). After picking an
+  option, wait for the listbox to be gone (`toHaveCount(0)`) before
+  typing, and assert the field holds what was typed (`toHaveValue`)
+  before submitting.
 - What a process printed is not kept for a reader however late it comes.
   On macOS the last close of a terminal's slave side waits about 0.6 s for
   the master to read what is queued, then discards it: a child that printed
