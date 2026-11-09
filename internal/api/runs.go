@@ -396,9 +396,13 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 // answer 404 as for any run the engine does not hold.
 func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("run")
+	after, ok := decisionsAfter(w, r)
+	if !ok {
+		return
+	}
 	if run, ok := s.runs.GetWithDiffs(r.Context(), id); ok {
 		reply := map[string]any{"run": run}
-		s.addRunDecisions(r, reply, id, "")
+		s.addRunDecisions(r, reply, id, "", after)
 		writeJSON(w, http.StatusOK, reply)
 		return
 	}
@@ -410,7 +414,7 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		if ok {
 			// Its decisions are the ledger's, and outlast the engine's hold.
 			reply := map[string]any{"run": run, "record": true}
-			s.addRunDecisions(r, reply, id, "")
+			s.addRunDecisions(r, reply, id, "", after)
 			writeJSON(w, http.StatusOK, reply)
 			return
 		}
