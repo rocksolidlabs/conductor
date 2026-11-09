@@ -421,7 +421,7 @@ test('verbs and switches: go, mark, share, answer; the theme, the sidebar, notif
   await expect(page.getByLabel('Working directory')).toBeVisible({ timeout: 15_000 })
   await page.keyboard.press('Escape')
   // The prefixes each pick their kind.
-  for (const [prefix, chip] of [['>', 'Actions'], ['#', 'Runs and crews'], [':', 'Files'], ['@', 'People'], ['!', 'Events'], ['?', 'Shortcuts']] as const) {
+  for (const [prefix, chip] of [['>', 'Actions'], ['#', 'Runs and crews'], [':', 'Files'], ['@', 'People'], ['!', 'Events'], ['?', 'Shortcuts'], ['~', 'History']] as const) {
     const palette = await openPalette(page)
     await palette.locator('input[data-palette-input]').fill(prefix)
     await expect(palette.locator('[data-palette-chip]')).toHaveText(chip)
