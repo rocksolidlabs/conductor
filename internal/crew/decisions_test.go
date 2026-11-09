@@ -1727,6 +1727,48 @@ func savedAs(t *testing.T, rec ledger.DecisionRecord, k int, rc ResponseReceipt)
 	t.Fatalf("no response %d in %+v", k, rec.Responses)
 }
 
+// A response receipt at its fields' worst cases is within its bound
+// (#751): a text and a name at their bounds of characters JSON escapes
+// to six bytes, a rationale at its bound as encoded, an actor at the
+// ledger's bound escaping alike, each number at its widest, and words
+// past their bound, cut where a character ends to maxReceiptWords.
+func TestAResponseReceiptAtItsFieldsBoundsFits(t *testing.T) {
+	esc := func(n int) string { return strings.Repeat("<", n) }
+	resp, err := checkResponse(Response{ResponseID: "r1", Text: esc(maxAnswerText), Rationale: strings.Repeat("&", (maxRationale-2)/6), ByName: esc(100), ExpectedRev: 1})
+	if err != nil || len(resp.ByName) != 64 {
+		t.Fatalf("the fields at their bounds: %+v %v", resp, err)
+	}
+	words := cutReceiptWords(strings.Repeat("\u2028", maxReceiptWords))
+	if b, _ := json.Marshal(words); len(b) > maxReceiptWords || len(b) < maxReceiptWords-6 || !strings.HasSuffix(words, "…") {
+		t.Fatalf("the words cut to %d bytes as encoded", len(b))
+	}
+	if w := "dr-1 was answered by <Nate>"; cutReceiptWords(w) != w {
+		t.Fatalf("words within their bound cut: %q", cutReceiptWords(w))
+	}
+	choice, kept := 5, false
+	rc := ResponseReceipt{Decision: ledger.DecisionID(1<<63 - 1), K: 1<<63 - 1, Status: "refused", Code: CodeArtifactUncommitted, Words: words,
+		Actor: esc(ledger.MaxDecisionActor), ByName: resp.ByName, Choice: &choice, Text: resp.Text, Rationale: resp.Rationale,
+		At: time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC), Rev: 1<<63 - 1, Repeat: true, Kept: &kept,
+		// Whom it answered for (#741): a person of the ledger's most
+		// characters, each escaping, and the longest responsibility.
+		For: &ReceiptFor{Person: esc(ledger.MaxForName), Responsibility: longestResponsibility()}}
+	if n := len(receiptJSON(rc)); n > ledger.MaxDecisionReceipt {
+		t.Fatalf("the widest receipt is %d bytes, over %d", n, ledger.MaxDecisionReceipt)
+	}
+}
+
+// longestResponsibility is the longest of the responsibilities a person
+// may hold, the widest a receipt's for can carry.
+func longestResponsibility() string {
+	w := ""
+	for _, r := range Responsibilities {
+		if len(r) > len(w) {
+			w = r
+		}
+	}
+	return w
+}
+
 // A response sent again is answered from the row the ledger saved, byte for
 // byte, before anything of the new send is built (#635, review round 3).
 // The answer's accepted receipt fills the ledger's receipt bound, so a
@@ -1751,19 +1793,10 @@ func TestARepeatIsItsSavedReceipt(t *testing.T) {
 	n, _ := ledger.ParseDecisionID(d.ID)
 	rl.n.Store(n)
 
-	// The text whose accepted receipt is the bound at its widest time.
-	size := func(text string) int {
-		return len(receiptJSON(ResponseReceipt{Decision: d.ID, Status: "accepted", Words: fmt.Sprintf("Recorded: %s answered by Nate", d.ID),
-			Actor: "admin", ByName: "Nate", Text: text, At: time.Date(2026, 11, 6, 12, 0, 0, 123456789, time.UTC), Rev: 2}))
-	}
-	text := strings.Repeat("<", 1300)
-	for size(text+"x") <= ledger.MaxDecisionReceipt {
-		text += "x"
-	}
-	if size(text) < ledger.MaxDecisionReceipt-1 || len(text) > maxAnswerText {
-		t.Fatalf("the text's receipt is %d bytes, the text %d", size(text), len(text))
-	}
-	resp := Response{ResponseID: "r1", Text: text, ExpectedRev: 1, ByName: "Nate"}
+	// The text and the rationale at their bounds, of characters JSON
+	// escapes to six bytes (#751).
+	text, rationale := strings.Repeat("<", maxAnswerText), strings.Repeat("&", (maxRationale-2)/6)
+	resp := Response{ResponseID: "r1", Text: text, Rationale: rationale, ExpectedRev: 1, ByName: "Nate"}
 
 	rl.refuse.Store(true)
 	if _, err := e.RespondDecision(t.Context(), d.ID, resp, "admin", workbench(e)); err == nil || rl.refuse.Load() {
@@ -1801,7 +1834,7 @@ func TestARepeatIsItsSavedReceipt(t *testing.T) {
 	}
 	savedAs(t, rec, 1, again)
 	other := resp
-	other.Text += "y"
+	other.Text = text[1:] + "y"
 	var de *DecisionError
 	if _, err := e.RespondDecision(t.Context(), d.ID, other, "admin", workbench(e)); !errors.As(err, &de) || de.Code != CodeResponseConflict {
 		t.Fatalf("another body under r1: %v", err)

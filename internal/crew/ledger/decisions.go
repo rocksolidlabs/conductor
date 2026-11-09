@@ -203,8 +203,14 @@ const (
 	MaxAuthority      = 1 << 10
 	// MaxDecisionReceipt bounds a response's receipt, MaxDecisionApplied
 	// the application receipt, MaxHistoryDetail a history row's detail
-	// and MaxDecisionWhy a final state's words, as encoded.
-	MaxDecisionReceipt = 8 << 10
+	// and MaxDecisionWhy a final state's words, as encoded. A response's
+	// receipt is the sum of its fields' encoded worst cases (internal/crew,
+	// receiptJSON): a text of 4,096 bytes that escape to six each (24 KiB),
+	// a rationale of 2 KiB, an actor of MaxDecisionActor bytes and a name
+	// of 64 characters escaping alike, its words at 3 KiB and the rest,
+	// under 32 KiB, so a response within its fields' bounds is never
+	// refused for its receipt (#751).
+	MaxDecisionReceipt = 32 << 10
 	MaxDecisionApplied = 4 << 10
 	MaxHistoryDetail   = 2 << 10
 	MaxDecisionWhy     = 2 << 10
