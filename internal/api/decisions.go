@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"strconv"
 	"time"
-	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/crew"
@@ -30,9 +29,13 @@ import (
 // The decisions' bounds (docs/protocol.md, Decisions).
 const (
 	// maxDecisionRequestBody bounds a request's body, maxDecisionAnswerBody
-	// a response's and an operation's.
+	// an operation's, and maxDecisionRespondBody a response's: its fields
+	// at their bounds as encoding/json sends them, a text of 4,096 bytes
+	// that escape to six each among them, as proto.MaxDecide bounds the
+	// same fields on a link (#751).
 	maxDecisionRequestBody = 24 << 10
 	maxDecisionAnswerBody  = 8 << 10
+	maxDecisionRespondBody = 32 << 10
 	// maxDecisionSummaryText bounds a summary's question, answer and why,
 	// each as encoded, maxDecisionSummary a summary, and
 	// maxDecisionSummaryPage a page of them (maxDecisionsListed), under
@@ -43,15 +46,20 @@ const (
 	maxDecisionsListed     = ledger.MaxDecisionsPage
 	// maxDecisionReply bounds GET /api/decisions/{did}: the record whole
 	// (its request, baseline, receipts, history and application at their
-	// bounds) and its refs, each at most maxDecisionRef as encoded, its
-	// escapes counted (fitRef).
-	maxDecisionReply = 1 << 20
+	// bounds, its 32 receipts at ledger.MaxDecisionReceipt) and its refs,
+	// each at most maxDecisionRef as encoded, its escapes counted (fitRef).
+	maxDecisionReply = 2 << 20
 	maxDecisionRef   = 4 << 10
 	// maxDecisionListed bounds a record as the operator's lists give it
-	// (listedOf: its request, baseline, policy, application, why and
-	// answer at their bounds), and maxDecisionListPage a page of them
-	// (GET /api/decisions, a ticket's decisions; TestTheOperatorsDecisionListFitsItsBound).
-	maxDecisionListed   = 48 << 10
+	// (listedOf), the sum of its parts at their encoded worst cases: its
+	// request, baseline, policy and application as encoded, its why
+	// (bounded in bytes) and its answer (a label of 80 characters, ": "
+	// and a text of 4,096 bytes) of characters that escape to six bytes
+	// each (#751), and its other fields, 914 bytes at their widths; and
+	// maxDecisionListPage a page of them (GET /api/decisions, a ticket's
+	// decisions; TestTheOperatorsDecisionListFitsItsBound).
+	maxDecisionListed = ledger.MaxDecisionRequest + ledger.MaxDecisionBaseline + ledger.MaxDecisionPolicy + ledger.MaxDecisionApplied +
+		6*(ledger.MaxDecisionWhy+ledger.MaxOptionLabel+ext.MaxAnswerText) + len(": ") + 914
 	maxDecisionListPage = maxDecisionsListed*maxDecisionListed + 1<<10
 	// maxDecisionEvent bounds a decision event's data.
 	maxDecisionEvent = 256
@@ -478,37 +486,11 @@ func summaryOf(row ledger.DecisionRow, answer string) decisionSummary {
 		sum.ClosedAt = &at
 	}
 	for _, f := range []*string{&sum.Question, &sum.Answer, &sum.Why} {
-		if c := cutEncoded(*f, maxDecisionSummaryText); c != *f {
+		if c := crew.CutEncoded(*f, maxDecisionSummaryText); c != *f {
 			*f, sum.Cut = c, true
 		}
 	}
 	return sum
-}
-
-// cutEncoded is s cut where a character ends to at most n bytes as
-// writeJSON encodes it: a character JSON escapes counts as its escape
-// (a control character, <, > and & six bytes, " and \ two, U+2028 and
-// U+2029 six, a byte that is not UTF-8 six, as �).
-func cutEncoded(s string, n int) string {
-	size := 0
-	for i := 0; i < len(s); {
-		c, w := utf8.DecodeRuneInString(s[i:])
-		enc := w
-		switch {
-		case c == utf8.RuneError && w == 1:
-			enc = 6
-		case c == '"' || c == '\\' || c == '\n' || c == '\r' || c == '\t':
-			enc = 2
-		case c < 0x20 || c == '<' || c == '>' || c == '&' || c == '\u2028' || c == '\u2029':
-			enc = 6
-		}
-		if size+enc > n {
-			return s[:i]
-		}
-		size += enc
-		i += w
-	}
-	return s
 }
 
 // handleDecisions lists the decisions the query names, newest first,
@@ -595,7 +577,7 @@ func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDecisionRespond(w http.ResponseWriter, r *http.Request) {
 	did := r.PathValue("did")
 	var resp crew.Response
-	if err := decodeJSONLimit(w, r, &resp, maxDecisionAnswerBody); err != nil {
+	if err := decodeJSONLimit(w, r, &resp, maxDecisionRespondBody); err != nil {
 		writeError(w, http.StatusBadRequest, crew.CodeInvalid, err.Error())
 		return
 	}
