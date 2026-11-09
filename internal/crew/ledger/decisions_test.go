@@ -678,6 +678,47 @@ func TestAHandBackMovesTheReceivingRunsRevision(t *testing.T) {
 	}
 }
 
+// DecisionRevisions lists every decision by its number, in pages, with
+// the run that holds it and its rev as they are now: a change written in
+// another run's transition than the holder's (a continuation's) moves the
+// rev and keeps the holder, and a continuation's move changes the holder.
+func TestDecisionRevisionsListEveryDecisionsPlaceAndRev(t *testing.T) {
+	ctx := context.Background()
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	const a, b = "team-00000001", "team-00000002"
+	newRun(t, l, a)
+	tasksOf(t, l, a, "deploy")
+	settled, moving := open(t, l, gateDecision(a, "g1")), open(t, l, gateDecision(a, "g2"))
+	setState(t, l, a, settled, DecisionCancelled, "")
+	finish(t, l, a)
+	continuation(t, l, a, b, "deploy")
+	in(t, l, b, func(tx *Tx) error {
+		_, err := tx.MoveDecisions(a, b)
+		return err
+	})
+	own := open(t, l, gateDecision(b, "g3"))
+	setState(t, l, b, settled, DecisionCancelled, "") // B's transition, A's decision
+	var got []DecisionRevision
+	for after := int64(0); ; {
+		page, err := l.DecisionRevisions(ctx, after, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page) > 2 {
+			t.Fatalf("a page of %d", len(page))
+		}
+		got = append(got, page...)
+		if len(page) < 2 {
+			break
+		}
+		after = page[len(page)-1].N
+	}
+	want := []DecisionRevision{{N: settled, CurrentRun: a, Rev: 3}, {N: moving, CurrentRun: b, Rev: 1}, {N: own, CurrentRun: b, Rev: 1}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("the revisions: %+v, want %+v", got, want)
+	}
+}
+
 // Every bound of the store, checked in the transaction that would pass
 // it: 4 open per attempt, 64 open per run, 1,000 per run in all, 32
 // responses, 32 operations, the receipts' and the request's bounds; an

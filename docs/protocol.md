@@ -4678,24 +4678,35 @@ response row's actor as the actor, none when the row names none, its
 rationale, `outcome` the option chosen: `approved` or `rejected` for a
 gate's approval, `done` or `not_done` for an assignment, else `answered`,
 its title the option's label and its words, cut from the answer alone,
-its summary who answered and whom for, as its receipt keeps them, then
-the question it answers), keyed `decision:dr-<n>/<k>` as DR1 numbers its receipt,
-`answers` to the request and, once Yardmaster applied it, `applied` to the
-attempt, task or run it was applied to. A refused response decided
-nothing and is not indexed. What is indexed of a decision is what the
-ledger held at one read of it, marked `S<stamp>/P<stamp>/C<run>/O<run>`
-with a digest of what its entries were built from (its row, and its run's
-place: machine, project, repository, tree, crew, ticket and asking
-agent) and the runs that hold it and opened it, so an entry is never
-older than its mark. A decision changes only in a transition of the run
-that holds it, or in the prune that hands it back to the run the pruned
-one continued, which moves that run's revision with it (the ledger tells
-it as that run's commit, and the reconcile finds it by the revision), and
-its place only with that run's record or rows, so the run's pass, which
-each of those asks for, compares each of the run's decisions' marks with
+its body the option chosen, whole (a label is at most 80 characters,
+far inside the body's bound), then its words and rationale, its summary
+who answered and whom for, as its receipt keeps them, then the question
+it answers), keyed `decision:dr-<n>/<k>` as DR1 numbers its receipt,
+`answers` to the request and, once Yardmaster applied it, `applied` to
+what its application receipt says it reached: the asking attempt when
+typed into it, its task when put in the task's next file (the receipt's
+attempt is the one that asked), a gate's tasks, else its run. A refused
+response decided nothing and is not indexed. What is indexed of a
+decision is what the ledger held at one read of it, marked
+`S<stamp>/P<stamp>/C<run>/O<run>/R<rev>` with a digest of what its
+entries were built from (its row, and its run's place: machine, project,
+repository, tree, crew, ticket and asking agent), the runs that hold it
+and opened it, and its rev, so an entry is never older than its mark.
+The mark covers the decision's place and its revision as the ledger
+holds them: every change of a decision moves its rev or the run that
+holds it, whatever wrote it (a transition of the run that holds it, one
+of a continuation that supersedes an applied approval its ancestor
+holds, a prune's hand-back, another server), and every reconcile compares
+each decision the ledger keeps with its mark by those two and reads again
+each that differs or that the index does not hold. Its place changes
+only with its run's record or rows, so the run's pass, which each of
+those asks for, compares each of the run's decisions' whole marks with
 what it reads before it commits its own (a scan that fails is made again
-by the pass retried): a decision handed back past a move no pass indexed
-differs from its mark there and is indexed again. A run whose ledger rows
+by the pass retried): a change in that run's own transition, or of its
+place, is indexed with the run's pass, any other at the next reconcile
+(every 30 s) at the latest. A prune that hands a decision back moves the
+receiving run's revision with it too (the ledger tells it as that run's
+commit). A run whose ledger rows
 are gone, its record kept or not, reads again every decision it held or
 opened: the ones it opened went with it and their entries go, and the
 ones it held the ledger handed to the run the pruned one continued,

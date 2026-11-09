@@ -107,6 +107,7 @@ type indexLedger interface {
 	// DR1's decision records (PR-9): one read whole, and a page of rows.
 	Decision(ctx context.Context, n int64) (ledger.DecisionRecord, bool, error)
 	Decisions(ctx context.Context, f ledger.DecisionFilter) ([]ledger.DecisionRow, error)
+	DecisionRevisions(ctx context.Context, after int64, limit int) ([]ledger.DecisionRevision, error)
 }
 
 // historyIndexer feeds the index. Its fields after mu are the hooks'
@@ -1294,12 +1295,12 @@ func (h *historyIndexer) indexRun(ctx context.Context, ix *history.Index, id str
 			return err
 		}
 	}
-	// The decisions the run holds, each whose row or place moved (a
-	// decision changes only in a transition of the run that holds it),
-	// found before the run's mark is committed, so a scan that fails is
-	// made again by this pass retried. A run the ledger no longer has, its
-	// record kept, was pruned: every decision it held or opened is read
-	// again, taken with it or handed back.
+	// The decisions the run holds, each whose row or place moved, found
+	// before the run's mark is committed, so a scan that fails is made
+	// again by this pass retried (a decision another run's transition
+	// changed is found by the reconcile, markMovedDecisions). A run the
+	// ledger no longer has, its record kept, was pruned: every decision it
+	// held or opened is read again, taken with it or handed back.
 	switch {
 	case inLedger:
 		if err := h.markDecisions(ctx, ix, ld, p); err != nil {
@@ -1872,6 +1873,11 @@ func (h *historyIndexer) reconcile(ctx context.Context) {
 					h.mark(key) // its pass removes it, or keeps its record's part
 				}
 			}
+		}
+		// Every decision the ledger keeps, compared with its mark by the run
+		// that holds it and its rev, whatever moved it.
+		if err := h.markMovedDecisions(ctx, ix, ld); err != nil && !errors.Is(err, ledger.ErrUnavailable) {
+			h.log.Warn("the history's reconcile could not compare the decisions", "err", err)
 		}
 	}
 	if docs, err := h.data.ListDocs("runs"); err == nil {

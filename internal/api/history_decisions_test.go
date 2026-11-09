@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
@@ -771,5 +772,117 @@ func TestADecisionAnsweredByTheLedgersOwnerIsReconciled(t *testing.T) {
 	ix = histReconcile(t, e)
 	if h := histEntry(t, ix, hResponseRef(id, 1)); h.Title != id+": Use Postgres" || !strings.HasPrefix(h.Summary, "by Nate · ") {
 		t.Fatalf("the answer the owner recorded: %+v", h.Entry)
+	}
+}
+
+// An applied approval an ancestor holds, superseded in a transition of
+// its continuation, is indexed again. A continuation carries its chain's
+// applied approvals as settled and never moves them, so the supersession
+// (crew's closeDecision, a next candidate's) writes the decision's row in
+// the continuation's transition with the ancestor still holding it: the
+// decision's rev moves and the holder's revision does not, and the
+// continuation's pass scans only what the continuation holds. Every
+// reconcile compares each decision the ledger keeps with its mark by the
+// run that holds it and its rev, whatever moved it: the decision is read
+// again, its outcome superseded, and the search by outcome finds it.
+func TestADecisionSupersededInAContinuationIsIndexedAgain(t *testing.T) {
+	e := newTestEnv(t, nil)
+	noTick(t, e)
+	ld := e.srv.ledger
+	const from, to = "hist-000000e6", "hist-000000e7"
+	histCreate(t, ld, from, "", histCrew(e.root))
+	id := histAsk(t, ld, from, false)
+	histRespond(t, ld, from, id, 1, 1, true, "")
+	histSettleDecision(t, ld, from, id, ledger.DecisionApplied, &crew.Application{At: histNow, By: "yardmaster", Run: from, Task: "build", Attempt: 1, Response: 1, Validated: true, How: crew.HowTyped, Words: "typed"}, "", "")
+	histFinish(t, ld, from)
+	histCreate(t, ld, to, from, histCrew(e.root))
+	histTx(t, ld, to, func(tx *ledger.Tx) error {
+		_, err := tx.MoveDecisions(from, to) // an applied decision stays where it is
+		return err
+	})
+	ix := histReconcile(t, e)
+	key := hDecisionRef(id)
+	if h := histEntry(t, ix, key); h.Run != from || h.Outcome != ledger.DecisionApplied {
+		t.Fatalf("before the supersession: %+v", h.Entry)
+	}
+	histEntry(t, ix, hRunRef(to))
+	n, _ := ledger.ParseDecisionID(id)
+	before, _, _ := ld.Pointer(t.Context(), from)
+	histSettleDecision(t, ld, to, id, ledger.DecisionSuperseded, nil, "the task's next candidate replaced its subject", "")
+	rec, _, err := ld.Decision(t.Context(), n)
+	if err != nil || rec.CurrentRun != from || rec.State != ledger.DecisionSuperseded {
+		t.Fatalf("the ledger after the supersession: %+v %v", rec.DecisionRow, err)
+	}
+	if after, _, _ := ld.Pointer(t.Context(), from); after.Revision != before.Revision {
+		t.Fatalf("the holder's revision moved: %d, was %d", after.Revision, before.Revision)
+	}
+	histSettle(t, e) // the continuation's pass, which its commit asked for
+	ix = histReconcile(t, e)
+	if h := histEntry(t, ix, key); h.Run != from || h.Outcome != ledger.DecisionSuperseded {
+		t.Fatalf("after the reconcile: %+v", h.Entry)
+	}
+	if m := histMark(t, ix, key); !markHolds(m, from, rec.Rev) {
+		t.Fatalf("the mark %s, of %s at rev %d", m, from, rec.Rev)
+	}
+	if keys := hsKeys(hsSearch(t, e, "kind:decision outcome:superseded")); !slices.Equal(keys, []string{key}) {
+		t.Fatalf("the superseded decisions: %v", keys)
+	}
+}
+
+// An answer is linked to what its application receipt says it reached:
+// typed into the asking attempt, to that attempt; put in its task's next
+// file, to the task, though the receipt keeps the attempt that asked (the
+// next attempt, not that one, reads the file).
+func TestAnAnswerIsAppliedToWhatItReached(t *testing.T) {
+	e := newTestEnv(t, nil)
+	ld := e.srv.ledger
+	const typed, filed = "hist-000000e8", "hist-000000e9"
+	ids := map[string]string{}
+	for run, how := range map[string]string{typed: crew.HowTyped, filed: crew.HowTaskFile} {
+		histCreate(t, ld, run, "", histCrew(e.root))
+		id := histAsk(t, ld, run, false)
+		histRespond(t, ld, run, id, 1, 1, true, "")
+		histSettleDecision(t, ld, run, id, ledger.DecisionApplied, &crew.Application{At: histNow, By: "yardmaster", Run: run, Task: "build", Attempt: 1, Response: 1, Validated: true, How: how, Words: how}, "", "")
+		ids[run] = id
+	}
+	ix := histSettle(t, e)
+	if got := histOut(t, ix, hResponseRef(ids[typed], 1), relApplied); !slices.Equal(got, []string{attemptKey(typed, "build", 1)}) {
+		t.Fatalf("a typed answer applied to: %v", got)
+	}
+	if got := histOut(t, ix, hResponseRef(ids[filed], 1), relApplied); !slices.Equal(got, []string{hTaskRef(filed, "build")}) {
+		t.Fatalf("an answer put in the task's file applied to: %v", got)
+	}
+}
+
+// The option a response chose is searched whole though its title cuts
+// it: a label of 79 characters (DR1 allows 80) that is 215 bytes, chosen
+// with no words of its own, is whole at the head of the response's body,
+// and a word at its end finds the response.
+func TestAChosenOptionIsSearchedWhole(t *testing.T) {
+	e := newTestEnv(t, nil)
+	ld := e.srv.ledger
+	const run = "hist-000000ea"
+	histCreate(t, ld, run, "", histCrew(e.root))
+	label := strings.Repeat("界", 68) + " zebrafinch"
+	if n := utf8.RuneCountInString(label); n > ledger.MaxOptionLabel || len(label) <= history.MaxTitle {
+		t.Fatalf("the label: %d characters, %d bytes", n, len(label))
+	}
+	var id string
+	histTx(t, ld, run, func(tx *ledger.Tx) error {
+		d, _, err := tx.OpenDecision(ledger.DecisionRow{Origin: ledger.OriginAgent, Type: ledger.DecisionApproval, TaskID: "build", Attempt: 1, SessionID: "s-build-1",
+			Member: "lead", RequestID: "q-label", Fingerprint: "fp-label", Policy: histPolicy,
+			Request: fmt.Sprintf(`{"question":"Which one?","options":[{"label":"Use Postgres"},{"label":%q}],"subject":{"kind":"commit","commit":%q}}`, label, commitID(1))})
+		id = d.ID()
+		return err
+	})
+	histRespond(t, ld, run, id, 1, 1, true, "")
+	ix := histSettle(t, e)
+	ref := hResponseRef(id, 1)
+	h := histEntry(t, ix, ref)
+	if strings.Contains(h.Title, "zebrafinch") || !strings.HasPrefix(h.Body, "Chose: "+label) {
+		t.Fatalf("the response: title %q, body %q", h.Title, h.Body)
+	}
+	if keys := hsKeys(hsSearch(t, e, "zebrafinch kind:decision.response")); !slices.Equal(keys, []string{ref}) {
+		t.Fatalf("the chosen option's last word: %v", keys)
 	}
 }

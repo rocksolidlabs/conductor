@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -36,19 +37,20 @@ import (
 // What is indexed of a decision is what the ledger held at one read of
 // it, and its mark is a digest of what its entries were built from (its
 // row and its run's place, as read for them), so an entry is never older
-// than its mark. A decision changes only inside a transition of the run
-// that holds it (its current run), or in the prune that hands it back to
-// the run the pruned one continued, which moves that run's revision and
-// tells it as that run's commit (ledger.Prune), and what its entries take
-// from that run changes only with the run's own record or rows, so the
-// run's pass, which every such change asks for, compares each of the
-// run's decisions' marks with what it reads now (markDecisions) before it
-// commits its own mark: a scan that fails is made again by the pass
-// retried, and a decision handed back past a move no pass indexed differs
-// from its mark there. A run whose
-// ledger rows are gone, its record kept or not, asks again of the
-// decisions it held or opened (markRunsDecisions), each read again or
-// removed, and the catch-up lists every decision the ledger keeps.
+// than its mark. The mark also names, as the ledger held them, the run
+// that holds the decision and its rev, which every change of a decision
+// moves, whatever run's transition, prune or server wrote it: every
+// reconcile compares each decision the ledger keeps with its mark by those
+// two (markMovedDecisions) and reads again each that differs. What its
+// entries take from its run changes only with that run's record or rows,
+// so the run's pass, which every such change asks for, compares each of
+// the decisions the run holds by its whole mark (markDecisions) before it
+// commits its own mark (a scan that fails is made again by the pass
+// retried): a change in the run's own transition, or of its place, is read
+// with the run's pass, any other at the next reconcile. A run whose ledger
+// rows are gone, its record kept or not, asks again of the decisions it
+// held or opened (markRunsDecisions), each read again or removed, and the
+// catch-up lists every decision the ledger keeps.
 
 // The links of a decision's entries.
 const (
@@ -112,15 +114,23 @@ func placeStamp(p runPlace, d ledger.DecisionRow) string {
 
 // decisionMark is a decision source's mark, of what its entries are built
 // from: S<stamp of its row>/P<stamp of its run's place>/C<current run>/O<run
-// it was opened in>, then U when that run's repository was not known. The
-// runs are named so that a run pruned finds the decisions it held or
-// opened.
+// it was opened in>/R<rev>, then U when that run's repository was not
+// known. The runs are named so that a run pruned finds the decisions it
+// held or opened; the current run and the rev, so that the reconcile
+// compares every decision with the ledger's list of them (markHolds).
 func decisionMark(d ledger.DecisionRow, p runPlace) string {
-	m := "S" + decisionStamp(d) + "/P" + placeStamp(p, d) + "/C" + d.CurrentRun + "/O" + d.RunID
+	m := "S" + decisionStamp(d) + "/P" + placeStamp(p, d) + "/C" + d.CurrentRun + "/O" + d.RunID + "/R" + strconv.Itoa(d.Rev)
 	if p.repoUnknown {
 		m += "/U"
 	}
 	return m
+}
+
+// markHolds says a decision's mark was made of its row as held by run at
+// rev.
+func markHolds(mark, run string, rev int) bool {
+	parts := strings.Split(mark, "/")
+	return slices.Contains(parts, "C"+run) && slices.Contains(parts, "R"+strconv.Itoa(rev))
 }
 
 // markOfRun says a decision's mark names run as the one holding it or the
@@ -241,6 +251,51 @@ func (h *historyIndexer) markDecisions(ctx context.Context, ix *history.Index, l
 			return nil
 		}
 		before = rows[len(rows)-1].N
+	}
+}
+
+// markMovedDecisions marks dirty each decision the ledger keeps whose
+// current run or rev, as the ledger holds them now, is not what its mark
+// in the index was made of, or which the index does not hold: whatever
+// moved it, a transition of a run other than the one holding it (a
+// continuation superseding an applied approval its ancestor holds), a
+// prune's hand-back or another server's write. Called from every
+// reconcile.
+func (h *historyIndexer) markMovedDecisions(ctx context.Context, ix *history.Index, ld indexLedger) error {
+	marks := map[string]string{}
+	for after := "decision:"; ; {
+		page, err := ix.Sources(ctx, after, history.MaxSourcesPage)
+		if err != nil {
+			return err
+		}
+		done := len(page) < history.MaxSourcesPage
+		for _, s := range page {
+			if !strings.HasPrefix(s.Key, "decision:") {
+				done = true
+				break
+			}
+			marks[s.Key] = s.Mark
+		}
+		if done {
+			break
+		}
+		after = page[len(page)-1].Key
+	}
+	for after := int64(0); ; {
+		revs, err := ld.DecisionRevisions(ctx, after, ledger.MaxDecisionRevisions)
+		if err != nil {
+			return err
+		}
+		for _, d := range revs {
+			key := hDecisionRef(ledger.DecisionID(d.N))
+			if m, ok := marks[key]; !ok || !markHolds(m, d.CurrentRun, d.Rev) {
+				h.mark(key)
+			}
+		}
+		if len(revs) < ledger.MaxDecisionRevisions {
+			return nil
+		}
+		after = revs[len(revs)-1].N
 	}
 }
 
@@ -367,7 +422,10 @@ func decisionEntries(p runPlace, d crew.Decision) ([]history.Entry, []history.Li
 		// lead the summary, so a long or many-lined answer never cuts them.
 		x.Title = hTitle(d.ID + ": " + cmp.Or(answerOfReceipt(rc, options), "answered"))
 		x.Summary = hSummary(strings.Join(hNonEmpty(responseWho(cmp.Or(rc.ByName, rc.Actor), receiptForWords(rc)), d.ID+" asked: "+req.Question), " · "))
-		x.Body = history.Clip(strings.Join(hNonEmpty(rc.Text, prefixed("Why: ", rc.Rationale)), "\n"), history.MaxLongBody)
+		// The body starts with the option chosen, whole (a label is at most
+		// ledger.MaxOptionLabel characters, far inside the body's bound),
+		// which the title may cut.
+		x.Body = history.Clip(strings.Join(hNonEmpty(prefixed("Chose: ", chosenOption(rc, options)), rc.Text, prefixed("Why: ", rc.Rationale)), "\n"), history.MaxLongBody)
 		out = append(out, x)
 		links = append(links, history.Link{From: rref, Rel: relAnswers, To: ref})
 		if app := d.Applied; app != nil && app.Response == rc.K {
@@ -415,13 +473,18 @@ func responseOutcome(d crew.Decision, rc crew.ResponseReceipt) string {
 	return "answered"
 }
 
+// chosenOption is the label of the option a response chose, "" for none.
+func chosenOption(rc crew.ResponseReceipt, options []string) string {
+	if rc.Choice != nil && *rc.Choice >= 0 && *rc.Choice < len(options) {
+		return options[*rc.Choice]
+	}
+	return ""
+}
+
 // answerOfReceipt is a response in words, as DR1 says it: the chosen
 // option's label, then its text.
 func answerOfReceipt(rc crew.ResponseReceipt, options []string) string {
-	answer := ""
-	if rc.Choice != nil && *rc.Choice >= 0 && *rc.Choice < len(options) {
-		answer = options[*rc.Choice]
-	}
+	answer := chosenOption(rc, options)
 	if rc.Text != "" {
 		if answer != "" {
 			answer += ": "
@@ -432,13 +495,15 @@ func answerOfReceipt(rc crew.ResponseReceipt, options []string) string {
 }
 
 // appliedTo is what an application receipt says the answer was applied
-// to: the asking attempt (typed into it or put in its task's next file),
-// a gate's tasks (released or cancelled), else its run (noted).
+// to: the asking attempt when typed into it, its task when put in the
+// task's next file (the receipt's attempt is the one that asked, not the
+// one the file reaches), a gate's tasks (released or cancelled), else its
+// run (noted).
 func appliedTo(app crew.Application) []string {
 	switch {
 	case app.Run == "":
 		return nil
-	case app.Task != "" && app.Attempt > 0:
+	case app.Task != "" && app.Attempt > 0 && app.How == crew.HowTyped:
 		return []string{attemptKey(app.Run, app.Task, app.Attempt)}
 	case app.Task != "":
 		return []string{hTaskRef(app.Run, app.Task)}

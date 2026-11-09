@@ -1639,6 +1639,48 @@ func (l *Ledger) Decisions(ctx context.Context, f DecisionFilter) ([]DecisionRow
 	return out, err
 }
 
+// DecisionRevision is what every change of a decision moves, as the
+// ledger holds it: its number, the run that holds it and its rev.
+type DecisionRevision struct {
+	N          int64
+	CurrentRun string
+	Rev        int
+}
+
+// MaxDecisionRevisions bounds a page of DecisionRevisions.
+const MaxDecisionRevisions = 1000
+
+// DecisionRevisions reads the decisions after n (0 for the first) by their
+// number, the run that holds each and its rev only, a page of at most
+// MaxDecisionRevisions (limit 0 for that): what a reader that compares
+// every decision with what it last read of it (the history's reconcile)
+// lists without their requests.
+func (l *Ledger) DecisionRevisions(ctx context.Context, after int64, limit int) ([]DecisionRevision, error) {
+	if limit <= 0 || limit > MaxDecisionRevisions {
+		limit = MaxDecisionRevisions
+	}
+	var out []DecisionRevision
+	err := l.readAt(ctx, func(q querier, version int) error {
+		if version < versionDecisions {
+			return nil
+		}
+		rows, err := q.QueryContext(ctx, "SELECT n, current_run, rev FROM decisions WHERE n > ? ORDER BY n LIMIT ?", after, limit)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var d DecisionRevision
+			if err := rows.Scan(&d.N, &d.CurrentRun, &d.Rev); err != nil {
+				rows.Close()
+				return err
+			}
+			out = append(out, d)
+		}
+		return cmp.Or(rows.Err(), rows.Close())
+	})
+	return out, err
+}
+
 // Holds reads the holds under a run, active and released, by task and
 // decision.
 func (l *Ledger) Holds(ctx context.Context, run string) ([]HoldRow, error) {
