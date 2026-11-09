@@ -82,14 +82,24 @@ const (
 // marks, each record's ref, state and mark (its rev, its responses and
 // its history counted), for the link's notification hash: a final record,
 // which the link still reads (decision_record), changes it as an open one
-// does. A failed read is an error, never a scope with fewer records.
-func (s *Server) laneDecisionItems(ctx context.Context, rd *inboxRead, sc laneScope) (items []*inboxItem, marks []string, err error) {
+// does. A failed read is an error, never a scope with fewer records. The
+// read takes at most ledger.MaxScopeDecisions records, the open and
+// answered first, then the newest of the rest; a scope that holds more
+// (a continuation's, which took over its run's open and answered records
+// beside the ones it opened) is never cut silently: cut says so in words,
+// the list carries them, and the marks carry the cut, so the hash says it
+// too. A final record left out of such a read is not watched.
+func (s *Server) laneDecisionItems(ctx context.Context, rd *inboxRead, sc laneScope) (items []*inboxItem, marks []string, cut string, err error) {
 	if s.ledger == nil || sc.run == "" || (sc.session != "" && sc.task == "") {
-		return nil, nil, nil
+		return nil, nil, "", nil
 	}
-	rows, err := s.ledger.ScopeDecisions(ctx, sc.run, sc.task)
+	limit := ledger.MaxScopeDecisions
+	if seam := s.laneSeam; seam != nil && seam.scopeLimit > 0 {
+		limit = seam.scopeLimit
+	}
+	rows, more, err := s.ledger.ScopeDecisions(ctx, sc.run, sc.task, limit)
 	if err != nil {
-		return nil, nil, fmt.Errorf("the decisions of run %s: %w", sc.run, err)
+		return nil, nil, "", fmt.Errorf("the decisions of run %s: %w", sc.run, err)
 	}
 	for _, row := range rows {
 		marks = append(marks, ledger.DecisionRef(row.N)+" "+row.State+" "+recordMarkOf(row.Rev, row.Responses, row.History))
@@ -97,7 +107,17 @@ func (s *Server) laneDecisionItems(ctx context.Context, rd *inboxRead, sc laneSc
 			items = append(items, laneRecordItem(rd.decisionItem(row.DecisionRow, row.Held, nil)))
 		}
 	}
-	return items, marks, nil
+	if more {
+		cut = laneScopeCut(limit)
+		marks = append(marks, "more than "+strconv.Itoa(limit))
+	}
+	return items, marks, cut, nil
+}
+
+// laneScopeCut are the words of a scope whose read of DR1's records
+// reached its bound of limit.
+func laneScopeCut(limit int) string {
+	return fmt.Sprintf("More than %d durable decisions are in this link's scope: it reads %d, the open and answered first, then the newest of the rest, so an older final one is not listed here and its changes are not told. Open the run on the LAN or the desktop for every record.", limit, limit)
 }
 
 // laneRecordItem is a record's item as a link shows it: its actions taken

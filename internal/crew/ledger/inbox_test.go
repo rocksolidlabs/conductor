@@ -149,20 +149,20 @@ func TestScopeDecisions(t *testing.T) {
 		}
 		return out
 	}
-	got, err := l.ScopeDecisions(ctx, run, "")
+	got, _, err := l.ScopeDecisions(ctx, run, "", 0)
 	if err != nil || !slices.Equal(ns(got), []int64{asked, gate, closed}) || got[2].State != DecisionCancelled {
 		t.Fatalf("the run's: %v %v", ns(got), err)
 	}
 	if got[0].Held != nil || !slices.Equal(got[1].Held, []string{"deploy"}) || got[2].Held != nil {
 		t.Fatalf("what each holds: %+v", got)
 	}
-	if got, err := l.ScopeDecisions(ctx, run, "build"); err != nil || !slices.Equal(ns(got), []int64{asked}) {
+	if got, _, err := l.ScopeDecisions(ctx, run, "build", 0); err != nil || !slices.Equal(ns(got), []int64{asked}) {
 		t.Fatalf("build's: %v %v", ns(got), err)
 	}
-	if got, err := l.ScopeDecisions(ctx, run, "deploy"); err != nil || !slices.Equal(ns(got), []int64{gate}) {
+	if got, _, err := l.ScopeDecisions(ctx, run, "deploy", 0); err != nil || !slices.Equal(ns(got), []int64{gate}) {
 		t.Fatalf("deploy's, by its hold: %v %v", ns(got), err)
 	}
-	before, err := l.ScopeDecisions(ctx, run, "deploy")
+	before, _, err := l.ScopeDecisions(ctx, run, "deploy", 0)
 	if err != nil || before[0].Responses != 0 || before[0].History != 0 {
 		t.Fatalf("before: %+v %v", before, err)
 	}
@@ -173,13 +173,87 @@ func TestScopeDecisions(t *testing.T) {
 		_, err := tx.Respond(gate, ResponseRow{Actor: "admin", Authority: workbenchAuth, ResponseID: "r1", Fingerprint: "fp-r1", Status: ResponseRefused, Receipt: `{"words":"stale"}`})
 		return err
 	})
-	after, err := l.ScopeDecisions(ctx, run, "deploy")
+	after, _, err := l.ScopeDecisions(ctx, run, "deploy", 0)
 	rec := record(t, l, gate)
 	if err != nil || after[0].Responses != len(rec.Responses) || after[0].History != len(rec.History) || after[0].Responses != 1 || after[0].History != 1 {
 		t.Fatalf("after a comment and a refusal: %+v, the record %d %d, %v", after, len(rec.Responses), len(rec.History), err)
 	}
-	if got, err := l.ScopeDecisions(ctx, "", ""); err != nil || len(got) != 0 {
+	if got, _, err := l.ScopeDecisions(ctx, "", "", 0); err != nil || len(got) != 0 {
 		t.Fatalf("no run: %v %v", got, err)
+	}
+}
+
+// copies puts n copies of decision of as rows of run in state, as a
+// continuation's record or an old run's would be: written straight to the
+// table, past what opening them one by one would cost a test.
+func copies(t *testing.T, l *Ledger, of int64, run, state string, n int) {
+	t.Helper()
+	if _, err := l.db.Exec(`WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < ?)
+		INSERT INTO decisions (run_id, current_run, origin, type, gate, task_id, attempt, session_id, member, ticket, plan, plan_digest,
+			request_id, fingerprint, request, evidence, policy, state, rev, created_at)
+		SELECT ?, ?, d.origin, d.type, d.gate || '-' || c.i, d.task_id, d.attempt, d.session_id, d.member, d.ticket, d.plan, d.plan_digest,
+			'', d.fingerprint || '-' || c.i, d.request, d.evidence, d.policy, ?, d.rev, d.created_at FROM decisions d, c WHERE d.n = ? ORDER BY c.i`,
+		n, run, run, state, of); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A scope past its bound says so, and never leaves out an open record: a
+// continuation holds the 101 answered records it took over and the 1,000
+// its own run opened, the newest of them the only one open. At the bound
+// (1,100) every record is read and none is said to be missing; one past
+// it, the read says more, and what it left out is the oldest final record,
+// never the open one or an answered one.
+func TestScopeDecisionsAtTheirBound(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	ctx := context.Background()
+	const first, next = "team-00000001", "team-00000002"
+	newRun(t, l, first)
+	kept := open(t, l, gateDecision(first, "kept"))
+	answer(t, l, first, kept, "a1", workbenchAuth)
+	copies(t, l, kept, first, DecisionAnswered, 100)
+	continuation(t, l, first, next)
+	in(t, l, next, func(tx *Tx) error {
+		moved, err := tx.MoveDecisions(first, next)
+		if err == nil && len(moved) != 101 {
+			err = fmt.Errorf("%d moved", len(moved))
+		}
+		return err
+	})
+	old := open(t, l, gateDecision(next, "old"))
+	setState(t, l, next, old, DecisionCancelled, "")
+	copies(t, l, old, next, DecisionCancelled, MaxDecisionsPerRun-3)
+	last := open(t, l, gateDecision(next, "last"))
+	setState(t, l, next, last, DecisionCancelled, "")
+	all, more, err := l.ScopeDecisions(ctx, next, "", 0)
+	if err != nil || more || len(all) != MaxScopeDecisions || MaxScopeDecisions != 1100 {
+		t.Fatalf("at the bound: %d read, more %v, %v", len(all), more, err)
+	}
+	if !slices.IsSortedFunc(all, func(a, b InboxDecision) int { return int(a.N - b.N) }) || all[0].N != kept {
+		t.Fatal("at the bound: not oldest first")
+	}
+	newest := open(t, l, gateDecision(next, "newest"))
+	got, more, err := l.ScopeDecisions(ctx, next, "", 0)
+	if err != nil || !more || len(got) != MaxScopeDecisions {
+		t.Fatalf("past the bound: %d read, more %v, %v", len(got), more, err)
+	}
+	if got[len(got)-1].N != newest || got[len(got)-1].State != DecisionOpen {
+		t.Fatalf("past the bound, the newest record, the only one open, was left out: the last read is %s", got[len(got)-1].ID())
+	}
+	answered := 0
+	for _, d := range got {
+		if d.N == old {
+			t.Fatal("past the bound, the oldest final record was read in another's place")
+		}
+		if d.State == DecisionAnswered {
+			answered++
+		}
+	}
+	if answered != 101 || !slices.IsSortedFunc(got, func(a, b InboxDecision) int { return int(a.N - b.N) }) {
+		t.Fatalf("past the bound: %d answered read of 101, or not oldest first", answered)
+	}
+	if few, more, err := l.ScopeDecisions(ctx, next, "", 2); err != nil || !more || len(few) != 2 || few[0].State != DecisionAnswered || few[1].N != newest {
+		t.Fatalf("a read of two: %d, more %v, %v", len(few), more, err)
 	}
 }
 

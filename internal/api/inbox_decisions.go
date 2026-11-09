@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
@@ -221,12 +224,14 @@ func (rd *inboxRead) decisionItem(row ledger.DecisionRow, held []string, rec *le
 	return it
 }
 
-// capitalize is s with its first letter upper case.
+// capitalize is s with its first letter upper case: its first rune whole,
+// the rest of its bytes as they are.
 func capitalize(s string) string {
-	if s == "" {
+	r, n := utf8.DecodeRuneInString(s)
+	if n == 0 || r == utf8.RuneError {
 		return s
 	}
-	return strings.ToUpper(s[:1]) + s[1:]
+	return string(unicode.ToUpper(r)) + s[n:]
 }
 
 // cmpPrefix is p and s, or "" for an empty s.
@@ -251,16 +256,27 @@ func answeredWaits(held bool) string {
 // their dependents, the asking attempt, and the run's end.
 func (rd *inboxRead) decisionBlocking(it *inboxItem, row ledger.DecisionRow, run inboxRun, held []string, where string) {
 	id := row.ID()
+	// Each task once, before the item's bound counts what it cannot keep:
+	// held tasks share dependents.
+	var tasks []string
+	add := func(t string) {
+		if !slices.Contains(tasks, t) {
+			tasks = append(tasks, t)
+		}
+	}
 	for _, t := range held {
-		it.block("task:" + row.CurrentRun + "/" + t)
+		add(t)
 	}
 	for _, t := range held {
 		for _, d := range dependents(run.run, t) {
-			it.block("task:" + row.CurrentRun + "/" + d)
+			add(d)
 		}
 	}
 	if row.Origin == ledger.OriginAgent && row.TaskID != "" {
-		it.block("task:" + row.CurrentRun + "/" + row.TaskID)
+		add(row.TaskID)
+	}
+	for _, t := range tasks {
+		it.block("task:" + row.CurrentRun + "/" + t)
 	}
 	it.block("run:" + row.CurrentRun)
 	var words string

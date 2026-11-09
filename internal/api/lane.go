@@ -190,6 +190,10 @@ type laneSeams struct {
 	// (the read its scope was judged on) and resolved a head's refs, with
 	// the part asked and the rev read, before the part is cut.
 	recordRead func(part string, rev int)
+	// scopeLimit, when above 0, is the most DR1 records a scope's read
+	// takes in place of ledger.MaxScopeDecisions, so a test reaches the
+	// bound with a few.
+	scopeLimit int
 }
 
 // holdLink is the hold a decision link's answer takes as the session's
@@ -364,9 +368,10 @@ func (s *Server) itemRef(sc laneScope, reqID, v string) (brakeman.Ref, []byte) {
 
 // laneItems is every open item in the scope, oldest first by (since, ref),
 // and the marks of every DR1 record in the scope whatever its state (for
-// the hash, laneDecisionItems): an error for DR1's records that could not
-// be read.
-func (s *Server) laneItems(ctx context.Context, sc laneScope) ([]*inboxItem, []string, error) {
+// the hash, laneDecisionItems), with cut the words of a scope whose DR1
+// records passed the read's bound ("" for none): an error for DR1's
+// records that could not be read.
+func (s *Server) laneItems(ctx context.Context, sc laneScope) (_ []*inboxItem, _ []string, cut string, _ error) {
 	rd := s.newInboxRead(ctx)
 	var out []*inboxItem
 	var infos []session.Info
@@ -379,9 +384,9 @@ func (s *Server) laneItems(ctx context.Context, sc laneScope) ([]*inboxItem, []s
 			}
 		}
 	}
-	records, marks, err := s.laneDecisionItems(ctx, rd, sc)
+	records, marks, cut, err := s.laneDecisionItems(ctx, rd, sc)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	out = append(out, records...)
 	if sc.run != "" && s.runs != nil {
@@ -397,7 +402,7 @@ func (s *Server) laneItems(ctx context.Context, sc laneScope) ([]*inboxItem, []s
 		}
 	}
 	slices.SortFunc(out, func(a, b *inboxItem) int { return a.before(inboxCursor{b.Since, b.Ref}) })
-	return out, marks, nil
+	return out, marks, cut, nil
 }
 
 // decisionFrame is a TypeDecision frame of reqID with v as its field; a
@@ -419,13 +424,17 @@ func decisionFrame(reqID string, set func(*proto.Decision, json.RawMessage), v a
 
 // laneList is a page of the lane's list: at most proto.DecisionPage
 // summaries after the cursor, next and total, and on the first page the
-// link's Recent.
+// link's Recent. Truncated, with Cut its words, says the scope's DR1
+// records passed the read's bound (laneDecisionItems): total then counts
+// what was read, and the scope holds more.
 type laneList struct {
-	Items  []inboxSummary `json:"items"`
-	Next   string         `json:"next,omitempty"`
-	Total  int            `json:"total"`
-	At     time.Time      `json:"at"`
-	Recent []share.Recent `json:"recent,omitempty"`
+	Items     []inboxSummary `json:"items"`
+	Next      string         `json:"next,omitempty"`
+	Total     int            `json:"total"`
+	Truncated bool           `json:"truncated,omitempty"`
+	Cut       string         `json:"cut,omitempty"`
+	At        time.Time      `json:"at"`
+	Recent    []share.Recent `json:"recent,omitempty"`
 }
 
 // lanePage is the page of all, in (since, ref) order, after the cursor:
@@ -452,12 +461,12 @@ func (l *Lane) List(ctx context.Context, linkID, sessionID string, m proto.Decis
 	if err != nil {
 		return refusal(m.ReqID, proto.DecideInvalid, err.Error())
 	}
-	all, _, err := s.laneItems(ctx, sc)
+	all, _, cut, err := s.laneItems(ctx, sc)
 	if err != nil {
 		s.log.Warn("lane: the scope's items could not be read", "err", err)
 		return refusal(m.ReqID, "unavailable", "the decisions could not be read")
 	}
-	out := laneList{Items: []inboxSummary{}, Total: len(all), At: time.Now().UTC()}
+	out := laneList{Items: []inboxSummary{}, Total: len(all), Truncated: cut != "", Cut: cut, At: time.Now().UTC()}
 	page, next := lanePage(all, after)
 	out.Next = next
 	for _, it := range page {
@@ -1156,7 +1165,7 @@ func (s *Server) laneHash(ctx context.Context, linkID string) (hash string, ok b
 	if no != nil {
 		return "", true
 	}
-	items, marks, err := s.laneItems(ctx, sc)
+	items, marks, _, err := s.laneItems(ctx, sc)
 	if err != nil {
 		s.log.Warn("lane: the scope's items could not be read for its watch", "err", err)
 		return "", false

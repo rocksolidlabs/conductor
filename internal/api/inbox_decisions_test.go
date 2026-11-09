@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/config"
@@ -751,7 +752,7 @@ func TestALinkIsToldOfAFinalRecordsChange(t *testing.T) {
 		last, _ := h[len(h)-1].(map[string]any)
 		return d["state"] == ledger.DecisionApplied && slices.Contains([]any{ledger.HistoryDeliveryEntered, ledger.HistoryDeliveryUntyped, ledger.HistoryDeliveryUncertain}, last["kind"])
 	})
-	if items, _, err := f.srv.laneItems(t.Context(), mustScope(t, f.srv, link)); err != nil || slices.ContainsFunc(items, func(it *inboxItem) bool { return it.Ref == "decision:dr-1" }) {
+	if items, _, _, err := f.srv.laneItems(t.Context(), mustScope(t, f.srv, link)); err != nil || slices.ContainsFunc(items, func(it *inboxItem) bool { return it.Ref == "decision:dr-1" }) {
 		t.Fatalf("the applied record is still an item of the link: %v", err)
 	}
 	first := hash()
@@ -1139,4 +1140,86 @@ func TestAGateOverTheDesk(t *testing.T) {
 			t.Fatalf("applied, over the desk: %s", got)
 		}
 	})
+}
+
+// A record's blocking names each task once before its bound counts what
+// it cannot keep: a gate that holds the first two tasks of a chain of 22
+// blocks the 22 tasks and the run, 23 refs, though the two held tasks
+// share their dependents.
+func TestARecordsBlockingCountsEachTaskOnce(t *testing.T) {
+	const runID = "team-00000001"
+	var run crew.Run
+	for i := range 22 {
+		task := crew.TaskState{ID: fmt.Sprintf("t%02d", i)}
+		if i > 0 {
+			task.Needs = []string{fmt.Sprintf("t%02d", i-1)}
+		}
+		run.Tasks = append(run.Tasks, task)
+	}
+	it := &inboxItem{}
+	row := ledger.DecisionRow{N: 1, RunID: runID, CurrentRun: runID, Origin: ledger.OriginPlan, Gate: "g1", State: ledger.DecisionOpen}
+	(&inboxRead{}).decisionBlocking(it, row, inboxRun{run: run, ok: true}, []string{"t00", "t01"}, "the plan's gate g1")
+	seen := map[string]bool{}
+	for _, ref := range it.Blocking.Refs {
+		if seen[ref] {
+			t.Fatalf("%s named twice", ref)
+		}
+		seen[ref] = true
+	}
+	if len(it.Blocking.Refs) != inboxRefs || it.Blocking.More != 23-inboxRefs || it.summary().Blocks != 23 {
+		t.Fatalf("%d refs and %d more, %d blocked, of 23", len(it.Blocking.Refs), it.Blocking.More, it.summary().Blocks)
+	}
+}
+
+// An item's words begin with their first letter upper case, the whole
+// rune: an agent named in Unicode keeps its name whole in what it asks.
+func TestCapitalizeTakesAWholeRune(t *testing.T) {
+	for in, want := range map[string]string{"": "", "éclair in attempt build.1": "Éclair in attempt build.1", "the plan's gate": "The plan's gate", "日本": "日本", "\xffx": "\xffx"} {
+		if got := capitalize(in); got != want {
+			t.Fatalf("capitalize(%q) = %q, want %q", in, got, want)
+		}
+	}
+	it := &inboxItem{}
+	row := ledger.DecisionRow{N: 1, RunID: "team-00000001", CurrentRun: "team-00000001", Origin: ledger.OriginAgent, TaskID: "build", Attempt: 1, State: ledger.DecisionOpen}
+	(&inboxRead{}).decisionBlocking(it, row, inboxRun{}, nil, "éclair in attempt build.1")
+	if !utf8.ValidString(it.Blocking.Words) || !strings.HasPrefix(it.Blocking.Words, "Éclair in attempt build.1 waits") {
+		t.Fatalf("the words: %q", it.Blocking.Words)
+	}
+}
+
+// A link's scope whose DR1 records pass its read's bound says so, and
+// never silently: at the bound the list is whole and carries no cut; one
+// record past it, the list says truncated in words, keeps the open
+// records (the newest among them), and the marks the link's hash is made
+// of carry the cut. The seam lowers the bound to two records, as
+// ledger.TestScopeDecisionsAtTheirBound proves the ledger's at 1,100.
+func TestALinksScopePastItsBoundSaysSo(t *testing.T) {
+	f := newDecisionFixture(t, nil, nil)
+	f.srv.laneSeam = &laneSeams{scopeLimit: 2}
+	f.ask(t, approvalBody("r1"), http.StatusCreated, "")
+	f.ask(t, approvalBody("r2"), http.StatusCreated, "")
+	link, tok := f.decisionLink(t, "/api/sessions/"+f.sid+"/links", "phone", 0)
+	w := dialLane(t, f.testEnv, "/ws/sessions/"+f.sid, tok)
+	if page := w.list(""); page.Total != 2 || page.Truncated || page.Cut != "" {
+		t.Fatalf("at the bound: %+v", page)
+	}
+	_, marks, cut, err := f.srv.laneItems(t.Context(), mustScope(t, f.srv, link))
+	if err != nil || cut != "" || slices.ContainsFunc(marks, func(m string) bool { return strings.HasPrefix(m, "more than") }) {
+		t.Fatalf("at the bound: %q %v %v", cut, marks, err)
+	}
+	f.ask(t, approvalBody("r3"), http.StatusCreated, "")
+	page := w.list("")
+	if words := laneScopeCut(ledger.MaxScopeDecisions); len(words) > 500 || !strings.HasPrefix(words, "More than 1100 ") {
+		t.Fatalf("the cut's words at the ledger's bound: %d bytes, %q", len(words), words)
+	}
+	if page.Total != 2 || !page.Truncated || !strings.HasPrefix(page.Cut, "More than 2 durable decisions are in this link's scope") {
+		t.Fatalf("past the bound: %+v", page)
+	}
+	if refs := []string{page.Items[0].Ref, page.Items[1].Ref}; !slices.Equal(refs, []string{"decision:dr-2", "decision:dr-3"}) {
+		t.Fatalf("past the bound, the records listed: %v", refs)
+	}
+	_, marks, cut, err = f.srv.laneItems(t.Context(), mustScope(t, f.srv, link))
+	if err != nil || cut != page.Cut || len(marks) != 3 || marks[2] != "more than 2" {
+		t.Fatalf("past the bound, the hash's marks: %v, %q %v", marks, cut, err)
+	}
 }

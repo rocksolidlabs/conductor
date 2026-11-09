@@ -2055,10 +2055,12 @@ refused `invalid`, naming its `reqId` when it has one within its bound.
 those its run holds; a session link's, those of its attempt's task,
 asked by it or holding it; open, or answered and `tracking`; a question
 that mirrors one is not listed beside it), oldest first by `(since, ref)`, at most 25 a page:
-`{items, next?, total, at, recent?}`, `next` the cursor after the last
+`{items, next?, total, at, truncated?, cut?, recent?}`, `next` the cursor after the last
 when more follow, `total` every item in scope, so nothing is cut
 silently; an item that left between pages is not on the next, one that
-came is in its place. The first page carries the link's **Recent**: the
+came is in its place. `truncated` (with `cut`, its words, at most 500
+bytes) says the scope's DR1 records passed the read's bound (One read,
+below): `total` then counts the items read, and the scope holds more. The first page carries the link's **Recent**: the
 last 50 actions taken through it, `{ref, receipt, attempt, at}`, oldest
 first, kept in memory with the link (gone with it), one per item and
 attempt, so an item closed by its action stays readable with its steps
@@ -2117,7 +2119,19 @@ only an item's: a comment, a request for more information, a refused or
 late response and a delivery's history row each tell the viewer, after
 the record's application as before it. A read that fails is refused
 `unavailable` (the list, an item, a part), never answered with fewer
-records, and changes nothing the watch compares.
+records, and changes nothing the watch compares. The scope's read takes
+at most 1,100 DR1 records, the sum of the 1,000 a run may open and a
+page of 100 past them; a continuation holds the open and answered
+records it took over beside the ones it opened, so a scope can hold
+more. The promise is narrowed there, fail-closed and never silent: a
+read that reaches the bound takes the open and answered records first,
+then the newest of the rest, so an open record is never the one left
+out while the open and answered fit; the list carries `truncated` and
+`cut` ("More than 1100 durable decisions are in this link's scope…",
+pointing to the LAN or the desktop for every record), and the
+notification's hash carries the cut as a mark of its own. A final
+record left out of such a read is not listed and its changes are not
+told; `decision_record` still reads it, by its ref.
 
 **Track.** `{ref, receipt, attempt, steps}`, the four steps of `GET
 /api/inbox/track`, read under this link's actor (a DR1 record's is

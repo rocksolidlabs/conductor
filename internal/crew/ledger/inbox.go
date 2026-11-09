@@ -3,6 +3,7 @@ package ledger
 import (
 	"cmp"
 	"context"
+	"slices"
 	"strings"
 	"time"
 )
@@ -178,18 +179,31 @@ func readHeld(ctx context.Context, q querier, ns []int64) (map[int64][]string, e
 	return out, cmp.Or(rows.Err(), rows.Close())
 }
 
-// ScopeDecisions reads every decision run holds, whatever its state (with
-// task, those of task: asked by it or holding it, as DecisionFilter's
-// Task reads), oldest first, each with what it holds and its counts, every
-// row of one read transaction, so a change committed meanwhile is seen
-// whole or not at all: a decision link's scope, its open items and the
-// final records a link still reads. At most MaxDecisionsPerRun and a page
-// are read, past what a run may hold. A database older than the decision
+// MaxScopeDecisions bounds a read of ScopeDecisions: the
+// MaxDecisionsPerRun a run may open and a page of MaxDecisionsPage past
+// them, 1,100 records. A run can hold more than it opened (a continuation
+// moves its open and answered records to the next run, MoveDecisions), so
+// a scope can pass the bound, and a read that reaches it says so.
+const MaxScopeDecisions = MaxDecisionsPerRun + MaxDecisionsPage
+
+// ScopeDecisions reads the decisions run holds, whatever their state
+// (with task, those of task: asked by it or holding it, as
+// DecisionFilter's Task reads), oldest first by n, each with what it
+// holds and its counts, every row of one read transaction, so a change
+// committed meanwhile is seen whole or not at all: a decision link's
+// scope, its open items and the final records a link still reads. At
+// most limit are read (at most MaxScopeDecisions, 0 for that); more says
+// the scope holds more than that, and then the ones read are its open and
+// answered records first, then the newest of the rest: the oldest final
+// records are the ones left out. A database older than the decision
 // tables has none.
-func (l *Ledger) ScopeDecisions(ctx context.Context, run, task string) ([]InboxDecision, error) {
-	out := []InboxDecision{}
+func (l *Ledger) ScopeDecisions(ctx context.Context, run, task string, limit int) (out []InboxDecision, more bool, err error) {
+	if limit <= 0 || limit > MaxScopeDecisions {
+		limit = MaxScopeDecisions
+	}
+	out = []InboxDecision{}
 	if run == "" {
-		return out, nil
+		return out, false, nil
 	}
 	args := []any{run}
 	where := "d.current_run = ?"
@@ -197,9 +211,9 @@ func (l *Ledger) ScopeDecisions(ctx context.Context, run, task string) ([]InboxD
 		where += " AND (d.task_id = ? OR EXISTS (SELECT 1 FROM decision_holds h WHERE h.decision = d.n AND h.task_id = ?))"
 		args = append(args, task, task)
 	}
-	query := "SELECT " + inboxCols + " FROM decisions d WHERE " + where + " ORDER BY d.n LIMIT ?"
-	args = append(args, MaxDecisionsPerRun+MaxDecisionsPage)
-	err := l.readSnapshot(ctx, func(q querier, version int) error {
+	query := "SELECT " + inboxCols + " FROM decisions d WHERE " + where + " ORDER BY (d.state IN (?, ?)) DESC, d.n DESC LIMIT ?"
+	args = append(args, DecisionOpen, DecisionAnswered, limit+1)
+	err = l.readSnapshot(ctx, func(q querier, version int) error {
 		if version < versionDecisions {
 			return nil
 		}
@@ -208,9 +222,13 @@ func (l *Ledger) ScopeDecisions(ctx context.Context, run, task string) ([]InboxD
 		return err
 	})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return out, nil
+	if len(out) > limit {
+		out, more = out[:limit], true
+	}
+	slices.SortFunc(out, func(a, b InboxDecision) int { return cmp.Compare(a.N, b.N) })
+	return out, more, nil
 }
 
 // countsScanner scans a decision's columns, then its two counts.
