@@ -555,6 +555,20 @@ func TestActWordsNameTheRunFromTheLaunch(t *testing.T) {
 	}
 }
 
+// TestActWordsNameAReview: a request for changes answers Dispatch's
+// receipt, whose id is the review it recorded; the repair is Yardmaster's.
+func TestActWordsNameAReview(t *testing.T) {
+	reply := `{"receipt":{"opId":"bk0123456789abcdef0123456789abcd","id":"0123456789abcdef","status":"done"},"receiptRef":"op:brakeman/bk0123456789abcdef0123456789abcd"}`
+	want := "request_repair ran (opId q1): done; its receipt is op:brakeman/bk0123456789abcdef0123456789abcd, the ref a brief cites it by (an outcome/1's receipt); review 0123456789abcdef recorded, its repair Yardmaster's to apply (the candidate's task's next attempt)"
+	if got := actWords("request_repair", "q1", json.RawMessage(reply)); got != want {
+		t.Errorf("got %q\nwant %q", got, want)
+	}
+	refused := `{"receipt":{"opId":"bk0123456789abcdef0123456789abcd","id":"0123456789abcdef","status":"refused"}}`
+	if got := actWords("request_repair", "q1", json.RawMessage(refused)); strings.Contains(got, "review 0123456789abcdef") {
+		t.Errorf("a refusal names a review: %q", got)
+	}
+}
+
 // TestActWordsNameADecisionsRoute: a decision's route answers DR1's
 // receipt, which the words name by its decision and history row, with
 // DR1's words, and no op: ref, which names a Dispatch receipt.

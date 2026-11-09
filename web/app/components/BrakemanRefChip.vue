@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { RefResolution } from '~/utils/brakeman'
-import { changedFromBaseline, changedSince, parseRef, receiptPath, refDecision, refLabel, refPage } from '~/utils/brakeman'
+import { changedFromBaseline, changedSince, parseRef, refDecision, refLabel } from '~/utils/brakeman'
 
 /**
  * One piece of evidence a brief cites (docs/plans/brakeman.md, PR-6): a chip labelled by what the ref names, a link to where the person
@@ -13,6 +13,10 @@ import { changedFromBaseline, changedSince, parseRef, receiptPath, refDecision, 
  * In `baseline` mode (a decision card's evidence, docs/plans/decisions.md) the resolution alone says what changed: its `seen`, the
  * record when the question was asked, against its `now` (changedFromBaseline), for every kind, tickets and files included; the page's
  * live state is not read. A baseline its store could not read then shows "not read when asked" instead.
+ *
+ * Where it opens and what it reads are the injected access's (useRefAccess, docs/plans/decision-inbox.md PR-4): today's, the
+ * workbench's page for the ref and its record over HTTP; on a decision link's join page, a member's terminal tab for a session, a
+ * check's log through the lane, and the words where anything else is opened.
  */
 const props = defineProps<{ refName: string; resolution?: RefResolution; baseline?: boolean }>()
 
@@ -23,9 +27,15 @@ const label = computed(() =>
     run: (id) => live.runNames.value[id],
   }),
 )
-const to = computed(() => refPage(props.refName, props.resolution))
-const receipt = computed(() => receiptPath(props.refName, props.resolution))
-const decision = computed(() => refDecision(props.refName))
+const access = useRefAccess()
+const target = computed(() => access.route(props.refName, props.resolution))
+const to = computed(() => (target.value && 'to' in target.value ? target.value.to : ''))
+const opens = computed(() => (target.value && 'open' in target.value ? target.value.open : null))
+const elsewhere = computed(() => (target.value && 'words' in target.value ? target.value.words : ''))
+const receipt = computed(() => !!access.read(props.refName, props.resolution))
+// A decision ref's chip opens its record in the decision's card (#539) where the access routes it nowhere: the workbench's, whose
+// decision refs have no page. A link's access gives its words instead, and the chip opens nothing there.
+const decision = computed(() => (target.value ? '' : refDecision(props.refName)))
 const decisionModal = useDecisionModal()
 
 /** What the page has live of the record, in the words the server's resolution keeps (internal/api/brakeman_refs.go). */
@@ -62,11 +72,13 @@ const title = computed(() => {
     const seen = props.resolution.seen
     parts.push(unread.value ? 'not read when asked' : `${stateRev(seen) || 'unknown'} when asked`)
     parts.push(`${stateRev(now) || 'unknown'} now`)
+    if (elsewhere.value) parts.push(elsewhere.value)
     return parts.join(' · ')
   }
   if (now?.state) parts.push(`was ${now.state} when the brief was kept`)
   if (now?.sha256) parts.push(`log SHA-256 ${now.sha256}`)
   if (changed.value && liveState.value?.state) parts.push(`${liveState.value.state} now`)
+  if (elsewhere.value) parts.push(elsewhere.value)
   return parts.join(' · ')
 })
 </script>
@@ -75,10 +87,13 @@ const title = computed(() => {
   <span class="inline-flex items-center gap-1" :data-ref-chip="refName" :data-changed="changed || undefined" :data-baseline="baseline || undefined">
     <UBadge :color="deleted ? 'error' : 'neutral'" variant="outline" size="sm" :title="title" class="max-w-full">
       <NuxtLink v-if="to && !deleted" :to="to" class="truncate hover:underline" data-ref-link>{{ label }}</NuxtLink>
+      <button v-else-if="opens && !deleted" type="button" class="truncate hover:underline" data-ref-link data-ref-open @click.prevent="opens()">{{ label }}</button>
       <button v-else-if="decision && !deleted" type="button" class="truncate hover:underline" data-ref-link :data-ref-decision="decision" @click="decisionModal.open(decision)">{{ label }}</button>
-      <span v-else class="truncate">{{ label }}<template v-if="deleted"> (deleted)</template></span>
+      <span v-else class="truncate" :data-ref-elsewhere="elsewhere || undefined">{{ label }}<template v-if="deleted"> (deleted)</template></span>
+      <!-- Where a chip that opens nothing here is opened, in words a phone shows (a title is never seen on a touch screen). -->
+      <span v-if="elsewhere && !deleted" class="whitespace-normal text-[10px] text-muted" data-ref-elsewhere-words>· {{ elsewhere }}</span>
       <span v-if="resolution?.now.sha256" class="font-mono text-[10px] text-muted">{{ resolution.now.sha256.slice(0, 12) }}</span>
-      <BrakemanReceipt v-if="receipt && !deleted" :ref-name="refName" :path="receipt" :label="label" :kept-sha256="resolution?.now.sha256" />
+      <BrakemanReceipt v-if="receipt && !deleted" :ref-name="refName" :resolution="resolution" :label="label" :kept-sha256="resolution?.now.sha256" />
     </UBadge>
     <UBadge v-if="changed" :label="baseline && resolution?.seen.rev ? `changed since r${resolution.seen.rev}` : 'changed since'" color="warning" variant="subtle" size="sm" :title="baseline && resolution ? `was ${stateRev(resolution.seen) || 'unknown'} when asked` : undefined" data-ref-changed />
     <UBadge v-else-if="unread" label="not read when asked" color="neutral" variant="subtle" size="sm" data-ref-unread />

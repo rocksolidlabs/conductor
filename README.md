@@ -1738,8 +1738,11 @@ Brakeman may see.
 from a closed list, each said in words: **Launch an approved plan** (a managed
 run from a ticket's plan revision you approved, while the approval holds) and
 **Prepare a follow-up** (a plan revision based on the approved one, which you
-then approve or not). **Request a repair** and **Route a decision** are listed
-as not in this build: nothing serves them yet. A granted operation goes to
+then approve or not), **Request a repair** (a request for changes on a
+candidate of a run the server is running, which Yardmaster repairs; never an
+approval, and never the continuation of a stopped run) and **Route a
+decision** (an open decision sent to you or to a person of its run's crew,
+never answered). A granted operation goes to
 that operation's own route, which checks the grant (as the turn began and
 now), what Brakeman may see, its scope and the target's state, and leaves a
 receipt; the brief then shows the proposal as "Brakeman did this" with its

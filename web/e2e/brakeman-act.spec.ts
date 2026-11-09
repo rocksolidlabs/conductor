@@ -189,14 +189,15 @@ async function turn(opId: string, actId: string, propose = true): Promise<string
 }
 
 test('granted in Settings, Brakeman launches the approved revision, and the brief and the run page show its receipt', async ({ page }) => {
-  // The grant, in Settings, with what it authorizes in words: one wait of 30 s, then fifteen steps and the poll of the saved grant.
-  budget(30_000 + 16 * STEP_MS)
+  // The grant, in Settings, with what it authorizes in words: one wait of 30 s, then sixteen steps and the poll of the saved grant.
+  budget(30_000 + 17 * STEP_MS)
   await open(page, '/settings')
   const g = page.locator('[data-brakeman-grant="launch_approved_plan"]')
   await expect(g).toHaveAttribute('data-grant-served', 'true', { timeout: 30_000 })
   await expect(page.locator('[data-brakeman-grants]')).toContainText('never approves one')
-  // A grant this build serves no route of cannot be turned on.
-  await expect(page.locator('[data-brakeman-grant="request_repair"]')).toHaveAttribute('data-grant-served', 'false')
+  // Requesting a repair is served (RV1's review route), and never approves or accepts a result.
+  await expect(page.locator('[data-brakeman-grant="request_repair"]')).toHaveAttribute('data-grant-served', 'true')
+  await expect(page.locator('[data-brakeman-grants]')).toContainText('It never approves or accepts a result')
   // Routing a decision is served, to a person of its run's crew too, and never answers one.
   await expect(page.locator('[data-brakeman-grant="route_decision"]')).toHaveAttribute('data-grant-served', 'true')
   await expect(page.locator('[data-brakeman-grants]')).toContainText("or to a person of its run's crew, by name or by the responsibility they hold. It never answers one")

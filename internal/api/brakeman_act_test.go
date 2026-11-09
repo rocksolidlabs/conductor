@@ -168,12 +168,6 @@ func TestAnUngrantedActIsRefused(t *testing.T) {
 	if status, out := f.launchAct(t, map[string]any{"opId": "a-3"}); status != http.StatusForbidden || codeOf(out) != "not_granted" {
 		t.Fatalf("a grant taken away: %d %v", status, out)
 	}
-	// The grant this build cannot serve is refused at the save.
-	for _, op := range []string{brakeman.ActRequestRepair} {
-		c := f.bk.config(t)
-		c["permissions"].(map[string]any)["act"] = []any{op}
-		f.expect(t, "PUT", "/api/brakeman/config", map[string]any{"rev": c["rev"], "config": c}, http.StatusBadRequest, brakeman.CodeInvalidConfig)
-	}
 }
 
 // endTurn stops the turn's run and waits for the slot.

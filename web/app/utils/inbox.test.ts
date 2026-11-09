@@ -37,6 +37,10 @@ import {
   stepsFinal,
   ticketOf,
   itemOf,
+  decisionIdOf,
+  inboxKindWords,
+  inboxSections,
+  isDecisionRef,
   type InboxItem,
   withOutcome,
   writeRecentActions,
@@ -265,8 +269,13 @@ describe("the phone's paths", () => {
 
 describe('the list', () => {
   it('says nothing needs a decision only when its last read answered with none', () => {
-    const answered = { loaded: true, items: [], unavailable: '', error: '' }
+    const answered = { loaded: true, total: 0, tracking: 0, unavailable: '', error: '' }
     expect(inboxEmpty(answered)).toBe(true)
+    // What the server counts open, not the page the list holds: a first page of records answered and not yet applied, with an open
+    // item past it, is not empty; records answered and not yet applied alone are.
+    expect(inboxEmpty({ ...answered, total: 151, tracking: 150 })).toBe(false)
+    expect(inboxEmpty({ ...answered, total: 150, tracking: 150 })).toBe(true)
+    expect(inboxEmpty({ ...answered, total: 1 })).toBe(false)
     // An empty read, then a failed one: what is open now is not known.
     expect(inboxEmpty({ ...answered, error: 'the server could not be reached' })).toBe(false)
     expect(inboxEmpty({ ...answered, loaded: false })).toBe(false)
@@ -380,5 +389,47 @@ describe('decisionLinkTargets', () => {
       { value: 'run:r1', label: 'Run: release 7' },
       { value: 'session:s1', label: 'Session: api-fix' },
     ])
+  })
+})
+
+// DR1's records on the page (docs/plans/decision-inbox.md, PR-4): the decision kind's ref and words, the list's two parts ("Answered,
+// not yet applied" from the server's list), the bar's number without them, and this browser's Recent keeping only actions on items
+// DR1 does not hold (its records' Recent is the server's).
+describe('the decision kind', () => {
+  const s = (ref: string, tracking?: boolean) => ({ ref, kind: ref.startsWith('decision:') ? 'decision' : 'task', since: '', title: ref, brief: '', question: '', answerer: '', actions: [], ...(tracking ? { tracking } : {}) })
+  it("names a DR1 record by its ref, and only a record's ref", () => {
+    expect(isDecisionRef('decision:dr-12')).toBe(true)
+    expect(decisionIdOf('decision:dr-12')).toBe('dr-12')
+    for (const r of ['decision:dr-0', 'decision:12', 'question:0123456789abcdef/0123456789abcdef', 'decision:dr-1/x']) {
+      expect(isDecisionRef(r)).toBe(false)
+      expect(decisionIdOf(r)).toBe('')
+    }
+    expect(inboxKindWords('decision')).toBe('A durable decision')
+    expect(inboxKindWords('task')).toBe('A failed task')
+  })
+  it('puts the records answered and not yet applied apart, each part in the list\'s order', () => {
+    const items = [s('decision:dr-1', true), s('task:crew-0000aaaa-11112222/build'), s('decision:dr-2'), s('decision:dr-3', true)]
+    const { open, tracking } = inboxSections(items)
+    expect(open.map((x) => x.ref)).toEqual(['task:crew-0000aaaa-11112222/build', 'decision:dr-2'])
+    expect(tracking.map((x) => x.ref)).toEqual(['decision:dr-1', 'decision:dr-3'])
+  })
+  it("leaves the records answered and not yet applied out of the bar's number", () => {
+    expect(barCount({ total: 5, tracking: 2 })).toBe(3)
+    expect(barCount({ total: 2, tracking: 2 })).toBe(0)
+    expect(barCount({ total: 1, tracking: 4 })).toBe(0)
+    expect(barCount({ total: 7 })).toBe(7)
+  })
+  it("keeps no action on a DR1 record in this browser's Recent: the server's Recent holds its records", () => {
+    const now = 1_800_000_000_000
+    const kept = keptRecent(
+      [
+        { ref: 'decision:dr-1', receipt: 'resp-1', at: now - 1000 },
+        { ref: 'task:crew-0000aaaa-11112222/build', receipt: 'c-1', at: now - 2000 },
+      ],
+      now,
+    )
+    expect(kept.map((e) => e.ref)).toEqual(['task:crew-0000aaaa-11112222/build'])
+    const stored = { getItem: () => JSON.stringify([{ ref: 'decision:dr-2', receipt: 'r', at: now - 10 }]) }
+    expect(readRecentActions(stored, now)).toEqual([])
   })
 })

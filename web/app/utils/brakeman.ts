@@ -1033,7 +1033,7 @@ export const GRANTS: ReadonlyArray<{ value: string; label: string; words: string
   {
     value: 'request_repair',
     label: 'Request a repair',
-    words: "Ask for changes on a run's candidate, a Yardmaster repair round of the task. It never accepts a result.",
+    words: "Ask for changes on a candidate of a run the server is running, a Yardmaster repair round of its task, recorded as Brakeman's review. It never approves or accepts a result, and never continues a stopped run: that stays yours.",
   },
   {
     value: 'prepare_followup',
@@ -1215,7 +1215,7 @@ export function actLaunchRef(a: BrakemanAct): string | null {
   return a.state === 'done' && a.operation === 'launch_approved_plan' && a.receipt && HEX.test(a.receipt) ? `launch:${a.receipt}` : null
 }
 
-/** What a done act made, by its receipt's id, in words: the launch or the plan revision of its ticket; "" with none. */
+/** What a done act made, by its receipt's id, in words: the launch, the plan revision or the review of its ticket; "" with none. */
 export function actMade(a: BrakemanAct): string {
   if (a.state !== 'done' || !a.receipt) return ''
   const ticket = refTicket(a.target)
@@ -1225,6 +1225,8 @@ export function actMade(a: BrakemanAct): string {
       return `the launch ${a.receipt}${of}`
     case 'prepare_followup':
       return `the plan revision ${a.receipt}${of}`
+    case 'request_repair':
+      return `the review ${a.receipt}${of}`
     case 'route_decision': {
       const [d, seq] = a.receipt.split('#')
       return `${d} routed: row ${seq} of its history`

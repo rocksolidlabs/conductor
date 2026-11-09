@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { nextTick, ref } from 'vue'
 import type { DecideOkMsg, DecisionReply } from '~/utils/protocol'
 import type { InboxAction, InboxItem, InboxSummary } from '~/utils/inbox'
-import { DecisionLane, LaneError, LaneLocal, type LaneAsk, type LaneDecide, type LaneWire } from '~/utils/transport/decide'
+import { DecisionLane, LaneError, LaneLocal, RECORD_NO_WORD_WORDS, type LaneAsk, type LaneDecide, type LaneWire } from '~/utils/transport/decide'
 import { useJoinDecide } from './useJoinDecide'
 
 // What the join page's Decide keeps (docs/plans/decision-inbox.md, PR-7), over a wire whose replies the test gives one by one, in
@@ -331,5 +331,93 @@ describe('useJoinDecide', () => {
     await flush()
     expect(f.decided).toHaveLength(2)
     expect(f.decided[1]!.m.opId).not.toBe(f.decided[0]!.m.opId)
+  })
+})
+
+// A DR1 record on the join page (docs/plans/decision-inbox.md, PR-4): opened, its item read and its record assembled from the parts
+// of one mark over the lane, handed whole; read again at the next change, and kept with the words when it moved four times in a
+// row; an assembly under way when the item is left hands nothing on and asks no more parts.
+describe("useJoinDecide's DR1 record", () => {
+  const dref = 'decision:dr-1'
+  const recordItem = { ref: dref, subject: dref, kind: 'decision', since: '', title: 'May deploy go out?', brief: '', briefBy: 'conductor', question: 'May deploy go out?', answerer: '', revision: '1', blocking: { words: '', refs: [] }, actions: [], recommended: -1 } as unknown as InboxItem
+  const head = (rev: string) => ({ reqId: 'x', record: { ref: dref, part: 'head', rev, decision: { id: 'dr-1', state: 'open', rev: 1, request: { question: 'May deploy go out?' } }, refs: [], total: 0 } })
+  const empty = (part: string, rev: string) => ({ reqId: 'x', record: { ref: dref, part, rev, total: 0 } })
+
+  it('assembles the record when its item opens, again at the next change, and keeps the last whole one with the words after four moves', async () => {
+    const f = fakeWire()
+    const seq = ref(0)
+    const d = useJoinDecide(new DecisionLane(() => f.wire), seq)
+    d.open(dref)
+    await flush()
+    f.take('decision_read').settle({ reqId: 'x', item: recordItem })
+    await flush()
+    f.take('decision_record', (m) => m.t === 'decision_record' && m.part === 'head').settle(head('100000'))
+    await flush()
+    f.take('decision_record', (m) => m.t === 'decision_record' && m.part === 'responses' && m.rev === '100000').settle(empty('responses', '100000'))
+    await flush()
+    f.take('decision_record', (m) => m.t === 'decision_record' && m.part === 'history' && m.rev === '100000').settle(empty('history', '100000'))
+    await flush()
+    expect(d.record.value?.rev).toBe('100000')
+    expect(d.recordWords.value).toBe('')
+
+    // The next change: the list read again, the item, and the record, which moves at every head it is read at (five heads).
+    seq.value++
+    await flush()
+    f.answerAll('decisions_list', () => page(1, 1, 1))
+    await flush()
+    f.take('decision_read').settle({ reqId: 'x', item: recordItem })
+    await flush()
+    for (let i = 0; i < 5; i++) {
+      f.take('decision_record', (m) => m.t === 'decision_record' && m.part === 'head').settle(head(`${i + 2}00000`))
+      await flush()
+      f.take('decision_record', (m) => m.t === 'decision_record' && m.part === 'responses').fail(new LaneError('record_moved', 'moved', { rev: `${i + 3}00000` }))
+      await flush()
+    }
+    expect(d.record.value?.rev).toBe('100000')
+    expect(d.recordWords.value).toContain('changed while it was read')
+  })
+
+  it('says a read that got no word back on a connection still up, and Read again reads the item and its record again', async () => {
+    const f = fakeWire()
+    const d = useJoinDecide(new DecisionLane(() => f.wire), ref(0))
+    d.open(dref)
+    await flush()
+    f.take('decision_read').settle({ reqId: 'x', item: recordItem })
+    await flush()
+    // The lane's read timed out: no word, the connection still up, and no change to come on an unchanged decision.
+    f.take('decision_record', (m) => m.t === 'decision_record' && m.part === 'head').fail(new LaneError('no_word', 'no word came back'))
+    await flush()
+    expect(d.record.value).toBeNull()
+    expect(d.recordWords.value).toBe(RECORD_NO_WORD_WORDS)
+    expect(f.asked.filter((a) => a.m.t === 'decision_record')).toHaveLength(1)
+
+    const again = d.reread()
+    await flush()
+    f.take('decision_read').settle({ reqId: 'x', item: recordItem })
+    await again
+    await flush()
+    f.take('decision_record', (m) => m.t === 'decision_record' && m.part === 'head').settle(head('100000'))
+    await flush()
+    f.take('decision_record', (m) => m.t === 'decision_record' && m.part === 'responses').settle(empty('responses', '100000'))
+    await flush()
+    f.take('decision_record', (m) => m.t === 'decision_record' && m.part === 'history').settle(empty('history', '100000'))
+    await flush()
+    expect(d.record.value?.rev).toBe('100000')
+    expect(d.recordWords.value).toBe('')
+  })
+
+  it('takes nothing an assembly under way brings back once the item is left, and asks it no more parts', async () => {
+    const f = fakeWire()
+    const d = useJoinDecide(new DecisionLane(() => f.wire), ref(0))
+    d.open(dref)
+    await flush()
+    f.take('decision_read').settle({ reqId: 'x', item: recordItem })
+    await flush()
+    const h = f.take('decision_record', (m) => m.t === 'decision_record' && m.part === 'head')
+    d.back()
+    h.settle(head('100000'))
+    await flush()
+    expect(f.asked.filter((a) => a.m.t === 'decision_record')).toHaveLength(1)
+    expect(d.record.value).toBeNull()
   })
 })
