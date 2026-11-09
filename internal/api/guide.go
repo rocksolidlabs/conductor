@@ -363,8 +363,8 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		// dispatcher of its own. A turn's session token names its session
 		// in X-Conductor-Session on each.
 		{Name: "observe", MCP: "observe", Scope: "observe", Method: http.MethodGet, Path: "/api/brakeman/changes", needs: needLauncher,
-			Summary:     "Read what you may see as a Brakeman turn: what changed, a status, runs, tasks, receipts, logs, candidates, tickets, plan revisions, sessions, files, overlaps, earlier briefs.",
-			Description: "When this session is a Brakeman turn: read one thing Conductor holds, within your scope and visibility, each answer counted against your reads. what names it (changes, status, screen, overlaps, briefs, runs, run, task, steps, log, command, messages, candidates, projects, tickets, ticket, history, comments, plans, sessions, touched) and query its parameters (run, task, n, id, k, command, key, session, since, cursor, limit, lines, q, after, before). Every item carries the ref a brief cites it by; each answer keeps its observe_<what> entry's bound.",
+			Summary:     "Read what you may see as a Brakeman turn: what changed, a status, runs, tasks, receipts, logs, candidates, tickets, plan revisions, sessions, files, overlaps, earlier briefs, the history.",
+			Description: "When this session is a Brakeman turn: read one thing Conductor holds, within your scope and visibility, each answer counted against your reads. what names it (changes, status, screen, overlaps, briefs, search, runs, run, task, steps, log, command, messages, candidates, projects, tickets, ticket, history, comments, plans, sessions, touched) and query its parameters (run, task, n, id, k, command, key, session, since, cursor, limit, lines, q, after, before). Every item carries the ref a brief cites it by; each answer keeps its observe_<what> entry's bound.",
 			CLI:         []string{"conductor", "brakeman", "observe", "WHAT", "--KEY", "VALUE"},
 			Input: obj(map[string]any{
 				"what":  map[string]any{"type": "string", "enum": observeWhats, "description": "what to read: the guide's observe_<what> operation names its route"},
@@ -376,6 +376,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		observeOp("screen", "/api/brakeman/screen", "A server session's screen's last lines, only with terminals visible; a hosted session's is unavailable.", "session", "lines"),
 		observeOp("overlaps", "/api/brakeman/overlaps", "Paths changed in two or more live attempts' or sessions' work trees of one repository, with the trees' refs."),
 		observeOp("briefs", "/api/brakeman/briefs", "Earlier briefs, newest first: title, summary and refs; one made under a wider scope or visibility is withheld.", "q", "after"),
+		observeOp("search", "/api/brakeman/history", "Search the history (the palette's ~ words and filters) for earlier sessions, ended ones' records too, runs, receipts, tickets and briefs, 20 a page at most (limit, after): what your grant shows, each with its ref.", "q", "limit", "after"),
 		observeOp("runs", "/api/runs", "The runs in your scope, newest first, each with its ref, a page at a time: after (the page before's next) and limit (at most 100). A run past the page's bound alone comes short, its cut naming what it leaves out (tasks: read each with observe_task).", "after", "limit"),
 		observeOp("run", "/api/runs/{run}", "A run whole, with its tasks and its open decisions (each id, state and rev; decisionsAfter, the page before's decisionsNext, reads on), each with its ref; a run past the bound comes short, its cut naming what it leaves out (tasks: read each with observe_task).", "decisionsAfter"),
 		observeOp("task", "/api/runs/{run}/tasks/{task}", "A managed task with its attempts and their receipts, and its open decisions as observe_run gives them.", "decisionsAfter"),
@@ -633,7 +634,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 
 // observeWhats is what the observe tool reads, each an observe_<what>
 // operation of the table.
-var observeWhats = []string{"changes", "status", "screen", "overlaps", "briefs", "runs", "run", "task", "steps", "log", "command", "messages", "candidates", "projects", "tickets", "ticket", "history", "comments", "plans", "sessions", "touched"}
+var observeWhats = []string{"changes", "status", "screen", "overlaps", "briefs", "search", "runs", "run", "task", "steps", "log", "command", "messages", "candidates", "projects", "tickets", "ticket", "history", "comments", "plans", "sessions", "touched"}
 
 // observeOp is one read of a Brakeman turn's: observe_<what>, its route,
 // its query's parameters by name and its path's, and its answer's bound:
@@ -1030,6 +1031,9 @@ var ownReadClasses = map[string][]string{
 	"/api/brakeman/screen":   {brakeman.ClassTerminals},
 	"/api/brakeman/status":   {brakeman.ClassRuns, brakeman.ClassSessions},
 	"/api/brakeman/overlaps": {brakeman.ClassRuns, brakeman.ClassSessions},
+	// The history's entries are each of one class's record or more
+	// (historyReadClasses), each served only when its classes are seen.
+	"/api/brakeman/history": {brakeman.ClassRuns, brakeman.ClassLogs, brakeman.ClassDispatch, brakeman.ClassSessions, brakeman.ClassTouched},
 }
 
 // opClasses are the visibility classes op reads, one of which a Brakeman

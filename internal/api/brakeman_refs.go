@@ -392,8 +392,9 @@ func (rr *refResolver) resolve(ctx context.Context, ref brakeman.Ref) (brakeman.
 // ref is followed at (a comment's where it is now).
 func (rr *refResolver) stateNow(ref brakeman.Ref, f refFound) (brakeman.RefState, string) {
 	u := refURL(ref)
-	if ref.Kind == brakeman.RefComment && f.now.URL != "" {
-		// What the turn read is followed where the comment is now.
+	if (ref.Kind == brakeman.RefComment || ref.Kind == brakeman.RefSession) && f.now.URL != "" {
+		// What the turn read is followed where the comment is now, and
+		// a session the registry no longer lists on its record's page.
 		u = f.now.URL
 	}
 	now := f.now
@@ -1208,16 +1209,36 @@ type chatter interface {
 // lookupSessionPart reads a session, its question or its touched file from
 // what the server holds of it: the registry, the session's attention and
 // its chat window (a hosted session's attention only), and its touched
-// index.
+// index; and, for a session the registry does not list, its record in the
+// session journal (docs/plans/history.md, PR-11), the third source.
 func (rr *refResolver) lookupSessionPart(ctx context.Context, ref brakeman.Ref) (refFound, error) {
 	f := refFound{item: brakeman.ScopeItem{Kind: brakeman.ItemSession, Session: ref.Session}}
 	d, ok := rr.s.registry.Get(ref.Session)
 	if !ok {
 		// Gone from the registry: admitted as the run it was a member of,
-		// while the engine still knows that.
-		if runID, _, ok := rr.s.runs.MemberOf(ref.Session); ok {
+		// while the engine still knows that, else as its record says.
+		runID, _, member := rr.s.runs.MemberOf(ref.Session)
+		rec, recorded, err := rr.recordRef(ref.Session)
+		if err != nil {
+			return f, err
+		}
+		if !member && recorded && rec.Crew != nil && rec.Crew.RunID != "" {
+			runID, member = rec.Crew.RunID, true
+		}
+		if member {
 			if err := rr.memberItem(ctx, &f.item, runID); err != nil {
 				return f, err
+			}
+		}
+		if recorded {
+			// Its repository the one it read at launch, as the record
+			// keeps it; none for a hosted record, as for a live hosted
+			// session. The record is the source read: its state is
+			// record, or lost, and it is followed on its page.
+			f.item.Repo = recordRepo(rec)
+			if ref.Kind == brakeman.RefSession {
+				f.found, f.now = true, brakeman.RefState{URL: recordURL(ref.Session), State: recordState(rec), At: firstTime(rec.EndedAt, rec.LostAt, rec.StartedAt)}
+				return f, nil
 			}
 		}
 		if ref.Kind == brakeman.RefSession {

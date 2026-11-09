@@ -4802,7 +4802,7 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   none of them holds HS1's Done. PR-9 (#626, PR #755): DR1's decision records in
   the history, in its own entry below. PR-10 (#628, PR #763): RV1's review
   batches and findings, in its own entry below. PR-11 (#630): Brakeman
-  reads history within its grant, waiting on Brakeman's PR-9 to PR-13.
+  reads history within its grant, in its own entry below.
   PR-12 (#632): what a host reports of its sessions, and a hosted
   session's record.
 - **Searchable history: DR1's decisions in it (HS1 PR-9, #626,
@@ -4852,6 +4852,32 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   finding's body is bounded at 16 KiB, not the plan's 4 KiB, so its
   words, resolution, lines and quote are searched whole. Its checks are in
   its body.
+- **Searchable history: Brakeman reads it within its grant (HS1 PR-11,
+  #630, 2026-11-09).** Program item HS1, planned in
+  `docs/plans/history.md` (PR #609); PR-11 (#630): Brakeman's `observe`
+  gains `search` (`observe_search`, `GET /api/brakeman/history`), the
+  History search answered for a turn. The tool's what is `search`, not
+  the plan's `history`, which already names a ticket's field history. An
+  entry is served only when every class its text reads is visible (a
+  check's receipt is runs and logs, its log being its text) and the
+  record it is of resolves within the turn's scope now, read from that
+  record's own store and never from the index; a Brakeman turn's own runs
+  and sessions are never served, since what an earlier turn reported was
+  read under that turn's grant, which only its brief's footprint carries.
+  Each entry is cited by its ref, never the index's key, and nothing in
+  the answer counts the index's other rows. The ref resolver gains the
+  session journal as its third source: a session that ended before a
+  restart resolves from its record, admitted by the repository it read at
+  launch and its run, its state `record` (or `lost`) and its URL its
+  record's page, so a brief can cite it. Observed by the tests, not yet
+  by hand: a plain session in a repository, ended, the server restarted,
+  found by a turn scoped to that repository, cited, resolved from its
+  record, its read logged and its URL the record page, and a record in
+  another repository refused (`TestABriefCitesARecordOnlySessionAfterARestart`);
+  the refusals by scope, visibility and Brakeman's own
+  (`TestBrakemansHistoryKeepsToTheGrant`). The by-hand look, a real
+  agent's turn finding an earlier session after a restart, is not made
+  yet. Its checks are in its body.
 - **Project manifests: a fresh attempt worktree made usable, predictably
   (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
   `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the
