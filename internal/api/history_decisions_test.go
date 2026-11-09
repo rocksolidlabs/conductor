@@ -676,11 +676,9 @@ func TestADecisionsAvailabilityIsPrunedOrUnknown(t *testing.T) {
 
 // Whom a decision is for, as its record keeps it (HM1): the person an
 // accepted response answered for, its receipt's, in the response's
-// summary beside who answered, and a search for the person finds it; the request's
-// for, the person its opening resolved (an object in the request the
-// ledger keeps, never the label as sent), in the request's summary. The
-// ledger on this branch refuses a request with a for until HM1's PR
-// (#741) adds it, so the request's is read from a record built here.
+// summary beside who answered, and a search for the person finds it; the
+// request's for, the person its opening resolved (the object the ledger
+// keeps, never the label as sent), in the request's summary.
 func TestADecisionSaysWhomItIsFor(t *testing.T) {
 	e := newTestEnv(t, nil)
 	ld := e.srv.ledger
@@ -690,28 +688,32 @@ func TestADecisionSaysWhomItIsFor(t *testing.T) {
 	histRespondWith(t, ld, run, id, 1, 1, true, "", func(rc map[string]any) {
 		rc["for"] = map[string]any{"person": "ana", "responsibility": crew.RespArchitecture}
 	})
+	var named string
+	histTx(t, ld, run, func(tx *ledger.Tx) error {
+		d, _, err := tx.OpenDecision(ledger.DecisionRow{Origin: ledger.OriginPlan, Type: ledger.DecisionApproval, Gate: "g2", Plan: "pl-1", PlanDigest: "d1", Fingerprint: "fp-g2", Policy: histPolicy,
+			Request: `{"question":"Ship the login redesign?","options":[{"label":"Approve"},{"label":"Reject"}],"subject":{"kind":"plan","plan":"pl-1","digest":"d1"},` +
+				`"for":{"label":"role:architecture","person":"ana","responsibility":"architecture"}}`})
+		named = d.ID()
+		return err
+	})
+	histRespondWith(t, ld, run, named, 1, 1, true, "", func(rc map[string]any) {
+		rc["for"] = map[string]any{"person": "bo"}
+	})
 	ix := histSettle(t, e)
 	if h := histEntry(t, ix, hResponseRef(id, 1)); h.Title != id+": Reject" || !strings.HasPrefix(h.Summary, "by Nate for ana, the architecture owner · ") {
 		t.Fatalf("the response: %+v", h.Entry)
 	}
-	if keys := hsKeys(hsSearch(t, e, "ana")); !slices.Equal(keys, []string{hResponseRef(id, 1)}) {
+	if r := histEntry(t, ix, hDecisionRef(named)); r.Title != "Ship the login redesign?" || r.Revision != "pl-1" || !strings.Contains(r.Summary, "for ana, the architecture owner") {
+		t.Fatalf("the request: %+v", r.Entry)
+	}
+	if r := histEntry(t, ix, hResponseRef(named, 1)); r.Title != named+": Reject" || !strings.HasPrefix(r.Summary, "by Nate for bo · ") {
+		t.Fatalf("the response for a person named by name: %+v", r.Entry)
+	}
+	if keys := hsKeys(hsSearch(t, e, "ana kind:decision.response")); !slices.Equal(keys, []string{hResponseRef(id, 1)}) {
 		t.Fatalf("a search for the person: %v", keys)
 	}
-
-	one := 1
-	entries, _ := decisionEntries(runPlace{run: run}, crew.Decision{ID: "dr-9", Run: run, Origin: ledger.OriginPlan, Type: ledger.DecisionApproval, Gate: "g1",
-		Request: json.RawMessage(`{"question":"Ship the login redesign?","options":[{"label":"Approve"},{"label":"Reject"}],"subject":{"kind":"plan","plan":"pl-1","digest":"d1"},` +
-			`"for":{"label":"role:architecture","person":"ana","responsibility":"architecture"}}`),
-		Responses: []crew.ResponseReceipt{{Decision: "dr-9", K: 1, Status: ledger.ResponseAccepted, Actor: adminActor, ByName: "Nate", Choice: &one}}},
-		map[int]*recordFor{1: {Person: "ana"}})
-	if len(entries) != 2 {
-		t.Fatalf("the entries: %+v", entries)
-	}
-	if r := entries[0]; r.Title != "Ship the login redesign?" || r.Revision != "pl-1" || !strings.Contains(r.Summary, "for ana, the architecture owner") {
-		t.Fatalf("the request: %+v", r)
-	}
-	if r := entries[1]; r.Title != "dr-9: Reject" || !strings.HasPrefix(r.Summary, "by Nate for ana · ") {
-		t.Fatalf("the response for a person named by name: %+v", r)
+	if keys := hsKeys(hsSearch(t, e, "ana kind:decision")); !slices.Equal(keys, []string{hDecisionRef(named)}) {
+		t.Fatalf("a search for the person a request is for: %v", keys)
 	}
 }
 
@@ -735,7 +737,7 @@ func TestAResponseIsIndexedAsItsRowsActor(t *testing.T) {
 	zero := 0
 	entries, _ := decisionEntries(runPlace{run: run}, crew.Decision{ID: "dr-9", Run: run, Origin: ledger.OriginPlan, Type: ledger.DecisionApproval, Gate: "g1",
 		Request:   json.RawMessage(`{"question":"Ship it?","options":[{"label":"Approve"},{"label":"Reject"}]}`),
-		Responses: []crew.ResponseReceipt{{Decision: "dr-9", K: 1, Status: ledger.ResponseAccepted, Choice: &zero}}}, nil)
+		Responses: []crew.ResponseReceipt{{Decision: "dr-9", K: 1, Status: ledger.ResponseAccepted, Choice: &zero}}})
 	if len(entries) != 2 || entries[1].Actor != "" || entries[1].Title != "dr-9: Approve" || entries[1].Summary != "dr-9 asked: Ship it?" {
 		t.Fatalf("a response with no actor: %+v", entries)
 	}

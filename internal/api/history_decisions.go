@@ -169,7 +169,7 @@ func (h *historyIndexer) indexDecision(ctx context.Context, ix *history.Index, i
 	} else if ok && old == mark {
 		return nil
 	}
-	entries, links := decisionEntries(p, crew.DecisionOf(rec), receiptFors(rec))
+	entries, links := decisionEntries(p, crew.DecisionOf(rec))
 	return ix.Replace(ctx, history.Source{Key: key, Mark: mark, Generation: h.gen}, entries, links)
 }
 
@@ -297,53 +297,45 @@ func decisionAnchor(d crew.Decision) string {
 	return hRunRef(d.Run)
 }
 
-// recordFor is whom a decision is for as its record keeps it (HM1): the
-// person its request named when it opened and the responsibility they
-// hold for it, or the person an accepted response answered for, its
-// receipt's.
-type recordFor struct {
-	Person         string `json:"person"`
-	Responsibility string `json:"responsibility,omitempty"`
-}
-
-// words is whom f is for in DR1's words: "ana, the architecture owner",
-// or "ana" for a person named by name; "" for none.
-func (f *recordFor) words() string {
-	if f == nil || f.Person == "" {
+// forWords is whom a decision is for in DR1's words (HM1): "ana, the
+// architecture owner", or "ana" for a person named by name; "" for none.
+func forWords(person, responsibility string) string {
+	if person == "" {
 		return ""
 	}
-	if w, ok := crew.ResponsibilityWords[f.Responsibility]; ok {
-		return f.Person + ", the " + w
+	if w, ok := crew.ResponsibilityWords[responsibility]; ok {
+		return person + ", the " + w
 	}
-	return f.Person
+	return person
 }
 
 // keptRequest is a request as the ledger keeps it: DR1's request, its for
-// the person the opening resolved (an object), never the label as sent.
+// the person the opening resolved (HM1's object), never the label as sent.
 type keptRequest struct {
 	crew.DecisionRequest
-	For *recordFor `json:"for,omitempty"`
+	For *crew.DecisionFor `json:"for,omitempty"`
 }
 
-// receiptFors is whom each response answered for, by its number, as its
-// receipt in the ledger keeps it.
-func receiptFors(rec ledger.DecisionRecord) map[int]*recordFor {
-	out := map[int]*recordFor{}
-	for _, rr := range rec.Responses {
-		var b struct {
-			For *recordFor `json:"for"`
-		}
-		if json.Unmarshal([]byte(rr.Receipt), &b) == nil && b.For != nil && b.For.Person != "" {
-			out[rr.K] = b.For
-		}
+// forWords is whom req is for in words.
+func (req keptRequest) forWords() string {
+	if req.For == nil {
+		return ""
 	}
-	return out
+	return forWords(req.For.Person, req.For.Responsibility)
+}
+
+// receiptForWords is whom an accepted response answered for in words, as
+// its receipt keeps it.
+func receiptForWords(rc crew.ResponseReceipt) string {
+	if rc.For == nil {
+		return ""
+	}
+	return forWords(rc.For.Person, rc.For.Responsibility)
 }
 
 // decisionEntries is a decision's entries: its request, as a record, and
-// each response it accepted, as a decision, with their links; fors is whom
-// each response answered for, by its number.
-func decisionEntries(p runPlace, d crew.Decision, fors map[int]*recordFor) ([]history.Entry, []history.Link) {
+// each response it accepted, as a decision, with their links.
+func decisionEntries(p runPlace, d crew.Decision) ([]history.Entry, []history.Link) {
 	var req keptRequest
 	_ = json.Unmarshal(d.Request, &req)
 	ref := hDecisionRef(d.ID)
@@ -356,7 +348,7 @@ func decisionEntries(p runPlace, d crew.Decision, fors map[int]*recordFor) ([]hi
 	e := base
 	e.Key, e.Ref, e.Kind, e.At, e.Outcome, e.Actor = ref, ref, "decision", hAt(d.CreatedAt, p.fallback), d.State, hField(d.Member)
 	e.Title = hTitle(cmp.Or(req.Question, d.ID))
-	e.Summary = hSummary(strings.Join(hNonEmpty(d.ID+" "+d.Type, askedWords(d), prefixed("for ", req.For.words()), subjectWords(req.Subject), authorizesWords(req.Authorizes)), " · "))
+	e.Summary = hSummary(strings.Join(hNonEmpty(d.ID+" "+d.Type, askedWords(d), prefixed("for ", req.forWords()), subjectWords(req.Subject), authorizesWords(req.Authorizes)), " · "))
 	e.Body = history.Clip(requestBody(req.DecisionRequest, crew.DecisionOptions(d.Type, string(d.Request))), history.MaxLongBody)
 	out := []history.Entry{e}
 	var links []history.Link
@@ -374,7 +366,7 @@ func decisionEntries(p runPlace, d crew.Decision, fors map[int]*recordFor) ([]hi
 		// The title is cut from the answer alone; who answered and whom for
 		// lead the summary, so a long or many-lined answer never cuts them.
 		x.Title = hTitle(d.ID + ": " + cmp.Or(answerOfReceipt(rc, options), "answered"))
-		x.Summary = hSummary(strings.Join(hNonEmpty(responseWho(cmp.Or(rc.ByName, rc.Actor), fors[rc.K].words()), d.ID+" asked: "+req.Question), " · "))
+		x.Summary = hSummary(strings.Join(hNonEmpty(responseWho(cmp.Or(rc.ByName, rc.Actor), receiptForWords(rc)), d.ID+" asked: "+req.Question), " · "))
 		x.Body = history.Clip(strings.Join(hNonEmpty(rc.Text, prefixed("Why: ", rc.Rationale)), "\n"), history.MaxLongBody)
 		out = append(out, x)
 		links = append(links, history.Link{From: rref, Rel: relAnswers, To: ref})
