@@ -402,7 +402,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		// holds, the snapshot and the configuration now together.
 		{Name: "act", MCP: "act", Scope: "act", Method: http.MethodPost, Path: actRouteOf(brakeman.ActLaunchApprovedPlan), needs: needLauncher, Receipt: "dispatch",
 			Summary:     "Run an operation the person granted you, through its own route: checked against the grant, your scope and its target's state, it leaves its receipt.",
-			Description: "When this session is a Brakeman turn the person granted operations to: run one (operation names it: " + strings.Join(actOperations(), ", ") + ") through that operation's own route, with its path parameters in params and its body in body, as the guide's entry of that operation gives them; opId is minted when you give none, and the same opId again answers the receipt kept. It is refused unless the person grants it now and did when your turn began, its target is within your scope and visibility, and in the state the operation needs (an approved revision whose approval still holds; the ticket's revision you read as expectedRev; a decision open at the rev you read). It runs as Brakeman and answers its route's own answer: the receipt, whose id is what it made (the launch's, the revision's), and for Dispatch's, receiptRef, the ref a brief cites it by (op:brakeman/<its opId>, an outcome/1's receipt). Approving, answering, accepting and closing stay the person's: no grant does them.",
+			Description: "When this session is a Brakeman turn the person granted operations to: run one (operation names it: " + strings.Join(actOperations(), ", ") + ") through that operation's own route, with its path parameters in params and its body in body, as the guide's entry of that operation gives them; opId is minted when you give none, and the same opId again answers the receipt kept. It is refused unless the person grants it now and did when your turn began, its target is within your scope and visibility, and in the state the operation needs (an approved revision whose approval still holds; the ticket's revision you read as expectedRev; a decision open at the rev you read). It runs as Brakeman and answers its route's own answer: the receipt, whose id is what it made (the launch, revision or review), and for Dispatch's, receiptRef, the ref a brief cites it by (op:brakeman/<its opId>, an outcome/1's receipt). Approving, answering, accepting and closing stay the person's: no grant does them.",
 			CLI:         []string{"conductor", "brakeman", "act", "OPERATION", "--key", "KEY", "--body-file", "BODY.json"},
 			Input: obj(map[string]any{
 				"operation": map[string]any{"type": "string", "enum": actOperations(), "description": "the operation granted: the guide's entry of that name gives its route and its body"},
@@ -412,6 +412,8 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			}, "operation")},
 		actEntry(brakeman.ActLaunchApprovedPlan, ticketLaunchBody{},
 			"Launch a managed run from a ticket's plan revision the operator approved and whose approval still holds (plan: its id; expectedRev: the ticket's revision you read); the same launch for the same opId."),
+		actEntry(brakeman.ActRequestRepair, reviewSubmitBody{},
+			"Request changes of a candidate (<run>/<task>/<n>@<commit>: its task's newest result, in a run this server runs; verdict request_changes; expectedRev: the ticket's revision you read): Yardmaster repairs the task. Never a comment or an approval; via and continueRun are not yours."),
 		actEntry(brakeman.ActPrepareFollowup, planProposeBody{},
 			"Propose a revision of a ticket's plan basedOn the approved one (its id), which the operator then approves or not: never approved by you."),
 		routeActEntry(),
@@ -974,7 +976,10 @@ func (s *Server) admits(c guideCaller, op Operation) bool {
 	// The act tool sends the operations granted: it is given while one of
 	// them is, by the classes that one needs.
 	if c.brakeman && op.Scope == "act" && op.Name == "act" {
-		return slices.ContainsFunc(c.acts, func(a string) bool { return seesAny(actClassesOf(a), c.visible.Has) })
+		return slices.ContainsFunc(c.acts, func(a string) bool { return actSees(a, c.visible.Has) })
+	}
+	if c.brakeman && op.Scope == "act" && !actSees(op.Name, c.visible.Has) {
+		return false
 	}
 	return true
 }
@@ -992,17 +997,29 @@ func opAgentOnly(name string) bool {
 // grant gives no read.
 var actClasses = []string{brakeman.ClassDispatch}
 
-// actClassesOf is the classes the act op needs a turn to see one of:
-// route_decision's (the runs), the others' (Dispatch), and for the act
-// tool, which sends any of them, either.
+// actClassesOf is the classes the act op needs a turn to see one of
+// (request_repair: every one of, actSees): route_decision's (the runs),
+// request_repair's (Dispatch and the runs), the others' (Dispatch), and
+// for the act tool, which sends any of them, either.
 func actClassesOf(name string) []string {
 	switch name {
 	case brakeman.ActRouteDecision:
 		return routeActClasses
+	case brakeman.ActRequestRepair:
+		return repairActClasses
 	case "act":
 		return append(slices.Clone(actClasses), routeActClasses...)
 	}
 	return actClasses
+}
+
+// actSees reports whether a turn that sees what sees reports may send the
+// act op: every class request_repair needs, one of any other's.
+func actSees(op string, sees func(string) bool) bool {
+	if op == brakeman.ActRequestRepair {
+		return !slices.ContainsFunc(repairActClasses, func(c string) bool { return !sees(c) })
+	}
+	return seesAny(actClassesOf(op), sees)
 }
 
 // ownReadClasses are the classes Brakeman's own reads (observeRoute) need

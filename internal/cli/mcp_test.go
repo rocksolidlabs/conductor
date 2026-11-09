@@ -906,7 +906,7 @@ func TestTheActToolIsListedOnlyWithAGrant(t *testing.T) {
 		t.Fatalf("the act tool is not the table's: %+v", tl)
 	}
 	enum := op.Input["properties"].(map[string]any)["operation"].(map[string]any)["enum"]
-	if fmt.Sprint(enum) != fmt.Sprint(actOperations()) || fmt.Sprint(actOperations()) != "[launch_approved_plan prepare_followup route_decision]" {
+	if fmt.Sprint(enum) != fmt.Sprint(actOperations()) || fmt.Sprint(actOperations()) != "[launch_approved_plan request_repair prepare_followup route_decision]" {
 		t.Fatalf("the operations: %v, the table's %v", enum, actOperations())
 	}
 }
@@ -918,7 +918,7 @@ func TestTheActToolIsListedOnlyWithAGrant(t *testing.T) {
 // parameter the route does not take and one it needs missing are refused
 // before anything is sent.
 func TestActSendsEachOperationToItsRoute(t *testing.T) {
-	g := newGrantServer(t, []string{brakeman.ActLaunchApprovedPlan, brakeman.ActPrepareFollowup}, false)
+	g := newGrantServer(t, []string{brakeman.ActLaunchApprovedPlan, brakeman.ActPrepareFollowup, brakeman.ActRequestRepair}, false)
 	replies := mcpRun(t, brakemanEnv(g.URL, "s1", "agent-tok"),
 		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"act","arguments":{"operation":"launch_approved_plan","params":{"key":"CND-12"},"body":{"plan":"0123456789abcdef","expectedRev":3}}}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"act","arguments":{"operation":"prepare_followup","params":{"key":"CND-12"},"body":{"crew":"team","basedOn":"0123456789abcdef"},"opId":"mine-1"}}}`,
@@ -926,6 +926,7 @@ func TestActSendsEachOperationToItsRoute(t *testing.T) {
 		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"act","arguments":{"operation":"launch_approved_plan","params":{"key":"CND-12","run":"r1"}}}}`,
 		`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"act","arguments":{"operation":"launch_approved_plan","body":{"plan":"0123456789abcdef"}}}}`,
 		`{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"act","arguments":{"operation":"act","params":{"key":"CND-12"}}}}`,
+		`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"act","arguments":{"operation":"request_repair","params":{"key":"CND-12"},"body":{"candidate":"c","verdict":"request_changes"},"opId":"q-1"}}}`,
 	)
 	for i, want := range []string{"launch_approved_plan ran (opId ", "prepare_followup ran (opId mine-1): done; its receipt is op:brakeman/bk2, the ref a brief cites it by (an outcome/1's receipt); revision 2 (fedcba9876543210) proposed"} {
 		if text, isErr := toolText(t, replies[i]); isErr || !strings.HasPrefix(text, want) {
@@ -935,16 +936,19 @@ func TestActSendsEachOperationToItsRoute(t *testing.T) {
 	if text, _ := toolText(t, replies[0]); !strings.Contains(text, "done; its receipt is op:brakeman/bk1, the ref a brief cites it by (an outcome/1's receipt); launch 0123456789abcdef; run r-1 launched") || !strings.Contains(text, `"receiptRef": "op:brakeman/bk1"`) || !strings.Contains(text, `"runId": "r-1"`) {
 		t.Errorf("the launch's words: %q", text)
 	}
-	for i, want := range []string{"act: operation is one of launch_approved_plan, prepare_followup", "act launch_approved_plan takes the path parameters key", "act launch_approved_plan needs key", "act: operation is one of"} {
+	for i, want := range []string{"act: operation is one of launch_approved_plan, request_repair, prepare_followup, route_decision", "act launch_approved_plan takes the path parameters key", "act launch_approved_plan needs key", "act: operation is one of"} {
 		if text, isErr := toolText(t, replies[2+i]); !isErr || !strings.HasPrefix(text, want) {
 			t.Errorf("reply %d: %q %v", 2+i, text, isErr)
 		}
 	}
 	sent := g.sent()
-	if len(sent) != 2 {
+	if len(sent) != 3 {
 		t.Fatalf("%d posts: %+v", len(sent), sent)
 	}
 	launch, follow := sent[0], sent[1]
+	if r := sent[2]; r.path != "/api/dispatch/tickets/CND-12/reviews" || r.body["opId"] != "q-1" || r.body["verdict"] != "request_changes" || r.session != "s1" {
+		t.Errorf("the request for changes: %+v", r)
+	}
 	if launch.path != "/api/dispatch/tickets/CND-12/launch" || launch.auth != "Bearer agent-tok" || launch.session != "s1" ||
 		launch.body["plan"] != "0123456789abcdef" || launch.body["expectedRev"] != float64(3) || len(launch.body["opId"].(string)) != 16 {
 		t.Errorf("the launch: %+v", launch)
@@ -1003,6 +1007,11 @@ func TestAnActIsNotBoundByTheSessionClientsTimeout(t *testing.T) {
 	}
 	if actRequestTimeout(brakeman.ActLaunchApprovedPlan) != launchRequestTimeout || launchRequestTimeout <= api.LaunchTimeout {
 		t.Fatalf("a launch's request waits %v, the server's launch %v", actRequestTimeout(brakeman.ActLaunchApprovedPlan), api.LaunchTimeout)
+	}
+	// A request for changes waits as conductor dispatch review does, within
+	// the act's budget.
+	if actRequestTimeout(brakeman.ActRequestRepair) != reviewRequestTimeout || reviewRequestTimeout <= api.ReviewTimeout || reviewRequestTimeout > launchRequestTimeout {
+		t.Fatalf("a review's request waits %v, the server's review %v", actRequestTimeout(brakeman.ActRequestRepair), api.ReviewTimeout)
 	}
 	if actBudget() < time.Duration(launchTries)*launchRequestTimeout {
 		t.Fatalf("an act's budget %v holds fewer than %d sends", actBudget(), launchTries)

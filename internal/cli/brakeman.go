@@ -237,13 +237,18 @@ const maxActReply = 4 << 20
 
 // actRequestTimeout bounds one request of an act: a launch's as
 // conductor dispatch launch waits for it (launchRequestTimeout, the
-// server's own bound on a launch and a request's time beside it), any
-// other operation's as the session client waits for a request. The
-// session client's own timeout never bounds an act (post), so a launch
-// the server is still starting is never reported failed at 60 s.
+// server's own bound on a launch and a request's time beside it),
+// a request for changes as conductor dispatch review waits for one
+// (reviewRequestTimeout), any other operation's as the session client
+// waits for a request. The session client's own timeout never bounds an
+// act (post), so a launch the server is still starting is never reported
+// failed at 60 s.
 func actRequestTimeout(name string) time.Duration {
-	if name == brakeman.ActLaunchApprovedPlan {
+	switch name {
+	case brakeman.ActLaunchApprovedPlan:
 		return launchRequestTimeout
+	case brakeman.ActRequestRepair:
+		return reviewRequestTimeout
 	}
 	return actSessionTimeout
 }
@@ -513,6 +518,9 @@ func actWords(operation, opID string, reply json.RawMessage) string {
 	}
 	if p := out.Plan; p != nil && p.ID != "" {
 		line += fmt.Sprintf("; revision %d (%s) %s, for the operator to approve or not", p.N, p.ID, p.State)
+	}
+	if r := out.Receipt; operation == brakeman.ActRequestRepair && r != nil && r.ID != "" && r.Status == "done" {
+		line += "; review " + r.ID + " recorded, its repair Yardmaster's to apply (the candidate's task's next attempt)"
 	}
 	return line
 }
