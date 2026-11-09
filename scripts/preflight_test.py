@@ -119,7 +119,7 @@ class Steps(unittest.TestCase):
     def test_the_go_race_tests_run_on_the_whole_module_here_and_on_the_mac(self):
         for steps in (p.LINUX_STEPS, p.MAC_STEPS):
             race = [s for s in steps if s["name"] == "go-test-race"]
-            self.assertEqual(race[0]["argv"], ["go", "test", "-race", "-count=1", "-timeout", "30m", "./..."])
+            self.assertEqual(race[0]["argv"], ["go", "test", "-race", "-count=1", "-timeout", "60m", "./..."])
 
     def test_every_entry_point_runs_the_race_tests_with_the_same_bound(self):
         # CI, make test and the documented command pass the bound preflight

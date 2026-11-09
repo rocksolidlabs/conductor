@@ -13,7 +13,7 @@ Run the narrow tests while iterating, then the complete checks for every affecte
 ```bash
 git fetch origin && python3 scripts/dco_check.py --base origin/main --head HEAD  # every commit of the branch signed off by its author (CI's dco job); the fetch so that origin/main is GitHub's
 make lint                      # gofmt -l, go vet, the open-core rules (internal/opencore's TestModuleKeepsTheRules)
-go test -race -count=1 -timeout 30m ./...   # includes PTY, WebSocket and pion loopback tests; its bound is explained below
+go test -race -count=1 -timeout 60m ./...   # includes PTY, WebSocket and pion loopback tests; its bound is explained below
 npm --prefix web run typecheck
 npm --prefix web test          # vitest (link detection)
 make web-build                 # nuxt generate + copy into internal/web/dist
@@ -32,13 +32,18 @@ python3 scripts/notices.py --check  # THIRD_PARTY_NOTICES current (after make we
 python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (dco_check.py, notices.py, preflight.py, release_draft.py)
 ```
 
-The race tests' `-timeout 30m` catches a hang; it is not a speed target.
+The race tests' `-timeout 60m` catches a hang; it is not a speed target.
 go test's default, ten minutes a package, is less than `internal/api` takes
 on a machine shared with other runs: 17.7 minutes in a run of the whole
 module on the 64-core Linux box at a load average of 77 to 160
-(2026-10-30), against 6.3 in CI. A run left at the default fails there for
-no defect. `make test`, `ci.yml` and `scripts/preflight.py` pass the same
-bound, and `scripts/preflight_test.py` holds them to it.
+(2026-10-30). On CI's runner it takes about thirty minutes (1553 to 1796 s
+on main's green runs of 2026-11-08), and a run reached the old 30 m bound
+with nothing hung (#281), so the bound is 60 m: above every honest run, a
+hang bound only. A run left at the default fails for no defect. `make
+test`, `ci.yml` and `scripts/preflight.py` pass the same bound, and
+`scripts/preflight_test.py` holds them to it. CI's go job has its own
+`timeout-minutes: 90`, the test bound plus its other steps (never a
+multiple of it), so a hang still ends the job.
 
 A file CI's jobs fetch from a release mirror is cached by its version (`actions/cache`) and its download retried for minutes: Neovim's tarball through `curl --retry-all-errors`, refetched when it is not a gzip, and Electron's binary through
 `desktop/scripts/install-electron.mjs` (the desktop tests' `pretest`, six tries of electron's own installer), so a mirror's bad half hour fails one try, not the run (#281).
