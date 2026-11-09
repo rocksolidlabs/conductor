@@ -27,6 +27,8 @@ export interface Action {
   disabled?: boolean
   /** Why it is disabled, said beside it. */
   reason?: string
+  /** The palette stays open as it runs (Find this elsewhere sets the palette's rows). */
+  keepOpen?: boolean
   run: () => void
 }
 

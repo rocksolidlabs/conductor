@@ -1,6 +1,6 @@
 import type { Ref } from 'vue'
 import { CommandRefused } from '~/utils/tasks'
-import { lostQuestion, recordLost, resumeDestination, resumeQuestion, resumeReceiptWords, type Availability, type RecordReply, type ResumeReceipt } from '~/utils/history'
+import { lostQuestion, recordLost, resumeDestination, resumeFailure, resumeQuestion, type Availability, type RecordReply, type ResumeReceipt } from '~/utils/history'
 
 /** The page's question about a resume: the first ask, a lost record's second one, or none shown. */
 export type ResumeStep = 'ask' | 'lost' | null
@@ -143,15 +143,9 @@ export function useSessionRecord(id: Ref<string>) {
         return
       }
       step.value = null
-      const receipt = e instanceof CommandRefused ? (e.receipt as ResumeReceipt) : null
-      const state = receipt?.state ?? ''
-      // No reply came, the same id sent twice: the server may have started it and both answers been lost. Not known either way.
-      const unanswered = !receipt && (e as { status?: number }).status === 0
-      // An uncertain receipt is no refusal: the server stopped while starting it, and its process may have started (its receipt says so).
-      if (unanswered) toast.add({ title: 'Whether it resumed is not known', description: 'No reply came, though it was sent twice: it may have started. The outcome is unknown; the record\'s receipts below, read again now, say whether it did.', icon: 'i-lucide-circle-help', color: 'warning' })
-      else if (receipt && state === 'uncertain') toast.add({ title: 'Whether it resumed is not known', description: resumeReceiptWords(receipt), icon: 'i-lucide-circle-help', color: 'warning' })
-      else if (state === 'pending') toast.add({ title: 'It is still being started', description: 'Its receipt below says how it ends.', icon: 'i-lucide-loader', color: 'neutral' })
-      else toast.add({ title: 'It did not resume', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: e instanceof CommandRefused ? 'warning' : 'error' })
+      // An unknown or pending outcome is said as such, never as "it did not resume" (resumeFailure, the palette's rule too).
+      const f = resumeFailure(e, { unknown: "the record's receipts below, read again now, say whether it did", pending: 'Its receipt below says how it ends.' })
+      toast.add({ title: f.title, description: f.description, icon: f.icon, color: f.color })
     } finally {
       if (holds(t)) {
         resuming.value = false

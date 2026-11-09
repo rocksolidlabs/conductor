@@ -17,7 +17,7 @@ export const stubPath = join(here, 'stub-agent.sh')
 export const PORT_MIN = 18400
 export const PORT_MAX = 18499
 /** How long the server has to answer /api/health. */
-const HEALTH_WAIT_MS = 20_000
+export const HEALTH_WAIT_MS = 20_000
 
 /** The server binary: CONDUCTOR_E2E_BIN, else bin/conductor of this checkout. */
 export function serverBinary(): string {

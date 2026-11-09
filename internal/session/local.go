@@ -2697,7 +2697,13 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 			snap = snap[n:]
 		}
 	}
+	// On the roster before its ready, which says the server holds what its
+	// presence changes: a run's chat reads the roster without this lock.
+	s.hub.enter(sub)
 	sub.send(proto.MustControl(proto.Simple{T: proto.CtlReady}))
+	if readySent != nil {
+		readySent()
+	}
 	for _, e := range s.activity.Tail(ActivityReplay) {
 		sub.send(proto.MustControl(EntryToProto(e)))
 	}

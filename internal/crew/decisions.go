@@ -62,6 +62,11 @@ const (
 	maxAnswerText    = 4096    // ext.MaxAnswerText
 	maxRationale     = 2 << 10 // as encoded
 	maxDecisionTries = 3       // a response retried against the run that holds it
+	// maxReceiptWords bounds a response receipt's words as encoded
+	// (cutReceiptWords), so that a response whose fields are within their
+	// bounds always has a receipt within ledger.MaxDecisionReceipt, the
+	// sum of its fields' encoded worst cases (#751).
+	maxReceiptWords = 3 << 10
 )
 
 // The codes a decision's refusal names (DecisionError.Code), the routes'
@@ -1658,6 +1663,7 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 		}
 		rc.Rev = d.Rev + 1
 	}
+	rc.Words = cutReceiptWords(rc.Words)
 	got, err := dtx.Respond(n, ledger.ResponseRow{Actor: actor, Authority: authRaw, ResponseID: resp.ResponseID, Fingerprint: fp, Status: status, Receipt: receiptJSON(rc)})
 	switch {
 	case errors.Is(err, ledger.ErrDecisionLimit) && auth.Via == ViaIdentity:
@@ -1750,6 +1756,43 @@ func nameOf(byName, actor string) string {
 func receiptJSON(rc ResponseReceipt) string {
 	b, _ := json.Marshal(rc)
 	return string(b)
+}
+
+// cutReceiptWords are a receipt's words cut where a character ends to
+// maxReceiptWords bytes as encoded, their quotes and the mark of a cut
+// ("…") counted: the words are the engine's own (a stale response's
+// changes, a closed decision's why), never a field of the response.
+func cutReceiptWords(w string) string {
+	if CutEncoded(w, maxReceiptWords-2) == w {
+		return w
+	}
+	return CutEncoded(w, maxReceiptWords-2-len("…")) + "…"
+}
+
+// CutEncoded is s cut where a character ends to at most n bytes as
+// encoding/json encodes it: a character JSON escapes counts as its escape
+// (a control character, <, > and & six bytes, " and \ two, U+2028 and
+// U+2029 six, a byte that is not UTF-8 six, as �).
+func CutEncoded(s string, n int) string {
+	size := 0
+	for i := 0; i < len(s); {
+		c, w := utf8.DecodeRuneInString(s[i:])
+		enc := w
+		switch {
+		case c == utf8.RuneError && w == 1:
+			enc = 6
+		case c == '"' || c == '\\' || c == '\n' || c == '\r' || c == '\t':
+			enc = 2
+		case c < 0x20 || c == '<' || c == '>' || c == '&' || c == '\u2028' || c == '\u2029':
+			enc = 6
+		}
+		if size+enc > n {
+			return s[:i]
+		}
+		size += enc
+		i += w
+	}
+	return s
 }
 
 // answeredWords say who answered a decision and when, from its record as
