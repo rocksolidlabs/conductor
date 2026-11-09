@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -59,7 +60,7 @@ var records = []any{
 	&ext.RunRef{ID: "r1", Crew: "c1", URL: "https://conductor.example.com/runs/r1"},
 	&ext.SubmitRequest{Session: "s1", Question: "q1", Input: "1", Text: "yes", By: principal},
 	&ext.SubmitResult{Status: "entered"},
-	&ext.TurnLaunch{Agent: "claude", Model: "opus", AllowTools: true, Folder: "/src", Line: "Brakeman request br-1", Label: "Brakeman · briefing br-1", Request: "br-1"},
+	&ext.TurnLaunch{Agent: "claude", Model: "opus", AllowTools: true, Folder: "/src", Reads: []string{"/home/me"}, Line: "Brakeman request br-1", Label: "Brakeman · briefing br-1", Request: "br-1"},
 	&ext.ApprovedLaunch{Ticket: "CND-12", Plan: "0123456789abcdef", ExpectedRev: 3, OpID: "op-1", Label: "nightly", By: principal},
 }
 
@@ -262,6 +263,12 @@ func TestValid(t *testing.T) {
 		{"turn folder relative", with(turn, func(r *ext.TurnLaunch) { r.Folder = "src" }).Valid(), false},
 		{"turn without a folder", with(turn, func(r *ext.TurnLaunch) { r.Folder = "" }).Valid(), false},
 		{"turn folder past its bound", with(turn, func(r *ext.TurnLaunch) { r.Folder = filepath.Join(abs, long(ext.MaxFolder)) }).Valid(), false},
+		{"turn reads at their bound", with(turn, func(r *ext.TurnLaunch) { r.Reads = slices.Repeat([]string{abs}, ext.MaxTurnReads) }).Valid(), true},
+		{"turn reads past their bound", with(turn, func(r *ext.TurnLaunch) { r.Reads = slices.Repeat([]string{abs}, ext.MaxTurnReads+1) }).Valid(), false},
+		{"turn reads a relative folder", with(turn, func(r *ext.TurnLaunch) { r.Reads = []string{abs, "src"} }).Valid(), false},
+		{"turn reads an empty folder", with(turn, func(r *ext.TurnLaunch) { r.Reads = []string{""} }).Valid(), false},
+		{"turn reads a folder past its bound", with(turn, func(r *ext.TurnLaunch) { r.Reads = []string{filepath.Join(abs, long(ext.MaxFolder))} }).Valid(), false},
+		{"turn reads a folder of two lines", with(turn, func(r *ext.TurnLaunch) { r.Reads = []string{abs + "\nx"} }).Valid(), false},
 		{"turn without a line", with(turn, func(r *ext.TurnLaunch) { r.Line = "" }).Valid(), false},
 		{"turn line at its bound", with(turn, func(r *ext.TurnLaunch) { r.Line = long(ext.MaxTurnLine) }).Valid(), true},
 		{"turn line past its bound", with(turn, func(r *ext.TurnLaunch) { r.Line = long(ext.MaxTurnLine + 1) }).Valid(), false},
