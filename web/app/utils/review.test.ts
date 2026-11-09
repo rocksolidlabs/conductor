@@ -6,6 +6,28 @@ import {
   MAX_ANCHOR_LINES,
   MAX_REPAIR_PAYLOAD,
   applicationWords,
+  FAILURE_CLASSES,
+  MAX_CHECK_EXCERPT,
+  checkNote,
+  findingAt,
+  findingMarks,
+  firstReviewCandidate,
+  latestReviewable,
+  rankCandidates,
+  chainLinkedTicket,
+  quotable,
+  runLaunch,
+  untimedWords,
+  openFindingsPerFile,
+  requestedCheckOf,
+  taskReviewTarget,
+  type CheckRef,
+  type PreparedRepair,
+  classWords,
+  failedReceiptActions,
+  findingsInOrder,
+  markBlocked,
+  recheckWords,
   batchProblems,
   changeRequestOf,
   composerOnFileMove,
@@ -306,5 +328,288 @@ describe('the note form when the file shown moves', () => {
     expect(composerOnFileMove({ ...general, inline: true, at: 'c|b' })).toBeNull()
     expect(composerOnFileMove({ ...general, at: 'c|b' })).toBeNull()
     expect(composerOnFileMove(null)).toBeNull()
+  })
+})
+
+describe('a failed receipt', () => {
+  const allowed = { allowed: true }
+  const refused = { allowed: false, why: 'continue run A first' }
+  it('offers Check again exactly when the prepared request says the engine takes it, first for a machine failure, whatever the class', () => {
+    expect(failedReceiptActions(allowed, 'infrastructure', false)).toEqual({ actions: ['recheck', 'request'], why: '' })
+    expect(failedReceiptActions(allowed, 'flaky', true)).toEqual({ actions: ['recheck', 'request', 'retry'], why: '' })
+    expect(failedReceiptActions(allowed, 'code', false)).toEqual({ actions: ['request', 'recheck'], why: '' })
+    expect(failedReceiptActions(allowed, 'unavailable', true)).toEqual({ actions: ['request', 'recheck', 'retry'], why: '' })
+  })
+  it("says why in its place when the engine would not take it, whatever the class: Request changes stays", () => {
+    expect(failedReceiptActions(refused, 'infrastructure', false)).toEqual({ actions: ['request'], why: 'continue run A first' })
+    expect(failedReceiptActions({ allowed: false }, 'code', true).actions).toEqual(['request', 'retry'])
+    expect(failedReceiptActions({ allowed: false }, 'code', true).why).not.toBe('')
+  })
+  it('names the run a Check again was made in: the candidate\'s, or a continuation of it', () => {
+    expect(recheckWords({ run: 'rA', attempt: 1 }, { run: 'rA', attempt: 2 })).toBe('Checked again as attempt 2, the same commit as attempt 1.')
+    expect(recheckWords({ run: 'rA', attempt: 1 }, { run: 'rB', attempt: 4 })).toBe('Checked again as attempt 4 of run rB, a continuation of rA.')
+  })
+  it("says each class in words", () => {
+    for (const c of FAILURE_CLASSES) expect(classWords(c).label).not.toBe('')
+    expect(classWords('code').label).toBe('code defect')
+    expect(classWords('flaky').label).toBe('possibly flaky')
+  })
+  it('makes a check note the route takes: the receipt, the class chosen and the quote, no path, side or lines', () => {
+    const p = {
+      finding: { kind: 'check' as const, intent: 'change' as const, message: 'The check test failed on 1111111 (attempt 1): exit 1.', check: { source: 'ledger' as const, receipt: 'r/build/1/check/test/1', run: 'r', task: 'build', attempt: 1, phase: 'check', id: 'test', k: 1, subject: '1'.repeat(40), argv: ['false'], exit: 1, timedOut: false, killed: false, stable: true, state: 'finished', where: 'native', logBytes: 3, tail: 'no\n', class: 'code' as const } },
+      criteria: { source: 'ticket' as const, acceptance: 'It is built.' },
+      recheck: { allowed: true, run: 'r', revision: 4, attempt: 1, commit: '1'.repeat(40) },
+    }
+    const n = checkNote(p, 'infrastructure', '  no  ', '')
+    expect(findingOf({ ...n, key: 'k' })).toEqual({ kind: 'check', intent: 'change', severity: 'major', message: p.finding.message, check: { source: 'ledger', receipt: 'r/build/1/check/test/1', chosen: 'infrastructure', quote: '  no  ' } })
+    expect(noteWhere(n)).toBe('check test failed (r/build/1/check/test/1)')
+  })
+  it("quotes a check's output as a finding holds it: no terminal escape, no carriage return, no control but a newline and a tab", () => {
+    const esc = String.fromCharCode(0x1b)
+    const bel = String.fromCharCode(0x07)
+    const colored = `${esc}[31mFAIL${esc}[0m TestX\r\n${esc}]0;title${bel}--- ok\r\n${esc}(Bdone\tnow${String.fromCharCode(0x9b)}2K\rprogress 100%${String.fromCharCode(0x7f, 0x00)}\n`
+    expect(quotable(colored)).toBe('FAIL TestX\n--- ok\ndone\tnow\nprogress 100%\n')
+    // What the server's rule for finding.quote refuses (unicode.IsControl but a newline and a tab) is never left in.
+    const refused = (q: string) => [...q].some((ch) => { const c = ch.codePointAt(0)!; return (c < 0x20 && c !== 0x0a && c !== 0x09) || (c >= 0x7f && c <= 0x9f) })
+    const every = Array.from({ length: 0xa0 }, (_, i) => String.fromCharCode(i)).join('')
+    expect(refused(quotable(every))).toBe(false)
+    expect(quotable('plain text\n\tindented')).toBe('plain text\n\tindented')
+    // The check note sends the quote so, whatever the person left in the field; the receipt's tail is the evidence, unchanged.
+    const p = {
+      finding: { kind: 'check' as const, intent: 'change' as const, message: 'm', check: { source: 'ledger' as const, receipt: 'r/build/1/check/test/1', run: 'r', task: 'build', attempt: 1, phase: 'check', id: 'test', k: 1, subject: '1'.repeat(40), argv: ['false'], exit: 1, timedOut: false, killed: false, stable: true, state: 'finished', where: 'native', logBytes: 3, tail: colored, class: 'code' as const } },
+      criteria: { source: 'ticket' as const },
+      recheck: { allowed: true, run: 'r', revision: 4, attempt: 1, commit: '1'.repeat(40) },
+    }
+    const n = checkNote(p, 'code', colored, '')
+    expect(n.check?.quote).toBe('FAIL TestX\n--- ok\ndone\tnow\nprogress 100%\n')
+    expect(n.measured?.tail).toBe(colored)
+    expect(checkNote(p, 'code', `${esc}[0m\r\n`, '').check).not.toHaveProperty('quote')
+  })
+})
+
+describe('findings across candidates', () => {
+  it('list the open first, then the resolved, then the withdrawn, the newest review first, each in its order', () => {
+    const f = (id: string, state: 'open' | 'resolved' | 'withdrawn', createdAt: string, k: number) => ({ id, state, createdAt, k })
+    const got = findingsInOrder([f('a', 'resolved', '2026-01-02', 1), f('b', 'open', '2026-01-01', 2), f('c', 'withdrawn', '2026-01-03', 1), f('d', 'open', '2026-01-02', 1), f('e', 'open', '2026-01-01', 1)])
+    expect(got.map((x) => x.id)).toEqual(['d', 'e', 'b', 'a', 'c'])
+  })
+  it("are marked against a later candidate of their task, and never resolved on the commit they were made on", () => {
+    const x = '1'.repeat(40)
+    const y = '2'.repeat(40)
+    expect(markBlocked(`r/build/1@${x}`, `r/build/2@${y}`, 'resolved')).toBe('')
+    expect(markBlocked(`r/build/1@${x}`, `r/build/1@${x}`, 'withdrawn')).toContain('later candidate')
+    expect(markBlocked(`r/build/1@${x}`, `r/build/2@${x}`, 'resolved')).toContain('the commit the finding was made on')
+    expect(markBlocked(`r/build/1@${x}`, `r/build/2@${x}`, 'open')).toBe('')
+    expect(markBlocked(`r/build/1@${x}`, `r2/build/3@${y}`, 'withdrawn')).toBe('')
+    expect(markBlocked(`r/build/1@${x}`, `r/prep/2@${y}`, 'resolved')).toContain('a finding of build')
+  })
+})
+
+describe('a check note measured as the server fills it', () => {
+  const tail = 'x'.repeat(MAX_CHECK_EXCERPT)
+  const ref: CheckRef = {
+    source: 'ledger', receipt: `run-1/build/3/check/test/1`, run: 'run-1', task: 'build', attempt: 3, phase: 'check', id: 'test', k: 1, subject: C, argv: ['false'], exit: 1,
+    timedOut: false, killed: false, stable: true, state: 'finished', error: 'exit status 1', where: 'native', logSha256: 'e'.repeat(64), logBytes: 123456, tail, class: 'code',
+  }
+  const p: PreparedRepair = { finding: { kind: 'check', intent: 'change', message: 'The check test failed.', check: ref }, criteria: { source: 'checks' }, recheck: { allowed: false, run: 'run-1', revision: 1, attempt: 3, commit: C } }
+
+  it("carries the receipt's fields into the request as crew.RequestedCheck has them, the class chosen and the quote, never the route's source", () => {
+    const n = note(checkNote(p, 'flaky', 'the quote', ''))
+    const body = reviewBody(cand, B, 'request_changes', '', [n])
+    const cr = changeRequestOf(body, 'Nate', [n])
+    expect(cr.changes[0]!.check).toEqual({
+      receipt: ref.receipt, run: 'run-1', task: 'build', attempt: 3, phase: 'check', id: 'test', k: 1, subject: C, exit: 1, stable: true, error: 'exit status 1',
+      logSha256: 'e'.repeat(64), logBytes: 123456, tail, class: 'code', chosen: 'flaky', quote: 'the quote',
+    })
+    // Go's omitempty: an exit of 0 is written (a pointer), false and empty members are not; `stable` always is.
+    expect(requestedCheckOf({ ...ref, exit: 0, error: undefined, logBytes: 0, stable: false })).toMatchObject({ exit: 0, stable: false })
+    expect(requestedCheckOf({ ...ref, exit: 0, error: undefined, logBytes: 0, stable: false })).not.toHaveProperty('logBytes')
+  })
+
+  it("adds what the server fills to the fixture's request byte for byte", () => {
+    const edge = fixture.cases.find((c) => c.name === 'at the edge')!
+    const n = note(checkNote(p, 'code', '', ''))
+    const filled = changeRequestOf(reviewBody(cand, B, 'request_changes', '', [n]), 'Nate', [n]).changes[0]!.check!
+    const last = edge.request.changes.length - 1
+    const withCheck = { ...edge.request, changes: edge.request.changes.map((c, i) => (i === last ? { ...c, check: filled } : c)) }
+    expect(repairBytes(withCheck) - edge.bytes).toBe(goJSONBytes(filled) + ',"check":'.length)
+    expect(repairBytes(withCheck) > MAX_REPAIR_PAYLOAD).toBe(true)
+  })
+
+  it('refuses a batch the receipt takes past 64 KiB, which counting the route\'s few members alone let through', () => {
+    const n = note(checkNote(p, 'code', '', ''))
+    const filler = (len: number) => note({ intent: 'change', severity: 'nit', message: 'y'.repeat(len) })
+    // The filler sized so that the request as the page counted it before (the check note's route members alone) is at the bound.
+    const routeOnly = (len: number) => {
+      const body = reviewBody(cand, B, 'request_changes', '', [filler(len), n])
+      const cr = changeRequestOf(body, 'admin', [{}, { measured: { receipt: n.check!.receipt, stable: true } }])
+      return repairBytes({ ...cr, changes: cr.changes.map((c, i) => (i === 1 ? { ...c, check: { ...n.check!, stable: true } } : c)) })
+    }
+    const len = MAX_REPAIR_PAYLOAD - routeOnly(1) + 1
+    expect(routeOnly(len)).toBe(MAX_REPAIR_PAYLOAD)
+    const notes = [filler(len), n]
+    const body = reviewBody(cand, B, 'request_changes', '', notes)
+    expect(batchProblems(body, 'admin', notes).at(-1)).toMatch(/^The notes are \d+ KiB as the run keeps them, more than 64 KiB: shorten them\.$/)
+    // A check note whose receipt the draft does not hold is counted at its largest: never less than the receipt itself.
+    const { measured: _m, ...bare } = n
+    const worst = repairBytes(changeRequestOf(reviewBody(cand, B, 'request_changes', '', [bare]), 'admin', [{}]))
+    expect(worst).toBeGreaterThanOrEqual(repairBytes(changeRequestOf(reviewBody(cand, B, 'request_changes', '', [n]), 'admin', [n])))
+  })
+})
+
+describe('a finding on the candidate shown', () => {
+  const shown = `run-1/build/2@${B}`
+  const f = (o: Record<string, unknown>) => ({ kind: 'line' as const, side: 'base' as const, path: 'a.txt', from: 3, to: 4, locatedOn: shown, state: 'open' as const, message: 'm', ...o })
+  it("is at its located lines on the candidate side, whatever side it was made on, a rename's lines within the renamed file", () => {
+    expect(findingAt(f({ located: { state: 'moved', from: 5, to: 6 } }), shown)).toEqual({ side: 'candidate', path: 'a.txt', from: 5, to: 6 })
+    expect(findingAt(f({ located: { state: 'same' } }), shown)).toEqual({ side: 'candidate', path: 'a.txt', from: 3, to: 4 })
+    expect(findingAt(f({ located: { state: 'renamed', path: 'b.txt', located: { state: 'moved', from: 7, to: 8 } } }), shown)).toEqual({ side: 'candidate', path: 'b.txt', from: 7, to: 8 })
+    expect(findingAt(f({ located: { state: 'renamed', path: 'b.txt', located: { state: 'same' } } }), shown)).toEqual({ side: 'candidate', path: 'b.txt', from: 3, to: 4 })
+    expect(findingAt(f({ kind: 'file', from: undefined, to: undefined, located: { state: 'renamed', path: 'b.txt' } }), shown)).toEqual({ side: 'candidate', path: 'b.txt' })
+    expect(findingAt(f({ located: { state: 'changed' } }), shown)).toEqual({ side: 'candidate', path: 'a.txt' })
+  })
+  it('is where it was made when it was not located on the candidate shown, or its file is gone', () => {
+    expect(findingAt(f({ located: { state: 'moved', from: 5, to: 6 }, locatedOn: `run-1/build/3@${C}` }), shown)).toBeNull()
+    expect(findingAt(f({ located: { state: 'file_gone' } }), shown)).toBeNull()
+    expect(findingAt(f({ located: { state: 'unknown', why: 'binary' } }), shown)).toBeNull()
+    expect(findingAt({ kind: 'general', locatedOn: shown, located: { state: 'same' } }, shown)).toBeNull()
+  })
+  it("marks the open ones in the candidate side's margin of their file, and counts them by the diff's paths", () => {
+    const fs = [
+      f({ located: { state: 'moved', from: 5, to: 6 }, message: 'one' }),
+      f({ located: { state: 'same' }, state: 'resolved', message: 'resolved' }),
+      f({ located: { state: 'changed' }, message: 'changed' }),
+      f({ kind: 'file', from: undefined, to: undefined, path: 'c.txt', located: { state: 'same' }, message: 'file' }),
+      f({ located: { state: 'moved', from: 1, to: 1 }, locatedOn: `run-1/build/3@${C}`, message: 'elsewhere' }),
+    ]
+    expect(findingMarks(fs, shown, 'a.txt')).toEqual([{ side: 'candidate', from: 5, to: 6, label: 'one' }])
+    expect(openFindingsPerFile(fs, shown, [{ path: 'a.txt' }, { path: 'c.txt' }])).toEqual({ 'a.txt': 2, 'c.txt': 1 })
+    expect(openFindingsPerFile(fs, shown, [{ path: 'z.txt' }])).toEqual({})
+  })
+})
+
+describe("a run page's task to review", () => {
+  it('names its result in the run it came from when a continuation imported it, else in the run itself', () => {
+    expect(taskReviewTarget('run-B', { kind: 'work', result: { attempt: 2, commit: C }, importedFrom: 'run-A/build/2' }, [])).toEqual({ run: 'run-A', attempt: 2, commit: C })
+    expect(taskReviewTarget('run-B', { kind: 'work', result: { attempt: 4, commit: C } }, [])).toEqual({ run: 'run-B', attempt: 4, commit: C })
+    expect(taskReviewTarget('run-B', { kind: 'work' }, [{ n: 3, result: B }, { n: 4 }])).toEqual({ run: 'run-B', attempt: 3, commit: B })
+    expect(taskReviewTarget('run-B', { kind: 'review', result: { attempt: 1, commit: C } }, [])).toBeNull()
+  })
+})
+
+describe("the ticket's candidates to review", () => {
+  const A = 'd'.repeat(40)
+  const cnd = (attempt: number, commit: string, o: Record<string, unknown> = {}) => ({ attempt, commit, state: 'succeeded', standing: false, withdrawn: false, receipts: [] as { startedAt: string }[], ...o })
+  const at = (t: string) => [{ startedAt: t }]
+  it("opens the latest: prep then build, build's checks later, build's", () => {
+    const runs = [{ run: 'r1', tasks: [
+      { task: 'prep', kind: 'work', candidates: [cnd(1, A, { standing: true, receipts: at('2026-11-08T10:00:00Z') })] },
+      { task: 'build', kind: 'work', candidates: [cnd(1, B, { standing: true, receipts: at('2026-11-08T10:05:00Z') })] },
+    ] }]
+    expect(latestReviewable(runs)?.value).toBe(`r1/build/1@${B}`)
+    // The crew's order the other way round: still the one submitted last.
+    expect(latestReviewable([{ run: 'r1', tasks: [...runs[0]!.tasks].reverse() }])?.value).toBe(`r1/build/1@${B}`)
+  })
+  it('takes a failed candidate, a continuation over the run it continues, never a withdrawn one', () => {
+    const failed = [{ run: 'r1', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(3, C, { state: 'failed', receipts: at('2026-11-08T10:00:00Z') }), cnd(2, B, { state: 'failed' })] }] }]
+    expect(latestReviewable(failed)).toEqual({ value: `r1/build/3@${C}`, label: `build · attempt 3 · ${C.slice(0, 12)} · failed · r1` })
+    // The continuation started after the run it continues had ended: its candidate refused before its checks (no receipt) is still the newer.
+    const chain = [
+      { run: 'r2', startedAt: '2026-11-09T01:00:00Z', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(4, B)] }] },
+      { run: 'r1', startedAt: '2026-11-08T09:00:00Z', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(3, C, { receipts: at('2026-11-09T00:00:00Z') })] }] },
+    ]
+    expect(latestReviewable(chain)?.value).toBe(`r2/build/4@${B}`)
+    expect(latestReviewable([{ run: 'r1', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(1, A, { withdrawn: true })] }] }])).toBeNull()
+  })
+  it("ranks a fresh launch beside an older continuation by time, never by the continuation's depth", () => {
+    // A week-old continuation (r2 continues r1) and today's independent launch r3: r3's candidate is the latest, whichever order the runs come in.
+    const runs = [
+      { run: 'r2', startedAt: '2026-11-01T10:00:00Z', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(2, B, { receipts: at('2026-11-01T10:30:00Z') })] }] },
+      { run: 'r1', startedAt: '2026-10-31T10:00:00Z', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(1, A, { receipts: at('2026-10-31T10:30:00Z') })] }] },
+      { run: 'r3', startedAt: '2026-11-08T09:00:00Z', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(1, C, { receipts: at('2026-11-08T09:30:00Z') })] }] },
+    ]
+    expect(latestReviewable(runs)?.value).toBe(`r3/build/1@${C}`)
+    expect(latestReviewable([...runs].reverse())?.value).toBe(`r3/build/1@${C}`)
+    expect(rankCandidates(runs).map((x) => x.value)).toEqual([`r3/build/1@${C}`, `r2/build/2@${B}`, `r1/build/1@${A}`])
+    // The same ordering opens the view and ranks its picker: the newest standing candidate first.
+    expect(firstReviewCandidate(runs.map((r) => ({ ...r, tasks: r.tasks.map((t) => ({ ...t, candidates: t.candidates.map((c) => ({ ...c, standing: true })) })) })))).toBe(`r3/build/1@${C}`)
+  })
+  it("keeps a task's later attempt newer than an earlier one in its run when it has no receipt", () => {
+    const runs = [{ run: 'r1', startedAt: '2026-11-08T09:00:00Z', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(2, B), cnd(1, A, { receipts: at('2026-11-08T09:30:00.5Z') })] }] }]
+    expect(rankCandidates(runs).map((x) => x.value)).toEqual([`r1/build/2@${B}`, `r1/build/1@${A}`])
+  })
+  it("ranks a candidate with no receipt of its own at the latest time known before it, and says so: no other ordering", () => {
+    // prep checked, then build, which needs it, with no check: the candidates carry no attempt's times, so build ranks at its run's start,
+    // below prep. The promise is narrowed to that: build is marked, and the palette's and the picker's words say its time is not known.
+    const runs = [{ run: 'r1', startedAt: '2026-11-08T09:00:00Z', tasks: [
+      { task: 'prep', kind: 'work', candidates: [cnd(1, A, { standing: true, receipts: at('2026-11-08T09:10:00Z') })] },
+      { task: 'build', kind: 'work', candidates: [cnd(1, B, { standing: true })] },
+    ] }]
+    const ranked = rankCandidates(runs)
+    expect(ranked.map((x) => [x.value, x.timed])).toEqual([[`r1/prep/1@${A}`, true], [`r1/build/1@${B}`, false]])
+    expect(untimedWords(ranked[0]!)).toBe('')
+    expect(untimedWords(ranked[1]!)).toBe(' · time not known (no check of it)')
+    expect(firstReviewCandidate(runs)).toBe(`r1/prep/1@${A}`)
+    // Alone, the untimed candidate is the latest, and its label says how it was ranked.
+    expect(latestReviewable([{ ...runs[0]!, tasks: [runs[0]!.tasks[1]!] }])?.label).toBe(`build · attempt 1 · ${B.slice(0, 12)} · r1 · time not known (no check of it)`)
+  })
+  it("opens the newest standing candidate when the route names none, else the newest", () => {
+    const runs = [{ run: 'r1', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(2, B, { state: 'failed' }), cnd(1, A, { standing: true })] }] }]
+    expect(firstReviewCandidate(runs)).toBe(`r1/build/1@${A}`)
+    expect(firstReviewCandidate([{ run: 'r1', tasks: [{ task: 'build', kind: 'work', candidates: [cnd(2, B, { state: 'failed' })] }] }])).toBe(`r1/build/2@${B}`)
+  })
+})
+
+describe("a continuation's ticket on the run page", () => {
+  const runs: Record<string, { resumedFrom?: string; resumedBy?: string; link?: { key: string; deletedAt?: string } }> = {
+    C: { resumedFrom: 'B' },
+    B: { resumedFrom: 'A', resumedBy: 'C' },
+    A: { link: { key: 'CND-12' }, resumedBy: 'B' },
+  }
+  const read = {
+    ticket: async (r: string) => runs[r]?.link ?? null,
+    resumedFrom: async (r: string) => runs[r]?.resumedFrom,
+    resumedBy: async (r: string) => runs[r]?.resumedBy,
+  }
+  it('is the ticket whose run link names a run back along its chain, for a continuation of a run linked by hand', async () => {
+    expect(await chainLinkedTicket({ from: 'A' }, read)).toBe('CND-12')
+    // The run page of C asks from the run C continues: B, then A.
+    expect(await chainLinkedTicket({ from: runs.C!.resumedFrom }, read)).toBe('CND-12')
+  })
+  it('is the ticket whose run link names a continuation linked after it was made, for the run it continues', async () => {
+    // Standalone A continued as B, then B linked to CND-12: Dispatch gives the whole chain to CND-12, A's page among it.
+    const later: Record<string, { resumedFrom?: string; resumedBy?: string; link?: { key: string } }> = { A: { resumedBy: 'B' }, B: { resumedFrom: 'A', resumedBy: 'C' }, C: { resumedFrom: 'B', link: { key: 'CND-12' } } }
+    const r = { ticket: async (x: string) => later[x]?.link ?? null, resumedFrom: async (x: string) => later[x]?.resumedFrom, resumedBy: async (x: string) => later[x]?.resumedBy }
+    expect(await chainLinkedTicket({ by: later.A!.resumedBy }, r)).toBe('CND-12')
+    // B, in the middle: back to A (no link), then forward to C.
+    expect(await chainLinkedTicket({ from: 'A', by: 'C' }, r)).toBe('CND-12')
+  })
+  it('is none for a chain no live link names, past its bound, or when a read fails', async () => {
+    expect(await chainLinkedTicket({ from: 'B' }, { ...read, ticket: async (r) => (r === 'A' ? { key: 'CND-12', deletedAt: '2026-11-08T00:00:00Z' } : null) })).toBe('')
+    expect(await chainLinkedTicket({ from: 'B' }, read, 1)).toBe('')
+    expect(await chainLinkedTicket({ from: 'B' }, { ...read, resumedFrom: async () => Promise.reject(new Error('offline')) })).toBe('')
+    expect(await chainLinkedTicket({ by: 'B' }, { ...read, ticket: async () => null, resumedBy: async () => Promise.reject(new Error('offline')) })).toBe('')
+    expect(await chainLinkedTicket({}, read)).toBe('')
+  })
+})
+
+describe("what launched a candidate's run", () => {
+  const l = (id: string, runId: string) => ({ id, runId })
+  const link = (ref: string, o: Record<string, string> = {}) => ({ kind: 'run', ref, ...o })
+  it('is the launch the page read, back along the run\'s chain', () => {
+    const continues = new Map([['rB', 'rA']])
+    expect(runLaunch('rB', { launches: [l('L1', 'rA')], links: [], continues })).toEqual({ state: 'launched', launch: l('L1', 'rA') })
+    expect(runLaunch('rA', { launches: [l('L1', 'rA')], links: [link('rA')], continues })).toEqual({ state: 'launched', launch: l('L1', 'rA') })
+  })
+  it("is a run linked by hand only when a live run link of the ticket names a run of its chain", () => {
+    const continues = new Map([['rB', 'rA']])
+    expect(runLaunch('rB', { launches: [], links: [link('rA')], continues })).toEqual({ state: 'linked' })
+    expect(runLaunch('rB', { launches: [], links: [link('rA', { deletedAt: '2026-11-08T00:00:00Z' })], continues })).toEqual({ state: 'unread' })
+    expect(runLaunch('rB', { launches: [], links: [{ kind: 'delivery', ref: 'rA' }], continues })).toEqual({ state: 'unread' })
+  })
+  it('is not read for a launch past what the page read: never another launch, never a run taken for one linked by hand', () => {
+    // An older launch past the Runs pages read and the Plan's recent launches: the page holds other launches, none of this run.
+    expect(runLaunch('rOld', { launches: [l('L9', 'rNew')], links: [], continues: new Map() })).toEqual({ state: 'unread' })
+    expect(runLaunch('rX', { launches: [], links: [], continues: new Map([['rX', 'rY'], ['rY', 'rX']]) })).toEqual({ state: 'unread' })
   })
 })

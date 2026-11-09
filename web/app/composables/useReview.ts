@@ -1,10 +1,10 @@
-import { getCurrentScope, nextTick, onScopeDispose, watch, type InjectionKey } from 'vue'
+import { computed, getCurrentScope, nextTick, onScopeDispose, watch, type InjectionKey } from 'vue'
 import { ApiError } from './useApi'
-import type { DispatchReceipt, OpBody } from './useDispatch'
+import type { DispatchReceipt, OpBody, RunCandidate } from './useDispatch'
 import { through, type DispatchOrder } from '~/utils/dispatchOrder'
-import { mintCommandId, sendCommand } from '~/utils/tasks'
-import { allPages, parseCandidate, type CandidateRef } from '~/utils/dispatch'
-import { latest, type Located, type NewFinding, type ReviewApplication, type ReviewBody, type Side } from '~/utils/review'
+import { CommandRefused, mintCommandId, sendCommand } from '~/utils/tasks'
+import { allPages, candidateRef, parseCandidate, type CandidateRef } from '~/utils/dispatch'
+import { latest, recheckWords, type CheckRef, type Located, type NewFinding, type PreparedRepair, type ReviewApplication, type ReviewBody, type Side } from '~/utils/review'
 
 /**
  * A person's reviews of a ticket's candidates (Program item RV1, docs/plans/review-repair.md, "web/app"): a candidate's diff and its
@@ -51,6 +51,8 @@ export interface ReviewFinding extends NewFinding {
   anchorCommit?: string
   lines: string[]
   message: string
+  /** A check finding's receipt, as the server read it from the ledger. */
+  check?: CheckRef
   createdAt: string
   candidate: string
   state: 'open' | 'resolved' | 'withdrawn'
@@ -142,7 +144,7 @@ export function useReviewApi() {
       const r = await requestText(`${attemptPath(c)}/diff/file?path=${enc(path)}&side=${side}` + (base ? `&base=${enc(base)}` : ''))
       return { text: r.text, truncated: r.headers.get('X-Conductor-Truncated') === '1', commit: r.headers.get('X-Conductor-Commit') ?? '' }
     },
-    prepareRepair: (c: CandidateRef, step: string, k: number) => request<unknown>(`${attemptPath(c)}/steps/${enc(step)}/${k}/repair`),
+    prepareRepair: (c: Pick<CandidateRef, 'run' | 'task' | 'attempt'>, step: string, k: number) => request<PreparedRepair>(`${attemptPath(c)}/steps/${enc(step)}/${k}/repair`),
     recheck: (run: string, task: string, body: { commandId: string; attempt: number; commit: string; expectedRevision?: number }) =>
       request<{ receipt: DispatchReceipt; run: string; attempt: number }>(`/api/runs/${enc(run)}/tasks/${enc(task)}/recheck`, { method: 'POST', body }),
     submitReview: (key: string, body: OpBody & ReviewBody & Omit<ApplyOptions, 'opId'>) => request<ReviewReply>(`/api/dispatch/tickets/${enc(key)}/reviews`, { method: 'POST', body }),
@@ -164,6 +166,8 @@ export function useReviewApi() {
 
 /** The most reviews a ticket holds (the store's dispatch.MaxReviews): a whole read of them stops there, 25 pages of 20. */
 export const MAX_REVIEWS = 500
+/** The most findings a ticket holds: fifty a review (dispatch.MaxReviewFindings), MAX_REVIEWS reviews. */
+export const MAX_FINDINGS = 50 * MAX_REVIEWS
 
 /** The open findings of a run's task among a ticket's reviews: each review counts its own by state (its findings' latest marks), as the store does. */
 export function openFindingsOf(reviews: readonly ReviewSummary[], run: string, task: string): number {
@@ -175,10 +179,21 @@ export function openFindingsOf(reviews: readonly ReviewSummary[], run: string, t
   return n
 }
 
-/** What the ticket page gives the candidates it lists (DispatchCandidates): the open findings of a run's task, and the Review view's link. */
+/** The open findings of a task among a ticket's reviews, every run's: the findings the Review view lists for a candidate of that task. */
+export function openFindingsOfTask(reviews: readonly ReviewSummary[], task: string): number {
+  let n = 0
+  for (const r of reviews) if (parseCandidate(r.candidate)?.task === task) n += r.counts?.open ?? 0
+  return n
+}
+
+/**
+ * What the ticket page gives the candidates it lists (DispatchCandidates): the open findings of a run's task, the Review view's link (at
+ * a failed receipt to prepare a repair from, `<id>/<k>`), and the ticket's reviews, whose applied requests are a person's repairs.
+ */
 export interface ReviewEntry {
   openFindings: (run: string, task: string) => number
-  href: (candidate: string) => { query: Record<string, string> }
+  href: (candidate: string, repair?: string) => { query: Record<string, string> }
+  reviews: () => readonly ReviewSummary[]
 }
 export const REVIEW_ENTRY: InjectionKey<ReviewEntry> = Symbol('review-entry')
 
@@ -210,6 +225,33 @@ export function useReview(gate: DispatchOrder) {
     /** The ticket's reviews, newest first, every page (at most MAX_REVIEWS, the store's bound), applied together when the gate takes the whole read. */
     readReviews: (key: string, apply: (r: ReviewSummary[]) => void) =>
       through(gate, `reviews:${key}`, () => allPages((before) => api.ticketReviews(key, before).then((p) => ({ items: p.reviews ?? [], next: p.next })), MAX_REVIEWS), apply),
+    /**
+     * The ticket's findings of the candidate's task, every page, each located on that candidate (the server's `located`, against
+     * `candidate`), with its state, its last mark and what the repair attempts said they addressed; applied when the gate takes the read.
+     */
+    readFindings: (key: string, candidate: string, apply: (f: ReviewFinding[]) => void) =>
+      through(gate, `findings:${key}:${candidate}`, () => allPages((after) => api.findings(key, { state: 'all', candidate, after }).then((p) => ({ items: p.findings ?? [], next: p.next })), MAX_FINDINGS), apply),
+    /** A failed receipt's prepared repair request (read whole, never cut). */
+    prepare: (c: Pick<CandidateRef, 'run' | 'task' | 'attempt'>, step: string, k: number) => api.prepareRepair(c, step, k),
+    /**
+     * A finding marked against a candidate: its op id minted, asked once more with it on a lost reply; a refusal is a CommandRefused in
+     * the store's words, a 409 invalid (not a later candidate, Resolved on the finding's own commit) an ApiError in the server's.
+     */
+    mark: (id: string, candidate: string, verdict: FindingMark['verdict'], note: string) => {
+      const n = note.trim()
+      return sendCommand((b: OpBody & { candidate: string; verdict: FindingMark['verdict']; note?: string; via: 'web' }) => api.markFinding(id, b), { ...op(), candidate, verdict, via: 'web' as const, ...(n ? { note: n } : {}) })
+    },
+    /**
+     * Check again: the failed candidate named in its own run (`c`), sent to `run`, the run the prepared request says it goes to, at its
+     * revision; a command id minted, asked once more with it on a lost reply. The reply names the run and the attempt it was checked in.
+     */
+    recheck: (c: CandidateRef, revision: number | undefined) =>
+      sendCommand((b: { commandId: string; attempt: number; commit: string; expectedRevision?: number }) => api.recheck(c.run, c.task, b), {
+        commandId: mintCommandId(),
+        attempt: c.attempt,
+        commit: c.commit,
+        ...(revision ? { expectedRevision: revision } : {}),
+      }),
     /** A review whole, ordered by its revision. */
     readReview: (id: string, apply: (r: Review) => void) => through(gate, `review:${id}`, () => api.review(id), apply, (r) => r.rev),
 
@@ -434,4 +476,224 @@ export function useShowWhenReady(o: { key: () => string; ready: () => boolean })
     cancel = stop
   }
   return { show, cancel: end }
+}
+
+/**
+ * A failed receipt's repair prepared, as the Review view's panel shows it (ReviewCheckFailure): the request read for the candidate shown
+ * when it was asked (`shown`), its failure, and Check again of the candidate the prepared request names. The late-answer rule: a reply
+ * is applied only to the request that asked for it, by its generation (a later prepare) and its identity (the candidate it was asked
+ * for still shown), checked as it is applied.
+ */
+export function usePreparedRepair(r: Pick<ReturnType<typeof useReview>, 'prepare' | 'recheck'>, shown: () => string) {
+  const open = ref(false)
+  const prepared = ref<PreparedRepair | null>(null)
+  const error = ref('')
+  const loading = ref(false)
+  const asks = latest()
+  // What the request shown was prepared from, to read it again when the run refuses its Check again as moved on.
+  let from: { c: CandidateRef; id: string; k: number; at: string } | null = null
+  async function prepare(c: CandidateRef, id: string, k: number): Promise<void> {
+    const at = shown()
+    const current = asks.ask()
+    from = { c, id, k, at }
+    open.value = true
+    prepared.value = null
+    error.value = ''
+    loading.value = true
+    try {
+      const p = await r.prepare(c, id, k)
+      if (!current()) return
+      if (shown() === at) prepared.value = p
+      else error.value = 'Another candidate is shown now: prepare the repair from its checks.'
+    } catch (e) {
+      if (current()) error.value = shown() === at ? (e as Error).message : 'Another candidate is shown now: prepare the repair from its checks.'
+    } finally {
+      if (current()) loading.value = false
+    }
+  }
+  /**
+   * Check again of the candidate the prepared request `p` names, as it names it: its receipt's run and task, the attempt and the commit
+   * of its `recheck`, at its revision (of the run it goes to); the words of where it was checked. A refusal because the run moved on
+   * since the request was read (stale_revision: a continuation just started, a task that moved) did nothing: the request is read again
+   * and, while `p` is still the one shown, its `recheck` (the run, its revision, whether Check again stands) takes the new one's, the
+   * person's class, quote and words kept; the refusal says so, and Check again, if it still stands, asks the run as it is now.
+   */
+  async function recheck(p: PreparedRepair): Promise<string> {
+    const c = { run: p.finding.check.run, task: p.finding.check.task, attempt: p.recheck.attempt, commit: p.recheck.commit }
+    try {
+      const reply = await r.recheck(c, p.recheck.revision)
+      return recheckWords(c, { run: reply.run || p.recheck.run, attempt: reply.attempt })
+    } catch (e) {
+      const at = from
+      if (!(e instanceof CommandRefused) || e.receipt.refusal !== 'stale_revision' || !at) throw e
+      const fresh = await r.prepare(at.c, at.id, at.k).catch(() => null)
+      if (!fresh) throw new Error(`${e.message}. Nothing was done; prepare the repair again to read the run as it is now.`, { cause: e })
+      if (prepared.value === p && from === at && shown() === at.at) p.recheck = fresh.recheck
+      throw new Error(
+        `The run moved on since the repair was prepared: nothing was done. It is read again: ${fresh.recheck.allowed ? 'Check again asks the run as it is now.' : 'Check again is not offered now.'}`,
+        { cause: e },
+      )
+    }
+  }
+  return { open, prepared, error, loading, prepare, recheck }
+}
+
+/**
+ * Check again as one panel of a prepared request asks it: busy while on its way, its words once answered, its failure. A reply is
+ * applied only while the panel shows the prepared request it was asked of (by identity) and no reset came since (a request prepared
+ * again, another receipt's): a slow Check again of receipt A never writes into receipt B's panel, nor leaves B's button busy.
+ */
+export function useRecheckAsk(shown: () => PreparedRepair | null) {
+  const busy = ref(false)
+  const rechecked = ref('')
+  const failure = ref('')
+  const asks = latest()
+  function reset(): void {
+    asks.ask()
+    busy.value = false
+    rechecked.value = ''
+    failure.value = ''
+  }
+  async function again(recheck: (p: PreparedRepair) => Promise<string>): Promise<void> {
+    const p = shown()
+    if (!p) return
+    const current = asks.ask()
+    const holds = () => current() && shown() === p
+    busy.value = true
+    failure.value = ''
+    try {
+      const words = await recheck(p)
+      if (holds()) rechecked.value = words
+    } catch (e) {
+      if (holds()) failure.value = (e as Error).message
+    } finally {
+      if (holds()) busy.value = false
+    }
+  }
+  return { busy, rechecked, failure, reset, again }
+}
+
+/**
+ * The ticket's acceptance criteria as a launch's package froze them (a launch never changes): read for the launch shown, and while no
+ * text was taken for it, asked again at each tick the page gives (`ticks`: its reads of the ticket, the stream's resets), so a failed
+ * read is said in words (`error`) and asked again rather than left reading. A reply is applied only to the latest ask, for the launch
+ * still shown.
+ */
+export function useLaunchedCriteria(read: (id: string) => Promise<{ package?: unknown }>, launch: () => string | undefined, ticks: () => unknown) {
+  const taken = ref<{ id: string; text: string } | null>(null)
+  const error = ref('')
+  const asks = latest()
+  function ask(): void {
+    const id = launch()
+    if (!id || taken.value?.id === id) return
+    const current = asks.ask()
+    read(id)
+      .then((l) => {
+        if (!current() || launch() !== id) return
+        const pkg = l.package as { ticket?: { acceptance?: string } } | null | undefined
+        taken.value = { id, text: pkg?.ticket?.acceptance ?? '' }
+        error.value = ''
+      })
+      .catch((e) => {
+        if (current() && launch() === id) error.value = (e as Error).message || 'the read failed'
+      })
+  }
+  watch(launch, () => (error.value = ''))
+  watch([launch, ticks], ask, { immediate: true })
+  /** The criteria as launched, null until read for the launch shown. */
+  const text = computed(() => (taken.value && taken.value.id === launch() ? taken.value.text : null))
+  return { text, error }
+}
+
+/**
+ * The candidate the Review view shows, read by its id (`<run>/<task>/<n>@<commit>`) from its own run: GET /api/runs/{run}/candidates
+ * ?task=&before=n+1, that task's attempts up to n (six at most, newest first) and the run's base. It is never looked for among the
+ * ticket's pages of runs and candidates, so whichever run and attempt the route names, however old, the view has its receipts, its state,
+ * its run's base and its task's earlier results. Read when it is named and again at each tick the page gives (`ticks`: its reads of the
+ * ticket, the stream's resets, the ticket's candidates read again), what was read staying shown meanwhile; a page that does not hold it
+ * (no such attempt at that commit), a run the server knows nowhere and any failure are said (`error`) and asked again at the next tick.
+ * A reply is applied only to the latest ask, for the candidate still named.
+ */
+export function useNamedCandidate(o: {
+  read: (run: string, task: string, before: number) => Promise<{ base?: string; candidates?: Array<{ task: string; kind: 'work' | 'review'; candidates: RunCandidate[] }> }>
+  want: () => CandidateRef | null
+  ticks: () => unknown
+}) {
+  const found = ref<{ key: string; c: RunCandidate; base: string; earlier: RunCandidate[] } | null>(null)
+  const error = ref('')
+  const loading = ref(false)
+  const asks = latest()
+  const named = () => (o.want() ? candidateRef(o.want()!) : '')
+  async function read(): Promise<void> {
+    const w = o.want()
+    if (!w) return
+    const key = candidateRef(w)
+    const current = asks.ask()
+    const holds = () => current() && named() === key
+    loading.value = true
+    try {
+      const page = await o.read(w.run, w.task, w.attempt + 1)
+      if (!holds()) return
+      const all = page.candidates?.find((t) => t.task === w.task)?.candidates ?? []
+      const c = all.find((x) => x.attempt === w.attempt && x.commit === w.commit)
+      if (c) {
+        found.value = { key, c, base: page.base ?? '', earlier: all.filter((x) => x.attempt < w.attempt) }
+        error.value = ''
+      } else error.value = `attempt ${w.attempt} of ${w.task} in run ${w.run} has no candidate at ${w.commit.slice(0, 12)}`
+    } catch (e) {
+      if (holds()) error.value = e instanceof ApiError && e.status === 404 ? `the server knows no run ${w.run}` : (e as Error).message || 'the read failed'
+    } finally {
+      if (current()) loading.value = false
+    }
+  }
+  watch(named, () => (error.value = ''))
+  watch(() => [named(), o.ticks()], () => void read(), { immediate: true })
+  const shown = computed(() => (found.value && found.value.key === named() ? found.value : null))
+  return {
+    /** The candidate named, as last read: null before its first read answers, or when it is not the one named now. */
+    candidate: computed(() => shown.value?.c ?? null),
+    /** Its run's base, '' until read. */
+    base: computed(() => shown.value?.base ?? ''),
+    /** Its task's earlier attempts in its run, read with it (six at most with it): the earlier results a diff may be read against. */
+    earlier: computed(() => shown.value?.earlier ?? []),
+    error,
+    loading,
+  }
+}
+
+/**
+ * The ticket's findings of the shown candidate's task, located on it (useReview's readFindings): read when the candidate moves and at
+ * each tick the page gives (`ticks`: its reads of the ticket, the stream's resets, and the ticket's candidates read again, which a run's
+ * change makes: a repair's result that says what it addressed is one), so the agent's claims and the located words come in while the
+ * same candidate stays shown. Cleared at a move of the candidate; a reply is applied only to the latest ask, for the candidate still
+ * shown and the view still open.
+ */
+export function useTaskFindings(r: Pick<ReturnType<typeof useReview>, 'readFindings'>, o: { ticket: () => string; candidate: () => string; ticks: () => unknown }) {
+  const list = ref<ReviewFinding[]>([])
+  const error = ref('')
+  const loading = ref(false)
+  const asks = latest()
+  let closed = false
+  if (getCurrentScope()) onScopeDispose(() => (closed = true))
+  async function read(): Promise<void> {
+    const key = o.ticket()
+    const at = o.candidate()
+    if (closed || !at || !parseCandidate(at)) return
+    const current = asks.ask()
+    loading.value = true
+    try {
+      await r.readFindings(key, at, (fs) => {
+        if (!current() || key !== o.ticket() || at !== o.candidate()) return
+        list.value = fs
+        error.value = ''
+      })
+    } catch (e) {
+      if (current()) error.value = (e as Error).message
+    } finally {
+      if (current()) loading.value = false
+    }
+  }
+  watch(o.candidate, () => (list.value = []))
+  watch(() => [o.ticket(), o.candidate(), o.ticks()], () => void read(), { immediate: true })
+  return { list, error, loading, read }
 }

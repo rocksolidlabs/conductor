@@ -20,6 +20,8 @@ export interface HeldRun {
    * withdrawn since, never offered to a delivery or counted in the Decisions, which are of the runs shown.
    */
   linked?: true
+  /** When the run started, as its summary says: the Review view's ordering of candidates (rankCandidates, RV1). */
+  startedAt?: string
 }
 
 /**
@@ -46,6 +48,7 @@ export function heldRuns(
       id,
       label: s?.label || e.launch?.label || '',
       signature: JSON.stringify([revision(id) ?? 0, s ? [s.state, s.paused, s.outcome ?? '', s.stoppedAt ?? '', s.tasks] : null]),
+      ...(s?.startedAt ? { startedAt: s.startedAt } : {}),
     })
   }
   for (const l of links) {
@@ -270,7 +273,7 @@ export function useTicketCandidates(o: { gate: DispatchOrder; key: () => string;
   }
 
   /** The runs shown with their tasks, in the order given, for the form's choices and the Decisions: not a run read only for a delivery. */
-  const runs = computed(() => o.runs().flatMap((r) => (r.linked ? [] : [{ run: r.id, label: r.label, tasks: byRun.get(r.id) ?? [] }])))
+  const runs = computed(() => o.runs().flatMap((r) => (r.linked ? [] : [{ run: r.id, label: r.label, ...(r.startedAt ? { startedAt: r.startedAt } : {}), tasks: byRun.get(r.id) ?? [] }])))
   /** The first run shown whose read failed, and why, in words: '' when none. */
   const error = computed(() => {
     for (const r of o.runs()) {

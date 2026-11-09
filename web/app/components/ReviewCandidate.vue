@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { shortCommit } from '~/utils/dispatchPlans'
 import type { BaseChoice, ReviewCandidateOption } from '~/utils/review'
+import type { Lineage } from '~/utils/reviewLineage'
 
 /**
  * The candidate reviewed and the base its diff is read against (Program item RV1, PR-6): a picker of the ticket's candidates, newest
  * first per task, each with its commit and whether it stands as its task's result; and a picker of the bases the server takes (the
  * run's base, where the attempt started, another result of the task). The base is the draft's: it is locked while the draft holds a
- * note on the base side, and says why. How each candidate came to be (its lineage) is shown by a later part of this view.
+ * note on the base side, and says why. Under them, how each candidate of the task came to be (ReviewLineage, PR-7).
  */
 defineProps<{
   options: ReviewCandidateOption[]
@@ -15,6 +16,8 @@ defineProps<{
   base: string
   /** Why the base cannot move now, in words: '' when it can. */
   locked: string
+  /** The lineage of the task's candidates, oldest first. */
+  lineage?: readonly Lineage[]
 }>()
 const emit = defineEmits<{ candidate: [ref: string]; base: [commit: string] }>()
 </script>
@@ -48,5 +51,6 @@ const emit = defineEmits<{ candidate: [ref: string]; base: [commit: string] }>()
     <p v-if="locked" class="flex items-center gap-1.5 text-xs text-muted sm:basis-full" data-review-base-locked>
       <UIcon name="i-lucide-lock" class="size-3.5 flex-none" />{{ locked }}
     </p>
+    <ReviewLineage v-if="lineage?.length" class="sm:basis-full" :lineage="lineage" :candidate="candidate" @candidate="(v: string) => emit('candidate', v)" />
   </div>
 </template>

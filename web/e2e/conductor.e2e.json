@@ -135,6 +135,17 @@
         "adapter": "claude",
         "signal": { "kind": "hook" },
         "session": { "startArgs": ["--session-id", "{id}"], "idFrom": "hook", "resumeArgs": ["--resume", "{id}"], "idPattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+      },
+      {
+        "id": "worker-review",
+        "name": "Worker, review edits (e2e stub)",
+        "description": "The CLI worker under STUB_REVIEW_EDITS=1 (RV1): fixed edits for a person's review's located states, and each change asked for named as addressed.",
+        "command": ["@BASH@", "@STUB@"],
+        "allowArgs": true,
+        "env": { "STUB_IDENTITY": "claude", "STUB_REPORT": "plain", "STUB_WORKER": "cli", "STUB_REVIEW_EDITS": "1" },
+        "adapter": "claude",
+        "signal": { "kind": "hook" },
+        "session": { "startArgs": ["--session-id", "{id}"], "idFrom": "hook", "resumeArgs": ["--resume", "{id}"], "idPattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
       }
     ]
   }
