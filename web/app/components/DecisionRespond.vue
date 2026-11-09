@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Decision, OpReceipt, ResponseReceipt } from '~/utils/decisions'
-import { askForMore, commentDecision, confirmAuthorizes, optionsOf, recommended, refusalOf, respondDecision, responseBody } from '~/utils/decisions'
+import { answerAsWords, askForMore, commentDecision, confirmAuthorizes, optionsOf, recommended, refusalOf, respondDecision, responseBody } from '~/utils/decisions'
 
 /**
  * The operator's answer to a durable decision (Program item DR1, docs/plans/decisions.md, "web/app"): the controls by its type (a
@@ -136,13 +136,15 @@ watch(
           Answer {{ decision.id }} <span class="font-semibold">{{ options[pending.choice]?.label }}</span>?
           <template v-if="confirmAuthorizes(decision, pending.choice)"> <span data-decision-confirm-authorizes>{{ confirmAuthorizes(decision, pending.choice) }}</span></template>
         </p>
+        <p v-if="answerAsWords(decision)" class="text-xs text-muted" data-decision-answer-as>{{ answerAsWords(decision) }}.</p>
         <p v-if="moved" class="text-xs text-warning" data-decision-moved>{{ decision.id }} changed since you picked it: it is {{ decision.state }} now. Confirm sends it anyway, and the answer says what happened.</p>
         <div class="flex justify-end gap-2">
           <UButton label="Back" color="neutral" variant="ghost" size="sm" :disabled="busy" data-decision-back @click="pending = null" />
           <UButton :label="`Answer ${options[pending.choice]?.label ?? ''}`" color="primary" size="sm" :loading="busy" data-decision-confirm @click="send(pending.choice, pending.rev)" />
         </div>
       </div>
-      <div v-else-if="!confirms" class="flex justify-end">
+      <div v-else-if="!confirms" class="flex items-center justify-end gap-2">
+        <span v-if="answerAsWords(decision)" class="mr-auto text-xs text-muted" data-decision-answer-as>{{ answerAsWords(decision) }}.</span>
         <UButton label="Answer" icon="i-lucide-send" color="primary" size="sm" :disabled="!canSend" :loading="busy" data-decision-send @click="send(picked, decision.rev)" />
       </div>
     </template>

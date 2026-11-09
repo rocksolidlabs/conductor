@@ -4,7 +4,9 @@ import type { KnownPerson } from '~/composables/usePeople'
 import type { TicketSummary, TicketsPage } from '~/composables/useDispatch'
 import type { PaletteGroup } from './palette'
 import type { PaletteItem } from '~/composables/usePalette'
-import { capPeople, oneReadAtATime, ownedHow, PEOPLE_IDLE, PEOPLE_MATCHED, personDetail, personFromSegment, personLists, personPath, personRows, personSegment, plainPersonName, readTicketsPage, ticketsPageQuery, TICKETS_PAGE, type PersonTicketList } from './people'
+import type { PersonWork } from '~/composables/usePeople'
+import { SerialReads } from '~/composables/useDecisions'
+import { boundedRead, capPeople, freshTicketLists, keepsTicketLists, noReplyWords, oneReadAtATime, ownedHow, PEOPLE_IDLE, PEOPLE_MATCHED, PERSON_READ_MS, personDetail, personFromSegment, personLists, personPath, personRows, personSegment, plainPersonName, readTicketsPage, ticketsPageQuery, TICKETS_PAGE, type PersonTicketList } from './people'
 
 const nate: KnownPerson = { name: 'nate', dispatch: true, crews: [{ id: 'api', name: 'api', responsibilities: ['architecture'] }] }
 const ana: KnownPerson = {
@@ -308,5 +310,127 @@ describe("a person's ticket lists", () => {
     const gone = list()
     await readTicketsPage(gone, dispatch, () => false)
     expect(gone.tickets).toEqual([])
+  })
+})
+
+// A person's page reads their work again on every decision's change, one read at a time (SerialReads, HM1, PR-12): each read is
+// bounded and cancellable, so one that never gets its reply is given up, says so, and frees the reads queued after it; a reply that comes
+// after it was given up is never used.
+describe('boundedRead', () => {
+  it('gives up a read with no reply, aborting it, and the read queued after it is made', async () => {
+    vi.useFakeTimers()
+    try {
+      const signals: AbortSignal[] = []
+      const shown: string[] = []
+      const failed: string[] = []
+      let calls = 0
+      let late: ((v: string) => void) | undefined
+      const once = async () => {
+        calls++
+        const n = calls
+        const w = await boundedRead(
+          (signal) => {
+            signals.push(signal)
+            // The first read stalls: its reply comes only after it was given up. The second answers at once.
+            return n === 1 ? new Promise<string>((resolve) => (late = resolve)) : Promise.resolve(`read ${n}`)
+          },
+          PERSON_READ_MS,
+        )
+        shown.push(w)
+      }
+      const reads = new SerialReads(once, (e) => failed.push(e.message))
+      const first = reads.run()
+      // A decision changed while the first read stalls: one more read is queued behind it.
+      void reads.run()
+      await vi.advanceTimersByTimeAsync(PERSON_READ_MS - 1)
+      expect(calls).toBe(1)
+      expect(signals[0]!.aborted).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      await first
+      expect(failed).toEqual([noReplyWords(PERSON_READ_MS)])
+      expect(failed[0]).toBe('the server sent no reply in 15 s')
+      expect(signals[0]!.aborted).toBe(true)
+      expect(calls).toBe(2)
+      expect(shown).toEqual(['read 2'])
+      // The stalled read's reply, late: never shown.
+      late!('read 1, late')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(shown).toEqual(['read 2'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // The page going while one read is under way and one more queued behind it (two decision events, then unmount): the reads are stopped
+  // before the read under way is aborted, so its settling starts nothing, and no event after it asks for one (Codex's round 2 on #741).
+  it('makes no queued read after the page goes, its read under way aborted', async () => {
+    const ctl = new AbortController()
+    const failed: string[] = []
+    let calls = 0
+    const once = async () => {
+      calls++
+      await boundedRead(() => new Promise<string>(() => {}), PERSON_READ_MS, calls === 1 ? ctl : new AbortController())
+    }
+    const reads = new SerialReads(once, (e) => failed.push(e.message))
+    const first = reads.run()
+    void reads.run()
+    reads.stop()
+    ctl.abort()
+    await first
+    expect(calls).toBe(1)
+    expect(failed).toHaveLength(1)
+    await reads.run()
+    expect(calls).toBe(1)
+  })
+
+  it('is given up at once when its caller aborts it, and returns a reply that comes in time', async () => {
+    const ctl = new AbortController()
+    let seen: AbortSignal | undefined
+    const read = boundedRead((signal) => ((seen = signal), new Promise<string>(() => {})), PERSON_READ_MS, ctl)
+    ctl.abort()
+    await expect(read).rejects.toThrow()
+    expect(seen!.aborted).toBe(true)
+    await expect(boundedRead(() => Promise.resolve('work'), PERSON_READ_MS)).resolves.toBe('work')
+    await expect(boundedRead(() => Promise.reject(new Error('404')), PERSON_READ_MS)).rejects.toThrow('404')
+    const gone = new AbortController()
+    gone.abort()
+    let made = false
+    await expect(boundedRead(() => ((made = true), Promise.resolve('x')), PERSON_READ_MS, gone)).rejects.toThrow()
+    expect(made).toBe(false)
+  })
+})
+
+// A decision's change reads the person's work again, and the ticket lists, which no decision changes, keep the pages Show more read: 40
+// tickets shown stay 40. A read for another reason, of another person, or after their tickets' counts changed starts the lists again.
+describe('keepsTicketLists', () => {
+  const tickets: NonNullable<PersonWork['tickets']> = { owner: 0, assignee: 45, ownerHref: '/api/dispatch/tickets?owner=ana', assigneeHref: '/api/dispatch/tickets?assignee=person%3Aana' }
+  const summary = (i: number) => ({ id: `t${i}`, key: `CND-${i}`, title: `Ticket ${i}`, status: 'todo' }) as unknown as TicketSummary
+
+  it('keeps the pages read through Show more across a decision event', async () => {
+    const lists = freshTicketLists(tickets)
+    expect(lists.map((l) => l.id)).toEqual(['assignee'])
+    const list = lists[0]!
+    const pages: TicketsPage[] = [
+      { tickets: Array.from({ length: TICKETS_PAGE }, (_, i) => summary(i)), next: 'c1', total: 45 } as TicketsPage,
+      { tickets: Array.from({ length: TICKETS_PAGE }, (_, i) => summary(i + TICKETS_PAGE)), next: 'c2', total: 45 } as TicketsPage,
+    ]
+    let page = 0
+    await readTicketsPage(list, async () => pages[page++]!)
+    await readTicketsPage(list, async () => pages[page++]!)
+    expect(list.tickets).toHaveLength(40)
+    // The decision event's read of the same person, their tickets as they were: the lists, and their 40 tickets, stay.
+    expect(keepsTicketLists(true, 'ana', 'ana', tickets, { ...tickets })).toBe(true)
+    expect(list.tickets).toHaveLength(40)
+  })
+
+  it('starts the lists again for any other read', () => {
+    expect(keepsTicketLists(false, 'ana', 'ana', tickets, tickets)).toBe(false)
+    expect(keepsTicketLists(true, 'ana', 'nate', tickets, tickets)).toBe(false)
+    expect(keepsTicketLists(true, null, 'ana', undefined, tickets)).toBe(false)
+    expect(keepsTicketLists(true, 'ana', 'ana', tickets, { ...tickets, assignee: 46 })).toBe(false)
+    expect(keepsTicketLists(true, 'ana', 'ana', tickets, null)).toBe(false)
+    expect(keepsTicketLists(true, 'ana', 'ana', null, tickets)).toBe(false)
+    expect(keepsTicketLists(true, 'ana', 'ana', null, null)).toBe(true)
+    expect(freshTicketLists(null)).toEqual([])
   })
 })

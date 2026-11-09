@@ -38,6 +38,7 @@ const pages = computed(() => [
   { label: 'Agents', icon: 'i-lucide-bot', to: '/agents' },
   { label: 'Dispatch', icon: 'i-lucide-ticket', to: '/dispatch' },
   { label: 'Events', icon: 'i-lucide-radio-tower', to: '/events' },
+  { label: 'History', icon: 'i-lucide-history', to: '/history' },
   ...(desktop.isDesktop.value ? [{ label: 'Settings', icon: 'i-lucide-settings', to: '/settings' }] : []),
 ])
 /** Your menu's items as buttons, the sheet closed before each acts. */

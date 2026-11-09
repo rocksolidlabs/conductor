@@ -6,6 +6,10 @@ import {
   argvLine,
   decisionsProblem,
   defaultLabel,
+  forItems,
+  holderOf,
+  planDecisionsOut,
+  planForWords,
   expectedChecks,
   historyLaunches,
   keptComments,
@@ -390,5 +394,60 @@ describe('the launches the history names', () => {
     expect(later).toEqual({ launches: [expect.objectContaining({ id: 'l3' })], after: 252 })
     // Nothing since: the cursor stays.
     expect(await scanLaunches(read, later.after)).toEqual({ launches: [], after: 252 })
+  })
+})
+
+// Whom a revision's decision is for (docs/plans/decisions.md, HM1, PR-12): the decisions sent whole, `for` and the assignment kind kept;
+// a `for` the picked crew no longer resolves blocks Save in the server's words; the For select's items; the revision's words.
+describe("a decision's for", () => {
+  const people = [
+    { name: 'nate', responsibilities: ['architecture' as const, 'product' as const] },
+    { name: 'ana', responsibilities: ['acceptance' as const] },
+    { name: 'bo' },
+  ]
+  it('sends every field, for and the assignment kind kept', () => {
+    const out = planDecisionsOut([
+      { id: ' schema ', question: ' Is the schema right? ', kind: 'approval', before: ['build'], for: 'role:architecture' },
+      { id: 'migrate', question: 'Run it on staging', kind: 'assignment', before: ['docs'], for: 'person:ana' },
+      { id: 'which', question: 'Which?', kind: 'clarification', before: [] },
+    ])
+    expect(out).toEqual([
+      { id: 'schema', question: 'Is the schema right?', kind: 'approval', before: ['build'], for: 'role:architecture' },
+      { id: 'migrate', question: 'Run it on staging', kind: 'assignment', before: ['docs'], for: 'person:ana' },
+      { id: 'which', question: 'Which?', kind: 'clarification', before: [] },
+    ])
+    expect('for' in out[2]!).toBe(false)
+  })
+  it('names a for the crew no longer resolves', () => {
+    const ds = [{ id: 'schema', question: 'Q', for: 'role:security' }]
+    expect(decisionsProblem(ds, people, 'api')).toBe('The decision schema is for role:security: no person of crew api holds security')
+    expect(decisionsProblem([{ id: 'd', question: 'Q', for: 'person:zed' }], people, 'api')).toBe('The decision d is for person:zed: no person of crew api is named "zed"')
+    expect(decisionsProblem([{ id: 'd', question: 'Q', for: 'role:legal' }], people)).toBe('The decision d is for role:legal: "role:legal" is not one of architecture, product, security, acceptance')
+    expect(decisionsProblem([{ id: 'd', question: 'Q', for: 'role:architecture' }, { id: 'e', question: 'Q', for: 'person:bo' }], people)).toBe('')
+    // Before the crew is read, only the shape is judged: the server says the rest.
+    expect(decisionsProblem(ds, null)).toBe('')
+  })
+  it('resolves a label as the server does', () => {
+    expect(holderOf(people, 'role:product')).toEqual({ person: 'nate', responsibility: 'product' })
+    expect(holderOf(people, 'person:bo')).toEqual({ person: 'bo' })
+    expect(holderOf(people, 'team:api')).toEqual({ error: 'label "team:api" must be role:<responsibility> or person:<name>' })
+  })
+  it('offers the operator alone, each held responsibility and each person', () => {
+    expect(forItems(people, ['role:security']).map((i) => [i.label, i.value])).toEqual([
+      ['The operator alone', 'none'],
+      ['architecture owner: nate', 'role:architecture'],
+      ['product owner: nate', 'role:product'],
+      ['acceptance owner: ana', 'role:acceptance'],
+      ['nate', 'person:nate'],
+      ['ana', 'person:ana'],
+      ['bo', 'person:bo'],
+      ['role:security (not in this crew)', 'role:security'],
+    ])
+  })
+  it("says whom in the revision's words", () => {
+    expect(planForWords('role:architecture', people)).toBe('nate (architecture owner)')
+    expect(planForWords('person:ana', people)).toBe('ana')
+    expect(planForWords('role:security', people)).toBe('role:security')
+    expect(planForWords(undefined, people)).toBe('')
   })
 })
