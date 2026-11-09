@@ -652,15 +652,43 @@ func TestABriefingWithoutAFactIsRefused(t *testing.T) {
 }
 
 // A turn launches in the adapter's read-only mode: Claude Code's tool
-// rules and --strict-mcp-config in its argv, then its model, nothing a
-// person typed; never with yolo, the server's yolo on or not.
+// rules and --strict-mcp-config in its argv, then the folders it reads
+// besides its own, then its model, nothing a person typed; never with
+// yolo, the server's yolo on or not. With its folder the home folder the
+// turn runs in the desk's own and reads (--add-dir, #705) the home folder
+// and the crews' folders outside it, each once: one within another is
+// left out, and so is one outside the allowed roots.
 func TestATurnLaunchesReadOnly(t *testing.T) {
 	t.Parallel()
-	b := brakemanEnv(t, func(c *config.Config) { c.Yolo = true })
+	other, outside := realRoot(t, t.TempDir()), realRoot(t, t.TempDir())
+	b := brakemanEnv(t, func(c *config.Config) {
+		c.Yolo = true
+		c.AllowedRoots = append(c.AllowedRoots, other)
+		c.DataDir = filepath.Join(c.DefaultCwd, ".local", "share", "conductor", "data")
+	})
+	b.desk.homeDir.Store(&b.root)
+	within := filepath.Join(b.root, "app")
+	if err := os.Mkdir(within, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for i, dir := range []string{other, within, outside} {
+		c := crew.Crew{Name: fmt.Sprintf("crew %d", i), Goal: "g", Cwd: dir, Where: crew.WhereServer, Isolation: crew.IsolationNone,
+			Members: []crew.Member{{Name: "lead", AgentID: "cat", Start: crew.Start{When: crew.StartImmediately}}}}
+		if _, err := b.srv.crews.Create(c); err != nil {
+			t.Fatal(err)
+		}
+	}
 	b.enable(t, "bk", func(c map[string]any) { c["model"] = "sonnet" })
+	desk, err := b.desk.st.Folder("")
+	if err != nil {
+		t.Fatal(err)
+	}
 	id := b.briefing(t)
 	_, _, l := b.turnSession(t, id)
 	argv := l.Info().Command
+	if l.Info().Cwd != desk {
+		t.Fatalf("the turn runs in %s, want the desk's own folder %s", l.Info().Cwd, desk)
+	}
 	for _, want := range []string{"--strict-mcp-config", "--model=sonnet"} {
 		if !slices.Contains(argv, want) {
 			t.Fatalf("argv %q lacks %s", argv, want)
@@ -668,6 +696,23 @@ func TestATurnLaunchesReadOnly(t *testing.T) {
 	}
 	if !slices.ContainsFunc(argv, func(a string) bool { return strings.HasPrefix(a, "--disallowedTools=") && strings.Contains(a, "Bash") }) {
 		t.Fatalf("argv %q lacks the write tools' rule", argv)
+	}
+	var reads []string
+	for _, a := range argv {
+		if dir, ok := strings.CutPrefix(a, "--add-dir="); ok {
+			reads = append(reads, dir)
+		}
+	}
+	if want := []string{b.root, other}; !slices.Equal(reads, want) {
+		t.Fatalf("the turn reads %q, want %q (argv %q)", reads, want, argv)
+	}
+	if i, j := slices.Index(argv, "--strict-mcp-config"), slices.Index(argv, "--add-dir="+b.root); j < i || slices.Index(argv, "--model=sonnet") < j {
+		t.Fatalf("argv %q: the folders read are not after the read-only mode and before the model", argv)
+	}
+	// Settings is told the same folders.
+	folders, _ := b.expect(t, "GET", "/api/brakeman", nil, http.StatusOK, "")["folders"].(map[string]any)
+	if folders["turn"] != desk || fmt.Sprint(folders["reads"]) != fmt.Sprint([]any{b.root, other}) {
+		t.Fatalf("the state's folders %v, want %s reading %s and %s", folders, desk, b.root, other)
 	}
 	if l.Info().Yolo || slices.Contains(argv, "--dangerously-skip-permissions") {
 		t.Fatalf("a turn took yolo: %q", argv)

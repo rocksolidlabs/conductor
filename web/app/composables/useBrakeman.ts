@@ -1,4 +1,4 @@
-import type { BrakemanBrief, BrakemanConfig, BrakemanRequest, BrakemanRole, BrakemanState, RefResolution, RoleLogRow } from '../utils/brakeman'
+import type { BrakemanBrief, BrakemanConfig, BrakemanFolders, BrakemanRequest, BrakemanRole, BrakemanState, RefResolution, RoleLogRow } from '../utils/brakeman'
 import { closed, keptBrief, openedMark, requestNumber, stateRank, stopAction, unopened } from '../utils/brakeman'
 import { dropKeptMake, readKeptMakes, reconcileActs, reconcileMade, sendKept, storeKeptMake, type KeptMake } from '../utils/brakemanCards'
 import { mintCommandId } from '../utils/tasks'
@@ -489,14 +489,14 @@ export function useBrakeman() {
   }
 
   /**
-   * Saves the configuration read at `rev`: {config, warnings?}. A reply that arrives after a reset is the token before's (perhaps
+   * Saves the configuration read at `rev`: {config, warnings?, folders?}. A reply that arrives after a reset is the token before's (perhaps
    * another server's configuration): it is refused, and neither the store nor the form takes it.
    */
   async function saveConfig(config: BrakemanConfig) {
     const at = store.generation
-    const out = await request<{ config: BrakemanConfig; warnings?: string[] }>('/api/brakeman/config', { method: 'PUT', body: { rev: config.rev, config } })
+    const out = await request<{ config: BrakemanConfig; warnings?: string[]; folders?: BrakemanFolders }>('/api/brakeman/config', { method: 'PUT', body: { rev: config.rev, config } })
     if (store.generation !== at) throw new Error("The token changed before the save was answered: the configuration shown is this server's.")
-    if (store.state) store.state = { ...store.state, config: out.config, warnings: out.warnings }
+    if (store.state) store.state = { ...store.state, config: out.config, warnings: out.warnings, folders: out.folders }
     version.value++
     void store.readState()
     return out
