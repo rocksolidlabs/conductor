@@ -1240,6 +1240,10 @@ func (s *Server) applyTry(ctx context.Context, v dispatch.Review, e reviewSettle
 	if err != nil {
 		return applyOutcome{why: "the run's chain could not be read (" + err.Error() + "): send it again"}
 	}
+	if admitted, _ := ctx.Value(reviewRunKey{}).(string); admitted != "" && admitted != newest {
+		// Brakeman's request is held to the run it was admitted on.
+		return applyOutcome{why: fmt.Sprintf("run %s was continued as %s since the request was admitted, so nothing was sent: request changes of a candidate there", admitted, newest)}
+	}
 	cmd := crew.Command{ID: e.command, ExpectedRevision: expected}
 	rq := crew.RepairRequest{Task: c.Task, Attempt: c.Attempt, Commit: c.Commit, Request: reviewRequest(v)}
 	if newest != c.Run {
@@ -1271,6 +1275,18 @@ func (s *Server) applyTry(ctx context.Context, v dispatch.Review, e reviewSettle
 		why = err.Error()
 	}
 	return s.readBack(ctx, newest, e, why)
+}
+
+// reviewRunKey keys the run a Brakeman act's review was admitted on
+// (withReviewRun).
+type reviewRunKey struct{}
+
+// withReviewRun is ctx carrying the run a review of Brakeman's
+// (request_repair) was admitted on, its candidate's: its application is
+// refused when the newest run of the candidate's chain is another, a
+// continuation made since, never sent there (applyTry).
+func withReviewRun(ctx context.Context, run string) context.Context {
+	return context.WithValue(ctx, reviewRunKey{}, run)
 }
 
 // continueWith makes the continuation of the run that carries the repair

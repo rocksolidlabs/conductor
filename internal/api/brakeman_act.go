@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"unicode/utf8"
 
@@ -55,23 +56,21 @@ type actRoute struct {
 }
 
 // actRoutes is the routes each granted operation is sent to, by pattern.
-// request_repair (RV1's request changes on a candidate) has no route in
-// this build: it cannot be granted (actServed). route_decision is DR1's
-// routing route (brakeman_act_decision.go).
+// request_repair is RV1's review route (brakeman_act_repair.go),
+// route_decision DR1's routing route (brakeman_act_decision.go).
 var actRoutes = map[string]actRoute{
-	"POST /api/dispatch/tickets/{key}/launch": {op: brakeman.ActLaunchApprovedPlan, bound: maxTicketLaunchBody},
-	"POST /api/dispatch/tickets/{key}/plans":  {op: brakeman.ActPrepareFollowup, bound: maxTicketBody},
-	decisionRoutePattern:                      {op: brakeman.ActRouteDecision, bound: maxDecisionAnswerBody},
+	"POST /api/dispatch/tickets/{key}/launch":  {op: brakeman.ActLaunchApprovedPlan, bound: maxTicketLaunchBody},
+	"POST /api/dispatch/tickets/{key}/reviews": {op: brakeman.ActRequestRepair, bound: maxReviewBody},
+	"POST /api/dispatch/tickets/{key}/plans":   {op: brakeman.ActPrepareFollowup, bound: maxTicketBody},
+	decisionRoutePattern:                       {op: brakeman.ActRouteDecision, bound: maxDecisionAnswerBody},
 }
 
 // actServed answers nil for a granted operation whose route this build
 // serves, else why not (brakeman.Facts.ServesAct).
 func actServed(op string) error {
 	switch op {
-	case brakeman.ActLaunchApprovedPlan, brakeman.ActPrepareFollowup, brakeman.ActRouteDecision:
+	case brakeman.ActLaunchApprovedPlan, brakeman.ActRequestRepair, brakeman.ActPrepareFollowup, brakeman.ActRouteDecision:
 		return nil
-	case brakeman.ActRequestRepair:
-		return errors.New("RV1's request for changes on a candidate is not served by this build")
 	}
 	return fmt.Errorf("no operation %s", op)
 }
@@ -137,6 +136,10 @@ type actBody struct {
 	Plan, Label string
 	// Propose is a follow-up's request (its crew and basedOn among it).
 	Propose dispatch.PlanRequest
+	// Review is a request for changes as RV1's route decodes it, and
+	// Candidate its candidate.
+	Review    reviewSubmitBody
+	Candidate dispatch.Candidate
 }
 
 // turnAct answers a Brakeman turn's act on the operation ar
@@ -251,7 +254,7 @@ func (s *Server) turnAct(w http.ResponseWriter, r *http.Request, tp *turnPrincip
 		}
 	}
 	if admit {
-		act := brakeman.Act{OpID: body.OpID, Operation: ar.op, Target: target, Op: op, Args: args, State: brakeman.ActPending, At: d.now().UTC()}
+		act := brakeman.Act{OpID: body.OpID, Operation: ar.op, Target: target, Run: body.Candidate.Run, Op: op, Args: args, State: brakeman.ActPending, At: d.now().UTC()}
 		var ae *apiError
 		switch err := s.pendAct(ctx, ds, tp, ar, key, body, act); {
 		case err == nil:
@@ -289,6 +292,12 @@ func (s *Server) turnAct(w http.ResponseWriter, r *http.Request, tp *turnPrincip
 		return
 	}
 	s.copyActOutcome(d, req.ID, body.OpID, rec)
+	if ar.op == brakeman.ActRequestRepair {
+		// A review's answer speaks of its candidate's run too.
+		d.readMu.Lock()
+		d.usedClass(req.ID, brakeman.ClassRuns)
+		d.readMu.Unlock()
+	}
 	s.answerAct(ctx, w, tp, key, op, rec)
 }
 
@@ -462,6 +471,11 @@ func actArgs(ar actRoute, key string, raw []byte) (actBody, string, *apiError) {
 	var body actBody
 	var canon any
 	switch ar.op {
+	case brakeman.ActRequestRepair:
+		var aerr *apiError
+		if body, canon, aerr = repairArgs(raw); aerr != nil {
+			return actBody{}, "", aerr
+		}
 	case brakeman.ActPrepareFollowup:
 		var b planProposeBody
 		if err := store.DecodeStrict(raw, &b); err != nil {
@@ -524,14 +538,16 @@ func (s *Server) admitAct(ctx context.Context, ds *dispatch.Store, tp *turnPrinc
 	// What the turn may see, checked apart from the grant: a grant gives
 	// no read.
 	o := s.newObserver(tp)
-	if !seesAny(actClasses, o.grant.sees) {
-		return newAPIError(http.StatusForbidden, "not_visible", "Brakeman may not see "+brakeman.ClassDispatch)
+	if !actSees(ar.op, o.grant.sees) {
+		return newAPIError(http.StatusForbidden, "not_visible", "Brakeman may not see "+strings.Join(actClassesOf(ar.op), " and "))
 	}
 	aerr := s.admitVisibleAct(ctx, ds, o, ar, key, body)
 	if aerr != nil {
 		d := s.brakeman
 		d.readMu.Lock()
-		d.usedClass(tp.req.ID, brakeman.ClassDispatch)
+		for _, c := range actClassesOf(ar.op) {
+			d.usedClass(tp.req.ID, c)
+		}
 		d.readMu.Unlock()
 	}
 	return aerr
@@ -545,6 +561,11 @@ func (s *Server) admitVisibleAct(ctx context.Context, ds *dispatch.Store, o *obs
 		return newAPIError(http.StatusInternalServerError, "store_failed", "the ticket's runs could not be read")
 	case !ok:
 		return newAPIError(http.StatusForbidden, "outside_scope", "outside the request's scope")
+	}
+	if ar.op == brakeman.ActRequestRepair {
+		if aerr := repairAdmitted(ctx, o, body.Candidate); aerr != nil {
+			return aerr
+		}
 	}
 	if ar.op == brakeman.ActPrepareFollowup {
 		// The follow-up's crew and the folder it would plan in, as the
@@ -647,6 +668,9 @@ func (s *Server) actTargetState(ctx context.Context, ds *dispatch.Store, o *obse
 	if body.ExpectedRev > 0 && tk.Rev != body.ExpectedRev {
 		return newAPIError(http.StatusConflict, dispatch.RefusalStaleRevision, fmt.Sprintf("the revision expected is %d; %s's is %d: read it again", body.ExpectedRev, key, tk.Rev))
 	}
+	if ar.op == brakeman.ActRequestRepair {
+		return s.repairTargetState(ctx, body.Candidate)
+	}
 	id, what := body.Plan, "the revision to launch"
 	if ar.op == brakeman.ActPrepareFollowup {
 		id, what = body.Propose.BasedOn, "the approved revision a follow-up is based on (basedOn)"
@@ -716,6 +740,8 @@ func (s *Server) runAct(ctx context.Context, rec *replyRecorder, ds *dispatch.St
 			return actMakesAdmitted(ctx, o, crewID, cwd)
 		}}
 		s.ticketPropose(ctx, rec, ds, dispatch.Op{Actor: brakemanActor, ID: op, ExpectedRev: body.ExpectedRev, By: brakemanBy}, key, body.Propose, guard)
+	case brakeman.ActRequestRepair:
+		s.runRepair(ctx, rec, ds, key, op, body)
 	}
 }
 

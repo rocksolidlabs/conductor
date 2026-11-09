@@ -1016,7 +1016,7 @@ func TestEachBodyBoundIsItsRoutes(t *testing.T) {
 	// every operation this build serves, the act routes' own bodies.
 	bk := brakemanEnv(t, nil)
 	bk.enable(t, "bk", func(c map[string]any) {
-		c["permissions"].(map[string]any)["act"] = append(slices.Clone(everyGrant), brakeman.ActRouteDecision)
+		c["permissions"].(map[string]any)["act"] = append(slices.Clone(everyGrant), brakeman.ActRouteDecision, brakeman.ActRequestRepair)
 	})
 	bsid, btok, _ := bk.turnSession(t, bk.briefing(t))
 
@@ -1320,7 +1320,8 @@ func TestATurnsGuideListsItsGrantedOperations(t *testing.T) {
 		op := x.(map[string]any)
 		ops[op["name"].(string)] = op
 	}
-	for name, path := range map[string]string{"act": "/api/dispatch/tickets/{key}/launch", brakeman.ActLaunchApprovedPlan: "/api/dispatch/tickets/{key}/launch", brakeman.ActPrepareFollowup: "/api/dispatch/tickets/{key}/plans"} {
+	for name, path := range map[string]string{"act": "/api/dispatch/tickets/{key}/launch", brakeman.ActLaunchApprovedPlan: "/api/dispatch/tickets/{key}/launch", brakeman.ActPrepareFollowup: "/api/dispatch/tickets/{key}/plans",
+		brakeman.ActRequestRepair: "/api/dispatch/tickets/{key}/reviews"} {
 		op := ops[name]
 		if status != http.StatusOK || op == nil || op["scope"] != "act" || op["path"] != path || op["receipt"] != "dispatch" {
 			t.Errorf("the admin's %s: %v", name, op)
@@ -1330,9 +1331,6 @@ func TestATurnsGuideListsItsGrantedOperations(t *testing.T) {
 	// the decision's rev.
 	if op := ops[brakeman.ActRouteDecision]; op == nil || op["scope"] != "act" || op["path"] != "/api/decisions/{did}/route" || op["receipt"] != "ledger" || op["revision"] != "decision" {
 		t.Errorf("the admin's %s: %v", brakeman.ActRouteDecision, op)
-	}
-	if ops[brakeman.ActRequestRepair] != nil {
-		t.Errorf("%s, which this build serves no route of, is listed", brakeman.ActRequestRepair)
 	}
 }
 
