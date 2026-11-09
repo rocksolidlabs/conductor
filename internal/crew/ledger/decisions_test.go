@@ -898,7 +898,7 @@ func TestDecisionBounds(t *testing.T) {
 		}
 		n2 := open(t, l, gateDecision(run, "g2"))
 		for name, fn := range map[string]func(tx *Tx) error{
-			"a receipt past 8 KiB": func(tx *Tx) error {
+			"a receipt past 32 KiB": func(tx *Tx) error {
 				_, err := tx.Respond(n2, ResponseRow{Actor: "admin", Authority: workbenchAuth, ResponseID: "big", Fingerprint: "fp", Status: ResponseRefused,
 					Receipt: `{"words":"` + strings.Repeat("x", MaxDecisionReceipt) + `"}`})
 				return err
@@ -922,6 +922,17 @@ func TestDecisionBounds(t *testing.T) {
 			if err := try(l, run, fn); !errors.Is(err, ErrTooLarge) {
 				t.Fatalf("%s: %v", name, err)
 			}
+		}
+		// A receipt at its bound is kept (#751).
+		if err := try(l, run, func(tx *Tx) error {
+			words := strings.Repeat("x", MaxDecisionReceipt-len(`{"words":""}`))
+			got, err := tx.Respond(n2, ResponseRow{Actor: "admin", Authority: workbenchAuth, ResponseID: "at-bound", Fingerprint: "fp", Status: ResponseRefused, Receipt: `{"words":"` + words + `"}`})
+			if err == nil && (!got.Kept || len(got.Row.Receipt) != MaxDecisionReceipt) {
+				err = fmt.Errorf("the receipt at its bound: %+v", got)
+			}
+			return err
+		}); err != nil {
+			t.Fatalf("a receipt at its bound: %v", err)
 		}
 		// Applied only with its receipt.
 		answer(t, l, run, n2, "r-wb", workbenchAuth)
@@ -1455,7 +1466,8 @@ func TestAReleasedHoldKeepsItsRow(t *testing.T) {
 
 // MoveHolds writes the run continued's holds under the continuation as
 // they are and releases the active ones of the run continued, at the
-// move's time: one active row, under the decision's current run.
+// move's time: one active row, under the decision's current run, and the
+// record read with what it holds there.
 func TestMoveHoldsLeavesOneActiveRow(t *testing.T) {
 	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
 	ctx := context.Background()
@@ -1473,6 +1485,9 @@ func TestMoveHoldsLeavesOneActiveRow(t *testing.T) {
 		_, err := tx.Release(a, "deploy", n)
 		return err
 	})
+	if rec := record(t, l, n); rec.CurrentRun != a || !slices.Equal(rec.Held, []string{"build"}) {
+		t.Fatalf("the record before the move holds %v under %s", rec.Held, rec.CurrentRun)
+	}
 	released := map[string]time.Time{}
 	hs, _ := l.Holds(ctx, a)
 	for _, h := range hs {
@@ -1504,6 +1519,9 @@ func TestMoveHoldsLeavesOneActiveRow(t *testing.T) {
 	}
 	if c := countRows(t, l, "SELECT COUNT(*) FROM decision_holds WHERE decision = ? AND released_at = ''", n); c != 1 {
 		t.Fatalf("%d active holds", c)
+	}
+	if rec := record(t, l, n); rec.CurrentRun != b || !slices.Equal(rec.Held, []string{"build"}) {
+		t.Fatalf("the record after the move holds %v under %s", rec.Held, rec.CurrentRun)
 	}
 	in(t, l, a, func(tx *Tx) error {
 		if err := tx.Hold(a, "build", n); !errors.Is(err, ErrNotCurrent) {

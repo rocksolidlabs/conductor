@@ -19,6 +19,7 @@ import (
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -31,10 +32,12 @@ import (
 
 // inboxPage is a page of GET /api/inbox, decoded.
 type inboxPageOut struct {
-	Items []inboxSummary `json:"items"`
-	Next  string         `json:"next"`
-	Total int            `json:"total"`
-	At    time.Time      `json:"at"`
+	Items    []inboxSummary `json:"items"`
+	Next     string         `json:"next"`
+	Total    int            `json:"total"`
+	Tracking int            `json:"tracking"`
+	Recent   []inboxSummary `json:"recent"`
+	At       time.Time      `json:"at"`
 }
 
 // inboxList reads a page of the inbox after after, failing t unless 200.
@@ -453,7 +456,7 @@ func maxItem() *inboxItem {
 		Question: esc(session.MaxAttentionMessage), Answerer: fitText(esc(200), 120), RoutedRule: fitText(esc(400), 200),
 		Revision: strings.Repeat("9", 64), Now: fitText(esc(900), 500), WhyHuman: fitText(esc(3000), 1<<10),
 		Uncertainty: fitText(esc(3000), 1<<10), Authorizes: fitText(esc(3000), 1<<10), CardRev: strings.Repeat("9", 64),
-		CardNote: fitText(esc(400), 200), Recommended: 5}
+		CardNote: fitText(esc(400), 200), Recommended: 5, State: ledger.DecisionSuperseded}
 	it.Subject = it.Ref
 	for range ext.MaxDestinations {
 		it.RoutedTo = append(it.RoutedTo, inboxDestination{Kind: "person", Name: strings.Repeat("<", ext.MaxDestinationName)})
@@ -463,8 +466,9 @@ func maxItem() *inboxItem {
 		it.Blocking.Refs = append(it.Blocking.Refs, fitText(ref, maxInboxRef))
 		it.Evidence = append(it.Evidence, inboxRef{Ref: fitText(ref, maxInboxRef), Label: fitText(esc(400), 200)})
 	}
+	five := 5
 	for range inboxActions {
-		it.Actions = append(it.Actions, inboxAction{Name: "answer", Label: fitText(esc(100), 80), Input: ctl, Text: true, Expect: strings.Repeat("9", 64),
+		it.Actions = append(it.Actions, inboxAction{Name: "answer", Label: fitText(esc(100), 80), Input: ctl, Text: true, Choice: &five, Expect: strings.Repeat("9", 64),
 			TicketRev: 1 << 62, Scope: fitText(esc(2000), 1<<10), Confirm: true, Route: fitText(esc(400), 200)})
 	}
 	for range 6 {
@@ -502,12 +506,20 @@ func TestInboxItemBounded(t *testing.T) {
 	}
 }
 
-// 150 summaries at their bounds: the reply at most 640 KiB.
+// 150 summaries at their bounds, and Recent's 50 closed: the reply at
+// most 840 KiB.
 func TestInboxReplyBounded(t *testing.T) {
 	s := maxItem().summary()
-	out := inboxPageOut{Total: 1 << 30, Next: strings.Repeat("x", maxInboxCursor), At: time.Now()}
+	s.Tracking = true
+	at := time.Now()
+	out := inboxPageOut{Total: 1 << 30, Tracking: 1 << 30, Next: strings.Repeat("x", maxInboxCursor), At: at}
 	for range inboxPage {
 		out.Items = append(out.Items, s)
+	}
+	closed := s
+	closed.Closed = &at
+	for range inboxRecent {
+		out.Recent = append(out.Recent, closed)
 	}
 	b, err := json.Marshal(out)
 	if err != nil {

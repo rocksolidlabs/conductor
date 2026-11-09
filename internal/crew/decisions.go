@@ -62,6 +62,11 @@ const (
 	maxAnswerText    = 4096    // ext.MaxAnswerText
 	maxRationale     = 2 << 10 // as encoded
 	maxDecisionTries = 3       // a response retried against the run that holds it
+	// maxReceiptWords bounds a response receipt's words as encoded
+	// (cutReceiptWords), so that a response whose fields are within their
+	// bounds always has a receipt within ledger.MaxDecisionReceipt, the
+	// sum of its fields' encoded worst cases (#751).
+	maxReceiptWords = 3 << 10
 )
 
 // The codes a decision's refusal names (DecisionError.Code), the routes'
@@ -1396,15 +1401,7 @@ func (e *Engine) TaskDecision(ctx context.Context, sessionID, id string) (Decisi
 func (e *Engine) decisionOf(rec ledger.DecisionRecord) Decision {
 	d := DecisionOf(rec)
 	if d.Asker != nil {
-		e.mu.Lock()
-		if r := e.runs[rec.CurrentRun]; r != nil {
-			if t := r.task(rec.TaskID); t != nil {
-				if a := t.active(); a != nil && a.n == rec.Attempt && a.sessionID == rec.SessionID && e.sessionLive(a.sessionID) {
-					d.Asker.Live = true
-				}
-			}
-		}
-		e.mu.Unlock()
+		d.Asker.Live = e.AskerLive(rec.DecisionRow)
 	}
 	return d
 }
@@ -1456,6 +1453,31 @@ func DecisionOf(rec ledger.DecisionRecord) Decision {
 		d.Asker = &DecisionAsker{Task: rec.TaskID, Attempt: rec.Attempt}
 	}
 	return d
+}
+
+// DecisionOf is the record rec, read whole once, as Decision reports it:
+// for a reader that has judged that read (a decision link's scope) and
+// must report the same, not a read made after it.
+func (e *Engine) DecisionOf(rec ledger.DecisionRecord) Decision { return e.decisionOf(rec) }
+
+// AskerLive says whether an agent's decision's asking attempt is its
+// task's active one, in the session that asked, and that session lives:
+// the one a request for more information reaches (Decision's
+// Asker.Live). False for a plan's.
+func (e *Engine) AskerLive(row ledger.DecisionRow) bool {
+	if row.Origin != ledger.OriginAgent {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if r := e.runs[row.CurrentRun]; r != nil {
+		if t := r.task(row.TaskID); t != nil {
+			if a := t.active(); a != nil && a.n == row.Attempt && a.sessionID == row.SessionID && e.sessionLive(a.sessionID) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // sessionLive reports whether the session is the server's and has not
@@ -1661,6 +1683,7 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 		}
 		rc.Rev = d.Rev + 1
 	}
+	rc.Words = cutReceiptWords(rc.Words)
 	got, err := dtx.Respond(n, ledger.ResponseRow{Actor: actor, Authority: authRaw, ResponseID: resp.ResponseID, Fingerprint: fp, Status: status, Receipt: receiptJSON(rc)})
 	switch {
 	case errors.Is(err, ledger.ErrDecisionLimit) && auth.Via == ViaIdentity:
@@ -1753,6 +1776,43 @@ func nameOf(byName, actor string) string {
 func receiptJSON(rc ResponseReceipt) string {
 	b, _ := json.Marshal(rc)
 	return string(b)
+}
+
+// cutReceiptWords are a receipt's words cut where a character ends to
+// maxReceiptWords bytes as encoded, their quotes and the mark of a cut
+// ("…") counted: the words are the engine's own (a stale response's
+// changes, a closed decision's why), never a field of the response.
+func cutReceiptWords(w string) string {
+	if CutEncoded(w, maxReceiptWords-2) == w {
+		return w
+	}
+	return CutEncoded(w, maxReceiptWords-2-len("…")) + "…"
+}
+
+// CutEncoded is s cut where a character ends to at most n bytes as
+// encoding/json encodes it: a character JSON escapes counts as its escape
+// (a control character, <, > and & six bytes, " and \ two, U+2028 and
+// U+2029 six, a byte that is not UTF-8 six, as �).
+func CutEncoded(s string, n int) string {
+	size := 0
+	for i := 0; i < len(s); {
+		c, w := utf8.DecodeRuneInString(s[i:])
+		enc := w
+		switch {
+		case c == utf8.RuneError && w == 1:
+			enc = 6
+		case c == '"' || c == '\\' || c == '\n' || c == '\r' || c == '\t':
+			enc = 2
+		case c < 0x20 || c == '<' || c == '>' || c == '&' || c == '\u2028' || c == '\u2029':
+			enc = 6
+		}
+		if size+enc > n {
+			return s[:i]
+		}
+		size += enc
+		i += w
+	}
+	return s
 }
 
 // answeredWords say who answered a decision and when, from its record as

@@ -203,8 +203,14 @@ const (
 	MaxAuthority      = 1 << 10
 	// MaxDecisionReceipt bounds a response's receipt, MaxDecisionApplied
 	// the application receipt, MaxHistoryDetail a history row's detail
-	// and MaxDecisionWhy a final state's words, as encoded.
-	MaxDecisionReceipt = 8 << 10
+	// and MaxDecisionWhy a final state's words, as encoded. A response's
+	// receipt is the sum of its fields' encoded worst cases (internal/crew,
+	// receiptJSON): a text of 4,096 bytes that escape to six each (24 KiB),
+	// a rationale of 2 KiB, an actor of MaxDecisionActor bytes and a name
+	// of 64 characters escaping alike, its words at 3 KiB and the rest,
+	// under 32 KiB, so a response within its fields' bounds is never
+	// refused for its receipt (#751).
+	MaxDecisionReceipt = 32 << 10
 	MaxDecisionApplied = 4 << 10
 	MaxHistoryDetail   = 2 << 10
 	MaxDecisionWhy     = 2 << 10
@@ -395,11 +401,14 @@ type HoldRow struct {
 	ReleasedAt time.Time
 }
 
-// DecisionRecord is a decision with its responses and history, in order.
+// DecisionRecord is a decision with its responses and history, in order,
+// and the tasks it holds now (its active holds under its current run, by
+// task; none when it holds nothing), all of one read.
 type DecisionRecord struct {
 	DecisionRow
 	Responses []ResponseRow
 	History   []HistoryRow
+	Held      []string
 }
 
 // Respond's outcomes beside its row: Repeat when the actor sent the same
@@ -1454,8 +1463,9 @@ type DecisionFilter struct {
 	Limit      int
 }
 
-// Decision reads decision n with its responses and history, all three of
-// one commit (one read transaction), so a transition committed meanwhile
+// Decision reads decision n with its responses, its history and the
+// tasks it holds, all of one commit (one read transaction), so a
+// transition committed meanwhile (a continuation moving it and its holds)
 // is seen whole or not at all.
 func (l *Ledger) Decision(ctx context.Context, n int64) (DecisionRecord, bool, error) {
 	return l.decisionWhere(ctx, n, "")
@@ -1499,7 +1509,8 @@ func (l *Ledger) decisionWhere(ctx context.Context, n int64, cond string, args .
 	return rec, true, nil
 }
 
-// readRecord reads decision n's responses and history into rec, through q.
+// readRecord reads decision n's responses, history and the tasks it holds
+// into rec, through q.
 func readRecord(ctx context.Context, q querier, n int64, rec *DecisionRecord) error {
 	rows, err := q.QueryContext(ctx, "SELECT "+responseCols+" FROM decision_responses WHERE decision = ? ORDER BY k", n)
 	if err != nil {
@@ -1528,7 +1539,12 @@ func readRecord(ctx context.Context, q querier, n int64, rec *DecisionRecord) er
 		}
 		rec.History = append(rec.History, h)
 	}
-	return cmp.Or(rows.Err(), rows.Close())
+	if err := cmp.Or(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	held, err := readHeld(ctx, q, []int64{n})
+	rec.Held = held[n]
+	return err
 }
 
 // Record reads decision n with its responses and history within the
