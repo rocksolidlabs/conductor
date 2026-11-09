@@ -429,8 +429,11 @@ export interface PlanReference {
 export interface PlanDecision {
   id: string
   question: string
-  kind: 'approval' | 'clarification'
+  /** An approval, a clarification, or an assignment: work a person does by hand, answered Done or Not done (HM1). */
+  kind: 'approval' | 'clarification' | 'assignment'
   before: string[]
+  /** Whom it is for (HM1): `role:architecture` (a responsibility of the crew) or `person:nate`; absent for the operator alone. */
+  for?: string
 }
 
 /** The saved crew as a revision keeps it: the fields the page shows of it, its working directory and its yolo choice fixed. */

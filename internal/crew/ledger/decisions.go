@@ -203,8 +203,14 @@ const (
 	MaxAuthority      = 1 << 10
 	// MaxDecisionReceipt bounds a response's receipt, MaxDecisionApplied
 	// the application receipt, MaxHistoryDetail a history row's detail
-	// and MaxDecisionWhy a final state's words, as encoded.
-	MaxDecisionReceipt = 8 << 10
+	// and MaxDecisionWhy a final state's words, as encoded. A response's
+	// receipt is the sum of its fields' encoded worst cases (internal/crew,
+	// receiptJSON): a text of 4,096 bytes that escape to six each (24 KiB),
+	// a rationale of 2 KiB, an actor of MaxDecisionActor bytes and a name
+	// of 64 characters escaping alike, its words at 3 KiB and the rest,
+	// under 32 KiB, so a response within its fields' bounds is never
+	// refused for its receipt (#751).
+	MaxDecisionReceipt = 32 << 10
 	MaxDecisionApplied = 4 << 10
 	MaxHistoryDetail   = 2 << 10
 	MaxDecisionWhy     = 2 << 10
@@ -427,6 +433,41 @@ type requestShape struct {
 	Expertise      []string      `json:"expertise,omitempty"`
 	Subject        *subjectShape `json:"subject"`
 	Supersedes     string        `json:"supersedes,omitempty"`
+	For            *forShape     `json:"for,omitempty"`
+}
+
+// forShape is whom a decision is for (docs/plans/decisions.md, HM1): the
+// label as given, the person it named when it was resolved ("" for one
+// that resolved to no one) and the responsibility, "" for a person named
+// by name.
+type forShape struct {
+	Label          string `json:"label"`
+	Person         string `json:"person"`
+	Responsibility string `json:"responsibility,omitempty"`
+}
+
+// The bounds of a request's for: a label is role: or person: and a name of
+// at most MaxForName characters, the person such a name, the
+// responsibility a word of the four.
+const (
+	MaxForName           = 60
+	maxForLabel          = len("person:") + MaxForName*4
+	maxForResponsibility = 20
+)
+
+func checkFor(f *forShape) error {
+	if f == nil {
+		return nil
+	}
+	switch {
+	case f.Label == "" || len(f.Label) > maxForLabel || !utf8.ValidString(f.Label):
+		return invalid("for's label is 1 to %d bytes", maxForLabel)
+	case utf8.RuneCountInString(f.Person) > MaxForName || !utf8.ValidString(f.Person):
+		return invalid("for's person is at most %d characters", MaxForName)
+	case len(f.Responsibility) > maxForResponsibility:
+		return invalid("for's responsibility is at most %d bytes", maxForResponsibility)
+	}
+	return nil
 }
 
 // subjectShape is the exact thing a decision is about: a commit, a
@@ -548,6 +589,9 @@ func checkRequest(raw, typ string) error {
 		if _, ok := ParseDecisionID(r.Supersedes); !ok {
 			return invalid("supersedes %q is not a decision's id", r.Supersedes)
 		}
+	}
+	if err := checkFor(r.For); err != nil {
+		return err
 	}
 	return checkSubject(r.Subject)
 }
@@ -927,6 +971,51 @@ func (t *Tx) PutDecision(d DecisionRow) error {
 	}
 	_, err = t.tx.ExecContext(t.ctx, `UPDATE decisions SET state = ?, rev = ?, why = ?, superseded_by = ?, applied = ?, current_run = ?, closed_at = ? WHERE n = ?`,
 		d.State, d.Rev, d.Why, d.SupersededBy, d.Applied, d.CurrentRun, stamp(closed), d.N)
+	return err
+}
+
+// RouteFor writes decision n's request as request, which differs from the
+// one kept only in whom it is for (its for: a route to a person's label,
+// docs/plans/decisions.md, HM1): only while the decision is open
+// (ErrDecisionState otherwise), the request of its shape and bounds, every
+// other field byte for byte the opening's (ErrInvalidDecision otherwise).
+// The rev and the history are the caller's, in the same transaction.
+func (t *Tx) RouteFor(n int64, request string) error {
+	cur, err := t.mustDecision(n)
+	if err != nil {
+		return err
+	}
+	if cur.State != DecisionOpen {
+		return fmt.Errorf("%w: %s is %s: whom it is for changes only while it is open", ErrDecisionState, cur.ID(), cur.State)
+	}
+	if err := checkRequest(request, cur.Type); err != nil {
+		return err
+	}
+	rest := func(raw string) (map[string]json.RawMessage, error) {
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			return nil, err
+		}
+		delete(m, "for")
+		return m, nil
+	}
+	was, err := rest(cur.Request)
+	if err != nil {
+		return invalid("the kept request: %v", err)
+	}
+	now, err := rest(request)
+	if err != nil {
+		return invalid("the request: %v", err)
+	}
+	if len(was) != len(now) {
+		return invalid("a route changes only whom %s is for", cur.ID())
+	}
+	for k, v := range was {
+		if w, ok := now[k]; !ok || string(w) != string(v) {
+			return invalid("a route changes only whom %s is for, not its %s", cur.ID(), k)
+		}
+	}
+	_, err = t.tx.ExecContext(t.ctx, `UPDATE decisions SET request = ? WHERE n = ?`, request, n)
 	return err
 }
 
@@ -1355,15 +1444,18 @@ func (t *Tx) Refund(run, task string, attempt int, d int64) (bool, error) {
 // Readers.
 
 // DecisionFilter narrows Decisions: by states (any of them; none for
-// every state), the run that holds a decision, its ticket, and a task (the
-// asking task, or one it holds or held); Before, a decision's n, pages
-// back from it (0 for the newest); Limit at most MaxDecisionsPage (0 for
-// that).
+// every state), the run that holds a decision, its ticket, a task (the
+// asking task, or one it holds or held), and the person it is for (For: a
+// name, matched exactly against the person its request's for named when
+// it was resolved, docs/plans/decisions.md, HM1); Before, a decision's n,
+// pages back from it (0 for the newest); Limit at most MaxDecisionsPage
+// (0 for that).
 type DecisionFilter struct {
 	States     []string
 	CurrentRun string
 	Ticket     string
 	Task       string
+	For        string
 	Before     int64
 	Limit      int
 }
@@ -1517,6 +1609,10 @@ func (l *Ledger) Decisions(ctx context.Context, f DecisionFilter) ([]DecisionRow
 	}
 	if f.Task != "" {
 		where, args = append(where, "(d.task_id = ? OR EXISTS (SELECT 1 FROM decision_holds h WHERE h.decision = d.n AND h.task_id = ?))"), append(args, f.Task, f.Task)
+	}
+	if f.For != "" {
+		// JSON1 is compiled into modernc.org/sqlite (docs/dependencies.md).
+		where, args = append(where, "json_extract(d.request, '$.for.person') = ?"), append(args, f.For)
 	}
 	if f.Before > 0 {
 		where, args = append(where, "d.n < ?"), append(args, f.Before)

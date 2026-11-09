@@ -631,6 +631,18 @@ func (s *Server) planBody(ctx context.Context, w http.ResponseWriter, ds *dispat
 	if err := c.Launchable(); err != nil {
 		return fail(http.StatusConflict, dispatch.RefusalInvalid, "the crew %s cannot be launched: %s", c.ID, err.Error())
 	}
+	// Whom each decision is for resolves in the crew the revision takes,
+	// as it is now (crew.Holder, the one list of the responsibilities):
+	// the revision's body keeps that crew, so a launch resolves the label
+	// against the same one (docs/plans/decisions.md, HM1).
+	for _, d := range req.Decisions {
+		if d.For == "" {
+			continue
+		}
+		if _, _, err := crew.Holder(c, d.For); err != nil {
+			return fail(http.StatusBadRequest, dispatch.RefusalInvalid, "the decision %s is for %s: %s", cut(d.ID, 64), cut(d.For, 80), err.Error())
+		}
+	}
 	cat := s.Catalog()
 	if err := c.CheckAgents(cat); err != nil {
 		return fail(http.StatusConflict, dispatch.RefusalInvalid, "the crew %s: %s", c.ID, err.Error())

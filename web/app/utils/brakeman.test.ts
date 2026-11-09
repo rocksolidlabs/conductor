@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { BrakemanAct, BrakemanConfig, BriefItem } from './brakeman'
 import { renderMarkdown } from './markdown'
-import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actFor, actsApart, readingBlocks, actLaunchRef, actMade, actReceiptRef, actShown, actShownFrom, actLaunchId, keepLaunch, MAX_KEPT_LAUNCHES, proposalOffered, actWords, followLaunch, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedFromBaseline, changedSince, configProblems, displayBy, formField, formMove, grantHeld, grantLabel, groupItems, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
+import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actFor, actsApart, readingBlocks, actLaunchRef, actMade, actReceiptRef, actShown, actShownFrom, actLaunchId, keepLaunch, MAX_KEPT_LAUNCHES, proposalOffered, actWords, followLaunch, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedFromBaseline, changedSince, configProblems, displayBy, foldersLine, formField, formMove, grantHeld, grantLabel, groupItems, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
 
 // Brakeman's words, refs and checks on the app's pages (docs/plans/brakeman.md, PR-6).
 
@@ -235,6 +235,16 @@ describe("a brief's items", () => {
     const r = { id: 'br-3', agent: { agentId: 'claude', adapter: 'claude', version: '2.1.287', model: 'sonnet' }, briefAt: '2026-11-02T09:00:00Z' }
     expect(provenance(r, 'Claude Code')).toBe('Claude Code · model sonnet · version 2.1.287 · request br-3 · as of 2026-11-02T09:00:00Z')
     expect(provenance({ ...r, agent: { agentId: 'claude' }, briefAt: undefined })).toBe("claude · its default model · request br-3")
+    // The folder the turn ran in, as its stamp names it (#705).
+    const folder = '/home/me/.local/share/conductor/data/brakeman/folders/default'
+    expect(provenance({ ...r, agent: { ...r.agent, folder } }, 'Claude Code')).toBe(`Claude Code · model sonnet · version 2.1.287 · request br-3 · as of 2026-11-02T09:00:00Z · ran in ${folder}`)
+  })
+
+  it('say where a turn runs and what it reads besides (#705)', () => {
+    expect(foldersLine({ turn: '/srv/code/app', reads: [] }, '/srv/code/app')).toBe('Its turns run in /srv/code/app.')
+    expect(foldersLine({ turn: '/srv/code/app', reads: ['/srv/other'] }, '/srv/code/app')).toBe('Its turns run in /srv/code/app, and read /srv/other besides.')
+    expect(foldersLine({ turn: '/d/brakeman/folders/default', reads: ['/home/me'] }, '/home/me')).toBe('Its turns run in /d/brakeman/folders/default, a folder of their own you trust once, and read /home/me besides.')
+    expect(foldersLine({ turn: '/d/f', reads: ['/home/me', '/srv/a', '/srv/b'] }, '/home/me')).toBe('Its turns run in /d/f, a folder of their own you trust once, and read /home/me, /srv/a and /srv/b besides.')
   })
 
   it('count as not opened until this browser opened them', () => {

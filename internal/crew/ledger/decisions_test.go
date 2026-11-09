@@ -803,7 +803,7 @@ func TestDecisionBounds(t *testing.T) {
 		}
 		n2 := open(t, l, gateDecision(run, "g2"))
 		for name, fn := range map[string]func(tx *Tx) error{
-			"a receipt past 8 KiB": func(tx *Tx) error {
+			"a receipt past 32 KiB": func(tx *Tx) error {
 				_, err := tx.Respond(n2, ResponseRow{Actor: "admin", Authority: workbenchAuth, ResponseID: "big", Fingerprint: "fp", Status: ResponseRefused,
 					Receipt: `{"words":"` + strings.Repeat("x", MaxDecisionReceipt) + `"}`})
 				return err
@@ -827,6 +827,17 @@ func TestDecisionBounds(t *testing.T) {
 			if err := try(l, run, fn); !errors.Is(err, ErrTooLarge) {
 				t.Fatalf("%s: %v", name, err)
 			}
+		}
+		// A receipt at its bound is kept (#751).
+		if err := try(l, run, func(tx *Tx) error {
+			words := strings.Repeat("x", MaxDecisionReceipt-len(`{"words":""}`))
+			got, err := tx.Respond(n2, ResponseRow{Actor: "admin", Authority: workbenchAuth, ResponseID: "at-bound", Fingerprint: "fp", Status: ResponseRefused, Receipt: `{"words":"` + words + `"}`})
+			if err == nil && (!got.Kept || len(got.Row.Receipt) != MaxDecisionReceipt) {
+				err = fmt.Errorf("the receipt at its bound: %+v", got)
+			}
+			return err
+		}); err != nil {
+			t.Fatalf("a receipt at its bound: %v", err)
 		}
 		// Applied only with its receipt.
 		answer(t, l, run, n2, "r-wb", workbenchAuth)
@@ -1796,5 +1807,93 @@ func TestMigrationEightToNineKeysARequestByItsTask(t *testing.T) {
 	docs := open(t, again, agentDecision(run, "docs", 1, "q1"))
 	if docs == n {
 		t.Fatalf("docs' q1 is build's %s", DecisionID(n))
+	}
+}
+
+// Decisions for a person (HM1, PR-12): the filter reads the person the
+// request's for named when it opened, matched exactly, with the other
+// filters and the page's bound as DR1's; a decision for no one, one for
+// another person, and a label that resolved to no one are not theirs.
+func TestDecisionsFilterByPerson(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	ctx := context.Background()
+	const run = "team-00000001"
+	newRun(t, l, run)
+	tasksOf(t, l, run, "build", "docs")
+	forOf := func(gate, f string) DecisionRow {
+		d := gateDecision(run, gate)
+		d.Request = strings.TrimSuffix(d.Request, "}") + `,"for":` + f + `}`
+		return d
+	}
+	nate1 := open(t, l, forOf("schema", `{"label":"role:architecture","person":"nate","responsibility":"architecture"}`))
+	open(t, l, forOf("docs", `{"label":"person:ana","person":"ana"}`))
+	open(t, l, gateDecision(run, "plain"))
+	open(t, l, forOf("lost", `{"label":"role:security","person":""}`))
+	nate2 := open(t, l, forOf("deploy", `{"label":"person:nate","person":"nate"}`))
+	open(t, l, forOf("case", `{"label":"person:Nate","person":"Nate"}`))
+	setState(t, l, run, nate1, DecisionCancelled, "")
+	ids := func(ds []DecisionRow) []int64 {
+		var out []int64
+		for _, d := range ds {
+			out = append(out, d.N)
+		}
+		return out
+	}
+	ds, err := l.Decisions(ctx, DecisionFilter{For: "nate"})
+	if err != nil || !slices.Equal(ids(ds), []int64{nate2, nate1}) {
+		t.Fatalf("nate's decisions %v, %v", ids(ds), err)
+	}
+	ds, err = l.Decisions(ctx, DecisionFilter{For: "nate", States: []string{DecisionOpen}})
+	if err != nil || !slices.Equal(ids(ds), []int64{nate2}) {
+		t.Fatalf("nate's open decisions %v, %v", ids(ds), err)
+	}
+	ds, err = l.Decisions(ctx, DecisionFilter{For: "nate", Limit: 1})
+	if err != nil || !slices.Equal(ids(ds), []int64{nate2}) {
+		t.Fatalf("a page of one of nate's %v, %v", ids(ds), err)
+	}
+	ds, err = l.Decisions(ctx, DecisionFilter{For: "nate", Before: nate2})
+	if err != nil || !slices.Equal(ids(ds), []int64{nate1}) {
+		t.Fatalf("the page after %s %v, %v", DecisionID(nate2), ids(ds), err)
+	}
+	if ds, err := l.Decisions(ctx, DecisionFilter{For: "ana"}); err != nil || len(ds) != 1 || ds[0].Gate != "docs" {
+		t.Fatalf("ana's decisions %+v, %v", ds, err)
+	}
+	if ds, err := l.Decisions(ctx, DecisionFilter{For: "bob"}); err != nil || len(ds) != 0 {
+		t.Fatalf("bob's decisions %+v, %v", ds, err)
+	}
+}
+
+// RouteFor (HM1, PR-12) writes whom an open decision is for and nothing
+// else: a request whose other fields differ is refused, as is one past its
+// bounds, and a decision that is not open keeps its request.
+func TestRouteForChangesOnlyFor(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	const run = "team-00000001"
+	newRun(t, l, run)
+	tasksOf(t, l, run, "build")
+	d := gateDecision(run, "schema")
+	base := d.Request
+	withFor := func(f string) string { return strings.TrimSuffix(base, "}") + `,"for":` + f + `}` }
+	d.Request = withFor(`{"label":"role:architecture","person":"nate","responsibility":"architecture"}`)
+	n := open(t, l, d)
+	ana := withFor(`{"label":"person:ana","person":"ana"}`)
+	in(t, l, run, func(tx *Tx) error { return tx.RouteFor(n, ana) })
+	if got := record(t, l, n).Request; got != ana {
+		t.Fatalf("the request after the route: %s", got)
+	}
+	other := strings.Replace(ana, "Ship the migration?", "Ship it now?", 1)
+	if err := try(l, run, func(tx *Tx) error { return tx.RouteFor(n, other) }); !errors.Is(err, ErrInvalidDecision) {
+		t.Fatalf("a route that changes the question: %v", err)
+	}
+	long := withFor(`{"label":"person:` + strings.Repeat("a", maxForLabel) + `","person":"a"}`)
+	if err := try(l, run, func(tx *Tx) error { return tx.RouteFor(n, long) }); !errors.Is(err, ErrInvalidDecision) {
+		t.Fatalf("a label past its bound: %v", err)
+	}
+	setState(t, l, run, n, DecisionCancelled, "")
+	if err := try(l, run, func(tx *Tx) error { return tx.RouteFor(n, base) }); !errors.Is(err, ErrDecisionState) {
+		t.Fatalf("a route of a cancelled decision: %v", err)
+	}
+	if got := record(t, l, n).Request; got != ana {
+		t.Fatalf("the cancelled decision's request became %s", got)
 	}
 }

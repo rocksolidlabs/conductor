@@ -78,13 +78,18 @@ const dispatchUsage = `Usage:
                                   [--attachment NAME]... [--comment N]...
                                   [--constraints-file F]
                                   [--decision ID:KIND:QUESTION[@TASK,...]]...
+                                  [--decision-for ID=role:RESP|person:NAME]...
                                   [--note TEXT]
       make the ticket's next plan revision from a saved crew with tasks, as it
       is now, at the commit REF names (HEAD when not given); the references,
       relative to the crew's folder, resolved at that commit; the attachments
       by name and the comments by number to hand over; F a file of Markdown,
-      - for stdin; a decision's KIND approval or clarification, the tasks
-      that wait on it after the last @
+      - for stdin; a decision's KIND approval, clarification or assignment
+      (work a person does by hand, answered Done or Not done), the tasks
+      that wait on it after the last @; --decision-for names whom decision
+      ID is for, a responsibility of the crew (architecture, product,
+      security, acceptance) or a person of it: the operator answers it for
+      them
   conductor dispatch plan approve KEY-n N [--note TEXT]
       approve revision N, the operator's act: it supersedes the approved one
   conductor dispatch plan withdraw KEY-n N

@@ -529,6 +529,24 @@ func TestTheFullestDecisionFitsItsBound(t *testing.T) {
 	}
 }
 
+// A response whose fields are at their bounds, of characters JSON
+// escapes to six bytes, is kept (#751): a text of 4,096 bytes of < and a
+// rationale of & at 2 KiB as encoded, sent as encoding/json sends them,
+// are recorded, answered 201 and read back whole.
+func TestAResponseAtItsFieldsBoundsIsKept(t *testing.T) {
+	f := newDecisionFixture(t, nil, nil)
+	f.ask(t, map[string]any{"requestId": "c1", "type": "clarification", "question": "Which index?"}, http.StatusCreated, "")
+	text, rationale := strings.Repeat("<", ext.MaxAnswerText), strings.Repeat("&", (2<<10-2)/6)
+	out := f.expect(t, http.MethodPost, "/api/decisions/dr-1/respond", map[string]any{"responseId": "r1", "text": text, "rationale": rationale, "expectedRev": 1}, http.StatusCreated, "")
+	if rc := entityOf(t, out, "receipt"); rc["status"] != "accepted" || rc["text"] != text || rc["rationale"] != rationale {
+		t.Fatalf("the receipt: %.300v", rc)
+	}
+	d := f.decisionWhen(t, "dr-1", "applied", inState(ledger.DecisionApplied))
+	if rs, _ := d["responses"].([]any); len(rs) != 1 || rs[0].(map[string]any)["text"] != text || rs[0].(map[string]any)["rationale"] != rationale {
+		t.Fatalf("the responses read back: %.300v", d["responses"])
+	}
+}
+
 // The operator's lists (GET /api/decisions, a ticket's decisions) give
 // each record without its history and its responses (listedOf): the
 // fullest such record fits maxDecisionListed, so a page of them with its
@@ -559,7 +577,9 @@ func TestTheOperatorsDecisionListFitsItsBound(t *testing.T) {
 	}
 }
 
-// fullestDecision is the fullest record: every part at its bound.
+// fullestDecision is the fullest record: every part at its bound, its
+// free text (why, the answer) of characters JSON escapes to six bytes,
+// its identifiers at their patterns' widths (#751, review round 1).
 func fullestDecision(t *testing.T) crew.Decision {
 	t.Helper()
 	text := func(n int) string { return strings.Repeat("a", n) }
@@ -570,8 +590,8 @@ func fullestDecision(t *testing.T) crew.Decision {
 		Origin: ledger.OriginAgent, Type: ledger.DecisionApproval, Gate: text(40), Asker: &crew.DecisionAsker{Task: text(40), Attempt: 1 << 30, Live: true},
 		Member: text(64), Ticket: text(16), Plan: text(16), PlanDigest: text(64), RequestID: text(32),
 		Request: raw(ledger.MaxDecisionRequest), Evidence: raw(ledger.MaxDecisionBaseline), Policy: raw(ledger.MaxDecisionPolicy),
-		State: ledger.DecisionSuperseded, Rev: 1 << 30, Why: text(ledger.MaxDecisionWhy), SupersededBy: ledger.DecisionID(1<<63 - 1),
-		Answer: text(ledger.MaxOptionLabel*4) + ": " + text(ext.MaxAnswerText), CreatedAt: at, AnsweredAt: &at, ClosedAt: &at}
+		State: ledger.DecisionSuperseded, Rev: 1 << 30, Why: strings.Repeat("<", ledger.MaxDecisionWhy), SupersededBy: ledger.DecisionID(1<<63 - 1),
+		Answer: strings.Repeat("<", ledger.MaxOptionLabel) + ": " + strings.Repeat("<", ext.MaxAnswerText), CreatedAt: at, AnsweredAt: &at, ClosedAt: &at}
 	for range ledger.MaxDecisionResponses {
 		rc := crew.ResponseReceipt{Decision: d.ID, K: 1 << 30, Status: "refused", Code: crew.CodeStaleDecision, Actor: text(ledger.MaxDecisionActor), Choice: &choice, At: at, Rev: 1 << 30}
 		fixed := len(decisionJSON(t, rc))
@@ -618,8 +638,8 @@ func TestAFullDecisionListFitsItsBound(t *testing.T) {
 	if n := len(encodedReply(t, map[string]any{"decisions": page, "next": row.ID()})); n > maxDecisionSummaryPage {
 		t.Fatalf("a page of %d bytes, over %d", n, maxDecisionSummaryPage)
 	}
-	if got := cutEncoded("ab<é ", 4); got != "ab" {
-		t.Fatalf("cutEncoded: %q", got)
+	if got := crew.CutEncoded("ab<é ", 4); got != "ab" {
+		t.Fatalf("CutEncoded: %q", got)
 	}
 	// Two decisions, a page of one: the newest with next, then the other without.
 	f := newDecisionFixture(t, nil, nil)
