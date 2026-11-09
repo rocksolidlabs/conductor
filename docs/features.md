@@ -4801,8 +4801,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   Later PRs, each adding its paragraph and its own short observation here;
   none of them holds HS1's Done. PR-9 (#626, PR #755): DR1's decision records in
   the history, in its own entry below. PR-10 (#628, PR #763): RV1's review
-  batches and findings, in its own entry below. PR-11 (#630): Brakeman
-  reads history within its grant, in its own entry below.
+  batches and findings, in its own entry below. PR-11 (#630, PR #764):
+  Brakeman reads history within its grant, in its own entry below.
   PR-12 (#632): what a host reports of its sessions, and a hosted
   session's record.
 - **Searchable history: DR1's decisions in it (HS1 PR-9, #626,
@@ -4854,7 +4854,7 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   its body.
 - **Searchable history: Brakeman reads it within its grant (HS1 PR-11,
   #630, 2026-11-09).** Program item HS1, planned in
-  `docs/plans/history.md` (PR #609); PR-11 (#630): Brakeman's `observe`
+  `docs/plans/history.md` (PR #609); PR-11 (#630, PR #764): Brakeman's `observe`
   gains `search` (`observe_search`, `GET /api/brakeman/history`), the
   History search answered for a turn. The tool's what is `search`, not
   the plan's `history`, which already names a ticket's field history. An
