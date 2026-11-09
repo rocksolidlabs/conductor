@@ -686,8 +686,11 @@ func (s *Server) serveEntry(av *availability, e history.Entry, snippet string, r
 		URL:      historyURL(e.Kind, e.Key, e.Ref, e.Seq, e.Title, av.listed),
 		Anchor:   servedAnchor{Ref: e.Anchor, Label: anchorLabel(e.Anchor), URL: historyURL("", e.Anchor, e.Anchor, 0, "", av.listed)},
 	}
-	if e.Kind == "launch" {
+	switch {
+	case e.Kind == "launch":
 		out.URL = launchURL(e)
+	case isDecisionKind(e.Kind):
+		out.URL = decisionEntryURL(e)
 	}
 	if e.Agent != "" {
 		out.Agent = &servedAgent{ID: e.Agent, Name: s.catalogAgentName(e.Agent), Version: e.AgentVersion, Session: e.AgentSession}
@@ -704,8 +707,11 @@ func (s *Server) serveEntry(av *availability, e history.Entry, snippet string, r
 				kind, key, title = l.Entry.Kind, l.Entry.Key, l.Entry.Title
 			}
 			sl.URL = historyURL(kind, key, l.Ref, 0, title, av.listed)
-			if strings.HasPrefix(l.Ref, "launch:") {
+			switch {
+			case strings.HasPrefix(l.Ref, "launch:"):
 				sl.URL = av.launchURL(l.Ref)
+			case l.Entry != nil && isDecisionKind(l.Entry.Kind):
+				sl.URL = av.decisionURL(l.Entry.Key)
 			}
 			out.Links = append(out.Links, sl)
 		}
@@ -776,6 +782,7 @@ var kindLabels = map[string]string{
 	"plan.approved": "plan approval", "plan.withdrawn": "plan withdrawal", "plan.superseded": "plan superseded",
 	"ticket.accepted": "acceptance", "ticket.unaccepted": "acceptance withdrawn", "ticket.closed": "ticket closed",
 	"launch": "launch", "delivery.verified": "verified delivery", "brief.item": "Brakeman's brief",
+	"decision": "decision request", "decision.response": "decision response",
 }
 
 // labelOfKind is a row's source in words: "Claude Code session" for a
@@ -814,6 +821,11 @@ func anchorLabel(ref string) string {
 	case "session":
 		return "session " + rest
 	case "ticket", "run", "launch", "brief":
+		return rest
+	case "decision":
+		if len(parts) == 2 {
+			return parts[0] + " response " + parts[1]
+		}
 		return rest
 	case "plan":
 		if len(parts) == 2 {

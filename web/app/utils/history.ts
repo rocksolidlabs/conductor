@@ -316,8 +316,8 @@ function filter(name: string, value?: string): string {
  * narrows by both, and the History page's Rejected chip writes the outcomes; a kind or an outcome added here (DR1's decision records,
  * the plan's PR-9) reaches both.
  */
-export const REJECTING_KINDS: readonly string[] = ['plan.withdrawn', 'plan.superseded', 'review.verdict']
-export const REJECTING_OUTCOMES: readonly string[] = ['withdrawn', 'superseded', 'needs_changes']
+export const REJECTING_KINDS: readonly string[] = ['plan.withdrawn', 'plan.superseded', 'review.verdict', 'decision.response']
+export const REJECTING_OUTCOMES: readonly string[] = ['withdrawn', 'superseded', 'needs_changes', 'rejected']
 
 /** The History page's Outcome chips, each an `outcome:` filter's value; Rejected is every rejecting outcome. */
 export function outcomeChips(): Array<{ value: string; label: string }> {
