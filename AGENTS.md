@@ -296,6 +296,10 @@ add its rule here.
   gap. Feed the state that routes a viewer's answer before the viewer has
   the output, prove it with a stall after the send (`afterBroadcast`),
   and when one state is kept twice, wait on the copy the code decides by.
+  A viewer's `ready` is shown too: it went out before the hub held the
+  viewer, and a run's roster built in between left out a person who had
+  it (2026-11-08, #281). Keep the entry before `ready` (`Hub.enter`), and
+  wait for the roster that names everyone, not the first one sent.
 - A control that only hurries what the page does by itself races it.
   Read it again beside a read the page asks again on its own (a failed
   re-read, retried with backoff) can vanish before the click lands, and
@@ -306,9 +310,12 @@ add its rule here.
   mounted through its closing animation and keeps the focus in its
   search field: text filled into the next field in that window lands in
   the menu's search and opens it again, and the field stays empty
-  (`dispatch-plan.spec.ts`, #467). After picking an option, wait for the
-  listbox to be gone (`toHaveCount(0)`) before typing, and assert the
-  field holds what was typed (`toHaveValue`) before submitting.
+  (`dispatch-plan.spec.ts`, #467); a select with no search hands the
+  focus back to its trigger as it goes, and a key pressed then opens it
+  again (`pickOption`, `manifest-editor.spec.ts`). After picking an
+  option, wait for the listbox to be gone (`toHaveCount(0)`) before
+  typing, and assert the field holds what was typed (`toHaveValue`)
+  before submitting.
 - What a process printed is not kept for a reader however late it comes.
   On macOS the last close of a terminal's slave side waits about 0.6 s for
   the master to read what is queued, then discards it: a child that printed
@@ -385,6 +392,14 @@ add its rule here.
   itself: GitHub's release downloads answered 504 for thirty minutes and
   one try of Neovim's tarball and Electron's binary failed four jobs of an
   hour-long run, twice (2026-11-08, #281; `docs/checks.md` says how).
+- A spec's setup owns what it starts and reads only what its own start
+  wrote. A `beforeAll` that writes to fixed names under the suite's root
+  meets, on a repeat (`--repeat-each`), the last start's log, repository
+  and transcripts: `switchyard.spec.ts` took the first share link of a log
+  every start appended to and talked to the ended switchyard's port, so the
+  spec could not repeat and no flake in it could be proved fixed
+  (2026-11-08, #281). Give each start a folder of its own and reset in it
+  every module variable a test reads.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.

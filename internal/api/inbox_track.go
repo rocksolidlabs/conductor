@@ -518,6 +518,14 @@ func (s *Server) handleInboxTrack(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if n, is, err := decisionRefN(q["ref"]); is {
+		if err != nil || q["attempt"] != "" {
+			writeError(w, http.StatusBadRequest, "invalid_request", "ref is a decision's ref and receipt response:<responseId> or comment:<opId>, with no attempt")
+			return
+		}
+		s.handleDecisionTrack(w, r, n, q["receipt"])
+		return
+	}
 	ref, err := brakeman.ParseRef(q["ref"])
 	receipt, attempt := q["receipt"], q["attempt"]
 	if err != nil || len(receipt) > 64 || len(attempt) > 64 {

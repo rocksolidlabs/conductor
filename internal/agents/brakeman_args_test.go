@@ -125,3 +125,19 @@ func TestClaudeAllowsConductorsTools(t *testing.T) {
 		}
 	}
 }
+
+// Only Claude Code takes folders to read besides the one it runs in
+// (#705): --add-dir, one = form a folder, a folder that is not absolute
+// left out. Codex's --add-dir makes a folder writable, so Codex has none.
+func TestOnlyClaudeReadsOtherFolders(t *testing.T) {
+	if got := idsWith(func(a Adapter) bool { return a.ReadDirArgs != nil }); !slices.Equal(got, []string{"claude"}) {
+		t.Fatalf("adapters that read other folders: %v", got)
+	}
+	claude, _ := Get("claude")
+	if got := claude.ReadDirArgs([]string{"/home/me", "relative", "", "/srv/code app"}); !slices.Equal(got, []string{"--add-dir=/home/me", "--add-dir=/srv/code app"}) {
+		t.Errorf("claude: ReadDirArgs = %q", got)
+	}
+	if got := claude.ReadDirArgs(nil); got != nil {
+		t.Errorf("claude: no folders gave %q", got)
+	}
+}

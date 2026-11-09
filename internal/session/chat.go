@@ -698,6 +698,10 @@ func (r *ChatRoom) History() []ChatMessage {
 	return r.ring.snapshot()
 }
 
+// readySent, when set, runs as an attach has sent its client ready, before
+// the client is on the session's hub: tests read a run's roster there.
+var readySent func()
+
 // roomReplayed, when set, runs as a client of a run's member has been sent
 // the run chat's replay, before it is on the session's hub: tests post to
 // the run there.

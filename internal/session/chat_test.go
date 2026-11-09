@@ -499,6 +499,44 @@ func TestRunChatReachesEveryMembersViewers(t *testing.T) {
 	}
 }
 
+// A viewer sent ready is on the run's roster from then on, before its
+// attach has put it on its session's hub: a roster read meanwhile (another
+// member's arrival broadcasting it) names it, once, and so does every one
+// after (#281).
+func TestARunRosterNamesAViewerSentReady(t *testing.T) {
+	room := NewChatRoom(nil, nil)
+	a, _ := newLocalWith(t, Options{RunChat: room})
+	b, _ := newLocalWith(t, Options{RunChat: room})
+	room.Join(a, "core")
+	room.Join(b, "tests")
+	if _, err := b.AttachWith(AttachOptions{Role: RoleView, Name: "Priya", Cols: 80, Rows: 24}, newChanSink(false)); err != nil {
+		t.Fatal(err)
+	}
+	people := func(r proto.ChatRoster) string {
+		var out []string
+		for _, p := range r.List {
+			out = append(out, p.Name+"@"+p.On)
+		}
+		slices.Sort(out)
+		return fmt.Sprintf("%d %s", r.Count, strings.Join(out, ","))
+	}
+	var held string
+	readySent = func() {
+		readySent = nil
+		held = people(room.Roster())
+	}
+	t.Cleanup(func() { readySent = nil })
+	if _, err := a.AttachWith(AttachOptions{Role: RoleControl, Name: "Nate", Cols: 80, Rows: 24}, newChanSink(false)); err != nil {
+		t.Fatal(err)
+	}
+	if held != "2 Nate@core,Priya@tests" {
+		t.Fatalf("the roster read after Nate's ready: %s", held)
+	}
+	if got := people(room.Roster()); got != "2 Nate@core,Priya@tests" {
+		t.Fatalf("the roster once he is on the hub: %s", got)
+	}
+}
+
 // A run message posted on one member while a viewer attaches to another,
 // once the viewer has been sent the run's replay and before it is on its
 // session's hub, still reaches the viewer: in the replay or live, never
