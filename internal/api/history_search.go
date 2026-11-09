@@ -679,7 +679,7 @@ func (s *Server) serveEntry(av *availability, e history.Entry, snippet string, r
 	out := servedEntry{
 		Key: e.Key, Kind: e.Kind, Class: e.Class, Outcome: e.Outcome, Title: e.Title, Summary: e.Summary, Snippet: snippet,
 		At: e.At, Actor: e.Actor, Crew: e.Crew, Run: e.Run, Ticket: e.Ticket, Repeats: rep, Links: []servedLink{},
-		Source:   servedSource{Store: storeOfKind(e.Kind), Label: labelOfKind(e.Kind, s.catalogAgentName(e.Agent)), Ref: e.Ref},
+		Source:   servedSource{Store: storeOf(e), Label: labelOfKind(e.Kind, s.catalogAgentName(e.Agent)), Ref: e.Ref},
 		Host:     servedHost{Name: e.Host, User: e.HostUser, Hosted: e.Hosted, Where: e.Where},
 		Project:  servedProject{Key: e.Project, Repo: e.Repo, Tree: e.Tree},
 		Revision: servedRevision{Label: cmpOr(e.Revision, hShort(e.Commit)), Commit: e.Commit},
@@ -691,6 +691,8 @@ func (s *Server) serveEntry(av *availability, e history.Entry, snippet string, r
 		out.URL = launchURL(e)
 	case isDecisionKind(e.Kind):
 		out.URL = decisionEntryURL(e)
+	case isReviewKind(e):
+		out.URL = reviewEntryURL(e)
 	}
 	if e.Agent != "" {
 		out.Agent = &servedAgent{ID: e.Agent, Name: s.catalogAgentName(e.Agent), Version: e.AgentVersion, Session: e.AgentSession}
@@ -710,8 +712,8 @@ func (s *Server) serveEntry(av *availability, e history.Entry, snippet string, r
 			switch {
 			case strings.HasPrefix(l.Ref, "launch:"):
 				sl.URL = av.launchURL(l.Ref)
-			case l.Entry != nil && isDecisionKind(l.Entry.Kind):
-				sl.URL = av.decisionURL(l.Entry.Key)
+			case l.Entry != nil && (isDecisionKind(l.Entry.Kind) || isReviewKind(history.Entry{Kind: l.Entry.Kind, Key: l.Entry.Key})):
+				sl.URL = av.entryURL(l.Entry.Key)
 			}
 			out.Links = append(out.Links, sl)
 		}
@@ -757,7 +759,17 @@ func (s *Server) catalogAgentName(id string) string {
 	return id
 }
 
-// storeOfKind is the store that holds an entry's evidence.
+// storeOf is the store that holds an entry's evidence: by its kind, but
+// for a review finding, which is an attempt's in the ledger (an agent
+// reviewer's) or a ticket's in Dispatch (a person's, in an RV1 review).
+func storeOf(e history.Entry) string {
+	if isReviewKind(e) {
+		return "dispatch"
+	}
+	return storeOfKind(e.Kind)
+}
+
+// storeOfKind is the store that holds an entry's evidence, by its kind.
 func storeOfKind(kind string) string {
 	switch {
 	case kind == "session" || strings.HasPrefix(kind, "session."):
@@ -783,6 +795,7 @@ var kindLabels = map[string]string{
 	"ticket.accepted": "acceptance", "ticket.unaccepted": "acceptance withdrawn", "ticket.closed": "ticket closed",
 	"launch": "launch", "delivery.verified": "verified delivery", "brief.item": "Brakeman's brief",
 	"decision": "decision request", "decision.response": "decision response",
+	"review.batch": "review", "review.resolved": "finding resolved",
 }
 
 // labelOfKind is a row's source in words: "Claude Code session" for a

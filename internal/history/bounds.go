@@ -42,13 +42,18 @@ const (
 // options with their tradeoffs, its uncertainty and what a yes
 // authorizes: the ledger keeps the request in at most 16 KiB) and a
 // decision's response (its text of at most 4 KiB and its rationale of at
-// most 2 KiB, which a short body would cut); a check's, a verify step's
-// and a failed step's log at MaxCheckBody; 4 KiB for the rest (a
-// session's entry, a message, a checkpoint, a blocker, a finding, a
-// verdict, an act's note).
+// most 2 KiB, which a short body would cut), an RV1 review batch (its
+// summary of at most 4,000 characters) and a review finding (a person's
+// words and the resolution asked for, at most 1,000 characters each, the
+// lines as they saw them, at most 12 of 200 bytes, and a check finding's
+// quote of at most 2 KiB: up to 12.5 KB in all, which a short body would
+// cut); a check's, a verify step's and a failed step's log at
+// MaxCheckBody; 4 KiB for the rest (a session's entry, a message, a
+// checkpoint, a blocker, a verdict, an act's note, a resolution's note of
+// at most 1,000 characters).
 func bodyBound(kind string) int {
 	switch kind {
-	case "attempt.result", "ticket", "comment", "brief.item", "plan", "decision", "decision.response":
+	case "attempt.result", "ticket", "comment", "brief.item", "plan", "decision", "decision.response", "review.batch", "review.finding":
 		return MaxLongBody
 	case "check", "verify", "step":
 		return MaxCheckBody

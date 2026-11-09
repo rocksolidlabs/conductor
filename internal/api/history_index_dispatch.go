@@ -127,9 +127,10 @@ var ticketFields = map[string]bool{"approved_at": true, "approved_note": true, "
 	"accepted_at": true, "accepted_note": true, "status": true}
 
 // indexTicket reads a ticket: its mark Q<seq> (its changes' last, read
-// first), then the ticket, its comments, its plan revisions and its
-// launches, each through Dispatch's own read. A ticket Dispatch no longer
-// holds is removed.
+// first), then the ticket, its comments, its plan revisions, its launches
+// and its reviews, each through Dispatch's own read (a review's and a
+// finding's rows and every mark are changes of the ticket, so they move
+// the mark too). A ticket Dispatch no longer holds is removed.
 func (h *historyIndexer) indexTicket(ctx context.Context, ix *history.Index, key string) error {
 	ds := h.dispatch
 	if ds == nil {
@@ -185,6 +186,11 @@ func (h *historyIndexer) indexTicket(ctx context.Context, ix *history.Index, key
 		return err
 	}
 	if r.launches, err = ds.Launches(ctx, key, dispatch.MaxLaunches); err != nil {
+		return err
+	}
+	if r.reviews, err = readReviews(ctx, ds, key); errors.Is(err, dispatch.ErrNotFound) {
+		return ix.Remove(ctx, src)
+	} else if err != nil {
 		return err
 	}
 	entries, links := ticketEntries(r)

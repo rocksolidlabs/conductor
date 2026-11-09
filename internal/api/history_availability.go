@@ -156,8 +156,8 @@ type availability struct {
 	launches map[string]string
 	// decisions is each decision's availability, read once for the reply
 	// (its request's and its responses').
-	decisions    map[int64]availabilityOf
-	decisionURLs map[string]string // a link's end's page, by its entry's key
+	decisions map[int64]availabilityOf
+	entryURLs map[string]string // a decision's or a review's link's end's page, by its entry's key
 	// records is the journal's answer for each session record an entry
 	// read asked of it (recordAnswer).
 	records map[string]answer
@@ -186,7 +186,7 @@ type runFolder struct {
 func (s *Server) newAvailability(ctx context.Context, ix *history.Index, ld *ledger.Ledger) *availability {
 	return &availability{s: s, ctx: ctx, ix: ix, ld: ld, attempts: map[string]attemptsRead{}, checks: map[attemptID]checksRead{},
 		folders: map[string]*runFolder{}, records: map[string]answer{}, briefs: map[string]availabilityOf{},
-		launches: map[string]string{}, decisions: map[int64]availabilityOf{}, decisionURLs: map[string]string{}}
+		launches: map[string]string{}, decisions: map[int64]availabilityOf{}, entryURLs: map[string]string{}}
 }
 
 // close closes the run folders the reply opened.
@@ -273,6 +273,10 @@ func (av *availability) of(e history.Entry, full bool) availabilityOf {
 		if e.Outcome == availDeleted {
 			return availabilityOf{State: availDeleted, Words: "deleted"}
 		}
+		return availabilityOf{State: availKept, Words: "in Dispatch"}
+	case isReviewKind(e):
+		// A review, its findings and their marks are never deleted: kept
+		// in Dispatch with their ticket, a tombstoned one's among them.
 		return availabilityOf{State: availKept, Words: "in Dispatch"}
 	case kind == "brief.item" && err == nil:
 		return av.brief(r.Request)

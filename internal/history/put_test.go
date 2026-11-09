@@ -29,7 +29,8 @@ func TestClassComesFromTheKindAlone(t *testing.T) {
 		"comment": ClassSaid, "brief.item": ClassSaid,
 		"command": ClassDecided, "plan.approved": ClassDecided, "plan.withdrawn": ClassDecided, "plan.superseded": ClassDecided,
 		"ticket.accepted": ClassDecided, "ticket.unaccepted": ClassDecided, "ticket.closed": ClassDecided, "decision.response": ClassDecided,
-		"check": ClassChecked, "verify": ClassChecked, "candidate.verified": ClassChecked, "delivery.verified": ClassChecked,
+		"review.batch": ClassDecided, "check": ClassChecked, "verify": ClassChecked, "candidate.verified": ClassChecked,
+		"delivery.verified": ClassChecked, "review.resolved": ClassChecked,
 	}
 	if got := Kinds(); len(got) != len(want) {
 		t.Fatalf("the table holds %d kinds, the plan %d: %v", len(got), len(want), got)
@@ -52,8 +53,8 @@ func TestClassComesFromTheKindAlone(t *testing.T) {
 		}
 	}
 	// The same words in every class: none is another's repeat.
-	if h, _ := ix.Entry(ctx, "k:check"); h.Repeats.Count != 4 {
-		t.Errorf("a check's repeats: %+v, want the checked kinds' 4", h.Repeats)
+	if h, _ := ix.Entry(ctx, "k:check"); h.Repeats.Count != 5 {
+		t.Errorf("a check's repeats: %+v, want the checked kinds' 5", h.Repeats)
 	}
 	e := Entry{Key: "k", Kind: "session.chat", Class: ClassChecked, Ref: "r", Anchor: "a", Title: "t", At: t0}
 	wantErr(t, ix.Replace(ctx, Source{Key: "s2"}, []Entry{e}, nil), ErrClass)
@@ -353,9 +354,9 @@ func TestReplaceRefusesPastABound(t *testing.T) {
 	if err := ix.Replace(ctx, Source{Key: "s"}, []Entry{long}, nil); err != nil {
 		t.Errorf("a comment at its bound: %v", err)
 	}
-	// A decision request and its response at theirs (PR-9), one byte past
-	// refused.
-	for _, kind := range []string{"decision", "decision.response"} {
+	// A decision request and its response at theirs (PR-9), and an RV1
+	// review batch and a finding at theirs (PR-10), one byte past refused.
+	for _, kind := range []string{"decision", "decision.response", "review.batch", "review.finding"} {
 		e := ok
 		e.Kind, e.Actor, e.Body = kind, "admin", strings.Repeat("b", MaxLongBody)
 		if err := ix.Replace(ctx, Source{Key: "s"}, []Entry{e}, nil); err != nil {
@@ -366,6 +367,17 @@ func TestReplaceRefusesPastABound(t *testing.T) {
 			t.Errorf("a %s past its bound: %v, want a bound", kind, err)
 		}
 	}
+	// A finding's verified resolution (PR-10): its note in a short body,
+	// bound to the commit it was verified on.
+	resolved := ok
+	resolved.Kind, resolved.Actor, resolved.Commit, resolved.Body = "review.resolved", "admin", "abc1234", strings.Repeat("b", MaxShortBody)
+	if err := ix.Replace(ctx, Source{Key: "s"}, []Entry{resolved}, nil); err != nil {
+		t.Errorf("a review.resolved at its bound: %v", err)
+	}
+	resolved.Body += "b"
+	wantErr(t, ix.Replace(ctx, Source{Key: "s"}, []Entry{resolved}, nil), ErrBound)
+	resolved.Body, resolved.Commit = "", ""
+	wantErr(t, ix.Replace(ctx, Source{Key: "s"}, []Entry{resolved}, nil), ErrBound)
 	// A response is a person's act: it names its actor.
 	noActor := ok
 	noActor.Kind = "decision.response"

@@ -17,8 +17,9 @@ const (
 // they recur or who repeats them. It is closed: a kind it does not hold
 // is refused (ErrKind), so a PR that indexes a new record changes this
 // table, its bounds (bodyBound) and TestClassComesFromTheKindAlone
-// together. A review finding stays said; its verified resolution would be
-// an entry of its own checked kind, never the finding's class changed.
+// together. A review finding stays said; its verified resolution is an
+// entry of its own checked kind (review.resolved), never the finding's
+// class changed.
 var kinds = map[string]string{
 	// The stores' own objects.
 	"session": ClassRecord,
@@ -42,7 +43,7 @@ var kinds = map[string]string{
 	"session.chat":       ClassSaid,
 	"attempt.result":     ClassSaid, // a submitted summary and issues
 	"review.verdict":     ClassSaid, // an agent reviewer's, though the engine acts on it
-	"review.finding":     ClassSaid,
+	"review.finding":     ClassSaid, // an agent reviewer's, or a person's in an RV1 review batch
 	"attempt.checkpoint": ClassSaid,
 	"attempt.blocker":    ClassSaid,
 	"message":            ClassSaid,
@@ -60,12 +61,20 @@ var kinds = map[string]string{
 	// A response a DR1 decision accepted, with its responder and
 	// rationale: the ledger's receipt of it.
 	"decision.response": ClassDecided,
+	// A person's review batch of a candidate (RV1,
+	// docs/plans/review-repair.md): Request changes, Comment or Approve,
+	// bound to its candidate and base, by the reviewer.
+	"review.batch": ClassDecided,
 
 	// Receipts of what the server ran.
 	"check":              ClassChecked, // a task's check
 	"verify":             ClassChecked, // a project manifest's verify step
 	"candidate.verified": ClassChecked, // a result commit whose every check passed
 	"delivery.verified":  ClassChecked, // a delivery whose candidate's receipt is kept
+	// A finding's resolution verified against a later candidate of another
+	// commit, as RV1's mark of it says (a resolved mark is refused on the
+	// finding's own commit): the finding itself stays said.
+	"review.resolved": ClassChecked,
 }
 
 // classOf is the class of a kind, the only place one is decided; ok is
@@ -91,4 +100,4 @@ var receiptKinds = []string{"check", "verify"}
 
 // needsCommit are the checked kinds bound to the commit they checked: an
 // entry of one with no commit is refused.
-var needsCommit = []string{"check", "verify", "candidate.verified"}
+var needsCommit = []string{"check", "verify", "candidate.verified", "review.resolved"}

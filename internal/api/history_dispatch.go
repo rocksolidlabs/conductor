@@ -26,8 +26,9 @@ import (
 //   - a ticket's history is read for the acts it records (a plan
 //     revision's approval, withdrawal and supersession, an acceptance and
 //     its withdrawal, a close by a person) and for nothing else: no
-//     field's earlier value, and nothing of a review or a finding (RV1's
-//     rows, Program item RV1, which PR-10 indexes by its own rules);
+//     field's earlier value; a review and its findings (RV1's rows) are
+//     read through RV1's own reads of them, by their rules
+//     (history_reviews.go, PR-10);
 //   - a plan revision is its record (its crew, its base, its number), never
 //     its body;
 //   - a brief's request is never read for what the person asked of
@@ -52,7 +53,8 @@ func hBriefItemRef(id string, item int) string { return "brief:" + id + "/" + st
 
 // ticketRead is what a ticket's pass read of Dispatch, each through the
 // store's own read: the ticket as its page shows it, every comment, its
-// plan revisions, its launches and its changes. Its project is its key's;
+// plan revisions, its launches, its changes and its reviews, each whole.
+// Its project is its key's;
 // its repository is left to the project (a project's folder can move with
 // no change of the ticket's, and Similar scopes by the project first).
 type ticketRead struct {
@@ -61,6 +63,7 @@ type ticketRead struct {
 	plans    []dispatch.PlanSummary
 	launches []dispatch.LaunchSummary
 	changes  []dispatch.ChangeRow
+	reviews  []dispatch.Review
 }
 
 // isPerson says an actor is a person's: the operator (the workbench token)
@@ -72,8 +75,8 @@ func isPerson(actor string) bool {
 
 // ticketEntries is a ticket's entries: its record, its comments, its plan
 // revisions with the acts on them, its launches, its acceptance and its
-// close by a person, and its deliveries whose verification receipt is
-// kept; and their links.
+// close by a person, its deliveries whose verification receipt is kept,
+// and its reviews (reviewEntries); and their links.
 func ticketEntries(r ticketRead) ([]history.Entry, []history.Link) {
 	tk := r.v.Ticket
 	key := tk.Key
@@ -238,7 +241,10 @@ func ticketEntries(r ticketRead) ([]history.Entry, []history.Link) {
 		out = append(out, x)
 		links = append(links, history.Link{From: ref, Rel: relDelivers, To: attemptKey(cand.Run, cand.Task, cand.Attempt)})
 	}
-	return out, links
+
+	base.At = e.At
+	re, rl := reviewEntries(base, key, r.reviews)
+	return append(out, re...), append(links, rl...)
 }
 
 // planAct is the act on a plan revision a change records: approved (its

@@ -628,20 +628,26 @@ func decisionEntryURL(e history.Entry) string {
 	return decisionPageURL(e.Run, task, id)
 }
 
-// decisionURL is the page of the decision entry a link's end names, by its
-// key: the entry as the index holds it, read once for the reply ("" when
-// it holds none). A link's end carries no run of its own.
-func (av *availability) decisionURL(key string) string {
-	if u, ok := av.decisionURLs[key]; ok {
+// entryURL is the page of the decision or review entry a link's end
+// names, by its key: the entry as the index holds it, read once for the
+// reply ("" when it holds none). A link's end carries no run or candidate
+// of its own.
+func (av *availability) entryURL(key string) string {
+	if u, ok := av.entryURLs[key]; ok {
 		return u
 	}
 	u := ""
 	if av.ix != nil {
-		if h, err := av.ix.Entry(av.ctx, key); err == nil && isDecisionKind(h.Kind) {
-			u = decisionEntryURL(h.Entry)
+		if h, err := av.ix.Entry(av.ctx, key); err == nil {
+			switch {
+			case isDecisionKind(h.Kind):
+				u = decisionEntryURL(h.Entry)
+			case isReviewKind(h.Entry):
+				u = reviewEntryURL(h.Entry)
+			}
 		}
 	}
-	av.decisionURLs[key] = u
+	av.entryURLs[key] = u
 	return u
 }
 
