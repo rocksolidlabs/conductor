@@ -3,6 +3,7 @@ import { pickerStart, type PickerField } from '~/utils/dirPicker'
 import type { AgentInfo, ReachInfo } from '~/composables/useSessions'
 import { identity, notInstalledBadge } from '~/utils/agents'
 import { plainCopy, switchyardProblem, type DesktopIceStatus, type DesktopSettings } from '~/utils/desktop'
+import { followSaved, holds, holdsFields, saveParts, saveWords, together, type BrakemanPart, type SaveOutcome } from '~/utils/settingsSave'
 import { SETTINGS_FIELD_UI, sectionFromQuery, sectionInView, shownSections, type SectionBox, type SettingsSectionId } from '~/utils/settingsSections'
 
 // The desktop app's settings: what its shell starts the server with. In a
@@ -22,6 +23,11 @@ const navbarButtonUi = { label: 'hidden sm:inline' }
 const settings = ref<DesktopSettings | null>(null)
 const form = reactive<DesktopSettings>({ dataDir: '', allowedRoots: [], defaultCwd: '', yolo: false, reach: 'auto', closeToTray: true, wslDistro: '', wslWindowsHome: false, switchyardEnabled: true, switchyardServer: '', switchyardToken: '', switchyardName: '' })
 const saving = ref(false)
+/**
+ * The page's fields are held while a save that sends the app's settings is out (holdsFields): the app may answer it by loading the
+ * page on the restarted server's port, where nothing typed meanwhile could follow (#707's review).
+ */
+const holding = ref(false)
 const error = ref('')
 const reach = ref<ReachInfo | null>(null)
 /** Windows: what the app forwards for WebRTC from WSL (null elsewhere). */
@@ -50,7 +56,12 @@ const reachItems = [
   { label: 'Manual: find the public address only', value: 'manual' },
   { label: 'Off', value: 'off' },
 ]
-const dirty = computed(() => !!settings.value && JSON.stringify({ ...settings.value }) !== JSON.stringify({ ...form }))
+const appDirty = computed(() => !!settings.value && JSON.stringify({ ...settings.value }) !== JSON.stringify({ ...form }))
+/** Brakeman's section, saved by the page's one Save with the rest (#707); in a browser, alone. */
+const brakemanCard = useTemplateRef<{ dirty: boolean; blocked: boolean; take: () => BrakemanPart | null }>('brakemanCard')
+/** Brakeman's form holds a change the form's own checks refuse: nothing is saved until it is fixed, where it says. */
+const blocked = computed(() => !!brakemanCard.value?.dirty && !!brakemanCard.value?.blocked)
+const dirty = computed(() => appDirty.value || !!brakemanCard.value?.dirty)
 // The switchyard as last loaded or saved: a plain one on another machine is
 // refused with the words why (switchyardProblem, which the app's validate
 // repeats) until the field or the switch changes. Loaded so (settings saved
@@ -69,8 +80,9 @@ async function load() {
   if (!b) return
   try {
     const s = await b.settings.get()
+    // A field changed while a save was out keeps its edit (followSaved); the first read sets every field.
+    followSaved(form, settings.value, s)
     settings.value = s
-    Object.assign(form, s)
     switchyardChecked.value = switchyardKey()
     versions.value = await b.versions()
     if (b.platform === 'win32') ice.value = await b.ice()
@@ -83,44 +95,76 @@ async function load() {
   ])
 }
 
+/** A Save refused before anything was sent: the words at the top, and where the button is too (#348) when Brakeman's is held with it. */
+function refuse(out: SaveOutcome) {
+  const words = saveWords(out)
+  error.value = words.description ?? words.title
+  if (out.brakeman === 'held') toast.add({ title: words.title, description: words.description, icon: 'i-lucide-triangle-alert', color: 'error' })
+}
+
 async function save() {
   const b = desktop.bridge.value
   // One save at a time: a second click before the first is under way would set the settings and restart the server twice.
-  if (!b || saving.value) return
+  if (saving.value || blocked.value) return
+  // Both parts as they are at the click (#707's review): what is typed while the save is out is kept for the next Save, never sent
+  // by this one, and what the page tells (a restart, the order) is told of what is sent.
+  const sent = b && appDirty.value && settings.value ? plainCopy(form) : null
+  const before = settings.value
+  const card = brakemanCard.value?.take() ?? null
+  if (!sent && !card) return
   error.value = ''
-  switchyardChecked.value = switchyardKey()
-  const refused = switchyardProblem(form)
-  if (refused) {
-    error.value = refused
-    return
+  if (sent && before) {
+    switchyardChecked.value = switchyardKey()
+    const refused = switchyardProblem(sent) || together(before, sent, card)
+    if (refused) {
+      refuse({ brakeman: card ? 'held' : 'unchanged', app: 'refused', error: refused })
+      return
+    }
   }
   // Taken at once, before anything is awaited, so the button and the guard above hold from the first click (#433's review).
   saving.value = true
+  holding.value = holdsFields(sent)
   // What this page can tell on its own, for an app that cannot say what became
   // of the save (older apps): taken before the save, since once the saved
   // settings are copied into the form nothing differs any more (#214).
-  const restarting = restarts.value
+  const restarting = !!sent && restarts.value
   try {
-    // A restart moves the server to a fresh port and the app loads this page there with its path and query (desktop/src/window.ts,
-    // followOrigin): the section in view goes in the query first, so the page that follows opens on it (#433).
-    if (restarting) await keepSectionInQuery()
-    // A plain copy: the form is reactive, and a Vue proxy cannot cross the
-    // bridge ("An object could not be cloned", #348).
-    const next = await b.settings.set(plainCopy(form))
-    settings.value = next
-    Object.assign(form, next)
-    // The app says what became of it: the server restarted, or the settings
-    // were saved alone (a retry after a restart that failed changes nothing the
-    // server reads, since the settings were kept).
-    const told = await b.settings.outcome?.().catch(() => undefined)
-    savedToast(told === undefined ? (restarting ? 'restarted' : 'saved') : told)
-    await load()
-  } catch (e) {
-    error.value = (e as Error).message
-    // The alert sits at the top of a long page: say it where the button is too (#348).
-    toast.add({ title: 'Not saved', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
+    // Brakeman's part first, on this server: the app's may restart it (utils/settingsSave.ts).
+    const out = await saveParts({
+      brakeman: card ? card.send : null,
+      app: sent
+        ? {
+            send: async () => {
+              // A restart moves the server to a fresh port and the app loads this page there with its path and query (desktop/src/window.ts,
+              // followOrigin): the section in view goes in the query first, so the page that follows opens on it (#433).
+              if (restarting) await keepSectionInQuery()
+              // The copy taken at the click: plain, since the form is reactive and a Vue proxy cannot cross the bridge ("An object could
+              // not be cloned", #348).
+              const next = await b!.settings.set(sent)
+              followSaved(form, sent, next)
+              settings.value = next
+              // The app says what became of it: the server restarted, or the settings
+              // were saved alone (a retry after a restart that failed changes nothing the
+              // server reads, since the settings were kept).
+              const told = await b!.settings.outcome?.().catch(() => undefined)
+              return told === undefined ? (restarting ? 'restarted' : 'saved') : told === 'restarted' ? 'restarted' : 'saved'
+            },
+            // The app keeps the settings before it restarts the server (desktop/src/save.ts): refused, it may hold them all the same.
+            kept: async () => holds(await b!.settings.get(), sent),
+          }
+        : null,
+    })
+    const words = saveWords(out)
+    if (words.ok) toast.add({ title: words.title, icon: 'i-lucide-check', color: 'success' })
+    else {
+      error.value = words.description ?? words.title
+      // The alert sits at the top of a long page: say it where the button is too (#348).
+      toast.add({ title: words.title, description: words.description, icon: 'i-lucide-triangle-alert', color: 'error' })
+    }
+    if (out.app === 'saved' || out.app === 'restarted') await load()
   } finally {
     saving.value = false
+    holding.value = false
   }
 }
 
@@ -292,7 +336,7 @@ onMounted(async () => {
 })
 
 // This page's group in the command palette (#302): Save, and the desktop app's buttons. Only in the desktop app (#332): the
-// browser's page is the server's file and a notice, with nothing to save, so it offers no row.
+// browser's page is the server's file, a notice and Brakeman's section, which its save bar saves, so it offers no row.
 const live = useAttention()
 usePalette().registerPage(() => {
   if (!desktop.isDesktop.value) return null
@@ -300,7 +344,7 @@ usePalette().registerPage(() => {
   return {
     label: 'Settings',
     rows: [
-      { key: 'page:save', label: restarts.value ? 'Save and restart the server' : 'Save', icon: 'i-lucide-save', disabled: !dirty.value || saving.value, ask: restarts.value ? { title: 'Save and restart the server?', detail: n ? `${n} ${n === 1 ? 'session ends' : 'sessions end'} with it.` : 'No session is running.' } : undefined, run: save },
+      { key: 'page:save', label: restarts.value ? 'Save and restart the server' : 'Save', icon: 'i-lucide-save', disabled: !dirty.value || saving.value || blocked.value, ask: restarts.value ? { title: 'Save and restart the server?', detail: n ? `${n} ${n === 1 ? 'session ends' : 'sessions end'} with it.` : 'No session is running.' } : undefined, run: save },
       ...(desktop.isDesktop.value
         ? [
             { key: 'page:restart', label: 'Restart server', icon: 'i-lucide-rotate-ccw', ask: { title: 'Restart the server?', detail: n ? `${n} ${n === 1 ? 'session ends' : 'sessions end'} with it.` : 'No session is running.' }, run: () => void desktop.bridge.value?.restartServer() },
@@ -343,7 +387,7 @@ usePalette().registerPage(() => {
       <div v-if="!desktop.isDesktop.value" class="@container mx-auto flex w-full max-w-7xl flex-col gap-5" data-settings-sections>
         <UAlert color="neutral" variant="subtle" icon="i-lucide-info" title="This server is configured by its file" description="These settings belong to the desktop app, which starts a server of its own. A server you run yourself takes its configuration file and CONDUCTOR_* variables (see the README)." />
         <!-- Brakeman's configuration is the server's own, saved through its route: here in a browser too. -->
-        <BrakemanSettings data-settings-section="brakeman" />
+        <BrakemanSettings ref="brakemanCard" data-settings-section="brakeman" />
         <AboutCard data-settings-section="app" />
       </div>
       <div v-else ref="layout" class="mx-auto flex w-full max-w-7xl flex-col gap-4 lg:flex-row lg:items-start lg:gap-6" data-desktop-settings>
@@ -375,7 +419,8 @@ usePalette().registerPage(() => {
             @click="scrollToSection(s.id)"
           />
         </nav>
-        <div class="@container flex min-w-0 flex-1 flex-col gap-5" data-settings-sections>
+        <!-- A fieldset, so a save that may move the page holds every field of the sections at once (holding). -->
+        <fieldset :disabled="holding" class="@container m-0 flex min-w-0 flex-1 flex-col gap-5 border-0 p-0" data-settings-sections>
         <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" data-settings-error />
         <UAlert
           v-if="desktop.serverState.value"
@@ -475,21 +520,22 @@ usePalette().registerPage(() => {
           </ul>
         </UCard>
 
-        <BrakemanSettings :class="sectionClass" data-settings-section="brakeman" />
+        <BrakemanSettings ref="brakemanCard" :class="sectionClass" data-settings-section="brakeman" />
 
         <AboutCard :versions="versions" :class="sectionClass" data-settings-section="app">
           <USwitch v-model="form.closeToTray" label="Closing the window keeps Conductor in the tray; the server goes on" data-tray-switch />
         </AboutCard>
-        </div>
+        </fieldset>
 
         <DirPickerModal v-if="picker" v-model:open="pickerOpen" :start="picker.start" :title="picker.title" anywhere :roots="form.allowedRoots" :expect="picker.expect" @pick="onPick" />
       </div>
     </template>
-    <!-- The save bar is the panel's footer: in reach wherever the page is scrolled (#366). -->
-    <template v-if="desktop.isDesktop.value" #footer>
+    <!-- The save bar is the panel's footer: in reach wherever the page is scrolled (#366). In a browser it saves Brakeman's section (#707). -->
+    <template v-if="desktop.isDesktop.value || brakeman.available.value !== false" #footer>
       <div class="flex items-center gap-3 border-t border-default px-4 py-3 sm:px-6" data-settings-save-bar>
-        <UButton :label="restarts ? 'Save and restart the server' : 'Save'" icon="i-lucide-save" :loading="saving" :disabled="!dirty" data-save-settings @click="save" />
-        <span v-if="restarts" class="text-xs text-muted">Changing where or how agents run restarts the server; running sessions end.</span>
+        <UButton :label="restarts ? 'Save and restart the server' : 'Save'" icon="i-lucide-save" :loading="saving" :disabled="!dirty || blocked" data-save-settings @click="save" />
+        <span v-if="blocked" class="text-xs text-error" data-settings-blocked>Brakeman's settings hold a value it refuses: fix it, where it says, to save.</span>
+        <span v-else-if="restarts" class="text-xs text-muted">Changing where or how agents run restarts the server; running sessions end.</span>
       </div>
     </template>
   </UDashboardPanel>

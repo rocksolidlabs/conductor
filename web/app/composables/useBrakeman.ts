@@ -1,6 +1,7 @@
 import type { BrakemanBrief, BrakemanConfig, BrakemanFolders, BrakemanRequest, BrakemanRole, BrakemanState, RefResolution, RoleLogRow } from '../utils/brakeman'
 import { closed, keptBrief, openedMark, requestNumber, stateRank, stopAction, unopened } from '../utils/brakeman'
 import { dropKeptMake, readKeptMakes, reconcileActs, reconcileMade, sendKept, storeKeptMake, type KeptMake } from '../utils/brakemanCards'
+import { newer } from '../utils/settingsSave'
 import { mintCommandId } from '../utils/tasks'
 import { ApiError } from './useApi'
 import type { DispatchWatch } from './useDispatchLive'
@@ -264,11 +265,7 @@ export class BrakemanLive {
         try {
           const s = await this.reads.state()
           if (at !== this.gen) return
-          this.state = s
-          this.available = true
-          this.problem = ''
-          if (s.current) this.apply(s.current)
-          for (const q of s.queue) this.apply(q)
+          this.take(s)
         } catch (e) {
           if (at !== this.gen) return
           this.unavailable(e)
@@ -281,6 +278,31 @@ export class BrakemanLive {
     }
   }
 
+  /**
+   * Takes a state read. Its configuration is taken by the page's one rule (utils/settingsSave.ts, `newer`): never over one whose
+   * revision is newer, whatever order the replies came in, so a read that left before a save and answers after it never takes the
+   * store back to what the save replaced. The rest of the state is the read's.
+   */
+  private take(s: BrakemanState) {
+    const held = this.state
+    this.state = held && newer(held.config, s.config) ? { ...s, config: held.config, warnings: held.warnings } : s
+    this.available = true
+    this.problem = ''
+    if (s.current) this.apply(s.current)
+    for (const q of s.queue) this.apply(q)
+  }
+
+  /** Takes a state read made on its own (the composable's readConfig, whose caller checked the generation), as readState does. */
+  takeState(s: BrakemanState) {
+    this.take(s)
+    this.changed()
+  }
+
+  /** Takes a save's answer (saveConfig, whose caller checked the generation): unless the configuration held is newer (`newer`). */
+  takeConfig(out: { config: BrakemanConfig; warnings?: string[]; folders?: BrakemanFolders }) {
+    if (this.state && !newer(this.state.config, out.config)) this.state = { ...this.state, config: out.config, warnings: out.warnings, folders: out.folders }
+  }
+
   private unavailable(e: unknown) {
     if (e instanceof ApiError && (e.status === 503 || e.status === 403)) {
       this.available = e.code === 'brakeman_recovering' || e.code === 'brakeman_not_owner' ? this.available : false
@@ -288,6 +310,9 @@ export class BrakemanLive {
     }
   }
 }
+
+/** The words of a configuration read answered, or asked, after the token changed. */
+export const TOKEN_MOVED_READ = "The token changed before Brakeman's settings were read: the form shown is this server's."
 
 let live: BrakemanLive | undefined
 /** The app's one live store of Brakeman's requests; useAttention hands it every `brakeman` event and every `snapshot`. */
@@ -496,10 +521,25 @@ export function useBrakeman() {
     const at = store.generation
     const out = await request<{ config: BrakemanConfig; warnings?: string[]; folders?: BrakemanFolders }>('/api/brakeman/config', { method: 'PUT', body: { rev: config.rev, config } })
     if (store.generation !== at) throw new Error("The token changed before the save was answered: the configuration shown is this server's.")
-    if (store.state) store.state = { ...store.state, config: out.config, warnings: out.warnings, folders: out.folders }
+    store.takeConfig(out)
     version.value++
     void store.readState()
     return out
+  }
+
+  /**
+   * The configuration saved now, read fresh for a choice made under the store's generation `at` (Settings' stale refusal): a read of
+   * its own, never folded into one already out (which may have been sent before the save it answers) nor swallowed when it fails,
+   * and taken by the store unless the configuration it holds is newer, which is then the one answered (`newer`). Refused when
+   * the token moved before it was asked or before it was answered: the reply is the form's that asked, and a new token's form is
+   * another server's (#707's review).
+   */
+  async function readConfig(at: number): Promise<BrakemanConfig> {
+    if (store.generation !== at) throw new Error(TOKEN_MOVED_READ)
+    const s = await request<BrakemanState>('/api/brakeman')
+    if (store.generation !== at) throw new Error(TOKEN_MOVED_READ)
+    store.takeState(s)
+    return store.state?.config ?? s.config
   }
 
   /** Asks Brakeman: the request kept (201) or the one this id asked already (200). */
@@ -704,5 +744,5 @@ export function useBrakeman() {
     return store.generation
   })
 
-  return { state, requests, available, problem, hasMore, generation, unopened: unopenedIds, markOpened, load, reset, more: () => store.readMore(), readRequest: (id: string) => store.readRequest(id), readNamed: (id: string) => store.readNamed(id), saveConfig, ask, cancel, stop, make, keptMake, forgetMake, finishMake, readTicketTitle, ticketTitle, ticketTitlesWatch, brief, refs, closed, role, roleAction, keepNote, clearNotes, roleSeq }
+  return { state, requests, available, problem, hasMore, generation, unopened: unopenedIds, markOpened, load, readConfig, reset, more: () => store.readMore(), readRequest: (id: string) => store.readRequest(id), readNamed: (id: string) => store.readNamed(id), saveConfig, ask, cancel, stop, make, keptMake, forgetMake, finishMake, readTicketTitle, ticketTitle, ticketTitlesWatch, brief, refs, closed, role, roleAction, keepNote, clearNotes, roleSeq }
 }
