@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
@@ -1021,6 +1022,43 @@ func TestAPersonsWorkWhenASourceCannotBeRead(t *testing.T) {
 	}
 	if err := os.Remove(brokenCrew); err != nil {
 		t.Fatal(err)
+	}
+	e.expect(t, "GET", "/api/people/nobody", nil, http.StatusNotFound, "not_found")
+
+	// No ledger (openLedger gives none when it cannot open it): the
+	// decisions are not read, which the reply says, never an empty list
+	// read; and a name only a decision might name is not refused for it.
+	// A server of its own whose ledger never opened (its file a link, as
+	// TestLaunchGates makes it), never this one's field written while its
+	// workers read it; this one, its ledger open, reads them.
+	if e.srv.ledger == nil {
+		t.Fatal("the server opened no ledger")
+	}
+	if kai := work("kai"); kai["decisionsUnavailable"] != nil {
+		t.Fatalf("the ledger open: kai %v", kai)
+	}
+	none := readyEnv(t, func(cfg *config.Config) {
+		cfg.DataDir = filepath.Join(t.TempDir(), "data")
+		seedDispatch(t, cfg.DataDir)
+		runs := filepath.Join(cfg.DataDir, "runs")
+		if err := os.MkdirAll(runs, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(runs, "elsewhere.sqlite"), filepath.Join(runs, ledger.File)); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if none.srv.ledger != nil {
+		t.Fatal("the ledger opened")
+	}
+	if err := none.srv.records.Save(crew.Run{ID: "kai-0000000c", CrewID: "kai", Name: "kai's", Cwd: none.root, State: crew.RunStopped, StartedAt: time.Now(), Managed: &crew.Managed{Revision: 1},
+		Tasks: []crew.TaskState{{ID: "t1", Member: "lead", State: ledger.TaskReady, Owner: "kai", OwnerFrom: crew.OwnerFromTask}}}); err != nil {
+		t.Fatal(err)
+	}
+	kai = none.expect(t, "GET", "/api/people/kai", nil, http.StatusOK, "")
+	nobody = none.expect(t, "GET", "/api/people/nobody", nil, http.StatusOK, "")
+	if kai["decisionsUnavailable"] != true || count(kai, "decisions") != 0 || count(kai, "tasks") != 1 || nobody["decisionsUnavailable"] != true {
+		t.Fatalf("no ledger: kai %v, nobody %v", kai, nobody)
 	}
 	e.expect(t, "GET", "/api/people/nobody", nil, http.StatusNotFound, "not_found")
 

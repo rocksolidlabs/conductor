@@ -469,9 +469,9 @@ test("granted Route a decision, Brakeman routes a gate's decision to the crew's 
   // DR1's receipt is the decision's history: no op: chip, which names a Dispatch receipt.
   await expect(p.locator('[data-proposal-did-receipt]')).toHaveCount(0)
   await p.locator(`[data-proposal-did-decision="${did}"]`).click()
-  // The decision's card: the operator answers it, for ana, as its history says.
-  const card = page.locator(`[data-decision-routed-for="ana"]`)
-  await expect(card).toHaveText(', for ana (routed by brakeman)', { timeout: 30_000 })
+  // The decision's card: the operator answers it, for ana, as the request's for now says (HM1's route rewrites it), named once.
+  await expect(page.locator(`[data-decision-modal-id="${did}"] [data-decision-approver]`)).toHaveText('the operator, for ana (security reviewer)', { timeout: 30_000 })
+  await expect(page.locator('[data-decision-routed-for]')).toHaveCount(0)
   // Its history, unfolded: the route Brakeman made, to ana.
   await page.locator('[data-decision-history-toggle]').click()
   await expect(page.locator('[data-decision-history] [data-history-kind="routed"]').filter({ hasText: 'routed to ana: ana reviews what build touches. · brakeman' })).toHaveCount(1)

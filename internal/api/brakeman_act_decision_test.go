@@ -63,7 +63,14 @@ func newRouteFixture(t *testing.T, grant []string, mod func(c map[string]any)) *
 // the op id, at the rev it reads now.
 func (f *routeFixture) route(t *testing.T, opID string, to map[string]any) (int, map[string]any) {
 	t.Helper()
-	return f.asTurn(t, http.MethodPost, "/api/decisions/"+f.did+"/route", map[string]any{"opId": opID, "expectedRev": f.rev(t), "to": to, "note": "Brakeman read the attempt."})
+	return f.routeAt(t, opID, to, f.rev(t))
+}
+
+// routeAt is route at the rev read, rev: a retry sends the body it sent,
+// at the rev it read then (a route to a person bumps it, HM1).
+func (f *routeFixture) routeAt(t *testing.T, opID string, to map[string]any, rev int) (int, map[string]any) {
+	t.Helper()
+	return f.asTurn(t, http.MethodPost, "/api/decisions/"+f.did+"/route", map[string]any{"opId": opID, "expectedRev": rev, "to": to, "note": "Brakeman read the attempt."})
 }
 
 // rev is the decision's rev now.
@@ -101,12 +108,15 @@ func (f *routeFixture) routedBy(t *testing.T, actor string) []map[string]any {
 // the run's crew: DR1's receipt, under the actor brakeman and the derived
 // op id, the routed row naming the person beside the operator, the act
 // done in the request with the receipt copied; the same opId again is
-// that route's receipt, one row; to a person by name and to the operator
-// too. A label no person of the crew holds is refused before anything is
-// kept, and the decision stays open, unanswered.
+// that route's receipt, one row. The decision is then for that person
+// (HM1): a turn's route to another person is refused (stale_target), to
+// the operator taken. On a decision for no one, a label no person of the
+// crew holds is refused before anything is kept, and a person by name is
+// taken. The decisions stay open, unanswered.
 func TestRouteToALabel(t *testing.T) {
 	f := newRouteFixture(t, []string{brakeman.ActRouteDecision}, nil)
-	status, out := f.route(t, "r-1", map[string]any{"kind": "role", "name": "security"})
+	read := f.rev(t)
+	status, out := f.routeAt(t, "r-1", map[string]any{"kind": "role", "name": "security"}, read)
 	if status != http.StatusOK {
 		t.Fatalf("the route: %d %v", status, out)
 	}
@@ -131,25 +141,36 @@ func TestRouteToALabel(t *testing.T) {
 		t.Fatalf("the act %+v", acts)
 	}
 	// The same act again: DR1's receipt of it, nothing routed again.
-	status, again := f.route(t, "r-1", map[string]any{"kind": "role", "name": "security"})
+	status, again := f.routeAt(t, "r-1", map[string]any{"kind": "role", "name": "security"}, read)
 	if status != http.StatusOK || again["receipt"].(map[string]any)["repeat"] != true || len(f.routedBy(t, brakemanActor)) != 1 {
 		t.Fatalf("the act again: %d %v", status, again)
 	}
-	// To a person by name, and to the operator.
-	if status, out := f.route(t, "r-2", map[string]any{"kind": "person", "name": "nate"}); status != http.StatusOK || !strings.Contains(out["receipt"].(map[string]any)["words"].(string), "nate") {
+	// Now for ana (HM1's route rewrote the request's for): a turn routes to
+	// a person only a decision for no one, so to nate is refused and
+	// nothing routed; to the operator is taken.
+	if status, out := f.route(t, "r-2", map[string]any{"kind": "person", "name": "nate"}); status != http.StatusConflict || codeOf(out) != "stale_target" || len(f.routedBy(t, brakemanActor)) != 1 {
 		t.Fatalf("to nate: %d %v", status, out)
 	}
 	if status, out := f.route(t, "r-3", map[string]any{"kind": "operator"}); status != http.StatusOK {
 		t.Fatalf("to the operator: %d %v", status, out)
 	}
-	// A responsibility no person of the crew holds, and a name none has.
+	// Another decision of the run, for no one: a responsibility no person
+	// of the crew holds and a name none has are refused, nothing kept; to
+	// a person by name is taken.
+	other := entityOf(t, f.df.ask(t, approvalBody("q-2"), http.StatusCreated, ""), "decision")["id"].(string)
+	routeOther := func(opID string, to map[string]any) (int, map[string]any) {
+		return f.asTurn(t, http.MethodPost, "/api/decisions/"+other+"/route", map[string]any{"opId": opID, "expectedRev": 1, "to": to, "note": "Brakeman read the attempt."})
+	}
 	for i, to := range []map[string]any{{"kind": "role", "name": "product"}, {"kind": "person", "name": "zed"}} {
-		status, out := f.route(t, "r-x"+string(rune('a'+i)), to)
+		status, out := routeOther("r-x"+string(rune('a'+i)), to)
 		if status != http.StatusBadRequest || codeOf(out) != crew.CodeInvalid || !strings.Contains(out["error"].(map[string]any)["message"].(string), "no person of crew routes") {
 			t.Fatalf("to %v: %d %v", to, status, out)
 		}
 	}
-	if acts := f.acts(t); len(acts) != 3 || len(f.routedBy(t, brakemanActor)) != 3 {
+	if status, out := routeOther("r-4", map[string]any{"kind": "person", "name": "nate"}); status != http.StatusOK || !strings.Contains(out["receipt"].(map[string]any)["words"].(string), "nate") {
+		t.Fatalf("to nate: %d %v", status, out)
+	}
+	if acts := f.acts(t); len(acts) != 3 || len(f.routedBy(t, brakemanActor)) != 2 {
 		t.Fatalf("acts %+v", acts)
 	}
 	// Routed, never answered: the operator still answers it.
@@ -217,8 +238,11 @@ func TestARouteCommittedBeforeItsCopyIsCompletedAfterARestart(t *testing.T) {
 	if status, out := f.route(t, "r-1", to); status != http.StatusServiceUnavailable {
 		t.Fatalf("the route: %d %v", status, out)
 	}
+	// The decision is for ana now: the route that never runs goes to the
+	// operator, which a decision for someone still takes.
+	op := map[string]any{"kind": "operator"}
 	holdActAt(t, "pending")
-	if status, out := f.route(t, "r-2", to); status != http.StatusServiceUnavailable {
+	if status, out := f.route(t, "r-2", op); status != http.StatusServiceUnavailable {
 		t.Fatalf("the route: %d %v", status, out)
 	}
 	actSeam.Store(nil)
@@ -232,7 +256,7 @@ func TestARouteCommittedBeforeItsCopyIsCompletedAfterARestart(t *testing.T) {
 		acts[1].State != brakeman.ActNotRun || acts[1].Why != "the server stopped before it ran" {
 		t.Fatalf("after the recovery %+v", acts)
 	}
-	if status, out := f.route(t, "r-2", to); status != http.StatusConflict || codeOf(out) != "act_not_run" {
+	if status, out := f.route(t, "r-2", op); status != http.StatusConflict || codeOf(out) != "act_not_run" {
 		t.Fatalf("the route never run, again: %d %v", status, out)
 	}
 	if n := len(f.routedBy(t, brakemanActor)); n != 1 {
@@ -247,15 +271,18 @@ func TestARouteCommittedBeforeItsCopyIsCompletedAfterARestart(t *testing.T) {
 func TestARouteRetriedAfterALostReplyIsOneRoute(t *testing.T) {
 	f := newRouteFixture(t, []string{brakeman.ActRouteDecision}, nil)
 	to := map[string]any{"kind": "role", "name": "security"}
+	// The retry sends the body it sent, at the rev it read then: the route
+	// bumped it (HM1).
+	read := f.rev(t)
 	holdActAt(t, "committed")
-	if status, out := f.route(t, "r-1", to); status != http.StatusServiceUnavailable {
+	if status, out := f.routeAt(t, "r-1", to, read); status != http.StatusServiceUnavailable {
 		t.Fatalf("the route: %d %v", status, out)
 	}
 	actSeam.Store(nil)
 	if acts := f.acts(t); len(acts) != 1 || acts[0].State != brakeman.ActPending {
 		t.Fatalf("before the retry %+v", acts)
 	}
-	status, out := f.route(t, "r-1", to)
+	status, out := f.routeAt(t, "r-1", to, read)
 	rc, _ := out["receipt"].(map[string]any)
 	if status != http.StatusOK || rc["repeat"] != true || rc["decision"] != f.did {
 		t.Fatalf("the retry: %d %v", status, out)
