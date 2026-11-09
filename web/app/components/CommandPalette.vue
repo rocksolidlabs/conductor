@@ -113,8 +113,14 @@ const result = computed(() => rows.groupsFor(palette.query.value))
 const groups = computed(() => result.value.groups)
 const flat = computed(() => groups.value.flatMap((g) => g.rows))
 const mode = computed<PaletteMode>(() => result.value.mode)
-const MODE_NAMES: Record<PaletteMode, string> = { search: '', actions: 'Actions', runs: 'Runs and crews', files: 'Files', people: 'People', events: 'Events', shortcuts: 'Shortcuts' }
-const placeholder = computed(() => (mode.value === 'search' ? 'Find a session, run, crew, file or action… (> # : @ ! ? for a kind; stop, share, answer, reply… to act)' : `Search ${MODE_NAMES[mode.value].toLowerCase()}…`))
+const MODE_NAMES: Record<PaletteMode, string> = { search: '', actions: 'Actions', runs: 'Runs and crews', files: 'Files', people: 'People', events: 'Events', shortcuts: 'Shortcuts', history: 'History' }
+const placeholder = computed(() =>
+  mode.value === 'search'
+    ? 'Find a session, run, crew, file or action… (> # : @ ! ? ~ for a kind; stop, share, answer, reply… to act)'
+    : mode.value === 'history'
+      ? 'Search what was said, decided and checked… (class: outcome: project: host: agent: since:)'
+      : `Search ${MODE_NAMES[mode.value].toLowerCase()}…`,
+)
 
 // Focus: the input, or one row by its key. The row's element takes the real focus, so its keys are its own.
 const input = useTemplateRef<{ inputRef?: HTMLInputElement }>('input')
@@ -281,7 +287,7 @@ async function runAction(row: PaletteItem, a: Action) {
   }
   noteRow(row)
   asking.value = null
-  palette.close()
+  if (!a.keepOpen) palette.close()
   a.run()
 }
 function confirm(row: PaletteItem) {
@@ -431,7 +437,10 @@ function onListKey(e: KeyboardEvent) {
       return void runRow(row)
     case 'ArrowRight':
       own()
-      if (row.actions?.length) revealed.value = row.key
+      if (row.actions?.length) {
+        revealed.value = row.key
+        row.reveal?.()
+      }
       return
     case 'ArrowLeft':
       own()
@@ -522,10 +531,12 @@ const dotClass: Record<NonNullable<PaletteItem['state']>, string> = { needs: 'bg
                 <div class="min-w-0 flex-1">
                   <div class="flex items-center gap-2">
                     <span class="truncate text-sm font-medium text-highlighted" data-palette-label><template v-for="(p, i) in pieces(row.label)" :key="i"><mark v-if="i === 1 && p" class="rounded-sm bg-primary/20 text-highlighted">{{ p }}</mark><template v-else>{{ p }}</template></template></span>
+                    <UBadge v-if="row.badge" :label="row.badge.label" :color="row.badge.color" variant="subtle" size="sm" class="flex-none" data-palette-badge />
                     <UBadge v-if="row.on !== undefined" :label="row.on ? 'on' : 'off'" :color="row.on ? 'success' : 'neutral'" variant="subtle" size="sm" :data-palette-switch="row.on ? 'on' : 'off'" />
                     <span v-if="row.kbds?.length" class="ml-auto flex flex-none items-center gap-0.5"><UKbd v-for="(k, i) in row.kbds" :key="i" :value="k" size="sm" /></span>
                   </div>
                   <div v-if="row.detail" class="truncate font-mono text-[11.5px] text-muted" data-palette-detail>{{ row.detail }}</div>
+                  <div v-if="row.third" class="truncate text-xs text-toned" data-palette-third>{{ row.third }}</div>
                   <div v-if="row.note" class="text-xs text-warning" data-palette-note>{{ row.note }}</div>
                   <!-- A Needs-you row: its choices numbered, or a reply field; held and away as the sidebar shows them. -->
                   <div v-if="row.prompt" class="mt-1.5" data-palette-prompt>

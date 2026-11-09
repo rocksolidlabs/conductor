@@ -81,6 +81,7 @@ export function useApi() {
     return new ApiError(status, code, message, data?.error ?? {}, data ?? fe.data)
   }
 
+  /** `signal` aborts the request (a search overtaken by the next key): it then throws as a network error does, which its caller drops. */
   async function request<T>(path: string, opts: { method?: string; body?: unknown; token?: string; query?: Record<string, string>; base?: string; signal?: AbortSignal } = {}): Promise<T> {
     const token = opts.token ?? admin.token.value
     try {
