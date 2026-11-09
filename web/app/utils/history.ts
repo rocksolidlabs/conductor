@@ -241,8 +241,15 @@ export interface ClassBadge {
 }
 
 /**
- * The badge of an entry's class. Only a `checked` entry that passed gets a ✓; a failed one a ✗; a receipt that neither passed nor
- * failed (interrupted) says so without either. What was said or decided is never drawn as checked, whatever its outcome says.
+ * The outcomes of a `checked` entry drawn with a ✓: a receipt that passed, and a review finding's resolution verified against a later
+ * candidate of another commit (`review.resolved`, RV1's rule, the plan's PR-10).
+ */
+const VERIFIED_OUTCOMES: readonly string[] = ['passed', 'resolved']
+
+/**
+ * The badge of an entry's class. Only a `checked` entry that passed (or a finding's verified resolution) gets a ✓; a failed one a ✗;
+ * a receipt that neither passed nor failed (interrupted) says so without either. What was said or decided is never drawn as checked,
+ * whatever its outcome says: a review finding resolved is still Conversation, its resolution a row of its own.
  */
 export function classBadge(e: Pick<HistoryItem, 'class' | 'outcome'>): ClassBadge | null {
   switch (e.class) {
@@ -251,7 +258,7 @@ export function classBadge(e: Pick<HistoryItem, 'class' | 'outcome'>): ClassBadg
     case 'decided':
       return { label: 'Decision', color: 'primary' }
     case 'checked':
-      if (e.outcome === 'passed') return { label: 'Checked ✓', color: 'success' }
+      if (e.outcome && VERIFIED_OUTCOMES.includes(e.outcome)) return { label: 'Checked ✓', color: 'success' }
       if (e.outcome === 'failed') return { label: 'Checked ✗', color: 'error' }
       return { label: e.outcome ? `Checked: ${e.outcome}` : 'Checked', color: 'warning' }
   }
@@ -314,10 +321,10 @@ function filter(name: string, value?: string): string {
 /**
  * What a rejected design is, in one place: the kinds that can reject one and the outcomes that do. The "Rejected designs" question
  * narrows by both, and the History page's Rejected chip writes the outcomes; a kind or an outcome added here (DR1's decision records,
- * the plan's PR-9) reaches both.
+ * the plan's PR-9; a person's review batch that requested changes, PR-10) reaches both.
  */
-export const REJECTING_KINDS: readonly string[] = ['plan.withdrawn', 'plan.superseded', 'review.verdict', 'decision.response']
-export const REJECTING_OUTCOMES: readonly string[] = ['withdrawn', 'superseded', 'needs_changes', 'rejected']
+export const REJECTING_KINDS: readonly string[] = ['plan.withdrawn', 'plan.superseded', 'review.verdict', 'decision.response', 'review.batch']
+export const REJECTING_OUTCOMES: readonly string[] = ['withdrawn', 'superseded', 'needs_changes', 'rejected', 'request_changes']
 
 /** The History page's Outcome chips, each an `outcome:` filter's value; Rejected is every rejecting outcome. */
 export function outcomeChips(): Array<{ value: string; label: string }> {

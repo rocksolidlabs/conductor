@@ -150,6 +150,20 @@ describe('repeatWords', () => {
   })
 })
 
+describe("an RV1 review's rows (PR-10)", () => {
+  it('draws a batch as a Decision, a finding as Conversation whatever its state, and its verified resolution as Checked ✓', () => {
+    expect(classBadge({ class: 'decided', outcome: 'request_changes' })).toEqual({ label: 'Decision', color: 'primary' })
+    expect(classBadge({ class: 'decided', outcome: 'approve' })).toEqual({ label: 'Decision', color: 'primary' })
+    for (const outcome of ['open', 'resolved', 'withdrawn']) expect(classBadge({ class: 'said', outcome })).toEqual({ label: 'Conversation', color: 'neutral' })
+    expect(classBadge({ class: 'checked', outcome: 'resolved' })).toEqual({ label: 'Checked ✓', color: 'success' })
+  })
+
+  it("asks for a batch that requested changes among the rejected designs", () => {
+    expect(REJECTING_KINDS).toContain('review.batch')
+    expect(REJECTING_OUTCOMES).toContain('request_changes')
+  })
+})
+
 describe('the Rejected designs question (PR-9)', () => {
   it("asks for a DR1 gate's rejected decision beside a plan's withdrawal or supersession and a review's needs_changes", () => {
     expect(REJECTING_KINDS).toContain('decision.response')
@@ -162,7 +176,7 @@ describe('historyQuestions', () => {
   it('asks the four questions as ready queries', () => {
     expect(historyQuestions({ project: 'CND', host: 'lab-box' }).map((q) => [q.id, q.query])).toEqual([
       ['failures', 'class:checked outcome:failed'],
-      ['rejected', 'kind:plan.withdrawn,plan.superseded,review.verdict,decision.response outcome:withdrawn,superseded,needs_changes,rejected'],
+      ['rejected', 'kind:plan.withdrawn,plan.superseded,review.verdict,decision.response,review.batch outcome:withdrawn,superseded,needs_changes,rejected,request_changes'],
       ['verified', 'class:checked outcome:passed project:CND'],
       ['sessions', 'host:lab-box kind:session'],
     ])
