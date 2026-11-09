@@ -652,17 +652,21 @@ func TestALanesReadsInFlightBound(t *testing.T) {
 	}
 }
 
-// A DR1 record is no item before DR1's records join the inbox: its read is
-// refused unsupported, by the owner.
-func TestDecisionRecordIsUnsupportedBeforeDR1(t *testing.T) {
+// A record's part is read only of a DR1 record in the link's scope
+// (decision:dr-N, PR-3): a ref of another kind, or one naming no
+// decision, is invalid; a session link whose session runs no attempt
+// covers no record.
+func TestDecisionRecordReadsOnlyARecordInScope(t *testing.T) {
 	e := newTestEnv(t, nil)
 	id := sessionHex("record")
 	newFakeSession(t, e, id, session.Options{})
 	_, tok := e.decisionLink(t, "/api/sessions/"+id+"/links", "phone", 0)
 	w := dialLane(t, e, "/ws/sessions/"+id, tok)
-	rid := w.reqID()
-	if code := w.refusedRead(proto.DecisionRecord{T: proto.CtlDecisionRecord, ReqID: rid, Ref: "decision:d1", Part: proto.RecordHead}, rid); code != proto.DecideUnsupported {
-		t.Fatalf("a record's head: %s", code)
+	for ref, want := range map[string]string{"decision:d1": proto.DecideInvalid, questionRef(id, "q1"): proto.DecideInvalid, "decision:dr-1": proto.DecideNotInScope} {
+		rid := w.reqID()
+		if code := w.refusedRead(proto.DecisionRecord{T: proto.CtlDecisionRecord, ReqID: rid, Ref: ref, Part: proto.RecordHead}, rid); code != want {
+			t.Fatalf("%s's head: %s, want %s", ref, code, want)
+		}
 	}
 }
 

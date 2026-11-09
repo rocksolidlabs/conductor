@@ -79,6 +79,10 @@ type Server struct {
 	// watches (lane.go).
 	laneSeam *laneSeams
 	lanes    laneState
+	// decisionItemSeam is nil but in tests: called with a DR1 record's n
+	// as its item is about to be made, after the read of the record and
+	// what it holds (inbox_decisions.go).
+	decisionItemSeam func(n int64)
 	// deliveryReplayed is nil but in tests: called once a delivery naming
 	// a candidate found no receipt in its first replay, before the ledger
 	// is read, so a test can commit a twin try of the operation there

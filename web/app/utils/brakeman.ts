@@ -396,6 +396,7 @@ export interface ParsedRef {
   request?: string
   item?: number
   launch?: string
+  decision?: string
 }
 
 const RUN = /^[a-z0-9][a-z0-9-]{0,63}-[0-9a-f]{8}$/
@@ -405,6 +406,7 @@ const HEX = /^[0-9a-f]{16}$/
 const TICKET = /^[A-Z][A-Z0-9]{1,5}-[1-9][0-9]{0,17}$/
 const COMMIT = /^[0-9a-f]{40}([0-9a-f]{24})?$/
 const REQUEST = /^br-[1-9][0-9]{0,17}$/
+const DECISION = /^dr-[1-9][0-9]{0,17}$/
 const NUMBER = /^(0|[1-9][0-9]{0,17})$/
 
 /** The ref's bound, in bytes (brakeman.MaxRef). */
@@ -481,6 +483,9 @@ export function parseRef(s: string): ParsedRef | null {
       const n = num(p[2], 1)
       return p.length === 3 && RUN.test(p[0]!) && TASK.test(p[1]!) && n ? { kind, run: p[0], task: p[1], n } : null
     }
+    case 'decision':
+      // decision:<dr-n>, DR1's record, as its run's read lists it.
+      return p.length === 1 && DECISION.test(p[0]!) ? { kind, decision: p[0] } : null
   }
   return null
 }
@@ -616,6 +621,8 @@ export function refLabel(ref: string, names: { session?: (id: string) => string 
       return `launch ${r.launch}`
     case 'candidate':
       return `candidate ${r.task}, attempt ${r.n}`
+    case 'decision':
+      return `decision ${r.decision}`
   }
   return ref
 }
@@ -1036,7 +1043,7 @@ export const GRANTS: ReadonlyArray<{ value: string; label: string; words: string
   {
     value: 'route_decision',
     label: 'Route a decision',
-    words: 'Send a decision record to you, the operator, to answer. It never answers one.',
+    words: "Send an open decision record to you, the operator, or to a person of its run's crew, by name or by the responsibility they hold. It never answers one: you answer it, for them.",
   },
 ]
 
@@ -1060,10 +1067,28 @@ export function refTicket(ref: string): string {
  * proposal's: the card says so.
  */
 export function actFor(p: Extract<BriefItem, { kind: 'proposal/1' }>, acts: readonly BrakemanAct[] | undefined): BrakemanAct | undefined {
-  const ticket = refTicket(p.target)
   const opId = typeof p.args?.opId === 'string' ? p.args.opId : ''
-  if (!ticket || !opId || !acts?.length) return undefined
+  if (!opId || !acts?.length) return undefined
+  if (p.op === 'route_decision') {
+    // A route's act and its proposal name the decision: decision:<dr-n>.
+    const d = refDecision(p.target)
+    return d ? acts.find((a) => a.opId === opId && a.operation === p.op && refDecision(a.target) === d) : undefined
+  }
+  const ticket = refTicket(p.target)
+  if (!ticket) return undefined
   return acts.find((a) => a.opId === opId && a.operation === p.op && refTicket(a.target) === ticket)
+}
+
+/** The decision a decision: ref names; "" for any other. */
+export function refDecision(ref: string): string {
+  const r = parseRef(ref)
+  return r?.kind === 'decision' ? r.decision! : ''
+}
+
+/** The decision a done route_decision act routed, from its receipt (DR1's, dr-<n>#<seq>); "" for any other act. */
+export function actDecision(a: BrakemanAct): string {
+  const m = a.state === 'done' && a.operation === 'route_decision' ? /^(dr-[1-9][0-9]*)#[1-9][0-9]*$/.exec(a.receipt ?? '') : null
+  return m ? m[1]! : ''
 }
 
 /**
@@ -1181,7 +1206,8 @@ export function actWords(a: BrakemanAct, launch?: ActLaunch | null): string {
  * what the operation made, a launch's or a revision's, never named the receipt (actMade).
  */
 export function actReceiptRef(a: BrakemanAct): string | null {
-  return a.state === 'done' && OP.test(a.op ?? '') ? `op:brakeman/${a.op}` : null
+  // A route's receipt is DR1's, in the decision's history: no op: ref names it.
+  return a.state === 'done' && a.operation !== 'route_decision' && OP.test(a.op ?? '') ? `op:brakeman/${a.op}` : null
 }
 
 /** The ref of the launch a done launch_approved_plan act made, for its launch chip and the launch it is read by; else null. */
@@ -1199,6 +1225,10 @@ export function actMade(a: BrakemanAct): string {
       return `the launch ${a.receipt}${of}`
     case 'prepare_followup':
       return `the plan revision ${a.receipt}${of}`
+    case 'route_decision': {
+      const [d, seq] = a.receipt.split('#')
+      return `${d} routed: row ${seq} of its history`
+    }
   }
   return `${a.receipt}, what it made`
 }

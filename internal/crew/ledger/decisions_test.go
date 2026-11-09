@@ -803,7 +803,7 @@ func TestDecisionBounds(t *testing.T) {
 		}
 		n2 := open(t, l, gateDecision(run, "g2"))
 		for name, fn := range map[string]func(tx *Tx) error{
-			"a receipt past 8 KiB": func(tx *Tx) error {
+			"a receipt past 32 KiB": func(tx *Tx) error {
 				_, err := tx.Respond(n2, ResponseRow{Actor: "admin", Authority: workbenchAuth, ResponseID: "big", Fingerprint: "fp", Status: ResponseRefused,
 					Receipt: `{"words":"` + strings.Repeat("x", MaxDecisionReceipt) + `"}`})
 				return err
@@ -827,6 +827,17 @@ func TestDecisionBounds(t *testing.T) {
 			if err := try(l, run, fn); !errors.Is(err, ErrTooLarge) {
 				t.Fatalf("%s: %v", name, err)
 			}
+		}
+		// A receipt at its bound is kept (#751).
+		if err := try(l, run, func(tx *Tx) error {
+			words := strings.Repeat("x", MaxDecisionReceipt-len(`{"words":""}`))
+			got, err := tx.Respond(n2, ResponseRow{Actor: "admin", Authority: workbenchAuth, ResponseID: "at-bound", Fingerprint: "fp", Status: ResponseRefused, Receipt: `{"words":"` + words + `"}`})
+			if err == nil && (!got.Kept || len(got.Row.Receipt) != MaxDecisionReceipt) {
+				err = fmt.Errorf("the receipt at its bound: %+v", got)
+			}
+			return err
+		}); err != nil {
+			t.Fatalf("a receipt at its bound: %v", err)
 		}
 		// Applied only with its receipt.
 		answer(t, l, run, n2, "r-wb", workbenchAuth)
@@ -1101,6 +1112,70 @@ func TestAnOperationIDIsUniquePerDecision(t *testing.T) {
 	}
 }
 
+// HistoryByOp finds the row an author wrote under an op id, whichever
+// decision holds it, and nothing for another author's id or none.
+func TestHistoryByOpFindsItsRow(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	const run = "team-00000001"
+	newRun(t, l, run)
+	open(t, l, gateDecision(run, "g1"))
+	n2 := open(t, l, gateDecision(run, "g2"))
+	var want HistoryRow
+	in(t, l, run, func(tx *Tx) error {
+		var err error
+		want, _, err = tx.History(n2, HistoryRow{Kind: HistoryRouted, By: "brakeman", Detail: `{"to":[{"kind":"operator"}]}`, OpID: "bk0123", Fingerprint: "fp"})
+		return err
+	})
+	got, ok, err := l.HistoryByOp(t.Context(), n2, "brakeman", "bk0123")
+	if err != nil || !ok || got.Decision != n2 || got.Seq != want.Seq || got.Kind != HistoryRouted {
+		t.Fatalf("found %+v %v %v, want %+v", got, ok, err, want)
+	}
+	for _, c := range []struct {
+		n      int64
+		by, op string
+	}{{n2, "admin", "bk0123"}, {n2, "brakeman", "bk9999"}, {n2, "brakeman", ""}, {n2 - 1, "brakeman", "bk0123"}, {0, "brakeman", "bk0123"}} {
+		if _, ok, err := l.HistoryByOp(t.Context(), c.n, c.by, c.op); ok || err != nil {
+			t.Fatalf("%v: %v %v", c, ok, err)
+		}
+	}
+}
+
+// A Brakeman turn's operations on a decision count in their own group:
+// past MaxDecisionTurnOps the turn's next is refused, while the
+// operator's comment, in a group the turn's rows never fill, is still
+// written; and the operator's operations spent leave the turn's room.
+func TestATurnsOperationsKeepTheirOwnBound(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	const run = "team-00000001"
+	newRun(t, l, run)
+	n := open(t, l, gateDecision(run, "g1"))
+	write := func(h HistoryRow) error {
+		return try(l, run, func(tx *Tx) error {
+			_, _, err := tx.History(n, h)
+			return err
+		})
+	}
+	turn := func(i int) HistoryRow {
+		return HistoryRow{Kind: HistoryRouted, By: TurnActor, Detail: `{"to":[{"kind":"operator"}]}`, OpID: fmt.Sprintf("bk%d", i), Fingerprint: "fp"}
+	}
+	for i := range MaxDecisionTurnOps {
+		if err := write(turn(i)); err != nil {
+			t.Fatalf("the turn's route %d: %v", i, err)
+		}
+	}
+	if err := write(turn(MaxDecisionTurnOps)); !errors.Is(err, ErrDecisionLimit) || !strings.Contains(err.Error(), "operations by brakeman") {
+		t.Fatalf("the turn's route past its bound: %v", err)
+	}
+	for i := range MaxDecisionOperations {
+		if err := write(HistoryRow{Kind: HistoryCommented, By: "admin", Detail: `{"text":"x"}`, OpID: fmt.Sprintf("c%d", i), Fingerprint: "fp"}); err != nil {
+			t.Fatalf("the operator's comment %d beside the turn's routes: %v", i, err)
+		}
+	}
+	if err := write(HistoryRow{Kind: HistoryRouted, By: "admin", Detail: `{"to":[{"kind":"operator"}]}`, OpID: "c-last", Fingerprint: "fp"}); !errors.Is(err, ErrDecisionLimit) {
+		t.Fatalf("the operator's operation past its own bound: %v", err)
+	}
+}
+
 // Every kind is written to its own bound and refused past it; the
 // notified rows take the rest of 256 and past it are not written,
 // counted as dropped in the next row written that has room for the count
@@ -1156,33 +1231,36 @@ func TestTheHistoryCapHolds(t *testing.T) {
 	bounds := []struct {
 		kinds []string
 		max   int
-		op    bool
+		by    string // an operation's actor, "" for no operation
 	}{
-		{[]string{HistoryRouted}, 1, false}, // the second of two: the first took the count
-		{[]string{HistoryCommented, HistoryInfoRequested, HistoryRouted}, MaxDecisionOperations, true},
-		{[]string{HistoryResponded}, MaxDecisionResponses, false},
-		{[]string{HistoryApplied}, 1, false},
-		{[]string{HistorySuperseded, HistoryCancelled}, 1, false},
-		{[]string{HistoryRefunded}, 1, false},
-		{[]string{HistoryDeliveryTyping, HistoryDeliveryEntered, HistoryDeliveryUntyped, HistoryDeliveryUncertain, HistoryDeliveryTaskFile}, 3, false},
+		{[]string{HistoryRouted}, 1, ""}, // the second of two: the first took the count
+		{[]string{HistoryCommented, HistoryInfoRequested, HistoryRouted}, MaxDecisionOperations, "admin"},
+		// A Brakeman turn's routes: their own bound, after the operator's
+		// are spent and apart from them.
+		{[]string{HistoryRouted}, MaxDecisionTurnOps, TurnActor},
+		{[]string{HistoryResponded}, MaxDecisionResponses, ""},
+		{[]string{HistoryApplied}, 1, ""},
+		{[]string{HistorySuperseded, HistoryCancelled}, 1, ""},
+		{[]string{HistoryRefunded}, 1, ""},
+		{[]string{HistoryDeliveryTyping, HistoryDeliveryEntered, HistoryDeliveryUntyped, HistoryDeliveryUncertain, HistoryDeliveryTaskFile}, 3, ""},
 	}
 	k := 0
-	row := func(kind string, op bool) HistoryRow {
+	row := func(kind, by string) HistoryRow {
 		k++
 		h := HistoryRow{Kind: kind}
-		if op {
-			h.By, h.OpID, h.Fingerprint = "admin", fmt.Sprintf("op%d", k), "fp"
+		if by != "" {
+			h.By, h.OpID, h.Fingerprint = by, fmt.Sprintf("op%d", k), "fp"
 		}
 		return h
 	}
 	for _, b := range bounds {
 		for i := range b.max {
-			if _, err := write(row(b.kinds[i%len(b.kinds)], b.op)); err != nil {
+			if _, err := write(row(b.kinds[i%len(b.kinds)], b.by)); err != nil {
 				t.Fatalf("%v %d: %v", b.kinds, i, err)
 			}
 		}
 		for _, kind := range b.kinds {
-			if _, err := write(row(kind, b.op)); !errors.Is(err, ErrDecisionLimit) {
+			if _, err := write(row(kind, b.by)); !errors.Is(err, ErrDecisionLimit) {
 				t.Fatalf("%s past its bound: %v", kind, err)
 			}
 		}
@@ -1360,7 +1438,8 @@ func TestAReleasedHoldKeepsItsRow(t *testing.T) {
 
 // MoveHolds writes the run continued's holds under the continuation as
 // they are and releases the active ones of the run continued, at the
-// move's time: one active row, under the decision's current run.
+// move's time: one active row, under the decision's current run, and the
+// record read with what it holds there.
 func TestMoveHoldsLeavesOneActiveRow(t *testing.T) {
 	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
 	ctx := context.Background()
@@ -1378,6 +1457,9 @@ func TestMoveHoldsLeavesOneActiveRow(t *testing.T) {
 		_, err := tx.Release(a, "deploy", n)
 		return err
 	})
+	if rec := record(t, l, n); rec.CurrentRun != a || !slices.Equal(rec.Held, []string{"build"}) {
+		t.Fatalf("the record before the move holds %v under %s", rec.Held, rec.CurrentRun)
+	}
 	released := map[string]time.Time{}
 	hs, _ := l.Holds(ctx, a)
 	for _, h := range hs {
@@ -1409,6 +1491,9 @@ func TestMoveHoldsLeavesOneActiveRow(t *testing.T) {
 	}
 	if c := countRows(t, l, "SELECT COUNT(*) FROM decision_holds WHERE decision = ? AND released_at = ''", n); c != 1 {
 		t.Fatalf("%d active holds", c)
+	}
+	if rec := record(t, l, n); rec.CurrentRun != b || !slices.Equal(rec.Held, []string{"build"}) {
+		t.Fatalf("the record after the move holds %v under %s", rec.Held, rec.CurrentRun)
 	}
 	in(t, l, a, func(tx *Tx) error {
 		if err := tx.Hold(a, "build", n); !errors.Is(err, ErrNotCurrent) {

@@ -37,6 +37,9 @@ const (
 	RefPlan      = "plan"      // plan:<KEY-n>/<revision>, the revision's number from 1
 	RefLaunch    = "launch"    // launch:<id>
 	RefCandidate = "candidate" // candidate:<run>/<task>/<n>
+	// DR1's decision record (Program item DR1): what a route_decision act
+	// routes, read in its run's decisions.
+	RefDecision = "decision" // decision:<dr-n>
 )
 
 // The shapes of a ref's parts, each the one its own package gives it,
@@ -60,6 +63,8 @@ var (
 	commitPattern = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
 	// A request's id.
 	requestIDPattern = regexp.MustCompile(`^br-[1-9][0-9]{0,17}$`)
+	// A decision record's id (ledger.DecisionID).
+	decisionIDPattern = regexp.MustCompile(`^dr-[1-9][0-9]{0,17}$`)
 )
 
 // maxActor is a Dispatch actor's bound (dispatch.MaxActor).
@@ -88,6 +93,7 @@ type Ref struct {
 	Request  string // brief: br-n
 	Item     int    // brief: the item's index, from 0
 	Launch   string // launch: its id, 16 hex digits
+	Decision string // decision: dr-n
 }
 
 // RefError is a ref that does not parse: the ref and why.
@@ -250,6 +256,11 @@ func ParseRef(s string) (Ref, error) {
 			return bad("a candidate's attempt number is a whole number from 1")
 		}
 		r.Run, r.Task, r.N = parts[0], parts[1], int(n)
+	case RefDecision:
+		if !want(1) || !decisionIDPattern.MatchString(parts[0]) {
+			return bad("want decision:<dr-n>")
+		}
+		r.Decision = parts[0]
 	default:
 		return bad("no kind %q: a ref is one of %s", kind, refFormsWords())
 	}
@@ -322,6 +333,8 @@ func (r Ref) String() string {
 		return "launch:" + r.Launch
 	case RefCandidate:
 		return "candidate:" + r.Run + "/" + r.Task + "/" + itoa(r.N)
+	case RefDecision:
+		return "decision:" + r.Decision
 	}
 	return ""
 }
