@@ -326,6 +326,31 @@ operator; after each commit the server sends the `decision` event and
 notification and tells the decision router (`ext.DecisionRouter`) of
 the record.
 
+A crew may list **people** beside its members (HM1, `people.go`): local
+labels, never started (no session, worktree, launch slot or agent token),
+each holding at most one of four responsibilities in the crew
+(architecture owner, product owner, security reviewer, acceptance
+owner), and a task may name its accountable owner, falling back to the
+acceptance owner (`TaskOwner`). A run keeps its people as its chain's
+launch row keeps the crew, and an attempt's task file says who answers
+for the work. A decision names whom it is for, `role:<responsibility>`
+or `person:<name>`: a plan revision's decision in its body, which the
+proposal resolves against the crew it takes and the launch hands the
+engine beside the package, never in it (`crew.Planned.For`, so the
+package stays the version every build reads; a gate asked again reads
+the label from the record of the decision it follows), and an agent's
+in its request. `Holder` resolves the label over the run's crew as launched in
+the transaction that opens the decision, and the request keeps the
+person it named (`for`), so a later edit of the saved crew changes
+nothing about it; a route to a person or a responsibility
+(`RouteDecision`) changes it only while the decision is open, at the rev
+read, bumping the rev, so a response is always for the person the rev
+it read named. The operator still answers every decision under
+`local/1` (decision D4); the receipt keeps whom it answered for beside
+who answered, and the typed line and the task file say both. A person's
+page lists the decisions for them (the ledger's filter on
+`$.for.person`).
+
 A managed crew may carry a **project manifest** (EN1, `manifest.go`): what
 makes a fresh tree of the project usable, how it is checked and how it is
 cleaned up. It is not an agent's recipes, which are the catalog's. It is
@@ -620,11 +645,23 @@ time). The desk takes the oldest, charges the day's budget and launches
 through the engine (`Engine.LaunchNamedWith`, then `crew.Launcher`, the path
 every member takes; the desk calls the `ext.Host` the composition root
 gives it, whose `LaunchTurn` is `launchTurn`, its one door, never `os/exec`) an
-unsaved one-member crew: the configured agent in the configured folder
-(through `openCwd`), isolation `none`, its arguments the adapter's
-read-only mode, then its model flag, then the rule that lets Conductor's
-MCP tools run without asking when the person allowed it; never yolo, never
-a managed run. The run carries `class: brakeman` and the request's id, its
+unsaved one-member crew: the configured agent in the folder its request's
+`agent.folder` names (through `openCwd`), isolation `none`, its arguments
+the adapter's read-only mode, then the folders it reads besides its own,
+then its model flag, then the rule that lets Conductor's MCP tools run
+without asking when the person allowed it; never yolo, never a managed
+run. The folder is the configured one, unless that is the home folder,
+whose trust Claude Code never keeps (#705): a turn of an agent with a
+switch for reading other folders (`Adapter.ReadDirArgs`, Claude Code's
+`--add-dir`) then runs in the desk's own folder for its account,
+`brakeman/folders/<account>`, made once and kept, so a person trusts it
+once. Such a turn reads, besides its own folder, the configured folder and
+the working folders of the crews it observes (the saved crews' and the
+runs', within the scope's crews, runs and repositories when it names
+them), each resolved through `resolveCwd`, at most 16; Codex, whose
+`--add-dir` makes a folder writable, runs in the configured folder and its
+read-only sandbox reads beyond it. Settings shows both (`folders` in
+`GET /api/brakeman`), and a brief's provenance the folder its turn ran in. The run carries `class: brakeman` and the request's id, its
 session is "Brakeman · br-n" with `CONDUCTOR_BRAKEMAN` set, and the line
 typed into it once it is ready names the request and the tools. Every turn
 is a fresh session: the agent reads its request, the earlier briefs and
@@ -744,11 +781,13 @@ reads and none of the crew or ticket tools.
 **The records** are JSON documents under the data directory's `brakeman/`
 (0700; `internal/brakeman`, which has no HTTP, no session, no process and
 no import of `internal/crew`): `config.json`, `state.json` (the last
-number, the op ids, the day's charges) and, per request,
+number, the op ids, the day's charges), per request,
 `requests/br-<n>.json` with its brief, the brief's resolutions, the
 turn's read log and a pending make's input beside it, each measured
-before it is written; the newest 500 requests are kept, and every open or
-pinned one. The desk owns them while it holds `brakeman/owner.lock`, taken
+before it is written, and `folders/<account>/`, the folder a turn runs in
+in place of the home folder (`default` for the agent's default login, else
+32 hex characters of the account's SHA-256), kept across turns; the newest
+500 requests are kept, and every open or pinned one. The desk owns them while it holds `brakeman/owner.lock`, taken
 by the ledger's own lock code (`store.OwnerLock`); a second server on the
 directory reads them and writes nothing (`503 brakeman_not_owner`).
 

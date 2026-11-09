@@ -4177,13 +4177,141 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   dr-2 open, dr-2 answered from the run page (Recorded, waiting for the
   run to be continued), Continue, `build`'s next attempt starting at its
   checkpoint with the answer in its task file, one `applied` row, and
-  `build` succeeding; a second Approve of dr-2 from another tab given the
+  `build` succeeding; dr-2 seen the same everywhere while it waits and
+  once it is answered: the task, Needs your decision's row, the asking
+  session's attention and the desktop app's notification, none left
+  asking after the answer; a second Approve of dr-2 from another tab given the
   first's receipt or "answered by"; dr-1 approved, `deploy` run and the
   run succeeding, and a second run of the revision rejecting dr-1,
   `deploy` cancelled with the words, `build` and `lint` unaffected; a
   share link with control on `build`'s session showing the question and
   no way to answer it; and Codex as the asking agent in one of the runs.
   A defect it finds is fixed in the stream.
+- **People in a crew: who owns its decisions and outcomes, and the
+  operator answering for them (HM1, #642 to #645, 2026-11-06 to
+  2026-11-08).** Program item HM1, planned with DR1 in
+  `docs/plans/decisions.md` (PR #608) and shipped as four PRs. A crew lists
+  people beside its members: local labels, never started (no session,
+  worktree, branch, launch slot or agent token is ever made for one), each
+  holding at most one of four responsibilities in the crew (architecture
+  owner, product owner, security reviewer, acceptance owner), and a task
+  names its accountable owner, the crew's acceptance owner when it names
+  none. A run keeps its people as it was launched; the run page's header,
+  each task's row and an attempt's task file ("Who answers for this
+  work") name them; a person's name links to their page, which lists the
+  crews they are in, the tasks they own, the Dispatch tickets they own or
+  are assigned and the decisions for them. A plan revision's decision, or
+  an agent's `decision_request`, names whom it is for, `role:architecture`
+  or `person:nate`, and may be an assignment (work a person does by hand,
+  answered Done or Not done); the label resolves when the decision opens,
+  against the run's crew as launched, and the record keeps the person it
+  named. The operator answers it, for them: the card says "the operator,
+  for nate (architecture owner)", the confirm "You answer as the
+  operator, for nate", and the receipt keeps who answered and for whom
+  side by side. Who may answer does not change (decision D4). See
+  `docs/architecture.md` (Crew runs) and `docs/protocol.md` (the crew,
+  run and people routes; Decisions). No new dependency, no feature tag,
+  no ledger schema change: what a decision records of a person is in the
+  request's and the receipt's JSON. What each PR shipped and the tests it
+  added:
+
+  PR-9 (#642, PR #671): `Person`, the responsibilities, `Task.Owner`,
+  `checkPeople`, `TaskOwner`, `Holder`, the run's people and owners from
+  the chain's launch row, a launch an older build made from a revision
+  with people made whole (`restoreLaunchPeople`, `Tx.RestorePeople`), the
+  task file's section, the crew and run routes' fields, `GET
+  /api/people`. `internal/crew`'s `people_test.go`, `internal/api`'s
+  `people_test.go`. PR-10 (#643, PR #674): the crew editor's People and
+  Owner, the run page's people and owners, the revision's people.
+  `crews.test.ts`, `crew-people.spec.ts`. PR-11 (#644, PR #682): `GET
+  /api/people/{name}`, the person's page, the chips' links, the palette's
+  `@` people. `TestAPersonsWork`, `people.test.ts`. PR-12 (#645): whom a
+  decision is for. Dispatch's `PlanDecision.for` (its shape checked by the
+  store, omitted when empty so an older body's digest is unchanged) and
+  the `assignment` kind; the proposal's check of the label in the crew the
+  revision takes (`crew.Holder`, `400 invalid` in the crew's words); the
+  gate's and the request's `for` resolved in their opening's transaction,
+  the opening's routed row naming the person beside the operator; a
+  planned launch refused for a gate its crew does not resolve;
+  `RouteDecision`'s `person` and `role`, only while the decision is open,
+  at the rev read and through the run that holds it, rewriting `for`
+  (`Tx.RouteFor`, nothing else) and bumping the rev; the receipt's `for`,
+  the typed line's and the task file's "answered by Nate for nate, the
+  architecture owner"; the ledger's `DecisionFilter.For`, `GET
+  /api/decisions?for=` and the person's page's decisions; `conductor
+  dispatch plan propose --decision-for`, `conductor task decide --for`,
+  `decision_request`'s `for`, the skill's sentence; the proposal form's
+  Assignment kind and For select, `planDecisionsOut` so a revision keeps
+  every field of its base's decisions, the cards' words.
+  `internal/dispatch`'s `TestPlanDecisionFor`; `internal/crew`'s
+  `decisions_for_test.go` (`TestAGateNamesItsLabel`,
+  `TestALabelResolvesFromTheCrewAsLaunched`,
+  `TestAnAgentsLabelNoPersonHoldsIsRefused`,
+  `TestAnAssignmentGateForAPerson`, `TestRouteDecisionToAPersonAndARole`,
+  `TestARouteChangesForOnlyWhileOpen`, `TestAGateAsksAgainForItsLabel`);
+  `internal/dispatch`'s `TestThePackageCarriesNoFor` (an older build's
+  strict reader of the package); `internal/crew/ledger`'s
+  `TestDecisionsFilterByPerson`, `TestRouteForChangesOnlyFor`;
+  `internal/api`'s `decisions_for_test.go`
+  (`TestTheOperatorAnswersForALabel`,
+  `TestProposalRefusesALabelTheCrewLacks`, `TestAPersonsDecisions`);
+  `internal/cli`'s `TestDecisionFor`, `TestTaskDecideFor`,
+  `TestDecisionRequestToolTakesFor`; `internal/agents`'
+  `TestSkillSaysWhomADecisionIsFor`; `decisions.test.ts`,
+  `dispatchPlans.test.ts`; `decisions-people.spec.ts`.
+
+  What an older Conductor does with these files: it reads a crew file
+  that lists people as unreadable and leaves it out of its lists (the
+  store never writes over a file it cannot read, and a newer build reads
+  it again); a managed run's record with people is written again from
+  the ledger at the newer build's next start. Whom a decision is for
+  never travels in a launch's package: the package is version 1's shape,
+  which every older build reads, and the engine is handed each label from
+  the revision's body beside it (`crew.Planned.For`); a gate's request
+  in the ledger keeps it from then on, and a gate asked again reads it
+  from the record of the decision it follows. So an older build that
+  continues a run this build launched reads its package whole, carries
+  its decisions with their `for` as written, answers and applies them as
+  any other, and asks a gate again for the operator alone (it knows no
+  label); its ledger refuses to open a decision whose request keeps
+  `for` (a replacement of such a decision). An older build that launches
+  a revision whose decision names `for` cannot be stopped by any guard a
+  build already shipped holds: it decodes the body without `for` and
+  opens the gates for the operator alone, and nothing restores their
+  labels afterwards (this build's later continuation finds none in their
+  records and asks again for the operator alone). Who may answer is the
+  same either way, the operator (decision D4); only the label is
+  missing. A revision that names whom a decision is for is launched by
+  this build or a later one.
+
+  The acceptance (the plan's Acceptance, HM1: a crew lists an
+  architecture owner who is a person; a gate names that label and the
+  operator answers for it), what is observed and what is not. Observed,
+  with the stub worker, by the specs CI runs: a crew given an
+  architecture owner and an acceptance owner, saved and read back, its
+  run's header and task rows naming them, no session for either
+  (`crew-people.spec.ts`); a plan revision's approval for the
+  architecture owner before `build` and an assignment for ana before
+  `docs`, proposed and revised through the page with both `for`s kept,
+  approved and launched, the card saying the operator answers for nate
+  (architecture owner), the receipt for whom, `build` started, and ana's
+  page listing her assignment until it is answered Done, `docs` then
+  started (`decisions-people.spec.ts`). Not yet made: the plan's by-hand
+  observation, the maintainers' check after this entry's PR merges,
+  recorded here (what ran, against which `main`, what it did not
+  exercise): on the open-source build with nothing registered, on a
+  server of its own on the LAN Linux box or the Mac, nate added as
+  architecture owner and ana as acceptance owner, saved and reloaded; a
+  revision with an approval `schema` for `role:architecture` before
+  `build` proposed, approved and launched; the header listing both,
+  `build`'s row its owner, nothing made for either person; the gate
+  holding `build`, the decision views and nate's page saying "for nate,
+  the architecture owner" (that page read again from a phone's browser
+  on the same LAN); answered as the operator, the receipt by the
+  operator for nate, `build` started, nate's page no longer listing it;
+  and a real agent asking for the architecture owner's decision by its
+  responsibility after reading "Who answers for this work". A defect it
+  finds is fixed in the stream.
 - **Review and repair: a person's batched review of a candidate, one
   traceable repair round, findings checked against the new candidate
   (RV1, #618 to #633, 2026-11-06 to 2026-11-08).** Program item RV1,

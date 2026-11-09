@@ -59,6 +59,7 @@ export type DecisionWatcher = (e: DecisionEvent | null, restarted?: boolean) => 
 export class SerialReads {
   private inflight: Promise<void> | null = null
   private again = false
+  private stopped = false
   constructor(
     private readonly once: () => Promise<void>,
     private readonly failed: (e: Error) => void = () => {},
@@ -66,6 +67,7 @@ export class SerialReads {
 
   /** Asks for a read: made now, or once after the one under way. Resolves when the reads it waits for are done; never rejects. */
   run(): Promise<void> {
+    if (this.stopped) return this.inflight ?? Promise.resolve()
     if (this.inflight) {
       this.again = true
       return this.inflight
@@ -83,12 +85,22 @@ export class SerialReads {
               /* a failure's report never stops the read queued after it */
             }
           }
-        } while (this.again)
+        } while (this.again && !this.stopped)
       } finally {
         this.inflight = null
       }
     })()
     return this.inflight
+  }
+
+  /**
+   * Ends the reads, as the page that asked for them goes: one queued is never made and none is asked again. The one under way runs to
+   * its end (its caller aborts it), and what it settles starts nothing after it: stopped before that abort, so the abort's settling
+   * cannot start the queued read.
+   */
+  stop(): void {
+    this.stopped = true
+    this.again = false
   }
 }
 

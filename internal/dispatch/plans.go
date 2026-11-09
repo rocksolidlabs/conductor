@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // A ticket's plan revisions (Program item DS2,
@@ -428,8 +430,9 @@ func (t *tx) planComments(tk Ticket, in []PlanComment) ([]PlanComment, error) {
 
 // checkDecisions checks the decisions a revision names: at most
 // MaxPlanDecisions, each an id of a task id's shape named once, a
-// question, its kind, and at most MaxDecisionBefore tasks of the crew
-// that wait on it, each once.
+// question, its kind, at most MaxDecisionBefore tasks of the crew that
+// wait on it, each once, and whom it is for by its shape alone
+// (checkDecisionFor).
 func checkDecisions(ds []PlanDecision, crew planCrew) error {
 	if err := checkCount("decisions in a revision", len(ds), MaxPlanDecisions); err != nil {
 		return err
@@ -440,8 +443,11 @@ func checkDecisions(ds []PlanDecision, crew planCrew) error {
 			return refuse(RefusalInvalid, "the decision %q's id is not of a task id's shape", d.ID)
 		case slices.ContainsFunc(ds[:i], func(o PlanDecision) bool { return o.ID == d.ID }):
 			return refuse(RefusalInvalid, "the decision %s is named twice", d.ID)
-		case d.Kind != DecisionApproval && d.Kind != DecisionClarification:
-			return refuse(RefusalInvalid, "the decision %s's kind %q is neither approval nor clarification", d.ID, d.Kind)
+		case d.Kind != DecisionApproval && d.Kind != DecisionClarification && d.Kind != DecisionAssignment:
+			return refuse(RefusalInvalid, "the decision %s's kind %q is not approval, clarification or assignment", d.ID, d.Kind)
+		}
+		if err := checkDecisionFor(d); err != nil {
+			return err
 		}
 		if err := checkField("plan.decision_question", "the decision "+d.ID+"'s question", d.Question); err != nil {
 			return err
@@ -459,6 +465,41 @@ func checkDecisions(ds []PlanDecision, crew planCrew) error {
 		}
 	}
 	return nil
+}
+
+// checkDecisionFor checks the shape of whom a decision is for: empty, or
+// role: or person: and then 1 to MaxPersonName characters of valid UTF-8
+// with no control character (Dispatch's person.name rule). Whether the
+// crew resolves it is internal/api's to judge (crew.Holder): this package
+// keeps no list of the responsibilities.
+func checkDecisionFor(d PlanDecision) error {
+	if d.For == "" {
+		return nil
+	}
+	name, ok := strings.CutPrefix(d.For, DecisionForRole)
+	if !ok {
+		name, ok = strings.CutPrefix(d.For, DecisionForPerson)
+	}
+	switch {
+	case !ok:
+		return refuse(RefusalInvalid, "the decision %s is for %q: a label is role:<responsibility> or person:<name>", d.ID, cutLabel(d.For))
+	case name == "" || !utf8.ValidString(name) || utf8.RuneCountInString(name) > MaxPersonName || strings.ContainsFunc(name, unicode.IsControl):
+		return refuse(RefusalInvalid, "the decision %s is for %q: what follows role: or person: is 1 to %d characters with no control character", d.ID, cutLabel(d.For), MaxPersonName)
+	}
+	return nil
+}
+
+// cutLabel is a label as a refusal quotes it: at most 80 bytes, cut where
+// a character ends.
+func cutLabel(s string) string {
+	if len(s) <= 80 {
+		return s
+	}
+	n := 80
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…"
 }
 
 // normalized is the body with every list a list, none null, so a body
