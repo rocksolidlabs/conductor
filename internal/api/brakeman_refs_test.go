@@ -500,7 +500,10 @@ func TestADeletedTargetResolvesAsDeleted(t *testing.T) {
 // A question resolves while its session is listed and the question in its
 // window; once the window has moved past it, or the session has left the
 // registry, it is unavailable beside what the turn observed, and a
-// question the turn never observed then names nothing.
+// question the turn never observed then names nothing. The session itself
+// resolves from its record once the registry no longer lists it
+// (docs/plans/history.md, PR-11), and is deleted once its record is
+// forgotten.
 func TestAnEvictedQuestionIsUnavailable(t *testing.T) {
 	f := newRefsFixture(t)
 	cfg := brakeman.DefaultConfig(f.e.root)
@@ -532,21 +535,33 @@ func TestAnEvictedQuestionIsUnavailable(t *testing.T) {
 	}
 
 	// The session leaves the registry: its question and its file are
-	// unavailable, the session itself deleted.
+	// unavailable, the session itself read from its record.
 	file, sess := ref(t, "file:"+f.session+"/"+f.file), ref(t, "session:"+f.session)
 	// Stopped first: Remove retires the session and leaves its process.
 	if err := f.local.Stop(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	f.e.srv.registry.Remove(f.session)
-	got, err = f.resolve(t, cfg, cfg, []brakeman.Item{panel(q, file, sess)}, read,
-		brakeman.Read{Ref: file, Class: brakeman.ClassTouched, State: "edit", At: at},
-		brakeman.Read{Ref: sess, Class: brakeman.ClassSessions, State: "running", At: at})
+	reads := []brakeman.Read{read,
+		{Ref: file, Class: brakeman.ClassTouched, State: "edit", At: at},
+		{Ref: sess, Class: brakeman.ClassSessions, State: "running", At: at}}
+	got, err = f.resolve(t, cfg, cfg, []brakeman.Item{panel(q, file, sess)}, reads...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got[0].Now.State != refUnavailable || got[1].Now.State != refUnavailable || got[2].Now.State != refDeleted {
+	page := "/history/sessions/" + f.session
+	if got[0].Now.State != refUnavailable || got[1].Now.State != refUnavailable || got[2].Now.State != availRecord ||
+		got[2].Now.URL != page || got[2].Seen.URL != page || got[2].Seen.State != "running" {
 		t.Fatalf("a session gone: %+v", got)
+	}
+	// Its record forgotten, the session the turn read is deleted.
+	endedRecord(t, f.e, f.session)
+	if err := f.e.srv.sessionRecords.Forget(f.session); err != nil {
+		t.Fatal(err)
+	}
+	got, err = f.resolve(t, cfg, cfg, []brakeman.Item{panel(sess)}, reads...)
+	if err != nil || got[0].Now.State != refDeleted {
+		t.Fatalf("a session whose record is forgotten: %v %+v", err, got)
 	}
 }
 
