@@ -1748,10 +1748,25 @@ func TestAResponseReceiptAtItsFieldsBoundsFits(t *testing.T) {
 	choice, kept := 5, false
 	rc := ResponseReceipt{Decision: ledger.DecisionID(1<<63 - 1), K: 1<<63 - 1, Status: "refused", Code: CodeArtifactUncommitted, Words: words,
 		Actor: esc(ledger.MaxDecisionActor), ByName: resp.ByName, Choice: &choice, Text: resp.Text, Rationale: resp.Rationale,
-		At: time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC), Rev: 1<<63 - 1, Repeat: true, Kept: &kept}
+		At: time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC), Rev: 1<<63 - 1, Repeat: true, Kept: &kept,
+		// Whom it answered for (#741): a person of the ledger's most
+		// characters, each escaping, and the longest responsibility.
+		For: &ReceiptFor{Person: esc(ledger.MaxForName), Responsibility: longestResponsibility()}}
 	if n := len(receiptJSON(rc)); n > ledger.MaxDecisionReceipt {
 		t.Fatalf("the widest receipt is %d bytes, over %d", n, ledger.MaxDecisionReceipt)
 	}
+}
+
+// longestResponsibility is the longest of the responsibilities a person
+// may hold, the widest a receipt's for can carry.
+func longestResponsibility() string {
+	w := ""
+	for _, r := range Responsibilities {
+		if len(r) > len(w) {
+			w = r
+		}
+	}
+	return w
 }
 
 // A response sent again is answered from the row the ledger saved, byte for
