@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { nextTick, ref } from 'vue'
 import type { DecideOkMsg, DecisionReply } from '~/utils/protocol'
 import type { InboxAction, InboxItem, InboxSummary } from '~/utils/inbox'
-import { DecisionLane, LaneError, LaneLocal, type LaneAsk, type LaneDecide, type LaneWire } from '~/utils/transport/decide'
+import { DecisionLane, LaneError, LaneLocal, RECORD_NO_WORD_WORDS, type LaneAsk, type LaneDecide, type LaneWire } from '~/utils/transport/decide'
 import { useJoinDecide } from './useJoinDecide'
 
 // What the join page's Decide keeps (docs/plans/decision-inbox.md, PR-7), over a wire whose replies the test gives one by one, in
@@ -375,6 +375,35 @@ describe("useJoinDecide's DR1 record", () => {
     }
     expect(d.record.value?.rev).toBe('100000')
     expect(d.recordWords.value).toContain('changed while it was read')
+  })
+
+  it('says a read that got no word back on a connection still up, and Read again reads the item and its record again', async () => {
+    const f = fakeWire()
+    const d = useJoinDecide(new DecisionLane(() => f.wire), ref(0))
+    d.open(dref)
+    await flush()
+    f.take('decision_read').settle({ reqId: 'x', item: recordItem })
+    await flush()
+    // The lane's read timed out: no word, the connection still up, and no change to come on an unchanged decision.
+    f.take('decision_record', (m) => m.t === 'decision_record' && m.part === 'head').fail(new LaneError('no_word', 'no word came back'))
+    await flush()
+    expect(d.record.value).toBeNull()
+    expect(d.recordWords.value).toBe(RECORD_NO_WORD_WORDS)
+    expect(f.asked.filter((a) => a.m.t === 'decision_record')).toHaveLength(1)
+
+    const again = d.reread()
+    await flush()
+    f.take('decision_read').settle({ reqId: 'x', item: recordItem })
+    await again
+    await flush()
+    f.take('decision_record', (m) => m.t === 'decision_record' && m.part === 'head').settle(head('100000'))
+    await flush()
+    f.take('decision_record', (m) => m.t === 'decision_record' && m.part === 'responses').settle(empty('responses', '100000'))
+    await flush()
+    f.take('decision_record', (m) => m.t === 'decision_record' && m.part === 'history').settle(empty('history', '100000'))
+    await flush()
+    expect(d.record.value?.rev).toBe('100000')
+    expect(d.recordWords.value).toBe('')
   })
 
   it('takes nothing an assembly under way brings back once the item is left, and asks it no more parts', async () => {

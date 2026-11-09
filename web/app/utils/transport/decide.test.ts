@@ -261,6 +261,48 @@ describe("a DR1 record's assembly over the lane", () => {
     expect(o.asked.map((a) => a.part)).toEqual(['head', 'responses'])
   })
 
+  it('asks no head again when the part in flight as it was dropped is refused record_moved, and hands no refusal on', async () => {
+    let live = true
+    const o = owner(() => '101002', 1, 2)
+    const read = async (part: LaneRecordPart['part'], r?: string, after?: string) => {
+      if (part === 'responses') {
+        // The item is left while the part is under way, and the owner refuses the part: the record moved meanwhile.
+        o.asked.push({ part, rev: r, after })
+        live = false
+        throw new LaneError('record_moved', 'moved', { rev: '202003' })
+      }
+      return o.read(part, r, after)
+    }
+    expect(await assembleRecord(ref, read, () => live)).toEqual({ dropped: true })
+    expect(o.asked.map((a) => a.part)).toEqual(['head', 'responses'])
+    // Any other refusal of a dropped assembly's part is not handed on either: the reply is the dropped request's.
+    live = true
+    const failing = async (part: LaneRecordPart['part'], r?: string, after?: string) => {
+      if (part === 'history') {
+        live = false
+        throw new LaneError('no_word', 'no word came back')
+      }
+      return o.read(part, r, after)
+    }
+    expect(await assembleRecord(ref, failing, () => live)).toEqual({ dropped: true })
+  })
+
+  it('restarts only while it is still wanted: a restart dropped before its head asks nothing', async () => {
+    let live = true
+    let heads = 0
+    const read = async (part: LaneRecordPart['part'], r?: string): Promise<LaneRecordPart> => {
+      if (part === 'head') {
+        heads++
+        return head('101000')
+      }
+      // Each part moved; the second refusal comes as a later change begins another assembly.
+      if (heads === 2) live = false
+      throw new LaneError('record_moved', 'moved', { rev: r })
+    }
+    expect(await assembleRecord(ref, read, () => live)).toEqual({ dropped: true })
+    expect(heads).toBe(2)
+  })
+
   it('refuses a head that names another record, and a page cursor that does not move on', async () => {
     await expect(assembleRecord(ref, async () => ({ ...head('101000'), ref: 'decision:dr-2' }))).rejects.toMatchObject({ code: 'invalid' })
     const stuck = async (part: LaneRecordPart['part'], r?: string): Promise<LaneRecordPart> => (part === 'head' ? head('103000') : { ref, part, rev: r!, total: 3, next: '0', responses: [] })

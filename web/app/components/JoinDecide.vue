@@ -113,7 +113,15 @@ const recentWord = (e: JoinRecent) => recentBadge({ ref: e.ref, receipt: e.recei
         @reread="reread"
       >
         <template #record>
-          <UAlert v-if="recordWords" color="neutral" variant="subtle" icon="i-lucide-info" :title="recordWords" data-inbox-record-words />
+          <UAlert
+            v-if="recordWords"
+            color="neutral"
+            variant="subtle"
+            icon="i-lucide-info"
+            :title="recordWords"
+            :actions="[{ label: 'Read again', color: 'neutral', variant: 'outline', class: 'min-h-11', onClick: () => reread() }]"
+            data-inbox-record-words
+          />
           <DecisionCard v-if="record && record.ref === item.ref" :decision="record.decision" :refs="record.refs" :now="now" />
           <p v-else-if="!recordWords" class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Reading the decision…</p>
         </template>

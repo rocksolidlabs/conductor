@@ -61,7 +61,7 @@ const openAction = computed(() => ({
   receipt: typeof route.query.receipt === 'string' ? route.query.receipt : '',
   attempt: typeof route.query.attempt === 'string' ? route.query.attempt : '',
 }))
-const empty = computed(() => inboxEmpty({ ...state.value, items: sections.value.open }))
+const empty = computed(() => inboxEmpty(state.value))
 
 /**
  * The open item's DR1 record, when it names one: read whole from DR1's route (useDecisionRecord: one read at a time, ordered by the

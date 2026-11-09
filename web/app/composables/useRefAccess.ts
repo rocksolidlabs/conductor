@@ -1,6 +1,6 @@
 import { hasInjectionContext, inject } from 'vue'
 import type { RefResolution } from '~/utils/brakeman'
-import { defaultRefAccess, REF_ACCESS, refReadError, type RefAccess } from '~/utils/refAccess'
+import { defaultRefAccess, REF_ACCESS, refReadError, refReadShown, type RefAccess } from '~/utils/refAccess'
 import type { TicketComment } from './useDispatch'
 
 /**
@@ -16,7 +16,8 @@ export function useRefAccess(): RefAccess {
 /**
  * A chip's record read as it is opened (BrakemanReceipt.vue): through the access (`useRefAccess`'s), each opening counted, so a reply
  * is shown only in the opening it was asked for, and one that comes after a later opening is dropped. A comment the reply does not hold
- * is said gone.
+ * is said gone; a text that is part of the record its SHA-256 is of (a link's cut log, a dropped log's kept end) says what it is
+ * (`shown`, refReadShown).
  */
 export function useRefReceipt(o: { ref: () => string; resolution: () => RefResolution | undefined }, access: RefAccess = useRefAccess()) {
   const open = ref(false)
@@ -24,6 +25,7 @@ export function useRefReceipt(o: { ref: () => string; resolution: () => RefResol
   const error = ref('')
   const text = ref('')
   const sha256 = ref('')
+  const shown = ref('')
   const comment = ref<TicketComment | null>(null)
   let opened = 0
 
@@ -34,6 +36,7 @@ export function useRefReceipt(o: { ref: () => string; resolution: () => RefResol
     error.value = ''
     text.value = ''
     sha256.value = ''
+    shown.value = ''
     comment.value = null
     const reader = access.read(o.ref(), o.resolution())
     try {
@@ -49,6 +52,7 @@ export function useRefReceipt(o: { ref: () => string; resolution: () => RefResol
       } else {
         text.value = r.text
         sha256.value = r.sha256 ?? ''
+        shown.value = refReadShown(r)
       }
     } catch (e) {
       if (mine === opened) error.value = refReadError(e)
@@ -56,5 +60,5 @@ export function useRefReceipt(o: { ref: () => string; resolution: () => RefResol
       if (mine === opened) loading.value = false
     }
   }
-  return { open, loading, error, text, sha256, comment, read }
+  return { open, loading, error, text, sha256, shown, comment, read }
 }

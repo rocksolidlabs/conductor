@@ -12,8 +12,23 @@ import type { LaneEvidence } from './transport/decide'
 /** Where a chip's ref opens: a page of this app, an action of the page that drew it (a terminal tab), or nowhere, with the words why. */
 export type RefTarget = { to: string } | { open: () => void } | { words: string }
 
-/** A ref's record as read: a text (a check's log, a receipt as JSON) with the SHA-256 the server sent beside it, or a ticket's comment. */
-export type RefRead = { kind: 'text'; text: string; sha256?: string } | { kind: 'comment'; comment: TicketComment | null }
+/**
+ * A ref's record as read: a text (a check's log, a receipt as JSON) with the SHA-256 the server sent beside it, or a ticket's comment.
+ * A log read through a link may be part of the log, not the log its SHA-256 is of: `cut`, its last 4 KiB of `bytes`; `dropped`, a log
+ * not kept, read as the end its receipt keeps (docs/protocol.md, Decision links, Evidence).
+ */
+export type RefRead = { kind: 'text'; text: string; sha256?: string; cut?: boolean; bytes?: number; dropped?: boolean } | { kind: 'comment'; comment: TicketComment | null }
+
+/**
+ * What a read's text is, when it is not the whole record its SHA-256 is of ('' when it is): a log not kept, shown as the end its
+ * receipt keeps; a log cut to its last 4 KiB. The receipt says it above the text, and names the SHA-256 the whole log's.
+ */
+export function refReadShown(r: RefRead): string {
+  if (r.kind !== 'text') return ''
+  if (r.dropped) return "The log was not kept: the run's logs were at their bound. Shown is the end of its output its receipt keeps, not the log."
+  if (r.cut) return `Shown is the log's last 4 KiB${r.bytes ? ` of its ${r.bytes.toLocaleString('en-US')} bytes` : ''}: the whole log is read on the desktop or the LAN.`
+  return ''
+}
 
 /** What a chip and its record read through. */
 export interface RefAccess {
@@ -69,8 +84,9 @@ export const LINK_ELSEWHERE = 'open it on the desktop or the LAN'
 /**
  * A decision link's access (the join page's Decide), for the evidence of the item `item()` names: a session's chip opens that member's
  * terminal tab (`openSession`, which reads the entry through the lane and says so when the session is not in the link's scope); a
- * check's chip reads its log's end through the lane (`decision_evidence`), checked to be the entry asked; anything else shows its label
- * and the words where it is opened. Nothing is read over HTTP, and nothing goes to a workbench page.
+ * check's chip reads its log's end through the lane (`decision_evidence`), checked to be the entry asked, with whether it is cut or
+ * the log was dropped (refReadShown); anything else shows its label and the words where it is opened. Nothing is read over HTTP, and
+ * nothing goes to a workbench page.
  */
 export function linkRefAccess(o: { evidence: (ref: string) => Promise<LaneEvidence>; openSession: (ref: string) => void }): RefAccess {
   return {
@@ -85,7 +101,7 @@ export function linkRefAccess(o: { evidence: (ref: string) => Promise<LaneEviden
       return async () => {
         const e = await o.evidence(ref)
         if (e.kind !== 'log' || e.ref !== ref) throw new Error('The link answered for another entry.')
-        return { kind: 'text', text: e.tail, sha256: e.sha256 ?? '' }
+        return { kind: 'text', text: e.tail, sha256: e.sha256 ?? '', ...(e.cut ? { cut: true } : {}), ...(e.bytes !== undefined ? { bytes: e.bytes } : {}), ...(e.dropped ? { dropped: true } : {}) }
       }
     },
     runHeld: () => undefined,

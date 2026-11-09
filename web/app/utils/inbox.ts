@@ -377,11 +377,13 @@ export function trackKey(e: Pick<RecentEntry, 'ref' | 'receipt' | 'attempt'>): s
 }
 
 /**
- * Whether the list may say that nothing needs a decision: only when its last read answered, with no item. A read that failed says
- * nothing of what is open now, so after it the page shows the failure, never an empty list.
+ * Whether the list may say that nothing needs a decision: only when its last read answered, and the server counts nothing open that a
+ * person decides (its `total` less the DR1 records answered and not yet applied, barCount), whatever page the list holds: a first
+ * page of such records alone, with an open item on the next, is not empty. A read that failed says nothing of what is open now, so
+ * after it the page shows the failure, never an empty list.
  */
-export function inboxEmpty(s: { loaded: boolean; items: readonly unknown[]; unavailable: string; error: string }): boolean {
-  return s.loaded && !s.items.length && !s.unavailable && !s.error
+export function inboxEmpty(s: { loaded: boolean; total: number; tracking?: number; unavailable: string; error: string }): boolean {
+  return s.loaded && barCount(s) === 0 && !s.unavailable && !s.error
 }
 
 // ---------------------------------------------------------------------------

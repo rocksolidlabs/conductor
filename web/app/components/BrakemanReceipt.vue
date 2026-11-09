@@ -11,7 +11,7 @@ import { commentAuthor } from '~/utils/dispatch'
  */
 const props = defineProps<{ refName: string; label: string; keptSha256?: string; resolution?: RefResolution }>()
 
-const { open, loading, error, text, sha256, comment, read } = useRefReceipt({ ref: () => props.refName, resolution: () => props.resolution })
+const { open, loading, error, text, sha256, shown, comment, read } = useRefReceipt({ ref: () => props.refName, resolution: () => props.resolution })
 </script>
 
 <template>
@@ -25,9 +25,13 @@ const { open, loading, error, text, sha256, comment, read } = useRefReceipt({ re
           <p class="text-xs text-muted">#{{ comment.n }} · {{ commentAuthor(comment) }}<template v-if="comment.deletedAt"> · deleted</template></p>
           <MarkdownPreview :text="comment.body ?? ''" dir="" :relative-links="false" class="text-sm" />
         </template>
-        <pre v-else class="max-h-[60vh] overflow-auto whitespace-pre-wrap break-words rounded bg-elevated/40 p-2 font-mono text-xs" data-ref-receipt-text>{{ text }}</pre>
-        <p v-if="sha256" class="break-all font-mono text-[11px] text-muted">
-          SHA-256 {{ sha256 }}<template v-if="keptSha256"> · {{ keptSha256 === sha256 ? 'the one kept with the brief' : `the brief kept ${keptSha256}` }}</template>
+        <template v-else>
+          <!-- A text that is part of the log its SHA-256 is of (a link's last 4 KiB, a dropped log's kept end) says so first. -->
+          <p v-if="shown" class="text-xs text-muted text-pretty" data-ref-receipt-shown>{{ shown }}</p>
+          <pre class="max-h-[60vh] overflow-auto whitespace-pre-wrap break-words rounded bg-elevated/40 p-2 font-mono text-xs" data-ref-receipt-text>{{ text }}</pre>
+        </template>
+        <p v-if="sha256" class="break-all font-mono text-[11px] text-muted" data-ref-receipt-sha256>
+          SHA-256<template v-if="shown"> of the whole log</template> {{ sha256 }}<template v-if="keptSha256"> · {{ keptSha256 === sha256 ? 'the one kept with the brief' : `the brief kept ${keptSha256}` }}</template>
         </p>
       </div>
     </template>

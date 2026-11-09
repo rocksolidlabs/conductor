@@ -9,6 +9,7 @@ import {
   LaneError,
   LaneLocal,
   RECORD_MOVED_WORDS,
+  RECORD_NO_WORD_WORDS,
   refusedWords,
   type AssembledRecord,
   type DecisionLane,
@@ -74,7 +75,7 @@ function owedWords(e: unknown, kind: string, went: boolean): string {
  * `decisions_changed`; DR1's card is handed only a record assembled whole (`record`). Each assembly is one generation: another item
  * opened, the list left, or a later assembly begun drops what an earlier one brings back, and it asks no more parts. A record that
  * moved four times in a row while it was read keeps the last one assembled whole, with the words why (`recordWords`), until the next
- * change reads it again.
+ * change reads it again; one whose read got no word back says so, and Read again (`reread`) reads the item and its record again.
  */
 export function useJoinDecide(lane: DecisionLane, seq: Ref<number>) {
   const items = ref<InboxSummary[]>([])
@@ -234,7 +235,10 @@ export function useJoinDecide(lane: DecisionLane, seq: Ref<number>) {
     } catch (e) {
       if (!mine()) return
       if (record.value?.ref !== r) record.value = null
-      recordWords.value = e instanceof LaneError && NO_REPLY.has(e.code) ? '' : `The record could not be read: ${(e as Error).message}`
+      // No connection now (closed, nothing sent): the welcome of the next one reads it again, and the page says it is offline. A read
+      // that got no word on a connection still up is said, with Read again: no change may come to read it again by itself.
+      recordWords.value =
+        e instanceof LaneError && e.code === LaneLocal.NoWord ? RECORD_NO_WORD_WORDS : e instanceof LaneError && NO_REPLY.has(e.code) ? '' : `The record could not be read: ${(e as Error).message}`
     }
   }
   /** Leaves the record shown: nothing an assembly under way brings back is taken. */

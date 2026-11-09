@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as vue from 'vue'
-import { LINK_ELSEWHERE, linkRefAccess, REF_ACCESS, type RefAccess } from '~/utils/refAccess'
+import { LINK_ELSEWHERE, linkRefAccess, REF_ACCESS, refReadShown, type RefAccess } from '~/utils/refAccess'
+import type { LaneEvidence } from '~/utils/transport/decide'
 import { refPage } from '~/utils/brakeman'
 // Imported with the file, not inside a test: a module loaded in a test is loaded on the test's 5 s, which a loaded machine spends on the
 // load alone. Their auto-imports are globals read when they are called, stubbed below.
@@ -84,6 +85,34 @@ describe("an evidence chip's access", () => {
     await expect(a.read(check)!()).resolves.toEqual({ kind: 'text', text: 'the check looked', sha256: 'ab'.repeat(32) })
     expect(reads).toEqual([`text /api/runs/crew-0000aaaa-11112222/tasks/build/attempts/1/steps/until/1/log`])
     expect(a.runHeld).toBeUndefined()
+  })
+
+  it("says what a link's log read shows when it is not the log its SHA-256 is of: a cut log's last 4 KiB, a dropped log's kept end", async () => {
+    const sha = 'ef'.repeat(32)
+    const entries: Record<string, LaneEvidence> = {
+      cut: { ref: check, kind: 'log', tail: 'the end of a long log', cut: true, bytes: 70_000, sha256: sha, exit: 1 },
+      dropped: { ref: check, kind: 'log', tail: 'what the receipt kept', bytes: 70_000, sha256: sha, exit: 1, dropped: true },
+      whole: { ref: check, kind: 'log', tail: 'the check looked', bytes: 17, sha256: sha, exit: 1 },
+    }
+    for (const [name, entry] of Object.entries(entries)) {
+      const link = linkRefAccess({ evidence: async () => entry, openSession: () => {} })
+      const r = within(link, () => useRefReceipt({ ref: () => check, resolution: () => undefined }))
+      await r.read()
+      expect([r.text.value, r.sha256.value], name).toEqual([entry.kind === 'log' ? entry.tail : '', sha])
+      if (name === 'cut') expect(r.shown.value).toBe("Shown is the log's last 4 KiB of its 70,000 bytes: the whole log is read on the desktop or the LAN.")
+      if (name === 'dropped') expect(r.shown.value).toContain('The log was not kept')
+      // A log shown whole is shown as it was: nothing said above it.
+      if (name === 'whole') expect(r.shown.value).toBe('')
+    }
+    // The read keeps the lane's facts: whether it was cut, its size, whether it was dropped.
+    const cut = await linkRefAccess({ evidence: async () => entries.cut!, openSession: () => {} }).read(check)!()
+    expect(cut).toEqual({ kind: 'text', text: 'the end of a long log', sha256: sha, cut: true, bytes: 70_000 })
+    expect(refReadShown({ kind: 'text', text: 'x', dropped: true, cut: true })).toContain('not kept')
+    // Today's read, the whole log over HTTP, says nothing above it.
+    const r = within(undefined, () => useRefReceipt({ ref: () => check, resolution: () => undefined }))
+    await r.read()
+    expect([r.text.value, r.shown.value]).toEqual(['the check looked', ''])
+    expect(apiCalls).toEqual(['useApi'])
   })
 
   it("refuses a link's log read that answers for another entry", async () => {

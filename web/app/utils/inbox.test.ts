@@ -269,8 +269,13 @@ describe("the phone's paths", () => {
 
 describe('the list', () => {
   it('says nothing needs a decision only when its last read answered with none', () => {
-    const answered = { loaded: true, items: [], unavailable: '', error: '' }
+    const answered = { loaded: true, total: 0, tracking: 0, unavailable: '', error: '' }
     expect(inboxEmpty(answered)).toBe(true)
+    // What the server counts open, not the page the list holds: a first page of records answered and not yet applied, with an open
+    // item past it, is not empty; records answered and not yet applied alone are.
+    expect(inboxEmpty({ ...answered, total: 151, tracking: 150 })).toBe(false)
+    expect(inboxEmpty({ ...answered, total: 150, tracking: 150 })).toBe(true)
+    expect(inboxEmpty({ ...answered, total: 1 })).toBe(false)
     // An empty read, then a failed one: what is open now is not known.
     expect(inboxEmpty({ ...answered, error: 'the server could not be reached' })).toBe(false)
     expect(inboxEmpty({ ...answered, loaded: false })).toBe(false)

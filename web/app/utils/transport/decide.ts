@@ -227,6 +227,12 @@ export const RECORD_PAGES = 64
 /** The words the card shows beside a record that changed faster than it was read (the last one assembled whole, or none). */
 export const RECORD_MOVED_WORDS = 'This decision changed while it was read; reading again on its next change.'
 
+/**
+ * The words the card shows when a part of the record got no word back (the lane's read timed out, the connection still up): what the
+ * record holds now is not known, nothing reads it again by itself on an unchanged decision, so the words offer Read again.
+ */
+export const RECORD_NO_WORD_WORDS = 'No word came back while this decision was read, so what it holds now is not known here. Read again to ask once more.'
+
 /** What an assembly came to: the record whole at one mark; `moved`, after RECORD_RESTARTS restarts; `dropped`, a later one began. */
 export type Assembly = { whole: AssembledRecord } | { moved: true } | { dropped: true }
 
@@ -238,10 +244,15 @@ const DROPPED = Symbol('dropped')
  * record every part of which was cut at one mark, never an open head beside an applied history. A part at another mark (`record_moved`
  * from the owner, or a part whose own mark or name is not the one asked) drops what was assembled and starts again from the head; after
  * RECORD_RESTARTS restarts in a row it gives up (`moved`) until the next change. `live` says whether this assembly is still the one
- * wanted (another item opened, or a later change asked a new one): once it says no, nothing more is asked and nothing it read is
- * handed on. Any other refusal or failure is thrown.
+ * wanted (another item opened, or a later change asked a new one): it is asked before every request and after every reply, a restart's
+ * head included, so once it says no nothing more is asked, and nothing it read, nor any refusal or failure of a part, is handed on
+ * (`dropped`): a reply is applied only to the request that asked for it. Any other refusal or failure is thrown.
  */
 export async function assembleRecord(ref: string, read: (part: LaneRecordPart['part'], rev?: string, after?: string) => Promise<LaneRecordPart>, live: () => boolean = () => true): Promise<Assembly> {
+  const ask: typeof read = (part, rev, after) => {
+    if (!live()) throw DROPPED
+    return read(part, rev, after)
+  }
   const want = (p: LaneRecordPart, part: LaneRecordPart['part'], rev: string) => {
     if (!live()) throw DROPPED
     if (p.part !== part || p.ref !== ref || p.rev !== rev) throw new LaneError(DecideCode.RecordMoved, 'the part was cut at another mark', { rev: p.rev })
@@ -253,7 +264,7 @@ export async function assembleRecord(ref: string, read: (part: LaneRecordPart['p
     let total = 0
     for (let i = 0; ; i++) {
       if (i >= RECORD_PAGES) throw new LaneError(DecideCode.Invalid, `the record's ${part} has more pages than a record holds`)
-      const p = await read(part, rev, after)
+      const p = await ask(part, rev, after)
       want(p, part, rev)
       if (i === 0) {
         answer = p.answer
@@ -271,7 +282,7 @@ export async function assembleRecord(ref: string, read: (part: LaneRecordPart['p
   try {
     for (let restarts = 0; ; restarts++) {
       try {
-        const head = await read('head')
+        const head = await ask('head')
         if (!live()) throw DROPPED
         if (head.part !== 'head' || head.ref !== ref || !head.decision || !head.rev || `decision:${head.decision.id}` !== ref) throw new LaneError(DecideCode.Invalid, 'the head names another record')
         const rev = head.rev
@@ -288,7 +299,7 @@ export async function assembleRecord(ref: string, read: (part: LaneRecordPart['p
       }
     }
   } catch (e) {
-    if (e === DROPPED) return { dropped: true }
+    if (e === DROPPED || !live()) return { dropped: true }
     throw e
   }
 }
