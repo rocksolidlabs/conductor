@@ -543,3 +543,19 @@ func TestSkillSaysFindingsMayComeFromAPerson(t *testing.T) {
 		}
 	}
 }
+
+// The skill's decisions paragraph says whom a decision is for: the task
+// file's "Who answers for this work" names the holders, and --for (for,
+// in decision_request) names the one the decision is for, the operator
+// answering for them (docs/plans/decisions.md, HM1, PR-12).
+func TestSkillSaysWhomADecisionIsFor(t *testing.T) {
+	start := strings.Index(Skill, "\n## Decisions\n")
+	if start < 0 {
+		t.Fatal("no Decisions section")
+	}
+	section := strings.Join(strings.Fields(Skill[start:]), " ")
+	want := `Your task file's "Who answers for this work" names who holds each responsibility; --for (for, in decision_request) names the one the decision is for, role:architecture or person:nate, and the operator answers it for them.`
+	if !strings.Contains(section, want) {
+		t.Errorf("the decisions section does not say %q", want)
+	}
+}

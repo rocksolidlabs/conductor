@@ -3,9 +3,12 @@ import {
   ChunkAssembler,
   FrameType,
   ProtoVersion,
+  decodeDecision,
   decodeFile,
   decodeFrame,
+  decisionRequestValid,
   encodeControl,
+  encodeDecide,
   encodeFileWrite,
   encodeInput,
   encodeText,
@@ -16,6 +19,9 @@ import {
   type ChatPost,
   type ChatSend,
   type ControlMessage,
+  type DecideOkMsg,
+  type DecisionReply,
+  type DecisionRequest,
   type FileResponse,
   type FileWriteOptions,
   type NvimSwapChoice,
@@ -24,6 +30,7 @@ import {
 } from '../protocol'
 import { ANSWER_WAIT_SECONDS, answerMessage, NO_QUESTION, ReplyError, type QuestionReply } from '../reply'
 import { rttFromPong } from './rtt'
+import { LaneError, LaneLocal, type LaneAsk, type LaneDecide } from './decide'
 import type { CloseInfo, TerminalTransport, TransportState } from './types'
 
 const FILE_TIMEOUT_MS = 20000
@@ -35,6 +42,12 @@ const NVIM_OPEN_TIMEOUT_MS = 20_000
  * it was not confirmed.
  */
 export const ANSWER_TIMEOUT_MS = ANSWER_WAIT_SECONDS * 1000
+/**
+ * How long a lane read waits for its reply, and a decide for its receipt: the owner answers every one (docs/protocol.md, Decision
+ * links), so these bound a hang alone. A decide given up on may have been taken: the page says so, and asks again under its opId.
+ */
+export const LANE_READ_TIMEOUT_MS = 30_000
+export const DECIDE_TIMEOUT_MS = 60_000
 
 /**
  * Shared frame handling for both transports: listener registration, the
@@ -58,6 +71,10 @@ export abstract class BaseTransport implements TerminalTransport {
   protected takesAnswers = false
   /** The owner's welcome said `submitAck`: it answers a submit that names its request (#322). */
   protected acksSubmits = false
+  /** The owner's welcome said `decisions`: this connection is a decision link's, and takes the lane (decide.ts). */
+  protected takesDecisions = false
+  /** Lane reads waiting for their DECISION frame and decides for their `decide_ok`, by reqId; a `decide_refused` settles either. */
+  protected laneWaits = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: number; decide: boolean }>()
   protected chunks = new ChunkAssembler()
   protected lastError?: { code: string; message: string }
   protected welcomeResolve?: (w: Welcome) => void
@@ -138,6 +155,60 @@ export abstract class BaseTransport implements TerminalTransport {
       this.answers.set(reqId, { resolve, reject, timer })
       this.send(encodeControl({ ...msg }))
     })
+  }
+
+  /** The owner's last welcome said `decisions`: the lane may be asked. */
+  get decisions(): boolean {
+    return this.takesDecisions && this.state.value === 'open'
+  }
+
+  /**
+   * A lane read (docs/protocol.md, Decision links): a control naming a fresh reqId, settled by the DECISION frame naming it, or a
+   * LaneError: the owner's `decide_refused` with its code, the connection's end (`closed`), no reply in LANE_READ_TIMEOUT_MS
+   * (`no_word`), or nothing sent (`not_sent`: not open, the welcome said no `decisions`, or the request is past its bounds,
+   * `invalid`).
+   */
+  laneRequest(m: LaneAsk): Promise<DecisionReply> {
+    if (!this.decisions) return Promise.reject(new LaneError(LaneLocal.NotSent, 'not connected to a decision link'))
+    const reqId = `l${(++this.reqCounter).toString(36)}`
+    const msg = { ...m, reqId } as DecisionRequest
+    if (!decisionRequestValid(msg)) return Promise.reject(new LaneError('invalid', 'the request is past its bounds'))
+    return this.laneWait<DecisionReply>(reqId, false, LANE_READ_TIMEOUT_MS, () => this.send(encodeControl(msg as unknown as Record<string, unknown>)))
+  }
+
+  /**
+   * One action on an item, a DECIDE frame naming a fresh reqId: settled by `decide_ok` (its receipt), or a LaneError as a read is.
+   * A decide that is `closed` or `no_word` may have been taken: asked again under the same opId, the owner answers the first one's
+   * receipt (`repeat`) and does nothing twice.
+   */
+  decide(m: LaneDecide): Promise<DecideOkMsg> {
+    if (!this.decisions) return Promise.reject(new LaneError(LaneLocal.NotSent, 'not connected to a decision link'))
+    const reqId = `d${(++this.reqCounter).toString(36)}`
+    const frame = encodeDecide({ ...m, reqId })
+    if (!frame) return Promise.reject(new LaneError('invalid', 'the action is past its bounds'))
+    return this.laneWait<DecideOkMsg>(reqId, true, DECIDE_TIMEOUT_MS, () => this.send(frame))
+  }
+
+  private laneWait<T>(reqId: string, decide: boolean, ms: number, send: () => void): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        this.laneWaits.delete(reqId)
+        reject(new LaneError(LaneLocal.NoWord, decide ? 'the owner did not say whether it took the action' : 'the owner did not answer'))
+      }, ms)
+      this.laneWaits.set(reqId, { resolve: resolve as (v: unknown) => void, reject, timer, decide })
+      send()
+    })
+  }
+
+  /** Settles the lane request reqId with ok (a reply) or err; false when none waits under it. */
+  private settleLane(reqId: string, ok: unknown, err?: Error, decide?: boolean): boolean {
+    const w = this.laneWaits.get(reqId)
+    if (!w || (decide !== undefined && w.decide !== decide && !err)) return false
+    this.laneWaits.delete(reqId)
+    window.clearTimeout(w.timer)
+    if (err) w.reject(err)
+    else w.resolve(ok)
+    return true
   }
 
   chat(post: ChatPost): void {
@@ -267,6 +338,12 @@ export abstract class BaseTransport implements TerminalTransport {
         if (whole) this.handleFrame(whole)
         return true
       }
+      case FrameType.Decision: {
+        // A lane read's reply: settles the read it names; one naming none (a read given up on) is dropped.
+        const d = decodeDecision(frame.payload)
+        if (d) this.settleLane(d.reqId, d, undefined, false)
+        return true
+      }
     }
     return false
   }
@@ -283,10 +360,14 @@ export abstract class BaseTransport implements TerminalTransport {
         return
       }
     }
+    // The owner's word on a lane request settles it, as an answer's does, and goes no further.
+    if (msg.t === 'decide_ok' && msg.reqId && this.settleLane(msg.reqId, msg, undefined, true)) return
+    if (msg.t === 'decide_refused' && msg.reqId && this.settleLane(msg.reqId, null, new LaneError(msg.code, msg.message, { rev: msg.rev, ref: msg.ref, receipt: msg.receipt }))) return
     if (msg.t === 'welcome') {
       this.state.value = 'open'
       this.takesAnswers = !!msg.answer
       this.acksSubmits = !!msg.submitAck
+      this.takesDecisions = !!msg.decisions
       this.welcomeResolve?.(msg)
       this.welcomeResolve = undefined
       this.welcomeReject = undefined
@@ -325,6 +406,11 @@ export abstract class BaseTransport implements TerminalTransport {
       a.reject(new ReplyError('closed', 'the connection closed before the session said whether it took the reply'))
     }
     this.answers.clear()
+    for (const w of this.laneWaits.values()) {
+      window.clearTimeout(w.timer)
+      w.reject(new LaneError(LaneLocal.Closed, w.decide ? 'the connection closed before the owner said whether it took the action' : 'the connection closed'))
+    }
+    this.laneWaits.clear()
     for (const cb of this.closeCbs) cb(info)
   }
 }

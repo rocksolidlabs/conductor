@@ -285,6 +285,13 @@ type Lane struct{ s *Server }
 // Lane is the server's lane, which a publisher hands its connections.
 func (s *Server) Lane() *Lane { return &Lane{s: s} }
 
+// SetSwitchyardDecisions says whether this server's host connections say,
+// in their registered, that it carries a decision link's lane
+// (signal.Hub.SetDecisions). The serve command says so: its embedded join
+// page has the Decide tab the lane is for (docs/plans/decision-inbox.md,
+// PR-7), so no build advertises what its page lacks.
+func (s *Server) SetSwitchyardDecisions(on bool) { s.hosts.SetDecisions(on) }
+
 // laneScope is what a decision link covers, read as it stands.
 type laneScope struct {
 	link *share.Link

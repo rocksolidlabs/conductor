@@ -229,7 +229,18 @@ func gatedPlan(t *testing.T, runID, base string, ds ...PackageDecision) Planned 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return Planned{RunID: runID, Base: base, Digest: packageDigest(raw), Package: raw}
+	// Whom each decision is for travels beside the package, as the API
+	// hands it from the revision's body (HM1).
+	var labels map[string]string
+	for _, d := range ds {
+		if d.For != "" {
+			if labels == nil {
+				labels = map[string]string{}
+			}
+			labels[d.ID] = d.For
+		}
+	}
+	return Planned{RunID: runID, Base: base, Digest: packageDigest(raw), Package: raw, For: labels}
 }
 
 // launchGated launches c as a planned run whose package names ds, its
