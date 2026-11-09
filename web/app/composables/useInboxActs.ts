@@ -115,7 +115,8 @@ export class InboxActs {
 
   /** Does action `a` on item `it` (a typed line in `text`); null when nothing is done (one is out on the item, or no route fits). */
   act(it: InboxItem, a: InboxAction, text?: string): Promise<ActCame | null> {
-    if (this.pending(it.ref)) return Promise.resolve(null)
+    // A DR1 record is answered through DR1's own card (DecisionRespond), never here.
+    if (this.pending(it.ref) || it.kind === 'decision') return Promise.resolve(null)
     if (a.name === 'answer') return this.answer(it, a, text)
     if (a.name === 'retry' || a.name === 'accept' || a.name === 'cancel' || a.name === 'recheck') return this.command(it, a)
     if (a.name === 'approve' || a.name === 'withdraw') return this.plan(it, a)

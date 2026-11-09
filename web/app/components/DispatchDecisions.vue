@@ -11,7 +11,7 @@ import { relativeTime } from '~/utils/sessions'
  * history beside the one before), the owner's acceptance on record, the results a person accepted anyway in its runs, and the decision
  * records a merge brought (their link kind reserved for durable decisions, Program item DR1). Then the durable decision records of the
  * ticket's runs (Program item DR1: a gate of the approved revision, an agent's request), each with its state and its receipts in words,
- * and Answer (or Show) opening its card. Below them, the decisions the approved revision says a person will make, each with its latest
+ * and Answer (or Show) opening its card, and a link to its item on the decision page (Needs your decision, MB0's PR-4). Below them, the decisions the approved revision says a person will make, each with its latest
  * record's state: Conductor holds the tasks they name until the operator answers. Read from what the page reads (the revisions, the
  * ticket, the runs' candidates, the ticket's decisions), never a copy of its own. One column on a phone.
  */
@@ -36,6 +36,8 @@ const tones = { warning: 'text-warning', error: 'text-error', muted: 'text-muted
 const decisionModal = useDecisionModal()
 /** A required decision's latest record: the newest gate of that plan decision opened under the approved revision, none of another's. */
 const recordOf = (gate: string) => requiredRecord(props.records, gate, props.planId)
+/** A record's item on the decision page (Program item MB0), by its ref. */
+const decisionPage = (id: string) => `/decisions?item=${encodeURIComponent(`decision:${id}`)}`
 </script>
 
 <template>
@@ -76,6 +78,8 @@ const recordOf = (gate: string) => requiredRecord(props.records, gate, props.pla
           <p class="text-xs text-dimmed">
             {{ r.origin === 'plan' ? `the plan's gate ${r.gate ?? ''}` : `asked by ${r.asker?.task ?? 'an agent'}` }} {{ relativeTime(r.createdAt, now, { suffix: true }) }} ·
             <NuxtLink :to="`/runs/${encodeURIComponent(r.run)}?view=tasks`" class="hover:underline">open the run</NuxtLink>
+            ·
+            <NuxtLink :to="decisionPage(r.id)" class="hover:underline" :data-ticket-decision-item="r.id">on Needs your decision</NuxtLink>
           </p>
         </div>
         <UButton :label="r.state === 'open' ? 'Answer' : 'Show'" size="xs" :color="r.state === 'open' ? 'warning' : 'neutral'" variant="soft" class="flex-none" :data-ticket-decision-open="r.id" @click="decisionModal.open(r.id)" />

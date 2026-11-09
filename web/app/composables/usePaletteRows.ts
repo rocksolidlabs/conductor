@@ -67,8 +67,9 @@ const PAGES: Array<{ id: string; label: string; to: string; kbds: string[]; icon
  * The decision page's rows (docs/plans/decision-inbox.md, PR-2): one per open item, by its ref, "Decide: <title>", each opening the
  * item on the page. `go` navigates (and closes the palette).
  */
-export function decisionRows(items: ReadonlyArray<Pick<InboxSummary, 'ref' | 'title' | 'question' | 'brief'>>, go: (to: string) => void): PaletteItem[] {
-  return items.map((s) => {
+export function decisionRows(items: ReadonlyArray<Pick<InboxSummary, 'ref' | 'title' | 'question' | 'brief' | 'tracking'>>, go: (to: string) => void): PaletteItem[] {
+  // A DR1 record answered and not yet applied waits on Yardmaster, not on a person: no row (the bar's number leaves it out too).
+  return items.filter((s) => !s.tracking).map((s) => {
     const to = `/decisions?item=${encodeURIComponent(s.ref)}`
     return { key: `decide:${s.ref}`, label: `Decide: ${s.title}`, detail: s.question || s.brief, icon: 'i-lucide-gavel', run: () => go(to), href: to }
   })

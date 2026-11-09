@@ -1,4 +1,6 @@
+import { hasInjectionContext, inject } from 'vue'
 import type { DecisionEvent } from '~/utils/protocol'
+import { REF_ACCESS } from '~/utils/refAccess'
 import type { Decision, DecisionRef } from '~/utils/decisions'
 import { isDecisionId, replaces, runHeldOf } from '~/utils/decisions'
 import type { RunInfo } from './useSessions'
@@ -411,8 +413,14 @@ export function useDecisionRecord(id: () => string) {
  * hold the run (Codex's round 2): the store taking it forgets the read, the store letting it go (a restart that left the run a record)
  * reads it again, and the reply of a read asked before either is dropped, so a run read as running before a restart is never what the
  * card judges by after it.
+ *
+ * A page that provides its own access (REF_ACCESS with `runHeld`: a decision link's join page, which reads nothing through the API)
+ * answers it instead, and nothing is read here.
  */
 export function useDecisionRun(run: () => string) {
+  const given = hasInjectionContext() ? inject(REF_ACCESS, null) : null
+  const held = given?.runHeld
+  if (held) return computed(() => held(run()))
   const live = useAttention()
   const read = ref<{ id: string; run: RunInfo | null } | null>(null)
   let asked = 0

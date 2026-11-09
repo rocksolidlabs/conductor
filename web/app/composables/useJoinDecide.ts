@@ -1,7 +1,21 @@
 import { computed, nextTick, ref, watch, type Ref } from 'vue'
 import { itemOf, mintRequestId, reconcileDelivery, showingWords, stepsFinal, trackKey, type DeliveryStep, type InboxAction, type InboxItem, type InboxSummary } from '~/utils/inbox'
 import { DecideCode, type DecideOkMsg } from '~/utils/protocol'
-import { decideOf, decideOutcome, decideUnconfirmed, LaneError, LaneLocal, refusedWords, type DecisionLane, type LaneDecide, type LaneRecent } from '~/utils/transport/decide'
+import {
+  assembleRecord,
+  decideOf,
+  decideOutcome,
+  decideUnconfirmed,
+  LaneError,
+  LaneLocal,
+  RECORD_MOVED_WORDS,
+  RECORD_NO_WORD_WORDS,
+  refusedWords,
+  type AssembledRecord,
+  type DecisionLane,
+  type LaneDecide,
+  type LaneRecent,
+} from '~/utils/transport/decide'
 
 /** One action taken through the link, as the page keeps it: `from`, the item it was taken on when its steps are read under another. */
 export type JoinRecent = LaneRecent & { from?: string }
@@ -55,6 +69,13 @@ function owedWords(e: unknown, kind: string, went: boolean): string {
  * actor; an action whose steps are read under another item (a blocker's question's Cancel, read as its task's) is kept with the
  * item it was taken on (`from`), so that item's card shows them. The link's Recent is the owner's (at most 50), with this page's
  * own actions not yet in it.
+ *
+ * A DR1 record open (docs/plans/decision-inbox.md, PR-4) is assembled from its parts over the lane (assembleRecord: the head, then its
+ * responses and its history, every part cut at the head's mark) each time its item is read, so on its opening and at each
+ * `decisions_changed`; DR1's card is handed only a record assembled whole (`record`). Each assembly is one generation: another item
+ * opened, the list left, or a later assembly begun drops what an earlier one brings back, and it asks no more parts. A record that
+ * moved four times in a row while it was read keeps the last one assembled whole, with the words why (`recordWords`), until the next
+ * change reads it again; one whose read got no word back says so, and Read again (`reread`) reads the item and its record again.
  */
 export function useJoinDecide(lane: DecisionLane, seq: Ref<number>) {
   const items = ref<InboxSummary[]>([])
@@ -73,6 +94,11 @@ export function useJoinDecide(lane: DecisionLane, seq: Ref<number>) {
   const pick = ref<{ receipt: string; attempt: string } | null>(null)
   const item = ref<InboxItem | null>(null)
   const missing = ref('')
+  /** The open DR1 record as last assembled whole, and what the page says beside it ('' for nothing). */
+  const record = ref<AssembledRecord | null>(null)
+  const recordWords = ref('')
+  /** The assemblies' generation: one more for each assembly begun and for each item left. */
+  let recordGen = 0
   /** Each item's action owed (JoinOwed), the refusal's words of its last one settled, and what a read of its evidence said. */
   const owed = ref<Record<string, JoinOwed>>({})
   const refused = ref<Record<string, string>>({})
@@ -182,6 +208,7 @@ export function useJoinDecide(lane: DecisionLane, seq: Ref<number>) {
       item.value = it
       seenTitles.value[it.ref] = it.title
       missing.value = ''
+      if (it.kind === 'decision') void readRecord(r)
     } catch (e) {
       if (openRef.value !== r) return
       // No reply (no connection now): the item stays drawn as last read, with what is owed on it.
@@ -190,8 +217,42 @@ export function useJoinDecide(lane: DecisionLane, seq: Ref<number>) {
       missing.value = e instanceof LaneError && e.code === DecideCode.NotFound ? 'This link no longer finds that item.' : (e as Error).message
     }
   }
+  /** Assembles the open DR1 record r (one generation); its outcome is taken only while it is still the one asked, for r still open. */
+  async function readRecord(r: string) {
+    const gen = ++recordGen
+    const mine = () => gen === recordGen && openRef.value === r
+    try {
+      const out = await assembleRecord(r, (part, rev, after) => lane.record(r, part, rev, after), mine)
+      if (!mine() || 'dropped' in out) return
+      if ('whole' in out) {
+        record.value = out.whole
+        recordWords.value = ''
+      } else {
+        // Moved four times in a row: the last record assembled whole stays (or none), read again at the next change.
+        if (record.value?.ref !== r) record.value = null
+        recordWords.value = RECORD_MOVED_WORDS
+      }
+    } catch (e) {
+      if (!mine()) return
+      if (record.value?.ref !== r) record.value = null
+      // No connection now (closed, nothing sent): the welcome of the next one reads it again, and the page says it is offline. A read
+      // that got no word on a connection still up is said, with Read again: no change may come to read it again by itself.
+      recordWords.value =
+        e instanceof LaneError && e.code === LaneLocal.NoWord ? RECORD_NO_WORD_WORDS : e instanceof LaneError && NO_REPLY.has(e.code) ? '' : `The record could not be read: ${(e as Error).message}`
+    }
+  }
+  /** Leaves the record shown: nothing an assembly under way brings back is taken. */
+  function dropRecord() {
+    recordGen++
+    record.value = null
+    recordWords.value = ''
+  }
+
   function open(r: string, p: { receipt: string; attempt: string } | null = null) {
-    if (openRef.value !== r) item.value = null
+    if (openRef.value !== r) {
+      item.value = null
+      dropRecord()
+    }
     openRef.value = r
     pick.value = p
     missing.value = ''
@@ -203,6 +264,7 @@ export function useJoinDecide(lane: DecisionLane, seq: Ref<number>) {
     pick.value = null
     item.value = null
     missing.value = ''
+    dropRecord()
   }
 
   /** The action whose steps the open card shows: the Recent row's it was opened from, else the newest taken on the item. */
@@ -326,6 +388,8 @@ export function useJoinDecide(lane: DecisionLane, seq: Ref<number>) {
     openRef,
     item,
     missing,
+    record,
+    recordWords,
     owed,
     feedback,
     delivery,

@@ -597,3 +597,255 @@ test("a run decision link through the switchyard: a phone answers a member's que
     publisher = null
   }
 })
+
+// The gate over the desk (docs/plans/decision-inbox.md, MB0 PR-4): a server publishing to the spec's switchyard (relay-only, as the
+// test above) launches a run from a ticket's approved revision whose plan requires a decision before its first task, so the run
+// opens its gate with no attempt and no member alive. Its run decision link, minted at the switchyard over the run's desk, opens on a
+// phone at the switchyard's own join page: the gate's item, and DR1's card drawn from the record the page assembled over the lane
+// (its question, its options, its four states), with no control (a link cannot answer a durable decision yet, the item's words say
+// where it is answered); the inbox's own evidence there says where each entry is opened; and the join page sends no request to the
+// publisher, and none for a run or a decision to any /api/ (the spec watches the page's requests). Each step raises the test's
+// timeout by its own waits' caps as it takes them (budget).
+test('a gate before the first attempt, over the desk: its card drawn from the record assembled through the link, with no member alive and no API read', async ({ browser, state }) => {
+  const STEP = 30_000
+  const budget = (waits: number, ms = STEP) => test.info().setTimeout(test.info().timeout + waits * ms)
+  budget(2)
+  const here = dirname(fileURLToPath(import.meta.url))
+  const tag = randomBytes(4).toString('hex')
+  const home5 = join(state.root, `publisher5-${tag}-home`)
+  const data5 = join(state.root, `publisher5-${tag}-data`)
+  const repo5 = join(state.root, `publisher5-${tag}-repo`)
+  for (const d of [home5, data5, repo5]) mkdirSync(d, { recursive: true })
+  scratchRepo(repo5)
+  const config = join(state.root, `publisher5-${tag}.json`)
+  renderConfig(join(here, 'conductor.e2e.json'), config)
+  publisher = await startServer({
+    config,
+    home: home5,
+    data: data5,
+    allowedRoot: state.root,
+    defaultCwd: repo5,
+    log: join(state.root, `publisher5-${tag}.log`),
+    env: { CONDUCTOR_RENDEZVOUS: '1', CONDUCTOR_RENDEZVOUS_SERVER: syURL, CONDUCTOR_RENDEZVOUS_TOKEN: hostToken, CONDUCTOR_RENDEZVOUS_RELAY_ONLY: '1', CONDUCTOR_RENDEZVOUS_HOST_NAME: 'publisher5' },
+  })
+  const pub = async <T>(method: string, path: string, body?: unknown): Promise<{ status: number; body: T }> => {
+    const r = await fetch(publisher!.baseURL + path, { method, headers: { Authorization: `Bearer ${publisher!.token}`, 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
+    const text = await r.text()
+    return { status: r.status, body: (text ? JSON.parse(text) : undefined) as T }
+  }
+  const ok = async <T>(method: string, path: string, body?: unknown): Promise<T> => {
+    const r = await pub<T>(method, path, body)
+    expect(r.status, `${method} ${path}: ${JSON.stringify(r.body)}`).toBeLessThan(300)
+    return r.body
+  }
+  const question = 'May build start?'
+  await ok('POST', '/api/dispatch/projects', { opId: `sgd-p-${tag}`, key: 'SGD', name: 'E2E gate over the desk' })
+  const { ticket } = await ok<{ ticket: { key: string } }>('POST', '/api/dispatch/tickets', { opId: `sgd-t-${tag}`, project: 'SGD', title: 'Build through a gate' })
+  const crew = await ok<{ crew: { id: string } }>('POST', '/api/crews', {
+    name: 'e2e gate desk',
+    goal: 'build once approved',
+    cwd: '',
+    where: 'server',
+    isolation: 'worktree',
+    openAfterLaunch: false,
+    yolo: null,
+    members: [{ name: 'builder', agentId: 'worker', prompt: '', start: { when: 'task' } }],
+    tasks: [{ id: 'build', member: 'builder', kind: 'work', instructions: 'Build it.' }],
+  })
+  const plan = await ok<{ plan: { id: string } }>('POST', `/api/dispatch/tickets/${ticket.key}/plans`, { opId: `sgd-r1-${tag}`, crew: crew.crew.id, decisions: [{ id: 'go', question, kind: 'approval', before: ['build'] }] })
+  await ok('POST', `/api/dispatch/plans/${plan.plan.id}/approve`, { opId: `sgd-a1-${tag}` })
+  budget(1, 130_000)
+  const runId = (await ok<{ launch: { runId: string } }>('POST', `/api/dispatch/tickets/${ticket.key}/launch`, { opId: `sgd-l1-${tag}`, plan: plan.plan.id })).launch.runId
+  const contexts: Array<{ close: () => Promise<void> }> = []
+  try {
+    const gates = await ok<{ decisions: Array<{ id: string; gate?: string; state: string }> }>('GET', `/api/decisions?run=${encodeURIComponent(runId)}`)
+    const gate = gates.decisions.find((d) => d.gate === 'go')
+    expect(gate?.state).toBe('open')
+    const ref = `decision:${gate!.id}`
+    // No attempt has started: no member of the run lives.
+    const run = await ok<{ run: Run }>('GET', `/api/runs/${runId}`)
+    expect(run.run.members.every((m) => m.status !== 'running' && m.status !== 'starting')).toBe(true)
+    expect(task(run.run, 'build').attempts).toBe(0)
+
+    // The run's decision link, minted at the switchyard over the run's desk.
+    budget(1)
+    const link = await ok<{ url: string }>('POST', `/api/runs/${runId}/links`, { role: 'control', decide: true, label: 'e2e gate link' })
+    expect(link.url.startsWith(`${syURL}/join/`), link.url).toBe(true)
+
+    // A phone opens it at the switchyard's own join page, every request it makes watched.
+    budget(6)
+    const phoneCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+    contexts.push(phoneCtx)
+    const phone = await phoneCtx.newPage()
+    const requests: string[] = []
+    phone.on('request', (r) => requests.push(r.url()))
+    await phone.goto(link.url)
+    await expect(phone.getByRole('heading', { name: 'Join SGD-1 Build through a gate' })).toBeVisible({ timeout: STEP })
+    await phone.getByRole('textbox', { name: 'Your name' }).fill('e2e gate phone')
+    await expect(phone.getByRole('textbox', { name: 'Your name' })).toHaveValue('e2e gate phone')
+    await phone.getByRole('button', { name: 'Join crew' }).tap()
+    const decide = phone.locator('[data-join-run-decide]')
+    await expect(decide.locator(`[data-inbox-row="${ref}"]`)).toBeVisible({ timeout: STEP })
+    await expect(decide.locator(`[data-inbox-row="${ref}"] [data-inbox-row-durable]`)).toHaveText('A durable decision')
+    await decide.locator(`[data-inbox-row="${ref}"]`).tap()
+
+    // DR1's card from the record assembled through the link: the question, its two options, its four states; no control.
+    const item = decide.locator(`[data-inbox-item="${ref}"]`)
+    const card = item.locator(`[data-decision-card][data-decision-id="${gate!.id}"]`)
+    await expect(card.locator('[data-decision-question]')).toHaveText(question, { timeout: STEP })
+    await expect(card.locator('[data-decision-option]')).toHaveCount(2)
+    await expect
+      .poll(() => card.locator('[data-decision-step]').evaluateAll((els) => Object.fromEntries(els.map((e) => [e.getAttribute('data-decision-step'), e.getAttribute('data-step-status')]))), { timeout: STEP })
+      .toEqual({ open: 'done', recorded: 'waiting', validated: 'pending', applied: 'pending' })
+    await expect(item.locator('[data-decision-respond]')).toHaveCount(0)
+    await expect(item.locator('[data-inbox-actions]')).toHaveCount(0)
+    await expect(item.locator('[data-inbox-now]')).toContainText('a link cannot answer a durable decision yet')
+    // The inbox's own evidence there: each entry says where it is opened, none a workbench page.
+    await item.locator('[data-inbox-evidence-toggle]').tap()
+    await expect(item.locator('[data-evidence-ref^="run:"] [data-evidence-elsewhere]')).toHaveText('Open it on the desktop or the LAN.')
+
+    // Nothing of it was read from the publisher, and nothing of a run or a decision through any /api/.
+    expect(requests.filter((u) => u.startsWith(publisher!.baseURL))).toEqual([])
+    expect(requests.filter((u) => /\/api\/(runs|decisions|inbox|sessions)\b/.test(new URL(u).pathname))).toEqual([])
+  } finally {
+    for (const c of contexts) await c.close().catch(() => {})
+    await pub('POST', `/api/runs/${runId}/stop`).catch(() => {})
+    await stopServer(publisher.pid)
+    publisher = null
+  }
+})
+
+// DR1's card's evidence chips over the desk (docs/plans/decision-inbox.md, MB0 PR-4): a server publishing to the spec's switchyard
+// (relay-only) runs a task whose first attempt fails its check and whose second asks an agent's durable decision (the stub's
+// STUB_DECISION from attempt 2), citing its own session, the first attempt's check and the run. Its member's session lives on while it
+// waits. The run's decision link opens on a phone at the switchyard's join page; DR1's card there draws the three chips through the
+// link: the check's receipt reads its log through the lane (its words beside the SHA-256), the session's chip opens the member's
+// terminal tab, the run's says in words where it is opened; and the page sends no request to the publisher, and none for a run or a
+// decision to any /api/. Each step raises the test's timeout by its own waits' caps as it takes them (budget).
+test("an agent's decision over the desk: DR1's card's chips read the check's log through the lane, open the member's terminal, and say where the rest opens", async ({ browser, state }) => {
+  const STEP = 30_000
+  const budget = (waits: number, ms = STEP) => test.info().setTimeout(test.info().timeout + waits * ms)
+  budget(2)
+  const here = dirname(fileURLToPath(import.meta.url))
+  const tag = randomBytes(4).toString('hex')
+  const home6 = join(state.root, `publisher6-${tag}-home`)
+  const data6 = join(state.root, `publisher6-${tag}-data`)
+  const repo6 = join(state.root, `publisher6-${tag}-repo`)
+  for (const d of [home6, data6, repo6]) mkdirSync(d, { recursive: true })
+  scratchRepo(repo6)
+  const config = join(state.root, `publisher6-${tag}.json`)
+  renderConfig(join(here, 'conductor.e2e.json'), config)
+  // The worker that asks from its second attempt, citing its session, its first attempt's check and its run.
+  const cfg = JSON.parse(readFileSync(config, 'utf8')) as { catalog: { agents: Array<{ id: string; name: string; env?: Record<string, string> }> } }
+  const base = cfg.catalog.agents.find((a) => a.id === 'worker')!
+  cfg.catalog.agents.push({
+    ...JSON.parse(JSON.stringify(base)),
+    id: 'worker-decides',
+    name: `${base.name}, worker-decides`,
+    env: { ...base.env, STUB_DECISION: 'approval', STUB_DECISION_FROM: '2', STUB_DECISION_EVIDENCE: 'session:{session} check:{run}/build/1/looked/1 run:{run}' },
+  })
+  writeFileSync(config, JSON.stringify(cfg, null, 2) + '\n')
+  publisher = await startServer({
+    config,
+    home: home6,
+    data: data6,
+    allowedRoot: state.root,
+    defaultCwd: repo6,
+    log: join(state.root, `publisher6-${tag}.log`),
+    env: { CONDUCTOR_RENDEZVOUS: '1', CONDUCTOR_RENDEZVOUS_SERVER: syURL, CONDUCTOR_RENDEZVOUS_TOKEN: hostToken, CONDUCTOR_RENDEZVOUS_RELAY_ONLY: '1', CONDUCTOR_RENDEZVOUS_HOST_NAME: 'publisher6' },
+  })
+  const pub = async <T>(method: string, path: string, body?: unknown): Promise<{ status: number; body: T }> => {
+    const r = await fetch(publisher!.baseURL + path, { method, headers: { Authorization: `Bearer ${publisher!.token}`, 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
+    const text = await r.text()
+    return { status: r.status, body: (text ? JSON.parse(text) : undefined) as T }
+  }
+  const ok = async <T>(method: string, path: string, body?: unknown): Promise<T> => {
+    const r = await pub<T>(method, path, body)
+    expect(r.status, `${method} ${path}: ${JSON.stringify(r.body)}`).toBeLessThan(300)
+    return r.body
+  }
+  const crew = await ok<{ crew: { id: string } }>('POST', '/api/crews', {
+    name: 'e2e chips desk',
+    goal: 'ask once the check failed',
+    cwd: '',
+    where: 'server',
+    isolation: 'worktree',
+    openAfterLaunch: false,
+    yolo: null,
+    members: [{ name: 'builder', agentId: 'worker-decides', prompt: '', start: { when: 'task' } }],
+    tasks: [{ id: 'build', member: 'builder', kind: 'work', instructions: 'Build it.', checks: [{ id: 'looked', argv: ['sh', '-c', 'echo the check looked; exit 1'] }] }],
+  })
+  const runId = (await ok<{ run: { id: string } }>('POST', `/api/crews/${crew.crew.id}/launch`)).run.id
+  const contexts: Array<{ close: () => Promise<void> }> = []
+  try {
+    // Attempt 1 fails its check; attempt 2 asks, and its session lives on while it waits.
+    budget(1, 180_000)
+    type Asked = { id: string; state: string; asker?: { task: string; attempt: number; live: boolean } }
+    let asked: Asked | undefined
+    await expect
+      .poll(
+        async () => {
+          asked = (await ok<{ decisions: Asked[] }>('GET', `/api/decisions?run=${encodeURIComponent(runId)}`)).decisions.find((d) => d.asker?.task === 'build')
+          return asked ? `${asked.state} ${asked.asker?.attempt}` : ''
+        },
+        { timeout: 180_000, intervals: [500], message: "build's second attempt asks its decision" },
+      )
+      .toBe('open 2')
+    const ref = `decision:${asked!.id}`
+    const member = task(await ok<{ run: Run }>('GET', `/api/runs/${runId}`).then((b) => b.run), 'build').attempt?.sessionId ?? ''
+    expect(member).not.toBe('')
+    const chips = { session: `session:${member}`, check: `check:${runId}/build/1/looked/1`, run: `run:${runId}` }
+
+    // The run's decision link, minted at the switchyard over the run's desk; a phone opens it there, every request watched.
+    budget(7)
+    const link = await ok<{ url: string }>('POST', `/api/runs/${runId}/links`, { role: 'control', decide: true, label: 'e2e chips link' })
+    expect(link.url.startsWith(`${syURL}/join/`), link.url).toBe(true)
+    const phoneCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+    contexts.push(phoneCtx)
+    const phone = await phoneCtx.newPage()
+    const requests: string[] = []
+    phone.on('request', (r) => requests.push(r.url()))
+    await phone.goto(link.url)
+    await phone.getByRole('textbox', { name: 'Your name' }).fill('e2e chips phone', { timeout: STEP })
+    await expect(phone.getByRole('textbox', { name: 'Your name' })).toHaveValue('e2e chips phone')
+    await phone.getByRole('button', { name: 'Join crew' }).tap()
+    const decide = phone.locator('[data-join-run-decide]')
+    await expect(decide.locator(`[data-inbox-row="${ref}"]`)).toBeVisible({ timeout: STEP })
+    await decide.locator(`[data-inbox-row="${ref}"]`).tap()
+    const item = decide.locator(`[data-inbox-item="${ref}"]`)
+    const card = item.locator(`[data-decision-card][data-decision-id="${asked!.id}"]`)
+    const chip = (r: string) => card.locator(`[data-decision-evidence] [data-ref-chip="${r}"]`)
+    await expect(chip(chips.check)).toBeVisible({ timeout: STEP })
+    await expect(chip(chips.session)).toBeVisible()
+    await expect(chip(chips.run)).toBeVisible()
+
+    // The run's chip opens nothing here, and says where it is opened, in words on the page.
+    await expect(chip(chips.run).locator('[data-ref-link]')).toHaveCount(0)
+    await expect(chip(chips.run).locator('[data-ref-elsewhere-words]')).toBeVisible()
+    await expect(chip(chips.run).locator('[data-ref-elsewhere-words]')).toHaveText('· open it on the desktop or the LAN')
+
+    // The check's chip reads its log through the lane: the text, and its SHA-256, the whole log here (it is short), nothing said above it.
+    await chip(chips.check).locator('[data-ref-receipt]').tap()
+    const modal = phone.locator('[data-ref-receipt-modal]')
+    await expect(modal.locator('[data-ref-receipt-text]')).toContainText('the check looked', { timeout: STEP })
+    await expect(modal.locator('[data-ref-receipt-sha256]')).toContainText('SHA-256')
+    await expect(modal.locator('[data-ref-receipt-shown]')).toHaveCount(0)
+    await phone.keyboard.press('Escape')
+    await expect(modal).toHaveCount(0, { timeout: STEP })
+
+    // The session's chip opens the member's terminal tab, one tap; then back to the crew, and the card again.
+    await chip(chips.session).locator('[data-ref-open]').tap()
+    await expect(phone.locator('.terminal-host .xterm-screen').first()).toBeVisible({ timeout: STEP })
+    await phone.getByRole('button', { name: 'Back to the crew' }).tap()
+    await expect(chip(chips.session)).toBeVisible({ timeout: STEP })
+
+    // Nothing of it was read from the publisher, and nothing of a run or a decision through any /api/.
+    expect(requests.filter((u) => u.startsWith(publisher!.baseURL))).toEqual([])
+    expect(requests.filter((u) => /\/api\/(runs|decisions|inbox|sessions)\b/.test(new URL(u).pathname))).toEqual([])
+  } finally {
+    for (const c of contexts) await c.close().catch(() => {})
+    await pub('POST', `/api/runs/${runId}/stop`).catch(() => {})
+    await stopServer(publisher.pid)
+    publisher = null
+  }
+})

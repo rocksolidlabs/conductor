@@ -31,6 +31,10 @@ export interface InboxState {
   items: InboxSummary[]
   /** Every open item, not the pages' (the bar's number, "Showing 150 of 212"). */
   total: number
+  /** How many of `total` are DR1 records answered and not yet applied, which the bar's number leaves out. */
+  tracking: number
+  /** DR1's records closed in the last day, the latest first: the server's Recent, the same for every viewer (the first page's). */
+  closed: InboxSummary[]
   /** The cursor of the next page when more follow, else ''. */
   next: string
   /** A read has answered since the start (or the last token). */
@@ -63,7 +67,7 @@ function wordFor(e: RecentEntry, outcome: string | undefined): string | undefine
 }
 
 export function emptyInbox(): InboxState {
-  return { items: [], total: 0, next: '', loaded: false, error: '', unavailable: '', recent: [], tracks: {} }
+  return { items: [], total: 0, tracking: 0, closed: [], next: '', loaded: false, error: '', unavailable: '', recent: [], tracks: {} }
 }
 
 /**
@@ -209,11 +213,15 @@ export class InboxLive {
       const got: InboxSummary[] = []
       let after: string | undefined
       let total = 0
+      let tracking = 0
+      let closed: InboxSummary[] = []
       let next = ''
       for (let i = 0; i < this.pages; i++) {
         const p = await this.bounded(reads.list(after))
-        got.push(...p.items)
+        got.push(...(p.items ?? []))
         total = p.total
+        tracking = p.tracking ?? 0
+        if (i === 0) closed = p.recent ?? []
         next = p.next ?? ''
         if (!p.next) break
         after = p.next
@@ -221,10 +229,10 @@ export class InboxLive {
       if (gen !== this.generation) return
       const seen = new Set<string>()
       const items = inboxOrder(got.filter((s) => !seen.has(s.ref) && seen.add(s.ref)))
-      this.state = { ...this.state, items, total, next, loaded: true, error: '', unavailable: '' }
+      this.state = { ...this.state, items, total, tracking, closed, next, loaded: true, error: '', unavailable: '' }
     } catch (e) {
       if (gen !== this.generation) return
-      if (e instanceof ApiError && e.status === 403 && e.code === 'switchyard') this.state = { ...this.state, items: [], total: 0, next: '', loaded: true, unavailable: e.message, error: '' }
+      if (e instanceof ApiError && e.status === 403 && e.code === 'switchyard') this.state = { ...this.state, items: [], total: 0, tracking: 0, closed: [], next: '', loaded: true, unavailable: e.message, error: '' }
       else this.state = { ...this.state, error: (e as Error).message || 'The inbox could not be read' }
     }
     this.publish()
@@ -353,6 +361,7 @@ export function useInbox() {
     void l.changed()
   }
 
+  // The bar's number leaves out the DR1 records answered and not yet applied (barCount).
   const count = computed(() => (state.value.unavailable ? 0 : barCount(state.value.loaded ? state.value : null)))
 
   return { state, count, start, live: l, changed: () => l.changed(), more: () => l.more() }
