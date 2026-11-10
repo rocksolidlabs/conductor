@@ -81,6 +81,38 @@ app opens its own workbench at `/join/<token>?server=https://<switchyard>`,
 which signals to the switchyard from the app's page (`src/invite.ts` has
 the parser, the same rules as the web's `utils/invite.ts`).
 
+## Updates
+
+`src/updater.ts`. A package names its own update feed: electron-builder
+writes `app-update.yml` beside the app for a package with a publish
+target, and the app updates itself (macOS, Windows, AppImage) only when it
+finds that file; a package with none has no updater, so it never fails at
+every check, and its log says "this build names no update feed". A deb or
+rpm is updated by its package manager, and the log names the download page:
+the packaged `package.json`'s `conductor.downloadPage`, an `https://` URL
+of at most 200 bytes (anything else is ignored), or the repository's
+releases page (`/releases`: `/releases/latest` answers 404 while every
+release is a prerelease).
+
+**An install under the earlier app id.** The rc line was built as
+`dev.conductor.app`; its successor's id is `io.rocksolidlabs.conductor`, and
+both install to `%LOCALAPPDATA%\Programs\Conductor`. An installer of the
+successor replaces the earlier install (`build/installer.nsh`,
+`customUnInstallCheck`, compiled in for that id alone: an open-source rc
+and a staging installer hold none of it). In the install section, after the
+pages and electron-builder's running-app check and before any file is
+copied, it looks for the earlier id's uninstall entry (the GUID
+electron-builder derives from `dev.conductor.app`) under HKCU and HKLM. An
+entry found is removed as electron-builder removes an earlier version of
+an installer's own id: a copy of its uninstaller run in place with
+`/S /KEEP_APP_DATA --updated` (user data kept, every file restored at one
+it cannot move), tried five times a second apart; then the entry and the
+files must be gone before the install goes on. Otherwise the install stops
+and says why, with nothing copied: the earlier app could not be removed,
+was not fully removed, or is installed for everyone and the installer is
+not running as administrator. An entry whose uninstaller and folder are
+both gone is removed and the install goes on.
+
 ## What stays by hand
 
 The packaged app on each platform (dmg, deb, rpm, AppImage, nsis) and the
