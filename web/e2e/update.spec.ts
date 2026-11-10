@@ -13,7 +13,7 @@ import { expect, test, type Session } from './fixtures'
 test.describe.configure({ mode: 'serial' })
 
 type Told = { ready: string; announce: boolean; failed: string; restart?: string; checking?: boolean }
-type Invited = { e2eInvite?: (invite: unknown) => Promise<boolean> }
+type Invited = { e2eInvite?: (invite: unknown) => Promise<boolean>; e2eTaken?: boolean }
 
 async function stubApp(page: Page, token: string, url: string, init: Told) {
   await page.addInitScript(
@@ -202,8 +202,13 @@ test('a restart asked is asked again as the workbench comes back from an invite'
   await page.locator('[data-header-update]').first().click()
   await expect(modal).toContainText(' on this computer')
   await expect.poll(() => page.evaluate(() => typeof (window as unknown as Invited).e2eInvite)).toBe('function')
-  expect(await page.evaluate(({ server, token }) => (window as unknown as Invited).e2eInvite!({ server, token }), { server: state.baseURL, token })).toBe(true)
+  // The invite routes the page: started, never awaited across that route, its answer kept by the page and read after (#281).
+  await page.evaluate(({ server, token }) => {
+    const w = window as unknown as Invited
+    void w.e2eInvite!({ server, token }).then((taken) => (w.e2eTaken = taken))
+  }, { server: state.baseURL, token })
   await expect(page).toHaveURL(new RegExp(`/join/${token}`))
+  await expect.poll(() => page.evaluate(() => (window as unknown as Invited).e2eTaken)).toBe(true)
   await page.goBack()
   await expect(page).toHaveURL(/\/yard$/)
   await expect(modal).toContainText('Restart to update to 0.7.0-rc.12?')

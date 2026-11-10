@@ -414,6 +414,18 @@ add its rule here.
   spec could not repeat and no flake in it could be proved fixed
   (2026-11-08, #281). Give each start a folder of its own and reset in it
   every module variable a test reads.
+- A call that moves the page is started, not awaited for its answer. An
+  evaluate that awaits a promise in the page holds the protocol's answer
+  open for as long as the promise takes, and Playwright reports any loss
+  of that answer as "Execution context was destroyed", a page load's
+  among them. The stubbed app's invite, awaited for its `true`, waited
+  across its own route to the join page and lost the answer twice in CI,
+  though the route was made in place (no document fetched; the trace
+  drew the join page after) and 74 runs here, loaded too, never lost it
+  (`update.spec.ts`, 2026-11-08 and 2026-11-10, #281). Start such a call
+  without awaiting it, let the page keep its answer, and wait for what
+  the call does (the address, what the next page draws) before reading
+  the answer kept (`invite` in `invite.spec.ts`).
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
