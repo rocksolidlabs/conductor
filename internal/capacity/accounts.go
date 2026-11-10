@@ -28,7 +28,10 @@
 // holder of the lock calls Store.Own once it holds it, which concludes a
 // check no process finished and lets the Store write. Until then every
 // write, every Reserve of a registered account and every Versions.Admit is
-// refused accounts_not_owner.
+// refused accounts_not_owner. From Own on, the owner's record of versions
+// is the one in memory, and Versions.Reload, for a server that does not own
+// the folder, is refused. The accounts document holds nothing in memory: a
+// write that could not be saved changed nothing.
 package capacity
 
 import (
@@ -119,6 +122,7 @@ const (
 	CodeVersionsFull   = "versions_full"
 	CodeUnqualified    = "unqualified"
 	CodeNotOwner       = "accounts_not_owner"
+	CodeNotKept        = "versions_not_kept"
 )
 
 // Error is a refusal, with the code a route answers, the field it is
@@ -269,8 +273,9 @@ type Store struct {
 	ver  *Versions
 
 	mu       sync.Mutex
-	owned    bool           // Own has run
-	reserved map[string]int // account id -> launches under way
+	owned    bool                    // Own has run
+	reserved map[string]int          // account id -> launches under way
+	seam     func(name string) error // this package's tests: asked before each save, its error the save's
 }
 
 // Open opens capacity/ in the data directory (made 0700) and reads both
@@ -399,6 +404,11 @@ func (s *Store) update(expectedRev int64, change func(d *Accounts) error) (Accou
 	}
 	if len(b) > MaxAccountsDoc {
 		return Accounts{}, invalid("", "the accounts would pass %d bytes", MaxAccountsDoc)
+	}
+	if s.seam != nil {
+		if err := s.seam(AccountsFile); err != nil {
+			return Accounts{}, err
+		}
 	}
 	if err := s.st.Save(AccountsFile, d); err != nil {
 		return Accounts{}, err

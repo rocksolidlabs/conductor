@@ -2,6 +2,7 @@ package capacity
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,10 +14,13 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
-// onDisk reads capacity/versions.json as it is now.
+// onDisk reads capacity/versions.json as it is now; none is no record.
 func onDisk(t *testing.T, dir string) versionsDoc {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(dir, Dir, VersionsFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return versionsDoc{}
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

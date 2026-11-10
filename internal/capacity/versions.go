@@ -78,13 +78,25 @@ type record struct {
 // Store.Own, Admit is refused accounts_not_owner and nothing is saved. A
 // turned record is terminal: no later outcome, check or reload changes or
 // forgets it.
+//
+// What is in memory and not on disk is known to be so. An outcome whose
+// save failed is held in memory, where this server keeps to it, and the
+// record says, under its lock, that it holds what the file does not
+// (unsaved). While it does, no Admit and no Done answers success: each
+// saves the record first, and when that fails too it is refused
+// versions_not_kept and admits nothing. A Reload never replaces the
+// owner's record. So a version whose outcome is unsaved is started by no
+// one, and once a call has answered success a restart admits nothing
+// memory refuses.
 type Versions struct {
 	st *store.Store
 
 	mu      sync.Mutex
-	owned   bool     // Store.Own has run: admissions and saves are this server's
-	recs    []record // oldest change first
-	pending int      // shared admissions whose Turned would add a held record
+	owned   bool                    // Store.Own has run: admissions and saves are this server's
+	recs    []record                // oldest change first
+	pending int                     // shared admissions whose Turned would add a held record
+	unsaved bool                    // recs hold a change the file does not; only ever true once owned
+	seam    func(name string) error // this package's tests: asked before each save, its error the save's
 }
 
 func cannotRead(why string, a ...any) error {
@@ -146,19 +158,25 @@ func openVersions(st *store.Store) (*Versions, error) {
 }
 
 // Reload reads the record again as it is on disk, writing nothing: what a
-// server that does not own the folder shows, and what the owner's Own
-// starts from. A turned record already known stays turned, whatever the
-// file says.
+// server that does not own the folder shows. A turned record already known
+// stays turned, whatever the file says. Once Own has run it is refused, in
+// words, and changes nothing: the owner's record is the one in memory, an
+// outcome it holds unsaved is saved by its next Admit or Done, and the
+// file only ever lags it.
 func (v *Versions) Reload() error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	if v.owned {
+		return fmt.Errorf("capacity: %s is read again only by a server that does not own capacity/: this one owns it, and its record in memory is the record", VersionsFile)
+	}
 	_, err := v.reloadLocked()
 	return err
 }
 
 // reloadLocked replaces the records with the file's, keeping every turned
 // one known; added says a turned record was kept that the file lacks. The
-// caller holds v.mu.
+// caller holds v.mu, and the record is not owned yet, so memory holds
+// nothing unsaved that the file's could replace.
 func (v *Versions) reloadLocked() (added bool, err error) {
 	recs, err := loadVersions(v.st)
 	if err != nil {
@@ -200,10 +218,27 @@ func (v *Versions) own() error {
 	}
 	if changed {
 		if err := v.save(); err != nil {
-			return err
+			return fmt.Errorf("capacity: the checks no process finished could not be saved interrupted in %s, so the folder is not owned: %w", VersionsFile, err)
 		}
 	}
 	v.owned = true
+	return nil
+}
+
+// NotKeptWords begin the words of a versions_not_kept refusal.
+const NotKeptWords = "an outcome is held in memory and not yet kept in capacity/versions.json"
+
+// keepLocked saves the record when memory holds what the file does not,
+// and answers versions_not_kept, in words, when that save fails; the
+// caller holds v.mu.
+func (v *Versions) keepLocked() error {
+	if !v.unsaved {
+		return nil
+	}
+	if err := v.save(); err != nil {
+		return &Error{Code: CodeNotKept, Words: fmt.Sprintf("%s (%v): this server keeps to it and starts no read until it is kept; the next admission or outcome saves it again", NotKeptWords, err)}
+	}
+	v.unsaved = false
 	return nil
 }
 
@@ -228,6 +263,11 @@ func (v *Versions) save() error {
 	}
 	if len(b) > MaxVersionsDoc {
 		return fmt.Errorf("capacity: %s would pass %d bytes", VersionsFile, MaxVersionsDoc)
+	}
+	if v.seam != nil {
+		if err := v.seam(VersionsFile); err != nil {
+			return err
+		}
 	}
 	return v.st.Save(VersionsFile, d)
 }
@@ -298,8 +338,10 @@ func unqualified(words string, a ...any) error {
 //
 // A server that does not own the folder (no Store.Own) is refused
 // accounts_not_owner and starts nothing: it does not hold the record a
-// run's outcome must be saved in. A turned version is refused, even to a
-// check. A qualified or checked
+// run's outcome must be saved in. A record holding an outcome not yet
+// saved is saved first, and while that fails every ask is refused
+// versions_not_kept and starts nothing. A turned version is refused, even
+// to a check. A qualified or checked
 // version is admitted for every read, sharing no record. Any other is
 // refused unless check: then, when it has no record or an interrupted
 // one, it becomes checking and is saved before Admit returns, so the
@@ -316,6 +358,9 @@ func (v *Versions) Admit(adapter, version string, qualified, check bool) (*Admis
 	defer v.mu.Unlock()
 	if !v.owned {
 		return nil, notOwner()
+	}
+	if err := v.keepLocked(); err != nil {
+		return nil, err
 	}
 	state := ""
 	if i := v.find(key); i >= 0 {
@@ -347,52 +392,55 @@ func (v *Versions) Admit(adapter, version string, qualified, check bool) (*Admis
 	prev := slices.Clone(v.recs)
 	_ = v.set(key, VersionChecking) // not turned: refused above
 	if err := v.save(); err != nil {
-		v.recs = prev
-		return nil, err
+		v.recs = prev // memory as the file is: nothing held
+		return nil, fmt.Errorf("capacity: the check of %s could not be saved in %s, so it is not started: %w", version, VersionsFile, err)
 	}
 	return &Admission{v: v, key: key, exclusive: true}, nil
 }
 
-// Admission is one run's leave to start, from Admit. Done is called
-// exactly once, with what the run's own output proved.
+// Admission is one run's leave to start, from Admit. Done is called once,
+// with what the run's own output proved, and again while it answers
+// versions_not_kept.
 type Admission struct {
 	v         *Versions
 	key       string
 	exclusive bool // a check: the version is checking until Done
-	once      sync.Once
+	done      bool // under v.mu: the outcome is in the record
 }
 
-// Done records the run's outcome and saves it before it returns. For a
-// check, Local makes the version checked, Turned turned and Inconclusive
-// interrupted. For a read shared with others, Turned records the version
-// turned and Local or Inconclusive leave its record as it is. A version
-// recorded turned meanwhile (by another run admitted while this one ran)
-// stays turned, whatever this run proved. Only the first call counts; the
-// record in memory holds the outcome even when the save fails, and the
-// error says the save failed.
+// Done records the run's outcome and saves it before it answers success.
+// For a check, Local makes the version checked, Turned turned and
+// Inconclusive interrupted. For a read shared with others, Turned records
+// the version turned and Local or Inconclusive leave its record as it is.
+// A version recorded turned meanwhile (by another run admitted while this
+// one ran) stays turned, whatever this run proved. Only the first call's
+// outcome counts. When the record then holds anything the file does not
+// (this outcome, or another's whose save failed), it is saved first; when
+// that fails, Done answers versions_not_kept: the outcome is held in
+// memory, which this server keeps to and admits nothing past, and the next
+// Admit or Done (this one called again included) saves it.
 func (a *Admission) Done(o Outcome) error {
-	var err error
-	a.once.Do(func() {
-		v := a.v
-		v.mu.Lock()
-		defer v.mu.Unlock()
+	v := a.v
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if !a.done {
+		a.done = true
 		if !a.exclusive {
 			v.pending--
 		}
-		var state string
+		state := ""
 		switch {
 		case o == Turned:
 			state = VersionTurned
 		case !a.exclusive:
-			return
 		case o == Local:
 			state = VersionChecked
 		default:
 			state = VersionInterrupted
 		}
-		if v.set(a.key, state) {
-			err = v.save()
+		if state != "" && v.set(a.key, state) {
+			v.unsaved = true
 		}
-	})
-	return err
+	}
+	return v.keepLocked()
 }
