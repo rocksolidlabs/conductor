@@ -446,13 +446,13 @@ authority: [{kind: "operator"}]}`. The only policy of this repository is
 it. `{kind: "operator"}` admits the admin grant (the workbench token, or
 an identity provider's principal with `ext.GrantAdmin`); `{kind:
 "grant", grant: "decide"}`, which only a route to the grant adds
-(Routing, below), admits an identity provider's principal with
+(Routing, below), admits anyone an identity provider gives
 `ext.GrantDecide` (`docs/plans/decide-grant.md`). One function,
 `crew.Admits`, judges every entry, for the response's transaction, the
-application's recheck and every read. The record keeps it so that a
-response and an application check the policy the decision was opened
-under against the one in force, and so that a later policy is a later
-revision of the same field.
+response's recheck and every read (`crew.Admission`). The record keeps it
+so that a response and an application check the policy the decision was
+opened under against the one in force, and so that a later policy is a
+later revision of the same field.
 
 A response's `authority` is what the policy checks, kept apart from its
 `actor`, the audit's words: `grant` (`admin`, else `decide`, or none), `via`
@@ -879,9 +879,9 @@ response has committed it asks the provider again through the guard
 `Engine.ConfirmAuthority(id, k, admitted)`; until then
 `applyDecisions` leaves that decision `answered` and applies nothing of
 it. Admitted again as the same subject with a grant the decision's
-policy admits (the admin grant; or the decide grant, for a decision
-whose `authority` holds `{kind: "grant", grant: "decide"}`: `crew.Admits`,
-`docs/plans/decide-grant.md`): the
+policy, as it is at the recheck, admits (the admin grant; or the decide
+grant, for a decision whose `authority` holds `{kind: "grant", grant:
+"decide"}`: `crew.Admission`, `docs/plans/decide-grant.md`): the
 application proceeds in its own transaction, which checks that `k` is
 still the decision's accepted response and `boot` this process's. Not
 admitted, or no answer in time (a provider that fails, is late or is
@@ -1041,18 +1041,21 @@ state.
 records a `routed` history row. DR1's only destination is `{kind:
 "operator"}` (a re-route to the operator, with a note: what Brakeman's
 `route_decision` grant does in BK2); any other kind is `invalid` until
-HM1 adds a person's label. It changes no state, but for the one case
+HM1 adds a person's label. It changes no state, but for the two cases
 below. A route to `{kind: "grant", grant: "decide"}`
 (`docs/plans/decide-grant.md`) adds that entry to the decision's policy
-`authority`: refused `409 no_identity` when no identity provider is
+`authority`, which then admits anyone holding the decide grant, not one
+person: refused `409 no_identity` when no identity provider is
 registered, and taken only while the decision is open, at the
 `expectedRev` its body carries and through the run that holds it, as a
 route to a person is (HM1, below); in one transaction it rewrites the
 policy, writes the `routed` row and bumps `rev`, so a card read before
-it is `stale_decision`. A route to the operator of an open decision
-whose `authority` holds a grant entry takes the entries out the same
-way (the policy back to `{kind: "operator"}` alone, a `routed` row,
-`rev` + 1).
+it is `stale_decision`. A route to the operator of a decision whose
+`authority` holds a grant entry takes the entries out (the policy back
+to `{kind: "operator"}` alone, a `routed` row, `rev` + 1) in every
+state, through the held run or the ledger alone, whatever `expectedRev`
+it names: it narrows who may read the decision and never changes an
+answer already confirmed.
 
 **An operation repeats as a response does.** A comment, a more_info, a
 route and a cancel each write one history row (`commented`,
@@ -1229,8 +1232,8 @@ with `DisallowUnknownFields` and bounded:
 | `GET /api/sessions/{id}/decisions/{did}` | the attempt's own token | one of its task's, whole |
 | `POST /api/sessions/{id}/decisions/{did}/withdraw` | the attempt's own token | `{}` → `{decision}`; `409 decision_closed` |
 | `GET /api/decisions` | admin | `?state=&run=&ticket=&after=&limit=` (100) → `{decisions, next?}`, newest first, without history |
-| `GET /api/decisions/{did}` | admin, or a principal with the decide grant the decision's policy admits (`404 not_found` for one it does not) | the record whole with its evidence's `refs` (at most 1 MiB as encoded, the sum of its parts at their bounds: the 16 KiB request, its 10 KiB evidence baseline, 32 receipts of at most 8 KiB (256 KiB), 256 history rows of at most 2 KiB of detail and 256 bytes of envelope (576 KiB), the 4 KiB application receipt and 20 ref resolutions of at most 2 KiB (40 KiB), 902 KiB in all; `TestTheFullestDecisionFitsItsBound` builds one with every part at its bound) |
-| `POST /api/decisions/{did}/respond` | admin, or a principal with the decide grant the decision's policy admits (`404 not_found` for one it does not) | `{responseId, choice?, text?, rationale?, expectedRev, byName?}` (8 KiB) → `201 {receipt, decision}`; `200` repeat; `409 decision_answered`, `decision_closed`, `stale_decision`, `stale_policy`, `response_conflict`, `not_held`; `403 not_approver`; `503 decision_moved` |
+| `GET /api/decisions/{did}` | admin, or a principal with the decide grant the decision admits (`crew.Admission`; `404 not_found` for one it does not) | the admin: `{decision, refs}`, the record whole and its evidence refs' resolutions, at most 2 MiB (`maxDecisionReply`: the record's parts at their bounds, its 32 receipts at `ledger.MaxDecisionReceipt`, 32 KiB each, and its refs at `maxDecisionRef`); a decide principal: the decide view alone (`proto.DecideView`, at most 32 KiB, `docs/plans/decide-grant.md`) |
+| `POST /api/decisions/{did}/respond` | admin, or a principal with the decide grant the decision admits (`404 not_found` for one it does not) | `{responseId, choice?, text?, rationale?, expectedRev, byName?}` (at most 32 KiB, `maxDecisionRespondBody`: `text` at most 4,096 bytes and `rationale` 2 KiB, each as `encoding/json` sends it, escapes and all) → `201 {receipt, decision}`; `200` repeat; `409 decision_answered`, `decision_closed`, `stale_decision`, `stale_policy`, `response_conflict`, `not_held`; `403 not_approver`; `503 decision_moved`; a decide principal's reply its own receipt and the decide view (`proto.DecideReply`), a refusal's words its code's (`decideWords`) |
 | `POST /api/decisions/{did}/cancel` | admin | `{commandId, why, release?, expectedRev}` → `{receipt, decision}`; `200` the same for a repeat; `409 op_conflict` |
 | `POST /api/decisions/{did}/comment` | admin | `{opId, kind: comment\|more_info, text, expectedRev}` (8 KiB) → `{receipt, decision}`; `200` the same for a repeat; `409 op_conflict`; `409 no_recipient` (a `more_info` without a live asking attempt); `429 decision_limit` |
 | `POST /api/decisions/{did}/route` | admin | `{opId, to: {kind: "operator"} \| {kind: "grant", grant: "decide"}, note?, expectedRev}` → `{receipt, decision}`; `200` the same for a repeat; `409 op_conflict`; `409 no_identity` (a route to the grant on a build with no identity provider registered); `429 decision_limit` |
@@ -1244,10 +1247,10 @@ the free build's one approver is the operator; `403 not_approver` is the
 policy's refusal of a principal that got past it without the authority
 `local/1` names (a router's answer, below). A principal holding the
 decide grant and not the admin grant, which only a build with an
-identity provider registered can present, is refused every route but
-the read and the response of a decision its policy admits and the
-decide-only routes of `docs/plans/decide-grant.md` (`401 unauthorized`,
-as today).
+identity provider registered can present, is admitted by `GET /api/me`
+and by the read, the response and the stream of a decision it is
+admitted to (`docs/plans/decide-grant.md`), and answered by every other
+route as a request with no credential is (`401 unauthorized`).
 
 - The result route (`task_result`, `POST /api/sessions/{id}/task/result`)
   gains the refusal `409 decision_open` (A result while a decision
