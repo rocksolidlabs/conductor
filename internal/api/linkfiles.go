@@ -77,7 +77,11 @@ type keptLink struct {
 // links counted against each open-host address, and whether each host
 // instance is connected or since when it is gone.
 //
-// Locks go in this order: fmu, then mu, then the link store's own.
+// Locks go in this order: fmu, then mu, then the link store's own. Under
+// them the keeper tells a connection (keepLink's answer, hostUp's link_gone),
+// which takes the hosted session's own lock and then the connection's, never
+// the hub's. Those two locks are leaves with respect to the keeper: nothing
+// may call into the keeper while holding either (signal.HostedSession).
 type linkKeeper struct {
 	files *store.Store
 	// fmu orders the files' saves and deletes. A save looks, under it,
@@ -402,7 +406,8 @@ var (
 // held, which an open admission (hostUp) takes before it may end the link,
 // so that whatever the admission tells the connection of the link comes
 // after its creation. It only queues in the connection's own lane, which
-// never waits (signal.HostedSession.Tell).
+// never waits (signal.HostedSession.Tell, which takes the hosted session's
+// lock and then the connection's, never the hub's).
 func (s *Server) keepLink(link *share.Link, token, owner, addr string, answer func()) error {
 	k := s.keeper
 	if k == nil || owner == "" {

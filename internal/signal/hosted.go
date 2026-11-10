@@ -123,7 +123,8 @@ type HostConn struct {
 	// of the server's own lane; waiting, the viewers' messages waiting for
 	// room, in their order (sendFrom); and room, which they wait on: Took
 	// closes it, as does a waiter that leaves the head of the line, and the
-	// next to wait makes another.
+	// next to wait makes another. It is a leaf with respect to the
+	// switchyard's link keeper, as HostedSession's mu is.
 	mu       sync.Mutex
 	bytes    int
 	ownBytes int
@@ -830,6 +831,12 @@ type HostedSession struct {
 	// together, for links over several of its sessions.
 	owner string
 
+	// mu, like HostConn's, is a leaf with respect to the switchyard's link
+	// keeper (internal/api, linkfiles.go): the keeper tells a connection
+	// (Tell, DisconnectHeldLink) while it holds its own locks, so nothing
+	// may call into the keeper while holding mu or a connection's mu (an
+	// Authorize or OnWait that touched it, or notifyChange moved inside mu)
+	// without making a deadlock.
 	mu   sync.Mutex
 	info session.Info
 	// touched is the files the host's agent touched since the host
