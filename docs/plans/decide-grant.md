@@ -123,8 +123,9 @@ an identity provider registered:
    decide page alone, headed "Signed in as Ana": no sidebar, no sessions,
    no runs, no Dispatch, no inbox. The page reads which decisions await
    Ana through `GET /api/me/decisions`, the `{id, rev}` of each open
-   decision routed to the grant, newest first, and nothing else of them
-   (The decide list, below). It reads each card through
+   decision routed to the grant among the server's newest 500 open
+   decisions, newest first, and nothing else of them (The decide list,
+   below). It reads each card through
    `GET /api/decisions/dr-7`, which answers a decide principal the decide
    view (a fixed projection, The decide view, below), at most four cards
    at once, and answers through `POST /api/decisions/dr-7/respond`. It
@@ -164,19 +165,22 @@ one, `GET /api/events`, the inbox's three routes, `GET /api/decisions`
 and the operator's operations among them); one that also holds `host`
 keeps the host connection exactly as today (`hostAllowed`, `/ws/host`).
 A principal holding `admin` is the operator, whatever else it holds.
+`deciding` authenticates first, as `launching` does on `main`
+(`requireAdmin` around `launchingAny`): the switchyard's `403` is only
+ever said to a principal the route admits.
 
-| Grants held | `requireAdmin` (`p.admin`) | `hostAllowed` (`p.host`) | `GET /api/me/decisions` (`deciding`) | the read and the respond route as the decide grant's (`deciding`) | the decide page |
-|---|---|---|---|---|---|
-| `admin`, with or without others | yes | yes | no: `403 not_decide` (the operator reads `GET /api/decisions`) | no: the admin's, as today | no: the operator's page |
-| `host` | no | yes | no (`401`) | no (`401`) | no |
-| `decide` | no | no | yes | yes | yes |
-| `host` and `decide` | no | yes | yes | yes | yes |
-| none (a share link, no credential) | no | no | no (`401`) | no (`401`) | no |
+| Grants held | `requireAdmin` (`p.admin`) | `hostAllowed` (`p.host`) | `GET /api/me/decisions` (`deciding`) | the read and the respond route as the decide grant's (`deciding`) | the three on a switchyard (`deciding`) | the decide page |
+|---|---|---|---|---|---|---|
+| `admin`, with or without others | yes | yes | no: `403 not_decide` (the operator reads `GET /api/decisions`) | no: the admin's, as today | `403 switchyard`, as `launching` answers it today | no: the operator's page |
+| `host` | no | yes | no (`401`) | no (`401`) | `401`, as on `main` | no |
+| `decide` | no | no | yes | yes | `403 switchyard` | yes |
+| `host` and `decide` | no | yes | yes | yes | `403 switchyard` | yes |
+| none (a share link, no credential) | no | no | no (`401`) | no (`401`) | `401`, as on `main` | no |
 
 | Route | What it answers a decide principal | Why the person needs it |
 |---|---|---|
 | `GET /api/me` | `{subject, name, grants}` | the page's "Signed in as", and whether this pass is a decide pass |
-| `GET /api/me/decisions` | the decide list: `{decisions: [{id, rev}], cut?}`, the open decisions whose entries admit it, newest first, at most 200 and 16 KiB (The decide list, below) | which decisions await its answer, when it was sent to the decide page with no decision's address |
+| `GET /api/me/decisions` | the decide list: `{decisions: [{id, rev}], cut?}`, the open decisions whose entries admit it among the server's newest 500 open decisions, newest first, at most 200 and 16 KiB (The decide list, below) | which decisions await its answer, when it was sent to the decide page with no decision's address |
 | `GET /api/decisions/{did}` | the decide view of one decision it is admitted to (below); `404 not_found` otherwise | the question it was routed, and later the outcome of its answer |
 | `POST /api/decisions/{did}/respond` | DR1's response, judged by the decision's entries (`crew.Admits`); its reply the decide view and its own receipt | the answer itself |
 
@@ -197,8 +201,9 @@ the person may not see, and returns other records, counts and pages. None
 is given to the grant (Out of scope; Owner decisions, 1). What the person
 does need, to find the decisions that await it when it comes with no
 decision's address, is the issue's read model in its smallest form: the
-decide list, a route of its own, its rows chosen by the admission in its
-own query, with no count beyond its entries, no page and no cursor.
+decide list, a route of its own, each row judged by the one-decision
+read's own admission, with no count beyond its entries, no page and no
+cursor.
 
 ## The decide list
 
@@ -209,42 +214,66 @@ more: `proto.DecideList`, the issue's stream snapshot served as a read.
 |---|---|---|
 | `decisions[].id` | the row's id | which decision to read (`GET /api/decisions/{did}`) |
 | `decisions[].rev` | the row's `rev` | whether a card already read is of the decision as it is now |
-| `cut?` | `true` when the query found more rows than the bound (below) | that more may await than it lists; omitted otherwise |
+| `cut?` | `true` when a 201st admitted decision was met, or the read reached its own bound first (below) | that more may await than it lists; omitted otherwise |
 
 No title, question, run, ticket, session or person's name; no count
-beyond the entries returned; no page and no cursor. The newest 200
-(`proto.MaxDecideListEntries`), as one reply of at most 16 KiB
+beyond the entries returned; no page and no cursor. At most 200
+admitted decisions (`proto.MaxDecideListEntries`), as one reply of at most 16 KiB
 (`proto.MaxDecideList`); the reply is one encoded value of whole
 entries, never one split, and 200 at
 their widest (an id of `dr-` and 19 digits, a `rev` of 19 digits: 58
 bytes each with its comma) are 11,626 bytes with the envelope, so the
 count is always the bound that cuts.
 
-**Admission is the condition of the query.** One ledger read,
-`ledger.Ledger.OpenDecisionsLabelled(ctx, label, limit, admit)` (new),
-one statement in one read transaction (`readSnapshot`, as `Decision`
-reads): `SELECT` the decision rows `WHERE d.state = 'open' AND
-json_extract(d.request, '$.for.label') = ?` (the label
-`grant:decide`, the grant's route target; JSON1 is how
-`DecisionFilter.For` already reads the request's `for`) `ORDER BY d.n
-DESC LIMIT` `limit` + 1, and each row read is judged inside that
-transaction by `admit(ledger.DecisionRow) bool`, which the route passes
-as `crew.AdmissionOf` over that row (`ledger.DecisionRecord{DecisionRow:
-row}`) answering `AdmitOpen` for the caller. It answers `(revs
-[]DecisionRevision, cut bool, err)`: the number and `rev` (the shipped
-`DecisionRevision`, its run left unused) of the rows admitted, at most
-`limit` (200), and `cut` when the query found `limit` + 1 rows, so that
-more may await than it lists (a refused row among them leaves the list
-shorter, never longer). The
-query never reads a row whose route target is not the grant or that is
-not open, so nothing is read wider and narrowed afterwards; `admit` is
-the same judgement every other decide route makes (I1), and a row it
-cannot judge (a request or a policy it cannot read: `EntriesOf` gives no
-entries) is left out as a refused one is. An open decision's admission
-reads its row alone (its state, its policy, its request's `for`): no
-response, history or hold enters `AdmitOpen`, so judging the row is
-judging the record (`TestAdmitsIsTheOneCheck` holds them equal). A read
-the ledger cannot make answers as `GET /api/decisions` answers one
+**Admission has one reader, and it is Go's.** No SQL of the list reads
+a request or a policy: no JSON function is in its query. One ledger read,
+`ledger.Ledger.OpenDecisionsNewest(ctx, limit int, visit
+func(DecisionRow) bool) (more bool, err error)` (new), one statement in
+one read transaction (`readSnapshot`, as `Decision` reads): `SELECT` the decision rows `WHERE
+d.state = 'open' ORDER BY d.n DESC` (the row's number, the key every
+decision read orders by, so the order is total), each row scanned by
+`scanDecision`, as every read scans one, and handed to `visit` inside
+that transaction, one at a time, newest first, nothing kept by the read.
+It is bounded twice: at most `limit` rows (at most `ledger.MaxOpenScan`,
+500, and 0 for that, as `ScopeDecisions` takes its limit), and at most
+`ledger.MaxOpenScanBytes` (16 MiB) of them, the sum of the lengths of the
+text `scanDecision` reads for each. A row past either bound is not handed,
+and the read answers `more`: open decisions remain that it did not read.
+`visit` answering false stops the read there, `more` false.
+
+The route's `visit` judges each row with `crew.AdmissionOf` over
+`ledger.DecisionRecord{DecisionRow: row}`, the judgement the one-decision
+read makes (`decideAdmission`, I1), and keeps `{id, rev}` of the rows it
+answers `AdmitOpen` for. A request `encoding/json` cannot decode, or a
+policy it cannot read, gives no entry that admits a decide principal
+(`crew.EntriesOf`), so such a
+row is one more refused row, whatever SQLite would have made of its text,
+and the rows after it are read on. An open decision's admission reads its
+row alone (its state, its policy, its request's `for`): no response,
+history or hold enters `AdmitOpen`, so judging the row is judging the
+record (`TestAdmitsIsTheOneCheck` holds them equal), and the list and the
+one-decision read cannot disagree, whatever members a request's text
+repeats, capitalises or escapes.
+
+**The limit and the cut count admitted rows only.** The reply holds the
+first 200 admitted decisions the read hands, newest first; `visit` stops
+the read at the 201st admitted one. `cut` is true when a 201st admitted
+decision was met, or when the read answered `more` (its own bound reached
+before the open decisions were exhausted); omitted otherwise. A refused
+row never takes a place in the reply, and sets `cut` only by taking a
+place in the read's bound (What remains, below).
+
+**What remains, in words.** The one thing decisions that do not admit
+the caller can change is how far back the list looks: it looks at the
+newest 500 open decisions of the server (fewer when those rows hold more
+than 16 MiB together), the operator's own among them. On a server with
+more open decisions than that, a decide principal's list can miss an
+older one that admits it, and then says `cut`; that decision's card is
+still read by its address (`/decide/<did>`), which the read judges
+alone. Nothing else about such decisions can change the reply: below the
+bound, adding them leaves it byte for byte the same.
+
+A read the ledger cannot make answers as `GET /api/decisions` answers one
 (`taskError`), naming no decision.
 
 ## The decide view
@@ -399,12 +428,13 @@ provider. The page's rule is about what a person is shown, never about
 what can be written, and no time is promised from a take-back to a
 closed card. It is one property the page holds by itself: **the card can
 be answered only on a fresh view.** The page marks each read with the
-moment it began and keeps the mark of the last read that succeeded;
+moment it began and keeps the mark of the last read whose reply the
+card took;
 while that mark is older than `DECIDE_FRESH_FOR` (25 s) the card is
 **suspended**: its choices and its sends disabled, the draft and the
 answer sent kept, and the page says "Checking that dr-7 is still yours
-to answer." The next read that succeeds makes it answerable again; a
-`404` closes that card (the draft kept, the pass and the other cards
+to answer." The next read whose reply it takes makes it answerable
+again; a `404` closes that card (the draft kept, the pass and the other cards
 untouched) and a `401` closes the page (the pass emptied, every draft
 kept). A card's reads go
 one at a time, every `DECIDE_READ_EVERY` (10 s) while shown, each
@@ -414,6 +444,13 @@ bound replaces the view before its mark is `DECIDE_READ_EVERY` +
 suspend the card. Reads that fail (a timeout, a `5xx`, no network)
 suspend it once the mark passes the window, and it stays suspended until
 one succeeds, however many fail.
+
+Every reply a card meets, a read's or a respond's, passes one order
+before it draws anything: the card keeps the highest `rev` it has shown
+and whether it has reached an end for this person, and a reply of a lower
+`rev`, or a read's reply that arrives after that end, is dropped. It draws
+nothing and renews no freshness, so a slow read cannot reopen a card its
+own answer closed (The changes, `web/app`: One order for a card).
 
 The decide list is read under the same rule, with a mark of its own: one
 read at a time, on the same interval, each bounded the same; while its
@@ -482,8 +519,10 @@ bounds, beside the decision links' (`decisions.go`):
   an unknown kind admits nobody. A later kind (SW1's subject entry) adds
   its rule here and nowhere else. `EntriesOf(rec)` (Admission and its
   end): the policy's `authority`, and the grant's entry when the route
-  target is the grant; a policy it cannot read gives no entries, so it
-  admits nobody. `AdmissionOf(rec, who)`, answering the type
+  target is the grant, read through `grantFor` (below), the one reader of
+  the target; a policy it cannot read gives no entries, so it admits
+  nobody, and a request `encoding/json` cannot decode gives no grant
+  entry. `AdmissionOf(rec, who)`, answering the type
   `Admission` (`AdmitWhole`, `AdmitOpen`, `AdmitOutcome`, `AdmitNone`), is
   `Admits` over `EntriesOf` plus
   the state and the principal's own responses, over one record.
@@ -508,7 +547,10 @@ bounds, beside the decision links' (`decisions.go`):
   transaction, the `routed` row with `for` and `forWas`, `rev` + 1. A
   route to the grant of a decision already given to it is what HM1's
   route to the person a decision is already for is: a row and `rev` + 1.
-  `grantFor(request) bool` reads the target; `requestFor` keeps
+  `grantFor(request) bool` reads the target, decoding the request with
+  `encoding/json` as `checkRequest` does (false for text it cannot
+  decode); `GrantDecideLabel` (`"grant:decide"`) is the one place the
+  target's label is spelled. `requestFor` keeps
   answering nil for a `for` with no person, so HM1's readers (the
   receipt's `for`, the task file, `GET /api/decisions?for=`, a gate's
   label carried to its next decision) treat a grant target as for no
@@ -546,18 +588,20 @@ bounds, beside the decision links' (`decisions.go`):
   cannot change once answered). `replaceDecision`, which copies the
   answered row whole, drops a grant target from the request it copies,
   so the replacement is the operator's alone (Owner decisions, 7).
-- `ledger/decisions.go`: `OpenDecisionsLabelled(ctx, label string, limit
-  int, admit func(DecisionRow) bool) ([]DecisionRevision, bool, error)`
-  (new), the decide list's one read (The decide list): one statement in
-  one `readSnapshot`, its condition the state `open` and the request's
-  `for.label`, newest first, `limit` + 1 rows, each judged by `admit`
-  inside the read; a `limit` outside 1 to 200 is taken as 200, as
-  `Decisions` bounds its page. The label it is
-  asked for is `crew.GrantDecideLabel` (`"grant:decide"`, in
-  `decisions_for.go`), the one place the target's label is spelled.
-  No hook inside the read: the ledger has one connection, so a write
-  waits for a read transaction to end, and a test holds a list read
-  after it (`afterDecideList`, `internal/api`).
+- `ledger/decisions.go`: `OpenDecisionsNewest(ctx, limit int, visit
+  func(DecisionRow) bool) (more bool, err error)` (new), the decide list's
+  one read (The decide list): one statement in one `readSnapshot`, its
+  condition the state `open` alone (no JSON function), newest first by
+  `n`, each row scanned by `scanDecision` and handed to `visit` inside the
+  read; at most `limit` rows (`MaxOpenScan`, 500, for 0 or more) and
+  `MaxOpenScanBytes` (16 MiB) of their text, taken from the package's
+  `openScanBytes` so the ledger's own test lowers it, `more` when a row
+  past either bound is left unread; `visit` false stops it. `visit`
+  reads nothing of the ledger (its one connection is the read's): the
+  list's is `crew.AdmissionOf` over the row, which reads nothing. No
+  hook inside the read: the ledger has one connection, so a write waits
+  for a read transaction to end, and a test holds a list read after it
+  (`afterDecideList`, `internal/api`).
 - No ledger schema change and no migration: the `for` is a field of the
   request's JSON, of the shape HM1's `forShape` checks (a label, no
   person). An older binary reading a grant target treats it as a label
@@ -576,8 +620,8 @@ bounds, beside the decision links' (`decisions.go`):
   `decideAdmission(rec, p principal) crew.Admission` (new) is
   `crew.AdmissionOf` over the record and the principal as an
   `Admittee`; the read and the respond route call it and nothing else,
-  and the list passes it, over each row its query reads, as the
-  ledger's `admit`.
+  and the list calls it over each row the ledger's read hands its
+  `visit`.
 - `me.go` (new): `GET /api/me`, any authenticated principal:
   `proto.MeReply`, at most `proto.MaxMeReply`: the workbench token
   `["admin", "host"]`, a host token `["host"]`, a share link `[]`, a
@@ -587,18 +631,27 @@ bounds, beside the decision links' (`decisions.go`):
   say).
 - `decisions.go`: the three decision routes of the surface (the list,
   the read, the respond route) are wrapped in
-  `deciding` (new): the admin exactly as `launching` (so `403
-  switchyard` on a switchyard for everyone), a decide principal
-  (`p.decide && !p.admin`, whatever else it holds) through to the handler, `401` for every other principal under the rate
-  limit. `GET /api/decisions` and the operator's operations stay
-  `launching`.
+  `deciding` (new), which authenticates first, as `launching` does
+  (`requireAdmin` around `launchingAny`, `server.go`): a principal that
+  is neither the admin nor a decide principal (`p.decide && !p.admin`,
+  whatever else it holds), a host-only one and no credential among them,
+  `401` under the rate limit, as on `main`, switchyard or not; then, on a
+  switchyard, `403 switchyard` for the admin and for a decide principal
+  alike (`launchingAny`'s answer); else the admin exactly as
+  `launching` passes it and a decide principal through to the handler.
+  `GET /api/decisions` and the operator's operations stay `launching`.
   - `handleDecideList` (new), `GET /api/me/decisions`: for a decide
-    principal, one `s.ledger.OpenDecisionsLabelled(ctx,
-    crew.GrantDecideLabel, proto.MaxDecideListEntries, admit)`, `admit`
-    answering `decideAdmission` over the row is `AdmitOpen`; its reply
-    `proto.DecideList`, each entry `{id: ledger.DecisionID(n), rev}`,
-    `cut` from the read, written with `writeJSON`; the count is the bound
-    that cuts, and `TestDecideBounds` proves 200 entries at their widest
+    principal, one `s.ledger.OpenDecisionsNewest(ctx, limit, visit)`
+    (`limit` 0 in the product; a test seam, `decideScanLimit`, as the
+    lane's `scopeLimit` stands in for `ledger.MaxScopeDecisions`, so a
+    test reaches the bound with a few), whose
+    `visit` keeps `{id: ledger.DecisionID(n), rev}` of each row
+    `decideAdmission` answers `AdmitOpen` for, skips every other row, and
+    answers false at the 201st admitted one
+    (`proto.MaxDecideListEntries` + 1); its reply `proto.DecideList`, the
+    first 200 kept, `cut` when a 201st was met or the read answered
+    `more`, written with `writeJSON`; the count is the bound that cuts,
+    and `TestDecideBounds` proves 200 entries at their widest
     fit `proto.MaxDecideList`, as `TestTheOperatorsDecisionListFitsItsBound`
     proves the operator's page. For the admin (whom
     `deciding` passes as `launching` does) `403 not_decide` ("this list
@@ -733,13 +786,31 @@ pass is held:
     `not_used`, `ended`, `gone` or its Close; the list's at `ended`. So
     a tab makes at most five reads at a time, the list's and four
     cards'.
+  - **One order for a card, whichever reply brings it.** A card keeps
+    `view`, the view it shows (the highest `rev` it has shown), and `end`,
+    set once it has reached an end for this person (`applied`,
+    `not_used`, `gone`, `ended`). A reply from either path, a read's or a
+    respond's, is taken only through `replaces(view, reply, whole)`
+    (`web/app/utils/decisions.ts`), the function the operator's card
+    orders its record by on `main` (`DecisionRecordView.read` calls it with
+    `whole` true, `.write` with `whole` false, `composables/useDecisions.ts`),
+    called the same way: a read's reply with `whole` true (a card's reads
+    go one at a time, so one of the same `rev` is the later one), a
+    respond's with `whole` false. A reply it refuses (a lower `rev` than
+    shown, or a respond's of the `rev` shown), and any read's reply that
+    arrives once `end` is set, is dropped: it draws nothing, moves no mark
+    and renews no freshness. So a read begun at open `rev` R that returns
+    after the respond's reply drew the answered `rev` R + 1 draws nothing,
+    and the card stays answered. A reload starts the card anew.
   - **Freshness** (What an open page shows). `freshAt`, the moment the
-    last read that succeeded began, taken before its request is sent;
+    last read whose reply the card took began, taken before its request
+    is sent;
     the card is `suspended` while `now - freshAt > DECIDE_FRESH_FOR`
     (25 s), judged at every send, on a timer armed at each success for
     the moment its mark turns that old, and at once when the tab is
     shown again. Suspended, its choices and sends are disabled, `draft`
-    and `sent` kept; a respond's reply draws its view and moves no mark.
+    and `sent` kept; a respond's reply the card takes draws its view and
+    moves no mark.
     The list keeps a `freshAt` of its own under the same rule: while it
     is stale its rows are drawn as last read, Open disabled, the page
     saying "Checking which decisions await you here."; it never makes a
@@ -748,7 +819,8 @@ pass is held:
     vitest's fake clock (`vi.useFakeTimers()`, as
     `useDispatchLive.test.ts` drives one) moves them; Playwright drives a
     read by the focus event (its 1.44.1 has no clock).
-  - `view`, the last decide view read; a refused send never clears it.
+  - `view`, the last decide view the card's order took; a refused send
+    never clears it.
   - **What the page keeps of an answer**, one row per moment, against
     DR1's replay rules as they are on `main` (`replayed`, called by
     `RespondDecision` before any judgement and again in `respondTx`: the
@@ -829,10 +901,16 @@ The triple together: the types and bounds above in `internal/proto`
   connection given by it;
 - the Decisions table: a `GET /api/me` row; a `GET /api/me/decisions`
   row (the decide grant's alone: `{decisions: [{id, rev}], cut?}`, the
-  open decisions whose entries admit the caller, newest first, at most
-  `MaxDecideListEntries` (200) and `MaxDecideList` (16 KiB), no other
-  field, count, page or cursor; the admin `403 not_decide`, any other
-  principal `401`); `GET /api/decisions/{did}`'s
+  first `MaxDecideListEntries` (200) open decisions whose entries admit
+  the caller, newest first, at most `MaxDecideList` (16 KiB), no other
+  field, count, page or cursor; `cut` when a 201st admitted one was met
+  or the read reached its bound first; in words, the one thing that
+  remains: the list looks at the newest 500 open decisions of the server
+  (`MaxOpenScan`, fewer when those rows pass 16 MiB), so on a server with
+  more open decisions than that a decide principal's list can miss an
+  older one, and says `cut`; the admin `403 not_decide`, a host-only
+  principal and no credential `401`, on a switchyard too, an admitted
+  principal there `403 switchyard`); `GET /api/decisions/{did}`'s
   decide view (its fields, `MaxDecideView`, the `404` for a decision not
   admitted); the respond row's decide reply and refusal
   (`MaxDecideReply`, `decideWords`); the route row's `grant`
@@ -898,9 +976,9 @@ person's next read says `not_used`.
 
 **A decide principal's reads.** Each is one ledger read, judged and
 built from that read: a decision's read one record read whole, the list
-one statement whose condition is the grant's target and the open state,
-each row it reads judged inside that read; no reply is written from a
-judgement of another read, and nothing is pushed. A list read and a
+one bounded statement over the open rows, newest first, each row it
+hands judged in Go inside that read by the same `AdmissionOf`; no reply
+is written from a judgement of another read, and nothing is pushed. A list read and a
 take-back meet in the ledger's one snapshot: a list read whose snapshot
 was taken before the take-back committed lists the decision at the rev
 it judged, and the next read does not; the card read that follows is
@@ -917,8 +995,9 @@ Invariants:
 - **I1, one judgement.** Every decision of whether a principal may read
   or answer a decision is `crew.AdmissionOf` (with `crew.Admits` over
   `crew.EntriesOf` inside it) over one record: the read, the list (over
-  each row its query reads), the respond route's check and the
-  response's transaction (`Admits`).
+  each row the ledger's bounded read hands it, in Go; no SQL of it reads
+  a request or a policy), the respond route's check and the response's
+  transaction (`Admits`).
   `TestAdmitsIsTheOneCheck` holds them to one table.
 - **I2, the four routes.** A decide principal is answered by every
   route outside the four exactly as it is without the decide grant (a
@@ -1135,19 +1214,45 @@ Go race (`go test -race -count=1 -timeout 60m ./...`, with `make lint`,
     the next read lists dr-8 alone, and dr-7's read is `404`; dr-8
     answered by another holder: gone from the next list; a route to the
     grant of a third: in the next list at its new rev.
-  - `TestDecideListBound`: 201 open decisions given to the grant: the
-    200 newest listed, `cut` true, the oldest absent; with 200, all
-    listed and no `cut`; the reply within `proto.MaxDecideList`, each
-    entry whole (the reply decodes).
+  - `TestDecideListBound`: 201 open decisions given to the grant (made
+    in several runs, `MaxOpenPerRun` being 64): the 200 newest listed,
+    `cut` true, the oldest absent; with 200, all listed and no `cut`; the
+    reply within `proto.MaxDecideList`, each entry whole (the reply
+    decodes).
+  - `TestDecideListCountsAdmittedRowsOnly`, at the product's bound unless
+    it says otherwise: one reply taken, then refused rows added below the
+    bound (open decisions of the operator's and of an HM1 person's, and
+    one given to the grant whose request is `{`, written into the test's
+    ledger as the row's text, since `checkRequest` refuses it on every
+    path that writes one): the reply byte for byte the same; 200
+    admitted and one refused row: all 200 listed, no `cut`; 201 refused
+    rows newer than one admitted row: that one still listed, no `cut`;
+    the undecodable row among admitted ones: skipped, every other listed,
+    the list read and the one-decision read both answering (the read
+    `404`); with `decideScanLimit` at 10, ten refused rows newer than an
+    admitted one: it is not listed and `cut` is true, the case the words
+    of The decide list name.
+  - `TestDecideListAndReadAgree`: requests given to the grant written as
+    text the decoder takes but SQL reads otherwise, each into the test's
+    ledger as the row's text: `for` given twice (a person's label, then
+    the grant's, and the other order), its members capitalised (`"For"`,
+    `"Label"`) and escaped (`"\u0066or"`): for each, the decide principal
+    finds it in the list exactly when its one-decision read answers the
+    decide view, and the read is `404` exactly when the list leaves it
+    out.
   - `TestDecideListRefusesOthers`: the admin (the workbench token, and a
     provider's principal with `admin` and `decide`) `403 not_decide`, a
-    host-only pass and no credential `401`, on a switchyard `403
-    switchyard` for every principal; the decide-only and the
-    host-and-decide passes answered alike.
-- `internal/crew/ledger`: `TestOpenDecisionsLabelled` (only open rows of
-  the label, newest first, `limit` + 1 read and `cut`, `admit` called on
-  every row read and a refused one left out; a ledger at a version
-  before the decision tables lists none).
+    host-only pass and no credential `401`; on a switchyard, on the list,
+    the read and the respond route: a host-only pass and no credential
+    the `401` they get on `main` (the body `requireAdmin` writes), the
+    admin and both decide principals `403 switchyard`; the decide-only
+    and the host-and-decide passes answered alike.
+- `internal/crew/ledger`: `TestOpenDecisionsNewest` (only open rows,
+  newest first by `n`, each handed as stored, an undecodable request
+  among them; `visit` false stopping the read with `more` false; `limit`
+  rows then `more` true when an open row is left, `more` false when none
+  is; `openScanBytes` lowered: the row past it not handed, `more` true;
+  a ledger at a version before the decision tables hands none).
 
 The issue's three stream tests, as reads, so nothing of them is dropped
 (Owner decisions, 16):
@@ -1194,7 +1299,14 @@ Vitest (`npm --prefix web test`, with `npm --prefix web run typecheck`):
   `rev` that differs from an open card's view reading that card at once;
   a decision gone from the list between two reads read once at once and
   closed by its `404` with its draft kept, or drawn with its own
-  answer's outcome; an empty list's words; each row of the send table (a new `responseId` per send,
+  answer's outcome; an empty list's words; the card's one order: an
+  open read held behind the fake fetch's gate, the respond's reply (the
+  answered view at `rev` R + 1) drawn, the read released with the open
+  view at R: the card stays answered, no choice offered, its `freshAt`
+  unmoved; a read's reply of a lower `rev` than shown dropped, one of the
+  same `rev` taken; a respond's reply of the `rev` shown dropped; a read's
+  reply arriving after the card's `404`, and after `applied`, drawing
+  nothing; each row of the send table (a new `responseId` per send,
   `sent` frozen and resent byte for byte after no reply, a new id after
   a definite refusal, a receipt of another id resolving nothing); each
   `outcome`'s words; an assignment's options drawn as the view gives
@@ -1288,7 +1400,7 @@ leaves `main` working and green on its own and carries the
 
 | PR | Title | Contains | Touches | Tests | Depends on | Parallel with |
 |---|---|---|---|---|---|---|
-| PR-1 (#776, ~780 + 1,080 lines: the list and its tests add ~230 + 380 to round 3's ~550 + 700) | ext, api, web: a decide grant and a pass taken from the fragment | `ext.GrantDecide`; `proto`'s decide types and bounds; `crew.Admits`, `crew.EntriesOf`, `crew.AdmissionOf`, `crew.OutcomeOf`, the grant as a route target (`routeLabel`, `forRoute`, `gateFor`), the take-back, the operation kept for it (`ledger.Tx.Operations`), `respondTx`'s check, `replaceDecision`'s drop, `ledger.OpenDecisionsLabelled`; `GET /api/me`, `GET /api/me/decisions`, `deciding`, the decide view and words, `decideAdmission`, `authorityOf`, `recheckResponse`, `no_identity`, `answererOf`, Brakeman's refusal; the pass parser, its store, the plugin, the middleware, `useDecide` and its reads of the list and the cards, the decide page; `docs/protocol.md`, `protocol.ts`, `docs/features.md`, `docs/repository-map.md` | `ext`, `internal/proto`, `internal/crew`, `internal/api`, `web/app`, `web/e2e`, `docs` | every test above | #775 (its PR merged); DR1, HM1 and MB0 on `main` | none: #775 shares `ext`, `internal/api`, `web/app` and `docs` |
+| PR-1 (#776, ~810 + 1,320 lines: round 4's bounded read of the open decisions, its admitted count and the card's order add ~30 + 240 to the list's ~780 + 1,080) | ext, api, web: a decide grant and a pass taken from the fragment | `ext.GrantDecide`; `proto`'s decide types and bounds; `crew.Admits`, `crew.EntriesOf`, `crew.AdmissionOf`, `crew.OutcomeOf`, the grant as a route target (`routeLabel`, `forRoute`, `gateFor`), the take-back, the operation kept for it (`ledger.Tx.Operations`), `respondTx`'s check, `replaceDecision`'s drop, `ledger.OpenDecisionsNewest`; `GET /api/me`, `GET /api/me/decisions`, `deciding`, the decide view and words, `decideAdmission`, `authorityOf`, `recheckResponse`, `no_identity`, `answererOf`, Brakeman's refusal; the pass parser, its store, the plugin, the middleware, `useDecide` and its reads of the list and the cards, each card's order through `replaces`, the decide page; `docs/protocol.md`, `protocol.ts`, `docs/features.md`, `docs/repository-map.md` | `ext`, `internal/proto`, `internal/crew`, `internal/api`, `web/app`, `web/e2e`, `docs` | every test above | #775 (its PR merged); DR1, HM1 and MB0 on `main` | none: #775 shares `ext`, `internal/api`, `web/app` and `docs` |
 
 ## Owner decisions
 
@@ -1296,8 +1408,9 @@ Dated 2026-11-10. Each is a default for a choice the issue's words leave
 open, or a narrowing of them, the fail-closed one, which the owner may
 overturn. Review round 2 changed 1, 4, 5, 7, 8 and 12, withdrew 11 (its
 stream is gone) and added 16 to 19; review round 3 changed 16 and added
-20; after round 3 the lead changed 1, 12 and 16 (the list restored); the
-numbers are kept so the earlier threads still point at the right one.
+20; after round 3 the lead changed 1, 12 and 16 (the list restored);
+review round 4 changed 1 (the list's admission in Go, its limit and cut
+of admitted rows) and 14 (authentication first); the numbers are kept so the earlier threads still point at the right one.
 
 1. **Four routes: who it is, the list, one decision, its answer**
    (after round 3; rounds 1 and 2 had cut the list). The grant reaches
@@ -1309,12 +1422,17 @@ numbers are kept so the earlier threads still point at the right one.
    way in, would otherwise find nothing to answer. It comes back in the
    smallest form that fails closed: the issue's own snapshot bound,
    `{id, rev}` of the open decisions that admit the caller, at most 200
-   and 16 KiB, a `cut` flag, a route of its own, its rows chosen by the
-   admission in the query that reads them and judged by `AdmissionOf`
-   inside that read. What the cut rounds feared of a read computed over
-   every record and narrowed afterwards (its order, its bound, its count,
-   its errors, the records it links) has no place in it: no field but
-   the two, no count, page or cursor, no other record. The stream: 16.
+   and 16 KiB, a `cut` flag, a route of its own. Round 4: admission has
+   one reader, Go's: the list reads the server's newest 500 open
+   decisions through a bounded ledger read with no JSON function in its
+   SQL, and judges each row with the one-decision read's own
+   `AdmissionOf`, so the two cannot disagree; its limit and its `cut`
+   count admitted rows only. What remains, and the owner may weigh: on a
+   server with more than 500 open decisions, a decide principal's list
+   can miss an older one that admits it, and says `cut` (its address
+   still reads it). Nothing else of decisions that do not admit the
+   caller changes the reply: no field but the two, no count, page or
+   cursor, no other record. The stream: 16.
 2. **The decide view is a table.** A decide principal reads the
    request's own words, its state and its own receipts (each with its
    `responseId`), never the record whole, the refs, the history or
@@ -1363,8 +1481,12 @@ numbers are kept so the earlier threads still point at the right one.
     reads the outcome of an answer sent before.
 13. **The workbench token wins.** With one stored, the pass is kept and
     not sent, and the decide address opens the operator's page.
-14. **On a switchyard the decide routes are `403 switchyard`**, as
-    `launching`'s are: decisions are answered where the work runs.
+14. **On a switchyard the decide routes are `403 switchyard` to an
+    admitted principal, after authentication** (round 4), as
+    `launching`'s are on `main` (`requireAdmin` around `launchingAny`):
+    decisions are answered where the work runs. The admin and a decide
+    principal get `403 switchyard`; a host-only principal and a request
+    with no credential get the `401` they get on `main`.
 15. **Playwright on the shipped build.** No test-only binary registers a
     fake provider; the page is proved against the real server's refusal
     and against stubbed replies, the server by Go tests with `exttest`.
@@ -1539,7 +1661,7 @@ route row is `docs/protocol.md`'s with the grant added:
 
 | Route | Who | Body → reply |
 |---|---|---|
-| `GET /api/me/decisions` | a principal with the decide grant and not the admin grant (the admin `403 not_decide`) | → `{decisions: [{id, rev}], cut?}`: the open decisions whose entries admit it (`crew.AdmissionOf`, judged in the one read that chooses them), newest first, at most 200 and 16 KiB, no other field, count, page or cursor (`proto.DecideList`, `docs/plans/decide-grant.md`) |
+| `GET /api/me/decisions` | a principal with the decide grant and not the admin grant (the admin `403 not_decide`) | → `{decisions: [{id, rev}], cut?}`: the first 200 open decisions whose entries admit it, newest first, at most 16 KiB, each judged in Go by `crew.AdmissionOf`, the one-decision read's judgement, over a bounded read of the server's newest 500 open decisions (no JSON function in its SQL); `cut` when a 201st admitted one was met or the read reached its bound first, so on a server with more open decisions than that the list can miss an older one; no other field, count, page or cursor (`proto.DecideList`, `docs/plans/decide-grant.md`) |
 | `GET /api/decisions/{did}` | admin, or a principal with the decide grant the decision admits (`crew.AdmissionOf`; `404 not_found` for one it does not) | the admin: `{decision, refs}`, the record whole and its evidence refs' resolutions, at most 2 MiB (`maxDecisionReply`: the record's parts at their bounds, its 32 receipts at `ledger.MaxDecisionReceipt`, 32 KiB each, and its refs at `maxDecisionRef`); a decide principal: the decide view alone (`proto.DecideView`, at most 32 KiB, `docs/plans/decide-grant.md`) |
 | `POST /api/decisions/{did}/respond` | admin, or a principal with the decide grant the decision admits (`404 not_found` for one it does not) | `{responseId, choice?, text?, rationale?, expectedRev, byName?}` (at most 32 KiB, `maxDecisionRespondBody`: `text` at most 4,096 bytes and `rationale` 2 KiB, each as `encoding/json` sends it, escapes and all) → `201 {receipt, decision}`; `200` repeat; `409 decision_answered`, `decision_closed`, `stale_decision`, `stale_policy`, `response_conflict`, `not_held`; `403 not_approver`; `503 decision_moved`; a decide principal's reply its own receipt and the decide view (`proto.DecideReply`), a refusal's words its code's (`decideWords`) |
 | `POST /api/decisions/{did}/route` | admin, or a Brakeman turn granted `route_decision` | `{opId, to: {kind: "operator"} \| {kind: "person", name} \| {kind: "role", name: <responsibility>} \| {kind: "grant", grant: "decide"}, note?, expectedRev}` → `{receipt, decision}` (a turn: `{receipt, error}`); `200` the same for a repeat; `409 op_conflict`, `stale_decision`; `429 decision_limit` (the operator's operations, comments, requests for more and routes together, at most 32 per decision, the last kept for the take-back while it is given to the grant; a Brakeman turn's routes, at most 4, apart from them). To the operator it changes no state, but takes back a decision given to the grant. To a person or a responsibility (HM1), resolved in the run's crew as launched (`400 invalid` for one it does not resolve), it changes whom the decision is for, and to the grant it gives the decision to the decide grant: only while it is `open` (`409 decision_answered`, `decision_closed` otherwise), at the `expectedRev` read (at least 1, judged before the state, so a route sent at a rev an answer moved is `stale_decision`), through the run that holds it (`409 not_held` otherwise; the take-back also through the ledger alone); it rewrites the request's `for`, writes the `routed` row with `for` and `forWas`, and bumps `rev`. To a person or a responsibility, who answers does not change: the operator; to the grant, anyone holding the decide grant answers too. To the grant: the admin's alone, `409 no_identity` on a build with no identity provider registered; a turn's `to: grant` is `400 invalid`, and a turn's route of a decision given to the grant `409 stale_target` |
