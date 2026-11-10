@@ -854,8 +854,11 @@ func TestDerivedOpIDs(t *testing.T) {
 		}
 		seen[id] = parts
 	}
-	if DerivedOpID("ab", "c") == DerivedOpID("a", "bc") || DerivedOpID("x", "y") != DerivedOpID("x", "y") {
+	if DerivedOpID("ab", "c") == DerivedOpID("a", "bc") {
 		t.Fatal("the parent and its parts are not length-prefixed")
+	}
+	if one, again := DerivedOpID("x", "y"), DerivedOpID("x", "y"); one != again {
+		t.Fatal("one input gave two ids")
 	}
 }
 
