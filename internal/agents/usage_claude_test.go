@@ -143,7 +143,7 @@ func TestClaudeUsageInconclusive(t *testing.T) {
 		}, "ended before it answered"},
 		{"child exits", func(t *testing.T, pidfile string) []string {
 			return []string{"USAGE_STREAM=" + noResult(t), "USAGE_THEN=fail"}
-		}, "ended before it answered: fixture failure on stderr"},
+		}, "ended before it answered (exit status 3; "},
 		{"malformed", func(t *testing.T, pidfile string) []string {
 			return []string{"USAGE_STREAM=" + variant(t, "claude-usage.jsonl", `{"type":"result"`, "not json\n"+`{"type":"result"`)}
 		}, "not JSON"},
@@ -318,5 +318,107 @@ func TestClaudeUsageArgv(t *testing.T) {
 	}
 	if rep := readClaudeUsage(context.Background(), UsageInput{Command: self(t), Env: s.env}); rep.State != UsageError || !strings.Contains(rep.Words, "no folder") {
 		t.Fatalf("no folder: %+v", rep)
+	}
+}
+
+// TestClaudeUsageUnknownPayer: a login whose payment provider is missing,
+// null or not one Conductor knows, or whose sign-in is an unknown one
+// that merely looks like a key, is unknown (error, the field named), never
+// the nearest guess; /usage is not started.
+func TestClaudeUsageUnknownPayer(t *testing.T) {
+	for name, c := range map[string]struct{ body, words string }{
+		"no provider":      {`{"loggedIn": true, "authMethod": "claude.ai", "subscriptionType": "max"}`, "apiProvider"},
+		"null provider":    {`{"loggedIn": true, "authMethod": "claude.ai", "apiProvider": null, "subscriptionType": "max"}`, "apiProvider"},
+		"unknown provider": {`{"loggedIn": true, "authMethod": "claude.ai", "apiProvider": "elsewhere", "subscriptionType": "max"}`, "apiProvider"},
+		"key-like method":  {`{"loggedIn": true, "authMethod": "keychain_sso", "apiProvider": "firstParty"}`, "authMethod"},
+		"no method":        {`{"loggedIn": true, "apiProvider": "firstParty"}`, "authMethod"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newStub(t, "claude", "USAGE_AUTH="+authFile(t, c.body))
+			adm := &fakeAdmit{}
+			rep := claudeRead(t, s, adm)
+			if rep.State != UsageError || !strings.Contains(rep.Words, c.words) || s.started(t, "-p") != 0 || len(adm.asked) != 0 {
+				t.Fatalf("%+v", rep)
+			}
+		})
+	}
+	// The providers Conductor knows are key-paid, in its own words.
+	for _, p := range []string{"bedrock", "vertex", "foundry"} {
+		s := newStub(t, "claude", "USAGE_AUTH="+authFile(t, `{"loggedIn": true, "authMethod": "third_party", "apiProvider": "`+p+`"}`))
+		if rep := claudeRead(t, s, &fakeAdmit{}); rep.State != UsageKeyPaid || strings.Contains(rep.Words, p) || s.started(t, "-p") != 0 {
+			t.Fatalf("%s: %+v", p, rep)
+		}
+	}
+}
+
+// TestClaudeUsageFlagRefused: a version that no longer takes the turn
+// bound's flag (--max-turns, which --help no longer lists) refuses it
+// before any output; the read fails closed: unknown, in Conductor's words,
+// with nothing proved, and no turn could have been taken.
+func TestClaudeUsageFlagRefused(t *testing.T) {
+	s := newStub(t, "claude", "USAGE_REFUSE=--max-turns")
+	adm := &fakeAdmit{}
+	rep := claudeRead(t, s, adm)
+	if rep.State != UsageError || rep.Outcome != Inconclusive || !strings.Contains(rep.Words, "this version of the tool is not one Conductor has checked") || strings.Contains(rep.Words, "unknown option") {
+		t.Fatalf("%+v", rep)
+	}
+	if got := adm.outcomes(); !slices.Equal(got, []Outcome{Inconclusive}) {
+		t.Fatalf("Done %v", got)
+	}
+}
+
+// The markers a stub plants in what it prints: one shaped as an account's
+// email, one as a plain word. Neither may reach a report.
+const (
+	markMail = "fixture-marker-7a1c@example.invalid"
+	markWord = "FixtureMarkerWord"
+)
+
+// noMarks fails when a report (as JSON, and as the recipes tier prints
+// it) holds either marker.
+func noMarks(t *testing.T, name string, rep UsageReport) {
+	t.Helper()
+	b, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	for _, m := range []string{markMail, markWord, strings.ToLower(markWord)} {
+		if strings.Contains(string(b), m) || strings.Contains(recipeSummary(rep), m) {
+			t.Errorf("%s: the tool's text reached the report: %s", name, b)
+		}
+	}
+}
+
+// TestClaudeUsageKeepsNoToolWords: whatever Claude Code prints, on stderr or
+// in a field Conductor reads, the report's words are Conductor's own: the
+// markers planted there reach no report, and no word of the recipes
+// tier's line.
+func TestClaudeUsageKeepsNoToolWords(t *testing.T) {
+	mark := "USAGE_MARK=" + markMail + " " + markWord
+	cases := map[string][]string{
+		"version":       {"USAGE_VERSION=" + markWord + " " + markMail},
+		"child exits":   {"USAGE_THEN=fail", "USAGE_STREAM=" + variant(t, "claude-usage.jsonl", `{"type":"result"`, `{"type":"other"`)},
+		"auth not json": {"USAGE_AUTH=" + authFile(t, markMail+" "+markWord)},
+		"auth method":   {"USAGE_AUTH=" + authFile(t, `{"loggedIn": true, "authMethod": "`+markWord+`", "apiProvider": "firstParty"}`)},
+		"auth provider": {"USAGE_AUTH=" + authFile(t, `{"loggedIn": true, "authMethod": "claude.ai", "apiProvider": "`+markWord+`"}`)},
+		"plan":          {"USAGE_AUTH=" + authFile(t, `{"loggedIn": true, "authMethod": "claude.ai", "apiProvider": "firstParty", "subscriptionType": "`+markWord+`"}`)},
+		"kind":          {"USAGE_STREAM=" + variant(t, "claude-usage.jsonl", `"kind":"weekly_all"`, `"kind":"`+markWord+`"`)},
+		"severity":      {"USAGE_STREAM=" + variant(t, "claude-usage.jsonl", `"severity":"normal"`, `"severity":"`+markWord+`"`)},
+		"model name":    {"USAGE_STREAM=" + variant(t, "claude-usage.jsonl", `"display_name":"Fixture Model"`, `"display_name":"`+markMail+`"`)},
+		"currency":      {"USAGE_STREAM=" + variant(t, "claude-usage.jsonl", `"currency":"USD"`, `"currency":"`+markWord+`"`)},
+		"key source":    {"USAGE_STREAM=" + variant(t, "claude-usage.jsonl", `"apiKeySource":"none"`, `"apiKeySource":"`+markWord+`"`)},
+		"flag refused":  {"USAGE_REFUSE=--max-turns"},
+	}
+	for name, kv := range cases {
+		t.Run(name, func(t *testing.T) {
+			rep := claudeRead(t, newStub(t, "claude", append(kv, mark)...), &fakeAdmit{})
+			if name == "plan" && rep.State != UsageOK {
+				t.Fatalf("an unknown plan is not reported, and the read goes on: %+v", rep)
+			}
+			if name != "plan" && rep.State == UsageOK {
+				t.Fatalf("read as ok: %+v", rep)
+			}
+			noMarks(t, name, rep)
+		})
 	}
 }

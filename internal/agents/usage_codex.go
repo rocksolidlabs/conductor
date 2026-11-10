@@ -22,6 +22,23 @@ const (
 
 var codexAppServerArgs = []string{"app-server", "--listen", "stdio://"}
 
+// codexPlans are the plan types reported (app-server's PlanType, 0.163.0;
+// the recipes tier fails when the schema names one not here); another is
+// not reported.
+var codexPlans = map[string]bool{"free": true, "go": true, "plus": true, "pro": true, "prolite": true, "promax": true, "team": true,
+	"self_serve_business_prolite": true, "self_serve_business_usage_based": true, "business": true, "ent26": true,
+	"enterprise_cbp_automation": true, "enterprise_cbp_usage_based": true, "enterprise": true, "edu": true, "edu_plus": true, "edu_pro": true, "unknown": true}
+
+// codexReached are the rateLimitReachedType values Conductor knows
+// (RateLimitReachedType, 0.163.0, held to the schema as codexPlans is);
+// another fails the read.
+var codexReached = map[string]bool{"rate_limit_reached": true, "workspace_owner_credits_depleted": true, "workspace_member_credits_depleted": true,
+	"workspace_owner_usage_limit_reached": true, "workspace_member_usage_limit_reached": true}
+
+// codexMaxReset is the last reset time a report carries: JSON's last
+// four-digit year. A later one (or one in milliseconds) is no time.
+var codexMaxReset = time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC).Unix()
+
 // codexUsageMethods is everything the reader sends, in this order:
 // config/read, which would answer the person's configuration (it can hold
 // a secret), is never among them.
@@ -35,8 +52,9 @@ type rpcReply struct {
 	ID     json.RawMessage `json:"id"`
 	Method string          `json:"method"`
 	Result json.RawMessage `json:"result"`
-	Error  *struct {
-		Message string `json:"message"`
+	// Error is the refusal; its message is never read, only its code.
+	Error *struct {
+		Code *int `json:"code"`
 	} `json:"error"`
 }
 
@@ -88,9 +106,9 @@ func readCodexUsage(ctx context.Context, in UsageInput) (rep UsageReport) {
 		return *stop
 	}
 	fail := func(words string) UsageReport { return UsageReport{State: UsageError, Words: words, Version: v} }
-	proc, err := startUsage(ctx, p.with(codexAppServerArgs...), in, true)
+	proc, err := startUsage(ctx, p.with(codexAppServerArgs...), in, true, false)
 	if err != nil {
-		return fail("Codex could not start: " + err.Error())
+		return fail("Codex could not be started")
 	}
 	defer proc.end()
 	c := codexClient{proc: proc}
@@ -114,7 +132,7 @@ func readCodexUsage(ctx context.Context, in UsageInput) (rep UsageReport) {
 	case acct.Account.Type == "amazonBedrock":
 		return UsageReport{State: UsageKeyPaid, Words: "paid through Amazon Bedrock: no usage windows are reported", Version: v}
 	case acct.Account.Type != "chatgpt":
-		return fail("account/read names an account Conductor does not read: " + clip(acct.Account.Type, usageMaxLimit))
+		return fail("account/read names an account type Conductor does not know: its usage is not read")
 	}
 	var lim codexLimits
 	if w := c.call(3, codexUsageMethods[3], nil, &lim); w != "" {
@@ -126,7 +144,9 @@ func readCodexUsage(ctx context.Context, in UsageInput) (rep UsageReport) {
 		return fail("Codex's rate limits: " + err.Error())
 	}
 	rep.Version = v
-	if rep.Plan = clip(acct.Account.PlanType, usageMaxPlan); rep.Plan == "" {
+	if codexPlans[acct.Account.PlanType] {
+		rep.Plan = acct.Account.PlanType
+	} else if acct.Account.PlanType == "" {
 		rep.Plan = codexPlan(lim)
 	}
 	return rep
@@ -171,7 +191,10 @@ func (c codexClient) call(id int, method string, params any, out any) string {
 			continue
 		}
 		if r.Error != nil {
-			return clip("Codex refused "+method+": "+r.Error.Message, usageMaxWords)
+			if r.Error.Code != nil {
+				return fmt.Sprintf("Codex refused %s (error %d)", method, *r.Error.Code)
+			}
+			return "Codex refused " + method
 		}
 		if out != nil && json.Unmarshal(r.Result, out) != nil {
 			return "Codex's answer to " + method + " is not in the shape Conductor reads"
@@ -197,15 +220,36 @@ func codexReport(lim codexLimits) (UsageReport, error) {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	for _, id := range ids {
+	for i, id := range ids {
 		s := snaps[id]
+		// A field is named by its place, never by the provider's id.
+		field := fmt.Sprintf("rateLimitsByLimitId[%d]", i)
+		if id == "" {
+			field = "rateLimits"
+		}
 		limit := id
 		if s.LimitID != nil {
 			limit = *s.LimitID
 		}
+		if limit != "" {
+			var err error
+			if limit, err = shownName(limit, usageMaxLimit, field+".limitId"); err != nil {
+				return rep, err
+			}
+		}
+		var limitName string
+		if s.LimitName != nil && *s.LimitName != "" {
+			var err error
+			if limitName, err = shownName(*s.LimitName, usageMaxName/2, field+".limitName"); err != nil {
+				return rep, err
+			}
+		}
 		reached := s.RateLimitReachedType != nil && *s.RateLimitReachedType != ""
+		if reached && !codexReached[*s.RateLimitReachedType] {
+			return rep, fmt.Errorf("%s.rateLimitReachedType is not one Conductor knows", field)
+		}
 		if reached && rep.Limits.Reached == "" {
-			rep.Limits.Reached = clip(*s.RateLimitReachedType, usageMaxLimit)
+			rep.Limits.Reached = *s.RateLimitReachedType
 		}
 		if s.SpendControlReached != nil && (rep.Limits.SpendControl == nil || *s.SpendControlReached) {
 			b := *s.SpendControlReached
@@ -218,9 +262,9 @@ func codexReport(lim codexLimits) (UsageReport, error) {
 			if k.w == nil {
 				continue
 			}
-			w, err := codexWindowOf(k.kind, limit, s.LimitName, k.w, reached)
+			w, err := codexWindowOf(k.kind, limit, limitName, k.w, reached)
 			if err != nil {
-				return rep, fmt.Errorf("%s.%s: %w", clip(id, usageMaxLimit), k.kind, err)
+				return rep, fmt.Errorf("%s.%s.%w", field, k.kind, err)
 			}
 			if len(rep.Windows) == usageMaxWindows {
 				return rep, fmt.Errorf("more than %d windows", usageMaxWindows)
@@ -228,7 +272,7 @@ func codexReport(lim codexLimits) (UsageReport, error) {
 			rep.Windows = append(rep.Windows, w)
 		}
 		if s.Credits != nil {
-			bal, err := figure(s.Credits.Balance, id+".credits.balance")
+			bal, err := figure(s.Credits.Balance, field+".credits.balance")
 			if err != nil {
 				return rep, err
 			}
@@ -244,8 +288,8 @@ func codexReport(lim codexLimits) (UsageReport, error) {
 	return rep, nil
 }
 
-func codexWindowOf(kind, limit string, limitName *string, cw *codexWindow, reached bool) (UsageWindow, error) {
-	w := UsageWindow{Kind: kind, Limit: clip(limit, usageMaxLimit)}
+func codexWindowOf(kind, limit, limitName string, cw *codexWindow, reached bool) (UsageWindow, error) {
+	w := UsageWindow{Kind: kind, Limit: limit}
 	if cw.UsedPercent == nil {
 		return w, fmt.Errorf("usedPercent is missing")
 	}
@@ -273,10 +317,13 @@ func codexWindowOf(kind, limit string, limitName *string, cw *codexWindow, reach
 	default:
 		w.Name = "Secondary"
 	}
-	if limitName != nil && *limitName != "" {
-		w.Name = clip(*limitName+", "+w.Name, usageMaxName)
+	if limitName != "" {
+		w.Name = limitName + ", " + w.Name
 	}
 	if cw.ResetsAt != nil {
+		if *cw.ResetsAt < 0 || *cw.ResetsAt > codexMaxReset {
+			return w, fmt.Errorf("resetsAt is not a time Conductor reads")
+		}
 		t := time.Unix(*cw.ResetsAt, 0).UTC()
 		w.ResetsAt = &t
 	}
@@ -298,8 +345,8 @@ func hasCredit(cs []UsageCredit, c UsageCredit) bool {
 
 // codexPlan is the first snapshot's plan type, when account/read gave none.
 func codexPlan(lim codexLimits) string {
-	if lim.RateLimits != nil && lim.RateLimits.PlanType != nil {
-		return clip(*lim.RateLimits.PlanType, usageMaxPlan)
+	if lim.RateLimits != nil && lim.RateLimits.PlanType != nil && codexPlans[*lim.RateLimits.PlanType] {
+		return *lim.RateLimits.PlanType
 	}
 	return ""
 }

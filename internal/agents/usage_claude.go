@@ -5,33 +5,56 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"strings"
+	"regexp"
 	"time"
 )
 
 // Claude Code's usage, read through its own commands: `auth status
 // --json`, which decides how the login is paid, then for a subscription
 // login of an admitted version the local /usage command in print mode,
-// which answers with no model turn. Checked by hand on 2.1.322 (the result
-// line's num_turns 0 and local_command "usage") and, signed out, by the
-// recipes tier.
+// which answers with no model turn. Checked on 2.1.322, signed in, by the
+// recipes tier's read (the result line's num_turns 0 and local_command
+// "usage"), and signed out by its flag checks.
 const (
 	claudeUsageQualified = "2.1.322"
-	// The plan's reading on 2.1.318 answered the same way, with the same
-	// fields.
-	claudeUsageMinVersion = "2.1.318"
+	// MinVersion is the checked version itself: the plan's reading on
+	// 2.1.318 was not a check of this reader, and nobody checked the
+	// versions between, so none of them is read.
+	claudeUsageMinVersion = claudeUsageQualified
 )
 
 var (
 	claudeAuthArgs = []string{"auth", "status", "--json"}
 	// --setting-sources local: no hook or plugin of the person's runs;
-	// --tools "": no tool can run whatever the version does; --max-turns
-	// 1 bounds what a version that answers with a turn spends (a flag
-	// 2.1.322's --help no longer lists, and still takes).
+	// --tools "": no tool can run whatever the version does, the bound
+	// --help documents; --max-turns 1 bounds what a version that answers
+	// with a turn spends. 2.1.322's --help no longer lists --max-turns,
+	// and takes it. A version that refuses it ends the run before any
+	// output (its parser's exit): the read is then error, "this version of
+	// the tool is not one Conductor has checked", Inconclusive, with no
+	// turn taken (claudeUsageRun); one that takes and ignores it still
+	// runs no tool. The nightly tier cannot check it: --help hides it and
+	// only a /usage run takes it, which needs a login and an admission; the
+	// signed-in recipes read (TestRecipeClaudeUsageRead) does.
 	claudeUsageArgs = []string{"-p", "/usage", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--setting-sources", "local", "--strict-mcp-config", "--tools", "", "--max-turns", "1"}
+
+	// claudeProviders are the apiProvider values Conductor knows, with the
+	// words for a provider that pays instead of a subscription; firstParty
+	// is Anthropic's own. Any other value, or none, is not known.
+	claudeProviders = map[string]string{"firstParty": "", "bedrock": "Amazon Bedrock", "vertex": "Google Vertex AI", "foundry": "Microsoft Foundry"}
+	// claudeKeyMethods are the authMethod values that are a key.
+	claudeKeyMethods = map[string]bool{"api_key": true}
+	// claudeKeySources are the init line's apiKeySource values that are a
+	// key; "none" is the subscription.
+	claudeKeySources = map[string]bool{"ANTHROPIC_API_KEY": true, "apiKeyHelper": true, "/login managed key": true}
+	// claudePlans are the subscription types reported; another is not.
+	claudePlans = map[string]bool{"pro": true, "max": true, "team": true, "enterprise": true}
 )
 
 const claudeAuthMax = 64 << 10
+
+// currency is the shape of a currency code (ISO 4217).
+var currency = regexp.MustCompile(`^[A-Z]{3}$`)
 
 func claudeUsageReader() *UsageReader {
 	return &UsageReader{Qualified: claudeUsageQualified, MinVersion: claudeUsageMinVersion, Read: readClaudeUsage}
@@ -40,10 +63,18 @@ func claudeUsageReader() *UsageReader {
 // claudeAuth is what is kept of `auth status --json`: the email, the
 // organisation and the login's expiry are never decoded.
 type claudeAuth struct {
-	LoggedIn         *bool  `json:"loggedIn"`
-	AuthMethod       string `json:"authMethod"`
-	APIProvider      string `json:"apiProvider"`
-	SubscriptionType string `json:"subscriptionType"`
+	LoggedIn         *bool   `json:"loggedIn"`
+	AuthMethod       *string `json:"authMethod"`
+	APIProvider      *string `json:"apiProvider"`
+	SubscriptionType *string `json:"subscriptionType"`
+}
+
+// strOf is s, or "" for nil.
+func strOf(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // claudeLine is what is read of one stream-json line: the init line's
@@ -92,19 +123,30 @@ func readClaudeUsage(ctx context.Context, in UsageInput) (rep UsageReport) {
 	}
 	rep.Version = version
 	auth, words := claudeAuthStatus(ctx, p, in)
+	provider, knownProvider := claudeProviders[strOf(auth.APIProvider)]
+	method := strOf(auth.AuthMethod)
 	switch {
 	case words != "":
 		return UsageReport{State: UsageError, Words: words, Version: version}
 	case !*auth.LoggedIn:
 		return UsageReport{State: UsageSignedOut, Words: "not signed in to Claude Code", Version: version}
-	case auth.APIProvider != "firstParty":
-		return UsageReport{State: UsageKeyPaid, Words: "paid through " + clip(auth.APIProvider, usageMaxLimit) + ": no usage windows are reported", Version: version}
-	case strings.Contains(strings.ToLower(auth.AuthMethod), "key"):
+	case strOf(auth.APIProvider) == "":
+		return UsageReport{State: UsageError, Words: "Claude Code's auth status gives no apiProvider: how the login is paid is not known", Version: version}
+	case !knownProvider:
+		return UsageReport{State: UsageError, Words: "Claude Code's auth status names an apiProvider Conductor does not know: how the login is paid is not known", Version: version}
+	case provider != "":
+		return UsageReport{State: UsageKeyPaid, Words: "paid through " + provider + ": no usage windows are reported", Version: version}
+	case claudeKeyMethods[method]:
 		return UsageReport{State: UsageKeyPaid, Words: "signed in with an API key: no usage windows are reported", Version: version}
-	case auth.AuthMethod != "claude.ai":
-		return UsageReport{State: UsageError, Words: "auth status names a sign-in Conductor does not read: " + clip(auth.AuthMethod, usageMaxLimit), Version: version}
+	case method == "":
+		return UsageReport{State: UsageError, Words: "Claude Code's auth status gives no authMethod: how the login is paid is not known", Version: version}
+	case method != "claude.ai":
+		return UsageReport{State: UsageError, Words: "Claude Code's auth status names an authMethod Conductor does not know: how the login is paid is not known", Version: version}
 	}
-	plan := clip(auth.SubscriptionType, usageMaxPlan)
+	var plan string
+	if claudePlans[strOf(auth.SubscriptionType)] {
+		plan = strOf(auth.SubscriptionType)
+	}
 	if !p.unchanged() {
 		return UsageReport{State: UsageUnqualified, Words: "the program changed while it was checked", Version: version, Plan: plan}
 	}
@@ -137,9 +179,9 @@ func readClaudeUsage(ctx context.Context, in UsageInput) (rep UsageReport) {
 // words say why when it gave no answer read.
 func claudeAuthStatus(ctx context.Context, p program, in UsageInput) (claudeAuth, string) {
 	var auth claudeAuth
-	proc, err := startUsage(ctx, p.with(claudeAuthArgs...), in, false)
+	proc, err := startUsage(ctx, p.with(claudeAuthArgs...), in, false, false)
 	if err != nil {
-		return auth, clip("Claude Code's auth status could not start: "+err.Error(), usageMaxWords)
+		return auth, "Claude Code's auth status could not be started"
 	}
 	defer proc.end()
 	out, err := io.ReadAll(io.LimitReader(proc.lines.r, claudeAuthMax+1))
@@ -151,11 +193,7 @@ func claudeAuthStatus(ctx context.Context, p program, in UsageInput) (claudeAuth
 	}
 	if json.Unmarshal(out, &auth) != nil || auth.LoggedIn == nil {
 		proc.end()
-		w := "Claude Code's auth status gave no answer Conductor reads"
-		if line := firstLine(proc.stderr.String()); line != "" {
-			w += ": " + line
-		}
-		return auth, clip(w, usageMaxWords)
+		return auth, "Claude Code's auth status gave no answer Conductor reads" + proc.exitWords()
 	}
 	return auth, ""
 }
@@ -165,17 +203,23 @@ func claudeAuthStatus(ctx context.Context, p program, in UsageInput) (claudeAuth
 // local_command "usage".
 func claudeUsageRun(ctx context.Context, p program, in UsageInput, version string) UsageReport {
 	fail := func(words string) UsageReport { return UsageReport{State: UsageError, Words: words} }
-	proc, err := startUsage(ctx, p.with(claudeUsageArgs...), in, false)
+	proc, err := startUsage(ctx, p.with(claudeUsageArgs...), in, false, false)
 	if err != nil {
-		return fail("Claude Code could not start: " + err.Error())
+		return fail("Claude Code could not be started")
 	}
 	defer proc.end()
 	var keySource *string
 	var limits *claudeRateLimits
-	for {
+	for seen := 0; ; seen++ {
 		line, err := proc.lines.next()
 		if err != nil {
-			return fail(proc.why("Claude Code", err, claudeUsageTimeout))
+			words := proc.why("Claude Code", err, claudeUsageTimeout)
+			// Nothing printed and a failing exit is a version that refused
+			// the read's arguments (claudeUsageArgs): no turn was taken.
+			if seen == 0 && ctx.Err() == nil && proc.exitedFailing() {
+				words = "Claude Code " + version + " ended before it printed anything" + proc.exitWords() + ": this version of the tool is not one Conductor has checked"
+			}
+			return fail(words)
 		}
 		var l claudeLine
 		if json.Unmarshal(line, &l) != nil {
@@ -208,8 +252,10 @@ func claudeResult(l claudeLine, keySource *string, limits *claudeRateLimits, ver
 	switch {
 	case keySource == nil:
 		rep.State, rep.Words = UsageError, "the /usage run did not say how it is paid"
+	case claudeKeySources[*keySource]:
+		rep.State, rep.Words = UsageKeyPaid, "the /usage run is paid by a key: no usage windows are reported"
 	case *keySource != "none":
-		rep.State, rep.Words = UsageKeyPaid, "paid by "+clip(*keySource, usageMaxLimit)+": no usage windows are reported"
+		rep.State, rep.Words = UsageError, "the /usage run names an apiKeySource Conductor does not know: how it is paid is not known"
 	case limits == nil:
 		rep.State, rep.Words = UsageError, "the /usage run reported no limits"
 	default:
@@ -239,10 +285,14 @@ func claudeWindows(rl *claudeRateLimits) ([]UsageWindow, []UsageCredit, error) {
 		case "weekly_scoped":
 			w.Name = "Weekly, one model"
 			if l.Scope != nil && l.Scope.Model != nil && l.Scope.Model.DisplayName != "" {
-				w.Name = clip("Weekly, "+l.Scope.Model.DisplayName, usageMaxName)
+				model, err := shownName(l.Scope.Model.DisplayName, usageMaxName-len("Weekly, "), field+".scope.model.display_name")
+				if err != nil {
+					return nil, nil, err
+				}
+				w.Name = "Weekly, " + model
 			}
 		default:
-			return nil, nil, fmt.Errorf("%s.kind %q is not a window Conductor knows", field, clip(l.Kind, usageMaxLimit))
+			return nil, nil, fmt.Errorf("%s.kind is not a window Conductor knows", field)
 		}
 		switch l.Severity {
 		case "", "normal", "warning", "critical":
@@ -259,7 +309,7 @@ func claudeWindows(rl *claudeRateLimits) ([]UsageWindow, []UsageCredit, error) {
 		}
 		if l.ResetsAt != nil {
 			t, err := time.Parse(time.RFC3339Nano, *l.ResetsAt)
-			if err != nil {
+			if err != nil || !reportable(t) {
 				return nil, nil, fmt.Errorf("%s.resets_at is not a time", field)
 			}
 			w.ResetsAt = &t
@@ -268,7 +318,10 @@ func claudeWindows(rl *claudeRateLimits) ([]UsageWindow, []UsageCredit, error) {
 	}
 	var cs []UsageCredit
 	if x := rl.ExtraUsage; x != nil {
-		c := UsageCredit{Kind: "extra_usage", Enabled: x.IsEnabled, Currency: clip(x.Currency, usageMaxCurrency)}
+		if x.Currency != "" && !currency.MatchString(x.Currency) {
+			return nil, nil, fmt.Errorf("extra_usage.currency is not a currency code")
+		}
+		c := UsageCredit{Kind: "extra_usage", Enabled: x.IsEnabled, Currency: x.Currency}
 		var err error
 		if c.Used, err = figure((*string)(x.UsedCredits), "extra_usage.used_credits"); err != nil {
 			return nil, nil, err

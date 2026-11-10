@@ -67,31 +67,24 @@ func RunProbe(ctx context.Context, command []string, p Probe, env map[string]str
 	if len(command) == 0 {
 		return ProbeResult{Error: "no command"}
 	}
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
 	dir, err := os.MkdirTemp("", "conductor-probe-")
 	if err != nil {
 		return ProbeResult{Error: err.Error()}
 	}
 	defer os.RemoveAll(dir)
-	return runProbeIn(ctx, append(append([]string{}, command...), p.Args...), p, probeEnv(env), dir)
-}
-
-// runProbeIn runs argv (the command and the probe's arguments) in dir with
-// env and reads its answer with p, under RunProbe's bounds. The usage
-// readers ask a program's version through it, with their own environment
-// and folder (usage.go).
-func runProbeIn(ctx context.Context, argv []string, p Probe, env []string, dir string) ProbeResult {
-	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	args := append(append([]string{}, command[1:]...), p.Args...)
+	cmd := exec.CommandContext(ctx, command[0], args...)
 	cmd.Dir = dir
 	cmd.Stdin = nil
-	cmd.Env = env
+	cmd.Env = probeEnv(env)
 	cmd.WaitDelay = 500 * time.Millisecond
 	var out limitedBuffer
 	out.max = probeMaxOutput
 	cmd.Stdout, cmd.Stderr = &out, &out
 	probeAttr(cmd)
-	err := cmd.Run()
+	err = cmd.Run()
 	res := ProbeResult{Ran: true}
 	var exit *exec.ExitError
 	switch {
@@ -158,20 +151,24 @@ var ansi = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 
 func stripANSI(s string) string { return ansi.ReplaceAllString(s, "") }
 
-// limitedBuffer keeps the first max bytes written and drops the rest.
+// limitedBuffer keeps the first max bytes written and drops the rest. A
+// write is always taken whole (its length returned): os/exec's copier
+// reads a shorter count as an error and closes the pipe, and the program
+// would die writing on.
 type limitedBuffer struct {
 	b   bytes.Buffer
 	max int
 }
 
 func (l *limitedBuffer) Write(p []byte) (int, error) {
+	n := len(p)
 	if room := l.max - l.b.Len(); room > 0 {
 		if len(p) > room {
 			p = p[:room]
 		}
 		l.b.Write(p)
 	}
-	return len(p), nil
+	return n, nil
 }
 
 func (l *limitedBuffer) String() string { return l.b.String() }

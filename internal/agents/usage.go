@@ -10,8 +10,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
@@ -84,10 +87,10 @@ const (
 // UsageReport is what one read found.
 type UsageReport struct {
 	State   string        // ok | signed_out | key_paid | unqualified | error
-	Words   string        // why, for every state but ok; at most 300 bytes
+	Words   string        // why, for every state but ok, in Conductor's own words (never the tool's); at most 300 bytes
 	Version string        // the version this read's own check found; "" when none
 	Outcome Outcome       // what the run proved (Claude Code); Inconclusive for Codex
-	Plan    string        // the subscription or plan type as the tool says it; at most 40 bytes
+	Plan    string        // the subscription or plan type, one of the reader's known set; "" when not reported or not known
 	Windows []UsageWindow // at most 16
 	Credits []UsageCredit // at most 4
 	Limits  UsageLimits   // the provider's refusal flags, apart from any window
@@ -123,19 +126,17 @@ type UsageCredit struct {
 	Limit     *string
 	Balance   *string
 	Unlimited bool
-	Currency  string // at most 16 bytes
+	Currency  string // an ISO 4217 code, or ""
 }
 
 const (
-	usageMaxLine     = 1 << 20 // one output line
-	usageMaxOutput   = 4 << 20 // all of a program's output
-	usageMaxStderr   = 4 << 10 // what is kept of its stderr, for its first line
+	usageMaxLine     = 1 << 20  // one output line
+	usageMaxOutput   = 4 << 20  // all of a program's output
+	versionMaxOutput = 64 << 10 // all of a version's print: more is no version
 	usageMaxWords    = 300
-	usageMaxPlan     = 40
 	usageMaxName     = 80
 	usageMaxLimit    = 40
 	usageMaxFigure   = 32
-	usageMaxCurrency = 16
 	usageMaxWindows  = 16
 	usageMaxCredits  = 4
 )
@@ -157,6 +158,7 @@ var (
 	afterVersion = func() {}
 
 	errUsageTimeout   = errors.New("usage read timed out")
+	errVersionTimeout = errors.New("version check timed out")
 	errLineTooLong    = errors.New("line too long")
 	errOutputTooLarge = errors.New("output too large")
 )
@@ -175,12 +177,11 @@ type program struct {
 }
 
 // resolveProgram resolves command[0] to its file (exec.LookPath, then
-// filepath.EvalSymlinks), and every later absolute element that names a
-// regular file (the script a wrapper runs) the same way, and notes each
-// file's identity. A relative element is kept as it is: what it names
-// depends on the folder the program runs in, and its version's print is
-// then the gate.
-func resolveProgram(command []string) (program, error) {
+// filepath.EvalSymlinks), and every later element that names a regular
+// file (the script a wrapper runs) the same way, a relative one taken in
+// dir, the folder the program runs in; it notes each file's identity, and
+// the program runs with the resolved paths.
+func resolveProgram(command []string, dir string) (program, error) {
 	if len(command) == 0 || command[0] == "" {
 		return program{}, errors.New("no command")
 	}
@@ -213,11 +214,13 @@ func resolveProgram(command []string) (program, error) {
 	}
 	p.argv = append(p.argv, first)
 	for _, x := range command[1:] {
-		if filepath.IsAbs(x) {
-			if fi, err := os.Stat(x); err == nil && fi.Mode().IsRegular() {
-				if x, err = note(x); err != nil {
-					return p, err
-				}
+		at := x
+		if !filepath.IsAbs(at) {
+			at = filepath.Join(dir, at)
+		}
+		if fi, err := os.Stat(at); x != "" && err == nil && fi.Mode().IsRegular() {
+			if x, err = note(at); err != nil {
+				return p, err
 			}
 		}
 		p.argv = append(p.argv, x)
@@ -250,28 +253,64 @@ func qualify(ctx context.Context, in UsageInput, probe *Probe, tool, min string)
 	stop := func(state, words, version string) *UsageReport {
 		return &UsageReport{State: state, Words: clip(words, usageMaxWords), Version: version}
 	}
-	if in.Dir == "" {
+	if in.Dir == "" || !filepath.IsAbs(in.Dir) {
 		return program{}, "", stop(UsageError, "no folder to read in", "")
 	}
-	p, err := resolveProgram(in.Command)
+	p, err := resolveProgram(in.Command, in.Dir)
 	if err != nil {
 		return p, "", stop(UsageError, err.Error(), "")
 	}
-	res := runProbeIn(ctx, p.with(probe.Args...), *probe, usageEnv(in.Env), in.Dir)
-	switch {
-	case !res.Ran:
-		return p, "", stop(UsageUnqualified, "the version of "+p.name+" could not be checked: "+res.Error, "")
-	case res.Impostor, !res.Identified, res.Version == "":
-		return p, "", stop(UsageUnqualified, p.name+" does not answer as "+tool, "")
+	version, words := askVersion(ctx, p, probe, in, tool)
+	if words != "" {
+		return p, "", stop(UsageUnqualified, words, "")
 	}
 	afterVersion()
 	if !p.unchanged() {
-		return p, "", stop(UsageUnqualified, "the program changed while it was checked", res.Version)
+		return p, "", stop(UsageUnqualified, "the program changed while it was checked", version)
 	}
-	if versionLess(res.Version, min) {
-		return p, "", stop(UsageUnqualified, tool+" "+res.Version+" is read only from "+min, res.Version)
+	if versionLess(version, min) {
+		return p, "", stop(UsageUnqualified, tool+" "+version+" is read only from "+min, version)
 	}
-	return p, res.Version, nil
+	return p, version, nil
+}
+
+// askVersion runs the whole prefix with the probe's arguments, as a read
+// runs every program (startUsage), its stdout and stderr together read to
+// their end, as the identity probe reads them, then its group ended and
+// its exit read. Only a run that exits 0 within probeTimeout, printing at
+// most versionMaxOutput bytes that the probe identifies as the tool, gives
+// a version; words say, in Conductor's words, why not. A helper the
+// program leaves holding its output keeps the read to that timeout, and
+// goes with the group then.
+func askVersion(ctx context.Context, p program, probe *Probe, in UsageInput, tool string) (version, words string) {
+	vctx, cancel := context.WithTimeoutCause(ctx, probeTimeout, errVersionTimeout)
+	defer cancel()
+	proc, err := startUsage(vctx, p.with(probe.Args...), in, false, true)
+	if err != nil {
+		return "", "the version of " + p.name + " could not be checked: it did not start"
+	}
+	out, rerr := io.ReadAll(io.LimitReader(proc.out, versionMaxOutput+1))
+	proc.end()
+	switch {
+	case context.Cause(vctx) == errVersionTimeout:
+		return "", fmt.Sprintf("%s did not print its version within %d s", p.name, int(probeTimeout/time.Second))
+	case ctx.Err() != nil:
+		return "", "the read was stopped"
+	case len(out) > versionMaxOutput:
+		return "", p.name + " printed more than 64 KiB for its version"
+	case rerr != nil && !errors.Is(rerr, os.ErrClosed):
+		return "", "the version of " + p.name + " could not be read"
+	case !proc.cmd.ProcessState.Success():
+		return "", "the version command of " + p.name + " failed" + proc.exitWords() + ": its version is not known"
+	}
+	text := string(out)
+	if probe.Reject != nil && probe.Reject.MatchString(text) {
+		return "", p.name + " does not answer as " + tool
+	}
+	if m := probe.Match.FindStringSubmatch(text); len(m) > 1 && strings.TrimSpace(m[1]) != "" {
+		return strings.TrimSpace(m[1]), ""
+	}
+	return "", p.name + " does not answer as " + tool
 }
 
 // versionLess compares two dotted versions number by number; a part that
@@ -307,46 +346,90 @@ func usageEnv(env []string) []string {
 	return append(out, "TERM=dumb", "NO_COLOR=1")
 }
 
-// usageProc is one program a read runs: its output read line by line
-// under the bounds, its stderr kept to its first usageMaxStderr bytes.
+// usageProc is one program a read runs. It starts in a session of its
+// own (usageAttr), so it has no controlling terminal and its process group
+// is its own; its stdin is nothing (/dev/null) or, for Codex, a pipe. Its
+// stdout is read line by line under the bounds (with its stderr, for a
+// version's print); otherwise its stderr is drained to its end and only
+// counted, never kept: nothing the tool prints there reaches a report,
+// whatever its size, and the pipe is never closed under it. The read's
+// end (its deadline, or the caller's) kills the group and closes stdout's
+// read end, so a read never waits on a descendant that kept the pipe; end
+// kills the group before the reaping, while the group's id is still the
+// leader's, and no kill is sent after it.
 type usageProc struct {
 	ctx    context.Context
 	cmd    *exec.Cmd
+	out    io.ReadCloser
 	lines  *boundedLines
 	stdin  io.WriteCloser
-	stderr *limitedBuffer
+	stderr *countWriter
 	ended  bool
+	done   chan struct{}
+
+	mu     sync.Mutex
+	reaped bool
 }
 
-// startUsage starts argv in the read's folder and environment, in a
-// process group of its own that ctx's end kills; withStdin gives it a
-// pipe, otherwise its stdin is nothing.
-func startUsage(ctx context.Context, argv []string, in UsageInput, withStdin bool) (*usageProc, error) {
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+// countWriter counts what is written to it and keeps none of it.
+type countWriter struct{ n atomic.Int64 }
+
+func (c *countWriter) Write(p []byte) (int, error) {
+	c.n.Add(int64(len(p)))
+	return len(p), nil
+}
+
+// startUsage starts argv in the read's folder and environment (usageProc);
+// withStdin gives it a pipe, merged sends its stderr where its stdout goes.
+func startUsage(ctx context.Context, argv []string, in UsageInput, withStdin, merged bool) (*usageProc, error) {
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = in.Dir
 	cmd.Env = usageEnv(in.Env)
 	cmd.WaitDelay = time.Second
-	p := &usageProc{ctx: ctx, cmd: cmd, stderr: &limitedBuffer{max: usageMaxStderr}}
-	cmd.Stderr = p.stderr
+	p := &usageProc{ctx: ctx, cmd: cmd, stderr: &countWriter{}, done: make(chan struct{})}
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
 	}
+	if merged {
+		cmd.Stderr = cmd.Stdout
+	} else {
+		cmd.Stderr = p.stderr
+	}
 	if withStdin {
 		if p.stdin, err = cmd.StdinPipe(); err != nil {
+			out.Close()
 			return nil, err
 		}
 	}
-	probeAttr(cmd)
+	usageAttr(cmd)
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
+	p.out = out
 	p.lines = &boundedLines{r: bufio.NewReaderSize(out, 64<<10)}
+	go func() {
+		select {
+		case <-ctx.Done():
+			p.kill()
+			_ = out.Close()
+		case <-p.done:
+		}
+	}()
 	return p, nil
 }
 
+// kill ends the program's process group, unless it is reaped.
+func (p *usageProc) kill() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.reaped {
+		endGroup(p.cmd)
+	}
+}
+
 // end closes the program's stdin, kills its process group and waits for
-// it. Idempotent.
+// it. Idempotent; called by the read's goroutine alone.
 func (p *usageProc) end() {
 	if p.ended {
 		return
@@ -355,13 +438,41 @@ func (p *usageProc) end() {
 	if p.stdin != nil {
 		_ = p.stdin.Close()
 	}
-	endGroup(p.cmd)
+	p.kill()
+	p.mu.Lock()
+	p.reaped = true
+	p.mu.Unlock()
 	_ = p.cmd.Wait()
+	close(p.done)
 }
 
-// why says, for people, how the program's read ended without an answer:
-// its deadline, a bound, or its end with the first line of its stderr
-// (cut). It ends the program first, so its stderr is whole.
+// exitWords says, in Conductor's words, how the ended program exited and
+// how much it wrote on stderr: " (exit status 3; 47 bytes on stderr, not
+// shown)", or "" when there is neither.
+func (p *usageProc) exitWords() string {
+	var w []string
+	if st := p.cmd.ProcessState; st != nil && st.Exited() {
+		w = append(w, fmt.Sprintf("exit status %d", st.ExitCode()))
+	}
+	if n := p.stderr.n.Load(); n > 0 {
+		w = append(w, fmt.Sprintf("%d bytes on stderr, not shown", n))
+	}
+	if len(w) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(w, "; ") + ")"
+}
+
+// exitedFailing says the ended program exited by itself with a status
+// other than 0.
+func (p *usageProc) exitedFailing() bool {
+	st := p.cmd.ProcessState
+	return st != nil && st.Exited() && st.ExitCode() != 0
+}
+
+// why says, in Conductor's words, how the program's read ended without an
+// answer: its deadline, a bound, or its end with its exit. It ends the
+// program first. The tool's own text is never in it.
 func (p *usageProc) why(tool string, err error, timeout time.Duration) string {
 	p.end()
 	switch {
@@ -373,14 +484,10 @@ func (p *usageProc) why(tool string, err error, timeout time.Duration) string {
 		return tool + " printed a line longer than 1 MiB"
 	case errors.Is(err, errOutputTooLarge):
 		return tool + " printed more than 4 MiB"
-	case errors.Is(err, io.EOF), errors.Is(err, os.ErrClosed):
-		w := tool + " ended before it answered"
-		if line := firstLine(p.stderr.String()); line != "" {
-			w += ": " + line
-		}
-		return clip(w, usageMaxWords)
+	case errors.Is(err, io.EOF), errors.Is(err, os.ErrClosed), errors.Is(err, io.ErrUnexpectedEOF):
+		return tool + " ended before it answered" + p.exitWords()
 	}
-	return clip(tool+": "+err.Error(), usageMaxWords)
+	return tool + " could not be read" + p.exitWords()
 }
 
 // boundedLines reads lines of at most usageMaxLine bytes, and at most
@@ -429,17 +536,41 @@ func clip(s string, n int) string {
 	return s[:n]
 }
 
-// figure is a provider's number as it wrote it, at most usageMaxFigure
-// bytes; nil for null or absent.
+// decimal is the shape of a figure: a JSON number.
+var decimal = regexp.MustCompile(`^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?$`)
+
+// figure is a provider's number as it wrote it, a decimal of at most
+// usageMaxFigure bytes; nil for null or absent.
 func figure(n *string, field string) (*string, error) {
 	if n == nil {
 		return nil, nil
 	}
-	if len(*n) > usageMaxFigure {
-		return nil, fmt.Errorf("%s is longer than %d bytes", field, usageMaxFigure)
+	if len(*n) > usageMaxFigure || !decimal.MatchString(*n) {
+		return nil, fmt.Errorf("%s is not a figure Conductor reads", field)
 	}
 	v := *n
 	return &v, nil
+}
+
+// nameShape is what a provider's name may look like to be shown: words of
+// letters and digits, spaces and a little punctuation. An address, an id
+// with other characters or a sentence is not a name, and fails the read.
+var nameShape = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 ._()+-]*$`)
+
+// shownName is a provider's name if it has the shape of one and at most max
+// bytes.
+func shownName(s string, max int, field string) (string, error) {
+	if len(s) > max || !nameShape.MatchString(s) {
+		return "", fmt.Errorf("%s is not a name Conductor shows", field)
+	}
+	return s, nil
+}
+
+// reportable says a time can be carried in a report (JSON's four-digit
+// years, an offset within a day).
+func reportable(t time.Time) bool {
+	_, err := t.MarshalJSON()
+	return err == nil
 }
 
 // percent is a provider's share used, 0 to 100.

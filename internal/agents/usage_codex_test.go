@@ -162,7 +162,57 @@ func TestCodexUsageFormatChanged(t *testing.T) {
 		})
 	}
 	s := newStub(t, "codex", "USAGE_ACCOUNT="+jsonFile(t, `{"account":{"type":"someNewKind"},"requiresOpenaiAuth":true}`))
-	if rep := codexRead(t, s); rep.State != UsageError || !strings.Contains(rep.Words, "someNewKind") {
+	if rep := codexRead(t, s); rep.State != UsageError || !strings.Contains(rep.Words, "type Conductor does not know") || strings.Contains(rep.Words, "someNewKind") {
 		t.Fatalf("unknown account: %+v", rep)
+	}
+}
+
+// TestCodexUsageResetOutOfRange: a reset time that is no time a report can
+// carry (past year 9999, or given in milliseconds) fails the read with
+// its field, never a report that cannot be written.
+func TestCodexUsageResetOutOfRange(t *testing.T) {
+	for name, at := range map[string]string{"year 10000": "253402300800", "milliseconds": "1794830400000", "negative": "-1"} {
+		t.Run(name, func(t *testing.T) {
+			s := newStub(t, "codex", "USAGE_LIMITS="+jsonFile(t, `{"rateLimits":{"limitId":"codex","primary":{"usedPercent":1,"windowDurationMins":300,"resetsAt":`+at+`}}}`))
+			rep := codexRead(t, s)
+			if _, err := json.Marshal(rep); err != nil {
+				t.Fatalf("the report cannot be written: %v", err)
+			}
+			if rep.State != UsageError || !strings.Contains(rep.Words, "resetsAt") || len(rep.Windows) != 0 {
+				t.Fatalf("%+v", rep)
+			}
+		})
+	}
+}
+
+// TestCodexUsageKeepsNoToolWords: Codex's own error messages, an unknown
+// account type or plan, and names or figures of a shape Conductor does not
+// show reach no report.
+func TestCodexUsageKeepsNoToolWords(t *testing.T) {
+	mark := "USAGE_MARK=" + markMail + " " + markWord
+	limits := func(old, new string) string {
+		return "USAGE_LIMITS=" + variant(t, "codex-limits.json", old, new)
+	}
+	cases := map[string][]string{
+		"version":      {"USAGE_VERSION=" + markWord},
+		"rpc error":    {"USAGE_RPC_ERROR=account/read"},
+		"account type": {"USAGE_ACCOUNT=" + jsonFile(t, `{"account":{"type":"`+markWord+`"},"requiresOpenaiAuth":true}`)},
+		"plan":         {"USAGE_ACCOUNT=" + jsonFile(t, `{"account":{"type":"chatgpt","planType":"`+markWord+`"},"requiresOpenaiAuth":true}`), limits(`"planType":"pro"`, `"planType":"`+markWord+`"`)},
+		"limit name":   {limits(`"limitName":"Fixture model"`, `"limitName":"`+markMail+`"`)},
+		"limit id":     {limits(`"codex_fixture":{"limitId":"codex_fixture"`, `"`+markMail+`":{"limitId":null`)},
+		"reached":      {limits(`"spendControlReached":null,"planType":"pro","rateLimitReachedType":null`, `"spendControlReached":null,"planType":"pro","rateLimitReachedType":"`+markWord+`"`)},
+		"balance":      {limits(`"balance":"1250"},"individualLimit":null,"spendControlReached":false,"planType":"pro","rateLimitReachedType":null},"rateLimitsByLimitId"`, `"balance":"`+markWord+`"},"individualLimit":null,"spendControlReached":false,"planType":"pro","rateLimitReachedType":null},"rateLimitsByLimitId":null,"x"`)},
+	}
+	for name, kv := range cases {
+		t.Run(name, func(t *testing.T) {
+			rep := codexRead(t, newStub(t, "codex", append(kv, mark)...))
+			if name == "plan" && (rep.State != UsageOK || rep.Plan != "") {
+				t.Fatalf("an unknown plan is not reported, and the read goes on: %+v", rep)
+			}
+			if name != "plan" && rep.State == UsageOK {
+				t.Fatalf("read as ok: %+v", rep)
+			}
+			noMarks(t, name, rep)
+		})
 	}
 }
