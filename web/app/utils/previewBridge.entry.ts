@@ -26,7 +26,8 @@ function start() {
   if (origins.length === 0) return
   const gate = createGate(origins, win.parent)
 
-  // The outline, in a closed shadow root no style of the page reaches.
+  // The outline, in a closed shadow root no style of the page reaches. Its host is made once and kept (hidden between
+  // selections), so the epoch, which leaves the host's own mutations out, never counts the bridge's coming and going.
   let host: HTMLElement | null = null
   let box: HTMLElement | null = null
   let label: HTMLElement | null = null
@@ -76,9 +77,7 @@ function start() {
     if (!selecting) return
     selecting = false
     for (const [type, fn] of listeners) win.removeEventListener(type, fn, true)
-    host?.remove()
-    host = box = label = null
-    current = null
+    show(null)
   }
 
   const choose = (el: El) => {
@@ -134,16 +133,19 @@ function start() {
   const enter = () => {
     leave()
     selecting = true
-    host = doc.createElement('conductor-preview-bridge')
-    host.style.cssText = 'all: initial; position: fixed; inset: 0; z-index: 2147483647; pointer-events: none;'
-    const root = host.attachShadow({ mode: 'closed' })
-    box = doc.createElement('div')
-    box.style.cssText = 'position: fixed; display: none; box-sizing: border-box; border: 2px solid #3b82f6; background: rgba(59,130,246,.12); pointer-events: none;'
-    label = doc.createElement('div')
-    label.style.cssText = 'position: absolute; left: 0; bottom: 100%; font: 12px/1.4 ui-monospace, monospace; color: #fff; background: #1e3a8a; padding: 1px 4px; white-space: nowrap;'
-    box.append(label)
-    root.append(box)
-    doc.documentElement.append(host)
+    if (!host) {
+      host = doc.createElement('conductor-preview-bridge')
+      host.style.cssText = 'all: initial; position: fixed; inset: 0; z-index: 2147483647; pointer-events: none;'
+      const root = host.attachShadow({ mode: 'closed' })
+      box = doc.createElement('div')
+      box.style.cssText = 'position: fixed; display: none; box-sizing: border-box; border: 2px solid #3b82f6; background: rgba(59,130,246,.12); pointer-events: none;'
+      label = doc.createElement('div')
+      label.style.cssText = 'position: absolute; left: 0; bottom: 100%; font: 12px/1.4 ui-monospace, monospace; color: #fff; background: #1e3a8a; padding: 1px 4px; white-space: nowrap;'
+      box.append(label)
+      root.append(box)
+    }
+    // Put back if the page took it out (its own subtree, which the epoch leaves out).
+    if (!host.isConnected) doc.documentElement.append(host)
     for (const [type, fn] of listeners) win.addEventListener(type, fn, true)
   }
 
