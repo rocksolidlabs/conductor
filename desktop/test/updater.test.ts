@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import {
   DEFAULT_DOWNLOAD_PAGE,
@@ -13,6 +13,7 @@ import {
   restartToInstall,
   startUpdater,
   updateChannel,
+  updatesLine,
   watchUpdater,
   type AppUpdater,
 } from '../src/updater'
@@ -52,11 +53,19 @@ describe('update channel', () => {
 describe('the download page', () => {
   const pkg = (downloadPage: unknown) => JSON.stringify({ name: 'conductor-desktop', version: '0.7.0', conductor: { downloadPage } })
 
+  // The same rows as internal/config's TestSwitchyardAppURL: the two addresses take one form.
   it('the download page from the package', () => {
-    expect(downloadPage(pkg('https://example.test/download'))).toBe('https://example.test/download')
-    expect(downloadPage(pkg('https://example.test/download?from=app#mac'))).toBe('https://example.test/download?from=app#mac')
     const at200 = 'https://example.test/' + 'a'.repeat(200 - 'https://example.test/'.length)
-    expect(downloadPage(pkg(at200))).toBe(at200)
+    for (const [page, parsed] of [
+      [at200, at200],
+      ['https://example.test', 'https://example.test/'],
+      ['https://example.test/download', 'https://example.test/download'],
+      ['https://example.test:8443/download', 'https://example.test:8443/download'],
+      ['https://example.test/download?from=app#mac', 'https://example.test/download?from=app#mac'],
+      ['https://Example.Test/a%2Fb', 'https://example.test/a%2Fb'],
+    ]) {
+      expect(downloadPage(pkg(page)), page).toBe(parsed)
+    }
     // None named: the repository's releases, all of them (/releases/latest answers 404 while every release is a prerelease).
     expect(DEFAULT_DOWNLOAD_PAGE).toBe('https://github.com/rocksolidlabs/conductor/releases')
     expect(downloadPage(JSON.stringify({ name: 'conductor-desktop' }))).toBe(DEFAULT_DOWNLOAD_PAGE)
@@ -82,6 +91,29 @@ describe('the download page', () => {
       at200 + 'a',
       // Fewer than 200 characters, more than 200 bytes.
       'https://example.test/' + 'é'.repeat(100),
+      'https://:443/download',
+      'https://:/download',
+      'https://example.test:99999/',
+      'https://example.test:0/',
+      'https://example.test:/',
+      'https://xn--/download',
+      'https://shop.xn--p1ai/',
+      // Controls and spaces past ASCII: NEL, no-break space, line separator, right-to-left override, CSI, ideographic space,
+      // and a zero-width space in the host.
+      ...[0x85, 0xa0, 0x2028, 0x202e, 0x9b, 0x3000].map((c) => `https://example.test/a${String.fromCharCode(c)}b`),
+      `https://exa${String.fromCharCode(0x200b)}mple.test/`,
+      'https://evil.example%E3%80%82com/',
+      'https:\\\\evil.example\\dl',
+      'https://example.test\\dl',
+      'https:evil.example/dl',
+      'https:/evil.example',
+      'HTTPS://example.test/',
+      'https://127.0.0.1/',
+      'https://[::1]/',
+      'https://example.test./',
+      'https://a..test/',
+      'https://example.test/%',
+      'https://example.test/%zz',
       '',
       42,
       true,
@@ -94,6 +126,17 @@ describe('the download page', () => {
     for (const text of ['', 'not json', '{"conductor":', 'null', '[]', '"https://example.test/download"', '{"conductor":"https://example.test/download"}']) {
       expect(downloadPage(text), text).toBe(DEFAULT_DOWNLOAD_PAGE)
     }
+  })
+
+  it('the log names the download page without its query or fragment', () => {
+    let read = 0
+    const page = () => (read++, downloadPage(pkg('https://example.test/download?key=secret#mac')))
+    expect(updatesLine('link', true, page)).toBe('by your package manager (https://example.test/download)')
+    // Only a package manager's install names a page; a package with no feed is none, and names none.
+    expect(updatesLine('auto', true, page)).toBe('from the update feed this package names, checked every six hours')
+    expect(updatesLine('none', true, page)).toBe('none: this build names no update feed')
+    expect(updatesLine('none', false, page)).toBe('none in development')
+    expect(read).toBe(1)
   })
 })
 
@@ -131,8 +174,8 @@ describe('starting the updater', () => {
     // The error electron-updater emits for the failed check lets nothing go, and nothing is under way.
     u.emit('error', new Error('getaddrinfo ENOTFOUND updates.example.test'))
     expect(heard).toEqual([])
-    await new Promise((r) => setTimeout(r, 0))
-    expect(started!.busy()).toBe(false)
+    // The check's chain ends a few promise steps after the check itself: wait for that state, not for a clock.
+    await vi.waitFor(() => expect(started!.busy()).toBe(false))
   })
 
   it('an updater that cannot be loaded is logged and the app runs on', async () => {

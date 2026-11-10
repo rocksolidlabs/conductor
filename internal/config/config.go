@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -181,8 +182,8 @@ type Switchyard struct {
 	OpenHostLinks int `json:"openHostLinks,omitempty"`
 	// AppURL is where the switchyard's pages send a visitor for the desktop
 	// app (Get the desktop app): an https URL of at most
-	// MaxSwitchyardAppURL bytes, refused otherwise at load. Empty is
-	// DefaultSwitchyardAppURL.
+	// MaxSwitchyardAppURL bytes in appURLForm's form, refused otherwise at
+	// load. Empty is DefaultSwitchyardAppURL.
 	AppURL string `json:"appURL,omitempty"`
 }
 
@@ -208,20 +209,31 @@ func (c *Config) SwitchyardAppURL() (link string, ok bool) {
 	}
 }
 
-// appURLOK reports whether raw is in switchyard.appURL's form: an https URL
-// with a host and no user information, of at most MaxSwitchyardAppURL
-// bytes, with no space or control character in it.
+// appURLForm is switchyard.appURL's form, the same text as the desktop
+// app's download page (desktop/src/updater.ts, ADDRESS_FORM): https:// in
+// those letters; a host name of letters, digits and hyphens in labels
+// joined by dots, the last beginning with a letter; a port of digits, if
+// any; then a path, query or fragment of printable ASCII (0x21 to 0x7e)
+// without a backslash, a % only before two hex digits. So no user
+// information, no IP literal and no space or control character.
+var appURLForm = regexp.MustCompile(`^https://((?:[A-Za-z0-9-]+\.)*[A-Za-z][A-Za-z0-9-]*)(?::([0-9]{1,5}))?(?:[/?#](?:[!-$&-\[\]-~]|%[0-9A-Fa-f]{2})*)?$`)
+
+// appURLOK reports whether raw is in switchyard.appURL's form (appURLForm),
+// of at most MaxSwitchyardAppURL bytes, no label of its host beginning
+// xn-- (an internationalised name, which the form cannot check), its port
+// 1 to 65535, and parsed by url.Parse as the host it names.
 func appURLOK(raw string) bool {
-	if len(raw) > MaxSwitchyardAppURL {
+	m := appURLForm.FindStringSubmatch(raw)
+	if m == nil || len(raw) > MaxSwitchyardAppURL || strings.HasPrefix(strings.ToLower(m[1]), "xn--") || strings.Contains(strings.ToLower(m[1]), ".xn--") {
 		return false
 	}
-	for i := 0; i < len(raw); i++ {
-		if raw[i] <= ' ' || raw[i] == 0x7f {
+	if m[2] != "" {
+		if n, _ := strconv.Atoi(m[2]); n < 1 || n > 65535 {
 			return false
 		}
 	}
 	u, err := url.Parse(raw)
-	return err == nil && u.Scheme == "https" && u.Host != "" && u.User == nil
+	return err == nil && u.Hostname() == m[1] && u.User == nil
 }
 
 // SwitchyardRelay reports whether the switchyard relays (Switchyard.Relay, on by default).

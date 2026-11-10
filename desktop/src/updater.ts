@@ -22,9 +22,19 @@ export const DEFAULT_DOWNLOAD_PAGE = 'https://github.com/rocksolidlabs/conductor
 export const MAX_DOWNLOAD_PAGE = 200
 
 /**
+ * ADDRESS_FORM is a download page's form, the same text as switchyard.appURL's (internal/config, appURLForm): https:// in those
+ * letters; a host name of letters, digits and hyphens in labels joined by dots, the last beginning with a letter; a port of
+ * digits, if any; then a path, query or fragment of printable ASCII (0x21 to 0x7e) without a backslash, a % only before two hex
+ * digits. So no user information, no IP literal and no space or control character.
+ */
+const ADDRESS_FORM = /^https:\/\/((?:[A-Za-z0-9-]+\.)*[A-Za-z][A-Za-z0-9-]*)(?::([0-9]{1,5}))?(?:[/?#](?:[!-$&-\[\]-~]|%[0-9A-Fa-f]{2})*)?$/
+
+/**
  * downloadPage is where the app points for a new version: the packaged package.json's conductor.downloadPage (packageJson, its
- * text, null when it could not be read), an https URL with a host of at most MAX_DOWNLOAD_PAGE bytes with no space or control
- * character in it; anything else is ignored, and the page is DEFAULT_DOWNLOAD_PAGE.
+ * text, null when it could not be read) in ADDRESS_FORM, of at most MAX_DOWNLOAD_PAGE bytes, no label of its host beginning
+ * xn-- (an internationalised name, which the form cannot check), its port 1 to 65535, and parsed by the URL standard as the
+ * host it names; the page is then the parsed address (its href). Anything else is ignored, and the page is
+ * DEFAULT_DOWNLOAD_PAGE.
  */
 export function downloadPage(packageJson: string | null): string {
   let page: unknown
@@ -33,14 +43,29 @@ export function downloadPage(packageJson: string | null): string {
   } catch {
     return DEFAULT_DOWNLOAD_PAGE
   }
-  if (typeof page !== 'string' || Buffer.byteLength(page) > MAX_DOWNLOAD_PAGE || /[\x00-\x20\x7f]/.test(page)) return DEFAULT_DOWNLOAD_PAGE
+  if (typeof page !== 'string') return DEFAULT_DOWNLOAD_PAGE
+  // The form is ASCII, so its length is its bytes.
+  const m = ADDRESS_FORM.exec(page)
+  if (!m || page.length > MAX_DOWNLOAD_PAGE || /(^|\.)xn--/i.test(m[1]!) || (m[2] && (Number(m[2]) < 1 || Number(m[2]) > 65535))) return DEFAULT_DOWNLOAD_PAGE
   try {
     const u = new URL(page)
-    if (u.protocol !== 'https:' || !u.hostname || u.username || u.password) return DEFAULT_DOWNLOAD_PAGE
+    return u.hostname === m[1]!.toLowerCase() ? u.href : DEFAULT_DOWNLOAD_PAGE
   } catch {
     return DEFAULT_DOWNLOAD_PAGE
   }
-  return page
+}
+
+/**
+ * updatesLine is what the log says of updates on channel (updateChannel): from the feed, by the package manager with the
+ * download page (page, read only then) by its origin and path alone, never its query or fragment, or none.
+ */
+export function updatesLine(channel: 'auto' | 'link' | 'none', packaged: boolean, page: () => string): string {
+  if (channel === 'auto') return 'from the update feed this package names, checked every six hours'
+  if (channel === 'link') {
+    const u = new URL(page())
+    return `by your package manager (${u.origin}${u.pathname})`
+  }
+  return packaged ? 'none: this build names no update feed' : 'none in development'
 }
 
 const EVERY = 6 * 60 * 60 * 1000

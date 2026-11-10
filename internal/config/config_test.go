@@ -1584,13 +1584,46 @@ func TestSwitchyardAppURL(t *testing.T) {
 	if link, ok := cfg.SwitchyardAppURL(); link != "https://example.test/app?from=switchyard" || !ok {
 		t.Fatalf("env: %q %v", link, ok)
 	}
+	// The same rows as desktop/test/updater.test.ts's download page: the two addresses take one form.
+	in := func(r rune) string { return "https://example.test/a" + string(r) + "b" }
 	at200 := "https://example.test/" + strings.Repeat("a", 200-len("https://example.test/"))
-	c := Defaults()
-	c.Switchyard.AppURL = at200
-	if err := c.Validate(); err != nil {
-		t.Fatalf("200 bytes: %v", err)
+	for _, good := range []string{
+		at200,
+		"https://example.test",
+		"https://example.test/download",
+		"https://example.test:8443/download",
+		"https://example.test/download?from=app#mac",
+		"https://Example.Test/a%2Fb",
+	} {
+		c := Defaults()
+		c.Switchyard.AppURL = good
+		if err := c.Validate(); err != nil {
+			t.Errorf("%q: %v", good, err)
+		}
 	}
 	for _, bad := range []string{
+		"https://:443/download",
+		"https://:/download",
+		"https://example.test:99999/",
+		"https://example.test:0/",
+		"https://example.test:/",
+		"https://xn--/download",
+		"https://shop.xn--p1ai/",
+		// Controls and spaces past ASCII: NEL, no-break space, line separator, right-to-left override, CSI, ideographic space,
+		// and a zero-width space in the host.
+		in(0x85), in(0xa0), in(0x2028), in(0x202e), in(0x9b), in(0x3000),
+		"https://exa" + string(rune(0x200b)) + "mple.test/",
+		"https://evil.example%E3%80%82com/",
+		"https:\\\\evil.example\\dl",
+		"https://example.test\\dl",
+		"https:evil.example/dl",
+		"https:/evil.example",
+		"HTTPS://example.test/",
+		"https://127.0.0.1/",
+		"https://[::1]/",
+		"https://example.test./",
+		"https://a..test/",
+		"https://example.test/%",
 		"http://example.test/download",
 		"javascript:alert(1)",
 		"https://",

@@ -19,7 +19,7 @@ import { WslLauncher, wslAvailable, wslNetworkingMode } from './launcher-wsl'
 import { ICE_UDP_PORT, UdpForwarder, windowsLanAddress } from './udp-forwarder'
 import { allowIceThroughFirewall, firewallRuleExists, type IceStatus } from './firewall'
 import { InviteDelivery, inviteInArgv, invitePath, parseInvite, type Invite } from './invite'
-import { downloadPage, UpdateNotice, failedAtStart, offerUpdates, restartToInstall, startUpdater, updateChannel, type RestartOutcome, type StartedUpdater } from './updater'
+import { downloadPage, UpdateNotice, failedAtStart, offerUpdates, restartToInstall, startUpdater, updateChannel, updatesLine, type RestartOutcome, type StartedUpdater } from './updater'
 import { buildLine, showSplash, SPLASH_STEPS, splashQuery, type Splash } from './splash'
 
 const dev = !app.isPackaged
@@ -415,10 +415,7 @@ async function run() {
   // The package names its update feed (electron-builder's app-update.yml, beside the app) and its download page (package.json's
   // conductor.downloadPage), or none.
   const channel = updateChannel(process.platform, !!process.env.APPIMAGE, app.isPackaged, existsSync(join(resources, 'app-update.yml')))
-  log(
-    'main',
-    `updates: ${channel === 'auto' ? 'from the update feed this package names, checked every six hours' : channel === 'link' ? `by your package manager (${downloadPage(packageJson())})` : app.isPackaged ? 'none: this build names no update feed' : 'none in development'}`,
-  )
+  log('main', `updates: ${updatesLine(channel, app.isPackaged, () => downloadPage(packageJson()))}`)
   // Every workbench window asks what to say (UpdateNotice), a second one opened from the first too; one not open, or not ready
   // yet, asks as it loads.
   const tellWorkbench = () => {
