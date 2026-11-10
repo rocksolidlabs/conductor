@@ -6,8 +6,9 @@ one decision and see nothing else has no grant to hold, so a provider
 could only make that person the operator. This plan adds the grant
 between them: `ext.GrantDecide`, which answers a durable decision (DR1,
 `docs/plans/decisions.md`) the operator has routed to it, and reads
-nothing else; the decide page, one decision's page drawn for such a
-principal alone; DR1's route operation taught to give a decision to the
+nothing else but the list of `{id, rev}` of the open decisions routed to
+it; the decide page, the decision page drawn for such a principal alone;
+DR1's route operation taught to give a decision to the
 grant, as one more of the route targets HM1 writes, and to take it back;
 and the web app's way to take such a principal's credential, a pass,
 from the URL fragment without ever sending it in a URL.
@@ -111,27 +112,33 @@ an identity provider registered:
    provider gives the decide grant, not one person: the route's words and
    "who may answer" say so. Its `rev` moves, and its history says who
    routed it. The policy column is not written.
-2. The person is sent to `https://<server>/decide/dr-7#pass=<pass>`, the
-   decide page's address with a pass in its fragment. How they are sent,
+2. The person is sent to `https://<server>/decide#pass=<pass>`, the
+   decide page's address with a pass in its fragment, or to
+   `/decide/dr-7#pass=<pass>`, which shows dr-7 first. How they are sent,
    and by what, is the provider module's business. The app takes the
    pass out of the address bar before anything else runs, keeps it for
    the tab, and asks `GET /api/me`, which answers the principal's name
    and grants.
 3. A principal with the decide grant and not the admin grant sees the
    decide page alone, headed "Signed in as Ana": no sidebar, no sessions,
-   no runs, no Dispatch, no inbox. The page reads dr-7 through
+   no runs, no Dispatch, no inbox. The page reads which decisions await
+   Ana through `GET /api/me/decisions`, the `{id, rev}` of each open
+   decision routed to the grant, newest first, and nothing else of them
+   (The decide list, below). It reads each card through
    `GET /api/decisions/dr-7`, which answers a decide principal the decide
-   view (a fixed projection, The decide view, below), and answers
-   through `POST /api/decisions/dr-7/respond`. It reads dr-7 again every
-   10 s while the tab is shown, and at once when it is shown again, and
-   lets Ana answer only on a view read in the last 25 s; the decide grant
-   gives no live connection. Those two and `GET /api/me` are the grant's
-   whole surface.
+   view (a fixed projection, The decide view, below), at most four cards
+   at once, and answers through `POST /api/decisions/dr-7/respond`. It
+   reads the list and each open card again every 10 s while the tab is
+   shown, and at once when it is shown again, and lets Ana answer only on
+   a view read in the last 25 s; the decide grant gives no live
+   connection. Those three and `GET /api/me` are the grant's whole
+   surface.
 4. Ana's answer is recorded under `user:<subject>` with the authority
    `{grant: decide, via: identity}`, rechecked with the provider after
    its commit, and applied by Yardmaster as any identity's answer is.
-   Once dr-7 is answered, Ana reads only the outcome of her own answer,
-   and another holder of the grant reads nothing of it.
+   Once dr-7 is answered, it leaves the list; Ana reads only the outcome
+   of her own answer, by its address, and another holder of the grant
+   reads nothing of it.
 5. When the provider stops admitting the pass (its end, or a revocation),
    the page's next request is `401`; the page says "Your access to this server
    has ended. Open it again from your workspace page.", clears the pass,
@@ -140,15 +147,16 @@ an identity provider registered:
 
 A browser that already holds a workbench token for that origin keeps it:
 the pass never replaces it, and the decide page's address then opens the
-operator's page for dr-7 instead.
+operator's page for dr-7 instead (the operator's decision page, for
+`/decide` alone).
 
 ## The decide principal's surface
 
 A grant adds its own surface and takes nothing away: a principal's
 surface is the union of what each grant it holds gives. The decide grant
-gives these three routes, a closed list, and nothing else. A principal
+gives these four routes, a closed list, and nothing else. A principal
 holding `decide` and not `admin`, whatever else it holds, is a **decide
-principal**: these three answer it as the decide grant's, and every
+principal**: these four answer it as the decide grant's, and every
 other route answers it exactly as it answers the same principal without
 the decide grant. A decide-only principal is answered as a request with
 no credential (`401` under the rate limit for every route that needs
@@ -157,25 +165,26 @@ and the operator's operations among them); one that also holds `host`
 keeps the host connection exactly as today (`hostAllowed`, `/ws/host`).
 A principal holding `admin` is the operator, whatever else it holds.
 
-| Grants held | `requireAdmin` (`p.admin`) | `hostAllowed` (`p.host`) | the three routes as the decide grant's (`deciding`) | the decide page |
-|---|---|---|---|---|
-| `admin`, with or without others | yes | yes | no: the admin's, as today | no: the operator's page |
-| `host` | no | yes | no (`401`) | no |
-| `decide` | no | no | yes | yes |
-| `host` and `decide` | no | yes | yes | yes |
-| none (a share link, no credential) | no | no | no (`401`) | no |
+| Grants held | `requireAdmin` (`p.admin`) | `hostAllowed` (`p.host`) | `GET /api/me/decisions` (`deciding`) | the read and the respond route as the decide grant's (`deciding`) | the decide page |
+|---|---|---|---|---|---|
+| `admin`, with or without others | yes | yes | no: `403 not_decide` (the operator reads `GET /api/decisions`) | no: the admin's, as today | no: the operator's page |
+| `host` | no | yes | no (`401`) | no (`401`) | no |
+| `decide` | no | no | yes | yes | yes |
+| `host` and `decide` | no | yes | yes | yes | yes |
+| none (a share link, no credential) | no | no | no (`401`) | no (`401`) | no |
 
 | Route | What it answers a decide principal | Why the person needs it |
 |---|---|---|
 | `GET /api/me` | `{subject, name, grants}` | the page's "Signed in as", and whether this pass is a decide pass |
+| `GET /api/me/decisions` | the decide list: `{decisions: [{id, rev}], cut?}`, the open decisions whose entries admit it, newest first, at most 200 and 16 KiB (The decide list, below) | which decisions await its answer, when it was sent to the decide page with no decision's address |
 | `GET /api/decisions/{did}` | the decide view of one decision it is admitted to (below); `404 not_found` otherwise | the question it was routed, and later the outcome of its answer |
 | `POST /api/decisions/{did}/respond` | DR1's response, judged by the decision's entries (`crew.Admits`); its reply the decide view and its own receipt | the answer itself |
 
 No live connection is among them: the decide grant gives none, and the
-decide page reads its one decision again on an interval and when shown
-again (The changes, `web/app`; Owner decisions, 16). So no stream, no
-signal under the ledger's lock and no delivery is planned, and
-`GET /api/events` stays `401` to a decide principal.
+decide page reads the list and its open cards again on an interval and
+when shown again (The changes, `web/app`; Owner decisions, 16). So no
+stream, no signal under the ledger's lock and no delivery is planned,
+and `GET /api/events` stays `401` to a decide principal.
 
 Asked of each further route the first draft gave the grant, whether the
 issue's outcome ("a person who should answer one decision, and see
@@ -183,11 +192,60 @@ nothing else") needs it: the inbox list and item (`GET /api/inbox`,
 `GET /api/inbox/item`), their counts and pages, the track route
 (`GET /api/inbox/track`), a stream across decisions or of one,
 Brakeman's card on an item, and evidence refs resolved through the
-operator's resolver. It does not: a person sent to one decision's
-address needs none of them, and each is a read computed over records the
-person may not see. None is
-given to the grant (Out of scope; Owner decisions, 1). With no list,
-there is no count, page or cursor to compute over admitted rows.
+operator's resolver. It does not: each is a read computed over records
+the person may not see, and returns other records, counts and pages. None
+is given to the grant (Out of scope; Owner decisions, 1). What the person
+does need, to find the decisions that await it when it comes with no
+decision's address, is the issue's read model in its smallest form: the
+decide list, a route of its own, its rows chosen by the admission in its
+own query, with no count beyond its entries, no page and no cursor.
+
+## The decide list
+
+What `GET /api/me/decisions` answers a decide principal, and nothing
+more: `proto.DecideList`, the issue's stream snapshot served as a read.
+
+| Field | From | Why the answerer needs it |
+|---|---|---|
+| `decisions[].id` | the row's id | which decision to read (`GET /api/decisions/{did}`) |
+| `decisions[].rev` | the row's `rev` | whether a card already read is of the decision as it is now |
+| `cut?` | `true` when the query found more rows than the bound (below) | that more may await than it lists; omitted otherwise |
+
+No title, question, run, ticket, session or person's name; no count
+beyond the entries returned; no page and no cursor. The newest 200
+(`proto.MaxDecideListEntries`), as one reply of at most 16 KiB
+(`proto.MaxDecideList`); the reply is one encoded value of whole
+entries, never one split, and 200 at
+their widest (an id of `dr-` and 19 digits, a `rev` of 19 digits: 58
+bytes each with its comma) are 11,626 bytes with the envelope, so the
+count is always the bound that cuts.
+
+**Admission is the condition of the query.** One ledger read,
+`ledger.Ledger.OpenDecisionsLabelled(ctx, label, limit, admit)` (new),
+one statement in one read transaction (`readSnapshot`, as `Decision`
+reads): `SELECT` the decision rows `WHERE d.state = 'open' AND
+json_extract(d.request, '$.for.label') = ?` (the label
+`grant:decide`, the grant's route target; JSON1 is how
+`DecisionFilter.For` already reads the request's `for`) `ORDER BY d.n
+DESC LIMIT` `limit` + 1, and each row read is judged inside that
+transaction by `admit(ledger.DecisionRow) bool`, which the route passes
+as `crew.AdmissionOf` over that row (`ledger.DecisionRecord{DecisionRow:
+row}`) answering `AdmitOpen` for the caller. It answers `(revs
+[]DecisionRevision, cut bool, err)`: the number and `rev` (the shipped
+`DecisionRevision`, its run left unused) of the rows admitted, at most
+`limit` (200), and `cut` when the query found `limit` + 1 rows, so that
+more may await than it lists (a refused row among them leaves the list
+shorter, never longer). The
+query never reads a row whose route target is not the grant or that is
+not open, so nothing is read wider and narrowed afterwards; `admit` is
+the same judgement every other decide route makes (I1), and a row it
+cannot judge (a request or a policy it cannot read: `EntriesOf` gives no
+entries) is left out as a refused one is. An open decision's admission
+reads its row alone (its state, its policy, its request's `for`): no
+response, history or hold enters `AdmitOpen`, so judging the row is
+judging the record (`TestAdmitsIsTheOneCheck` holds them equal). A read
+the ledger cannot make answers as `GET /api/decisions` answers one
+(`taskError`), naming no decision.
 
 ## The decide view
 
@@ -216,6 +274,11 @@ for a decide principal.
 | `createdAt` | the record's `createdAt` | when it was asked |
 | `own[{k, responseId, status, code?, rev, at, choice?}]` | the record's response rows whose actor is `user:<this subject>`, the newest 8, each with its row's `responseId` (the ledger's `ResponseRow.ResponseID`, from the same read) | what became of its own answers, each matched to the send that made it; never another responder's |
 | `outcome?` | `crew.OutcomeOf(rec, actor)`, over the record whole (below) | the outcome of its own answer, which the page says in words |
+
+The decide list's two fields are this table's first two rows, `id` and
+`rev`, from the same columns, and nothing else of the table (The decide
+list); `TestDecideViewIsTheTable` walks `proto.DecideEntry` against
+them, so one table names every field a decide read returns.
 
 While the decision is `open`, the view holds every field. Once it is
 `answered` or final, it holds `id`, `rev`, `own` and `outcome` alone: no
@@ -288,13 +351,14 @@ So admission ends:
 
 - **with the answer**, for every holder of the grant without a response
   of its own: once dr-7 is answered, a later pass, or walking the `dr-N`
-  ids, finds nothing;
+  ids, finds nothing, and the decide list no longer holds it (it lists
+  open decisions only; the responder reads its outcome by the address);
 - **with the take-back**, for everyone: while dr-7 is open, the
   operator's route to the operator takes the target off the grant, at
   the `expectedRev` it read, as every route is judged, held run or not,
   and one operation is always left for it (a route to a person or a role
   replaces the target too, through the held run, as HM1's does; The
-  changes, `internal/crew`);
+  changes, `internal/crew`); the next list read holds it no more;
 - **with the pass**, when the provider stops admitting it: the next
   request is `401`.
 
@@ -340,7 +404,9 @@ while that mark is older than `DECIDE_FRESH_FOR` (25 s) the card is
 **suspended**: its choices and its sends disabled, the draft and the
 answer sent kept, and the page says "Checking that dr-7 is still yours
 to answer." The next read that succeeds makes it answerable again; a
-`401` or a `404` closes it (the pass emptied, the draft kept). Reads go
+`404` closes that card (the draft kept, the pass and the other cards
+untouched) and a `401` closes the page (the pass emptied, every draft
+kept). A card's reads go
 one at a time, every `DECIDE_READ_EVERY` (10 s) while shown, each
 aborted at `DECIDE_READ_WAIT` (10 s), so a read that succeeds at its
 bound replaces the view before its mark is `DECIDE_READ_EVERY` +
@@ -348,6 +414,19 @@ bound replaces the view before its mark is `DECIDE_READ_EVERY` +
 suspend the card. Reads that fail (a timeout, a `5xx`, no network)
 suspend it once the mark passes the window, and it stays suspended until
 one succeeds, however many fail.
+
+The decide list is read under the same rule, with a mark of its own: one
+read at a time, on the same interval, each bounded the same; while its
+last good read is older than `DECIDE_FRESH_FOR` the list is suspended
+(its rows drawn as last read, no card opened from them, the page saying
+"Checking which decisions await you here."), and a `401` closes the
+page. The list never makes a card answerable: each card is answerable
+only on its own fresh view, since only the card's read judges that
+decision whole. A list read whose `rev` for an open card is not the
+card's view's reads that card at once; a decision that leaves the list
+between two reads has its card read once more at once, which a refusal
+closes (`404`, any unsent answer and the draft kept, as above) or the
+outcome of its own answer replaces.
 
 ## The changes
 
@@ -362,7 +441,7 @@ one succeeds, however many fail.
 
 ### `internal/proto`
 
-`decide.go` (new), the wire of the three routes as Go types with their
+`decide.go` (new), the wire of the four routes as Go types with their
 bounds, beside the decision links' (`decisions.go`):
 
 - `MeReply{Subject, Name string; Grants []string}` (`subject` and `name`
@@ -383,6 +462,11 @@ bounds, beside the decision links' (`decisions.go`):
   200`, the bound of `decideWords`: a name of its own, since the
   decision links' `MaxDecideWords` (500, `decisions.go`), which
   `lane.go` fits a `decide_refused`'s message to, is untouched.
+- `DecideList{Decisions []DecideEntry; Cut bool}` (`json:"decisions"`,
+  `json:"cut,omitempty"`), `DecideEntry{ID string; Rev int}` (`json:"id"`,
+  `json:"rev"`), `MaxDecideListEntries = 200` and `MaxDecideList = 16 <<
+  10`, the issue's bounds (The decide list: 200 entries at their widest
+  are 11,626 bytes).
 - `OutcomeApplied`, `OutcomeWaiting`, `OutcomeNotUsed`,
   `OutcomeRefused`, the `outcome` words.
 
@@ -462,6 +546,18 @@ bounds, beside the decision links' (`decisions.go`):
   cannot change once answered). `replaceDecision`, which copies the
   answered row whole, drops a grant target from the request it copies,
   so the replacement is the operator's alone (Owner decisions, 7).
+- `ledger/decisions.go`: `OpenDecisionsLabelled(ctx, label string, limit
+  int, admit func(DecisionRow) bool) ([]DecisionRevision, bool, error)`
+  (new), the decide list's one read (The decide list): one statement in
+  one `readSnapshot`, its condition the state `open` and the request's
+  `for.label`, newest first, `limit` + 1 rows, each judged by `admit`
+  inside the read; a `limit` outside 1 to 200 is taken as 200, as
+  `Decisions` bounds its page. The label it is
+  asked for is `crew.GrantDecideLabel` (`"grant:decide"`, in
+  `decisions_for.go`), the one place the target's label is spelled.
+  No hook inside the read: the ledger has one connection, so a write
+  waits for a read transaction to end, and a test holds a list read
+  after it (`afterDecideList`, `internal/api`).
 - No ledger schema change and no migration: the `for` is a field of the
   request's JSON, of the shape HM1's `forShape` checks (a label, no
   person). An older binary reading a grant target treats it as a label
@@ -479,7 +575,9 @@ bounds, beside the decision links' (`decisions.go`):
   /api/events` among them (its check is `p.admin`).
   `decideAdmission(rec, p principal) crew.Admission` (new) is
   `crew.AdmissionOf` over the record and the principal as an
-  `Admittee`; the read and the respond route call it and nothing else.
+  `Admittee`; the read and the respond route call it and nothing else,
+  and the list passes it, over each row its query reads, as the
+  ledger's `admit`.
 - `me.go` (new): `GET /api/me`, any authenticated principal:
   `proto.MeReply`, at most `proto.MaxMeReply`: the workbench token
   `["admin", "host"]`, a host token `["host"]`, a share link `[]`, a
@@ -487,12 +585,28 @@ bounds, beside the decision links' (`decisions.go`):
   `401` under the rate limit. Not refused on a switchyard (the workbench
   there is `["admin", "host"]` too; its lack of a role is `whoami`'s to
   say).
-- `decisions.go`: the two decision routes of the surface are wrapped in
+- `decisions.go`: the three decision routes of the surface (the list,
+  the read, the respond route) are wrapped in
   `deciding` (new): the admin exactly as `launching` (so `403
   switchyard` on a switchyard for everyone), a decide principal
   (`p.decide && !p.admin`, whatever else it holds) through to the handler, `401` for every other principal under the rate
   limit. `GET /api/decisions` and the operator's operations stay
   `launching`.
+  - `handleDecideList` (new), `GET /api/me/decisions`: for a decide
+    principal, one `s.ledger.OpenDecisionsLabelled(ctx,
+    crew.GrantDecideLabel, proto.MaxDecideListEntries, admit)`, `admit`
+    answering `decideAdmission` over the row is `AdmitOpen`; its reply
+    `proto.DecideList`, each entry `{id: ledger.DecisionID(n), rev}`,
+    `cut` from the read, written with `writeJSON`; the count is the bound
+    that cuts, and `TestDecideBounds` proves 200 entries at their widest
+    fit `proto.MaxDecideList`, as `TestTheOperatorsDecisionListFitsItsBound`
+    proves the operator's page. For the admin (whom
+    `deciding` passes as `launching` does) `403 not_decide` ("this list
+    is the decide grant's: the operator reads GET /api/decisions"),
+    nothing read. A ledger read that fails answers as `GET
+    /api/decisions` does (`taskError`). `afterDecideList` (a test hook,
+    nil in the product, as `afterDecideRead` is) holds a list read
+    between its ledger read and its reply.
   - `handleDecision`: for a decide principal, one read of the record
     whole (`s.ledger.Decision`), then `decideAdmission` over that record, then
     the reply built from that same record: `AdmitOpen` or `AdmitOutcome`,
@@ -534,8 +648,10 @@ bounds, beside the decision links' (`decisions.go`):
   `RouteDecision` judges it again in the operation's transaction
   (`operate`'s `staleOp`). The route to the grant bumps `rev`, so a turn's
   route admitted before it is `409 stale_decision` after it.
-- `server.go`: `GET /api/me` registered; the two decision routes
-  registered through `deciding`.
+- `server.go`: `GET /api/me` registered; `decisions.go`'s
+  `routeDecisions`, where the decision routes are registered today, adds
+  `GET /api/me/decisions` through `deciding` and registers the two
+  decision routes of the surface through it.
 
 ### `web/app`
 
@@ -545,7 +661,7 @@ pass is held:
 | Site | Today | With this row |
 |---|---|---|
 | `plugins/token-fragment.client.ts` | takes `#token=` into the workbench store | takes `#token=` as today and `#pass=` into the pass store, both dropped from the address bar first |
-| `composables/useDecide.ts` (new) | | the only code that sends the pass, in the `Authorization` header, to the three routes and nowhere else |
+| `composables/useDecide.ts` (new) | | the only code that sends the pass, in the `Authorization` header, to the four routes and nowhere else |
 | `app.vue` (`attention.start`, `identity.ensureDefault`) | started once a workbench token is held | unchanged: never started on a pass |
 | `layouts/default.vue` (`useAttention`, `useInbox`, `useBrakeman`, the token dialog) | the workbench's frame | unchanged; never drawn while a pass is held without a workbench token (the middleware, below) |
 | `composables/useApi.ts` | the workbench token in the header; a `401` asks for it | unchanged: never carries the pass, never touches the pass store |
@@ -576,23 +692,47 @@ pass is held:
   on the first navigation over `to.hash` too (`takeCredentials`), so it
   judges right whether it runs before or after the plugin: a workbench
   token held, `/decide/<did>` goes to the operator's
-  `/decisions?item=decision:<did>`; no workbench token and a pass held,
+  `/decisions?item=decision:<did>` and `/decide` to `/decisions`; no
+  workbench token and a pass held,
   every path but `/decide/**` goes to `/decide`. Nothing of the
   workbench's layout or pages is set up before it has run, and it waits
   on no request.
 - `composables/useDecide.ts` (new): the decide page's client and state,
   page-owned:
-  - `me()`, `read(did)`, `respond(did)`, each with `Authorization:
-    Bearer <pass>`, each aborted after `DECIDE_READ_WAIT` (10 s); a `401`
-    or a `404` empties the pass store (`end()`) and closes the card
-    (`ended` or `gone`); any other refusal is its code's words.
-  - **Reads.** One `read(did)` at a time: the next is due
+  - `me()`, `list()`, `read(did)`, `respond(did)`, each with
+    `Authorization: Bearer <pass>`, each aborted after `DECIDE_READ_WAIT`
+    (10 s); a `401` from any of them empties the pass store (`end()`)
+    and closes the page (`ended`); a `404` of a card closes that card
+    alone (`gone`), the pass and the other cards untouched; any other
+    refusal is its code's words.
+  - **The list and the cards.** `list()` reads the decide list; the
+    page keeps one card's state per decision it has drawn (`view`,
+    `draft`, `sent`, its marks), in the page's memory. At most
+    `DECIDE_CARDS` (4) cards are **open** at once, each reading as
+    below: the decision of the address first when there is one, then
+    the list's newest; the list's other entries are rows ("dr-12 awaits
+    your answer.") with Open, disabled while four are open ("Four are
+    open: close one to open another."). A card offers Close only while
+    it holds no draft and no answer whose outcome is not yet known, so
+    no draft is ever put out of sight; a closed card's state is kept, so
+    Open again draws it as it was and reads it at once. A card closed by
+    a refusal (`gone`) or at a final outcome reads no more and is not
+    counted among the four; Dismiss drops it. A list read whose `rev`
+    for an open card differs from its view's reads that card at once; an
+    open card whose decision is no longer listed is read once at once,
+    whatever is due. An empty list, with no card open: "Nothing awaits
+    your answer here."
+  - **Reads.** The list and each open card read on schedules of their
+    own, each the same: one read at a time (one `list()`, one `read(did)`
+    per card); the next is due
     `DECIDE_READ_EVERY` (10 s) after the last began while
     `document.visibilityState` is `visible` (none while hidden), and at
     once on `visibilitychange` to visible and on the window's `focus`; a
     read that falls due while one is out is not stacked, and starts the
-    moment that one returns. The reads stop at `applied`, `not_used`,
-    `ended` or `gone`.
+    moment that one returns. A card's reads stop at `applied`,
+    `not_used`, `ended`, `gone` or its Close; the list's at `ended`. So
+    a tab makes at most five reads at a time, the list's and four
+    cards'.
   - **Freshness** (What an open page shows). `freshAt`, the moment the
     last read that succeeded began, taken before its request is sent;
     the card is `suspended` while `now - freshAt > DECIDE_FRESH_FOR`
@@ -600,6 +740,10 @@ pass is held:
     the moment its mark turns that old, and at once when the tab is
     shown again. Suspended, its choices and sends are disabled, `draft`
     and `sent` kept; a respond's reply draws its view and moves no mark.
+    The list keeps a `freshAt` of its own under the same rule: while it
+    is stale its rows are drawn as last read, Open disabled, the page
+    saying "Checking which decisions await you here."; it never makes a
+    card answerable or not, which only the card's own mark does.
     Its timers go through `setTimeout`, so
     vitest's fake clock (`vi.useFakeTimers()`, as
     `useDispatchLive.test.ts` drives one) moves them; Playwright drives a
@@ -623,7 +767,7 @@ pass is held:
     | a read whose `own` holds `sent.responseId` | kept | resolved by that receipt (accepted, or the refusal row above) | as that row | `useDecide.test.ts`: a receipt of another `responseId` (another tab of the same subject) resolves nothing |
     | the view not fresh (`suspended`) | kept | kept | "Checking that dr-7 is still yours to answer."; choices and sends disabled until a read succeeds | `useDecide.test.ts` |
     | `401` | kept | kept | "Your access to this server has ended. Open it again from your workspace page."; every send disabled; the pass emptied | `decide-only.spec.ts` |
-    | `404` | kept | kept | "dr-7 is no longer open to you."; every send disabled; the pass emptied | `useDecide.test.ts` |
+    | `404` | kept | kept | "dr-7 is no longer open to you."; that card's sends disabled; the pass, the list and the other cards untouched | `useDecide.test.ts` |
 
     A receipt is matched to a send by its `responseId` alone, from the
     same read as the rest of the view; a newer receipt of another id
@@ -632,16 +776,22 @@ pass is held:
   - `whenIdle()`, the promise of the work under way, the vitest's seam.
 - `pages/decide/[did].vue` and `pages/decide/index.vue` (new), layout
   `bare` (`definePageMeta`), so no sidebar, palette, Needs you pill or
-  token dialog is drawn. The header "Signed in as <name>" (`me()`); a
-  pass whose grants hold `admin` or lack `decide`: "This page answers a
-  decision routed to you; this pass is not for it." The card from
-  `view`: question, context, the options with their tradeoffs and the
+  token dialog is drawn: one page, `/decide` and `/decide/<did>` alike,
+  the address's decision drawn first. The header "Signed in as <name>"
+  (`me()`); a pass whose grants hold `admin` or lack `decide`: "This
+  page answers a decision routed to you; this pass is not for it." The
+  open cards one under another, as the operator's decision page draws an
+  item's card today (one column on a phone), then the list's other
+  entries as rows with Open, then, with no entry and no card, "Nothing
+  awaits your answer here." Each card from its `view`: question, context, the options with their tradeoffs and the
   recommendation, uncertainty and what it authorizes; the answer as its
   type asks (Nuxt UI's `URadioGroup`, `UTextarea`, `UButton`), not the
   operator's `DecisionRespond`, which carries Comment and Ask for more.
   The words, each a `UAlert` above the card, the draft left as it is:
   - `401`: "Your access to this server has ended. Open it again from
-    your workspace page." Every send disabled.
+    your workspace page." Every send disabled, above the page.
+  - the list `suspended`: "Checking which decisions await you here.",
+    above the rows; Open disabled.
   - `404` after a view was drawn: "dr-7 is no longer open to you."
   - `suspended`: "Checking that dr-7 is still yours to answer." Choices
     and sends disabled.
@@ -662,7 +812,8 @@ pass is held:
   answer" naming it ("the operator, or anyone holding the decide
   grant"), and no "for <person>" drawn for it.
 - `utils/protocol.ts`: `GRANT_DECIDE`, `MeReply` with `MAX_ME_REPLY`,
-  `DecideView`, `DecideOption`, `DecideReceipt`, `DecideReply`,
+  `DecideList` and `DecideEntry` with `MAX_DECIDE_LIST` and
+  `MAX_DECIDE_LIST_ENTRIES`, `DECIDE_CARDS`, `DecideView`, `DecideOption`, `DecideReceipt`, `DecideReply`,
   `DecideRefusal` with their bounds, the `outcome` words,
   `DECIDE_READ_EVERY`, `DECIDE_READ_WAIT` and `DECIDE_FRESH_FOR`, the route's `grant`
   destination and `no_identity`, beside the existing decision rows.
@@ -672,19 +823,25 @@ pass is held:
 The triple together: the types and bounds above in `internal/proto`
 (`decide.go`), their mirror in `protocol.ts`, and in `docs/protocol.md`:
 
-- the HTTP API's opening paragraph: the decide grant, the three routes
+- the HTTP API's opening paragraph: the decide grant, the four routes
   that admit it, every other route answering it as without the grant
   (a decide-only principal as no credential, `401`), and no live
   connection given by it;
-- the Decisions table: a `GET /api/me` row; `GET /api/decisions/{did}`'s
+- the Decisions table: a `GET /api/me` row; a `GET /api/me/decisions`
+  row (the decide grant's alone: `{decisions: [{id, rev}], cut?}`, the
+  open decisions whose entries admit the caller, newest first, at most
+  `MaxDecideListEntries` (200) and `MaxDecideList` (16 KiB), no other
+  field, count, page or cursor; the admin `403 not_decide`, any other
+  principal `401`); `GET /api/decisions/{did}`'s
   decide view (its fields, `MaxDecideView`, the `404` for a decision not
   admitted); the respond row's decide reply and refusal
   (`MaxDecideReply`, `decideWords`); the route row's `grant`
   destination beside the shipped ones, the take-back, the operation kept
   for it, Brakeman's refusal and `409 no_identity`; the decide page's
-  reads (one at a time, every 10 s while shown, each bounded at 10 s)
-  and its freshness window (a view not renewed for 25 s cannot be
-  answered). The shipped bounds
+  reads (the list's and each open card's, at most four cards open, each
+  one at a time, every 10 s while shown, each bounded at 10 s) and its
+  freshness window (a view not renewed for 25 s cannot be answered).
+  The shipped bounds
   are kept: the record's read at most 2 MiB (`maxDecisionReply`), a
   response's body at most 32 KiB (`maxDecisionRespondBody`);
 - the `GET /api/inbox/item` row: its answerer words naming the grant
@@ -696,8 +853,8 @@ The triple together: the types and bounds above in `internal/proto`
 ### Docs
 
 `docs/features.md`: the row's entry. `docs/repository-map.md`: the
-`internal/api/decisions.go` row names the decide view and `decideAdmission`;
-the `ext` row names three grants.
+`internal/api/decisions.go` row names the decide view, the decide list
+and `decideAdmission`; the `ext` row names three grants.
 
 ## Events, orderings and invariants
 
@@ -739,9 +896,15 @@ A provider that fails, is late or is away has not said yes: the decision
 is superseded, the replacement opens for the operator alone, and the
 person's next read says `not_used`.
 
-**A decide principal's reads.** Each is one record read, judged and
-built from that read: no frame or reply is written from a judgement of
-another read, and nothing is pushed. The page asks again on its
+**A decide principal's reads.** Each is one ledger read, judged and
+built from that read: a decision's read one record read whole, the list
+one statement whose condition is the grant's target and the open state,
+each row it reads judged inside that read; no reply is written from a
+judgement of another read, and nothing is pushed. A list read and a
+take-back meet in the ledger's one snapshot: a list read whose snapshot
+was taken before the take-back committed lists the decision at the rev
+it judged, and the next read does not; the card read that follows is
+judged again and refused. The page asks again on its
 interval and when shown again; the server keeps nothing for it between
 requests.
 
@@ -753,16 +916,20 @@ Invariants:
 
 - **I1, one judgement.** Every decision of whether a principal may read
   or answer a decision is `crew.AdmissionOf` (with `crew.Admits` over
-  `crew.EntriesOf` inside it) over one record: the read, the respond
-  route's check and the response's transaction (`Admits`).
+  `crew.EntriesOf` inside it) over one record: the read, the list (over
+  each row its query reads), the respond route's check and the
+  response's transaction (`Admits`).
   `TestAdmitsIsTheOneCheck` holds them to one table.
-- **I2, the three routes.** A decide principal is answered by every
-  route outside the three exactly as it is without the decide grant (a
+- **I2, the four routes.** A decide principal is answered by every
+  route outside the four exactly as it is without the decide grant (a
   decide-only one as a request with no credential),
-  and is written no byte of a decision `crew.AdmissionOf` answers `AdmitNone` for.
+  and is written no byte of a decision `crew.AdmissionOf` answers `AdmitNone` for,
+  nor its id in a list.
 - **I3, the table.** What a decide principal reads of a decision is
   `proto.DecideView`, every field named in The decide view's table,
-  built from the one record its route read.
+  built from the one record its route read; what it reads of the
+  decisions that admit it is `proto.DecideList`, `id` and `rev` of each
+  and the `cut` flag, The decide list's table.
 - **I4, the pass in no URL.** The pass is read only by the plugin and
   `useDecide`, and sent only in an `Authorization` header; the server
   reads it from no query. (The workbench token keeps the URLs it is in
@@ -786,13 +953,14 @@ Invariants:
   the decide page: the module that registers a provider; this repository
   only asks the provider about a token.
 - The decide grant on the inbox (`GET /api/inbox`, `GET
-  /api/inbox/item`, `GET /api/inbox/track`), its counts and pages, a list
-  of the decisions that admit a principal, a stream across decisions or
-  of one (Owner decisions, 16), Brakeman's card, and evidence refs
-  resolved for a decide principal: a
-  person answers the one decision its address names (Owner decisions,
-  1). A later row that wants a list plans it with the grant as a
-  condition of its query.
+  /api/inbox/item`, `GET /api/inbox/track`) and the operator's decisions
+  list (`GET /api/decisions`), their counts, pages and cursors; anything
+  of a listed decision beyond its `id` and `rev` (its title, run, ticket,
+  session or person); answered or final decisions in the list (the
+  responder reads its outcome by the decision's address); a stream across
+  decisions or of one (Owner decisions, 16); Brakeman's card; and evidence
+  refs resolved for a decide principal. The decide list is the one read
+  across decisions the grant gives (Owner decisions, 1).
 - A pass as the operator's credential on the workbench's screens: they
   keep the workbench token.
 - Any grant but `decide` in a route (a route to `host` or `admin` is
@@ -819,7 +987,8 @@ held between its read and its transaction by the engine's
 `beforeRespond`, a Brakeman route held by the act seam
 (`atActSeam("pending")`), the provider's answer through `exttest`'s
 `FakeIdentity` (`Add`, `Remove`, `SetErr`) and the guard's gate, a read
-held after its record read by `afterDecideRead`, the page
+held after its record read by `afterDecideRead`, a list read held
+after its ledger read by `afterDecideList`, the page
 through `useDecide().whenIdle()`, vitest's fake clock and a fake fetch
 whose replies the test releases.
 
@@ -832,7 +1001,9 @@ Go race (`go test -race -count=1 -timeout 60m ./...`, with `make lint`,
 - `internal/proto`: `TestDecideBounds` (a `MeReply`, a `DecideView`, a
   `DecideReply` and a `DecideRefusal`, each with every field at its
   bound and of characters `encoding/json` escapes to six bytes, fits its
-  constant).
+  constant; a `DecideList` of `MaxDecideListEntries` entries at their
+  widest, ids and revs at their widths and `cut` set, fits
+  `MaxDecideList`).
 - `internal/crew`:
   - `TestAdmission` (the table: admin, decide, admin and decide, host and
     decide, none, a router,
@@ -877,7 +1048,8 @@ Go race (`go test -race -count=1 -timeout 60m ./...`, with `make lint`,
     patterns, the constants among them, so a route added later is walked
     too) asked with a decide-only pass, a host-and-decide pass, a
     host-only pass and no credential, the rate limit raised for every
-    walk: the three routes answer both decide principals alike; every
+    walk: the four routes (`GET /api/me`, `GET /api/me/decisions`, the
+    read and the respond route) answer both decide principals alike; every
     other answers the decide-only pass exactly as no credential and the
     host-and-decide pass exactly as the host-only one (status and body),
     `GET /api/events`, the inbox's three routes, `GET /api/decisions` and
@@ -898,8 +1070,9 @@ Go race (`go test -race -count=1 -timeout 60m ./...`, with `make lint`,
     markers, nor the run's id, nor the other subject, nor another
     decision.
   - `TestDecideViewIsTheTable`: walks `proto.DecideView`'s and
-    `DecideReceipt`'s fields by reflection against the table's names, so
-    a field added without the table fails.
+    `DecideReceipt`'s fields by reflection against the table's names, and
+    `DecideEntry`'s against its first two (`DecideList` holding only
+    `decisions` and `cut`), so a field added without the table fails.
   - `TestDecideViewOfAnAssignment`: an assignment given to the grant
     reads "Done" at 0 and "Not done" at 1 (the labels
     `crew.DecisionOptions` gives); a choice of 1 is accepted.
@@ -929,9 +1102,9 @@ Go race (`go test -race -count=1 -timeout 60m ./...`, with `make lint`,
     applied.
   - `TestDecideReadsAskTheProvider` (for the issue's
     `TestPrincipalWatchWatchesDecide`, Owner decisions, 16): a pass the
-    fake stops admitting (`Remove`) is `401` at the next read and the
-    next response, nothing cached; the decide grant gives no connection
-    the recheck would watch.
+    fake stops admitting (`Remove`) is `401` at the next list read, the
+    next read and the next response, nothing cached; the decide grant
+    gives no connection the recheck would watch.
   - `TestBrakemanRouteKeepsOffTheGrant`: a turn's route to the operator
     admitted at rev R and held at `atActSeam("pending")`, the operator's
     route to the grant committed (R + 1), the act released: `409
@@ -941,8 +1114,49 @@ Go race (`go test -race -count=1 -timeout 60m ./...`, with `make lint`,
   - `TestAdmitsIsTheOneCheck`: one table of records (target, state, own
     response) against admin, decide, admin and decide, host and decide,
     none and a router: the read's
-    answer, the respond route's check and the response's transaction
-    agree with `crew.AdmissionOf` on every row.
+    answer, the list's (a row listed exactly when `crew.AdmissionOf` is
+    `AdmitOpen`, and `AdmissionOf` over the row alone the same as over
+    the record whole for every open row), the respond route's check and
+    the response's transaction agree with `crew.AdmissionOf` on every
+    row.
+  - `TestDecideListCarriesOnlyAdmittedDecisions`: decisions given to the
+    grant (open, answered by this subject and by another, cancelled),
+    open ones not given to it (the operator's, an HM1 person's), one
+    given and taken back, and a row given to the grant whose policy
+    cannot be read; sessions started, activity, chat and other decisions
+    changed meanwhile, each carrying a marker string: listed as a decide
+    principal (alone, and with host), the reply, decoded with
+    `DisallowUnknownFields` into `proto.DecideList`, holds exactly the
+    open admitted ids at their current revs, newest first, no `cut`, and
+    none of the markers.
+  - `TestDecideListTakeBackBetweenReads`: dr-7 and dr-8 given to the
+    grant; a list read held at `afterDecideList` while the operator takes
+    dr-7 back, the read released: it lists dr-7 at the rev it judged;
+    the next read lists dr-8 alone, and dr-7's read is `404`; dr-8
+    answered by another holder: gone from the next list; a route to the
+    grant of a third: in the next list at its new rev.
+  - `TestDecideListBound`: 201 open decisions given to the grant: the
+    200 newest listed, `cut` true, the oldest absent; with 200, all
+    listed and no `cut`; the reply within `proto.MaxDecideList`, each
+    entry whole (the reply decodes).
+  - `TestDecideListRefusesOthers`: the admin (the workbench token, and a
+    provider's principal with `admin` and `decide`) `403 not_decide`, a
+    host-only pass and no credential `401`, on a switchyard `403
+    switchyard` for every principal; the decide-only and the
+    host-and-decide passes answered alike.
+- `internal/crew/ledger`: `TestOpenDecisionsLabelled` (only open rows of
+  the label, newest first, `limit` + 1 read and `cut`, `admit` called on
+  every row read and a refused one left out; a ledger at a version
+  before the decision tables lists none).
+
+The issue's three stream tests, as reads, so nothing of them is dropped
+(Owner decisions, 16):
+
+| The issue's test | The read tests that carry its assertion | What each asserts of it |
+|---|---|---|
+| `TestDecisionStreamCarriesOnlyAdmittedDecisions` | `TestDecideListCarriesOnlyAdmittedDecisions` (the snapshot); `TestDecideReadCarriesNothingElse` (a decision's data) | the list holds the admitted open decisions alone, `{id, rev}` and nothing else, while sessions, activity, chat and other decisions change; a read of one holds nothing of anything else |
+| `TestDecisionStreamPolicyChangedDuringDelivery` | `TestDecideListTakeBackBetweenReads`; `TestDecideReadJudgesTheRowItReturns` | a read in flight across a take-back answers what it judged, the next read has nothing of the decision, and its card read is refused |
+| `TestPrincipalWatchWatchesDecide` | `TestDecideReadsAskTheProvider` | a pass the provider no longer admits is `401` at the next request of every route of the grant; no connection is given for a watch to hold |
 
 Vitest (`npm --prefix web test`, with `npm --prefix web run typecheck`):
 
@@ -957,7 +1171,7 @@ Vitest (`npm --prefix web test`, with `npm --prefix web run typecheck`):
   refused, in memory.
 - `composables/useDecide.test.ts` (a fake fetch whose replies the test
   releases, `vi.useFakeTimers()`, `whenIdle()`): every request to one of
-  the three routes, the pass in its header and in no URL; a read due
+  the four routes, the pass in its header and in no URL; a read due
   10 s of the fake clock after the last began while visible, none while
   hidden, one at once on `visibilitychange` and on `focus`; a read
   aborted at 10 s; never two at once, and one that fell due while
@@ -969,8 +1183,18 @@ Vitest (`npm --prefix web test`, with `npm --prefix web run typecheck`):
   the mark is 25 s old (choices and send disabled, the draft kept),
   answerable again when a read succeeds, closed by a `404` or a `401`;
   one read that succeeds at its 10 s bound never suspends the card; a
-  `401` and a `404` each empty the pass and close the card, the draft
-  kept; each row of the send table (a new `responseId` per send,
+  `401` from any route empties the pass and closes the page, every draft
+  kept; a card's `404` closes that card alone, its draft kept, the pass,
+  the list and the other cards going on; the list: read on its own
+  interval, suspended once its mark is 25 s old (rows drawn as last
+  read, Open disabled) and never making a card answerable; the address's
+  decision opened first, then the newest, at most four open and Open
+  disabled at four, Close offered only on a card with no draft and no
+  answer of unknown outcome, a closed card reopened as it was; a listed
+  `rev` that differs from an open card's view reading that card at once;
+  a decision gone from the list between two reads read once at once and
+  closed by its `404` with its draft kept, or drawn with its own
+  answer's outcome; an empty list's words; each row of the send table (a new `responseId` per send,
   `sent` frozen and resent byte for byte after no reply, a new id after
   a definite refusal, a receipt of another id resolving nothing); each
   `outcome`'s words; an assignment's options drawn as the view gives
@@ -989,12 +1213,18 @@ switched on to admit a pass (articles 1 to 3), so:
   the pass, `GET /api/me` answered `401` by the real server, the ended
   words, the store empty; no request URL holds the pass and no request
   goes to `/api/events`.
-- **The page against the three routes stubbed in the browser**
+- **The page against the four routes stubbed in the browser**
   (`page.route`, as `brakeman.spec.ts` and `decisions-gate.spec.ts` stub
   replies): the decide page alone ("Signed in as Ana", no sidebar, the
-  token dialog never opened), every request one of the three with the
+  token dialog never opened), every request one of the four with the
   pass in its header, no response `401` until the spec answers one, no
-  request to an events stream; an assignment answered "Not done"
+  request to an events stream; `/decide` with no decision's address and
+  a stubbed list of dr-7 and dr-8: both cards drawn, newest first, from
+  their reads; `/decide/dr-7` with a list of dr-8 and dr-7: dr-7 drawn
+  first; an empty list: "Nothing awaits your answer here."; a list read
+  driven by a `focus` event that no longer holds dr-8: dr-8's card read
+  once, its stubbed `404` closing it with its draft still in its field
+  and dr-7 still answerable; an assignment answered "Not done"
   (choice 1); a send whose reply the stub aborts, "Not known whether
   your answer to dr-7 was recorded", then Send again whose body the spec
   asserts equal to the first, answered from its receipt; a read driven
@@ -1058,7 +1288,7 @@ leaves `main` working and green on its own and carries the
 
 | PR | Title | Contains | Touches | Tests | Depends on | Parallel with |
 |---|---|---|---|---|---|---|
-| PR-1 (#776, ~550 + 700 lines) | ext, api, web: a decide grant and a pass taken from the fragment | `ext.GrantDecide`; `proto`'s decide types and bounds; `crew.Admits`, `crew.EntriesOf`, `crew.AdmissionOf`, `crew.OutcomeOf`, the grant as a route target (`routeLabel`, `forRoute`, `gateFor`), the take-back, the operation kept for it (`ledger.Tx.Operations`), `respondTx`'s check, `replaceDecision`'s drop; `GET /api/me`, `deciding`, the decide view and words, `decideAdmission`, `authorityOf`, `recheckResponse`, `no_identity`, `answererOf`, Brakeman's refusal; the pass parser, its store, the plugin, the middleware, `useDecide` and its reads, the decide page; `docs/protocol.md`, `protocol.ts`, `docs/features.md`, `docs/repository-map.md` | `ext`, `internal/proto`, `internal/crew`, `internal/api`, `web/app`, `web/e2e`, `docs` | every test above | #775 (its PR merged); DR1, HM1 and MB0 on `main` | none: #775 shares `ext`, `internal/api`, `web/app` and `docs` |
+| PR-1 (#776, ~780 + 1,080 lines: the list and its tests add ~230 + 380 to round 3's ~550 + 700) | ext, api, web: a decide grant and a pass taken from the fragment | `ext.GrantDecide`; `proto`'s decide types and bounds; `crew.Admits`, `crew.EntriesOf`, `crew.AdmissionOf`, `crew.OutcomeOf`, the grant as a route target (`routeLabel`, `forRoute`, `gateFor`), the take-back, the operation kept for it (`ledger.Tx.Operations`), `respondTx`'s check, `replaceDecision`'s drop, `ledger.OpenDecisionsLabelled`; `GET /api/me`, `GET /api/me/decisions`, `deciding`, the decide view and words, `decideAdmission`, `authorityOf`, `recheckResponse`, `no_identity`, `answererOf`, Brakeman's refusal; the pass parser, its store, the plugin, the middleware, `useDecide` and its reads of the list and the cards, the decide page; `docs/protocol.md`, `protocol.ts`, `docs/features.md`, `docs/repository-map.md` | `ext`, `internal/proto`, `internal/crew`, `internal/api`, `web/app`, `web/e2e`, `docs` | every test above | #775 (its PR merged); DR1, HM1 and MB0 on `main` | none: #775 shares `ext`, `internal/api`, `web/app` and `docs` |
 
 ## Owner decisions
 
@@ -1066,16 +1296,25 @@ Dated 2026-11-10. Each is a default for a choice the issue's words leave
 open, or a narrowing of them, the fail-closed one, which the owner may
 overturn. Review round 2 changed 1, 4, 5, 7, 8 and 12, withdrew 11 (its
 stream is gone) and added 16 to 19; review round 3 changed 16 and added
-20; the numbers are kept so the earlier threads still point at the right
-one.
+20; after round 3 the lead changed 1, 12 and 16 (the list restored); the
+numbers are kept so the earlier threads still point at the right one.
 
-1. **Three routes, one decision.** The grant reaches `GET /api/me`, one
-   decision's read and its respond route, and nothing else. The issue's
-   "decision page's read model filtered to the decisions that admit it"
-   and its stream are not built: a person answers the decision its
-   address names (`/decide/<did>`), and a read computed over every record
-   and narrowed afterwards is where a grant leaks (its order, its bound,
-   its count, its errors, the records it links). The stream: 16.
+1. **Four routes: who it is, the list, one decision, its answer**
+   (after round 3; rounds 1 and 2 had cut the list). The grant reaches
+   `GET /api/me`, the decide list (`GET /api/me/decisions`), one
+   decision's read and its respond route, and nothing else. The list is
+   back because the issue gives a decide principal "the decision page's
+   read model filtered to the decisions that admit it", and a person sent
+   to the decide page with a pass and no decision's address, the ordinary
+   way in, would otherwise find nothing to answer. It comes back in the
+   smallest form that fails closed: the issue's own snapshot bound,
+   `{id, rev}` of the open decisions that admit the caller, at most 200
+   and 16 KiB, a `cut` flag, a route of its own, its rows chosen by the
+   admission in the query that reads them and judged by `AdmissionOf`
+   inside that read. What the cut rounds feared of a read computed over
+   every record and narrowed afterwards (its order, its bound, its count,
+   its errors, the records it links) has no place in it: no field but
+   the two, no count, page or cursor, no other record. The stream: 16.
 2. **The decide view is a table.** A decide principal reads the
    request's own words, its state and its own receipts (each with its
    `responseId`), never the record whole, the refs, the history or
@@ -1117,8 +1356,9 @@ one.
 11. **Withdrawn in round 2.** It said how the stream ended; there is no
     stream (16).
 12. **The pass lives in the tab; the draft and the answer sent in the
-    page.** The pass in `sessionStorage`, emptied at its first `401` or
-    `404`; the draft and the frozen `sent` body in the page's state,
+    page.** The pass in `sessionStorage`, emptied at its first `401`
+    (after round 3: a `404` closes one card and keeps the pass, since the
+    list may hold others); the draft and the frozen `sent` body in the page's state,
     never in the browser's storage: a new Open reloads the page, which
     reads the outcome of an answer sent before.
 13. **The workbench token wins.** With one stored, the pass is kept and
@@ -1131,7 +1371,13 @@ one.
 16. **No live connection for a decide principal** (round 2). The issue
     names `GET /api/decisions/events` as "the only live connection a
     decide-only principal may open"; the decide grant gives none. The
-    decide page reads its one decision every 10 s while shown and at once
+    difference a person can weigh: with the issue's stream a decision
+    routed, taken back or answered would show on an open page at once;
+    here it shows at the page's next read, every 10 s while the page is
+    shown, and while reads fail the page cannot be answered on what it
+    last read. The issue's snapshot is kept, as the decide list read
+    again on that interval (1). The decide page reads the list and each
+    open card every 10 s while shown and at once
     when shown again, the server refuses a response after a take-back,
     an answer or a pass's end, and the page lets a person answer only on
     a view read in the last 25 s (What an open page shows). Round 3
@@ -1139,11 +1385,13 @@ one.
     read begun before the take-back can return late, and reads can keep
     failing. That removes the stream's caps, its signal under the ledger's lock and the race
     between a delivery's judgement and its write. The issue's stream
-    tests become read tests:
+    tests become read tests (the table under Tests per surface):
     `TestDecisionStreamCarriesOnlyAdmittedDecisions` is
+    `TestDecideListCarriesOnlyAdmittedDecisions` and
     `TestDecideReadCarriesNothingElse` (other decisions and the session,
-    activity and chat changes among its markers),
+    activity and chat changes among their markers),
     `TestDecisionStreamPolicyChangedDuringDelivery` is
+    `TestDecideListTakeBackBetweenReads` and
     `TestDecideReadJudgesTheRowItReturns`, and
     `TestPrincipalWatchWatchesDecide` is `TestDecideReadsAskTheProvider`.
     A later row may add a stream on this one's judgement.
@@ -1173,9 +1421,11 @@ one.
 The acceptance boundary is observed when the PR's checks pass in CI and
 locally: `TestDecideGrantAdmitsDecisionRoutesOnly` and the other
 `internal/api` tests show a principal with only the decide grant
-answering the decision it may through the three routes and answered as
+answering the decisions it may through the four routes and answered as
 no credential everywhere else, `GET /api/events` among them;
-`TestDecideReadCarriesNothingElse` shows it reading nothing else; the
+`TestDecideListCarriesOnlyAdmittedDecisions` and
+`TestDecideReadCarriesNothingElse` show it listing the open decisions
+that admit it and reading nothing else; the
 vitest files and `decide-only.spec.ts` show
 the pass taken from the fragment, dropped from the address bar, kept for
 the tab and never sent in a URL. Done is the PR merged with those checks
@@ -1283,12 +1533,13 @@ Routing (the operator's operations):
 > the grant.
 
 The route table's rows (`internal/api`: the routes; the other rows are
-unchanged). The bounds are the shipped ones (`maxDecisionReply`,
+unchanged; the decide list's row is new, after `GET /api/decisions`'s). The bounds are the shipped ones (`maxDecisionReply`,
 `maxDecisionRespondBody`, `docs/protocol.md`'s Decisions table), and the
 route row is `docs/protocol.md`'s with the grant added:
 
 | Route | Who | Body → reply |
 |---|---|---|
+| `GET /api/me/decisions` | a principal with the decide grant and not the admin grant (the admin `403 not_decide`) | → `{decisions: [{id, rev}], cut?}`: the open decisions whose entries admit it (`crew.AdmissionOf`, judged in the one read that chooses them), newest first, at most 200 and 16 KiB, no other field, count, page or cursor (`proto.DecideList`, `docs/plans/decide-grant.md`) |
 | `GET /api/decisions/{did}` | admin, or a principal with the decide grant the decision admits (`crew.AdmissionOf`; `404 not_found` for one it does not) | the admin: `{decision, refs}`, the record whole and its evidence refs' resolutions, at most 2 MiB (`maxDecisionReply`: the record's parts at their bounds, its 32 receipts at `ledger.MaxDecisionReceipt`, 32 KiB each, and its refs at `maxDecisionRef`); a decide principal: the decide view alone (`proto.DecideView`, at most 32 KiB, `docs/plans/decide-grant.md`) |
 | `POST /api/decisions/{did}/respond` | admin, or a principal with the decide grant the decision admits (`404 not_found` for one it does not) | `{responseId, choice?, text?, rationale?, expectedRev, byName?}` (at most 32 KiB, `maxDecisionRespondBody`: `text` at most 4,096 bytes and `rationale` 2 KiB, each as `encoding/json` sends it, escapes and all) → `201 {receipt, decision}`; `200` repeat; `409 decision_answered`, `decision_closed`, `stale_decision`, `stale_policy`, `response_conflict`, `not_held`; `403 not_approver`; `503 decision_moved`; a decide principal's reply its own receipt and the decide view (`proto.DecideReply`), a refusal's words its code's (`decideWords`) |
 | `POST /api/decisions/{did}/route` | admin, or a Brakeman turn granted `route_decision` | `{opId, to: {kind: "operator"} \| {kind: "person", name} \| {kind: "role", name: <responsibility>} \| {kind: "grant", grant: "decide"}, note?, expectedRev}` → `{receipt, decision}` (a turn: `{receipt, error}`); `200` the same for a repeat; `409 op_conflict`, `stale_decision`; `429 decision_limit` (the operator's operations, comments, requests for more and routes together, at most 32 per decision, the last kept for the take-back while it is given to the grant; a Brakeman turn's routes, at most 4, apart from them). To the operator it changes no state, but takes back a decision given to the grant. To a person or a responsibility (HM1), resolved in the run's crew as launched (`400 invalid` for one it does not resolve), it changes whom the decision is for, and to the grant it gives the decision to the decide grant: only while it is `open` (`409 decision_answered`, `decision_closed` otherwise), at the `expectedRev` read (at least 1, judged before the state, so a route sent at a rev an answer moved is `stale_decision`), through the run that holds it (`409 not_held` otherwise; the take-back also through the ledger alone); it rewrites the request's `for`, writes the `routed` row with `for` and `forWas`, and bumps `rev`. To a person or a responsibility, who answers does not change: the operator; to the grant, anyone holding the decide grant answers too. To the grant: the admin's alone, `409 no_identity` on a build with no identity provider registered; a turn's `to: grant` is `400 invalid`, and a turn's route of a decision given to the grant `409 stale_target` |
@@ -1301,8 +1552,10 @@ The paragraph after the table:
 > policy's refusal of a principal that got past it without the authority
 > `local/1` names (a router's answer, below). A principal holding the
 > decide grant and not the admin grant, which only a build with an
-> identity provider registered can present, is admitted by `GET /api/me`
-> and by the read and the response of a decision it is admitted to
-> (`docs/plans/decide-grant.md`), and answered by every other route as
+> identity provider registered can present, is admitted by `GET /api/me`,
+> by the list of the open decisions it is admitted to (`GET
+> /api/me/decisions`) and by the read and the response of a decision it
+> is admitted to (`docs/plans/decide-grant.md`), and answered by every
+> other route as
 > it is without the decide grant (a decide-only one as a request with no
 > credential, `401 unauthorized`).

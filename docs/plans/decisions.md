@@ -1240,6 +1240,7 @@ with `DisallowUnknownFields` and bounded:
 | `GET /api/sessions/{id}/decisions/{did}` | the attempt's own token | one of its task's, whole |
 | `POST /api/sessions/{id}/decisions/{did}/withdraw` | the attempt's own token | `{}` → `{decision}`; `409 decision_closed` |
 | `GET /api/decisions` | admin | `?state=&run=&ticket=&after=&limit=` (100) → `{decisions, next?}`, newest first, without history |
+| `GET /api/me/decisions` | a principal with the decide grant and not the admin grant (the admin `403 not_decide`) | → `{decisions: [{id, rev}], cut?}`: the open decisions whose entries admit it (`crew.AdmissionOf`, judged in the one read that chooses them), newest first, at most 200 and 16 KiB, no other field, count, page or cursor (`proto.DecideList`, `docs/plans/decide-grant.md`) |
 | `GET /api/decisions/{did}` | admin, or a principal with the decide grant the decision admits (`crew.AdmissionOf`; `404 not_found` for one it does not) | the admin: `{decision, refs}`, the record whole and its evidence refs' resolutions, at most 2 MiB (`maxDecisionReply`: the record's parts at their bounds, its 32 receipts at `ledger.MaxDecisionReceipt`, 32 KiB each, and its refs at `maxDecisionRef`); a decide principal: the decide view alone (`proto.DecideView`, at most 32 KiB, `docs/plans/decide-grant.md`) |
 | `POST /api/decisions/{did}/respond` | admin, or a principal with the decide grant the decision admits (`404 not_found` for one it does not) | `{responseId, choice?, text?, rationale?, expectedRev, byName?}` (at most 32 KiB, `maxDecisionRespondBody`: `text` at most 4,096 bytes and `rationale` 2 KiB, each as `encoding/json` sends it, escapes and all) → `201 {receipt, decision}`; `200` repeat; `409 decision_answered`, `decision_closed`, `stale_decision`, `stale_policy`, `response_conflict`, `not_held`; `403 not_approver`; `503 decision_moved`; a decide principal's reply its own receipt and the decide view (`proto.DecideReply`), a refusal's words its code's (`decideWords`) |
 | `POST /api/decisions/{did}/cancel` | admin | `{commandId, why, release?, expectedRev}` → `{receipt, decision}`; `200` the same for a repeat; `409 op_conflict` |
@@ -1255,9 +1256,11 @@ the free build's one approver is the operator; `403 not_approver` is the
 policy's refusal of a principal that got past it without the authority
 `local/1` names (a router's answer, below). A principal holding the
 decide grant and not the admin grant, which only a build with an
-identity provider registered can present, is admitted by `GET /api/me`
-and by the read and the response of a decision it is admitted to
-(`docs/plans/decide-grant.md`), and answered by every other route as
+identity provider registered can present, is admitted by `GET /api/me`,
+by the list of the open decisions it is admitted to (`GET
+/api/me/decisions`) and by the read and the response of a decision it
+is admitted to (`docs/plans/decide-grant.md`), and answered by every
+other route as
 it is without the decide grant (a decide-only one as a request with no
 credential, `401 unauthorized`).
 
