@@ -550,8 +550,6 @@ const (
 	imageAsset            = "https://github.com/user-attachments/assets/i"
 )
 
-var completions = []completion{attached, skipType, skipSize, failedTry}
-
 // complete ends a try at the image of the ticket's manifest as c says,
 // under the op id.
 func complete(t *testing.T, s *Store, key, image, op string, c completion) {
@@ -573,35 +571,48 @@ func complete(t *testing.T, s *Store, key, image, op string, c completion) {
 	}
 }
 
-// liveAttachments is the ids of the ticket's live attachments in the store.
-func liveAttachments(t *testing.T, s *Store, ticketID string) map[string]bool {
+// heldAttachments is every attachment of the ticket the store holds, live or
+// removed, each with whether it is removed.
+func heldAttachments(t *testing.T, s *Store, ticketID string) map[string]bool {
 	t.Helper()
 	out := map[string]bool{}
-	for _, id := range texts(t, s, "SELECT id FROM attachments WHERE ticket_id = ? AND deleted_at = ''", ticketID) {
-		out[id] = true
+	for _, row := range texts(t, s, "SELECT id || ' ' || (deleted_at != '') FROM attachments WHERE ticket_id = ?", ticketID) {
+		id, removed, _ := strings.Cut(row, " ")
+		out[id] = removed == "1"
 	}
 	return out
 }
 
-// everyKeptAttachmentNamed fails the test unless the merged state names,
-// in its manifest, exactly the attachments the merge keeps of those the
-// two replicas made for the item's images: every live attachment of
-// either replica but the ones the merge releases (removed as
-// attachment.remove removes one), each named by one entry, and every
-// entry that names an attachment naming one of them. It gives the
-// manifest by image id.
-func everyKeptAttachmentNamed(t *testing.T, a, b *Store, key string, got CounterpartState) map[string]SnapshotImage {
+// everyKeptAttachmentNamed fails the test unless the merged state keeps
+// the invariant of mergeManifest over the attachments the replicas hold
+// (each replica's heldAttachments): an attachment is live in the merge when
+// a replica holds it and none removed it (the store's rule for a set: its
+// one add, named by no remove), and then every entry that names an
+// attachment names a live one, no two entries name one, nothing removed
+// is named or released, nothing named is released, and every live
+// attachment is named or released, once. It gives the manifest by image
+// id.
+func everyKeptAttachmentNamed(t *testing.T, got CounterpartState, replicas ...map[string]bool) map[string]SnapshotImage {
 	t.Helper()
-	id := ticketOf(t, a, key).ID
-	kept := liveAttachments(t, a, id)
-	for att := range liveAttachments(t, b, id) {
-		kept[att] = true
-	}
-	for _, att := range releasedBy(got) {
-		if !kept[att] {
-			t.Fatalf("the merge releases %s, which neither replica keeps", att)
+	held, removed := map[string]bool{}, map[string]bool{}
+	for _, r := range replicas {
+		for att, gone := range r {
+			held[att] = true
+			removed[att] = removed[att] || gone
 		}
-		delete(kept, att)
+	}
+	live := map[string]bool{}
+	for att := range held {
+		if !removed[att] {
+			live[att] = true
+		}
+	}
+	released := map[string]bool{}
+	for _, att := range releasedBy(got) {
+		if !live[att] || released[att] {
+			t.Fatalf("the merge releases %s, which is not live or released twice (removed %v, released %v)", att, removed[att], releasedBy(got))
+		}
+		released[att] = true
 	}
 	sn, ok := ParseSnapshot(got.ExternalSnapshot)
 	if !ok {
@@ -617,29 +628,60 @@ func everyKeptAttachmentNamed(t *testing.T, a, b *Store, key string, got Counter
 		if im.AttachmentID == "" {
 			continue
 		}
-		if named[im.AttachmentID] || !kept[im.AttachmentID] {
-			t.Fatalf("the entry %+v names an attachment the merge does not keep, or one another entry names (kept %v)", im, kept)
+		switch att := im.AttachmentID; {
+		case !live[att]:
+			t.Fatalf("the entry %+v names an attachment that is not live (removed %v)", im, removed[att])
+		case named[att]:
+			t.Fatalf("two entries name the attachment %s: %+v", att, sn.Images)
+		case released[att]:
+			t.Fatalf("the entry %+v names an attachment the merge releases", im)
 		}
 		named[im.AttachmentID] = true
 	}
-	for att := range kept {
-		if !named[att] {
+	for att := range live {
+		if !named[att] && !released[att] {
 			t.Fatalf("the merge keeps the attachment %s, which no entry names: %+v (released %v)", att, sn.Images, releasedBy(got))
 		}
 	}
 	return byID
 }
 
-// Every attachment a merge keeps for an image of the linked item is named
-// by the merged manifest, and every entry that names an attachment names
-// a kept one, whichever completions the two replicas made for an image and
-// in whichever order: an attachment is never replaced by a completion that
-// made none (a skip, a failure), and of two attachments of one image the
-// first made in the one order is the entry's, the other released. Walked
-// for every pair of completions of one image, made in both orders, and
-// for two and three images each given its own pair; then past
-// MaxImportImages, where pending entries and skips are cut before an
-// attachment, and an attachment cut is released.
+// removed is a try at an image that makes its attachment, then a removal
+// of that attachment (attachment.remove), which puts the entry back to
+// pending.
+const removed completion = "removed"
+
+// walkOps is the operations the walk gives an image on a replica: an
+// import, a skip, a failed try and a removal of an imported attachment.
+var walkOps = []completion{attached, skipType, failedTry, removed}
+
+// forkRun is what a replica forked from the walk's base did and holds:
+// its ticket's change rows, its attachments (heldAttachments), and the
+// attachment it made for each image it imported, by image.
+type forkRun struct {
+	rows        []ChangeRow
+	attachments map[string]bool
+	made        map[int]string
+}
+
+// The invariant of mergeManifest holds whatever completions two or three
+// replicas made for an image and in whichever order: every entry that
+// names an attachment names a live one, nothing removed is named or
+// released, nothing named is released, and every live attachment is named
+// or released; an attachment is never replaced by a completion that made
+// none, of two live attachments of one image the first made in the one
+// order is the entry's, and an image whose only attachments were removed
+// is pending unless a skip was recorded. Walked for every ordered pair and
+// every ordered triple of the operations walkOps (so each multiset in every
+// order), on two and three replicas forked from one base, for one, two and
+// three images, image i taking the tuple p+i so every tuple meets every
+// place. Replicas are independent once forked, so the walk forks one per
+// place and tuple of operations, each place's made after every earlier
+// place's (two places never share an instant), and a merge of any tuple is
+// the union of its places' rows; each replica alone keeps the invariant
+// too (m1). Then past MaxImportImages, where pending entries and skips
+// are cut before an attachment, an attachment cut is released, and an
+// attachment removed is neither named nor released.
 func TestEveryKeptAttachmentIsNamed(t *testing.T) {
 	importN := func(t *testing.T, n int) (*Store, string) {
 		s := linkedStore(t)
@@ -651,70 +693,126 @@ func TestEveryKeptAttachmentIsNamed(t *testing.T) {
 		}
 		return s, mustImport(t, s, "imp", "CND", read)
 	}
-	type pair struct{ a, b completion }
-	var pairs []pair
-	for _, ca := range completions {
-		for _, cb := range completions {
-			pairs = append(pairs, pair{ca, cb})
-		}
-	}
-	for _, n := range []int{1, 2, 3} {
-		for p := range pairs {
-			for _, aFirst := range []bool{true, false} {
-				// Image i takes the pair p+i, so every pair meets every place.
-				var mine []pair
-				for i := 0; i < n; i++ {
-					mine = append(mine, pairs[(p+i)%len(pairs)])
-				}
-				t.Run(fmt.Sprintf("%d images, %v, a first %v", n, mine, aFirst), func(t *testing.T) {
-					t.Parallel()
-					a, key := importN(t, n)
-					b := fork(t, a)
-					firstOf := map[int]string{}
-					for i, pr := range mine {
-						image := fmt.Sprint(imageAsset, i)
-						order := []struct {
-							s    *Store
-							side string
-							c    completion
-						}{{a, "a", pr.a}, {b, "b", pr.b}}
-						if !aFirst {
-							order[0], order[1] = order[1], order[0]
-						}
-						// The op ids sort as the tries are made, so two tries
-						// at one instant order as made.
-						for k, o := range order {
-							complete(t, o.s, key, image, fmt.Sprintf("%d-%d-%s", i, k, o.side), o.c)
-							if o.c == attached && firstOf[i] == "" {
-								firstOf[i] = ticketAttachmentOf(t, o.s, key, image)
-							}
-						}
-					}
-					got := mergeOf(t, a, b, key)
-					byID := everyKeptAttachmentNamed(t, a, b, key, got)
-					for i, pr := range mine {
-						im := byID[fmt.Sprint(imageAsset, i)]
-						switch {
-						case pr.a == attached || pr.b == attached:
-							if im.AttachmentID != firstOf[i] || im.Skipped != "" {
-								t.Fatalf("image %d: the entry %+v, not the first attachment made, %s", i, im, firstOf[i])
-							}
-						case pr.a == failedTry && pr.b == failedTry:
-							if im.done() {
-								t.Fatalf("image %d: no try recorded anything, yet %+v", i, im)
-							}
-						default:
-							if im.Skipped == "" || im.AttachmentID != "" {
-								t.Fatalf("image %d: a skip was recorded, yet %+v", i, im)
-							}
-						}
-					}
-				})
+	var pairs, triples [][]completion
+	for _, x := range walkOps {
+		for _, y := range walkOps {
+			pairs = append(pairs, []completion{x, y})
+			for _, z := range walkOps {
+				triples = append(triples, []completion{x, y, z})
 			}
 		}
 	}
+	for _, n := range []int{1, 2, 3} {
+		t.Run(fmt.Sprintf("%d images", n), func(t *testing.T) {
+			t.Parallel()
+			base, key := importN(t, n)
+			id := ticketOf(t, base, key).ID
+			// tupleAt is what the replica at place j does to each image
+			// in the walk's case p of the combos.
+			tupleAt := func(combos [][]completion, p, j int) []completion {
+				var out []completion
+				for i := 0; i < n; i++ {
+					out = append(out, combos[(p+i)%len(combos)][j])
+				}
+				return out
+			}
+			runs := map[string]*forkRun{}
+			name := func(j int, ops []completion) string { return fmt.Sprint(j, ops) }
+			for j := 0; j < 3; j++ {
+				need := map[string][]completion{}
+				for _, combos := range [][][]completion{pairs, triples} {
+					for p := range combos {
+						if j < len(combos[p]) {
+							ops := tupleAt(combos, p, j)
+							need[name(j, ops)] = ops
+						}
+					}
+				}
+				// Every replica of place j makes its tries after every
+				// replica of place j-1 has made its own.
+				t.Run(fmt.Sprint("place ", j), func(t *testing.T) {
+					for label, ops := range need {
+						run := &forkRun{made: map[int]string{}}
+						runs[label] = run
+						t.Run(label, func(t *testing.T) {
+							t.Parallel()
+							f := fork(t, base)
+							for i, c := range ops {
+								image := fmt.Sprint(imageAsset, i)
+								op := fmt.Sprintf("p%d-%d-%s", j, i, c)
+								if c != removed {
+									complete(t, f, key, image, op, c)
+									if c == attached {
+										run.made[i] = ticketAttachmentOf(t, f, key, image)
+									}
+									continue
+								}
+								complete(t, f, key, image, op, attached)
+								att := ticketAttachmentOf(t, f, key, image)
+								rc, err := f.RemoveAttachment(context.Background(), testOp(op+"-rm"), key, att)
+								want(t, rc, err, StatusDone, "")
+								if im := ticketAttachmentOf(t, f, key, image); im != "" {
+									t.Fatalf("the entry still names %s after its removal", im)
+								}
+							}
+							m1(t, f, key, label)
+							run.rows = ticketRows(t, f, id)
+							run.attachments = heldAttachments(t, f, id)
+						})
+					}
+				})
+			}
+			if t.Failed() {
+				return
+			}
+			for _, combos := range [][][]completion{pairs, triples} {
+				for p := range combos {
+					var places []*forkRun
+					var rows [][]ChangeRow
+					var held []map[string]bool
+					for j := range combos[p] {
+						r := runs[name(j, tupleAt(combos, p, j))]
+						places = append(places, r)
+						rows = append(rows, r.rows)
+						held = append(held, r.attachments)
+					}
+					what := fmt.Sprintf("%d images, case %d of %d places", n, p, len(places))
+					got := ReconcileCounterpart(slices.Concat(rows...))
+					// The replicas' rows in another order, and each seen twice,
+					// make the same merge.
+					back := slices.Clone(rows)
+					slices.Reverse(back)
+					for _, again := range [][]ChangeRow{slices.Concat(back...), slices.Concat(slices.Concat(back...), slices.Concat(rows...))} {
+						if other := ReconcileCounterpart(again); !reflect.DeepEqual(other, got) {
+							t.Fatalf("%s: the merge depends on the rows' order:\n%+v\n%+v", what, got, other)
+						}
+					}
+					byID := everyKeptAttachmentNamed(t, got, held...)
+					for i := 0; i < n; i++ {
+						ops := combos[(p+i)%len(combos)]
+						im := byID[fmt.Sprint(imageAsset, i)]
+						first := slices.Index(ops, attached)
+						switch {
+						case first >= 0:
+							if want := places[first].made[i]; im.AttachmentID != want || im.Skipped != "" {
+								t.Fatalf("%s, image %d (%v): the entry %+v, not the first live attachment made, %s", what, i, ops, im, want)
+							}
+						case slices.Contains(ops, skipType):
+							if im.Skipped == "" || im.AttachmentID != "" {
+								t.Fatalf("%s, image %d (%v): a skip was recorded, yet %+v", what, i, ops, im)
+							}
+						case im.done():
+							t.Fatalf("%s, image %d (%v): nothing live or skipped was recorded, yet %+v", what, i, ops, im)
+						}
+					}
+				}
+			}
+		})
+	}
 	// Past the bound: A and B each read six new images after they parted
-	// and complete them; the union is past MaxImportImages.
+	// and complete them; the union is past MaxImportImages. In the last
+	// case B removes each of its six once made, and the attachment A made
+	// of image 0 before they parted, which A keeps.
 	withImages := func(m int, ids ...string) ExternalRead {
 		r := ghRead("I_X", m, "Title", "Body")
 		r.Snapshot.Images = nil
@@ -726,7 +824,7 @@ func TestEveryKeptAttachmentIsNamed(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		b    completion
-	}{{"B attached its six", attached}, {"B skipped its six", skipSize}, {"B's six pending", failedTry}} {
+	}{{"B attached its six", attached}, {"B skipped its six", skipSize}, {"B's six pending", failedTry}, {"B removed its six and A's first", removed}} {
 		t.Run("past the bound, "+c.name, func(t *testing.T) {
 			t.Parallel()
 			a, key := importN(t, 0)
@@ -744,26 +842,41 @@ func TestEveryKeptAttachmentIsNamed(t *testing.T) {
 			refreshed(t, b, "b-refresh", key, withImages(9, ids("b")...))
 			for i := 0; i < 6; i++ {
 				complete(t, a, key, fmt.Sprint(imageAsset, "a", i), fmt.Sprint("a-", i), attached)
-				complete(t, b, key, fmt.Sprint(imageAsset, "b", i), fmt.Sprint("b-", i), c.b)
+				if c.b != removed {
+					complete(t, b, key, fmt.Sprint(imageAsset, "b", i), fmt.Sprint("b-", i), c.b)
+					continue
+				}
+				image := fmt.Sprint(imageAsset, "b", i)
+				complete(t, b, key, image, fmt.Sprint("b-", i), attached)
+				rc, err := b.RemoveAttachment(context.Background(), testOp(fmt.Sprint("b-rm-", i)), key, ticketAttachmentOf(t, b, key, image))
+				want(t, rc, err, StatusDone, "")
 			}
+			if c.b == removed {
+				rc, err := b.RemoveAttachment(context.Background(), testOp("b-rm-first"), key, ticketAttachmentOf(t, b, key, imageAsset+"0"))
+				want(t, rc, err, StatusDone, "")
+			}
+			m1(t, a, key, "a")
+			m1(t, b, key, "b")
 			got := mergeOf(t, a, b, key)
-			byID := everyKeptAttachmentNamed(t, a, b, key, got)
+			id := ticketOf(t, a, key).ID
+			byID := everyKeptAttachmentNamed(t, got, heldAttachments(t, a, id), heldAttachments(t, b, id))
 			if len(byID) != MaxImportImages {
 				t.Fatalf("the merged manifest holds %d entries", len(byID))
 			}
 			// A's seven attachments are kept before any skip or pending
 			// entry; with B's six attachments beside them, the latest made
-			// are cut and released.
+			// are cut and released; with B's removals, A's six live ones
+			// alone, and the image A's first was made of pending.
 			kept := 0
 			for _, im := range byID {
 				if im.AttachmentID != "" {
 					kept++
 				}
 			}
-			if wantKept := map[completion]int{attached: MaxImportImages, skipSize: 7, failedTry: 7}[c.b]; kept != wantKept {
+			if wantKept := map[completion]int{attached: MaxImportImages, skipSize: 7, failedTry: 7, removed: 6}[c.b]; kept != wantKept {
 				t.Fatalf("%d entries name an attachment, not %d: %+v", kept, wantKept, byID)
 			}
-			if wantReleased := map[completion]int{attached: 5, skipSize: 0, failedTry: 0}[c.b]; len(releasedBy(got)) != wantReleased {
+			if wantReleased := map[completion]int{attached: 5, skipSize: 0, failedTry: 0, removed: 0}[c.b]; len(releasedBy(got)) != wantReleased {
 				t.Fatalf("%d attachments released, not %d", len(releasedBy(got)), wantReleased)
 			}
 		})

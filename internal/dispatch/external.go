@@ -261,7 +261,11 @@ func systemOf(identity string) string {
 	return system
 }
 
-// checkSystem refuses a system the store was not opened with (invalid).
+// checkSystem refuses a system the store was not opened with (invalid):
+// the one door every local write that makes or keeps a system the owner of
+// a ticket's field goes through (ticket.import, ticket.link_external,
+// ticket.refresh, ticket.authority giving a field to the system). Taking a
+// field for Dispatch never asks it, nor does an unlink.
 func (t *tx) checkSystem(system string) error {
 	if !slices.Contains(t.systems, system) {
 		return refuse(RefusalInvalid, "the tracker system %q is not one this server links (%s)", system, strings.Join(t.systems, ", "))
@@ -906,7 +910,9 @@ type RefreshArgs struct {
 // moved, each field the owners give the system set to FromExternal's
 // output where that differs from the stored field (one observe row each:
 // a CRLF body is the same description), and ticket_reads in the same
-// transaction. A field Dispatch owns is never written. The API runs it
+// transaction. A field Dispatch owns is never written. The ticket's
+// system must be one the store was opened with (invalid otherwise), as on
+// every local write that makes or keeps a system an owner. The API runs it
 // only when RefreshNeeded says the snapshot or a system-owned field would
 // change; a read that finds nothing new is RecordTicketRead's alone. A
 // change of a system-owned field moves the ticket's intent digest, so a
@@ -921,6 +927,10 @@ func (s *Store) RefreshExternal(ctx context.Context, op Op, key string, read Ext
 		}
 		if tk.ExternalID == "" {
 			return refuse(RefusalInvalid, "%s has no linked issue", tk.Key)
+		}
+		// A refresh keeps the system the writer of the fields it owns.
+		if err := t.checkSystem(systemOf(tk.ExternalID)); err != nil {
+			return err
 		}
 		sn, title, description, err := t.linkedRead(tk, read)
 		if err != nil {
@@ -996,7 +1006,9 @@ type AuthorityArgs struct {
 // linked item's system (ticket.authority): the field title or description,
 // the owner OwnerDispatch or the system the ticket's linked issue is of,
 // anything else invalid, as is a ticket with no linked issue or a field
-// its owner holds already. To Dispatch it sets the owners and writes one
+// its owner holds already. Giving a field to the system asks the
+// registry first (invalid for a system the store was not opened with);
+// taking one for Dispatch is always allowed. To Dispatch it sets the owners and writes one
 // adopt row of the field with the text it holds, although the text does
 // not change. To the system it takes the read the API made a moment
 // before (invalid with none), the read checked as a refresh's (invalid for
@@ -1040,6 +1052,9 @@ func (s *Store) SetAuthority(ctx context.Context, op Op, args AuthorityArgs, rea
 				return err
 			}
 			return t.adopt(tk, args.Field, textOf(tk, args.Field), owner)
+		}
+		if err := t.checkSystem(system); err != nil {
+			return err
 		}
 		if owner != "" {
 			return refuse(RefusalInvalid, "the %s of %s is %s's already", args.Field, tk.Key, owner)

@@ -259,10 +259,83 @@ func TestSourceIsTheSystem(t *testing.T) {
 	newProject(t, none, "CND")
 	rc, err = none.ImportTicket(ctx, testOp("imp"), ImportArgs{Project: "CND", URL: "x"}, ghRead("I_1", 0, "T", "B"))
 	want(t, rc, err, StatusFailed, RefusalInvalid)
+	// Each name changes the one a store opens with, and is refused in its
+	// words.
+	good, err := OpenOptions(storeDir(t), Options{Systems: []string{"github"}})
+	if err != nil {
+		t.Fatalf("a store opened with github: %v", err)
+	}
+	good.Close()
 	for _, bad := range []string{"native", "dispatch", "GitHub", strings.Repeat("a", 17), "1abc"} {
-		if _, err := OpenOptions(storeDir(t), Options{Systems: []string{bad}}); err == nil {
-			t.Fatalf("a store opened with %q", bad)
+		if _, err := OpenOptions(storeDir(t), Options{Systems: []string{bad}}); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%q is not a tracker system's name", bad)) {
+			t.Errorf("a store opened with %q: %v", bad, err)
 		}
+	}
+}
+
+// One door says whether a system may own a field: every local write that
+// makes or keeps a system the owner of a ticket's field (the package's
+// exported writes of the authority and of the fields a system owns:
+// ticket.import, ticket.link_external, ticket.authority giving a field
+// back, ticket.refresh) is refused invalid, in checkSystem's words, on a
+// database reopened without that system, and done once it is reopened
+// with it; taking a field for Dispatch and an unlink are done without it.
+func TestEveryOwnerWriteAsksTheRegistry(t *testing.T) {
+	ctx := context.Background()
+	dir := storeDir(t)
+	reopen := func(systems ...string) *Store {
+		s, err := OpenOptions(dir, Options{Systems: systems})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	s := reopen("github")
+	newProject(t, s, "CND")
+	given := mustImport(t, s, "imp1", "CND", ghRead("I_1", 0, "T", "B"))
+	owned(t, s, "take1", given, FieldTitle, OwnerDispatch, nil)
+	unlinked := mustImport(t, s, "imp2", "CND", ghRead("I_2", 0, "T", "B"))
+	_, native := newTicket(t, s, "CND", "Native")
+	s.Close()
+	writes := []struct {
+		name, id string
+		do       func(s *Store, opID string) (Receipt, error)
+	}{
+		{"an import", "import", func(s *Store, opID string) (Receipt, error) {
+			return s.ImportTicket(ctx, testOp(opID), ImportArgs{Project: "CND", URL: "https://github.com/rocksolidlabs/conductor/issues/612"}, ghRead("I_3", 0, "T", "B"))
+		}},
+		{"a link", "link", func(s *Store, opID string) (Receipt, error) {
+			return s.LinkExternal(ctx, testOp(opID), LinkArgs{Key: native}, ghRead("I_4", 0, "T", "B"))
+		}},
+		{"a give back", "give", func(s *Store, opID string) (Receipt, error) {
+			read := ghRead("I_1", 1, "T", "B")
+			return s.SetAuthority(ctx, testOp(opID), AuthorityArgs{Key: given, Field: FieldTitle, Owner: "github"}, &read)
+		}},
+		{"a refresh", "refresh", func(s *Store, opID string) (Receipt, error) {
+			return s.RefreshExternal(ctx, testOp(opID), given, ghRead("I_1", 2, "T2", "B2"))
+		}},
+	}
+	without := reopen()
+	for _, w := range writes {
+		rc, err := w.do(without, "no-"+w.id)
+		want(t, rc, err, StatusFailed, RefusalInvalid)
+		if !strings.Contains(rc.Error, `the tracker system "github" is not one this server links`) {
+			t.Errorf("%s without github: %q", w.name, rc.Error)
+		}
+	}
+	// Dispatch takes a field, and an unlink ends a link, without it.
+	owned(t, without, "take2", given, FieldDescription, OwnerDispatch, nil)
+	rc, err := without.UnlinkExternal(ctx, testOp("unlink"), unlinked)
+	want(t, rc, err, StatusDone, "")
+	without.Close()
+	with := reopen("github")
+	defer with.Close()
+	for _, w := range writes {
+		rc, err := w.do(with, "with-"+w.id)
+		want(t, rc, err, StatusDone, "")
+	}
+	if a := ParseAuthority(string(ticketOf(t, with, given).Authority)); a.Title != "github" || a.Description != "" {
+		t.Fatalf("the owners after the give back: %+v", a)
 	}
 }
 

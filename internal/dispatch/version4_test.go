@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"reflect"
 	"slices"
@@ -141,22 +142,30 @@ func TestSnapshotBound(t *testing.T) {
 	if _, err := encodeSnapshot(big); !isRefusal(err, RefusalBound) {
 		t.Fatalf("a snapshot past its bound: %v", err)
 	}
-	for name, mutate := range map[string]func(*ExternalRead){
-		"a host past 253 bytes": func(r *ExternalRead) { r.Snapshot.Host = strings.Repeat("h", MaxExternalHost+1) },
-		"an upper-case host":    func(r *ExternalRead) { r.Snapshot.Host = "GitHub.com" },
-		"a node id of 101":      func(r *ExternalRead) { r.Snapshot.NodeID = strings.Repeat("N", MaxNodeID+1) },
-		"a node id with ':'":    func(r *ExternalRead) { r.Snapshot.NodeID = "I:1" },
-		"a remote id of 65":     func(r *ExternalRead) { r.Snapshot.DatabaseID = strings.Repeat("9", MaxRemoteID+1) },
-		"an http URL":           func(r *ExternalRead) { r.Snapshot.URL = "http://github.com/o/r/issues/1" },
-		"no update time":        func(r *ExternalRead) { r.Snapshot.UpdatedAt = time.Time{} },
-		"a short commit":        func(r *ExternalRead) { r.Snapshot.HeadSha = "abc" },
-		"a validator of 201":    func(r *ExternalRead) { r.IssueETag = strings.Repeat("e", MaxValidator+1) },
-		"version 2":             func(r *ExternalRead) { r.Snapshot.V = 2 },
+	// Each case changes one part of a read that is accepted, and is
+	// refused by its own check, its code and its words.
+	if _, _, _, err := normalSnapshot(ghRead("I_1", 0, "T", "B")); err != nil {
+		t.Fatalf("the read the cases change: %v", err)
+	}
+	for _, c := range []struct {
+		name, code, words string
+		mutate            func(*ExternalRead)
+	}{
+		{"a host past 253 bytes", RefusalInvalid, "is not a lower-case host name", func(r *ExternalRead) { r.Snapshot.Host = strings.Repeat("h", MaxExternalHost+1) }},
+		{"an upper-case host", RefusalInvalid, `the host "GitHub.com" is not a lower-case host name`, func(r *ExternalRead) { r.Snapshot.Host = "GitHub.com" }},
+		{"a node id of 101", RefusalInvalid, "the item's node id is not 1 to 100", func(r *ExternalRead) { r.Snapshot.NodeID = strings.Repeat("N", MaxNodeID+1) }},
+		{"a node id with ':'", RefusalInvalid, "the item's node id is not 1 to 100", func(r *ExternalRead) { r.Snapshot.NodeID = "I:1" }},
+		{"a remote id of 65", RefusalBound, "the item's database id is more than 64 bytes", func(r *ExternalRead) { r.Snapshot.DatabaseID = strings.Repeat("9", MaxRemoteID+1) }},
+		{"an http URL", RefusalInvalid, "the item's page on github.com is not https", func(r *ExternalRead) { r.Snapshot.URL = "http://github.com/o/r/issues/1" }},
+		{"no update time", RefusalInvalid, "the read names no time the item was updated", func(r *ExternalRead) { r.Snapshot.UpdatedAt = time.Time{} }},
+		{"a short commit", RefusalInvalid, "the head commit is not a full commit id", func(r *ExternalRead) { r.Snapshot.HeadSha = "abc" }},
+		{"a validator of 201", RefusalInvalid, "a read's validator is not at most 200 bytes", func(r *ExternalRead) { r.IssueETag = strings.Repeat("e", MaxValidator+1) }},
+		{"version 2", RefusalInvalid, "the snapshot is version 2, not 1", func(r *ExternalRead) { r.Snapshot.V = 2 }},
 	} {
 		read := ghRead("I_1", 0, "T", "B")
-		mutate(&read)
-		if _, _, _, err := normalSnapshot(read); !isRefusal(err, RefusalInvalid) && !isRefusal(err, RefusalBound) {
-			t.Errorf("%s: %v", name, err)
+		c.mutate(&read)
+		if _, _, _, err := normalSnapshot(read); !isRefusal(err, c.code) || !strings.Contains(err.Error(), c.words) {
+			t.Errorf("%s: %v, want %s naming %q", c.name, err, c.code, c.words)
 		}
 	}
 	// A loopback host's http URL is the tests' fake's.
@@ -469,24 +478,41 @@ func TestTicketReplyBound(t *testing.T) {
 	if parts > MaxTicketExternalParts || MaxTicketExternalParts-parts > 4<<10 {
 		t.Fatalf("the new parts are %d bytes at their worst, their bound %d", parts, MaxTicketExternalParts)
 	}
-	// A read past its bounds is refused, nothing written.
-	link := v.Links[0].ID
-	for name, mutate := range map[string]func(*LinkRead){
-		"101 checks":            func(r *LinkRead) { r.Checks = append(checks, checks[0]) },
-		"a check's name of 201": func(r *LinkRead) { r.Checks = []LinkCheck{{ID: "1", Name: strings.Repeat("n", MaxCheckName+1)}} },
-		"a check with no id":    func(r *LinkRead) { r.Checks = []LinkCheck{{Name: "n"}} },
-		"nine reasons":          func(r *LinkRead) { r.Incomplete = &ChecksIncomplete{Words: strings.Split("a b c d e f g h i", " ")} },
-		"a reason of 121": func(r *LinkRead) {
-			r.Incomplete = &ChecksIncomplete{Words: []string{strings.Repeat("w", MaxIncompleteWord+1)}}
-		},
-		"incomplete with no reason":  func(r *LinkRead) { r.Incomplete = &ChecksIncomplete{Omitted: 1} },
-		"merged but open":            func(r *LinkRead) { r.State = "open" },
-		"checks past 32 KiB encoded": func(r *LinkRead) { r.Checks = bigChecks() },
+	// A read past its bounds is refused, nothing written: each case on a
+	// link of its own that holds no read, the read it changes accepted
+	// there after its refusal.
+	_, other := newTicket(t, s, "CND", "Past its bounds")
+	for i, c := range []struct {
+		name, code, words string
+		mutate            func(*LinkRead)
+	}{
+		{"101 checks", RefusalBound, "at most 100 checks in a read; this has 101", func(r *LinkRead) { r.Checks = append(checks, checks[0]) }},
+		{"a check's name of 201", RefusalBound, "a check's name is more than 200 bytes",
+			func(r *LinkRead) { r.Checks = []LinkCheck{{ID: "1", Name: strings.Repeat("n", MaxCheckName+1)}} }},
+		{"a check with no id", RefusalInvalid, "check 0's id is not 1 to 64 bytes", func(r *LinkRead) { r.Checks = []LinkCheck{{Name: "n"}} }},
+		{"nine reasons", RefusalInvalid, "an incomplete set of checks says why in 1 to 8 reasons",
+			func(r *LinkRead) { r.Incomplete = &ChecksIncomplete{Words: strings.Split("a b c d e f g h i", " ")} }},
+		{"a reason of 121", RefusalBound, "a reason the checks are incomplete is more than 120 bytes",
+			func(r *LinkRead) {
+				r.Incomplete = &ChecksIncomplete{Words: []string{strings.Repeat("w", MaxIncompleteWord+1)}}
+			}},
+		{"incomplete with no reason", RefusalInvalid, "an incomplete set of checks says why in 1 to 8 reasons",
+			func(r *LinkRead) { r.Incomplete = &ChecksIncomplete{Omitted: 1} }},
+		{"merged but open", RefusalInvalid, "an item is merged exactly when its state is merged", func(r *LinkRead) { r.State = "open" }},
+		{"checks past 32 KiB encoded", RefusalBound, "the read's checks are", func(r *LinkRead) { r.Checks = bigChecks() }},
 	} {
+		rc, err := addLink(s, fmt.Sprint("bound", i), other, NewLink{Kind: LinkDelivery, URL: fmt.Sprint("https://github.com/o/r/pull/", 100+i)})
+		want(t, rc, err, StatusDone, "")
 		r := prRead("PR_1", 9, "merged")
-		mutate(&r)
-		if err := s.RecordRead(ctx, link, r); !isRefusal(err, RefusalBound) && !isRefusal(err, RefusalInvalid) {
-			t.Errorf("%s: %v", name, err)
+		c.mutate(&r)
+		if err := s.RecordRead(ctx, rc.ID, r); !isRefusal(err, c.code) || !strings.Contains(err.Error(), c.words) {
+			t.Errorf("%s: %v, want %s naming %q", c.name, err, c.code, c.words)
+		}
+		if _, found, err := s.LinkReadOf(ctx, rc.ID); found || err != nil {
+			t.Errorf("%s: a read was kept (%v)", c.name, err)
+		}
+		if err := s.RecordRead(ctx, rc.ID, prRead("PR_1", 9, "merged")); err != nil {
+			t.Errorf("%s: the read it changes is refused: %v", c.name, err)
 		}
 	}
 }

@@ -652,10 +652,11 @@ func Repair(e EdgeChange, admitted bool, at time.Time, n int) ChangeRow {
 // and the description; DropRead, which says the replica drops its own
 // ticket_reads row, so the page's next open reads the item with no
 // validators and writes the system's text (rule 5's last case); and
-// Release, the attachments the item's images were made into that the
-// merged manifest does not name (rule 3: of two attachments of one image,
-// the one made later; one cut past MaxImportImages), in their order, nil
-// when there are none. The merge removes each in the step that writes the
+// Release, the live attachments the item's images were made into that the
+// merged manifest does not name (rule 3: of two live attachments of one
+// image, the one made later; one cut past MaxImportImages), in their
+// order, nil when there are none; an attachment removed on either replica
+// is neither named nor released. The merge removes each in the step that writes the
 // merged snapshot, as attachment.remove removes one (its row tombstoned,
 // one remove row of the attachments field naming its add's tag, by the
 // actor merge), so every attachment the ticket keeps for an image of the
@@ -690,10 +691,11 @@ type CounterpartState struct {
 //     period, the one with the latest updatedAt (equal: the one order) is
 //     external_snapshot, its manifest every entry any of them holds
 //     (mergeManifest: a manifest only grows), each done by image id where
-//     any of them records it, an attachment before a skip, the first made
-//     of two attachments, and the attachments it does not name released
+//     any of them records it, a live attachment before a skip, the first
+//     made of two live attachments, an entry whose attachment was removed
+//     pending, and the live attachments it does not name released
 //     (Release), so no attachment of the item's images is kept that none
-//     names; external_url is its url.
+//     names and none removed is named; external_url is its url.
 //  4. Owners by the person's order: authority is the last owner change of
 //     the item in the period (its of the item's), else none.
 //  5. Every field has one writer: a field the owners give the system is
@@ -766,7 +768,7 @@ func ReconcileCounterpart(rows []ChangeRow) CounterpartState {
 		if chosen >= 0 {
 			snap, have = reads[chosen], true
 			out.ExternalSnapshot = chosenValue
-			images, release, changed := mergeManifest(reads, chosen)
+			images, release, changed := mergeManifest(reads, chosen, keptAttachments(log))
 			out.Release = release
 			if changed {
 				snap.Images = images
@@ -816,36 +818,69 @@ func ReconcileCounterpart(rows []ChangeRow) CounterpartState {
 	return out
 }
 
+// keptAttachments is the attachments the log keeps live, by the store's
+// rule for a set (an observed-remove set): an attachment is live while
+// its add is in the log and no remove names that add's tag, whatever the
+// two rows' places in the one order.
+func keptAttachments(log []ChangeRow) map[string]bool {
+	removed := map[Tag]bool{}
+	for _, r := range log {
+		if r.Field == "attachments" && r.Op == OpRemove {
+			for _, tag := range Tags(r.Prior) {
+				removed[tag] = true
+			}
+		}
+	}
+	live := map[string]bool{}
+	for _, r := range log {
+		var a struct {
+			ID string `json:"id"`
+		}
+		if r.Field == "attachments" && r.Op == OpAdd && !removed[TagOf(r)] && json.Unmarshal([]byte(r.Value), &a) == nil && a.ID != "" {
+			live[a.ID] = true
+		}
+	}
+	return live
+}
+
 // mergeManifest is the image manifest of the merged snapshot, the read
-// chosen of reads (rule 3), and the attachments it releases. A manifest
-// only grows and its entries only become done, on one replica as in a
-// merge, so it is the chosen read's entries in their order, then every
-// entry another read holds that it lacks, in the one order of the reads
-// and each read's own order. Each entry is done as the reads record its
-// image, taken in their one order: by the first attachment made of it,
-// since an attachment is never replaced by a completion that made none (a
-// skip; a try that failed records nothing); with none, by the first skip
-// recorded. An attachment of the image that is not the entry's (another
-// replica's, made later in the one order) is released. Past
-// MaxImportImages (replicas that each added images after they parted) the
-// latest entries go first, pending ones, then skips, then those that name
-// an attachment, which is released; so an attachment is cut only when
-// more than MaxImportImages entries name one. release is every
-// attachment some read's entry names that the result does not, in the
-// order the reads first name them, nil when there is none; changed is
-// false when the result is the chosen read's own manifest.
-func mergeManifest(reads []ExternalSnapshot, chosen int) (images []SnapshotImage, release []string, changed bool) {
+// chosen of reads (rule 3), and the attachments it releases, live the
+// attachments the merged log keeps (liveAttachments). The invariant: every
+// entry that names an attachment names a live one, a removed attachment is
+// never named nor released, and every live attachment some read names for
+// an image is named by the result or released, once. So the attachments
+// live are known before any entry is chosen: an entry naming one that was
+// removed, on either replica, is pending (the image is fetched again at
+// the next read) unless another read records the image otherwise. A
+// manifest only grows, so the result is the chosen read's entries in
+// their order, then every entry another read holds that it lacks, in the
+// one order of the reads and each read's own order. Each entry is done as
+// the reads record its image, taken in their one order: by the first live
+// attachment made of it, since an attachment is never replaced by a
+// completion that made none (a skip; a try that failed records nothing);
+// with none, by the first skip recorded; with neither, pending. A live
+// attachment of the image that is not the entry's (another replica's,
+// made later in the one order) is released. Past MaxImportImages
+// (replicas that each added images after they parted) the latest entries
+// go first, pending ones, then skips, then those that name an attachment,
+// which is released; so an attachment is cut only when more than
+// MaxImportImages entries name one. release is every live attachment some
+// read's entry names that the result does not, in the order the reads
+// first name them, nil when there is none; changed is false when the
+// result is the chosen read's own manifest.
+func mergeManifest(reads []ExternalSnapshot, chosen int, live map[string]bool) (images []SnapshotImage, release []string, changed bool) {
 	done := map[string]SnapshotImage{}
 	var made []string
 	madeSeen := map[string]bool{}
 	for _, r := range reads {
 		for _, im := range r.Images {
-			if im.AttachmentID != "" && !madeSeen[im.AttachmentID] {
+			attached := im.AttachmentID != "" && live[im.AttachmentID]
+			if attached && !madeSeen[im.AttachmentID] {
 				madeSeen[im.AttachmentID] = true
 				made = append(made, im.AttachmentID)
 			}
 			switch d, ok := done[im.ID]; {
-			case im.AttachmentID != "" && (!ok || d.AttachmentID == ""):
+			case attached && (!ok || d.AttachmentID == ""):
 				done[im.ID] = im
 			case im.Skipped != "" && !ok:
 				done[im.ID] = im
@@ -859,10 +894,12 @@ func mergeManifest(reads []ExternalSnapshot, chosen int) (images []SnapshotImage
 			return
 		}
 		seen[im.ID] = true
-		if d, ok := done[im.ID]; ok {
-			im = d
+		d, ok := done[im.ID]
+		if !ok {
+			// Pending, or naming a removed attachment: pending.
+			d = SnapshotImage{ID: im.ID}
 		}
-		out = append(out, im)
+		out = append(out, d)
 	}
 	for _, im := range reads[chosen].Images {
 		add(im)

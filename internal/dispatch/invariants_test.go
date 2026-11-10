@@ -85,10 +85,15 @@ func TestNoAddressCarriesAQuery(t *testing.T) {
 		}, name)), ImportArgs{Project: "CND", URL: url}, read)
 		want(t, rc, err, StatusFailed, RefusalInvalid)
 		noSecret(t, name+"'s refusal", rc.Error)
-		if strings.Contains(rc.Error, "rocksolidlabs/conductor") || !strings.Contains(rc.Error, "github.com") {
+		if !strings.Contains(rc.Error, "the item's page on github.com carries a query, a fragment or a user name") {
+			t.Errorf("%s: the words: %s", name, rc.Error)
+		}
+		if strings.Contains(rc.Error, "rocksolidlabs/conductor") {
 			t.Errorf("%s: the words name the address, not its host: %s", name, rc.Error)
 		}
 	}
+	// The read each case changed is accepted.
+	mustImport(t, s, "q-whole", "CND", ghRead("I_Q", 0, "T", "B"))
 	// An http page off a loopback host: the words name the host alone.
 	read := ghRead("I_Q", 0, "T", "B")
 	read.Snapshot.URL = "http://github.com/rocksolidlabs/conductor/issues/612"
@@ -318,30 +323,38 @@ func TestLinkReadKeepsItsItem(t *testing.T) {
 	s := linkedStore(t)
 	newProject(t, s, "CND")
 	_, key := newTicket(t, s, "CND", "Delivered")
-	rc, err := addLink(s, "d1", key, NewLink{Kind: LinkDelivery, URL: "https://github.com/rocksolidlabs/conductor/pull/9"})
-	want(t, rc, err, StatusDone, "")
-	link := rc.ID
-	if err := s.RecordReadError(ctx, link, "GitHub said 502"); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.RecordRead(ctx, link, prRead("PR_9", 1, "open")); err != nil {
-		t.Fatalf("the first read after a failure: %v", err)
-	}
-	for name, mutate := range map[string]func(*LinkRead){
-		"another node id, newer": func(r *LinkRead) { r.NodeID = "PR_OTHER" },
-		"another node id, older": func(r *LinkRead) { r.NodeID, r.UpdatedAt = "PR_OTHER", day0 },
-		"another host":           func(r *LinkRead) { r.Host = "ghe.example.com" },
-		"another system":         func(r *LinkRead) { r.System = "forge" },
+	// Each case on a link of its own, first read as PR_9 after a failure;
+	// the read the case changes is accepted there after its refusal.
+	for i, c := range []struct {
+		name   string
+		mutate func(*LinkRead)
+	}{
+		{"another node id, newer", func(r *LinkRead) { r.NodeID = "PR_OTHER" }},
+		{"another node id, older", func(r *LinkRead) { r.NodeID, r.UpdatedAt = "PR_OTHER", day0 }},
+		{"another host", func(r *LinkRead) { r.Host = "ghe.example.com" }},
+		{"another system", func(r *LinkRead) { r.System = "forge" }},
 	} {
-		r := prRead("PR_9", 9, "merged")
-		mutate(&r)
-		if err := s.RecordRead(ctx, link, r); !isRefusal(err, RefusalInvalid) {
-			t.Errorf("%s: %v", name, err)
+		rc, err := addLink(s, fmt.Sprint("d", i), key, NewLink{Kind: LinkDelivery, URL: fmt.Sprint("https://github.com/rocksolidlabs/conductor/pull/", 9+i)})
+		want(t, rc, err, StatusDone, "")
+		link := rc.ID
+		if err := s.RecordReadError(ctx, link, "GitHub said 502"); err != nil {
+			t.Fatal(err)
 		}
-	}
-	got, _, err := s.LinkReadOf(ctx, link)
-	if err != nil || got.NodeID != "PR_9" || got.State != "open" || got.Merged {
-		t.Fatalf("the read kept: %+v %v", got, err)
+		if err := s.RecordRead(ctx, link, prRead("PR_9", 1, "open")); err != nil {
+			t.Fatalf("the first read after a failure: %v", err)
+		}
+		r := prRead("PR_9", 9, "merged")
+		c.mutate(&r)
+		if err := s.RecordRead(ctx, link, r); !isRefusal(err, RefusalInvalid) || !strings.Contains(err.Error(), "the item the link was read as") {
+			t.Errorf("%s: %v", c.name, err)
+		}
+		got, _, err := s.LinkReadOf(ctx, link)
+		if err != nil || got.NodeID != "PR_9" || got.State != "open" || got.Merged {
+			t.Fatalf("%s: the read kept: %+v %v", c.name, got, err)
+		}
+		if err := s.RecordRead(ctx, link, prRead("PR_9", 9, "merged")); err != nil {
+			t.Errorf("%s: the read it changes is refused: %v", c.name, err)
+		}
 	}
 }
 
