@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -24,7 +25,11 @@ import (
 // linkOrphanAfter with it (a host connected is never gone, however long ago
 // it registered). An open host's link also gives its place in its address's
 // count to a new link of that address once its host has been gone for
-// linkYieldAfter and the address has no other room: it is ended then.
+// linkYieldAfter and the address has no other room: it is ended then. A
+// link minted while its host presented a host token counts against no
+// address but its host instance's: when that instance asks as an open host
+// (a resume, a take-back, another of its sessions, after a restart too), it
+// counts toward what the open host may keep (keepLink).
 
 // linkFile is a link as a switchyard keeps it.
 type linkFile struct {
@@ -89,6 +94,10 @@ type linkKeeper struct {
 	kept map[string]keptLink
 	// addrs are the ids of the links counted against each open-host address.
 	addrs map[string]map[string]struct{}
+	// tokened are the ids of the links each host instance minted while it
+	// presented a host token (a kept link with no address), which an open
+	// host of the instance counts beside its address's.
+	tokened map[string]map[string]struct{}
 	// live counts each host instance's connections; seen is when an
 	// instance was last connected (as it registered or left; for the owners
 	// of the links restored at startup, the start).
@@ -102,6 +111,10 @@ type linkKeeper struct {
 	// until it goes, the host's revoke is answered that it is not done, and
 	// a revoked link is still listed as its host's (liveLinkIDs). Under fmu.
 	undeleted map[string]string
+	// keeping is nil but in tests: called as keepLink begins, before it
+	// takes the locks, with the address it counts against ("" for a host
+	// with the host token).
+	keeping atomic.Pointer[func(addr string)]
 }
 
 // linkFileUndeleted says whether the file of linkID, no longer kept, is
@@ -177,15 +190,23 @@ func (k *linkKeeper) away(owner string, now time.Time) time.Duration {
 	return now.Sub(k.seen[owner])
 }
 
+// countedIn is where a kept link is counted: against its open host's
+// address, or, minted with a host token, against its host instance.
+func (k *linkKeeper) countedIn(kl keptLink) (map[string]map[string]struct{}, string) {
+	if kl.addr != "" {
+		return k.addrs, kl.addr
+	}
+	return k.tokened, kl.owner
+}
+
 // hold counts a kept link in. Called with mu held.
 func (k *linkKeeper) hold(id string, kl keptLink) {
 	k.kept[id] = kl
-	if kl.addr != "" {
-		if k.addrs[kl.addr] == nil {
-			k.addrs[kl.addr] = map[string]struct{}{}
-		}
-		k.addrs[kl.addr][id] = struct{}{}
+	m, key := k.countedIn(kl)
+	if m[key] == nil {
+		m[key] = map[string]struct{}{}
 	}
+	m[key][id] = struct{}{}
 }
 
 // release forgets a kept link: its hash and its place in its address's
@@ -197,11 +218,10 @@ func (k *linkKeeper) release(id string) string {
 		return ""
 	}
 	delete(k.kept, id)
-	if kl.addr != "" {
-		delete(k.addrs[kl.addr], id)
-		if len(k.addrs[kl.addr]) == 0 {
-			delete(k.addrs, kl.addr)
-		}
+	m, key := k.countedIn(kl)
+	delete(m[key], id)
+	if len(m[key]) == 0 {
+		delete(m, key)
 	}
 	return kl.owner
 }
@@ -251,7 +271,7 @@ func (s *Server) openLinkKeeper(st *store.Store) {
 		s.log.Error("links are not kept across restarts: cannot open the links directory", "err", err)
 		return
 	}
-	k := &linkKeeper{files: files, kept: map[string]keptLink{}, addrs: map[string]map[string]struct{}{}, live: map[string]int{}, seen: map[string]time.Time{}, undeleted: map[string]string{}}
+	k := &linkKeeper{files: files, kept: map[string]keptLink{}, addrs: map[string]map[string]struct{}{}, tokened: map[string]map[string]struct{}{}, live: map[string]int{}, seen: map[string]time.Time{}, undeleted: map[string]string{}}
 	s.keeper = k
 	entries, err := files.List()
 	if err != nil {
@@ -290,12 +310,16 @@ func (s *Server) openLinkKeeper(st *store.Store) {
 // Why keepLink refuses a link.
 var (
 	errLinksFull   = errors.New("this address holds as many links as this switchyard keeps; revoke one, or ask the operator for a host token")
+	errHostFull    = errors.New("this address, with the links this host made with a host token, holds as many links as an open host may keep; revoke one, or connect with the host token")
 	errLinkGone    = errors.New("the link was revoked or expired, or its session ended, as it was made")
 	errLinkNotKept = errors.New("the switchyard could not keep the link; try again")
 )
 
 // keepLink makes a link minted for a hosted session of owner durable and
-// writes its file, within the bounds. At an open host's address with no
+// writes its file, within the bounds. An open host's (addr set) counts the
+// links of its address and those its instance minted with a host token
+// (tokened): at or past the bound it mints none, and those keep working
+// until they end as any link does. At an open host's address with no
 // room left, links whose host has been gone longer than linkYieldAfter
 // give their places up (yielding) and are ended, only when that leaves the
 // new link room and once its file is written: a link that needed them and
@@ -308,6 +332,9 @@ func (s *Server) keepLink(link *share.Link, token, owner, addr string) error {
 	k := s.keeper
 	if k == nil || owner == "" {
 		return nil
+	}
+	if f := k.keeping.Load(); f != nil {
+		(*f)(addr)
 	}
 	h := share.HashToken(token)
 	k.fmu.Lock()
@@ -322,9 +349,14 @@ func (s *Server) keepLink(link *share.Link, token, owner, addr string) error {
 		err = errLinkGone
 	} else if s.links.Count() > maxDurableLinks {
 		err = errLinksFull
-	} else if over := len(k.addrs[addr]) - s.cfg.Switchyard.OpenHostLinks + 1; addr != "" && over > 0 {
+	} else if over := len(k.addrs[addr]) + len(k.tokened[owner]) - s.cfg.Switchyard.OpenHostLinks + 1; addr != "" && over > 0 {
+		// Only the address's links of hosts gone a while give places up:
+		// the instance's own, made with a token, are its host's, connected.
 		if yielded = k.yielding(addr, time.Now(), over); yielded == nil {
 			err = errLinksFull
+			if len(k.tokened[owner]) > 0 {
+				err = errHostFull
+			}
 		}
 	}
 	// Under mu, so a drop of the link (its file and its count, which
