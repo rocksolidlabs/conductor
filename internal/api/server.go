@@ -162,8 +162,13 @@ type Server struct {
 	historyReads    historyGate
 	historyHold     func(ctx context.Context, r *http.Request)
 	historyDeadline time.Duration
-	commits         *commitFan // the commit hooks' observers (commits.go)
-	readRevision    func(ctx context.Context, dir string) (gitcli.Revision, error)
+	// historySeal seals a Brakeman history read's continuations
+	// (brakeman_history.go); historyTurnReply, a test's seam, is when set
+	// that read's reply bound in place of maxObserveReply.
+	historySeal      historySealer
+	historyTurnReply atomic.Int64
+	commits          *commitFan // the commit hooks' observers (commits.go)
+	readRevision     func(ctx context.Context, dir string) (gitcli.Revision, error)
 	// recordRepos is each native server session's launch repository, by
 	// the identity of its common git directory (*launchRepo, which holds
 	// it open where the system reuses identities), until its end commit is
