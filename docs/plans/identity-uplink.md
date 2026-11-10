@@ -22,15 +22,13 @@ and its tests. It was written against `main` at 175e0be5 (PR #763,
 `FakeHost`), `internal/api` (`auth.go`'s `tokenPrincipal`,
 `identity.go`, `extensions.go`'s `guardIdentity` and `extFailed`,
 `exthost.go`'s `tryStart`, `capabilities.go`, `guide.go`, `ws_host.go`,
-`desk_host.go`'s `deskMessage`, `publish.go`'s `endLinks`,
-`linkfiles.go`'s `linkKeeper`, `keepLink` and `hostUp`, `server.go`'s
-registry `OnRemove`), `internal/hostagent` (`agent.go`'s
-`dialAndRegister`, `controlLoop`, `serveConn`, `connLost` and
-`RefusedError`, `controlwriter.go`, `uplink.go`, `desk.go`),
-`internal/cli` (`host.go`, `serve.go`), `internal/signal` (`hub.go`'s
-`Register` and `attach`, `hosted.go`'s `HostDisconnected` and `Retire`,
-`desk.go`'s `EndDesk`), `internal/share` (`ListNaming`, `RevokeGroup`,
-`DeleteSession`), `internal/config/deny.go`,
+`desk_host.go`'s `deskMessage`, `linkfiles.go`'s `keepLink`),
+`internal/hostagent` (`agent.go`'s `dialAndRegister`, `controlLoop`,
+`serveConn`, `connLost` and `RefusedError`, `controlwriter.go`,
+`uplink.go`, `desk.go`), `internal/cli` (`host.go`, `serve.go`,
+`export.go`), `internal/signal` (`hub.go`'s `Register` and `attach`,
+`hosted.go`'s `HostDisconnected`), `internal/export` (`export.go`'s
+`Write` and `rest`, `leftout.go`), `internal/config/deny.go`,
 `internal/proto/hostmsg.go`, `docs/protocol.md` (Host control
 connection, HTTP API), `web/app/utils/protocol.ts`,
 `web/app/utils/capabilities.ts`, `web/app/composables/useCapabilities.ts`
@@ -65,10 +63,10 @@ and `Mode`, the optional identity methods and the capabilities row's
    it, and no flag in this repository changes that.
 4. Revoke strengthened, never weakened: a host connection a provider no
    longer admits is closed within the recheck's period, as a viewer's
-   is; stop, inspect, export and approvals are untouched; a refused
-   credential never turns into an open host's admission, and a revoked
-   host keeps nothing at the switchyard (Events, A revoked host's
-   session).
+   is; stop, inspect and approvals are untouched; export takes nothing a
+   provider keeps in host mode, wherever its directory lies (Events,
+   Invariants); a refused credential never turns into an open host's
+   admission.
 5. Dependencies one way: `ext` stays standard library only; no new
    module, no import of a private one; the open-core lint
    (`internal/opencore`) is unchanged and passes.
@@ -112,13 +110,15 @@ After this row:
   refused server publication is owed and the next Share publishes it; a
   refused `conductor host` tries again for a bounded time).
 - A host connection a provider admitted is asked about again every 30 s
-  and closed `access revoked` once the provider no longer admits it; its
-  session ends at the switchyard, its links with it.
+  and closed `access revoked` once the provider no longer admits it.
+  Nothing else is done to its session; the host registers again with
+  what its provider gives then, as after any drop.
 - When the provider replaces a short-lived credential, the replacement
   is handed to the switchyard over the live host connection
   (`host_token`), so hosted sessions and their viewers do not drop when
-  it arrives in time; when anything goes wrong with it, the connection
-  drops once and the host registers again, as after any drop.
+  it is delivered in time; when it is not, or anything goes wrong with
+  it, the connection drops once and the host registers again, as after
+  any drop.
 - Settings → The app shows who the server is signed in as, beside the
   provider: "signed in as Ana · workspace Acme".
 
@@ -160,11 +160,11 @@ prevent. The message stays, made as narrow as it can be:
 - It has one path that succeeds. Every other outcome ends in one
   fallback, the drop a reconnect is (Events, One fallback): nothing is
   retried in place, and nothing of a renewal outlives its connection.
-- The provider says how early it answers a replacement
-  (`ext.UplinkTokenLead`), which leaves the transport time to carry it
-  before the old credential lapses; the conditions under which it does
-  are stated (Events, Two timers), and outside them the renewal takes
-  the fallback or meets a verdict.
+- The seam states how early a provider answers a replacement
+  (`ext.UplinkTokenLead`); no delivery time is promised. A renewal is
+  timely only if it is delivered before the recheck finds the old
+  credential ended; one that is not meets a verdict, which closes the
+  connection as the fallback does (Events, Two timers).
 
 What it leaves out is listed under Out of scope.
 
@@ -228,11 +228,12 @@ type IdentityDetail interface{ Detail() string }
 const (
 	MaxHostToken      = 2048 // bytes, proto.MaxHostToken
 	MaxIdentityDetail = 80   // characters (runes)
-	// UplinkTokenLead is how long before a credential stops being
-	// admitted its replacement is answered: the host asks every 30 s, its
-	// send waits at most 15 s for its turn, and the switchyard takes a
-	// renewal within two IdentityWaits, so this leaves about a minute for
-	// the transport (docs/plans/identity-uplink.md, Two timers).
+	// UplinkTokenLead is how long, at least, before a credential stops
+	// being admitted its replacement is answered; how much earlier is the
+	// provider's choice. A renewal is in time only if it is delivered
+	// before the switchyard's recheck finds the old credential ended;
+	// when it is not, the connection closes and the host registers again
+	// (docs/plans/identity-uplink.md, Two timers).
 	UplinkTokenLead = 2 * time.Minute
 )
 
@@ -296,7 +297,8 @@ the `host_token` row (who sends it, only after `renews`, at most one per
 30 s step and only for a changed token, its bounds, what the server does
 with it, and that every failure closes the connection), `registered`'s
 `renews`, and the recheck of a provider-admitted host connection (closed
-`4403 access revoked`, the session ended at the switchyard).
+`4403 access revoked`; nothing the host sends after the verdict is
+handled, and the host registers again).
 
 ### `internal/api`
 
@@ -308,9 +310,10 @@ with it, and that every failure closes the connection), `registered`'s
 - `identity.go`. `hostAllowed` becomes `hostPrincipal(r, tok)
   (principal, bool)`, the same check returning the principal, so the host
   connection knows its subject. A connection's credential is a
-  `watchedToken`: the token, `ended` (the connection's terminal state:
-  a verdict was recorded) and a mutex that is the connection's credential
-  turn, all of it made with the connection and gone with it.
+  `watchedToken`: the token, `ended` (an atomic flag, the connection's
+  terminal state: a verdict was recorded; set only under the turn) and a
+  mutex that is the connection's credential turn, all of it made with
+  the connection and gone with it.
   `principalWatch` is generalised: it takes the `*watchedToken` and the
   grant the connection needs (`admin` for a viewer's WebSocket and the
   events stream, as today, whose token never changes; `host` for a host
@@ -320,22 +323,18 @@ with it, and that every failure closes the connection), `registered`'s
 - `ws_host.go`. A host connection admitted through a provider's
   principal (`subject != ""`), a session's or a desk's, keeps a
   `watchedToken` in its `hostConnState`, says `renews` in its
-  `registered`, and runs the watch. Its `end` is `endStanding(hs)`,
-  then the close `proto.CloseForbidden` (4403) `access revoked` (Events,
-  A revoked host's session). A connection of the workbench token, a host
-  token or an open host has none, says no `renews` and is never asked
-  about. `handleHostMessage` gains `case proto.HostTokenType`:
-  `hostToken(hc, data)` (Events, below). `endStanding` is made of what
-  `main` has: the hub forgets the session (`Hub.Forget`, below), its
-  links end as at a session's end (`endLinks`, which deletes their
-  files), its owner's run links that name it are revoked (`ListNaming`,
-  `RevokeGroup`), and it leaves the registry (`registry.Remove`, whose
-  `OnRemove` retires its viewers); a desk is ended by `EndDesk` and its
-  run's links naming it revoked. A test seam, `hostCredSeam`, has three
-  hooks the tests below use: `waiting` (a recheck or a renewal waits for
-  the turn), `reading` (a host message read, before it is handled) and
-  `closing` (a verdict recorded and the turn given back, before the
-  close handshake).
+  `registered`, and runs the watch. Its `end` is the close
+  `proto.CloseForbidden` (4403) `access revoked`, and nothing else
+  (Events, After the close). The read loop looks at `ended` before it
+  handles each message, a relayed frame included, and once it is set
+  handles none and returns (Events, A verdict is terminal). A connection
+  of the workbench token, a host token or an open host has none, says
+  no `renews` and is never asked about. `handleHostMessage` gains `case
+  proto.HostTokenType`: `hostToken(hc, data)` (Events, below). A test
+  seam, `hostCredSeam`, has three hooks the tests below use: `waiting`
+  (a recheck or a renewal waits for the turn), `reading` (a host message
+  read, before `ended` is looked at) and `closing` (a verdict recorded
+  and the turn given back, before the close handshake).
 - `desk_host.go`. `deskMessage` admits `proto.HostTokenType`.
 - `extensions.go`. A renewal's ask is a kind of its own,
   `kindIdentityRenew` (`identity-renew`), with its own `extInFlight`
@@ -376,14 +375,6 @@ with it, and that every failure closes the connection), `registered`'s
   (`pubStopped`, whose comment now says "owed"): the next Share
   (`republish`) publishes the same running session again.
 
-### `internal/signal`
-
-`hub.go`. `Forget(hs)`: the hub drops a hosted session from its index
-if it is still `hs`, as `EndDesk` does for a desk, so neither a resume
-by its secret nor its instance's next registration finds it; the next
-registration under the same instance and local id is a new session
-(`Register`'s path for an id it does not hold: a new secret, no links).
-
 ### `internal/hostagent`
 
 - `uplinkcred.go` (new). `UplinkCredential`, the one guarded door to the
@@ -407,8 +398,10 @@ registration under the same instance and local id is a new session
   could not be answered, as a failure.
 - `agent.go`. `Options` gains `Credential *UplinkCredential` and, for
   tests, `after func(time.Duration) <-chan time.Time` (nil is
-  `time.After`), the clock of the waits below and of the credential's
-  guard, and `renewed func(renewStep)`, called once each renewal step
+  `time.After`), the clock of the waits below, of the credential's guard
+  and of each connection's writer's turn waits (`controlWriter.after`,
+  set from it in `useConnHearing`; nil is today's timer), and `renewed
+  func(renewStep)`, called once each renewal step
   has decided (`sent`, `unchanged`, `none`, `closed`, `ended`: its
   connection ended first). `dialAndRegister` asks `Present` before it
   dials, in place of reading `opts.Token`; no header when it is `""`; a
@@ -426,6 +419,9 @@ registration under the same instance and local id is a new session
   writer's context (`controlWriter.ctx`, cancelled by `stop` as the
   connection is lost), not `serveConn`'s, which is the control loop's
   and outlives the connection (Events, Renewal, host side).
+- `controlwriter.go`. `controlWriter` gains `after` (above) for `put`'s
+  turn timer, and a test hook `taking`, which `run` calls before it takes
+  a message from a lane, so a test holds the writer at a gate.
 - `uplink.go`. `Uplink` gains `Credential` and, for tests, `after` and
   `renewed`, and `options` (which `Publish` and `OpenDesk` use) passes
   all three into every publication's and desk's `Options`.
@@ -437,7 +433,11 @@ registration under the same instance and local id is a new session
   `context.Canceled`). Its first try's outcome closes `tried` at the try's
   return or its give-up at `StartWait`, and `started` waits for that as
   `ProviderStarted` does (true at once for a provider that is no
-  `ext.Starter`). Its `ext.Host` has `HostToken` the `--token`, `Mode`
+  `ext.Starter`). Before anything else it makes `<state>/ext` 0700 and
+  writes `config.ProviderStateMark` in it (an empty file, 0600); when
+  either fails, the provider is never started (`started` answers false at
+  once, so a token it owns is withheld) and the failure is logged by its
+  kind. Its `ext.Host` has `HostToken` the `--token`, `Mode`
   `ModeHost`, `DataDir` `<state>/ext/<name>` made 0700, `Log` the host's
   logger with `provider=<name>`, and `Launch`, `LaunchTurn`,
   `LaunchApproved`, `Submit`, `Notify` and `Decision` answering
@@ -454,7 +454,29 @@ place `conductor host` keeps its provider's directory. `machineFiles`
 (a server's sessions) and `LocalFileDeny` (a hosted session's) both
 name it as a denied directory, so no session's file read, save or editor
 reaches what a provider keeps there, with the links on the way followed
-as for every other entry (`withTargets`).
+as for every other entry (`withTargets`). `ProviderStateMark =
+".conductor-provider-state"`, the name of the file that marks the host's
+`<state>/ext` as a provider's state (`StartIdentity` writes it; the
+export leaves every directory that holds it out).
+
+### `internal/export`
+
+The host's state directory may lie inside a data directory
+(`XDG_STATE_HOME` set to it, or above it), where `leftOut`'s root-relative
+`ext` row does not see it. So the rule is the mark, not a path:
+`rest`'s walk, at each directory, looks for `config.ProviderStateMark`
+in it (an `Lstat` through the walk's `os.Root`, any type) and, when it
+is there, leaves the directory out whole (`WhyProvider`, its path listed
+in the manifest's `left`). `leftOut` gains a `name` row for the mark, so
+`Install` refuses an archive that holds one. The server's export route
+(`internal/api/export.go`) and `conductor export` with the server stopped
+(`internal/cli/export.go`) both write through `export.Write`, so one rule
+covers both; `records` takes only `runs/<name>.json` files, never a
+directory's contents. The rule reads no configuration and no
+environment: the mark is in the directory itself, written before the
+provider can write anything there, so no setting of `XDG_STATE_HOME`,
+`dataDir` or the export's own environment turns it off, and a link to
+the directory is never followed (it is not a regular file).
 
 ### `internal/cli`
 
@@ -600,19 +622,16 @@ So a `host_token` holds its connection's read loop at most two
 `IdentityWait`s, and no close handshake runs under the turn.
 
 **One fallback.** A renewal that does not take the one success path (it
-is read late behind the read loop's relay bound or a large relayed
-frame, its send is withdrawn or fails, the provider is late, refuses or
-cannot tell, its message is out of bounds, its connection ends under it)
-ends in one place: that connection closes (`4403 access revoked` from
-the switchyard, as the issue says; `1000` from the host when its own
-send failed) and the host registers again through the path that exists
-today (`controlLoop`'s backoff, `dialAndRegister`, a resume by the
-session's secret), presenting what `Present` gives then, admitted or
-refused by the rules for what it presents. The session stays at the
-switchyard as for any host away (`HostDisconnected`); what a person
-sees is the session's viewers dropped and reconnecting, as after any
-drop of the host's connection. Nothing of the renewal survives its
-connection on either side. Only a verdict (below) does more.
+is delivered after a recheck found the old credential ended, its send is
+withdrawn or fails, the provider is late, refuses or cannot tell, its
+message is out of bounds, its connection ends under it) ends in one
+place: that connection closes (`4403 access revoked` from the
+switchyard, as the issue says; `1000` from the host when its own send
+failed) and the host registers again (After the close, below). What a
+person sees is the session's viewers dropped and reconnecting, as after
+any drop of the host's connection. Nothing of the renewal survives its
+connection on either side. A verdict closes the connection the same
+way.
 
 **Recheck** (`principalWatch`, host grant). Every 30 s
 (`identityRecheckEvery`, `extAfter` the seam) it takes the connection's
@@ -625,57 +644,62 @@ verdict.
 
 **A verdict is terminal before anything blocks.** A recheck's verdict,
 or a renewal's, sets `ended` under the turn, and the turn is given back;
-only then does `end` run (`endStanding`, then the close handshake, which
-the library bounds at five seconds to write the close and five to read
-its acknowledgement). Anything that takes the turn after (a renewal
-waiting for it, a `host_token` still queued in the read loop, the next
-recheck) meets `ended` and is refused without an ask. So a renewal
-waits for the turn at most one recheck's ask, whatever the close
-handshake takes, and nothing is admitted on a connection after its
-verdict. A renewal and a recheck of one connection never overlap, so a
-verdict always concerns the token it asked about.
+only then is the connection closed (`4403 access revoked`; the library
+bounds the close handshake at five seconds to write the close and five
+to read its acknowledgement). From the verdict on, the connection's
+reader dispatches nothing: before it handles each message it looks at
+`ended`, and a message it reads once `ended` is set (a link request, a
+run link update, a `host_token`, a relayed frame, anything) is not
+handled; the reader returns, and the connection ends as any does. It
+reads the flag without waiting for the turn, so a recheck's ask never
+holds the session's output; a message read while a recheck still asks
+comes before the verdict. A message whose handling began before the
+verdict completes as it would on `main` (a link it mints is one minted
+before a drop). Anything that takes the turn after (a renewal waiting
+for it, the next recheck) meets `ended` and is refused without an ask.
+So a renewal waits for the turn at most one recheck's ask, whatever the
+close handshake takes. A renewal and a recheck of one connection never
+overlap, so a verdict always concerns the token it asked about.
 
 **Two timers, one deadline.** The host's 30 s ask and the switchyard's
 30 s recheck run on their own timers against one deadline, the old
-credential's end. The provider answers a replacement at least
-`ext.UplinkTokenLead` (2 minutes) before that end. The host asks within
-30 s and its send waits at most 15 s for its turn (or takes the
-fallback), and the switchyard's ask takes at most two `IdentityWait`s,
-which leaves the transport about a minute to carry the message to the
-read loop. It does so where a credentialed host's connection has no
-relay bound (`switchyard.relayKBps` 0, the default; an open host, which
-has its address's bound, never renews), and where one is set, when the
-largest frame ahead of it (`proto.MaxFrame`, about 1 MiB, behind what
-the host's writer holds) passes at that rate within that minute: at
-32 KB/s and above. Outside those conditions a recheck can find the old
-credential lapsed before the renewal is read; the provider's answer
-then cannot be told from a revocation, and it is a verdict: the session
-ends at the switchyard (below) and the host registers a new one with the
-new credential. Fail-closed, never an admission it should not have.
+credential's end. The seam asks the provider to answer a replacement at
+least `ext.UplinkTokenLead` before that end; how much earlier is the
+provider's choice. No delivery time is promised: between the host's
+answer and the switchyard's read loop stand the host's writer, the
+network and the switchyard's relay bound, none of which this row bounds.
+A renewal is timely only if it is delivered and taken before a recheck
+finds the old credential ended. When it is not, the provider's answer
+cannot be told from a revocation: it is a verdict, the connection closes
+`4403 access revoked`, and the host registers again with the new
+credential (After the close). Fail-closed, never an admission it should
+not have.
 
-**A revoked host's session.** A verdict ends the session's standing at
-the switchyard, all of it, before the connection is closed
-(`endStanding`): the hub forgets it (`Hub.Forget`), so its resume by its
-secret is answered `4404 cannot resume session` and its instance's next
-registration finds nothing to take back; its links end as at the
-session's end (`endLinks`, their files deleted, so a restart restores
-none), its owner's run links that name it are revoked, and it leaves
-the registry, its viewers closed as at its end. The host's existing path
-then applies (`dialAndRegister` on `4404` drops the resume and registers
-afresh): what registers next is a new session, admitted or refused by
-the rules for what it presents then (an open host under the open-host
-limits, counted from nothing, where open hosts are admitted; refused 401
-where not, the host trying again with `controlLoop`'s backoff). What a
-person sees: the session leaves the switchyard's list and its viewers
-are closed as at a session's end; its links no longer open anything (a
-run link naming it no longer opens its other sessions either); the
-session keeps running on the host; and if the host registers again, it
-is a new hosted session, with links minted anew. That is the free
-default (article 8): a revoked credential takes away what the provider
-granted and leaves nothing a build with no token would not have.
+**After the close.** A verdict, like the fallback, closes the
+connection and does nothing else: the session stays at the switchyard as
+for any host away (`HostDisconnected`), with its secret, its links and
+its viewers' places as a dropped connection leaves them on `main`. The
+host's existing path applies (`controlLoop`'s backoff, `dialAndRegister`,
+a resume by the session's secret), presenting what `Present` gives then:
+a credential the provider admits resumes the session; nothing, where the
+switchyard admits only credentials, is refused 401, and the host tries
+again with the backoff; nothing, where it admits open hosts, resumes the
+session as an open host, under the open-host limits for its connection
+and its new links. The links minted while it was admitted keep the
+address `keepLink` gave them, none, so the open-host bound on links
+(`switchyard.openHostLinks`) does not count them: `main`'s switchyard
+binds neither a session's resume (`Hub.Register`, by secret or by
+instance) nor its links to how the host was admitted. A stock host does
+not reach that on `main`, whose presented token is fixed for its process
+(`newUplink` in `serve.go`, `Options.Token` in `host.go`) and whose
+instance, which fixes its sessions' ids, is new with each process; a
+client that presents a token and resumes with none does, and after this
+row a stock host does when its provider gives nothing at a reconnect.
+That is #803 (Out of scope); this row adds no accounting for it.
 
 **Host mode, start and stop.** `runHost`: `extensions()`, then
-`StartIdentity` (the first try begins), then `hostagent.Run`, whose
+`StartIdentity` (the mark written in `<state>/ext`, then the first try
+begins), then `hostagent.Run`, whose
 first `dialAndRegister` asks `Present`; when `Run` returns, the
 provider's context ends and `stop` waits for its try. Only the identity
 provider is started in host mode; every other registered provider is
@@ -700,9 +724,12 @@ says so.
   fallback, and nothing of a renewal outlives its connection on either
   side.
 - A verdict is recorded before the turn is given back and before
-  anything blocks; nothing is admitted on that connection after it.
-- A verdict leaves the session nothing at the switchyard: no record to
-  resume, no link, no viewer.
+  anything blocks; the connection's reader handles nothing it reads
+  after it, and the verdict does nothing but close the connection.
+- What a provider keeps in host mode is in no export, wherever the
+  host's state directory lies: its directory carries the mark, the
+  provider is not started without it, and the export leaves every
+  marked directory out.
 - No token is logged on either side; the guards log kinds and counts,
   and an identity provider's failed Start is logged without its text.
 - Nothing is stored: no schema, no migration.
@@ -715,17 +742,15 @@ says so.
 - Renewing a connection admitted with the workbench token, a host token
   or as an open host in place: an open host's connection reconnects once
   its provider gives a token; the others keep what admitted them.
-- Anything a revoked host would keep: a revoked host keeps nothing. Its
-  session, its links and its resume end at the verdict (Events, A revoked
-  host's session); no accounting carries a revoked session's links over
-  to an open host, because none are left to carry.
-- Binding a hosted session to the admission that registered it beyond
-  the verdict: the switchyard hears a revocation only on a live
-  connection. A host whose connection ended for another reason (the
-  renewal's fallback, a network drop) and that comes back with what its
-  provider gives then resumes its session as any host coming back does
-  on `main` today, a host with a host token coming back as an open host
-  among them.
+- Doing more at a verdict than closing the connection (ending the
+  session, its links or its resume at the switchyard): part 3 of the
+  issue asks for the close, and after it the host registers again as
+  after any drop (Events, After the close).
+- What a session's links count when its host comes back admitted
+  otherwise than it was (#803): `main`'s switchyard ties neither the
+  resume nor the links to the admission, and this row adds no
+  accounting for it.
+- A delivery time for a renewal: none is promised (Events, Two timers).
 - Retrying a renewal in place, a renewal's own acknowledgement or a
   second lane for it: every failure takes the one fallback.
 - A rule on how often `host_token` arrives (round 1's 15 s spacing is
@@ -777,11 +802,12 @@ and the code's seams, never the clock):
   carries the new token; on an open host's connection an answer closes
   it 1000 (`closed`) and the reconnect presents the token; a stub whose
   `registered` has no `renews` reads no frame (`none`), for a session
-  and for a desk (`OpenDesk`); a send withdrawn (the connection backed up
-  as `controlwriter_test.go`'s `dialHeld` and `backedUp` hold one, the
-  agent's `controlWait` lowered, the backup made before the tick fires)
-  closes the connection 1000 (`closed`), no `host_token` is read on it,
-  and the reconnect presents the new token; a `Renewed` held by a gate across a disconnect (the
+  and for a desk (`OpenDesk`); a send withdrawn: the connection's writer
+  held at a gate before it can take any message (`controlWriter.taking`),
+  the tick fired, the `host_token`'s turn timer seen armed on `after` and
+  then fired by the test, and only once `renewed` has reported `closed`
+  is the gate let go: no `host_token` is read on that connection, and the
+  reconnect presents the new token; a `Renewed` held by a gate across a disconnect (the
   stub closes, the host registers again, then the gate opens): the old
   connection's step reports `ended`, neither connection reads a frame
   from it, and the new connection's own step sends the token once.
@@ -796,9 +822,21 @@ and the code's seams, never the clock):
   its context ended once the host has; two host-mode starts over one
   state directory both start, with one `DataDir`, neither refused; a
   Start that errs and one that panics with the configured token in their
-  words, which the host's log never holds),
+  words, which the host's log never holds; the mark in `<state>/ext`
+  before Start is called, and a state directory where it cannot be
+  written starts no provider),
   `TestHostRegistersWithTheUplinkToken` (a test server sees the
-  provider's token in the registration's header, not the configured).
+  provider's token in the registration's header, not the configured),
+  `TestHostProviderStateNotExported` (`XDG_STATE_HOME` set to a data
+  directory, the host started and its provider writing a file in its
+  `DataDir`; `export.Write` of that data directory holds nothing under
+  `conductor/ext/` and lists it left out, `provider`).
+- `internal/export`: `TestProviderStateMarkLeftOut` (a data directory
+  holding `a/b/ext/` with the mark and a file beside it, a nested host
+  state directory: the archive holds neither and its manifest lists
+  `a/b/ext/` left out, `provider`; the same directory without the mark
+  is exported, so the rule is the mark and not the name; `Install`
+  refuses an archive holding a path with the mark's name).
 - `internal/config`: `TestHostStateDirDenied` (`FileDeny` and
   `LocalFileDeny` name `HostStateDir()`, with `XDG_STATE_HOME` set and
   unset, and its target when a link leads to it).
@@ -806,14 +844,18 @@ and the code's seams, never the clock):
   host connection, a session's and a desk's, says `renews` and is closed
   4403 `access revoked` once revoked; kept on an error, late or panicking
   answer; a workbench-token, host-token and open-host connection says no
-  `renews` and is never asked; after a revocation, of a session and of a
-  desk, the session is gone at the switchyard: its resume by its secret
-  is answered 4404, a session link and a run link naming it no longer
-  open anything, their files are deleted (a second server over the same
-  data directory, started after the first has closed, restores neither),
-  and an open registration under the same instance is a new session
-  whose `registered` lists no link, while a switchyard with no open hosts
-  refuses it 401).
+  `renews` and is never asked; after the close, of a session and of a
+  desk, the session is as after any drop: shown `host_disconnected`, a
+  resume with a token the fake admits taken back (same id, its link still
+  opening it), and one presenting nothing refused 401 by a switchyard
+  with no open hosts; and a verdict crossing the host's messages: a
+  recheck's verdict with the close held at `hostCredSeam.closing`, the
+  test client then sends a `link` and a `host_token`, the first seen
+  read at `hostCredSeam.reading`, and the gate opens; once the handler's
+  read loop has ended (the session shown `host_disconnected`, which the
+  handler sets only after its loop), no link was minted for the session,
+  no `link_created` reached the client, the fake was never asked about
+  the token, and the connection was closed 4403).
   `TestHostTokenRenewal` (the switchyard's half, rechecks fired through
   `extAfter`, the provider's asks held by gates in the fake, each step
   waited for on `hostCredSeam`'s hooks or on the fake's asks, never on
@@ -826,7 +868,7 @@ and the code's seams, never the clock):
   late, busy or panicking answer: closed 4403 and the session kept (the
   host's resume with the new token admitted, same id, its link still
   opening it); a verdict for another subject or no host grant: closed
-  4403 and the session ended as after a recheck's; a token of the
+  4403 as after a recheck's; a token of the
   server's own chain (the workbench token, a host token, a live, an
   expired and a revoked link): the fallback, the fake never asked about
   it; both orders of the two timers: a recheck first while the old token
@@ -835,15 +877,14 @@ and the code's seams, never the clock):
   is held by a gate while a recheck fires, the test waiting for the
   recheck to wait for the connection's turn (`hostCredSeam.waiting`)
   before it opens the gate, the old token's refusal never asked and the
-  connection kept; a renewal queued behind a held reader (the read loop
-  held at `hostCredSeam.reading` on the message before it, the old
-  token revoked in the fake, a recheck fired): the recheck's verdict
-  ends the session, and once the reader is let go the queued
-  `host_token` meets `ended`, the fake never asked about its token; and
-  a verdict terminal before the close (a recheck's verdict with the
-  close held at `hostCredSeam.closing`: the turn is free, a
-  `host_token` sent meanwhile is refused without an ask, and only once
-  the gate opens is the connection closed 4403).
+  connection kept; and a renewal not delivered in time, the fallback: the
+  read loop held at `hostCredSeam.reading` on the message before a
+  `host_token` the test client has written, the old token revoked in the
+  fake and a recheck fired, the verdict seen at `hostCredSeam.closing`,
+  then the reader let go and the close: the queued `host_token` is never
+  handled (the fake never asked about its token), the connection is
+  closed 4403, and the client's registration again with the new token
+  resumes the session (same id, its link still opening it).
   `TestCapabilitiesDetail` (the detail on the identity row; none while
   starting, for an invalid, late or panicking answer; a detail of 80
   runes kept, 81 refused; reading the guide asks the fake nothing and
@@ -928,7 +969,7 @@ registers one.
 
 | PR | Title | Repository | Contains | Touches | Tests | Depends on | Parallel with | Size |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| PR-1 (#775) | ext, api, hostagent, cli: the host token, the uplink's credential failing closed, host connections rechecked and renewed (`ext.Host` gains `HostToken` and `Mode`) | rocksolidlabs/conductor | the six parts above, the `host_token` triple and `registered`'s `renews`, the host state directory denied, the About card's Identity row, the features entry | `ext`, `ext/exttest`, `internal/api`, `internal/signal`, `internal/hostagent`, `internal/cli`, `internal/config`, `internal/proto`, `web/app`, `web/e2e`, `docs` | the Go race tests, vitest and Playwright named above | C2 on `main` (merged) | none in this repository; #776 follows it | ~680 + 880 (code + tests) |
+| PR-1 (#775) | ext, api, hostagent, cli: the host token, the uplink's credential failing closed, host connections rechecked and renewed (`ext.Host` gains `HostToken` and `Mode`) | rocksolidlabs/conductor | the six parts above, the `host_token` triple and `registered`'s `renews`, the host state directory denied and marked, the export leaving a marked directory out, the About card's Identity row, the features entry | `ext`, `ext/exttest`, `internal/api`, `internal/hostagent`, `internal/cli`, `internal/config`, `internal/export`, `internal/proto`, `web/app`, `web/e2e`, `docs` | the Go race tests, vitest and Playwright named above | C2 on `main` (merged) | none in this repository; #776 follows it | ~630 + 790 (code + tests) |
 
 Adding two methods to `ext.Host` breaks an implementation of `Host`
 outside this module (a provider's own test fake), so the PR's title
@@ -938,11 +979,10 @@ names it, as `ext`'s Stability section asks. The PR carries the
 ## Owner decisions
 
 Dated 2026-11-10. The issue's words leave these open; each takes the
-fail-closed answer as a default the owner can overturn. Review round 2
-narrowed IU8, IU9, IU13 and IU14 (their text below is the narrowed one);
-round 1's 15 s spacing rule (part of IU8) and a revoked host resuming as
-an open host (IU14) are withdrawn, and no decision speaks of a mechanism
-the plan no longer has.
+fail-closed answer as a default the owner can overturn. The text below
+is each decision as it stands after review round 3; round 1's 15 s
+spacing rule (part of IU8) is withdrawn, IU14 is withdrawn in round 3,
+and no decision speaks of a mechanism the plan no longer has.
 
 - **IU1. The message's key.** Every host message carries its type in
   `t`, so the issue's `{type: "host_token", token}` is
@@ -982,14 +1022,18 @@ the plan no longer has.
   renewal and a recheck of one connection take turns, each holding it
   from its ask to its verdict, so a verdict always concerns the token
   current when it asked; a verdict is recorded under the turn, the turn
-  is given back before the close handshake, and whatever takes the turn
-  after it is refused unasked.
+  is given back before the close handshake, whatever takes the turn
+  after it is refused unasked, and the connection's reader handles
+  nothing it reads after it.
 - **IU10. The host's state directory.** `$XDG_STATE_HOME/conductor`, or
   `~/.local/state/conductor` (where older hosts kept their hooks), so
   the provider's directory is `<state>/ext/<name>`, 0700, shared without
   a lock by the user's `conductor host` processes on the machine, apart
-  from any server's `<dataDir>/ext/<name>`, outside every data directory
-  an export reads, and denied to every session's files (`internal/config`).
+  from any server's `<dataDir>/ext/<name>`, and denied to every
+  session's files (`internal/config`). `<state>/ext` carries a mark
+  (`config.ProviderStateMark`), the provider is not started without it,
+  and an export leaves every directory that holds the mark out, wherever
+  it lies (`internal/export`).
 - **IU11. The server's host token.** `cfg.Rendezvous.Token` only while
   the server publishes to a switchyard, and only on the identity slot's
   provider's Host; `""` otherwise and on a switchyard.
@@ -999,16 +1043,14 @@ the plan no longer has.
   asked through the guard at each request of the route, only once the
   provider has started; read again by the app at each opening of the
   card, and while a ready provider shows none.
-- **IU13. The renewal's lead.** A replacement credential is answered at
-  least `ext.UplinkTokenLead` (2 minutes) before the one it replaces
-  lapses, which leaves the transport about a minute: enough with no
-  relay bound on credentialed hosts (the default) or one of 32 KB/s and
-  more. A renewal read after the old credential lapsed may meet a
-  recheck's verdict.
-- **IU14. A revoked host keeps nothing.** A verdict ends the session at
-  the switchyard: forgotten by the hub (no resume), its links and the
-  run links naming it ended, its viewers closed; what the host registers
-  next is a new session, admitted or refused by what it presents then.
+- **IU13. The renewal's lead.** The seam asks for a replacement at least
+  `ext.UplinkTokenLead` (2 minutes) before the old credential ends, and
+  promises no delivery time: a renewal not taken before the recheck finds
+  the old credential ended meets a verdict, and the host registers again.
+- **IU14. Withdrawn in review round 3.** It ended a revoked session's
+  standing at the switchyard; part 3 of the issue asks only for the
+  close, and that teardown raced the host's own registration and the
+  link files' deletion.
 - **IU15. A withheld first registration.** On the server the
   publication is owed and the next Share publishes it; `conductor host`
   tries again for at most 2 minutes, then exits as today.
