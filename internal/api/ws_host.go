@@ -150,8 +150,10 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	}()
 	// The host's kept links wait for it while it is connected, from before
 	// it is told which the switchyard holds; its time away starts as this
-	// connection ends (before the session shows it gone).
-	defer s.hostUp(hs.Owner())()
+	// connection ends (before the session shows it gone). Admitted open, the
+	// links its instance made with the host token count against its address
+	// from here, before it is told them: those past the bound end.
+	defer s.hostUp(hs.Owner(), hc.addr)()
 
 	// An open host, which presented no token, is handed the configured
 	// servers alone: no media provider is asked for it (iceServersFor).

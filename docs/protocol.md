@@ -647,12 +647,7 @@ sweep, tries again; until then `registered.links` still lists it, so the
 host keeps its record), `error{code, message, requestId?}`
 (`requestId` names the link request a refusal answers: `invalid_role`,
 `invalid_request`, `rate_limited`, `link_refused`, `no_instance`, `not_found`,
-`store_unavailable`, `stale`; on a switchyard an open host's request is
-`link_refused` while its address's kept links, with those its host instance
-made with a host token, fill `switchyard.openHostLinks`, in those words:
-"this address, with the links this host made with a host token, holds as
-many links as an open host may keep; revoke one, or connect with the host
-token").
+`store_unavailable`, `stale`).
 
 `registered.recipe` (#293) is what the server's catalog says to watch on
 the screen of the agent the host registered (`session.agentId`), so that a
@@ -832,14 +827,32 @@ switchyard holds a host's links while any of its instance's connections
 is up, and for seven days after the last one ends; an open host's link
 also gives its place in its address's count (`switchyard.openHostLinks`)
 to a new link of that address that has no other once its host has been
-gone five minutes, and is ended (`registered.links` leaves it out). A link
-minted while its host presented a host token counts against no address;
-when its host instance registers as an open host (a resume by its secret,
-a take-back by its instance, another of its sessions, also after the
-switchyard restarted, from the link's file), the open host counts it with
-its address's: it mints none while they fill the bound, and they keep
-working until they expire, are revoked or go as any link goes. The
-registration itself is not refused for it. A run
+gone five minutes, and is ended (`registered.links` leaves it out).
+
+A link minted while its host presented a host token counts against no
+address. A host that comes back without the token it had is an open host,
+and keeps at most what an open host may have: as its instance is admitted
+open (a resume by its session's secret, whatever instance it names then, a
+take-back by its instance, another of its sessions, also after the
+switchyard restarted), the links that instance made with the token count
+against its address from then on, as the links an open host mints do, and
+those that would leave the address past `switchyard.openHostLinks` are
+ended at once, the oldest first. An ended link is as a revoked one: its
+viewers are closed, a join answers 404, its file goes, and the host's
+`registered` leaves it out of `links`. Only that host's links end; the
+links of the address's other hosts stay as they are, and from then on the
+address's links, the host's among them, are bounded, give their places up
+and are refused as any open host's. A link the host asks for with the
+token while its instance holds a connection admitted open is counted the
+same way as it is made (refused when the address has no room). The
+registration itself is not refused. Nothing changes for a host that keeps
+its token, for an open host that never had one, or for the other hosts of
+the address. A host admitted with the token again keeps the links it holds
+then, as its own, and mints past the bound as before: the ones that ended
+do not come back. A link whose file the switchyard could not remove or
+rewrite is read back after a restart as a link made with the token, and
+counted again at its host's next open admission, which can only end more.
+A run
 the publishing server forgets (idle and evicted past its hundred, or one
 whose launch failed) has the links minted for it at the switchyard revoked
 over a member's publication still up, else any of the server's (the links

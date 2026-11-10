@@ -883,7 +883,7 @@ func TestAHostComingBackWaitsForLinksGivingTheirPlacesUp(t *testing.T) {
 	k := e.srv.keeper
 	k.fmu.Lock()
 	up := make(chan func(), 1)
-	go func() { up <- e.srv.hostUp("an-owner") }()
+	go func() { up <- e.srv.hostUp("an-owner", "") }()
 	select {
 	case <-up:
 		k.fmu.Unlock()
