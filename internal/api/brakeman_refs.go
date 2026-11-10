@@ -170,6 +170,22 @@ func refClass(kind string) string {
 	return brakeman.ClassRuns
 }
 
+// citedClasses is the class of every ref b cites and of the record each is
+// of, read by its turn or not: its footprint holds them (an earlier
+// brief's ref names none here; its own footprint admits it).
+func citedClasses(b brakeman.Brief) []string {
+	var out []string
+	for _, it := range b.Items {
+		for _, r := range it.Refs() {
+			out = append(out, refClass(r.Kind))
+			if s, ok := scopeOfRef(r); ok {
+				out = append(out, refClass(s.Kind))
+			}
+		}
+	}
+	return out
+}
+
 // resolveBriefRefs resolves every distinct ref of b, in the order the
 // brief first names them, for the request req (begun under req.Config)
 // under the configuration now, with what its turn read (log): a ref that

@@ -753,8 +753,9 @@ func kindSet[V any](m map[string]V) map[string]bool {
 }
 
 // Every operation an act may be granted names the kinds whose text holds
-// words it gives, and each is kept from every turn: withheld, or a kind
-// whose rows an act makes are left out by their actor.
+// words it gives, and each is kept from every turn: withheld, a kind
+// whose rows an act makes are left out by their actor, or a decision's,
+// whose plan's gates are left out by their anchor.
 func TestEveryActsWordsAreKeptFromTurns(t *testing.T) {
 	if len(historyActWords) != len(brakeman.Grantable) {
 		t.Fatalf("%d acts decided, %d grantable", len(historyActWords), len(brakeman.Grantable))
@@ -770,8 +771,8 @@ func TestEveryActsWordsAreKeptFromTurns(t *testing.T) {
 			switch {
 			case !slices.Contains(history.Kinds(), k):
 				t.Errorf("%s: %s is no kind of the index's", op, k)
-			case served && hk.place != placeTicket:
-				t.Errorf("%s: %s is served and not left out by its actor", op, k)
+			case served && hk.place != placeTicket && !slices.Contains(historyDecisionKinds, k):
+				t.Errorf("%s: %s is served and not left out by its actor or its anchor", op, k)
 			case !served && !withheld:
 				t.Errorf("%s: %s undecided", op, k)
 			}
@@ -849,15 +850,14 @@ func TestAnEntryIsOfItsRecord(t *testing.T) {
 
 // A turn's history read is bounded and reads on: at most limit entries
 // and maxObserveReply bytes a page, next reading on with nothing given
-// twice and nothing skipped, newest first; and its bound counts only rows
-// its grant covers: a comment of OTH, the row right past the newest
-// maxHistoryTurnScan (CND's), is served to a turn scoped to OTH by a read
-// of every comment as by its own line, and still once more of CND's are
-// indexed.
+// twice and nothing skipped, newest first; and it reads only rows its
+// grant covers: a comment of OTH, under 200 newer comments of CND, is
+// served to a turn scoped to OTH by a read of every comment as by its own
+// line, and still once more of CND's are indexed.
 func TestAHistoryReadIsBoundedAndReadsOn(t *testing.T) {
 	f := newObsFixture(t)
 	beyond := "comment:" + f.otherTicket + "/" + doneOf(t)(f.srv.dispatch.AddComment(t.Context(), adminOp("Ann"), f.otherTicket, "turnstile beyond")).ID
-	const n = maxHistoryTurnScan
+	const n = 200
 	for i := range n {
 		doneOf(t)(f.srv.dispatch.AddComment(t.Context(), adminOp("Ann"), f.ticket, fmt.Sprintf("turnstile note %d", i)))
 	}

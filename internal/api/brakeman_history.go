@@ -29,12 +29,13 @@ import (
 // Brakeman reads history within its grant (docs/plans/history.md, PR-11).
 // GET /api/brakeman/history is the History search's line answered for the
 // caller: the admin, or a Brakeman turn held to its grant as its refs are
-// (refGrant). A turn's read is answered from the rows its grant covers by
-// their own columns and from nothing else: the grant is a condition of the
-// index's statement (historyRestriction: the kinds it may be served, each
-// placed within the scope by the columns its rows carry), met before any
-// row is matched, ordered, counted or paged; the page is newest first,
-// never ranked; and each row is then admitted as Brakeman's refs are: every
+// (refGrant). A turn's read is answered from the rows its grant covers and
+// reads no other, in its cost too: the index draws them by their own
+// columns (historyRestriction: the kinds it may be served, each placed
+// within the scope by the one column its rows carry) and matches the
+// line's words against those rows alone, at most maxHistoryTurnExamine a
+// reply; the page is newest first, never ranked; and each row is then
+// admitted as Brakeman's refs are: every
 // class its text reads visible (historyKinds), the record it is of
 // resolving within the scope now, read from that record's own store and
 // never from the index. A row that cannot be judged (a record that cannot
@@ -57,12 +58,13 @@ const (
 	// costs the resolution of its record, read from its store.
 	maxHistoryTurnPage     = 20
 	defaultHistoryTurnPage = 10
-	// maxHistoryTurnScan bounds the index's rows one read looks at, each
-	// a row the grant's restriction holds: past it the answer is what was
-	// found, with next. historyTurnPage is how many the index is asked for
-	// at a time.
-	maxHistoryTurnScan = 200
-	historyTurnPage    = 50
+	// maxHistoryTurnExamine bounds the rows of the read's restriction the
+	// index draws for one reply, which is its whole cost: past it the
+	// answer is what was found, with cut "examined" when that is less
+	// than a page (history.MaxExamine). historyTurnPage is how many
+	// entries the index is asked for at a time.
+	maxHistoryTurnExamine = history.MaxExamine
+	historyTurnPage       = 50
 	// maxHistoryTurnAfter bounds a read's after: a continuation this
 	// route gave, an index cursor (at most maxHistoryAfter) sealed.
 	maxHistoryTurnAfter = 3 << 10
@@ -156,13 +158,16 @@ var historyWithheld = map[string]string{
 // (brakeman.Grantable), the kinds whose indexed text holds words the act
 // gives, each kept from every turn (TestEveryActsWordsAreKeptFromTurns): a
 // launch and a plan revision an act makes are left out by their actor
-// (historyRestriction), a run and its tasks titled by the launch's label
-// and a review are withheld kinds (historyWithheld). A routing's note is
-// kept in the decision's own history, which the index does not hold.
+// (historyRestriction), a plan's gate, whose question and id the revision
+// gives, by its anchor (historyDecisionKinds), a run and its tasks titled
+// by the launch's label and a review are withheld kinds
+// (historyWithheld). A routing's note is kept in the decision's own
+// history, which the index does not hold. TestNoActsWordsReachATurn takes
+// every text field of every act through what follows it.
 var historyActWords = map[string][]string{
 	brakeman.ActLaunchApprovedPlan: {"launch", "run", "task"},
 	brakeman.ActRequestRepair:      {"review.batch", "review.finding"},
-	brakeman.ActPrepareFollowup:    {"plan"},
+	brakeman.ActPrepareFollowup:    {"plan", "decision", "decision.response"},
 	brakeman.ActRouteDecision:      nil,
 }
 
@@ -521,73 +526,154 @@ func (hs *historyScope) turnEntry(ctx context.Context, out servedEntry, e histor
 	return te, append(readsOf(cited, classes, state), reads...), nil
 }
 
-// historyRestriction is the rows a turn's read may answer at all, as a
-// condition of the index's statement (history.Restriction): the kinds it
-// may be served (historyKinds, every class of each seen), each placed
-// within every scope of the grant by the columns its rows carry, as
-// brakeman.Scope.Admits places their records:
-//   - a run's part by its crew, its run, its repository and the project
-//     of the ticket it was launched from;
-//   - a session's entries by its repository, and its own id where the
-//     scope names sessions; a crew member's by its crew and run too, and
-//     none under a scope of projects, which no column of theirs places; a
-//     plain session's none under a scope of crews, runs or projects that
-//     names no session, as Admits has it;
-//   - a ticket's entries by its project, and under a scope of runs or
-//     crews only a launch's or a delivery's, by the run it names; none an
-//     act made (its actor);
+// historyRestriction is the rows a read may answer at all, which the
+// index draws them by (history.Restriction): the kinds it may be served
+// (historyKinds, every class of each seen), each placed within every scope
+// of the grant by one column its rows carry, as brakeman.Scope.Admits
+// places their records, and drawn by that column's values alone, so the
+// read never reads a row outside it, in what it answers or in its cost:
+//   - a run's part by its run's crew, its run, its repository or the
+//     project of the ticket the run was launched from; a decision's only
+//     where an asking task is its anchor (a plan's gate, whose question the
+//     plan revision's author wrote, is left out);
+//   - a session's entries by its repository or its own id (a plain
+//     session's and a crew member's alike), a crew member's alone by its
+//     run's crew or its run; none under a scope of projects, which no
+//     column of theirs places;
+//   - a ticket's entries by its project, none under a scope of runs or
+//     crews; a launch's by its project or the run it names, a delivery's
+//     by that run, neither under a scope of repositories (no column of
+//     theirs holds the run's), a delivery not under one of projects (nor
+//     the run's project); none an act made (its actor);
 //   - a brief's items, each then admitted on its footprint (resolveBrief).
 //
-// nil for the admin, whose read is of everything.
+// A place the scope puts on two columns at once (a run's rows under a
+// scope of repositories and crews) is not drawn at all: one column a
+// place. The admin's read is what a turn with every class and no scope is
+// served.
 func historyRestriction(o *observer) *history.Restriction {
+	sees, scopes := o.sees, o.grant.scopes
 	if o.tp == nil {
-		return nil
+		sees, scopes = func(string) bool { return true }, nil
 	}
-	byPlace := map[string][]string{}
-	for _, k := range slices.Sorted(maps.Keys(historyKinds)) {
-		hk := historyKinds[k]
-		if !slices.ContainsFunc(hk.classes, func(c string) bool { return !o.sees(c) }) {
-			byPlace[hk.place] = append(byPlace[hk.place], k)
-		}
-	}
-	in := func(conds []history.Cond, column string, values []string) []history.Cond {
-		if len(values) == 0 {
-			return conds
-		}
-		return append(conds, history.Cond{Column: column, Values: slices.Clone(values)})
-	}
-	run := []history.Cond{}
-	plain := []history.Cond{{Column: "run", Values: []string{""}}}
-	member := []history.Cond{{Column: "run", Values: []string{""}, Not: true}}
-	ticket := []history.Cond{{Column: "actor", Values: historyActors, Not: true}}
+	var repos, sessions, crews, runs, projects selector
 	plainOK, memberOK := true, true
-	for _, s := range o.grant.scopes {
-		sessions := make([]string, len(s.Sessions))
+	for _, s := range scopes {
+		refs := make([]string, len(s.Sessions))
 		for i, id := range s.Sessions {
-			sessions[i] = hSessionRef(id)
+			refs[i] = hSessionRef(id)
 		}
-		run = in(in(in(in(run, "crew", s.Crews), "run", s.Runs), "tree", s.Repos), "ticket.project", s.Projects)
-		plain = in(in(plain, "tree", s.Repos), "anchor", sessions)
+		repos, sessions, crews, runs, projects = repos.and(s.Repos), sessions.and(refs), crews.and(s.Crews), runs.and(s.Runs), projects.and(s.Projects)
 		if len(s.Sessions) == 0 && len(s.Crews)+len(s.Runs)+len(s.Projects) > 0 {
 			plainOK = false
 		}
-		member = in(in(in(in(member, "tree", s.Repos), "anchor", sessions), "crew", s.Crews), "run", s.Runs)
 		if len(s.Projects) > 0 {
 			memberOK = false
 		}
-		ticket = in(in(in(ticket, "project", s.Projects), "run", s.Runs), "run.crew", s.Crews)
 	}
+	// A run's id names its crew: runs and crews together are the runs of
+	// those crews, a crew alone the runs whose id names it.
+	ofRun := runs.as("run")
+	if crews.set && runs.set {
+		ofRun.values = slices.DeleteFunc(ofRun.values, func(r string) bool { return !slices.Contains(crews.values, crewOfRun(r)) })
+	} else if crews.set {
+		ofRun = crews.as("run.crew")
+	}
+	tree, anchor, project := repos.as("tree"), sessions.as("anchor"), projects.as("ticket.project")
 	r := &history.Restriction{Clauses: []history.Clause{}}
-	for _, c := range []struct {
-		place string
-		conds []history.Cond
-		ok    bool
-	}{{placeRun, run, true}, {placeSession, plain, plainOK}, {placeSession, member, memberOK}, {placeTicket, ticket, true}, {placeBrief, nil, true}} {
-		if kinds := byPlace[c.place]; c.ok && len(kinds) > 0 {
-			r.Clauses = append(r.Clauses, history.Clause{Kinds: kinds, Conds: c.conds})
+	add := func(kinds []string, keep []history.Cond, by ...placed) {
+		place, ok := placeOf(by...)
+		if !ok || len(kinds) == 0 {
+			return
+		}
+		r.Clauses = append(r.Clauses, history.Clause{Kinds: kinds, Place: place, Keep: keep})
+	}
+	seen := func(place string, ok func(string) bool) []string {
+		var out []string
+		for _, k := range slices.Sorted(maps.Keys(historyKinds)) {
+			hk := historyKinds[k]
+			if hk.place == place && ok(k) && !slices.ContainsFunc(hk.classes, func(c string) bool { return !sees(c) }) {
+				out = append(out, k)
+			}
+		}
+		return out
+	}
+	not := func(set ...string) func(string) bool { return func(k string) bool { return !slices.Contains(set, k) } }
+	only := func(set ...string) func(string) bool { return func(k string) bool { return slices.Contains(set, k) } }
+	asked := []history.Cond{{Column: "anchor.kind", Values: []string{brakeman.RefTask}}}
+	add(seen(placeRun, not(historyDecisionKinds...)), nil, ofRun, tree, project)
+	add(seen(placeRun, only(historyDecisionKinds...)), asked, ofRun, tree, project)
+	switch {
+	case plainOK && memberOK && !crews.set && !runs.set:
+		add(seen(placeSession, not()), nil, tree, anchor)
+	case memberOK && !plainOK && (crews.set || runs.set):
+		// A crew member's alone: its run's column places it.
+		if place, ok := placeOf(tree, anchor, ofRun); ok && place != nil && (place.Column == "run" || place.Column == "run.crew") {
+			add(seen(placeSession, not()), nil, ofRun)
 		}
 	}
+	act := []history.Cond{{Column: "actor", Values: historyActors, Not: true}}
+	if !crews.set && !runs.set {
+		add(seen(placeTicket, not(historyNamesRun...)), act, project)
+	}
+	if !repos.set {
+		add(seen(placeTicket, only("launch")), act, project, ofRun)
+		if !projects.set {
+			add(seen(placeTicket, only("delivery.verified")), act, ofRun)
+		}
+	}
+	add(seen(placeBrief, not()), nil)
 	return r
+}
+
+// historyDecisionKinds are the kinds of a decision's rows, whose anchor is
+// its asking task, or its run for a plan's gate (decisionAnchor).
+var historyDecisionKinds = []string{"decision", "decision.response"}
+
+// historyNamesRun are a ticket's kinds whose rows name a run (launch,
+// delivery): placed by that run too.
+var historyNamesRun = []string{"launch", "delivery.verified"}
+
+// selector is one selector of the grant's scopes: set when a scope names
+// it, its values those every scope that names it names.
+type selector struct {
+	set    bool
+	values []string
+}
+
+func (s selector) and(vs []string) selector {
+	switch {
+	case len(vs) == 0:
+		return s
+	case !s.set:
+		return selector{set: true, values: slices.Clone(vs)}
+	}
+	return selector{set: true, values: slices.DeleteFunc(slices.Clone(s.values), func(v string) bool { return !slices.Contains(vs, v) })}
+}
+
+// placed is a selector as the column it places rows by.
+type placed struct {
+	column string
+	selector
+}
+
+func (s selector) as(column string) placed { return placed{column, s} }
+
+// placeOf is the one column of by that is set, as a place (nil when none
+// is: every row of the kinds); ok false when two are, which no index
+// draws by.
+func placeOf(by ...placed) (*history.Cond, bool) {
+	var place *history.Cond
+	for _, p := range by {
+		if !p.set {
+			continue
+		}
+		if place != nil {
+			return nil, false
+		}
+		place = &history.Cond{Column: p.column, Values: slices.Clone(p.values)}
+	}
+	return place, true
 }
 
 // historyStores is nil when every store a read may resolve a row in is
@@ -690,16 +776,16 @@ func (s *Server) openContinuation(holder, line, next string) (string, bool) {
 // handleBrakemanHistory answers GET /api/brakeman/history?q=&limit=&after=:
 // the History search's entries the caller may read, newest first, at most
 // limit (1 to maxHistoryTurnPage, defaultHistoryTurnPage when absent) and
-// maxObserveReply bytes, next among them, {entries, next?, indexing:
+// maxObserveReply bytes, next among them, {entries, next?, cut?, indexing:
 // {state}}. The query's words and filters are the search's
 // (handleHistorySearch), its words matching and never ranking, Brakeman's
 // own runs and sessions left out (a turn's always, the admin's unless the
-// line names a crew or the kind brief.item), and a turn's read held to the
-// rows its grant's restriction covers (historyRestriction) before any of
-// them is looked at. next, on a reply with entries, reads on after its
-// last entry (sealed for the caller and the line); a reply with none
-// carries none, so a read whose maxHistoryTurnScan rows looked at the
-// grant admits none of ends there.
+// line names a crew or the kind brief.item), and the read answered from
+// the rows its restriction covers (historyRestriction; the admin's, every
+// kind a turn may be served), drawn by their own columns, at most
+// maxHistoryTurnExamine of them: cut "examined" when they held less than a
+// page. next, on a reply with entries, reads on after its last entry
+// (sealed for the caller and the line); a reply with none carries none.
 func (s *Server) handleBrakemanHistory(w http.ResponseWriter, r *http.Request, o *observer) {
 	h, ok := s.historyRead(w, r, "q", "limit", "after")
 	if !ok {
@@ -760,6 +846,15 @@ func (s *Server) handleBrakemanHistory(w http.ResponseWriter, r *http.Request, o
 		hq.ExceptCrews = []string{crew.ClassBrakeman}
 	}
 	hq.Restrict, hq.Newest = historyRestriction(o), true
+	if o.tp != nil && o.sees(brakeman.ClassDispatch) && s.brakeman != nil {
+		// A filter on Dispatch's fields reads them, by which entries it
+		// finds, whether it finds any or not.
+		for _, name := range []string{"ticket", "project"} {
+			if _, ok := hq.Filter(name); ok {
+				s.brakeman.usedClass(o.tp.req.ID, brakeman.ClassDispatch)
+			}
+		}
+	}
 	// The indexing's state alone: how far the index reaches, and what it
 	// dropped, are counts of rows a turn may not see.
 	indexing := func(pageState string) map[string]any {
@@ -781,22 +876,25 @@ func (s *Server) handleBrakemanHistory(w http.ResponseWriter, r *http.Request, o
 		bound = int(b)
 	}
 	out := []turnHistoryEntry{}
-	used, scanned := historyReplyReserve, 0
+	used, examine, cut := historyReplyReserve, maxHistoryTurnExamine, false
 	last, state := "", ""
 	for done := false; !done; {
-		hq.Limit, hq.After = historyTurnPage, cursor
+		if examine <= 0 {
+			cut = true
+			break
+		}
+		hq.Limit, hq.After, hq.Examine = historyTurnPage, cursor, examine
 		page, err := ix.Search(ctx, hq)
 		if err != nil {
 			h.fail(err)
 			return
 		}
-		state = page.State
+		state, examine = page.State, examine-page.Drawn
 		for i, hit := range page.Entries {
-			if len(out) == int(limit) || scanned == maxHistoryTurnScan {
+			if len(out) == int(limit) {
 				done = true
 				break
 			}
-			scanned++
 			scope, cited, res, ok, err := hs.admit(ctx, hit.Entry)
 			var te turnHistoryEntry
 			var reads []brakeman.Read
@@ -831,10 +929,19 @@ func (s *Server) handleBrakemanHistory(w http.ResponseWriter, r *http.Request, o
 			if page.Next == "" {
 				break
 			}
+			if page.Cut == history.CutExamined {
+				cut = true
+				break
+			}
 			cursor = page.Next
 		}
 	}
 	reply := map[string]any{"entries": out, "indexing": indexing(state)}
+	if cut && len(out) < int(limit) {
+		// The rows the reply may examine are spent short of a page: the
+		// line is to be narrowed (a time window, a kind).
+		reply["cut"] = history.CutExamined
+	}
 	if len(out) > 0 && last != "" {
 		// After the last entry served, whether or not the index holds
 		// more: whether it does is a count of rows the caller may not see.

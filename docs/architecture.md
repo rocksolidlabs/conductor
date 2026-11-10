@@ -689,8 +689,9 @@ changed since a time or since the last complete briefing's watermarks
 windows with their gaps, Dispatch's change feed), the status Conductor
 computes, a screen, overlapping changes, earlier briefs and the History
 search (`brakeman_history.go`: answered newest first from the rows the
-turn's grant covers by their own columns, the grant a condition of the
-index's query before any row is ordered or bounded; an entry only when
+turn's grant covers, which the index draws by their own columns and reads
+no other, at most 1,000 a reply, the line's words matched against those
+rows' texts alone (`internal/history/draw.go`); an entry only when
 every class its text reads is visible and the record it is of resolves
 within the grant from its own store, never a Brakeman turn's own run or
 session, one stored record's with no links, each cited by its ref and
