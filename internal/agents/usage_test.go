@@ -136,6 +136,23 @@ func helperEnd() int {
 	return 0
 }
 
+// helperAfter writes what follows the answer: what the test feeds
+// through the named pipe USAGE_AFTER, copied to stdout as it arrives, then
+// USAGE_AFTER_STDERR bytes on stderr in writes of 64 KiB.
+func helperAfter() {
+	if path := os.Getenv("USAGE_AFTER"); path != "" {
+		if f, err := os.Open(path); err == nil {
+			_, _ = io.Copy(os.Stdout, f)
+			f.Close()
+		}
+	}
+	n, _ := strconv.Atoi(os.Getenv("USAGE_AFTER_STDERR"))
+	chunk := strings.Repeat("e", 64<<10)
+	for ; n > 0; n -= len(chunk) {
+		os.Stderr.WriteString(chunk[:min(n, len(chunk))])
+	}
+}
+
 func catFile(env string) {
 	if f, err := os.Open(os.Getenv(env)); err == nil {
 		_, _ = io.Copy(os.Stdout, f)
@@ -239,6 +256,7 @@ func claudeHelper() int {
 		}
 		helperStart()
 		catFile("USAGE_STREAM")
+		helperAfter()
 		return helperEnd()
 	default:
 		return 2
@@ -276,8 +294,17 @@ func codexHelper() int {
 			return 4
 		}
 		helperLog(helperCall{Method: m.Method})
+		// USAGE_NOREPLY: the limits are never answered; what follows is
+		// written and the run ends as USAGE_THEN says, stdin still open.
+		if m.Method == "account/rateLimits/read" && os.Getenv("USAGE_NOREPLY") != "" {
+			helperAfter()
+			return helperEnd()
+		}
 		if m.Method != "" && m.Method == os.Getenv("USAGE_RPC_ERROR") {
 			os.Stdout.WriteString(`{"id":` + string(m.ID) + `,"error":{"code":-32600,"message":"refused for ` + os.Getenv("USAGE_MARK") + `"}}` + "\n")
+			if m.Method == "account/rateLimits/read" {
+				helperAfter()
+			}
 			continue
 		}
 		switch m.Method {
@@ -290,6 +317,7 @@ func codexHelper() int {
 			reply(m.ID, "USAGE_ACCOUNT")
 		case "account/rateLimits/read":
 			reply(m.ID, "USAGE_LIMITS")
+			helperAfter()
 		case "initialized":
 		default:
 			os.Stdout.WriteString(`{"id":` + string(m.ID) + `,"error":{"code":-32601,"message":"fixture: no such method"}}` + "\n")

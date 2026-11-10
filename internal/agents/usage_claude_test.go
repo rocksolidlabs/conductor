@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -181,6 +182,14 @@ func TestClaudeUsageInconclusive(t *testing.T) {
 		{"no command", func(t *testing.T, pidfile string) []string {
 			return []string{"USAGE_STREAM=" + variant(t, "claude-usage.jsonl", `"local_command":"usage",`, ``)}
 		}, "named no local command"},
+		// An explicit null is not an absent field: the error flag and the
+		// subtype given as null fail closed (review round 3).
+		{"error flag null", func(t *testing.T, pidfile string) []string {
+			return []string{"USAGE_STREAM=" + variant(t, "claude-usage.jsonl", `"is_error":false`, `"is_error":null`)}
+		}, "says the /usage run failed"},
+		{"subtype null", func(t *testing.T, pidfile string) []string {
+			return []string{"USAGE_STREAM=" + variant(t, "claude-usage.jsonl", `"type":"result","subtype":"success"`, `"type":"result","subtype":null`)}
+		}, "says the /usage run failed"},
 		{"bound", func(t *testing.T, pidfile string) []string {
 			p := filepath.Join(t.TempDir(), "big.jsonl")
 			if err := os.WriteFile(p, []byte(strings.Repeat("y", usageMaxLine+10)+"\n"), 0o600); err != nil {
@@ -451,64 +460,169 @@ func TestClaudeUsageKeepsNoToolWords(t *testing.T) {
 	}
 }
 
-// TestClaudeVerdictTable holds claudeVerdict, the one table from a result
-// line's evidence to the run's outcome, over every combination of the
-// fields the plan names: num_turns absent, null, zero, above zero or
-// malformed; local_command absent, null, "usage", another or malformed;
-// the error flag; and a line or part the stream could not read. The proof
-// of a turn comes first, whatever else is there; Local needs all of its
-// evidence and nothing against it; every other row is Inconclusive.
+// fieldRecorder reads a line's fields as jsonFields does, and notes the
+// name of every field asked.
+type fieldRecorder struct {
+	f    jsonFields
+	read map[string]bool
+}
+
+func (r fieldRecorder) get(name string, out any) fieldIs {
+	r.read[name] = true
+	return r.f.get(name, out)
+}
+
+// TestClaudeVerdictTable walks claudeVerdict, the one table from a result
+// line's evidence to the run's outcome: every field the table reads, each
+// absent, null, of a wrong type and at each valid value, in every
+// combination with the others and with a line or part the stream could
+// not read. A null takes the decision of a wrong type, the fail-closed one,
+// for every field. The proof of a turn comes first, whatever else is
+// there; Local needs all of its evidence and nothing against it; every
+// other row is Inconclusive. The fields the table reads are noted as it
+// reads them: a field it reads that the walk does not name, a field added
+// later with no decision here, fails the test.
 func TestClaudeVerdictTable(t *testing.T) {
-	turnsOf := map[string]string{"absent": "", "null": `"num_turns":null,`, "0": `"num_turns":0,`, "1": `"num_turns":1,`, "3": `"num_turns":3,`, "-1": `"num_turns":-1,`, "string": `"num_turns":"1",`, "fraction": `"num_turns":0.5,`}
-	commandOf := map[string]string{"absent": "", "null": `"local_command":null,`, "usage": `"local_command":"usage",`, "other": `"local_command":"compact",`, "number": `"local_command":7,`}
-	errorOf := map[string]string{"absent": "", "false": `"is_error":false,`, "true": `"is_error":true,`, "malformed": `"is_error":"no",`, "error subtype": `"subtype":"error_during_execution",`, "malformed subtype": `"subtype":3,`}
+	type value struct {
+		label, json string // json "" for absent
+		kind        string // absent, null, wrong (a wrong type) or valid
+		says        string // what it says of the run, for want
+	}
+	walk := []struct {
+		name   string
+		values []value
+	}{
+		{"num_turns", []value{
+			{"absent", "", "absent", "none"}, {"null", "null", "null", "none"},
+			{"a string", `"1"`, "wrong", "none"}, {"a fraction", "0.5", "wrong", "none"}, {"a boolean", "true", "wrong", "none"}, {"an object", "{}", "wrong", "none"},
+			{"-1", "-1", "valid", "none"}, {"0", "0", "valid", "zero"}, {"1", "1", "valid", "turn"}, {"3", "3", "valid", "turn"},
+		}},
+		{"local_command", []value{
+			{"absent", "", "absent", "none"}, {"null", "null", "null", "none"},
+			{"a number", "7", "wrong", "none"}, {"a boolean", "false", "wrong", "none"}, {"a list", `["usage"]`, "wrong", "none"},
+			{"usage", `"usage"`, "valid", "usage"}, {"compact", `"compact"`, "valid", "other"}, {"empty", `""`, "valid", "other"},
+		}},
+		{"is_error", []value{
+			{"absent", "", "absent", "clean"}, {"null", "null", "null", "failed"},
+			{"a string", `"no"`, "wrong", "failed"}, {"a number", "0", "wrong", "failed"},
+			{"false", "false", "valid", "clean"}, {"true", "true", "valid", "failed"},
+		}},
+		{"subtype", []value{
+			{"absent", "", "absent", "clean"}, {"null", "null", "null", "failed"},
+			{"a number", "3", "wrong", "failed"}, {"a boolean", "true", "wrong", "failed"},
+			{"success", `"success"`, "valid", "clean"}, {"error_during_execution", `"error_during_execution"`, "valid", "failed"},
+		}},
+	}
+	// The walk itself: each field absent, null, of a wrong type and valid,
+	// and its null deciding as each of its wrong types does.
+	for _, w := range walk {
+		kinds := map[string]bool{}
+		var null string
+		for _, v := range w.values {
+			kinds[v.kind] = true
+			if v.kind == "null" {
+				null = v.says
+			}
+		}
+		for _, k := range []string{"absent", "null", "wrong", "valid"} {
+			if !kinds[k] {
+				t.Fatalf("%s: no %s value walked", w.name, k)
+			}
+		}
+		for _, v := range w.values {
+			if v.kind == "wrong" && v.says != null {
+				t.Fatalf("%s: null says %s, %s says %s", w.name, null, v.label, v.says)
+			}
+		}
+	}
 	// The plan's rows, read in their order.
-	want := func(turns, command, flag string, bad bool) Outcome {
+	want := func(says map[string]string, bad bool) Outcome {
 		switch {
-		case turns == "1" || turns == "3", command == "other":
+		case says["num_turns"] == "turn", says["local_command"] == "other":
 			return Turned
-		case bad, turns != "0", command != "usage", flag != "absent" && flag != "false":
+		case bad, says["num_turns"] != "zero", says["local_command"] != "usage", says["is_error"] != "clean", says["subtype"] != "clean":
 			return Inconclusive
 		}
 		return Local
 	}
-	n := 0
-	for turns, tf := range turnsOf {
-		for command, cf := range commandOf {
-			for flag, ef := range errorOf {
-				for _, bad := range []bool{false, true} {
-					line := `{` + tf + cf + ef + `"type":"result"}`
-					var f jsonFields
-					if err := json.Unmarshal([]byte(line), &f); err != nil {
-						t.Fatalf("%s: %v", line, err)
-					}
-					why := ""
-					if bad {
-						why = "Claude Code printed a line that is not JSON"
-					}
-					got, words := claudeVerdict(f, why)
-					if w := want(turns, command, flag, bad); got != w {
-						t.Errorf("turns %s, command %s, flag %s, bad line %v: %v, want %v", turns, command, flag, bad, got, w)
-					}
-					if (got == Inconclusive) != (words != "") {
-						t.Errorf("%s: outcome %v with words %q", line, got, words)
-					}
-					n++
+	read := map[string]bool{}
+	rows := 0
+	var visit func(i int, parts []string, says map[string]string, labels []string)
+	visit = func(i int, parts []string, says map[string]string, labels []string) {
+		if i < len(walk) {
+			for _, v := range walk[i].values {
+				p := parts
+				if v.json != "" {
+					p = append(slices.Clone(parts), `"`+walk[i].name+`":`+v.json)
 				}
+				s := maps.Clone(says)
+				s[walk[i].name] = v.says
+				visit(i+1, p, s, append(slices.Clone(labels), walk[i].name+" "+v.label))
 			}
+			return
+		}
+		line := `{` + strings.Join(append(slices.Clone(parts), `"type":"result"`), ",") + `}`
+		var f jsonFields
+		if err := json.Unmarshal([]byte(line), &f); err != nil {
+			t.Fatalf("%s: %v", line, err)
+		}
+		for _, bad := range []bool{false, true} {
+			why := ""
+			if bad {
+				why = "Claude Code printed a line that is not JSON"
+			}
+			got, words := claudeVerdict(fieldRecorder{f, read}, why)
+			if w := want(says, bad); got != w {
+				t.Errorf("%s, bad line %v: %v, want %v", strings.Join(labels, ", "), bad, got, w)
+			}
+			if (got == Inconclusive) != (words != "") {
+				t.Errorf("%s: outcome %v with words %q", line, got, words)
+			}
+			rows++
 		}
 	}
-	if n != 8*5*6*2 {
-		t.Fatalf("%d rows", n)
+	visit(0, nil, map[string]string{}, nil)
+	total := 2
+	for _, w := range walk {
+		total *= len(w.values)
 	}
-	// The rows the round's finding named, as literals.
+	if rows != total {
+		t.Fatalf("%d rows, want %d", rows, total)
+	}
+	var walked []string
+	for _, w := range walk {
+		walked = append(walked, w.name)
+	}
+	if got := slices.Sorted(maps.Keys(read)); !slices.Equal(got, slices.Sorted(slices.Values(walked))) {
+		t.Fatalf("claudeVerdict reads %q; the walk decides %q: a field read needs its row here", got, walked)
+	}
+
+	// The one reader of a field: absent, null, a value and a wrong type
+	// are four answers.
+	var f jsonFields
+	if err := json.Unmarshal([]byte(`{"n":null,"v":1,"w":"x"}`), &f); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	for name, is := range map[string]fieldIs{"a": fieldAbsent, "n": fieldNull, "v": fieldValue, "w": fieldWrong} {
+		if got := f.get(name, &n); got != is {
+			t.Errorf("get(%s): %v, want %v", name, got, is)
+		}
+	}
+
+	// The rows the review rounds named, as literals.
 	for line, w := range map[string]Outcome{
-		`{"type":"result","local_command":"compact"}`:                 Turned,
-		`{"type":"result","num_turns":0,"local_command":"usage"}`:     Local,
-		`{"type":"result","num_turns":0}`:                             Inconclusive,
-		`{"type":"result","local_command":"usage"}`:                   Inconclusive,
-		`{"type":"result","num_turns":1,"local_command":"usage"}`:     Turned,
-		`{"type":"result","num_turns":"x","local_command":"compact"}`: Turned,
+		`{"type":"result","local_command":"compact"}`:                                              Turned,
+		`{"type":"result","num_turns":0,"local_command":"usage"}`:                                  Local,
+		`{"type":"result","num_turns":0}`:                                                          Inconclusive,
+		`{"type":"result","local_command":"usage"}`:                                                Inconclusive,
+		`{"type":"result","num_turns":1,"local_command":"usage"}`:                                  Turned,
+		`{"type":"result","num_turns":"x","local_command":"compact"}`:                              Turned,
+		`{"type":"result","num_turns":0,"local_command":"usage","is_error":null,"subtype":null}`:   Inconclusive,
+		`{"type":"result","num_turns":0,"local_command":"usage","is_error":null}`:                  Inconclusive,
+		`{"type":"result","num_turns":0,"local_command":"usage","is_error":false,"subtype":null}`:  Inconclusive,
+		`{"type":"result","num_turns":1,"local_command":"usage","is_error":null,"subtype":null}`:   Turned,
+		`{"type":"result","num_turns":0,"local_command":"compact","is_error":null,"subtype":null}`: Turned,
 	} {
 		var f jsonFields
 		if err := json.Unmarshal([]byte(line), &f); err != nil {

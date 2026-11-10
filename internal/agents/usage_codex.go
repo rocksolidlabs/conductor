@@ -105,15 +105,31 @@ func readCodexUsage(ctx context.Context, in UsageInput) (rep UsageReport) {
 	if stop != nil {
 		return *stop
 	}
-	fail := func(words string) UsageReport { return UsageReport{State: UsageError, Words: words, Version: v} }
 	proc, err := startUsage(ctx, p.with(codexAppServerArgs...), in, true, false)
 	if err != nil {
 		if w := ended(ctx, "Codex", codexUsageTimeout); w != "" {
-			return fail(w)
+			return UsageReport{State: UsageError, Words: w, Version: v}
 		}
-		return fail("Codex could not be started")
+		return UsageReport{State: UsageError, Words: "Codex could not be started", Version: v}
 	}
-	defer proc.end()
+	rep = codexExchange(proc, v)
+	// The one place the read is decided, once the app server has ended,
+	// what it printed after its last answer read under the same bounds
+	// (usageProc.end): a bound passed at any time fails the read, whatever
+	// it had answered. Codex refuses nothing for good, so nothing stands
+	// past a bound. With none passed, the answer stands however the server
+	// then ended (its exit, the deadline).
+	proc.end()
+	if w := proc.boundWords("Codex"); w != "" {
+		return UsageReport{State: UsageError, Words: w, Version: v}
+	}
+	return rep
+}
+
+// codexExchange sends codexUsageMethods and maps their answers; the
+// caller ends the app server and decides the read.
+func codexExchange(proc *usageProc, v string) UsageReport {
+	fail := func(words string) UsageReport { return UsageReport{State: UsageError, Words: words, Version: v} }
 	c := codexClient{proc: proc}
 	var acct codexAccount
 	if w := c.call(1, codexUsageMethods[0], map[string]any{"clientInfo": map[string]string{"name": "conductor", "version": version.Version}}, nil); w != "" {
@@ -141,8 +157,7 @@ func readCodexUsage(ctx context.Context, in UsageInput) (rep UsageReport) {
 	if w := c.call(3, codexUsageMethods[3], nil, &lim); w != "" {
 		return fail(w)
 	}
-	proc.end()
-	rep, err = codexReport(lim)
+	rep, err := codexReport(lim)
 	if err != nil {
 		return fail("Codex's rate limits: " + err.Error())
 	}

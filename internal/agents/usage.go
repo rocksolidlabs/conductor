@@ -137,7 +137,7 @@ type UsageCredit struct {
 // is kept, never after a trim (TestUsageBoundEdges holds each at its edge).
 const (
 	usageMaxLine     = 1 << 20  // bytes read for one stdout line, its final '\n' alone not counted ('\r', spaces and a blank line's bytes are)
-	usageMaxOutput   = 4 << 20  // every byte read from a program's stdout: lines, terminators, blank lines, and what is drained at its end
+	usageMaxOutput   = 4 << 20  // every byte read from a program's stdout, from its first to its exit: lines, terminators, blank lines, and what it prints after its answer
 	versionMaxOutput = 64 << 10 // every byte of a version's print, stdout and stderr together: more is no version
 	usageMaxWords    = 300      // bytes of a report's words, cut on a character's boundary
 	usageMaxName     = 80       // bytes of a window's name as shown, its prefix ("Weekly, ") included
@@ -436,12 +436,15 @@ func (c *countWriter) Write(p []byte) (int, error) {
 // child's argv after any admission and immediately before the context's
 // last look and the start; usageStarted once the child is started;
 // usageWaiting when its end begins (its answer or its output's end read,
-// its stdin closed), before it waits for the exit;
+// its stdin closed), before the rest of its output is read; usageDrained
+// once that rest is read to its end within the bounds, before it waits
+// for the exit (never for a child past a bound, which is not waited for);
 // usageReaped once it is reaped. Each is set before a read starts.
 var (
 	usageStarting = func([]string) {}
 	usageStarted  = func([]string) {}
 	usageWaiting  = func([]string) {}
+	usageDrained  = func([]string) {}
 	usageReaped   = func([]string) {}
 )
 
@@ -554,11 +557,15 @@ func (p *usageProc) kill() {
 // closeOut closes the read end of the output, once.
 func (p *usageProc) closeOut() { p.outOnce.Do(func() { _ = p.out.Close() }) }
 
-// end ends a child whose answer is read, or whose output ended: its stdin
-// closed, what it still prints read and dropped (drain) so it is never
-// held writing, then the starter's order (usageProc): its exit, or the
-// read's deadline; the rest of its group killed; its reaping. Idempotent;
-// called by the read's goroutine alone.
+// end ends a child whose answer is read, or whose output ended, or whose
+// output passed a bound: its stdin closed, what it still prints read
+// through the same bounds as its answer and dropped (drain), so it is
+// never held writing, then the starter's order (usageProc): its exit, or
+// the read's deadline; the rest of its group killed; its reaping. A child
+// past a bound, before its answer or after it, is no more read, and so
+// not waited for (stop). Every reader ends every child it read through
+// end, and only then decides the read (the bound passed, if any, is
+// boundWords'). Idempotent; called by the read's goroutine alone.
 func (p *usageProc) end() {
 	if p.ended {
 		return
@@ -567,10 +574,12 @@ func (p *usageProc) end() {
 		_ = p.stdin.Close()
 	}
 	usageWaiting(p.argv)
-	if !p.lines.drain() {
+	p.lines.drain()
+	if p.lines.passed != nil {
 		p.stop()
 		return
 	}
+	usageDrained(p.argv)
 	select {
 	case <-p.exited:
 	case <-p.ctx.Done():
@@ -631,53 +640,72 @@ func (p *usageProc) exitedFailing() bool {
 }
 
 // why says, in Conductor's words, how the program's read ended without an
-// answer: its deadline, a bound, or its end with its exit. It ends the
-// program first (stop past a bound, else end). The tool's own text is
-// never in it.
+// answer (err, what the read last got): a bound passed, its deadline, or
+// its end with its exit. It ends the program first (end). The tool's own
+// text is never in it.
 func (p *usageProc) why(tool string, err error, timeout time.Duration) string {
-	if errors.Is(err, errLineTooLong) || errors.Is(err, errOutputTooLarge) {
-		p.stop()
-	} else {
-		p.end()
+	p.end()
+	if w := p.boundWords(tool); w != "" {
+		return w
 	}
 	switch {
 	case ended(p.ctx, tool, timeout) != "":
 		return ended(p.ctx, tool, timeout)
-	case errors.Is(err, errLineTooLong):
-		return tool + " printed a line longer than 1 MiB"
-	case errors.Is(err, errOutputTooLarge):
-		return tool + " printed more than 4 MiB"
 	case errors.Is(err, io.EOF), errors.Is(err, os.ErrClosed), errors.Is(err, io.ErrUnexpectedEOF):
 		return tool + " ended before it answered" + p.exitWords()
 	}
 	return tool + " could not be read" + p.exitWords()
 }
 
+// boundWords says, in Conductor's words, which bound the program's output
+// passed at any time of the read, before its answer or after it; "" when
+// none did. A reader asks it once the program has ended (end): a bound
+// passed is the read's failure, whatever answer was read before it.
+func (p *usageProc) boundWords(tool string) string {
+	switch {
+	case errors.Is(p.lines.passed, errLineTooLong):
+		return tool + " printed a line longer than 1 MiB"
+	case errors.Is(p.lines.passed, errOutputTooLarge):
+		return tool + " printed more than 4 MiB"
+	}
+	return ""
+}
+
 // boundedLines reads lines of at most usageMaxLine bytes, and at most
-// usageMaxOutput bytes in all, applying both while it reads.
+// usageMaxOutput bytes in all, applying both while it reads. next is the
+// one path by which a reader reads a program's stdout as lines, its
+// answer and what follows it alike (drain is next to the end).
 type boundedLines struct {
 	r     *bufio.Reader
-	total int // every byte read from the output, by next and drain
+	total int // every byte read from the output
+	// passed is the first bound passed (errLineTooLong, errOutputTooLarge):
+	// kept for the read's decision, and every next after it returns it.
+	passed error
 }
 
 // next returns the next non-empty line, trimmed; io.EOF at the end. The
 // line bound counts every byte read for the line but its final '\n',
 // before any trimming: a '\r', a space and a blank line's bytes count.
 func (b *boundedLines) next() ([]byte, error) {
+	if b.passed != nil {
+		return nil, b.passed
+	}
 	for {
 		var line []byte
 		for {
 			chunk, err := b.r.ReadSlice('\n')
 			b.total += len(chunk)
 			if b.total > usageMaxOutput {
-				return nil, errOutputTooLarge
+				b.passed = errOutputTooLarge
+				return nil, b.passed
 			}
 			n := len(line) + len(chunk)
 			if err == nil {
 				n-- // the '\n' that ends the line
 			}
 			if n > usageMaxLine {
-				return nil, errLineTooLong
+				b.passed = errLineTooLong
+				return nil, b.passed
 			}
 			line = append(line, chunk...)
 			if err == bufio.ErrBufferFull {
@@ -694,18 +722,13 @@ func (b *boundedLines) next() ([]byte, error) {
 	}
 }
 
-// drain reads the output to its end and drops it, counted in the same
-// total; false once that passes usageMaxOutput, with the rest unread.
-func (b *boundedLines) drain() bool {
-	buf := make([]byte, 32<<10)
+// drain reads the rest of the output through next, under both bounds,
+// and drops it: to its end, its close, or the first bound passed (then
+// passed), with the rest unread.
+func (b *boundedLines) drain() {
 	for {
-		n, err := b.r.Read(buf)
-		b.total += n
-		if b.total > usageMaxOutput {
-			return false
-		}
-		if err != nil {
-			return true
+		if _, err := b.next(); err != nil {
+			return
 		}
 	}
 }
