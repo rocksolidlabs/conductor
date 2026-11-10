@@ -2524,12 +2524,8 @@ func lastID[T any](list []T) string {
 // content). A brief with no footprint kept counts every class its
 // snapshot had on.
 func (o *observer) briefWithin(req brakeman.Request) bool {
-	classes := brakeman.Classes
-	if req.Footprint != nil {
-		classes = req.Footprint.Classes
-	}
-	for _, c := range classes {
-		if (req.Footprint != nil || req.Config.Visibility.Has(c)) && !o.grant.sees(c) {
+	for _, c := range briefClasses(req) {
+		if !o.grant.sees(c) {
 			return false
 		}
 	}
@@ -2537,13 +2533,11 @@ func (o *observer) briefWithin(req brakeman.Request) bool {
 }
 
 // noteFootprint notes an earlier brief given whole as read in every class
-// its footprint used: derived content carries its sources' grant into
-// the turn that reads it.
+// it was admitted on (briefClasses: its footprint's, or every class its
+// snapshot had on for one that keeps none): derived content carries its
+// sources' grant into the turn that reads it.
 func (o *observer) noteFootprint(req brakeman.Request) {
-	classes := []string{}
-	if req.Footprint != nil {
-		classes = req.Footprint.Classes
-	}
+	classes := briefClasses(req)
 	for _, c := range classes {
 		o.note(brakeman.Ref{Kind: brakeman.RefBrief, Request: req.ID}, c, req.State, "")
 	}

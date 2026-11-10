@@ -61,6 +61,10 @@ const (
 	// every match when there are no filters, else those it read that pass
 	// them.
 	CutScanned = "scanned"
+	// CutExamined: a restricted read (Query.Newest) drew Query.Examine
+	// rows of its restriction before it found a page's worth; Next reads
+	// on after the last row it drew.
+	CutExamined = "examined"
 )
 
 var (
@@ -90,6 +94,19 @@ type Query struct {
 	// (docs/plans/history.md, "A Brakeman brief"). Part of the query's
 	// digest, so a cursor of one is refused by the other.
 	ExceptCrews []string
+	// Restrict is every row a Newest search may answer at all, whatever
+	// its line (Restriction), and a Newest search's only source of rows:
+	// they are drawn by its own columns, so no row outside it is read,
+	// matched, ordered, counted or paged. Part of the query's digest.
+	Restrict *Restriction
+	// Newest answers from Restrict's rows, newest first, its words
+	// matching and never ranking (searchDrawn): no score (a cursor's is
+	// 0), no Total, and its hits carry their snippets alone (no repeats,
+	// no links). It draws at most Examine rows (0: MaxExamine) and says so
+	// (CutExamined) when they hold less than a page. Part of the query's
+	// digest, Examine not.
+	Newest  bool
+	Examine int
 
 	terms   []string // FTS5 strings, each a condition of its own
 	none    bool     // words were typed and none is kept: nothing matches
@@ -380,17 +397,132 @@ func termKey(term string) string {
 	return b.String()
 }
 
+// Restriction is the rows a search may answer: a row is within it when it
+// meets one of its clauses, so one with none admits no row. It is made of
+// the rows' own columns alone, and a Newest search reads its rows by them
+// (searchDrawn): each clause's rows are drawn by their kind and the column
+// that places them, through an index of those columns, so a row of
+// another kind or another value of that column is never read.
+type Restriction struct {
+	Clauses []Clause `json:"c"`
+}
+
+// Clause is rows of its kinds whose Place column holds one of its values
+// (every row of its kinds when it has none) and whose columns meet each of
+// its Keep conditions, which are tested on the rows drawn alone. A kind is
+// of one clause at most.
+type Clause struct {
+	Kinds []string `json:"k"`
+	Place *Cond    `json:"p,omitempty"`
+	Keep  []Cond   `json:"w,omitempty"`
+}
+
+// Cond is a column of a row (restrictColumns; a Place one of
+// placeColumns, never Not) whose value is one of Values, or, Not, none of
+// them.
+type Cond struct {
+	Column string   `json:"c"`
+	Values []string `json:"v"`
+	Not    bool     `json:"n,omitempty"`
+}
+
+// restrictColumns are the columns a Cond names, each an expression over
+// the row: its own, the project of its ticket's key, the crew of its run's
+// id (a key less its dash and number, an id less its dash and eight hex
+// digits; "" when there is none) and the kind of the ref it is anchored
+// to (the anchor up to its colon).
+var restrictColumns = map[string]string{
+	"project":        "e.project",
+	"tree":           "e.tree",
+	"crew":           "e.crew",
+	"run":            "e.run",
+	"anchor":         "e.anchor",
+	"actor":          "e.actor",
+	"ticket.project": "substr(e.ticket, 1, instr(e.ticket, '-') - 1)",
+	"run.crew":       "substr(e.run, 1, max(length(e.run) - 9, 0))",
+	"anchor.kind":    "substr(e.anchor, 1, max(instr(e.anchor, ':') - 1, 0))",
+}
+
+// check refuses a restriction that names a column restrictColumns does
+// not hold, places by one placeColumns does not, or holds a kind in two
+// clauses.
+func (r *Restriction) check() error {
+	if r == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, c := range r.Clauses {
+		for _, k := range c.Kinds {
+			if seen[k] {
+				return badQuery("a restriction holds the kind %q twice", k)
+			}
+			seen[k] = true
+		}
+		if c.Place != nil {
+			if _, ok := placeColumns[c.Place.Column]; !ok || c.Place.Column == "" || c.Place.Not {
+				return badQuery("a restriction places by the column %q", c.Place.Column)
+			}
+		}
+		for _, w := range c.Keep {
+			if _, ok := restrictColumns[w.Column]; !ok {
+				return badQuery("a restriction names the column %q", w.Column)
+			}
+		}
+	}
+	return nil
+}
+
+// sql is the restriction as one condition over the entries, e, every
+// value bound as an argument: what a row drawn by it is checked against
+// again before anything else is asked of it.
+func (r *Restriction) sql() (string, []any) {
+	var args []any
+	in := func(expr string, vs []string, not bool) string {
+		if len(vs) == 0 {
+			if not {
+				return "1"
+			}
+			return "0"
+		}
+		for _, v := range vs {
+			args = append(args, v)
+		}
+		op := " IN ("
+		if not {
+			op = " NOT IN ("
+		}
+		return expr + op + marks(len(vs)) + ")"
+	}
+	var ors []string
+	for _, c := range r.Clauses {
+		ands := []string{in("e.kind", c.Kinds, false)}
+		if c.Place != nil {
+			ands = append(ands, in(restrictColumns[c.Place.Column], c.Place.Values, false))
+		}
+		for _, w := range c.Keep {
+			ands = append(ands, in(restrictColumns[w.Column], w.Values, w.Not))
+		}
+		ors = append(ors, "("+strings.Join(ands, " AND ")+")")
+	}
+	if len(ors) == 0 {
+		return "0", nil
+	}
+	return "(" + strings.Join(ors, " OR ") + ")", args
+}
+
 // digest is what a cursor binds the query by: its terms, filters and
 // times as parsed.
 func (q Query) digest() string {
 	b, _ := json.Marshal(struct {
-		T []string `json:"t"`
-		N bool     `json:"n"`
-		F []filter `json:"f"`
-		S *when    `json:"s"`
-		U *when    `json:"u"`
-		X []string `json:"x,omitempty"`
-	}{q.terms, q.none, q.filters, q.since, q.until, q.ExceptCrews})
+		T []string     `json:"t"`
+		N bool         `json:"n"`
+		F []filter     `json:"f"`
+		S *when        `json:"s"`
+		U *when        `json:"u"`
+		X []string     `json:"x,omitempty"`
+		R *Restriction `json:"r,omitempty"`
+		O bool         `json:"o,omitempty"`
+	}{q.terms, q.none, q.filters, q.since, q.until, q.ExceptCrews, q.Restrict, q.Newest})
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:16])
 }
@@ -465,6 +597,8 @@ type Page struct {
 	TotalCapped bool   `json:"totalCapped,omitempty"`
 	Cut         string `json:"cut,omitempty"`
 	State       string `json:"state,omitempty"`
+	// Drawn is how many rows a restricted read drew (Query.Newest).
+	Drawn int `json:"-"`
 	// after is the cursor after each entry of the page, in its order: a
 	// reply that serves only the first rows of a page reads on from the
 	// last it served (After).
@@ -592,8 +726,11 @@ func scanEntry(rows interface{ Scan(...any) error }, before ...any) (id int64, e
 // with filters alone, newer first; in both, last by the entry's key, so
 // the order is total. Class never weighs in it. A search of words reads
 // at most MaxScanned of its matches and ranks at most MaxRanked, and says
-// so (Page.Cut); past MaxScanned matches its page is newest first. The
-// next page is the rows strictly after the cursor's in the same order.
+// so (Page.Cut); past MaxScanned matches its page is newest first. A
+// Newest query is newest first whatever it holds, its words matching and
+// never ranking, nothing counted (Query.Newest); a Restrict is a
+// condition of every statement. The next page is the rows strictly after
+// the cursor's in the same order.
 // Every statement reads one snapshot, after the index's version and
 // generation: an index of another version, or owed a Check, answers its
 // State and no rows, a cursor of another query ErrCursor, one of an
@@ -607,6 +744,15 @@ func (ix *Index) Search(ctx context.Context, q Query) (Page, error) {
 	}
 	if limit < 1 || limit > MaxLimit {
 		return page, badQuery("a page is 1 to %d entries, not %d", MaxLimit, q.Limit)
+	}
+	if err := q.Restrict.check(); err != nil {
+		return page, err
+	}
+	if q.Newest != (q.Restrict != nil) {
+		return page, badQuery("a search newest first is of a restriction's rows, and only it")
+	}
+	if q.Examine < 0 || q.Examine > MaxExamine {
+		return page, badQuery("a search draws 1 to %d rows, not %d", MaxExamine, q.Examine)
 	}
 	var after *cursor
 	if q.After != "" {
@@ -637,6 +783,9 @@ func (ix *Index) Search(ctx context.Context, q Query) (Page, error) {
 	}
 	if q.none {
 		return page, nil
+	}
+	if q.Newest {
+		return ix.searchDrawn(ctx, tx, q, after, limit, gen)
 	}
 	conds, args := q.conds(ix.now())
 	words := len(q.terms) > 0

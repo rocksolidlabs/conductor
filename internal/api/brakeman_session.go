@@ -414,7 +414,7 @@ func (s *Server) handleSessionBrakemanBrief(w http.ResponseWriter, r *http.Reque
 		if cur, err := d.st.Get(id); err == nil {
 			coverage = cur.Coverage
 		}
-		kept, err := d.st.KeepBrief(id, brakeman.Kept{OpID: body.OpID, Brief: b, Refs: refs, RunID: runID, SessionID: info.ID, Coverage: coverage, Classes: d.classesUsed(id)})
+		kept, err := d.st.KeepBrief(id, brakeman.Kept{OpID: body.OpID, Brief: b, Refs: refs, RunID: runID, SessionID: info.ID, Coverage: coverage, Classes: append(d.classesUsed(id), citedClasses(b)...)})
 		d.readMu.Unlock()
 		d.admit.Unlock()
 		if err != nil {

@@ -137,13 +137,15 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite" // the database driver, registered as "sqlite"
 )
 
-// Version is the schema version this package writes and reads.
-const Version = 1
+// Version is the schema version this package writes and reads: 2 adds
+// the indexes a restricted read draws its rows by (placeColumns).
+const Version = 2
 
 // File is the index's name in the history directory.
 const File = "index.sqlite"
@@ -210,6 +212,9 @@ type Index struct {
 	// MaxRanked); a test sets them lower.
 	maxScanned int
 	maxRanked  int
+	// drawSeam, when a test sets it (SetDrawSeam), is given the id of
+	// every row a restricted read draws.
+	drawSeam atomic.Pointer[func(id int64)]
 
 	// life is held shared by every call for as long as it runs and whole
 	// by whatever changes the handles: Close, Check's move aside and a
@@ -885,7 +890,7 @@ func (ix *Index) clearTo(ctx context.Context, version int) error {
 }
 
 // schema is the index's tables (docs/plans/history.md, "The database"),
-// version 1. schema_version holds, beside the version and the generation,
+// version 2. schema_version holds, beside the version and the generation,
 // how many entries the budget dropped, whether an owner holds the index
 // open (open: set by Open, cleared by Close, so an owner finds it set
 // when the last did not close) and whether a Check is owed (unchecked).
@@ -954,6 +959,14 @@ var schema = []string{
 	`CREATE INDEX entries_source ON entries(source)`,
 	`CREATE INDEX entries_subject ON entries(subject_key) WHERE subject_key != ''`,
 	`CREATE INDEX entries_digest ON entries(digest)`,
+	// The rows a restricted read draws, newest first, by their kind and
+	// the column that places them (placeColumns).
+	`CREATE INDEX entries_draw ON entries(kind, at, key)`,
+	`CREATE INDEX entries_draw_tree ON entries(kind, tree, at, key)`,
+	`CREATE INDEX entries_draw_anchor ON entries(kind, anchor, at, key)`,
+	`CREATE INDEX entries_draw_run ON entries(kind, run, at, key)`,
+	`CREATE INDEX entries_draw_crew ON entries(kind, substr(run, 1, max(length(run) - 9, 0)), at, key)`,
+	`CREATE INDEX entries_draw_project ON entries(kind, substr(ticket, 1, instr(ticket, '-') - 1), at, key)`,
 	`CREATE INDEX links_to ON links(to_ref, rel)`,
 	`CREATE INDEX links_source ON links(source)`,
 }
