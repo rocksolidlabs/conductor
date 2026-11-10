@@ -34,6 +34,7 @@ import (
 	"github.com/rocksolidlabs/conductor/ext/local"
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/gitcli"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/pty"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -169,6 +170,11 @@ type Options struct {
 	// transport, when set (tests), is the control connection's transport in
 	// place of the standard one: a test's names dialed to its own servers.
 	transport *http.Transport
+	// revision and probe, when set (tests), read the folder's revision and
+	// the agent's version in place of gitcli's and the adapter's probe
+	// (report.go).
+	revision func(ctx context.Context, dir string) (gitcli.Revision, error)
+	probe    func(ctx context.Context, argv []string, adapter string) string
 }
 
 // Result reports how the hosted process ended.
@@ -234,6 +240,8 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	instance, _ := share.NewToken()
 	a := &agent{opts: opts, wsURL: wsURL, dir: dir, cols: cols, rows: rows, peers: map[string]*peer{}, log: opts.Log, agentToken: agentToken, instance: instance, localID: "1"}
 	a.activity = newActivityForwarder(a.sendActivity, a.sendChat, opts.Log)
+	// What the host reports of the session, read before its process starts.
+	a.report = a.readReport(ctx)
 	firstConn, registered, err := a.dialAndRegister(ctx)
 	if err != nil {
 		return Result{}, err
@@ -488,6 +496,14 @@ type agent struct {
 	// done.
 	lanes laneGroup
 
+	// report is what the host reports of its session (report.go), read
+	// before its process starts; sessionInfo what the server's last
+	// registered said of session_info; endCommit the end's, read once.
+	report      proto.HostReport
+	sessionInfo atomic.Bool
+	endOnce     sync.Once
+	endCommit   string
+
 	// ticks counts keepHearing's ticks done, each counted after its ping
 	// is reserved, or not: two more ticks after a link went means one
 	// began after it went and reserved none (tests wait on that before
@@ -739,6 +755,7 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	a.secret = registered.Secret
 	a.ice = registered.ICEServers
 	a.decisions.Store(registered.Decisions)
+	a.sessionInfo.Store(registered.SessionInfo)
 	if registered.Links != nil {
 		a.held, a.heldKnown = map[string]bool{}, true
 		for _, id := range registered.Links {
@@ -779,6 +796,7 @@ func (a *agent) registration(cols, rows uint16) proto.Register {
 		// The owner's own server may route the session's questions: it is
 		// told what the session keeps, and its answers are taken.
 		reg.Host.AnswerAs = true
+		reg.Session.HostReport = a.report
 		return reg
 	}
 	reg.Host.User = ""
@@ -1279,8 +1297,18 @@ func (a *agent) watchStatus(ctx context.Context, w *controlWriter) {
 		return
 	case <-a.local.Ended():
 	}
+	// The end commit, for a server that takes it, is read while the
+	// viewers are handed the end, and sent ahead of the status.
+	var ended chan string
+	if a.takesSessionInfo() {
+		ended = make(chan string, 1)
+		go func() { ended <- a.endRevision(ctx) }()
+	}
 	a.handViewersTheEnd(ctx, w.done)
 	info := a.local.Info()
+	if ended != nil {
+		a.sendSessionInfo(w, info.ID, <-ended)
+	}
 	if b, err := json.Marshal(proto.HostStatusMsg{T: proto.HostStatus, SessionID: info.ID, Status: string(info.Status), ExitCode: info.ExitCode}); err == nil {
 		_ = w.sendControl(websocket.MessageText, b)
 	}
