@@ -177,3 +177,28 @@ describe('a run desk', () => {
     expect(JSON.parse(JSON.stringify(g)).desk).toHaveLength(64)
   })
 })
+
+// The preview bridge's messages (internal/proto/preview.go): both parsers judge one fixture alike. Imported here, at the end, so
+// this block stays apart from the lanes' list above.
+import { MAX_ELEMENT_REPORT, MAX_PREVIEW_TO_BRIDGE, MAX_PREVIEW_TO_WORKBENCH, measuredBytes, parsePreviewMessage, previewMeasure } from './protocol'
+
+describe('the preview bridge', () => {
+  const fixture = JSON.parse(readFileSync(fileURLToPath(new URL('../../../internal/proto/testdata/preview-messages.json', import.meta.url)), 'utf8')) as {
+    measures: Array<{ name: string; units: number[]; bytes: number }>
+    messages: Array<{ name: string; nonce: string; message: unknown; ok: boolean }>
+  }
+
+  it('bounds its messages as Go does', () => {
+    expect([MAX_PREVIEW_TO_BRIDGE, MAX_PREVIEW_TO_WORKBENCH, MAX_ELEMENT_REPORT]).toEqual([4096, 65536, 32768])
+  })
+
+  it('gives every message of the fixture the verdict Go gives it', () => {
+    expect(fixture.messages.length).toBeGreaterThan(80)
+    for (const c of fixture.messages) expect({ name: c.name, ok: parsePreviewMessage(c.message, c.nonce) !== null }).toEqual({ name: c.name, ok: c.ok })
+  })
+
+  it('measures as Go writes: <, & and > as they are, U+2028 in six bytes, a lone surrogate as U+FFFD', () => {
+    for (const m of fixture.measures) expect({ name: m.name, bytes: measuredBytes(String.fromCharCode(...m.units)) }).toEqual({ name: m.name, bytes: m.bytes })
+    expect(previewMeasure({ a: '<&>' })).toBe(11)
+  })
+})

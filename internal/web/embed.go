@@ -20,6 +20,17 @@ func Available() bool {
 	return err == nil
 }
 
+// PreviewBridge is the preview bridge the web build emits
+// (preview-bridge.js, web/nuxt.config.ts), nil when the embedded app has
+// none (a server built without make web-build).
+func PreviewBridge() []byte {
+	b, err := fs.ReadFile(dist, "dist/preview-bridge.js")
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
 // Handler serves the SPA: static assets by path, index.html for every other
 // route so client-side routing works on reload. It returns nil when the UI
 // has not been built.

@@ -3,6 +3,7 @@ package crew
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -186,8 +187,13 @@ type tree struct {
 	stateDir string
 	preview  string
 	allow    []string
-	a        *attempt
-	busy     sync.WaitGroup
+	// bridge is the preview bridge's URL for a tree with a preview, ""
+	// for none; secret is the tree's own (CONDUCTOR_TREE_SECRET), minted
+	// as it is resolved, held here alone and given only in the
+	// environment of its commands and its session (names).
+	bridge, secret string
+	a              *attempt
+	busy           sync.WaitGroup
 	// handed, ending, ended, session, starting, services, ready, dead:
 	// see above.
 	handed, ending, ended bool
@@ -293,15 +299,52 @@ func (e *Engine) allowedEnv(names []string) ([]string, error) {
 // port's name in upper case.
 func portVar(name string) string { return "CONDUCTOR_PORT_" + strings.ToUpper(name) }
 
+// SetPreviewBridge gives the engine the preview bridge's URL on the
+// server's loopback (api's SetListen, once the server listens): a tree
+// with a preview resolved after it is named it (CONDUCTOR_PREVIEW_BRIDGE).
+// Never set, or "", no tree is: a server with no loopback listener, or
+// whose embedded app has no bridge.
+func (e *Engine) SetPreviewBridge(url string) {
+	e.mu.Lock()
+	e.previewBridge = url
+	e.mu.Unlock()
+}
+
+// PreviewBridge is the bridge's URL SetPreviewBridge gave, "" for none.
+func (e *Engine) PreviewBridge() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.previewBridge
+}
+
+// treeSecretBytes is the size of a tree's secret, hex in its names.
+const treeSecretBytes = 32
+
+// newTreeSecret is a tree's secret: 32 bytes from crypto/rand, hex.
+func newTreeSecret() (string, error) {
+	b := make([]byte, treeSecretBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
 // names is Conductor's own names of t as its session is given them
-// (LaunchSpec.Inject): its ports, its state directory and its preview.
+// (LaunchSpec.Inject): its ports, its state directory, its preview with
+// the bridge's URL, and its secret. The secret is a value of the
+// environment alone: no placeholder expands to it, so no argv, receipt,
+// row, event, task file or log line holds it, and a preview names it
+// only as ${CONDUCTOR_TREE_SECRET}.
 func (t *tree) names() map[string]string {
-	env := map[string]string{"CONDUCTOR_STATE_DIR": t.stateDir}
+	env := map[string]string{"CONDUCTOR_STATE_DIR": t.stateDir, "CONDUCTOR_TREE_SECRET": t.secret}
 	for name, n := range t.ports {
 		env[portVar(name)] = strconv.Itoa(n)
 	}
 	if t.preview != "" {
 		env["CONDUCTOR_PREVIEW_URL"] = t.preview
+		if t.bridge != "" {
+			env["CONDUCTOR_PREVIEW_BRIDGE"] = t.bridge
+		}
 	}
 	return env
 }
@@ -459,6 +502,13 @@ func (e *Engine) resolveTree(ctx context.Context, r *run, a *attempt, kind, dir,
 		return nil, err
 	}
 	stateDir := filepath.Join(cwd, taskDir, stateDirName)
+	secret, err := newTreeSecret()
+	if err != nil {
+		return nil, fmt.Errorf("the tree's secret could not be drawn: %w", err)
+	}
+	e.mu.Lock()
+	bridge := e.previewBridge
+	e.mu.Unlock()
 	ports := map[string]int{}
 	draws := map[string]int{}
 	draw := man.m.Ports
@@ -482,7 +532,10 @@ func (e *Engine) resolveTree(ctx context.Context, r *run, a *attempt, kind, dir,
 			return nil, err
 		}
 		t := &tree{kind: kind, dir: dir, cwd: cwd, commit: commit, man: resolvedManifest{m: expanded, source: man.source, revision: man.revision, digest: man.digest},
-			ports: maps.Clone(ports), stateDir: stateDir, preview: expanded.Preview, allow: allow, a: a, died: make(chan struct{})}
+			ports: maps.Clone(ports), stateDir: stateDir, preview: expanded.Preview, allow: allow, secret: secret, a: a, died: make(chan struct{})}
+		if t.preview != "" {
+			t.bridge = bridge
+		}
 		closed, held := false, false
 		draw = nil
 		err = e.transact(ctx, r, func() tx {

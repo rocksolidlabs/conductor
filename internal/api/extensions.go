@@ -36,6 +36,8 @@ type options struct {
 	// notices is the third-party notices text the server serves
 	// (WithNotices); the embedded one unless a main handed in its own.
 	notices string
+	// previewBridge is the built preview bridge (WithPreviewBridge).
+	previewBridge []byte
 }
 
 // WithExtensions gives the server the providers p, as the composition root

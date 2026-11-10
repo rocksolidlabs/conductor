@@ -2271,6 +2271,109 @@ with them and refuses every lane message `unsupported`; a hosted
 session's viewer at the server itself is welcomed without them, so a
 client sends none there.
 
+## Preview bridge
+
+The preview bridge (docs/plans/browser-evidence.md, PR-2) is a script a
+previewed page runs, loaded by the page itself in a browser or put into
+it by the desktop shell, that reads the page for the workbench framing
+it: the frame's document is another origin's, so nothing else can. It
+reads, never writes, the page; it reads no storage, cookie, console or
+network, never an `input`'s value, a password field or a `textarea`'s
+text; and it does nothing until a workbench origin says `hello`.
+
+**Serving.** `GET /preview-bridge.js` (no credential: a script tag
+carries none, and the script holds no secret) serves the bridge the web
+build emits (`make web-build` fails when the built app has none, or one
+without its marker exactly once) with the server's workbench origins, a
+JSON array, in the marker's place: the plain listener's own address and
+`127.0.0.1`, `localhost` and `[::1]` at its port, the TLS listener's
+loopback names at its port, and `publicUrl`'s origin, each once, at most
+16, each at most 256 bytes. `Content-Type: text/javascript;
+charset=utf-8`, `Cache-Control: no-cache`, `Cross-Origin-Resource-Policy:
+cross-origin`, `X-Content-Type-Options: nosniff`. A server whose embedded
+app has no bridge (built without `make web-build`, or `make dev`'s), and
+a switchyard, answer `404 no_bridge` ("this server was built without the
+web app's preview bridge: run make web-build"). A tree with a preview
+resolved once the server listens on the loopback (or on every address)
+is given `CONDUCTOR_PREVIEW_BRIDGE`, `http://127.0.0.1:<port>/preview-bridge.js`
+(`[::1]` for a listener there alone); a tree without a preview, and every
+tree of a server with no bridge or no loopback listener, none. The Nuxt
+dev server serves the same script at the same path, its origin the dev
+server's own when the page asks over the loopback, else none.
+
+**Messages** (`conductor-preview/1`; `internal/proto/preview.go` and
+`web/app/utils/protocol.ts`, both held to
+`internal/proto/testdata/preview-messages.json`): each a plain object
+through `postMessage` with `conductor: "preview/1"`, its type in `t` and
+a `nonce`, and exactly the fields its type carries. From the workbench:
+`hello` (its `nonce`, 16 to 64 of `A-Z a-z 0-9 _ -`, is the one every
+later message of either side carries), `select` (selection mode: the
+pointer outlines, a click or Enter selects, Up and Down step through the
+elements stacked under the pointer, Left and Right walk to the parent
+and the first child, Shift with Up and Down to the siblings, Escape
+leaves), `describe {selector}` (the element a selector of at most 1,024
+bytes finds), `look` (the page now) and `cancel`. From the bridge:
+`ready {version: 1, hints}` (`hints` the kinds of source the page gives,
+each once: `attribute`, `vue`, `svelte`, `react`), `selected {element}`,
+`described {element}` or `described {missing: true}`, `looked` and
+`cancelled`; every one but `cancelled` with the page read at that
+moment, never the handshake's: `url` (at most 2,048 bytes), `title` (at
+most 200 characters), `viewport {width, height, dpr, scrollX, scrollY,
+colorScheme (light, dark), userAgent (at most 512 bytes)}`, `epoch` (a
+whole number the bridge bumps, at most once an animation frame, on a
+resize or scroll of the window, a mutation of the document but its own
+host's, and every animation and transition event: it says only that the
+page moved) and `revision` (the page's `<meta name="conductor-revision"
+content="<commit>[+<content>]">`, lower-case hex of 4 to 64 digits with
+one optional `+` part, at most 128 bytes, else "").
+
+**The element report** (`element`): `{tag, id, classes, role, name (the
+accessible name), text, selector (found exactly once: a unique id, else
+the shortest chain of tag, stable classes and :nth-of-type), box {x, y,
+width, height}, attributes ([name, value]; an input's value never),
+state {disabled, hidden, ariaDisabled, ariaExpanded, pointerEvents,
+inert, hovered, motion (the animations playing on it, its subtree and
+its ancestors)}, hit {self, selector, tag} (what elementFromPoint finds
+at the box's centre), html (its outer HTML from a copy with every input
+value and textarea text emptied, cut at a tag's end), neighbourhood (its
+parent's, each sibling's subtree past depth 2 elided), ancestors ([{tag,
+id, classes, role}], innermost first), styles ([property, value] of a
+fixed list of 64), hints ([{how, file, line, column, component}]: a
+data-conductor-source "<file>:<line>:<column>" on it or an ancestor, a
+Vue dev build's component chain, Svelte's __svelte_meta, React 18's
+_debugSource), cut (the steps it was cut by)}`. Each field to its bound,
+in bytes as measured below: the tag, id, classes, role, name and the
+state's strings 1,024 each, the text and the selectors 1,024, at most 32
+attributes of a 64-byte name and a 512-byte value, the HTML 12 KiB, the
+neighbourhood 24 KiB, at most 12 ancestors of 512 each, at most 64 styles
+of a 64-byte name and a 256-byte value, at most 8 hints of a 1,024-byte
+file and a 256-byte component. The report as a whole is at most 32 KiB:
+the bridge cuts it to fit, measuring after each step and stopping at the
+first that fits, in this order, each named in `cut`: `neighbourhood` (to
+nothing), `html` (to its opening tag), `styles` (to the first 16),
+`attributes` (each value to 64 bytes), `tag` (the opening tag to 512
+bytes, then the HTML dropped), `hints` (the innermost 2, each file to its
+last 256 bytes and component to 128), `ancestors` (the innermost 4),
+`attribute-count` (the first 8), `names` (the tag, text, name, id, role,
+classes, selector and the hit test's tag and selector to 256 bytes each),
+`style-count` (the first 8). What the last step leaves is under 12 KiB
+whatever the fields held. **One measure**: a value's size is the UTF-8
+length of its JSON as Go writes it with HTML escaping off (`<`, `>` and
+`&` as they are; U+2028, U+2029 and control characters but `\b`, `\f`,
+`\n`, `\r` and `\t` in six bytes; a lone surrogate as U+FFFD), which
+`proto.PreviewMeasure` and `previewMeasure` both compute; a string's
+bound leaves its quotes out.
+
+**Bounds and the gate.** A message to the bridge is at most 4 KiB, one
+to the workbench at most 64 KiB, as measured; one past it, or that does
+not parse by its type's schema, is dropped unanswered. The bridge takes
+a message only from `window.parent`, at one of the origins written into
+it, and, after the `hello`, only from that hello's origin with its
+nonce (a later `hello` starts again); it posts only to `window.parent`,
+addressed to that origin, never `*`. The workbench takes an answer only
+from the frame's window at the preview's origin with the nonce it sent.
+Nothing the page sends is executed or rendered as HTML by the workbench.
+
 ## HTTP API
 
 On a switchyard (`switchyard.enabled`, `conductor switchyard`) every route
@@ -3248,9 +3351,13 @@ all, a `url` 2048, `preview` 512): one past its bound fails the tree at
 more than 512"), before anything is written or run in it. A step and a
 check run in a tree are given the tree's names, `CONDUCTOR_PORT_<NAME>` (the
 port's name in upper case) for each port, `CONDUCTOR_STATE_DIR` (its absolute
-path), with a preview `CONDUCTOR_PREVIEW_URL`, and `CONDUCTOR_RUN`,
-`CONDUCTOR_TASK` and `CONDUCTOR_ATTEMPT`, and no other `CONDUCTOR_` name, a
-token least of all; and the manifest's approved `env` names, and no other
+path), with a preview `CONDUCTOR_PREVIEW_URL` (and `CONDUCTOR_PREVIEW_BRIDGE`,
+see Preview bridge), `CONDUCTOR_TREE_SECRET` (32 random bytes as hex, minted
+as the tree is resolved, held in the server's memory alone: no placeholder
+expands to it, so no argv, receipt, row, event, task file or log line holds
+it; a preview names it as `${CONDUCTOR_TREE_SECRET}` and keeps the name), and
+`CONDUCTOR_RUN`, `CONDUCTOR_TASK` and `CONDUCTOR_ATTEMPT`, and no other
+`CONDUCTOR_` name, no token of the server's; and the manifest's approved `env` names, and no other
 name of the server's passthrough. The attempt's session is given the tree's
 names and the approved names beside its own (a session keeps its crew's
 names and the passthrough every session has). The setup steps run in

@@ -6,6 +6,12 @@ import { MERMAID_RENDERER_DEV_PATH } from './app/utils/mermaidRules'
 
 const webRoot = fileURLToPath(new URL('.', import.meta.url))
 
+// The preview bridge (app/utils/previewBridge.entry.ts, docs/protocol.md, Preview bridge) as one classic script: built into the
+// app's output for the server to serve with its origins written in, and served by the dev server with the dev server's own.
+const PREVIEW_BRIDGE = 'preview-bridge.js'
+const previewBridgeLib = { entry: `${webRoot}app/utils/previewBridge.entry.ts`, formats: ['iife' as const], name: 'conductorPreviewBridge', fileName: () => PREVIEW_BRIDGE }
+const ORIGINS_MARKER = /(["'])__CONDUCTOR_WORKBENCH_ORIGINS__\1/
+
 // Nuxt configuration for the Conductor workbench. The app is a client-only
 // SPA generated into internal/web/dist and embedded in the Go binary.
 const bundled = bundledPackages(webRoot, `${webRoot}.nuxt/bundled-packages.json`)
@@ -67,6 +73,12 @@ export default defineNuxtConfig({
     optimizeDeps: { include: ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-webgl', '@xterm/addon-web-links'] },
   },
   hooks: {
+    // The built app: the preview bridge into Nitro's public output once its assets are copied (nuxt generate runs this too),
+    // so make web-build carries it into internal/web/dist, where the server serves it at /preview-bridge.js.
+    async 'nitro:build:public-assets'(nitro) {
+      const { build } = await import('vite')
+      await build({ configFile: false, root: webRoot, publicDir: false, logLevel: 'warn', build: { outDir: nitro.options.output.publicDir, emptyOutDir: false, minify: false, lib: previewBridgeLib } })
+    },
     // The dev server only: the Markdown preview's Mermaid renderer (app/utils/mermaidFrame.entry.ts) as one classic script
     // at a path of its own, bundled by Vite's library build as the dev server starts. The built app serves the same entry
     // as a worker-format asset; under the dev server Vite serves modules, which the preview's sandboxed frame (its origin
@@ -89,6 +101,30 @@ export default defineNuxtConfig({
           return code
         })
       bundle.catch(() => {})
+      // The preview bridge, its marker replaced with the dev server's own origin when a page asks it over the loopback.
+      const bridge = import('vite').then(({ build }) =>
+        build({ configFile: false, root: webRoot, publicDir: false, logLevel: 'silent', build: { write: false, minify: false, lib: previewBridgeLib } }).then((out) => {
+          const code = ((Array.isArray(out) ? out[0] : out) as { output?: Array<{ code?: string }> }).output?.find((c) => typeof c.code === 'string')?.code
+          if (!code) throw new Error('the preview bridge did not build')
+          return code
+        }),
+      )
+      bridge.catch(() => {})
+      server.middlewares.stack.unshift({
+        route: `/${PREVIEW_BRIDGE}`,
+        handle: (req: IncomingMessage, res: ServerResponse, next: (err?: unknown) => void) => {
+          bridge.then(
+            (code) => {
+              const host = req.headers.host ?? ''
+              const origins = /^(localhost|127\.0\.0\.1|\[::1\]):\d+$/.test(host) ? [`http://${host}`] : []
+              res.setHeader('Content-Type', 'text/javascript; charset=utf-8')
+              res.setHeader('Cache-Control', 'no-store')
+              res.end(code.replace(ORIGINS_MARKER, JSON.stringify(origins)))
+            },
+            (e) => next(e),
+          )
+        },
+      })
       server.middlewares.stack.unshift({
         route: MERMAID_RENDERER_DEV_PATH,
         handle: (_req: IncomingMessage, res: ServerResponse, next: (err?: unknown) => void) => {

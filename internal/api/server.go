@@ -233,6 +233,8 @@ type Server struct {
 	reachMu sync.Mutex
 	reach   reachSource
 	certs   certSource
+	// bridge is the preview bridge and the listener's address (previewbridge.go).
+	bridge previewBridge
 	// opens holds the links agents opened that wait for a desktop app (opens.go).
 	opens *openDesk
 	// publisher publishes sessions to a rendezvous (SetPublisher); published
@@ -477,6 +479,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// Every provider behind the guard before the server's first write of
 	// its own (the ledger's recovery, the records): nothing calls them yet.
 	s.readRevision = gitcli.RevisionOf
+	s.bridge.before, s.bridge.after = splitBridge(o.previewBridge)
 	s.installExtensions(o.providers)
 	s.installRuntimes(o.providers, o.native)
 	s.syncs = syncs
@@ -851,6 +854,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /third-party-notices.txt", s.handleNotices)
+	mux.HandleFunc("GET /preview-bridge.js", s.handlePreviewBridge)
 	mux.HandleFunc("GET /api/reach", s.requireAdmin(s.handleReach))
 	mux.HandleFunc("GET /.well-known/acme-challenge/{token}", s.handleACMEChallenge)
 	mux.HandleFunc("GET /api/whoami", s.requireAdmin(s.handleWhoAmI))

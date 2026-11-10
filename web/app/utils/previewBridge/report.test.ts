@@ -1,0 +1,160 @@
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { describe, expect, it } from 'vitest'
+import { ELEMENT_BOUNDS as B, ELEMENT_CUTS, MAX_ELEMENT_REPORT, measuredBytes, previewMeasure, validElement, type ElementReport } from '../protocol'
+import { FakeDoc, h } from './fakeDom'
+import { REPORT_STYLES, boundFields, cutEnd, cutHTML, cutReport, cutStart, readElement } from './report'
+import type { Doc, El } from './select'
+
+/** s of exactly n measured bytes, made of c (a character of a measure that divides n, or 'a'). */
+const of = (n: number, c = 'a') => c.repeat(Math.floor(n / measuredBytes(c)))
+
+/** A report with every field at its own bound, its strings of c. */
+function fullest(c: string): ElementReport {
+  return {
+    tag: of(B.name, c),
+    id: of(B.name, c),
+    classes: of(B.name, c),
+    role: of(B.name, c),
+    name: of(B.name, c),
+    text: of(B.text, c),
+    selector: of(B.selector, c),
+    box: { x: 1.25, y: -3, width: 100, height: 20 },
+    attributes: Array.from({ length: B.attributes }, () => [of(B.attributeName, c), of(B.attributeValue, c)] as [string, string]),
+    state: { disabled: true, hidden: false, ariaDisabled: of(B.name, c), ariaExpanded: of(B.name, c), pointerEvents: of(B.name, c), inert: false, hovered: true, motion: 2 },
+    hit: { self: false, selector: of(B.selector, c), tag: of(B.name, c) },
+    html: '<' + of(B.html - 2, c) + '>',
+    neighbourhood: '<i>' + of(B.neighbourhood - 7, c) + '</i>',
+    ancestors: Array.from({ length: B.ancestors }, () => ({ tag: of(128, c), id: of(128, c), classes: of(128, c), role: of(80, c) })),
+    styles: Array.from({ length: B.styles }, (_, i) => [REPORT_STYLES[i]!, of(B.styleValue, c)] as [string, string]),
+    hints: Array.from({ length: B.hints }, () => ({ how: 'vue' as const, file: of(B.hintFile, c), line: 9007199254740991, column: 1, component: of(B.hintComponent, c) })),
+    cut: [],
+  }
+}
+
+/** The plan's largest-tag shape: a 12 KiB opening tag, eight 1,024-byte hint files, twelve 512-byte ancestors, 32 attributes at their bounds. */
+function largestTag(c: string): ElementReport {
+  return { ...fullest(c), neighbourhood: '', text: '', name: '' }
+}
+
+/** The fixture the server's tests read (internal/api/testdata): the report as cut and its measure. */
+function writeFixture(name: string, r: ElementReport) {
+  const dir = fileURLToPath(new URL('../../../../internal/api/testdata/', import.meta.url))
+  mkdirSync(dir, { recursive: true })
+  const comment = `Written by web/app/utils/previewBridge/report.test.ts: the bridge's report cut to ${MAX_ELEMENT_REPORT} bytes by its measure, which bytes is.`
+  writeFileSync(dir + name, JSON.stringify({ comment, bytes: previewMeasure(r), report: r }, null, 1) + '\n')
+}
+
+describe('the cut of one field', () => {
+  it('cuts by measured bytes and never splits a character', () => {
+    expect(cutStart('a b', 6)).toBe('a') // U+2028 is six bytes as Go writes it
+    expect(cutStart('a b', 7)).toBe('a ')
+    expect(cutStart('😀😀', 5)).toBe('😀')
+    expect(cutStart('é'.repeat(10), 5)).toBe('éé')
+    expect(cutEnd('dir/very/long/path/File.vue', 8)).toBe('File.vue')
+    expect(measuredBytes(cutStart('\x01'.repeat(100), 64))).toBe(60)
+  })
+
+  it('cuts HTML at an element boundary at each bound', () => {
+    expect(cutHTML('<p>aaa</p><p>bbb</p>', 12)).toBe('<p>aaa</p>')
+    expect(cutHTML('<p>aaa</p><p>bbb</p>', 2)).toBe('')
+    const html = '<ul>' + '<li class="row">item</li>'.repeat(2000) + '</ul>'
+    for (const bound of [B.html, B.neighbourhood]) {
+      const cut = cutHTML(html, bound)
+      expect(measuredBytes(cut)).toBeLessThanOrEqual(bound)
+      expect(measuredBytes(cut)).toBeGreaterThan(bound - 30)
+      expect(cut.endsWith('>')).toBe(true)
+      expect(html.startsWith(cut)).toBe(true)
+    }
+    const r = boundFields({ ...fullest('a'), html, neighbourhood: html })
+    expect([r.html.at(-1), r.neighbourhood.at(-1)]).toEqual(['>', '>'])
+  })
+})
+
+describe('the cut of a report', () => {
+  it('takes every field to its bound, then the steps in order to the report bound, and writes the fullest fixture', () => {
+    const raw = fullest('a')
+    expect(previewMeasure(raw)).toBeGreaterThan(70 * 1024) // the bounds add up to about 78 KiB
+    const r = cutReport(raw)
+    expect(previewMeasure(r)).toBeLessThanOrEqual(MAX_ELEMENT_REPORT)
+    expect(validElement(r)).toBe(true)
+    // The steps taken are the first ones, in order, each named once.
+    expect(r.cut).toEqual(ELEMENT_CUTS.slice(0, r.cut.length))
+    expect(r.cut[0]).toBe('neighbourhood')
+    expect(r.neighbourhood).toBe('')
+    writeFixture('fullest-report.json', r)
+  })
+
+  it('cuts the largest-tag shape of six-byte characters past the first four steps and writes its fixture', () => {
+    const raw = largestTag('\x01')
+    // Steps 1 to 4 are not enough for it: the opening tag is cut, then the hints.
+    const r = cutReport(raw)
+    expect(r.cut).toEqual(ELEMENT_CUTS.slice(0, 6))
+    expect(previewMeasure(r)).toBeLessThanOrEqual(MAX_ELEMENT_REPORT)
+    expect(r.html).toBe('')
+    expect(r.hints).toHaveLength(2)
+    expect(validElement(r)).toBe(true)
+    writeFixture('largest-tag-report.json', r)
+  })
+
+  it('goes through the tenth step below the bound, and what it leaves at worst is under 12 KiB', () => {
+    for (const c of ['a', '\x01', ' ', 'é']) {
+      const r = cutReport(fullest(c), 0)
+      expect(r.cut).toEqual([...ELEMENT_CUTS])
+      expect(previewMeasure(r)).toBeLessThan(12 * 1024)
+      expect([r.styles.length, r.attributes.length, r.ancestors.length, r.hints.length, r.html, r.neighbourhood]).toEqual([8, 8, 4, 2, '', ''])
+      for (const k of ['tag', 'text', 'name', 'id', 'role', 'classes', 'selector'] as const) expect(measuredBytes(r[k])).toBeLessThanOrEqual(256)
+      expect(validElement(r)).toBe(true)
+    }
+  })
+
+  it('stops at the first step that fits', () => {
+    const lean = { ...fullest('a'), attributes: [], styles: [], hints: [], ancestors: [] }
+    const small = cutReport({ ...lean, html: '<b>' + 'x'.repeat(12000) + '</b>', neighbourhood: '<i>aaaa</i>'.repeat(3000) })
+    expect(small.cut).toEqual(['neighbourhood'])
+    expect(cutReport({ ...fullest('a'), neighbourhood: '', html: '', attributes: [], styles: [], hints: [], ancestors: [] }).cut).toEqual([])
+  })
+})
+
+describe('the reading of an element', () => {
+  function form() {
+    const pw = h('input', { type: 'password', name: 'pw', value: 'hunter2' })
+    const typed = h('input', { name: 'q', value: 'typed-words' })
+    const area = h('textarea', { name: 'note' }, 'draft-text')
+    const label = h('label', {}, 'Search ', typed)
+    const save = h('button', { id: 'save', 'aria-label': 'Save the form' }, 'Save')
+    const f = h('form', { id: 'f' }, pw, label, area, save)
+    const root = h('html', {}, h('body', {}, f))
+    const d = new FakeDoc(root)
+    d.hitAt = () => [save]
+    return { f, pw, typed, area, label, save, d }
+  }
+  const win = (styles: Record<string, string> = {}) => ({ getComputedStyle: () => ({ getPropertyValue: (p: string) => styles[p] ?? '' }) })
+
+  it('never reads an input value, a password or a textarea text', () => {
+    const p = form()
+    for (const el of [p.f, p.pw, p.typed, p.area, p.label]) {
+      const r = readElement(el as unknown as El, { doc: p.d as unknown as Doc, win: win(), host: null })
+      const all = JSON.stringify(r)
+      for (const secret of ['hunter2', 'typed-words', 'draft-text']) expect(all, `${el.tagName} ${secret}`).not.toContain(secret)
+    }
+    // The page keeps them: the clone is emptied, never the page.
+    expect(p.pw.getAttribute('value')).toBe('hunter2')
+    expect(p.area.textContent).toBe('draft-text')
+  })
+
+  it('reads the name, the state, the hit test and the fixed list of styles', () => {
+    const p = form()
+    p.save.attrs.set('disabled', '')
+    const r = readElement(p.save as unknown as El, { doc: p.d as unknown as Doc, win: win({ display: 'block', 'pointer-events': 'none' }), host: null })
+    expect(r.name).toBe('Save the form')
+    expect(r.selector).toBe('#save')
+    expect(r.state).toMatchObject({ disabled: true, pointerEvents: 'none' })
+    expect(r.hit).toEqual({ self: true, selector: '#save', tag: 'button' })
+    expect(r.styles.map(([k]) => k)).toEqual([...REPORT_STYLES])
+    expect(r.styles[0]).toEqual(['display', 'block'])
+    expect(new Set(REPORT_STYLES).size).toBe(64)
+    expect(REPORT_STYLES.slice(0, 8)).toEqual(['display', 'visibility', 'opacity', 'pointer-events', 'position', 'z-index', 'inset', 'transform'])
+    expect(validElement(r)).toBe(true)
+  })
+})
