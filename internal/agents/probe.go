@@ -67,24 +67,31 @@ func RunProbe(ctx context.Context, command []string, p Probe, env map[string]str
 	if len(command) == 0 {
 		return ProbeResult{Error: "no command"}
 	}
-	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
-	defer cancel()
 	dir, err := os.MkdirTemp("", "conductor-probe-")
 	if err != nil {
 		return ProbeResult{Error: err.Error()}
 	}
 	defer os.RemoveAll(dir)
-	args := append(append([]string{}, command[1:]...), p.Args...)
-	cmd := exec.CommandContext(ctx, command[0], args...)
+	return runProbeIn(ctx, append(append([]string{}, command...), p.Args...), p, probeEnv(env), dir)
+}
+
+// runProbeIn runs argv (the command and the probe's arguments) in dir with
+// env and reads its answer with p, under RunProbe's bounds. The usage
+// readers ask a program's version through it, with their own environment
+// and folder (usage.go).
+func runProbeIn(ctx context.Context, argv []string, p Probe, env []string, dir string) ProbeResult {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
 	cmd.Stdin = nil
-	cmd.Env = probeEnv(env)
+	cmd.Env = env
 	cmd.WaitDelay = 500 * time.Millisecond
 	var out limitedBuffer
 	out.max = probeMaxOutput
 	cmd.Stdout, cmd.Stderr = &out, &out
 	probeAttr(cmd)
-	err = cmd.Run()
+	err := cmd.Run()
 	res := ProbeResult{Ran: true}
 	var exit *exec.ExitError
 	switch {

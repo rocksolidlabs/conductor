@@ -19,3 +19,12 @@ func probeAttr(cmd *exec.Cmd) {
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 }
+
+// endGroup kills the process group cmd leads, before its Wait reaps the
+// leader (so the group's id cannot have been given to another): a usage
+// read ends every helper its program started, whatever it answered.
+func endGroup(cmd *exec.Cmd) {
+	if cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+}
