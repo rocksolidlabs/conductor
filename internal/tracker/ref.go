@@ -291,7 +291,8 @@ func hostAdmitted(host string, o ParseOptions) bool {
 
 // Check refuses a reference that is not one this package's parsing makes:
 // its system github, its kind issue or change, its space owner/name as
-// GitHub names a repository and its id a number (Host is the adapter's to
+// GitHub names a repository, its id a number and its SpaceID, when one is
+// held, a RemoteID (Host is the adapter's to
 // check, against the credential). A Ref read back from a store or built by
 // a caller is held to it before any of it goes into a request's path.
 func (r Ref) Check() error {
@@ -302,8 +303,15 @@ func (r Ref) Check() error {
 	if !ok {
 		return fmt.Errorf("%w: a repository is <owner>/<name>", ErrRef)
 	}
-	_, err := makeRef(r.Host, owner, name, r.Kind, r.ID)
-	return err
+	if _, err := makeRef(r.Host, owner, name, r.Kind, r.ID); err != nil {
+		return err
+	}
+	if r.SpaceID != "" {
+		if err := CheckRemoteID(r.SpaceID); err != nil {
+			return fmt.Errorf("%w: %v", ErrRef, err)
+		}
+	}
+	return nil
 }
 
 func makeRef(host, owner, name, kind, num string) (Ref, error) {

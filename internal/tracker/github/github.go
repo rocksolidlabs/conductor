@@ -297,6 +297,22 @@ func (a *Adapter) lookupRepo(ctx context.Context, c tracker.Credential, ep endpo
 	return p, nil
 }
 
+// lookupHeld is lookupRepo for a caller's Ref: when the Ref holds the
+// repository's identity (Ref.SpaceID, what an earlier read returned), a
+// lookup that names another is tracker.ErrTargetChanged, and nothing more
+// is asked.
+func (a *Adapter) lookupHeld(ctx context.Context, c tracker.Credential, ep endpoint, r tracker.Ref) (repo, error) {
+	p, err := a.lookupRepo(ctx, c, ep, r.Space)
+	if err != nil {
+		return repo{}, err
+	}
+	if r.SpaceID != "" && p.id != r.SpaceID {
+		lr := request{method: http.MethodGet, path: "/repos/" + r.Space}
+		return repo{}, &tracker.RequestError{System: tracker.GitHub, Method: lr.method, Path: ep.errPath(lr), Status: http.StatusOK, Err: tracker.ErrTargetChanged, Words: "the repository's name now names another repository"}
+	}
+	return p, nil
+}
+
 // request is one request to the API host.
 type request struct {
 	method string

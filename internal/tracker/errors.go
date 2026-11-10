@@ -26,7 +26,9 @@ var (
 	// ErrBound: an answer past its bound.
 	ErrBound = errors.New("the answer is past its bound")
 	// ErrTargetChanged: the item a write was prepared for is no longer
-	// of that kind or in that repository.
+	// of that kind or in that repository, or a Ref's repository name now
+	// names another repository than the identity the caller holds
+	// (Ref.SpaceID).
 	ErrTargetChanged = errors.New("the item is no longer where the write was prepared for")
 	// ErrNothingWritten is also wrapped by a write's error when its
 	// answer proves nothing was written; a write's error without it is

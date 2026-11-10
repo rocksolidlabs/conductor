@@ -22,8 +22,14 @@ import (
 
 var (
 	issue42 = ref("octo-example/widgets", tracker.KindIssue, "42")
-	target  = tracker.Target{NodeID: "I_kwDOFixture42", Kind: tracker.KindIssue, SpaceID: "4000001", Ref: issue42, URL: "https://github.com/octo-example/widgets/issues/42", State: tracker.StateOpen}
+	target  = tracker.Target{NodeID: "I_kwDOFixture42", Kind: tracker.KindIssue, SpaceID: "4000001", Ref: holding(issue42, "4000001"), URL: "https://github.com/octo-example/widgets/issues/42", State: tracker.StateOpen}
 )
+
+// holding is a Ref holding the repository's identity, as a read returns it.
+func holding(r tracker.Ref, id tracker.RemoteID) tracker.Ref {
+	r.SpaceID = id
+	return r
+}
 
 func (r *rig) commentCred(pub string, try int) tracker.Credential {
 	return r.cred.ForWrite(tracker.Write{Kind: tracker.WriteComment, Publication: pub, Try: try, PostSha256: strings.Repeat("ab", 32)})

@@ -174,7 +174,7 @@ func (a *Adapter) Resolve(ctx context.Context, c tracker.Credential, nodeID stri
 	if err != nil {
 		return fail(tracker.ErrUnsupported, "an answer Conductor cannot read")
 	}
-	ref.Host, ref.Kind = ep.host, t.Kind
+	ref.Host, ref.Kind, ref.SpaceID = ep.host, t.Kind, t.SpaceID
 	t.Ref = ref
 	t.URL = itemURL(ref, n.URL)
 	return t, nil

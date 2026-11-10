@@ -237,3 +237,99 @@ func TestLookupWithoutAnIDAsksNothingMore(t *testing.T) {
 		}
 	}
 }
+
+// An identity the caller holds is honoured across calls: a read returns
+// the repository's identity in its Ref, and a later call about the same
+// target given that Ref refuses with tracker.ErrTargetChanged, before any
+// request but the lookup, once the name names another repository (a twin
+// with the same numbers and commits, merged and green). Without an
+// identity held, a call reads whatever holds the name now, as before.
+func TestHeldIdentityAcrossCalls(t *testing.T) {
+	r := newRig(t)
+	r.answerAll()
+	r.reply(http.MethodGet, widgets+"/issues/43", 200, githubtest.Fixture("pull_issue.json"))
+	r.reply(http.MethodGet, widgets+"/pulls/43", 200, githubtest.Fixture("pull.json"))
+	r.reply(http.MethodGet, widgets+"/issues/42/comments", 200, []map[string]any{})
+	it, _, err := r.a.Read(ctx, r.cred, pr43, tracker.Validators{})
+	if err != nil || it.Ref.SpaceID != "4000001" || it.Merged {
+		t.Fatalf("the first read: %+v %v", it.Ref, err)
+	}
+	tg, err := r.a.Resolve(ctx, r.cred, target.NodeID)
+	if err != nil || tg.Ref.SpaceID != tg.SpaceID || tg.SpaceID != "4000001" {
+		t.Fatalf("Resolve: %+v %v", tg, err)
+	}
+
+	// The name now names a twin: another identity, the same numbers and
+	// commits, the pull merged and every check green.
+	twin := "/repositories/4999999"
+	r.reply(http.MethodGet, "/repos/octo-example/widgets", 200, repoAnswer(4999999, "octo-example/widgets"))
+	pullIssue := fixture(t, "pull_issue.json")
+	pullIssue["node_id"] = "PR_kwDOTwin43"
+	merged := fixture(t, "pull.json")
+	merged["merged"], merged["merged_at"], merged["node_id"] = true, "2026-10-05T08:00:00Z", "PR_kwDOTwin43"
+	merged["base"].(map[string]any)["repo"] = repoAnswer(4999999, "octo-example/widgets")
+	r.reply(http.MethodGet, twin+"/issues/43", 200, pullIssue)
+	r.reply(http.MethodGet, twin+"/pulls/43", 200, merged)
+	r.reply(http.MethodGet, twin+"/commits/"+head+"/status", 200, statuses(1, 1, false))
+	r.reply(http.MethodGet, twin+"/actions/runs", 200, map[string]any{"total_count": 0, "workflow_runs": []any{}})
+	r.reply(http.MethodGet, twin+"/commits/"+head+"/check-runs", 200, checkRuns("check_runs", 0, 0, 0, plain))
+	r.reply(http.MethodGet, twin+"/actions/jobs/2000001/logs", http.StatusFound, "", "Location", "https://"+twinBlob+"/twin/job-logs.txt?sig=s")
+	var asked []string
+	r.fake.Handle(http.MethodGet, twinBlob, "/twin/job-logs.txt", azureBlob("the twin's log\n", &asked))
+
+	job := tracker.Check{ID: "job:2000001", HasLog: true}
+	only := func(what string, err error) {
+		t.Helper()
+		if !errors.Is(err, tracker.ErrTargetChanged) {
+			t.Errorf("%s with the identity held: %v", what, err)
+		}
+	}
+	for name, call := range map[string]func() error{
+		"Read":     func() error { _, _, err := r.a.Read(ctx, r.cred, it.Ref, tracker.Validators{}); return err },
+		"Checks":   func() error { _, err := r.a.Checks(ctx, r.cred, it.Ref, head); return err },
+		"CheckLog": func() error { _, err := r.a.CheckLog(ctx, r.cred, it.Ref, job, 100); return err },
+	} {
+		before := len(r.fake.Requests())
+		only(name, call())
+		if reqs := r.fake.Requests()[before:]; len(reqs) != 1 || reqs[0].Path != "/repos/octo-example/widgets" {
+			t.Errorf("%s asked beyond the lookup: %d requests", name, len(reqs))
+		}
+	}
+	// FindComment holds the identity in its Target: it never names the
+	// repository, so the twin never answers (its node is where it was),
+	// and when the node is no longer in the repository held it refuses
+	// before the listing.
+	m := tracker.Match{Marker: r.a.Marker("p1"), BodySha256: tracker.BodyDigest(twinPosted)}
+	if _, found, err := r.a.FindComment(ctx, r.cred, tg, now, m); err != nil || found != tracker.FoundNo {
+		t.Errorf("FindComment: %v %v", found, err)
+	}
+	r.graphql(func(githubtest.GraphQL) (int, any) {
+		return 200, issueNode(target.NodeID, 42, 4999999, "octo-example/widgets", "OPEN")
+	})
+	before := len(r.fake.Requests())
+	if _, found, err := r.a.FindComment(ctx, r.cred, tg, now, m); !errors.Is(err, tracker.ErrTargetChanged) || found != tracker.FoundUnknown {
+		t.Errorf("FindComment, the node in another repository: %v %v", found, err)
+	}
+	if n := len(r.fake.Requests()) - before; n != 1 {
+		t.Errorf("FindComment asked beyond the Resolve: %d requests", n)
+	}
+	for _, q := range r.fake.Requests() {
+		if strings.HasPrefix(q.Path, "/repos/") && q.Path != "/repos/octo-example/widgets" {
+			t.Errorf("a request names the repository by its name: %s", q.Path)
+		}
+	}
+
+	// Without an identity held, as before: the name's holder now is read,
+	// and its identity returned for the caller to hold from then on.
+	fresh := it.Ref
+	fresh.SpaceID = ""
+	if got, _, err := r.a.Read(ctx, r.cred, fresh, tracker.Validators{}); err != nil || !got.Merged || got.Ref.SpaceID != "4999999" {
+		t.Errorf("Read with none held: %+v %v", got.Ref, err)
+	}
+	if set, err := r.a.Checks(ctx, r.cred, fresh, head); err != nil || !set.Passed() {
+		t.Errorf("Checks with none held: %+v %v", set, err)
+	}
+	if b, err := r.a.CheckLog(ctx, r.cred, fresh, job, 100); err != nil || string(b.Bytes) != "the twin's log\n" {
+		t.Errorf("CheckLog with none held: %q %v", b.Bytes, err)
+	}
+}

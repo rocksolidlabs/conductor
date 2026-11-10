@@ -127,7 +127,7 @@ func (a *Adapter) Checks(ctx context.Context, c tracker.Credential, r tracker.Re
 
 	// The repository, by its name this once; every listing after by the
 	// identity read.
-	rp, err := a.lookupRepo(cctx, c, ep, r.Space)
+	rp, err := a.lookupHeld(cctx, c, ep, r)
 	switch {
 	case ranOut(err, "the repository, the statuses, the GitHub Actions jobs and the check runs not read"):
 		return finish(set, all), nil
@@ -407,7 +407,7 @@ func (a *Adapter) CheckLog(ctx context.Context, c tracker.Credential, r tracker.
 	if err != nil {
 		return tracker.LogTail{}, err
 	}
-	rp, err := a.lookupRepo(ctx, c, ep, r.Space)
+	rp, err := a.lookupHeld(ctx, c, ep, r)
 	if err != nil {
 		return tracker.LogTail{}, err
 	}

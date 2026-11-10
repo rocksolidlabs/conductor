@@ -87,8 +87,11 @@ type half struct {
 // another, as is a node id that changed at the same place; a redirected
 // answer whose place cannot be read is refused, and so is a pull request
 // whose issue was answered from a redirect (a pull request is never
-// transferred: its repository would not be the one looked up). r is held
-// to tracker.Ref.Check before any of it goes into a path.
+// transferred: its repository would not be the one looked up). The
+// item's Ref holds the identity looked up (Ref.SpaceID), none for an issue
+// answered from a transfer; a Ref given with one held is
+// tracker.ErrTargetChanged when the lookup names another. r is held to
+// tracker.Ref.Check before any of it goes into a path.
 func (a *Adapter) Read(ctx context.Context, c tracker.Credential, r tracker.Ref, v tracker.Validators) (tracker.Item, bool, error) {
 	if err := r.Check(); err != nil {
 		return tracker.Item{}, false, &tracker.RequestError{System: tracker.GitHub, Method: "-", Path: "-", Err: tracker.ErrUnsupported, Words: "not a GitHub item"}
@@ -97,7 +100,7 @@ func (a *Adapter) Read(ctx context.Context, c tracker.Credential, r tracker.Ref,
 	if err != nil {
 		return tracker.Item{}, false, err
 	}
-	rp, err := a.lookupRepo(ctx, c, ep, r.Space)
+	rp, err := a.lookupHeld(ctx, c, ep, r)
 	if err != nil {
 		return tracker.Item{}, false, err
 	}
@@ -155,6 +158,12 @@ func (a *Adapter) Read(ctx context.Context, c tracker.Credential, r tracker.Ref,
 		pullETag = pl.ans.header.Get("ETag")
 	}
 	item := a.item(r, issue, iss.ans.header.Get("ETag"))
+	// The identity the caller holds from now on: the repository looked
+	// up, unless the issue answered from another place (a transfer), whose
+	// repository's identity this read did not see.
+	if !iss.ans.redirected {
+		item.Ref.SpaceID = rp.id
+	}
 	if isPull {
 		item.Ref.Kind = tracker.KindChange
 		item.Merged = pull.Merged
@@ -227,6 +236,7 @@ func (a *Adapter) placed(ep endpoint, h half, moved bool, r tracker.Ref, v track
 // repository has another); r's place, with the answer's kind, otherwise.
 func placeOf(r tracker.Ref, issue issueJSON) (tracker.Ref, bool) {
 	out := r
+	out.SpaceID = ""
 	if issue.PullRequest != nil {
 		out.Kind = tracker.KindChange
 	} else {

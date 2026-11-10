@@ -14,20 +14,20 @@ func TestParseGitHubURLs(t *testing.T) {
 		o        ParseOptions
 		want     Ref
 	}{
-		{"https://github.com/octo-example/widgets/issues/42", "", o, Ref{GitHub, "github.com", "octo-example/widgets", KindIssue, "42"}},
-		{"https://github.com/octo-example/widgets/pull/43", "", o, Ref{GitHub, "github.com", "octo-example/widgets", KindChange, "43"}},
-		{"  https://GitHub.com/Octo-Example/Widgets.js/pull/43  ", "", o, Ref{GitHub, "github.com", "Octo-Example/Widgets.js", KindChange, "43"}},
-		{"octo-example/widgets#12", "", o, Ref{GitHub, "github.com", "octo-example/widgets", KindIssue, "12"}},
-		{"#12", "octo-example/widgets", o, Ref{GitHub, "github.com", "octo-example/widgets", KindIssue, "12"}},
-		{"#12", "https://github.com/octo-example/widgets", o, Ref{GitHub, "github.com", "octo-example/widgets", KindIssue, "12"}},
-		{"#12", "https://github.com/octo-example/widgets.git/", o, Ref{GitHub, "github.com", "octo-example/widgets", KindIssue, "12"}},
-		{"#12", "git@github.com:octo-example/widgets.git", o, Ref{GitHub, "github.com", "octo-example/widgets", KindIssue, "12"}},
-		{"#12", "ssh://git@github.com:22/octo-example/widgets.git", o, Ref{GitHub, "github.com", "octo-example/widgets", KindIssue, "12"}},
-		{"#12", "git@ghe.example.test:team/tool.git", o, Ref{GitHub, "ghe.example.test", "team/tool", KindIssue, "12"}},
-		{"team/other#3", "git@ghe.example.test:team/tool.git", o, Ref{GitHub, "ghe.example.test", "team/other", KindIssue, "3"}},
-		{"https://ghe.example.test/team/tool/issues/9", "", o, Ref{GitHub, "ghe.example.test", "team/tool", KindIssue, "9"}},
-		{"http://127.0.0.1:8123/team/tool/issues/9", "", lo, Ref{GitHub, "127.0.0.1:8123", "team/tool", KindIssue, "9"}},
-		{"https://github.com/octo-example/widgets/issues/18446744073709551615", "", o, Ref{GitHub, "github.com", "octo-example/widgets", KindIssue, "18446744073709551615"}},
+		{"https://github.com/octo-example/widgets/issues/42", "", o, Ref{GitHub, "github.com", "octo-example/widgets", KindIssue, "42", ""}},
+		{"https://github.com/octo-example/widgets/pull/43", "", o, Ref{GitHub, "github.com", "octo-example/widgets", KindChange, "43", ""}},
+		{"  https://GitHub.com/Octo-Example/Widgets.js/pull/43  ", "", o, Ref{GitHub, "github.com", "Octo-Example/Widgets.js", KindChange, "43", ""}},
+		{"octo-example/widgets#12", "", o, Ref{GitHub, "github.com", "octo-example/widgets", KindIssue, "12", ""}},
+		{"#12", "octo-example/widgets", o, Ref{GitHub, "github.com", "octo-example/widgets", KindIssue, "12", ""}},
+		{"#12", "https://github.com/octo-example/widgets", o, Ref{GitHub, "github.com", "octo-example/widgets", KindIssue, "12", ""}},
+		{"#12", "https://github.com/octo-example/widgets.git/", o, Ref{GitHub, "github.com", "octo-example/widgets", KindIssue, "12", ""}},
+		{"#12", "git@github.com:octo-example/widgets.git", o, Ref{GitHub, "github.com", "octo-example/widgets", KindIssue, "12", ""}},
+		{"#12", "ssh://git@github.com:22/octo-example/widgets.git", o, Ref{GitHub, "github.com", "octo-example/widgets", KindIssue, "12", ""}},
+		{"#12", "git@ghe.example.test:team/tool.git", o, Ref{GitHub, "ghe.example.test", "team/tool", KindIssue, "12", ""}},
+		{"team/other#3", "git@ghe.example.test:team/tool.git", o, Ref{GitHub, "ghe.example.test", "team/other", KindIssue, "3", ""}},
+		{"https://ghe.example.test/team/tool/issues/9", "", o, Ref{GitHub, "ghe.example.test", "team/tool", KindIssue, "9", ""}},
+		{"http://127.0.0.1:8123/team/tool/issues/9", "", lo, Ref{GitHub, "127.0.0.1:8123", "team/tool", KindIssue, "9", ""}},
+		{"https://github.com/octo-example/widgets/issues/18446744073709551615", "", o, Ref{GitHub, "github.com", "octo-example/widgets", KindIssue, "18446744073709551615", ""}},
 	}
 	for _, c := range ok {
 		got, err := ParseGitHub(c.raw, c.def, c.o)
@@ -77,7 +77,7 @@ func TestParseGitHubURLs(t *testing.T) {
 }
 
 func TestRefStrings(t *testing.T) {
-	r := Ref{GitHub, "github.com", "octo-example/widgets", KindChange, "43"}
+	r := Ref{GitHub, "github.com", "octo-example/widgets", KindChange, "43", ""}
 	if r.String() != "octo-example/widgets#43" || r.Key() != "github:github.com/octo-example/widgets/change/43" {
 		t.Fatalf("String %q Key %q", r.String(), r.Key())
 	}
@@ -110,20 +110,21 @@ func TestCheckHost(t *testing.T) {
 }
 
 func TestRefCheck(t *testing.T) {
-	good := Ref{GitHub, "github.com", "octo-example/widgets", KindIssue, "42"}
+	good := Ref{GitHub, "github.com", "octo-example/widgets", KindIssue, "42", ""}
 	if err := good.Check(); err != nil {
 		t.Fatal(err)
 	}
 	for _, r := range []Ref{
-		{GitHub, "github.com", "octo-example/widgets/../../user", KindIssue, "42"},
-		{GitHub, "github.com", "octo-example/widgets", KindIssue, "42?x=1"},
-		{GitHub, "github.com", "octo-example/widgets", KindIssue, "42/comments"},
-		{GitHub, "github.com", "octo-example/widgets", KindIssue, "../42"},
-		{GitHub, "github.com", "octo-example/widgets#x", KindIssue, "42"},
-		{GitHub, "github.com", "octo-example", KindIssue, "42"},
-		{GitHub, "github.com", "octo-example/widgets", "commit", "42"},
-		{"gitlab", "github.com", "octo-example/widgets", KindIssue, "42"},
-		{GitHub, "github.com", "octo-example/widgets", KindIssue, ""},
+		{GitHub, "github.com", "octo-example/widgets/../../user", KindIssue, "42", ""},
+		{GitHub, "github.com", "octo-example/widgets", KindIssue, "42?x=1", ""},
+		{GitHub, "github.com", "octo-example/widgets", KindIssue, "42/comments", ""},
+		{GitHub, "github.com", "octo-example/widgets", KindIssue, "../42", ""},
+		{GitHub, "github.com", "octo-example/widgets#x", KindIssue, "42", ""},
+		{GitHub, "github.com", "octo-example", KindIssue, "42", ""},
+		{GitHub, "github.com", "octo-example/widgets", "commit", "42", ""},
+		{"gitlab", "github.com", "octo-example/widgets", KindIssue, "42", ""},
+		{GitHub, "github.com", "octo-example/widgets", KindIssue, "", ""},
+		{GitHub, "github.com", "octo-example/widgets", KindIssue, "42", "4000001 1"},
 	} {
 		if err := r.Check(); !errors.Is(err, ErrRef) {
 			t.Errorf("%+v admitted", r)

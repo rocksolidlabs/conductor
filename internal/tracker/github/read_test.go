@@ -23,7 +23,7 @@ func TestReadIssue(t *testing.T) {
 	if err != nil || notMod {
 		t.Fatalf("Read: %v %v", notMod, err)
 	}
-	want := tracker.Ref{System: "github", Host: "github.com", Space: "octo-example/widgets", Kind: tracker.KindIssue, ID: "42"}
+	want := tracker.Ref{System: "github", Host: "github.com", Space: "octo-example/widgets", Kind: tracker.KindIssue, ID: "42", SpaceID: "4000001"}
 	if it.Ref != want || it.NodeID != "I_kwDOFixture42" || it.DatabaseID != "5300000042" || it.URL != "https://github.com/octo-example/widgets/issues/42" {
 		t.Fatalf("identity %+v", it)
 	}

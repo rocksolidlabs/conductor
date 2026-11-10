@@ -61,13 +61,19 @@ const (
 // host (github.com, or a GitHub Enterprise Server host name, lower case,
 // with a port only in tests), Space its repository's owner/name (at most
 // MaxSpace bytes), Kind issue or change, ID its number as text (at most
-// MaxID bytes).
+// MaxID bytes). SpaceID is the repository's identity the caller holds,
+// empty for none: a read returns it in its Ref (Item.Ref, Target.Ref) as the
+// repository it read, and a call given a Ref that holds one refuses with
+// ErrTargetChanged, before any other request, when Space now names a
+// repository of another identity. Key and String leave it out: it says
+// which repository the caller read, not where the item is.
 type Ref struct {
-	System string `json:"system"`
-	Host   string `json:"host"`
-	Space  string `json:"space"`
-	Kind   string `json:"kind"`
-	ID     string `json:"id"`
+	System  string   `json:"system"`
+	Host    string   `json:"host"`
+	Space   string   `json:"space"`
+	Kind    string   `json:"kind"`
+	ID      string   `json:"id"`
+	SpaceID RemoteID `json:"spaceId,omitempty"`
 }
 
 // String is the reference as a person writes it: owner/name#12.
@@ -357,7 +363,11 @@ const (
 // request of the call by the identity that lookup read, so no answer of
 // another repository (one that took the name meanwhile, a fork with the
 // same commits) stands for it; an answer that cannot be tied to that
-// identity is not used. An adapter never retries a request by itself.
+// identity is not used. A caller that combines two calls as evidence
+// about one target passes the identity from the first to the second (the
+// Ref.SpaceID a read returned): the second refuses with ErrTargetChanged
+// when the name now names another repository. An adapter never retries a
+// request by itself.
 type Adapter interface {
 	// System is the adapter's system name, its key in Adapters.
 	System() string
