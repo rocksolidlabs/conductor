@@ -26,17 +26,25 @@
 ; handleUninstallResult), after the pages, after its own running-app check
 ; and before any file is copied, in place of its check of this id's earlier
 ; uninstall, which the macro makes first.
-!if "${APP_ID}" == "io.rocksolidlabs.conductor"
+!if "${APP_ID}" S== "io.rocksolidlabs.conductor"
   ; The GUID electron-builder derives from dev.conductor.app (UUID v5 of the
   ; id in its namespace, NsisTarget.js), and the earlier id's two keys.
   !define CONDUCTOR_EARLIER_GUID "3648324d-47e0-5ae4-adc7-00ce07fef04a"
   !define CONDUCTOR_EARLIER_UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${CONDUCTOR_EARLIER_GUID}"
   !define CONDUCTOR_EARLIER_INSTALL_KEY "Software\${CONDUCTOR_EARLIER_GUID}"
-  !define CONDUCTOR_EARLIER_FAILED "The earlier Conductor could not be removed; nothing was changed. Close it and run this installer again."
+  ; The earlier app's two files in its folder: common.nsh's
+  ; APP_EXECUTABLE_FILENAME and UNINSTALL_FILENAME for its product name,
+  ; Conductor (the uninstaller with the backslash before it, 24 characters).
+  !define CONDUCTOR_EARLIER_EXE "Conductor.exe"
+  !define CONDUCTOR_EARLIER_UNINSTALLER "\Uninstall Conductor.exe"
+  ; Each stop says what could not be done and what the person does next.
+  !define CONDUCTOR_EARLIER_FAILED "The earlier Conductor could not be removed. Close it and run this installer again."
   !define CONDUCTOR_EARLIER_PARTLY "The earlier Conductor was not fully removed. Run this installer again."
   !define CONDUCTOR_EARLIER_FOR_EVERYONE "An earlier Conductor is installed for everyone on this computer. Run this installer as administrator to replace it."
+  !define CONDUCTOR_EARLIER_BY_HAND "This installer cannot remove the earlier Conductor. Remove it from the installed apps, then run this installer again."
 
-  ; conductorEarlierStop ends the install before anything is copied.
+  ; conductorEarlierStop ends the install before anything of the new app is
+  ; copied.
   !macro conductorEarlierStop MESSAGE
     DetailPrint `${MESSAGE}`
     MessageBox MB_OK|MB_ICONSTOP `${MESSAGE}` /SD IDOK
@@ -50,81 +58,114 @@
     EnumRegKey $conductorEarlierProbe ${ROOT} `${KEY}` 0
   !macroend
 
-  ; conductorReplaceEarlier removes the earlier id's install under ROOT, if
-  ; any, by electron-builder's own upgrade protocol (installUtil.nsh's
-  ; uninstallOldVersion, which runs only for an installer's own id): a copy
-  ; of its uninstaller run in place against its folder (_?=, so ExecWait
-  ; returns once the removal has ended), --updated for the move-aside path
-  ; that restores every file at one it cannot move and keeps the user data.
-  !macro conductorReplaceEarlier ROOT MODE
+  ; conductorEarlierJudge sets $conductorEarlierForm to what the move does
+  ; with ROOT's entry of the earlier id: none (no uninstall entry), run (an
+  ; entry in the earlier installer's form, its uninstaller and Conductor.exe
+  ; in its folder), stale (in that form, its uninstaller and folder gone) or
+  ; stop (anything else, a folder that cannot be known among them: nothing
+  ; is run or deleted). The form is what registryAddInstallInfo wrote
+  ; (include/installer.nsh of the templates: UninstallString
+  ; '"$INSTDIR\Uninstall Conductor.exe" <mode>', InstallLocation "$INSTDIR"):
+  ; in quotes, an absolute path (a drive that exists, a colon, a backslash)
+  ; to the uninstaller, and an InstallLocation, when there is one, naming
+  ; that file's folder (in any case, with one trailing backslash or none).
+  ; The folder the move works on, $conductorEarlierDir, is that file's own.
+  !macro conductorEarlierJudge ROOT
+    StrCpy $conductorEarlierForm none
     !insertmacro conductorEarlierFound ${ROOT} "${CONDUCTOR_EARLIER_UNINSTALL_KEY}"
     ${IfNot} ${Errors}
-      ReadRegStr $conductorEarlierUninstaller ${ROOT} "${CONDUCTOR_EARLIER_UNINSTALL_KEY}" UninstallString
-      !insertmacro GetInQuotes $conductorEarlierUninstaller "$conductorEarlierUninstaller"
-      ReadRegStr $conductorEarlierDir ${ROOT} "${CONDUCTOR_EARLIER_INSTALL_KEY}" InstallLocation
-      ${If} $conductorEarlierDir == ""
-      ${AndIf} $conductorEarlierUninstaller != ""
-        Push $conductorEarlierUninstaller
-        Call GetFileParent
-        Pop $conductorEarlierDir
-      ${EndIf}
-      ${If} $conductorEarlierUninstaller == ""
-      ${OrIfNot} ${FileExists} "$conductorEarlierUninstaller"
-        ; The uninstaller is missing: a stale entry, its folder gone, is
-        ; removed; with the folder still there, nothing can remove it.
-        ${If} $conductorEarlierDir == ""
-        ${OrIfNot} ${FileExists} "$conductorEarlierDir\*.*"
-          DetailPrint `Removing the stale entry of the earlier Conductor (${ROOT}).`
-          DeleteRegKey ${ROOT} "${CONDUCTOR_EARLIER_UNINSTALL_KEY}"
-          DeleteRegKey ${ROOT} "${CONDUCTOR_EARLIER_INSTALL_KEY}"
-        ${Else}
-          !insertmacro conductorEarlierStop "${CONDUCTOR_EARLIER_FAILED}"
-        ${EndIf}
-      ${Else}
-        DetailPrint `Removing the earlier Conductor (${ROOT}).`
-        !insertmacro copyFile "$conductorEarlierUninstaller" "$PLUGINSDIR\conductor-earlier-uninstaller.exe"
-        ; A non-zero exit is tried again a second later, five tries in all,
-        ; as the template's loop makes.
-        StrCpy $conductorEarlierTry 0
-        ${Do}
-          IntOp $conductorEarlierTry $conductorEarlierTry + 1
-          ClearErrors
-          ExecWait '"$PLUGINSDIR\conductor-earlier-uninstaller.exe" /S /KEEP_APP_DATA --updated ${MODE} _?=$conductorEarlierDir' $conductorEarlierExit
-          ${If} ${Errors}
-            StrCpy $conductorEarlierExit "-1"
+      StrCpy $conductorEarlierForm stop
+      ReadRegStr $conductorEarlierText ${ROOT} "${CONDUCTOR_EARLIER_UNINSTALL_KEY}" UninstallString
+      !insertmacro GetInQuotes $conductorEarlierUninstaller $conductorEarlierText
+      StrCpy $conductorEarlierDir $conductorEarlierUninstaller -24
+      StrCpy $conductorEarlierText $conductorEarlierUninstaller "" -24
+      StrCpy $conductorEarlierProbe $conductorEarlierUninstaller 1
+      StrCpy $conductorEarlierDrive $conductorEarlierUninstaller 3
+      ReadRegStr $conductorEarlierLocation ${ROOT} "${CONDUCTOR_EARLIER_INSTALL_KEY}" InstallLocation
+      ${If} $conductorEarlierText S== "${CONDUCTOR_EARLIER_UNINSTALLER}"
+      ${AndIf} $conductorEarlierDrive S== "$conductorEarlierProbe:\"
+      ${AndIf} ${FileExists} "$conductorEarlierDrive*.*"
+        ${If} $conductorEarlierLocation == ""
+        ${OrIf} $conductorEarlierLocation == $conductorEarlierDir
+        ${OrIf} $conductorEarlierLocation == "$conductorEarlierDir\"
+          ${If} ${FileExists} "$conductorEarlierUninstaller"
+          ${AndIf} ${FileExists} "$conductorEarlierDir\${CONDUCTOR_EARLIER_EXE}"
+            StrCpy $conductorEarlierForm run
+          ${ElseIfNot} ${FileExists} "$conductorEarlierUninstaller"
+          ${AndIfNot} ${FileExists} "$conductorEarlierDir\*.*"
+            StrCpy $conductorEarlierForm stale
           ${EndIf}
-          ${If} $conductorEarlierExit == 0
-          ${OrIf} $conductorEarlierTry >= 5
-            ${ExitDo}
-          ${EndIf}
-          Sleep 1000
-        ${Loop}
-        ${If} $conductorEarlierExit != 0
-          DetailPrint `The earlier Conductor's uninstaller exited with $conductorEarlierExit.`
-          !insertmacro conductorEarlierStop "${CONDUCTOR_EARLIER_FAILED}"
-        ${EndIf}
-        ; Exit 0 is not taken on trust: the entry and the files are gone
-        ; before anything is copied.
-        !insertmacro conductorEarlierFound ${ROOT} "${CONDUCTOR_EARLIER_UNINSTALL_KEY}"
-        ${IfNot} ${Errors}
-          !insertmacro conductorEarlierStop "${CONDUCTOR_EARLIER_PARTLY}"
-        ${EndIf}
-        !insertmacro conductorEarlierFound ${ROOT} "${CONDUCTOR_EARLIER_INSTALL_KEY}"
-        ${IfNot} ${Errors}
-          !insertmacro conductorEarlierStop "${CONDUCTOR_EARLIER_PARTLY}"
-        ${EndIf}
-        ${If} ${FileExists} "$conductorEarlierDir\Conductor.exe"
-        ${OrIf} ${FileExists} "$conductorEarlierUninstaller"
-          !insertmacro conductorEarlierStop "${CONDUCTOR_EARLIER_PARTLY}"
         ${EndIf}
       ${EndIf}
     ${EndIf}
   !macroend
 
+  ; conductorReplaceEarlier acts on ROOT's entry of the earlier id as
+  ; conductorEarlierJudge finds it. One it can run is removed by
+  ; electron-builder's own upgrade protocol (installUtil.nsh's
+  ; uninstallOldVersion, which runs only for an installer's own id): a copy
+  ; of its uninstaller run in place against its folder (_?=, so ExecWait
+  ; returns once the removal has ended), --updated for the move-aside path
+  ; that restores every file at one it cannot move and keeps the user data.
+  ; A stale one's two keys are deleted.
+  !macro conductorReplaceEarlier ROOT MODE
+    !insertmacro conductorEarlierJudge ${ROOT}
+    ${If} $conductorEarlierForm == stop
+      !insertmacro conductorEarlierStop "${CONDUCTOR_EARLIER_BY_HAND}"
+    ${ElseIf} $conductorEarlierForm == stale
+      DetailPrint `Removing the stale entry of the earlier Conductor (${ROOT}).`
+      DeleteRegKey ${ROOT} "${CONDUCTOR_EARLIER_UNINSTALL_KEY}"
+      DeleteRegKey ${ROOT} "${CONDUCTOR_EARLIER_INSTALL_KEY}"
+    ${ElseIf} $conductorEarlierForm == run
+      DetailPrint `Removing the earlier Conductor (${ROOT}).`
+      !insertmacro copyFile "$conductorEarlierUninstaller" "$PLUGINSDIR\conductor-earlier-uninstaller-${ROOT}.exe"
+      ; A non-zero exit is tried again a second later, five tries in all,
+      ; as the template's loop makes.
+      StrCpy $conductorEarlierTry 0
+      ${Do}
+        IntOp $conductorEarlierTry $conductorEarlierTry + 1
+        ClearErrors
+        ExecWait '"$PLUGINSDIR\conductor-earlier-uninstaller-${ROOT}.exe" /S /KEEP_APP_DATA --updated ${MODE} _?=$conductorEarlierDir' $conductorEarlierExit
+        ${If} ${Errors}
+          StrCpy $conductorEarlierExit "-1"
+        ${EndIf}
+        ${If} $conductorEarlierExit == 0
+        ${OrIf} $conductorEarlierTry >= 5
+          ${ExitDo}
+        ${EndIf}
+        Sleep 1000
+      ${Loop}
+      ${If} $conductorEarlierExit != 0
+        DetailPrint `The earlier Conductor's uninstaller exited with $conductorEarlierExit.`
+        !insertmacro conductorEarlierStop "${CONDUCTOR_EARLIER_FAILED}"
+      ${EndIf}
+      ${If} ${FileExists} "$conductorEarlierDir\${CONDUCTOR_EARLIER_EXE}"
+      ${OrIf} ${FileExists} "$conductorEarlierUninstaller"
+        !insertmacro conductorEarlierStop "${CONDUCTOR_EARLIER_PARTLY}"
+      ${EndIf}
+    ${EndIf}
+    ; Neither exit 0 nor a delete is taken on trust: both keys are gone
+    ; before anything of the new app is copied.
+    ${If} $conductorEarlierForm != none
+      !insertmacro conductorEarlierFound ${ROOT} "${CONDUCTOR_EARLIER_UNINSTALL_KEY}"
+      ${IfNot} ${Errors}
+        !insertmacro conductorEarlierStop "${CONDUCTOR_EARLIER_PARTLY}"
+      ${EndIf}
+      !insertmacro conductorEarlierFound ${ROOT} "${CONDUCTOR_EARLIER_INSTALL_KEY}"
+      ${IfNot} ${Errors}
+        !insertmacro conductorEarlierStop "${CONDUCTOR_EARLIER_PARTLY}"
+      ${EndIf}
+    ${EndIf}
+  !macroend
+
   !macro customUnInstallCheck
+    Var /GLOBAL conductorEarlierForm
     Var /GLOBAL conductorEarlierProbe
+    Var /GLOBAL conductorEarlierText
+    Var /GLOBAL conductorEarlierDrive
     Var /GLOBAL conductorEarlierUninstaller
     Var /GLOBAL conductorEarlierDir
+    Var /GLOBAL conductorEarlierLocation
     Var /GLOBAL conductorEarlierExit
     Var /GLOBAL conductorEarlierTry
     ; The template's check of this id's earlier uninstall, made first; a
@@ -137,14 +178,21 @@
       SetErrorLevel 2
       Quit
     ${EndIf}
-    ; An install for everyone needs this installer elevated: it stops
-    ; before anything is changed.
-    !insertmacro conductorEarlierFound HKLM "${CONDUCTOR_EARLIER_UNINSTALL_KEY}"
-    ${IfNot} ${Errors}
-    ${AndIfNot} ${UAC_IsAdmin}
-      !insertmacro conductorEarlierStop "${CONDUCTOR_EARLIER_FOR_EVERYONE}"
+    ; The move is a person's act: an update the app started (--updated,
+    ; the template's isUpdated) never makes it. A successor that updates
+    ; itself was installed by a run that made it.
+    ${If} ${isUpdated}
+      DetailPrint `An update the app started: an earlier Conductor, if any, is left for the next run of this installer by hand.`
+    ${Else}
+      ; An install for everyone needs this installer elevated: it stops
+      ; before anything of the new app is copied.
+      !insertmacro conductorEarlierFound HKLM "${CONDUCTOR_EARLIER_UNINSTALL_KEY}"
+      ${IfNot} ${Errors}
+      ${AndIfNot} ${UAC_IsAdmin}
+        !insertmacro conductorEarlierStop "${CONDUCTOR_EARLIER_FOR_EVERYONE}"
+      ${EndIf}
+      !insertmacro conductorReplaceEarlier HKCU "/currentuser"
+      !insertmacro conductorReplaceEarlier HKLM "/allusers"
     ${EndIf}
-    !insertmacro conductorReplaceEarlier HKCU "/currentuser"
-    !insertmacro conductorReplaceEarlier HKLM "/allusers"
   !macroend
 !endif
