@@ -1558,6 +1558,70 @@ func TestSwitchyardConfig(t *testing.T) {
 	}
 }
 
+// switchyard.appURL, the desktop app's link on a switchyard's pages: the
+// repository's releases page by default; the file and the environment set
+// it; one that is not an https URL with a host, of at most 200 bytes, is
+// refused at load, the key named and the value not.
+func TestSwitchyardAppURL(t *testing.T) {
+	cfg := Defaults()
+	if link, ok := cfg.SwitchyardAppURL(); link != "https://github.com/rocksolidlabs/conductor/releases" || !ok {
+		t.Fatalf("default: %q %v", link, ok)
+	}
+	if err := store.DecodeStrict([]byte(`{"switchyard":{"appURL":"https://example.test/download"}}`), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if link, ok := cfg.SwitchyardAppURL(); link != "https://example.test/download" || !ok {
+		t.Fatalf("file: %q %v", link, ok)
+	}
+	if err := applyEnv(cfg, func(k string) string {
+		return map[string]string{"CONDUCTOR_SWITCHYARD_APP_URL": "https://example.test/app?from=switchyard"}[k]
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if link, ok := cfg.SwitchyardAppURL(); link != "https://example.test/app?from=switchyard" || !ok {
+		t.Fatalf("env: %q %v", link, ok)
+	}
+	at200 := "https://example.test/" + strings.Repeat("a", 200-len("https://example.test/"))
+	c := Defaults()
+	c.Switchyard.AppURL = at200
+	if err := c.Validate(); err != nil {
+		t.Fatalf("200 bytes: %v", err)
+	}
+	for _, bad := range []string{
+		"http://example.test/download",
+		"javascript:alert(1)",
+		"https://",
+		"https:///download",
+		"/releases",
+		"example.test/download",
+		"https://user:secret@example.test/download",
+		"https://example.test/a b",
+		"https://example.test/a\tb",
+		"https://example.test/\x7f",
+		" https://example.test/download",
+		"https://example.test/%zz",
+		at200 + "a",
+	} {
+		c := Defaults()
+		c.Switchyard.AppURL = bad
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), "switchyard.appURL must be an https URL") {
+			t.Errorf("%q: %v", bad, err)
+			continue
+		}
+		if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "example.test") {
+			t.Errorf("%q: the error shows the value: %v", bad, err)
+		}
+		// A config that skipped Validate gets the default.
+		if link, ok := c.SwitchyardAppURL(); link != DefaultSwitchyardAppURL || ok {
+			t.Errorf("%q read as %q %v", bad, link, ok)
+		}
+	}
+}
+
 // The token's old name, adminToken in the file and CONDUCTOR_ADMIN_TOKEN in
 // the environment, still works and is reported as renamed; the new name wins
 // when both are given.

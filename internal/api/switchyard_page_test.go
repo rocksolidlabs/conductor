@@ -2,6 +2,7 @@ package api
 
 import (
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor"
 	"github.com/rocksolidlabs/conductor/internal/certs"
+	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
@@ -196,6 +198,39 @@ func TestSwitchyardLandingSaysWhatAPublisherNeeds(t *testing.T) {
 	open := openSwitchyardEnv(t, nil)
 	if _, body := getPage(t, open, "/"); !strings.Contains(body, "Nothing to configure") || strings.Contains(body, "Ask the operator of this switchyard for a host token") || !strings.Contains(body, "A host token is optional") {
 		t.Fatalf("open: %.300s", body)
+	}
+}
+
+// The pages' Get the desktop app link is switchyard.appURL, and the
+// repository's releases page without it. One out of form that reached the
+// server without Validate, which refuses it at load, is the default, said in
+// the log once and without the value.
+func TestSwitchyardPagesLinkTheAppURL(t *testing.T) {
+	link := func(url string) string { return `<a class="btn" href="` + url + `">Get the desktop app</a>` }
+	pages := func(e *testEnv, want string) {
+		t.Helper()
+		for _, p := range []string{"/", "/crews"} {
+			if _, body := getPage(t, e, p); strings.Count(body, link(want)) != 1 || strings.Count(body, ">Get the desktop app</a>") != 1 {
+				t.Fatalf("%s does not link %s: %.300s", p, want, body)
+			}
+		}
+	}
+	pages(switchyardEnv(t, true), "https://github.com/rocksolidlabs/conductor/releases")
+	pages(newTestEnv(t, func(c *config.Config) {
+		c.Switchyard.Enabled = true
+		c.Switchyard.AppURL = "https://example.test/download/conductor"
+	}), "https://example.test/download/conductor")
+
+	logs := &logBuffer{}
+	bad := newTestEnvLogging(t, func(c *config.Config) { c.Switchyard.Enabled = true }, slog.New(slog.NewTextHandler(logs, nil)))
+	bad.srv.cfg.Switchyard.AppURL = "http://example.test/download?key=secret"
+	pages(bad, "https://github.com/rocksolidlabs/conductor/releases")
+	pages(bad, "https://github.com/rocksolidlabs/conductor/releases")
+	if n := strings.Count(logs.String(), "switchyard.appURL is not an https URL"); n != 1 {
+		t.Fatalf("said %d times:\n%s", n, logs.String())
+	}
+	if strings.Contains(logs.String(), "secret") || strings.Contains(logs.String(), "example.test") {
+		t.Fatalf("the log shows the value: %s", logs.String())
 	}
 }
 

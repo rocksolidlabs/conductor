@@ -179,6 +179,49 @@ type Switchyard struct {
 	// they are counted, not only rate-limited. A link whose host has been
 	// gone five minutes gives its place to a new one of the address.
 	OpenHostLinks int `json:"openHostLinks,omitempty"`
+	// AppURL is where the switchyard's pages send a visitor for the desktop
+	// app (Get the desktop app): an https URL of at most
+	// MaxSwitchyardAppURL bytes, refused otherwise at load. Empty is
+	// DefaultSwitchyardAppURL.
+	AppURL string `json:"appURL,omitempty"`
+}
+
+// DefaultSwitchyardAppURL is the desktop app's link on a switchyard's pages
+// when switchyard.appURL names none: the repository's releases page.
+const DefaultSwitchyardAppURL = "https://github.com/rocksolidlabs/conductor/releases"
+
+// MaxSwitchyardAppURL bounds switchyard.appURL, in bytes.
+const MaxSwitchyardAppURL = 200
+
+// SwitchyardAppURL is the desktop app's link on a switchyard's pages
+// (switchyard.appURL), DefaultSwitchyardAppURL when it names none. One out
+// of form (appURLOK) is the default too, with ok false: Validate refuses it
+// at load, so only a config that skipped Validate gets here with one.
+func (c *Config) SwitchyardAppURL() (link string, ok bool) {
+	switch v := c.Switchyard.AppURL; {
+	case v == "":
+		return DefaultSwitchyardAppURL, true
+	case appURLOK(v):
+		return v, true
+	default:
+		return DefaultSwitchyardAppURL, false
+	}
+}
+
+// appURLOK reports whether raw is in switchyard.appURL's form: an https URL
+// with a host and no user information, of at most MaxSwitchyardAppURL
+// bytes, with no space or control character in it.
+func appURLOK(raw string) bool {
+	if len(raw) > MaxSwitchyardAppURL {
+		return false
+	}
+	for i := 0; i < len(raw); i++ {
+		if raw[i] <= ' ' || raw[i] == 0x7f {
+			return false
+		}
+	}
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Host != "" && u.User == nil
 }
 
 // SwitchyardRelay reports whether the switchyard relays (Switchyard.Relay, on by default).
@@ -950,6 +993,7 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 	if err := num("CONDUCTOR_SWITCHYARD_OPEN_HOST_RELAY_KBPS", &cfg.Switchyard.OpenHostRelayKBps); err != nil {
 		return err
 	}
+	str("CONDUCTOR_SWITCHYARD_APP_URL", &cfg.Switchyard.AppURL)
 	if err := num("CONDUCTOR_ICE_UDP_PORT", &cfg.ICE.UDPPort); err != nil {
 		return err
 	}
@@ -1078,6 +1122,9 @@ func (c *Config) Validate() error {
 	}
 	if n := c.Switchyard.OpenHostRelayKBps; n < 0 || n > 1<<20 {
 		errs = append(errs, errors.New("switchyard.openHostRelayKBps must be between 0 and 1048576"))
+	}
+	if _, ok := c.SwitchyardAppURL(); !ok {
+		errs = append(errs, fmt.Errorf("switchyard.appURL must be an https URL with a host and no user name or password, of at most %d bytes", MaxSwitchyardAppURL))
 	}
 	for _, o := range c.Switchyard.AllowedOrigins {
 		if strings.TrimSpace(o) == "" || strings.Contains(o, "://") {
