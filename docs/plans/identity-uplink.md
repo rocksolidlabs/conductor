@@ -42,8 +42,11 @@ appears only in an example detail, where it names the paid tenant.
 **What is on `main` and what is not.** Every prerequisite is on `main`:
 C2's `IdentityProvider`, its guard and the 30 s recheck (`identity.go`),
 `ext.Starter` and the server's supervision of it (`exthost.go`), `GET
-/api/capabilities` and the About card's Extensions row (C9). Nothing this
-row needs waits on another item. Issue #776 (`docs/plans/decide-grant.md`,
+/api/capabilities` and the About card's Extensions row (C9). One defect
+of `main`'s switchyard this row would expose waits on its own fix:
+#803 (a host's links stay outside the open-host link limit when it
+comes back as an open host) lands first, and this row's code is cut
+once it has merged (IU16). Issue #776 (`docs/plans/decide-grant.md`,
 the stream's other open-source row) follows this row and shares `ext`,
 `internal/api`, `web/app` and `docs`: this plan owns `ext.Host.HostToken`
 and `Mode`, the optional identity methods and the capabilities row's
@@ -156,7 +159,7 @@ prevent. The message stays, made as narrow as it can be:
   provider sees it, takes one at a time in the connection's read loop,
   asks through slots of its own, and takes it under the same
   per-connection turn as the recheck, so a renewal and a recheck never
-  overlap (no generations, no verdict to drop).
+  overlap.
 - It has one path that succeeds. Every other outcome ends in one
   fallback, the drop a reconnect is (Events, One fallback): nothing is
   retried in place, and nothing of a renewal outlives its connection.
@@ -685,17 +688,19 @@ a credential the provider admits resumes the session; nothing, where the
 switchyard admits only credentials, is refused 401, and the host tries
 again with the backoff; nothing, where it admits open hosts, resumes the
 session as an open host, under the open-host limits for its connection
-and its new links. The links minted while it was admitted keep the
-address `keepLink` gave them, none, so the open-host bound on links
+and its new links, held to those limits as #803 has it. On `main` the
+links minted while it was admitted keep the address `keepLink` gave
+them, none, so the open-host bound on links
 (`switchyard.openHostLinks`) does not count them: `main`'s switchyard
 binds neither a session's resume (`Hub.Register`, by secret or by
 instance) nor its links to how the host was admitted. A stock host does
 not reach that on `main`, whose presented token is fixed for its process
 (`newUplink` in `serve.go`, `Options.Token` in `host.go`) and whose
-instance, which fixes its sessions' ids, is new with each process; a
-client that presents a token and resumes with none does, and after this
-row a stock host does when its provider gives nothing at a reconnect.
-That is #803 (Out of scope); this row adds no accounting for it.
+instance, which fixes its sessions' ids, is new with each process; after
+this row a stock host would, when its provider gives nothing at a
+reconnect. So #803's fix lands before this row's code (IU16), no build
+lets a stock host reach the uncounted state, and this row adds no
+accounting of its own.
 
 **Host mode, start and stop.** `runHost`: `extensions()`, then
 `StartIdentity` (the mark written in `<state>/ext`, then the first try
@@ -747,14 +752,12 @@ says so.
   issue asks for the close, and after it the host registers again as
   after any drop (Events, After the close).
 - What a session's links count when its host comes back admitted
-  otherwise than it was (#803): `main`'s switchyard ties neither the
-  resume nor the links to the admission, and this row adds no
-  accounting for it.
+  otherwise than it was: that is #803, whose fix lands before this
+  row's code is cut (IU16); this row adds no accounting of its own.
 - A delivery time for a renewal: none is promised (Events, Two timers).
 - Retrying a renewal in place, a renewal's own acknowledgement or a
   second lane for it: every failure takes the one fallback.
-- A rule on how often `host_token` arrives (round 1's 15 s spacing is
-  withdrawn): the read loop's order and the credential turn bound what a
+- A rule on how often `host_token` arrives: the read loop's order and the credential turn bound what a
   renewal costs.
 - Telling a lapsed credential from a revoked one at a recheck: both are
   a verdict.
@@ -969,7 +972,7 @@ registers one.
 
 | PR | Title | Repository | Contains | Touches | Tests | Depends on | Parallel with | Size |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| PR-1 (#775) | ext, api, hostagent, cli: the host token, the uplink's credential failing closed, host connections rechecked and renewed (`ext.Host` gains `HostToken` and `Mode`) | rocksolidlabs/conductor | the six parts above, the `host_token` triple and `registered`'s `renews`, the host state directory denied and marked, the export leaving a marked directory out, the About card's Identity row, the features entry | `ext`, `ext/exttest`, `internal/api`, `internal/hostagent`, `internal/cli`, `internal/config`, `internal/export`, `internal/proto`, `web/app`, `web/e2e`, `docs` | the Go race tests, vitest and Playwright named above | C2 on `main` (merged) | none in this repository; #776 follows it | ~630 + 790 (code + tests) |
+| PR-1 (#775) | ext, api, hostagent, cli: the host token, the uplink's credential failing closed, host connections rechecked and renewed (`ext.Host` gains `HostToken` and `Mode`) | rocksolidlabs/conductor | the six parts above, the `host_token` triple and `registered`'s `renews`, the host state directory denied and marked, the export leaving a marked directory out, the About card's Identity row, the features entry | `ext`, `ext/exttest`, `internal/api`, `internal/hostagent`, `internal/cli`, `internal/config`, `internal/export`, `internal/proto`, `web/app`, `web/e2e`, `docs` | the Go race tests, vitest and Playwright named above | C2 on `main` (merged); #803's fix merged first (IU16) | none in this repository; #776 follows it | ~630 + 790 (code + tests) |
 
 Adding two methods to `ext.Host` breaks an implementation of `Host`
 outside this module (a provider's own test fake), so the PR's title
@@ -979,10 +982,8 @@ names it, as `ext`'s Stability section asks. The PR carries the
 ## Owner decisions
 
 Dated 2026-11-10. The issue's words leave these open; each takes the
-fail-closed answer as a default the owner can overturn. The text below
-is each decision as it stands after review round 3; round 1's 15 s
-spacing rule (part of IU8) is withdrawn, IU14 is withdrawn in round 3,
-and no decision speaks of a mechanism the plan no longer has.
+fail-closed answer as a default the owner can overturn. Numbers are
+kept as first given, so IU14 stands empty.
 
 - **IU1. The message's key.** Every host message carries its type in
   `t`, so the issue's `{type: "host_token", token}` is
@@ -1047,13 +1048,15 @@ and no decision speaks of a mechanism the plan no longer has.
   `ext.UplinkTokenLead` (2 minutes) before the old credential ends, and
   promises no delivery time: a renewal not taken before the recheck finds
   the old credential ended meets a verdict, and the host registers again.
-- **IU14. Withdrawn in review round 3.** It ended a revoked session's
-  standing at the switchyard; part 3 of the issue asks only for the
-  close, and that teardown raced the host's own registration and the
-  link files' deletion.
+- **IU14. Withdrawn.** A verdict does only what part 3 of the issue
+  asks, the close (Out of scope).
 - **IU15. A withheld first registration.** On the server the
   publication is owed and the next Share publishes it; `conductor host`
   tries again for at most 2 minutes, then exits as today.
+- **IU16. #803 first.** This row's code is cut once #803 (a host's
+  links stay outside the open-host link limit when it comes back as an
+  open host) has merged, so no build lets a stock host reach the
+  uncounted state; a defect the stream needs is fixed in the stream.
 
 ## Acceptance
 
