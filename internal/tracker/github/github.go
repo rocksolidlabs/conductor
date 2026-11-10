@@ -8,17 +8,23 @@
 // tests' and the e2e harness's alone).
 //
 // A call uses two clients of its own. The API client makes the requests to
-// the API host, through the credential's Transport and no other way, and
-// follows a redirect only within that host (a renamed repository's 301),
-// handing any other back unfollowed, so a credential reaches the API host
-// alone by construction. The signed-address client fetches what the API
-// named on another host (an image's src in body_html, a job log's
-// Location) through the base transport alone, which holds no credential,
-// following a redirect only to a host the request's rule admits
-// (tracker.ImageHost, tracker.LogHost). Every answer is read to its bound,
-// past which it is tracker.ErrBound; nothing is retried and nothing polls.
-// GitHub's answers are decoded leniently (they carry many fields this
-// package does not read); what Conductor sends is built from its own types.
+// the API host, through the credential's Transport and no other way, whose
+// every hop is held to the API host byte for byte, and follows a redirect
+// only within that host (a renamed repository's 301), handing any other
+// back unfollowed, so a credential reaches the API host alone by
+// construction. A write is sent once by every layer: no body to send again,
+// no redirect followed, and its every ending sorted into made, nothing
+// written or not known (sortWrite's table). The signed-address client
+// fetches what the API named on another host (an image's src in body_html,
+// a job log's Location) through the base transport alone, which holds no
+// credential, sending only to a host the request's rule admits, at every
+// hop (tracker.ImageHost, tracker.LogHost). Every host goes through
+// tracker.CheckHost, and an address is built from its parts. Every answer
+// is read to its bound, past which it is tracker.ErrBound, and every
+// request has its own deadline (RequestTimeout, ImageTimeout); nothing is
+// retried and nothing polls. GitHub's answers are decoded leniently (they
+// carry many fields this package does not read); what Conductor sends is
+// built from its own types.
 package github
 
 import (
@@ -29,9 +35,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/tracker"
@@ -94,6 +102,10 @@ type Adapter struct {
 	base http.RoundTripper
 	log  *slog.Logger
 	ua   string
+	// after runs f once d has passed and gives the stop of that timer:
+	// the clock of every request's own deadline (RequestTimeout,
+	// ImageTimeout), time.AfterFunc's but in tests.
+	after func(d time.Duration, f func()) (stop func() bool)
 }
 
 var _ tracker.Adapter = (*Adapter)(nil)
@@ -113,7 +125,23 @@ func New(o Options) *Adapter {
 	if a.o.Now == nil {
 		a.o.Now = time.Now
 	}
+	a.after = func(d time.Duration, f func()) func() bool { return time.AfterFunc(d, f).Stop }
 	return a
+}
+
+// errTimedOut is the cause of a request's context its own deadline ended.
+var errTimedOut = errors.New("the request's deadline passed")
+
+// deadline is ctx with the request's own deadline d on the adapter's clock:
+// the context ends, with errTimedOut as its cause, once d has passed; done
+// stops the clock and ends the context.
+func (a *Adapter) deadline(ctx context.Context, d time.Duration) (context.Context, func()) {
+	rc, cancel := context.WithCancelCause(ctx)
+	stop := a.after(d, func() { cancel(errTimedOut) })
+	return rc, func() {
+		stop()
+		cancel(context.Canceled)
+	}
 }
 
 // System is "github".
@@ -147,36 +175,47 @@ func (a *Adapter) Parse(raw, defaultSpace string) (tracker.Ref, error) {
 	return tracker.ParseGitHub(raw, defaultSpace, a.parseOptions())
 }
 
-// endpoint is a host's API: its scheme and host, REST's base and
-// GraphQL's address.
+// endpoint is a host's API: the item's host, the API's scheme and host,
+// and the paths REST and GraphQL are under. An address is built from these
+// parts, never by joining strings, and every request's URL is held to
+// scheme and apiHost byte for byte before it is sent (do) and at every hop
+// (the credential's transport).
 type endpoint struct {
-	host    string // the item's host (github.com, an Enterprise host)
-	scheme  string
-	apiHost string
-	rest    string
-	graphql string
+	host        string // the item's host (github.com, an Enterprise host)
+	scheme      string
+	apiHost     string
+	restPrefix  string // "" for api.github.com, /api/v3 for an Enterprise host
+	graphqlPath string
 }
 
-// endpointFor is the API of a host the credential is for.
+// endpointFor is the API of a host the credential is for. The host passes
+// tracker.CheckHost (no user, path, query, fragment, port, percent sign or
+// byte past lower-case ASCII; a loopback form only with Options.Loopback)
+// and is github.com, a loopback form, or a saved Enterprise Server host
+// equal byte for byte; anything else is refused before any request.
 func (a *Adapter) endpointFor(c tracker.Credential, host string) (endpoint, error) {
 	if c.IsZero() {
-		return endpoint{}, &tracker.RequestError{System: tracker.GitHub, Method: "-", Path: "-", Err: tracker.ErrUnauthorized, Words: "no token is saved for " + host}
+		return endpoint{}, &tracker.RequestError{System: tracker.GitHub, Method: "-", Path: "-", Err: tracker.ErrUnauthorized, Words: "no token is saved for this host"}
 	}
 	if c.Host() != host {
 		return endpoint{}, &tracker.RequestError{System: tracker.GitHub, Method: "-", Path: "-", Err: tracker.ErrUnsupported, Words: "the token is for another host"}
 	}
+	refused := &tracker.RequestError{System: tracker.GitHub, Method: "-", Path: "-", Err: tracker.ErrUnsupported, Words: "not a host Conductor reads"}
+	if tracker.CheckHost(host, a.o.Loopback) != nil {
+		return endpoint{}, refused
+	}
 	switch {
 	case host == tracker.GitHubHost:
-		return endpoint{host: host, scheme: "https", apiHost: "api.github.com", rest: "https://api.github.com", graphql: "https://api.github.com/graphql"}, nil
+		return endpoint{host: host, scheme: "https", apiHost: "api.github.com", graphqlPath: "/graphql"}, nil
 	case a.o.Loopback && tracker.IsLoopback(host):
-		return endpoint{host: host, scheme: "http", apiHost: host, rest: "http://" + host + "/api/v3", graphql: "http://" + host + "/api/graphql"}, nil
+		return endpoint{host: host, scheme: "http", apiHost: host, restPrefix: "/api/v3", graphqlPath: "/api/graphql"}, nil
 	}
 	for _, h := range a.parseOptions().Hosts {
-		if h == host && !strings.Contains(host, ":") && host != "" {
-			return endpoint{host: host, scheme: "https", apiHost: host, rest: "https://" + host + "/api/v3", graphql: "https://" + host + "/api/graphql"}, nil
+		if h == host && tracker.CheckHost(h, false) == nil {
+			return endpoint{host: host, scheme: "https", apiHost: host, restPrefix: "/api/v3", graphqlPath: "/api/graphql"}, nil
 		}
 	}
-	return endpoint{}, &tracker.RequestError{System: tracker.GitHub, Method: "-", Path: "-", Err: tracker.ErrUnsupported, Words: host + " is not a host Conductor reads"}
+	return endpoint{}, refused
 }
 
 // request is one request to the API host.
@@ -191,6 +230,10 @@ type request struct {
 	// keep3xx hands a redirect off the API host back as the answer (a
 	// job log's 302) instead of refusing it.
 	keep3xx bool
+	// write marks a mutation: sent once by every layer under the adapter
+	// (no body to send again, no redirect followed), and a request that
+	// provably never left is said as nothing written.
+	write bool
 }
 
 // answer is the API host's answer.
@@ -201,41 +244,59 @@ type answer struct {
 	redirected bool
 }
 
-func (e endpoint) url(r request) string {
+func (e endpoint) path(r request) string {
 	if r.path == "" {
-		return e.graphql
+		return e.graphqlPath
 	}
-	u := e.rest + r.path
+	return e.restPrefix + r.path
+}
+
+func (e endpoint) url(r request) *url.URL {
+	u := &url.URL{Scheme: e.scheme, Host: e.apiHost, Path: e.path(r)}
 	if len(r.query) > 0 {
-		u += "?" + r.query.Encode()
+		u.RawQuery = r.query.Encode()
 	}
 	return u
 }
 
 // errPath is a request's path as an error says it: never its query.
-func (e endpoint) errPath(r request) string {
-	u, err := url.Parse(e.url(r))
-	if err != nil {
-		return "-"
-	}
-	return u.Path
-}
+func (e endpoint) errPath(r request) string { return e.path(r) }
 
 // errRedirect is a redirect the client refused.
 var errRedirect = errors.New("redirect refused")
 
 // do sends a request to the API host with the credential's transport and
-// reads its answer to the bound. A status of 400 or more is the error it
-// maps to; a 3xx off the API host is refused unless keep3xx.
+// reads its answer to the bound, within the request's own deadline. A
+// status of 400 or more is the error it maps to; a 3xx off the API host is
+// refused unless keep3xx. A write (r.write) is sent once by every layer:
+// its body cannot be sent again (net/http replays a body only through
+// GetBody, which a write's request does not have, over HTTP/1.1 and
+// HTTP/2 alike), no redirect is followed for it (its 3xx is the answer),
+// and when no connection was ever had for it the error says nothing was
+// written: the request never left.
 func (a *Adapter) do(ctx context.Context, c tracker.Credential, ep endpoint, r request) (answer, error) {
 	path := ep.errPath(r)
+	rctx, done := a.deadline(ctx, RequestTimeout)
+	defer done()
+	var connected atomic.Bool
+	if r.write {
+		rctx = httptrace.WithClientTrace(rctx, &httptrace.ClientTrace{GotConn: func(httptrace.GotConnInfo) { connected.Store(true) }})
+	}
 	var body io.Reader
 	if r.body != nil {
 		body = bytes.NewReader(r.body)
 	}
-	req, err := http.NewRequestWithContext(ctx, r.method, ep.url(r), body)
-	if err != nil {
-		return answer{}, &tracker.RequestError{System: tracker.GitHub, Method: r.method, Path: path, Err: tracker.ErrUnsupported}
+	u := ep.url(r)
+	req, err := http.NewRequestWithContext(rctx, r.method, u.String(), body)
+	if err != nil || req.URL.Scheme != ep.scheme || req.URL.Host != ep.apiHost || req.URL.User != nil || req.URL.Path != u.Path {
+		e := &tracker.RequestError{System: tracker.GitHub, Method: r.method, Path: path, Err: tracker.ErrUnsupported, Words: "an address Conductor does not send to"}
+		if r.write {
+			return answer{}, tracker.Proven(e)
+		}
+		return answer{}, e
+	}
+	if r.write {
+		req.GetBody = nil
 	}
 	accept := r.accept
 	if accept == "" {
@@ -252,13 +313,15 @@ func (a *Adapter) do(ctx context.Context, c tracker.Credential, ep endpoint, r r
 	}
 	redirected := false
 	client := &http.Client{
-		Transport: c.Transport(a.base),
-		Timeout:   RequestTimeout,
+		Transport: c.Transport(a.base, ep.scheme, ep.apiHost),
 		CheckRedirect: func(next *http.Request, via []*http.Request) error {
+			if r.write {
+				return http.ErrUseLastResponse
+			}
 			if len(via) >= MaxRedirects {
 				return errRedirect
 			}
-			if next.URL.Scheme != ep.scheme || !strings.EqualFold(next.URL.Host, ep.apiHost) {
+			if next.URL.Scheme != ep.scheme || next.URL.Host != ep.apiHost || next.URL.User != nil {
 				return http.ErrUseLastResponse
 			}
 			redirected = true
@@ -267,17 +330,23 @@ func (a *Adapter) do(ctx context.Context, c tracker.Credential, ep endpoint, r r
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return answer{}, a.transportError(ctx, r.method, path, err)
+		e := a.transportError(ctx, rctx, r.method, path, err)
+		if r.write && !connected.Load() {
+			return answer{}, tracker.Proven(e)
+		}
+		return answer{}, e
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 && resp.StatusCode != http.StatusNotModified {
+		if r.write {
+			return answer{}, &tracker.RequestError{System: tracker.GitHub, Method: r.method, Path: path, Status: resp.StatusCode, Err: tracker.ErrUnsupported, Words: "a redirect, which a write does not follow"}
+		}
 		if r.keep3xx {
 			return answer{status: resp.StatusCode, header: resp.Header, redirected: redirected}, nil
 		}
 		return answer{}, &tracker.RequestError{System: tracker.GitHub, Method: r.method, Path: path, Status: resp.StatusCode, Err: tracker.ErrUnsupported, Words: "a redirect off the API host"}
 	}
 	if resp.StatusCode >= 400 {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, MaxErrorAnswer))
 		return answer{status: resp.StatusCode, header: resp.Header}, a.statusError(r.method, path, resp)
 	}
 	data, err := readBounded(resp.Body, r.max)
@@ -285,7 +354,7 @@ func (a *Adapter) do(ctx context.Context, c tracker.Credential, ep endpoint, r r
 		if errors.Is(err, tracker.ErrBound) {
 			return answer{}, &tracker.RequestError{System: tracker.GitHub, Method: r.method, Path: path, Status: resp.StatusCode, Err: tracker.ErrBound, Words: "past " + strconv.FormatInt(r.max, 10) + " bytes"}
 		}
-		return answer{}, a.transportError(ctx, r.method, path, err)
+		return answer{}, a.transportError(ctx, rctx, r.method, path, err)
 	}
 	return answer{status: resp.StatusCode, header: resp.Header, body: data, redirected: redirected}, nil
 }
@@ -304,33 +373,42 @@ func readBounded(r io.Reader, max int64) ([]byte, error) {
 }
 
 // transportError is a request that had no answer: its words never carry
-// the URL (a url.Error's text has the query).
-func (a *Adapter) transportError(ctx context.Context, method, path string, err error) error {
+// the URL (a url.Error's text has the query). ctx is the caller's, rctx
+// the request's own (its deadline's cause errTimedOut).
+func (a *Adapter) transportError(ctx, rctx context.Context, method, path string, err error) error {
 	e := &tracker.RequestError{System: tracker.GitHub, Method: method, Path: path, Err: tracker.ErrUnavailable, Words: "the connection failed"}
-	if errors.Is(err, errRedirect) {
+	switch {
+	case errors.Is(err, tracker.ErrOffHost):
+		e.Err, e.Words = tracker.ErrUnsupported, "an address Conductor does not send the token to"
+		return e
+	case errors.Is(err, errRedirect):
 		e.Err, e.Words = tracker.ErrUnsupported, "a redirect Conductor does not follow"
+		return e
+	case ctx.Err() != nil:
+		e.Cause = ctx.Err()
+		e.Words = "the call ended"
+		return e
+	case errors.Is(context.Cause(rctx), errTimedOut):
+		e.Words = "timed out"
 		return e
 	}
 	var ne interface{ Timeout() bool }
 	if errors.As(err, &ne) && ne.Timeout() {
 		e.Words = "timed out"
 	}
-	if ctx.Err() != nil {
-		e.Cause = ctx.Err()
-		e.Words = "the call ended"
-	}
 	return e
 }
 
-// statusError maps a refusal to its typed error.
+// statusError maps a refusal to its typed error. A rate limit is told
+// from a refusal for a permission by GitHub's own signals, in every form
+// it gives them (rateLimited): its headers, or its message.
 func (a *Adapter) statusError(method, path string, resp *http.Response) error {
+	msg := refusalMessage(resp.Body)
 	e := &tracker.RequestError{System: tracker.GitHub, Method: method, Path: path, Status: resp.StatusCode}
-	rl := a.rateLimited(resp.Header)
+	rl := a.rateLimited(resp.Header, resp.StatusCode, msg)
 	switch s := resp.StatusCode; {
-	case (s == http.StatusForbidden || s == http.StatusTooManyRequests) && rl != nil:
+	case rl != nil:
 		e.Err = rl
-	case s == http.StatusTooManyRequests:
-		e.Err = &tracker.ErrRateLimited{}
 	case s == http.StatusUnauthorized:
 		e.Err = tracker.ErrUnauthorized
 	case s == http.StatusForbidden:
@@ -351,8 +429,26 @@ func (a *Adapter) statusError(method, path string, resp *http.Response) error {
 	return e
 }
 
-// rateLimited reads a rate limit's refusal from its headers, or nil.
-func (a *Adapter) rateLimited(h http.Header) *tracker.ErrRateLimited {
+// refusalMessage is a refusal's message ("message" of its JSON), read to
+// MaxErrorAnswer; never shown, only matched.
+func refusalMessage(body io.Reader) string {
+	data, _ := io.ReadAll(io.LimitReader(body, MaxErrorAnswer))
+	var m struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(data, &m) != nil {
+		return ""
+	}
+	return m.Message
+}
+
+// rateLimited reads a rate limit's refusal, or nil, from GitHub's signals
+// (docs.github.com, "Rate limits for the REST API" and for GraphQL):
+// Retry-After, X-RateLimit-Remaining at 0 (with X-RateLimit-Reset), or, on
+// a 403 or a 429, a message naming the rate limit (a secondary limit may
+// carry neither header, and GitHub says to wait at least a minute then).
+// A 429 is always a rate limit.
+func (a *Adapter) rateLimited(h http.Header, status int, msg string) *tracker.ErrRateLimited {
 	if ra := h.Get("Retry-After"); ra != "" {
 		if s, err := strconv.Atoi(ra); err == nil && s >= 0 {
 			return &tracker.ErrRateLimited{Reset: a.o.Now().Add(time.Duration(s) * time.Second)}
@@ -363,6 +459,12 @@ func (a *Adapter) rateLimited(h http.Header) *tracker.ErrRateLimited {
 		if s, err := strconv.ParseInt(h.Get("X-RateLimit-Reset"), 10, 64); err == nil {
 			return &tracker.ErrRateLimited{Reset: time.Unix(s, 0)}
 		}
+		return &tracker.ErrRateLimited{}
+	}
+	if (status == http.StatusForbidden || status == http.StatusTooManyRequests) && strings.Contains(strings.ToLower(msg), "rate limit") {
+		return &tracker.ErrRateLimited{Reset: a.o.Now().Add(time.Minute)}
+	}
+	if status == http.StatusTooManyRequests {
 		return &tracker.ErrRateLimited{}
 	}
 	return nil
@@ -377,14 +479,48 @@ func decode(ep endpoint, r request, data []byte, v any) error {
 	return nil
 }
 
-// remoteID makes a RemoteID of a GitHub number.
+// remoteID makes a RemoteID of a GitHub id as GitHub gives it, a JSON
+// number or a BigInt's JSON string: its decimal digits as written (1 to
+// MaxRemoteID, no leading zero), never through a fixed-width type, or ”.
 func remoteID(n json.Number) tracker.RemoteID {
-	s := n.String()
-	if _, err := strconv.ParseUint(s, 10, 64); err != nil {
+	return decimal(n.String())
+}
+
+func decimal(s string) tracker.RemoteID {
+	if s == "" || len(s) > tracker.MaxRemoteID || (s[0] == '0' && len(s) > 1) {
 		return ""
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return ""
+		}
 	}
 	return tracker.RemoteID(s)
 }
+
+// bigID is a GitHub BigInt (fullDatabaseId): a JSON string of digits, or
+// a number as some answers give it.
+type bigID string
+
+func (b *bigID) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		*b = ""
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*b = bigID(s)
+		return nil
+	}
+	var n json.Number
+	if err := json.Unmarshal(data, &n); err != nil {
+		return err
+	}
+	*b = bigID(n.String())
+	return nil
+}
+
+func (b bigID) remote() tracker.RemoteID { return decimal(string(b)) }
 
 // Whoami reads the token's account: GET /user, its scopes from
 // X-OAuth-Scopes (a classic token's; a fine-grained token has none).

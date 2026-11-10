@@ -3,9 +3,11 @@ package github_test
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +23,9 @@ const (
 	secret = "ghp_FixtureTokenNeverSent0123456789abcd"
 	head   = "1111111111111111111111111111111111111111"
 )
+
+// quiet is a logger for an adapter whose write lines no test reads.
+var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 // now is the fake clock a Retry-After is read against.
 var now = time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
@@ -117,7 +122,7 @@ func issueNode(id string, number int, repoID int64, nameWithOwner, state string)
 	return map[string]any{"data": map[string]any{"node": map[string]any{
 		"__typename": "Issue", "id": id, "number": number, "state": state,
 		"url":        "https://github.com/" + nameWithOwner + "/issues/" + itoa(number),
-		"repository": map[string]any{"databaseId": repoID, "nameWithOwner": nameWithOwner},
+		"repository": map[string]any{"fullDatabaseId": strconv.FormatInt(repoID, 10), "nameWithOwner": nameWithOwner},
 	}}}
 }
 

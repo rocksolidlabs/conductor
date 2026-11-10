@@ -5,9 +5,10 @@
 // loopback hosts the e2e harness uses. It serves the routes a test
 // scripts, records every request with its headers, counts every write by
 // route, and holds a request on a gate the test opens. Its fixtures
-// (fixtures/) are GitHub's REST answers in GitHub's documented shapes,
-// with invented owners, repositories, accounts and ids, and no token or
-// signed URL's real query.
+// (fixtures/) are GitHub's REST answers in the shapes captured from
+// github.com on 2026-11-10 (hosts, paths and id sizes as GitHub gave
+// them), with invented owners, repositories, accounts and ids, and no
+// token or signed URL's real query.
 package githubtest
 
 import (

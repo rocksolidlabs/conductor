@@ -3,6 +3,7 @@ package github_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -23,7 +24,7 @@ func TestReadIssue(t *testing.T) {
 		t.Fatalf("Read: %v %v", notMod, err)
 	}
 	want := tracker.Ref{System: "github", Host: "github.com", Space: "octo-example/widgets", Kind: tracker.KindIssue, ID: "42"}
-	if it.Ref != want || it.NodeID != "I_kwDOFixture42" || it.DatabaseID != "5000042" || it.URL != "https://github.com/octo-example/widgets/issues/42" {
+	if it.Ref != want || it.NodeID != "I_kwDOFixture42" || it.DatabaseID != "5300000042" || it.URL != "https://github.com/octo-example/widgets/issues/42" {
 		t.Fatalf("identity %+v", it)
 	}
 	if it.Title != "The widget list crashes when empty" || it.State != tracker.StateOpen || it.StateReason != "" || it.BodyTruncated {
@@ -41,17 +42,25 @@ func TestReadIssue(t *testing.T) {
 	if steps, ok := tracker.Repro(it.Body); !ok || steps != "1. Open the widget list\n2. Remove every widget\n3. See the crash\n\n![crash](https://github.com/user-attachments/assets/6f1c2e9a-4b7d-4a52-9c3e-0f1d2a3b4c5d)" {
 		t.Fatalf("repro %q %v", steps, ok)
 	}
-	// body_html's images: GitHub's own hosts kept, every other dropped.
+	// body_html's images, in the shapes captured from a public issue on
+	// 2026-11-10 (an attachment rendered as private-user-images with a
+	// signed ?jwt=, an image from another site through camo, an older
+	// upload on user-images): GitHub's own hosts kept, every other left
+	// out and counted.
 	var ids []string
 	for _, img := range it.Images {
 		ids = append(ids, img.ID)
 	}
 	wantIDs := []string{
-		"https://github.com/user-attachments/assets/6f1c2e9a-4b7d-4a52-9c3e-0f1d2a3b4c5d",
+		"https://private-user-images.githubusercontent.com/9000001/400000042-6f1c2e9a-4b7d-4a52-9c3e-0f1d2a3b4c5d.png",
 		"https://camo.githubusercontent.com/3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a/68747470733a2f2f6578616d706c652e636f6d2f6c6f676f2e706e67",
+		"https://user-images.githubusercontent.com/9000001/120000001-0a1b2c3d-1111-4a6b-8c7d-9e0f1a2b3c4d.png",
 	}
-	if strings.Join(ids, " ") != strings.Join(wantIDs, " ") || it.Images[0].Alt != "crash" {
+	if strings.Join(ids, " ") != strings.Join(wantIDs, " ") || it.Images[0].Alt != "crash" || !strings.HasSuffix(it.Images[0].FetchURL(), "?jwt=REDACTED.fixture.jwt") {
 		t.Fatalf("images %v", ids)
+	}
+	if it.ImagesLeftOut != (tracker.ImagesLeftOut{Unlisted: 3}) {
+		t.Fatalf("left out %+v", it.ImagesLeftOut)
 	}
 	q := r.fake.Requests()[0]
 	if q.Header.Get("Accept") != "application/vnd.github.full+json" || q.Header.Get("X-GitHub-Api-Version") != "2022-11-28" || q.Header.Get("User-Agent") != "Conductor/test" || q.Header.Get("If-None-Match") != "" {
@@ -181,6 +190,67 @@ func TestReadFollowsRename(t *testing.T) {
 		t.Fatalf("not at its new place: %+v", it.Ref)
 	}
 	r.authOnlyToAPI()
+}
+
+// An issue transferred to another repository has another number there: it
+// is answered at its place now, repository and number, and a node id that
+// differs names that place.
+func TestReadFollowsTransfer(t *testing.T) {
+	r := newRig(t)
+	moved := fixture(t, "issue.json")
+	moved["html_url"] = "https://github.com/octo-example/other-repo/issues/7"
+	r.reply(http.MethodGet, "/repos/octo-example/widgets/issues/42", http.StatusMovedPermanently, `{"message":"Moved Permanently"}`, "Location", "https://api.github.com/repositories/4000002/issues/7")
+	r.reply(http.MethodGet, "/repositories/4000002/issues/7", 200, moved)
+	it, _, err := r.a.Read(ctx, r.cred, ref("octo-example/widgets", tracker.KindIssue, "42"), tracker.Validators{NodeID: "I_kwDOFixture42"})
+	want := tracker.Ref{System: tracker.GitHub, Host: "github.com", Space: "octo-example/other-repo", Kind: tracker.KindIssue, ID: "7"}
+	if err != nil || it.Ref != want || it.URL != "https://github.com/octo-example/other-repo/issues/7" {
+		t.Fatalf("not at its place now: %+v %s %v", it.Ref, it.URL, err)
+	}
+	_, _, err = r.a.Read(ctx, r.cred, ref("octo-example/widgets", tracker.KindIssue, "42"), tracker.Validators{NodeID: "I_kwDOAnotherOne"})
+	var mv *tracker.ErrMoved
+	if !errors.As(err, &mv) || mv.To != want {
+		t.Fatalf("another node: %v", err)
+	}
+	// A redirected answer whose place cannot be read is refused.
+	moved["html_url"] = "https://collector.example/octo-example/other-repo/issues/7"
+	r.reply(http.MethodGet, "/repositories/4000002/issues/7", 200, moved)
+	if _, _, err := r.a.Read(ctx, r.cred, ref("octo-example/widgets", tracker.KindIssue, "42"), tracker.Validators{NodeID: "I_kwDOFixture42"}); !errors.Is(err, tracker.ErrUnsupported) {
+		t.Fatalf("an unreadable new place: %v", err)
+	}
+}
+
+// A body's images past the bound, or on a host the rule does not admit,
+// are counted, so the caller can say what was not imported.
+func TestReadImagesLeftOut(t *testing.T) {
+	r := newRig(t)
+	var b strings.Builder
+	for i := 0; i < tracker.MaxImages+2; i++ {
+		fmt.Fprintf(&b, `<img src="https://user-images.githubusercontent.com/9000001/%d-x.png">`, i)
+	}
+	b.WriteString(`<img src="https://user-images.githubusercontent.com/9000001/0-x.png"><img src="https://intranet.example/x.png"><img src="/relative.png">`)
+	r.reply(http.MethodGet, "/repos/octo-example/widgets/issues/42", 200, map[string]any{"node_id": "I_kwDOFixture42", "html_url": "https://github.com/octo-example/widgets/issues/42", "body_html": b.String()})
+	it, _, err := r.a.Read(ctx, r.cred, ref("octo-example/widgets", tracker.KindIssue, "42"), tracker.Validators{})
+	if err != nil || len(it.Images) != tracker.MaxImages || it.ImagesLeftOut != (tracker.ImagesLeftOut{Unlisted: 2, PastBound: 2}) {
+		t.Fatalf("%d images, left out %+v, %v", len(it.Images), it.ImagesLeftOut, err)
+	}
+}
+
+// A Ref that is not ParseGitHub's shape asks nothing.
+func TestReadRefHeldToItsShape(t *testing.T) {
+	r := newRig(t)
+	for _, bad := range []tracker.Ref{
+		{System: tracker.GitHub, Host: "github.com", Space: "octo-example/widgets/../../user", Kind: tracker.KindIssue, ID: "42"},
+		{System: tracker.GitHub, Host: "github.com", Space: "octo-example/widgets", Kind: tracker.KindIssue, ID: "42?per_page=1"},
+		{System: tracker.GitHub, Host: "github.com", Space: "octo-example/widgets", Kind: tracker.KindIssue, ID: "42#x"},
+		{System: tracker.GitHub, Host: "github.com", Space: "octo-example", Kind: tracker.KindIssue, ID: "42"},
+	} {
+		if _, _, err := r.a.Read(ctx, r.cred, bad, tracker.Validators{}); !errors.Is(err, tracker.ErrUnsupported) {
+			t.Errorf("%+v: %v", bad, err)
+		}
+	}
+	if n := len(r.fake.Requests()); n != 0 {
+		t.Fatalf("%d requests", n)
+	}
 }
 
 func TestReadMovedRefused(t *testing.T) {

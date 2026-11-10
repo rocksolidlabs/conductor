@@ -66,12 +66,17 @@ type half struct {
 // for its merge and head, each with its own If-None-Match. The item is
 // not modified only when every request it took answered 304; a 304 beside
 // a 200 reads the one that answered 304 again without its validator, so
-// the item returned is whole and current. A read answered from a redirect
-// (a renamed or transferred repository) is the item at its new place when
-// its node id is the one v holds, and *tracker.ErrMoved when it is
-// another, as is a node id that changed at the same place.
+// the item returned is whole and current. The item's place is the one its
+// answer gives (html_url: its repository and its number as they are now),
+// so a read answered from a redirect (a renamed repository, an issue
+// transferred to another repository and so another number) is the item at
+// its new place when its node id is the one v holds, and *tracker.ErrMoved
+// naming that new place when it is another, as is a node id that changed
+// at the same place; a redirected answer whose place cannot be read is
+// refused. r is held to tracker.Ref.Check before any of it goes into a
+// path.
 func (a *Adapter) Read(ctx context.Context, c tracker.Credential, r tracker.Ref, v tracker.Validators) (tracker.Item, bool, error) {
-	if r.System != tracker.GitHub || (r.Kind != tracker.KindIssue && r.Kind != tracker.KindChange) {
+	if err := r.Check(); err != nil {
 		return tracker.Item{}, false, &tracker.RequestError{System: tracker.GitHub, Method: "-", Path: "-", Err: tracker.ErrUnsupported, Words: "not a GitHub item"}
 	}
 	ep, err := a.endpointFor(c, r.Host)
@@ -90,8 +95,8 @@ func (a *Adapter) Read(ctx context.Context, c tracker.Credential, r tracker.Ref,
 			return tracker.Item{}, false, err
 		}
 		isPull = issue.PullRequest != nil
-		if merr := moved(r, v, issue); merr != nil {
-			return tracker.Item{}, false, &tracker.RequestError{System: tracker.GitHub, Method: iss.r.method, Path: ep.errPath(iss.r), Status: iss.ans.status, Err: merr}
+		if err := a.placed(ep, iss, r, v, issue); err != nil {
+			return tracker.Item{}, false, err
 		}
 	}
 	if !isPull && iss.ans.status == http.StatusNotModified {
@@ -100,11 +105,11 @@ func (a *Adapter) Read(ctx context.Context, c tracker.Credential, r tracker.Ref,
 	var pull pullJSON
 	pullETag := ""
 	if isPull {
-		space := r.Space
+		place := r
 		if iss.ans.status == http.StatusOK {
-			space = placeOf(r, issue).Space
+			place, _ = placeOf(r, issue)
 		}
-		pl, err := a.half(ctx, c, ep, "/repos/"+space+"/pulls/"+r.ID, "", v.Pull)
+		pl, err := a.half(ctx, c, ep, "/repos/"+place.Space+"/pulls/"+place.ID, "", v.Pull)
 		if err != nil {
 			return tracker.Item{}, false, err
 		}
@@ -123,8 +128,8 @@ func (a *Adapter) Read(ctx context.Context, c tracker.Credential, r tracker.Ref,
 			if err := decode(ep, iss.r, iss.ans.body, &issue); err != nil {
 				return tracker.Item{}, false, err
 			}
-			if merr := moved(r, v, issue); merr != nil {
-				return tracker.Item{}, false, &tracker.RequestError{System: tracker.GitHub, Method: iss.r.method, Path: ep.errPath(iss.r), Status: iss.ans.status, Err: merr}
+			if err := a.placed(ep, iss, r, v, issue); err != nil {
+				return tracker.Item{}, false, err
 			}
 		}
 		if err := decode(ep, pl.r, pl.ans.body, &pull); err != nil {
@@ -159,17 +164,26 @@ func (a *Adapter) half(ctx context.Context, c tracker.Credential, ep endpoint, p
 	return half{ans: ans, r: r}, err
 }
 
-// moved is the error of an answer whose node id is not the one v holds.
-// A redirect or not, another node id is another item.
-func moved(r tracker.Ref, v tracker.Validators, issue issueJSON) error {
-	if v.NodeID == "" || issue.NodeID == v.NodeID {
-		return nil
+// placed checks an issue's answer against what the caller holds: a
+// redirected answer whose place cannot be read is refused, and an answer
+// whose node id is not the one v holds is *tracker.ErrMoved naming the
+// item's place now. A redirect or not, another node id is another item.
+func (a *Adapter) placed(ep endpoint, h half, r tracker.Ref, v tracker.Validators, issue issueJSON) error {
+	place, ok := placeOf(r, issue)
+	if !ok && h.ans.redirected {
+		return &tracker.RequestError{System: tracker.GitHub, Method: h.r.method, Path: ep.errPath(h.r), Status: h.ans.status, Err: tracker.ErrUnsupported, Words: "the item moved and its new place cannot be read"}
 	}
-	return &tracker.ErrMoved{To: placeOf(r, issue)}
+	if v.NodeID != "" && issue.NodeID != v.NodeID {
+		return &tracker.RequestError{System: tracker.GitHub, Method: h.r.method, Path: ep.errPath(h.r), Status: h.ans.status, Err: &tracker.ErrMoved{To: place}}
+	}
+	return nil
 }
 
-// placeOf is the item's place as its answer says it (html_url), or r's.
-func placeOf(r tracker.Ref, issue issueJSON) tracker.Ref {
+// placeOf is the item's place as its answer says it: html_url's owner,
+// name and number, when it is on r's host byte for byte and reads as a
+// reference (ok), whatever the number (an issue transferred to another
+// repository has another); r's place, with the answer's kind, otherwise.
+func placeOf(r tracker.Ref, issue issueJSON) (tracker.Ref, bool) {
 	out := r
 	if issue.PullRequest != nil {
 		out.Kind = tracker.KindChange
@@ -177,21 +191,24 @@ func placeOf(r tracker.Ref, issue issueJSON) tracker.Ref {
 		out.Kind = tracker.KindIssue
 	}
 	u, err := url.Parse(issue.HTMLURL)
-	if err != nil {
-		return out
+	if err != nil || u.Host != r.Host || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return out, false
 	}
 	segs := strings.Split(strings.Trim(u.Path, "/"), "/")
-	if len(segs) == 4 && (segs[2] == "issues" || segs[2] == "pull") && segs[3] == r.ID {
-		if ref, err := tracker.ParseGitHub(segs[0]+"/"+segs[1]+"#"+segs[3], "", tracker.ParseOptions{}); err == nil {
-			out.Space = ref.Space
-		}
+	if len(segs) != 4 || (segs[2] != "issues" && segs[2] != "pull") {
+		return out, false
 	}
-	return out
+	ref, err := tracker.ParseGitHub(segs[0]+"/"+segs[1]+"#"+segs[3], "", tracker.ParseOptions{})
+	if err != nil {
+		return out, false
+	}
+	out.Space, out.ID = ref.Space, ref.ID
+	return out, true
 }
 
 // item makes the Item of an issue's answer, cut to the tracker's bounds.
 func (a *Adapter) item(r tracker.Ref, issue issueJSON, etag string) tracker.Item {
-	place := placeOf(r, issue)
+	place, _ := placeOf(r, issue)
 	it := tracker.Item{
 		Ref:        place,
 		NodeID:     cut(issue.NodeID, tracker.MaxNodeID),
@@ -235,7 +252,7 @@ func (a *Adapter) item(r tracker.Ref, issue issueJSON, etag string) tracker.Item
 	if issue.ClosedAt != nil {
 		it.ClosedAt = *issue.ClosedAt
 	}
-	it.Images = imagesOf(place.Host, issue.BodyHTML)
+	it.Images, it.ImagesLeftOut = imagesOf(place.Host, issue.BodyHTML)
 	return it
 }
 

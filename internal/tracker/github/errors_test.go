@@ -93,8 +93,15 @@ func TestErrorsMapped(t *testing.T) {
 		{403, []string{"Retry-After", "60"}, now.Add(time.Minute)},
 		{429, []string{"Retry-After", "30"}, now.Add(30 * time.Second)},
 		{429, nil, time.Time{}},
+		// A secondary rate limit may carry neither header: told by its
+		// message, and GitHub says to wait at least a minute.
+		{403, []string{"X-RateLimit-Remaining", "4000"}, now.Add(time.Minute)},
 	} {
-		r.reply(http.MethodGet, path, c.status, "", c.header...)
+		body := ""
+		if c.status == 403 && len(c.header) == 2 {
+			body = `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`
+		}
+		r.reply(http.MethodGet, path, c.status, body, c.header...)
 		var rl *tracker.ErrRateLimited
 		if err := read(); !errors.As(err, &rl) || !rl.Reset.Equal(c.want) || errors.Is(err, tracker.ErrForbidden) {
 			t.Errorf("%d %v: %v", c.status, c.header, err)
@@ -114,6 +121,20 @@ func TestErrorsMapped(t *testing.T) {
 	})
 	if !errors.Is(err, tracker.ErrUnavailable) || !errors.Is(err, context.Canceled) {
 		t.Errorf("held: %v", err)
+	}
+	// The request's own deadline, held at the gate, which never opens,
+	// until the adapter's clock says it passed: timed out, not the call.
+	clock := &fakeClock{}
+	github.SetClock(r.a, clock.after)
+	gate := r.fake.Hold(http.MethodGet, api, path)
+	done := make(chan error, 1)
+	go func() { done <- read() }()
+	<-gate.Reached()
+	clock.pass()
+	err = <-done
+	gate.Open()
+	if !errors.Is(err, tracker.ErrUnavailable) || !strings.Contains(err.Error(), "timed out") || errors.Is(err, context.Canceled) {
+		t.Errorf("the request's deadline: %v", err)
 	}
 	// An answer GitHub would not give.
 	r.reply(http.MethodGet, path, 200, "not json")
@@ -226,8 +247,8 @@ func TestTokenOnlyToTheAPIHost(t *testing.T) {
 	blob := "productionresultssa0.blob.core.windows.net"
 	r.reply(http.MethodGet, "/repos/octo-example/widgets/actions/jobs/7/logs", http.StatusFound, "", "Location", "https://"+blob+"/logs/7.txt?sig=s")
 	r.fake.Reply(http.MethodGet, blob, "/logs/7.txt", 200, "the log")
-	if b, err := r.a.CheckLog(ctx, r.cred, iss, tracker.Check{ID: "job:7", HasLog: true}, 100); err != nil || string(b) != "the log" {
-		t.Fatalf("CheckLog %q %v", b, err)
+	if b, err := r.a.CheckLog(ctx, r.cred, iss, tracker.Check{ID: "job:7", HasLog: true}, 100); err != nil || string(b.Bytes) != "the log" {
+		t.Fatalf("CheckLog %+v %v", b, err)
 	}
 
 	// A redirect from the API host to another host: handed back, never

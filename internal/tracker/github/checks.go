@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"slices"
@@ -51,6 +50,9 @@ type checkJSON struct {
 	App         *struct {
 		Slug string `json:"slug"`
 	} `json:"app"`
+	// CheckRunURL is a job's check run (…/check-runs/{id}): the Actions
+	// jobs' documented link to the check run each is.
+	CheckRunURL string `json:"check_run_url"`
 }
 
 type jobsJSON struct {
@@ -89,9 +91,14 @@ func validSHA(s string) bool {
 // tracker.MaxChecks or MaxCheckSetEncoded add an Incomplete entry, with
 // Omitted counting what GitHub's totals say was left. What a cut keeps is
 // fixed: failed first, then pending, then the rest, each by name and id.
+// What it asks is bounded as well: each listing is cut to its own bound as
+// soon as it is read, whatever an answer holds, so it asks the jobs of at
+// most MaxRuns runs (at most MaxRuns+3 requests in all), and a cut is said.
+// r is held to tracker.Ref.Check, and a run's id to its digits, before any
+// of it goes into a path.
 func (a *Adapter) Checks(ctx context.Context, c tracker.Credential, r tracker.Ref, sha string) (tracker.CheckSet, error) {
-	if r.System != tracker.GitHub || !validSHA(sha) {
-		return tracker.CheckSet{}, &tracker.RequestError{System: tracker.GitHub, Method: "-", Path: "-", Err: tracker.ErrUnsupported, Words: "a commit is 40 or 64 hex digits"}
+	if r.Check() != nil || !validSHA(sha) {
+		return tracker.CheckSet{}, &tracker.RequestError{System: tracker.GitHub, Method: "-", Path: "-", Err: tracker.ErrUnsupported, Words: "a GitHub item and a commit of 40 or 64 hex digits"}
 	}
 	ep, err := a.endpointFor(c, r.Host)
 	if err != nil {
@@ -110,6 +117,8 @@ func (a *Adapter) Checks(ctx context.Context, c tracker.Credential, r tracker.Re
 	case err != nil:
 		return tracker.CheckSet{}, err
 	default:
+		total := max(st.TotalCount, len(st.Statuses))
+		st.Statuses = st.Statuses[:min(len(st.Statuses), MaxStatuses)]
 		for _, s := range st.Statuses {
 			ch := tracker.Check{ID: "status:" + s.ID.String(), Name: cut(s.Context, 200), Status: "completed", URL: link(s.TargetURL), StartedAt: s.CreatedAt, HeadSHA: sha, App: "status"}
 			switch s.State {
@@ -123,7 +132,7 @@ func (a *Adapter) Checks(ctx context.Context, c tracker.Credential, r tracker.Re
 			}
 			all = append(all, ch)
 		}
-		cutSaid(&set, st.TotalCount, len(st.Statuses), ans, "statuses at this commit")
+		cutSaid(&set, total, len(st.Statuses), ans, "statuses at this commit")
 	}
 
 	// The GitHub Actions jobs.
@@ -140,25 +149,35 @@ func (a *Adapter) Checks(ctx context.Context, c tracker.Credential, r tracker.Re
 		actionsRead = true
 		// The runs left are not counted in Omitted: their jobs are not
 		// known, only that they are there.
+		total := max(runs.TotalCount, len(runs.WorkflowRuns))
+		runs.WorkflowRuns = runs.WorkflowRuns[:min(len(runs.WorkflowRuns), MaxRuns)]
 		switch {
-		case runs.TotalCount > len(runs.WorkflowRuns):
-			set.AddIncomplete(fmt.Sprintf("%d workflow runs at this commit; the first %d read", runs.TotalCount, len(runs.WorkflowRuns)))
+		case total > len(runs.WorkflowRuns):
+			set.AddIncomplete(fmt.Sprintf("%d workflow runs at this commit; the first %d read", total, len(runs.WorkflowRuns)))
 		case hasNext(ans):
 			set.AddIncomplete(fmt.Sprintf("more workflow runs at this commit than the first %d read", len(runs.WorkflowRuns)))
 		}
 		for _, run := range runs.WorkflowRuns {
+			id := remoteID(run.ID)
+			if id == "" {
+				return tracker.CheckSet{}, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: ep.errPath(request{path: base + "/actions/runs"}), Status: http.StatusOK, Err: tracker.ErrUnsupported, Words: "an answer Conductor cannot read"}
+			}
 			var js jobsJSON
-			ans, err := a.page(ctx, c, ep, base+"/actions/runs/"+run.ID.String()+"/jobs", url.Values{"per_page": {strconv.Itoa(MaxJobs)}}, &js)
+			ans, err := a.page(ctx, c, ep, base+"/actions/runs/"+string(id)+"/jobs", url.Values{"per_page": {strconv.Itoa(MaxJobs)}}, &js)
 			if err != nil {
 				return tracker.CheckSet{}, err
 			}
+			jtotal := max(js.TotalCount, len(js.Jobs))
+			js.Jobs = js.Jobs[:min(len(js.Jobs), MaxJobs)]
 			for _, j := range js.Jobs {
 				ch := toCheck("job:", j, sha)
 				ch.App, ch.HasLog = actionsApp, true
-				jobs[j.ID.String()] = true
+				if cr := checkRunOf(j.CheckRunURL); cr != "" {
+					jobs[cr] = true
+				}
 				all = append(all, ch)
 			}
-			cutSaid(&set, js.TotalCount, len(js.Jobs), ans, "jobs in workflow run "+cut(run.Name, 40))
+			cutSaid(&set, jtotal, len(js.Jobs), ans, "jobs in workflow run "+cut(run.Name, 40))
 		}
 	}
 
@@ -171,6 +190,8 @@ func (a *Adapter) Checks(ctx context.Context, c tracker.Credential, r tracker.Re
 	case err != nil:
 		return tracker.CheckSet{}, err
 	default:
+		crTotal := max(crs.TotalCount, len(crs.CheckRuns))
+		crs.CheckRuns = crs.CheckRuns[:min(len(crs.CheckRuns), MaxCheckRuns)]
 		for _, cr := range crs.CheckRuns {
 			slug := ""
 			if cr.App != nil {
@@ -183,7 +204,7 @@ func (a *Adapter) Checks(ctx context.Context, c tracker.Credential, r tracker.Re
 			ch.App = cut(slug, 100)
 			all = append(all, ch)
 		}
-		cutSaid(&set, crs.TotalCount, len(crs.CheckRuns), ans, "check runs at this commit")
+		cutSaid(&set, crTotal, len(crs.CheckRuns), ans, "check runs at this commit")
 	}
 
 	slices.SortStableFunc(all, func(x, y tracker.Check) int {
@@ -212,6 +233,20 @@ func (a *Adapter) Checks(ctx context.Context, c tracker.Credential, r tracker.Re
 		set.Checks = []tracker.Check{}
 	}
 	return set, nil
+}
+
+// checkRunOf is the id of the check run a job's check_run_url names (its
+// last path segment, digits), or ”.
+func checkRunOf(s string) string {
+	u, err := url.Parse(s)
+	if err != nil {
+		return ""
+	}
+	seg := u.Path[strings.LastIndexByte(u.Path, '/')+1:]
+	if !strings.HasSuffix(strings.TrimSuffix(u.Path, "/"+seg), "/check-runs") {
+		return ""
+	}
+	return string(decimal(seg))
 }
 
 // rank orders a cut's keeping: failed, then pending, then the rest.
@@ -295,69 +330,103 @@ func (a *Adapter) page(ctx context.Context, c tracker.Credential, ep endpoint, p
 // CheckLog reads a GitHub Actions job's log, its last tail bytes: GET
 // …/actions/jobs/{id}/logs by the API client, whose redirect is handed
 // back, its Location admitted by tracker.LogHost and fetched by the
-// signed-address client with no credential, at most MaxLogRead bytes. A
-// check of another app has no log (tracker.ErrUnsupported), nor has a log
-// kept on a host Conductor does not fetch from.
-func (a *Adapter) CheckLog(ctx context.Context, c tracker.Credential, r tracker.Ref, check tracker.Check, tail int) ([]byte, error) {
+// signed-address client with no credential, asking only the last tail
+// bytes (a suffix Range: a 206 is the tail; a whole 200 is kept to its
+// last tail bytes when it fits in MaxLogRead, tracker.ErrBound past it). A
+// log longer than what is given says so (LogTail.Cut). A check of another
+// app has no log (tracker.ErrUnsupported), nor has a log kept on a host
+// Conductor does not fetch from.
+func (a *Adapter) CheckLog(ctx context.Context, c tracker.Credential, r tracker.Ref, check tracker.Check, tail int) (tracker.LogTail, error) {
 	id, ok := strings.CutPrefix(check.ID, "job:")
-	if _, err := strconv.ParseUint(id, 10, 64); !ok || err != nil || !check.HasLog {
-		return nil, &tracker.RequestError{System: tracker.GitHub, Method: "-", Path: "-", Err: tracker.ErrUnsupported, Words: "only a GitHub Actions job has a log"}
+	if !ok || decimal(id) == "" || !check.HasLog || r.Check() != nil {
+		return tracker.LogTail{}, &tracker.RequestError{System: tracker.GitHub, Method: "-", Path: "-", Err: tracker.ErrUnsupported, Words: "only a GitHub Actions job has a log"}
 	}
 	if tail <= 0 || tail > MaxLogRead {
-		return nil, &tracker.RequestError{System: tracker.GitHub, Method: "-", Path: "-", Err: tracker.ErrUnsupported, Words: "a log's tail is 1 byte to 8 MiB"}
+		return tracker.LogTail{}, &tracker.RequestError{System: tracker.GitHub, Method: "-", Path: "-", Err: tracker.ErrUnsupported, Words: "a log's tail is 1 byte to 8 MiB"}
 	}
 	ep, err := a.endpointFor(c, r.Host)
 	if err != nil {
-		return nil, err
+		return tracker.LogTail{}, err
 	}
 	req := request{method: http.MethodGet, path: "/repos/" + r.Space + "/actions/jobs/" + id + "/logs", max: MaxLogRead, keep3xx: true}
 	ans, err := a.do(ctx, c, ep, req)
 	if err != nil {
-		return nil, err
+		return tracker.LogTail{}, err
 	}
-	data := ans.body
-	if ans.status >= 300 {
-		loc, err := url.Parse(ans.header.Get("Location"))
-		admit := func(u *url.URL) bool { return tracker.LogHost(tracker.GitHub, ep.host, u) }
-		if err != nil || !loc.IsAbs() || !admit(loc) {
-			return nil, &tracker.RequestError{System: tracker.GitHub, Method: req.method, Path: ep.errPath(req), Status: ans.status, Err: tracker.ErrUnsupported, Words: "the log is kept where Conductor does not fetch from: open it on GitHub"}
-		}
-		if data, err = a.fetchSigned(ctx, loc, admit, MaxLogRead); err != nil {
-			return nil, err
-		}
+	if ans.status < 300 {
+		return tailOf(ans.body, tail, int64(len(ans.body))), nil
 	}
-	if len(data) > tail {
-		data = data[len(data)-tail:]
+	loc, err := url.Parse(ans.header.Get("Location"))
+	admit := func(u *url.URL) bool { return tracker.LogHost(tracker.GitHub, ep.host, u) }
+	if err != nil || !loc.IsAbs() || !admit(loc) {
+		return tracker.LogTail{}, &tracker.RequestError{System: tracker.GitHub, Method: req.method, Path: ep.errPath(req), Status: ans.status, Err: tracker.ErrUnsupported, Words: "the log is kept where Conductor does not fetch from: open it on GitHub"}
 	}
-	return data, nil
+	return a.fetchLog(ctx, loc, admit, tail)
 }
 
-// fetchSigned GETs a signed address with no credential, at most max bytes.
-func (a *Adapter) fetchSigned(ctx context.Context, u *url.URL, admit func(*url.URL) bool, max int64) ([]byte, error) {
+// tailOf is the last tail bytes of a log of size bytes held whole in data.
+func tailOf(data []byte, tail int, size int64) tracker.LogTail {
+	out := tracker.LogTail{Bytes: data, Size: size}
+	if len(data) > tail {
+		out.Bytes = data[len(data)-tail:]
+	}
+	out.Cut = int64(len(out.Bytes)) < size
+	return out
+}
+
+// fetchLog GETs a signed log address with no credential, asking its last
+// tail bytes (Range: bytes=-tail), within ImageTimeout.
+func (a *Adapter) fetchLog(ctx context.Context, u *url.URL, admit func(*url.URL) bool, tail int) (tracker.LogTail, error) {
 	path := u.Path
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return nil, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: path, Err: tracker.ErrUnsupported}
+	rctx, done := a.deadline(ctx, ImageTimeout)
+	defer done()
+	req, err := http.NewRequestWithContext(rctx, http.MethodGet, u.String(), nil)
+	if err != nil || req.URL.Host != u.Host {
+		return tracker.LogTail{}, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: path, Err: tracker.ErrUnsupported}
 	}
 	req.Header.Set("User-Agent", a.ua)
-	resp, err := a.signedClient(ImageTimeout, admit).Do(req)
+	req.Header.Set("Range", "bytes=-"+strconv.Itoa(tail))
+	resp, err := a.signedClient(admit).Do(req)
 	if err != nil {
-		return nil, a.transportError(ctx, http.MethodGet, path, err)
+		return tracker.LogTail{}, a.transportError(ctx, rctx, http.MethodGet, path, err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, MaxErrorAnswer))
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusPartialContent:
+	case http.StatusRequestedRangeNotSatisfiable:
+		// An empty log has no last bytes.
+		return tracker.LogTail{Bytes: []byte{}}, nil
+	default:
 		if resp.StatusCode < 400 {
-			return nil, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: path, Status: resp.StatusCode, Err: tracker.ErrUnsupported}
+			return tracker.LogTail{}, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: path, Status: resp.StatusCode, Err: tracker.ErrUnsupported}
 		}
-		return nil, a.statusError(http.MethodGet, path, resp)
+		return tracker.LogTail{}, a.statusError(http.MethodGet, path, resp)
 	}
-	data, err := readBounded(resp.Body, max)
+	data, err := readBounded(resp.Body, MaxLogRead)
 	if errors.Is(err, tracker.ErrBound) {
-		return nil, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: path, Status: resp.StatusCode, Err: tracker.ErrBound, Words: "past " + strconv.FormatInt(max, 10) + " bytes"}
+		return tracker.LogTail{}, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: path, Status: resp.StatusCode, Err: tracker.ErrBound, Words: "past " + strconv.Itoa(MaxLogRead) + " bytes"}
 	}
 	if err != nil {
-		return nil, a.transportError(ctx, http.MethodGet, path, err)
+		return tracker.LogTail{}, a.transportError(ctx, rctx, http.MethodGet, path, err)
 	}
-	return data, nil
+	if resp.StatusCode == http.StatusOK {
+		return tailOf(data, tail, int64(len(data))), nil
+	}
+	// A 206: Content-Range bytes <first>-<last>/<size>.
+	size := int64(0)
+	first := int64(-1)
+	if cr, ok := strings.CutPrefix(resp.Header.Get("Content-Range"), "bytes "); ok {
+		span, total, _ := strings.Cut(cr, "/")
+		lo, _, _ := strings.Cut(span, "-")
+		if n, err := strconv.ParseInt(total, 10, 64); err == nil && n >= 0 {
+			size = n
+		}
+		if n, err := strconv.ParseInt(lo, 10, 64); err == nil && n >= 0 {
+			first = n
+		}
+	}
+	out := tailOf(data, tail, int64(len(data)))
+	out.Size = size
+	out.Cut = out.Cut || first != 0 || (size > 0 && size > int64(len(out.Bytes)))
+	return out, nil
 }

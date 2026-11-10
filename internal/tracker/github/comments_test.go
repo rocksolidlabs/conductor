@@ -6,11 +6,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/tracker"
 	"github.com/rocksolidlabs/conductor/internal/tracker/github"
@@ -30,10 +33,11 @@ func (r *rig) closeCred(pub string, try int) tracker.Credential {
 	return r.cred.ForWrite(tracker.Write{Kind: tracker.WriteClose, Publication: pub, Try: try, Comment: "7700001"})
 }
 
-// commentAnswer is AddCommentDocument's answer.
+// commentAnswer is AddCommentDocument's answer, its id a BigInt's JSON
+// string as GitHub gives fullDatabaseId (captured 2026-11-10).
 func commentAnswer(id int64, author int64) map[string]any {
 	return map[string]any{"data": map[string]any{"addComment": map[string]any{"commentEdge": map[string]any{"node": map[string]any{
-		"databaseId": id, "url": "https://github.com/octo-example/widgets/issues/42#issuecomment-" + strconv.FormatInt(id, 10), "createdAt": "2026-11-10T12:00:01Z",
+		"fullDatabaseId": strconv.FormatInt(id, 10), "url": "https://github.com/octo-example/widgets/issues/42#issuecomment-" + strconv.FormatInt(id, 10), "createdAt": "2026-11-10T12:00:01Z",
 		"author": map[string]any{"login": "mona-example", "databaseId": author},
 	}}}}}
 }
@@ -45,7 +49,7 @@ func (r *rig) answerAll() {
 		case github.ResolveDocument:
 			return 200, issueNode(g.Variables["id"].(string), 42, 4000001, "octo-example/widgets", "OPEN")
 		case github.AddCommentDocument:
-			return 200, commentAnswer(7700001, 9000001)
+			return 200, commentAnswer(6700000001, 9000001)
 		case github.CloseIssueDocument:
 			return 200, map[string]any{"data": map[string]any{"closeIssue": map[string]any{"issue": map[string]any{"id": g.Variables["issueId"], "state": "CLOSED", "stateReason": g.Variables["stateReason"]}}}}
 		}
@@ -207,7 +211,7 @@ func TestResolve(t *testing.T) {
 		t.Fatalf("issue %+v %v", tg, err)
 	}
 
-	answer = map[string]any{"data": map[string]any{"node": map[string]any{"__typename": "PullRequest", "id": "PR_kwDOFixture43", "number": 43, "url": "https://github.com/octo-example/widgets/pull/43", "state": "MERGED", "repository": map[string]any{"databaseId": 4000001, "nameWithOwner": "octo-example/widgets"}}}}
+	answer = map[string]any{"data": map[string]any{"node": map[string]any{"__typename": "PullRequest", "id": "PR_kwDOFixture43", "number": 43, "url": "https://github.com/octo-example/widgets/pull/43", "state": "MERGED", "repository": map[string]any{"fullDatabaseId": "4000001", "nameWithOwner": "octo-example/widgets"}}}}
 	tg, err = r.a.Resolve(ctx, r.cred, "PR_kwDOFixture43")
 	if err != nil || tg.Kind != tracker.KindChange || tg.State != tracker.StateMerged || tg.Ref.Kind != tracker.KindChange || tg.URL != "https://github.com/octo-example/widgets/pull/43" {
 		t.Fatalf("pull request %+v %v", tg, err)
@@ -234,6 +238,32 @@ func TestResolve(t *testing.T) {
 	if _, err := r.a.Resolve(ctx, r.cred, "I_kwDOFixture42"); !errors.Is(err, tracker.ErrForbidden) {
 		t.Errorf("forbidden: %v", err)
 	}
+	// A repository's id past 2^31, given as a number or as GitHub's BigInt
+	// string: read whole either way.
+	for _, id := range []any{"9876543210123", 9876543210123} {
+		answer = issueNode("I_kwDOFixture42", 42, 0, "octo-example/widgets", "OPEN")
+		answer["data"].(map[string]any)["node"].(map[string]any)["repository"].(map[string]any)["fullDatabaseId"] = id
+		if tg, err := r.a.Resolve(ctx, r.cred, "I_kwDOFixture42"); err != nil || tg.SpaceID != "9876543210123" {
+			t.Errorf("repository id %v: %+v %v", id, tg, err)
+		}
+	}
+	// A repository without its id is not taken.
+	answer = issueNode("I_kwDOFixture42", 42, 0, "octo-example/widgets", "OPEN")
+	answer["data"].(map[string]any)["node"].(map[string]any)["repository"].(map[string]any)["fullDatabaseId"] = nil
+	if _, err := r.a.Resolve(ctx, r.cred, "I_kwDOFixture42"); err == nil {
+		t.Error("a repository without its id taken")
+	}
+	// A GraphQL rate limit: GitHub's 200 with RATE_LIMITED and its reset.
+	r.fake.Handle(http.MethodPost, api, "/graphql", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-Reset", "1762780000")
+		_, _ = w.Write([]byte(`{"data":{"node":null},"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`))
+	})
+	var rl *tracker.ErrRateLimited
+	if _, err := r.a.Resolve(ctx, r.cred, "I_kwDOFixture42"); !errors.As(err, &rl) || rl.Reset.Unix() != 1762780000 {
+		t.Errorf("a GraphQL rate limit: %v", err)
+	}
+	r.graphql(func(githubtest.GraphQL) (int, any) { return 200, answer })
 	// An answer for another node than asked is not taken.
 	answer = issueNode("I_kwDOOther", 42, 4000001, "octo-example/widgets", "OPEN")
 	if _, err := r.a.Resolve(ctx, r.cred, "I_kwDOFixture42"); err == nil {
@@ -281,7 +311,9 @@ func TestCommentAndFind(t *testing.T) {
 	marker := r.a.Marker("p1")
 	posted := "Fixed in the delivery.\n\n" + marker
 	c, err := r.a.Comment(ctx, r.commentCred("p1", 1), target, posted)
-	if err != nil || c.ID != "7700001" || c.AuthorID != "9000001" || c.Author != "mona-example" || c.Check() != nil {
+	// A comment's id is past a GraphQL Int's 2^31 (captured: ten digits),
+	// read whole from fullDatabaseId.
+	if err != nil || c.ID != "6700000001" || c.AuthorID != "9000001" || c.Author != "mona-example" || c.Check() != nil {
 		t.Fatalf("Comment %+v %v", c, err)
 	}
 	// Sent to the node id, never to a path.
@@ -397,66 +429,215 @@ func TestCommentAndFind(t *testing.T) {
 	}
 }
 
-func TestWriteAnswers(t *testing.T) {
-	type outcome int
-	const (
-		proven outcome = iota
-		unknown
-	)
-	null := func(typ string) map[string]any {
-		return map[string]any{"data": map[string]any{"addComment": nil}, "errors": []any{map[string]any{"type": typ, "message": "no"}}}
+// outcome is one of the write table's three answers.
+type outcome string
+
+const (
+	made    outcome = "made"
+	nothing outcome = "nothing written"
+	unknown outcome = "not known"
+)
+
+// sortedAs is the outcome a write's error says, checked in its words too.
+func sortedAs(t *testing.T, name string, err error) outcome {
+	t.Helper()
+	switch {
+	case err == nil:
+		return made
+	case tracker.NothingWritten(err):
+		if errors.Is(err, tracker.ErrWriteUnknown) || !strings.HasSuffix(err.Error(), ": nothing was written") {
+			t.Errorf("%s: words %q", name, err.Error())
+		}
+		return nothing
+	case errors.Is(err, tracker.ErrWriteUnknown):
+		if !strings.HasSuffix(err.Error(), ": not known whether the write was made") {
+			t.Errorf("%s: words %q", name, err.Error())
+		}
+		return unknown
 	}
-	cases := []struct {
-		name   string
-		status int
-		body   any
-		want   outcome
+	t.Errorf("%s: an error that is not sorted: %v", name, err)
+	return ""
+}
+
+// fakeClock is the clock of the requests' own deadlines: a deadline
+// passes when the test says.
+type fakeClock struct {
+	mu sync.Mutex
+	fs []func()
+}
+
+func (c *fakeClock) after(_ time.Duration, f func()) func() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.fs = append(c.fs, f)
+	return func() bool { return true }
+}
+
+// pass makes every deadline set so far pass.
+func (c *fakeClock) pass() {
+	c.mu.Lock()
+	fs := c.fs
+	c.fs = nil
+	c.mu.Unlock()
+	for _, f := range fs {
+		f()
+	}
+}
+
+// TestWriteTable walks the write table (sortWrite's comment): every way a
+// write can end, for a comment and for a close, sorted into made, nothing
+// written or not known, said in the error's words, and never sent twice.
+func TestWriteTable(t *testing.T) {
+	null := func(field, typ string) string {
+		return `{"data":{"` + field + `":null},"errors":[{"type":"` + typ + `","message":"no"}]}`
+	}
+	closed := func(id, state string) string {
+		return `{"data":{"closeIssue":{"issue":{"id":"` + id + `","state":"` + state + `","stateReason":"COMPLETED"}}}}`
+	}
+	comment := `{"data":{"addComment":{"commentEdge":{"node":{"fullDatabaseId":"6700000001","url":"https://github.com/octo-example/widgets/issues/42#issuecomment-6700000001","createdAt":"2026-11-10T12:00:01Z","author":{"login":"mona-example","databaseId":9000001}}}}}}`
+	// An answer per document: the comment's and the close's.
+	type ans struct {
+		status         int
+		comment, close string
+		header         []string
+	}
+	both := func(status int, body string, header ...string) ans { return ans{status, body, body, header} }
+	rows := []struct {
+		name string
+		ans  ans
+		// serve, when set, serves the route instead of ans.
+		serve          http.HandlerFunc
+		comment, cls   outcome
+		rateLimited    bool
+		requestsAtMost int
 	}{
-		{"401", 401, `{"message":"Bad credentials"}`, proven},
-		{"403", 403, `{"message":"Forbidden"}`, proven},
-		{"NOT_FOUND", 200, null("NOT_FOUND"), proven},
-		{"FORBIDDEN", 200, null("FORBIDDEN"), proven},
-		{"UNPROCESSABLE", 200, null("UNPROCESSABLE"), proven},
-		{"another error type", 200, null("INTERNAL"), unknown},
-		{"no data, no error", 200, map[string]any{"data": nil}, unknown},
-		{"partial data", 200, map[string]any{"data": commentAnswer(1, 2)["data"], "errors": []any{map[string]any{"type": "NOT_FOUND"}}}, unknown},
-		{"an edge without its node", 200, map[string]any{"data": map[string]any{"addComment": map[string]any{"commentEdge": nil}}}, unknown},
-		{"unreadable", 200, "{not json", unknown},
-		{"404", 404, "", unknown},
-		{"429", 429, "", unknown},
-		{"500", 500, "", unknown},
-		{"502", 502, "", unknown},
+		{name: "made", ans: ans{200, comment, closed(target.NodeID, "CLOSED"), nil}, comment: made, cls: made},
+		{name: "a reset after the request was read", serve: reset, comment: unknown, cls: unknown},
+		{name: "301", ans: both(301, "", "Location", "https://api.github.com/elsewhere"), comment: unknown, cls: unknown},
+		{name: "302", ans: both(302, "", "Location", "https://api.github.com/elsewhere"), comment: unknown, cls: unknown},
+		{name: "303", ans: both(303, "", "Location", "https://api.github.com/elsewhere"), comment: unknown, cls: unknown},
+		{name: "307", ans: both(307, "", "Location", "https://api.github.com/graphql"), comment: unknown, cls: unknown},
+		{name: "308", ans: both(308, "", "Location", "https://api.github.com/graphql"), comment: unknown, cls: unknown},
+		{name: "401", ans: both(401, `{"message":"Bad credentials"}`), comment: nothing, cls: nothing},
+		{name: "403", ans: both(403, `{"message":"Resource not accessible by personal access token"}`), comment: nothing, cls: nothing},
+		{name: "403 a secondary rate limit", ans: both(403, `{"message":"You have exceeded a secondary rate limit."}`, "X-RateLimit-Remaining", "4000"), comment: nothing, cls: nothing, rateLimited: true},
+		{name: "403 the primary rate limit", ans: both(403, `{"message":"API rate limit exceeded"}`, "X-RateLimit-Remaining", "0", "X-RateLimit-Reset", "1762780000"), comment: nothing, cls: nothing, rateLimited: true},
+		{name: "429", ans: both(429, "", "Retry-After", "30"), comment: nothing, cls: nothing, rateLimited: true},
+		{name: "429 with nothing said", ans: both(429, ""), comment: nothing, cls: nothing, rateLimited: true},
+		{name: "400", ans: both(400, `{"message":"Problems parsing JSON"}`), comment: unknown, cls: unknown},
+		{name: "404", ans: both(404, ""), comment: unknown, cls: unknown},
+		{name: "422", ans: both(422, ""), comment: unknown, cls: unknown},
+		{name: "500", ans: both(500, ""), comment: unknown, cls: unknown},
+		{name: "502", ans: both(502, ""), comment: unknown, cls: unknown},
+		{name: "a 200 past its bound", ans: both(200, string(padded(github.MaxGraphQLAnswer+1))), comment: unknown, cls: unknown},
+		{name: "a 200 that does not parse", ans: both(200, "{not json"), comment: unknown, cls: unknown},
+		{name: "null beside NOT_FOUND", ans: ans{200, null("addComment", "NOT_FOUND"), null("closeIssue", "NOT_FOUND"), nil}, comment: nothing, cls: nothing},
+		{name: "null beside FORBIDDEN", ans: ans{200, null("addComment", "FORBIDDEN"), null("closeIssue", "FORBIDDEN"), nil}, comment: nothing, cls: nothing},
+		{name: "null beside UNPROCESSABLE", ans: ans{200, null("addComment", "UNPROCESSABLE"), null("closeIssue", "UNPROCESSABLE"), nil}, comment: nothing, cls: nothing},
+		{name: "null beside RATE_LIMITED", ans: ans{200, null("addComment", "RATE_LIMITED"), null("closeIssue", "RATE_LIMITED"), []string{"X-RateLimit-Remaining", "0", "X-RateLimit-Reset", "1762780000"}}, comment: nothing, cls: nothing, rateLimited: true},
+		{name: "null beside another type", ans: ans{200, null("addComment", "INTERNAL"), null("closeIssue", "INTERNAL"), nil}, comment: unknown, cls: unknown},
+		{name: "no data, no error", ans: both(200, `{"data":null}`), comment: unknown, cls: unknown},
+		{name: "data with errors beside", ans: ans{200, strings.TrimSuffix(comment, "}") + `,"errors":[{"type":"NOT_FOUND"}]}`, strings.TrimSuffix(closed(target.NodeID, "CLOSED"), "}") + `,"errors":[{"type":"NOT_FOUND"}]}`, nil}, comment: unknown, cls: unknown},
+		{name: "data that does not say what was written", ans: ans{200, `{"data":{"addComment":{"commentEdge":null}}}`, `{"data":{"closeIssue":{"issue":null}}}`, nil}, comment: unknown, cls: unknown},
+		{name: "ids that are not ids; not the issue asked", ans: ans{200, strings.Replace(comment, `"6700000001"`, `"67e8"`, 1), closed("I_kwDOAnotherOne", "CLOSED"), nil}, comment: unknown, cls: unknown},
+		{name: "no id; an issue not closed", ans: ans{200, strings.Replace(comment, `"fullDatabaseId":"6700000001",`, ``, 1), closed(target.NodeID, "OPEN"), nil}, comment: unknown, cls: unknown},
 	}
-	for _, c := range cases {
+	for _, row := range rows {
 		r := newRig(t)
-		r.reply(http.MethodPost, "/graphql", c.status, c.body)
-		_, err := r.a.Comment(ctx, r.commentCred("p1", 1), target, "x")
-		cerr := r.a.Close(ctx, r.closeCred("p1", 1), target, tracker.ReasonCompleted)
-		for _, e := range []error{err, cerr} {
-			if c.name == "partial data" && e == cerr {
-				continue // the close's answer has no addComment
-			}
-			if c.name == "an edge without its node" && e == cerr {
-				continue
-			}
-			got := unknown
-			if tracker.NothingWritten(e) {
-				got = proven
-			}
-			if e == nil || got != c.want || (got == unknown && !errors.Is(e, tracker.ErrWriteUnknown)) {
-				t.Errorf("%s: %v", c.name, e)
-			}
+		if row.serve != nil {
+			r.fake.Handle(http.MethodPost, api, "/graphql", row.serve)
+		} else {
+			r.fake.Handle(http.MethodPost, api, "/graphql", func(w http.ResponseWriter, req *http.Request) {
+				g, _ := githubtest.ParseGraphQL(r.fake.Requests()[len(r.fake.Requests())-1].Body)
+				body := row.ans.comment
+				if g.Query == github.CloseIssueDocument {
+					body = row.ans.close
+				}
+				for i := 0; i+1 < len(row.ans.header); i += 2 {
+					w.Header().Set(row.ans.header[i], row.ans.header[i+1])
+				}
+				w.WriteHeader(row.ans.status)
+				_, _ = w.Write([]byte(body))
+			})
+		}
+		_, cerr := r.a.Comment(ctx, r.commentCred("p1", 1), target, "x")
+		kerr := r.a.Close(ctx, r.closeCred("p1", 1), target, tracker.ReasonCompleted)
+		if got := sortedAs(t, row.name+" (comment)", cerr); got != row.comment {
+			t.Errorf("%s: a comment %s: %v", row.name, got, cerr)
+		}
+		if got := sortedAs(t, row.name+" (close)", kerr); got != row.cls {
+			t.Errorf("%s: a close %s: %v", row.name, got, kerr)
+		}
+		var rl *tracker.ErrRateLimited
+		if row.rateLimited && (!errors.As(cerr, &rl) || !errors.As(kerr, &rl)) {
+			t.Errorf("%s: not said as a rate limit: %v / %v", row.name, cerr, kerr)
+		}
+		if n := len(r.fake.Requests()); n != 2 {
+			t.Errorf("%s: %d requests for two writes", row.name, n)
 		}
 	}
-	// A call ended while the write was held: not known.
+
+	// Refused before any request: nothing written, nothing asked.
 	r := newRig(t)
+	r.answerAll()
+	bad := target
+	bad.NodeID = ""
+	if _, err := r.a.Comment(ctx, r.commentCred("p1", 1), bad, "x"); sortedAs(t, "a node id out of shape", err) != nothing {
+		t.Errorf("a node id out of shape: %v", err)
+	}
+	if err := r.a.Close(ctx, r.closeCred("p1", 1), bad, tracker.ReasonCompleted); sortedAs(t, "a node id out of shape", err) != nothing {
+		t.Errorf("a node id out of shape: %v", err)
+	}
+	offHost := target
+	offHost.Ref.Host = "ghe.example.test@collector.example"
+	cred := tracker.Token(offHost.Ref.Host, secret).ForWrite(tracker.Write{Kind: tracker.WriteComment, Publication: "p1", Try: 1})
+	if _, err := r.a.Comment(ctx, cred, offHost, "x"); sortedAs(t, "a host not admitted", err) != nothing {
+		t.Errorf("a host not admitted: %v", err)
+	}
+	if n := len(r.fake.Requests()); n != 0 {
+		t.Fatalf("%d requests", n)
+	}
+
+	// No connection was ever had: the dial failed, or the call had ended.
+	dead := github.New(github.Options{Logger: quiet, Transport: &http.Transport{DialContext: func(context.Context, string, string) (net.Conn, error) {
+		return nil, errors.New("no route")
+	}}})
+	if _, err := dead.Comment(ctx, r.commentCred("p1", 1), target, "x"); sortedAs(t, "a dial that failed", err) != nothing || !errors.Is(err, tracker.ErrUnavailable) {
+		t.Errorf("a dial that failed: %v", err)
+	}
+	ended, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := r.a.Comment(ended, r.commentCred("p1", 1), target, "x"); sortedAs(t, "a call ended first", err) != nothing {
+		t.Errorf("a call ended before a connection: %v", err)
+	}
+
+	// A connection was had and no answer came: the call ended while the
+	// write was held at GitHub, or the request's own deadline passed.
+	r = newRig(t)
 	r.answerAll()
 	err := held(t, r, api, "/graphql", func(c context.Context) error {
 		_, err := r.a.Comment(c, r.commentCred("p1", 1), target, "x")
 		return err
 	})
-	if tracker.NothingWritten(err) || !errors.Is(err, tracker.ErrWriteUnknown) || !errors.Is(err, context.Canceled) {
-		t.Fatalf("held: %v", err)
+	if sortedAs(t, "the call ended while held", err) != unknown || !errors.Is(err, context.Canceled) {
+		t.Errorf("the call ended while held: %v", err)
+	}
+	clock := &fakeClock{}
+	github.SetClock(r.a, clock.after)
+	for _, write := range []func() error{
+		func() error { _, err := r.a.Comment(ctx, r.commentCred("p1", 1), target, "x"); return err },
+		func() error { return r.a.Close(ctx, r.closeCred("p1", 1), target, tracker.ReasonCompleted) },
+	} {
+		gate := r.fake.Hold(http.MethodPost, api, "/graphql")
+		done := make(chan error, 1)
+		go func() { done <- write() }()
+		<-gate.Reached()
+		clock.pass()
+		err := <-done
+		gate.Open()
+		if sortedAs(t, "the request's deadline", err) != unknown || !strings.Contains(err.Error(), "timed out") || errors.Is(err, context.Canceled) {
+			t.Errorf("the request's own deadline: %v", err)
+		}
 	}
 }
 
@@ -484,5 +665,71 @@ func TestCloseReason(t *testing.T) {
 	}
 	if len(r.fake.Requests()) != before || r.fake.Writes("graphql CloseIssue") != 2 {
 		t.Fatal("a refused close made a request")
+	}
+}
+
+// FindComment answers no only from a listing that cannot have skipped a
+// comment: when the list moved between two of its pages (a comment before
+// the boundary deleted, so the next page starts one later), a match past
+// the boundary is either found or the answer is not known, never no.
+func TestFindNoOnlyFromAWholeListing(t *testing.T) {
+	r := newRig(t)
+	r.answerAll()
+	marker := r.a.Marker("p1")
+	posted := "Fixed in the delivery.\n\n" + marker
+	m := tracker.Match{Marker: marker, BodySha256: tracker.BodyDigest(posted), AuthorID: "9000001"}
+	var mu sync.Mutex
+	list := make([]map[string]any, 0, 150)
+	for i := 0; i < 150; i++ {
+		if i == 100 {
+			list = append(list, comment(7700001, 9000001, posted))
+			continue
+		}
+		list = append(list, comment(7600000+i, 9000002, "an unrelated comment"))
+	}
+	deleted := false
+	r.fake.Handle(http.MethodGet, api, "/repos/octo-example/widgets/issues/42/comments", func(w http.ResponseWriter, req *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		p, _ := strconv.Atoi(req.URL.Query().Get("page"))
+		if p == 2 && !deleted {
+			// The first comment is deleted between the two pages' reads.
+			list, deleted = list[1:], true
+		}
+		lo, hi := (p-1)*100, p*100
+		lo, hi = min(lo, len(list)), min(hi, len(list))
+		var links []string
+		if hi < len(list) {
+			links = append(links, fmt.Sprintf(`<https://api.github.com/repositories/4000001/issues/42/comments?page=%d>; rel="next"`, p+1))
+		}
+		if p > 1 {
+			links = append(links, fmt.Sprintf(`<https://api.github.com/repositories/4000001/issues/42/comments?page=%d>; rel="prev"`, p-1))
+		}
+		if len(links) > 0 {
+			w.Header().Set("Link", strings.Join(links, ", "))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(githubtest.Body(list[lo:hi]))
+	})
+	got, found, err := r.a.FindComment(ctx, r.cred, target, now, m)
+	if found == tracker.FoundNo {
+		t.Fatalf("no, while the matching comment is on the issue: %+v %v", got, err)
+	}
+	if found == tracker.FoundYes && got.ID != "7700001" {
+		t.Fatalf("found %+v", got)
+	}
+
+	// A comment that matches but whose ids cannot be read makes the answer
+	// not known, never no.
+	r.comments(1, func(p, i int) map[string]any {
+		if i == 0 {
+			c := comment(7700001, 9000001, posted)
+			c["id"] = -1
+			return c
+		}
+		return nil
+	})
+	if _, found, _ := r.a.FindComment(ctx, r.cred, target, now, tracker.Match{Marker: marker, BodySha256: tracker.BodyDigest(posted)}); found != tracker.FoundUnknown {
+		t.Fatalf("an unreadable match: %v", found)
 	}
 }
