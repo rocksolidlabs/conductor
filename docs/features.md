@@ -4857,15 +4857,26 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `docs/plans/history.md` (PR #609); PR-11 (#630, PR #764): Brakeman's `observe`
   gains `search` (`observe_search`, `GET /api/brakeman/history`), the
   History search answered for a turn. The tool's what is `search`, not
-  the plan's `history`, which already names a ticket's field history. An
+  the plan's `history`, which already names a ticket's field history. A
+  turn's read is answered from the rows its grant covers by their own
+  columns, newest first: the grant is a condition of the index's query
+  (the kinds the turn may see, each placed in the scope by the columns
+  its rows carry), met before any row is ordered, bounded or paged. An
   entry is served only when every class its text reads is visible (a
   check's receipt is runs and logs, its log being its text) and the
   record it is of resolves within the turn's scope now, read from that
-  record's own store and never from the index; a Brakeman turn's own runs
-  and sessions are never served, since what an earlier turn reported was
-  read under that turn's grant, which only its brief's footprint carries.
-  Each entry is cited by its ref, never the index's key, and nothing in
-  the answer counts the index's other rows. The ref resolver gains the
+  record's own store and never from the index; a row that cannot be
+  judged is left out as a refused one is. A Brakeman turn's own runs and
+  sessions are never served, since what an earlier turn reported was read
+  under that turn's grant, which only its brief's footprint carries. Each
+  entry is one stored record's, cited by its ref, never the index's key,
+  with no links, and one table from kind and field to class decides what
+  it serves and what its read records (a project's key and a ticket's
+  Dispatch's); nothing in the answer counts the index's other rows. What
+  a turn's history does not hold: a review's entries (read through the
+  review routes), a run's and a task's entries (titled by a launch's
+  label), a launch or plan revision an act made, links, and any ranking
+  of its results. The ref resolver gains the
   session journal as its third source: a session that ended before a
   restart resolves from its record, admitted by the repository it read at
   launch and its run, its state `record` (or `lost`) and its URL its
@@ -4875,7 +4886,10 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   record, its read logged and its URL the record page, and a record in
   another repository refused (`TestABriefCitesARecordOnlySessionAfterARestart`);
   the refusals by scope, visibility and Brakeman's own
-  (`TestBrakemansHistoryKeepsToTheGrant`). The by-hand look, a real
+  (`TestBrakemansHistoryKeepsToTheGrant`); a page and its bound by the
+  grant's own rows (`TestATurnsPageIsNewestFirst`,
+  `TestAHistoryReadIsBoundedAndReadsOn`,
+  `TestARecordThatCannotBeReadIsLeftOut`). The by-hand look, a real
   agent's turn finding an earlier session after a restart, is not made
   yet. Its checks are in its body.
 - **Project manifests: a fresh attempt worktree made usable, predictably

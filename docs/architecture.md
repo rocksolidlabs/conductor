@@ -688,10 +688,13 @@ changed since a time or since the last complete briefing's watermarks
 (`brakeman_changes.go`: the ledger's events, the sessions' activity
 windows with their gaps, Dispatch's change feed), the status Conductor
 computes, a screen, overlapping changes, earlier briefs and the History
-search (`brakeman_history.go`: an entry only when every class its text
-reads is visible and the record it is of resolves within the grant from
-its own store, never a Brakeman turn's own run or session, each cited by
-its ref and never by the index's key). Each read
+search (`brakeman_history.go`: answered newest first from the rows the
+turn's grant covers by their own columns, the grant a condition of the
+index's query before any row is ordered or bounded; an entry only when
+every class its text reads is visible and the record it is of resolves
+within the grant from its own store, never a Brakeman turn's own run or
+session, one stored record's with no links, each cited by its ref and
+never by the index's key). Each read
 counts against the turn's budget and goes into its read log, which is how
 the server knows what the turn saw and how far its coverage reaches; an
 earlier brief made under a wider scope or visibility is given only as its

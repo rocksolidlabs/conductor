@@ -90,6 +90,16 @@ type Query struct {
 	// (docs/plans/history.md, "A Brakeman brief"). Part of the query's
 	// digest, so a cursor of one is refused by the other.
 	ExceptCrews []string
+	// Restrict, when set, is every row the search may answer at all,
+	// whatever its line (Restriction): a condition of the statement, met
+	// before anything is matched, ordered, counted or paged, so no row
+	// outside it weighs in any of them. Part of the query's digest.
+	Restrict *Restriction
+	// Newest answers newest first, its words matching and never ranking:
+	// no score (a cursor's is 0), no bound counted over the words'
+	// matches (no Cut), no Total, and its hits carry their snippets alone
+	// (no repeats, no links). Part of the query's digest.
+	Newest bool
 
 	terms   []string // FTS5 strings, each a condition of its own
 	none    bool     // words were typed and none is kept: nothing matches
@@ -380,17 +390,105 @@ func termKey(term string) string {
 	return b.String()
 }
 
+// Restriction is the rows a search may answer: a row is within it when it
+// meets one of its clauses, so one with none admits no row. It is made of
+// the rows' own columns alone.
+type Restriction struct {
+	Clauses []Clause `json:"c"`
+}
+
+// Clause is rows of its kinds whose columns meet each of its conditions.
+type Clause struct {
+	Kinds []string `json:"k"`
+	Conds []Cond   `json:"w,omitempty"`
+}
+
+// Cond is a column of a row (restrictColumns) whose value is one of
+// Values, or, Not, none of them.
+type Cond struct {
+	Column string   `json:"c"`
+	Values []string `json:"v"`
+	Not    bool     `json:"n,omitempty"`
+}
+
+// restrictColumns are the columns a Cond names, each an expression over
+// the row: its own, and the project of its ticket's key and the crew of
+// its run's id (a key less its dash and number, an id less its dash and
+// eight hex digits; "" when there is none).
+var restrictColumns = map[string]string{
+	"project":        "e.project",
+	"tree":           "e.tree",
+	"crew":           "e.crew",
+	"run":            "e.run",
+	"anchor":         "e.anchor",
+	"actor":          "e.actor",
+	"ticket.project": "substr(e.ticket, 1, instr(e.ticket, '-') - 1)",
+	"run.crew":       "substr(e.run, 1, max(length(e.run) - 9, 0))",
+}
+
+// check refuses a restriction that names a column restrictColumns does
+// not hold.
+func (r *Restriction) check() error {
+	if r == nil {
+		return nil
+	}
+	for _, c := range r.Clauses {
+		for _, w := range c.Conds {
+			if _, ok := restrictColumns[w.Column]; !ok {
+				return badQuery("a restriction names the column %q", w.Column)
+			}
+		}
+	}
+	return nil
+}
+
+// sql is the restriction as one condition over the entries, e, every
+// value bound as an argument.
+func (r *Restriction) sql() (string, []any) {
+	var args []any
+	in := func(expr string, vs []string, not bool) string {
+		if len(vs) == 0 {
+			if not {
+				return "1"
+			}
+			return "0"
+		}
+		for _, v := range vs {
+			args = append(args, v)
+		}
+		op := " IN ("
+		if not {
+			op = " NOT IN ("
+		}
+		return expr + op + marks(len(vs)) + ")"
+	}
+	var ors []string
+	for _, c := range r.Clauses {
+		ands := []string{in("e.kind", c.Kinds, false)}
+		for _, w := range c.Conds {
+			ands = append(ands, in(restrictColumns[w.Column], w.Values, w.Not))
+		}
+		ors = append(ors, "("+strings.Join(ands, " AND ")+")")
+	}
+	if len(ors) == 0 {
+		return "0", nil
+	}
+	return "(" + strings.Join(ors, " OR ") + ")", args
+}
+
 // digest is what a cursor binds the query by: its terms, filters and
 // times as parsed.
 func (q Query) digest() string {
 	b, _ := json.Marshal(struct {
-		T []string `json:"t"`
-		N bool     `json:"n"`
-		F []filter `json:"f"`
-		S *when    `json:"s"`
-		U *when    `json:"u"`
-		X []string `json:"x,omitempty"`
-	}{q.terms, q.none, q.filters, q.since, q.until, q.ExceptCrews})
+		T []string     `json:"t"`
+		N bool         `json:"n"`
+		F []filter     `json:"f"`
+		S *when        `json:"s"`
+		U *when        `json:"u"`
+		X []string     `json:"x,omitempty"`
+		R *Restriction `json:"r,omitempty"`
+		O bool         `json:"o,omitempty"`
+	}{q.terms, q.none, q.filters, q.since, q.until, q.ExceptCrews, q.Restrict, q.Newest})
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:16])
 }
@@ -432,6 +530,10 @@ func (q Query) conds(now time.Time) (conds []string, args []any) {
 	}
 	if len(q.ExceptCrews) > 0 {
 		conds = append(conds, "NOT "+in("e.crew", q.ExceptCrews))
+	}
+	if q.Restrict != nil {
+		c, a := q.Restrict.sql()
+		conds, args = append(conds, c), append(args, a...)
 	}
 	if q.since != nil {
 		conds = append(conds, "e.at >= ?")
@@ -592,8 +694,11 @@ func scanEntry(rows interface{ Scan(...any) error }, before ...any) (id int64, e
 // with filters alone, newer first; in both, last by the entry's key, so
 // the order is total. Class never weighs in it. A search of words reads
 // at most MaxScanned of its matches and ranks at most MaxRanked, and says
-// so (Page.Cut); past MaxScanned matches its page is newest first. The
-// next page is the rows strictly after the cursor's in the same order.
+// so (Page.Cut); past MaxScanned matches its page is newest first. A
+// Newest query is newest first whatever it holds, its words matching and
+// never ranking, nothing counted (Query.Newest); a Restrict is a
+// condition of every statement. The next page is the rows strictly after
+// the cursor's in the same order.
 // Every statement reads one snapshot, after the index's version and
 // generation: an index of another version, or owed a Check, answers its
 // State and no rows, a cursor of another query ErrCursor, one of an
@@ -607,6 +712,9 @@ func (ix *Index) Search(ctx context.Context, q Query) (Page, error) {
 	}
 	if limit < 1 || limit > MaxLimit {
 		return page, badQuery("a page is 1 to %d entries, not %d", MaxLimit, q.Limit)
+	}
+	if err := q.Restrict.check(); err != nil {
+		return page, err
 	}
 	var after *cursor
 	if q.After != "" {
@@ -674,7 +782,20 @@ func (ix *Index) Search(ctx context.Context, q Query) (Page, error) {
 		andConds = " AND " + strings.Join(conds, " AND ")
 	}
 	scanned := func() bool { return matched > ix.maxScanned }
-	if words {
+	switch {
+	case words && q.Newest:
+		// Every match that passes the filters and the restriction, newest
+		// first, the page sorted by its keys alone: nothing is counted or
+		// cut over the words' other matches.
+		var past string
+		pageArgs = append(append(pageArgs, q.match()), args...)
+		if after != nil {
+			past = " AND (e.at < ? OR (e.at = ? AND e.key > ?))"
+			pageArgs = append(pageArgs, after.At, after.At, after.Key)
+		}
+		stmt = "WITH p AS (SELECT e.id AS id, 0.0 AS score, e.at AS at, e.key AS key FROM entries_fts f CROSS JOIN entries e ON e.id = f.rowid WHERE entries_fts MATCH ?" +
+			andConds + past + " ORDER BY e.at DESC, e.key LIMIT ?) SELECT -1, p.score, " + entryColumns + whole + order
+	case words:
 		rows, err := tx.QueryContext(ctx, "SELECT rowid FROM entries_fts WHERE entries_fts MATCH ? ORDER BY rowid DESC LIMIT ?", q.match(), ix.maxScanned+1)
 		if err != nil {
 			return page, err
@@ -726,7 +847,7 @@ func (ix *Index) Search(ctx context.Context, q Query) (Page, error) {
 			stmt = "WITH m AS MATERIALIZED (SELECT e.id AS id, 0.0 AS score, e.at AS at, e.key AS key" + windowFrom + where() + "), p AS (SELECT * FROM m" + past +
 				" ORDER BY at DESC, key LIMIT ?) SELECT (SELECT COUNT(*) FROM m), p.score, " + entryColumns + whole + order
 		}
-	} else {
+	default:
 		var extra []string
 		pageArgs = append(pageArgs, args...)
 		if after != nil {
@@ -785,6 +906,11 @@ func (ix *Index) Search(ctx context.Context, q Query) (Page, error) {
 		}
 		return tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM ("+count+" LIMIT ?)", append(countArgs, MaxTotal+1)...).Scan(&page.Total)
 	}
+	if q.Newest {
+		// Nothing counted: its page and its snippets alone.
+		page.Total = 0
+		return page, decorate(ctx, tx, page.Entries, ids, q.match(), false)
+	}
 	page.Total = total
 	var counted error
 	switch {
@@ -813,16 +939,17 @@ func (ix *Index) Search(ctx context.Context, q Query) (Page, error) {
 	if page.Total > MaxTotal {
 		page.Total, page.TotalCapped = MaxTotal, true
 	}
-	if err := decorate(ctx, tx, page.Entries, ids, q.match()); err != nil {
+	if err := decorate(ctx, tx, page.Entries, ids, q.match(), true); err != nil {
 		return page, err
 	}
 	return page, nil
 }
 
 // decorate gives each hit its snippet (from the match when there is one:
-// its best column with the match marked; else its summary or body), its
-// repeats and its links, each a statement for the whole page.
-func decorate(ctx context.Context, tx *sql.Tx, hits []Hit, ids []int64, match string) error {
+// its best column with the match marked; else its summary or body) and,
+// when related, its repeats and its links, each a statement for the whole
+// page.
+func decorate(ctx context.Context, tx *sql.Tx, hits []Hit, ids []int64, match string, related bool) error {
 	if len(hits) == 0 {
 		return nil
 	}
@@ -852,28 +979,30 @@ func decorate(ctx context.Context, tx *sql.Tx, hits []Hit, ids []int64, match st
 	}
 	type group struct{ digest, class string }
 	repeats := map[group]Repeats{}
-	var args []any
-	refs := map[string]bool{}
-	for _, h := range hits {
-		args = append(args, h.Digest)
-		refs[h.Ref] = true
-	}
-	err := each(ctx, tx, `SELECT digest, class, COUNT(*), COUNT(DISTINCT anchor) FROM entries
-		WHERE digest IN (`+marks(len(args))+`) GROUP BY digest, class`, args, func(rows *sql.Rows) error {
-		var g group
-		var r Repeats
-		if err := rows.Scan(&g.digest, &g.class, &r.Count, &r.Anchors); err != nil {
+	links := map[string]Links{}
+	if related {
+		var args []any
+		refs := map[string]bool{}
+		for _, h := range hits {
+			args = append(args, h.Digest)
+			refs[h.Ref] = true
+		}
+		err := each(ctx, tx, `SELECT digest, class, COUNT(*), COUNT(DISTINCT anchor) FROM entries
+			WHERE digest IN (`+marks(len(args))+`) GROUP BY digest, class`, args, func(rows *sql.Rows) error {
+			var g group
+			var r Repeats
+			if err := rows.Scan(&g.digest, &g.class, &r.Count, &r.Anchors); err != nil {
+				return err
+			}
+			repeats[g] = r
+			return nil
+		})
+		if err != nil {
 			return err
 		}
-		repeats[g] = r
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	links, err := readLinks(ctx, tx, slices.Sorted(maps.Keys(refs)), pageLinks)
-	if err != nil {
-		return err
+		if links, err = readLinks(ctx, tx, slices.Sorted(maps.Keys(refs)), pageLinks); err != nil {
+			return err
+		}
 	}
 	for i := range hits {
 		h := &hits[i]
@@ -1062,7 +1191,7 @@ func (ix *Index) Entry(ctx context.Context, key string) (Hit, error) {
 			return err
 		}
 		hits := []Hit{{Entry: e}}
-		if err := decorate(ctx, tx, hits, []int64{id}, ""); err != nil {
+		if err := decorate(ctx, tx, hits, []int64{id}, "", true); err != nil {
 			return err
 		}
 		hit = hits[0]
@@ -1188,7 +1317,7 @@ func (ix *Index) Similar(ctx context.Context, key, scope string, chain []string,
 		if err := rows.Err(); err != nil {
 			return err
 		}
-		return decorate(ctx, tx, hits, ids, "")
+		return decorate(ctx, tx, hits, ids, "", true)
 	})
 	return hits, err
 }

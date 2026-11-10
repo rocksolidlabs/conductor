@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -21,6 +22,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/history"
 	"github.com/rocksolidlabs/conductor/internal/journal"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -141,17 +143,6 @@ func linkRefs(e map[string]any) []string {
 		refs = append(refs, l.(map[string]any)["ref"].(string))
 	}
 	return refs
-}
-
-// linkOf is the link of a served entry whose ref is ref, nil for none.
-func linkOf(e map[string]any, ref string) map[string]any {
-	ls, _ := e["links"].([]any)
-	for _, l := range ls {
-		if m := l.(map[string]any); m["ref"] == ref {
-			return m
-		}
-	}
-	return nil
 }
 
 // readClasses is each class the turn's log reads ref in.
@@ -299,10 +290,11 @@ func TestAnUnopenedJournalIsAnError(t *testing.T) {
 // What a turn reads of the history keeps to its grant, each refusal as
 // the grant's other reads refuse: a run outside the scope, a class not
 // visible (a check's receipt with logs off, whose log its text is), a
-// project outside it, sessions off; Brakeman's own runs and sessions
-// left out whatever the line names; a turn
-// that sees none of the classes refused at once; the admin's answer
-// holds them all.
+// project outside it, sessions off; a review's entries, an agent
+// reviewer's among them, served under no grant; Brakeman's own runs and
+// sessions left out whatever the line names; a turn that sees none of the
+// classes refused at once; the admin's answer holds them all. No entry
+// carries links.
 func TestBrakemansHistoryKeepsToTheGrant(t *testing.T) {
 	f := newObsFixture(t)
 	check, otherCheck := receipts(t, f)
@@ -335,12 +327,11 @@ func TestBrakemansHistoryKeepsToTheGrant(t *testing.T) {
 			line: "build fails", not: []string{"ticket:" + f.ticket}},
 		{name: "dispatch not visible", mod: func(c map[string]any) { c["visibility"].(map[string]any)["dispatch"] = false },
 			line: "build fails", not: []string{"ticket:" + f.ticket}},
-		// An agent reviewer's finding is the run's words, as its verdict
-		// is: read with runs, whatever Dispatch is.
+		// A review's entries are read through the review routes: never
+		// served here, whatever is visible.
+		{name: "an agent reviewer's finding", line: "kind:review.finding,review.verdict", not: []string{review}},
 		{name: "an agent reviewer's finding, dispatch not visible", mod: func(c map[string]any) { c["visibility"].(map[string]any)["dispatch"] = false },
-			line: "kind:review.finding", want: []string{review}},
-		{name: "an agent reviewer's finding, runs not visible", mod: func(c map[string]any) { c["visibility"].(map[string]any)["runs"] = false },
-			line: "kind:review.finding", not: []string{review}},
+			line: "kind:review.finding,review.verdict", not: []string{review}},
 		{name: "nothing visible", mod: func(c map[string]any) {
 			v := c["visibility"].(map[string]any)
 			for _, k := range []string{"runs", "logs", "dispatch", "sessions", "touched"} {
@@ -393,17 +384,15 @@ func TestBrakemansHistoryKeepsToTheGrant(t *testing.T) {
 				if m["key"] != nil || m["repeats"] != nil {
 					t.Errorf("an entry names the index's rows: %v", m)
 				}
+				if _, ok := m["links"]; ok {
+					t.Errorf("an entry carries links: %v", m)
+				}
 				if strings.HasPrefix(m["ref"].(string), "run:brakeman-") {
 					t.Errorf("Brakeman's own run: %v", m["ref"])
 				}
 			}
 			if ix, _ := out["indexing"].(map[string]any); len(ix) != 1 {
 				t.Errorf("the indexing says more than its state: %v", ix)
-			}
-			if slices.Contains(c.want, review) {
-				if got := readClasses(t, f, review); !slices.Equal(got, []string{brakeman.ClassRuns}) {
-					t.Errorf("the agent reviewer's finding read in %v, want the runs' alone", got)
-				}
 			}
 		})
 	}
@@ -450,39 +439,10 @@ func TestAHistoryReadIsNotedInItsClasses(t *testing.T) {
 	}
 }
 
-// A run of the team crew, launched from a ticket the team's scope admits
-// and resumed from the other crew's run: the admin sees both links; a turn
-// scoped to the team keeps the ticket's, with its title, and leaves out
-// the other run's, its read log holding the ticket in Dispatch's class. An
-// anchor or a link named outside the grant is left out of an entry, one
-// inside it kept and read.
-func TestALinkOrAnchorOutsideTheGrantIsLeftOut(t *testing.T) {
-	f := newObsFixture(t)
-	run := linkedRun(t, f)
-	admin := hsEntry(hsSearch(t, f.testEnv, "kind:run "+run), run)
-	if refs := linkRefs(admin); !slices.Contains(refs, "ticket:"+f.ticket) || !slices.Contains(refs, "run:"+f.other) {
-		t.Fatalf("the admin's links: %v", refs)
-	}
-	f.turn(t, func(c map[string]any) { c["scope"] = map[string]any{"crews": []string{"team"}} })
-	e := historyEntryOf(f.expectRead(t, searchPath("kind:run "+run), http.StatusOK, ""), run)
-	if e == nil {
-		t.Fatal("the run is not served")
-	}
-	if l := linkOf(e, "ticket:"+f.ticket); l == nil || !strings.Contains(fmt.Sprint(l["label"]), "The build fails") {
-		t.Fatalf("the ticket's link: %v in %v", l, linkRefs(e))
-	}
-	if l := linkOf(e, "run:"+f.other); l != nil {
-		t.Fatalf("a link outside the scope: %v", l)
-	}
-	if got := readClasses(t, f, "ticket:"+f.ticket); !slices.Contains(got, brakeman.ClassDispatch) {
-		t.Fatalf("the ticket's link read in %v", got)
-	}
-	if _, ok := f.readOf(t, "run:"+f.other); ok {
-		t.Fatal("the other run was read")
-	}
-
-	// The filter itself, given an entry whose anchor and links name a
-	// run outside the scope and one inside it.
+// turnScope is the history's admission for the fixture's turn as it
+// reads now.
+func turnScope(t *testing.T, f *obsFixture) *historyScope {
+	t.Helper()
 	r := httptest.NewRequest(http.MethodGet, "/api/brakeman/history", nil)
 	r.Header.Set(brakemanSessionHeader, f.sid)
 	r.Header.Set("Authorization", "Bearer "+f.tok)
@@ -490,22 +450,54 @@ func TestALinkOrAnchorOutsideTheGrantIsLeftOut(t *testing.T) {
 	if refused != nil || tp == nil {
 		t.Fatalf("the turn's principal: %v", refused)
 	}
-	ix := f.srv.history.index()
-	av := f.srv.newAvailability(t.Context(), ix, f.srv.ledger)
-	defer av.close()
-	hs := &historyScope{o: f.srv.newObserver(tp), ix: ix, av: av, done: map[brakeman.Ref]historyAdmission{}, linked: map[string]*history.Entry{}, noted: map[brakeman.Read]bool{}}
-	own, other := "run:"+f.run, "run:"+f.other
-	entry := history.Entry{Kind: "run", Key: own, Ref: own}
+	return &historyScope{o: f.srv.newObserver(tp), done: map[brakeman.Ref]historyAdmission{}, noted: map[brakeman.Read]bool{}}
+}
+
+// A turn's entry is its own record's and carries no links: a ticket that
+// runs were launched from (the admin's entry links them) is served to a
+// turn of every scope with no links and nothing of those runs read, and
+// to a turn scoped to a crew not at all, since its rows name no run of
+// the crew. An anchor is served only where its record resolves within the
+// grant, and read there.
+func TestATurnsEntryCarriesNoLinks(t *testing.T) {
+	f := newObsFixture(t)
+	run := linkedRun(t, f)
+	ticket := "ticket:" + f.ticket
+	if admin := hsEntry(hsSearch(t, f.testEnv, "build fails"), ticket); !slices.Contains(linkRefs(admin), run) {
+		t.Fatalf("the admin's ticket: %v", admin)
+	}
+	f.turn(t, func(c map[string]any) { c["scope"] = map[string]any{} })
+	out := f.expectRead(t, searchPath("build fails"), http.StatusOK, "")
+	e := historyEntryOf(out, ticket)
+	if e == nil {
+		t.Fatalf("the ticket: %v", historyRefs(out))
+	}
+	if _, ok := e["links"]; ok {
+		t.Fatalf("the ticket carries links: %v", e)
+	}
+	for _, r := range []string{run, "run:" + f.other} {
+		if _, ok := f.readOf(t, r); ok {
+			t.Fatalf("%s read through the ticket", r)
+		}
+	}
+	f.again(t, func(c map[string]any) { c["scope"] = map[string]any{"crews": []string{"team"}} })
+	if refs := historyRefs(f.expectRead(t, searchPath("build fails"), http.StatusOK, "")); slices.Contains(refs, ticket) {
+		t.Fatalf("a ticket served to a turn scoped to a crew: %v", refs)
+	}
+
+	// An anchor outside the scope is left out, one inside it kept and read.
+	hs := turnScope(t, f)
+	own, other := attemptKey(f.run, "build", 1), attemptKey(f.other, "build", 1)
+	entry := history.Entry{Kind: "attempt", Key: own, Ref: own}
 	scope, cited, res, ok, err := hs.admit(t.Context(), entry)
 	if err != nil || !ok {
-		t.Fatalf("the team's run: %v %v", ok, err)
+		t.Fatalf("the team's attempt: %v %v", ok, err)
 	}
 	for _, c := range []struct {
 		anchor string
 		kept   bool
-	}{{other, false}, {own, true}} {
-		served := servedEntry{Kind: "run", Anchor: servedAnchor{Ref: c.anchor, Label: anchorLabel(c.anchor)},
-			Links: []servedLink{{Rel: relContinues, Dir: "out", Ref: other}, {Rel: relContinues, Dir: "in", Ref: own}}}
+	}{{"run:" + f.other, false}, {"run:" + f.run, true}} {
+		served := servedEntry{Kind: "attempt", Anchor: servedAnchor{Ref: c.anchor, Label: anchorLabel(c.anchor)}}
 		te, reads, err := hs.turnEntry(t.Context(), served, entry, scope, cited, res)
 		if err != nil {
 			t.Fatal(err)
@@ -513,65 +505,101 @@ func TestALinkOrAnchorOutsideTheGrantIsLeftOut(t *testing.T) {
 		if (te.Anchor != nil) != c.kept {
 			t.Errorf("the anchor %s: %+v", c.anchor, te.Anchor)
 		}
-		if len(te.Links) != 1 || te.Links[0].Ref != own {
-			t.Errorf("the links: %+v", te.Links)
-		}
 		for _, rd := range reads {
-			if rd.Ref.String() == other {
+			if rd.Ref.String() == "run:"+f.other || rd.Ref.String() == other {
 				t.Errorf("a read of the other run: %+v", rd)
 			}
 		}
 	}
 }
 
-// A turn reads a run whose link shows a ticket's title, and keeps a brief
-// that repeats it: the brief's footprint holds Dispatch, so a later turn
-// with Dispatch off is given the brief withheld, and its own read of the
-// run leaves the ticket's link out, and the ticket's key and the project's
-// the entry names (Dispatch's records, as the run's class is not): a line
-// filtering by either is refused.
-func TestALinkedTitleIsReadInItsClasses(t *testing.T) {
+// A file's ref names its session and the file: an anchor of one is served
+// only to a grant that sees touched files as well as sessions.
+func TestAFileAnchorNeedsTouched(t *testing.T) {
 	f := newObsFixture(t)
-	run := linkedRun(t, f)
-	if admin := hsEntry(hsSearch(t, f.testEnv, "kind:run "+run), run); admin["ticket"] != f.ticket {
-		t.Fatalf("the admin's run names no ticket: %v", admin)
+	file := "file:" + f.plain + "/" + filepath.Join(f.root, "plan.go")
+	if _, err := brakeman.ParseRef(file); err != nil {
+		t.Fatalf("the file's ref: %v", err)
 	}
-	team := func(c map[string]any) { c["scope"] = map[string]any{"crews": []string{"team"}} }
-	f.turn(t, team)
-	e := historyEntryOf(f.expectRead(t, searchPath("kind:run "+run), http.StatusOK, ""), run)
-	if l := linkOf(e, "ticket:"+f.ticket); l == nil || !strings.Contains(fmt.Sprint(l["label"]), "The build fails") {
-		t.Fatalf("the ticket's link: %v", e)
+	for _, touched := range []bool{false, true} {
+		vis := func(c map[string]any) {
+			c["scope"] = map[string]any{}
+			c["visibility"] = map[string]any{"runs": true, "logs": true, "dispatch": true, "sessions": true, "touched": touched}
+		}
+		if f.sid == "" {
+			f.turn(t, vis)
+		} else {
+			f.again(t, vis)
+		}
+		reads, ok, err := turnScope(t, f).refReads(t.Context(), file)
+		if err != nil || ok != touched {
+			t.Fatalf("touched %v: the file's anchor admitted %v, %v", touched, ok, err)
+		}
+		if ok && !slices.ContainsFunc(reads, func(rd brakeman.Read) bool { return rd.Class == brakeman.ClassTouched }) {
+			t.Fatalf("the file's anchor read in %+v", reads)
+		}
 	}
-	if e["ticket"] != f.ticket {
-		t.Fatalf("the run's ticket with Dispatch on: %v", e)
+}
+
+// A plain session in a project's repository, with no ticket of it: a turn
+// that sees Dispatch is served the project's key on the session's entry
+// and the read is noted in Dispatch's class too, so a brief citing the
+// session carries Dispatch in its footprint and a later turn with Dispatch
+// off is given it withheld; that turn is served the session without the
+// key, its read in the sessions' class alone, and may not filter by
+// project or ticket.
+func TestAProjectKeyIsReadWithDispatch(t *testing.T) {
+	b := brakemanEnv(t, nil)
+	dir := filepath.Join(b.root, "repo")
+	gitInit(t, dir, true)
+	resp, out := b.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "cat", "cwd": dir, "name": "turnstile project"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("launch: %d %v", resp.StatusCode, out)
 	}
-	if refs := historyRefs(f.expectRead(t, searchPath("kind:run ticket:"+f.ticket), http.StatusOK, "")); !slices.Contains(refs, run) {
-		t.Fatalf("the run by its ticket with Dispatch on: %v", refs)
+	id := out["id"].(string)
+	b.stopAndWait(id)
+	endedRecord(t, b.testEnv, id)
+	histProject(t, b.testEnv, "PRJ", dir)
+	sess := "session:" + id
+	histSettle(t, b.testEnv)
+	until(t, "the session's project indexed", func() bool {
+		p, _ := hsEntry(hsSearch(t, b.testEnv, "turnstile"), sess)["project"].(map[string]any)
+		return p["key"] == "PRJ"
+	})
+	f := &obsFixture{bkEnv: b}
+	vis := func(dispatch bool) func(c map[string]any) {
+		return func(c map[string]any) {
+			c["scope"] = map[string]any{}
+			c["visibility"] = map[string]any{"runs": true, "logs": true, "dispatch": dispatch, "sessions": true, "touched": true}
+		}
 	}
-	brief := map[string]any{"schema": brakeman.BriefSchema, "title": "What ran", "summary": "The build fails.",
-		"items": []any{map[string]any{"kind": brakeman.ItemFact, "text": "the run was launched from The build fails", "evidence": []string{run}}}}
-	if status, out := f.submit(t, f.sid, f.tok, fmt.Sprintf("b-%d", bkOps.Add(1)), brief); status != http.StatusCreated {
-		t.Fatalf("the brief: %d %v", status, out)
+	f.turn(t, vis(true))
+	e := historyEntryOf(f.expectRead(t, searchPath("turnstile"), http.StatusOK, ""), sess)
+	if p, _ := e["project"].(map[string]any); p["key"] != "PRJ" {
+		t.Fatalf("the session with Dispatch on: %v", e)
+	}
+	if got := readClasses(t, f, sess); !slices.Contains(got, brakeman.ClassDispatch) || !slices.Contains(got, brakeman.ClassSessions) {
+		t.Fatalf("the session read in %v", got)
+	}
+	if status, kept := f.submit(t, f.sid, f.tok, "project", factBrief(sess)); status != http.StatusCreated {
+		t.Fatalf("the brief: %d %v", status, kept)
 	}
 	early := f.req
 	if r, _ := f.desk.st.Get(early); r.Footprint == nil || !slices.Contains(r.Footprint.Classes, brakeman.ClassDispatch) {
 		t.Fatalf("the brief's footprint: %+v", r.Footprint)
 	}
-	f.again(t, func(c map[string]any) {
-		team(c)
-		c["visibility"].(map[string]any)["dispatch"] = false
-	})
+	f.again(t, vis(false))
 	if got := f.briefsOf(t)[early]; got == nil || whole(got) {
 		t.Fatalf("the brief with Dispatch off: %v", got)
 	}
-	e = historyEntryOf(f.expectRead(t, searchPath("kind:run "+run), http.StatusOK, ""), run)
-	if e == nil || linkOf(e, "ticket:"+f.ticket) != nil || e["ticket"] != nil {
-		t.Fatalf("the run with Dispatch off: %v", e)
+	e = historyEntryOf(f.expectRead(t, searchPath("turnstile"), http.StatusOK, ""), sess)
+	if p, _ := e["project"].(map[string]any); e == nil || p["key"] != nil {
+		t.Fatalf("the session with Dispatch off: %v", e)
 	}
-	if p, _ := e["project"].(map[string]any); p["key"] != nil {
-		t.Fatalf("the run's project with Dispatch off: %v", p)
+	if got := readClasses(t, f, sess); !slices.Equal(got, []string{brakeman.ClassSessions}) {
+		t.Fatalf("the session read with Dispatch off in %v", got)
 	}
-	for _, line := range []string{"kind:run ticket:" + f.ticket, "kind:run project:CND"} {
+	for _, line := range []string{"turnstile ticket:PRJ-1", "turnstile project:PRJ"} {
 		f.expectRead(t, searchPath(line), http.StatusForbidden, "not_visible")
 	}
 }
@@ -674,33 +702,126 @@ func TestABriefWithoutAFootprintCarriesItsClasses(t *testing.T) {
 	}
 }
 
-// Every kind the index holds names the classes a turn must see to read
-// its entries, and no other kind is named: a kind added to the index is
-// served to no turn until it is given its classes here.
-func TestEveryHistoryKindHasItsClasses(t *testing.T) {
+// Every kind the index holds is decided once: served, with the classes a
+// turn must see to read its entries and the record whose columns place its
+// rows, or withheld, with why; no other kind is named. A kind added to the
+// index is served to no turn until it is decided here.
+func TestEveryHistoryKindIsDecided(t *testing.T) {
 	kinds := history.Kinds()
+	places := []string{placeSession, placeRun, placeTicket, placeBrief}
 	for _, k := range kinds {
-		classes, ok := historyReadClasses[k]
-		if !ok {
-			t.Errorf("%s: no classes", k)
+		hk, served := historyKinds[k]
+		why, withheld := historyWithheld[k]
+		switch {
+		case served == withheld:
+			t.Errorf("%s: served %v, withheld %v", k, served, withheld)
+		case withheld && why == "":
+			t.Errorf("%s: withheld with no why", k)
+		case served && !slices.Contains(places, hk.place):
+			t.Errorf("%s: placed by %q", k, hk.place)
 		}
-		for _, c := range classes {
+		for _, c := range hk.classes {
 			if !slices.Contains(brakeman.Classes, c) {
 				t.Errorf("%s: no class %q", k, c)
 			}
 		}
+		if served && hk.place != placeBrief && len(hk.classes) == 0 {
+			t.Errorf("%s: served with no class", k)
+		}
 	}
-	for k := range historyReadClasses {
-		if !slices.Contains(kinds, k) {
-			t.Errorf("%s: no kind of the index's", k)
+	for _, m := range []map[string]bool{kindSet(historyKinds), kindSet(historyWithheld)} {
+		for k := range m {
+			if !slices.Contains(kinds, k) {
+				t.Errorf("%s: no kind of the index's", k)
+			}
+		}
+	}
+	for k := range historyKinds {
+		if strings.HasPrefix(k, "review.") || k == "run" || k == "task" {
+			t.Errorf("%s is served", k)
+		}
+	}
+}
+
+// kindSet is a map's keys as a set.
+func kindSet[V any](m map[string]V) map[string]bool {
+	out := map[string]bool{}
+	for k := range m {
+		out[k] = true
+	}
+	return out
+}
+
+// Every operation an act may be granted names the kinds whose text holds
+// words it gives, and each is kept from every turn: withheld, or a kind
+// whose rows an act makes are left out by their actor.
+func TestEveryActsWordsAreKeptFromTurns(t *testing.T) {
+	if len(historyActWords) != len(brakeman.Grantable) {
+		t.Fatalf("%d acts decided, %d grantable", len(historyActWords), len(brakeman.Grantable))
+	}
+	for _, op := range brakeman.Grantable {
+		kinds, ok := historyActWords[op]
+		if !ok {
+			t.Errorf("%s: undecided", op)
+		}
+		for _, k := range kinds {
+			_, withheld := historyWithheld[k]
+			hk, served := historyKinds[k]
+			switch {
+			case !slices.Contains(history.Kinds(), k):
+				t.Errorf("%s: %s is no kind of the index's", op, k)
+			case served && hk.place != placeTicket:
+				t.Errorf("%s: %s is served and not left out by its actor", op, k)
+			case !served && !withheld:
+				t.Errorf("%s: %s undecided", op, k)
+			}
+		}
+	}
+	if !slices.Contains(historyActors, brakemanActor) || !slices.Contains(historyActors, brakemanBy) {
+		t.Fatalf("an act's actors: %v", historyActors)
+	}
+}
+
+// Every field of a turn's entry is decided (historyFields names it, or
+// the struct it is in), and the table names no field the entry lacks; a
+// project's key and a ticket are served and read only with Dispatch.
+func TestEveryTurnFieldIsDecided(t *testing.T) {
+	var paths []string
+	var walk func(rt reflect.Type, prefix string)
+	walk = func(rt reflect.Type, prefix string) {
+		for i := range rt.NumField() {
+			name, _, _ := strings.Cut(rt.Field(i).Tag.Get("json"), ",")
+			path := prefix + name
+			paths = append(paths, path)
+			if _, ok := historyFields[path]; !ok {
+				if ft := rt.Field(i).Type; ft.Kind() == reflect.Struct && hasFieldsUnder(path) {
+					walk(ft, path+".")
+					continue
+				}
+				t.Errorf("%s: undecided", path)
+			}
+		}
+	}
+	walk(reflect.TypeOf(turnHistoryEntry{}), "")
+	for k := range historyFields {
+		if !slices.Contains(paths, k) {
+			t.Errorf("%s: no field of the entry's", k)
+		}
+	}
+	for _, sees := range []bool{false, true} {
+		te := turnHistoryEntry{Ref: "attempt:team-0000aaaa/build/1", Ticket: "CND-1", Project: servedProject{Key: "CND", Repo: "/r/.git", Tree: "/r"}}
+		read := emitFields(&te, func(c string) bool { return c != brakeman.ClassDispatch || sees })
+		kept := te.Ticket == "CND-1" && te.Project.Key == "CND"
+		if kept != sees || te.Project.Tree != "/r" || te.Ref == "" || slices.Contains(read, brakeman.ClassDispatch) != sees {
+			t.Errorf("Dispatch seen %v: %+v, read %v", sees, te, read)
 		}
 	}
 }
 
 // A ref's record: a session's record its own scope; a run's part its
-// run's; a ticket's comment and plan revision their ticket's; an entry
-// whose ref Brakeman's grammar does not name is of its ticket or its
-// decision, and cites that.
+// run's; a ticket's comment and plan revision their ticket's; a decision's
+// response, whose ref Brakeman's grammar does not name, is of its
+// decision and cites that; any other such entry is of no record.
 func TestAnEntryIsOfItsRecord(t *testing.T) {
 	for _, c := range []struct {
 		e            history.Entry
@@ -711,7 +832,7 @@ func TestAnEntryIsOfItsRecord(t *testing.T) {
 		{history.Entry{Kind: "check", Ref: "check:team-0000aaaa/build/1/test/1"}, "run:team-0000aaaa", "check:team-0000aaaa/build/1/test/1"},
 		{history.Entry{Kind: "comment", Ref: "comment:CND-1/0123456789abcdef"}, "ticket:CND-1", "comment:CND-1/0123456789abcdef"},
 		{history.Entry{Kind: "decision.response", Ref: "decision:dr-3/1"}, "decision:dr-3", "decision:dr-3"},
-		{history.Entry{Kind: "review.batch", Key: "ticket:CND-1#review/r1", Ref: "ticket:CND-1#review/r1", Ticket: "CND-1"}, "ticket:CND-1", "ticket:CND-1"},
+		{history.Entry{Kind: "delivery.verified", Key: "ticket:CND-1#delivery/l1", Ref: "ticket:CND-1", Ticket: "CND-1"}, "ticket:CND-1", "ticket:CND-1"},
 		{history.Entry{Kind: "brief.item", Ref: "brief:br-4/1"}, "brief:br-4/1", "brief:br-4/1"},
 	} {
 		scope, cited, ok := entryScope(c.e)
@@ -719,22 +840,20 @@ func TestAnEntryIsOfItsRecord(t *testing.T) {
 			t.Errorf("%s: %v %v %v, want %s %s", c.e.Ref, scope, cited, ok, c.scope, c.cited)
 		}
 	}
-	if _, _, ok := entryScope(history.Entry{Kind: "review.batch", Ref: "ticket:CND-1#review/r1"}); ok {
-		t.Error("an entry of no record a turn can be admitted to")
+	for _, e := range []history.Entry{{Kind: "review.batch", Ref: "ticket:CND-1#review/r1"}, {Kind: "review.batch", Ref: "ticket:CND-1#review/r1", Ticket: "CND-1"}} {
+		if _, _, ok := entryScope(e); ok {
+			t.Errorf("an entry of no record a turn can be admitted to: %+v", e)
+		}
 	}
 }
 
 // A turn's history read is bounded and reads on: at most limit entries
 // and maxObserveReply bytes a page, next reading on with nothing given
-// twice and nothing skipped (a search of filters alone, newest first: a
-// search of words is ranked, and a source indexed between two pages may
-// move a row's score, as the plan says of the search's own pages); and a
-// read looks at maxHistoryTurnScan of the index's rows, never the whole
-// index at once: a comment of OTH, the row right past the newest
-// maxHistoryTurnScan (CND's), is admitted to a turn scoped to OTH and
-// found by its own line, yet a read of every comment, whose bound ends
-// before it, ends there with no entry and no next (a continuation names
-// only what the reply showed).
+// twice and nothing skipped, newest first; and its bound counts only rows
+// its grant covers: a comment of OTH, the row right past the newest
+// maxHistoryTurnScan (CND's), is served to a turn scoped to OTH by a read
+// of every comment as by its own line, and still once more of CND's are
+// indexed.
 func TestAHistoryReadIsBoundedAndReadsOn(t *testing.T) {
 	f := newObsFixture(t)
 	beyond := "comment:" + f.otherTicket + "/" + doneOf(t)(f.srv.dispatch.AddComment(t.Context(), adminOp("Ann"), f.otherTicket, "turnstile beyond")).ID
@@ -806,9 +925,18 @@ func TestAHistoryReadIsBoundedAndReadsOn(t *testing.T) {
 	if refs := historyRefs(f.expectRead(t, searchPath("kind:comment project:OTH"), http.StatusOK, "")); !slices.Contains(refs, beyond) {
 		t.Fatalf("the comment of OTH is not admitted: %v", refs)
 	}
-	out := f.expectRead(t, searchPath("kind:comment"), http.StatusOK, "")
-	if refs := historyRefs(out); len(refs) != 0 || out["next"] != nil {
-		t.Fatalf("a read past its bound of rows: %v, next %v", refs, out["next"])
+	every := historyRefs(f.expectRead(t, searchPath("kind:comment"), http.StatusOK, ""))
+	if !slices.Contains(every, beyond) {
+		t.Fatalf("a read of every comment, %d of CND's newer: %v", n, every)
+	}
+	more := "comment:" + f.ticket + "/" + doneOf(t)(f.srv.dispatch.AddComment(t.Context(), adminOp("Ann"), f.ticket, "turnstile one more")).ID
+	ix := histSettle(t, f.testEnv)
+	until(t, "one more comment indexed", func() bool {
+		_, err := ix.Entry(t.Context(), more)
+		return err == nil
+	})
+	if got := historyRefs(f.expectRead(t, searchPath("kind:comment"), http.StatusOK, "")); !slices.Equal(got, every) {
+		t.Fatalf("one more comment outside the grant: %v, before %v", got, every)
 	}
 }
 
@@ -954,5 +1082,233 @@ func TestAPageCutByBytesKeepsItsBound(t *testing.T) {
 	}
 	if len(seen) != n+1 {
 		t.Fatalf("%d comments read, want %d", len(seen), n+1)
+	}
+}
+
+// endedIn launches a plain session named name in dir, ends it, and
+// answers its id once its record is ended.
+func endedIn(t *testing.T, b *bkEnv, dir, name string) string {
+	t.Helper()
+	resp, out := b.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "cat", "cwd": dir, "name": name})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("launch in %s: %d %v", dir, resp.StatusCode, out)
+	}
+	id := out["id"].(string)
+	b.stopAndWait(id)
+	endedRecord(t, b.testEnv, id)
+	return id
+}
+
+// A record that cannot be read is left out of a turn's read as a refused
+// one is, and the reply is the same 200 whatever matches it: records in two
+// repositories, the server restarted, a turn scoped to one; a record of
+// each made unreadable, the turn's reads of words only the other
+// repository's record holds, of a prefix of them and of words none holds
+// answer alike, and its read of its own repository's records answers the
+// readable one.
+func TestARecordThatCannotBeReadIsLeftOut(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("a record's mode does not keep root from reading it")
+	}
+	b := brakemanEnv(t, nil)
+	inside, outside := filepath.Join(b.root, "inside"), filepath.Join(b.root, "outside")
+	gitInit(t, inside, true)
+	gitInit(t, outside, true)
+	kept := endedIn(t, b, inside, "turnstile kept")
+	damaged := endedIn(t, b, inside, "turnstile damaged")
+	elsewhere := endedIn(t, b, outside, "turnstile zebracorn")
+	rec, _, err := b.srv.sessionRecords.Get(kept)
+	if err != nil || rec.Repo == "" {
+		t.Fatalf("the record's repository: %+v %v", rec, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	b.srv.Shutdown(ctx)
+	again := &bkEnv{testEnv: b.restart()}
+	again.desk = again.srv.brakeman
+	again.srv.limiter = newRateLimiter(1e6, 1e6)
+	histSettle(t, again.testEnv)
+	until(t, "the records indexed", func() bool {
+		keys := hsKeys(hsSearch(t, again.testEnv, "turnstile"))
+		return slices.Contains(keys, "session:"+kept) && slices.Contains(keys, "session:"+damaged) && slices.Contains(keys, "session:"+elsewhere)
+	})
+	f := &obsFixture{bkEnv: again}
+	f.turn(t, func(c map[string]any) {
+		c["scope"] = map[string]any{"repos": []string{rec.Repo}}
+		c["budget"].(map[string]any)["readsPerTurn"] = brakeman.MaxReadsPerTurn
+	})
+	lines := []string{"zebracorn", "zebr", "zebx", "qwertyuiop", "turnstile"}
+	answers := func() map[string][]string {
+		t.Helper()
+		out := map[string][]string{}
+		for _, line := range lines {
+			out[line] = historyRefs(f.expectRead(t, searchPath(line), http.StatusOK, ""))
+		}
+		return out
+	}
+	before := answers()
+	if !slices.Equal(before["turnstile"], []string{"session:" + damaged, "session:" + kept}) {
+		t.Fatalf("the turn's records: %v", before["turnstile"])
+	}
+	for _, id := range []string{damaged, elsewhere} {
+		path := filepath.Join(again.srv.cfg.DataDir, journal.Dir, journal.SessionsDir, id+".json")
+		if err := os.Chmod(path, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+		if _, _, err := again.srv.sessionRecords.Get(id); err == nil || errors.Is(err, journal.ErrNotFound) {
+			t.Fatalf("the record of %s is read: %v", id, err)
+		}
+	}
+	after := answers()
+	for _, line := range lines {
+		want := before[line]
+		if line == "turnstile" {
+			want = []string{"session:" + kept}
+		}
+		if !slices.Equal(after[line], want) {
+			t.Errorf("%q: %v, want %v", line, after[line], want)
+		}
+	}
+}
+
+// A turn's page is newest first, by its own rows alone: two comments of
+// the turn's project, each matching a line by both its words, come back
+// newest first, and in the same order however many rows outside the grant
+// hold one of the words.
+func TestATurnsPageIsNewestFirst(t *testing.T) {
+	f := newObsFixture(t)
+	done := doneOf(t)
+	add := func(key, body string) string {
+		return "comment:" + key + "/" + done(f.srv.dispatch.AddComment(t.Context(), adminOp("Ann"), key, body)).ID
+	}
+	older := add(f.ticket, "zork zork zork quux")
+	newer := add(f.ticket, "zork quux quux quux")
+	settled := func(n int) {
+		t.Helper()
+		histSettle(t, f.testEnv)
+		until(t, "the comments indexed", func() bool {
+			total, _ := hsSearch(t, f.testEnv, "kind:comment")["total"].(float64)
+			return int(total) == n
+		})
+	}
+	for range 15 {
+		add(f.otherTicket, "quux")
+	}
+	settled(18)
+	f.turn(t, func(c map[string]any) { c["scope"] = map[string]any{"projects": []string{"CND"}} })
+	want := []string{newer, older}
+	if got := historyRefs(f.expectRead(t, searchPath("zork quux"), http.StatusOK, "")); !slices.Equal(got, want) {
+		t.Fatalf("the turn's page: %v, want %v", got, want)
+	}
+	for range 30 {
+		add(f.otherTicket, "zork")
+	}
+	settled(48)
+	if got := historyRefs(f.expectRead(t, searchPath("zork quux"), http.StatusOK, "")); !slices.Equal(got, want) {
+		t.Fatalf("the turn's page with more rows outside the grant: %v, want %v", got, want)
+	}
+}
+
+// A review's entries are read through the review routes and never served
+// here: a person's review of a run's candidate with a finding resolved on
+// a later candidate, and a review recorded through Brakeman's act, each
+// in the admin's history, are served to no turn, whatever it sees and
+// whatever its line names. A plan revision an act proposed is left out by
+// its actor, beside a person's, which is served.
+func TestReviewsAndActsWordsAreNotServed(t *testing.T) {
+	b := brakemanEnv(t, nil)
+	run := histReviewed(t, b.testEnv)
+	v := histReview(t, b.testEnv, run)
+	histMarkFinding(t, b.testEnv, run, v.Findings[0].ID, 2, dispatch.FindingResolved, "closed on logout")
+	ds := b.srv.dispatch
+	if _, _, err := ds.SubmitReview(t.Context(), dispatch.Op{Actor: brakemanActor, ID: opID(), By: brakemanBy}, "CND-1", dispatch.NewReview{
+		Candidate: candName(run, "build", 2, commitID(2)), Base: commitID(0), Verdict: dispatch.VerdictComment, Summary: "The pelican handler holds.",
+		Via: dispatch.ViaBrakeman}, dispatch.ReviewEvidence{}); err != nil {
+		t.Fatal(err)
+	}
+	plan := func(op dispatch.Op, name string) string {
+		t.Helper()
+		crewJSON, _ := json.Marshal(map[string]any{"id": "c1", "name": name, "tasks": []any{map[string]any{"id": "build"}}})
+		doneOf(t)(ds.ProposePlan(t.Context(), op, "CND-1", dispatch.PlanRequest{Crew: "c1"}, dispatch.PlanBody{Base: strings.Repeat("ab", 20), Crew: crewJSON}))
+		plans, err := ds.Plans(t.Context(), "CND-1")
+		if err != nil || len(plans) == 0 {
+			t.Fatalf("the plans: %v %v", plans, err)
+		}
+		n := 0
+		for _, p := range plans {
+			n = max(n, p.N)
+		}
+		return hPlanRef("CND-1", n)
+	}
+	person := plan(adminOp("Ann"), "Pelican crew of Ann's")
+	acted := plan(dispatch.Op{Actor: brakemanActor, ID: opID(), By: brakemanBy}, "Pelican crew of an act's")
+	histSettle(t, b.testEnv)
+	reviewKinds := []string{"review.batch", "review.finding", "review.resolved"}
+	indexed := func() (kinds, plans []string) {
+		for _, x := range hsSearch(t, b.testEnv, "kind:"+strings.Join(reviewKinds, ","))["entries"].([]any) {
+			if k := x.(map[string]any)["kind"].(string); !slices.Contains(kinds, k) {
+				kinds = append(kinds, k)
+			}
+		}
+		return kinds, hsKeys(hsSearch(t, b.testEnv, "kind:plan"))
+	}
+	deadline := time.Now().Add(testWait)
+	for kinds, plans := indexed(); len(kinds) != len(reviewKinds) || !slices.Contains(plans, person) || !slices.Contains(plans, acted); kinds, plans = indexed() {
+		if time.Now().After(deadline) {
+			t.Fatalf("the reviews and plans indexed: %v, %v (%s, %s)", kinds, plans, person, acted)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	f := &obsFixture{bkEnv: b}
+	f.turn(t, func(c map[string]any) {
+		c["scope"] = map[string]any{}
+		c["visibility"] = map[string]any{"runs": true, "logs": true, "dispatch": true, "sessions": true, "touched": true}
+	})
+	for _, line := range []string{"pelican", "albatross", "kind:" + strings.Join(reviewKinds, ","), "kind:review.batch run:" + run} {
+		for _, x := range f.expectRead(t, searchPath(line), http.StatusOK, "")["entries"].([]any) {
+			if k := x.(map[string]any)["kind"].(string); strings.HasPrefix(k, "review.") {
+				t.Errorf("%q: a review's entry is served: %v", line, x)
+			}
+		}
+	}
+	got := historyRefs(f.expectRead(t, searchPath("kind:plan"), http.StatusOK, ""))
+	if !slices.Contains(got, person) || slices.Contains(got, acted) {
+		t.Fatalf("the plan revisions: %v, a person's %s, an act's %s", got, person, acted)
+	}
+}
+
+// A record keeps a folder past its bound cut, which can be its parent's: a
+// session in a repository nested in another whose record keeps both its
+// folder and its repository cut to the outer one admits nothing under a
+// scope of repositories, the outer one's included; a scope of none
+// admits it.
+func TestAFolderAtTheJournalsBoundNamesNoRepository(t *testing.T) {
+	b := brakemanEnv(t, nil)
+	parent, child := longFolder(t, b.root)
+	id := "0000000000000c02"
+	at := time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)
+	in, err := b.srv.sessionRecords.Begin(journal.Record{ID: id, Name: "long folder", Kind: "server", Where: "native", Cwd: child, Repo: child, StartedAt: at,
+		Agent: journal.Agent{ID: "cat", Name: "Cat"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.srv.sessionRecords.Settle(in, journal.State{Name: "long folder", Final: true, End: &journal.Ending{At: at.Add(time.Minute), How: "stopped"}})
+	b.srv.sessionRecords.Flush()
+	if r, _, err := b.srv.sessionRecords.Get(id); err != nil || r.Cwd != parent || r.Repo != parent || !journal.CwdMayBeCut(r.Repo) {
+		t.Fatalf("the record keeps %d bytes of the folder and %d of the repository: %v", len(r.Cwd), len(r.Repo), err)
+	}
+	brief := brakeman.Brief{Schema: brakeman.BriefSchema, Title: "t", Summary: "s", Items: []brakeman.Item{panel(ref(t, "session:"+id))}}
+	for _, c := range []struct {
+		repos []string
+		ok    bool
+	}{{[]string{parent}, false}, {[]string{child}, false}, {nil, true}} {
+		cfg := brakeman.DefaultConfig(b.root)
+		cfg.Scope.Repos = c.repos
+		_, err := b.srv.resolveBriefRefs(t.Context(), nil, brakeman.Request{ID: "br-1", Config: brakeman.SnapshotOf(cfg)}, brief, brakeman.ReadLog{}, cfg)
+		var bad *badRefsError
+		if c.ok != (err == nil) || (!c.ok && (!errors.As(err, &bad) || !strings.Contains(err.Error(), "outside the request's scope"))) {
+			t.Errorf("repos %v: %v", c.repos, err)
+		}
 	}
 }

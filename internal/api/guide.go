@@ -376,7 +376,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		observeOp("screen", "/api/brakeman/screen", "A server session's screen's last lines, only with terminals visible; a hosted session's is unavailable.", "session", "lines"),
 		observeOp("overlaps", "/api/brakeman/overlaps", "Paths changed in two or more live attempts' or sessions' work trees of one repository, with the trees' refs."),
 		observeOp("briefs", "/api/brakeman/briefs", "Earlier briefs, newest first: title, summary and refs; one made under a wider scope or visibility is withheld.", "q", "after"),
-		observeOp("search", "/api/brakeman/history", "Search the history (the palette's ~ words and filters) for earlier sessions, ended ones' records too, runs, receipts, tickets and briefs, 20 a page at most (limit, after): what your grant shows, each with its ref.", "q", "limit", "after"),
+		observeOp("search", "/api/brakeman/history", "Search the history (the palette's ~ words and filters), newest first, 20 a page at most (limit, after): the rows your grant covers by their own columns, each one record's, with its ref and no links. Not here: reviews, runs' and tasks' own entries, what an act made.", "q", "limit", "after"),
 		observeOp("runs", "/api/runs", "The runs in your scope, newest first, each with its ref, a page at a time: after (the page before's next) and limit (at most 100). A run past the page's bound alone comes short, its cut naming what it leaves out (tasks: read each with observe_task).", "after", "limit"),
 		observeOp("run", "/api/runs/{run}", "A run whole, with its tasks and its open decisions (each id, state and rev; decisionsAfter, the page before's decisionsNext, reads on), each with its ref; a run past the bound comes short, its cut naming what it leaves out (tasks: read each with observe_task).", "decisionsAfter"),
 		observeOp("task", "/api/runs/{run}/tasks/{task}", "A managed task with its attempts and their receipts, and its open decisions as observe_run gives them.", "decisionsAfter"),
@@ -1032,7 +1032,7 @@ var ownReadClasses = map[string][]string{
 	"/api/brakeman/status":   {brakeman.ClassRuns, brakeman.ClassSessions},
 	"/api/brakeman/overlaps": {brakeman.ClassRuns, brakeman.ClassSessions},
 	// The history's entries are each of one class's record or more
-	// (historyReadClasses), each served only when its classes are seen.
+	// (historyKinds), each served only when its classes are seen.
 	"/api/brakeman/history": {brakeman.ClassRuns, brakeman.ClassLogs, brakeman.ClassDispatch, brakeman.ClassSessions, brakeman.ClassTouched},
 }
 
