@@ -2,6 +2,10 @@ package api
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
@@ -31,11 +36,16 @@ import (
 // does not name. A served entry carries the ref a brief cites it by (its
 // own, when Brakeman's grammar names it and it is of that record, else
 // the record's), never the index's key; its links and its anchor only
-// where they resolve within the grant too; none of what counts the
-// index's other rows (a total, how often its words recur and where, how
-// far the index reaches). Each served entry is noted in the turn's read
-// log in each class it read, with no revision: a history row is a line
-// of the index, not a snapshot of its record.
+// where they resolve within the grant too, a link that shows its other
+// end's indexed entry only where that entry would be served itself; none
+// of what counts the index's other rows (a total, how often its words
+// recur and where, how far the index reaches). Each served entry, and
+// each anchor and link it carries, is noted in the turn's read log in
+// each class it read, with no revision: a history row is a line of the
+// index, not a snapshot of its record. A continuation names only what
+// the reply showed: the position after its last entry, sealed for the
+// caller and the line (sealContinuation); a reply of no entries carries
+// none.
 
 // The bounds of a turn's read of the history.
 const (
@@ -49,6 +59,12 @@ const (
 	// many the index is asked for at a time.
 	maxHistoryTurnScan = 200
 	historyTurnPage    = 50
+	// maxHistoryTurnAfter bounds a read's after: a continuation this
+	// route gave, an index cursor (at most maxHistoryAfter) sealed.
+	maxHistoryTurnAfter = 3 << 10
+	// historyReplyReserve is what a reply holds beside its entries: its
+	// braces and names, its indexing's state and a next at its bound.
+	historyReplyReserve = 256 + maxHistoryTurnAfter
 )
 
 // historyReadClasses is, by an entry's kind, every visibility class its
@@ -93,7 +109,9 @@ var historyReadClasses = map[string][]string{
 	"ticket.unaccepted": {brakeman.ClassDispatch},
 	"ticket.closed":     {brakeman.ClassDispatch},
 	// What a ticket keeps of a run's candidate: its verification and a
-	// person's review of it, read with their ticket and of that run.
+	// person's review of it, read with their ticket and of that run. An
+	// agent reviewer's finding, kept by its attempt, is the run's alone
+	// (entryClasses).
 	"delivery.verified": {brakeman.ClassDispatch, brakeman.ClassRuns},
 	"review.batch":      {brakeman.ClassDispatch, brakeman.ClassRuns},
 	"review.finding":    {brakeman.ClassDispatch, brakeman.ClassRuns},
@@ -102,9 +120,25 @@ var historyReadClasses = map[string][]string{
 	"brief.item": {},
 }
 
-// historyOfRun are the kinds a ticket keeps of a run's candidate: an
-// entry of one is admitted only when that run is too.
-var historyOfRun = []string{"delivery.verified", "review.batch", "review.finding", "review.resolved"}
+// entryClasses is every visibility class e's indexed text reads: its
+// kind's (historyReadClasses), but an agent reviewer's finding, which its
+// attempt keeps in the ledger (isReviewKind tells it from a person's,
+// which a ticket keeps), the runs' as its verdict is. known is false for
+// a kind the table does not name.
+func entryClasses(e history.Entry) (classes []string, known bool) {
+	if e.Kind == "review.finding" && !isReviewKind(e) {
+		return []string{brakeman.ClassRuns}, true
+	}
+	classes, known = historyReadClasses[e.Kind]
+	return classes, known
+}
+
+// keptOfRun reports whether e is what a ticket keeps of a run's
+// candidate (its verified delivery, a person's review, its findings and
+// their resolutions): admitted only when that run is too.
+func keptOfRun(e history.Entry) bool {
+	return e.Kind == "delivery.verified" || isReviewKind(e)
+}
 
 // turnHistoryEntry is an entry as a turn reads it: the admin's served
 // entry less what names the index's rows (its key, its repeats), with the
@@ -152,11 +186,24 @@ type turnHistoryRef struct {
 }
 
 // historyScope admits a read's entries: each record's resolution read
-// once per read.
+// once per read, and each indexed entry a link shows read once from the
+// index (linked).
 type historyScope struct {
-	o    *observer
-	done map[brakeman.Ref]historyAdmission
+	o      *observer
+	ix     *history.Index
+	av     *availability
+	done   map[brakeman.Ref]historyAdmission
+	linked map[string]*history.Entry
+	// noted are the reads noted for the reply, each once.
+	noted map[brakeman.Read]bool
 }
+
+// indexError is an error reading the index, which the history's read
+// answers as the search does (historyReq.fail).
+type indexError struct{ err error }
+
+func (e indexError) Error() string { return e.err.Error() }
+func (e indexError) Unwrap() error { return e.err }
 
 // historyAdmission is a scope ref's resolution: within the grant (why
 // ""), with its state now.
@@ -273,7 +320,7 @@ func entryScope(e history.Entry) (scope, cited brakeman.Ref, ok bool) {
 // visible, its record within the scope now, and, for what a ticket keeps
 // of a run, that run too.
 func (hs *historyScope) admit(ctx context.Context, e history.Entry) (scope, cited brakeman.Ref, res brakeman.Resolution, ok bool, err error) {
-	classes, known := historyReadClasses[e.Kind]
+	classes, known := entryClasses(e)
 	if !known || slices.ContainsFunc(classes, func(c string) bool { return !hs.o.sees(c) }) {
 		return scope, cited, res, false, nil
 	}
@@ -283,7 +330,7 @@ func (hs *historyScope) admit(ctx context.Context, e history.Entry) (scope, cite
 	if res, ok, err = hs.admitRef(ctx, scope); err != nil || !ok {
 		return scope, cited, res, false, err
 	}
-	if slices.Contains(historyOfRun, e.Kind) {
+	if keptOfRun(e) {
 		run := brakeman.Ref{Kind: brakeman.RefRun, Run: e.Run}
 		if e.Run == "" || run.Valid() != nil {
 			return scope, cited, res, false, nil
@@ -295,87 +342,247 @@ func (hs *historyScope) admit(ctx context.Context, e history.Entry) (scope, cite
 	return scope, cited, res, true, nil
 }
 
-// admitted reports whether the ref a link or an anchor names resolves
-// within the grant (its record's resolution): false for one Brakeman's
-// grammar does not name.
-func (hs *historyScope) admitted(ctx context.Context, ref string) (bool, error) {
+// refReads are the reads of a bare ref a link or an anchor names, ok
+// when it resolves within the grant (its record's resolution): its class
+// and its record's, at its record's state now when it is that record,
+// else "linked"; ok false for one Brakeman's grammar does not name.
+func (hs *historyScope) refReads(ctx context.Context, ref string) (reads []brakeman.Read, ok bool, err error) {
 	r, err := brakeman.ParseRef(ref)
 	if err != nil {
-		return false, nil
+		return nil, false, nil
 	}
 	scope, ok := scopeOfRef(r)
 	if !ok {
-		return false, nil
+		return nil, false, nil
 	}
-	_, ok, err = hs.admitRef(ctx, scope)
-	return ok, err
+	res, ok, err := hs.admitRef(ctx, scope)
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	state := "linked"
+	if r == scope {
+		state = res.Now.State
+	}
+	classes := []string{refClass(r.Kind), refClass(scope.Kind)}
+	if scope.Kind == brakeman.RefBrief {
+		classes = hs.footprint(scope)
+	}
+	return readsOf(r, classes, state), true, nil
 }
 
-// noteEntry notes a served entry in the turn's read log: its cited ref
-// in each class its text read (a brief's item in each of its footprint's,
-// as an earlier brief given whole is), at its record's state now when it
-// cites that record, else at its availability, with no revision.
-func (hs *historyScope) noteEntry(e history.Entry, scope, cited brakeman.Ref, res brakeman.Resolution, av availabilityOf) {
-	o := hs.o
-	if o.tp == nil {
-		return
+// footprint is the classes a brief's item reads: its footprint's, as an
+// earlier brief given whole is; the runs' for a brief that keeps none.
+func (hs *historyScope) footprint(brief brakeman.Ref) []string {
+	if req, err := hs.o.rr.desk.Get(brief.Request); err == nil && req.Footprint != nil && len(req.Footprint.Classes) > 0 {
+		return req.Footprint.Classes
 	}
-	state := av.State
+	return []string{brakeman.ClassRuns}
+}
+
+// readsOf is a read of ref in each class of classes, each once, at
+// state, with no revision.
+func readsOf(ref brakeman.Ref, classes []string, state string) []brakeman.Read {
+	var out []brakeman.Read
+	for _, c := range classes {
+		rd := brakeman.Read{Ref: ref, Class: c, State: state}
+		if c != "" && !slices.Contains(out, rd) {
+			out = append(out, rd)
+		}
+	}
+	return out
+}
+
+// entryReads are the reads of an entry served or shown by a link: its
+// cited ref in each class its text read (a brief's item in each of its
+// footprint's), at its record's state now when it cites that record,
+// else at its availability (avState).
+func (hs *historyScope) entryReads(e history.Entry, scope, cited brakeman.Ref, res brakeman.Resolution, avState string) []brakeman.Read {
+	state := avState
 	if cited == scope {
 		state = res.Now.State
 	}
-	classes := historyReadClasses[e.Kind]
+	classes, _ := entryClasses(e)
 	if scope.Kind == brakeman.RefBrief {
-		classes = []string{brakeman.ClassRuns}
-		if req, err := o.rr.desk.Get(scope.Request); err == nil && req.Footprint != nil && len(req.Footprint.Classes) > 0 {
-			classes = req.Footprint.Classes
-		}
+		classes = hs.footprint(scope)
 	}
-	for _, c := range classes {
-		o.note(cited, c, state, "")
+	return readsOf(cited, classes, state)
+}
+
+// linkedEntry is the index's entry of key, which a link shows: ok false
+// for one the index no longer holds.
+func (hs *historyScope) linkedEntry(ctx context.Context, key string) (history.Entry, bool, error) {
+	if e, ok := hs.linked[key]; ok {
+		if e == nil {
+			return history.Entry{}, false, nil
+		}
+		return *e, true, nil
+	}
+	hit, err := hs.ix.Entry(ctx, key)
+	switch {
+	case errors.Is(err, history.ErrGone):
+		hs.linked[key] = nil
+		return history.Entry{}, false, nil
+	case err != nil:
+		return history.Entry{}, false, indexError{err}
+	}
+	hs.linked[key] = &hit.Entry
+	return hit.Entry, true, nil
+}
+
+// note notes reads in the turn's read log, each once a reply.
+func (hs *historyScope) note(reads []brakeman.Read) {
+	for _, rd := range reads {
+		if !hs.noted[rd] {
+			hs.noted[rd] = true
+			hs.o.noteRead(rd)
+		}
 	}
 }
 
-// turnEntry is e as served (out) for a turn: the ref it cites, its
-// anchor and links those that resolve within the grant.
-func (hs *historyScope) turnEntry(ctx context.Context, out servedEntry, cited brakeman.Ref) (turnHistoryEntry, error) {
+// turnEntry is e as served (out) for a turn, and the reads serving it
+// makes: the ref it cites; its anchor and links only those whose record
+// resolves within the grant, and a link that shows its other end's
+// indexed entry (its title, class and outcome) only when that entry is
+// admitted as an entry is; each read in its classes as an entry is
+// (entryReads, refReads).
+func (hs *historyScope) turnEntry(ctx context.Context, out servedEntry, e history.Entry, scope, cited brakeman.Ref, res brakeman.Resolution) (turnHistoryEntry, []brakeman.Read, error) {
 	te := turnHistoryEntry{
 		Ref: cited.String(), Kind: out.Kind, Class: out.Class, Outcome: out.Outcome, Title: out.Title, Summary: out.Summary,
 		Snippet: out.Snippet, At: out.At, Actor: out.Actor, Source: turnSource{Store: out.Source.Store, Label: out.Source.Label},
 		Host: out.Host, Project: out.Project, Revision: out.Revision, Agent: out.Agent, Crew: out.Crew, Run: out.Run, Ticket: out.Ticket,
 		URL: out.URL, Links: []turnHistoryRef{}, Availability: out.Availability,
 	}
+	reads := hs.entryReads(e, scope, cited, res, out.Availability.State)
 	if out.Anchor.Ref != "" {
-		ok, err := hs.admitted(ctx, out.Anchor.Ref)
+		rds, ok, err := hs.refReads(ctx, out.Anchor.Ref)
 		if err != nil {
-			return te, err
+			return te, nil, err
 		}
 		if ok {
 			a := out.Anchor
 			te.Anchor = &a
+			reads = append(reads, rds...)
 		}
 	}
 	for _, l := range out.Links {
-		ok, err := hs.admitted(ctx, l.Ref)
+		rds, ok, err := hs.refReads(ctx, l.Ref)
 		if err != nil {
-			return te, err
+			return te, nil, err
 		}
-		if ok {
-			te.Links = append(te.Links, turnHistoryRef{Rel: l.Rel, Dir: l.Dir, Ref: l.Ref, Label: l.Label, Class: l.Class, Outcome: l.Outcome, URL: l.URL})
+		if !ok {
+			continue
 		}
+		if l.Key != "" {
+			// The link shows the indexed entry at its other end: as that
+			// entry is served, or not at all.
+			le, found, err := hs.linkedEntry(ctx, l.Key)
+			if err != nil {
+				return te, nil, err
+			}
+			if !found {
+				continue
+			}
+			ls, lc, lr, ok, err := hs.admit(ctx, le)
+			if err != nil {
+				return te, nil, err
+			}
+			if !ok {
+				continue
+			}
+			rds = append(rds, hs.entryReads(le, ls, lc, lr, hs.av.of(le, false).State)...)
+		}
+		reads = append(reads, rds...)
+		te.Links = append(te.Links, turnHistoryRef{Rel: l.Rel, Dir: l.Dir, Ref: l.Ref, Label: l.Label, Class: l.Class, Outcome: l.Outcome, URL: l.URL})
 	}
-	return te, nil
+	return te, reads, nil
+}
+
+// historySealer seals a history read's continuations under a key of the
+// server's, made at its first use; a restart makes another, and the
+// continuations given before it are refused.
+type historySealer struct {
+	once sync.Once
+	aead cipher.AEAD
+	err  error
+}
+
+func (hs *historySealer) get() (cipher.AEAD, error) {
+	hs.once.Do(func() {
+		key := make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			hs.err = err
+			return
+		}
+		block, err := aes.NewCipher(key)
+		if err != nil {
+			hs.err = err
+			return
+		}
+		hs.aead, hs.err = cipher.NewGCM(block)
+	})
+	return hs.aead, hs.err
+}
+
+// continuationData binds a continuation to the read it reads on: its
+// caller (holder) and its line, each with its length.
+func continuationData(holder, line string) []byte {
+	return fmt.Appendf(nil, "conductor brakeman history next\x00%d:%s%d:%s", len(holder), holder, len(line), line)
+}
+
+// historyHolder is who a continuation is given to: the admin, or a turn
+// by its request and session.
+func historyHolder(o *observer) string {
+	if o.tp == nil {
+		return "admin"
+	}
+	return "turn " + o.tp.req.ID + " " + o.tp.session
+}
+
+// sealContinuation is the continuation of holder's read of line at pos,
+// the index's cursor after the reply's last entry: pos sealed (AES-GCM),
+// so its holder can neither read it nor make one, and it reads on only
+// the read it was given for, on this server.
+func (s *Server) sealContinuation(holder, line, pos string) (string, error) {
+	aead, err := s.historySeal.get()
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, aead.NonceSize(), aead.NonceSize()+len(pos)+aead.Overhead())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(aead.Seal(nonce, nonce, []byte(pos), continuationData(holder, line))), nil
+}
+
+// openContinuation is the index's cursor a continuation sealed for
+// holder's read of line: ok false for anything else.
+func (s *Server) openContinuation(holder, line, next string) (string, bool) {
+	aead, err := s.historySeal.get()
+	if err != nil {
+		return "", false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(next)
+	if err != nil || len(raw) < aead.NonceSize()+aead.Overhead() {
+		return "", false
+	}
+	pos, err := aead.Open(nil, raw[:aead.NonceSize()], raw[aead.NonceSize():], continuationData(holder, line))
+	if err != nil {
+		return "", false
+	}
+	return string(pos), true
 }
 
 // handleBrakemanHistory answers GET /api/brakeman/history?q=&limit=&after=:
 // the History search's entries the caller may read, in the search's
 // order, at most limit (1 to maxHistoryTurnPage, defaultHistoryTurnPage
-// when absent) and maxObserveReply bytes, {entries, next?, indexing:
-// {state}}; next reads on after the last row looked at, while the index
-// holds more. The query's words and filters are the search's
-// (handleHistorySearch), Brakeman's own runs and sessions left out: a
-// turn's always, the admin's unless the line names a crew or the kind
-// brief.item.
+// when absent) and maxObserveReply bytes, next among them, {entries,
+// next?, indexing: {state}}. next, on a reply with entries, reads on
+// after its last entry (sealed for the caller and the line); a reply with
+// none carries none, so a read whose maxHistoryTurnScan rows looked at
+// the grant admits none of ends there. The query's words and filters are
+// the search's (handleHistorySearch), Brakeman's own runs and sessions
+// left out: a turn's always, the admin's unless the line names a crew or
+// the kind brief.item.
 func (s *Server) handleBrakemanHistory(w http.ResponseWriter, r *http.Request, o *observer) {
 	h, ok := s.historyRead(w, r, "q", "limit", "after")
 	if !ok {
@@ -402,9 +609,17 @@ func (s *Server) handleBrakemanHistory(w http.ResponseWriter, r *http.Request, o
 	if limit == 0 {
 		limit = defaultHistoryTurnPage
 	}
-	if len(after) > maxHistoryAfter {
-		h.refuse(http.StatusBadRequest, "bad_cursor", fmt.Sprintf("the cursor is %d bytes, more than %d", len(after), maxHistoryAfter))
+	if len(after) > maxHistoryTurnAfter {
+		h.refuse(http.StatusBadRequest, "bad_cursor", fmt.Sprintf("the cursor is %d bytes, more than %d", len(after), maxHistoryTurnAfter))
 		return
+	}
+	holder, cursor := historyHolder(o), ""
+	if after != "" {
+		var ok bool
+		if cursor, ok = s.openContinuation(holder, line, after); !ok {
+			h.refuse(http.StatusBadRequest, "bad_cursor", "the cursor is not a next this read of this line gave")
+			return
+		}
 	}
 	hq, err := history.ParseQuery(line)
 	if err != nil {
@@ -428,10 +643,21 @@ func (s *Server) handleBrakemanHistory(w http.ResponseWriter, r *http.Request, o
 	}
 	av := s.newAvailability(ctx, ix, s.ledger)
 	defer av.close()
-	hs := &historyScope{o: o, done: map[brakeman.Ref]historyAdmission{}}
+	hs := &historyScope{o: o, ix: ix, av: av, done: map[brakeman.Ref]historyAdmission{}, linked: map[string]*history.Entry{}, noted: map[brakeman.Read]bool{}}
+	fail := func(err error) {
+		if ierr := (indexError{}); errors.As(err, &ierr) {
+			h.fail(ierr.err)
+			return
+		}
+		s.observeError(h.w, err)
+	}
+	bound := maxObserveReply
+	if b := s.historyTurnReply.Load(); b > 0 {
+		bound = int(b)
+	}
 	out := []turnHistoryEntry{}
-	used, scanned := 128, 0
-	next, cursor, state := "", after, ""
+	used, scanned := historyReplyReserve, 0
+	last, state := "", ""
 	for done := false; !done; {
 		hq.Limit, hq.After = historyTurnPage, cursor
 		page, err := ix.Search(ctx, hq)
@@ -440,41 +666,35 @@ func (s *Server) handleBrakemanHistory(w http.ResponseWriter, r *http.Request, o
 			return
 		}
 		state = page.State
-		// before is the cursor of the rows from the page's i-th on.
-		before := func(i int) string {
-			if i == 0 {
-				return cursor
-			}
-			return page.After(i - 1)
-		}
 		for i, hit := range page.Entries {
 			if len(out) == int(limit) || scanned == maxHistoryTurnScan {
-				next, done = before(i), true
+				done = true
 				break
 			}
 			scanned++
 			scope, cited, res, ok, err := hs.admit(ctx, hit.Entry)
 			if err != nil {
-				s.observeError(h.w, err)
+				fail(err)
 				return
 			}
 			if !ok {
 				continue
 			}
 			served := s.serveEntry(av, hit.Entry, hit.Snippet, history.Repeats{}, hit.Links, false)
-			te, err := hs.turnEntry(ctx, served, cited)
+			te, reads, err := hs.turnEntry(ctx, served, hit.Entry, scope, cited, res)
 			if err != nil {
-				s.observeError(h.w, err)
+				fail(err)
 				return
 			}
 			b, _ := json.Marshal(te)
-			if len(out) > 0 && used+len(b)+1 > maxObserveReply {
-				next, done = before(i), true
+			if len(out) > 0 && used+len(b)+1 > bound {
+				done = true
 				break
 			}
 			used += len(b) + 1
-			hs.noteEntry(hit.Entry, scope, cited, res, served.Availability)
+			hs.note(reads)
 			out = append(out, te)
+			last = page.After(i)
 		}
 		if !done {
 			if page.Next == "" {
@@ -484,8 +704,17 @@ func (s *Server) handleBrakemanHistory(w http.ResponseWriter, r *http.Request, o
 		}
 	}
 	reply := map[string]any{"entries": out, "indexing": indexing(state)}
-	if next != "" {
-		reply["next"] = next
+	if len(out) > 0 && last != "" {
+		// After the last entry served, whether or not the index holds
+		// more: whether it does is a count of rows the caller may not see.
+		next, err := s.sealContinuation(holder, line, last)
+		if err != nil {
+			s.observeError(h.w, err)
+			return
+		}
+		if len(next) <= maxHistoryTurnAfter {
+			reply["next"] = next
+		}
 	}
 	h.reply(http.StatusOK, reply)
 }
