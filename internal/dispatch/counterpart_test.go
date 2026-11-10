@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -49,11 +50,11 @@ func mergeOf(t *testing.T, a, b *Store, key string) CounterpartState {
 	ra, rb := ticketRows(t, a, id), ticketRows(t, b, id)
 	ab := ReconcileCounterpart(append(slices.Clone(ra), rb...))
 	ba := ReconcileCounterpart(append(slices.Clone(rb), ra...))
-	if ab != ba {
+	if !reflect.DeepEqual(ab, ba) {
 		t.Fatalf("the merge is not the same both ways:\n%+v\n%+v", ab, ba)
 	}
 	// Each replica's rows seen twice change nothing.
-	if again := ReconcileCounterpart(append(append(slices.Clone(rb), ra...), append(slices.Clone(ra), rb...)...)); again != ab {
+	if again := ReconcileCounterpart(append(append(slices.Clone(rb), ra...), append(slices.Clone(ra), rb...)...)); !reflect.DeepEqual(again, ab) {
 		t.Fatalf("the merge with every row twice:\n%+v\n%+v", again, ab)
 	}
 	return ab
@@ -67,7 +68,7 @@ func m1(t *testing.T, s *Store, key, step string) {
 	held := stateOf(t, s, key)
 	rows := ticketRows(t, s, ticketOf(t, s, key).ID)
 	for k := 0; k <= len(rows); k++ {
-		if got := ReconcileCounterpart(append(slices.Clone(rows), rows[:k]...)); got != held {
+		if got := ReconcileCounterpart(append(slices.Clone(rows), rows[:k]...)); !reflect.DeepEqual(got, held) {
 			t.Fatalf("%s: the merge of the store's own rows (with its first %d again) is\n%+v\nnot what it holds\n%+v", step, k, got, held)
 		}
 	}
@@ -104,7 +105,7 @@ func TestCounterpartMerge(t *testing.T) {
 		want(t, rc, err, StatusDone, "")
 		refreshed(t, b, "b-refresh", key, ghRead("I_X", 5, "Their new title", "Body"))
 		got := mergeOf(t, a, b, key)
-		if got != (CounterpartState{Title: "Title", Description: "Body"}) {
+		if !reflect.DeepEqual(got, CounterpartState{Title: "Title", Description: "Body"}) {
 			t.Fatalf("%+v", got)
 		}
 	})
@@ -126,7 +127,7 @@ func TestCounterpartMerge(t *testing.T) {
 		owned(t, a, "a-give", key, FieldDescription, "github", &fresh)
 		mine := "B's edit"
 		mustEdit(t, b, "b-edit", key, TicketEdit{Set: TicketSet{Description: &mine}})
-		if got := mergeOf(t, a, b, key); got.Description != "GitHub's body now" || got != stateOf(t, a, key) {
+		if got := mergeOf(t, a, b, key); got.Description != "GitHub's body now" || !reflect.DeepEqual(got, stateOf(t, a, key)) {
 			t.Fatalf("%+v", got)
 		}
 	})
@@ -145,7 +146,7 @@ func TestCounterpartMerge(t *testing.T) {
 		want(t, rc, err, StatusDone, "")
 		refreshed(t, b, "b-refresh", key, ghRead("I_X", 5, "X again", "x"))
 		got := mergeOf(t, a, b, key)
-		if got != stateOf(t, a, key) || got.ExternalID != "github:github.com:I_Y" {
+		if !reflect.DeepEqual(got, stateOf(t, a, key)) || got.ExternalID != "github:github.com:I_Y" {
 			t.Fatalf("%+v", got)
 		}
 	})
@@ -154,7 +155,7 @@ func TestCounterpartMerge(t *testing.T) {
 		b := fork(t, a)
 		refreshed(t, a, "a-refresh", key, ghRead("I_X", 10, "Newer", "Body"))
 		refreshed(t, b, "b-refresh", key, ghRead("I_X", 5, "Older", "Body"))
-		if got := mergeOf(t, a, b, key); got != stateOf(t, a, key) || got.Title != "Newer" {
+		if got := mergeOf(t, a, b, key); !reflect.DeepEqual(got, stateOf(t, a, key)) || got.Title != "Newer" {
 			t.Fatalf("%+v", got)
 		}
 	})
@@ -219,7 +220,7 @@ func TestCounterpartMerge(t *testing.T) {
 		rc, err = a.LinkExternal(ctx, testOp("a-relink"), LinkArgs{Key: key}, ghRead("I_X", 3, "Title", "Body"))
 		want(t, rc, err, StatusDone, "")
 		got := mergeOf(t, a, b, key)
-		if got.Description != mine || ParseAuthority(got.Authority).Owners() != (Owners{Title: OwnerDispatch, Description: OwnerDispatch}) || got != stateOf(t, a, key) {
+		if got.Description != mine || ParseAuthority(got.Authority).Owners() != (Owners{Title: OwnerDispatch, Description: OwnerDispatch}) || !reflect.DeepEqual(got, stateOf(t, a, key)) {
 			t.Fatalf("the merge: %+v\nA holds %+v", got, stateOf(t, a, key))
 		}
 	})
@@ -535,3 +536,252 @@ func (g *gitHub) step(t *testing.T, r *rand.Rand, s *Store, key, op string) stri
 	}
 	return name
 }
+
+// completion is one way a try at an image of a manifest ends: an
+// attachment made, a skip for its type or its size recorded, or a failure
+// that records nothing (its context gone), the entry left pending.
+type completion string
+
+const (
+	attached   completion = "attached"
+	skipType   completion = "type"
+	skipSize   completion = "size"
+	failedTry  completion = "failed"
+	imageAsset            = "https://github.com/user-attachments/assets/i"
+)
+
+var completions = []completion{attached, skipType, skipSize, failedTry}
+
+// complete ends a try at the image of the ticket's manifest as c says,
+// under the op id.
+func complete(t *testing.T, s *Store, key, image, op string, c completion) {
+	t.Helper()
+	ctx := context.Background()
+	switch c {
+	case attached:
+		rc, err := s.ImportImage(ctx, testOp(op), key, image, ImageUpload{Name: "github-1.png", ContentType: "image/png", Body: bytes.NewReader([]byte(op))})
+		want(t, rc, err, StatusDone, "")
+	case skipType, skipSize:
+		rc, err := s.ImportImage(ctx, testOp(op), key, image, ImageUpload{Skipped: string(c)})
+		want(t, rc, err, StatusDone, "")
+	case failedTry:
+		gone, cancel := context.WithCancel(ctx)
+		cancel()
+		if _, err := s.ImportImage(gone, testOp(op), key, image, ImageUpload{Name: "github-1.png", ContentType: "image/png", Body: bytes.NewReader([]byte(op))}); err == nil {
+			t.Fatalf("a try with its context gone was not refused")
+		}
+	}
+}
+
+// liveAttachments is the ids of the ticket's live attachments in the store.
+func liveAttachments(t *testing.T, s *Store, ticketID string) map[string]bool {
+	t.Helper()
+	out := map[string]bool{}
+	for _, id := range texts(t, s, "SELECT id FROM attachments WHERE ticket_id = ? AND deleted_at = ''", ticketID) {
+		out[id] = true
+	}
+	return out
+}
+
+// everyKeptAttachmentNamed fails the test unless the merged state names,
+// in its manifest, exactly the attachments the merge keeps of those the
+// two replicas made for the item's images: every live attachment of
+// either replica but the ones the merge releases (removed as
+// attachment.remove removes one), each named by one entry, and every
+// entry that names an attachment naming one of them. It gives the
+// manifest by image id.
+func everyKeptAttachmentNamed(t *testing.T, a, b *Store, key string, got CounterpartState) map[string]SnapshotImage {
+	t.Helper()
+	id := ticketOf(t, a, key).ID
+	kept := liveAttachments(t, a, id)
+	for att := range liveAttachments(t, b, id) {
+		kept[att] = true
+	}
+	for _, att := range releasedBy(got) {
+		if !kept[att] {
+			t.Fatalf("the merge releases %s, which neither replica keeps", att)
+		}
+		delete(kept, att)
+	}
+	sn, ok := ParseSnapshot(got.ExternalSnapshot)
+	if !ok {
+		t.Fatalf("no merged snapshot: %+v", got)
+	}
+	byID := map[string]SnapshotImage{}
+	named := map[string]bool{}
+	for _, im := range sn.Images {
+		if _, twice := byID[im.ID]; twice {
+			t.Fatalf("the image %s has two entries: %+v", im.ID, sn.Images)
+		}
+		byID[im.ID] = im
+		if im.AttachmentID == "" {
+			continue
+		}
+		if named[im.AttachmentID] || !kept[im.AttachmentID] {
+			t.Fatalf("the entry %+v names an attachment the merge does not keep, or one another entry names (kept %v)", im, kept)
+		}
+		named[im.AttachmentID] = true
+	}
+	for att := range kept {
+		if !named[att] {
+			t.Fatalf("the merge keeps the attachment %s, which no entry names: %+v (released %v)", att, sn.Images, releasedBy(got))
+		}
+	}
+	return byID
+}
+
+// Every attachment a merge keeps for an image of the linked item is named
+// by the merged manifest, and every entry that names an attachment names
+// a kept one, whichever completions the two replicas made for an image and
+// in whichever order: an attachment is never replaced by a completion that
+// made none (a skip, a failure), and of two attachments of one image the
+// first made in the one order is the entry's, the other released. Walked
+// for every pair of completions of one image, made in both orders, and
+// for two and three images each given its own pair; then past
+// MaxImportImages, where pending entries and skips are cut before an
+// attachment, and an attachment cut is released.
+func TestEveryKeptAttachmentIsNamed(t *testing.T) {
+	importN := func(t *testing.T, n int) (*Store, string) {
+		s := linkedStore(t)
+		newProject(t, s, "CND")
+		read := ghRead("I_X", 0, "Title", "Body")
+		read.Snapshot.Images = nil
+		for i := 0; i < n; i++ {
+			read.Snapshot.Images = append(read.Snapshot.Images, SnapshotImage{ID: fmt.Sprint(imageAsset, i)})
+		}
+		return s, mustImport(t, s, "imp", "CND", read)
+	}
+	type pair struct{ a, b completion }
+	var pairs []pair
+	for _, ca := range completions {
+		for _, cb := range completions {
+			pairs = append(pairs, pair{ca, cb})
+		}
+	}
+	for _, n := range []int{1, 2, 3} {
+		for p := range pairs {
+			for _, aFirst := range []bool{true, false} {
+				// Image i takes the pair p+i, so every pair meets every place.
+				var mine []pair
+				for i := 0; i < n; i++ {
+					mine = append(mine, pairs[(p+i)%len(pairs)])
+				}
+				t.Run(fmt.Sprintf("%d images, %v, a first %v", n, mine, aFirst), func(t *testing.T) {
+					t.Parallel()
+					a, key := importN(t, n)
+					b := fork(t, a)
+					firstOf := map[int]string{}
+					for i, pr := range mine {
+						image := fmt.Sprint(imageAsset, i)
+						order := []struct {
+							s    *Store
+							side string
+							c    completion
+						}{{a, "a", pr.a}, {b, "b", pr.b}}
+						if !aFirst {
+							order[0], order[1] = order[1], order[0]
+						}
+						// The op ids sort as the tries are made, so two tries
+						// at one instant order as made.
+						for k, o := range order {
+							complete(t, o.s, key, image, fmt.Sprintf("%d-%d-%s", i, k, o.side), o.c)
+							if o.c == attached && firstOf[i] == "" {
+								firstOf[i] = ticketAttachmentOf(t, o.s, key, image)
+							}
+						}
+					}
+					got := mergeOf(t, a, b, key)
+					byID := everyKeptAttachmentNamed(t, a, b, key, got)
+					for i, pr := range mine {
+						im := byID[fmt.Sprint(imageAsset, i)]
+						switch {
+						case pr.a == attached || pr.b == attached:
+							if im.AttachmentID != firstOf[i] || im.Skipped != "" {
+								t.Fatalf("image %d: the entry %+v, not the first attachment made, %s", i, im, firstOf[i])
+							}
+						case pr.a == failedTry && pr.b == failedTry:
+							if im.done() {
+								t.Fatalf("image %d: no try recorded anything, yet %+v", i, im)
+							}
+						default:
+							if im.Skipped == "" || im.AttachmentID != "" {
+								t.Fatalf("image %d: a skip was recorded, yet %+v", i, im)
+							}
+						}
+					}
+				})
+			}
+		}
+	}
+	// Past the bound: A and B each read six new images after they parted
+	// and complete them; the union is past MaxImportImages.
+	withImages := func(m int, ids ...string) ExternalRead {
+		r := ghRead("I_X", m, "Title", "Body")
+		r.Snapshot.Images = nil
+		for _, id := range ids {
+			r.Snapshot.Images = append(r.Snapshot.Images, SnapshotImage{ID: imageAsset + id})
+		}
+		return r
+	}
+	for _, c := range []struct {
+		name string
+		b    completion
+	}{{"B attached its six", attached}, {"B skipped its six", skipSize}, {"B's six pending", failedTry}} {
+		t.Run("past the bound, "+c.name, func(t *testing.T) {
+			t.Parallel()
+			a, key := importN(t, 0)
+			refreshed(t, a, "base", key, withImages(1, "0", "1"))
+			complete(t, a, key, imageAsset+"0", "base-0", attached)
+			b := fork(t, a)
+			ids := func(side string) []string {
+				out := []string{"0", "1"}
+				for i := 0; i < 6; i++ {
+					out = append(out, fmt.Sprint(side, i))
+				}
+				return out
+			}
+			refreshed(t, a, "a-refresh", key, withImages(5, ids("a")...))
+			refreshed(t, b, "b-refresh", key, withImages(9, ids("b")...))
+			for i := 0; i < 6; i++ {
+				complete(t, a, key, fmt.Sprint(imageAsset, "a", i), fmt.Sprint("a-", i), attached)
+				complete(t, b, key, fmt.Sprint(imageAsset, "b", i), fmt.Sprint("b-", i), c.b)
+			}
+			got := mergeOf(t, a, b, key)
+			byID := everyKeptAttachmentNamed(t, a, b, key, got)
+			if len(byID) != MaxImportImages {
+				t.Fatalf("the merged manifest holds %d entries", len(byID))
+			}
+			// A's seven attachments are kept before any skip or pending
+			// entry; with B's six attachments beside them, the latest made
+			// are cut and released.
+			kept := 0
+			for _, im := range byID {
+				if im.AttachmentID != "" {
+					kept++
+				}
+			}
+			if wantKept := map[completion]int{attached: MaxImportImages, skipSize: 7, failedTry: 7}[c.b]; kept != wantKept {
+				t.Fatalf("%d entries name an attachment, not %d: %+v", kept, wantKept, byID)
+			}
+			if wantReleased := map[completion]int{attached: 5, skipSize: 0, failedTry: 0}[c.b]; len(releasedBy(got)) != wantReleased {
+				t.Fatalf("%d attachments released, not %d", len(releasedBy(got)), wantReleased)
+			}
+		})
+	}
+}
+
+// ticketAttachmentOf is the attachment the store's manifest names for the
+// image.
+func ticketAttachmentOf(t *testing.T, s *Store, key, image string) string {
+	t.Helper()
+	for _, im := range snapshotOf(t, ticketOf(t, s, key)).Images {
+		if im.ID == image {
+			return im.AttachmentID
+		}
+	}
+	t.Fatalf("%s has no entry for %s", key, image)
+	return ""
+}
+
+// releasedBy is the attachments the merged state releases.
+func releasedBy(got CounterpartState) []string { return got.Release }

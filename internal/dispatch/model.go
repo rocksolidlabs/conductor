@@ -428,15 +428,18 @@ const (
 	// escaping off, so the words' worst is U+2028, six bytes a character),
 	// in bytes: it measures 1,626 at its worst (TestTicketReplyBound).
 	MaxLinkReadSummary = 2 << 10
-	// MaxTicketExternalParts bounds what a ticket's read carries of its
-	// linked issue and its links' reads (the snapshot, the owners, the
-	// linked issue's read, closed_on and a summary per live link) at their
-	// escaped worst as the route encodes them, in bytes: the measure,
-	// 119,814 bytes (the snapshot 34,186 of them, fifty summaries most of
-	// the rest), rounded up to a KiB (TestTicketReplyBound holds it within
-	// 4 KiB of the measure). The room the API's MaxTicketReply keeps for
-	// it.
-	MaxTicketExternalParts = 118 << 10
+	// MaxTicketExternalParts bounds what this version adds to a ticket's
+	// read (the snapshot, the owners, the linked issue's read, closed_on, a
+	// summary per live link, the source, the identity, the page, the
+	// authority and the close policy's merged with its words), measured as
+	// the reply the route returns at its escaped worst less the same read
+	// as main's would hold it, in bytes: the measure, 124,469 bytes (the
+	// snapshot 34,186 of them, fifty summaries most of the rest, the page
+	// 2,065 and the merged words 2,137), rounded up to a KiB
+	// (TestTicketReplyBound finds the parts from TicketView's type and
+	// holds the bound within 4 KiB of the measure). The room the API's
+	// MaxTicketReply keeps for it.
+	MaxTicketExternalParts = 122 << 10
 	// MaxMergedReadAge is how old a link's read may be for the close
 	// policy's merged: the close route's own read is what counts.
 	MaxMergedReadAge = 5 * time.Minute

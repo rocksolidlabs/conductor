@@ -3,6 +3,9 @@ package dispatch
 import (
 	"context"
 	"encoding/json"
+	"maps"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -172,33 +175,189 @@ func TestSnapshotBound(t *testing.T) {
 	}
 }
 
-// The parts of a ticket's read this version adds (the snapshot, the
-// owners, the linked issue's read, closed_on and a summary of each live
-// link's read), each at its bound and at its escaped worst as the route
-// encodes it (encodeValue is writeDispatch's encoding: HTML escaping off,
-// so '"' for a text bounded in bytes and U+2028 for one bounded in
-// characters), are under MaxTicketExternalParts, and that bound is the
-// measure rounded up to a KiB or two, not a guess above it (the room the
-// API's MaxTicketReply leaves the later rows depends on it); each summary is
-// under MaxLinkReadSummary; a link's read past its bounds is refused.
+// mainReplyPaths is every JSON key path of a ticket's read on main before
+// this version (replyPaths of main's TicketView at 7c40e389): what main's
+// own size test (internal/api, MaxTicketReply) measures.
+var mainReplyPaths = []string{
+	"acceptance", "acceptedAt", "acceptedBy", "acceptedCriteria", "acceptedFor", "acceptedNote", "approved", "approved[]", "approved[].approvedAt",
+	"approved[].approvedBy", "approved[].approvedIntent", "approved[].approvedNote", "approved[].approvedRev", "approved[].base",
+	"approved[].basedOn", "approved[].bytes", "approved[].createdAt", "approved[].createdBy", "approved[].crewId", "approved[].crewName",
+	"approved[].crewUpdatedAt", "approved[].digest", "approved[].fingerprint", "approved[].id", "approved[].n", "approved[].rev", "approved[].stale",
+	"approved[].stale.remedy", "approved[].stale.words", "approved[].state", "approved[].ticketId", "approved[].withdrawnAt",
+	"approved[].withdrawnBy", "assignees", "assignees[]", "attachments", "attachments[]", "attachments[].contentType", "attachments[].createdAt",
+	"attachments[].createdBy", "attachments[].deletedAt", "attachments[].id", "attachments[].name", "attachments[].sha256", "attachments[].size",
+	"attachments[].ticketId", "authority", "blocked", "children", "children.tickets", "children.tickets[]", "children.tickets[].deletedAt",
+	"children.tickets[].id", "children.tickets[].key", "children.tickets[].status", "children.tickets[].title", "children.total", "close",
+	"close.met", "close.met.acceptance", "close.met.delivery", "close.met.verified", "close.missing", "close.missing[]", "close.requires",
+	"close.requires[]", "close.verifiedWhy", "close.why", "closedAt", "comments", "comments[]", "comments[].author", "comments[].body",
+	"comments[].by", "comments[].createdAt", "comments[].deletedAt", "comments[].editedAt", "comments[].id", "comments[].n", "comments[].rev",
+	"comments[].ticketId", "createdAt", "createdBy", "deletedAt", "description", "externalId", "externalSnapshot", "externalUrl", "horizon", "id",
+	"key", "labels", "labels[]", "launchCount", "links", "links[]", "links[].candidate", "links[].createdAt", "links[].createdBy",
+	"links[].deletedAt", "links[].id", "links[].kind", "links[].note", "links[].ref", "links[].url", "links[].verified", "milestoneId", "number",
+	"owner", "parent", "parent.deletedAt", "parent.id", "parent.key", "parent.status", "parent.title", "parentId", "priority", "projectId",
+	"relations", "relationsTotal", "relations[]", "relations[].createdAt", "relations[].createdBy", "relations[].deletedAt", "relations[].fromId",
+	"relations[].id", "relations[].kind", "relations[].other", "relations[].other.deletedAt", "relations[].other.id", "relations[].other.key",
+	"relations[].other.status", "relations[].other.title", "relations[].toId", "rev", "source", "status", "title", "updatedAt",
+}
+
+// rowReplyParts is what this row adds to a ticket's read or now fills
+// (Program item IN1a, PR-1): the paths it adds, and main's paths it fills
+// that main left empty (source's longer value, the counterpart group).
+// "close.requires[]" and "close.missing[]" are filled with merged, the
+// requirement this version adds.
+var rowReplyParts = []string{
+	"owners", "externalRead", "linkReads", "closedOn", "close.mergedWhy", "close.met.merged",
+	"source", "externalId", "externalUrl", "externalSnapshot", "authority", "close.requires[]", "close.missing[]",
+}
+
+// replyPaths is every JSON key path of the type as encoding/json writes
+// it: a field by its name, an embedded struct's fields as its own, a
+// slice's element under "[]" and a map's value under "{}", a time and a
+// raw message a value; each path once, a type met again on its own path
+// not walked again.
+func replyPaths(t reflect.Type) []string {
+	var out []string
+	var walk func(t reflect.Type, prefix string, on map[reflect.Type]bool)
+	walk = func(t reflect.Type, prefix string, on map[reflect.Type]bool) {
+		for t.Kind() == reflect.Pointer {
+			t = t.Elem()
+		}
+		switch {
+		case t == reflect.TypeFor[time.Time]() || t == reflect.TypeFor[json.RawMessage]():
+			return
+		case t.Kind() == reflect.Slice:
+			out = append(out, prefix+"[]")
+			walk(t.Elem(), prefix+"[]", on)
+		case t.Kind() == reflect.Map:
+			out = append(out, prefix+"{}")
+			walk(t.Elem(), prefix+"{}", on)
+		case t.Kind() == reflect.Struct:
+			if on[t] {
+				return
+			}
+			on[t] = true
+			defer delete(on, t)
+			for i := 0; i < t.NumField(); i++ {
+				f := t.Field(i)
+				name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+				switch {
+				case !f.IsExported() || name == "-":
+				case f.Anonymous && name == "":
+					walk(f.Type, prefix, on)
+				default:
+					if name == "" {
+						name = f.Name
+					}
+					p := name
+					if prefix != "" {
+						p = prefix + "." + name
+					}
+					out = append(out, p)
+					walk(f.Type, p, on)
+				}
+			}
+		}
+	}
+	walk(t, "", map[reflect.Type]bool{})
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// mainOf is a ticket's read, decoded as JSON with its numbers as written,
+// as main's would hold it: the parts this row adds left out, source
+// native, and merged out of the policy's requirements.
+func mainOf(v map[string]any) map[string]any {
+	out := maps.Clone(v)
+	for _, k := range []string{"owners", "externalRead", "linkReads", "closedOn", "externalId", "externalUrl", "externalSnapshot", "authority"} {
+		delete(out, k)
+	}
+	out["source"] = TrackerNative
+	c := maps.Clone(out["close"].(map[string]any))
+	delete(c, "mergedWhy")
+	met := maps.Clone(c["met"].(map[string]any))
+	delete(met, "merged")
+	c["met"] = met
+	for _, k := range []string{"requires", "missing"} {
+		c[k] = slices.DeleteFunc(slices.Clone(c[k].([]any)), func(r any) bool { return r == RequireMerged })
+	}
+	out["close"] = c
+	return out
+}
+
+// filled reports whether every value the path names in the decoded reply
+// is there, a text among them not empty ("[]" every element, "{}" every
+// value, at least one each).
+func filled(v any, path []string) bool {
+	if len(path) == 0 {
+		s, isText := v.(string)
+		return v != nil && (!isText || s != "")
+	}
+	var each []any
+	switch {
+	case path[0] == "[]":
+		l, _ := v.([]any)
+		each = l
+	case path[0] == "{}":
+		m, _ := v.(map[string]any)
+		for _, e := range m {
+			each = append(each, e)
+		}
+	default:
+		m, _ := v.(map[string]any)
+		e, ok := m[path[0]]
+		if !ok {
+			return false
+		}
+		each = []any{e}
+	}
+	if len(each) == 0 {
+		return false
+	}
+	for _, e := range each {
+		if !filled(e, path[1:]) {
+			return false
+		}
+	}
+	return true
+}
+
+// splitPath is a reply path's steps: names, "[]" and "{}".
+func splitPath(p string) []string {
+	p = strings.NewReplacer("[]", ".[]", "{}", ".{}").Replace(p)
+	return strings.Split(p, ".")
+}
+
+// What this version adds to a ticket's read, measured as the reply the
+// route returns: the largest ticket's read (TicketView) with every part
+// this row adds or fills at its bound and every text at its escaped worst
+// as the route encodes it (encodeValue is writeDispatch's encoding: HTML
+// escaping off, so '"' for a text bounded in bytes and U+2028 for one
+// bounded in characters), less the same read as main's would hold it
+// (mainOf). The parts are found from the reply's type: every key path of
+// TicketView that main's read has not (mainReplyPaths) must be one of this
+// row's (rowReplyParts) and filled in the read measured, so a part a later
+// row adds fails here until it is built at its worst. The measure is under
+// MaxTicketExternalParts, and that bound is the measure rounded up to a
+// KiB or two, not a guess above it (the room the API's MaxTicketReply
+// keeps for it depends on it); each summary is under MaxLinkReadSummary; a
+// link's read past its bounds is refused.
 func TestTicketReplyBound(t *testing.T) {
 	ctx := context.Background()
 	s := linkedStore(t)
 	newProject(t, s, "CND")
 	key := mustImport(t, s, "imp", "CND", ghRead("I_1", 0, "T", "B"))
 	tk := ticketOf(t, s, key)
-	snapshot, err := encodeSnapshot(worstSnapshot(t, worst))
+	worstSn := worstSnapshot(t, worst)
+	snapshot, err := encodeSnapshot(worstSn)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.db.Exec("UPDATE tickets SET external_snapshot = ? WHERE id = ?", snapshot, tk.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RecordTicketReadError(ctx, key, tk.ExternalID, worstWords(4*MaxReadError)); err != nil {
 		t.Fatal(err)
 	}
-	// The identity and the owners at their bounds: a system of 16 bytes, a
-	// host of 253 and a node id of 100.
+	// The identity, the owners and the source at their bounds: a system of
+	// 16 bytes, a host of 253 and a node id of 100; the page the snapshot's,
+	// MaxExternalURL bytes; closed_on a read at its bounds.
 	system := strings.Repeat("s", 16)
 	identity := ExternalIdentity(system, strings.Repeat("h", MaxExternalHost), strings.Repeat("N", MaxNodeID))
 	if _, err := s.db.Exec("UPDATE ticket_reads SET external_id = ?, updated_at = ?, read_at = ?, error_at = ?, issue_etag = ?, pull_etag = ?, read_by = ? WHERE ticket_id = ?",
@@ -206,8 +365,22 @@ func TestTicketReplyBound(t *testing.T) {
 		worstWords(MaxByName), tk.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.Exec("UPDATE tickets SET external_id = ?, authority = ? WHERE id = ?", identity,
-		Authority{Of: authorityKey(identity), Title: system, Description: system}.encode(), tk.ID); err != nil {
+	closedOn, err := encodeValue(ClosedOn{LinkID: strings.Repeat("f", IDLen), MergedAt: day0.Add(time.Nanosecond), MergeSha: strings.Repeat("b", 64),
+		ReadAt: day0.Add(time.Nanosecond)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(worstSn.URL) != MaxExternalURL {
+		t.Fatalf("the worst page is %d bytes", len(worstSn.URL))
+	}
+	if _, err := s.db.Exec("UPDATE tickets SET external_id = ?, authority = ?, source = ?, external_url = ?, external_snapshot = ?, closed_on = ? WHERE id = ?",
+		identity, Authority{Of: authorityKey(identity), Title: system, Description: system}.encode(), system, worstSn.URL, snapshot, closedOn, tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	// The policy names merged (PR-4 offers it), unmet, its words at their
+	// longest: each delivery read merged longer ago than a duration holds,
+	// each delivery's page at MaxLinkURL.
+	if _, err := s.db.Exec(`UPDATE projects SET close_requires = '["acceptance","delivery","verified","merged"]' WHERE key = 'CND'`); err != nil {
 		t.Fatal(err)
 	}
 	var checks []LinkCheck
@@ -215,7 +388,8 @@ func TestTicketReplyBound(t *testing.T) {
 		checks = append(checks, LinkCheck{ID: strings.Repeat("9", 20), Name: "c", Status: "completed", Conclusion: "failure"})
 	}
 	for i := 0; i < MaxLinks; i++ {
-		rc, err := addLink(s, "l"+newID(), key, NewLink{Kind: LinkDelivery, URL: "https://github.com/o/r/pull/" + strings.Repeat("9", 10) + string(rune('a'+i%26)) + string(rune('a'+i/26))})
+		page := "https://github.com/o/r/pull/" + string(rune('a'+i%26)) + string(rune('a'+i/26))
+		rc, err := addLink(s, "l"+newID(), key, NewLink{Kind: LinkDelivery, URL: page + "/" + strings.Repeat("9", MaxLinkURL-len(page)-1)})
 		want(t, rc, err, StatusDone, "")
 		r := prRead(strings.Repeat("N", MaxNodeID), 1, "merged")
 		r.MergeSha, r.HeadSha, r.Checks = strings.Repeat("a", 64), strings.Repeat("b", 64), checks
@@ -228,6 +402,9 @@ func TestTicketReplyBound(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if _, err := s.db.Exec("UPDATE link_reads SET read_at = ?", stamp(time.Date(1700, 1, 1, 0, 0, 0, 1, time.UTC))); err != nil {
+		t.Fatal(err)
+	}
 	v, err := s.Ticket(ctx, key)
 	if err != nil {
 		t.Fatal(err)
@@ -235,36 +412,62 @@ func TestTicketReplyBound(t *testing.T) {
 	if len(v.LinkReads) != MaxLinks {
 		t.Fatalf("%d link reads", len(v.LinkReads))
 	}
+	var summary int
 	for id, sum := range v.LinkReads {
 		b, _ := encodeValue(sum)
 		if len(b) > MaxLinkReadSummary {
 			t.Fatalf("the summary of %s is %d bytes, more than %d", id, len(b), MaxLinkReadSummary)
 		}
-	}
-	closedOn, err := encodeValue(ClosedOn{LinkID: strings.Repeat("f", IDLen), MergedAt: day0.Add(time.Nanosecond), MergeSha: strings.Repeat("b", 64),
-		ReadAt: day0.Add(time.Nanosecond)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	parts, err := encodeValue(struct {
-		Snapshot     json.RawMessage            `json:"externalSnapshot"`
-		Authority    json.RawMessage            `json:"authority"`
-		ClosedOn     json.RawMessage            `json:"closedOn"`
-		Owners       *Owners                    `json:"owners"`
-		ExternalRead *TicketRead                `json:"externalRead"`
-		LinkReads    map[string]LinkReadSummary `json:"linkReads"`
-	}{v.ExternalSnapshot, v.Authority, json.RawMessage(closedOn), v.Owners, v.ExternalRead, v.LinkReads})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var summary int
-	for _, sum := range v.LinkReads {
-		b, _ := encodeValue(sum)
 		summary = max(summary, len(b))
 	}
-	t.Logf("the new parts at their worst: %d bytes, their bound %d (the snapshot %d, a summary %d)", len(parts), MaxTicketExternalParts, len(v.ExternalSnapshot), summary)
-	if len(parts) > MaxTicketExternalParts || MaxTicketExternalParts-len(parts) > 4<<10 {
-		t.Fatalf("the new parts are %d bytes at their worst, their bound %d", len(parts), MaxTicketExternalParts)
+	reply, err := encodeValue(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec := json.NewDecoder(strings.NewReader(reply))
+	dec.UseNumber()
+	var tree map[string]any
+	if err := dec.Decode(&tree); err != nil {
+		t.Fatal(err)
+	}
+	// The reply's parts, from its type: every one main's read has not is
+	// this row's, and filled.
+	for _, p := range replyPaths(reflect.TypeFor[TicketView]()) {
+		if slices.Contains(mainReplyPaths, p) {
+			continue
+		}
+		if !slices.ContainsFunc(rowReplyParts, func(part string) bool {
+			return p == part || strings.HasPrefix(p, part+".") || strings.HasPrefix(p, part+"{}")
+		}) {
+			t.Errorf("%s is a part of the ticket's read that neither main's measure nor this row's holds", p)
+		}
+	}
+	for _, part := range rowReplyParts {
+		for _, p := range replyPaths(reflect.TypeFor[TicketView]()) {
+			if (p == part || strings.HasPrefix(p, part+".") || strings.HasPrefix(p, part+"{}")) && !filled(tree, splitPath(p)) {
+				t.Errorf("the read measured leaves %s empty", p)
+			}
+		}
+	}
+	if !slices.Contains(v.Close.Requires, RequireMerged) || !slices.Contains(v.Close.Missing, RequireMerged) {
+		t.Errorf("the policy's merged is not in the read: %+v", v.Close)
+	}
+	again, err := encodeValue(tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asMain, err := encodeValue(mainOf(tree))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again) != len(reply) {
+		t.Fatalf("the reply decoded and encoded again is %d bytes, not %d", len(again), len(reply))
+	}
+	parts := len(reply) - len(asMain)
+	t.Logf("the new parts at their worst: %d bytes of a %d-byte read, their bound %d (the snapshot %d, a summary %d, the merged words %d)", parts, len(reply),
+		MaxTicketExternalParts, len(v.ExternalSnapshot), summary, len(v.Close.MergedWhy))
+	if parts > MaxTicketExternalParts || MaxTicketExternalParts-parts > 4<<10 {
+		t.Fatalf("the new parts are %d bytes at their worst, their bound %d", parts, MaxTicketExternalParts)
 	}
 	// A read past its bounds is refused, nothing written.
 	link := v.Links[0].ID

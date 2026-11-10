@@ -205,7 +205,7 @@ func encodeLinkRead(r LinkRead) (checks, incomplete string, err error) {
 		return "", "", refuse(RefusalInvalid, "the read names no time the item was updated")
 	case r.Merged != (r.State == "merged"):
 		return "", "", refuse(RefusalInvalid, "an item is merged exactly when its state is merged")
-	case !validatorPattern.MatchString(r.IssueETag) || !validatorPattern.MatchString(r.PullETag):
+	case !validator(r.IssueETag) || !validator(r.PullETag):
 		return "", "", refuse(RefusalInvalid, "a read's validator is not at most %d bytes of printable ASCII", MaxValidator)
 	case len(r.Checks) > MaxLinkChecks:
 		return "", "", refuse(RefusalBound, "at most %d checks in a read; this has %d", MaxLinkChecks, len(r.Checks))
@@ -233,6 +233,12 @@ func encodeLinkRead(r LinkRead) (checks, incomplete string, err error) {
 				return "", "", err
 			}
 		}
+		// A state is the system's word, never an address; a name is words,
+		// kept address-free (addressFree), within its bound.
+		if holdsAddress(c.Status) || holdsAddress(c.Conclusion) {
+			return "", "", refuse(RefusalInvalid, "check %d's state holds an address", i)
+		}
+		list[i].Name, list[i].App = cutBytes(addressFree(c.Name), MaxCheckName), cutBytes(addressFree(c.App), MaxCheckName)
 		if c.URL != "" {
 			// A check's page is kept only whole: one that carries a query, a
 			// fragment or a user is not kept, the check kept without it.
@@ -254,17 +260,20 @@ func encodeLinkRead(r LinkRead) (checks, incomplete string, err error) {
 		return "", "", refuse(RefusalBound, "the read's checks are %d bytes, more than %d", len(checks), MaxLinkChecksJSON)
 	}
 	if r.Incomplete != nil {
-		in := *r.Incomplete
+		// A copy, its words address-free (addressFree) within their bound:
+		// the caller's read is never changed under it.
+		in := ChecksIncomplete{Words: slices.Clone(r.Incomplete.Words), Omitted: r.Incomplete.Omitted}
 		if len(in.Words) == 0 || len(in.Words) > MaxIncompleteWords || in.Omitted < 0 {
 			return "", "", refuse(RefusalInvalid, "an incomplete set of checks says why in 1 to %d reasons", MaxIncompleteWords)
 		}
-		for _, w := range in.Words {
+		for i, w := range in.Words {
 			if w == "" {
 				return "", "", refuse(RefusalInvalid, "a reason the checks are incomplete is empty")
 			}
 			if err := checkText("a reason the checks are incomplete", w, MaxIncompleteWord); err != nil {
 				return "", "", err
 			}
+			in.Words[i] = cutBytes(addressFree(w), MaxIncompleteWord)
 		}
 		if incomplete, err = encodeValue(in); err != nil {
 			return "", "", err

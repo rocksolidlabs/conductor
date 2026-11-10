@@ -153,6 +153,11 @@ const (
 	SkippedSize = "size"
 )
 
+// ImageTypes is the content types an imported image's attachment is made
+// with, its type as the API sniffed it; any other image is skipped
+// (SkippedType).
+var ImageTypes = []string{"image/png", "image/jpeg", "image/gif", "image/webp"}
+
 // done reports whether the image needs no more work: an attachment made of
 // it, or a skip recorded.
 func (im SnapshotImage) done() bool { return im.AttachmentID != "" || im.Skipped != "" }
@@ -438,6 +443,9 @@ func checkRemoteID(what, id string) error {
 			return refuse(RefusalInvalid, "%s is not printable ASCII", what)
 		}
 	}
+	if holdsAddress(id) {
+		return refuse(RefusalInvalid, "%s holds an address, which an id never does", what)
+	}
 	return nil
 }
 
@@ -478,6 +486,8 @@ func normalSnapshot(read ExternalRead) (sn ExternalSnapshot, title, description 
 		return ExternalSnapshot{}, "", "", refuse(RefusalBound, "the item's identity is more than %d bytes", MaxExternalID)
 	case len(sn.Space) > MaxSnapshotSpace || len(sn.ID) > MaxSnapshotItemID:
 		return ExternalSnapshot{}, "", "", refuse(RefusalBound, "the item's place is past its bound")
+	case holdsAddress(sn.Space) || holdsAddress(sn.ID):
+		return ExternalSnapshot{}, "", "", refuse(RefusalInvalid, "the item's place holds an address, which a repository's name or an item's number never does")
 	}
 	page, err := itemPage(sn.URL)
 	if err != nil {
@@ -539,7 +549,7 @@ func normalSnapshot(read ExternalRead) (sn ExternalSnapshot, title, description 
 	sn.BodyTruncated = sn.BodyTruncated || cut
 	sn.DescriptionSha256 = sha256Hex(description)
 	for _, v := range []string{read.IssueETag, read.PullETag} {
-		if !validatorPattern.MatchString(v) {
+		if !validator(v) {
 			return ExternalSnapshot{}, "", "", refuse(RefusalInvalid, "a read's validator is not at most %d bytes of printable ASCII", MaxValidator)
 		}
 	}
@@ -1103,6 +1113,9 @@ func (s *Store) ImportImage(ctx context.Context, op Op, key, imageID string, img
 	// The image by its id as the manifest keeps it: the API may name it by
 	// the address it fetched, whose query is left behind here.
 	id, admitted := manifestImageID(imageID)
+	if img.Body != nil && !slices.Contains(ImageTypes, img.ContentType) {
+		return Receipt{}, fmt.Errorf("dispatch: an image's attachment is one of the types %v", ImageTypes)
+	}
 	mark := func(t *tx, tk Ticket, entry SnapshotImage) error {
 		if !admitted {
 			return refuse(RefusalInvalid, "the image is not an address an import manifest holds")
@@ -1203,20 +1216,43 @@ var (
 	wordsPathQuery = regexp.MustCompile(`(/[^\s?]*)\?\S*`)
 )
 
-// readWords is a read's failure as a row keeps it: cleaned of control
-// characters, each address in it as the store keeps an address
-// (addressWords, "an address" for one it does not admit) and each path's
-// query left out, so the words never keep a signed URL's credential, and
-// cut to MaxReadError characters.
-func readWords(s string) string {
-	s = strings.TrimSpace(cleanText(s, false))
+// addressFree is the one door free text about a tracker passes into the
+// store (Program item IN1a, review round 2 of #780): a read's failure, a
+// reason its checks are incomplete, a check's name and its app's, a
+// reader's name, and a refusal's words, every receipt's among them
+// (refuse, words). Each address in the text is what the store keeps of an
+// address (addressWords: its scheme, host and path; "an address" for one
+// it does not admit) and each path's query is left out, so no such text
+// keeps an address's query, fragment or user, which a signed URL's
+// credential and a person's password ride in. A text the store holds as
+// opaque (an id, a validator, a check's state, an item's place) is
+// refused instead where this would change it (holdsAddress); the item's
+// own words (its title, body, steps, labels, logins, milestone and
+// branch) are the person's, kept as the tracker has them, as a ticket's
+// description keeps a person's link.
+func addressFree(s string) string {
 	s = wordsAddress.ReplaceAllStringFunc(s, func(a string) string {
 		if kept, ok := addressWords(a); ok {
 			return kept
 		}
 		return "an address"
 	})
-	s = wordsPathQuery.ReplaceAllString(s, "$1")
+	return wordsPathQuery.ReplaceAllString(s, "$1")
+}
+
+// holdsAddress reports whether the text holds what addressFree changes:
+// an address, or a path's query.
+func holdsAddress(s string) bool { return addressFree(s) != s }
+
+// validator reports whether v is a read's validator as the store keeps
+// one: printable ASCII, at most MaxValidator bytes, holding no address.
+func validator(v string) bool { return validatorPattern.MatchString(v) && !holdsAddress(v) }
+
+// readWords is a read's failure as a row keeps it: cleaned of control
+// characters, made address-free (addressFree), so the words never keep a
+// signed URL's credential, and cut to MaxReadError characters.
+func readWords(s string) string {
+	s = addressFree(strings.TrimSpace(cleanText(s, false)))
 	if rs := []rune(s); len(rs) > MaxReadError {
 		s = string(rs[:MaxReadError-1]) + "…"
 	}
@@ -1234,10 +1270,10 @@ func readWords(s string) string {
 // OnRead's listeners are told, never OnChange's. ErrNotFound when there is
 // no such ticket.
 func (s *Store) RecordTicketRead(ctx context.Context, key, identity string, r TicketRead) error {
-	if !validatorPattern.MatchString(r.IssueETag) || !validatorPattern.MatchString(r.PullETag) {
+	if !validator(r.IssueETag) || !validator(r.PullETag) {
 		return refuse(RefusalInvalid, "a read's validator is not at most %d bytes of printable ASCII", MaxValidator)
 	}
-	by := []rune(strings.TrimSpace(cleanText(r.ReadBy, false)))
+	by := []rune(strings.TrimSpace(addressFree(cleanText(r.ReadBy, false))))
 	by = by[:min(len(by), MaxByName)]
 	return s.recordTicketRead(ctx, key, identity, func(dbtx *sql.Tx, tk Ticket, now time.Time) error {
 		if err := staleRead(ctx, dbtx, tk.ID, identity, r.UpdatedAt); err != nil {

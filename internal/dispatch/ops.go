@@ -180,7 +180,7 @@ func (r *Refusal) Error() string { return r.Code + ": " + r.Words }
 
 // refuse is a Refusal with the given code and words.
 func refuse(code, format string, args ...any) error {
-	return &Refusal{Code: code, Words: fmt.Sprintf(format, args...)}
+	return &Refusal{Code: code, Words: addressFree(fmt.Sprintf(format, args...))}
 }
 
 // The entities a change row names. A set member (an assignee, label,
@@ -859,8 +859,11 @@ func insertReceipt(ctx context.Context, dbtx *sql.Tx, op Op, intent, fp string, 
 	return err
 }
 
-// words cuts a refusal's words to maxReceiptWords characters.
+// words is a refusal's words as a receipt keeps them: address-free
+// (addressFree: no address's query, fragment or user) and cut to
+// maxReceiptWords characters.
 func words(s string) string {
+	s = addressFree(s)
 	rs := []rune(s)
 	if len(rs) <= maxReceiptWords {
 		return s

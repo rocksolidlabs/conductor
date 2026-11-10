@@ -777,7 +777,7 @@ func TestImportImageAtomic(t *testing.T) {
 	// Done already: refused, nothing kept.
 	rc, err = s.ImportImage(ctx, testOp("again"), key, a1, ImageUpload{Name: "x.png", ContentType: "image/png", Body: bytes.NewReader([]byte("other"))})
 	want(t, rc, err, StatusFailed, RefusalInvalid)
-	rc, err = s.ImportImage(ctx, testOp("stranger"), key, "https://github.com/user-attachments/assets/zz", ImageUpload{Name: "x.png", Body: bytes.NewReader(png)})
+	rc, err = s.ImportImage(ctx, testOp("stranger"), key, "https://github.com/user-attachments/assets/zz", ImageUpload{Name: "x.png", ContentType: "image/png", Body: bytes.NewReader(png)})
 	want(t, rc, err, StatusFailed, RefusalInvalid)
 	if n := countOf(t, s, "SELECT COUNT(*) FROM attachments"); n != attachments {
 		t.Fatalf("%d attachments after the refusals, was %d", n, attachments)

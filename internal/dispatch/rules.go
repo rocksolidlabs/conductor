@@ -649,9 +649,18 @@ func Repair(e EdgeChange, admitted bool, at time.Time, n int) ChangeRow {
 // CounterpartState is a ticket's linked issue and the two fields its
 // system may own, as ReconcileCounterpart makes them of a merged log: the
 // four columns of the counterpart group as their rows hold them, the title
-// and the description, and DropRead, which says the replica drops its own
+// and the description; DropRead, which says the replica drops its own
 // ticket_reads row, so the page's next open reads the item with no
-// validators and writes the system's text (rule 5's last case).
+// validators and writes the system's text (rule 5's last case); and
+// Release, the attachments the item's images were made into that the
+// merged manifest does not name (rule 3: of two attachments of one image,
+// the one made later; one cut past MaxImportImages), in their order, nil
+// when there are none. The merge removes each in the step that writes the
+// merged snapshot, as attachment.remove removes one (its row tombstoned,
+// one remove row of the attachments field naming its add's tag, by the
+// actor merge), so every attachment the ticket keeps for an image of the
+// linked item is named by the manifest and every entry that names an
+// attachment names a kept one.
 type CounterpartState struct {
 	ExternalID       string
 	ExternalURL      string
@@ -660,6 +669,7 @@ type CounterpartState struct {
 	Title            string
 	Description      string
 	DropRead         bool
+	Release          []string
 }
 
 // ReconcileCounterpart merges a ticket's counterpart group as one, from
@@ -679,9 +689,11 @@ type CounterpartState struct {
 //  3. Reads by the system's clock: of the item's snapshot rows in the
 //     period, the one with the latest updatedAt (equal: the one order) is
 //     external_snapshot, its manifest every entry any of them holds
-//     (mergeManifest: a manifest only grows, so no attachment is left that
-//     none names), each done by image id where any of them records it;
-//     external_url is its url.
+//     (mergeManifest: a manifest only grows), each done by image id where
+//     any of them records it, an attachment before a skip, the first made
+//     of two attachments, and the attachments it does not name released
+//     (Release), so no attachment of the item's images is kept that none
+//     names; external_url is its url.
 //  4. Owners by the person's order: authority is the last owner change of
 //     the item in the period (its of the item's), else none.
 //  5. Every field has one writer: a field the owners give the system is
@@ -754,7 +766,9 @@ func ReconcileCounterpart(rows []ChangeRow) CounterpartState {
 		if chosen >= 0 {
 			snap, have = reads[chosen], true
 			out.ExternalSnapshot = chosenValue
-			if images, changed := mergeManifest(reads, chosen); changed {
+			images, release, changed := mergeManifest(reads, chosen)
+			out.Release = release
+			if changed {
 				snap.Images = images
 				if v, err := encodeSnapshot(snap); err == nil {
 					out.ExternalSnapshot = v
@@ -803,23 +817,37 @@ func ReconcileCounterpart(rows []ChangeRow) CounterpartState {
 }
 
 // mergeManifest is the image manifest of the merged snapshot, the read
-// chosen of reads (rule 3): a manifest only grows and its entries only
-// become done, on one replica as in a merge, so it is the chosen read's
-// entries in their order, then every entry another read holds that it
-// lacks, in the one order of the reads and each read's own order, each
-// entry done with the attachment or the skip the last read in that order
-// records for its image id. Past MaxImportImages (two replicas that each
-// added images after they parted), pending entries go first, the latest
-// first, so a done entry (an attachment made, a skip recorded) is kept
-// before any pending one; only more than MaxImportImages done entries,
-// which needs replicas that each completed new images past the bound
-// between them, cut a done one, the latest in the same order. changed is
+// chosen of reads (rule 3), and the attachments it releases. A manifest
+// only grows and its entries only become done, on one replica as in a
+// merge, so it is the chosen read's entries in their order, then every
+// entry another read holds that it lacks, in the one order of the reads
+// and each read's own order. Each entry is done as the reads record its
+// image, taken in their one order: by the first attachment made of it,
+// since an attachment is never replaced by a completion that made none (a
+// skip; a try that failed records nothing); with none, by the first skip
+// recorded. An attachment of the image that is not the entry's (another
+// replica's, made later in the one order) is released. Past
+// MaxImportImages (replicas that each added images after they parted) the
+// latest entries go first, pending ones, then skips, then those that name
+// an attachment, which is released; so an attachment is cut only when
+// more than MaxImportImages entries name one. release is every
+// attachment some read's entry names that the result does not, in the
+// order the reads first name them, nil when there is none; changed is
 // false when the result is the chosen read's own manifest.
-func mergeManifest(reads []ExternalSnapshot, chosen int) ([]SnapshotImage, bool) {
+func mergeManifest(reads []ExternalSnapshot, chosen int) (images []SnapshotImage, release []string, changed bool) {
 	done := map[string]SnapshotImage{}
+	var made []string
+	madeSeen := map[string]bool{}
 	for _, r := range reads {
 		for _, im := range r.Images {
-			if im.done() {
+			if im.AttachmentID != "" && !madeSeen[im.AttachmentID] {
+				madeSeen[im.AttachmentID] = true
+				made = append(made, im.AttachmentID)
+			}
+			switch d, ok := done[im.ID]; {
+			case im.AttachmentID != "" && (!ok || d.AttachmentID == ""):
+				done[im.ID] = im
+			case im.Skipped != "" && !ok:
 				done[im.ID] = im
 			}
 		}
@@ -847,16 +875,28 @@ func mergeManifest(reads []ExternalSnapshot, chosen int) ([]SnapshotImage, bool)
 			add(im)
 		}
 	}
-	for i := len(out) - 1; len(out) > MaxImportImages && i >= 0; i-- {
-		if !out[i].done() {
-			out = slices.Delete(out, i, i+1)
+	for _, cut := range []func(SnapshotImage) bool{
+		func(im SnapshotImage) bool { return !im.done() },
+		func(im SnapshotImage) bool { return im.AttachmentID == "" },
+		func(SnapshotImage) bool { return true },
+	} {
+		for i := len(out) - 1; len(out) > MaxImportImages && i >= 0; i-- {
+			if cut(out[i]) {
+				out = slices.Delete(out, i, i+1)
+			}
 		}
-	}
-	if len(out) > MaxImportImages {
-		out = out[:MaxImportImages]
 	}
 	if out == nil {
 		out = []SnapshotImage{}
 	}
-	return out, !slices.Equal(out, reads[chosen].Images)
+	named := map[string]bool{}
+	for _, im := range out {
+		named[im.AttachmentID] = true
+	}
+	for _, id := range made {
+		if !named[id] {
+			release = append(release, id)
+		}
+	}
+	return out, release, !slices.Equal(out, reads[chosen].Images)
 }

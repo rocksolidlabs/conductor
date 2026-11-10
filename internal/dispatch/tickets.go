@@ -1047,8 +1047,9 @@ func readTexts(ctx context.Context, q queryer, query string, args ...any) ([]str
 // more when a merge left more: the field rules), at most
 // MaxTicketApproved, each with its staleness; how many launches it has;
 // and, from schema version 4, its linked issue's owners and last read and
-// its links' reads summarised (at most MaxTicketExternalParts with the
-// snapshot). The revisions, the launches and a link's whole read are reads
+// its links' reads summarised (with the snapshot, the counterpart group,
+// closed_on and the policy's merged, at most MaxTicketExternalParts more
+// than main's read). The revisions, the launches and a link's whole read are reads
 // of their own (Plans, LinkReadOf), so the read keeps its bound.
 type TicketView struct {
 	Ticket
