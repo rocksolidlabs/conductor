@@ -364,8 +364,10 @@ type ViewerJoin struct {
 // link asked for and that is still under way (one that left once it had
 // sent) is withdrawn. A switchyard also sends it for a link it ends of
 // itself at an open admission past its bound, whether or not a viewer
-// joined through it, so that the host no longer offers it. LinkID is at
-// most MaxLinkID bytes; an older host ignores the message.
+// joined through it, to the connection that holds the link (its
+// session's, or its run's desk's): on the connection that asked for the
+// link, after its link_created. LinkID is at most MaxLinkID bytes; an older
+// host ignores the message.
 type LinkGone struct {
 	T      string `json:"t"`
 	LinkID string `json:"linkId"`

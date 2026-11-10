@@ -283,8 +283,10 @@ func (k *linkKeeper) yielding(addr string, now time.Time, n int) []string {
 // against addr. Only a link that still opens something (opens) is
 // counted, moved or kept: one that no longer does (expired and not yet
 // swept, revoked and not yet told, dropped) is released and returned as
-// dead, taking no place. The address's other links are left as they are.
-// Called with mu held.
+// dead, taking no place. The address's other links are left as they are,
+// and of them too only those that still open something take a place (the
+// sweep and the revoke's hook release the rest, as ever). Called with mu
+// held.
 func (k *linkKeeper) admitOpen(owner, addr string, bound int, now time.Time, opens func(id string) bool) (ended, moved, dead []string) {
 	var cs []giveUp
 	away := k.away(owner, now)
@@ -299,7 +301,14 @@ func (k *linkKeeper) admitOpen(owner, addr string, bound int, now time.Time, ope
 		k.release(id)
 	}
 	giveUpFirst(cs)
-	over := len(k.addrs[addr]) + len(cs) - bound
+	over := len(cs) - bound
+	if len(cs) > 0 {
+		for id := range k.addrs[addr] {
+			if opens(id) {
+				over++
+			}
+		}
+	}
 	for i, c := range cs {
 		kl := k.kept[c.id]
 		k.release(c.id)
@@ -387,9 +396,17 @@ var (
 // keeps nothing of a link the store no longer opens: one revoked, expired
 // or dropped since it was made is neither counted nor written, nor has any
 // other ended for it. A link refused is dropped from the store.
-func (s *Server) keepLink(link *share.Link, token, owner, addr string) error {
+//
+// answer queues the host's answer naming the link (link_created) and is
+// called once the link is kept, never for one refused: with fmu still
+// held, which an open admission (hostUp) takes before it may end the link,
+// so that whatever the admission tells the connection of the link comes
+// after its creation. It only queues in the connection's own lane, which
+// never waits (signal.HostedSession.Tell).
+func (s *Server) keepLink(link *share.Link, token, owner, addr string, answer func()) error {
 	k := s.keeper
 	if k == nil || owner == "" {
+		answer()
 		return nil
 	}
 	if f := k.keeping.Load(); f != nil {
@@ -476,6 +493,7 @@ func (s *Server) keepLink(link *share.Link, token, owner, addr string) error {
 		s.deleteFile(id, o)
 		s.log.Info("a kept link gave its place to a new one, its host gone", "link", id)
 	}
+	answer()
 	k.fmu.Unlock()
 	for _, l := range ended {
 		s.closeLinkViewers(l)
@@ -564,13 +582,16 @@ func (s *Server) dropLinkFile(linkID string) {
 // no link request of it is decided between the two, and those that leave
 // the address past the bound end (admitOpen), as a link that gives its
 // place up does: they leave the keeper and the store, their files go, and
-// their viewers are closed; the host's connections that hold them are told
-// they went, whether or not anyone joined through them (endHeldLink). A
-// link that no longer opens anything is counted for nothing and its file
-// goes. The files of the links that end go before the others are written
-// again with the address, so a stop between leaves no ended link kept. The
-// address's other links stay as they are. While the instance holds a
-// connection admitted open, it makes no link with the token (keepLink).
+// their viewers are closed; the connection that holds each is told it
+// went, after its link_created (keepLink queues that under fmu), whether or
+// not anyone joined through it (endHeldLink). Of the links it made with
+// the token, one that no longer opens anything is counted for nothing and
+// its file goes; of the address's, one that no longer opens anything takes
+// no place and is left as it is, to the sweep and the revoke's hook. The
+// files of the links that end go before the others are written again with
+// the address, so a stop between leaves no ended link kept. The address's
+// other links stay as they are. While the instance holds a connection
+// admitted open, it makes no link with the token (keepLink).
 func (s *Server) hostUp(owner, addr string) func() {
 	k := s.keeper
 	if k == nil || owner == "" {
@@ -632,7 +653,9 @@ func (s *Server) hostUp(owner, addr string) func() {
 // ended of itself while its host may hold it (an open admission), as
 // closeLinkViewers does, and tells the connection that holds it (its
 // session's, or its run's desk's) that it went, whether or not a viewer
-// joined through it, so that the host no longer offers it.
+// joined through it. A run link of a run with no desk is told to its
+// members' connections as closeLinkViewers tells them: only when a viewer
+// joined through it.
 func (s *Server) endHeldLink(l *share.Link) {
 	switch {
 	case l.RunID == "":

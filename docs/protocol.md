@@ -548,8 +548,8 @@ of the leaves of the link's viewers; those viewers are closed before it is
 queued, and nothing of theirs still queued is sent after it (see the
 queue's lanes above), so a host, older or newer, never hears of a viewer of
 a link after its going; no link no viewer joined through is named,
-except one a switchyard ends of itself at an open admission (see its
-links below); and a host away is not told again. The server keeps at most 1024 joined
+except one a switchyard ends of itself at an open admission, to the
+connection that holds it (see its links below); and a host away is not told again. The server keeps at most 1024 joined
 links per session (far more than can open it at once); one pushed out is
 named gone then (it may still open the session: a viewer joining through it
 later starts afresh on the host). The host types nothing more of what a
@@ -839,12 +839,21 @@ switchyard restarted), the links that instance made with the token count
 against its address from then on, as the links an open host mints do, and
 those that would leave the address past `switchyard.openHostLinks` are
 ended at once, the oldest first. Only a link that still opens something
-counts: one that has expired and is not yet swept, or is revoked, takes no
-place, and its file goes. An ended link is as a revoked one: its viewers
-are closed, a join answers 404, its file goes, the host's `registered`
-leaves it out of `links`, and the host's connection that holds it (its
-session's, or its run's desk's) is told `link_gone` for it, whether or not
-a viewer joined through it. Only that host's links end; the links of the
+counts, the address's own links as the host's: one that has expired and is
+not yet swept, or is revoked and not yet released, takes no place. Of the
+host's links made with the token, such a one's file goes then; one of the
+address's is left as it is, for the sweep or the revoke to remove. An
+ended link is as a revoked one: its viewers are closed, a join answers
+404, its file goes, the host's `registered` leaves it out of `links`, and
+the host's connection that holds it (its session's, or its run's desk's)
+is told `link_gone` for it, whether or not a viewer joined through it; on
+the connection that asked for the link, that comes after its
+`link_created`, however close the request and the admission come. A run link of a run with no desk is told to its
+members' connections only if a viewer joined through it, as for a revoke.
+That is all the switchyard does: what the publisher lists or offers after
+`link_gone` is the publisher's, and today it goes on listing a link that is
+not a decision link until it registers again or a person revokes it
+(issue #820). Only that host's links end; the links of the
 address's other hosts stay as they are, and from then on the address's
 links, the host's among them, are bounded, give their places up and are
 refused as any open host's. While the instance holds a connection admitted
@@ -860,8 +869,10 @@ link ended so whose file the switchyard could not remove stays ended while
 the switchyard runs, and its file goes at the next sweep that can remove
 it; if the switchyard restarts first, the file is read back as a link made
 with the token: counted again at its host's next open admission, and
-working again if its host comes back with the token. A link whose file the
-switchyard could not rewrite with its address is read back the same way.
+working again if its host comes back with the token, though its publisher,
+told of its end, may no longer list it. A restart that cannot write the
+links folder reads back no link, until a later restart that can. A link whose file the switchyard could not rewrite with its address is
+read back the same way.
 A run
 the publishing server forgets (idle and evicted past its hundred, or one
 whose launch failed) has the links minted for it at the switchyard revoked

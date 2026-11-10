@@ -1101,10 +1101,9 @@ func (h *HostedSession) linkViewers(linkID string) []*Viewer {
 func (h *HostedSession) DisconnectLink(linkID string) { h.closeLink(linkID, true, false) }
 
 // DisconnectHeldLink is DisconnectLink for a link the server ended of
-// itself while its host may still hold and offer it (a switchyard's open
+// itself while this connection may still hold it (a switchyard's open
 // admission past its bound): the host is told the link went (link_gone)
-// whether or not a viewer ever joined through it, so that it no longer
-// offers it.
+// whether or not a viewer ever joined through it.
 func (h *HostedSession) DisconnectHeldLink(linkID string) { h.closeLink(linkID, true, true) }
 
 // EndLink closes the viewers attached through linkID, one of the session's

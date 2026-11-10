@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -609,7 +610,7 @@ func TestEveryOrderOfAnInstancesConnectionsCountsItsLinks(t *testing.T) {
 				t.Fatal(err)
 			}
 			decided := make(chan error, 1)
-			go func() { decided <- e.srv.keepLink(l, token, owner, "") }()
+			go func() { decided <- e.srv.keepLink(l, token, owner, "", func() {}) }()
 			select {
 			case <-reached:
 			case <-time.After(10 * time.Second):
@@ -976,5 +977,277 @@ func TestALinkEndedAtAnOpenAdmissionWhoseFileStays(t *testing.T) {
 			again, reg := dialFakeHostWith(t, b, hi, hs, "")
 			heldToTheOpenBound(t, b, dir, again, reg, ids, tokens)
 		})
+	}
+}
+
+// At an open admission the address's own links count only while they
+// still open something: one of another open host's, or of the admitted
+// instance's own from that address, that has expired by the link store's
+// clock and is not yet swept, or that is revoked and its hook not yet run,
+// takes no place, so a live link the instance made with the token is not
+// ended for it. The admission leaves those links as they are (counted,
+// their files there) for the sweep and the hook, after which the address
+// holds the admitted link alone, one of its one.
+func TestAnOpenAdmissionCountsOnlyTheAddresssLinksThatStillOpen(t *testing.T) {
+	const instance = "instance-secret-0123456789"
+	for _, dead := range []string{"another open host's, expired", "its own from the address, expired", "another open host's, revoked"} {
+		t.Run(dead, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "data")
+			e := keptSwitchyard(t, dir, func(c *config.Config) { c.Switchyard.OpenHostLinks = 1 })
+			var clock atomic.Int64
+			now := func() time.Time { return time.Now().Add(time.Duration(clock.Load())) }
+			e.srv.links.SetNowForTest(now)
+			hi, hs := instanceHost(e, instance, "1")
+			// x: the address's link that will open nothing.
+			var (
+				x       string
+				release = func() {}
+			)
+			switch dead {
+			case "its own from the address, expired":
+				open, _ := dialFakeHostWith(t, e, hi, hs, "")
+				x, _ = mintHostLinkFor(t, open, "x", 300)
+				leave(t, e, open)
+			default:
+				ohi, ohs := instanceHost(e, "other-instance-0123456789", "h")
+				other, _ := dialFakeHostWith(t, e, ohi, ohs, "")
+				ttl := 300
+				if dead == "another open host's, revoked" {
+					ttl = 0
+				}
+				x, _ = mintHostLinkFor(t, other, "x", ttl)
+				leave(t, e, other)
+				if ttl == 0 {
+					release = revokeHeld(t, e, other.sessionID, x)
+				}
+			}
+			tokened, _ := dialFakeHostWith(t, e, hi, hs, "Bearer test-host-token")
+			l, lt := mintHostLinkFor(t, tokened, "l", 0)
+			leave(t, e, tokened)
+			if dead != "another open host's, revoked" {
+				clock.Store(int64(301 * time.Second))
+			}
+			if e.srv.opensAnything(x) {
+				t.Fatalf("the address's link %s still opens", x)
+			}
+			open, reg := dialFakeHostWith(t, e, hi, hs, "")
+			linkKept(t, e, dir, l, lt)
+			if links, _ := reg["links"].([]any); !slices.Contains(links, any(l)) {
+				t.Fatalf("registered lists %v, not the kept link %s", links, l)
+			}
+			counted := func() []string {
+				k := e.srv.keeper
+				k.mu.Lock()
+				defer k.mu.Unlock()
+				var ids []string
+				for id := range k.addrs["127.0.0.1"] {
+					ids = append(ids, id)
+				}
+				slices.Sort(ids)
+				return ids
+			}
+			// The dead link is left as it was: counted, its file there.
+			want := []string{l, x}
+			slices.Sort(want)
+			if got := counted(); !slices.Equal(got, want) {
+				t.Fatalf("counted against the address after the admission %v, want %v", got, want)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "links", x+".json")); err != nil {
+				t.Fatalf("the file of the address's dead link: %v", err)
+			}
+			release()
+			e.srv.links.ExpireDue(now())
+			e.srv.sweepLinks(now())
+			if got := counted(); !slices.Equal(got, []string{l}) {
+				t.Fatalf("counted against the address after the sweep %v, want [%s]", got, l)
+			}
+			linkKept(t, e, dir, l, lt)
+			open.send(proto.HostLinkMsg{T: proto.HostLink, RequestID: "o1", Role: "view"})
+			if m := linkAnswer(t, open, "o1"); m["code"] != "link_refused" {
+				t.Fatalf("the address at its bound, one of one: %v", m)
+			}
+		})
+	}
+}
+
+// logGate is a log handler that holds the first record with the message
+// it is armed with, until released.
+type logGate struct {
+	msg     atomic.Pointer[string]
+	once    sync.Once
+	reached chan struct{}
+	gate    chan struct{}
+}
+
+func newLogGate() *logGate {
+	return &logGate{reached: make(chan struct{}), gate: make(chan struct{})}
+}
+
+func (g *logGate) Enabled(context.Context, slog.Level) bool { return true }
+
+func (g *logGate) Handle(_ context.Context, r slog.Record) error {
+	if m := g.msg.Load(); m != nil && r.Message == *m {
+		g.once.Do(func() {
+			close(g.reached)
+			<-g.gate
+		})
+	}
+	return nil
+}
+
+func (g *logGate) WithAttrs([]slog.Attr) slog.Handler { return g }
+func (g *logGate) WithGroup(string) slog.Handler      { return g }
+
+// arm holds the next record logged with msg.
+func (g *logGate) arm(msg string) { g.msg.Store(&msg) }
+
+// held waits for the record; the bound only bounds a hang.
+func (g *logGate) held(t *testing.T) {
+	t.Helper()
+	select {
+	case <-g.reached:
+	case <-time.After(10 * time.Second):
+		t.Fatal("nothing reached the log line")
+	}
+}
+
+// toldOf is what h is told of the link its request requestID made, in
+// order, once it has been told both its link_created (returned too) and its
+// link_gone.
+func toldOf(t *testing.T, h *fakeHost, requestID string) ([]string, map[string]any) {
+	t.Helper()
+	type said struct{ t, id string }
+	var (
+		told    []said
+		created map[string]any
+	)
+	timeout := time.After(10 * time.Second)
+	for {
+		if created != nil && slices.Contains(told, said{proto.HostLinkGone, created["linkId"].(string)}) {
+			var out []string
+			for _, s := range told {
+				if s.id == created["linkId"] {
+					out = append(out, s.t)
+				}
+			}
+			return out, created
+		}
+		select {
+		case m := <-h.msgs:
+			id, _ := m["linkId"].(string)
+			switch m["t"] {
+			case proto.HostLinkCreated:
+				if m["requestId"] == requestID {
+					created = m
+				}
+				told = append(told, said{proto.HostLinkCreated, id})
+			case proto.HostLinkGone:
+				told = append(told, said{proto.HostLinkGone, id})
+			case proto.HostError:
+				if m["requestId"] == requestID {
+					t.Fatalf("the request was refused: %v", m)
+				}
+			}
+		case <-timeout:
+			t.Fatalf("told %v, not both the link's creation and its end", told)
+		}
+	}
+}
+
+// joinToken is the token of the link a link_created m names.
+func joinToken(m map[string]any) string {
+	u, _ := m["url"].(string)
+	return u[strings.LastIndex(u, "/")+1:]
+}
+
+// A link an open admission of another session of its instance ends is told
+// to the connection that asked for it after its link_created, whichever of
+// the two the switchyard does first: the admission as the request's answer
+// is on its way, after the host has its answer, or before the keeper
+// decides the request (then refused, and nothing named). A session's link
+// and a run's link alike.
+func TestALinkEndedAtAnOpenAdmissionIsToldAfterItsCreation(t *testing.T) {
+	const instance = "instance-secret-0123456789"
+	type kind struct {
+		name, logged string
+		ask          func(t *testing.T, e *testEnv) (*fakeHost, func(requestID string))
+	}
+	kinds := []kind{
+		{"a session's link", "link minted for a host", func(t *testing.T, e *testEnv) (*fakeHost, func(string)) {
+			hi, hs := instanceHost(e, instance, "1")
+			h, _ := dialFakeHostWith(t, e, hi, hs, "Bearer test-host-token")
+			return h, func(id string) { h.send(proto.HostLinkMsg{T: proto.HostLink, RequestID: id, Role: "view"}) }
+		}},
+		{"a run link", "run link minted for a host", func(t *testing.T, e *testEnv) (*fakeHost, func(string)) {
+			d := dialFakeDeskWith(t, e, deskReg(instance, "run-1"), "Bearer test-host-token")
+			g := proto.RunGroup{ID: "run-1", Name: "Release", Desk: d.sessionID, Members: []proto.RunMember{{Name: "lead", AgentID: "cat", Status: "pending"}}}
+			return d, func(id string) {
+				d.send(proto.HostRunLinkMsg{T: proto.HostRunLink, RequestID: id, Role: "view", Run: g})
+			}
+		}},
+	}
+	for _, kd := range kinds {
+		for _, when := range []string{"as its answer is on its way", "after its answer", "before the keeper decides"} {
+			t.Run(kd.name+", admitted "+when, func(t *testing.T) {
+				dir := filepath.Join(t.TempDir(), "data")
+				gate := newLogGate()
+				t.Cleanup(func() {
+					select {
+					case <-gate.gate:
+					default:
+						close(gate.gate)
+					}
+				})
+				e := newTestEnvLogging(t, func(c *config.Config) {
+					c.Switchyard.Enabled = true
+					c.Switchyard.OpenHosts = true
+					c.DataDir = dir
+					c.Switchyard.OpenHostLinks = 1
+				}, slog.New(gate))
+				// Another instance's open host fills the address.
+				ohi, ohs := instanceHost(e, "other-instance-0123456789", "h")
+				other, _ := dialFakeHostWith(t, e, ohi, ohs, "")
+				x, xt := mintHostLink(t, other, "x")
+				holder, ask := kd.ask(t, e)
+				hi, hs := instanceHost(e, instance, "2")
+				admit := func() { dialFakeHostWith(t, e, hi, hs, "") }
+				var id, token string
+				switch when {
+				case "as its answer is on its way":
+					gate.arm(kd.logged)
+					ask("r1")
+					gate.held(t)
+					admit()
+					close(gate.gate)
+					told, m := toldOf(t, holder, "r1")
+					if !slices.Equal(told, []string{proto.HostLinkCreated, proto.HostLinkGone}) {
+						t.Fatalf("the connection that asked is told %v of its link", told)
+					}
+					id, token = m["linkId"].(string), joinToken(m)
+				case "after its answer":
+					ask("r1")
+					m := linkAnswer(t, holder, "r1")
+					if m["t"] != proto.HostLinkCreated {
+						t.Fatalf("the link: %v", m)
+					}
+					id, token = m["linkId"].(string), joinToken(m)
+					admit()
+					linkGoneFor(t, holder, id)
+				default:
+					hold := holdKeeping(t, e, false)
+					ask("r1")
+					hold.held()
+					admit()
+					hold.release()
+					if m := linkAnswer(t, holder, "r1"); m["code"] != "link_refused" || m["message"] != errOpenHeld.Error() {
+						t.Fatalf("a request with the token decided after its instance's open admission: %v", m)
+					}
+					linkKept(t, e, dir, x, xt)
+					return
+				}
+				linkEnded(t, e, dir, id, token)
+				linkKept(t, e, dir, x, xt)
+			})
+		}
 	}
 }
