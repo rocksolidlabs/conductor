@@ -1836,6 +1836,9 @@ func (s *Server) routeBrakeman(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/brakeman/screen", s.observeRoute(s.handleBrakemanScreen))
 	mux.HandleFunc("GET /api/brakeman/overlaps", s.observeRoute(s.handleBrakemanOverlaps))
 	mux.HandleFunc("GET /api/brakeman/briefs", s.observeRoute(s.handleBrakemanBriefs))
+	// The History search within the grant (docs/plans/history.md, PR-11),
+	// its reply held and written as the History's routes write theirs.
+	mux.HandleFunc("GET /api/brakeman/history", historyRoute(s.observeRoute(s.handleBrakemanHistory)))
 	mux.HandleFunc("GET /api/brakeman/role", s.requireAdmin(s.handleBrakemanRole))
 	mux.HandleFunc("POST /api/brakeman/role", s.requireAdmin(s.handleBrakemanRoleAction))
 	mux.HandleFunc("POST /api/brakeman/role/notes", s.requireAdmin(s.handleBrakemanKeepNote))

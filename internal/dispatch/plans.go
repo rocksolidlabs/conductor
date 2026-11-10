@@ -785,7 +785,7 @@ var intentFields = []struct{ field, words string }{{"title", "the title"}, {"des
 
 // intentWords says which of the ticket's intent fields differ now from
 // what they were at the revision's approval: a field the ticket's set
-// rows after the approval's latest (by the local seq) touched, whose
+// or observe rows after the approval's latest (by the local seq) touched, whose
 // first such row's prior (its value at the approval) is not its value
 // now, so a field edited and edited back is not named: "the description
 // changed since revision 3 was approved", or, when the log does not say
@@ -796,11 +796,13 @@ func intentWords(ctx context.Context, q queryer, tk Ticket, p PlanSummary) (stri
 		EntityPlan, p.ID).Scan(&since); err != nil {
 		return "", err
 	}
-	// Each field's first set row after the approval, its prior the
-	// field's value at the approval.
+	// Each field's first set or observe row after the approval (a change
+	// a read of the linked item wrote is a change), its prior the field's
+	// value at the approval; an adopt row keeps the text it found, and its
+	// prior is the system that owned it, so it is never one.
 	rows, err := q.QueryContext(ctx, `SELECT field, prior FROM changes WHERE seq IN (SELECT MIN(seq) FROM changes
-		WHERE entity = ? AND entity_id = ? AND op = ? AND seq > ? AND field IN ('title', 'description', 'acceptance') GROUP BY field)`,
-		EntityTicket, tk.ID, OpSet, since)
+		WHERE entity = ? AND entity_id = ? AND op IN (?, ?) AND seq > ? AND field IN ('title', 'description', 'acceptance') GROUP BY field)`,
+		EntityTicket, tk.ID, OpSet, OpObserve, since)
 	if err != nil {
 		return "", err
 	}

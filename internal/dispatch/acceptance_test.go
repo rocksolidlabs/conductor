@@ -398,10 +398,11 @@ func TestTheCloseStateIsComputedOnRead(t *testing.T) {
 		t.Fatalf("a deleted ticket's: %+v", st)
 	}
 	// Nothing of the state is a column: the ticket's columns are the
-	// schema's, the acceptance's facts among them and no close.
+	// schema's, the acceptance's facts among them and no close (closed_on
+	// is the read a gated close rested on, a fact, not the state).
 	cols := texts(t, s, "SELECT name FROM pragma_table_info('tickets')")
 	for _, c := range cols {
-		if (strings.Contains(c, "close") && c != "closed_at") || strings.Contains(c, "blocked") || strings.Contains(c, "met") {
+		if (strings.Contains(c, "close") && c != "closed_at" && c != "closed_on") || strings.Contains(c, "blocked") || strings.Contains(c, "met") {
 			t.Fatalf("a stored state: %s", c)
 		}
 	}

@@ -265,7 +265,7 @@ func TestTheAdminsReadsAreUnchanged(t *testing.T) {
 func TestBrakemansPrincipalReadsOnlyTheNamedRoutes(t *testing.T) {
 	f := newObsFixture(t)
 	f.turn(t, nil)
-	own := []string{"GET /api/brakeman/changes", "GET /api/brakeman/status", "GET /api/brakeman/screen", "GET /api/brakeman/overlaps", "GET /api/brakeman/briefs"}
+	own := []string{"GET /api/brakeman/changes", "GET /api/brakeman/status", "GET /api/brakeman/screen", "GET /api/brakeman/overlaps", "GET /api/brakeman/briefs", "GET /api/brakeman/history"}
 	wild := strings.NewReplacer("{run}", f.run, "{task}", "build", "{n}", "1", "{id}", "test", "{k}", "1", "{key}", f.ticket, "{command}", "c1")
 	for _, pattern := range muxPatterns(t, "/api/") {
 		method, path, _ := strings.Cut(pattern, " ")
