@@ -687,7 +687,15 @@ screens, off by default). Its own reads under `/api/brakeman/` add what
 changed since a time or since the last complete briefing's watermarks
 (`brakeman_changes.go`: the ledger's events, the sessions' activity
 windows with their gaps, Dispatch's change feed), the status Conductor
-computes, a screen, overlapping changes and earlier briefs. Each read
+computes, a screen, overlapping changes, earlier briefs and the History
+search (`brakeman_history.go`: answered newest first from the rows the
+turn's grant covers, which the index draws by their own columns and reads
+no other, at most 1,000 a reply, the line's words matched against those
+rows' texts alone (`internal/history/draw.go`); an entry only when
+every class its text reads is visible and the record it is of resolves
+within the grant from its own store, never a Brakeman turn's own run or
+session, one stored record's with no links, each cited by its ref and
+never by the index's key). Each read
 counts against the turn's budget and goes into its read log, which is how
 the server knows what the turn saw and how far its coverage reaches; an
 earlier brief made under a wider scope or visibility is given only as its
@@ -709,7 +717,10 @@ Every fact names evidence as refs (`run:`,
 `brakeman_refs.go` resolves each against its own store, the grant and the
 read log before the brief is kept: a ref that names nothing, lies outside
 the grant or names a revision other than the one read is refused (`422
-bad_refs`), so the agent fixes it in its turn. What each ref was when read
+bad_refs`), so the agent fixes it in its turn. A session the registry no
+longer lists (one that ended before a restart) resolves from its record
+in the session journal, admitted by the repository and run the record
+keeps and followed on its record's page. What each ref was when read
 and when kept is kept beside the brief, and the page marks what changed
 since.
 
