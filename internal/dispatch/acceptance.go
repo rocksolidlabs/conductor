@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"strings"
+	"time"
 )
 
 // Acceptance is a fact of its own, never implied by a status: the
@@ -35,16 +36,21 @@ type CloseState struct {
 	Missing     []string `json:"missing"`
 	Why         string   `json:"why,omitempty"`
 	VerifiedWhy string   `json:"verifiedWhy,omitempty"`
+	MergedWhy   string   `json:"mergedWhy,omitempty"`
+	// mergedOn is the read merged rests on when it is met: what a close
+	// the policy gates writes in closed_on.
+	mergedOn *ClosedOn
 }
 
 // CloseMet says which of the close policy's requirements a ticket meets,
 // required or not: the owner's acceptance, a delivery link, and a
 // delivery whose candidate's recorded receipt passed (verified, which
-// implies a delivery).
+// implies a delivery), and a delivery read merged a moment ago (merged).
 type CloseMet struct {
 	Acceptance bool `json:"acceptance"`
 	Delivery   bool `json:"delivery"`
 	Verified   bool `json:"verified"`
+	Merged     bool `json:"merged"`
 }
 
 // AcceptTicket records the owner's acceptance of the live ticket with the
@@ -138,29 +144,30 @@ func (s *Store) CloseState(ctx context.Context, key string) (CloseState, error) 
 		if err != nil {
 			return err
 		}
-		out, err = closeOf(ctx, q, p, tk)
+		out, err = closeOf(ctx, q, p, tk, time.Now())
 		return err
 	})
 	return out, err
 }
 
-// closeOf is the close policy's state of the ticket tk of the project p:
-// tk's acceptance, owner and criteria as given (the gate passes them as
-// an edit leaves them), and its live delivery links.
-func closeOf(ctx context.Context, q queryer, p Project, tk Ticket) (CloseState, error) {
+// closeOf is the close policy's state of the ticket tk of the project p at
+// now: tk's acceptance, owner and criteria as given (the gate passes them
+// as an edit leaves them), and its live delivery links with their reads.
+func closeOf(ctx context.Context, q queryer, p Project, tk Ticket, now time.Time) (CloseState, error) {
 	deliveries, err := deliveriesOf(ctx, q, tk.ID)
 	if err != nil {
 		return CloseState{}, err
 	}
-	return closeState(p.CloseRequires, tk, deliveries), nil
+	return closeState(p.CloseRequires, tk, deliveries, now), nil
 }
 
 // closeState is the close policy's state, pure: the acceptance is met when
 // one is recorded, for the owner the ticket has now, against the criteria
 // it has now; a delivery when a live delivery link is there; verified when
 // one of them names a candidate whose recorded receipt passed
-// (verifiedState).
-func closeState(requires []string, tk Ticket, deliveries []delivery) CloseState {
+// (verifiedState); merged when one of them was read merged at most
+// MaxMergedReadAge before now (mergedState).
+func closeState(requires []string, tk Ticket, deliveries []delivery, now time.Time) CloseState {
 	st := CloseState{Requires: append([]string{}, requires...), Missing: []string{}}
 	var why []string
 	if !tk.AcceptedAt.IsZero() {
@@ -178,8 +185,10 @@ func closeState(requires []string, tk Ticket, deliveries []delivery) CloseState 
 	}
 	st.Met.Delivery = len(deliveries) > 0
 	st.Met.Verified, st.VerifiedWhy = verifiedState(deliveries)
+	st.Met.Merged, st.MergedWhy, st.mergedOn = mergedState(deliveries, now)
 	for _, r := range requires {
-		if (r == RequireAcceptance && !st.Met.Acceptance) || (r == RequireDelivery && !st.Met.Delivery) || (r == RequireVerified && !st.Met.Verified) {
+		if (r == RequireAcceptance && !st.Met.Acceptance) || (r == RequireDelivery && !st.Met.Delivery) || (r == RequireVerified && !st.Met.Verified) ||
+			(r == RequireMerged && !st.Met.Merged) {
 			st.Missing = append(st.Missing, r)
 		}
 	}
@@ -205,6 +214,8 @@ func policyRefusal(what string, st CloseState) error {
 			lacks = append(lacks, "a delivery link")
 		case RequireVerified:
 			lacks = append(lacks, "a verified delivery ("+st.VerifiedWhy+")")
+		case RequireMerged:
+			lacks = append(lacks, "a merged delivery ("+st.MergedWhy+")")
 		}
 	}
 	return &Refusal{Code: RefusalClosePolicy, Words: what + " is done only once its project's close policy is met: it lacks " + strings.Join(lacks, " and "),
