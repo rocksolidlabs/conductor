@@ -160,9 +160,13 @@ func (c Credential) Write() (Write, bool) {
 // token's transport checks each request it is given, at every hop a client
 // makes, and sends only one whose URL has that scheme, that host byte for
 // byte and no user, setting Authorization on a copy of it and sending no
-// Referer; any other is refused with ErrOffHost before base sees it, so
-// code that holds a credential cannot send its token anywhere else. An
-// address the system signs is fetched over base, with no credential.
+// Referer; any other is refused with ErrOffHost before base sees it. So
+// the destination is fixed by the credential at the level of the address:
+// no request for another address carries the token. base itself is the
+// caller's round tripper (the adapter's Options.Transport, a seam for
+// tests, nil for the standard one): it is handed the copy that carries
+// Authorization, and it dials where it dials. An address the system signs
+// is fetched over base, with no credential.
 func (c Credential) Transport(base http.RoundTripper) http.RoundTripper {
 	if base == nil {
 		base = http.DefaultTransport

@@ -31,8 +31,28 @@ func holding(r tracker.Ref, id tracker.RemoteID) tracker.Ref {
 	return r
 }
 
-func (r *rig) commentCred(pub string, try int) tracker.Credential {
-	return r.cred.ForWrite(tracker.Write{Kind: tracker.WriteComment, Publication: pub, Try: try, PostSha256: strings.Repeat("ab", 32)})
+// posted is text as a publication posts it: the text, a blank line and the
+// publication's marker (text that already holds the marker as it is).
+func posted(pub, text string) string {
+	marker := "<!-- conductor-publication:" + pub + " -->"
+	if strings.Contains(text, marker) {
+		return text
+	}
+	return text + "\n\n" + marker
+}
+
+// tagFor is a comment's write tag for body: its PostSha256 the SHA-256 of
+// the exact bytes posted.
+func tagFor(pub string, try int, body string) tracker.Write {
+	sum := sha256.Sum256([]byte(body))
+	return tracker.Write{Kind: tracker.WriteComment, Publication: pub, Try: try, PostSha256: hex.EncodeToString(sum[:])}
+}
+
+// post posts text as publication pub's try: its bytes posted(pub, text),
+// under a credential tagged with their digest.
+func (r *rig) post(c context.Context, pub string, try int, t tracker.Target, text string) (tracker.Comment, error) {
+	body := posted(pub, text)
+	return r.a.Comment(c, r.cred.ForWrite(tagFor(pub, try, body)), t, body)
 }
 
 func (r *rig) closeCred(pub string, try int) tracker.Credential {
@@ -41,11 +61,25 @@ func (r *rig) closeCred(pub string, try int) tracker.Credential {
 
 // commentAnswer is AddCommentDocument's answer, its id a BigInt's JSON
 // string as GitHub gives fullDatabaseId (captured 2026-11-10).
+// It names the target's node (the subject) and repository (4000001).
 func commentAnswer(id int64, author int64) map[string]any {
-	return map[string]any{"data": map[string]any{"addComment": map[string]any{"commentEdge": map[string]any{"node": map[string]any{
+	return commentOn(target.NodeID, "4000001", id, author)
+}
+
+// commentOn is AddCommentDocument's answer for a comment on subject in the
+// repository repoID.
+func commentOn(subject, repoID string, id int64, author int64) map[string]any {
+	return map[string]any{"data": map[string]any{"addComment": map[string]any{"subject": map[string]any{"id": subject}, "commentEdge": map[string]any{"node": map[string]any{
 		"fullDatabaseId": strconv.FormatInt(id, 10), "url": "https://github.com/octo-example/widgets/issues/42#issuecomment-" + strconv.FormatInt(id, 10), "createdAt": "2026-11-10T12:00:01Z",
-		"author": map[string]any{"login": "mona-example", "databaseId": author},
+		"repository": map[string]any{"fullDatabaseId": repoID},
+		"author":     map[string]any{"login": "mona-example", "databaseId": author},
 	}}}}}
+}
+
+// closeAnswer is CloseIssueDocument's answer: the issue id, CLOSED, in the
+// repository repoID.
+func closeAnswer(id, reason any, repoID string) map[string]any {
+	return map[string]any{"data": map[string]any{"closeIssue": map[string]any{"issue": map[string]any{"id": id, "state": "CLOSED", "stateReason": reason, "repository": map[string]any{"fullDatabaseId": repoID}}}}}
 }
 
 // answerAll answers each of the three documents.
@@ -55,9 +89,9 @@ func (r *rig) answerAll() {
 		case github.ResolveDocument:
 			return 200, issueNode(g.Variables["id"].(string), 42, 4000001, "octo-example/widgets", "OPEN")
 		case github.AddCommentDocument:
-			return 200, commentAnswer(6700000001, 9000001)
+			return 200, commentOn(g.Variables["subjectId"].(string), "4000001", 6700000001, 9000001)
 		case github.CloseIssueDocument:
-			return 200, map[string]any{"data": map[string]any{"closeIssue": map[string]any{"issue": map[string]any{"id": g.Variables["issueId"], "state": "CLOSED", "stateReason": g.Variables["stateReason"]}}}}
+			return 200, closeAnswer(g.Variables["issueId"], g.Variables["stateReason"], "4000001")
 		}
 		return 200, map[string]any{"data": nil, "errors": []any{map[string]any{"type": "UNKNOWN_DOCUMENT"}}}
 	})
@@ -66,7 +100,10 @@ func (r *rig) answerAll() {
 func TestDocumentsAreConstants(t *testing.T) {
 	r := newRig(t)
 	r.answerAll()
-	bodies := []string{"plain", `say "hi"`, `back\slash`, "<b>&amp;</b> > <", "line one\nline two\r\n", "ends with the marker\n\n<!-- conductor-publication:p1 -->", `"}}, "query": "mutation { x }`}
+	var bodies []string
+	for _, b := range []string{"plain", `say "hi"`, `back\slash`, "<b>&amp;</b> > <", "line one\nline two", "ends with the marker\n\n<!-- conductor-publication:p1 -->", `"}}, "query": "mutation { x }`} {
+		bodies = append(bodies, posted("p1", b))
+	}
 	nodes := []string{"I_kwDOFixture42", `I_"quoted"`, `I_\back`, "I_<&>"}
 	for _, n := range nodes {
 		tg := target
@@ -75,7 +112,7 @@ func TestDocumentsAreConstants(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, b := range bodies {
-			if _, err := r.a.Comment(ctx, r.commentCred("p1", 1), tg, b); err != nil {
+			if _, err := r.post(ctx, "p1", 1, tg, b); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -164,8 +201,10 @@ func TestWriteTagNeverSentWithAToken(t *testing.T) {
 	r := newRig(t)
 	r.answerAll()
 	const pub = "pubTAG123"
-	cc := r.cred.ForWrite(tracker.Write{Kind: tracker.WriteComment, Publication: pub, Try: 4, PostSha256: strings.Repeat("9f", 32)})
-	if _, err := r.a.Comment(ctx, cc, target, "the outcome"); err != nil {
+	body := posted(pub, "the outcome")
+	tag := tagFor(pub, 4, body)
+	cc := r.cred.ForWrite(tag)
+	if _, err := r.a.Comment(ctx, cc, target, body); err != nil {
 		t.Fatal(err)
 	}
 	cl := r.cred.ForWrite(tracker.Write{Kind: tracker.WriteClose, Publication: pub, Try: 5, Comment: "7712345"})
@@ -173,11 +212,17 @@ func TestWriteTagNeverSentWithAToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, q := range r.fake.Requests() {
+		// The posted bytes hold the publication's marker, which names it
+		// by design; nothing else of the tag is sent.
 		all := string(q.Body) + q.RawQuery + q.Path
+		if g, err := githubtest.ParseGraphQL(q.Body); err == nil && g.Variables["body"] == body {
+			delete(g.Variables, "body")
+			all = g.Query + fmt.Sprint(g.Variables) + q.RawQuery + q.Path
+		}
 		for k, vs := range q.Header {
 			all += k + strings.Join(vs, "")
 		}
-		for _, tag := range []string{pub, strings.Repeat("9f", 32), "7712345"} {
+		for _, tag := range []string{pub, tag.PostSha256, "7712345"} {
 			if strings.Contains(all, tag) {
 				t.Fatalf("the tag %q reached GitHub: %s", tag, all)
 			}
@@ -316,7 +361,7 @@ func TestCommentAndFind(t *testing.T) {
 	r.answerAll()
 	marker := r.a.Marker("p1")
 	posted := "Fixed in the delivery.\n\n" + marker
-	c, err := r.a.Comment(ctx, r.commentCred("p1", 1), target, posted)
+	c, err := r.post(ctx, "p1", 1, target, posted)
 	// A comment's id is past a GraphQL Int's 2^31 (captured: ten digits),
 	// read whole from fullDatabaseId.
 	if err != nil || c.ID != "6700000001" || c.AuthorID != "9000001" || c.Author != "mona-example" || c.Check() != nil {
@@ -498,9 +543,9 @@ func TestWriteTable(t *testing.T) {
 		return `{"data":{"` + field + `":null},"errors":[{"type":"` + typ + `","message":"no"}]}`
 	}
 	closed := func(id, state string) string {
-		return `{"data":{"closeIssue":{"issue":{"id":"` + id + `","state":"` + state + `","stateReason":"COMPLETED"}}}}`
+		return `{"data":{"closeIssue":{"issue":{"id":"` + id + `","state":"` + state + `","stateReason":"COMPLETED","repository":{"fullDatabaseId":"4000001"}}}}}`
 	}
-	comment := `{"data":{"addComment":{"commentEdge":{"node":{"fullDatabaseId":"6700000001","url":"https://github.com/octo-example/widgets/issues/42#issuecomment-6700000001","createdAt":"2026-11-10T12:00:01Z","author":{"login":"mona-example","databaseId":9000001}}}}}}`
+	comment := `{"data":{"addComment":{"subject":{"id":"I_kwDOFixture42"},"commentEdge":{"node":{"fullDatabaseId":"6700000001","url":"https://github.com/octo-example/widgets/issues/42#issuecomment-6700000001","createdAt":"2026-11-10T12:00:01Z","repository":{"fullDatabaseId":"4000001"},"author":{"login":"mona-example","databaseId":9000001}}}}}}`
 	// An answer per document: the comment's and the close's.
 	type ans struct {
 		status         int
@@ -552,6 +597,9 @@ func TestWriteTable(t *testing.T) {
 		{name: "data that does not say what was written", ans: ans{200, `{"data":{"addComment":{"commentEdge":null}}}`, `{"data":{"closeIssue":{"issue":null}}}`, nil}, comment: unknown, cls: unknown},
 		{name: "ids that are not ids; not the issue asked", ans: ans{200, strings.Replace(comment, `"6700000001"`, `"67e8"`, 1), closed("I_kwDOAnotherOne", "CLOSED"), nil}, comment: unknown, cls: unknown},
 		{name: "no id; an issue not closed", ans: ans{200, strings.Replace(comment, `"fullDatabaseId":"6700000001",`, ``, 1), closed(target.NodeID, "OPEN"), nil}, comment: unknown, cls: unknown},
+		{name: "another subject; another repository", ans: ans{200, strings.Replace(comment, `"I_kwDOFixture42"`, `"I_kwDOAnotherOne"`, 1), strings.Replace(closed(target.NodeID, "CLOSED"), `"4000001"`, `"4999999"`, 1), nil}, comment: unknown, cls: unknown},
+		{name: "the comment in another repository; no repository", ans: ans{200, strings.Replace(comment, `{"fullDatabaseId":"4000001"}`, `{"fullDatabaseId":"4999999"}`, 1), strings.Replace(closed(target.NodeID, "CLOSED"), `,"repository":{"fullDatabaseId":"4000001"}`, ``, 1), nil}, comment: unknown, cls: unknown},
+		{name: "no subject; a null repository", ans: ans{200, strings.Replace(comment, `"subject":{"id":"I_kwDOFixture42"},`, ``, 1), strings.Replace(closed(target.NodeID, "CLOSED"), `{"fullDatabaseId":"4000001"}`, `null`, 1), nil}, comment: unknown, cls: unknown},
 	}
 	for _, row := range rows {
 		r := newRig(t)
@@ -571,7 +619,7 @@ func TestWriteTable(t *testing.T) {
 				_, _ = w.Write([]byte(body))
 			})
 		}
-		_, cerr := r.a.Comment(ctx, r.commentCred("p1", 1), target, "x")
+		_, cerr := r.post(ctx, "p1", 1, target, "x")
 		kerr := r.a.Close(ctx, r.closeCred("p1", 1), target, tracker.ReasonCompleted)
 		if got := sortedAs(t, row.name+" (comment)", cerr); got != row.comment {
 			t.Errorf("%s: a comment %s: %v", row.name, got, cerr)
@@ -593,7 +641,7 @@ func TestWriteTable(t *testing.T) {
 	r.answerAll()
 	bad := target
 	bad.NodeID = ""
-	if _, err := r.a.Comment(ctx, r.commentCred("p1", 1), bad, "x"); sortedAs(t, "a node id out of shape", err) != nothing {
+	if _, err := r.post(ctx, "p1", 1, bad, "x"); sortedAs(t, "a node id out of shape", err) != nothing {
 		t.Errorf("a node id out of shape: %v", err)
 	}
 	if err := r.a.Close(ctx, r.closeCred("p1", 1), bad, tracker.ReasonCompleted); sortedAs(t, "a node id out of shape", err) != nothing {
@@ -601,7 +649,7 @@ func TestWriteTable(t *testing.T) {
 	}
 	offHost := target
 	offHost.Ref.Host = "ghe.example.test@collector.example"
-	if _, err := r.a.Comment(ctx, r.commentCred("p1", 1), offHost, "x"); sortedAs(t, "a host not admitted", err) != nothing {
+	if _, err := r.post(ctx, "p1", 1, offHost, "x"); sortedAs(t, "a host not admitted", err) != nothing {
 		t.Errorf("a host not admitted: %v", err)
 	}
 	if n := len(r.fake.Requests()); n != 0 {
@@ -611,7 +659,7 @@ func TestWriteTable(t *testing.T) {
 	// The call had ended before the request was made: nothing written.
 	ended, cancel := context.WithCancel(ctx)
 	cancel()
-	if _, err := r.a.Comment(ended, r.commentCred("p1", 1), target, "x"); sortedAs(t, "a call ended first", err) != nothing {
+	if _, err := r.post(ended, "p1", 1, target, "x"); sortedAs(t, "a call ended first", err) != nothing {
 		t.Errorf("a call ended before the request: %v", err)
 	}
 	// The base transport was handed the request and failed (here its
@@ -619,7 +667,7 @@ func TestWriteTable(t *testing.T) {
 	dead := github.New(github.Options{Logger: quiet, Transport: &http.Transport{DialContext: func(context.Context, string, string) (net.Conn, error) {
 		return nil, errors.New("no route")
 	}}})
-	if _, err := dead.Comment(ctx, r.commentCred("p1", 1), target, "x"); sortedAs(t, "a dial that failed", err) != unknown || !errors.Is(err, tracker.ErrUnavailable) {
+	if _, err := dead.Comment(ctx, r.cred.ForWrite(tagFor("p1", 1, posted("p1", "x"))), target, posted("p1", "x")); sortedAs(t, "a dial that failed", err) != unknown || !errors.Is(err, tracker.ErrUnavailable) {
 		t.Errorf("a dial that failed: %v", err)
 	}
 
@@ -628,7 +676,7 @@ func TestWriteTable(t *testing.T) {
 	r = newRig(t)
 	r.answerAll()
 	err := held(t, r, api, "/graphql", func(c context.Context) error {
-		_, err := r.a.Comment(c, r.commentCred("p1", 1), target, "x")
+		_, err := r.post(c, "p1", 1, target, "x")
 		return err
 	})
 	if sortedAs(t, "the call ended while held", err) != unknown || !errors.Is(err, context.Canceled) {
@@ -637,7 +685,7 @@ func TestWriteTable(t *testing.T) {
 	clock := &fakeClock{}
 	github.SetClock(r.a, clock.after)
 	for _, write := range []func() error{
-		func() error { _, err := r.a.Comment(ctx, r.commentCred("p1", 1), target, "x"); return err },
+		func() error { _, err := r.post(ctx, "p1", 1, target, "x"); return err },
 		func() error { return r.a.Close(ctx, r.closeCred("p1", 1), target, tracker.ReasonCompleted) },
 	} {
 		gate := r.fake.Hold(http.MethodPost, api, "/graphql")
@@ -810,7 +858,7 @@ func TestCommentPostsTheBytesGiven(t *testing.T) {
 	r := newRig(t)
 	r.answerAll()
 	for _, body := range []string{"Fixed \xff in the delivery.", "\xc3", "a\xed\xa0\x80b"} {
-		_, err := r.a.Comment(ctx, r.commentCred("p1", 1), target, body+"\n\n"+r.a.Marker("p1"))
+		_, err := r.post(ctx, "p1", 1, target, body+"\n\n"+r.a.Marker("p1"))
 		if !tracker.NothingWritten(err) || !errors.Is(err, tracker.ErrUnsupported) {
 			t.Errorf("%q: %v", body, err)
 		}
@@ -820,7 +868,7 @@ func TestCommentPostsTheBytesGiven(t *testing.T) {
 	}
 	// Valid UTF-8 the encoding escapes (<, >, &, U+2028) is the same text.
 	body := "<b>&</b> é\n\n" + r.a.Marker("p1")
-	if _, err := r.a.Comment(ctx, r.commentCred("p1", 1), target, body); err != nil {
+	if _, err := r.post(ctx, "p1", 1, target, body); err != nil {
 		t.Fatal(err)
 	}
 	g, _ := githubtest.ParseGraphQL(r.fake.Requests()[0].Body)

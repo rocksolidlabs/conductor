@@ -382,8 +382,9 @@ type Adapter interface {
 	// that every later request of the call names by its identity) was
 	// answered "not modified" for v, and the Item is then empty.
 	Read(ctx context.Context, c Credential, r Ref, v Validators) (Item, bool, error)
-	// Image downloads one of a read's images, at most max bytes, with
-	// its media type.
+	// Image downloads one of a read's images, at most max bytes (1 to
+	// the adapter's ceiling; another bound is refused before any
+	// request), with its media type.
 	Image(ctx context.Context, c Credential, img ImageRef, max int64) (io.ReadCloser, string, error)
 	// Checks reads a change's checks at a commit.
 	Checks(ctx context.Context, c Credential, r Ref, sha string) (CheckSet, error)
@@ -394,7 +395,7 @@ type Adapter interface {
 	Resolve(ctx context.Context, c Credential, nodeID string) (Target, error)
 	// Comment posts a comment on the item.
 	Comment(ctx context.Context, c Credential, t Target, body string) (Comment, error)
-	// FindComment looks for a comment matching m posted at or after
+	// FindComment looks for a comment matching m posted (made) at or after
 	// since on the item.
 	FindComment(ctx context.Context, c Credential, t Target, since time.Time, m Match) (Comment, Found, error)
 	// Close closes an issue with a reason (ReasonCompleted,

@@ -13,8 +13,10 @@
 // only within that host (a renamed repository's 301), handing any other
 // back unfollowed, so a credential reaches the API host alone by
 // construction: the credential carries its API address and its transport
-// sends to no other. A job log's redirect is never followed by it, whatever
-// host it names. A repository is named by its owner and name in one
+// sends to no other. Only the repository's lookup and Read's issue half
+// follow a redirect at all; every other request, each one built by the
+// path builder among them, follows none, and a job log's redirect is
+// handed back, whatever host it names. A repository is named by its owner and name in one
 // request alone, its lookup (lookupRepo); every request after it names the
 // repository by the identity the lookup read (repo.path), so no other
 // repository's answer, one that took the name meanwhile or a fork with the
@@ -70,6 +72,9 @@ const (
 	MaxGraphQLAnswer = 64 << 10
 	MaxErrorAnswer   = 64 << 10
 	MaxLogRead       = 8 << 20
+	// MaxImageRead is the largest bound an Image call may ask for (an
+	// attachment's 16 MiB); a bound outside 1 to it is refused.
+	MaxImageRead = 16 << 20
 	// MaxRuns is the workflow runs read at a commit, MaxJobs a run's jobs,
 	// MaxCheckRuns the check runs and MaxStatuses the statuses read.
 	MaxRuns      = 20
@@ -107,7 +112,9 @@ type Options struct {
 	// of http.DefaultTransport). It holds no credential, and it sends a
 	// request at most once (net/http's own sends a write once: the
 	// adapter gives it no body to send again); a layer that retries by
-	// itself would send a write twice.
+	// itself would send a write twice. It is a seam for tests: it is handed
+	// the API requests with their Authorization, and the token goes where
+	// it dials, so production code leaves it nil.
 	Transport http.RoundTripper
 	// Logger receives the writes' lines (nil: slog.Default()).
 	Logger *slog.Logger
@@ -279,7 +286,7 @@ func (p repo) path(rest string) string {
 // for it. An answer whose id cannot be read is one Conductor cannot read.
 // space is held to tracker.Ref.Check by the caller.
 func (a *Adapter) lookupRepo(ctx context.Context, c tracker.Credential, ep endpoint, space string) (repo, error) {
-	r := request{method: http.MethodGet, path: "/repos/" + space, max: MaxItemAnswer}
+	r := request{method: http.MethodGet, path: "/repos/" + space, max: MaxItemAnswer, follow: true}
 	ans, err := a.do(ctx, c, ep, r)
 	if err != nil {
 		return repo{}, err
@@ -298,10 +305,15 @@ func (a *Adapter) lookupRepo(ctx context.Context, c tracker.Credential, ep endpo
 }
 
 // lookupHeld is lookupRepo for a caller's Ref: when the Ref holds the
-// repository's identity (Ref.SpaceID, what an earlier read returned), a
-// lookup that names another is tracker.ErrTargetChanged, and nothing more
-// is asked.
+// repository's identity (Ref.SpaceID, what an earlier read returned), one
+// that is not the adapter's own form of a repository's identity (a
+// positive decimal number) is refused before any request
+// (tracker.ErrUnsupported), and a lookup that names another is
+// tracker.ErrTargetChanged, and nothing more is asked.
 func (a *Adapter) lookupHeld(ctx context.Context, c tracker.Credential, ep endpoint, r tracker.Ref) (repo, error) {
+	if r.SpaceID != "" && !spaceIDShape(r.SpaceID) {
+		return repo{}, &tracker.RequestError{System: tracker.GitHub, Method: "-", Path: "-", Err: tracker.ErrUnsupported, Words: "not a GitHub repository id"}
+	}
 	p, err := a.lookupRepo(ctx, c, ep, r.Space)
 	if err != nil {
 		return repo{}, err
@@ -328,6 +340,12 @@ type request struct {
 	// signed-address client to fetch; any other success is an answer
 	// Conductor does not take for it (the log is fetched one way).
 	keep3xx bool
+	// follow lets the request follow a redirect within the API host: the
+	// repository's lookup by name (a renamed repository's 301) and Read's
+	// issue half (a transferred issue, its node id compared) alone. Every
+	// other request, each one repo.path builds among them, follows none: a
+	// redirect is an answer Conductor cannot use.
+	follow bool
 	// write marks a mutation: sent once by every layer under the adapter
 	// (a body that cannot be sent again, with or without bytes, and no
 	// redirect followed), and a request that provably never left is said
@@ -366,8 +384,9 @@ var errRedirect = errors.New("redirect refused")
 
 // do sends a request to the API host with the credential's transport and
 // reads its answer to the bound, within the request's own deadline. A
-// status of 400 or more is the error it maps to; a 3xx off the API host is
-// refused, and a request with keep3xx follows no redirect at all and takes
+// status of 400 or more is the error it maps to; a redirect is followed
+// only for a request that may follow one (request.follow) and only within
+// the API host, any other 3xx is refused, and a request with keep3xx takes
 // only its 3xx. A path that is "" is refused unless the request is
 // GraphQL's POST. A write (r.write) is sent once by every layer:
 // its request always has a body that cannot be sent again (net/http sends
@@ -419,7 +438,7 @@ func (a *Adapter) do(ctx context.Context, c tracker.Credential, ep endpoint, r r
 		Transport: c.Transport(handedTo{a.base, &handed}),
 		CheckRedirect: func(next *http.Request, via []*http.Request) error {
 			next.Header.Del("Referer")
-			if r.write || r.keep3xx {
+			if r.write || r.keep3xx || !r.follow {
 				return http.ErrUseLastResponse
 			}
 			if len(via) >= MaxRedirects {
@@ -462,7 +481,7 @@ func (a *Adapter) do(ctx context.Context, c tracker.Credential, ep endpoint, r r
 		return answer{status: resp.StatusCode, header: resp.Header}, nil
 	}
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 && resp.StatusCode != http.StatusNotModified {
-		return answer{}, &tracker.RequestError{System: tracker.GitHub, Method: r.method, Path: path, Status: resp.StatusCode, Err: tracker.ErrUnsupported, Words: "a redirect off the API host"}
+		return answer{}, &tracker.RequestError{System: tracker.GitHub, Method: r.method, Path: path, Status: resp.StatusCode, Err: tracker.ErrUnsupported, Words: "a redirect Conductor does not follow"}
 	}
 	if resp.StatusCode >= 400 {
 		return answer{status: resp.StatusCode, header: resp.Header}, a.statusError(r.method, path, resp)
@@ -543,8 +562,11 @@ func (a *Adapter) statusError(method, path string, resp *http.Response) error {
 		e.Err = tracker.ErrUnauthorized
 	case s == http.StatusForbidden:
 		e.Err = tracker.ErrForbidden
-		if p := resp.Header.Get("X-Accepted-GitHub-Permissions"); p != "" && len(p) <= 200 {
-			e.Words = "it needs " + p
+		if p := resp.Header.Get("X-Accepted-GitHub-Permissions"); p != "" {
+			e.Words = "it needs a permission the token lacks"
+			if names, ok := permissions(p); ok {
+				e.Words = "it needs " + names
+			}
 		}
 	case s == http.StatusNotFound || s == http.StatusGone:
 		e.Err = tracker.ErrNotFound
@@ -557,6 +579,35 @@ func (a *Adapter) statusError(method, path string, resp *http.Response) error {
 		}
 	}
 	return e
+}
+
+// permissions parses X-Accepted-GitHub-Permissions in GitHub's documented
+// shape (sets of name=level pairs, the pairs of a set separated by commas,
+// the sets by semicolons: any one set is enough), each name [a-z_] and
+// each level read, write or admin, at most 8 pairs, and writes the names
+// back in that shape, never the header's own text; ok is false for any
+// other.
+func permissions(h string) (string, bool) {
+	var sets []string
+	n := 0
+	for _, set := range strings.Split(h, ";") {
+		var pairs []string
+		for _, pair := range strings.Split(set, ",") {
+			name, level, found := strings.Cut(strings.TrimSpace(pair), "=")
+			n++
+			if !found || n > 8 || name == "" || len(name) > 40 || (level != "read" && level != "write" && level != "admin") {
+				return "", false
+			}
+			for i := 0; i < len(name); i++ {
+				if (name[i] < 'a' || name[i] > 'z') && name[i] != '_' {
+					return "", false
+				}
+			}
+			pairs = append(pairs, name+"="+level)
+		}
+		sets = append(sets, strings.Join(pairs, ", "))
+	}
+	return strings.Join(sets, "; "), true
 }
 
 // refusalMessage is a refusal's message ("message" of its JSON), read to

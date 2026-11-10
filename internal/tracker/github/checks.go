@@ -397,7 +397,7 @@ func (a *Adapter) page(ctx context.Context, c tracker.Credential, ep endpoint, p
 // fetch.
 func (a *Adapter) CheckLog(ctx context.Context, c tracker.Credential, r tracker.Ref, check tracker.Check, tail int) (tracker.LogTail, error) {
 	id, ok := strings.CutPrefix(check.ID, "job:")
-	if !ok || decimal(id) == "" || !check.HasLog || r.Check() != nil {
+	if !ok || decimal(id) == "" || id == "0" || !check.HasLog || r.Check() != nil {
 		return tracker.LogTail{}, &tracker.RequestError{System: tracker.GitHub, Method: "-", Path: "-", Err: tracker.ErrUnsupported, Words: "only a GitHub Actions job has a log"}
 	}
 	if tail <= 0 || tail > MaxLogRead {

@@ -2,12 +2,15 @@ package github
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -41,14 +44,18 @@ func tagged(c tracker.Credential, kind string) (tracker.Write, error) {
 //	401; 403 (a permission, or a rate limit); 429 (a rate limit) nothing written
 //	any other 4xx; any 5xx                                      not known
 //	a 200 past MaxGraphQLAnswer, or one that does not parse     not known
-//	a 200 whose data for the mutation is null beside an error
-//	of type NOT_FOUND, FORBIDDEN, UNPROCESSABLE or RATE_LIMITED nothing written
-//	a 200 whose data is null beside no error, or another type   not known
+//	a 200 whose data for the mutation is null and whose every
+//	error is of type NOT_FOUND, FORBIDDEN, UNPROCESSABLE or
+//	RATE_LIMITED at no path or at the mutation's own field      nothing written
+//	a 200 whose data is null beside no error, or beside any
+//	other error (another type, or a refusal deeper in the
+//	payload), in any order                                      not known
 //	a 200 with data and errors beside it                        not known
-//	a 200 whose data does not say what was written (Comment:
-//	no comment, ids that are not ids; Close: not the issue
-//	asked, or not closed)                                       not known
-//	a 200 whose data says what was written                      made
+//	a 200 whose data does not say what was written, or says
+//	it of another target (Comment: no comment, ids that are
+//	not ids, a subject or repository not the target's; Close:
+//	not the issue asked or its repository, or not closed)       not known
+//	a 200 whose data says what was written on the target        made
 //
 // Nothing written is answered only on a fact: the request provably never
 // left (refused before it, or never handed to the base transport) or
@@ -70,15 +77,17 @@ func (a *Adapter) sortWrite(ep endpoint, r request, status int, ans gqlAnswer, e
 		return &tracker.RequestError{System: tracker.GitHub, Method: r.method, Path: ep.errPath(r), Status: status, Err: e, Words: words}
 	}
 	if len(raw) == 0 || string(raw) == "null" {
+		proven := len(ans.Errors) > 0
 		for _, e := range ans.Errors {
-			switch e.Type {
-			case "NOT_FOUND", "FORBIDDEN", "RATE_LIMITED":
-				return nil, tracker.Proven(fail(a.gqlRefusal(gqlAnswer{Errors: []gqlError{e}, header: ans.header}), "GitHub refused the write"))
-			case "UNPROCESSABLE":
-				return nil, tracker.Proven(fail(tracker.ErrUnsupported, "GitHub refused the write as invalid"))
-			}
+			proven = proven && e.refusing(field)
 		}
-		return nil, tracker.Unknown(fail(tracker.ErrUnavailable, "GitHub's answer does not say whether the write was made"))
+		if !proven {
+			return nil, tracker.Unknown(fail(tracker.ErrUnavailable, "GitHub's answer does not say whether the write was made"))
+		}
+		if ans.Errors[0].Type == "UNPROCESSABLE" {
+			return nil, tracker.Proven(fail(tracker.ErrUnsupported, "GitHub refused the write as invalid"))
+		}
+		return nil, tracker.Proven(fail(a.gqlRefusal(gqlAnswer{Errors: ans.Errors[:1], header: ans.header}), "GitHub refused the write"))
 	}
 	if len(ans.Errors) > 0 {
 		return nil, tracker.Unknown(fail(tracker.ErrUnavailable, "GitHub answered with errors beside the write's data"))
@@ -102,9 +111,31 @@ func (a *Adapter) logWrite(w tracker.Write, err error) {
 	a.log.Info("tracker write", attrs...)
 }
 
+// targetShape refuses, proving nothing written, a Target of a shape no
+// Resolve returns: its kind issue or change, its node id a node id, and
+// its repository's identity the adapter's own form of one (a positive
+// decimal number).
+func targetShape(t tracker.Target) error {
+	if (t.Kind != tracker.KindIssue && t.Kind != tracker.KindChange) || !nodeIDShape(t.NodeID) || !spaceIDShape(t.SpaceID) {
+		return tracker.Proven(&tracker.RequestError{System: tracker.GitHub, Method: http.MethodPost, Path: "-", Err: tracker.ErrUnsupported, Words: "not a target a Resolve gives"})
+	}
+	return nil
+}
+
+// spaceIDShape reports a repository's identity in the adapter's own form:
+// a positive decimal number with no leading zero.
+func spaceIDShape(id tracker.RemoteID) bool { return repo{id: id}.path("") != "" }
+
 // Comment posts a comment on the node t names (AddCommentDocument), with a
-// credential tagged for a comment. Its error says, through
-// tracker.NothingWritten, whether the answer proves nothing was posted.
+// credential tagged for a comment. Before any request, proving nothing
+// written, it refuses what its own finder could never confirm: a Target of
+// a shape no Resolve returns, and a body that is not the bytes the tag
+// names (its SHA-256 the tag's PostSha256), not in the form a listing's
+// match reads (tracker.BodyDigest's normalisation leaves it as it is), or
+// without the publication's marker. Its answer is made only when it names
+// the target's own node (the subject) and repository; any other is not
+// known. Its error says, through tracker.NothingWritten, whether the
+// answer proves nothing was posted.
 func (a *Adapter) Comment(ctx context.Context, c tracker.Credential, t tracker.Target, body string) (out tracker.Comment, err error) {
 	w, err := tagged(c, tracker.WriteComment)
 	if err != nil {
@@ -115,6 +146,9 @@ func (a *Adapter) Comment(ctx context.Context, c tracker.Credential, t tracker.T
 	if err != nil {
 		return tracker.Comment{}, tracker.Proven(err)
 	}
+	if err := targetShape(t); err != nil {
+		return tracker.Comment{}, err
+	}
 	if !nodeIDShape(t.NodeID) || t.NodeID == "" || len(t.NodeID) > tracker.MaxNodeID || body == "" || len(body) > MaxCommentBody {
 		return tracker.Comment{}, tracker.Proven(&tracker.RequestError{System: tracker.GitHub, Method: http.MethodPost, Path: "-", Err: tracker.ErrBound, Words: "a comment is 1 to 65536 bytes on a node"})
 	}
@@ -123,17 +157,26 @@ func (a *Adapter) Comment(ctx context.Context, c tracker.Credential, t tracker.T
 	if !utf8.ValidString(body) {
 		return tracker.Comment{}, tracker.Proven(&tracker.RequestError{System: tracker.GitHub, Method: http.MethodPost, Path: "-", Err: tracker.ErrUnsupported, Words: "a comment's body is UTF-8"})
 	}
+	sum := sha256.Sum256([]byte(body))
+	digest := hex.EncodeToString(sum[:])
+	if marker := a.Marker(w.Publication); digest != w.PostSha256 || tracker.BodyDigest(body) != digest || marker == "" || !strings.Contains(body, marker) {
+		return tracker.Comment{}, tracker.Proven(&tracker.RequestError{System: tracker.GitHub, Method: http.MethodPost, Path: "-", Err: tracker.ErrUnsupported, Words: "a comment's body is the bytes its tag names, normalised, with its marker"})
+	}
 	ans, r, status, gerr := a.gql(ctx, c, ep, AddCommentDocument, map[string]any{"subjectId": t.NodeID, "body": body}, true)
 	raw, err := a.sortWrite(ep, r, status, ans, gerr, "addComment")
 	if err != nil {
 		return tracker.Comment{}, err
 	}
 	var got struct {
+		Subject *struct {
+			ID string `json:"id"`
+		} `json:"subject"`
 		CommentEdge *struct {
 			Node *struct {
 				FullDatabaseID bigID     `json:"fullDatabaseId"`
 				URL            string    `json:"url"`
 				CreatedAt      time.Time `json:"createdAt"`
+				Repository     *repoJSON `json:"repository"`
 				Author         *struct {
 					Login      string      `json:"login"`
 					DatabaseID json.Number `json:"databaseId"`
@@ -146,6 +189,9 @@ func (a *Adapter) Comment(ctx context.Context, c tracker.Credential, t tracker.T
 		return tracker.Comment{}, unknown
 	}
 	n := got.CommentEdge.Node
+	if got.Subject == nil || got.Subject.ID != t.NodeID || n.Repository == nil || n.Repository.FullDatabaseID.remote() != t.SpaceID {
+		return tracker.Comment{}, tracker.Unknown(&tracker.RequestError{System: tracker.GitHub, Method: r.method, Path: ep.errPath(r), Status: status, Err: tracker.ErrTargetChanged, Words: "the comment's answer does not name the target's node and repository"})
+	}
 	out = tracker.Comment{ID: n.FullDatabaseID.remote(), URL: n.URL, CreatedAt: n.CreatedAt, AuthorID: remoteID(n.Author.DatabaseID), Author: cut(n.Author.Login, 39)}
 	if out.Check() != nil {
 		return tracker.Comment{}, unknown
@@ -164,14 +210,18 @@ type commentJSON struct {
 	} `json:"user"`
 }
 
-// FindComment looks for a comment matching m on the node t names: it
-// Resolves the node for this listing (tracker.ErrTargetChanged when it is
+// FindComment looks for a comment matching m, made at or after since, on
+// the node t names; a Target of a shape no Resolve returns is refused
+// before any request. It Resolves the node for this listing (tracker.ErrTargetChanged when it is
 // no longer of t's kind in t's repository), then lists GET
 // /repositories/{id}/issues/{n}/comments?since=<since>, the repository by
 // the id the Resolve read (a rename keeps it, a name another repository
 // takes has another, so no other repository's issue can answer for the
-// target), at most MaxCommentPages pages of 100. A comment's author is its user.id in
-// decimal. Found is yes for a match; no only from a listing that cannot
+// target), at most MaxCommentPages pages of 100, none answered from a
+// redirect (a page that is is a failure: unknown). GitHub's since is the
+// time of a comment's last change, so a listed comment created before
+// since is never a match, and one whose creation time cannot be read is
+// not known. A comment's author is its user.id in decimal. Found is yes for a match; no only from a listing that cannot
 // have skipped a comment: one read whole in a single page (one answer is
 // one moment), or, over several pages, read whole twice with the same
 // comments in the same order (GitHub's pages count by position, so a
@@ -182,6 +232,9 @@ type commentJSON struct {
 func (a *Adapter) FindComment(ctx context.Context, c tracker.Credential, t tracker.Target, since time.Time, m tracker.Match) (tracker.Comment, tracker.Found, error) {
 	if err := m.Check(); err != nil {
 		return tracker.Comment{}, tracker.FoundUnknown, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: "-", Err: tracker.ErrUnsupported, Words: err.Error()}
+	}
+	if targetShape(t) != nil {
+		return tracker.Comment{}, tracker.FoundUnknown, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: "-", Err: tracker.ErrUnsupported, Words: "not a target a Resolve gives"}
 	}
 	ep, err := a.endpointFor(c, t.Ref.Host)
 	if err != nil {
@@ -250,6 +303,16 @@ func (a *Adapter) listWindow(ctx context.Context, c tracker.Credential, ep endpo
 			if !m.MatchesBody(cm.Body) {
 				continue
 			}
+			// GitHub's since is the time of a comment's last change: one
+			// made before since is never a match, and one whose time
+			// cannot be read is not known.
+			if cm.CreatedAt.IsZero() {
+				w.unreadable = true
+				continue
+			}
+			if !since.IsZero() && cm.CreatedAt.Before(since) {
+				continue
+			}
 			if cm.User == nil || remoteID(cm.User.ID) == "" {
 				w.unreadable = true
 				continue
@@ -278,8 +341,9 @@ func (a *Adapter) listWindow(ctx context.Context, c tracker.Credential, ep endpo
 }
 
 // Close closes the issue t names (CloseIssueDocument) with a reason, with
-// a credential tagged for a close; a Target of kind change is refused
-// before any request. Its error says, through tracker.NothingWritten,
+// a credential tagged for a close; a Target of kind change, or of a shape
+// no Resolve returns, is refused before any request. Its answer is made
+// only when it names the issue asked, in the target's repository, closed. Its error says, through tracker.NothingWritten,
 // whether the answer proves the issue was not closed.
 func (a *Adapter) Close(ctx context.Context, c tracker.Credential, t tracker.Target, reason string) (err error) {
 	w, err := tagged(c, tracker.WriteClose)
@@ -303,22 +367,24 @@ func (a *Adapter) Close(ctx context.Context, c tracker.Credential, t tracker.Tar
 	if err != nil {
 		return tracker.Proven(err)
 	}
-	if !nodeIDShape(t.NodeID) {
-		return tracker.Proven(&tracker.RequestError{System: tracker.GitHub, Method: http.MethodPost, Path: "-", Err: tracker.ErrUnsupported, Words: "a node id is 1 to 100 bytes"})
+	if err := targetShape(t); err != nil {
+		return err
 	}
 	ans, r, status, gerr := a.gql(ctx, c, ep, CloseIssueDocument, map[string]any{"issueId": t.NodeID, "stateReason": gr}, true)
 	raw, err := a.sortWrite(ep, r, status, ans, gerr, "closeIssue")
 	if err != nil {
 		return err
 	}
-	// Made only when the answer names the issue asked, closed.
+	// Made only when the answer names the issue asked, in the target's
+	// repository, closed.
 	var got struct {
 		Issue *struct {
-			ID    string `json:"id"`
-			State string `json:"state"`
+			ID         string    `json:"id"`
+			State      string    `json:"state"`
+			Repository *repoJSON `json:"repository"`
 		} `json:"issue"`
 	}
-	if json.Unmarshal(raw, &got) != nil || got.Issue == nil || got.Issue.ID != t.NodeID || got.Issue.State != "CLOSED" {
+	if json.Unmarshal(raw, &got) != nil || got.Issue == nil || got.Issue.ID != t.NodeID || got.Issue.State != "CLOSED" || got.Issue.Repository == nil || got.Issue.Repository.FullDatabaseID.remote() != t.SpaceID {
 		return tracker.Unknown(&tracker.RequestError{System: tracker.GitHub, Method: r.method, Path: ep.errPath(r), Status: status, Err: tracker.ErrUnsupported, Words: "a close's answer that does not name the issue closed"})
 	}
 	return nil

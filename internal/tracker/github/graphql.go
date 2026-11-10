@@ -23,26 +23,53 @@ const (
     ... on PullRequest { id number url state repository { fullDatabaseId nameWithOwner } }
   }
 }`
-	// AddCommentDocument posts a comment on a node, answering its
-	// database id (fullDatabaseId, GitHub's BigInt: a comment's id is past
-	// a GraphQL Int's 2^31), URL, time and author (an Actor's databaseId,
-	// the only number GitHub gives for a User or a Bot).
+	// AddCommentDocument posts a comment on a node, answering the node it
+	// was posted on (subject), and the comment's database id
+	// (fullDatabaseId, GitHub's BigInt: a comment's id is past a GraphQL
+	// Int's 2^31), URL, time, repository (its fullDatabaseId) and author
+	// (an Actor's databaseId, the only number GitHub gives for a User or a
+	// Bot). The subject and the repository tie the answer to the target.
 	AddCommentDocument = `mutation AddComment($subjectId: ID!, $body: String!) {
   addComment(input: {subjectId: $subjectId, body: $body}) {
-    commentEdge { node { fullDatabaseId url createdAt author { login ... on User { databaseId } ... on Bot { databaseId } } } }
+    subject { id }
+    commentEdge { node { fullDatabaseId url createdAt repository { fullDatabaseId } author { login ... on User { databaseId } ... on Bot { databaseId } } } }
   }
 }`
-	// CloseIssueDocument closes an issue with a reason.
+	// CloseIssueDocument closes an issue with a reason, answering the
+	// issue and its repository, which tie the answer to the target.
 	CloseIssueDocument = `mutation CloseIssue($issueId: ID!, $stateReason: IssueClosedStateReason) {
   closeIssue(input: {issueId: $issueId, stateReason: $stateReason}) {
-    issue { id state stateReason }
+    issue { id state stateReason repository { fullDatabaseId } }
   }
 }`
 )
 
-// gqlError is one of a GraphQL answer's errors.
+// gqlError is one of a GraphQL answer's errors: its type and its path
+// (the answer's fields it names, from the operation's own down; absent for
+// an error of the whole request).
 type gqlError struct {
-	Type string `json:"type"`
+	Type string            `json:"type"`
+	Path []json.RawMessage `json:"path"`
+}
+
+// refusing reports an error a write's answer may prove nothing written by:
+// a refusing type (NOT_FOUND, FORBIDDEN, UNPROCESSABLE, RATE_LIMITED)
+// whose path is absent or exactly the mutation's own field, so it is what
+// nulled the mutation and not something deeper in its payload.
+func (e gqlError) refusing(field string) bool {
+	switch e.Type {
+	case "NOT_FOUND", "FORBIDDEN", "UNPROCESSABLE", "RATE_LIMITED":
+	default:
+		return false
+	}
+	switch len(e.Path) {
+	case 0:
+		return true
+	case 1:
+		var s string
+		return json.Unmarshal(e.Path[0], &s) == nil && s == field
+	}
+	return false
 }
 
 // gqlAnswer is a GraphQL answer: its data, raw, its errors, and the
@@ -124,8 +151,8 @@ func (a *Adapter) Resolve(ctx context.Context, c tracker.Credential, nodeID stri
 	if err != nil {
 		return tracker.Target{}, err
 	}
-	if nodeID == "" || len(nodeID) > tracker.MaxNodeID {
-		return tracker.Target{}, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodPost, Path: "-", Err: tracker.ErrUnsupported, Words: "a node id is 1 to 100 bytes"}
+	if !nodeIDShape(nodeID) {
+		return tracker.Target{}, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodPost, Path: "-", Err: tracker.ErrUnsupported, Words: "a node id is 1 to 100 bytes of visible ASCII"}
 	}
 	ans, r, status, err := a.gql(ctx, c, ep, ResolveDocument, map[string]any{"id": nodeID}, false)
 	if err != nil {

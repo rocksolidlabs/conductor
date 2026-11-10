@@ -146,7 +146,7 @@ func TestTwinNeverAnswersForTheRepository(t *testing.T) {
 	if b, err := r.a.CheckLog(ctx, r.cred, pr43, tracker.Check{ID: "job:2000001", HasLog: true}, 100); err != nil || string(b.Bytes) != "the target's log\n" {
 		t.Errorf("CheckLog: %q %v", b.Bytes, err)
 	}
-	if _, err := r.a.Comment(ctx, r.commentCred("p1", 1), target, "hello"); err != nil {
+	if _, err := r.post(ctx, "p1", 1, target, "hello"); err != nil {
 		t.Errorf("Comment: %v", err)
 	}
 	m := tracker.Match{Marker: r.a.Marker("p1"), BodySha256: tracker.BodyDigest(twinPosted)}

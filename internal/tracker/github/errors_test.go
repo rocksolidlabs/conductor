@@ -331,7 +331,7 @@ func TestNoRetry(t *testing.T) {
 		r.reply(http.MethodGet, widgets+"/issues/42", status, "", "Retry-After", "1")
 		_, _, _ = r.a.Read(ctx, r.cred, ref("octo-example/widgets", tracker.KindIssue, "42"), tracker.Validators{})
 		r.reply(http.MethodPost, "/graphql", status, "", "Retry-After", "1")
-		_, _ = r.a.Comment(ctx, r.cred.ForWrite(tracker.Write{Kind: tracker.WriteComment, Publication: "p1", Try: 1}), tracker.Target{NodeID: "I_x", Kind: tracker.KindIssue, Ref: ref("octo-example/widgets", tracker.KindIssue, "42")}, "hello")
+		_, _ = r.post(ctx, "p1", 1, target, "hello")
 		// The repository's lookup, the read, the write: each once.
 		if n := len(r.fake.Requests()); n != 3 {
 			t.Fatalf("%d: %d requests", status, n)

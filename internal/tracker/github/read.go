@@ -61,6 +61,9 @@ type pullJSON struct {
 	} `json:"base"`
 }
 
+// issueAccept is the issue half's media type: body and body_html.
+const issueAccept = "application/vnd.github.full+json"
+
 // half is one of a read's two requests answered.
 type half struct {
 	ans answer
@@ -105,7 +108,7 @@ func (a *Adapter) Read(ctx context.Context, c tracker.Credential, r tracker.Ref,
 		return tracker.Item{}, false, err
 	}
 	issuePath, pullPath := rp.path("/issues/"+r.ID), rp.path("/pulls/"+r.ID)
-	iss, err := a.half(ctx, c, ep, issuePath, "application/vnd.github.full+json", v.Issue)
+	iss, err := a.half(ctx, c, ep, issuePath, issueAccept, v.Issue)
 	if err != nil {
 		return tracker.Item{}, false, err
 	}
@@ -139,7 +142,7 @@ func (a *Adapter) Read(ctx context.Context, c tracker.Credential, r tracker.Ref,
 			}
 		}
 		if iss.ans.status == http.StatusNotModified {
-			if iss, err = a.half(ctx, c, ep, issuePath, "application/vnd.github.full+json", ""); err != nil {
+			if iss, err = a.half(ctx, c, ep, issuePath, issueAccept, ""); err != nil {
 				return tracker.Item{}, false, err
 			}
 			if err := decode(ep, iss.r, iss.ans.body, &issue); err != nil {
@@ -207,9 +210,12 @@ func samePull(ep endpoint, iss, pl half, rp repo, r tracker.Ref, issue issueJSON
 	return nil
 }
 
-// half makes one of a read's GETs; a 304 is an answer, not an error.
+// half makes one of a read's GETs; a 304 is an answer, not an error. The
+// issue's half alone (its accept the full media type) may be answered
+// from a redirect, a transferred issue's, whose node id placed compares;
+// the pull request's follows none.
 func (a *Adapter) half(ctx context.Context, c tracker.Credential, ep endpoint, path, accept, etag string) (half, error) {
-	r := request{method: http.MethodGet, path: path, accept: accept, etag: etag, max: MaxItemAnswer}
+	r := request{method: http.MethodGet, path: path, accept: accept, etag: etag, max: MaxItemAnswer, follow: accept == issueAccept}
 	ans, err := a.do(ctx, c, ep, r)
 	return half{ans: ans, r: r}, err
 }

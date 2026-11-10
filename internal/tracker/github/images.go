@@ -120,13 +120,17 @@ func signedRefusal(path string, status int, what string) error {
 }
 
 // Image downloads one of a read's images from its signed address with no
-// credential, at most max bytes (tracker.ErrBound past them), within
+// credential, at most max bytes (1 to MaxImageRead; any other bound is
+// refused before any request; tracker.ErrBound past them), within
 // ImageTimeout until its body is closed, and gives its media type as
 // GitHub's answer says it.
 func (a *Adapter) Image(ctx context.Context, c tracker.Credential, img tracker.ImageRef, max int64) (io.ReadCloser, string, error) {
 	host := c.Host()
 	if _, err := a.endpointFor(c, host); err != nil {
 		return nil, "", err
+	}
+	if max < 1 || max > MaxImageRead {
+		return nil, "", &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: "-", Err: tracker.ErrUnsupported, Words: "an image's bound is 1 byte to 16 MiB"}
 	}
 	u, err := url.Parse(img.FetchURL())
 	admit := func(u *url.URL) bool { return tracker.ImageHost(tracker.GitHub, host, u) }
@@ -177,7 +181,8 @@ func (b *bounded) Read(p []byte) (int, error) {
 	if b.left < 0 {
 		return 0, b.boundErr()
 	}
-	if int64(len(p)) > b.left+1 {
+	// Never left+1 unless left is below len(p), so no bound can overflow.
+	if int64(len(p)) > b.left {
 		p = p[:b.left+1]
 	}
 	n, err := b.rc.Read(p)

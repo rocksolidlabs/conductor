@@ -62,8 +62,10 @@ func (e *ErrMoved) Error() string {
 
 // RequestError is a call's error: the request's method, its path without
 // the query, the status (0 when there was no answer), the typed error and
-// words of the adapter's own. It never carries a header, a query or a
-// body the system sent.
+// words of the adapter's own. It never carries a header's text, a query or
+// a body the system sent: a permission a refusal names is written only as
+// the names it parses to in the system's documented shape, or as fixed
+// words.
 type RequestError struct {
 	System string
 	Method string

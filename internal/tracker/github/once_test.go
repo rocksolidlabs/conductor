@@ -143,7 +143,7 @@ func TestWriteSentOnceOverHTTP2(t *testing.T) {
 			s := newH2Resetter(t, code)
 			a := s.adapter()
 			cred := mustToken(t, "github.com", false)
-			_, err := a.Comment(ctx, cred.ForWrite(tracker.Write{Kind: tracker.WriteComment, Publication: "p1", Try: 1}), target, "hello")
+			_, err := a.Comment(ctx, cred.ForWrite(tagFor("p1", 1, posted("p1", "hello"))), target, posted("p1", "hello"))
 			if n := s.whole.Load(); n != 1 {
 				t.Fatalf("one Comment reached the server as %d requests read whole (%d connections): %v", n, s.conns.Load(), err)
 			}
@@ -163,7 +163,7 @@ func TestWriteSentOnceOverHTTP2(t *testing.T) {
 func TestWriteSentOnceOnAReset(t *testing.T) {
 	r := newRig(t)
 	r.fake.Handle(http.MethodPost, api, "/graphql", reset)
-	_, err := r.a.Comment(ctx, r.commentCred("p1", 1), target, "hello")
+	_, err := r.post(ctx, "p1", 1, target, "hello")
 	if n := r.fake.Writes("graphql AddComment"); n != 1 {
 		t.Fatalf("one Comment reached the fake %d times", n)
 	}
@@ -187,11 +187,11 @@ func TestWriteFollowsNoRedirect(t *testing.T) {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"data":{"addComment":{"commentEdge":{"node":{"fullDatabaseId":"7700001","databaseId":7700001,"url":"https://github.com/octo-example/widgets/issues/42#issuecomment-7700001","createdAt":"2026-11-10T12:00:01Z","author":{"login":"mona-example","databaseId":9000001}}}}}}`))
+			_, _ = w.Write([]byte(`{"data":{"addComment":{"subject":{"id":"I_kwDOFixture42"},"commentEdge":{"node":{"fullDatabaseId":"7700001","databaseId":7700001,"url":"https://github.com/octo-example/widgets/issues/42#issuecomment-7700001","createdAt":"2026-11-10T12:00:01Z","repository":{"fullDatabaseId":"4000001"},"author":{"login":"mona-example","databaseId":9000001}}}}}}`))
 		})
 		r.reply(http.MethodGet, "/elsewhere", 401, `{"message":"Bad credentials"}`)
 		r.reply(http.MethodPost, "/elsewhere", 200, `{"data":{"addComment":null}}`)
-		_, err := r.a.Comment(ctx, r.commentCred("p1", 1), target, "hello")
+		_, err := r.post(ctx, "p1", 1, target, "hello")
 		if n := r.fake.Writes("graphql AddComment"); n != 1 || len(r.fake.Requests()) != 1 {
 			t.Errorf("%d: %d AddComment writes, %d requests", status, n, len(r.fake.Requests()))
 		}
@@ -231,7 +231,7 @@ func TestWriteSentOnceAfterAGoAway(t *testing.T) {
 	s.goaway.Store(true)
 	a := s.adapter()
 	cred, _ := credFor("github.com")
-	_, err := a.Comment(ctx, cred.ForWrite(tracker.Write{Kind: tracker.WriteComment, Publication: "p1", Try: 1}), target, "hello")
+	_, err := a.Comment(ctx, cred.ForWrite(tagFor("p1", 1, posted("p1", "hello"))), target, posted("p1", "hello"))
 	if n := s.whole.Load(); n != 1 || err == nil || tracker.NothingWritten(err) {
 		t.Fatalf("Comment: %d requests, %v", n, err)
 	}
@@ -254,10 +254,10 @@ func TestWriteSentOnceOnAReusedConnection(t *testing.T) {
 		}
 		reset(w, req)
 	})
-	if _, err := r.a.Comment(ctx, r.commentCred("p1", 1), target, "hello"); err != nil {
+	if _, err := r.post(ctx, "p1", 1, target, "hello"); err != nil {
 		t.Fatal(err)
 	}
-	_, err := r.a.Comment(ctx, r.commentCred("p2", 1), target, "hello")
+	_, err := r.post(ctx, "p2", 1, target, "hello")
 	if n := r.fake.Writes("graphql AddComment"); n != 2 {
 		t.Fatalf("two Comments reached the fake %d times", n)
 	}
@@ -286,7 +286,7 @@ func TestWriteUnknownWhenTheBaseFails(t *testing.T) {
 	b := &swallow{}
 	a := github.New(github.Options{Logger: quiet, Transport: b})
 	cred, _ := credFor("github.com")
-	_, err := a.Comment(ctx, cred.ForWrite(tracker.Write{Kind: tracker.WriteComment, Publication: "p1", Try: 1}), target, "hello")
+	_, err := a.Comment(ctx, cred.ForWrite(tagFor("p1", 1, posted("p1", "hello"))), target, posted("p1", "hello"))
 	if b.n.Load() != 1 || tracker.NothingWritten(err) || !errors.Is(err, tracker.ErrWriteUnknown) {
 		t.Fatalf("Comment: %d requests, %v", b.n.Load(), err)
 	}
