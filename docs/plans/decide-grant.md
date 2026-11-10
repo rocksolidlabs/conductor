@@ -13,7 +13,9 @@ grant, as one more of the route targets HM1 writes, and to take it back;
 and the web app's way to take such a principal's credential, a pass,
 from the URL fragment without ever sending it in a URL.
 
-It is the row of issue #776, written from the issue's words against
+It is the row of issue #776, built as two PRs (The PRs: the server's
+half for #776, the app's half for an issue cut when this plan merges),
+written from the issue's words against
 `main` at `175e0be5` (2026-11-10) after reading `ext/identity.go` and
 `ext/valid.go`, `ext/exttest/fakes.go`, `internal/api` (`auth.go`,
 `identity.go`, `extensions.go`, `decisions.go`, `decision_refs.go`,
@@ -90,8 +92,9 @@ the business of the module that registers a provider.
    token: `401`); an answer not rechecked in time is superseded and the
    operator answers again (DR1's rule, unchanged).
 9. **CGO off.** No change.
-10. **Contract.** This plan before its code, one issue and one PR, race
-    tests, vitest and Playwright, the protocol triple together
+10. **Contract.** This plan before its code, two PRs, each of one issue
+    (#776's for the server, and the app's cut when this plan merges; The
+    PRs), race tests, vitest and Playwright, the protocol triple together
     (`internal/proto`, `protocol.ts`, `docs/protocol.md`), each new
     message with its bound and its test.
 11. **Names.** As above; the grant is `decide`, a word the repository
@@ -169,7 +172,7 @@ A principal holding `admin` is the operator, whatever else it holds.
 (`requireAdmin` around `launchingAny`): the switchyard's `403` is only
 ever said to a principal the route admits.
 
-| Grants held | `requireAdmin` (`p.admin`) | `hostAllowed` (`p.host`) | `GET /api/me/decisions` (`deciding`) | the read and the respond route as the decide grant's (`deciding`) | the three on a switchyard (`deciding`) | the decide page |
+| Grants held | `requireAdmin` (`p.admin`) | `hostAllowed` (`p.host`) | `GET /api/me/decisions` (`deciding`) | the read and the respond route as the decide grant's (`deciding`) | the list, the read and the respond route on a switchyard (`deciding`) | the decide page |
 |---|---|---|---|---|---|---|
 | `admin`, with or without others | yes | yes | no: `403 not_decide` (the operator reads `GET /api/decisions`) | no: the admin's, as today | `403 switchyard`, as `launching` answers it today | no: the operator's page |
 | `host` | no | yes | no (`401`) | no (`401`) | `401`, as on `main` | no |
@@ -774,7 +777,8 @@ pass is held:
     for an open card differs from its view's reads that card at once; an
     open card whose decision is no longer listed is read once at once,
     whatever is due. An empty list, with no card open: "Nothing awaits
-    your answer here."
+    your answer here." A list whose reply says `cut`: "More may await
+    your answer than this page lists; a decision's own link opens it."
   - **Reads.** The list and each open card read on schedules of their
     own, each the same: one read at a time (one `list()`, one `read(did)`
     per card); the next is due
@@ -864,6 +868,8 @@ pass is held:
     your workspace page." Every send disabled, above the page.
   - the list `suspended`: "Checking which decisions await you here.",
     above the rows; Open disabled.
+  - the list `cut`: "More may await your answer than this page lists; a
+    decision's own link opens it.", above the rows.
   - `404` after a view was drawn: "dr-7 is no longer open to you."
   - `suspended`: "Checking that dr-7 is still yours to answer." Choices
     and sends disabled.
@@ -997,8 +1003,11 @@ Invariants:
   `crew.EntriesOf` inside it) over one record: the read, the list (over
   each row the ledger's bounded read hands it, in Go; no SQL of it reads
   a request or a policy), the respond route's check and the response's
-  transaction (`Admits`).
-  `TestAdmitsIsTheOneCheck` holds them to one table.
+  transaction (`Admits`). The recheck before application reads no
+  record, since the entries cannot change once answered (I7); its
+  answer is `Admits` over the entries the response was judged by, for
+  the same subject holding the grant the response's authority names.
+  `TestAdmitsIsTheOneCheck` holds all of them to one table.
 - **I2, the four routes.** A decide principal is answered by every
   route outside the four exactly as it is without the decide grant (a
   decide-only one as a request with no credential),
@@ -1071,7 +1080,7 @@ after its ledger read by `afterDecideList`, the page
 through `useDecide().whenIdle()`, vitest's fake clock and a fake fetch
 whose replies the test releases.
 
-Go race (`go test -race -count=1 -timeout 60m ./...`, with `make lint`,
+Go race, every one in PR-1 (`go test -race -count=1 -timeout 60m ./...`, with `make lint`,
 `make lint-static`, `make vuln`):
 
 - `ext`: `TestGrantDecideValid` (`decide` valid, alone and beside
@@ -1197,7 +1206,12 @@ Go race (`go test -race -count=1 -timeout 60m ./...`, with `make lint`,
     `AdmitOpen`, and `AdmissionOf` over the row alone the same as over
     the record whole for every open row), the respond route's check and
     the response's transaction agree with `crew.AdmissionOf` on every
-    row.
+    row; and, for each row with an accepted response, the recheck's
+    `admitted` (`ConfirmAuthority`'s answer, the issue's fourth caller)
+    for the principal the fake provider answers again is `crew.Admits`
+    over the entries that response's transaction judged, restricted to
+    the grant its authority names, so the recheck and the one function
+    cannot disagree though the recheck reads no record (I7).
   - `TestDecideListCarriesOnlyAdmittedDecisions`: decisions given to the
     grant (open, answered by this subject and by another, cancelled),
     open ones not given to it (the operator's, an HM1 person's), one
@@ -1254,7 +1268,7 @@ Go race (`go test -race -count=1 -timeout 60m ./...`, with `make lint`,
   is; `openScanBytes` lowered: the row past it not handed, `more` true;
   a ledger at a version before the decision tables hands none).
 
-The issue's three stream tests, as reads, so nothing of them is dropped
+The issue's three stream tests, as reads (PR-1), so nothing of them is dropped
 (Owner decisions, 16):
 
 | The issue's test | The read tests that carry its assertion | What each asserts of it |
@@ -1263,7 +1277,7 @@ The issue's three stream tests, as reads, so nothing of them is dropped
 | `TestDecisionStreamPolicyChangedDuringDelivery` | `TestDecideListTakeBackBetweenReads`; `TestDecideReadJudgesTheRowItReturns` | a read in flight across a take-back answers what it judged, the next read has nothing of the decision, and its card read is refused |
 | `TestPrincipalWatchWatchesDecide` | `TestDecideReadsAskTheProvider` | a pass the provider no longer admits is `401` at the next request of every route of the grant; no connection is given for a watch to hold |
 
-Vitest (`npm --prefix web test`, with `npm --prefix web run typecheck`):
+Vitest, every file in PR-2 (`npm --prefix web test`, with `npm --prefix web run typecheck`):
 
 - `utils/identityPass.test.ts`: a 2,048-character pass with dots taken,
   2,049 refused, a character outside the set refused; both keys dropped
@@ -1299,7 +1313,8 @@ Vitest (`npm --prefix web test`, with `npm --prefix web run typecheck`):
   `rev` that differs from an open card's view reading that card at once;
   a decision gone from the list between two reads read once at once and
   closed by its `404` with its draft kept, or drawn with its own
-  answer's outcome; an empty list's words; the card's one order: an
+  answer's outcome; an empty list's words; a `cut` list's words, and
+  none without `cut`; the card's one order: an
   open read held behind the fake fetch's gate, the respond's reply (the
   answered view at `rev` R + 1) drawn, the read released with the open
   view at R: the card stays answered, no choice offered, its `freshAt`
@@ -1311,11 +1326,15 @@ Vitest (`npm --prefix web test`, with `npm --prefix web run typecheck`):
   a definite refusal, a receipt of another id resolving nothing); each
   `outcome`'s words; an assignment's options drawn as the view gives
   them.
+- `utils/decisions.test.ts`: a record whose request's `for` is `{label:
+  "grant:decide"}`: `approverWords` says "the operator, or anyone
+  holding the decide grant"; `forWords`, `answerAsWords` and
+  `assignmentWords` draw no "for".
 - `utils/passSites.test.ts`: only `plugins/token-fragment.client.ts` and
   `composables/useDecide.ts` import the pass store (the app's sources
   read through `import.meta.glob`).
 
-Playwright (`make test-e2e`, after `npm --prefix web run typecheck:e2e`),
+Playwright, in PR-2 (`make test-e2e`, after `npm --prefix web run typecheck:e2e`),
 `decide-only.spec.ts`, on the shipped build `make test-e2e` already
 builds. That build registers no provider, and nothing in it may be
 switched on to admit a pass (articles 1 to 3), so:
@@ -1392,15 +1411,43 @@ desktop-test`, `make test-pebble`, `make test-live`.
 
 ## The PRs
 
-The one PR is issue #776's: one branch `issue-776`, cut from `main` once
-#775's PR has merged, a draft PR at its first commit, the checks of every
-surface before each push, its body ticking the open-core checklist. It
-leaves `main` working and green on its own and carries the
-`docs/features.md` entry.
+Two PRs, one after the other, since the row at about 810 + 1,320 lines
+is past one PR's size. The plan's parts split cleanly at the app's
+screens: everything a principal can do through the server is reached by
+Go tests on the real handlers, with no page, and the page reaches the
+server only through the four routes' wire, which `internal/proto` and its
+mirror in `protocol.ts` fix in the first PR. Each PR is one branch
+(`issue-N`, cut from `main` once what it depends on has merged), a draft
+PR at its first commit, the checks of every surface it touches before
+each push, its body ticking the open-core checklist, and each leaves
+`main` working and green on its own.
 
-| PR | Title | Contains | Touches | Tests | Depends on | Parallel with |
-|---|---|---|---|---|---|---|
-| PR-1 (#776, ~810 + 1,320 lines: round 4's bounded read of the open decisions, its admitted count and the card's order add ~30 + 240 to the list's ~780 + 1,080) | ext, api, web: a decide grant and a pass taken from the fragment | `ext.GrantDecide`; `proto`'s decide types and bounds; `crew.Admits`, `crew.EntriesOf`, `crew.AdmissionOf`, `crew.OutcomeOf`, the grant as a route target (`routeLabel`, `forRoute`, `gateFor`), the take-back, the operation kept for it (`ledger.Tx.Operations`), `respondTx`'s check, `replaceDecision`'s drop, `ledger.OpenDecisionsNewest`; `GET /api/me`, `GET /api/me/decisions`, `deciding`, the decide view and words, `decideAdmission`, `authorityOf`, `recheckResponse`, `no_identity`, `answererOf`, Brakeman's refusal; the pass parser, its store, the plugin, the middleware, `useDecide` and its reads of the list and the cards, each card's order through `replaces`, the decide page; `docs/protocol.md`, `protocol.ts`, `docs/features.md`, `docs/repository-map.md` | `ext`, `internal/proto`, `internal/crew`, `internal/api`, `web/app`, `web/e2e`, `docs` | every test above | #775 (its PR merged); DR1, HM1 and MB0 on `main` | none: #775 shares `ext`, `internal/api`, `web/app` and `docs` |
+- **PR-1, issue #776**: the server's half. On `main` after it, a
+  provider's decide principal can be routed a decision, list it, read it
+  and answer it through the four routes, and the operator can give and
+  take back the grant; a `#pass=` fragment is still only an unknown
+  token to the app's screens, which are unchanged. It closes #776, whose
+  vitest and Playwright parts move to PR-2's issue.
+- **PR-2, an issue to be cut when this plan merges**: the app's half,
+  which needs nothing of PR-1 but its routes and its wire types.
+
+Each test, bound and docs line of this plan lands in exactly one of them:
+
+| | PR-1 (#776) | PR-2 (the app's issue) |
+|---|---|---|
+| Code | `ext` (`GrantDecide`); `internal/proto` (`decide.go`); `internal/crew` (`decisions_admit.go`, `decisions_for.go`, the take-back, the operation kept for it, `respondTx`, `replaceDecision`) and `internal/crew/ledger` (`OpenDecisionsNewest`, `Tx.Operations`); `internal/api` (`principal.decide`, `decideAdmission`, `me.go`, `deciding`, the list, the read, the respond route, `authorityOf`, `recheckResponse`, `no_identity`, `answererOf`, `guide.go`, Brakeman's refusal, `server.go`); in `web/app/utils/protocol.ts`, the mirror of `internal/proto` alone (`GRANT_DECIDE`, `MeReply`, `DecideList`, `DecideEntry`, `DecideView`, `DecideOption`, `DecideReceipt`, `DecideReply`, `DecideRefusal`, the `outcome` words, the route's `grant` destination and `no_identity`) | `web/app`: `utils/identityPass.ts`, `composables/useIdentityPass.ts`, `plugins/token-fragment.client.ts`, `middleware/decide.global.ts`, `composables/useDecide.ts`, `pages/decide/index.vue` and `pages/decide/[did].vue`, `utils/decisions.ts`; in `protocol.ts`, the page's own constants (`DECIDE_CARDS`, `DECIDE_READ_EVERY`, `DECIDE_READ_WAIT`, `DECIDE_FRESH_FOR`) |
+| Bounds | `MaxMeReply`, `MaxDecideView`, `MaxDecideReply`, `MaxDecideRefusalWords`, `MaxDecideList`, `MaxDecideListEntries` (with their `protocol.ts` mirrors), `ledger.MaxOpenScan`, `ledger.MaxOpenScanBytes`, the operation of `MaxDecisionOperations` kept for the take-back | `MAX_PASS`, the four cards, the read interval, the read bound and the freshness window |
+| Tests | every Go test of Tests per surface (`ext`, `internal/proto`, `internal/crew`, `internal/api`, `internal/crew/ledger`) and the stream-test map | every vitest file of Tests per surface and `decide-only.spec.ts` |
+| Docs | `docs/protocol.md`: the HTTP API's opening paragraph, the Decisions table's rows (`GET /api/me`, `GET /api/me/decisions`, the read, the respond route, the route) and the `GET /api/inbox/item` row; `docs/repository-map.md`'s rows | `docs/protocol.md`: the decide page's reads and freshness window, and the fragment key `pass`; `docs/features.md`, the row's entry |
+| Checks | Go (`make lint`, `go test -race`, `make lint-static`, `make vuln`); the web checks for its `protocol.ts` change (`npm --prefix web run typecheck`, `npm --prefix web test`, the e2e build and `make test-e2e`), with no web test of its own | the web checks (`typecheck`, vitest, `typecheck:e2e`, `make web-build` and `make build-go`, `make test-e2e`); Go only as the e2e build needs it |
+
+| PR | Title | Repository | Contains | Touches | Tests | Depends on | Parallel with | Size (code + tests) |
+|---|---|---|---|---|---|---|---|---|
+| PR-1 (#776) | ext, api: a decide grant, its four routes and the route to it | rocksolidlabs/conductor | the PR-1 column above | `ext`, `internal/proto`, `internal/crew`, `internal/api`, `web/app/utils/protocol.ts`, `docs` | the Go tests above | #775 (its PR merged); DR1, HM1 and MB0 on `main` | none: #775 shares `ext`, `internal/api`, `web/app` and `docs` | about 470 + 820 |
+| PR-2 (an issue cut when this plan merges) | web: the decide page and a pass taken from the fragment | rocksolidlabs/conductor | the PR-2 column above | `web/app`, `web/e2e`, `docs` | the vitest files and `decide-only.spec.ts` above | PR-1 (merged) | none: it follows PR-1 | about 340 + 500 |
+
+A release that carries the decide grant is cut only once both have
+merged: PR-1 alone gives the server's routes and no page to reach them.
 
 ## Owner decisions
 
@@ -1410,7 +1457,9 @@ overturn. Review round 2 changed 1, 4, 5, 7, 8 and 12, withdrew 11 (its
 stream is gone) and added 16 to 19; review round 3 changed 16 and added
 20; after round 3 the lead changed 1, 12 and 16 (the list restored);
 review round 4 changed 1 (the list's admission in Go, its limit and cut
-of admitted rows) and 14 (authentication first); the numbers are kept so the earlier threads still point at the right one.
+of admitted rows) and 14 (authentication first); the final check said
+in words what a person notices of 3, 12 and 17; the numbers are kept so
+the earlier threads still point at the right one.
 
 1. **Four routes: who it is, the list, one decision, its answer**
    (after round 3; rounds 1 and 2 had cut the list). The grant reaches
@@ -1440,7 +1489,11 @@ of admitted rows) and 14 (authentication first); the numbers are kept so the ear
    (`crew.DecisionOptions`), an assignment's two fixed ones among them.
 3. **Admission ends with the answer.** Once a decision is answered, a
    holder of the grant reads only the outcome of its own answer, and one
-   with no answer of its own reads nothing.
+   with no answer of its own reads nothing. What a person notices: an
+   answered decision leaves the decide list, so the outcome of their
+   answer is shown on the page that sent it and at the decision's own
+   address (`/decide/<did>`), not in the list a later Open of `/decide`
+   draws.
 4. **The take-back is a route, while the decision is open** (round 2;
    round 1 had it in every state at any rev). It is a route to the
    operator (or to a person or a role), at the `expectedRev` read, held
@@ -1477,8 +1530,13 @@ of admitted rows) and 14 (authentication first); the numbers are kept so the ear
     page.** The pass in `sessionStorage`, emptied at its first `401`
     (after round 3: a `404` closes one card and keeps the pass, since the
     list may hold others); the draft and the frozen `sent` body in the page's state,
-    never in the browser's storage: a new Open reloads the page, which
-    reads the outcome of an answer sent before.
+    never in the browser's storage: a new Open loads the page anew, and
+    at the decision's address reads the outcome of an answer sent before
+    (3). What a person notices, against the issue's one store for the
+    origin: when access ends, an answer not yet sent stays readable on
+    that page, which can no longer send it, and the page a new Open
+    brings starts without it, so the person enters it again there; a tab
+    opened by hand, with no Open, holds no pass and shows the ended words.
 13. **The workbench token wins.** With one stored, the pass is kept and
     not sent, and the decide address opens the operator's page.
 14. **On a switchyard the decide routes are `403 switchyard` to an
@@ -1526,7 +1584,11 @@ of admitted rows) and 14 (authentication first); the numbers are kept so the ear
     write changes a policy today (`PutDecision` keeps it), so this adds
     no writer, no new bound and no new history row; `admits(authority,
     principal)` stays one function over entries, and SW1's subject entry
-    adds its rule there.
+    adds its rule there. What a person notices: a decision has one route
+    target at a time, so giving it to the decide grant drops whom it was
+    for (HM1's person or responsibility), and routing it to a person
+    takes the grant back; the history shows each route, and the operator
+    answers either way.
 18. **One operation is kept for the take-back** (round 2). While a
     decision is given to the grant, the last of its 32 operations is the
     take-back's; a route to the grant needs two left.
@@ -1540,19 +1602,19 @@ of admitted rows) and 14 (authentication first); the numbers are kept so the ear
 
 ## Acceptance
 
-The acceptance boundary is observed when the PR's checks pass in CI and
-locally: `TestDecideGrantAdmitsDecisionRoutesOnly` and the other
-`internal/api` tests show a principal with only the decide grant
-answering the decisions it may through the four routes and answered as
-no credential everywhere else, `GET /api/events` among them;
+The acceptance boundary is observed in two steps, each when its PR's
+checks pass in CI and locally. PR-1: `TestDecideGrantAdmitsDecisionRoutesOnly`
+and the other `internal/api` tests show a principal with only the decide
+grant answering the decisions it may through the four routes and
+answered as no credential everywhere else, `GET /api/events` among them;
 `TestDecideListCarriesOnlyAdmittedDecisions` and
 `TestDecideReadCarriesNothingElse` show it listing the open decisions
-that admit it and reading nothing else; the
-vitest files and `decide-only.spec.ts` show
-the pass taken from the fragment, dropped from the address bar, kept for
-the tab and never sent in a URL. Done is the PR merged with those checks
-green. Nothing needs the owner but the merge; a live check with a real
-identity provider is the provider module's.
+that admit it and reading nothing else. PR-2: the vitest files and
+`decide-only.spec.ts` show the pass taken from the fragment, dropped
+from the address bar, kept for the tab and never sent in a URL, and the
+decide page alone drawn for it. Done is both PRs merged with those
+checks green. Nothing needs the owner but the merges; a live check with
+a real identity provider is the provider module's.
 
 ## The amendment to docs/plans/decisions.md
 
