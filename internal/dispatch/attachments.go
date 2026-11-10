@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -104,7 +105,25 @@ type received struct {
 // dropped in a transaction of its own when the database answers, else left
 // to expire, and a file published is the sweep's.
 func (s *Store) AddAttachment(ctx context.Context, op Op, key, name, contentType string, r io.Reader) (Receipt, Attachment, error) {
-	const intent = "attachment.add"
+	args := func(size int64, sum string) any {
+		return struct {
+			Key         string `json:"key"`
+			Name        string `json:"name"`
+			ContentType string `json:"contentType"`
+			Size        int64  `json:"size"`
+			SHA256      string `json:"sha256"`
+		}{key, name, contentType, size, sum}
+	}
+	return s.addAttachment(ctx, op, "attachment.add", key, name, contentType, r, args, nil)
+}
+
+// addAttachment is AddAttachment under the intent, its content the
+// operation's args of the content's size and hash, and also, when given,
+// in the operation's transaction once the attachment's row and its add
+// row are written: what an import's image commits with it (its manifest's
+// entry), refused with the attachment.
+func (s *Store) addAttachment(ctx context.Context, op Op, intent, key, name, contentType string, r io.Reader,
+	argsOf func(size int64, sum string) any, also func(t *tx, tk Ticket, a Attachment) error) (Receipt, Attachment, error) {
 	if err := op.check(); err != nil {
 		return Receipt{}, Attachment{}, err
 	}
@@ -145,13 +164,7 @@ func (s *Store) AddAttachment(ctx context.Context, op Op, key, name, contentType
 			beforeCommit()
 		}
 	}
-	args := struct {
-		Key         string `json:"key"`
-		Name        string `json:"name"`
-		ContentType string `json:"contentType"`
-		Size        int64  `json:"size"`
-		SHA256      string `json:"sha256"`
-	}{key, name, contentType, u.size, u.sum}
+	args := argsOf(u.size, u.sum)
 	// ran says the change ran, so its transaction dropped the lease
 	// whichever way it ended, once it committed.
 	ran := false
@@ -214,6 +227,11 @@ func (s *Store) AddAttachment(ctx context.Context, op Op, key, name, contentType
 		}
 		if err := t.record(ChangeRow{Entity: EntityTicket, EntityID: tk.ID, TicketID: tk.ID, ProjectID: tk.ProjectID, Field: "attachments", Op: OpAdd, Value: value}); err != nil {
 			return err
+		}
+		if also != nil {
+			if err := also(t, tk, a); err != nil {
+				return err
+			}
 		}
 		made = a
 		return nil
@@ -358,9 +376,13 @@ func (s *Store) exec(ctx context.Context, query string, args ...any) error {
 // was and its prior the tag of the add that made it. No file is deleted,
 // since an upload of the same content may be between its publication and
 // its commit: the sweep deletes the file once no live row and no lease
-// names it. The attachment missing, removed or another ticket's is
-// not_found; a deleted ticket is not_found; an expected revision is the
-// ticket's; an archived project refuses it (archived).
+// names it. An attachment an imported image was made into also puts the
+// image's entry in the ticket's import manifest back to pending (one set
+// row of external_snapshot), so the image is fetched again at the next
+// read and no entry names a removed attachment. The attachment missing,
+// removed or another ticket's is not_found; a deleted ticket is
+// not_found; an expected revision is the ticket's; an archived project
+// refuses it (archived).
 func (s *Store) RemoveAttachment(ctx context.Context, op Op, key, id string) (Receipt, error) {
 	args := struct {
 		Key string `json:"key"`
@@ -393,8 +415,28 @@ func (s *Store) RemoveAttachment(ctx context.Context, op Op, key, id string) (Re
 		if err != nil {
 			return err
 		}
-		return t.recordRemove(ChangeRow{Entity: EntityTicket, EntityID: tk.ID, TicketID: tk.ID, ProjectID: tk.ProjectID, Field: "attachments", Value: value},
-			rowTags([]string{id}, adds))
+		if err := t.recordRemove(ChangeRow{Entity: EntityTicket, EntityID: tk.ID, TicketID: tk.ID, ProjectID: tk.ProjectID, Field: "attachments", Value: value},
+			rowTags([]string{id}, adds)); err != nil {
+			return err
+		}
+		// An imported image's attachment: its manifest's entry goes back to
+		// pending, so no entry names a removed attachment, here as in a
+		// merge (ReconcileCounterpart), and the image is fetched again at
+		// the next read.
+		sn, ok := ParseSnapshot(string(tk.ExternalSnapshot))
+		i := -1
+		if ok {
+			i = slices.IndexFunc(sn.Images, func(im SnapshotImage) bool { return im.AttachmentID == id })
+		}
+		if i < 0 {
+			return nil
+		}
+		sn.Images[i] = SnapshotImage{ID: sn.Images[i].ID}
+		snapshot, err := encodeSnapshot(sn)
+		if err != nil {
+			return err
+		}
+		return t.setScalars("tickets", ticketBase(tk), []fieldValue{{"external_snapshot", string(tk.ExternalSnapshot)}}, []fieldValue{{"external_snapshot", snapshot}})
 	})
 }
 
