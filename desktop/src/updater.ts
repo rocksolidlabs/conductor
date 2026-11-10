@@ -1,21 +1,59 @@
 import type { Logs } from './logs'
 
 /**
- * updateChannel says whether the app can update itself: the dmg/zip and
- * nsis installs do (electron-updater against the GitHub releases), while a
- * deb, rpm or AppImage from a package manager is updated by it, so the app
- * only points at the release page.
+ * updateChannel says whether the app can update itself: the dmg/zip and nsis installs and the AppImage do (electron-updater
+ * against the update feed the package names), while a deb or rpm from a package manager is updated by it, so the app only
+ * points at the download page. feed is whether the package names an update feed (an app-update.yml in its resources, which
+ * electron-builder writes for a package with a publish target): a package with none has no updater, which would fail at every
+ * check.
  */
-export function updateChannel(platform: string, appImage: boolean, packaged: boolean): 'auto' | 'link' | 'none' {
-  if (!packaged) return 'none'
+export function updateChannel(platform: string, appImage: boolean, packaged: boolean, feed: boolean): 'auto' | 'link' | 'none' {
+  if (!packaged || !feed) return 'none'
   if (platform === 'darwin' || platform === 'win32') return 'auto'
   return appImage ? 'auto' : 'link'
 }
 
-export const RELEASES_URL = 'https://github.com/rocksolidlabs/conductor/releases/latest'
+/**
+ * The download page when the package names none: the repository's releases, all of them (its /releases/latest answers 404
+ * while every release is a prerelease).
+ */
+export const DEFAULT_DOWNLOAD_PAGE = 'https://github.com/rocksolidlabs/conductor/releases'
+/** The longest download page a package may name, in bytes. */
+export const MAX_DOWNLOAD_PAGE = 200
+
+/**
+ * downloadPage is where the app points for a new version: the packaged package.json's conductor.downloadPage (packageJson, its
+ * text, null when it could not be read), an https URL with a host of at most MAX_DOWNLOAD_PAGE bytes with no space or control
+ * character in it; anything else is ignored, and the page is DEFAULT_DOWNLOAD_PAGE.
+ */
+export function downloadPage(packageJson: string | null): string {
+  let page: unknown
+  try {
+    page = (JSON.parse(packageJson ?? 'null') as { conductor?: { downloadPage?: unknown } } | null)?.conductor?.downloadPage
+  } catch {
+    return DEFAULT_DOWNLOAD_PAGE
+  }
+  if (typeof page !== 'string' || Buffer.byteLength(page) > MAX_DOWNLOAD_PAGE || /[\x00-\x20\x7f]/.test(page)) return DEFAULT_DOWNLOAD_PAGE
+  try {
+    const u = new URL(page)
+    if (u.protocol !== 'https:' || !u.hostname || u.username || u.password) return DEFAULT_DOWNLOAD_PAGE
+  } catch {
+    return DEFAULT_DOWNLOAD_PAGE
+  }
+  return page
+}
+
 const EVERY = 6 * 60 * 60 * 1000
 /** How long an install may take to quit the app before it is taken for one that did not start. */
 const INSTALL_WAIT = 60 * 1000
+
+/** What startUpdater needs of electron-updater's autoUpdater. */
+export interface AppUpdater extends WatchedUpdater, InstallingUpdater {
+  autoDownload: boolean
+  autoInstallOnAppQuit: boolean
+  logger: unknown
+  checkForUpdates(): Promise<{ downloadPromise?: Promise<unknown> | null } | null>
+}
 
 /** What the app does with the updater it started (startUpdater). */
 export interface StartedUpdater {
@@ -40,10 +78,15 @@ export interface StartedUpdater {
  * stops the server: installVia) and what a restart to update holds the
  * checks with (UpdateChecks), null where the app does not update itself.
  */
-export async function startUpdater(channel: 'auto' | 'link' | 'none', logs: Logs, on: UpdaterEvents): Promise<StartedUpdater | null> {
+export async function startUpdater(
+  channel: 'auto' | 'link' | 'none',
+  logs: Pick<Logs, 'line'>,
+  on: UpdaterEvents,
+  load: () => Promise<AppUpdater> = async () => (await import('electron-updater')).autoUpdater,
+): Promise<StartedUpdater | null> {
   if (channel !== 'auto') return null
   try {
-    const { autoUpdater } = await import('electron-updater')
+    const autoUpdater = await load()
     autoUpdater.autoDownload = true
     autoUpdater.autoInstallOnAppQuit = true
     autoUpdater.logger = { info: (m: unknown) => logs.line('main', `updater: ${String(m)}`), warn: (m: unknown) => logs.line('main', `updater: ${String(m)}`), error: (m: unknown) => logs.line('main', `updater: ${String(m)}`), debug: () => {} }

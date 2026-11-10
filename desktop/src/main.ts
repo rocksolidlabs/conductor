@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, Menu, type Tray } from 'electron'
 import { randomBytes } from 'node:crypto'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { serverEnv, SERVE_ARGS } from './env'
@@ -19,7 +19,7 @@ import { WslLauncher, wslAvailable, wslNetworkingMode } from './launcher-wsl'
 import { ICE_UDP_PORT, UdpForwarder, windowsLanAddress } from './udp-forwarder'
 import { allowIceThroughFirewall, firewallRuleExists, type IceStatus } from './firewall'
 import { InviteDelivery, inviteInArgv, invitePath, parseInvite, type Invite } from './invite'
-import { RELEASES_URL, UpdateNotice, failedAtStart, offerUpdates, restartToInstall, startUpdater, updateChannel, type RestartOutcome, type StartedUpdater } from './updater'
+import { downloadPage, UpdateNotice, failedAtStart, offerUpdates, restartToInstall, startUpdater, updateChannel, type RestartOutcome, type StartedUpdater } from './updater'
 import { buildLine, showSplash, SPLASH_STEPS, splashQuery, type Splash } from './splash'
 
 const dev = !app.isPackaged
@@ -29,6 +29,15 @@ const resources = app.isPackaged ? process.resourcesPath : join(__dirname, '..')
 function sourceBinary(): string {
   if (app.isPackaged) return join(resources, process.platform === 'win32' ? 'conductor-linux' : 'conductor')
   return process.env.CONDUCTOR_DESKTOP_BIN || join(__dirname, '..', '..', 'bin', 'conductor')
+}
+
+/** The app's own package.json, as packaged (in the asar), or null when it cannot be read. */
+function packageJson(): string | null {
+  try {
+    return readFileSync(join(app.getAppPath(), 'package.json'), 'utf8')
+  } catch {
+    return null
+  }
 }
 
 function iconPath(): string {
@@ -403,8 +412,13 @@ async function run() {
   })
   tray = inTray.tray
   trayUpdate = inTray.update
-  const channel = updateChannel(process.platform, !!process.env.APPIMAGE, app.isPackaged)
-  log('main', `updates: ${channel === 'auto' ? 'from the GitHub releases, checked every six hours' : channel === 'link' ? `by your package manager (${RELEASES_URL})` : 'none in development'}`)
+  // The package names its update feed (electron-builder's app-update.yml, beside the app) and its download page (package.json's
+  // conductor.downloadPage), or none.
+  const channel = updateChannel(process.platform, !!process.env.APPIMAGE, app.isPackaged, existsSync(join(resources, 'app-update.yml')))
+  log(
+    'main',
+    `updates: ${channel === 'auto' ? 'from the update feed this package names, checked every six hours' : channel === 'link' ? `by your package manager (${downloadPage(packageJson())})` : app.isPackaged ? 'none: this build names no update feed' : 'none in development'}`,
+  )
   // Every workbench window asks what to say (UpdateNotice), a second one opened from the first too; one not open, or not ready
   // yet, asks as it loads.
   const tellWorkbench = () => {
