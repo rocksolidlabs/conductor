@@ -111,6 +111,14 @@ const (
 	// revision whose handed-over comment is edited or gone, a launch of
 	// one whose ticket's intent changed since it was approved.
 	RefusalStalePlan = "stale_plan"
+	// RefusalExternalLinked is an outside item another live ticket has as
+	// its linked issue already, the receipt's Key naming that ticket;
+	// RefusalExternalOwned an edit of a field the linked item's system
+	// owns; RefusalStaleRead a read older, by the system's own clock, than
+	// the one kept (Program item IN1a, external.go, reads.go).
+	RefusalExternalLinked = "external_linked"
+	RefusalExternalOwned  = "external_owned"
+	RefusalStaleRead      = "stale_read"
 )
 
 // The words of an op_conflict refusal: the id was used with other
@@ -214,6 +222,14 @@ const (
 	OpDelete    = "delete"
 	OpReconcile = "reconcile"
 	OpMigrate   = "migrate"
+	// OpObserve is a ticket's title or description set to what a read of
+	// its linked item made it (an import, a refresh, a field given back),
+	// and OpAdopt the field made Dispatch's keeping its text (a take over,
+	// an unlink: value the text, prior the system that owned it), so a
+	// row says by its own kind which side wrote it (Program item IN1a,
+	// "The counterpart group").
+	OpObserve = "observe"
+	OpAdopt   = "adopt"
 )
 
 // ChangeRow is one row of the changes log: an operation on one field of
@@ -290,6 +306,8 @@ type tx struct {
 	// runSuffix mints a run id's last part for a launch (mintRunID), nil
 	// for crypto/rand's: a test's seam.
 	runSuffix func() string
+	// systems is the store's trackers' systems (Options.Systems).
+	systems []string
 	// onRefusal, when a change sets it, runs once a refusal has undone the
 	// change, in its transaction before its receipt: what a refusal keeps
 	// beside the receipt (an upload's lease, dropped with it).
@@ -352,8 +370,9 @@ func (t *tx) record(c ChangeRow) error {
 var searchedFields = map[string]bool{"title": true, "description": true, "acceptance": true}
 
 // searchedBy is the search entry a change row makes stale, and whether
-// there is one: a ticket's own on its create and on a set of a field the
-// entry holds; a comment's on every row of the comment (its create, its
+// there is one: a ticket's own on its create and on a set or an observe of
+// a field the entry holds (an adopt keeps the field's text, so it makes
+// none stale); a comment's on every row of the comment (its create, its
 // body, its delete), since the entry holds the body while the comment is
 // live. No other entry: a comment's rows leave its ticket's own entry and
 // its other comments' as they are (docs/plans/dispatch.md, Owner
@@ -361,7 +380,7 @@ var searchedFields = map[string]bool{"title": true, "description": true, "accept
 // since a list leaves a deleted ticket out by its row.
 func searchedBy(c ChangeRow) (searchEntry, bool) {
 	switch {
-	case c.Entity == EntityTicket && (c.Op == OpCreate || (c.Op == OpSet && searchedFields[c.Field])):
+	case c.Entity == EntityTicket && (c.Op == OpCreate || ((c.Op == OpSet || c.Op == OpObserve) && searchedFields[c.Field])):
 		return searchEntry{id: c.EntityID}, true
 	case c.Entity == EntityComment:
 		return searchEntry{comment: true, id: c.EntityID}, true
@@ -578,7 +597,7 @@ func (s *Store) apply(ctx context.Context, op Op, intent, fp string, change func
 	if found {
 		return rc, nil, nil
 	}
-	t := &tx{ctx: ctx, tx: dbtx, now: time.Now().UTC(), op: op, intent: intent, fp: fp, runExists: s.runExists, sight: s.sight, runSuffix: s.runSuffix}
+	t := &tx{ctx: ctx, tx: dbtx, now: time.Now().UTC(), op: op, intent: intent, fp: fp, runExists: s.runExists, sight: s.sight, runSuffix: s.runSuffix, systems: s.systems}
 	// The change runs under a savepoint: a refusal undoes it and keeps the
 	// transaction, and with it the write lock, for its receipt, so no other
 	// writer (a second store on the file) runs the same operation between
@@ -1035,6 +1054,13 @@ func (t *tx) scalars(table, id string, cols []string) ([]fieldValue, error) {
 // set row naming the field, its value and its prior. A field unchanged
 // writes nothing. table and the columns are the code's, never a client's.
 func (t *tx) setScalars(table string, base ChangeRow, before, after []fieldValue) error {
+	return t.writeScalars(table, base, before, after, nil)
+}
+
+// writeScalars is setScalars, each row's op opOf of its column where
+// opOf names one (an import's title and description, observe), set
+// otherwise.
+func (t *tx) writeScalars(table string, base ChangeRow, before, after []fieldValue, opOf map[string]string) error {
 	prior := map[string]string{}
 	for _, f := range before {
 		prior[f.column] = f.value
@@ -1048,6 +1074,9 @@ func (t *tx) setScalars(table string, base ChangeRow, before, after []fieldValue
 		}
 		row := base
 		row.Field, row.Op, row.Value, row.Prior = f.column, OpSet, f.value, prior[f.column]
+		if op := opOf[f.column]; op != "" {
+			row.Op = op
+		}
 		if err := t.record(row); err != nil {
 			return err
 		}

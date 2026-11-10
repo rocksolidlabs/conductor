@@ -37,6 +37,14 @@ const (
 	ClassLog        FieldClass = "log"
 	ClassAllocation FieldClass = "allocation"
 	ClassGated      FieldClass = "gated"
+	// ClassCounterpart is a ticket's linked issue (external_id,
+	// external_url, external_snapshot, authority): merged as one group by
+	// ReconcileCounterpart, never field by field, so two operations' halves
+	// never mix (Program item IN1a, "The counterpart group").
+	ClassCounterpart FieldClass = "counterpart"
+	// ClassDerived is a table every replica keeps for itself (a read of
+	// GitHub, the store's instance): never a changes row, never shipped.
+	ClassDerived FieldClass = "derived"
 )
 
 // Class names the class of a field of an entity, the entity as a change
@@ -56,8 +64,10 @@ func Class(entity, field string) FieldClass {
 			return ClassGated
 		case "title", "description", "acceptance", "priority", "horizon", "owner", "parent_id", "milestone_id",
 			"accepted_at", "accepted_by", "accepted_for", "accepted_criteria", "accepted_note", "closed_at", "deleted_at",
-			"source", "external_id", "external_url", "external_snapshot", "authority":
+			"source", "closed_on":
 			return ClassScalar
+		case "external_id", "external_url", "external_snapshot", "authority":
+			return ClassCounterpart
 		case "assignees", "ticket_assignees", "labels", "ticket_labels", "relations", "links", "attachments":
 			return ClassSet
 		case "comments":
@@ -187,6 +197,12 @@ func Class(entity, field string) FieldClass {
 			"fingerprint":
 			return ClassImmutable
 		}
+	case "link_read", "link_reads", "ticket_read", "ticket_reads", "store_instance":
+		// The reads of GitHub and the store's instance (schema version 4):
+		// each replica's own, every column.
+		if field != "" {
+			return ClassDerived
+		}
 	case "change", "changes":
 		switch field {
 		case "actor", "op_id", "n":
@@ -304,6 +320,10 @@ func Merge(local, remote ChangeRow) Winner {
 		return KeepLocal
 	}
 	switch Class(local.Entity, local.Field) {
+	case ClassCounterpart:
+		// Every row of the group is kept: ReconcileCounterpart decides the
+		// group from them all.
+		return KeepBoth
 	case ClassScalar, ClassGated:
 		if Less(local, remote) {
 			return TakeRemote
@@ -623,4 +643,170 @@ func Repair(e EdgeChange, admitted bool, at time.Time, n int) ChangeRow {
 		Entity: EntityTicket, EntityID: e.From, TicketID: e.From, Field: fields[e.Kind], Op: OpReconcile, Value: string(value),
 		At: at, Actor: ActorMerge, OpID: string(tag), N: n,
 	}
+}
+
+// CounterpartState is a ticket's linked issue and the two fields its
+// system may own, as ReconcileCounterpart makes them of a merged log: the
+// four columns of the counterpart group as their rows hold them, the title
+// and the description, and DropRead, which says the replica drops its own
+// ticket_reads row, so the page's next open reads the item with no
+// validators and writes the system's text (rule 5's last case).
+type CounterpartState struct {
+	ExternalID       string
+	ExternalURL      string
+	ExternalSnapshot string
+	Authority        string
+	Title            string
+	Description      string
+	DropRead         bool
+}
+
+// ReconcileCounterpart merges a ticket's counterpart group as one, from
+// the change rows of the ticket (any of its rows; rows of one identity
+// counted once, so a log merged with itself or with a prefix of itself
+// gives what it gives alone), run after the per-field merge as Reconcile
+// is for the edges (docs/plans/tracker-linking.md, "The counterpart
+// group"):
+//
+//  1. Identity first: the last external_id row in the one order decides
+//     the ticket's linked item, or none. Its period is the rows after the
+//     last operation that set another identity (a link of another item,
+//     an unlink).
+//  2. Nothing of another item survives: a snapshot or an owner change of
+//     another item, or of one before the period, is dropped. A title's or
+//     a description's row is never dropped for its item.
+//  3. Reads by the system's clock: of the item's snapshot rows in the
+//     period, the one with the latest updatedAt (equal: the one order) is
+//     external_snapshot, its manifest taking by image id an attachment or
+//     a skip any of them records; external_url is its url.
+//  4. Owners by the person's order: authority is the last owner change of
+//     the item in the period (its of the item's), else none.
+//  5. Every field has one writer: a field the owners give the system is
+//     what the snapshot makes it (the title FromExternal of its whole
+//     title; the description the text among the field's rows whose SHA-256
+//     is the snapshot's descriptionSha256, or, when no row holds it, the
+//     last observe row's, DropRead set); a field Dispatch owns is the last
+//     of its set and adopt rows, never an observe row.
+//
+// Pure: nothing here reads the store.
+func ReconcileCounterpart(rows []ChangeRow) CounterpartState {
+	seen := map[Tag]bool{}
+	var log []ChangeRow
+	for _, r := range rows {
+		if r.Entity != EntityTicket || seen[TagOf(r)] {
+			continue
+		}
+		seen[TagOf(r)] = true
+		log = append(log, r)
+	}
+	Order(log)
+	// sameOp reports whether two rows are one operation's.
+	sameOp := func(a, b ChangeRow) bool { return a.Actor == b.Actor && a.OpID == b.OpID && a.At.Equal(b.At) }
+	var out CounterpartState
+	var boundary *ChangeRow
+	decided := false
+	for _, r := range log {
+		if r.Field == "external_id" && r.Op == OpSet {
+			out.ExternalID, decided = r.Value, true
+		}
+	}
+	if decided && out.ExternalID != "" {
+		for i := range log {
+			if r := log[i]; r.Field == "external_id" && r.Op == OpSet && r.Value != out.ExternalID {
+				boundary = &log[i]
+			}
+		}
+	}
+	inPeriod := func(r ChangeRow) bool {
+		return boundary == nil || (!sameOp(r, *boundary) && Less(*boundary, r))
+	}
+	var snap ExternalSnapshot
+	have := false
+	auth := Authority{}
+	if out.ExternalID != "" {
+		key := authorityKey(out.ExternalID)
+		var reads []ExternalSnapshot
+		chosen, chosenValue := -1, ""
+		for _, r := range log {
+			if !inPeriod(r) || r.Op != OpSet {
+				continue
+			}
+			switch r.Field {
+			case "external_snapshot":
+				sn, ok := ParseSnapshot(r.Value)
+				if !ok || sn.Identity() != out.ExternalID {
+					continue
+				}
+				reads = append(reads, sn)
+				// Later in the one order wins a tie: >=.
+				if chosen < 0 || !sn.UpdatedAt.Before(reads[chosen].UpdatedAt) {
+					chosen, chosenValue = len(reads)-1, r.Value
+				}
+			case "authority":
+				if a := ParseAuthority(r.Value); a.Of == key {
+					auth = a
+				}
+			}
+		}
+		if chosen >= 0 {
+			snap, have = reads[chosen], true
+			out.ExternalSnapshot = chosenValue
+			changed := false
+			for i, im := range snap.Images {
+				if im.done() {
+					continue
+				}
+				for _, other := range reads {
+					for _, o := range other.Images {
+						if o.ID == im.ID && o.done() {
+							snap.Images[i], changed = o, true
+						}
+					}
+				}
+			}
+			if changed {
+				if v, err := encodeSnapshot(snap); err == nil {
+					out.ExternalSnapshot = v
+				}
+			}
+			out.ExternalURL = snap.URL
+		}
+	}
+	out.Authority = auth.encode()
+	for _, field := range []string{FieldTitle, FieldDescription} {
+		text := ""
+		switch {
+		case auth.owner(field) != "" && have && field == FieldTitle:
+			text, _, _ = FromExternal(snap.Title, "")
+		case auth.owner(field) != "" && have:
+			found := snap.DescriptionSha256 == sha256Hex("")
+			for _, r := range log {
+				if r.Field == field && (r.Op == OpSet || r.Op == OpObserve || r.Op == OpAdopt) && sha256Hex(r.Value) == snap.DescriptionSha256 {
+					text, found = r.Value, true
+				}
+			}
+			if !found {
+				// Given back on one replica while another read past it: the
+				// last text a read made, and a read again with no validators.
+				for _, r := range log {
+					if r.Field == field && r.Op == OpObserve {
+						text = r.Value
+					}
+				}
+				out.DropRead = true
+			}
+		default:
+			for _, r := range log {
+				if r.Field == field && (r.Op == OpSet || r.Op == OpAdopt) {
+					text = r.Value
+				}
+			}
+		}
+		if field == FieldTitle {
+			out.Title = text
+		} else {
+			out.Description = text
+		}
+	}
+	return out
 }

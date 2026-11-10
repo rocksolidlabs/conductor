@@ -104,7 +104,25 @@ type received struct {
 // dropped in a transaction of its own when the database answers, else left
 // to expire, and a file published is the sweep's.
 func (s *Store) AddAttachment(ctx context.Context, op Op, key, name, contentType string, r io.Reader) (Receipt, Attachment, error) {
-	const intent = "attachment.add"
+	args := func(size int64, sum string) any {
+		return struct {
+			Key         string `json:"key"`
+			Name        string `json:"name"`
+			ContentType string `json:"contentType"`
+			Size        int64  `json:"size"`
+			SHA256      string `json:"sha256"`
+		}{key, name, contentType, size, sum}
+	}
+	return s.addAttachment(ctx, op, "attachment.add", key, name, contentType, r, args, nil)
+}
+
+// addAttachment is AddAttachment under the intent, its content the
+// operation's args of the content's size and hash, and also, when given,
+// in the operation's transaction once the attachment's row and its add
+// row are written: what an import's image commits with it (its manifest's
+// entry), refused with the attachment.
+func (s *Store) addAttachment(ctx context.Context, op Op, intent, key, name, contentType string, r io.Reader,
+	argsOf func(size int64, sum string) any, also func(t *tx, tk Ticket, a Attachment) error) (Receipt, Attachment, error) {
 	if err := op.check(); err != nil {
 		return Receipt{}, Attachment{}, err
 	}
@@ -145,13 +163,7 @@ func (s *Store) AddAttachment(ctx context.Context, op Op, key, name, contentType
 			beforeCommit()
 		}
 	}
-	args := struct {
-		Key         string `json:"key"`
-		Name        string `json:"name"`
-		ContentType string `json:"contentType"`
-		Size        int64  `json:"size"`
-		SHA256      string `json:"sha256"`
-	}{key, name, contentType, u.size, u.sum}
+	args := argsOf(u.size, u.sum)
 	// ran says the change ran, so its transaction dropped the lease
 	// whichever way it ended, once it committed.
 	ran := false
@@ -214,6 +226,11 @@ func (s *Store) AddAttachment(ctx context.Context, op Op, key, name, contentType
 		}
 		if err := t.record(ChangeRow{Entity: EntityTicket, EntityID: tk.ID, TicketID: tk.ID, ProjectID: tk.ProjectID, Field: "attachments", Op: OpAdd, Value: value}); err != nil {
 			return err
+		}
+		if also != nil {
+			if err := also(t, tk, a); err != nil {
+				return err
+			}
 		}
 		made = a
 		return nil

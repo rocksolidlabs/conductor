@@ -39,6 +39,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -104,6 +105,13 @@ type Store struct {
 	// crypto/rand (mintRunID): a test forces a run id the store holds
 	// already, set through openWith.
 	runSuffix func() string
+	// systems is the trackers' systems a ticket's source and its field
+	// owners may name (Options.Systems), fixed at open.
+	systems []string
+
+	// rmu guards readers, what OnRead registered.
+	rmu     sync.Mutex
+	readers []func(ReadNotice)
 
 	// lmu guards listeners, what OnChange registered.
 	lmu       sync.Mutex
@@ -232,6 +240,33 @@ type Change struct {
 // pruned at open (prune) and then every day by a goroutine of the
 // store's, which Close stops.
 func Open(dir string) (*Store, error) { return openWith(dir, nil) }
+
+// Options is what a store is opened with beside its directory. Systems is
+// the trackers' systems a ticket's source and its field owners may name
+// on a local write (docs/plans/tracker-linking.md: github, the names the
+// API's adapter registry gives): each 1 to 16 bytes of [a-z0-9-] starting
+// with a letter, never native or dispatch. A store opened with none
+// refuses every import and link of an outside item (invalid), and reads
+// whatever a replica's rows name.
+type Options struct {
+	Systems []string
+}
+
+// SystemPattern is a tracker system's name.
+var SystemPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,15}$`)
+
+// OpenOptions is Open with the options: an error, and no store, for a
+// system's name past its shape, native, dispatch or one named twice.
+func OpenOptions(dir string, o Options) (*Store, error) {
+	var systems []string
+	for _, name := range o.Systems {
+		if !SystemPattern.MatchString(name) || name == SourceNative || name == OwnerDispatch || slices.Contains(systems, name) {
+			return nil, fmt.Errorf("dispatch: %q is not a tracker system's name", name)
+		}
+		systems = append(systems, name)
+	}
+	return openWith(dir, func(s *Store) { s.systems = systems })
+}
 
 // openWith is Open, configure (when given) setting the store's fields
 // before anything reads them: a test shortens pruneEvery so.
@@ -402,10 +437,15 @@ func open(ctx context.Context, path string, readOnly bool) (*sql.DB, error) {
 // switch from a rollback journal's mode writes the header, which
 // read-only mode refuses, and a refused open would leave the store
 // nothing to read.
-func dsn(path string, readOnly bool) string {
+func dsn(path string, readOnly bool) string { return dsnMode(path, readOnly, !readOnly) }
+
+// dsnMode is dsn, the switch to WAL made only when wal is set: a write to
+// a file no server has open (Reissue's, a restore's staged copy) leaves
+// its journal's mode as it found it.
+func dsnMode(path string, readOnly, wal bool) string {
 	q := url.Values{}
 	pragmas := []string{fmt.Sprintf("busy_timeout(%d)", busyTimeout/time.Millisecond), "foreign_keys(1)", "synchronous(FULL)"}
-	if !readOnly {
+	if wal {
 		pragmas = append(pragmas, "journal_mode(WAL)")
 	}
 	if runtime.GOOS == "darwin" {
@@ -474,6 +514,9 @@ func (s *Store) prepare(ctx context.Context, db *sql.DB) error {
 			}
 		}
 		if _, err := tx.ExecContext(ctx, "INSERT INTO schema_version (version) VALUES (?)", Version); err != nil {
+			return err
+		}
+		if err := writeInstance(ctx, tx); err != nil {
 			return err
 		}
 	default:
