@@ -356,8 +356,9 @@ const (
 // its bytes escaped.
 const (
 	// MaxExternalID bounds a ticket's linked item's identity,
-	// <system>:<host>:<node id>, in bytes.
-	MaxExternalID = 360
+	// <system>:<host>:<node id>, in bytes: a system's 16, a host's 253 and
+	// a node id's 100 beside their two colons.
+	MaxExternalID = 371
 	// MaxExternalURL bounds the linked item's page, in bytes.
 	MaxExternalURL = 2 << 10
 	// MaxExternalSnapshot bounds a ticket's snapshot as encoded, in bytes:
@@ -420,14 +421,18 @@ const (
 	// MaxCheckName bounds a check's name and its app's, in bytes.
 	MaxCheckName = 200
 	// MaxLinkReadSummary bounds one link's read as a ticket's read carries
-	// it (LinkReadSummary), at its escaped worst, in bytes.
-	MaxLinkReadSummary = 1536
+	// it (LinkReadSummary), at its escaped worst as the API encodes it (Go's
+	// JSON: a '<' of its error's words is six bytes), in bytes.
+	MaxLinkReadSummary = 2 << 10
 	// MaxTicketExternalParts bounds what a ticket's read carries of its
 	// linked issue and its links' reads (the snapshot, the owners, the
-	// linked issue's read, a summary per live link) at their escaped worst,
-	// in bytes: what the API's MaxTicketReply makes room for
-	// (TestTicketReplyBound).
-	MaxTicketExternalParts = 128 << 10
+	// linked issue's read and closed_on, a summary per live link) at their
+	// escaped worst as the API encodes them, in bytes: Go's JSON writes a
+	// '<' as six bytes, so the snapshot, under MaxExternalSnapshot as the
+	// store encodes it, takes some 110 KiB there, and fifty summaries 100
+	// KiB (TestTicketReplyBound). What the API's MaxTicketReply makes room
+	// for.
+	MaxTicketExternalParts = 224 << 10
 	// MaxMergedReadAge is how old a link's read may be for the close
 	// policy's merged: the close route's own read is what counts.
 	MaxMergedReadAge = 5 * time.Minute

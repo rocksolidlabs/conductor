@@ -392,7 +392,7 @@ func normalSnapshot(read ExternalRead) (sn ExternalSnapshot, title, description 
 	switch {
 	case !SystemPattern.MatchString(sn.System):
 		return ExternalSnapshot{}, "", "", refuse(RefusalInvalid, "the system %q is not a tracker system's name", sn.System)
-	case len(sn.Host) > MaxExternalHost+6 || !hostPattern.MatchString(sn.Host):
+	case len(sn.Host) > MaxExternalHost || !hostPattern.MatchString(sn.Host):
 		return ExternalSnapshot{}, "", "", refuse(RefusalInvalid, "the host %q is not a lower-case host name", sn.Host)
 	case !nodeIDPattern.MatchString(sn.NodeID):
 		return ExternalSnapshot{}, "", "", refuse(RefusalInvalid, "the item's node id is not 1 to %d letters, digits, '_', '=' or '-'", MaxNodeID)

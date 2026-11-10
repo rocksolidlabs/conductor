@@ -193,7 +193,7 @@ func encodeLinkRead(r LinkRead) (checks, incomplete string, err error) {
 	switch {
 	case !SystemPattern.MatchString(r.System):
 		return "", "", refuse(RefusalInvalid, "the system %q is not a tracker system's name", r.System)
-	case len(r.Host) > MaxExternalHost+6 || !hostPattern.MatchString(r.Host):
+	case len(r.Host) > MaxExternalHost || !hostPattern.MatchString(r.Host):
 		return "", "", refuse(RefusalInvalid, "the host %q is not a lower-case host name", r.Host)
 	case !nodeIDPattern.MatchString(r.NodeID):
 		return "", "", refuse(RefusalInvalid, "the item's node id is not 1 to %d letters, digits, '_', '=' or '-'", MaxNodeID)

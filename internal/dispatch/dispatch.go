@@ -25,7 +25,12 @@
 // ticket's reviews of its runs' candidates, their findings and the
 // findings' marks (reviews.go; Program item RV1,
 // docs/plans/review-repair.md), a request's application recorded as the
-// ledger's owner reports it. It starts nothing and imports
+// ledger's owner reports it. From version 4 a ticket may have a linked
+// issue, an item of an outside tracker it mirrors, with which side owns
+// its title and description, and the store keeps the last reads of it and
+// of its links' items, which the API makes and hands it (external.go,
+// reads.go; Program item IN1a, docs/plans/tracker-linking.md); it reads
+// no tracker itself. It starts nothing and imports
 // nothing of the engine's: its sight of the runs is the functions the API
 // gives it (SetRunExists, SetRunTicket, SetRunChain). The API, the CLI
 // and the tests are its callers.

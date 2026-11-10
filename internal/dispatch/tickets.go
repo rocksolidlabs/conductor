@@ -239,8 +239,12 @@ func (t *tx) createTicket(n NewTicket, extra []fieldValue, opOf map[string]strin
 // and removed, or named twice, is invalid; an edit that changes nothing
 // is refused invalid. A name the edit gives (a new owner, a person:
 // assignee added) that the directory lacks is added to it, after the
-// ticket's rows (knowPeople). A deleted ticket is not_found; an archived
-// project refuses it (archived).
+// ticket's rows (knowPeople). A title or description the ticket's owners
+// give its linked item's system is not the edit's to change
+// (external_owned: a read writes it, or a take over makes it Dispatch's).
+// A close gated by a policy that requires merged records the read it
+// rested on in closed_on, in the same operation. A deleted ticket is
+// not_found; an archived project refuses it (archived).
 func (s *Store) EditTicket(ctx context.Context, op Op, key string, e TicketEdit) (Receipt, error) {
 	args := struct {
 		Key string `json:"key"`
