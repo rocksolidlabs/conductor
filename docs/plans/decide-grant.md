@@ -749,8 +749,12 @@ pass is held:
   judges right whether it runs before or after the plugin: a workbench
   token held, `/decide/<did>` goes to the operator's
   `/decisions?item=decision:<did>` and `/decide` to `/decisions`; no
-  workbench token and a pass held,
-  every path but `/decide/**` goes to `/decide`. Nothing of the
+  workbench token and a pass held, the operator page's own address of
+  one decision, `/decisions?item=decision:<did>`, goes to `/decide/<did>`
+  (so a link that names a decision opens that decision whichever of the
+  two a person holds; an `item` that is not a decision's goes to
+  `/decide`), and every other path but `/decide/**` goes to `/decide`.
+  Nothing of the
   workbench's layout or pages is set up before it has run, and it waits
   on no request.
 - `composables/useDecide.ts` (new): the decide page's client and state,
@@ -1283,7 +1287,9 @@ Vitest, every file in PR-2 (`npm --prefix web test`, with `npm --prefix web run 
   2,049 refused, a character outside the set refused; both keys dropped
   from the fragment, the rest kept, a refused value dropped too;
   `decideRedirect`'s rules (a workbench token held, a pass held, both,
-  neither; the first navigation's fragment).
+  neither; the first navigation's fragment; with a pass alone,
+  `/decisions?item=decision:<did>` to `/decide/<did>` and an `item` that
+  is not a decision's to `/decide`).
 - `composables/useIdentityPass.test.ts`: the pass in `sessionStorage`,
   never `localStorage`; a stored workbench token never replaced; a new
   pass replaces the old; after `end()` the store is empty; storage
