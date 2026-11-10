@@ -439,14 +439,8 @@ func (rr *refResolver) resolveBrief(ref brakeman.Ref) (brakeman.Resolution, stri
 	case !req.HasBrief:
 		return brakeman.Resolution{}, "resolves to nothing: " + ref.Request + " has no brief", nil
 	}
-	classes := brakeman.Classes
-	if req.Footprint != nil {
-		classes = req.Footprint.Classes
-	}
-	for _, c := range classes {
-		// A footprint that is not the earlier request's own (none kept)
-		// counts every class its snapshot had on.
-		if (req.Footprint != nil || req.Config.Visibility.Has(c)) && !rr.grant.sees(c) {
+	for _, c := range briefClasses(req) {
+		if !rr.grant.sees(c) {
 			return brakeman.Resolution{}, "outside the request's scope: " + ref.Request + " was made under a wider scope or visibility", nil
 		}
 	}
@@ -473,6 +467,25 @@ func (rr *refResolver) resolveBrief(ref brakeman.Ref) (brakeman.Resolution, stri
 		seen = brakeman.RefState{URL: now.URL, State: read.State, Rev: read.Rev, SHA256: read.SHA256, At: read.At}
 	}
 	return brakeman.Resolution{Ref: ref, Seen: fitState(seen), Now: fitState(now)}, "", nil
+}
+
+// briefClasses is every visibility class an earlier brief's text may
+// hold: its footprint's, or, for a request that keeps none, every class
+// its snapshot had on. A grant must see each to read the brief, and a
+// read of it is recorded in each (briefWithin, noteFootprint, the
+// history's footprint): what it was admitted on is what its read
+// carries into a brief made from it.
+func briefClasses(req brakeman.Request) []string {
+	if req.Footprint != nil {
+		return req.Footprint.Classes
+	}
+	var out []string
+	for _, c := range brakeman.Classes {
+		if req.Config.Visibility.Has(c) {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // goneBrief is a brief: ref whose earlier request or brief is gone (pruned):

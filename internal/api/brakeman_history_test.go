@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -16,9 +18,12 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
+	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/history"
+	"github.com/rocksolidlabs/conductor/internal/journal"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // Brakeman reads history within its grant (docs/plans/history.md, PR-11):
@@ -247,6 +252,47 @@ func TestABriefCitesARecordOnlySessionAfterARestart(t *testing.T) {
 	page := "/history/sessions/" + in
 	if r.Ref.String() != "session:"+in || r.Now.State != availRecord || r.Now.URL != page || r.Seen.State != availRecord || r.Seen.URL != page {
 		t.Fatalf("the citation: %+v", r)
+	}
+}
+
+// A journal the server keeps and could not open is not an absent record:
+// a session the registry does not list is answered store_unavailable, as
+// an unopened ledger or Dispatch store is (TestAnUnopenedStoreIsAnError),
+// never resolved to nothing or to deleted; a server that keeps no journal
+// (a switchyard) holds no record of it, which is no error.
+func TestAnUnopenedJournalIsAnError(t *testing.T) {
+	id := session.NewID()
+	e := newTestEnv(t, func(cfg *config.Config) {
+		cfg.DataDir = filepath.Join(t.TempDir(), "data")
+		if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		// The journal's folder is a file: the journal cannot be opened.
+		if err := os.WriteFile(filepath.Join(cfg.DataDir, journal.Dir), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if e.srv.store == nil || e.srv.sessionRecords != nil {
+		t.Fatal("the journal opened over a file, or the server keeps no data directory")
+	}
+	cfg := brakeman.DefaultConfig(e.root)
+	_, err := e.srv.resolveBriefRefs(t.Context(), nil, brakeman.Request{ID: "br-1", Config: brakeman.SnapshotOf(cfg)},
+		brakeman.Brief{Schema: brakeman.BriefSchema, Title: "t", Summary: "s", Items: []brakeman.Item{panel(ref(t, "session:"+id))}}, brakeman.ReadLog{}, cfg)
+	var unopened *errRefStore
+	var bad *badRefsError
+	if !errors.As(err, &unopened) || errors.As(err, &bad) {
+		t.Fatalf("a session ref with the journal unopened: %v", err)
+	}
+	if _, ok, err := (&refResolver{s: e.srv}).recordRef(id); ok || !errors.As(err, &unopened) {
+		t.Fatalf("the record with the journal unopened: %v %v", ok, err)
+	}
+
+	yard := newTestEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true })
+	if yard.srv.sessionRecords != nil {
+		t.Fatal("a switchyard keeps a journal")
+	}
+	if _, ok, err := (&refResolver{s: yard.srv}).recordRef(id); ok || err != nil {
+		t.Fatalf("the record on a server that keeps no journal: %v %v", ok, err)
 	}
 }
 
@@ -481,15 +527,26 @@ func TestALinkOrAnchorOutsideTheGrantIsLeftOut(t *testing.T) {
 // A turn reads a run whose link shows a ticket's title, and keeps a brief
 // that repeats it: the brief's footprint holds Dispatch, so a later turn
 // with Dispatch off is given the brief withheld, and its own read of the
-// run leaves the ticket's link out.
+// run leaves the ticket's link out, and the ticket's key and the project's
+// the entry names (Dispatch's records, as the run's class is not): a line
+// filtering by either is refused.
 func TestALinkedTitleIsReadInItsClasses(t *testing.T) {
 	f := newObsFixture(t)
 	run := linkedRun(t, f)
+	if admin := hsEntry(hsSearch(t, f.testEnv, "kind:run "+run), run); admin["ticket"] != f.ticket {
+		t.Fatalf("the admin's run names no ticket: %v", admin)
+	}
 	team := func(c map[string]any) { c["scope"] = map[string]any{"crews": []string{"team"}} }
 	f.turn(t, team)
 	e := historyEntryOf(f.expectRead(t, searchPath("kind:run "+run), http.StatusOK, ""), run)
 	if l := linkOf(e, "ticket:"+f.ticket); l == nil || !strings.Contains(fmt.Sprint(l["label"]), "The build fails") {
 		t.Fatalf("the ticket's link: %v", e)
+	}
+	if e["ticket"] != f.ticket {
+		t.Fatalf("the run's ticket with Dispatch on: %v", e)
+	}
+	if refs := historyRefs(f.expectRead(t, searchPath("kind:run ticket:"+f.ticket), http.StatusOK, "")); !slices.Contains(refs, run) {
+		t.Fatalf("the run by its ticket with Dispatch on: %v", refs)
 	}
 	brief := map[string]any{"schema": brakeman.BriefSchema, "title": "What ran", "summary": "The build fails.",
 		"items": []any{map[string]any{"kind": brakeman.ItemFact, "text": "the run was launched from The build fails", "evidence": []string{run}}}}
@@ -508,8 +565,112 @@ func TestALinkedTitleIsReadInItsClasses(t *testing.T) {
 		t.Fatalf("the brief with Dispatch off: %v", got)
 	}
 	e = historyEntryOf(f.expectRead(t, searchPath("kind:run "+run), http.StatusOK, ""), run)
-	if e == nil || linkOf(e, "ticket:"+f.ticket) != nil {
+	if e == nil || linkOf(e, "ticket:"+f.ticket) != nil || e["ticket"] != nil {
 		t.Fatalf("the run with Dispatch off: %v", e)
+	}
+	if p, _ := e["project"].(map[string]any); p["key"] != nil {
+		t.Fatalf("the run's project with Dispatch off: %v", p)
+	}
+	for _, line := range []string{"kind:run ticket:" + f.ticket, "kind:run project:CND"} {
+		f.expectRead(t, searchPath(line), http.StatusForbidden, "not_visible")
+	}
+}
+
+// An earlier brief that keeps no footprint (a request kept before
+// footprints were) is admitted on every class its configuration had on,
+// and a read of it records the same classes: a turn reads its item
+// through the history and keeps a brief citing it, whose footprint then
+// holds logs, so a later turn with logs off is served neither brief; given
+// whole, the earlier brief is read in those classes too.
+func TestABriefWithoutAFootprintCarriesItsClasses(t *testing.T) {
+	f := newObsFixture(t)
+	all := []string{brakeman.ClassRuns, brakeman.ClassLogs, brakeman.ClassDispatch, brakeman.ClassSessions, brakeman.ClassTouched}
+	vis := func(c map[string]any) {
+		c["scope"] = map[string]any{}
+		c["visibility"] = map[string]any{"runs": true, "logs": true, "dispatch": true, "sessions": true, "touched": true}
+	}
+	early := f.keepEarlier(t, brakeman.DefaultConfig(f.root), []brakeman.Item{fact("TestTurnstile failed in build", ref(t, "run:"+f.run))}, "TestTurnstile failed.",
+		[]brakeman.Read{{Ref: ref(t, "run:"+f.run), Class: brakeman.ClassRuns, At: time.Now()}})
+	// Kept as a request from before footprints: none.
+	path := filepath.Join(f.srv.store.Dir(), brakeman.Dir, brakeman.RequestsDir, early+".json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	delete(doc, "footprint")
+	if raw, err = json.Marshal(doc); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".new", raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path+".new", path); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := f.desk.st.Get(early); err != nil || r.Footprint != nil || !r.Config.Visibility.Logs {
+		t.Fatalf("the earlier request: %+v %v", r.Footprint, err)
+	}
+	indexed := func(item string) {
+		t.Helper()
+		ix := histSettle(t, f.testEnv)
+		until(t, item+" indexed", func() bool {
+			_, err := ix.Entry(t.Context(), item)
+			return err == nil
+		})
+	}
+	item := hBriefItemRef(early, 0)
+	indexed(item)
+	classesOf := func(ref string) []string {
+		t.Helper()
+		got := readClasses(t, f, ref)
+		slices.Sort(got)
+		return got
+	}
+	sorted := slices.Sorted(slices.Values(all))
+
+	f.turn(t, vis)
+	if refs := historyRefs(f.expectRead(t, searchPath("kind:brief.item"), http.StatusOK, "")); !slices.Contains(refs, item) {
+		t.Fatalf("the earlier brief's item: %v", refs)
+	}
+	if got := classesOf(item); !slices.Equal(got, sorted) {
+		t.Fatalf("the earlier brief's item read in %v, want %v", got, sorted)
+	}
+	f.submitFact(t, item)
+	copied := f.req
+	if r, _ := f.desk.st.Get(copied); r.Footprint == nil || !slices.Contains(r.Footprint.Classes, brakeman.ClassLogs) {
+		t.Fatalf("the brief citing it: footprint %+v", r.Footprint)
+	}
+	copiedItem := hBriefItemRef(copied, 0)
+	indexed(copiedItem)
+
+	// Logs on: both are served, and the earlier brief given whole is read
+	// in its configuration's classes.
+	f.again(t, vis)
+	if refs := historyRefs(f.expectRead(t, searchPath("kind:brief.item"), http.StatusOK, "")); !slices.Contains(refs, item) || !slices.Contains(refs, copiedItem) {
+		t.Fatalf("both briefs with logs on: %v", refs)
+	}
+	f.again(t, vis)
+	if got := f.briefsOf(t)[early]; !whole(got) {
+		t.Fatalf("the earlier brief with logs on: %v", got)
+	}
+	if got := classesOf(item); !slices.Equal(got, sorted) {
+		t.Fatalf("the earlier brief given whole read in %v, want %v", got, sorted)
+	}
+
+	// Logs off: neither.
+	f.again(t, func(c map[string]any) {
+		vis(c)
+		c["visibility"].(map[string]any)["logs"] = false
+	})
+	if refs := historyRefs(f.expectRead(t, searchPath("kind:brief.item"), http.StatusOK, "")); slices.Contains(refs, item) || slices.Contains(refs, copiedItem) {
+		t.Fatalf("a brief with logs off: %v", refs)
+	}
+	if got := f.briefsOf(t)[copied]; got == nil || whole(got) {
+		t.Fatalf("the brief citing it with logs off: %v", got)
 	}
 }
 
@@ -568,21 +729,48 @@ func TestAnEntryIsOfItsRecord(t *testing.T) {
 // twice and nothing skipped (a search of filters alone, newest first: a
 // search of words is ranked, and a source indexed between two pages may
 // move a row's score, as the plan says of the search's own pages); and a
-// read whose rows the grant admits none of looks at maxHistoryTurnScan of
-// them, never the whole index at once, and ends there with no next (a
-// continuation names only what the reply showed).
+// read looks at maxHistoryTurnScan of the index's rows, never the whole
+// index at once: a comment of OTH, the row right past the newest
+// maxHistoryTurnScan (CND's), is admitted to a turn scoped to OTH and
+// found by its own line, yet a read of every comment, whose bound ends
+// before it, ends there with no entry and no next (a continuation names
+// only what the reply showed).
 func TestAHistoryReadIsBoundedAndReadsOn(t *testing.T) {
 	f := newObsFixture(t)
-	const n = maxHistoryTurnScan + 50
+	beyond := "comment:" + f.otherTicket + "/" + doneOf(t)(f.srv.dispatch.AddComment(t.Context(), adminOp("Ann"), f.otherTicket, "turnstile beyond")).ID
+	const n = maxHistoryTurnScan
 	for i := range n {
 		doneOf(t)(f.srv.dispatch.AddComment(t.Context(), adminOp("Ann"), f.ticket, fmt.Sprintf("turnstile note %d", i)))
 	}
 	histSettle(t, f.testEnv)
-	// The ticket's own comment and the n added.
+	// The ticket's own comment and the n added, and the one of OTH.
 	until(t, "the comments indexed", func() bool {
 		total, _ := hsSearch(t, f.testEnv, "kind:comment project:CND")["total"].(float64)
-		return int(total) == n+1
+		_, err := f.srv.history.index().Entry(t.Context(), beyond)
+		return int(total) == n+1 && err == nil
 	})
+	// The admin's read of every comment, newest first: CND's n added,
+	// then the one of OTH, the first row past a turn's bound.
+	var order []string
+	for after := ""; len(order) <= n; {
+		q := url.Values{"q": {"kind:comment"}, "limit": {"100"}}
+		if after != "" {
+			q.Set("after", after)
+		}
+		status, out := hsGet(t, f.testEnv, "/api/history", q, adminToken)
+		if status != http.StatusOK {
+			t.Fatalf("the admin's search: %d %v", status, out)
+		}
+		order = append(order, hsKeys(out)...)
+		next, _ := out["next"].(string)
+		if next == "" {
+			break
+		}
+		after = next
+	}
+	if len(order) <= n || order[n] != beyond || slices.ContainsFunc(order[:n], func(k string) bool { return !strings.HasPrefix(k, "comment:"+f.ticket+"/") }) {
+		t.Fatalf("the comment of OTH is not the row right past the bound: %d rows, row %d %q", len(order), n, order[min(n, len(order)-1)])
+	}
 	f.turn(t, func(c map[string]any) { c["budget"].(map[string]any)["readsPerTurn"] = brakeman.MaxReadsPerTurn })
 	seen := map[string]bool{}
 	for after := ""; ; {
@@ -615,9 +803,12 @@ func TestAHistoryReadIsBoundedAndReadsOn(t *testing.T) {
 		t.Fatalf("%d comments read, want %d", len(seen), n+1)
 	}
 	f.again(t, func(c map[string]any) { c["scope"] = map[string]any{"projects": []string{"OTH"}} })
-	out := f.expectRead(t, searchPath("kind:comment project:CND"), http.StatusOK, "")
+	if refs := historyRefs(f.expectRead(t, searchPath("kind:comment project:OTH"), http.StatusOK, "")); !slices.Contains(refs, beyond) {
+		t.Fatalf("the comment of OTH is not admitted: %v", refs)
+	}
+	out := f.expectRead(t, searchPath("kind:comment"), http.StatusOK, "")
 	if refs := historyRefs(out); len(refs) != 0 || out["next"] != nil {
-		t.Fatalf("a read the grant admits none of: %v, next %v", refs, out["next"])
+		t.Fatalf("a read past its bound of rows: %v, next %v", refs, out["next"])
 	}
 }
 

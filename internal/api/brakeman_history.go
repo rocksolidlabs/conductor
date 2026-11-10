@@ -370,11 +370,15 @@ func (hs *historyScope) refReads(ctx context.Context, ref string) (reads []brake
 	return readsOf(r, classes, state), true, nil
 }
 
-// footprint is the classes a brief's item reads: its footprint's, as an
-// earlier brief given whole is; the runs' for a brief that keeps none.
+// footprint is the classes a brief's item reads: the ones its brief is
+// admitted on (briefClasses: its footprint's, or every class its snapshot
+// had on for one that keeps none), as an earlier brief given whole is;
+// the runs' for one of none.
 func (hs *historyScope) footprint(brief brakeman.Ref) []string {
-	if req, err := hs.o.rr.desk.Get(brief.Request); err == nil && req.Footprint != nil && len(req.Footprint.Classes) > 0 {
-		return req.Footprint.Classes
+	if req, err := hs.o.rr.desk.Get(brief.Request); err == nil {
+		if classes := briefClasses(req); len(classes) > 0 {
+			return classes
+		}
 	}
 	return []string{brakeman.ClassRuns}
 }
@@ -451,6 +455,13 @@ func (hs *historyScope) turnEntry(ctx context.Context, out servedEntry, e histor
 		Snippet: out.Snippet, At: out.At, Actor: out.Actor, Source: turnSource{Store: out.Source.Store, Label: out.Source.Label},
 		Host: out.Host, Project: out.Project, Revision: out.Revision, Agent: out.Agent, Crew: out.Crew, Run: out.Run, Ticket: out.Ticket,
 		URL: out.URL, Links: []turnHistoryRef{}, Availability: out.Availability,
+	}
+	if !hs.o.sees(brakeman.ClassDispatch) {
+		// A ticket's key and a project's name Dispatch's records, which
+		// a turn that does not see Dispatch reads nothing of: an entry
+		// of another class (a run launched from a ticket, a session in a
+		// project's repository) is served without them.
+		te.Ticket, te.Project.Key = "", ""
 	}
 	reads := hs.entryReads(e, scope, cited, res, out.Availability.State)
 	if out.Anchor.Ref != "" {
@@ -626,6 +637,16 @@ func (s *Server) handleBrakemanHistory(w http.ResponseWriter, r *http.Request, o
 		h.fail(err)
 		return
 	}
+	if !o.sees(brakeman.ClassDispatch) {
+		// A filter on a field the turn is not given (turnEntry) would
+		// read it all the same, by which entries it finds.
+		for _, name := range []string{"ticket", "project"} {
+			if _, ok := hq.Filter(name); ok {
+				h.refuse(http.StatusForbidden, "not_visible", name+": filters on Dispatch's records, which this turn does not see")
+				return
+			}
+		}
+	}
 	_, crews := hq.Filter("crew")
 	if kinds, _ := hq.Filter("kind"); o.tp != nil || (!crews && !slices.Contains(kinds, "brief.item")) {
 		// A turn never reads Brakeman's own runs and sessions (admitRef),
@@ -723,12 +744,17 @@ func (s *Server) handleBrakemanHistory(w http.ResponseWriter, r *http.Request, o
 
 // recordRef reads the record of the session id from the journal, for a
 // session the registry does not list: ok false when the server keeps no
-// journal or the journal holds no record of id; an error for one it
-// could not read, which is not its absence.
+// journal (no data directory, a switchyard) or the journal holds no
+// record of id; an error for a journal the server keeps and could not
+// open (as the ledger and Dispatch's store answer one), or a record it
+// could not read, neither of which is its absence.
 func (rr *refResolver) recordRef(id string) (journal.Record, bool, error) {
 	j := rr.s.sessionRecords
-	if j == nil {
+	switch {
+	case j == nil && (rr.s.store == nil || rr.s.cfg.Switchyard.Enabled):
 		return journal.Record{}, false, nil
+	case j == nil:
+		return journal.Record{}, false, &errRefStore{what: "the session records"}
 	}
 	rec, _, err := j.Get(id)
 	switch {
