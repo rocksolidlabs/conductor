@@ -36,10 +36,14 @@ type CacheOptions struct {
 	// most MaxReads at once, never once Close has begun, with a context
 	// Close cancels, and with the Intent of the askers of this read.
 	Read func(ctx context.Context, k Key, in Intent) Reading
-	// OnRead, when set, is called after a reading of k is kept, so what
-	// it tells sees the reading in the cache. It is not called once Close
-	// has begun, and Close waits for a call under way.
-	OnRead func(k Key)
+	// OnRead, when set, is called once a read of k has ended and its
+	// reading is kept, with k's View as it then is, so what it tells sees
+	// the reading in the cache without asking for k (a View is an ask, and
+	// a read ending moves no key's place). A read whose key is, as it ends,
+	// the least recently asked of a full cache is dropped at once instead
+	// of kept, and v then says so (never_read). It is not called once
+	// Close has begun, and Close waits for a call under way.
+	OnRead func(k Key, v View)
 }
 
 // ReadOptions are what one asker wants of a read.
@@ -83,7 +87,7 @@ const ClosedWords = "the server is shutting down: no read is started"
 type Cache struct {
 	clock  Clock
 	read   func(ctx context.Context, k Key, in Intent) Reading
-	onRead func(k Key)
+	onRead func(k Key, v View)
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -96,8 +100,8 @@ type Cache struct {
 	beforeAdmit, afterClosed func()
 
 	mu      sync.Mutex
-	closed  bool // Close has begun: no read starts
-	tick    uint64
+	closed  bool   // Close has begun: no read starts
+	tick    uint64 // the asks so far; only ask moves it
 	keys    map[Key]*kept
 	flights map[Key]*flight
 	queued  int // flights waiting for a slot, each holding a place in cool
@@ -109,16 +113,18 @@ type Cache struct {
 
 type kept struct {
 	readings []Reading // oldest first, at most KeepPerKey
-	asked    uint64
+	asked    uint64    // the tick of k's last ask
 }
 
 // flight is a read asked and not yet kept; done is closed once it is kept
 // (or given up). check is the strongest intent of its askers, decided
-// once its reader asks (Intent.Check).
+// once its reader asks (Intent.Check). asked is the tick of its key's last
+// ask, which a key not yet kept takes into the cache with its reading.
 type flight struct {
 	done    chan struct{}
 	check   bool
 	decided bool
+	asked   uint64
 }
 
 // NewCache makes a cache over its reader. Close ends the reads under way.
@@ -172,7 +178,6 @@ func (c *Cache) Read(ctx context.Context, k Key, o ReadOptions) View {
 		return closedView(k)
 	}
 	now := c.clock.Now()
-	c.touch(k)
 	f := c.flights[k]
 	if f == nil {
 		for key, t := range c.cool {
@@ -181,6 +186,7 @@ func (c *Cache) Read(ctx context.Context, k Key, o ReadOptions) View {
 			}
 		}
 		if _, ok := c.cool[k]; ok || len(c.cool)+c.queued >= MaxCooldown {
+			c.ask(k)
 			v := c.viewLocked(k, now)
 			if v.NextRead == nil {
 				next := c.soonestLocked(now)
@@ -195,6 +201,7 @@ func (c *Cache) Read(ctx context.Context, k Key, o ReadOptions) View {
 		c.wg.Add(1)
 		go c.run(k, f)
 	}
+	c.ask(k)
 	if o.Check && !f.decided {
 		f.check = true
 	}
@@ -204,7 +211,11 @@ func (c *Cache) Read(ctx context.Context, k Key, o ReadOptions) View {
 	case <-c.clock.After(Wait):
 	case <-ctx.Done():
 	}
-	return c.View(k)
+	// The answer is the ask's, made as it arrived: its end (the read kept,
+	// the wait over, the asker gone) moves nothing.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.viewLocked(k, c.clock.Now())
 }
 
 // soonestLocked is the end of the cooldown entry that ends first, or
@@ -249,30 +260,44 @@ func (c *Cache) run(k Key, f *flight) {
 	c.mu.Unlock()
 	r := c.read(c.ctx, k, Intent{c: c, f: f})
 	<-c.slots
-	r = r.kept(k, c.clock.Now())
+	now := c.clock.Now()
+	r = r.kept(k, now)
 	c.mu.Lock()
-	c.keep(k, r)
+	c.keep(k, f, r)
 	delete(c.flights, k)
 	tell := !c.closed && c.onRead != nil
+	var v View
+	if tell {
+		v = c.viewLocked(k, now)
+	}
 	c.mu.Unlock()
 	close(f.done)
 	if tell {
-		c.onRead(k)
+		c.onRead(k, v)
 	}
 }
 
-// touch marks k as asked now; the caller holds c.mu.
-func (c *Cache) touch(k Key) {
+// ask marks k as asked now, whether it is kept, its read is under way, or
+// both: the one place a key's place in the cache's order moves, called
+// only where a request for k arrives (Read, View). Keeping a reading, a
+// refusal, an asker leaving or its wait ending, a reading growing stale
+// and a key dropped move nothing. The caller holds c.mu.
+func (c *Cache) ask(k Key) {
+	c.tick++
 	if e := c.keys[k]; e != nil {
-		c.tick++
 		e.asked = c.tick
 	}
+	if f := c.flights[k]; f != nil {
+		f.asked = c.tick
+	}
 }
 
-// keep adds r to k's readings, dropping its oldest past KeepPerKey and,
-// for a new key past MaxKeys, the least recently asked key; the caller
-// holds c.mu.
-func (c *Cache) keep(k Key, r Reading) {
+// keep adds r, the reading of f, to k's readings, dropping its oldest past
+// KeepPerKey. A key not yet kept comes in at its last ask (f's), so its
+// read ending moves it nowhere: in a full cache the least recently asked
+// key is dropped, and when that is k itself, r is dropped and nothing
+// else is. The caller holds c.mu.
+func (c *Cache) keep(k Key, f *flight, r Reading) {
 	e := c.keys[k]
 	if e == nil {
 		if len(c.keys) >= MaxKeys {
@@ -284,27 +309,29 @@ func (c *Cache) keep(k Key, r Reading) {
 					least, at, first = key, o.asked, false
 				}
 			}
+			if f.asked < at {
+				return
+			}
 			delete(c.keys, least)
 		}
-		e = &kept{}
+		e = &kept{asked: f.asked}
 		c.keys[k] = e
 	}
-	c.tick++
-	e.asked = c.tick
 	e.readings = append(e.readings, r)
 	if n := len(e.readings) - KeepPerKey; n > 0 {
 		e.readings = slices.Delete(e.readings, 0, n)
 	}
 }
 
-// View answers k's View from what is kept, reading nothing: the newest
+// View answers k's View from what is kept, reading nothing, and counts as
+// an ask of k (it moves k's place as Read does): the newest
 // reading and its freshness, never_read when none is kept, the state
 // reading while a read is under way, and NextRead while k was read less
 // than MinInterval ago.
 func (c *Cache) View(k Key) View {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.touch(k)
+	c.ask(k)
 	return c.viewLocked(k, c.clock.Now())
 }
 

@@ -1,9 +1,11 @@
 package capacity
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -80,7 +82,7 @@ func (r *fakeReader) awaitKept(t *testing.T) {
 func newTestCache(t *testing.T, gated bool) (*Cache, *fakeClock, *fakeReader) {
 	clock := newClock()
 	r := newReader(clock, gated)
-	c := NewCache(CacheOptions{Clock: clock, Read: r.read, OnRead: func(k Key) { r.kept <- k }})
+	c := NewCache(CacheOptions{Clock: clock, Read: r.read, OnRead: func(k Key, _ View) { r.kept <- k }})
 	t.Cleanup(c.Close)
 	return c, clock, r
 }
@@ -223,21 +225,262 @@ func TestCacheKeepsEight(t *testing.T) {
 	}
 }
 
-func TestCacheDropsLeastAsked(t *testing.T) {
-	c, _, _ := newTestCache(t, false)
+// orderReader answers every read at once, but a read of the key it is told
+// to hold waits at its gate (entered tells it has started), and a read of
+// the key it is told to refuse answers a refusal.
+type orderReader struct {
+	entered chan Key
+	release chan struct{}
+
+	mu           sync.Mutex
+	hold, refuse Key
+}
+
+func (r *orderReader) read(ctx context.Context, k Key, _ Intent) Reading {
+	r.mu.Lock()
+	hold, refuse := k == r.hold, k == r.refuse
+	r.mu.Unlock()
+	if hold {
+		r.entered <- k
+		select {
+		case <-r.release:
+		case <-ctx.Done():
+		}
+	}
+	if refuse {
+		return Reading{State: StateError, Words: "an invented refusal"}
+	}
+	return Reading{State: StateOK}
+}
+
+// orderWalk is a full cache whose keys were asked key(0) first, key(127)
+// last, and the steps that touch its order.
+type orderWalk struct {
+	t     *testing.T
+	c     *Cache
+	clock *fakeClock
+	r     *orderReader
+}
+
+func newOrderWalk(t *testing.T) *orderWalk {
+	clock := newClock()
+	r := &orderReader{entered: make(chan Key, 1), release: make(chan struct{})}
+	w := &orderWalk{t: t, c: NewCache(CacheOptions{Clock: clock, Read: r.read}), clock: clock, r: r}
+	t.Cleanup(w.c.Close)
 	for i := range MaxKeys {
-		c.Read(context.Background(), key(i), ReadOptions{})
+		w.read(key(i))
 	}
-	c.View(key(0)) // asked again: now key(1) is the least recently asked
-	c.Read(context.Background(), key(MaxKeys), ReadOptions{})
-	c.mu.Lock()
-	n, has0, has1 := len(c.keys), c.keys[key(0)] != nil, c.keys[key(1)] != nil
-	c.mu.Unlock()
-	if n != MaxKeys || !has0 || has1 {
-		t.Fatalf("%d keys, key 0 kept %v, key 1 kept %v", n, has0, has1)
+	return w
+}
+
+func (w *orderWalk) read(k Key) View { return w.c.Read(context.Background(), k, ReadOptions{}) }
+
+// order is the kept keys, the least recently asked first.
+func (w *orderWalk) order() []Key {
+	w.c.mu.Lock()
+	defer w.c.mu.Unlock()
+	keys := make([]Key, 0, len(w.c.keys))
+	for k := range w.c.keys {
+		keys = append(keys, k)
 	}
-	if v := c.View(key(1)); v.State != StateNeverRead {
-		t.Errorf("a dropped key: %s", v.State)
+	slices.SortFunc(keys, func(a, b Key) int { return cmp.Compare(w.c.keys[a].asked, w.c.keys[b].asked) })
+	return keys
+}
+
+// askOthers views every kept key but skip, in their order, so the order
+// holds among them and skip is behind them all.
+func (w *orderWalk) askOthers(skip Key) {
+	for _, k := range w.order() {
+		if k != skip {
+			w.c.View(k)
+		}
+	}
+}
+
+// start asks a read of k that its reader holds at the gate, and returns
+// once the read has started and its asker waits: the asker's View comes
+// on the channel, and cancel makes the asker leave.
+func (w *orderWalk) start(k Key, refuse bool) (cancel func(), got <-chan View) {
+	w.t.Helper()
+	w.r.mu.Lock()
+	w.r.hold = k
+	if refuse {
+		w.r.refuse = k
+	}
+	w.r.mu.Unlock()
+	w.clock.mu.Lock()
+	handed := w.clock.handed
+	w.clock.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := make(chan View, 1)
+	go func() { ch <- w.c.Read(ctx, k, ReadOptions{}) }()
+	select {
+	case <-w.r.entered:
+	case <-time.After(time.Minute): // bounds a hang only
+		w.t.Fatalf("the read of %v never started", k)
+	}
+	w.clock.awaitWaiters(w.t, handed+1)
+	return cancel, ch
+}
+
+// join asks k again while its read is under way, and returns once that
+// asker waits; its View comes on the channel.
+func (w *orderWalk) join(k Key) <-chan View {
+	w.clock.mu.Lock()
+	handed := w.clock.handed
+	w.clock.mu.Unlock()
+	ch := make(chan View, 1)
+	go func() { ch <- w.read(k) }()
+	w.clock.awaitWaiters(w.t, handed+1)
+	return ch
+}
+
+// settled waits until no read of k is under way: its reading kept or
+// dropped.
+func (w *orderWalk) settled(k Key) {
+	w.t.Helper()
+	for end := time.Now().Add(time.Minute); w.c.flightOf(k) != nil; time.Sleep(time.Millisecond) { // the minute bounds a hang only
+		if time.Now().After(end) {
+			w.t.Fatalf("the read of %v never ended", k)
+		}
+	}
+}
+
+// TestCacheDropsLeastAsked walks every path that touches the cache's
+// order: only an ask (a Read or a View arriving, for a key kept or one
+// whose read is under way) moves a key's place. Keeping a reading or a
+// refusal, an asker leaving or its wait ending, a read ending after its
+// asker left, a reading growing stale and a key dropped move nothing. The
+// reads that must end at a given step are held at a gate; nothing waits
+// on the clock. Each row leaves its subject either the most recently
+// asked key (moved) or the least (not moved), and one more key read then
+// drops the least.
+func TestCacheDropsLeastAsked(t *testing.T) {
+	first := key(MaxKeys + 1) // a key never kept before its row
+	cases := []struct {
+		name    string
+		subject Key
+		moved   bool
+		step    func(w *orderWalk)
+	}{
+		{"a view of a kept key", key(0), true, func(w *orderWalk) { w.c.View(key(0)) }},
+		{"a read started", key(0), true, func(w *orderWalk) {
+			w.clock.Advance(MinInterval)
+			w.read(key(0))
+		}},
+		{"a second request for a key whose read is under way", key(0), true, func(w *orderWalk) {
+			w.clock.Advance(MinInterval)
+			cancel, got := w.start(key(0), false)
+			cancel()
+			<-got
+			w.askOthers(key(0))
+			again := w.join(key(0))
+			close(w.r.release)
+			<-again
+		}},
+		{"a read refused by its key's cooldown", key(0), true, func(w *orderWalk) {
+			if v := w.read(key(0)); v.NextRead == nil {
+				w.t.Errorf("a read inside MinInterval made: %+v", v)
+			}
+		}},
+		{"a read ending with its asker waiting", key(0), false, func(w *orderWalk) {
+			w.clock.Advance(MinInterval)
+			_, got := w.start(key(0), false)
+			w.askOthers(key(0))
+			close(w.r.release)
+			if v := <-got; v.State != StateOK {
+				w.t.Errorf("the asker's answer: %s", v.State)
+			}
+		}},
+		{"an asker leaving after every other key was asked", key(0), false, func(w *orderWalk) {
+			w.clock.Advance(MinInterval)
+			cancel, got := w.start(key(0), false)
+			w.askOthers(key(0))
+			cancel()
+			<-got
+			close(w.r.release)
+			w.settled(key(0))
+		}},
+		{"an asker's wait ending after every other key was asked", key(0), false, func(w *orderWalk) {
+			w.clock.Advance(MinInterval)
+			_, got := w.start(key(0), false)
+			w.askOthers(key(0))
+			w.clock.Advance(Wait)
+			<-got
+			close(w.r.release)
+			w.settled(key(0))
+		}},
+		{"a read ending after its asker left (Codex round 3)", key(0), false, func(w *orderWalk) {
+			w.clock.Advance(MinInterval)
+			cancel, got := w.start(key(0), false)
+			cancel()
+			<-got
+			w.askOthers(key(0))
+			close(w.r.release)
+			w.settled(key(0))
+		}},
+		{"a reader's refusal kept", key(0), false, func(w *orderWalk) {
+			w.clock.Advance(MinInterval)
+			cancel, got := w.start(key(0), true)
+			cancel()
+			<-got
+			w.askOthers(key(0))
+			close(w.r.release)
+			w.settled(key(0))
+			if v := w.c.viewOf(key(0)); v.State != StateError {
+				w.t.Errorf("the refusal not kept: %s", v.State)
+			}
+		}},
+		{"a reading growing stale and its cooldown ending", key(0), false, func(w *orderWalk) {
+			w.clock.Advance(FreshFor)
+		}},
+		{"a key dropped", key(1), false, func(w *orderWalk) {
+			w.read(key(MaxKeys)) // drops key(0), the least recently asked
+		}},
+		{"a first read ending after every kept key was asked", first, false, func(w *orderWalk) {
+			cancel, got := w.start(first, false)
+			cancel()
+			<-got
+			w.askOthers(first)
+			close(w.r.release)
+			w.settled(first)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newOrderWalk(t)
+			tc.step(w)
+			order := w.order()
+			if len(order) != MaxKeys {
+				t.Fatalf("%d keys kept, want %d", len(order), MaxKeys)
+			}
+			switch {
+			case tc.moved && order[len(order)-1] != tc.subject:
+				t.Fatalf("%v did not move to the most recently asked: %v is", tc.subject, order[len(order)-1])
+			case tc.subject == first:
+				// Not kept before, and the least recently asked as its read
+				// ended: dropped as it ended, every kept key kept.
+				if slices.Contains(order, first) || order[0] != key(0) {
+					t.Fatalf("a first read ending moved its key: %v kept %v, the least recently asked %v", first, slices.Contains(order, first), order[0])
+				}
+			case !tc.moved && order[0] != tc.subject:
+				t.Fatalf("%v moved: %v is the least recently asked, not it", tc.subject, order[0])
+			}
+			// One more key read drops the least recently asked: the
+			// subject when it did not move.
+			least, next := order[0], key(2*MaxKeys)
+			w.read(next)
+			after := w.order()
+			if len(after) != MaxKeys || slices.Contains(after, least) || !slices.Contains(after, next) {
+				t.Fatalf("one more key: %d kept, %v still kept %v, %v kept %v", len(after), least, slices.Contains(after, least), next, slices.Contains(after, next))
+			}
+			if slices.Contains(after, tc.subject) == !tc.moved {
+				t.Errorf("%v kept %v after one more key, moved %v", tc.subject, !tc.moved, tc.moved)
+			}
+			if v := w.c.View(least); v.State != StateNeverRead {
+				t.Errorf("a dropped key: %s", v.State)
+			}
+		})
 	}
 }
 
@@ -294,15 +537,18 @@ func TestViewReadsNothing(t *testing.T) {
 func TestOnReadAfterKept(t *testing.T) {
 	clock := newClock()
 	r := newReader(clock, false)
-	seen := make(chan View, 1)
+	type told struct{ given, cached View }
+	seen := make(chan told, 1)
 	var c *Cache
-	c = NewCache(CacheOptions{Clock: clock, Read: r.read, OnRead: func(k Key) { seen <- c.View(k) }})
+	c = NewCache(CacheOptions{Clock: clock, Read: r.read, OnRead: func(k Key, v View) { seen <- told{v, c.View(k)} }})
 	t.Cleanup(c.Close)
 	c.Read(context.Background(), key(1), ReadOptions{})
 	select {
-	case v := <-seen:
-		if v.State != StateOK || v.ReadAt == nil || !v.ReadAt.Equal(t0) {
-			t.Fatalf("OnRead saw %+v", v)
+	case got := <-seen:
+		for _, v := range []View{got.given, got.cached} {
+			if v.State != StateOK || v.ReadAt == nil || !v.ReadAt.Equal(t0) {
+				t.Fatalf("OnRead saw %+v", v)
+			}
 		}
 	case <-time.After(time.Minute): // bounds a hang only
 		t.Fatal("OnRead never called")
@@ -353,7 +599,7 @@ func TestCacheCloseStartsNothing(t *testing.T) {
 	t.Run("a read held before its admission", func(t *testing.T) {
 		clock := newClock()
 		r := newReader(clock, false)
-		c := NewCache(CacheOptions{Clock: clock, Read: r.read, OnRead: func(k Key) { r.kept <- k }})
+		c := NewCache(CacheOptions{Clock: clock, Read: r.read, OnRead: func(k Key, _ View) { r.kept <- k }})
 		entered, gate := make(chan struct{}), make(chan struct{})
 		c.beforeAdmit = func() { close(entered); <-gate }
 		got := make(chan View)
@@ -394,7 +640,7 @@ func TestCacheCloseStartsNothing(t *testing.T) {
 	t.Run("a read waiting for a slot", func(t *testing.T) {
 		clock := newClock()
 		r := newReader(clock, true)
-		c := NewCache(CacheOptions{Clock: clock, Read: r.read, OnRead: func(k Key) { r.kept <- k }})
+		c := NewCache(CacheOptions{Clock: clock, Read: r.read, OnRead: func(k Key, _ View) { r.kept <- k }})
 		var wg sync.WaitGroup
 		for i := range 3 {
 			wg.Go(func() { c.Read(context.Background(), key(i), ReadOptions{}) })
@@ -710,6 +956,13 @@ func TestCacheClockDecidesReadAt(t *testing.T) {
 	if v := ahead.view(t0); v.Fresh != FreshStale {
 		t.Errorf("a reading dated ahead of the clock: %s", v.Fresh)
 	}
+}
+
+// viewOf is k's View, answered without asking for k.
+func (c *Cache) viewOf(k Key) View {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.viewLocked(k, c.clock.Now())
 }
 
 // flightOf is the read asked of k and not yet kept, nil when none.
