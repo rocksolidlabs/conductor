@@ -450,13 +450,13 @@ refusal is an HTTP error before the upgrade, `{"error": {code, message}}`:
 when longer, and stops when the session ends. Text frames are JSON; binary
 frames are RELAY envelopes.
 
-Host → server: `register{proto, host{name,version,user?,answerAs?}, session{name,agentId,command,cwd,cols,rows,relayOnly?,agentToken?,branch?}, resume?{sessionId,secret}}`
+Host → server: `register{proto, host{name,version,user?,answerAs?}, session{name,agentId,command,cwd,cols,rows,relayOnly?,agentToken?,branch?,where?,agentVersion?,repo?,repoCommon?,startCommit?}, resume?{sessionId,secret}}`
 (`user` ≤ 64 bytes is the OS user for "hosted by"; `answerAs: true` says the host takes `answer_as` and
 sends `kept` with its `attention` (below): `conductor host` says it, a server publishing to a switchyard
 never does, an older host leaves it out and an older server ignores it; `cwd` ≤ 4096 bytes; `branch` ≤ 200 bytes is read from `.git/HEAD`;
 a server publishing its sessions to a switchyard registers each with less: `command` is one word, the
-agent's id or else the program's name, never an argument; `cwd` the folder's last element; no `user`
-and no `branch`),
+agent's id or else the program's name, never an argument; `cwd` the folder's last element; no `user`,
+no `branch` and none of what the host reports, below),
 `status{sessionId,status,exitCode?}`, `resize{sessionId,cols,rows}`,
 `answer{viewerId,sdp}`, `ice{viewerId,candidate}`, `viewer_error{viewerId,code,message}`,
 `viewer_closed{viewerId}`, `attention{sessionId,state,message?,source,kind?,options?,id?,ask?,kept?}`
@@ -482,6 +482,7 @@ that resumes without it has the pair it last sent stand until its first
 `attention`, which then drops the `kept`), and an older server ignores the
 field),
 `activity{sessionId,entry,state?}`,
+`session_info{sessionId?,endCommit?}` (what the host reports, below),
 `chat{sessionId,message}` (a chat message the host's session kept, as `chat` carries it to a viewer; the server takes the connection's session, keeps `message`, `system` and `sent_to_agent` kinds, scope `session`, bounded ids, cleaned names, the text cleaned and cut to 2048 bytes, `to` only as `agent`, and mirrors it into the events stream; a switchyard drops it),
 `link{requestId, role, ttlSeconds?, label?}` (a share link to the session,
 minted by the server: `requestId` ≤ 32 bytes, `label` ≤ 120 bytes,
@@ -516,7 +517,7 @@ started cannot reach it after. A server that knows no revision ignores the
 field (it decodes host messages without refusing unknown fields), and an
 older host sends none.
 
-Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links, recipe?, decisions?}`
+Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links, recipe?, decisions?, sessionInfo?}`
 (`decisions: true` from a switchyard that carries a decision link's lane,
 relaying DECISION and DECIDE, keeping run desks and serving the join
 page's Decide tab, below, Decision links: a publisher mints a decision link
@@ -528,7 +529,8 @@ host's session, as the viewer's welcome carries them, none dropped for
 the frame: a host message holds 64 KiB; an open host, registered with no
 token, is handed the configured ones alone; `links`: the ids of the live links the server holds for the session, `[]`
 when none; an older server sends no field, which says nothing;
-`recipe`, below),
+`recipe`, below; `sessionInfo: true` says the server takes `session_info`,
+below, absent from a switchyard, on a desk's and from an older server),
 `viewer_join{viewerId, role, linkId?, linkLabel?, principal?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
 `relay_start{viewerId}`, `viewer_leave{viewerId, reason?}`, `link_gone{linkId}`, `stop{sessionId}`,
 `viewer_behind{viewerId, behind}` (a relayed viewer fell behind what the
@@ -648,6 +650,37 @@ host keeps its record), `error{code, message, requestId?}`
 (`requestId` names the link request a refusal answers: `invalid_role`,
 `invalid_request`, `rate_limited`, `link_refused`, `no_instance`, `not_found`,
 `store_unavailable`, `stale`).
+
+**What a host reports of its session** (Program item HS1, PR-12), for
+the session's record (History): the host is where the session is
+launched, so it reads the launch on its own machine. `session.where` is
+its Runtime, 1–32 bytes of `a-z`, `0-9` and `-` beginning with a letter
+(`native` for `conductor host`); `session.agentVersion`, at most 64 bytes
+of one line, its adapter's probe of the agent; and only when its Runtime
+is native, read in its folder before its process starts (one `git
+rev-parse`, the C locale, 2 s), `session.repo` (the working tree's top)
+and `session.repoCommon` (the repository's common git directory), each an
+absolute path (`/…`, `X:\…`, `\\…`) of at most 4096 bytes with no
+control character, and `session.startCommit`, 40 or 64 lowercase hex
+digits. A host on another Runtime reports its `where` and no git fact.
+Each is optional: an older host sends none, an older server ignores
+them, and the record says "not reported by its host" for each one
+absent, never the server's own fact and never native. A register with
+any of them past its bound is refused (`registration rejected`). Once
+its process has ended, a host whose `registered` said `sessionInfo`
+sends `session_info{endCommit?}` (its folder's HEAD read the same way,
+native only; none when not read) before the `status` that says the
+session ended, so the server has it as it records the end; the whole
+message is at most 2 KiB, and one past it, or whose `endCommit` is not a
+full commit id, is dropped and logged, the connection kept. None of it
+goes to a switchyard, which records nothing. The server keeps all of it
+in the hosted session's record alone, never as a path on its own disk or
+an argument of a command: a hosted record's repository places it in no
+project. A hosted agent's own session id is not reported by the host: its
+hooks report it to the server (`POST /api/sessions/{id}/attention`,
+`agentSession`), which keeps it in the record by the catalog's recipe for
+the agent, never in the hosted session's listing, and Resume of a hosted
+record stays its host's (`400 hosted_session`).
 
 `registered.recipe` (#293) is what the server's catalog says to watch on
 the screen of the agent the host registered (`session.agentId`), so that a
@@ -4735,7 +4768,9 @@ Program item HS1; `internal/journal`): a JSON document of its own,
 each file 0600), begun and written as the session is made, before it can
 keep an entry, then written by the journal's writer as it changes, and
 at once at its end and when a crew is taken after its launch. A hosted
-session has no record yet. A server killed loses what was not yet
+session gets one too, begun as its host registers it and holding what
+its host reports (Host control connection, What a host reports of its
+session). A server killed loses what was not yet
 written; no time bound is promised. The server holding `history/owner.lock` writes the
 records; another server on the same data directory reads them (its own
 sessions unrecorded, `readOnly` on the list) and takes the lock when the
@@ -4746,8 +4781,16 @@ server with no data directory, and a switchyard, keep none.
 A record holds the session's id, name and kind; its agent (`id`, `name`,
 `adapter`, `version` from the server's probe, its own `session` `{id,
 source, resumable}` as the session knows it); its host (`name`, `user`;
-`owner` and `hosted` are kept for a later version's hosted records,
-empty here); `where` it ran (its Runtime, always set); its `cwd`; for a native
+for a hosted session `hosted: true` and `owner`, a hash of its host's
+instance); `where` it ran (its Runtime, always set for a server session;
+a hosted session's as its host reported it, none when it reported none:
+not reported, never native); its `cwd`; for a hosted session `repo`,
+`repoCommon`, `startCommit` (`startFrom: "host"`), `endCommit` and the
+agent's `version` as its host reported them, and its agent's own
+`session` as its hooks reported it to this server, none of it read on
+this server's machine, and of its evidence what its host sends (its
+activity and chat messages: no question and no answer, which its host's
+chat keeps); for a native
 session the `repo` (the worktree's top), `repoCommon` (the
 repository's common git directory, absolute), `branch` and `startCommit`
 read in one `git rev-parse` in the folder opened and checked, the one its
@@ -4770,10 +4813,14 @@ the record open), or `lostAt` when the server stopped observing it
 (`ending` `lost`: a session removed from the listing, or still there at
 a shutdown, while its process ran; a record found open at the next
 start; a record whose delete failed while its file said open: whether
-its process ended is not known); the end is read from the session
+its process ended is not known; `host away` for a hosted one, whose end
+is the one its host reported); the end is read from the session
 itself, not from the order its events arrive in, and once recorded it
-stands; `ending` (`exited (exit 0)`, `stopped`, `lost`, …); `reopened`,
-kept for a later version's hosted records, 0 here; and its evidence: `entries[{seq, at, kind, id?, ref?, event?,
+stands; `ending` (`exited (exit 0)`, `stopped`, `lost`, `host away`, …);
+`reopened`, how many times a hosted record was taken up again by the same
+host registering the same session after the server stopped observing it
+(a restart, its host away past the grace), its entries kept and a status
+line `taken up again by its host` among them; and its evidence: `entries[{seq, at, kind, id?, ref?, event?,
 byName?, message?, path?, tool?, url?, to?, choices?, outcome?}]` in order
 of `at`, then `seq`: `typed` (a line Conductor typed: a crew's prompt, a
 broadcast, a handoff), `question` (the agent's question in the chat, `id`

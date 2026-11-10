@@ -5,8 +5,12 @@ import {
   DECISION_PAGE,
   DecideCode,
   FrameType,
+  HOST_MAX_AGENT_VERSION,
   HOST_MAX_DESK_ID,
   HOST_MAX_LOCAL_ID,
+  HOST_MAX_REPORT_PATH,
+  HOST_MAX_REPORT_WHERE,
+  HOST_MAX_SESSION_INFO,
   HOST_MAX_RUN_ID,
   MAX_DECIDE,
   MAX_DECIDE_IN_FLIGHT,
@@ -26,7 +30,9 @@ import {
   encodeJSONFrame,
   goJSONLength,
   hostDeskLocalId,
+  hostReportValid,
   parseJSON,
+  validCommit,
   type DecideMsg,
   type DecideOkMsg,
   type DecideRefusedMsg,
@@ -34,6 +40,7 @@ import {
   type DecisionsChangedMsg,
   type HostRegisterDeskMessage,
   type HostRunGroup,
+  type HostSessionInfoMessage,
   type Welcome,
 } from './protocol'
 
@@ -175,5 +182,38 @@ describe('a run desk', () => {
     expect(m.localId.length).toBeGreaterThan(HOST_MAX_LOCAL_ID)
     const g: HostRunGroup = { id: runId, name: 'Run', members: [], desk: 'd'.repeat(HOST_MAX_DESK_ID) }
     expect(JSON.parse(JSON.stringify(g)).desk).toHaveLength(64)
+  })
+})
+
+// What a host reports of its session (internal/proto HostReport, HostSessionInfoMsg; docs/protocol.md, Host control connection):
+// each field at its bound taken and one past it refused, as the server's hub holds them; an older host's register, with none, taken.
+describe('a host report', () => {
+  const path = '/' + 'p'.repeat(HOST_MAX_REPORT_PATH - 1)
+  it('takes every field at its bound, and none', () => {
+    expect(hostReportValid({})).toBe(true)
+    expect(hostReportValid({ where: 'w' + '-'.repeat(HOST_MAX_REPORT_WHERE - 1), agentVersion: 'é'.repeat(HOST_MAX_AGENT_VERSION / 2), repo: path, repoCommon: 'C:\\src\\app\\.git', startCommit: '0f'.repeat(32) })).toBe(true)
+    expect(hostReportValid({ where: 'native', repo: '\\\\server\\share', startCommit: 'a'.repeat(40) })).toBe(true)
+  })
+  it('refuses each one past its bound or out of its form', () => {
+    for (const r of [
+      { where: 'w'.repeat(HOST_MAX_REPORT_WHERE + 1) },
+      { where: 'VM' },
+      { where: '9vm' },
+      { agentVersion: 'é'.repeat(HOST_MAX_AGENT_VERSION / 2) + '1' },
+      { agentVersion: '2.1\nfake' },
+      { repo: path + 'p' },
+      { repoCommon: 'src/app' },
+      { repo: 'https://user:secret@example.com/app.git' },
+      { startCommit: 'a'.repeat(39) },
+      { startCommit: 'a'.repeat(41) },
+      { startCommit: 'A'.repeat(40) },
+    ]) expect(hostReportValid(r), JSON.stringify(r)).toBe(false)
+  })
+  it('bounds a session_info by its bytes and its end commit by its form', () => {
+    const m: HostSessionInfoMessage = { t: 'session_info', endCommit: 'c'.repeat(64) }
+    const body = JSON.stringify(m)
+    expect(body.length).toBeLessThan(HOST_MAX_SESSION_INFO)
+    expect(validCommit(m.endCommit!)).toBe(true)
+    expect(validCommit('HEAD')).toBe(false)
   })
 })
