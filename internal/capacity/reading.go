@@ -92,6 +92,9 @@ type Reading struct {
 	Version   string // the agent's version this read found; "" when none
 	Qualified string // the reader's qualified version
 	ReadAt    time.Time
+	// Env is the hex SHA-256 of the variables the read was made with,
+	// never their values; "" when the reader gave none.
+	Env string
 }
 
 // Window is one usage limit as the provider reported it. A window the
@@ -233,6 +236,21 @@ type View struct {
 	ReadBy   *ReadBy     `json:"readBy,omitempty"`
 	Fresh    string      `json:"fresh"`
 	NextRead *time.Time  `json:"nextReadAfter,omitempty"`
+	// Env is the reading's Env, kept out of the JSON (MarkEnv).
+	Env string `json:"-"`
+}
+
+// EnvWords are the words of a view whose reading was made with another
+// environment than a read would be now.
+const EnvWords = "the agent's environment changed since this reading"
+
+// MarkEnv makes the view stale, with EnvWords, when it shows a reading
+// made with an environment other than env, the hex SHA-256 of the
+// variables a read of its key would be made with now.
+func (v *View) MarkEnv(env string) {
+	if v.ReadAt != nil && v.Env != env {
+		v.Fresh, v.Words = FreshStale, EnvWords
+	}
 }
 
 // clip cuts s to at most n bytes on a character's boundary.
@@ -293,6 +311,7 @@ func (r Reading) view(now time.Time) View {
 		ReadAt:  &at,
 		ReadBy:  &ReadBy{Program: r.Program, Version: r.Version, Qualified: r.Qualified},
 		Fresh:   FreshNow,
+		Env:     r.Env,
 	}
 	if now.Sub(r.ReadAt) >= FreshFor {
 		v.Fresh = FreshStale

@@ -151,3 +151,25 @@ func TestEveryStateHasWords(t *testing.T) {
 		t.Errorf("the tool's words kept at %d bytes", len(v.Words))
 	}
 }
+
+func TestViewMarkEnv(t *testing.T) {
+	clock := newClock()
+	c := NewCache(CacheOptions{Clock: clock, Read: func(context.Context, Key) Reading {
+		return Reading{State: StateOK, Env: "sum-a"}
+	}})
+	defer c.Close()
+	v := c.Read(context.Background(), key(1))
+	if v.MarkEnv("sum-a"); v.Fresh != FreshNow || v.Words != "" {
+		t.Errorf("the same environment: %s %q", v.Fresh, v.Words)
+	}
+	if v.MarkEnv("sum-b"); v.Fresh != FreshStale || v.Words != EnvWords {
+		t.Errorf("another environment: %s %q", v.Fresh, v.Words)
+	}
+	if b, _ := json.Marshal(v); strings.Contains(string(b), "sum-a") {
+		t.Errorf("the hash in the JSON: %s", b)
+	}
+	never := c.View(key(2))
+	if never.MarkEnv("sum-b"); never.Fresh != FreshNone {
+		t.Errorf("never read: %s", never.Fresh)
+	}
+}
