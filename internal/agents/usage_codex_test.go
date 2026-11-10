@@ -52,6 +52,16 @@ func TestCodexUsageMethodsClosed(t *testing.T) {
 func TestCodexUsageExchange(t *testing.T) {
 	pidfile := filepath.Join(t.TempDir(), "pid")
 	s := newStub(t, "codex", "USAGE_PIDFILE="+pidfile, "USAGE_THEN=hang", "CODEX_HOME=/fixture/codex")
+	// The helper stays after its stdin closed: its exit is waited for up
+	// to the read's deadline, which the test expires once the end waits,
+	// and the answer read stands.
+	expire := readDeadline(t)
+	none := func([]string) {}
+	starterHooks(t, none, none, func(argv []string) {
+		if childKind(argv) == "app-server" {
+			expire()
+		}
+	}, none)
 	rep := codexRead(t, s)
 	if rep.State != UsageOK || rep.Version != codexUsageQualified || rep.Outcome != Inconclusive {
 		t.Fatalf("%+v", rep)
@@ -64,7 +74,7 @@ func TestCodexUsageExchange(t *testing.T) {
 			t.Fatalf("args %q", c.Args)
 		}
 	}
-	// The helper stays after its stdin closed: the read ends its group.
+	// The read ends its group at the deadline.
 	waitGone(t, readPid(t, pidfile))
 }
 

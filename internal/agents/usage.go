@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
+
+	"github.com/rocksolidlabs/conductor/internal/proc"
 )
 
 // The usage readers (docs/plans/capacity.md, PR-1): an agent's usage
@@ -56,7 +58,9 @@ type Admission interface{ Done(o Outcome) }
 // line with num_turns 0 and local_command "usage"; Turned for a result
 // line with num_turns above 0 or another local_command; Inconclusive for
 // every other end: a timeout, end of file or the child's exit before a
-// result line, a malformed line, an output bound passed.
+// result line, a malformed line, an output bound passed. The proof of a
+// turn is read first, before what only makes a run inconclusive; the one
+// table is claudeVerdict's.
 type Outcome int
 
 const (
@@ -129,16 +133,18 @@ type UsageCredit struct {
 	Currency  string // an ISO 4217 code, or ""
 }
 
+// The readers' bounds, each measured on what it bounds as it was read or
+// is kept, never after a trim (TestUsageBoundEdges holds each at its edge).
 const (
-	usageMaxLine     = 1 << 20  // one output line
-	usageMaxOutput   = 4 << 20  // all of a program's output
-	versionMaxOutput = 64 << 10 // all of a version's print: more is no version
-	usageMaxWords    = 300
-	usageMaxName     = 80
-	usageMaxLimit    = 40
-	usageMaxFigure   = 32
-	usageMaxWindows  = 16
-	usageMaxCredits  = 4
+	usageMaxLine     = 1 << 20  // bytes read for one stdout line, its final '\n' alone not counted ('\r', spaces and a blank line's bytes are)
+	usageMaxOutput   = 4 << 20  // every byte read from a program's stdout: lines, terminators, blank lines, and what is drained at its end
+	versionMaxOutput = 64 << 10 // every byte of a version's print, stdout and stderr together: more is no version
+	usageMaxWords    = 300      // bytes of a report's words, cut on a character's boundary
+	usageMaxName     = 80       // bytes of a window's name as shown, its prefix ("Weekly, ") included
+	usageMaxLimit    = 40       // bytes of a limit id as the provider wrote it (decoded JSON string)
+	usageMaxFigure   = 32       // bytes of a figure's JSON number text as the provider wrote it
+	usageMaxWindows  = 16       // windows in a report
+	usageMaxCredits  = 4        // credit figures in a report
 )
 
 var (
@@ -151,6 +157,12 @@ var (
 	// it when the stub has written its pid, instead of racing a clock.
 	withUsageTimeout = func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
 		return context.WithTimeoutCause(ctx, d, errUsageTimeout)
+	}
+
+	// withVersionTimeout gives a version's print its deadline, a seam as
+	// withUsageTimeout is.
+	withVersionTimeout = func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+		return context.WithTimeoutCause(ctx, d, errVersionTimeout)
 	}
 
 	// afterVersion runs between the version's print and the second note
@@ -248,8 +260,8 @@ func (p program) with(args ...string) []string {
 // qualify resolves the read's command, asks the whole prefix its version
 // with the adapter's probe, and checks the files did not change meanwhile
 // and the version is at least min. A non-nil report ends the read with
-// nothing else started.
-func qualify(ctx context.Context, in UsageInput, probe *Probe, tool, min string) (program, string, *UsageReport) {
+// nothing else started. timeout is the read's own, for its words.
+func qualify(ctx context.Context, in UsageInput, probe *Probe, tool, min string, timeout time.Duration) (program, string, *UsageReport) {
 	stop := func(state, words, version string) *UsageReport {
 		return &UsageReport{State: state, Words: clip(words, usageMaxWords), Version: version}
 	}
@@ -260,9 +272,13 @@ func qualify(ctx context.Context, in UsageInput, probe *Probe, tool, min string)
 	if err != nil {
 		return p, "", stop(UsageError, err.Error(), "")
 	}
-	version, words := askVersion(ctx, p, probe, in, tool)
+	version, words := askVersion(ctx, p, probe, in, tool, timeout)
 	if words != "" {
-		return p, "", stop(UsageUnqualified, words, "")
+		state := UsageUnqualified
+		if ctx.Err() != nil {
+			state = UsageError
+		}
+		return p, "", stop(state, words, "")
 	}
 	afterVersion()
 	if !p.unchanged() {
@@ -276,29 +292,37 @@ func qualify(ctx context.Context, in UsageInput, probe *Probe, tool, min string)
 
 // askVersion runs the whole prefix with the probe's arguments, as a read
 // runs every program (startUsage), its stdout and stderr together read to
-// their end, as the identity probe reads them, then its group ended and
-// its exit read. Only a run that exits 0 within probeTimeout, printing at
-// most versionMaxOutput bytes that the probe identifies as the tool, gives
-// a version; words say, in Conductor's words, why not. A helper the
-// program leaves holding its output keeps the read to that timeout, and
-// goes with the group then.
-func askVersion(ctx context.Context, p program, probe *Probe, in UsageInput, tool string) (version, words string) {
-	vctx, cancel := context.WithTimeoutCause(ctx, probeTimeout, errVersionTimeout)
+// their end, as the identity probe reads them, then ended (end: its exit,
+// then its group, then its reaping) and its exit status judged. Only a run
+// that exits 0 within probeTimeout, printing at most versionMaxOutput bytes
+// that the probe identifies as the tool, gives a version; words say, in
+// Conductor's words, why not. Output closed before the exit waits for the
+// exit; a helper left holding the output goes with the group at the exit.
+func askVersion(ctx context.Context, p program, probe *Probe, in UsageInput, tool string, timeout time.Duration) (version, words string) {
+	vctx, cancel := withVersionTimeout(ctx, probeTimeout)
 	defer cancel()
 	proc, err := startUsage(vctx, p.with(probe.Args...), in, false, true)
 	if err != nil {
+		if w := ended(ctx, tool, timeout); w != "" {
+			return "", w
+		}
 		return "", "the version of " + p.name + " could not be checked: it did not start"
 	}
-	out, rerr := io.ReadAll(io.LimitReader(proc.out, versionMaxOutput+1))
-	proc.end()
+	// versionMaxOutput: every byte of the print, stdout and stderr together.
+	out, rerr := io.ReadAll(io.LimitReader(proc.lines.r, versionMaxOutput+1))
+	if len(out) > versionMaxOutput {
+		proc.stop()
+	} else {
+		proc.end()
+	}
 	switch {
+	case ended(ctx, tool, timeout) != "":
+		return "", ended(ctx, tool, timeout)
 	case context.Cause(vctx) == errVersionTimeout:
 		return "", fmt.Sprintf("%s did not print its version within %d s", p.name, int(probeTimeout/time.Second))
-	case ctx.Err() != nil:
-		return "", "the read was stopped"
 	case len(out) > versionMaxOutput:
 		return "", p.name + " printed more than 64 KiB for its version"
-	case rerr != nil && !errors.Is(rerr, os.ErrClosed):
+	case rerr != nil:
 		return "", "the version of " + p.name + " could not be read"
 	case !proc.cmd.ProcessState.Success():
 		return "", "the version command of " + p.name + " failed" + proc.exitWords() + ": its version is not known"
@@ -311,6 +335,18 @@ func askVersion(ctx context.Context, p program, probe *Probe, in UsageInput, too
 		return strings.TrimSpace(m[1]), ""
 	}
 	return "", p.name + " does not answer as " + tool
+}
+
+// ended says, in Conductor's words, how the read's context ended: its own
+// deadline (withUsageTimeout), or the caller's stop; "" while it runs.
+func ended(ctx context.Context, tool string, timeout time.Duration) string {
+	switch {
+	case ctx.Err() == nil:
+		return ""
+	case context.Cause(ctx) == errUsageTimeout:
+		return fmt.Sprintf("%s did not answer within %d s", tool, int(timeout/time.Second))
+	}
+	return "the read was stopped"
 }
 
 // versionLess compares two dotted versions number by number; a part that
@@ -346,26 +382,43 @@ func usageEnv(env []string) []string {
 	return append(out, "TERM=dumb", "NO_COLOR=1")
 }
 
-// usageProc is one program a read runs. It starts in a session of its
-// own (usageAttr), so it has no controlling terminal and its process group
-// is its own; its stdin is nothing (/dev/null) or, for Codex, a pipe. Its
-// stdout is read line by line under the bounds (with its stderr, for a
-// version's print); otherwise its stderr is drained to its end and only
-// counted, never kept: nothing the tool prints there reaches a report,
-// whatever its size, and the pipe is never closed under it. The read's
-// end (its deadline, or the caller's) kills the group and closes stdout's
-// read end, so a read never waits on a descendant that kept the pipe; end
-// kills the group before the reaping, while the group's id is still the
-// leader's, and no kill is sent after it.
+// usageProc is one program a read runs: every child of a read (the
+// version's print, Claude Code's auth status and /usage run, Codex's app
+// server, the recipes tier's commands) goes through startUsage and ends
+// through end or stop. It starts in a session of its own (usageAttr), so
+// it has no controlling terminal and its process group is its own; its
+// stdin is nothing (/dev/null) or, for Codex, a pipe. Its stdout is a pipe
+// of the read's own, read line by line under the bounds (with its stderr,
+// for a version's print); otherwise its stderr is drained to its end and
+// only counted, never kept: nothing the tool prints there reaches a
+// report, whatever its size, and the pipe is never closed under it.
+//
+// Its end has one order, whatever the child: its exit is seen without
+// reaping it (proc.WatchExit), or the deadline passes; then the rest of
+// its group is killed, while the group's id is still the leader's; then it
+// is reaped, and no kill is sent after; then its exit status is judged.
+// The exit is what says it finished, never its output's end: a program
+// that closes its output and then exits cleanly is not killed for it. When
+// the leader exits, what it left in its group is killed at once, so a
+// helper holding the output does not keep the read waiting, and what was
+// printed before is still read from the pipe. The read's end (its
+// deadline, or the caller's) kills the group and closes the output, so a
+// read never waits on a process that left the group holding the pipe.
 type usageProc struct {
 	ctx    context.Context
+	argv   []string
 	cmd    *exec.Cmd
-	out    io.ReadCloser
+	out    *os.File // the read end of the output's pipe, ours
 	lines  *boundedLines
 	stdin  io.WriteCloser
 	stderr *countWriter
-	ended  bool
-	done   chan struct{}
+	reap   func() error
+	// exited is closed once the leader has exited (or its watch failed,
+	// and it was killed).
+	exited  chan struct{}
+	ended   bool
+	done    chan struct{}
+	outOnce sync.Once
 
 	mu     sync.Mutex
 	reaped bool
@@ -379,44 +432,114 @@ func (c *countWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// The starter's seams, for the tests: usageStarting is called with a
+// child's argv after any admission and immediately before the context's
+// last look and the start; usageStarted once the child is started;
+// usageWaiting when its end begins (its answer or its output's end read,
+// its stdin closed), before it waits for the exit;
+// usageReaped once it is reaped. Each is set before a read starts.
+var (
+	usageStarting = func([]string) {}
+	usageStarted  = func([]string) {}
+	usageWaiting  = func([]string) {}
+	usageReaped   = func([]string) {}
+)
+
+// errNotStarted says the read's context had ended before the start: no
+// process was started.
+var errNotStarted = errors.New("the read had ended: nothing was started")
+
 // startUsage starts argv in the read's folder and environment (usageProc);
 // withStdin gives it a pipe, merged sends its stderr where its stdout goes.
+// A context ended by the moment of the start starts nothing
+// (errNotStarted): the last look is made after any admission and
+// immediately before the start.
 func startUsage(ctx context.Context, argv []string, in UsageInput, withStdin, merged bool) (*usageProc, error) {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = in.Dir
 	cmd.Env = usageEnv(in.Env)
 	cmd.WaitDelay = time.Second
-	p := &usageProc{ctx: ctx, cmd: cmd, stderr: &countWriter{}, done: make(chan struct{})}
-	out, err := cmd.StdoutPipe()
+	p := &usageProc{ctx: ctx, argv: argv, cmd: cmd, stderr: &countWriter{}, exited: make(chan struct{}), done: make(chan struct{})}
+	r, w, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
+	var closers []*os.File
+	closeAll := func() {
+		for _, f := range closers {
+			_ = f.Close()
+		}
+	}
+	closers = append(closers, r, w)
+	cmd.Stdout = w
 	if merged {
-		cmd.Stderr = cmd.Stdout
+		cmd.Stderr = w
 	} else {
 		cmd.Stderr = p.stderr
 	}
+	var childIn *os.File
 	if withStdin {
-		if p.stdin, err = cmd.StdinPipe(); err != nil {
-			out.Close()
+		sr, sw, err := os.Pipe()
+		if err != nil {
+			closeAll()
 			return nil, err
 		}
+		closers = append(closers, sr, sw)
+		cmd.Stdin, childIn, p.stdin = sr, sr, sw
 	}
 	usageAttr(cmd)
+	usageStarting(argv)
+	if ctx.Err() != nil {
+		closeAll()
+		return nil, errNotStarted
+	}
 	if err := cmd.Start(); err != nil {
+		closeAll()
 		return nil, err
 	}
-	p.out = out
-	p.lines = &boundedLines{r: bufio.NewReaderSize(out, 64<<10)}
-	go func() {
-		select {
-		case <-ctx.Done():
-			p.kill()
-			_ = out.Close()
-		case <-p.done:
-		}
-	}()
+	// The child holds its ends now.
+	_ = w.Close()
+	if childIn != nil {
+		_ = childIn.Close()
+	}
+	p.out = r
+	p.lines = &boundedLines{r: bufio.NewReaderSize(r, 64<<10)}
+	exited, reap, err := proc.WatchExit(cmd)
+	if err != nil {
+		// As proc.Run: an exit that cannot be watched is not guessed at;
+		// the child is ended now, while its group's id is its own.
+		endGroup(cmd)
+		_ = cmd.Wait()
+		closeAll()
+		return nil, fmt.Errorf("the exit of %s could not be watched", filepath.Base(argv[0]))
+	}
+	p.reap = reap
+	usageStarted(argv)
+	go p.watch(exited)
 	return p, nil
+}
+
+// watch kills the group once the leader has exited (what it left goes with
+// it; nothing reaps it here), and kills the group and closes the output
+// when the read's context ends, until the child is reaped.
+func (p *usageProc) watch(exited <-chan error) {
+	for {
+		select {
+		case <-exited:
+			// nil: the exit seen; an error: the watch failed while the
+			// leader may run still, and it is ended now. Either way the
+			// group goes, and the leader is no more waited for.
+			exited = nil
+			p.kill()
+			close(p.exited)
+		case <-p.ctx.Done():
+			p.kill()
+			p.closeOut()
+			return
+		case <-p.done:
+			return
+		}
+	}
 }
 
 // kill ends the program's process group, unless it is reaped.
@@ -428,22 +551,58 @@ func (p *usageProc) kill() {
 	}
 }
 
-// end closes the program's stdin, kills its process group and waits for
-// it. Idempotent; called by the read's goroutine alone.
+// closeOut closes the read end of the output, once.
+func (p *usageProc) closeOut() { p.outOnce.Do(func() { _ = p.out.Close() }) }
+
+// end ends a child whose answer is read, or whose output ended: its stdin
+// closed, what it still prints read and dropped (drain) so it is never
+// held writing, then the starter's order (usageProc): its exit, or the
+// read's deadline; the rest of its group killed; its reaping. Idempotent;
+// called by the read's goroutine alone.
 func (p *usageProc) end() {
 	if p.ended {
 		return
 	}
-	p.ended = true
 	if p.stdin != nil {
 		_ = p.stdin.Close()
 	}
+	usageWaiting(p.argv)
+	if !p.lines.drain() {
+		p.stop()
+		return
+	}
+	select {
+	case <-p.exited:
+	case <-p.ctx.Done():
+	}
+	p.finish()
+}
+
+// stop ends a child the read no longer reads (a bound passed): its exit is
+// not waited for, since one held writing to a pipe nobody reads would
+// never come, and the same order follows from there: its group killed,
+// then its reaping.
+func (p *usageProc) stop() {
+	if p.ended {
+		return
+	}
+	if p.stdin != nil {
+		_ = p.stdin.Close()
+	}
+	p.finish()
+}
+
+// finish kills the group, reaps the leader and closes the output.
+func (p *usageProc) finish() {
+	p.ended = true
 	p.kill()
 	p.mu.Lock()
 	p.reaped = true
 	p.mu.Unlock()
-	_ = p.cmd.Wait()
+	_ = p.reap()
 	close(p.done)
+	p.closeOut()
+	usageReaped(p.argv)
 }
 
 // exitWords says, in Conductor's words, how the ended program exited and
@@ -454,6 +613,7 @@ func (p *usageProc) exitWords() string {
 	if st := p.cmd.ProcessState; st != nil && st.Exited() {
 		w = append(w, fmt.Sprintf("exit status %d", st.ExitCode()))
 	}
+	// The stderr count: every byte the child wrote there, none of it kept.
 	if n := p.stderr.n.Load(); n > 0 {
 		w = append(w, fmt.Sprintf("%d bytes on stderr, not shown", n))
 	}
@@ -472,14 +632,17 @@ func (p *usageProc) exitedFailing() bool {
 
 // why says, in Conductor's words, how the program's read ended without an
 // answer: its deadline, a bound, or its end with its exit. It ends the
-// program first. The tool's own text is never in it.
+// program first (stop past a bound, else end). The tool's own text is
+// never in it.
 func (p *usageProc) why(tool string, err error, timeout time.Duration) string {
-	p.end()
+	if errors.Is(err, errLineTooLong) || errors.Is(err, errOutputTooLarge) {
+		p.stop()
+	} else {
+		p.end()
+	}
 	switch {
-	case context.Cause(p.ctx) == errUsageTimeout:
-		return fmt.Sprintf("%s did not answer within %d s", tool, int(timeout/time.Second))
-	case p.ctx.Err() != nil:
-		return "the read was stopped"
+	case ended(p.ctx, tool, timeout) != "":
+		return ended(p.ctx, tool, timeout)
 	case errors.Is(err, errLineTooLong):
 		return tool + " printed a line longer than 1 MiB"
 	case errors.Is(err, errOutputTooLarge):
@@ -494,10 +657,12 @@ func (p *usageProc) why(tool string, err error, timeout time.Duration) string {
 // usageMaxOutput bytes in all, applying both while it reads.
 type boundedLines struct {
 	r     *bufio.Reader
-	total int
+	total int // every byte read from the output, by next and drain
 }
 
-// next returns the next non-empty line, trimmed; io.EOF at the end.
+// next returns the next non-empty line, trimmed; io.EOF at the end. The
+// line bound counts every byte read for the line but its final '\n',
+// before any trimming: a '\r', a space and a blank line's bytes count.
 func (b *boundedLines) next() ([]byte, error) {
 	for {
 		var line []byte
@@ -507,7 +672,11 @@ func (b *boundedLines) next() ([]byte, error) {
 			if b.total > usageMaxOutput {
 				return nil, errOutputTooLarge
 			}
-			if len(bytes.TrimRight(line, "\r\n"))+len(bytes.TrimRight(chunk, "\r\n")) > usageMaxLine {
+			n := len(line) + len(chunk)
+			if err == nil {
+				n-- // the '\n' that ends the line
+			}
+			if n > usageMaxLine {
 				return nil, errLineTooLong
 			}
 			line = append(line, chunk...)
@@ -521,6 +690,22 @@ func (b *boundedLines) next() ([]byte, error) {
 		}
 		if line = bytes.TrimSpace(line); len(line) > 0 {
 			return line, nil
+		}
+	}
+}
+
+// drain reads the output to its end and drops it, counted in the same
+// total; false once that passes usageMaxOutput, with the rest unread.
+func (b *boundedLines) drain() bool {
+	buf := make([]byte, 32<<10)
+	for {
+		n, err := b.r.Read(buf)
+		b.total += n
+		if b.total > usageMaxOutput {
+			return false
+		}
+		if err != nil {
+			return true
 		}
 	}
 }

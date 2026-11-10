@@ -101,6 +101,14 @@ func TestClaudeUsageRefusesModelTurn(t *testing.T) {
 	for name, pairs := range map[string][]string{
 		"turns":   {`"num_turns":0`, `"num_turns":1`},
 		"command": {`"local_command":"usage"`, `"local_command":"compact"`},
+		// The proof of a turn is read before what only makes a run
+		// inconclusive: another command with no count of turns, or with
+		// one not a number, and a turn after a line that is not JSON.
+		"command, no turns":        {`"num_turns":0,`, ``, `"local_command":"usage"`, `"local_command":"compact"`},
+		"command, turns malformed": {`"num_turns":0`, `"num_turns":"0"`, `"local_command":"usage"`, `"local_command":"compact"`},
+		"turns, command malformed": {`"num_turns":0`, `"num_turns":2`, `"local_command":"usage"`, `"local_command":7`},
+		"turns after a bad line":   {`{"type":"result"`, "not json\n" + `{"type":"result"`, `"num_turns":0`, `"num_turns":1`},
+		"turns, an error flag":     {`"num_turns":0`, `"num_turns":1`, `"is_error":false`, `"is_error":true`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := newStub(t, "claude", "USAGE_STREAM="+variant(t, "claude-usage.jsonl", pairs...))
@@ -138,8 +146,28 @@ func TestClaudeUsageInconclusive(t *testing.T) {
 			expireOnPid(t, pidfile, claudeUsageTimeout)
 			return []string{"USAGE_PIDFILE=" + pidfile, "USAGE_BEFORE=hang"}
 		}, "did not answer within 90 s"},
+		// Its output closed and its leader never exits: ended at the
+		// deadline, which the test expires once the end waits for the exit.
 		{"output ends", func(t *testing.T, pidfile string) []string {
+			expire := readDeadline(t)
+			none := func([]string) {}
+			starterHooks(t, none, none, func(argv []string) {
+				if childKind(argv) == "usage" {
+					expire()
+				}
+			}, none)
 			return []string{"USAGE_STREAM=" + noResult(t), "USAGE_THEN=close"}
+		}, "did not answer within 90 s"},
+		{"not JSON, then no result", func(t *testing.T, pidfile string) []string {
+			b, err := os.ReadFile(noResult(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := filepath.Join(t.TempDir(), "bad.jsonl")
+			if err := os.WriteFile(p, append([]byte("not json\n"), b...), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return []string{"USAGE_STREAM=" + p, "USAGE_THEN=fail"}
 		}, "ended before it answered"},
 		{"child exits", func(t *testing.T, pidfile string) []string {
 			return []string{"USAGE_STREAM=" + noResult(t), "USAGE_THEN=fail"}
@@ -420,5 +448,74 @@ func TestClaudeUsageKeepsNoToolWords(t *testing.T) {
 			}
 			noMarks(t, name, rep)
 		})
+	}
+}
+
+// TestClaudeVerdictTable holds claudeVerdict, the one table from a result
+// line's evidence to the run's outcome, over every combination of the
+// fields the plan names: num_turns absent, null, zero, above zero or
+// malformed; local_command absent, null, "usage", another or malformed;
+// the error flag; and a line or part the stream could not read. The proof
+// of a turn comes first, whatever else is there; Local needs all of its
+// evidence and nothing against it; every other row is Inconclusive.
+func TestClaudeVerdictTable(t *testing.T) {
+	turnsOf := map[string]string{"absent": "", "null": `"num_turns":null,`, "0": `"num_turns":0,`, "1": `"num_turns":1,`, "3": `"num_turns":3,`, "-1": `"num_turns":-1,`, "string": `"num_turns":"1",`, "fraction": `"num_turns":0.5,`}
+	commandOf := map[string]string{"absent": "", "null": `"local_command":null,`, "usage": `"local_command":"usage",`, "other": `"local_command":"compact",`, "number": `"local_command":7,`}
+	errorOf := map[string]string{"absent": "", "false": `"is_error":false,`, "true": `"is_error":true,`, "malformed": `"is_error":"no",`, "error subtype": `"subtype":"error_during_execution",`, "malformed subtype": `"subtype":3,`}
+	// The plan's rows, read in their order.
+	want := func(turns, command, flag string, bad bool) Outcome {
+		switch {
+		case turns == "1" || turns == "3", command == "other":
+			return Turned
+		case bad, turns != "0", command != "usage", flag != "absent" && flag != "false":
+			return Inconclusive
+		}
+		return Local
+	}
+	n := 0
+	for turns, tf := range turnsOf {
+		for command, cf := range commandOf {
+			for flag, ef := range errorOf {
+				for _, bad := range []bool{false, true} {
+					line := `{` + tf + cf + ef + `"type":"result"}`
+					var f jsonFields
+					if err := json.Unmarshal([]byte(line), &f); err != nil {
+						t.Fatalf("%s: %v", line, err)
+					}
+					why := ""
+					if bad {
+						why = "Claude Code printed a line that is not JSON"
+					}
+					got, words := claudeVerdict(f, why)
+					if w := want(turns, command, flag, bad); got != w {
+						t.Errorf("turns %s, command %s, flag %s, bad line %v: %v, want %v", turns, command, flag, bad, got, w)
+					}
+					if (got == Inconclusive) != (words != "") {
+						t.Errorf("%s: outcome %v with words %q", line, got, words)
+					}
+					n++
+				}
+			}
+		}
+	}
+	if n != 8*5*6*2 {
+		t.Fatalf("%d rows", n)
+	}
+	// The rows the round's finding named, as literals.
+	for line, w := range map[string]Outcome{
+		`{"type":"result","local_command":"compact"}`:                 Turned,
+		`{"type":"result","num_turns":0,"local_command":"usage"}`:     Local,
+		`{"type":"result","num_turns":0}`:                             Inconclusive,
+		`{"type":"result","local_command":"usage"}`:                   Inconclusive,
+		`{"type":"result","num_turns":1,"local_command":"usage"}`:     Turned,
+		`{"type":"result","num_turns":"x","local_command":"compact"}`: Turned,
+	} {
+		var f jsonFields
+		if err := json.Unmarshal([]byte(line), &f); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := claudeVerdict(f, ""); got != w {
+			t.Errorf("%s: %v, want %v", line, got, w)
+		}
 	}
 }

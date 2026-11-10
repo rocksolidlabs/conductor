@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -51,7 +52,7 @@ var (
 	claudePlans = map[string]bool{"pro": true, "max": true, "team": true, "enterprise": true}
 )
 
-const claudeAuthMax = 64 << 10
+const claudeAuthMax = 64 << 10 // every byte of auth status's stdout
 
 // currency is the shape of a currency code (ISO 4217).
 var currency = regexp.MustCompile(`^[A-Z]{3}$`)
@@ -75,21 +76,6 @@ func strOf(s *string) string {
 		return ""
 	}
 	return *s
-}
-
-// claudeLine is what is read of one stream-json line: the init line's
-// apiKeySource, the usage report's rate limits (never its session part,
-// never the message or local_command_source, the words the command prints
-// for people), and the result line's turns and command.
-type claudeLine struct {
-	Type         string  `json:"type"`
-	Subtype      string  `json:"subtype"`
-	APIKeySource *string `json:"apiKeySource"`
-	UsageReport  *struct {
-		RateLimits *claudeRateLimits `json:"rate_limits"`
-	} `json:"usage_report"`
-	NumTurns     *int    `json:"num_turns"`
-	LocalCommand *string `json:"local_command"`
 }
 
 type claudeRateLimits struct {
@@ -117,7 +103,7 @@ func readClaudeUsage(ctx context.Context, in UsageInput) (rep UsageReport) {
 	defer func() { rep.ReadAt = time.Now(); rep.Words = clip(rep.Words, usageMaxWords) }()
 	ctx, cancel := withUsageTimeout(ctx, claudeUsageTimeout)
 	defer cancel()
-	p, version, stop := qualify(ctx, in, claudeIdentity, "Claude Code", claudeUsageMinVersion)
+	p, version, stop := qualify(ctx, in, claudeIdentity, "Claude Code", claudeUsageMinVersion, claudeUsageTimeout)
 	if stop != nil {
 		return *stop
 	}
@@ -150,6 +136,10 @@ func readClaudeUsage(ctx context.Context, in UsageInput) (rep UsageReport) {
 	if !p.unchanged() {
 		return UsageReport{State: UsageUnqualified, Words: "the program changed while it was checked", Version: version, Plan: plan}
 	}
+	// A read that has ended asks no admission: nothing would be started.
+	if w := ended(ctx, "Claude Code", claudeUsageTimeout); w != "" {
+		return UsageReport{State: UsageError, Words: w, Version: version, Plan: plan}
+	}
 	newer := versionLess(claudeUsageQualified, version)
 	if in.Admit == nil {
 		w := "no run of Claude Code " + version + " was admitted"
@@ -166,6 +156,9 @@ func readClaudeUsage(ctx context.Context, in UsageInput) (rep UsageReport) {
 		}
 		return UsageReport{State: UsageUnqualified, Words: w, Version: version, Plan: plan}
 	}
+	// An admission granted is told exactly once, whatever came of it: a
+	// read that ended inside the admission starts nothing (startUsage) and
+	// tells it Inconclusive.
 	rep = claudeUsageRun(ctx, p, in, version)
 	adm.Done(rep.Outcome)
 	rep.Version = version
@@ -181,35 +174,45 @@ func claudeAuthStatus(ctx context.Context, p program, in UsageInput) (claudeAuth
 	var auth claudeAuth
 	proc, err := startUsage(ctx, p.with(claudeAuthArgs...), in, false, false)
 	if err != nil {
+		if w := ended(ctx, "Claude Code", claudeUsageTimeout); w != "" {
+			return auth, w
+		}
 		return auth, "Claude Code's auth status could not be started"
 	}
 	defer proc.end()
+	// claudeAuthMax: every byte of its stdout.
 	out, err := io.ReadAll(io.LimitReader(proc.lines.r, claudeAuthMax+1))
 	switch {
+	case len(out) > claudeAuthMax:
+		proc.stop()
+		if w := ended(ctx, "Claude Code", claudeUsageTimeout); w != "" {
+			return auth, w
+		}
+		return auth, "Claude Code's auth status printed more than 64 KiB"
 	case err != nil, ctx.Err() != nil:
 		return auth, proc.why("Claude Code's auth status", err, claudeUsageTimeout)
-	case len(out) > claudeAuthMax:
-		return auth, "Claude Code's auth status printed more than 64 KiB"
 	}
+	proc.end()
 	if json.Unmarshal(out, &auth) != nil || auth.LoggedIn == nil {
-		proc.end()
 		return auth, "Claude Code's auth status gave no answer Conductor reads" + proc.exitWords()
 	}
 	return auth, ""
 }
 
-// claudeUsageRun runs /usage and reads its lines until the result line.
-// Its Outcome is what that line proved: Local only for num_turns 0 and
-// local_command "usage".
+// claudeUsageRun runs /usage and reads its lines until the result line,
+// on past a line it cannot read (claudeStream), so that a result line that
+// proves a turn is always seen. Its Outcome is claudeVerdict's.
 func claudeUsageRun(ctx context.Context, p program, in UsageInput, version string) UsageReport {
 	fail := func(words string) UsageReport { return UsageReport{State: UsageError, Words: words} }
 	proc, err := startUsage(ctx, p.with(claudeUsageArgs...), in, false, false)
 	if err != nil {
+		if w := ended(ctx, "Claude Code", claudeUsageTimeout); w != "" {
+			return fail(w)
+		}
 		return fail("Claude Code could not be started")
 	}
 	defer proc.end()
-	var keySource *string
-	var limits *claudeRateLimits
+	var st claudeStream
 	for seen := 0; ; seen++ {
 		line, err := proc.lines.next()
 		if err != nil {
@@ -221,46 +224,152 @@ func claudeUsageRun(ctx context.Context, p program, in UsageInput, version strin
 			}
 			return fail(words)
 		}
-		var l claudeLine
-		if json.Unmarshal(line, &l) != nil {
+		if result := st.add(line); result != nil {
 			proc.end()
-			return fail("Claude Code printed a line that is not JSON")
-		}
-		switch {
-		case l.Type == "system" && l.Subtype == "init":
-			keySource = l.APIKeySource
-		case l.UsageReport != nil && l.UsageReport.RateLimits != nil:
-			limits = l.UsageReport.RateLimits
-		case l.Type == "result":
-			proc.end()
-			return claudeResult(l, keySource, limits, version)
+			return claudeResult(result, st, version)
 		}
 	}
 }
 
-// claudeResult judges the run by its result line, then reads its report.
-func claudeResult(l claudeLine, keySource *string, limits *claudeRateLimits, version string) UsageReport {
+// jsonFields is a line's JSON object, each field decoded on its own, so a
+// field Conductor does not read, or one that fails, hides no other.
+type jsonFields map[string]json.RawMessage
+
+// get decodes the named field into out. present: the field is there and
+// not null; ok: it is absent, null, or of out's type.
+func (f jsonFields) get(name string, out any) (present, ok bool) {
+	raw, there := f[name]
+	if !there || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return false, true
+	}
+	return true, json.Unmarshal(raw, out) == nil
+}
+
+// claudeStream is what the lines before the result line left: the init
+// line's apiKeySource, the usage report's rate limits, and, in Conductor's
+// words, the first line or part of one that could not be read (bad).
+type claudeStream struct {
+	keySource *string
+	limits    *claudeRateLimits
+	bad       string
+}
+
+func (s *claudeStream) note(words string) {
+	if s.bad == "" {
+		s.bad = words
+	}
+}
+
+// add reads one line, never its message or local_command_source (the
+// words the command prints for people) and never the usage report's
+// session part; it returns the line's fields when it is the result line.
+func (s *claudeStream) add(line []byte) jsonFields {
+	var f jsonFields
+	if json.Unmarshal(line, &f) != nil || f == nil {
+		s.note("Claude Code printed a line that is not JSON")
+		return nil
+	}
+	var typ, subtype string
+	if _, ok := f.get("type", &typ); !ok {
+		s.note("a line of Claude Code's names its type in a shape Conductor does not read")
+		return nil
+	}
+	if typ == "result" {
+		return f
+	}
+	if typ == "system" {
+		if _, ok := f.get("subtype", &subtype); !ok {
+			s.note("a system line of Claude Code's names its subtype in a shape Conductor does not read")
+		}
+	}
+	if typ == "system" && subtype == "init" {
+		var ks string
+		if present, ok := f.get("apiKeySource", &ks); !ok {
+			s.note("the init line's apiKeySource is not in the shape Conductor reads")
+		} else if present {
+			s.keySource = &ks
+		}
+	}
+	var report jsonFields
+	if present, ok := f.get("usage_report", &report); !ok {
+		s.note("the usage report is not in the shape Conductor reads")
+	} else if present {
+		var rl claudeRateLimits
+		if present, ok := report.get("rate_limits", &rl); !ok {
+			s.note("the usage report's rate_limits are not in the shape Conductor reads")
+		} else if present {
+			s.limits = &rl
+		}
+	}
+	return nil
+}
+
+// claudeVerdict is the one table from a /usage run's evidence to its
+// outcome (the plan, PR-1: Local only for num_turns 0 and local_command
+// "usage"; Turned for num_turns above 0 or another local_command;
+// Inconclusive for every other end), read in the order of what each piece
+// proves, so that the proof of a turn is never hidden by what only makes
+// the run inconclusive. bad is the first line or part the stream could not
+// read ("" when none); words say why a run is Inconclusive.
+//
+//  1. num_turns a whole number above 0                   Turned
+//  2. local_command a string other than "usage"          Turned
+//  3. a line before the result line, or a part, unread   Inconclusive
+//  4. num_turns absent, null, or not a whole number >= 0 Inconclusive
+//  5. local_command absent, null, or not a string        Inconclusive
+//  6. is_error true or not a boolean, or subtype given
+//     and not "success"                                  Inconclusive: the plan does not decide; fail closed
+//  7. num_turns 0 and local_command "usage"              Local
+//
+// A run that ends without a result line (a timeout, its output's end or
+// its exit, a bound passed) has no evidence and is Inconclusive too.
+func claudeVerdict(f jsonFields, bad string) (Outcome, string) {
+	var turns int
+	turnsGiven, turnsOK := f.get("num_turns", &turns)
+	turnsOK = turnsOK && turnsGiven && turns >= 0
+	var command string
+	commandGiven, commandOK := f.get("local_command", &command)
+	commandOK = commandOK && commandGiven
+	var isError bool
+	_, errorOK := f.get("is_error", &isError)
+	subtype := "success"
+	_, subtypeOK := f.get("subtype", &subtype)
 	switch {
-	case l.NumTurns == nil || *l.NumTurns < 0:
-		return UsageReport{State: UsageError, Words: "Claude Code's result line gave no turns"}
-	case *l.NumTurns > 0 || (l.LocalCommand != nil && *l.LocalCommand != "usage"):
+	case turnsOK && turns > 0, commandOK && command != "usage":
+		return Turned, ""
+	case bad != "":
+		return Inconclusive, bad
+	case !turnsOK:
+		return Inconclusive, "Claude Code's result line gave no turns"
+	case !commandOK:
+		return Inconclusive, "Claude Code's result line named no local command"
+	case !errorOK || isError || !subtypeOK || subtype != "success":
+		return Inconclusive, "Claude Code's result line says the /usage run failed"
+	}
+	return Local, ""
+}
+
+// claudeResult judges the run by claudeVerdict, then reads its report.
+func claudeResult(f jsonFields, st claudeStream, version string) UsageReport {
+	switch o, words := claudeVerdict(f, st.bad); o {
+	case Turned:
 		return UsageReport{State: UsageUnqualified, Outcome: Turned, Words: "Claude Code " + version + " answered /usage with a model turn: it is not run again"}
-	case l.LocalCommand == nil:
-		return UsageReport{State: UsageError, Words: "Claude Code's result line named no local command"}
+	case Inconclusive:
+		return UsageReport{State: UsageError, Words: words}
 	}
 	rep := UsageReport{State: UsageOK, Outcome: Local}
 	switch {
-	case keySource == nil:
+	case st.keySource == nil:
 		rep.State, rep.Words = UsageError, "the /usage run did not say how it is paid"
-	case claudeKeySources[*keySource]:
+	case claudeKeySources[*st.keySource]:
 		rep.State, rep.Words = UsageKeyPaid, "the /usage run is paid by a key: no usage windows are reported"
-	case *keySource != "none":
+	case *st.keySource != "none":
 		rep.State, rep.Words = UsageError, "the /usage run names an apiKeySource Conductor does not know: how it is paid is not known"
-	case limits == nil:
+	case st.limits == nil:
 		rep.State, rep.Words = UsageError, "the /usage run reported no limits"
 	default:
 		var err error
-		if rep.Windows, rep.Credits, err = claudeWindows(limits); err != nil {
+		if rep.Windows, rep.Credits, err = claudeWindows(st.limits); err != nil {
 			rep.State, rep.Words, rep.Windows, rep.Credits = UsageError, "Claude Code's usage report: "+err.Error(), nil, nil
 		}
 	}

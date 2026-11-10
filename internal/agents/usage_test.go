@@ -143,15 +143,51 @@ func catFile(env string) {
 	}
 }
 
+// helperHold holds the run of the given kind (version, auth, usage,
+// app-server) when USAGE_HOLD names it: it writes its pid to
+// USAGE_HOLDFILE (renamed into place whole) and sleeps, before any output.
+func helperHold(kind string) {
+	if os.Getenv("USAGE_HOLD") != kind {
+		return
+	}
+	path := os.Getenv("USAGE_HOLDFILE")
+	_ = os.WriteFile(path+".new", []byte(strconv.Itoa(os.Getpid())), 0o600)
+	_ = os.Rename(path+".new", path)
+	time.Sleep(time.Hour)
+}
+
+// writePid writes pid to path, renamed into place whole.
+func writePid(path string, pid int) {
+	_ = os.WriteFile(path+".new", []byte(strconv.Itoa(pid)), 0o600)
+	_ = os.Rename(path+".new", path)
+}
+
 // helperVersion answers --version as USAGE_VERSION says (else want),
 // first starting a child in its group that outlives it when
-// USAGE_VERSION_PIDFILE names a file, and exits USAGE_VERSION_EXIT.
+// USAGE_VERSION_PIDFILE names a file (holding the output when
+// USAGE_VERSION_HOLD is "child", through a child that leaves, a
+// grandchild, when it is "grandchild"), and exits USAGE_VERSION_EXIT.
+// USAGE_VERSION_THEN "close-gate" closes the output and waits for the
+// file USAGE_GATE before it exits; "close-hang" closes it and never exits.
 func helperVersion(want string) int {
+	helperHold("version")
 	if path := os.Getenv("USAGE_VERSION_PIDFILE"); path != "" {
-		child := exec.Command("sleep", "600")
-		if child.Start() == nil {
-			_ = os.WriteFile(path+".new", []byte(strconv.Itoa(child.Process.Pid)), 0o600)
-			_ = os.Rename(path+".new", path)
+		switch os.Getenv("USAGE_VERSION_HOLD") {
+		case "grandchild":
+			sh := exec.Command("sh", "-c", `sleep 600 & printf %s $! > "$1.new" && mv "$1.new" "$1"`, "sh", path)
+			sh.Stdout = os.Stdout
+			_ = sh.Run()
+		case "child":
+			child := exec.Command("sleep", "600")
+			child.Stdout = os.Stdout
+			if child.Start() == nil {
+				writePid(path, child.Process.Pid)
+			}
+		default:
+			child := exec.Command("sleep", "600")
+			if child.Start() == nil {
+				writePid(path, child.Process.Pid)
+			}
 		}
 	}
 	v := os.Getenv("USAGE_VERSION")
@@ -162,6 +198,21 @@ func helperVersion(want string) int {
 		os.Stderr.WriteString(m + "\n")
 	}
 	os.Stdout.WriteString(v + "\n")
+	switch os.Getenv("USAGE_VERSION_THEN") {
+	case "close-gate":
+		os.Stdout.Close()
+		os.Stderr.Close()
+		for {
+			if _, err := os.Stat(os.Getenv("USAGE_GATE")); err == nil {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	case "close-hang":
+		os.Stdout.Close()
+		os.Stderr.Close()
+		time.Sleep(time.Hour)
+	}
 	code, _ := strconv.Atoi(os.Getenv("USAGE_VERSION_EXIT"))
 	return code
 }
@@ -173,10 +224,12 @@ func claudeHelper() int {
 	case len(args) == 1 && args[0] == "--version":
 		return helperVersion(claudeUsageQualified + " (Claude Code)")
 	case len(args) >= 2 && args[0] == "auth" && args[1] == "status":
+		helperHold("auth")
 		helperNoise()
 		helperTTY()
 		catFile("USAGE_AUTH")
 	case len(args) > 0 && args[0] == "-p":
+		helperHold("usage")
 		helperNoise()
 		// A version that no longer takes one of the read's flags refuses
 		// it as Claude Code's parser does, before any output.
@@ -203,6 +256,7 @@ func codexHelper() int {
 	if len(args) == 0 || args[0] != "app-server" {
 		return 2
 	}
+	helperHold("app-server")
 	helperNoise()
 	helperStart()
 	reply := func(id json.RawMessage, file string) {

@@ -67,11 +67,12 @@ func usageRecipeRun(t *testing.T, command []string, args ...string) (out string,
 	if err != nil {
 		t.Fatalf("%s could not be started", filepath.Base(command[0]))
 	}
-	b, rerr := io.ReadAll(io.LimitReader(proc.out, usageRecipeMax+1))
-	proc.end()
+	b, rerr := io.ReadAll(io.LimitReader(proc.lines.r, usageRecipeMax+1))
 	if len(b) > usageRecipeMax {
+		proc.stop()
 		t.Fatalf("%s %s printed more than 1 MiB", filepath.Base(command[0]), strings.Join(args, " "))
 	}
+	proc.end()
 	return string(b), rerr == nil && ctx.Err() == nil && proc.cmd.ProcessState.Success()
 }
 

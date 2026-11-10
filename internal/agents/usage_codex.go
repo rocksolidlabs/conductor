@@ -101,13 +101,16 @@ func readCodexUsage(ctx context.Context, in UsageInput) (rep UsageReport) {
 	defer func() { rep.ReadAt = time.Now(); rep.Words = clip(rep.Words, usageMaxWords) }()
 	ctx, cancel := withUsageTimeout(ctx, codexUsageTimeout)
 	defer cancel()
-	p, v, stop := qualify(ctx, in, codexIdentity, "Codex", codexUsageMinVersion)
+	p, v, stop := qualify(ctx, in, codexIdentity, "Codex", codexUsageMinVersion, codexUsageTimeout)
 	if stop != nil {
 		return *stop
 	}
 	fail := func(words string) UsageReport { return UsageReport{State: UsageError, Words: words, Version: v} }
 	proc, err := startUsage(ctx, p.with(codexAppServerArgs...), in, true, false)
 	if err != nil {
+		if w := ended(ctx, "Codex", codexUsageTimeout); w != "" {
+			return fail(w)
+		}
 		return fail("Codex could not be started")
 	}
 	defer proc.end()
