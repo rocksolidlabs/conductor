@@ -86,16 +86,20 @@ func validSHA(s string) bool {
 // checks without logs), the GitHub Actions jobs (at most MaxRuns runs and
 // MaxJobs jobs a run), and the check runs of other apps (a fine-grained
 // token's 403 there is an Incomplete entry, not an error), each job once.
-// No bound cuts silently: each listing's own count is compared with what
-// was read, and each cut, a next page named, and the merged set past
-// tracker.MaxChecks or MaxCheckSetEncoded add an Incomplete entry, with
-// Omitted counting what GitHub's totals say was left. What a cut keeps is
-// fixed: failed first, then pending, then the rest, each by name and id.
-// What it asks is bounded as well: each listing is cut to its own bound as
-// soon as it is read, whatever an answer holds, so it asks the jobs of at
-// most MaxRuns runs (at most MaxRuns+3 requests in all), and a cut is said.
-// r is held to tracker.Ref.Check, and a run's id to its digits, before any
-// of it goes into a path.
+// No bound cuts silently: each listing's own count (held to 0 to MaxCount;
+// outside, not known) is compared with what was read, and each cut, a next
+// page named, and the merged set past tracker.MaxChecks or
+// MaxCheckSetEncoded add an Incomplete entry, with Omitted counting what
+// GitHub's totals say was left. What a cut keeps is fixed: failed first,
+// then pending, then the rest, each by name and id. What it asks is
+// bounded as well: each listing is cut to its own bound as soon as it is
+// read, whatever an answer holds, so it asks the jobs of at most MaxRuns
+// runs (at most MaxRuns+3 requests in all), and a cut is said. The whole
+// call has its own deadline, ChecksTimeout: when it passes (or the
+// caller's context ends) while a listing is read, the listings read before
+// it are the answer, with an Incomplete entry saying what was not read, so
+// the set never passes. r is held to tracker.Ref.Check, and a run's id to
+// its digits, before any of it goes into a path.
 func (a *Adapter) Checks(ctx context.Context, c tracker.Credential, r tracker.Ref, sha string) (tracker.CheckSet, error) {
 	if r.Check() != nil || !validSHA(sha) {
 		return tracker.CheckSet{}, &tracker.RequestError{System: tracker.GitHub, Method: "-", Path: "-", Err: tracker.ErrUnsupported, Words: "a GitHub item and a commit of 40 or 64 hex digits"}
@@ -104,20 +108,33 @@ func (a *Adapter) Checks(ctx context.Context, c tracker.Credential, r tracker.Re
 	if err != nil {
 		return tracker.CheckSet{}, err
 	}
+	cctx, done := a.deadline(ctx, ChecksTimeout)
+	defer done()
 	base := "/repos/" + r.Space
 	var set tracker.CheckSet
 	var all []tracker.Check
+	// ranOut is a listing's error when it is the call's time that ended:
+	// what was read is kept, and what was not is said.
+	ranOut := func(err error, left string) bool {
+		if err == nil || cctx.Err() == nil {
+			return false
+		}
+		set.AddIncomplete("the read's time ran out: " + left)
+		return true
+	}
 
 	// The combined statuses.
 	var st statusesJSON
-	ans, err := a.page(ctx, c, ep, base+"/commits/"+sha+"/status", url.Values{"per_page": {strconv.Itoa(MaxStatuses)}}, &st)
+	ans, err := a.page(cctx, c, ep, base+"/commits/"+sha+"/status", url.Values{"per_page": {strconv.Itoa(MaxStatuses)}}, &st)
 	switch {
+	case ranOut(err, "the statuses, the GitHub Actions jobs and the check runs not read"):
+		return finish(set, all), nil
 	case forbidden(err):
 		set.AddIncomplete("commit statuses could not be read: the token lacks Commit statuses read")
 	case err != nil:
 		return tracker.CheckSet{}, err
 	default:
-		total := max(st.TotalCount, len(st.Statuses))
+		listed := len(st.Statuses)
 		st.Statuses = st.Statuses[:min(len(st.Statuses), MaxStatuses)]
 		for _, s := range st.Statuses {
 			ch := tracker.Check{ID: "status:" + s.ID.String(), Name: cut(s.Context, 200), Status: "completed", URL: link(s.TargetURL), StartedAt: s.CreatedAt, HeadSHA: sha, App: "status"}
@@ -132,15 +149,17 @@ func (a *Adapter) Checks(ctx context.Context, c tracker.Credential, r tracker.Re
 			}
 			all = append(all, ch)
 		}
-		cutSaid(&set, total, len(st.Statuses), ans, "statuses at this commit")
+		cutSaid(&set, st.TotalCount, listed, len(st.Statuses), ans, "statuses at this commit")
 	}
 
 	// The GitHub Actions jobs.
 	jobs := map[string]bool{}
 	actionsRead := false
 	var runs runsJSON
-	ans, err = a.page(ctx, c, ep, base+"/actions/runs", url.Values{"head_sha": {sha}, "per_page": {strconv.Itoa(MaxRuns)}}, &runs)
+	ans, err = a.page(cctx, c, ep, base+"/actions/runs", url.Values{"head_sha": {sha}, "per_page": {strconv.Itoa(MaxRuns)}}, &runs)
 	switch {
+	case ranOut(err, "the GitHub Actions jobs and the check runs not read"):
+		return finish(set, all), nil
 	case forbidden(err):
 		set.AddIncomplete("GitHub Actions jobs could not be read: the token lacks Actions read")
 	case err != nil:
@@ -149,25 +168,29 @@ func (a *Adapter) Checks(ctx context.Context, c tracker.Credential, r tracker.Re
 		actionsRead = true
 		// The runs left are not counted in Omitted: their jobs are not
 		// known, only that they are there.
-		total := max(runs.TotalCount, len(runs.WorkflowRuns))
+		listed := len(runs.WorkflowRuns)
 		runs.WorkflowRuns = runs.WorkflowRuns[:min(len(runs.WorkflowRuns), MaxRuns)]
+		total, known := count(runs.TotalCount, listed)
 		switch {
-		case total > len(runs.WorkflowRuns):
+		case known && total > len(runs.WorkflowRuns):
 			set.AddIncomplete(fmt.Sprintf("%d workflow runs at this commit; the first %d read", total, len(runs.WorkflowRuns)))
-		case hasNext(ans):
+		case listed > len(runs.WorkflowRuns) || hasNext(ans):
 			set.AddIncomplete(fmt.Sprintf("more workflow runs at this commit than the first %d read", len(runs.WorkflowRuns)))
 		}
-		for _, run := range runs.WorkflowRuns {
+		for i, run := range runs.WorkflowRuns {
 			id := remoteID(run.ID)
 			if id == "" {
 				return tracker.CheckSet{}, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: ep.errPath(request{path: base + "/actions/runs"}), Status: http.StatusOK, Err: tracker.ErrUnsupported, Words: "an answer Conductor cannot read"}
 			}
 			var js jobsJSON
-			ans, err := a.page(ctx, c, ep, base+"/actions/runs/"+string(id)+"/jobs", url.Values{"per_page": {strconv.Itoa(MaxJobs)}}, &js)
+			ans, err := a.page(cctx, c, ep, base+"/actions/runs/"+string(id)+"/jobs", url.Values{"per_page": {strconv.Itoa(MaxJobs)}}, &js)
+			if ranOut(err, fmt.Sprintf("%d of %d workflow runs' jobs read, the check runs not read", i, len(runs.WorkflowRuns))) {
+				return finish(set, all), nil
+			}
 			if err != nil {
 				return tracker.CheckSet{}, err
 			}
-			jtotal := max(js.TotalCount, len(js.Jobs))
+			jlisted := len(js.Jobs)
 			js.Jobs = js.Jobs[:min(len(js.Jobs), MaxJobs)]
 			for _, j := range js.Jobs {
 				ch := toCheck("job:", j, sha)
@@ -177,20 +200,22 @@ func (a *Adapter) Checks(ctx context.Context, c tracker.Credential, r tracker.Re
 				}
 				all = append(all, ch)
 			}
-			cutSaid(&set, jtotal, len(js.Jobs), ans, "jobs in workflow run "+cut(run.Name, 40))
+			cutSaid(&set, js.TotalCount, jlisted, len(js.Jobs), ans, "jobs in workflow run "+cut(run.Name, 40))
 		}
 	}
 
 	// Other apps' check runs.
 	var crs checkRunsJSON
-	ans, err = a.page(ctx, c, ep, base+"/commits/"+sha+"/check-runs", url.Values{"per_page": {strconv.Itoa(MaxCheckRuns)}}, &crs)
+	ans, err = a.page(cctx, c, ep, base+"/commits/"+sha+"/check-runs", url.Values{"per_page": {strconv.Itoa(MaxCheckRuns)}}, &crs)
 	switch {
+	case ranOut(err, "the check runs not read"):
+		return finish(set, all), nil
 	case forbidden(err):
 		set.AddIncomplete("other apps' check runs need a classic token")
 	case err != nil:
 		return tracker.CheckSet{}, err
 	default:
-		crTotal := max(crs.TotalCount, len(crs.CheckRuns))
+		listed := len(crs.CheckRuns)
 		crs.CheckRuns = crs.CheckRuns[:min(len(crs.CheckRuns), MaxCheckRuns)]
 		for _, cr := range crs.CheckRuns {
 			slug := ""
@@ -204,9 +229,14 @@ func (a *Adapter) Checks(ctx context.Context, c tracker.Credential, r tracker.Re
 			ch.App = cut(slug, 100)
 			all = append(all, ch)
 		}
-		cutSaid(&set, crTotal, len(crs.CheckRuns), ans, "check runs at this commit")
+		cutSaid(&set, crs.TotalCount, listed, len(crs.CheckRuns), ans, "check runs at this commit")
 	}
+	return finish(set, all), nil
+}
 
+// finish orders and cuts a check set's checks (failed first, then pending,
+// then the rest; tracker.MaxChecks, MaxCheckSetEncoded), each cut said.
+func finish(set tracker.CheckSet, all []tracker.Check) tracker.CheckSet {
 	slices.SortStableFunc(all, func(x, y tracker.Check) int {
 		return cmp.Or(cmp.Compare(rank(x), rank(y)), strings.Compare(x.Name, y.Name), strings.Compare(x.ID, y.ID))
 	})
@@ -232,7 +262,7 @@ func (a *Adapter) Checks(ctx context.Context, c tracker.Credential, r tracker.Re
 	if set.Checks == nil {
 		set.Checks = []tracker.Check{}
 	}
-	return set, nil
+	return set
 }
 
 // checkRunOf is the id of the check run a job's check_run_url names (its
@@ -293,16 +323,27 @@ func link(s *string) string {
 	return u.String()
 }
 
-// cutSaid adds the Incomplete entry of a listing whose total is past what
-// was read, or which names a next page.
-func cutSaid(set *tracker.CheckSet, total, read int, ans answer, what string) {
-	if total > read {
+// count is a listing's total_count held to its range: the larger of it and
+// the items listed when it is 0 to MaxCount, and not known otherwise.
+func count(total, listed int) (int, bool) {
+	if total < 0 || total > MaxCount {
+		return 0, false
+	}
+	return max(total, listed), true
+}
+
+// cutSaid adds the Incomplete entry of a listing cut from listed items to
+// read, whose total (its total_count) is past what was read, or which
+// names a next page; a total not known says only that there were more.
+func cutSaid(set *tracker.CheckSet, totalCount, listed, read int, ans answer, what string) {
+	if total, known := count(totalCount, listed); known && total > read {
 		set.AddIncomplete(fmt.Sprintf("%d %s; the first %d read", total, what, read))
 		set.Omitted += total - read
 		return
 	}
-	if hasNext(ans) {
+	if listed > read || hasNext(ans) {
 		set.AddIncomplete(fmt.Sprintf("more %s than the first %d read", what, read))
+		set.Omitted += listed - read
 	}
 }
 
@@ -331,11 +372,10 @@ func (a *Adapter) page(ctx context.Context, c tracker.Credential, ep endpoint, p
 // …/actions/jobs/{id}/logs by the API client, whose redirect is handed
 // back, its Location admitted by tracker.LogHost and fetched by the
 // signed-address client with no credential, asking only the last tail
-// bytes (a suffix Range: a 206 is the tail; a whole 200 is kept to its
-// last tail bytes when it fits in MaxLogRead, tracker.ErrBound past it). A
-// log longer than what is given says so (LogTail.Cut). A check of another
-// app has no log (tracker.ErrUnsupported), nor has a log kept on a host
-// Conductor does not fetch from.
+// bytes in the form its storage host serves (fetchLog). A log longer than
+// what is given says so (LogTail.Cut). A check of another app has no log
+// (tracker.ErrUnsupported), nor has a log kept on a host Conductor does
+// not fetch from.
 func (a *Adapter) CheckLog(ctx context.Context, c tracker.Credential, r tracker.Ref, check tracker.Check, tail int) (tracker.LogTail, error) {
 	id, ok := strings.CutPrefix(check.ID, "job:")
 	if !ok || decimal(id) == "" || !check.HasLog || r.Check() != nil {
@@ -374,59 +414,137 @@ func tailOf(data []byte, tail int, size int64) tracker.LogTail {
 	return out
 }
 
-// fetchLog GETs a signed log address with no credential, asking its last
-// tail bytes (Range: bytes=-tail), within ImageTimeout.
+// MaxLogSize is the largest size a log's Content-Range is taken to give;
+// past it the answer is one Conductor cannot read.
+const MaxLogSize = 1 << 40
+
+// fetchLog GETs a signed log address with no credential, within
+// ImageTimeout, asking its last tail bytes in the form GitHub's log
+// storage serves (captured 2026-11-10: it answers a range with a first and
+// a last byte with a 206, and ignores a range of the last bytes alone,
+// answering the whole log): bytes 0 to tail-1 first, then, when the
+// Content-Range says the log is longer, its last tail bytes by their
+// offsets. A whole 200 is kept to its last tail bytes when it fits in
+// MaxLogRead (tracker.ErrBound past it). A 416 is an empty log only when it
+// says the log's size is 0. A 206 is taken only when its Content-Range,
+// each number held to its range, is the range asked and the bytes it
+// holds; any other is an answer Conductor cannot read.
 func (a *Adapter) fetchLog(ctx context.Context, u *url.URL, admit func(*url.URL) bool, tail int) (tracker.LogTail, error) {
-	path := u.Path
 	rctx, done := a.deadline(ctx, ImageTimeout)
 	defer done()
+	client := a.signedClient(admit)
+	part, err := a.logRange(ctx, rctx, client, u, 0, int64(tail)-1)
+	switch {
+	case err != nil:
+		return tracker.LogTail{}, err
+	case part.whole:
+		return tailOf(part.data, tail, int64(len(part.data))), nil
+	case part.size <= int64(tail):
+		// The whole log (an empty one's 416 included).
+		return tracker.LogTail{Bytes: part.data, Size: part.size}, nil
+	}
+	size := part.size
+	last, err := a.logRange(ctx, rctx, client, part.at, size-int64(tail), size-1)
+	switch {
+	case err != nil:
+		return tracker.LogTail{}, err
+	case last.whole:
+		return tailOf(last.data, tail, int64(len(last.data))), nil
+	case last.size != size:
+		return tracker.LogTail{}, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: u.Path, Status: http.StatusPartialContent, Err: tracker.ErrUnavailable, Words: "the log changed while it was read"}
+	}
+	return tracker.LogTail{Bytes: last.data, Size: size, Cut: true}, nil
+}
+
+// logPart is one answer of a log's storage host: the whole log (a 200), or
+// the bytes of the range asked and the log's size (a 206, or a 416 naming
+// size 0), and the address that answered.
+type logPart struct {
+	data  []byte
+	whole bool
+	size  int64
+	at    *url.URL
+}
+
+// logRange asks u for bytes first to last.
+func (a *Adapter) logRange(ctx, rctx context.Context, client *http.Client, u *url.URL, first, last int64) (logPart, error) {
+	path := u.Path
+	unreadable := func(status int) error {
+		return &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: path, Status: status, Err: tracker.ErrUnsupported, Words: "an answer Conductor cannot read"}
+	}
 	req, err := http.NewRequestWithContext(rctx, http.MethodGet, u.String(), nil)
 	if err != nil || req.URL.Host != u.Host {
-		return tracker.LogTail{}, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: path, Err: tracker.ErrUnsupported}
+		return logPart{}, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: path, Err: tracker.ErrUnsupported}
 	}
 	req.Header.Set("User-Agent", a.ua)
-	req.Header.Set("Range", "bytes=-"+strconv.Itoa(tail))
-	resp, err := a.signedClient(admit).Do(req)
+	req.Header.Set("Range", "bytes="+strconv.FormatInt(first, 10)+"-"+strconv.FormatInt(last, 10))
+	resp, err := client.Do(req)
 	if err != nil {
-		return tracker.LogTail{}, a.transportError(ctx, rctx, http.MethodGet, path, err)
+		return logPart{}, a.transportError(ctx, rctx, http.MethodGet, path, err)
 	}
 	defer resp.Body.Close()
+	at := resp.Request.URL
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusPartialContent:
 	case http.StatusRequestedRangeNotSatisfiable:
-		// An empty log has no last bytes.
-		return tracker.LogTail{Bytes: []byte{}}, nil
+		if resp.Header.Get("Content-Range") != "bytes */0" {
+			return logPart{}, unreadable(resp.StatusCode)
+		}
+		return logPart{data: []byte{}, at: at}, nil
 	default:
 		if resp.StatusCode < 400 {
-			return tracker.LogTail{}, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: path, Status: resp.StatusCode, Err: tracker.ErrUnsupported}
+			return logPart{}, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: path, Status: resp.StatusCode, Err: tracker.ErrUnsupported}
 		}
-		return tracker.LogTail{}, a.statusError(http.MethodGet, path, resp)
+		return logPart{}, signedRefusal(path, resp.StatusCode, "log")
 	}
 	data, err := readBounded(resp.Body, MaxLogRead)
 	if errors.Is(err, tracker.ErrBound) {
-		return tracker.LogTail{}, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: path, Status: resp.StatusCode, Err: tracker.ErrBound, Words: "past " + strconv.Itoa(MaxLogRead) + " bytes"}
+		return logPart{}, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: path, Status: resp.StatusCode, Err: tracker.ErrBound, Words: "past " + strconv.Itoa(MaxLogRead) + " bytes"}
 	}
 	if err != nil {
-		return tracker.LogTail{}, a.transportError(ctx, rctx, http.MethodGet, path, err)
+		return logPart{}, a.transportError(ctx, rctx, http.MethodGet, path, err)
 	}
 	if resp.StatusCode == http.StatusOK {
-		return tailOf(data, tail, int64(len(data))), nil
+		return logPart{data: data, whole: true, at: at}, nil
 	}
-	// A 206: Content-Range bytes <first>-<last>/<size>.
-	size := int64(0)
-	first := int64(-1)
-	if cr, ok := strings.CutPrefix(resp.Header.Get("Content-Range"), "bytes "); ok {
-		span, total, _ := strings.Cut(cr, "/")
-		lo, _, _ := strings.Cut(span, "-")
-		if n, err := strconv.ParseInt(total, 10, 64); err == nil && n >= 0 {
-			size = n
-		}
-		if n, err := strconv.ParseInt(lo, 10, 64); err == nil && n >= 0 {
-			first = n
-		}
+	// A 206: Content-Range bytes <first>-<last>/<size>, the range asked
+	// (its last byte the log's last when the log is shorter).
+	lo, hi, size, ok := contentRange(resp.Header.Get("Content-Range"))
+	if !ok || lo != first || hi > last || (hi < last && hi != size-1) || int64(len(data)) != hi-lo+1 {
+		return logPart{}, unreadable(resp.StatusCode)
 	}
-	out := tailOf(data, tail, int64(len(data)))
-	out.Size = size
-	out.Cut = out.Cut || first != 0 || (size > 0 && size > int64(len(out.Bytes)))
-	return out, nil
+	return logPart{data: data, size: size, at: at}, nil
+}
+
+// contentRange reads "bytes <first>-<last>/<size>", each a decimal number
+// held to its range: first <= last < size <= MaxLogSize.
+func contentRange(s string) (first, last, size int64, ok bool) {
+	rest, ok := strings.CutPrefix(s, "bytes ")
+	if !ok {
+		return 0, 0, 0, false
+	}
+	span, total, ok1 := strings.Cut(rest, "/")
+	lo, hi, ok2 := strings.Cut(span, "-")
+	if !ok1 || !ok2 {
+		return 0, 0, 0, false
+	}
+	num := func(d string) (int64, bool) {
+		if d == "" || len(d) > 13 {
+			return 0, false
+		}
+		for i := 0; i < len(d); i++ {
+			if d[i] < '0' || d[i] > '9' {
+				return 0, false
+			}
+		}
+		n, err := strconv.ParseInt(d, 10, 64)
+		return n, err == nil && n <= MaxLogSize
+	}
+	f, okf := num(lo)
+	l, okl := num(hi)
+	z, okz := num(total)
+	if !okf || !okl || !okz || f > l || l >= z {
+		return 0, 0, 0, false
+	}
+	return f, l, z, true
 }

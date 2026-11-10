@@ -295,7 +295,7 @@ func TestHosts(t *testing.T) {
 	fake.Reply(http.MethodGet, host, "/api/v3/repos/team/tool/issues/9", 200, githubtest.Fixture("issue.json"))
 	lo := github.New(github.Options{Loopback: true, Transport: fake.Transport()})
 	r9 := tracker.Ref{System: "github", Host: host, Space: "team/tool", Kind: tracker.KindIssue, ID: "9"}
-	cred := tracker.Token(host, secret)
+	cred := mustToken(t, host, true)
 	if _, _, err := lo.Read(ctx, cred, r9, tracker.Validators{}); err != nil {
 		t.Fatalf("loopback with the switch: %v", err)
 	}
@@ -310,13 +310,13 @@ func TestHosts(t *testing.T) {
 	ghe := github.New(github.Options{Hosts: func() []string { return []string{"ghe.example.test"} }, Transport: fake.Transport()})
 	fake.Reply(http.MethodGet, "ghe.example.test", "/api/v3/repos/team/tool/issues/9", 200, githubtest.Fixture("issue.json"))
 	r9.Host = "ghe.example.test"
-	it, _, err := ghe.Read(ctx, tracker.Token("ghe.example.test", secret), r9, tracker.Validators{})
+	it, _, err := ghe.Read(ctx, mustToken(t, "ghe.example.test", false), r9, tracker.Validators{})
 	if err != nil || it.Ref.Host != "ghe.example.test" || !strings.HasPrefix(it.URL, "https://ghe.example.test/") {
 		t.Fatalf("Enterprise Server: %+v %v", it.Ref, err)
 	}
 	// A token is never sent to another host than its own.
 	before := len(fake.Requests())
-	if _, _, err := ghe.Read(ctx, tracker.Token("github.com", secret), r9, tracker.Validators{}); !errors.Is(err, tracker.ErrUnsupported) {
+	if _, _, err := ghe.Read(ctx, mustToken(t, "github.com", false), r9, tracker.Validators{}); !errors.Is(err, tracker.ErrUnsupported) {
 		t.Fatalf("a github.com token to another host: %v", err)
 	}
 	if len(fake.Requests()) != before {

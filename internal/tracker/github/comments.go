@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/tracker"
 )
@@ -27,17 +28,19 @@ func tagged(c tracker.Credential, kind string) (tracker.Write, error) {
 // saying which of the write table's three outcomes the answer proves. The
 // table, every way a write can end (a test walks it, TestWriteTable):
 //
-//	refused before any request (an untagged credential, a target or a
-//	body out of shape, a host not admitted)                    nothing written
-//	no connection was ever had for the request (a dial, a TLS
-//	handshake or a proxy failed; the token's transport refused
-//	the address; the call ended first)                          nothing written
-//	a connection was had and no answer came (a reset, the
-//	request's own deadline, the call ended)                     not known
-//	any 3xx (a write follows none)                              not known
+//	refused before any request (an untagged credential, a target, or
+//	a body out of shape or not valid UTF-8, a host not admitted,
+//	the call ended before the request was made)                 nothing written
+//	the base transport was never handed the request (the token's
+//	transport refused the address)                              nothing written
+//	the base transport was handed it and no answer came (a dial,
+//	a reset, the request's own deadline, the call ended: what it
+//	sent is not known)                                          not known
+//	any 1xx, or any 2xx but 200                                 not known
+//	any 3xx, 304 included (a write follows none)                not known
 //	401; 403 (a permission, or a rate limit); 429 (a rate limit) nothing written
 //	any other 4xx; any 5xx                                      not known
-//	a 2xx past MaxGraphQLAnswer, or one that does not parse     not known
+//	a 200 past MaxGraphQLAnswer, or one that does not parse     not known
 //	a 200 whose data for the mutation is null beside an error
 //	of type NOT_FOUND, FORBIDDEN, UNPROCESSABLE or RATE_LIMITED nothing written
 //	a 200 whose data is null beside no error, or another type   not known
@@ -47,9 +50,10 @@ func tagged(c tracker.Credential, kind string) (tracker.Write, error) {
 //	asked, or not closed)                                       not known
 //	a 200 whose data says what was written                      made
 //
-// Nothing written is answered only where the request provably never
-// reached GitHub or GitHub provably refused it; an outcome not known is
-// said in the error's words and the adapter never sends the write again.
+// Nothing written is answered only on a fact: the request provably never
+// left (refused before it, or never handed to the base transport) or
+// GitHub's own answer refused it; an outcome not known is said in the
+// error's words and the adapter never sends the write again.
 func (a *Adapter) sortWrite(ep endpoint, r request, status int, ans gqlAnswer, err error, field string) (json.RawMessage, error) {
 	if err != nil {
 		if tracker.NothingWritten(err) {
@@ -114,6 +118,11 @@ func (a *Adapter) Comment(ctx context.Context, c tracker.Credential, t tracker.T
 	if !nodeIDShape(t.NodeID) || t.NodeID == "" || len(t.NodeID) > tracker.MaxNodeID || body == "" || len(body) > MaxCommentBody {
 		return tracker.Comment{}, tracker.Proven(&tracker.RequestError{System: tracker.GitHub, Method: http.MethodPost, Path: "-", Err: tracker.ErrBound, Words: "a comment is 1 to 65536 bytes on a node"})
 	}
+	// What is posted is byte for byte what was given, or nothing: the
+	// encoding to GitHub would change bytes that are not UTF-8.
+	if !utf8.ValidString(body) {
+		return tracker.Comment{}, tracker.Proven(&tracker.RequestError{System: tracker.GitHub, Method: http.MethodPost, Path: "-", Err: tracker.ErrUnsupported, Words: "a comment's body is UTF-8"})
+	}
 	ans, r, status, gerr := a.gql(ctx, c, ep, AddCommentDocument, map[string]any{"subjectId": t.NodeID, "body": body}, true)
 	raw, err := a.sortWrite(ep, r, status, ans, gerr, "addComment")
 	if err != nil {
@@ -158,8 +167,10 @@ type commentJSON struct {
 // FindComment looks for a comment matching m on the node t names: it
 // Resolves the node for this listing (tracker.ErrTargetChanged when it is
 // no longer of t's kind in t's repository), then lists GET
-// …/issues/{n}/comments?since=<since> at the node's place now, at most
-// MaxCommentPages pages of 100. A comment's author is its user.id in
+// /repositories/{id}/issues/{n}/comments?since=<since>, the repository by
+// the id the Resolve read (a rename keeps it, a name another repository
+// takes has another, so no other repository's issue can answer for the
+// target), at most MaxCommentPages pages of 100. A comment's author is its user.id in
 // decimal. Found is yes for a match; no only from a listing that cannot
 // have skipped a comment: one read whole in a single page (one answer is
 // one moment), or, over several pages, read whole twice with the same
@@ -183,10 +194,10 @@ func (a *Adapter) FindComment(ctx context.Context, c tracker.Credential, t track
 	if now.Kind != t.Kind || now.SpaceID != t.SpaceID {
 		return tracker.Comment{}, tracker.FoundUnknown, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodPost, Path: ep.errPath(request{method: http.MethodPost}), Status: http.StatusOK, Err: tracker.ErrTargetChanged}
 	}
-	if err := now.Ref.Check(); err != nil {
+	if err := now.Ref.Check(); err != nil || decimal(string(now.SpaceID)) == "" {
 		return tracker.Comment{}, tracker.FoundUnknown, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodPost, Path: ep.errPath(request{method: http.MethodPost}), Status: http.StatusOK, Err: tracker.ErrUnsupported, Words: "an answer Conductor cannot read"}
 	}
-	path := "/repos/" + now.Ref.Space + "/issues/" + now.Ref.ID + "/comments"
+	path := "/repositories/" + string(now.SpaceID) + "/issues/" + now.Ref.ID + "/comments"
 	first, err := a.listWindow(ctx, c, ep, path, since, m)
 	switch {
 	case err != nil:

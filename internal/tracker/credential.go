@@ -13,8 +13,9 @@ import (
 // for one host (Token), possibly tagged with the write it is for
 // (ForWrite). Its String, its fmt forms (every verb), its slog value and
 // its JSON are token(<fingerprint>), never a byte of the secret, so no
-// caller can log one by printing what it holds. An adapter opens it one
-// way: Transport, for requests to the system's API host alone.
+// caller can log one by printing what it holds. It is made for one API
+// address (Token, APIAddress) and opened one way: Transport, for requests
+// to that address alone.
 type Credential struct{ c *credential }
 
 // credential holds the secret behind a closure: fmt and reflection print a
@@ -22,18 +23,48 @@ type Credential struct{ c *credential }
 // field, a pointer or a bad verb never prints a byte of it.
 type credential struct {
 	host        string
+	scheme, api string
 	secret      func() string
 	fingerprint string
 	write       *Write
 }
 
-// Token makes the credential of a token for a host.
-func Token(host, secret string) Credential {
+// Token makes the credential of a token for a host, and with it the one
+// API address its token is ever sent to (APIAddress): https and the API
+// host of github.com or of a GitHub Enterprise Server host, or, made in
+// loopback mode (CONDUCTOR_TRACKER_LOOPBACK=1), plain http to a loopback
+// form. A host CheckHost does not admit at the moment it is made is
+// refused: no credential is made for it.
+func Token(host, secret string, loopback bool) (Credential, error) {
+	scheme, api, err := APIAddress(host, loopback)
+	if err != nil {
+		return Credential{}, err
+	}
+	c := &credential{host: host, scheme: scheme, api: api}
 	if secret == "" {
-		return Credential{&credential{host: host}}
+		return Credential{c}, nil
 	}
 	sum := sha256.Sum256([]byte(secret))
-	return Credential{&credential{host: host, secret: func() string { return secret }, fingerprint: hex.EncodeToString(sum[:6])}}
+	c.secret, c.fingerprint = func() string { return secret }, hex.EncodeToString(sum[:6])
+	return Credential{c}, nil
+}
+
+// APIAddress is the address of a host's API, the one place a token for
+// that host goes: https://api.github.com for github.com, https to the host
+// itself for any other host CheckHost admits (a GitHub Enterprise Server's
+// API is on its own host), and plain http only to a loopback form, in
+// loopback mode. Any other host is refused (ErrHost).
+func APIAddress(host string, loopback bool) (scheme, api string, err error) {
+	if err := CheckHost(host, loopback); err != nil {
+		return "", "", err
+	}
+	switch {
+	case host == GitHubHost:
+		return "https", "api.github.com", nil
+	case loopback && IsLoopback(host):
+		return "http", host, nil
+	}
+	return "https", host, nil
 }
 
 // IsZero reports the credential of no token.
@@ -45,6 +76,15 @@ func (c Credential) Host() string {
 		return ""
 	}
 	return c.c.host
+}
+
+// API is the address the credential's token is sent to, its scheme and
+// host (APIAddress), fixed when it was made.
+func (c Credential) API() (scheme, host string) {
+	if c.c == nil {
+		return "", ""
+	}
+	return c.c.scheme, c.c.api
 }
 
 // Fingerprint is the first 12 hex digits of the SHA-256 of the secret:
@@ -115,40 +155,39 @@ func (c Credential) Write() (Write, bool) {
 	return *c.c.write, true
 }
 
-// Transport is the round tripper for requests to the system's API host,
-// over base: scheme and host are that API host's (https and api.github.com
-// for github.com). A token's transport checks each request it is given, at
-// every hop a client makes, and sends only one whose URL has that scheme,
-// that host byte for byte and no user, setting Authorization on a copy of
-// it; any other is refused with ErrOffHost before base sees it, so the
-// token never travels to another host whatever the caller built. An
-// adapter uses it for its API host's requests alone; an address the
-// system signs is fetched over base, with no credential.
-func (c Credential) Transport(base http.RoundTripper, scheme, host string) http.RoundTripper {
+// Transport is the round tripper for requests to the credential's own API
+// address (API), over base: its caller names no scheme and no host. A
+// token's transport checks each request it is given, at every hop a client
+// makes, and sends only one whose URL has that scheme, that host byte for
+// byte and no user, setting Authorization on a copy of it and sending no
+// Referer; any other is refused with ErrOffHost before base sees it, so
+// code that holds a credential cannot send its token anywhere else. An
+// address the system signs is fetched over base, with no credential.
+func (c Credential) Transport(base http.RoundTripper) http.RoundTripper {
 	if base == nil {
 		base = http.DefaultTransport
 	}
 	if c.IsZero() {
 		return base
 	}
-	return tokenTransport{base: base, c: c.c, scheme: scheme, host: host}
+	return tokenTransport{base: base, c: c.c}
 }
 
 // tokenTransport holds the credential, whose secret no print reaches.
 type tokenTransport struct {
-	base         http.RoundTripper
-	c            *credential
-	scheme, host string
+	base http.RoundTripper
+	c    *credential
 }
 
 func (t tokenTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	if t.host == "" || r.URL == nil || r.URL.Scheme != t.scheme || r.URL.Host != t.host || r.URL.User != nil || (r.Host != "" && r.Host != t.host) {
+	if t.c.api == "" || r.URL == nil || r.URL.Scheme != t.c.scheme || r.URL.Host != t.c.api || r.URL.User != nil || (r.Host != "" && r.Host != t.c.api) {
 		if r.Body != nil {
 			r.Body.Close()
 		}
 		return nil, ErrOffHost
 	}
 	r2 := r.Clone(r.Context())
+	r2.Header.Del("Referer")
 	r2.Header.Set("Authorization", "Bearer "+t.c.secret())
 	return t.base.RoundTrip(r2)
 }

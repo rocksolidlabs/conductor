@@ -114,7 +114,11 @@ type nodeJSON struct {
 
 // Resolve reads where a node is now (ResolveDocument): an Issue is a
 // Target of kind issue, a PullRequest of kind change, any other node, or
-// none, tracker.ErrNotFound. The kind is GitHub's type, never a URL's.
+// none, tracker.ErrNotFound. The kind is GitHub's type, never a URL's. It
+// answers only what it read: a node with errors beside it (GraphQL's
+// partial answer, a failed field null) or a state GitHub gives no such
+// item (OPEN or CLOSED for an issue, and MERGED for a pull request) is an
+// answer Conductor cannot read, never a state taken to be open.
 func (a *Adapter) Resolve(ctx context.Context, c tracker.Credential, nodeID string) (tracker.Target, error) {
 	ep, err := a.endpointFor(c, c.Host())
 	if err != nil {
@@ -141,7 +145,7 @@ func (a *Adapter) Resolve(ctx context.Context, c tracker.Credential, nodeID stri
 	if err := json.Unmarshal(raw, &n); err != nil {
 		return fail(tracker.ErrUnsupported, "an answer Conductor cannot read")
 	}
-	t := tracker.Target{NodeID: n.ID, SpaceID: n.Repository.FullDatabaseID.remote(), State: strings.ToLower(n.State)}
+	t := tracker.Target{NodeID: n.ID, SpaceID: n.Repository.FullDatabaseID.remote()}
 	switch n.Typename {
 	case "Issue":
 		t.Kind = tracker.KindIssue
@@ -149,6 +153,18 @@ func (a *Adapter) Resolve(ctx context.Context, c tracker.Credential, nodeID stri
 		t.Kind = tracker.KindChange
 	default:
 		return fail(tracker.ErrNotFound, "the node is not an issue or a pull request")
+	}
+	switch {
+	case len(ans.Errors) > 0:
+		return fail(tracker.ErrUnsupported, "an answer Conductor cannot read: errors beside the node")
+	case n.State == "OPEN":
+		t.State = tracker.StateOpen
+	case n.State == "CLOSED":
+		t.State = tracker.StateClosed
+	case n.State == "MERGED" && t.Kind == tracker.KindChange:
+		t.State = tracker.StateMerged
+	default:
+		return fail(tracker.ErrUnsupported, "an answer Conductor cannot read: a state GitHub does not give")
 	}
 	owner, name, ok := strings.Cut(n.Repository.NameWithOwner, "/")
 	if !ok || n.ID != nodeID || t.SpaceID == "" {
@@ -161,10 +177,5 @@ func (a *Adapter) Resolve(ctx context.Context, c tracker.Credential, nodeID stri
 	ref.Host, ref.Kind = ep.host, t.Kind
 	t.Ref = ref
 	t.URL = itemURL(ref, n.URL)
-	switch t.State {
-	case tracker.StateOpen, tracker.StateClosed, tracker.StateMerged:
-	default:
-		t.State = tracker.StateOpen
-	}
 	return t, nil
 }

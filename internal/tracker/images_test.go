@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -160,5 +161,32 @@ func TestImageRefNeverPrintsItsQuery(t *testing.T) {
 	var back Item
 	if err := json.Unmarshal(b, &back); err != nil || back.Images[0].ID != img.ID || back.Images[0].Alt != "shot" || back.Images[0].FetchURL() != "" {
 		t.Fatalf("read back %+v, %v", back.Images, err)
+	}
+}
+
+// The log hosts are the list GitHub's own list of domains named on the day
+// it was read: each storage account by its name, none by a pattern.
+func TestLogHostIsTheCapturedList(t *testing.T) {
+	admitted := func(n string) bool {
+		return LogHost(GitHub, "github.com", mustURL(t, "https://productionresultssa"+n+".blob.core.windows.net/x"))
+	}
+	listed := 0
+	for i := 0; i < 1000; i++ {
+		n := strconv.Itoa(i)
+		want := i <= 19 || (i >= 30 && i <= 49) || (i >= 100 && i <= 199)
+		if admitted(n) != want {
+			t.Errorf("productionresultssa%s: admitted %v, the list says %v", n, admitted(n), want)
+		}
+		if want {
+			listed++
+		}
+	}
+	if listed != 140 {
+		t.Fatalf("%d accounts", listed)
+	}
+	for _, n := range []string{"00", "01", "007", "020", "0031", "1000", "+1", "-1"} {
+		if admitted(n) {
+			t.Errorf("productionresultssa%s admitted", n)
+		}
 	}
 }

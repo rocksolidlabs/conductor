@@ -82,7 +82,7 @@ func TestErrorsMapped(t *testing.T) {
 
 	// Rate limits: a 403 or 429 with the remaining count at 0 or a
 	// Retry-After.
-	until := time.Unix(1762780000, 0)
+	until := now.Add(10 * time.Minute)
 	for _, c := range []struct {
 		status int
 		header []string
@@ -290,8 +290,8 @@ func TestErrorsCarryNoQuery(t *testing.T) {
 	r.fake.Handle(http.MethodGet, api, "/repos/octo-example/widgets/actions/runs", reset)
 	_, err = r.a.Checks(ctx, r.cred, iss, head)
 	errs = append(errs, err)
-	errs = append(errs, held(t, r, api, "/repos/octo-example/widgets/actions/runs", func(c context.Context) error {
-		_, err := r.a.Checks(c, r.cred, iss, head)
+	errs = append(errs, held(t, r, api, "/repos/octo-example/widgets/issues/42", func(c context.Context) error {
+		_, _, err := r.a.Read(c, r.cred, iss, tracker.Validators{})
 		return err
 	}))
 
@@ -306,7 +306,7 @@ func TestErrorsCarryNoQuery(t *testing.T) {
 	r.graphql(func(githubtest.GraphQL) (int, any) {
 		return 200, issueNode("I_kwDOFixture42", 42, 4000001, "octo-example/widgets", "OPEN")
 	})
-	r.reply(http.MethodGet, "/repos/octo-example/widgets/issues/42/comments", 503, "")
+	r.reply(http.MethodGet, "/repositories/4000001/issues/42/comments", 503, "")
 	tgt := tracker.Target{NodeID: "I_kwDOFixture42", Kind: tracker.KindIssue, SpaceID: "4000001", Ref: iss}
 	m := tracker.Match{Marker: "<!-- conductor-publication:p1 -->", BodySha256: tracker.BodyDigest("x")}
 	_, _, err = r.a.FindComment(ctx, r.cred, tgt, now, m)
@@ -334,6 +334,46 @@ func TestNoRetry(t *testing.T) {
 		_, _ = r.a.Comment(ctx, r.cred.ForWrite(tracker.Write{Kind: tracker.WriteComment, Publication: "p1", Try: 1}), tracker.Target{NodeID: "I_x", Kind: tracker.KindIssue, Ref: ref("octo-example/widgets", tracker.KindIssue, "42")}, "hello")
 		if n := len(r.fake.Requests()); n != 2 {
 			t.Fatalf("%d: %d requests", status, n)
+		}
+	}
+}
+
+// Numbers from the service are held to a range before any arithmetic: a
+// Retry-After past an hour, negative or not a number, and a reset time
+// before now or past an hour from now, are a rate limit whose reset is not
+// known, never a time in the past or centuries ahead.
+func TestRateLimitResetHeldToItsRange(t *testing.T) {
+	path := "/repos/octo-example/widgets/issues/42"
+	in := func(d time.Duration) string { return strconv.FormatInt(now.Add(d).Unix(), 10) }
+	cases := []struct {
+		name   string
+		header []string
+		reset  time.Time
+	}{
+		{"Retry-After 30", []string{"Retry-After", "30"}, now.Add(30 * time.Second)},
+		{"Retry-After an hour", []string{"Retry-After", "3600"}, now.Add(time.Hour)},
+		{"Retry-After past an hour", []string{"Retry-After", "3601"}, time.Time{}},
+		{"Retry-After past time.Duration", []string{"Retry-After", "9300000000"}, time.Time{}},
+		{"Retry-After past int64", []string{"Retry-After", "99999999999999999999"}, time.Time{}},
+		{"Retry-After negative", []string{"Retry-After", "-1"}, time.Time{}},
+		{"Retry-After a date", []string{"Retry-After", "Wed, 21 Oct 2026 07:28:00 GMT"}, time.Time{}},
+		{"a reset in ten minutes", []string{"X-RateLimit-Remaining", "0", "X-RateLimit-Reset", in(10 * time.Minute)}, now.Add(10 * time.Minute)},
+		{"a reset past", []string{"X-RateLimit-Remaining", "0", "X-RateLimit-Reset", in(-time.Second)}, time.Time{}},
+		{"a reset past an hour", []string{"X-RateLimit-Remaining", "0", "X-RateLimit-Reset", in(time.Hour + time.Second)}, time.Time{}},
+		{"a reset at int64's end", []string{"X-RateLimit-Remaining", "0", "X-RateLimit-Reset", "9223372036854775807"}, time.Time{}},
+		{"a reset negative", []string{"X-RateLimit-Remaining", "0", "X-RateLimit-Reset", "-9223372036854775808"}, time.Time{}},
+	}
+	for _, c := range cases {
+		r := newRig(t)
+		r.reply(http.MethodGet, path, 429, `{"message":"rate limit"}`, c.header...)
+		_, _, err := r.a.Read(ctx, r.cred, ref("octo-example/widgets", tracker.KindIssue, "42"), tracker.Validators{})
+		var rl *tracker.ErrRateLimited
+		if !errors.As(err, &rl) {
+			t.Errorf("%s: not a rate limit: %v", c.name, err)
+			continue
+		}
+		if !rl.Reset.Equal(c.reset) {
+			t.Errorf("%s: reset %v, want %v", c.name, rl.Reset, c.reset)
 		}
 	}
 }

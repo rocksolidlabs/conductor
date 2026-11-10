@@ -12,9 +12,12 @@
 // every hop is held to the API host byte for byte, and follows a redirect
 // only within that host (a renamed repository's 301), handing any other
 // back unfollowed, so a credential reaches the API host alone by
-// construction. A write is sent once by every layer: no body to send again,
-// no redirect followed, and its every ending sorted into made, nothing
-// written or not known (sortWrite's table). The signed-address client
+// construction: the credential carries its API address and its transport
+// sends to no other. A write is sent once by every layer: a body that
+// cannot be sent again, with or without bytes, no redirect followed, and
+// its every ending sorted into made, nothing written or not known
+// (sortWrite's table), nothing written only on a fact that shows it. No
+// hop of any request carries a Referer. The signed-address client
 // fetches what the API named on another host (an image's src in body_html,
 // a job log's Location) through the base transport alone, which holds no
 // credential, sending only to a host the request's rule admits, at every
@@ -35,7 +38,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httptrace"
 	"net/url"
 	"strconv"
 	"strings"
@@ -75,6 +77,17 @@ const (
 	MaxCommentPages = 10
 	// MaxCommentBody is GitHub's bound on a comment's body.
 	MaxCommentBody = 65536
+	// ChecksTimeout bounds a whole Checks call (at most MaxRuns+3
+	// requests): when it passes, the listings read are the answer and the
+	// rest is said to be missing.
+	ChecksTimeout = 45 * time.Second
+	// MaxRateLimitWait is the furthest reset a rate limit's answer is
+	// taken to give (GitHub's limits reset within the hour): a Retry-After
+	// or a reset time past it, or before now, is a reset not known.
+	MaxRateLimitWait = time.Hour
+	// MaxCount bounds a listing's total_count: a count outside 0 to it is
+	// not known.
+	MaxCount = 1_000_000
 )
 
 // Options configure an Adapter.
@@ -86,7 +99,10 @@ type Options struct {
 	// (CONDUCTOR_TRACKER_LOOPBACK=1).
 	Loopback bool
 	// Transport is the base round tripper of both clients (nil: a clone
-	// of http.DefaultTransport). It holds no credential.
+	// of http.DefaultTransport). It holds no credential, and it sends a
+	// request at most once (net/http's own sends a write once: the
+	// adapter gives it no body to send again); a layer that retries by
+	// itself would send a write twice.
 	Transport http.RoundTripper
 	// Logger receives the writes' lines (nil: slog.Default()).
 	Logger *slog.Logger
@@ -188,11 +204,14 @@ type endpoint struct {
 	graphqlPath string
 }
 
-// endpointFor is the API of a host the credential is for. The host passes
-// tracker.CheckHost (no user, path, query, fragment, port, percent sign or
-// byte past lower-case ASCII; a loopback form only with Options.Loopback)
-// and is github.com, a loopback form, or a saved Enterprise Server host
-// equal byte for byte; anything else is refused before any request.
+// endpointFor is the API of a host the credential is for, at the
+// credential's own API address (tracker.APIAddress, fixed when it was
+// made). The host passes tracker.CheckHost (a name, never a number; no
+// user, path, query, fragment, port, percent sign or byte past lower-case
+// ASCII; a loopback form only with Options.Loopback) and is github.com, a
+// loopback form, or a saved Enterprise Server host equal byte for byte;
+// anything else, or a credential whose address is not that host's API, is
+// refused before any request.
 func (a *Adapter) endpointFor(c tracker.Credential, host string) (endpoint, error) {
 	if c.IsZero() {
 		return endpoint{}, &tracker.RequestError{System: tracker.GitHub, Method: "-", Path: "-", Err: tracker.ErrUnauthorized, Words: "no token is saved for this host"}
@@ -201,18 +220,24 @@ func (a *Adapter) endpointFor(c tracker.Credential, host string) (endpoint, erro
 		return endpoint{}, &tracker.RequestError{System: tracker.GitHub, Method: "-", Path: "-", Err: tracker.ErrUnsupported, Words: "the token is for another host"}
 	}
 	refused := &tracker.RequestError{System: tracker.GitHub, Method: "-", Path: "-", Err: tracker.ErrUnsupported, Words: "not a host Conductor reads"}
-	if tracker.CheckHost(host, a.o.Loopback) != nil {
+	scheme, api, err := tracker.APIAddress(host, a.o.Loopback)
+	if err != nil {
 		return endpoint{}, refused
 	}
+	if cs, ch := c.API(); cs != scheme || ch != api {
+		return endpoint{}, refused
+	}
+	ep := endpoint{host: host, scheme: scheme, apiHost: api, restPrefix: "/api/v3", graphqlPath: "/api/graphql"}
 	switch {
 	case host == tracker.GitHubHost:
-		return endpoint{host: host, scheme: "https", apiHost: "api.github.com", graphqlPath: "/graphql"}, nil
+		ep.restPrefix, ep.graphqlPath = "", "/graphql"
+		return ep, nil
 	case a.o.Loopback && tracker.IsLoopback(host):
-		return endpoint{host: host, scheme: "http", apiHost: host, restPrefix: "/api/v3", graphqlPath: "/api/graphql"}, nil
+		return ep, nil
 	}
 	for _, h := range a.parseOptions().Hosts {
-		if h == host && tracker.CheckHost(h, false) == nil {
-			return endpoint{host: host, scheme: "https", apiHost: host, restPrefix: "/api/v3", graphqlPath: "/api/graphql"}, nil
+		if h == host {
+			return ep, nil
 		}
 	}
 	return endpoint{}, refused
@@ -231,8 +256,9 @@ type request struct {
 	// job log's 302) instead of refusing it.
 	keep3xx bool
 	// write marks a mutation: sent once by every layer under the adapter
-	// (no body to send again, no redirect followed), and a request that
-	// provably never left is said as nothing written.
+	// (a body that cannot be sent again, with or without bytes, and no
+	// redirect followed), and a request that provably never left is said
+	// as nothing written.
 	write bool
 }
 
@@ -269,19 +295,18 @@ var errRedirect = errors.New("redirect refused")
 // reads its answer to the bound, within the request's own deadline. A
 // status of 400 or more is the error it maps to; a 3xx off the API host is
 // refused unless keep3xx. A write (r.write) is sent once by every layer:
-// its body cannot be sent again (net/http replays a body only through
-// GetBody, which a write's request does not have, over HTTP/1.1 and
-// HTTP/2 alike), no redirect is followed for it (its 3xx is the answer),
-// and when no connection was ever had for it the error says nothing was
-// written: the request never left.
+// its request always has a body that cannot be sent again (net/http sends
+// a request again over HTTP/2 when it has no body, or through GetBody,
+// which a write's request does not have), no redirect is followed for it,
+// and any answer but a 200 or a refusal is not known. Nothing written is
+// said only on a fact: the address was refused or the call had ended
+// before the request was made, or the base transport was never handed it
+// (the token's transport refused it). A base transport that was handed it
+// and failed tells nothing of whether it was sent: not known.
 func (a *Adapter) do(ctx context.Context, c tracker.Credential, ep endpoint, r request) (answer, error) {
 	path := ep.errPath(r)
 	rctx, done := a.deadline(ctx, RequestTimeout)
 	defer done()
-	var connected atomic.Bool
-	if r.write {
-		rctx = httptrace.WithClientTrace(rctx, &httptrace.ClientTrace{GotConn: func(httptrace.GotConnInfo) { connected.Store(true) }})
-	}
 	var body io.Reader
 	if r.body != nil {
 		body = bytes.NewReader(r.body)
@@ -296,7 +321,9 @@ func (a *Adapter) do(ctx context.Context, c tracker.Credential, ep endpoint, r r
 		return answer{}, e
 	}
 	if r.write {
-		req.GetBody = nil
+		// Never nil nor http.NoBody (a request net/http's HTTP/2 client
+		// sends again), never rewound.
+		req.Body, req.GetBody = io.NopCloser(bytes.NewReader(r.body)), nil
 	}
 	accept := r.accept
 	if accept == "" {
@@ -312,9 +339,11 @@ func (a *Adapter) do(ctx context.Context, c tracker.Credential, ep endpoint, r r
 		req.Header.Set("If-None-Match", r.etag)
 	}
 	redirected := false
+	var handed atomic.Bool
 	client := &http.Client{
-		Transport: c.Transport(a.base, ep.scheme, ep.apiHost),
+		Transport: c.Transport(handedTo{a.base, &handed}),
 		CheckRedirect: func(next *http.Request, via []*http.Request) error {
+			next.Header.Del("Referer")
 			if r.write {
 				return http.ErrUseLastResponse
 			}
@@ -328,19 +357,30 @@ func (a *Adapter) do(ctx context.Context, c tracker.Credential, ep endpoint, r r
 			return nil
 		},
 	}
+	if rctx.Err() != nil {
+		e := a.transportError(ctx, rctx, r.method, path, rctx.Err())
+		if r.write {
+			return answer{}, tracker.Proven(e)
+		}
+		return answer{}, e
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		e := a.transportError(ctx, rctx, r.method, path, err)
-		if r.write && !connected.Load() {
+		if r.write && !handed.Load() {
 			return answer{}, tracker.Proven(e)
 		}
 		return answer{}, e
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 300 && resp.StatusCode < 400 && resp.StatusCode != http.StatusNotModified {
-		if r.write {
-			return answer{}, &tracker.RequestError{System: tracker.GitHub, Method: r.method, Path: path, Status: resp.StatusCode, Err: tracker.ErrUnsupported, Words: "a redirect, which a write does not follow"}
+	if r.write && resp.StatusCode != http.StatusOK && resp.StatusCode < 400 {
+		words := "an answer that does not say whether the write was made"
+		if resp.StatusCode >= 300 {
+			words = "a redirect, which a write does not follow"
 		}
+		return answer{}, &tracker.RequestError{System: tracker.GitHub, Method: r.method, Path: path, Status: resp.StatusCode, Err: tracker.ErrUnsupported, Words: words}
+	}
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 && resp.StatusCode != http.StatusNotModified {
 		if r.keep3xx {
 			return answer{status: resp.StatusCode, header: resp.Header, redirected: redirected}, nil
 		}
@@ -357,6 +397,18 @@ func (a *Adapter) do(ctx context.Context, c tracker.Credential, ep endpoint, r r
 		return answer{}, a.transportError(ctx, rctx, r.method, path, err)
 	}
 	return answer{status: resp.StatusCode, header: resp.Header, body: data, redirected: redirected}, nil
+}
+
+// handedTo is the base transport under the credential's, noting that a
+// request was handed to it: the line past which a write may have been sent.
+type handedTo struct {
+	base   http.RoundTripper
+	handed *atomic.Bool
+}
+
+func (h handedTo) RoundTrip(r *http.Request) (*http.Response, error) {
+	h.handed.Store(true)
+	return h.base.RoundTrip(r)
 }
 
 // readBounded reads r to its end, at most max bytes; one more is
@@ -447,22 +499,26 @@ func refusalMessage(body io.Reader) string {
 // Retry-After, X-RateLimit-Remaining at 0 (with X-RateLimit-Reset), or, on
 // a 403 or a 429, a message naming the rate limit (a secondary limit may
 // carry neither header, and GitHub says to wait at least a minute then).
-// A 429 is always a rate limit.
+// A 429 is always a rate limit. Each number is held to its range before
+// any arithmetic: a Retry-After of 0 to MaxRateLimitWait seconds, a reset
+// from now to MaxRateLimitWait after it; outside, or not a number, the
+// reset is not known (zero), never a time in the past or far ahead.
 func (a *Adapter) rateLimited(h http.Header, status int, msg string) *tracker.ErrRateLimited {
+	now := a.o.Now()
 	if ra := h.Get("Retry-After"); ra != "" {
-		if s, err := strconv.Atoi(ra); err == nil && s >= 0 {
-			return &tracker.ErrRateLimited{Reset: a.o.Now().Add(time.Duration(s) * time.Second)}
+		if s, err := strconv.ParseInt(ra, 10, 64); err == nil && s >= 0 && s <= int64(MaxRateLimitWait/time.Second) {
+			return &tracker.ErrRateLimited{Reset: now.Add(time.Duration(s) * time.Second)}
 		}
 		return &tracker.ErrRateLimited{}
 	}
 	if h.Get("X-RateLimit-Remaining") == "0" {
-		if s, err := strconv.ParseInt(h.Get("X-RateLimit-Reset"), 10, 64); err == nil {
+		if s, err := strconv.ParseInt(h.Get("X-RateLimit-Reset"), 10, 64); err == nil && s >= now.Unix() && s <= now.Add(MaxRateLimitWait).Unix() {
 			return &tracker.ErrRateLimited{Reset: time.Unix(s, 0)}
 		}
 		return &tracker.ErrRateLimited{}
 	}
 	if (status == http.StatusForbidden || status == http.StatusTooManyRequests) && strings.Contains(strings.ToLower(msg), "rate limit") {
-		return &tracker.ErrRateLimited{Reset: a.o.Now().Add(time.Minute)}
+		return &tracker.ErrRateLimited{Reset: now.Add(time.Minute)}
 	}
 	if status == http.StatusTooManyRequests {
 		return &tracker.ErrRateLimited{}

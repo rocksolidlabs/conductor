@@ -2,9 +2,11 @@ package github_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -49,11 +51,12 @@ func (l *lockedBuffer) String() string {
 }
 
 type rig struct {
-	t    *testing.T
-	fake *githubtest.Server
-	a    *github.Adapter
-	cred tracker.Credential
-	log  *lockedBuffer
+	t     *testing.T
+	fake  *githubtest.Server
+	a     *github.Adapter
+	cred  tracker.Credential
+	log   *lockedBuffer
+	hosts []string
 }
 
 func newRig(t *testing.T, hosts ...string) *rig {
@@ -67,7 +70,60 @@ func newRig(t *testing.T, hosts ...string) *rig {
 		UserAgent: "Conductor/test",
 		Now:       func() time.Time { return now },
 	})
-	return &rig{t: t, fake: fake, a: a, cred: tracker.Token("github.com", secret), log: log}
+	return &rig{t: t, fake: fake, a: a, cred: mustToken(t, "github.com", false), log: log, hosts: hosts}
+}
+
+// credFor is a token's credential for host, and whether one could be made
+// for it.
+func credFor(h string) (tracker.Credential, bool) {
+	c, err := tracker.Token(h, secret, false)
+	return c, err == nil
+}
+
+// mustToken is a token's credential for a host Token admits.
+func mustToken(t testing.TB, h string, loopback bool) tracker.Credential {
+	t.Helper()
+	c, err := tracker.Token(h, secret, loopback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// dials records the address of every connection an adapter makes.
+type dials struct {
+	mu    sync.Mutex
+	addrs []string
+}
+
+func (d *dials) list() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.addrs...)
+}
+
+// dialRecorded gives the rig an adapter over the same fake whose every
+// dial is recorded: the address a request is sent to, as the transport
+// dials it.
+func (r *rig) dialRecorded() *dials {
+	d := &dials{}
+	tr := r.fake.Transport()
+	inner := tr.DialContext
+	tr.DialContext = func(c context.Context, network, addr string) (net.Conn, error) {
+		d.mu.Lock()
+		d.addrs = append(d.addrs, addr)
+		d.mu.Unlock()
+		return inner(c, network, addr)
+	}
+	hosts := r.hosts
+	r.a = github.New(github.Options{
+		Hosts:     func() []string { return hosts },
+		Transport: tr,
+		Logger:    quiet,
+		UserAgent: "Conductor/test",
+		Now:       func() time.Time { return now },
+	})
+	return d
 }
 
 // reply serves a fixed answer on the API host.

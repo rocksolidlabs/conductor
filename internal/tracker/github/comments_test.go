@@ -256,11 +256,11 @@ func TestResolve(t *testing.T) {
 	// A GraphQL rate limit: GitHub's 200 with RATE_LIMITED and its reset.
 	r.fake.Handle(http.MethodPost, api, "/graphql", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("X-RateLimit-Remaining", "0")
-		w.Header().Set("X-RateLimit-Reset", "1762780000")
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(now.Add(10*time.Minute).Unix(), 10))
 		_, _ = w.Write([]byte(`{"data":{"node":null},"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`))
 	})
 	var rl *tracker.ErrRateLimited
-	if _, err := r.a.Resolve(ctx, r.cred, "I_kwDOFixture42"); !errors.As(err, &rl) || rl.Reset.Unix() != 1762780000 {
+	if _, err := r.a.Resolve(ctx, r.cred, "I_kwDOFixture42"); !errors.As(err, &rl) || !rl.Reset.Equal(now.Add(10*time.Minute)) {
 		t.Errorf("a GraphQL rate limit: %v", err)
 	}
 	r.graphql(func(githubtest.GraphQL) (int, any) { return 200, answer })
@@ -274,7 +274,7 @@ func TestResolve(t *testing.T) {
 // comments serves the comments of issue 42 on pages of 100: page p's
 // comments from fill, and a Link to a next page while p < pages.
 func (r *rig) comments(pages int, fill func(page, i int) map[string]any) {
-	r.fake.Handle(http.MethodGet, api, "/repos/octo-example/widgets/issues/42/comments", func(w http.ResponseWriter, req *http.Request) {
+	r.fake.Handle(http.MethodGet, api, "/repositories/4000001/issues/42/comments", func(w http.ResponseWriter, req *http.Request) {
 		p, _ := strconv.Atoi(req.URL.Query().Get("page"))
 		var list []map[string]any
 		if p <= pages {
@@ -390,7 +390,7 @@ func TestCommentAndFind(t *testing.T) {
 	}
 
 	// A full page with no Link at all may have a next: it is read.
-	r.fake.Handle(http.MethodGet, api, "/repos/octo-example/widgets/issues/42/comments", func(w http.ResponseWriter, req *http.Request) {
+	r.fake.Handle(http.MethodGet, api, "/repositories/4000001/issues/42/comments", func(w http.ResponseWriter, req *http.Request) {
 		var list []map[string]any
 		switch req.URL.Query().Get("page") {
 		case "1":
@@ -518,6 +518,11 @@ func TestWriteTable(t *testing.T) {
 		{name: "303", ans: both(303, "", "Location", "https://api.github.com/elsewhere"), comment: unknown, cls: unknown},
 		{name: "307", ans: both(307, "", "Location", "https://api.github.com/graphql"), comment: unknown, cls: unknown},
 		{name: "308", ans: both(308, "", "Location", "https://api.github.com/graphql"), comment: unknown, cls: unknown},
+		{name: "300", ans: both(300, ""), comment: unknown, cls: unknown},
+		{name: "304", ans: both(304, ""), comment: unknown, cls: unknown},
+		{name: "307 with no Location", ans: both(307, ""), comment: unknown, cls: unknown},
+		{name: "201 with the data", ans: ans{201, comment, closed(target.NodeID, "CLOSED"), nil}, comment: unknown, cls: unknown},
+		{name: "204", ans: both(204, ""), comment: unknown, cls: unknown},
 		{name: "401", ans: both(401, `{"message":"Bad credentials"}`), comment: nothing, cls: nothing},
 		{name: "403", ans: both(403, `{"message":"Resource not accessible by personal access token"}`), comment: nothing, cls: nothing},
 		{name: "403 a secondary rate limit", ans: both(403, `{"message":"You have exceeded a secondary rate limit."}`, "X-RateLimit-Remaining", "4000"), comment: nothing, cls: nothing, rateLimited: true},
@@ -590,25 +595,26 @@ func TestWriteTable(t *testing.T) {
 	}
 	offHost := target
 	offHost.Ref.Host = "ghe.example.test@collector.example"
-	cred := tracker.Token(offHost.Ref.Host, secret).ForWrite(tracker.Write{Kind: tracker.WriteComment, Publication: "p1", Try: 1})
-	if _, err := r.a.Comment(ctx, cred, offHost, "x"); sortedAs(t, "a host not admitted", err) != nothing {
+	if _, err := r.a.Comment(ctx, r.commentCred("p1", 1), offHost, "x"); sortedAs(t, "a host not admitted", err) != nothing {
 		t.Errorf("a host not admitted: %v", err)
 	}
 	if n := len(r.fake.Requests()); n != 0 {
 		t.Fatalf("%d requests", n)
 	}
 
-	// No connection was ever had: the dial failed, or the call had ended.
-	dead := github.New(github.Options{Logger: quiet, Transport: &http.Transport{DialContext: func(context.Context, string, string) (net.Conn, error) {
-		return nil, errors.New("no route")
-	}}})
-	if _, err := dead.Comment(ctx, r.commentCred("p1", 1), target, "x"); sortedAs(t, "a dial that failed", err) != nothing || !errors.Is(err, tracker.ErrUnavailable) {
-		t.Errorf("a dial that failed: %v", err)
-	}
+	// The call had ended before the request was made: nothing written.
 	ended, cancel := context.WithCancel(ctx)
 	cancel()
 	if _, err := r.a.Comment(ended, r.commentCred("p1", 1), target, "x"); sortedAs(t, "a call ended first", err) != nothing {
-		t.Errorf("a call ended before a connection: %v", err)
+		t.Errorf("a call ended before the request: %v", err)
+	}
+	// The base transport was handed the request and failed (here its
+	// dial): what it sent is not known (TestWriteUnknownWhenTheBaseFails).
+	dead := github.New(github.Options{Logger: quiet, Transport: &http.Transport{DialContext: func(context.Context, string, string) (net.Conn, error) {
+		return nil, errors.New("no route")
+	}}})
+	if _, err := dead.Comment(ctx, r.commentCred("p1", 1), target, "x"); sortedAs(t, "a dial that failed", err) != unknown || !errors.Is(err, tracker.ErrUnavailable) {
+		t.Errorf("a dial that failed: %v", err)
 	}
 
 	// A connection was had and no answer came: the call ended while the
@@ -688,7 +694,7 @@ func TestFindNoOnlyFromAWholeListing(t *testing.T) {
 		list = append(list, comment(7600000+i, 9000002, "an unrelated comment"))
 	}
 	deleted := false
-	r.fake.Handle(http.MethodGet, api, "/repos/octo-example/widgets/issues/42/comments", func(w http.ResponseWriter, req *http.Request) {
+	r.fake.Handle(http.MethodGet, api, "/repositories/4000001/issues/42/comments", func(w http.ResponseWriter, req *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
 		p, _ := strconv.Atoi(req.URL.Query().Get("page"))
@@ -731,5 +737,110 @@ func TestFindNoOnlyFromAWholeListing(t *testing.T) {
 	})
 	if _, found, _ := r.a.FindComment(ctx, r.cred, target, now, tracker.Match{Marker: marker, BodySha256: tracker.BodyDigest(posted)}); found != tracker.FoundUnknown {
 		t.Fatalf("an unreadable match: %v", found)
+	}
+	// So does one whose author is not given.
+	r.comments(1, func(p, i int) map[string]any {
+		if i == 0 {
+			c := comment(7700001, 9000001, posted)
+			c["user"] = nil
+			return c
+		}
+		return nil
+	})
+	if _, found, _ := r.a.FindComment(ctx, r.cred, target, now, m); found != tracker.FoundUnknown {
+		t.Fatalf("a match with no author: %v", found)
+	}
+}
+
+// Resolve answers only what it read: a node answered with errors beside it
+// (a field that failed is null and its error listed) or with a state GitHub
+// gives no such item is an answer Conductor cannot read, never one whose
+// state is taken to be open.
+func TestResolveAnswersOnlyWhatItRead(t *testing.T) {
+	r := newRig(t)
+	var answer map[string]any
+	r.graphql(func(githubtest.GraphQL) (int, any) { return 200, answer })
+	partial := issueNode("I_kwDOFixture42", 42, 4000001, "octo-example/widgets", "OPEN")
+	partial["data"].(map[string]any)["node"].(map[string]any)["state"] = nil
+	partial["errors"] = []any{map[string]any{"type": "INTERNAL", "path": []any{"node", "state"}}}
+	beside := issueNode("I_kwDOFixture42", 42, 4000001, "octo-example/widgets", "CLOSED")
+	beside["errors"] = []any{map[string]any{"type": "INTERNAL", "path": []any{"node", "repository"}}}
+	pull := func(state string) map[string]any {
+		return map[string]any{"data": map[string]any{"node": map[string]any{"__typename": "PullRequest", "id": "I_kwDOFixture42", "number": 43, "url": "https://github.com/octo-example/widgets/pull/43", "state": state, "repository": map[string]any{"fullDatabaseId": "4000001", "nameWithOwner": "octo-example/widgets"}}}}
+	}
+	for name, a := range map[string]map[string]any{
+		"a state null beside its error": partial,
+		"errors beside a whole node":    beside,
+		"a state GitHub does not give":  issueNode("I_kwDOFixture42", 42, 4000001, "octo-example/widgets", "SOMETHING_NEW"),
+		"no state":                      issueNode("I_kwDOFixture42", 42, 4000001, "octo-example/widgets", ""),
+		"an issue merged":               issueNode("I_kwDOFixture42", 42, 4000001, "octo-example/widgets", "MERGED"),
+		"a lower-case state":            issueNode("I_kwDOFixture42", 42, 4000001, "octo-example/widgets", "open"),
+		"a pull request drafted":        pull("DRAFT"),
+	} {
+		answer = a
+		if tg, err := r.a.Resolve(ctx, r.cred, "I_kwDOFixture42"); err == nil {
+			t.Errorf("%s: answered %+v", name, tg)
+		}
+	}
+	for state, want := range map[string]string{"OPEN": tracker.StateOpen, "CLOSED": tracker.StateClosed} {
+		answer = issueNode("I_kwDOFixture42", 42, 4000001, "octo-example/widgets", state)
+		if tg, err := r.a.Resolve(ctx, r.cred, "I_kwDOFixture42"); err != nil || tg.State != want {
+			t.Errorf("an issue %s: %+v %v", state, tg, err)
+		}
+	}
+	for state, want := range map[string]string{"OPEN": tracker.StateOpen, "CLOSED": tracker.StateClosed, "MERGED": tracker.StateMerged} {
+		answer = pull(state)
+		if tg, err := r.a.Resolve(ctx, r.cred, "I_kwDOFixture42"); err != nil || tg.State != want {
+			t.Errorf("a pull request %s: %+v %v", state, tg, err)
+		}
+	}
+}
+
+// What is posted is byte for byte what was given, or nothing: a body that
+// is not valid UTF-8 (which the encoding to GitHub would change) is
+// refused before any request, so the bytes a match digests are the bytes
+// GitHub holds.
+func TestCommentPostsTheBytesGiven(t *testing.T) {
+	r := newRig(t)
+	r.answerAll()
+	for _, body := range []string{"Fixed \xff in the delivery.", "\xc3", "a\xed\xa0\x80b"} {
+		_, err := r.a.Comment(ctx, r.commentCred("p1", 1), target, body+"\n\n"+r.a.Marker("p1"))
+		if !tracker.NothingWritten(err) || !errors.Is(err, tracker.ErrUnsupported) {
+			t.Errorf("%q: %v", body, err)
+		}
+	}
+	if n := len(r.fake.Requests()); n != 0 {
+		t.Fatalf("%d requests", n)
+	}
+	// Valid UTF-8 the encoding escapes (<, >, &, U+2028) is the same text.
+	body := "<b>&</b> é\n\n" + r.a.Marker("p1")
+	if _, err := r.a.Comment(ctx, r.commentCred("p1", 1), target, body); err != nil {
+		t.Fatal(err)
+	}
+	g, _ := githubtest.ParseGraphQL(r.fake.Requests()[0].Body)
+	if g.Variables["body"] != body {
+		t.Fatalf("sent %q", g.Variables["body"])
+	}
+}
+
+// The finder lists the target's own repository by its identity: the
+// listing is addressed by the repository's id the Resolve read, so a name
+// another repository has taken since cannot answer for the target.
+func TestFindListsTheRepositoryByItsID(t *testing.T) {
+	r := newRig(t)
+	r.answerAll()
+	marker := r.a.Marker("p1")
+	posted := "Fixed in the delivery.\n\n" + marker
+	// The old name now names a new repository, whose #42 has other comments.
+	r.fake.Reply(http.MethodGet, api, "/repos/octo-example/widgets/issues/42/comments", 200, []map[string]any{comment(8800001, 9000003, "a comment on the new repository's #42")})
+	r.fake.Reply(http.MethodGet, api, "/repositories/4000001/issues/42/comments", 200, []map[string]any{comment(7700001, 9000001, posted)})
+	got, found, err := r.a.FindComment(ctx, r.cred, target, now, tracker.Match{Marker: marker, BodySha256: tracker.BodyDigest(posted), AuthorID: "9000001"})
+	if err != nil || found != tracker.FoundYes || got.ID != "7700001" {
+		t.Fatalf("%+v %v %v", got, found, err)
+	}
+	for _, q := range r.fake.Requests() {
+		if strings.HasPrefix(q.Path, "/repos/") {
+			t.Fatalf("listed by name: %s", q.Path)
+		}
 	}
 }

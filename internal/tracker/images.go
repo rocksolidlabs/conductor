@@ -64,8 +64,11 @@ func (i ImageRef) MarshalJSON() ([]byte, error) {
 // from github.com on 2026-11-10: a rendered body names
 // private-user-images (with a signed ?jwt=), user-images (older uploads)
 // and camo (an image from another site, proxied); github.com's
-// /user-attachments/assets/ answers a redirect to GitHub's asset bucket.
-// objects.githubusercontent.com is the plan's and was not seen.
+// /user-attachments/assets/ answers a redirect to GitHub's asset bucket
+// (github-production-user-asset-6210df, a bucket named by its host, which
+// holds the files people attach to issues and comments, each object asked
+// with its own signature). objects.githubusercontent.com is the plan's and
+// was not seen. Each is an exact name, never a pattern.
 var githubImageHosts = map[string]bool{
 	"private-user-images.githubusercontent.com":            true,
 	"user-images.githubusercontent.com":                    true,
@@ -113,11 +116,11 @@ func fetchHost(system, host string, u *url.URL) (string, bool) {
 // route answers (a URL the authenticated API gave, never one a body names)
 // and never for an image: https only, no user, u's host passing CheckHost;
 // for github.com the hosts GitHub's list of domains by function names for
-// Actions' logs (api.github.com/meta, read 2026-11-10: the
-// *.actions.githubusercontent.com hosts and
-// productionresultssa<n>.blob.core.windows.net, each storage account named
-// by its number, never any other *.blob.core.windows.net); for a GitHub
-// Enterprise Server host, that host and its subdomains only.
+// Actions (api.github.com/meta, domains.actions, read 2026-11-10): a host
+// under *.actions.githubusercontent.com, the list's own wildcard, and the
+// storage accounts the list names one by one (githubLogAccounts), exactly,
+// never by a pattern; for a GitHub Enterprise Server host, that host and
+// its subdomains only.
 func LogHost(system, host string, u *url.URL) bool {
 	h, ok := fetchHost(system, host, u)
 	if !ok {
@@ -127,16 +130,7 @@ func LogHost(system, host string, u *url.URL) bool {
 		if s := ".actions.githubusercontent.com"; strings.HasSuffix(h, s) && len(h) > len(s) {
 			return true
 		}
-		acct, ok := strings.CutSuffix(h, ".blob.core.windows.net")
-		if n, ok2 := strings.CutPrefix(acct, "productionresultssa"); ok && ok2 && n != "" && len(n) <= 3 {
-			for i := 0; i < len(n); i++ {
-				if n[i] < '0' || n[i] > '9' {
-					return false
-				}
-			}
-			return true
-		}
-		return false
+		return githubLogAccounts[h]
 	}
 	return h == host || strings.HasSuffix(h, "."+host)
 }

@@ -130,3 +130,30 @@ func TestRefCheck(t *testing.T) {
 		}
 	}
 }
+
+// A host is a name, never a number: a host a URL parser or a resolver
+// would read as an address in any spelling (dotted, decimal, octal, hex,
+// short, a last label that is digits or begins a number, a bracketed
+// form) is no host outside loopback mode, nor is localhost; a name whose
+// last label is letters is one, digits in its other labels or not.
+func TestCheckHostIsANameNeverANumber(t *testing.T) {
+	for _, h := range []string{
+		"127.0.0.1", "10.0.0.1", "169.254.169.254", "0.0.0.0", "127.1", "10.1", "0",
+		"2130706433", "017700000001", "0177.0.0.1", "0x7f000001", "0x7f.0.0.1", "0x7f.1", "0x7f",
+		"1.2.3.0x4", "example.123", "example.0x1", "example.1e5", "a.b.c.4",
+		"[::1]", "[::ffff:127.0.0.1]", "[fe80::1]",
+		"localhost", "ghe.localhost",
+	} {
+		if err := CheckHost(h, false); !errors.Is(err, ErrHost) {
+			t.Errorf("CheckHost(%q, false) admitted a number", h)
+		}
+		if err := CheckHost(h, true); !errors.Is(err, ErrHost) {
+			t.Errorf("CheckHost(%q, true) admitted it without a port", h)
+		}
+	}
+	for _, h := range []string{"github.com", "ghe.example.test", "10.example", "127.0.0.1.example", "a1.example", "x1.example.c0m", "media.git.corp.example"} {
+		if err := CheckHost(h, false); err != nil {
+			t.Errorf("CheckHost(%q): %v", h, err)
+		}
+	}
+}

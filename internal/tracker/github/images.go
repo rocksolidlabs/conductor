@@ -72,7 +72,9 @@ func imagesOf(host, bodyHTML string) ([]tracker.ImageRef, tracker.ImagesLeftOut)
 
 // guard is the base transport of the signed-address client: it sends a
 // request only when admit admits its URL, checked at every hop, so the
-// host judged is the host dialled whatever a redirect says.
+// host judged is the host dialled whatever a redirect says, and sends it
+// with no Referer, so a signed address's query never leaves the host it
+// was signed for.
 type guard struct {
 	base  http.RoundTripper
 	admit func(*url.URL) bool
@@ -85,22 +87,36 @@ func (g guard) RoundTrip(r *http.Request) (*http.Response, error) {
 		}
 		return nil, errRedirect
 	}
+	if r.Header.Get("Referer") != "" {
+		r = r.Clone(r.Context())
+		r.Header.Del("Referer")
+	}
 	return g.base.RoundTrip(r)
 }
 
 // signedClient is the client of an address the API named on another host:
 // the base transport behind guard, no credential, a redirect followed only
-// to a host admit admits.
+// to a host admit admits, with no Referer.
 func (a *Adapter) signedClient(admit func(*url.URL) bool) *http.Client {
 	return &http.Client{
 		Transport: guard{base: a.base, admit: admit},
 		CheckRedirect: func(next *http.Request, via []*http.Request) error {
+			next.Header.Del("Referer")
 			if len(via) >= MaxRedirects || next.URL.Scheme != via[0].URL.Scheme || !admit(next.URL) {
 				return errRedirect
 			}
 			return nil
 		},
 	}
+}
+
+// signedRefusal is a refusal from a host an address was signed for (an
+// image's, a log's): that fetch's own outcome, its status alone. It is
+// never the token's state (the host never saw the token: no
+// tracker.ErrUnauthorized, ErrForbidden or ErrRateLimited), and no header
+// or body text of that host reaches it.
+func signedRefusal(path string, status int, what string) error {
+	return &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: path, Status: status, Err: tracker.ErrUnavailable, Words: "the " + what + " host refused it"}
 }
 
 // Image downloads one of a read's images from its signed address with no
@@ -137,7 +153,7 @@ func (a *Adapter) Image(ctx context.Context, c tracker.Credential, img tracker.I
 		if resp.StatusCode < 400 {
 			return nil, "", &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: path, Status: resp.StatusCode, Err: tracker.ErrUnsupported}
 		}
-		return nil, "", a.statusError(http.MethodGet, path, resp)
+		return nil, "", signedRefusal(path, resp.StatusCode, "image")
 	}
 	if resp.ContentLength > max {
 		resp.Body.Close()

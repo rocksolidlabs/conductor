@@ -1,10 +1,13 @@
 package github_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -264,8 +267,8 @@ func TestCheckLogTail(t *testing.T) {
 	if b, _ := r.a.CheckLog(ctx, r.cred, pr43, job, 1<<20); string(b.Bytes) != full || b.Cut || b.Size != int64(len(full)) {
 		t.Fatalf("a tail longer than the log: %+v", b)
 	}
-	// Only the tail is asked for: a suffix Range.
-	if q := r.fake.Requests()[len(r.fake.Requests())-1]; q.Host != blob || q.Header.Get("Range") != "bytes=-1048576" {
+	// Only the tail is asked for, from its first byte to its last.
+	if q := r.fake.Requests()[len(r.fake.Requests())-1]; q.Host != blob || q.Header.Get("Range") != "bytes=0-1048575" {
 		t.Fatalf("asked %s with Range %q", q.Host, q.Header.Get("Range"))
 	}
 	r.authOnlyToAPI()
@@ -343,5 +346,100 @@ func TestChecksAskBounded(t *testing.T) {
 	}
 	if !said || set.Passed() {
 		t.Fatalf("the cut was not said: %q", set.Incomplete)
+	}
+}
+
+// A read ends by its own bound and keeps what it got: when the call's time
+// runs out while a later listing is read, the listings read before it are
+// the answer, the rest said to be missing, and the set never passes.
+func TestChecksKeepWhatTheyReadWhenTimeRunsOut(t *testing.T) {
+	r := newRig(t)
+	r.reply(http.MethodGet, statusPath, 200, statuses(3, 3, true))
+	r.reply(http.MethodGet, runsPath, 200, map[string]any{"total_count": 0, "workflow_runs": []any{}})
+	gate := r.fake.Hold(http.MethodGet, api, crPath)
+	c, cancel := context.WithCancel(ctx)
+	type result struct {
+		set tracker.CheckSet
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		set, err := r.a.Checks(c, r.cred, pr43, head)
+		done <- result{set, err}
+	}()
+	<-gate.Reached()
+	cancel()
+	got := <-done
+	gate.Open()
+	if got.err != nil {
+		t.Fatalf("the statuses read were lost: %v", got.err)
+	}
+	if len(got.set.Checks) != 3 || !got.set.Checks[0].Failed() || got.set.Passed() {
+		t.Fatalf("kept %+v", got.set)
+	}
+	if !slices.ContainsFunc(got.set.Incomplete, func(s string) bool { return strings.Contains(s, "time ran out") && strings.Contains(s, "check runs") }) {
+		t.Fatalf("incomplete %q", got.set.Incomplete)
+	}
+}
+
+// timers is a clock whose deadlines pass when the test says, one length at
+// a time.
+type timers struct {
+	mu sync.Mutex
+	fs map[time.Duration][]func()
+}
+
+func (c *timers) after(d time.Duration, f func()) func() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.fs == nil {
+		c.fs = map[time.Duration][]func(){}
+	}
+	c.fs[d] = append(c.fs[d], f)
+	return func() bool { return true }
+}
+
+// pass makes the deadlines of length d set so far pass, and says how many.
+func (c *timers) pass(d time.Duration) int {
+	c.mu.Lock()
+	fs := c.fs[d]
+	delete(c.fs, d)
+	c.mu.Unlock()
+	for _, f := range fs {
+		f()
+	}
+	return len(fs)
+}
+
+// The whole read has a deadline of its own: when ChecksTimeout passes
+// while a run's jobs are read, the runs' jobs read before are kept, the
+// rest said, no error.
+func TestChecksOwnDeadline(t *testing.T) {
+	r := newRig(t)
+	clock := &timers{}
+	github.SetClock(r.a, clock.after)
+	r.reply(http.MethodGet, statusPath, 200, statuses(0, 0, false))
+	runs := []map[string]any{{"id": 1000001, "name": "ci"}, {"id": 1000002, "name": "nightly"}}
+	r.reply(http.MethodGet, runsPath, 200, map[string]any{"total_count": 2, "workflow_runs": runs})
+	r.reply(http.MethodGet, jobsPath, 200, checkRuns("jobs", 2, 2, 1, plain))
+	gate := r.fake.Hold(http.MethodGet, api, "/repos/octo-example/widgets/actions/runs/1000002/jobs")
+	done := make(chan tracker.CheckSet, 1)
+	errc := make(chan error, 1)
+	go func() {
+		set, err := r.a.Checks(ctx, r.cred, pr43, head)
+		done <- set
+		errc <- err
+	}()
+	<-gate.Reached()
+	if n := clock.pass(github.ChecksTimeout); n != 1 {
+		t.Fatalf("%d deadlines of the whole read", n)
+	}
+	set, err := <-done, <-errc
+	gate.Open()
+	if err != nil || len(set.Checks) != 2 || !set.Checks[0].Failed() || set.Passed() {
+		t.Fatalf("%+v %v", set, err)
+	}
+	if !slices.Contains(set.Incomplete, "the read's time ran out: 1 of 2 workflow runs' jobs read, the check runs not read") {
+		t.Fatalf("incomplete %q", set.Incomplete)
 	}
 }
