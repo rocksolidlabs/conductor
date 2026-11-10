@@ -138,9 +138,8 @@ func (s *Store) collectOrphans(ctx context.Context, now time.Time) error {
 		if ended() {
 			return first
 		}
-		var named bool
-		if err := dbtx.QueryRowContext(held, `SELECT EXISTS (SELECT 1 FROM attachments WHERE sha256 = ? AND deleted_at = '')
-			OR EXISTS (SELECT 1 FROM uploads WHERE sha256 = ?) OR EXISTS (SELECT 1 FROM launch_files WHERE sha256 = ?)`, c.sum, c.sum, c.sum).Scan(&named); err != nil {
+		named, err := isNamed(held, dbtx, c.sum)
+		if err != nil {
 			return err
 		}
 		if !named {
@@ -157,6 +156,45 @@ func (s *Store) collectOrphans(ctx context.Context, now time.Time) error {
 		}
 	}
 	return first
+}
+
+// isNamed is whether anything holds the content with the hash: a live
+// attachment row, an upload's lease, a launch's pin, or a capture's or a
+// send's file (capture_files, whose row is there only while its holder
+// is).
+func isNamed(ctx context.Context, q queryer, sum string) (bool, error) {
+	var named bool
+	err := q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM attachments WHERE sha256 = ?1 AND deleted_at = '')
+		OR EXISTS (SELECT 1 FROM uploads WHERE sha256 = ?1) OR EXISTS (SELECT 1 FROM launch_files WHERE sha256 = ?1)
+		OR EXISTS (SELECT 1 FROM capture_files WHERE sha256 = ?1)`, sum).Scan(&named)
+	return named, err
+}
+
+// collectOne deletes the content file with the hash when nothing names it,
+// as the sweep's collection would, under a write transaction it holds until
+// the unlink has returned: what a refused capture or send published, so a
+// refusal leaves no file behind. One another upload leased meanwhile, or
+// that a row names, is left; an error leaves the file to the sweep.
+func (s *Store) collectOne(ctx context.Context, sum string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.readOnly || s.db == nil {
+		return nil
+	}
+	held := context.WithoutCancel(ctx)
+	dbtx, err := s.db.BeginTx(held, nil)
+	if err != nil {
+		return err
+	}
+	defer dbtx.Rollback()
+	named, err := isNamed(held, dbtx, sum)
+	if err != nil || named {
+		return err
+	}
+	if err := s.unlink(contentPath(filepath.Join(s.dir, attachmentsDir), sum)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // listed is a file the sweep may delete: a content file with its hash, or
