@@ -241,6 +241,29 @@ func (q Query) places(now time.Time) []*drawPlace {
 	return out
 }
 
+// DrawnKinds is every kind q's restriction draws rows of, as places draws
+// them: each kind of its clauses the line's kind filters leave, of a clause
+// whose column has a value; none for a line that matches nothing. A
+// function of the restriction and the line alone, whatever the index holds.
+func (q Query) DrawnKinds() []string {
+	if q.Restrict == nil || q.none {
+		return nil
+	}
+	kinds := q.kindsOf()
+	var out []string
+	for _, c := range q.Restrict.Clauses {
+		if c.Place != nil && len(c.Place.Values) == 0 {
+			continue
+		}
+		for _, k := range c.Kinds {
+			if (kinds == nil || kinds[k]) && !slices.Contains(out, k) {
+				out = append(out, k)
+			}
+		}
+	}
+	return out
+}
+
 // idList is ids as a JSON array, for json_each.
 func idList(ids []int64) string {
 	b := []byte{'['}

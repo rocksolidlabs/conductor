@@ -231,3 +231,42 @@ func TestARestrictedReadSaysWhenItsBoundIsSpent(t *testing.T) {
 		t.Fatal("a read newest first with no restriction")
 	}
 }
+
+// DrawnKinds is the kinds a read's places draw rows of, the line's kind
+// filters applied (two filters leave what both name), a clause whose
+// column has no value drawing none, and none for a line that matches
+// nothing.
+func TestDrawnKindsAreTheKindsAReadDraws(t *testing.T) {
+	r := &Restriction{Clauses: []Clause{
+		{Kinds: []string{"session.chat", "session.typed"}, Place: &Cond{Column: "anchor", Values: []string{"session:aaaa", "session:bbbb"}}},
+		{Kinds: []string{"comment", "ticket"}, Place: &Cond{Column: "ticket.project", Values: []string{"CND"}}},
+		{Kinds: []string{"check"}, Place: &Cond{Column: "run", Values: nil}},
+		{Kinds: []string{"brief.item"}},
+	}}
+	for line, want := range map[string][]string{
+		"":                                {"session.chat", "session.typed", "comment", "ticket", "brief.item"},
+		"zebra":                           {"session.chat", "session.typed", "comment", "ticket", "brief.item"},
+		"zebra kind:comment":              {"comment"},
+		"kind:comment,session.chat":       {"session.chat", "comment"},
+		"kind:comment,ticket kind:ticket": {"ticket"},
+		"kind:check":                      nil,
+		"!!!":                             nil,
+	} {
+		q, err := ParseQuery(line)
+		if err != nil {
+			t.Fatal(err)
+		}
+		q.Restrict, q.Newest = r, true
+		var drawn []string
+		if !q.none {
+			for _, p := range q.places(time.Now()) {
+				if k := p.args[0].(string); !slices.Contains(drawn, k) {
+					drawn = append(drawn, k)
+				}
+			}
+		}
+		if got := q.DrawnKinds(); !slices.Equal(got, want) || !slices.Equal(got, drawn) {
+			t.Errorf("%q: %v, want %v, the places drawing %v", line, got, want, drawn)
+		}
+	}
+}

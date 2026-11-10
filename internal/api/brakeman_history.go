@@ -550,7 +550,8 @@ func (hs *historyScope) turnEntry(ctx context.Context, out servedEntry, e histor
 // A place the scope puts on two columns at once (a run's rows under a
 // scope of repositories and crews) is not drawn at all: one column a
 // place. The admin's read is what a turn with every class and no scope is
-// served.
+// served, except that the admin's line may ask for Brakeman's own runs and
+// sessions (handleBrakemanHistory).
 func historyRestriction(o *observer) *history.Restriction {
 	sees, scopes := o.sees, o.grant.scopes
 	if o.tp == nil {
@@ -624,6 +625,36 @@ func historyRestriction(o *observer) *history.Restriction {
 	}
 	add(seen(placeBrief, not()), nil)
 	return r
+}
+
+// historySearched is every visibility class a turn's read of hq reads,
+// whatever it finds, a function of its grant and its line alone: the
+// classes of every kind its restriction draws rows of (history.Query's
+// DrawnKinds; for a brief's items every class the turn sees, since a brief
+// is admitted on its footprint), and Dispatch's for a filter on Dispatch's
+// fields (ticket:, project:).
+func historySearched(o *observer, hq history.Query) []string {
+	var out []string
+	add := func(classes ...string) {
+		for _, c := range classes {
+			if !slices.Contains(out, c) {
+				out = append(out, c)
+			}
+		}
+	}
+	for _, k := range hq.DrawnKinds() {
+		if historyKinds[k].place == placeBrief {
+			add(slices.DeleteFunc(slices.Clone(brakeman.Classes), func(c string) bool { return !o.sees(c) })...)
+			continue
+		}
+		add(historyKinds[k].classes...)
+	}
+	for _, name := range []string{"ticket", "project"} {
+		if _, ok := hq.Filter(name); ok && o.sees(brakeman.ClassDispatch) {
+			add(brakeman.ClassDispatch)
+		}
+	}
+	return out
 }
 
 // historyDecisionKinds are the kinds of a decision's rows, whose anchor is
@@ -846,13 +877,11 @@ func (s *Server) handleBrakemanHistory(w http.ResponseWriter, r *http.Request, o
 		hq.ExceptCrews = []string{crew.ClassBrakeman}
 	}
 	hq.Restrict, hq.Newest = historyRestriction(o), true
-	if o.tp != nil && o.sees(brakeman.ClassDispatch) && s.brakeman != nil {
-		// A filter on Dispatch's fields reads them, by which entries it
-		// finds, whether it finds any or not.
-		for _, name := range []string{"ticket", "project"} {
-			if _, ok := hq.Filter(name); ok {
-				s.brakeman.usedClass(o.tp.req.ID, brakeman.ClassDispatch)
-			}
+	if o.tp != nil && s.brakeman != nil {
+		// Before the search runs, whatever it finds: what it answers, rows
+		// or none, is an answer about every row it looks through.
+		for _, c := range historySearched(o, hq) {
+			s.brakeman.usedClass(o.tp.req.ID, c)
 		}
 	}
 	// The indexing's state alone: how far the index reaches, and what it

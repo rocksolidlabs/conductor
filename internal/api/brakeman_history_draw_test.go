@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -124,8 +125,9 @@ func TestATurnsReadSaysWhenItExaminedItsBound(t *testing.T) {
 // A ticket's row that names a run is placed by both: a verified delivery
 // of the ticket by a run outside a scope of repositories is outside the
 // read, and two hundred of them, newer and holding the line's words, change
-// nothing of what a turn so scoped is served (the ticket's comment); a
-// turn scoped to the delivering run is served them.
+// nothing of what a turn so scoped is served (the ticket's comment) or of
+// the rows its read draws; a turn scoped to the delivering run is served
+// them.
 func TestADeliveryIsPlacedByItsRunToo(t *testing.T) {
 	f := newObsFixture(t)
 	kept := "comment:" + f.ticket + "/" + doneOf(t)(f.srv.dispatch.AddComment(t.Context(), adminOp("Ann"), f.ticket, "osprey kept")).ID
@@ -140,7 +142,8 @@ func TestADeliveryIsPlacedByItsRunToo(t *testing.T) {
 		c["scope"] = map[string]any{"repos": []string{inside}}
 		c["budget"].(map[string]any)["readsPerTurn"] = brakeman.MaxReadsPerTurn
 	})
-	before := historyRefs(f.expectRead(t, searchPath("osprey"), http.StatusOK, ""))
+	out, drawn := drawnBy(t, f, searchPath("osprey"))
+	before := historyRefs(out)
 	if !slices.Equal(before, []string{kept}) {
 		t.Fatalf("the ticket's comment under a scope of repositories: %v", before)
 	}
@@ -151,11 +154,11 @@ func TestADeliveryIsPlacedByItsRunToo(t *testing.T) {
 			At: time.Now().Add(time.Hour), Actor: "admin", Title: "osprey delivered", Summary: "1 receipts"})
 	}
 	plantRows(t, f, "deliveries", deliveries)
-	if got := historyRefs(f.expectRead(t, searchPath("osprey"), http.StatusOK, "")); !slices.Equal(got, before) {
-		t.Fatalf("with the deliveries of a run outside the scope: %v, before %v", got, before)
+	if got, n := drawnBy(t, f, searchPath("osprey")); !slices.Equal(historyRefs(got), before) || n != drawn {
+		t.Fatalf("with the deliveries of a run outside the scope: %v drawing %d rows, before %v drawing %d", historyRefs(got), n, before, drawn)
 	}
 	f.again(t, func(c map[string]any) { c["scope"] = map[string]any{"runs": []string{f.run}} })
-	out := f.expectRead(t, searchPath("osprey kind:delivery.verified"), http.StatusOK, "")
+	out = f.expectRead(t, searchPath("osprey kind:delivery.verified"), http.StatusOK, "")
 	if refs := historyRefs(out); len(refs) == 0 || refs[0] != "ticket:"+f.ticket {
 		t.Fatalf("the deliveries to a turn scoped to their run: %v", refs)
 	}
@@ -208,4 +211,111 @@ func TestAFilterAndACitationAreInTheFootprint(t *testing.T) {
 	if r, _ := f.desk.st.Get(f.req); r.Footprint == nil || !slices.Contains(r.Footprint.Classes, brakeman.ClassDispatch) {
 		t.Fatalf("a brief citing a ticket it did not read: footprint %+v", r.Footprint)
 	}
+}
+
+// footprintOf is the footprint of the brief the turn keeps citing the run
+// alone, and the request it kept it in.
+func footprintOf(t *testing.T, f *obsFixture) ([]string, string) {
+	t.Helper()
+	f.submitFact(t, "run:"+f.run)
+	r, err := f.desk.st.Get(f.req)
+	if err != nil || r.Footprint == nil {
+		t.Fatalf("the brief's footprint: %+v %v", r.Footprint, err)
+	}
+	return r.Footprint.Classes, f.req
+}
+
+// A search is read in the classes of every kind it draws rows of, whatever
+// it serves: one that serves nothing, narrowed to comments, is read in
+// Dispatch's class and no other kind's, and its brief is not given whole
+// to a later turn that does not see Dispatch; one of every kind that
+// serves nothing is read in every class the turn sees; one that serves a
+// comment and draws checks too is read in the logs' class as well.
+func TestASearchIsReadInTheClassesOfWhatItDraws(t *testing.T) {
+	f := newObsFixture(t)
+	kept := "comment:" + f.ticket + "/" + doneOf(t)(f.srv.dispatch.AddComment(t.Context(), adminOp("Ann"), f.ticket, "osprey kept")).ID
+	ix := histSettle(t, f.testEnv)
+	until(t, "the comment indexed", func() bool {
+		_, err := ix.Entry(t.Context(), kept)
+		return err == nil
+	})
+	f.turn(t, func(c map[string]any) { c["scope"] = map[string]any{} })
+	if refs := historyRefs(f.expectRead(t, searchPath("quokka kind:comment"), http.StatusOK, "")); len(refs) != 0 {
+		t.Fatalf("the search served %v", refs)
+	}
+	got, early := footprintOf(t, f)
+	if !slices.Contains(got, brakeman.ClassDispatch) || slices.ContainsFunc(got, func(c string) bool {
+		return c == brakeman.ClassSessions || c == brakeman.ClassLogs || c == brakeman.ClassTouched
+	}) {
+		t.Errorf("a search of comments that served nothing: footprint %v", got)
+	}
+	f.again(t, func(c map[string]any) { c["visibility"].(map[string]any)["dispatch"] = false })
+	if b := f.briefsOf(t)[early]; b == nil || whole(b) {
+		t.Errorf("the brief to a turn that does not see Dispatch: %v", b)
+	}
+
+	f.again(t, func(c map[string]any) { c["visibility"].(map[string]any)["dispatch"] = true })
+	if refs := historyRefs(f.expectRead(t, searchPath("quokka"), http.StatusOK, "")); len(refs) != 0 {
+		t.Fatalf("the search served %v", refs)
+	}
+	seen := []string{brakeman.ClassRuns, brakeman.ClassLogs, brakeman.ClassDispatch, brakeman.ClassSessions, brakeman.ClassTouched}
+	if got, _ := footprintOf(t, f); !slices.Equal(slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(seen))) {
+		t.Errorf("a search of every kind that served nothing: footprint %v, want %v", got, seen)
+	}
+
+	f.again(t, nil)
+	if refs := historyRefs(f.expectRead(t, searchPath("osprey kind:comment,check"), http.StatusOK, "")); !slices.Equal(refs, []string{kept}) {
+		t.Fatalf("the search served %v", refs)
+	}
+	if got, _ := footprintOf(t, f); !slices.Contains(got, brakeman.ClassLogs) || !slices.Contains(got, brakeman.ClassDispatch) {
+		t.Errorf("a search that served a comment and drew checks: footprint %v", got)
+	}
+}
+
+// A continuation given before the history was rebuilt is answered 409
+// stale_cursor.
+func TestAContinuationFromBeforeARebuildIsStale(t *testing.T) {
+	f := newObsFixture(t)
+	var refs []string
+	for _, words := range []string{"osprey one", "osprey two"} {
+		refs = append(refs, "comment:"+f.ticket+"/"+doneOf(t)(f.srv.dispatch.AddComment(t.Context(), adminOp("Ann"), f.ticket, words)).ID)
+	}
+	ix := histSettle(t, f.testEnv)
+	until(t, "the comments indexed", func() bool {
+		for _, ref := range refs {
+			if _, err := ix.Entry(t.Context(), ref); err != nil {
+				return false
+			}
+		}
+		return true
+	})
+	before, _ := ix.Stats(t.Context())
+	f.turn(t, func(c map[string]any) { c["scope"] = map[string]any{} })
+	next, _ := f.expectRead(t, searchPath("osprey kind:comment", "limit", "1"), http.StatusOK, "")["next"].(string)
+	if next == "" {
+		t.Fatal("no next")
+	}
+	if resp, out := f.do("POST", "/api/history/reindex", adminToken, nil); resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("reindex: %d %v", resp.StatusCode, out)
+	}
+	ix = histSettle(t, f.testEnv)
+	if after, _ := ix.Stats(t.Context()); after.Generation == before.Generation {
+		t.Fatalf("the index was not cleared: generation %d", after.Generation)
+	}
+	f.expectRead(t, searchPath("osprey kind:comment", "limit", "1", "after", next), http.StatusConflict, "stale_cursor")
+}
+
+// The guide gives the search's page as the route reads it: its default
+// and its bound.
+func TestTheGuideGivesTheSearchsPage(t *testing.T) {
+	want := fmt.Sprintf("newest first, %d a page, %d at most (limit, after)", defaultHistoryTurnPage, maxHistoryTurnPage)
+	for _, op := range Operations() {
+		if op.Name == "observe_search" {
+			if !strings.Contains(op.Summary, want) {
+				t.Fatalf("the guide's search: %q, want %q in it", op.Summary, want)
+			}
+			return
+		}
+	}
+	t.Fatal("no observe_search in the guide")
 }
