@@ -4804,7 +4804,7 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   batches and findings, in its own entry below. PR-11 (#630, PR #764):
   Brakeman reads history within its grant, in its own entry below.
   PR-12 (#632): what a host reports of its sessions, and a hosted
-  session's record.
+  session's record, in its own entry below.
 - **Searchable history: DR1's decisions in it (HS1 PR-9, #626,
   2026-11-08).** Program item HS1, planned in `docs/plans/history.md`
   (PR #609); PR-8 (#624) writes the item's entry, with each PR's checks
@@ -4908,6 +4908,41 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   (`TestNoActsWordsReachATurn`, `TestEveryActsFieldIsDecided`). The by-hand look, a real
   agent's turn finding an earlier session after a restart, is not made
   yet. Its checks are in its body.
+- **Searchable history: what a host reports of its sessions (HS1 PR-12,
+  #632, 2026-11-10).** Program item HS1, planned in
+  `docs/plans/history.md` (PR #609); PR-12 (#632): a hosted session gets
+  a record, and its host, the launch site, reports what the record holds
+  of its launch. A protocol change on the host's control connection
+  (`docs/protocol.md`, What a host reports of its session): the
+  register's session gains `where` (the host's Runtime), `agentVersion`
+  (its adapter's probe of the agent), and, read in the host's folder
+  before its process starts and only on a native Runtime, `repo`,
+  `repoCommon` and `startCommit`; `registered` gains `sessionInfo`; and
+  one new host message, `session_info{endCommit}`, at most 2 KiB, sent
+  before the status that ends the session. Each field is optional and
+  bounded, a register past a bound refused, and an older host's register
+  taken: its record says "not reported by its host" for each absent,
+  never native. A hosted agent's own session is captured on the server
+  from its hook's report, by the catalog's recipe for the agent
+  (`session.NextAgentSession`, the policy a server session's capture
+  uses), into the record alone. The record ends `host away` when the
+  server stops observing it (a restart, its host away past the grace),
+  never lost or ended, and the same host's next registration of the
+  session takes it up again (`journal.BeginHosted`, `reopened` counted,
+  its entries kept). It holds no question: a host's chat sends none. No
+  record field and no history kind is new, and nothing new is served to
+  a Brakeman turn (a hosted record places itself in no repository or
+  project). Observed by the tests: `TestTheHostReadsItsLaunchRevisionBeforeItStarts`,
+  `TestANonNativeHostReportsItsWhereAndNoGit`,
+  `TestAHostedAgentSessionIsCapturedFromItsHook`,
+  `TestAHostedRecordTakesWhatItsHostReports`,
+  `TestAnOldHostsRecordSaysNotReported`,
+  `TestAHostedRecordIsTakenUpAgainByItsHost`, the journal's
+  `TestBeginHostedReopensTheSameHostsRecord`, and the protocol's bounds in
+  Go and vitest. Not made yet, the maintainers' by hand: a hosted session
+  from `conductor host` on the Mac recorded with the agent's version, its
+  own session and its launch commit as the Mac reports them. Its checks
+  are in its body.
 - **Project manifests: a fresh attempt worktree made usable, predictably
   (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
   `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the
