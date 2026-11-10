@@ -26,16 +26,16 @@ import (
 // against every bound, the store working out itself what it can from
 // them: the drift between the selection's read and the save's, what the
 // page's declared revision says of the tree (serving), the changed paths'
-// cut and how a retake is related to the capture it retakes. A send
-// freezes the capture's document (CaptureDocument, conductor.capture/1) as
-// a content file.
+// cut and how a retake is related to the capture it retakes. The
+// capture's document (CaptureDocument, conductor.capture/1) is what a send
+// will freeze as a content file.
 
 // CaptureSchemaName is a capture document's schema.
 const CaptureSchemaName = "conductor.capture/1"
 
 // A capture's words: how it was taken, where from, what tree, how its
 // image was had, how a retake is related, an annotation's kind, a
-// source's class, what the page serves, a send's kind and state.
+// source's class, what the page serves.
 const (
 	CaptureViaWeb      = "web"
 	CaptureViaDesktop  = "desktop"
@@ -55,17 +55,6 @@ const (
 	ServingDeclared    = "declared"
 	ServingStale       = "stale"
 	ServingUnconfirmed = "unconfirmed"
-	// SendReview and SendDecision are reserved: the store refuses them
-	// until the items that own reviews and decisions lift it (the plan's
-	// PR-10 and PR-11).
-	SendTicket    = "ticket"
-	SendBrakeman  = "brakeman"
-	SendReview    = "review"
-	SendDecision  = "decision"
-	SendPending   = "pending"
-	SendSent      = "sent"
-	SendRefused   = "refused"
-	SendCancelled = "cancelled"
 	// holderCapture is the holder of a live capture's own file.
 	holderCapture = "capture"
 )
@@ -290,22 +279,6 @@ type AnnotationEdit struct {
 	Element *ElementReport `json:"element,omitempty"`
 }
 
-// Destination is where a send goes as the person named it: a new ticket
-// (Project and Title), an existing one (Key), or Brakeman.
-type Destination struct {
-	Kind    string `json:"kind"`
-	Project string `json:"project,omitempty"`
-	Title   string `json:"title,omitempty"`
-	Key     string `json:"key,omitempty"`
-}
-
-// SendFacts is what the API made of a send: for Brakeman the request as
-// the desk will be asked it (JSON, at most MaxSendRequest bytes), which a
-// recovery replays whole.
-type SendFacts struct {
-	Request json.RawMessage `json:"request,omitempty"`
-}
-
 // Annotation is one annotation of a capture as a set names it: K its
 // place from 1 (0 in a version's content, which is the rest).
 type Annotation struct {
@@ -379,64 +352,19 @@ type SetPointer struct {
 }
 
 // Capture is a capture as a read gives it: its document at its revision
-// now, who made it and how, the bridge's epoch, the run's scope, its live
-// set and its sends. A deleted capture is its id, rev, times and sends
-// alone: its words are gone with it.
+// now, who made it and how, the bridge's epoch, the run's scope and its
+// live set. A deleted capture is its id, rev and times alone: its words
+// are gone with it.
 type Capture struct {
 	CaptureDocument
-	CreatedAt time.Time     `json:"createdAt"`
-	CreatedBy string        `json:"createdBy,omitempty"`
-	Actor     string        `json:"actor,omitempty"`
-	Via       string        `json:"via,omitempty"`
-	Epoch     int64         `json:"epoch,omitempty"`
-	Scope     CaptureScope  `json:"scope"`
-	Set       SetPointer    `json:"set"`
-	DeletedAt time.Time     `json:"deletedAt,omitzero"`
-	Sends     []CaptureSend `json:"sends,omitempty"`
-}
-
-// SendOutcome is what became of a send: sent (with its target and the
-// attachments it added), refused (why) or cancelled.
-type SendOutcome struct {
-	ID     string    `json:"id"`
-	Kind   string    `json:"kind"`
-	Target string    `json:"target,omitempty"`
-	Files  []string  `json:"files,omitempty"`
-	Why    string    `json:"why,omitempty"`
-	At     time.Time `json:"at"`
-	Actor  string    `json:"actor"`
-	OpID   string    `json:"opId"`
-}
-
-// SendCancel is a person's cancel of a send, kept before anything acts on
-// it.
-type SendCancel struct {
-	OpID  string    `json:"opId"`
-	At    time.Time `json:"at"`
-	Actor string    `json:"actor"`
-}
-
-// CaptureSend is a send as a read gives it: its input, its state by
-// sendState with the deciding outcome's target, files and why, its
-// outcomes and its cancels. A list leaves its request out.
-type CaptureSend struct {
-	ID        string          `json:"id"`
-	Capture   string          `json:"capture"`
-	Rev       int64           `json:"rev"`
-	Kind      string          `json:"kind"`
-	Asked     json.RawMessage `json:"asked"`
-	Digest    string          `json:"digest"`
-	Request   json.RawMessage `json:"request,omitempty"`
-	CreatedAt time.Time       `json:"createdAt"`
-	CreatedBy string          `json:"createdBy,omitempty"`
-	Actor     string          `json:"actor"`
-	OpID      string          `json:"opId"`
-	State     string          `json:"state"`
-	Target    string          `json:"target,omitempty"`
-	Files     []string        `json:"files,omitempty"`
-	Why       string          `json:"why,omitempty"`
-	Outcomes  []SendOutcome   `json:"outcomes"`
-	Cancels   []SendCancel    `json:"cancels"`
+	CreatedAt time.Time    `json:"createdAt"`
+	CreatedBy string       `json:"createdBy,omitempty"`
+	Actor     string       `json:"actor,omitempty"`
+	Via       string       `json:"via,omitempty"`
+	Epoch     int64        `json:"epoch,omitempty"`
+	Scope     CaptureScope `json:"scope"`
+	Set       SetPointer   `json:"set"`
+	DeletedAt time.Time    `json:"deletedAt,omitzero"`
 }
 
 // RequestDigest is a capture operation's request as the API received it,
@@ -454,40 +382,6 @@ func RequestDigest(body any, image string) (string, error) {
 	h.Write([]byte{0})
 	h.Write([]byte(image))
 	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-// sendState is a send's state, the one projection every read makes of
-// its outcomes, the same in any order of arrival: none is pending; any
-// sent makes it sent, the earliest sent deciding its target and files;
-// else the earliest refusal or cancellation, by (at, actor, op_id, id).
-// It returns the deciding outcome, nil for pending.
-func sendState(outcomes []SendOutcome) (string, *SendOutcome) {
-	earlier := func(a, b *SendOutcome) bool {
-		if b == nil {
-			return true
-		}
-		if !a.At.Equal(b.At) {
-			return a.At.Before(b.At)
-		}
-		return a.Actor+"\x00"+a.OpID+"\x00"+a.ID < b.Actor+"\x00"+b.OpID+"\x00"+b.ID
-	}
-	var sent, other *SendOutcome
-	for i := range outcomes {
-		o := &outcomes[i]
-		switch {
-		case o.Kind == SendSent && earlier(o, sent):
-			sent = o
-		case (o.Kind == SendRefused || o.Kind == SendCancelled) && earlier(o, other):
-			other = o
-		}
-	}
-	switch {
-	case sent != nil:
-		return SendSent, sent
-	case other != nil:
-		return other.Kind, other
-	}
-	return SendPending, nil
 }
 
 // measure is v's size as the store keeps it: its JSON with HTML escaping
@@ -823,53 +717,4 @@ func inImage(label string, r Rect, img CaptureImage) error {
 		return refuse(RefusalInvalid, "%s's rectangle is not within the %d by %d screenshot", label, img.Width, img.Height)
 	}
 	return nil
-}
-
-// fileName is the name a send's file takes on a ticket.
-func fileName(c Capture, ext string) string {
-	return fmt.Sprintf("capture-%s-r%d.%s", c.ID, c.Rev, ext)
-}
-
-// ticketText is a ticket's description made from a capture: its warnings
-// first (the drift, what the page serves, no screenshot), the page and
-// its revision, then each annotation's note with its element, what a click
-// reaches and its first source; cut to MaxTicketDescription at a
-// character, so the warnings always stand.
-func ticketText(c Capture) string {
-	var b strings.Builder
-	line := func(format string, args ...any) { fmt.Fprintf(&b, format+"\n", args...) }
-	o := c.Origin
-	if o.Drift != nil {
-		line("> The worktree changed between the selection and the save.")
-	}
-	switch o.Serving.State {
-	case ServingStale:
-		line("> The page reports %s; the tree holds %s.", o.Serving.Page, short(o.Commit))
-	case ServingUnconfirmed:
-		line("> What the page shows is not confirmed against the tree.")
-	}
-	if c.Image.How == ImageNone {
-		line("> No screenshot: %s", c.Image.Why)
-	}
-	line("Captured from %s (%s), %s %dx%d.", c.URL, c.Title, c.Viewport.Mode, c.Viewport.Width, c.Viewport.Height)
-	if o.Kind != OriginURL {
-		line("Revision: %s %s/%s#%d at %s, %d changed files.", o.Tree, o.Run, o.Task, o.Attempt, short(o.Commit), o.Changed)
-	}
-	for _, a := range c.Annotations {
-		line("\n### %d. %s", a.K, a.Kind)
-		if e := a.Element; e != nil {
-			line("`%s` %q, `%s`", e.Tag, e.Name, e.Selector)
-			if !e.Hit.Self && e.Hit.Selector != "" {
-				line("A click at its centre reaches `%s`.", e.Hit.Selector)
-			}
-			if e.State.Disabled {
-				line("It is disabled.")
-			}
-		}
-		if len(a.Sources) > 0 {
-			line("Source: `%s` (%s)", a.Sources[0].Path, a.Sources[0].Class)
-		}
-		line("%s", a.Note)
-	}
-	return cutBytes(fitText(b.String(), true), MaxTicketDescription)
 }

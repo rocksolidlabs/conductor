@@ -139,11 +139,9 @@ const (
 	IntentLinkAdd      = "link.add"
 	IntentReviewSubmit = "review.submit"
 	IntentFindingMark  = "finding.mark"
-	// A capture's create and a send keep it on their rows (Program item
-	// PV1); an edit's is the request's digest, compared while its receipt
-	// is kept.
+	// A capture's create keeps it on its row (Program item PV1); an
+	// edit's is the request's digest, compared while its receipt is kept.
 	IntentCaptureCreate = "capture.create"
-	IntentCaptureSend   = "capture.send"
 )
 
 // Receipt is what an operation gets and what the store keeps under
@@ -212,12 +210,9 @@ const (
 	// log, field marks).
 	EntityReview  = "review"
 	EntityFinding = "finding"
-	// EntityCapture is a person's capture of a preview and EntityCaptureSend
-	// one of its sends (Program item PV1): neither names a ticket or a
-	// project (a send to a ticket touches the ticket too, by its own rows);
-	// a capture bumps its own rev, a send has none.
-	EntityCapture     = "capture"
-	EntityCaptureSend = "capture_send"
+	// EntityCapture is a person's capture of a preview (Program item PV1):
+	// its rows name no ticket or project, and it bumps its own rev.
+	EntityCapture = "capture"
 )
 
 // The ops of a change row: a scalar field set (value and prior), a set
@@ -778,14 +773,13 @@ func prunedAnswer(ctx context.Context, q queryer, op Op, intent, fp string) (rc 
 			return conflictReceipt(op, intent, wordsOpConflict), true, nil
 		}
 		table, id = "finding_marks", v.ID
-	case IntentCaptureCreate, IntentCaptureSend:
-		// A capture's create row and a send's are the operation's first;
-		// a database before captureSchema holds neither.
-		entityWant := map[string]string{IntentCaptureCreate: EntityCapture, IntentCaptureSend: EntityCaptureSend}[intent]
-		if entity != entityWant || kind != OpCreate || schemaOf(q) < captureSchema {
+	case IntentCaptureCreate:
+		// A capture's create row is the operation's first; a database
+		// before captureSchema holds none.
+		if entity != EntityCapture || kind != OpCreate || schemaOf(q) < captureSchema {
 			return conflictReceipt(op, intent, wordsOpConflict), true, nil
 		}
-		table, id = map[string]string{IntentCaptureCreate: "captures", IntentCaptureSend: "capture_sends"}[intent], entityID
+		table, id = "captures", entityID
 	default:
 		return done, true, nil
 	}
@@ -984,7 +978,7 @@ func (s *Store) Committed(ctx context.Context, actor, id string) (rc Receipt, fo
 		return Receipt{}, false, err
 	}
 	rc = Receipt{OpID: id, Status: StatusDone, Repeat: true}
-	if kind == OpCreate && (entity == EntityPlan || entity == EntityLaunch || entity == EntityReview || entity == EntityCapture || entity == EntityCaptureSend) {
+	if kind == OpCreate && (entity == EntityPlan || entity == EntityLaunch || entity == EntityReview || entity == EntityCapture) {
 		rc.ID = entityID
 	}
 	return rc, true, nil
