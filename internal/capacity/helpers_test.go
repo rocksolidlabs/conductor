@@ -44,8 +44,19 @@ func (f *fakeFacts) Bound(id string) []string {
 	return f.bound[id]
 }
 
-// openAt opens capacity/ in dir with the clock now.
+// openAt opens capacity/ in dir and owns it, as the server holding
+// capacity/owner.lock does.
 func openAt(t *testing.T, dir string, o Options) *Store {
+	t.Helper()
+	s := openNotOwned(t, dir, o)
+	if err := s.Own(); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// openNotOwned opens capacity/ in dir as a server without the owner lock.
+func openNotOwned(t *testing.T, dir string, o Options) *Store {
 	t.Helper()
 	data, err := store.Open(dir)
 	if err != nil {

@@ -160,7 +160,7 @@ func TestAccountFolderFixed(t *testing.T) {
 	for i := range ty.NumMethod() {
 		names = append(names, ty.Method(i).Name)
 	}
-	want := []string{"Accounts", "Add", "Remove", "Rename", "Reserve", "Retire", "SetDefault", "Versions"}
+	want := []string{"Accounts", "Add", "Own", "Remove", "Rename", "Reserve", "Retire", "SetDefault", "Versions"}
 	if !slices.Equal(names, want) {
 		t.Errorf("Store's methods are %v, want %v", names, want)
 	}
@@ -307,9 +307,21 @@ func TestAccountsDocumentBounded(t *testing.T) {
 	}
 
 	// Read back bounded and strict: a document past the bound, one with a
-	// field Accounts does not have (a token, say), and one whose account
-	// breaks its shape are each refused at Open, never read as empty.
+	// field Accounts does not have (a token, say), one whose account
+	// breaks its shape, and one that is not the document at all (null, {},
+	// a list, a number, a rev below 1 or no accounts list: this package
+	// writes none of them) each cannot be read at Open, and is left as it
+	// is, never read as empty for the next write to replace.
 	for name, body := range map[string][]byte{
+		"null":          []byte(`null`),
+		"empty object":  []byte(`{}`),
+		"array":         []byte(`[]`),
+		"number":        []byte(`7`),
+		"rev 0":         []byte(`{"rev":0,"accounts":[]}`),
+		"rev 0, null":   []byte(`{"rev":0,"accounts":null}`),
+		"accounts null": []byte(`{"rev":1,"accounts":null}`),
+		"no accounts":   []byte(`{"rev":1}`),
+		"no rev":        []byte(`{"accounts":[]}`),
 		"too large":     append([]byte(`{"rev":1,"accounts":[]}`), bytes.Repeat([]byte(" "), MaxAccountsDoc)...),
 		"unknown field": []byte(`{"rev":1,"accounts":[{"id":"a-abcdefgh2345","adapter":"claude","label":"W","folder":"/w","createdAt":"2030-01-02T03:04:05Z","token":"invented"}]}`),
 		"email":         []byte(`{"rev":1,"accounts":[],"email":"someone@example.invalid"}`),
@@ -324,11 +336,81 @@ func TestAccountsDocumentBounded(t *testing.T) {
 			t.Fatal(err)
 		}
 		data, _ := store.Open(d)
-		if _, err := Open(data, Options{}); err == nil {
-			t.Errorf("%s: opened", name)
+		if _, err := Open(data, Options{}); err == nil || !strings.Contains(err.Error(), "cannot be read") {
+			t.Errorf("%s: opened: %v", name, err)
 		} else if name == "too large" && !errors.Is(err, store.ErrTooLarge) {
 			t.Errorf("%s: %v", name, err)
 		}
+		if b, _ := os.ReadFile(filepath.Join(d, Dir, AccountsFile)); !bytes.Equal(b, body) {
+			t.Errorf("%s: the file changed", name)
+		}
+	}
+	// A count past its bound in a document read back cannot be read either.
+	var many []string
+	for i := range MaxRemoved + 1 {
+		many = append(many, `"a-`+strings.Repeat(string(base32[i%32]), 6)+strings.Repeat(string(base32[i/32]), 6)+`"`)
+	}
+	d := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(d, Dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d, Dir, AccountsFile), []byte(`{"rev":1,"accounts":[],"removed":[`+strings.Join(many, ",")+`]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := store.Open(d)
+	if _, err := Open(data, Options{}); err == nil || !strings.Contains(err.Error(), "removed ids") {
+		t.Errorf("%d removed ids: %v", MaxRemoved+1, err)
+	}
+}
+
+// TestNotOwnerWritesNothing: a Store opened without Own (a server without
+// capacity/owner.lock) reads the accounts and writes nothing: every write
+// and every Reserve of a registered account is refused accounts_not_owner
+// in words, and nothing is made on disk. Own lets the same Store write.
+func TestNotOwnerWritesNothing(t *testing.T) {
+	f := newFacts()
+	dir := t.TempDir()
+	owner := openAt(t, dir, Options{Now: clockAt(t0)})
+	a, rev, err := owner.Add(f, "claude", "Work", "/home/u/work", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, Dir, AccountsFile)
+	before, _ := os.ReadFile(path)
+	s := openNotOwned(t, dir, Options{Now: clockAt(t0)})
+	if d, err := s.Accounts(); err != nil || d.Rev != rev || len(d.Accounts) != 1 {
+		t.Fatalf("read without owning: %+v, %v", d, err)
+	}
+	writes := map[string]func() error{
+		"add":     func() error { _, _, err := s.Add(f, "codex", "Home", "/home/u/home", rev); return err },
+		"rename":  func() error { _, _, err := s.Rename(a.ID, "Job", rev); return err },
+		"retire":  func() error { _, _, err := s.Retire(a.ID, rev); return err },
+		"remove":  func() error { _, err := s.Remove(f, a.ID, rev); return err },
+		"default": func() error { _, _, err := s.SetDefault("claude", a.ID, rev); return err },
+		"reserve": func() error { _, _, err := s.Reserve(a.ID); return err },
+	}
+	for name, w := range writes {
+		if err := w(); code(err) != CodeNotOwner || !strings.Contains(err.Error(), "does not own") {
+			t.Errorf("%s without owning: %v", name, err)
+		}
+	}
+	if _, _, err := s.Reserve(DefaultID); err != nil {
+		t.Errorf("the agent's own login without owning: %v", err)
+	}
+	if after, _ := os.ReadFile(path); !bytes.Equal(before, after) {
+		t.Errorf("a server without the lock changed the document:\n%s", after)
+	}
+	if _, err := os.Stat(filepath.Join(dir, Dir, VersionsFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a record of versions made: %v", err)
+	}
+	if err := s.Own(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Own(); err != nil { // a second call does nothing
+		t.Fatal(err)
+	}
+	if _, _, err := s.Rename(a.ID, "Job", rev); err != nil {
+		t.Errorf("rename once owned: %v", err)
 	}
 }
 

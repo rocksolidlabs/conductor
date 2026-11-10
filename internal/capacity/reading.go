@@ -2,6 +2,7 @@ package capacity
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 	"unicode/utf8"
 )
@@ -60,6 +61,9 @@ const (
 )
 
 // The bounds a reading is held to as it is kept, which keep a View small.
+// Free text for people (words, a plan's, a window's and a program's name)
+// is cut to them, saying so; any other value past its bound makes the
+// reading error, never a cut-down value (Reading.kept).
 const (
 	MaxWords   = 300 // bytes
 	MaxPlan    = 40  // bytes
@@ -91,7 +95,10 @@ type Reading struct {
 	Program   string // the program read, for people ("Claude Code")
 	Version   string // the agent's version this read found; "" when none
 	Qualified string // the reader's qualified version
-	ReadAt    time.Time
+	// ReadAt is the cache's: its clock's time when the read returned. A
+	// time the reader puts here is replaced, so no reader's clock decides
+	// freshness.
+	ReadAt time.Time
 	// Env is the hex SHA-256 of the variables the read was made with,
 	// never their values; "" when the reader gave none.
 	Env string
@@ -253,51 +260,166 @@ func (v *View) MarkEnv(env string) {
 	}
 }
 
-// clip cuts s to at most n bytes on a character's boundary.
-func clip(s string, n int) string {
+// cutMark ends free text that was cut, so the cut is said.
+const cutMark = "…"
+
+// cut holds free text meant for a person (words, a plan's or a window's
+// name, a program's name) to at most n bytes: cut on a character's
+// boundary and ended with cutMark when it was longer. Nothing else a
+// reader answers is ever cut (bounded).
+func cut(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	for n > 0 && !utf8.RuneStart(s[n]) {
-		n--
+	m := n - len(cutMark)
+	for m > 0 && !utf8.RuneStart(s[m]) {
+		m--
 	}
-	return s[:n]
+	return s[:m] + cutMark
 }
 
-func clipp(p *string, n int) *string {
+// own is a copy of what p points to, so no pointer of a kept reading is
+// the reader's or a caller's.
+func own[T any](p *T) *T {
 	if p == nil {
 		return nil
 	}
-	s := clip(*p, n)
-	return &s
+	v := *p
+	return &v
 }
 
-// bounded is r held to the bounds a kept reading has, its slices its own.
-func (r Reading) bounded() Reading {
-	r.Words, r.Plan = clip(r.Words, MaxWords), clip(r.Plan, MaxPlan)
-	r.Program, r.Version, r.Qualified = clip(r.Program, MaxShort), clip(r.Version, MaxVersion), clip(r.Qualified, MaxVersion)
-	ws := make([]Window, 0, min(len(r.Windows), MaxWindows))
-	for _, w := range r.Windows[:min(len(r.Windows), MaxWindows)] {
-		w.Kind, w.Name, w.Limit, w.Severity = clip(w.Kind, MaxShort), clip(w.Name, MaxName), clip(w.Limit, MaxShort), clip(w.Severity, MaxShort)
-		w.Percent = max(0, min(100, w.Percent))
-		ws = append(ws, w)
-	}
-	cs := make([]Credit, 0, min(len(r.Credits), MaxCredits))
-	for _, c := range r.Credits[:min(len(r.Credits), MaxCredits)] {
-		c.Kind, c.Currency = clip(c.Kind, MaxShort), clip(c.Currency, MaxShort)
-		c.Used, c.Limit, c.Balance = clipp(c.Used, MaxFigure), clipp(c.Limit, MaxFigure), clipp(c.Balance, MaxFigure)
-		cs = append(cs, c)
-	}
-	r.Windows, r.Credits = ws, cs
-	r.Limits.Reached = clip(r.Limits.Reached, MaxShort)
-	if r.State != StateOK && r.Words == "" {
-		r.Words = StateWords(r.State)
-	}
-	return r
+func (w Window) clone() Window {
+	w.ResetsAt, w.Active = own(w.ResetsAt), own(w.Active)
+	return w
 }
 
-// view is the View of a kept reading at now: what the reading holds and
-// how fresh it is.
+func (c Credit) clone() Credit {
+	c.Enabled, c.Used, c.Limit, c.Balance = own(c.Enabled), own(c.Used), own(c.Limit), own(c.Balance)
+	return c
+}
+
+func (l Limits) clone() Limits {
+	l.SpendControl, l.OrdinaryAllowed = own(l.SpendControl), own(l.OrdinaryAllowed)
+	return l
+}
+
+func cloneWindows(ws []Window) []Window {
+	out := make([]Window, 0, len(ws))
+	for _, w := range ws {
+		out = append(out, w.clone())
+	}
+	return out
+}
+
+func cloneCredits(cs []Credit) []Credit {
+	out := make([]Credit, 0, len(cs))
+	for _, c := range cs {
+		out = append(out, c.clone())
+	}
+	return out
+}
+
+// outOfBounds names the first value of an ok reading past its bound, ""
+// when every one fits. A value that does not fit is never cut: the
+// reading is unknown instead (kept).
+func (r Reading) outOfBounds() string {
+	long := func(what string, s string, n int) string {
+		if len(s) > n {
+			return fmt.Sprintf("%s is longer than %d bytes", what, n)
+		}
+		return ""
+	}
+	longp := func(what string, p *string, n int) string {
+		if p == nil {
+			return ""
+		}
+		return long(what, *p, n)
+	}
+	first := func(whys ...string) string {
+		for _, w := range whys {
+			if w != "" {
+				return w
+			}
+		}
+		return ""
+	}
+	switch {
+	case len(r.Windows) > MaxWindows:
+		return fmt.Sprintf("%d windows, more than %d", len(r.Windows), MaxWindows)
+	case len(r.Credits) > MaxCredits:
+		return fmt.Sprintf("%d credit figures, more than %d", len(r.Credits), MaxCredits)
+	}
+	if why := first(long("the version", r.Version, MaxVersion), long("the qualified version", r.Qualified, MaxVersion),
+		long("the reached limit", r.Limits.Reached, MaxShort)); why != "" {
+		return why
+	}
+	for i, w := range r.Windows {
+		switch {
+		case w.Percent < 0 || w.Percent > 100:
+			return fmt.Sprintf("window %d's percent is %d, not 0 to 100", i+1, w.Percent)
+		case w.Minutes < 0:
+			return fmt.Sprintf("window %d's length is %d minutes", i+1, w.Minutes)
+		}
+		if why := first(long(fmt.Sprintf("window %d's kind", i+1), w.Kind, MaxShort), long(fmt.Sprintf("window %d's limit", i+1), w.Limit, MaxShort),
+			long(fmt.Sprintf("window %d's severity", i+1), w.Severity, MaxShort)); why != "" {
+			return why
+		}
+	}
+	for i, c := range r.Credits {
+		if why := first(long(fmt.Sprintf("credit %d's kind", i+1), c.Kind, MaxShort), long(fmt.Sprintf("credit %d's currency", i+1), c.Currency, MaxShort),
+			longp(fmt.Sprintf("credit %d's used figure", i+1), c.Used, MaxFigure), longp(fmt.Sprintf("credit %d's limit", i+1), c.Limit, MaxFigure),
+			longp(fmt.Sprintf("credit %d's balance", i+1), c.Balance, MaxFigure)); why != "" {
+			return why
+		}
+	}
+	return ""
+}
+
+// kept is the reading the cache keeps of what the reader answered for k,
+// the read having returned at at (the cache's clock):
+//
+//   - its time is at, whatever the reader dated it;
+//   - a state no reading has is error;
+//   - an ok reading with a value past its bound (a figure, a version, a
+//     percent, a count of windows or credits) is error, with words naming
+//     the bound: never a cut or clamped figure;
+//   - a reading that is not ok holds its state, its words, its time and
+//     its environment's hash, and nothing of the reader's plan, windows,
+//     credits, limits or versions;
+//   - free text for people is cut, saying so (cut);
+//   - every slice and pointer is its own, never the reader's.
+func (r Reading) kept(k Key, at time.Time) Reading {
+	failed := func(words string) Reading {
+		return Reading{Key: k, State: StateError, Words: cut(words, MaxWords), ReadAt: at, Env: r.Env}
+	}
+	switch r.State {
+	case StateOK, StateSignedOut, StateKeyPaid, StateUnqualified, StateError:
+	default:
+		return failed("the reader answered no state a reading has")
+	}
+	if r.State != StateOK {
+		words := r.Words
+		if words == "" {
+			words = StateWords(r.State)
+		}
+		return Reading{Key: k, State: r.State, Words: cut(words, MaxWords), ReadAt: at, Env: r.Env}
+	}
+	if why := r.outOfBounds(); why != "" {
+		return failed("the read's answer is unknown: " + why)
+	}
+	out := Reading{Key: k, State: StateOK, Words: cut(r.Words, MaxWords), Plan: cut(r.Plan, MaxPlan),
+		Windows: cloneWindows(r.Windows), Credits: cloneCredits(r.Credits), Limits: r.Limits.clone(),
+		Program: cut(r.Program, MaxShort), Version: r.Version, Qualified: r.Qualified, ReadAt: at, Env: r.Env}
+	for i := range out.Windows {
+		out.Windows[i].Name = cut(out.Windows[i].Name, MaxName)
+	}
+	return out
+}
+
+// view is the View of a kept reading at now: what the reading holds, in
+// copies of its own, and how fresh it is. A reading that is not ok shows
+// its state and its words alone. A reading dated ahead of the clock (the
+// clock set back) is never fresh.
 func (r Reading) view(now time.Time) View {
 	at := r.ReadAt
 	v := View{
@@ -305,15 +427,17 @@ func (r Reading) view(now time.Time) View {
 		Account: ViewAccount{ID: r.Key.Account, Plan: r.Plan},
 		State:   r.State,
 		Words:   r.Words,
-		Windows: r.Windows,
-		Credits: r.Credits,
-		Limits:  r.Limits,
+		Windows: cloneWindows(r.Windows),
+		Credits: cloneCredits(r.Credits),
+		Limits:  r.Limits.clone(),
 		ReadAt:  &at,
-		ReadBy:  &ReadBy{Program: r.Program, Version: r.Version, Qualified: r.Qualified},
 		Fresh:   FreshNow,
 		Env:     r.Env,
 	}
-	if now.Sub(r.ReadAt) >= FreshFor {
+	if r.State == StateOK {
+		v.ReadBy = &ReadBy{Program: r.Program, Version: r.Version, Qualified: r.Qualified}
+	}
+	if age := now.Sub(r.ReadAt); age >= FreshFor || age < 0 {
 		v.Fresh = FreshStale
 	}
 	for _, w := range r.Windows {

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
 // onDisk reads capacity/versions.json as it is now.
@@ -169,12 +171,29 @@ func TestVersionsInterrupted(t *testing.T) {
 	}
 	// A check no process finished: its record is checking on disk.
 	doc := `{"schema":1,"checking":["claude@2.1.322"],"checked":["claude@2.1.320"],"turned":[],"interrupted":[]}`
-	if err := os.WriteFile(filepath.Join(dir, Dir, VersionsFile), []byte(doc), 0o600); err != nil {
+	path := filepath.Join(dir, Dir, VersionsFile)
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	v := openAt(t, dir, Options{}).Versions()
+	// Opening writes nothing: a server without the owner lock may open the
+	// folder while the owner's check is still running.
+	s := openNotOwned(t, dir, Options{})
+	if b, _ := os.ReadFile(path); string(b) != doc {
+		t.Fatalf("Open wrote the record:\n%s", b)
+	}
+	if got := s.Versions().State("claude", "2.1.322"); got != VersionChecking {
+		t.Fatalf("the record as read: %q", got)
+	}
+	if _, err := s.Versions().Admit("claude", "2.1.322", false, true); code(err) != CodeNotOwner {
+		t.Fatalf("a check before Own: %v", err)
+	}
+	// The owner's Own concludes it: interrupted, on disk.
+	if err := s.Own(); err != nil {
+		t.Fatal(err)
+	}
+	v := s.Versions()
 	if got := stateOnDisk(t, dir, "claude@2.1.322"); got != VersionInterrupted {
-		t.Fatalf("on disk after open: %q", got)
+		t.Fatalf("on disk after Own: %q", got)
 	}
 	if got := v.State("claude", "2.1.320"); got != VersionChecked {
 		t.Errorf("the checked record: %q", got)
@@ -295,4 +314,198 @@ func TestVersionsTurnedNeverDropped(t *testing.T) {
 		t.Fatalf("the document: %v, %v", fi, err)
 	}
 	openAt(t, dir, Options{})
+}
+
+// TestVersionsTwoOpens: two servers over one data directory. Only the one
+// that owns the folder writes the record; the other's open interrupts no
+// check under way and its asks start nothing; and once it owns the folder
+// (the first ended), it reads the turned record the first saved.
+func TestVersionsTwoOpens(t *testing.T) {
+	dir := t.TempDir()
+	a := openAt(t, dir, Options{}).Versions()
+	adm, err := a.Admit("claude", "2.1.400", false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := openNotOwned(t, dir, Options{})
+	if got := stateOnDisk(t, dir, "claude@2.1.400"); got != VersionChecking {
+		t.Fatalf("after the second Open, on disk: %q", got)
+	}
+	if err := adm.Done(Turned); err != nil {
+		t.Fatal(err)
+	}
+	for _, ver := range []string{"2.1.400", "2.1.401"} {
+		if _, err := b.Versions().Admit("claude", ver, true, true); code(err) != CodeNotOwner {
+			t.Fatalf("the second server's check of %s: %v", ver, err)
+		}
+	}
+	if got := stateOnDisk(t, dir, "claude@2.1.400"); got != VersionTurned {
+		t.Fatalf("after the second server's asks, on disk: %q", got)
+	}
+	// A reload shows the record as it is on disk, writing nothing.
+	if err := b.Versions().Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.Versions().State("claude", "2.1.400"); got != VersionTurned {
+		t.Fatalf("the second server's reload: %q", got)
+	}
+	// The first ends; the second takes the lock and owns the folder.
+	if err := b.Own(); err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []bool{false, true} {
+		if _, err := b.Versions().Admit("claude", "2.1.400", true, check); code(err) != CodeUnqualified || !strings.Contains(err.Error(), "model turn") {
+			t.Errorf("a turned version on the new owner, check %v: %v", check, err)
+		}
+	}
+	c, err := b.Versions().Admit("claude", "2.1.401", false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Done(Local); err != nil {
+		t.Fatal(err)
+	}
+	if got := stateOnDisk(t, dir, "claude@2.1.400"); got != VersionTurned {
+		t.Errorf("after the new owner's own check, on disk 2.1.400: %q", got)
+	}
+}
+
+// TestVersionsTurnedTerminal: a turned record is never changed back. A
+// checked version dropped from the record (the oldest past MaxChecked)
+// while a shared read of it runs can be checked again; the shared read
+// ends Turned, then the check ends Local: the version stays turned.
+func TestVersionsTurnedTerminal(t *testing.T) {
+	dir := t.TempDir()
+	v := openAt(t, dir, Options{}).Versions()
+	check := func(ver string, o Outcome) {
+		t.Helper()
+		a, err := v.Admit("claude", ver, false, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := a.Done(o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range MaxChecked {
+		check(fmt.Sprintf("1.%d", i), Local)
+	}
+	shared, err := v.Admit("claude", "1.0", false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check(fmt.Sprintf("1.%d", MaxChecked), Local) // drops 1.0, the oldest
+	if got := v.State("claude", "1.0"); got != "" {
+		t.Fatalf("1.0 not dropped: %q", got)
+	}
+	exclusive, err := v.Admit("claude", "1.0", false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := shared.Done(Turned); err != nil {
+		t.Fatal(err)
+	}
+	if err := exclusive.Done(Local); err != nil {
+		t.Fatal(err)
+	}
+	if got := stateOnDisk(t, dir, "claude@1.0"); got != VersionTurned {
+		t.Fatalf("a turned record overwritten: %q", got)
+	}
+	// The other order and the other outcomes: turned stays turned.
+	for _, o := range []Outcome{Local, Inconclusive} {
+		ver := fmt.Sprintf("2.%d", o)
+		a, err := v.Admit("claude", ver, true, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := v.Admit("claude", ver, true, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = a.Done(Turned)
+		_ = b.Done(o)
+		if got := stateOnDisk(t, dir, "claude@"+ver); got != VersionTurned {
+			t.Errorf("turned, then %v: %q", o, got)
+		}
+	}
+	if _, err := v.Admit("claude", "1.0", false, true); code(err) != CodeUnqualified {
+		t.Errorf("a check of the turned version: %v", err)
+	}
+}
+
+// TestVersionsDocumentShape: a record that is not the document's shape or
+// passes its counts cannot be read, at Open and at Own, and is left as it
+// is: never opened as an empty record the next save replaces, never cut
+// down to its bound.
+func TestVersionsDocumentShape(t *testing.T) {
+	list := func(prefix string, n int) string {
+		var l []string
+		for i := range n {
+			l = append(l, fmt.Sprintf("%q", fmt.Sprintf("claude@%s.%d", prefix, i)))
+		}
+		return "[" + strings.Join(l, ",") + "]"
+	}
+	doc := func(checking, checked, turned, interrupted string) string {
+		return fmt.Sprintf(`{"schema":1,"checking":%s,"checked":%s,"turned":%s,"interrupted":%s}`, checking, checked, turned, interrupted)
+	}
+	for name, body := range map[string]string{
+		"null":             `null`,
+		"empty object":     `{}`,
+		"array":            `[]`,
+		"number":           `7`,
+		"schema only":      `{"schema":1}`,
+		"a list null":      `{"schema":1,"checking":[],"checked":[],"turned":null,"interrupted":[]}`,
+		"schema 0":         `{"schema":0,"checking":[],"checked":[],"turned":[],"interrupted":[]}`,
+		"too many checked": doc("[]", list("c", MaxChecked+1), "[]", "[]"),
+		"too many turned":  doc("[]", "[]", list("t", MaxHeld+1), "[]"),
+		"too many held":    doc(list("k", 1), "[]", list("t", MaxHeld/2), list("i", MaxHeld/2)),
+	} {
+		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, Dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, Dir, VersionsFile)
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		data, err := store.Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Open(data, Options{}); err == nil || !strings.Contains(err.Error(), "cannot be read") {
+			t.Errorf("%s: opened: %v", name, err)
+		}
+		if b, _ := os.ReadFile(path); string(b) != body {
+			t.Errorf("%s: the file changed", name)
+		}
+	}
+	// At the bounds exactly, the record is read.
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, Dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := doc(list("k", 1), list("c", MaxChecked), list("t", MaxHeld/2), list("i", MaxHeld/2-1))
+	if err := os.WriteFile(filepath.Join(dir, Dir, VersionsFile), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := openAt(t, dir, Options{})
+	if got := s.Versions().State("claude", "k.0"); got != VersionInterrupted {
+		t.Errorf("a record at its bounds, after Own: %q", got)
+	}
+	// A file damaged after Open: Own refuses, writing nothing.
+	dir = t.TempDir()
+	s = openNotOwned(t, dir, Options{})
+	path := filepath.Join(dir, Dir, VersionsFile)
+	if err := os.WriteFile(path, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Own(); err == nil || !strings.Contains(err.Error(), "cannot be read") {
+		t.Fatalf("Own over a damaged record: %v", err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != `{}` {
+		t.Errorf("Own wrote over a damaged record: %s", b)
+	}
+	if _, err := s.Versions().Admit("claude", "2.1.500", false, true); code(err) != CodeNotOwner {
+		t.Errorf("a check after a failed Own: %v", err)
+	}
 }

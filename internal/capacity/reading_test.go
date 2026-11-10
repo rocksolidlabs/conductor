@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -40,8 +41,8 @@ func TestMissingWindowIsAbsent(t *testing.T) {
 		{State: StateError, Words: "the tool's words"},
 	}
 	for i, rd := range reads {
-		c := NewCache(CacheOptions{Clock: clock, Read: func(context.Context, Key) Reading { return rd }})
-		v := c.Read(context.Background(), key(i))
+		c := NewCache(CacheOptions{Clock: clock, Read: func(context.Context, Key, Intent) Reading { return rd }})
+		v := c.Read(context.Background(), key(i), ReadOptions{})
 		c.Close()
 		m := viewJSON(t, v)
 		ws, ok := m["windows"].([]any)
@@ -54,9 +55,9 @@ func TestMissingWindowIsAbsent(t *testing.T) {
 		}
 	}
 	// A reported window at 0% says 0; an absent one says nothing.
-	c := NewCache(CacheOptions{Clock: clock, Read: func(context.Context, Key) Reading { return reads[0] }})
+	c := NewCache(CacheOptions{Clock: clock, Read: func(context.Context, Key, Intent) Reading { return reads[0] }})
 	defer c.Close()
-	b, _ := json.Marshal(c.Read(context.Background(), key(9)))
+	b, _ := json.Marshal(c.Read(context.Background(), key(9), ReadOptions{}))
 	if !strings.Contains(string(b), `"percent":0`) || !strings.Contains(string(b), `"source":"provider"`) {
 		t.Errorf("a window at 0%%: %s", b)
 	}
@@ -136,29 +137,30 @@ func TestEveryStateHasWords(t *testing.T) {
 	// it has them and in its state's otherwise.
 	clock := newClock()
 	for i, s := range []string{StateSignedOut, StateKeyPaid, StateUnqualified, StateError} {
-		c := NewCache(CacheOptions{Clock: clock, Read: func(context.Context, Key) Reading { return Reading{State: s} }})
-		v := c.Read(context.Background(), key(i))
+		c := NewCache(CacheOptions{Clock: clock, Read: func(context.Context, Key, Intent) Reading { return Reading{State: s} }})
+		v := c.Read(context.Background(), key(i), ReadOptions{})
 		c.Close()
 		if v.State != s || v.Words != StateWords(s) {
 			t.Errorf("%s kept as %s: %q", s, v.State, v.Words)
 		}
 	}
-	c := NewCache(CacheOptions{Clock: clock, Read: func(context.Context, Key) Reading {
+	c := NewCache(CacheOptions{Clock: clock, Read: func(context.Context, Key, Intent) Reading {
 		return Reading{State: StateError, Words: strings.Repeat("w", 2*MaxWords)}
 	}})
 	defer c.Close()
-	if v := c.Read(context.Background(), key(9)); len(v.Words) != MaxWords {
-		t.Errorf("the tool's words kept at %d bytes", len(v.Words))
+	// Words are for people: cut to the bound, and the cut is said.
+	if v := c.Read(context.Background(), key(9), ReadOptions{}); len(v.Words) > MaxWords || !strings.HasSuffix(v.Words, cutMark) || !strings.HasPrefix(v.Words, "www") {
+		t.Errorf("the tool's words kept as %d bytes: %q", len(v.Words), v.Words)
 	}
 }
 
 func TestViewMarkEnv(t *testing.T) {
 	clock := newClock()
-	c := NewCache(CacheOptions{Clock: clock, Read: func(context.Context, Key) Reading {
+	c := NewCache(CacheOptions{Clock: clock, Read: func(context.Context, Key, Intent) Reading {
 		return Reading{State: StateOK, Env: "sum-a"}
 	}})
 	defer c.Close()
-	v := c.Read(context.Background(), key(1))
+	v := c.Read(context.Background(), key(1), ReadOptions{})
 	if v.MarkEnv("sum-a"); v.Fresh != FreshNow || v.Words != "" {
 		t.Errorf("the same environment: %s %q", v.Fresh, v.Words)
 	}
@@ -171,5 +173,37 @@ func TestViewMarkEnv(t *testing.T) {
 	never := c.View(key(2))
 	if never.MarkEnv("sum-b"); never.Fresh != FreshNone {
 		t.Errorf("never read: %s", never.Fresh)
+	}
+}
+
+// TestReadingFields holds the fields of what the cache keeps and shows.
+// A field added to one of them must be added here, and, when it is a
+// pointer, a slice or a map, to the copies Reading.kept and Reading.view
+// make (clone) and to TestCacheKeepsCopies, so no kept value is shared.
+func TestReadingFields(t *testing.T) {
+	fields := func(v any) []string {
+		var out []string
+		ty := reflect.TypeOf(v)
+		for i := range ty.NumField() {
+			out = append(out, ty.Field(i).Name+" "+ty.Field(i).Type.String())
+		}
+		return out
+	}
+	for _, c := range []struct {
+		v    any
+		want []string
+	}{
+		{Reading{}, []string{"Key capacity.Key", "State string", "Words string", "Plan string", "Windows []capacity.Window", "Credits []capacity.Credit", "Limits capacity.Limits",
+			"Program string", "Version string", "Qualified string", "ReadAt time.Time", "Env string"}},
+		{Window{}, []string{"Source string", "Kind string", "Name string", "Minutes int", "Percent int", "ResetsAt *time.Time", "Severity string", "Active *bool", "Limit string"}},
+		{Credit{}, []string{"Source string", "Kind string", "Enabled *bool", "Used *string", "Limit *string", "Balance *string", "Unlimited bool", "Currency string"}},
+		{Limits{}, []string{"Source string", "Reached string", "SpendControl *bool", "OrdinaryAllowed *bool"}},
+		{View{}, []string{"Agent capacity.ViewAgent", "Model capacity.ViewModel", "Account capacity.ViewAccount", "Host capacity.ViewHost", "State string", "Words string",
+			"Windows []capacity.Window", "Credits []capacity.Credit", "Limits capacity.Limits", "Counts capacity.Counts", "ReadAt *time.Time", "ReadBy *capacity.ReadBy",
+			"Fresh string", "NextRead *time.Time", "Env string"}},
+	} {
+		if got := fields(c.v); !slices.Equal(got, c.want) {
+			t.Errorf("%T's fields:\n%v\nwant\n%v", c.v, got, c.want)
+		}
 	}
 }

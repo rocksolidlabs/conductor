@@ -51,6 +51,17 @@ type versionsDoc struct {
 	Interrupted []string `json:"interrupted"`
 }
 
+// versionsWire is the document as it is read: every member is required,
+// so a file of null, {}, or a list left null is not the record's shape
+// and cannot be read, never an empty record the next save replaces.
+type versionsWire struct {
+	Schema      *int      `json:"schema"`
+	Checking    *[]string `json:"checking"`
+	Checked     *[]string `json:"checked"`
+	Turned      *[]string `json:"turned"`
+	Interrupted *[]string `json:"interrupted"`
+}
+
 const versionsSchema = 1
 
 // record is one entry of the record of versions.
@@ -63,64 +74,137 @@ type record struct {
 // read may start (docs/plans/capacity.md, Qualification): one record per
 // adapter and version, kept in order of its last change. Every admission
 // and every outcome is one transition under its lock (versionsMu in the
-// plan), saved before it answers.
+// plan), saved before it answers. Only the owner writes it: until
+// Store.Own, Admit is refused accounts_not_owner and nothing is saved. A
+// turned record is terminal: no later outcome, check or reload changes or
+// forgets it.
 type Versions struct {
 	st *store.Store
 
 	mu      sync.Mutex
+	owned   bool     // Store.Own has run: admissions and saves are this server's
 	recs    []record // oldest change first
 	pending int      // shared admissions whose Turned would add a held record
 }
 
-// openVersions reads the record and, since a checking record at open is a
-// check no process finished, makes every one interrupted and saves that.
-func openVersions(st *store.Store) (*Versions, error) {
-	v := &Versions{st: st}
-	var d versionsDoc
+func cannotRead(why string, a ...any) error {
+	return fmt.Errorf("capacity: %s cannot be read: %s", VersionsFile, fmt.Sprintf(why, a...))
+}
+
+// loadVersions reads the record as it is on disk, bounded, strict, of the
+// record's shape and within its counts (MaxChecked, MaxHeld); a missing
+// one is no record. It writes nothing.
+func loadVersions(st *store.Store) ([]record, error) {
+	var d versionsWire
 	ok, err := st.LoadLimit(VersionsFile, &d, MaxVersionsDoc)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("capacity: %s cannot be read: %w", VersionsFile, err)
 	}
 	if !ok {
-		return v, nil
+		return nil, nil
 	}
-	if d.Schema != versionsSchema {
-		return nil, fmt.Errorf("capacity: %s: schema %d, not %d", VersionsFile, d.Schema, versionsSchema)
+	if d.Schema == nil || d.Checking == nil || d.Checked == nil || d.Turned == nil || d.Interrupted == nil {
+		return nil, cannotRead("not the record's shape (schema and the four lists checking, checked, turned and interrupted)")
 	}
+	if *d.Schema != versionsSchema {
+		return nil, cannotRead("schema %d, not %d", *d.Schema, versionsSchema)
+	}
+	if n := len(*d.Checked); n > MaxChecked {
+		return nil, cannotRead("%d checked records, at most %d", n, MaxChecked)
+	}
+	if n := len(*d.Checking) + len(*d.Turned) + len(*d.Interrupted); n > MaxHeld {
+		return nil, cannotRead("%d checking, turned and interrupted records, at most %d", n, MaxHeld)
+	}
+	var recs []record
 	seen := map[string]bool{}
-	add := func(list []string, state string) error {
-		for _, k := range list {
-			ad, ver, ok := strings.Cut(k, "@")
-			if !ok || !adapterPattern.MatchString(ad) || !versionPattern.MatchString(ver) || seen[k] {
-				return fmt.Errorf("capacity: %s: %q", VersionsFile, k)
-			}
-			seen[k] = true
-			v.recs = append(v.recs, record{key: k, state: state})
-		}
-		return nil
-	}
 	// The lists keep each state's order; a list's records go behind the
 	// earlier lists', the order a save made them in.
 	for _, l := range []struct {
 		list  []string
 		state string
-	}{{d.Checked, VersionChecked}, {d.Turned, VersionTurned}, {d.Interrupted, VersionInterrupted}, {d.Checking, VersionChecking}} {
-		if err := add(l.list, l.state); err != nil {
-			return nil, err
+	}{{*d.Checked, VersionChecked}, {*d.Turned, VersionTurned}, {*d.Interrupted, VersionInterrupted}, {*d.Checking, VersionChecking}} {
+		for _, k := range l.list {
+			ad, ver, ok := strings.Cut(k, "@")
+			if !ok || !adapterPattern.MatchString(ad) || !versionPattern.MatchString(ver) || seen[k] {
+				return nil, cannotRead("%q", k)
+			}
+			seen[k] = true
+			recs = append(recs, record{key: k, state: l.state})
 		}
 	}
-	if len(d.Checking) == 0 {
-		return v, nil
+	return recs, nil
+}
+
+// openVersions reads the record to check it, and writes nothing: the
+// recovery of a check no process finished is the owner's (own).
+func openVersions(st *store.Store) (*Versions, error) {
+	recs, err := loadVersions(st)
+	if err != nil {
+		return nil, err
+	}
+	return &Versions{st: st, recs: recs}, nil
+}
+
+// Reload reads the record again as it is on disk, writing nothing: what a
+// server that does not own the folder shows, and what the owner's Own
+// starts from. A turned record already known stays turned, whatever the
+// file says.
+func (v *Versions) Reload() error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	_, err := v.reloadLocked()
+	return err
+}
+
+// reloadLocked replaces the records with the file's, keeping every turned
+// one known; added says a turned record was kept that the file lacks. The
+// caller holds v.mu.
+func (v *Versions) reloadLocked() (added bool, err error) {
+	recs, err := loadVersions(v.st)
+	if err != nil {
+		return false, err
+	}
+	for _, r := range v.recs {
+		if r.state != VersionTurned {
+			continue
+		}
+		i := slices.IndexFunc(recs, func(o record) bool { return o.key == r.key })
+		switch {
+		case i < 0:
+			recs, added = append(recs, r), true
+		case recs[i].state != VersionTurned:
+			recs[i].state, added = VersionTurned, true
+		}
+	}
+	v.recs = recs
+	return added, nil
+}
+
+// own is Store.Own's part: the record read again, every checking record
+// (a check no process finished: a crash, a kill) made interrupted and
+// saved, and the record this server's from then on. It runs once.
+func (v *Versions) own() error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.owned {
+		return nil
+	}
+	changed, err := v.reloadLocked()
+	if err != nil {
+		return err
 	}
 	for i := range v.recs {
 		if v.recs[i].state == VersionChecking {
-			v.recs[i].state = VersionInterrupted
+			v.recs[i].state, changed = VersionInterrupted, true
 		}
 	}
-	if err := v.save(); err != nil {
-		return nil, err
+	if changed {
+		if err := v.save(); err != nil {
+			return err
+		}
 	}
-	return v, nil
+	v.owned = true
+	return nil
 }
 
 // save writes the record whole, measured first; the caller holds v.mu.
@@ -164,9 +248,14 @@ func (v *Versions) held() int {
 }
 
 // set gives key its state, as its newest change, and drops the oldest
-// checked records past MaxChecked; the caller holds v.mu and saves.
-func (v *Versions) set(key, state string) {
+// checked records past MaxChecked; the caller holds v.mu and saves when it
+// answers true. A turned record is terminal: set leaves it as it is and
+// answers false.
+func (v *Versions) set(key, state string) bool {
 	if i := v.find(key); i >= 0 {
+		if v.recs[i].state == VersionTurned {
+			return false
+		}
 		v.recs = slices.Delete(v.recs, i, i+1)
 	}
 	v.recs = append(v.recs, record{key: key, state: state})
@@ -184,6 +273,7 @@ func (v *Versions) set(key, state string) {
 		}
 		i++
 	}
+	return true
 }
 
 // State answers the record of adapter's version: one of the Version
@@ -206,7 +296,10 @@ func unqualified(words string, a ...any) error {
 // reader's MinVersion to its Qualified version (the caller compares);
 // check is the admin's explicit check.
 //
-// A turned version is refused, even to a check. A qualified or checked
+// A server that does not own the folder (no Store.Own) is refused
+// accounts_not_owner and starts nothing: it does not hold the record a
+// run's outcome must be saved in. A turned version is refused, even to a
+// check. A qualified or checked
 // version is admitted for every read, sharing no record. Any other is
 // refused unless check: then, when it has no record or an interrupted
 // one, it becomes checking and is saved before Admit returns, so the
@@ -221,6 +314,9 @@ func (v *Versions) Admit(adapter, version string, qualified, check bool) (*Admis
 	key := adapter + "@" + version
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	if !v.owned {
+		return nil, notOwner()
+	}
 	state := ""
 	if i := v.find(key); i >= 0 {
 		state = v.recs[i].state
@@ -249,7 +345,7 @@ func (v *Versions) Admit(adapter, version string, qualified, check bool) (*Admis
 		return nil, full()
 	}
 	prev := slices.Clone(v.recs)
-	v.set(key, VersionChecking)
+	_ = v.set(key, VersionChecking) // not turned: refused above
 	if err := v.save(); err != nil {
 		v.recs = prev
 		return nil, err
@@ -269,9 +365,11 @@ type Admission struct {
 // Done records the run's outcome and saves it before it returns. For a
 // check, Local makes the version checked, Turned turned and Inconclusive
 // interrupted. For a read shared with others, Turned records the version
-// turned and Local or Inconclusive leave its record as it is. Only the
-// first call counts; the record in memory holds the outcome even when the
-// save fails, and the error says the save failed.
+// turned and Local or Inconclusive leave its record as it is. A version
+// recorded turned meanwhile (by another run admitted while this one ran)
+// stays turned, whatever this run proved. Only the first call counts; the
+// record in memory holds the outcome even when the save fails, and the
+// error says the save failed.
 func (a *Admission) Done(o Outcome) error {
 	var err error
 	a.once.Do(func() {
@@ -292,8 +390,9 @@ func (a *Admission) Done(o Outcome) error {
 		default:
 			state = VersionInterrupted
 		}
-		v.set(a.key, state)
-		err = v.save()
+		if v.set(a.key, state) {
+			err = v.save()
+		}
 	})
 	return err
 }

@@ -19,6 +19,16 @@
 //	capacity/                 0700
 //	capacity/accounts.json    the accounts (Accounts), 0600, MaxAccountsDoc
 //	capacity/versions.json    the versions (Versions), 0600, MaxVersionsDoc
+//
+// A document is its shape or it cannot be read: a file that is not the
+// document (null, {}, a list, a number, a member missing), past its bound
+// or past its counts is an error in words, never an empty document a
+// later write replaces. One server writes them: the one that holds
+// capacity/owner.lock. Open reads and checks, and writes nothing; the
+// holder of the lock calls Store.Own once it holds it, which concludes a
+// check no process finished and lets the Store write. Until then every
+// write, every Reserve of a registered account and every Versions.Admit is
+// refused accounts_not_owner.
 package capacity
 
 import (
@@ -108,6 +118,7 @@ const (
 	CodeCheckUnderWay  = "check_under_way"
 	CodeVersionsFull   = "versions_full"
 	CodeUnqualified    = "unqualified"
+	CodeNotOwner       = "accounts_not_owner"
 )
 
 // Error is a refusal, with the code a route answers, the field it is
@@ -130,6 +141,11 @@ func (e *Error) Error() string {
 	}
 	return s
 }
+
+// NotOwnerWords are the words of an accounts_not_owner refusal.
+const NotOwnerWords = "this server does not own capacity/ (another server over this data directory holds capacity/owner.lock, or this platform has no owner lock): it writes neither the accounts nor the record of versions, and starts no read that must be recorded there"
+
+func notOwner() error { return &Error{Code: CodeNotOwner, Words: NotOwnerWords} }
 
 func invalid(field, words string, a ...any) error {
 	return &Error{Code: CodeInvalidAccount, Field: field, Words: fmt.Sprintf(words, a...)}
@@ -253,13 +269,17 @@ type Store struct {
 	ver  *Versions
 
 	mu       sync.Mutex
+	owned    bool           // Own has run
 	reserved map[string]int // account id -> launches under way
 }
 
-// Open opens capacity/ in the data directory (made 0700), reads both
-// documents to check them, and recovers the record of versions (Versions).
-// A document that does not load is an error, never an empty one, so no
-// later write overwrites it.
+// Open opens capacity/ in the data directory (made 0700) and reads both
+// documents to check them. It writes nothing, and the Store it answers
+// does not own the folder: every write, every Reserve of a registered
+// account and every Versions.Admit is refused accounts_not_owner until
+// Own. A document that does not load (past its bound, not its shape, not
+// strict JSON, past its counts) is an error that says it cannot be read,
+// never an empty document, so no later write overwrites it.
 func Open(data *store.Store, o Options) (*Store, error) {
 	st, err := data.Sub(Dir)
 	if err != nil {
@@ -281,21 +301,64 @@ func Open(data *store.Store, o Options) (*Store, error) {
 	return s, nil
 }
 
+// Own is the call the server that holds capacity/owner.lock makes once it
+// holds it (at its start, or when it takes the lock after waiting for
+// it): it reads both documents again, makes every checking record of the
+// record of versions interrupted (a check no process finished) and saves
+// that, and from then on lets this Store write. Nothing else in the
+// package writes before it. A second call does nothing. An error leaves
+// the Store not owning, and its documents as they were.
+func (s *Store) Own() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.owned {
+		return nil
+	}
+	if _, err := s.load(); err != nil {
+		return err
+	}
+	if err := s.ver.own(); err != nil {
+		return err
+	}
+	s.owned = true
+	return nil
+}
+
 // Versions is the record of versions in the same folder.
 func (s *Store) Versions() *Versions { return s.ver }
 
+// accountsWire is the document as it is read: rev and accounts are
+// required, so a file of null or {} is not the document's shape.
+type accountsWire struct {
+	Rev      *int64            `json:"rev"`
+	Accounts *[]Account        `json:"accounts"`
+	Defaults map[string]string `json:"defaults,omitempty"`
+	Removed  []string          `json:"removed,omitempty"`
+}
+
 // load reads the document, bounded and strict; a missing one is rev 0
-// with no account.
+// with no account. One that exists is the document this package writes or
+// cannot be read: an object with a rev of 1 or more (every write bumps it
+// from 0) and an accounts list, within its counts (checkDoc).
 func (s *Store) load() (Accounts, error) {
-	var d Accounts
-	if _, err := s.st.LoadLimit(AccountsFile, &d, MaxAccountsDoc); err != nil {
-		return Accounts{}, err
+	cannot := func(err error) error { return fmt.Errorf("capacity: %s cannot be read: %w", AccountsFile, err) }
+	var w accountsWire
+	ok, err := s.st.LoadLimit(AccountsFile, &w, MaxAccountsDoc)
+	if err != nil {
+		return Accounts{}, cannot(err)
 	}
+	if !ok {
+		return Accounts{Accounts: []Account{}}, nil
+	}
+	switch {
+	case w.Rev == nil || w.Accounts == nil:
+		return Accounts{}, cannot(errors.New("not the accounts document's shape (an object with rev and an accounts list)"))
+	case *w.Rev < 1:
+		return Accounts{}, cannot(fmt.Errorf("rev %d: every document this server writes is at rev 1 or more", *w.Rev))
+	}
+	d := Accounts{Rev: *w.Rev, Accounts: *w.Accounts, Defaults: w.Defaults, Removed: w.Removed}
 	if err := checkDoc(&d); err != nil {
-		return Accounts{}, fmt.Errorf("capacity: %s: %w", AccountsFile, err)
-	}
-	if d.Accounts == nil {
-		d.Accounts = []Account{}
+		return Accounts{}, cannot(err)
 	}
 	return d, nil
 }
@@ -313,6 +376,9 @@ func (s *Store) Accounts() (Accounts, error) {
 func (s *Store) update(expectedRev int64, change func(d *Accounts) error) (Accounts, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !s.owned {
+		return Accounts{}, notOwner()
+	}
 	d, err := s.load()
 	if err != nil {
 		return Accounts{}, err
@@ -543,14 +609,19 @@ func DefaultOf(d Accounts, adapter string) string {
 // it, under the accounts' lock, so Remove is refused until release is
 // called (once the session is registered or the run's record holds the
 // binding, or the launch failed; a second call does nothing). The account
-// must exist and not be retired. "default" needs no reservation: it
-// answers a zero Account and a release that does nothing.
+// must exist and not be retired, and the Store own the folder (Own): a
+// server that does not cannot see a removal, so it binds no registered
+// account. "default" needs no reservation: it answers a zero Account and
+// a release that does nothing.
 func (s *Store) Reserve(id string) (Account, func(), error) {
 	if id == DefaultID {
 		return Account{}, func() {}, nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !s.owned {
+		return Account{}, nil, notOwner()
+	}
 	d, err := s.load()
 	if err != nil {
 		return Account{}, nil, err
