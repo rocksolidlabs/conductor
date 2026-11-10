@@ -104,11 +104,15 @@ type State struct {
 }
 
 // Ending is how a session ended (End): an observed end with its time and
-// words, or (Lost) the server no longer observing it.
+// words, or (Lost) the server no longer observing it. Commit is an
+// observed end's commit as the session's own machine read it (a hosted
+// session's host, StartFromHost's), written with the end in place of the
+// writer's read (EndCommit); none, the writer reads it.
 type Ending struct {
-	At   time.Time
-	How  string
-	Lost bool
+	At     time.Time
+	How    string
+	Lost   bool
+	Commit string
 }
 
 // Options are Open's.
@@ -600,10 +604,9 @@ func (j *Journal) Flush() {
 // all the same, its instance answered, and the writer tries it again as
 // any record it holds (Begin answers an error only for a record it did not
 // keep). An id that has a record is refused (ErrExists): a server
-// session's id is made once and never comes back. The journal records
-// server sessions alone; a record's hosted fields (Host.Hosted,
-// Host.Owner, Reopened) are kept as given, for the records a later
-// version writes.
+// session's id is made once and never comes back; a hosted session's,
+// which comes back, is begun by BeginHosted. A record's hosted fields
+// (Host.Hosted, Host.Owner) are kept as given.
 func (j *Journal) Begin(r Record) (Instance, error) {
 	if !idPattern.MatchString(r.ID) {
 		return Instance{}, ErrBadID
@@ -1005,6 +1008,9 @@ func (j *Journal) endLocked(x *rec, end Ending) {
 	} else {
 		x.r.EndedAt, x.r.LostAt, x.r.Ending = end.At, time.Time{}, cutBytes(end.How, maxField)
 		x.needEnd = true
+		if end.Commit != "" {
+			x.r.End, x.needEnd = fitPath(end.Commit, 64), false
+		}
 		j.closeQuestions(&x.r)
 	}
 	x.dirty, x.urgent, x.endedAt = true, true, j.o.Now()
@@ -1641,7 +1647,7 @@ func (j *Journal) restoreLocked(id string) {
 	case newer:
 		j.index[id] = summaryOf(&r, true)
 	case r.open():
-		r.LostAt, r.Ending = mod, EndingLost
+		r.LostAt, r.Ending = mod, lostEnding(&r)
 		x := &rec{id: id, r: r, dirty: true, urgent: true, endedAt: j.o.Now()}
 		j.recs[id] = x
 		j.index[id] = j.row(x)
@@ -1827,7 +1833,7 @@ func (j *Journal) recoverLocked() error {
 		}
 		dirty := false
 		if r.open() {
-			r.LostAt, r.Ending = f.mod.UTC(), EndingLost
+			r.LostAt, r.Ending = f.mod.UTC(), lostEnding(&r)
 			dirty = true
 		}
 		for i := range r.Resumes {
