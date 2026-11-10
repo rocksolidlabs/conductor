@@ -8,17 +8,18 @@ between them: `ext.GrantDecide`, which answers a durable decision (DR1,
 `docs/plans/decisions.md`) the operator has routed to it, and reads
 nothing else; the decide page, one decision's page drawn for such a
 principal alone; DR1's route operation taught to give a decision to the
-grant and to take it back; and the web app's way to take such a
-principal's credential, a pass, from the URL fragment without ever
-sending it in a URL.
+grant, as one more of the route targets HM1 writes, and to take it back;
+and the web app's way to take such a principal's credential, a pass,
+from the URL fragment without ever sending it in a URL.
 
 It is the row of issue #776, written from the issue's words against
 `main` at `175e0be5` (2026-11-10) after reading `ext/identity.go` and
 `ext/valid.go`, `ext/exttest/fakes.go`, `internal/api` (`auth.go`,
 `identity.go`, `extensions.go`, `decisions.go`, `decision_refs.go`,
 `events.go`, `inbox.go`, `inbox_decisions.go`,
-`brakeman_act_decision.go`, `server.go`), `internal/crew`'s
-`decisions.go` and `decisions_wait.go`, `internal/proto/decisions.go`,
+`brakeman_act_decision.go`, `lane_decisions.go`, `server.go`),
+`internal/crew`'s `decisions.go`, `decisions_wait.go`, `decisions_for.go`
+and `ledger/decisions.go`, `internal/proto/decisions.go`,
 and `web/app` (`app.vue`, `layouts/`, `plugins/token-fragment.client.ts`,
 `utils/desktop.ts`, `composables/useWorkbenchToken.ts`, `useApi.ts`,
 `useInbox.ts`, `useDecisions.ts`, `useInboxActs.ts`, `useBrakeman.ts`,
@@ -32,17 +33,17 @@ recheck), quoted whole below.
 
 **Prerequisites.** On `main`: C2 (the identity provider seam,
 `docs/plans/ext.md`), DR1 with every row (the records, their routes,
-`authorityOf`, `ConfirmAuthority`, `principalWatch`'s use by the events
-stream), HM1 (the route to a person, whose rules the route to the grant
-copies) and MB0's run rows (the operator's decision page). Not on
-`main`: issue #775, the stream's other open-source row (the host token
+`authorityOf`, `ConfirmAuthority`), HM1 (the route to a person: the
+request's `for`, written by `ledger.Tx.RouteFor`, which the route to
+the grant writes too) and MB0's run rows (the operator's decision page).
+Not on `main`: issue #775, the stream's other open-source row (the host token
 and the uplink's credential, `docs/plans/identity-uplink.md`). Both rows
 change `ext/identity.go`, `internal/api`'s identity checks,
 `docs/protocol.md` and `web/app/utils/protocol.ts`, so this row is built
-after #775 merges and on what it adds: `principalWatch` taking the grant
-a connection needs and the token it watches (#775's `watchedToken`), and
-the seam's words for an ended admission. That plan owns those pieces;
-this one names them and restates none.
+after #775 merges, on those files as it leaves them. That plan owns the
+connection rechecks (`principalWatch`, its `watchedToken`); this row
+uses none of them, since a decide principal opens no live connection
+(Owner decisions, 16).
 
 The names follow the railroad: Conductor is the application, Yardmaster
 the harness that holds the wait and applies the answer, Switchman the
@@ -70,10 +71,12 @@ the business of the module that registers a provider.
 4. **Stop, inspect, revoke, export, approvals free.** The grant answers
    one routed decision and reads its own outcome; stop, inspection,
    export and every other approval stay the operator's. The operator
-   takes the grant back from a decision in every state, whether or not
-   its run is held (the take-back, below), and a provider's revocation
-   ends the principal's requests at once and its stream within the
-   recheck (`identityRecheckEvery`, 30 s, and `ext.IdentityWait`).
+   takes the grant back from an open decision at any time, held run or
+   not, and one operation is always kept for it (the take-back, below);
+   once the decision is answered no holder but the answerer reads it, and
+   the operator's cancel and the provider's revocation still end it. A
+   revoked pass is refused at its next request (every request asks the
+   provider), and an open page within one read interval and one read.
 5. **Dependencies one way.** No import changes; `ext` stays standard
    library only.
 6. **No feature build tag.** None added; no test-only binary either
@@ -83,9 +86,8 @@ the business of the module that registers a provider.
    principal.
 8. **Provider outage is the free default.** A provider that fails, is
    late or is away admits nothing new (the guard's answer, an unknown
-   token: `401`), and a recheck it cannot answer ends no stream, as today;
-   an answer not rechecked in time is superseded and the operator answers
-   again (DR1's rule, unchanged).
+   token: `401`); an answer not rechecked in time is superseded and the
+   operator answers again (DR1's rule, unchanged).
 9. **CGO off.** No change.
 10. **Contract.** This plan before its code, one issue and one PR, race
     tests, vitest and Playwright, the protocol triple together
@@ -104,9 +106,11 @@ an identity provider registered:
 1. The operator routes decision dr-7 to the decide grant through DR1's
    route operation (`POST /api/decisions/{did}/route`, the guide's
    `decision_route`) with `to: {kind: "grant", grant: "decide"}`. From
-   then on dr-7's policy admits **anyone** the provider gives the decide
-   grant, not one person: the route's words and "who may answer" say so.
-   Its `rev` moves, and its history says who routed it.
+   then on dr-7's route target (the request's `for`, where HM1's route
+   to a person writes) is the decide grant, which admits **anyone** the
+   provider gives the decide grant, not one person: the route's words and
+   "who may answer" say so. Its `rev` moves, and its history says who
+   routed it. The policy column is not written.
 2. The person is sent to `https://<server>/decide/dr-7#pass=<pass>`, the
    decide page's address with a pass in its fragment. How they are sent,
    and by what, is the provider module's business. The app takes the
@@ -117,20 +121,22 @@ an identity provider registered:
    decide page alone, headed "Signed in as Ana": no sidebar, no sessions,
    no runs, no Dispatch, no inbox. The page reads dr-7 through
    `GET /api/decisions/dr-7`, which answers a decide principal the decide
-   view (a fixed projection, The decide view, below), answers through
-   `POST /api/decisions/dr-7/respond`, and hears of dr-7's changes
-   through `GET /api/decisions/dr-7/events`. Those three and
-   `GET /api/me` are the grant's whole surface.
+   view (a fixed projection, The decide view, below), and answers
+   through `POST /api/decisions/dr-7/respond`. It reads dr-7 again every
+   10 s while the tab is shown, and at once when it is shown again; it
+   opens no live connection. Those two and `GET /api/me` are the grant's
+   whole surface.
 4. Ana's answer is recorded under `user:<subject>` with the authority
    `{grant: decide, via: identity}`, rechecked with the provider after
    its commit, and applied by Yardmaster as any identity's answer is.
    Once dr-7 is answered, Ana reads only the outcome of her own answer,
    and another holder of the grant reads nothing of it.
 5. When the provider stops admitting the pass (its end, or a revocation),
-   the next request is `401` and the stream ends at its next recheck; the
-   page says "Your access to this server has ended. Open it again from
-   your workspace page.", clears the pass, and keeps the answer Ana had
-   not sent yet. A new Open brings a new pass.
+   the next request is `401`, at most one interval and one read after it
+   (Admission and its end); the page says "Your access to this server
+   has ended. Open it again from your workspace page.", clears the pass,
+   and keeps the answer Ana had not sent yet. A new Open brings a new
+   pass.
 
 A browser that already holds a workbench token for that origin keeps it:
 the pass never replaces it, and the decide page's address then opens the
@@ -139,7 +145,7 @@ operator's page for dr-7 instead.
 ## The decide principal's surface
 
 A closed list. A principal holding `decide` and not `admin` is admitted
-by these four routes and by nothing else; every other route answers it
+by these three routes and by nothing else; every other route answers it
 exactly as it answers a request with no credential (`401` under the rate
 limit for every route that needs one, `GET /api/events`, the inbox's
 three routes, `GET /api/decisions` and the operator's operations among
@@ -149,17 +155,23 @@ them).
 |---|---|---|
 | `GET /api/me` | `{subject, name, grants}` | the page's "Signed in as", and whether this pass is a decide pass |
 | `GET /api/decisions/{did}` | the decide view of one decision it is admitted to (below); `404 not_found` otherwise | the question it was routed, and later the outcome of its answer |
-| `POST /api/decisions/{did}/respond` | DR1's response, judged by the policy; its reply the decide view and its own receipt | the answer itself |
-| `GET /api/decisions/{did}/events` | Server-Sent Events of that one decision: `{id, state, rev}` while admitted, one last `{id, rev}` when not | what tells an open page the decision changed, or that its admission ended |
+| `POST /api/decisions/{did}/respond` | DR1's response, judged by the decision's entries (`crew.Admits`); its reply the decide view and its own receipt | the answer itself |
+
+No live connection is among them: the decide page reads its one decision
+again on an interval and when shown again, and each read is judged
+fresh (The changes, `web/app`; Owner decisions, 16). So no stream, no
+signal under the ledger's lock and no delivery is planned, and
+`GET /api/events` stays `401` to the grant.
 
 Asked of each further route the first draft gave the grant, whether the
 issue's outcome ("a person who should answer one decision, and see
 nothing else") needs it: the inbox list and item (`GET /api/inbox`,
 `GET /api/inbox/item`), their counts and pages, the track route
-(`GET /api/inbox/track`), a stream across decisions, Brakeman's card on
-an item, and evidence refs resolved through the operator's resolver. It
-does not: a person sent to one decision's address needs none of them, and
-each is a read computed over records the person may not see. None is
+(`GET /api/inbox/track`), a stream across decisions or of one,
+Brakeman's card on an item, and evidence refs resolved through the
+operator's resolver. It does not: a person sent to one decision's
+address needs none of them, and each is a read computed over records the
+person may not see. None is
 given to the grant (Out of scope; Owner decisions, 1). With no list,
 there is no count, page or cursor to compute over admitted rows.
 
@@ -167,50 +179,62 @@ there is no count, page or cursor to compute over admitted rows.
 
 What `GET /api/decisions/{did}` answers a decide principal, what the
 respond route answers it beside its receipt, and nothing more: one Go
-type, `proto.DecideView`, built in one function, `decideView(d
-crew.Decision, subject string, a crew.Admission) proto.DecideView`, from
-the one record the route read (The changes, `internal/api`). Nothing in
-it is resolved through another record: `decisionRefs` and the inbox's
-item builders are never called for a decide principal.
+type, `proto.DecideView`, built in one function, `decideView(rec
+ledger.DecisionRecord, actor string, a crew.Admission)
+proto.DecideView`, from the one record the route read whole
+(`s.ledger.Decision`, as the decision lane's `laneRecord` reads one;
+The changes, `internal/api`). Nothing in it is resolved through another
+record: `decisionRefs` and the inbox's item builders are never called
+for a decide principal.
 
 | Field | From | Why the answerer needs it |
 |---|---|---|
 | `id` | the record's id | names the decision in the respond route |
 | `rev` | the record's `rev` | the `expectedRev` of the answer |
-| `state` | the record's state | whether it can still be answered |
+| `state` | the record's state (while `open` only) | whether it can still be answered |
 | `type` | the record's type | which form the answer takes (an option, approve or reject, a line) |
 | `question` | the request's `question` | what is asked |
 | `context` | the request's `context` | the asker's words for why |
-| `options[{label, tradeoffs}]` | the request's `options` | what to choose from |
+| `options[{label, tradeoffs?}]` | the labels `crew.DecisionOptions(type, request)` answers, the one place the engine makes them (`optionsOf`, which `answerFits` counts: an assignment's fixed "Done" and "Not done" at 0 and 1, else the request's options in order), each with the request's `tradeoffs` at the same index (none for an assignment) | what to choose from, at the index the answer's `choice` names |
 | `recommendation?` | the request's `recommendation` | the option the asker recommends |
 | `uncertainty?` | the request's `uncertainty` | what the asker is unsure of |
 | `authorizes?` | the request's `authorizes` | what an answer lets happen |
 | `createdAt` | the record's `createdAt` | when it was asked |
-| `own[{k, status, code?, rev, at, choice?}]` | the record's responses whose actor is `user:<this subject>`, the newest 8 | what became of its own answers; never another responder's |
-| `outcome?` | computed from the state and `own` (below) | the outcome of its own answer, which the page says in words |
+| `own[{k, responseId, status, code?, rev, at, choice?}]` | the record's response rows whose actor is `user:<this subject>`, the newest 8, each with its row's `responseId` (the ledger's `ResponseRow.ResponseID`, from the same read) | what became of its own answers, each matched to the send that made it; never another responder's |
+| `outcome?` | `crew.OutcomeOf(rec, actor)`, over the record whole (below) | the outcome of its own answer, which the page says in words |
 
 While the decision is `open`, the view holds every field. Once it is
-`answered` or final (applied, superseded, cancelled or expired), it holds
-`id`, `rev`, `state`, `own` and `outcome` alone. `outcome` is one of
-`recorded` (answered, the accepted response its own), `applied` (applied,
-its own), `not_used` (superseded after its own accepted response: the
-recheck did not admit it, and the replacement is the operator's),
-`answered_elsewhere` (answered or applied, the accepted response
-another's; who is never said) and `closed` (cancelled, expired, or
-superseded with no accepted response of its own).
+`answered` or final, it holds `id`, `rev`, `own` and `outcome` alone: no
+`state`, since which final state it is would say why, and the outcome
+says what the person needs.
+
+`outcome` is one of four words, computed at the read from the whole
+record (every response row, the accepted response, the application
+receipt), never from `own`'s eight or from the state alone, and never
+naming a reason:
+
+| `outcome` | When | The page says |
+|---|---|---|
+| `applied` | the record's application receipt names its own accepted response (`Application.Response` is that row's `k`), whatever the state is now (an approval applied and then superseded by a new candidate stays `applied`) | "Your answer to dr-7 was applied." |
+| `waiting` | its own response is the accepted one, the decision `answered`, no application | "Your answer to dr-7 was recorded." |
+| `not_used` | its own response is the accepted one, the decision final, and no application names it (its recheck did not admit it, its subject moved before the application, or it was cancelled: the view never says which) | "Your answer to dr-7 was not used." |
+| `refused` (with `code`) | it has responses and none is accepted: `code` the newest one's, one of DR1's refusal codes (`decision_answered`, `decision_closed`, `stale_decision`, `stale_policy`, `not_approver`, `response_conflict`, `not_held`, `invalid`), each naming no one | its code's words (`decideWords`) |
+
+No outcome while it is open and no response of its own is kept.
 
 Left out, each on purpose: the run, `openedIn`, `origin`, `gate`,
 `asker`, `member`, `ticket`, `plan`, `planDigest`, `requestId`, the
 request's `evidence`, `expertise`, `subject` (a commit, a run, a task, a
-path) and `for` (HM1's label), the refs and their resolutions, `policy`,
-`why`, `supersededBy` (a decision the principal is not admitted to),
-`answer` (it names who answered), every other responder's receipt,
-`applied` (it names the run and the task), the history (the operator's
-comments, notes and routes, the router's rows), Brakeman's card, and the
-inbox item's run, ticket and session names and its blocking. A receipt's
-`words`, `actor`, `byName`, `text` and `rationale` are left out of `own`
-too: the engine's words name other people (`answeredWords` names who
-answered first), and the page says each code in words of its own.
+path) and `for` (HM1's label, or the grant), the refs and their
+resolutions, `policy`, `why`, `supersededBy` (a decision the principal
+is not admitted to), `answer` (it names who answered), every other
+responder's receipt, `applied` (it names the run and the task), the
+history (the operator's comments, notes and routes, the router's rows),
+Brakeman's card, and the inbox item's run, ticket and session names and
+its blocking. A receipt's `words`, `actor`, `byName`, `text` and
+`rationale` are left out of `own` too: the engine's words name other
+people (`answeredWords` names who answered first), and the page says
+each code in words of its own.
 
 A refusal the respond route answers a decide principal carries
 `{error: {code, message}, receipt?}`, its `message` the fixed words of
@@ -219,15 +243,29 @@ its code (`decideWords`, at most 200 bytes, naming no one) and its
 
 ## Admission and its end
 
-`crew.Admission(d Decision, who Admittee) Admission` is the one
-judgement, over the record a route read:
+A decision's **entries** are what `crew.Admits` judges:
+`crew.EntriesOf(rec)` is its policy's `authority` (`[{kind:
+"operator"}]`, as every decision opens) and, when its route target is
+the decide grant (the request's `for` is `{label: "grant:decide"}`, no
+person), `{kind: "grant", grant: "decide"}` beside it. The policy column
+itself is never written (`ledger.Tx.PutDecision` keeps it as opened);
+the route target is HM1's stored field, written only by
+`ledger.Tx.RouteFor`, which refuses a decision that is not open
+(`internal/crew/ledger/decisions.go`, `RouteFor`). So **a decision's
+entries change only while it is open**, and the entries a response was
+judged by in its transaction are the entries at its recheck and at its
+application.
+
+`crew.Admission(rec, who Admittee) Admission` is the one judgement,
+over the record a route read:
 
 - `Whole`: `who` holds the admin grant (the workbench token, or a
   provider's principal with `admin`): DR1's routes as today.
-- `Open`: `who` holds `decide`, a policy entry admits it (`crew.Admits`,
-  below) and the decision is `open`: the decide view whole.
-- `Outcome`: `who` holds `decide`, a policy entry admits it, the decision
-  is `answered` or final, and `own` is not empty: the outcome view.
+- `Open`: `who` holds `decide`, an entry admits it (the route target is
+  the decide grant) and the decision is `open`: the decide view whole.
+- `Outcome`: `who` holds `decide`, an entry admits it, the decision is
+  `answered` or final, and it has a response of its own: the outcome
+  view.
 - `None`: anything else, and every decision that does not exist:
   `404 not_found` with the same body for both.
 
@@ -236,29 +274,52 @@ So admission ends:
 - **with the answer**, for every holder of the grant without a response
   of its own: once dr-7 is answered, a later pass, or walking the `dr-N`
   ids, finds nothing;
-- **with the take-back**, for everyone: the operator's route to the
-  operator takes the grant entry out of the policy in every state, open,
-  answered or final, held run or not, whatever `rev` the operator read
-  (it only narrows who may read; it never changes the answer), and the
-  next read, response or delivery of each holder is `None`;
+- **with the take-back**, for everyone: while dr-7 is open, the
+  operator's route to the operator takes the target off the grant, at
+  the `expectedRev` it read, as every route is judged, held run or not,
+  and one operation is always left for it (a route to a person or a role
+  replaces the target too, through the held run, as HM1's does; The
+  changes, `internal/crew`);
 - **with the pass**, when the provider stops admitting it: the next
-  request is `401`, and the stream ends at its next recheck
-  (`principalWatch`, within `identityRecheckEvery` and
-  `ext.IdentityWait`).
+  request is `401`.
 
-A take-back after the response committed and before `recheckResponse`
-asked the provider makes that answer not admitted, so the decision is
-superseded and the replacement is the operator's (DR1's rule); a
-take-back after the confirmation changes who may read the decision, not
-its application.
+A take-back and an answer meet in one row, and whichever commits first
+decides:
 
-What an open page does when its admission ends: the stream sends one
-last `{id, rev}` and ends (the take-back, the answer for a principal with
-no response of its own), or is cut (the pass); the page reads the
-decision once more and says "dr-7 is no longer open to you." on a `404`,
-or the ended words on a `401`, with the draft kept either way. Both
-happen as soon as the stream's next delivery or the recheck has run: no
-timer of the page's own is involved.
+| Order | The operator sees | The person sees |
+|---|---|---|
+| take-back, then the response's transaction | the take-back's receipt (`rev` + 1) | its response refused `403 not_approver`, kept as its own receipt; its next read `404`: "dr-7 is no longer open to you." |
+| the response's transaction, then the take-back | `409 decision_answered`, the answer's words (whom it is for changes only while it is open); the answer goes on to its recheck and application, and the operator may still cancel it while it is `answered` (DR1's cancel) | its receipt `accepted`; the outcome `waiting`, then `applied` or `not_used` |
+
+The respond route's transaction reads the row's entries itself
+(`respondTx`, `crew.Admits`), so the read before it decides nothing; the
+test holds the response between its read and its transaction with the
+engine's `beforeRespond` hook and commits the take-back there.
+
+Once answered, nothing a route does changes the entries, so the
+confirmation needs no read of the record: `recheckResponse` asks the
+provider through the guard, after the commit, and `ConfirmAuthority`
+(which records the answer in the engine's memory under `e.mu`; it has
+no transaction of its own) is told `admitted` only for the same subject
+still holding the grant the response's authority names (`admin`, or
+`decide`). The application's transaction (`applyTx`) is unchanged: it
+supersedes an identity's answer not confirmed by this process, as
+today.
+
+**Other ends, whatever the count of operations**: the operator answers
+dr-7 itself, or cancels it (DR1's cancel, open or answered, has the
+final row's own place in the history and no operation slot); a stopped
+run takes no identity's answer (`409 not_held`), and the take-back
+works through the ledger alone while it is stopped; the provider ends
+the pass. Stop, inspect and revoke are untouched (article 4).
+
+**What an open page sees.** The page reads dr-7 every 10 s while the tab
+is shown, and once at once when it is shown again (The changes,
+`web/app`). So a page open when the take-back, the answer or the pass's
+end commits shows the question at most one interval and one read longer
+(10 s and a read bounded at 10 s: 20 s), and a response it sends
+meanwhile is judged by the server fresh and refused. A refused read
+(`401`, `404`) empties the pass and closes the card, the draft kept.
 
 ## The changes
 
@@ -267,17 +328,13 @@ timer of the page's own is involved.
 - `identity.go`: `GrantDecide Grant = "decide"`, documented as "answer
   a decision routed to the grant, and read nothing else". `Grant.Valid`
   accepts it; `Principal.Valid`'s refusal words name the three ("is not
-  admin, host or decide"). `IdentityProvider`'s comment, as #775 leaves
-  it, gains the decide grant among what a recheck asks: a connection is
-  closed when the answer is another subject or a principal without the
-  grant that connection needs (`decide` for a decide principal's
-  decision stream).
+  admin, host or decide").
 - `ext/exttest`: nothing new; `FakeIdentity.Add` already takes any valid
   principal, so its tests' passes hold `decide` once `Grant.Valid` does.
 
 ### `internal/proto`
 
-`decide.go` (new), the wire of the four routes as Go types with their
+`decide.go` (new), the wire of the three routes as Go types with their
 bounds, beside the decision links' (`decisions.go`):
 
 - `MeReply{Subject, Name string; Grants []string}` (`subject` and `name`
@@ -286,85 +343,108 @@ bounds, beside the decision links' (`decisions.go`):
   characters, each a character `encoding/json` escapes to six bytes
   (`<`, `>`, `&`, U+2028), are 528 bytes, the three grants and the rest
   under 100.
-- `DecideView` (the table above), `DecideReceipt` (`own`'s entries),
+- `DecideView` (the table above), `DecideOption{Label, Tradeoffs}`,
+  `DecideReceipt` (`own`'s entries, `responseId` among them),
   `MaxDecideView = 32 << 10`: the request's fields at most
   `ledger.MaxDecisionRequest` (16 KiB) as the ledger keeps them encoded,
-  8 receipts of at most 256 bytes, the rest under 1 KiB.
+  8 receipts of at most 256 bytes (a `responseId` of 32 bytes among
+  them), the rest under 1 KiB.
 - `DecideReply{Receipt DecideReceipt; Decision *DecideView}` and
   `DecideRefusal{Error{Code, Message}; Receipt *DecideReceipt}`, with
   `MaxDecideReply = MaxDecideView + 1<<10` and `MaxDecideWords = 200`.
-- `DecisionStreamEvent{ID string; State string; Rev int}` (`state`
-  omitted on the last), `MaxDecisionStreamEvent = 128`.
-- `MaxDecisionStreams = 64` (in all) and
-  `MaxDecisionStreamsPerSubject = 4` (an identity's subject; the
-  workbench token is one subject of its own).
-- `OutcomeRecorded`, `OutcomeApplied`, `OutcomeNotUsed`,
-  `OutcomeAnsweredElsewhere`, `OutcomeClosed`, the `outcome` codes.
+- `OutcomeApplied`, `OutcomeWaiting`, `OutcomeNotUsed`,
+  `OutcomeRefused`, the `outcome` words.
 
 ### `internal/crew`
 
 - `decisions_admit.go` (new): `PolicyEntry{Kind string; Grant string}`
-  (`json:"kind"`, `json:"grant,omitempty"`), the entries of a policy's
-  `authority`; `Admittee{Grants []string; Via string; Subject string}`,
-  who asks; `Admits(entries []PolicyEntry, who Admittee) bool`: each
-  entry admits by its own kind's rule, and one entry that does admits.
-  `operator` admits `via` `workbench` with the admin grant, or `via`
-  `identity` with the admin grant; `grant` admits `via` `identity`
-  holding that grant; `router` is admitted by no entry; an unknown kind
-  admits nobody. A later kind (SW1's subject entry) adds its rule here and
-  nowhere else. `PolicyOf(raw) ([]PolicyEntry, error)` reads a record's
-  policy; a policy it cannot read admits nobody. `Admission(d Decision,
-  who Admittee) Admission` (Admission and its end, above) is `Admits`
-  plus the state and the principal's own responses, over one record.
-- `decisions.go`: `RespondDecision`'s check of the authority
-  (`auth.Grant != grantAdmin`, today) becomes `!Admits(policy, auth as
-  an Admittee)`, refusing `not_approver` ("dr-7 is not yours to answer:
-  refused under local/1") over the policy its transaction read. The
-  policy keeps its revision, `local/1`, so `stale_policy` keeps its
-  meaning. `applyTx` is unchanged: it checks, as today, that an
-  identity's answer was confirmed by this process (`ConfirmAuthority`)
-  and that its `boot` is this process's; the grant is judged in the
-  response's transaction and again in `recheckResponse` (below), and no
-  route widens a decision's policy once it is answered, so `applyTx` has
-  nothing further to judge.
-- `decisions_wait.go`: `Destination` gains `Grant string`
-  (`json:"grant,omitempty"`). `RouteDecision` takes `{kind: "grant",
-  grant: "decide"}` (any other grant `invalid`): only while the decision
-  is open, at its `expectedRev`, through the run that holds it (`not_held`
-  otherwise, "continue it, then route it to the grant"), as `forRoute`'s
-  person route is taken; in one transaction it adds the entry to the
-  policy's `authority`, writes the `routed` row (`{to: [{kind: "grant",
-  grant: "decide"}], rule: "local/1: the operator, or anyone holding the
-  decide grant", by}`) and bumps `rev`. A policy that already holds the
-  entry is not changed: the row is written, `rev` is not bumped, and the
-  words say "dr-7 already admits the decide grant". **The take-back**: a
-  route to the operator of a decision whose `authority` holds a grant
-  entry takes the entries out (policy back to `policyJSON`), writes the
-  row and bumps `rev`, in every state, through the held run or the
-  ledger alone (`operate`'s `held` and `notHeld` both), whatever
-  `expectedRev` it names; to the operator of any other decision it
-  changes nothing, as today. The policy stays under
-  `ledger.MaxDecisionPolicy` (1 KiB): each entry is held once.
-- The fresh decision that replaces an identity's answer not rechecked
-  (`replaceDecision`) opens under `policyJSON`, the operator alone
-  (Owner decisions, 7).
-- No ledger schema change and no migration: `policy` and `authority` are
-  JSON columns already. An older binary reading a policy with a grant
-  entry checks only its revision and the admin grant, so it refuses a
-  decide answer `not_approver`, and it supersedes an identity's answer
-  whose `boot` is another process's: both fail closed.
+  (`json:"kind"`, `json:"grant,omitempty"`); `Admittee{Grants []string;
+  Via string; Subject string}`, who asks; `Admits(entries []PolicyEntry,
+  who Admittee) bool`: each entry admits by its own kind's rule, and one
+  entry that does admits. `operator` admits `via` `workbench` with the
+  admin grant, or `via` `identity` with the admin grant; `grant` admits
+  `via` `identity` holding that grant; `router` is admitted by no entry;
+  an unknown kind admits nobody. A later kind (SW1's subject entry) adds
+  its rule here and nowhere else. `EntriesOf(rec)` (Admission and its
+  end): the policy's `authority`, and the grant's entry when the route
+  target is the grant; a policy it cannot read gives no entries, so it
+  admits nobody. `Admission(rec, who)` is `Admits` over `EntriesOf` plus
+  the state and the principal's own responses, over one record.
+  `OutcomeOf(rec, actor) (outcome, code string)`: the four words of The
+  decide view, from the record whole (`answerOf` for the accepted
+  response, the application receipt's `Response`, every response row of
+  `actor`).
+- `decisions_for.go`: the decide grant is one more route target in the
+  request's `for`, the field HM1's route writes. `DestGrant = "grant"`;
+  `Destination` gains `Grant string` (`json:"grant,omitempty"`);
+  `routeLabel` takes `{kind: "grant", grant: "decide"}` alone, no name,
+  as the label `grant:decide` (any other grant, or a name, `invalid`).
+  `forRoute`, for that label, makes `DecisionFor{Label: "grant:decide"}`
+  without `Holder` (no person), its words "anyone holding the decide
+  grant", its rule "local/1: the operator, or anyone holding the decide
+  grant", its `to` the operator and `{kind: "grant", grant: "decide"}`;
+  everything else is HM1's route as it is: only while the decision is
+  open (`decision_answered` or `decision_closed` otherwise, no row), at
+  the `expectedRev` read (at least 1), through the held run (`not_held`
+  otherwise, "continue it, then route it to the grant"), the request's
+  `for` rewritten by `ledger.Tx.RouteFor` in the operation's
+  transaction, the `routed` row with `for` and `forWas`, `rev` + 1. A
+  route to the grant of a decision already given to it is what HM1's
+  route to the person a decision is already for is: a row and `rev` + 1.
+  `grantFor(request) bool` reads the target; `requestFor` keeps
+  answering nil for a `for` with no person, so HM1's readers (the
+  receipt's `for`, the task file, `GET /api/decisions?for=`, a gate's
+  label carried to its next decision) treat a grant target as for no
+  person. `resolveFor` and `Holder` take only `person:` and `role:`, so
+  no opening writes `grant:decide`; `gateFor`'s fallback, which keeps a
+  label it cannot resolve as given, drops a `grant:` one.
+- **The take-back** (`RouteDecision`): a route to the operator of a
+  decision whose target is the grant goes through `forRoute` with no
+  target, so `RouteFor` writes the request without its `for`, the row
+  says `forWas` the grant, and `rev` + 1: only while open, at the
+  `expectedRev` it names (judged in its transaction by `operate`'s
+  `staleOp`, as every route is), through the held run **or the ledger
+  alone** (its `notHeld` takes the same edit, which HM1's person route
+  refuses while open). A route to a person or a role of such a decision
+  replaces the target, as HM1's route does, so it takes the grant back
+  too. A route to the operator of any other decision changes nothing, as
+  today.
+- **One operation is kept for the take-back** (`operate`'s `write`, in
+  the operation's transaction): an operation after which the decision's
+  target is the decide grant (the route to the grant, and every comment,
+  request for more or route while it is given to it, the take-back
+  excepted) is refused `429 decision_limit` ("the last operation of dr-7
+  is kept for taking the decide grant back") when it would take the last
+  of `MaxDecisionOperations`, counted as `Tx.History` counts the
+  operator's group (`ledger.Tx.Operations(n)`, new, that same query). So
+  a route to the grant is refused unless one slot is left after it, and
+  the take-back always has one. A Brakeman turn's routes count in their
+  own group and never reach such a decision (`internal/api`, below).
+- `decisions.go`: `respondTx`'s check of the authority (`auth.Grant !=
+  grantAdmin`, today) becomes `!Admits(EntriesOf(rec), auth as an
+  Admittee)`, over the record its transaction reads, refusing
+  `not_approver` ("dr-7 is not yours to answer: refused under local/1").
+  The policy keeps its revision, `local/1`, so `stale_policy` keeps its
+  meaning. `applyTx` is unchanged (Admission and its end: the entries
+  cannot change once answered). `replaceDecision`, which copies the
+  answered row whole, drops a grant target from the request it copies,
+  so the replacement is the operator's alone (Owner decisions, 7).
+- No ledger schema change and no migration: the `for` is a field of the
+  request's JSON, of the shape HM1's `forShape` checks (a label, no
+  person). An older binary reading a grant target treats it as a label
+  naming no person, checks only the admin grant, and so refuses a decide
+  answer `not_approver`; it supersedes an identity's answer whose `boot`
+  is another process's: both fail closed.
 
 ### `internal/api`
 
 - `identity.go`: `principal` gains `decide bool`; `grantPrincipal` sets
   it for `ext.GrantDecide`. `requireAdmin` is unchanged, so a
   decide-only principal is `401` on every admin route, `GET /api/events`
-  among them (its check is `p.admin`). `admission(d crew.Decision, p
-  principal) crew.Admission` (new) is `crew.Admission` over the record
-  and the principal as an `Admittee`; the read, the respond route, the
-  stream and `recheckResponse` call it and nothing else. The decision
-  stream's watch is #775's `principalWatch` with the grant `decide` (or
-  `admin` for an admin's stream).
+  among them (its check is `p.admin`). `admission(rec, p principal)
+  crew.Admission` (new) is `crew.Admission` over the record and the
+  principal as an `Admittee`; the read and the respond route call it and
+  nothing else.
 - `me.go` (new): `GET /api/me`, any authenticated principal:
   `proto.MeReply`, at most `proto.MaxMeReply`: the workbench token
   `["admin", "host"]`, a host token `["host"]`, a share link `[]`, a
@@ -372,85 +452,55 @@ bounds, beside the decision links' (`decisions.go`):
   `401` under the rate limit. Not refused on a switchyard (the workbench
   there is `["admin", "host"]` too; its lack of a role is `whoami`'s to
   say).
-- `decisions.go`: the three decision routes of the surface are wrapped
-  in `deciding` (new): the admin exactly as `launching` (so `403
+- `decisions.go`: the two decision routes of the surface are wrapped in
+  `deciding` (new): the admin exactly as `launching` (so `403
   switchyard` on a switchyard for everyone), a decide-only principal
   through to the handler, `401` for every other principal under the rate
   limit. `GET /api/decisions` and the operator's operations stay
   `launching`.
-  - `handleDecision`: one read of the record (`s.runs.Decision`), then
-    `admission` over that record, then the reply built from that same
-    record: `Whole`, `{decision, refs}` as today; `Open` or `Outcome`,
+  - `handleDecision`: for a decide principal, one read of the record
+    whole (`s.ledger.Decision`), then `admission` over that record, then
+    the reply built from that same record: `Open` or `Outcome`,
     `decideView` (the version judged is the version written); `None`,
     `404 {error: {code: "not_found", message: "no such decision"}}`,
     the body a decision that does not exist gets for a decide principal.
+    `afterDecideRead` (a test hook, nil in the product) holds a read
+    between its record read and its reply. The admin's read is as today.
   - `handleDecisionRespond`: for a decide principal, one read and
     `admission` first (`None`: the same `404`, nothing written), then
-    DR1's transaction, whose `Admits` over the policy it reads decides
-    (a take-back in between: `403 not_approver`, its receipt kept). Its
-    reply is `proto.DecideReply`: its own receipt reduced, and the
-    decide view of the record read again after the commit, judged again
-    (omitted when that read is `None`); a refusal `proto.DecideRefusal`
-    with `decideWords(code)`.
+    DR1's transaction, whose `Admits` over the entries it reads decides.
+    Its reply is `proto.DecideReply`: its own receipt reduced (its
+    `responseId` the body's), and the decide view of the record read
+    again after the commit, judged again (omitted when that read is
+    `None`); a refusal `proto.DecideRefusal` with `decideWords(code)`.
   - `authorityOf` records the grant: `admin` when held, else `decide`,
     with `via: identity` and the subject.
-  - `recheckResponse`'s `admitted` becomes: the provider answered in time,
-    the same subject, and `admission` of the record read after the
-    recheck, under the principal the recheck answered, is not `None`.
+  - `recheckResponse`'s `admitted` becomes: the provider answered in
+    time, the same subject, holding the grant the response's authority
+    names (`admin`, or `decide`). It reads no record.
   - `handleDecisionRoute` refuses `to: grant` with `409 no_identity`
     ("no identity provider is registered: a decision is given to the
     decide grant only where one is") before the engine when `s.exts`
     holds no identity provider (`Registered()` lists none of kind
     identity); the route stays the admin's.
-- `decision_stream.go` (new): `GET /api/decisions/{did}/events`,
-  Server-Sent Events of one decision, through `deciding`, the token from
-  the `Authorization` header alone (`presentedToken(r, false)`: never a
-  query).
-  - **Bounds first**: at most `proto.MaxDecisionStreams` open in all and
-    `proto.MaxDecisionStreamsPerSubject` per subject, counted under the
-    hub's mutex; past either, `429 {error: {code: "stream_limit"}}`
-    before any read.
-  - **Open**: subscribe (a one-slot signal channel keyed by the
-    decision's id), then read the record and judge `admission` (`None`:
-    `404`, unsubscribed, nothing written), then `200` and
-    `event: decision` with `{id, state, rev}` of that read.
-  - **Told**: `decisionTold`, under the ledger's lock after the commit,
-    calls `decisionStreams.changed(id)`, which takes the hub's mutex,
-    finds that id's subscribers in a map and does a non-blocking send on
-    each one-slot channel (a signal already pending stands for both). It
-    parses nothing and judges nothing: the work under the ledger's lock is
-    one map lookup and at most `MaxDecisionStreams` sends.
-  - **Delivered**: the stream's own goroutine, woken by its signal, reads
-    the record (outside the ledger's lock), judges `admission` over that
-    read, and writes from that same read: `{id, state, rev}` when
-    admitted and its `rev` is past the last written; one last
-    `event: decision` with `{id, rev}` alone and the end when `None`; the
-    end after writing a final state. So a change queued before a
-    take-back and delivered after it is judged by the record as the
-    take-back left it: nothing of it is written but that last `{id,
-    rev}`. `decisionStreamBeforeRead` (a test hook, nil in the product)
-    holds a delivery between its signal and its read.
-  - **Kept**: pings as `GET /api/events` sends them. `principalWatch`
-    watches the token with the grant the stream opened with; when it ends
-    the stream, it cuts a write under way and ends the context as
-    `handleEvents` does (a write deadline already passed, set while the
-    handler runs, then the cancel). No frame is written for that end: the
-    page learns it from its next request's `401`.
-  - Nothing else is ever written to it: its one producer is the record of
-    its own decision.
-- `inbox_decisions.go`: `answererOf` takes the record's policy too and
-  names the grant entry ("the operator, or anyone holding the decide
+- `inbox_decisions.go`: `answererOf` reads the record's route target too
+  and names the grant ("the operator, or anyone holding the decide
   grant"); the inbox stays the admin's (`inboxOnly`, unchanged).
 - `guide.go`: `decision_route`'s description names the grant
   destination, the take-back and `no_identity` (its schema is
   `Destination`'s, which gains `grant`).
-- `brakeman_act_decision.go`: a Brakeman turn's `route_decision` act
-  refuses `to: grant` (`400 invalid`) and a route to the operator of a
-  decision whose policy holds a grant entry (`409 stale_target`, "dr-7
-  is given to the decide grant: the operator may route it"), as it
-  refuses to change whom a decision is for.
-- `server.go`: `GET /api/me` and the stream registered; the three
-  decision routes registered through `deciding`.
+- `brakeman_act_decision.go`: `admitVisibleRoute` refuses `to: grant`
+  (`400 invalid`) and any route of a decision whose target is the grant
+  (`409 stale_target`, "dr-7 is given to the decide grant: the operator
+  may route it"), beside its refusal to change whom a decision is for.
+  That check reads before the act runs, and needs nothing new to hold: a
+  turn's route always carries an `expectedRev` of at least 1
+  (`routeActArgs`), `admitVisibleRoute` checks it against its read, and
+  `RouteDecision` judges it again in the operation's transaction
+  (`operate`'s `staleOp`). The route to the grant bumps `rev`, so a turn's
+  route admitted before it is `409 stale_decision` after it.
+- `server.go`: `GET /api/me` registered; the two decision routes
+  registered through `deciding`.
 
 ### `web/app`
 
@@ -460,7 +510,7 @@ pass is held:
 | Site | Today | With this row |
 |---|---|---|
 | `plugins/token-fragment.client.ts` | takes `#token=` into the workbench store | takes `#token=` as today and `#pass=` into the pass store, both dropped from the address bar first |
-| `composables/useDecide.ts` (new) | | the only code that sends the pass, in the `Authorization` header, to the four routes and nowhere else |
+| `composables/useDecide.ts` (new) | | the only code that sends the pass, in the `Authorization` header, to the three routes and nowhere else |
 | `app.vue` (`attention.start`, `identity.ensureDefault`) | started once a workbench token is held | unchanged: never started on a pass |
 | `layouts/default.vue` (`useAttention`, `useInbox`, `useBrakeman`, the token dialog) | the workbench's frame | unchanged; never drawn while a pass is held without a workbench token (the middleware, below) |
 | `composables/useApi.ts` | the workbench token in the header; a `401` asks for it | unchanged: never carries the pass, never touches the pass store |
@@ -497,22 +547,43 @@ pass is held:
   on no request.
 - `composables/useDecide.ts` (new): the decide page's client and state,
   page-owned:
-  - `me()`, `read(did)`, `respond(did)`, `stream(did)`, each with
-    `Authorization: Bearer <pass>`; a `401` calls the pass store's
-    `end()`; a `404` sets `gone` and leaves the pass; any other refusal
-    is its code's words.
-  - `view`, the last decide view read; a refused read never clears it,
-    so the card stays drawn.
-  - `draft`, `{choice?, text, rationale, responseId}`, its `responseId`
-    minted with the draft: no refusal clears it, only a reply whose
-    receipt is the draft's (`201`, or `200` repeat).
-  - `sent`: `unknown` when a send got no reply (the network, a `5xx`),
-    until a read shows a newer receipt in `own` or the same draft sent
-    again (the same `responseId`) is answered, which DR1 answers from its
-    receipt (`200`, repeat) and never records twice.
-  - On a stream frame, one read; on the stream's end, one read, and the
-    stream opened again when that read is admitted and not final, after
-    1 s, doubling to 30 s while opens fail.
+  - `me()`, `read(did)`, `respond(did)`, each with `Authorization:
+    Bearer <pass>`, each aborted after `DECIDE_READ_WAIT` (10 s); a `401`
+    or a `404` empties the pass store (`end()`) and closes the card
+    (`ended` or `gone`); any other refusal is its code's words.
+  - **Reads.** `read(did)` every `DECIDE_READ_EVERY` (10 s) while
+    `document.visibilityState` is `visible`, none while hidden, and one at
+    once on `visibilitychange` to visible and on the window's `focus`;
+    one read at a time, a tick that finds one under way skipped. Each
+    read is judged by the server fresh; the reads stop at `applied`,
+    `not_used`, `ended` or `gone`. Its timers go through `setTimeout`, so
+    vitest's fake clock (`vi.useFakeTimers()`, as
+    `useDispatchLive.test.ts` drives one) moves them; Playwright drives a
+    read by the focus event (its 1.44.1 has no clock).
+  - `view`, the last decide view read; a refused send never clears it.
+  - **What the page keeps of an answer**, one row per moment, against
+    DR1's replay rules as they are on `main` (`replayed`, called by
+    `RespondDecision` before any judgement and again in `respondTx`: the
+    same actor and `responseId` with the same body, fingerprinted whole,
+    `expectedRev` included, is answered from its saved row, an accepted
+    one `200` repeat and a kept refusal refused again in its own words;
+    the same id with another body is `409 response_conflict`):
+
+    | Moment | `draft` (editable) | `sent` (immutable) | What the page shows and does | Test |
+    |---|---|---|---|---|
+    | the person edits | `{choice?, text, rationale}`, as typed | none | the form | `useDecide.test.ts`: the draft kept through a refused read |
+    | the person sends | kept | `{responseId, choice?, text?, rationale?, expectedRev}`: a new `responseId` minted for this send, the draft's fields and the `rev` of `view`, frozen as sent | "Sending"; Send disabled | the body sent is `sent`, byte for byte |
+    | `201`, or `200` repeat | kept | cleared | the receipt; then the outcome from the next read | `TestDecideOwnCarriesTheResponseID` (Go); `useDecide.test.ts` |
+    | a definite refusal (a `4xx` with a code: `stale_decision`, `decision_answered`, `not_approver`, `response_conflict`, `invalid`, ...) | kept | cleared: its id is done with (a kept refusal is replayed for it, another body refused `response_conflict`) | its code's words; the next Send is a new attempt, with a new `responseId` and the latest `view.rev` | `TestDecideOwnCarriesTheResponseID`: after a kept `stale_decision`, the same id with the new rev `response_conflict`, a new id accepted; `useDecide.test.ts`: a new id after a refusal |
+    | no definite answer (no reply, an abort, a `5xx`, `503 decision_moved`) | kept | kept as it was | "Not known whether your answer to dr-7 was recorded. Send it again: the same answer is never recorded twice."; Send again sends `sent` unchanged, never the draft | `TestDecideOwnCarriesTheResponseID`: the same body again `200` repeat with the saved receipt; `useDecide.test.ts`: the retry's body equals the first |
+    | a read whose `own` holds `sent.responseId` | kept | resolved by that receipt (accepted, or the refusal row above) | as that row | `useDecide.test.ts`: a receipt of another `responseId` (another tab of the same subject) resolves nothing |
+    | `401` | kept | kept | "Your access to this server has ended. Open it again from your workspace page."; every send disabled; the pass emptied | `decide-only.spec.ts` |
+    | `404` | kept | kept | "dr-7 is no longer open to you."; every send disabled; the pass emptied | `useDecide.test.ts` |
+
+    A receipt is matched to a send by its `responseId` alone, from the
+    same read as the rest of the view; a newer receipt of another id
+    says nothing of a send. A send whose receipt has left `own`'s eight
+    is resolved by Send again, which the replay answers.
   - `whenIdle()`, the promise of the work under way, the vitest's seam.
 - `pages/decide/[did].vue` and `pages/decide/index.vue` (new), layout
   `bare` (`definePageMeta`), so no sidebar, palette, Needs you pill or
@@ -529,37 +600,41 @@ pass is held:
   - `404` after a view was drawn: "dr-7 is no longer open to you."
   - `unknown`: "Not known whether your answer to dr-7 was recorded. Send
     it again: the same answer is never recorded twice."
-  - `recorded`: "Recorded: your answer to dr-7."; `applied`: "Your answer
-    to dr-7 was applied."; `not_used`: "Your answer to dr-7 could not be
-    confirmed, so it was not used. The operator will answer it.";
-    `answered_elsewhere`: "dr-7 was answered before your answer reached
-    it."; `closed`: "dr-7 was closed before your answer."
+  - the outcome's words (The decide view): `waiting`, `applied`,
+    `not_used`, and `refused` by its code (`decision_answered`: "dr-7 was
+    answered before your answer reached it."; `decision_closed`: "dr-7
+    was closed before your answer."; `stale_decision`: "dr-7 changed
+    since you read it: read it again and answer.").
+  - The options as `view.options` gives them, by index: the page makes
+    none of its own, so an assignment's "Done" and "Not done" are the
+    server's (`crew.DecisionOptions`).
   - No pass (`/decide` alone, or a reload after the end): the `401`
     words.
-- `utils/decisions.ts`: the policy's grant entry in the record's types,
-  and "who may answer" naming it ("the operator, or anyone holding the
-  decide grant").
+- `utils/decisions.ts`: the grant's target in the record's types (the
+  request's `for` as `{label: "grant:decide"}`, no person), "who may
+  answer" naming it ("the operator, or anyone holding the decide
+  grant"), and no "for <person>" drawn for it.
 - `utils/protocol.ts`: `GRANT_DECIDE`, `MeReply` with `MAX_ME_REPLY`,
-  `DecideView`, `DecideReceipt`, `DecideReply`, `DecideRefusal` with
-  their bounds, `DecisionStreamEvent` with `MAX_DECISION_STREAM_EVENT`,
-  the stream caps, the `outcome` codes, the route's `grant` destination,
-  `no_identity` and `stream_limit`, beside the existing decision rows.
+  `DecideView`, `DecideOption`, `DecideReceipt`, `DecideReply`,
+  `DecideRefusal` with their bounds, the `outcome` words,
+  `DECIDE_READ_EVERY` and `DECIDE_READ_WAIT`, the route's `grant`
+  destination and `no_identity`, beside the existing decision rows.
 
 ### `internal/proto`, `web/app/utils/protocol.ts`, `docs/protocol.md`
 
 The triple together: the types and bounds above in `internal/proto`
 (`decide.go`), their mirror in `protocol.ts`, and in `docs/protocol.md`:
 
-- the HTTP API's opening paragraph: the decide grant, the four routes
+- the HTTP API's opening paragraph: the decide grant, the three routes
   that admit it, every other route answering it as no credential
-  (`401`), the recheck watching it on the decision stream;
+  (`401`), and no live connection for it;
 - the Decisions table: a `GET /api/me` row; `GET /api/decisions/{did}`'s
   decide view (its fields, `MaxDecideView`, the `404` for a decision not
   admitted); the respond row's decide reply and refusal
-  (`MaxDecideReply`, `decideWords`); a `GET /api/decisions/{did}/events`
-  row (its frames, `MaxDecisionStreamEvent`, the caps and `429
-  stream_limit`, its order and its end); the route row's `grant`
-  destination, the take-back and `409 no_identity`. The shipped bounds
+  (`MaxDecideReply`, `decideWords`); the route row's `grant`
+  destination beside the shipped ones, the take-back, the operation kept
+  for it, Brakeman's refusal and `409 no_identity`; the decide page's
+  reads (every 10 s while shown, each bounded at 10 s). The shipped bounds
   are kept: the record's read at most 2 MiB (`maxDecisionReply`), a
   response's body at most 32 KiB (`maxDecisionRespondBody`);
 - the `GET /api/inbox/item` row: its answerer words naming the grant
@@ -571,8 +646,8 @@ The triple together: the types and bounds above in `internal/proto`
 ### Docs
 
 `docs/features.md`: the row's entry. `docs/repository-map.md`: the
-`internal/api/decisions.go` row names the decide view, the decision
-stream and `admission`; the `ext` row names three grants.
+`internal/api/decisions.go` row names the decide view and `admission`;
+the `ext` row names three grants.
 
 ## Events, orderings and invariants
 
@@ -581,63 +656,61 @@ URL with both keys taken out, and only then stores what it took; no
 request is made before it runs (it is a client plugin, ahead of the first
 page's setup), and the middleware judges from the fragment itself if it
 runs first. The pass leaves the browser only in an `Authorization` header
-`useDecide` sets; the server reads no pass from a query (the stream and
-every decide route call `presentedToken(r, false)`). A stored workbench
+`useDecide` sets; the server reads no pass from a query (every decide
+route calls `presentedToken(r, false)`). A stored workbench
 token is never written by this path, and while one is stored the pass is
 kept and not sent. The pass is never logged, by the server (the guard
 logs a provider's name, never a token) or by the page.
 
-**The route to the grant and the take-back.** One transaction each, in
-DR1's order for an operation: the repeat look by `(decision, actor,
-opId)` first (its receipt, `repeat: true`); then, for the route to the
-grant, the state (`open`), `expectedRev` and the held run; then the
-policy rewritten, the `routed` row, `rev` + 1. The take-back checks no
-state, rev or hold. The registration check (`no_identity`) is made before
-the transaction and writes nothing. After the commit `decisionTold` sends
-DR1's `decision` event on `GET /api/events`, the notification, the
-router's tell and the decision streams' signal, in that order, under the
-ledger's lock.
+**The route to the grant and the take-back.** Each is one of DR1's
+operations, in its order: the repeat look by `(decision, actor, opId)`
+first (its receipt, `repeat: true`); then, in one transaction, the row
+judged (its run, the `expectedRev` read, `staleOp`), the state (`open`,
+`forRoute`'s edit judged against the row), the operations left (one kept
+for the take-back), then the request's `for` rewritten (`RouteFor`), the
+`routed` row and `rev` + 1. The route to the grant is made through the
+held run only; the take-back through the held run or the ledger alone.
+The registration check (`no_identity`) is made before the transaction
+and writes nothing. After the commit `decisionTold` sends DR1's
+`decision` event on `GET /api/events`, the notification and the
+router's tell, as for every route.
 
 **A decide principal's response.** The route's read and `admission`
 (`404` when `None`), then DR1's transaction, whose policy check is
-`Admits` over the policy it reads (a take-back in between:
-`not_approver`, kept); an identity's response to a run not held is
-`not_held`, as today. After the commit, `recheckResponse` asks the
-provider through the guard (bounded by `ext.IdentityWait`) and calls
-`ConfirmAuthority` with `admitted` true only for the same subject whose
-`admission` of the record as it is then is not `None`. A provider that
-fails, is late or is away has not said yes: the decision is superseded,
-the replacement opens for the operator alone, and the person's stream
-delivers the superseded state, whose view says `not_used`.
+`Admits` over the entries it reads: a take-back committed in between is
+`not_approver`, kept; a take-back after the commit is `decision_answered`
+and changes nothing (Admission and its end). An identity's response to a
+run not held is `not_held`, as today. After the commit,
+`recheckResponse` asks the provider through the guard (bounded by
+`ext.IdentityWait`) and calls `ConfirmAuthority` with `admitted` true
+only for the same subject still holding the grant its authority names.
+A provider that fails, is late or is away has not said yes: the decision
+is superseded, the replacement opens for the operator alone, and the
+person's next read says `not_used`.
 
-**The stream.** Subscribe, then read, then write the first frame: a
-change committed after the read signals the channel, so nothing is lost.
-Every frame is written from the read made for it, after the commit it
-follows, judged against the policy that read found: the version judged
-is the version written, and a frame for a change made before a take-back
-but delivered after it is never written. The ledger's lock covers the
-signal alone.
+**A decide principal's reads.** Each is one record read, judged and
+built from that read: no frame or reply is written from a judgement of
+another read, and nothing is pushed. The page asks again on its
+interval and when shown again; the server keeps nothing for it between
+requests.
 
 **What a pass meets when it ends.** Every request asks the provider
-(C2's rule), so the first request after the end is `401`; the stream ends
-at its next recheck. A pass a provider no longer admits is never cached
-by the server.
+(C2's rule), so the first request after the end is `401`. A pass a
+provider no longer admits is never cached by the server.
 
 Invariants:
 
-- **I1, one judgement.** Every decision of whether a principal may read,
-  hear of or answer a decision is `crew.Admission` (with `crew.Admits`
-  inside it) over one record: the read, the respond route's check, the
-  response's transaction (`Admits`), `recheckResponse` and the stream's
-  open and each delivery. `TestAdmitsIsTheOneCheck` holds them to one
-  table.
-- **I2, the four routes.** A decide-only principal is answered by every
-  route outside the four exactly as a request with no credential is, and
-  is written no byte of a decision `Admission` answers `None` for, but
-  for the one `{id, rev}` of the change that ended its admission.
+- **I1, one judgement.** Every decision of whether a principal may read
+  or answer a decision is `crew.Admission` (with `crew.Admits` over
+  `crew.EntriesOf` inside it) over one record: the read, the respond
+  route's check and the response's transaction (`Admits`).
+  `TestAdmitsIsTheOneCheck` holds them to one table.
+- **I2, the three routes.** A decide-only principal is answered by every
+  route outside the three exactly as a request with no credential is,
+  and is written no byte of a decision `Admission` answers `None` for.
 - **I3, the table.** What a decide principal reads of a decision is
-  `proto.DecideView`, every field named in The decide view's table, built
-  from the one record its route read.
+  `proto.DecideView`, every field named in The decide view's table,
+  built from the one record its route read.
 - **I4, the pass in no URL.** The pass is read only by the plugin and
   `useDecide`, and sent only in an `Authorization` header; the server
   reads it from no query. (The workbench token keeps the URLs it is in
@@ -645,7 +718,15 @@ Invariants:
 - **I5, the workbench token kept.** The pass path never writes
   `conductor.workbenchToken`.
 - **I6, no schema change.** The ledger's tables and version are
-  unchanged; an older binary fails closed on what this one writes.
+  unchanged, and the policy column is written by no new code; an older
+  binary fails closed on what this one writes.
+- **I7, entries change only while open.** The grant's entry is the
+  route target, which only `RouteFor` writes, and only while the
+  decision is open; so the entries a response is judged by are the
+  entries at its recheck and its application.
+- **I8, the take-back has its slot.** While a decision is given to the
+  grant, one of its `MaxDecisionOperations` is free, and only the
+  take-back may take it.
 
 ## Out of scope
 
@@ -654,8 +735,9 @@ Invariants:
   only asks the provider about a token.
 - The decide grant on the inbox (`GET /api/inbox`, `GET
   /api/inbox/item`, `GET /api/inbox/track`), its counts and pages, a list
-  of the decisions that admit a principal, a stream across decisions,
-  Brakeman's card, and evidence refs resolved for a decide principal: a
+  of the decisions that admit a principal, a stream across decisions or
+  of one (Owner decisions, 16), Brakeman's card, and evidence refs
+  resolved for a decide principal: a
   person answers the one decision its address names (Owner decisions,
   1). A later row that wants a list plans it with the grant as a
   condition of its query.
@@ -672,15 +754,22 @@ Invariants:
   the provider's detail: #775 (`docs/plans/identity-uplink.md`).
 - A draft kept across a new Open: the draft stays in the page (Owner
   decisions, 12).
+- A take-back once a decision is answered: whom it is for changes only
+  while it is open (HM1's `RouteFor`), so the answer goes to its recheck
+  and application; the operator cancels an answered decision with DR1's
+  cancel instead, and no other holder reads it by then (Owner
+  decisions, 4).
 
 ## Tests per surface
 
-Every timed thing is driven through a seam, never waited for: the
-recheck through `extAfterOr`'s seam (`s.extAfter`), a delivery through
-`decisionStreamBeforeRead`, the provider's answer through `exttest`'s
-`FakeIdentity` (`Add`, `Remove`, `SetErr`) and the guard's gate, the page
-through `useDecide().whenIdle()` and a fake fetch whose replies the test
-releases.
+Every timed thing is driven through a seam, never waited for: a response
+held between its read and its transaction by the engine's
+`beforeRespond`, a Brakeman route held by the act seam
+(`atActSeam("pending")`), the provider's answer through `exttest`'s
+`FakeIdentity` (`Add`, `Remove`, `SetErr`) and the guard's gate, a read
+held after its record read by `afterDecideRead`, the page
+through `useDecide().whenIdle()`, vitest's fake clock and a fake fetch
+whose replies the test releases.
 
 Go race (`go test -race -count=1 -timeout 60m ./...`, with `make lint`,
 `make lint-static`, `make vuln`):
@@ -689,28 +778,50 @@ Go race (`go test -race -count=1 -timeout 60m ./...`, with `make lint`,
   `admin` and `host`; given twice refused; an unknown grant's words name
   the three).
 - `internal/proto`: `TestDecideBounds` (a `MeReply`, a `DecideView`, a
-  `DecideReply`, a `DecideRefusal` and a `DecisionStreamEvent`, each with
-  every field at its bound and of characters `encoding/json` escapes to
-  six bytes, fits its constant).
-- `internal/crew`: `TestAdmission` (the table: admin, decide, both,
-  none, a router, against a policy with and without the entry, an
-  unreadable one and an unknown kind, in each state, with and without a
-  response of its own); `TestRouteToGrantAddsTheEntry` (open, at its
-  rev, a `routed` row and `rev` + 1; answered, closed, a stale rev and a
-  run not held refused with no row; a second route writes its row and
-  leaves the policy and `rev`); `TestOperatorRouteTakesTheGrantBack`
-  (open held, open not held, answered and applied: the entry out, a row,
-  `rev` + 1, at a stale `expectedRev` too); `TestDecideResponseUnderThePolicy`
-  (a decide authority accepted under a policy with the entry,
-  `not_approver` without it, and after a take-back committed between the
-  route's read and the transaction).
+  `DecideReply` and a `DecideRefusal`, each with every field at its
+  bound and of characters `encoding/json` escapes to six bytes, fits its
+  constant).
+- `internal/crew`:
+  - `TestAdmission` (the table: admin, decide, both, none, a router,
+    against a record whose target is and is not the grant, an unreadable
+    policy and an unknown kind, in each state, with and without a
+    response of its own).
+  - `TestRouteToGrantSetsTheTarget` (open and held, at its rev: the
+    request's `for` the grant, a `routed` row with `for` and `forWas`,
+    `rev` + 1, the policy column byte for byte the opening's; answered,
+    closed, a stale rev and a run not held refused with no row; a route
+    to `admin` or with a name `invalid`; `gateFor` drops a `grant:`
+    label).
+  - `TestTakeBackWhileOpen` (a route to the operator of a decision given
+    to the grant, held and not held: no `for`, a row, `rev` + 1; at a
+    stale `expectedRev` `stale_decision` and nothing changed; of an
+    answered one `decision_answered` and nothing changed; a route to a
+    person replaces the grant).
+  - `TestTakeBackKeepsItsSlot` (a decision with 30 operations: the route
+    to the grant taken as the 31st, a comment then refused
+    `decision_limit`, the take-back taken as the 32nd; one with 31: the
+    route to the grant refused).
+  - `TestDecideResponseUnderTheTarget` (a decide authority accepted with
+    the grant's target, `not_approver` without it; a response held at
+    `beforeRespond` while the take-back commits: `not_approver`, kept; a
+    response committed first: the take-back `decision_answered`, the
+    answer applied).
+  - `TestReplacementIsTheOperators` (an identity's answer not confirmed:
+    the replacement's request has no `for`, and a decide principal is
+    `None` on it).
+  - `TestOutcomeOf` (`waiting`; `applied`; an approval applied and then
+    superseded by a new candidate still `applied`; `not_used` by a failed
+    confirmation, and `not_used` by its subject moving before the
+    application, each without a reason; `refused` with its newest code;
+    an accepted response of its own found after eight later refusals of
+    its own).
 - `internal/api`, in `decide_test.go`, with `exttest.NewFakeIdentity`
   registered:
   - `TestDecideGrantAdmitsDecisionRoutesOnly`: every pattern the package
     registers (found by scanning its non-test sources for `HandleFunc`
     patterns, the constants among them, so a route added later is walked
     too) asked with a decide-only pass and with no credential, the rate
-    limit raised for both walks: the four routes answer the decide
+    limit raised for both walks: the three routes answer the decide
     principal; every other answers it exactly as it answers no
     credential (status and body), `GET /api/events`, the inbox's three
     routes and `GET /api/decisions` among them.
@@ -718,53 +829,60 @@ Go race (`go test -race -count=1 -timeout 60m ./...`, with `make lint`,
     provider's principal with each grant, none (`401`); a subject and a
     name of characters that escape to six bytes fit `MaxMeReply`.
   - `TestRouteToGrantNeedsAProvider`: no provider registered, `409
-    no_identity`, no row; registered, the entry and the row.
+    no_identity`, no row; registered, the target and the row.
   - `TestDecideReadCarriesNothingElse`: a decision whose request cites a
     ticket, a session and a file, with an operator's comment in its
     history, another subject's refused response, a Brakeman card on its
-    subject and an HM1 label, each carrying a marker string: read as a
+    subject and an HM1 label before the grant, each carrying a marker
+    string; sessions started, activity, chat and other decisions changed
+    meanwhile, other decisions given to the grant among them: read as a
     decide principal, open and then answered, the reply holds none of the
-    markers, nor the run's id, nor the other subject.
+    markers, nor the run's id, nor the other subject, nor another
+    decision.
   - `TestDecideViewIsTheTable`: walks `proto.DecideView`'s and
     `DecideReceipt`'s fields by reflection against the table's names, so
     a field added without the table fails.
+  - `TestDecideViewOfAnAssignment`: an assignment given to the grant
+    reads "Done" at 0 and "Not done" at 1 (the labels
+    `crew.DecisionOptions` gives); a choice of 1 is accepted.
   - `TestDecideReadJudgesTheRowItReturns`: the read held after its read
-    of the record (a hook), the grant taken back, the read released: the
-    reply is the view of the rev it judged; the next read is `404`.
+    of the record (a hook), the grant taken back and a comment committed,
+    the read released: the reply is the view of the rev it judged; the
+    next read is `404`.
   - `TestDecideAdmissionEnds`: answered by another, a holder with no
-    response of its own `404`, the responder the outcome view alone;
-    after a take-back of an answered decision and of an open one whose
-    run is not held, both `404`.
+    response of its own `404`, the responder the outcome view alone; a
+    take-back of an open one whose run is not held, through the ledger
+    alone: `404` for every holder.
+  - `TestDecideOwnCarriesTheResponseID`: two sends of one subject with
+    two ids (two tabs), each receipt in `own` under its own
+    `responseId`; the same body sent again `200` repeat with its saved
+    receipt; after a kept `stale_decision`, the same id with the new
+    `expectedRev` `409 response_conflict` and a new id accepted.
   - `TestDecideRefusalsNameNobody`: `decision_answered`, `stale_decision`
     and `not_approver` answered to a decide principal carry
     `decideWords` and its own receipt reduced, never the other
     responder's name or subject.
-  - `TestConfirmAuthorityAdmitsDecide`: the same subject with the decide
-    grant admitted for a decision with the entry, refused for one without
-    it (a take-back before the recheck: superseded, the view `not_used`),
-    another subject refused, a provider late through the guard's gate:
-    superseded.
-  - `TestPrincipalWatchWatchesDecide`: a decide principal's stream ended
-    when the recheck answers no decide grant or another subject, kept for
-    an error or a late answer, the recheck driven through `extAfterOr`'s
-    seam; the reconnect `401`.
-  - `TestDecisionStreamCarriesOnlyAdmittedDecisions`: sessions started,
-    activity, chat and other decisions changed meanwhile, other
-    decisions routed to the grant among them: the stream of dr-7 writes
-    dr-7's frames alone, each at most `MaxDecisionStreamEvent`.
-  - `TestDecisionStreamPolicyChangedDuringDelivery`: a delivery held at
-    `decisionStreamBeforeRead`, an operator's comment committed (a
-    change), then the take-back, then the hold released: one `{id, rev}`
-    of the take-back's rev, no frame of the comment's rev, the end.
-  - `TestDecisionStreamAtItsCap`: `MaxDecisionStreamsPerSubject` streams
-    of one subject open, the next `429 stream_limit` before any read;
-    another subject's opens until `MaxDecisionStreams`; one ended frees
-    its place.
-  - `TestAdmitsIsTheOneCheck`: one table of records (policy, state, own
+  - `TestConfirmAuthorityAdmitsDecide`: the same subject still holding
+    the decide grant admitted and applied; the provider's principal
+    changed to one without it before the recheck, another subject, and a
+    provider late through the guard's gate: superseded, the view
+    `not_used`; a take-back sent while the recheck is held at the gate:
+    `decision_answered`, and once released the answer applied.
+  - `TestDecideReadsAskTheProvider` (for the issue's
+    `TestPrincipalWatchWatchesDecide`, Owner decisions, 16): a pass the
+    fake stops admitting (`Remove`) is `401` at the next read and the
+    next response, nothing cached; a decide principal holds no
+    connection the recheck would watch.
+  - `TestBrakemanRouteKeepsOffTheGrant`: a turn's route to the operator
+    admitted at rev R and held at `atActSeam("pending")`, the operator's
+    route to the grant committed (R + 1), the act released: `409
+    stale_decision`, the target still the grant; a turn's route of a
+    decision given to the grant, to any destination, `409 stale_target`;
+    `to: grant` from a turn `400 invalid`.
+  - `TestAdmitsIsTheOneCheck`: one table of records (target, state, own
     response) against admin, decide, both, none and a router: the read's
-    answer, the respond route's check, the stream's open and
-    `recheckResponse`'s `admitted` agree with `crew.Admission` on every
-    row.
+    answer, the respond route's check and the response's transaction
+    agree with `crew.Admission` on every row.
 
 Vitest (`npm --prefix web test`, with `npm --prefix web run typecheck`):
 
@@ -778,13 +896,16 @@ Vitest (`npm --prefix web test`, with `npm --prefix web run typecheck`):
   pass replaces the old; after `end()` the store is empty; storage
   refused, in memory.
 - `composables/useDecide.test.ts` (a fake fetch whose replies the test
-  releases, `whenIdle()`): every request to one of the four routes, the
-  pass in its header and in no URL; a `401` ends the pass, a `404` sets
-  `gone` and keeps it; the draft and its `responseId` kept through a
-  refused read, a refused send and a `401`; a send with no reply is
-  `unknown` until a read shows its receipt, or the same `responseId`
-  sent again is answered `200`; each `outcome` code's words; a stream
-  frame makes one read, a stream's end one read and a reopen.
+  releases, `vi.useFakeTimers()`, `whenIdle()`): every request to one of
+  the three routes, the pass in its header and in no URL; a read every
+  10 s of the fake clock while visible, none while hidden, one at once
+  on `visibilitychange` and on `focus`, one at a time; a read aborted at
+  10 s; a `401` and a `404` each empty the pass and close the card, the
+  draft kept; each row of the send table (a new `responseId` per send,
+  `sent` frozen and resent byte for byte after no reply, a new id after
+  a definite refusal, a receipt of another id resolving nothing); each
+  `outcome`'s words; an assignment's options drawn as the view gives
+  them.
 - `utils/passSites.test.ts`: only `plugins/token-fragment.client.ts` and
   `composables/useDecide.ts` import the pass store (the app's sources
   read through `import.meta.glob`).
@@ -799,16 +920,19 @@ switched on to admit a pass (articles 1 to 3), so:
   the pass, `GET /api/me` answered `401` by the real server, the ended
   words, the store empty; no request URL holds the pass and no request
   goes to `/api/events`.
-- **The page against the four routes stubbed in the browser**
+- **The page against the three routes stubbed in the browser**
   (`page.route`, as `brakeman.spec.ts` and `decisions-gate.spec.ts` stub
   replies): the decide page alone ("Signed in as Ana", no sidebar, the
-  token dialog never opened), every request one of the four with the
-  pass in its header, no response `401` until the spec answers one; an
-  answer recorded; a send whose reply the stub aborts, "Not known
-  whether your answer to dr-7 was recorded", then the same answer sent
-  again answered from its receipt; the stub's `401` to a send: the ended
-  words with the draft still in its field; `not_used` drawn from a
-  stubbed view.
+  token dialog never opened), every request one of the three with the
+  pass in its header, no response `401` until the spec answers one, no
+  request to an events stream; an assignment answered "Not done"
+  (choice 1); a send whose reply the stub aborts, "Not known whether
+  your answer to dr-7 was recorded", then Send again whose body the spec
+  asserts equal to the first, answered from its receipt; a read driven
+  by a `focus` event the spec dispatches (no clock is waited on) whose
+  stub answers `404`: "dr-7 is no longer open to you."; the stub's `401`
+  to a send: the ended words with the draft still in its field;
+  `not_used` drawn from a stubbed view.
 - **A workbench token held**: `/decide/dr-7#pass=…` keeps
   `conductor.workbenchToken`, sends the pass nowhere and opens the
   operator's `/decisions?item=decision:dr-7`.
@@ -851,9 +975,9 @@ desktop-test`, `make test-pebble`, `make test-live`.
 - [x] Article 3: no flag and no test-only binary; the grant exists only
   in a provider's answer.
 - [x] Article 4: stop, inspect, revoke, export and approvals stay the
-  operator's; the operator takes the grant back in every state, and a
-  revoked pass loses its requests at once and its stream within the
-  recheck.
+  operator's; the operator takes the grant back from an open decision
+  with a slot always kept for it, cancels an answered one, and a revoked
+  pass loses its next request.
 
 ## The PRs
 
@@ -865,60 +989,68 @@ leaves `main` working and green on its own and carries the
 
 | PR | Title | Contains | Touches | Tests | Depends on | Parallel with |
 |---|---|---|---|---|---|---|
-| PR-1 (#776, ~700 + 800 lines) | ext, api, web: a decide grant and a pass taken from the fragment | `ext.GrantDecide`; `proto`'s decide types and bounds; `crew.Admits`, `crew.Admission`, the policy check, the route to the grant and the take-back; `GET /api/me`, `deciding`, the decide view and words, `GET /api/decisions/{did}/events` and its hub, `admission`, `authorityOf`, `recheckResponse`, `no_identity`, `answererOf`, Brakeman's refusals; the pass parser, its store, the plugin, the middleware, `useDecide`, the decide page; `docs/protocol.md`, `protocol.ts`, `docs/features.md`, `docs/repository-map.md` | `ext`, `internal/proto`, `internal/crew`, `internal/api`, `web/app`, `web/e2e`, `docs` | every test above | #775 (its PR merged); DR1 and MB0 on `main` | none: #775 shares `ext`, `internal/api`, `web/app` and `docs` |
+| PR-1 (#776, ~550 + 700 lines) | ext, api, web: a decide grant and a pass taken from the fragment | `ext.GrantDecide`; `proto`'s decide types and bounds; `crew.Admits`, `crew.EntriesOf`, `crew.Admission`, `crew.OutcomeOf`, the grant as a route target (`routeLabel`, `forRoute`, `gateFor`), the take-back, the operation kept for it (`ledger.Tx.Operations`), `respondTx`'s check, `replaceDecision`'s drop; `GET /api/me`, `deciding`, the decide view and words, `admission`, `authorityOf`, `recheckResponse`, `no_identity`, `answererOf`, Brakeman's refusal; the pass parser, its store, the plugin, the middleware, `useDecide` and its reads, the decide page; `docs/protocol.md`, `protocol.ts`, `docs/features.md`, `docs/repository-map.md` | `ext`, `internal/proto`, `internal/crew`, `internal/api`, `web/app`, `web/e2e`, `docs` | every test above | #775 (its PR merged); DR1, HM1 and MB0 on `main` | none: #775 shares `ext`, `internal/api`, `web/app` and `docs` |
 
 ## Owner decisions
 
 Dated 2026-11-10. Each is a default for a choice the issue's words leave
 open, or a narrowing of them, the fail-closed one, which the owner may
-overturn.
+overturn. Review round 2 changed 1, 4, 5, 7, 8 and 12, withdrew 11 (its
+stream is gone) and added 16 to 19; the numbers are kept so the earlier
+threads still point at the right one.
 
-1. **Four routes, one decision.** The grant reaches `GET /api/me`, one
-   decision's read, its respond route and its stream, and nothing else.
-   The issue's "decision page's read model filtered to the decisions
-   that admit it" and its stream across decisions are not built: a person
-   answers the decision its address names (`/decide/<did>`), and a read
-   computed over every record and narrowed afterwards is where a grant
-   leaks (its order, its bound, its count, its errors, the records it
-   links). The issue's stream becomes one decision's,
-   `GET /api/decisions/{did}/events`, its tests kept.
+1. **Three routes, one decision.** The grant reaches `GET /api/me`, one
+   decision's read and its respond route, and nothing else. The issue's
+   "decision page's read model filtered to the decisions that admit it"
+   and its stream are not built: a person answers the decision its
+   address names (`/decide/<did>`), and a read computed over every record
+   and narrowed afterwards is where a grant leaks (its order, its bound,
+   its count, its errors, the records it links). The stream: 16.
 2. **The decide view is a table.** A decide principal reads the
-   request's own words, its state and its own receipts, never the
-   record whole, the refs, the history or another's receipt (The decide
-   view).
+   request's own words, its state and its own receipts (each with its
+   `responseId`), never the record whole, the refs, the history or
+   another's receipt (The decide view). Its options are the engine's
+   (`crew.DecisionOptions`), an assignment's two fixed ones among them.
 3. **Admission ends with the answer.** Once a decision is answered, a
    holder of the grant reads only the outcome of its own answer, and one
    with no answer of its own reads nothing.
-4. **The take-back works in every state.** A route to the operator of a
-   decision whose policy holds a grant entry removes it, open, answered
-   or final, held run or not, at any `expectedRev`: it only narrows.
+4. **The take-back is a route, while the decision is open** (round 2;
+   round 1 had it in every state at any rev). It is a route to the
+   operator (or to a person or a role), at the `expectedRev` read, held
+   run or not, with one operation kept for it (18). The grant's target is
+   HM1's `for`, which changes only while a decision is open, so once
+   answered nothing takes it back: the answer goes to its recheck and its
+   application, which the operator may stop with DR1's cancel while it
+   is `answered`, and no other holder reads the decision by then.
 5. **"A new revision" is the decision's `rev`.** The route to the grant
-   bumps the record's `rev` and leaves the policy's revision `local/1`:
-   `stale_policy` refuses any revision but the one in force, so a new
-   policy revision would refuse every response, while `rev` + 1 makes a
-   card read before the route `stale_decision`.
+   bumps the record's `rev`; the policy keeps `local/1` and is not
+   written (17): `stale_policy` refuses any revision but the one in
+   force, so a new policy revision would refuse every response, while
+   `rev` + 1 makes a card read before the route `stale_decision`.
 6. **Given only while open, at its rev, through the held run.** The
-   route to the grant follows HM1's route to a person.
+   route to the grant is HM1's route to a person, with another target.
 7. **A replacement is the operator's.** The fresh decision that replaces
-   an identity's answer not rechecked opens under the operator's policy
-   alone; the operator routes it again if a holder of the grant should
-   answer it, and the person's page says `not_used`.
+   an identity's answer not rechecked opens with no grant target (round
+   2: `replaceDecision` copies the row whole, so it drops it); the
+   operator routes it again if a holder of the grant should answer it,
+   and the person's page says `not_used`.
 8. **Brakeman neither gives nor takes the grant.** Its act refuses `to:
-   grant` and a route to the operator of a decision given to the grant.
-9. **Not admitted is not found.** A decide principal's read, response or
-   stream of a decision `Admission` answers `None` for is `404
-   not_found`, with the body a decision that does not exist gets.
+   grant` and any route of a decision given to the grant; a turn's route
+   admitted before the grant is refused `stale_decision` by the
+   transaction's rev check, which every turn's route already carries
+   (round 2: no new restriction is needed in the engine).
+9. **Not admitted is not found.** A decide principal's read or response
+   of a decision `Admission` answers `None` for is `404 not_found`, with
+   the body a decision that does not exist gets.
 10. **`GET /api/me` for the chain's tokens**: the workbench token
     `admin` and `host`, a host token `host`, a link none.
-11. **The stream's end writes no frame.** A recheck that ends it cuts it
-    as `GET /api/events` is cut; the page learns it from its next
-    request's `401`. A take-back or an answer ends it with one last
-    `{id, rev}`.
-12. **The pass lives in the tab; the draft in the page.** The pass in
-    `sessionStorage`, emptied at its first `401`; the draft and its
-    `responseId` in the page's state, never in the browser's storage: a
-    new Open reloads the page, which reads the outcome of an answer sent
-    before.
+11. **Withdrawn in round 2.** It said how the stream ended; there is no
+    stream (16).
+12. **The pass lives in the tab; the draft and the answer sent in the
+    page.** The pass in `sessionStorage`, emptied at its first `401` or
+    `404`; the draft and the frozen `sent` body in the page's state,
+    never in the browser's storage: a new Open reloads the page, which
+    reads the outcome of an answer sent before.
 13. **The workbench token wins.** With one stored, the pass is kept and
     not sent, and the decide address opens the operator's page.
 14. **On a switchyard the decide routes are `403 switchyard`**, as
@@ -926,17 +1058,49 @@ overturn.
 15. **Playwright on the shipped build.** No test-only binary registers a
     fake provider; the page is proved against the real server's refusal
     and against stubbed replies, the server by Go tests with `exttest`.
+16. **No live connection for a decide principal** (round 2). The issue
+    names `GET /api/decisions/events` as "the only live connection a
+    decide-only principal may open"; this row opens none. The decide page
+    reads its one decision every 10 s while shown and at once when shown
+    again, each read judged fresh, so an open page outlives a take-back,
+    an answer or a pass's end by at most one interval and one read
+    (20 s), and a response sent meanwhile is refused. That removes the
+    stream's caps, its signal under the ledger's lock and the race
+    between a delivery's judgement and its write. The issue's stream
+    tests become read tests:
+    `TestDecisionStreamCarriesOnlyAdmittedDecisions` is
+    `TestDecideReadCarriesNothingElse` (other decisions and the session,
+    activity and chat changes among its markers),
+    `TestDecisionStreamPolicyChangedDuringDelivery` is
+    `TestDecideReadJudgesTheRowItReturns`, and
+    `TestPrincipalWatchWatchesDecide` is `TestDecideReadsAskTheProvider`.
+    A later row may add a stream on this one's judgement.
+17. **The grant is a route target** (round 2). The issue's route "adds
+    `{kind: "grant", grant: "decide"}` to the decision's policy
+    authority as a new revision"; this row keeps that entry as the route
+    target in the request's `for`, written by HM1's operation and its
+    ledger method (`RouteFor`), and `crew.Admits` judges the policy's
+    entries with the target's beside them (`crew.EntriesOf`). No ledger
+    write changes a policy today (`PutDecision` keeps it), so this adds
+    no writer, no new bound and no new history row; `admits(authority,
+    principal)` stays one function over entries, and SW1's subject entry
+    adds its rule there.
+18. **One operation is kept for the take-back** (round 2). While a
+    decision is given to the grant, the last of its 32 operations is the
+    take-back's; a route to the grant needs two left.
+19. **The outcome is one of four words** (round 2): `applied`,
+    `waiting`, `not_used`, `refused` with a code, from the whole record,
+    never a reason.
 
 ## Acceptance
 
 The acceptance boundary is observed when the PR's checks pass in CI and
 locally: `TestDecideGrantAdmitsDecisionRoutesOnly` and the other
 `internal/api` tests show a principal with only the decide grant
-answering the decision it may through the four routes and answered as no
-credential everywhere else, `GET /api/events` among them;
-`TestDecideReadCarriesNothingElse` and
-`TestDecisionStreamCarriesOnlyAdmittedDecisions` show it reading and
-hearing of nothing else; the vitest files and `decide-only.spec.ts` show
+answering the decision it may through the three routes and answered as
+no credential everywhere else, `GET /api/events` among them;
+`TestDecideReadCarriesNothingElse` shows it reading nothing else; the
+vitest files and `decide-only.spec.ts` show
 the pass taken from the fragment, dropped from the address bar, kept for
 the tab and never sent in a URL. Done is the PR merged with those checks
 green. Nothing needs the owner but the merge; a live check with a real
@@ -945,23 +1109,28 @@ identity provider is the provider module's.
 ## The amendment to docs/plans/decisions.md
 
 This plan's pull request changes `docs/plans/decisions.md` in these
-places, quoted as that file now reads.
+places, quoted as that file now reads. It adds the grant beside every
+destination and caller DR1 and HM1 ship (the operator, a person, a
+responsibility, a Brakeman turn granted `route_decision`, as
+`docs/protocol.md`'s route row has them) and replaces none.
 
 The policy (The changes, the ledger):
 
 > `policy` (JSON): `{revision: "local/1", approver: "operator", quorum: 1,
 > authority: [{kind: "operator"}]}`. The only policy of this repository is
-> `local/1`: one response from a principal its `authority` admits decides
-> it. `{kind: "operator"}` admits the admin grant (the workbench token, or
-> an identity provider's principal with `ext.GrantAdmin`); `{kind:
-> "grant", grant: "decide"}`, which only a route to the grant adds
-> (Routing, below), admits anyone an identity provider gives
-> `ext.GrantDecide` (`docs/plans/decide-grant.md`). One function,
-> `crew.Admits`, judges every entry, for the response's transaction, the
-> response's recheck and every read (`crew.Admission`). The record keeps
-> it so that a response and an application check the policy the decision
-> was opened under against the one in force, and so that a later policy
-> is a later revision of the same field.
+> `local/1`: one response from a principal the decision's entries admit
+> decides it. Its entries are the policy's `authority`, whose `{kind:
+> "operator"}` admits the admin grant (the workbench token, or an identity
+> provider's principal with `ext.GrantAdmin`), and, while the decision's
+> route target is the decide grant (Routing, below: the request's `for`,
+> never the policy), `{kind: "grant", grant: "decide"}` beside it, which
+> admits anyone an identity provider gives `ext.GrantDecide`
+> (`docs/plans/decide-grant.md`). One function, `crew.Admits`, judges the
+> entries (`crew.EntriesOf`), for the response's transaction and every
+> read of a decide principal (`crew.Admission`); no write changes the
+> policy. The record keeps it so that a response and an application check
+> the policy the decision was opened under against the one in force, and
+> so that a later policy is a later revision of the same field.
 
 A response's authority (the same section):
 
@@ -990,16 +1159,18 @@ The recheck (Applying, in `internal/crew`):
 > `principalWatch` asks) and hands the engine the answer,
 > `Engine.ConfirmAuthority(id, k, admitted)`; until then
 > `applyDecisions` leaves that decision `answered` and applies nothing of
-> it. Admitted again as the same subject with a grant the decision's
-> policy, as it is at the recheck, admits (the admin grant; or the decide
-> grant, for a decision whose `authority` holds `{kind: "grant", grant:
-> "decide"}`: `crew.Admission`, `docs/plans/decide-grant.md`): the
-> application proceeds in its own transaction, which checks that `k` is
-> still the decision's accepted response and `boot` this process's. Not
+> it. Admitted again as the same subject holding the grant the response's
+> authority names (the admin grant; or the decide grant, which the
+> decision's entries admitted in the response's transaction and which no
+> route changes once the decision is answered:
+> `docs/plans/decide-grant.md`): the application proceeds in its own
+> transaction, which checks that `k` is still the decision's accepted
+> response and `boot` this process's. Not
 > admitted, or no answer in time (a provider that fails, is late or is
 > busy has not said yes, and a gate is never released on what nobody
-> said): the decision is superseded by a fresh one, the same request and
-> holds ("user:nate's answer could not be rechecked; dr-9 asks again"),
+> said): the decision is superseded by a fresh one, the same request (less
+> a decide-grant target: `docs/plans/decide-grant.md`) and holds
+> ("user:nate's answer could not be rechecked; dr-9 asks again"),
 > which always has its place among the run's bounds (A replacement always
 > has its place, in the ledger, above),
 > and the operator answers again, with the workbench token if the
@@ -1015,31 +1186,36 @@ Routing (the operator's operations):
 > records a `routed` history row. DR1's only destination is `{kind:
 > "operator"}` (a re-route to the operator, with a note: what Brakeman's
 > `route_decision` grant does in BK2); any other kind is `invalid` until
-> HM1 adds a person's label. It changes no state, but for the two cases
-> below. A route to `{kind: "grant", grant: "decide"}`
-> (`docs/plans/decide-grant.md`) adds that entry to the decision's policy
-> `authority`, which then admits anyone holding the decide grant, not one
-> person: refused `409 no_identity` when no identity provider is
-> registered, and taken only while the decision is open, at the
-> `expectedRev` its body carries and through the run that holds it, as a
-> route to a person is (HM1, below); in one transaction it rewrites the
-> policy, writes the `routed` row and bumps `rev`, so a card read before
-> it is `stale_decision`. A route to the operator of a decision whose
-> `authority` holds a grant entry takes the entries out (the policy back
-> to `{kind: "operator"}` alone, a `routed` row, `rev` + 1) in every
-> state, through the held run or the ledger alone, whatever `expectedRev`
-> it names: it narrows who may read the decision and never changes an
-> answer already confirmed.
+> HM1 adds a person's label. It changes no state. HM1's routes to a
+> person and to a responsibility keep their rules (HM1, below; the route
+> row of the table). A route to `{kind: "grant", grant: "decide"}`
+> (`docs/plans/decide-grant.md`) is one more target of HM1's route: refused
+> `409 no_identity` when no identity provider is registered, and otherwise
+> taken as a route to a person is, only while the decision is open, at the
+> `expectedRev` its body carries and through the run that holds it; in one
+> transaction the request's `for` is rewritten (`Tx.RouteFor`) to `{label:
+> "grant:decide"}`, the `routed` row written and `rev` bumped, so a card
+> read before it is `stale_decision`. The decision then admits anyone
+> holding the decide grant beside the operator, not one person; the policy
+> is not written. A route to the operator of a decision given to the grant
+> takes it back (the `for` rewritten without it, a `routed` row, `rev` +
+> 1): only while it is open, at its `expectedRev`, through the held run or
+> the ledger alone; a route of it to a person or a responsibility, made as
+> HM1's is, replaces it. While a decision is given to the grant, the last
+> of its `MaxDecisionOperations` is kept for that take-back. A Brakeman
+> turn's route refuses `to: grant` and any route of a decision given to
+> the grant.
 
 The route table's rows (`internal/api`: the routes; the other rows are
 unchanged). The bounds are the shipped ones (`maxDecisionReply`,
-`maxDecisionRespondBody`, `docs/protocol.md`'s Decisions table):
+`maxDecisionRespondBody`, `docs/protocol.md`'s Decisions table), and the
+route row is `docs/protocol.md`'s with the grant added:
 
 | Route | Who | Body → reply |
 |---|---|---|
 | `GET /api/decisions/{did}` | admin, or a principal with the decide grant the decision admits (`crew.Admission`; `404 not_found` for one it does not) | the admin: `{decision, refs}`, the record whole and its evidence refs' resolutions, at most 2 MiB (`maxDecisionReply`: the record's parts at their bounds, its 32 receipts at `ledger.MaxDecisionReceipt`, 32 KiB each, and its refs at `maxDecisionRef`); a decide principal: the decide view alone (`proto.DecideView`, at most 32 KiB, `docs/plans/decide-grant.md`) |
 | `POST /api/decisions/{did}/respond` | admin, or a principal with the decide grant the decision admits (`404 not_found` for one it does not) | `{responseId, choice?, text?, rationale?, expectedRev, byName?}` (at most 32 KiB, `maxDecisionRespondBody`: `text` at most 4,096 bytes and `rationale` 2 KiB, each as `encoding/json` sends it, escapes and all) → `201 {receipt, decision}`; `200` repeat; `409 decision_answered`, `decision_closed`, `stale_decision`, `stale_policy`, `response_conflict`, `not_held`; `403 not_approver`; `503 decision_moved`; a decide principal's reply its own receipt and the decide view (`proto.DecideReply`), a refusal's words its code's (`decideWords`) |
-| `POST /api/decisions/{did}/route` | admin | `{opId, to: {kind: "operator"} \| {kind: "grant", grant: "decide"}, note?, expectedRev}` → `{receipt, decision}`; `200` the same for a repeat; `409 op_conflict`; `409 no_identity` (a route to the grant on a build with no identity provider registered); `429 decision_limit` |
+| `POST /api/decisions/{did}/route` | admin, or a Brakeman turn granted `route_decision` | `{opId, to: {kind: "operator"} \| {kind: "person", name} \| {kind: "role", name: <responsibility>} \| {kind: "grant", grant: "decide"}, note?, expectedRev}` → `{receipt, decision}` (a turn: `{receipt, error}`); `200` the same for a repeat; `409 op_conflict`, `stale_decision`; `429 decision_limit` (the operator's operations, comments, requests for more and routes together, at most 32 per decision, the last kept for the take-back while it is given to the grant; a Brakeman turn's routes, at most 4, apart from them). To the operator it changes no state, but takes back a decision given to the grant. To a person or a responsibility (HM1), resolved in the run's crew as launched (`400 invalid` for one it does not resolve), it changes whom the decision is for, and to the grant it gives the decision to the decide grant: only while it is `open` (`409 decision_answered`, `decision_closed` otherwise), at the `expectedRev` read (at least 1), through the run that holds it (`409 not_held` otherwise; the take-back also through the ledger alone); it rewrites the request's `for`, writes the `routed` row with `for` and `forWas`, and bumps `rev`. To a person or a responsibility, who answers does not change: the operator; to the grant, anyone holding the decide grant answers too. To the grant: the admin's alone, `409 no_identity` on a build with no identity provider registered; a turn's `to: grant` is `400 invalid`, and a turn's route of a decision given to the grant `409 stale_target` |
 
 The paragraph after the table:
 
@@ -1050,6 +1226,6 @@ The paragraph after the table:
 > `local/1` names (a router's answer, below). A principal holding the
 > decide grant and not the admin grant, which only a build with an
 > identity provider registered can present, is admitted by `GET /api/me`
-> and by the read, the response and the stream of a decision it is
-> admitted to (`docs/plans/decide-grant.md`), and answered by every other
-> route as a request with no credential is (`401 unauthorized`).
+> and by the read and the response of a decision it is admitted to
+> (`docs/plans/decide-grant.md`), and answered by every other route as a
+> request with no credential is (`401 unauthorized`).

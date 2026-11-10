@@ -442,17 +442,19 @@ names no evidence, so its baseline is empty.
 
 `policy` (JSON): `{revision: "local/1", approver: "operator", quorum: 1,
 authority: [{kind: "operator"}]}`. The only policy of this repository is
-`local/1`: one response from a principal its `authority` admits decides
-it. `{kind: "operator"}` admits the admin grant (the workbench token, or
-an identity provider's principal with `ext.GrantAdmin`); `{kind:
-"grant", grant: "decide"}`, which only a route to the grant adds
-(Routing, below), admits anyone an identity provider gives
-`ext.GrantDecide` (`docs/plans/decide-grant.md`). One function,
-`crew.Admits`, judges every entry, for the response's transaction, the
-response's recheck and every read (`crew.Admission`). The record keeps it
-so that a response and an application check the policy the decision was
-opened under against the one in force, and so that a later policy is a
-later revision of the same field.
+`local/1`: one response from a principal the decision's entries admit
+decides it. Its entries are the policy's `authority`, whose `{kind:
+"operator"}` admits the admin grant (the workbench token, or an identity
+provider's principal with `ext.GrantAdmin`), and, while the decision's
+route target is the decide grant (Routing, below: the request's `for`,
+never the policy), `{kind: "grant", grant: "decide"}` beside it, which
+admits anyone an identity provider gives `ext.GrantDecide`
+(`docs/plans/decide-grant.md`). One function, `crew.Admits`, judges the
+entries (`crew.EntriesOf`), for the response's transaction and every
+read of a decide principal (`crew.Admission`); no write changes the
+policy. The record keeps it so that a response and an application check
+the policy the decision was opened under against the one in force, and
+so that a later policy is a later revision of the same field.
 
 A response's `authority` is what the policy checks, kept apart from its
 `actor`, the audit's words: `grant` (`admin`, else `decide`, or none), `via`
@@ -878,16 +880,18 @@ response has committed it asks the provider again through the guard
 `principalWatch` asks) and hands the engine the answer,
 `Engine.ConfirmAuthority(id, k, admitted)`; until then
 `applyDecisions` leaves that decision `answered` and applies nothing of
-it. Admitted again as the same subject with a grant the decision's
-policy, as it is at the recheck, admits (the admin grant; or the decide
-grant, for a decision whose `authority` holds `{kind: "grant", grant:
-"decide"}`: `crew.Admission`, `docs/plans/decide-grant.md`): the
-application proceeds in its own transaction, which checks that `k` is
-still the decision's accepted response and `boot` this process's. Not
+it. Admitted again as the same subject holding the grant the response's
+authority names (the admin grant; or the decide grant, which the
+decision's entries admitted in the response's transaction and which no
+route changes once the decision is answered:
+`docs/plans/decide-grant.md`): the application proceeds in its own
+transaction, which checks that `k` is still the decision's accepted
+response and `boot` this process's. Not
 admitted, or no answer in time (a provider that fails, is late or is
 busy has not said yes, and a gate is never released on what nobody
-said): the decision is superseded by a fresh one, the same request and
-holds ("user:nate's answer could not be rechecked; dr-9 asks again"),
+said): the decision is superseded by a fresh one, the same request (less
+a decide-grant target: `docs/plans/decide-grant.md`) and holds
+("user:nate's answer could not be rechecked; dr-9 asks again"),
 which always has its place among the run's bounds (A replacement always
 has its place, in the ledger, above),
 and the operator answers again, with the workbench token if the
@@ -1041,21 +1045,25 @@ state.
 records a `routed` history row. DR1's only destination is `{kind:
 "operator"}` (a re-route to the operator, with a note: what Brakeman's
 `route_decision` grant does in BK2); any other kind is `invalid` until
-HM1 adds a person's label. It changes no state, but for the two cases
-below. A route to `{kind: "grant", grant: "decide"}`
-(`docs/plans/decide-grant.md`) adds that entry to the decision's policy
-`authority`, which then admits anyone holding the decide grant, not one
-person: refused `409 no_identity` when no identity provider is
-registered, and taken only while the decision is open, at the
-`expectedRev` its body carries and through the run that holds it, as a
-route to a person is (HM1, below); in one transaction it rewrites the
-policy, writes the `routed` row and bumps `rev`, so a card read before
-it is `stale_decision`. A route to the operator of a decision whose
-`authority` holds a grant entry takes the entries out (the policy back
-to `{kind: "operator"}` alone, a `routed` row, `rev` + 1) in every
-state, through the held run or the ledger alone, whatever `expectedRev`
-it names: it narrows who may read the decision and never changes an
-answer already confirmed.
+HM1 adds a person's label. It changes no state. HM1's routes to a
+person and to a responsibility keep their rules (HM1, below; the route
+row of the table). A route to `{kind: "grant", grant: "decide"}`
+(`docs/plans/decide-grant.md`) is one more target of HM1's route: refused
+`409 no_identity` when no identity provider is registered, and otherwise
+taken as a route to a person is, only while the decision is open, at the
+`expectedRev` its body carries and through the run that holds it; in one
+transaction the request's `for` is rewritten (`Tx.RouteFor`) to `{label:
+"grant:decide"}`, the `routed` row written and `rev` bumped, so a card
+read before it is `stale_decision`. The decision then admits anyone
+holding the decide grant beside the operator, not one person; the policy
+is not written. A route to the operator of a decision given to the grant
+takes it back (the `for` rewritten without it, a `routed` row, `rev` +
+1): only while it is open, at its `expectedRev`, through the held run or
+the ledger alone; a route of it to a person or a responsibility, made as
+HM1's is, replaces it. While a decision is given to the grant, the last
+of its `MaxDecisionOperations` is kept for that take-back. A Brakeman
+turn's route refuses `to: grant` and any route of a decision given to
+the grant.
 
 **An operation repeats as a response does.** A comment, a more_info, a
 route and a cancel each write one history row (`commented`,
@@ -1236,7 +1244,7 @@ with `DisallowUnknownFields` and bounded:
 | `POST /api/decisions/{did}/respond` | admin, or a principal with the decide grant the decision admits (`404 not_found` for one it does not) | `{responseId, choice?, text?, rationale?, expectedRev, byName?}` (at most 32 KiB, `maxDecisionRespondBody`: `text` at most 4,096 bytes and `rationale` 2 KiB, each as `encoding/json` sends it, escapes and all) → `201 {receipt, decision}`; `200` repeat; `409 decision_answered`, `decision_closed`, `stale_decision`, `stale_policy`, `response_conflict`, `not_held`; `403 not_approver`; `503 decision_moved`; a decide principal's reply its own receipt and the decide view (`proto.DecideReply`), a refusal's words its code's (`decideWords`) |
 | `POST /api/decisions/{did}/cancel` | admin | `{commandId, why, release?, expectedRev}` → `{receipt, decision}`; `200` the same for a repeat; `409 op_conflict` |
 | `POST /api/decisions/{did}/comment` | admin | `{opId, kind: comment\|more_info, text, expectedRev}` (8 KiB) → `{receipt, decision}`; `200` the same for a repeat; `409 op_conflict`; `409 no_recipient` (a `more_info` without a live asking attempt); `429 decision_limit` |
-| `POST /api/decisions/{did}/route` | admin | `{opId, to: {kind: "operator"} \| {kind: "grant", grant: "decide"}, note?, expectedRev}` → `{receipt, decision}`; `200` the same for a repeat; `409 op_conflict`; `409 no_identity` (a route to the grant on a build with no identity provider registered); `429 decision_limit` |
+| `POST /api/decisions/{did}/route` | admin, or a Brakeman turn granted `route_decision` | `{opId, to: {kind: "operator"} \| {kind: "person", name} \| {kind: "role", name: <responsibility>} \| {kind: "grant", grant: "decide"}, note?, expectedRev}` → `{receipt, decision}` (a turn: `{receipt, error}`); `200` the same for a repeat; `409 op_conflict`, `stale_decision`; `429 decision_limit` (the operator's operations, comments, requests for more and routes together, at most 32 per decision, the last kept for the take-back while it is given to the grant; a Brakeman turn's routes, at most 4, apart from them). To the operator it changes no state, but takes back a decision given to the grant. To a person or a responsibility (HM1), resolved in the run's crew as launched (`400 invalid` for one it does not resolve), it changes whom the decision is for, and to the grant it gives the decision to the decide grant: only while it is `open` (`409 decision_answered`, `decision_closed` otherwise), at the `expectedRev` read (at least 1), through the run that holds it (`409 not_held` otherwise; the take-back also through the ledger alone); it rewrites the request's `for`, writes the `routed` row with `for` and `forWas`, and bumps `rev`. To a person or a responsibility, who answers does not change: the operator; to the grant, anyone holding the decide grant answers too. To the grant: the admin's alone, `409 no_identity` on a build with no identity provider registered; a turn's `to: grant` is `400 invalid`, and a turn's route of a decision given to the grant `409 stale_target` |
 
 `responseId`, `commandId` and `opId` take the shape the run commands'
 ids take (1 to 32 of `A-Z a-z 0-9 . _ ~ -`); the web mints them and
@@ -1248,9 +1256,9 @@ policy's refusal of a principal that got past it without the authority
 `local/1` names (a router's answer, below). A principal holding the
 decide grant and not the admin grant, which only a build with an
 identity provider registered can present, is admitted by `GET /api/me`
-and by the read, the response and the stream of a decision it is
-admitted to (`docs/plans/decide-grant.md`), and answered by every other
-route as a request with no credential is (`401 unauthorized`).
+and by the read and the response of a decision it is admitted to
+(`docs/plans/decide-grant.md`), and answered by every other route as a
+request with no credential is (`401 unauthorized`).
 
 - The result route (`task_result`, `POST /api/sessions/{id}/task/result`)
   gains the refusal `409 decision_open` (A result while a decision
