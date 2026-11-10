@@ -60,57 +60,83 @@ func (i ImageRef) MarshalJSON() ([]byte, error) {
 }
 
 // githubImageHosts are the hosts github.com serves an issue's images from
-// (beside github.com itself under /user-attachments/assets/).
+// (beside github.com itself under /user-attachments/assets/), as captured
+// from github.com on 2026-11-10: a rendered body names
+// private-user-images (with a signed ?jwt=), user-images (older uploads)
+// and camo (an image from another site, proxied); github.com's
+// /user-attachments/assets/ answers a redirect to GitHub's asset bucket.
+// objects.githubusercontent.com is the plan's and was not seen.
 var githubImageHosts = map[string]bool{
-	"private-user-images.githubusercontent.com": true,
-	"user-images.githubusercontent.com":         true,
-	"camo.githubusercontent.com":                true,
-	"objects.githubusercontent.com":             true,
+	"private-user-images.githubusercontent.com":            true,
+	"user-images.githubusercontent.com":                    true,
+	"camo.githubusercontent.com":                           true,
+	"objects.githubusercontent.com":                        true,
+	"github-production-user-asset-6210df.s3.amazonaws.com": true,
 }
 
-// githubLogSuffixes are the hosts github.com keeps GitHub Actions' job
-// logs on (GitHub's list of domains by function, Actions' logs).
-var githubLogSuffixes = []string{".actions.githubusercontent.com", ".blob.core.windows.net"}
-
 // ImageHost reports whether an image may be downloaded from u for an item
-// of system on host: https only, no user; for github.com the hosts GitHub
-// serves issue images from and github.com under /user-attachments/assets/;
-// for a GitHub Enterprise Server host, that host and media.<host>. A
-// redirect is followed only to such a host. No other host is ever fetched,
-// so an item's text cannot make the server request an address of its
-// network.
+// of system on host: https only, no user, u's host passing CheckHost (so
+// it is judged exactly as it is dialled: never folded, never with a port);
+// for github.com the hosts GitHub serves issue images from and github.com
+// under /user-attachments/assets/; for a GitHub Enterprise Server host,
+// that host and media.<host>. A redirect is followed only to such a host.
+// No other host is ever fetched, so an item's text cannot make the server
+// request an address of its network.
 func ImageHost(system, host string, u *url.URL) bool {
-	if system != GitHub || u == nil || u.Scheme != "https" || u.User != nil || u.Opaque != "" {
+	h, ok := fetchHost(system, host, u)
+	if !ok {
 		return false
 	}
-	h := strings.ToLower(u.Host)
 	if host == GitHubHost {
 		if githubImageHosts[h] {
 			return true
 		}
 		return h == GitHubHost && strings.HasPrefix(u.EscapedPath(), "/user-attachments/assets/") && !strings.Contains(u.Path, "..")
 	}
-	return host != "" && (h == host || h == "media."+host)
+	return h == host || h == "media."+host
+}
+
+// fetchHost is u's host when u is an https address with no user whose host
+// and the item's host both pass CheckHost.
+func fetchHost(system, host string, u *url.URL) (string, bool) {
+	if system != GitHub || u == nil || u.Scheme != "https" || u.User != nil || u.Opaque != "" {
+		return "", false
+	}
+	if CheckHost(u.Host, false) != nil || CheckHost(host, false) != nil {
+		return "", false
+	}
+	return u.Host, true
 }
 
 // LogHost reports whether a GitHub Actions job's log may be fetched from u
 // for an item of system on host, used only for the redirect a job's logs
 // route answers (a URL the authenticated API gave, never one a body names)
-// and never for an image: https only, no user; for github.com the hosts
-// GitHub keeps Actions' logs on (githubLogSuffixes); for a GitHub
+// and never for an image: https only, no user, u's host passing CheckHost;
+// for github.com the hosts GitHub's list of domains by function names for
+// Actions' logs (api.github.com/meta, read 2026-11-10: the
+// *.actions.githubusercontent.com hosts and
+// productionresultssa<n>.blob.core.windows.net, each storage account named
+// by its number, never any other *.blob.core.windows.net); for a GitHub
 // Enterprise Server host, that host and its subdomains only.
 func LogHost(system, host string, u *url.URL) bool {
-	if system != GitHub || u == nil || u.Scheme != "https" || u.User != nil || u.Opaque != "" {
+	h, ok := fetchHost(system, host, u)
+	if !ok {
 		return false
 	}
-	h := strings.ToLower(u.Host)
 	if host == GitHubHost {
-		for _, s := range githubLogSuffixes {
-			if strings.HasSuffix(h, s) && len(h) > len(s) && !strings.Contains(h, ":") {
-				return true
+		if s := ".actions.githubusercontent.com"; strings.HasSuffix(h, s) && len(h) > len(s) {
+			return true
+		}
+		acct, ok := strings.CutSuffix(h, ".blob.core.windows.net")
+		if n, ok2 := strings.CutPrefix(acct, "productionresultssa"); ok && ok2 && n != "" && len(n) <= 3 {
+			for i := 0; i < len(n); i++ {
+				if n[i] < '0' || n[i] > '9' {
+					return false
+				}
 			}
+			return true
 		}
 		return false
 	}
-	return host != "" && (h == host || strings.HasSuffix(h, "."+host))
+	return h == host || strings.HasSuffix(h, "."+host)
 }

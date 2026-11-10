@@ -3,7 +3,6 @@ package tracker
 import (
 	"errors"
 	"fmt"
-	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -102,7 +101,7 @@ func ParseRepository(raw string, o ParseOptions) (host, space string, err error)
 		if perr != nil || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery {
 			return "", "", ErrRef
 		}
-		host = strings.ToLower(u.Hostname())
+		host, _ = asciiLower(u.Hostname())
 		if !hostAdmitted(host, o) {
 			return "", "", fmt.Errorf("%w: %s is not a host Conductor reads", ErrRef, host)
 		}
@@ -119,7 +118,7 @@ func ParseRepository(raw string, o ParseOptions) (host, space string, err error)
 		if !ok {
 			return "", "", ErrRef
 		}
-		host = strings.ToLower(h)
+		host, _ = asciiLower(h)
 		if !hostAdmitted(host, o) {
 			return "", "", fmt.Errorf("%w: %s is not a host Conductor reads", ErrRef, host)
 		}
@@ -149,7 +148,10 @@ func parseURL(raw string, o ParseOptions) (string, []string, error) {
 	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(raw, "#") || u.User != nil || u.Opaque != "" {
 		return "", nil, fmt.Errorf("%w: a reference has no query, fragment or user", ErrRef)
 	}
-	host := strings.ToLower(u.Host)
+	host, ok := asciiLower(u.Host)
+	if !ok {
+		return "", nil, fmt.Errorf("%w: %s", ErrRef, ErrHost)
+	}
 	switch u.Scheme {
 	case "https":
 		if u.Port() != "" && !(o.Loopback && IsLoopback(host)) {
@@ -179,51 +181,121 @@ func splitPath(p string) []string {
 	return strings.Split(p, "/")
 }
 
-// IsLoopback reports a host (with or without a port) that is a loopback
-// address or localhost.
-func IsLoopback(host string) bool {
-	h := host
-	if hh, _, err := net.SplitHostPort(host); err == nil {
-		h = hh
+// ErrHost is a host Conductor does not admit.
+var ErrHost = errors.New("not a host Conductor admits")
+
+// CheckHost is the one rule of what a host is, for every host Conductor
+// sends a request to or judges an address by: a credential's, a saved
+// Enterprise Server host, an image's, a log's and a reference's. A host is
+// an exact DNS name, lower-case ASCII: labels of 1 to 63 bytes of
+// [a-z0-9-], neither starting nor ending with '-', joined by single dots,
+// 253 bytes at most, no trailing dot. With loopback (the loopback switch)
+// it may instead be a loopback form, IsLoopback. Nothing else is a host:
+// a user, a path, a query, a fragment, a port, a percent sign, an upper
+// case letter or a byte past ASCII is refused, never normalised, so the
+// string judged is the string the transport dials.
+func CheckHost(host string, loopback bool) error {
+	if loopback && IsLoopback(host) {
+		return nil
 	}
-	if h == "localhost" {
-		return true
+	if !dnsName(host) {
+		return fmt.Errorf("%w: %q", ErrHost, host)
 	}
-	ip := net.ParseIP(strings.Trim(h, "[]"))
-	return ip != nil && ip.IsLoopback()
+	return nil
 }
 
-func hostAdmitted(host string, o ParseOptions) bool {
-	if host == GitHubHost {
-		return true
-	}
-	if o.Loopback && IsLoopback(host) {
-		return true
-	}
-	if !validHostName(host) {
+// dnsName reports an exact lower-case ASCII DNS name.
+func dnsName(h string) bool {
+	if h == "" || len(h) > 253 {
 		return false
 	}
+	for _, l := range strings.Split(h, ".") {
+		if l == "" || len(l) > 63 || l[0] == '-' || l[len(l)-1] == '-' {
+			return false
+		}
+		for i := 0; i < len(l); i++ {
+			c := l[i]
+			if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// IsLoopback reports one of the loopback forms the loopback switch admits:
+// localhost, 127.0.0.1 or [::1], then ':' and a port of 1 to 5 digits
+// (1 to 65535, no leading zero). Nothing spelled around them is one.
+func IsLoopback(host string) bool {
+	for _, name := range []string{"localhost:", "127.0.0.1:", "[::1]:"} {
+		if port, ok := strings.CutPrefix(host, name); ok {
+			return portDigits(port)
+		}
+	}
+	return false
+}
+
+func portDigits(p string) bool {
+	if p == "" || len(p) > 5 || p[0] == '0' {
+		return false
+	}
+	for i := 0; i < len(p); i++ {
+		if p[i] < '0' || p[i] > '9' {
+			return false
+		}
+	}
+	n, err := strconv.Atoi(p)
+	return err == nil && n <= 65535
+}
+
+// asciiLower folds ASCII upper case, as a person may type a reference's
+// host; a byte past ASCII is no host at all (”, false).
+func asciiLower(s string) (string, bool) {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 0x80 {
+			return "", false
+		}
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b), true
+}
+
+// hostAdmitted reports a reference's host the options admit: github.com,
+// a loopback form with the switch, or a host of o.Hosts, each passing
+// CheckHost and compared byte for byte.
+func hostAdmitted(host string, o ParseOptions) bool {
+	if CheckHost(host, o.Loopback) != nil {
+		return false
+	}
+	if host == GitHubHost || (o.Loopback && IsLoopback(host)) {
+		return true
+	}
 	for _, h := range o.Hosts {
-		if strings.ToLower(h) == host {
+		if h == host {
 			return true
 		}
 	}
 	return false
 }
 
-// validHostName reports a lower-case DNS name of letters, digits, hyphens
-// and dots.
-func validHostName(h string) bool {
-	if h == "" || len(h) > 253 || h[0] == '.' || h[0] == '-' {
-		return false
+// Check refuses a reference that is not one this package's parsing makes:
+// its system github, its kind issue or change, its space owner/name as
+// GitHub names a repository and its id a number (Host is the adapter's to
+// check, against the credential). A Ref read back from a store or built by
+// a caller is held to it before any of it goes into a request's path.
+func (r Ref) Check() error {
+	if r.System != GitHub || (r.Kind != KindIssue && r.Kind != KindChange) {
+		return fmt.Errorf("%w: not a GitHub issue or pull request", ErrRef)
 	}
-	for i := 0; i < len(h); i++ {
-		c := h[i]
-		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' && c != '.' {
-			return false
-		}
+	owner, name, ok := strings.Cut(r.Space, "/")
+	if !ok {
+		return fmt.Errorf("%w: a repository is <owner>/<name>", ErrRef)
 	}
-	return true
+	_, err := makeRef(r.Host, owner, name, r.Kind, r.ID)
+	return err
 }
 
 func makeRef(host, owner, name, kind, num string) (Ref, error) {
@@ -233,8 +305,10 @@ func makeRef(host, owner, name, kind, num string) (Ref, error) {
 	if num == "" || len(num) > MaxID || num[0] == '0' {
 		return Ref{}, fmt.Errorf("%w: the number is 1 to %d digits", ErrRef, MaxID)
 	}
-	if _, err := strconv.ParseUint(num, 10, 64); err != nil {
-		return Ref{}, fmt.Errorf("%w: the number is decimal digits", ErrRef)
+	for i := 0; i < len(num); i++ {
+		if num[i] < '0' || num[i] > '9' {
+			return Ref{}, fmt.Errorf("%w: the number is decimal digits", ErrRef)
+		}
 	}
 	return Ref{System: GitHub, Host: host, Space: owner + "/" + name, Kind: kind, ID: num}, nil
 }

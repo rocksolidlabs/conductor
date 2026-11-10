@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"time"
 )
@@ -33,6 +34,9 @@ var (
 	ErrNothingWritten = errors.New("nothing was written")
 	// ErrWriteUnknown: a write's answer does not say whether it was made.
 	ErrWriteUnknown = errors.New("not known whether the write was made")
+	// ErrOffHost: a request for another address than the credential's API
+	// host, refused by the credential's transport before it was sent.
+	ErrOffHost = fmt.Errorf("%w: a request for another host than the token's", ErrUnsupported)
 )
 
 // ErrRateLimited is a request refused for the rate limit, until Reset
@@ -92,16 +96,34 @@ func (e *RequestError) Unwrap() []error {
 // NothingWritten reports a write's error that proves nothing was written.
 func NothingWritten(err error) bool { return errors.Is(err, ErrNothingWritten) }
 
-// joined is a write's error: the call's, with what its answer proves.
+// joined is a write's error: the call's, with what its answer proves, said
+// in its words as well ("...: nothing was written", "...: not known
+// whether the write was made"), so the outcome is told wherever the error
+// is shown, not only through errors.Is.
 type joined struct{ errs []error }
 
-func (j *joined) Error() string   { return j.errs[0].Error() }
+func (j *joined) Error() string   { return j.errs[0].Error() + ": " + j.errs[1].Error() }
 func (j *joined) Unwrap() []error { return j.errs }
 
 // Proven wraps err as a write's error whose answer proves nothing was
-// written.
-func Proven(err error) error { return &joined{[]error{err, ErrNothingWritten}} }
+// written. An error already sorted is returned as it is.
+func Proven(err error) error {
+	if sorted(err) {
+		return err
+	}
+	return &joined{[]error{err, ErrNothingWritten}}
+}
 
 // Unknown wraps err as a write's error whose answer does not say whether
-// the write was made.
-func Unknown(err error) error { return &joined{[]error{err, ErrWriteUnknown}} }
+// the write was made. An error already sorted is returned as it is.
+func Unknown(err error) error {
+	if sorted(err) {
+		return err
+	}
+	return &joined{[]error{err, ErrWriteUnknown}}
+}
+
+// sorted reports an error that already says a write's outcome.
+func sorted(err error) bool {
+	return errors.Is(err, ErrNothingWritten) || errors.Is(err, ErrWriteUnknown)
+}

@@ -137,7 +137,27 @@ type Item struct {
 	HeadSHA       string     `json:"headSha,omitempty"`
 	BaseRef       string     `json:"baseRef,omitempty"`
 	Images        []ImageRef `json:"images,omitempty"`
-	Validators    Validators `json:"validators"`
+	// ImagesLeftOut counts the body's images Images does not hold, by
+	// reason, so a caller can say "N images not imported".
+	ImagesLeftOut ImagesLeftOut `json:"imagesLeftOut,omitzero"`
+	Validators    Validators    `json:"validators"`
+}
+
+// ImagesLeftOut counts an item's images a read left out: Unlisted those on
+// a host the image rule does not admit, PastBound those past MaxImages.
+type ImagesLeftOut struct {
+	Unlisted  int `json:"unlisted,omitempty"`
+	PastBound int `json:"pastBound,omitempty"`
+}
+
+// LogTail is the end of a check's log: Bytes its last bytes (at most the
+// tail asked for), Cut true when the log is longer than Bytes (its start
+// was not asked for or not kept), Size the log's length in bytes when the
+// system said it (0 when it did not).
+type LogTail struct {
+	Bytes []byte `json:"bytes"`
+	Cut   bool   `json:"cut,omitempty"`
+	Size  int64  `json:"size,omitempty"`
 }
 
 // Check is one CI job on a change at a commit. ID names its kind and the
@@ -183,17 +203,31 @@ type CheckSet struct {
 }
 
 // Passed reports a set that is whole, not empty, and every check of it
-// completed without a failure.
+// completed with a conclusion that is a pass: success, neutral or skipped.
+// Any other (a failure, stale, one not known) is not.
 func (s CheckSet) Passed() bool {
 	if len(s.Incomplete) > 0 || len(s.Checks) == 0 {
 		return false
 	}
 	for _, c := range s.Checks {
-		if c.Pending() || c.Failed() {
+		if c.Pending() || !c.Succeeded() {
 			return false
 		}
 	}
 	return true
+}
+
+// Succeeded reports a check that completed with a conclusion that is a
+// pass: success, neutral or skipped.
+func (c Check) Succeeded() bool {
+	if c.Status != "completed" {
+		return false
+	}
+	switch c.Conclusion {
+	case "success", "neutral", "skipped":
+		return true
+	}
+	return false
 }
 
 // AddIncomplete adds a reason the set is cut, cut to MaxIncompleteLen
@@ -274,13 +308,16 @@ func (m Match) Check() error {
 
 // Matches reports whether a comment with this body and author is m's.
 func (m Match) Matches(body string, author RemoteID) bool {
-	if m.Marker == "" || !strings.Contains(body, m.Marker) {
-		return false
-	}
 	if m.AuthorID != "" && author != m.AuthorID {
 		return false
 	}
-	return BodyDigest(body) == m.BodySha256
+	return m.MatchesBody(body)
+}
+
+// MatchesBody reports a body that holds m's marker and whose normalised
+// bytes have m's digest, whoever wrote it.
+func (m Match) MatchesBody(body string) bool {
+	return m.Marker != "" && strings.Contains(body, m.Marker) && BodyDigest(body) == m.BodySha256
 }
 
 // BodyDigest is the SHA-256, in hex, of a comment's body normalised as a
@@ -333,8 +370,9 @@ type Adapter interface {
 	Image(ctx context.Context, c Credential, img ImageRef, max int64) (io.ReadCloser, string, error)
 	// Checks reads a change's checks at a commit.
 	Checks(ctx context.Context, c Credential, r Ref, sha string) (CheckSet, error)
-	// CheckLog reads the last tail bytes of a check's log.
-	CheckLog(ctx context.Context, c Credential, r Ref, check Check, tail int) ([]byte, error)
+	// CheckLog reads the last tail bytes of a check's log, saying when the
+	// log is longer than what it gives.
+	CheckLog(ctx context.Context, c Credential, r Ref, check Check, tail int) (LogTail, error)
 	// Resolve reads where an item is now, by its node id.
 	Resolve(ctx context.Context, c Credential, nodeID string) (Target, error)
 	// Comment posts a comment on the item.

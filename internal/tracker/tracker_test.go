@@ -33,8 +33,8 @@ func (f *fakeAdapter) Image(context.Context, Credential, ImageRef, int64) (io.Re
 func (f *fakeAdapter) Checks(context.Context, Credential, Ref, string) (CheckSet, error) {
 	return CheckSet{}, ErrUnsupported
 }
-func (f *fakeAdapter) CheckLog(context.Context, Credential, Ref, Check, int) ([]byte, error) {
-	return nil, ErrUnsupported
+func (f *fakeAdapter) CheckLog(context.Context, Credential, Ref, Check, int) (LogTail, error) {
+	return LogTail{}, ErrUnsupported
 }
 func (f *fakeAdapter) Resolve(context.Context, Credential, string) (Target, error) {
 	return Target{}, ErrUnsupported
@@ -149,7 +149,7 @@ func TestMatch(t *testing.T) {
 
 func TestCheckSetPassed(t *testing.T) {
 	ok := Check{Status: "completed", Conclusion: "success"}
-	if !(CheckSet{Checks: []Check{ok}}).Passed() {
+	if !(CheckSet{Checks: []Check{ok, {Status: "completed", Conclusion: "neutral"}, {Status: "completed", Conclusion: "skipped"}}}).Passed() {
 		t.Fatal("a whole passing set")
 	}
 	for name, s := range map[string]CheckSet{
@@ -157,6 +157,9 @@ func TestCheckSetPassed(t *testing.T) {
 		"incomplete": {Checks: []Check{ok}, Incomplete: []string{"cut"}},
 		"failed":     {Checks: []Check{ok, {Status: "completed", Conclusion: "failure"}}},
 		"pending":    {Checks: []Check{ok, {Status: "in_progress"}}},
+		"stale":      {Checks: []Check{ok, {Status: "completed", Conclusion: "stale"}}},
+		"unknown":    {Checks: []Check{ok, {Status: "completed", Conclusion: "something_new"}}},
+		"none said":  {Checks: []Check{ok, {Status: "completed"}}},
 	} {
 		if s.Passed() {
 			t.Errorf("%s passed", name)
@@ -196,5 +199,13 @@ func TestErrorsWrap(t *testing.T) {
 	u := Unknown(&RequestError{Err: ErrUnavailable})
 	if NothingWritten(u) || !errors.Is(u, ErrWriteUnknown) {
 		t.Fatal("Unknown")
+	}
+	// The outcome is said in the error's words, not only through errors.Is.
+	if !strings.HasSuffix(p.Error(), ": nothing was written") || !strings.HasSuffix(u.Error(), ": not known whether the write was made") {
+		t.Fatalf("words %q, %q", p.Error(), u.Error())
+	}
+	// An error already sorted keeps its outcome.
+	if Unknown(p) != p || Proven(u) != u {
+		t.Fatal("a sorted error sorted again")
 	}
 }

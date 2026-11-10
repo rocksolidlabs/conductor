@@ -3,6 +3,7 @@ package tracker
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -25,7 +26,7 @@ func TestCredentialNeverPrinted(t *testing.T) {
 		for _, f := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x", "%d"} {
 			out = append(out, fmt.Sprintf(f, c), fmt.Sprintf(f, holder{c, c, &c}), fmt.Sprintf(f, []Credential{c}))
 		}
-		out = append(out, c.String(), fmt.Sprint(c.Transport(nil)), fmt.Sprintf("%+v", c.Transport(nil)), fmt.Sprintf("%#v", c.Transport(nil)))
+		out = append(out, c.String(), fmt.Sprint(c.Transport(nil, "https", "api.github.com")), fmt.Sprintf("%+v", c.Transport(nil, "https", "api.github.com")), fmt.Sprintf("%#v", c.Transport(nil, "https", "api.github.com")))
 		b, err := json.Marshal(holder{C: c, P: &c})
 		if err != nil {
 			t.Fatal(err)
@@ -65,7 +66,7 @@ func TestCredentialTransport(t *testing.T) {
 	c := Token("github.com", secret)
 	req, _ := http.NewRequest(http.MethodGet, "https://api.github.com/user", nil)
 	req.Header.Set("Accept", "application/vnd.github+json")
-	if _, err := c.Transport(base).RoundTrip(req); err != nil {
+	if _, err := c.Transport(base, "https", "api.github.com").RoundTrip(req); err != nil {
 		t.Fatal(err)
 	}
 	if len(base.got) != 1 {
@@ -96,7 +97,7 @@ func TestCredentialTransport(t *testing.T) {
 		t.Fatal("the tag changed the credential")
 	}
 	base.got = nil
-	if _, err := tagged.Transport(base).RoundTrip(req); err != nil {
+	if _, err := tagged.Transport(base, "https", "api.github.com").RoundTrip(req); err != nil {
 		t.Fatal(err)
 	}
 	if len(base.got[0].Header) != 2 {
@@ -104,8 +105,34 @@ func TestCredentialTransport(t *testing.T) {
 	}
 	// The zero credential's transport is the base, adding nothing.
 	base.got = nil
-	_, _ = (Credential{}).Transport(base).RoundTrip(req)
+	_, _ = (Credential{}).Transport(base, "https", "api.github.com").RoundTrip(req)
 	if base.got[0].Header.Get("Authorization") != "" {
 		t.Fatal("the zero credential sent Authorization")
+	}
+}
+
+// The token travels only on a request whose URL is the credential's API
+// host, checked by the credential's transport itself at every hop.
+func TestCredentialTransportChecksEveryHop(t *testing.T) {
+	base := &recordRT{}
+	tr := Token("github.com", secret).Transport(base, "https", "api.github.com")
+	for _, u := range []string{"https://collector.example/x", "https://api.github.com.collector.example/x", "http://api.github.com/x", "https://user@api.github.com/x", "https://api.github.com:443/x", "https://API.github.com/x"} {
+		req, _ := http.NewRequest(http.MethodGet, u, nil)
+		if _, err := tr.RoundTrip(req); !errors.Is(err, ErrOffHost) || !errors.Is(err, ErrUnsupported) {
+			t.Errorf("%s: %v", u, err)
+		}
+	}
+	// A Host header set apart from the URL is refused too.
+	req, _ := http.NewRequest(http.MethodGet, "https://api.github.com/user", nil)
+	req.Host = "collector.example"
+	if _, err := tr.RoundTrip(req); !errors.Is(err, ErrOffHost) {
+		t.Errorf("a Host apart from the URL: %v", err)
+	}
+	if len(base.got) != 0 {
+		t.Fatalf("%d requests reached the base", len(base.got))
+	}
+	req, _ = http.NewRequest(http.MethodGet, "https://api.github.com/user", nil)
+	if _, err := tr.RoundTrip(req); err != nil || len(base.got) != 1 || base.got[0].Header.Get("Authorization") != "Bearer "+secret {
+		t.Fatalf("the API host's request: %v", err)
 	}
 }

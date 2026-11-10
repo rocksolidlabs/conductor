@@ -24,7 +24,7 @@ func TestImageHost(t *testing.T) {
 		{"github.com", "https://camo.githubusercontent.com/abc/def"},
 		{"github.com", "https://objects.githubusercontent.com/github-production-user-asset/1"},
 		{"github.com", "https://github.com/user-attachments/assets/6f1c2e9a-4b7d-4a52-9c3e-0f1d2a3b4c5d"},
-		{"github.com", "https://GitHub.com/user-attachments/assets/x"},
+		{"github.com", "https://github-production-user-asset-6210df.s3.amazonaws.com/9000001/6f1c2e9a.png?X-Amz-Signature=s"},
 		{"ghe.example.test", "https://ghe.example.test/user-attachments/assets/x"},
 		{"ghe.example.test", "https://media.ghe.example.test/user/1/files/x.png"},
 	}
@@ -51,6 +51,17 @@ func TestImageHost(t *testing.T) {
 		{GitHub, "ghe.example.test", "http://ghe.example.test/x.png"},
 		{GitHub, "ghe.example.test", "https://ghe.example.test.evil.example/x.png"},
 		{"gitlab", "github.com", "https://camo.githubusercontent.com/abc"},
+		// A host is judged as it is dialled: never folded, never past ASCII.
+		{GitHub, "github.com", "https://GitHub.com/user-attachments/assets/x"},
+		{GitHub, "github.com", "https://CAMO.githubusercontent.com/abc"},
+		{GitHub, "github.com", "https://gİthub.com/user-attachments/assets/x"},
+		{GitHub, "github.com", "https://g%C4%B0thub.com/user-attachments/assets/x"},
+		{GitHub, "github.com", "https://camo.gİthubusercontent.com/abc"},
+		{GitHub, "github.com", "https://camo.githubusercontent.com./abc"},
+		{GitHub, "github.com", "https://other-bucket.s3.amazonaws.com/x.png"},
+		{GitHub, "git.corp.example", "https://medİa.git.corp.example/x.png"},
+		{GitHub, "git.corp.example", "https://gİt.corp.example/x.png"},
+		{GitHub, "git.corp.example@evil.example", "https://evil.example/x.png"},
 	}
 	for _, c := range refused {
 		if ImageHost(c.system, c.host, mustURL(t, c.u)) {
@@ -65,6 +76,8 @@ func TestImageHost(t *testing.T) {
 func TestLogHost(t *testing.T) {
 	logs := []string{
 		"https://productionresultssa0.blob.core.windows.net/actions-results/x/logs/job/job-logs.txt?sig=s",
+		"https://productionresultssa31.blob.core.windows.net/actions-results/x/workflow-job-run-y/logs/job/job-logs.txt?sig=s",
+		"https://productionresultssa199.blob.core.windows.net/x",
 		"https://pipelines.actions.githubusercontent.com/serviceHosts/x/_apis/pipelines/1/runs/2/signedlogcontent/3",
 		"https://results-receiver.actions.githubusercontent.com/x",
 	}
@@ -94,6 +107,14 @@ func TestLogHost(t *testing.T) {
 		"https://blob.core.windows.net.evil.example/x",
 		"https://productionresultssa0.blob.core.windows.net:8443/x",
 		"https://user@pipelines.actions.githubusercontent.com/x",
+		// GitHub's list names its storage accounts; any other is anyone's.
+		"https://evil.blob.core.windows.net/x",
+		"https://productionresultssa.blob.core.windows.net/x",
+		"https://productionresultssa1x.blob.core.windows.net/x",
+		"https://productionresultssa1234.blob.core.windows.net/x",
+		"https://PRODUCTIONRESULTSSA0.blob.core.windows.net/x",
+		"https://productionresultssa0.blob.core.wİndows.net/x",
+		"https://pİpelines.actions.githubusercontent.com/x",
 	} {
 		if LogHost(GitHub, "github.com", mustURL(t, s)) {
 			t.Errorf("LogHost admitted %s", s)

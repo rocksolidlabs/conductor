@@ -116,27 +116,38 @@ func (c Credential) Write() (Write, bool) {
 }
 
 // Transport is the round tripper for requests to the system's API host,
-// over base: a token's sets Authorization on each request it is given
-// (a copy of it) and does nothing else. An adapter uses it for its API
-// host's requests alone; an address the system signs is fetched over base,
-// with no credential.
-func (c Credential) Transport(base http.RoundTripper) http.RoundTripper {
+// over base: scheme and host are that API host's (https and api.github.com
+// for github.com). A token's transport checks each request it is given, at
+// every hop a client makes, and sends only one whose URL has that scheme,
+// that host byte for byte and no user, setting Authorization on a copy of
+// it; any other is refused with ErrOffHost before base sees it, so the
+// token never travels to another host whatever the caller built. An
+// adapter uses it for its API host's requests alone; an address the
+// system signs is fetched over base, with no credential.
+func (c Credential) Transport(base http.RoundTripper, scheme, host string) http.RoundTripper {
 	if base == nil {
 		base = http.DefaultTransport
 	}
 	if c.IsZero() {
 		return base
 	}
-	return tokenTransport{base: base, c: c.c}
+	return tokenTransport{base: base, c: c.c, scheme: scheme, host: host}
 }
 
 // tokenTransport holds the credential, whose secret no print reaches.
 type tokenTransport struct {
-	base http.RoundTripper
-	c    *credential
+	base         http.RoundTripper
+	c            *credential
+	scheme, host string
 }
 
 func (t tokenTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if t.host == "" || r.URL == nil || r.URL.Scheme != t.scheme || r.URL.Host != t.host || r.URL.User != nil || (r.Host != "" && r.Host != t.host) {
+		if r.Body != nil {
+			r.Body.Close()
+		}
+		return nil, ErrOffHost
+	}
 	r2 := r.Clone(r.Context())
 	r2.Header.Set("Authorization", "Bearer "+t.c.secret())
 	return t.base.RoundTrip(r2)
