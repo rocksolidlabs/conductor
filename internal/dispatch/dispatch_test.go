@@ -698,13 +698,14 @@ func uniqueIndexes(t *testing.T, db *sql.DB) []string {
 }
 
 // theUniqueIndexes is the unique indexes of the schema: every row's own
-// id and the keys never minted twice, and nothing else. Versions 2 and 3
-// add none but their tables' primary keys.
+// id and the keys never minted twice, and nothing else. Versions 2, 3 and
+// 4 add none but their tables' primary keys.
 var theUniqueIndexes = []string{
 	"attachments(id)", "changes(actor, op_id, n)", "comments(id)", "finding_marks(id)", "labels(id)", "launch_files(launch_id, sha256)",
-	"launches(id)", "links(id)", "milestones(id)", "ops(actor, id)", "people(name)", "plans(id)", "projects(id)", "projects(key)",
-	"relations(id)", "review_findings(id)", "reviews(id)", "ticket_assignees(ticket_id, actor)",
-	"ticket_labels(ticket_id, label_id)", "tickets(id)", "tickets(key)", "tickets(project_id, number)", "uploads(id)", "views(id)",
+	"launches(id)", "link_reads(link_id)", "links(id)", "milestones(id)", "ops(actor, id)", "people(name)", "plans(id)", "projects(id)",
+	"projects(key)", "publications(id)", "relations(id)", "review_findings(id)", "reviews(id)", "store_instance(id)",
+	"ticket_assignees(ticket_id, actor)", "ticket_labels(ticket_id, label_id)", "ticket_reads(ticket_id)", "tickets(id)", "tickets(key)",
+	"tickets(project_id, number)", "uploads(id)", "views(id)",
 }
 
 func TestAClosedStoreRefusesEverything(t *testing.T) {

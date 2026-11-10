@@ -349,6 +349,102 @@ const (
 	FindingReplyReserve = 48 << 10
 )
 
+// The bounds of a ticket's linked issue, its field owners, its reads and
+// its links' reads (Program item IN1a, docs/plans/tracker-linking.md,
+// "internal/dispatch"). A snapshot's strings have had their control
+// characters but \t and \n dropped (cleanText), so each is at most twice
+// its bytes escaped.
+const (
+	// MaxExternalID bounds a ticket's linked item's identity,
+	// <system>:<host>:<node id>, in bytes: a system's 16, a host's 253 and
+	// a node id's 100 beside their two colons.
+	MaxExternalID = 371
+	// MaxExternalURL bounds the linked item's page, in bytes.
+	MaxExternalURL = 2 << 10
+	// MaxExternalSnapshot bounds a ticket's snapshot as encoded, in bytes:
+	// every part at its bound with every text at its escaped worst is
+	// under it (model_test.go, TestSnapshotBound), and it fits a change row.
+	MaxExternalSnapshot = 40 << 10
+	// MaxAuthority bounds a ticket's field owners as encoded, in bytes.
+	MaxAuthority = 256
+	// MaxClosedOn bounds the read a gated close rested on as encoded, in
+	// bytes: the link by its id, the merge's time and commit and the read's
+	// time come to under 200 bytes at their bounds (ClosedOn keeps no URL;
+	// TestGatedCloseOnALongDeliveryURL measures it).
+	MaxClosedOn = 1 << 10
+	// MaxExternalHost bounds a tracker's host name, in bytes (a DNS name's
+	// bound), a port beside it in a test.
+	MaxExternalHost = 253
+	// MaxNodeID bounds a system's stable id of an item, in bytes.
+	MaxNodeID = 100
+	// MaxRemoteID bounds an identity the remote system gives (an account's,
+	// an item's database id, a repository's), opaque text, in bytes.
+	MaxRemoteID = 64
+	// MaxSnapshotSpace bounds a repository's owner/name, in bytes.
+	MaxSnapshotSpace = 200
+	// MaxSnapshotItemID bounds an item's number as text, in bytes.
+	MaxSnapshotItemID = 20
+	// MaxSnapshotTitle bounds the system's whole title kept in a snapshot,
+	// in bytes; a ticket's own title is MaxTicketTitle characters of it.
+	MaxSnapshotTitle = 1024
+	// MaxSnapshotLabels bounds the labels a snapshot names, the rest
+	// counted in labelsTotal; MaxSnapshotLabel one name, in bytes.
+	MaxSnapshotLabels = 20
+	MaxSnapshotLabel  = 100
+	// MaxSnapshotAssignees bounds the accounts a snapshot names;
+	// MaxSnapshotLogin one account's name, in bytes (GitHub's 39).
+	MaxSnapshotAssignees = 20
+	MaxSnapshotLogin     = 39
+	// MaxSnapshotName bounds a snapshot's milestone and base branch, in
+	// bytes.
+	MaxSnapshotName = 255
+	// MaxRepro bounds an item's steps to reproduce, in bytes.
+	MaxRepro = 8 << 10
+	// MaxImportImages bounds the images an import's manifest holds: the
+	// package's bound on attachments handed over.
+	MaxImportImages = 8
+	// MaxImageID bounds an image's id, its URL without query or fragment,
+	// in bytes: an image whose id is longer is left out of the manifest.
+	MaxImageID = 512
+	// MaxValidator bounds a read's validator (an ETag), in bytes.
+	MaxValidator = 200
+	// MaxReadError bounds a read's failure in words, in characters.
+	MaxReadError = 200
+	// MaxLinkChecks bounds the checks a link's read keeps, and
+	// MaxLinkChecksJSON them as encoded, in bytes.
+	MaxLinkChecks     = 100
+	MaxLinkChecksJSON = 32 << 10
+	// MaxChecksIncomplete bounds why a link's checks are not whole as
+	// encoded, in bytes: at most MaxIncompleteWords reasons of at most
+	// MaxIncompleteWord bytes each, and the count of checks omitted.
+	MaxChecksIncomplete = 1 << 10
+	MaxIncompleteWords  = 8
+	MaxIncompleteWord   = 120
+	// MaxCheckName bounds a check's name and its app's, in bytes.
+	MaxCheckName = 200
+	// MaxLinkReadSummary bounds one link's read as a ticket's read carries
+	// it (LinkReadSummary), at its escaped worst as the route encodes it
+	// (encodeValue and the API's writeDispatch: Go's JSON with HTML
+	// escaping off, so the words' worst is U+2028, six bytes a character),
+	// in bytes: it measures 1,626 at its worst (TestTicketReplyBound).
+	MaxLinkReadSummary = 2 << 10
+	// MaxTicketExternalParts bounds what this version adds to a ticket's
+	// read (the snapshot, the owners, the linked issue's read, closed_on, a
+	// summary per live link, the source, the identity, the page, the
+	// authority and the close policy's merged with its words), measured as
+	// the reply the route returns at its escaped worst less the same read
+	// as main's would hold it, in bytes: the measure, 124,469 bytes (the
+	// snapshot 34,186 of them, fifty summaries most of the rest, the page
+	// 2,065 and the merged words 2,137), rounded up to a KiB
+	// (TestTicketReplyBound finds the parts from TicketView's type and
+	// holds the bound within 4 KiB of the measure). The room the API's
+	// MaxTicketReply keeps for it.
+	MaxTicketExternalParts = 122 << 10
+	// MaxMergedReadAge is how old a link's read may be for the close
+	// policy's merged: the close route's own read is what counts.
+	MaxMergedReadAge = 5 * time.Minute
+)
+
 // The bounds of the reads (query.go, and the composite reads of a
 // ticket and of the projects).
 const (
@@ -448,10 +544,21 @@ const (
 	RequireAcceptance = "acceptance"
 	RequireDelivery   = "delivery"
 	RequireVerified   = "verified"
+	// RequireMerged is a live delivery link whose pull request GitHub says
+	// is merged, by a read of the link at most MaxMergedReadAge old
+	// (Program item IN1a, reads.go). The model meets it; a project's
+	// policy refuses it until the API reads a close's links (offered).
+	RequireMerged = "merged"
 )
 
 // CloseRequirements is the requirements in their order in a policy.
-var CloseRequirements = []string{RequireAcceptance, RequireDelivery, RequireVerified}
+var CloseRequirements = []string{RequireAcceptance, RequireDelivery, RequireVerified, RequireMerged}
+
+// offeredRequirements is the requirements a project's policy may name on
+// a local write: merged waits for the close route's reads of GitHub
+// (docs/plans/tracker-linking.md, PR-4), so that no project is set to a
+// requirement nothing yet meets.
+var offeredRequirements = []string{RequireAcceptance, RequireDelivery, RequireVerified}
 
 // The kinds of a relation: "depends on" is blocks read from the other
 // end.
@@ -545,37 +652,38 @@ type Project struct {
 // undelete).
 // Labels are the ids of its live labels.
 type Ticket struct {
-	ID               string    `json:"id"`
-	ProjectID        string    `json:"projectId"`
-	Number           int64     `json:"number"`
-	Key              string    `json:"key"`
-	Title            string    `json:"title"`
-	Description      string    `json:"description"`
-	Acceptance       string    `json:"acceptance"`
-	Status           string    `json:"status"`
-	Priority         int       `json:"priority"`
-	Horizon          string    `json:"horizon"`
-	Owner            string    `json:"owner"`
-	ParentID         string    `json:"parentId"`
-	MilestoneID      string    `json:"milestoneId"`
-	AcceptedAt       time.Time `json:"acceptedAt,omitzero"`
-	AcceptedBy       string    `json:"acceptedBy,omitempty"`
-	AcceptedFor      string    `json:"acceptedFor,omitempty"`
-	AcceptedCriteria string    `json:"acceptedCriteria,omitempty"`
-	AcceptedNote     string    `json:"acceptedNote,omitempty"`
-	Source           string    `json:"source"`
-	ExternalID       string    `json:"externalId,omitempty"`
-	ExternalURL      string    `json:"externalUrl,omitempty"`
-	ExternalSnapshot string    `json:"externalSnapshot,omitempty"`
-	Authority        string    `json:"authority,omitempty"`
-	CreatedAt        time.Time `json:"createdAt"`
-	CreatedBy        string    `json:"createdBy"`
-	UpdatedAt        time.Time `json:"updatedAt"`
-	ClosedAt         time.Time `json:"closedAt,omitzero"`
-	DeletedAt        time.Time `json:"deletedAt,omitzero"`
-	Rev              int64     `json:"rev"`
-	Assignees        []string  `json:"assignees"`
-	Labels           []string  `json:"labels"`
+	ID               string          `json:"id"`
+	ProjectID        string          `json:"projectId"`
+	Number           int64           `json:"number"`
+	Key              string          `json:"key"`
+	Title            string          `json:"title"`
+	Description      string          `json:"description"`
+	Acceptance       string          `json:"acceptance"`
+	Status           string          `json:"status"`
+	Priority         int             `json:"priority"`
+	Horizon          string          `json:"horizon"`
+	Owner            string          `json:"owner"`
+	ParentID         string          `json:"parentId"`
+	MilestoneID      string          `json:"milestoneId"`
+	AcceptedAt       time.Time       `json:"acceptedAt,omitzero"`
+	AcceptedBy       string          `json:"acceptedBy,omitempty"`
+	AcceptedFor      string          `json:"acceptedFor,omitempty"`
+	AcceptedCriteria string          `json:"acceptedCriteria,omitempty"`
+	AcceptedNote     string          `json:"acceptedNote,omitempty"`
+	Source           string          `json:"source"`
+	ExternalID       string          `json:"externalId,omitempty"`
+	ExternalURL      string          `json:"externalUrl,omitempty"`
+	ExternalSnapshot json.RawMessage `json:"externalSnapshot,omitempty"`
+	Authority        json.RawMessage `json:"authority,omitempty"`
+	ClosedOn         json.RawMessage `json:"closedOn,omitempty"`
+	CreatedAt        time.Time       `json:"createdAt"`
+	CreatedBy        string          `json:"createdBy"`
+	UpdatedAt        time.Time       `json:"updatedAt"`
+	ClosedAt         time.Time       `json:"closedAt,omitzero"`
+	DeletedAt        time.Time       `json:"deletedAt,omitzero"`
+	Rev              int64           `json:"rev"`
+	Assignees        []string        `json:"assignees"`
+	Labels           []string        `json:"labels"`
 }
 
 // Label is a label's row: a name unique among its project's live labels
@@ -1168,7 +1276,10 @@ func closePolicy(requires []string) ([]string, error) {
 		}
 	}
 	for _, r := range requires {
-		if !slices.Contains(CloseRequirements, r) {
+		if r == RequireMerged {
+			return nil, refuse(RefusalInvalid, "the close policy's merged needs the close's reads of GitHub, which this server does not make yet")
+		}
+		if !slices.Contains(offeredRequirements, r) {
 			return nil, refuse(RefusalInvalid, "the close policy's %q is none of acceptance, delivery and verified", r)
 		}
 	}

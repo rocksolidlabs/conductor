@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"encoding/json"
+	"slices"
 	"sort"
 	"strconv"
 	"time"
@@ -37,6 +38,14 @@ const (
 	ClassLog        FieldClass = "log"
 	ClassAllocation FieldClass = "allocation"
 	ClassGated      FieldClass = "gated"
+	// ClassCounterpart is a ticket's linked issue (external_id,
+	// external_url, external_snapshot, authority): merged as one group by
+	// ReconcileCounterpart, never field by field, so two operations' halves
+	// never mix (Program item IN1a, "The counterpart group").
+	ClassCounterpart FieldClass = "counterpart"
+	// ClassDerived is a table every replica keeps for itself (a read of
+	// GitHub, the store's instance): never a changes row, never shipped.
+	ClassDerived FieldClass = "derived"
 )
 
 // Class names the class of a field of an entity, the entity as a change
@@ -56,8 +65,10 @@ func Class(entity, field string) FieldClass {
 			return ClassGated
 		case "title", "description", "acceptance", "priority", "horizon", "owner", "parent_id", "milestone_id",
 			"accepted_at", "accepted_by", "accepted_for", "accepted_criteria", "accepted_note", "closed_at", "deleted_at",
-			"source", "external_id", "external_url", "external_snapshot", "authority":
+			"source", "closed_on":
 			return ClassScalar
+		case "external_id", "external_url", "external_snapshot", "authority":
+			return ClassCounterpart
 		case "assignees", "ticket_assignees", "labels", "ticket_labels", "relations", "links", "attachments":
 			return ClassSet
 		case "comments":
@@ -187,6 +198,12 @@ func Class(entity, field string) FieldClass {
 			"fingerprint":
 			return ClassImmutable
 		}
+	case "link_read", "link_reads", "ticket_read", "ticket_reads", "store_instance":
+		// The reads of GitHub and the store's instance (schema version 4):
+		// each replica's own, every column.
+		if field != "" {
+			return ClassDerived
+		}
 	case "change", "changes":
 		switch field {
 		case "actor", "op_id", "n":
@@ -304,6 +321,10 @@ func Merge(local, remote ChangeRow) Winner {
 		return KeepLocal
 	}
 	switch Class(local.Entity, local.Field) {
+	case ClassCounterpart:
+		// Every row of the group is kept: ReconcileCounterpart decides the
+		// group from them all.
+		return KeepBoth
 	case ClassScalar, ClassGated:
 		if Less(local, remote) {
 			return TakeRemote
@@ -623,4 +644,296 @@ func Repair(e EdgeChange, admitted bool, at time.Time, n int) ChangeRow {
 		Entity: EntityTicket, EntityID: e.From, TicketID: e.From, Field: fields[e.Kind], Op: OpReconcile, Value: string(value),
 		At: at, Actor: ActorMerge, OpID: string(tag), N: n,
 	}
+}
+
+// CounterpartState is a ticket's linked issue and the two fields its
+// system may own, as ReconcileCounterpart makes them of a merged log: the
+// four columns of the counterpart group as their rows hold them, the title
+// and the description; DropRead, which says the replica drops its own
+// ticket_reads row, so the page's next open reads the item with no
+// validators and writes the system's text (rule 5's last case); and
+// Release, the live attachments the item's images were made into that the
+// merged manifest does not name (rule 3: of two live attachments of one
+// image, the one made later; one cut past MaxImportImages), in their
+// order, nil when there are none; an attachment removed on either replica
+// is neither named nor released. The merge removes each in the step that writes the
+// merged snapshot, as attachment.remove removes one (its row tombstoned,
+// one remove row of the attachments field naming its add's tag, by the
+// actor merge), so every attachment the ticket keeps for an image of the
+// linked item is named by the manifest and every entry that names an
+// attachment names a kept one.
+type CounterpartState struct {
+	ExternalID       string
+	ExternalURL      string
+	ExternalSnapshot string
+	Authority        string
+	Title            string
+	Description      string
+	DropRead         bool
+	Release          []string
+}
+
+// ReconcileCounterpart merges a ticket's counterpart group as one, from
+// the change rows of the ticket (any of its rows; rows of one identity
+// counted once, so a log merged with itself or with a prefix of itself
+// gives what it gives alone), run after the per-field merge as Reconcile
+// is for the edges (docs/plans/tracker-linking.md, "The counterpart
+// group"):
+//
+//  1. Identity first: the last external_id row in the one order decides
+//     the ticket's linked item, or none. Its period is the rows after the
+//     last operation that set another identity (a link of another item,
+//     an unlink).
+//  2. Nothing of another item survives: a snapshot or an owner change of
+//     another item, or of one before the period, is dropped. A title's or
+//     a description's row is never dropped for its item.
+//  3. Reads by the system's clock: of the item's snapshot rows in the
+//     period, the one with the latest updatedAt (equal: the one order) is
+//     external_snapshot, its manifest every entry any of them holds
+//     (mergeManifest: a manifest only grows), each done by image id where
+//     any of them records it, a live attachment before a skip, the first
+//     made of two live attachments, an entry whose attachment was removed
+//     pending, and the live attachments it does not name released
+//     (Release), so no attachment of the item's images is kept that none
+//     names and none removed is named; external_url is its url.
+//  4. Owners by the person's order: authority is the last owner change of
+//     the item in the period (its of the item's), else none.
+//  5. Every field has one writer: a field the owners give the system is
+//     what the snapshot makes it (the title FromExternal of its whole
+//     title; the description the text among the field's rows whose SHA-256
+//     is the snapshot's descriptionSha256, or, when no row holds it, the
+//     last observe row's, DropRead set); a field Dispatch owns is the last
+//     of its set and adopt rows, never an observe row.
+//
+// Pure: nothing here reads the store.
+func ReconcileCounterpart(rows []ChangeRow) CounterpartState {
+	seen := map[Tag]bool{}
+	var log []ChangeRow
+	for _, r := range rows {
+		if r.Entity != EntityTicket || seen[TagOf(r)] {
+			continue
+		}
+		seen[TagOf(r)] = true
+		log = append(log, r)
+	}
+	Order(log)
+	// sameOp reports whether two rows are one operation's.
+	sameOp := func(a, b ChangeRow) bool { return a.Actor == b.Actor && a.OpID == b.OpID && a.At.Equal(b.At) }
+	var out CounterpartState
+	var boundary *ChangeRow
+	decided := false
+	for _, r := range log {
+		if r.Field == "external_id" && r.Op == OpSet {
+			out.ExternalID, decided = r.Value, true
+		}
+	}
+	if decided && out.ExternalID != "" {
+		for i := range log {
+			if r := log[i]; r.Field == "external_id" && r.Op == OpSet && r.Value != out.ExternalID {
+				boundary = &log[i]
+			}
+		}
+	}
+	inPeriod := func(r ChangeRow) bool {
+		return boundary == nil || (!sameOp(r, *boundary) && Less(*boundary, r))
+	}
+	var snap ExternalSnapshot
+	have := false
+	auth := Authority{}
+	if out.ExternalID != "" {
+		key := authorityKey(out.ExternalID)
+		var reads []ExternalSnapshot
+		chosen, chosenValue := -1, ""
+		for _, r := range log {
+			if !inPeriod(r) || r.Op != OpSet {
+				continue
+			}
+			switch r.Field {
+			case "external_snapshot":
+				sn, ok := ParseSnapshot(r.Value)
+				if !ok || sn.Identity() != out.ExternalID {
+					continue
+				}
+				reads = append(reads, sn)
+				// Later in the one order wins a tie: >=.
+				if chosen < 0 || !sn.UpdatedAt.Before(reads[chosen].UpdatedAt) {
+					chosen, chosenValue = len(reads)-1, r.Value
+				}
+			case "authority":
+				if a := ParseAuthority(r.Value); a.Of == key {
+					auth = a
+				}
+			}
+		}
+		if chosen >= 0 {
+			snap, have = reads[chosen], true
+			out.ExternalSnapshot = chosenValue
+			images, release, changed := mergeManifest(reads, chosen, keptAttachments(log))
+			out.Release = release
+			if changed {
+				snap.Images = images
+				if v, err := encodeSnapshot(snap); err == nil {
+					out.ExternalSnapshot = v
+				}
+			}
+			out.ExternalURL = snap.URL
+		}
+	}
+	out.Authority = auth.encode()
+	for _, field := range []string{FieldTitle, FieldDescription} {
+		text := ""
+		switch {
+		case auth.owner(field) != "" && have && field == FieldTitle:
+			text, _, _ = FromExternal(snap.Title, "")
+		case auth.owner(field) != "" && have:
+			found := snap.DescriptionSha256 == sha256Hex("")
+			for _, r := range log {
+				if r.Field == field && (r.Op == OpSet || r.Op == OpObserve || r.Op == OpAdopt) && sha256Hex(r.Value) == snap.DescriptionSha256 {
+					text, found = r.Value, true
+				}
+			}
+			if !found {
+				// Given back on one replica while another read past it: the
+				// last text a read made, and a read again with no validators.
+				for _, r := range log {
+					if r.Field == field && r.Op == OpObserve {
+						text = r.Value
+					}
+				}
+				out.DropRead = true
+			}
+		default:
+			for _, r := range log {
+				if r.Field == field && (r.Op == OpSet || r.Op == OpAdopt) {
+					text = r.Value
+				}
+			}
+		}
+		if field == FieldTitle {
+			out.Title = text
+		} else {
+			out.Description = text
+		}
+	}
+	return out
+}
+
+// keptAttachments is the attachments the log keeps live, by the store's
+// rule for a set (an observed-remove set): an attachment is live while
+// its add is in the log and no remove names that add's tag, whatever the
+// two rows' places in the one order.
+func keptAttachments(log []ChangeRow) map[string]bool {
+	removed := map[Tag]bool{}
+	for _, r := range log {
+		if r.Field == "attachments" && r.Op == OpRemove {
+			for _, tag := range Tags(r.Prior) {
+				removed[tag] = true
+			}
+		}
+	}
+	live := map[string]bool{}
+	for _, r := range log {
+		var a struct {
+			ID string `json:"id"`
+		}
+		if r.Field == "attachments" && r.Op == OpAdd && !removed[TagOf(r)] && json.Unmarshal([]byte(r.Value), &a) == nil && a.ID != "" {
+			live[a.ID] = true
+		}
+	}
+	return live
+}
+
+// mergeManifest is the image manifest of the merged snapshot, the read
+// chosen of reads (rule 3), and the attachments it releases, live the
+// attachments the merged log keeps (liveAttachments). The invariant: every
+// entry that names an attachment names a live one, a removed attachment is
+// never named nor released, and every live attachment some read names for
+// an image is named by the result or released, once. So the attachments
+// live are known before any entry is chosen: an entry naming one that was
+// removed, on either replica, is pending (the image is fetched again at
+// the next read) unless another read records the image otherwise. A
+// manifest only grows, so the result is the chosen read's entries in
+// their order, then every entry another read holds that it lacks, in the
+// one order of the reads and each read's own order. Each entry is done as
+// the reads record its image, taken in their one order: by the first live
+// attachment made of it, since an attachment is never replaced by a
+// completion that made none (a skip; a try that failed records nothing);
+// with none, by the first skip recorded; with neither, pending. A live
+// attachment of the image that is not the entry's (another replica's,
+// made later in the one order) is released. Past MaxImportImages
+// (replicas that each added images after they parted) the latest entries
+// go first, pending ones, then skips, then those that name an attachment,
+// which is released; so an attachment is cut only when more than
+// MaxImportImages entries name one. release is every live attachment some
+// read's entry names that the result does not, in the order the reads
+// first name them, nil when there is none; changed is false when the
+// result is the chosen read's own manifest.
+func mergeManifest(reads []ExternalSnapshot, chosen int, live map[string]bool) (images []SnapshotImage, release []string, changed bool) {
+	done := map[string]SnapshotImage{}
+	var made []string
+	madeSeen := map[string]bool{}
+	for _, r := range reads {
+		for _, im := range r.Images {
+			attached := im.AttachmentID != "" && live[im.AttachmentID]
+			if attached && !madeSeen[im.AttachmentID] {
+				madeSeen[im.AttachmentID] = true
+				made = append(made, im.AttachmentID)
+			}
+			switch d, ok := done[im.ID]; {
+			case attached && (!ok || d.AttachmentID == ""):
+				done[im.ID] = im
+			case im.Skipped != "" && !ok:
+				done[im.ID] = im
+			}
+		}
+	}
+	var out []SnapshotImage
+	seen := map[string]bool{}
+	add := func(im SnapshotImage) {
+		if seen[im.ID] {
+			return
+		}
+		seen[im.ID] = true
+		d, ok := done[im.ID]
+		if !ok {
+			// Pending, or naming a removed attachment: pending.
+			d = SnapshotImage{ID: im.ID}
+		}
+		out = append(out, d)
+	}
+	for _, im := range reads[chosen].Images {
+		add(im)
+	}
+	for i, r := range reads {
+		if i == chosen {
+			continue
+		}
+		for _, im := range r.Images {
+			add(im)
+		}
+	}
+	for _, cut := range []func(SnapshotImage) bool{
+		func(im SnapshotImage) bool { return !im.done() },
+		func(im SnapshotImage) bool { return im.AttachmentID == "" },
+		func(SnapshotImage) bool { return true },
+	} {
+		for i := len(out) - 1; len(out) > MaxImportImages && i >= 0; i-- {
+			if cut(out[i]) {
+				out = slices.Delete(out, i, i+1)
+			}
+		}
+	}
+	if out == nil {
+		out = []SnapshotImage{}
+	}
+	named := map[string]bool{}
+	for _, im := range out {
+		named[im.AttachmentID] = true
+	}
+	for _, id := range made {
+		if !named[id] {
+			release = append(release, id)
+		}
+	}
+	return out, release, !slices.Equal(out, reads[chosen].Images)
 }

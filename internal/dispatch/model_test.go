@@ -340,7 +340,7 @@ func TestTheVocabulariesAreThePlans(t *testing.T) {
 		{[]string{"verified", "delivery", "acceptance"}, `["acceptance","delivery","verified"]`},
 		{[]string{"acceptance", "acceptance"}, "twice"},
 		{[]string{"verified", "verified"}, "twice"},
-		{[]string{"merged"}, "none of"},
+		{[]string{"merged"}, "the close's reads of GitHub"},
 		{[]string{""}, "none of"},
 	} {
 		got, err := closePolicyValue(c.requires)
