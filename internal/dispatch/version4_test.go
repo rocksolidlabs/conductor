@@ -63,13 +63,16 @@ func TestRulesClassesVersionFour(t *testing.T) {
 	}
 }
 
-// worst is a text of n bytes at its escaped worst as Go's JSON writes it
-// with HTML escaping on, the API's encoding: '<' is six bytes.
-func worst(n int) string { return strings.Repeat("<", n) }
+// worst is a text of n bytes at its escaped worst as the store and the API
+// encode it (encodeValue, writeDispatch: Go's JSON with HTML escaping off):
+// '"' is two bytes.
+func worst(n int) string { return strings.Repeat(`"`, n) }
 
-// stored is a text of n bytes at its escaped worst as the store encodes it
-// (encodeValue, HTML escaping off): '"' is two bytes.
-func stored(n int) string { return strings.Repeat(`"`, n) }
+// worstWords is a text of n characters at its escaped worst as the store
+// and the API encode it where the text is trimmed (a read's words, a
+// reader's name): U+2028 (worstChars) between two letters, since a trim
+// takes it off the ends.
+func worstWords(n int) string { return "a" + strings.Repeat("\u2028", n-2) + "a" }
 
 // worstSnapshot is a snapshot with every part at its bound, every text at
 // its escaped worst by the encoding worst names, as normalSnapshot leaves
@@ -84,9 +87,12 @@ func worstSnapshot(t *testing.T, worst func(int) string) ExternalSnapshot {
 	for i := range assignees {
 		assignees[i] = worst(MaxSnapshotLogin)
 	}
+	// An image's id is an address the store keeps: scheme, host and path,
+	// which JSON writes as they are.
 	var images []SnapshotImage
 	for i := 0; i < MaxImportImages+3; i++ {
-		images = append(images, SnapshotImage{ID: worst(MaxImageID-1) + string(rune('a'+i))})
+		id := "https://" + host + "/" + string(rune('a'+i))
+		images = append(images, SnapshotImage{ID: id + strings.Repeat("p", MaxImageID-len(id))})
 	}
 	url := "https://" + host + "/" + strings.Repeat("&", MaxExternalURL-len("https://")-len(host)-1)
 	read := ExternalRead{
@@ -116,7 +122,7 @@ func worstSnapshot(t *testing.T, worst func(int) string) ExternalSnapshot {
 // stored (the store's encoding) and fits a change row; one past its bound
 // is refused; the identity's parts past their shapes are invalid.
 func TestSnapshotBound(t *testing.T) {
-	sn := worstSnapshot(t, stored)
+	sn := worstSnapshot(t, worst)
 	v, err := encodeSnapshot(sn)
 	if err != nil {
 		t.Fatalf("the worst snapshot: %v", err)
@@ -167,10 +173,14 @@ func TestSnapshotBound(t *testing.T) {
 }
 
 // The parts of a ticket's read this version adds (the snapshot, the
-// owners, the linked issue's read and a summary of each live link's read),
-// each at its bound and at its escaped worst as the API encodes it, are
-// under MaxTicketExternalParts, each summary under MaxLinkReadSummary; a
-// link's read past its bounds is refused.
+// owners, the linked issue's read, closed_on and a summary of each live
+// link's read), each at its bound and at its escaped worst as the route
+// encodes it (encodeValue is writeDispatch's encoding: HTML escaping off,
+// so '"' for a text bounded in bytes and U+2028 for one bounded in
+// characters), are under MaxTicketExternalParts, and that bound is the
+// measure rounded up to a KiB or two, not a guess above it (the room the
+// API's MaxTicketReply leaves the later rows depends on it); each summary is
+// under MaxLinkReadSummary; a link's read past its bounds is refused.
 func TestTicketReplyBound(t *testing.T) {
 	ctx := context.Background()
 	s := linkedStore(t)
@@ -184,11 +194,20 @@ func TestTicketReplyBound(t *testing.T) {
 	if _, err := s.db.Exec("UPDATE tickets SET external_snapshot = ? WHERE id = ?", snapshot, tk.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordTicketReadError(ctx, key, tk.ExternalID, worst(4*MaxReadError)); err != nil {
+	if err := s.RecordTicketReadError(ctx, key, tk.ExternalID, worstWords(4*MaxReadError)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.Exec("UPDATE ticket_reads SET issue_etag = ?, pull_etag = ?, read_by = ? WHERE ticket_id = ?",
-		strings.Repeat("<", MaxValidator), strings.Repeat("<", MaxValidator), worst(MaxByName), tk.ID); err != nil {
+	// The identity and the owners at their bounds: a system of 16 bytes, a
+	// host of 253 and a node id of 100.
+	system := strings.Repeat("s", 16)
+	identity := ExternalIdentity(system, strings.Repeat("h", MaxExternalHost), strings.Repeat("N", MaxNodeID))
+	if _, err := s.db.Exec("UPDATE ticket_reads SET external_id = ?, updated_at = ?, read_at = ?, error_at = ?, issue_etag = ?, pull_etag = ?, read_by = ? WHERE ticket_id = ?",
+		identity, stamp(day0.Add(time.Nanosecond)), stamp(day0.Add(time.Nanosecond)), stamp(day0.Add(time.Nanosecond)), worst(MaxValidator), worst(MaxValidator),
+		worstWords(MaxByName), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec("UPDATE tickets SET external_id = ?, authority = ? WHERE id = ?", identity,
+		Authority{Of: authorityKey(identity), Title: system, Description: system}.encode(), tk.ID); err != nil {
 		t.Fatal(err)
 	}
 	var checks []LinkCheck
@@ -200,11 +219,12 @@ func TestTicketReplyBound(t *testing.T) {
 		want(t, rc, err, StatusDone, "")
 		r := prRead(strings.Repeat("N", MaxNodeID), 1, "merged")
 		r.MergeSha, r.HeadSha, r.Checks = strings.Repeat("a", 64), strings.Repeat("b", 64), checks
-		r.Incomplete = &ChecksIncomplete{Words: []string{"x"}, Omitted: 1 << 30}
+		r.MergedAt, r.UpdatedAt = day0.Add(time.Nanosecond), day0.Add(time.Nanosecond)
+		r.Incomplete = &ChecksIncomplete{Words: []string{"x"}, Omitted: 1 << 62}
 		if err := s.RecordRead(ctx, rc.ID, r); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.RecordReadError(ctx, rc.ID, worst(4*MaxReadError)); err != nil {
+		if err := s.RecordReadError(ctx, rc.ID, worstWords(4*MaxReadError)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -216,22 +236,35 @@ func TestTicketReplyBound(t *testing.T) {
 		t.Fatalf("%d link reads", len(v.LinkReads))
 	}
 	for id, sum := range v.LinkReads {
-		b, _ := json.Marshal(sum)
+		b, _ := encodeValue(sum)
 		if len(b) > MaxLinkReadSummary {
 			t.Fatalf("the summary of %s is %d bytes, more than %d", id, len(b), MaxLinkReadSummary)
 		}
 	}
-	parts, _ := json.Marshal(struct {
+	closedOn, err := encodeValue(ClosedOn{LinkID: strings.Repeat("f", IDLen), MergedAt: day0.Add(time.Nanosecond), MergeSha: strings.Repeat("b", 64),
+		ReadAt: day0.Add(time.Nanosecond)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts, err := encodeValue(struct {
 		Snapshot     json.RawMessage            `json:"externalSnapshot"`
 		Authority    json.RawMessage            `json:"authority"`
 		ClosedOn     json.RawMessage            `json:"closedOn"`
 		Owners       *Owners                    `json:"owners"`
 		ExternalRead *TicketRead                `json:"externalRead"`
 		LinkReads    map[string]LinkReadSummary `json:"linkReads"`
-	}{v.ExternalSnapshot, v.Authority, json.RawMessage(`{"linkId":"0123456789abcdef","url":"` + worst(MaxLinkURL) + `"}`), v.Owners, v.ExternalRead, v.LinkReads})
-	t.Logf("the new parts at their worst: %d bytes, their bound %d", len(parts), MaxTicketExternalParts)
-	if len(parts) > MaxTicketExternalParts {
-		t.Fatalf("the new parts are %d bytes, more than %d", len(parts), MaxTicketExternalParts)
+	}{v.ExternalSnapshot, v.Authority, json.RawMessage(closedOn), v.Owners, v.ExternalRead, v.LinkReads})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var summary int
+	for _, sum := range v.LinkReads {
+		b, _ := encodeValue(sum)
+		summary = max(summary, len(b))
+	}
+	t.Logf("the new parts at their worst: %d bytes, their bound %d (the snapshot %d, a summary %d)", len(parts), MaxTicketExternalParts, len(v.ExternalSnapshot), summary)
+	if len(parts) > MaxTicketExternalParts || MaxTicketExternalParts-len(parts) > 4<<10 {
+		t.Fatalf("the new parts are %d bytes at their worst, their bound %d", len(parts), MaxTicketExternalParts)
 	}
 	// A read past its bounds is refused, nothing written.
 	link := v.Links[0].ID

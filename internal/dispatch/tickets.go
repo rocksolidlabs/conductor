@@ -69,6 +69,12 @@ type ticketCreated struct {
 	Key       string    `json:"key"`
 	CreatedAt time.Time `json:"createdAt"`
 	CreatedBy string    `json:"createdBy"`
+	// Fingerprint is an import's (ticket.import's): the content of the
+	// request that made the ticket, kept with its first row for good, so a
+	// resend whose receipt is pruned is answered with this ticket when its
+	// content is the same (prunedAnswer) and never makes a second. A
+	// ticket.create keeps none, as before.
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 // ticketDefaults is a ticket's scalar fields that its create and its
@@ -101,7 +107,7 @@ var (
 // project refuses it (archived). The receipt carries its id and key.
 func (s *Store) CreateTicket(ctx context.Context, op Op, n NewTicket) (Receipt, error) {
 	return s.Apply(ctx, op, "ticket.create", n, func(t *tx) error {
-		_, err := t.createTicket(n, nil, nil)
+		_, err := t.createTicket(n, nil, nil, "")
 		return err
 	})
 }
@@ -109,8 +115,9 @@ func (s *Store) CreateTicket(ctx context.Context, op Op, n NewTicket) (Receipt, 
 // createTicket makes the ticket n names (CreateTicket's rules), extra's
 // columns (an import's source and linked issue) set after its own fields,
 // each row's op opOf of its column where opOf names one (an import's title
-// and description, observe), and gives its id.
-func (t *tx) createTicket(n NewTicket, extra []fieldValue, opOf map[string]string) (string, error) {
+// and description, observe), its create row keeping fingerprint where it
+// is one (an import's), and gives its id.
+func (t *tx) createTicket(n NewTicket, extra []fieldValue, opOf map[string]string, fingerprint string) (string, error) {
 	p, err := t.project(n.Project)
 	if err != nil {
 		return "", err
@@ -185,7 +192,7 @@ func (t *tx) createTicket(n NewTicket, extra []fieldValue, opOf map[string]strin
 		return "", err
 	}
 	t.created(id, key)
-	value, err := encodeValue(ticketCreated{ID: id, ProjectID: p.ID, Number: number, Key: key, CreatedAt: t.now, CreatedBy: by})
+	value, err := encodeValue(ticketCreated{ID: id, ProjectID: p.ID, Number: number, Key: key, CreatedAt: t.now, CreatedBy: by, Fingerprint: fingerprint})
 	if err != nil {
 		return "", err
 	}
@@ -429,8 +436,11 @@ func (s *Store) DeleteTicket(ctx context.Context, op Op, key string) (Receipt, e
 // reference may not come back: a run link of its naming a run another
 // live ticket has linked meanwhile (a tombstone holds no run) is removed
 // in the same operation, one remove row naming its tags, so a run
-// belongs to one live ticket at most. A live ticket is invalid; an
-// archived project refuses it (archived).
+// belongs to one live ticket at most. Its linked issue cannot be shared so:
+// a ticket whose linked item another live ticket took while it was deleted
+// is refused external_linked, naming that ticket (one item, one live
+// ticket: the check an import and a link make, linkedTo). A live ticket is
+// invalid; an archived project refuses it (archived).
 func (s *Store) UndeleteTicket(ctx context.Context, op Op, key string) (Receipt, error) {
 	args := struct {
 		Key string `json:"key"`
@@ -446,6 +456,14 @@ func (s *Store) UndeleteTicket(ctx context.Context, op Op, key string) (Receipt,
 		}
 		if before[0].value == "" {
 			return refuse(RefusalInvalid, "%s is not deleted", tk.Key)
+		}
+		// Live again, it would be a second live ticket of its linked item
+		// when another took the item while it was deleted (external_linked,
+		// naming that ticket): one item, one live ticket.
+		if tk.ExternalID != "" {
+			if err := t.linkedTo(tk.ExternalID, tk.ID); err != nil {
+				return err
+			}
 		}
 		if err := t.setScalars("tickets", ChangeRow{Entity: EntityTicket, EntityID: tk.ID, TicketID: tk.ID, ProjectID: tk.ProjectID},
 			before, []fieldValue{{"deleted_at", ""}}); err != nil {

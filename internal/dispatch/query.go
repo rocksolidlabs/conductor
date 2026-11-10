@@ -572,7 +572,15 @@ func (q Query) plan() (p listPlan, none bool, err error) {
 		cond(blockedSet)
 	}
 	if q.External != "" {
-		cond("(t.external_url = ? OR t.id IN (SELECT l.ticket_id FROM links l WHERE l.url = ? AND l.deleted_at = ''))", q.External, q.External)
+		// A linked item's page is kept as the store keeps an address
+		// (admitAddress): the URL searched for is compared in that form, a
+		// pasted link's query or fragment left behind; a link's URL as
+		// DS1 keeps it, as given.
+		page := q.External
+		if kept, ok := addressWords(q.External); ok {
+			page = kept
+		}
+		cond("(t.external_url = ? OR t.id IN (SELECT l.ticket_id FROM links l WHERE l.url = ? AND l.deleted_at = ''))", page, q.External)
 	}
 	for _, term := range terms {
 		cond(termMatch, term)

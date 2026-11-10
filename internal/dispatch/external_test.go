@@ -303,7 +303,7 @@ func isRefusal(err error, code string) bool {
 // A link sets a native ticket's linked issue without a field, every field
 // Dispatch's; an unlink empties the four columns (source stays), drops
 // ticket_reads, and adopts each field GitHub owned; a ticket with none is
-// invalid to unlink.
+// invalid to unlink. A link's owners name the item and no field.
 func TestLinkAndUnlink(t *testing.T) {
 	ctx := context.Background()
 	s := linkedStore(t)
@@ -313,10 +313,14 @@ func TestLinkAndUnlink(t *testing.T) {
 	rc, err := s.LinkExternal(ctx, testOp("l1"), LinkArgs{Key: key, URL: read.Snapshot.URL}, read)
 	want(t, rc, err, StatusDone, "")
 	tk := ticketOf(t, s, key)
-	if tk.Title != "Mine" || tk.Description != "My words" || tk.Source != "native" || tk.ExternalID != "github:github.com:I_1" || len(tk.Authority) != 0 {
+	// Every field Dispatch's, as owners that name the item and no field: a
+	// row of its own, so a merge orders the link among the item's owner
+	// changes.
+	if tk.Title != "Mine" || tk.Description != "My words" || tk.Source != "native" || tk.ExternalID != "github:github.com:I_1" ||
+		ParseAuthority(string(tk.Authority)) != (Authority{Of: authorityKey("github:github.com:I_1")}) {
 		t.Fatalf("the linked ticket: %+v", tk)
 	}
-	if got := opRows(t, s, "l1"); !slices.Equal(got, []string{"external_id:set", "external_url:set", "external_snapshot:set"}) {
+	if got := opRows(t, s, "l1"); !slices.Equal(got, []string{"external_id:set", "external_url:set", "external_snapshot:set", "authority:set"}) {
 		t.Fatalf("the link's rows: %v", got)
 	}
 	v, _ := s.Ticket(ctx, key)
@@ -738,7 +742,7 @@ func TestCloseRequiresMerged(t *testing.T) {
 	var on ClosedOn
 	tk, err := readTicket(ctx, s.db, key)
 	if err != nil || json.Unmarshal(tk.ClosedOn, &on) != nil || on.LinkID != delivery || on.MergeSha != strings.Repeat("b", 40) ||
-		on.URL != "https://github.com/rocksolidlabs/conductor/pull/9" || on.ReadAt.IsZero() {
+		on.ReadAt.IsZero() || strings.Contains(string(tk.ClosedOn), "https://") {
 		t.Fatalf("closed_on: %s %v", tk.ClosedOn, err)
 	}
 	if got := opRows(t, s, "c4"); !slices.Contains(got, "closed_on:set") {
@@ -803,7 +807,9 @@ func TestImportImageAtomic(t *testing.T) {
 
 // A resend of an import with the same op id is a replay, whatever its read
 // now holds (a changed body, images reordered): never op_conflict, nothing
-// written again.
+// written again; once its receipt is pruned, it is answered by the
+// ticket's create row with the ticket's id and key, its content compared
+// with the import's.
 func TestImportManifestReplay(t *testing.T) {
 	ctx := context.Background()
 	s := linkedStore(t)
@@ -827,6 +833,38 @@ func TestImportManifestReplay(t *testing.T) {
 	}
 	// Another request under the op id is a conflict.
 	re, err = s.ImportTicket(ctx, testOp("imp"), ImportArgs{Project: "CND", URL: "other"}, again)
+	want(t, re, err, StatusFailed, RefusalOpConflict)
+	// Its receipt pruned, the resend finds the ticket again by its create
+	// row (R1), never makes a second, and other content is still a
+	// conflict.
+	if _, err := s.db.Exec("DELETE FROM ops WHERE actor = 'test' AND id = 'imp'"); err != nil {
+		t.Fatal(err)
+	}
+	tk := ticketOf(t, s, rc.Key)
+	if replay, found, err := s.Replay(ctx, testOp("imp"), IntentTicketImport, args); err != nil || !found || replay.Status != StatusDone ||
+		replay.ID != tk.ID || replay.Key != rc.Key {
+		t.Fatalf("the replay once pruned: %+v %v %v", replay, found, err)
+	}
+	re, err = s.ImportTicket(ctx, testOp("imp"), args, again)
+	if err != nil || re.Status != StatusDone || !re.Repeat || re.ID != tk.ID || re.Key != rc.Key {
+		t.Fatalf("the resend once pruned: %+v %v", re, err)
+	}
+	if n := countOf(t, s, "SELECT COUNT(*) FROM changes"); n != rows {
+		t.Fatalf("the resend once pruned wrote %d rows", n-rows)
+	}
+	re, err = s.ImportTicket(ctx, testOp("imp"), ImportArgs{Project: "CND", URL: "other"}, again)
+	want(t, re, err, StatusFailed, RefusalOpConflict)
+	// A ticket.create's op id resent as an import is another operation's.
+	_, native := newTicket(t, s, "CND", "Native")
+	_ = native
+	if _, err := s.db.Exec("DELETE FROM ops WHERE actor = 'test'"); err != nil {
+		t.Fatal(err)
+	}
+	var createOp string
+	if err := s.db.QueryRow("SELECT op_id FROM changes WHERE entity = 'ticket' AND op = 'create' AND entity_id = ?", ticketOf(t, s, native).ID).Scan(&createOp); err != nil {
+		t.Fatal(err)
+	}
+	re, err = s.ImportTicket(ctx, testOp(createOp), args, again)
 	want(t, re, err, StatusFailed, RefusalOpConflict)
 }
 
@@ -863,8 +901,9 @@ func TestDerivedOpIDs(t *testing.T) {
 }
 
 // Query.External finds the tickets whose linked issue's page, or one of
-// whose live links' URL, is the URL; a removed link's URL finds none; a
-// URL past its bound is a bad query.
+// whose live links' URL, is the URL (the page compared as the store keeps
+// an address, a pasted link's query and fragment left behind); a removed
+// link's URL finds none; a URL past its bound is a bad query.
 func TestQueryExternal(t *testing.T) {
 	ctx := context.Background()
 	s := linkedStore(t)
@@ -881,7 +920,8 @@ func TestQueryExternal(t *testing.T) {
 	want(t, rc, err, StatusDone, "")
 	rc, err = s.RemoveLink(ctx, testOp("rm"), gone, rc.ID)
 	want(t, rc, err, StatusDone, "")
-	for url, keys := range map[string][]string{read.Snapshot.URL: {imported}, pr: {linked}, old: {}, "https://example.com/none": {}} {
+	for url, keys := range map[string][]string{read.Snapshot.URL: {imported}, read.Snapshot.URL + "?notification_referrer_id=1#issuecomment-2": {imported},
+		pr: {linked}, old: {}, "https://example.com/none": {}} {
 		page, err := s.List(ctx, Query{External: url})
 		if err != nil {
 			t.Fatal(err)

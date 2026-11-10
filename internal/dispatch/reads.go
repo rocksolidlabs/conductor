@@ -215,7 +215,9 @@ func encodeLinkRead(r LinkRead) (checks, incomplete string, err error) {
 			return "", "", refuse(RefusalInvalid, "%s is not a full commit id", sha.what)
 		}
 	}
-	list := r.Checks
+	// A copy: the caller's read, which two calls may share, is never
+	// changed under it.
+	list := slices.Clone(r.Checks)
 	if list == nil {
 		list = []LinkCheck{}
 	}
@@ -232,8 +234,15 @@ func encodeLinkRead(r LinkRead) (checks, incomplete string, err error) {
 			}
 		}
 		if c.URL != "" {
-			if err := checkExternalURL(c.URL); err != nil {
+			// A check's page is kept only whole: one that carries a query, a
+			// fragment or a user is not kept, the check kept without it.
+			a, err := admitAddress("a check's page", c.URL)
+			if err != nil {
 				return "", "", err
+			}
+			list[i].URL = a.kept
+			if a.carries() {
+				list[i].URL = ""
 			}
 		}
 		list[i].CompletedAt = c.CompletedAt.UTC()
@@ -272,21 +281,29 @@ func encodeLinkRead(r LinkRead) (checks, incomplete string, err error) {
 // (no changes row, no receipt): the link must be live (a *Refusal
 // not_found otherwise: a read for a link since removed is dropped) and a
 // delivery or an external link (invalid); the read checked and bounded as
-// encodeLinkRead says; a read of the item the row holds that is older by
-// the system's clock than the one kept is a *Refusal stale_read, nothing
-// written. Then OnRead's listeners are told.
+// encodeLinkRead says, on a copy (r is never changed); a read of another
+// item than the one the link was first read as (its system, host and node
+// id) is a *Refusal invalid, and one older by the system's clock than the
+// one kept a *Refusal stale_read, nothing written either way. Then OnRead's
+// listeners are told.
 func (s *Store) RecordRead(ctx context.Context, linkID string, r LinkRead) error {
 	checks, incomplete, err := encodeLinkRead(r)
 	if err != nil {
 		return err
 	}
 	return s.recordLinkRead(ctx, linkID, func(dbtx *sql.Tx, l Link, now time.Time) error {
-		var node, at string
-		switch err := dbtx.QueryRowContext(ctx, "SELECT node_id, updated_at FROM link_reads WHERE link_id = ?", l.ID).Scan(&node, &at); {
-		case isNoRows(err):
+		// The item the link was first read as is the link's: a read of
+		// another (a node id, a host or a system of its own) is refused, as
+		// is one older than the read kept. A row a failure alone wrote names
+		// no item yet.
+		var system, host, node, at string
+		switch err := dbtx.QueryRowContext(ctx, "SELECT system, host, node_id, updated_at FROM link_reads WHERE link_id = ?", l.ID).Scan(&system, &host, &node, &at); {
+		case isNoRows(err), node == "":
 		case err != nil:
 			return err
-		case node == r.NodeID && at != "" && r.UpdatedAt.Before(unstamp(at)):
+		case system != r.System || host != r.Host || node != r.NodeID:
+			return refuse(RefusalInvalid, "the read is of %s, not %s, the item the link was read as", ExternalIdentity(r.System, r.Host, r.NodeID), ExternalIdentity(system, host, node))
+		case at != "" && r.UpdatedAt.Before(unstamp(at)):
 			return refuse(RefusalStaleRead, "the item was read as updated at %s, which is older than the read kept (%s)", stamp(r.UpdatedAt), at)
 		}
 		merged := 0

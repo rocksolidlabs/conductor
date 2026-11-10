@@ -328,24 +328,90 @@ func FromExternal(title, body string) (string, string, bool) {
 	return t, d, cut
 }
 
-// checkURL checks a linked item's page: https (or http on a loopback
-// host, the tests' fake), a host, no control character, at most
-// MaxExternalURL bytes.
-func checkExternalURL(s string) error {
+// address is an address as the store keeps it (admitAddress): its scheme,
+// host and path alone, in one form, and what the address it was made of
+// carried beside them, which the store never keeps.
+type address struct {
+	kept                  string
+	query, fragment, user bool
+	host                  string
+}
+
+// carries reports whether the address carried a query, a fragment or a
+// user beside its scheme, host and path.
+func (a address) carries() bool { return a.query || a.fragment || a.user }
+
+// admitAddress is the one door an address passes into the store (Program
+// item IN1a, review round 1 of #780): a linked item's page, an image's id,
+// a check's page, an address in a read's failure or in a refusal's words.
+// The address is at most MaxExternalURL bytes of UTF-8 with no control
+// character, https, or http on a loopback host (the tests' fake), with a
+// host; what the store keeps of it is its scheme, its host lower-cased and
+// its path escaped one way (url.URL's EscapedPath), at most MaxExternalURL
+// bytes, never its query, its fragment or its user, which a signed URL's
+// credential and a person's password ride in. The caller says what becomes
+// of an address that carried any (carries): refused, or kept without it.
+// The refusal's words name the address's host at most, never the address,
+// so a query never reaches a receipt or a log through them.
+func admitAddress(what, s string) (address, error) {
 	if len(s) > MaxExternalURL {
-		return refuse(RefusalBound, "the item's URL is more than %d bytes", MaxExternalURL)
+		return address{}, refuse(RefusalBound, "%s is more than %d bytes", what, MaxExternalURL)
 	}
 	u, err := url.Parse(s)
-	if err != nil || u.Hostname() == "" || strings.IndexFunc(s, unicode.IsControl) >= 0 || !utf8.ValidString(s) {
-		return refuse(RefusalInvalid, "the item's URL %q is not an https URL", s)
+	if err != nil || u.Hostname() == "" || u.Opaque != "" || strings.IndexFunc(s, unicode.IsControl) >= 0 || !utf8.ValidString(s) {
+		return address{}, refuse(RefusalInvalid, "%s is not an https URL", what)
 	}
+	host := strings.ToLower(u.Host)
 	switch {
 	case u.Scheme == "https":
 	case u.Scheme == "http" && isLoopback(u.Hostname()):
 	default:
-		return refuse(RefusalInvalid, "the item's URL %q is not an https URL", s)
+		return address{}, refuse(RefusalInvalid, "%s on %s is not https", what, cleanText(host, false))
 	}
-	return nil
+	a := address{kept: u.Scheme + "://" + host + u.EscapedPath(), query: strings.Contains(s, "?"), fragment: strings.Contains(s, "#"), user: u.User != nil,
+		host: host}
+	if len(a.kept) > MaxExternalURL {
+		return address{}, refuse(RefusalBound, "%s on %s is more than %d bytes", what, host, MaxExternalURL)
+	}
+	return a, nil
+}
+
+// itemPage admits a linked item's page: an address that carries a query, a
+// fragment or a user is refused (invalid), since the page is the item's
+// whole address and the tracker's own form of it has none; it gives the
+// page as the store keeps it.
+func itemPage(s string) (string, error) {
+	a, err := admitAddress("the item's page", s)
+	if err != nil {
+		return "", err
+	}
+	if a.carries() {
+		return "", refuse(RefusalInvalid, "the item's page on %s carries a query, a fragment or a user name, which the store never keeps", a.host)
+	}
+	return a.kept, nil
+}
+
+// manifestImageID is an image's id as a manifest keeps it: its address without its
+// query or fragment (a signed URL's query is a credential, the plan's
+// ImageRef), ok false for an address the store does not admit, one that
+// carries a user, or one past MaxImageID bytes, which is left out of the
+// manifest.
+func manifestImageID(s string) (string, bool) {
+	a, err := admitAddress("an image", s)
+	if err != nil || a.user || len(a.kept) > MaxImageID {
+		return "", false
+	}
+	return a.kept, true
+}
+
+// addressWords is an address as words may name it (a refusal's, a read's
+// failure's): what the store keeps of it, or none when it admits none.
+func addressWords(s string) (string, bool) {
+	a, err := admitAddress("an address", s)
+	if err != nil {
+		return "", false
+	}
+	return a.kept, true
 }
 
 // isLoopback reports whether host is a loopback address or localhost.
@@ -375,12 +441,16 @@ func checkRemoteID(what, id string) error {
 	return nil
 }
 
-// normalSnapshot is a read's snapshot as the store keeps it: its
-// identity's parts and its place checked (invalid or bound past their
-// shapes); every string cleaned (cleanText) and cut to its bound, the
-// labels and assignees to their counts (the rest in labelsTotal), the
-// manifest to MaxImportImages images of ids at most MaxImageID bytes in
-// the body's order, each once and none done (an import's), the steps to
+// normalSnapshot is a read's snapshot as the store keeps it, made on a
+// copy (the read is never changed): its identity's parts and its place
+// checked (invalid or bound past their shapes), its page admitted
+// (itemPage: one that carries a query, a fragment or a user is invalid);
+// every string cleaned (cleanText) and cut to its bound, the labels and
+// assignees to their counts (the rest in labelsTotal), the manifest to
+// MaxImportImages images in the body's order, each by its id as a
+// manifest keeps it (manifestImageID: its address without query or
+// fragment; one the store does not admit, with a user, or past MaxImageID
+// left out), each once and none done (an import's), the steps to
 // reproduce to MaxRepro at a line's end; and the digests the store
 // derives: the body's, the steps', and the description's FromExternal
 // makes of the body. It also gives that title and description.
@@ -409,9 +479,11 @@ func normalSnapshot(read ExternalRead) (sn ExternalSnapshot, title, description 
 	case len(sn.Space) > MaxSnapshotSpace || len(sn.ID) > MaxSnapshotItemID:
 		return ExternalSnapshot{}, "", "", refuse(RefusalBound, "the item's place is past its bound")
 	}
-	if err := checkExternalURL(sn.URL); err != nil {
+	page, err := itemPage(sn.URL)
+	if err != nil {
 		return ExternalSnapshot{}, "", "", err
 	}
+	sn.URL = page
 	for _, id := range []struct{ what, id string }{{"the item's database id", sn.DatabaseID}, {"the author's id", sn.AuthorID}} {
 		if err := checkRemoteID(id.what, id.id); err != nil {
 			return ExternalSnapshot{}, "", "", err
@@ -451,8 +523,8 @@ func normalSnapshot(read ExternalRead) (sn ExternalSnapshot, title, description 
 	}
 	images := []SnapshotImage{}
 	for _, im := range sn.Images {
-		id := cleanText(im.ID, false)
-		if id == "" || len(id) > MaxImageID || slices.ContainsFunc(images, func(o SnapshotImage) bool { return o.ID == id }) {
+		id, ok := manifestImageID(im.ID)
+		if !ok || slices.ContainsFunc(images, func(o SnapshotImage) bool { return o.ID == id }) {
 			continue
 		}
 		if len(images) == MaxImportImages {
@@ -636,8 +708,10 @@ func (t *tx) linkedRead(tk Ticket, read ExternalRead) (ExternalSnapshot, string,
 // create writes. Refused external_linked when a live ticket holds the
 // item already, archived for an archived project; every other rule is
 // CreateTicket's. The read is an argument apart from args: the fingerprint
-// is args alone, so a resend is a replay. The receipt carries the
-// ticket's id and key.
+// is args alone, so a resend is a replay, and the create row keeps it, so a
+// resend whose receipt is pruned is answered with the ticket's id and key
+// (prunedAnswer) and never imports the item twice. The receipt carries
+// the ticket's id and key.
 func (s *Store) ImportTicket(ctx context.Context, op Op, args ImportArgs, read ExternalRead) (Receipt, error) {
 	return s.Apply(ctx, op, IntentTicketImport, args, func(t *tx) error {
 		sn, title, description, err := normalSnapshot(read)
@@ -660,7 +734,7 @@ func (s *Store) ImportTicket(ctx context.Context, op Op, args ImportArgs, read E
 			Horizon: args.Horizon, Owner: args.Owner, Assignees: args.Assignees, Labels: args.Labels, Milestone: args.Milestone}
 		extra := []fieldValue{{"source", sn.System}, {"external_id", identity}, {"external_url", sn.URL}, {"external_snapshot", snapshot},
 			{"authority", authority.encode()}}
-		id, err := t.createTicket(n, extra, map[string]string{"title": OpObserve, "description": OpObserve})
+		id, err := t.createTicket(n, extra, map[string]string{"title": OpObserve, "description": OpObserve}, t.fp)
 		if err != nil {
 			return err
 		}
@@ -677,9 +751,11 @@ type LinkArgs struct {
 
 // LinkExternal sets the live ticket's linked issue to the item a read
 // gives (ticket.link_external) without changing a field: external_id,
-// external_url and external_snapshot, one set row each, the owners left
-// every field Dispatch's (the ticket was written here), its ticket_reads
-// row written. The system must be one the store was opened with
+// external_url, external_snapshot and authority, one set row each, the
+// owners every field Dispatch's (the ticket was written here) as an
+// authority that names the item and no field ({"of": …}, so a relink of an
+// item is an owner change of it a merge orders), its ticket_reads row
+// written. The system must be one the store was opened with
 // (invalid); a ticket that has a linked issue is invalid (unlink it
 // first); external_linked when another live ticket holds the item. An
 // expected revision is the ticket's; a deleted ticket is not_found; an
@@ -713,7 +789,14 @@ func (s *Store) LinkExternal(ctx context.Context, op Op, args LinkArgs, read Ext
 		if err != nil {
 			return err
 		}
-		after := []fieldValue{{"external_id", identity}, {"external_url", sn.URL}, {"external_snapshot", snapshot}, {"authority", ""}}
+		// The owners every field Dispatch's, for this item: {"of": …} with no
+		// field named, a row although an unlinked ticket's authority is ''
+		// already, so a merge reads the link as the last owner change of the
+		// item and an owner change another replica made of it before the
+		// relink hands nothing back to the system ("The counterpart group",
+		// rule 4).
+		owners := Authority{Of: authorityKey(identity)}.encode()
+		after := []fieldValue{{"external_id", identity}, {"external_url", sn.URL}, {"external_snapshot", snapshot}, {"authority", owners}}
 		if err := t.setScalars("tickets", ticketBase(tk), before, after); err != nil {
 			return err
 		}
@@ -1009,21 +1092,31 @@ type ImageUpload struct {
 // made; with none, the entry's skip recorded (one set row). An image not in
 // the manifest, or whose entry is done already, is invalid; the ticket's
 // attachments' bound is DS1's; a refusal keeps neither the row nor the
-// entry. The fingerprint is the key, the image's id and what it carries
-// (the name, type, size and SHA-256 of its content, or its skip), so the
-// API's derived op id for it (DerivedOpID) replays one input.
+// entry. The image is named by its id as the manifest keeps it
+// (manifestImageID): an address with a query or a fragment names the
+// entry without them, so the API may name it by the URL it fetched, and
+// the query is kept nowhere. The fingerprint is the key, that id and what
+// it carries (the name, type, size and SHA-256 of its content, or its
+// skip), so the API's derived op id for it (DerivedOpID) replays one
+// input.
 func (s *Store) ImportImage(ctx context.Context, op Op, key, imageID string, img ImageUpload) (Receipt, error) {
+	// The image by its id as the manifest keeps it: the API may name it by
+	// the address it fetched, whose query is left behind here.
+	id, admitted := manifestImageID(imageID)
 	mark := func(t *tx, tk Ticket, entry SnapshotImage) error {
+		if !admitted {
+			return refuse(RefusalInvalid, "the image is not an address an import manifest holds")
+		}
 		sn, ok := ParseSnapshot(string(tk.ExternalSnapshot))
 		i := -1
 		if ok {
-			i = slices.IndexFunc(sn.Images, func(im SnapshotImage) bool { return im.ID == imageID })
+			i = slices.IndexFunc(sn.Images, func(im SnapshotImage) bool { return im.ID == id })
 		}
 		switch {
 		case i < 0:
-			return refuse(RefusalInvalid, "the image %q is not in %s's import manifest", imageID, tk.Key)
+			return refuse(RefusalInvalid, "the image %q is not in %s's import manifest", id, tk.Key)
 		case sn.Images[i].done():
-			return refuse(RefusalInvalid, "the image %q of %s is done already", imageID, tk.Key)
+			return refuse(RefusalInvalid, "the image %q of %s is done already", id, tk.Key)
 		}
 		sn.Images[i] = entry
 		snapshot, err := encodeSnapshot(sn)
@@ -1040,13 +1133,13 @@ func (s *Store) ImportImage(ctx context.Context, op Op, key, imageID string, img
 			Key     string `json:"key"`
 			Image   string `json:"image"`
 			Skipped string `json:"skipped"`
-		}{key, imageID, img.Skipped}
+		}{key, id, img.Skipped}
 		return s.Apply(ctx, op, IntentImportImage, args, func(t *tx) error {
 			tk, _, err := t.ticket(key, false)
 			if err != nil {
 				return err
 			}
-			return mark(t, tk, SnapshotImage{ID: imageID, Skipped: img.Skipped})
+			return mark(t, tk, SnapshotImage{ID: id, Skipped: img.Skipped})
 		})
 	}
 	args := func(size int64, sum string) any {
@@ -1057,10 +1150,10 @@ func (s *Store) ImportImage(ctx context.Context, op Op, key, imageID string, img
 			ContentType string `json:"contentType"`
 			Size        int64  `json:"size"`
 			SHA256      string `json:"sha256"`
-		}{key, imageID, img.Name, img.ContentType, size, sum}
+		}{key, id, img.Name, img.ContentType, size, sum}
 	}
 	rc, _, err := s.addAttachment(ctx, op, IntentImportImage, key, img.Name, img.ContentType, img.Body, args, func(t *tx, tk Ticket, a Attachment) error {
-		return mark(t, tk, SnapshotImage{ID: imageID, AttachmentID: a.ID, SHA256: a.SHA256})
+		return mark(t, tk, SnapshotImage{ID: id, AttachmentID: a.ID, SHA256: a.SHA256})
 	})
 	return rc, err
 }
@@ -1100,10 +1193,30 @@ func ticketReadOf(ctx context.Context, q queryer, ticketID string) (*TicketRead,
 	return &r, nil
 }
 
+var (
+	// wordsAddress is an address in words: a scheme and what follows it up
+	// to a space.
+	wordsAddress = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://\S*`)
+	// wordsPathQuery is a path's query in words (an API path the adapter
+	// named): from the '?' after a path to a space. A '#' after a path is
+	// left, since "owner/repo#612" names an item.
+	wordsPathQuery = regexp.MustCompile(`(/[^\s?]*)\?\S*`)
+)
+
 // readWords is a read's failure as a row keeps it: cleaned of control
-// characters and cut to MaxReadError characters.
+// characters, each address in it as the store keeps an address
+// (addressWords, "an address" for one it does not admit) and each path's
+// query left out, so the words never keep a signed URL's credential, and
+// cut to MaxReadError characters.
 func readWords(s string) string {
 	s = strings.TrimSpace(cleanText(s, false))
+	s = wordsAddress.ReplaceAllStringFunc(s, func(a string) string {
+		if kept, ok := addressWords(a); ok {
+			return kept
+		}
+		return "an address"
+	})
+	s = wordsPathQuery.ReplaceAllString(s, "$1")
 	if rs := []rune(s); len(rs) > MaxReadError {
 		s = string(rs[:MaxReadError-1]) + "…"
 	}

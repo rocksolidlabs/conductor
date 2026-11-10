@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"encoding/json"
+	"slices"
 	"sort"
 	"strconv"
 	"time"
@@ -677,8 +678,10 @@ type CounterpartState struct {
 //     a description's row is never dropped for its item.
 //  3. Reads by the system's clock: of the item's snapshot rows in the
 //     period, the one with the latest updatedAt (equal: the one order) is
-//     external_snapshot, its manifest taking by image id an attachment or
-//     a skip any of them records; external_url is its url.
+//     external_snapshot, its manifest every entry any of them holds
+//     (mergeManifest: a manifest only grows, so no attachment is left that
+//     none names), each done by image id where any of them records it;
+//     external_url is its url.
 //  4. Owners by the person's order: authority is the last owner change of
 //     the item in the period (its of the item's), else none.
 //  5. Every field has one writer: a field the owners give the system is
@@ -751,20 +754,8 @@ func ReconcileCounterpart(rows []ChangeRow) CounterpartState {
 		if chosen >= 0 {
 			snap, have = reads[chosen], true
 			out.ExternalSnapshot = chosenValue
-			changed := false
-			for i, im := range snap.Images {
-				if im.done() {
-					continue
-				}
-				for _, other := range reads {
-					for _, o := range other.Images {
-						if o.ID == im.ID && o.done() {
-							snap.Images[i], changed = o, true
-						}
-					}
-				}
-			}
-			if changed {
+			if images, changed := mergeManifest(reads, chosen); changed {
+				snap.Images = images
 				if v, err := encodeSnapshot(snap); err == nil {
 					out.ExternalSnapshot = v
 				}
@@ -809,4 +800,63 @@ func ReconcileCounterpart(rows []ChangeRow) CounterpartState {
 		}
 	}
 	return out
+}
+
+// mergeManifest is the image manifest of the merged snapshot, the read
+// chosen of reads (rule 3): a manifest only grows and its entries only
+// become done, on one replica as in a merge, so it is the chosen read's
+// entries in their order, then every entry another read holds that it
+// lacks, in the one order of the reads and each read's own order, each
+// entry done with the attachment or the skip the last read in that order
+// records for its image id. Past MaxImportImages (two replicas that each
+// added images after they parted), pending entries go first, the latest
+// first, so a done entry (an attachment made, a skip recorded) is kept
+// before any pending one; only more than MaxImportImages done entries,
+// which needs replicas that each completed new images past the bound
+// between them, cut a done one, the latest in the same order. changed is
+// false when the result is the chosen read's own manifest.
+func mergeManifest(reads []ExternalSnapshot, chosen int) ([]SnapshotImage, bool) {
+	done := map[string]SnapshotImage{}
+	for _, r := range reads {
+		for _, im := range r.Images {
+			if im.done() {
+				done[im.ID] = im
+			}
+		}
+	}
+	var out []SnapshotImage
+	seen := map[string]bool{}
+	add := func(im SnapshotImage) {
+		if seen[im.ID] {
+			return
+		}
+		seen[im.ID] = true
+		if d, ok := done[im.ID]; ok {
+			im = d
+		}
+		out = append(out, im)
+	}
+	for _, im := range reads[chosen].Images {
+		add(im)
+	}
+	for i, r := range reads {
+		if i == chosen {
+			continue
+		}
+		for _, im := range r.Images {
+			add(im)
+		}
+	}
+	for i := len(out) - 1; len(out) > MaxImportImages && i >= 0; i-- {
+		if !out[i].done() {
+			out = slices.Delete(out, i, i+1)
+		}
+	}
+	if len(out) > MaxImportImages {
+		out = out[:MaxImportImages]
+	}
+	if out == nil {
+		out = []SnapshotImage{}
+	}
+	return out, !slices.Equal(out, reads[chosen].Images)
 }

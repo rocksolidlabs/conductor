@@ -368,7 +368,9 @@ const (
 	// MaxAuthority bounds a ticket's field owners as encoded, in bytes.
 	MaxAuthority = 256
 	// MaxClosedOn bounds the read a gated close rested on as encoded, in
-	// bytes.
+	// bytes: the link by its id, the merge's time and commit and the read's
+	// time come to under 200 bytes at their bounds (ClosedOn keeps no URL;
+	// TestGatedCloseOnALongDeliveryURL measures it).
 	MaxClosedOn = 1 << 10
 	// MaxExternalHost bounds a tracker's host name, in bytes (a DNS name's
 	// bound), a port beside it in a test.
@@ -421,18 +423,20 @@ const (
 	// MaxCheckName bounds a check's name and its app's, in bytes.
 	MaxCheckName = 200
 	// MaxLinkReadSummary bounds one link's read as a ticket's read carries
-	// it (LinkReadSummary), at its escaped worst as the API encodes it (Go's
-	// JSON: a '<' of its error's words is six bytes), in bytes.
+	// it (LinkReadSummary), at its escaped worst as the route encodes it
+	// (encodeValue and the API's writeDispatch: Go's JSON with HTML
+	// escaping off, so the words' worst is U+2028, six bytes a character),
+	// in bytes: it measures 1,626 at its worst (TestTicketReplyBound).
 	MaxLinkReadSummary = 2 << 10
 	// MaxTicketExternalParts bounds what a ticket's read carries of its
 	// linked issue and its links' reads (the snapshot, the owners, the
-	// linked issue's read and closed_on, a summary per live link) at their
-	// escaped worst as the API encodes them, in bytes: Go's JSON writes a
-	// '<' as six bytes, so the snapshot, under MaxExternalSnapshot as the
-	// store encodes it, takes some 110 KiB there, and fifty summaries 100
-	// KiB (TestTicketReplyBound). What the API's MaxTicketReply makes room
-	// for.
-	MaxTicketExternalParts = 224 << 10
+	// linked issue's read, closed_on and a summary per live link) at their
+	// escaped worst as the route encodes them, in bytes: the measure,
+	// 119,814 bytes (the snapshot 34,186 of them, fifty summaries most of
+	// the rest), rounded up to a KiB (TestTicketReplyBound holds it within
+	// 4 KiB of the measure). The room the API's MaxTicketReply keeps for
+	// it.
+	MaxTicketExternalParts = 118 << 10
 	// MaxMergedReadAge is how old a link's read may be for the close
 	// policy's merged: the close route's own read is what counts.
 	MaxMergedReadAge = 5 * time.Minute

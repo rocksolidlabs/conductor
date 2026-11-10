@@ -695,8 +695,10 @@ func conflictReceipt(op Op, intent, words string) Receipt {
 // another, op_conflict, as the receipt would have answered. A plan
 // revision's proposal finds its create row (entity plan), a launch its
 // create row (entity launch), a link's add its add row (a ticket's links),
-// whose link names the fingerprint; a first row of another kind is
-// another operation's, op_conflict. A record with no fingerprint (a link
+// whose link names the fingerprint, an import its ticket's create row,
+// which keeps the import's fingerprint and is answered with the ticket's
+// id and key; a first row of another kind is another operation's,
+// op_conflict. A record with no fingerprint (a link
 // a version 1 store added) cannot be compared: op_conflict with the words
 // that say so, which refuses the resend rather than take content it
 // cannot check, and a new operation for the same link is refused as a
@@ -738,6 +740,24 @@ func prunedAnswer(ctx context.Context, q queryer, op Op, intent, fp string) (rc 
 			return conflictReceipt(op, intent, wordsOpConflict), true, nil
 		}
 		table, id = "reviews", entityID
+	case IntentTicketImport:
+		// An import's first row is its ticket's create row, which keeps the
+		// import's fingerprint (ticketCreated): the same content is answered
+		// with that ticket, so a resend finds what it made and imports
+		// nothing twice (R1); a create row of another kind of operation (a
+		// ticket.create keeps none) is another operation's.
+		var v ticketCreated
+		if entity != EntityTicket || kind != OpCreate || json.Unmarshal([]byte(value), &v) != nil || v.Fingerprint != fp {
+			return conflictReceipt(op, intent, wordsOpConflict), true, nil
+		}
+		if err := q.QueryRowContext(ctx, "SELECT key FROM tickets WHERE id = ?", entityID).Scan(&done.Key); err != nil {
+			if isNoRows(err) {
+				return Receipt{}, false, fmt.Errorf("dispatch: the operation %s made ticket %s, which has no row", op.ID, entityID)
+			}
+			return Receipt{}, false, err
+		}
+		done.ID = entityID
+		return done, true, nil
 	case IntentFindingMark:
 		var v struct {
 			ID string `json:"id"`
