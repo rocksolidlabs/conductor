@@ -23,7 +23,8 @@ func (c *lookupCache) stub(look func(program string) (string, error)) {
 }
 
 // hangWait is a lookup wait only a hang reaches. lookupWait (2 s) is the
-// product's bound, past which an unanswered lookup counts as installed; a
+// product's bound, past which an unanswered lookup counts as installed in a
+// listing and refuses a launch; a
 // test that compares what servers say of a program needs their answers, which
 // a loaded machine can take longer than that to give.
 const hangWait = time.Minute
@@ -456,9 +457,9 @@ func TestCatalogLooksUpConcurrently(t *testing.T) {
 // Programs whose lookups stall do not hold up the catalog, a crew launch or
 // the add-agent form's check past the wait: the catalog answers once, in
 // about one wait, listing them as available; a launch of members on them is
-// allowed (the spawn still fails if a program is missing); the check says
-// unknown "timeout". When the lookups land, their answers are kept and the
-// catalog says what they found.
+// refused, as not shown to be installed (an unknown is never a yes); the
+// check says unknown "timeout". When the lookups land, their answers are
+// kept and the catalog says what they found.
 func TestLookupsThatStallAnswerUnknownInTime(t *testing.T) {
 	e := newTestEnv(t, nil)
 	const wait = 300 * time.Millisecond
@@ -499,7 +500,7 @@ func TestLookupsThatStallAnswerUnknownInTime(t *testing.T) {
 	}
 	start = time.Now()
 	cat := e.srv.Catalog()
-	if err := checkLaunch(members, cat, e.srv.installedFor(t.Context(), cat, members), nil); err != nil {
+	if err := checkLaunch(members, cat, e.srv.installedFor(t.Context(), cat, members), nil); !errors.Is(err, crew.ErrInvalid) || !strings.Contains(err.Error(), `agent "stall-0" could not be shown to be installed`) {
 		t.Fatalf("a launch on stalled lookups: %v", err)
 	}
 	if took := time.Since(start); took > stalled*wait/2 {

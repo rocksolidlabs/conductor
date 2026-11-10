@@ -137,17 +137,21 @@ func await(ctx context.Context, call *lookupCall, wait time.Duration) (path stri
 // lookup: exec resolves it against the session's working directory, which the
 // server's own cannot stand for. A bare name is looked up on the PATH, and any
 // program of that name counts; an absolute path is looked up as it is. A
-// lookup that does not answer in time (found's known false) counts as well:
-// the launch goes ahead, and the spawn fails if the program is missing.
+// lookup that does not answer in time (found's known false) counts as well,
+// for a listing; a launch asks installedKnown, which tells it apart.
 func (c *lookupCache) installed(ctx context.Context, program string) bool {
+	ok, known := c.installedKnown(ctx, program)
+	return ok || !known
+}
+
+// installedKnown is installed with whether the lookup answered in time
+// (known): a launch refuses a program it could not show to be installed.
+func (c *lookupCache) installedKnown(ctx context.Context, program string) (ok, known bool) {
 	if relativePath(program) {
-		return true
+		return true, true
 	}
 	path, ok, known := c.found(ctx, program)
-	if ok && known && c.onWindows(path) {
-		return false
-	}
-	return ok || !known
+	return ok && known && !c.onWindows(path), known
 }
 
 // onWindows says whether a resolved path is a Windows program seen from
@@ -162,14 +166,18 @@ func relativePath(program string) bool {
 	return strings.ContainsAny(program, "/"+string(filepath.Separator)) && !filepath.IsAbs(program)
 }
 
-// warm reports whether each of programs is installed, asking about them all
-// at once: the lookups of those with no fresh answer run together, at most
-// lookupWorkers at a time, so a listing of N uncached programs takes about
-// one lookup's time, not N, and never much more than lookupWait.
-func (c *lookupCache) warm(ctx context.Context, programs []string) map[string]bool {
+// installedAnswer is what installedKnown says of a program.
+type installedAnswer struct{ ok, known bool }
+
+// warm reports whether each of programs is installed, as installedKnown
+// does, asking about them all at once: the lookups of those with no fresh
+// answer run together, at most lookupWorkers at a time, so a launch of N
+// uncached programs takes about one lookup's time, not N, and never much
+// more than lookupWait.
+func (c *lookupCache) warm(ctx context.Context, programs []string) map[string]installedAnswer {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	answers := make(map[string]bool, len(programs))
+	answers := make(map[string]installedAnswer, len(programs))
 	seen := map[string]bool{}
 	for _, p := range programs {
 		if seen[p] {
@@ -177,9 +185,9 @@ func (c *lookupCache) warm(ctx context.Context, programs []string) map[string]bo
 		}
 		seen[p] = true
 		wg.Go(func() {
-			ok := c.installed(ctx, p)
+			ok, known := c.installedKnown(ctx, p)
 			mu.Lock()
-			answers[p] = ok
+			answers[p] = installedAnswer{ok, known}
 			mu.Unlock()
 		})
 	}

@@ -123,6 +123,14 @@ add its rule here.
   on CI; the bound is 60 m now; the package's length is CPU work under the
   race detector across its 1,365 tests, not waits, and CI's longest job is
   e2e at 49 minutes, so no row makes it faster).
+- An answer the product's bound cut off is not a yes, in the product
+  either. A crew launch read a PATH lookup that ran past its 2 s wait as
+  "installed" and started the lead of a crew whose other member could not
+  run, on a loaded WSL box whose PATH reaches into /mnt/c
+  (`TestLaunchRefusesAnAgentNotInstalled`, 2026-11-10, #281). The launch
+  refuses what it could not show now, saying so; the test that needs the
+  lookup's answer waits for it (`stubWait(hangWait)`), and one that holds
+  the lookup at the seam proves the refusal every run.
 - Order what must be ordered. Keys that must stay unconfirmed go in after
   the process is stopped (SIGSTOP), not raced against a kill. A check made
   at once after an action ("nothing served yet") holds the step the action
