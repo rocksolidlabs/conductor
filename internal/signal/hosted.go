@@ -888,6 +888,8 @@ type HostedSession struct {
 	// its place among the registry's sessions while it lives.
 	desk  string
 	place *session.Reservation
+	// report is what its host reported of it as it registered (report.go).
+	report proto.HostReport
 }
 
 // Owner is the hash of the host instance that registered the session, "" when none.

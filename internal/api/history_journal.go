@@ -15,6 +15,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/journal"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/signal"
 	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
@@ -22,7 +23,7 @@ import (
 // a record of every server session, kept by internal/journal under the
 // data directory's history/. The server opens it with its data directory
 // (a switchyard keeps none) and keeps each recorded session's record in
-// step with the session. A hosted session has no record yet.
+// step with the session; a hosted session's is in history_hosted.go.
 //
 // # The record follows the session (reconcile)
 //
@@ -288,6 +289,12 @@ type recorder struct {
 	watching bool
 	leaving  bool
 	gone     chan struct{}
+	// h is a hosted session's recorder's session (history_hosted.go), d
+	// nil; as is its agent's own session as this server captured it, and
+	// endCommit what its host sent before its end. Guarded by recMu.
+	h         *signal.HostedSession
+	as        *session.AgentSession
+	endCommit string
 }
 
 // recordSeam runs the test's hook at stage (recordHook), with the
@@ -494,6 +501,10 @@ func (s *Server) reconcile(rc *recorder) {
 // and waits for a process whose status ended while it runs
 // (awaitProcessEnd). The caller holds recMu.
 func (s *Server) reconcileLocked(rc *recorder, finalPass bool) {
+	if rc.h != nil {
+		s.reconcileHostedLocked(rc, finalPass)
+		return
+	}
 	id := rc.in.ID()
 	if s.recCur[id] != rc || rc.leaving {
 		return
@@ -551,7 +562,7 @@ func (s *Server) recordRemoved(id string, d session.Driver) {
 	s.recordSeam("beforeRemovedReconcile", id)
 	s.recMu.Lock()
 	defer s.recMu.Unlock()
-	if rc := s.recCur[id]; rc != nil && rc.d != nil && session.Driver(rc.d) == d {
+	if rc := s.recCur[id]; rc != nil && ((rc.d != nil && session.Driver(rc.d) == d) || (rc.h != nil && session.Driver(rc.h) == d)) {
 		s.reconcileLocked(rc, false)
 	}
 }
@@ -576,6 +587,9 @@ func (s *Server) recordActivity(rc *recorder, e session.ActivityEntry) {
 	a := journal.Activity{At: e.At, Type: e.Type, By: e.By, ByName: e.ByName, Message: e.Message, URL: e.URL, To: e.To, Tool: e.Tool, Op: e.Op, Path: e.Path}
 	if e.Type == session.ActivityFile {
 		a.Path = session.TouchedAbs(rc.cwd, e.Path)
+		if rc.h != nil {
+			a.Path = signal.HostAbs(rc.cwd, e.Path)
+		}
 	}
 	s.recMu.Lock()
 	defer s.recMu.Unlock()

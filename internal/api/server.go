@@ -686,10 +686,19 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		if info.Status.Ended() {
 			s.endLinks(info.ID)
 		}
+		s.recordHostedHint(info.ID)
 	}
-	s.hosts.OnActivity = s.events.activity
+	s.hosts.OnActivity = func(id string, e session.ActivityEntry, st session.AttentionState) {
+		s.events.activity(id, e, st)
+		s.recordHostedActivity(id, e)
+	}
 	// A hosted session's chat reaches the browsers' unread counts as a server session's does.
-	s.hosts.OnChat = func(id string, m session.ChatMessage) { s.events.chat(id, "", m) }
+	s.hosts.OnChat = func(id string, m session.ChatMessage) {
+		s.events.chat(id, "", m)
+		s.recordHostedChat(id, m)
+	}
+	// A hosted session's record (history_hosted.go).
+	s.hosts.OnAdded, s.hosts.OnSessionInfo = s.beginHostedRecord, s.recordSessionInfo
 	s.registry.OnRemove = func(id string, d session.Driver) {
 		// Its viewers go with it first, and none attaches after: a run
 		// link's revoke, or its run forgotten, looks for them in the
