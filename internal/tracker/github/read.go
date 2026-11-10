@@ -11,7 +11,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/tracker"
 )
 
-// issueJSON is what Read takes of GET /repos/{owner}/{repo}/issues/{n}.
+// issueJSON is what Read takes of GET /repositories/{id}/issues/{n}.
 type issueJSON struct {
 	ID          json.Number `json:"id"`
 	NodeID      string      `json:"node_id"`
@@ -42,16 +42,22 @@ type issueJSON struct {
 	} `json:"pull_request"`
 }
 
-// pullJSON is what Read takes of GET /repos/{owner}/{repo}/pulls/{n}.
+// pullJSON is what Read takes of GET /repositories/{id}/pulls/{n}: its
+// number and its base repository's id are its identity, compared with the
+// repository and the number asked before it is combined with the issue's.
 type pullJSON struct {
-	Merged         bool       `json:"merged"`
-	MergedAt       *time.Time `json:"merged_at"`
-	MergeCommitSHA *string    `json:"merge_commit_sha"`
+	Number         json.Number `json:"number"`
+	Merged         bool        `json:"merged"`
+	MergedAt       *time.Time  `json:"merged_at"`
+	MergeCommitSHA *string     `json:"merge_commit_sha"`
 	Head           struct {
 		SHA string `json:"sha"`
 	} `json:"head"`
 	Base struct {
-		Ref string `json:"ref"`
+		Ref  string `json:"ref"`
+		Repo *struct {
+			ID json.Number `json:"id"`
+		} `json:"repo"`
 	} `json:"base"`
 }
 
@@ -61,20 +67,28 @@ type half struct {
 	r   request
 }
 
-// Read reads an issue or a pull request: GET …/issues/{n} with the full
-// media type (body and body_html), and for a pull request GET …/pulls/{n}
-// for its merge and head, each with its own If-None-Match. The item is
-// not modified only when every request it took answered 304; a 304 beside
-// a 200 reads the one that answered 304 again without its validator, so
-// the item returned is whole and current. The item's place is the one its
-// answer gives (html_url: its repository and its number as they are now),
-// so a read answered from a redirect (a renamed repository, an issue
-// transferred to another repository and so another number) is the item at
-// its new place when its node id is the one v holds, and *tracker.ErrMoved
-// naming that new place when it is another, as is a node id that changed
-// at the same place; a redirected answer whose place cannot be read is
-// refused. r is held to tracker.Ref.Check before any of it goes into a
-// path.
+// Read reads an issue or a pull request: the repository's lookup by its
+// name (lookupRepo), then, by the identity it read, GET
+// /repositories/{id}/issues/{n} with the full media type (body and
+// body_html), and for a pull request GET /repositories/{id}/pulls/{n} for
+// its merge and head, each with its own If-None-Match. The pull request's
+// answer is combined with the issue's only when it names itself the same
+// item (its number, and its base repository's id the one looked up, the
+// pull answer's own identity); any other is an answer Conductor cannot
+// read, never merge state taken from it. The item is not modified only
+// when every request for the item answered 304; a 304 beside a 200 reads
+// the one that answered 304 again without its validator, by the same
+// identity, so the item returned is whole and current. The item's place
+// is the one its answer gives (html_url: its repository and its number as
+// they are now), so a read answered from a redirect (a renamed
+// repository's lookup, an issue transferred to another repository and so
+// another number) is the item at its new place when its node id is the
+// one v holds, and *tracker.ErrMoved naming that new place when it is
+// another, as is a node id that changed at the same place; a redirected
+// answer whose place cannot be read is refused, and so is a pull request
+// whose issue was answered from a redirect (a pull request is never
+// transferred: its repository would not be the one looked up). r is held
+// to tracker.Ref.Check before any of it goes into a path.
 func (a *Adapter) Read(ctx context.Context, c tracker.Credential, r tracker.Ref, v tracker.Validators) (tracker.Item, bool, error) {
 	if err := r.Check(); err != nil {
 		return tracker.Item{}, false, &tracker.RequestError{System: tracker.GitHub, Method: "-", Path: "-", Err: tracker.ErrUnsupported, Words: "not a GitHub item"}
@@ -83,8 +97,12 @@ func (a *Adapter) Read(ctx context.Context, c tracker.Credential, r tracker.Ref,
 	if err != nil {
 		return tracker.Item{}, false, err
 	}
-	base := "/repos/" + r.Space
-	iss, err := a.half(ctx, c, ep, base+"/issues/"+r.ID, "application/vnd.github.full+json", v.Issue)
+	rp, err := a.lookupRepo(ctx, c, ep, r.Space)
+	if err != nil {
+		return tracker.Item{}, false, err
+	}
+	issuePath, pullPath := rp.path("/issues/"+r.ID), rp.path("/pulls/"+r.ID)
+	iss, err := a.half(ctx, c, ep, issuePath, "application/vnd.github.full+json", v.Issue)
 	if err != nil {
 		return tracker.Item{}, false, err
 	}
@@ -95,7 +113,7 @@ func (a *Adapter) Read(ctx context.Context, c tracker.Credential, r tracker.Ref,
 			return tracker.Item{}, false, err
 		}
 		isPull = issue.PullRequest != nil
-		if err := a.placed(ep, iss, r, v, issue); err != nil {
+		if err := a.placed(ep, iss, rp.moved, r, v, issue); err != nil {
 			return tracker.Item{}, false, err
 		}
 	}
@@ -105,11 +123,7 @@ func (a *Adapter) Read(ctx context.Context, c tracker.Credential, r tracker.Ref,
 	var pull pullJSON
 	pullETag := ""
 	if isPull {
-		place := r
-		if iss.ans.status == http.StatusOK {
-			place, _ = placeOf(r, issue)
-		}
-		pl, err := a.half(ctx, c, ep, "/repos/"+place.Space+"/pulls/"+place.ID, "", v.Pull)
+		pl, err := a.half(ctx, c, ep, pullPath, "", v.Pull)
 		if err != nil {
 			return tracker.Item{}, false, err
 		}
@@ -117,22 +131,25 @@ func (a *Adapter) Read(ctx context.Context, c tracker.Credential, r tracker.Ref,
 			return tracker.Item{}, true, nil
 		}
 		if pl.ans.status == http.StatusNotModified {
-			if pl, err = a.half(ctx, c, ep, pl.r.path, "", ""); err != nil {
+			if pl, err = a.half(ctx, c, ep, pullPath, "", ""); err != nil {
 				return tracker.Item{}, false, err
 			}
 		}
 		if iss.ans.status == http.StatusNotModified {
-			if iss, err = a.half(ctx, c, ep, iss.r.path, "application/vnd.github.full+json", ""); err != nil {
+			if iss, err = a.half(ctx, c, ep, issuePath, "application/vnd.github.full+json", ""); err != nil {
 				return tracker.Item{}, false, err
 			}
 			if err := decode(ep, iss.r, iss.ans.body, &issue); err != nil {
 				return tracker.Item{}, false, err
 			}
-			if err := a.placed(ep, iss, r, v, issue); err != nil {
+			if err := a.placed(ep, iss, rp.moved, r, v, issue); err != nil {
 				return tracker.Item{}, false, err
 			}
 		}
 		if err := decode(ep, pl.r, pl.ans.body, &pull); err != nil {
+			return tracker.Item{}, false, err
+		}
+		if err := samePull(ep, iss, pl, rp, r, issue, pull); err != nil {
 			return tracker.Item{}, false, err
 		}
 		pullETag = pl.ans.header.Get("ETag")
@@ -157,6 +174,30 @@ func (a *Adapter) Read(ctx context.Context, c tracker.Credential, r tracker.Ref,
 	return item, false, nil
 }
 
+// samePull ties a pull request's answer to the issue it is combined with:
+// both answered at the paths asked by the identity looked up (neither from
+// a redirect, which the issue's of a pull request never is; a renamed
+// repository's is its lookup's, before either), the issue's answer a pull
+// request's, and the pull's own identity, its number and its base
+// repository's id, those asked. An answer that does not carry them is not
+// used: the read is one Conductor cannot read.
+func samePull(ep endpoint, iss, pl half, rp repo, r tracker.Ref, issue issueJSON, pull pullJSON) error {
+	bad := func(words string) error {
+		return &tracker.RequestError{System: tracker.GitHub, Method: pl.r.method, Path: ep.errPath(pl.r), Status: pl.ans.status, Err: tracker.ErrUnsupported, Words: "an answer Conductor cannot read: " + words}
+	}
+	switch {
+	case iss.ans.redirected || pl.ans.redirected:
+		return bad("a pull request answered from another place")
+	case issue.PullRequest == nil:
+		return bad("the issue's answer is not a pull request's")
+	case pull.Base.Repo == nil || remoteID(pull.Base.Repo.ID) != rp.id:
+		return bad("the pull request's answer does not name the repository asked")
+	case pull.Number.String() != r.ID:
+		return bad("the pull request's answer does not name the number asked")
+	}
+	return nil
+}
+
 // half makes one of a read's GETs; a 304 is an answer, not an error.
 func (a *Adapter) half(ctx context.Context, c tracker.Credential, ep endpoint, path, accept, etag string) (half, error) {
 	r := request{method: http.MethodGet, path: path, accept: accept, etag: etag, max: MaxItemAnswer}
@@ -164,13 +205,14 @@ func (a *Adapter) half(ctx context.Context, c tracker.Credential, ep endpoint, p
 	return half{ans: ans, r: r}, err
 }
 
-// placed checks an issue's answer against what the caller holds: a
-// redirected answer whose place cannot be read is refused, and an answer
+// placed checks an issue's answer against what the caller holds: an
+// answer redirected (or its repository's lookup, moved) whose place
+// cannot be read is refused, and an answer
 // whose node id is not the one v holds is *tracker.ErrMoved naming the
 // item's place now. A redirect or not, another node id is another item.
-func (a *Adapter) placed(ep endpoint, h half, r tracker.Ref, v tracker.Validators, issue issueJSON) error {
+func (a *Adapter) placed(ep endpoint, h half, moved bool, r tracker.Ref, v tracker.Validators, issue issueJSON) error {
 	place, ok := placeOf(r, issue)
-	if !ok && h.ans.redirected {
+	if !ok && (h.ans.redirected || moved) {
 		return &tracker.RequestError{System: tracker.GitHub, Method: h.r.method, Path: ep.errPath(h.r), Status: h.ans.status, Err: tracker.ErrUnsupported, Words: "the item moved and its new place cannot be read"}
 	}
 	if v.NodeID != "" && issue.NodeID != v.NodeID {

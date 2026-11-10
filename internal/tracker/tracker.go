@@ -352,7 +352,12 @@ const (
 // repository path, renamed or reused, can turn a write to another item;
 // both refuse a credential not tagged for them (ForWrite) with
 // ErrUnsupported before any request, and Close refuses a Target of kind
-// change. An adapter never retries a request by itself.
+// change. A read that takes a Ref (Read, Checks, CheckLog) names the
+// repository by its name in one request alone, its lookup, and every later
+// request of the call by the identity that lookup read, so no answer of
+// another repository (one that took the name meanwhile, a fork with the
+// same commits) stands for it; an answer that cannot be tied to that
+// identity is not used. An adapter never retries a request by itself.
 type Adapter interface {
 	// System is the adapter's system name, its key in Adapters.
 	System() string
@@ -362,8 +367,10 @@ type Adapter interface {
 	Parse(raw string, defaultSpace string) (Ref, error)
 	// Whoami reads the account the credential belongs to.
 	Whoami(ctx context.Context, c Credential) (Account, error)
-	// Read reads an item; the bool is true when every request it took
-	// was answered "not modified" for v, and the Item is then empty.
+	// Read reads an item; the bool is true when every request for the
+	// item (its repository's lookup aside, which names the repository
+	// that every later request of the call names by its identity) was
+	// answered "not modified" for v, and the Item is then empty.
 	Read(ctx context.Context, c Credential, r Ref, v Validators) (Item, bool, error)
 	// Image downloads one of a read's images, at most max bytes, with
 	// its media type.

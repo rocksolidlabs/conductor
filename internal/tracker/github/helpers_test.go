@@ -70,7 +70,33 @@ func newRig(t *testing.T, hosts ...string) *rig {
 		UserAgent: "Conductor/test",
 		Now:       func() time.Time { return now },
 	})
-	return &rig{t: t, fake: fake, a: a, cred: mustToken(t, "github.com", false), log: log, hosts: hosts}
+	r := &rig{t: t, fake: fake, a: a, cred: mustToken(t, "github.com", false), log: log, hosts: hosts}
+	r.repos()
+	return r
+}
+
+// The fixtures' repositories: octo-example/widgets is 4000001, and
+// octo-example/private-widgets 4000003; every request after a lookup names
+// them by these ids.
+const (
+	widgets = "/repositories/4000001"
+	private = "/repositories/4000003"
+)
+
+// repoAnswer is GET /repos/{owner}/{name}'s answer, the fields Conductor
+// reads and a few beside them.
+func repoAnswer(id int64, fullName string) map[string]any {
+	return map[string]any{"id": id, "node_id": "R_kgDOFixture" + strconv.FormatInt(id, 10), "full_name": fullName, "private": false}
+}
+
+// repos serves the lookups of the fixtures' repositories, and
+// octo-example/old-widgets as a renamed repository's: a 301 to the
+// repository by its id, as GitHub answers a name a rename left.
+func (r *rig) repos() {
+	r.reply(http.MethodGet, "/repos/octo-example/widgets", 200, repoAnswer(4000001, "octo-example/widgets"))
+	r.reply(http.MethodGet, widgets, 200, repoAnswer(4000001, "octo-example/widgets"))
+	r.reply(http.MethodGet, "/repos/octo-example/private-widgets", 200, repoAnswer(4000003, "octo-example/private-widgets"))
+	r.reply(http.MethodGet, "/repos/octo-example/old-widgets", http.StatusMovedPermanently, `{"message":"Moved Permanently"}`, "Location", "https://api.github.com"+widgets)
 }
 
 // credFor is a token's credential for host, and whether one could be made

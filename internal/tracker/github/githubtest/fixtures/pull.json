@@ -39,6 +39,15 @@
    "html_url": "https://github.com/mona-example",
    "type": "User",
    "site_admin": false
+  },
+  "repo": {
+   "id": 4000001,
+   "node_id": "R_kgDOFixture4000001",
+   "name": "widgets",
+   "full_name": "octo-example/widgets",
+   "private": false,
+   "html_url": "https://github.com/octo-example/widgets",
+   "url": "https://api.github.com/repos/octo-example/widgets"
   }
  },
  "base": {
@@ -55,6 +64,15 @@
    "html_url": "https://github.com/mona-example",
    "type": "User",
    "site_admin": false
+  },
+  "repo": {
+   "id": 4000001,
+   "node_id": "R_kgDOFixture4000001",
+   "name": "widgets",
+   "full_name": "octo-example/widgets",
+   "private": false,
+   "html_url": "https://github.com/octo-example/widgets",
+   "url": "https://api.github.com/repos/octo-example/widgets"
   }
  },
  "merged": false,

@@ -82,7 +82,10 @@ func validSHA(s string) bool {
 	return true
 }
 
-// Checks reads a change's checks at a commit: the combined statuses (as
+// Checks reads a change's checks at a commit, in the repository its
+// lookup names (lookupRepo; every listing by the identity it read, so a
+// fork or a repository that took the name, holding the same commits with
+// checks of its own, never answers for it): the combined statuses (as
 // checks without logs), the GitHub Actions jobs (at most MaxRuns runs and
 // MaxJobs jobs a run), and the check runs of other apps (a fine-grained
 // token's 403 there is an Incomplete entry, not an error), each job once.
@@ -94,7 +97,7 @@ func validSHA(s string) bool {
 // then pending, then the rest, each by name and id. What it asks is
 // bounded as well: each listing is cut to its own bound as soon as it is
 // read, whatever an answer holds, so it asks the jobs of at most MaxRuns
-// runs (at most MaxRuns+3 requests in all), and a cut is said. The whole
+// runs (at most MaxRuns+4 requests in all, the lookup's included), and a cut is said. The whole
 // call has its own deadline, ChecksTimeout: when it passes (or the
 // caller's context ends) while a listing is read, the listings read before
 // it are the answer, with an Incomplete entry saying what was not read, so
@@ -110,7 +113,6 @@ func (a *Adapter) Checks(ctx context.Context, c tracker.Credential, r tracker.Re
 	}
 	cctx, done := a.deadline(ctx, ChecksTimeout)
 	defer done()
-	base := "/repos/" + r.Space
 	var set tracker.CheckSet
 	var all []tracker.Check
 	// ranOut is a listing's error when it is the call's time that ended:
@@ -123,9 +125,19 @@ func (a *Adapter) Checks(ctx context.Context, c tracker.Credential, r tracker.Re
 		return true
 	}
 
+	// The repository, by its name this once; every listing after by the
+	// identity read.
+	rp, err := a.lookupRepo(cctx, c, ep, r.Space)
+	switch {
+	case ranOut(err, "the repository, the statuses, the GitHub Actions jobs and the check runs not read"):
+		return finish(set, all), nil
+	case err != nil:
+		return tracker.CheckSet{}, err
+	}
+
 	// The combined statuses.
 	var st statusesJSON
-	ans, err := a.page(cctx, c, ep, base+"/commits/"+sha+"/status", url.Values{"per_page": {strconv.Itoa(MaxStatuses)}}, &st)
+	ans, err := a.page(cctx, c, ep, rp.path("/commits/"+sha+"/status"), url.Values{"per_page": {strconv.Itoa(MaxStatuses)}}, &st)
 	switch {
 	case ranOut(err, "the statuses, the GitHub Actions jobs and the check runs not read"):
 		return finish(set, all), nil
@@ -156,7 +168,7 @@ func (a *Adapter) Checks(ctx context.Context, c tracker.Credential, r tracker.Re
 	jobs := map[string]bool{}
 	actionsRead := false
 	var runs runsJSON
-	ans, err = a.page(cctx, c, ep, base+"/actions/runs", url.Values{"head_sha": {sha}, "per_page": {strconv.Itoa(MaxRuns)}}, &runs)
+	ans, err = a.page(cctx, c, ep, rp.path("/actions/runs"), url.Values{"head_sha": {sha}, "per_page": {strconv.Itoa(MaxRuns)}}, &runs)
 	switch {
 	case ranOut(err, "the GitHub Actions jobs and the check runs not read"):
 		return finish(set, all), nil
@@ -180,10 +192,10 @@ func (a *Adapter) Checks(ctx context.Context, c tracker.Credential, r tracker.Re
 		for i, run := range runs.WorkflowRuns {
 			id := remoteID(run.ID)
 			if id == "" {
-				return tracker.CheckSet{}, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: ep.errPath(request{path: base + "/actions/runs"}), Status: http.StatusOK, Err: tracker.ErrUnsupported, Words: "an answer Conductor cannot read"}
+				return tracker.CheckSet{}, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: ep.errPath(request{path: rp.path("/actions/runs")}), Status: http.StatusOK, Err: tracker.ErrUnsupported, Words: "an answer Conductor cannot read"}
 			}
 			var js jobsJSON
-			ans, err := a.page(cctx, c, ep, base+"/actions/runs/"+string(id)+"/jobs", url.Values{"per_page": {strconv.Itoa(MaxJobs)}}, &js)
+			ans, err := a.page(cctx, c, ep, rp.path("/actions/runs/"+string(id)+"/jobs"), url.Values{"per_page": {strconv.Itoa(MaxJobs)}}, &js)
 			if ranOut(err, fmt.Sprintf("%d of %d workflow runs' jobs read, the check runs not read", i, len(runs.WorkflowRuns))) {
 				return finish(set, all), nil
 			}
@@ -206,7 +218,7 @@ func (a *Adapter) Checks(ctx context.Context, c tracker.Credential, r tracker.Re
 
 	// Other apps' check runs.
 	var crs checkRunsJSON
-	ans, err = a.page(cctx, c, ep, base+"/commits/"+sha+"/check-runs", url.Values{"per_page": {strconv.Itoa(MaxCheckRuns)}}, &crs)
+	ans, err = a.page(cctx, c, ep, rp.path("/commits/"+sha+"/check-runs"), url.Values{"per_page": {strconv.Itoa(MaxCheckRuns)}}, &crs)
 	switch {
 	case ranOut(err, "the check runs not read"):
 		return finish(set, all), nil
@@ -368,14 +380,21 @@ func (a *Adapter) page(ctx context.Context, c tracker.Credential, ep endpoint, p
 	return ans, decode(ep, r, ans.body, v)
 }
 
-// CheckLog reads a GitHub Actions job's log, its last tail bytes: GET
-// …/actions/jobs/{id}/logs by the API client, whose redirect is handed
-// back, its Location admitted by tracker.LogHost and fetched by the
-// signed-address client with no credential, asking only the last tail
-// bytes in the form its storage host serves (fetchLog). A log longer than
-// what is given says so (LogTail.Cut). A check of another app has no log
+// CheckLog reads a GitHub Actions job's log, its last tail bytes, one way
+// alone: the repository's lookup, then GET
+// /repositories/{id}/actions/jobs/{job}/logs by the API client, which
+// follows no redirect for it, whatever host it names, the API host's own
+// included, and hands the redirect back; its Location admitted by
+// tracker.LogHost and fetched by the signed-address client with no
+// credential, asking only the last tail bytes in the form its storage
+// host serves (fetchLog). Any other answer the API gives for it is not
+// taken (the log's tail is tracker.ErrUnavailable). A log longer than what
+// is given says so (LogTail.Cut). A check of another app has no log
 // (tracker.ErrUnsupported), nor has a log kept on a host Conductor does
-// not fetch from.
+// not fetch from; and where the host a log is kept on refuses a fetch
+// without the token (an Enterprise server that keeps its logs behind it),
+// the tail is tracker.ErrUnavailable: the token never goes with a log's
+// fetch.
 func (a *Adapter) CheckLog(ctx context.Context, c tracker.Credential, r tracker.Ref, check tracker.Check, tail int) (tracker.LogTail, error) {
 	id, ok := strings.CutPrefix(check.ID, "job:")
 	if !ok || decimal(id) == "" || !check.HasLog || r.Check() != nil {
@@ -388,13 +407,14 @@ func (a *Adapter) CheckLog(ctx context.Context, c tracker.Credential, r tracker.
 	if err != nil {
 		return tracker.LogTail{}, err
 	}
-	req := request{method: http.MethodGet, path: "/repos/" + r.Space + "/actions/jobs/" + id + "/logs", max: MaxLogRead, keep3xx: true}
-	ans, err := a.do(ctx, c, ep, req)
+	rp, err := a.lookupRepo(ctx, c, ep, r.Space)
 	if err != nil {
 		return tracker.LogTail{}, err
 	}
-	if ans.status < 300 {
-		return tailOf(ans.body, tail, int64(len(ans.body))), nil
+	req := request{method: http.MethodGet, path: rp.path("/actions/jobs/" + id + "/logs"), max: MaxErrorAnswer, keep3xx: true}
+	ans, err := a.do(ctx, c, ep, req)
+	if err != nil {
+		return tracker.LogTail{}, err
 	}
 	loc, err := url.Parse(ans.header.Get("Location"))
 	admit := func(u *url.URL) bool { return tracker.LogHost(tracker.GitHub, ep.host, u) }

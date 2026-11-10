@@ -13,7 +13,12 @@
 // only within that host (a renamed repository's 301), handing any other
 // back unfollowed, so a credential reaches the API host alone by
 // construction: the credential carries its API address and its transport
-// sends to no other. A write is sent once by every layer: a body that
+// sends to no other. A job log's redirect is never followed by it, whatever
+// host it names. A repository is named by its owner and name in one
+// request alone, its lookup (lookupRepo); every request after it names the
+// repository by the identity the lookup read (repo.path), so no other
+// repository's answer, one that took the name meanwhile or a fork with the
+// same commits, can stand for it. A write is sent once by every layer: a body that
 // cannot be sent again, with or without bytes, no redirect followed, and
 // its every ending sorted into made, nothing written or not known
 // (sortWrite's table), nothing written only on a fact that shows it. No
@@ -77,7 +82,7 @@ const (
 	MaxCommentPages = 10
 	// MaxCommentBody is GitHub's bound on a comment's body.
 	MaxCommentBody = 65536
-	// ChecksTimeout bounds a whole Checks call (at most MaxRuns+3
+	// ChecksTimeout bounds a whole Checks call (at most MaxRuns+4
 	// requests): when it passes, the listings read are the answer and the
 	// rest is said to be missing.
 	ChecksTimeout = 45 * time.Second
@@ -243,6 +248,55 @@ func (a *Adapter) endpointFor(c tracker.Credential, host string) (endpoint, erro
 	return endpoint{}, refused
 }
 
+// repo is a repository as every request after its lookup names it: by the
+// identity the lookup read (GitHub's numeric id, which a rename keeps and
+// a new repository of a reused name, a fork among them, does not have),
+// never by its owner and name.
+type repo struct {
+	id tracker.RemoteID
+	// moved: the lookup was answered from a redirect (a renamed
+	// repository).
+	moved bool
+}
+
+// path is the one place a repository's part of a request path is written
+// after its lookup: /repositories/{id} and rest. Nothing else writes a
+// repository's path but lookupRepo, which alone names it by owner and
+// name. An id that is not a positive number in decimal digits makes no
+// path ("", which do refuses: no route is ever "").
+func (p repo) path(rest string) string {
+	if decimal(string(p.id)) == "" || p.id == "0" {
+		return ""
+	}
+	return "/repositories/" + string(p.id) + rest
+}
+
+// lookupRepo reads a repository's identity from its owner and name (GET
+// /repos/{owner}/{name}, following a renamed repository's redirect within
+// the API host): the only request that names a repository by its name.
+// Whatever the call asks after it is asked by the identity it read
+// (repo.path), so a name another repository takes meanwhile cannot answer
+// for it. An answer whose id cannot be read is one Conductor cannot read.
+// space is held to tracker.Ref.Check by the caller.
+func (a *Adapter) lookupRepo(ctx context.Context, c tracker.Credential, ep endpoint, space string) (repo, error) {
+	r := request{method: http.MethodGet, path: "/repos/" + space, max: MaxItemAnswer}
+	ans, err := a.do(ctx, c, ep, r)
+	if err != nil {
+		return repo{}, err
+	}
+	var got struct {
+		ID json.Number `json:"id"`
+	}
+	if err := decode(ep, r, ans.body, &got); err != nil {
+		return repo{}, err
+	}
+	p := repo{id: remoteID(got.ID), moved: ans.redirected}
+	if p.path("") == "" {
+		return repo{}, &tracker.RequestError{System: tracker.GitHub, Method: r.method, Path: ep.errPath(r), Status: ans.status, Err: tracker.ErrUnsupported, Words: "an answer Conductor cannot read: no repository id"}
+	}
+	return p, nil
+}
+
 // request is one request to the API host.
 type request struct {
 	method string
@@ -252,8 +306,11 @@ type request struct {
 	etag   string
 	body   []byte
 	max    int64
-	// keep3xx hands a redirect off the API host back as the answer (a
-	// job log's 302) instead of refusing it.
+	// keep3xx marks a request whose answer is its redirect (a job log's
+	// 302): no redirect is followed for it, whatever host it names, the
+	// API host's own included, and the 3xx is handed back unread for the
+	// signed-address client to fetch; any other success is an answer
+	// Conductor does not take for it (the log is fetched one way).
 	keep3xx bool
 	// write marks a mutation: sent once by every layer under the adapter
 	// (a body that cannot be sent again, with or without bytes, and no
@@ -294,7 +351,9 @@ var errRedirect = errors.New("redirect refused")
 // do sends a request to the API host with the credential's transport and
 // reads its answer to the bound, within the request's own deadline. A
 // status of 400 or more is the error it maps to; a 3xx off the API host is
-// refused unless keep3xx. A write (r.write) is sent once by every layer:
+// refused, and a request with keep3xx follows no redirect at all and takes
+// only its 3xx. A path that is "" is refused unless the request is
+// GraphQL's POST. A write (r.write) is sent once by every layer:
 // its request always has a body that cannot be sent again (net/http sends
 // a request again over HTTP/2 when it has no body, or through GetBody,
 // which a write's request does not have), no redirect is followed for it,
@@ -313,7 +372,7 @@ func (a *Adapter) do(ctx context.Context, c tracker.Credential, ep endpoint, r r
 	}
 	u := ep.url(r)
 	req, err := http.NewRequestWithContext(rctx, r.method, u.String(), body)
-	if err != nil || req.URL.Scheme != ep.scheme || req.URL.Host != ep.apiHost || req.URL.User != nil || req.URL.Path != u.Path {
+	if err != nil || (r.path == "" && r.method != http.MethodPost) || req.URL.Scheme != ep.scheme || req.URL.Host != ep.apiHost || req.URL.User != nil || req.URL.Path != u.Path {
 		e := &tracker.RequestError{System: tracker.GitHub, Method: r.method, Path: path, Err: tracker.ErrUnsupported, Words: "an address Conductor does not send to"}
 		if r.write {
 			return answer{}, tracker.Proven(e)
@@ -344,7 +403,7 @@ func (a *Adapter) do(ctx context.Context, c tracker.Credential, ep endpoint, r r
 		Transport: c.Transport(handedTo{a.base, &handed}),
 		CheckRedirect: func(next *http.Request, via []*http.Request) error {
 			next.Header.Del("Referer")
-			if r.write {
+			if r.write || r.keep3xx {
 				return http.ErrUseLastResponse
 			}
 			if len(via) >= MaxRedirects {
@@ -380,10 +439,13 @@ func (a *Adapter) do(ctx context.Context, c tracker.Credential, ep endpoint, r r
 		}
 		return answer{}, &tracker.RequestError{System: tracker.GitHub, Method: r.method, Path: path, Status: resp.StatusCode, Err: tracker.ErrUnsupported, Words: words}
 	}
-	if resp.StatusCode >= 300 && resp.StatusCode < 400 && resp.StatusCode != http.StatusNotModified {
-		if r.keep3xx {
-			return answer{status: resp.StatusCode, header: resp.Header, redirected: redirected}, nil
+	if r.keep3xx && resp.StatusCode < 400 {
+		if resp.StatusCode < 300 || resp.StatusCode == http.StatusNotModified {
+			return answer{}, &tracker.RequestError{System: tracker.GitHub, Method: r.method, Path: path, Status: resp.StatusCode, Err: tracker.ErrUnavailable, Words: "an answer that is not the redirect asked for"}
 		}
+		return answer{status: resp.StatusCode, header: resp.Header}, nil
+	}
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 && resp.StatusCode != http.StatusNotModified {
 		return answer{}, &tracker.RequestError{System: tracker.GitHub, Method: r.method, Path: path, Status: resp.StatusCode, Err: tracker.ErrUnsupported, Words: "a redirect off the API host"}
 	}
 	if resp.StatusCode >= 400 {

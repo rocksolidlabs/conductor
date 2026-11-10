@@ -124,7 +124,7 @@ func TestImageHostIsTheHostDialled(t *testing.T) {
 	}
 	// In a read's body: left out, and counted.
 	body := `<p><img src="https://gİthub.com/user-attachments/assets/6f1c2e9a"><img src="https://g%C4%B0thub.com/user-attachments/assets/6f1c2e9b"></p>`
-	r.reply(http.MethodGet, "/repos/octo-example/widgets/issues/42", 200, map[string]any{"node_id": "I_kwDOFixture42", "html_url": "https://github.com/octo-example/widgets/issues/42", "body_html": body})
+	r.reply(http.MethodGet, widgets+"/issues/42", 200, map[string]any{"node_id": "I_kwDOFixture42", "html_url": "https://github.com/octo-example/widgets/issues/42", "body_html": body})
 	it, _, err := r.a.Read(ctx, r.cred, ref("octo-example/widgets", tracker.KindIssue, "42"), tracker.Validators{})
 	if err != nil || len(it.Images) != 0 {
 		t.Fatalf("Read: %v %v", it.Images, err)
@@ -228,7 +228,7 @@ func TestRedirectHopIsTheHostDialled(t *testing.T) {
 
 	r = newRig(t)
 	d = r.dialRecorded()
-	logs := "/repos/octo-example/widgets/actions/jobs/2000001/logs"
+	logs := widgets + "/actions/jobs/2000001/logs"
 	r.reply(http.MethodGet, logs, http.StatusFound, "", "Location", "https://pipelines.actions.githubusercontent.com/log?sig=s")
 	for _, loc := range []string{
 		"https://productionresultssa1.blob.core.wİndows.net/x",

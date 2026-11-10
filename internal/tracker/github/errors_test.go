@@ -43,7 +43,7 @@ func held(t *testing.T, r *rig, host, path string, call func(context.Context) er
 
 func TestErrorsMapped(t *testing.T) {
 	r := newRig(t)
-	path := "/repos/octo-example/widgets/issues/42"
+	path := widgets + "/issues/42"
 	read := func() error {
 		_, _, err := r.a.Read(ctx, r.cred, ref("octo-example/widgets", tracker.KindIssue, "42"), tracker.Validators{})
 		return err
@@ -152,7 +152,7 @@ func padded(n int) []byte {
 func TestBodiesBounded(t *testing.T) {
 	r := newRig(t)
 	iss := ref("octo-example/widgets", tracker.KindIssue, "42")
-	path := "/repos/octo-example/widgets/issues/42"
+	path := widgets + "/issues/42"
 	r.reply(http.MethodGet, path, 200, padded(github.MaxItemAnswer))
 	if _, _, err := r.a.Read(ctx, r.cred, iss, tracker.Validators{}); err != nil {
 		t.Fatalf("an item at its bound: %v", err)
@@ -162,14 +162,14 @@ func TestBodiesBounded(t *testing.T) {
 		t.Fatalf("an item past its bound: %v", err)
 	}
 
-	status := "/repos/octo-example/widgets/commits/" + head + "/status"
+	status := widgets + "/commits/" + head + "/status"
 	r.reply(http.MethodGet, status, 200, padded(github.MaxPageAnswer+1))
 	if _, err := r.a.Checks(ctx, r.cred, iss, head); !errors.Is(err, tracker.ErrBound) {
 		t.Fatalf("a page past its bound: %v", err)
 	}
 	r.reply(http.MethodGet, status, 200, padded(github.MaxPageAnswer))
-	r.reply(http.MethodGet, "/repos/octo-example/widgets/actions/runs", 200, `{"total_count":0,"workflow_runs":[]}`)
-	r.reply(http.MethodGet, "/repos/octo-example/widgets/commits/"+head+"/check-runs", 200, `{"total_count":0,"check_runs":[]}`)
+	r.reply(http.MethodGet, widgets+"/actions/runs", 200, `{"total_count":0,"workflow_runs":[]}`)
+	r.reply(http.MethodGet, widgets+"/commits/"+head+"/check-runs", 200, `{"total_count":0,"check_runs":[]}`)
 	if _, err := r.a.Checks(ctx, r.cred, iss, head); err != nil {
 		t.Fatalf("a page at its bound: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestBodiesBounded(t *testing.T) {
 		t.Fatalf("a streamed image past its bound: %d %v", len(b), err)
 	}
 
-	logs := "/repos/octo-example/widgets/actions/jobs/2000001/logs"
+	logs := widgets + "/actions/jobs/2000001/logs"
 	blob := "productionresultssa0.blob.core.windows.net"
 	r.reply(http.MethodGet, logs, http.StatusFound, "", "Location", "https://"+blob+"/actions-results/x/job-logs.txt?sig=s")
 	r.fake.Reply(http.MethodGet, blob, "/actions-results/x/job-logs.txt", 200, strings.Repeat("l", github.MaxLogRead+1))
@@ -245,7 +245,7 @@ func TestTokenOnlyToTheAPIHost(t *testing.T) {
 	// A job's log: the API's 302 handed back, its Location fetched with no
 	// credential.
 	blob := "productionresultssa0.blob.core.windows.net"
-	r.reply(http.MethodGet, "/repos/octo-example/widgets/actions/jobs/7/logs", http.StatusFound, "", "Location", "https://"+blob+"/logs/7.txt?sig=s")
+	r.reply(http.MethodGet, widgets+"/actions/jobs/7/logs", http.StatusFound, "", "Location", "https://"+blob+"/logs/7.txt?sig=s")
 	r.fake.Reply(http.MethodGet, blob, "/logs/7.txt", 200, "the log")
 	if b, err := r.a.CheckLog(ctx, r.cred, iss, tracker.Check{ID: "job:7", HasLog: true}, 100); err != nil || string(b.Bytes) != "the log" {
 		t.Fatalf("CheckLog %+v %v", b, err)
@@ -253,7 +253,7 @@ func TestTokenOnlyToTheAPIHost(t *testing.T) {
 
 	// A redirect from the API host to another host: handed back, never
 	// followed through the credential's transport.
-	r.reply(http.MethodGet, "/repos/octo-example/widgets/issues/42", http.StatusFound, "", "Location", "https://collector.evil.example/steal")
+	r.reply(http.MethodGet, widgets+"/issues/42", http.StatusFound, "", "Location", "https://collector.evil.example/steal")
 	if _, _, err := r.a.Read(ctx, r.cred, iss, tracker.Validators{}); !errors.Is(err, tracker.ErrUnsupported) {
 		t.Fatalf("an API redirect off its host: %v", err)
 	}
@@ -283,14 +283,14 @@ func TestErrorsCarryNoQuery(t *testing.T) {
 	r := newRig(t)
 	iss := ref("octo-example/widgets", tracker.KindIssue, "42")
 	var errs []error
-	r.reply(http.MethodGet, "/repos/octo-example/widgets/commits/"+head+"/status", 200, `{"total_count":0,"statuses":[]}`)
-	r.reply(http.MethodGet, "/repos/octo-example/widgets/actions/runs", 500, "")
+	r.reply(http.MethodGet, widgets+"/commits/"+head+"/status", 200, `{"total_count":0,"statuses":[]}`)
+	r.reply(http.MethodGet, widgets+"/actions/runs", 500, "")
 	_, err := r.a.Checks(ctx, r.cred, iss, head)
 	errs = append(errs, err)
-	r.fake.Handle(http.MethodGet, api, "/repos/octo-example/widgets/actions/runs", reset)
+	r.fake.Handle(http.MethodGet, api, widgets+"/actions/runs", reset)
 	_, err = r.a.Checks(ctx, r.cred, iss, head)
 	errs = append(errs, err)
-	errs = append(errs, held(t, r, api, "/repos/octo-example/widgets/issues/42", func(c context.Context) error {
+	errs = append(errs, held(t, r, api, widgets+"/issues/42", func(c context.Context) error {
 		_, _, err := r.a.Read(c, r.cred, iss, tracker.Validators{})
 		return err
 	}))
@@ -328,11 +328,12 @@ func TestErrorsCarryNoQuery(t *testing.T) {
 func TestNoRetry(t *testing.T) {
 	for _, status := range []int{401, 403, 429, 500, 503} {
 		r := newRig(t)
-		r.reply(http.MethodGet, "/repos/octo-example/widgets/issues/42", status, "", "Retry-After", "1")
+		r.reply(http.MethodGet, widgets+"/issues/42", status, "", "Retry-After", "1")
 		_, _, _ = r.a.Read(ctx, r.cred, ref("octo-example/widgets", tracker.KindIssue, "42"), tracker.Validators{})
 		r.reply(http.MethodPost, "/graphql", status, "", "Retry-After", "1")
 		_, _ = r.a.Comment(ctx, r.cred.ForWrite(tracker.Write{Kind: tracker.WriteComment, Publication: "p1", Try: 1}), tracker.Target{NodeID: "I_x", Kind: tracker.KindIssue, Ref: ref("octo-example/widgets", tracker.KindIssue, "42")}, "hello")
-		if n := len(r.fake.Requests()); n != 2 {
+		// The repository's lookup, the read, the write: each once.
+		if n := len(r.fake.Requests()); n != 3 {
 			t.Fatalf("%d: %d requests", status, n)
 		}
 	}
@@ -343,7 +344,7 @@ func TestNoRetry(t *testing.T) {
 // before now or past an hour from now, are a rate limit whose reset is not
 // known, never a time in the past or centuries ahead.
 func TestRateLimitResetHeldToItsRange(t *testing.T) {
-	path := "/repos/octo-example/widgets/issues/42"
+	path := widgets + "/issues/42"
 	in := func(d time.Duration) string { return strconv.FormatInt(now.Add(d).Unix(), 10) }
 	cases := []struct {
 		name   string

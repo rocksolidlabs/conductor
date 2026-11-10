@@ -76,6 +76,7 @@ type Server struct {
 
 	mu       sync.Mutex
 	routes   map[string]http.HandlerFunc
+	other    http.HandlerFunc
 	requests []Request
 	writes   map[string]int
 	gates    map[string]*Gate
@@ -128,6 +129,14 @@ func (s *Server) Handle(method, host, path string, h http.HandlerFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.routes[key(method, host, path)] = h
+}
+
+// Otherwise serves every request no route names with h (nil: GitHub's
+// 404).
+func (s *Server) Otherwise(h http.HandlerFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.other = h
 }
 
 // Reply serves a fixed answer: a status, a body (bytes, a string, or a
@@ -241,6 +250,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	k := key(r.Method, host, r.URL.Path)
 	h := s.routes[k]
+	if h == nil {
+		h = s.other
+	}
 	g := s.gates[k]
 	s.mu.Unlock()
 	if g != nil {

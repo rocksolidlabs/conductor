@@ -197,7 +197,7 @@ func (a *Adapter) FindComment(ctx context.Context, c tracker.Credential, t track
 	if err := now.Ref.Check(); err != nil || decimal(string(now.SpaceID)) == "" {
 		return tracker.Comment{}, tracker.FoundUnknown, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodPost, Path: ep.errPath(request{method: http.MethodPost}), Status: http.StatusOK, Err: tracker.ErrUnsupported, Words: "an answer Conductor cannot read"}
 	}
-	path := "/repositories/" + string(now.SpaceID) + "/issues/" + now.Ref.ID + "/comments"
+	path := repo{id: now.SpaceID}.path("/issues/" + now.Ref.ID + "/comments")
 	first, err := a.listWindow(ctx, c, ep, path, since, m)
 	switch {
 	case err != nil:

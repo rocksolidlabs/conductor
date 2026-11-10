@@ -22,7 +22,7 @@ func BodilessWrite(ctx context.Context, a *Adapter, c tracker.Credential) error 
 	if err != nil {
 		return err
 	}
-	r := request{method: http.MethodDelete, path: "/repos/octo-example/widgets/issues/42/lock", write: true, max: MaxErrorAnswer}
+	r := request{method: http.MethodDelete, path: repo{id: "4000001"}.path("/issues/42/lock"), write: true, max: MaxErrorAnswer}
 	if _, err = a.do(ctx, c, ep, r); err != nil {
 		_, err = a.sortWrite(ep, r, 0, gqlAnswer{}, err, "")
 	}

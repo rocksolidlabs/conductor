@@ -18,7 +18,7 @@ var ctx = context.Background()
 
 func TestReadIssue(t *testing.T) {
 	r := newRig(t)
-	r.reply(http.MethodGet, "/repos/octo-example/widgets/issues/42", 200, githubtest.Fixture("issue.json"), "ETag", `W/"issue-1"`)
+	r.reply(http.MethodGet, widgets+"/issues/42", 200, githubtest.Fixture("issue.json"), "ETag", `W/"issue-1"`)
 	it, notMod, err := r.a.Read(ctx, r.cred, ref("octo-example/widgets", tracker.KindIssue, "42"), tracker.Validators{})
 	if err != nil || notMod {
 		t.Fatalf("Read: %v %v", notMod, err)
@@ -62,8 +62,12 @@ func TestReadIssue(t *testing.T) {
 	if it.ImagesLeftOut != (tracker.ImagesLeftOut{Unlisted: 3}) {
 		t.Fatalf("left out %+v", it.ImagesLeftOut)
 	}
-	q := r.fake.Requests()[0]
-	if q.Header.Get("Accept") != "application/vnd.github.full+json" || q.Header.Get("X-GitHub-Api-Version") != "2022-11-28" || q.Header.Get("User-Agent") != "Conductor/test" || q.Header.Get("If-None-Match") != "" {
+	// The repository looked up by its name, then the issue by its id.
+	if q := r.fake.Requests()[0]; q.Path != "/repos/octo-example/widgets" {
+		t.Fatalf("first asked %s", q.Path)
+	}
+	q := r.fake.Requests()[1]
+	if q.Path != widgets+"/issues/42" || q.Header.Get("Accept") != "application/vnd.github.full+json" || q.Header.Get("X-GitHub-Api-Version") != "2022-11-28" || q.Header.Get("User-Agent") != "Conductor/test" || q.Header.Get("If-None-Match") != "" {
 		t.Fatalf("headers %v", q.Header)
 	}
 	r.authOnlyToAPI()
@@ -71,7 +75,7 @@ func TestReadIssue(t *testing.T) {
 
 func TestReadPrivateImages(t *testing.T) {
 	r := newRig(t)
-	r.reply(http.MethodGet, "/repos/octo-example/private-widgets/issues/7", 200, githubtest.Fixture("issue_private.json"))
+	r.reply(http.MethodGet, private+"/issues/7", 200, githubtest.Fixture("issue_private.json"))
 	it, _, err := r.a.Read(ctx, r.cred, ref("octo-example/private-widgets", tracker.KindIssue, "7"), tracker.Validators{})
 	if err != nil || len(it.Images) != 1 {
 		t.Fatalf("Read: %+v %v", it.Images, err)
@@ -104,8 +108,8 @@ func TestReadPrivateImages(t *testing.T) {
 
 func TestReadPull(t *testing.T) {
 	r := newRig(t)
-	r.reply(http.MethodGet, "/repos/octo-example/widgets/issues/43", 200, githubtest.Fixture("pull_issue.json"), "ETag", `"i43"`)
-	r.reply(http.MethodGet, "/repos/octo-example/widgets/pulls/43", 200, githubtest.Fixture("pull.json"), "ETag", `"p43"`)
+	r.reply(http.MethodGet, widgets+"/issues/43", 200, githubtest.Fixture("pull_issue.json"), "ETag", `"i43"`)
+	r.reply(http.MethodGet, widgets+"/pulls/43", 200, githubtest.Fixture("pull.json"), "ETag", `"p43"`)
 	// A short form reads as an issue; GitHub's answer says it is a change.
 	in, err := r.a.Parse("octo-example/widgets#43", "")
 	if err != nil || in.Kind != tracker.KindIssue {
@@ -124,7 +128,7 @@ func TestReadPull(t *testing.T) {
 
 	merged := fixture(t, "pull.json")
 	merged["merged"], merged["merged_at"], merged["state"] = true, "2026-10-05T08:00:00Z", "closed"
-	r.reply(http.MethodGet, "/repos/octo-example/widgets/pulls/43", 200, merged)
+	r.reply(http.MethodGet, widgets+"/pulls/43", 200, merged)
 	it, _, err = r.a.Read(ctx, r.cred, it.Ref, tracker.Validators{})
 	if err != nil || it.State != tracker.StateMerged || !it.Merged || it.MergeSHA != "2222222222222222222222222222222222222222" || it.MergedAt.IsZero() {
 		t.Fatalf("merged %+v %v", it, err)
@@ -134,7 +138,7 @@ func TestReadPull(t *testing.T) {
 
 func TestReadNotModified(t *testing.T) {
 	r := newRig(t)
-	r.etagged("/repos/octo-example/widgets/issues/42", `"i1"`, githubtest.Fixture("issue.json"))
+	r.etagged(widgets+"/issues/42", `"i1"`, githubtest.Fixture("issue.json"))
 	issue := ref("octo-example/widgets", tracker.KindIssue, "42")
 	it, notMod, err := r.a.Read(ctx, r.cred, issue, tracker.Validators{Issue: `"i1"`})
 	if err != nil || !notMod || it.NodeID != "" {
@@ -142,8 +146,8 @@ func TestReadNotModified(t *testing.T) {
 	}
 
 	// A pull request: both 304 is not modified.
-	r.etagged("/repos/octo-example/widgets/issues/43", `"i43"`, githubtest.Fixture("pull_issue.json"))
-	r.etagged("/repos/octo-example/widgets/pulls/43", `"p43"`, githubtest.Fixture("pull.json"))
+	r.etagged(widgets+"/issues/43", `"i43"`, githubtest.Fixture("pull_issue.json"))
+	r.etagged(widgets+"/pulls/43", `"p43"`, githubtest.Fixture("pull.json"))
 	change := ref("octo-example/widgets", tracker.KindChange, "43")
 	if _, notMod, err := r.a.Read(ctx, r.cred, change, tracker.Validators{Issue: `"i43"`, Pull: `"p43"`}); err != nil || !notMod {
 		t.Fatalf("both 304: %v %v", notMod, err)
@@ -152,7 +156,7 @@ func TestReadNotModified(t *testing.T) {
 	// The issue's 304 beside a pull request whose head moved: read whole.
 	moved := fixture(t, "pull.json")
 	moved["head"].(map[string]any)["sha"] = "4444444444444444444444444444444444444444"
-	r.etagged("/repos/octo-example/widgets/pulls/43", `"p44"`, moved)
+	r.etagged(widgets+"/pulls/43", `"p44"`, moved)
 	before := len(r.fake.Requests())
 	it, notMod, err = r.a.Read(ctx, r.cred, change, tracker.Validators{Issue: `"i43"`, Pull: `"p43"`})
 	if err != nil || notMod {
@@ -162,25 +166,24 @@ func TestReadNotModified(t *testing.T) {
 		t.Fatalf("not whole: %+v", it)
 	}
 	reqs := r.fake.Requests()[before:]
-	if len(reqs) != 3 || reqs[2].Path != "/repos/octo-example/widgets/issues/43" || reqs[2].Header.Get("If-None-Match") != "" {
+	if len(reqs) != 4 || reqs[3].Path != widgets+"/issues/43" || reqs[3].Header.Get("If-None-Match") != "" {
 		t.Fatalf("the issue was not read again without its validator: %+v", reqs)
 	}
 
 	// The pull's 304 beside an issue that changed: the pull read again.
-	r.etagged("/repos/octo-example/widgets/pulls/43", `"p43"`, githubtest.Fixture("pull.json"))
+	r.etagged(widgets+"/pulls/43", `"p43"`, githubtest.Fixture("pull.json"))
 	before = len(r.fake.Requests())
 	it, notMod, err = r.a.Read(ctx, r.cred, change, tracker.Validators{Issue: `"old"`, Pull: `"p43"`})
 	if err != nil || notMod || it.HeadSHA != head {
 		t.Fatalf("issue changed: %+v %v %v", it, notMod, err)
 	}
-	if reqs := r.fake.Requests()[before:]; len(reqs) != 3 || reqs[2].Path != "/repos/octo-example/widgets/pulls/43" || reqs[2].Header.Get("If-None-Match") != "" {
+	if reqs := r.fake.Requests()[before:]; len(reqs) != 4 || reqs[3].Path != widgets+"/pulls/43" || reqs[3].Header.Get("If-None-Match") != "" {
 		t.Fatalf("the pull was not read again: %+v", reqs)
 	}
 }
 
 func TestReadFollowsRename(t *testing.T) {
 	r := newRig(t)
-	r.reply(http.MethodGet, "/repos/octo-example/old-widgets/issues/42", http.StatusMovedPermanently, `{"message":"Moved Permanently"}`, "Location", "https://api.github.com/repositories/4000001/issues/42")
 	r.reply(http.MethodGet, "/repositories/4000001/issues/42", 200, githubtest.Fixture("issue.json"))
 	it, _, err := r.a.Read(ctx, r.cred, ref("octo-example/old-widgets", tracker.KindIssue, "42"), tracker.Validators{NodeID: "I_kwDOFixture42"})
 	if err != nil {
@@ -199,7 +202,7 @@ func TestReadFollowsTransfer(t *testing.T) {
 	r := newRig(t)
 	moved := fixture(t, "issue.json")
 	moved["html_url"] = "https://github.com/octo-example/other-repo/issues/7"
-	r.reply(http.MethodGet, "/repos/octo-example/widgets/issues/42", http.StatusMovedPermanently, `{"message":"Moved Permanently"}`, "Location", "https://api.github.com/repositories/4000002/issues/7")
+	r.reply(http.MethodGet, widgets+"/issues/42", http.StatusMovedPermanently, `{"message":"Moved Permanently"}`, "Location", "https://api.github.com/repositories/4000002/issues/7")
 	r.reply(http.MethodGet, "/repositories/4000002/issues/7", 200, moved)
 	it, _, err := r.a.Read(ctx, r.cred, ref("octo-example/widgets", tracker.KindIssue, "42"), tracker.Validators{NodeID: "I_kwDOFixture42"})
 	want := tracker.Ref{System: tracker.GitHub, Host: "github.com", Space: "octo-example/other-repo", Kind: tracker.KindIssue, ID: "7"}
@@ -228,7 +231,7 @@ func TestReadImagesLeftOut(t *testing.T) {
 		fmt.Fprintf(&b, `<img src="https://user-images.githubusercontent.com/9000001/%d-x.png">`, i)
 	}
 	b.WriteString(`<img src="https://user-images.githubusercontent.com/9000001/0-x.png"><img src="https://intranet.example/x.png"><img src="/relative.png">`)
-	r.reply(http.MethodGet, "/repos/octo-example/widgets/issues/42", 200, map[string]any{"node_id": "I_kwDOFixture42", "html_url": "https://github.com/octo-example/widgets/issues/42", "body_html": b.String()})
+	r.reply(http.MethodGet, widgets+"/issues/42", 200, map[string]any{"node_id": "I_kwDOFixture42", "html_url": "https://github.com/octo-example/widgets/issues/42", "body_html": b.String()})
 	it, _, err := r.a.Read(ctx, r.cred, ref("octo-example/widgets", tracker.KindIssue, "42"), tracker.Validators{})
 	if err != nil || len(it.Images) != tracker.MaxImages || it.ImagesLeftOut != (tracker.ImagesLeftOut{Unlisted: 2, PastBound: 2}) {
 		t.Fatalf("%d images, left out %+v, %v", len(it.Images), it.ImagesLeftOut, err)
@@ -255,7 +258,6 @@ func TestReadRefHeldToItsShape(t *testing.T) {
 
 func TestReadMovedRefused(t *testing.T) {
 	r := newRig(t)
-	r.reply(http.MethodGet, "/repos/octo-example/old-widgets/issues/42", http.StatusMovedPermanently, "", "Location", "https://api.github.com/repositories/4000001/issues/42")
 	r.reply(http.MethodGet, "/repositories/4000001/issues/42", 200, githubtest.Fixture("issue.json"))
 	_, _, err := r.a.Read(ctx, r.cred, ref("octo-example/old-widgets", tracker.KindIssue, "42"), tracker.Validators{NodeID: "I_kwDOAnotherOne"})
 	var mv *tracker.ErrMoved
@@ -263,7 +265,7 @@ func TestReadMovedRefused(t *testing.T) {
 		t.Fatalf("redirected to another node: %v", err)
 	}
 	// The old name made a new repository: no redirect, another node id.
-	r.reply(http.MethodGet, "/repos/octo-example/widgets/issues/42", 200, githubtest.Fixture("issue.json"))
+	r.reply(http.MethodGet, widgets+"/issues/42", 200, githubtest.Fixture("issue.json"))
 	if _, _, err := r.a.Read(ctx, r.cred, ref("octo-example/widgets", tracker.KindIssue, "42"), tracker.Validators{NodeID: "I_kwDOAnotherOne"}); !errors.As(err, &mv) {
 		t.Fatalf("another node at the same place: %v", err)
 	}
@@ -292,7 +294,8 @@ func TestWhoami(t *testing.T) {
 func TestHosts(t *testing.T) {
 	fake := githubtest.New(t)
 	host := fake.PlainHost()
-	fake.Reply(http.MethodGet, host, "/api/v3/repos/team/tool/issues/9", 200, githubtest.Fixture("issue.json"))
+	fake.Reply(http.MethodGet, host, "/api/v3/repos/team/tool", 200, repoAnswer(4000009, "team/tool"))
+	fake.Reply(http.MethodGet, host, "/api/v3/repositories/4000009/issues/9", 200, githubtest.Fixture("issue.json"))
 	lo := github.New(github.Options{Loopback: true, Transport: fake.Transport()})
 	r9 := tracker.Ref{System: "github", Host: host, Space: "team/tool", Kind: tracker.KindIssue, ID: "9"}
 	cred := mustToken(t, host, true)
@@ -308,7 +311,8 @@ func TestHosts(t *testing.T) {
 	}
 	// An Enterprise Server host over https, at /api/v3.
 	ghe := github.New(github.Options{Hosts: func() []string { return []string{"ghe.example.test"} }, Transport: fake.Transport()})
-	fake.Reply(http.MethodGet, "ghe.example.test", "/api/v3/repos/team/tool/issues/9", 200, githubtest.Fixture("issue.json"))
+	fake.Reply(http.MethodGet, "ghe.example.test", "/api/v3/repos/team/tool", 200, repoAnswer(4000009, "team/tool"))
+	fake.Reply(http.MethodGet, "ghe.example.test", "/api/v3/repositories/4000009/issues/9", 200, githubtest.Fixture("issue.json"))
 	r9.Host = "ghe.example.test"
 	it, _, err := ghe.Read(ctx, mustToken(t, "ghe.example.test", false), r9, tracker.Validators{})
 	if err != nil || it.Ref.Host != "ghe.example.test" || !strings.HasPrefix(it.URL, "https://ghe.example.test/") {

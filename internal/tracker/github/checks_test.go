@@ -17,10 +17,10 @@ import (
 )
 
 const (
-	statusPath = "/repos/octo-example/widgets/commits/" + head + "/status"
-	runsPath   = "/repos/octo-example/widgets/actions/runs"
-	jobsPath   = "/repos/octo-example/widgets/actions/runs/1000001/jobs"
-	crPath     = "/repos/octo-example/widgets/commits/" + head + "/check-runs"
+	statusPath = widgets + "/commits/" + head + "/status"
+	runsPath   = widgets + "/actions/runs"
+	jobsPath   = widgets + "/actions/runs/1000001/jobs"
+	crPath     = widgets + "/commits/" + head + "/check-runs"
 )
 
 var pr43 = ref("octo-example/widgets", tracker.KindChange, "43")
@@ -189,7 +189,7 @@ func TestChecksIncomplete(t *testing.T) {
 			var runs []map[string]any
 			for i := 1; i <= 20; i++ {
 				runs = append(runs, map[string]any{"id": 1000000 + i, "name": fmt.Sprintf("wf%02d", i)})
-				r.reply(http.MethodGet, fmt.Sprintf("/repos/octo-example/widgets/actions/runs/%d/jobs", 1000000+i), 200, `{"total_count":0,"jobs":[]}`)
+				r.reply(http.MethodGet, fmt.Sprintf(widgets+"/actions/runs/%d/jobs", 1000000+i), 200, `{"total_count":0,"jobs":[]}`)
 			}
 			r.reply(http.MethodGet, runsPath, 200, map[string]any{"total_count": 21, "workflow_runs": runs})
 		}, "21 workflow runs at this commit; the first 20 read", false, 0},
@@ -251,7 +251,7 @@ func TestChecksIncomplete(t *testing.T) {
 
 func TestCheckLogTail(t *testing.T) {
 	r := newRig(t)
-	logs := "/repos/octo-example/widgets/actions/jobs/2000001/logs"
+	logs := widgets + "/actions/jobs/2000001/logs"
 	// The shape of github.com's answer: a 302 to the job's log on Azure
 	// blob storage with a signed query.
 	blob := "productionresultssa0.blob.core.windows.net"
@@ -294,7 +294,7 @@ func TestCheckLogTail(t *testing.T) {
 	if _, err := r.a.CheckLog(ctx, r.cred, pr43, job, 100); !errors.Is(err, tracker.ErrUnsupported) || !strings.Contains(err.Error(), "open it on GitHub") {
 		t.Fatalf("another host: %v", err)
 	}
-	if n := len(r.fake.Requests()) - before; n != 1 {
+	if n := len(r.fake.Requests()) - before; n != 2 {
 		t.Fatalf("%d requests", n)
 	}
 	// A check of another app, or a status, has no log: no request; nor
@@ -309,7 +309,7 @@ func TestCheckLogTail(t *testing.T) {
 	if _, err := r.a.CheckLog(ctx, r.cred, bad, job, 100); !errors.Is(err, tracker.ErrUnsupported) {
 		t.Fatalf("a Ref out of shape: %v", err)
 	}
-	if n := len(r.fake.Requests()) - before; n != 1 {
+	if n := len(r.fake.Requests()) - before; n != 2 {
 		t.Fatalf("%d requests", n)
 	}
 }
@@ -324,7 +324,7 @@ func TestChecksAskBounded(t *testing.T) {
 	var runs []map[string]any
 	for i := 1; i <= 500; i++ {
 		runs = append(runs, map[string]any{"id": 1000000 + i, "name": fmt.Sprintf("wf%03d", i)})
-		r.reply(http.MethodGet, fmt.Sprintf("/repos/octo-example/widgets/actions/runs/%d/jobs", 1000000+i), 200, `{"total_count":0,"jobs":[]}`)
+		r.reply(http.MethodGet, fmt.Sprintf(widgets+"/actions/runs/%d/jobs", 1000000+i), 200, `{"total_count":0,"jobs":[]}`)
 	}
 	r.reply(http.MethodGet, runsPath, 200, map[string]any{"total_count": 500, "workflow_runs": runs})
 	set, err := r.a.Checks(ctx, r.cred, pr43, head)
@@ -422,7 +422,7 @@ func TestChecksOwnDeadline(t *testing.T) {
 	runs := []map[string]any{{"id": 1000001, "name": "ci"}, {"id": 1000002, "name": "nightly"}}
 	r.reply(http.MethodGet, runsPath, 200, map[string]any{"total_count": 2, "workflow_runs": runs})
 	r.reply(http.MethodGet, jobsPath, 200, checkRuns("jobs", 2, 2, 1, plain))
-	gate := r.fake.Hold(http.MethodGet, api, "/repos/octo-example/widgets/actions/runs/1000002/jobs")
+	gate := r.fake.Hold(http.MethodGet, api, widgets+"/actions/runs/1000002/jobs")
 	done := make(chan tracker.CheckSet, 1)
 	errc := make(chan error, 1)
 	go func() {
