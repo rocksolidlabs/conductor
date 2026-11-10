@@ -1,0 +1,154 @@
+package github
+
+import (
+	"context"
+	"errors"
+	"io"
+	"mime"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
+	"golang.org/x/net/html"
+
+	"github.com/rocksolidlabs/conductor/internal/tracker"
+)
+
+// imagesOf finds an item's images: the <img src> of its body_html, at most
+// tracker.MaxImages, each kept only when tracker.ImageHost admits it, one
+// per ID. A private repository's images are reachable only through the
+// short-lived signed URLs GitHub puts in the rendered body, which is why
+// the rendered body is read and not the Markdown.
+func imagesOf(host, bodyHTML string) []tracker.ImageRef {
+	var out []tracker.ImageRef
+	seen := map[string]bool{}
+	z := html.NewTokenizer(strings.NewReader(bodyHTML))
+	for len(out) < tracker.MaxImages {
+		tt := z.Next()
+		if tt == html.ErrorToken {
+			break
+		}
+		if tt != html.StartTagToken && tt != html.SelfClosingTagToken {
+			continue
+		}
+		name, hasAttr := z.TagName()
+		if string(name) != "img" || !hasAttr {
+			continue
+		}
+		var src, alt string
+		for {
+			k, v, more := z.TagAttr()
+			switch string(k) {
+			case "src":
+				src = string(v)
+			case "alt":
+				alt = string(v)
+			}
+			if !more {
+				break
+			}
+		}
+		u, err := url.Parse(src)
+		if err != nil || !u.IsAbs() || !tracker.ImageHost(tracker.GitHub, host, u) {
+			continue
+		}
+		img := tracker.NewImageRef(u, cut(alt, 1024))
+		if seen[img.ID] {
+			continue
+		}
+		seen[img.ID] = true
+		out = append(out, img)
+	}
+	return out
+}
+
+// signedClient is the client of an address the API named on another host:
+// the base transport, no credential, a redirect followed only to a host
+// admit admits.
+func (a *Adapter) signedClient(timeout time.Duration, admit func(*url.URL) bool) *http.Client {
+	return &http.Client{
+		Transport: a.base,
+		Timeout:   timeout,
+		CheckRedirect: func(next *http.Request, via []*http.Request) error {
+			if len(via) >= MaxRedirects || next.URL.Scheme != via[0].URL.Scheme || !admit(next.URL) {
+				return errRedirect
+			}
+			return nil
+		},
+	}
+}
+
+// Image downloads one of a read's images from its signed address with no
+// credential, at most max bytes (tracker.ErrBound past them), and gives
+// its media type as GitHub's answer says it.
+func (a *Adapter) Image(ctx context.Context, c tracker.Credential, img tracker.ImageRef, max int64) (io.ReadCloser, string, error) {
+	host := c.Host()
+	if _, err := a.endpointFor(c, host); err != nil {
+		return nil, "", err
+	}
+	u, err := url.Parse(img.FetchURL())
+	admit := func(u *url.URL) bool { return tracker.ImageHost(tracker.GitHub, host, u) }
+	if err != nil || img.FetchURL() == "" || !admit(u) {
+		return nil, "", &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: "-", Err: tracker.ErrUnsupported, Words: "an image Conductor does not fetch"}
+	}
+	path := u.Path
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, "", &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: path, Err: tracker.ErrUnsupported}
+	}
+	req.Header.Set("User-Agent", a.ua)
+	req.Header.Set("Accept", "image/png, image/jpeg, image/gif, image/webp, */*;q=0.1")
+	resp, err := a.signedClient(ImageTimeout, admit).Do(req)
+	if err != nil {
+		return nil, "", a.transportError(ctx, http.MethodGet, path, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, MaxErrorAnswer))
+		resp.Body.Close()
+		if resp.StatusCode < 400 {
+			return nil, "", &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: path, Status: resp.StatusCode, Err: tracker.ErrUnsupported}
+		}
+		return nil, "", a.statusError(http.MethodGet, path, resp)
+	}
+	if resp.ContentLength > max {
+		resp.Body.Close()
+		return nil, "", &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: path, Status: resp.StatusCode, Err: tracker.ErrBound, Words: "past " + strconv.FormatInt(max, 10) + " bytes"}
+	}
+	mt, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	return &bounded{rc: resp.Body, left: max, path: path}, mt, nil
+}
+
+// bounded reads a body to at most left bytes; one more is the error
+// tracker.ErrBound.
+type bounded struct {
+	rc   io.ReadCloser
+	left int64
+	path string
+}
+
+func (b *bounded) Read(p []byte) (int, error) {
+	if b.left < 0 {
+		return 0, b.boundErr()
+	}
+	if int64(len(p)) > b.left+1 {
+		p = p[:b.left+1]
+	}
+	n, err := b.rc.Read(p)
+	if int64(n) > b.left {
+		n, b.left = int(b.left), -1
+		return n, b.boundErr()
+	}
+	b.left -= int64(n)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return n, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: b.path, Err: tracker.ErrUnavailable, Words: "the download failed"}
+	}
+	return n, err
+}
+
+func (b *bounded) boundErr() error {
+	return &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: b.path, Status: http.StatusOK, Err: tracker.ErrBound}
+}
+
+func (b *bounded) Close() error { return b.rc.Close() }

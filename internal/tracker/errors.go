@@ -95,13 +95,13 @@ func NothingWritten(err error) bool { return errors.Is(err, ErrNothingWritten) }
 // joined is a write's error: the call's, with what its answer proves.
 type joined struct{ errs []error }
 
-func (j joined) Error() string   { return j.errs[0].Error() }
-func (j joined) Unwrap() []error { return j.errs }
+func (j *joined) Error() string   { return j.errs[0].Error() }
+func (j *joined) Unwrap() []error { return j.errs }
 
 // Proven wraps err as a write's error whose answer proves nothing was
 // written.
-func Proven(err error) error { return joined{[]error{err, ErrNothingWritten}} }
+func Proven(err error) error { return &joined{[]error{err, ErrNothingWritten}} }
 
 // Unknown wraps err as a write's error whose answer does not say whether
 // the write was made.
-func Unknown(err error) error { return joined{[]error{err, ErrWriteUnknown}} }
+func Unknown(err error) error { return &joined{[]error{err, ErrWriteUnknown}} }

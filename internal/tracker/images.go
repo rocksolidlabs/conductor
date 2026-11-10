@@ -15,8 +15,8 @@ import (
 // it (FetchURL). Its fmt forms, its slog value and its JSON say the ID
 // alone.
 type ImageRef struct {
-	ID    string
-	Alt   string
+	ID  string
+	Alt string
 	// fetch is behind a closure: fmt and reflection print a func as its
 	// address, so no print reaches the signed query.
 	fetch func() string

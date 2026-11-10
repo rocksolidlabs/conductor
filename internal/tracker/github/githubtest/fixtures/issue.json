@@ -1,0 +1,80 @@
+{
+ "url": "https://api.github.com/repos/octo-example/widgets/issues/42",
+ "repository_url": "https://api.github.com/repos/octo-example/widgets",
+ "labels_url": "https://api.github.com/repos/octo-example/widgets/issues/42/labels{/name}",
+ "comments_url": "https://api.github.com/repos/octo-example/widgets/issues/42/comments",
+ "events_url": "https://api.github.com/repos/octo-example/widgets/issues/42/events",
+ "html_url": "https://github.com/octo-example/widgets/issues/42",
+ "id": 5000042,
+ "node_id": "I_kwDOFixture42",
+ "number": 42,
+ "title": "The widget list crashes when empty",
+ "user": {
+  "login": "mona-example",
+  "id": 9000001,
+  "node_id": "U_kgDOFixture1",
+  "avatar_url": "https://avatars.githubusercontent.com/u/9000001?v=4",
+  "gravatar_id": "",
+  "url": "https://api.github.com/users/mona-example",
+  "html_url": "https://github.com/mona-example",
+  "type": "User",
+  "site_admin": false
+ },
+ "labels": [
+  {
+   "id": 7000000,
+   "node_id": "LA_kwDOFixture0",
+   "url": "https://api.github.com/repos/octo-example/widgets/labels/bug",
+   "name": "bug",
+   "color": "d73a4a",
+   "default": true,
+   "description": ""
+  }
+ ],
+ "state": "open",
+ "locked": false,
+ "assignee": {
+  "login": "hubot-example",
+  "id": 9000002,
+  "node_id": "U_kgDOFixture2",
+  "url": "https://api.github.com/users/hubot-example",
+  "html_url": "https://github.com/hubot-example",
+  "type": "User",
+  "site_admin": false
+ },
+ "assignees": [
+  {
+   "login": "hubot-example",
+   "id": 9000002,
+   "node_id": "U_kgDOFixture2",
+   "url": "https://api.github.com/users/hubot-example",
+   "html_url": "https://github.com/hubot-example",
+   "type": "User",
+   "site_admin": false
+  }
+ ],
+ "milestone": {
+  "url": "https://api.github.com/repos/octo-example/widgets/milestones/1",
+  "html_url": "https://github.com/octo-example/widgets/milestone/1",
+  "id": 8000001,
+  "node_id": "MI_kwDOFixture1",
+  "number": 1,
+  "title": "v1.0",
+  "state": "open"
+ },
+ "comments": 2,
+ "created_at": "2026-10-01T09:00:00Z",
+ "updated_at": "2026-10-02T10:30:00Z",
+ "closed_at": null,
+ "author_association": "OWNER",
+ "active_lock_reason": null,
+ "body": "The widget list crashes when it is empty.\r\n\r\n### Steps to reproduce\r\n\r\n1. Open the widget list\r\n2. Remove every widget\r\n3. See the crash\r\n\r\n![crash](https://github.com/user-attachments/assets/6f1c2e9a-4b7d-4a52-9c3e-0f1d2a3b4c5d)\r\n\r\n### Expected behavior\r\n\r\nAn empty list.\r\n",
+ "body_html": "<p dir=\"auto\">The widget list crashes when it is empty.</p>\n<h3 dir=\"auto\">Steps to reproduce</h3>\n<ol dir=\"auto\">\n<li>Open the widget list</li>\n<li>Remove every widget</li>\n<li>See the crash</li>\n</ol>\n<p dir=\"auto\"><a target=\"_blank\" rel=\"noopener noreferrer\" href=\"https://github.com/user-attachments/assets/6f1c2e9a-4b7d-4a52-9c3e-0f1d2a3b4c5d\"><img src=\"https://github.com/user-attachments/assets/6f1c2e9a-4b7d-4a52-9c3e-0f1d2a3b4c5d\" alt=\"crash\" style=\"max-width: 100%;\"></a></p>\n<p dir=\"auto\"><a target=\"_blank\" rel=\"noopener noreferrer nofollow\" href=\"https://camo.githubusercontent.com/3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a/68747470733a2f2f6578616d706c652e636f6d2f6c6f676f2e706e67\"><img src=\"https://camo.githubusercontent.com/3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a/68747470733a2f2f6578616d706c652e636f6d2f6c6f676f2e706e67\" alt=\"logo\" data-canonical-src=\"https://example.com/logo.png\" style=\"max-width: 100%;\"></a></p>\n<p dir=\"auto\"><img src=\"https://intranet.example/metadata.png\" alt=\"not GitHub's\"> <img src=\"https://github.com/octo-example/widgets/raw/main/x.png\" alt=\"off the assets path\"> <img src=\"http://user-images.githubusercontent.com/1/plain.png\" alt=\"http\"></p>\n<h3 dir=\"auto\">Expected behavior</h3>\n<p dir=\"auto\">An empty list.</p>",
+ "reactions": {
+  "url": "https://api.github.com/repos/octo-example/widgets/issues/42/reactions",
+  "total_count": 0
+ },
+ "timeline_url": "https://api.github.com/repos/octo-example/widgets/issues/42/timeline",
+ "performed_via_github_app": null,
+ "state_reason": null
+}
