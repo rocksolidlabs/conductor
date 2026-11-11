@@ -89,12 +89,16 @@ func claudeSteps(hooksDir string) []step {
 	return []step{mergeHooksStep(claudeAssets, hooksDir, "claude.json", claudeSettings, claudeMarker), skillStep(hooksDir, claudeSkill)}
 }
 
+// claudeIdentity is Claude Code's probe, which its usage reader asks too.
+var claudeIdentity = &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?m)^\s*(\d+\.\d+\.\d+)\s*\(Claude Code\)`), Verified: true}
+
 func claudeAdapter() Adapter {
 	return Adapter{
 		ID:   "claude",
 		Name: "Claude Code",
 		// Verified live (2.1.287): `claude --version` prints "2.1.287 (Claude Code)".
-		Probe:  &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?m)^\s*(\d+\.\d+\.\d+)\s*\(Claude Code\)`), Verified: true},
+		Probe:  claudeIdentity,
+		Usage:  claudeUsageReader(),
 		Assets: claudeAssets,
 		Inject: func(hooksDir string, sig catalog.Signal) ([]string, map[string]string) {
 			settings := "claude.json"
