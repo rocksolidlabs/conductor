@@ -369,6 +369,61 @@ func TestAccountsDocumentBounded(t *testing.T) {
 // every Reserve of a registered account and every Admit is refused
 // accounts_not_owner in words, and nothing is made on disk. Own lets the
 // same Store write.
+// Folders reads the accounts document's folders from the file alone: none
+// for no document; every account's, retired ones included, from the
+// document the Store writes and from one a later version writes (a field
+// this one does not know); an error for a file that is not JSON, past its
+// bound, a link, or naming a folder that is not absolute.
+func TestFolders(t *testing.T) {
+	dir := t.TempDir()
+	if got, err := Folders(dir); err != nil || got != nil {
+		t.Fatalf("no document: %q, %v", got, err)
+	}
+	s := openAt(t, dir, Options{Now: clockAt(t0)})
+	f := newFacts()
+	a, rev, err := s.Add(f, "claude", "Work", "/home/u/work", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, rev, err = s.Add(f, "codex", "Home", "/home/u/home", rev); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = s.Retire(a.ID, rev); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/home/u/work", "/home/u/home"}
+	if got, err := Folders(dir); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("the Store's document: %q, %v", got, err)
+	}
+	path := filepath.Join(dir, Dir, AccountsFile)
+	write := func(b string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(b), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(`{"rev":9,"bindings":{"s":"a"},"accounts":[{"id":"a-x","folder":"/home/u/work","pinned":true}]}`)
+	if got, err := Folders(dir); err != nil || !slices.Equal(got, want[:1]) {
+		t.Fatalf("a later version's document: %q, %v", got, err)
+	}
+	for name, b := range map[string]string{"not JSON": "{oops", "a folder not absolute": `{"accounts":[{"folder":"rel/work"}]}`, "accounts not a list": `{"accounts":{}}`,
+		"past its bound": `{"accounts":[],"x":"` + strings.Repeat("x", MaxAccountsDoc) + `"}`} {
+		write(b)
+		if got, err := Folders(dir); err == nil {
+			t.Errorf("%s: %q", name, got)
+		}
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "elsewhere.json"), path); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := Folders(dir); err == nil {
+		t.Errorf("a link: %q", got)
+	}
+}
+
 func TestNotOwnerWritesNothing(t *testing.T) {
 	f := newFacts()
 	dir := t.TempDir()

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"maps"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -38,15 +39,23 @@ import (
 
 // The routes' bounds, and the owner lock's wait.
 const (
-	maxAccountsReply = capacity.MaxAccountsDoc + 4<<10      // GET /api/accounts: the document's 64 KiB, then the readings and adapters beside it
-	maxCapacityView  = 32 << 10                             // one view
-	maxCapacityPage  = 128 << 10                            // a page of the listing
-	maxCapacityLimit = 16                                   // views a page holds at most
-	maxCapacityEvent = 512                                  // a capacity event's data
-	maxCapacityBody  = 1 << 10                              // POST /api/capacity/read's body
-	maxAccountBody   = maxCapacityBody + capacity.MaxFolder // an account write's: a folder's path and the rest
-	maxStartsPerKey  = 512                                  // the start times a key's counts keep
-	maxCountKeys     = 256                                  // keys the counts keep
+	maxAccountsReply = capacity.MaxAccountsDoc + 4<<10 // GET /api/accounts: the document's 64 KiB, then the readings and adapters beside it
+	maxCapacityView  = 32 << 10                        // one view
+	maxCapacityPage  = 128 << 10                       // a page of the listing
+	maxCapacityLimit = 16                              // views a page holds at most
+	maxCapacityEvent = 512                             // a capacity event's data
+	maxCapacityBody  = 1 << 10                         // POST /api/capacity/read's body
+	maxStartsPerKey  = 512                             // the start times a key's counts keep
+	maxCountKeys     = 256                             // keys the counts keep
+	// An account write's body is bounded by its largest valid spelling:
+	// each text field at its limit with every character escaped as JSON
+	// may escape it (an ASCII byte as \u00XX, 6 bytes; a character past the
+	// BMP, 4 bytes of UTF-8, as a surrogate pair, 12), plus 256 bytes for
+	// the names, the punctuation and expectedRev. A rename's, a retire's
+	// and a default's hold no folder.
+	maxEscapedLabel    = 12 * capacity.MaxLabel
+	maxAccountBody     = 256 + 6*32 + maxEscapedLabel + 6*capacity.MaxFolder // an add: adapter, label, folder (25,744 bytes)
+	maxAccountEditBody = 256 + maxEscapedLabel                               // every other write (976 bytes)
 )
 
 var (
@@ -63,7 +72,7 @@ var ownerOnlyReaders = map[string]bool{"claude": true}
 // from besides its ConfigDirEnv: a launch whose own additions set one is
 // env_set, its usage not read.
 var authEnv = map[string][]string{
-	"claude": {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"},
+	"claude": {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"},
 	"codex":  {"OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL"},
 }
 
@@ -89,7 +98,6 @@ type capacityDesk struct {
 	waiting  sync.WaitGroup
 	starts   map[capacity.Key][]time.Time
 	lastRead map[string]accountReading // account id, or "<adapter>:default"
-	denied   []string                  // folders' last answer; never changed, replaced
 
 	// The tests' seams: seam runs inside an add's write, under the store's
 	// lock (Facts.CheckAccountDir); closing as close takes the store's gate.
@@ -225,32 +233,6 @@ func (d *capacityDesk) close() {
 	d.owned = false
 }
 
-// folders are what a session's file requests leave out besides the
-// server's own files (Server.fileDeny): each registered account's folder,
-// retired ones included, as the accounts document holds them when asked,
-// and where a link on its way leads (session.Leads), as the deny list
-// names its other entries. A document that cannot be read answers the
-// folders it held when last read.
-func (d *capacityDesk) folders() []string {
-	if d == nil || d.st == nil {
-		return nil
-	}
-	doc, err := d.st.Accounts()
-	var out []string
-	for _, a := range doc.Accounts {
-		out = append(out, a.Folder)
-		if real := session.Leads(a.Folder); real != "" && real != a.Folder {
-			out = append(out, real)
-		}
-	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if err == nil {
-		d.denied = out
-	}
-	return d.denied
-}
-
 // started counts a server session of agent started now, on its default
 // account (PR-3: nothing binds another yet).
 func (d *capacityDesk) started(agent string) {
@@ -309,7 +291,8 @@ func (d *capacityDesk) counts(k capacity.Key) capacity.Counts {
 // for GET /api/accounts, then the capacity event goes out. The note is
 // made under mu, which a remove takes to delete its account's, and only
 // for an account the document holds at that moment, or an adapter's own
-// login read through an entry that does not pin another (pinned); every
+// login as the read filed it when it started (read: an entry that pinned
+// no other, its adapter then), never from the catalog as it is now; every
 // note naming neither is dropped then. So the map holds at most what can
 // exist, MaxAccounts and an entry per adapter with a ConfigDirEnv, and a
 // reading of a live account always has its room.
@@ -317,9 +300,6 @@ func (d *capacityDesk) onRead(k capacity.Key, v capacity.View) {
 	if v.ReadAt == nil {
 		return
 	}
-	a, _ := d.s.Catalog().Get(k.Agent)
-	ad, _ := agents.Get(a.Adapter)
-	pinned := d.s.pinned(a)
 	d.mu.Lock()
 	if doc, err := d.st.Accounts(); err == nil {
 		live := map[string]bool{}
@@ -333,9 +313,9 @@ func (d *capacityDesk) onRead(k capacity.Key, v capacity.View) {
 		}
 		key := k.Account
 		if key == capacity.DefaultID {
-			key = a.Adapter + ":" + capacity.DefaultID
+			key = v.Filed
 		}
-		if live[k.Account] || (k.Account == capacity.DefaultID && pinned == "" && ad.ConfigDirEnv != "") {
+		if live[k.Account] || (k.Account == capacity.DefaultID && v.Filed != "") {
 			d.lastRead[key] = accountReading{Agent: k.Agent, State: v.State, ReadAt: *v.ReadAt}
 		}
 	}
@@ -402,10 +382,17 @@ func (s *Server) readEnv(agent catalog.Agent, folder string) ([]string, string) 
 // its own login, in every form of the question (a view, the listing, a
 // read), and its readings are not its adapter's own login's. "" for none.
 func (s *Server) pinned(agent catalog.Agent) string {
-	ad, _ := agents.Get(agent.Adapter)
 	built, _ := s.readEnv(agent, "")
+	return pinnedIn(agent.Adapter, built)
+}
+
+// pinnedIn is the variable of built, an environment as readEnv builds it,
+// that pins adapter's login: its ConfigDirEnv or a login variable; "" for
+// none.
+func pinnedIn(adapter string, built []string) string {
+	ad, _ := agents.Get(adapter)
 	lookup := pty.Lookup(built)
-	for _, k := range append([]string{ad.ConfigDirEnv}, authEnv[agent.Adapter]...) {
+	for _, k := range append([]string{ad.ConfigDirEnv}, authEnv[adapter]...) {
 		if k != "" && lookup(k) != "" {
 			return k
 		}
@@ -497,6 +484,9 @@ func (d *capacityDesk) read(ctx context.Context, k capacity.Key, in capacity.Int
 	if rd == nil || rd.Read == nil {
 		return failed(capacity.StateWords(capacity.StateUnsupported))
 	}
+	if len(agent.Command) == 0 || relativePath(agent.Command[0]) {
+		return failed(relativeWords)
+	}
 	if owned, why := d.ownership(); ownerOnlyReaders[agent.Adapter] && !owned {
 		return failed(notOwnerWords(agent, why))
 	}
@@ -513,6 +503,12 @@ func (d *capacityDesk) read(ctx context.Context, k capacity.Key, in capacity.Int
 		folder = doc.Accounts[i].Folder
 	}
 	env, hash := d.s.readEnv(agent, folder)
+	// Filed now, from the environment this read runs with: its adapter's
+	// own login when it reads the default through an entry pinning none.
+	filed := ""
+	if ad, _ := agents.Get(agent.Adapter); k.Account == capacity.DefaultID && ad.ConfigDirEnv != "" && pinnedIn(agent.Adapter, env) == "" {
+		filed = agent.Adapter + ":" + capacity.DefaultID
+	}
 	var adm *admission
 	var refused error
 	input := agents.UsageInput{Command: agent.Command, Env: env, Dir: d.runDir, Admit: func(version string) (agents.Admission, error) {
@@ -545,6 +541,7 @@ func (d *capacityDesk) read(ctx context.Context, k capacity.Key, in capacity.Int
 			r = capacity.Reading{State: capacity.StateError, Words: "the outcome of the run could not be recorded", Env: hash}
 		}
 	}
+	r.Filed = filed
 	if r.State != capacity.StateOK {
 		return r
 	}
@@ -556,6 +553,18 @@ func (d *capacityDesk) read(ctx context.Context, k capacity.Key, in capacity.Int
 	}
 	r.Limits = capacity.Limits{Reached: rep.Limits.Reached, SpendControl: rep.Limits.SpendControl, OrdinaryAllowed: rep.Limits.OrdinaryAllowed}
 	return r
+}
+
+// relativeWords are a not_installed view's words for an entry whose command
+// is a path relative to a working folder.
+const relativeWords = "this agent's command is a path relative to the folder a session runs in: the server reads only a program it finds itself"
+
+// capacityReadable says the server resolves agent's command as the
+// identity probe does: a program it finds installed, never a command given
+// as a relative path, which is not looked up (relativePath). A view of any
+// other is not_installed, the listing leaves it out, and no read runs it.
+func (s *Server) capacityReadable(ctx context.Context, agent catalog.Agent) bool {
+	return len(agent.Command) > 0 && !relativePath(agent.Command[0]) && s.lookups.installed(ctx, agent.Command[0])
 }
 
 // agentProgram is the name of agent's program for people: its adapter's.
@@ -646,7 +655,7 @@ func (d *capacityDesk) viewOf(ctx context.Context, agent catalog.Agent, q capaci
 		state = capacity.StateRemote
 	case rd == nil || rd.Read == nil:
 		state = capacity.StateUnsupported
-	case len(agent.Command) == 0 || !d.s.lookups.installed(ctx, agent.Command[0]):
+	case !d.s.capacityReadable(ctx, agent):
 		state = capacity.StateNotInstalled
 	case setsLogin || (pinned != "" && id != capacity.DefaultID):
 		state = capacity.StateEnvSet
@@ -659,6 +668,9 @@ func (d *capacityDesk) viewOf(ctx context.Context, agent catalog.Agent, q capaci
 		v = capacity.View{State: state, Words: capacity.StateWords(state), Windows: []capacity.Window{}, Credits: []capacity.Credit{}, Fresh: capacity.FreshNone}
 		if state == capacity.StateNotOwner {
 			v.Words = notOwnerWords(agent, why)
+		}
+		if state == capacity.StateNotInstalled && len(agent.Command) > 0 && relativePath(agent.Command[0]) {
+			v.Words = relativeWords
 		}
 		if state == capacity.StateEnvSet && pinned != "" && !setsLogin {
 			v.Words = "this agent's entry sets " + pinned + ": it uses that login, its default account only"
@@ -735,7 +747,10 @@ func (s *Server) handleCapacity(w http.ResponseWriter, r *http.Request) {
 	if !s.capacityAvailable(w) {
 		return
 	}
-	q := r.URL.Query()
+	q, ok := capacityQueryOf(w, r)
+	if !ok {
+		return
+	}
 	vq := capacityQuery{account: q.Get("account"), model: q.Get("model"), launch: q.Get("launch"), yolo: q.Get("yolo") == "1" || q.Get("yolo") == "true"}
 	if vq.launch == "" {
 		vq.launch = "session"
@@ -778,6 +793,18 @@ func (s *Server) handleCapacity(w http.ResponseWriter, r *http.Request) {
 	s.capacityPage(w, r, vq, after, limit)
 }
 
+// capacityQueryOf is r's query as the repository's bounded parser reads it
+// (parseQuery: a ';' is part of a value), false having refused one it
+// cannot read in its fixed words, so no question is answered as another.
+func capacityQueryOf(w http.ResponseWriter, r *http.Request) (url.Values, bool) {
+	q, err := parseQuery(r.URL.RawQuery)
+	if err != nil {
+		refuse(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return nil, false
+	}
+	return q, true
+}
+
 // capacityAgent is the catalog's agent id, false having refused an id not
 // of an agent id's form (in words that do not repeat it) or not there.
 func (s *Server) capacityAgent(w http.ResponseWriter, id string) (catalog.Agent, bool) {
@@ -805,7 +832,7 @@ func (s *Server) capacityPage(w http.ResponseWriter, r *http.Request, vq capacit
 	}
 	var keys []capacity.Key
 	for _, agent := range s.Catalog().List() {
-		if len(agent.Command) == 0 || !s.lookups.installed(r.Context(), agent.Command[0]) {
+		if !s.capacityReadable(r.Context(), agent) {
 			continue
 		}
 		keys = append(keys, capacity.Key{Agent: agent.ID, Account: capacity.DefaultID})

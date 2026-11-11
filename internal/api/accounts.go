@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -10,6 +11,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/capacity"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // The accounts routes (docs/plans/capacity.md, PR-3): the account
@@ -21,18 +23,32 @@ import (
 // capacityFacts is what internal/capacity asks of the server. Nothing
 // binds an account before PR-4, so Bound names nothing: a remove is
 // refused only while a reservation holds the account.
-type capacityFacts struct{ seam func() }
+type capacityFacts struct {
+	seam func()
+	data string // the server's data directory, which no account's folder overlaps
+}
 
 func (capacityFacts) ConfigDirEnv(adapter string) (string, bool) {
 	ad, ok := agents.Get(adapter)
 	return ad.ConfigDirEnv, ok
 }
 
+// CheckAccountDir is Brakeman's check of an account folder, and the folder
+// neither inside the data directory nor holding it, compared both ways as
+// the deny list compares (session.DeniedBy: by identity, links resolved).
 func (f capacityFacts) CheckAccountDir(dir string) error {
 	if f.seam != nil {
 		f.seam()
 	}
-	return checkAccountDir(dir)
+	if err := checkAccountDir(dir); err != nil || f.data == "" {
+		return err
+	}
+	real, err := filepath.EvalSymlinks(dir)
+	data, derr := filepath.EvalSymlinks(f.data)
+	if err != nil || derr != nil || session.DeniedBy(real, []string{data}) || session.DeniedBy(data, []string{real}) {
+		return errors.New("a folder inside the server's data directory, or one that holds it: an account's folder is kept apart from it")
+	}
+	return nil
 }
 
 func (capacityFacts) Bound(string) []string { return nil }
@@ -181,12 +197,18 @@ type (
 // decodeAccountWrite decodes a write's body into v, whose expectedRev
 // rev points to, answering false having answered the request: an id (the
 // server mints one) and a folder where the route takes none (an
-// account's folder never changes) are refused with their words.
+// account's folder never changes) are refused with their words. The body
+// is bounded by its route's largest valid spelling: an add's, which holds a
+// folder, or maxAccountEditBody.
 func (s *Server) decodeAccountWrite(w http.ResponseWriter, r *http.Request, v any, rev func() *int64) bool {
 	if !s.capacityAvailable(w) {
 		return false
 	}
-	if err := decodeJSONLimit(w, r, v, maxAccountBody); err != nil {
+	bound := maxAccountEditBody
+	if _, add := v.(*addAccountBody); add {
+		bound = maxAccountBody
+	}
+	if err := decodeJSONLimit(w, r, v, int64(bound)); err != nil {
 		switch msg := err.Error(); {
 		case strings.Contains(msg, `unknown field "id"`):
 			writeAccountError(w, http.StatusBadRequest, capacity.CodeInvalidAccount, "id", "the server mints an account's id", nil)
@@ -209,7 +231,7 @@ func (s *Server) handleAddAccount(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeAccountWrite(w, r, &b, func() *int64 { return b.ExpectedRev }) {
 		return
 	}
-	a, rev, err := s.capacity.st.Add(capacityFacts{seam: s.capacity.seam}, b.Adapter, b.Label, b.Folder, *b.ExpectedRev)
+	a, rev, err := s.capacity.st.Add(capacityFacts{seam: s.capacity.seam, data: s.store.Dir()}, b.Adapter, b.Label, b.Folder, *b.ExpectedRev)
 	if err != nil {
 		s.writeCapacityError(w, err)
 		return
@@ -255,7 +277,11 @@ func (s *Server) handleRemoveAccount(w http.ResponseWriter, r *http.Request) {
 	if !s.capacityAvailable(w) {
 		return
 	}
-	rev, err := strconv.ParseInt(r.URL.Query().Get("expectedRev"), 10, 64)
+	q, ok := capacityQueryOf(w, r)
+	if !ok {
+		return
+	}
+	rev, err := strconv.ParseInt(q.Get("expectedRev"), 10, 64)
 	if err != nil {
 		writeAccountError(w, http.StatusBadRequest, capacity.CodeInvalidAccount, "expectedRev", "?expectedRev= the rev of the accounts as read", nil)
 		return

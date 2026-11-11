@@ -20,6 +20,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf16"
 
 	"github.com/rocksolidlabs/conductor/ext/local"
 	"github.com/rocksolidlabs/conductor/internal/agents"
@@ -179,7 +180,7 @@ func viewOfKey(t *testing.T, e *testEnv, query string) map[string]any {
 	return e.expect(t, "GET", "/api/capacity?"+query, nil, http.StatusOK, "")
 }
 
-// capacityRoutes is every route of the row, with a body that would pass.
+// capacityRoutes is every route of the row, as a switchyard is asked them.
 var capacityRoutes = []struct{ method, path, body string }{
 	{"GET", "/api/accounts", ""}, {"POST", "/api/accounts", `{"adapter":"claude","label":"x","folder":"/tmp","expectedRev":0}`},
 	{"PATCH", "/api/accounts/a-aaaaaaaaaaaa", `{"label":"y","expectedRev":0}`}, {"POST", "/api/accounts/a-aaaaaaaaaaaa/retire", `{"expectedRev":0}`},
@@ -187,26 +188,72 @@ var capacityRoutes = []struct{ method, path, body string }{
 	{"GET", "/api/capacity?agent=claude-a", ""}, {"GET", "/api/capacity", ""}, {"POST", "/api/capacity/read", `{"agent":"codex-a"}`},
 }
 
-// Every route is the admin's: a session's token, a link's, a host's and
-// none are refused 401, and a switchyard answers 403 switchyard.
+// rowBodies are the row's routes by their guide's method and path, each
+// asked as the admin would ask it with success: id a Claude Code account
+// the document holds, at the accounts' rev rev, and a folder the server's
+// user owns.
+func rowBodies(t *testing.T, id string, rev int64) map[string]struct{ path, body string } {
+	t.Helper()
+	r := strconv.FormatInt(rev, 10)
+	folder, _ := json.Marshal(realRoot(t, t.TempDir()))
+	return map[string]struct{ path, body string }{
+		"GET /api/accounts":                    {"/api/accounts", ""},
+		"POST /api/accounts":                   {"/api/accounts", `{"adapter":"claude","label":"x","folder":` + string(folder) + `,"expectedRev":` + r + `}`},
+		"PATCH /api/accounts/{id}":             {"/api/accounts/" + id, `{"label":"y","expectedRev":` + r + `}`},
+		"POST /api/accounts/{id}/retire":       {"/api/accounts/" + id + "/retire", `{"expectedRev":` + r + `}`},
+		"DELETE /api/accounts/{id}":            {"/api/accounts/" + id + "?expectedRev=" + r, ""},
+		"PUT /api/accounts/defaults/{adapter}": {"/api/accounts/defaults/claude", `{"account":"` + id + `","expectedRev":` + r + `}`},
+		"GET /api/capacity":                    {"/api/capacity?agent=claude-a&account=" + id, ""},
+		"POST /api/capacity/read":              {"/api/capacity/read", `{"agent":"claude-a","account":"` + id + `"}`},
+	}
+}
+
+// Every route is the admin's: a session's token, a link's, a host's, a
+// Brakeman turn's on its own session and none, each asking with a body
+// that would pass and a real account in the path, are refused 401, start no
+// read and leave the accounts document byte for byte; a switchyard answers
+// 403 switchyard.
 func TestAccountsRoutesAdminOnly(t *testing.T) {
 	claude, codex := newFakeUsage("claude"), newFakeUsage("codex")
-	e := capEnv(t, nil, nil, claude, codex, nil)
+	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), append(bkAgents(), capAgents...), capReaders(claude, codex))
+	e.srv.limiter = newRateLimiter(1e6, 1e6)
+	bk := bkEnvOf(t, e)
+	id := addAccount(t, e, "claude", "Work")
 	sid := e.createSession("cat")
 	_, lo := e.do("POST", "/api/sessions/"+sid+"/links", adminToken, map[string]any{"role": "control"})
 	link, _ := lo["token"].(string)
 	if link == "" {
 		t.Fatalf("no link: %v", lo)
 	}
-	for name, tok := range map[string]string{"a session's token": e.agentToken(sid), "a link's": link, "a host's": "test-host-token", "none": ""} {
-		for _, r := range capacityRoutes {
-			if status, data, _ := e.callAs(t, tok, r.method, r.path, []byte(r.body)); status != http.StatusUnauthorized {
+	bk.enable(t, "bk", nil)
+	bsid, btok, _ := bk.turnSession(t, bk.briefing(t))
+	routes := []struct{ method, path, body string }{{"GET", "/api/capacity", ""}, {"POST", "/api/capacity/read", `{"agent":"codex-a"}`}}
+	for route, r := range rowBodies(t, id, accountsRev(t, e)) {
+		method, _, _ := strings.Cut(route, " ")
+		routes = append(routes, struct{ method, path, body string }{method, r.path, r.body})
+	}
+	before := accountsOnDisk(t, e)
+	for name, tok := range map[string]string{"a session's token": e.agentToken(sid), "a link's": link, "a host's": "test-host-token", "none": "", "a Brakeman turn's": btok} {
+		for _, r := range routes {
+			status, data := 0, []byte(nil)
+			if tok == btok {
+				status, data, _ = e.callAsTurn(t, tok, bsid, r.method, r.path, []byte(r.body))
+			} else {
+				status, data, _ = e.callAs(t, tok, r.method, r.path, []byte(r.body))
+			}
+			if status != http.StatusUnauthorized {
 				t.Errorf("%s on %s %s: %d %.200s", name, r.method, r.path, status, data)
 			}
 		}
 	}
 	if calls, _ := codex.count(); calls != 0 {
 		t.Fatalf("a refused read was made: %d", calls)
+	}
+	if calls, _ := claude.count(); calls != 0 {
+		t.Fatalf("a refused Claude Code read was made: %d", calls)
+	}
+	if after := accountsOnDisk(t, e); !bytes.Equal(before, after) {
+		t.Fatalf("a refused write changed the accounts: %s", after)
 	}
 	yard := newTestEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true })
 	for _, r := range capacityRoutes {
@@ -843,6 +890,9 @@ func TestCapacityStaysWithTheAdmin(t *testing.T) {
 	reads, _ := claude.count()
 	codexReads, _ := codex.count()
 	sessions := len(e.srv.registry.List())
+	// The row's own routes are asked as the admin would ask them with
+	// success, a real account in the path; every other with {} for a body.
+	row := rowBodies(t, id, accountsRev(t, e))
 	for _, op := range Operations() {
 		for _, p := range []struct{ who, tok, sid string }{{"a session", e.agentToken(sid), sid}, {"a link", link, sid}, {"a host", "test-host-token", sid}, {"a Brakeman turn", btok, bsid}} {
 			path := wild.ReplaceAllStringFunc(op.Path, func(w string) string {
@@ -855,11 +905,19 @@ func TestCapacityStaysWithTheAdmin(t *testing.T) {
 			if op.Method != http.MethodGet {
 				body = []byte(`{}`)
 			}
+			r, ours := row[op.Method+" "+op.Path]
+			if ours {
+				path, body = r.path, []byte(r.body)
+			}
+			var status int
 			var data []byte
 			if p.sid == bsid {
-				_, data, _ = e.callAsTurn(t, p.tok, bsid, op.Method, path, body)
+				status, data, _ = e.callAsTurn(t, p.tok, bsid, op.Method, path, body)
 			} else {
-				_, data, _ = e.callAs(t, p.tok, op.Method, path, body)
+				status, data, _ = e.callAs(t, p.tok, op.Method, path, body)
+			}
+			if ours && status != http.StatusUnauthorized {
+				t.Errorf("%s's %s %s: %d %.200s", p.who, op.Method, path, status, data)
 			}
 			leaked(p.who, op.Method+" "+path, data)
 		}
@@ -872,8 +930,19 @@ func TestCapacityStaysWithTheAdmin(t *testing.T) {
 	if now != reads || codexNow != codexReads || len(e.srv.registry.List()) != sessions {
 		t.Errorf("the walk started something: reads %d then %d, %d then %d; sessions %d then %d", reads, now, codexReads, codexNow, sessions, len(e.srv.registry.List()))
 	}
+	// The accounts made unreadable and readable again around a file
+	// request each: the deny list's two lines are logged, and pass too.
+	writeFile(t, accountsFile, []byte("not json"))
+	e.getFile(sid, link, "notes.md", "raw")
+	writeFile(t, accountsFile, before)
+	e.getFile(sid, link, "notes.md", "raw")
 	logMu.Lock()
 	defer logMu.Unlock()
+	for _, words := range []string{denyAllWords, denyEndWords} {
+		if !bytes.Contains(logged.Bytes(), []byte(words)) {
+			t.Errorf("the log lacks %q", words)
+		}
+	}
 	leaked("the log", "", logged.Bytes())
 }
 
@@ -1075,6 +1144,7 @@ func TestCapacityOneQuestionOneAnswer(t *testing.T) {
 		{ID: "q-yolo", Name: "Yolo", Adapter: "claude", Command: []string{"/bin/cat"}, Yolo: &catalog.Yolo{Env: map[string]string{"ANTHROPIC_API_KEY": "sk-invented"}}},
 		{ID: "q-pinned", Name: "Pinned", Adapter: "claude", Command: []string{"/bin/cat"}, Env: map[string]string{"CLAUDE_CONFIG_DIR": realRoot(t, t.TempDir())}},
 		{ID: "q-keyed", Name: "Keyed", Adapter: "claude", Command: []string{"/bin/cat"}, Env: map[string]string{"ANTHROPIC_API_KEY": "sk-invented"}},
+		{ID: "q-token", Name: "Token", Adapter: "claude", Command: []string{"/bin/cat"}, Env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "invented"}},
 	}
 	claude := newFakeUsage("claude")
 	e := capEnv(t, nil, nil, claude, newFakeUsage("codex"), kinds, withRuntime(&sessiontest.FakeRuntime{Place: "boxcar", Base: local.Native()}))
@@ -1203,7 +1273,8 @@ func TestCapacityRefusalsBounded(t *testing.T) {
 // routes and frames serve, as the data directory is: inside a session's
 // folder, a file in it is refused (denied) to the admin and to a link's
 // viewer and controller, over HTTP and in-band, read, listed or saved; the
-// file beside it is served; once the account is removed, served as any.
+// file beside it is served; once the account is removed it stays refused,
+// as every entry of the list is kept once named, until the server stops.
 func TestAccountFolderLeftOutOfSessionFiles(t *testing.T) {
 	const secret = "login-file-7731"
 	e := capEnv(t, nil, nil, newFakeUsage("claude"), newFakeUsage("codex"), nil)
@@ -1261,7 +1332,431 @@ func TestAccountFolderLeftOutOfSessionFiles(t *testing.T) {
 		t.Fatal("a save reached the account's folder")
 	}
 	e.expect(t, "DELETE", "/api/accounts/"+id+"?expectedRev=1", nil, http.StatusNoContent, "")
-	if status, got, _ := e.getFile(sid, tokens["a view link"], "logins/work/auth.json", "raw"); status != http.StatusOK || got != secret {
+	if status, got, code := e.getFile(sid, tokens["a view link"], "logins/work/auth.json", "raw"); status != http.StatusForbidden || code != "denied" || strings.Contains(got, secret) {
 		t.Fatalf("the folder once the account is removed: %d %q", status, got)
+	}
+}
+
+// loginsIn makes logins/work, holding auth.json, and logins/notes.md
+// beside it in root: the folder and the file the next tests ask for.
+func loginsIn(t *testing.T, root string) string {
+	t.Helper()
+	folder := filepath.Join(root, "logins", "work")
+	if err := os.MkdirAll(folder, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for path, body := range map[string]string{filepath.Join(folder, "auth.json"): "login-file-7731", filepath.Join(root, "logins", "notes.md"): "# beside\n"} {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return folder
+}
+
+// viewOfFiles is a new cat session's id on e and a view link's token for it.
+func viewOfFiles(t *testing.T, e *testEnv) (string, string) {
+	t.Helper()
+	sid := e.createSession("cat")
+	_, lo := e.do("POST", "/api/sessions/"+sid+"/links", adminToken, map[string]any{"role": "view"})
+	tok, _ := lo["token"].(string)
+	if tok == "" {
+		t.Fatalf("no link: %v", lo)
+	}
+	return sid, tok
+}
+
+// filesServed checks what a view link of sid is served: the account's
+// folder never, the file beside it only when beside is true.
+func filesServed(t *testing.T, e *testEnv, sid, tok, when string, beside bool) {
+	t.Helper()
+	if status, got, code := e.getFile(sid, tok, "logins/work/auth.json", "raw"); status != http.StatusForbidden || code != "denied" || strings.Contains(got, "login-file-7731") {
+		t.Errorf("%s, the account's folder: %d %.200s", when, status, got)
+	}
+	status, got, code := e.getFile(sid, tok, "logins/notes.md", "raw")
+	if beside && (status != http.StatusOK || got != "# beside\n") {
+		t.Errorf("%s, the file beside: %d %.200s", when, status, got)
+	}
+	if !beside && (status != http.StatusForbidden || code != "denied") {
+		t.Errorf("%s, the file beside, served while the accounts cannot be read: %d %.200s", when, status, got)
+	}
+}
+
+// accountsFileOf is e's capacity/accounts.json.
+func accountsFileOf(e *testEnv) string {
+	return filepath.Join(e.srv.store.Dir(), capacity.Dir, capacity.AccountsFile)
+}
+
+func writeFile(t *testing.T, path string, b []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An account's folder is refused from the accounts document itself: a
+// server over a record of versions that cannot be read (so the routes
+// answer capacity_unavailable) still refuses it to a view link, and serves
+// the file beside it.
+func TestAccountFoldersNeedNoRecordOfVersions(t *testing.T) {
+	claude, codex := newFakeUsage("claude"), newFakeUsage("codex")
+	e := capEnv(t, nil, nil, claude, codex, nil)
+	folder := loginsIn(t, e.root)
+	e.expect(t, "POST", "/api/accounts", map[string]any{"adapter": "codex", "label": "Work", "folder": folder, "expectedRev": 0}, http.StatusCreated, "")
+	shutdown(e)
+	writeFile(t, filepath.Join(e.srv.store.Dir(), capacity.Dir, capacity.VersionsFile), []byte("{oops"))
+	next := serveSecond(t, e, claude, codex)
+	next.expect(t, "GET", "/api/accounts", nil, http.StatusServiceUnavailable, "capacity_unavailable")
+	sid, tok := viewOfFiles(t, next)
+	filesServed(t, next, sid, tok, "the record of versions unreadable at the start", true)
+}
+
+// While the accounts document cannot be read, no file of any session is
+// served, at the start and later; once it can be read again the file beside
+// the folder is served, the folder still refused. The log says each change
+// once, not at each request.
+func TestEveryFileRefusedWhileTheAccountsCannotBeRead(t *testing.T) {
+	claude, codex := newFakeUsage("claude"), newFakeUsage("codex")
+	var logged bytes.Buffer
+	var logMu sync.Mutex
+	e := capEnv(t, nil, slog.New(slog.NewTextHandler(lockedWriter{&logged, &logMu}, nil)), claude, codex, nil)
+	folder := loginsIn(t, e.root)
+	e.expect(t, "POST", "/api/accounts", map[string]any{"adapter": "codex", "label": "Work", "folder": folder, "expectedRev": 0}, http.StatusCreated, "")
+	good := accountsOnDisk(t, e)
+	sid, tok := viewOfFiles(t, e)
+	filesServed(t, e, sid, tok, "the accounts read", true)
+	writeFile(t, accountsFileOf(e), []byte("not json"))
+	filesServed(t, e, sid, tok, "the accounts made unreadable later", false)
+	writeFile(t, accountsFileOf(e), good)
+	filesServed(t, e, sid, tok, "the accounts readable again", true)
+	logMu.Lock()
+	for _, words := range []string{denyAllWords, denyEndWords} {
+		if n := strings.Count(logged.String(), words); n != 1 {
+			t.Errorf("the log says %q %d times", words, n)
+		}
+	}
+	logMu.Unlock()
+	shutdown(e)
+	writeFile(t, accountsFileOf(e), []byte("not json"))
+	next := serveSecond(t, e, claude, codex)
+	sid, tok = viewOfFiles(t, next)
+	filesServed(t, next, sid, tok, "the accounts unreadable at the start", false)
+	writeFile(t, accountsFileOf(e), good)
+	filesServed(t, next, sid, tok, "the accounts readable again after the start", true)
+}
+
+// An accounts document with a field this version does not know (one a
+// later version writes) still names its folders: right after an add, with
+// no file request between, and at the start; the file beside is served.
+func TestAccountFoldersReadWhateverTheDocumentAdds(t *testing.T) {
+	claude, codex := newFakeUsage("claude"), newFakeUsage("codex")
+	e := capEnv(t, nil, nil, claude, codex, nil)
+	sid, tok := viewOfFiles(t, e)
+	folder := loginsIn(t, e.root)
+	e.expect(t, "POST", "/api/accounts", map[string]any{"adapter": "codex", "label": "Work", "folder": folder, "expectedRev": 0}, http.StatusCreated, "")
+	var doc map[string]any
+	if err := json.Unmarshal(accountsOnDisk(t, e), &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc["bindings"] = map[string]any{"s-1": "a-aaaaaaaaaaaa"}
+	doc["accounts"].([]any)[0].(map[string]any)["pinned"] = true
+	later, _ := json.Marshal(doc)
+	writeFile(t, accountsFileOf(e), later)
+	filesServed(t, e, sid, tok, "a later version's document right after the add", true)
+	shutdown(e)
+	next := serveSecond(t, e, claude, codex)
+	sid, tok = viewOfFiles(t, next)
+	filesServed(t, next, sid, tok, "a later version's document at the start", true)
+}
+
+// An account's folder and the server's data directory do not overlap: a
+// folder inside it, one that holds it, and a link to either are refused
+// invalid_account on the folder, and the export names none of them.
+func TestAccountFolderApartFromTheDataDirectory(t *testing.T) {
+	e := capEnv(t, nil, nil, newFakeUsage("claude"), newFakeUsage("codex"), nil)
+	data := realRoot(t, e.srv.store.Dir())
+	inside := filepath.Join(data, "logins", "work")
+	if err := os.MkdirAll(inside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	holds := filepath.Dir(data)
+	linkIn, linkOut := filepath.Join(e.root, "in"), filepath.Join(e.root, "out")
+	for link, to := range map[string]string{linkIn: inside, linkOut: holds} {
+		if err := os.Symlink(to, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	folders := []string{data, inside, holds, linkIn, linkOut}
+	for _, f := range folders {
+		status, body, out := e.callAs(t, adminToken, "POST", "/api/accounts", map[string]any{"adapter": "claude", "label": "Work", "folder": f, "expectedRev": 0})
+		if status != http.StatusBadRequest || errorCode(out) != capacity.CodeInvalidAccount || !strings.Contains(string(body), `"field":"folder"`) {
+			t.Errorf("the folder %s: %d %.300s", f, status, body)
+		}
+	}
+	resp, b := getExport(t, e, adminToken)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the export: %d %.200s", resp.StatusCode, b)
+	}
+	for _, f := range folders {
+		if name := archiveHolding(t, b, f); name != "" {
+			t.Errorf("the export's %s names %s", name, f)
+		}
+	}
+}
+
+// A read, a check and the view take the command the server resolved, the
+// identity probe's: a command given as a path relative to a working folder
+// is never looked up nor run, its view not_installed in fixed words, by
+// either adapter's own reader, the listing leaving it out as it leaves out
+// what is not installed.
+func TestCapacityReadsNoRelativeCommand(t *testing.T) {
+	dir := realRoot(t, t.TempDir())
+	marker := filepath.Join(dir, "ran")
+	writeFile(t, filepath.Join(dir, "tool"), []byte("#!/bin/sh\necho \"$0 $*\" >> "+marker+"\necho not-json\n"))
+	if err := os.Chmod(filepath.Join(dir, "tool"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	rel := []catalog.Agent{{ID: "rel-claude", Name: "Rel Claude", Adapter: "claude", Command: []string{"./tool"}}, {ID: "rel-codex", Name: "Rel Codex", Adapter: "codex", Command: []string{"./tool"}}}
+	cl, _ := agents.Get("claude")
+	cx, _ := agents.Get("codex")
+	e := capEnv(t, nil, nil, newFakeUsage("claude"), newFakeUsage("codex"), rel, withUsageReaders(map[string]*agents.UsageReader{"claude": cl.Usage, "codex": cx.Usage}))
+	for _, a := range rel {
+		if v := viewOfKey(t, e, "agent="+a.ID); v["state"] != capacity.StateNotInstalled || v["words"] == "" {
+			t.Errorf("%s's view: %v", a.ID, v)
+		}
+		if v := readNow(t, e, a.ID, "", false); v["state"] != capacity.StateNotInstalled {
+			t.Errorf("%s's read: %v", a.ID, v)
+		}
+		if v := listedView(t, e, "launch=session", a.ID, capacity.DefaultID); v != nil {
+			t.Errorf("%s listed: %v", a.ID, v)
+		}
+	}
+	if v := readNow(t, e, "rel-claude", "", true); v["state"] != capacity.StateNotInstalled {
+		t.Errorf("the check: %v", v)
+	}
+	if b, err := os.ReadFile(marker); err == nil {
+		t.Fatalf("a program in the server's working folder ran: %s", b)
+	}
+}
+
+// A reading is filed by what its read used, decided as the read starts: a
+// pinned entry's read held while the entry is edited to pin nothing, and
+// one held while its adapter changes, file nothing as an adapter's own
+// login's reading.
+func TestAReadingIsFiledByWhatItsReadUsed(t *testing.T) {
+	pinned := func(id string) catalog.Agent {
+		return catalog.Agent{ID: id, Name: id, Adapter: "claude", Command: []string{"/bin/cat"}, Env: map[string]string{"CLAUDE_CONFIG_DIR": realRoot(t, t.TempDir())}}
+	}
+	claude, codex := newFakeUsage("claude"), newFakeUsage("codex")
+	e := capEnv(t, nil, nil, claude, codex, []catalog.Agent{pinned("q-unpinned"), pinned("q-moved")})
+	events := e.sse(t)
+	for _, c := range []struct {
+		id      string
+		edit    func(a *catalog.Agent)
+		adapter string
+	}{
+		{"q-unpinned", func(a *catalog.Agent) { a.Env = nil }, "claude"},
+		{"q-moved", func(a *catalog.Agent) { a.Adapter, a.Env = "codex", nil }, "codex"},
+	} {
+		gate, called := make(chan struct{}), make(chan struct{}, 1)
+		claude.set(func(f *fakeUsage) { f.gate, f.called = gate, called })
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, _, _ = e.callAs(t, adminToken, "POST", "/api/capacity/read", []byte(`{"agent":"`+c.id+`"}`))
+		}()
+		<-called
+		claude.set(func(f *fakeUsage) { f.gate, f.called = nil, nil })
+		cat := e.srv.Catalog()
+		a, _ := cat.Get(c.id)
+		c.edit(&a)
+		changed, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: replaceAgent(cat.List(), a)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.setCatalog(changed)
+		close(gate)
+		awaitEvent(t, events, capacityEventOf(c.id, capacity.DefaultID))
+		<-done
+		for _, raw := range e.expect(t, "GET", "/api/accounts", nil, http.StatusOK, "")["adapters"].([]any) {
+			if ad := raw.(map[string]any); ad["reading"] != nil {
+				t.Errorf("%s: %s's own login's reading is %v", c.id, ad["adapter"], ad["reading"])
+			}
+		}
+	}
+}
+
+// Every route of the row that takes a query reads it as the repository's
+// bounded parser does: a raw ';', an escape that is not one and a query past
+// the parameter bound are refused 400 in fixed words, never answered as
+// another question (an account dropped from the query is never the
+// default's view).
+func TestCapacityQueriesReadAsSent(t *testing.T) {
+	e := capEnv(t, nil, nil, newFakeUsage("claude"), newFakeUsage("codex"), nil)
+	id := addAccount(t, e, "claude", "Work")
+	many := strings.Repeat("x=1&", maxQueryParams)
+	for _, c := range []struct{ method, path string }{
+		{"GET", "/api/capacity?agent=claude-a&account=default;"},
+		{"GET", "/api/capacity?agent=claude-a&account=" + id + ";x"},
+		{"GET", "/api/capacity?agent=claude-a&account=%zz"},
+		{"GET", "/api/capacity?agent=claude-a&x=%zz"},
+		{"GET", "/api/capacity?" + many + "agent=claude-a"},
+		{"GET", "/api/capacity?limit=2;"},
+		{"GET", "/api/capacity?" + many},
+		{"DELETE", "/api/accounts/" + id + "?expectedRev=1;"},
+		{"DELETE", "/api/accounts/" + id + "?expectedRev=%zz"},
+		{"DELETE", "/api/accounts/" + id + "?" + many + "expectedRev=1"},
+	} {
+		status, data, _ := e.callAs(t, adminToken, c.method, c.path, nil)
+		if status != http.StatusBadRequest || len(data) > maxCapacityView || bytes.Contains(data, []byte(id)) {
+			t.Errorf("%s %.80s: %d %.200s", c.method, c.path, status, data)
+		}
+	}
+	if got := e.expect(t, "GET", "/api/accounts", nil, http.StatusOK, ""); len(got["accounts"].([]any)) != 1 {
+		t.Fatalf("a refused remove removed: %v", got)
+	}
+}
+
+// An outcome whose save failed is saved once more before capacity/owner.lock
+// goes, by either way a server stops: with the save working again at the
+// stop, the next owner holds the version turned and starts nothing of it;
+// with the save still failing, the record is byte for byte what it was.
+// The save fails as a disk refuses it: capacity/ made read-only.
+func TestAnOutcomeNotKeptIsSavedBeforeTheLockGoes(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes into a folder made read-only")
+	}
+	fastLockTick(t)
+	for _, stop := range []struct {
+		name string
+		fn   func(e *testEnv)
+	}{
+		{"Shutdown", shutdown},
+		{"WaitBackground", func(e *testEnv) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			e.srv.WaitBackground(ctx)
+		}},
+	} {
+		for _, works := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s, the save working at the stop %t", stop.name, works), func(t *testing.T) {
+				admitted, gate, told := make(chan struct{}), make(chan struct{}), make(chan struct{})
+				var once sync.Once
+				var mu sync.Mutex
+				starts := 0
+				turning := &agents.UsageReader{Qualified: "2.0.0", MinVersion: "2.0.0", Read: func(ctx context.Context, in agents.UsageInput) agents.UsageReport {
+					adm, err := in.Admit("2.1.7")
+					if err != nil {
+						return agents.UsageReport{State: agents.UsageUnqualified, Words: err.Error(), Version: "2.1.7"}
+					}
+					mu.Lock()
+					starts++
+					mu.Unlock()
+					first := false
+					once.Do(func() { first = true; close(admitted); <-gate })
+					adm.Done(agents.Turned)
+					if first {
+						close(told)
+					}
+					return agents.UsageReport{State: agents.UsageUnqualified, Words: "a model turn was taken", Version: "2.1.7", Outcome: agents.Turned}
+				}}
+				readers := withUsageReaders(map[string]*agents.UsageReader{"claude": turning, "codex": newFakeUsage("codex").reader()})
+				e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), capAgents, readers)
+				dir := filepath.Join(e.srv.store.Dir(), capacity.Dir)
+				versions := filepath.Join(dir, capacity.VersionsFile)
+				go func() {
+					_, _, _ = e.callAs(t, adminToken, "POST", "/api/capacity/read", []byte(`{"agent":"claude-a","check":true}`))
+				}()
+				<-admitted
+				if err := os.Chmod(dir, 0o500); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+				close(gate)
+				<-told
+				if st := e.srv.capacity.st.Versions().State("claude", "2.1.7"); st != capacity.VersionTurned {
+					t.Fatalf("in memory after the failed save: %q", st)
+				}
+				before, _ := os.ReadFile(versions)
+				if works {
+					if err := os.Chmod(dir, 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				stop.fn(e)
+				if after, _ := os.ReadFile(versions); !works && !bytes.Equal(before, after) {
+					t.Fatalf("the record changed with its save failing: %s, then %s", before, after)
+				}
+				if err := os.Chmod(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				srv, err := New(e.srv.cfg, e.srv.base, e.srv.log, nil, e.srv.store, readers)
+				if err != nil {
+					t.Fatal(err)
+				}
+				second := e.serve(srv)
+				until(t, "the second owns capacity/", owns(second))
+				if !works {
+					return
+				}
+				if st := second.srv.capacity.st.Versions().State("claude", "2.1.7"); st != capacity.VersionTurned {
+					t.Fatalf("the next owner holds %q", st)
+				}
+				for _, check := range []string{"false", "true"} {
+					second.callAs(t, adminToken, "POST", "/api/capacity/read", []byte(`{"agent":"claude-a","check":`+check+`}`))
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				if starts != 1 {
+					t.Fatalf("the turned version was started %d times", starts)
+				}
+			})
+		}
+	}
+}
+
+// jsonEscaped is s as a JSON string with every byte written as an escape,
+// the longest spelling JSON allows: a byte of ASCII as \u00XX, a character
+// past the BMP as its surrogate pair.
+func jsonEscaped(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		if r > 0xffff {
+			hi, lo := utf16.EncodeRune(r)
+			fmt.Fprintf(&b, `\u%04x\u%04x`, hi, lo)
+			continue
+		}
+		fmt.Fprintf(&b, `\u%04x`, r)
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+// The body bound of an add and of a rename is the largest valid body: each
+// text field at its limit in its most escaped spelling. A folder at its
+// limit so spelled reaches the folder's checks (not a body too large), one
+// byte past it is refused as a folder, and a label at its limit so spelled
+// is renamed.
+func TestAccountBodiesBoundTheirLargestSpelling(t *testing.T) {
+	e := capEnv(t, nil, nil, newFakeUsage("claude"), newFakeUsage("codex"), nil)
+	id := addAccount(t, e, "claude", "Work")
+	label := strings.Repeat("\U0001F600", capacity.MaxLabel)
+	base := realRoot(t, t.TempDir())
+	at := base + "/" + strings.Repeat("d", capacity.MaxFolder-len(base)-1)
+	for _, c := range []struct {
+		folder string
+		past   bool // past the folder's limit: refused for its length
+	}{{at, false}, {at + "d", true}} {
+		body := `{"adapter":` + jsonEscaped("claude") + `,"label":` + jsonEscaped(label) + `,"folder":` + jsonEscaped(c.folder) + `,"expectedRev":` + strconv.FormatInt(accountsRev(t, e), 10) + `}`
+		status, data, out := e.callAs(t, adminToken, "POST", "/api/accounts", []byte(body))
+		if status != http.StatusBadRequest || errorCode(out) != capacity.CodeInvalidAccount || !strings.Contains(string(data), `"field":"folder"`) || strings.Contains(string(data), "at most") != c.past {
+			t.Errorf("a folder of %d bytes in a %d-byte body: %d %.300s", len(c.folder), len(body), status, data)
+		}
+	}
+	rev := strconv.FormatInt(accountsRev(t, e), 10)
+	body := `{"label":` + jsonEscaped(label) + `,"expectedRev":` + rev + `}`
+	if status, data, _ := e.callAs(t, adminToken, "PATCH", "/api/accounts/"+id, []byte(body)); status != http.StatusOK {
+		t.Errorf("a label at its limit in a %d-byte body: %d %.300s", len(body), status, data)
 	}
 }

@@ -36,10 +36,13 @@ package capacity
 
 import (
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -339,7 +342,65 @@ func (s *Store) Disown() {
 	s.owned = false
 	s.ver.mu.Lock()
 	defer s.ver.mu.Unlock()
+	// An outcome whose save failed is tried once more while this Store
+	// still owns the record; failing again, it goes with the process.
+	_ = s.ver.keepLocked()
 	s.ver.owned = false
+}
+
+// Folders answers the folder of every account in the accounts document of
+// the data directory dataDir, retired ones included, read from the file
+// alone: no Store, no lock and no record of versions. A document that is
+// not there answers none; one that is JSON answers its folders whatever
+// else it holds, so a later version's document still names them. A file
+// that cannot be read, is not a regular file, passes MaxAccountsDoc or is
+// not JSON, or a folder that is not an absolute path, is an error.
+func Folders(dataDir string) ([]string, error) {
+	path := filepath.Join(dataDir, Dir, AccountsFile)
+	fi, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err == nil && !fi.Mode().IsRegular() {
+		err = errors.New("not a regular file")
+	}
+	var b []byte
+	if err == nil {
+		b, err = readLimit(path, MaxAccountsDoc)
+	}
+	var doc struct {
+		Accounts []struct {
+			Folder string `json:"folder"`
+		} `json:"accounts"`
+	}
+	if err == nil {
+		err = json.Unmarshal(b, &doc)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%s cannot be read: %w", path, err)
+	}
+	var out []string
+	for _, a := range doc.Accounts {
+		if !filepath.IsAbs(a.Folder) {
+			return nil, fmt.Errorf("%s names a folder that is not an absolute path", path)
+		}
+		out = append(out, filepath.Clean(a.Folder))
+	}
+	return out, nil
+}
+
+// readLimit reads the file at path, an error past limit bytes.
+func readLimit(path string, limit int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err == nil && int64(len(b)) > limit {
+		err = fmt.Errorf("more than %d bytes", limit)
+	}
+	return b, err
 }
 
 // ValidID says id has an account id's form: "default", or a minted one.

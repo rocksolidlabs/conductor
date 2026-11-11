@@ -102,6 +102,9 @@ type Reading struct {
 	// Env is the hex SHA-256 of the variables the read was made with,
 	// never their values; "" when the reader gave none.
 	Env string
+	// Filed is what the reader's caller files the reading under, decided
+	// as the read starts; carried as it is to the View, never in its JSON.
+	Filed string
 }
 
 // Window is one usage limit as the provider reported it. A window the
@@ -245,6 +248,8 @@ type View struct {
 	NextRead *time.Time  `json:"nextReadAfter,omitempty"`
 	// Env is the reading's Env, kept out of the JSON (MarkEnv).
 	Env string `json:"-"`
+	// Filed is the reading's Filed, kept out of the JSON.
+	Filed string `json:"-"`
 }
 
 // EnvWords are the words of a view whose reading was made with another
@@ -390,7 +395,7 @@ func (r Reading) outOfBounds() string {
 //   - every slice and pointer is its own, never the reader's.
 func (r Reading) kept(k Key, at time.Time) Reading {
 	failed := func(words string) Reading {
-		return Reading{Key: k, State: StateError, Words: cut(words, MaxWords), ReadAt: at, Env: r.Env}
+		return Reading{Key: k, State: StateError, Words: cut(words, MaxWords), ReadAt: at, Env: r.Env, Filed: r.Filed}
 	}
 	switch r.State {
 	case StateOK, StateSignedOut, StateKeyPaid, StateUnqualified, StateError:
@@ -402,14 +407,14 @@ func (r Reading) kept(k Key, at time.Time) Reading {
 		if words == "" {
 			words = StateWords(r.State)
 		}
-		return Reading{Key: k, State: r.State, Words: cut(words, MaxWords), ReadAt: at, Env: r.Env}
+		return Reading{Key: k, State: r.State, Words: cut(words, MaxWords), ReadAt: at, Env: r.Env, Filed: r.Filed}
 	}
 	if why := r.outOfBounds(); why != "" {
 		return failed("the read's answer is unknown: " + why)
 	}
 	out := Reading{Key: k, State: StateOK, Words: cut(r.Words, MaxWords), Plan: cut(r.Plan, MaxPlan),
 		Windows: cloneWindows(r.Windows), Credits: cloneCredits(r.Credits), Limits: r.Limits.clone(),
-		Program: cut(r.Program, MaxShort), Version: r.Version, Qualified: r.Qualified, ReadAt: at, Env: r.Env}
+		Program: cut(r.Program, MaxShort), Version: r.Version, Qualified: r.Qualified, ReadAt: at, Env: r.Env, Filed: r.Filed}
 	for i := range out.Windows {
 		out.Windows[i].Name = cut(out.Windows[i].Name, MaxName)
 	}
@@ -433,6 +438,7 @@ func (r Reading) view(now time.Time) View {
 		ReadAt:  &at,
 		Fresh:   FreshNow,
 		Env:     r.Env,
+		Filed:   r.Filed,
 	}
 	if r.State == StateOK {
 		v.ReadBy = &ReadBy{Program: r.Program, Version: r.Version, Qualified: r.Qualified}

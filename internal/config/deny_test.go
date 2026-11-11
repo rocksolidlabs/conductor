@@ -756,3 +756,76 @@ func TestLocalFileDenyFunc(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// The list a hosted session of this machine is given (LocalFileDenyFunc for
+// the server's config) refuses each folder the server's accounts document
+// registers, as the server's own sessions do: reached by its path, by a link
+// to it, and one registered through a link; kept once named, so a folder
+// whose account is removed stays refused. A document that cannot be read is
+// an error at the start and, later, refuses every file until it can be.
+func TestLocalFileDenyRefusesAccountFolders(t *testing.T) {
+	home := realTempDir(t)
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", realTempDir(t))
+	data := filepath.Join(realTempDir(t), "data")
+	t.Setenv("CONDUCTOR_DATA_DIR", data)
+	t.Setenv("CONDUCTOR_CATALOG_PATH", "")
+	t.Chdir(realTempDir(t))
+	write := func(path, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	work, other, registered := filepath.Join(home, "logins", "work"), filepath.Join(home, "logins", "other"), filepath.Join(home, "links", "other")
+	write(filepath.Join(work, "auth.json"), "login\n")
+	write(filepath.Join(other, "auth.json"), "login\n")
+	write(filepath.Join(home, "notes.md"), "# beside\n")
+	for link, to := range map[string]string{registered: other, filepath.Join(home, "alias"): work} {
+		if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(to, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	doc := filepath.Join(data, "capacity", "accounts.json")
+	account := func(id, folder string) string {
+		return `{"id":"` + id + `","adapter":"codex","label":"L","folder":"` + folder + `","createdAt":"2026-11-11T00:00:00Z"}`
+	}
+	write(doc, `{"rev":2,"accounts":[`+account("a-aaaaaaaaaaaa", work)+`,`+account("a-bbbbbbbbbbbb", registered)+`]}`)
+	deny, err := LocalFileDenyFunc("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refused := func(when string) {
+		t.Helper()
+		list := deny()
+		for _, p := range []string{"logins/work/auth.json", "alias/auth.json", "links/other/auth.json", "logins/other/auth.json"} {
+			if r, err := session.ResolvePath(home, p, list); err == nil {
+				t.Errorf("%s: %s resolved to %s, want it refused", when, p, r)
+			}
+		}
+	}
+	refused("registered")
+	write(doc, `{"rev":3,"accounts":[]}`)
+	refused("removed")
+	if _, err := session.ResolvePath(home, "notes.md", deny()); err != nil {
+		t.Errorf("the file beside: %v", err)
+	}
+	root := string(filepath.Separator)
+	write(doc, `not json`)
+	if list := deny(); !slices.Contains(list, root) {
+		t.Errorf("the accounts made unreadable later: %q, want %s among them", list, root)
+	}
+	if _, err := LocalFileDenyFunc(""); err == nil {
+		t.Error("the accounts unreadable at the start: no error")
+	}
+	write(doc, `{"rev":3,"accounts":[]}`)
+	if list := deny(); slices.Contains(list, root) {
+		t.Errorf("the accounts readable again: %q", list)
+	}
+}

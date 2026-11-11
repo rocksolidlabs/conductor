@@ -1873,9 +1873,12 @@ the server it starts: on Windows its folder in the Windows profile, under
 those settings name and `~/.local/share/conductor/data`, looked up again at
 each request and kept once named, so a data directory the app moves to while
 the server runs is refused from then on. A registered account's folder
-(Capacity) is left out as the data directory is, with everything in it,
-looked up in the accounts at each request: an account added is refused from
-then on, and one removed is served again as any other folder. The config file, the
+(Capacity) is left out as the data directory is, with everything in it, read
+from `capacity/accounts.json` itself at each request and kept once named: an
+account added is refused from then on, and one removed stays refused until
+the server stops. While that document is there and cannot be read, every
+file of every session is refused, until it can be read again; the server's
+log says so once as that begins and once as it ends. The config file, the
 catalog file and the settings file are matched as files, so a link to them is
 refused as well; the copies are matched by name alone. One of these paths that is not on
 disk (a data directory never made, a config file moved away) is matched by its
@@ -1889,10 +1892,12 @@ the config file `conductor host --server-config` names, with its `dataDir`
 and `catalogPath`; and for the desktop app's server, the app's own directory,
 its settings file as a config file (its link target and the copies there
 included), the data directory its settings name and, inside WSL,
-`~/.local/share/conductor/data`. The host looks these up again at each
+`~/.local/share/conductor/data`; and each folder the accounts document of
+that data directory registers. The host looks these up again at each
 request and keeps refusing what it refused before, so a data directory moved
-while the session runs is refused at both places. While one of these paths
-is relative, or the config file or the desktop app's settings cannot be read,
+while the session runs is refused at both places, and a removed account's
+folder stays refused. While one of these paths is relative, or the config
+file, the desktop app's settings or the accounts document cannot be read,
 every file is refused (and the host does not start). Saves, and opening a file
 in the editor's Neovim, go through the same rules.
 Responses carry a JSON header
@@ -5267,7 +5272,8 @@ An **account** is a reference to an agent's own login on this server
 adapter that moves its login folder (`claude`: `CLAUDE_CONFIG_DIR`,
 `codex`: `CODEX_HOME`), a label of 1 to 60 characters and the folder that
 login lives in (absolute, at most 4,096 bytes, a directory the server's
-user owns, fixed once added), under an id the server mints (`a-` and 12
+user owns, neither inside the server's data directory nor holding it,
+compared with the links on both resolved, fixed once added), under an id the server mints (`a-` and 12
 base32 characters, never minted again once removed). Every adapter also
 has the account `default`, never stored: the agent's own login. No
 credential, email, organisation or provider id is kept, and nothing in the
@@ -5285,7 +5291,10 @@ a check (its view is `not_owner`, a check `409 accounts_not_owner`), and
 still reads Codex, whose reads cost no turn and change no record. A server
 that lets the lock go (at shutdown) first waits for the write under way and
 then refuses every write `409 accounts_not_owner`, as one that never held
-it, so the next owner is the only writer. A
+it, so the next owner is the only writer. A check's outcome is saved when it
+is known and tried once more before the lock is given up; a server that
+ends without having saved it leaves the version as the record has it, and
+the next owner may read that version once more before it learns the same. A
 **reading** is what an agent's own tool reported of a login's usage at one
 moment (`internal/agents`' readers), kept in memory only, at most 8 per
 key and 128 keys, so a restart starts at `never_read`. A key (an agent and
@@ -5310,7 +5319,12 @@ switchyard answers `403 switchyard`); a server with no data directory
 answers `503 capacity_unavailable`. A value outside its form (an agent's
 id, an account's, an adapter's name, `after`) is refused `400` in the
 server's own words, which do not repeat it, and every refusal is at most
-32 KiB:
+32 KiB. A query is read as the other routes read theirs (a `;` is part of a
+value): one with an escape that is not one or past 10,000 parameters is
+refused `400 invalid_request`, never answered as another question. A
+write's body is bounded by its largest valid spelling, each text field at
+its limit with every character escaped as JSON may escape it: an add's at
+25,744 bytes, every other write's at 976 (`413 bound` past it):
 
 | Route | Body and answer |
 |---|---|
@@ -5329,7 +5343,9 @@ words}, account: {id, label, default, retired, plan}, host: {kind, name?,
 words?}, state, words, windows, credits, limits, counts, readAt?, readBy?:
 {program, version, qualified}, fresh, nextReadAfter?}`. `state` is one of
 `ok`, `reading`, `never_read`, `signed_out`, `key_paid`, `unqualified`,
-`error`, `unsupported` (no reader for the agent), `not_installed`,
+`error`, `unsupported` (no reader for the agent), `not_installed` (also
+an entry whose command is a path relative to a working folder: no read,
+check or view looks it up or runs it, and the listing leaves it out),
 `remote`, `env_set` (the launch's yolo environment, or the entry for an
 account other than `default`, sets the agent's login), `not_owner`; each
 has its words. Each window carries `source: "provider"` and is absent when
