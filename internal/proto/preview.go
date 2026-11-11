@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"regexp"
 	"slices"
@@ -68,10 +69,13 @@ const (
 	MaxElementReport      = 32 << 10
 	// MaxPreviewTextToBridge and MaxPreviewTextToWorkbench bound a
 	// message's text as it arrives, before anything decodes it: twice its
-	// direction's measured bound, since the most an honest JSON text
-	// writes beyond its measure is a lone surrogate's escape, six bytes
-	// for the three of its U+FFFD. A reader of a message's text reads no
-	// more than this.
+	// direction's measured bound. The bound is the browser's own JSON
+	// writer's (JSON.stringify), which escapes nothing it need not and so
+	// never writes a message longer than its measure; a text that escapes
+	// what need not be escaped (< in six bytes, as json.Marshal writes
+	// it) can pass the bound, and is refused. A Go writer of a message writes
+	// with HTML escaping off (an Encoder's SetEscapeHTML(false)). A reader
+	// of a message's text reads no more than this.
 	MaxPreviewTextToBridge    = 2 * MaxPreviewToBridge
 	MaxPreviewTextToWorkbench = 2 * MaxPreviewToWorkbench
 	// MaxPreviewSelector bounds a describe's selector, MaxPreviewURL a
@@ -289,10 +293,10 @@ func negativeZeros(v any) int {
 // bridge's messages and holds it to its type's schema. Its text is
 // refused past to's text bound (MaxPreviewTextToBridge or
 // MaxPreviewTextToWorkbench) or when it is not UTF-8, before anything
-// decodes it; it is then decoded once, and the value is judged: a type of
-// to's way, every field the type carries there and no other (a member
-// given twice is its last), each of its kind and within its bound (a
-// whole number in any spelling of its value, 3, 3.0 or 3e0), the whole
+// decodes it; it is then decoded once (decodeOnce: no member twice, no
+// lone surrogate), and the value is judged: a type of to's way, every
+// field the type carries there and no other, each of its kind and within
+// its bound (a whole number in any spelling of its value, 3, 3.0 or 3e0), the whole
 // within to's measured bound (MaxPreviewToBridge or MaxPreviewToWorkbench)
 // and an element within MaxElementReport. A hello gives the nonce: any
 // well-formed one passes; every other message must carry nonce, the one
@@ -313,8 +317,8 @@ func ParsePreviewMessage(data []byte, to PreviewDirection, nonce string) (Previe
 	if !utf8.Valid(data) {
 		return PreviewMessage{}, fmt.Errorf("%w: its text is not UTF-8", errPreview)
 	}
-	var v any
-	if err := json.Unmarshal(data, &v); err != nil {
+	v, err := decodeOnce(data)
+	if err != nil {
 		return PreviewMessage{}, errPreview
 	}
 	m, err := checkPreview(v, to, most, nonce)
@@ -322,6 +326,56 @@ func ParsePreviewMessage(data []byte, to PreviewDirection, nonce string) (Previe
 		return PreviewMessage{}, err
 	}
 	return buildPreview(m), nil
+}
+
+// decodeOnce is data's one JSON value, refused when an object gives a
+// member twice or a string escapes half of a surrogate pair alone: no
+// writer of a message writes either and no value holds either, so what is
+// accepted has the content the app's parser, handed a value, judges.
+func decodeOnce(data []byte) (any, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	v, err := decodeValue(dec)
+	if _, end := dec.Token(); err != nil || end != io.EOF || loneSurrogate(data) {
+		return nil, errPreview
+	}
+	return v, nil
+}
+
+// decodeValue is dec's next value, the decoder's errors sticking.
+func decodeValue(dec *json.Decoder) (v any, err error) {
+	tok, err := dec.Token()
+	if d, ok := tok.(json.Delim); err != nil || !ok {
+		return tok, err
+	} else if d == '[' {
+		a := []any{}
+		for dec.More() && err == nil {
+			v, err = decodeValue(dec)
+			a = append(a, v)
+		}
+		return a, errors.Join(err, closing(dec))
+	}
+	m := map[string]any{}
+	for dec.More() && err == nil {
+		k, _ := dec.Token()
+		key, _ := k.(string)
+		if _, twice := m[key]; twice {
+			return nil, errPreview
+		}
+		m[key], err = decodeValue(dec)
+	}
+	return m, errors.Join(err, closing(dec))
+}
+
+func closing(dec *json.Decoder) error { _, err := dec.Token(); return err }
+
+// jsonEscapes are a JSON text's escapes, left to right: a surrogate pair's
+// or half of one (its digits in the first group), or another character's.
+var jsonEscapes = regexp.MustCompile(`(?i)\\u(d[89ab][0-9a-f]{2}(?:\\ud[c-f][0-9a-f]{2})?|d[c-f][0-9a-f]{2})|\\.`)
+
+// loneSurrogate reports whether data, a JSON text, escapes half of a
+// surrogate pair alone.
+func loneSurrogate(data []byte) bool {
+	return slices.ContainsFunc(jsonEscapes.FindAllSubmatch(data, -1), func(m [][]byte) bool { return len(m[1]) == 4 })
 }
 
 // buildPreview is the message m holds, m judged by checkPreview: every

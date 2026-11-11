@@ -12,6 +12,7 @@ import (
 	"os"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf16"
@@ -41,9 +42,14 @@ type previewCase struct {
 	To    string `json:"to"`    // the way the parser is told the message travels: bridge or workbench
 	Nonce string `json:"nonce"` // the nonce the parser holds: the hello's, or "" before any
 	// Message is the message's text as both parsers read it, spelled as
-	// written here (a number as 3.0, a member twice).
+	// written here (a number as 3.0, an escaped key). For an accepted
+	// message, the content each parser gives is the content of this text.
 	Message json.RawMessage `json:"message"`
 	OK      bool            `json:"ok"`
+	// AsText marks a text no value is (one that gives a member twice):
+	// the server reads it and refuses it; the app's parser, handed values,
+	// never meets it, so its suite leaves the case out.
+	AsText bool `json:"asText,omitempty"`
 }
 
 // measureCase is a string given as its UTF-16 code units (a lone surrogate
@@ -59,12 +65,15 @@ type measureCase struct {
 // in preview.go, the cut's steps and the hint kinds, the measures and the
 // messages.
 type previewFile struct {
-	Comment   string         `json:"comment"`
-	Bounds    map[string]int `json:"bounds"`
-	Cuts      []string       `json:"cuts"`
-	HintKinds []string       `json:"hintKinds"`
-	Measures  []measureCase  `json:"measures"`
-	Messages  []previewCase  `json:"messages"`
+	Comment string         `json:"comment"`
+	Bounds  map[string]int `json:"bounds"`
+	// TextBounds are the bounds of a message's text only the server holds,
+	// written here as numbers, not read from preview.go.
+	TextBounds map[string]int `json:"textBounds"`
+	Cuts       []string       `json:"cuts"`
+	HintKinds  []string       `json:"hintKinds"`
+	Measures   []measureCase  `json:"measures"`
+	Messages   []previewCase  `json:"messages"`
 }
 
 type obj = map[string]any
@@ -96,30 +105,51 @@ func msg(t string, nonce string, fields ...obj) obj {
 	return m
 }
 
-// with is m with path (keys, the last one set) set to v, or removed for a nil v.
-func with(m obj, v any, path ...string) obj {
+// set is m with path's member (an object's key, or a list's index in
+// digits) set to v, or removed from its object when gone.
+func set(m obj, v any, gone bool, path ...string) obj {
 	out := deepCopy(m).(obj)
-	at := out
+	var at any = out
 	for _, k := range path[:len(path)-1] {
-		at = at[k].(obj)
+		if a, ok := at.([]any); ok {
+			i, _ := strconv.Atoi(k)
+			at = a[i]
+		} else {
+			at = at.(obj)[k]
+		}
 	}
-	if v == nil {
-		delete(at, path[len(path)-1])
-	} else {
-		at[path[len(path)-1]] = v
+	last := path[len(path)-1]
+	switch c := at.(type) {
+	case []any:
+		i, _ := strconv.Atoi(last)
+		c[i] = v
+	case obj:
+		if gone {
+			delete(c, last)
+		} else {
+			c[last] = v
+		}
 	}
 	return out
 }
 
+// with is m with path's member set to v, or removed for a nil v.
+func with(m obj, v any, path ...string) obj { return set(m, v, v == nil, path...) }
+
 // nulled is m with path's member there and null.
-func nulled(m obj, path ...string) obj {
-	out := deepCopy(m).(obj)
-	at := out
-	for _, k := range path[:len(path)-1] {
-		at = at[k].(obj)
+func nulled(m obj, path ...string) obj { return set(m, nil, false, path...) }
+
+// writeText is v as a message's text is written: JSON with HTML escaping
+// off, as JSON.stringify writes it but for U+2028, U+2029 (six bytes
+// here) and a negative zero (-0 here).
+func writeText(v any) []byte {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		panic(err)
 	}
-	at[path[len(path)-1]] = nil
-	return out
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n"))
 }
 
 func deepCopy(v any) any {
@@ -143,9 +173,24 @@ func deepCopy(v any) any {
 // pad is a string of n measured bytes.
 func pad(n int) string { return strings.Repeat("a", n) }
 
-// wide is a string of n measured bytes in three-byte characters, but its
-// last n%3 bytes.
-func wide(n int) string { return strings.Repeat("€", n/3) + pad(n%3) }
+// width is a character and the bytes it measures in a message.
+type width struct {
+	name string
+	c    string
+	n    int
+}
+
+// byteWidths are characters of every measure a message's bounds count:
+// one byte, two (a quote, escaped), three, and six (U+2028, escaped).
+var byteWidths = []width{{"one-byte", "a", 1}, {"two-byte", `"`, 2}, {"three-byte", "€", 3}, {"six-byte", lineSeparator, 6}}
+
+// lineSeparator is U+2028, which a message's measure counts as its
+// six-byte escape.
+const lineSeparator = "\xe2\x80\xa8"
+
+// fill is a string of n measured bytes in w's characters, but its last
+// n%w.n bytes.
+func (w width) fill(n int) string { return strings.Repeat(w.c, n/w.n) + pad(n%w.n) }
 
 func repeat(n int, v any) []any {
 	out := make([]any, n)
@@ -285,25 +330,27 @@ func previewCases() previewFile {
 		}
 		return "workbench"
 	}
-	marshal := func(m any) string {
-		raw, err := json.Marshal(m)
-		if err != nil {
-			panic(err)
-		}
-		return string(raw)
-	}
+	marshal := func(m any) string { return string(writeText(m)) }
 	addText := func(name, to, nonce, text string, ok bool) {
-		cs = append(cs, previewCase{name, to, nonce, json.RawMessage(text), ok})
+		cs = append(cs, previewCase{name, to, nonce, json.RawMessage(text), ok, false})
 	}
 	addTo := func(name, to, nonce string, m any, ok bool) { addText(name, to, nonce, marshal(m), ok) }
 	add := func(name, nonce string, m any, ok bool) { addTo(name, way(m), nonce, m, ok) }
-	// spelled is m's text with old, there once, written as new.
-	spelled := func(name, nonce string, m any, old, new string, ok bool) {
+	// respell is m's text with old, there once, written as new.
+	respell := func(name string, m any, old, new string) string {
 		text := marshal(m)
 		if strings.Count(text, old) != 1 {
 			panic(name + ": " + old + " is not in the message once")
 		}
-		addText(name, way(m), nonce, strings.Replace(text, old, new, 1), ok)
+		return strings.Replace(text, old, new, 1)
+	}
+	spelled := func(name, nonce string, m any, old, new string, ok bool) {
+		addText(name, way(m), nonce, respell(name, m, old, new), ok)
+	}
+	// twice is m's text with a member given twice, old written as new: a
+	// text no writer writes and no value holds, refused.
+	twice := func(name, nonce string, m any, old, new string) {
+		cs = append(cs, previewCase{name + " (no writer writes a member twice)", way(m), nonce, json.RawMessage(respell(name, m, old, new)), false, true})
 	}
 	// The handshake and the nonce.
 	add("hello", "", msg(PreviewHello, n), true)
@@ -348,7 +395,6 @@ func previewCases() previewFile {
 	add("a negative horizontal scroll", n, with(ready, -4, "viewport", "scrollX"), true)
 	add("a viewport of negative width", n, with(ready, -1, "viewport", "width"), false)
 	add("a viewport of negative height", n, with(ready, -1, "viewport", "height"), false)
-	add("a device pixel ratio of 0", n, with(ready, 0, "viewport", "dpr"), false)
 	add("an epoch that is not whole", n, with(ready, 1.5, "epoch"), false)
 	add("a negative epoch", n, with(ready, -1, "epoch"), false)
 	add("the largest epoch a number holds", n, with(ready, maxPreviewInt, "epoch"), true)
@@ -399,15 +445,16 @@ func previewCases() previewFile {
 	for _, b := range previewBounds() {
 		switch b.kind {
 		case inBytes:
-			add(b.member+" at its bound", n, b.build(b.n, pad), true)
-			add(b.member+" one byte past", n, b.build(b.n+1, pad), false)
-			add(b.member+" at its bound in three-byte characters", n, b.build(b.n, wide), true)
-			add(b.member+" one three-byte character past", n, b.build(b.n+3, wide), false)
+			for _, w := range byteWidths {
+				add(b.member+" at its bound in "+w.name+" characters", n, b.build(b.n, w.fill), true)
+				add(b.member+" one "+w.name+" character past", n, b.build(b.n+w.n, w.fill), false)
+			}
 		case inChars:
-			add(b.member+" at its bound in characters", n, b.build(b.n, func(k int) string { return strings.Repeat("é", k) }), true)
-			add(b.member+" one character past", n, b.build(b.n+1, func(k int) string { return strings.Repeat("é", k) }), false)
-			add(b.member+" at its bound in characters of two code units", n, b.build(b.n, func(k int) string { return strings.Repeat("😀", k) }), true)
-			add(b.member+" one character of two code units past", n, b.build(b.n+1, func(k int) string { return strings.Repeat("😀", k) }), false)
+			for _, c := range []string{"a", `"`, "é", lineSeparator, "😀"} {
+				chars := func(k int) string { return strings.Repeat(c, k) }
+				add(b.member+" at its bound in characters "+strconv.QuoteToASCII(c), n, b.build(b.n, chars), true)
+				add(b.member+" one character "+strconv.QuoteToASCII(c)+" past", n, b.build(b.n+1, chars), false)
+			}
 		case inItems, inHex:
 			add(b.member+" at their bound", n, b.build(b.n, nil), true)
 			add(b.member+" one past", n, b.build(b.n+1, nil), false)
@@ -416,7 +463,7 @@ func previewCases() previewFile {
 		}
 	}
 	// A number is its value, never its spelling; a negative zero measures
-	// as 0 in both; a member given twice is its last; a key is exactly its
+	// as 0 in both; a member given twice is refused; a key is exactly its
 	// own letters; null is no value of any field.
 	spelled("a version written 1.0", n, ready, `"version":1`, `"version":1.0`, true)
 	spelled("a version written 1e0", n, ready, `"version":1`, `"version":1e0`, true)
@@ -434,12 +481,153 @@ func previewCases() previewFile {
 	add("an element one byte past with a negative zero", n, sel(sized(with(element(), negZero, "box", "x"), MaxElementReport+1, pad)), false)
 	add("an element at its bound with a negative zero in each number", n, sel(sized(with(with(with(element(), negZero, "box", "y"), negZero, "box", "height"), negZero, "state", "motion"), MaxElementReport, pad)), true)
 	describe := msg(PreviewDescribe, n, obj{"selector": "#x"})
-	spelled("a selector given twice, the last one empty", n, describe, `"selector":"#x"`, `"selector":"#x","selector":""`, false)
-	spelled("a selector given twice, the first one empty", n, describe, `"selector":"#x"`, `"selector":"","selector":"#x"`, true)
-	spelled("a nonce given twice, the wrong one first", n, describe, `"nonce":"`+n+`"`, `"nonce":"`+otherNonce+`","nonce":"`+n+`"`, true)
-	spelled("a nonce given twice, the right one first", n, describe, `"nonce":"`+n+`"`, `"nonce":"`+n+`","nonce":"`+otherNonce+`"`, false)
-	spelled("a nonce given twice, a number first", n, describe, `"nonce":"`+n+`"`, `"nonce":1,"nonce":"`+n+`"`, true)
-	spelled("a type given twice, the last one the message's", n, describe, `"t":"describe"`, `"t":"hello","t":"describe"`, true)
+	twice("a selector given twice, the same both times", n, describe, `"selector":"#x"`, `"selector":"#x","selector":"#x"`)
+	twice("a selector given twice, the first one empty", n, describe, `"selector":"#x"`, `"selector":"","selector":"#x"`)
+	twice("a nonce given twice, the wrong one first", n, describe, `"nonce":"`+n+`"`, `"nonce":"`+otherNonce+`","nonce":"`+n+`"`)
+	twice("a nonce given twice, a number first", n, describe, `"nonce":"`+n+`"`, `"nonce":1,"nonce":"`+n+`"`)
+	twice("a type given twice", n, describe, `"t":"describe"`, `"t":"hello","t":"describe"`)
+	twice("an epoch given twice, the first past a double", n, ready, `"epoch":3`, `"epoch":1e400,"epoch":3`)
+	twice("a box's x given twice", n, sel(element()), `"x":10`, `"x":10,"x":10`)
+	// A string is well-formed: one that escapes half of a surrogate pair
+	// alone is refused by both (the server reads the escape; the app's
+	// parser is handed the lone code unit), a pair escaped passes.
+	for _, s := range []struct {
+		name, text string
+		ok         bool
+	}{
+		{"a high surrogate alone", `#\ud800`, false},
+		{"a low surrogate alone", `#\udc00x`, false},
+		{"a pair reversed", `#\udc00\ud800`, false},
+		{"a high surrogate at the end", `#x\udbff`, false},
+		{"a pair escaped", `#\` + `ud83d\` + `ude00`, true},
+		{"a backslash before a u", `#\\ud800`, true},
+	} {
+		spelled("a selector holding "+s.name, n, describe, `"#x"`, `"`+s.text+`"`, s.ok)
+		spelled("an element's selector holding "+s.name, n, sel(element()), `"#save"`, `"`+s.text+`"`, s.ok)
+	}
+	// The schema itself: every object of a message (each type's own, the
+	// viewport and each object of the element report) with a member of its
+	// own, and each of its members null and of another kind; each refused.
+	other := map[reflect.Kind]any{reflect.String: 0, reflect.Float64: "0", reflect.Int64: "0", reflect.Int: "0", reflect.Bool: 0,
+		reflect.Slice: obj{}, reflect.Array: obj{}, reflect.Pointer: []any{}, reflect.Struct: []any{}}
+	kinds := func(t reflect.Type) map[string]reflect.Kind {
+		out := map[string]reflect.Kind{}
+		for i := range t.NumField() {
+			f := t.Field(i)
+			name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+			out[name] = f.Type.Kind()
+		}
+		return out
+	}
+	members := func(what string, m obj, path []string, k map[string]reflect.Kind, keys []string) {
+		add(what+" with a member of its own", n, with(m, "x", append(slices.Clone(path), "own")...), false)
+		for _, key := range keys {
+			at := append(slices.Clone(path), key)
+			kind, ok := k[key]
+			if !ok {
+				panic(what + ": no kind for " + key)
+			}
+			add(what+"'s "+key+" of null", n, nulled(m, at...), false)
+			add(what+"'s "+key+" of another kind", n, with(m, other[kind], at...), false)
+		}
+	}
+	message := kinds(reflect.TypeFor[PreviewMessage]())
+	for _, m := range []obj{msg(PreviewHello, n), msg(PreviewSelect, n), msg(PreviewLook, n), msg(PreviewCancel, n), describe, ready, sel(element()),
+		msg(PreviewDescribed, n, page(), obj{"element": element()}), msg(PreviewDescribed, n, page(), obj{"missing": true}),
+		msg(PreviewLooked, n, page()), msg(PreviewCancelled, n)} {
+		what := "a " + m["t"].(string)
+		if _, ok := m["missing"]; ok {
+			what += " as missing"
+		}
+		members(what, m, nil, message, slices.Sorted(maps.Keys(m)))
+	}
+	for _, o := range []struct {
+		what string
+		t    reflect.Type
+		m    obj
+		path []string
+	}{
+		{"the viewport", reflect.TypeFor[PreviewViewport](), ready, []string{"viewport"}},
+		{"the element", reflect.TypeFor[ElementReport](), sel(element()), []string{"element"}},
+		{"the box", reflect.TypeFor[ElementBox](), sel(element()), []string{"element", "box"}},
+		{"the state", reflect.TypeFor[ElementState](), sel(element()), []string{"element", "state"}},
+		{"the hit test", reflect.TypeFor[ElementHit](), sel(element()), []string{"element", "hit"}},
+		{"an ancestor", reflect.TypeFor[ElementAncestor](), sel(element()), []string{"element", "ancestors", "0"}},
+		{"a hint", reflect.TypeFor[ElementHint](), sel(element()), []string{"element", "hints", "0"}},
+	} {
+		k := kinds(o.t)
+		members(o.what, o.m, o.path, k, slices.Sorted(maps.Keys(k)))
+	}
+	// The items of each list, of another kind.
+	add("an attribute of another kind", n, sel(with(element(), []any{"id"}, "attributes")), false)
+	add("an attribute's name of another kind", n, sel(with(element(), []any{[]any{1, "save"}}, "attributes")), false)
+	add("a style's value of another kind", n, sel(with(element(), []any{[]any{"display", 1}}, "styles")), false)
+	add("an ancestor of another kind", n, sel(with(element(), []any{"div"}, "ancestors")), false)
+	add("a hint of another kind", n, sel(with(element(), []any{"vue"}, "hints")), false)
+	add("a cut step of another kind", n, sel(with(element(), []any{0}, "cut")), false)
+	add("a ready's hint kind of another kind", n, with(ready, []any{0}, "hints"), false)
+	// The flag missing is true, not merely truthy.
+	for _, v := range []any{1, "true", []any{}, obj{}} {
+		add("described as missing "+marshal(v), n, msg(PreviewDescribed, n, page(), obj{"missing": v}), false)
+	}
+	// The nonce and the revision's parts at their bounds and one off.
+	for _, k := range []int{15, 16, 64, 65} {
+		add("hello with a nonce of "+strconv.Itoa(k), "", msg(PreviewHello, strings.Repeat("n", k)), k >= 16 && k <= 64)
+	}
+	hex := func(k int) string { return strings.Repeat("a", k) }
+	for _, r := range []struct {
+		name, rev string
+		ok        bool
+	}{
+		{"a commit of 3 digits", hex(3), false}, {"a commit of 4 digits", hex(4), true},
+		{"a commit of 64 digits", hex(64), true}, {"a commit of 65 digits", hex(65), false},
+		{"content of 3 digits", hex(4) + "+" + hex(3), false}, {"content of 4 digits", hex(4) + "+" + hex(4), true},
+		{"content of 64 digits", hex(63) + "+" + hex(64), true}, {"content of 65 digits", hex(4) + "+" + hex(65), false},
+	} {
+		add("a revision of "+r.name, n, with(ready, r.rev, "revision"), r.ok)
+	}
+	// Every numeric rule at its edges: a whole number from 0 to 2^53-1 (an
+	// epoch, a motion, a hint's line and column), a size at least 0 (the
+	// viewport's and the box's), a device pixel ratio above 0, a scroll and
+	// a box's place any number; every number finite (1e400 is past a
+	// double: Go refuses the text, JSON.parse makes it Infinity).
+	for _, e := range []struct {
+		what   string
+		m      obj
+		path   []string
+		ok, no []any
+	}{
+		{"an epoch", ready, []string{"epoch"}, []any{0, maxPreviewInt}, []any{-1, 0.5, maxPreviewInt + 1}},
+		{"a motion", sel(element()), []string{"element", "state", "motion"}, []any{0, maxPreviewInt}, []any{-1, 0.5, maxPreviewInt + 1}},
+		{"a hint's line", sel(element()), []string{"element", "hints", "0", "line"}, []any{0, maxPreviewInt}, []any{-1, 0.5, maxPreviewInt + 1}},
+		{"a hint's column", sel(element()), []string{"element", "hints", "0", "column"}, []any{0, maxPreviewInt}, []any{-1, 0.5, maxPreviewInt + 1}},
+		{"a viewport's width", ready, []string{"viewport", "width"}, []any{0, 0.5}, []any{-1, -0.5}},
+		{"a viewport's height", ready, []string{"viewport", "height"}, []any{0, 0.5}, []any{-1, -0.5}},
+		{"a box's width", sel(element()), []string{"element", "box", "width"}, []any{0, 0.5}, []any{-1, -0.5}},
+		{"a box's height", sel(element()), []string{"element", "box", "height"}, []any{0, 0.5}, []any{-1, -0.5}},
+		{"a device pixel ratio", ready, []string{"viewport", "dpr"}, []any{math.SmallestNonzeroFloat64, 0.5}, []any{0, -1}},
+		{"a scroll", ready, []string{"viewport", "scrollX"}, []any{-math.MaxFloat64, math.MaxFloat64}, nil},
+		{"a vertical scroll", ready, []string{"viewport", "scrollY"}, []any{-math.MaxFloat64, math.MaxFloat64}, nil},
+		{"a box's x", sel(element()), []string{"element", "box", "x"}, []any{-math.MaxFloat64, math.MaxFloat64}, nil},
+		{"a box's y", sel(element()), []string{"element", "box", "y"}, []any{-math.MaxFloat64, math.MaxFloat64}, nil},
+	} {
+		for _, v := range e.ok {
+			add(e.what+" of "+marshal(v), n, with(e.m, v, e.path...), true)
+		}
+		for _, v := range e.no {
+			add(e.what+" of "+marshal(v), n, with(e.m, v, e.path...), false)
+		}
+		const marker = 1234567.25
+		spelled(e.what+" of 1e400", n, with(e.m, marker, e.path...), "1234567.25", "1e400", false)
+	}
+	// The largest message to the workbench, every member at its bound, as
+	// the browser's writer writes it: past a text bound of 34 KiB.
+	largest := sel(sized(element(), MaxElementReport, pad))
+	largest = with(with(with(largest, pad(MaxPreviewURL), "url"), strings.Repeat("😀", MaxPreviewTitle), "title"), pad(MaxPreviewUserAgent), "viewport", "userAgent")
+	if len(writeText(largest)) <= 34<<10 {
+		panic("the largest message is not past 34 KiB")
+	}
+	add("the largest message to the workbench", n, largest, true)
 	spelled("a selector's key in another case", n, describe, `"selector"`, `"Selector"`, false)
 	spelled("a selector's key with a letter that folds to its own", n, describe, `"selector"`, `"ſelector"`, false)
 	spelled("a nonce's key in capitals", n, describe, `"nonce"`, `"NONCE"`, false)
@@ -483,13 +671,34 @@ func previewCases() previewFile {
 		bounds[b.bound] = b.n
 	}
 	return previewFile{
-		Comment:   "Written by internal/proto's TestPreviewMessagesFixture (CONDUCTOR_WRITE_FIXTURES=1) and judged by it and by web/app/utils/protocol.test.ts: the bounds both parsers hold, by their names in preview.go; each message's verdict with the parser told its way and holding nonce, its text as both read it; and each string's measure as Go writes it.",
-		Bounds:    bounds,
-		Cuts:      ElementCuts,
-		HintKinds: PreviewHintKinds,
-		Measures:  ms,
-		Messages:  cs,
+		Comment:    "Written by internal/proto's TestPreviewMessagesFixture (CONDUCTOR_WRITE_FIXTURES=1) and judged by it and by web/app/utils/protocol.test.ts: the bounds both parsers hold, by their names in preview.go, and the text's the server alone holds; each message's verdict with the parser told its way and holding nonce, its text as both read it (asText: a text no value is, the server's alone), an accepted one's content the content of its text; and each string's measure as Go writes it.",
+		Bounds:     bounds,
+		TextBounds: map[string]int{"MaxPreviewTextToBridge": 8192, "MaxPreviewTextToWorkbench": 131072},
+		Cuts:       ElementCuts,
+		HintKinds:  PreviewHintKinds,
+		Measures:   ms,
+		Messages:   cs,
 	}
+}
+
+// previewContent is p as a message's content: the members its type
+// carries, as JSON decodes them.
+func previewContent(p PreviewMessage) any {
+	all := obj{"selector": p.Selector, "version": p.Version, "url": p.URL, "title": p.Title, "viewport": p.Viewport, "epoch": p.Epoch,
+		"revision": p.Revision, "hints": p.Hints, "element": p.Element, "missing": p.Missing}
+	m := obj{"conductor": p.Conductor, "t": p.T, "nonce": p.Nonce}
+	keys := previewFields[p.T]
+	if p.T == PreviewDescribed {
+		keys = slices.Concat(keys, []string{map[bool]string{true: "element", false: "missing"}[p.Element != nil]})
+	}
+	for _, k := range keys {
+		m[k] = all[k]
+	}
+	var v any
+	if err := json.Unmarshal(writeText(m), &v); err != nil {
+		panic(err)
+	}
+	return v
 }
 
 func toAny(ss []string) []any {
@@ -517,7 +726,7 @@ func encodeFixture(f previewFile) []byte {
 	for _, field := range []struct {
 		name string
 		v    any
-	}{{"comment", f.Comment}, {"bounds", f.Bounds}, {"cuts", f.Cuts}, {"hintKinds", f.HintKinds}} {
+	}{{"comment", f.Comment}, {"bounds", f.Bounds}, {"textBounds", f.TextBounds}, {"cuts", f.Cuts}, {"hintKinds", f.HintKinds}} {
 		b.WriteString(` "` + field.name + `": `)
 		b.Write(line(field.v))
 		b.WriteString(",\n")
@@ -572,10 +781,26 @@ func TestPreviewMessagesFixture(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s: no way %q", c.Name, c.To)
 		}
-		_, err := ParsePreviewMessage(c.Message, to, c.Nonce)
+		p, err := ParsePreviewMessage(c.Message, to, c.Nonce)
 		if (err == nil) != c.OK {
 			t.Errorf("%s: ok %v, want %v (%v)", c.Name, err == nil, c.OK, err)
 		}
+		if err != nil {
+			continue
+		}
+		// What was parsed is the content of the text, field by field.
+		var want any
+		if err := json.Unmarshal(c.Message, &want); err != nil {
+			t.Fatal(err)
+		}
+		if got := previewContent(p); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: parsed as %s", c.Name, writeText(got))
+		}
+	}
+	// The text's bounds are the numbers the fixture writes, not read from
+	// preview.go.
+	if got := map[string]int{"MaxPreviewTextToBridge": MaxPreviewTextToBridge, "MaxPreviewTextToWorkbench": MaxPreviewTextToWorkbench}; !maps.Equal(got, f.TextBounds) {
+		t.Errorf("the text's bounds %v, the fixture's %v", got, f.TextBounds)
 	}
 	// The measure: the fixture's strings decoded as Go's JSON decoder reads
 	// them (a lone surrogate is U+FFFD), measured as a message holds them.
@@ -626,27 +851,34 @@ func TestEveryPreviewBoundIsInTheTable(t *testing.T) {
 }
 
 // A message's text is bounded before anything decodes it, at twice its
-// way's measured bound, and refused when it is not UTF-8 (no honest
-// sender writes either); within its bound, whitespace and escapes cost
-// nothing a value pays, so a text that measures within its bound once
-// decoded passes.
+// way's measured bound (the fixture's numbers, 8 KiB and 128 KiB, written
+// there, not read from the constants), and refused when it is not UTF-8;
+// within its bound, whitespace and escapes cost nothing a value pays, so a
+// text that measures within its bound once decoded passes. The bound is
+// the browser's writer's: a valid report json.Marshal writes, escaping
+// each < in six bytes, is past it and refused, by design; written with
+// HTML escaping off it passes.
 func TestAPreviewMessagesTextIsBoundedBeforeItIsDecoded(t *testing.T) {
-	selectText, _ := json.Marshal(msg(PreviewSelect, fixtureNonce))
-	readyText, _ := json.Marshal(readyMessage())
+	selectText := writeText(msg(PreviewSelect, fixtureNonce))
+	readyText := writeText(readyMessage())
 	padded := func(text []byte, size int) []byte {
 		return append(append([]byte{'{'}, bytes.Repeat([]byte(" "), size-len(text))...), text[1:]...)
 	}
+	angled := selectedOf(sized(with(element(), strings.Repeat("<", MaxElementHTML), "html"), MaxElementReport, func(k int) string { return strings.Repeat(">", k) }))
+	marshalled, _ := json.Marshal(angled)
 	for _, tc := range []struct {
 		name string
 		to   PreviewDirection
 		text []byte
 		ok   bool
 	}{
-		{"a select padded to its text's bound", PreviewToBridge, padded(selectText, MaxPreviewTextToBridge), true},
-		{"a select padded one byte past", PreviewToBridge, padded(selectText, MaxPreviewTextToBridge+1), false},
+		{"a select padded to 8,192 bytes", PreviewToBridge, padded(selectText, 8192), true},
+		{"a select padded to 8,193 bytes", PreviewToBridge, padded(selectText, 8193), false},
 		{"a select padded with a mebibyte", PreviewToBridge, padded(selectText, 1<<20), false},
-		{"a ready padded to its text's bound", PreviewToWorkbench, padded(readyText, MaxPreviewTextToWorkbench), true},
-		{"a ready padded one byte past", PreviewToWorkbench, padded(readyText, MaxPreviewTextToWorkbench+1), false},
+		{"a ready padded to 131,072 bytes", PreviewToWorkbench, padded(readyText, 131072), true},
+		{"a ready padded to 131,073 bytes", PreviewToWorkbench, padded(readyText, 131073), false},
+		{"a report of angle brackets written with HTML escaping off", PreviewToWorkbench, writeText(angled), true},
+		{"the same report as json.Marshal writes it", PreviewToWorkbench, marshalled, false},
 		{"a selector of a thousand escapes, within the text's bound", PreviewToBridge,
 			[]byte(`{"conductor":"preview/1","t":"describe","nonce":"` + fixtureNonce + `","selector":"` + strings.Repeat(`\`+`u0061`, MaxPreviewSelector) + `"}`), true},
 		{"a selector holding a byte that is not UTF-8", PreviewToBridge,
@@ -677,7 +909,7 @@ func TestAPreviewRefusalNamesNothingOfTheMessage(t *testing.T) {
 		with(readyMessage(), chosen, "revision"),
 		msg(PreviewSelect, fixtureNonce, obj{chosen: chosen}),
 	} {
-		text, _ := json.Marshal(m)
+		text := writeText(m)
 		_, err := ParsePreviewMessage(text, PreviewToBridge, fixtureNonce)
 		if err == nil || !errors.Is(err, errPreview) {
 			t.Fatalf("%s: %v", text, err)
@@ -692,13 +924,15 @@ func TestAPreviewRefusalNamesNothingOfTheMessage(t *testing.T) {
 }
 
 // The message is built from the value judged: every field the text gave,
-// a number by its value whatever its spelling, a member given twice by its
-// last.
+// a number by its value whatever its spelling. A member given twice is
+// refused, whichever comes first.
 func TestAPreviewMessageIsBuiltFromTheValueJudged(t *testing.T) {
-	text, _ := json.Marshal(selectedOf(element()))
+	text := writeText(selectedOf(element()))
 	text = bytes.Replace(text, []byte(`"epoch":3`), []byte(`"epoch":3e0`), 1)
 	text = bytes.Replace(text, []byte(`"line":0`), []byte(`"line":4.0`), 1)
-	text = bytes.Replace(text, []byte(`"title":"Settings"`), []byte(`"title":"First","title":"Settings"`), 1)
+	if _, err := ParsePreviewMessage(bytes.Replace(text, []byte(`"title":"Settings"`), []byte(`"title":"First","title":"Settings"`), 1), PreviewToWorkbench, fixtureNonce); err == nil {
+		t.Fatal("a title given twice passed")
+	}
 	got, err := ParsePreviewMessage(text, PreviewToWorkbench, fixtureNonce)
 	if err != nil {
 		t.Fatal(err)
@@ -714,14 +948,15 @@ func TestAPreviewMessageIsBuiltFromTheValueJudged(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v\nwant %+v", got, want)
 	}
-	readyText, _ := json.Marshal(with(readyMessage(), []any{"vue", "react"}, "hints"))
+	readyText := writeText(with(readyMessage(), []any{"vue", "react"}, "hints"))
 	r, err := ParsePreviewMessage(bytes.Replace(readyText, []byte(`"version":1`), []byte(`"version":1.0`), 1), PreviewToWorkbench, fixtureNonce)
 	if err != nil || r.Version != PreviewVersion || !slices.Equal(r.Hints, []string{"vue", "react"}) {
 		t.Fatalf("%+v %v", r, err)
 	}
-	d, err := ParsePreviewMessage([]byte(`{"conductor":"preview/1","t":"describe","nonce":"`+fixtureNonce+`","selector":"#a","selector":"#b"}`), PreviewToBridge, fixtureNonce)
-	if err != nil || d.Selector != "#b" {
-		t.Fatalf("%+v %v", d, err)
+	for _, s := range []string{`"selector":"#a","selector":"#b"`, `"selector":"#b","selector":"#b"`, `"selector":1e400,"selector":"#b"`} {
+		if _, err := ParsePreviewMessage([]byte(`{"conductor":"preview/1","t":"describe","nonce":"`+fixtureNonce+`",`+s+`}`), PreviewToBridge, fixtureNonce); err == nil {
+			t.Fatalf("%s passed", s)
+		}
 	}
 }
 

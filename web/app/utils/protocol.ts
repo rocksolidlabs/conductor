@@ -1209,15 +1209,25 @@ export type PreviewMessage = PreviewToBridge | PreviewToWorkbench
 /** The way a message travels: to the bridge (the workbench's) or to the workbench (the bridge's answers). */
 export type PreviewDirection = 'bridge' | 'workbench'
 
-const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+const LONE_SURROGATES = new RegExp(LONE_SURROGATE.source, 'g')
 
 /** s with every lone surrogate made U+FFFD, as Go's encoder writes invalid UTF-8 (String.prototype.toWellFormed). */
 export function wellFormed(s: string): string {
-  return s.replace(LONE_SURROGATE, '�')
+  return s.replace(LONE_SURROGATES, '�')
 }
 
 /** How deep a message's values go: the message, its element, a list of the element's, an item of that list. */
 const PREVIEW_DEPTH = 4
+/** The most members an object of a message has: an element report's. */
+const PREVIEW_MEMBERS = 17
+
+/** How many own keys v has, counted as they are met and no further than one past most: no list of them is made. */
+function keyCount(v: object, most: number): number {
+  let n = 0
+  for (const k in v) if (Object.hasOwn(v, k) && ++n > most) break
+  return n
+}
 
 type Obj = Record<string, unknown>
 
@@ -1228,17 +1238,18 @@ function plain(v: unknown): v is Obj {
   return p === Object.prototype || p === null
 }
 
-/** Whether v is an array with every index present and no member beside them. */
+/** Whether v is an array with every index present and no member beside them, its length judged before its keys are counted. */
 function dense(v: unknown): v is unknown[] {
-  return Array.isArray(v) && Object.getPrototypeOf(v) === Array.prototype && Object.keys(v).length === v.length
+  return Array.isArray(v) && Object.getPrototypeOf(v) === Array.prototype && keyCount(v, v.length) === v.length
 }
 
 /**
  * v's size as the bridge and the server count it (proto.PreviewMeasure): the UTF-8 length of its JSON as Go writes it with HTML
- * escaping off, lone surrogates as U+FFFD, U+2028 and U+2029 in six bytes each, a negative zero as 0. A string's measure counts its
- * quotes. It is one walk of v that stops past most: Infinity for a value past most and for one JSON does not hold as it is (a big
- * integer, a symbol, a function, undefined, a number not finite, an object of another kind than a plain object or an array, an array
- * with a hole or a named member, nesting past a message's depth), so nothing is written out to be measured and nothing throws.
+ * escaping off, U+2028 and U+2029 in six bytes each, a negative zero as 0. A string's measure counts its quotes. It is one walk of v
+ * that stops past most: Infinity for a value past most and for one a message does not hold (a big integer, a symbol, a function,
+ * undefined, a number not finite, a string with a lone surrogate, an object of another kind than a plain object or an array, an
+ * object of more members than PREVIEW_MEMBERS, an array with a hole or a named member, nesting past a message's depth), so nothing
+ * is written out to be measured, no list of a value's keys is made, and nothing throws.
  */
 export function previewMeasure(v: unknown, most = Infinity): number {
   let n = 0
@@ -1247,7 +1258,7 @@ export function previewMeasure(v: unknown, most = Infinity): number {
     switch (typeof x) {
       case 'string':
         // Every code unit is a byte at least: a string longer than what is left is past it unread.
-        return x.length <= most - n && add(measuredBytes(x) + 2)
+        return x.length <= most - n && !LONE_SURROGATE.test(x) && add(measuredBytes(x) + 2)
       case 'number':
         return Number.isFinite(x) && add(String(x).length) // String(-0) is "0", as JSON.stringify writes it
       case 'boolean':
@@ -1264,10 +1275,12 @@ export function previewMeasure(v: unknown, most = Infinity): number {
       for (let i = 0; i < x.length; i++) if (!walk(x[i], depth + 1)) return false
       return true
     }
-    if (!plain(x)) return false
-    const keys = Object.keys(x)
-    if (keys.length > most - n || !add(2 + Math.max(0, keys.length - 1))) return false
-    for (const k of keys) if (k.length > most - n || !add(measuredBytes(k) + 3) || !walk(x[k], depth + 1)) return false
+    if (!plain(x) || !add(2)) return false
+    let members = 0
+    for (const k in x) {
+      if (!Object.hasOwn(x, k)) continue
+      if (++members > PREVIEW_MEMBERS || k.length > most - n || !add(measuredBytes(k) + (members > 1 ? 4 : 3)) || !walk(x[k], depth + 1)) return false
+    }
     return true
   }
   return walk(v, 0) ? n : Infinity
@@ -1292,8 +1305,7 @@ export function measuredBytes(s: string): number {
 }
 
 function exactKeys(m: Obj, keys: string[]): boolean {
-  const own = Object.keys(m)
-  return own.length === keys.length && keys.every((k) => Object.hasOwn(m, k))
+  return keyCount(m, keys.length) === keys.length && keys.every((k) => Object.hasOwn(m, k))
 }
 
 function object(v: unknown, ...keys: string[]): Obj | null {
@@ -1307,12 +1319,12 @@ const bool = (v: unknown) => typeof v === 'boolean'
 
 /** Whether v is a list of at most most items, every index judged (a hole is no item). */
 function list(v: unknown, most: number, item: (x: unknown, i: number) => boolean): boolean {
-  if (!dense(v) || v.length > most) return false
+  if (!Array.isArray(v) || v.length > most || !dense(v)) return false
   for (let i = 0; i < v.length; i++) if (!item(v[i], i)) return false
   return true
 }
 
-const pair = (name: number, value: number) => (v: unknown) => dense(v) && v.length === 2 && str(v[0], name) && str(v[1], value)
+const pair = (name: number, value: number) => (v: unknown) => Array.isArray(v) && v.length === 2 && dense(v) && str(v[0], name) && str(v[1], value)
 
 function pageFields(m: Obj): boolean {
   if (typeof m.title !== 'string' || [...m.title].length > MAX_PREVIEW_TITLE || !str(m.url, MAX_PREVIEW_URL) || !integer(m.epoch)) return false

@@ -180,6 +180,7 @@ describe('a run desk', () => {
 
 // The preview bridge's messages (internal/proto/preview.go): both parsers judge one fixture alike. Imported here, at the end, so
 // this block stays apart from the lanes' list above.
+import { runInNewContext } from 'node:vm'
 import { vi } from 'vitest'
 import {
   ELEMENT_BOUNDS,
@@ -205,7 +206,7 @@ describe('the preview bridge', () => {
     cuts: string[]
     hintKinds: string[]
     measures: Array<{ name: string; units: number[]; bytes: number }>
-    messages: Array<{ name: string; to: PreviewDirection; nonce: string; message: unknown; ok: boolean }>
+    messages: Array<{ name: string; to: PreviewDirection; nonce: string; message: unknown; ok: boolean; asText?: boolean }>
   }
   const nonce = 'n0nce-of-the-hello-1234'
   // A message of the fixture by its name, as a structured clone of it: what postMessage hands a listener.
@@ -250,12 +251,80 @@ describe('the preview bridge', () => {
     expect([...PREVIEW_HINT_KINDS]).toEqual(fixture.hintKinds)
   })
 
-  it('gives every message of the fixture the verdict Go gives it, the message as text read and as a structured clone', () => {
-    expect(fixture.messages.length).toBeGreaterThan(200)
-    for (const c of fixture.messages) {
-      expect({ name: c.name, ok: parsePreviewMessage(c.message, c.to, c.nonce) !== null }).toEqual({ name: c.name, ok: c.ok })
-      expect({ name: c.name, ok: parsePreviewMessage(structuredClone(c.message), c.to, c.nonce) !== null }).toEqual({ name: c.name, ok: c.ok })
+  // A text that gives a member twice is no value (the server reads such a text and refuses it): the app's parser never meets one.
+  it('gives every message of the fixture the verdict and the content Go gives it, the message as text read and as a structured clone', () => {
+    const values = fixture.messages.filter((c) => !c.asText)
+    expect(values.length).toBeGreaterThan(600)
+    for (const c of values) {
+      for (const v of [c.message, structuredClone(c.message)]) {
+        const got = parsePreviewMessage(v, c.to, c.nonce)
+        expect({ name: c.name, ok: got !== null }).toEqual({ name: c.name, ok: c.ok })
+        if (got) expect({ name: c.name, got }).toEqual({ name: c.name, got: c.message })
+      }
     }
+  })
+
+  // GET /preview-bridge.js serves the built script whole inside a wrapper (internal/api's TestTheBridgeIsServedWhole writes what
+  // it serves): each served script runs as the script itself does, given its origins as a parameter, and reads them back as they
+  // were configured.
+  it('runs each script the route serves as the script runs, its origins read back as configured', () => {
+    const served = JSON.parse(readFileSync(fileURLToPath(new URL('../../../internal/api/testdata/preview-bridge-served.json', import.meta.url)), 'utf8')) as {
+      origins: string[]
+      cases: Array<{ name: string; script: string; served: string }>
+    }
+    expect(served.cases.length).toBe(4)
+    for (const c of served.cases) {
+      const run = (go: (report: (...a: unknown[]) => void) => void) => {
+        const seen: unknown[][] = []
+        go((...a) => seen.push(a))
+        return JSON.parse(JSON.stringify(seen)) as unknown[][]
+      }
+      const got = run((report) => runInNewContext(c.served, { report }))
+      const want = run((report) => new Function('conductorWorkbenchOrigins', 'report', c.script)(served.origins, report))
+      expect({ name: c.name, got }).toEqual({ name: c.name, got: want })
+      expect(got.length).toBe(1)
+    }
+    expect(served.cases[0]!.served.includes(served.cases[0]!.script)).toBe(true)
+    const first = served.cases[0]!
+    const back: unknown[] = []
+    runInNewContext(first.served, { report: (o: unknown) => back.push(o) })
+    expect(JSON.parse(JSON.stringify(back[0]))).toEqual(served.origins)
+  })
+
+  // The work is counted in the keys the parser lists and the members it asks of: no list of a value's keys is made, and the count
+  // stops one past the most an object of a message has.
+  it('counts an object\'s members as it meets them, a list\'s length first, and stops past the schema\'s number', () => {
+    const extra = (o: object) => {
+      const out: Record<string, unknown> = { ...o }
+      for (let i = 0; i < 100_000; i++) out[`m${i}`] = i
+      return out
+    }
+    const sel = named('selected')
+    const nothing = Object.assign([], extra({}))
+    const cases: Array<[string, unknown, PreviewDirection]> = [
+      ['a select with a hundred thousand members more', structuredClone(extra(named('select'))), 'bridge'],
+      ['an element with a hundred thousand members more', structuredClone({ ...sel, element: extra(sel.element) }), 'workbench'],
+      ['attributes of no items and a hundred thousand named members', structuredClone({ ...sel, element: { ...sel.element, attributes: nothing } }), 'workbench'],
+    ]
+    const realKeys = Object.keys
+    let listed = 0
+    const keys = vi.spyOn(Object, 'keys').mockImplementation((o: object) => {
+      const k = realKeys(o)
+      listed += k.length
+      return k
+    })
+    const own = vi.spyOn(Object, 'hasOwn')
+    let got: unknown[] = []
+    let asked = Infinity
+    try {
+      got = cases.map(([, v, to]) => parsePreviewMessage(v, to, nonce))
+    } finally {
+      asked = own.mock.calls.length
+      keys.mockRestore()
+      own.mockRestore()
+    }
+    expect(got).toEqual([null, null, null])
+    expect({ listed, asked: asked < 1_000 }).toEqual({ listed: 0, asked: true })
   })
 
   it('measures as Go writes: <, & and > as they are, U+2028 in six bytes, a lone surrogate as U+FFFD, a negative zero as 0', () => {
@@ -271,24 +340,24 @@ describe('the preview bridge', () => {
     const cases: Record<string, unknown> = {}
     const select = named('select')
     cases['a big integer beside the members'] = { ...select, x: 1n }
-    cases['a big integer as a selector'] = { ...named('the describe\'s selector at its bound'), selector: 1n }
+    cases['a big integer as a selector'] = { ...named('the describe\'s selector at its bound in one-byte characters'), selector: 1n }
     cases['a big integer as an epoch'] = { ...named('ready'), epoch: 1n }
     const loop: Record<string, unknown> = { ...select }
     loop.x = loop
     cases['a cycle beside the members'] = loop
     const selfish: Record<string, unknown> = {}
     selfish.self = selfish
-    cases['a cycle as a selector'] = { ...named('the describe\'s selector at its bound'), selector: selfish }
+    cases['a cycle as a selector'] = { ...named('the describe\'s selector at its bound in one-byte characters'), selector: selfish }
     const sel = named('selected')
     cases['a cycle in an element'] = { ...sel, element: { ...sel.element, box: selfish } }
     let deep: unknown = 'x'
     for (let i = 0; i < 2000; i++) deep = [deep] // as deep as a structured clone goes here; any past four is refused
     cases['nesting beside the members'] = { ...select, x: deep }
-    cases['nesting as a selector'] = { ...named('the describe\'s selector at its bound'), selector: deep }
+    cases['nesting as a selector'] = { ...named('the describe\'s selector at its bound in one-byte characters'), selector: deep }
     cases['nesting in an element'] = { ...sel, element: { ...sel.element, hints: [deep] } }
     cases['a date as a URL'] = { ...named('ready'), url: new Date(0) }
     cases['a map as a viewport'] = { ...named('ready'), viewport: new Map([['width', 1]]) }
-    cases['a string object as a selector'] = { ...named('the describe\'s selector at its bound'), selector: new String('#x') }
+    cases['a string object as a selector'] = { ...named('the describe\'s selector at its bound in one-byte characters'), selector: new String('#x') }
     for (const [name, v] of Object.entries(cases)) {
       const cloned = structuredClone(v)
       const to: PreviewDirection = ['select', 'describe'].includes((cloned as { t: string }).t) ? 'bridge' : 'workbench'
@@ -337,7 +406,7 @@ describe('the preview bridge', () => {
     let reads = Infinity
     try {
       got = [
-        parsePreviewMessage({ ...named('the describe\'s selector at its bound'), selector: huge }, 'bridge', nonce),
+        parsePreviewMessage({ ...named('the describe\'s selector at its bound in one-byte characters'), selector: huge }, 'bridge', nonce),
         parsePreviewMessage({ ...named('select'), x: huge }, 'bridge', nonce),
         parsePreviewMessage({ ...named('ready'), url: huge }, 'workbench', nonce),
         parsePreviewMessage({ ...named('selected'), element: { ...named('selected').element, html: huge } }, 'workbench', nonce),
