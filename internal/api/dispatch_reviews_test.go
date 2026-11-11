@@ -1802,7 +1802,10 @@ func tick(t *testing.T, ticks chan time.Time) {
 // A settlement past its budget leaves the review pending, and the worker's
 // next pass, on its clock alone (no commit, no wake, nothing remembered of
 // the failure), settles it: the store is the worklist, not a retry the
-// failed settlement had to schedule.
+// failed settlement had to schedule. The budget bounds the claim too: one
+// spent before the claim (the first, held so; any on a loaded machine,
+// whose claim can take longer than the test's 50 ms) leaves the review
+// unclaimed, and a later pass claims it.
 func TestASettlementPastItsBudgetIsTakenUpByTheNextPass(t *testing.T) {
 	l := newLaunchTest(t, nil, nil)
 	run, c1 := succeededCandidate(t, l, func(dir string) string { return commitFile(t, dir, "a.txt", "a\n") })
@@ -1811,8 +1814,14 @@ func TestASettlementPastItsBudgetIsTakenUpByTheNextPass(t *testing.T) {
 	expired := make(chan error, 1)
 	var first atomic.Bool
 	first.Store(true)
+	var claims atomic.Int32
 	l.srv.reviews.setSeams(func(rg *reviewGate) {
 		rg.settleWait = 50 * time.Millisecond
+		rg.beforeClaim = func(ctx context.Context, _ string) {
+			if claims.Add(1) == 1 {
+				<-ctx.Done()
+			}
+		}
 		rg.beforeSettleRead = func(ctx context.Context, _ string) {
 			if !first.CompareAndSwap(true, false) {
 				return
@@ -1825,19 +1834,28 @@ func TestASettlementPastItsBudgetIsTakenUpByTheNextPass(t *testing.T) {
 	v := submitPending(t, l.srv, candName(run, "build", 1, c1), l.head)
 	let()
 	tick(t, ticks)
-	select {
-	case err := <-expired:
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("the first settlement ended with %v, not its budget", err)
+	// A tick is taken once the pass before it has ended: one taken before
+	// the read's budget ran out followed a pass that never claimed.
+	for read := false; !read; {
+		select {
+		case err := <-expired:
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("the first settlement ended with %v, not its budget", err)
+			}
+			read = true
+		case ticks <- time.Now():
+		case <-time.After(testWait):
+			t.Fatal("the pass never settled the review")
 		}
-	case <-time.After(testWait):
-		t.Fatal("the pass never settled the review")
+	}
+	if n := claims.Load(); n < 2 {
+		t.Fatalf("the read came from claim %d, not one after the claim past its budget", n)
 	}
 	tick(t, ticks)
 	if a := waitApplication(t, l.srv, v.ID, dispatch.ApplicationRefused); a.Why != wordsNotTaken {
 		t.Fatalf("the application: %+v", a)
 	}
-	l.srv.reviews.setSeams(func(rg *reviewGate) { rg.beforeSettleRead = nil })
+	l.srv.reviews.setSeams(func(rg *reviewGate) { rg.beforeClaim, rg.beforeSettleRead = nil, nil })
 }
 
 // A listing of the pending reviews that fails, the start's (its budget

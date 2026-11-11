@@ -122,7 +122,11 @@ add its rule here.
   a hang (2026-11-08: internal/api's race run reached go test's 30 m bound
   on CI; the bound is 60 m now; the package's length is CPU work under the
   race detector across its 1,365 tests, not waits, and CI's longest job is
-  e2e at 49 minutes, so no row makes it faster).
+  e2e at 49 minutes, so no row makes it faster). Nor is a test's bound the
+  product's: a budget shortened to see one step spend it bounds every step
+  under it, and a step it was not meant for (a review's claim, before the
+  read a test held past 50 ms) loses it on a loaded machine; the test lets
+  that pass go and takes the next (#281).
 - Order what must be ordered. Keys that must stay unconfirmed go in after
   the process is stopped (SIGSTOP), not raced against a kill. A check made
   at once after an action ("nothing served yet") holds the step the action
