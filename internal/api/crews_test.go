@@ -1570,6 +1570,56 @@ func TestLaunchRefusesAnAgentItCouldNotLookUp(t *testing.T) {
 	wantAPIError(t, "add member", resp, out, http.StatusBadRequest, "invalid_crew", `member "late": agent "held" could not be shown to be installed on the server`)
 }
 
+// The "try again" of that refusal works however long the lookup takes: an
+// answer that arrives after the cache's lifetime has passed since its lookup
+// started is fresh from its arrival, so the launch asked again is admitted on
+// it without another lookup, which on such a machine would run out of time
+// and refuse again, every time.
+func TestLaunchRetryUsesASlowLookupsAnswer(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.stopEverything(t)
+	var mu sync.Mutex
+	now, lookups := time.Now(), 0
+	e.srv.lookups.mu.Lock()
+	e.srv.lookups.now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return now
+	}
+	e.srv.lookups.mu.Unlock()
+	gate := make(chan struct{})
+	t.Cleanup(func() { close(gate) })
+	e.srv.lookups.stub(func(program string) (string, error) {
+		if program == "/bin/cat" {
+			mu.Lock()
+			lookups++
+			mu.Unlock()
+			<-gate
+		}
+		return program, nil
+	})
+	e.srv.lookups.stubWait(100 * time.Millisecond)
+	body := e.crewBody("Slow crew")
+	body["isolation"] = "none"
+	c := e.sendCrew("POST", "/api/crews", body, http.StatusCreated)
+	resp, out := e.do("POST", "/api/crews/"+c["id"].(string)+"/launch", adminToken, nil)
+	wantAPIError(t, "launch", resp, out, http.StatusBadRequest, "invalid_crew", `member "tests": agent "cat" could not be shown to be installed on the server`)
+	mu.Lock()
+	now = now.Add(lookupTTL + time.Second)
+	mu.Unlock()
+	gate <- struct{}{} // the held lookup answers: installed
+	waitKept(t, e.srv.lookups, "/bin/cat", hangWait)
+	resp, out = e.do("POST", "/api/crews/"+c["id"].(string)+"/launch", adminToken, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("the retry after the answer arrived: %d %v", resp.StatusCode, out)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if lookups != 1 {
+		t.Fatalf("%d lookups of /bin/cat, want 1: the retry did not use the answer", lookups)
+	}
+}
+
 // POST /api/crews/examples seeds the examples once, one file each, with the
 // server's default working directory: a second call adds nothing, an edit
 // survives it, a deleted example comes back, and the list pages them with the

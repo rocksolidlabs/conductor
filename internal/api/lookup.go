@@ -30,10 +30,15 @@ const lookupWorkers = 8
 // hold a lookup for minutes.
 const lookupWait = 2 * time.Second
 
+// lookupEntry is an answer. It is fresh for lookupTTL from when it arrived
+// (at), however long its lookup took, so the retry a slow lookup's refusal
+// asks for finds it; of two answers about one program, the one whose lookup
+// started later (started) is kept.
 type lookupEntry struct {
-	path string
-	ok   bool
-	at   time.Time // when the lookup started
+	path    string
+	ok      bool
+	at      time.Time // when the answer arrived
+	started time.Time // when its lookup started
 }
 
 // lookupCall is a lookup under way, run by a goroutine of its own (run). Its
@@ -255,7 +260,7 @@ func (c *lookupCache) run(program string, call *lookupCall) {
 	c.sem <- struct{}{}
 	defer func() { <-c.sem }()
 	path, err := call.look(program)
-	e, known = lookupEntry{path: path, ok: err == nil, at: call.at}, true
+	e, known = lookupEntry{path: path, ok: err == nil, started: call.at}, true
 }
 
 // settle takes call off the lookups under way and, when it has an answer
@@ -271,14 +276,15 @@ func (c *lookupCache) settle(program string, call *lookupCall, e lookupEntry, kn
 		delete(c.inflight, program)
 	}
 	if known {
-		for p, old := range c.entries {
-			if e.at.Sub(old.at) >= lookupTTL {
+		e.at = c.now()
+		old, had := c.entries[program]
+		for p, o := range c.entries {
+			if e.at.Sub(o.at) >= lookupTTL {
 				delete(c.entries, p)
 			}
 		}
-		old, had := c.entries[program]
 		switch {
-		case had && old.at.After(e.at):
+		case had && old.started.After(e.started):
 			e = old
 		case had || len(c.entries) < maxLookups:
 			c.entries[program] = e

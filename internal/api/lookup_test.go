@@ -181,7 +181,8 @@ func TestLookupCacheKeepsAtMostMaxLookups(t *testing.T) {
 
 // A lookup that started earlier and ends later does not replace the answer
 // of one that started after it: a found under way when the CLI is installed
-// does not undo the add-agent form's check that sees it.
+// does not undo the add-agent form's check that sees it. The older answer
+// arrives later, on a clock that has moved: arrival is not what orders them.
 func TestLookupCacheKeepsTheNewerAnswer(t *testing.T) {
 	var mu sync.Mutex
 	now := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
@@ -213,6 +214,9 @@ func TestLookupCacheKeepsTheNewerAnswer(t *testing.T) {
 	if p, ok, _ := c.check(t.Context(), "agent"); !ok || p != "/bin/agent" {
 		t.Fatalf("check: %q %v", p, ok)
 	}
+	mu.Lock()
+	now = now.Add(time.Second)
+	mu.Unlock()
 	close(release)
 	if !<-older {
 		t.Fatal("the older found answered with its own, older answer")
