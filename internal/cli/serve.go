@@ -356,6 +356,8 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 			_ = ln.Close()
 			return 1, err
 		}
+		// The port it is bound to, for the bridge's https origins.
+		srv.SetTLSListen(tlsLn.Addr().String())
 		go func() { errCh <- httpSrv.Serve(tlsLn) }()
 	}
 	mapper := startReach(mctx, cfg, srv, certMgr, portOf(ln), portOf(tlsLn), log)

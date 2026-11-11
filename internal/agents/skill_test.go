@@ -51,7 +51,7 @@ func TestSkillText(t *testing.T) {
 		// its state directory, in the environment.
 		"CONDUCTOR_PORT_<NAME> holds each of its ports", "CONDUCTOR_PREVIEW_URL its preview", "CONDUCTOR_STATE_DIR (.conductor/state)",
 		// PV1 PR-2a: the tree's secret.
-		"CONDUCTOR_TREE_SECRET is\n  a credential of this tree alone",
+		"CONDUCTOR_TREE_SECRET is\n  a credential of this tree alone", "never print\n  it, and never run a command that dumps the environment",
 		`"${CONDUCTOR_BIN:-conductor}" task send --to docs "the API is under internal/api/users.go; the handler names are final"`,
 		`"${CONDUCTOR_BIN:-conductor}" task inbox`,
 		`"${CONDUCTOR_BIN:-conductor}" task ack 3`,

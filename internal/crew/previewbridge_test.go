@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -112,15 +113,20 @@ func TestNoBridgeWithoutAPreview(t *testing.T) {
 
 // Each tree has a secret of its own, minted as it is resolved: the
 // worktree's and its result's checkout differ, each service and the
-// session see their tree's in their environment, and the value is in no
-// step receipt, ledger row, event, task file, attempt state or log line of
-// the run. A preview names it, ${CONDUCTOR_TREE_SECRET}, and keeps the name.
+// session see their tree's in their environment, and Conductor writes the
+// value into no step receipt, ledger row, event, task file, attempt state
+// or log line of the run. A preview names it, ${CONDUCTOR_TREE_SECRET},
+// and keeps the name. What a command prints is its output: a setup step
+// that prints the secret has it in its receipt's log and tail, kept as any
+// output is, and nowhere else.
 func TestTheTreeSecretIsInNoReceipt(t *testing.T) {
 	dir := newRepo(t)
 	e, fl, l := managedEngine(t)
 	e.SetPreviewBridge(testBridge)
 	const preview = "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/#token=${CONDUCTOR_TREE_SECRET}"
-	run := launchManaged(t, e, repoManifestCrew(dir, namesManifest(preview), work("build", "lead")))
+	man := namesManifest(preview)
+	man.Setup = append(man.Setup, shStep("say", `printf 'the secret: %s\n' "$CONDUCTOR_TREE_SECRET"`))
+	run := launchManaged(t, e, repoManifestCrew(dir, man, work("build", "lead")))
 	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
 	wt := a.Attempt.Worktree
 	hex64 := regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -147,10 +153,30 @@ func TestTheTreeSecretIsInNoReceipt(t *testing.T) {
 		t.Fatalf("the checkout's secret is not its own")
 	}
 	waitTreesEnded(t, e, run.ID)
+	// The step that printed the secret has it in its output, as it printed
+	// it: its log and its tail, in each tree it ran in.
+	l.mu.Lock()
+	checks := slices.Clone(l.checks)
+	printed := 0
+	for i, c := range checks {
+		if c.ID == "say" {
+			for _, s := range []string{worktree, checkout} {
+				if strings.Contains(c.Tail, "the secret: "+s) && strings.Contains(string(c.Log), "the secret: "+s) {
+					printed++
+				}
+			}
+		}
+		// The output kept is the command's; everything else of the
+		// receipt is Conductor's.
+		checks[i].Log, checks[i].Tail = nil, ""
+	}
+	if printed != 2 {
+		l.mu.Unlock()
+		t.Fatalf("the printing step's output holds the secret in %d trees, want 2", printed)
+	}
 	// Everything the run left: the fake ledger's rows and events, the task
 	// files, the run as the engine reads it (its attempts and its log).
-	l.mu.Lock()
-	rows, err := json.Marshal(map[string]any{"events": fakeEvents(l.events), "runs": l.runs, "tasks": l.tasks, "attempts": l.attempts, "checks": l.checks,
+	rows, err := json.Marshal(map[string]any{"events": fakeEvents(l.events), "runs": l.runs, "tasks": l.tasks, "attempts": l.attempts, "checks": checks,
 		"commands": l.commands, "messages": l.messages, "prerequisites": l.prerequisites, "trees": l.trees})
 	l.mu.Unlock()
 	if err != nil {
