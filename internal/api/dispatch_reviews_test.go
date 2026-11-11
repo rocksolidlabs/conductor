@@ -1838,7 +1838,12 @@ func TestASettlementPastItsBudgetIsTakenUpByTheNextPass(t *testing.T) {
 	let()
 	tick(t, ticks)
 	// A tick is taken once the pass before it has ended: one taken before
-	// the read's budget ran out followed a pass that never claimed.
+	// the read's budget ran out followed a pass that never claimed. One
+	// bound for the whole wait, taken before the first of these ticks: a
+	// bound per tick would start again at every pass, and a worker none of
+	// whose passes got past its claim would tick until the package's
+	// timeout instead of failing here.
+	deadline := time.After(testWait)
 	for read := false; !read; {
 		select {
 		case err := <-expired:
@@ -1847,8 +1852,8 @@ func TestASettlementPastItsBudgetIsTakenUpByTheNextPass(t *testing.T) {
 			}
 			read = true
 		case ticks <- time.Now():
-		case <-time.After(testWait):
-			t.Fatal("the pass never settled the review")
+		case <-deadline:
+			t.Fatalf("no pass reached the command's read in %v: %d passes came to the claim, none got past it to the read", testWait, claims.Load())
 		}
 	}
 	if n := claims.Load(); n < 2 {
