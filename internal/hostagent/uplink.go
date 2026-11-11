@@ -46,7 +46,10 @@ type Uplink struct {
 	// LinkGone, when set, is told each link the switchyard says no longer
 	// opens what one of its connections carries, with that connection's
 	// session or desk's run (Options.LinkGone).
-	LinkGone func(linkID, sessionID, runID string)
+	LinkGone func(linkID, sessionID, runID string, ended bool)
+	// LinkUnnamed, when set, is told each link one of its connections held
+	// that the connection's registered no longer names (Options.LinkUnnamed).
+	LinkUnnamed func(linkID, sessionID, runID string)
 	// Credential chooses what each publication and desk presents in place
 	// of Token (Options.Credential); nil presents Token.
 	Credential *UplinkCredential
@@ -108,7 +111,7 @@ func (u *Uplink) options(info session.Info) Options {
 	opts := Options{
 		ServerURL: u.ServerURL, Token: u.Token, Name: info.Name, HostName: u.HostName, AgentID: info.AgentID,
 		Argv: info.Command, Dir: info.Cwd, RelayOnly: u.RelayOnly, Insecure: u.Insecure, ICEServers: u.ICEServers, ICE: u.ICE, ReconnectMax: u.ReconnectMax, Log: log,
-		Switchyard: true, Decisions: u.Decisions, LinkGone: u.LinkGone,
+		Switchyard: true, Decisions: u.Decisions, LinkGone: u.LinkGone, LinkUnnamed: u.LinkUnnamed,
 		Credential: u.Credential, after: u.after, renewed: u.renewed, taking: u.taking,
 	}
 	if opts.HostName == "" {

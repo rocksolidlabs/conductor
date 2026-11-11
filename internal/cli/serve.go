@@ -421,7 +421,7 @@ func newUplink(cfg *config.Config, server string, srv *api.Server, p ext.Provide
 	}
 	return &hostagent.Uplink{ServerURL: server, Token: rv.Token, HostName: rv.HostName, RelayOnly: rv.RelayOnly, Insecure: rv.Insecure,
 		ICE: hostagent.ICE{UDPPort: cfg.ICE.UDPPort, PublicIP: cfg.ICE.PublicIP}, Log: log,
-		Decisions: srv.Lane(), LinkGone: srv.RemoteLinkGone, Credential: cred}
+		Decisions: srv.Lane(), LinkGone: srv.RemoteLinkGone, LinkUnnamed: srv.RemoteLinkUnnamed, Credential: cred}
 }
 
 // identityName is the name the identity provider registered under, "" for
