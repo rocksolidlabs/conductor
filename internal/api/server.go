@@ -103,6 +103,8 @@ type Server struct {
 	log             *slog.Logger
 	web             http.Handler
 	store           *store.Store
+	// trackers keeps the person's GitHub token (trackers.go).
+	trackers *trackerKeep
 	// crews holds the saved crews, one file each in crews/ of the data
 	// directory; nil when there is no store.
 	crews *crew.Store
@@ -468,6 +470,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		log:         log,
 		web:         web,
 		store:       st,
+		trackers:    newTrackers(cfg, st, log),
 		crews:       crews,
 		fileDeny:    fileDeny(cfg, st),
 		lookups:     newLookupCache(),
@@ -947,6 +950,7 @@ func (s *Server) Handler() http.Handler {
 	// and links, the saved views, a run's ticket and the receipts
 	// (dispatch.go), the admin's alone.
 	s.routeDispatch(mux)
+	s.routeTrackers(mux) // the GitHub token (trackers.go)
 	mux.HandleFunc("GET /api/integrations", s.launching(s.handleIntegrations))
 	mux.HandleFunc("POST /api/integrations/{id}/install", s.launching(s.handleInstallIntegration))
 	mux.HandleFunc("GET /api/sessions", s.readable("GET /api/sessions", s.handleListSessions))

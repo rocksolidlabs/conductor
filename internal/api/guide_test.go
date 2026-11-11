@@ -824,6 +824,7 @@ func TestEachBodySchemaIsWhatItsRouteDecodes(t *testing.T) {
 		"history_resume": historyResumeBody{},
 		// A person's reviews.
 		"review_submit": reviewSubmitBody{}, "review_retry": reviewRetryBody{}, "finding_mark": findingMarkBody{},
+		"tracker_set": trackerSaveBody{},
 	}
 	seen := 0
 	for _, op := range Operations() {

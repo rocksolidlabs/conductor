@@ -4111,6 +4111,31 @@ commit that changed many entities (a label's delete on hundreds of
 tickets) never drops a client that keeps up. It reaches the pages alone,
 never a webhook or the run engine.
 
+#### GitHub tokens
+
+A person's own GitHub token (`docs/plans/tracker-linking.md`), for
+github.com or a GitHub Enterprise Server host, one per host and at most 4
+hosts, kept in the data directory's `credentials/github.json` (the
+directory 0700, the file 0600, both the server's user's; a file or a
+directory another user owns or may read is not used, `500
+credentials_unusable` naming which), or given to the server in
+`CONDUCTOR_GITHUB_TOKEN` for `CONDUCTOR_GITHUB_HOST` (github.com by
+default; never a configuration file's key). No route, event, log line,
+export (`credentials/` is left out, and a restore refuses it) or sync
+store ever carries a token: a person is shown its fingerprint, the first
+12 hex digits of its SHA-256. A token goes only to its host's API
+(`https://api.github.com`, or `https://<host>/api/v3`), in
+`Authorization`, never in a URL; a redirect to another host is not
+followed. The three routes are the admin's alone (a share link, a
+session's token, a host token and a Brakeman turn answer `401`) and a
+switchyard's `403 switchyard`; a body is at most 4 KiB.
+
+| Route | Body | Answer |
+|---|---|---|
+| `GET /api/trackers` | none | `{github: [{host, login, accountId, fingerprint, scopes, savedAt, source: settings\|environment, state: ok\|refused\|unchecked, checkedAt}]}`, the file's entries by host then the environment's: `refused` when GitHub refused that token at `checkedAt` (save a new one), `unchecked` for the environment's before any call; never a token |
+| `POST /api/trackers/github` | `{host?, token}`: a token of 1 to 255 bytes of visible ASCII (`400 invalid_token` otherwise), a host as the tracker's rule admits it (`400 invalid_host`) | checks the token with GitHub (`GET /user`, within 15 s), then keeps it: `200 {tracker}`, `{tracker, unchanged: true}` for the token already kept (compared in constant time; nothing written). A failed check keeps nothing and leaves a kept token as it was, in fixed words that carry nothing GitHub sent: `422 token_refused` (refused, or no account readable), `429 rate_limited` with `Retry-After`, `502 tracker_unavailable` (unreachable, a redirect, an answer that is no account), `502 tracker_bound`. `409 changed` when the host's token was saved or removed while this one was checked (save it again), `409 too_many_hosts` past 4, `409 environment` for the environment's host |
+| `POST /api/trackers/github/remove` | `{host?}` | drops the host's entry: `200 {removed}`; a call already under way finishes with the token it read, every later one answers `412 no_token`. It stops Conductor's use of the token only: it stays valid on GitHub until revoked there. `409 environment` for the environment's host |
+
 ### Brakeman
 
 Brakeman is Conductor's sidekick agent (`docs/plans/brakeman.md`): an
