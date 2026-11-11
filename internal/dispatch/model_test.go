@@ -71,6 +71,32 @@ var planBounds = map[string]struct {
 	"finding.quote":      {2 << 10, false},
 	"mark.note":          {1000, true},
 	"mark.located":       {4 << 10, false},
+	// Program item PV1's (docs/plans/browser-evidence.md, "Bounds"): a
+	// note of 4,000 characters, a URL of 2,048 bytes, a title of 200
+	// characters, the element's text, selector and names of 1,024 bytes,
+	// an attribute's name of 64 and value of 512, the HTML of 12 KiB and
+	// the neighbourhood of 24 KiB, a style's value of 256, a hint's file of
+	// 1,024 and component of 256, a user agent of 512; and the code's own
+	// for what the plan leaves to it: why there is no screenshot, a short
+	// word of the report, and a send's target and why.
+	"annotation.note":         {4000, true},
+	"capture.url":             {2 << 10, false},
+	"capture.title":           {200, true},
+	"capture.user_agent":      {512, false},
+	"capture.image_why":       {500, true},
+	"element.name":            {1 << 10, false},
+	"element.text":            {1 << 10, false},
+	"element.selector":        {1 << 10, false},
+	"element.attribute_name":  {64, false},
+	"element.attribute_value": {512, false},
+	"element.html":            {12 << 10, false},
+	"element.neighbourhood":   {24 << 10, false},
+	"element.style_value":     {256, false},
+	"element.word":            {64, false},
+	"element.hint_file":       {1 << 10, false},
+	"element.hint_component":  {256, false},
+	"send.target":             {100, false},
+	"send.why":                {2000, true},
 	"op.by":              {60, true},
 	"op.actor":           {60, false},
 }

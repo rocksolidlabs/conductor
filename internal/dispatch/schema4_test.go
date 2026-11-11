@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -57,7 +58,7 @@ func TestMigrationThreeToFour(t *testing.T) {
 	before := map[string][]string{}
 	cols := map[string][]string{}
 	for _, table := range tables {
-		if slices.Contains(version4Tables, table) || table == "tickets_fts" || table == "schema_version" {
+		if slices.Contains(version4Tables, table) || slices.Contains(version5Tables, table) || table == "tickets_fts" || table == "schema_version" {
 			continue
 		}
 		cols[table] = columnsOf(t, raw, table)
@@ -80,7 +81,8 @@ func TestMigrationThreeToFour(t *testing.T) {
 	if ro, why := s.ReadOnly(); ro {
 		t.Fatalf("read-only: %s", why)
 	}
-	if err := s.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil || version != 4 {
+	// Brought on to this binary's version, each step in the one open.
+	if err := s.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil || version != Version {
 		t.Fatalf("version %d %v", version, err)
 	}
 	for table, c := range cols {
@@ -141,7 +143,7 @@ func TestMigrationThreeToFour(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { older.Close() })
-	if ro, why := older.ReadOnly(); !ro || !strings.Contains(why, "version 4, written by a newer Conductor") {
+	if ro, why := older.ReadOnly(); !ro || !strings.Contains(why, fmt.Sprintf("version %d, written by a newer Conductor", Version)) {
 		t.Fatalf("read-only %v: %s", ro, why)
 	}
 	if v, err := older.Ticket(ctx, key); err != nil || v.Title != "Imported" {

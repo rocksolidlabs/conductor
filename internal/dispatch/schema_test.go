@@ -114,6 +114,13 @@ func versionOneStore(t *testing.T, fill func(s *Store)) string {
 	}
 	db := openRaw(t, filepath.Join(dir, File))
 	for _, stmt := range []string{
+		"DROP TABLE capture_files",
+		"DROP TABLE capture_send_cancels",
+		"DROP TABLE capture_send_outcomes",
+		"DROP TABLE capture_sends",
+		"DROP TABLE capture_annotation_sets",
+		"DROP TABLE capture_annotations",
+		"DROP TABLE captures",
 		"DROP TABLE publications",
 		"DROP TABLE store_instance",
 		"DROP TABLE ticket_reads",
@@ -270,7 +277,7 @@ func TestMigratedVersion2EqualsAFreshOne(t *testing.T) {
 		// The version 2 tables, the FTS index (whose entries a search
 		// below reads) and the version, which the migration bumps.
 		if slices.Contains([]string{"plans", "launches", "launch_files", "reviews", "review_findings", "finding_marks", "link_reads", "ticket_reads",
-			"store_instance", "publications", "tickets_fts", "schema_version"}, table) {
+			"store_instance", "publications", "tickets_fts", "schema_version"}, table) || slices.Contains(version5Tables, table) {
 			continue
 		}
 		v1Columns[table] = columnsOf(t, raw, table)

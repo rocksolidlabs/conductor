@@ -419,6 +419,10 @@ func TestEveryVersionFourTextHasADecision(t *testing.T) {
 	found := map[string]bool{}
 	oldTables := tablesOf(old)
 	for _, table := range tablesOf(s.db) {
+		// A later version's tables are that version's to decide.
+		if slices.Contains(version5Tables, table) {
+			continue
+		}
 		cols := textColumns(s.db, table)
 		if slices.Contains(oldTables, table) {
 			oldCols := textColumns(old, table)
