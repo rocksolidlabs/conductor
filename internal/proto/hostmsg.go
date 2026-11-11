@@ -137,7 +137,11 @@ type Registered struct {
 	ICEServers   []ICEServer `json:"iceServers,omitempty"`
 	// Links are the ids of the live links the server holds for the
 	// session, so a host registering again after the server restarted
-	// knows which of the links it minted still open it. Never omitted: a
+	// knows which of the links it minted still open it: a session's own
+	// link its session's do not name has ended there, and so has a run's
+	// link its desk's do not name (a desk's are every live link of its
+	// run); a member's name the run links whose group names the member,
+	// which ends nothing of one they leave out. Never omitted: a
 	// server without links sends []; an older server sends no field (nil
 	// to the host, which says nothing).
 	Links []string `json:"links"`
@@ -373,11 +377,16 @@ type ViewerJoin struct {
 // itself at an open admission past its bound, whether or not a viewer
 // joined through it, to the connection that holds the link (its
 // session's, or its run's desk's): on the connection that asked for the
-// link, after its link_created. LinkID is at most MaxLinkID bytes; an older
-// host ignores the message.
+// link, after its link_created; to each member's connection of a run link
+// whose run's desk was not told (none, away or gone). Such a one says Ended: the link itself opens
+// nothing any more, so its publisher stops listing it; without Ended (an
+// older switchyard's, every other end) a member's connection hears only
+// that its session is no longer opened. LinkID is at most MaxLinkID bytes;
+// the message is a host message (MaxHostMessage); an older host ignores it.
 type LinkGone struct {
 	T      string `json:"t"`
 	LinkID string `json:"linkId"`
+	Ended  bool   `json:"ended,omitempty"`
 }
 
 // ViewerRef addresses one viewer (relay_start, viewer_closed; a

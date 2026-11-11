@@ -31,6 +31,25 @@ func TestRegisteredSaysDecisions(t *testing.T) {
 	}
 }
 
+// A link_gone says ended only when the switchyard ended the link of itself;
+// the field is left out otherwise, so an older host reads the message it
+// always did, and an older switchyard's reads as not ended. At its bound it
+// fits a host message.
+func TestLinkGoneSaysEnded(t *testing.T) {
+	b, _ := json.Marshal(LinkGone{T: HostLinkGone, LinkID: strings.Repeat("l", MaxLinkID), Ended: true})
+	if !strings.Contains(string(b), `"ended":true`) || len(b) > MaxHostMessage {
+		t.Fatalf("an ended link_gone: %s", b)
+	}
+	b, _ = json.Marshal(LinkGone{T: HostLinkGone, LinkID: "l1"})
+	if strings.Contains(string(b), "ended") {
+		t.Fatalf("a link_gone that is not ended says so: %s", b)
+	}
+	var older LinkGone
+	if err := json.Unmarshal([]byte(`{"t":"link_gone","linkId":"l1"}`), &older); err != nil || older.Ended {
+		t.Fatalf("an older switchyard's link_gone: %+v %v", older, err)
+	}
+}
+
 // A desk's first message: the host's instance required (no_instance
 // without it), the run within a run group's bounds, its local id the
 // run's, a resume within a session's; at its bounds it fits a host

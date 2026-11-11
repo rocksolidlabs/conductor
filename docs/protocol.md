@@ -528,11 +528,18 @@ lane and keeps desks all the same, but says nothing), a boolean in the
 host's session, as the viewer's welcome carries them, none dropped for
 the frame: a host message holds 64 KiB; an open host, registered with no
 token, is handed the configured ones alone; `links`: the ids of the live links the server holds for the session, `[]`
-when none; an older server sends no field, which says nothing;
+when none (a run's desk's: every live link of its run; a member's: the
+run links whose group names it); an older server sends no field, which
+says nothing; a host registering again takes them as the links its
+connection holds, and tells its publisher each link it held that they no
+longer name as not named, which is not an `ended` word: the publisher
+ends such a link only where not being named can mean nothing else (a
+session's own link on its session's connection, a run's link on the
+run's desk), and a member's registration ends nothing of a run's link;
 `recipe`, below; `sessionInfo: true` says the server takes `session_info`,
 below, absent from a switchyard, on a desk's and from an older server),
 `viewer_join{viewerId, role, linkId?, linkLabel?, principal?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
-`relay_start{viewerId}`, `viewer_leave{viewerId, reason?}`, `link_gone{linkId}`, `stop{sessionId}`,
+`relay_start{viewerId}`, `viewer_leave{viewerId, reason?}`, `link_gone{linkId, ended?}`, `stop{sessionId}`,
 `viewer_behind{viewerId, behind}` (a relayed viewer fell behind what the
 server holds for it, or caught up: above; a host refuses one whose
 `viewerId` is not 16 bytes, and one for a viewer it no longer has changes
@@ -543,15 +550,19 @@ provider no longer admits the principal it came as, or `expired` (the link
 reached its expiry), none for any other end (it left, its connection failed,
 it was too slow); `link_gone`: a link a viewer joined the session through
 (`linkId`, at most 64 bytes) no longer opens it (revoked, expired as the
-server's clock says, its run forgotten, its run's session no longer named),
-sent once, whether a viewer is still attached through it or not, in the
+server's clock says, its run forgotten, its run's session no longer named,
+or, with `ended: true`, ended by the switchyard itself at an open
+admission, below), sent once, whether a viewer is still attached through it or not, in the
 server's own lane, ahead of the viewers' messages queued for the host and
 of the leaves of the link's viewers; those viewers are closed before it is
 queued, and nothing of theirs still queued is sent after it (see the
 queue's lanes above), so a host, older or newer, never hears of a viewer of
 a link after its going; no link no viewer joined through is named,
 except one a switchyard ends of itself at an open admission, to the
-connection that holds it (see its links below); and a host away is not told again. The server keeps at most 1024 joined
+connection that holds it (see its links below), with `ended: true`: the
+link itself opens nothing any more, wherever it is told (absent, as from
+an older switchyard and for every other end, a member's connection hears
+only that its session is no longer opened); and a host away is not told again. The server keeps at most 1024 joined
 links per session (far more than can open it at once); one pushed out is
 named gone then (it may still open the session: a viewer joining through it
 later starts afresh on the host). The host types nothing more of what a
@@ -897,14 +908,42 @@ address's is left as it is, for the sweep or the revoke to remove. An
 ended link is as a revoked one: its viewers are closed, a join answers
 404, its file goes, the host's `registered` leaves it out of `links`, and
 the host's connection that holds it (its session's, or its run's desk's)
-is told `link_gone` for it, whether or not a viewer joined through it; on
-the connection that asked for the link, that comes after its
-`link_created`, however close the request and the admission come. A run link of a run with no desk is told to its
-members' connections only if a viewer joined through it, as for a revoke.
-That is all the switchyard does: what the publisher lists or offers after
-`link_gone` is the publisher's, and today it goes on listing a link that is
-not a decision link until it registers again or a person revokes it
-(issue #820). Only that host's links end; the links of the
+is told `link_gone` for it, with `ended: true`, whether or not a viewer
+joined through it; on the connection that asked for the link, that comes
+after its `link_created`, however close the request and the admission
+come. A run link whose run's desk is not told (the run has none, the desk
+its group names is away or has already ended, or the desk's connection
+did not take the word: it has closed, or its queue is full) is told so to
+each of its members' connections, the one it was minted over among them;
+a second telling changes nothing. A host drops a link so told from the links its
+connection says the switchyard holds, before its publisher hears of it,
+and the publisher takes `ended` as the link's own end on whichever of its
+connections it comes, a member's too, applied to what the link is then: a
+decision link is ended here, its record kept, owed its revoke, as below;
+any other link leaves the session's Share list or the run's links at once,
+without registering again. A word that comes while the link is still
+being minted is applied once the mint has recorded it (a run's mint holds
+the run's turn until then; a session's looks at the held links again once
+it has recorded its link). A `link_gone` without `ended`, or for a link
+the publisher never held, changes nothing of its lists. What the host
+lists is held to the switchyard's `registered` where its answer can say
+so: the host lists no link of a session that the session's last
+`registered` did not name, and no link of a run that its desk held and
+the desk's last `registered` did not name, since such a link is ended by
+the path an `ended` word takes as the session or the desk registers
+again. A member's registration ends nothing of a run's link, since a
+member's answer also stops naming a link when the member has left the
+run's group. Between two registrations an end is told by a message; a
+message that could not be delivered (the connection is away, its queue is
+full, the member it was told to has been replaced in its run) is caught
+up at the next registration of the session, for its own links, or of the
+run's desk, for the run's; until then the link is listed and opens
+nothing. A run's link whose end reached no connection that could apply it
+stays listed, opening nothing, until the run's desk registers again; one
+the desk's connection never held (minted over a member since the desk
+last registered, or ended before the run's desk first registered) stays
+listed until the run is forgotten or a person revokes it (the revoke is
+answered `not_found` and the record forgotten). Only that host's links end; the links of the
 address's other hosts stay as they are, and from then on the address's
 links, the host's among them, are bounded, give their places up and are
 refused as any open host's. While the instance holds a connection admitted
@@ -2331,12 +2370,15 @@ each desk then ending by itself, what was left of it logged. A link
 the switchyard says is gone (`link_gone`) ends here too, where the word
 is the link's own end: a session link's from its session's connection, a
 run link's from the run's desk (a member's says only that the member left
-the run's group). The word forgets nothing: the switchyard sends it as it
+the run's group, unless it says `ended`). The word forgets nothing: the switchyard sends it as it
 closes the link's viewers, before it has deleted what it keeps of the
 link (a revoke whose file it could not delete is answered
 `store_unavailable` after it, and a restart there would bring the link
 back), so the link is owed its revoke there, listed with `revokePending:
-true` and keeping the run's desk, until the switchyard confirms it. One
+true` and keeping the run's desk, until the switchyard confirms it, also
+once its connection no longer says the switchyard holds it (an `ended`
+word, or a `registered` of its session, or of its run's desk, that no
+longer names it). One
 rule holds in every path: the publisher forgets the record of a decision
 link revoked here only once the switchyard has confirmed the revoke or
 answered `not_found`, whatever happened to the link, its viewers or its

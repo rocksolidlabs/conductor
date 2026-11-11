@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -357,14 +359,20 @@ func TestADesksViewerHasTheLaneAlone(t *testing.T) {
 func TestUplinkPassesDecisions(t *testing.T) {
 	d := &fakeDecisions{}
 	gone := make(chan string, 1)
-	u := &Uplink{ServerURL: "https://switchyard.example.net", Decisions: d, LinkGone: func(id, sessionID, runID string) { gone <- id + " " + sessionID + " " + runID }}
+	u := &Uplink{ServerURL: "https://switchyard.example.net", Decisions: d, LinkGone: func(id, sessionID, runID string, ended bool) {
+		gone <- fmt.Sprint(id, " ", sessionID, " ", runID, " ", ended)
+	}, LinkUnnamed: func(id, sessionID, runID string) { gone <- fmt.Sprint("unnamed ", id, " ", sessionID, " ", runID) }}
 	for _, opts := range []Options{u.options(session.Info{ID: "s", Name: "cat"}), u.options(session.Info{Name: "Run"})} {
-		if opts.Decisions != Decisions(d) || opts.LinkGone == nil || !opts.Switchyard {
+		if opts.Decisions != Decisions(d) || opts.LinkGone == nil || opts.LinkUnnamed == nil || !opts.Switchyard {
 			t.Fatalf("options %+v", opts)
 		}
-		opts.LinkGone("l9", "s", "")
-		if got := <-gone; got != "l9 s " {
+		opts.LinkGone("l9", "s", "", true)
+		if got := <-gone; got != "l9 s  true" {
 			t.Fatalf("link gone %q", got)
+		}
+		opts.LinkUnnamed("l8", "", "run-1")
+		if got := <-gone; got != "unnamed l8  run-1" {
+			t.Fatalf("link unnamed %q", got)
 		}
 	}
 }
@@ -615,20 +623,155 @@ func TestADesksRepliesWaitOffTheReadLoop(t *testing.T) {
 // only on its desk's word (a member's says the member left the group).
 func TestLinkGoneSaysWhatItsConnectionCarries(t *testing.T) {
 	gone := make(chan string, 2)
-	note := func(id, sessionID, runID string) { gone <- id + "|" + sessionID + "|" + runID }
+	note := func(id, sessionID, runID string, ended bool) {
+		gone <- fmt.Sprint(id, "|", sessionID, "|", runID, "|", ended)
+	}
 	sessionAgent, _ := laneAgentWith(t, &fakeDecisions{}, "dl1", func(a *agent, _ *peer) { a.opts.LinkGone = note })
 	if err := sessionAgent.handleControl(t.Context(), mustJSON(proto.LinkGone{T: proto.HostLinkGone, LinkID: "dl1"})); err != nil {
 		t.Fatal(err)
 	}
-	if got := <-gone; got != "dl1|s|" {
+	if got := <-gone; got != "dl1|s||false" {
 		t.Fatalf("a session's link_gone: %q", got)
 	}
 	desk := &agent{opts: Options{LinkGone: note, Switchyard: true}, peers: map[string]*peer{}, log: discardLog, desk: &proto.DeskRun{ID: "run-1", Name: "Run"}}
-	if err := desk.handleControl(t.Context(), mustJSON(proto.LinkGone{T: proto.HostLinkGone, LinkID: "dl1"})); err != nil {
+	if err := desk.handleControl(t.Context(), mustJSON(proto.LinkGone{T: proto.HostLinkGone, LinkID: "dl1", Ended: true})); err != nil {
 		t.Fatal(err)
 	}
-	if got := <-gone; got != "dl1||run-1" {
+	if got := <-gone; got != "dl1||run-1|true" {
 		t.Fatalf("a desk's link_gone: %q", got)
+	}
+}
+
+// A link the server says it ended of itself (link_gone, ended) leaves what
+// the connection says the server holds (held) before the publisher is
+// told, so a mint the word crosses finds it dropped once it has recorded
+// its link; any other link_gone, and one for a link it never held, change
+// nothing of it.
+func TestAnEndedLinkLeavesTheHeldLinks(t *testing.T) {
+	held := make(chan []string, 4)
+	a, _ := laneAgentWith(t, &fakeDecisions{}, "dl1", func(x *agent, _ *peer) {
+		x.held, x.heldKnown = map[string]bool{"l1": true, "l2": true}, true
+		x.opts.LinkGone = func(string, string, string, bool) {
+			ids, _ := x.heldLinks()
+			slices.Sort(ids)
+			held <- ids
+		}
+	})
+	for _, c := range []struct {
+		m    proto.LinkGone
+		held []string
+	}{{proto.LinkGone{LinkID: "l2"}, []string{"l1", "l2"}}, {proto.LinkGone{LinkID: "l9", Ended: true}, []string{"l1", "l2"}}, {proto.LinkGone{LinkID: "l1", Ended: true}, []string{"l2"}}} {
+		c.m.T = proto.HostLinkGone
+		if err := a.handleControl(t.Context(), mustJSON(c.m)); err != nil {
+			t.Fatal(err)
+		}
+		if told := <-held; !slices.Equal(told, c.held) {
+			t.Fatalf("held as the publisher is told %s went: %v", c.m.LinkID, told)
+		}
+	}
+	if ids, known := a.heldLinks(); !known || !slices.Equal(ids, []string{"l2"}) {
+		t.Fatalf("held after l1 ended: %v %v", ids, known)
+	}
+}
+
+// A registered is what the server holds (takeHeldLocked): the links held
+// before it that it does not name are returned, to be told not named; the
+// first registration returns none, and an older server's registered (no
+// links) changes nothing.
+func TestARegisteredIsTheLinksHeld(t *testing.T) {
+	a := &agent{}
+	for _, c := range []struct {
+		links, unnamed, held []string
+	}{
+		{[]string{"l1", "l2", "l3"}, nil, []string{"l1", "l2", "l3"}},
+		{nil, nil, []string{"l1", "l2", "l3"}},
+		{[]string{"l2", "l4"}, []string{"l1", "l3"}, []string{"l2", "l4"}},
+		{[]string{}, []string{"l2", "l4"}, []string{}},
+	} {
+		a.mu.Lock()
+		unnamed := a.takeHeldLocked(c.links)
+		a.mu.Unlock()
+		slices.Sort(unnamed)
+		held, _ := a.heldLinks()
+		slices.Sort(held)
+		if !slices.Equal(unnamed, c.unnamed) || !slices.Equal(held, c.held) {
+			t.Fatalf("registered %v: not named %v, held %v; want %v, %v", c.links, unnamed, held, c.unnamed, c.held)
+		}
+	}
+}
+
+// A publication that registers again tells its publisher each link it
+// held that the server's registered no longer names as not named
+// (LinkUnnamed), never as an ended link_gone, the link already gone from
+// its held links; the links named stay held.
+func TestARegistrationTellsTheLinksItNoLongerNames(t *testing.T) {
+	var n atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		if _, _, err := c.Read(r.Context()); err != nil {
+			return
+		}
+		links := []string{"l1", "l2"}
+		if n.Add(1) > 1 {
+			links = []string{"l2"}
+		}
+		b, _ := json.Marshal(proto.Registered{T: proto.HostRegistered, SessionID: "h1", Secret: "x", ShareBaseURL: "https://yard.example.net", Links: links})
+		_ = c.Write(r.Context(), websocket.MessageText, b)
+		if n.Load() == 1 {
+			return // the connection lost: it registers again
+		}
+		for {
+			if _, _, err := c.Read(r.Context()); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	type told struct {
+		how, id, sessionID, runID string
+		held                      []string
+	}
+	gone := make(chan told, 4)
+	var pub *Published
+	var ready sync.WaitGroup
+	ready.Add(1)
+	u := &Uplink{ServerURL: srv.URL, Insecure: true, RelayOnly: true, LinkGone: func(id, sessionID, runID string, ended bool) {
+		ready.Wait()
+		held, _ := pub.HeldLinks()
+		gone <- told{fmt.Sprint("link_gone, ended ", ended), id, sessionID, runID, held}
+	}, LinkUnnamed: func(id, sessionID, runID string) {
+		ready.Wait()
+		held, _ := pub.HeldLinks()
+		gone <- told{"not named", id, sessionID, runID, held}
+	}}
+	proc, err := pty.Start(pty.Spec{Argv: []string{"/bin/cat"}, Dir: t.TempDir(), Env: hostEnv(nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { proc.Stop(t.Context(), time.Second) })
+	local := session.NewLocal(session.Info{ID: "s", Command: []string{"cat"}, Cols: 80, Rows: 24}, proc, session.Options{Log: discardLog})
+	pub, err = u.Publish(t.Context(), local)
+	ready.Done()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pub.Stop)
+	select {
+	case got := <-gone:
+		if got.how != "not named" || got.id != "l1" || got.sessionID != "s" || got.runID != "" || !slices.Equal(got.held, []string{"l2"}) {
+			t.Fatalf("told %+v", got)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the publisher was told nothing as the publication registered again")
+	}
+	select {
+	case got := <-gone:
+		t.Fatalf("told also %+v", got)
+	default:
 	}
 }
 

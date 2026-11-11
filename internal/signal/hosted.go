@@ -1047,11 +1047,12 @@ func (h *HostedSession) linkWent(linkID string) {
 }
 
 // linkGone tells the host, when it is connected, that linkID no longer
-// opens the session.
-func (h *HostedSession) linkGone(conn *HostConn, linkID string) {
-	if conn != nil && linkID != "" {
-		conn.sendJSON(proto.LinkGone{T: proto.HostLinkGone, LinkID: linkID})
-	}
+// opens the session; ended, that the link itself opens nothing any more
+// (one the server ended of itself: DisconnectHeldLink). It says whether
+// the connection's queue took the word: not when there is none, nor when
+// it has closed or its queue is full (which closes it).
+func (h *HostedSession) linkGone(conn *HostConn, linkID string, ended bool) bool {
+	return conn != nil && linkID != "" && conn.sendJSON(proto.LinkGone{T: proto.HostLinkGone, LinkID: linkID, Ended: ended})
 }
 
 // linkLapsed is a joined link reaching its expiry: the host is told it is
@@ -1070,7 +1071,7 @@ func (h *HostedSession) linkLapsed(linkID string) {
 		v.closeForLink(session.ErrExpired)
 	}
 	if joined {
-		h.linkGone(conn, linkID)
+		h.linkGone(conn, linkID, false)
 	}
 }
 
@@ -1113,9 +1114,13 @@ func (h *HostedSession) DisconnectLink(linkID string) { h.closeLink(linkID, true
 
 // DisconnectHeldLink is DisconnectLink for a link the server ended of
 // itself while this connection may still hold it (a switchyard's open
-// admission past its bound): the host is told the link went (link_gone)
-// whether or not a viewer ever joined through it.
-func (h *HostedSession) DisconnectHeldLink(linkID string) { h.closeLink(linkID, true, true) }
+// admission past its bound): the host is told the link went (link_gone,
+// ended) whether or not a viewer ever joined through it. It says whether
+// the host's connection took the word (linkGone): not while the host is
+// away, nor when its connection has closed or its queue is full.
+func (h *HostedSession) DisconnectHeldLink(linkID string) bool {
+	return h.closeLink(linkID, true, true)
+}
 
 // EndLink closes the viewers attached through linkID, one of the session's
 // own links, as the session's end, which ends its links with it (the
@@ -1130,8 +1135,9 @@ func (h *HostedSession) EndLink(linkID string) { h.closeLink(linkID, false, fals
 // held: told even when no viewer joined) and EndLink. A revoke also stops
 // what the session's end still writes the link's viewers, should it have
 // closed them first (finish). A revoke closes the link's viewers before it
-// queues the link's going (DisconnectLink).
-func (h *HostedSession) closeLink(linkID string, revoked, held bool) {
+// queues the link's going (DisconnectLink). It says whether the going was
+// taken by a connection's queue.
+func (h *HostedSession) closeLink(linkID string, revoked, held bool) bool {
 	h.mu.Lock()
 	hit := h.linkViewers(linkID)
 	joined := linkID != "" && h.forgetLink(linkID)
@@ -1148,8 +1154,9 @@ func (h *HostedSession) closeLink(linkID string, revoked, held bool) {
 		}
 	}
 	if revoked && (joined || held) {
-		h.linkGone(conn, linkID)
+		return h.linkGone(conn, linkID, held)
 	}
+	return false
 }
 
 // RevokeViewer closes v as revoked for a credential that is not a link (an
@@ -1513,7 +1520,7 @@ func (h *HostedSession) AddViewerWith(o ViewerOptions) (*Viewer, error) {
 	}
 	conn := h.conn
 	h.mu.Unlock()
-	h.linkGone(conn, pushedOut)
+	h.linkGone(conn, pushedOut, false)
 	h.sendJoin(conn, v, proto.ViewerJoin{T: proto.HostViewerJoin, ViewerID: o.ID, Role: string(role), LinkID: o.LinkID, LinkLabel: o.LinkLabel, Principal: o.Principal}, o.ChargeJoin)
 	h.notifyChange()
 	return v, nil
