@@ -219,9 +219,11 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-		// Nothing read once a verdict is recorded is handled (identity.go).
+		// Nothing read once a verdict is recorded is handled (identity.go),
+		// and the close says why whichever of the two makes it first.
 		runHook(s.credHook(func(h *hostCredSeam) func() { return h.reading }))
 		if hc.cred != nil && hc.cred.ended.Load() {
+			c.Close(proto.CloseForbidden, "access revoked")
 			return
 		}
 		// A switchyard's bound on what the host sends: its relayed output,
