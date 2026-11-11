@@ -3,7 +3,7 @@
 
 | Dependency | Version |
 |---|---|
-| Go | `go 1.26` (module) with `toolchain go1.26.10` pinned in `go.mod`, so every machine and CI run the patch the standard library's vulnerability fixes need (the go command fetches it on its own; CI's `~1.26.0` with check-latest lags a new patch by days) |
+| Go | `go 1.26` (module) with `toolchain go1.26.11` pinned in `go.mod`, so every machine and CI run the patch the standard library's vulnerability fixes need (the go command fetches it on its own; CI's `~1.26.0` with check-latest lags a new patch by days) |
 | honnef.co/go/tools (staticcheck, `make lint-static`) | v0.8.1 (2026.2.1) |
 | golang.org/x/vuln (govulncheck, `make vuln`) | v1.8.0 |
 | github.com/pion/webrtc/v4 | v4.2.21 |

@@ -7,7 +7,7 @@ ships; do not edit it by hand.
 
 The conductor binary: Go modules
 --------------------------------
-  Go (the standard library and runtime) go1.26.10          BSD-3-Clause
+  Go (the standard library and runtime) go1.26.11          BSD-3-Clause
   dario.cat/mergo v1.0.0                                   BSD-3-Clause
   github.com/ProtonMail/go-crypto v1.1.6                   BSD-3-Clause
   github.com/cenkalti/backoff/v5 v5.0.3                    MIT
@@ -247,7 +247,7 @@ The desktop app: Electron and its packages
   universalify 2.0.1                                       MIT
 
 ==============================================================================
-Go (the standard library and runtime) go1.26.10
+Go (the standard library and runtime) go1.26.11
 ==============================================================================
 
 --- LICENSE
@@ -4777,7 +4777,7 @@ golang.org/x/crypto v0.57.0
 
 --- LICENSE
 
-The same text as Go (the standard library and runtime) go1.26.10's above.
+The same text as Go (the standard library and runtime) go1.26.11's above.
 
 ==============================================================================
 golang.org/x/net v0.60.0
@@ -4785,7 +4785,7 @@ golang.org/x/net v0.60.0
 
 --- LICENSE
 
-The same text as Go (the standard library and runtime) go1.26.10's above.
+The same text as Go (the standard library and runtime) go1.26.11's above.
 
 ==============================================================================
 golang.org/x/sys v0.49.0
@@ -4793,7 +4793,7 @@ golang.org/x/sys v0.49.0
 
 --- LICENSE
 
-The same text as Go (the standard library and runtime) go1.26.10's above.
+The same text as Go (the standard library and runtime) go1.26.11's above.
 
 ==============================================================================
 golang.org/x/term v0.46.0
@@ -4801,7 +4801,7 @@ golang.org/x/term v0.46.0
 
 --- LICENSE
 
-The same text as Go (the standard library and runtime) go1.26.10's above.
+The same text as Go (the standard library and runtime) go1.26.11's above.
 
 ==============================================================================
 golang.org/x/text v0.42.0
@@ -4809,7 +4809,7 @@ golang.org/x/text v0.42.0
 
 --- LICENSE
 
-The same text as Go (the standard library and runtime) go1.26.10's above.
+The same text as Go (the standard library and runtime) go1.26.11's above.
 
 ==============================================================================
 golang.org/x/time v0.16.0
@@ -4817,7 +4817,7 @@ golang.org/x/time v0.16.0
 
 --- LICENSE
 
-The same text as Go (the standard library and runtime) go1.26.10's above.
+The same text as Go (the standard library and runtime) go1.26.11's above.
 
 ==============================================================================
 gopkg.in/warnings.v0 v0.1.2
