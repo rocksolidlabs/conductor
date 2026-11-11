@@ -1,0 +1,89 @@
+{
+ "url": "https://api.github.com/repos/octo-example/widgets/pulls/43",
+ "id": 6000043,
+ "node_id": "PR_kwDOFixture43",
+ "html_url": "https://github.com/octo-example/widgets/pull/43",
+ "number": 43,
+ "state": "open",
+ "locked": false,
+ "title": "Show an empty list",
+ "user": {
+  "login": "mona-example",
+  "id": 9000001,
+  "node_id": "U_kgDOFixture1",
+  "avatar_url": "https://avatars.githubusercontent.com/u/9000001?v=4",
+  "gravatar_id": "",
+  "url": "https://api.github.com/users/mona-example",
+  "html_url": "https://github.com/mona-example",
+  "type": "User",
+  "site_admin": false
+ },
+ "body": "Fixes #42.\n",
+ "created_at": "2026-10-03T09:00:00Z",
+ "updated_at": "2026-10-04T12:00:00Z",
+ "closed_at": null,
+ "merged_at": null,
+ "merge_commit_sha": "2222222222222222222222222222222222222222",
+ "draft": false,
+ "head": {
+  "label": "mona-example:empty-list",
+  "ref": "empty-list",
+  "sha": "1111111111111111111111111111111111111111",
+  "user": {
+   "login": "mona-example",
+   "id": 9000001,
+   "node_id": "U_kgDOFixture1",
+   "avatar_url": "https://avatars.githubusercontent.com/u/9000001?v=4",
+   "gravatar_id": "",
+   "url": "https://api.github.com/users/mona-example",
+   "html_url": "https://github.com/mona-example",
+   "type": "User",
+   "site_admin": false
+  },
+  "repo": {
+   "id": 4000001,
+   "node_id": "R_kgDOFixture4000001",
+   "name": "widgets",
+   "full_name": "octo-example/widgets",
+   "private": false,
+   "html_url": "https://github.com/octo-example/widgets",
+   "url": "https://api.github.com/repos/octo-example/widgets"
+  }
+ },
+ "base": {
+  "label": "octo-example:main",
+  "ref": "main",
+  "sha": "3333333333333333333333333333333333333333",
+  "user": {
+   "login": "mona-example",
+   "id": 9000001,
+   "node_id": "U_kgDOFixture1",
+   "avatar_url": "https://avatars.githubusercontent.com/u/9000001?v=4",
+   "gravatar_id": "",
+   "url": "https://api.github.com/users/mona-example",
+   "html_url": "https://github.com/mona-example",
+   "type": "User",
+   "site_admin": false
+  },
+  "repo": {
+   "id": 4000001,
+   "node_id": "R_kgDOFixture4000001",
+   "name": "widgets",
+   "full_name": "octo-example/widgets",
+   "private": false,
+   "html_url": "https://github.com/octo-example/widgets",
+   "url": "https://api.github.com/repos/octo-example/widgets"
+  }
+ },
+ "merged": false,
+ "mergeable": true,
+ "rebaseable": true,
+ "mergeable_state": "clean",
+ "merged_by": null,
+ "comments": 0,
+ "review_comments": 0,
+ "commits": 1,
+ "additions": 10,
+ "deletions": 2,
+ "changed_files": 1
+}

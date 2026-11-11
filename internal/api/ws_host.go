@@ -150,8 +150,10 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	}()
 	// The host's kept links wait for it while it is connected, from before
 	// it is told which the switchyard holds; its time away starts as this
-	// connection ends (before the session shows it gone).
-	defer s.hostUp(hs.Owner())()
+	// connection ends (before the session shows it gone). Admitted open, the
+	// links its instance made with the host token count against its address
+	// from here, before it is told them: those past the bound end.
+	defer s.hostUp(hs.Owner(), hc.addr)()
 
 	// An open host, which presented no token, is handed the configured
 	// servers alone: no media provider is asked for it (iceServersFor).
@@ -642,16 +644,17 @@ func (s *Server) hostLink(hs *signal.HostedSession, hc *hostConnState, m proto.H
 		refuse("link_refused", err.Error())
 		return
 	}
-	if err := s.keepLink(link, token, hs.Owner(), hc.addr); err != nil {
-		refuse("link_refused", err.Error())
-		return
-	}
-	s.log.Info("link minted for a host", "session", hs.Info().ID, "role", role, "label", link.Label)
 	out := proto.LinkCreated{T: proto.HostLinkCreated, RequestID: m.RequestID, URL: hc.base + "/join/" + url.PathEscape(token), Invite: inviteFor(hc.base, token), LinkID: link.ID, Role: string(link.Role), Label: link.Label}
 	if link.ExpiresAt != nil {
 		out.ExpiresAt = link.ExpiresAt.UTC().Format(time.RFC3339)
 	}
-	_ = hs.Tell(out)
+	// The answer is queued as the link is kept, ahead of anything an open
+	// admission later tells this connection of it (keepLink).
+	if err := s.keepLink(link, token, hs.Owner(), hc.addr, func() { _ = hs.Tell(out) }); err != nil {
+		refuse("link_refused", err.Error())
+		return
+	}
+	s.log.Info("link minted for a host", "session", hs.Info().ID, "role", role, "label", link.Label)
 }
 
 // liveLinkIDs are the ids of the links that still open a hosted session here
@@ -752,16 +755,16 @@ func (s *Server) hostRunLink(hs *signal.HostedSession, hc *hostConnState, m prot
 		refuse("link_refused", err.Error())
 		return
 	}
-	if err := s.keepLink(link, token, hs.Owner(), hc.addr); err != nil {
-		refuse("link_refused", err.Error())
-		return
-	}
-	s.log.Info("run link minted for a host", "run", m.Run.ID, "members", len(g.Members), "role", role)
 	out := proto.LinkCreated{T: proto.HostLinkCreated, RequestID: m.RequestID, URL: hc.base + "/join/" + url.PathEscape(token), Invite: inviteFor(hc.base, token), LinkID: link.ID, Role: string(link.Role), Label: link.Label, RunID: m.Run.ID}
 	if link.ExpiresAt != nil {
 		out.ExpiresAt = link.ExpiresAt.UTC().Format(time.RFC3339)
 	}
-	_ = hs.Tell(out)
+	// As hostLink's: queued as the link is kept (keepLink).
+	if err := s.keepLink(link, token, hs.Owner(), hc.addr, func() { _ = hs.Tell(out) }); err != nil {
+		refuse("link_refused", err.Error())
+		return
+	}
+	s.log.Info("run link minted for a host", "run", m.Run.ID, "members", len(g.Members), "role", role)
 }
 
 // hostRunLinkUpdate gives the links of a host's run its members now and

@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -24,7 +25,11 @@ import (
 // linkOrphanAfter with it (a host connected is never gone, however long ago
 // it registered). An open host's link also gives its place in its address's
 // count to a new link of that address once its host has been gone for
-// linkYieldAfter and the address has no other room: it is ended then.
+// linkYieldAfter and the address has no other room: it is ended then. A
+// link minted while its host presented a host token counts against no
+// address until its host instance is admitted as an open host (a resume, a
+// take-back, another of its sessions, after a restart too): from then on it
+// counts against that address, and those past the bound end (hostUp).
 
 // linkFile is a link as a switchyard keeps it.
 type linkFile struct {
@@ -72,7 +77,11 @@ type keptLink struct {
 // links counted against each open-host address, and whether each host
 // instance is connected or since when it is gone.
 //
-// Locks go in this order: fmu, then mu, then the link store's own.
+// Locks go in this order: fmu, then mu, then the link store's own. Under
+// them the keeper tells a connection (keepLink's answer, hostUp's link_gone),
+// which takes the hosted session's own lock and then the connection's, never
+// the hub's. Those two locks are leaves with respect to the keeper: nothing
+// may call into the keeper while holding either (signal.HostedSession).
 type linkKeeper struct {
 	files *store.Store
 	// fmu orders the files' saves and deletes. A save looks, under it,
@@ -89,11 +98,19 @@ type linkKeeper struct {
 	kept map[string]keptLink
 	// addrs are the ids of the links counted against each open-host address.
 	addrs map[string]map[string]struct{}
+	// tokened are the ids of the links each host instance minted while it
+	// presented a host token (a kept link with no address): counted against
+	// no address until the instance is admitted open (hostUp).
+	tokened map[string]map[string]struct{}
 	// live counts each host instance's connections; seen is when an
 	// instance was last connected (as it registered or left; for the owners
 	// of the links restored at startup, the start).
 	live map[string]int
 	seen map[string]time.Time
+	// open counts each host instance's connections admitted open: while
+	// it holds one, a link it asks for with the host token is refused
+	// (keepLink), so none of its links is counted against no address.
+	open map[string]int
 	// undeleted are the links no longer kept whose file could not be
 	// deleted (its directory not writable for a while), with the host
 	// instance each was kept for: each sweep, and that instance's revoke of
@@ -102,6 +119,10 @@ type linkKeeper struct {
 	// until it goes, the host's revoke is answered that it is not done, and
 	// a revoked link is still listed as its host's (liveLinkIDs). Under fmu.
 	undeleted map[string]string
+	// keeping is nil but in tests: called as keepLink begins, before it
+	// takes the locks, with the address of the connection asking ("" for a
+	// host with the host token).
+	keeping atomic.Pointer[func(addr string)]
 }
 
 // linkFileUndeleted says whether the file of linkID, no longer kept, is
@@ -177,15 +198,23 @@ func (k *linkKeeper) away(owner string, now time.Time) time.Duration {
 	return now.Sub(k.seen[owner])
 }
 
+// countedIn is where a kept link is counted: against its open host's
+// address, or, minted with a host token, against its host instance.
+func (k *linkKeeper) countedIn(kl keptLink) (map[string]map[string]struct{}, string) {
+	if kl.addr != "" {
+		return k.addrs, kl.addr
+	}
+	return k.tokened, kl.owner
+}
+
 // hold counts a kept link in. Called with mu held.
 func (k *linkKeeper) hold(id string, kl keptLink) {
 	k.kept[id] = kl
-	if kl.addr != "" {
-		if k.addrs[kl.addr] == nil {
-			k.addrs[kl.addr] = map[string]struct{}{}
-		}
-		k.addrs[kl.addr][id] = struct{}{}
+	m, key := k.countedIn(kl)
+	if m[key] == nil {
+		m[key] = map[string]struct{}{}
 	}
+	m[key][id] = struct{}{}
 }
 
 // release forgets a kept link: its hash and its place in its address's
@@ -197,36 +226,26 @@ func (k *linkKeeper) release(id string) string {
 		return ""
 	}
 	delete(k.kept, id)
-	if kl.addr != "" {
-		delete(k.addrs[kl.addr], id)
-		if len(k.addrs[kl.addr]) == 0 {
-			delete(k.addrs, kl.addr)
-		}
+	m, key := k.countedIn(kl)
+	delete(m[key], id)
+	if len(m[key]) == 0 {
+		delete(m, key)
 	}
 	return kl.owner
 }
 
-// yielding is the n links counted against addr that give their places up
-// first: of those whose host has been gone longer than linkYieldAfter, the
-// oldest of the hosts gone longest; nil when fewer than n may, so that none
-// is ended for a link that would still find no room. Called with mu held.
-func (k *linkKeeper) yielding(addr string, now time.Time, n int) []string {
-	type candidate struct {
-		id   string
-		away time.Duration
-		made time.Time
-	}
-	var cs []candidate
-	for id := range k.addrs[addr] {
-		kl := k.kept[id]
-		if away := k.away(kl.owner, now); away > linkYieldAfter {
-			cs = append(cs, candidate{id, away, kl.created})
-		}
-	}
-	if len(cs) < n {
-		return nil
-	}
-	slices.SortFunc(cs, func(a, b candidate) int {
+// giveUp is a kept link that may give its place up: its host's time away
+// and when it was made.
+type giveUp struct {
+	id   string
+	away time.Duration
+	made time.Time
+}
+
+// giveUpFirst orders links in the order they give their places up: of the
+// hosts gone longest first, the oldest link first.
+func giveUpFirst(cs []giveUp) {
+	slices.SortFunc(cs, func(a, b giveUp) int {
 		if c := cmp.Compare(b.away, a.away); c != 0 {
 			return c
 		}
@@ -235,11 +254,84 @@ func (k *linkKeeper) yielding(addr string, now time.Time, n int) []string {
 		}
 		return strings.Compare(a.id, b.id)
 	})
+}
+
+// yielding is the n links counted against addr that give their places up
+// first: of those whose host has been gone longer than linkYieldAfter, the
+// oldest of the hosts gone longest; nil when fewer than n may, so that none
+// is ended for a link that would still find no room. Called with mu held.
+func (k *linkKeeper) yielding(addr string, now time.Time, n int) []string {
+	var cs []giveUp
+	for id := range k.addrs[addr] {
+		kl := k.kept[id]
+		if away := k.away(kl.owner, now); away > linkYieldAfter {
+			cs = append(cs, giveUp{id, away, kl.created})
+		}
+	}
+	if len(cs) < n {
+		return nil
+	}
+	giveUpFirst(cs)
 	ids := make([]string, n)
 	for i := range ids {
 		ids[i] = cs[i].id
 	}
 	return ids
+}
+
+// admitOpen counts the links the host instance owner minted with a host
+// token against addr, the address it is admitted open from, as any link an
+// open host of addr mints: those that would leave the address past bound
+// are released instead, in the order links give their places up (the
+// oldest first), and returned as ended; moved are those now counted
+// against addr. Only a link that still opens something (opens) is
+// counted, moved or kept: one that no longer does (expired and not yet
+// swept, revoked and not yet told, dropped) is released and returned as
+// dead, taking no place. The address's other links are left as they are,
+// and of them too only those that still open something take a place (the
+// sweep and the revoke's hook release the rest, as ever). Called with mu
+// held.
+func (k *linkKeeper) admitOpen(owner, addr string, bound int, now time.Time, opens func(id string) bool) (ended, moved, dead []string) {
+	var cs []giveUp
+	away := k.away(owner, now)
+	for id := range k.tokened[owner] {
+		if !opens(id) {
+			dead = append(dead, id)
+			continue
+		}
+		cs = append(cs, giveUp{id, away, k.kept[id].created})
+	}
+	for _, id := range dead {
+		k.release(id)
+	}
+	giveUpFirst(cs)
+	over := len(cs) - bound
+	if len(cs) > 0 {
+		for id := range k.addrs[addr] {
+			if opens(id) {
+				over++
+			}
+		}
+	}
+	for i, c := range cs {
+		kl := k.kept[c.id]
+		k.release(c.id)
+		if i < over {
+			ended = append(ended, c.id)
+			continue
+		}
+		kl.addr = addr
+		k.hold(c.id, kl)
+		moved = append(moved, c.id)
+	}
+	return ended, moved, dead
+}
+
+// opensAnything says whether the link linkID still opens what it was made
+// for, by the link store's clock: not revoked, not expired, not dropped.
+func (s *Server) opensAnything(linkID string) bool {
+	_, err := s.links.Live(linkID)
+	return err == nil
 }
 
 // openLinkKeeper opens links/ under st and puts the links kept there back
@@ -251,7 +343,7 @@ func (s *Server) openLinkKeeper(st *store.Store) {
 		s.log.Error("links are not kept across restarts: cannot open the links directory", "err", err)
 		return
 	}
-	k := &linkKeeper{files: files, kept: map[string]keptLink{}, addrs: map[string]map[string]struct{}{}, live: map[string]int{}, seen: map[string]time.Time{}, undeleted: map[string]string{}}
+	k := &linkKeeper{files: files, kept: map[string]keptLink{}, addrs: map[string]map[string]struct{}{}, tokened: map[string]map[string]struct{}{}, live: map[string]int{}, seen: map[string]time.Time{}, open: map[string]int{}, undeleted: map[string]string{}}
 	s.keeper = k
 	entries, err := files.List()
 	if err != nil {
@@ -290,24 +382,40 @@ func (s *Server) openLinkKeeper(st *store.Store) {
 // Why keepLink refuses a link.
 var (
 	errLinksFull   = errors.New("this address holds as many links as this switchyard keeps; revoke one, or ask the operator for a host token")
+	errOpenHeld    = errors.New("this host also holds a connection admitted without its host token, which bounds its links as an open host's: it mints none with the token until that connection ends or presents the token again")
 	errLinkGone    = errors.New("the link was revoked or expired, or its session ended, as it was made")
 	errLinkNotKept = errors.New("the switchyard could not keep the link; try again")
 )
 
 // keepLink makes a link minted for a hosted session of owner durable and
-// writes its file, within the bounds. At an open host's address with no
-// room left, links whose host has been gone longer than linkYieldAfter
-// give their places up (yielding) and are ended, only when that leaves the
-// new link room and once its file is written: a link that needed them and
-// whose file cannot be written is refused, and they stay as they were. It
+// writes its file, within the bounds. A link asked for with the host token
+// (addr "") by a host instance that holds a connection admitted open is
+// refused: it would be counted against no address. At an open host's
+// address with no room left, links whose host has been gone
+// longer than linkYieldAfter give their places up (yielding) and are
+// ended, only when that leaves the new link room and once its file is
+// written: a link that needed them and whose file cannot be written is
+// refused, and they stay as they were. It
 // refuses a link when the bounds leave no room, ending no other link, and
 // keeps nothing of a link the store no longer opens: one revoked, expired
 // or dropped since it was made is neither counted nor written, nor has any
 // other ended for it. A link refused is dropped from the store.
-func (s *Server) keepLink(link *share.Link, token, owner, addr string) error {
+//
+// answer queues the host's answer naming the link (link_created) and is
+// called once the link is kept, never for one refused: with fmu still
+// held, which an open admission (hostUp) takes before it may end the link,
+// so that whatever the admission tells the connection of the link comes
+// after its creation. It only queues in the connection's own lane, which
+// never waits (signal.HostedSession.Tell, which takes the hosted session's
+// lock and then the connection's, never the hub's).
+func (s *Server) keepLink(link *share.Link, token, owner, addr string, answer func()) error {
 	k := s.keeper
 	if k == nil || owner == "" {
+		answer()
 		return nil
+	}
+	if f := k.keeping.Load(); f != nil {
+		(*f)(addr)
 	}
 	h := share.HashToken(token)
 	k.fmu.Lock()
@@ -320,7 +428,18 @@ func (s *Server) keepLink(link *share.Link, token, owner, addr string) error {
 		// Revoked, expired or dropped since it was made: no place is given
 		// up for it.
 		err = errLinkGone
+	} else if addr == "" && k.open[owner] > 0 {
+		// The instance is an open host as well (hostUp): its links are an
+		// open host's, counted against an address, and this one would be
+		// counted against none.
+		err = errOpenHeld
 	} else if s.links.Count() > maxDurableLinks {
+		err = errLinksFull
+	} else if addr != "" && len(k.tokened[owner]) > 0 {
+		// Never so: an instance admitted open has its links made with the
+		// token counted against its address (hostUp), and makes none with
+		// the token while it holds an open connection (errOpenHeld). Should
+		// it hold one counted against nothing, it mints none.
 		err = errLinksFull
 	} else if over := len(k.addrs[addr]) - s.cfg.Switchyard.OpenHostLinks + 1; addr != "" && over > 0 {
 		if yielded = k.yielding(addr, time.Now(), over); yielded == nil {
@@ -379,6 +498,7 @@ func (s *Server) keepLink(link *share.Link, token, owner, addr string) error {
 		s.deleteFile(id, o)
 		s.log.Info("a kept link gave its place to a new one, its host gone", "link", id)
 	}
+	answer()
 	k.fmu.Unlock()
 	for _, l := range ended {
 		s.closeLinkViewers(l)
@@ -452,33 +572,117 @@ func (s *Server) dropLinkFile(linkID string) {
 	s.deleteFile(linkID, owner)
 }
 
-// hostUp notes that a host instance holds a connection, until the function
-// it returns is called as the connection ends: while an instance holds one,
-// its kept links are neither swept nor give their places up, and its time
-// away starts when its last one ends. Called before the host is told which
-// of its links the switchyard holds, so a link ended for its place is
-// either ended before (and not told) or kept. It takes fmu too: a link
-// that is giving its place up (keepLink, from its choice until it ends)
-// or being swept (endKept) is done before its host is back.
-func (s *Server) hostUp(owner string) func() {
+// hostUp notes that a host instance holds a connection, admitted open from
+// addr ("" for one with the host token), until the function it returns is
+// called as the connection ends: while an instance holds one, its kept
+// links are neither swept nor give their places up, and its time away
+// starts when its last one ends. Called before the host is told which of
+// its links the switchyard holds, so a link ended for its place is either
+// ended before (and not told) or kept. It takes fmu too: a link that is
+// giving its place up (keepLink, from its choice until it ends) or being
+// swept (endKept) is done before its host is back.
+//
+// An instance admitted open is an open host from then on: the links it
+// made with the host token are counted against addr, in the same step, so
+// no link request of it is decided between the two, and those that leave
+// the address past the bound end (admitOpen), as a link that gives its
+// place up does: they leave the keeper and the store, their files go, and
+// their viewers are closed; the connection that holds each is told it
+// went, after its link_created (keepLink queues that under fmu), whether or
+// not anyone joined through it (endHeldLink). Of the links it made with
+// the token, one that no longer opens anything is counted for nothing and
+// its file goes; of the address's, one that no longer opens anything takes
+// no place and is left as it is, to the sweep and the revoke's hook. The
+// files of the links that end go before the others are written again with
+// the address, so a stop between leaves no ended link kept. The address's
+// other links stay as they are. While the instance holds a connection
+// admitted open, it makes no link with the token (keepLink).
+func (s *Server) hostUp(owner, addr string) func() {
 	k := s.keeper
 	if k == nil || owner == "" {
 		return func() {}
 	}
 	k.fmu.Lock()
 	k.mu.Lock()
+	now := time.Now()
 	k.live[owner]++
-	k.seen[owner] = time.Now()
+	k.seen[owner] = now
+	var (
+		gone, moved, dead []string
+		ended             []*share.Link
+	)
+	if addr != "" {
+		k.open[owner]++
+		gone, moved, dead = k.admitOpen(owner, addr, s.cfg.Switchyard.OpenHostLinks, now, s.opensAnything)
+		for _, id := range moved {
+			s.links.SetOwner(id, owner, addr)
+		}
+		for _, id := range gone {
+			if l, ok := s.links.Drop(id); ok {
+				ended = append(ended, l)
+			}
+		}
+	}
 	k.mu.Unlock()
+	for _, id := range gone {
+		s.deleteFile(id, owner)
+		s.log.Info("a link made with a host token ended, its host admitted open with more than an open host may keep", "link", id)
+	}
+	for _, id := range dead {
+		s.deleteFile(id, owner)
+	}
+	// Their files say the address now, so a restart counts them against it.
+	for _, id := range moved {
+		_ = s.saveLinkFile(id)
+	}
 	k.fmu.Unlock()
+	for _, l := range ended {
+		s.endHeldLink(l)
+	}
 	return func() {
 		k.mu.Lock()
 		if k.live[owner]--; k.live[owner] <= 0 {
 			delete(k.live, owner)
 		}
 		k.seen[owner] = time.Now()
+		if addr != "" {
+			if k.open[owner]--; k.open[owner] <= 0 {
+				delete(k.open, owner)
+			}
+		}
 		k.mu.Unlock()
 	}
+}
+
+// endHeldLink closes the viewers attached through l, a link the switchyard
+// ended of itself while its host may hold it (an open admission), as
+// closeLinkViewers does, and tells the connection that holds it (its
+// session's, or its run's desk's) that it went, whether or not a viewer
+// joined through it. A run link of a run with no desk is told to its
+// members' connections as closeLinkViewers tells them: only when a viewer
+// joined through it.
+func (s *Server) endHeldLink(l *share.Link) {
+	switch {
+	case l.RunID == "":
+		if hs, ok := s.hosts.Get(l.SessionID); ok {
+			hs.DisconnectHeldLink(l.ID)
+			return
+		}
+	case l.Group != nil && l.Group.Desk != "":
+		if d, ok := s.hosts.Desk(l.Group.Desk); ok {
+			for _, m := range l.Group.Members {
+				if m.SessionID == "" {
+					continue
+				}
+				if md, ok := s.registry.Get(m.SessionID); ok {
+					md.DisconnectLink(l.ID)
+				}
+			}
+			d.DisconnectHeldLink(l.ID)
+			return
+		}
+	}
+	s.closeLinkViewers(l)
 }
 
 // sweepLinks drops the kept links that expired, and those whose host has

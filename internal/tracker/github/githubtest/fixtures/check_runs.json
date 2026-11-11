@@ -1,0 +1,95 @@
+{
+ "total_count": 3,
+ "check_runs": [
+  {
+   "id": 2000001,
+   "head_sha": "1111111111111111111111111111111111111111",
+   "node_id": "CR_kwDOFixture2000001",
+   "external_id": "",
+   "url": "https://api.github.com/repos/octo-example/widgets/check-runs/2000001",
+   "html_url": "https://github.com/octo-example/widgets/runs/2000001",
+   "details_url": "https://checks.example/2000001",
+   "status": "completed",
+   "conclusion": "failure",
+   "started_at": "2026-10-04T12:00:40Z",
+   "completed_at": "2026-10-04T12:08:00Z",
+   "output": {
+    "title": null,
+    "summary": null,
+    "text": null,
+    "annotations_count": 0
+   },
+   "name": "test",
+   "check_suite": {
+    "id": 1200001
+   },
+   "app": {
+    "id": 15368,
+    "slug": "github-actions",
+    "node_id": "MDM6QXBwMTUzNjg=",
+    "name": "github-actions"
+   },
+   "pull_requests": []
+  },
+  {
+   "id": 2000002,
+   "head_sha": "1111111111111111111111111111111111111111",
+   "node_id": "CR_kwDOFixture2000002",
+   "external_id": "",
+   "url": "https://api.github.com/repos/octo-example/widgets/check-runs/2000002",
+   "html_url": "https://github.com/octo-example/widgets/runs/2000002",
+   "details_url": "https://checks.example/2000002",
+   "status": "completed",
+   "conclusion": "success",
+   "started_at": "2026-10-04T12:00:40Z",
+   "completed_at": "2026-10-04T12:08:00Z",
+   "output": {
+    "title": null,
+    "summary": null,
+    "text": null,
+    "annotations_count": 0
+   },
+   "name": "build",
+   "check_suite": {
+    "id": 1200001
+   },
+   "app": {
+    "id": 15368,
+    "slug": "github-actions",
+    "node_id": "MDM6QXBwMTUzNjg=",
+    "name": "github-actions"
+   },
+   "pull_requests": []
+  },
+  {
+   "id": 2500001,
+   "head_sha": "1111111111111111111111111111111111111111",
+   "node_id": "CR_kwDOFixture2500001",
+   "external_id": "",
+   "url": "https://api.github.com/repos/octo-example/widgets/check-runs/2500001",
+   "html_url": "https://github.com/octo-example/widgets/runs/2500001",
+   "details_url": "https://checks.example/2500001",
+   "status": "in_progress",
+   "conclusion": null,
+   "started_at": "2026-10-04T12:00:40Z",
+   "completed_at": null,
+   "output": {
+    "title": null,
+    "summary": null,
+    "text": null,
+    "annotations_count": 0
+   },
+   "name": "coverage",
+   "check_suite": {
+    "id": 1200001
+   },
+   "app": {
+    "id": 1300001,
+    "slug": "codecov-example",
+    "node_id": "MDM6QXBwMTUzNjg=",
+    "name": "codecov-example"
+   },
+   "pull_requests": []
+  }
+ ]
+}
