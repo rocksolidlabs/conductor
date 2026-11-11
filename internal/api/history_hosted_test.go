@@ -1,13 +1,16 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/journal"
 	"github.com/rocksolidlabs/conductor/internal/proto"
@@ -22,9 +25,13 @@ import (
 // host reports rep, its agent's hooks holding token.
 func registerReporting(t *testing.T, e *testEnv, localID, agent, token string, rep proto.HostReport) *signal.HostedSession {
 	t.Helper()
-	hs, _, err := e.srv.hosts.Register(proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion,
-		Host:    proto.HostInfo{Name: "mac", User: "ada", Instance: "instance-r"},
-		Session: proto.HostSession{AgentID: agent, Command: []string{agent}, Cwd: "/Users/ada/app", Cols: 80, Rows: 24, LocalID: localID, AgentToken: token, HostReport: rep}}, signal.NewHostConn())
+	return registerSession(t, e, signal.NewHostConn(), proto.HostSession{AgentID: agent, Command: []string{agent}, Cwd: "/Users/ada/app", Cols: 80, Rows: 24, LocalID: localID, AgentToken: token, HostReport: rep})
+}
+
+// registerSession registers s from instance-r's host on conn.
+func registerSession(t *testing.T, e *testEnv, conn *signal.HostConn, s proto.HostSession) *signal.HostedSession {
+	t.Helper()
+	hs, _, err := e.srv.hosts.Register(proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion, Host: proto.HostInfo{Name: "mac", User: "ada", Instance: "instance-r"}, Session: s}, conn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,11 +47,13 @@ func TestAHostedRecordTakesWhatItsHostReports(t *testing.T) {
 	e := newTestEnv(t, nil)
 	start, end := strings.Repeat("a", 40), strings.Repeat("b", 40)
 	rep := proto.HostReport{Where: "native", AgentVersion: "2.1.304", Repo: "/Users/ada/app", RepoCommon: "/Users/ada/app/.git", StartCommit: start}
-	bad := rep
-	bad.StartCommit = "HEAD"
-	if _, _, err := e.srv.hosts.Register(proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion, Host: proto.HostInfo{Name: "mac"},
-		Session: proto.HostSession{AgentID: "sh", Command: []string{"sh"}, Cwd: "/w", HostReport: bad}}, signal.NewHostConn()); !errors.Is(err, signal.ErrBadRegister) {
-		t.Fatalf("a register past its report's bounds: %v", err)
+	// Past a bound, and a field with a character that changes how it is
+	// drawn: the register refused alike.
+	for _, bad := range []proto.HostReport{{StartCommit: "HEAD"}, {AgentVersion: "2.1.304" + string(rune(0x202e))}, {Repo: "/Users/ada/" + string(rune(0x200b)) + "app"}} {
+		if _, _, err := e.srv.hosts.Register(proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion, Host: proto.HostInfo{Name: "mac"},
+			Session: proto.HostSession{AgentID: "sh", Command: []string{"sh"}, Cwd: "/w", HostReport: bad}}, signal.NewHostConn()); !errors.Is(err, signal.ErrBadRegister) {
+			t.Fatalf("a register reporting %+v: %v", bad, err)
+		}
 	}
 	hs := registerReporting(t, e, "1", "sh", "", rep)
 	id := hs.Info().ID
@@ -170,6 +179,149 @@ func TestAHostedRecordIsTakenUpAgainByItsHost(t *testing.T) {
 	registerHost(t, e2, "instance-a", "1")
 	if r, _ := recordFile(t, e2, id); r.Reopened != 2 || r.Ending != "" {
 		t.Fatalf("taken up after the grace: %+v", r)
+	}
+}
+
+// The agent session a hosted record captured is the record's: taken up
+// again after a restart, and after the hub let its session go past the
+// grace, the recipe's policy goes on from what the record holds (Codex's
+// lowest kept over a later higher id, the same id again without a turn
+// changing nothing).
+func TestAReopenedRecordKeepsItsAgentSession(t *testing.T) {
+	codex := catalog.Agent{ID: "codex-like", Name: "codex-like", Command: []string{"/bin/cat"},
+		Session: &catalog.SessionRecipe{IDFrom: "hook", IDPolicy: session.PolicyLowest, ResumeArgs: []string{"resume", "{id}"}, IDPattern: "^[0-9a-f-]+$"}}
+	low, high := "0000aaaa-0001", "ffff0000-0002"
+	for _, path := range []string{"a restart", "the grace"} {
+		t.Run(path, func(t *testing.T) {
+			e := newTestEnvAgents(t, nil, nil, []catalog.Agent{codex})
+			tok := "hosted-agent-token-0123456789abcdef"
+			s := proto.HostSession{AgentID: "codex-like", Command: []string{"codex"}, Cwd: "/Users/ada/app", Cols: 80, Rows: 24, LocalID: "1", AgentToken: tok}
+			conn := signal.NewHostConn()
+			id := registerSession(t, e, conn, s).Info().ID
+			report := func(e *testEnv, as string, turn bool) {
+				t.Helper()
+				if resp, out := e.do("POST", "/api/sessions/"+id+"/attention", tok, map[string]any{"state": "done", "agentSession": as, "turn": turn}); resp.StatusCode != http.StatusOK {
+					t.Fatalf("the hook's report: %d %v", resp.StatusCode, out)
+				}
+			}
+			report(e, low, true)
+			if path == "a restart" {
+				e = restartServer(t, e)
+			} else {
+				hs, _ := e.srv.registry.Get(id)
+				hs.(*signal.HostedSession).HostDisconnected(conn)
+				e.srv.hosts.Expire(time.Now().Add(signal.DisconnectGrace + time.Second))
+				until(t, "the hub let the session go", func() bool { _, ok := e.srv.registry.Get(id); return !ok })
+			}
+			if again := registerSession(t, e, signal.NewHostConn(), s).Info().ID; again != id {
+				t.Fatalf("the id came back as %s", again)
+			}
+			report(e, high, true)
+			report(e, low, false)
+			r, _, err := e.srv.sessionRecords.Get(id)
+			if err != nil || r.Reopened != 1 {
+				t.Fatalf("the record taken up again: %+v %v", r, err)
+			}
+			if as := r.Agent.Session; as == nil || as.ID != low || !as.Resumable || as.Source != session.AgentSessionHook {
+				t.Fatalf("the record's agent session after %s: %+v", path, as)
+			}
+		})
+	}
+}
+
+// A hosted record takes nothing from this server's machine: its folder,
+// on this machine a repository with a commit, gives it no repository and
+// no commit; its agent, whose version this server's own probe holds, no
+// version; it says where it ran only as its host said it (here nothing:
+// not reported). A path its host reports is its host's: one that names,
+// on this machine, a place this server refuses its own sessions is kept
+// as its host gave it.
+func TestAHostedRecordBorrowsNothingFromTheServer(t *testing.T) {
+	probed := catalog.Agent{ID: "probed", Name: "probed", Command: []string{"/bin/cat"}, Adapter: "claude"}
+	e := newTestEnvAgents(t, nil, nil, []catalog.Agent{probed})
+	e.srv.probes.mu.Lock()
+	e.srv.probes.run = func(context.Context, []string, agents.Probe, map[string]string) agents.ProbeResult {
+		return agents.ProbeResult{Ran: true, Identified: true, Version: "9.9.9"}
+	}
+	e.srv.probes.mu.Unlock()
+	a, _ := e.srv.Catalog().Get("probed")
+	path, _, _ := e.srv.lookups.found(t.Context(), "/bin/cat")
+	e.srv.identityOf(t.Context(), a, path, true)
+	if id, ok := e.srv.cachedIdentity(a); !ok || id.Version != "9.9.9" {
+		t.Fatalf("this server's probe holds no version of the agent: %+v %v", id, ok)
+	}
+	repo := filepath.Join(e.root, "repo")
+	gitInit(t, repo, true)
+	denied := filepath.Join(e.srv.cfg.DataDir, "notes.txt")
+	if !session.DeniedBy(denied, e.srv.fileDeny()) {
+		t.Fatalf("%s is not refused to this server's own sessions", denied)
+	}
+	hs := registerSession(t, e, signal.NewHostConn(), proto.HostSession{AgentID: "probed", Command: []string{"/bin/cat"}, Cwd: repo, Cols: 80, Rows: 24, LocalID: "1"})
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	hs.HostActivity(proto.Activity{Type: "file", Op: "edit", Path: denied, At: now}, "")
+	code := 0
+	hs.HostStatus(session.StatusExited, &code)
+	r := endedRecord(t, e, hs.Info().ID)
+	if r.Where != "" || r.Agent.Version != "" || r.Repo != "" || r.RepoCommon != "" || r.Start != "" || r.StartFrom != "" || r.End != "" {
+		t.Fatalf("the hosted record took this machine's facts: %+v", r)
+	}
+	if len(r.Files) != 1 || r.Files[0].Path != denied {
+		t.Fatalf("the host's path: %+v", r.Files)
+	}
+}
+
+// A Brakeman turn's history read draws no row of a hosted session's
+// record, whatever its grant: the default scope (every session), one
+// naming the hosted session, one of a repository. A server session's
+// record beside it is served as before; the hosted one is in no answer
+// and no read the turn's log keeps.
+func TestABrakemanTurnReadsNoHostedRecord(t *testing.T) {
+	b := brakemanEnv(t, nil)
+	dir := filepath.Join(b.root, "inside")
+	gitInit(t, dir, true)
+	resp, out := b.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "cat", "cwd": dir, "name": "turnstile server"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("launch: %d %v", resp.StatusCode, out)
+	}
+	server := out["id"].(string)
+	b.stopAndWait(server)
+	rec := endedRecord(t, b.testEnv, server)
+	hs := registerSession(t, b.testEnv, signal.NewHostConn(), proto.HostSession{Name: "turnstile hosted", AgentID: "sh", Command: []string{"sh"}, Cwd: dir, Cols: 80, Rows: 24, LocalID: "1",
+		HostReport: proto.HostReport{Where: "native", Repo: rec.Repo, RepoCommon: rec.RepoCommon}})
+	hosted := hs.Info().ID
+	code := 0
+	hs.HostStatus(session.StatusExited, &code)
+	endedRecord(t, b.testEnv, hosted)
+	histSettle(t, b.testEnv)
+	if keys := hsKeys(hsSearch(t, b.testEnv, "turnstile")); !slices.Contains(keys, "session:"+server) || !slices.Contains(keys, "session:"+hosted) {
+		t.Fatalf("the admin's search: %v", keys)
+	}
+	f := &obsFixture{bkEnv: b}
+	for i, c := range []struct {
+		name  string
+		scope map[string]any
+		want  []string
+	}{
+		{"every session", map[string]any{}, []string{"session:" + server}},
+		{"the hosted session named", map[string]any{"sessions": []string{hosted}}, []string{}},
+		{"its repository", map[string]any{"repos": []string{rec.Repo}}, []string{"session:" + server}},
+	} {
+		mod := func(cfg map[string]any) {
+			cfg["scope"] = c.scope
+			cfg["visibility"] = map[string]any{"runs": true, "logs": true, "dispatch": true, "sessions": true, "touched": true}
+		}
+		if i == 0 {
+			f.turn(t, mod)
+		} else {
+			f.again(t, mod)
+		}
+		got := f.expectRead(t, searchPath("turnstile"), http.StatusOK, "")
+		if refs := historyRefs(got); !slices.Equal(refs, c.want) {
+			t.Errorf("%s: the turn's history %v, want %v", c.name, refs, c.want)
+		}
+		if _, ok := f.readOf(t, "session:"+hosted); ok {
+			t.Errorf("%s: the hosted record is in the turn's read log", c.name)
+		}
 	}
 }
 

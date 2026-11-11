@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -17,11 +18,14 @@ import (
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/ext/local"
+	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/api"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/gitcli"
 	"github.com/rocksolidlabs/conductor/internal/journal"
+	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 	"github.com/rocksolidlabs/conductor/internal/store"
 )
@@ -124,10 +128,7 @@ func TestTheHostReadsItsLaunchRevisionBeforeItStarts(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	res, err := Run(ctx, Options{ServerURL: srv.URL, Token: hostToken, RelayOnly: true, Name: "native", Argv: []string{"/bin/sh", "-c", "exit 0"}, Dir: dir,
-		Runtime: commitAtStart{local.Native(), t}, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		probe: func(_ context.Context, argv []string, _ string) string {
-			return "9.9.9 (" + filepath.Base(argv[0]) + ")"
-		}})
+		Runtime: commitAtStart{local.Native(), t}, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,8 +140,144 @@ func TestTheHostReadsItsLaunchRevisionBeforeItStarts(t *testing.T) {
 	if after == before || r.End != after {
 		t.Fatalf("the record's end commit %q, the folder's %q after the start's %q", r.End, after, before)
 	}
-	if r.Agent.Version != "9.9.9 (sh)" || !r.Host.Hosted || r.Host.Owner == "" {
+	// A shell is no agent's program: its version is not the agent's
+	// (TestTheAgentsVersionIsTheAgents).
+	if r.Agent.Version != "" || !r.Host.Hosted || r.Host.Owner == "" {
 		t.Fatalf("the record's agent and host: %+v %+v", r.Agent, r.Host)
+	}
+}
+
+// The end commit is the launch repository's, read through the folder the
+// host opened for the launch and kept only when the repository there is
+// still the launch's: a folder moved away with another repository made at
+// its path has its own folder's commit where the system reads a folder
+// through its handle (Linux) and none elsewhere, never the other's; a
+// repository made again at the same path has none.
+func TestTheHostsEndCommitIsItsLaunchRepositorys(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	srv := recordingServer(t)
+	for _, c := range []struct {
+		name   string
+		change func(t *testing.T, dir string)
+		own    bool
+	}{
+		{"its folder moved, another put at its path", func(t *testing.T, dir string) {
+			if err := os.Rename(dir, dir+".was"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}, runtime.GOOS == "linux"},
+		{"its repository made again at the same path", func(t *testing.T, dir string) {
+			if err := os.RemoveAll(filepath.Join(dir, ".git")); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "w")
+			if err := os.Mkdir(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			git(t, dir, "init", "-q")
+			git(t, dir, "commit", "-q", "--allow-empty", "-m", "first")
+			procs := make(chan *sessiontest.FakeProc, 1)
+			fake := &sessiontest.FakeRuntime{Place: ext.WhereNative, Terminal: func(ext.TerminalSpec) (*sessiontest.FakeProc, error) {
+				p := sessiontest.NewFakeProc()
+				procs <- p
+				return p, nil
+			}}
+			heads := make(chan [2]string, 1)
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+			defer cancel()
+			res, err := Run(ctx, Options{ServerURL: srv.URL, Token: hostToken, RelayOnly: true, Name: "moved", Argv: []string{"/bin/agent"}, Dir: dir, Runtime: fake,
+				Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+				Registered: func(string, string) {
+					go func() {
+						p := <-procs
+						git(t, dir, "commit", "-q", "--allow-empty", "-m", "during the session")
+						head := git(t, dir, "rev-parse", "HEAD")
+						c.change(t, dir)
+						git(t, dir, "init", "-q")
+						git(t, dir, "commit", "-q", "--allow-empty", "-m", "another repository")
+						heads <- [2]string{head, git(t, dir, "rev-parse", "HEAD")}
+						p.End(0)
+					}()
+				}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			h := <-heads
+			want := ""
+			if c.own {
+				want = h[0]
+			}
+			if r := endedRecord(t, srv.URL, res.SessionID); r.End != want || r.End == h[1] {
+				t.Fatalf("the end commit %q, want %q (the other repository's %s)", r.End, want, h[1])
+			}
+		})
+	}
+}
+
+// The agent's version is the agent's: the probe runs the launched program
+// alone, never the launch's arguments, and only when that program is the
+// agent's own; a wrapper (npx, a shell) answers for itself, so its version
+// is never kept as the agent's.
+func TestTheAgentsVersionIsTheAgents(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the stand-in programs are shell scripts")
+	}
+	dir := t.TempDir()
+	args := filepath.Join(dir, "args")
+	stand := func(name, version string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("#!/bin/sh\necho \"$@\" >> "+args+"\necho "+version+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	npx, opencode := stand("npx", "10.9.2"), stand("opencode", "1.4.0")
+	for _, c := range []struct {
+		argv []string
+		want string
+	}{
+		{[]string{npx, "opencode-ai"}, ""},
+		{[]string{"/bin/sh", "-c", opencode}, ""},
+		{[]string{opencode, "--model", "x", "run", "a prompt"}, "1.4.0"},
+	} {
+		a := &agent{opts: Options{Adapter: "opencode", Argv: c.argv}}
+		if got := a.probeVersion(t.Context()); got != c.want {
+			t.Errorf("%q: the version %q, want %q", c.argv, got, c.want)
+		}
+	}
+	ran, _ := os.ReadFile(args)
+	if strings.TrimSpace(string(ran)) != "--version" {
+		t.Fatalf("the stand-ins were run with %q", ran)
+	}
+}
+
+// What the host's own deny list refuses of its session's files it leaves
+// out of what it reports: a file entry there is not sent, one elsewhere is,
+// and every other entry is sent as before.
+func TestTheHostLeavesOutWhatItsDenyListRefuses(t *testing.T) {
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "conductor-data")
+	var sent []proto.HostActivityMsg
+	a := &agent{opts: Options{FileDeny: func() []string { return []string{secret} }}, dir: dir, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1"}
+	a.sendHook = func(v any) { sent = append(sent, v.(proto.HostActivityMsg)) }
+	for _, e := range []session.ActivityEntry{
+		{Type: session.ActivityFile, Op: "read", Path: filepath.Join(secret, "state.json")},
+		{Type: session.ActivityFile, Op: "read", Path: "conductor-data/config.json"},
+		{Type: session.ActivityFile, Op: "edit", Path: "main.go"},
+		{Type: session.ActivityProgress, Message: "built"},
+	} {
+		a.sendActivity(e, "")
+	}
+	if len(sent) != 2 || sent[0].Entry.Path != "main.go" || sent[1].Entry.Message != "built" {
+		t.Fatalf("sent %+v", sent)
 	}
 }
 
@@ -165,7 +302,10 @@ func TestANonNativeHostReportsItsWhereAndNoGit(t *testing.T) {
 			asked.Add(1)
 			return gitcli.Revision{Top: "/w", Common: "/w/.git", Commit: strings.Repeat("a", 40)}, nil
 		},
-		probe: func(context.Context, []string, string) string { asked.Add(1); return "1.0" }})
+		probe: func(context.Context, []string, agents.Probe, map[string]string) agents.ProbeResult {
+			asked.Add(1)
+			return agents.ProbeResult{Ran: true, Identified: true, Version: "1.0"}
+		}})
 	if err != nil {
 		t.Fatal(err)
 	}

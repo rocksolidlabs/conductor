@@ -30,6 +30,25 @@ func lostEnding(r *Record) string {
 	return EndingLost
 }
 
+// hosted says x is a hosted session's record: what it holds is its host's,
+// and nothing of this machine is asked of it (no deny list, no end commit
+// read here). The caller holds mu.
+func (x *rec) hosted() bool { return x.r.Host.Hosted }
+
+// AgentSession is the agent session the record of in holds now, nil for
+// none or when in is not the record's instance: what a hosted record's
+// next capture goes on from, whichever of its instances captured it.
+func (j *Journal) AgentSession(in Instance) *AgentSession {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	x, ok := j.recs[in.id]
+	if !ok || in.n == 0 || x.inst != in.n || x.r.Agent.Session == nil {
+		return nil
+	}
+	c := *x.r.Agent.Session
+	return &c
+}
+
 // BeginHosted keeps the record of a hosted session as its hub adds it
 // (Host.Hosted, its host instance's hash in Host.Owner), and answers its
 // instance. An id with no record is begun as Begin begins one. A record of

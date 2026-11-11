@@ -750,7 +750,7 @@ func TestARemovedRecordLetsItsRepositoryGo(t *testing.T) {
 	if !ok {
 		t.Fatal("the launch kept no repository")
 	}
-	repoB := v.(*launchRepo)
+	repoB := v.(*gitcli.LaunchRepo)
 	head := commitAt(t, wa, "during the session")
 	armed.Store(true)
 	e.stopAndWait(a)
@@ -766,10 +766,8 @@ func TestARemovedRecordLetsItsRepositoryGo(t *testing.T) {
 	if _, ok := e.srv.recordRepos.Load(b); ok {
 		t.Fatal("the forgotten record's repository is still kept")
 	}
-	if repoB.held != nil {
-		if _, err := repoB.held.Stat(); !errors.Is(err, os.ErrClosed) {
-			t.Fatalf("the forgotten record's repository is still open: %v", err)
-		}
+	if repoB.Holding() {
+		t.Fatal("the forgotten record's repository is still open")
 	}
 	letGo()
 	if r := endedRecord(t, e, a); r.End != head {

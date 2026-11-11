@@ -52,10 +52,10 @@ var (
 
 // Check reports whether r is within its bounds: Where none or 1 to
 // MaxReportWhere of a-z, 0-9 and '-' beginning with a letter; AgentVersion
-// none or at most MaxAgentVersion bytes of one line of UTF-8 text; Repo and
-// RepoCommon none or an absolute path (a POSIX one, a Windows drive's or a
-// UNC one: the host's OS may not be the server's) of at most MaxReportPath
-// bytes with no control character, never an address; StartCommit none or
+// none or at most MaxAgentVersion bytes of one line of UTF-8 text (oneLine);
+// Repo and RepoCommon none or an absolute path (a POSIX one, a Windows
+// drive's or a UNC one: the host's OS may not be the server's) of at most
+// MaxReportPath bytes of one line, never an address; StartCommit none or
 // a full commit id (ValidCommit).
 func (r HostReport) Check() error {
 	if r.Where != "" && !whereSlug(r.Where) {
@@ -132,9 +132,15 @@ func whereSlug(s string) bool {
 	return true
 }
 
-// oneLine reports whether s is UTF-8 text with no control character.
+// oneLine reports whether s is one line of UTF-8 text drawn as it reads:
+// no control character, and none that changes how a line is drawn without
+// being seen (the format class: direction marks, overrides and isolates,
+// the zero-width ones; the line and paragraph separators). Every text
+// field a host reports is held to it.
 func oneLine(s string) bool {
-	return utf8.ValidString(s) && !strings.ContainsFunc(s, unicode.IsControl)
+	return utf8.ValidString(s) && !strings.ContainsFunc(s, func(r rune) bool {
+		return unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp)
+	})
 }
 
 // reportedPath reports whether p is none, or an absolute path of at most

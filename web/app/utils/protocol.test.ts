@@ -209,6 +209,16 @@ describe('a host report', () => {
       { startCommit: 'A'.repeat(40) },
     ]) expect(hostReportValid(r), JSON.stringify(r)).toBe(false)
   })
+  it('refuses in each text field a character that changes how the line is drawn', () => {
+    // Built from their code points (a direction override and isolate, zero-width space and joiner, BOM, line and paragraph
+    // separators), as proto's TestAReportedFieldIsOneLineDrawnInOrder has them.
+    for (const c of [0x202e, 0x2066, 0x200b, 0x200d, 0xfeff, 0x2028, 0x2029].map((n) => String.fromCodePoint(n))) {
+      for (const r of [{ agentVersion: '2.1.304' + c }, { repo: '/src/' + c + 'app' }, { repoCommon: '/src/app/' + c + '.git' }]) {
+        expect(hostReportValid(r), JSON.stringify(r)).toBe(false)
+      }
+    }
+    expect(hostReportValid({ agentVersion: '2.1.304 (Claude Code)', repo: '/Users/adá/app' })).toBe(true)
+  })
   it('bounds a session_info by its bytes and its end commit by its form', () => {
     const m: HostSessionInfoMessage = { t: 'session_info', endCommit: 'c'.repeat(64) }
     const body = JSON.stringify(m)

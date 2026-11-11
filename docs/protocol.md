@@ -657,27 +657,39 @@ the session's record (History): the host is where the session is
 launched, so it reads the launch on its own machine. `session.where` is
 its Runtime, 1–32 bytes of `a-z`, `0-9` and `-` beginning with a letter
 (`native` for `conductor host`); `session.agentVersion`, at most 64 bytes
-of one line, its adapter's probe of the agent; and only when its Runtime
-is native, read in its folder before its process starts (one `git
-rev-parse`, the C locale, 2 s), `session.repo` (the working tree's top)
-and `session.repoCommon` (the repository's common git directory), each an
-absolute path (`/…`, `X:\…`, `\\…`) of at most 4096 bytes with no
-control character, and `session.startCommit`, 40 or 64 lowercase hex
-digits. A host on another Runtime reports its `where` and no git fact.
+of one line, its adapter's probe of the agent's own program alone (none
+when the launched program is not the agent's, a wrapper such as `npx` or
+a shell, whose version is its own); and only when its Runtime is native,
+read in the folder it opened for the launch, before its process starts
+(one `git rev-parse`, the C locale, 2 s), `session.repo` (the working
+tree's top) and `session.repoCommon` (the repository's common git
+directory), each an absolute path (`/…`, `X:\…`, `\\…`) of at most 4096
+bytes of one line, and `session.startCommit`, 40 or 64 lowercase hex
+digits. One line is UTF-8 with no control character and none that
+changes how a line is drawn unseen (Unicode's format class: direction
+marks, overrides and isolates, zero-width characters; the line and
+paragraph separators). A host on another Runtime reports its `where` and
+no git fact.
 Each is optional: an older host sends none, an older server ignores
 them, and the record says "not reported by its host" for each one
 absent, never the server's own fact and never native. A register with
 any of them past its bound is refused (`registration rejected`). Once
 its process has ended, a host whose `registered` said `sessionInfo`
 sends `session_info{endCommit?}` (its folder's HEAD read the same way,
-native only; none when not read) before the `status` that says the
+through the folder it opened, native only, and kept only when the
+repository there is still the launch's by the file system's identity:
+none for a folder moved away with another repository at its path where
+the system cannot read a folder through its handle, or a repository made
+again; none when not read) before the `status` that says the
 session ended, so the server has it as it records the end; the whole
 message is at most 2 KiB, and one past it, or whose `endCommit` is not a
 full commit id, is dropped and logged, the connection kept. None of it
 goes to a switchyard, which records nothing. The server keeps all of it
 in the hosted session's record alone, never as a path on its own disk or
 an argument of a command: a hosted record's repository places it in no
-project. A hosted agent's own session id is not reported by the host: its
+project, and a file path in its activity is kept as text, never looked
+up on the server (a host leaves out of what it sends the files its own
+deny list refuses). A hosted agent's own session id is not reported by the host: its
 hooks report it to the server (`POST /api/sessions/{id}/attention`,
 `agentSession`), which keeps it in the record by the catalog's recipe for
 the agent, never in the hosted session's listing, and Resume of a hosted

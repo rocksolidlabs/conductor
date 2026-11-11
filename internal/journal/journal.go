@@ -1007,7 +1007,9 @@ func (j *Journal) endLocked(x *rec, end Ending) {
 		x.r.LostAt, x.r.Ending = end.At, cutBytes(end.How, maxField)
 	} else {
 		x.r.EndedAt, x.r.LostAt, x.r.Ending = end.At, time.Time{}, cutBytes(end.How, maxField)
-		x.needEnd = true
+		// A hosted record's end commit is its host's or none: the writer
+		// never reads one for it on this machine.
+		x.needEnd = !x.hosted()
 		if end.Commit != "" {
 			x.r.End, x.needEnd = fitPath(end.Commit, 64), false
 		}
@@ -1169,8 +1171,9 @@ func (j *Journal) endCommit(ctx context.Context, x *rec) {
 	x.dirty, x.urgent = true, true
 }
 
-// fold asks the server's deny list (Denied) of each touch a record holds,
-// by the path as it came, and folds the rest into its files. What it
+// fold asks the server's deny list (Denied) of each touch a server
+// session's record holds, by the path as it came, and folds the rest into
+// its files; a hosted record's are folded as they came. What it
 // judged is kept only
 // while x is still the record in memory (the package's rule): a record
 // removed while it folded takes nothing of it.
@@ -1178,10 +1181,14 @@ func (j *Journal) fold(x *rec) {
 	j.mu.Lock()
 	touches := x.touches
 	x.touches = nil
+	// A hosted record's paths are its host's, text: this machine's deny
+	// list is never asked of them (the host leaves out what its own
+	// refuses before it reports them).
+	ask := j.o.Denied != nil && !x.hosted()
 	j.mu.Unlock()
 	kept := touches[:0:0]
 	for _, t := range touches {
-		if j.o.Denied != nil && j.o.Denied(t.path) {
+		if ask && j.o.Denied(t.path) {
 			continue
 		}
 		kept = append(kept, t)
@@ -1722,7 +1729,8 @@ func (j *Journal) ForgetAll() (forgotten, kept int, err error) {
 	return forgotten, kept, err
 }
 
-// Prune deletes the ended records past MaxRecords, those that stopped
+// Prune deletes the ended records past MaxRecords: hosted sessions'
+// records first, then the server's own sessions', each those that stopped
 // being open longest ago first (by their end, else when they were last
 // observed); a live one, one holding a pending receipt and one of a later
 // version are never deleted and never counted.
@@ -1749,7 +1757,13 @@ func (j *Journal) pruneLocked() {
 		j.unlockChoose()
 		return
 	}
+	// The kept come first: the server's own sessions' records before any
+	// hosted one's, so a hosted record goes before any of the server's
+	// own, whatever the number of them; then the latest first.
 	sort.Slice(ended, func(a, b int) bool {
+		if x, y := ended[a].Host.Hosted, ended[b].Host.Hosted; x != y {
+			return y
+		}
 		if x, y := ended[a].stopped, ended[b].stopped; !x.Equal(y) {
 			return x.After(y)
 		}

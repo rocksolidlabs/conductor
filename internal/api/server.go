@@ -170,7 +170,7 @@ type Server struct {
 	commits          *commitFan // the commit hooks' observers (commits.go)
 	readRevision     func(ctx context.Context, dir string) (gitcli.Revision, error)
 	// recordRepos is each native server session's launch repository, by
-	// the identity of its common git directory (*launchRepo, which holds
+	// the identity of its common git directory (*gitcli.LaunchRepo, which holds
 	// it open where the system reuses identities), until its end commit is
 	// read (recordEndCommit) or none is to be read; recCur, under recMu, the
 	// registration each record follows (*recorder), by its id, until its

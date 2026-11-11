@@ -16,8 +16,9 @@ import (
 // nothing of the server's machine: no probe, no git read, no Runtime. Its
 // agent's own session is captured here, from the hook that reports it to
 // this server (captureHostedAgentSession), by the catalog's recipe for the
-// agent, and kept in the recorder and the record, never in the hosted
-// session's Info, which is its host's.
+// agent, from what the record holds whichever registration captured it,
+// and kept in the record, never in the hosted session's Info, which is its
+// host's.
 //
 // It follows its session by the same rule as a server session's
 // (reconcile in history_journal.go): the hub's OnAdded begins it, the
@@ -168,8 +169,10 @@ func (s *Server) recordSessionInfo(hs *signal.HostedSession, m proto.HostSession
 
 // captureHostedAgentSession is captureAgentSession for a hosted session:
 // the id its agent's hook reported to this server, by the catalog's recipe
-// for the agent (its pattern and policy: none, nothing captured), kept by
-// its recorder and settled into its record; the hosted Info is untouched.
+// for the agent (its pattern and policy: none, nothing captured), applied
+// to the agent session the record holds (journal.AgentSession), whichever
+// registration of the session captured it, and settled into the record;
+// the hosted Info is untouched.
 func (s *Server) captureHostedAgentSession(hs *signal.HostedSession, agentSession string, turn bool) {
 	info := hs.Info()
 	policy, ok := s.agentSessionPolicy(info.AgentID, agentSession)
@@ -183,7 +186,11 @@ func (s *Server) captureHostedAgentSession(hs *signal.HostedSession, agentSessio
 	if rc == nil || rc.h != hs || !s.held(rc) {
 		return
 	}
-	next, changed := session.NextAgentSession(rc.as, agentSession, policy, turn)
+	var cur *session.AgentSession
+	if as := s.sessionRecords.AgentSession(rc.in); as != nil {
+		cur = &session.AgentSession{ID: as.ID, Source: as.Source, Resumable: as.Resumable}
+	}
+	next, changed := session.NextAgentSession(cur, agentSession, policy, turn)
 	if !changed {
 		return
 	}

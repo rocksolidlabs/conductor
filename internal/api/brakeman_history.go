@@ -539,7 +539,9 @@ func (hs *historyScope) turnEntry(ctx context.Context, out servedEntry, e histor
 //   - a session's entries by its repository or its own id (a plain
 //     session's and a crew member's alike), a crew member's alone by its
 //     run's crew or its run; none under a scope of projects, which no
-//     column of theirs places;
+//     column of theirs places; for a turn, none of a hosted session's
+//     record under any scope (what its host reports is not placed for a
+//     turn, narrower than a grant of every session says);
 //   - a ticket's entries by its project, none under a scope of runs or
 //     crews; a launch's by its project or the run it names, a delivery's
 //     by that run, neither under a scope of repositories (no column of
@@ -551,7 +553,7 @@ func (hs *historyScope) turnEntry(ctx context.Context, out servedEntry, e histor
 // scope of repositories and crews) is not drawn at all: one column a
 // place. The admin's read is what a turn with every class and no scope is
 // served, except that the admin's line may ask for Brakeman's own runs and
-// sessions (handleBrakemanHistory).
+// sessions (handleBrakemanHistory) and holds hosted sessions' records.
 func historyRestriction(o *observer) *history.Restriction {
 	sees, scopes := o.sees, o.grant.scopes
 	if o.tp == nil {
@@ -604,13 +606,19 @@ func historyRestriction(o *observer) *history.Restriction {
 	asked := []history.Cond{{Column: "anchor.kind", Values: []string{brakeman.RefTask}}}
 	add(seen(placeRun, not(historyDecisionKinds...)), nil, ofRun, tree, project)
 	add(seen(placeRun, only(historyDecisionKinds...)), asked, ofRun, tree, project)
+	// A turn draws no row of a hosted session's record, whatever its
+	// grant: what a host reports is not placed for a turn.
+	var ofServer []history.Cond
+	if o.tp != nil {
+		ofServer = []history.Cond{{Column: "hosted", Values: []string{"1"}, Not: true}}
+	}
 	switch {
 	case plainOK && memberOK && !crews.set && !runs.set:
-		add(seen(placeSession, not()), nil, tree, anchor)
+		add(seen(placeSession, not()), ofServer, tree, anchor)
 	case memberOK && !plainOK && (crews.set || runs.set):
 		// A crew member's alone: its run's column places it.
 		if place, ok := placeOf(tree, anchor, ofRun); ok && place != nil && (place.Column == "run" || place.Column == "run.crew") {
-			add(seen(placeSession, not()), nil, ofRun)
+			add(seen(placeSession, not()), ofServer, ofRun)
 		}
 	}
 	act := []history.Cond{{Column: "actor", Values: historyActors, Not: true}}

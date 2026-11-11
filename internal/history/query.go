@@ -427,7 +427,8 @@ type Cond struct {
 }
 
 // restrictColumns are the columns a Cond names, each an expression over
-// the row: its own, the project of its ticket's key, the crew of its run's
+// the row: its own (hosted 1 for a hosted session's record's rows, else
+// 0), the project of its ticket's key, the crew of its run's
 // id (a key less its dash and number, an id less its dash and eight hex
 // digits; "" when there is none) and the kind of the ref it is anchored
 // to (the anchor up to its colon).
@@ -438,6 +439,7 @@ var restrictColumns = map[string]string{
 	"run":            "e.run",
 	"anchor":         "e.anchor",
 	"actor":          "e.actor",
+	"hosted":         "e.hosted",
 	"ticket.project": "substr(e.ticket, 1, instr(e.ticket, '-') - 1)",
 	"run.crew":       "substr(e.run, 1, max(length(e.run) - 9, 0))",
 	"anchor.kind":    "substr(e.anchor, 1, max(instr(e.anchor, ':') - 1, 0))",

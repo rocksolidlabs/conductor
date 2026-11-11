@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -94,6 +95,90 @@ func TestBeginHostedRefusesALiveRecordAndTakesOneFromItsFile(t *testing.T) {
 	j2.Flush()
 	if r, _ := onDisk(t, dir, id); r.Reopened != 1 || r.Ending != "" || !slices.Equal(messages(r), []string{"before", Reopening}) {
 		t.Fatalf("taken up after the restart: %+v", r)
+	}
+}
+
+// A path a host reports is its host's: the deny list a server session's
+// paths go through (Denied) is never asked of it, and it is kept as it
+// came, whatever it names on this machine; a server session's paths beside
+// it are asked as before. A hosted end with no commit of its host's asks
+// the writer for none either.
+func TestAHostedRecordAsksNothingOfThisMachine(t *testing.T) {
+	var mu sync.Mutex
+	var denied, ended []string
+	j, dir := newJournal(t, Options{
+		Denied: func(path string) bool {
+			mu.Lock()
+			defer mu.Unlock()
+			denied = append(denied, path)
+			return strings.HasPrefix(path, "/data/")
+		},
+		EndCommit: func(_ context.Context, r Record) string {
+			mu.Lock()
+			defer mu.Unlock()
+			ended = append(ended, r.ID)
+			return strings.Repeat("e", 40)
+		},
+	})
+	hosted, err := j.BeginHosted(hostedRecord(sid(1), "owner-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := begin(t, j, serverRecord(sid(2)))
+	for _, in := range []Instance{hosted, server} {
+		j.Note(in, Activity{Type: actFile, Op: "edit", Path: "/data/conductor.json"})
+		j.Note(in, Activity{Type: actFile, Op: "edit", Path: "/w/main.go"})
+	}
+	j.Flush()
+	finish(j, hosted, Ending{How: "exited (exit 0)"})
+	finish(j, server, Ending{How: "exited (exit 0)"})
+	j.Flush()
+	h, _ := onDisk(t, dir, sid(1))
+	if len(h.Files) != 2 || !slices.ContainsFunc(h.Files, func(f File) bool { return f.Path == "/data/conductor.json" }) || h.End != "" {
+		t.Fatalf("the hosted record: files %+v end %q", h.Files, h.End)
+	}
+	if s, _ := onDisk(t, dir, sid(2)); len(s.Files) != 1 || s.Files[0].Path != "/w/main.go" || s.End != strings.Repeat("e", 40) {
+		t.Fatalf("the server record: files %+v end %q", s.Files, s.End)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(denied, []string{"/data/conductor.json", "/w/main.go"}) || !slices.Equal(ended, []string{sid(2)}) {
+		t.Fatalf("this machine was asked of %q and for the end commits of %q", denied, ended)
+	}
+}
+
+// Past the journal's bound a hosted session's ended record goes before any
+// of the server's own sessions', the oldest first: no number of hosted
+// records removes a server session's record; with the hosted ones gone,
+// the server's own past the bound go as before.
+func TestAHostsRecordsGoBeforeTheServersOwn(t *testing.T) {
+	j, dir := newJournal(t, Options{maxRecords: new(3)})
+	endedRecords(t, j, 0, 3)
+	for i := 10; i < 20; i++ {
+		in, err := j.BeginHosted(hostedRecord(sid(i), "owner-a"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		finish(j, in, Ending{How: "exited (exit 0)"})
+		j.Flush()
+	}
+	j.Prune()
+	for i := range 3 {
+		if !exists(dir, sid(i)) {
+			t.Fatalf("the server's record %d was pruned for hosted ones", i)
+		}
+	}
+	for i := 10; i < 20; i++ {
+		if exists(dir, sid(i)) {
+			t.Fatalf("hosted record %d kept past the bound", i)
+		}
+	}
+	endedRecords(t, j, 3, 2)
+	j.Prune()
+	for i, want := range []bool{false, false, true, true, true} {
+		if exists(dir, sid(i)) != want {
+			t.Fatalf("server record %d kept %v, want %v", i, !want, want)
+		}
 	}
 }
 

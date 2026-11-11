@@ -171,10 +171,10 @@ type Options struct {
 	// place of the standard one: a test's names dialed to its own servers.
 	transport *http.Transport
 	// revision and probe, when set (tests), read the folder's revision and
-	// the agent's version in place of gitcli's and the adapter's probe
+	// run the agent's probe in place of gitcli's and agents.RunProbe
 	// (report.go).
 	revision func(ctx context.Context, dir string) (gitcli.Revision, error)
-	probe    func(ctx context.Context, argv []string, adapter string) string
+	probe    func(ctx context.Context, command []string, p agents.Probe, env map[string]string) agents.ProbeResult
 }
 
 // Result reports how the hosted process ended.
@@ -240,10 +240,19 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	instance, _ := share.NewToken()
 	a := &agent{opts: opts, wsURL: wsURL, dir: dir, cols: cols, rows: rows, peers: map[string]*peer{}, log: opts.Log, agentToken: agentToken, instance: instance, localID: "1"}
 	a.activity = newActivityForwarder(a.sendActivity, a.sendChat, opts.Log)
+	// The folder is opened once, before anything is read of it: the
+	// report's reads, the process's start and the session's file reads and
+	// saves go through it.
+	folder, err := session.OpenFolder(dir)
+	if err != nil {
+		return Result{}, err
+	}
 	// What the host reports of the session, read before its process starts.
-	a.report = a.readReport(ctx)
+	a.report = a.readReport(ctx, folder)
+	defer a.letLaunchGo()
 	firstConn, registered, err := a.dialAndRegister(ctx)
 	if err != nil {
+		folder.Close()
 		return Result{}, err
 	}
 	notifyURL := attentionURL(opts.ServerURL, registered.SessionID)
@@ -258,14 +267,6 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		if _, ok := env[k]; !ok {
 			env[k] = v
 		}
-	}
-	// The folder is opened once: the process starts in it and the
-	// session's file reads and saves go through it.
-	folder, err := session.OpenFolder(dir)
-	if err != nil {
-		a.dropConn(firstConn)
-		firstConn.Close(websocket.StatusNormalClosure, "start failed")
-		return Result{}, err
 	}
 	dirFile, err := folder.Dir()
 	if err != nil {
@@ -497,9 +498,13 @@ type agent struct {
 	lanes laneGroup
 
 	// report is what the host reports of its session (report.go), read
-	// before its process starts; sessionInfo what the server's last
-	// registered said of session_info; endCommit the end's, read once.
+	// before its process starts; launchDir the launch's folder and
+	// launchRepo its repository, held for the end's read, which must find
+	// the same; sessionInfo what the server's last registered said of
+	// session_info; endCommit the end's, read once.
 	report      proto.HostReport
+	launchDir   *os.File
+	launchRepo  *gitcli.LaunchRepo
 	sessionInfo atomic.Bool
 	endOnce     sync.Once
 	endCommit   string
@@ -1077,8 +1082,14 @@ func (a *agent) sendChat(m session.ChatMessage) {
 }
 
 // sendActivity delivers one entry, and the attention state it records, on the
-// control connection.
+// control connection. A file entry whose path this host's own deny list
+// refuses (Options.FileDeny) is not sent: what the host leaves out of its
+// sessions' files it leaves out of what it reports of them, the server
+// asking nothing of its own machine about a host's paths.
 func (a *agent) sendActivity(e session.ActivityEntry, state session.AttentionState) {
+	if e.Type == session.ActivityFile && a.opts.FileDeny != nil && e.Path != "" && session.DeniedBy(session.TouchedAbs(a.dir, e.Path), a.opts.FileDeny()) {
+		return
+	}
 	m := hostActivityMsg(a.sessionID(), e)
 	m.State = string(state)
 	a.send(m)

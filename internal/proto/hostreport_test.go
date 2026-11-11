@@ -53,6 +53,31 @@ func TestAHostsReportIsHeldToItsBounds(t *testing.T) {
 	}
 }
 
+// A reported field is one line drawn as it reads: a character that
+// changes how the line is drawn without being seen (a direction override
+// or isolate, a zero-width space or joiner, a line or paragraph separator)
+// is refused in every field, as a control character is.
+func TestAReportedFieldIsOneLineDrawnInOrder(t *testing.T) {
+	// Built from their code points, so that none is in this file itself.
+	for _, c := range []rune{0x202e, 0x2066, 0x200b, 0x200d, 0xfeff, 0x2028, 0x2029} {
+		r := string(c)
+		for name, rep := range map[string]HostReport{
+			"where":        {Where: "native" + r},
+			"agentVersion": {AgentVersion: "2.1.304" + r + "evil"},
+			"repo":         {Repo: "/src/" + r + "app"},
+			"repoCommon":   {RepoCommon: "/src/app/" + r + ".git"},
+			"startCommit":  {StartCommit: strings.Repeat("a", 39) + r},
+		} {
+			if rep.Check() == nil {
+				t.Errorf("%s with %U was taken", name, c)
+			}
+		}
+	}
+	if (HostReport{AgentVersion: "2.1.304 (Claude Code)", Repo: "/Users/adá/app"}).Check() != nil {
+		t.Fatal("plain text was refused")
+	}
+}
+
 // An older host's register, with none of the report's fields, decodes with
 // an empty report, and a report's fields ride beside the session's own.
 func TestAnOldHostsRegisterHasNoReport(t *testing.T) {

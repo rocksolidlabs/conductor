@@ -738,8 +738,9 @@ export function validCommit(s: string): boolean {
 /** Whether a HostReport is within its bounds, as the server's hub holds it (proto.HostReport.Check): lengths in UTF-8 bytes. */
 export function hostReportValid(r: HostReport): boolean {
   const bytes = (s: string) => new TextEncoder().encode(s).length
-  // eslint-disable-next-line no-control-regex
-  const oneLine = (s: string) => !/[\u0000-\u001f\u007f-\u009f]/.test(s)
+  // One line drawn as it reads: no control character, none of the format class (direction marks and overrides, the zero-width
+  // ones), no line or paragraph separator (proto's oneLine).
+  const oneLine = (s: string) => !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(s)
   const path = (p?: string) => !p || (bytes(p) <= HOST_MAX_REPORT_PATH && oneLine(p) && /^(?:\/|\\\\|[A-Za-z]:[\\/])/.test(p))
   if (r.where && !new RegExp(`^[a-z][a-z0-9-]{0,${HOST_MAX_REPORT_WHERE - 1}}$`).test(r.where)) return false
   if (r.agentVersion && (bytes(r.agentVersion) > HOST_MAX_AGENT_VERSION || !oneLine(r.agentVersion))) return false

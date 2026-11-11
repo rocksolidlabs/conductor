@@ -4929,17 +4929,35 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   server stops observing it (a restart, its host away past the grace),
   never lost or ended, and the same host's next registration of the
   session takes it up again (`journal.BeginHosted`, `reopened` counted,
-  its entries kept). It holds no question: a host's chat sends none. No
-  record field and no history kind is new, and nothing new is served to
-  a Brakeman turn (a hosted record places itself in no repository or
-  project). Observed by the tests: `TestTheHostReadsItsLaunchRevisionBeforeItStarts`,
+  its entries kept), and the agent session it captured is the record's,
+  the recipe's policy going on from it whichever registration reports
+  next. It holds no question: a host's chat sends none. A hosted record
+  takes nothing from the server's machine (no probe, no git read, no deny
+  list asked of its paths: the host leaves out what its own refuses), and
+  past the journal's bound a hosted record goes before any of the server's
+  own sessions' records. The host reads its revision through the folder
+  it opened for the launch, keeps its end commit only for the same
+  repository, and reports its agent's version only from the agent's own
+  program; every reported text field is one line drawn as it reads. No
+  record field and no history kind is new, and a Brakeman turn's history
+  read draws no row of a hosted record whatever its grant (narrower than
+  a grant of every session says; a later row may place hosted records for
+  a turn). Observed by the tests: `TestTheHostReadsItsLaunchRevisionBeforeItStarts`,
   `TestANonNativeHostReportsItsWhereAndNoGit`,
+  `TestTheHostsEndCommitIsItsLaunchRepositorys`,
+  `TestTheAgentsVersionIsTheAgents`,
+  `TestTheHostLeavesOutWhatItsDenyListRefuses`,
   `TestAHostedAgentSessionIsCapturedFromItsHook`,
+  `TestAReopenedRecordKeepsItsAgentSession`,
   `TestAHostedRecordTakesWhatItsHostReports`,
+  `TestAHostedRecordBorrowsNothingFromTheServer`,
+  `TestABrakemanTurnReadsNoHostedRecord`,
   `TestAnOldHostsRecordSaysNotReported`,
   `TestAHostedRecordIsTakenUpAgainByItsHost`, the journal's
-  `TestBeginHostedReopensTheSameHostsRecord`, and the protocol's bounds in
-  Go and vitest. Not made yet, the maintainers' by hand: a hosted session
+  `TestBeginHostedReopensTheSameHostsRecord`,
+  `TestAHostedRecordAsksNothingOfThisMachine` and
+  `TestAHostsRecordsGoBeforeTheServersOwn`, and the protocol's bounds in
+  Go and vitest (`TestAReportedFieldIsOneLineDrawnInOrder`). Not made yet, the maintainers' by hand: a hosted session
   from `conductor host` on the Mac recorded with the agent's version, its
   own session and its launch commit as the Mac reports them. Its checks
   are in its body.
