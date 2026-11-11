@@ -1724,8 +1724,11 @@ func TestASubmitsClaimHoldsOffARetryAndAPass(t *testing.T) {
 func TestACommittedReviewWhoseReadFailedIsSettled(t *testing.T) {
 	l := newLaunchTest(t, nil, nil)
 	run, c1 := succeededCandidate(t, l, func(dir string) string { return commitFile(t, dir, "a.txt", "a\n") })
-	// Armed, the first read of a review pending (its try committed) fails:
-	// the read after the commit, not a read before it.
+	// Armed, every read of a review pending (its try committed) fails, the
+	// request's read after its commit and the history's of the ticket
+	// alike, until the request has answered: a read before the commit is
+	// not failed. Failing only the first read let the history's, woken by
+	// the commit, take the failure before the request read (#281).
 	var armed atomic.Bool
 	l.srv.dispatch.SetReviewReadFailsForTest(func(id string) error {
 		if !armed.Load() {
@@ -1735,16 +1738,15 @@ func TestACommittedReviewWhoseReadFailedIsSettled(t *testing.T) {
 		if err != nil || !slices.ContainsFunc(pending, func(v dispatch.ReviewSummary) bool { return v.ID == id }) {
 			return nil
 		}
-		if armed.CompareAndSwap(true, false) {
-			return errors.New("the store could not read the review")
-		}
-		return nil
+		return errors.New("the store could not read the review")
 	})
 	t.Cleanup(func() { l.srv.dispatch.SetReviewReadFailsForTest(nil) })
 	armed.Store(true)
 	out := sendReview(t, l.testEnv, "CND-1", reviewOf(candName(run, "build", 1, c1), l.head, "request_changes", changeOf("x")), http.StatusCreated, "")
-	if armed.Load() {
-		t.Fatal("the read after the commit never failed")
+	armed.Store(false)
+	// The read after the commit failed: the receipt answers alone.
+	if out["review"] != nil {
+		t.Fatalf("the read after the commit never failed: %v", out["review"])
 	}
 	rc := receiptOf(t, out)
 	id, _ := rc["id"].(string)
@@ -1756,8 +1758,9 @@ func TestACommittedReviewWhoseReadFailedIsSettled(t *testing.T) {
 	}
 	armed.Store(true)
 	out = retryReview(t, l.testEnv, id, nil, http.StatusOK, "")
-	if armed.Load() {
-		t.Fatal("the read after Request again's commit never failed")
+	armed.Store(false)
+	if out["review"] != nil {
+		t.Fatalf("the read after Request again's commit never failed: %v", out["review"])
 	}
 	if rc := receiptOf(t, out); rc["status"] != dispatch.StatusDone {
 		t.Fatalf("Request again's receipt: %v", rc)
