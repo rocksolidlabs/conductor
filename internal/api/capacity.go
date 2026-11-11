@@ -633,6 +633,16 @@ func (s *Server) capacityAvailable(w http.ResponseWriter) bool {
 	return false
 }
 
+// writeBodyError answers a body that did not decode: 413 past its bound,
+// else 400 with the decoder's words (a field it does not know, a type).
+func writeBodyError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errBodyTooLarge) {
+		writeError(w, http.StatusRequestEntityTooLarge, "bound", err.Error())
+		return
+	}
+	writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+}
+
 // writeCapacityJSON answers v, encoded as the store encodes the document
 // (no HTML escaping, so a label's '<' is one byte in both), refused when
 // it passes bound.
@@ -772,7 +782,7 @@ func (s *Server) handleCapacityRead(w http.ResponseWriter, r *http.Request) {
 	}
 	var body capacityReadBody
 	if err := decodeJSONLimit(w, r, &body, maxCapacityBody); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "a body {agent, account?, check?}")
+		writeBodyError(w, err)
 		return
 	}
 	agent, ok := s.Catalog().Get(body.Agent)

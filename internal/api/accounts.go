@@ -169,7 +169,7 @@ func (s *Server) decodeAccountWrite(w http.ResponseWriter, r *http.Request, v an
 		case strings.Contains(msg, `unknown field "folder"`):
 			writeAccountError(w, http.StatusBadRequest, capacity.CodeInvalidAccount, "folder", "an account's folder never changes: add another account for another folder", nil)
 		default:
-			writeError(w, http.StatusBadRequest, "invalid_request", "a JSON object of the route's fields")
+			writeBodyError(w, err)
 		}
 		return false
 	}

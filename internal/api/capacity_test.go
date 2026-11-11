@@ -56,7 +56,9 @@ type fakeUsage struct {
 }
 
 func newFakeUsage(adapter string) *fakeUsage {
-	reset := time.Date(2026, 11, 11, 3, 0, 0, 0, time.UTC)
+	// A week ahead of the cache's clock (the real one here), so no
+	// reading of the test passes its reset.
+	reset := time.Now().Add(7 * 24 * time.Hour).UTC().Truncate(time.Second)
 	off := false
 	return &fakeUsage{adapter: adapter, starts: map[string]int{}, outcome: agents.Local, report: agents.UsageReport{
 		State: agents.UsageOK, Plan: "max",
@@ -550,7 +552,7 @@ func largestReport() agents.UsageReport {
 	fig := strings.Repeat("9", capacity.MaxFigure)
 	on := true
 	for i := range capacity.MaxWindows {
-		at := time.Date(2026, 11, 11, 3, 0, 0, i, time.UTC)
+		at := time.Now().Add(7*24*time.Hour + time.Duration(i)).UTC()
 		rep.Windows = append(rep.Windows, agents.UsageWindow{Kind: strings.Repeat("k", capacity.MaxShort), Name: strings.Repeat("n", capacity.MaxName), Minutes: 10080, Percent: 100, ResetsAt: &at, Severity: "critical", Active: &on, Limit: strings.Repeat("l", capacity.MaxShort)})
 	}
 	for range capacity.MaxCredits {
