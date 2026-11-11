@@ -123,7 +123,8 @@ type HostConn struct {
 	// of the server's own lane; waiting, the viewers' messages waiting for
 	// room, in their order (sendFrom); and room, which they wait on: Took
 	// closes it, as does a waiter that leaves the head of the line, and the
-	// next to wait makes another.
+	// next to wait makes another. It is a leaf with respect to the
+	// switchyard's link keeper, as HostedSession's mu is.
 	mu       sync.Mutex
 	bytes    int
 	ownBytes int
@@ -830,6 +831,12 @@ type HostedSession struct {
 	// together, for links over several of its sessions.
 	owner string
 
+	// mu, like HostConn's, is a leaf with respect to the switchyard's link
+	// keeper (internal/api, linkfiles.go): the keeper tells a connection
+	// (Tell, DisconnectHeldLink) while it holds its own locks, so nothing
+	// may call into the keeper while holding mu or a connection's mu (an
+	// Authorize or OnWait that touched it, or notifyChange moved inside mu)
+	// without making a deadlock.
 	mu   sync.Mutex
 	info session.Info
 	// touched is the files the host's agent touched since the host
@@ -1098,7 +1105,13 @@ func (h *HostedSession) linkViewers(linkID string) []*Viewer {
 // that is away, or whose connection ends before the message reaches it, is
 // not told again: a host counts every link gone as it loses its
 // connection.
-func (h *HostedSession) DisconnectLink(linkID string) { h.closeLink(linkID, true) }
+func (h *HostedSession) DisconnectLink(linkID string) { h.closeLink(linkID, true, false) }
+
+// DisconnectHeldLink is DisconnectLink for a link the server ended of
+// itself while this connection may still hold it (a switchyard's open
+// admission past its bound): the host is told the link went (link_gone)
+// whether or not a viewer ever joined through it.
+func (h *HostedSession) DisconnectHeldLink(linkID string) { h.closeLink(linkID, true, true) }
 
 // EndLink closes the viewers attached through linkID, one of the session's
 // own links, as the session's end, which ends its links with it (the
@@ -1107,13 +1120,14 @@ func (h *HostedSession) DisconnectLink(linkID string) { h.closeLink(linkID, true
 // it, the session's last output, and then told the session ended (Pump).
 // Otherwise it is DisconnectLink. The host, whose session has ended, is not
 // told the link went.
-func (h *HostedSession) EndLink(linkID string) { h.closeLink(linkID, false) }
+func (h *HostedSession) EndLink(linkID string) { h.closeLink(linkID, false, false) }
 
-// closeLink is DisconnectLink (revoked) and EndLink. A revoke also stops
+// closeLink is DisconnectLink (revoked), DisconnectHeldLink (revoked and
+// held: told even when no viewer joined) and EndLink. A revoke also stops
 // what the session's end still writes the link's viewers, should it have
 // closed them first (finish). A revoke closes the link's viewers before it
 // queues the link's going (DisconnectLink).
-func (h *HostedSession) closeLink(linkID string, revoked bool) {
+func (h *HostedSession) closeLink(linkID string, revoked, held bool) {
 	h.mu.Lock()
 	hit := h.linkViewers(linkID)
 	joined := linkID != "" && h.forgetLink(linkID)
@@ -1129,7 +1143,7 @@ func (h *HostedSession) closeLink(linkID string, revoked bool) {
 			v.close(session.ErrSessionEnded)
 		}
 	}
-	if joined && revoked {
+	if revoked && (joined || held) {
 		h.linkGone(conn, linkID)
 	}
 }

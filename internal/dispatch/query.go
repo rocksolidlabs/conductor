@@ -93,8 +93,12 @@ type Filter struct {
 type Query struct {
 	Project string `json:"project,omitempty"`
 	Filter
-	Limit  int    `json:"limit,omitempty"`
-	Cursor string `json:"cursor,omitempty"`
+	// External is a URL, at most MaxLinkURL bytes: the tickets whose linked
+	// issue's page, or one of whose live links' URL, it is (a pasted
+	// GitHub link's search; Program item IN1a).
+	External string `json:"external,omitempty"`
+	Limit    int    `json:"limit,omitempty"`
+	Cursor   string `json:"cursor,omitempty"`
 }
 
 // Page is a page of a list: its tickets as summaries, without their
@@ -482,6 +486,9 @@ func (q Query) plan() (p listPlan, none bool, err error) {
 	if err := q.Filter.check(); err != nil {
 		return listPlan{}, false, err
 	}
+	if len(q.External) > MaxLinkURL || !utf8.ValidString(q.External) {
+		return listPlan{}, false, badQuery("the URL searched for is not at most %d bytes of UTF-8", MaxLinkURL)
+	}
 	p.limit = q.Limit
 	if p.limit == 0 {
 		p.limit = DefaultListLimit
@@ -563,6 +570,17 @@ func (q Query) plan() (p listPlan, none bool, err error) {
 	}
 	if q.Blocked {
 		cond(blockedSet)
+	}
+	if q.External != "" {
+		// A linked item's page is kept as the store keeps an address
+		// (admitAddress): the URL searched for is compared in that form, a
+		// pasted link's query or fragment left behind; a link's URL as
+		// DS1 keeps it, as given.
+		page := q.External
+		if kept, ok := addressWords(q.External); ok {
+			page = kept
+		}
+		cond("(t.external_url = ? OR t.id IN (SELECT l.ticket_id FROM links l WHERE l.url = ? AND l.deleted_at = ''))", page, q.External)
 	}
 	for _, term := range terms {
 		cond(termMatch, term)

@@ -66,7 +66,7 @@ func TestCreateATicketWithEveryField(t *testing.T) {
 		tk.ParentID != parentID || tk.MilestoneID != m || !slices.Equal(tk.Assignees, []string{"agent:claude", "person:Alice"}) || !slices.Equal(tk.Labels, labels) ||
 		tk.CreatedBy != "Alice B" || tk.Source != "native" || tk.CreatedAt.IsZero() || !tk.ClosedAt.IsZero() || !tk.DeletedAt.IsZero() || tk.Rev != 1 ||
 		!tk.AcceptedAt.IsZero() || tk.AcceptedBy != "" || tk.AcceptedFor != "" || tk.AcceptedCriteria != "" || tk.AcceptedNote != "" ||
-		tk.ExternalID != "" || tk.ExternalURL != "" || tk.ExternalSnapshot != "" || tk.Authority != "" {
+		tk.ExternalID != "" || tk.ExternalURL != "" || tk.ExternalSnapshot != nil || tk.Authority != nil {
 		t.Fatalf("the ticket: %+v", tk)
 	}
 	// One create row with what never changes, one set row per field the
