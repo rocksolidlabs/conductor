@@ -1,0 +1,36 @@
+{
+ "state": "failure",
+ "sha": "1111111111111111111111111111111111111111",
+ "total_count": 2,
+ "statuses": [
+  {
+   "url": "https://api.github.com/repos/octo-example/widgets/statuses/1111111111111111111111111111111111111111",
+   "avatar_url": "https://avatars.githubusercontent.com/oa/1?v=4",
+   "id": 3000001,
+   "node_id": "SC_kwDOFixture1",
+   "state": "success",
+   "description": "Build passed",
+   "target_url": "https://ci.example/builds/1?token=never-kept",
+   "context": "ci/build",
+   "created_at": "2026-10-04T12:01:00Z",
+   "updated_at": "2026-10-04T12:05:00Z"
+  },
+  {
+   "url": "https://api.github.com/repos/octo-example/widgets/statuses/1111111111111111111111111111111111111111",
+   "id": 3000002,
+   "node_id": "SC_kwDOFixture2",
+   "state": "failure",
+   "description": "Lint failed",
+   "target_url": "https://ci.example/builds/2",
+   "context": "ci/lint",
+   "created_at": "2026-10-04T12:01:00Z",
+   "updated_at": "2026-10-04T12:03:00Z"
+  }
+ ],
+ "repository": {
+  "id": 4000001,
+  "full_name": "octo-example/widgets"
+ },
+ "commit_url": "https://api.github.com/repos/octo-example/widgets/commits/1111111111111111111111111111111111111111",
+ "url": "https://api.github.com/repos/octo-example/widgets/commits/1111111111111111111111111111111111111111/status"
+}
