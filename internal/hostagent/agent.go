@@ -684,7 +684,13 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	}
 	// A redirect the dial follows is held to the rule the URL given was
 	// (Run, Uplink.Publish): plain to another machine only with Insecure.
+	// A registration through an identity provider (Credential) is made to
+	// the configured address alone: a redirect is a failed registration,
+	// never followed, so nothing it carries goes anywhere else.
 	base.CheckRedirect = a.redirectRule(base.CheckRedirect)
+	if a.opts.Credential != nil {
+		base.CheckRedirect = func(*http.Request, []*http.Request) error { return errCredentialRedirect }
+	}
 	// The connection's socket is a pacedConn (controlWriter). Whatever the
 	// host reads on the connection, a frame's part included, as its TLS
 	// gives it, it notes as heard (hearingTransport), for its give-up alone:
@@ -773,15 +779,7 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	}
 	a.mu.Unlock()
 	w := a.useConnHearing(c, pc, live)
-	// What counts as presented is what arrived: a registration answered
-	// from another origin than the configured server's (a redirect away)
-	// presented nothing there, whatever its client sent, and is never sent
-	// a credential in a message.
-	if atOrigin(a.wsURL, resp) {
-		w.presented, w.renews = token, registered.Renews
-	} else {
-		w.elsewhere = true
-	}
+	w.presented, w.renews = token, registered.Renews
 	a.log.Info("registered with conductor", "session", registered.SessionID, "resumed", registered.Resumed)
 	if first && a.opts.Registered != nil {
 		a.opts.Registered(registered.SessionID, registered.ShareBaseURL)
@@ -789,31 +787,10 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	return c, registered, nil
 }
 
-// atOrigin says resp, the upgrade's answer, came from wsURL's own origin
-// (its scheme, host and port), not from where a redirect led.
-func atOrigin(wsURL string, resp *http.Response) bool {
-	want, err := url.Parse(wsURL)
-	if err != nil || resp == nil || resp.Request == nil || resp.Request.URL == nil {
-		return false
-	}
-	return origin(want) == origin(resp.Request.URL)
-}
-
-// origin is u's scheme (ws as http, wss as https), host and port.
-func origin(u *url.URL) string {
-	scheme := strings.ToLower(u.Scheme)
-	switch scheme {
-	case "ws":
-		scheme = "http"
-	case "wss":
-		scheme = "https"
-	}
-	port := u.Port()
-	if port == "" {
-		port = map[string]string{"http": "80", "https": "443"}[scheme]
-	}
-	return scheme + "://" + strings.ToLower(u.Hostname()) + ":" + port
-}
+// errCredentialRedirect is a redirect answered to a registration through
+// an identity provider (dialAndRegister): in the host's own words, which
+// name no address the answer gave.
+var errCredentialRedirect = &redirectRefused{errors.New("host: the server answered the registration with a redirect, which a registration through the identity provider does not follow")}
 
 // registration is the register message: the session as the owner's own
 // server lists it, or, to a switchyard (Options.Switchyard), as little as

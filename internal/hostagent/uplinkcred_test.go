@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -567,33 +568,142 @@ func TestHostTokenRenewalSameSubjectOnly(t *testing.T) {
 			t.Fatalf("host_token frames %v", got)
 		}
 	})
-	// A registration answered from another origin than the configured
-	// server's (a redirect away): nothing counts as presented there, and no
-	// credential is sent there in a message, whatever it says of renews.
-	t.Run("nothing sent where the registration was redirected", func(t *testing.T) {
-		var configured *httptest.Server
-		h := newRenewUplink(t, true, "cred-1", "")
-		yard := strings.Replace(h.y.srv.URL, "127.0.0.1", "localhost", 1)
-		configured = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			http.Redirect(w, r, yard+r.URL.Path, http.StatusTemporaryRedirect)
-		}))
-		t.Cleanup(configured.Close)
-		h.cred = NewUplinkCredential(h.f, "cloud", configured.URL, ownedCode, nil, discardLog)
-		h.cred.after = h.clock.after
-		h.u.ServerURL, h.u.Credential = configured.URL, h.cred
-		pub, err := h.u.Publish(t.Context(), catLocal(t))
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(pub.Stop)
-		h.registered(t, "") // the client sent no header across origins
-		h.f.answer("cred-2", true)
-		h.tick(t, renewNone)
-		h.tick(t, renewNone)
-		if h.sent() != 0 {
-			t.Fatal("a credential was sent to the server a redirect led to")
-		}
+}
+
+// seenServer is a test server that records every request's path and
+// Authorization before serve (nil: none) answers it.
+type seenServer struct {
+	srv  *httptest.Server
+	mu   sync.Mutex
+	seen []string
+}
+
+func newSeenServer(t *testing.T, tls bool, serve func(s *seenServer, w http.ResponseWriter, r *http.Request)) *seenServer {
+	t.Helper()
+	s := &seenServer{}
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		s.seen = append(s.seen, r.URL.RequestURI()+" "+r.Header.Get("Authorization"))
+		s.mu.Unlock()
+		serve(s, w, r)
 	})
+	if tls {
+		s.srv = httptest.NewTLSServer(h)
+	} else {
+		s.srv = httptest.NewServer(h)
+	}
+	t.Cleanup(s.srv.Close)
+	return s
+}
+
+func (s *seenServer) requests() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.seen)
+}
+
+// TestRegistrationFollowsNoRedirect: a registration through the identity
+// provider's credential is made to the configured address alone. Answered
+// with a redirect (to another host, the same host's other port, another
+// scheme, a subdomain, or a chain back to the configured server) it fails
+// in the host's own words: the server the redirect names sees no request,
+// nothing is sent anywhere after, and nothing counts as presented.
+func TestRegistrationFollowsNoRedirect(t *testing.T) {
+	port := func(u string) string {
+		_, p, _ := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(u, "http://"), "https://"), ":")
+		return p
+	}
+	for _, c := range []struct {
+		name string
+		tls  bool
+		// to is where the configured server redirects, given the yard's
+		// address (127.0.0.1:<port>), its own and another server's, which
+		// redirects back to the configured one (the chain).
+		to func(yard, self, other string) string
+		// names maps a name the dial is given to the address it dials.
+		names func(yard, self string) map[string]string
+		url   func(self string) string
+	}{
+		{name: "another host", to: func(yard, _, _ string) string { return "http://localhost:" + port(yard) + "/ws/host" }},
+		{name: "the same host's other port", to: func(yard, _, _ string) string { return "http://" + yard + "/ws/host" }},
+		{name: "another scheme", tls: true, to: func(yard, _, _ string) string { return "http://" + yard + "/ws/host" }},
+		{name: "a subdomain", to: func(yard, _, _ string) string { return "http://sub.yard.test:" + port(yard) + "/ws/host" },
+			names: func(yard, self string) map[string]string {
+				return map[string]string{"yard.test:" + port(self): self, "sub.yard.test:" + port(yard): yard}
+			},
+			url: func(self string) string { return "http://yard.test:" + port(self) }},
+		{name: "a chain back to the configured server", to: func(_, _, other string) string { return "http://localhost:" + port(other) + "/ws/host" }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			y := newStubYard(t)
+			y.renews.Store(true)
+			yard := newSeenServer(t, false, func(_ *seenServer, w http.ResponseWriter, r *http.Request) { y.srv.Config.Handler.ServeHTTP(w, r) })
+			yardAddr := strings.TrimPrefix(yard.srv.URL, "http://")
+			var otherAddr atomic.Pointer[string]
+			configured := newSeenServer(t, c.tls, func(s *seenServer, w http.ResponseWriter, r *http.Request) {
+				if r.URL.Query().Get("back") != "" {
+					y.srv.Config.Handler.ServeHTTP(w, r) // the chain's end: the yard itself
+					return
+				}
+				http.Redirect(w, r, c.to(yardAddr, s.srv.Listener.Addr().String(), *otherAddr.Load()), http.StatusTemporaryRedirect)
+			})
+			self := configured.srv.Listener.Addr().String()
+			server := configured.srv.URL
+			other := newSeenServer(t, false, func(_ *seenServer, w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, configured.srv.URL+"/ws/host?back=1", http.StatusTemporaryRedirect)
+			})
+			otherHost := other.srv.Listener.Addr().String()
+			otherAddr.Store(&otherHost)
+			var base *http.Transport
+			if c.tls {
+				base = configured.srv.Client().Transport.(*http.Transport)
+			}
+			var transport *http.Transport
+			if c.names != nil {
+				server = c.url(self)
+				transport = (&namedDialer{to: c.names(yardAddr, self)}).transport(base)
+			} else if base != nil {
+				transport = base.Clone()
+			}
+			f := &uplinkFake{}
+			f.answer("cred-1", true)
+			cred := NewUplinkCredential(f, "cloud", server, ownedCode, nil, discardLog)
+			wsURL, err := controlURL(server)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := &agent{opts: Options{ServerURL: server, Token: ownedCode, HostName: "office", Insecure: true, Switchyard: true, ReconnectMax: time.Second,
+				Log: discardLog, Credential: cred, transport: transport}, wsURL: wsURL, peers: map[string]*peer{}, log: discardLog, instance: "inst-1", localID: "1"}
+			conn, _, err := a.dialAndRegister(t.Context())
+			if conn != nil {
+				conn.CloseNow()
+			}
+			if err == nil {
+				t.Fatal("a redirected registration through the credential registered")
+			}
+			if strings.Contains(err.Error(), port(yardAddr)) || strings.Contains(err.Error(), "localhost") || strings.Contains(err.Error(), "sub.yard") {
+				t.Fatalf("the failure names where the redirect led: %v", err)
+			}
+			if got := append(yard.requests(), other.requests()...); len(got) != 0 {
+				t.Fatalf("a server the redirect names saw %q", got)
+			}
+			if got := configured.requests(); len(got) != 1 || !strings.HasSuffix(got[0], "Bearer cred-1") {
+				t.Fatalf("the configured server saw %q, one registration presenting the credential wanted", got)
+			}
+			if a.out != nil && a.out.presented != "" {
+				t.Fatalf("%q counts as presented", a.out.presented)
+			}
+			if n := len(y.received(proto.HostTokenType)); n != 0 {
+				t.Fatalf("%d host_token frames", n)
+			}
+		})
+	}
+	// With no provider, a redirect is followed as before.
+	y := newStubYard(t)
+	configured := newSeenServer(t, false, func(_ *seenServer, w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, y.srv.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	})
+	runUntilRegistered(t, Options{ServerURL: configured.srv.URL, Token: hostToken, Argv: []string{"/bin/cat"}, RelayOnly: true, Log: discardLog})
 }
 
 // TestLateOwnerAnswerCountsAsOwned: an owner check whose answer and
@@ -744,6 +854,46 @@ func TestStopWaitsForTheTry(t *testing.T) {
 			t.Fatal("a Start that never returns returned")
 		}
 		close(s.gate)
+	}
+}
+
+// quickStarter is uplinkFake with a Start that succeeds at once, keeping
+// the Host it was handed.
+type quickStarter struct {
+	*uplinkFake
+	host chan ext.Host
+}
+
+func (s *quickStarter) Start(_ context.Context, h ext.Host) error {
+	s.host <- h
+	return nil
+}
+
+// TestLateStartCountsAsLate: a Start whose success and whose ext.StartWait
+// are both there when the try looks is late: not started, its Host
+// refusing (no token). The try is held until the answer is there
+// (judging); the wait has fired already.
+func TestLateStartCountsAsLate(t *testing.T) {
+	for i := range 64 {
+		s := &quickStarter{uplinkFake: &uplinkFake{}, host: make(chan ext.Host, 1)}
+		after := func(d time.Duration) <-chan time.Time {
+			ch := make(chan time.Time, 1)
+			if d == ext.StartWait {
+				ch <- time.Now()
+			}
+			return ch
+		}
+		started, stop := StartIdentity(t.Context(), s, "cloud", HostIdentity{Token: ownedCode, StateDir: t.TempDir(), after: after,
+			judging: func(answered func() bool) {
+				for !answered() {
+					time.Sleep(time.Millisecond)
+				}
+			}})
+		h := <-s.host
+		if started(t.Context()) || h.HostToken() != "" {
+			t.Fatalf("try %d: a Start answered past its wait started (its Host's token %q)", i, h.HostToken())
+		}
+		stop()
 	}
 }
 

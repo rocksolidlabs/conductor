@@ -416,6 +416,9 @@ func newUplink(cfg *config.Config, server string, srv *api.Server, p ext.Provide
 	// (hostagent.UplinkCredential); nil presents the host token as before.
 	name := identityName(p)
 	cred := hostagent.NewUplinkCredential(p.Identity, name, server, rv.Token, func(ctx context.Context) bool { return srv.ProviderStarted(ctx, name) }, log)
+	if cred != nil {
+		srv.SetUplinkHeld(cred.Held)
+	}
 	return &hostagent.Uplink{ServerURL: server, Token: rv.Token, HostName: rv.HostName, RelayOnly: rv.RelayOnly, Insecure: rv.Insecure,
 		ICE: hostagent.ICE{UDPPort: cfg.ICE.UDPPort, PublicIP: cfg.ICE.PublicIP}, Log: log,
 		Decisions: srv.Lane(), LinkGone: srv.RemoteLinkGone, Credential: cred}

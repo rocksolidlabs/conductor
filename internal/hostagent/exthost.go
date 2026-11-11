@@ -16,12 +16,15 @@ import (
 
 // HostIdentity is what conductor host hands its identity provider: the
 // configured host token (--token), the host's state directory
-// (config.HostStateDir), its logger, and, for tests, its clock.
+// (config.HostStateDir), its logger, and, for tests, its clock and the
+// seam told as a try's answer is about to be judged, with whether it is
+// there yet.
 type HostIdentity struct {
 	Token    string
 	StateDir string
 	Log      *slog.Logger
 	after    func(time.Duration) <-chan time.Time
+	judging  func(answered func() bool)
 }
 
 // StartIdentity starts p, the identity provider registered as name, in
@@ -68,7 +71,7 @@ func StartIdentity(ctx context.Context, p ext.IdentityProvider, name string, h H
 		delay, tries := time.Second, 0
 		for ctx.Err() == nil {
 			tries++
-			why := tryHostStart(ctx, st, &hostExtHost{name: name, token: h.Token, dir: filepath.Join(extDir, name), log: h.Log.With("provider", name)}, after, markTried)
+			why := tryHostStart(ctx, st, &hostExtHost{name: name, token: h.Token, dir: filepath.Join(extDir, name), log: h.Log.With("provider", name)}, after, markTried, h.judging)
 			if why == "" {
 				ok2.Store(true)
 				markTried()
@@ -125,7 +128,7 @@ func markProviderState(state, extDir string) error {
 // "" for a success or the failure's kind: error, panic or late. A late
 // try is given up at ext.StartWait (its Host revoked, tried marked) and
 // waited for before tryHostStart returns, so two tries never overlap.
-func tryHostStart(ctx context.Context, st ext.Starter, h *hostExtHost, after func(time.Duration) <-chan time.Time, markTried func()) string {
+func tryHostStart(ctx context.Context, st ext.Starter, h *hostExtHost, after func(time.Duration) <-chan time.Time, markTried func(), judging func(answered func() bool)) string {
 	tctx, cancel := context.WithCancel(ctx)
 	h.ctx = tctx
 	wait := after(ext.StartWait)
@@ -150,8 +153,17 @@ func tryHostStart(ctx context.Context, st ext.Starter, h *hostExtHost, after fun
 		case <-after(ext.StartWait):
 		}
 	}
+	if judging != nil {
+		judging(func() bool { return len(done) > 0 })
+	}
 	select {
 	case why := <-done:
+		if passed(wait) {
+			// The answer and its deadline both there: late, as one after it.
+			cancel()
+			markTried()
+			return "late"
+		}
 		if why == "" && ctx.Err() == nil {
 			// The try that succeeded lasts as long as the host: its
 			// context ends with ctx.

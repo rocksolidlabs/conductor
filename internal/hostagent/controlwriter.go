@@ -378,12 +378,9 @@ type controlWriter struct {
 	// presented is what the connection's registration presented and
 	// renews whether its registered said renews (renewToken's): made with
 	// the connection, gone with it. presented changes only on renewToken's
-	// goroutine. elsewhere says the registration's answer came from
-	// another origin than the configured server's (a redirect): nothing
-	// counts as presented there, renews is false and nothing is renewed.
+	// goroutine.
 	presented string
 	renews    bool
-	elsewhere bool
 
 	ctx    context.Context
 	cancel context.CancelFunc

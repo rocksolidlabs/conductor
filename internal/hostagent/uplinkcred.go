@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -43,6 +44,7 @@ type UplinkCredential struct {
 	mu     sync.Mutex
 	logged map[string]time.Time
 	failed map[string]int
+	held   []string
 }
 
 // NewUplinkCredential is the credential the uplink to server presents for
@@ -120,7 +122,25 @@ func (c *UplinkCredential) renewed(ctx context.Context, owned bool) (string, boo
 		c.fail("token", "the configured token answered back")
 		return "", false
 	}
+	c.mu.Lock()
+	if !slices.Contains(c.held, v.token) {
+		c.held = append(c.held, v.token)[max(0, len(c.held)+1-heldTokens):]
+	}
+	c.mu.Unlock()
 	return v.token, true
+}
+
+// heldTokens is how many of the tokens it took from the provider the
+// credential keeps (Held), the latest.
+const heldTokens = 8
+
+// Held is the tokens the credential has taken from the provider and still
+// holds (the last heldTokens distinct ones): what the server's check of the
+// provider's detail refuses to show (api.Server.SetUplinkHeld).
+func (c *UplinkCredential) Held() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.held)
 }
 
 func (c *UplinkCredential) wait(d time.Duration) <-chan time.Time {
@@ -173,9 +193,27 @@ func (c *UplinkCredential) ask(ctx context.Context, f *flight, kind string, fn f
 	f.mu.Unlock()
 	select {
 	case <-cl.done:
+		if passed(ctx.Done()) {
+			// The caller's bound (Present's) ended as the answer came: late.
+			return credAnswer{}, false
+		}
 		return cl.v, cl.ok
 	case <-ctx.Done():
 		return credAnswer{}, false
+	}
+}
+
+// passed says deadline has fired, read without waiting: every wait on a
+// provider in the host agent (the credential's asks, the provider's Start)
+// arms its deadline before the call and reads it here once the call has
+// answered, so an answer and a passed deadline both there is late, whichever
+// a select took first.
+func passed[T any](deadline <-chan T) bool {
+	select {
+	case <-deadline:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -209,11 +247,10 @@ func (c *UplinkCredential) run(f *flight, cl *credCall, kind string, fn func() c
 	}
 	select {
 	case r := <-res:
-		select {
-		case <-deadline:
+		if passed(deadline) {
 			// Both there: the answer is late, its value the default's.
 			c.fail(kind, "late")
-		default:
+		} else {
 			if r.panicked {
 				c.fail(kind, "panic")
 			}
@@ -312,10 +349,10 @@ const (
 // connection 1000 and the reconnect presents it: nothing is retried in
 // place. On an open host's connection (it presented nothing) a credential
 // closes it 1000, and the reconnect presents it. Elsewhere nothing is
-// sent: the next reconnect presents what Present answers then; and on a
-// connection whose registration ended away from the configured server's
-// origin (a redirect), nothing is asked or sent at all. Ending a
-// credential is the switchyard's recheck's to do.
+// sent: the next reconnect presents what Present answers then. A
+// registration through the credential follows no redirect
+// (dialAndRegister), so every connection here is the configured server's.
+// Ending a credential is the switchyard's recheck's to do.
 func (a *agent) renewToken(w *controlWriter) {
 	cred := a.opts.Credential
 	if cred == nil {
@@ -335,12 +372,6 @@ func (a *agent) renewToken(w *controlWriter) {
 		case <-w.ctx.Done():
 			return
 		case <-a.afterOr(uplinkTokenEvery):
-		}
-		if w.elsewhere {
-			// Its registration ended at another server than the one the
-			// credential is for: nothing is asked, and nothing sent there.
-			step(renewNone)
-			continue
 		}
 		tok, ok := cred.Renewed(w.ctx)
 		switch {
