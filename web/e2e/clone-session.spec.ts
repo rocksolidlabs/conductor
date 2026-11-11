@@ -86,6 +86,32 @@ async function quickClone(page: Page, s: Session): Promise<Locator> {
   return dialog
 }
 
+/**
+ * Holds a closed row menu's exit (its closing animation paused) until the returned call lets it go: the menu stays mounted after
+ * Clone… or Clone with options… was picked, as it did on a loaded machine, and goes when let go, giving its More button the focus.
+ */
+async function holdMenuExit(page: Page): Promise<() => Promise<void>> {
+  const paused = await page.addStyleTag({ content: '[role="menu"][data-state="closed"] { animation-play-state: paused !important }' })
+  return async () => {
+    await paused.evaluate((el) => (el as Element).remove())
+    await expect(page.locator('[role="menu"]')).toHaveCount(0)
+  }
+}
+
+/** Holds the next clone of `s` at the network: `arrived` once it is there, sent on when `release` is called. */
+async function holdClone(page: Page, s: Session): Promise<{ arrived: Promise<void>; release: () => void }> {
+  let reached!: () => void
+  const arrived = new Promise<void>((r) => (reached = r))
+  let release!: () => void
+  const released = new Promise<void>((r) => (release = r))
+  await page.route(`**/api/sessions/${s.id}/clone`, async (route) => {
+    reached()
+    await released
+    await route.continue()
+  }, { times: 1 })
+  return { arrived, release }
+}
+
 /** The listed session named `name`, once there is one, noted to be stopped. */
 async function named(api: { ok: <T>(method: string, path: string, body?: unknown) => Promise<T> }, name: string): Promise<Session> {
   let found: Session | undefined
@@ -388,18 +414,36 @@ test("both dialogs warn of a run's worktree, and say the server's refusals: a na
   await page.keyboard.press('Escape')
   await expect(dialog).toHaveCount(0)
 
-  // The directory removed: each dialog says the server's invalid_cwd, with no other directory taken instead.
+  // The directory removed: each dialog says the server's invalid_cwd, with no other directory taken instead. The row's menu goes
+  // only while the clone is on its way, as it did on a loaded machine (#281): its More button takes the focus, the dialog gives it
+  // back to its name field, and the one Escape there closes the dialog.
   rmSync(dir, { recursive: true, force: true })
+  let letMenuGo = await holdMenuExit(page)
+  let sent = await holdClone(page, source)
   quick = await quickClone(page, source)
+  await expect(page.locator('[role="menu"][data-state="closed"]')).toHaveCount(1)
   await quick.locator('[data-clone-input]').fill(unique('e2e clone nodir'))
   await quick.locator('[data-clone-save]').click()
+  await sent.arrived
+  await expect(quick.locator('[data-clone-save]')).toBeDisabled()
+  await letMenuGo()
+  await expect(quick.locator('[data-clone-input]')).toBeFocused()
+  sent.release()
   await expect(quick).toContainText('The directory cannot be used')
   await page.keyboard.press('Escape')
   await expect(quick).toHaveCount(0)
+  letMenuGo = await holdMenuExit(page)
+  sent = await holdClone(page, source)
   dialog = await withOptions(page, source)
+  await expect(page.locator('[role="menu"][data-state="closed"]')).toHaveCount(1)
   await expect(dialog.getByRole('radio', { name: /Claude Code/ })).toHaveAttribute('aria-checked', 'true')
   await dialog.locator('[data-clone-name]').fill(unique('e2e clone nodir'))
   await dialog.locator('[data-launch-clone-submit]').click()
+  await sent.arrived
+  await expect(dialog.locator('[data-launch-clone-submit]')).toBeDisabled()
+  await letMenuGo()
+  await expect(dialog.locator('[data-clone-name]')).toBeFocused()
+  sent.release()
   await expect(dialog.locator('[data-launch-error]')).toContainText('The directory cannot be used')
   await page.keyboard.press('Escape')
   await expect(dialog).toHaveCount(0)

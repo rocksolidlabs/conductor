@@ -317,7 +317,9 @@ add its rule here.
   the menu's search and opens it again, and the field stays empty
   (`dispatch-plan.spec.ts`, #467); a select with no search hands the
   focus back to its trigger as it goes, and a key pressed then opens it
-  again (`pickOption`, `manifest-editor.spec.ts`). After picking an
+  again (`pickOption`, `manifest-editor.spec.ts`), and a row's menu gone
+  during a dialog's save hands its trigger the Escape (`holdMenuExit`,
+  #281). After picking an
   option, wait for the listbox to be gone (`toHaveCount(0)`) before
   typing, and assert the field holds what was typed (`toHaveValue`)
   before submitting.
