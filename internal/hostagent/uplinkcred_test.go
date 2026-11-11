@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -235,6 +236,24 @@ func TestOwnedTokenNeverPresented(t *testing.T) {
 	f.answer("cred-1", true)
 	if tok, _ := NewUplinkCredential(f, "cloud", openURL, "a-host-token", nil, nil).Present(t.Context()); tok != "cred-1" {
 		t.Fatalf("the provider's token for one it does not own: %q", tok)
+	}
+}
+
+// TestHeldKeepsTheLastDistinct: Held is the last heldTokens distinct
+// tokens taken, by when each was last taken: one taken again moves to the
+// newest place, and the next new one drops the oldest by that order.
+func TestHeldKeepsTheLastDistinct(t *testing.T) {
+	f := &uplinkFake{}
+	cred := NewUplinkCredential(f, "cloud", "https://yard.invalid", ownedCode, nil, discardLog)
+	for _, tok := range []string{"cred-a", "cred-b", "cred-c", "cred-d", "cred-e", "cred-f", "cred-g", "cred-h", "cred-a", "cred-i"} {
+		f.answer(tok, true)
+		if got, ok := cred.Renewed(t.Context()); !ok || got != tok {
+			t.Fatalf("Renewed %q, %v, want %q", got, ok, tok)
+		}
+	}
+	want := []string{"cred-c", "cred-d", "cred-e", "cred-f", "cred-g", "cred-h", "cred-a", "cred-i"}
+	if got := cred.Held(); !slices.Equal(got, want) {
+		t.Fatalf("held %q, want %q", got, want)
 	}
 }
 
@@ -462,10 +481,17 @@ func TestHostTokenRenewalSameSubjectOnly(t *testing.T) {
 	})
 	t.Run("none where registered did not say renews", func(t *testing.T) {
 		h := newRenewHarness(t, false, "cred-1")
-		h.f.answer("cred-2", true)
-		h.tick(t, renewNone)
+		// Nor is a credential taken there, however many periods pass: the
+		// one the connection presents stays among those Held keeps.
+		for i := range heldTokens + 2 {
+			h.f.answer("cred-next-"+strconv.Itoa(i), true)
+			h.tick(t, renewNone)
+		}
 		if h.sent() != 0 {
 			t.Fatal("host_token sent where registered did not say renews")
+		}
+		if held := h.cred.Held(); !slices.Contains(held, "cred-1") {
+			t.Fatalf("held %q: the credential the connection presents is gone", held)
 		}
 	})
 	t.Run("none for a desk where registered did not say renews, one where it did", func(t *testing.T) {

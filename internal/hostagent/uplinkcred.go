@@ -123,9 +123,9 @@ func (c *UplinkCredential) renewed(ctx context.Context, owned bool) (string, boo
 		return "", false
 	}
 	c.mu.Lock()
-	if !slices.ContainsFunc(c.held, func(h string) bool { return share.Equal(h, v.token) }) {
-		c.held = append(c.held, v.token)[max(0, len(c.held)+1-heldTokens):]
-	}
+	// One taken again moves to the newest place.
+	c.held = slices.DeleteFunc(c.held, func(h string) bool { return share.Equal(h, v.token) })
+	c.held = append(c.held, v.token)[max(0, len(c.held)+1-heldTokens):]
 	c.mu.Unlock()
 	return v.token, true
 }
@@ -135,7 +135,9 @@ func (c *UplinkCredential) renewed(ctx context.Context, owned bool) (string, boo
 const heldTokens = 8
 
 // Held is the tokens the credential has taken from the provider and still
-// holds (the last heldTokens distinct ones): part of the list the server's
+// holds (the last heldTokens distinct ones, by when each was last taken;
+// a connection whose registered did not say renews takes none after the
+// one it presents, renewToken): part of the list the server's
 // filter of the provider's detail compares with (api.Server.SetUplinkHeld).
 func (c *UplinkCredential) Held() []string {
 	c.mu.Lock()
@@ -349,7 +351,7 @@ const (
 // connection 1000 and the reconnect presents it: nothing is retried in
 // place. On an open host's connection (it presented nothing) a credential
 // closes it 1000, and the reconnect presents it. Elsewhere nothing is
-// sent: the next reconnect presents what Present answers then. A
+// asked or sent: the next reconnect presents what Present answers then. A
 // registration through the credential follows no redirect
 // (dialAndRegister), so every connection here is the configured server's.
 // Ending a credential is the switchyard's recheck's to do.
@@ -373,6 +375,11 @@ func (a *agent) renewToken(w *controlWriter) {
 			return
 		case <-a.afterOr(uplinkTokenEvery):
 		}
+		if !w.renews && w.presented != "" {
+			// Nothing would be sent: no credential is taken either.
+			step(renewNone)
+			continue
+		}
 		tok, ok := cred.Renewed(w.ctx)
 		switch {
 		case w.ctx.Err() != nil:
@@ -383,8 +390,6 @@ func (a *agent) renewToken(w *controlWriter) {
 		case w.presented == "":
 			closeFor("credential ready")
 			return
-		case !w.renews:
-			step(renewNone)
 		case share.Equal(tok, w.presented):
 			step(renewUnchanged)
 		default:

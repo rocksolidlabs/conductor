@@ -310,9 +310,15 @@ func TestHostTokenMessage(t *testing.T) {
 			t.Errorf("ParseHostToken(%d bytes) = %d bytes, %v", len(tok), len(got), err)
 		}
 	}
+	// A message at its bound parses; one byte past it does not.
+	small := `{"t":"host_token","token":"a"}`
+	atBound := small + strings.Repeat(" ", MaxHostTokenMessage-len(small))
+	if got, err := ParseHostToken([]byte(atBound)); err != nil || got != "a" {
+		t.Errorf("ParseHostToken(a message of %d bytes) = %q, %v", len(atBound), got, err)
+	}
 	for name, msg := range map[string]string{
 		"past the token's bound":  `{"t":"host_token","token":"` + strings.Repeat("A", MaxHostToken+1) + `"}`,
-		"past the message's":      `{"t":"host_token","token":"a"}` + strings.Repeat(" ", MaxHostTokenMessage),
+		"past the message's":      atBound + " ",
 		"empty":                   `{"t":"host_token","token":""}`,
 		"not token68":             `{"t":"host_token","token":"a b"}`,
 		"escaped":                 `{"t":"host_token","token":"a\u0000"}`,
