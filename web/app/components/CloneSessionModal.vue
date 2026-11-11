@@ -15,6 +15,7 @@ const toast = useToast()
 const draft = ref('')
 const saving = ref(false)
 const refused = ref('')
+const form = ref<HTMLFormElement>()
 
 // Every opening starts afresh, the name empty (decision 3 of #434).
 watch(clone.opening, () => {
@@ -36,6 +37,10 @@ async function save() {
   // The opening this clone is sent from: its reply closes the dialog or shows its refusal only while that opening lasts.
   const sentFrom = clone.opening.value
   const current = () => clone.open.value && clone.opening.value === sentFrom
+  // The rename dialog's rule (#281): the Clone button, disabled as it saves, can hold the focus no longer, so the field takes it.
+  // The row's menu, unmounting late, gives its More button the focus; the dialog's trap can give it back only to something that
+  // takes it, and behind the dialog the list took Escape for its own.
+  form.value?.querySelector<HTMLInputElement>('[data-clone-input]')?.focus()
   saving.value = true
   try {
     const made = await api.clone(t.id, { name: state.value.name })
@@ -53,7 +58,7 @@ async function save() {
 <template>
   <UModal v-model:open="clone.open.value" :title="title" description="Its agent, directory, arguments and yolo choice, in a new conversation.">
     <template #body>
-      <form class="flex flex-col gap-3" data-clone-dialog @submit.prevent="save">
+      <form ref="form" class="flex flex-col gap-3" data-clone-dialog @submit.prevent="save">
         <UAlert v-if="sharedTree" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="SHARED_TREE_WARNING" data-clone-shared-tree />
         <UFormField label="Name" name="name" :error="error" :help="state.problem === 'empty' ? 'Give the clone a name no session has' : undefined">
           <UInput v-model="draft" aria-label="Clone's name" class="w-full" autofocus data-clone-input />
