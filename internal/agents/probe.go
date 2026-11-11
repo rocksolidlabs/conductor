@@ -151,20 +151,24 @@ var ansi = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 
 func stripANSI(s string) string { return ansi.ReplaceAllString(s, "") }
 
-// limitedBuffer keeps the first max bytes written and drops the rest.
+// limitedBuffer keeps the first max bytes written and drops the rest. A
+// write is always taken whole (its length returned): os/exec's copier
+// reads a shorter count as an error and closes the pipe, and the program
+// would die writing on.
 type limitedBuffer struct {
 	b   bytes.Buffer
 	max int
 }
 
 func (l *limitedBuffer) Write(p []byte) (int, error) {
+	n := len(p)
 	if room := l.max - l.b.Len(); room > 0 {
 		if len(p) > room {
 			p = p[:room]
 		}
 		l.b.Write(p)
 	}
-	return len(p), nil
+	return n, nil
 }
 
 func (l *limitedBuffer) String() string { return l.b.String() }
