@@ -1817,7 +1817,10 @@ func (s *Store) Reviews(ctx context.Context, key, before string) (ReviewsPage, e
 		out.Reviews = rs
 		return nil
 	})
-	return out, err
+	if err != nil {
+		return ReviewsPage{}, err
+	}
+	return out, nil
 }
 
 // PendingReviews reads every request whose application is pending, oldest
@@ -1990,5 +1993,8 @@ func (s *Store) Findings(ctx context.Context, key string, filter FindingFilter, 
 		}
 		return nil
 	})
-	return out, err
+	if err != nil {
+		return FindingsPage{}, err
+	}
+	return out, nil
 }

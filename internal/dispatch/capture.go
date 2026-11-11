@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 )
 
 // A capture is a person's evidence about work (Program item PV1,
@@ -30,8 +29,9 @@ import (
 // of the tree (serving), the changed paths' cut and how a retake is
 // related to the capture it retakes. How the screenshot was taken is the
 // client's word (NewCapture.ImageHow), checked against what the store
-// knows and stored as given. The names the privacy rule compares are
-// judged in one form (isName, namedAs). The capture's document
+// knows and stored as given. The names the privacy rule compares are what
+// its lists of names allow and nothing else, judged in one form (isTag,
+// isAttributeName, namedAs). The capture's document
 // (CaptureDocument, conductor.capture/1) is what a send will freeze as a
 // content file.
 
@@ -411,6 +411,13 @@ func measure(v any) int {
 	return len(s)
 }
 
+// storable is whether t is a time the store writes and reads back: as
+// JSON in its own zone, and as a stamp (four digits of year in UTC).
+func storable(t time.Time) bool {
+	_, err := t.MarshalJSON()
+	return err == nil && t.UTC().Year() >= 0 && t.UTC().Year() <= 9999
+}
+
 // checker keeps the first refusal of a run of checks.
 type checker struct{ err error }
 
@@ -475,17 +482,30 @@ func (c *checker) names(label string, tag, id, role, name string, classes []stri
 	}
 }
 
-// isName is whether s is a name, as an element's tag and an attribute's
-// name must be: not empty, and no white space or control character
-// anywhere in it.
-func isName(s string) bool {
-	return s != "" && !strings.ContainsFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
+// The names the privacy rule judges are what these allow and nothing
+// else. A tag is ASCII letters, digits, '.', '_' and '-', from a letter,
+// with at most one prefix of the same form before one colon: HTML's,
+// SVG's and MathML's elements and custom elements. An attribute's name is
+// ASCII, from a letter, '_', ':' or '@', on with letters, digits, '_',
+// '.', ':', '@' and '-', and something after its last colon.
+var (
+	tagPattern           = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._-]*(:[A-Za-z][A-Za-z0-9._-]*)?$`)
+	attributeNamePattern = regexp.MustCompile(`^[A-Za-z_:@][A-Za-z0-9_.:@-]*$`)
+)
+
+// isTag is whether s is an element's tag (tagPattern).
+func isTag(s string) bool { return tagPattern.MatchString(s) }
+
+// isAttributeName is whether s is an attribute's name
+// (attributeNamePattern).
+func isAttributeName(s string) bool {
+	return attributeNamePattern.MatchString(s) && !strings.HasSuffix(s, ":")
 }
 
 // namedAs is whether the name (an element's tag, an attribute's name) is
 // the local name want, as the privacy rule compares names: what follows
-// its last colon, without regard to case. Every question the rule asks of
-// a name goes through it.
+// its last colon, without regard to ASCII case. Every question the rule
+// asks of a name goes through it.
 func namedAs(name, want string) bool {
 	if i := strings.LastIndexByte(name, ':'); i >= 0 {
 		name = name[i+1:]
@@ -493,12 +513,26 @@ func namedAs(name, want string) bool {
 	return strings.EqualFold(name, want)
 }
 
+// asciiLetters is s's ASCII letters alone, lower-cased: what a type
+// attribute's value is judged by.
+func asciiLetters(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case 'a' <= r && r <= 'z':
+			return r
+		case 'A' <= r && r <= 'Z':
+			return r + 'a' - 'A'
+		}
+		return -1
+	}, s)
+}
+
 // element checks an element's report by every bound of the plan's, and
-// the privacy rule: an input's value, and a password field's, is never
-// kept, its tag and its attributes' names judged as names (isName,
-// namedAs).
+// the privacy rule: an input's value, and a password field's (a type whose
+// letters spell password, on any element), is never kept, its tag and its
+// attributes' names judged as names (isTag, isAttributeName, namedAs).
 func (c *checker) element(label string, e *ElementReport) {
-	c.must(isName(e.Tag), RefusalInvalid, "%s's tag is not a name", label)
+	c.must(isTag(e.Tag), RefusalInvalid, "%s's tag is not an element's name", label)
 	c.names(label, e.Tag, e.ID, e.Role, e.Name, e.Classes)
 	c.field("element.text", label+"'s text", e.Text)
 	c.field("element.selector", label+"'s selector", e.Selector)
@@ -507,9 +541,9 @@ func (c *checker) element(label string, e *ElementReport) {
 	secret := namedAs(e.Tag, "input")
 	for _, a := range e.Attributes {
 		c.field("element.attribute_name", label+"'s attribute name", a[0])
-		c.must(isName(a[0]), RefusalInvalid, "%s's attribute name is not a name", label)
+		c.must(isAttributeName(a[0]), RefusalInvalid, "%s's attribute name is not an attribute's name", label)
 		c.field("element.attribute_value", label+"'s attribute value", a[1])
-		secret = secret || (namedAs(a[0], "type") && strings.EqualFold(strings.TrimSpace(a[1]), "password"))
+		secret = secret || (namedAs(a[0], "type") && asciiLetters(a[1]) == "password")
 	}
 	for _, a := range e.Attributes {
 		c.must(!secret || !namedAs(a[0], "value"), RefusalInvalid, "%s keeps an input's value, which is never kept", label)
@@ -612,20 +646,26 @@ func checkCapture(n NewCapture, f CaptureFacts, image bool) (Capture, []Annotati
 	// there is none, the desktop's only from the desktop client.
 	c.must((!image && n.ImageHow == ImageNone) || (image && (n.ImageHow == ImageTab || (n.ImageHow == ImageDesktop && n.Via == CaptureViaDesktop))),
 		RefusalInvalid, "how the screenshot was taken, %q, is not none without one, or tab or (from the desktop client) desktop with one", n.ImageHow)
-	c.must(n.Label.Changed >= 0, RefusalInvalid, "the selection's read counts fewer than no changed paths")
+	c.must(n.Label.Changed >= 0 && n.Label.Changed <= MaxChangedCount, RefusalInvalid, "the selection's read counts changed paths not from 0 to %d", MaxChangedCount)
+	// Every time is one the store writes and reads back, and the
+	// selection's read was made before the capture is.
+	c.must(storable(n.SelectedAt), RefusalInvalid, "the moment of selection is not a time the store keeps")
+	c.must(n.Label.ReadAt.IsZero() || (storable(n.Label.ReadAt) && !n.Label.ReadAt.After(time.Now())), RefusalInvalid,
+		"the selection's read is not a time the store keeps before now")
 	// The origin and its tree, the server's.
 	switch f.Origin {
 	case OriginURL:
 		c.must(f.Run == "" && f.Task == "" && f.Attempt == 0 && f.Tree == "" && f.Commit == "" && f.Content == "" && f.Changed == 0 &&
-			len(f.ChangedPaths) == 0 && !f.Mutable && f.Candidate == "" && f.Where == "" && f.Scope == (CaptureScope{}), RefusalInvalid,
-			"a link's capture names no run, no tree and no run's scope")
+			len(f.ChangedPaths) == 0 && !f.Mutable && f.Candidate == "" && f.Where == "" && f.Scope == (CaptureScope{}) && len(f.Sources) == 0 &&
+			n.Label.Commit == "" && n.Label.Content == "", RefusalInvalid,
+			"a link's capture names no run, no tree, no sources and no run's scope, and its selection no commit and no content")
 	case OriginAttempt, OriginCandidate:
 		c.must(validRunID(f.Run) && taskIDPattern.MatchString(f.Task) && f.Attempt >= 1 && f.Attempt <= MaxFindingLine, RefusalInvalid,
 			"the capture's attempt is not a run's, a task's and a number from 1")
 		c.hexID("the tree's commit", f.Commit, true)
 		c.hexID("the tree's content", f.Content, false)
 		c.must(whereIDPattern.MatchString(f.Where), RefusalInvalid, "where the attempt ran is not a runtime's name")
-		c.must(f.Changed >= len(f.ChangedPaths), RefusalInvalid, "the tree's changed paths are more than its count")
+		c.must(f.Changed >= len(f.ChangedPaths) && f.Changed <= MaxChangedCount, RefusalInvalid, "the tree's changed paths are more than its count, or its count more than %d", MaxChangedCount)
 		for _, p := range f.ChangedPaths {
 			c.field("capture.changed_path", "a changed path", p)
 		}
@@ -634,7 +674,7 @@ func checkCapture(n NewCapture, f CaptureFacts, image bool) (Capture, []Annotati
 		if f.Origin == OriginAttempt {
 			c.must(f.Tree == TreeWorktree && f.Mutable && f.Candidate == "", RefusalInvalid, "an attempt's capture is of its worktree, mutable, and names no candidate")
 		} else {
-			c.must(f.Tree == TreePreview, RefusalInvalid, "a candidate's capture is of its preview checkout")
+			c.must(f.Tree == TreePreview && f.Candidate != "", RefusalInvalid, "a candidate's capture is of its preview checkout and names its candidate")
 		}
 		if f.Candidate != "" {
 			cand, err := ParseCandidate(f.Candidate)
@@ -671,7 +711,7 @@ func checkCapture(n NewCapture, f CaptureFacts, image bool) (Capture, []Annotati
 			c.element(label, a.Element)
 			c.sources(label, sources)
 			o := a.Observed
-			c.must(!o.At.IsZero(), RefusalInvalid, "%s names no moment", label)
+			c.must(!o.At.IsZero() && storable(o.At), RefusalInvalid, "%s names no moment the store keeps", label)
 			c.field("capture.title", label+"'s title", o.Title)
 			// Stability is the pixels' verdict: none without a screenshot,
 			// and never stable while the element is in motion.

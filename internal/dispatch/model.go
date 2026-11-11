@@ -478,8 +478,11 @@ const (
 	// at whichever comes first, as encoded; the count stays whole.
 	MaxChangedPaths      = 200
 	MaxChangedPathsBytes = 16 << 10
-	MaxUserAgent         = 512
-	MaxCaptureScope      = 2 << 10 // as encoded
+	// MaxChangedCount bounds a tree's changed paths as counted, the
+	// selection's read's and the save's.
+	MaxChangedCount = 1 << 24
+	MaxUserAgent    = 512
+	MaxCaptureScope = 2 << 10 // as encoded
 	// MaxDeclaredRevision bounds what a page declares it serves:
 	// <commit>[+<content>] in hex.
 	MaxDeclaredRevision = 128

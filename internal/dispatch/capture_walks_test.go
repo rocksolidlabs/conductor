@@ -21,13 +21,13 @@ import (
 // every read the store offers after a delete, and every way out of an
 // upload after its file is published.
 
-// carries is whether a result of the type can hold a capture's words: a
-// capture, its document, an annotation, a change row, a receipt, a file,
-// an interface, or a string or bytes the read gives whole.
-func carries(t reflect.Type, top bool, seen map[reflect.Type]bool) bool {
+// carries is whether a result of the type can hold a capture's words, in
+// whatever shape: a string or bytes anywhere in it (a field of a struct
+// inside a struct, a slice, an array or a map of them, behind a pointer),
+// a file, or an interface; an error or a time alone holds none.
+func carries(t reflect.Type, seen map[reflect.Type]bool) bool {
 	switch t {
-	case reflect.TypeFor[Capture](), reflect.TypeFor[CaptureDocument](), reflect.TypeFor[Annotation](), reflect.TypeFor[ChangeRow](),
-		reflect.TypeFor[Receipt](), reflect.TypeFor[os.File]():
+	case reflect.TypeFor[os.File]():
 		return true
 	case reflect.TypeFor[error](), reflect.TypeFor[time.Time]():
 		return false
@@ -37,27 +37,58 @@ func carries(t reflect.Type, top bool, seen map[reflect.Type]bool) bool {
 	}
 	seen[t] = true
 	switch t.Kind() {
-	case reflect.String:
-		return top
-	case reflect.Interface:
+	case reflect.String, reflect.Interface:
 		return true
 	case reflect.Slice:
-		if t.Elem().Kind() == reflect.Uint8 {
-			return top
-		}
-		return carries(t.Elem(), top, seen)
-	case reflect.Pointer, reflect.Array:
-		return carries(t.Elem(), top, seen)
+		return t.Elem().Kind() == reflect.Uint8 || carries(t.Elem(), seen)
+	case reflect.Pointer, reflect.Array, reflect.Chan:
+		return carries(t.Elem(), seen)
 	case reflect.Map:
-		return carries(t.Key(), top, seen) || carries(t.Elem(), top, seen)
+		return carries(t.Key(), seen) || carries(t.Elem(), seen)
 	case reflect.Struct:
 		for i := 0; i < t.NumField(); i++ {
-			if f := t.Field(i); f.IsExported() && carries(f.Type, false, seen) {
+			if f := t.Field(i); f.IsExported() && carries(f.Type, seen) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// The walk's detector finds text in whatever shape a result holds it:
+// result types it would once have missed (a summary of plain strings, a
+// capture's image, text nested in structs and slices) are found, and a
+// result of numbers, times and errors alone is not.
+func TestTheReadWalkSeesNestedText(t *testing.T) {
+	type summary struct{ Title string }
+	type nested struct {
+		Inner struct{ Deeper []summary }
+	}
+	type numbers struct {
+		N  int
+		At time.Time
+		OK bool
+	}
+	for _, c := range []struct {
+		name string
+		t    reflect.Type
+		want bool
+	}{
+		{"a summary of a string", reflect.TypeFor[summary](), true},
+		{"a capture's image", reflect.TypeFor[CaptureImage](), true},
+		{"a viewport", reflect.TypeFor[Viewport](), true},
+		{"a slice of summaries in a struct in a struct", reflect.TypeFor[nested](), true},
+		{"a map to pointers to summaries", reflect.TypeFor[map[int][]*summary](), true},
+		{"bytes in a struct", reflect.TypeFor[struct{ B []byte }](), true},
+		{"an array of summaries", reflect.TypeFor[[2]summary](), true},
+		{"numbers, times and flags", reflect.TypeFor[numbers](), false},
+		{"an error", reflect.TypeFor[error](), false},
+		{"a slice of numbers", reflect.TypeFor[[]int64](), false},
+	} {
+		if got := carries(c.t, map[reflect.Type]bool{}); got != c.want {
+			t.Errorf("%s: carries %v, want %v", c.name, got, c.want)
+		}
+	}
 }
 
 // storeReads is every exported method of the store that takes no
@@ -76,7 +107,7 @@ func storeReads() []string {
 			continue
 		}
 		for o := 0; o < m.Type.NumOut(); o++ {
-			if carries(m.Type.Out(o), true, map[reflect.Type]bool{}) {
+			if carries(m.Type.Out(o), map[reflect.Type]bool{}) {
 				names = append(names, m.Name)
 				break
 			}
@@ -84,6 +115,75 @@ func storeReads() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// callRead calls the store's read by its name with an argument of each
+// type the walk has: ctx, word for every string, k for every number, the
+// zero value of anything else. It gives the results but the error, and the
+// error.
+func callRead(ctx context.Context, s *Store, name, word string, k int) ([]any, error) {
+	m := reflect.ValueOf(s).MethodByName(name)
+	in := make([]reflect.Value, m.Type().NumIn())
+	for i := range in {
+		switch at := m.Type().In(i); {
+		case at == reflect.TypeFor[context.Context]():
+			in[i] = reflect.ValueOf(ctx)
+		case at.Kind() == reflect.String:
+			in[i] = reflect.ValueOf(word).Convert(at)
+		case at.Kind() >= reflect.Int && at.Kind() <= reflect.Int64:
+			in[i] = reflect.ValueOf(k).Convert(at)
+		default:
+			in[i] = reflect.Zero(at)
+		}
+	}
+	var results []any
+	var err error
+	for _, v := range m.Call(in) {
+		if v.Type() == reflect.TypeFor[error]() {
+			if !v.IsNil() {
+				err = v.Interface().(error)
+			}
+			continue
+		}
+		results = append(results, v.Interface())
+	}
+	return results, err
+}
+
+// answersNothingElse fails unless every result beside a non-nil error is
+// its type's zero value.
+func answersNothingElse(t *testing.T, what string, results []any, err error) {
+	t.Helper()
+	if err == nil {
+		return
+	}
+	for i, r := range results {
+		if v := reflect.ValueOf(r); v.IsValid() && !v.IsZero() {
+			t.Errorf("%s answers %v with its result %d not its zero value: %.300s", what, err, i, encodeResults(results))
+		}
+	}
+}
+
+// encodeResults is the results as JSON (as Go prints them when they have
+// no JSON), a file's bytes read whole and the file closed.
+func encodeResults(results []any) []byte {
+	var out []byte
+	for _, r := range results {
+		if fh, ok := r.(*os.File); ok {
+			if fh != nil {
+				b, _ := io.ReadAll(fh)
+				fh.Close()
+				out = append(out, b...)
+			}
+			continue
+		}
+		b, err := json.Marshal(r)
+		if err != nil {
+			b = fmt.Appendf(nil, "%+v", r)
+		}
+		out = append(out, b...)
+	}
+	return out
 }
 
 // A deleted capture is its tombstone, not found or left out through every
@@ -268,9 +368,18 @@ func TestEveryReadHidesADeletedCapture(t *testing.T) {
 			return enc(sums), err
 		},
 	}
+	// The reads driven above alone by the capture's names (below): each
+	// reads the tables of what it names, none a capture's.
+	other := "reads no capture's table: driven by the capture's names alone"
 	notReads := map[string]string{
 		"Dir":      "the store's own directory",
 		"ReadOnly": "whether the store takes writes, and the store's own words why",
+	}
+	for _, name := range []string{"Attachment", "Blockers", "ChainHolders", "ChangedSince", "Children", "ClaimReview", "CloseState", "Comment",
+		"Comments", "Findings", "Label", "Labels", "LaunchByID", "Launches", "LinkReadOf", "Links", "List", "Marks", "Milestone", "Milestones",
+		"OpenPlans", "PendingLaunches", "PendingReviews", "People", "Plan", "Plans", "Project", "Projects", "Relations", "Review", "Reviews",
+		"RunTicket", "Ticket", "View", "Views"} {
+		notReads[name] = other
 	}
 	for _, name := range storeReads() {
 		_, driven := reads[name]
@@ -281,6 +390,26 @@ func TestEveryReadHidesADeletedCapture(t *testing.T) {
 	for name := range notReads {
 		if !slices.Contains(storeReads(), name) {
 			t.Errorf("notReads names %s, which is no read of the store's", name)
+		}
+	}
+	// Every read, driven by each of the capture's names (its id, its image's
+	// hash, its run and task, its create's op id), a capture that never was
+	// and the ticket's key for every word, at 0 and 10 for every number: no
+	// result gives a word of the deleted capture, and an error answers
+	// nothing else.
+	for _, name := range storeReads() {
+		for _, word := range []string{id, newID(), key, sumOf(img), f.Run, f.Task, "walk-create", ""} {
+			for _, k := range []int{0, 10} {
+				results, err := callRead(ctx, s, name, word, k)
+				what := fmt.Sprintf("%s(%q, %d)", name, word, k)
+				answersNothingElse(t, what, results, err)
+				got := encodeResults(results)
+				for _, w := range words {
+					if bytes.Contains(got, []byte(w)) {
+						t.Errorf("%s after the delete gives %q: %.300s", what, w, got)
+					}
+				}
+			}
 		}
 	}
 	names := make([]string, 0, len(reads))
@@ -304,8 +433,69 @@ func TestEveryReadHidesADeletedCapture(t *testing.T) {
 	}
 }
 
-// The image of a capture deleted and swept between the row's read and the
-// file's open is not found, as an attachment's is.
+// An error answers nothing else: every read of the package, driven into
+// its errors (a capture deleted, one that never was, a page past its
+// bound, a store closed), gives the zero value of every result beside a
+// non-nil error.
+func TestAnErrorAnswersNothingElse(t *testing.T) {
+	ctx := context.Background()
+	s, key := attachmentTicket(t)
+	n, f := testCapture(true)
+	gone := mustCreate(t, s, "gone", n, f, pngOf(t, 8, 8, 42))
+	rc, err := s.DeleteCapture(ctx, testOp("delete"), gone)
+	want(t, rc, err, StatusDone, "")
+	mustCreate(t, s, "live", n, f, pngOf(t, 8, 8, 43))
+	errs := 0
+	drive := func(when string) {
+		for _, name := range storeReads() {
+			for _, word := range []string{gone, newID(), key, f.Run, "", "not an id"} {
+				for _, k := range []int{-1, 0, MaxCapturePage + 1} {
+					results, err := callRead(ctx, s, name, word, k)
+					if err != nil {
+						errs++
+					}
+					answersNothingElse(t, fmt.Sprintf("%s %s(%q, %d)", when, name, word, k), results, err)
+				}
+			}
+		}
+	}
+	drive("open:")
+	for _, c := range []struct {
+		name string
+		call func() ([]any, error)
+	}{
+		{"the document of a deleted capture", func() ([]any, error) { d, err := s.Document(ctx, gone, 2); return []any{d}, err }},
+		{"the image of a deleted capture", func() ([]any, error) { c, fh, err := s.OpenCaptureImage(ctx, gone); return []any{c, fh}, err }},
+		{"a capture that never was", func() ([]any, error) { c, err := s.Capture(ctx, newID()); return []any{c}, err }},
+		{"a page past its bound", func() ([]any, error) {
+			p, err := s.Captures(ctx, CaptureFilter{}, "", MaxCapturePage+1)
+			return []any{p}, err
+		}},
+		{"a page after no capture", func() ([]any, error) { p, err := s.Captures(ctx, CaptureFilter{}, newID(), 10); return []any{p}, err }},
+		{"the hashes of no copy", func() ([]any, error) {
+			h, err := SnapshotHashes(ctx, filepath.Join(t.TempDir(), "none.sqlite"))
+			return []any{h}, err
+		}},
+	} {
+		results, err := c.call()
+		if err == nil {
+			t.Errorf("%s: no error", c.name)
+		}
+		answersNothingElse(t, c.name, results, err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before := errs
+	drive("closed:")
+	if errs == before {
+		t.Fatal("no read of a closed store failed")
+	}
+}
+
+// The image of a capture deleted (and the store swept) between the row's
+// read and the file's open is not found, as an attachment's is, and the
+// answer gives nothing else: no capture, no file.
 func TestAnImageDeletedWhileOpeningIsNotFound(t *testing.T) {
 	ctx := context.Background()
 	s := openStore(t, storeDir(t))
@@ -320,12 +510,64 @@ func TestAnImageDeletedWhileOpeningIsNotFound(t *testing.T) {
 			t.Error(err)
 		}
 	}
-	_, fh, err := s.OpenCaptureImage(ctx, id)
+	c, fh, err := s.OpenCaptureImage(ctx, id)
 	if fh != nil {
 		fh.Close()
 	}
 	if exists(t, contentAt(s, sumOf(img))) || !errors.Is(err, ErrNotFound) {
 		t.Fatalf("the image opened while its capture was deleted: %v (its file there %v)", err, exists(t, contentAt(s, sumOf(img))))
+	}
+	if !reflect.ValueOf(c).IsZero() || fh != nil {
+		t.Fatalf("the not found answer gives %+v and the file %v", c, fh)
+	}
+}
+
+// A delete that releases a file collects it as it commits: captures
+// created and deleted in turn leave no file behind and no sweep is needed,
+// while a screenshot another capture or an attachment names stays and
+// still opens; a delete answered by its receipt collects nothing.
+func TestADeleteCollectsTheFileItReleases(t *testing.T) {
+	ctx := context.Background()
+	s, key := attachmentTicket(t)
+	n, f := testCapture(true)
+	for i := range 20 {
+		img := pngOf(t, 8, 8, byte(100+i))
+		id := mustCreate(t, s, opID("turn", i), n, f, img)
+		rc, err := s.DeleteCapture(ctx, testOp(opID("turn-delete", i)), id)
+		want(t, rc, err, StatusDone, "")
+		if exists(t, contentAt(s, sumOf(img))) {
+			t.Fatalf("turn %d: the released screenshot is still there", i)
+		}
+	}
+	if got := contentFiles(t, s); len(got) != 0 {
+		t.Fatalf("after the creates and deletes: %v left", got)
+	}
+	// One screenshot another capture names, one an attachment names.
+	shared, attached := pngOf(t, 8, 8, 90), pngOf(t, 8, 8, 91)
+	mustPut(t, s, "attached", key, "attached.png", attached)
+	keep := mustCreate(t, s, "keep", n, f, shared)
+	for i, img := range [][]byte{shared, attached} {
+		id := mustCreate(t, s, opID("held", i), n, f, img)
+		rc, err := s.DeleteCapture(ctx, testOp(opID("held-delete", i)), id)
+		want(t, rc, err, StatusDone, "")
+		if !exists(t, contentAt(s, sumOf(img))) {
+			t.Fatalf("a screenshot another holder names (%d) is gone", i)
+		}
+		// The resend, answered by its receipt, takes nothing.
+		rc, err = s.DeleteCapture(ctx, testOp(opID("held-delete", i)), id)
+		if want(t, rc, err, StatusDone, ""); !rc.Repeat || !exists(t, contentAt(s, sumOf(img))) {
+			t.Fatalf("the resend of a delete: %+v, the file there %v", rc, exists(t, contentAt(s, sumOf(img))))
+		}
+	}
+	_, fh, err := s.OpenCaptureImage(ctx, keep)
+	if err != nil {
+		t.Fatalf("the live capture's screenshot: %v", err)
+	}
+	fh.Close()
+	rc, err := s.DeleteCapture(ctx, testOp("keep-delete"), keep)
+	want(t, rc, err, StatusDone, "")
+	if exists(t, contentAt(s, sumOf(shared))) || !exists(t, contentAt(s, sumOf(attached))) {
+		t.Fatal("the last holder's delete kept its file, or took the attachment's")
 	}
 }
 
@@ -515,6 +757,20 @@ func TestCapturesAreListedNewestFirstByPage(t *testing.T) {
 		if _, err := s.Captures(ctx, c.f, c.after, c.limit); !errors.Is(err, ErrBadQuery) {
 			t.Errorf("%+v after %q, %d: %v, want a bad query", c.f, c.after, c.limit, err)
 		}
+	}
+	// Pages of two by their cursors, every cursor's capture live: each
+	// capture once and in its order, neither repeated nor skipped, the last
+	// page with no next.
+	var walked []string
+	for after, pages := "", 0; pages == 0 || after != ""; pages++ {
+		if pages > len(ids) {
+			t.Fatalf("the pages do not end: %v", walked)
+		}
+		page := list(CaptureFilter{}, after, 2)
+		walked, after = append(walked, idsOf(page)...), page.Next
+	}
+	if !slices.Equal(walked, newest) {
+		t.Fatalf("the pages of two: %v, want %v", walked, newest)
 	}
 	// Two pages and the rest: between the first and the second, a capture
 	// made, one of the second page deleted and the cursor's own.

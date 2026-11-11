@@ -27,7 +27,8 @@ import (
 // file when nothing else names it.
 //
 // What a delete does: it REMOVES what only the live capture held (its
-// screenshot's hold, so the file goes when nothing else names it; its
+// screenshot's hold, the file collected as the delete commits when
+// nothing else names it; its
 // annotations' versions and sets, every note and element report with
 // them), and it HIDES the rest: the page part stays in the capture's row
 // and in the change row that made it, for the sends that froze it and for
@@ -422,13 +423,19 @@ func (s *Store) EditCapture(ctx context.Context, op Op, digest, id string, expec
 // unsent leaves nothing the sweep must keep; the rest is hidden by every
 // read (the package's comment says what a delete removes and what it
 // hides). Its sends, the files they hold and the ticket attachments they
-// made stay. not_found when there is none or it is deleted.
+// made stay. Once the delete has committed, the screenshot it released
+// goes through the one collection (collectOne): at once when nothing else
+// names it, kept when anything does. not_found when there is none or it
+// is deleted.
 func (s *Store) DeleteCapture(ctx context.Context, op Op, id string) (Receipt, error) {
-	return s.withUpload(ctx, op, IntentCaptureDelete, captureArgs{ID: id}, func() error { return nil }, nil, 0, nil, func(t *tx, _ *received) error {
+	released := ""
+	rc, err := s.withUpload(ctx, op, IntentCaptureDelete, captureArgs{ID: id}, func() error { return nil }, nil, 0, nil, func(t *tx, _ *received) error {
+		released = ""
 		c, err := t.liveCapture(id)
 		if err != nil {
 			return err
 		}
+		released = c.Image.SHA256
 		base := ChangeRow{Entity: EntityCapture, EntityID: id}
 		if err := t.setScalars("captures", base, []fieldValue{{"deleted_at", ""}}, []fieldValue{{"deleted_at", stamp(t.now)}}); err != nil {
 			return err
@@ -453,6 +460,10 @@ func (s *Store) DeleteCapture(ctx context.Context, op Op, id string) (Receipt, e
 		}
 		return nil
 	})
+	if err == nil && rc.Status == StatusDone && released != "" {
+		_ = s.collectOne(ctx, released)
+	}
+	return rc, err
 }
 
 // captureColumns is a capture's row as scanCapture reads it.
@@ -558,7 +569,10 @@ func (s *Store) Document(ctx context.Context, id string, rev int64) ([]byte, err
 		out = []byte(s)
 		return err
 	})
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // Capture reads the capture with the id and its annotations, as a read
@@ -579,7 +593,10 @@ func (s *Store) Capture(ctx context.Context, id string) (Capture, error) {
 		c.Annotations = anns
 		return nil
 	})
-	return c, err
+	if err != nil {
+		return Capture{}, err
+	}
+	return c, nil
 }
 
 // tombstoneOf is a deleted capture as every read gives it.
@@ -626,13 +643,13 @@ type CapturesPage struct {
 // out of range, a task with no run or an attempt with no task, or an after
 // that names no capture.
 func (s *Store) Captures(ctx context.Context, f CaptureFilter, after string, limit int) (CapturesPage, error) {
-	page := CapturesPage{Captures: []Capture{}}
 	switch {
 	case limit < 1 || limit > MaxCapturePage:
-		return page, badQuery("a page of captures is 1 to %d, not %d", MaxCapturePage, limit)
+		return CapturesPage{}, badQuery("a page of captures is 1 to %d, not %d", MaxCapturePage, limit)
 	case (f.Task != "" && f.Run == "") || (f.Attempt != 0 && f.Task == "") || f.Attempt < 0:
-		return page, badQuery("a page of captures names a task of a run, and an attempt of a task")
+		return CapturesPage{}, badQuery("a page of captures names a task of a run, and an attempt of a task")
 	}
+	page := CapturesPage{Captures: []Capture{}}
 	where, args := []string{"deleted_at = ''"}, []any{}
 	for _, w := range []struct {
 		col string
@@ -694,7 +711,10 @@ func (s *Store) Captures(ctx context.Context, f CaptureFilter, after string, lim
 		}
 		return nil
 	})
-	return page, err
+	if err != nil {
+		return CapturesPage{}, err
+	}
+	return page, nil
 }
 
 // cutChars is s cut to at most n characters.
@@ -717,7 +737,10 @@ func (s *Store) OpenCaptureImage(ctx context.Context, id string) (Capture, *os.F
 		return Capture{}, nil, ErrNotFound
 	}
 	f, err := s.openHeld(ctx, id, c.Image.SHA256, holderCapture)
-	return c, f, err
+	if err != nil {
+		return Capture{}, nil, err
+	}
+	return c, f, nil
 }
 
 // openHeld opens a content file a capture_files row of the holder names:

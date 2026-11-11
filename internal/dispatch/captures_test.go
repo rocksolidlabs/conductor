@@ -9,6 +9,7 @@ import (
 	"image"
 	"image/png"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -300,6 +301,8 @@ func TestCaptureBoundsAtTheirEdges(t *testing.T) {
 		{"a source's path", MaxHintFile, RefusalBound, false, func(_ *NewCapture, f *CaptureFacts, k int) {
 			f.Sources[0] = []Source{{Path: rep("a", k), How: "vue", Class: "tracked"}}
 		}},
+		{"the selection's changed count", MaxChangedCount, RefusalInvalid, false, func(n *NewCapture, _ *CaptureFacts, k int) { n.Label.Changed = k }},
+		{"the tree's changed count", MaxChangedCount, RefusalInvalid, false, func(_ *NewCapture, f *CaptureFacts, k int) { f.Changed = k }},
 		{"the element's report, as measured", MaxElementReport, RefusalBound, false, func(n *NewCapture, _ *CaptureFacts, k int) {
 			e := element(n)
 			e.HTML = rep("h", MaxElementHTML)
@@ -375,6 +378,16 @@ func TestCaptureBoundsAtTheirEdges(t *testing.T) {
 	outside.Annotations = slices.Clone(n.Annotations)
 	outside.Annotations[1].Rect = Rect{6, 6, 3, 3}
 	refused("region", small, outside, f, RefusalInvalid)
+	// Each edge of the 8 by 8 screenshot on its own: one past refused, at
+	// it taken.
+	for i, r := range []Rect{{-1, 0, 2, 2}, {0, -1, 2, 2}, {7, 0, 2, 2}, {0, 7, 2, 2}} {
+		outside.Annotations[1].Rect = r
+		refused(fmt.Sprintf("a region past an edge (%d)", i), pngOf(t, 8, 8, byte(70+i)), outside, f, RefusalInvalid)
+	}
+	for i, r := range []Rect{{0, 0, 8, 8}, {6, 6, 2, 2}} {
+		outside.Annotations[1].Rect = r
+		mustCreate(t, s, opID("region-at-edge", i), outside, f, pngOf(t, 8, 8, byte(80+i)))
+	}
 	// MaxCaptures live: the rows past the first copied in, as a replica's
 	// would be; a deleted one is not counted.
 	nn, nf := testCapture(false)
@@ -455,6 +468,32 @@ func TestTheFullestCaptureFitsItsDocument(t *testing.T) {
 	if !utf8.Valid(doc) {
 		t.Fatal("the document is not UTF-8")
 	}
+	// The document's own bound, which no capture within the other bounds
+	// reaches: a set whose document would be past it is refused bound, and
+	// one at it is written.
+	big := captureOf(t, s, rc.ID)
+	for _, c := range []struct {
+		past int
+		code string
+	}{{1, RefusalBound}, {0, ""}} {
+		big.Title = ""
+		big.Title = rep("t", MaxCaptureDocument-measure(documentAt(big, big.Rev+1))+c.past)
+		status := StatusDone
+		if c.code != "" {
+			status = StatusFailed
+		}
+		brc, err := s.Apply(ctx, testOp(fmt.Sprintf("document-%d", c.past)), IntentCaptureEdit, captureArgs{ID: big.ID, Received: rep("e", 64)}, func(x *tx) error {
+			return x.writeSet(big, big.Rev+1, big.Annotations)
+		})
+		want(t, brc, err, status, c.code)
+	}
+}
+
+// documentAt is c's document at rev, as writeSet measures it.
+func documentAt(c Capture, rev int64) CaptureDocument {
+	d := c.CaptureDocument
+	d.Rev = rev
+	return d
 }
 
 // A crash between the screenshot's publication and its row: the store
@@ -522,23 +561,49 @@ func TestAnEditRefusesANewElementReport(t *testing.T) {
 	n, f := testCapture(true)
 	id := mustCreate(t, s, "c1", n, f, pngOf(t, 8, 8, 10))
 	c := captureOf(t, s, id)
+	region := func(r Rect) []AnnotationEdit { e := kept(c); e[1].Rect = r; return e }
 	for i, bad := range [][]AnnotationEdit{
 		append(kept(c), AnnotationEdit{Kind: AnnotationElement, Note: "another", Element: &ElementReport{Tag: "a", Selector: "a"}}),
 		append(kept(c), AnnotationEdit{Kind: AnnotationElement, Note: "another"}),
 		func() []AnnotationEdit { e := kept(c); e[0].Element = c.Annotations[0].Element; return e }(),
 		func() []AnnotationEdit { e := kept(c); e[0].Rect = Rect{1, 2, 3, 4}; return e }(),
 		append(kept(c), kept(c)[0]),
+		// A region's rectangle within the 8 by 8 screenshot, each edge on its
+		// own, and a number.
+		region(Rect{-1, 0, 2, 2}), region(Rect{0, -1, 2, 2}), region(Rect{7, 0, 2, 2}), region(Rect{0, 7, 2, 2}),
+		region(Rect{math.NaN(), 0, 1, 1}), region(Rect{0, 0, -1, 1}), region(Rect{math.Inf(1), 0, 1, 1}),
+		append(kept(c), AnnotationEdit{Kind: AnnotationRegion, Note: "new", Rect: Rect{6, 6, 3, 3}}),
+		func() []AnnotationEdit { e := kept(c); e[1].Note = "a\x00"; return e }(),
+		func() []AnnotationEdit { e := kept(c); e[0].K = 3; return e }(),
 	} {
-		rc, err := reedit(t, s, opID("bad", i), id, 1, bad)
+		// A digest of its own: a NaN has no JSON to digest.
+		rc, err := s.EditCapture(context.Background(), testOp(opID("bad", i)), fmt.Sprintf("%064d", i), id, 1, bad)
 		want(t, rc, err, StatusFailed, RefusalInvalid)
 	}
+	// One past MaxCaptureAnnotations is refused bound; at the bound, and a
+	// region at the screenshot's edges, taken.
+	many := kept(c)
+	for len(many) < MaxCaptureAnnotations+1 {
+		many = append(many, AnnotationEdit{Kind: AnnotationRegion, Note: "more", Rect: Rect{0, 0, 1, 1}})
+	}
+	rc, err := reedit(t, s, "too-many", id, 1, many)
+	want(t, rc, err, StatusFailed, RefusalBound)
+	many = many[:MaxCaptureAnnotations]
+	many[1].Rect = Rect{6, 6, 2, 2}
+	rc, err = reedit(t, s, "as-many", id, 1, many)
+	want(t, rc, err, StatusDone, "")
+	c = captureOf(t, s, id)
 	// Removing every annotation brings none and is taken.
-	rc, err := reedit(t, s, "remove-all", id, 1, []AnnotationEdit{})
+	rc, err = reedit(t, s, "remove-all", id, c.Rev, []AnnotationEdit{})
 	want(t, rc, err, StatusDone, "")
 	n, f = testCapture(false)
 	none := mustCreate(t, s, "c2", n, f, nil)
-	rc, err = reedit(t, s, "region", none, 1, []AnnotationEdit{{K: 1, Kind: AnnotationElement, Note: "x"}, {Kind: AnnotationRegion, Note: "r", Rect: Rect{0, 0, 1, 1}}})
-	want(t, rc, err, StatusFailed, RefusalInvalid)
+	// A region on a capture with no screenshot, even one of no size that
+	// no screenshot's edge would refuse.
+	for i, r := range []Rect{{0, 0, 1, 1}, {}} {
+		rc, err = reedit(t, s, opID("region", i), none, 1, []AnnotationEdit{{K: 1, Kind: AnnotationElement, Note: "x"}, {Kind: AnnotationRegion, Note: "r", Rect: r}})
+		want(t, rc, err, StatusFailed, RefusalInvalid)
+	}
 	if got := captureOf(t, s, none); got.Rev != 1 || len(got.Annotations) != 1 {
 		t.Fatalf("a refused edit wrote: %+v", got)
 	}
@@ -764,9 +829,9 @@ func TestAnnotationsMergeAsOneScalar(t *testing.T) {
 }
 
 // A capture deleted unsent: its tombstone, nothing it alone held (its
-// file's row, its versions and sets), its file swept unless another live
-// capture holds it, gone from SnapshotHashes, and no read giving its
-// words; a second delete not_found.
+// file's row, its versions and sets), its file collected by the delete
+// unless another live capture holds it, gone from SnapshotHashes, and no
+// read giving its words; a second delete not_found.
 func TestADeletedUnsentCaptureReleasesItsImage(t *testing.T) {
 	ctx := context.Background()
 	s := openStore(t, storeDir(t))
@@ -786,11 +851,8 @@ func TestADeletedUnsentCaptureReleasesItsImage(t *testing.T) {
 			t.Fatalf("%d rows of %s left", n, table)
 		}
 	}
-	if err := s.sweep(ctx, time.Now()); err != nil {
-		t.Fatal(err)
-	}
 	if !exists(t, contentAt(s, sumOf(shared))) || exists(t, contentAt(s, sumOf(own))) {
-		t.Fatal("the sweep kept the wrong files")
+		t.Fatal("the deletes kept the wrong files")
 	}
 	snap := filepath.Join(t.TempDir(), "snap.sqlite")
 	if err := s.Snapshot(ctx, snap); err != nil {
