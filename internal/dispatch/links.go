@@ -458,7 +458,7 @@ func (s *Store) RemoveLink(ctx context.Context, op Op, key, id string) (Receipt,
 }
 
 // removeLink tombstones every live row of the member of the ticket's
-// link l and records its remove: its value l whole, its prior the tags of
+// link l, drops their reads, and records its remove: its value l whole, its prior the tags of
 // the adds it removes (one row, more when they are more than one prior
 // holds: recordRemove).
 func (t *tx) removeLink(tk Ticket, l Link) error {
@@ -472,6 +472,10 @@ func (t *tx) removeLink(tk Ticket, l Link) error {
 	}
 	for _, lid := range ids {
 		if _, err := t.tx.ExecContext(t.ctx, "UPDATE links SET deleted_at = ? WHERE id = ?", stamp(t.now), lid); err != nil {
+			return err
+		}
+		// Its read goes with it, in the same transaction (reads.go).
+		if _, err := t.tx.ExecContext(t.ctx, "DELETE FROM link_reads WHERE link_id = ?", lid); err != nil {
 			return err
 		}
 	}

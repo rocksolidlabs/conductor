@@ -272,6 +272,24 @@ var watchFails = false
 // guess at its exit, since a signal to the group after the reaping could
 // reach another's.
 func watchExit(cmd *exec.Cmd, g *lifecycle) (<-chan error, func() error, error) {
+	return watchThenReap(cmd, func() error { return g.reap(cmd) })
+}
+
+// WatchExit is Run's exit watch (watchExit) for a command another package
+// starts and ends itself, the agents' usage readers': exited gives nil
+// once cmd's process, started and not reaped, has exited, which leaves it
+// unreaped and its group's id its own, or the error of a watch that failed
+// while it may be alive still; reap (cmd.Wait) reaps it, after which the
+// caller signals its group no more. An error says the watch could not be
+// set up: the caller ends the process then, as Run does, rather than guess
+// at its exit.
+func WatchExit(cmd *exec.Cmd) (exited <-chan error, reap func() error, err error) {
+	return watchThenReap(cmd, cmd.Wait)
+}
+
+// watchThenReap watches cmd's exit (watchPID) and gives reap, the wait
+// that reaps it, with the watch stopped after it.
+func watchThenReap(cmd *exec.Cmd, reap func() error) (<-chan error, func() error, error) {
 	exited := make(chan error, 1)
 	if watchFails {
 		return nil, nil, errors.New("the watch was made to fail")
@@ -280,12 +298,12 @@ func watchExit(cmd *exec.Cmd, g *lifecycle) (<-chan error, func() error, error) 
 	switch {
 	case errors.Is(err, errExited):
 		exited <- nil
-		return exited, func() error { return g.reap(cmd) }, nil
+		return exited, reap, nil
 	case err != nil:
 		return nil, nil, err
 	}
 	return exited, func() error {
-		err := g.reap(cmd)
+		err := reap()
 		stop()
 		return err
 	}, nil

@@ -1,0 +1,70 @@
+{
+ "url": "https://api.github.com/repos/octo-example/private-widgets/issues/7",
+ "repository_url": "https://api.github.com/repos/octo-example/private-widgets",
+ "labels_url": "https://api.github.com/repos/octo-example/private-widgets/issues/7/labels{/name}",
+ "comments_url": "https://api.github.com/repos/octo-example/private-widgets/issues/7/comments",
+ "events_url": "https://api.github.com/repos/octo-example/private-widgets/issues/7/events",
+ "html_url": "https://github.com/octo-example/private-widgets/issues/7",
+ "id": 5000007,
+ "node_id": "I_kwDOFixture7",
+ "number": 7,
+ "title": "Settings page is blank",
+ "user": {
+  "login": "mona-example",
+  "id": 9000001,
+  "node_id": "U_kgDOFixture1",
+  "avatar_url": "https://avatars.githubusercontent.com/u/9000001?v=4",
+  "gravatar_id": "",
+  "url": "https://api.github.com/users/mona-example",
+  "html_url": "https://github.com/mona-example",
+  "type": "User",
+  "site_admin": false
+ },
+ "labels": [],
+ "state": "open",
+ "locked": false,
+ "assignee": {
+  "login": "hubot-example",
+  "id": 9000002,
+  "node_id": "U_kgDOFixture2",
+  "url": "https://api.github.com/users/hubot-example",
+  "html_url": "https://github.com/hubot-example",
+  "type": "User",
+  "site_admin": false
+ },
+ "assignees": [
+  {
+   "login": "hubot-example",
+   "id": 9000002,
+   "node_id": "U_kgDOFixture2",
+   "url": "https://api.github.com/users/hubot-example",
+   "html_url": "https://github.com/hubot-example",
+   "type": "User",
+   "site_admin": false
+  }
+ ],
+ "milestone": {
+  "url": "https://api.github.com/repos/octo-example/private-widgets/milestones/1",
+  "html_url": "https://github.com/octo-example/private-widgets/milestone/1",
+  "id": 8000001,
+  "node_id": "MI_kwDOFixture1",
+  "number": 1,
+  "title": "v1.0",
+  "state": "open"
+ },
+ "comments": 2,
+ "created_at": "2026-10-01T09:00:00Z",
+ "updated_at": "2026-10-02T10:30:00Z",
+ "closed_at": null,
+ "author_association": "OWNER",
+ "active_lock_reason": null,
+ "body": "The settings page is blank.\n\n## Repro\n\n1. Open Settings\n",
+ "body_html": "<p dir=\"auto\">The settings page is blank.</p>\n<h2 dir=\"auto\">Repro</h2>\n<ol dir=\"auto\"><li>Open Settings</li></ol>\n<p dir=\"auto\"><a target=\"_blank\" rel=\"noopener noreferrer\" href=\"https://private-user-images.githubusercontent.com/9000001/400000001-0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d.png?jwt=REDACTED.fixture.jwt\"><img src=\"https://private-user-images.githubusercontent.com/9000001/400000001-0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d.png?jwt=REDACTED.fixture.jwt\" alt=\"blank settings\" style=\"max-width: 100%;\"></a></p>",
+ "reactions": {
+  "url": "https://api.github.com/repos/octo-example/private-widgets/issues/7/reactions",
+  "total_count": 0
+ },
+ "timeline_url": "https://api.github.com/repos/octo-example/private-widgets/issues/7/timeline",
+ "performed_via_github_app": null,
+ "state_reason": null
+}
