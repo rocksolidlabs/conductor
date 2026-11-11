@@ -280,21 +280,34 @@ func (s *Store) CandidateRefusal(ctx context.Context, key, run string) error {
 type delivery struct {
 	candidate string
 	verified  string
+	// link and url are the link's; read its last read, nil for none
+	// (reads.go).
+	link, url string
+	read      *LinkRead
 }
 
 // deliveriesOf reads the ticket's live delivery links as the ticket shows
 // them (linksOf: a member two replicas added read as its later add), in
-// the order they were made, so a receipt the ticket does not show never
-// meets the close policy. A version 1 database has no candidates.
+// the order they were made, each with its last read, so a receipt or a
+// read the ticket does not show never meets the close policy. A version 1
+// database has no candidates, and one before version 4 no reads.
 func deliveriesOf(ctx context.Context, q queryer, ticketID string) ([]delivery, error) {
 	links, err := linksOf(ctx, q, ticketID)
+	if err != nil {
+		return nil, err
+	}
+	reads, err := linkReadsOf(ctx, q, ticketID)
 	if err != nil {
 		return nil, err
 	}
 	var out []delivery
 	for _, l := range links {
 		if l.Kind == LinkDelivery {
-			out = append(out, delivery{candidate: l.Candidate, verified: string(l.Verified)})
+			d := delivery{candidate: l.Candidate, verified: string(l.Verified), link: l.ID, url: l.URL}
+			if r, ok := reads[l.ID]; ok {
+				d.read = &r
+			}
+			out = append(out, d)
 		}
 	}
 	return out, nil
@@ -344,4 +357,49 @@ func shortfall(v Verified) string {
 		}
 	}
 	return "passed its checks, but its attempt did not succeed"
+}
+
+// ClosedOn is the read a close that required merged rested on, as a
+// ticket's closed_on keeps it: the delivery link (by its id: the link's own
+// rows keep its URL, so closed_on never copies an address and stays well
+// under MaxClosedOn whatever the URL's length), when the system says it
+// merged and its merge commit, and when the read was made.
+type ClosedOn struct {
+	LinkID   string    `json:"linkId"`
+	MergedAt time.Time `json:"mergedAt,omitzero"`
+	MergeSha string    `json:"mergeSha,omitempty"`
+	ReadAt   time.Time `json:"readAt"`
+}
+
+// deliveryWords names a delivery link in the close policy's words: its URL
+// as the store keeps an address (scheme, host and path: never a query, a
+// fragment or a user, admitAddress), or the link's id when its URL is not
+// one the store admits.
+func deliveryWords(d delivery) string {
+	if kept, ok := addressWords(d.url); ok {
+		return kept
+	}
+	return "link " + d.link
+}
+
+// mergedState is the close policy's merged, pure, at now: met by a live
+// delivery whose last read says merged and was made at most
+// MaxMergedReadAge before now, the first such in the order the deliveries
+// come (on, the read it rests on); else the words for the latest delivery
+// that fell short, or "no delivery link's pull request was read merged".
+func mergedState(deliveries []delivery, now time.Time) (met bool, why string, on *ClosedOn) {
+	why = "no delivery link's pull request was read merged"
+	for _, d := range deliveries {
+		switch {
+		case d.read == nil || d.read.ReadAt.IsZero():
+			why = "the delivery " + deliveryWords(d) + " has not been read"
+		case !d.read.Merged:
+			why = "GitHub said the delivery " + deliveryWords(d) + " is " + d.read.State + ", not merged"
+		case now.Sub(d.read.ReadAt) > MaxMergedReadAge:
+			why = fmt.Sprintf("the delivery %s was read merged %s ago, more than %s: read it again", deliveryWords(d), now.Sub(d.read.ReadAt).Round(time.Second), MaxMergedReadAge)
+		default:
+			return true, "", &ClosedOn{LinkID: d.link, MergedAt: d.read.MergedAt, MergeSha: d.read.MergeSha, ReadAt: d.read.ReadAt}
+		}
+	}
+	return false, why, nil
 }

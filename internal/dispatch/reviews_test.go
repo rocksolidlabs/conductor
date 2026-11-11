@@ -1364,8 +1364,8 @@ func fixtureV2(t *testing.T) string {
 	return dir
 }
 
-// A version 2 database is brought to version 3 at open: three tables and
-// five indexes made, every row of every table as it was, no migrate row,
+// A version 2 database is brought to version 3 at open (and on to this
+// binary's version): three tables and five indexes made, every row of every table as it was, no migrate row,
 // the schema read back a fresh store's; and it writes on: a review of the
 // launched run's candidate.
 func TestMigrationTwoToThreeKeepsEveryRow(t *testing.T) {
@@ -1379,7 +1379,8 @@ func TestMigrationTwoToThreeKeepsEveryRow(t *testing.T) {
 	before := map[string][]string{}
 	cols := map[string][]string{}
 	for _, table := range tables {
-		if slices.Contains([]string{"reviews", "review_findings", "finding_marks", "tickets_fts", "schema_version"}, table) {
+		if slices.Contains([]string{"reviews", "review_findings", "finding_marks", "link_reads", "ticket_reads", "store_instance", "publications",
+			"tickets_fts", "schema_version"}, table) {
 			continue
 		}
 		cols[table] = columnsOf(t, raw, table)
@@ -1393,7 +1394,7 @@ func TestMigrationTwoToThreeKeepsEveryRow(t *testing.T) {
 	if ro, why := s.ReadOnly(); ro {
 		t.Fatalf("read-only: %s", why)
 	}
-	if err := s.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil || version != 3 {
+	if err := s.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil || version != Version {
 		t.Fatalf("version %d %v", version, err)
 	}
 	for table, c := range cols {
@@ -1424,10 +1425,11 @@ func TestMigrationTwoToThreeKeepsEveryRow(t *testing.T) {
 	}
 }
 
-// A version 3 database opens read-only under a binary that writes version
-// 2 (a DS2 binary: its rule for a later version, the one this store
-// applies, with the version it writes set to 2), its reviews kept: reads
-// work, a write is refused read_only, and the file stays version 3.
+// A version 3 database (and so this binary's, a later one) opens read-only
+// under a binary that writes version 2 (a DS2 binary: its rule for a later
+// version, the one this store applies, with the version it writes set to
+// 2), its reviews kept: reads work, a write is refused read_only, and the
+// file stays the version it was.
 func TestVersionThreeIsReadOnlyForOlder(t *testing.T) {
 	ctx := context.Background()
 	dir := storeDir(t)
@@ -1444,7 +1446,7 @@ func TestVersionThreeIsReadOnlyForOlder(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { older.Close() })
-	if ro, why := older.ReadOnly(); !ro || !strings.Contains(why, "version 3, written by a newer Conductor") {
+	if ro, why := older.ReadOnly(); !ro || !strings.Contains(why, fmt.Sprintf("version %d, written by a newer Conductor", Version)) {
 		t.Fatalf("read-only %v: %s", ro, why)
 	}
 	if tk, err := older.Ticket(ctx, key); err != nil || tk.Title != "Reviewed" {
@@ -1461,7 +1463,7 @@ func TestVersionThreeIsReadOnlyForOlder(t *testing.T) {
 		t.Fatalf("the review after: %+v", got)
 	}
 	var version int
-	if err := again.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil || version != 3 {
+	if err := again.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil || version != Version {
 		t.Fatalf("version %d %v", version, err)
 	}
 }

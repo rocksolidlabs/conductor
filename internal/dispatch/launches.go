@@ -713,7 +713,8 @@ func (s *Store) PendingLaunches(ctx context.Context) ([]LaunchSummary, error) {
 
 // ChangedSince reads what changed of the ticket of the launch with the id
 // since the launch (LaunchChanges): the intent fields set in the ticket's
-// change rows after the launch's create row, by the local seq, whose value
+// change rows after the launch's create row, by the local seq (a set, or
+// an observe: what a read of its linked item wrote), whose value
 // now is not the package's (a field edited and edited back is not named);
 // the comments added since that are live; and the ticket's rev now. A run
 // keeps working from its package whatever this says. ErrNotFound when
@@ -746,8 +747,11 @@ func (s *Store) ChangedSince(ctx context.Context, id string) (LaunchChanges, err
 		if err != nil {
 			return err
 		}
-		set, err := readTexts(ctx, q, "SELECT DISTINCT field FROM changes WHERE entity = ? AND entity_id = ? AND op = ? AND seq > ? AND field IN ('title', 'description', 'acceptance')",
-			EntityTicket, ticketID, OpSet, since)
+		// A field set here or written by a read of its linked item (an
+		// observe row: a change GitHub made is a change); an adopt row keeps
+		// the text it found, so it changes none.
+		set, err := readTexts(ctx, q, "SELECT DISTINCT field FROM changes WHERE entity = ? AND entity_id = ? AND op IN (?, ?) AND seq > ? AND field IN ('title', 'description', 'acceptance')",
+			EntityTicket, ticketID, OpSet, OpObserve, since)
 		if err != nil {
 			return err
 		}

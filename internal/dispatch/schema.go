@@ -12,8 +12,11 @@ import (
 // plan revisions and launches and three columns of a link
 // (docs/plans/dispatch-evidence.md, Program item DS2); version 3 adds a
 // ticket's reviews, their findings and the findings' marks
-// (docs/plans/review-repair.md, Program item RV1).
-const Version = 3
+// (docs/plans/review-repair.md, Program item RV1); version 4 adds a
+// ticket's linked issue in the columns DS1 reserved, the reads of linked
+// GitHub items, the store's instance and the publications' table, and a
+// ticket's closed_on (docs/plans/tracker-linking.md, Program item IN1a).
+const Version = 4
 
 // migrations bring a database from the version keyed to the next, in the
 // transaction that read the version, with the version's bump. A migration
@@ -33,6 +36,14 @@ const Version = 3
 // the findings' marks and their five indexes, and reads or rewrites no
 // row: a version 2 database holds no review, so nothing is derived and no
 // migrate row is written.
+//
+// Version 3 to 4 makes four tables (the links' and the linked issues'
+// reads, the store's instance and the publications) and their four
+// indexes, adds a ticket's closed_on, empty on every version 3 row, and
+// writes the instance's one row (migrationsGo). It reads and rewrites no
+// other row: every version 3 ticket has source native and the other
+// reserved columns empty, since nothing wrote them, so nothing is derived
+// and no migrate row is written.
 var migrations = map[int][]string{
 	1: append([]string{
 		plansTable,
@@ -47,11 +58,20 @@ var migrations = map[int][]string{
 		reviewFindingsTable,
 		findingMarksTable,
 	}, version3Indexes...),
+	3: append([]string{
+		linkReadsTable,
+		ticketReadsTable,
+		storeInstanceTable,
+		publicationsTable,
+		`ALTER TABLE tickets ADD COLUMN closed_on TEXT NOT NULL DEFAULT ''`,
+	}, version4Indexes...),
 }
 
 // migrationsGo run after a version's statements, in the same transaction:
 // what SQL alone cannot work out.
-var migrationsGo = map[int]func(context.Context, *sql.Tx) error{}
+var migrationsGo = map[int]func(context.Context, *sql.Tx) error{
+	3: writeInstance,
+}
 
 // plansTable is a ticket's plan revisions (plans.go): each immutable once
 // made but for its state, its approval and its withdrawal, its body the
@@ -197,6 +217,108 @@ const findingMarksTable = `CREATE TABLE finding_marks (
 		fingerprint TEXT NOT NULL DEFAULT ''
 	)`
 
+// linkReadsTable is the last read of the GitHub item a live link names
+// (Program item IN1a, reads.go): a cache, derived and local, never a
+// changes row, never replicated; a link removed drops its row in the same
+// transaction. checks is JSON (at most MaxLinkChecks at the item's head
+// commit), checks_incomplete the words of why the set is not whole.
+const linkReadsTable = `CREATE TABLE link_reads (
+		link_id TEXT PRIMARY KEY REFERENCES links(id),
+		ticket_id TEXT NOT NULL REFERENCES tickets(id),
+		system TEXT NOT NULL DEFAULT '',
+		host TEXT NOT NULL DEFAULT '',
+		kind TEXT NOT NULL DEFAULT '',
+		node_id TEXT NOT NULL DEFAULT '',
+		state TEXT NOT NULL DEFAULT '',
+		merged INTEGER NOT NULL DEFAULT 0,
+		merged_at TEXT NOT NULL DEFAULT '',
+		merge_sha TEXT NOT NULL DEFAULT '',
+		head_sha TEXT NOT NULL DEFAULT '',
+		checks TEXT NOT NULL DEFAULT '[]',
+		checks_incomplete TEXT NOT NULL DEFAULT '',
+		updated_at TEXT NOT NULL DEFAULT '',
+		read_at TEXT NOT NULL DEFAULT '',
+		issue_etag TEXT NOT NULL DEFAULT '',
+		pull_etag TEXT NOT NULL DEFAULT '',
+		error TEXT NOT NULL DEFAULT '',
+		error_at TEXT NOT NULL DEFAULT ''
+	)`
+
+// ticketReadsTable is when a ticket's linked issue was last read, for the
+// identity it was read for, and the read's validators (external.go):
+// derived and local as link_reads is; unlinking drops it.
+const ticketReadsTable = `CREATE TABLE ticket_reads (
+		ticket_id TEXT PRIMARY KEY REFERENCES tickets(id),
+		external_id TEXT NOT NULL,
+		updated_at TEXT NOT NULL DEFAULT '',
+		read_at TEXT NOT NULL DEFAULT '',
+		read_by TEXT NOT NULL DEFAULT '',
+		issue_etag TEXT NOT NULL DEFAULT '',
+		pull_etag TEXT NOT NULL DEFAULT '',
+		error TEXT NOT NULL DEFAULT '',
+		error_at TEXT NOT NULL DEFAULT ''
+	)`
+
+// storeInstanceTable is this database's instance, one row of 32 hex
+// digits, written by the create or the migration and written again with a
+// new value by a restore (Reissue), so a restored copy is never the
+// instance it was exported from: derived and local, never a changes row,
+// never replicated.
+const storeInstanceTable = `CREATE TABLE store_instance (
+		id TEXT PRIMARY KEY
+	)`
+
+// publicationsTable is a ticket's publications, each one comment
+// Conductor posts to GitHub for a person (docs/plans/tracker-linking.md,
+// "publications"): made here by version 4, written by the operations of
+// a later row of the plan, which this version's store has none of.
+const publicationsTable = `CREATE TABLE publications (
+		id TEXT PRIMARY KEY,
+		ticket_id TEXT NOT NULL REFERENCES tickets(id),
+		target TEXT NOT NULL,
+		target_kind TEXT NOT NULL,
+		target_url TEXT NOT NULL DEFAULT '',
+		target_ref TEXT NOT NULL DEFAULT '',
+		target_node_id TEXT NOT NULL,
+		target_space_id TEXT NOT NULL,
+		instance TEXT NOT NULL,
+		marker TEXT NOT NULL,
+		body TEXT NOT NULL,
+		post_sha256 TEXT NOT NULL,
+		parts TEXT NOT NULL DEFAULT '[]',
+		close_issue TEXT NOT NULL DEFAULT '',
+		state TEXT NOT NULL DEFAULT 'draft',
+		tries INTEGER NOT NULL DEFAULT 0,
+		attempt INTEGER NOT NULL DEFAULT 0,
+		find_since TEXT NOT NULL DEFAULT '',
+		sent_as_id TEXT NOT NULL DEFAULT '',
+		sent_as_login TEXT NOT NULL DEFAULT '',
+		remote_id TEXT NOT NULL DEFAULT '',
+		remote_url TEXT NOT NULL DEFAULT '',
+		close_state TEXT NOT NULL DEFAULT '',
+		close_tries INTEGER NOT NULL DEFAULT 0,
+		close_error TEXT NOT NULL DEFAULT '',
+		error TEXT NOT NULL DEFAULT '',
+		sending_at TEXT NOT NULL DEFAULT '',
+		sent_at TEXT NOT NULL DEFAULT '',
+		sent_by TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		created_by TEXT NOT NULL DEFAULT '',
+		fingerprint TEXT NOT NULL DEFAULT '',
+		rev INTEGER NOT NULL DEFAULT 0
+	)`
+
+// version4Indexes is the indexes version 4 adds: the tickets by their
+// linked item's identity, a ticket's links' reads, a ticket's
+// publications in their order, and the publications by their state. None
+// is unique: one ticket per linked item is a rule of the local write.
+var version4Indexes = []string{
+	`CREATE INDEX tickets_external ON tickets (external_id)`,
+	`CREATE INDEX link_reads_ticket ON link_reads (ticket_id)`,
+	`CREATE INDEX publications_ticket_created ON publications (ticket_id, created_at)`,
+	`CREATE INDEX publications_state ON publications (state)`,
+}
+
 // version3Indexes is the indexes version 3 adds: a ticket's reviews in
 // their order, the reviews by their application's state (the reconcile's
 // pending ones), a review's findings in their order, a ticket's findings,
@@ -222,11 +344,13 @@ var version2Indexes = []string{
 	`CREATE INDEX launch_files_sha256 ON launch_files (sha256)`,
 }
 
-// schema is version 3, whole: every table of docs/plans/dispatch.md's
+// schema is version 4, whole: every table of docs/plans/dispatch.md's
 // schema table, docs/plans/dispatch-evidence.md's (plans, launches,
 // launch_files, and a link's three columns, last of its table as the
-// migration adds them) and docs/plans/review-repair.md's (reviews,
-// review_findings, finding_marks), the FTS index included, its indexes and two of the
+// migration adds them), docs/plans/review-repair.md's (reviews,
+// review_findings, finding_marks) and docs/plans/tracker-linking.md's
+// (link_reads, ticket_reads, store_instance, publications, and a ticket's
+// closed_on, last of its columns as the migration adds it), the FTS index included, its indexes and two of the
 // list's own (tickets_list, ticket_labels_label), and the unique
 // indexes of the keys never minted twice and nothing else (projects.key,
 // tickets.key and (project_id, number), people.name, changes (actor,
@@ -310,6 +434,7 @@ var schema = append([]string{
 		closed_at TEXT NOT NULL DEFAULT '',
 		deleted_at TEXT NOT NULL DEFAULT '',
 		rev INTEGER NOT NULL DEFAULT 0,
+		closed_on TEXT NOT NULL DEFAULT '',
 		UNIQUE (project_id, number)
 	)`,
 	`CREATE TABLE ticket_assignees (
@@ -474,12 +599,16 @@ var schema = append([]string{
 	reviewsTable,
 	reviewFindingsTable,
 	findingMarksTable,
-}, append(slices.Clone(version2Indexes), version3Indexes...)...)
+	linkReadsTable,
+	ticketReadsTable,
+	storeInstanceTable,
+	publicationsTable,
+}, append(append(slices.Clone(version2Indexes), version3Indexes...), version4Indexes...)...)
 
 // tables is every table of the schema but the FTS index's own and
 // SQLite's, by name: what a test lists sqlite_master against.
 var tables = []string{
-	"attachments", "changes", "comments", "finding_marks", "labels", "launch_files", "launches", "links", "milestones", "ops", "people", "plans",
-	"projects", "relations", "review_findings", "reviews", "schema_version", "ticket_assignees", "ticket_labels", "tickets", "tickets_fts",
-	"uploads", "views",
+	"attachments", "changes", "comments", "finding_marks", "labels", "launch_files", "launches", "link_reads", "links", "milestones", "ops",
+	"people", "plans", "projects", "publications", "relations", "review_findings", "reviews", "schema_version", "store_instance",
+	"ticket_assignees", "ticket_labels", "ticket_reads", "tickets", "tickets_fts", "uploads", "views",
 }
