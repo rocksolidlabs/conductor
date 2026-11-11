@@ -280,17 +280,15 @@ describe('the earlier app id replaced by the installer', () => {
       '${If} ${FileExists} "$conductorEarlierUninstaller"',
       '${AndIf} ${FileExists} "$conductorEarlierDir\\${CONDUCTOR_EARLIER_EXE}"',
       'StrCpy $conductorEarlierForm run',
-      '${ElseIfNot} ${FileExists} "$conductorEarlierUninstaller"',
-      '${AndIfNot} ${FileExists} "$conductorEarlierDir\\*.*"',
-      'StrCpy $conductorEarlierForm stale',
       '${EndIf}',
       '${EndIf}',
       '${EndIf}',
       '${EndIf}',
       '${EndIf}',
     ])
-    // What leads to each outcome: a run and a stale entry only through every test of the whole form, and nothing but a found
-    // entry leads to a stop.
+    // What leads to each outcome, three in all: a run only through every test of the whole form and its uninstaller and
+    // Conductor.exe found; nothing but a found entry leads to a stop, which is every entry that is not a run (an uninstaller not
+    // found among them: a file gone and a folder that cannot be looked into answer FileExists the same); no entry is none.
     const form = [
       '${IfNot} ${Errors}',
       '${If} $conductorEarlierText S== `"$conductorEarlierUninstaller" ${MODE}`',
@@ -304,13 +302,13 @@ describe('the earlier app id replaced by the installer', () => {
       none: [[]],
       stop: [['${IfNot} ${Errors}']],
       run: [[...form, '${If} ${FileExists} "$conductorEarlierUninstaller"', '${AndIf} ${FileExists} "$conductorEarlierDir\\${CONDUCTOR_EARLIER_EXE}"']],
-      stale: [[...form, '${ElseIfNot} ${FileExists} "$conductorEarlierUninstaller"', '${AndIfNot} ${FileExists} "$conductorEarlierDir\\*.*"']],
     })
     // One root's pass reads nothing it has not set itself: the HKLM pass, right after the HKCU pass, never sees HKCU's entry.
     expect(unset(onePass(s))).toEqual([])
     // The folder is the uninstaller's own, never one read from elsewhere or guessed.
     expect(s.match(/StrCpy \$conductorEarlierDir|ReadRegStr \$conductorEarlierDir|Pop \$conductorEarlierDir/g)).toEqual(['StrCpy $conductorEarlierDir'])
-    // Only a judged entry is acted on: a stop runs and deletes nothing, a stale one's keys are deleted, only a runnable one runs.
+    // Only a judged entry is acted on: a stop copies, runs and deletes nothing and comes first, only a runnable one runs, and
+    // the move deletes no key or file itself: the earlier entry's keys go only by its own uninstaller, run and answered.
     const lines = replace.split('\n')
     const branch = (form: string) => {
       const at = lines.findIndex((l) => /^\s*\$\{(If|ElseIf)\} \$conductorEarlierForm == (\w+)$/.exec(l)?.[2] === form)
@@ -320,10 +318,13 @@ describe('the earlier app id replaced by the installer', () => {
     }
     expect(replace.indexOf('!insertmacro conductorEarlierJudge ${ROOT}')).toBe(replace.search(/\S/))
     expect(branch('stop').trim()).toBe('!insertmacro conductorEarlierStop "${CONDUCTOR_EARLIER_BY_HAND}"')
-    expect(branch('stale').match(/DeleteRegKey/g)).toHaveLength(2)
-    expect(branch('stale')).not.toMatch(/ExecWait|copyFile/)
+    expect(replace.indexOf('${If} $conductorEarlierForm == stop')).toBeLessThan(replace.indexOf('copyFile'))
     expect(branch('run')).toMatch(/copyFile[\s\S]*ExecWait/)
-    expect(replace.match(/DeleteRegKey|ExecWait|copyFile/g)).toEqual(['DeleteRegKey', 'DeleteRegKey', 'copyFile', 'ExecWait'])
+    expect(replace.match(/DeleteReg|ExecWait|copyFile/g)).toEqual(['copyFile', 'ExecWait'])
+    expect(s).not.toMatch(/^\s*(DeleteRegKey|DeleteRegValue|Delete|RMDir|Rename)\b/m)
+    expect(script()).toContain(
+      '!define CONDUCTOR_EARLIER_BY_HAND "An earlier Conductor is installed that this installer cannot remove: its uninstaller was not found, or its entry is not one its installer wrote. Remove it from the installed apps, then run this installer again."',
+    )
   })
 
   it('an update the app started never makes the move', () => {
@@ -370,8 +371,8 @@ describe('the earlier app id replaced by the installer', () => {
     const s = compiled(script(), 'io.rocksolidlabs.conductor')
     const replace = macro(s, 'conductorReplaceEarlier')
     const after = replace.slice(replace.indexOf('${If} $conductorEarlierExit != 0'))
-    // Neither exit 0 nor a stale entry's delete is taken on trust: both keys gone from that root, and after a removal the rc's
-    // Conductor.exe and uninstaller gone from its folder.
+    // Exit 0 is not taken on trust: both keys gone from that root, and the rc's Conductor.exe and uninstaller gone from its
+    // folder.
     const partly = '!insertmacro conductorEarlierStop "${CONDUCTOR_EARLIER_PARTLY}"'
     expect(script()).toContain('!define CONDUCTOR_EARLIER_PARTLY "The earlier Conductor was not fully removed. Run this installer again."')
     const keys = replace.slice(replace.indexOf('${If} $conductorEarlierForm != none'))
@@ -379,7 +380,6 @@ describe('the earlier app id replaced by the installer', () => {
     for (const key of ['CONDUCTOR_EARLIER_UNINSTALL_KEY', 'CONDUCTOR_EARLIER_INSTALL_KEY']) {
       expect(keys).toMatch(new RegExp(`!insertmacro conductorEarlierFound \\$\\{ROOT\\} "\\$\\{${key}\\}"\\n\\s*\\$\\{IfNot\\} \\$\\{Errors\\}\\n\\s*${partly.replace(/[$.{}"]/g, '\\$&')}`))
     }
-    expect(replace.lastIndexOf('DeleteRegKey')).toBeLessThan(replace.indexOf('${If} $conductorEarlierForm != none'))
     expect(after).toMatch(/\$\{If\} \$\{FileExists\} "\$conductorEarlierDir\\\$\{CONDUCTOR_EARLIER_EXE\}"\n\s*\$\{OrIf\} \$\{FileExists\} "\$conductorEarlierUninstaller"\n\s*!insertmacro conductorEarlierStop/)
     // A key is found by enumerating it, which fails only where it is not.
     expect(macro(s, 'conductorEarlierFound')).toMatch(/ClearErrors\n\s*EnumRegKey \$conductorEarlierProbe \$\{ROOT\} `\$\{KEY\}` 0/)

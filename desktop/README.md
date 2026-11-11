@@ -130,13 +130,16 @@ uninstaller and `Conductor.exe` in its folder, is removed as electron-builder re
 installer's own id: a copy of its uninstaller run in place with
 `/S /KEEP_APP_DATA --updated` (user data kept, every file restored at one
 it cannot move), tried five times a second apart; then the entry and the
-files must be gone before the install goes on. Such an entry whose
-uninstaller and folder are both gone is removed, and must then be gone.
-Any other entry, every value the earlier installer did not write among
-them, stops the install with nothing run and nothing deleted. Every stop
+files must be gone before the install goes on. The installer deletes no
+key or file of the earlier app itself. Any other entry, every value the
+earlier installer did not write among them, stops the install with nothing
+copied, run or deleted; so does an entry whose uninstaller is not found,
+since a file that is gone and a folder the installer cannot look into
+answer it the same, and that is no proof the earlier app is gone. Every stop
 comes before any of the new app is copied, and says why: the earlier app could not be removed, was not fully removed, is
 installed for everyone and the installer is not running as administrator,
-or is not in a form the installer can remove (remove it from the installed
+or cannot be removed by this installer, its uninstaller not found or its
+entry not in the earlier installer's form (remove it from the installed
 apps, then run the installer again). A stop does not undo what
 electron-builder's own upgrade step did before it: run by hand over an
 installed successor, the installer has already removed that successor's

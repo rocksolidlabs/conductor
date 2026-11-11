@@ -41,7 +41,7 @@
   !define CONDUCTOR_EARLIER_FAILED "The earlier Conductor could not be removed. Close it and run this installer again."
   !define CONDUCTOR_EARLIER_PARTLY "The earlier Conductor was not fully removed. Run this installer again."
   !define CONDUCTOR_EARLIER_FOR_EVERYONE "An earlier Conductor is installed for everyone on this computer. Run this installer as administrator to replace it."
-  !define CONDUCTOR_EARLIER_BY_HAND "This installer cannot remove the earlier Conductor. Remove it from the installed apps, then run this installer again."
+  !define CONDUCTOR_EARLIER_BY_HAND "An earlier Conductor is installed that this installer cannot remove: its uninstaller was not found, or its entry is not one its installer wrote. Remove it from the installed apps, then run this installer again."
 
   ; conductorEarlierStop ends the install before anything of the new app is
   ; copied.
@@ -61,8 +61,10 @@
   ; conductorEarlierJudge sets $conductorEarlierForm to what the move does
   ; with ROOT's entry of the earlier id: none (no uninstall entry it can
   ; open), run (an entry in the earlier installer's form, its uninstaller
-  ; and Conductor.exe in its folder), stale (in that form, its uninstaller
-  ; and folder gone) or stop (anything else: nothing is run or deleted).
+  ; and Conductor.exe in its folder) or stop (anything else: nothing is
+  ; copied, run or deleted). An uninstaller that is not found is a stop: a
+  ; file that is gone and a folder that cannot be looked into answer
+  ; FileExists the same, so it is no proof that the earlier app is gone.
   ; The form is, whole, what registryAddInstallInfo writes for an install
   ; under ROOT (include/installer.nsh of the templates: UninstallString
   ; '"$INSTDIR\Uninstall Conductor.exe" <mode>', InstallLocation "$INSTDIR",
@@ -98,9 +100,6 @@
             ${If} ${FileExists} "$conductorEarlierUninstaller"
             ${AndIf} ${FileExists} "$conductorEarlierDir\${CONDUCTOR_EARLIER_EXE}"
               StrCpy $conductorEarlierForm run
-            ${ElseIfNot} ${FileExists} "$conductorEarlierUninstaller"
-            ${AndIfNot} ${FileExists} "$conductorEarlierDir\*.*"
-              StrCpy $conductorEarlierForm stale
             ${EndIf}
           ${EndIf}
         ${EndIf}
@@ -115,15 +114,12 @@
   ; of its uninstaller run in place against its folder (_?=, so ExecWait
   ; returns once the removal has ended), --updated for the move-aside path
   ; that restores every file at one it cannot move and keeps the user data.
-  ; A stale one's two keys are deleted.
+  ; The move deletes nothing itself: the earlier uninstaller removes its
+  ; files and its two keys.
   !macro conductorReplaceEarlier ROOT MODE
     !insertmacro conductorEarlierJudge ${ROOT} "${MODE}"
     ${If} $conductorEarlierForm == stop
       !insertmacro conductorEarlierStop "${CONDUCTOR_EARLIER_BY_HAND}"
-    ${ElseIf} $conductorEarlierForm == stale
-      DetailPrint `Removing the stale entry of the earlier Conductor (${ROOT}).`
-      DeleteRegKey ${ROOT} "${CONDUCTOR_EARLIER_UNINSTALL_KEY}"
-      DeleteRegKey ${ROOT} "${CONDUCTOR_EARLIER_INSTALL_KEY}"
     ${ElseIf} $conductorEarlierForm == run
       DetailPrint `Removing the earlier Conductor (${ROOT}).`
       !insertmacro copyFile "$conductorEarlierUninstaller" "$PLUGINSDIR\conductor-earlier-uninstaller-${ROOT}.exe"
@@ -152,8 +148,8 @@
         !insertmacro conductorEarlierStop "${CONDUCTOR_EARLIER_PARTLY}"
       ${EndIf}
     ${EndIf}
-    ; Neither exit 0 nor a delete is taken on trust: both keys are gone
-    ; before anything of the new app is copied.
+    ; Exit 0 is not taken on trust: both keys are gone before anything of
+    ; the new app is copied.
     ${If} $conductorEarlierForm != none
       !insertmacro conductorEarlierFound ${ROOT} "${CONDUCTOR_EARLIER_UNINSTALL_KEY}"
       ${IfNot} ${Errors}
