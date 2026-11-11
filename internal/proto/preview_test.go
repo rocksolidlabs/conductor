@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"maps"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf16"
@@ -313,40 +312,5 @@ func TestPreviewMessagesFixture(t *testing.T) {
 	}
 	if len(f.Messages) < 80 || len(f.Measures) < 8 {
 		t.Fatalf("the fixture has %d messages and %d measures", len(f.Messages), len(f.Measures))
-	}
-}
-
-// The two report fixtures the bridge's report.test.ts writes
-// (internal/api/testdata): every field at its bound, and the largest-tag
-// shape cut through the tenth step, each within the element report's
-// schema and its bound by the shared measure.
-func TestTheBridgesReportFixturesAreElements(t *testing.T) {
-	for _, name := range []string{"fullest-report.json", "largest-tag-report.json"} {
-		raw, err := os.ReadFile(filepath.Join("..", "api", "testdata", name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var f struct {
-			Report json.RawMessage `json:"report"`
-			Bytes  int             `json:"bytes"`
-		}
-		if err := json.Unmarshal(raw, &f); err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		var v any
-		if err := json.Unmarshal(f.Report, &v); err != nil {
-			t.Fatal(err)
-		}
-		if got := PreviewMeasure(v); got != f.Bytes || got > MaxElementReport {
-			t.Errorf("%s: %d bytes by Go's measure, the bridge's %d, the bound %d", name, got, f.Bytes, MaxElementReport)
-		}
-		if !validElement(v) {
-			t.Errorf("%s is not an element report", name)
-		}
-		m := msg(PreviewSelected, fixtureNonce, page(), obj{"element": v})
-		raw, _ = json.Marshal(m)
-		if _, err := ParsePreviewMessage(raw, fixtureNonce); err != nil {
-			t.Errorf("%s in a selected: %v", name, err)
-		}
 	}
 }

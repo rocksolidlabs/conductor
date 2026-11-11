@@ -50,7 +50,6 @@ web-build: $(NODE_STAMP) ## generate the static SPA and copy it into internal/we
 	find internal/web/dist -mindepth 1 -not -name .gitkeep -delete
 	cp -r web/.output/public/. internal/web/dist/
 	touch internal/web/dist/.gitkeep
-	@test "$$(grep -o __CONDUCTOR_WORKBENCH_ORIGINS__ internal/web/dist/preview-bridge.js 2>/dev/null | wc -l)" -eq 1 || { echo "web-build: internal/web/dist/preview-bridge.js is missing or does not hold its origins' marker once"; exit 1; }
 
 web-typecheck: $(NODE_STAMP) ## vue-tsc type check
 	cd web && npm run typecheck

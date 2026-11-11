@@ -2329,23 +2329,22 @@ text; and it does nothing until a workbench origin says `hello`.
 
 **Serving.** `GET /preview-bridge.js` (no credential: a script tag
 carries none, and the script holds no secret) serves the bridge the web
-build emits (`make web-build` fails when the built app has none, or one
-without its marker exactly once) with the server's workbench origins, a
+build emits (the script and its build are PV1 PR-2b's; one without its
+marker exactly once is none) with the server's workbench origins, a
 JSON array, in the marker's place: the plain listener's own address and
 `127.0.0.1`, `localhost` and `[::1]` at its port, the TLS listener's
 loopback names at its port, and `publicUrl`'s origin, each once, at most
 16, each at most 256 bytes. `Content-Type: text/javascript;
 charset=utf-8`, `Cache-Control: no-cache`, `Cross-Origin-Resource-Policy:
 cross-origin`, `X-Content-Type-Options: nosniff`. A server whose embedded
-app has no bridge (built without `make web-build`, or `make dev`'s), and
+app has no bridge (built without `make web-build`, by a web build that
+emits none, or `make dev`'s), and
 a switchyard, answer `404 no_bridge` ("this server was built without the
 web app's preview bridge: run make web-build"). A tree with a preview
 resolved once the server listens on the loopback (or on every address)
 is given `CONDUCTOR_PREVIEW_BRIDGE`, `http://127.0.0.1:<port>/preview-bridge.js`
 (`[::1]` for a listener there alone); a tree without a preview, and every
-tree of a server with no bridge or no loopback listener, none. The Nuxt
-dev server serves the same script at the same path, its origin the dev
-server's own when the page asks over the loopback, else none.
+tree of a server with no bridge or no loopback listener, none.
 
 **Messages** (`conductor-preview/1`; `internal/proto/preview.go` and
 `web/app/utils/protocol.ts`, both held to
