@@ -18,7 +18,7 @@ import (
 // beside it; and what the other Conductors on the machine keep: ~/.conductor,
 // the desktop app's directories and settings, and the directory the app
 // names for the server it starts (CONDUCTOR_DESKTOP_DIR); and each folder
-// the accounts document registers (Capacity). The list is looked up again at
+// the accounts document of each of those registers (Capacity). The list is looked up again at
 // each request and keeps what it named before (config.Config.FileDenyFunc),
 // so a data directory the desktop app's settings move to while the server
 // runs, or an account added, is refused from then on. While the accounts

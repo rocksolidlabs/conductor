@@ -1411,8 +1411,10 @@ func TestAccountFoldersNeedNoRecordOfVersions(t *testing.T) {
 }
 
 // While the accounts document cannot be read, no file of any session is
-// served, at the start and later; once it can be read again the file beside
-// the folder is served, the folder still refused. The log says each change
+// served, at the start and later: one that is not JSON, and JSON the Store
+// does not read as the document (null, {}, accounts null or not a list, an
+// account without a folder). Once it can be read again the file beside the
+// folder is served, the folder still refused. The log says each change
 // once, not at each request.
 func TestEveryFileRefusedWhileTheAccountsCannotBeRead(t *testing.T) {
 	claude, codex := newFakeUsage("claude"), newFakeUsage("codex")
@@ -1424,8 +1426,16 @@ func TestEveryFileRefusedWhileTheAccountsCannotBeRead(t *testing.T) {
 	good := accountsOnDisk(t, e)
 	sid, tok := viewOfFiles(t, e)
 	filesServed(t, e, sid, tok, "the accounts read", true)
-	writeFile(t, accountsFileOf(e), []byte("not json"))
-	filesServed(t, e, sid, tok, "the accounts made unreadable later", false)
+	var doc map[string]any
+	if err := json.Unmarshal(good, &doc); err != nil {
+		t.Fatal(err)
+	}
+	delete(doc["accounts"].([]any)[0].(map[string]any), "folder")
+	noFolder, _ := json.Marshal(doc)
+	for _, b := range []string{"not json", "null", "{}", `{"rev":1,"accounts":null}`, `{"rev":1,"accounts":{}}`, string(noFolder)} {
+		writeFile(t, accountsFileOf(e), []byte(b))
+		filesServed(t, e, sid, tok, "the accounts made "+b+" later", false)
+	}
 	writeFile(t, accountsFileOf(e), good)
 	filesServed(t, e, sid, tok, "the accounts readable again", true)
 	logMu.Lock()
@@ -1435,13 +1445,16 @@ func TestEveryFileRefusedWhileTheAccountsCannotBeRead(t *testing.T) {
 		}
 	}
 	logMu.Unlock()
-	shutdown(e)
-	writeFile(t, accountsFileOf(e), []byte("not json"))
-	next := serveSecond(t, e, claude, codex)
-	sid, tok = viewOfFiles(t, next)
-	filesServed(t, next, sid, tok, "the accounts unreadable at the start", false)
-	writeFile(t, accountsFileOf(e), good)
-	filesServed(t, next, sid, tok, "the accounts readable again after the start", true)
+	for _, b := range []string{"not json", `{"rev":1,"accounts":null}`} {
+		shutdown(e)
+		writeFile(t, accountsFileOf(e), []byte(b))
+		next := serveSecond(t, e, claude, codex)
+		sid, tok = viewOfFiles(t, next)
+		filesServed(t, next, sid, tok, "the accounts "+b+" at the start", false)
+		writeFile(t, accountsFileOf(e), good)
+		filesServed(t, next, sid, tok, "the accounts readable again after the start", true)
+		e = next
+	}
 }
 
 // An accounts document with a field this version does not know (one a
@@ -1466,6 +1479,35 @@ func TestAccountFoldersReadWhateverTheDocumentAdds(t *testing.T) {
 	next := serveSecond(t, e, claude, codex)
 	sid, tok = viewOfFiles(t, next)
 	filesServed(t, next, sid, tok, "a later version's document at the start", true)
+}
+
+// A folder is an account's only when the deny list, given that folder,
+// refuses it, by its own path and where its links lead: one that is not is
+// refused invalid_account on the folder at registration, and written into
+// the document by hand it is the document's error, so no file is served,
+// through the link's target or beside it.
+func TestAnAccountFolderIsOneTheDenyListRefuses(t *testing.T) {
+	claude, codex := newFakeUsage("claude"), newFakeUsage("codex")
+	e := capEnv(t, nil, nil, claude, codex, nil)
+	folder := loginsIn(t, e.root)
+	link := filepath.Join(e.root, "*work*")
+	if err := os.Symlink(folder, link); err != nil {
+		t.Fatal(err)
+	}
+	status, body, out := e.callAs(t, adminToken, "POST", "/api/accounts", map[string]any{"adapter": "codex", "label": "Work", "folder": link, "expectedRev": 0})
+	if status != http.StatusBadRequest || errorCode(out) != capacity.CodeInvalidAccount || !strings.Contains(string(body), `"field":"folder"`) {
+		t.Errorf("the folder %s: %d %.300s", link, status, body)
+	}
+	e.expect(t, "POST", "/api/accounts", map[string]any{"adapter": "codex", "label": "Home", "folder": realRoot(t, t.TempDir()), "expectedRev": accountsRev(t, e)}, http.StatusCreated, "")
+	var doc map[string]any
+	if err := json.Unmarshal(accountsOnDisk(t, e), &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc["accounts"].([]any)[0].(map[string]any)["folder"] = link
+	planted, _ := json.Marshal(doc)
+	writeFile(t, accountsFileOf(e), planted)
+	sid, tok := viewOfFiles(t, e)
+	filesServed(t, e, sid, tok, "the folder written in by hand", false)
 }
 
 // An account's folder and the server's data directory do not overlap: a
@@ -1541,14 +1583,15 @@ func TestCapacityReadsNoRelativeCommand(t *testing.T) {
 
 // A reading is filed by what its read used, decided as the read starts: a
 // pinned entry's read held while the entry is edited to pin nothing, and
-// one held while its adapter changes, file nothing as an adapter's own
-// login's reading.
+// one held while its adapter changes (with its environment or alone), file
+// nothing as an adapter's own login's reading; and the entry's capacity
+// answer is stale, the reading made by what the entry no longer is.
 func TestAReadingIsFiledByWhatItsReadUsed(t *testing.T) {
 	pinned := func(id string) catalog.Agent {
 		return catalog.Agent{ID: id, Name: id, Adapter: "claude", Command: []string{"/bin/cat"}, Env: map[string]string{"CLAUDE_CONFIG_DIR": realRoot(t, t.TempDir())}}
 	}
 	claude, codex := newFakeUsage("claude"), newFakeUsage("codex")
-	e := capEnv(t, nil, nil, claude, codex, []catalog.Agent{pinned("q-unpinned"), pinned("q-moved")})
+	e := capEnv(t, nil, nil, claude, codex, []catalog.Agent{pinned("q-unpinned"), pinned("q-moved"), pinned("q-adapter")})
 	events := e.sse(t)
 	for _, c := range []struct {
 		id      string
@@ -1557,6 +1600,7 @@ func TestAReadingIsFiledByWhatItsReadUsed(t *testing.T) {
 	}{
 		{"q-unpinned", func(a *catalog.Agent) { a.Env = nil }, "claude"},
 		{"q-moved", func(a *catalog.Agent) { a.Adapter, a.Env = "codex", nil }, "codex"},
+		{"q-adapter", func(a *catalog.Agent) { a.Adapter = "codex" }, "codex"},
 	} {
 		gate, called := make(chan struct{}), make(chan struct{}, 1)
 		claude.set(func(f *fakeUsage) { f.gate, f.called = gate, called })
@@ -1582,6 +1626,9 @@ func TestAReadingIsFiledByWhatItsReadUsed(t *testing.T) {
 			if ad := raw.(map[string]any); ad["reading"] != nil {
 				t.Errorf("%s: %s's own login's reading is %v", c.id, ad["adapter"], ad["reading"])
 			}
+		}
+		if v := viewOfKey(t, e, "agent="+c.id); v["fresh"] != capacity.FreshStale || v["words"] != capacity.EnvWords || v["agent"].(map[string]any)["adapter"] != c.adapter {
+			t.Errorf("%s: the capacity answer after the change: %v", c.id, v)
 		}
 	}
 }

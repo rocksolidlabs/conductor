@@ -40,9 +40,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"maps"
-	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -349,58 +347,18 @@ func (s *Store) Disown() {
 }
 
 // Folders answers the folder of every account in the accounts document of
-// the data directory dataDir, retired ones included, read from the file
-// alone: no Store, no lock and no record of versions. A document that is
-// not there answers none; one that is JSON answers its folders whatever
-// else it holds, so a later version's document still names them. A file
-// that cannot be read, is not a regular file, passes MaxAccountsDoc or is
-// not JSON, or a folder that is not an absolute path, is an error.
+// the data directory dataDir, retired ones included: the document read and
+// judged as the Store reads it (loadAccounts), with no lock and no record of
+// versions, but for a member it does not know, which is passed over so that
+// a later version's document still names its folders. A document that is
+// not there answers none; one the Store would refuse is an error.
 func Folders(dataDir string) ([]string, error) {
-	path := filepath.Join(dataDir, Dir, AccountsFile)
-	fi, err := os.Lstat(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	if err == nil && !fi.Mode().IsRegular() {
-		err = errors.New("not a regular file")
-	}
-	var b []byte
-	if err == nil {
-		b, err = readLimit(path, MaxAccountsDoc)
-	}
-	var doc struct {
-		Accounts []struct {
-			Folder string `json:"folder"`
-		} `json:"accounts"`
-	}
-	if err == nil {
-		err = json.Unmarshal(b, &doc)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("%s cannot be read: %w", path, err)
-	}
+	d, err := loadAccounts(store.At(filepath.Join(dataDir, Dir)), json.Unmarshal)
 	var out []string
-	for _, a := range doc.Accounts {
-		if !filepath.IsAbs(a.Folder) {
-			return nil, fmt.Errorf("%s names a folder that is not an absolute path", path)
-		}
-		out = append(out, filepath.Clean(a.Folder))
+	for _, a := range d.Accounts {
+		out = append(out, a.Folder)
 	}
-	return out, nil
-}
-
-// readLimit reads the file at path, an error past limit bytes.
-func readLimit(path string, limit int64) ([]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, limit+1))
-	if err == nil && int64(len(b)) > limit {
-		err = fmt.Errorf("more than %d bytes", limit)
-	}
-	return b, err
+	return out, err
 }
 
 // ValidID says id has an account id's form: "default", or a minted one.
@@ -422,10 +380,19 @@ type accountsWire struct {
 // with no account. One that exists is the document this package writes or
 // cannot be read: an object with a rev of 1 or more (every write bumps it
 // from 0) and an accounts list, within its counts (checkDoc).
-func (s *Store) load() (Accounts, error) {
+func (s *Store) load() (Accounts, error) { return loadAccounts(s.st, store.DecodeStrict) }
+
+// loadAccounts is load from st, its bytes decoded by decode.
+func loadAccounts(st *store.Store, decode func([]byte, any) error) (Accounts, error) {
 	cannot := func(err error) error { return fmt.Errorf("capacity: %s cannot be read: %w", AccountsFile, err) }
+	var raw json.RawMessage
 	var w accountsWire
-	ok, err := s.st.LoadLimit(AccountsFile, &w, MaxAccountsDoc)
+	ok, err := st.LoadLimit(AccountsFile, &raw, MaxAccountsDoc)
+	if err == nil && ok {
+		if err = decode(raw, &w); err != nil {
+			err = &store.ParseError{Name: AccountsFile, Err: err}
+		}
+	}
 	if err != nil {
 		return Accounts{}, cannot(err)
 	}

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"errors"
 	"net/http"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/capacity"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
@@ -33,15 +35,19 @@ func (capacityFacts) ConfigDirEnv(adapter string) (string, bool) {
 	return ad.ConfigDirEnv, ok
 }
 
-// CheckAccountDir is Brakeman's check of an account folder, and the folder
-// neither inside the data directory nor holding it, compared both ways as
-// the deny list compares (session.DeniedBy: by identity, links resolved).
+// CheckAccountDir is Brakeman's check of an account folder, a folder the
+// deny list given it refuses (config.Refuses), and the folder neither inside
+// the data directory nor holding it, compared both ways as the deny list
+// compares (session.DeniedBy: by identity, links resolved).
 func (f capacityFacts) CheckAccountDir(dir string) error {
 	if f.seam != nil {
 		f.seam()
 	}
-	if err := checkAccountDir(dir); err != nil || f.data == "" {
-		return err
+	if err := checkAccountDir(dir); err != nil || !config.Refuses(dir) {
+		return cmp.Or(err, errors.New("not a folder the server registers as it is spelt: give the folder's own path"))
+	}
+	if f.data == "" {
+		return nil
 	}
 	real, err := filepath.EvalSymlinks(dir)
 	data, derr := filepath.EvalSymlinks(f.data)

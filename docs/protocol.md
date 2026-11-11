@@ -1874,7 +1874,9 @@ those settings name and `~/.local/share/conductor/data`, looked up again at
 each request and kept once named, so a data directory the app moves to while
 the server runs is refused from then on. A registered account's folder
 (Capacity) is left out as the data directory is, with everything in it, read
-from `capacity/accounts.json` itself at each request and kept once named: an
+from the `capacity/accounts.json` of each of these data directories at each
+request, as the server reads that document but for a member it does not
+know, and kept once named: an
 account added is refused from then on, and one removed stays refused until
 the server stops. While that document is there and cannot be read, every
 file of every session is refused, until it can be read again; the server's
@@ -1893,7 +1895,7 @@ and `catalogPath`; and for the desktop app's server, the app's own directory,
 its settings file as a config file (its link target and the copies there
 included), the data directory its settings name and, inside WSL,
 `~/.local/share/conductor/data`; and each folder the accounts document of
-that data directory registers. The host looks these up again at each
+each of these data directories registers. The host looks these up again at each
 request and keeps refusing what it refused before, so a data directory moved
 while the session runs is refused at both places, and a removed account's
 folder stays refused. While one of these paths is relative, or the config
@@ -5273,7 +5275,8 @@ adapter that moves its login folder (`claude`: `CLAUDE_CONFIG_DIR`,
 `codex`: `CODEX_HOME`), a label of 1 to 60 characters and the folder that
 login lives in (absolute, at most 4,096 bytes, a directory the server's
 user owns, neither inside the server's data directory nor holding it,
-compared with the links on both resolved, fixed once added), under an id the server mints (`a-` and 12
+compared with the links on both resolved, and one that a deny list given
+that path alone refuses, by the path and where its links lead, fixed once added), under an id the server mints (`a-` and 12
 base32 characters, never minted again once removed). Every adapter also
 has the account `default`, never stored: the agent's own login. No
 credential, email, organisation or provider id is kept, and nothing in the
@@ -5304,8 +5307,8 @@ minutes. Only `POST /api/capacity/read` reads; every `GET` answers what is
 kept. A read runs with the environment a session of that agent gets (the
 entry's and the server's part, one function for both), then
 `TERM=dumb`, `NO_COLOR=1` and the account's folder; a reading keeps a
-SHA-256 of it, never its values, and a view whose environment now hashes
-otherwise is `stale`. A reader's words are Conductor's own, never the
+SHA-256 of the agent's adapter and that environment, never its values, and
+a view whose adapter or environment now hashes otherwise is `stale`. A reader's words are Conductor's own, never the
 tool's output.
 
 No launch takes an account yet: a session runs on the agent's own login

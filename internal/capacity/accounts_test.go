@@ -369,11 +369,12 @@ func TestAccountsDocumentBounded(t *testing.T) {
 // every Reserve of a registered account and every Admit is refused
 // accounts_not_owner in words, and nothing is made on disk. Own lets the
 // same Store write.
-// Folders reads the accounts document's folders from the file alone: none
-// for no document; every account's, retired ones included, from the
-// document the Store writes and from one a later version writes (a field
-// this one does not know); an error for a file that is not JSON, past its
-// bound, a link, or naming a folder that is not absolute.
+// Folders reads the accounts document's folders as the Store reads the
+// document: none for no document; every account's, retired ones included,
+// from the document the Store writes and from one a later version writes (a
+// member this one does not know); an error for whatever the Store refuses:
+// a file that is not JSON, past its bound, a link, null, an object without
+// its rev or its accounts list, and an account without a folder in its form.
 func TestFolders(t *testing.T) {
 	dir := t.TempDir()
 	if got, err := Folders(dir); err != nil || got != nil {
@@ -402,12 +403,16 @@ func TestFolders(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write(`{"rev":9,"bindings":{"s":"a"},"accounts":[{"id":"a-x","folder":"/home/u/work","pinned":true}]}`)
+	account := func(folder string) string {
+		return `{"id":"a-aaaaaaaaaaaa","adapter":"codex","label":"L",` + folder + `"createdAt":"2030-01-02T03:04:05Z","pinned":true}`
+	}
+	write(`{"rev":9,"bindings":{"s":"a"},"accounts":[` + account(`"folder":"/home/u/work",`) + `]}`)
 	if got, err := Folders(dir); err != nil || !slices.Equal(got, want[:1]) {
 		t.Fatalf("a later version's document: %q, %v", got, err)
 	}
-	for name, b := range map[string]string{"not JSON": "{oops", "a folder not absolute": `{"accounts":[{"folder":"rel/work"}]}`, "accounts not a list": `{"accounts":{}}`,
-		"past its bound": `{"accounts":[],"x":"` + strings.Repeat("x", MaxAccountsDoc) + `"}`} {
+	for name, b := range map[string]string{"not JSON": "{oops", "a folder not absolute": `{"rev":1,"accounts":[` + account(`"folder":"rel/work",`) + `]}`, "accounts not a list": `{"rev":1,"accounts":{}}`,
+		"past its bound": `{"rev":1,"accounts":[],"x":"` + strings.Repeat("x", MaxAccountsDoc) + `"}`, "null": "null", "{}": "{}", "accounts null": `{"rev":1,"accounts":null}`,
+		"no rev": `{"accounts":[]}`, "an account without a folder": `{"rev":1,"accounts":[` + account("") + `]}`} {
 		write(b)
 		if got, err := Folders(dir); err == nil {
 			t.Errorf("%s: %q", name, got)

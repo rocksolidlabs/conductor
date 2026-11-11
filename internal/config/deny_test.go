@@ -829,3 +829,76 @@ func TestLocalFileDenyRefusesAccountFolders(t *testing.T) {
 		t.Errorf("the accounts readable again: %q", list)
 	}
 }
+
+// The accounts of every data directory the list names are read, the other
+// Conductors' of this machine too: conductor host's list, on a machine whose
+// desktop app's settings name another data directory with an account
+// registered there, refuses that account's folder, as the server's own list
+// does; that document made unreadable, the list holds the root.
+func TestEveryDataDirectoryNamedHasItsAccountsRead(t *testing.T) {
+	home, base := realTempDir(t), realTempDir(t)
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", base)
+	t.Setenv("CONDUCTOR_DATA_DIR", filepath.Join(realTempDir(t), "data"))
+	t.Setenv("CONDUCTOR_CATALOG_PATH", "")
+	t.Chdir(realTempDir(t))
+	write := func(path, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	desktop, folder := filepath.Join(realTempDir(t), "desktop-data"), filepath.Join(home, "logins", "work")
+	write(filepath.Join(base, "conductor-desktop", "settings.json"), `{"dataDir": "`+desktop+`"}`)
+	write(filepath.Join(folder, "auth.json"), "login\n")
+	write(filepath.Join(home, "notes.md"), "# beside\n")
+	doc := filepath.Join(desktop, "capacity", "accounts.json")
+	write(doc, `{"rev":1,"accounts":[{"id":"a-aaaaaaaaaaaa","adapter":"codex","label":"L","folder":"`+folder+`","createdAt":"2026-11-11T00:00:00Z"}]}`)
+	deny, err := LocalFileDenyFunc("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := (&Config{DataDir: filepath.Join(realTempDir(t), "own")}).FileDenyFunc()
+	for who, list := range map[string][]string{"conductor host's": deny(), "the server's": server()} {
+		if r, err := session.ResolvePath(home, "logins/work/auth.json", list); err == nil {
+			t.Errorf("%s list: the desktop server's account's folder resolved to %s", who, r)
+		}
+		if _, err := session.ResolvePath(home, "notes.md", list); err != nil {
+			t.Errorf("%s list: the file beside: %v", who, err)
+		}
+	}
+	write(doc, `not json`)
+	root := string(filepath.Separator)
+	for who, list := range map[string][]string{"conductor host's": deny(), "the server's": server()} {
+		if !slices.Contains(list, root) {
+			t.Errorf("%s list, the desktop server's accounts unreadable: %q, want %s among them", who, list, root)
+		}
+	}
+}
+
+// Refuses answers whether the deny list given a folder refuses it: a folder,
+// a link to one, a folder gone and one whose parent is gone are refused; a
+// link the list does not refuse as it is spelt is not.
+func TestRefuses(t *testing.T) {
+	dir := realTempDir(t)
+	work := filepath.Join(dir, "logins", "work")
+	if err := os.MkdirAll(work, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for link, to := range map[string]string{filepath.Join(dir, "alias"): work, filepath.Join(dir, "*work*"): work} {
+		if err := os.Symlink(to, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{work, filepath.Join(dir, "alias"), filepath.Join(dir, "gone"), filepath.Join(dir, "gone", "work")} {
+		if !Refuses(f) {
+			t.Errorf("%s: not refused", f)
+		}
+	}
+	if f := filepath.Join(dir, "*work*"); Refuses(f) {
+		t.Errorf("%s: refused", f)
+	}
+}

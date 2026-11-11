@@ -364,7 +364,8 @@ func (s *Server) agentEnv(agent catalog.Agent, adapterEnv map[string]string) ([]
 // readEnv is the environment a read of agent on the account with folder
 // ("" for its own login) runs with: a session's (agentEnv over the
 // server's, as pty.BuildEnv builds it), then the folder as the adapter's
-// ConfigDirEnv; and the hex SHA-256 of it, which a reading keeps.
+// ConfigDirEnv; and the hex SHA-256 of the adapter and it, which a reading
+// keeps, so a reading by another adapter is not this entry's (MarkEnv).
 func (s *Server) readEnv(agent catalog.Agent, folder string) ([]string, string) {
 	_, adapterEnv := agents.InjectFor(agent.Adapter, agents.HooksDir(s.cfg.DataDir), agent.EffectiveSignal(), false)
 	passthrough, env := s.agentEnv(agent, adapterEnv)
@@ -372,7 +373,7 @@ func (s *Server) readEnv(agent catalog.Agent, folder string) ([]string, string) 
 		env[ad.ConfigDirEnv] = folder
 	}
 	built := pty.BuildEnv(pty.ParentEnv(), passthrough, env, nil)
-	sum := sha256.Sum256([]byte(strings.Join(built, "\x00")))
+	sum := sha256.Sum256([]byte(agent.Adapter + "\x00" + strings.Join(built, "\x00")))
 	return built, hex.EncodeToString(sum[:])
 }
 

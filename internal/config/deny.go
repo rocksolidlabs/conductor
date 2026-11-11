@@ -27,10 +27,10 @@ import (
 // it, a file on its own. What the other Conductors on this machine keep is
 // refused as well (machineFiles): a session must not read the desktop
 // app's settings, which hold its switchyard token, nor another server's
-// data directory. The folder of each account the accounts document of the
-// data directory, and of each of dirs, registers (accountFolders) is
-// refused as a directory too; while a document cannot be read, the list
-// holds the file system's root as well, which refuses every file.
+// data directory. The folder of each account the accounts document of each
+// directory the list names registers (accountFolders) is refused as a
+// directory too; while a document cannot be read, the list holds the file
+// system's root as well, which refuses every file.
 func (c *Config) FileDeny(dirs ...string) []string {
 	list, err := c.fileDenyNow(dirs)
 	if err != nil {
@@ -42,14 +42,15 @@ func (c *Config) FileDeny(dirs ...string) []string {
 // fileDenyNow is FileDeny's list, and the error of an accounts document
 // that cannot be read, whose folders the list then lacks.
 func (c *Config) fileDenyNow(dirs []string) ([]string, error) {
-	folders, err := accountFolders(append([]string{c.DataDir}, dirs...))
 	more, files := c.machineFiles()
+	folders, err := accountFolders(slices.Concat([]string{c.DataDir}, dirs, more))
 	return c.fileDeny(slices.Concat(dirs, folders, more), files), err
 }
 
 // accountFolders are the folders of the accounts each data directory's
 // accounts document registers (capacity.Folders), each directory read once;
-// the error of the first document that cannot be read.
+// the error of the first document that cannot be read or names a folder
+// its own deny list would not refuse (Refuses).
 func accountFolders(data []string) ([]string, error) {
 	var out, seen []string
 	for _, d := range data {
@@ -58,12 +59,24 @@ func accountFolders(data []string) ([]string, error) {
 		}
 		seen = append(seen, filepath.Clean(d))
 		f, err := capacity.Folders(d)
+		if err == nil && slices.ContainsFunc(f, func(p string) bool { return !Refuses(p) }) {
+			err = fmt.Errorf("%s names a folder that is not registered as it is spelt", filepath.Join(d, capacity.Dir, capacity.AccountsFile))
+		}
 		if err != nil {
 			return out, err
 		}
 		out = append(out, f...)
 	}
 	return out, nil
+}
+
+// Refuses says whether the deny list of folder alone, built as every deny
+// list is (session.DenyList, withTargets), refuses folder, and so all in it:
+// reached by its own path and by where its links lead (session.Leads).
+func Refuses(folder string) bool {
+	deny := withTargets(nil, session.DenyList([]string{folder}, nil))
+	real := session.Leads(folder)
+	return real != "" && session.DeniedBy(folder, deny) && session.DeniedBy(real, deny)
 }
 
 // FileDenyFunc is FileDeny(dirs...) for a server that runs a long time
@@ -149,7 +162,7 @@ func (c *Config) fileDeny(dirs, files []string) []string {
 // directory, ~/.conductor, is refused whichever directory that is, as are
 // the copies beside the config file and the catalog file, the directories
 // and settings of the desktop app's server (desktopFiles), and the folder of
-// each account that server's accounts document registers. A config file or
+// each account the accounts document of each of these directories registers. A config file or
 // an accounts document that cannot be read or parsed is an error, and so are the
 // desktop app's settings when they are there but cannot be read, and a data
 // directory or a catalog file given as a relative path: conductor serve
@@ -212,11 +225,12 @@ func LocalFileDeny(path string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The folders that server's accounts register, as its own sessions
-	// refuse them (FileDeny): a document that cannot be read is an error.
-	folders, err := accountFolders([]string{c.DataDir})
+	// The folders the accounts of each data directory named register, as
+	// the server's own sessions refuse them (FileDeny): a document that
+	// cannot be read is an error.
+	folders, err := accountFolders(slices.Concat([]string{c.DataDir}, dirs, desktopDirs))
 	if err != nil {
-		return nil, fmt.Errorf("the accounts of the server's data directory: %w", err)
+		return nil, fmt.Errorf("the accounts of a data directory refused: %w", err)
 	}
 	return c.fileDeny(slices.Concat(dirs, folders, desktopDirs), append([]string{read}, desktopSettings...)), nil
 }
