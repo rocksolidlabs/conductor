@@ -124,7 +124,11 @@ add its rule here.
   2026-11-08: internal/api's race run reached go test's 30 m bound
   on CI; the bound is 60 m now; the package's length is CPU work under the
   race detector across its 1,365 tests, not waits, and CI's longest job is
-  e2e at 49 minutes, so no row makes it faster).
+  e2e at 49 minutes, so no row makes it faster). Nor is a test's bound the
+  product's: a budget shortened to see one step spend it bounds every step
+  under it, and a step it was not meant for (a review's claim, before the
+  read a test held past 50 ms) loses it on a loaded machine; the test lets
+  that pass go and takes the next (#281).
 - An answer the product's bound cut off is not a yes, in the product
   either. A crew launch read a PATH lookup that ran past its 2 s wait as
   "installed" and started the lead of a crew whose other member could not
