@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/version"
 )
@@ -27,8 +28,21 @@ import (
 const (
 	switchyardDocsURL   = "https://github.com/rocksolidlabs/conductor#readme"
 	switchyardSourceURL = "https://github.com/rocksolidlabs/conductor"
-	switchyardAppURL    = "https://github.com/rocksolidlabs/conductor/releases"
 )
+
+// switchyardAppURL is the pages' Get the desktop app link: switchyard.appURL,
+// or the repository's releases page. Validate refuses one out of form at
+// load; a config that skipped it (one built in code) gets the default, and
+// the log says so once, without the value.
+func (s *Server) switchyardAppURL() string {
+	link, ok := s.cfg.SwitchyardAppURL()
+	if !ok {
+		s.appURLSaid.Do(func() {
+			s.log.Warn("switchyard.appURL is not an https URL with a host, within its bound and in its canonical form: the pages link the default", "maxBytes", config.MaxSwitchyardAppURL, "default", link)
+		})
+	}
+	return link
+}
 
 // relayMeter counts the bytes the switchyard relayed over the last hour, in
 // one-minute buckets, for the operator's "Relay this hour" figure.
@@ -179,7 +193,7 @@ func (s *Server) switchyardPageData() switchyardPage {
 		Uptime:    uptimeWords(time.Since(s.started)),
 		DocsURL:   switchyardDocsURL,
 		SourceURL: switchyardSourceURL,
-		AppURL:    switchyardAppURL,
+		AppURL:    s.switchyardAppURL(),
 	}
 	if u, err := url.Parse(s.cfg.PublicURL); err == nil && u.Host != "" {
 		p.Host = u.Host
