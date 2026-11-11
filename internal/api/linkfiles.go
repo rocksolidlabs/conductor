@@ -659,10 +659,13 @@ func (s *Server) hostUp(owner, addr string) func() {
 // closeLinkViewers does, and tells the connection that holds it (its
 // session's, or its run's desk's) that it went, whether or not a viewer
 // joined through it. A run link whose run's desk was not told (the run has
-// none, or the desk its group names is away or already gone) is told so to
-// each of its members' connections, the one it was minted over among
-// them: each of them can list it. A second telling changes nothing, since
-// ended is the link's own end whichever connection carries it.
+// none, the desk its group names is away or already gone, or its
+// connection's queue did not take the word) is told so to each of its
+// members' connections, the one it was minted over among them: each of
+// them can list it. A second telling changes nothing, since ended is the
+// link's own end whichever connection carries it. A word no connection
+// takes is caught up as the connection that held the link registers again
+// (its registered no longer names it).
 func (s *Server) endHeldLink(l *share.Link) {
 	switch {
 	case l.RunID == "":

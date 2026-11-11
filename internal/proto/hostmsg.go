@@ -134,7 +134,9 @@ type Registered struct {
 	ICEServers   []ICEServer `json:"iceServers,omitempty"`
 	// Links are the ids of the live links the server holds for the
 	// session, so a host registering again after the server restarted
-	// knows which of the links it minted still open it. Never omitted: a
+	// knows which of the links it minted still open it: one it held that
+	// they do not name has ended there (a desk's are every live link of
+	// its run). Never omitted: a
 	// server without links sends []; an older server sends no field (nil
 	// to the host, which says nothing).
 	Links []string `json:"links"`

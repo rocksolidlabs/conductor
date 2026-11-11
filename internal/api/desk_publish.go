@@ -689,8 +689,10 @@ func (s *Server) stopRevokeRetries() {
 // answers not_found (retryRevokeThere, or a revoke again from here).
 //
 // A link the switchyard says it ended of itself (ended: an open admission
-// past its bound, #820) is the link's own end on whichever connection it
-// is told, a member's too (remoteLinkEnded).
+// past its bound, #820), or that a connection held and its registered,
+// as it registers again, no longer names (hostagent.Options.LinkGone), is
+// the link's own end on whichever connection it is told, a member's too
+// (remoteLinkEnded).
 func (s *Server) RemoteLinkGone(linkID, sessionID, runID string, ended bool) {
 	if ended {
 		s.remoteLinkEnded(linkID, sessionID, runID)

@@ -165,7 +165,9 @@ type Options struct {
 	// its session; a run link's, from the run's desk alone (a member's says
 	// only that the member left the run's group). ended says the server
 	// ended the link itself (proto.LinkGone.Ended): the link's own end, on
-	// any connection, a member's too; the link has left the held links.
+	// any connection, a member's too; the link has left the held links. A
+	// link the connection held that its registered, as it registers
+	// again, no longer names is told so too, ended (takeHeldLocked).
 	LinkGone func(linkID, sessionID, runID string, ended bool)
 
 	// transport, when set (tests), is the control connection's transport in
@@ -741,16 +743,14 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	a.secret = registered.Secret
 	a.ice = registered.ICEServers
 	a.decisions.Store(registered.Decisions)
-	if registered.Links != nil {
-		a.held, a.heldKnown = map[string]bool{}, true
-		for _, id := range registered.Links {
-			a.held[id] = true
-		}
-	}
+	ended := a.takeHeldLocked(registered.Links)
 	if len(a.opts.ICEServers) > 0 {
 		a.ice = a.opts.ICEServers
 	}
 	a.mu.Unlock()
+	for _, id := range ended {
+		a.linkWent(id, true)
+	}
 	a.useConnHearing(c, pc, live)
 	a.log.Info("registered with conductor", "session", registered.SessionID, "resumed", registered.Resumed)
 	if first && a.opts.Registered != nil {
@@ -1379,23 +1379,7 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		if m.LinkID == "" || len(m.LinkID) > proto.MaxLinkID {
 			return errors.New("invalid link_gone")
 		}
-		a.creds.gone(m.LinkID)
-		if m.Ended {
-			// The server holds it no more, before the publisher is told:
-			// a mint the word crosses looks at the held links once it has
-			// recorded its link (the api's handleCreateLink), so either the
-			// mint finds it dropped or the word finds it made.
-			a.noteHeld(m.LinkID, false)
-		}
-		if a.opts.LinkGone != nil {
-			sessionID, runID := "", ""
-			if a.desk != nil {
-				runID = a.desk.ID
-			} else if a.local != nil {
-				sessionID = a.local.Info().ID
-			}
-			a.opts.LinkGone(m.LinkID, sessionID, runID, m.Ended)
-		}
+		a.linkWent(m.LinkID, m.Ended)
 	case proto.HostOffer:
 		var m proto.ViewerSDP
 		if err := json.Unmarshal(data, &m); err != nil {
@@ -1925,6 +1909,58 @@ func writeJSON(ctx context.Context, c *websocket.Conn, v any) error {
 
 // discard is used when no stdout is configured.
 var _ io.Writer = io.Discard
+
+// takeHeldLocked makes links, what a registered names (nil from an older
+// server, which says nothing), the links held, and returns those held
+// before that it does not name: the server holds them no more for this
+// connection, and no word of their end reached it (it was away, or the
+// word was lost with it). Nothing is returned at the first registration,
+// which held nothing. The
+// caller holds mu, and tells each returned link's end (linkWent) once it
+// has let mu go.
+func (a *agent) takeHeldLocked(links []string) []string {
+	if links == nil {
+		return nil
+	}
+	named := make(map[string]bool, len(links))
+	for _, id := range links {
+		named[id] = true
+	}
+	var ended []string
+	if a.heldKnown {
+		for id := range a.held {
+			if !named[id] {
+				ended = append(ended, id)
+			}
+		}
+	}
+	a.held, a.heldKnown = named, true
+	return ended
+}
+
+// linkWent is what a link the server says no longer opens what this
+// connection carries does here (link_gone; ended, also a link a
+// registered no longer names): the credentials of its viewers go; an
+// ended one leaves the held links before the publisher is told, as a mint
+// the word crosses looks at the held links once it has recorded its link
+// (the api's handleCreateLink), so either the mint finds it dropped or the
+// word finds it made; then the publisher is told (Options.LinkGone).
+func (a *agent) linkWent(linkID string, ended bool) {
+	a.creds.gone(linkID)
+	if ended {
+		a.noteHeld(linkID, false)
+	}
+	if a.opts.LinkGone == nil {
+		return
+	}
+	sessionID, runID := "", ""
+	if a.desk != nil {
+		runID = a.desk.ID
+	} else if a.local != nil {
+		sessionID = a.local.Info().ID
+	}
+	a.opts.LinkGone(linkID, sessionID, runID, ended)
+}
 
 // noteHeld keeps held in step with a link the server minted or revoked.
 func (a *agent) noteHeld(linkID string, on bool) {

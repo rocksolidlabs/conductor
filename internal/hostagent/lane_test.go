@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -666,6 +667,103 @@ func TestAnEndedLinkLeavesTheHeldLinks(t *testing.T) {
 	}
 	if ids, known := a.heldLinks(); !known || !slices.Equal(ids, []string{"l2"}) {
 		t.Fatalf("held after l1 ended: %v %v", ids, known)
+	}
+}
+
+// A registered is what the server holds (takeHeldLocked): the links held
+// before it that it does not name are returned, to be told ended; the
+// first registration returns none, and an older server's registered (no
+// links) changes nothing.
+func TestARegisteredIsTheLinksHeld(t *testing.T) {
+	a := &agent{}
+	for _, c := range []struct {
+		links, ended, held []string
+	}{
+		{[]string{"l1", "l2", "l3"}, nil, []string{"l1", "l2", "l3"}},
+		{nil, nil, []string{"l1", "l2", "l3"}},
+		{[]string{"l2", "l4"}, []string{"l1", "l3"}, []string{"l2", "l4"}},
+		{[]string{}, []string{"l2", "l4"}, []string{}},
+	} {
+		a.mu.Lock()
+		ended := a.takeHeldLocked(c.links)
+		a.mu.Unlock()
+		slices.Sort(ended)
+		held, _ := a.heldLinks()
+		slices.Sort(held)
+		if !slices.Equal(ended, c.ended) || !slices.Equal(held, c.held) {
+			t.Fatalf("registered %v: ended %v, held %v; want %v, %v", c.links, ended, held, c.ended, c.held)
+		}
+	}
+}
+
+// A publication that registers again tells its publisher, ended, each
+// link it held that the server's registered no longer names, the link
+// already gone from its held links; the links named stay held.
+func TestARegistrationTellsTheLinksItNoLongerNames(t *testing.T) {
+	var n atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		if _, _, err := c.Read(r.Context()); err != nil {
+			return
+		}
+		links := []string{"l1", "l2"}
+		if n.Add(1) > 1 {
+			links = []string{"l2"}
+		}
+		b, _ := json.Marshal(proto.Registered{T: proto.HostRegistered, SessionID: "h1", Secret: "x", ShareBaseURL: "https://yard.example.net", Links: links})
+		_ = c.Write(r.Context(), websocket.MessageText, b)
+		if n.Load() == 1 {
+			return // the connection lost: it registers again
+		}
+		for {
+			if _, _, err := c.Read(r.Context()); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	type told struct {
+		id, sessionID, runID string
+		ended                bool
+		held                 []string
+	}
+	gone := make(chan told, 4)
+	var pub *Published
+	var ready sync.WaitGroup
+	ready.Add(1)
+	u := &Uplink{ServerURL: srv.URL, Insecure: true, RelayOnly: true, LinkGone: func(id, sessionID, runID string, ended bool) {
+		ready.Wait()
+		held, _ := pub.HeldLinks()
+		gone <- told{id, sessionID, runID, ended, held}
+	}}
+	proc, err := pty.Start(pty.Spec{Argv: []string{"/bin/cat"}, Dir: t.TempDir(), Env: hostEnv(nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { proc.Stop(t.Context(), time.Second) })
+	local := session.NewLocal(session.Info{ID: "s", Command: []string{"cat"}, Cols: 80, Rows: 24}, proc, session.Options{Log: discardLog})
+	pub, err = u.Publish(t.Context(), local)
+	ready.Done()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pub.Stop)
+	select {
+	case got := <-gone:
+		if got.id != "l1" || got.sessionID != "s" || got.runID != "" || !got.ended || !slices.Equal(got.held, []string{"l2"}) {
+			t.Fatalf("told %+v", got)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the publisher was told nothing as the publication registered again")
+	}
+	select {
+	case got := <-gone:
+		t.Fatalf("told also %+v", got)
+	default:
 	}
 }
 

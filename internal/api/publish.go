@@ -119,7 +119,8 @@ func (s *Server) remoteLinksOf(id string) []remoteLink {
 			// The rendezvous holds it no more: its record goes, every one
 			// with the publication. A decision link's, while the
 			// publication stands, is left to its own end (an ended word,
-			// or its mint's look again: endedNow), which revokes it here and
+			// a registered that no longer names it, or its mint's look
+			// again: endedNow), which revokes it here and
 			// keeps its record, owed its revoke (forgetRemote): it is
 			// listed as it stands.
 			s.forgetRemoteLocked(id, "", lid, pub == nil)
