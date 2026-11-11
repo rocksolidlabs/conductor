@@ -165,10 +165,13 @@ type Options struct {
 	// its session; a run link's, from the run's desk alone (a member's says
 	// only that the member left the run's group). ended says the server
 	// ended the link itself (proto.LinkGone.Ended): the link's own end, on
-	// any connection, a member's too; the link has left the held links. A
-	// link the connection held that its registered, as it registers
-	// again, no longer names is told so too, ended (takeHeldLocked).
+	// any connection, a member's too; the link has left the held links.
 	LinkGone func(linkID, sessionID, runID string, ended bool)
+	// LinkUnnamed, when set, is told each link this connection held that
+	// its registered, as it registers again, no longer names
+	// (takeHeldLocked), as LinkGone is: not a told end, since a member's
+	// registered also stops naming a run's link once it left the group.
+	LinkUnnamed func(linkID, sessionID, runID string)
 
 	// transport, when set (tests), is the control connection's transport in
 	// place of the standard one: a test's names dialed to its own servers.
@@ -743,13 +746,13 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	a.secret = registered.Secret
 	a.ice = registered.ICEServers
 	a.decisions.Store(registered.Decisions)
-	ended := a.takeHeldLocked(registered.Links)
+	unnamed := a.takeHeldLocked(registered.Links)
 	if len(a.opts.ICEServers) > 0 {
 		a.ice = a.opts.ICEServers
 	}
 	a.mu.Unlock()
-	for _, id := range ended {
-		a.linkWent(id, true)
+	for _, id := range unnamed {
+		a.linkWent(id, false, true)
 	}
 	a.useConnHearing(c, pc, live)
 	a.log.Info("registered with conductor", "session", registered.SessionID, "resumed", registered.Resumed)
@@ -1379,7 +1382,7 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		if m.LinkID == "" || len(m.LinkID) > proto.MaxLinkID {
 			return errors.New("invalid link_gone")
 		}
-		a.linkWent(m.LinkID, m.Ended)
+		a.linkWent(m.LinkID, m.Ended, false)
 	case proto.HostOffer:
 		var m proto.ViewerSDP
 		if err := json.Unmarshal(data, &m); err != nil {
@@ -1912,12 +1915,9 @@ var _ io.Writer = io.Discard
 
 // takeHeldLocked makes links, what a registered names (nil from an older
 // server, which says nothing), the links held, and returns those held
-// before that it does not name: the server holds them no more for this
-// connection, and no word of their end reached it (it was away, or the
-// word was lost with it). Nothing is returned at the first registration,
-// which held nothing. The
-// caller holds mu, and tells each returned link's end (linkWent) once it
-// has let mu go.
+// before that it does not name (Options.LinkUnnamed). Nothing is returned
+// at the first registration, which held nothing. The caller holds mu, and
+// tells each returned link (linkWent) once it has let mu go.
 func (a *agent) takeHeldLocked(links []string) []string {
 	if links == nil {
 		return nil
@@ -1926,32 +1926,31 @@ func (a *agent) takeHeldLocked(links []string) []string {
 	for _, id := range links {
 		named[id] = true
 	}
-	var ended []string
+	var unnamed []string
 	if a.heldKnown {
 		for id := range a.held {
 			if !named[id] {
-				ended = append(ended, id)
+				unnamed = append(unnamed, id)
 			}
 		}
 	}
 	a.held, a.heldKnown = named, true
-	return ended
+	return unnamed
 }
 
 // linkWent is what a link the server says no longer opens what this
-// connection carries does here (link_gone; ended, also a link a
-// registered no longer names): the credentials of its viewers go; an
-// ended one leaves the held links before the publisher is told, as a mint
-// the word crosses looks at the held links once it has recorded its link
-// (the api's handleCreateLink), so either the mint finds it dropped or the
-// word finds it made; then the publisher is told (Options.LinkGone).
-func (a *agent) linkWent(linkID string, ended bool) {
+// connection carries does here (link_gone), or, unnamed, one this
+// connection held that its registered no longer names (the held links
+// already the answer's): the credentials of its viewers go; an ended one
+// leaves the held links before the publisher is told, as a mint the word
+// crosses looks at the held links once it has recorded its link (the
+// api's handleCreateLink), so either the mint finds it dropped or the word
+// finds it made; then the publisher is told (Options.LinkGone, or
+// Options.LinkUnnamed).
+func (a *agent) linkWent(linkID string, ended, unnamed bool) {
 	a.creds.gone(linkID)
 	if ended {
 		a.noteHeld(linkID, false)
-	}
-	if a.opts.LinkGone == nil {
-		return
 	}
 	sessionID, runID := "", ""
 	if a.desk != nil {
@@ -1959,7 +1958,12 @@ func (a *agent) linkWent(linkID string, ended bool) {
 	} else if a.local != nil {
 		sessionID = a.local.Info().ID
 	}
-	a.opts.LinkGone(linkID, sessionID, runID, ended)
+	switch {
+	case unnamed && a.opts.LinkUnnamed != nil:
+		a.opts.LinkUnnamed(linkID, sessionID, runID)
+	case !unnamed && a.opts.LinkGone != nil:
+		a.opts.LinkGone(linkID, sessionID, runID, ended)
+	}
 }
 
 // noteHeld keeps held in step with a link the server minted or revoked.

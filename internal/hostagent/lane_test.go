@@ -361,14 +361,18 @@ func TestUplinkPassesDecisions(t *testing.T) {
 	gone := make(chan string, 1)
 	u := &Uplink{ServerURL: "https://switchyard.example.net", Decisions: d, LinkGone: func(id, sessionID, runID string, ended bool) {
 		gone <- fmt.Sprint(id, " ", sessionID, " ", runID, " ", ended)
-	}}
+	}, LinkUnnamed: func(id, sessionID, runID string) { gone <- fmt.Sprint("unnamed ", id, " ", sessionID, " ", runID) }}
 	for _, opts := range []Options{u.options(session.Info{ID: "s", Name: "cat"}), u.options(session.Info{Name: "Run"})} {
-		if opts.Decisions != Decisions(d) || opts.LinkGone == nil || !opts.Switchyard {
+		if opts.Decisions != Decisions(d) || opts.LinkGone == nil || opts.LinkUnnamed == nil || !opts.Switchyard {
 			t.Fatalf("options %+v", opts)
 		}
 		opts.LinkGone("l9", "s", "", true)
 		if got := <-gone; got != "l9 s  true" {
 			t.Fatalf("link gone %q", got)
+		}
+		opts.LinkUnnamed("l8", "", "run-1")
+		if got := <-gone; got != "unnamed l8  run-1" {
+			t.Fatalf("link unnamed %q", got)
 		}
 	}
 }
@@ -671,13 +675,13 @@ func TestAnEndedLinkLeavesTheHeldLinks(t *testing.T) {
 }
 
 // A registered is what the server holds (takeHeldLocked): the links held
-// before it that it does not name are returned, to be told ended; the
+// before it that it does not name are returned, to be told not named; the
 // first registration returns none, and an older server's registered (no
 // links) changes nothing.
 func TestARegisteredIsTheLinksHeld(t *testing.T) {
 	a := &agent{}
 	for _, c := range []struct {
-		links, ended, held []string
+		links, unnamed, held []string
 	}{
 		{[]string{"l1", "l2", "l3"}, nil, []string{"l1", "l2", "l3"}},
 		{nil, nil, []string{"l1", "l2", "l3"}},
@@ -685,20 +689,21 @@ func TestARegisteredIsTheLinksHeld(t *testing.T) {
 		{[]string{}, []string{"l2", "l4"}, []string{}},
 	} {
 		a.mu.Lock()
-		ended := a.takeHeldLocked(c.links)
+		unnamed := a.takeHeldLocked(c.links)
 		a.mu.Unlock()
-		slices.Sort(ended)
+		slices.Sort(unnamed)
 		held, _ := a.heldLinks()
 		slices.Sort(held)
-		if !slices.Equal(ended, c.ended) || !slices.Equal(held, c.held) {
-			t.Fatalf("registered %v: ended %v, held %v; want %v, %v", c.links, ended, held, c.ended, c.held)
+		if !slices.Equal(unnamed, c.unnamed) || !slices.Equal(held, c.held) {
+			t.Fatalf("registered %v: not named %v, held %v; want %v, %v", c.links, unnamed, held, c.unnamed, c.held)
 		}
 	}
 }
 
-// A publication that registers again tells its publisher, ended, each
-// link it held that the server's registered no longer names, the link
-// already gone from its held links; the links named stay held.
+// A publication that registers again tells its publisher each link it
+// held that the server's registered no longer names as not named
+// (LinkUnnamed), never as an ended link_gone, the link already gone from
+// its held links; the links named stay held.
 func TestARegistrationTellsTheLinksItNoLongerNames(t *testing.T) {
 	var n atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -727,9 +732,8 @@ func TestARegistrationTellsTheLinksItNoLongerNames(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	type told struct {
-		id, sessionID, runID string
-		ended                bool
-		held                 []string
+		how, id, sessionID, runID string
+		held                      []string
 	}
 	gone := make(chan told, 4)
 	var pub *Published
@@ -738,7 +742,11 @@ func TestARegistrationTellsTheLinksItNoLongerNames(t *testing.T) {
 	u := &Uplink{ServerURL: srv.URL, Insecure: true, RelayOnly: true, LinkGone: func(id, sessionID, runID string, ended bool) {
 		ready.Wait()
 		held, _ := pub.HeldLinks()
-		gone <- told{id, sessionID, runID, ended, held}
+		gone <- told{fmt.Sprint("link_gone, ended ", ended), id, sessionID, runID, held}
+	}, LinkUnnamed: func(id, sessionID, runID string) {
+		ready.Wait()
+		held, _ := pub.HeldLinks()
+		gone <- told{"not named", id, sessionID, runID, held}
 	}}
 	proc, err := pty.Start(pty.Spec{Argv: []string{"/bin/cat"}, Dir: t.TempDir(), Env: hostEnv(nil)})
 	if err != nil {
@@ -754,7 +762,7 @@ func TestARegistrationTellsTheLinksItNoLongerNames(t *testing.T) {
 	t.Cleanup(pub.Stop)
 	select {
 	case got := <-gone:
-		if got.id != "l1" || got.sessionID != "s" || got.runID != "" || !got.ended || !slices.Equal(got.held, []string{"l2"}) {
+		if got.how != "not named" || got.id != "l1" || got.sessionID != "s" || got.runID != "" || !slices.Equal(got.held, []string{"l2"}) {
 			t.Fatalf("told %+v", got)
 		}
 	case <-time.After(20 * time.Second):

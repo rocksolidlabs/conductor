@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"context"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -34,7 +35,7 @@ func endedPair(t *testing.T, bound int) (yard, local *testEnv, told chan string)
 		Decisions: local.srv.Lane(), LinkGone: func(linkID, sessionID, runID string, ended bool) {
 			local.srv.RemoteLinkGone(linkID, sessionID, runID, ended)
 			told <- linkID
-		}}})
+		}, LinkUnnamed: local.srv.RemoteLinkUnnamed}})
 	return yard, local, told
 }
 
@@ -392,12 +393,15 @@ func TestAnEndedLinkIsAppliedToWhatItIsThen(t *testing.T) {
 // does: it knows each host connection by the session id the switchyard's
 // registered names (written unmasked and uncompressed), cuts the ones the
 // test names, and holds every connection made after a cut from reaching
-// the switchyard until the test lets them through.
+// the switchyard until the test lets them through. It also holds back the
+// registered of the sessions the test names (hold) until it releases them,
+// so one connection's registration is taken before another's.
 type yardFront struct {
 	*httptest.Server
 	mu    sync.Mutex
 	conns map[string]net.Conn
 	gate  chan struct{}
+	holds map[string]chan struct{}
 }
 
 func newYardFront(t *testing.T, yard *testEnv) *yardFront {
@@ -419,7 +423,48 @@ func newYardFront(t *testing.T, yard *testEnv) *yardFront {
 	}))
 	t.Cleanup(f.Close)
 	t.Cleanup(f.let)
+	t.Cleanup(func() {
+		f.mu.Lock()
+		ids := slices.Collect(maps.Keys(f.holds))
+		f.mu.Unlock()
+		f.release(ids...)
+	})
 	return f
+}
+
+// hold holds back the registered the switchyard writes for its sessions
+// ids from then on, until release.
+func (f *yardFront) hold(ids ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.holds == nil {
+		f.holds = map[string]chan struct{}{}
+	}
+	for _, id := range ids {
+		if f.holds[id] == nil {
+			f.holds[id] = make(chan struct{})
+		}
+	}
+}
+
+// knows says whether a connection of the switchyard's session id has been
+// written its registered through the front since it was last cut.
+func (f *yardFront) knows(id string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.conns[id] != nil
+}
+
+// release lets the registered held back for ids through.
+func (f *yardFront) release(ids ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, id := range ids {
+		if c := f.holds[id]; c != nil {
+			close(c)
+			delete(f.holds, id)
+		}
+	}
 }
 
 // cut closes the connections of the switchyard's sessions ids, the next
@@ -480,27 +525,34 @@ func (c *frontConn) Write(p []byte) (int, error) {
 	if m := registeredAs.FindSubmatch(p); m != nil {
 		c.f.mu.Lock()
 		c.f.conns[string(m[1])] = c.Conn
+		held := c.f.holds[string(m[1])]
 		c.f.mu.Unlock()
+		if held != nil {
+			<-held
+		}
 	}
 	return c.Conn.Write(p)
 }
 
 // The walk, its connections away (#820): a link the switchyard ends while
 // none of the publisher's connections that could be told of it is
-// connected is ended here as the connection that held it registers again,
-// its registered no longer naming it: a session's decision link as its
-// session registers, a run's decision link and a run's link as the run's
-// desk and member do. An end told on a member's connection that is no
-// longer the run's (a member replaced) is not applied there: the link is
-// listed until the run's connections register again, and gone after. The
-// other links stay as they were. Judged by the links routes, as the walk.
+// connected is ended here as the connection whose registered can say so
+// registers again, its registered no longer naming it: a session's
+// decision link as its session registers, a run's decision link and a
+// run's link as the run's desk does, its member's registration held back.
+// The member's registration, the desk's held back, ends nothing: the link
+// is listed until the desk's is taken. An end told on a member's
+// connection that is no longer the run's (a member replaced) is not
+// applied there: the link is listed until the run's desk registers again,
+// and gone after. The other links stay as they were. Judged by the links
+// routes, as the walk.
 func TestAnEndedLinkIsCaughtUpAtTheNextRegistration(t *testing.T) {
 	yard := keptSwitchyard(t, filepath.Join(t.TempDir(), "data"), nil)
 	yard.srv.hosts.SetDecisions(true)
 	front := newYardFront(t, yard)
 	local := newTestEnv(t, nil)
-	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: front.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true,
-		Decisions: local.srv.Lane(), LinkGone: local.srv.RemoteLinkGone}})
+	words := &wordLog{}
+	local.srv.SetPublisher(uplinkPublisher{words.uplink(front.URL, local)})
 	next := retries(local)
 	id := publishedSession(t, local)
 	runID := local.launchCrew(t, "Pair", catMember("lead", "immediately"))
@@ -514,6 +566,8 @@ func TestAnEndedLinkIsCaughtUpAtTheNextRegistration(t *testing.T) {
 
 	there := func(sid string) string { return local.srv.publishedOf(sid).CurrentID() }
 	yardS, yardM, yardD := there(id), there(member), local.srv.liveDesk(runID).CurrentID()
+	// What each connection carries, as its words to the publisher say it.
+	wordOn := map[string][2]string{yardS: {id, ""}, yardM: {member, ""}, yardD: {"", runID}}
 	hosted := func(yid string) *signal.HostedSession {
 		if hs, ok := yard.srv.hosts.Get(yid); ok {
 			return hs
@@ -540,7 +594,7 @@ func TestAnEndedLinkIsCaughtUpAtTheNextRegistration(t *testing.T) {
 	back := func(t *testing.T, ids ...string) {
 		front.let()
 		for _, yid := range ids {
-			until(t, "the connection back", func() bool { return hosted(yid).Connected() })
+			until(t, "the connection back", func() bool { return hosted(yid).Connected() && front.knows(yid) })
 		}
 	}
 	// endThere ends the link at the switchyard as an open admission does.
@@ -577,15 +631,38 @@ func TestAnEndedLinkIsCaughtUpAtTheNextRegistration(t *testing.T) {
 		}
 	}
 
+	// held says whether the run's desk and its member both hold linkID.
+	held := func(linkID string) bool {
+		m, _ := local.srv.publishedOf(member).HeldLinks()
+		d, _ := local.srv.liveDesk(runID).(interface{ HeldLinks() ([]string, bool) }).HeldLinks()
+		return slices.Contains(m, linkID) && slices.Contains(d, linkID)
+	}
+	// holdingBoth has the run's desk and its member register again, so
+	// that each holds the run's links (its registered names them),
+	// whichever connection they were minted over.
+	holdingBoth := func(t *testing.T, ids ...string) {
+		away(t, yardD, yardM)
+		back(t, yardD, yardM)
+		until(t, "the run's desk and its member hold the links", func() bool {
+			for _, linkID := range ids {
+				if !held(linkID) {
+					return false
+				}
+			}
+			return true
+		})
+	}
+
 	rows := []struct {
 		name   string
 		path   string
 		decide bool
-		away   []string
+		away   []string // away as the link is ended
+		first  string   // whose registration is taken first, the others' held back until it has been
 	}{
-		{"a session's decision link ended while its session is away", sessionPath, true, []string{yardS}},
-		{"a run's decision link ended while its desk and its member are away", runPath, true, []string{yardD, yardM}},
-		{"a run's link ended while its desk and its member are away", runPath, false, []string{yardD, yardM}},
+		{"a session's decision link ended while its session is away", sessionPath, true, []string{yardS}, yardS},
+		{"a run's decision link ended while its desk and its member are away: the desk's registration ends it", runPath, true, []string{yardD, yardM}, yardD},
+		{"a run's link ended while its desk and its member are away: the desk's registration ends it", runPath, false, []string{yardD, yardM}, yardD},
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
@@ -595,9 +672,21 @@ func TestAnEndedLinkIsCaughtUpAtTheNextRegistration(t *testing.T) {
 			} else {
 				linkID = mintRemote(t, local, row.path)
 			}
+			if row.path == runPath {
+				holdingBoth(t, linkID)
+			}
+			others := slices.DeleteFunc(slices.Clone(row.away), func(yid string) bool { return yid == row.first })
 			away(t, row.away...)
 			endThere(t, linkID)
-			back(t, row.away...)
+			// The first's registration is taken (its word for the link
+			// handed to the publisher) before the others' registered is
+			// let through: an end that follows is the first's.
+			front.hold(others...)
+			back(t, row.first)
+			on := wordOn[row.first]
+			until(t, "the first registration taken", func() bool { return words.saw(linkID, on[0], on[1]) })
+			front.release(others...)
+			back(t, others...)
 			if !row.decide {
 				caughtUp(t, "the ended link left the list", func() bool { return listed(row.path, linkID) == nil })
 			} else {
@@ -624,22 +713,52 @@ func TestAnEndedLinkIsCaughtUpAtTheNextRegistration(t *testing.T) {
 		})
 	}
 
-	// The window, both halves: an end whose word went to a member
-	// replaced (a session the engine no longer has in the run) is not
-	// applied as it comes; the run's connections registering again catch
-	// it up.
-	t.Run("a run's link ended as it is told to a member replaced", func(t *testing.T) {
-		linkID := mintRemote(t, local, runPath)
+	// The member's registration, the desk's held back, ends none of the
+	// run's links its registered no longer names, among them one whose
+	// end was told to a member replaced (a session the engine no longer
+	// has in the run), which is not applied as it comes either; the
+	// desk's registration then ends them all. Last: whatever the words
+	// started is waited for before the judgement (WaitBackground), which
+	// ends the revokes' retries, so the decision link stays owed its
+	// revoke.
+	t.Run("a run's links ended while its desk and its member are away: the member's registration ends none of them", func(t *testing.T) {
+		decision, _ := remoteDecisionLink(t, local, runPath, "member")
+		ordinary, replaced := mintRemote(t, local, runPath), mintRemote(t, local, runPath)
+		ended := []string{decision, ordinary, replaced}
+		holdingBoth(t, ended...)
 		away(t, yardD, yardM)
-		endThere(t, linkID)
-		// Taken as it comes (no run's turn is waited for: the session is
-		// no member of a run).
-		local.srv.RemoteLinkGone(linkID, sessionHex("replaced"), "", true)
-		if listed(runPath, linkID) == nil {
-			t.Fatal("an end told on a connection that is no longer the run's was applied")
+		for _, linkID := range ended {
+			endThere(t, linkID)
 		}
-		back(t, yardD, yardM)
-		caughtUp(t, "the ended link left the list at the run's next registration", func() bool { return listed(runPath, linkID) == nil })
+		local.srv.RemoteLinkGone(replaced, sessionHex("replaced"), "", true)
+		front.hold(yardD)
+		back(t, yardM)
+		until(t, "the member's registration taken", func() bool {
+			for _, linkID := range ended {
+				if !words.saw(linkID, member, "") {
+					return false
+				}
+			}
+			return true
+		})
+		local.srv.WaitBackground(t.Context())
+		for _, linkID := range ended {
+			if l := listed(runPath, linkID); l == nil || l["revokePending"] == true {
+				t.Errorf("the run's link %s after its member's registration alone: %v", linkID, l)
+			}
+		}
+		if !local.srv.Lane().DecisionLink(decision, "", runID) {
+			t.Error("the run's decision link opens no lane after its member's registration alone")
+		}
+		front.release(yardD)
+		back(t, yardD)
+		caughtUp(t, "the run's links ended at its desk's next registration", func() bool {
+			l := listed(runPath, decision)
+			return l != nil && l["revokePending"] == true && listed(runPath, ordinary) == nil && listed(runPath, replaced) == nil
+		})
+		if local.srv.Lane().DecisionLink(decision, "", runID) {
+			t.Error("the ended link still opens a lane here")
+		}
 		unchanged(t)
 	})
 }

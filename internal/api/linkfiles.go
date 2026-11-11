@@ -664,8 +664,9 @@ func (s *Server) hostUp(owner, addr string) func() {
 // members' connections, the one it was minted over among them: each of
 // them can list it. A second telling changes nothing, since ended is the
 // link's own end whichever connection carries it. A word no connection
-// takes is caught up as the connection that held the link registers again
-// (its registered no longer names it).
+// takes is caught up at the next registration of the session, for its own
+// links, or of the run's desk, for the run's (its registered no longer
+// names it); a member's registration ends nothing of a run's link.
 func (s *Server) endHeldLink(l *share.Link) {
 	switch {
 	case l.RunID == "":

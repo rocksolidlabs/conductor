@@ -689,10 +689,8 @@ func (s *Server) stopRevokeRetries() {
 // answers not_found (retryRevokeThere, or a revoke again from here).
 //
 // A link the switchyard says it ended of itself (ended: an open admission
-// past its bound, #820), or that a connection held and its registered,
-// as it registers again, no longer names (hostagent.Options.LinkGone), is
-// the link's own end on whichever connection it is told, a member's too
-// (remoteLinkEnded).
+// past its bound, #820) is the link's own end on whichever connection it
+// is told, a member's too (remoteLinkEnded).
 func (s *Server) RemoteLinkGone(linkID, sessionID, runID string, ended bool) {
 	if ended {
 		s.remoteLinkEnded(linkID, sessionID, runID)
@@ -719,6 +717,21 @@ func (s *Server) RemoteLinkGone(linkID, sessionID, runID string, ended bool) {
 	s.links.Revoke(l.SessionID, linkID)
 	if _, owed := s.revokeOwed(l.SessionID, "", linkID); owed {
 		s.retryRevokeThere(l.SessionID, "", linkID)
+	}
+}
+
+// RemoteLinkUnnamed is told a link one of the publisher's connections held
+// that its registered no longer names (hostagent.Uplink.LinkUnnamed): the
+// link's end only where it can mean nothing else, a run's link on the
+// run's desk (as an ended word is) and a session's own link on its
+// session's connection. It never asks which run a session is of: a
+// member's answer also stops naming a run's link once it left the group.
+func (s *Server) RemoteLinkUnnamed(linkID, sessionID, runID string) {
+	switch {
+	case runID != "":
+		s.remoteLinkEnded(linkID, "", runID)
+	case sessionID != "":
+		s.endedNow(sessionID, "", linkID)
 	}
 }
 

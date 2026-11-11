@@ -47,6 +47,9 @@ type Uplink struct {
 	// opens what one of its connections carries, with that connection's
 	// session or desk's run (Options.LinkGone).
 	LinkGone func(linkID, sessionID, runID string, ended bool)
+	// LinkUnnamed, when set, is told each link one of its connections held
+	// that the connection's registered no longer names (Options.LinkUnnamed).
+	LinkUnnamed func(linkID, sessionID, runID string)
 
 	// instance is this server's secret with the rendezvous: with each
 	// session's own id it gives a published session the same id after the
@@ -100,7 +103,7 @@ func (u *Uplink) options(info session.Info) Options {
 	opts := Options{
 		ServerURL: u.ServerURL, Token: u.Token, Name: info.Name, HostName: u.HostName, AgentID: info.AgentID,
 		Argv: info.Command, Dir: info.Cwd, RelayOnly: u.RelayOnly, Insecure: u.Insecure, ICEServers: u.ICEServers, ICE: u.ICE, ReconnectMax: u.ReconnectMax, Log: log,
-		Switchyard: true, Decisions: u.Decisions, LinkGone: u.LinkGone,
+		Switchyard: true, Decisions: u.Decisions, LinkGone: u.LinkGone, LinkUnnamed: u.LinkUnnamed,
 	}
 	if opts.HostName == "" {
 		opts.HostName, _ = os.Hostname()

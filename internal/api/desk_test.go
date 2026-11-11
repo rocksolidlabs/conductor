@@ -57,7 +57,7 @@ func deskPair(t *testing.T, decisions bool) (yard, local *testEnv) {
 	local = readyEnv(t, nil)
 	local.gitRepo(t)
 	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: yard.http.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true,
-		Decisions: local.srv.Lane(), LinkGone: local.srv.RemoteLinkGone}})
+		Decisions: local.srv.Lane(), LinkGone: local.srv.RemoteLinkGone, LinkUnnamed: local.srv.RemoteLinkUnnamed}})
 	return yard, local
 }
 
@@ -964,7 +964,7 @@ func keptDeskPair(t *testing.T) (yard, local *testEnv, dir string, gone <-chan s
 		Decisions: local.srv.Lane(), LinkGone: func(linkID, sessionID, runID string, ended bool) {
 			local.srv.RemoteLinkGone(linkID, sessionID, runID, ended)
 			told <- linkID
-		}}})
+		}, LinkUnnamed: local.srv.RemoteLinkUnnamed}})
 	return yard, local, dir, told
 }
 
