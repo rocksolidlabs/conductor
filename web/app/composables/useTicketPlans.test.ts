@@ -4,11 +4,14 @@ import { ApiError } from './useApi'
 import type { DispatchReceipt, DispatchTicket, LaunchSummary, PlanReply, PlanSummary } from './useDispatch'
 import { useDispatchOps } from './useDispatchOps'
 import { DispatchOrder } from '../utils/dispatchOrder'
+import { useTicketPlans } from './useTicketPlans'
 
 // A ticket page's plan state (Program item DS2, PR-10) against replies held back and let go in the order a test picks: an operation's
 // answer, a 404 and a launch's answer go through the page's ordering gate, so a snapshot's reset or a later read is never undone by an
 // answer to a request sent before it. useTicketPlans reads Nuxt's auto-imports (Vue's, useDispatchApi, useDispatchOps, useIdentity,
-// useToast) as globals: each is stubbed, the API by replies the test holds.
+// useToast) as globals: each is stubbed, the API by replies the test holds. They are read when the composable is called, so the module
+// is imported once with the file, never inside a test: an import that took seconds on a loaded machine timed the first test out, and
+// its body, still running, then took the next test's requests (#281).
 
 /** A reply the test lets go: `ok` answers, `fail` rejects. */
 function held<T>() {
@@ -66,7 +69,6 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals())
 
 async function page() {
-  const { useTicketPlans } = await import('./useTicketPlans')
   const gate = new DispatchOrder()
   const ticket = { key: 'PL-1', rev: 3 } as DispatchTicket
   const plans = useTicketPlans({ gate, key: () => 'PL-1', ticket: () => ticket })

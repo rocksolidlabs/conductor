@@ -123,6 +123,14 @@ add its rule here.
   on CI; the bound is 60 m now; the package's length is CPU work under the
   race detector across its 1,365 tests, not waits, and CI's longest job is
   e2e at 49 minutes, so no row makes it faster).
+- An answer the product's bound cut off is not a yes, in the product
+  either. A crew launch read a PATH lookup that ran past its 2 s wait as
+  "installed" and started the lead of a crew whose other member could not
+  run, on a loaded WSL box whose PATH reaches into /mnt/c
+  (`TestLaunchRefusesAnAgentNotInstalled`, 2026-11-10, #281). The launch
+  refuses what it could not show now, saying so; the test that needs the
+  lookup's answer waits for it (`stubWait(hangWait)`), and one that holds
+  the lookup at the seam proves the refusal every run.
 - Order what must be ordered. Keys that must stay unconfirmed go in after
   the process is stopped (SIGSTOP), not raced against a kill. A check made
   at once after an action ("nothing served yet") holds the step the action
@@ -144,6 +152,16 @@ add its rule here.
   its own waits' caps as it takes them (`testInfo.setTimeout`, the
   `budget` of `palette-rows.spec.ts`), with the config's timeout above
   their sum, never a multiple of the config's.
+- Import what is tested with the file, never inside a test. A module
+  imported in a test's body (`await import('./useTicketPlans')` in its
+  helper) counts its cold import against that test's 5 s, and a test that
+  times out is not stopped: on a loaded machine the import took seconds,
+  the first test timed out, and its body went on when the import came,
+  made its composable on the next test's stubs and sent into the next
+  test's arrays, which then saw a second request or an error not yet
+  said (2026-11-11, #281). These composables read their auto-imports when
+  they are called, so their static import before the stubs is safe; a
+  module that reads one as it loads is imported after its stubs.
 - Count only what the test made. A spec that counts sessions, tiles or list
   rows sees what an earlier spec left behind and what the server's sweeps
   removed: end the strays first (`stopStrays` in `web/e2e/fixtures.ts`) and
@@ -317,7 +335,9 @@ add its rule here.
   the menu's search and opens it again, and the field stays empty
   (`dispatch-plan.spec.ts`, #467); a select with no search hands the
   focus back to its trigger as it goes, and a key pressed then opens it
-  again (`pickOption`, `manifest-editor.spec.ts`). After picking an
+  again (`pickOption`, `manifest-editor.spec.ts`), and a row's menu gone
+  during a dialog's save hands its trigger the Escape (`holdMenuExit`,
+  #281). After picking an
   option, wait for the listbox to be gone (`toHaveCount(0)`) before
   typing, and assert the field holds what was typed (`toHaveValue`)
   before submitting.
@@ -397,6 +417,10 @@ add its rule here.
   itself: GitHub's release downloads answered 504 for thirty minutes and
   one try of Neovim's tarball and Electron's binary failed four jobs of an
   hour-long run, twice (2026-11-08, #281; `docs/checks.md` says how).
+  A runner's package mirror list is fetched from too: when its first name
+  stopped resolving, apt waited on it for every package until the install
+  failed, so the job takes out a mirror whose name does not resolve and
+  retries the install (2026-11-11, #281).
 - A port probed free is not a port owned, and a health answer at it is
   not the child's: readiness is the answer the child alone can give, its
   own token accepted. Every worktree's e2e suite on a machine picks from
@@ -425,6 +449,23 @@ add its rule here.
   the request has answered), and prove the read the test cares about
   failed from what it answered (the receipt alone), never from a one-shot
   flag having been spent.
+- A call that moves the page is started, not awaited for its answer,
+  and a read made after such a call takes a rejection in the words
+  "Execution context was destroyed" as "not yet". Seen: in two CI runs
+  (`update.spec.ts`, 2026-11-08 and 2026-11-10, #281) the evaluate that
+  awaited the stubbed app's invite for its `true`, across the route to
+  the join page the invite makes, was rejected in those words, though
+  the traces show no document fetched and the join page drawn after.
+  It was not reproduced: 74 runs here, loaded too, never saw it, so its
+  cause is not known; Playwright gives those words to more than a page
+  load. The rule makes the specs not depend on it. Start
+  such a call without awaiting it and let the page keep its answer
+  (`startCall` in `web/e2e/fixtures.ts`), wait for what the call does
+  (the address, what the next page draws), and make every read of the
+  page after it in an `expect.poll` through `notYet`, which reads again
+  on those words until the poll's bound and fails at once on any other
+  rejection: the poll alone fails at the first rejection its read meets
+  (`not-yet.spec.ts` cuts a read with a load to show both).
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
