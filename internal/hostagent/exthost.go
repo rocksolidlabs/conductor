@@ -93,12 +93,11 @@ func StartIdentity(ctx context.Context, p ext.IdentityProvider, name string, h H
 		}
 		return ok2.Load()
 	}
+	// The tries' goroutine waits for the try under way at most
+	// ext.StartWait once ctx has ended (tryHostStart), and then returns.
 	stop = func() {
 		cancel()
-		select {
-		case <-done:
-		case <-time.After(ext.StartWait):
-		}
+		<-done
 	}
 	return started, stop
 }
@@ -143,6 +142,14 @@ func tryHostStart(ctx context.Context, st ext.Starter, h *hostExtHost, after fun
 			why = "error"
 		}
 	}()
+	// stopped waits, once ctx has ended (stop), for the try under way, at
+	// most ext.StartWait from then.
+	stopped := func() {
+		select {
+		case <-done:
+		case <-after(ext.StartWait):
+		}
+	}
 	select {
 	case why := <-done:
 		if why == "" && ctx.Err() == nil {
@@ -162,10 +169,12 @@ func tryHostStart(ctx context.Context, st ext.Starter, h *hostExtHost, after fun
 		select {
 		case <-done:
 		case <-ctx.Done():
+			stopped()
 		}
 		return "late"
 	case <-ctx.Done():
 		cancel()
+		stopped()
 		return "stopped"
 	}
 }

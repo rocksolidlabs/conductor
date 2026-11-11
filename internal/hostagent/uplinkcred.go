@@ -34,6 +34,9 @@ type UplinkCredential struct {
 	// after is the clock of the guard's waits and Present's deadline (a
 	// test's own; nil is time.After).
 	after func(time.Duration) <-chan time.Time
+	// judging, when set (tests), is called as the guard is about to judge a
+	// call's answer, with whether the answer is there yet.
+	judging func(answered func() bool)
 
 	owns, token flight
 
@@ -176,12 +179,17 @@ func (c *UplinkCredential) ask(ctx context.Context, f *flight, kind string, fn f
 	}
 }
 
-// run makes cl's call of fn, within ext.IdentityWait.
+// run makes cl's call of fn, within ext.IdentityWait. The deadline is
+// armed before fn is called, and an answer counts only when the guard
+// finds it while the deadline has not passed: an answer and a passed
+// deadline both there when the guard looks is late, as is one given
+// after it.
 func (c *UplinkCredential) run(f *flight, cl *credCall, kind string, fn func() credAnswer) {
 	type result struct {
 		v        credAnswer
 		panicked bool
 	}
+	deadline := c.wait(ext.IdentityWait)
 	res := make(chan result, 1)
 	go func() {
 		defer func() {
@@ -191,6 +199,9 @@ func (c *UplinkCredential) run(f *flight, cl *credCall, kind string, fn func() c
 		}()
 		res <- result{v: fn()}
 	}()
+	if c.judging != nil {
+		c.judging(func() bool { return len(res) > 0 })
+	}
 	finish := func() {
 		f.mu.Lock()
 		f.cur = nil
@@ -198,13 +209,19 @@ func (c *UplinkCredential) run(f *flight, cl *credCall, kind string, fn func() c
 	}
 	select {
 	case r := <-res:
-		if r.panicked {
-			c.fail(kind, "panic")
+		select {
+		case <-deadline:
+			// Both there: the answer is late, its value the default's.
+			c.fail(kind, "late")
+		default:
+			if r.panicked {
+				c.fail(kind, "panic")
+			}
+			cl.v, cl.ok = r.v, !r.panicked
 		}
-		cl.v, cl.ok = r.v, !r.panicked
 		finish()
 		close(cl.done)
-	case <-c.wait(ext.IdentityWait):
+	case <-deadline:
 		c.fail(kind, "late")
 		close(cl.done)
 		<-res
@@ -232,19 +249,35 @@ func withheldRefusal(err error) bool {
 // err, with backoff (1 s doubling to ReconnectMax), each try asking
 // Present anew, for at most firstCredentialWait; past it, or once a try
 // is refused otherwise, it answers that try's refusal.
+//
+// The bound reaches into a try: every try runs under a context that ends
+// at firstCredentialWait (its ask, its dial and its registration), so a
+// try begun just inside the bound does not outlive it; one cut short so
+// answers the last refusal.
 func (a *agent) registerWhileWithheld(ctx context.Context, err error) (*websocket.Conn, proto.Registered, error) {
+	bound, cancel := context.WithCancel(ctx)
+	defer cancel()
 	giveUp := a.afterOr(firstCredentialWait)
+	go func() {
+		select {
+		case <-giveUp:
+			cancel()
+		case <-bound.Done():
+		}
+	}()
 	backoff := time.Second
 	for {
 		select {
-		case <-ctx.Done():
-			return nil, proto.Registered{}, err
-		case <-giveUp:
+		case <-bound.Done():
 			return nil, proto.Registered{}, err
 		case <-a.afterOr(backoff):
 		}
 		backoff = min(2*backoff, a.opts.ReconnectMax)
-		c, reg, again := a.dialAndRegister(ctx)
+		c, reg, again := a.dialAndRegister(bound)
+		if again != nil && bound.Err() != nil && ctx.Err() == nil {
+			// Cut short by the bound.
+			return nil, proto.Registered{}, err
+		}
 		if !withheldRefusal(again) {
 			return c, reg, again
 		}
@@ -279,7 +312,9 @@ const (
 // connection 1000 and the reconnect presents it: nothing is retried in
 // place. On an open host's connection (it presented nothing) a credential
 // closes it 1000, and the reconnect presents it. Elsewhere nothing is
-// sent: the next reconnect presents what Present answers then. Ending a
+// sent: the next reconnect presents what Present answers then; and on a
+// connection whose registration ended away from the configured server's
+// origin (a redirect), nothing is asked or sent at all. Ending a
 // credential is the switchyard's recheck's to do.
 func (a *agent) renewToken(w *controlWriter) {
 	cred := a.opts.Credential
@@ -301,6 +336,12 @@ func (a *agent) renewToken(w *controlWriter) {
 			return
 		case <-a.afterOr(uplinkTokenEvery):
 		}
+		if w.elsewhere {
+			// Its registration ended at another server than the one the
+			// credential is for: nothing is asked, and nothing sent there.
+			step(renewNone)
+			continue
+		}
 		tok, ok := cred.Renewed(w.ctx)
 		switch {
 		case w.ctx.Err() != nil:
@@ -313,7 +354,7 @@ func (a *agent) renewToken(w *controlWriter) {
 			return
 		case !w.renews:
 			step(renewNone)
-		case tok == w.presented:
+		case share.Equal(tok, w.presented):
 			step(renewUnchanged)
 		default:
 			b, _ := json.Marshal(proto.HostTokenMsg{T: proto.HostTokenType, Token: tok})

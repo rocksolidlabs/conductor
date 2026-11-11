@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -152,8 +155,11 @@ func TestOwnedTokenNeverPresented(t *testing.T) {
 		"panicking": func() bool { panic("cannot tell " + ownedCode) },
 	}
 	gave := map[string]func(f *uplinkFake, c *UplinkCredential){
-		"ok false":             func(f *uplinkFake, _ *UplinkCredential) { f.answer("", false) },
-		"a refused answer":     func(f *uplinkFake, _ *UplinkCredential) { f.answer("not a token", true) },
+		"ok false":         func(f *uplinkFake, _ *UplinkCredential) { f.answer("", false) },
+		"a refused answer": func(f *uplinkFake, _ *UplinkCredential) { f.answer("not a token", true) },
+		"past the bound": func(f *uplinkFake, _ *UplinkCredential) {
+			f.answer("cred-"+strings.Repeat("A", ext.MaxHostToken), true)
+		},
 		"the configured token": func(f *uplinkFake, _ *UplinkCredential) { f.answer(ownedCode, true) },
 		"late":                 func(f *uplinkFake, _ *UplinkCredential) { f.gate = never },
 		"panicking": func(f *uplinkFake, _ *UplinkCredential) {
@@ -283,17 +289,26 @@ func TestCredentialAfterTheFirstAsk(t *testing.T) {
 type stepClock struct {
 	mu    sync.Mutex
 	waits map[time.Duration][]chan time.Time
+	armed map[time.Duration]int
 }
 
 func (c *stepClock) after(d time.Duration) <-chan time.Time {
 	ch := make(chan time.Time)
 	c.mu.Lock()
 	if c.waits == nil {
-		c.waits = map[time.Duration][]chan time.Time{}
+		c.waits, c.armed = map[time.Duration][]chan time.Time{}, map[time.Duration]int{}
 	}
 	c.waits[d] = append(c.waits[d], ch)
+	c.armed[d]++
 	c.mu.Unlock()
 	return ch
+}
+
+// count is how many waits of d were ever asked of the clock.
+func (c *stepClock) count(d time.Duration) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.armed[d]
 }
 
 // fire fires a wait of d that a goroutine is waiting on: one whose
@@ -323,6 +338,8 @@ func (c *stepClock) fire(t *testing.T, d time.Duration) {
 type renewHarness struct {
 	y     *stubYard
 	f     *uplinkFake
+	cred  *UplinkCredential
+	u     *Uplink
 	clock *stepClock
 	steps chan renewStep
 	// hold, once set, holds each connection writer at gate before it takes
@@ -333,22 +350,35 @@ type renewHarness struct {
 
 func newRenewHarness(t *testing.T, renews bool, first string) *renewHarness {
 	t.Helper()
-	h := &renewHarness{y: newStubYard(t), f: &uplinkFake{}, clock: &stepClock{}, steps: make(chan renewStep, 64), gate: make(chan struct{})}
-	h.y.renews.Store(renews)
-	h.f.answer(first, first != "")
-	u := &Uplink{ServerURL: h.y.srv.URL, Token: ownedCode, HostName: "office", Log: discardLog,
-		Credential: NewUplinkCredential(h.f, "cloud", h.y.srv.URL, ownedCode, nil, discardLog),
-		after:      h.clock.after, renewed: func(s renewStep) { h.steps <- s }, taking: func() {
-			if h.hold.Load() {
-				<-h.gate
-			}
-		}}
-	pub, err := u.Publish(t.Context(), catLocal(t))
+	h := newRenewUplink(t, renews, first, "")
+	pub, err := h.u.Publish(t.Context(), catLocal(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(pub.Stop)
 	h.registered(t, first)
+	return h
+}
+
+// newRenewUplink is the harness's uplink, not yet publishing, to server
+// ("" for the stub switchyard's own address), the credential's guard on
+// the test's clock as the uplink's waits are.
+func newRenewUplink(t *testing.T, renews bool, first, server string) *renewHarness {
+	t.Helper()
+	h := &renewHarness{y: newStubYard(t), f: &uplinkFake{}, clock: &stepClock{}, steps: make(chan renewStep, 64), gate: make(chan struct{})}
+	h.y.renews.Store(renews)
+	h.f.answer(first, first != "")
+	if server == "" {
+		server = h.y.srv.URL
+	}
+	h.cred = NewUplinkCredential(h.f, "cloud", server, ownedCode, nil, discardLog)
+	h.cred.after = h.clock.after
+	h.u = &Uplink{ServerURL: server, Token: ownedCode, HostName: "office", Log: discardLog, Credential: h.cred,
+		after: h.clock.after, renewed: func(s renewStep) { h.steps <- s }, taking: func() {
+			if h.hold.Load() {
+				<-h.gate
+			}
+		}}
 	return h
 }
 
@@ -430,13 +460,61 @@ func TestHostTokenRenewalSameSubjectOnly(t *testing.T) {
 		h := newRenewHarness(t, false, "cred-1")
 		h.f.answer("cred-2", true)
 		h.tick(t, renewNone)
-		// Out of bounds: nothing to send, ever.
-		for _, bad := range []string{"cred-" + strings.Repeat("A", ext.MaxHostToken), "cred 2"} {
+		if h.sent() != 0 {
+			t.Fatal("host_token sent where registered did not say renews")
+		}
+	})
+	t.Run("none for a desk where registered did not say renews, one where it did", func(t *testing.T) {
+		for _, renews := range []bool{false, true} {
+			h := newRenewUplink(t, renews, "cred-1", "")
+			d, err := h.u.OpenDesk(t.Context(), proto.DeskRun{ID: "run-1", Name: "run"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = d.Stop(ctx)
+			})
+			h.registered(t, "cred-1")
+			h.f.answer("cred-2", true)
+			want, n := renewNone, 0
+			if renews {
+				want, n = renewSent, 1
+			}
+			h.tick(t, want)
+			if renews {
+				h.y.wait("the desk's host_token", func(m yardMsg) bool { return m.t == proto.HostTokenType })
+			}
+			if got := h.sent(); got != n {
+				t.Fatalf("renews %v: %d host_token frames from a desk, want %d", renews, got, n)
+			}
+		}
+	})
+	// On a connection that renews: what the provider answers out of bounds,
+	// or the configured token it owns answered back, is never sent.
+	t.Run("never sent: out of bounds, or the owned token answered back", func(t *testing.T) {
+		never := make(chan struct{})
+		t.Cleanup(func() { close(never) })
+		h := newRenewHarness(t, true, "cred-1")
+		for _, bad := range []string{"cred-" + strings.Repeat("A", ext.MaxHostToken), "cred 2", ownedCode} {
 			h.f.answer(bad, true)
 			h.tick(t, renewNone)
 		}
+		// The owned token answered back by an owner that panics, or is late.
+		h.f.answer(ownedCode, true)
+		h.f.mu.Lock()
+		h.f.owns = func() bool { panic("cannot tell " + ownedCode) }
+		h.f.mu.Unlock()
+		h.tick(t, renewNone)
+		h.f.mu.Lock()
+		h.f.owns = func() bool { <-never; return false }
+		h.f.mu.Unlock()
+		h.clock.fire(t, uplinkTokenEvery)
+		h.clock.fire(t, ext.IdentityWait) // the owner's ask, late
+		h.step(t, renewNone)
 		if h.sent() != 0 {
-			t.Fatal("host_token sent where registered did not say renews")
+			t.Fatal("host_token sent out of bounds or with the owned token")
 		}
 	})
 	t.Run("a send withdrawn closes the connection", func(t *testing.T) {
@@ -469,12 +547,251 @@ func TestHostTokenRenewalSameSubjectOnly(t *testing.T) {
 		h.y.mu.Unlock()
 		c.Close(proto.CloseForbidden, "access revoked")
 		h.step(t, renewEnded)
+		f := h.f
+		f.mu.Lock()
+		f.gate = nil
+		f.mu.Unlock()
 		close(gate)
-		// The reconnect's ask shared the one held: it presents its answer.
+		// The reconnect, after its loop's wait, presents what the provider
+		// answers then (a fresh ask, or the held one should it still be in
+		// flight, never late on the test's clock: cred-2 either way).
 		h.registered(t, "cred-2")
-		h.tick(t, renewUnchanged)
 		if h.sent() != 0 {
 			t.Fatal("a step of the connection that ended sent host_token")
 		}
+		// The new connection's own step sends the token once.
+		h.f.answer("cred-3", true)
+		h.tick(t, renewSent)
+		h.y.wait("the new connection's host_token", func(m yardMsg) bool { return m.t == proto.HostTokenType })
+		if got := h.y.received(proto.HostTokenType); len(got) != 1 || got[0].raw["token"] != "cred-3" {
+			t.Fatalf("host_token frames %v", got)
+		}
 	})
+	// A registration answered from another origin than the configured
+	// server's (a redirect away): nothing counts as presented there, and no
+	// credential is sent there in a message, whatever it says of renews.
+	t.Run("nothing sent where the registration was redirected", func(t *testing.T) {
+		var configured *httptest.Server
+		h := newRenewUplink(t, true, "cred-1", "")
+		yard := strings.Replace(h.y.srv.URL, "127.0.0.1", "localhost", 1)
+		configured = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, yard+r.URL.Path, http.StatusTemporaryRedirect)
+		}))
+		t.Cleanup(configured.Close)
+		h.cred = NewUplinkCredential(h.f, "cloud", configured.URL, ownedCode, nil, discardLog)
+		h.cred.after = h.clock.after
+		h.u.ServerURL, h.u.Credential = configured.URL, h.cred
+		pub, err := h.u.Publish(t.Context(), catLocal(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(pub.Stop)
+		h.registered(t, "") // the client sent no header across origins
+		h.f.answer("cred-2", true)
+		h.tick(t, renewNone)
+		h.tick(t, renewNone)
+		if h.sent() != 0 {
+			t.Fatal("a credential was sent to the server a redirect led to")
+		}
+	})
+}
+
+// TestLateOwnerAnswerCountsAsOwned: an owner check whose answer and
+// deadline are both there when the guard looks is late, so a "not owned"
+// given then counts as owned and the configured token is not presented.
+// The guard is held until the answer is there (judging); the deadline
+// has passed already (lateAfter).
+func TestLateOwnerAnswerCountsAsOwned(t *testing.T) {
+	for i := range 64 {
+		f := &uplinkFake{owns: func() bool { return false }}
+		cred := NewUplinkCredential(f, "cloud", "https://yard.invalid", ownedCode, nil, discardLog)
+		cred.after = lateAfter
+		cred.judging = func(answered func() bool) {
+			for !answered() { // the fake answers at once
+				time.Sleep(time.Millisecond)
+			}
+		}
+		if tok, withheld := cred.Present(t.Context()); tok != "" || !withheld {
+			t.Fatalf("try %d: a late answer that the token is not owned presented %q, withheld %v", i, tok, withheld)
+		}
+	}
+}
+
+// TestCredentialLogsNoWords: the guard's failures are logged by kind and
+// why, never with what a provider said, a panic's value carrying the owned
+// token among it.
+func TestCredentialLogsNoWords(t *testing.T) {
+	logs := &syncLog{}
+	log := slog.New(slog.NewTextHandler(logs, nil))
+	never := make(chan struct{})
+	t.Cleanup(func() { close(never) })
+	for _, c := range []struct {
+		owns  func() bool
+		token func() (string, bool)
+		late  bool
+	}{
+		{owns: func() bool { panic("cannot tell " + ownedCode) }},
+		{owns: func() bool { return true }, token: func() (string, bool) { panic("token " + ownedCode) }},
+		{owns: func() bool { return true }, token: func() (string, bool) { return ownedCode, true }},
+		{owns: func() bool { <-never; return false }, late: true},
+	} {
+		f := &uplinkFake{owns: c.owns, token: c.token}
+		cred := NewUplinkCredential(f, "cloud", "https://yard.invalid", ownedCode, nil, log)
+		if c.late {
+			cred.after = lateAfter
+		}
+		if tok, withheld := cred.Present(t.Context()); tok != "" || !withheld {
+			t.Fatalf("Present %q, %v", tok, withheld)
+		}
+	}
+	out := logs.String()
+	for _, want := range []string{"failure=panic", "failure=late", `failure="the configured token answered back"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the log has no %s:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, ownedCode) {
+		t.Fatalf("the log quotes the provider:\n%s", out)
+	}
+}
+
+// TestFirstRegistrationBound: conductor host's retries of a withheld first
+// registration end at firstCredentialWait, a try under way included: one
+// whose ask the provider holds is cut short when the bound fires, and Run
+// answers the withheld refusal.
+func TestFirstRegistrationBound(t *testing.T) {
+	f := &uplinkFake{}
+	gate := make(chan struct{})
+	t.Cleanup(func() { close(gate) })
+	f.mu.Lock()
+	n := 0
+	f.token = func() (string, bool) {
+		if n++; n > 1 {
+			<-gate
+		}
+		return "", false
+	}
+	f.mu.Unlock()
+	url, _ := yardRecording(t, false, f)
+	clock, credClock := &stepClock{}, &stepClock{}
+	cred := NewUplinkCredential(f, "cloud", url, ownedCode, nil, discardLog)
+	cred.after = credClock.after
+	done := make(chan error, 1)
+	go func() {
+		_, err := Run(t.Context(), Options{ServerURL: url, Token: ownedCode, Argv: []string{"/bin/cat"}, Dir: t.TempDir(), Log: discardLog,
+			Credential: cred, after: clock.after})
+		done <- err
+	}()
+	clock.fire(t, time.Second) // the first retry's backoff
+	waitFor(t, "the retry's ask, held", func() bool { return f.calls.Load() >= 2 })
+	clock.fire(t, firstCredentialWait)
+	select {
+	case err := <-done:
+		var refused *RefusedError
+		if !errors.As(err, &refused) || !refused.CredentialWithheld() || refused.Status != http.StatusUnauthorized {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the try under way outlived the bound")
+	}
+	if n := f.calls.Load(); n != 2 {
+		t.Fatalf("the provider was asked %d times", n)
+	}
+}
+
+// stopStarter is uplinkFake with a Start that, once its context ends,
+// returns only when gate opens (never, unless it does).
+type stopStarter struct {
+	*uplinkFake
+	began, ended chan struct{}
+	gate         chan struct{}
+	returned     atomic.Bool
+}
+
+func (s *stopStarter) Start(ctx context.Context, _ ext.Host) error {
+	close(s.began)
+	<-ctx.Done()
+	close(s.ended)
+	<-s.gate
+	s.returned.Store(true)
+	return ctx.Err()
+}
+
+// TestStopWaitsForTheTry: StartIdentity's stop waits for a Start under way
+// to return, at most ext.StartWait (fired through its clock).
+func TestStopWaitsForTheTry(t *testing.T) {
+	for _, opens := range []bool{true, false} {
+		s := &stopStarter{uplinkFake: &uplinkFake{}, began: make(chan struct{}), ended: make(chan struct{}), gate: make(chan struct{})}
+		clock := &stepClock{}
+		_, stop := StartIdentity(t.Context(), s, "cloud", HostIdentity{StateDir: t.TempDir(), after: clock.after})
+		<-s.began
+		stopped := make(chan bool, 1)
+		go func() {
+			stop()
+			stopped <- s.returned.Load()
+		}()
+		<-s.ended
+		waitFor(t, "stop waiting for the try under way", func() bool { return clock.count(ext.StartWait) >= 2 })
+		if opens {
+			close(s.gate)
+			if !<-stopped {
+				t.Fatal("stop returned before the try under way")
+			}
+			continue
+		}
+		clock.fire(t, ext.StartWait) // the stop's bound
+		if <-stopped {
+			t.Fatal("a Start that never returns returned")
+		}
+		close(s.gate)
+	}
+}
+
+// TestHostedSessionRefusedTheStateDir: a hosted session whose folder holds
+// the host's state directory is refused a read and a save of what its
+// provider keeps there.
+func TestHostedSessionRefusedTheStateDir(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("CONDUCTOR_DATA_DIR", "")
+	t.Setenv("CONDUCTOR_CATALOG_PATH", "")
+	deny, err := config.LocalFileDenyFunc("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := editOpts()
+	opts.FileDenyFunc = deny
+	a, proc, begun := newHostOf(t, opts, 0, 0)
+	r := &signalRouter{to: map[string]chan any{}}
+	a.sendHook = r.send
+	heardFromServer(t, a)
+	cwd := a.local.Info().Cwd
+	t.Setenv("XDG_STATE_HOME", filepath.Join(cwd, "state"))
+	state, err := config.HostStateDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := filepath.Join(state, "ext", "cloud", "lease.json")
+	if err := os.MkdirAll(filepath.Dir(lease), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lease, []byte(`{"lease":"x"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fileIn(t, a, "notes.txt", "ordinary\n")
+	owner := submitViewerOn(t, a, proc, begun, "fedcba9876543210", "", r.add("fedcba9876543210"))
+	rel := "state/conductor/ext/cloud/lease.json"
+	owner.send(proto.FileGet{T: proto.CtlFileGet, ReqID: "r1", Path: rel})
+	if h := owner.fileAnswer("r1"); h.Kind != "error" || h.Error == nil || h.Error.Code != "denied" {
+		t.Fatalf("the read: %+v %+v", h, h.Error)
+	}
+	owner.saveOver("w1", rel, "changed")
+	if h := owner.fileAnswer("w1"); h.Kind != "error" || h.Error == nil || h.Error.Code != "denied" {
+		t.Fatalf("the save: %+v %+v", h, h.Error)
+	}
+	hasBody(t, lease, `{"lease":"x"}`)
+	owner.send(proto.FileGet{T: proto.CtlFileGet, ReqID: "r2", Path: "notes.txt"})
+	if h := owner.fileAnswer("r2"); h.Kind != "file" {
+		t.Fatalf("an ordinary read: %+v %+v", h, h.Error)
+	}
 }

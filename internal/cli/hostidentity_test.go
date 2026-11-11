@@ -31,6 +31,9 @@ type hostProvider struct {
 	fail  string // "", "error" or "panic"
 	mark  chan error
 	dirs  chan string
+	// toks is the HostToken each Start read while its try was live, the
+	// token its failure's words carry.
+	toks chan string
 }
 
 func (hostProvider) Name() string { return "cloud" }
@@ -46,20 +49,22 @@ func (p hostProvider) Start(ctx context.Context, h ext.Host) error {
 		p.mark <- merr
 		err = os.WriteFile(filepath.Join(dir, "lease.json"), []byte(`{"lease":"x"}`), 0o600)
 	}
+	tok := h.HostToken()
+	p.toks <- tok
 	p.dirs <- dir
 	p.began <- h
 	p.ctxs <- ctx
 	switch p.fail {
 	case "error":
-		return errors.New("cannot redeem " + h.HostToken())
+		return errors.New("cannot redeem " + tok)
 	case "panic":
-		panic("cannot redeem " + h.HostToken())
+		panic("cannot redeem " + tok)
 	}
 	return err
 }
 
 func newHostProvider(fail string) hostProvider {
-	return hostProvider{began: make(chan ext.Host, 8), ctxs: make(chan context.Context, 8), fail: fail, mark: make(chan error, 8), dirs: make(chan string, 8)}
+	return hostProvider{began: make(chan ext.Host, 8), ctxs: make(chan context.Context, 8), fail: fail, mark: make(chan error, 8), dirs: make(chan string, 8), toks: make(chan string, 8)}
 }
 
 func withHostProvider(t *testing.T, p hostProvider) {
@@ -115,6 +120,9 @@ func TestHostStartsTheIdentityProvider(t *testing.T) {
 	wg.Wait()
 	for range 2 {
 		h, ctx := <-p.began, <-p.ctxs
+		if tok := <-p.toks; tok != "code-xyz" {
+			t.Errorf("the Host handed %q over while its try was live, not the --token", tok)
+		}
 		if err := <-p.mark; err != nil {
 			t.Errorf("the mark was not there before Start: %v", err)
 		}
@@ -137,6 +145,9 @@ func TestHostStartsTheIdentityProvider(t *testing.T) {
 			return hostagent.Result{}, nil
 		}
 		_, stderr, _ := runHostWith(t, "--server", "http://127.0.0.1:1", "--token", "code-secret-9", "--no-local", "--", "sh")
+		if tok := <-p.toks; tok != "code-secret-9" {
+			t.Fatalf("%s: the failing Start's words carry %q, not the --token", fail, tok)
+		}
 		if strings.Contains(stderr, "code-secret-9") || !strings.Contains(stderr, "failure="+fail) {
 			t.Fatalf("%s: the host's log:\n%s", fail, stderr)
 		}
