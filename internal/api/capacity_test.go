@@ -1337,6 +1337,19 @@ func TestAccountFolderLeftOutOfSessionFiles(t *testing.T) {
 	}
 }
 
+// An account added and removed with no file request between still has its
+// folder refused: the add has the server name it in its deny list, which
+// keeps it until the server stops.
+func TestAccountFolderAddedAndRemovedUnseenStaysRefused(t *testing.T) {
+	e := capEnv(t, nil, nil, newFakeUsage("claude"), newFakeUsage("codex"), nil)
+	folder := loginsIn(t, e.root)
+	sid, tok := viewOfFiles(t, e)
+	out := e.expect(t, "POST", "/api/accounts", map[string]any{"adapter": "codex", "label": "Work", "folder": folder, "expectedRev": 0}, http.StatusCreated, "")
+	id := out["account"].(map[string]any)["id"].(string)
+	e.expect(t, "DELETE", "/api/accounts/"+id+"?expectedRev=1", nil, http.StatusNoContent, "")
+	filesServed(t, e, sid, tok, "added and removed with no file request between", true)
+}
+
 // loginsIn makes logins/work, holding auth.json, and logins/notes.md
 // beside it in root: the folder and the file the next tests ask for.
 func loginsIn(t *testing.T, root string) string {

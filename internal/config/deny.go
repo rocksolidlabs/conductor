@@ -28,7 +28,9 @@ import (
 // refused as well (machineFiles): a session must not read the desktop
 // app's settings, which hold its switchyard token, nor another server's
 // data directory. The folder of each account the accounts document of each
-// directory the list names registers (accountFolders) is refused as a
+// directory the list names registers (accountFolders; the desktop app's
+// default data directory, inside its own, among them: desktopDefaultData)
+// is refused as a
 // directory too; while a document cannot be read, the list holds the file
 // system's root as well, which refuses every file.
 func (c *Config) FileDeny(dirs ...string) []string {
@@ -43,7 +45,7 @@ func (c *Config) FileDeny(dirs ...string) []string {
 // that cannot be read, whose folders the list then lacks.
 func (c *Config) fileDenyNow(dirs []string) ([]string, error) {
 	more, files := c.machineFiles()
-	folders, err := accountFolders(slices.Concat([]string{c.DataDir}, dirs, more))
+	folders, err := accountFolders(slices.Concat([]string{c.DataDir}, dirs, more, desktopDefaultData()))
 	return c.fileDeny(slices.Concat(dirs, folders, more), files), err
 }
 
@@ -228,7 +230,7 @@ func LocalFileDeny(path string) ([]string, error) {
 	// The folders the accounts of each data directory named register, as
 	// the server's own sessions refuse them (FileDeny): a document that
 	// cannot be read is an error.
-	folders, err := accountFolders(slices.Concat([]string{c.DataDir}, dirs, desktopDirs))
+	folders, err := accountFolders(slices.Concat([]string{c.DataDir}, dirs, desktopDirs, desktopDefaultData()))
 	if err != nil {
 		return nil, fmt.Errorf("the accounts of a data directory refused: %w", err)
 	}
@@ -350,7 +352,8 @@ const maxDesktopSettings = 1 << 20
 // settings rather than with a config file (desktop/src/env.ts). The
 // directories: the app's own (desktopAppNames), which holds its settings
 // (desktop/src/main.ts) and, unless they say otherwise, the data directory
-// (conductor in it); the data directory its settings name; and, inside WSL,
+// (conductor in it, desktopDefaultData); the data directory its settings
+// name; and, inside WSL,
 // where the app on Windows runs the server, the default it gives a server
 // there, ~/.local/share/conductor/data (desktop/src/settings.ts,
 // wslDefaults). The files: each settings.json, so that one which is a
@@ -387,6 +390,24 @@ func desktopFiles() (dirs, files []string, err error) {
 		}
 	}
 	return dirs, files, err
+}
+
+// desktopDefaultData are the data directories the desktop app runs its
+// server on when its settings name none or it refuses them
+// (desktop/src/settings.ts, defaultSettings: conductor in its own
+// directory), under each of its names. Each is inside a directory
+// desktopFiles names, so the list refuses it already; they are given only
+// to accountFolders, so that the accounts registered there are read.
+func desktopDefaultData() []string {
+	base, err := os.UserConfigDir()
+	if err != nil || !filepath.IsAbs(base) {
+		return nil
+	}
+	var dirs []string
+	for _, name := range desktopAppNames {
+		dirs = append(dirs, filepath.Join(base, name, "conductor"))
+	}
+	return dirs
 }
 
 // desktopDataDir is the data directory the desktop app's settings file

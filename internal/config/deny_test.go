@@ -879,6 +879,61 @@ func TestEveryDataDirectoryNamedHasItsAccountsRead(t *testing.T) {
 	}
 }
 
+// The desktop app runs its server on the data directory in its own
+// directory (desktop/src/settings.ts, defaultSettings) when its settings name
+// none: with no settings file, the accounts registered in that directory, for
+// either of the app's names, are read by both lists, and that document
+// unreadable puts the root in both.
+func TestTheDesktopAppsDefaultDataDirectoryHasItsAccountsRead(t *testing.T) {
+	for _, name := range desktopAppNames {
+		t.Run(name, func(t *testing.T) {
+			home, base := realTempDir(t), realTempDir(t)
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_CONFIG_HOME", base)
+			t.Setenv("CONDUCTOR_DATA_DIR", filepath.Join(realTempDir(t), "data"))
+			t.Setenv("CONDUCTOR_CATALOG_PATH", "")
+			t.Chdir(realTempDir(t))
+			write := func(path, body string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			folder := filepath.Join(home, "logins", "work")
+			write(filepath.Join(folder, "auth.json"), "login\n")
+			write(filepath.Join(home, "notes.md"), "# beside\n")
+			doc := filepath.Join(base, name, "conductor", "capacity", "accounts.json")
+			write(doc, `{"rev":1,"accounts":[{"id":"a-aaaaaaaaaaaa","adapter":"codex","label":"L","folder":"`+folder+`","createdAt":"2026-11-11T00:00:00Z"}]}`)
+			if _, err := os.Stat(filepath.Join(base, name, "settings.json")); !os.IsNotExist(err) {
+				t.Fatalf("settings file: %v, want none", err)
+			}
+			deny, err := LocalFileDenyFunc("")
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := (&Config{DataDir: filepath.Join(realTempDir(t), "own")}).FileDenyFunc()
+			for who, list := range map[string][]string{"conductor host's": deny(), "the server's": server()} {
+				if r, err := session.ResolvePath(home, "logins/work/auth.json", list); err == nil {
+					t.Errorf("%s list: the desktop app's default server's account's folder resolved to %s", who, r)
+				}
+				if _, err := session.ResolvePath(home, "notes.md", list); err != nil {
+					t.Errorf("%s list: the file beside: %v", who, err)
+				}
+			}
+			write(doc, `not json`)
+			root := string(filepath.Separator)
+			for who, list := range map[string][]string{"conductor host's": deny(), "the server's": server()} {
+				if !slices.Contains(list, root) {
+					t.Errorf("%s list, the desktop app's default accounts unreadable: %q, want %s among them", who, list, root)
+				}
+			}
+		})
+	}
+}
+
 // Refuses answers whether the deny list given a folder refuses it: a folder,
 // a link to one, a folder gone and one whose parent is gone are refused; a
 // link the list does not refuse as it is spelt is not.

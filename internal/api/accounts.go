@@ -242,6 +242,10 @@ func (s *Server) handleAddAccount(w http.ResponseWriter, r *http.Request) {
 		s.writeCapacityError(w, err)
 		return
 	}
+	// The deny list is built once with the account saved, so that its folder
+	// is named, and so kept refused after a remove, even should no file
+	// request come between (config.Config.FileDenyFunc).
+	s.fileDeny()
 	writeCapacityJSON(w, http.StatusCreated, map[string]any{"account": a, "rev": rev}, maxAccountsReply)
 }
 

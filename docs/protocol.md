@@ -1874,11 +1874,13 @@ those settings name and `~/.local/share/conductor/data`, looked up again at
 each request and kept once named, so a data directory the app moves to while
 the server runs is refused from then on. A registered account's folder
 (Capacity) is left out as the data directory is, with everything in it, read
-from the `capacity/accounts.json` of each of these data directories at each
-request, as the server reads that document but for a member it does not
-know, and kept once named: an
-account added is refused from then on, and one removed stays refused until
-the server stops. While that document is there and cannot be read, every
+from the `capacity/accounts.json` of each of these data directories (and of
+`conductor` in the desktop app's own directory, the data directory the app's
+server uses when its settings name none) at each request, as the server
+reads that document but for a member it does not know, and kept once named:
+an account added is refused from then on, the server names its folder as it
+registers it, and one removed stays refused until the server stops. While
+that document is there and cannot be read, every
 file of every session is refused, until it can be read again; the server's
 log says so once as that begins and once as it ends. The config file, the
 catalog file and the settings file are matched as files, so a link to them is
@@ -1895,10 +1897,11 @@ and `catalogPath`; and for the desktop app's server, the app's own directory,
 its settings file as a config file (its link target and the copies there
 included), the data directory its settings name and, inside WSL,
 `~/.local/share/conductor/data`; and each folder the accounts document of
-each of these data directories registers. The host looks these up again at each
+each of these data directories (the app's default one, `conductor` in its own
+directory, among them) registers. The host looks these up again at each
 request and keeps refusing what it refused before, so a data directory moved
 while the session runs is refused at both places, and a removed account's
-folder stays refused. While one of these paths is relative, or the config
+folder stays refused once that session's list has named it. While one of these paths is relative, or the config
 file, the desktop app's settings or the accounts document cannot be read,
 every file is refused (and the host does not start). Saves, and opening a file
 in the editor's Neovim, go through the same rules.
