@@ -26,6 +26,7 @@ const loading = ref(false)
 const cachedCatalog = useState<{ agents: AgentInfo[]; yoloDefault: boolean } | null>('launchCatalog', () => null)
 const submitting = ref(false)
 const error = ref('')
+const form = ref<HTMLFormElement>()
 const knownHosted = ref<Set<string>>(new Set())
 /** The server's yolo default (GET /api/catalog). */
 const yoloDefault = ref(false)
@@ -182,6 +183,9 @@ async function submitClone(source: NonNullable<LaunchPrefill['clone']>) {
   // The opening this clone is sent from: its answer closes the dialog or says its refusal only while that opening lasts.
   const sentFrom = openings
   const current = () => open.value && openings === sentFrom
+  // Clone… and the rename dialog's rule (#281): the name field takes the focus from the Clone button, disabled as it sends, so a
+  // late row menu's More button cannot keep it behind the dialog, where the list takes Escape for its own.
+  form.value?.querySelector<HTMLInputElement>('[data-clone-name]')?.focus()
   submitting.value = true
   error.value = ''
   try {
@@ -225,7 +229,7 @@ async function submit() {
 <template>
   <UModal v-model:open="open" :title="cloning ? `Clone ${cloning.name}` : 'Launch agent'" :ui="{ content: 'max-w-xl', body: 'p-0' }">
     <template #body>
-      <form class="flex flex-col gap-5 p-5" :data-launch-clone="cloning ? cloning.id : undefined" @submit.prevent="submit">
+      <form ref="form" class="flex flex-col gap-5 p-5" :data-launch-clone="cloning ? cloning.id : undefined" @submit.prevent="submit">
         <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" data-launch-error />
         <UAlert v-if="missingAgent" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="`${missingAgent}, the agent it was launched with, is not offered on this server: it is gone from the catalog or not installed here. Pick an agent to clone with.`" data-clone-missing-agent />
         <UAlert v-if="cloning?.attempt" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="ATTEMPT_WARNING" data-clone-attempt />
