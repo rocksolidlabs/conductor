@@ -9,6 +9,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/capacity"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
 )
 
 // The accounts routes (docs/plans/capacity.md, PR-3): the account
@@ -20,14 +21,19 @@ import (
 // capacityFacts is what internal/capacity asks of the server. Nothing
 // binds an account before PR-4, so Bound names nothing: a remove is
 // refused only while a reservation holds the account.
-type capacityFacts struct{}
+type capacityFacts struct{ seam func() }
 
 func (capacityFacts) ConfigDirEnv(adapter string) (string, bool) {
 	ad, ok := agents.Get(adapter)
 	return ad.ConfigDirEnv, ok
 }
 
-func (capacityFacts) CheckAccountDir(dir string) error { return checkAccountDir(dir) }
+func (f capacityFacts) CheckAccountDir(dir string) error {
+	if f.seam != nil {
+		f.seam()
+	}
+	return checkAccountDir(dir)
+}
 
 func (capacityFacts) Bound(string) []string { return nil }
 
@@ -76,7 +82,7 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	d := s.capacity
 	doc, err := d.st.Accounts()
 	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, "capacity_unavailable", err.Error())
+		refuse(w, http.StatusServiceUnavailable, "capacity_unavailable", err.Error())
 		return
 	}
 	owned, why := d.ownership()
@@ -107,7 +113,7 @@ func (s *Server) writeCapacityError(w http.ResponseWriter, err error) {
 	var ce *capacity.Error
 	if !errors.As(err, &ce) {
 		s.log.Warn("capacity/accounts.json could not be read or written")
-		writeError(w, http.StatusInternalServerError, "store_failed", "capacity/accounts.json could not be read or written")
+		refuse(w, http.StatusInternalServerError, "store_failed", "capacity/accounts.json could not be read or written")
 		return
 	}
 	status := http.StatusConflict
@@ -129,8 +135,26 @@ type accountError struct {
 	Names   []string `json:"names,omitempty"`
 }
 
+// writeAccountError answers every refusal of the accounts' and capacity's
+// routes, measured as their replies are, under the least of their bounds.
 func writeAccountError(w http.ResponseWriter, status int, code, field, words string, names []string) {
-	writeJSON(w, status, map[string]accountError{"error": {Code: code, Message: words, Field: field, Names: names}})
+	writeCapacityJSON(w, status, map[string]accountError{"error": {Code: code, Message: words, Field: field, Names: names}}, maxCapacityView)
+}
+
+// refuse is writeAccountError with no field and no names.
+func refuse(w http.ResponseWriter, status int, code, words string) {
+	writeAccountError(w, status, code, "", words, nil)
+}
+
+// pathAccount is the path's account id, false having refused one that is
+// not a minted id's form, in words that do not repeat it.
+func pathAccount(w http.ResponseWriter, r *http.Request) (string, bool) {
+	id := r.PathValue("id")
+	if id == capacity.DefaultID || !capacity.ValidID(id) {
+		writeAccountError(w, http.StatusBadRequest, capacity.CodeInvalidAccount, "id", "an account's id: a- and 12 of a-z 2-7", nil)
+		return "", false
+	}
+	return id, true
 }
 
 // The bodies of the accounts' writes. A write names the rev it read.
@@ -185,7 +209,7 @@ func (s *Server) handleAddAccount(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeAccountWrite(w, r, &b, func() *int64 { return b.ExpectedRev }) {
 		return
 	}
-	a, rev, err := s.capacity.st.Add(capacityFacts{}, b.Adapter, b.Label, b.Folder, *b.ExpectedRev)
+	a, rev, err := s.capacity.st.Add(capacityFacts{seam: s.capacity.seam}, b.Adapter, b.Label, b.Folder, *b.ExpectedRev)
 	if err != nil {
 		s.writeCapacityError(w, err)
 		return
@@ -198,7 +222,11 @@ func (s *Server) handleRenameAccount(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeAccountWrite(w, r, &b, func() *int64 { return b.ExpectedRev }) {
 		return
 	}
-	a, rev, err := s.capacity.st.Rename(r.PathValue("id"), b.Label, *b.ExpectedRev)
+	id, ok := pathAccount(w, r)
+	if !ok {
+		return
+	}
+	a, rev, err := s.capacity.st.Rename(id, b.Label, *b.ExpectedRev)
 	if err != nil {
 		s.writeCapacityError(w, err)
 		return
@@ -211,7 +239,11 @@ func (s *Server) handleRetireAccount(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeAccountWrite(w, r, &b, func() *int64 { return b.ExpectedRev }) {
 		return
 	}
-	a, rev, err := s.capacity.st.Retire(r.PathValue("id"), *b.ExpectedRev)
+	id, ok := pathAccount(w, r)
+	if !ok {
+		return
+	}
+	a, rev, err := s.capacity.st.Retire(id, *b.ExpectedRev)
 	if err != nil {
 		s.writeCapacityError(w, err)
 		return
@@ -228,7 +260,10 @@ func (s *Server) handleRemoveAccount(w http.ResponseWriter, r *http.Request) {
 		writeAccountError(w, http.StatusBadRequest, capacity.CodeInvalidAccount, "expectedRev", "?expectedRev= the rev of the accounts as read", nil)
 		return
 	}
-	id := r.PathValue("id")
+	id, ok := pathAccount(w, r)
+	if !ok {
+		return
+	}
 	if _, err := s.capacity.st.Remove(capacityFacts{}, id, rev); err != nil {
 		s.writeCapacityError(w, err)
 		return
@@ -245,6 +280,14 @@ func (s *Server) handleAccountDefault(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	adapter := r.PathValue("adapter")
+	switch {
+	case !catalog.ValidID(adapter):
+		writeAccountError(w, http.StatusBadRequest, capacity.CodeInvalidAccount, "adapter", "an adapter's name: 1 to 32 of a-z 0-9 -", nil)
+		return
+	case !capacity.ValidID(b.Account):
+		writeAccountError(w, http.StatusBadRequest, capacity.CodeInvalidAccount, "account", "an account: default or a- and 12 of a-z 2-7", nil)
+		return
+	}
 	if env, _ := (capacityFacts{}).ConfigDirEnv(adapter); env == "" {
 		writeAccountError(w, http.StatusBadRequest, capacity.CodeInvalidAccount, "adapter", "an adapter that can move its login folder: "+adapter+" has its default login only", nil)
 		return

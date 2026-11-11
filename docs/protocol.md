@@ -1872,7 +1872,10 @@ the server it starts: on Windows its folder in the Windows profile, under
 `/mnt` inside WSL), its settings file as a config file, the data directory
 those settings name and `~/.local/share/conductor/data`, looked up again at
 each request and kept once named, so a data directory the app moves to while
-the server runs is refused from then on. The config file, the
+the server runs is refused from then on. A registered account's folder
+(Capacity) is left out as the data directory is, with everything in it,
+looked up in the accounts at each request: an account added is refused from
+then on, and one removed is served again as any other folder. The config file, the
 catalog file and the settings file are matched as files, so a link to them is
 refused as well; the copies are matched by name alone. One of these paths that is not on
 disk (a data directory never made, a config file moved away) is matched by its
@@ -5279,7 +5282,10 @@ server over the same data directory waits up to 10 s for it, then stays a
 reader); one without it answers `owner: false` with why, refuses every
 write `409 accounts_not_owner`, starts no Claude Code program for a read or
 a check (its view is `not_owner`, a check `409 accounts_not_owner`), and
-still reads Codex, whose reads cost no turn and change no record. A
+still reads Codex, whose reads cost no turn and change no record. A server
+that lets the lock go (at shutdown) first waits for the write under way and
+then refuses every write `409 accounts_not_owner`, as one that never held
+it, so the next owner is the only writer. A
 **reading** is what an agent's own tool reported of a login's usage at one
 moment (`internal/agents`' readers), kept in memory only, at most 8 per
 key and 128 keys, so a restart starts at `never_read`. A key (an agent and
@@ -5293,21 +5299,29 @@ SHA-256 of it, never its values, and a view whose environment now hashes
 otherwise is `stale`. A reader's words are Conductor's own, never the
 tool's output.
 
+No launch takes an account yet: a session runs on the agent's own login
+whatever the default says, and nothing holds an account, so a remove is
+never refused for one in use (`account_in_use` comes with the launches
+that bind an account, issue #784).
+
 **The routes**, each the workbench token's alone (a session's, a host's, a
 link's and a Brakeman turn's are refused `401`) and a launch route's (a
 switchyard answers `403 switchyard`); a server with no data directory
-answers `503 capacity_unavailable`:
+answers `503 capacity_unavailable`. A value outside its form (an agent's
+id, an account's, an adapter's name, `after`) is refused `400` in the
+server's own words, which do not repeat it, and every refusal is at most
+32 KiB:
 
 | Route | Body and answer |
 |---|---|
-| `GET /api/accounts` | `{owner, why?, rev, accounts: [{id, adapter, label, folder, retired?, createdAt, reading?: {agent, state, readAt}}], adapters: [{adapter, name, default, reading?}]}`: the document without its removed ids, each adapter that moves its login folder with its default account (`default` for the agent's own login, also when the one set is retired or gone) and its own login's last reading; at most 64 KiB |
+| `GET /api/accounts` | `{owner, why?, rev, accounts: [{id, adapter, label, folder, retired?, createdAt, reading?: {agent, state, readAt}}], adapters: [{adapter, name, default, reading?}]}`: the document without its removed ids, each adapter that moves its login folder with its default account (`default` for the agent's own login, also when the one set is retired or gone) and its own login's last reading (read through an entry that pins no other login); at most 68 KiB (the document's 64 KiB, then the readings and adapters beside it) |
 | `POST /api/accounts` | `{adapter, label, folder, expectedRev}` → `201 {account, rev}`; `400 invalid_account` with `field`; an `id` in the body refused (`field: "id"`); `409 stale_rev` |
 | `PATCH /api/accounts/{id}` | `{label, expectedRev}` → `{account, rev}`; a `folder` in the body refused (`field: "folder"`) |
-| `POST /api/accounts/{id}/retire` | `{expectedRev}` → `{account, rev}`: kept for what is bound to it, out of every choice and default |
-| `DELETE /api/accounts/{id}?expectedRev=n` | `204`; `409 account_in_use` with `names`, at most 10, while a launch holds the account |
+| `POST /api/accounts/{id}/retire` | `{expectedRev}` → `{account, rev}`: kept in the accounts, out of every choice and default |
+| `DELETE /api/accounts/{id}?expectedRev=n` | `204` |
 | `PUT /api/accounts/defaults/{adapter}` | `{account, expectedRev}` → `{defaults, rev}`; a retired account, or one of another adapter, refused |
-| `GET /api/capacity?agent=&account=&model=&launch=&yolo=` | one view, reading nothing; at most 32 KiB. `account` defaults to the agent's default; `launch` is `session` (the default), `legacy` (a legacy crew's member), `managed` (a managed run's attempt) or `remote` (a session on another computer) |
-| `GET /api/capacity?after=&limit=` | without `agent`: `{views, next?}`, every installed agent's view for its default and each account of its adapter not retired, ordered by `<agent>/<account>`, at most `limit` (1 to 16, 16 by default) and until the next would pass 128 KiB (at least one); `next` is the cursor to pass as `after` |
+| `GET /api/capacity?agent=&account=&model=&launch=&yolo=` | one view, reading nothing; at most 32 KiB. `account` defaults to the agent's default: its adapter's, or `default` for an entry whose environment (or the server's passthrough) sets the adapter's folder variable or one of its login variables, which has that login alone; `launch` is `session` (the default), `legacy` (a legacy crew's member), `managed` (a managed run's attempt) or `remote` (a session on another computer) |
+| `GET /api/capacity?after=&limit=` | without `agent`: `{views, next?}`, every installed agent's view for its default and, unless its entry sets its login, each account of its adapter not retired, ordered by `<agent>/<account>`, each asked as the single view would be with the same `launch` and `yolo`, at most `limit` (1 to 16, 16 by default) and until the next would pass 128 KiB (at least one); `next` is the cursor to pass as `after` |
 | `POST /api/capacity/read` | `{agent, account?, check?}` → `202` the view: `reading` when the read did not end within 2 s, the kept reading with `nextReadAfter` inside the 5 minutes; `check` (Claude Code only, `400` otherwise) runs a version not recorded `checked` once; at most 1 KiB of body |
 
 A **view** is `{agent: {id, name, adapter, version}, model: {chosen,

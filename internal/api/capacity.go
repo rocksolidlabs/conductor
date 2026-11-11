@@ -89,6 +89,11 @@ type capacityDesk struct {
 	waiting  sync.WaitGroup
 	starts   map[capacity.Key][]time.Time
 	lastRead map[string]accountReading // account id, or "<adapter>:default"
+	denied   []string                  // folders' last answer; never changed, replaced
+
+	// The tests' seams: seam runs inside an add's write, under the store's
+	// lock (Facts.CheckAccountDir); closing as close takes the store's gate.
+	seam, closing func()
 }
 
 // accountReading is an account's last reading as GET /api/accounts shows it.
@@ -189,8 +194,10 @@ func (d *capacityDesk) ownership() (bool, string) {
 }
 
 // close ends the reads (Cache.Close: none starts after, none under way is
-// left), the wait for the lock, then lets the lock go. A second call does
-// nothing.
+// left) and the wait for the lock, then gives the store's ownership up
+// (Store.Disown, which waits for a write under way: every later one is
+// refused accounts_not_owner, as on a server that never owned), and only
+// then lets the lock go. A second call does nothing.
 func (d *capacityDesk) close() {
 	if d == nil {
 		return
@@ -208,10 +215,40 @@ func (d *capacityDesk) close() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.lock != nil {
+		if d.closing != nil {
+			d.closing()
+		}
+		d.st.Disown()
 		d.lock.Release()
 		d.lock = nil
 	}
 	d.owned = false
+}
+
+// folders are what a session's file requests leave out besides the
+// server's own files (Server.fileDeny): each registered account's folder,
+// retired ones included, as the accounts document holds them when asked,
+// and where a link on its way leads (session.Leads), as the deny list
+// names its other entries. A document that cannot be read answers the
+// folders it held when last read.
+func (d *capacityDesk) folders() []string {
+	if d == nil || d.st == nil {
+		return nil
+	}
+	doc, err := d.st.Accounts()
+	var out []string
+	for _, a := range doc.Accounts {
+		out = append(out, a.Folder)
+		if real := session.Leads(a.Folder); real != "" && real != a.Folder {
+			out = append(out, real)
+		}
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if err == nil {
+		d.denied = out
+	}
+	return d.denied
 }
 
 // started counts a server session of agent started now, on its default
@@ -269,19 +306,38 @@ func (d *capacityDesk) counts(k capacity.Key) capacity.Counts {
 }
 
 // onRead is told each reading kept: its account's last reading is noted
-// for GET /api/accounts, then the capacity event goes out.
+// for GET /api/accounts, then the capacity event goes out. The note is
+// made under mu, which a remove takes to delete its account's, and only
+// for an account the document holds at that moment, or an adapter's own
+// login read through an entry that does not pin another (pinned); every
+// note naming neither is dropped then. So the map holds at most what can
+// exist, MaxAccounts and an entry per adapter with a ConfigDirEnv, and a
+// reading of a live account always has its room.
 func (d *capacityDesk) onRead(k capacity.Key, v capacity.View) {
 	if v.ReadAt == nil {
 		return
 	}
-	acct := k.Account
-	if acct == capacity.DefaultID {
-		a, _ := d.s.Catalog().Get(k.Agent)
-		acct = a.Adapter + ":" + capacity.DefaultID
-	}
+	a, _ := d.s.Catalog().Get(k.Agent)
+	ad, _ := agents.Get(a.Adapter)
+	pinned := d.s.pinned(a)
 	d.mu.Lock()
-	if _, ok := d.lastRead[acct]; ok || len(d.lastRead) < capacity.MaxAccounts+len(authEnv) {
-		d.lastRead[acct] = accountReading{Agent: k.Agent, State: v.State, ReadAt: *v.ReadAt}
+	if doc, err := d.st.Accounts(); err == nil {
+		live := map[string]bool{}
+		for _, acct := range doc.Accounts {
+			live[acct.ID] = true
+		}
+		for key := range d.lastRead {
+			if !live[key] && !strings.HasSuffix(key, ":"+capacity.DefaultID) {
+				delete(d.lastRead, key)
+			}
+		}
+		key := k.Account
+		if key == capacity.DefaultID {
+			key = a.Adapter + ":" + capacity.DefaultID
+		}
+		if live[k.Account] || (k.Account == capacity.DefaultID && pinned == "" && ad.ConfigDirEnv != "") {
+			d.lastRead[key] = accountReading{Agent: k.Agent, State: v.State, ReadAt: *v.ReadAt}
+		}
 	}
 	d.mu.Unlock()
 	d.s.events.capacity(k, v.State, *v.ReadAt)
@@ -340,16 +396,21 @@ func (s *Server) readEnv(agent catalog.Agent, folder string) ([]string, string) 
 	return built, hex.EncodeToString(sum[:])
 }
 
-// pinned is the folder agent's entry, or the server's passthrough, sets
-// its adapter's ConfigDirEnv to: such an agent has its default account
-// only. "" for none.
+// pinned is the variable by which agent's entry, or the server's
+// passthrough, pins its login: its adapter's ConfigDirEnv or one of its
+// login variables (authEnv). Such an agent has its default account only,
+// its own login, in every form of the question (a view, the listing, a
+// read), and its readings are not its adapter's own login's. "" for none.
 func (s *Server) pinned(agent catalog.Agent) string {
-	ad, ok := agents.Get(agent.Adapter)
-	if !ok || ad.ConfigDirEnv == "" {
-		return ""
-	}
+	ad, _ := agents.Get(agent.Adapter)
 	built, _ := s.readEnv(agent, "")
-	return pty.Lookup(built)(ad.ConfigDirEnv)
+	lookup := pty.Lookup(built)
+	for _, k := range append([]string{ad.ConfigDirEnv}, authEnv[agent.Adapter]...) {
+		if k != "" && lookup(k) != "" {
+			return k
+		}
+	}
+	return ""
 }
 
 // yoloSetsLogin says agent's yolo recipe sets its adapter's ConfigDirEnv
@@ -539,11 +600,20 @@ func (d *capacityDesk) viewOf(ctx context.Context, agent catalog.Agent, q capaci
 			return capacity.View{}, newAPIError(http.StatusServiceUnavailable, "capacity_unavailable", "the accounts could not be read")
 		}
 	}
-	id := q.account
-	if id == "" {
-		id = capacity.DefaultOf(doc, agent.Adapter)
+	if q.account != "" && !capacity.ValidID(q.account) {
+		return capacity.View{}, newAPIError(http.StatusBadRequest, "invalid_account", "an account is default or a- and 12 of a-z 2-7")
 	}
-	account := capacity.ViewAccount{ID: id, Default: id == capacity.DefaultOf(doc, agent.Adapter)}
+	// The account none is named for: an entry that pins its login has
+	// that login alone, any other its adapter's default.
+	pinned := d.s.pinned(agent)
+	id, def := q.account, capacity.DefaultOf(doc, agent.Adapter)
+	if pinned != "" {
+		def = capacity.DefaultID
+	}
+	if id == "" {
+		id = def
+	}
+	account := capacity.ViewAccount{ID: id, Default: id == def}
 	if id != capacity.DefaultID {
 		i := slices.IndexFunc(doc.Accounts, func(a capacity.Account) bool { return a.ID == id && a.Adapter == agent.Adapter })
 		if i < 0 {
@@ -558,7 +628,6 @@ func (d *capacityDesk) viewOf(ctx context.Context, agent catalog.Agent, q capaci
 	if q.model == "" {
 		model.Words = "the agent's default"
 	}
-	pinned := d.s.pinned(agent)
 	setsLogin := q.yolo && yoloSetsLogin(agent)
 	host := capacity.ViewHost{Kind: capacity.HostNative}
 	host.Name, _ = os.Hostname()
@@ -592,7 +661,7 @@ func (d *capacityDesk) viewOf(ctx context.Context, agent catalog.Agent, q capaci
 			v.Words = notOwnerWords(agent, why)
 		}
 		if state == capacity.StateEnvSet && pinned != "" && !setsLogin {
-			v.Words = "this agent's entry sets " + ad.ConfigDirEnv + ": it uses the login there, its default account only"
+			v.Words = "this agent's entry sets " + pinned + ": it uses that login, its default account only"
 		}
 	case read != nil:
 		v = read(k)
@@ -624,9 +693,9 @@ func (d *capacityDesk) viewOf(ctx context.Context, agent catalog.Agent, q capaci
 func (s *Server) capacityAvailable(w http.ResponseWriter) bool {
 	switch d := s.capacity; {
 	case d == nil:
-		writeError(w, http.StatusServiceUnavailable, "capacity_unavailable", "this server has no data directory, so it keeps no accounts")
+		refuse(w, http.StatusServiceUnavailable, "capacity_unavailable", "this server has no data directory, so it keeps no accounts")
 	case d.st == nil:
-		writeError(w, http.StatusServiceUnavailable, "capacity_unavailable", d.why)
+		refuse(w, http.StatusServiceUnavailable, "capacity_unavailable", d.why)
 	default:
 		return true
 	}
@@ -637,10 +706,10 @@ func (s *Server) capacityAvailable(w http.ResponseWriter) bool {
 // else 400 with the decoder's words (a field it does not know, a type).
 func writeBodyError(w http.ResponseWriter, err error) {
 	if errors.Is(err, errBodyTooLarge) {
-		writeError(w, http.StatusRequestEntityTooLarge, "bound", err.Error())
+		refuse(w, http.StatusRequestEntityTooLarge, "bound", err.Error())
 		return
 	}
-	writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+	refuse(w, http.StatusBadRequest, "invalid_request", err.Error())
 }
 
 // writeCapacityJSON answers v, encoded as the store encodes the document
@@ -672,18 +741,17 @@ func (s *Server) handleCapacity(w http.ResponseWriter, r *http.Request) {
 		vq.launch = "session"
 	}
 	if !slices.Contains(viewLaunches, vq.launch) {
-		writeError(w, http.StatusBadRequest, "invalid_request", "launch is one of "+strings.Join(viewLaunches, ", "))
+		refuse(w, http.StatusBadRequest, "invalid_request", "launch is one of "+strings.Join(viewLaunches, ", "))
 		return
 	}
 	if id := q.Get("agent"); id != "" {
-		agent, ok := s.Catalog().Get(id)
+		agent, ok := s.capacityAgent(w, id)
 		if !ok {
-			writeError(w, http.StatusNotFound, "not_found", "no such agent")
 			return
 		}
 		v, aerr := s.capacity.viewOf(r.Context(), agent, vq, nil)
 		if aerr != nil {
-			writeAPIError(w, aerr)
+			refuse(w, aerr.status, aerr.Code, aerr.Message)
 			return
 		}
 		writeCapacityJSON(w, http.StatusOK, v, maxCapacityView)
@@ -693,16 +761,35 @@ func (s *Server) handleCapacity(w http.ResponseWriter, r *http.Request) {
 	if l := q.Get("limit"); l != "" {
 		n, err := strconv.Atoi(l)
 		if err != nil || n < 1 || n > maxCapacityLimit {
-			writeError(w, http.StatusBadRequest, "invalid_request", "limit is 1 to "+strconv.Itoa(maxCapacityLimit))
+			refuse(w, http.StatusBadRequest, "invalid_request", "limit is 1 to "+strconv.Itoa(maxCapacityLimit))
 			return
 		}
 		limit = n
 	}
 	if vq.account != "" || vq.model != "" {
-		writeError(w, http.StatusBadRequest, "invalid_request", "account and model name one agent's view: give agent too")
+		refuse(w, http.StatusBadRequest, "invalid_request", "account and model name one agent's view: give agent too")
 		return
 	}
-	s.capacityPage(w, r, vq, q.Get("after"), limit)
+	after := q.Get("after")
+	if agent, account, ok := strings.Cut(after, "/"); after != "" && (!ok || !catalog.ValidID(agent) || !capacity.ValidID(account)) {
+		refuse(w, http.StatusBadRequest, "invalid_request", "after is the next a page gave: an agent's id, /, an account's")
+		return
+	}
+	s.capacityPage(w, r, vq, after, limit)
+}
+
+// capacityAgent is the catalog's agent id, false having refused an id not
+// of an agent id's form (in words that do not repeat it) or not there.
+func (s *Server) capacityAgent(w http.ResponseWriter, id string) (catalog.Agent, bool) {
+	if !catalog.ValidID(id) {
+		refuse(w, http.StatusBadRequest, "invalid_request", "an agent's id: 1 to 32 of a-z 0-9 -")
+		return catalog.Agent{}, false
+	}
+	agent, ok := s.Catalog().Get(id)
+	if !ok {
+		refuse(w, http.StatusNotFound, "not_found", "no such agent")
+	}
+	return agent, ok
 }
 
 // capacityPage answers a page of the listing: the views of each installed
@@ -713,7 +800,7 @@ func (s *Server) handleCapacity(w http.ResponseWriter, r *http.Request) {
 func (s *Server) capacityPage(w http.ResponseWriter, r *http.Request, vq capacityQuery, after string, limit int) {
 	doc, err := s.capacity.st.Accounts()
 	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, "capacity_unavailable", "the accounts could not be read")
+		refuse(w, http.StatusServiceUnavailable, "capacity_unavailable", "the accounts could not be read")
 		return
 	}
 	var keys []capacity.Key
@@ -746,7 +833,9 @@ func (s *Server) capacityPage(w http.ResponseWriter, r *http.Request, vq capacit
 			break
 		}
 		agent, _ := s.Catalog().Get(k.Agent)
-		v, aerr := s.capacity.viewOf(r.Context(), agent, capacityQuery{account: k.Account, launch: vq.launch}, nil)
+		q := vq // the page's own question, the account alone replaced
+		q.account = k.Account
+		v, aerr := s.capacity.viewOf(r.Context(), agent, q, nil)
 		if aerr != nil {
 			continue
 		}
@@ -785,18 +874,17 @@ func (s *Server) handleCapacityRead(w http.ResponseWriter, r *http.Request) {
 		writeBodyError(w, err)
 		return
 	}
-	agent, ok := s.Catalog().Get(body.Agent)
+	agent, ok := s.capacityAgent(w, body.Agent)
 	if !ok {
-		writeError(w, http.StatusNotFound, "not_found", "no such agent")
 		return
 	}
 	if body.Check {
 		if !ownerOnlyReaders[agent.Adapter] {
-			writeError(w, http.StatusBadRequest, "invalid_request", "only Claude Code's reader is checked: "+agentProgram(agent)+"'s reads cost no turn")
+			refuse(w, http.StatusBadRequest, "invalid_request", "only Claude Code's reader is checked: "+agentProgram(agent)+"'s reads cost no turn")
 			return
 		}
 		if owned, _ := s.capacity.ownership(); !owned {
-			writeError(w, http.StatusConflict, capacity.CodeNotOwner, capacity.NotOwnerWords)
+			refuse(w, http.StatusConflict, capacity.CodeNotOwner, capacity.NotOwnerWords)
 			return
 		}
 	}
@@ -805,7 +893,7 @@ func (s *Server) handleCapacityRead(w http.ResponseWriter, r *http.Request) {
 	}
 	v, aerr := s.capacity.viewOf(r.Context(), agent, capacityQuery{account: body.Account, launch: "session"}, read)
 	if aerr != nil {
-		writeAPIError(w, aerr)
+		refuse(w, aerr.status, aerr.Code, aerr.Message)
 		return
 	}
 	writeCapacityJSON(w, http.StatusAccepted, v, maxCapacityView)

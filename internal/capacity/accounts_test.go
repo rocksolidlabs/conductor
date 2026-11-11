@@ -160,7 +160,7 @@ func TestAccountFolderFixed(t *testing.T) {
 	for i := range ty.NumMethod() {
 		names = append(names, ty.Method(i).Name)
 	}
-	want := []string{"Accounts", "Add", "Own", "Remove", "Rename", "Reserve", "Retire", "SetDefault", "Versions"}
+	want := []string{"Accounts", "Add", "Disown", "Own", "Remove", "Rename", "Reserve", "Retire", "SetDefault", "Versions"}
 	if !slices.Equal(names, want) {
 		t.Errorf("Store's methods are %v, want %v", names, want)
 	}
@@ -364,9 +364,11 @@ func TestAccountsDocumentBounded(t *testing.T) {
 }
 
 // TestNotOwnerWritesNothing: a Store opened without Own (a server without
-// capacity/owner.lock) reads the accounts and writes nothing: every write
-// and every Reserve of a registered account is refused accounts_not_owner
-// in words, and nothing is made on disk. Own lets the same Store write.
+// capacity/owner.lock), and one that owned and then Disowned (a server
+// letting the lock go), reads the accounts and writes nothing: every write,
+// every Reserve of a registered account and every Admit is refused
+// accounts_not_owner in words, and nothing is made on disk. Own lets the
+// same Store write.
 func TestNotOwnerWritesNothing(t *testing.T) {
 	f := newFacts()
 	dir := t.TempDir()
@@ -375,23 +377,27 @@ func TestNotOwnerWritesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	owner.Disown()
 	path := filepath.Join(dir, Dir, AccountsFile)
 	before, _ := os.ReadFile(path)
 	s := openNotOwned(t, dir, Options{Now: clockAt(t0)})
 	if d, err := s.Accounts(); err != nil || d.Rev != rev || len(d.Accounts) != 1 {
 		t.Fatalf("read without owning: %+v, %v", d, err)
 	}
-	writes := map[string]func() error{
-		"add":     func() error { _, _, err := s.Add(f, "codex", "Home", "/home/u/home", rev); return err },
-		"rename":  func() error { _, _, err := s.Rename(a.ID, "Job", rev); return err },
-		"retire":  func() error { _, _, err := s.Retire(a.ID, rev); return err },
-		"remove":  func() error { _, err := s.Remove(f, a.ID, rev); return err },
-		"default": func() error { _, _, err := s.SetDefault("claude", a.ID, rev); return err },
-		"reserve": func() error { _, _, err := s.Reserve(a.ID); return err },
-	}
-	for name, w := range writes {
-		if err := w(); code(err) != CodeNotOwner || !strings.Contains(err.Error(), "does not own") {
-			t.Errorf("%s without owning: %v", name, err)
+	for who, s := range map[string]*Store{"never owning": s, "disowned": owner} {
+		writes := map[string]func() error{
+			"add":     func() error { _, _, err := s.Add(f, "codex", "Home", "/home/u/home", rev); return err },
+			"rename":  func() error { _, _, err := s.Rename(a.ID, "Job", rev); return err },
+			"retire":  func() error { _, _, err := s.Retire(a.ID, rev); return err },
+			"remove":  func() error { _, err := s.Remove(f, a.ID, rev); return err },
+			"default": func() error { _, _, err := s.SetDefault("claude", a.ID, rev); return err },
+			"reserve": func() error { _, _, err := s.Reserve(a.ID); return err },
+			"admit":   func() error { _, err := s.Versions().Admit("claude", "2.1.0", false, true); return err },
+		}
+		for name, w := range writes {
+			if err := w(); code(err) != CodeNotOwner || !strings.Contains(err.Error(), "does not own") {
+				t.Errorf("%s, %s: %v", who, name, err)
+			}
 		}
 	}
 	if _, _, err := s.Reserve(DefaultID); err != nil {

@@ -329,6 +329,22 @@ func (s *Store) Own() error {
 	return nil
 }
 
+// Disown is Own's inverse, the call a server makes before it lets
+// capacity/owner.lock go: under the Store's lock, so a write under way
+// ends first, and from then on every write, Reserve and Admit is refused
+// accounts_not_owner, as before Own, and no outcome is saved.
+func (s *Store) Disown() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.owned = false
+	s.ver.mu.Lock()
+	defer s.ver.mu.Unlock()
+	s.ver.owned = false
+}
+
+// ValidID says id has an account id's form: "default", or a minted one.
+func ValidID(id string) bool { return id == DefaultID || idPattern.MatchString(id) }
+
 // Versions is the record of versions in the same folder.
 func (s *Store) Versions() *Versions { return s.ver }
 

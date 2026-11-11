@@ -14,6 +14,7 @@ import (
 	"os/user"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -485,6 +486,10 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		relayed:     newRelayMeter(nil),
 		rechecking:  make(chan struct{}, 1),
 	}
+	// A registered account's folder is left out of a session's files as the
+	// data directory is, asked of the accounts at each request (folders).
+	deny := s.fileDeny
+	s.fileDeny = func() []string { return slices.Concat(deny(), s.capacity.folders()) }
 	// Every provider behind the guard before the server's first write of
 	// its own (the ledger's recovery, the records): nothing calls them yet.
 	s.readRevision = gitcli.RevisionOf
