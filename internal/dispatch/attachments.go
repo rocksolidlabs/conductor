@@ -220,7 +220,10 @@ func (s *Store) takes(op Op, intent string) (Receipt, bool, error) {
 // the file published under it and its name made durable. Content past
 // limit, or that check refuses (received.refused), is removed and nothing
 // is leased or published. The operation that names it takes the lease
-// (takeUpload); one that never ran drops it (dropLease).
+// (takeUpload); one that never ran drops it (dropLease). A publication
+// that fails drops the lease and gives the error with the content's hash
+// alone, since the file may be in place (a directory's sync failed after
+// the rename): the caller's to collect or to leave to the sweep.
 func (s *Store) upload(ctx context.Context, r io.Reader, limit int64, check func(path string) error) (received, error) {
 	s.mu.Lock()
 	syncDir, beforePublish, beforeCommit := s.syncDir, s.beforePublish, s.beforeCommit
@@ -230,8 +233,11 @@ func (s *Store) upload(ctx context.Context, r io.Reader, limit int64, check func
 		return received{}, err
 	}
 	u, err := receive(filepath.Join(root, uploadsDir), r, limit)
-	if err != nil || u.tmp == "" {
-		return u, err
+	if err != nil {
+		return received{}, err
+	}
+	if u.tmp == "" {
+		return u, nil
 	}
 	if check != nil {
 		if u.refused = check(u.tmp); u.refused != nil {
@@ -252,7 +258,7 @@ func (s *Store) upload(ctx context.Context, r io.Reader, limit int64, check func
 		u.gone = true
 	case err != nil:
 		s.dropLease(ctx, u.lease)
-		return received{}, err
+		return received{sum: u.sum}, err
 	}
 	if beforeCommit != nil {
 		beforeCommit()

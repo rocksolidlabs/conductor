@@ -61,11 +61,11 @@ func testCapture(image bool) (NewCapture, CaptureFacts) {
 		ChangedPaths: []string{"web/app.vue"}, Content: contentA, Mutable: true, Where: "native", Scope: CaptureScope{Crew: "crew", Repo: "/repo"},
 		Sources: [][]Source{{{Path: "web/app/components/SaveBar.vue", How: "vue", Found: true, Class: "tracked"}}}}
 	if image {
-		n.ImageScale = 1
+		n.ImageHow, n.ImageScale = ImageTab, 1
 		n.Annotations = append(n.Annotations, NewAnnotation{Kind: AnnotationRegion, Note: "here", Rect: Rect{0, 0, 4, 4}})
 		f.Sources = append(f.Sources, nil)
 	} else {
-		n.ImageWhy = "the person declined the tab capture"
+		n.ImageHow, n.ImageWhy = ImageNone, "the person declined the tab capture"
 	}
 	moment(&n)
 	return n, f
@@ -171,7 +171,9 @@ func TestACaptureIsStoredWithItsImageOnce(t *testing.T) {
 	if c := log.one(t); len(c) != 1 || c[0].Entity != EntityCapture || c[0].ID != a || c[0].Ticket != "" || c[0].Project != "" {
 		t.Fatalf("OnChange: %+v", c)
 	}
-	n.Via = CaptureViaDesktop
+	// The desktop client's screenshot by its own path, and one by the
+	// tab's: each as the client says it was taken.
+	n.Via, n.ImageHow = CaptureViaDesktop, ImageDesktop
 	b := mustCreate(t, s, "c2", n, f, img)
 	if got := contentFiles(t, s); !slices.Equal(got, []string{sumOf(img)}) {
 		t.Fatalf("the content files: %v", got)
@@ -184,6 +186,10 @@ func TestACaptureIsStoredWithItsImageOnce(t *testing.T) {
 	ca, cb := captureOf(t, s, a), captureOf(t, s, b)
 	if ca.Image != (CaptureImage{SHA256: sumOf(img), Width: 64, Height: 32, Bytes: int64(len(img)), How: ImageTab, Scale: 1}) || cb.Image.How != ImageDesktop {
 		t.Fatalf("the images: %+v %+v", ca.Image, cb.Image)
+	}
+	n.ImageHow = ImageTab
+	if c := captureOf(t, s, mustCreate(t, s, "c2-tab", n, f, img)); c.Image.How != ImageTab || c.Via != CaptureViaDesktop {
+		t.Fatalf("a desktop client's tab screenshot: %+v %s", c.Image, c.Via)
 	}
 	if ca.Rev != 1 || len(ca.Annotations) != 2 || ca.Annotations[0].K != 1 || ca.Annotations[0].Sources[0].Path != "web/app/components/SaveBar.vue" ||
 		ca.Origin.Drift != nil || ca.Origin.Serving.State != ServingUnconfirmed || ca.Actor != "test" || ca.CreatedBy != "Tester" {
@@ -639,6 +645,57 @@ func TestAnAnnotationSetIsARevisionNotItsContent(t *testing.T) {
 	if a, b := strings.Fields(got[0]), strings.Fields(got[1]); a[0] != b[0] || a[1] == b[1] {
 		t.Fatalf("an order restored: %v", got)
 	}
+	// Two replicas' identical edits at one rev, by two actors: both sets
+	// kept, put into one store two ids of one digest, and the pointer a
+	// merge picks names one of them whole.
+	snap := filepath.Join(t.TempDir(), "replica.sqlite")
+	if err := s.Snapshot(ctx, snap); err != nil {
+		t.Fatal(err)
+	}
+	dir := storeDir(t)
+	os.MkdirAll(dir, 0o700)
+	b, _ := os.ReadFile(snap)
+	os.WriteFile(filepath.Join(dir, File), b, 0o600)
+	replica := openStore(t, dir)
+	var pointers [2]ChangeRow
+	for i, st := range []*Store{s, replica} {
+		edits := kept(captureOf(t, st, id))
+		edits[0].Note = "the same on both"
+		rc, err := st.EditCapture(ctx, Op{Actor: fmt.Sprintf("replica%d", i), ID: "same"}, digestOf(t, edits, nil), id, 5, edits)
+		want(t, rc, err, StatusDone, "")
+		for _, r := range changesOf(t, st, fmt.Sprintf("replica%d", i), "same") {
+			if r.Field == "annotations" {
+				pointers[i] = r
+			}
+		}
+	}
+	cols := "capture_id, id, rev, digest, members, at, actor, op_id"
+	row := texts(t, replica, "SELECT json_array("+cols+") FROM capture_annotation_sets WHERE capture_id = ? AND rev = 6", id)
+	var vals []any
+	if len(row) != 1 || json.Unmarshal([]byte(row[0]), &vals) != nil {
+		t.Fatalf("the replica's set: %v", row)
+	}
+	if _, err := s.db.Exec("INSERT INTO capture_annotation_sets ("+cols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?)", vals...); err != nil {
+		t.Fatal(err)
+	}
+	both := texts(t, s, "SELECT digest || ' ' || id FROM capture_annotation_sets WHERE capture_id = ? AND rev = 6 ORDER BY id", id)
+	if len(both) != 2 || strings.Fields(both[0])[0] != strings.Fields(both[1])[0] || strings.Fields(both[0])[1] == strings.Fields(both[1])[1] {
+		t.Fatalf("both replicas' sets: %v", both)
+	}
+	win := pointers[0]
+	if Merge(pointers[0], pointers[1]) == TakeRemote {
+		win = pointers[1]
+	}
+	var ptr SetPointer
+	if err := json.Unmarshal([]byte(win.Value), &ptr); err != nil || ptr.Rev != 6 {
+		t.Fatalf("the pointer picked: %s %v", win.Value, err)
+	}
+	if _, err := s.db.Exec("UPDATE captures SET annotations = ? WHERE id = ?", win.Value, id); err != nil {
+		t.Fatal(err)
+	}
+	if c := captureOf(t, s, id); c.Set != ptr || len(c.Annotations) != 2 || c.Annotations[0].Note != "the same on both" {
+		t.Fatalf("the set the pointer names: %+v", c)
+	}
 }
 
 // Two replicas' edits of the same rev: their sets both kept (the sets'
@@ -1004,6 +1061,47 @@ func TestReplayAnswersACaptureResend(t *testing.T) {
 	again, err := reedit(t, s, "e1", id, 1, edits)
 	if err != nil || !again.Repeat || again.Rev != first.Rev {
 		t.Fatalf("an edit's resend: %+v %v", again, err)
+	}
+	// Once the receipts are pruned, one request has one answer: an edit
+	// and a delete answered only by their own kind and fingerprint, else
+	// op_conflict, nothing performed.
+	if _, err := s.db.Exec("DELETE FROM ops"); err != nil {
+		t.Fatal(err)
+	}
+	again, err = reedit(t, s, "e1", id, 1, edits)
+	if err != nil || !again.Repeat || again.Status != StatusDone {
+		t.Fatalf("an edit's resend, its receipt pruned: %+v %v", again, err)
+	}
+	other2 := kept(captureOf(t, s, id))
+	other2[0].Note = "second"
+	rc, err = reedit(t, s, "e1", id, 2, other2)
+	want(t, rc, err, StatusFailed, RefusalOpConflict)
+	rc, err = s.DeleteCapture(ctx, testOp("c1"), id)
+	want(t, rc, err, StatusFailed, RefusalOpConflict)
+	rc, err = s.DeleteCapture(ctx, testOp("e1"), id)
+	want(t, rc, err, StatusFailed, RefusalOpConflict)
+	if c := captureOf(t, s, id); c.Rev != 2 || c.Annotations[0].Note != "edited" || !c.DeletedAt.IsZero() {
+		t.Fatalf("a pruned id's other request was performed: %+v", c)
+	}
+	rc, err = s.DeleteCapture(ctx, testOp("d1"), id)
+	want(t, rc, err, StatusDone, "")
+	n2, f2 := testCapture(false)
+	second := mustCreate(t, s, "c2", n2, f2, nil)
+	if _, err := s.db.Exec("DELETE FROM ops"); err != nil {
+		t.Fatal(err)
+	}
+	if rc, err = s.DeleteCapture(ctx, testOp("d1"), id); err != nil || !rc.Repeat || rc.Status != StatusDone {
+		t.Fatalf("a delete's resend, its receipt pruned: %+v %v", rc, err)
+	}
+	rc, err = s.DeleteCapture(ctx, testOp("d1"), second)
+	want(t, rc, err, StatusFailed, RefusalOpConflict)
+	rc, err = reedit(t, s, "d1", second, 1, kept(captureOf(t, s, second)))
+	want(t, rc, err, StatusFailed, RefusalOpConflict)
+	if again, err = reedit(t, s, "e1", id, 1, edits); err != nil || !again.Repeat || again.Status != StatusDone {
+		t.Fatalf("an edit's resend after its capture's delete: %+v %v", again, err)
+	}
+	if c := captureOf(t, s, second); c.Rev != 1 || !c.DeletedAt.IsZero() {
+		t.Fatalf("the second capture: %+v", c)
 	}
 	if _, err := s.CreateCapture(ctx, testOp("c9"), "not a digest", n, f, nil); !errors.Is(err, ErrBadReceived) {
 		t.Fatalf("a bad digest: %v", err)

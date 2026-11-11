@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -22,7 +24,8 @@ import (
 // every string field of the records the new operations take, each
 // written with a marker address and every table, the ticket's and the
 // link's reads and an export read back for it. A column or a field added
-// later with no decision fails.
+// later with no decision fails: version 5's columns, and any added after
+// them, in TestEveryVersionFiveTextHasADecision.
 
 // markers are the addresses the walk writes: one with a user, a query and
 // a fragment, and a short one for a text bounded under the first.
@@ -388,39 +391,16 @@ func secretsOf(marker string) []string {
 func TestEveryVersionFourTextHasADecision(t *testing.T) {
 	s := linkedStore(t)
 	old := openRaw(t, filepath.Join(fixtureV3(t), File))
-	tablesOf := func(db *sql.DB) []string {
-		var out []string
-		rows, err := db.Query("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'tickets_fts%'")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var n string
-			rows.Scan(&n)
-			out = append(out, n)
-		}
-		return out
-	}
-	textColumns := func(db *sql.DB, table string) []string {
-		var out []string
-		rows, err := db.Query("SELECT name FROM pragma_table_info(?) WHERE type = 'TEXT'", table)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var n string
-			rows.Scan(&n)
-			out = append(out, n)
-		}
-		return out
-	}
+	tablesOf := func(db *sql.DB) []string { return tablesOfDB(t, db) }
+	textColumns := func(db *sql.DB, table string) []string { return textColumnsOf(t, db, table) }
+	v4 := openRaw(t, filepath.Join(fixtureV4(t), File))
+	v4Tables := tablesOf(v4)
 	found := map[string]bool{}
 	oldTables := tablesOf(old)
 	for _, table := range tablesOf(s.db) {
-		// A later version's tables are that version's to decide.
-		if slices.Contains(version5Tables, table) {
+		// A table version 4 does not have is a later version's, decided by
+		// that version's walk (TestEveryVersionFiveTextHasADecision).
+		if !slices.Contains(v4Tables, table) {
 			continue
 		}
 		cols := textColumns(s.db, table)
@@ -444,6 +424,146 @@ func TestEveryVersionFourTextHasADecision(t *testing.T) {
 	for c := range columnKept {
 		if !found[c] {
 			t.Errorf("columnKept names %s, which is not a text column version 4 adds", c)
+		}
+	}
+}
+
+// tablesOfDB is the tables of the database, SQLite's and the FTS index's
+// own left out.
+func tablesOfDB(t *testing.T, db *sql.DB) []string {
+	t.Helper()
+	return dbTexts(t, db, "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'tickets_fts%'")
+}
+
+// textColumnsOf is the text columns of the table.
+func textColumnsOf(t *testing.T, db *sql.DB, table string) []string {
+	t.Helper()
+	return dbTexts(t, db, "SELECT name FROM pragma_table_info(?) WHERE type = 'TEXT'", table)
+}
+
+// dbTexts is the query's one column of text.
+func dbTexts(t *testing.T, db *sql.DB, query string, args ...any) []string {
+	t.Helper()
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var n string
+		rows.Scan(&n)
+		out = append(out, n)
+	}
+	return out
+}
+
+// How version 5 keeps a text (the captures, Program item PV1), beside
+// keptDerived, keptClosed, keptOpaque (an id or a hex of a pattern no
+// address meets) and keptNone (no operation of this row writes it: the
+// sends' tables, #825's).
+const (
+	// keptEvidence: what the page, its bridge or the person gave (the
+	// page's address and title, the viewport, the element's report and
+	// moment, a note, why there is no screenshot, the pane's read), kept
+	// as given within its field rule: it is the evidence. An address among
+	// them (captures.url) is kept whole, its query and fragment with it,
+	// bounded and checked as an address (capture.url, kindURL), and no log
+	// line prints it (the captures' code logs nothing).
+	keptEvidence = "evidence"
+	// keptFacts: what the API read at the save (the run's scope, the
+	// tree's changed paths, the sources), kept as handed in within the
+	// field rules.
+	keptFacts = "facts"
+	// keptOperator: the operation's actor and display name, as every
+	// row of the store keeps them (op.actor, op.by).
+	keptOperator = "operator"
+)
+
+// version5Kept is the decision of every text column version 5 adds.
+var version5Kept = map[string]string{
+	"captures.id": keptDerived, "captures.created_at": keptDerived, "captures.created_by": keptOperator, "captures.actor": keptOperator,
+	"captures.via": keptClosed, "captures.fingerprint": keptDerived, "captures.url": keptEvidence, "captures.title": keptEvidence,
+	"captures.viewport": keptEvidence, "captures.selected_at": keptEvidence, "captures.saved_at": keptDerived, "captures.origin": keptClosed,
+	"captures.run_id": keptOpaque, "captures.task_id": keptOpaque, "captures.tree": keptClosed, "captures.commit_id": keptOpaque,
+	"captures.changed_paths": keptFacts, "captures.content": keptOpaque, "captures.candidate": keptOpaque, "captures.where_ran": keptOpaque,
+	"captures.scope": keptFacts, "captures.drift": keptEvidence, "captures.serving": keptDerived, "captures.image_sha256": keptDerived,
+	"captures.image_how": keptClosed, "captures.image_why": keptEvidence, "captures.retake_of": keptOpaque, "captures.retake_via": keptClosed,
+	"captures.deleted_at": keptDerived, "captures.annotations": keptDerived,
+	"capture_annotations.capture_id": keptDerived, "capture_annotations.sha256": keptDerived, "capture_annotations.kind": keptClosed,
+	"capture_annotations.note": keptEvidence, "capture_annotations.rect": keptEvidence, "capture_annotations.element": keptEvidence,
+	"capture_annotations.observed": keptEvidence, "capture_annotations.sources": keptFacts,
+	"capture_annotation_sets.capture_id": keptDerived, "capture_annotation_sets.id": keptDerived, "capture_annotation_sets.digest": keptDerived,
+	"capture_annotation_sets.members": keptDerived, "capture_annotation_sets.at": keptDerived, "capture_annotation_sets.actor": keptOperator,
+	"capture_annotation_sets.op_id": keptOpaque, "capture_files.capture_id": keptDerived, "capture_files.sha256": keptDerived,
+	"capture_files.holder": keptDerived,
+	// The sends' tables: #825's operations write them and decide each.
+	"capture_sends.id": keptNone, "capture_sends.capture_id": keptNone, "capture_sends.kind": keptNone, "capture_sends.asked": keptNone,
+	"capture_sends.digest": keptNone, "capture_sends.request": keptNone, "capture_sends.created_at": keptNone, "capture_sends.created_by": keptNone,
+	"capture_sends.actor": keptNone, "capture_sends.op_id": keptNone, "capture_sends.fingerprint": keptNone,
+	"capture_send_outcomes.send_id": keptNone, "capture_send_outcomes.id": keptNone, "capture_send_outcomes.kind": keptNone,
+	"capture_send_outcomes.target": keptNone, "capture_send_outcomes.files": keptNone, "capture_send_outcomes.why": keptNone,
+	"capture_send_outcomes.at": keptNone, "capture_send_outcomes.actor": keptNone, "capture_send_outcomes.op_id": keptNone,
+	"capture_send_cancels.send_id": keptNone, "capture_send_cancels.op_id": keptNone, "capture_send_cancels.at": keptNone,
+	"capture_send_cancels.actor": keptNone,
+}
+
+// Every text column version 5 adds has a decision (version5Kept): the
+// tables and the columns a fresh store has that the version 4 fixture
+// lacks, so a column added later with no decision fails here. A capture's
+// address is the evidence: kept as the page gave it, its query and
+// fragment with it, bounded and checked as an address, and printed by no
+// log line.
+func TestEveryVersionFiveTextHasADecision(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t, storeDir(t))
+	old := openRaw(t, filepath.Join(fixtureV4(t), File))
+	oldTables := tablesOfDB(t, old)
+	found := map[string]bool{}
+	for _, table := range tablesOfDB(t, s.db) {
+		cols := textColumnsOf(t, s.db, table)
+		if slices.Contains(oldTables, table) {
+			oldCols := textColumnsOf(t, old, table)
+			cols = slices.DeleteFunc(cols, func(c string) bool { return slices.Contains(oldCols, c) })
+		}
+		for _, c := range cols {
+			found[table+"."+c] = true
+			if _, ok := version5Kept[table+"."+c]; !ok {
+				t.Errorf("the text column %s.%s has no decision in version5Kept", table, c)
+			}
+		}
+	}
+	for c := range version5Kept {
+		if !found[c] {
+			t.Errorf("version5Kept names %s, which is not a text column version 5 adds", c)
+		}
+	}
+	// The address as the page gave it.
+	n, f := testCapture(false)
+	n.URL = markers[0]
+	moment(&n)
+	id := mustCreate(t, s, "address", n, f, nil)
+	if c, err := s.Capture(ctx, id); err != nil || c.URL != markers[0] {
+		t.Fatalf("the address kept: %q %v", c.URL, err)
+	}
+	for _, bad := range []string{"ftp://h/x", "http:///nohost", "http://h/" + strings.Repeat("a", MaxCaptureURL)} {
+		n.URL = bad
+		moment(&n)
+		if _, _, err := checkCapture(n, f, false); err == nil {
+			t.Errorf("the address %.40q is taken", bad)
+		}
+	}
+	// No log line: the captures' code imports no logger.
+	fset := token.NewFileSet()
+	for _, name := range []string{"capture.go", "captures.go"} {
+		file, err := parser.ParseFile(fset, name, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, imp := range file.Imports {
+			if p := strings.Trim(imp.Path.Value, `"`); p == "log" || p == "log/slog" {
+				t.Errorf("%s imports %s: a capture's address must be printed by no log line", name, p)
+			}
 		}
 	}
 }

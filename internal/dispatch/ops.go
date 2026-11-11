@@ -139,8 +139,9 @@ const (
 	IntentLinkAdd      = "link.add"
 	IntentReviewSubmit = "review.submit"
 	IntentFindingMark  = "finding.mark"
-	// A capture's create keeps it on its row (Program item PV1); an
-	// edit's is the request's digest, compared while its receipt is kept.
+	// A capture's create keeps it on its row (Program item PV1), an edit
+	// on its set's change row, a delete on its tombstone's row (the
+	// capture it names).
 	IntentCaptureCreate = "capture.create"
 )
 
@@ -780,6 +781,36 @@ func prunedAnswer(ctx context.Context, q queryer, op Op, intent, fp string) (rc 
 			return conflictReceipt(op, intent, wordsOpConflict), true, nil
 		}
 		table, id = "captures", entityID
+	case IntentCaptureEdit:
+		// An edit's first row is a version's or its set's, and its set's
+		// change row keeps the edit's fingerprint (writeSet), also after
+		// the capture's delete.
+		if entity != EntityCapture || kind != OpAdd || (field != "versions" && field != "sets") || schemaOf(q) < captureSchema {
+			return conflictReceipt(op, intent, wordsOpConflict), true, nil
+		}
+		var set string
+		if err := q.QueryRowContext(ctx, "SELECT value FROM changes WHERE actor = ? AND op_id = ? AND entity = ? AND field = 'sets' AND op = ?",
+			op.Actor, op.ID, EntityCapture, OpAdd).Scan(&set); err != nil && !isNoRows(err) {
+			return Receipt{}, false, err
+		}
+		var v struct {
+			Fingerprint string `json:"fingerprint"`
+		}
+		if json.Unmarshal([]byte(set), &v) != nil || v.Fingerprint != fp {
+			return conflictReceipt(op, intent, wordsOpConflict), true, nil
+		}
+		return done, true, nil
+	case IntentCaptureDelete:
+		// A delete's first row is its tombstone's, and the capture it names
+		// is the delete's whole content (captureArgs).
+		want, err := fingerprint(IntentCaptureDelete, captureArgs{ID: entityID})
+		if err != nil {
+			return Receipt{}, false, err
+		}
+		if entity != EntityCapture || field != "deleted_at" || kind != OpSet || want != fp {
+			return conflictReceipt(op, intent, wordsOpConflict), true, nil
+		}
+		return done, true, nil
 	default:
 		return done, true, nil
 	}

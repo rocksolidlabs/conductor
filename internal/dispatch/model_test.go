@@ -78,12 +78,14 @@ var planBounds = map[string]struct {
 	// the neighbourhood of 24 KiB, a style's value of 256, a hint's file of
 	// 1,024 and component of 256, a user agent of 512; and the code's own
 	// for what the plan leaves to it: why there is no screenshot, a short
-	// word of the report, and a send's target and why.
+	// word of the report, a changed path (the changed paths' bytes), and a
+	// send's target and why.
 	"annotation.note":         {4000, true},
 	"capture.url":             {2 << 10, false},
 	"capture.title":           {200, true},
 	"capture.user_agent":      {512, false},
 	"capture.image_why":       {500, true},
+	"capture.changed_path":    {16 << 10, false},
 	"element.name":            {1 << 10, false},
 	"element.text":            {1 << 10, false},
 	"element.selector":        {1 << 10, false},

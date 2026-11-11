@@ -498,6 +498,9 @@ const (
 	// MaxRectCoord bounds a box's or a rectangle's numbers either way, in
 	// pixels.
 	MaxRectCoord = 1 << 20
+	// MaxScroll bounds a frame's scroll either way, in pixels: what a
+	// browser scrolls to (Chromium's largest layout, 2^25).
+	MaxScroll = 1 << 25
 	// MaxCapturePage bounds a page of captures or of sends a read gives.
 	MaxCapturePage = 100
 )
@@ -1148,6 +1151,7 @@ var fieldRules = map[string]textRule{
 	"capture.title":           {max: MaxCaptureTitle, chars: true, kind: kindName},
 	"capture.user_agent":      {max: MaxUserAgent, kind: kindText},
 	"capture.image_why":       {max: MaxImageWhy, chars: true, kind: kindName},
+	"capture.changed_path":    {max: MaxChangedPathsBytes, required: true, kind: kindText},
 	"annotation.note":         {max: MaxAnnotationNote, chars: true, kind: kindMarkdown},
 	"element.name":            {max: MaxElementName, kind: kindMarkdown},
 	"element.text":            {max: MaxElementText, kind: kindMarkdown},

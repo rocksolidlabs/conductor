@@ -12,9 +12,10 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
+	"unicode"
 )
 
 // A capture is a person's evidence about work (Program item PV1,
@@ -23,12 +24,16 @@ import (
 // annotations, each an element the page's bridge reported or a region of
 // the screenshot, with the person's note. The client's words (NewCapture)
 // and the server's reads of the tree (CaptureFacts) are checked here
-// against every bound, the store working out itself what it can from
-// them: the drift between the selection's read and the save's, what the
-// page's declared revision says of the tree (serving), the changed paths'
-// cut and how a retake is related to the capture it retakes. The
-// capture's document (CaptureDocument, conductor.capture/1) is what a send
-// will freeze as a content file.
+// against every bound and every relation the evidence rules state, the
+// store working out itself what it can from them: the drift between the
+// selection's read and the save's, what the page's declared revision says
+// of the tree (serving), the changed paths' cut and how a retake is
+// related to the capture it retakes. How the screenshot was taken is the
+// client's word (NewCapture.ImageHow), checked against what the store
+// knows and stored as given. The names the privacy rule compares are
+// judged in one form (isName, namedAs). The capture's document
+// (CaptureDocument, conductor.capture/1) is what a send will freeze as a
+// content file.
 
 // CaptureSchemaName is a capture document's schema.
 const CaptureSchemaName = "conductor.capture/1"
@@ -218,9 +223,10 @@ type NewAnnotation struct {
 
 // NewCapture is what capture.create takes of the client: the page and
 // its moment (URL, title, viewport, the bridge's epoch, the revision the
-// page declared and the pane's read of the tree at the selection), the
-// screenshot's scale or why there is none, the capture it retakes, and
-// the annotations in their order.
+// page declared and the pane's read of the tree at the selection), how
+// the screenshot was taken (ImageDesktop, ImageTab, or ImageNone with why
+// there is none) and its scale, the capture it retakes, and the
+// annotations in their order.
 type NewCapture struct {
 	Via         string          `json:"via"`
 	URL         string          `json:"url"`
@@ -230,6 +236,7 @@ type NewCapture struct {
 	Revision    string          `json:"revision,omitempty"`
 	Label       TreeRead        `json:"label"`
 	SelectedAt  time.Time       `json:"selectedAt"`
+	ImageHow    string          `json:"imageHow"`
 	ImageScale  float64         `json:"imageScale,omitempty"`
 	ImageWhy    string          `json:"imageWhy,omitempty"`
 	RetakeOf    string          `json:"retakeOf,omitempty"`
@@ -353,8 +360,9 @@ type SetPointer struct {
 
 // Capture is a capture as a read gives it: its document at its revision
 // now, who made it and how, the bridge's epoch, the run's scope and its
-// live set. A deleted capture is its id, rev and times alone: its words
-// are gone with it.
+// live set. A deleted capture is its id, rev and times alone
+// (captureTombstone) through every read the store offers (DeleteCapture
+// says what a delete removes and what it hides).
 type Capture struct {
 	CaptureDocument
 	CreatedAt time.Time    `json:"createdAt"`
@@ -365,6 +373,15 @@ type Capture struct {
 	Scope     CaptureScope `json:"scope"`
 	Set       SetPointer   `json:"set"`
 	DeletedAt time.Time    `json:"deletedAt,omitzero"`
+}
+
+// captureTombstone is what every read gives of a deleted capture: its id,
+// its revision and its times.
+type captureTombstone struct {
+	ID        string    `json:"id"`
+	Rev       int64     `json:"rev"`
+	CreatedAt time.Time `json:"createdAt"`
+	DeletedAt time.Time `json:"deletedAt"`
 }
 
 // RequestDigest is a capture operation's request as the API received it,
@@ -423,8 +440,13 @@ func (c *checker) measured(label string, v any, max int) {
 
 // number checks numbers are finite and within MaxRectCoord either way.
 func (c *checker) number(label string, vs ...float64) {
+	c.within(label, MaxRectCoord, vs...)
+}
+
+// within checks numbers are finite and within bound either way.
+func (c *checker) within(label string, bound float64, vs ...float64) {
 	for _, v := range vs {
-		c.must(!math.IsNaN(v) && math.Abs(v) <= MaxRectCoord, RefusalInvalid, "%s is not a number within %d", label, MaxRectCoord)
+		c.must(!math.IsNaN(v) && math.Abs(v) <= bound, RefusalInvalid, "%s is not a number within %.0f", label, bound)
 	}
 }
 
@@ -436,7 +458,7 @@ func (c *checker) rect(label string, r Rect) {
 func (c *checker) viewport(label string, v Viewport) {
 	c.must(slices.Contains(ViewportModes, v.Mode), RefusalInvalid, "%s's mode %q is none of %s", label, v.Mode, strings.Join(ViewportModes, ", "))
 	c.must(v.Width >= 0 && v.Height >= 0 && v.Width <= MaxRectCoord && v.Height <= MaxRectCoord, RefusalInvalid, "%s's size is out of range", label)
-	c.number(label, v.ScrollX, v.ScrollY)
+	c.within(label+"'s scroll", MaxScroll, v.ScrollX, v.ScrollY)
 	c.must(v.Scale > 0 && v.Scale <= 64 && v.DPR > 0 && v.DPR <= 64, RefusalInvalid, "%s's scale and pixel ratio are not above 0 and at most 64", label)
 	c.must(v.ColorScheme == "light" || v.ColorScheme == "dark", RefusalInvalid, "%s's colour scheme is neither light nor dark", label)
 	c.field("capture.user_agent", label+"'s user agent", v.UserAgent)
@@ -453,24 +475,44 @@ func (c *checker) names(label string, tag, id, role, name string, classes []stri
 	}
 }
 
+// isName is whether s is a name, as an element's tag and an attribute's
+// name must be: not empty, and no white space or control character
+// anywhere in it.
+func isName(s string) bool {
+	return s != "" && !strings.ContainsFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
+}
+
+// namedAs is whether the name (an element's tag, an attribute's name) is
+// the local name want, as the privacy rule compares names: what follows
+// its last colon, without regard to case. Every question the rule asks of
+// a name goes through it.
+func namedAs(name, want string) bool {
+	if i := strings.LastIndexByte(name, ':'); i >= 0 {
+		name = name[i+1:]
+	}
+	return strings.EqualFold(name, want)
+}
+
 // element checks an element's report by every bound of the plan's, and
 // the privacy rule: an input's value, and a password field's, is never
-// kept.
+// kept, its tag and its attributes' names judged as names (isName,
+// namedAs).
 func (c *checker) element(label string, e *ElementReport) {
-	c.must(e.Tag != "", RefusalInvalid, "%s names no tag", label)
+	c.must(isName(e.Tag), RefusalInvalid, "%s's tag is not a name", label)
 	c.names(label, e.Tag, e.ID, e.Role, e.Name, e.Classes)
 	c.field("element.text", label+"'s text", e.Text)
 	c.field("element.selector", label+"'s selector", e.Selector)
 	c.rect(label+"'s box", e.Box)
 	c.count("attributes", len(e.Attributes), MaxElementAttributes)
-	secret := strings.EqualFold(e.Tag, "input")
+	secret := namedAs(e.Tag, "input")
 	for _, a := range e.Attributes {
 		c.field("element.attribute_name", label+"'s attribute name", a[0])
+		c.must(isName(a[0]), RefusalInvalid, "%s's attribute name is not a name", label)
 		c.field("element.attribute_value", label+"'s attribute value", a[1])
-		secret = secret || (strings.EqualFold(a[0], "type") && strings.EqualFold(a[1], "password"))
+		secret = secret || (namedAs(a[0], "type") && strings.EqualFold(strings.TrimSpace(a[1]), "password"))
 	}
 	for _, a := range e.Attributes {
-		c.must(!secret || !strings.EqualFold(a[0], "value"), RefusalInvalid, "%s keeps an input's value, which is never kept", label)
+		c.must(!secret || !namedAs(a[0], "value"), RefusalInvalid, "%s keeps an input's value, which is never kept", label)
 	}
 	for _, w := range []string{e.State.AriaDisabled, e.State.AriaExpanded, e.State.PointerEvents} {
 		c.field("element.word", label+"'s state", w)
@@ -522,14 +564,28 @@ func (c *checker) sources(label string, ss []Source) {
 	}
 }
 
-// pageOrigin is a URL's scheme, host and port: what a link's retake must
-// share with the capture it retakes.
+// pageOrigin is a URL's origin in one form: its scheme and host without
+// regard to case and its effective port (a default port written or not),
+// what a link's retake must share with the capture it retakes; "" for no
+// http or https URL with a host.
 func pageOrigin(s string) string {
 	u, err := url.Parse(s)
+	if err != nil || u.Hostname() == "" {
+		return ""
+	}
+	scheme, port := strings.ToLower(u.Scheme), u.Port()
+	defaults := map[string]string{"http": "80", "https": "443"}
+	if _, ok := defaults[scheme]; !ok {
+		return ""
+	}
+	if port == "" {
+		port = defaults[scheme]
+	}
+	n, err := strconv.Atoi(port)
 	if err != nil {
 		return ""
 	}
-	return u.Scheme + "://" + u.Host
+	return scheme + "://" + strings.ToLower(u.Hostname()) + ":" + strconv.Itoa(n)
 }
 
 // checkCapture checks a create's client words and the server's facts by
@@ -552,11 +608,17 @@ func checkCapture(n NewCapture, f CaptureFacts, image bool) (Capture, []Annotati
 	c.must(image == (n.ImageWhy == ""), RefusalInvalid, "a capture with no screenshot says why, and one with a screenshot says nothing")
 	c.field("capture.image_why", "why there is no screenshot", n.ImageWhy)
 	c.must((image && n.ImageScale > 0 && n.ImageScale <= 64) || (!image && n.ImageScale == 0), RefusalInvalid, "the screenshot's scale is not above 0 and at most 64")
+	// How the screenshot was taken is the client's word: none exactly when
+	// there is none, the desktop's only from the desktop client.
+	c.must((!image && n.ImageHow == ImageNone) || (image && (n.ImageHow == ImageTab || (n.ImageHow == ImageDesktop && n.Via == CaptureViaDesktop))),
+		RefusalInvalid, "how the screenshot was taken, %q, is not none without one, or tab or (from the desktop client) desktop with one", n.ImageHow)
+	c.must(n.Label.Changed >= 0, RefusalInvalid, "the selection's read counts fewer than no changed paths")
 	// The origin and its tree, the server's.
 	switch f.Origin {
 	case OriginURL:
 		c.must(f.Run == "" && f.Task == "" && f.Attempt == 0 && f.Tree == "" && f.Commit == "" && f.Content == "" && f.Changed == 0 &&
-			len(f.ChangedPaths) == 0 && !f.Mutable && f.Candidate == "" && f.Where == "", RefusalInvalid, "a link's capture names no run and no tree")
+			len(f.ChangedPaths) == 0 && !f.Mutable && f.Candidate == "" && f.Where == "" && f.Scope == (CaptureScope{}), RefusalInvalid,
+			"a link's capture names no run, no tree and no run's scope")
 	case OriginAttempt, OriginCandidate:
 		c.must(validRunID(f.Run) && taskIDPattern.MatchString(f.Task) && f.Attempt >= 1 && f.Attempt <= MaxFindingLine, RefusalInvalid,
 			"the capture's attempt is not a run's, a task's and a number from 1")
@@ -565,8 +627,10 @@ func checkCapture(n NewCapture, f CaptureFacts, image bool) (Capture, []Annotati
 		c.must(whereIDPattern.MatchString(f.Where), RefusalInvalid, "where the attempt ran is not a runtime's name")
 		c.must(f.Changed >= len(f.ChangedPaths), RefusalInvalid, "the tree's changed paths are more than its count")
 		for _, p := range f.ChangedPaths {
-			c.must(p != "" && utf8.ValidString(p), RefusalInvalid, "a changed path is empty or not valid UTF-8")
+			c.field("capture.changed_path", "a changed path", p)
 		}
+		// A drift kept says when its read was made.
+		c.must(drift(n.Label, f) == nil || !n.Label.ReadAt.IsZero(), RefusalInvalid, "the selection's read, kept as the drift, names no time")
 		if f.Origin == OriginAttempt {
 			c.must(f.Tree == TreeWorktree && f.Mutable && f.Candidate == "", RefusalInvalid, "an attempt's capture is of its worktree, mutable, and names no candidate")
 		} else {
@@ -609,6 +673,10 @@ func checkCapture(n NewCapture, f CaptureFacts, image bool) (Capture, []Annotati
 			o := a.Observed
 			c.must(!o.At.IsZero(), RefusalInvalid, "%s names no moment", label)
 			c.field("capture.title", label+"'s title", o.Title)
+			// Stability is the pixels' verdict: none without a screenshot,
+			// and never stable while the element is in motion.
+			c.must(o.Stable == nil || (image && (!*o.Stable || a.Element.State.Motion == 0)), RefusalInvalid,
+				"%s's stability is claimed without a screenshot, or while it is in motion", label)
 			// One capture is one moment: every element was selected at the
 			// moment the screenshot shows.
 			c.must(o.URL == n.URL && o.Viewport == n.Viewport && o.Epoch == n.Epoch && o.Revision == n.Revision &&
@@ -630,13 +698,7 @@ func checkCapture(n NewCapture, f CaptureFacts, image bool) (Capture, []Annotati
 		ChangedPaths: paths, ChangedCut: cut || len(paths) < f.Changed, Content: f.Content, Mutable: f.Mutable, Candidate: f.Candidate,
 		Where: f.Where, Drift: drift(n.Label, f), Serving: serving(n.Revision, f)}
 	doc := CaptureDocument{Schema: CaptureSchemaName, URL: n.URL, Title: n.Title, Viewport: n.Viewport, SelectedAt: n.SelectedAt.UTC(),
-		Origin: origin, Image: CaptureImage{How: ImageNone, Why: n.ImageWhy}, RetakeOf: n.RetakeOf}
-	if image {
-		doc.Image = CaptureImage{How: ImageTab, Scale: n.ImageScale}
-		if n.Via == CaptureViaDesktop {
-			doc.Image.How = ImageDesktop
-		}
-	}
+		Origin: origin, Image: CaptureImage{How: n.ImageHow, Why: n.ImageWhy, Scale: n.ImageScale}, RetakeOf: n.RetakeOf}
 	return Capture{CaptureDocument: doc, Via: n.Via, Epoch: n.Epoch, Scope: f.Scope}, anns, nil
 }
 
@@ -671,9 +733,10 @@ func drift(sel TreeRead, f CaptureFacts) *TreeRead {
 
 // serving is what the page's declared revision says against the save's
 // read: declared when it names the tree's commit (and its content when
-// the tree has changes), stale when it names another, unconfirmed when it
-// names none, a commit alone over a tree with changes, or there is no
-// tree.
+// the tree has changes) and the tree's content was read, stale when it
+// names another, unconfirmed when it names none, the tree's content was
+// not read (unknown, as the drift takes it), a commit alone over a tree
+// with changes, or there is no tree.
 func serving(page string, f CaptureFacts) Serving {
 	commit, content, plus := strings.Cut(page, "+")
 	state := ServingDeclared
@@ -682,7 +745,7 @@ func serving(page string, f CaptureFacts) Serving {
 		state = ServingUnconfirmed
 	case !strings.HasPrefix(f.Commit, commit):
 		state = ServingStale
-	case plus && f.Content == "":
+	case f.Content == "":
 		state = ServingUnconfirmed
 	case plus && !strings.HasPrefix(f.Content, content):
 		state = ServingStale

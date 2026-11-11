@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,11 +16,26 @@ import (
 // docs/plans/browser-evidence.md "Operations"): each a typed operation
 // (Apply) whose content is the request's digest as the API received it
 // (RequestDigest), so a resend is answered by its receipt, or once that is
-// pruned by the fingerprint the capture's row keeps (prunedAnswer). A
-// file an operation names (a create's screenshot) takes the upload path
-// first (upload), and the operation's one transaction takes its lease
-// with the rows; a refused operation leaves no row, and the file it
-// published is collected at once when nothing else names it (collectOne).
+// pruned by what its first row keeps (prunedAnswer: a create's
+// fingerprint on the capture's row, an edit's on its set's change row, a
+// delete's capture on its tombstone's row), each answered only by its own
+// kind. A file an operation names (a create's screenshot) takes the upload
+// path first (upload), and the operation's one transaction takes its
+// lease with the rows; every way out of it after the file is published
+// that commits no row naming the file (a refusal, a repeat, an error, a
+// failed sync) ends in one collection (collectOne), which removes the
+// file when nothing else names it.
+//
+// What a delete does: it REMOVES what only the live capture held (its
+// screenshot's hold, so the file goes when nothing else names it; its
+// annotations' versions and sets, every note and element report with
+// them), and it HIDES the rest: the page part stays in the capture's row
+// and in the change row that made it, for the sends that froze it and for
+// a later replication, and every read the store offers gives the deleted
+// capture as its tombstone alone (its id, its revision, its times:
+// Capture, ChangeValue), or not found (Document, OpenCaptureImage), or
+// leaves it out (Captures). No change row is rewritten; an export holds
+// what the store holds.
 
 // The intents of the operations on captures beside IntentCaptureCreate.
 const (
@@ -39,9 +55,10 @@ type captureArgs struct {
 // nothing uploaded; else r (nil for no file) takes the upload path, at
 // most limit bytes, check refusing what it would not have published, and
 // the operation's change takes the upload's lease first in its
-// transaction. A lease the change never took is dropped, and a file a
-// refused or failed operation published is collected when nothing names
-// it.
+// transaction. A lease the change never took is dropped, and a file
+// published that no committed row names (the upload failed after its
+// publication, the operation was refused, failed, or answered by another's
+// receipt) is collected when nothing names it.
 func (s *Store) withUpload(ctx context.Context, op Op, intent string, args captureArgs, pre func() error, r io.Reader, limit int64,
 	check func(path string) error, change func(t *tx, u *received) error) (Receipt, error) {
 	if err := op.check(); err != nil {
@@ -63,6 +80,9 @@ func (s *Store) withUpload(ctx context.Context, op Op, intent string, args captu
 	if r != nil {
 		got, err := s.upload(ctx, r, limit, check)
 		if err != nil {
+			if got.sum != "" {
+				_ = s.collectOne(ctx, got.sum)
+			}
 			return Receipt{}, err
 		}
 		u = &got
@@ -84,7 +104,8 @@ func (s *Store) withUpload(ctx context.Context, op Op, intent string, args captu
 		if !ran || err != nil {
 			s.dropLease(ctx, u.lease)
 		}
-		if err != nil || rc.Status != StatusDone {
+		// Only a change that ran and committed done wrote a row naming it.
+		if !ran || err != nil || rc.Status != StatusDone {
 			_ = s.collectOne(ctx, u.sum)
 		}
 	}
@@ -177,10 +198,12 @@ type captureCreated struct {
 
 // retakeVia checks the capture c retakes and says how the two are related:
 // run (the same run and task), else repo (the same repository); a link's
-// capture retakes a link's of the same page origin, related so by nothing
-// more. A deleted capture, another repository's or another origin's is
-// refused invalid. (ticket, a run launched from a ticket a send of the
-// first took it to, comes with the sends.)
+// capture retakes a link's of the same page origin (pageOrigin), related
+// so by nothing more. A deleted capture, another repository's or another
+// origin's is refused invalid. The plan's ticket (a run launched from a
+// ticket a sent send of the first targets) needs the sends, issue #825's:
+// until then such a retake is recorded repo, and a later version leaves
+// the rows already written as they are.
 func (t *tx) retakeVia(c Capture) (string, error) {
 	first, _, err := readCapture(t.ctx, t.tx, c.RetakeOf)
 	if err != nil || !first.DeletedAt.IsZero() {
@@ -192,7 +215,7 @@ func (t *tx) retakeVia(c Capture) (string, error) {
 	link, firstLink := c.Origin.Kind == OriginURL, first.Origin.Kind == OriginURL
 	switch {
 	case link || firstLink:
-		if link != firstLink || pageOrigin(c.URL) != pageOrigin(first.URL) {
+		if link != firstLink || pageOrigin(c.URL) == "" || pageOrigin(c.URL) != pageOrigin(first.URL) {
 			return "", refuse(RefusalInvalid, "a link's capture retakes only a link's of the same page origin")
 		}
 		return "", nil
@@ -286,8 +309,11 @@ func (t *tx) writeSet(c Capture, rev int64, anns []Annotation) error {
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, c.ID, ptr.Set, rev, sha256Hex(encoded), encoded, stamp(t.now), t.op.Actor, t.op.ID); err != nil {
 		return err
 	}
+	// The set's row keeps the operation's fingerprint: an edit resent once
+	// its receipt is pruned is answered by it (prunedAnswer).
 	row := base
-	row.Field, row.Op, row.Value = "sets", OpAdd, fmt.Sprintf(`{"id":%q,"rev":%d,"digest":%q,"members":%s}`, ptr.Set, rev, sha256Hex(encoded), encoded)
+	row.Field, row.Op, row.Value = "sets", OpAdd, fmt.Sprintf(`{"id":%q,"rev":%d,"digest":%q,"members":%s,"fingerprint":%q}`, ptr.Set, rev,
+		sha256Hex(encoded), encoded, t.fp)
 	if err := t.record(row); err != nil {
 		return err
 	}
@@ -393,9 +419,10 @@ func (s *Store) EditCapture(ctx context.Context, op Op, digest, id string, expec
 // tombstone, and in the same transaction what only the live capture held
 // removed, its screenshot's row (holder capture, one remove row of its
 // files) and its annotations' versions and sets, so a capture deleted
-// unsent leaves nothing the sweep must keep. Its sends, the files they
-// hold and the ticket attachments they made stay. not_found when there is
-// none or it is deleted.
+// unsent leaves nothing the sweep must keep; the rest is hidden by every
+// read (the package's comment says what a delete removes and what it
+// hides). Its sends, the files they hold and the ticket attachments they
+// made stay. not_found when there is none or it is deleted.
 func (s *Store) DeleteCapture(ctx context.Context, op Op, id string) (Receipt, error) {
 	return s.withUpload(ctx, op, IntentCaptureDelete, captureArgs{ID: id}, func() error { return nil }, nil, 0, nil, func(t *tx, _ *received) error {
 		c, err := t.liveCapture(id)
@@ -535,7 +562,7 @@ func (s *Store) Document(ctx context.Context, id string, rev int64) ([]byte, err
 }
 
 // Capture reads the capture with the id and its annotations, as a read
-// gives it: a deleted capture's words are not among it (Capture).
+// gives it: a deleted capture is its tombstone alone (Capture).
 // ErrNotFound when there is none.
 func (s *Store) Capture(ctx context.Context, id string) (Capture, error) {
 	var c Capture
@@ -546,7 +573,8 @@ func (s *Store) Capture(ctx context.Context, id string) (Capture, error) {
 			return err
 		}
 		if !c.DeletedAt.IsZero() {
-			c = Capture{CaptureDocument: CaptureDocument{ID: c.ID, Rev: c.Rev}, CreatedAt: c.CreatedAt, DeletedAt: c.DeletedAt}
+			d := tombstoneOf(c)
+			c = Capture{CaptureDocument: CaptureDocument{ID: d.ID, Rev: d.Rev}, CreatedAt: d.CreatedAt, DeletedAt: d.DeletedAt}
 		}
 		c.Annotations = anns
 		return nil
@@ -554,8 +582,30 @@ func (s *Store) Capture(ctx context.Context, id string) (Capture, error) {
 	return c, err
 }
 
-// CaptureFilter picks a list's captures: an attempt's (Run and Task, and
-// Attempt when given); none, the most recent.
+// tombstoneOf is a deleted capture as every read gives it.
+func tombstoneOf(c Capture) captureTombstone {
+	return captureTombstone{ID: c.ID, Rev: c.Rev, CreatedAt: c.CreatedAt, DeletedAt: c.DeletedAt}
+}
+
+// deletedCapture is the tombstone of the capture with the id, as a read
+// of a change row of it gives it: found false when there is none, it is
+// live, or the database is older than captureSchema.
+func deletedCapture(ctx context.Context, q queryer, id string) (string, bool, error) {
+	c, _, err := readCapture(ctx, q, id)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return "", false, nil
+	case err != nil:
+		return "", false, err
+	case c.DeletedAt.IsZero():
+		return "", false, nil
+	}
+	v, err := encodeValue(tombstoneOf(c))
+	return v, err == nil, err
+}
+
+// CaptureFilter picks a list's captures: a run's (Run), a task's of it
+// (and Task), an attempt's (and Attempt); none, the most recent.
 type CaptureFilter struct {
 	Run     string
 	Task    string
@@ -571,18 +621,26 @@ type CapturesPage struct {
 }
 
 // Captures lists the live captures the filter picks, newest first, after
-// the capture with the id after (a page's Next), at most limit, 1 to
-// MaxCapturePage.
+// the capture with the id after (a page's Next, a capture deleted since
+// among them), at most limit, 1 to MaxCapturePage. ErrBadQuery for a limit
+// out of range, a task with no run or an attempt with no task, or an after
+// that names no capture.
 func (s *Store) Captures(ctx context.Context, f CaptureFilter, after string, limit int) (CapturesPage, error) {
 	page := CapturesPage{Captures: []Capture{}}
-	if limit < 1 || limit > MaxCapturePage {
-		return page, fmt.Errorf("dispatch: a page of captures is 1 to %d", MaxCapturePage)
+	switch {
+	case limit < 1 || limit > MaxCapturePage:
+		return page, badQuery("a page of captures is 1 to %d, not %d", MaxCapturePage, limit)
+	case (f.Task != "" && f.Run == "") || (f.Attempt != 0 && f.Task == "") || f.Attempt < 0:
+		return page, badQuery("a page of captures names a task of a run, and an attempt of a task")
 	}
 	where, args := []string{"deleted_at = ''"}, []any{}
-	if f.Run != "" {
-		where, args = append(where, "run_id = ?", "task_id = ?"), append(args, f.Run, f.Task)
-		if f.Attempt > 0 {
-			where, args = append(where, "attempt_n = ?"), append(args, f.Attempt)
+	for _, w := range []struct {
+		col string
+		v   any
+		set bool
+	}{{"run_id", f.Run, f.Run != ""}, {"task_id", f.Task, f.Task != ""}, {"attempt_n", f.Attempt, f.Attempt > 0}} {
+		if w.set {
+			where, args = append(where, w.col+" = ?"), append(args, w.v)
 		}
 	}
 	err := s.read(ctx, func(q queryer) error {
@@ -590,6 +648,13 @@ func (s *Store) Captures(ctx context.Context, f CaptureFilter, after string, lim
 			return nil
 		}
 		if after != "" {
+			var there bool
+			if err := q.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM captures WHERE id = ?)", after).Scan(&there); err != nil {
+				return err
+			}
+			if !there {
+				return badQuery("the page's cursor names no capture")
+			}
 			where = append(where, "(created_at, id) < (SELECT created_at, id FROM captures WHERE id = ?)")
 			args = append(args, after)
 		}
@@ -612,14 +677,19 @@ func (s *Store) Captures(ctx context.Context, f CaptureFilter, after string, lim
 		if len(page.Captures) > limit {
 			page.Captures, page.Next = page.Captures[:limit], page.Captures[limit-1].ID
 		}
+		// A listing shows the first annotation's kind and note alone: one
+		// row of two columns, by the live set's first member.
 		for i := range page.Captures {
 			c := &page.Captures[i]
-			_, anns, err := readCapture(ctx, q, c.ID)
-			if err != nil {
+			var kind, note string
+			switch err := q.QueryRowContext(ctx, `SELECT a.kind, a.note FROM capture_annotation_sets s JOIN capture_annotations a
+				ON a.capture_id = s.capture_id AND a.sha256 = json_extract(s.members, '$[0]') WHERE s.capture_id = ? AND s.id = ?`,
+				c.ID, c.Set.Set).Scan(&kind, &note); {
+			case isNoRows(err):
+			case err != nil:
 				return err
-			}
-			if len(anns) > 0 {
-				c.Annotations = []Annotation{{K: 1, Kind: anns[0].Kind, Note: cutChars(anns[0].Note, 200)}}
+			default:
+				c.Annotations = []Annotation{{K: 1, Kind: kind, Note: cutChars(note, 200)}}
 			}
 		}
 		return nil
@@ -650,23 +720,41 @@ func (s *Store) OpenCaptureImage(ctx context.Context, id string) (Capture, *os.F
 	return c, f, err
 }
 
-// openHeld opens a content file a capture_files row of the holder names.
+// openHeld opens a content file a capture_files row of the holder names:
+// ErrNotFound when no row names it, a release committed between the row's
+// read and the file's open among them (the file missing, the row read
+// again, as OpenAttachment does).
 func (s *Store) openHeld(ctx context.Context, captureID, sum, holder string) (*os.File, error) {
 	if !hashPattern.MatchString(sum) {
 		return nil, ErrNotFound
 	}
-	var held bool
-	err := s.read(ctx, func(q queryer) error {
-		return q.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM capture_files WHERE sha256 = ? AND holder = ? AND capture_id = ?)",
-			sum, holder, captureID).Scan(&held)
-	})
+	isHeld := func() (bool, error) {
+		var held bool
+		err := s.read(ctx, func(q queryer) error {
+			return q.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM capture_files WHERE sha256 = ? AND holder = ? AND capture_id = ?)",
+				sum, holder, captureID).Scan(&held)
+		})
+		return held, err
+	}
+	held, err := isHeld()
 	if err != nil {
 		return nil, err
 	}
 	if !held {
 		return nil, ErrNotFound
 	}
+	s.mu.Lock()
+	beforeOpen := s.beforeOpen
+	s.mu.Unlock()
+	if beforeOpen != nil {
+		beforeOpen()
+	}
 	f, err := os.Open(contentPath(filepath.Join(s.dir, attachmentsDir), sum))
+	if errors.Is(err, fs.ErrNotExist) {
+		if still, rerr := isHeld(); rerr == nil && !still {
+			return nil, ErrNotFound
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("dispatch: the content %s held by %s: %w", sum, holder, err)
 	}
