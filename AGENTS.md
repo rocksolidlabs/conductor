@@ -399,6 +399,10 @@ add its rule here.
   itself: GitHub's release downloads answered 504 for thirty minutes and
   one try of Neovim's tarball and Electron's binary failed four jobs of an
   hour-long run, twice (2026-11-08, #281; `docs/checks.md` says how).
+  A runner's package mirror list is fetched from too: when its first name
+  stopped resolving, apt waited on it for every package until the install
+  failed, so the job takes out a mirror whose name does not resolve and
+  retries the install (2026-11-11, #281).
 - A port probed free is not a port owned, and a health answer at it is
   not the child's: readiness is the answer the child alone can give, its
   own token accepted. Every worktree's e2e suite on a machine picks from
