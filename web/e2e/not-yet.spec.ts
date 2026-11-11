@@ -47,6 +47,15 @@ test('a read through notYet that rejects otherwise fails at once in its own word
   expect(failed?.message).not.toContain('not yet')
 })
 
+test('a read through notYet of a selector that matches nothing fails at once in its own words', async ({ page }) => {
+  const failed = await expect
+    .poll(() => notYet(() => page.$eval('[data-not-there]', (el) => el.id)))
+    .toBe('x')
+    .then(() => null, (e: Error) => e)
+  expect(failed?.message).toContain('Failed to find element matching selector "[data-not-there]"')
+  expect(failed?.message).not.toContain('not yet')
+})
+
 test('a read through notYet lost until its bound says what it last saw', async ({ page }) => {
   const failed = await expect
     .poll(() =>

@@ -415,15 +415,15 @@ add its rule here.
   (2026-11-08, #281). Give each start a folder of its own and reset in it
   every module variable a test reads.
 - A call that moves the page is started, not awaited for its answer,
-  and a read made after it takes a lost answer as "not yet". An evaluate
-  that awaits a promise in the page holds the protocol's answer open for
-  as long as the promise takes, and Playwright reports any loss of an
-  answer as "Execution context was destroyed", a page load's among them.
-  The stubbed app's invite, awaited for its `true`, waited across its own
-  route to the join page and lost the answer in two CI runs, though the
-  route was made in place (no document fetched; the trace drew the join
-  page after); 74 runs here, loaded too, never lost it, so what lost it
-  is not known (`update.spec.ts`, 2026-11-08 and 2026-11-10, #281). Start
+  and a read made after such a call takes a rejection in the words
+  "Execution context was destroyed" as "not yet". Seen: in two CI runs
+  (`update.spec.ts`, 2026-11-08 and 2026-11-10, #281) the evaluate that
+  awaited the stubbed app's invite for its `true`, across the route to
+  the join page the invite makes, was rejected in those words, though
+  the traces show no document fetched and the join page drawn after.
+  It was not reproduced: 74 runs here, loaded too, never saw it, so its
+  cause is not known; Playwright gives those words to more than a page
+  load. The rule makes the specs not depend on it. Start
   such a call without awaiting it and let the page keep its answer
   (`startCall` in `web/e2e/fixtures.ts`), wait for what the call does
   (the address, what the next page draws), and make every read of the
