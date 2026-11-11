@@ -1144,7 +1144,7 @@ export const ELEMENT_BOUNDS = {
 export const PREVIEW_HINT_KINDS = ['attribute', 'vue', 'svelte', 'react'] as const
 export type PreviewHintKind = (typeof PREVIEW_HINT_KINDS)[number]
 
-/** The steps the bridge cuts a report by to fit MAX_ELEMENT_REPORT, in their order. */
+/** The steps the bridge cuts a report by to fit MAX_ELEMENT_REPORT, in their order: a report's cut is always a prefix of them. */
 export const ELEMENT_CUTS = ['neighbourhood', 'html', 'styles', 'attributes', 'tag', 'hints', 'ancestors', 'attribute-count', 'names', 'style-count'] as const
 export type ElementCut = (typeof ELEMENT_CUTS)[number]
 
@@ -1206,6 +1206,8 @@ export type PreviewToWorkbench = Marked &
     | { t: 'cancelled' }
   )
 export type PreviewMessage = PreviewToBridge | PreviewToWorkbench
+/** The way a message travels: to the bridge (the workbench's) or to the workbench (the bridge's answers). */
+export type PreviewDirection = 'bridge' | 'workbench'
 
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g
 
@@ -1214,27 +1216,80 @@ export function wellFormed(s: string): string {
   return s.replace(LONE_SURROGATE, '�')
 }
 
-/**
- * v's size as the bridge and the server count it (proto.PreviewMeasure): the UTF-8 length of its JSON as Go writes it with HTML
- * escaping off, lone surrogates as U+FFFD, U+2028 and U+2029 in six bytes each. A string's measure counts its quotes.
- */
-export function previewMeasure(v: unknown): number {
-  const json = JSON.stringify(v, (_k, x) => (typeof x === 'string' ? wellFormed(x) : x))
-  if (json === undefined) return Infinity
-  let seps = 0
-  for (let i = 0; i < json.length; i++) {
-    const c = json.charCodeAt(i)
-    if (c === 0x2028 || c === 0x2029) seps++
-  }
-  return byteLength(json) + 3 * seps
-}
-
-/** A string's measure in a message, its quotes left out. */
-export function measuredBytes(s: string): number {
-  return previewMeasure(s) - 2
-}
+/** How deep a message's values go: the message, its element, a list of the element's, an item of that list. */
+const PREVIEW_DEPTH = 4
 
 type Obj = Record<string, unknown>
+
+/** Whether v is a plain object: not an array, a date, a map or any other kind a structured clone carries. */
+function plain(v: unknown): v is Obj {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false
+  const p = Object.getPrototypeOf(v)
+  return p === Object.prototype || p === null
+}
+
+/** Whether v is an array with every index present and no member beside them. */
+function dense(v: unknown): v is unknown[] {
+  return Array.isArray(v) && Object.getPrototypeOf(v) === Array.prototype && Object.keys(v).length === v.length
+}
+
+/**
+ * v's size as the bridge and the server count it (proto.PreviewMeasure): the UTF-8 length of its JSON as Go writes it with HTML
+ * escaping off, lone surrogates as U+FFFD, U+2028 and U+2029 in six bytes each, a negative zero as 0. A string's measure counts its
+ * quotes. It is one walk of v that stops past most: Infinity for a value past most and for one JSON does not hold as it is (a big
+ * integer, a symbol, a function, undefined, a number not finite, an object of another kind than a plain object or an array, an array
+ * with a hole or a named member, nesting past a message's depth), so nothing is written out to be measured and nothing throws.
+ */
+export function previewMeasure(v: unknown, most = Infinity): number {
+  let n = 0
+  const add = (k: number) => (n += k) <= most
+  const walk = (x: unknown, depth: number): boolean => {
+    switch (typeof x) {
+      case 'string':
+        // Every code unit is a byte at least: a string longer than what is left is past it unread.
+        return x.length <= most - n && add(measuredBytes(x) + 2)
+      case 'number':
+        return Number.isFinite(x) && add(String(x).length) // String(-0) is "0", as JSON.stringify writes it
+      case 'boolean':
+        return add(x ? 4 : 5)
+      case 'object':
+        break
+      default:
+        return false
+    }
+    if (x === null) return add(4)
+    if (depth >= PREVIEW_DEPTH) return false
+    if (Array.isArray(x)) {
+      if (x.length > most - n || !dense(x) || !add(2 + Math.max(0, x.length - 1))) return false
+      for (let i = 0; i < x.length; i++) if (!walk(x[i], depth + 1)) return false
+      return true
+    }
+    if (!plain(x)) return false
+    const keys = Object.keys(x)
+    if (keys.length > most - n || !add(2 + Math.max(0, keys.length - 1))) return false
+    for (const k of keys) if (k.length > most - n || !add(measuredBytes(k) + 3) || !walk(x[k], depth + 1)) return false
+    return true
+  }
+  return walk(v, 0) ? n : Infinity
+}
+
+/** A string's measure in a message, its quotes left out: U+2028, U+2029 and control characters but \b, \f, \n, \r and \t in six bytes. */
+export function measuredBytes(s: string): number {
+  let n = 0
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    if (c < 0x20) n += c === 8 || c === 9 || c === 10 || c === 12 || c === 13 ? 2 : 6
+    else if (c === 0x22 || c === 0x5c) n += 2
+    else if (c < 0x80) n += 1
+    else if (c < 0x800) n += 2
+    else if (c === 0x2028 || c === 0x2029) n += 6
+    else if (c >= 0xd800 && c <= 0xdbff && (s.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
+      n += 4
+      i++
+    } else n += 3 // the rest of the plane, and a lone surrogate as U+FFFD
+  }
+  return n
+}
 
 function exactKeys(m: Obj, keys: string[]): boolean {
   const own = Object.keys(m)
@@ -1242,20 +1297,22 @@ function exactKeys(m: Obj, keys: string[]): boolean {
 }
 
 function object(v: unknown, ...keys: string[]): Obj | null {
-  if (typeof v !== 'object' || v === null || Array.isArray(v)) return null
-  return exactKeys(v as Obj, keys) ? (v as Obj) : null
+  return plain(v) && exactKeys(v, keys) ? v : null
 }
 
-const str = (v: unknown, most: number) => typeof v === 'string' && measuredBytes(v) <= most
+const str = (v: unknown, most: number) => typeof v === 'string' && v.length <= most && measuredBytes(v) <= most
 const num = (v: unknown, min: number) => typeof v === 'number' && Number.isFinite(v) && v >= min
 const integer = (v: unknown) => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= MAX_PREVIEW_INT
 const bool = (v: unknown) => typeof v === 'boolean'
 
-function list(v: unknown, most: number, item: (x: unknown) => boolean): boolean {
-  return Array.isArray(v) && v.length <= most && v.every(item)
+/** Whether v is a list of at most most items, every index judged (a hole is no item). */
+function list(v: unknown, most: number, item: (x: unknown, i: number) => boolean): boolean {
+  if (!dense(v) || v.length > most) return false
+  for (let i = 0; i < v.length; i++) if (!item(v[i], i)) return false
+  return true
 }
 
-const pair = (name: number, value: number) => (v: unknown) => Array.isArray(v) && v.length === 2 && str(v[0], name) && str(v[1], value)
+const pair = (name: number, value: number) => (v: unknown) => dense(v) && v.length === 2 && str(v[0], name) && str(v[1], value)
 
 function pageFields(m: Obj): boolean {
   if (typeof m.title !== 'string' || [...m.title].length > MAX_PREVIEW_TITLE || !str(m.url, MAX_PREVIEW_URL) || !integer(m.epoch)) return false
@@ -1266,14 +1323,14 @@ function pageFields(m: Obj): boolean {
 }
 
 function hintKinds(v: unknown): boolean {
-  return Array.isArray(v) && v.length <= PREVIEW_HINT_KINDS.length && new Set(v).size === v.length && v.every((x) => (PREVIEW_HINT_KINDS as readonly unknown[]).includes(x))
+  return list(v, PREVIEW_HINT_KINDS.length, (x, i) => (PREVIEW_HINT_KINDS as readonly unknown[]).includes(x) && (v as unknown[]).indexOf(x) === i)
 }
 
 /** Whether v is an element report by its schema, each field within its bound and the whole within MAX_ELEMENT_REPORT. */
 export function validElement(v: unknown): v is ElementReport {
   const B = ELEMENT_BOUNDS
   const e = object(v, 'tag', 'id', 'classes', 'role', 'name', 'text', 'selector', 'box', 'attributes', 'state', 'hit', 'html', 'neighbourhood', 'ancestors', 'styles', 'hints', 'cut')
-  if (!e || previewMeasure(e) > MAX_ELEMENT_REPORT) return false
+  if (!e || previewMeasure(e, MAX_ELEMENT_REPORT) > MAX_ELEMENT_REPORT) return false
   if (!['tag', 'id', 'classes', 'role', 'name'].every((k) => str(e[k], B.name))) return false
   if (!str(e.text, B.text) || !str(e.selector, B.selector) || !str(e.html, B.html) || !str(e.neighbourhood, B.neighbourhood)) return false
   const box = object(e.box, 'x', 'y', 'width', 'height')
@@ -1285,7 +1342,7 @@ export function validElement(v: unknown): v is ElementReport {
   if (!hit || !bool(hit.self) || !str(hit.selector, B.selector) || !str(hit.tag, B.name)) return false
   const ancestor = (x: unknown) => {
     const a = object(x, 'tag', 'id', 'classes', 'role')
-    return !!a && ['tag', 'id', 'classes', 'role'].every((k) => str(a[k], B.ancestor)) && previewMeasure(a) <= B.ancestor
+    return !!a && ['tag', 'id', 'classes', 'role'].every((k) => str(a[k], B.ancestor)) && previewMeasure(a, B.ancestor) <= B.ancestor
   }
   const hint = (x: unknown) => {
     const h = object(x, 'how', 'file', 'line', 'column', 'component')
@@ -1296,7 +1353,8 @@ export function validElement(v: unknown): v is ElementReport {
     list(e.ancestors, B.ancestors, ancestor) &&
     list(e.styles, B.styles, pair(B.styleName, B.styleValue)) &&
     list(e.hints, B.hints, hint) &&
-    list(e.cut, ELEMENT_CUTS.length, (x) => (ELEMENT_CUTS as readonly unknown[]).includes(x))
+    // The cut is a prefix of ELEMENT_CUTS: its first steps, in their order.
+    list(e.cut, ELEMENT_CUTS.length, (x, i) => x === ELEMENT_CUTS[i])
   )
 }
 
@@ -1315,20 +1373,23 @@ const PREVIEW_FIELDS: Record<string, string[]> = {
 const TO_BRIDGE = new Set(['hello', 'select', 'describe', 'look', 'cancel'])
 
 /**
- * v as one of the bridge's messages held to its type's schema (proto.ParsePreviewMessage): every field the type carries and no
- * other, each within its bound, the whole within its direction's bound and an element within MAX_ELEMENT_REPORT. A hello gives the
- * nonce (any well-formed one passes); every other message must carry `nonce`, the one the hello gave. null for anything else.
+ * v, a message travelling to, as one of the bridge's messages held to its type's schema (proto.ParsePreviewMessage): a type of to's
+ * way, every field the type carries and no other, each within its bound, the whole within to's bound and an element within
+ * MAX_ELEMENT_REPORT. A hello gives the nonce (any well-formed one passes); every other message must carry `nonce`, the one the
+ * hello gave. v is a value a page made (a structured clone), so it is judged in one bounded walk before anything else reads it
+ * whole (previewMeasure), the type's keys first: null for anything else, never an exception.
  */
-export function parsePreviewMessage(v: unknown, nonce: string): PreviewMessage | null {
-  if (typeof v !== 'object' || v === null || Array.isArray(v)) return null
-  const m = v as Obj
+export function parsePreviewMessage(v: unknown, to: PreviewDirection, nonce: string): PreviewMessage | null {
+  if (!plain(v)) return null
+  const m = v
   const t = typeof m.t === 'string' ? m.t : ''
   const fields = Object.hasOwn(PREVIEW_FIELDS, t) ? PREVIEW_FIELDS[t]! : null
-  if (!fields || m.conductor !== PREVIEW_MARK) return null
-  if (previewMeasure(m) > (TO_BRIDGE.has(t) ? MAX_PREVIEW_TO_BRIDGE : MAX_PREVIEW_TO_WORKBENCH)) return null
+  if (!fields || m.conductor !== PREVIEW_MARK || TO_BRIDGE.has(t) !== (to === 'bridge')) return null
   const keys = ['conductor', 't', 'nonce', ...fields]
   if (t === 'described') keys.push(Object.hasOwn(m, 'element') ? 'element' : 'missing')
   if (!exactKeys(m, keys)) return null
+  const most = to === 'bridge' ? MAX_PREVIEW_TO_BRIDGE : MAX_PREVIEW_TO_WORKBENCH
+  if (previewMeasure(m, most) > most) return null
   if (typeof m.nonce !== 'string' || !PREVIEW_NONCE.test(m.nonce) || (t !== 'hello' && m.nonce !== nonce)) return null
   if (t === 'describe' && (typeof m.selector !== 'string' || m.selector === '' || measuredBytes(m.selector) > MAX_PREVIEW_SELECTOR)) return null
   if (['ready', 'selected', 'described', 'looked'].includes(t) && !pageFields(m)) return null

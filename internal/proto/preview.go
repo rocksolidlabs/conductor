@@ -45,6 +45,17 @@ const (
 	PreviewCancelled = "cancelled"
 )
 
+// PreviewDirection is the way a message travels: to the bridge (the
+// workbench's hello, select, describe, look and cancel) or to the
+// workbench (the bridge's answers). A parser is told which it receives and
+// refuses the other way's types.
+type PreviewDirection int
+
+const (
+	PreviewToBridge PreviewDirection = iota + 1
+	PreviewToWorkbench
+)
+
 // The bridge's bounds, in bytes as PreviewMeasure counts them but where
 // said.
 const (
@@ -55,6 +66,14 @@ const (
 	MaxPreviewToBridge    = 4 << 10
 	MaxPreviewToWorkbench = 64 << 10
 	MaxElementReport      = 32 << 10
+	// MaxPreviewTextToBridge and MaxPreviewTextToWorkbench bound a
+	// message's text as it arrives, before anything decodes it: twice its
+	// direction's measured bound, since the most an honest JSON text
+	// writes beyond its measure is a lone surrogate's escape, six bytes
+	// for the three of its U+FFFD. A reader of a message's text reads no
+	// more than this.
+	MaxPreviewTextToBridge    = 2 * MaxPreviewToBridge
+	MaxPreviewTextToWorkbench = 2 * MaxPreviewToWorkbench
 	// MaxPreviewSelector bounds a describe's selector, MaxPreviewURL a
 	// page's URL, MaxPreviewTitle its title (in characters),
 	// MaxPreviewUserAgent the browser's user agent and MaxPreviewRevision
@@ -101,7 +120,8 @@ const (
 var PreviewHintKinds = []string{"attribute", "vue", "svelte", "react"}
 
 // ElementCuts are the steps the bridge cuts a report by to fit
-// MaxElementReport, in their order, as its cut names them.
+// MaxElementReport, in their order; a report's cut names the first of
+// them it took, in this order, so it is always a prefix of this list.
 var ElementCuts = []string{"neighbourhood", "html", "styles", "attributes", "tag", "hints", "ancestors", "attribute-count", "names", "style-count"}
 
 var (
@@ -212,14 +232,16 @@ type PreviewMessage struct {
 	Missing   bool             `json:"missing,omitempty"`
 }
 
-// errPreview is every refusal of ParsePreviewMessage: what it names is for
-// a test, never shown to the page.
+// errPreview is every refusal of ParsePreviewMessage. What a refusal adds
+// to it is fixed words, never a type, a mark or a member's text of the
+// message, so a caller may answer or log it.
 var errPreview = errors.New("not a preview message")
 
 // PreviewMeasure is v's size as the bridge and the server count it: the
 // UTF-8 length of its JSON as Go writes it with HTML escaping off (U+2028,
 // U+2029 and control characters but \b, \f, \n, \r and \t in six bytes,
-// invalid UTF-8 as U+FFFD). web/app/utils/protocol.ts's previewMeasure
+// invalid UTF-8 as U+FFFD), a negative zero counted as 0, the one byte
+// JSON.stringify writes for it. web/app/utils/protocol.ts's previewMeasure
 // counts the same.
 func PreviewMeasure(v any) int {
 	var b bytes.Buffer
@@ -228,30 +250,159 @@ func PreviewMeasure(v any) int {
 	if err := enc.Encode(v); err != nil {
 		return math.MaxInt
 	}
-	return b.Len() - 1 // the newline Encode ends with
+	switch v.(type) {
+	case nil, bool, float64, string, map[string]any, []any:
+	default:
+		// A typed value: its negative zeros are found in its JSON read back.
+		if err := json.Unmarshal(b.Bytes(), &v); err != nil {
+			return math.MaxInt
+		}
+	}
+	return b.Len() - 1 - negativeZeros(v) // the newline Encode ends with
 }
 
-// ParsePreviewMessage reads data as one of the bridge's messages and holds
-// it to its type's schema: every field the type carries there and no
-// other, each of its kind and within its bound, the whole within the
-// bound of its direction (MaxPreviewToBridge or MaxPreviewToWorkbench) and
-// an element within MaxElementReport. A hello gives the nonce: any
+// negativeZeros counts the negative zeros in v, a value as encoding/json
+// decodes it: Go writes each as -0, one byte more than its measure.
+func negativeZeros(v any) int {
+	switch x := v.(type) {
+	case float64:
+		if x == 0 && math.Signbit(x) {
+			return 1
+		}
+	case map[string]any:
+		n := 0
+		for _, e := range x {
+			n += negativeZeros(e)
+		}
+		return n
+	case []any:
+		n := 0
+		for _, e := range x {
+			n += negativeZeros(e)
+		}
+		return n
+	}
+	return 0
+}
+
+// ParsePreviewMessage reads data, a message travelling to, as one of the
+// bridge's messages and holds it to its type's schema. Its text is
+// refused past to's text bound (MaxPreviewTextToBridge or
+// MaxPreviewTextToWorkbench) or when it is not UTF-8, before anything
+// decodes it; it is then decoded once, and the value is judged: a type of
+// to's way, every field the type carries there and no other (a member
+// given twice is its last), each of its kind and within its bound (a
+// whole number in any spelling of its value, 3, 3.0 or 3e0), the whole
+// within to's measured bound (MaxPreviewToBridge or MaxPreviewToWorkbench)
+// and an element within MaxElementReport. A hello gives the nonce: any
 // well-formed one passes; every other message must carry nonce, the one
-// the hello gave ("" before any hello refuses them all). Anything else is
-// refused.
-func ParsePreviewMessage(data []byte, nonce string) (PreviewMessage, error) {
+// the hello gave ("" before any hello refuses them all). The message is
+// built from the value judged. Anything else is refused.
+func ParsePreviewMessage(data []byte, to PreviewDirection, nonce string) (PreviewMessage, error) {
+	text, most := MaxPreviewTextToBridge, MaxPreviewToBridge
+	switch to {
+	case PreviewToBridge:
+	case PreviewToWorkbench:
+		text, most = MaxPreviewTextToWorkbench, MaxPreviewToWorkbench
+	default:
+		return PreviewMessage{}, fmt.Errorf("%w: no direction", errPreview)
+	}
+	if len(data) > text {
+		return PreviewMessage{}, fmt.Errorf("%w: its text is past its bound", errPreview)
+	}
+	if !utf8.Valid(data) {
+		return PreviewMessage{}, fmt.Errorf("%w: its text is not UTF-8", errPreview)
+	}
 	var v any
 	if err := json.Unmarshal(data, &v); err != nil {
 		return PreviewMessage{}, errPreview
 	}
-	if err := checkPreview(v, nonce); err != nil {
+	m, err := checkPreview(v, to, most, nonce)
+	if err != nil {
 		return PreviewMessage{}, err
 	}
-	var m PreviewMessage
-	if err := json.Unmarshal(data, &m); err != nil {
-		return PreviewMessage{}, errPreview
+	return buildPreview(m), nil
+}
+
+// buildPreview is the message m holds, m judged by checkPreview: every
+// field read from the value judged, never from the text again.
+func buildPreview(m map[string]any) PreviewMessage {
+	p := PreviewMessage{Conductor: PreviewMark, Missing: m["missing"] == true}
+	p.T, _ = m["t"].(string)
+	p.Nonce, _ = m["nonce"].(string)
+	p.Selector, _ = m["selector"].(string)
+	p.URL, _ = m["url"].(string)
+	p.Title, _ = m["title"].(string)
+	p.Revision, _ = m["revision"].(string)
+	if _, ok := m["version"]; ok {
+		p.Version = PreviewVersion
 	}
-	return m, nil
+	p.Epoch = whole(m["epoch"])
+	if vp, ok := m["viewport"].(map[string]any); ok {
+		p.Viewport = &PreviewViewport{Width: number(vp["width"]), Height: number(vp["height"]), DPR: number(vp["dpr"]),
+			ScrollX: number(vp["scrollX"]), ScrollY: number(vp["scrollY"]), ColorScheme: text(vp["colorScheme"]), UserAgent: text(vp["userAgent"])}
+	}
+	if hs, ok := m["hints"].([]any); ok {
+		p.Hints = texts(hs)
+	}
+	if e, ok := m["element"].(map[string]any); ok {
+		p.Element = buildElement(e)
+	}
+	return p
+}
+
+// buildElement is the report e holds, e judged by validElement.
+func buildElement(e map[string]any) *ElementReport {
+	r := &ElementReport{Tag: text(e["tag"]), ID: text(e["id"]), Classes: text(e["classes"]), Role: text(e["role"]), Name: text(e["name"]),
+		Text: text(e["text"]), Selector: text(e["selector"]), HTML: text(e["html"]), Neighbourhood: text(e["neighbourhood"])}
+	box, _ := e["box"].(map[string]any)
+	r.Box = ElementBox{X: number(box["x"]), Y: number(box["y"]), Width: number(box["width"]), Height: number(box["height"])}
+	st, _ := e["state"].(map[string]any)
+	r.State = ElementState{Disabled: st["disabled"] == true, Hidden: st["hidden"] == true, AriaDisabled: text(st["ariaDisabled"]),
+		AriaExpanded: text(st["ariaExpanded"]), PointerEvents: text(st["pointerEvents"]), Inert: st["inert"] == true, Hovered: st["hovered"] == true,
+		Motion: whole(st["motion"])}
+	hit, _ := e["hit"].(map[string]any)
+	r.Hit = ElementHit{Self: hit["self"] == true, Selector: text(hit["selector"]), Tag: text(hit["tag"])}
+	pairs := func(v any) [][2]string {
+		a, _ := v.([]any)
+		out := make([][2]string, len(a))
+		for i, x := range a {
+			p, _ := x.([]any)
+			out[i] = [2]string{text(p[0]), text(p[1])}
+		}
+		return out
+	}
+	r.Attributes, r.Styles = pairs(e["attributes"]), pairs(e["styles"])
+	as, _ := e["ancestors"].([]any)
+	r.Ancestors = make([]ElementAncestor, len(as))
+	for i, x := range as {
+		a, _ := x.(map[string]any)
+		r.Ancestors[i] = ElementAncestor{Tag: text(a["tag"]), ID: text(a["id"]), Classes: text(a["classes"]), Role: text(a["role"])}
+	}
+	hs, _ := e["hints"].([]any)
+	r.Hints = make([]ElementHint, len(hs))
+	for i, x := range hs {
+		h, _ := x.(map[string]any)
+		r.Hints[i] = ElementHint{How: text(h["how"]), File: text(h["file"]), Line: whole(h["line"]), Column: whole(h["column"]), Component: text(h["component"])}
+	}
+	cut, _ := e["cut"].([]any)
+	r.Cut = texts(cut)
+	return r
+}
+
+func text(v any) string    { s, _ := v.(string); return s }
+func number(v any) float64 { n, _ := v.(float64); return n }
+
+// whole is v, a whole number integer judged, as an int64 (a negative zero
+// is 0).
+func whole(v any) int64 { n, _ := v.(float64); return int64(n) }
+
+func texts(a []any) []string {
+	out := make([]string, len(a))
+	for i, x := range a {
+		out[i] = text(x)
+	}
+	return out
 }
 
 // previewFields are the fields each type carries beside conductor, t and
@@ -274,22 +425,21 @@ func toBridge(t string) bool {
 	return false
 }
 
-func checkPreview(v any, nonce string) error {
+// checkPreview judges v, a message decoded once, as one travelling to
+// within most bytes: its type and mark, its type's keys, then its measure,
+// then each field.
+func checkPreview(v any, to PreviewDirection, most int, nonce string) (map[string]any, error) {
 	m, ok := v.(map[string]any)
 	if !ok {
-		return errPreview
+		return nil, errPreview
 	}
 	t, _ := m["t"].(string)
 	fields, known := previewFields[t]
 	if !known || m["conductor"] != PreviewMark {
-		return fmt.Errorf("%w: type %q, mark %v", errPreview, t, m["conductor"])
+		return nil, fmt.Errorf("%w: the type or the mark", errPreview)
 	}
-	most := MaxPreviewToWorkbench
-	if toBridge(t) {
-		most = MaxPreviewToBridge
-	}
-	if PreviewMeasure(v) > most {
-		return fmt.Errorf("%w: past %d bytes", errPreview, most)
+	if toBridge(t) != (to == PreviewToBridge) {
+		return nil, fmt.Errorf("%w: a type of the other way", errPreview)
 	}
 	keys := append([]string{"conductor", "t", "nonce"}, fields...)
 	if t == PreviewDescribed {
@@ -300,37 +450,40 @@ func checkPreview(v any, nonce string) error {
 		}
 	}
 	if !exactKeys(m, keys) {
-		return fmt.Errorf("%w: %s's fields", errPreview, t)
+		return nil, fmt.Errorf("%w: the type's fields", errPreview)
+	}
+	if PreviewMeasure(v) > most {
+		return nil, fmt.Errorf("%w: past its bound", errPreview)
 	}
 	got, _ := m["nonce"].(string)
 	if !previewNonce.MatchString(got) || (t != PreviewHello && got != nonce) {
-		return fmt.Errorf("%w: the nonce", errPreview)
+		return nil, fmt.Errorf("%w: the nonce", errPreview)
 	}
 	switch t {
 	case PreviewDescribe:
 		if s, ok := m["selector"].(string); !ok || s == "" || measured(s) > MaxPreviewSelector {
-			return fmt.Errorf("%w: the selector", errPreview)
+			return nil, fmt.Errorf("%w: the selector", errPreview)
 		}
 	case PreviewReady, PreviewSelected, PreviewDescribed, PreviewLooked:
 		if !pageFields(m) {
-			return fmt.Errorf("%w: the page", errPreview)
+			return nil, fmt.Errorf("%w: the page", errPreview)
 		}
 	}
 	switch t {
 	case PreviewReady:
 		if n, ok := m["version"].(float64); !ok || n != PreviewVersion || !hintKinds(m["hints"]) {
-			return fmt.Errorf("%w: the version or the hints", errPreview)
+			return nil, fmt.Errorf("%w: the version or the hints", errPreview)
 		}
 	case PreviewSelected:
 		if !validElement(m["element"]) {
-			return fmt.Errorf("%w: the element", errPreview)
+			return nil, fmt.Errorf("%w: the element", errPreview)
 		}
 	case PreviewDescribed:
 		if el, ok := m["element"]; ok && !validElement(el) || !ok && m["missing"] != true {
-			return fmt.Errorf("%w: the element", errPreview)
+			return nil, fmt.Errorf("%w: the element", errPreview)
 		}
 	}
-	return nil
+	return m, nil
 }
 
 // exactKeys reports whether m has every key of keys and no other.
@@ -472,8 +625,17 @@ func validElement(v any) bool {
 		how, _ := h["how"].(string)
 		return h != nil && slices.Contains(PreviewHintKinds, how) && str(h["file"], MaxHintFile) && integer(h["line"]) && integer(h["column"]) && str(h["component"], MaxHintComponent)
 	}
-	cut := func(v any) bool { s, _ := v.(string); return slices.Contains(ElementCuts, s) }
+	// The cut is a prefix of ElementCuts: its first steps, in their order.
+	cut, ok := e["cut"].([]any)
+	if !ok || len(cut) > len(ElementCuts) {
+		return false
+	}
+	for i, x := range cut {
+		if x != ElementCuts[i] {
+			return false
+		}
+	}
 	return list(e["attributes"], MaxElementAttributes, pair(MaxElementAttributeName, MaxElementAttributeValue)) &&
 		list(e["ancestors"], MaxAncestors, ancestor) && list(e["styles"], MaxStyles, pair(MaxStyleName, MaxStyleValue)) &&
-		list(e["hints"], MaxHints, hint) && list(e["cut"], len(ElementCuts), cut)
+		list(e["hints"], MaxHints, hint)
 }
