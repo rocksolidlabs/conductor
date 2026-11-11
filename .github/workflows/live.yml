@@ -37,35 +37,48 @@ jobs:
       - run: npm ci
         working-directory: web
       - run: make build
-      # ci.yml's e2e job has the same two steps and says why (2026-11-11, #281): keep them alike.
+      # ci.yml's e2e job has the same three steps and says why (2026-11-11, #281): keep them alike.
       - name: Take out package mirrors whose names do not resolve
+        timeout-minutes: 5
         run: |
           f=/etc/apt/apt-mirrors.txt fallback=https://mirrors.edge.kernel.org/ubuntu/
           if [ ! -f "$f" ]; then echo "No $f on this image: its package sources are left as they are."; exit 0; fi
           echo "The runner's mirror list, $f:"; cat "$f"
-          kept=$(mktemp)
+          blank='^[[:space:]]*(#|$)'
+          active=$(grep -vE "$blank" "$f" || true)
+          if [ -z "$active" ] || printf '%s\n' "$active" | grep -qv '://'; then echo "$f is not a list of mirror addresses: left as it is."; exit 0; fi
+          name_of() { h=${1#*://}; printf '%s' "${h%%[/[:space:]]*}"; }
+          resolves() { [ -n "$1" ] && timeout 30 getent ahosts "$1" >/dev/null; }
+          first=$(name_of "$(printf '%s\n' "$active" | head -n 1)")
+          if resolves "$first"; then echo "The first mirror's name, $first, resolves: $f is unchanged."; exit 0; fi
+          kept=$(mktemp) n=0
           while IFS= read -r line || [ -n "$line" ]; do
-            case "$line" in
-              *://*) host=${line#*://}; host=${host%%[/[:space:]]*} ;;
-              *) host= ;;
-            esac
-            if [ -z "$host" ] || timeout 30 getent ahosts "$host" >/dev/null; then
-              printf '%s\n' "$line" >> "$kept"
-            else
-              echo "::warning::$host does not resolve: taken out of $f for this job (#281)"
-            fi
+            if [[ $line =~ $blank ]]; then printf '%s\n' "$line" >> "$kept"
+            elif h=$(name_of "$line"); resolves "$h"; then printf '%s\n' "$line" >> "$kept"; n=$((n + 1))
+            else echo "::warning::$h does not resolve: taken out of $f for this job (#281)"; fi
           done < "$f"
-          if grep -q '://' "$f" && ! grep -q '://' "$kept"; then
+          if [ "$n" = 0 ]; then
             echo "::warning::no mirror of $f resolves: this job uses $fallback (#281)"
-            printf '%s\tpriority:1\n' "$fallback" > "$kept"
+            printf '%s\tpriority:1\n' "$fallback" >> "$kept"
           fi
-          if cmp -s "$f" "$kept"; then echo "Every mirror's name resolves: $f is unchanged."; else sudo cp "$kept" "$f"; echo "$f now:"; cat "$f"; fi
-      - name: Install Chromium with its system packages
+          sudo cp "$kept" "$f"; echo "$f now:"; cat "$f"
+      - name: Install Chromium's system packages
+        timeout-minutes: 40
         working-directory: web
         run: |
           for try in 1 2 3; do
-            npx playwright install --with-deps chromium && exit 0
-            echo "::warning::try $try of 3 of the browser's install failed (#281)"
+            sudo timeout -k 30 600 "$(command -v node)" node_modules/.bin/playwright install-deps chromium && exit 0
+            echo "::warning::try $try of 3 of the browser's system packages failed (#281)"
+            [ "$try" = 3 ] || { sleep 60; sudo dpkg --configure -a || true; }
+          done
+          exit 1
+      - name: Download Chromium
+        timeout-minutes: 40
+        working-directory: web
+        run: |
+          for try in 1 2 3; do
+            timeout -k 30 600 npx playwright install chromium && exit 0
+            echo "::warning::try $try of 3 of the browser's download failed (#281)"
             [ "$try" = 3 ] || sleep 60
           done
           exit 1
