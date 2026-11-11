@@ -2329,22 +2329,33 @@ text; and it does nothing until a workbench origin says `hello`.
 
 **Serving.** `GET /preview-bridge.js` (no credential: a script tag
 carries none, and the script holds no secret) serves the bridge the web
-build emits (the script and its build are PV1 PR-2b's) with the server's
-workbench origins, a JSON array of strings, in the marker's place. The
-marker is the one double-quoted literal `"__CONDUCTOR_WORKBENCH_ORIGINS__"`,
-exactly once, its name nowhere else in the script: a script without it,
-with it twice, in single or mismatched quotes, or with its name in a
-comment or another string as well, is none. The array is data: beside
+build emits (the script and its build are PV1 PR-2b's) whole, its bytes
+unchanged, inside a wrapper the server writes:
+`(function (conductorWorkbenchOrigins) {` and a line break, the script,
+a line break and `})(`, the server's workbench origins as a JSON array
+of strings, and `);`. Nothing of the script is searched, counted or
+replaced; the script is a script, not a module, and reads its origins
+from that parameter and from nowhere else. The array is data: beside
 JSON's own escapes (`"`, `\`, `<`, `>`, `&`, control characters, U+2028,
 U+2029), `'`, `` ` `` and `$` are written as `\u` escapes, so no origin's
 text can end a string of any quote, a line, a comment or the script. The
-origins are written as a browser writes an origin (scheme and host in
-lower case, an IPv6 host in brackets, the scheme's default port left
-out): each listener's at the port it is bound to (the plain one's and
-the TLS one's; a listener on a loopback address names that address and
-`127.0.0.1`, `localhost` and `[::1]` at its port, one on every address
-those three, one on another address that address alone), and
-`publicUrl`'s origin, each once, at most 16, each at most 256 bytes.
+origins are written as a browser writes an origin: each listener's at
+the port it is bound to (the plain one's and the TLS one's; a listener
+on a loopback address names that address and `127.0.0.1`, `localhost`
+and `[::1]` at its port; one on every address those three and the
+machine's addresses of both families as they are when the script is
+served, but IPv6 link-local ones; one on another address that address
+alone), and `publicUrl`'s origin when `publicUrl` already writes it as
+a browser does and names another machine: scheme and host in lower
+case, a name in ASCII (an internationalised one in its `xn--` form)
+whose last label begins with a letter, an IPv4 address in its dotted
+form, an IPv6 one in brackets in its own form (never as IPv4), a port
+without leading zeros that is not the scheme's default. A `publicUrl`
+written otherwise is left out (`conductor serve` says so once as it
+starts), and a local one (a local name, a loopback address) is never
+written as one: a loopback origin enters the list only through a
+listener that holds it. Each origin once, at most 16, each at most 256
+bytes.
 `Content-Type: text/javascript;
 charset=utf-8`, `Cache-Control: no-cache`, `Cross-Origin-Resource-Policy:
 cross-origin`, `X-Content-Type-Options: nosniff`. A server whose embedded
@@ -2360,28 +2371,44 @@ tree of a server with no bridge or no loopback listener, none.
 **Messages** (`conductor-preview/1`; `internal/proto/preview.go` and
 `web/app/utils/protocol.ts`, both held to
 `internal/proto/testdata/preview-messages.json`, which carries the
-bounds both hold by their Go names, every bound at it and one past, and
-each message's text as spelled): each a plain object
+bounds both hold by their Go names, every bound at it and one past in
+characters of each measure, every member of every object null and of
+another kind, and each message's text as spelled, the content both
+parsers give an accepted one compared with its text's): each a plain object
 through `postMessage` with `conductor: "preview/1"`, its type in `t` and
 a `nonce`, and exactly the fields its type carries. Each parser is told
 the way a message travels, to the bridge or to the workbench
 (`ParsePreviewMessage(data, to, nonce)`, `parsePreviewMessage(v, to,
 nonce)`), and refuses the other way's types. A field is its value, never
 its spelling: a whole number is any JSON number of that value (`3`,
-`3.0`, `3e0`), a member given twice is its last, and a key is exactly
-its own letters (another case, or a letter that folds to one, is another
-key). The server's parser refuses a message's text past twice its way's
-bound (8 KiB to the bridge, 128 KiB to the workbench, the most an honest
-JSON text writes beyond its measure being a lone surrogate's six-byte
-escape) or not UTF-8 before it decodes it, decodes it once and builds
-the message from the value it judged; its refusals are fixed words,
-never the message's text. The app's parser is handed a value a page
-made (a structured clone), so it judges plain objects and arrays alone,
-every index of a list present and no member beside them, numbers
-finite, no big integer or other kind of object, no nesting past a
-message's four levels, the type's keys before the measure, in one walk
-that stops at the bound; it answers null for anything else and never
-throws. From the workbench:
+`3.0`, `3e0`), and a key is exactly its own letters (another case, or a
+letter that folds to one, is another key). The language is the text an
+honest writer writes and nothing else: no object gives a member twice
+(the server refuses such a text, whichever value comes first; a value
+holds no such thing), and every string is well-formed (a string holding
+half of a surrogate pair alone is refused by both parsers, so what is
+accepted has one content on both sides). Numbers: `epoch`, a state's
+`motion` and a hint's `line` and `column` are whole numbers from 0 to
+2^53-1; the viewport's `width` and `height` and the box's `width` and
+`height` are at least 0; `dpr` is above 0; the scroll offsets and the
+box's `x` and `y` may be negative; every number is finite; `version` is
+1. The server's parser refuses a message's text past twice its way's
+measured bound (8 KiB to the bridge, 128 KiB to the workbench) or not
+UTF-8 before it decodes it. That bound is the writer's: the browser's
+own JSON writer escapes nothing it need not and never writes a message
+longer than its measure; a text that escapes what need not be escaped
+(each `<` in six bytes, as Go's `json.Marshal` writes it) can pass the
+bound and is refused, so a Go writer of a message writes with HTML
+escaping off. It decodes the text once and builds the message from the
+value it judged; its refusals are fixed words, never the message's
+text. The app's parser is handed a value a page made (a structured
+clone), so it judges plain objects and arrays alone, every index of a
+list present and no member beside them, no object of more members than
+a message's objects have (an element report's 17), counted as they are
+met, numbers finite, no big integer or other kind of object, no nesting
+past a message's four levels, the type's keys before the measure, in
+one walk that stops at the bound; it answers null for anything else and
+never throws. From the workbench:
 `hello` (its `nonce`, 16 to 64 of `A-Z a-z 0-9 _ -`, is the one every
 later message of either side carries), `select` (selection mode: the
 pointer outlines, a click or Enter selects, Up and Down step through the
@@ -2522,7 +2549,7 @@ its run, and on no other.
 | `GET /api/health` | none | liveness: `ok`, `version`, `commit`, `sessions`, `instance` (a random id of this server process, which the reach self-check matches); `switchyard` (whether this server is one) and `relay` (whether it relays hosted sessions: always on a plain server) |
 | `GET /api/reach` | admin | what the server knows about being reached from outside its network (`reach.mode`): `{mode, mapped, method?, publicUrl?, externalIp?, externalPort?, listenPort?, expiresAt?, renewedAt?, verified?, error?, tls?}`; `mapped` says a port on the public address reaches the server (`method` `upnp`, `pcp` or `nat-pmp`; `manual` with `mapped` false names a port the person forwarded); `publicUrl` is `https://<externalIp>[:port]`, the base share links take once `tls.ready`; `verified` is `ok` when the server reached itself through that URL and `unverified` when it did not, which is usual from inside the network and proves nothing; `error` is the last failure in words; `tls` is the TLS listener's certificate, absent without a TLS listener: `{mode (acme or files), identifiers?, challenge?, notAfter?, renewAt?, ready, lastError?, nextTry?}`, `ready` saying a certificate is served (the discovered address becomes a link's base only then) |
 | `GET /.well-known/acme-challenge/{token}` | none | the key authorization of an open ACME `http-01` order (RFC 8555 §8.3), on the plain listener; `404` for any other token, a token over 128 bytes, or without a TLS listener |
-| `GET /preview-bridge.js` | none | the preview bridge with the server's workbench origins written in (Preview bridge): `200` with `Content-Type: text/javascript; charset=utf-8`, `Cache-Control: no-cache`, `Cross-Origin-Resource-Policy: cross-origin` and `X-Content-Type-Options: nosniff`, the same bytes for every request; `404 no_bridge` when the embedded app has no bridge, and on a switchyard |
+| `GET /preview-bridge.js` | none | the preview bridge, its bytes unchanged, inside a wrapper called with the server's workbench origins (Preview bridge): `200` with `Content-Type: text/javascript; charset=utf-8`, `Cache-Control: no-cache`, `Cross-Origin-Resource-Policy: cross-origin` and `X-Content-Type-Options: nosniff`, the same bytes for every request; `404 no_bridge` when the embedded app has no bridge, and on a switchyard |
 | `GET /api/switchyard/status` | admin | on a switchyard only (`404` elsewhere): the landing page's operator figures, `{hosts, sessions, viewers, relayBytesHour, hostList: [{name, since, sessions, viewers}]}`, the live hosted sessions grouped by the publishing host, earliest first, and the bytes the relay carried in the last sixty minutes |
 | `GET /api/whoami` | admin | OS user running the server (the default display name); `host` is the machine's name (`""` when it cannot tell) and `switchyard` whether this server launches nothing; `home` the server user's home directory, when it has one (the settings picker's Home); `version` the server's version, as `conductor version` prints it (Settings → The app) |
 | `GET /api/export` | admin (a switchyard's too) | the data directory as one zip archive (`docs/plans/ext.md`, C6), streamed as it is made, nothing buffered whole: `200` with `Content-Type: application/zip` and `Content-Disposition: attachment; filename="conductor-export-<UTC time>.zip"` (`20060102T150405Z`). The archive holds `data/` as the data directory holds it (the catalog, the crews, the runs' records, a switchyard's `links/` (hashes, never tokens), `hooks/` and any other file) with the ledger's and Dispatch's databases as snapshots (`VACUUM INTO`, consistent while the server writes), the attachment files the Dispatch snapshot's live rows and launch pins require, and `conductor-export.json` last: `{format: 1, version, createdAt, files: [{path, size, sha256}], left: [{path, why}]}`. Left out, and listed with why: the workbench token and its lock, `restore.lock`, `runs/owner.lock`, `brakeman/owner.lock`, `history/owner.lock`, the databases' `-wal`, `-shm` and `-journal`, `*.tmp`, `.probe-*`, `.restore-*`, `dispatch/attachments/tmp/`, `tls/`, `ext/`, anything not a regular file or a directory, and a name not of `[A-Za-z0-9._-]` elements. The catalog is resolved against the configuration the server runs with, so saved agents' env values, configured ones they inherit among them, are in it in full: the archive is the person's own file. The records are copied before the ledger's snapshot, and none written after their copy is taken, so a record may lag its ledger, never lead it. A failure before the first byte is `500 internal`; one after it cuts the archive short, with no manifest, which no restore takes, and aborts the response (the connection dropped, or the stream reset, never a whole `200`), so the client's transfer fails; `503 no_data_dir` for a server with none |
@@ -3434,14 +3461,16 @@ check run in a tree are given the tree's names, `CONDUCTOR_PORT_<NAME>` (the
 port's name in upper case) for each port, `CONDUCTOR_STATE_DIR` (its absolute
 path), with a preview `CONDUCTOR_PREVIEW_URL` (and `CONDUCTOR_PREVIEW_BRIDGE`,
 see Preview bridge), `CONDUCTOR_TREE_SECRET` (32 random bytes as hex, minted
-as the tree is resolved, held in the server's memory alone and put by
-Conductor in the environment of the tree's commands and its session and
-nowhere else: no placeholder expands to it, so no argv holds it, and no
-receipt field Conductor fills, row, event, task file or log line of
-Conductor's own does; a preview names it as `${CONDUCTOR_TREE_SECRET}` and
-keeps the name. What a command prints is its output, kept as any output
-is, a step's head, tail and log and a session's scrollback: a command that
-prints its environment prints the secret there), and
+as the tree is resolved, held in the server's memory alone; Conductor
+writes it into the environment of the tree's commands and its session and
+into nothing else of its own accord: no placeholder expands to it, so no
+argv holds it, and a preview names it as `${CONDUCTOR_TREE_SECRET}` and
+keeps the name. What a command prints is its output: Conductor keeps
+output (a step's head, tail and log, a session's scrollback) and quotes a
+failing command's last lines in the failure's words, which reach the
+receipt, the run's rows, events and log, the state the routes answer and
+the next attempt's task files, so a command that prints its environment
+puts the secret there), and
 `CONDUCTOR_RUN`, `CONDUCTOR_TASK` and `CONDUCTOR_ATTEMPT`, and no other
 `CONDUCTOR_` name, no token of the server's; and the manifest's approved `env` names, and no other
 name of the server's passthrough. The attempt's session is given the tree's

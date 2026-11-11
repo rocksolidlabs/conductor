@@ -160,8 +160,9 @@ the end of your turn finishes nothing; only a submitted result does.
   and CONDUCTOR_STATE_DIR (.conductor/state) the directory its tools and
   services keep their state in, as task.md says. CONDUCTOR_TREE_SECRET is
   a credential of this tree alone, for a server the tree runs: never print
-  it, and never run a command that dumps the environment (env, printenv,
-  set) in a step or a service, whose output is kept.
+  it, and never dump the environment (env, printenv, set) in a step, a
+  check, a verify step or a service: Conductor keeps their output and
+  quotes a failing command's last lines in its failure.
 
 - A work task: commit your work on the branch you are on (the worktree
   must be clean apart from .conductor/), then submit the commit with a

@@ -331,14 +331,16 @@ func newTreeSecret() (string, error) {
 
 // names is Conductor's own names of t as its session is given them
 // (LaunchSpec.Inject): its ports, its state directory, its preview with
-// the bridge's URL, and its secret. Conductor puts the secret in the
-// environment of the tree's commands and its session and nowhere else: no
-// placeholder expands to it, so no argv holds it, and no receipt field
-// Conductor fills, row, event, task file or log line of Conductor's own
-// does; a preview names it only as ${CONDUCTOR_TREE_SECRET}. What a
-// command prints is its output, kept as any output is (a step's head,
-// tail and log, a session's scrollback): a command that prints its
-// environment prints the secret there.
+// the bridge's URL, and its secret. Conductor writes the secret into the
+// environment of the tree's commands and its session and into nothing
+// else of its own accord: no placeholder expands to it, so no argv holds
+// it, and a preview names it only as ${CONDUCTOR_TREE_SECRET}. What a
+// command prints is its output: Conductor keeps output (a step's head,
+// tail and log, a session's scrollback) and quotes a failing command's
+// last lines in the failure's words, which reach the receipt, the run's
+// rows, events and log, the state the routes answer and the next
+// attempt's task files; a command that prints its environment puts the
+// secret there.
 func (t *tree) names() map[string]string {
 	env := map[string]string{"CONDUCTOR_STATE_DIR": t.stateDir, "CONDUCTOR_TREE_SECRET": t.secret}
 	for name, n := range t.ports {

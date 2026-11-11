@@ -206,6 +206,42 @@ func TestTheTreeSecretIsInNoReceipt(t *testing.T) {
 	stopRun(t, e, run.ID)
 }
 
+// The other half of what is kept of a command: Conductor quotes a failing
+// command's last lines in the failure's own words. A setup step that
+// prints the tree's secret and fails has it in its output and in those
+// words: the step's receipt, the attempt's row, the run's events and the
+// run as the engine answers it (its pause and its log).
+func TestTheTreeSecretAFailingStepPrintedIsInItsFailureWords(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	m := Manifest{Setup: []Check{shStep("say", `printf 'the secret: %s\n' "$CONDUCTOR_TREE_SECRET"; exit 3`)}}
+	run := launchManaged(t, e, repoManifestCrew(dir, m, work("build", "lead")))
+	l.waitTreeRowsEnded(t, run.ID, "build", 1, ledger.TreeWorktree)
+	say, ok := rowOf(l.stepRows(run.ID, "build", 1), "say", 1)
+	secret, found := strings.CutPrefix(strings.TrimSpace(string(say.Log)), "the secret: ")
+	if !ok || !found || !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(secret) || say.Exit != 3 {
+		t.Fatalf("the step: %+v", say)
+	}
+	l.mu.Lock()
+	events, err := json.Marshal(fakeEvents(l.events))
+	l.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, _ := e.Get(run.ID)
+	state, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for what, b := range map[string]string{"the step's tail": say.Tail, "the step's error": say.Error, "the attempt's row": l.attemptRow(t, run.ID, "build", 1).Error,
+		"the events": string(events), "the run's pause": r.PausedWhy, "the run": string(state)} {
+		if !strings.Contains(b, secret) {
+			t.Errorf("%s does not quote the failing command's last lines", what)
+		}
+	}
+	stopRun(t, e, run.ID)
+}
+
 // fakeEvents is the events as JSON can hold them.
 func fakeEvents(evs []fakeEvent) []map[string]any {
 	out := make([]map[string]any, len(evs))

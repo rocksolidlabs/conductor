@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,12 +15,13 @@ import (
 
 // The preview bridge (docs/protocol.md, Preview bridge): the script a
 // previewed page loads, or the desktop shell puts into it, to read the page
-// for the workbench that frames it. The web build emits it with one marker
-// (PV1 PR-2b; until it does, the embed has none and the route answers
-// 404 no_bridge); GET /preview-bridge.js serves it with the server's
-// own workbench origins written in its place, so the bridge answers a
-// parent window at those origins alone. The route is unauthenticated (a
-// script tag carries no header) and holds no secret.
+// for the workbench that frames it. The web build emits it (PV1 PR-2b;
+// until it does, the embed has none and the route answers 404 no_bridge);
+// GET /preview-bridge.js serves it whole, unchanged, inside a wrapper the
+// server writes: a function whose one parameter is the server's own
+// workbench origins, called with them, so the bridge answers a parent
+// window at those origins alone. The route is unauthenticated (a script
+// tag carries no header) and holds no secret.
 
 // The bridge's origins: at most maxBridgeOrigins, each at most
 // maxBridgeOrigin bytes.
@@ -28,40 +30,34 @@ const (
 	maxBridgeOrigin  = 256
 )
 
-// bridgeMarkerName is the name the web build leaves for the origins, as
-// one double-quoted string literal: bridgeMarker.
-const bridgeMarkerName = `__CONDUCTOR_WORKBENCH_ORIGINS__`
+// The wrapper: bridgeHead, the script, bridgeTail, the origins as data,
+// bridgeEnd. The script reads its origins from the parameter alone.
+const (
+	bridgeHead = "(function (conductorWorkbenchOrigins) {\n"
+	bridgeTail = "\n})("
+	bridgeEnd  = ");\n"
+)
 
-var bridgeMarker = []byte(`"` + bridgeMarkerName + `"`)
-
-// previewBridge is the built bridge split at its marker (nil before: the
-// embedded app has none) and the addresses the plain and the TLS listener
-// got (SetListen, SetTLSListen), under mu.
+// previewBridge is the built bridge (nil: the embedded app has none) and
+// the addresses the plain and the TLS listener got (SetListen,
+// SetTLSListen), under mu.
 type previewBridge struct {
-	before, after []byte
-	mu            sync.Mutex
-	listen        string
-	tlsListen     string
+	script    []byte
+	mu        sync.Mutex
+	listen    string
+	tlsListen string
 }
 
 // WithPreviewBridge gives the server the built bridge (internal/web's
-// PreviewBridge): one that does not hold its marker as one double-quoted
-// literal, exactly once, with the marker's name nowhere else, is none, and
-// the route answers 404 no_bridge.
+// PreviewBridge); an empty one is none, and the route answers 404
+// no_bridge.
 func WithPreviewBridge(script []byte) Option {
 	return func(o *options) { o.previewBridge = script }
 }
 
-// splitBridge is script split at its one marker; nil, nil for none: no
-// marker, the marker twice, its name in single quotes, between mismatched
-// quotes, or anywhere beside the one literal (a comment, another string).
-func splitBridge(script []byte) (before, after []byte) {
-	if bytes.Count(script, bridgeMarker) != 1 || bytes.Count(script, []byte(bridgeMarkerName)) != 1 {
-		return nil, nil
-	}
-	at := bytes.Index(script, bridgeMarker)
-	return slices.Clone(script[:at]), slices.Clone(script[at+len(bridgeMarker):])
-}
+// machineAddrs is the machine's addresses, for a listener on every
+// address (a test replaces it).
+var machineAddrs = net.InterfaceAddrs
 
 // SetListen gives the server the address its plain listener got (conductor
 // serve, once it listens, before it serves): the bridge's origins are read
@@ -72,7 +68,7 @@ func (s *Server) SetListen(addr string) {
 	s.bridge.mu.Lock()
 	s.bridge.listen = addr
 	s.bridge.mu.Unlock()
-	if s.bridge.before == nil || s.cfg.Switchyard.Enabled {
+	if s.bridge.script == nil || s.cfg.Switchyard.Enabled {
 		return
 	}
 	if u := loopbackBase(addr); u != "" {
@@ -108,29 +104,61 @@ func (s *Server) SetTLSListen(addr string) {
 }
 
 // webOrigin is the origin of scheme, host and port as a browser writes
-// one (MessageEvent.origin): scheme and host in lower case, an IPv6 host
-// in brackets, the scheme's default port left out.
+// one (MessageEvent.origin), "" for a host or a port it would write
+// otherwise: an IP address in its own form (an IPv6 one in brackets), a
+// name of lower-case letters, digits and hyphens whose last label begins
+// with a letter (no internationalised name but its xn-- form), a port of
+// 1 to 65535 left out when it is the scheme's default.
 func webOrigin(scheme, host, port string) string {
-	scheme, host = asciiLower(scheme), asciiLower(host)
 	if ip := net.ParseIP(host); ip != nil {
 		host = ip.String()
-	}
-	if port == "" || scheme == "http" && port == "80" || scheme == "https" && port == "443" {
 		if strings.Contains(host, ":") {
-			return scheme + "://[" + host + "]"
+			host = "[" + host + "]"
 		}
+	} else if !browserName.MatchString(host) {
+		return ""
+	}
+	n, err := strconv.Atoi(port)
+	switch {
+	case err != nil || n <= 0 || n > 65535:
+		return ""
+	case scheme == "http" && n == 80 || scheme == "https" && n == 443:
 		return scheme + "://" + host
 	}
-	return scheme + "://" + net.JoinHostPort(host, port)
+	return scheme + "://" + host + ":" + strconv.Itoa(n)
 }
 
-func asciiLower(s string) string {
-	return strings.Map(func(r rune) rune {
-		if 'A' <= r && r <= 'Z' {
-			return r + 'a' - 'A'
-		}
-		return r
-	}, s)
+// browserName is a host name a browser keeps as it is.
+var browserName = regexp.MustCompile(`^([a-z0-9-]+\.)*[a-z][a-z0-9-]*$`)
+
+// publicOrigin is publicUrl's origin; "" when publicUrl names this machine
+// alone (a local address enters the list only through a listener that
+// holds it), or, left, when it does not already write its origin as a
+// browser does (capitals, the default port, a port of leading zeros, a
+// name not in ASCII, an address in another spelling, a user).
+func (s *Server) publicOrigin() (o string, left bool) {
+	pub := s.cfg.PublicURL
+	u, err := url.Parse(pub)
+	if err != nil || s.cfg.PublicURLIsLocal() || net.ParseIP(u.Hostname()).IsLoopback() {
+		return "", false
+	}
+	port := u.Port()
+	if port == "" {
+		port = map[string]string{"http": "80", "https": "443"}[u.Scheme]
+	}
+	o = webOrigin(u.Scheme, u.Hostname(), port)
+	if u.User != nil || o == "" || !strings.HasPrefix(pub, o) || len(pub) > len(o) && !strings.ContainsRune("/?#", rune(pub[len(o)])) {
+		return "", true
+	}
+	return o, false
+}
+
+// PublicOriginLeftOut reports whether the bridge leaves publicUrl out of
+// its origins as not written as a browser writes one (conductor serve
+// says so once).
+func (s *Server) PublicOriginLeftOut() bool {
+	_, left := s.publicOrigin()
+	return s.bridge.script != nil && !s.cfg.Switchyard.Enabled && left
 }
 
 // bridgeOrigins are the origins the server answers the workbench on,
@@ -139,7 +167,8 @@ func asciiLower(s string) string {
 // each within maxBridgeOrigin, at most maxBridgeOrigins. A listener on a
 // loopback address names that address and the loopback's three names,
 // 127.0.0.1, localhost and [::1], at its port; one on every address the
-// three names; one on another address that address alone.
+// three names and, last, the machine's addresses as they are now, both
+// families; one on another address that address alone.
 func (s *Server) bridgeOrigins() []string {
 	s.bridge.mu.Lock()
 	listen, tlsListen := s.bridge.listen, s.bridge.tlsListen
@@ -150,20 +179,19 @@ func (s *Server) bridgeOrigins() []string {
 			out = append(out, o)
 		}
 	}
+	var every []string // the wildcard listeners, scheme and port
 	at := func(scheme, addr string) {
 		host, port, err := net.SplitHostPort(addr)
+		ip := net.ParseIP(host)
+		all := host == "" || ip.IsUnspecified()
 		if err != nil {
 			return
-		}
-		if n, err := strconv.Atoi(port); err != nil || n <= 0 {
-			return
-		}
-		ip := net.ParseIP(host)
-		loopback := ip != nil && ip.IsLoopback() || asciiLower(host) == "localhost"
-		if host != "" && (ip == nil || !ip.IsUnspecified()) {
+		} else if all {
+			every = append(every, scheme, port)
+		} else {
 			add(webOrigin(scheme, host, port))
 		}
-		if host == "" || ip != nil && ip.IsUnspecified() || loopback {
+		if all || ip.IsLoopback() || host == "localhost" {
 			for _, name := range []string{"127.0.0.1", "localhost", "::1"} {
 				add(webOrigin(scheme, name, port))
 			}
@@ -173,13 +201,23 @@ func (s *Server) bridgeOrigins() []string {
 	if s.cfg.TLSEnabled() {
 		at("https", tlsListen)
 	}
-	if u, err := url.Parse(s.cfg.PublicURL); err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" && u.User == nil {
-		add(webOrigin(u.Scheme, u.Hostname(), u.Port()))
+	pub, _ := s.publicOrigin()
+	add(pub)
+	var addrs []net.Addr
+	if len(every) > 0 {
+		addrs, _ = machineAddrs()
+	}
+	for i := 0; i < len(every); i += 2 {
+		for _, a := range addrs {
+			if n, ok := a.(*net.IPNet); ok && !n.IP.IsMulticast() && !(n.IP.To4() == nil && n.IP.IsLinkLocalUnicast()) {
+				add(webOrigin(every[i], n.IP.String(), every[i+1]))
+			}
+		}
 	}
 	return out
 }
 
-// originsText is origins as the script holds them: a JSON array of
+// originsText is origins as the wrapper's call holds them: a JSON array of
 // strings, with every character that could end a string of any quote, a
 // line, a comment or a script tag escaped (json.Marshal escapes ", \, <, >,
 // &, control characters, U+2028 and U+2029; ', ` and $ are escaped here),
@@ -190,11 +228,16 @@ func originsText(origins []string) []byte {
 	return []byte(strings.NewReplacer(`'`, esc("27"), "`", esc("60"), `$`, esc("24")).Replace(string(b)))
 }
 
-// handlePreviewBridge serves the bridge with the server's origins written
-// in (GET /preview-bridge.js): 404 no_bridge for a server whose embedded app
-// has none, and in switchyard mode, which frames no preview.
+// wrapBridge is script, byte for byte, in the wrapper called with origins.
+func wrapBridge(script []byte, origins []string) []byte {
+	return bytes.Join([][]byte{[]byte(bridgeHead), script, []byte(bridgeTail), originsText(origins), []byte(bridgeEnd)}, nil)
+}
+
+// handlePreviewBridge serves the bridge in its wrapper with the server's
+// origins (GET /preview-bridge.js): 404 no_bridge for a server whose
+// embedded app has none, and in switchyard mode, which frames no preview.
 func (s *Server) handlePreviewBridge(w http.ResponseWriter, r *http.Request) {
-	if s.bridge.before == nil || s.cfg.Switchyard.Enabled {
+	if s.bridge.script == nil || s.cfg.Switchyard.Enabled {
 		writeError(w, http.StatusNotFound, "no_bridge", "this server was built without the web app's preview bridge: run make web-build")
 		return
 	}
@@ -203,5 +246,5 @@ func (s *Server) handlePreviewBridge(w http.ResponseWriter, r *http.Request) {
 	h.Set("Cache-Control", "no-cache")
 	h.Set("Cross-Origin-Resource-Policy", "cross-origin")
 	h.Set("X-Content-Type-Options", "nosniff")
-	_, _ = w.Write(bytes.Join([][]byte{s.bridge.before, originsText(s.bridgeOrigins()), s.bridge.after}, nil))
+	_, _ = w.Write(wrapBridge(s.bridge.script, s.bridgeOrigins()))
 }

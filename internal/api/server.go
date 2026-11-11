@@ -484,7 +484,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// Every provider behind the guard before the server's first write of
 	// its own (the ledger's recovery, the records): nothing calls them yet.
 	s.readRevision = gitcli.RevisionOf
-	s.bridge.before, s.bridge.after = splitBridge(o.previewBridge)
+	if len(o.previewBridge) > 0 {
+		s.bridge.script = append([]byte(nil), o.previewBridge...)
+	}
 	s.installExtensions(o.providers)
 	s.installRuntimes(o.providers, o.native)
 	s.syncs = syncs
