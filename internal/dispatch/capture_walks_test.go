@@ -462,10 +462,28 @@ func (q failingAfter) QueryRowContext(ctx context.Context, query string, args ..
 	return q.queryer.QueryRowContext(ctx, query, args...)
 }
 
+// cancelAtEnd is an upload's reader that cancels the upload's context once
+// it has given its last byte, before the upload takes its lease.
+type cancelAtEnd struct {
+	r      io.Reader
+	cancel context.CancelFunc
+}
+
+func (c cancelAtEnd) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	if err == io.EOF {
+		c.cancel()
+	}
+	return n, err
+}
+
 // An error answers nothing else: every read of the package, driven into
 // its errors (a capture deleted, one that never was, a page past its
-// bound, a read that fails after each of its steps, a store closed), gives
-// the zero value of every result beside a non-nil error.
+// bound, a store closed, and a read whose statements in the store's read
+// transaction fail after each of its steps), gives the zero value of every
+// result beside a non-nil error. The failing statements reach the reads
+// made through read alone (People, main's, reads outside it), and they
+// fail a statement, never a read's rows or its commit after its last.
 func TestAnErrorAnswersNothingElse(t *testing.T) {
 	ctx := context.Background()
 	s, key := attachmentTicket(t)
@@ -639,9 +657,10 @@ func TestADeleteCollectsTheFileItReleases(t *testing.T) {
 // collection: a failed sync of its directory, a refusal in the
 // transaction, a repeat answered by another create's receipt (two creates
 // at once under one op id and digest with other images), a context
-// cancelled. After each the store's own sweep finds nothing to collect, no
-// lease or temp file is left, and a file another holder names is kept.
-// An attachment's failed sync answers as before, its file the sweep's.
+// cancelled; and before it, a lease that fails. After each the store's own
+// sweep finds nothing to collect, no lease or temp file is left, and a file
+// another holder names is kept. An attachment's failed sync answers as
+// before, its file the sweep's.
 func TestEveryWayOutOfAnUploadCollectsItsFile(t *testing.T) {
 	ctx := context.Background()
 	s, key := attachmentTicket(t)
@@ -725,6 +744,24 @@ func TestEveryWayOutOfAnUploadCollectsItsFile(t *testing.T) {
 		t.Fatalf("a cancelled create: %v", err)
 	}
 	settled("a cancelled context")
+	// Before the publication: a context cancelled as the upload's file is
+	// read whole, so its lease fails; a capture's upload and an attachment's.
+	for i, capture := range []bool{true, false} {
+		img := pngOf(t, 8, 8, byte(56+i))
+		lctx, cancel := context.WithCancel(ctx)
+		r := cancelAtEnd{bytes.NewReader(img), cancel}
+		var err error
+		if capture {
+			_, err = s.CreateCapture(lctx, testOp(opID("unleased", i)), digestOf(t, n, img), n, f, r)
+		} else {
+			_, _, err = s.AddAttachment(lctx, testOp(opID("unleased", i)), key, "u.png", "image/png", r)
+		}
+		cancel()
+		if !errors.Is(err, context.Canceled) || exists(t, contentAt(s, sumOf(img))) {
+			t.Fatalf("an upload whose lease fails (capture %v): %v", capture, err)
+		}
+		settled(fmt.Sprintf("a lease that fails (capture %v)", capture))
+	}
 	// An attachment whose sync fails answers its error, as before, and
 	// leaves its file to the sweep.
 	if syncs {
