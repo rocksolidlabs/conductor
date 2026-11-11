@@ -230,7 +230,7 @@ func TestARevokeOutlastsARunUpdatesWriteAcrossARestart(t *testing.T) {
 		run := fmt.Sprintf("run-%d", r)
 		for range perRun {
 			l, tok, err := e.srv.links.CreateGroupLink(run, owner, group, session.RoleView, "", 0)
-			if err != nil || e.srv.keepLink(l, tok, owner, "") != nil {
+			if err != nil || e.srv.keepLink(l, tok, owner, "", func() {}) != nil {
 				t.Fatalf("mint: %v", err)
 			}
 			links = append(links, minted{l.ID, tok})
@@ -574,7 +574,7 @@ func TestNoLinkGivesItsPlaceUpForOneExpired(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(time.Millisecond)
-	if err := e.srv.keepLink(expired, token, ownerOf(t, e, other.sessionID), "127.0.0.1"); !errors.Is(err, errLinkGone) {
+	if err := e.srv.keepLink(expired, token, ownerOf(t, e, other.sessionID), "127.0.0.1", func() {}); !errors.Is(err, errLinkGone) {
 		t.Fatalf("keeping a link expired: %v", err)
 	}
 	if _, ok := e.srv.links.Get(id); !ok {
@@ -651,7 +651,7 @@ func TestALinkGoneAsItIsMadeIsNotKept(t *testing.T) {
 		link  *share.Link
 		token string
 	}{{revoked, revokedToken}, {dropped, droppedToken}} {
-		if err := e.srv.keepLink(l.link, l.token, d.Owner(), "127.0.0.1"); !errors.Is(err, errLinkGone) {
+		if err := e.srv.keepLink(l.link, l.token, d.Owner(), "127.0.0.1", func() {}); !errors.Is(err, errLinkGone) {
 			t.Fatalf("keeping a link gone: %v", err)
 		}
 		if _, err := os.Stat(filepath.Join(dir, "links", l.link.ID+".json")); !os.IsNotExist(err) {
@@ -883,7 +883,7 @@ func TestAHostComingBackWaitsForLinksGivingTheirPlacesUp(t *testing.T) {
 	k := e.srv.keeper
 	k.fmu.Lock()
 	up := make(chan func(), 1)
-	go func() { up <- e.srv.hostUp("an-owner") }()
+	go func() { up <- e.srv.hostUp("an-owner", "") }()
 	select {
 	case <-up:
 		k.fmu.Unlock()

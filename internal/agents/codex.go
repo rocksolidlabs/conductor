@@ -98,12 +98,16 @@ func codexSteps(hooksDir string) []step {
 	}
 }
 
+// codexIdentity is Codex's probe, which its usage reader asks too.
+var codexIdentity = &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?m)^\s*codex-cli\s+(\d+\.\d+\.\d+)`), Verified: true}
+
 func codexAdapter() Adapter {
 	return Adapter{
 		ID:   "codex",
 		Name: "Codex CLI",
 		// Verified live (0.159.0): `codex --version` prints "codex-cli 0.159.0".
-		Probe:  &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?m)^\s*codex-cli\s+(\d+\.\d+\.\d+)`), Verified: true},
+		Probe:  codexIdentity,
+		Usage:  codexUsageReader(),
 		Assets: codexAssets,
 		// The per-launch trust override Codex takes in place of the trust
 		// saved in config.toml: -c projects={"<dir>"={trust_level="trusted"}}
