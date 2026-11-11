@@ -284,6 +284,21 @@ export interface DecisionEvent {
 /** The bound of a `decision` event's data, in bytes (internal/api, maxDecisionEvent). */
 export const MAX_DECISION_EVENT = 256
 
+/**
+ * Data of a `capacity` event on GET /api/events (Program item AC1, docs/protocol.md "Capacity"): a reading of an agent's usage on
+ * an account was kept, for a page to read its view again with `GET /api/capacity?agent=&account=`. It names the key, the reading's
+ * state and when it was read, never a label, a folder or a figure. At most 512 bytes of data (`MAX_CAPACITY_EVENT`).
+ */
+export interface CapacityEvent {
+  agent: string
+  account: string
+  state: 'ok' | 'signed_out' | 'key_paid' | 'unqualified' | 'error' | 'never_read'
+  readAt: string
+}
+
+/** The bound of a `capacity` event's data, in bytes (internal/api, maxCapacityEvent). */
+export const MAX_CAPACITY_EVENT = 512
+
 export interface ICEServer {
   urls: string[]
   username?: string

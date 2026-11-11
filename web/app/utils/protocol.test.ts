@@ -12,6 +12,7 @@ import {
   MAX_DECIDE_IN_FLIGHT,
   MAX_DECISION,
   MAX_DECISION_CURSOR,
+  MAX_CAPACITY_EVENT,
   MAX_DECISION_EVENT,
   MAX_DECISION_READS_IN_FLIGHT,
   MAX_DECISION_RECEIPT,
@@ -30,6 +31,7 @@ import {
   type DecideMsg,
   type DecideOkMsg,
   type DecideRefusedMsg,
+  type CapacityEvent,
   type DecisionEvent,
   type DecisionsChangedMsg,
   type HostRegisterDeskMessage,
@@ -161,6 +163,22 @@ describe('the decision event', () => {
     }
     expect(new TextEncoder().encode(JSON.stringify(largest)).length).toBeLessThanOrEqual(MAX_DECISION_EVENT)
     expect(MAX_DECISION_EVENT).toBe(256)
+  })
+})
+
+// The `capacity` event's data (docs/protocol.md "Capacity"): its largest, an agent id of 32 bytes, an account id, the longest
+// state and a time with nanoseconds, fits the bound the server holds it to (internal/api, maxCapacityEvent,
+// TestCapacityEventBounded).
+describe('the capacity event', () => {
+  it('fits its bound at its largest', () => {
+    const largest: CapacityEvent = {
+      agent: 'a'.repeat(32),
+      account: 'a-abcdefghijkl',
+      state: 'unqualified',
+      readAt: '2026-11-10T23:59:59.999999999+14:00',
+    }
+    expect(new TextEncoder().encode(JSON.stringify(largest)).length).toBeLessThanOrEqual(MAX_CAPACITY_EVENT)
+    expect(MAX_CAPACITY_EVENT).toBe(512)
   })
 })
 
