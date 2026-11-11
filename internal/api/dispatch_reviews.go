@@ -133,8 +133,9 @@ type reviewGate struct {
 	// its read-back has noted the run it went to, before its command is
 	// read back; afterReadBack once the read-back's first read has
 	// answered, before the engine's hold is read and the answer taken;
-	// beforeSettleRead with the settlement's context and the candidate's
-	// run before a pass reads a review's command; beforeApply with a
+	// beforeClaim with the settlement's context and a review's id before a
+	// pass claims it; beforeSettleRead with the settlement's context and
+	// the candidate's run before a pass reads a review's command; beforeApply with a
 	// review's id before its command is sent; recordFails with a review's
 	// id before its outcome is written, the write failing when it answers
 	// an error; listFails before a pass lists the pending reviews, the
@@ -148,6 +149,7 @@ type reviewGate struct {
 	// settlement's budget in place of reviewSettleWait.
 	afterRegister    func(review string)
 	afterReadBack    func(review string)
+	beforeClaim      func(ctx context.Context, review string)
 	beforeSettleRead func(ctx context.Context, run string)
 	beforeApply      func(review string)
 	recordFails      func(review string) error
@@ -445,13 +447,16 @@ func (s *Server) passReviews(ctx context.Context, ld reviewLedger, worker bool) 
 func (s *Server) settleOne(ctx context.Context, ld reviewLedger, e reviewSettle, worker bool) {
 	g := &s.reviews
 	g.mu.Lock()
-	skips, seam, wait := g.workerSkips, g.beforeSettleRead, cmp.Or(g.settleWait, reviewSettleWait)
+	skips, claim, seam, wait := g.workerSkips, g.beforeClaim, g.beforeSettleRead, cmp.Or(g.settleWait, reviewSettleWait)
 	g.mu.Unlock()
 	if worker && skips != nil && skips(e.review) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
+	if claim != nil {
+		claim(ctx, e.review)
+	}
 	c, now, ok, err := s.dispatch.ClaimReview(ctx, e.review, e.try)
 	if err != nil {
 		s.log.Warn("a pending review could not be claimed; the next pass tries again", "review", e.review, "err", err)
