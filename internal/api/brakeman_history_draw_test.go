@@ -12,6 +12,24 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/history"
 )
 
+// drawReadDeadline is the history read's deadline for a test whose reads
+// do the whole of their bound's work: a turn's read that draws and matches
+// maxHistoryTurnExamine rows, or the admin's search that ranks and counts
+// ten thousand. Each is CPU alone, no wait (about 0.15 s without the race
+// detector, 4 to 10 s with it on an idle machine), so on a loaded one it
+// passes the product's historyReadTimeout, which is not what these tests
+// test (#281). This bounds only a hang.
+const drawReadDeadline = 10 * time.Minute
+
+// newDrawFixture is newObsFixture with drawReadDeadline, for a test whose
+// reads do that work.
+func newDrawFixture(t *testing.T) *obsFixture {
+	t.Helper()
+	f := newObsFixture(t)
+	f.srv.historyDeadline = drawReadDeadline
+	return f
+}
+
 // plantRows puts entries into the fixture's index as a source of their
 // own, one no indexer pass reads.
 func plantRows(t *testing.T, f *obsFixture, source string, entries []history.Entry) {
@@ -41,7 +59,7 @@ func drawnBy(t *testing.T, f *obsFixture, path string) (map[string]any, int) {
 // same words, outside its grant, each read answers the same and draws the
 // same rows from the index.
 func TestATurnsReadDrawsOnlyRowsItsGrantCovers(t *testing.T) {
-	f := newObsFixture(t)
+	f := newDrawFixture(t)
 	kept := "comment:" + f.ticket + "/" + doneOf(t)(f.srv.dispatch.AddComment(t.Context(), adminOp("Ann"), f.ticket, "zebra kept")).ID
 	ix := histSettle(t, f.testEnv)
 	until(t, "the comment indexed", func() bool {
@@ -92,7 +110,7 @@ func TestATurnsReadDrawsOnlyRowsItsGrantCovers(t *testing.T) {
 // than that is answered short with cut "examined" and no entries, and the
 // same line narrowed to a time window finds it.
 func TestATurnsReadSaysWhenItExaminedItsBound(t *testing.T) {
-	f := newObsFixture(t)
+	f := newDrawFixture(t)
 	old := "comment:" + f.ticket + "/" + doneOf(t)(f.srv.dispatch.AddComment(t.Context(), adminOp("Ann"), f.ticket, "pelican under them")).ID
 	ix := histSettle(t, f.testEnv)
 	until(t, "the comment indexed", func() bool {

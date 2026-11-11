@@ -81,10 +81,87 @@ app opens its own workbench at `/join/<token>?server=https://<switchyard>`,
 which signals to the switchyard from the app's page (`src/invite.ts` has
 the parser, the same rules as the web's `utils/invite.ts`).
 
+## Updates
+
+`src/updater.ts`. A package names its own update feed: the app updates
+itself (macOS, Windows, AppImage) only when it finds `app-update.yml` in
+its resources. What decides is whether electron-builder writes that file,
+and it writes it whenever a publish configuration resolves for the build
+(26.15's `PublishManager`: on macOS for a dmg or zip, on Windows for an
+nsis, on Linux for every package): the target's, the platform's or the top-level `publish`;
+with none set, a provider named by a token in the build's environment
+(`GH_TOKEN` or `GITHUB_TOKEN`, `GITLAB_TOKEN`, `KEYGEN_TOKEN`,
+`BITBUCKET_TOKEN`); with none of those, the GitHub repository the project
+names (`package.json`'s `repository`, a CI's repository variable or the
+project's `.git/config`). Only `publish: null` (or `-c.publish=null`)
+leaves it out for sure. `electron-builder.yml` names a GitHub `publish`,
+so every package built from it has a feed unless the build sets it to
+null. A package with none has no updater, so it never fails at every
+check, and its log says "this build names no update feed", a deb or rpm
+among them (it names no download page either). A deb or rpm that names
+a feed is updated by its package manager, and the log names the download
+page, by its address without a query or fragment: the packaged
+`package.json`'s `conductor.downloadPage`, an `https://` URL of at most 200
+bytes in the form `switchyard.appURL` takes (a host name of letters, digits,
+hyphens and dots, printable ASCII; anything else is ignored), as the URL
+standard writes it, which must be in that form and bound too, or the
+repository's releases page (`/releases`: `/releases/latest` answers 404
+while every release is a prerelease).
+
+**An install under the earlier app id.** The rc line was built as
+`dev.conductor.app`; its successor's id is `io.rocksolidlabs.conductor`, and
+both install to `%LOCALAPPDATA%\Programs\Conductor`. An installer of the
+successor replaces the earlier install (`build/installer.nsh`,
+`customUnInstallCheck`, compiled in for that id alone: an open-source rc
+and a staging installer hold none of it). In the install section, after the
+pages and electron-builder's running-app check and before any file is
+copied, it looks for the earlier id's uninstall entry (the GUID
+electron-builder derives from `dev.conductor.app`) under HKCU and HKLM; with
+none, it installs as usual. An entry under a key the installer cannot open
+is not seen, and the install goes on, as electron-builder's own upgrade
+step does not see an entry of the installer's own id that it cannot open.
+It acts only on an entry that is, whole, what the earlier installer wrote
+under that root: its `UninstallString` a quote, an absolute path to
+`Uninstall Conductor.exe`, a quote, one space and the root's mode word
+(`/currentuser` under HKCU, `/allusers` under HKLM), and nothing else; and
+its `InstallLocation` there and naming that file's folder (the earlier
+uninstaller takes its folder from that value). Such an entry, with the
+uninstaller and `Conductor.exe` in its folder, is removed as electron-builder removes an earlier version of an
+installer's own id: a copy of its uninstaller run in place with
+`/S /KEEP_APP_DATA --updated` (user data kept, every file restored at one
+it cannot move), tried five times a second apart; then the entry and the
+files must be gone before the install goes on. The installer deletes no
+key or file of the earlier app itself. Any other entry, every value the
+earlier installer did not write among them, stops the install with nothing
+copied, run or deleted; so does an entry whose uninstaller is not found,
+since a file that is gone and a folder the installer cannot look into
+answer it the same, and that is no proof the earlier app is gone. Every stop
+comes before any of the new app is copied, and says why: the earlier app could not be removed, was not fully removed, is
+installed for everyone and the installer is not running as administrator,
+or cannot be removed by this installer, its uninstaller not found or its
+entry not in the earlier installer's form (remove it from the installed
+apps, then run the installer again). A stop does not undo what
+electron-builder's own upgrade step did before it: run by hand over an
+installed successor, the installer has already removed that successor's
+earlier files, as any upgrade does, so after a stop the person follows the
+message and runs the installer again. An update the app started
+(`--updated`) never makes the move: a successor that updates itself was
+installed by a run that made it.
+
 ## What stays by hand
 
 The packaged app on each platform (dmg, deb, rpm, AppImage, nsis) and the
 WSL path on a real Windows machine: `docs/features.md` lists the checklist.
+
+The move from the earlier app id has never been run: its tests read the
+script and a compile shows what it holds for each id, but no installer was
+started. The first installer of `io.rocksolidlabs.conductor` does not ship
+until its cases (the by-hand list of the pull request that added it) have
+been run on a real Windows machine with an rc installed. Only that run shows
+that `FileExists` is false for a file in a folder the installer cannot look
+into, that a real rc's `UninstallString` is, byte for byte, in the form the
+move takes, and that Windows' installed apps remove an entry whose
+uninstaller is gone, the only way past the stop for one.
 
 ## Releasing
 

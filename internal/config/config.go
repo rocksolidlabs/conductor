@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -182,6 +183,81 @@ type Switchyard struct {
 	// admitted open counts here the links its instance made with a host
 	// token, and those past the bound end, the oldest first.
 	OpenHostLinks int `json:"openHostLinks,omitempty"`
+	// AppURL is where the switchyard's pages send a visitor for the desktop
+	// app (Get the desktop app): an https URL of at most
+	// MaxSwitchyardAppURL bytes in appURLForm's form and in its canonical
+	// form (appURLTaken), refused otherwise at load. Empty is
+	// DefaultSwitchyardAppURL.
+	AppURL string `json:"appURL,omitempty"`
+}
+
+// DefaultSwitchyardAppURL is the desktop app's link on a switchyard's pages
+// when switchyard.appURL names none: the repository's releases page.
+const DefaultSwitchyardAppURL = "https://github.com/rocksolidlabs/conductor/releases"
+
+// MaxSwitchyardAppURL bounds switchyard.appURL, in bytes.
+const MaxSwitchyardAppURL = 200
+
+// SwitchyardAppURL is the desktop app's link on a switchyard's pages:
+// switchyard.appURL as written, DefaultSwitchyardAppURL when it names none.
+// One appURLTaken refuses is the default too, with ok false: Validate
+// refuses it at load, so only a config that skipped Validate gets here with
+// one.
+func (c *Config) SwitchyardAppURL() (link string, ok bool) {
+	v := c.Switchyard.AppURL
+	if v == "" {
+		return DefaultSwitchyardAppURL, true
+	}
+	if appURLTaken(v) {
+		return v, true
+	}
+	return DefaultSwitchyardAppURL, false
+}
+
+// appURLForm is switchyard.appURL's form, the same text as the desktop
+// app's download page (desktop/src/updater.ts, ADDRESS_FORM): https:// in
+// those letters; a host name of letters, digits and hyphens in labels
+// joined by dots, the last beginning with a letter; a port of digits, if
+// any; then a path, query or fragment of printable ASCII (0x21 to 0x7e)
+// without a backslash, a % only before two hex digits. So no user
+// information, no IP literal and no space or control character.
+var appURLForm = regexp.MustCompile(`^https://((?:[A-Za-z0-9-]+\.)*[A-Za-z][A-Za-z0-9-]*)(?::([0-9]{1,5}))?(?:[/?#](?:[!-$&-\[\]-~]|%[0-9A-Fa-f]{2})*)?$`)
+
+// appURLTaken reports whether raw is taken as switchyard.appURL: in its form
+// (appURLForm), of at most MaxSwitchyardAppURL bytes, no label of its host
+// beginning xn-- (an internationalised name, which the form cannot check),
+// its port 1 to 65535, parsed by url.Parse as the host it names with no
+// user, and already in its canonical form: what url.Parse reads of it
+// written back by url.URL.String, its host in lower case and its port as a
+// number with 443 left out, byte for byte. So an upper-case host, :443, a
+// port with a leading zero, or a character url.URL.String escapes in a path
+// or fragment (a quote among them) is refused, and the pages link the text
+// that was checked. The bound is on that configured text: the pages'
+// template writes a few characters the canonical form keeps (an apostrophe
+// or a parenthesis, and in a query a quote, <, >, ^, `, {, | or }) as three,
+// and the desktop app's check of its download page (desktop/src/updater.ts)
+// is on the URL standard's canonical text, not on this one.
+func appURLTaken(raw string) bool {
+	m := appURLForm.FindStringSubmatch(raw)
+	if m == nil || len(raw) > MaxSwitchyardAppURL || strings.HasPrefix(strings.ToLower(m[1]), "xn--") || strings.Contains(strings.ToLower(m[1]), ".xn--") {
+		return false
+	}
+	host := strings.ToLower(m[1])
+	if m[2] != "" {
+		n, _ := strconv.Atoi(m[2])
+		if n < 1 || n > 65535 {
+			return false
+		}
+		if n != 443 {
+			host += ":" + strconv.Itoa(n)
+		}
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() != m[1] || u.User != nil {
+		return false
+	}
+	u.Host = host
+	return u.String() == raw
 }
 
 // SwitchyardRelay reports whether the switchyard relays (Switchyard.Relay, on by default).
@@ -971,6 +1047,7 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 	if err := num("CONDUCTOR_SWITCHYARD_OPEN_HOST_RELAY_KBPS", &cfg.Switchyard.OpenHostRelayKBps); err != nil {
 		return err
 	}
+	str("CONDUCTOR_SWITCHYARD_APP_URL", &cfg.Switchyard.AppURL)
 	if err := num("CONDUCTOR_ICE_UDP_PORT", &cfg.ICE.UDPPort); err != nil {
 		return err
 	}
@@ -1111,6 +1188,9 @@ func (c *Config) Validate() error {
 	}
 	if n := c.Switchyard.OpenHostRelayKBps; n < 0 || n > 1<<20 {
 		errs = append(errs, errors.New("switchyard.openHostRelayKBps must be between 0 and 1048576"))
+	}
+	if _, ok := c.SwitchyardAppURL(); !ok {
+		errs = append(errs, fmt.Errorf("switchyard.appURL must be an https URL with a host and no user name or password, of at most %d bytes, written as it parses (its host in lower case, no :443 and no leading zero in its port, a character such as a quote in its path percent-encoded)", MaxSwitchyardAppURL))
 	}
 	for _, o := range c.Switchyard.AllowedOrigins {
 		if strings.TrimSpace(o) == "" || strings.Contains(o, "://") {

@@ -2007,8 +2007,9 @@ move shows the new level in the workbench for a moment ("110%", or "249%,
 the largest" at a bound), without taking the focus, and the View menu
 shows the level on a line of its own; a level other than 100% kept from
 before is said once as the app starts.
-The macOS, Windows and AppImage builds update themselves from the GitHub
-releases: the app checks on start and every six hours and downloads an
+The macOS, Windows and AppImage builds update themselves from the update
+feed their package names (a package built with none has no updater and
+never checks): the app checks on start and every six hours and downloads an
 update in the background, and the update installs when you quit. The app
 never opens a dialog for an update. The workbench says it once per version,
 in a toast with **Restart to update**, and keeps a button in the sidebar's
@@ -2113,6 +2114,7 @@ file must run `compinit` before that line.
 | `switchyard.openHostRelayKBps` | `CONDUCTOR_SWITCHYARD_OPEN_HOST_RELAY_KBPS` | `128` | what the open hosts of one address relay a second, all of them together, in KiB (one bucket per address, a burst of twice that and never less than 4 MiB, as `relayKBps`); `0` falls back to `relayKBps`, per connection |
 | `switchyard.openHostLinks` | `CONDUCTOR_SWITCHYARD_OPEN_HOST_LINKS` | `32` | the links the open hosts of one address keep on the switchyard at a time (kept links outlive restarts, so they are counted); past it, a link whose host has been gone more than five minutes gives its place to the new one and is ended, and with none such the request is refused with `link_refused`; a host that made links with a host token and comes back without it counts them here from then on, and those past the bound end, the oldest first |
 | `switchyard.allowedOrigins` | `CONDUCTOR_SWITCHYARD_ORIGINS` (comma-separated host patterns) | `127.0.0.1:*`, `localhost:*` | the browser origins a switchyard answers across origins on the join route and accepts on a hosted session's WebSocket: the desktop app's own workbench |
+| `switchyard.appURL` | `CONDUCTOR_SWITCHYARD_APP_URL` | `https://github.com/rocksolidlabs/conductor/releases` | where a switchyard's pages send a visitor for the desktop app (Get the desktop app): an `https://` URL of at most 200 bytes of printable ASCII, its host name letters, digits, hyphens and dots (no IP address, no user name or password), its port 1 to 65535, and written as it parses (its host in lower case, no `:443` and no leading zero in its port, a character such as a quote in its path percent-encoded), which the pages link as written; anything else is a config error that stops the server at start. The 200 bytes bound the text set: the pages write an apostrophe or a parenthesis, and in a query a quote and a few others, as three characters |
 | `agents.selfService` | `CONDUCTOR_AGENT_SELF_SERVICE` (`1`/`true` on, `0`/`false` off) | `true` | an agent may form a crew around its own session, add members to its run, read its run and mint a view-only link to itself, with its session's own token (see [Agents that form crews](#crews)) |
 | `agents.mcp` | `CONDUCTOR_AGENT_MCP` (`1`/`true` on, `0`/`false` off) | `true` | register `conductor mcp` with agents that take an MCP server at launch (Claude Code, Codex), so the skill's reports and crew actions are tools |
 | `agents.installSkill` | `CONDUCTOR_AGENT_INSTALL_SKILL` (`1`/`true` on, `0`/`false` off) | `true` | a launch puts the Conductor skill in the agent's skills directory, in the server user's home, once per agent per server start (see [The Conductor skill](#events-and-hooks)) |
