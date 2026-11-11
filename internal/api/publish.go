@@ -116,9 +116,14 @@ func (s *Server) remoteLinksOf(id string) []remoteLink {
 			gone = rl.hostedID != pub.CurrentID()
 		}
 		if gone {
-			// The rendezvous holds it no more: settled.
-			s.forgetRemoteLocked(id, "", lid, true)
-			continue
+			// The rendezvous holds it no more: settled with the publication
+			// gone. Its word may also be a link_gone (ended), which comes
+			// before its revoke there is confirmed: a decision link owed it
+			// stays, listed (forgetRemote).
+			s.forgetRemoteLocked(id, "", lid, pub == nil)
+			if _, kept := s.remoteLinks[id][lid]; !kept {
+				continue
+			}
 		}
 		out = append(out, rl)
 	}

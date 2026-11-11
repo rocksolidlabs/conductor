@@ -1043,10 +1043,11 @@ func (h *HostedSession) linkWent(linkID string) {
 }
 
 // linkGone tells the host, when it is connected, that linkID no longer
-// opens the session.
-func (h *HostedSession) linkGone(conn *HostConn, linkID string) {
+// opens the session; ended, that the link itself opens nothing any more
+// (one the server ended of itself: DisconnectHeldLink).
+func (h *HostedSession) linkGone(conn *HostConn, linkID string, ended bool) {
 	if conn != nil && linkID != "" {
-		conn.sendJSON(proto.LinkGone{T: proto.HostLinkGone, LinkID: linkID})
+		conn.sendJSON(proto.LinkGone{T: proto.HostLinkGone, LinkID: linkID, Ended: ended})
 	}
 }
 
@@ -1066,7 +1067,7 @@ func (h *HostedSession) linkLapsed(linkID string) {
 		v.closeForLink(session.ErrExpired)
 	}
 	if joined {
-		h.linkGone(conn, linkID)
+		h.linkGone(conn, linkID, false)
 	}
 }
 
@@ -1109,8 +1110,8 @@ func (h *HostedSession) DisconnectLink(linkID string) { h.closeLink(linkID, true
 
 // DisconnectHeldLink is DisconnectLink for a link the server ended of
 // itself while this connection may still hold it (a switchyard's open
-// admission past its bound): the host is told the link went (link_gone)
-// whether or not a viewer ever joined through it.
+// admission past its bound): the host is told the link went (link_gone,
+// ended) whether or not a viewer ever joined through it.
 func (h *HostedSession) DisconnectHeldLink(linkID string) { h.closeLink(linkID, true, true) }
 
 // EndLink closes the viewers attached through linkID, one of the session's
@@ -1144,7 +1145,7 @@ func (h *HostedSession) closeLink(linkID string, revoked, held bool) {
 		}
 	}
 	if revoked && (joined || held) {
-		h.linkGone(conn, linkID)
+		h.linkGone(conn, linkID, held)
 	}
 }
 
@@ -1509,7 +1510,7 @@ func (h *HostedSession) AddViewerWith(o ViewerOptions) (*Viewer, error) {
 	}
 	conn := h.conn
 	h.mu.Unlock()
-	h.linkGone(conn, pushedOut)
+	h.linkGone(conn, pushedOut, false)
 	h.sendJoin(conn, v, proto.ViewerJoin{T: proto.HostViewerJoin, ViewerID: o.ID, Role: string(role), LinkID: o.LinkID, LinkLabel: o.LinkLabel, Principal: o.Principal}, o.ChargeJoin)
 	h.notifyChange()
 	return v, nil

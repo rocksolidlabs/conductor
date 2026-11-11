@@ -163,8 +163,9 @@ type Options struct {
 	// Uplink's, so the publisher's record of a decision link there ends
 	// with it where the word is the link's own end: a session link's, from
 	// its session; a run link's, from the run's desk alone (a member's says
-	// only that the member left the run's group).
-	LinkGone func(linkID, sessionID, runID string)
+	// only that the member left the run's group). ended says the server
+	// ended the link itself (proto.LinkGone.Ended), on any connection.
+	LinkGone func(linkID, sessionID, runID string, ended bool)
 
 	// transport, when set (tests), is the control connection's transport in
 	// place of the standard one: a test's names dialed to its own servers.
@@ -1385,7 +1386,13 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 			} else if a.local != nil {
 				sessionID = a.local.Info().ID
 			}
-			a.opts.LinkGone(m.LinkID, sessionID, runID)
+			a.opts.LinkGone(m.LinkID, sessionID, runID, m.Ended)
+		}
+		if m.Ended {
+			// The server holds it no more: after LinkGone, which marks a
+			// decision link's record owed its revoke before its listing can
+			// read it gone (the api's remoteLinksOf).
+			a.noteHeld(m.LinkID, false)
 		}
 	case proto.HostOffer:
 		var m proto.ViewerSDP

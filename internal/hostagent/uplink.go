@@ -46,7 +46,7 @@ type Uplink struct {
 	// LinkGone, when set, is told each link the switchyard says no longer
 	// opens what one of its connections carries, with that connection's
 	// session or desk's run (Options.LinkGone).
-	LinkGone func(linkID, sessionID, runID string)
+	LinkGone func(linkID, sessionID, runID string, ended bool)
 
 	// instance is this server's secret with the rendezvous: with each
 	// session's own id it gives a published session the same id after the

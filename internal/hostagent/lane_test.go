@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -357,13 +358,15 @@ func TestADesksViewerHasTheLaneAlone(t *testing.T) {
 func TestUplinkPassesDecisions(t *testing.T) {
 	d := &fakeDecisions{}
 	gone := make(chan string, 1)
-	u := &Uplink{ServerURL: "https://switchyard.example.net", Decisions: d, LinkGone: func(id, sessionID, runID string) { gone <- id + " " + sessionID + " " + runID }}
+	u := &Uplink{ServerURL: "https://switchyard.example.net", Decisions: d, LinkGone: func(id, sessionID, runID string, ended bool) {
+		gone <- fmt.Sprint(id, " ", sessionID, " ", runID, " ", ended)
+	}}
 	for _, opts := range []Options{u.options(session.Info{ID: "s", Name: "cat"}), u.options(session.Info{Name: "Run"})} {
 		if opts.Decisions != Decisions(d) || opts.LinkGone == nil || !opts.Switchyard {
 			t.Fatalf("options %+v", opts)
 		}
-		opts.LinkGone("l9", "s", "")
-		if got := <-gone; got != "l9 s " {
+		opts.LinkGone("l9", "s", "", true)
+		if got := <-gone; got != "l9 s  true" {
 			t.Fatalf("link gone %q", got)
 		}
 	}
@@ -615,20 +618,50 @@ func TestADesksRepliesWaitOffTheReadLoop(t *testing.T) {
 // only on its desk's word (a member's says the member left the group).
 func TestLinkGoneSaysWhatItsConnectionCarries(t *testing.T) {
 	gone := make(chan string, 2)
-	note := func(id, sessionID, runID string) { gone <- id + "|" + sessionID + "|" + runID }
+	note := func(id, sessionID, runID string, ended bool) {
+		gone <- fmt.Sprint(id, "|", sessionID, "|", runID, "|", ended)
+	}
 	sessionAgent, _ := laneAgentWith(t, &fakeDecisions{}, "dl1", func(a *agent, _ *peer) { a.opts.LinkGone = note })
 	if err := sessionAgent.handleControl(t.Context(), mustJSON(proto.LinkGone{T: proto.HostLinkGone, LinkID: "dl1"})); err != nil {
 		t.Fatal(err)
 	}
-	if got := <-gone; got != "dl1|s|" {
+	if got := <-gone; got != "dl1|s||false" {
 		t.Fatalf("a session's link_gone: %q", got)
 	}
 	desk := &agent{opts: Options{LinkGone: note, Switchyard: true}, peers: map[string]*peer{}, log: discardLog, desk: &proto.DeskRun{ID: "run-1", Name: "Run"}}
-	if err := desk.handleControl(t.Context(), mustJSON(proto.LinkGone{T: proto.HostLinkGone, LinkID: "dl1"})); err != nil {
+	if err := desk.handleControl(t.Context(), mustJSON(proto.LinkGone{T: proto.HostLinkGone, LinkID: "dl1", Ended: true})); err != nil {
 		t.Fatal(err)
 	}
-	if got := <-gone; got != "dl1||run-1" {
+	if got := <-gone; got != "dl1||run-1|true" {
 		t.Fatalf("a desk's link_gone: %q", got)
+	}
+}
+
+// A link the server says it ended of itself (link_gone, ended) leaves what
+// the connection says the server holds (held), after the publisher was
+// told; any other link_gone, and one for a link it never held, change
+// nothing of it.
+func TestAnEndedLinkLeavesTheHeldLinks(t *testing.T) {
+	held := make(chan []string, 4)
+	a, _ := laneAgentWith(t, &fakeDecisions{}, "dl1", func(x *agent, _ *peer) {
+		x.held, x.heldKnown = map[string]bool{"l1": true, "l2": true}, true
+		x.opts.LinkGone = func(string, string, string, bool) {
+			ids, _ := x.heldLinks()
+			slices.Sort(ids)
+			held <- ids
+		}
+	})
+	for _, m := range []proto.LinkGone{{LinkID: "l2"}, {LinkID: "l9", Ended: true}, {LinkID: "l1", Ended: true}} {
+		m.T = proto.HostLinkGone
+		if err := a.handleControl(t.Context(), mustJSON(m)); err != nil {
+			t.Fatal(err)
+		}
+		if told := <-held; !slices.Equal(told, []string{"l1", "l2"}) {
+			t.Fatalf("held as the publisher is told %s went: %v", m.LinkID, told)
+		}
+	}
+	if ids, known := a.heldLinks(); !known || !slices.Equal(ids, []string{"l2"}) {
+		t.Fatalf("held after l1 ended: %v %v", ids, known)
 	}
 }
 

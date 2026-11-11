@@ -549,7 +549,10 @@ queued, and nothing of theirs still queued is sent after it (see the
 queue's lanes above), so a host, older or newer, never hears of a viewer of
 a link after its going; no link no viewer joined through is named,
 except one a switchyard ends of itself at an open admission, to the
-connection that holds it (see its links below); and a host away is not told again. The server keeps at most 1024 joined
+connection that holds it (see its links below), with `ended: true`: the
+link itself opens nothing any more, wherever it is told (absent, as from
+an older switchyard and for every other end, a member's connection hears
+only that its session is no longer opened); and a host away is not told again. The server keeps at most 1024 joined
 links per session (far more than can open it at once); one pushed out is
 named gone then (it may still open the session: a viewer joining through it
 later starts afresh on the host). The host types nothing more of what a
@@ -846,14 +849,17 @@ address's is left as it is, for the sweep or the revoke to remove. An
 ended link is as a revoked one: its viewers are closed, a join answers
 404, its file goes, the host's `registered` leaves it out of `links`, and
 the host's connection that holds it (its session's, or its run's desk's)
-is told `link_gone` for it, whether or not a viewer joined through it; on
-the connection that asked for the link, that comes after its
-`link_created`, however close the request and the admission come. A run link of a run with no desk is told to its
-members' connections only if a viewer joined through it, as for a revoke.
-That is all the switchyard does: what the publisher lists or offers after
-`link_gone` is the publisher's, and today it goes on listing a link that is
-not a decision link until it registers again or a person revokes it
-(issue #820). Only that host's links end; the links of the
+is told `link_gone` for it, with `ended: true`, whether or not a viewer
+joined through it; on the connection that asked for the link, that comes
+after its `link_created`, however close the request and the admission
+come. A run link of a run with no desk is told so to each of its members'
+connections, the one it was minted over among them. A host drops a link so
+told from the links its connection says the switchyard holds; a publishing
+server leaves it out of the session's Share list and of the run's links at
+once, without registering again (a run's record once the mint that made it
+has recorded it), while a decision link's record stays, owed its revoke, as
+below. A `link_gone` without `ended`, or for a link the publisher never
+held, changes nothing of its lists. Only that host's links end; the links of the
 address's other hosts stay as they are, and from then on the address's
 links, the host's among them, are bounded, give their places up and are
 refused as any open host's. While the instance holds a connection admitted
@@ -2285,7 +2291,9 @@ closes the link's viewers, before it has deleted what it keeps of the
 link (a revoke whose file it could not delete is answered
 `store_unavailable` after it, and a restart there would bring the link
 back), so the link is owed its revoke there, listed with `revokePending:
-true` and keeping the run's desk, until the switchyard confirms it. One
+true` and keeping the run's desk, until the switchyard confirms it, also
+once its connection no longer says the switchyard holds it (an `ended`
+word). One
 rule holds in every path: the publisher forgets the record of a decision
 link revoked here only once the switchyard has confirmed the revoke or
 answered `not_found`, whatever happened to the link, its viewers or its

@@ -366,11 +366,16 @@ type ViewerJoin struct {
 // itself at an open admission past its bound, whether or not a viewer
 // joined through it, to the connection that holds the link (its
 // session's, or its run's desk's): on the connection that asked for the
-// link, after its link_created. LinkID is at most MaxLinkID bytes; an older
-// host ignores the message.
+// link, after its link_created; to each member's connection of a run link
+// whose run has no desk. Such a one says Ended: the link itself opens
+// nothing any more, so its publisher stops listing it; without Ended (an
+// older switchyard's, every other end) a member's connection hears only
+// that its session is no longer opened. LinkID is at most MaxLinkID bytes;
+// the message is a host message (MaxHostMessage); an older host ignores it.
 type LinkGone struct {
 	T      string `json:"t"`
 	LinkID string `json:"linkId"`
+	Ended  bool   `json:"ended,omitempty"`
 }
 
 // ViewerRef addresses one viewer (relay_start, viewer_closed; a

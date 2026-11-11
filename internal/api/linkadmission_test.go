@@ -860,20 +860,24 @@ func dialFakeDeskWith(t *testing.T, e *testEnv, m proto.RegisterDesk, auth strin
 	return h
 }
 
-// linkGoneFor waits for h to be told that linkID went.
+// linkGoneFor waits for h to be told that linkID went, ended there.
 func linkGoneFor(t *testing.T, h *fakeHost, linkID string) {
 	t.Helper()
 	for {
 		if m := h.expect(proto.HostLinkGone); m["linkId"] == linkID {
+			if m["ended"] != true {
+				t.Fatalf("the link_gone of a link the switchyard ended: %v", m)
+			}
 			return
 		}
 	}
 }
 
 // A link an open admission ends is told to the connection that holds it,
-// still connected with the host token, though nobody joined through it: a
-// session's link to its session, a run link to its run's desk. It joins
-// 404 and its file is gone; the link that fits stays.
+// still connected with the host token, though nobody joined through it,
+// as ended: a session's link to its session, a run link to its run's desk,
+// and a run link of a run with no desk to its member's connection it was
+// minted over. It joins 404 and its file is gone; the link that fits stays.
 func TestALinkEndedAtAnOpenAdmissionIsToldToItsConnection(t *testing.T) {
 	const instance = "instance-secret-0123456789"
 	t.Run("a session's link", func(t *testing.T) {
@@ -904,6 +908,23 @@ func TestALinkEndedAtAnOpenAdmissionIsToldToItsConnection(t *testing.T) {
 		hs.LocalID = "2"
 		dialFakeHostWith(t, e, hi, hs, "")
 		linkGoneFor(t, desk, r["linkId"].(string))
+		linkEnded(t, e, dir, r["linkId"].(string), u[strings.LastIndex(u, "/")+1:])
+		linkKept(t, e, dir, b, bt)
+	})
+	t.Run("a run link of a run with no desk", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "data")
+		e := keptSwitchyard(t, dir, func(c *config.Config) { c.Switchyard.OpenHostLinks = 1 })
+		hi, hs := instanceHost(e, instance, "1")
+		member, _ := dialFakeHostWith(t, e, hi, hs, "Bearer test-host-token")
+		r := runLinkOver(member, "view", proto.RunGroup{ID: "run-1", Name: "Release", Members: []proto.RunMember{{Name: "lead", SessionID: member.sessionID, AgentID: "cat", Status: "running"}}})
+		if r["t"] != proto.HostLinkCreated {
+			t.Fatalf("the run link: %v", r)
+		}
+		u, _ := r["url"].(string)
+		b, bt := mintHostLink(t, member, "b")
+		hs.LocalID = "2"
+		dialFakeHostWith(t, e, hi, hs, "")
+		linkGoneFor(t, member, r["linkId"].(string))
 		linkEnded(t, e, dir, r["linkId"].(string), u[strings.LastIndex(u, "/")+1:])
 		linkKept(t, e, dir, b, bt)
 	})

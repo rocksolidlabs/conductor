@@ -658,9 +658,8 @@ func (s *Server) hostUp(owner, addr string) func() {
 // ended of itself while its host may hold it (an open admission), as
 // closeLinkViewers does, and tells the connection that holds it (its
 // session's, or its run's desk's) that it went, whether or not a viewer
-// joined through it. A run link of a run with no desk is told to its
-// members' connections as closeLinkViewers tells them: only when a viewer
-// joined through it.
+// joined through it. A run link of a run with no desk is told so to each
+// of its members' connections, the one it was minted over among them.
 func (s *Server) endHeldLink(l *share.Link) {
 	switch {
 	case l.RunID == "":
@@ -681,6 +680,13 @@ func (s *Server) endHeldLink(l *share.Link) {
 			d.DisconnectHeldLink(l.ID)
 			return
 		}
+	case l.Group != nil:
+		for _, m := range l.Group.Members {
+			if hs, ok := s.hosts.Get(m.SessionID); ok {
+				hs.DisconnectHeldLink(l.ID)
+			}
+		}
+		return
 	}
 	s.closeLinkViewers(l)
 }

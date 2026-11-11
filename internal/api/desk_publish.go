@@ -687,8 +687,17 @@ func (s *Server) stopRevokeRetries() {
 // there (the store's hook marks it so) and keeps its record, listed and
 // holding the run's desk, until the switchyard confirms the revoke or
 // answers not_found (retryRevokeThere, or a revoke again from here).
-func (s *Server) RemoteLinkGone(linkID, sessionID, runID string) {
+//
+// Any other link the switchyard says it ended of itself (ended: an open
+// admission past its bound, #820) leaves this server's lists: a session's
+// as its publication's held set no longer names it (remoteLinksOf), a
+// run's record here, run being the desk's run or the run of the member
+// whose connection was told.
+func (s *Server) RemoteLinkGone(linkID, sessionID, runID string, ended bool) {
 	l, ok := s.links.Get(linkID)
+	if (!ok || !l.Remote) && ended {
+		s.remoteRunLinkEnded(linkID, sessionID, runID)
+	}
 	if !ok || !l.Remote {
 		return
 	}
@@ -710,6 +719,30 @@ func (s *Server) RemoteLinkGone(linkID, sessionID, runID string) {
 	if _, owed := s.revokeOwed(l.SessionID, "", linkID); owed {
 		s.retryRevokeThere(l.SessionID, "", linkID)
 	}
+}
+
+// remoteRunLinkEnded forgets the record of the run link linkID, which the
+// switchyard ended of itself, if it is one of run's (a member session's
+// run when run is ""). It takes the run's sync turn first, off the
+// connection's read loop: a mint holds that turn until it has recorded its
+// link, so a link ended as it was minted is recorded before it is
+// forgotten.
+func (s *Server) remoteRunLinkEnded(linkID, sessionID, runID string) {
+	if runID == "" && sessionID != "" && s.runOf != nil {
+		runID, _ = s.runOf(sessionID)
+	}
+	if runID == "" {
+		return
+	}
+	seam := s.runLinkEndedSeam
+	s.track(func() {
+		if seam != nil {
+			seam(runID)
+		}
+		unlock := s.lockRunSync(runID)
+		defer unlock()
+		s.forgetRemoteRunLinks(runID, linkID)
+	})
 }
 
 // forgetRemote is the one place a record of a link minted at the
