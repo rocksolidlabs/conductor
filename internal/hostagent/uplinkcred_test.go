@@ -174,7 +174,11 @@ func TestOwnedTokenNeverPresented(t *testing.T) {
 		"a Start that never returns": nil,
 	}
 	openURL, openAuths := yardRecording(t, true, &uplinkFake{})
-	closedURL, closedAuths := yardRecording(t, false, &uplinkFake{})
+	// One switchyard with open hosts off for each owner answer: the server
+	// refuses a refused request past a burst of 20 from one address with
+	// 429, so its refusals, one per token answer, stay within that burst
+	// however fast they come.
+	auths := openAuths
 	l := catLocal(t)
 	cell := func(own func() bool, give func(*uplinkFake, *UplinkCredential), url string, late bool) *UplinkCredential {
 		f := &uplinkFake{owns: own}
@@ -199,6 +203,9 @@ func TestOwnedTokenNeverPresented(t *testing.T) {
 		return cred
 	}
 	for ownName, own := range owns {
+		closedURL, closedAuths := yardRecording(t, false, &uplinkFake{})
+		prev := auths
+		auths = func() []string { return append(prev(), closedAuths()...) }
 		for gaveName, give := range gave {
 			what, late := ownName+", "+gaveName, ownName != "owned" || gaveName == "late"
 			if tok, withheld := cell(own, give, openURL, late).Present(t.Context()); tok != "" || !withheld {
@@ -220,7 +227,7 @@ func TestOwnedTokenNeverPresented(t *testing.T) {
 			}
 		}
 	}
-	for _, a := range append(openAuths(), closedAuths()...) {
+	for _, a := range auths() {
 		if a != "" {
 			t.Fatalf("a registration presented %q", a)
 		}
