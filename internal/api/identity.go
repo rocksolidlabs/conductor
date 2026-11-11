@@ -132,10 +132,11 @@ func (s *Server) watching(wt *watchedToken, on bool) {
 // Held), for the detail's check; before it starts serving.
 func (s *Server) SetUplinkHeld(held func() []string) { s.uplinkHeld.Store(&held) }
 
-// providerCredentials is every credential the process holds for or from
-// the identity provider: the host token it was handed, the workbench
-// token and the host tokens, what the uplink's credential took from it,
-// and every watched connection's token. The detail holds none of them.
+// providerCredentials is what the detail's filter compares with, as it
+// stands when asked: the host token the provider was handed, the
+// workbench token and the host tokens, the last eight distinct tokens the
+// uplink's credential took from it (hostagent's heldTokens), and every
+// watched connection's token and pending one.
 func (s *Server) providerCredentials() []string {
 	own := append([]string{s.cfg.Rendezvous.Token, s.cfg.WorkbenchToken}, s.cfg.HostTokens...)
 	if held := s.uplinkHeld.Load(); held != nil {
@@ -321,8 +322,8 @@ func (s *Server) principalWatch(p principal, wt *watchedToken, need ext.Grant) f
 // hostToken takes a host_token, inline in the host connection's read
 // loop: it reports whether the connection stays, which it does on the
 // one success path (the same subject admitted with the host grant, the
-// new token then the connection's) and on two that change nothing: the
-// token the connection holds already, which is asked of nobody, and a
+// new token then the connection's) and on two that ask nobody: the token
+// the connection holds already, which clears a pending one, and a
 // renewal the guard could not put to the provider, every renewal slot
 // taken, which is no verdict (as a busy recheck is none), the
 // connection keeping its token and the offered one pending for its next
@@ -354,7 +355,10 @@ func (s *Server) hostToken(hc *hostConnState, data []byte) bool {
 		return false
 	}
 	if share.Equal(tok, hc.cred.tok) {
-		// The token the connection holds: nothing changes, nobody is asked.
+		// The token the connection holds: nobody is asked, and a pending
+		// renewal is cleared, as a renewal admitted clears it, since this is
+		// what the host presents now.
+		hc.cred.set(hc.cred.tok, "")
 		return true
 	}
 	pr, admitted, known, busy := g.renew(hc.ctx, tok)

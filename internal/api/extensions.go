@@ -290,12 +290,15 @@ func (s *Server) extFailed(kind, name, why, detail string) {
 
 // quietErr is err as it leaves the guard of the provider name of kind: as
 // it is, unless name is the value registered in the identity slot, which
-// was handed the host token and whose words never leave its guard in any
-// slot (a return, a log line, a reply, a check's result): then the guard's
-// own words, its kind and name, io.EOF and the context's ends kept as they
-// are (the standard library's, which carry nothing of the provider's). No
-// method of err is called. Every guard method that answers a provider's
-// error, or a result that carries one (quietWords), passes it through here.
+// was handed the host token: then the guard's own words, its kind and
+// name, io.EOF and the context's ends kept as they are (the standard
+// library's, which carry nothing of the provider's). No method of err is
+// called. Every guard method that answers a provider's error, or a result
+// that carries a status text (quietWords: an error's words, a signal's),
+// passes it through here. What is replaced is the errors and the status
+// texts; what a command the provider runs prints (a result's Head and
+// Tail, a terminal's bytes, a command's Log) is that command's output and
+// is passed on as it is.
 func (s *Server) quietErr(kind, name string, err error) error {
 	if err == nil || err == io.EOF || err == context.Canceled || err == context.DeadlineExceeded || name == "" || name != s.identityName() {
 		return err
@@ -303,8 +306,8 @@ func (s *Server) quietErr(kind, name string, err error) error {
 	return errors.New(quietText(kind, name))
 }
 
-// quietWords is quietErr for an error's words inside a result (a
-// command's Err, a terminal's exit): "" stays "".
+// quietWords is quietErr for a status text inside a result (a command's
+// Err, LogErr and Signal, a terminal's exit's Err and Signal): "" stays "".
 func (s *Server) quietWords(kind, name, words string) string {
 	if words == "" || name == "" || name != s.identityName() {
 		return words
@@ -735,8 +738,10 @@ func (g guardIdentity) renew(ctx context.Context, token string) (p ext.Principal
 // detail is who the server is signed in as (ext.IdentityDetail), asked
 // only once the provider has started and only of one that says it: one
 // line of 1 to ext.MaxIdentityDetail characters with no control
-// character that holds no credential the process holds for or from the
-// provider (providerCredentials), or false.
+// character, or false. A detail is also dropped when it holds, as
+// written, one of the credentials providerCredentials lists as the
+// detail is asked for (the uplink's last eight distinct ones among them);
+// that literal match against that list is all this filter does.
 func (g guardIdentity) detail(ctx context.Context) (string, bool) {
 	d, isDetail := g.p.(ext.IdentityDetail)
 	if !isDetail || !live(g.ready) {

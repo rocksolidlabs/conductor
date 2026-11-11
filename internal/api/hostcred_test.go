@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -508,20 +509,18 @@ func TestHostTokenRenewal(t *testing.T) {
 	})
 	// Every renewal slot held by other connections' renewals: one more is
 	// not put to the provider, which is no verdict, and its connection
-	// stays with the token it holds.
+	// stays with the token it holds. The host then offers the token it
+	// holds again: nobody is asked and nothing stays pending, so the next
+	// recheck asks about the token held, which the provider admits, and
+	// never about the one it replaced, which it would refuse.
 	t.Run("a renewal the guard cannot put keeps the connection", func(t *testing.T) {
 		f := newCredIdentity()
-		e, _ := credEnv(t, f)
+		e, clock := credEnv(t, f)
+		h, _ := dialCred(t, e, hostReg("1", nil), credOld)
+		first := clock.next(t, identityRecheckEvery)
 		gate := make(chan struct{})
 		t.Cleanup(func() { close(gate) })
-		for i := range extInFlight {
-			tok := fmt.Sprintf("cloud-fill-%d", i)
-			f.set(func(f *credIdentity) { f.admits[tok], f.gates[tok] = credHost, gate })
-			h, _ := dialCred(t, e, hostReg(fmt.Sprintf("fill-%d", i), nil), credOld)
-			h.send(hostToken(tok))
-			f.awaitAsk(t, tok)
-		}
-		h, _ := dialCred(t, e, hostReg("1", nil), credOld)
+		fillRenewals(t, e, clock, f, gate)
 		h.send(hostToken(credNew))
 		h.link("view", "") // read after the renewal: the connection stayed
 		if f.timesAsked(credNew) != 0 {
@@ -532,6 +531,14 @@ func TestHostTokenRenewal(t *testing.T) {
 		h.link("view", "")
 		if f.timesAsked(credOld) != before {
 			t.Fatal("the token the connection holds was asked of the provider")
+		}
+		f.set(func(f *credIdentity) { delete(f.admits, credNew) })
+		first.fire <- time.Now()
+		f.awaitAsk(t, credOld)
+		clock.next(t, identityRecheckEvery) // the round over, the watch going on
+		h.link("view", "")                  // its messages still handled
+		if n := f.timesAsked(credNew); n != 0 {
+			t.Fatalf("the recheck asked about the renewal the host replaced (%d asks)", n)
 		}
 	})
 	t.Run("the token the connection holds, never asked", func(t *testing.T) {
@@ -818,12 +825,12 @@ type uplinkDetail struct {
 func (*uplinkDetail) OwnsHostToken(c string) bool                 { return strings.HasPrefix(c, "code-") }
 func (u *uplinkDetail) UplinkToken(string, string) (string, bool) { return u.tok, true }
 
-// TestDetailHoldsNoProviderCredential: the identity row's detail is
-// refused when it quotes a credential the process holds from the provider:
-// what the uplink's credential presents, on a server publishing to a
-// switchyard; a watched host connection's token, the one it renewed to and
-// one pending, on a switchyard.
-func TestDetailHoldsNoProviderCredential(t *testing.T) {
+// TestDetailDropsHeldCredentials: the identity row's detail is dropped
+// when it quotes, as written, a credential on the filter's list: what the
+// uplink's credential presents, on a server publishing to a switchyard; a
+// watched host connection's token, the one it renewed to and one pending,
+// on a switchyard; and what the list holds and does not.
+func TestDetailDropsHeldCredentials(t *testing.T) {
 	quotes := func(d *detailIdentity, tok string) { d.detail = func() string { return "signed in with " + tok } }
 	refused := func(t *testing.T, e *testEnv, tok string) {
 		t.Helper()
@@ -848,6 +855,52 @@ func TestDetailHoldsNoProviderCredential(t *testing.T) {
 		}
 		quotes(u.detailIdentity, u.tok)
 		refused(t, e, u.tok)
+	})
+	// The filter compares the detail, as written, with the credentials held
+	// as the detail is asked for: of the uplink's, its last eight distinct
+	// ones. A ninth back, one taken while the detail is asked for and
+	// another spelling of one are not among them; one inside a longer word
+	// is.
+	t.Run("what the filter compares", func(t *testing.T) {
+		u := &uplinkDetail{detailIdentity: &detailIdentity{credIdentity: newCredIdentity(), asked: make(chan struct{}, 64)}}
+		e := providerEnv(t, func(c *config.Config) {
+			c.Rendezvous.Server, c.Rendezvous.Token = "https://yard.invalid", "code-owned-1"
+		}, u)
+		cred := hostagent.NewUplinkCredential(u, "cloud", "https://yard.invalid", "code-owned-1", nil, nil)
+		e.srv.SetUplinkHeld(cred.Held)
+		for i := 1; i <= 9; i++ {
+			u.tok = fmt.Sprintf("cred-uplink-%d", i)
+			if tok, _ := cred.Present(t.Context()); tok != u.tok {
+				t.Fatalf("presented %q", tok)
+			}
+		}
+		shown := func(t *testing.T, detail string) {
+			t.Helper()
+			u.detail = func() string { return detail }
+			if _, out := e.do("GET", "/api/capabilities", adminToken, nil); !strings.Contains(mustJSON(out), detail) {
+				t.Fatalf("%q is not shown: %v", detail, out)
+			}
+		}
+		for _, held := range []string{"cred-uplink-9", "cred-uplink-2"} {
+			quotes(u.detailIdentity, held)
+			refused(t, e, held)
+		}
+		shown(t, "signed in with cred-uplink-1") // nine back
+		u.detail = func() string { return "signed in as xcred-uplink-9y" }
+		refused(t, e, "cred-uplink-9") // inside a longer word
+		shown(t, "signed in as "+base64.StdEncoding.EncodeToString([]byte("cred-uplink-9")))
+		// Taken while the detail is asked for, so not among those held then.
+		u.detail = func() string {
+			u.tok = "cred-uplink-10"
+			_, _ = cred.Present(context.Background())
+			return "signed in with cred-uplink-10"
+		}
+		if _, out := e.do("GET", "/api/capabilities", adminToken, nil); !strings.Contains(mustJSON(out), "signed in with cred-uplink-10") {
+			t.Fatalf("a detail naming what was taken during its ask is not shown: %v", out)
+		}
+		if held := cred.Held(); !slices.Contains(held, "cred-uplink-10") || len(held) != 8 {
+			t.Fatalf("the credential holds %q", held)
+		}
 	})
 	t.Run("on a switchyard", func(t *testing.T) {
 		d := &detailIdentity{credIdentity: newCredIdentity(), asked: make(chan struct{}, 64)}

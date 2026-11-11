@@ -18,10 +18,13 @@ import (
 )
 
 // The value registered in the identity slot is handed the host token; in
-// every other slot it holds, nothing it says leaves its guard: no returned
-// error, no result's words, no log line. The walk registers one value in
-// every slot, makes each method of each fail with the token (an error,
-// then a panic) and looks at what left the guard.
+// every other slot it holds, its errors and its results' status texts
+// leave its guard as the guard's own words, and its failures are logged
+// without its words. The walk registers one value in every slot, makes
+// each method of each fail with the token (an error, then a panic; a
+// result with the token in every text field) and looks at what left the
+// guard. What a command prints (a result's Head and Tail, which are bytes)
+// is the command's output, not walked.
 
 const walkToken = "code-secret-1"
 
@@ -55,6 +58,27 @@ func (w *walker) fail(method string) error {
 		panic(words)
 	}
 	return errors.New(words)
+}
+
+// texts is a T with words in every exported string field, a nested
+// struct's too, found by reflection: a text field added to a result later
+// is walked as well.
+func texts[T any](words string) T {
+	var v T
+	fillTexts(reflect.ValueOf(&v).Elem(), words)
+	return v
+}
+
+func fillTexts(v reflect.Value, words string) {
+	for i := range v.NumField() {
+		switch f := v.Field(i); {
+		case !f.CanSet():
+		case f.Kind() == reflect.String:
+			f.SetString(words)
+		case f.Kind() == reflect.Struct:
+			fillTexts(f, words)
+		}
+	}
 }
 
 func (w *walker) calls(method string) int {
@@ -111,8 +135,9 @@ func (w *walker) StartTerminal(context.Context, ext.TerminalSpec) (ext.Terminal,
 	return nil, w.fail("StartTerminal")
 }
 func (w *walker) Run(context.Context, ext.CommandSpec) ext.CommandResult {
-	err := w.fail("Run")
-	return ext.CommandResult{Exit: 1, Err: err.Error(), LogErr: err.Error()}
+	r := texts[ext.CommandResult](w.fail("Run").Error())
+	r.Exit = 1
+	return r
 }
 func (w *walker) Serve(context.Context, ext.CommandSpec) (ext.ServiceProcess, error) {
 	if w.start {
@@ -138,7 +163,9 @@ func (t walkTerminal) Done() <-chan struct{} {
 	return t.w.done
 }
 func (t walkTerminal) Exit() ext.ExitStatus {
-	return ext.ExitStatus{Code: 1, Err: t.w.fail("Exit").Error()}
+	st := texts[ext.ExitStatus](t.w.fail("Exit").Error())
+	st.Code = 1
+	return st
 }
 func (t walkTerminal) Stop(context.Context, time.Duration) error {
 	return t.w.fail("Stop")
@@ -147,7 +174,7 @@ func (t walkTerminal) Process() ext.ProcessInfo {
 	if t.w.panicOn == "Process" {
 		_ = t.w.fail("Process")
 	}
-	return ext.ProcessInfo{}
+	return texts[ext.ProcessInfo]("Process cannot go on with " + walkToken)
 }
 
 type walkService struct{ w *walker }
@@ -159,8 +186,9 @@ func (s walkService) Done() <-chan struct{} {
 	return s.w.done
 }
 func (s walkService) Result() ext.CommandResult {
-	err := s.w.fail("Result")
-	return ext.CommandResult{Exit: 1, Err: err.Error(), LogErr: err.Error()}
+	r := texts[ext.CommandResult](s.w.fail("Result").Error())
+	r.Exit = 1
+	return r
 }
 func (s walkService) Stop(context.Context) error { return s.w.fail("Stop") }
 
