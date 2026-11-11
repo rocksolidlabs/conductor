@@ -279,6 +279,13 @@ type Server struct {
 	// deskCheckSeam, in tests, runs as a desk's judgement is about to be
 	// made (deskCheck), its desk seen live.
 	deskCheckSeam func(runID string)
+	// runLinkEndedSeam, in tests, runs as an ended run link's forget is
+	// about to wait for its run's turn (remoteRunLinkEnded).
+	runLinkEndedSeam func(runID string)
+	// remoteHeldSeam, in tests, runs as a session's decision link minted
+	// at the rendezvous has been held here and is not yet recorded
+	// (handleCreateLink). Guarded by pubMu.
+	remoteHeldSeam func(linkID string)
 	// revokeRetries are the decision links whose revoke at the rendezvous
 	// is being tried again (retryRevokeThere), revokesCtx ends them as the
 	// server stops (revokesStopped: none begun after); revokeRetrySeam, in

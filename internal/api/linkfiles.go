@@ -658,9 +658,15 @@ func (s *Server) hostUp(owner, addr string) func() {
 // ended of itself while its host may hold it (an open admission), as
 // closeLinkViewers does, and tells the connection that holds it (its
 // session's, or its run's desk's) that it went, whether or not a viewer
-// joined through it. A run link of a run with no desk is told to its
-// members' connections as closeLinkViewers tells them: only when a viewer
-// joined through it.
+// joined through it. A run link whose run's desk was not told (the run has
+// none, the desk its group names is away or already gone, or its
+// connection's queue did not take the word) is told so to each of its
+// members' connections, the one it was minted over among them: each of
+// them can list it. A second telling changes nothing, since ended is the
+// link's own end whichever connection carries it. A word no connection
+// takes is caught up at the next registration of the session, for its own
+// links, or of the run's desk, for the run's (its registered no longer
+// names it); a member's registration ends nothing of a run's link.
 func (s *Server) endHeldLink(l *share.Link) {
 	switch {
 	case l.RunID == "":
@@ -668,19 +674,21 @@ func (s *Server) endHeldLink(l *share.Link) {
 			hs.DisconnectHeldLink(l.ID)
 			return
 		}
-	case l.Group != nil && l.Group.Desk != "":
-		if d, ok := s.hosts.Desk(l.Group.Desk); ok {
-			for _, m := range l.Group.Members {
-				if m.SessionID == "" {
-					continue
-				}
-				if md, ok := s.registry.Get(m.SessionID); ok {
-					md.DisconnectLink(l.ID)
-				}
+	case l.Group != nil:
+		told := false
+		if l.Group.Desk != "" {
+			if d, ok := s.hosts.Desk(l.Group.Desk); ok {
+				told = d.DisconnectHeldLink(l.ID)
 			}
-			d.DisconnectHeldLink(l.ID)
-			return
 		}
+		for _, m := range l.Group.Members {
+			if hs, ok := s.hosts.Get(m.SessionID); ok && !told && m.SessionID != "" {
+				hs.DisconnectHeldLink(l.ID)
+			} else if md, ok := s.registry.Get(m.SessionID); ok && m.SessionID != "" {
+				md.DisconnectLink(l.ID)
+			}
+		}
+		return
 	}
 	s.closeLinkViewers(l)
 }
