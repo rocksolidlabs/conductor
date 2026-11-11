@@ -414,18 +414,23 @@ add its rule here.
   spec could not repeat and no flake in it could be proved fixed
   (2026-11-08, #281). Give each start a folder of its own and reset in it
   every module variable a test reads.
-- A call that moves the page is started, not awaited for its answer. An
-  evaluate that awaits a promise in the page holds the protocol's answer
-  open for as long as the promise takes, and Playwright reports any loss
-  of that answer as "Execution context was destroyed", a page load's
-  among them. The stubbed app's invite, awaited for its `true`, waited
-  across its own route to the join page and lost the answer twice in CI,
-  though the route was made in place (no document fetched; the trace
-  drew the join page after) and 74 runs here, loaded too, never lost it
-  (`update.spec.ts`, 2026-11-08 and 2026-11-10, #281). Start such a call
-  without awaiting it, let the page keep its answer, and wait for what
-  the call does (the address, what the next page draws) before reading
-  the answer kept (`invite` in `invite.spec.ts`).
+- A call that moves the page is started, not awaited for its answer,
+  and a read made after it takes a lost answer as "not yet". An evaluate
+  that awaits a promise in the page holds the protocol's answer open for
+  as long as the promise takes, and Playwright reports any loss of an
+  answer as "Execution context was destroyed", a page load's among them.
+  The stubbed app's invite, awaited for its `true`, waited across its own
+  route to the join page and lost the answer in two CI runs, though the
+  route was made in place (no document fetched; the trace drew the join
+  page after); 74 runs here, loaded too, never lost it, so what lost it
+  is not known (`update.spec.ts`, 2026-11-08 and 2026-11-10, #281). Start
+  such a call without awaiting it and let the page keep its answer
+  (`startCall` in `web/e2e/fixtures.ts`), wait for what the call does
+  (the address, what the next page draws), and make every read of the
+  page after it in an `expect.poll` through `notYet`, which reads again
+  on those words until the poll's bound and fails at once on any other
+  rejection: the poll alone fails at the first rejection its read meets
+  (`not-yet.spec.ts` cuts a read with a load to show both).
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
