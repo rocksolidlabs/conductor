@@ -1,0 +1,15 @@
+{
+  "loggedIn": true,
+  "authMethod": "claude.ai",
+  "apiProvider": "firstParty",
+  "analyticsDisabled": false,
+  "projectsDirectory": "/home/fixture-person/.claude/projects",
+  "configDirectory": "/home/fixture-person/.claude",
+  "loginExpiresAt": "2031-01-01T00:00:00.000Z",
+  "email": "fixture-person@example.invalid",
+  "orgId": "00000000-0000-4000-8000-00000000f1f1",
+  "orgName": "Fixture Organisation",
+  "subscriptionType": "max",
+  "storedClaudeAiLogin": true,
+  "planTier": "fixture_tier"
+}

@@ -1,0 +1,1 @@
+{"account":{"type":"chatgpt","email":"fixture-person@example.invalid","planType":"pro"},"requiresOpenaiAuth":true,"workspaceRouting":{"chatgptAccountId":"fixture-routing-account-id","backendOrigin":"https://fixture.invalid","accountRoutingOverride":"NO_CONSTRAINT"}}
