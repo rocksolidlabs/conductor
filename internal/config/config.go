@@ -21,6 +21,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/store"
+	"github.com/rocksolidlabs/conductor/internal/tracker"
 )
 
 // FileView controls which share-link roles may read files from a session's
@@ -681,6 +682,17 @@ type Config struct {
 	// not find on its own. No file read reaches it (FileDeny). An absolute
 	// path; not a config-file key.
 	DesktopDir string `json:"-"`
+	// GitHubToken is a GitHub token given in the environment
+	// (CONDUCTOR_GITHUB_TOKEN) for GitHubHost (CONDUCTOR_GITHUB_HOST,
+	// github.com when unset), for a headless server; a token saved in
+	// Settings is kept in the data directory's credentials/ instead. Not a
+	// config-file key, so no file holds it; its every print is set or
+	// unset (Secret).
+	GitHubToken Secret `json:"-"`
+	GitHubHost  string `json:"-"`
+	// TrackerLoopback admits a tracker on a plain http loopback host
+	// (CONDUCTOR_TRACKER_LOOPBACK=1): tests and the e2e harness only.
+	TrackerLoopback bool `json:"-"`
 
 	// warnings are what the last Validate found worth saying but not wrong.
 	warnings []string
@@ -811,6 +823,13 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 	str("CONDUCTOR_CATALOG_PATH", &cfg.CatalogPath)
 	str("CONDUCTOR_DATA_DIR", &cfg.DataDir)
 	str("CONDUCTOR_DESKTOP_DIR", &cfg.DesktopDir)
+	if v := getenv("CONDUCTOR_GITHUB_TOKEN"); v != "" {
+		cfg.GitHubToken = NewSecret(v)
+	}
+	str("CONDUCTOR_GITHUB_HOST", &cfg.GitHubHost)
+	if v := getenv("CONDUCTOR_TRACKER_LOOPBACK"); v == "1" || v == "true" {
+		cfg.TrackerLoopback = true
+	}
 	if v := getenv("CONDUCTOR_FILE_VIEW"); v != "" {
 		cfg.FileView = FileView(v)
 	}
@@ -1057,6 +1076,18 @@ func (c *Config) Validate() error {
 	}
 	if time.Duration(c.ExitedRetention) < 0 {
 		errs = append(errs, errors.New("exitedRetention must not be negative"))
+	}
+	if c.GitHubToken.Set() || c.GitHubHost != "" {
+		if c.GitHubHost == "" {
+			c.GitHubHost = tracker.GitHubHost
+		}
+		// Neither message names the token: only its form is said.
+		if !TrackerTokenForm(c.GitHubToken.Reveal()) {
+			errs = append(errs, fmt.Errorf("CONDUCTOR_GITHUB_TOKEN must be 1 to %d bytes of visible ASCII", MaxTrackerToken))
+		}
+		if err := tracker.CheckHost(c.GitHubHost, c.TrackerLoopback); err != nil {
+			errs = append(errs, fmt.Errorf("CONDUCTOR_GITHUB_HOST: %w", err))
+		}
 	}
 	if c.ICE.UDPPort < 0 || c.ICE.UDPPort > 65535 {
 		errs = append(errs, errors.New("ice.udpPort must be between 0 and 65535"))

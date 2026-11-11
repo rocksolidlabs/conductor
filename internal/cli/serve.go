@@ -108,6 +108,10 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	if err != nil {
 		return 1, err
 	}
+	// Read once: no process the server starts inherits it, whatever
+	// environment that process is given (pty.BuildEnv drops CONDUCTOR_*
+	// as well).
+	_ = os.Unsetenv("CONDUCTOR_GITHUB_TOKEN")
 	for _, w := range cfg.Warnings() {
 		log.Warn(w)
 	}
