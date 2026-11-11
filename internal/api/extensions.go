@@ -292,11 +292,12 @@ func (s *Server) extFailed(kind, name, why, detail string) {
 // it is, unless name is the value registered in the identity slot, which
 // was handed the host token and whose words never leave its guard in any
 // slot (a return, a log line, a reply, a check's result): then the guard's
-// own words, its kind and name, io.EOF kept as it is. No method of err is
-// called. Every guard method that answers a provider's error, or a result
-// that carries one (quietWords), passes it through here.
+// own words, its kind and name, io.EOF and the context's ends kept as they
+// are (the standard library's, which carry nothing of the provider's). No
+// method of err is called. Every guard method that answers a provider's
+// error, or a result that carries one (quietWords), passes it through here.
 func (s *Server) quietErr(kind, name string, err error) error {
-	if err == nil || err == io.EOF || name == "" || name != s.identityName() {
+	if err == nil || err == io.EOF || err == context.Canceled || err == context.DeadlineExceeded || name == "" || name != s.identityName() {
 		return err
 	}
 	return errors.New(quietText(kind, name))
