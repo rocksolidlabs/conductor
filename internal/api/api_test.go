@@ -1344,6 +1344,9 @@ func TestCatalogCheckCommand(t *testing.T) {
 // available included, saves back as it is.
 func TestCatalogReportsAvailability(t *testing.T) {
 	e := newTestEnv(t, nil)
+	// "Not available" needs the lookup's answer, which a loaded machine's
+	// PATH walk can take past lookupWait to give (#281).
+	e.srv.lookups.stubWait(hangWait)
 	ghost := agentBody("ghost")
 	ghost["command"] = []string{"definitely-not-a-real-binary-xyz"}
 	ghost["site"] = "https://example.com/ghost"

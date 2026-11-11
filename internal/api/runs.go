@@ -146,18 +146,23 @@ func (s *Server) lookupLocal(id string) (*session.Local, bool) {
 }
 
 // checkLaunch reports the first member whose agent the catalog lacks, whose
-// agent's program is not installed on this server (installed, the server's
-// lookups), whose program the identity probe found to be another one
+// agent's program is not installed on this server or could not be shown to
+// be (installed, the server's lookups: a lookup that did not answer is
+// known false), whose program the identity probe found to be another one
 // (identity, nil to skip; a pending or failed probe refuses nothing), or who
 // is given arguments its agent does not take, so that a launch refuses it
 // before any session starts. The error matches crew.ErrInvalid.
-func checkLaunch(members []crew.Member, cat catalog.Catalog, installed func(program string) bool, identity func(a catalog.Agent) *Identity) error {
+func checkLaunch(members []crew.Member, cat catalog.Catalog, installed func(program string) (ok, known bool), identity func(a catalog.Agent) *Identity) error {
 	if err := (crew.Crew{Members: members}).CheckAgents(cat); err != nil {
 		return err
 	}
 	for _, m := range members {
 		a, _ := cat.Get(m.AgentID)
-		if !installed(a.Command[0]) {
+		ok, known := installed(a.Command[0])
+		if !known {
+			return fmt.Errorf("%w: member %q: agent %q could not be shown to be installed on the server (the search for %s did not finish in time); try again", crew.ErrInvalid, m.Name, m.AgentID, a.Command[0])
+		}
+		if !ok {
 			return fmt.Errorf("%w: member %q: agent %q is not installed on the server (%s was not found)", crew.ErrInvalid, m.Name, m.AgentID, a.Command[0])
 		}
 		if identity != nil {
@@ -175,10 +180,10 @@ func checkLaunch(members []crew.Member, cat catalog.Catalog, installed func(prog
 // installedFor looks up the programs of the members' agents in cat together
 // (warm), so that a launch waits about one lookup's time for them, at most
 // lookupWait, and answers checkLaunch from those answers: a program whose
-// lookup did not answer in time, or before ctx ended, counts as installed (a
-// relative path with a separator always does, since it resolves against the
-// session's directory).
-func (s *Server) installedFor(ctx context.Context, cat catalog.Catalog, members []crew.Member) func(program string) bool {
+// lookup did not answer in time, or before ctx ended, is not known, which
+// refuses the launch (a relative path with a separator always counts, since
+// it resolves against the session's directory).
+func (s *Server) installedFor(ctx context.Context, cat catalog.Catalog, members []crew.Member) func(program string) (ok, known bool) {
 	var programs []string
 	for _, m := range members {
 		if a, ok := cat.Get(m.AgentID); ok && len(a.Command) > 0 {
@@ -186,7 +191,7 @@ func (s *Server) installedFor(ctx context.Context, cat catalog.Catalog, members 
 		}
 	}
 	answers := s.lookups.warm(ctx, programs)
-	return func(program string) bool { return answers[program] }
+	return func(program string) (ok, known bool) { return answers[program].ok, answers[program].known }
 }
 
 // identityFor runs (or reads) the identity probes of the members' agents
