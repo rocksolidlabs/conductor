@@ -144,6 +144,16 @@ add its rule here.
   its own waits' caps as it takes them (`testInfo.setTimeout`, the
   `budget` of `palette-rows.spec.ts`), with the config's timeout above
   their sum, never a multiple of the config's.
+- Import what is tested with the file, never inside a test. A module
+  imported in a test's body (`await import('./useTicketPlans')` in its
+  helper) counts its cold import against that test's 5 s, and a test that
+  times out is not stopped: on a loaded machine the import took seconds,
+  the first test timed out, and its body went on when the import came,
+  made its composable on the next test's stubs and sent into the next
+  test's arrays, which then saw a second request or an error not yet
+  said (2026-11-11, #281). These composables read their auto-imports when
+  they are called, so their static import before the stubs is safe; a
+  module that reads one as it loads is imported after its stubs.
 - Count only what the test made. A spec that counts sessions, tiles or list
   rows sees what an earlier spec left behind and what the server's sweeps
   removed: end the strays first (`stopStrays` in `web/e2e/fixtures.ts`) and
