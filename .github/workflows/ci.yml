@@ -212,12 +212,65 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}
-      - run: npx playwright install --with-deps chromium
+      # The browser's system packages come from the runner's apt mirror list. On 2026-11-11
+      # its first name, azure.archive.ubuntu.com, stopped resolving and apt waited on it for
+      # every fetch until the install failed, every run's e2e job with it (#281). When the
+      # first mirror's name resolves, nothing changes. When it does not, each mirror whose
+      # name does not resolve is taken out for this job (comments are kept, never probed);
+      # when none is left, the job uses kernel.org's Ubuntu mirror, whose indexes apt still
+      # checks against the image's Ubuntu archive key. An image without the file, or with a
+      # file that is not a list of addresses, changes nothing. The same steps are in
+      # live.yml: keep them alike.
+      - name: Take out package mirrors whose names do not resolve
+        timeout-minutes: 5
+        run: |
+          f=/etc/apt/apt-mirrors.txt fallback=https://mirrors.edge.kernel.org/ubuntu/
+          if [ ! -f "$f" ]; then echo "No $f on this image: its package sources are left as they are."; exit 0; fi
+          echo "The runner's mirror list, $f:"; cat "$f"
+          blank='^[[:space:]]*(#|$)'
+          active=$(grep -vE "$blank" "$f" || true)
+          if [ -z "$active" ] || printf '%s\n' "$active" | grep -qv '://'; then echo "$f is not a list of mirror addresses: left as it is."; exit 0; fi
+          name_of() { h=${1#*://}; printf '%s' "${h%%[/[:space:]]*}"; }
+          resolves() { [ -n "$1" ] && timeout 30 getent ahosts "$1" >/dev/null; }
+          first=$(name_of "$(printf '%s\n' "$active" | head -n 1)")
+          if resolves "$first"; then echo "The first mirror's name, $first, resolves: $f is unchanged."; exit 0; fi
+          kept=$(mktemp) n=0
+          while IFS= read -r line || [ -n "$line" ]; do
+            if [[ $line =~ $blank ]]; then printf '%s\n' "$line" >> "$kept"
+            elif h=$(name_of "$line"); resolves "$h"; then printf '%s\n' "$line" >> "$kept"; n=$((n + 1))
+            else echo "::warning::$h does not resolve: taken out of $f for this job (#281)"; fi
+          done < "$f"
+          if [ "$n" = 0 ]; then
+            echo "::warning::no mirror of $f resolves: this job uses $fallback (#281)"
+            printf '%s\tpriority:1\n' "$fallback" >> "$kept"
+          fi
+          sudo cp "$kept" "$f"; echo "$f now:"; cat "$f"
+      # Three tries a minute apart, as the downloads above retry, each try bounded: the
+      # package install runs `timeout` as root, so its TERM, and the KILL 30 s after it,
+      # reach apt and dpkg under it, and the next try first finishes what a killed dpkg
+      # left. Each step takes at most 3 x (600 + 30) s + 2 x 60 s = 33.5 min, under its own
+      # 40 and the job's 360 (#281).
+      - name: Install Chromium's system packages
+        timeout-minutes: 40
         working-directory: web
+        run: |
+          for try in 1 2 3; do
+            sudo timeout -k 30 600 "$(command -v node)" node_modules/.bin/playwright install-deps chromium && exit 0
+            echo "::warning::try $try of 3 of the browser's system packages failed (#281)"
+            [ "$try" = 3 ] || { sleep 60; sudo dpkg --configure -a || true; }
+          done
+          exit 1
+      - name: Download Chromium
         if: steps.playwright-cache.outputs.cache-hit != 'true'
-      - run: npx playwright install-deps chromium
+        timeout-minutes: 40
         working-directory: web
-        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: |
+          for try in 1 2 3; do
+            timeout -k 30 600 npx playwright install chromium && exit 0
+            echo "::warning::try $try of 3 of the browser's download failed (#281)"
+            [ "$try" = 3 ] || sleep 60
+          done
+          exit 1
       - run: npm run typecheck:e2e
         working-directory: web
       - run: npm run test:e2e

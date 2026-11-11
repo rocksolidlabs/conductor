@@ -6,13 +6,16 @@ import type { RunAttempt, RunTask } from './useSessions'
 import { type AbsentOptions, DispatchOrder, through, throughOrAbsent } from '../utils/dispatchOrder'
 import { repairs } from '../utils/dispatchEvidence'
 import { dispatchLive } from './useDispatchLive'
+import { useRunCandidates } from './useRunCandidates'
 
 // A run's candidates as DispatchCandidates reads them (Program item DS2, PR-11), against replies the test lets go: a run_changing reply
 // asked again after its second, on the first read too, with nothing said as a failure; two review tasks' findings opened while the
 // first one's reply is held back, both lists shown; a snapshot reading the pages again; a failure asked before a reply applied, or before
 // a snapshot, never said; a failure that may pass asked again with no event; the repairs' tasks read from the task route, a record's
 // repair that never submitted included. useRunCandidates reads Nuxt's auto-imports (Vue's, useDispatch, useSessions,
-// onBeforeUnmount) as globals: each is stubbed, on fake timers.
+// onBeforeUnmount) as globals: each is stubbed, on fake timers. They are read when the composable is called, so the module is imported
+// once with the file, never inside a test: an import that took seconds on a loaded machine timed the first test out, and its body,
+// still running, then took the next test's requests (#281).
 
 function held<T>() {
   let ok!: (v: T) => void
@@ -66,7 +69,6 @@ afterEach(() => {
 })
 
 async function candidates(runId = 'crew-0000aaaa', rev: number | undefined = 1) {
-  const { useRunCandidates } = await import('./useRunCandidates')
   const revision = vue.ref<number | undefined>(rev)
   return { revision, c: useRunCandidates({ runId: () => runId, revision: () => revision.value }) }
 }
