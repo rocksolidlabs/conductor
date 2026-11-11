@@ -30,10 +30,15 @@ const lookupWorkers = 8
 // hold a lookup for minutes.
 const lookupWait = 2 * time.Second
 
+// lookupEntry is an answer. It is fresh for lookupTTL from when it arrived
+// (at), however long its lookup took, so the retry a slow lookup's refusal
+// asks for finds it; of two answers about one program, the one whose lookup
+// started later (started) is kept.
 type lookupEntry struct {
-	path string
-	ok   bool
-	at   time.Time // when the lookup started
+	path    string
+	ok      bool
+	at      time.Time // when the answer arrived
+	started time.Time // when its lookup started
 }
 
 // lookupCall is a lookup under way, run by a goroutine of its own (run). Its
@@ -137,17 +142,21 @@ func await(ctx context.Context, call *lookupCall, wait time.Duration) (path stri
 // lookup: exec resolves it against the session's working directory, which the
 // server's own cannot stand for. A bare name is looked up on the PATH, and any
 // program of that name counts; an absolute path is looked up as it is. A
-// lookup that does not answer in time (found's known false) counts as well:
-// the launch goes ahead, and the spawn fails if the program is missing.
+// lookup that does not answer in time (found's known false) counts as well,
+// for a listing; a launch asks installedKnown, which tells it apart.
 func (c *lookupCache) installed(ctx context.Context, program string) bool {
+	ok, known := c.installedKnown(ctx, program)
+	return ok || !known
+}
+
+// installedKnown is installed with whether the lookup answered in time
+// (known): a launch refuses a program it could not show to be installed.
+func (c *lookupCache) installedKnown(ctx context.Context, program string) (ok, known bool) {
 	if relativePath(program) {
-		return true
+		return true, true
 	}
 	path, ok, known := c.found(ctx, program)
-	if ok && known && c.onWindows(path) {
-		return false
-	}
-	return ok || !known
+	return ok && known && !c.onWindows(path), known
 }
 
 // onWindows says whether a resolved path is a Windows program seen from
@@ -162,14 +171,18 @@ func relativePath(program string) bool {
 	return strings.ContainsAny(program, "/"+string(filepath.Separator)) && !filepath.IsAbs(program)
 }
 
-// warm reports whether each of programs is installed, asking about them all
-// at once: the lookups of those with no fresh answer run together, at most
-// lookupWorkers at a time, so a listing of N uncached programs takes about
-// one lookup's time, not N, and never much more than lookupWait.
-func (c *lookupCache) warm(ctx context.Context, programs []string) map[string]bool {
+// installedAnswer is what installedKnown says of a program.
+type installedAnswer struct{ ok, known bool }
+
+// warm reports whether each of programs is installed, as installedKnown
+// does, asking about them all at once: the lookups of those with no fresh
+// answer run together, at most lookupWorkers at a time, so a launch of N
+// uncached programs takes about one lookup's time, not N, and never much
+// more than lookupWait.
+func (c *lookupCache) warm(ctx context.Context, programs []string) map[string]installedAnswer {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	answers := make(map[string]bool, len(programs))
+	answers := make(map[string]installedAnswer, len(programs))
 	seen := map[string]bool{}
 	for _, p := range programs {
 		if seen[p] {
@@ -177,9 +190,9 @@ func (c *lookupCache) warm(ctx context.Context, programs []string) map[string]bo
 		}
 		seen[p] = true
 		wg.Go(func() {
-			ok := c.installed(ctx, p)
+			ok, known := c.installedKnown(ctx, p)
 			mu.Lock()
-			answers[p] = ok
+			answers[p] = installedAnswer{ok, known}
 			mu.Unlock()
 		})
 	}
@@ -247,7 +260,7 @@ func (c *lookupCache) run(program string, call *lookupCall) {
 	c.sem <- struct{}{}
 	defer func() { <-c.sem }()
 	path, err := call.look(program)
-	e, known = lookupEntry{path: path, ok: err == nil, at: call.at}, true
+	e, known = lookupEntry{path: path, ok: err == nil, started: call.at}, true
 }
 
 // settle takes call off the lookups under way and, when it has an answer
@@ -263,14 +276,15 @@ func (c *lookupCache) settle(program string, call *lookupCall, e lookupEntry, kn
 		delete(c.inflight, program)
 	}
 	if known {
-		for p, old := range c.entries {
-			if e.at.Sub(old.at) >= lookupTTL {
+		e.at = c.now()
+		old, had := c.entries[program]
+		for p, o := range c.entries {
+			if e.at.Sub(o.at) >= lookupTTL {
 				delete(c.entries, p)
 			}
 		}
-		old, had := c.entries[program]
 		switch {
-		case had && old.at.After(e.at):
+		case had && old.started.After(e.started):
 			e = old
 		case had || len(c.entries) < maxLookups:
 			c.entries[program] = e
