@@ -95,6 +95,9 @@ type Server struct {
 	// keeper keeps the links a switchyard mints across its restarts
 	// (linkfiles.go); nil elsewhere.
 	keeper *linkKeeper
+	// appURLSaid says once that switchyard.appURL was out of form
+	// (switchyardAppURL).
+	appURLSaid sync.Once
 	// native and offered are the server's two Runtimes, set in New and
 	// never changed after (extruntime.go): the native one, every session
 	// starts in but an attempt of a run the offered one took, and the one
