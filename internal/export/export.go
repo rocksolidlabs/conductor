@@ -176,6 +176,12 @@ type writer struct {
 }
 
 func (e *writer) write() error {
+	// The mark in the data directory itself (rest looks for it below):
+	// the whole directory is a provider's state, and nothing of it is
+	// taken, records, databases and files alike.
+	if _, err := e.root.Lstat(config.ProviderStateMark); err == nil {
+		return errors.New("export: the data directory holds a provider's state (its mark), which no export takes")
+	}
 	if err := e.records(); err != nil {
 		return err
 	}

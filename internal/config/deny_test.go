@@ -665,6 +665,50 @@ func TestHostStateDirDenied(t *testing.T) {
 	}
 }
 
+// TestHostStateDirBothPlaces: a server and a host on one machine may run
+// with different environments, so a deny list names both places a host
+// can have used: the one its own process's XDG_STATE_HOME gives and the
+// default. A server started with XDG_STATE_HOME set refuses its session
+// the default place, where a host started without it keeps its provider's
+// state.
+func TestHostStateDirBothPlaces(t *testing.T) {
+	home := realTempDir(t)
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("CONDUCTOR_DATA_DIR", "")
+	t.Setenv("CONDUCTOR_CATALOG_PATH", "")
+	t.Chdir(realTempDir(t))
+	// The host's environment: none set.
+	t.Setenv("XDG_STATE_HOME", "")
+	hostState, err := HostStateDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(hostState, "ext", "cloud", "state.json")
+	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rel, _ := filepath.Rel(home, file)
+	// The server's environment, and another host's: set elsewhere.
+	elsewhere := realTempDir(t)
+	t.Setenv("XDG_STATE_HOME", elsewhere)
+	local, err := LocalFileDeny("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, deny := range map[string][]string{"a server's": (&Config{DataDir: filepath.Join(home, "data")}).FileDenyFunc()(), "a host's": local} {
+		if _, err := session.ResolvePath(home, rel, deny); err == nil {
+			t.Errorf("%s session resolved the provider's file at the default place", name)
+		}
+		if !slices.Contains(deny, filepath.Join(elsewhere, "conductor")) {
+			t.Errorf("%s list does not name its own setting's place: %q", name, deny)
+		}
+	}
+}
+
 // LocalFileDenyFunc follows what the config file and the desktop app's
 // settings name while a session runs, and keeps what it named before: a
 // data directory moved is refused at both places. A config file that cannot

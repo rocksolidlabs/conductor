@@ -1,6 +1,7 @@
 package export_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -270,6 +271,22 @@ func TestProviderStateMarkLeftOut(t *testing.T) {
 	}
 	if _, err := restore(craft(t, [2]string{"x/" + config.ProviderStateMark, ""}), filepath.Join(t.TempDir(), "restored")); err == nil {
 		t.Error("an archive holding the mark restored")
+	}
+}
+
+// TestProviderStateMarkAtTheRoot: an export whose directory itself holds
+// the mark (the host's <state>/ext given as the directory) takes nothing
+// of it.
+func TestProviderStateMarkAtTheRoot(t *testing.T) {
+	f := newFixture(t)
+	put(t, f.dir, config.ProviderStateMark, "")
+	put(t, f.dir, "cloud/lease.json", `{"lease":"x"}`)
+	var buf bytes.Buffer
+	if _, err := export.Write(t.Context(), &buf, f.source()); err == nil {
+		t.Fatal("a marked directory exported")
+	}
+	if bytes.Contains(buf.Bytes(), []byte("lease")) {
+		t.Fatal("the archive holds the provider's state")
 	}
 }
 

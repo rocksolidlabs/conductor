@@ -5971,7 +5971,11 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
     `conductor host` starts the provider before it registers, its
     directory under `$XDG_STATE_HOME/conductor/ext/<name>` (or
     `~/.local/state/conductor`), marked so no export takes it and refused
-    to every session's files.
+    to every session's files. A deny list names both places, the one its
+    own process's `XDG_STATE_HOME` gives and the default: a host started
+    with `XDG_STATE_HOME` set to a place a server's environment does not
+    name keeps its provider's state where that server's sessions are not
+    refused it.
   - The uplink presents what the provider chooses, asked through a guard
     at every registration (`hostagent.UplinkCredential`): a token the
     provider owns, or may own (its answer late, panicking or busy), is
