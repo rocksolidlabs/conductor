@@ -311,14 +311,17 @@ func TestHostTokenMessage(t *testing.T) {
 		}
 	}
 	for name, msg := range map[string]string{
-		"past the token's bound": `{"t":"host_token","token":"` + strings.Repeat("A", MaxHostToken+1) + `"}`,
-		"past the message's":     `{"t":"host_token","token":"a"}` + strings.Repeat(" ", MaxHostTokenMessage),
-		"empty":                  `{"t":"host_token","token":""}`,
-		"not token68":            `{"t":"host_token","token":"a b"}`,
-		"escaped":                `{"t":"host_token","token":"a\u0000"}`,
-		"an unknown field":       `{"t":"host_token","token":"a","more":1}`,
-		"another type":           `{"t":"status","token":"a"}`,
-		"two values":             `{"t":"host_token","token":"a"}{}`,
+		"past the token's bound":  `{"t":"host_token","token":"` + strings.Repeat("A", MaxHostToken+1) + `"}`,
+		"past the message's":      `{"t":"host_token","token":"a"}` + strings.Repeat(" ", MaxHostTokenMessage),
+		"empty":                   `{"t":"host_token","token":""}`,
+		"not token68":             `{"t":"host_token","token":"a b"}`,
+		"escaped":                 `{"t":"host_token","token":"a\u0000"}`,
+		"an unknown field":        `{"t":"host_token","token":"a","more":1}`,
+		"another type":            `{"t":"status","token":"a"}`,
+		"two values":              `{"t":"host_token","token":"a"}{}`,
+		"a closing bracket after": `{"t":"host_token","token":"a"}]`,
+		"a closing brace after":   `{"t":"host_token","token":"a"}}`,
+		"a string after":          `{"t":"host_token","token":"a"} "b"`,
 	} {
 		if _, err := ParseHostToken([]byte(msg)); err == nil {
 			t.Errorf("%s: parsed", name)
@@ -349,12 +352,23 @@ func TestPeekType(t *testing.T) {
 		`[1]`:       "",
 		`{"x":`:     "",
 		``:          "",
+		// Within the message's first MaxHostTokenMessage bytes alone: a t
+		// after a value that reaches past them, or after a number no reader
+		// holds, is not read.
+		`{"token":"` + strings.Repeat("a", MaxHostTokenMessage) + `","t":"host_token"}`: "",
+		`{"x":[` + strings.Repeat("0,", MaxHostTokenMessage) + `0],"t":"host_token"}`:   "",
+		`{"a":1e999,"t":"host_token","token":"a"}`:                                      "",
 	} {
 		if got := PeekType([]byte(msg)); got != want {
 			t.Errorf("PeekType(%.40q) = %q, want %q", msg, got, want)
 		}
 		if want == "" {
 			continue
+		}
+		// What follows the bound is never read: the same message with
+		// anything after it peeks the same.
+		if got := PeekType([]byte(msg + strings.Repeat("x", MaxHostTokenMessage))); len(msg) <= MaxHostTokenMessage && got != want {
+			t.Errorf("PeekType(%.40q and more) = %q, want %q", msg, got, want)
 		}
 		if h, err := ParseHeader([]byte(msg)); err == nil && h != want {
 			t.Errorf("%.40q: ParseHeader says %q", msg, h)

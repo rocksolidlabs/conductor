@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -205,6 +206,41 @@ func recheckWith(t *testing.T, clock *fakeClock, f *credIdentity, tok string, an
 
 func hostToken(tok string) proto.HostTokenMsg {
 	return proto.HostTokenMsg{T: proto.HostTokenType, Token: tok}
+}
+
+// receive waits for a hook's signal on ch, what names it.
+func receive(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(testWait):
+		t.Fatalf("never: %s", what)
+	}
+}
+
+// writeRaw writes msg to h's connection as it is.
+func writeRaw(t *testing.T, h *fakeHost, msg []byte) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := h.c.Write(ctx, websocket.MessageText, msg); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// fillRenewals holds every renewal slot: extInFlight connections, each
+// registered with credOld, send a host_token of their own whose ask is
+// held at gate. Their recheck waits are taken from clock and never fired.
+func fillRenewals(t *testing.T, e *testEnv, clock *fakeClock, f *credIdentity, gate chan struct{}) {
+	t.Helper()
+	for i := range extInFlight {
+		tok := fmt.Sprintf("cloud-fill-%d", i)
+		f.set(func(f *credIdentity) { f.admits[tok], f.gates[tok] = credHost, gate })
+		h, _ := dialCred(t, e, hostReg(fmt.Sprintf("fill-%d", i), nil), credOld)
+		clock.next(t, identityRecheckEvery)
+		h.send(hostToken(tok))
+		f.awaitAsk(t, tok)
+	}
 }
 
 // TestHostConnectionRechecked: a provider-admitted host connection, a
@@ -450,6 +486,10 @@ func TestHostTokenRenewal(t *testing.T) {
 	// A renewal waiting for the turn while a recheck's verdict lands meets
 	// ended and is refused unasked.
 	t.Run("a renewal waiting as a recheck's verdict lands", func(t *testing.T) {
+		// The recheck's ask is held at the gate, not by its guard's wait.
+		wait := time.Hour
+		extWaiting.Store(&wait)
+		t.Cleanup(func() { extWaiting.Store(nil) })
 		f := newCredIdentity()
 		e, clock := credEnv(t, f)
 		h, _ := dialCred(t, e, hostReg("1", nil), credOld)
@@ -459,7 +499,7 @@ func TestHostTokenRenewal(t *testing.T) {
 		f.set(func(f *credIdentity) { f.gates[credOld] = gate; delete(f.admits, credOld) })
 		recheckWith(t, clock, f, credOld, nil) // its ask held
 		h.send(hostToken(credNew))
-		<-waiting
+		receive(t, waiting, "the renewal waiting for the turn")
 		close(gate)
 		closedRevoked(t, h)
 		if f.timesAsked(credNew) != 0 {
@@ -506,11 +546,149 @@ func TestHostTokenRenewal(t *testing.T) {
 			t.Fatalf("the token the connection holds was asked %d times, its registration's alone wanted", n)
 		}
 	})
-	// Past its bound and cut short: a whole decode of it fails (and would
-	// close the connection as a bad host message), so a 4403 says it was
-	// refused by its size before anything decoded it, a session's and a
-	// desk's alike.
-	t.Run("past the bound at the socket, refused before a whole decode", func(t *testing.T) {
+	// A renewal the guard could not put is kept pending: the old token
+	// then refused, the connection's next recheck asks about the pending
+	// one in its place, in the recheck's own slots. Admitted, it is the
+	// connection's; refused, the connection closes; held past its bound,
+	// both are kept, nothing closes and the next recheck decides. The old
+	// token is never asked again.
+	for _, c := range []string{"admitted", "refused", "held past its bound"} {
+		t.Run("a pending renewal, "+c, func(t *testing.T) {
+			f := newCredIdentity()
+			e, clock := credEnv(t, f)
+			h, _ := dialCred(t, e, hostReg("1", nil), credOld)
+			first := clock.next(t, identityRecheckEvery)
+			gate := make(chan struct{})
+			t.Cleanup(func() { close(gate) })
+			fillRenewals(t, e, clock, f, gate)
+			before := f.timesAsked(credOld) // the registrations'
+			h.send(hostToken(credNew))
+			h.link("view", "") // read after the renewal: the connection stayed
+			if f.timesAsked(credNew) != 0 {
+				t.Fatal("a renewal past every slot was asked")
+			}
+			f.set(func(f *credIdentity) { delete(f.admits, credOld) })
+			switch c {
+			case "refused":
+				f.set(func(f *credIdentity) { delete(f.admits, credNew) })
+				first.fire <- time.Now()
+				f.awaitAsk(t, credNew)
+				closedRevoked(t, h)
+			case "held past its bound":
+				short := time.Millisecond
+				extWaiting.Store(&short)
+				t.Cleanup(func() { extWaiting.Store(nil) })
+				held := make(chan struct{})
+				f.set(func(f *credIdentity) { f.gates[credNew] = held })
+				first.fire <- time.Now()
+				f.awaitAsk(t, credNew)
+				next := clock.next(t, identityRecheckEvery) // that round over: late
+				extWaiting.Store(nil)
+				f.set(func(f *credIdentity) { delete(f.gates, credNew) })
+				close(held)
+				h.link("view", "")
+				next.fire <- time.Now()
+				f.awaitAsk(t, credNew)
+				fallthrough
+			case "admitted":
+				if c == "admitted" {
+					first.fire <- time.Now()
+					f.awaitAsk(t, credNew)
+				}
+				recheckWith(t, clock, f, credNew, nil) // the token it holds now
+				h.link("view", "")                     // its messages still handled
+			}
+			if n := f.timesAsked(credOld); n != before {
+				t.Fatalf("the old token was asked again (%d asks, %d before the renewal)", n, before)
+			}
+		})
+	}
+	// A recheck waiting for the turn while a renewal's verdict lands meets
+	// ended and returns unasked.
+	t.Run("a recheck waiting as a renewal's verdict lands", func(t *testing.T) {
+		wait := time.Hour
+		extWaiting.Store(&wait)
+		t.Cleanup(func() { extWaiting.Store(nil) })
+		f := newCredIdentity()
+		e, clock := credEnv(t, f)
+		waiting, ended := make(chan struct{}, 1), make(chan struct{}, 1)
+		e.srv.hostCred = &hostCredSeam{waiting: func() { waiting <- struct{}{} }, watchEnded: func() { ended <- struct{}{} }}
+		h, _ := dialCred(t, e, hostReg("1", nil), credOld)
+		tm := clock.next(t, identityRecheckEvery)
+		gate := make(chan struct{})
+		f.set(func(f *credIdentity) {
+			f.gates[credNew2] = gate
+			f.answer[credNew2] = func(context.Context) (ext.Principal, bool, error) {
+				return ext.Principal{Subject: "u-bob", Name: "Bob", Grants: []ext.Grant{ext.GrantHost}}, true, nil
+			}
+		})
+		h.send(hostToken(credNew2))
+		f.awaitAsk(t, credNew2) // the renewal holds the turn
+		tm.fire <- time.Now()
+		receive(t, waiting, "the recheck waiting for the turn")
+		close(gate)
+		closedRevoked(t, h)
+		receive(t, ended, "the watch's end")
+		if n := f.timesAsked(credOld); n != 1 {
+			t.Fatalf("a recheck that took the turn after the renewal's verdict asked about the old token (%d asks)", n)
+		}
+	})
+	// One reading of a message's type: the look ahead within the first
+	// bytes on a provider's connection, and the header's otherwise. A
+	// host_token by either is renewed through the bound or closed, a
+	// session's connection and a desk's alike; with no provider the look
+	// ahead never runs.
+	long := strings.Repeat("a", proto.MaxHostTokenMessage)
+	shapes := map[string][]byte{
+		"its token first":            []byte(`{"token":"` + long + `","t":"host_token"}`),
+		"a number before its type":   []byte(`{"a":1e999,"t":"host_token","token":"` + long + `"}`),
+		"past the bound":             []byte(`{"t":"host_token","token":"` + long + `"}`),
+		"a second value after it":    []byte(`{"t":"host_token","token":"` + credNew + `"}{}`),
+		"a closing bracket after it": []byte(`{"t":"host_token","token":"` + credNew + `"}]`),
+	}
+	t.Run("one reading of the type, at the socket", func(t *testing.T) {
+		for name, msg := range shapes {
+			f := newCredIdentity()
+			e, _ := credEnv(t, f)
+			var peeked atomic.Int32
+			e.srv.hostCred = &hostCredSeam{peeked: func() { peeked.Add(1) }}
+			for _, first := range []any{hostReg("1", nil), deskReg("inst-1", "run-1")} {
+				h, _ := dialCred(t, e, first, credOld)
+				writeRaw(t, h, msg)
+				closedRevoked(t, h)
+			}
+			if f.timesAsked(credNew) != 0 || peeked.Load() == 0 {
+				t.Fatalf("%s: the provider asked %d times, the look ahead run %d times", name, f.timesAsked(credNew), peeked.Load())
+			}
+		}
+	})
+	t.Run("one reading of the type, with no provider", func(t *testing.T) {
+		e := providerEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true }, nil)
+		var peeked atomic.Int32
+		e.srv.hostCred = &hostCredSeam{peeked: func() { peeked.Add(1) }}
+		for name, msg := range shapes {
+			for _, first := range []any{hostReg("1", nil), deskReg("inst-1", "run-1")} {
+				h, _ := dialCred(t, e, first, "test-host-token")
+				writeRaw(t, h, msg)
+				select {
+				case <-h.done:
+				case <-time.After(testWait):
+					t.Fatalf("%s: the connection was not closed", name)
+				}
+				var ce websocket.CloseError
+				if !errors.As(h.err, &ce) {
+					t.Fatalf("%s: %v", name, h.err)
+				}
+			}
+		}
+		if n := peeked.Load(); n != 0 {
+			t.Fatalf("the look ahead ran %d times with no provider", n)
+		}
+	})
+	// Past its bound and cut short, its type first: told by the look ahead
+	// and refused by its size (a whole decode of it would fail, closing the
+	// connection as a bad host message), a session's and a desk's alike.
+	t.Run("past the bound at the socket, its type first, refused by its size", func(t *testing.T) {
 		f := newCredIdentity()
 		e, _ := credEnv(t, f)
 		msg := []byte(`{"t":"host_token","token":"` + strings.Repeat("a", proto.MaxHostTokenMessage))
@@ -530,8 +708,9 @@ func TestHostTokenRenewal(t *testing.T) {
 		e, clock := credEnv(t, f)
 		h, reg := dialCred(t, e, hostReg("1", nil), credOld)
 		link := h.link("view", "")
-		hold, held, closing := make(chan struct{}), make(chan struct{}, 4), make(chan struct{}, 1)
-		e.srv.hostCred = &hostCredSeam{reading: func() { held <- struct{}{}; <-hold }, closing: func() { closing <- struct{}{} }}
+		hold, held, closing, watchEnd := make(chan struct{}), make(chan struct{}, 4), make(chan struct{}, 1), make(chan struct{}, 1)
+		e.srv.hostCred = &hostCredSeam{reading: func() { held <- struct{}{}; <-hold }, closing: func() { closing <- struct{}{} },
+			watchEnded: func() { watchEnd <- struct{}{} }}
 		h.send(proto.HostStatusMsg{T: proto.HostStatus, SessionID: h.sessionID, Status: string(session.StatusRunning)})
 		h.send(hostToken(credNew))
 		<-held
@@ -543,6 +722,7 @@ func TestHostTokenRenewal(t *testing.T) {
 		if f.timesAsked(credNew) != 0 {
 			t.Fatal("the host_token queued behind the verdict was handled")
 		}
+		receive(t, watchEnd, "the closed connection's watch ending") // the last to read the seam
 		e.srv.hostCred = nil
 		resumedAs(t, e, "1", reg, credNew, link)
 	})
@@ -626,6 +806,74 @@ func TestCapabilitiesDetail(t *testing.T) {
 	if _, out := newTestEnv(t, nil).do("GET", "/api/capabilities", adminToken, nil); mustJSON(out) != `{"providers":[]}` {
 		t.Fatalf("a plain build's reply: %v", out)
 	}
+}
+
+// uplinkDetail is detailIdentity owning the code it was configured with
+// and giving the switchyard tok.
+type uplinkDetail struct {
+	*detailIdentity
+	tok string
+}
+
+func (*uplinkDetail) OwnsHostToken(c string) bool                 { return strings.HasPrefix(c, "code-") }
+func (u *uplinkDetail) UplinkToken(string, string) (string, bool) { return u.tok, true }
+
+// TestDetailHoldsNoProviderCredential: the identity row's detail is
+// refused when it quotes a credential the process holds from the provider:
+// what the uplink's credential presents, on a server publishing to a
+// switchyard; a watched host connection's token, the one it renewed to and
+// one pending, on a switchyard.
+func TestDetailHoldsNoProviderCredential(t *testing.T) {
+	quotes := func(d *detailIdentity, tok string) { d.detail = func() string { return "signed in with " + tok } }
+	refused := func(t *testing.T, e *testEnv, tok string) {
+		t.Helper()
+		_, out := e.do("GET", "/api/capabilities", adminToken, nil)
+		if strings.Contains(mustJSON(out), tok) {
+			t.Fatalf("the reply holds %s: %v", tok, out)
+		}
+	}
+	t.Run("on a host", func(t *testing.T) {
+		u := &uplinkDetail{detailIdentity: &detailIdentity{credIdentity: newCredIdentity(), asked: make(chan struct{}, 64)}, tok: "cred-live-uplink-9"}
+		e := providerEnv(t, func(c *config.Config) {
+			c.Rendezvous.Server, c.Rendezvous.Token = "https://yard.invalid", "code-owned-1"
+		}, u)
+		cred := hostagent.NewUplinkCredential(u, "cloud", "https://yard.invalid", "code-owned-1", nil, nil)
+		e.srv.SetUplinkHeld(cred.Held)
+		u.detail = func() string { return "signed in as Ada" }
+		if _, out := e.do("GET", "/api/capabilities", adminToken, nil); !strings.Contains(mustJSON(out), "signed in as Ada") {
+			t.Fatalf("a detail holding no credential is not shown: %v", out)
+		}
+		if tok, _ := cred.Present(t.Context()); tok != u.tok {
+			t.Fatalf("presented %q", tok)
+		}
+		quotes(u.detailIdentity, u.tok)
+		refused(t, e, u.tok)
+	})
+	t.Run("on a switchyard", func(t *testing.T) {
+		d := &detailIdentity{credIdentity: newCredIdentity(), asked: make(chan struct{}, 64)}
+		e := providerEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true }, d)
+		clock := newFakeClock(e.srv)
+		d.detail = func() string { return "signed in as Ada" }
+		if _, out := e.do("GET", "/api/capabilities", adminToken, nil); !strings.Contains(mustJSON(out), "signed in as Ada") {
+			t.Fatalf("a detail holding no credential is not shown: %v", out)
+		}
+		h, _ := dialCred(t, e, hostReg("1", nil), credOld)
+		clock.next(t, identityRecheckEvery) // the watch holds it
+		quotes(d, credOld)
+		refused(t, e, credOld)
+		h.send(hostToken(credNew))
+		d.awaitAsk(t, credNew)
+		h.link("view", "")
+		quotes(d, credNew)
+		refused(t, e, credNew)
+		gate := make(chan struct{})
+		t.Cleanup(func() { close(gate) })
+		fillRenewals(t, e, clock, d.credIdentity, gate)
+		h.send(hostToken(credNew2))
+		h.link("view", "") // kept pending
+		quotes(d, credNew2)
+		refused(t, e, credNew2)
+	})
 }
 
 // modeStarter records the Host each try of its Start is given; its Start
@@ -713,63 +961,6 @@ func TestIdentityStartNotQuoted(t *testing.T) {
 		e.srv.ProviderStarted(t.Context(), "cloud")
 		e.srv.stopExtensions()
 		if strings.Contains(logs.String(), "code-secret-1") || !strings.Contains(logs.String(), "kind=start") {
-			t.Fatalf("panics %v: the log:\n%s", panics, logs.String())
-		}
-	}
-}
-
-// mediaIdentity is one value in the identity slot and the media slot under
-// one name, its media calls failing with the host token it was handed.
-type mediaIdentity struct {
-	*credIdentity
-	panics bool
-	mu     sync.Mutex
-	tok    string
-}
-
-func (m *mediaIdentity) Start(_ context.Context, h ext.Host) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.tok = h.HostToken()
-	return nil
-}
-
-func (m *mediaIdentity) ICEServers(context.Context, ext.ICERequest) ([]ext.ICEServer, error) {
-	m.mu.Lock()
-	tok := m.tok
-	m.mu.Unlock()
-	if m.panics {
-		panic("cannot reach media with " + tok)
-	}
-	return nil, errors.New("cannot reach media with " + tok)
-}
-
-func (m *mediaIdentity) Room(context.Context, ext.RoomRequest) (ext.RoomJoin, bool, error) {
-	return ext.RoomJoin{}, false, nil
-}
-
-// TestIdentityValueQuietInEverySlot: the value registered as the identity
-// provider, handed the host token, is logged without its words whichever
-// of its slots fails.
-func TestIdentityValueQuietInEverySlot(t *testing.T) {
-	for _, panics := range []bool{false, true} {
-		v := &mediaIdentity{credIdentity: newCredIdentity(), panics: panics}
-		logs := &syncLog{}
-		e := newTestEnvAgents(t, func(c *config.Config) {
-			c.Rendezvous.Server, c.Rendezvous.Token = "https://yard.invalid", "code-secret-1"
-		}, slog.New(slog.NewTextHandler(logs, nil)), nil, WithExtensions(local.Fill(ext.Providers{Identity: v, Media: v,
-			All: []ext.Entry{{Kind: ext.KindIdentity, Name: "cloud", Value: v}, {Kind: ext.KindMedia, Name: "cloud", Value: v}}})))
-		e.srv.StartExtensions(t.Context())
-		e.srv.ProviderStarted(t.Context(), "cloud")
-		v.mu.Lock()
-		handed := v.tok
-		v.mu.Unlock()
-		if handed != "code-secret-1" {
-			t.Fatalf("the provider was handed %q", handed)
-		}
-		e.srv.exts.media.ICEServers(t.Context(), ext.ICERequest{Purpose: "viewer"})
-		e.srv.stopExtensions()
-		if strings.Contains(logs.String(), "code-secret-1") || !strings.Contains(logs.String(), "kind=media") {
 			t.Fatalf("panics %v: the log:\n%s", panics, logs.String())
 		}
 	}

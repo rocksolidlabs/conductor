@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -82,15 +83,74 @@ func (s *Server) hostPrincipal(r *http.Request, tok string) (principal, bool) {
 // is read and changed only under the turn. ended is the connection's
 // terminal state, a verdict recorded, set only under the turn and read
 // without it (the host connection's reader looks at it before each
-// message).
+// message). pending is a host's renewal the guard could not put to the
+// provider (every renewal slot taken): the next recheck asks about it
+// first (principalWatch). tok and pending change only under the turn and
+// under mu, so the detail's check reads them under mu alone (held).
 type watchedToken struct {
-	turn  chan struct{}
-	tok   string
-	ended atomic.Bool
+	turn    chan struct{}
+	mu      sync.Mutex
+	tok     string
+	pending string
+	ended   atomic.Bool
 }
 
 func newWatchedToken(tok string) *watchedToken {
 	return &watchedToken{turn: make(chan struct{}, 1), tok: tok}
+}
+
+// set changes tok and pending; the caller holds the turn.
+func (w *watchedToken) set(tok, pending string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.tok, w.pending = tok, pending
+}
+
+// held is the tokens the connection holds, its pending one among them.
+func (w *watchedToken) held() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return []string{w.tok, w.pending}
+}
+
+// watching adds wt to the server's watched credentials, or removes it.
+func (s *Server) watching(wt *watchedToken, on bool) {
+	s.watchedMu.Lock()
+	defer s.watchedMu.Unlock()
+	if s.watched == nil {
+		s.watched = map[*watchedToken]struct{}{}
+	}
+	if on {
+		s.watched[wt] = struct{}{}
+	} else {
+		delete(s.watched, wt)
+	}
+}
+
+// SetUplinkHeld gives the server what answers the tokens its uplink's
+// credential took from the identity provider (hostagent.UplinkCredential's
+// Held), for the detail's check; before it starts serving.
+func (s *Server) SetUplinkHeld(held func() []string) { s.uplinkHeld.Store(&held) }
+
+// providerCredentials is every credential the process holds for or from
+// the identity provider: the host token it was handed, the workbench
+// token and the host tokens, what the uplink's credential took from it,
+// and every watched connection's token. The detail holds none of them.
+func (s *Server) providerCredentials() []string {
+	own := append([]string{s.cfg.Rendezvous.Token, s.cfg.WorkbenchToken}, s.cfg.HostTokens...)
+	if held := s.uplinkHeld.Load(); held != nil {
+		own = append(own, (*held)()...)
+	}
+	s.watchedMu.Lock()
+	ws := make([]*watchedToken, 0, len(s.watched))
+	for wt := range s.watched {
+		ws = append(ws, wt)
+	}
+	s.watchedMu.Unlock()
+	for _, wt := range ws {
+		own = append(own, wt.held()...)
+	}
+	return own
 }
 
 // take takes the turn, telling the seam first when it must wait for it;
@@ -118,9 +178,11 @@ func (w *watchedToken) give() { <-w.turn }
 // hostCredSeam lets a test hold a host connection's credential steps;
 // nil outside tests. waiting is told a recheck or a renewal waits for the
 // turn; reading, a host message read, before ended is looked at; closing,
-// a verdict recorded and the turn given back, before the close handshake.
+// a verdict recorded and the turn given back, before the close handshake;
+// watchEnded, a watch returning (principalWatch); peeked, the look ahead
+// for host_token run on a message (the host read loop).
 type hostCredSeam struct {
-	waiting, reading, closing func()
+	waiting, reading, closing, watchEnded, peeked func()
 }
 
 func (s *Server) credHook(pick func(*hostCredSeam) func()) func() {
@@ -189,7 +251,10 @@ var errPrincipalRevoked = fmt.Errorf("access revoked by the identity provider: %
 // and calls end, once, when the provider answers in time that it no
 // longer admits it as p: no principal, another subject, or one without
 // the grant the connection needs (admin for a viewer's control role and
-// the events stream, host for a host connection). Each ask holds the
+// the events stream, host for a host connection). A host connection's
+// pending renewal (hostToken) is asked about in the held token's place:
+// admitted, it becomes the connection's; refused, the connection ends; no
+// verdict leaves both, and the held token is not asked that round. Each ask holds the
 // connection's credential turn until its verdict is recorded (wt.ended);
 // the turn is given back before end runs, so no close handshake runs
 // under it. A provider that fails, panics, is late, is busy or answers a
@@ -208,6 +273,9 @@ func (s *Server) principalWatch(p principal, wt *watchedToken, need ext.Grant) f
 		return nil
 	}
 	return func(ctx context.Context, end func()) {
+		s.watching(wt, true)
+		defer s.watching(wt, false)
+		defer func() { runHook(s.credHook(func(h *hostCredSeam) func() { return h.watchEnded })) }()
 		for {
 			select {
 			case <-ctx.Done():
@@ -221,8 +289,21 @@ func (s *Server) principalWatch(p principal, wt *watchedToken, need ext.Grant) f
 				wt.give()
 				return
 			}
-			pr, admitted, known := g.recheck(ctx, wt.tok)
-			if !known || ctx.Err() != nil || (admitted && s.admitsAs(pr, p.subject, need)) {
+			// A pending renewal is what the host presents now: asked
+			// about in its place, and alone, this round.
+			tok, pending := wt.tok, wt.pending
+			if pending != "" {
+				tok = pending
+			}
+			pr, admitted, known := g.recheck(ctx, tok)
+			if !known || ctx.Err() != nil {
+				wt.give()
+				continue
+			}
+			if admitted && s.admitsAs(pr, p.subject, need) {
+				if pending != "" {
+					wt.set(pending, "")
+				}
 				wt.give()
 				continue
 			}
@@ -244,7 +325,8 @@ func (s *Server) principalWatch(p principal, wt *watchedToken, need ext.Grant) f
 // token the connection holds already, which is asked of nobody, and a
 // renewal the guard could not put to the provider, every renewal slot
 // taken, which is no verdict (as a busy recheck is none), the
-// connection keeping its token. Every other outcome is the one fallback,
+// connection keeping its token and the offered one pending for its next
+// recheck. Every other outcome is the one fallback,
 // false, and the caller closes the connection 4403 access revoked: a
 // message past its bounds (proto.ParseHostToken), a connection not
 // admitted through a provider's principal, a token the server's own
@@ -278,11 +360,14 @@ func (s *Server) hostToken(hc *hostConnState, data []byte) bool {
 	pr, admitted, known, busy := g.renew(hc.ctx, tok)
 	if busy {
 		// Not put to the provider, every renewal slot taken: no verdict,
-		// as a busy recheck is none; the connection keeps its token.
+		// as a busy recheck is none. The connection keeps its token and
+		// keeps this one pending (a later renewal replaces it), which its
+		// next recheck asks about first, in the recheck's own slots.
+		hc.cred.set(hc.cred.tok, tok)
 		return true
 	}
 	if known && admitted && s.admitsAs(pr, hc.subject, ext.GrantHost) {
-		hc.cred.tok = tok
+		hc.cred.set(tok, "")
 		return true
 	}
 	// A verdict, or a renewal that could not be told: either way the

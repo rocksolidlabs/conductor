@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -181,9 +182,10 @@ const (
 )
 
 // ParseHostToken decodes a host_token, refusing a message past
-// MaxHostTokenMessage before it is decoded, an unknown field, and a token
-// that is empty, past MaxHostToken or not of token68's characters (A-Z
-// a-z 0-9 - . _ ~ + / =, ext.ValidHostToken's rule).
+// MaxHostTokenMessage before it is decoded, an unknown field, anything
+// after its one object, and a token that is empty, past MaxHostToken or
+// not of token68's characters (A-Z a-z 0-9 - . _ ~ + / =,
+// ext.ValidHostToken's rule).
 func ParseHostToken(data []byte) (string, error) {
 	if len(data) > MaxHostTokenMessage {
 		return "", fmt.Errorf("host_token: %d bytes, past %d", len(data), MaxHostTokenMessage)
@@ -191,8 +193,11 @@ func ParseHostToken(data []byte) (string, error) {
 	var m HostTokenMsg
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&m); err != nil || m.T != HostTokenType || dec.More() {
+	if err := dec.Decode(&m); err != nil || m.T != HostTokenType {
 		return "", errors.New("host_token: not a host_token message")
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return "", errors.New("host_token: not one object alone")
 	}
 	if m.Token == "" || len(m.Token) > MaxHostToken || strings.TrimLeft(m.Token, token68) != "" {
 		return "", errors.New("host_token: the token is not 1 to 2048 bytes of token68")
@@ -201,14 +206,17 @@ func ParseHostToken(data []byte) (string, error) {
 }
 
 // PeekType is the type of a JSON message, its top-level t (matched as
-// ParseHeader matches it, case aside), read by a decoder that stops
-// there: what comes after t is never decoded, what comes before it is
-// stepped over token by token, and the message is never decoded whole.
-// "" when data is no object, or has no string t before the decoder fails.
-// Where t appears twice, the first is the one read (ParseHeader takes the
-// last).
+// ParseHeader matches it, case aside), read within the message's first
+// MaxHostTokenMessage bytes alone, by a decoder that stops at t: what
+// comes before it is stepped over token by token, never past those bytes,
+// so its work is bounded whatever the message holds. "" when those bytes
+// are no object's start or hold no string t before the decoder fails: a t
+// past them cannot be a valid host_token's. Where t appears twice, the
+// first is the one read (ParseHeader takes the last). The host read loop
+// runs it only on a connection admitted through an identity provider, and
+// closes one whose type ParseHeader reads as host_token otherwise.
 func PeekType(data []byte) string {
-	dec := json.NewDecoder(bytes.NewReader(data))
+	dec := json.NewDecoder(bytes.NewReader(data[:min(len(data), MaxHostTokenMessage)]))
 	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
 		return ""
 	}

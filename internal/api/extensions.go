@@ -288,6 +288,33 @@ func (s *Server) extFailed(kind, name, why, detail string) {
 	s.log.Warn("extension call failed: its free default answered", attrs...)
 }
 
+// quietErr is err as it leaves the guard of the provider name of kind: as
+// it is, unless name is the value registered in the identity slot, which
+// was handed the host token and whose words never leave its guard in any
+// slot (a return, a log line, a reply, a check's result): then the guard's
+// own words, its kind and name, io.EOF kept as it is. No method of err is
+// called. Every guard method that answers a provider's error, or a result
+// that carries one (quietWords), passes it through here.
+func (s *Server) quietErr(kind, name string, err error) error {
+	if err == nil || err == io.EOF || name == "" || name != s.identityName() {
+		return err
+	}
+	return errors.New(quietText(kind, name))
+}
+
+// quietWords is quietErr for an error's words inside a result (a
+// command's Err, a terminal's exit): "" stays "".
+func (s *Server) quietWords(kind, name, words string) string {
+	if words == "" || name == "" || name != s.identityName() {
+		return words
+	}
+	return quietText(kind, name)
+}
+
+func quietText(kind, name string) string {
+	return fmt.Sprintf("the %s provider %s failed", kind, name)
+}
+
 // extCall runs fn, a call of the provider name of kind, within wait and
 // answers its result, or fallback when fn errs, panics, returns what valid
 // refuses (a nil valid takes everything), or has not returned and been
@@ -474,6 +501,7 @@ func extDeliver(ctx context.Context, s *Server, kind, name string, fn func(conte
 		if err != nil && ctx.Err() == nil {
 			s.extFailed(kind, name, "delivery", err.Error())
 		}
+		err = s.quietErr(kind, name, err)
 	}()
 	// An error once the context ended is the context's end (the deferred
 	// check answers it), whatever the provider made of it.
@@ -706,14 +734,14 @@ func (g guardIdentity) renew(ctx context.Context, token string) (p ext.Principal
 // detail is who the server is signed in as (ext.IdentityDetail), asked
 // only once the provider has started and only of one that says it: one
 // line of 1 to ext.MaxIdentityDetail characters with no control
-// character that holds no token of the server's own (the host token it
-// handed over, the workbench token, a host token), or false.
+// character that holds no credential the process holds for or from the
+// provider (providerCredentials), or false.
 func (g guardIdentity) detail(ctx context.Context) (string, bool) {
 	d, isDetail := g.p.(ext.IdentityDetail)
 	if !isDetail || !live(g.ready) {
 		return "", false
 	}
-	own := append([]string{g.s.cfg.Rendezvous.Token, g.s.cfg.WorkbenchToken}, g.s.cfg.HostTokens...)
+	own := g.s.providerCredentials()
 	v := extCall(ctx, g.s, ext.KindIdentity, g.name, ext.IdentityWait, "", func(v string) error {
 		if v == "" {
 			return nil
@@ -976,8 +1004,12 @@ func (g guardSync) Deleted(ctx context.Context, d ext.Doc) error {
 func (g guardSync) Restore(ctx context.Context, r ext.RestoreRequest, w io.Writer) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			err = fmt.Errorf("panic: %v", p)
+			err = errors.New("panic")
+			if g.s.quietErr(ext.KindSync, g.name, err) == err {
+				err = fmt.Errorf("panic: %v", p) // not the identity's value: quoted, as before
+			}
 		}
+		err = g.s.quietErr(ext.KindSync, g.name, err)
 	}()
 	return g.p.Restore(ctx, r, w)
 }

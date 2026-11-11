@@ -252,21 +252,33 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 			hs.HostRelayFrame(viewerID, inner)
 			continue
 		}
-		// A host_token, a session's or a desk's, is told by a type read
-		// without decoding the message whole (proto.PeekType), so one past
-		// its bound is refused (ParseHostToken) before anything decodes it.
-		if proto.PeekType(data) == proto.HostTokenType {
-			if !s.hostToken(hc, data) {
-				c.Close(proto.CloseForbidden, "access revoked")
-				return
+		// A host_token, a session's or a desk's, on a connection admitted
+		// through an identity provider's principal alone: told by its type
+		// within the message's first bytes (proto.PeekType), and refused
+		// past its bound (ParseHostToken). Every other connection is read
+		// as before.
+		if hc.cred != nil {
+			runHook(s.credHook(func(h *hostCredSeam) func() { return h.peeked }))
+			if proto.PeekType(data) == proto.HostTokenType {
+				if !s.hostToken(hc, data) {
+					c.Close(proto.CloseForbidden, "access revoked")
+					return
+				}
+				continue
 			}
-			continue
 		}
-		if isDesk && !deskMessage(data) {
+		t, herr := proto.ParseHeader(data)
+		if isDesk && (herr != nil || !deskMessage(t)) {
 			c.Close(proto.CloseProtocolError, "a desk sends the messages of a desk alone")
 			return
 		}
-		if !s.handleHostMessage(hs, hc, data) {
+		if herr == nil && t == proto.HostTokenType {
+			// One answer: a host_token by this reading that did not pass the
+			// look ahead is refused, as one past its bounds is.
+			c.Close(proto.CloseForbidden, "access revoked")
+			return
+		}
+		if herr != nil || !s.handleHostMessage(hs, hc, t, data) {
 			c.Close(proto.CloseProtocolError, "bad host message")
 			return
 		}
@@ -472,11 +484,8 @@ func (b *byteBucket) untilFull(now time.Time) time.Duration {
 }
 
 // handleHostMessage dispatches a JSON message from the host; false is fatal.
-func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, data []byte) bool {
-	t, err := proto.ParseHeader(data)
-	if err != nil {
-		return false
-	}
+// t is its type, as the read loop read it once (proto.ParseHeader).
+func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, t string, data []byte) bool {
 	switch t {
 	case proto.HostAnswer:
 		var m proto.ViewerSDP
