@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/rocksolidlabs/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
@@ -239,6 +240,36 @@ func TestExportLeavesOut(t *testing.T) {
 	}
 	if _, err := restore(b, filepath.Join(t.TempDir(), "restored")); err != nil {
 		t.Fatalf("the archive does not restore: %v", err)
+	}
+}
+
+// TestProviderStateMarkLeftOut: a host's state directory nested in the
+// data directory (an XDG_STATE_HOME set inside it) is left out by its mark,
+// not by its name, and no archive may plant the mark.
+func TestProviderStateMarkLeftOut(t *testing.T) {
+	f := newFixture(t)
+	put(t, f.dir, "a/b/ext/"+config.ProviderStateMark, "")
+	put(t, f.dir, "a/b/ext/cloud/lease.json", `{"lease":"x"}`)
+	put(t, f.dir, "c/ext/plain.json", "{}")
+	b, m := archive(t, f.source())
+	left := map[string]string{}
+	for _, l := range m.Left {
+		left[l.Path] = l.Why
+	}
+	if left["a/b/ext/"] != export.WhyProvider {
+		t.Errorf("a/b/ext/ left out for %q: %v", left["a/b/ext/"], m.Left)
+	}
+	names, _ := entries(t, b)
+	for _, name := range names {
+		if strings.HasPrefix(name, export.DataDir+"a/") {
+			t.Errorf("the archive holds %s", name)
+		}
+	}
+	if !slices.Contains(names, export.DataDir+"c/ext/plain.json") {
+		t.Errorf("a directory named ext without the mark is left out: %v", names)
+	}
+	if _, err := restore(craft(t, [2]string{"x/" + config.ProviderStateMark, ""}), filepath.Join(t.TempDir(), "restored")); err == nil {
+		t.Error("an archive holding the mark restored")
 	}
 }
 

@@ -1394,8 +1394,10 @@ func (s *Server) guideReplies(ctx context.Context, c guideCaller, ops []Operatio
 
 // guideContent is each section's content for the caller, by its name.
 func (s *Server) guideContent(ctx context.Context, c guideCaller, ops []Operation) map[string]any {
-	// C9's answer, read once for both sections that name it.
-	caps := s.capabilities()
+	// C9's answer, read once for both sections that name it, without the
+	// identity's detail: a session's agent reads these rows, and the guide
+	// asks no provider.
+	caps := s.capabilities(ctx, false)
 	reached := []Operation{}
 	for _, op := range ops {
 		if s.admits(c, op) {

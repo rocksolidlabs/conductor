@@ -33,6 +33,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/version"
@@ -372,6 +373,13 @@ func (e *writer) rest() error {
 				return fs.SkipDir
 			}
 			return nil
+		}
+		// A provider's state in host mode, wherever it lies (an
+		// XDG_STATE_HOME inside the data directory): the mark in the
+		// directory itself, whatever its type, leaves it out whole.
+		if _, err := e.root.Lstat(filepath.Join(filepath.FromSlash(rel), config.ProviderStateMark)); err == nil && d.IsDir() {
+			e.leave(rel+"/", WhyProvider)
+			return fs.SkipDir
 		}
 		if isRecord(rel, d) {
 			// A run's record that records did not take was written after

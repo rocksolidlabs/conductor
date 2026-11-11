@@ -322,6 +322,21 @@ func TestValid(t *testing.T) {
 	}
 }
 
+// TestValidHostToken holds the host token to 1 to MaxHostToken bytes of
+// token68's characters.
+func TestValidHostToken(t *testing.T) {
+	for _, tok := range []string{"a", "Ab-0._~+/=", strings.Repeat("x", ext.MaxHostToken)} {
+		if !ext.ValidHostToken(tok) {
+			t.Errorf("ValidHostToken refused %q", tok)
+		}
+	}
+	for _, tok := range []string{"", strings.Repeat("x", ext.MaxHostToken+1), "a b", `a"b`, "a\\b", "é", "a\nb", "a%20"} {
+		if ext.ValidHostToken(tok) {
+			t.Errorf("ValidHostToken took %q", tok)
+		}
+	}
+}
+
 // with is a copy of r changed by edit.
 func with[T any](r T, edit func(*T)) T {
 	edit(&r)

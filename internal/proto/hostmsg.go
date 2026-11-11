@@ -1,6 +1,8 @@
 package proto
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -43,6 +45,10 @@ const (
 	// HostRegisterDesk is the first message of a run's desk's connection
 	// (RegisterDesk), in place of register.
 	HostRegisterDesk = "register_desk"
+	// HostTokenType renews the credential a host connection was admitted
+	// with (HostTokenMsg): {"t":"host_token","token":"…"}. Sent only on a
+	// connection whose registered said Renews.
+	HostTokenType = "host_token"
 
 	// server -> host
 	HostRegistered  = "registered"
@@ -154,7 +160,48 @@ type Registered struct {
 	// there; absent from an older switchyard and from one built without
 	// the tab, at which the publisher refuses one (switchyard_too_old).
 	Decisions bool `json:"decisions,omitempty"`
+	// Renews says the switchyard rechecks this connection's credential and
+	// takes host_token on it (HostTokenMsg): only on a connection admitted
+	// through an identity provider's principal; absent from an older
+	// switchyard and on a connection of the workbench token, a host token
+	// or an open host.
+	Renews bool `json:"renews,omitempty"`
 }
+
+// HostTokenMsg is host_token: the credential that replaces the one the
+// connection was admitted with.
+type HostTokenMsg struct {
+	T     string `json:"t"`
+	Token string `json:"token"`
+}
+
+const (
+	MaxHostToken        = 2048 // ext.MaxHostToken
+	MaxHostTokenMessage = 2560 // the message, encoded
+)
+
+// ParseHostToken decodes a host_token, refusing a message past
+// MaxHostTokenMessage before it is decoded, an unknown field, and a token
+// that is empty, past MaxHostToken or not of token68's characters (A-Z
+// a-z 0-9 - . _ ~ + / =, ext.ValidHostToken's rule).
+func ParseHostToken(data []byte) (string, error) {
+	if len(data) > MaxHostTokenMessage {
+		return "", fmt.Errorf("host_token: %d bytes, past %d", len(data), MaxHostTokenMessage)
+	}
+	var m HostTokenMsg
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&m); err != nil || m.T != HostTokenType || dec.More() {
+		return "", errors.New("host_token: not a host_token message")
+	}
+	if m.Token == "" || len(m.Token) > MaxHostToken || strings.TrimLeft(m.Token, token68) != "" {
+		return "", errors.New("host_token: the token is not 1 to 2048 bytes of token68")
+	}
+	return m.Token, nil
+}
+
+// token68 is the characters a host token is made of.
+const token68 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~+/="
 
 // RegisterDesk is the first message of a run's desk's connection, in
 // place of register (docs/plans/decision-inbox.md, PR-6): one more host

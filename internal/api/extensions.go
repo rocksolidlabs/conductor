@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/ext/local"
@@ -273,8 +276,11 @@ func (s *Server) extFailed(kind, name, why, detail string) {
 	g.mu.Unlock()
 	attrs := []any{"kind", kind, "provider", name, "failure", why, "failures", failures}
 	// An identity provider's words are never quoted: its error, its panic
-	// and its refused principal may carry the token it was given.
-	if detail != "" && kind != ext.KindIdentity && kind != kindIdentityRecheck {
+	// and its refused principal may carry the token it was given, and so
+	// may a failed Start of it, which was handed the host token.
+	quiet := kind == ext.KindIdentity || kind == kindIdentityRecheck || kind == kindIdentityRenew ||
+		(kind == extKindStart && name == s.identityName())
+	if detail != "" && !quiet {
 		attrs = append(attrs, "err", detail)
 	}
 	s.log.Warn("extension call failed: its free default answered", attrs...)
@@ -679,6 +685,43 @@ const kindIdentityRecheck = ext.KindIdentity + "-recheck"
 // is an answer (it may do nothing here), not a failure. Until its Start
 // has succeeded, nothing is known and nothing asked.
 func (g guardIdentity) recheck(ctx context.Context, token string) (p ext.Principal, ok, known bool) {
+	return g.reask(ctx, kindIdentityRecheck, token)
+}
+
+// kindIdentityRenew is the guard's kind of a host connection's renewal
+// (host_token): slots of its own, so renewals never take a recheck's or a
+// request's, and its failures are logged without the provider's words.
+const kindIdentityRenew = ext.KindIdentity + "-renew"
+
+// renew asks the provider about token, the credential a host connection
+// presents in place of the one it was admitted with, as recheck asks.
+func (g guardIdentity) renew(ctx context.Context, token string) (p ext.Principal, ok, known bool) {
+	return g.reask(ctx, kindIdentityRenew, token)
+}
+
+// detail is who the server is signed in as (ext.IdentityDetail), asked
+// only once the provider has started and only of one that says it: one
+// line of 1 to ext.MaxIdentityDetail characters with no control
+// character, or false.
+func (g guardIdentity) detail(ctx context.Context) (string, bool) {
+	d, isDetail := g.p.(ext.IdentityDetail)
+	if !isDetail || !live(g.ready) {
+		return "", false
+	}
+	v := extCall(ctx, g.s, ext.KindIdentity, g.name, ext.IdentityWait, "", func(v string) error {
+		if v == "" {
+			return nil
+		}
+		if n := utf8.RuneCountInString(v); !utf8.ValidString(v) || n > ext.MaxIdentityDetail || strings.ContainsFunc(v, unicode.IsControl) {
+			return errors.New("detail: not one line of at most 80 characters")
+		}
+		return nil
+	}, func(context.Context) (string, error) { return d.Detail(), nil })
+	return v, v != ""
+}
+
+// reask is recheck's and renew's ask, in kind's slots.
+func (g guardIdentity) reask(ctx context.Context, kind, token string) (p ext.Principal, ok, known bool) {
 	if !live(g.ready) {
 		return ext.Principal{}, false, false
 	}
@@ -686,7 +729,7 @@ func (g guardIdentity) recheck(ctx context.Context, token string) (p ext.Princip
 		p         ext.Principal
 		ok, known bool
 	}
-	a := extCall(ctx, g.s, kindIdentityRecheck, g.name, ext.IdentityWait, answer{}, func(a answer) error {
+	a := extCall(ctx, g.s, kind, g.name, ext.IdentityWait, answer{}, func(a answer) error {
 		if !a.ok {
 			return nil
 		}

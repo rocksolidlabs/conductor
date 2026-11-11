@@ -296,3 +296,40 @@ func TestRegisteredRecipeWireShapeAndBounds(t *testing.T) {
 		t.Error("a padded label past the bound: checked")
 	}
 }
+
+// TestHostTokenMessage holds host_token to its bounds and its strict
+// decode, and registered's renews to being left out when false.
+func TestHostTokenMessage(t *testing.T) {
+	// Every token68 character at once, and a token at its bound.
+	for _, tok := range []string{"Az09-._~+/=", strings.Repeat("A", MaxHostToken)} {
+		b, _ := json.Marshal(HostTokenMsg{T: HostTokenType, Token: tok})
+		if len(b) > MaxHostTokenMessage {
+			t.Fatalf("a token of %d bytes is a message of %d, past %d", len(tok), len(b), MaxHostTokenMessage)
+		}
+		if got, err := ParseHostToken(b); err != nil || got != tok {
+			t.Errorf("ParseHostToken(%d bytes) = %d bytes, %v", len(tok), len(got), err)
+		}
+	}
+	for name, msg := range map[string]string{
+		"past the token's bound": `{"t":"host_token","token":"` + strings.Repeat("A", MaxHostToken+1) + `"}`,
+		"past the message's":     `{"t":"host_token","token":"a"}` + strings.Repeat(" ", MaxHostTokenMessage),
+		"empty":                  `{"t":"host_token","token":""}`,
+		"not token68":            `{"t":"host_token","token":"a b"}`,
+		"escaped":                `{"t":"host_token","token":"a\u0000"}`,
+		"an unknown field":       `{"t":"host_token","token":"a","more":1}`,
+		"another type":           `{"t":"status","token":"a"}`,
+		"two values":             `{"t":"host_token","token":"a"}{}`,
+	} {
+		if _, err := ParseHostToken([]byte(msg)); err == nil {
+			t.Errorf("%s: parsed", name)
+		}
+	}
+	b, _ := json.Marshal(Registered{T: HostRegistered})
+	if strings.Contains(string(b), "renews") {
+		t.Errorf("registered without renews says it: %s", b)
+	}
+	b, _ = json.Marshal(Registered{T: HostRegistered, Renews: true})
+	if !strings.Contains(string(b), `"renews":true`) {
+		t.Errorf("registered with renews: %s", b)
+	}
+}

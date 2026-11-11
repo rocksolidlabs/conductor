@@ -21,7 +21,7 @@ func deskMessage(data []byte) bool {
 	}
 	switch t {
 	case proto.HostAnswer, proto.HostICE, proto.HostViewerError, proto.HostViewerClose,
-		proto.HostRunLink, proto.HostRunLinkUpdate, proto.HostLinkRevoke, proto.HostStatus:
+		proto.HostRunLink, proto.HostRunLinkUpdate, proto.HostLinkRevoke, proto.HostStatus, proto.HostTokenType:
 		return true
 	}
 	return false

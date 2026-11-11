@@ -71,6 +71,9 @@ func (c *Config) machineFiles() (dirs, files []string) {
 	if home, err := os.UserHomeDir(); err == nil && filepath.IsAbs(home) {
 		dirs = append(dirs, filepath.Join(home, ".conductor"))
 	}
+	if state, err := HostStateDir(); err == nil {
+		dirs = append(dirs, state)
+	}
 	d, f, _ := desktopFiles()
 	dirs = append(dirs, d...)
 	files = append(files, f...)
@@ -153,12 +156,40 @@ func LocalFileDeny(path string) ([]string, error) {
 	if home, err := os.UserHomeDir(); err == nil && filepath.IsAbs(home) {
 		dirs = append(dirs, filepath.Join(home, ".conductor"))
 	}
+	if state, err := HostStateDir(); err == nil {
+		dirs = append(dirs, state)
+	}
 	desktopDirs, desktopSettings, err := desktopFiles()
 	if err != nil {
 		return nil, err
 	}
 	return c.fileDeny(append(dirs, desktopDirs...), append([]string{read}, desktopSettings...)), nil
 }
+
+// HostStateDir is where conductor host keeps what is its own on this
+// machine, its identity provider's directory among it (<state>/ext/<name>):
+// $XDG_STATE_HOME/conductor when that is set and absolute, else
+// ~/.local/state/conductor. Every session's file reads, saves and editors
+// are refused it (machineFiles, LocalFileDeny).
+func HostStateDir() (string, error) {
+	if state := os.Getenv("XDG_STATE_HOME"); filepath.IsAbs(state) {
+		return filepath.Join(state, "conductor"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(home) {
+		return "", fmt.Errorf("the home directory %q is not an absolute path", home)
+	}
+	return filepath.Join(home, ".local", "state", "conductor"), nil
+}
+
+// ProviderStateMark names the file that marks a directory as a
+// provider's state in host mode (<state>/ext): written before the provider
+// can write there, and an export leaves every directory that holds it out,
+// wherever it lies.
+const ProviderStateMark = ".conductor-provider-state"
 
 // readConfigFile is os.ReadFile: a test replaces it to move a link while
 // the config file is read.

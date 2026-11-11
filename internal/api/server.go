@@ -290,8 +290,9 @@ type Server struct {
 	runSent         map[string]string
 	pubPending      map[string]chan struct{}
 	pubErr          map[string]string
-	// pubStopped are the sessions whose publication the rendezvous ended
-	// with a stop of its own: the next Share publishes them again.
+	// pubStopped are the sessions owed a publication: the rendezvous ended
+	// theirs with a stop of its own, or refused it for a credential the
+	// identity provider withheld. The next Share publishes them again.
 	pubStopped map[string]bool
 	// runSyncMu orders, per run, what tells the rendezvous a run's members
 	// (lockRunSync); the map is guarded by pubMu.
@@ -366,6 +367,9 @@ type Server struct {
 	extStarts   []*extStarter
 	extStarting atomic.Bool
 	extAfter    func(time.Duration) <-chan time.Time
+	// hostCred holds a host connection's credential steps in tests
+	// (hostCredSeam); nil outside them.
+	hostCred *hostCredSeam
 	// syncs is the sync adapter (sync.go): what the data directory, the
 	// ledger and Dispatch commit, told to the sync store.
 	syncs *syncAdapter

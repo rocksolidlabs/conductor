@@ -35,7 +35,8 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	}
 	tok := presentedToken(r, true)
 	open := tok == "" && s.cfg.Switchyard.Enabled && s.cfg.Switchyard.OpenHosts
-	if !open && !s.hostAllowed(r, tok) {
+	hp, allowed := s.hostPrincipal(r, tok)
+	if !open && !allowed {
 		if !s.limiter.allow(clientKey(r)) {
 			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")
 			return
@@ -131,6 +132,10 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	if open {
 		hc.addr = addr
 	}
+	if hp.subject != "" {
+		// An identity provider's principal: rechecked and renewed (identity.go).
+		hc.cred, hc.subject = newWatchedToken(tok), hp.subject
+	}
 	if s.cfg.Switchyard.Enabled {
 		switch {
 		case open && s.cfg.Switchyard.OpenHostRelayKBps > 0:
@@ -164,7 +169,7 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		recipe = s.hostRecipe(reg.Session.AgentID)
 	}
 	registered, dropped := registeredMessage(proto.Registered{T: proto.HostRegistered, SessionID: info.ID, Secret: hs.Secret(), ShareBaseURL: s.publicBase(r), Resumed: resumed, ICEServers: ice, Links: s.liveLinkIDs(info.ID),
-		Recipe: recipe, Decisions: s.hosts.Decisions()})
+		Recipe: recipe, Decisions: s.hosts.Decisions(), Renews: hc.cred != nil})
 	if dropped {
 		s.log.Warn("registered with the agent's recipe is past a host message; the hosted session watches no questions", "session", info.ID, "agent", reg.Session.AgentID)
 	}
@@ -205,10 +210,18 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	go hostKeepalive(ctx, c, s.pingEvery, s.hostPingEvery, hs.LinkStands)
+	if watch := s.principalWatch(hp, hc.cred, ext.GrantHost); watch != nil {
+		go watch(ctx, func() { c.Close(proto.CloseForbidden, "access revoked") })
+	}
 
 	for {
 		typ, data, err := c.Read(ctx)
 		if err != nil {
+			return
+		}
+		// Nothing read once a verdict is recorded is handled (identity.go).
+		runHook(s.credHook(func(h *hostCredSeam) func() { return h.reading }))
+		if hc.cred != nil && hc.cred.ended.Load() {
 			return
 		}
 		// A switchyard's bound on what the host sends: its relayed output,
@@ -240,6 +253,13 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		if isDesk && !deskMessage(data) {
 			c.Close(proto.CloseProtocolError, "a desk sends the messages of a desk alone")
 			return
+		}
+		if t, _ := proto.ParseHeader(data); t == proto.HostTokenType {
+			if !s.hostToken(hc, data) {
+				c.Close(proto.CloseForbidden, "access revoked")
+				return
+			}
+			continue
 		}
 		if !s.handleHostMessage(hs, hc, data) {
 			c.Close(proto.CloseProtocolError, "bad host message")
@@ -322,6 +342,10 @@ type hostConnState struct {
 	// (every server but a switchyard with switchyard.relay false), for what
 	// a viewer is left with when a frame for it is refused (forwardSignal).
 	relays bool
+	// cred and subject are a connection's admitted through an identity
+	// provider's principal (hostToken); nil and "" for every other.
+	cred    *watchedToken
+	subject string
 }
 
 // chargeForward charges, before a viewer is sent it, what a host's message
