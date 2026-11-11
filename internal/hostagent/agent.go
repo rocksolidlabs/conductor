@@ -164,7 +164,8 @@ type Options struct {
 	// with it where the word is the link's own end: a session link's, from
 	// its session; a run link's, from the run's desk alone (a member's says
 	// only that the member left the run's group). ended says the server
-	// ended the link itself (proto.LinkGone.Ended), on any connection.
+	// ended the link itself (proto.LinkGone.Ended): the link's own end, on
+	// any connection, a member's too; the link has left the held links.
 	LinkGone func(linkID, sessionID, runID string, ended bool)
 
 	// transport, when set (tests), is the control connection's transport in
@@ -1379,6 +1380,13 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 			return errors.New("invalid link_gone")
 		}
 		a.creds.gone(m.LinkID)
+		if m.Ended {
+			// The server holds it no more, before the publisher is told:
+			// a mint the word crosses looks at the held links once it has
+			// recorded its link (the api's handleCreateLink), so either the
+			// mint finds it dropped or the word finds it made.
+			a.noteHeld(m.LinkID, false)
+		}
 		if a.opts.LinkGone != nil {
 			sessionID, runID := "", ""
 			if a.desk != nil {
@@ -1387,12 +1395,6 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 				sessionID = a.local.Info().ID
 			}
 			a.opts.LinkGone(m.LinkID, sessionID, runID, m.Ended)
-		}
-		if m.Ended {
-			// The server holds it no more: after LinkGone, which marks a
-			// decision link's record owed its revoke before its listing can
-			// read it gone (the api's remoteLinksOf).
-			a.noteHeld(m.LinkID, false)
 		}
 	case proto.HostOffer:
 		var m proto.ViewerSDP

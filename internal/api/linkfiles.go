@@ -658,8 +658,11 @@ func (s *Server) hostUp(owner, addr string) func() {
 // ended of itself while its host may hold it (an open admission), as
 // closeLinkViewers does, and tells the connection that holds it (its
 // session's, or its run's desk's) that it went, whether or not a viewer
-// joined through it. A run link of a run with no desk is told so to each
-// of its members' connections, the one it was minted over among them.
+// joined through it. A run link whose run's desk was not told (the run has
+// none, or the desk its group names is away or already gone) is told so to
+// each of its members' connections, the one it was minted over among
+// them: each of them can list it. A second telling changes nothing, since
+// ended is the link's own end whichever connection carries it.
 func (s *Server) endHeldLink(l *share.Link) {
 	switch {
 	case l.RunID == "":
@@ -667,23 +670,18 @@ func (s *Server) endHeldLink(l *share.Link) {
 			hs.DisconnectHeldLink(l.ID)
 			return
 		}
-	case l.Group != nil && l.Group.Desk != "":
-		if d, ok := s.hosts.Desk(l.Group.Desk); ok {
-			for _, m := range l.Group.Members {
-				if m.SessionID == "" {
-					continue
-				}
-				if md, ok := s.registry.Get(m.SessionID); ok {
-					md.DisconnectLink(l.ID)
-				}
-			}
-			d.DisconnectHeldLink(l.ID)
-			return
-		}
 	case l.Group != nil:
+		told := false
+		if l.Group.Desk != "" {
+			if d, ok := s.hosts.Desk(l.Group.Desk); ok {
+				told = d.DisconnectHeldLink(l.ID)
+			}
+		}
 		for _, m := range l.Group.Members {
-			if hs, ok := s.hosts.Get(m.SessionID); ok {
+			if hs, ok := s.hosts.Get(m.SessionID); ok && !told && m.SessionID != "" {
 				hs.DisconnectHeldLink(l.ID)
+			} else if md, ok := s.registry.Get(m.SessionID); ok && m.SessionID != "" {
+				md.DisconnectLink(l.ID)
 			}
 		}
 		return

@@ -115,15 +115,15 @@ func (s *Server) remoteLinksOf(id string) []remoteLink {
 		default:
 			gone = rl.hostedID != pub.CurrentID()
 		}
-		if gone {
-			// The rendezvous holds it no more: settled with the publication
-			// gone. Its word may also be a link_gone (ended), which comes
-			// before its revoke there is confirmed: a decision link owed it
-			// stays, listed (forgetRemote).
+		if gone && (pub == nil || !rl.Decide) {
+			// The rendezvous holds it no more: its record goes, every one
+			// with the publication. A decision link's, while the
+			// publication stands, is left to its own end (an ended word,
+			// or its mint's look again: endedNow), which revokes it here and
+			// keeps its record, owed its revoke (forgetRemote): it is
+			// listed as it stands.
 			s.forgetRemoteLocked(id, "", lid, pub == nil)
-			if _, kept := s.remoteLinks[id][lid]; !kept {
-				continue
-			}
+			continue
 		}
 		out = append(out, rl)
 	}

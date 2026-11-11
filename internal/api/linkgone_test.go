@@ -1,15 +1,18 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"path/filepath"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/hostagent"
 	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/signal"
 )
 
 // endedPair is a switchyard that keeps links, open hosts on and bound
@@ -207,4 +210,175 @@ func TestADecisionLinkEndedAtAnOpenAdmissionKeepsItsRecordOwed(t *testing.T) {
 		t.Fatal("no revoke there was armed")
 	}
 	until(t, "the switchyard answered the revoke", func() bool { return slices.Equal(linkIDs(t, local, path), []string{kept}) })
+}
+
+// endingPub is a publication whose mints hand the link they made to at,
+// when set, before the server goes on with it: where a link_gone that came
+// right behind the link's link_created is taken.
+type endingPub struct {
+	PublishedSession
+	at *atomic.Pointer[func(string)]
+}
+
+func (p *endingPub) Decisions() bool { return carriesDecisions(p.PublishedSession) }
+
+func (p *endingPub) Link(ctx context.Context, role string, ttl time.Duration, label string) (proto.LinkCreated, error) {
+	res, err := p.PublishedSession.Link(ctx, role, ttl, label)
+	handTo(p.at, res, err)
+	return res, err
+}
+
+func (p *endingPub) RunLink(ctx context.Context, role string, ttl time.Duration, label string, g proto.RunGroup) (proto.LinkCreated, error) {
+	res, err := p.PublishedSession.RunLink(ctx, role, ttl, label, g)
+	handTo(p.at, res, err)
+	return res, err
+}
+
+// endingDesk is endingPub for a run's desk.
+type endingDesk struct {
+	Desk
+	at *atomic.Pointer[func(string)]
+}
+
+func (d *endingDesk) RunLink(ctx context.Context, role string, ttl time.Duration, label string, g proto.RunGroup) (proto.LinkCreated, error) {
+	res, err := d.Desk.RunLink(ctx, role, ttl, label, g)
+	handTo(d.at, res, err)
+	return res, err
+}
+
+func handTo(at *atomic.Pointer[func(string)], res proto.LinkCreated, err error) {
+	if f := at.Load(); f != nil && err == nil {
+		(*f)(res.LinkID)
+	}
+}
+
+// The walk (#820): a link the switchyard ends of itself is applied to what
+// the link is when the word is taken, whatever moment of its mint the word
+// comes at and whichever connection that can list it carries it: the
+// session's, the run's desk's, or a member's (the switchyard tells the
+// members when the run's desk is away or gone). A decision link is ended
+// here (its lane opens nothing), listed owing its revoke, and the revoke is
+// carried there again until the switchyard answers; any other link leaves
+// the list. The other links of the session and the run stay as they were.
+// Judged by the links routes the Share dialog and the run page read.
+func TestAnEndedLinkIsAppliedToWhatItIsThen(t *testing.T) {
+	yard, local, told := endedPair(t, 2)
+	next := retries(local)
+	id := publishedSession(t, local)
+	runID := local.launchCrew(t, "Pair", catMember("lead", "immediately"))
+	waitMembersPublished(t, local, runID, 1)
+	run, _ := local.srv.runs.Get(runID)
+	member := run.Members[0].SessionID
+	sessionPath, runPath := "/api/sessions/"+id+"/links", "/api/runs/"+runID+"/links"
+	keptSession := mintRemote(t, local, sessionPath)
+	keptRun := mintRemote(t, local, runPath)
+	keptDecision, _ := remoteDecisionLink(t, local, runPath, "kept")
+
+	var at, held atomic.Pointer[func(string)]
+	local.srv.pubMu.Lock()
+	for _, sid := range []string{id, member} {
+		local.srv.published[sid] = &endingPub{PublishedSession: local.srv.published[sid], at: &at}
+	}
+	rd := local.srv.desks[runID]
+	rd.desk = &endingDesk{Desk: rd.desk, at: &at}
+	local.srv.remoteHeldSeam = func(linkID string) {
+		if f := held.Load(); f != nil {
+			(*f)(linkID)
+		}
+	}
+	local.srv.pubMu.Unlock()
+
+	conn := func(sid string) func() *signal.HostedSession {
+		return func() *signal.HostedSession {
+			hs, _ := yard.srv.hosts.Get(local.srv.publishedOf(sid).CurrentID())
+			return hs
+		}
+	}
+	desk := func() *signal.HostedSession {
+		d, _ := yard.srv.hosts.Desk(local.srv.liveDesk(runID).CurrentID())
+		return d
+	}
+	listed := func(path, linkID string) map[string]any {
+		for _, l := range linksOf(t, local, path) {
+			if l["id"] == linkID {
+				return l
+			}
+		}
+		return nil
+	}
+	rows := []struct {
+		name   string
+		path   string
+		decide bool
+		when   string // minting: before the mint goes on; held: held, not recorded; made
+		conn   func() *signal.HostedSession
+	}{
+		{"a session's decision link ended as its mint is answered", sessionPath, true, "minting", conn(id)},
+		{"a session's decision link ended held and not yet recorded", sessionPath, true, "held", conn(id)},
+		{"a session's decision link ended once made", sessionPath, true, "made", conn(id)},
+		{"a session's link ended as its mint is answered", sessionPath, false, "minting", conn(id)},
+		{"a run's decision link ended on its desk as its mint is answered", runPath, true, "minting", desk},
+		{"a run's decision link ended on its desk once made", runPath, true, "made", desk},
+		{"a run's decision link ended on its member's connection, its desk away or gone", runPath, true, "made", conn(member)},
+		{"a run's link ended on its member's connection as its mint is answered", runPath, false, "minting", conn(member)},
+		{"a run's link ended on its desk once made", runPath, false, "made", desk},
+		{"a run's link ended on its member's connection, its desk away or gone", runPath, false, "made", conn(member)},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			end := func(linkID string) {
+				row.conn().DisconnectHeldLink(linkID)
+				if got := heard(t, told); got != linkID {
+					t.Errorf("told %s went, not %s", got, linkID)
+				}
+			}
+			switch row.when {
+			case "minting":
+				at.Store(&end)
+			case "held":
+				held.Store(&end)
+			}
+			var linkID string
+			if row.decide {
+				linkID, _ = remoteDecisionLink(t, local, row.path, "walk")
+			} else {
+				linkID = mintRemote(t, local, row.path)
+			}
+			at.Store(nil)
+			held.Store(nil)
+			if row.when == "made" {
+				end(linkID)
+			}
+			if !row.decide {
+				until(t, "the ended link left the list", func() bool { return listed(row.path, linkID) == nil })
+			} else {
+				until(t, "the ended link listed owing its revoke", func() bool {
+					l := listed(row.path, linkID)
+					return l != nil && l["revokePending"] == true
+				})
+				sid, rid := id, ""
+				if row.path == runPath {
+					sid, rid = "", runID
+				}
+				if local.srv.Lane().DecisionLink(linkID, sid, rid) {
+					t.Error("the ended link still opens a lane here")
+				}
+				select {
+				case try := <-next:
+					try()
+				case <-time.After(testWait):
+					t.Fatal("no revoke there was started")
+				}
+				until(t, "the switchyard answered the revoke", func() bool { return listed(row.path, linkID) == nil })
+			}
+			for _, k := range []struct{ path, id string }{{sessionPath, keptSession}, {runPath, keptRun}, {runPath, keptDecision}} {
+				if l := listed(k.path, k.id); l == nil || l["revokePending"] == true {
+					t.Errorf("the link %s that was not ended: %v", k.id, l)
+				}
+			}
+			if !local.srv.Lane().DecisionLink(keptDecision, "", runID) {
+				t.Error("the run's decision link that was not ended opens no lane")
+			}
+		})
+	}
 }

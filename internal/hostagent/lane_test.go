@@ -638,8 +638,9 @@ func TestLinkGoneSaysWhatItsConnectionCarries(t *testing.T) {
 }
 
 // A link the server says it ended of itself (link_gone, ended) leaves what
-// the connection says the server holds (held), after the publisher was
-// told; any other link_gone, and one for a link it never held, change
+// the connection says the server holds (held) before the publisher is
+// told, so a mint the word crosses finds it dropped once it has recorded
+// its link; any other link_gone, and one for a link it never held, change
 // nothing of it.
 func TestAnEndedLinkLeavesTheHeldLinks(t *testing.T) {
 	held := make(chan []string, 4)
@@ -651,13 +652,16 @@ func TestAnEndedLinkLeavesTheHeldLinks(t *testing.T) {
 			held <- ids
 		}
 	})
-	for _, m := range []proto.LinkGone{{LinkID: "l2"}, {LinkID: "l9", Ended: true}, {LinkID: "l1", Ended: true}} {
-		m.T = proto.HostLinkGone
-		if err := a.handleControl(t.Context(), mustJSON(m)); err != nil {
+	for _, c := range []struct {
+		m    proto.LinkGone
+		held []string
+	}{{proto.LinkGone{LinkID: "l2"}, []string{"l1", "l2"}}, {proto.LinkGone{LinkID: "l9", Ended: true}, []string{"l1", "l2"}}, {proto.LinkGone{LinkID: "l1", Ended: true}, []string{"l2"}}} {
+		c.m.T = proto.HostLinkGone
+		if err := a.handleControl(t.Context(), mustJSON(c.m)); err != nil {
 			t.Fatal(err)
 		}
-		if told := <-held; !slices.Equal(told, []string{"l1", "l2"}) {
-			t.Fatalf("held as the publisher is told %s went: %v", m.LinkID, told)
+		if told := <-held; !slices.Equal(told, c.held) {
+			t.Fatalf("held as the publisher is told %s went: %v", c.m.LinkID, told)
 		}
 	}
 	if ids, known := a.heldLinks(); !known || !slices.Equal(ids, []string{"l2"}) {

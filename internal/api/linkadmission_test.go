@@ -928,6 +928,36 @@ func TestALinkEndedAtAnOpenAdmissionIsToldToItsConnection(t *testing.T) {
 		linkEnded(t, e, dir, r["linkId"].(string), u[strings.LastIndex(u, "/")+1:])
 		linkKept(t, e, dir, b, bt)
 	})
+	// A group that names a desk does not say the run has one: a desk kept
+	// through its grace has no connection to tell, and one that has ended
+	// stays named until the group's next sync. The members are told.
+	for _, deskIs := range []string{"away", "gone"} {
+		t.Run("a run link whose run's desk is "+deskIs, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "data")
+			e := keptSwitchyard(t, dir, func(c *config.Config) { c.Switchyard.OpenHostLinks = 1 })
+			desk := dialFakeDeskWith(t, e, deskReg(instance, "run-1"), "Bearer test-host-token")
+			hi, hs := instanceHost(e, instance, "1")
+			member, _ := dialFakeHostWith(t, e, hi, hs, "Bearer test-host-token")
+			r := runLinkOver(desk, "view", proto.RunGroup{ID: "run-1", Name: "Release", Desk: desk.sessionID, Members: []proto.RunMember{{Name: "lead", SessionID: member.sessionID, AgentID: "cat", Status: "running"}}})
+			if r["t"] != proto.HostLinkCreated {
+				t.Fatalf("the run link: %v", r)
+			}
+			u, _ := r["url"].(string)
+			d, _ := e.srv.hosts.Desk(desk.sessionID)
+			if deskIs == "away" {
+				desk.c.CloseNow()
+				until(t, "the desk away", func() bool { return !d.Connected() })
+			} else {
+				d.EndDesk()
+			}
+			b, bt := mintHostLink(t, member, "b")
+			hs.LocalID = "2"
+			dialFakeHostWith(t, e, hi, hs, "")
+			linkGoneFor(t, member, r["linkId"].(string))
+			linkEnded(t, e, dir, r["linkId"].(string), u[strings.LastIndex(u, "/")+1:])
+			linkKept(t, e, dir, b, bt)
+		})
+	}
 }
 
 // A link an open admission ends whose file cannot be removed then (its

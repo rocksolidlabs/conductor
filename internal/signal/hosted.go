@@ -1111,8 +1111,11 @@ func (h *HostedSession) DisconnectLink(linkID string) { h.closeLink(linkID, true
 // DisconnectHeldLink is DisconnectLink for a link the server ended of
 // itself while this connection may still hold it (a switchyard's open
 // admission past its bound): the host is told the link went (link_gone,
-// ended) whether or not a viewer ever joined through it.
-func (h *HostedSession) DisconnectHeldLink(linkID string) { h.closeLink(linkID, true, true) }
+// ended) whether or not a viewer ever joined through it. It says whether a
+// connection was there to be told: none while the host is away.
+func (h *HostedSession) DisconnectHeldLink(linkID string) bool {
+	return h.closeLink(linkID, true, true)
+}
 
 // EndLink closes the viewers attached through linkID, one of the session's
 // own links, as the session's end, which ends its links with it (the
@@ -1127,8 +1130,9 @@ func (h *HostedSession) EndLink(linkID string) { h.closeLink(linkID, false, fals
 // held: told even when no viewer joined) and EndLink. A revoke also stops
 // what the session's end still writes the link's viewers, should it have
 // closed them first (finish). A revoke closes the link's viewers before it
-// queues the link's going (DisconnectLink).
-func (h *HostedSession) closeLink(linkID string, revoked, held bool) {
+// queues the link's going (DisconnectLink). It says whether the going was
+// queued on a connection.
+func (h *HostedSession) closeLink(linkID string, revoked, held bool) bool {
 	h.mu.Lock()
 	hit := h.linkViewers(linkID)
 	joined := linkID != "" && h.forgetLink(linkID)
@@ -1146,7 +1150,9 @@ func (h *HostedSession) closeLink(linkID string, revoked, held bool) {
 	}
 	if revoked && (joined || held) {
 		h.linkGone(conn, linkID, held)
+		return conn != nil && linkID != ""
 	}
+	return false
 }
 
 // RevokeViewer closes v as revoked for a credential that is not a link (an

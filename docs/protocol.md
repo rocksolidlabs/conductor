@@ -530,7 +530,7 @@ token, is handed the configured ones alone; `links`: the ids of the live links t
 when none; an older server sends no field, which says nothing;
 `recipe`, below),
 `viewer_join{viewerId, role, linkId?, linkLabel?, principal?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
-`relay_start{viewerId}`, `viewer_leave{viewerId, reason?}`, `link_gone{linkId}`, `stop{sessionId}`,
+`relay_start{viewerId}`, `viewer_leave{viewerId, reason?}`, `link_gone{linkId, ended?}`, `stop{sessionId}`,
 `viewer_behind{viewerId, behind}` (a relayed viewer fell behind what the
 server holds for it, or caught up: above; a host refuses one whose
 `viewerId` is not 16 bytes, and one for a viewer it no longer has changes
@@ -541,8 +541,9 @@ provider no longer admits the principal it came as, or `expired` (the link
 reached its expiry), none for any other end (it left, its connection failed,
 it was too slow); `link_gone`: a link a viewer joined the session through
 (`linkId`, at most 64 bytes) no longer opens it (revoked, expired as the
-server's clock says, its run forgotten, its run's session no longer named),
-sent once, whether a viewer is still attached through it or not, in the
+server's clock says, its run forgotten, its run's session no longer named,
+or, with `ended: true`, ended by the switchyard itself at an open
+admission, below), sent once, whether a viewer is still attached through it or not, in the
 server's own lane, ahead of the viewers' messages queued for the host and
 of the leaves of the link's viewers; those viewers are closed before it is
 queued, and nothing of theirs still queued is sent after it (see the
@@ -852,14 +853,20 @@ the host's connection that holds it (its session's, or its run's desk's)
 is told `link_gone` for it, with `ended: true`, whether or not a viewer
 joined through it; on the connection that asked for the link, that comes
 after its `link_created`, however close the request and the admission
-come. A run link of a run with no desk is told so to each of its members'
-connections, the one it was minted over among them. A host drops a link so
-told from the links its connection says the switchyard holds; a publishing
-server leaves it out of the session's Share list and of the run's links at
-once, without registering again (a run's record once the mint that made it
-has recorded it), while a decision link's record stays, owed its revoke, as
-below. A `link_gone` without `ended`, or for a link the publisher never
-held, changes nothing of its lists. Only that host's links end; the links of the
+come. A run link whose run's desk is not told (the run has none, or the
+desk its group names is away or has already ended) is told so to each of
+its members' connections, the one it was minted over among them; a second
+telling changes nothing. A host drops a link so told from the links its
+connection says the switchyard holds, before its publisher hears of it,
+and the publisher takes `ended` as the link's own end on whichever of its
+connections it comes, a member's too, applied to what the link is then: a
+decision link is ended here, its record kept, owed its revoke, as below;
+any other link leaves the session's Share list or the run's links at once,
+without registering again. A word that comes while the link is still
+being minted is applied once the mint has recorded it (a run's mint holds
+the run's turn until then; a session's looks at the held links again once
+it has recorded its link). A `link_gone` without `ended`, or for a link
+the publisher never held, changes nothing of its lists. Only that host's links end; the links of the
 address's other hosts stay as they are, and from then on the address's
 links, the host's among them, are bounded, give their places up and are
 refused as any open host's. While the instance holds a connection admitted
@@ -2286,7 +2293,7 @@ each desk then ending by itself, what was left of it logged. A link
 the switchyard says is gone (`link_gone`) ends here too, where the word
 is the link's own end: a session link's from its session's connection, a
 run link's from the run's desk (a member's says only that the member left
-the run's group). The word forgets nothing: the switchyard sends it as it
+the run's group, unless it says `ended`). The word forgets nothing: the switchyard sends it as it
 closes the link's viewers, before it has deleted what it keeps of the
 link (a revoke whose file it could not delete is answered
 `store_unavailable` after it, and a restart there would bring the link
