@@ -46,3 +46,19 @@ var watchFails = false
 func watchExit(*exec.Cmd, *lifecycle) (<-chan error, func() error, error) {
 	return nil, nil, errors.New("proc: no exit watch on this platform")
 }
+
+// WatchExit here sees the exit by reaping it, on a goroutine of its own:
+// with no process group signalled by its number, nothing can reach another
+// process once this one is reaped, and the process is killed through its
+// handle. reap gives that wait's error once it has returned.
+func WatchExit(cmd *exec.Cmd) (exited <-chan error, reap func() error, err error) {
+	ch := make(chan error, 1)
+	var waitErr error
+	done := make(chan struct{})
+	go func() {
+		waitErr = cmd.Wait()
+		close(done)
+		ch <- nil
+	}()
+	return ch, func() error { <-done; return waitErr }, nil
+}
