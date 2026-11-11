@@ -26,9 +26,9 @@ var version5Tables = []string{"captures", "capture_annotations", "capture_annota
 	"capture_send_cancels", "capture_files"}
 
 var (
-	capCommit  = strings.Repeat("a", 40)
-	contentA = strings.Repeat("c", 40)
-	momentAt = time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	capCommit = strings.Repeat("a", 40)
+	contentA  = strings.Repeat("c", 40)
+	momentAt  = time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
 )
 
 // pngOf is a PNG of w by h pixels, its first byte seed so two differ.
@@ -423,7 +423,7 @@ func TestTheFullestCaptureFitsItsDocument(t *testing.T) {
 	for i := range edits {
 		edits[i].Note = rep("\u2029", MaxAnnotationNote)
 	}
-	erc, err := reedit(t, s,"full-edit", rc.ID, 1, edits)
+	erc, err := reedit(t, s, "full-edit", rc.ID, 1, edits)
 	want(t, erc, err, StatusDone, "")
 	doc, err := s.Document(ctx, rc.ID, 2)
 	if err != nil || len(doc) > MaxCaptureDocument {
@@ -490,14 +490,14 @@ func TestAStaleEditIsRefused(t *testing.T) {
 	id := mustCreate(t, s, "c1", n, f, pngOf(t, 8, 8, 9))
 	edits := kept(captureOf(t, s, id))
 	edits[0].Note = "Still broken"
-	rc, err := reedit(t, s,"e1", id, 1, edits)
+	rc, err := reedit(t, s, "e1", id, 1, edits)
 	want(t, rc, err, StatusDone, "")
 	if rc.Rev != 2 {
 		t.Fatalf("the edit's rev: %+v", rc)
 	}
 	sets := count(t, s, "SELECT COUNT(*) FROM capture_annotation_sets")
 	edits[0].Note = "Fixed?"
-	rc, err = reedit(t, s,"e2", id, 1, edits)
+	rc, err = reedit(t, s, "e2", id, 1, edits)
 	want(t, rc, err, StatusFailed, RefusalStaleRevision)
 	if c := captureOf(t, s, id); c.Rev != 2 || c.Annotations[0].Note != "Still broken" || count(t, s, "SELECT COUNT(*) FROM capture_annotation_sets") != sets {
 		t.Fatalf("a stale edit wrote: %+v", c)
@@ -523,15 +523,15 @@ func TestAnEditRefusesANewElementReport(t *testing.T) {
 		func() []AnnotationEdit { e := kept(c); e[0].Rect = Rect{1, 2, 3, 4}; return e }(),
 		append(kept(c), kept(c)[0]),
 	} {
-		rc, err := reedit(t, s,opID("bad", i), id, 1, bad)
+		rc, err := reedit(t, s, opID("bad", i), id, 1, bad)
 		want(t, rc, err, StatusFailed, RefusalInvalid)
 	}
 	// Removing every annotation brings none and is taken.
-	rc, err := reedit(t, s,"remove-all", id, 1, []AnnotationEdit{})
+	rc, err := reedit(t, s, "remove-all", id, 1, []AnnotationEdit{})
 	want(t, rc, err, StatusDone, "")
 	n, f = testCapture(false)
 	none := mustCreate(t, s, "c2", n, f, nil)
-	rc, err = reedit(t, s,"region", none, 1, []AnnotationEdit{{K: 1, Kind: AnnotationElement, Note: "x"}, {Kind: AnnotationRegion, Note: "r", Rect: Rect{0, 0, 1, 1}}})
+	rc, err = reedit(t, s, "region", none, 1, []AnnotationEdit{{K: 1, Kind: AnnotationElement, Note: "x"}, {Kind: AnnotationRegion, Note: "r", Rect: Rect{0, 0, 1, 1}}})
 	want(t, rc, err, StatusFailed, RefusalInvalid)
 	if got := captureOf(t, s, none); got.Rev != 1 || len(got.Annotations) != 1 {
 		t.Fatalf("a refused edit wrote: %+v", got)
@@ -550,7 +550,7 @@ func TestAnEditWritesVersionsAndASet(t *testing.T) {
 	edits := kept(c)
 	edits[1].Note = "a region, renamed"
 	edits[0], edits[1] = edits[1], edits[0]
-	rc, err := reedit(t, s,"e1", id, 1, edits)
+	rc, err := reedit(t, s, "e1", id, 1, edits)
 	want(t, rc, err, StatusDone, "")
 	after := captureOf(t, s, id)
 	if after.Annotations[0].Note != "a region, renamed" || after.Annotations[0].K != 1 || after.Annotations[1].Note != "Broken" ||
@@ -574,10 +574,10 @@ func TestAnEditWritesVersionsAndASet(t *testing.T) {
 	}
 	// Up to MaxAnnotationSets sets a capture; the next refused.
 	for rev := int64(2); rev < MaxAnnotationSets; rev++ {
-		rc, err := reedit(t, s,opID("more", int(rev)), id, rev, kept(captureOf(t, s, id)))
+		rc, err := reedit(t, s, opID("more", int(rev)), id, rev, kept(captureOf(t, s, id)))
 		want(t, rc, err, StatusDone, "")
 	}
-	rc, err = reedit(t, s,"one-past", id, MaxAnnotationSets, kept(captureOf(t, s, id)))
+	rc, err = reedit(t, s, "one-past", id, MaxAnnotationSets, kept(captureOf(t, s, id)))
 	want(t, rc, err, StatusFailed, RefusalBound)
 	if n := count(t, s, "SELECT COUNT(*) FROM capture_annotation_sets WHERE capture_id = ?", id); n != MaxAnnotationSets {
 		t.Fatalf("%d sets", n)
@@ -632,7 +632,7 @@ func TestAnAnnotationSetIsARevisionNotItsContent(t *testing.T) {
 		if swap {
 			edits[0], edits[1] = edits[1], edits[0]
 		}
-		rc, err := reedit(t, s,opID("order", i), id, int64(3+i), edits)
+		rc, err := reedit(t, s, opID("order", i), id, int64(3+i), edits)
 		want(t, rc, err, StatusDone, "")
 	}
 	got := texts(t, s, "SELECT digest || ' ' || id FROM capture_annotation_sets WHERE capture_id = ? AND rev IN (3, 5) ORDER BY rev", id)
@@ -758,7 +758,7 @@ func TestADeletedUnsentCaptureReleasesItsImage(t *testing.T) {
 		t.Fatalf("the list: %+v %v", page, err)
 	}
 	edits := kept(captureOf(t, s, b))
-	rc, err = reedit(t, s,"edit-deleted", a, got.Rev, edits)
+	rc, err = reedit(t, s, "edit-deleted", a, got.Rev, edits)
 	want(t, rc, err, StatusFailed, RefusalNotFound)
 }
 
@@ -999,9 +999,9 @@ func TestReplayAnswersACaptureResend(t *testing.T) {
 	noUploads(t, s)
 	edits := kept(captureOf(t, s, id))
 	edits[0].Note = "edited"
-	first, err := reedit(t, s,"e1", id, 1, edits)
+	first, err := reedit(t, s, "e1", id, 1, edits)
 	want(t, first, err, StatusDone, "")
-	again, err := reedit(t, s,"e1", id, 1, edits)
+	again, err := reedit(t, s, "e1", id, 1, edits)
 	if err != nil || !again.Repeat || again.Rev != first.Rev {
 		t.Fatalf("an edit's resend: %+v %v", again, err)
 	}

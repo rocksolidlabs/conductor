@@ -97,8 +97,8 @@ var planBounds = map[string]struct {
 	"element.hint_component":  {256, false},
 	"send.target":             {100, false},
 	"send.why":                {2000, true},
-	"op.by":              {60, true},
-	"op.actor":           {60, false},
+	"op.by":                   {60, true},
+	"op.actor":                {60, false},
 }
 
 // atBound is a value of the rule's kind exactly at its bound, and past
