@@ -2,8 +2,11 @@ package proto
 
 import (
 	"encoding/json"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/rocksolidlabs/conductor/ext"
 )
@@ -75,6 +78,82 @@ func TestAReportedFieldIsOneLineDrawnInOrder(t *testing.T) {
 	}
 	if (HostReport{AgentVersion: "2.1.304 (Claude Code)", Repo: "/Users/adá/app"}).Check() != nil {
 		t.Fatal("plain text was refused")
+	}
+}
+
+// A reported field is made of what its form allows, and of nothing else:
+// one character of every general category the standard library can tell
+// (the first of each two-letter one of unicode.Categories; Cs none, which
+// UTF-8 cannot hold), at the start, in the middle and at the end of each
+// field of the report and of a session_info, is taken exactly when the
+// field's form takes it. A text field (a version; a path, after its root)
+// takes a letter, a number, punctuation, a symbol and the space, and a
+// combining mark after one of those, never one first; where its slug's
+// characters; a commit id none. The grapheme joiner and the variation
+// selectors of both ranges are refused after a letter; accented text, a
+// path in another script, a decomposed accent and a version's usual
+// punctuation are taken.
+func TestAReportedFieldIsMadeOfWhatItsFormAllows(t *testing.T) {
+	commit := strings.Repeat("a", 40)
+	text := map[string]func(string) HostReport{
+		"agentVersion": func(v string) HostReport { return HostReport{AgentVersion: v} },
+		"repo":         func(v string) HostReport { return HostReport{Repo: "/" + v} },
+		"repoCommon":   func(v string) HostReport { return HostReport{RepoCommon: "/" + v} },
+	}
+	for _, cat := range slices.Sorted(maps.Keys(unicode.Categories)) {
+		if len(cat) != 2 || cat == "Cs" {
+			continue
+		}
+		tab := unicode.Categories[cat]
+		r := rune(0)
+		if len(tab.R16) > 0 {
+			r = rune(tab.R16[0].Lo)
+		} else {
+			r = rune(tab.R32[0].Lo)
+		}
+		c := string(r)
+		base := r == ' ' || strings.ContainsRune("LNPS", rune(cat[0]))
+		for i, at := range []func(string, string) string{
+			func(s, c string) string { return c + s },
+			func(s, c string) string { return s[:2] + c + s[2:] },
+			func(s, c string) string { return s + c },
+		} {
+			for name, rep := range text {
+				// A version's start is the field's; a path's is after its root,
+				// which is punctuation.
+				want := base || (cat[0] == 'M' && (i > 0 || name != "agentVersion"))
+				if got := rep(at("1.4.0", c)).Check() == nil; got != want {
+					t.Errorf("%s %U (%s) at %d: taken %v, want %v", name, r, cat, i, got, want)
+				}
+			}
+			slug := r >= 'a' && r <= 'z' || i > 0 && (r >= '0' && r <= '9' || r == '-')
+			if got := (HostReport{Where: at("native", c)}).Check() == nil; got != slug {
+				t.Errorf("where %U (%s) at %d: taken %v, want %v", r, cat, i, got, slug)
+			}
+			if (HostReport{StartCommit: at(commit, c)}).Check() == nil {
+				t.Errorf("startCommit %U (%s) at %d taken", r, cat, i)
+			}
+			if b, _ := json.Marshal(HostSessionInfoMsg{T: HostSessionInfo, EndCommit: at(commit, c)}); func() bool { _, err := ParseSessionInfo(b); return err == nil }() {
+				t.Errorf("endCommit %U (%s) at %d taken", r, cat, i)
+			}
+		}
+	}
+	for _, r := range []rune{0x034f, 0xfe00, 0xfe0f, 0xe0100, 0xe01ef} {
+		for name, rep := range text {
+			if rep("é"+string(r)+"1.4").Check() == nil {
+				t.Errorf("%s with %U after a letter was taken", name, r)
+			}
+		}
+	}
+	for _, ok := range []HostReport{
+		{AgentVersion: "2.1.304 (Claude Code)", Repo: "/Users/adá/app"},
+		{AgentVersion: "v0.163.0-alpha.2+build_7", Repo: "/home/ада/проект", RepoCommon: "/home/ада/проект/.git"},
+		{Repo: "/Users/李/项目", RepoCommon: "C:\\Users\\Zoë\\app\\.git"},
+		{Repo: "/Users/ade\u0301/app"},
+	} {
+		if err := ok.Check(); err != nil {
+			t.Errorf("%+v refused", ok)
+		}
 	}
 }
 

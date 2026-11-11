@@ -39,6 +39,7 @@ import {
   type DecisionEvent,
   type DecisionsChangedMsg,
   type HostRegisterDeskMessage,
+  type HostReport,
   type HostRunGroup,
   type HostSessionInfoMessage,
   type Welcome,
@@ -218,6 +219,40 @@ describe('a host report', () => {
       }
     }
     expect(hostReportValid({ agentVersion: '2.1.304 (Claude Code)', repo: '/Users/adá/app' })).toBe(true)
+  })
+  it('takes in each text field exactly what its form allows', () => {
+    // One character of each general category, the first Go's tables hold of it (proto's TestAReportedFieldIsMadeOfWhatItsFormAllows):
+    // a letter, a number, punctuation, a symbol and the space taken anywhere; a mark after one of those (never a version's first);
+    // everything else nowhere.
+    const firsts: Record<string, number> = {
+      Cc: 0x0, Cf: 0xad, Cn: 0x378, Co: 0xe000, Ll: 0x61, Lm: 0x2b0, Lo: 0xaa, Lt: 0x1c5, Lu: 0x41, Mc: 0x903, Me: 0x488, Mn: 0x300,
+      Nd: 0x30, Nl: 0x16ee, No: 0xb2, Pc: 0x5f, Pd: 0x2d, Pe: 0x29, Pf: 0xbb, Pi: 0xab, Po: 0x21, Ps: 0x28, Sc: 0x24, Sk: 0x5e,
+      Sm: 0x2b, So: 0xa6, Zl: 0x2028, Zp: 0x2029, Zs: 0x20,
+    }
+    const fields: Record<string, (v: string) => HostReport> = {
+      agentVersion: (v) => ({ agentVersion: v }),
+      repo: (v) => ({ repo: '/' + v }),
+      repoCommon: (v) => ({ repoCommon: '/' + v }),
+    }
+    for (const [cat, n] of Object.entries(firsts)) {
+      const c = String.fromCodePoint(n)
+      const base = 'LNPS'.includes(cat[0]!) || n === 0x20
+      const at = [(s: string) => c + s, (s: string) => s.slice(0, 2) + c + s.slice(2), (s: string) => s + c]
+      at.forEach((put, i) => {
+        for (const [name, rep] of Object.entries(fields)) {
+          const want = base || (cat[0] === 'M' && (i > 0 || name !== 'agentVersion'))
+          expect(hostReportValid(rep(put('1.4.0'))), `${name} ${cat} at ${i}`).toBe(want)
+        }
+      })
+    }
+    for (const n of [0x034f, 0xfe00, 0xfe0f, 0xe0100, 0xe01ef]) {
+      for (const rep of Object.values(fields)) expect(hostReportValid(rep('é' + String.fromCodePoint(n) + '1.4'))).toBe(false)
+    }
+    for (const ok of [
+      { agentVersion: 'v0.163.0-alpha.2+build_7', repo: '/home/ада/проект', repoCommon: '/home/ада/проект/.git' },
+      { repo: '/Users/李/项目', repoCommon: 'C:\\Users\\Zoë\\app\\.git' },
+      { repo: '/Users/ade\u0301/app' },
+    ]) expect(hostReportValid(ok), JSON.stringify(ok)).toBe(true)
   })
   it('bounds a session_info by its bytes and its end commit by its form', () => {
     const m: HostSessionInfoMessage = { t: 'session_info', endCommit: 'c'.repeat(64) }

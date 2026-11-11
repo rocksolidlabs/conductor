@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"slices"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/history"
 	"github.com/rocksolidlabs/conductor/internal/journal"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -229,6 +232,83 @@ func TestAReopenedRecordKeepsItsAgentSession(t *testing.T) {
 	}
 }
 
+// A hook that comes while a registration is still putting the session's
+// recorder in place (the registry holds the session, the hub's OnAdded has
+// not returned) is not dropped: the registration held at a gate after its
+// record is taken up, a hook sent inside it, a lower id or the same id
+// with a turn, waits, and once the gate opens the record holds it.
+func TestAHookDuringARegistrationReachesTheRecord(t *testing.T) {
+	codex := catalog.Agent{ID: "codex-like", Name: "codex-like", Command: []string{"/bin/cat"},
+		Session: &catalog.SessionRecipe{IDFrom: "hook", IDPolicy: session.PolicyLowest, ResumeArgs: []string{"resume", "{id}"}, IDPattern: "^[0-9a-f-]+$"}}
+	low, high := "0000aaaa-0001", "ffff0000-0002"
+	for _, c := range []struct {
+		name      string
+		first     string
+		firstTurn bool
+	}{{"a lower id", high, true}, {"a turn of the same id", low, false}} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newTestEnvAgents(t, nil, nil, []catalog.Agent{codex})
+			tok := "hosted-agent-token-0123456789abcdef"
+			s := proto.HostSession{AgentID: "codex-like", Command: []string{"codex"}, Cwd: "/Users/ada/app", Cols: 80, Rows: 24, LocalID: "1", AgentToken: tok}
+			conn := signal.NewHostConn()
+			hs := registerSession(t, e, conn, s)
+			id := hs.Info().ID
+			report := func(as string, turn bool) (*http.Response, map[string]any) {
+				return e.do("POST", "/api/sessions/"+id+"/attention", tok, map[string]any{"state": "done", "agentSession": as, "turn": turn})
+			}
+			if resp, out := report(c.first, c.firstTurn); resp.StatusCode != http.StatusOK {
+				t.Fatalf("the first report: %d %v", resp.StatusCode, out)
+			}
+			hs.HostDisconnected(conn)
+			e.srv.hosts.Expire(time.Now().Add(signal.DisconnectGrace + time.Second))
+			until(t, "the hub let the session go", func() bool { _, ok := e.srv.registry.Get(id); return !ok })
+			begun, gate, waits := make(chan struct{}), make(chan struct{}), make(chan struct{}, 1)
+			hook := func(stage, sid string) {
+				switch {
+				case sid != id:
+				case stage == "hostedBegun":
+					close(begun)
+					<-gate
+				case stage == "hostedCaptureWaits":
+					waits <- struct{}{}
+				}
+			}
+			e.srv.recordHook.Store(&hook)
+			t.Cleanup(func() { e.srv.recordHook.Store(nil) })
+			registered := make(chan error, 1)
+			go func() {
+				_, _, err := e.srv.hosts.Register(proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion, Host: proto.HostInfo{Name: "mac", User: "ada", Instance: "instance-r"}, Session: s}, signal.NewHostConn())
+				registered <- err
+			}()
+			<-begun
+			answered := make(chan int, 1)
+			go func() {
+				resp, _ := report(low, true)
+				answered <- resp.StatusCode
+			}()
+			select {
+			case <-waits:
+			case code := <-answered:
+				answered <- code
+			}
+			close(gate)
+			if err := <-registered; err != nil {
+				t.Fatal(err)
+			}
+			if code := <-answered; code != http.StatusOK {
+				t.Fatalf("the hook inside the registration: %d", code)
+			}
+			r, _, err := e.srv.sessionRecords.Get(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if as := r.Agent.Session; as == nil || as.ID != low || !as.Resumable {
+				t.Fatalf("the record's agent session: %+v", as)
+			}
+		})
+	}
+}
+
 // A hosted record takes nothing from this server's machine: its folder,
 // on this machine a repository with a commit, gives it no repository and
 // no commit; its agent, whose version this server's own probe holds, no
@@ -273,8 +353,11 @@ func TestAHostedRecordBorrowsNothingFromTheServer(t *testing.T) {
 // A Brakeman turn's history read draws no row of a hosted session's
 // record, whatever its grant: the default scope (every session), one
 // naming the hosted session, one of a repository. A server session's
-// record beside it is served as before; the hosted one is in no answer
-// and no read the turn's log keeps.
+// record beside it is served as before; the hosted one is in no answer,
+// no read the turn's log keeps and no row the read draws (none at all
+// under the scope that names it), and so it stays with hosted rows of the
+// same words planted in the index: each read serves the same and draws
+// none of them. The admin's read of the route holds the hosted record.
 func TestABrakemanTurnReadsNoHostedRecord(t *testing.T) {
 	b := brakemanEnv(t, nil)
 	dir := filepath.Join(b.root, "inside")
@@ -297,7 +380,7 @@ func TestABrakemanTurnReadsNoHostedRecord(t *testing.T) {
 		t.Fatalf("the admin's search: %v", keys)
 	}
 	f := &obsFixture{bkEnv: b}
-	for i, c := range []struct {
+	cases := []struct {
 		name  string
 		scope map[string]any
 		want  []string
@@ -305,23 +388,53 @@ func TestABrakemanTurnReadsNoHostedRecord(t *testing.T) {
 		{"every session", map[string]any{}, []string{"session:" + server}},
 		{"the hosted session named", map[string]any{"sessions": []string{hosted}}, []string{}},
 		{"its repository", map[string]any{"repos": []string{rec.Repo}}, []string{"session:" + server}},
-	} {
-		mod := func(cfg map[string]any) {
-			cfg["scope"] = c.scope
-			cfg["visibility"] = map[string]any{"runs": true, "logs": true, "dispatch": true, "sessions": true, "touched": true}
+	}
+	turns := 0
+	drawn := func(phase string) (out []int) {
+		for _, c := range cases {
+			mod := func(cfg map[string]any) {
+				cfg["scope"] = c.scope
+				cfg["visibility"] = map[string]any{"runs": true, "logs": true, "dispatch": true, "sessions": true, "touched": true}
+			}
+			if turns++; turns == 1 {
+				f.turn(t, mod)
+			} else {
+				f.again(t, mod)
+			}
+			var keys []string
+			ix := f.srv.history.index()
+			ix.SetDrawSeam(func(_ int64, key string) { keys = append(keys, key) })
+			got := f.expectRead(t, searchPath("turnstile"), http.StatusOK, "")
+			ix.SetDrawSeam(nil)
+			if refs := historyRefs(got); !slices.Equal(refs, c.want) || got["cut"] != nil {
+				t.Errorf("%s, %s: the turn's history %v (cut %v), want %v", phase, c.name, refs, got["cut"], c.want)
+			}
+			if _, ok := f.readOf(t, "session:"+hosted); ok {
+				t.Errorf("%s, %s: the hosted record is in the turn's read log", phase, c.name)
+			}
+			if i := slices.IndexFunc(keys, func(k string) bool { return strings.HasPrefix(k, "session:"+hosted) }); i >= 0 {
+				t.Errorf("%s, %s: the read drew the hosted row %s, of %d drawn", phase, c.name, keys[i], len(keys))
+			}
+			out = append(out, len(keys))
 		}
-		if i == 0 {
-			f.turn(t, mod)
-		} else {
-			f.again(t, mod)
-		}
-		got := f.expectRead(t, searchPath("turnstile"), http.StatusOK, "")
-		if refs := historyRefs(got); !slices.Equal(refs, c.want) {
-			t.Errorf("%s: the turn's history %v, want %v", c.name, refs, c.want)
-		}
-		if _, ok := f.readOf(t, "session:"+hosted); ok {
-			t.Errorf("%s: the hosted record is in the turn's read log", c.name)
-		}
+		return out
+	}
+	if before := drawn("its record alone"); before[1] != 0 {
+		t.Errorf("the scope naming the hosted session drew %d rows", before[1])
+	}
+	var rows []history.Entry
+	for i := range maxHistoryTurnExamine + 1 {
+		rows = append(rows, history.Entry{Key: fmt.Sprintf("session:%s#planted/%05d", hosted, i), Kind: "session.typed", Ref: "session:" + hosted, Anchor: "session:" + hosted,
+			Tree: rec.Repo, Repo: rec.Repo, Hosted: true, At: time.Now().Add(time.Hour + time.Duration(i)*time.Millisecond), Title: "turnstile typed", Body: "turnstile typed"})
+	}
+	plantRows(t, f, "hosted", rows)
+	if after := drawn("with newer hosted rows"); after[1] != 0 {
+		t.Errorf("the scope naming the hosted session drew %d rows", after[1])
+	}
+	resp, body := f.raw(searchPath("turnstile"), adminToken, nil)
+	var admin map[string]any
+	if resp.StatusCode != http.StatusOK || json.Unmarshal(body, &admin) != nil || !slices.Contains(historyRefs(admin), "session:"+hosted) {
+		t.Errorf("the admin's read of the route: %d %s", resp.StatusCode, body)
 	}
 }
 

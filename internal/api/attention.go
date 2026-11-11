@@ -249,7 +249,7 @@ func (s *Server) handleAttention(w http.ResponseWriter, r *http.Request) {
 	if local, ok := d.(*session.Local); ok && req.AgentSession != "" {
 		s.captureAgentSession(local, req.AgentSession, req.Turn)
 	} else if hs, ok := d.(*signal.HostedSession); ok && req.AgentSession != "" {
-		s.captureHostedAgentSession(hs, req.AgentSession, req.Turn)
+		s.captureHostedAgentSession(r.Context(), hs, req.AgentSession, req.Turn)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"attention": d.Info().Attention})
 }

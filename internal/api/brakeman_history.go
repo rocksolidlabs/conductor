@@ -583,7 +583,10 @@ func historyRestriction(o *observer) *history.Restriction {
 		ofRun = crews.as("run.crew")
 	}
 	tree, anchor, project := repos.as("tree"), sessions.as("anchor"), projects.as("ticket.project")
-	r := &history.Restriction{Clauses: []history.Clause{}}
+	// A turn's draw holds no row of a hosted session's record, whatever
+	// its grant: what a host reports is not placed for a turn, and its rows
+	// are not drawn (history.Restriction.Hosted).
+	r := &history.Restriction{Clauses: []history.Clause{}, Hosted: o.tp == nil}
 	add := func(kinds []string, keep []history.Cond, by ...placed) {
 		place, ok := placeOf(by...)
 		if !ok || len(kinds) == 0 {
@@ -606,19 +609,13 @@ func historyRestriction(o *observer) *history.Restriction {
 	asked := []history.Cond{{Column: "anchor.kind", Values: []string{brakeman.RefTask}}}
 	add(seen(placeRun, not(historyDecisionKinds...)), nil, ofRun, tree, project)
 	add(seen(placeRun, only(historyDecisionKinds...)), asked, ofRun, tree, project)
-	// A turn draws no row of a hosted session's record, whatever its
-	// grant: what a host reports is not placed for a turn.
-	var ofServer []history.Cond
-	if o.tp != nil {
-		ofServer = []history.Cond{{Column: "hosted", Values: []string{"1"}, Not: true}}
-	}
 	switch {
 	case plainOK && memberOK && !crews.set && !runs.set:
-		add(seen(placeSession, not()), ofServer, tree, anchor)
+		add(seen(placeSession, not()), nil, tree, anchor)
 	case memberOK && !plainOK && (crews.set || runs.set):
 		// A crew member's alone: its run's column places it.
 		if place, ok := placeOf(tree, anchor, ofRun); ok && place != nil && (place.Column == "run" || place.Column == "run.crew") {
-			add(seen(placeSession, not()), ofServer, ofRun)
+			add(seen(placeSession, not()), nil, ofRun)
 		}
 	}
 	act := []history.Cond{{Column: "actor", Values: historyActors, Not: true}}

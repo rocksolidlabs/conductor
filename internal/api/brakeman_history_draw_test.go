@@ -30,7 +30,7 @@ func drawnBy(t *testing.T, f *obsFixture, path string) (map[string]any, int) {
 	t.Helper()
 	n := 0
 	ix := f.srv.history.index()
-	ix.SetDrawSeam(func(int64) { n++ })
+	ix.SetDrawSeam(func(int64, string) { n++ })
 	defer ix.SetDrawSeam(nil)
 	return f.expectRead(t, path, http.StatusOK, ""), n
 }

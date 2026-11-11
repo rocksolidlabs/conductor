@@ -52,9 +52,14 @@ func (a *agent) readRevision(ctx context.Context, dir string) (gitcli.Revision, 
 // the launch's arguments, which would run the launch again; and only when
 // that program is the agent's own (agentProgram): a wrapper's answer (npx,
 // a shell, an interpreter) is its own version, never kept as the agent's.
+// A program given as a relative path is not probed: the probe runs in a
+// folder of its own, not the launch's, where that path names another file.
 func (a *agent) probeVersion(ctx context.Context) string {
 	p := agents.ProbeFor(a.opts.Adapter)
 	if p == nil || len(a.opts.Argv) == 0 || !agentProgram(a.opts.Adapter, a.opts.Argv[0]) {
+		return ""
+	}
+	if prog := a.opts.Argv[0]; !filepath.IsAbs(prog) && strings.ContainsAny(prog, `/\`) {
 		return ""
 	}
 	run := agents.RunProbe
@@ -138,10 +143,19 @@ func (a *agent) readReport(ctx context.Context, folder *session.Folder) proto.Ho
 // opened for the launch and kept only when the repository found there is
 // the launch's (launchRepo, the file system's identity of its common
 // directory): a folder moved with another repository put at its path, or
-// its repository made again, lends no commit. "" when it was not read.
+// its repository made again, lends no commit. It is read only once the
+// host has seen the launched process gone (its own end,
+// session.Local.ProcessDone): a session marked ended while its process may
+// still run (a stop that failed, an output that closed first) reports no
+// end commit. "" when it was not read.
 func (a *agent) endRevision(ctx context.Context) string {
 	a.endOnce.Do(func() {
 		if rt := a.opts.Runtime; a.opts.Switchyard || rt == nil || rt.Where() != ext.WhereNative || a.launchRepo == nil {
+			return
+		}
+		select {
+		case <-a.local.ProcessDone():
+		default:
 			return
 		}
 		at, still := gitcli.OpenedPath(a.launchDir, a.dir)

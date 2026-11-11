@@ -132,15 +132,31 @@ func whereSlug(s string) bool {
 	return true
 }
 
-// oneLine reports whether s is one line of UTF-8 text drawn as it reads:
-// no control character, and none that changes how a line is drawn without
-// being seen (the format class: direction marks, overrides and isolates,
-// the zero-width ones; the line and paragraph separators). Every text
+// oneLine reports whether s is one line of UTF-8 text made of what a
+// reported field may hold, and nothing else: each character a letter, a
+// number, punctuation, a symbol or the space U+0020, or a combining mark
+// that follows one of those (or another such mark), so no field begins
+// with a mark; and none a renderer ignores by default (Unicode's
+// Default_Ignorable_Code_Point: a variation selector, the grapheme joiner,
+// a filler). A control, a format character, a separator other than the
+// space, a private or an unassigned character is none of these. Every text
 // field a host reports is held to it.
 func oneLine(s string) bool {
-	return utf8.ValidString(s) && !strings.ContainsFunc(s, func(r rune) bool {
-		return unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp)
-	})
+	if !utf8.ValidString(s) {
+		return false
+	}
+	based := false
+	for _, r := range s {
+		switch {
+		case unicode.In(r, unicode.Variation_Selector, unicode.Other_Default_Ignorable_Code_Point):
+			return false
+		case r == ' ' || unicode.In(r, unicode.L, unicode.N, unicode.P, unicode.S):
+			based = true
+		case !based || !unicode.Is(unicode.M, r):
+			return false
+		}
+	}
+	return true
 }
 
 // reportedPath reports whether p is none, or an absolute path of at most

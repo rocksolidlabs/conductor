@@ -4937,15 +4937,25 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   past the journal's bound a hosted record goes before any of the server's
   own sessions' records. The host reads its revision through the folder
   it opened for the launch, keeps its end commit only for the same
-  repository, and reports its agent's version only from the agent's own
-  program; every reported text field is one line drawn as it reads. No
+  repository and reads it only once it has seen its process gone, and
+  reports its agent's version only from the agent's own program, never
+  one given as a relative path; every reported text field is made of
+  letters, numbers, punctuation, symbols, the space and the marks after
+  them, nothing a renderer ignores by default. A hook that comes while a
+  registration is still putting its recorder in place waits for it. No
   record field and no history kind is new, and a Brakeman turn's history
-  read draws no row of a hosted record whatever its grant (narrower than
-  a grant of every session says; a later row may place hosted records for
-  a turn). Observed by the tests: `TestTheHostReadsItsLaunchRevisionBeforeItStarts`,
+  read draws no row of a hosted record whatever its grant: whether a row
+  is a hosted session's is a
+  key of the indexes a read draws by, and a turn's places read only the
+  server's own (narrower than a grant of every session says; a later row
+  may place hosted records for a turn). The index's schema is version 3
+  for it: an index of version 2 is rebuilt at the first start. Observed by
+  the tests: `TestTheHostReadsItsLaunchRevisionBeforeItStarts`,
   `TestANonNativeHostReportsItsWhereAndNoGit`,
   `TestTheHostsEndCommitIsItsLaunchRepositorys`,
-  `TestTheAgentsVersionIsTheAgents`,
+  `TestTheEndCommitWaitsForTheProcessToBeGone`,
+  `TestTheAgentsVersionIsTheAgents`, `TestARelativeProgramIsNotProbed`,
+  `TestAHookDuringARegistrationReachesTheRecord`,
   `TestTheHostLeavesOutWhatItsDenyListRefuses`,
   `TestAHostedAgentSessionIsCapturedFromItsHook`,
   `TestAReopenedRecordKeepsItsAgentSession`,
@@ -4957,7 +4967,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestBeginHostedReopensTheSameHostsRecord`,
   `TestAHostedRecordAsksNothingOfThisMachine` and
   `TestAHostsRecordsGoBeforeTheServersOwn`, and the protocol's bounds in
-  Go and vitest (`TestAReportedFieldIsOneLineDrawnInOrder`). Not made yet, the maintainers' by hand: a hosted session
+  Go and vitest (`TestAReportedFieldIsOneLineDrawnInOrder`,
+  `TestAReportedFieldIsMadeOfWhatItsFormAllows`). Not made yet, the maintainers' by hand: a hosted session
   from `conductor host` on the Mac recorded with the agent's version, its
   own session and its launch commit as the Mac reports them. Its checks
   are in its body.

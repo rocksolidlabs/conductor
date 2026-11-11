@@ -659,22 +659,28 @@ its Runtime, 1–32 bytes of `a-z`, `0-9` and `-` beginning with a letter
 (`native` for `conductor host`); `session.agentVersion`, at most 64 bytes
 of one line, its adapter's probe of the agent's own program alone (none
 when the launched program is not the agent's, a wrapper such as `npx` or
-a shell, whose version is its own); and only when its Runtime is native,
+a shell, whose version is its own, and none for a program given as a
+relative path, which names another file where the probe runs); and only when its Runtime is native,
 read in the folder it opened for the launch, before its process starts
 (one `git rev-parse`, the C locale, 2 s), `session.repo` (the working
 tree's top) and `session.repoCommon` (the repository's common git
 directory), each an absolute path (`/…`, `X:\…`, `\\…`) of at most 4096
 bytes of one line, and `session.startCommit`, 40 or 64 lowercase hex
-digits. One line is UTF-8 with no control character and none that
-changes how a line is drawn unseen (Unicode's format class: direction
-marks, overrides and isolates, zero-width characters; the line and
-paragraph separators). A host on another Runtime reports its `where` and
+digits. One line is UTF-8 made only of letters, numbers, punctuation,
+symbols and the space U+0020, each followed by any combining marks (so
+no mark first), and of nothing a renderer ignores by default (Unicode's
+Default_Ignorable_Code_Point: the variation selectors, the grapheme
+joiner); everything else is refused, controls, format characters and the
+other separators among it. A host on another Runtime reports its `where` and
 no git fact.
 Each is optional: an older host sends none, an older server ignores
 them, and the record says "not reported by its host" for each one
 absent, never the server's own fact and never native. A register with
 any of them past its bound is refused (`registration rejected`). Once
 its process has ended, a host whose `registered` said `sessionInfo`
+(its end commit read only when the host has seen the process itself
+gone; a session marked ended while its process may still run, a stop
+that failed or an output that closed first, reports none)
 sends `session_info{endCommit?}` (its folder's HEAD read the same way,
 through the folder it opened, native only, and kept only when the
 repository there is still the launch's by the file system's identity:

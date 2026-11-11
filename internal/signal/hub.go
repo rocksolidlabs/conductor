@@ -144,6 +144,7 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 		viewers:    map[string]*Viewer{},
 		maxViewers: hub.MaxViewers,
 		report:     reg.Session.HostReport,
+		added:      make(chan struct{}),
 		info: session.Info{
 			ID:        id,
 			Name:      name,
@@ -171,6 +172,7 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 	if hub.OnAdded != nil {
 		hub.OnAdded(hs)
 	}
+	close(hs.added)
 	hs.notifyChange()
 	return hs, false, nil
 }

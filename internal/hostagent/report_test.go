@@ -3,6 +3,7 @@ package hostagent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -84,9 +85,12 @@ func endedRecord(t *testing.T, base, id string) journal.Record {
 	}
 }
 
+// git runs git in dir, its automatic maintenance off, so no process of it
+// outlives the call to race the test's removal of dir (AGENTS.md).
 func git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, args...)...)
+	cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+		"-c", "maintenance.auto=false", "-c", "gc.auto=0"}, args...)...)
 	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -222,6 +226,103 @@ func TestTheHostsEndCommitIsItsLaunchRepositorys(t *testing.T) {
 	}
 }
 
+// heldProc is a process whose stop fails, leaving it running (failStop),
+// and whose output closes when the test closes out's writer.
+type heldProc struct {
+	ext.Terminal
+	out      *io.PipeReader
+	failStop bool
+}
+
+func (h heldProc) Read(b []byte) (int, error) { return h.out.Read(b) }
+
+func (h heldProc) Stop(ctx context.Context, grace time.Duration) error {
+	if h.failStop {
+		return errors.New("the process did not exit")
+	}
+	return h.Terminal.Stop(ctx, grace)
+}
+
+// holding is a native Runtime whose terminal is a heldProc, handed to the
+// test with its output's writer.
+type holding struct {
+	*sessiontest.FakeRuntime
+	failStop bool
+	procs    chan heldOne
+}
+
+type heldOne struct {
+	p   *sessiontest.FakeProc
+	out *io.PipeWriter
+}
+
+func (h holding) StartTerminal(context.Context, ext.TerminalSpec) (ext.Terminal, error) {
+	p := sessiontest.NewFakeProc()
+	r, w := io.Pipe()
+	h.procs <- heldOne{p, w}
+	return heldProc{sessiontest.FakeTerminal(p), r, h.failStop}, nil
+}
+
+// The end commit is read only once the host has seen its process gone: a
+// session marked ended while its process may still run (its stop failed;
+// its output closed first) reports none, though a commit is made in its
+// folder after it was marked ended.
+func TestTheEndCommitWaitsForTheProcessToBeGone(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	srv := recordingServer(t)
+	for _, c := range []struct {
+		name     string
+		failStop bool
+	}{{"its stop failed", true}, {"its output closed first", false}} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			git(t, dir, "init", "-q")
+			git(t, dir, "commit", "-q", "--allow-empty", "-m", "first")
+			rt := holding{FakeRuntime: &sessiontest.FakeRuntime{Place: ext.WhereNative}, failStop: c.failStop, procs: make(chan heldOne, 1)}
+			var reads atomic.Int32
+			var late atomic.Value
+			started := make(chan heldOne, 1)
+			ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+			defer cancel()
+			res, err := Run(ctx, Options{ServerURL: srv.URL, Token: hostToken, RelayOnly: true, Name: "held", Argv: []string{"/bin/agent"}, Dir: dir, Runtime: rt,
+				Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+				revision: func(ctx context.Context, at string) (gitcli.Revision, error) {
+					if reads.Add(1) > 1 {
+						// The end's read: the session is marked ended.
+						git(t, dir, "commit", "-q", "--allow-empty", "-m", "after the end")
+						late.Store(git(t, dir, "rev-parse", "HEAD"))
+					}
+					return gitcli.RevisionOf(ctx, at)
+				},
+				Registered: func(id, _ string) {
+					go func() {
+						s := <-rt.procs
+						started <- s
+						if c.failStop {
+							req, _ := http.NewRequest("DELETE", srv.URL+"/api/sessions/"+id, nil)
+							req.Header.Set("Authorization", "Bearer "+adminToken)
+							if resp, err := http.DefaultClient.Do(req); err == nil {
+								resp.Body.Close()
+							}
+							return
+						}
+						s.out.Close()
+					}()
+				}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := <-started
+			defer func() { s.p.End(0); s.out.Close() }()
+			if r := endedRecord(t, srv.URL, res.SessionID); r.End != "" {
+				t.Fatalf("the end commit %q of a process not seen gone (the commit after the end %v)", r.End, late.Load())
+			}
+		})
+	}
+}
+
 // The agent's version is the agent's: the probe runs the launched program
 // alone, never the launch's arguments, and only when that program is the
 // agent's own; a wrapper (npx, a shell) answers for itself, so its version
@@ -256,6 +357,36 @@ func TestTheAgentsVersionIsTheAgents(t *testing.T) {
 	ran, _ := os.ReadFile(args)
 	if strings.TrimSpace(string(ran)) != "--version" {
 		t.Fatalf("the stand-ins were run with %q", ran)
+	}
+}
+
+// A program given as a relative path is never probed: with one program of
+// that name beside the launch's folder and another where the probe runs,
+// no version is reported, and neither is run.
+func TestARelativeProgramIsNotProbed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the stand-in programs are shell scripts")
+	}
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	launch := filepath.Join(tmp, "w", "launch")
+	if err := os.MkdirAll(launch, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ran := filepath.Join(tmp, "ran")
+	for dir, version := range map[string]string{tmp: "9.9.9", filepath.Join(tmp, "w"): "1.4.0"} {
+		if err := os.WriteFile(filepath.Join(dir, "opencode"), []byte("#!/bin/sh\necho "+version+" >> "+ran+"\necho "+version+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, prog := range []string{"../opencode", "./../opencode"} {
+		a := &agent{opts: Options{Adapter: "opencode", Argv: []string{prog}, Dir: launch}, dir: launch}
+		if got := a.probeVersion(t.Context()); got != "" {
+			t.Errorf("%q: the version %q", prog, got)
+		}
+	}
+	if b, err := os.ReadFile(ran); err == nil {
+		t.Fatalf("a stand-in was run: %q", b)
 	}
 }
 

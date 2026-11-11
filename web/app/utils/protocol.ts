@@ -738,9 +738,11 @@ export function validCommit(s: string): boolean {
 /** Whether a HostReport is within its bounds, as the server's hub holds it (proto.HostReport.Check): lengths in UTF-8 bytes. */
 export function hostReportValid(r: HostReport): boolean {
   const bytes = (s: string) => new TextEncoder().encode(s).length
-  // One line drawn as it reads: no control character, none of the format class (direction marks and overrides, the zero-width
-  // ones), no line or paragraph separator (proto's oneLine).
-  const oneLine = (s: string) => !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(s)
+  // Made of what a reported field may hold (proto's oneLine): letters, numbers, punctuation, symbols and the space, each followed by
+  // any combining marks, so none first; nothing a renderer ignores by default (a variation selector, the grapheme joiner). The
+  // server's verdict is the one that counts: this mirror is for the tests, and where its Unicode tables and Go's differ, Go's rule.
+  const oneLine = (s: string) =>
+    /^(?:[\p{L}\p{N}\p{P}\p{S} ]\p{M}*)*$/u.test(s) && !/[\p{Default_Ignorable_Code_Point}\p{Variation_Selector}]/u.test(s)
   const path = (p?: string) => !p || (bytes(p) <= HOST_MAX_REPORT_PATH && oneLine(p) && /^(?:\/|\\\\|[A-Za-z]:[\\/])/.test(p))
   if (r.where && !new RegExp(`^[a-z][a-z0-9-]{0,${HOST_MAX_REPORT_WHERE - 1}}$`).test(r.where)) return false
   if (r.agentVersion && (bytes(r.agentVersion) > HOST_MAX_AGENT_VERSION || !oneLine(r.agentVersion))) return false

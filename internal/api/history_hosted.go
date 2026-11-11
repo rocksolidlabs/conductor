@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"errors"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/journal"
 	"github.com/rocksolidlabs/conductor/internal/proto"
@@ -77,6 +79,7 @@ func (s *Server) beginHostedRecord(hs *signal.HostedSession) {
 		}
 		return
 	}
+	s.recordSeam("hostedBegun", id)
 	s.recMu.Lock()
 	defer s.recMu.Unlock()
 	if s.recordsClosed || s.recCur[id] != nil {
@@ -172,13 +175,28 @@ func (s *Server) recordSessionInfo(hs *signal.HostedSession, m proto.HostSession
 // for the agent (its pattern and policy: none, nothing captured), applied
 // to the agent session the record holds (journal.AgentSession), whichever
 // registration of the session captured it, and settled into the record;
-// the hosted Info is untouched.
-func (s *Server) captureHostedAgentSession(hs *signal.HostedSession, agentSession string, turn bool) {
+// the hosted Info is untouched. A hook that comes while the registration
+// is still putting the session's recorder in place (the registry holds
+// the session before the hub's OnAdded returns) waits for it, bounded as
+// a report for a launch under way is (launchWait), and is then applied.
+func (s *Server) captureHostedAgentSession(ctx context.Context, hs *signal.HostedSession, agentSession string, turn bool) {
 	info := hs.Info()
 	policy, ok := s.agentSessionPolicy(info.AgentID, agentSession)
 	if !ok {
 		s.log.Debug("agent session id dropped", "session", info.ID)
 		return
+	}
+	select {
+	case <-hs.Added():
+	default:
+		s.recordSeam("hostedCaptureWaits", info.ID)
+		t := time.NewTimer(launchWait)
+		select {
+		case <-hs.Added():
+		case <-ctx.Done():
+		case <-t.C:
+		}
+		t.Stop()
 	}
 	s.recMu.Lock()
 	defer s.recMu.Unlock()
