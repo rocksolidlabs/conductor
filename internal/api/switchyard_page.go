@@ -38,7 +38,7 @@ func (s *Server) switchyardAppURL() string {
 	link, ok := s.cfg.SwitchyardAppURL()
 	if !ok {
 		s.appURLSaid.Do(func() {
-			s.log.Warn("switchyard.appURL is not an https URL with a host, within its bound: the pages link the default", "maxBytes", config.MaxSwitchyardAppURL, "default", link)
+			s.log.Warn("switchyard.appURL is not an https URL with a host, within its bound and in its canonical form: the pages link the default", "maxBytes", config.MaxSwitchyardAppURL, "default", link)
 		})
 	}
 	return link

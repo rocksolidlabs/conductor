@@ -54,7 +54,8 @@ describe('update channel', () => {
 describe('the download page', () => {
   const pkg = (downloadPage: unknown) => JSON.stringify({ name: 'conductor-desktop', version: '0.7.0', conductor: { downloadPage } })
 
-  // The same rows as internal/config's TestSwitchyardAppURL: the two addresses take one form.
+  // Rows like internal/config's TestSwitchyardAppURL: the two addresses take one form. The switchyard takes one only in its
+  // canonical form and links it as written; the app takes one in the form and uses the URL standard's text of it.
   it('the download page from the package', () => {
     const at200 = 'https://example.test/' + 'a'.repeat(200 - 'https://example.test/'.length)
     for (const [page, parsed] of [
