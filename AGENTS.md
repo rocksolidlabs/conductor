@@ -317,7 +317,9 @@ add its rule here.
   the menu's search and opens it again, and the field stays empty
   (`dispatch-plan.spec.ts`, #467); a select with no search hands the
   focus back to its trigger as it goes, and a key pressed then opens it
-  again (`pickOption`, `manifest-editor.spec.ts`). After picking an
+  again (`pickOption`, `manifest-editor.spec.ts`), and a row's menu gone
+  during a dialog's save hands its trigger the Escape (`holdMenuExit`,
+  #281). After picking an
   option, wait for the listbox to be gone (`toHaveCount(0)`) before
   typing, and assert the field holds what was typed (`toHaveValue`)
   before submitting.
@@ -414,6 +416,17 @@ add its rule here.
   spec could not repeat and no flake in it could be proved fixed
   (2026-11-08, #281). Give each start a folder of its own and reset in it
   every module variable a test reads.
+- A fault a test injects once goes to whoever comes first. A store seam
+  that failed "the first read" of a pending review meant the request's
+  read after its commit, but the history's indexer, woken by the same
+  commit, read the ticket's reviews too and on a loaded machine took the
+  failure first; the request then read the review, sent its command, and
+  the try was applied where the test wanted it refused
+  (`TestACommittedReviewWhoseReadFailedIsSettled`, 2026-11-10, #281).
+  Fail every reader for the window the test means (from the commit until
+  the request has answered), and prove the read the test cares about
+  failed from what it answered (the receipt alone), never from a one-shot
+  flag having been spent.
 - A call that moves the page is started, not awaited for its answer,
   and a read made after such a call takes a rejection in the words
   "Execution context was destroyed" as "not yet". Seen: in two CI runs
