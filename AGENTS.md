@@ -150,10 +150,10 @@ add its rule here.
   times out is not stopped: on a loaded machine the import took seconds,
   the first test timed out, and its body went on when the import came,
   made its composable on the next test's stubs and sent into the next
-  test's arrays, which then saw a second request, an error not yet said
-  or a reply answered to the other one (2026-11-11, #281). A composable's
-  auto-imports are read when it is called, so a static import before the
-  stubs is safe.
+  test's arrays, which then saw a second request or an error not yet
+  said (2026-11-11, #281). These composables read their auto-imports when
+  they are called, so their static import before the stubs is safe; a
+  module that reads one as it loads is imported after its stubs.
 - Count only what the test made. A spec that counts sessions, tiles or list
   rows sees what an earlier spec left behind and what the server's sweeps
   removed: end the strays first (`stopStrays` in `web/e2e/fixtures.ts`) and
