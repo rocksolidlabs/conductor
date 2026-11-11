@@ -119,7 +119,9 @@ add its rule here.
   wait is right for the product and wrong for a test that only needs the
   thing to happen: give the test its own wait where the product's is not
   what is tested, or make the product's bound generous where it only bounds
-  a hang (2026-11-08: internal/api's race run reached go test's 30 m bound
+  a hang, as the history read's 15 s does over work its rows bound, which
+  the race detector makes thirty times dearer (2026-11-11, #281;
+  2026-11-08: internal/api's race run reached go test's 30 m bound
   on CI; the bound is 60 m now; the package's length is CPU work under the
   race detector across its 1,365 tests, not waits, and CI's longest job is
   e2e at 49 minutes, so no row makes it faster).
