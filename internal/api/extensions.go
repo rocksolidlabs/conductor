@@ -277,9 +277,11 @@ func (s *Server) extFailed(kind, name, why, detail string) {
 	attrs := []any{"kind", kind, "provider", name, "failure", why, "failures", failures}
 	// An identity provider's words are never quoted: its error, its panic
 	// and its refused principal may carry the token it was given, and so
-	// may a failed Start of it, which was handed the host token.
+	// may any failure of the value registered under its name, in every
+	// slot it holds (its Start among them), which was handed the host
+	// token.
 	quiet := kind == ext.KindIdentity || kind == kindIdentityRecheck || kind == kindIdentityRenew ||
-		(kind == extKindStart && name == s.identityName())
+		(name != "" && name == s.identityName())
 	if detail != "" && !quiet {
 		attrs = append(attrs, "err", detail)
 	}
@@ -685,7 +687,8 @@ const kindIdentityRecheck = ext.KindIdentity + "-recheck"
 // is an answer (it may do nothing here), not a failure. Until its Start
 // has succeeded, nothing is known and nothing asked.
 func (g guardIdentity) recheck(ctx context.Context, token string) (p ext.Principal, ok, known bool) {
-	return g.reask(ctx, kindIdentityRecheck, token)
+	p, ok, known, _ = g.reask(ctx, kindIdentityRecheck, token)
+	return p, ok, known
 }
 
 // kindIdentityRenew is the guard's kind of a host connection's renewal
@@ -694,20 +697,23 @@ func (g guardIdentity) recheck(ctx context.Context, token string) (p ext.Princip
 const kindIdentityRenew = ext.KindIdentity + "-renew"
 
 // renew asks the provider about token, the credential a host connection
-// presents in place of the one it was admitted with, as recheck asks.
-func (g guardIdentity) renew(ctx context.Context, token string) (p ext.Principal, ok, known bool) {
+// presents in place of the one it was admitted with, as recheck asks;
+// busy says it was not asked, every renewal slot taken.
+func (g guardIdentity) renew(ctx context.Context, token string) (p ext.Principal, ok, known, busy bool) {
 	return g.reask(ctx, kindIdentityRenew, token)
 }
 
 // detail is who the server is signed in as (ext.IdentityDetail), asked
 // only once the provider has started and only of one that says it: one
 // line of 1 to ext.MaxIdentityDetail characters with no control
-// character, or false.
+// character that holds no token of the server's own (the host token it
+// handed over, the workbench token, a host token), or false.
 func (g guardIdentity) detail(ctx context.Context) (string, bool) {
 	d, isDetail := g.p.(ext.IdentityDetail)
 	if !isDetail || !live(g.ready) {
 		return "", false
 	}
+	own := append([]string{g.s.cfg.Rendezvous.Token, g.s.cfg.WorkbenchToken}, g.s.cfg.HostTokens...)
 	v := extCall(ctx, g.s, ext.KindIdentity, g.name, ext.IdentityWait, "", func(v string) error {
 		if v == "" {
 			return nil
@@ -715,21 +721,27 @@ func (g guardIdentity) detail(ctx context.Context) (string, bool) {
 		if n := utf8.RuneCountInString(v); !utf8.ValidString(v) || n > ext.MaxIdentityDetail || strings.ContainsFunc(v, unicode.IsControl) {
 			return errors.New("detail: not one line of at most 80 characters")
 		}
+		for _, tok := range own {
+			if tok != "" && strings.Contains(v, tok) {
+				return errors.New("detail: it holds a token")
+			}
+		}
 		return nil
 	}, func(context.Context) (string, error) { return d.Detail(), nil })
 	return v, v != ""
 }
 
-// reask is recheck's and renew's ask, in kind's slots.
-func (g guardIdentity) reask(ctx context.Context, kind, token string) (p ext.Principal, ok, known bool) {
+// reask is recheck's and renew's ask, in kind's slots; busy says it was
+// not made, every slot of kind taken.
+func (g guardIdentity) reask(ctx context.Context, kind, token string) (p ext.Principal, ok, known, busy bool) {
 	if !live(g.ready) {
-		return ext.Principal{}, false, false
+		return ext.Principal{}, false, false, false
 	}
 	type answer struct {
 		p         ext.Principal
 		ok, known bool
 	}
-	a := extCall(ctx, g.s, kind, g.name, ext.IdentityWait, answer{}, func(a answer) error {
+	a, sent := extCallSent(ctx, g.s, kind, g.name, ext.IdentityWait, answer{}, func(a answer) error {
 		if !a.ok {
 			return nil
 		}
@@ -739,9 +751,9 @@ func (g guardIdentity) reask(ctx context.Context, kind, token string) (p ext.Pri
 		return answer{copyPrincipal(p), ok, true}, err
 	})
 	if !a.known || !a.ok {
-		return ext.Principal{}, false, a.known
+		return ext.Principal{}, false, a.known, !sent
 	}
-	return a.p, true, true
+	return a.p, true, true, false
 }
 
 // guardRouter is a decision router behind the guard.

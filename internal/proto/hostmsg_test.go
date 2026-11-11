@@ -333,3 +333,31 @@ func TestHostTokenMessage(t *testing.T) {
 		t.Errorf("registered with renews: %s", b)
 	}
 }
+
+// TestPeekType reads a message's t as ParseHeader does, stepping over what
+// comes before it and never reading past it: a message cut short after
+// its t still has one.
+func TestPeekType(t *testing.T) {
+	for msg, want := range map[string]string{
+		`{"t":"host_token","token":"a"}`:                          HostTokenType,
+		`{"t":"host_token","token":"` + strings.Repeat("a", 4096): HostTokenType,
+		`{"T":"status"}`:                                         "status",
+		`{"token":"a","t":"host_token"}`:                         HostTokenType,
+		`{"x":{"t":"inner","y":[1,{"t":"deeper"}]},"t":"outer"}`: "outer",
+		`{"x":"a"}`: "",
+		`{"t":1}`:   "",
+		`[1]`:       "",
+		`{"x":`:     "",
+		``:          "",
+	} {
+		if got := PeekType([]byte(msg)); got != want {
+			t.Errorf("PeekType(%.40q) = %q, want %q", msg, got, want)
+		}
+		if want == "" {
+			continue
+		}
+		if h, err := ParseHeader([]byte(msg)); err == nil && h != want {
+			t.Errorf("%.40q: ParseHeader says %q", msg, h)
+		}
+	}
+}

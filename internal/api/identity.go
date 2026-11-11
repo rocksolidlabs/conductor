@@ -10,6 +10,7 @@ import (
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/share"
 )
 
 // The identity provider at authentication (Program item C2, the plan's
@@ -237,18 +238,23 @@ func (s *Server) principalWatch(p principal, wt *watchedToken, need ext.Grant) f
 }
 
 // hostToken takes a host_token, inline in the host connection's read
-// loop: it reports whether the renewal took its one success path, the
-// same subject admitted with the host grant, the new token then the
-// connection's. Every other outcome is the one fallback, false, and the
-// caller closes the connection 4403 access revoked: a message past its
-// bounds (proto.ParseHostToken), a connection not admitted through a
-// provider's principal, a token the server's own chain knows (never
-// asked of the provider), a connection already ended, an error, a late,
-// busy or panicking answer, and a verdict (no principal, another subject,
-// no host grant), recorded under the turn as a recheck's is. The ask is
-// made under the connection's credential turn, in the renewals' own
-// slots (kindIdentityRenew), within ext.IdentityWait, and the turn is
-// given back before it returns, so no close runs under it.
+// loop: it reports whether the connection stays, which it does on the
+// one success path (the same subject admitted with the host grant, the
+// new token then the connection's) and on two that change nothing: the
+// token the connection holds already, which is asked of nobody, and a
+// renewal the guard could not put to the provider, every renewal slot
+// taken, which is no verdict (as a busy recheck is none), the
+// connection keeping its token. Every other outcome is the one fallback,
+// false, and the caller closes the connection 4403 access revoked: a
+// message past its bounds (proto.ParseHostToken), a connection not
+// admitted through a provider's principal, a token the server's own
+// chain knows (never asked of the provider), a connection already
+// ended, an error, a late or panicking answer, and a verdict (no
+// principal, another subject, no host grant), recorded under the turn as
+// a recheck's is. The ask is made under the connection's credential
+// turn, in the renewals' own slots (kindIdentityRenew), within
+// ext.IdentityWait, and the turn is given back before it returns, so no
+// close runs under it.
 func (s *Server) hostToken(hc *hostConnState, data []byte) bool {
 	tok, err := proto.ParseHostToken(data)
 	if err != nil || hc.cred == nil {
@@ -265,7 +271,16 @@ func (s *Server) hostToken(hc *hostConnState, data []byte) bool {
 	if hc.cred.ended.Load() {
 		return false
 	}
-	pr, admitted, known := g.renew(hc.ctx, tok)
+	if share.Equal(tok, hc.cred.tok) {
+		// The token the connection holds: nothing changes, nobody is asked.
+		return true
+	}
+	pr, admitted, known, busy := g.renew(hc.ctx, tok)
+	if busy {
+		// Not put to the provider, every renewal slot taken: no verdict,
+		// as a busy recheck is none; the connection keeps its token.
+		return true
+	}
 	if known && admitted && s.admitsAs(pr, hc.subject, ext.GrantHost) {
 		hc.cred.tok = tok
 		return true

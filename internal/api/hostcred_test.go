@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -253,6 +255,29 @@ func TestHostConnectionRechecked(t *testing.T) {
 		})
 		closedRevoked(t, h)
 	})
+	// An open host's connection presents nothing: no renews, and no recheck
+	// of it ever asks the provider anything.
+	t.Run("an open host", func(t *testing.T) {
+		f := newCredIdentity()
+		e := providerEnv(t, func(c *config.Config) { c.Switchyard.Enabled, c.Switchyard.OpenHosts = true, true }, f)
+		clock := newFakeClock(e.srv)
+		_, reg := dialCred(t, e, hostReg("open", nil), "")
+		if reg["renews"] != nil {
+			t.Fatalf("an open host's connection says renews: %v", reg)
+		}
+		dialCred(t, e, hostReg("1", nil), credOld)
+		// The one recheck waiting is the provider-admitted connection's.
+		recheckWith(t, clock, f, credOld, nil)
+		clock.next(t, identityRecheckEvery)
+		f.mu.Lock()
+		asked := slices.Clone(f.asked)
+		f.mu.Unlock()
+		for _, a := range asked {
+			if a != credOld {
+				t.Fatalf("the provider was asked about %q", a)
+			}
+		}
+	})
 	// A verdict crossing the host's messages: nothing the reader reads after
 	// it is handled, a link request and a host_token included.
 	t.Run("a verdict before the host's messages", func(t *testing.T) {
@@ -422,6 +447,84 @@ func TestHostTokenRenewal(t *testing.T) {
 			t.Fatalf("the old token was asked %d times, its registration's alone wanted", n)
 		}
 	})
+	// A renewal waiting for the turn while a recheck's verdict lands meets
+	// ended and is refused unasked.
+	t.Run("a renewal waiting as a recheck's verdict lands", func(t *testing.T) {
+		f := newCredIdentity()
+		e, clock := credEnv(t, f)
+		h, _ := dialCred(t, e, hostReg("1", nil), credOld)
+		waiting := make(chan struct{}, 1)
+		e.srv.hostCred = &hostCredSeam{waiting: func() { waiting <- struct{}{} }}
+		gate := make(chan struct{})
+		f.set(func(f *credIdentity) { f.gates[credOld] = gate; delete(f.admits, credOld) })
+		recheckWith(t, clock, f, credOld, nil) // its ask held
+		h.send(hostToken(credNew))
+		<-waiting
+		close(gate)
+		closedRevoked(t, h)
+		if f.timesAsked(credNew) != 0 {
+			t.Fatal("a renewal that took the turn after the verdict was asked")
+		}
+	})
+	// Every renewal slot held by other connections' renewals: one more is
+	// not put to the provider, which is no verdict, and its connection
+	// stays with the token it holds.
+	t.Run("a renewal the guard cannot put keeps the connection", func(t *testing.T) {
+		f := newCredIdentity()
+		e, _ := credEnv(t, f)
+		gate := make(chan struct{})
+		t.Cleanup(func() { close(gate) })
+		for i := range extInFlight {
+			tok := fmt.Sprintf("cloud-fill-%d", i)
+			f.set(func(f *credIdentity) { f.admits[tok], f.gates[tok] = credHost, gate })
+			h, _ := dialCred(t, e, hostReg(fmt.Sprintf("fill-%d", i), nil), credOld)
+			h.send(hostToken(tok))
+			f.awaitAsk(t, tok)
+		}
+		h, _ := dialCred(t, e, hostReg("1", nil), credOld)
+		h.send(hostToken(credNew))
+		h.link("view", "") // read after the renewal: the connection stayed
+		if f.timesAsked(credNew) != 0 {
+			t.Fatal("a renewal past every slot was asked")
+		}
+		before := f.timesAsked(credOld)
+		h.send(hostToken(credOld)) // what it holds still: nobody asked
+		h.link("view", "")
+		if f.timesAsked(credOld) != before {
+			t.Fatal("the token the connection holds was asked of the provider")
+		}
+	})
+	t.Run("the token the connection holds, never asked", func(t *testing.T) {
+		f := newCredIdentity()
+		e, _ := credEnv(t, f)
+		h, _ := dialCred(t, e, hostReg("1", nil), credOld)
+		for range 5 {
+			h.send(hostToken(credOld))
+		}
+		h.link("view", "")
+		if n := f.timesAsked(credOld); n != 1 {
+			t.Fatalf("the token the connection holds was asked %d times, its registration's alone wanted", n)
+		}
+	})
+	// Past its bound and cut short: a whole decode of it fails (and would
+	// close the connection as a bad host message), so a 4403 says it was
+	// refused by its size before anything decoded it, a session's and a
+	// desk's alike.
+	t.Run("past the bound at the socket, refused before a whole decode", func(t *testing.T) {
+		f := newCredIdentity()
+		e, _ := credEnv(t, f)
+		msg := []byte(`{"t":"host_token","token":"` + strings.Repeat("a", proto.MaxHostTokenMessage))
+		for _, first := range []any{hostReg("1", nil), deskReg("inst-1", "run-1")} {
+			h, _ := dialCred(t, e, first, credOld)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			err := h.c.Write(ctx, websocket.MessageText, msg)
+			cancel()
+			if err != nil {
+				t.Fatal(err)
+			}
+			closedRevoked(t, h)
+		}
+	})
 	t.Run("a renewal not delivered in time", func(t *testing.T) {
 		f := newCredIdentity()
 		e, clock := credEnv(t, f)
@@ -467,7 +570,11 @@ func (startingIdentity) Start(context.Context, ext.Host) error { return errors.N
 // none.
 func TestCapabilitiesDetail(t *testing.T) {
 	d := &detailIdentity{credIdentity: newCredIdentity(), asked: make(chan struct{}, 64)}
-	e := providerEnv(t, nil, d)
+	const hostTok = "code-secret-1"
+	e := providerEnv(t, func(c *config.Config) { c.Rendezvous.Server, c.Rendezvous.Token = "https://yard.invalid", hostTok }, d)
+	// late holds the late case's Detail until its reply has been read: the
+	// guard's own wait alone decides it is late.
+	late := make(chan struct{})
 	for _, c := range []struct {
 		name, detail, want string
 		late, panics       bool
@@ -476,15 +583,18 @@ func TestCapabilitiesDetail(t *testing.T) {
 		{name: "80 runes", detail: strings.Repeat("é", ext.MaxIdentityDetail), want: strings.Repeat("é", ext.MaxIdentityDetail)},
 		{name: "81 runes", detail: strings.Repeat("é", ext.MaxIdentityDetail+1)},
 		{name: "two lines", detail: "signed in\nas Ana"},
+		{name: "the host token", detail: "signed in with " + hostTok},
+		{name: "the workbench token", detail: "signed in with " + adminToken},
+		{name: "a host token", detail: "signed in with test-host-token"},
 		{name: "panicking", panics: true},
-		{name: "late", late: true},
+		{name: "late", detail: "signed in as Ana, late", late: true},
 	} {
 		d.detail = func() string {
 			if c.panics {
 				panic("signed in as " + credOld)
 			}
 			if c.late {
-				time.Sleep(ext.IdentityWait + 100*time.Millisecond)
+				<-late
 			}
 			return c.detail
 		}
@@ -494,7 +604,13 @@ func TestCapabilitiesDetail(t *testing.T) {
 		if got, _ := row["detail"].(string); got != c.want || (c.want == "" && row["detail"] != nil) {
 			t.Errorf("%s: detail %q, want %q", c.name, got, c.want)
 		}
+		for _, tok := range []string{hostTok, adminToken, "test-host-token"} {
+			if strings.Contains(mustJSON(out), tok) {
+				t.Errorf("%s: the reply holds a token: %v", c.name, out)
+			}
+		}
 	}
+	close(late)
 	// "late" was the last: its call may still run, so detail is not set again.
 	for range len(d.asked) {
 		<-d.asked
@@ -597,6 +713,63 @@ func TestIdentityStartNotQuoted(t *testing.T) {
 		e.srv.ProviderStarted(t.Context(), "cloud")
 		e.srv.stopExtensions()
 		if strings.Contains(logs.String(), "code-secret-1") || !strings.Contains(logs.String(), "kind=start") {
+			t.Fatalf("panics %v: the log:\n%s", panics, logs.String())
+		}
+	}
+}
+
+// mediaIdentity is one value in the identity slot and the media slot under
+// one name, its media calls failing with the host token it was handed.
+type mediaIdentity struct {
+	*credIdentity
+	panics bool
+	mu     sync.Mutex
+	tok    string
+}
+
+func (m *mediaIdentity) Start(_ context.Context, h ext.Host) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tok = h.HostToken()
+	return nil
+}
+
+func (m *mediaIdentity) ICEServers(context.Context, ext.ICERequest) ([]ext.ICEServer, error) {
+	m.mu.Lock()
+	tok := m.tok
+	m.mu.Unlock()
+	if m.panics {
+		panic("cannot reach media with " + tok)
+	}
+	return nil, errors.New("cannot reach media with " + tok)
+}
+
+func (m *mediaIdentity) Room(context.Context, ext.RoomRequest) (ext.RoomJoin, bool, error) {
+	return ext.RoomJoin{}, false, nil
+}
+
+// TestIdentityValueQuietInEverySlot: the value registered as the identity
+// provider, handed the host token, is logged without its words whichever
+// of its slots fails.
+func TestIdentityValueQuietInEverySlot(t *testing.T) {
+	for _, panics := range []bool{false, true} {
+		v := &mediaIdentity{credIdentity: newCredIdentity(), panics: panics}
+		logs := &syncLog{}
+		e := newTestEnvAgents(t, func(c *config.Config) {
+			c.Rendezvous.Server, c.Rendezvous.Token = "https://yard.invalid", "code-secret-1"
+		}, slog.New(slog.NewTextHandler(logs, nil)), nil, WithExtensions(local.Fill(ext.Providers{Identity: v, Media: v,
+			All: []ext.Entry{{Kind: ext.KindIdentity, Name: "cloud", Value: v}, {Kind: ext.KindMedia, Name: "cloud", Value: v}}})))
+		e.srv.StartExtensions(t.Context())
+		e.srv.ProviderStarted(t.Context(), "cloud")
+		v.mu.Lock()
+		handed := v.tok
+		v.mu.Unlock()
+		if handed != "code-secret-1" {
+			t.Fatalf("the provider was handed %q", handed)
+		}
+		e.srv.exts.media.ICEServers(t.Context(), ext.ICERequest{Purpose: "viewer"})
+		e.srv.stopExtensions()
+		if strings.Contains(logs.String(), "code-secret-1") || !strings.Contains(logs.String(), "kind=media") {
 			t.Fatalf("panics %v: the log:\n%s", panics, logs.String())
 		}
 	}

@@ -252,16 +252,19 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 			hs.HostRelayFrame(viewerID, inner)
 			continue
 		}
-		if isDesk && !deskMessage(data) {
-			c.Close(proto.CloseProtocolError, "a desk sends the messages of a desk alone")
-			return
-		}
-		if t, _ := proto.ParseHeader(data); t == proto.HostTokenType {
+		// A host_token, a session's or a desk's, is told by a type read
+		// without decoding the message whole (proto.PeekType), so one past
+		// its bound is refused (ParseHostToken) before anything decodes it.
+		if proto.PeekType(data) == proto.HostTokenType {
 			if !s.hostToken(hc, data) {
 				c.Close(proto.CloseForbidden, "access revoked")
 				return
 			}
 			continue
+		}
+		if isDesk && !deskMessage(data) {
+			c.Close(proto.CloseProtocolError, "a desk sends the messages of a desk alone")
+			return
 		}
 		if !s.handleHostMessage(hs, hc, data) {
 			c.Close(proto.CloseProtocolError, "bad host message")

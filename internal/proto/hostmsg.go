@@ -200,6 +200,58 @@ func ParseHostToken(data []byte) (string, error) {
 	return m.Token, nil
 }
 
+// PeekType is the type of a JSON message, its top-level t (matched as
+// ParseHeader matches it, case aside), read by a decoder that stops
+// there: what comes after t is never decoded, what comes before it is
+// stepped over token by token, and the message is never decoded whole.
+// "" when data is no object, or has no string t before the decoder fails.
+// Where t appears twice, the first is the one read (ParseHeader takes the
+// last).
+func PeekType(data []byte) string {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return ""
+	}
+	for dec.More() {
+		k, err := dec.Token()
+		if err != nil {
+			return ""
+		}
+		if key, _ := k.(string); strings.EqualFold(key, "t") {
+			v, err := dec.Token()
+			t, _ := v.(string)
+			if err != nil {
+				return ""
+			}
+			return t
+		}
+		if !skipValue(dec) {
+			return ""
+		}
+	}
+	return ""
+}
+
+// skipValue steps dec over one value.
+func skipValue(dec *json.Decoder) bool {
+	depth := 0
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return false
+		}
+		switch tok {
+		case json.Delim('{'), json.Delim('['):
+			depth++
+		case json.Delim('}'), json.Delim(']'):
+			depth--
+		}
+		if depth == 0 {
+			return true
+		}
+	}
+}
+
 // token68 is the characters a host token is made of.
 const token68 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~+/="
 
