@@ -687,7 +687,15 @@ func (s *Server) stopRevokeRetries() {
 // there (the store's hook marks it so) and keeps its record, listed and
 // holding the run's desk, until the switchyard confirms the revoke or
 // answers not_found (retryRevokeThere, or a revoke again from here).
-func (s *Server) RemoteLinkGone(linkID, sessionID, runID string) {
+//
+// A link the switchyard says it ended of itself (ended: an open admission
+// past its bound, #820) is the link's own end on whichever connection it
+// is told, a member's too (remoteLinkEnded).
+func (s *Server) RemoteLinkGone(linkID, sessionID, runID string, ended bool) {
+	if ended {
+		s.remoteLinkEnded(linkID, sessionID, runID)
+		return
+	}
 	l, ok := s.links.Get(linkID)
 	if !ok || !l.Remote {
 		return
@@ -710,6 +718,87 @@ func (s *Server) RemoteLinkGone(linkID, sessionID, runID string) {
 	if _, owed := s.revokeOwed(l.SessionID, "", linkID); owed {
 		s.retryRevokeThere(l.SessionID, "", linkID)
 	}
+}
+
+// RemoteLinkUnnamed is told a link one of the publisher's connections held
+// that its registered no longer names (hostagent.Uplink.LinkUnnamed): the
+// link's end only where it can mean nothing else, a run's link on the
+// run's desk (as an ended word is) and a session's own link on its
+// session's connection. It never asks which run a session is of: a
+// member's answer also stops naming a run's link once it left the group.
+func (s *Server) RemoteLinkUnnamed(linkID, sessionID, runID string) {
+	switch {
+	case runID != "":
+		s.remoteLinkEnded(linkID, "", runID)
+	case sessionID != "":
+		s.endedNow(sessionID, "", linkID)
+	}
+}
+
+// remoteLinkEnded takes the switchyard's word that it ended linkID of
+// itself, told on session sessionID's connection or on run runID's desk's,
+// and applies it to what the link is when it is applied (endedNow). A
+// session's link at once: a mint of one looks again once it has recorded
+// its link (handleCreateLink), and the connection drops the link from its
+// held links before the word comes here, so the mint either finds it
+// dropped or the word finds it made. A run's link (the desk's run, or the
+// member's) in the run's sync turn, off the connection's read loop: a mint
+// holds that turn until it has recorded and held its link, so a link ended
+// as it was minted is ended once it is made.
+func (s *Server) remoteLinkEnded(linkID, sessionID, runID string) {
+	if runID == "" {
+		if sessionID == "" || s.endedNow(sessionID, "", linkID) {
+			return
+		}
+		if s.runOf != nil {
+			runID, _ = s.runOf(sessionID)
+		}
+		if runID == "" {
+			return
+		}
+	}
+	seam := s.runLinkEndedSeam
+	s.track(func() {
+		if seam != nil {
+			seam(runID)
+		}
+		unlock := s.lockRunSync(runID)
+		defer unlock()
+		s.endedNow("", runID, linkID)
+	})
+}
+
+// endedNow applies the switchyard's end of linkID, a session's link
+// (sessionID) or a run's (runID), to what the link is now. A decision link
+// of its is revoked here as its desk's or session's word revokes it (the
+// store's hook marks its record owed its revoke, which is carried there
+// again: retryRevokeThere); any other link's record is forgotten. A
+// decision link's record is never forgotten here (forgetRemote). It says
+// whether linkID was one of its.
+func (s *Server) endedNow(sessionID, runID, linkID string) bool {
+	if l, ok := s.links.Get(linkID); ok && l.Remote && l.RunID == runID && (runID != "" || l.SessionID == sessionID) {
+		if runID != "" {
+			s.links.RevokeRun(runID, linkID)
+			s.track(func() { s.deskCheck(runID) })
+		} else {
+			s.links.Revoke(sessionID, linkID)
+		}
+		if _, owed := s.revokeOwed(sessionID, runID, linkID); owed {
+			s.retryRevokeThere(sessionID, runID, linkID)
+		}
+		return true
+	}
+	s.pubMu.Lock()
+	defer s.pubMu.Unlock()
+	m := s.remoteLinks[sessionID]
+	if runID != "" {
+		m = s.remoteRunLinks[runID]
+	}
+	rl, ok := m[linkID]
+	if ok && !rl.Decide {
+		delete(m, linkID)
+	}
+	return ok
 }
 
 // forgetRemote is the one place a record of a link minted at the

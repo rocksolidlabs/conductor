@@ -675,6 +675,17 @@ export interface HostLinkRevokedMessage {
   linkId: string
 }
 
+/**
+ * server → host: a link no longer opens what the connection carries. ended (a switchyard's open admission past its bound) says
+ * the link itself opens nothing any more, so the publisher stops listing it; absent from an older switchyard and every other end.
+ */
+export interface HostLinkGoneMessage {
+  t: 'link_gone'
+  /** ≤ 64 bytes. */
+  linkId: string
+  ended?: boolean
+}
+
 /** A host connection may ask for this many links a minute (a revoke is never counted). */
 export const HOST_LINK_REQUESTS_PER_MINUTE = 5
 /** A link id in a revoke is at most this long. */

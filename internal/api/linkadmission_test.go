@@ -860,20 +860,24 @@ func dialFakeDeskWith(t *testing.T, e *testEnv, m proto.RegisterDesk, auth strin
 	return h
 }
 
-// linkGoneFor waits for h to be told that linkID went.
+// linkGoneFor waits for h to be told that linkID went, ended there.
 func linkGoneFor(t *testing.T, h *fakeHost, linkID string) {
 	t.Helper()
 	for {
 		if m := h.expect(proto.HostLinkGone); m["linkId"] == linkID {
+			if m["ended"] != true {
+				t.Fatalf("the link_gone of a link the switchyard ended: %v", m)
+			}
 			return
 		}
 	}
 }
 
 // A link an open admission ends is told to the connection that holds it,
-// still connected with the host token, though nobody joined through it: a
-// session's link to its session, a run link to its run's desk. It joins
-// 404 and its file is gone; the link that fits stays.
+// still connected with the host token, though nobody joined through it,
+// as ended: a session's link to its session, a run link to its run's desk,
+// and a run link of a run with no desk to its member's connection it was
+// minted over. It joins 404 and its file is gone; the link that fits stays.
 func TestALinkEndedAtAnOpenAdmissionIsToldToItsConnection(t *testing.T) {
 	const instance = "instance-secret-0123456789"
 	t.Run("a session's link", func(t *testing.T) {
@@ -907,6 +911,77 @@ func TestALinkEndedAtAnOpenAdmissionIsToldToItsConnection(t *testing.T) {
 		linkEnded(t, e, dir, r["linkId"].(string), u[strings.LastIndex(u, "/")+1:])
 		linkKept(t, e, dir, b, bt)
 	})
+	t.Run("a run link of a run with no desk", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "data")
+		e := keptSwitchyard(t, dir, func(c *config.Config) { c.Switchyard.OpenHostLinks = 1 })
+		hi, hs := instanceHost(e, instance, "1")
+		member, _ := dialFakeHostWith(t, e, hi, hs, "Bearer test-host-token")
+		r := runLinkOver(member, "view", proto.RunGroup{ID: "run-1", Name: "Release", Members: []proto.RunMember{{Name: "lead", SessionID: member.sessionID, AgentID: "cat", Status: "running"}}})
+		if r["t"] != proto.HostLinkCreated {
+			t.Fatalf("the run link: %v", r)
+		}
+		u, _ := r["url"].(string)
+		b, bt := mintHostLink(t, member, "b")
+		hs.LocalID = "2"
+		dialFakeHostWith(t, e, hi, hs, "")
+		linkGoneFor(t, member, r["linkId"].(string))
+		linkEnded(t, e, dir, r["linkId"].(string), u[strings.LastIndex(u, "/")+1:])
+		linkKept(t, e, dir, b, bt)
+	})
+	// A group that names a desk does not say the run has one: a desk kept
+	// through its grace has no connection to tell, and one that has ended
+	// stays named until the group's next sync; a desk whose queue is full
+	// takes no word (its connection closes, still the desk's until its
+	// writer sees it). The members are told.
+	for _, deskIs := range []string{"away", "gone", "full"} {
+		t.Run("a run link whose run's desk is "+deskIs, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "data")
+			e := keptSwitchyard(t, dir, func(c *config.Config) { c.Switchyard.OpenHostLinks = 1 })
+			// The host connections' writers wait while held is set.
+			var held atomic.Pointer[chan struct{}]
+			e.srv.viewerSeam = &viewerSeam{taking: func(ctx context.Context) {
+				if h := held.Load(); h != nil {
+					select {
+					case <-*h:
+					case <-ctx.Done():
+					}
+				}
+			}}
+			desk := dialFakeDeskWith(t, e, deskReg(instance, "run-1"), "Bearer test-host-token")
+			hi, hs := instanceHost(e, instance, "1")
+			member, _ := dialFakeHostWith(t, e, hi, hs, "Bearer test-host-token")
+			r := runLinkOver(desk, "view", proto.RunGroup{ID: "run-1", Name: "Release", Desk: desk.sessionID, Members: []proto.RunMember{{Name: "lead", SessionID: member.sessionID, AgentID: "cat", Status: "running"}}})
+			if r["t"] != proto.HostLinkCreated {
+				t.Fatalf("the run link: %v", r)
+			}
+			u, _ := r["url"].(string)
+			d, _ := e.srv.hosts.Desk(desk.sessionID)
+			b, bt := mintHostLink(t, member, "b")
+			release := func() {}
+			switch deskIs {
+			case "away":
+				desk.c.CloseNow()
+				until(t, "the desk away", func() bool { return !d.Connected() })
+			case "gone":
+				d.EndDesk()
+			case "full":
+				hold := make(chan struct{})
+				held.Store(&hold)
+				release = func() { held.Store(nil); close(hold) }
+				for n := 0; d.Tell(proto.LinkGone{T: "filler", LinkID: "filler"}) == nil; n++ {
+					if n > 1<<16 {
+						t.Fatal("the desk's queue never filled")
+					}
+				}
+			}
+			hs.LocalID = "2"
+			dialFakeHostWith(t, e, hi, hs, "")
+			release()
+			linkGoneFor(t, member, r["linkId"].(string))
+			linkEnded(t, e, dir, r["linkId"].(string), u[strings.LastIndex(u, "/")+1:])
+			linkKept(t, e, dir, b, bt)
+		})
+	}
 }
 
 // A link an open admission ends whose file cannot be removed then (its

@@ -142,6 +142,10 @@ func (k *Desk) Revoke(ctx context.Context, linkID string) error {
 	return k.a.requestRevoke(ctx, linkID)
 }
 
+// HeldLinks is what the switchyard last said it holds of the run's links
+// for the desk (Published.HeldLinks).
+func (k *Desk) HeldLinks() ([]string, bool) { return k.a.heldLinks() }
+
 // Done is closed once the desk has ended, Stop or the switchyard's stop.
 func (k *Desk) Done() <-chan struct{} { return k.done }
 

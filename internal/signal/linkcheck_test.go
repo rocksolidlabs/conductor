@@ -349,3 +349,51 @@ func TestHostedViewerGrantUntil(t *testing.T) {
 	}
 	hs.RemoveViewer(kept)
 }
+
+// DisconnectHeldLink says the host was told only when its connection's
+// queue took the link_gone: not with no connection, nor with one that has
+// closed, nor with one whose queue is full (which closes it).
+func TestDisconnectHeldLinkSaysWhetherTheWordWasTaken(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	register := func() (*HostedSession, *HostConn) {
+		conn := NewHostConn()
+		hs, _, err := hub.Register(proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion,
+			Host: proto.HostInfo{Name: "laptop"}, Session: proto.HostSession{Command: []string{"bash"}, Cols: 80, Rows: 24}}, conn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hs, conn
+	}
+	hs, conn := register()
+	if !hs.DisconnectHeldLink("l1") {
+		t.Fatal("a word its connection took was not told")
+	}
+	drainText(t, conn, proto.HostLinkGone)
+
+	closed, cconn := register()
+	cconn.Close()
+	if closed.DisconnectHeldLink("l1") {
+		t.Fatal("a word to a connection that has closed was told")
+	}
+
+	full, fconn := register()
+	for n := 0; full.Tell(proto.LinkGone{T: "filler", LinkID: "filler"}) == nil; n++ {
+		if n > 1<<16 {
+			t.Fatal("the queue never filled")
+		}
+	}
+	if full.DisconnectHeldLink("l1") {
+		t.Fatal("a word to a connection whose queue was full was told")
+	}
+	select {
+	case <-fconn.Done():
+	default:
+		t.Fatal("the connection whose queue was full is open")
+	}
+
+	gone, gconn := register()
+	gone.HostDisconnected(gconn)
+	if gone.DisconnectHeldLink("l1") {
+		t.Fatal("a word with no connection was told")
+	}
+}
