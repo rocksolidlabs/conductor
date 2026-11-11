@@ -153,6 +153,16 @@ installed by a run that made it.
 The packaged app on each platform (dmg, deb, rpm, AppImage, nsis) and the
 WSL path on a real Windows machine: `docs/features.md` lists the checklist.
 
+The move from the earlier app id has never been run: its tests read the
+script and a compile shows what it holds for each id, but no installer was
+started. The first installer of `io.rocksolidlabs.conductor` does not ship
+until its cases (the by-hand list of the pull request that added it) have
+been run on a real Windows machine with an rc installed. Only that run shows
+that `FileExists` is false for a file in a folder the installer cannot look
+into, that a real rc's `UninstallString` is, byte for byte, in the form the
+move takes, and that Windows' installed apps remove an entry whose
+uninstaller is gone, the only way past the stop for one.
+
 ## Releasing
 
 A release is built from a dispatch of `.github/workflows/release.yml` with
