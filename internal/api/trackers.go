@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -13,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/agents"
@@ -53,9 +56,14 @@ const (
 	// maxTrackerToken bounds a token: 1 to 255 bytes of visible ASCII
 	// (config.TrackerTokenForm).
 	maxTrackerToken = config.MaxTrackerToken
-	// maxTrackerFile bounds the file read back: four entries at their
-	// bounds are under 8 KiB.
+	// maxTrackerFile bounds the file read back, and so the file written
+	// (write): four entries with every field at its bound (a token's, a
+	// host's and an account's, tracker.Account.Check) fit well inside it
+	// (TestTrackerFileBounds).
 	maxTrackerFile = 16 << 10
+	// trackerReadTries bounds the looks a read makes when a save's rename
+	// crosses it (read).
+	trackerReadTries = 3
 	// trackerCheckTimeout bounds a save's check of the token with GitHub
 	// (Whoami): the adapter's own request's bound.
 	trackerCheckTimeout = github.RequestTimeout
@@ -100,8 +108,8 @@ func (f trackerFile) entry(host string) (trackerEntry, bool) {
 	return f.GitHub[i], true
 }
 
-// trackerSeen is what GitHub last said of a host's token, by its
-// fingerprint, since the server started.
+// trackerSeen is what GitHub last said of the token in use for a host, by
+// its fingerprint, since the server started (record).
 type trackerSeen struct {
 	fingerprint, state string
 	at                 time.Time
@@ -124,6 +132,11 @@ type trackerKeep struct {
 	seen     map[string]trackerSeen
 	gh       *github.Adapter
 	now      func() time.Time
+	// reached counts the file's reads and credentialFor's calls, and
+	// afterLook runs between a read's look at the file and its open: the
+	// tests' seams, unset in the product.
+	reached   atomic.Uint64
+	afterLook func()
 }
 
 func newTrackers(cfg *config.Config, st *store.Store, log *slog.Logger) *trackerKeep {
@@ -163,8 +176,11 @@ var errNoTrackerStore = errors.New("this server has no data directory to keep a 
 // read is the file, read whole through the directory as a root: the
 // directory and the file must be the server's user's and open to no one
 // else, the file a regular one (a link is refused), at most
-// maxTrackerFile bytes, decoded strictly. No file is no entry.
+// maxTrackerFile bytes, decoded strictly, each host's entry once. No file
+// is no entry. A read never waits on what is at the file's name (readOnce),
+// and one that crosses a save's rename reads the new file.
 func (k *trackerKeep) read() (trackerFile, error) {
+	k.reached.Add(1)
 	var f trackerFile
 	if k.st == nil {
 		return f, nil
@@ -188,41 +204,79 @@ func (k *trackerKeep) read() (trackerFile, error) {
 		return f, err
 	}
 	defer root.Close()
-	lfi, err := root.Lstat(githubFile)
-	if errors.Is(err, os.ErrNotExist) {
-		return f, nil
-	}
-	if err != nil {
-		return f, err
-	}
-	file, err := root.Open(githubFile)
-	if err != nil {
-		return f, err
-	}
-	defer file.Close()
-	fi, err := file.Stat()
-	if err != nil {
-		return f, err
-	}
 	name := trackerDir + "/" + githubFile
-	if !lfi.Mode().IsRegular() || !os.SameFile(lfi, fi) {
-		return f, fmt.Errorf("%s is not a regular file", name)
-	}
-	if err := private(name, fi); err != nil {
-		return f, err
-	}
-	b, err := io.ReadAll(io.LimitReader(file, maxTrackerFile+1))
-	if err != nil {
-		return f, err
-	}
-	if len(b) > maxTrackerFile {
-		return f, fmt.Errorf("%s is more than %d bytes", name, maxTrackerFile)
+	var b []byte
+	for try := 1; ; try++ {
+		var found, again bool
+		b, found, again, err = k.readOnce(root, name)
+		if again && try < trackerReadTries {
+			continue
+		}
+		if err != nil || !found {
+			return f, err
+		}
+		break
 	}
 	if err := store.DecodeStrict(b, &f); err != nil {
 		// The decoder's words may quote the file: only its name is said.
 		return trackerFile{}, fmt.Errorf("%s cannot be read as a token file", name)
 	}
+	for i, e := range f.GitHub {
+		if slices.ContainsFunc(f.GitHub[:i], func(x trackerEntry) bool { return x.Host == e.Host }) {
+			return trackerFile{}, fmt.Errorf("%s holds a host's entry twice", name)
+		}
+	}
 	return f, nil
+}
+
+// readOnce looks at the file, refuses at once what is not a regular file,
+// opens it so that the open cannot wait on what the name has become since
+// (non-blocking: a named pipe answers at once), and reads it when the file
+// opened is a regular, private file and the one looked at. again: it was
+// another such file, a save's rename between the look and the open.
+func (k *trackerKeep) readOnce(root *os.Root, name string) (b []byte, found, again bool, err error) {
+	lfi, err := root.Lstat(githubFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, false, nil
+	}
+	if err != nil {
+		return nil, false, false, err
+	}
+	if !lfi.Mode().IsRegular() {
+		return nil, false, false, fmt.Errorf("%s is not a regular file", name)
+	}
+	if k.afterLook != nil {
+		k.afterLook()
+	}
+	file, err := root.OpenFile(githubFile, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, false, nil
+	}
+	if err != nil {
+		return nil, false, false, err
+	}
+	defer file.Close()
+	fi, err := file.Stat()
+	if err != nil {
+		return nil, false, false, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, false, false, fmt.Errorf("%s is not a regular file", name)
+	}
+	if err := private(name, fi); err != nil {
+		return nil, false, false, err
+	}
+	if !os.SameFile(lfi, fi) {
+		return nil, false, true, fmt.Errorf("%s was replaced while it was read: try again", name)
+	}
+	b, err = io.ReadAll(io.LimitReader(file, maxTrackerFile+1))
+	if err != nil {
+		return nil, false, false, err
+	}
+	if len(b) > maxTrackerFile {
+		return nil, false, false, fmt.Errorf("%s is more than %d bytes", name, maxTrackerFile)
+	}
+	return b, true, false, nil
 }
 
 // private refuses what another user owns or may read (where the file
@@ -241,9 +295,13 @@ func private(name string, fi os.FileInfo) error {
 	return nil
 }
 
+// errTrackerFileFull is write's refusal of a file read would refuse.
+var errTrackerFileFull = fmt.Errorf("%s/%s would be more than %d bytes", trackerDir, githubFile, maxTrackerFile)
+
 // write puts f in place of the file: the directory made 0700 and held to
-// private, the file by the store's temp file of mode 0600 and rename. The
-// caller holds k.mu.
+// private, the file by the store's temp file of mode 0600 and rename; one
+// past read's bound is refused and the old file left whole. The caller
+// holds k.mu.
 func (k *trackerKeep) write(f trackerFile) error {
 	if k.st == nil {
 		return errNoTrackerStore
@@ -260,6 +318,9 @@ func (k *trackerKeep) write(f trackerFile) error {
 		return err
 	}
 	slices.SortFunc(f.GitHub, func(a, b trackerEntry) int { return strings.Compare(a.Host, b.Host) })
+	if b, err := store.Encode(f); err != nil || len(b) > maxTrackerFile {
+		return cmp.Or(err, errTrackerFileFull)
+	}
 	return sub.Save(githubFile, f)
 }
 
@@ -276,6 +337,7 @@ func errNoToken(host string) *apiError {
 // it and no route changes.
 func (s *Server) credentialFor(_ context.Context, ref tracker.Ref) (tracker.Credential, error) {
 	k := s.trackers
+	k.reached.Add(1)
 	if ref.System != tracker.GitHub {
 		return tracker.Credential{}, newAPIError(http.StatusBadRequest, "not_a_tracker_url", "no tracker this server reads")
 	}
@@ -293,20 +355,30 @@ func (s *Server) credentialFor(_ context.Context, ref tracker.Ref) (tracker.Cred
 	return e.Token.credential(ref.Host, k.cfg.TrackerLoopback)
 }
 
-// saw records what GitHub said of a host's token: accepted, or refused (a
-// token that stopped working). Any other answer says nothing of it.
-func (k *trackerKeep) saw(host, fingerprint string, err error) {
-	state := "ok"
-	switch {
-	case err == nil:
-	case errors.Is(err, tracker.ErrUnauthorized):
-		state = "refused"
-	default:
-		return
+// record notes what GitHub said of the token of fingerprint fp for host
+// (ok, or refused: a token that stopped working) when it is the token in
+// use there, the environment's for its host, else the one f keeps. A check
+// of any other token changes nothing that is shown. The caller holds k.mu.
+func (k *trackerKeep) record(f trackerFile, host, fp, state string) {
+	inUse := ""
+	if c, ok := k.environment(); ok && c.Host() == host {
+		inUse = c.Fingerprint()
+	} else if e, ok := f.entry(host); ok {
+		inUse = e.Fingerprint
 	}
-	k.mu.Lock()
-	k.seen[host] = trackerSeen{fingerprint: fingerprint, state: state, at: k.now().UTC()}
-	k.mu.Unlock()
+	if inUse != "" && inUse == fp {
+		k.seen[host] = trackerSeen{fingerprint: fp, state: state, at: k.now().UTC()}
+	}
+}
+
+// environment is the credential of the environment's token, if it gives
+// one.
+func (k *trackerKeep) environment() (tracker.Credential, bool) {
+	if !k.cfg.GitHubToken.Set() {
+		return tracker.Credential{}, false
+	}
+	c, err := tracker.Token(k.cfg.GitHubHost, k.cfg.GitHubToken.Reveal(), k.cfg.TrackerLoopback)
+	return c, err == nil
 }
 
 // trackerView is a token as a person is shown it: never the token.
@@ -320,7 +392,9 @@ type trackerView struct {
 	// Source is settings (the file) or environment.
 	Source string `json:"source"`
 	// State is ok, refused (GitHub refused it at CheckedAt: save a new
-	// one) or unchecked (the environment's, before any call).
+	// one), unchecked (the environment's, before any call) or unused (the
+	// file's for the host the environment gives a token for: the
+	// environment's is used).
 	State     string     `json:"state"`
 	CheckedAt *time.Time `json:"checkedAt,omitempty"`
 }
@@ -347,23 +421,25 @@ func (k *trackerKeep) seenOf(v *trackerView) {
 }
 
 // list is every token kept or given, as shown: the file's by host, then
-// the environment's.
+// the environment's. The file's for the environment's host is unused.
 func (k *trackerKeep) list() ([]trackerView, error) {
 	f, err := k.read()
 	if err != nil {
 		return nil, err
 	}
 	out := []trackerView{}
+	env, given := k.environment()
 	for _, e := range f.GitHub {
-		out = append(out, k.view(e))
-	}
-	if k.cfg.GitHubToken.Set() {
-		c, err := tracker.Token(k.cfg.GitHubHost, k.cfg.GitHubToken.Reveal(), k.cfg.TrackerLoopback)
-		if err == nil {
-			v := trackerView{Host: c.Host(), Fingerprint: c.Fingerprint(), Scopes: []string{}, Source: "environment", State: "unchecked"}
-			k.seenOf(&v)
-			out = append(out, v)
+		v := k.view(e)
+		if given && e.Host == env.Host() {
+			v.State = "unused"
 		}
+		out = append(out, v)
+	}
+	if given {
+		v := trackerView{Host: env.Host(), Fingerprint: env.Fingerprint(), Scopes: []string{}, Source: "environment", State: "unchecked"}
+		k.seenOf(&v)
+		out = append(out, v)
 	}
 	return out, nil
 }
@@ -398,16 +474,18 @@ type trackerRemoveBody struct {
 	Host string `json:"host,omitempty"`
 }
 
+// trackerBodyWords is the answer to a body that does not decode into the
+// route's members: the server's own words, never the decoder's.
+const trackerBodyWords = "the body is one JSON object of the route's members alone: host and token for a save, host for a remove"
+
 // trackerBody decodes a save's or a remove's body and holds its host to
 // the tracker's rule; false once it has answered.
 func (s *Server) trackerBody(w http.ResponseWriter, r *http.Request, v any, host *string) bool {
 	if err := decodeJSONLimit(w, r, v, maxTrackerBody); err != nil {
 		if errors.Is(err, errBodyTooLarge) {
-			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", err.Error())
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", errBodyTooLarge.Error())
 		} else {
-			// The decoder's words never quote a value: a field's name and
-			// its type at most.
-			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			writeError(w, http.StatusBadRequest, "invalid_request", trackerBodyWords)
 		}
 		return false
 	}
@@ -418,11 +496,12 @@ func (s *Server) trackerBody(w http.ResponseWriter, r *http.Request, v any, host
 		writeError(w, http.StatusBadRequest, "invalid_host", "the host is github.com or a GitHub Enterprise Server's name, in lower case, https only")
 		return false
 	}
-	if s.cfg.GitHubToken.Set() && *host == s.cfg.GitHubHost {
-		writeError(w, http.StatusConflict, "environment", "the token for "+*host+" is given in the server's environment (CONDUCTOR_GITHUB_TOKEN): change it there")
-		return false
-	}
 	return true
+}
+
+// environmentWords says the environment gives host's token.
+func environmentWords(host string) string {
+	return "the token for " + host + " is given in the server's environment (CONDUCTOR_GITHUB_TOKEN): change it there"
 }
 
 // handleTrackerSave checks a token with GitHub (Whoami), then keeps it.
@@ -438,6 +517,10 @@ func (s *Server) handleTrackerSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	host := b.Host
+	if s.cfg.GitHubToken.Set() && host == s.cfg.GitHubHost {
+		writeError(w, http.StatusConflict, "environment", environmentWords(host))
+		return
+	}
 	if !config.TrackerTokenForm(b.Token) {
 		writeError(w, http.StatusBadRequest, "invalid_token", "a token is 1 to 255 bytes of visible ASCII, with no space")
 		return
@@ -463,7 +546,13 @@ func (s *Server) handleTrackerSave(w http.ResponseWriter, r *http.Request) {
 		delete(k.checking, host)
 	}
 	k.mu.Unlock()
-	k.saw(host, cred.Fingerprint(), err)
+	if errors.Is(err, tracker.ErrUnauthorized) {
+		k.mu.Lock()
+		if f, rerr := k.read(); rerr == nil {
+			k.record(f, host, cred.Fingerprint(), "refused")
+		}
+		k.mu.Unlock()
+	}
 	if err != nil {
 		e := trackerRefusal(err, host)
 		var rl *tracker.ErrRateLimited
@@ -499,7 +588,9 @@ func (s *Server) handleTrackerSave(w http.ResponseWriter, r *http.Request) {
 
 // keep writes e under k.mu if its host's generation is still gen: the
 // entry kept, and whether it was kept already (the same token, by
-// share.Equal: nothing written), or the refusal.
+// share.Equal: nothing written, GitHub's acceptance recorded), or the
+// refusal, which records nothing. A token kept in place of another starts
+// its own record.
 func (k *trackerKeep) keep(gen uint64, e trackerEntry, presented string) (trackerEntry, bool, *apiError) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -511,6 +602,7 @@ func (k *trackerKeep) keep(gen uint64, e trackerEntry, presented string) (tracke
 		return e, false, newAPIError(http.StatusInternalServerError, "credentials_unusable", err.Error())
 	}
 	if kept, ok := f.entry(e.Host); ok && kept.Token.same(presented) {
+		k.record(f, e.Host, kept.Fingerprint, "ok")
 		return kept, true, nil
 	}
 	i := slices.IndexFunc(f.GitHub, func(x trackerEntry) bool { return x.Host == e.Host })
@@ -527,13 +619,16 @@ func (k *trackerKeep) keep(gen uint64, e trackerEntry, presented string) (tracke
 		return e, false, newAPIError(http.StatusInternalServerError, "store_failed", "the token could not be kept: the server's log says why")
 	}
 	k.gen[e.Host]++
+	delete(k.seen, e.Host)
 	return e, false, nil
 }
 
 // handleTrackerRemove drops a host's entry. A call already under way
 // finishes with the token it read; every later one is 412 no_token. It
 // stops Conductor's use of the token only: the token stays valid on
-// GitHub until the person revokes it there.
+// GitHub until the person revokes it there. For the host the environment
+// gives a token for, the file's entry goes as well, and the answer says
+// that the environment's token is still the one in use.
 func (s *Server) handleTrackerRemove(w http.ResponseWriter, r *http.Request) {
 	k := s.trackers
 	var b trackerRemoveBody
@@ -551,22 +646,29 @@ func (s *Server) handleTrackerRemove(w http.ResponseWriter, r *http.Request) {
 	n := len(f.GitHub)
 	f.GitHub = slices.DeleteFunc(f.GitHub, func(e trackerEntry) bool { return e.Host == b.Host })
 	removed := len(f.GitHub) < n
+	env, given := k.environment()
+	given = given && env.Host() == b.Host
 	if removed {
 		if err := k.write(f); err != nil {
 			s.log.Error("tracker token not removed", "route", r.Pattern, "host", b.Host, "status", http.StatusInternalServerError, "err", err)
 			writeError(w, http.StatusInternalServerError, "store_failed", "the token could not be removed: the server's log says why")
 			return
 		}
-		delete(k.seen, b.Host)
+		if !given {
+			delete(k.seen, b.Host)
+		}
 	}
 	s.log.Info("tracker token removed", "route", r.Pattern, "host", b.Host, "status", http.StatusOK, "removed", removed)
-	writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
+	reply := map[string]any{"removed": removed}
+	if given {
+		reply["inUse"], reply["message"] = "environment", "the token the server's environment gives for "+b.Host+" (CONDUCTOR_GITHUB_TOKEN) is still the one in use: change it there"
+	}
+	writeJSON(w, http.StatusOK, reply)
 }
 
 // trackerRefusal is a failed check's answer, in fixed words: a typed
-// error, its status and the permission names the adapter parsed, never
-// any text GitHub sent (which could echo what the request carried).
-// Nothing is saved.
+// error and its status, never a word GitHub sent (which could echo what
+// the request carried), a permission's name among them. Nothing is saved.
 func trackerRefusal(err error, host string) *apiError {
 	status := ""
 	var re *tracker.RequestError
@@ -580,11 +682,7 @@ func trackerRefusal(err error, host string) *apiError {
 	case errors.Is(err, tracker.ErrUnauthorized):
 		return newAPIError(http.StatusUnprocessableEntity, "token_refused", "GitHub refused this token for "+host+status+": it is not valid, has expired or was revoked; nothing was saved")
 	case errors.Is(err, tracker.ErrForbidden):
-		words := ""
-		if re != nil && re.Words != "" {
-			words = ": " + re.Words
-		}
-		return newAPIError(http.StatusUnprocessableEntity, "token_refused", "GitHub refused to name this token's account"+status+words+"; nothing was saved")
+		return newAPIError(http.StatusUnprocessableEntity, "token_refused", "GitHub refused to name this token's account"+status+": the token may lack a permission; nothing was saved")
 	case errors.Is(err, tracker.ErrBound):
 		return newAPIError(http.StatusBadGateway, "tracker_bound", "GitHub's answer was past its bound; nothing was saved")
 	case errors.Is(err, tracker.ErrUnavailable), errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):

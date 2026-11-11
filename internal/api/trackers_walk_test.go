@@ -32,7 +32,8 @@ import (
 // driven through every route the row adds, each way it answers (saved,
 // the same again, refused, a redirect to another host, GitHub unavailable,
 // rate-limited, the environment's host, a body past its bound, removed and
-// saved again), credentialFor's credential sent to GitHub, a session
+// saved again, answers that are no account, bodies that are not the
+// route's), credentialFor's credential sent to GitHub, a session
 // started with the environment's token in the server's own environment,
 // a Brakeman turn, every GET route of the API as the admin and as the
 // turn, an export, a sync store's commit-time copies, a restart with a
@@ -49,7 +50,8 @@ import (
 // token only in Authorization, only at the token's own API host, never in
 // a URL, a query or a body, and nothing at all at the host a redirect
 // named. Every route whose handler reaches the token is in the walk
-// (muxRoutesTouchingTheToken). Its parts the plan names on their own:
+// (muxRoutesTouchingTheToken), walked by a fixture of its own that reached
+// the token, never by a call alone. Its parts the plan names on their own:
 // TestTrackerTokenNeverLogged (the log lines) and TestTrackerTokenNotSynced
 // (the sync stores' documents) are this test's subtests.
 func TestTrackerTokenSavedNeverServed(t *testing.T) {
@@ -102,14 +104,22 @@ func TestTrackerTokenSavedNeverServed(t *testing.T) {
 		_ = json.Unmarshal(data, &out)
 		return resp.StatusCode, out
 	}
-	admin := func(pattern string, path string, body string, status int, code string) {
+	// admin is a fixture of a route that reaches the token, with the answer
+	// it must give: the route counts as walked once a call of it has
+	// reached the token (the keep's seam counts the file's reads and
+	// credentialFor's calls), never for being called alone.
+	admin := func(pattern string, path string, body string, status int, code string) map[string]any {
 		t.Helper()
 		method, _, _ := strings.Cut(pattern, " ")
-		walked[pattern] = true
+		before := b.srv.trackers.reached.Load()
 		got, out := call(b.testEnv, adminToken, "", method, path, []byte(body))
 		if got != status || (code != "" && codeOf(out) != code) {
 			t.Errorf("%s %s: %d %v, not %d %s", method, path, got, out, status, code)
 		}
+		if b.srv.trackers.reached.Load() > before {
+			walked[pattern] = true
+		}
+		return out
 	}
 	save := func(host, tok string, status int, code string) {
 		t.Helper()
@@ -127,6 +137,44 @@ func TestTrackerTokenSavedNeverServed(t *testing.T) {
 	save("", plantedToken, http.StatusOK, "")
 	admin("GET /api/trackers", "/api/trackers", "", http.StatusOK, "")
 
+	// Answers that are no account (a field that holds the token sent, a
+	// login of 20 KiB) and a 403 that names permissions: each is refused,
+	// then the list and the other hosts' credentials still answer, and a
+	// remove of that host works.
+	const answerHost = "ghe-1.example.com"
+	save(answerHost, plantedLoginForm, http.StatusBadGateway, "tracker_unavailable")
+	save(answerHost, plantedScopeForm, http.StatusBadGateway, "tracker_unavailable")
+	save(answerHost, plantedPermNames, http.StatusUnprocessableEntity, "token_refused")
+	save(answerHost, plantedBig, http.StatusBadGateway, "tracker_unavailable")
+	if out := admin("GET /api/trackers", "/api/trackers", "", http.StatusOK, ""); len(trackerRows(out)) != 2 {
+		t.Errorf("listed after the answers that hold a token: %v", out)
+	}
+	if c, err := b.srv.credentialFor(t.Context(), tracker.Ref{System: tracker.GitHub, Host: "github.com"}); err != nil || c.Fingerprint() != fingerprintOf(plantedToken) {
+		t.Errorf("github.com's credential after the answers that hold a token: %v %v", c, err)
+	}
+	if out := admin("POST /api/trackers/github/remove", "/api/trackers/github/remove", `{"host":"`+answerHost+`"}`, http.StatusOK, ""); out["removed"] != false {
+		t.Errorf("the remove of %s: %v", answerHost, out)
+	}
+
+	// Bodies that are not the route's: one fixed sentence, whatever the
+	// body holds of a token (a member's name, a control byte, a bad escape,
+	// a value unquoted, a second member).
+	for _, route := range []string{"/api/trackers/github", "/api/trackers/github/remove"} {
+		for _, body := range []string{
+			`{"` + plantedToken + `":"x"}`,
+			`{"token":"` + plantedToken + "\x01" + `x"}`,
+			`{"token":"` + plantedToken + `\qx"}`,
+			`{"token":` + plantedToken + `}`,
+			`{"host":"github.com","` + plantedToken + `":"x"}`,
+		} {
+			status, out := call(b.testEnv, adminToken, "", "POST", route, []byte(body))
+			msg, _ := out["error"].(map[string]any)
+			if status != http.StatusBadRequest || codeOf(out) != "invalid_request" || msg["message"] != trackerBodyWords {
+				t.Errorf("POST %s with a body not its own: %d %v", route, status, out)
+			}
+		}
+	}
+
 	// credentialFor's credentials, the file's and the environment's, at
 	// GitHub, and the kept one refused there.
 	for _, host := range []string{"github.com", gheHost} {
@@ -142,8 +190,9 @@ func TestTrackerTokenSavedNeverServed(t *testing.T) {
 
 	// A session started while the server's own environment holds the
 	// environment's token.
-	b.launch("sh", []string{"-c", "env > " + envDump})
-	if !waitFor(testWait, func() bool { fi, err := os.Stat(envDump); return err == nil && fi.Size() > 0 }) {
+	// The dump is written under another name and renamed when whole.
+	b.launch("sh", []string{"-c", "env > " + envDump + ".part && mv " + envDump + ".part " + envDump})
+	if !waitFor(testWait, func() bool { _, err := os.Stat(envDump); return err == nil }) {
 		t.Fatal("the session wrote no environment")
 	}
 	dump, _ := os.ReadFile(envDump)
@@ -157,7 +206,6 @@ func TestTrackerTokenSavedNeverServed(t *testing.T) {
 		if method != http.MethodGet || route == "/api/events" {
 			continue
 		}
-		walked[p] = true
 		path := strings.ReplaceAll(route, "{id}", bsid)
 		path = wild.ReplaceAllString(path, "x")
 		call(b.testEnv, adminToken, "", "GET", path, nil)
@@ -228,7 +276,7 @@ func TestTrackerTokenSavedNeverServed(t *testing.T) {
 	e2 := b.serve(srv2)
 	useFake(srv2, f)
 	events2 := e2.sse(t)
-	if status, out := call(e2, adminToken, "", "GET", "/api/trackers", nil); status != http.StatusOK || len(out["github"].([]any)) != 2 {
+	if status, out := call(e2, adminToken, "", "GET", "/api/trackers", nil); status != http.StatusOK || len(trackerRows(out)) != 2 {
 		t.Fatalf("after the restart: %d %v", status, out)
 	}
 	sync2.until(t, "the replay", func(calls []syncCall) bool { return replayedIn(calls, 1) })
@@ -287,7 +335,7 @@ func TestTrackerTokenSavedNeverServed(t *testing.T) {
 		if l := leaks(rest.Bytes()); len(l) > 0 {
 			t.Errorf("a request to %s carried %v outside its Authorization", r.Host, l)
 		}
-		if auth != "" && r.Host != "api.github.com" && r.Host != gheHost {
+		if auth != "" && r.Host != "api.github.com" && r.Host != gheHost && r.Host != answerHost {
 			t.Errorf("a token was sent to %s", r.Host)
 		}
 	}
@@ -340,6 +388,12 @@ func TestTrackerTokenSavedNeverServed(t *testing.T) {
 			t.Errorf("%s reaches the token and is not in the walk", p)
 		}
 	}
+}
+
+// trackerRows is a list's rows, none for an answer that is no list.
+func trackerRows(out map[string]any) []any {
+	l, _ := out["github"].([]any)
+	return l
 }
 
 func mustRequest(t *testing.T, url string) *http.Request {

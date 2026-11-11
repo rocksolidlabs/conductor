@@ -1268,3 +1268,25 @@ func TestServeWarnsOnceForAnInsecureSwitchyard(t *testing.T) {
 		t.Fatalf("CONDUCTOR_RENDEZVOUS_INSECURE=0 over the file: exit %d, %v", code, err)
 	}
 }
+
+// Once serve has read its configuration, the environment's GitHub token is
+// the configuration's alone: it is gone from the server's own environment,
+// which a process started with no environment built for it inherits. The
+// token is a made-up string.
+func TestServeConfigTakesTheTokenOutOfTheEnvironment(t *testing.T) {
+	clearConductorEnv(t)
+	const tok = "ghp_PLANTEDserveENVtoken0123456789abcdWXYZ"
+	t.Setenv("CONDUCTOR_GITHUB_TOKEN", tok)
+	cfg, err := serveConfig("")
+	if err != nil || !cfg.GitHubToken.Set() || cfg.GitHubToken.Reveal() != tok {
+		t.Fatalf("the configuration: %v %v", cfg, err)
+	}
+	if v, ok := os.LookupEnv("CONDUCTOR_GITHUB_TOKEN"); ok {
+		t.Fatalf("the server's environment still holds CONDUCTOR_GITHUB_TOKEN (%d bytes)", len(v))
+	}
+	for _, kv := range os.Environ() {
+		if strings.Contains(kv, tok) {
+			t.Fatal("the server's environment still holds the token")
+		}
+	}
+}
