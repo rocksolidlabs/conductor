@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -18,7 +19,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -50,20 +51,47 @@ const (
 
 var plantedAll = []string{plantedToken, plantedToken2, plantedEnv, plantedWrong, plantedMoved, plantedBusy, plantedLimited, plantedLoginForm, plantedScopeForm, plantedPermNames, plantedBig}
 
+// Tokens GitHub's fake takes and answers with a login made of them: in
+// lower case, less its last byte, and its base64. Their replies and lists
+// are an account's form and no more; no log line holds any of their forms
+// (echoForms). They are not among plantedAll.
+const (
+	plantedEchoLower = "ghp_PLANTEDechoLOWERtoken0123456789abWXYZ"
+	plantedEchoLess  = "ghp_PLANTEDechoLESStoken0123456789abcWXYZ"
+	plantedEchoB64   = "ghp_PLANTEDechoBASEtoken0123456789abcWXYZ"
+)
+
+// echoLogin is the login the fake answers for an echo token.
+func echoLogin(tok string) string {
+	switch tok {
+	case plantedEchoLower:
+		return strings.ToLower(tok)
+	case plantedEchoLess:
+		return tok[:len(tok)-1]
+	}
+	return base64.RawURLEncoding.EncodeToString([]byte(tok))
+}
+
 // leakForms is every form of tok a leak could take: the token, its first
-// twelve characters after its type's prefix, its SHA-256 in hex and in
-// base64, and its own base64. The fingerprint (the hash's first 12 hex
-// digits) is what a person is shown, and is not among them.
+// twelve characters after its type's prefix, its SHA-256 in hex (and the
+// first 12 of those digits alone) and in base64, and its own base64.
 func leakForms(tok string) []string {
 	sum := sha256.Sum256([]byte(tok))
-	return []string{tok, tok[4:16], hex.EncodeToString(sum[:]), base64.StdEncoding.EncodeToString(sum[:]),
+	return []string{tok, tok[4:16], hex.EncodeToString(sum[:]), hex.EncodeToString(sum[:6]), base64.StdEncoding.EncodeToString(sum[:]),
 		base64.StdEncoding.EncodeToString([]byte(tok)), base64.RawURLEncoding.EncodeToString([]byte(tok))}
 }
 
-func fingerprintOf(tok string) string {
-	sum := sha256.Sum256([]byte(tok))
-	return hex.EncodeToString(sum[:6])
+// echoForms is leakForms and the echo's own: in lower case, less a byte.
+func echoForms(tok string) []string {
+	return append(leakForms(tok), strings.ToLower(tok), tok[:len(tok)-1], strings.ToLower(tok[4:16]))
 }
+
+// tokenMark is what a person is shown of tok: its mark, keyed by this
+// process's own secret.
+func tokenMark(tok string) string { return tracker.Mark(tok) }
+
+// kept is a token held as an entry holds it.
+func kept(tok string) func() string { return func() string { return tok } }
 
 // leaks names the planted tokens whose any form b holds.
 func leaks(b []byte) []string {
@@ -105,6 +133,9 @@ func fakeGitHub(t *testing.T) *fakeGH {
 			w.Header().Set("X-OAuth-Scopes", "repo, read:org")
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(githubtest.Fixture("user.json"))
+		case tok == plantedEchoLower || tok == plantedEchoLess || tok == plantedEchoB64:
+			w.Header().Set("X-OAuth-Scopes", "repo")
+			_, _ = io.WriteString(w, `{"login":"`+echoLogin(tok)+`","id":9000003}`)
 		case tok == plantedLoginForm || tok == plantedBig:
 			login := tok
 			if tok == plantedBig {
@@ -146,6 +177,12 @@ func (f *fakeGH) deny(tok string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.accept, tok)
+}
+
+func (f *fakeGH) allow(tok string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.accept[tok] = true
 }
 
 // userCalls counts the fake's GET /user, everywhere.
@@ -241,7 +278,7 @@ func TestTrackerTokenChecked(t *testing.T) {
 
 	status, data, out := e.saveToken(t, "", plantedToken)
 	got, _ := out["tracker"].(map[string]any)
-	if status != http.StatusOK || got["login"] != "mona-example" || got["fingerprint"] != fingerprintOf(plantedToken) || got["source"] != "settings" || got["state"] != "ok" || got["host"] != "github.com" {
+	if status != http.StatusOK || got["login"] != "mona-example" || got["fingerprint"] != tokenMark(plantedToken) || got["source"] != "settings" || got["state"] != "ok" || got["host"] != "github.com" {
 		t.Fatalf("a saved token: %d %s", status, data)
 	}
 	if runtime.GOOS != "windows" {
@@ -278,7 +315,7 @@ func TestTrackerTokenChecked(t *testing.T) {
 	refusedAt := l[0]["checkedAt"]
 	stillRefused := func(after string) {
 		t.Helper()
-		if l := e.trackersListed(t); len(l) < 1 || l[0]["fingerprint"] != fingerprintOf(plantedToken) || l[0]["state"] != "refused" || l[0]["checkedAt"] != refusedAt {
+		if l := e.trackersListed(t); len(l) < 1 || l[0]["fingerprint"] != tokenMark(plantedToken) || l[0]["state"] != "refused" || l[0]["checkedAt"] != refusedAt {
 			t.Fatalf("after %s, the kept token: %v", after, l)
 		}
 	}
@@ -303,7 +340,7 @@ func TestTrackerTokenChecked(t *testing.T) {
 	if status, data, _ := e.saveToken(t, "", plantedToken2); status != http.StatusOK {
 		t.Fatalf("a new token: %d %s", status, data)
 	}
-	if l := e.trackersListed(t); len(l) != 1 || l[0]["state"] != "ok" || l[0]["fingerprint"] != fingerprintOf(plantedToken2) {
+	if l := e.trackersListed(t); len(l) != 1 || l[0]["state"] != "ok" || l[0]["fingerprint"] != tokenMark(plantedToken2) {
 		t.Fatalf("the new token: %v", l)
 	}
 
@@ -332,7 +369,7 @@ func TestTrackerTokenChecked(t *testing.T) {
 	if status, data, out := e.saveToken(t, "ghe-4.example.com", plantedEnv); status != http.StatusConflict || codeOf(out) != "too_many_hosts" {
 		t.Fatalf("a fifth host: %d %s", status, data)
 	}
-	if row := rowOf(e.trackersListed(t), "github.com"); row["fingerprint"] != fingerprintOf(plantedToken2) || row["state"] != "refused" || row["checkedAt"] != refusedAt {
+	if row := rowOf(e.trackersListed(t), "github.com"); row["fingerprint"] != tokenMark(plantedToken2) || row["state"] != "refused" || row["checkedAt"] != refusedAt {
 		t.Fatalf("after a fifth host's token was not kept: %v", row)
 	}
 	// A 403 is answered in the server's words: no permission's name.
@@ -367,7 +404,7 @@ func TestTrackerTokenChecked(t *testing.T) {
 	if status, data, out := env.callAs(t, adminToken, "POST", "/api/trackers/github/remove", map[string]any{"host": gheHost}); status != http.StatusOK || out["removed"] != false || out["inUse"] != "environment" {
 		t.Fatalf("the environment's host removed: %d %s", status, data)
 	}
-	if l := env.trackersListed(t); len(l) != 1 || l[0]["source"] != "environment" || l[0]["state"] != "unchecked" || l[0]["fingerprint"] != fingerprintOf(plantedEnv) {
+	if l := env.trackersListed(t); len(l) != 1 || l[0]["source"] != "environment" || l[0]["state"] != "unchecked" || l[0]["fingerprint"] != tokenMark(plantedEnv) {
 		t.Fatalf("the environment's token: %v", l)
 	}
 }
@@ -383,13 +420,34 @@ func TestTrackerRemoveTakesEffect(t *testing.T) {
 	}
 	ref := tracker.Ref{System: tracker.GitHub, Host: "github.com", Space: "octo/repo", Kind: "issue", ID: "1"}
 	c, err := e.srv.credentialFor(t.Context(), ref)
-	if err != nil || c.Fingerprint() != fingerprintOf(plantedToken) {
+	if err != nil || c.Fingerprint() != tokenMark(plantedToken) {
 		t.Fatalf("credentialFor: %v %v", c, err)
 	}
 	if _, err := e.srv.trackers.gh.Whoami(t.Context(), c); err != nil {
 		t.Fatalf("the credential at GitHub: %v", err)
 	}
-	if status, data, out := e.callAs(t, adminToken, "POST", "/api/trackers/github/remove", map[string]any{}); status != http.StatusOK || out["removed"] != true {
+	// A body is one JSON object, and a remove names its host: null, a
+	// number, a string, a list, no body and {} change nothing.
+	before, _ := os.ReadFile(e.credentialsFile())
+	for _, route := range []string{"/api/trackers/github", "/api/trackers/github/remove"} {
+		for _, body := range []string{"null", "1", `"github.com"`, `["github.com"]`, "", "{}"} {
+			if route == "/api/trackers/github" && body == "{}" {
+				continue // a save's {} is a token of no form
+			}
+			status, out := e.rawPost(t, route, body)
+			want, code := http.StatusBadRequest, "invalid_request"
+			if body == "{}" {
+				code = "invalid_host"
+			}
+			if msg, _ := out["error"].(map[string]any); status != want || codeOf(out) != code || (code == "invalid_request" && msg["message"] != trackerBodyWords) {
+				t.Errorf("POST %s %q: %d %v", route, body, status, out)
+			}
+		}
+	}
+	if after, _ := os.ReadFile(e.credentialsFile()); !bytes.Equal(before, after) {
+		t.Fatal("a body that is not the route's changed the file")
+	}
+	if status, data, out := e.callAs(t, adminToken, "POST", "/api/trackers/github/remove", map[string]any{"host": "github.com"}); status != http.StatusOK || out["removed"] != true {
 		t.Fatalf("remove: %d %s", status, data)
 	}
 	var ae *apiError
@@ -409,7 +467,7 @@ func TestTrackerRemoveTakesEffect(t *testing.T) {
 	env, _ := trackerEnv(t, func(c *config.Config) { c.GitHubToken, c.GitHubHost = config.NewSecret(plantedEnv), gheHost })
 	useFake(env.srv, f)
 	c, err = env.srv.credentialFor(t.Context(), tracker.Ref{System: tracker.GitHub, Host: gheHost})
-	if err != nil || c.Fingerprint() != fingerprintOf(plantedEnv) {
+	if err != nil || c.Fingerprint() != tokenMark(plantedEnv) {
 		t.Fatalf("the environment's: %v %v", c, err)
 	}
 	if acct, err := env.srv.trackers.gh.Whoami(t.Context(), c); err != nil || acct.Login != "mona-example" {
@@ -468,6 +526,25 @@ func TestTrackerRoutesAdminOnly(t *testing.T) {
 	}
 }
 
+// rawPost is a POST of body as it is, as the admin.
+func (e *testEnv) rawPost(t *testing.T, path, body string) (int, map[string]any) {
+	t.Helper()
+	req, err := http.NewRequest("POST", e.http.URL+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := e.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var out map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	return resp.StatusCode, out
+}
+
 // post is a raw POST for a goroutine of the test's: its status and its
 // body, or the error, never a t.Fatal.
 func (e *testEnv) post(path string, body any) (int, map[string]any, error) {
@@ -510,7 +587,7 @@ func TestTrackerSaveRaceRemove(t *testing.T) {
 		held <- answer{status, out, err}
 	}()
 	<-gate.Reached()
-	if status, data, out := e.callAs(t, adminToken, "POST", "/api/trackers/github/remove", map[string]any{}); status != http.StatusOK || out["removed"] != true {
+	if status, data, out := e.callAs(t, adminToken, "POST", "/api/trackers/github/remove", map[string]any{"host": "github.com"}); status != http.StatusOK || out["removed"] != true {
 		t.Fatalf("remove: %d %s", status, data)
 	}
 	gate.Open()
@@ -525,7 +602,7 @@ func TestTrackerSaveRaceRemove(t *testing.T) {
 	s, recorded := e.srv.trackers.seen["github.com"]
 	e.srv.trackers.mu.Unlock()
 	if recorded {
-		t.Fatalf("a token not kept is recorded: %v", s.fingerprint == fingerprintOf(plantedToken2))
+		t.Fatalf("a token not kept is recorded: %v", s.fingerprint == tokenMark(plantedToken2))
 	}
 
 	acts := func(fs ...func() (int, map[string]any, error)) {
@@ -557,7 +634,7 @@ func TestTrackerSaveRaceRemove(t *testing.T) {
 		return e.post("/api/trackers/github/remove", map[string]any{"host": "ghe-1.example.com"})
 	}, save("ghe-2.example.com", plantedToken2))
 	l := e.trackersListed(t)
-	if len(l) != 1 || l[0]["host"] != "ghe-2.example.com" || l[0]["fingerprint"] != fingerprintOf(plantedToken2) {
+	if len(l) != 1 || l[0]["host"] != "ghe-2.example.com" || l[0]["fingerprint"] != tokenMark(plantedToken2) {
 		t.Fatalf("after the two acts at once: %v", l)
 	}
 }
@@ -579,13 +656,13 @@ func TestTrackerEnvironmentHostKeptInSettings(t *testing.T) {
 	ref := tracker.Ref{System: tracker.GitHub, Host: gheHost}
 	used := func(when string) {
 		t.Helper()
-		if c, err := e.srv.credentialFor(t.Context(), ref); err != nil || c.Fingerprint() != fingerprintOf(plantedEnv) {
+		if c, err := e.srv.credentialFor(t.Context(), ref); err != nil || c.Fingerprint() != tokenMark(plantedEnv) {
 			t.Fatalf("%s, credentialFor: %v %v", when, c, err)
 		}
 	}
 	used("before the remove")
 	l := e.trackersListed(t)
-	if len(l) != 2 || l[0]["source"] != "settings" || l[0]["state"] != "unused" || l[0]["fingerprint"] != fingerprintOf(plantedToken) || l[1]["source"] != "environment" || l[1]["fingerprint"] != fingerprintOf(plantedEnv) {
+	if len(l) != 2 || l[0]["source"] != "settings" || l[0]["state"] != "unused" || l[0]["fingerprint"] != tokenMark(plantedToken) || l[1]["source"] != "environment" || l[1]["fingerprint"] != tokenMark(plantedEnv) {
 		t.Fatalf("listed: %v", l)
 	}
 	status, data, out := e.callAs(t, adminToken, "POST", "/api/trackers/github/remove", map[string]any{"host": gheHost})
@@ -602,6 +679,16 @@ func TestTrackerEnvironmentHostKeptInSettings(t *testing.T) {
 	if status, data, out := e.saveToken(t, gheHost, plantedToken); status != http.StatusConflict || codeOf(out) != "environment" {
 		t.Fatalf("a save for the environment's host: %d %s", status, data)
 	}
+}
+
+// writeTrackerFile puts f in place of k's file as a change does (change,
+// write).
+func writeTrackerFile(k *trackerKeep, f trackerFile) error {
+	var err error
+	if ae := k.change(true, func(d *os.File, _ trackerFile) *apiError { err = k.writeTokens(d, f); return nil }); ae != nil {
+		return ae
+	}
+	return err
 }
 
 // Four hosts' entries with every field at its bound (the longest host, a
@@ -623,7 +710,7 @@ func TestTrackerFileBounds(t *testing.T) {
 			t.Fatalf("not the longest host: %d", len(host))
 		}
 		full.GitHub = append(full.GitHub, trackerEntry{
-			Host: host, Token: keptToken(strings.Repeat(`"`, maxTrackerToken)), Fingerprint: strings.Repeat("f", 12),
+			Host: host, keptSecret: kept(strings.Repeat(`"`, maxTrackerToken)),
 			Login: strings.Repeat("l", tracker.MaxLogin), AccountID: tracker.RemoteID(strings.Repeat("9", tracker.MaxRemoteID)),
 			Scopes: scopes, SavedAt: time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC),
 		})
@@ -631,7 +718,10 @@ func TestTrackerFileBounds(t *testing.T) {
 			t.Fatalf("not an account at its bounds: %v", err)
 		}
 	}
-	b, err := store.Encode(full)
+	if err := writeTrackerFile(k, full); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(e.credentialsFile())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -639,22 +729,13 @@ func TestTrackerFileBounds(t *testing.T) {
 	if len(b) > maxTrackerFile*3/4 {
 		t.Fatalf("the fullest file is %d bytes, more than three quarters of %d", len(b), maxTrackerFile)
 	}
-	k.mu.Lock()
-	err = k.write(full)
-	k.mu.Unlock()
-	if err != nil {
-		t.Fatal(err)
-	}
 	if got, err := k.read(); err != nil || len(got.GitHub) != maxTrackerHosts {
 		t.Fatalf("the fullest file read back: %d %v", len(got.GitHub), err)
 	}
-	before, _ := os.ReadFile(e.credentialsFile())
+	before := b
 	past := trackerFile{GitHub: slices.Clone(full.GitHub)}
 	past.GitHub[0].Login = strings.Repeat("l", maxTrackerFile)
-	k.mu.Lock()
-	err = k.write(past)
-	k.mu.Unlock()
-	if !errors.Is(err, errTrackerFileFull) {
+	if err := writeTrackerFile(k, past); !errors.Is(err, errTrackerFileFull) {
 		t.Fatalf("a file past read's bound written: %v", err)
 	}
 	if after, _ := os.ReadFile(e.credentialsFile()); !bytes.Equal(before, after) {
@@ -665,272 +746,12 @@ func TestTrackerFileBounds(t *testing.T) {
 	}
 }
 
-// The read refuses, naming only the file, everything that is not the
-// private regular file it keeps, and never waits on what is at the name:
-// one table, a row per refusal. A rename between its look and its open
-// (afterLook) is read through: the new file is answered; a link or a named
-// pipe put there is refused at once.
-func TestTrackerReadRefuses(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Unix modes, links and named pipes")
-	}
-	const secret = "ghp_PLANTEDinTHEfileTOKEN0123456789abWXYZ"
-	valid := func(host string) []byte {
-		b, err := store.Encode(trackerFile{GitHub: []trackerEntry{{Host: host, Token: keptToken(secret), Fingerprint: fingerprintOf(secret), Login: "mona", AccountID: "1"}}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return b
-	}
-	// fresh is a keep over a new data directory with credentials/ at 0700.
-	fresh := func(t *testing.T) (*trackerKeep, string) {
-		t.Helper()
-		dir := t.TempDir()
-		st, err := store.Open(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		creds := filepath.Join(dir, trackerDir)
-		if err := os.Mkdir(creds, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		return newTrackers(&config.Config{}, st, slog.New(slog.DiscardHandler)), creds
-	}
-	put := func(t *testing.T, path string, b []byte) {
-		t.Helper()
-		if err := os.WriteFile(path, b, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// replace renames a new file of b over path, as a save does.
-	replace := func(t *testing.T, path string, b []byte) {
-		t.Helper()
-		put(t, path+".new", b)
-		if err := os.Rename(path+".new", path); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// readBounded is k.read under k.mu, as a remove makes it, failing by a
-	// bound of its own when it waits; the lock is free once it answers.
-	readBounded := func(t *testing.T, k *trackerKeep, unblock func()) (trackerFile, error) {
-		t.Helper()
-		type answer struct {
-			f   trackerFile
-			err error
-		}
-		done := make(chan answer, 1)
-		go func() {
-			k.mu.Lock()
-			f, err := k.read()
-			k.mu.Unlock()
-			done <- answer{f, err}
-		}()
-		select {
-		case a := <-done:
-			if !k.mu.TryLock() {
-				t.Fatal("the read's lock is held after it answered")
-			}
-			k.mu.Unlock()
-			return a.f, a.err
-		case <-time.After(testWait):
-			if unblock != nil {
-				unblock()
-			}
-			select {
-			case <-done:
-			case <-time.After(testWait):
-			}
-			t.Fatalf("the read waited %s on what is at the file's name, under the keep's lock", testWait)
-			return trackerFile{}, nil
-		}
-	}
-	// unblockPipe opens a named pipe for writing, which lets a read that
-	// waits on it go on.
-	unblockPipe := func(path string) func() {
-		return func() {
-			if w, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
-				w.Close()
-			}
-		}
-	}
-	for _, c := range []struct {
-		name  string
-		set   func(t *testing.T, creds, file string) func()
-		words string
-	}{
-		{"a link", func(t *testing.T, creds, file string) func() {
-			put(t, filepath.Join(creds, "real.json"), valid("github.com"))
-			return nil
-		}, "is not a regular file"},
-		{"a named pipe", func(t *testing.T, creds, file string) func() {
-			if err := syscall.Mkfifo(file, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			return unblockPipe(file)
-		}, "is not a regular file"},
-		{"a directory", func(t *testing.T, creds, file string) func() {
-			if err := os.Mkdir(file, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			return nil
-		}, "is not a regular file"},
-		{"credentials a file", func(t *testing.T, creds, file string) func() {
-			if err := os.Remove(creds); err != nil {
-				t.Fatal(err)
-			}
-			put(t, creds, valid("github.com"))
-			return nil
-		}, "is not a directory"},
-		{"credentials a link", func(t *testing.T, creds, file string) func() {
-			real := creds + "-real"
-			if err := os.Rename(creds, real); err != nil {
-				t.Fatal(err)
-			}
-			put(t, filepath.Join(real, githubFile), valid("github.com"))
-			if err := os.Symlink(real, creds); err != nil {
-				t.Fatal(err)
-			}
-			return nil
-		}, "is not a directory"},
-		{"one byte past 16 KiB", func(t *testing.T, creds, file string) func() {
-			b := valid("github.com")
-			put(t, file, append(b, bytes.Repeat([]byte(" "), maxTrackerFile+1-len(b))...))
-			return nil
-		}, "is more than 16384 bytes"},
-		{"a host's entry twice", func(t *testing.T, creds, file string) func() {
-			b, _ := store.Encode(trackerFile{GitHub: []trackerEntry{{Host: "github.com", Token: "a"}, {Host: "github.com", Token: "b"}}})
-			put(t, file, b)
-			return nil
-		}, "holds a host's entry twice"},
-		{"an unknown member", func(t *testing.T, creds, file string) func() {
-			put(t, file, []byte(`{"github":[],"`+secret+`":1}`))
-			return nil
-		}, "cannot be read as a token file"},
-		{"a file that does not decode", func(t *testing.T, creds, file string) func() {
-			put(t, file, []byte(`{"github":[{"host":"github.com","token":"`+secret+"\x01"))
-			return nil
-		}, "cannot be read as a token file"},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			k, creds := fresh(t)
-			file := filepath.Join(creds, githubFile)
-			unblock := c.set(t, creds, file)
-			if c.name == "a link" {
-				if err := os.Symlink("real.json", file); err != nil {
-					t.Fatal(err)
-				}
-			}
-			_, err := readBounded(t, k, unblock)
-			if err == nil || !strings.Contains(err.Error(), c.words) || strings.Contains(err.Error(), secret[4:16]) {
-				t.Fatalf("%v, not %q", err, c.words)
-			}
-		})
-	}
-	// Each bit of the group's and the others' on the directory (0700) and
-	// on the file (0600).
-	for _, bit := range []os.FileMode{0o040, 0o020, 0o010, 0o004, 0o002, 0o001} {
-		for _, which := range []string{"directory", "file"} {
-			mode := 0o700 | bit
-			if which == "file" {
-				mode = 0o600 | bit
-			}
-			t.Run(fmt.Sprintf("the %s at %04o", which, mode), func(t *testing.T) {
-				k, creds := fresh(t)
-				file := filepath.Join(creds, githubFile)
-				put(t, file, valid("github.com"))
-				path := creds
-				if which == "file" {
-					path = file
-				}
-				if err := os.Chmod(path, mode); err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { _ = os.Chmod(path, 0o700) })
-				if _, err := readBounded(t, k, nil); err == nil || !strings.Contains(err.Error(), "open to its group or others") {
-					t.Fatalf("%04o: %v", mode, err)
-				}
-			})
-		}
-	}
-	t.Run("16 KiB", func(t *testing.T) {
-		k, creds := fresh(t)
-		b := valid("github.com")
-		put(t, filepath.Join(creds, githubFile), append(b, bytes.Repeat([]byte(" "), maxTrackerFile-len(b))...))
-		if f, err := readBounded(t, k, nil); err != nil || len(f.GitHub) != 1 {
-			t.Fatalf("a file of 16 KiB: %v %v", f, err)
-		}
-	})
-
-	// Between the look and the open, through the seam.
-	t.Run("a rename between the look and the open", func(t *testing.T) {
-		k, creds := fresh(t)
-		file := filepath.Join(creds, githubFile)
-		put(t, file, valid("github.com"))
-		looks := 0
-		k.afterLook = func() {
-			if looks++; looks == 1 {
-				replace(t, file, valid(gheHost))
-			}
-		}
-		if f, err := readBounded(t, k, nil); err != nil || len(f.GitHub) != 1 || f.GitHub[0].Host != gheHost {
-			t.Fatalf("the read across a rename: %v %v", f, err)
-		}
-	})
-	t.Run("a rename at every look", func(t *testing.T) {
-		k, creds := fresh(t)
-		file := filepath.Join(creds, githubFile)
-		put(t, file, valid("github.com"))
-		looks := 0
-		k.afterLook = func() { looks++; replace(t, file, valid(gheHost)) }
-		if _, err := readBounded(t, k, nil); err == nil || looks != trackerReadTries {
-			t.Fatalf("%d looks: %v", looks, err)
-		}
-	})
-	for _, swap := range []string{"a link", "a named pipe"} {
-		t.Run(swap+" put there between the look and the open", func(t *testing.T) {
-			k, creds := fresh(t)
-			file := filepath.Join(creds, githubFile)
-			put(t, file, valid("github.com"))
-			put(t, filepath.Join(creds, "other.json"), valid(gheHost))
-			looks := 0
-			k.afterLook = func() {
-				if looks++; looks > 1 {
-					return
-				}
-				if err := os.Remove(file); err != nil {
-					t.Error(err)
-				}
-				var err error
-				if swap == "a link" {
-					err = os.Symlink("other.json", file)
-				} else {
-					err = syscall.Mkfifo(file, 0o600)
-				}
-				if err != nil {
-					t.Error(err)
-				}
-			}
-			var unblock func()
-			if swap == "a named pipe" {
-				unblock = unblockPipe(file)
-			}
-			_, err := readBounded(t, k, unblock)
-			if err == nil || !strings.Contains(err.Error(), "is not a regular file") {
-				t.Fatalf("%v", err)
-			}
-			if swap == "a named pipe" && looks != 1 {
-				t.Fatalf("a named pipe opened is refused at once, not after %d looks", looks)
-			}
-		})
-	}
-}
-
 // One small piece of code keeps the token: the file's types are named in
 // trackers.go alone among the package's code, and so is the one read of
 // the environment's (Secret.Reveal); the module's other packages name
 // neither but the configuration, which reads it from the environment.
 func TestTrackerTokenKeptByOneFile(t *testing.T) {
-	names := regexp.MustCompile(`\b(keptToken|trackerEntry|trackerFile|GitHubToken\.Reveal)\b`)
+	names := regexp.MustCompile(`\b(keptSecret|trackerEntry|trackerFile|trackerWire|trackerWireEntry|GitHubToken\.Reveal)\b`)
 	err := filepath.WalkDir("../..", func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -957,12 +778,318 @@ func TestTrackerTokenKeptByOneFile(t *testing.T) {
 }
 
 // muxRoutesTouchingTheToken is every route pattern the package's code
-// registers whose handler reaches the token: one that names credentialFor
-// or the server's trackers, or a function of the package that does, read
-// from the source as the mux is given them. TestTrackerTokenSavedNeverServed
-// must walk each: a route added later that reaches the token fails it
-// until it is in the walk.
+// registers whose handler reaches a token where it leaves the value that
+// holds it (a kept entry's keptSecret, the environment's Secret.Reveal),
+// or a function of the package that does, read from the source as the mux
+// is given them. TestTrackerTokenSavedNeverServed must walk each: a route
+// added later that reaches the token fails it until it is in the walk.
 func muxRoutesTouchingTheToken(t *testing.T) []string {
 	t.Helper()
-	return routesTouching(t, "credentialFor", "trackers")
+	return routesTouching(t, "keptSecret", "Reveal")
+}
+
+// heldSave starts a save on e held at the fake's gate for host, and waits
+// until GitHub was asked: it answers on the channel once the gate opens.
+func heldSave(t *testing.T, e *testEnv, f *fakeGH, host, tok string) (*githubtest.Gate, <-chan string) {
+	t.Helper()
+	apiHost, path := host, "/api/v3/user"
+	if host == "github.com" {
+		apiHost, path = "api.github.com", "/user"
+	}
+	gate := f.Hold("GET", apiHost, path)
+	done := make(chan string, 1)
+	go func() {
+		status, out, err := e.post("/api/trackers/github", map[string]any{"host": host, "token": tok})
+		done <- fmt.Sprint(status, " ", codeOf(out), " ", err)
+	}()
+	<-gate.Reached()
+	return gate, done
+}
+
+// hostsKept is the hosts the file holds, read from the file itself.
+func hostsKept(t *testing.T, e *testEnv) []string {
+	t.Helper()
+	f, err := e.srv.trackers.read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, x := range f.GitHub {
+		out = append(out, x.Host)
+	}
+	return out
+}
+
+// Two servers over one data directory: every change is made under the
+// file's own lock from what the file holds then. A save held at GitHub on
+// one while the other removes its host is not kept; two saves of two hosts
+// at once, one on each, are both kept; a save of a host while the other
+// replaces that host's token: the replace is kept, the save answers 409
+// changed, and both servers list the one kept.
+func TestTrackerTwoServersOneFile(t *testing.T) {
+	a, f := trackerEnv(t, nil)
+	b := newTestEnv(t, func(c *config.Config) { c.DataDir = a.srv.store.Dir() })
+	b.srv.limiter = newRateLimiter(1e6, 1e6)
+	useFake(b.srv, f)
+	if status, data, _ := a.saveToken(t, "github.com", plantedToken); status != http.StatusOK {
+		t.Fatalf("save on A: %d %s", status, data)
+	}
+	gate, held := heldSave(t, b, f, "github.com", plantedToken2)
+	if status, data, out := a.callAs(t, adminToken, "POST", "/api/trackers/github/remove", map[string]any{"host": "github.com"}); status != http.StatusOK || out["removed"] != true {
+		t.Fatalf("remove on A: %d %s", status, data)
+	}
+	gate.Open()
+	if got := <-held; got != "409 changed <nil>" {
+		t.Fatalf("B's save across A's remove: %s", got)
+	}
+	if h := hostsKept(t, a); len(h) != 0 {
+		t.Fatalf("the removed host is kept again: %v", h)
+	}
+	if _, err := a.srv.credentialFor(t.Context(), tracker.Ref{System: tracker.GitHub, Host: "github.com"}); err == nil {
+		t.Fatal("A hands out the token its admin removed")
+	}
+
+	// Two changes at once, one on each server: A's has read the file and
+	// not yet written it when B's save comes to the lock (B is then told
+	// it is busy, and waits), or, were there no lock, has answered.
+	busy, bDone := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	b.srv.trackers.lockFile = func(l *os.File) error {
+		err := lockTrackerFile(l)
+		if errors.Is(err, errTrackerBusy) {
+			once.Do(func() { close(busy) })
+		}
+		return err
+	}
+	var bAnswer string
+	ka := a.srv.trackers
+	if ae := ka.change(true, func(d *os.File, file trackerFile) *apiError {
+		go func() {
+			status, out, err := b.post("/api/trackers/github", map[string]any{"host": "ghe-2.example.com", "token": plantedToken2})
+			bAnswer = fmt.Sprint(status, " ", codeOf(out), " ", err)
+			close(bDone)
+		}()
+		select {
+		case <-busy:
+		case <-bDone:
+		}
+		file.GitHub = append(file.GitHub, trackerEntry{Host: "ghe-1.example.com", keptSecret: kept(plantedToken), Login: "mona", AccountID: "1"})
+		if err := ka.writeTokens(d, file); err != nil {
+			return newAPIError(http.StatusInternalServerError, "store_failed", err.Error())
+		}
+		return nil
+	}); ae != nil {
+		t.Fatal(ae)
+	}
+	<-bDone
+	if h := hostsKept(t, b); bAnswer != "200  <nil>" || !slices.Equal(h, []string{"ghe-1.example.com", "ghe-2.example.com"}) {
+		t.Fatalf("two changes at once: B answered %s, the file holds %v", bAnswer, h)
+	}
+
+	if status, data, _ := a.saveToken(t, "ghe-3.example.com", plantedToken); status != http.StatusOK {
+		t.Fatalf("save on A: %d %s", status, data)
+	}
+	gate, held = heldSave(t, b, f, "ghe-3.example.com", plantedToken2)
+	// B's check stays at its gate; A's goes through one already open.
+	f.Hold("GET", "ghe-3.example.com", "/api/v3/user").Open()
+	if status, data, _ := a.saveToken(t, "ghe-3.example.com", plantedEnv); status != http.StatusOK {
+		t.Fatalf("the replace on A: %d %s", status, data)
+	}
+	gate.Open()
+	if got := <-held; got != "409 changed <nil>" {
+		t.Fatalf("B's save across A's replace: %s", got)
+	}
+	for _, e := range []*testEnv{a, b} {
+		if row := rowOf(e.trackersListed(t), "ghe-3.example.com"); row["fingerprint"] != tokenMark(plantedEnv) {
+			t.Fatalf("listed: %v, not the replace", row)
+		}
+	}
+}
+
+// Nothing but the one file keeps a token: what a change cut short left
+// under the temporary file's one name goes at the next save or remove,
+// and at a start; after each, the directory holds the file and the lock
+// alone. On a file system without locks every change is refused in fixed
+// words and nothing is written, and the list still answers.
+func TestTrackerOneFileHoldsTheToken(t *testing.T) {
+	e, f := trackerEnv(t, nil)
+	dir := filepath.Dir(e.credentialsFile())
+	names := func(when string) {
+		t.Helper()
+		var got []string
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, x := range entries {
+			got = append(got, x.Name())
+		}
+		if !slices.Equal(got, []string{githubFile, trackerLock}) {
+			t.Fatalf("after %s, credentials/ holds %v", when, got)
+		}
+	}
+	leftover := func() {
+		t.Helper()
+		b, _ := store.Encode(trackerWire{GitHub: []trackerWireEntry{{Host: "ghe-1.example.com", Token: plantedToken2, Login: "mona", AccountID: "1"}}})
+		if err := os.WriteFile(filepath.Join(dir, trackerTemp), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if status, data, _ := e.saveToken(t, "github.com", plantedToken); status != http.StatusOK {
+		t.Fatalf("save: %d %s", status, data)
+	}
+	names("a save")
+	leftover()
+	if status, data, out := e.callAs(t, adminToken, "POST", "/api/trackers/github/remove", map[string]any{"host": "ghe-2.example.com"}); status != http.StatusOK || out["removed"] != false {
+		t.Fatalf("a remove of nothing: %d %s", status, data)
+	}
+	names("a remove of nothing")
+	leftover()
+	if status, data, _ := e.saveToken(t, "ghe-1.example.com", plantedToken); status != http.StatusOK {
+		t.Fatalf("save: %d %s", status, data)
+	}
+	names("a save over a leftover")
+	leftover()
+	stopEnv(t, e)
+	e = e.restart()
+	useFake(e.srv, f)
+	names("a restart")
+	if status, data, out := e.callAs(t, adminToken, "POST", "/api/trackers/github/remove", map[string]any{"host": "github.com"}); status != http.StatusOK || out["removed"] != true {
+		t.Fatalf("remove: %d %s", status, data)
+	}
+	names("a remove")
+	if err := filepath.WalkDir(e.srv.store.Dir(), func(p string, d fs.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() {
+			return err
+		}
+		if b, err := os.ReadFile(p); err == nil && bytes.Contains(b, []byte(plantedToken2)) {
+			t.Errorf("%s holds a token no entry keeps", p)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	before, _ := os.ReadFile(e.credentialsFile())
+	e.srv.trackers.lockFile = func(*os.File) error { return errTrackerNoLocks }
+	for _, c := range []struct {
+		path string
+		body map[string]any
+	}{{"/api/trackers/github", map[string]any{"host": "ghe-2.example.com", "token": plantedToken}}, {"/api/trackers/github/remove", map[string]any{"host": "ghe-1.example.com"}}} {
+		if status, data, out := e.callAs(t, adminToken, "POST", c.path, c.body); status != http.StatusInternalServerError || codeOf(out) != "credentials_unusable" || !strings.Contains(string(data), "no file locks") {
+			t.Errorf("%s without locks: %d %s", c.path, status, data)
+		}
+	}
+	if after, _ := os.ReadFile(e.credentialsFile()); !bytes.Equal(before, after) {
+		t.Fatal("a change without the lock wrote the file")
+	}
+	if l := e.trackersListed(t); len(l) != 1 || l[0]["host"] != "ghe-1.example.com" {
+		t.Fatalf("the list without locks: %v", l)
+	}
+}
+
+// A kept token prints nothing by any path: an entry and a whole file
+// through a JSON and a text log handler, as an attribute and inside a
+// struct; through the formatter's every verb, alone, by a pointer and
+// inside a struct with unexported fields; through the JSON encoder.
+func TestTrackerKeptTokenPrintsNothing(t *testing.T) {
+	const tok = "ghp_PLANTEDprintedTOKEN0123456789abcdWXYZ"
+	e := trackerEntry{Host: "github.com", keptSecret: kept(tok), Login: "mona", AccountID: "1", Scopes: []string{"repo"}}
+	f := trackerFile{GitHub: []trackerEntry{e}}
+	type holder struct {
+		F     trackerFile
+		inner trackerFile
+		e     trackerEntry
+		P     *trackerEntry
+	}
+	h := holder{f, f, e, &e}
+	var out []string
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x", "%X", "%d"} {
+		for _, v := range []any{e, &e, f, &f, h, &h, []trackerEntry{e}, map[string]trackerEntry{"x": e}} {
+			out = append(out, fmt.Sprintf(verb, v))
+		}
+	}
+	for _, mk := range []func(io.Writer) slog.Handler{
+		func(w io.Writer) slog.Handler { return slog.NewJSONHandler(w, nil) },
+		func(w io.Writer) slog.Handler { return slog.NewTextHandler(w, nil) },
+	} {
+		var b bytes.Buffer
+		slog.New(mk(&b)).Info("x", "entry", e, "file", f, "held", h, "ptr", &e, slog.Any("group", slog.GroupValue(slog.Any("f", f))))
+		out = append(out, b.String())
+	}
+	for _, v := range []any{e, f, h} {
+		b, _ := json.Marshal(v)
+		out = append(out, string(b))
+	}
+	for _, s := range out {
+		for _, form := range []string{tok, tok[4:16]} {
+			if strings.Contains(s, form) {
+				t.Fatalf("printed: %s", s)
+			}
+		}
+	}
+}
+
+// What is shown is the latest answer by when GitHub was asked: a check
+// that accepts the kept token asked first, one that refuses it asked
+// second, the second recorded first: after both, the list shows refused,
+// with the second's time.
+func TestTrackerLatestAnswerShown(t *testing.T) {
+	e, f := trackerEnv(t, nil)
+	var tick atomic.Int64
+	base := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	e.srv.trackers.now = func() time.Time { return base.Add(time.Duration(tick.Add(1)) * time.Second) }
+	const host = "ghe-2.example.com"
+	if status, data, _ := e.saveToken(t, host, plantedToken); status != http.StatusOK {
+		t.Fatalf("save: %d %s", status, data)
+	}
+	gate, first := heldSave(t, e, f, host, plantedToken)
+	f.deny(plantedToken)
+	f.Hold("GET", host, "/api/v3/user").Open()
+	if status, data, _ := e.saveToken(t, host, plantedToken); status != http.StatusUnprocessableEntity {
+		t.Fatalf("the second check: %d %s", status, data)
+	}
+	row := rowOf(e.trackersListed(t), host)
+	if row["state"] != "refused" {
+		t.Fatalf("after the second: %v", row)
+	}
+	f.allow(plantedToken)
+	gate.Open()
+	if got := <-first; got != "200  <nil>" {
+		t.Fatalf("the first check: %s", got)
+	}
+	if after := rowOf(e.trackersListed(t), host); after["state"] != "refused" || after["checkedAt"] != row["checkedAt"] {
+		t.Fatalf("after both: %v, not refused at %v", after, row["checkedAt"])
+	}
+}
+
+// A host is a name of at least two labels: the two fields of a save
+// swapped, and a remove naming one label, are refused before anything is
+// asked, and no line of the log holds the value.
+func TestTrackerHostIsAName(t *testing.T) {
+	const hexTok = "d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f7a8b9c0d"
+	logs := &logBuffer{}
+	e := newTestEnvLogging(t, nil, slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	e.srv.limiter = newRateLimiter(1e6, 1e6)
+	f := fakeGitHub(t)
+	useFake(e.srv, f)
+	for _, c := range []struct {
+		path string
+		body map[string]any
+	}{
+		{"/api/trackers/github", map[string]any{"host": hexTok, "token": "github.com"}},
+		{"/api/trackers/github", map[string]any{"host": plantedToken, "token": "github.com"}},
+		{"/api/trackers/github/remove", map[string]any{"host": hexTok}},
+		{"/api/trackers/github/remove", map[string]any{"host": "ghe"}},
+	} {
+		if status, data, out := e.callAs(t, adminToken, "POST", c.path, c.body); status != http.StatusBadRequest || codeOf(out) != "invalid_host" || strings.Contains(string(data), hexTok[:12]) {
+			t.Errorf("%s %v: %d %s", c.path, c.body, status, data)
+		}
+	}
+	if n := len(f.Requests()); n != 0 {
+		t.Fatalf("GitHub was asked %d times for a host of one label", n)
+	}
+	if out := logs.String(); strings.Contains(out, hexTok[:12]) || strings.Contains(out, plantedToken[4:16]) || strings.Contains(out, `"host":"ghe"`) {
+		t.Fatalf("the log holds a refused host:\n%s", out)
+	}
 }

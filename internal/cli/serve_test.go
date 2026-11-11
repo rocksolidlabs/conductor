@@ -13,6 +13,9 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"io/fs"
 	"math/big"
@@ -1288,5 +1291,42 @@ func TestServeConfigTakesTheTokenOutOfTheEnvironment(t *testing.T) {
 		if strings.Contains(kv, tok) {
 			t.Fatal("the server's environment still holds the token")
 		}
+	}
+}
+
+// serve reads its configuration through serveConfig, the function that
+// takes the token out of the environment, and through nothing else.
+func TestServeReadsItsConfigurationThroughServeConfig(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "serve.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, d := range file.Decls {
+		fd, ok := d.(*ast.FuncDecl)
+		if !ok || fd.Name.Name != "runServe" {
+			continue
+		}
+		found = true
+		calls := map[string]int{}
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			if c, ok := n.(*ast.CallExpr); ok {
+				switch fn := c.Fun.(type) {
+				case *ast.Ident:
+					calls[fn.Name]++
+				case *ast.SelectorExpr:
+					if x, ok := fn.X.(*ast.Ident); ok {
+						calls[x.Name+"."+fn.Sel.Name]++
+					}
+				}
+			}
+			return true
+		})
+		if calls["serveConfig"] != 1 || calls["config.Load"] != 0 {
+			t.Fatalf("runServe reads its configuration by %v, not serveConfig alone", calls)
+		}
+	}
+	if !found {
+		t.Fatal("no runServe in serve.go")
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path"
 	"path/filepath"
@@ -104,19 +105,35 @@ func TestTrackerTokenSavedNeverServed(t *testing.T) {
 		_ = json.Unmarshal(data, &out)
 		return resp.StatusCode, out
 	}
+	// The fixtures are served by a listener of their own over the server's
+	// handler, which notes, for each request, the pattern that served it
+	// and the times a token left the value that holds it while it was
+	// served (the keep's seam, reveal and environmentToken).
+	type note struct {
+		pattern string
+		reached uint64
+	}
+	notes := make(chan note, 1)
+	inner := b.srv.Handler()
+	fixtures := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		before := b.srv.trackers.reached.Load()
+		inner.ServeHTTP(w, r)
+		notes <- note{r.Pattern, b.srv.trackers.reached.Load() - before}
+	}))
+	fx := &testEnv{t: t, srv: b.srv, http: fixtures, root: b.root, client: fixtures.Client()}
 	// admin is a fixture of a route that reaches the token, with the answer
-	// it must give: the route counts as walked once a call of it has
-	// reached the token (the keep's seam counts the file's reads and
-	// credentialFor's calls), never for being called alone.
+	// it must give: the route counts as walked once that route served a
+	// call of it and reached the token meanwhile, never for being called
+	// alone, nor for a call another route served.
 	admin := func(pattern string, path string, body string, status int, code string) map[string]any {
 		t.Helper()
 		method, _, _ := strings.Cut(pattern, " ")
-		before := b.srv.trackers.reached.Load()
-		got, out := call(b.testEnv, adminToken, "", method, path, []byte(body))
+		got, out := call(fx, adminToken, "", method, path, []byte(body))
+		n := <-notes
 		if got != status || (code != "" && codeOf(out) != code) {
 			t.Errorf("%s %s: %d %v, not %d %s", method, path, got, out, status, code)
 		}
-		if b.srv.trackers.reached.Load() > before {
+		if n.pattern == pattern && n.reached > 0 {
 			walked[pattern] = true
 		}
 		return out
@@ -133,7 +150,7 @@ func TestTrackerTokenSavedNeverServed(t *testing.T) {
 	save("", plantedLimited, http.StatusTooManyRequests, "rate_limited")
 	save(gheHost, plantedToken, http.StatusConflict, "environment")
 	admin("POST /api/trackers/github", "/api/trackers/github", `{"token":"`+plantedToken+strings.Repeat(" ", maxTrackerBody)+`"}`, http.StatusRequestEntityTooLarge, "")
-	admin("POST /api/trackers/github/remove", "/api/trackers/github/remove", `{}`, http.StatusOK, "")
+	admin("POST /api/trackers/github/remove", "/api/trackers/github/remove", `{"host":"github.com"}`, http.StatusOK, "")
 	save("", plantedToken, http.StatusOK, "")
 	admin("GET /api/trackers", "/api/trackers", "", http.StatusOK, "")
 
@@ -149,12 +166,21 @@ func TestTrackerTokenSavedNeverServed(t *testing.T) {
 	if out := admin("GET /api/trackers", "/api/trackers", "", http.StatusOK, ""); len(trackerRows(out)) != 2 {
 		t.Errorf("listed after the answers that hold a token: %v", out)
 	}
-	if c, err := b.srv.credentialFor(t.Context(), tracker.Ref{System: tracker.GitHub, Host: "github.com"}); err != nil || c.Fingerprint() != fingerprintOf(plantedToken) {
+	if c, err := b.srv.credentialFor(t.Context(), tracker.Ref{System: tracker.GitHub, Host: "github.com"}); err != nil || c.Fingerprint() != tokenMark(plantedToken) {
 		t.Errorf("github.com's credential after the answers that hold a token: %v %v", c, err)
 	}
 	if out := admin("POST /api/trackers/github/remove", "/api/trackers/github/remove", `{"host":"`+answerHost+`"}`, http.StatusOK, ""); out["removed"] != false {
 		t.Errorf("the remove of %s: %v", answerHost, out)
 	}
+	// Accounts whose login is the token sent in lower case, less a byte, or
+	// its base64: what is kept and shown of them is an account's form, and
+	// no line of the log holds any form of them (NeverLogged).
+	const echoHost = "ghe-2.example.com"
+	echoes := []string{plantedEchoLower, plantedEchoLess, plantedEchoB64}
+	for _, tok := range echoes {
+		save(echoHost, tok, http.StatusOK, "")
+	}
+	admin("POST /api/trackers/github/remove", "/api/trackers/github/remove", `{"host":"`+echoHost+`"}`, http.StatusOK, "")
 
 	// Bodies that are not the route's: one fixed sentence, whatever the
 	// body holds of a token (a member's name, a control byte, a bad escape,
@@ -267,6 +293,7 @@ func TestTrackerTokenSavedNeverServed(t *testing.T) {
 	// A restart, with a sync store's replay of the whole state: the
 	// stream's connection ended first, so that the server's close does
 	// not wait on its handler.
+	fixtures.Close()
 	b.http.CloseClientConnections()
 	stopEnv(t, b.testEnv)
 	srv2, err := New(b.srv.cfg, b.srv.base, log, nil, b.srv.store, providers(sync2))
@@ -335,7 +362,7 @@ func TestTrackerTokenSavedNeverServed(t *testing.T) {
 		if l := leaks(rest.Bytes()); len(l) > 0 {
 			t.Errorf("a request to %s carried %v outside its Authorization", r.Host, l)
 		}
-		if auth != "" && r.Host != "api.github.com" && r.Host != gheHost && r.Host != answerHost {
+		if auth != "" && r.Host != "api.github.com" && r.Host != gheHost && r.Host != answerHost && r.Host != echoHost {
 			t.Errorf("a token was sent to %s", r.Host)
 		}
 	}
@@ -356,12 +383,24 @@ func TestTrackerTokenSavedNeverServed(t *testing.T) {
 		if l := leaks(lines); len(l) > 0 {
 			t.Errorf("the log holds %v", l)
 		}
-		if !bytes.Contains(lines, []byte("tracker token saved")) || !bytes.Contains(lines, []byte(`"credential":"token(`+fingerprintOf(plantedToken)+`)"`)) {
-			t.Error("the save's line, with the credential's printed form, is not in the log")
+		for _, tok := range echoes {
+			for _, f := range echoForms(tok) {
+				if bytes.Contains(lines, []byte(f)) {
+					t.Errorf("the log holds %q, a form of a token an account was answered with", f)
+				}
+			}
+		}
+		if !bytes.Contains(lines, []byte(`"msg":"tracker token saved"`)) {
+			t.Error("the save's line is not in the log")
 		}
 		for _, line := range bytes.Split(lines, []byte("\n")) {
 			if bytes.Contains(line, []byte("tracker token")) && !bytes.Contains(line, []byte(`"route":"POST /api/trackers/github`)) {
 				t.Errorf("a token's line names no route: %s", line)
+			}
+			// What a host answers is never logged: a save's line names the
+			// host the admin gave and the outcome.
+			if bytes.Contains(line, []byte("tracker token")) && (bytes.Contains(line, []byte(`"login"`)) || bytes.Contains(line, []byte(`"scopes"`)) || bytes.Contains(line, []byte(`"accountId"`))) {
+				t.Errorf("a token's line holds what GitHub answered: %s", line)
 			}
 			if i := bytes.Index(line, []byte("https://")); i >= 0 && bytes.ContainsRune(line[i:], '?') {
 				t.Errorf("a line carries a URL's query: %s", line)
@@ -407,11 +446,15 @@ func mustRequest(t *testing.T, url string) *http.Request {
 }
 
 // routesTouching is every route pattern the package's code registers
-// (a call or a composite literal whose first value is a pattern) whose
-// handler names one of names or a function of the package that does, at
-// any depth. A name is a method or field reached through a value (s.x)
-// or a function of the package (x()); a package's own (errors.New) is
-// not the package's.
+// (every call of a mux's Handle or HandleFunc) whose handler names one of
+// names or a function of the package that does, at any depth. Every
+// registration's pattern is read as a literal: one written there, a
+// constant written as one, or the field of each row of a table that a
+// function of the package returns as a literal and the registration
+// ranges over; a registration whose pattern it cannot read so fails the
+// test, so that no route is skipped. A name is a method or field reached
+// through a value (s.x) or a function of the package (x()); a package's
+// own (errors.New) is not the package's.
 func routesTouching(t *testing.T, names ...string) []string {
 	t.Helper()
 	paths, err := filepath.Glob("*.go")
@@ -427,7 +470,131 @@ func routesTouching(t *testing.T, names ...string) []string {
 	}
 	var sites []site
 	registrars := map[string]bool{}
-	pattern := regexp.MustCompile(`^"(GET|POST|PUT|PATCH|DELETE) /`)
+	type parsed struct {
+		file    *ast.File
+		imports map[string]bool
+	}
+	var files []parsed
+	consts := map[string]string{}       // a package constant written as a string literal
+	fields := map[string][]string{}     // a struct type's fields, in order
+	funcs := map[string]*ast.FuncDecl{} // a function of the package, by name
+	str := func(e ast.Expr) (string, bool) {
+		lit, ok := e.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return "", false
+		}
+		s, err := strconv.Unquote(lit.Value)
+		return s, err == nil
+	}
+	// literal reads e as a literal: written as one, or a constant (the
+	// package's, or the function's own) written as one.
+	literal := func(e ast.Expr) (string, bool) {
+		if s, ok := str(e); ok {
+			return s, true
+		}
+		id, ok := e.(*ast.Ident)
+		if !ok {
+			return "", false
+		}
+		if s, ok := consts[id.Name]; ok {
+			return s, true
+		}
+		if id.Obj != nil && id.Obj.Kind == ast.Con {
+			if vs, ok := id.Obj.Decl.(*ast.ValueSpec); ok {
+				for i, n := range vs.Names {
+					if n.Name == id.Name && i < len(vs.Values) {
+						return str(vs.Values[i])
+					}
+				}
+			}
+		}
+		return "", false
+	}
+	// rows reads the rows of the table that fd ranges over as v, each
+	// row's field f its pattern: the table is what a function of the
+	// package returns, a literal slice of literal rows.
+	rows := func(fd *ast.FuncDecl, v, f string) ([][]ast.Expr, []string, bool) {
+		var table string
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			if rs, ok := n.(*ast.RangeStmt); ok {
+				if id, ok := rs.Value.(*ast.Ident); ok && id.Name == v {
+					if call, ok := rs.X.(*ast.CallExpr); ok {
+						switch fn := call.Fun.(type) {
+						case *ast.SelectorExpr:
+							table = fn.Sel.Name
+						case *ast.Ident:
+							table = fn.Name
+						}
+					}
+				}
+			}
+			return true
+		})
+		src := funcs[table]
+		if src == nil || src.Body == nil {
+			return nil, nil, false
+		}
+		var out [][]ast.Expr
+		var patterns []string
+		ok := true
+		ast.Inspect(src.Body, func(n ast.Node) bool {
+			ret, isRet := n.(*ast.ReturnStmt)
+			if !isRet || !ok {
+				return ok
+			}
+			var cl *ast.CompositeLit
+			var elt *ast.Ident
+			if len(ret.Results) == 1 {
+				cl, _ = ret.Results[0].(*ast.CompositeLit)
+			}
+			if cl != nil {
+				if arr, isArr := cl.Type.(*ast.ArrayType); isArr {
+					elt, _ = arr.Elt.(*ast.Ident)
+				}
+			}
+			if elt == nil {
+				ok = false
+				return false
+			}
+			at := slices.Index(fields[elt.Name], f)
+			for _, row := range cl.Elts {
+				r, isRow := row.(*ast.CompositeLit)
+				if !isRow || at < 0 {
+					ok = false
+					return false
+				}
+				var p string
+				var rest []ast.Expr
+				found := false
+				for i, x := range r.Elts {
+					val := x
+					key := ""
+					if kv, isKV := x.(*ast.KeyValueExpr); isKV {
+						val = kv.Value
+						if id, isKey := kv.Key.(*ast.Ident); isKey {
+							key = id.Name
+						}
+					}
+					if key == f || key == "" && i == at {
+						p, found = literal(val)
+						if !found {
+							ok = false
+							return false
+						}
+						continue
+					}
+					rest = append(rest, val)
+				}
+				if !found {
+					ok = false
+					return false
+				}
+				patterns, out = append(patterns, p), append(out, rest)
+			}
+			return false
+		})
+		return out, patterns, ok && len(patterns) > 0
+	}
 	var named func(n ast.Node, imports map[string]bool) map[string]bool
 	named = func(n ast.Node, imports map[string]bool) map[string]bool {
 		out := map[string]bool{}
@@ -469,7 +636,40 @@ func routesTouching(t *testing.T, names ...string) []string {
 			}
 			imports[name] = true
 		}
+		files = append(files, parsed{file, imports})
 		for _, d := range file.Decls {
+			switch d := d.(type) {
+			case *ast.FuncDecl:
+				if d.Recv == nil || funcs[d.Name.Name] == nil {
+					funcs[d.Name.Name] = d
+				}
+			case *ast.GenDecl:
+				for _, spec := range d.Specs {
+					switch sp := spec.(type) {
+					case *ast.ValueSpec:
+						for i, n := range sp.Names {
+							if d.Tok == token.CONST && i < len(sp.Values) {
+								if s, ok := str(sp.Values[i]); ok {
+									consts[n.Name] = s
+								}
+							}
+						}
+					case *ast.TypeSpec:
+						if st, ok := sp.Type.(*ast.StructType); ok {
+							for _, fl := range st.Fields.List {
+								for _, n := range fl.Names {
+									fields[sp.Name.Name] = append(fields[sp.Name.Name], n.Name)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	for _, pf := range files {
+		imports := pf.imports
+		for _, d := range pf.file.Decls {
 			fd, ok := d.(*ast.FuncDecl)
 			if !ok || fd.Body == nil {
 				continue
@@ -483,22 +683,32 @@ func routesTouching(t *testing.T, names ...string) []string {
 				refs[fd.Name.Name][k] = true
 			}
 			ast.Inspect(fd.Body, func(n ast.Node) bool {
-				var vals []ast.Expr
-				switch x := n.(type) {
-				case *ast.CallExpr:
-					vals = x.Args
-				case *ast.CompositeLit:
-					vals = x.Elts
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
 				}
-				if len(vals) > 1 {
-					if lit, ok := vals[0].(*ast.BasicLit); ok && lit.Kind == token.STRING && pattern.MatchString(lit.Value) {
-						s, _ := strconv.Unquote(lit.Value)
-						sites = append(sites, site{s, vals[1:], imports})
-						// A function that registers routes is no handler:
-						// what it registers is judged route by route.
-						registrars[fd.Name.Name] = true
+				sel, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok || (sel.Sel.Name != "Handle" && sel.Sel.Name != "HandleFunc") || len(call.Args) != 2 {
+					return true
+				}
+				// A function that registers routes is no handler: what it
+				// registers is judged route by route.
+				registrars[fd.Name.Name] = true
+				if s, ok := literal(call.Args[0]); ok {
+					sites = append(sites, site{s, call.Args[1:], imports})
+					return true
+				}
+				if f, ok := call.Args[0].(*ast.SelectorExpr); ok {
+					if v, ok := f.X.(*ast.Ident); ok {
+						if rs, ps, ok := rows(fd, v.Name, f.Sel.Name); ok {
+							for i := range rs {
+								sites = append(sites, site{ps[i], append(rs[i], call.Args[1:]...), imports})
+							}
+							return true
+						}
 					}
 				}
+				t.Errorf("%s: a route registered with a pattern this check cannot read as a literal", fset.Position(call.Pos()))
 				return true
 			})
 		}
