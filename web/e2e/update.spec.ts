@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test'
-import { expect, test, type Session } from './fixtures'
+import { callAnswer, expect, startCall, test, type Session } from './fixtures'
 
 // The update the desktop app downloaded (#290): never a dialog of the app's
 // own, which every check that found the same download used to open again.
@@ -202,8 +202,10 @@ test('a restart asked is asked again as the workbench comes back from an invite'
   await page.locator('[data-header-update]').first().click()
   await expect(modal).toContainText(' on this computer')
   await expect.poll(() => page.evaluate(() => typeof (window as unknown as Invited).e2eInvite)).toBe('function')
-  expect(await page.evaluate(({ server, token }) => (window as unknown as Invited).e2eInvite!({ server, token }), { server: state.baseURL, token })).toBe(true)
+  // The invite routes the page: started, never awaited across that route, its answer kept by the page and read after (#281).
+  const taken = await startCall(page, 'e2eInvite', { server: state.baseURL, token })
   await expect(page).toHaveURL(new RegExp(`/join/${token}`))
+  await expect.poll(() => callAnswer(page, taken)).toBe(true)
   await page.goBack()
   await expect(page).toHaveURL(/\/yard$/)
   await expect(modal).toContainText('Restart to update to 0.7.0-rc.12?')
