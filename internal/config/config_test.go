@@ -1558,6 +1558,122 @@ func TestSwitchyardConfig(t *testing.T) {
 	}
 }
 
+// switchyard.appURL, the desktop app's link on a switchyard's pages: the
+// repository's releases page by default; the file and the environment set
+// it; one that is not an https URL with a host, of at most 200 bytes, is
+// refused at load, the key named and the value not.
+func TestSwitchyardAppURL(t *testing.T) {
+	cfg := Defaults()
+	if link, ok := cfg.SwitchyardAppURL(); link != "https://github.com/rocksolidlabs/conductor/releases" || !ok {
+		t.Fatalf("default: %q %v", link, ok)
+	}
+	if err := store.DecodeStrict([]byte(`{"switchyard":{"appURL":"https://example.test/download"}}`), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if link, ok := cfg.SwitchyardAppURL(); link != "https://example.test/download" || !ok {
+		t.Fatalf("file: %q %v", link, ok)
+	}
+	if err := applyEnv(cfg, func(k string) string {
+		return map[string]string{"CONDUCTOR_SWITCHYARD_APP_URL": "https://example.test/app?from=switchyard"}[k]
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if link, ok := cfg.SwitchyardAppURL(); link != "https://example.test/app?from=switchyard" || !ok {
+		t.Fatalf("env: %q %v", link, ok)
+	}
+	// Rows like desktop/test/updater.test.ts's download page: the two addresses take one form. The switchyard takes one only
+	// in its canonical form and links it as written; the app takes one in the form and uses the URL standard's text of it.
+	in := func(r rune) string { return "https://example.test/a" + string(r) + "b" }
+	at200 := "https://example.test/" + strings.Repeat("a", 200-len("https://example.test/"))
+	// Taken and linked as written: each is already what url.Parse reads of it written back.
+	for _, good := range []string{
+		at200,
+		"https://example.test",
+		"https://example.test/download",
+		"https://example.test:8443/download",
+		"https://example.test/download?from=app#mac",
+		"https://example.test/a%2Fb",
+		"https://example.test/a?B=C#D",
+		// A query is written back as it is: the pages' template writes this quote as three (the bound is on the text set).
+		`https://example.test/a?q="`,
+	} {
+		c := Defaults()
+		c.Switchyard.AppURL = good
+		if err := c.Validate(); err != nil {
+			t.Errorf("%q: %v", good, err)
+		}
+		if link, ok := c.SwitchyardAppURL(); link != good || !ok {
+			t.Errorf("%q links %q %v", good, link, ok)
+		}
+	}
+	for _, bad := range []string{
+		// Not in its canonical form: a writer of it changes it.
+		at200[:len(at200)-1] + `"`,
+		`https://example.test/a"b`,
+		"https://example.test/#a\"b",
+		"https://example.test/a^b",
+		"https://Example.Test/a%2Fb",
+		"https://Example.TEST:00443/a?B=C#D",
+		"https://EXAMPLE.test:08443/a",
+		"https://example.test:443",
+		"https://example.test:08443/a",
+		"https://example.test#",
+		"https://:443/download",
+		"https://:/download",
+		"https://example.test:99999/",
+		"https://example.test:0/",
+		"https://example.test:/",
+		"https://xn--/download",
+		"https://shop.xn--p1ai/",
+		// Controls and spaces past ASCII: NEL, no-break space, line separator, right-to-left override, CSI, ideographic space,
+		// and a zero-width space in the host.
+		in(0x85), in(0xa0), in(0x2028), in(0x202e), in(0x9b), in(0x3000),
+		"https://exa" + string(rune(0x200b)) + "mple.test/",
+		"https://evil.example%E3%80%82com/",
+		"https:\\\\evil.example\\dl",
+		"https://example.test\\dl",
+		"https:evil.example/dl",
+		"https:/evil.example",
+		"HTTPS://example.test/",
+		"https://127.0.0.1/",
+		"https://[::1]/",
+		"https://example.test./",
+		"https://a..test/",
+		"https://example.test/%",
+		"http://example.test/download",
+		"javascript:alert(1)",
+		"https://",
+		"https:///download",
+		"/releases",
+		"example.test/download",
+		"https://user:secret@example.test/download",
+		"https://example.test/a b",
+		"https://example.test/a\tb",
+		"https://example.test/\x7f",
+		" https://example.test/download",
+		"https://example.test/%zz",
+		at200 + "a",
+	} {
+		c := Defaults()
+		c.Switchyard.AppURL = bad
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), "switchyard.appURL must be an https URL") {
+			t.Errorf("%q: %v", bad, err)
+			continue
+		}
+		if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "example.test") {
+			t.Errorf("%q: the error shows the value: %v", bad, err)
+		}
+		// A config that skipped Validate gets the default.
+		if link, ok := c.SwitchyardAppURL(); link != DefaultSwitchyardAppURL || ok {
+			t.Errorf("%q read as %q %v", bad, link, ok)
+		}
+	}
+}
+
 // The token's old name, adminToken in the file and CONDUCTOR_ADMIN_TOKEN in
 // the environment, still works and is reported as renamed; the new name wins
 // when both are given.

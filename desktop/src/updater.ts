@@ -1,21 +1,85 @@
 import type { Logs } from './logs'
 
 /**
- * updateChannel says whether the app can update itself: the dmg/zip and
- * nsis installs do (electron-updater against the GitHub releases), while a
- * deb, rpm or AppImage from a package manager is updated by it, so the app
- * only points at the release page.
+ * updateChannel says whether the app can update itself: the dmg/zip and nsis installs and the AppImage do (electron-updater
+ * against the update feed the package names), while a deb or rpm from a package manager is updated by it, so the app only
+ * points at the download page. feed is whether the package names an update feed: an app-update.yml in its resources, which
+ * electron-builder writes whenever a publish configuration resolves for the build (desktop/README.md, Updates, says how); only
+ * publish set to null is sure to leave it out. A package with none has no updater, which would fail at every check.
  */
-export function updateChannel(platform: string, appImage: boolean, packaged: boolean): 'auto' | 'link' | 'none' {
-  if (!packaged) return 'none'
+export function updateChannel(platform: string, appImage: boolean, packaged: boolean, feed: boolean): 'auto' | 'link' | 'none' {
+  if (!packaged || !feed) return 'none'
   if (platform === 'darwin' || platform === 'win32') return 'auto'
   return appImage ? 'auto' : 'link'
 }
 
-export const RELEASES_URL = 'https://github.com/rocksolidlabs/conductor/releases/latest'
+/**
+ * The download page when the package names none: the repository's releases, all of them (its /releases/latest answers 404
+ * while every release is a prerelease).
+ */
+export const DEFAULT_DOWNLOAD_PAGE = 'https://github.com/rocksolidlabs/conductor/releases'
+/** The longest download page a package may name, in bytes. */
+export const MAX_DOWNLOAD_PAGE = 200
+
+/**
+ * ADDRESS_FORM is a download page's form, the same text as switchyard.appURL's (internal/config, appURLForm): https:// in those
+ * letters; a host name of letters, digits and hyphens in labels joined by dots, the last beginning with a letter; a port of
+ * digits, if any; then a path, query or fragment of printable ASCII (0x21 to 0x7e) without a backslash, a % only before two hex
+ * digits. So no user information, no IP literal and no space or control character.
+ */
+const ADDRESS_FORM = /^https:\/\/((?:[A-Za-z0-9-]+\.)*[A-Za-z][A-Za-z0-9-]*)(?::([0-9]{1,5}))?(?:[/?#](?:[!-$&-\[\]-~]|%[0-9A-Fa-f]{2})*)?$/
+
+/**
+ * downloadPage is where the app points for a new version: the packaged package.json's conductor.downloadPage (packageJson, its
+ * text, null when it could not be read) in ADDRESS_FORM, of at most MAX_DOWNLOAD_PAGE bytes, no label of its host beginning
+ * xn-- (an internationalised name, which the form cannot check), its port 1 to 65535, and parsed by the URL standard as the
+ * host it names; the page is then the parsed address's canonical text (its href), which must be in the form and within the bound
+ * too (the parser writes some characters as three), so the address checked is the one used. Anything else is ignored, and the
+ * page is DEFAULT_DOWNLOAD_PAGE.
+ */
+export function downloadPage(packageJson: string | null): string {
+  let page: unknown
+  try {
+    page = (JSON.parse(packageJson ?? 'null') as { conductor?: { downloadPage?: unknown } } | null)?.conductor?.downloadPage
+  } catch {
+    return DEFAULT_DOWNLOAD_PAGE
+  }
+  if (typeof page !== 'string') return DEFAULT_DOWNLOAD_PAGE
+  // The form is ASCII, so its length is its bytes.
+  const m = ADDRESS_FORM.exec(page)
+  if (!m || page.length > MAX_DOWNLOAD_PAGE || /(^|\.)xn--/i.test(m[1]!) || (m[2] && (Number(m[2]) < 1 || Number(m[2]) > 65535))) return DEFAULT_DOWNLOAD_PAGE
+  try {
+    const u = new URL(page)
+    return u.hostname === m[1]!.toLowerCase() && u.href.length <= MAX_DOWNLOAD_PAGE && ADDRESS_FORM.test(u.href) ? u.href : DEFAULT_DOWNLOAD_PAGE
+  } catch {
+    return DEFAULT_DOWNLOAD_PAGE
+  }
+}
+
+/**
+ * updatesLine is what the log says of updates on channel (updateChannel): from the feed, by the package manager with the
+ * download page (page, read only then) by its origin and path alone, never its query or fragment, or none.
+ */
+export function updatesLine(channel: 'auto' | 'link' | 'none', packaged: boolean, page: () => string): string {
+  if (channel === 'auto') return 'from the update feed this package names, checked every six hours'
+  if (channel === 'link') {
+    const u = new URL(page())
+    return `by your package manager (${u.origin}${u.pathname})`
+  }
+  return packaged ? 'none: this build names no update feed' : 'none in development'
+}
+
 const EVERY = 6 * 60 * 60 * 1000
 /** How long an install may take to quit the app before it is taken for one that did not start. */
 const INSTALL_WAIT = 60 * 1000
+
+/** What startUpdater needs of electron-updater's autoUpdater. */
+export interface AppUpdater extends WatchedUpdater, InstallingUpdater {
+  autoDownload: boolean
+  autoInstallOnAppQuit: boolean
+  logger: unknown
+  checkForUpdates(): Promise<{ downloadPromise?: Promise<unknown> | null } | null>
+}
 
 /** What the app does with the updater it started (startUpdater). */
 export interface StartedUpdater {
@@ -40,10 +104,15 @@ export interface StartedUpdater {
  * stops the server: installVia) and what a restart to update holds the
  * checks with (UpdateChecks), null where the app does not update itself.
  */
-export async function startUpdater(channel: 'auto' | 'link' | 'none', logs: Logs, on: UpdaterEvents): Promise<StartedUpdater | null> {
+export async function startUpdater(
+  channel: 'auto' | 'link' | 'none',
+  logs: Pick<Logs, 'line'>,
+  on: UpdaterEvents,
+  load: () => Promise<AppUpdater> = async () => (await import('electron-updater')).autoUpdater,
+): Promise<StartedUpdater | null> {
   if (channel !== 'auto') return null
   try {
-    const { autoUpdater } = await import('electron-updater')
+    const autoUpdater = await load()
     autoUpdater.autoDownload = true
     autoUpdater.autoInstallOnAppQuit = true
     autoUpdater.logger = { info: (m: unknown) => logs.line('main', `updater: ${String(m)}`), warn: (m: unknown) => logs.line('main', `updater: ${String(m)}`), error: (m: unknown) => logs.line('main', `updater: ${String(m)}`), debug: () => {} }
