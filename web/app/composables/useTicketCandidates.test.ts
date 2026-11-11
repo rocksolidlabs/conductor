@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as vue from 'vue'
 import { ApiError } from './useApi'
 import type { RunCandidatesPage, RunSummary, TaskCandidates, TicketLink, TicketRunEntry } from './useDispatch'
-import type { HeldRun } from './useTicketCandidates'
+import { heldRuns, useTicketCandidates, type HeldRun } from './useTicketCandidates'
 import type { RunCandidate } from './useDispatch'
 import { ticketDecisions } from '../utils/dispatch'
 import { DispatchOrder } from '../utils/dispatchOrder'
@@ -13,7 +13,9 @@ import { DispatchOrder } from '../utils/dispatchOrder'
 // the gate with a read on its way, every run read again; another ticket, nothing of the first one's kept; a failure of the read that
 // met it, never cleared by an older one's answer; a run hidden when its failure is asked again read when it is shown again; a task's
 // older candidates read until its attempts accepted anyway are found; and which runs are read (heldRuns), a delivery's run among them. useTicketCandidates reads Nuxt's auto-imports (Vue's, useDispatchApi, onBeforeUnmount) as globals: each is stubbed, on
-// fake timers.
+// fake timers. They are read when the composable is called, so the module is imported once with the file, never inside a test: an
+// import that took seconds on a loaded machine timed the first test out, and its body, still running, then took the next test's
+// requests (#281).
 
 function held<T>() {
   let ok!: (v: T) => void
@@ -63,7 +65,6 @@ function page(run: string, task: string, next?: string): RunCandidatesPage {
 const tasksOf = (c: { byRun: ReadonlyMap<string, TaskCandidates[]> }, run: string) => c.byRun.get(run)?.map((t) => t.task)
 
 async function candidates(runs: HeldRun[] = [held1('team-0000aaaa')]) {
-  const { useTicketCandidates } = await import('./useTicketCandidates')
   const gate = new DispatchOrder()
   const key = vue.ref('CND-1')
   const shown = vue.ref<HeldRun[]>(runs)
@@ -320,8 +321,7 @@ describe('the runs a ticket holds (heldRuns)', () => {
   const summary = (id: string, p: Partial<RunSummary> = {}): RunSummary => ({ id, label: `run ${id}`, state: 'running', paused: false, startedAt: '', record: false, members: [], tasks: {}, ...p }) as RunSummary
   const launch = (id: string, runId: string): TicketRunEntry => ({ kind: 'launch', launch: { id, state: 'started', runId, label: `launch ${id}` } as TicketRunEntry['launch'] })
 
-  it("leave out a contested chain's run and a run shown twice, in the section's order, with a launch's label for a run unread", async () => {
-    const { heldRuns } = await import('./useTicketCandidates')
+  it("leave out a contested chain's run and a run shown twice, in the section's order, with a launch's label for a run unread", () => {
     const entries: TicketRunEntry[] = [
       { kind: 'run', run: summary('team-0000aaaa') },
       { kind: 'run', run: summary('team-0000bbbb'), contested: { tickets: ['CND-2'] } as unknown as TicketRunEntry['contested'] },
@@ -335,8 +335,7 @@ describe('the runs a ticket holds (heldRuns)', () => {
     ])
   })
 
-  it("add a live delivery's run no entry holds, after the entries, and never a contested chain's", async () => {
-    const { heldRuns } = await import('./useTicketCandidates')
+  it("add a live delivery's run no entry holds, after the entries, and never a contested chain's", () => {
     const delivery = (run: string, p: Partial<TicketLink> = {}): TicketLink =>
       ({ id: run, kind: 'delivery', ref: '', url: '', note: '', candidate: `${run}/build/2@${'a'.repeat(40)}`, createdAt: '', createdBy: '', ...p }) as TicketLink
     const entries: TicketRunEntry[] = [
@@ -358,8 +357,7 @@ describe('the runs a ticket holds (heldRuns)', () => {
     ])
   })
 
-  it("move a run's signature with its summary and the live store's revision, and only then", async () => {
-    const { heldRuns } = await import('./useTicketCandidates')
+  it("move a run's signature with its summary and the live store's revision, and only then", () => {
     const sig = (s: Partial<RunSummary>, rev?: number) => heldRuns([{ kind: 'run', run: summary('team-0000aaaa', s) }], () => rev)[0]!.signature
     const base = sig({})
     expect(sig({ label: 'renamed' })).toBe(base)
