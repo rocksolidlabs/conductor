@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -704,6 +707,150 @@ func TestRegistrationFollowsNoRedirect(t *testing.T) {
 		http.Redirect(w, r, y.srv.URL+r.URL.Path, http.StatusTemporaryRedirect)
 	})
 	runUntilRegistered(t, Options{ServerURL: configured.srv.URL, Token: hostToken, Argv: []string{"/bin/cat"}, RelayOnly: true, Log: discardLog})
+}
+
+// recordingProxy is a proxy of the test's own on the loopback: it records
+// each request it is handed (its method, its host and its Authorization)
+// and carries it to the address to maps that host to, a CONNECT as a
+// tunnel and any other request as it came, both ways after.
+type recordingProxy struct {
+	to   map[string]string
+	srv  *httptest.Server
+	mu   sync.Mutex
+	seen []string
+}
+
+func newRecordingProxy(t *testing.T, to map[string]string) *recordingProxy {
+	t.Helper()
+	p := &recordingProxy{to: to}
+	p.srv = httptest.NewServer(http.HandlerFunc(p.serve))
+	t.Cleanup(p.srv.Close)
+	return p
+}
+
+func (p *recordingProxy) serve(w http.ResponseWriter, r *http.Request) {
+	p.mu.Lock()
+	p.seen = append(p.seen, strings.TrimSpace(r.Method+" "+r.Host+" "+r.Header.Get("Authorization")))
+	p.mu.Unlock()
+	target, ok := p.to[r.Host]
+	if !ok {
+		http.Error(w, "no such server", http.StatusBadGateway)
+		return
+	}
+	up, err := net.Dial("tcp", target)
+	if err != nil {
+		http.Error(w, "no such server", http.StatusBadGateway)
+		return
+	}
+	defer up.Close()
+	c, rw, err := http.NewResponseController(w).Hijack()
+	if err != nil {
+		return
+	}
+	defer c.Close()
+	if r.Method == http.MethodConnect {
+		_, err = c.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
+	} else {
+		err = r.Write(up)
+	}
+	if err != nil {
+		return
+	}
+	go func() {
+		_, _ = io.Copy(up, rw)
+		_ = up.Close()
+	}()
+	_, _ = io.Copy(c, up)
+}
+
+func (p *recordingProxy) requests() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.seen)
+}
+
+// proxyFromEnv is the proxy HTTP_PROXY or HTTPS_PROXY names, read at each
+// request: http.ProxyFromEnvironment reads the environment once in a
+// process, which an earlier test may have done.
+func proxyFromEnv(r *http.Request) (*url.URL, error) {
+	v := os.Getenv("HTTP_PROXY")
+	if r.URL.Scheme == "https" {
+		v = os.Getenv("HTTPS_PROXY")
+	}
+	if v == "" {
+		return nil, nil
+	}
+	return url.Parse(v)
+}
+
+// TestCredentialRegistrationWithoutTLSTakesNoProxy: with a proxy named in
+// the environment, a registration through the identity provider's
+// credential to a server reached without TLS is dialed to the configured
+// address directly and the proxy sees nothing; over TLS it tunnels through
+// the proxy as before, which sees a CONNECT alone; with no provider, the
+// registration goes through the proxy as before. The server is named
+// example.com (the test certificate's name), dialed only at the test's own
+// listeners.
+func TestCredentialRegistrationWithoutTLSTakesNoProxy(t *testing.T) {
+	// The process's own reading of the environment, taken before the test
+	// names its proxy, so nothing else in the process is sent to it.
+	_, _ = http.ProxyFromEnvironment(&http.Request{URL: &url.URL{Scheme: "http", Host: "example.com"}})
+	for _, c := range []struct {
+		name      string
+		tls, cred bool
+		proxySaw  func(host string) []string
+		serverSaw string
+	}{
+		{name: "without TLS, through the credential", cred: true, proxySaw: func(string) []string { return nil }, serverSaw: "Bearer cred-1"},
+		{name: "over TLS, through the credential", tls: true, cred: true, proxySaw: func(h string) []string { return []string{"CONNECT " + h} }, serverSaw: "Bearer cred-1"},
+		{name: "without TLS, no provider", proxySaw: func(h string) []string { return []string{"GET " + h + " Bearer " + hostToken} }, serverSaw: "Bearer " + hostToken},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			y := newStubYard(t)
+			configured := newSeenServer(t, c.tls, func(_ *seenServer, w http.ResponseWriter, r *http.Request) { y.srv.Config.Handler.ServeHTTP(w, r) })
+			self := configured.srv.Listener.Addr().String()
+			_, port, _ := net.SplitHostPort(self)
+			name := "example.com:" + port
+			px := newRecordingProxy(t, map[string]string{name: self})
+			pxAddr := px.srv.Listener.Addr().String()
+			t.Setenv("HTTP_PROXY", px.srv.URL)
+			t.Setenv("HTTPS_PROXY", px.srv.URL)
+			var base *http.Transport
+			if c.tls {
+				base = configured.srv.Client().Transport.(*http.Transport)
+			}
+			transport := (&namedDialer{to: map[string]string{name: self, pxAddr: pxAddr}}).transport(base)
+			transport.Proxy = proxyFromEnv
+			server := "http://" + name
+			if c.tls {
+				server = "https://" + name
+			}
+			opts := Options{ServerURL: server, Token: hostToken, HostName: "office", Insecure: true, Switchyard: true, ReconnectMax: time.Second,
+				Log: discardLog, transport: transport}
+			if c.cred {
+				f := &uplinkFake{}
+				f.answer("cred-1", true)
+				opts.Token = ownedCode
+				opts.Credential = NewUplinkCredential(f, "cloud", server, ownedCode, nil, discardLog)
+			}
+			wsURL, err := controlURL(server)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := &agent{opts: opts, wsURL: wsURL, peers: map[string]*peer{}, log: discardLog, instance: "inst-1", localID: "1"}
+			conn, _, err := a.dialAndRegister(t.Context())
+			if err != nil {
+				t.Fatalf("the registration: %v", err)
+			}
+			conn.CloseNow()
+			if got, want := px.requests(), c.proxySaw(name); !slices.Equal(got, want) {
+				t.Fatalf("the proxy saw %q, want %q", got, want)
+			}
+			if got := configured.requests(); len(got) != 1 || !strings.HasSuffix(got[0], c.serverSaw) {
+				t.Fatalf("the configured server saw %q, one registration presenting %q wanted", got, c.serverSaw)
+			}
+		})
+	}
 }
 
 // TestLateOwnerAnswerCountsAsOwned: an owner check whose answer and

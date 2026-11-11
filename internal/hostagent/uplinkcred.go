@@ -123,7 +123,7 @@ func (c *UplinkCredential) renewed(ctx context.Context, owned bool) (string, boo
 		return "", false
 	}
 	c.mu.Lock()
-	if !slices.Contains(c.held, v.token) {
+	if !slices.ContainsFunc(c.held, func(h string) bool { return share.Equal(h, v.token) }) {
 		c.held = append(c.held, v.token)[max(0, len(c.held)+1-heldTokens):]
 	}
 	c.mu.Unlock()
@@ -135,8 +135,8 @@ func (c *UplinkCredential) renewed(ctx context.Context, owned bool) (string, boo
 const heldTokens = 8
 
 // Held is the tokens the credential has taken from the provider and still
-// holds (the last heldTokens distinct ones): what the server's check of the
-// provider's detail refuses to show (api.Server.SetUplinkHeld).
+// holds (the last heldTokens distinct ones): part of the list the server's
+// filter of the provider's detail compares with (api.Server.SetUplinkHeld).
 func (c *UplinkCredential) Held() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()

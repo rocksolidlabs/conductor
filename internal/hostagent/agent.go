@@ -686,10 +686,20 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	// (Run, Uplink.Publish): plain to another machine only with Insecure.
 	// A registration through an identity provider (Credential) is made to
 	// the configured address alone: a redirect is a failed registration,
-	// never followed, so nothing it carries goes anywhere else.
+	// never followed, and to a server reached without TLS it is dialed
+	// directly, never through a proxy (over TLS a proxy carries a tunnel).
 	base.CheckRedirect = a.redirectRule(base.CheckRedirect)
 	if a.opts.Credential != nil {
 		base.CheckRedirect = func(*http.Request, []*http.Request) error { return errCredentialRedirect }
+		if strings.HasPrefix(a.wsURL, "ws://") {
+			t, _ := base.Transport.(*http.Transport)
+			if t == nil {
+				t = http.DefaultTransport.(*http.Transport)
+			}
+			t = t.Clone()
+			t.Proxy = nil
+			base.Transport = t
+		}
 	}
 	// The connection's socket is a pacedConn (controlWriter). Whatever the
 	// host reads on the connection, a frame's part included, as its TLS
