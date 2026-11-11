@@ -59,41 +59,49 @@
   !macroend
 
   ; conductorEarlierJudge sets $conductorEarlierForm to what the move does
-  ; with ROOT's entry of the earlier id: none (no uninstall entry), run (an
-  ; entry in the earlier installer's form, its uninstaller and Conductor.exe
-  ; in its folder), stale (in that form, its uninstaller and folder gone) or
-  ; stop (anything else, a folder that cannot be known among them: nothing
-  ; is run or deleted). The form is what registryAddInstallInfo wrote
-  ; (include/installer.nsh of the templates: UninstallString
-  ; '"$INSTDIR\Uninstall Conductor.exe" <mode>', InstallLocation "$INSTDIR"):
-  ; in quotes, an absolute path (a drive that exists, a colon, a backslash)
-  ; to the uninstaller, and an InstallLocation, when there is one, naming
-  ; that file's folder (in any case, with one trailing backslash or none).
-  ; The folder the move works on, $conductorEarlierDir, is that file's own.
-  !macro conductorEarlierJudge ROOT
+  ; with ROOT's entry of the earlier id: none (no uninstall entry it can
+  ; open), run (an entry in the earlier installer's form, its uninstaller
+  ; and Conductor.exe in its folder), stale (in that form, its uninstaller
+  ; and folder gone) or stop (anything else: nothing is run or deleted).
+  ; The form is, whole, what registryAddInstallInfo writes for an install
+  ; under ROOT (include/installer.nsh of the templates: UninstallString
+  ; '"$INSTDIR\Uninstall Conductor.exe" <mode>', InstallLocation "$INSTDIR",
+  ; MODE the mode word of ROOT's install). UninstallString is a quote, an
+  ; absolute path (a drive that exists, a colon, a backslash) to the
+  ; uninstaller, a quote, one space and MODE, and nothing else; it is
+  ; rebuilt from its quoted part and compared byte for byte, so a second
+  ; quote, text before the first or after MODE, or another mode word is out
+  ; of form. InstallLocation is required and names that file's folder (in
+  ; any case, with one trailing backslash or none): the earlier uninstaller
+  ; reads its folder from the install key, so the key must name the folder
+  ; judged here, $conductorEarlierDir. Each step runs only once the one
+  ; before it holds, and every variable a pass reads is set in that pass
+  ; before it is read.
+  !macro conductorEarlierJudge ROOT MODE
     StrCpy $conductorEarlierForm none
     !insertmacro conductorEarlierFound ${ROOT} "${CONDUCTOR_EARLIER_UNINSTALL_KEY}"
     ${IfNot} ${Errors}
       StrCpy $conductorEarlierForm stop
       ReadRegStr $conductorEarlierText ${ROOT} "${CONDUCTOR_EARLIER_UNINSTALL_KEY}" UninstallString
       !insertmacro GetInQuotes $conductorEarlierUninstaller $conductorEarlierText
-      StrCpy $conductorEarlierDir $conductorEarlierUninstaller -24
-      StrCpy $conductorEarlierText $conductorEarlierUninstaller "" -24
-      StrCpy $conductorEarlierProbe $conductorEarlierUninstaller 1
-      StrCpy $conductorEarlierDrive $conductorEarlierUninstaller 3
-      ReadRegStr $conductorEarlierLocation ${ROOT} "${CONDUCTOR_EARLIER_INSTALL_KEY}" InstallLocation
-      ${If} $conductorEarlierText S== "${CONDUCTOR_EARLIER_UNINSTALLER}"
-      ${AndIf} $conductorEarlierDrive S== "$conductorEarlierProbe:\"
-      ${AndIf} ${FileExists} "$conductorEarlierDrive*.*"
-        ${If} $conductorEarlierLocation == ""
-        ${OrIf} $conductorEarlierLocation == $conductorEarlierDir
-        ${OrIf} $conductorEarlierLocation == "$conductorEarlierDir\"
-          ${If} ${FileExists} "$conductorEarlierUninstaller"
-          ${AndIf} ${FileExists} "$conductorEarlierDir\${CONDUCTOR_EARLIER_EXE}"
-            StrCpy $conductorEarlierForm run
-          ${ElseIfNot} ${FileExists} "$conductorEarlierUninstaller"
-          ${AndIfNot} ${FileExists} "$conductorEarlierDir\*.*"
-            StrCpy $conductorEarlierForm stale
+      ${If} $conductorEarlierText S== `"$conductorEarlierUninstaller" ${MODE}`
+        StrCpy $conductorEarlierText $conductorEarlierUninstaller "" -24
+        StrCpy $conductorEarlierProbe $conductorEarlierUninstaller 1
+        StrCpy $conductorEarlierDrive $conductorEarlierUninstaller 3
+        StrCpy $conductorEarlierDir $conductorEarlierUninstaller -24
+        ${If} $conductorEarlierText S== "${CONDUCTOR_EARLIER_UNINSTALLER}"
+        ${AndIf} $conductorEarlierDrive S== "$conductorEarlierProbe:\"
+        ${AndIf} ${FileExists} "$conductorEarlierDrive*.*"
+          ReadRegStr $conductorEarlierLocation ${ROOT} "${CONDUCTOR_EARLIER_INSTALL_KEY}" InstallLocation
+          ${If} $conductorEarlierLocation == $conductorEarlierDir
+          ${OrIf} $conductorEarlierLocation == "$conductorEarlierDir\"
+            ${If} ${FileExists} "$conductorEarlierUninstaller"
+            ${AndIf} ${FileExists} "$conductorEarlierDir\${CONDUCTOR_EARLIER_EXE}"
+              StrCpy $conductorEarlierForm run
+            ${ElseIfNot} ${FileExists} "$conductorEarlierUninstaller"
+            ${AndIfNot} ${FileExists} "$conductorEarlierDir\*.*"
+              StrCpy $conductorEarlierForm stale
+            ${EndIf}
           ${EndIf}
         ${EndIf}
       ${EndIf}
@@ -109,7 +117,7 @@
   ; that restores every file at one it cannot move and keeps the user data.
   ; A stale one's two keys are deleted.
   !macro conductorReplaceEarlier ROOT MODE
-    !insertmacro conductorEarlierJudge ${ROOT}
+    !insertmacro conductorEarlierJudge ${ROOT} "${MODE}"
     ${If} $conductorEarlierForm == stop
       !insertmacro conductorEarlierStop "${CONDUCTOR_EARLIER_BY_HAND}"
     ${ElseIf} $conductorEarlierForm == stale

@@ -29,7 +29,8 @@ const templates = join(desktop, 'node_modules', 'app-builder-lib', 'templates', 
 /**
  * compiled is what makensis compiles of script for an installer of appId: the lines its !if, !else and !endif keep, with APP_ID
  * as electron-builder defines it. Only S== and S!= are read (makensis compares them byte for byte, as === does here; its == and
- * != ignore case); any other conditional is refused, so that one added later is read here before it is trusted.
+ * != ignore case), and only directives in lower case; any other conditional, in any case (makensis reads !IF as !if), is refused,
+ * so that one added later is read here before it is trusted.
  */
 function compiled(text: string, appId: string): string {
   const kept: string[] = []
@@ -44,7 +45,7 @@ function compiled(text: string, appId: string): string {
       stack[stack.length - 1]!.on = !stack[stack.length - 1]!.on
     } else if (t === '!endif') {
       stack.pop()
-    } else if (/^!(if|else|elseif)/.test(t)) {
+    } else if (/^!(if|else|endif)/i.test(t)) {
       throw new Error(`a conditional this reader does not know: ${t}`)
     } else if (on() && !t.startsWith(';')) {
       kept.push(line)
@@ -59,6 +60,89 @@ function macro(text: string, name: string): string {
   const m = new RegExp(`^\\s*!macro ${name}\\b[^\\n]*\\n([\\s\\S]*?)^\\s*!macroend`, 'm').exec(text)
   if (!m) throw new Error(`no macro ${name}`)
   return m[1]!
+}
+
+/** The statements and conditions of an NSIS body, one per line, trimmed, without comments and blank lines. */
+const steps = (body: string) =>
+  body
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((t) => t !== '' && !t.startsWith(';'))
+
+/**
+ * onePass is the text one root's pass runs (conductorReplaceEarlier for ROOT and MODE): its judge and its key probes written in
+ * where it inserts them, as makensis expands them.
+ */
+function onePass(s: string): string {
+  const found = macro(s, 'conductorEarlierFound')
+  const judge = macro(s, 'conductorEarlierJudge')
+  return macro(s, 'conductorReplaceEarlier')
+    .replace(/^\s*!insertmacro conductorEarlierJudge \$\{ROOT\} "\$\{MODE\}"$/m, () => judge)
+    .replace(/^\s*!insertmacro conductorEarlierFound \$\{ROOT\} "(\$\{[A-Z_]+\})"$/gm, (_l, key: string) => found.replaceAll('${KEY}', key))
+}
+
+/**
+ * outcomes maps each value the judge gives $conductorEarlierForm to the conditions that lead to it, outermost first: for every
+ * block open at the assignment, the conditions of the branch it is in (an If with its AndIf and OrIf lines, or the ElseIf or Else
+ * it reached).
+ */
+function outcomes(judge: string): Map<string, string[][]> {
+  const open: string[][] = []
+  const found = new Map<string, string[][]>()
+  for (const t of steps(judge)) {
+    const head = /^\$\{(\w+)\}/.exec(t)?.[1]
+    if (head === 'If' || head === 'IfNot') open.push([t])
+    else if (head === 'AndIf' || head === 'AndIfNot' || head === 'OrIf' || head === 'OrIfNot') open[open.length - 1]!.push(t)
+    else if (head === 'ElseIf' || head === 'ElseIfNot' || head === 'Else') open[open.length - 1] = [t]
+    else if (head === 'EndIf') open.pop()
+    const form = /^StrCpy \$conductorEarlierForm (\w+)$/.exec(t)?.[1]
+    if (form) found.set(form, [...(found.get(form) ?? []), open.flat()])
+  }
+  expect(open).toEqual([])
+  return found
+}
+
+/**
+ * unset lists each read in pass of a $conductorEarlier variable that this pass has not surely set before it: a value set inside a
+ * block that has ended, or in another branch, is not sure, so such a read could see what another root's pass left. A branch on
+ * $conductorEarlierForm == X knows what was set where the judge decided X. A Do with no condition runs its body once at least,
+ * so what its body sets at its own level stays set after it.
+ */
+function unset(pass: string): string[] {
+  const scopes: Set<string>[] = [new Set()]
+  const decided = new Map<string, Set<string>>()
+  const sure = () => new Set(scopes.flatMap((s) => [...s]))
+  const misses: string[] = []
+  for (const t of steps(pass)) {
+    const head = /^\$\{(\w+)\}/.exec(t)?.[1]
+    if (head === 'ElseIf' || head === 'ElseIfNot' || head === 'Else' || head === 'EndIf') scopes.pop()
+    let writes: string[] = []
+    let rest = t
+    const w = /^(?:StrCpy|ReadRegStr|IntOp|EnumRegKey|StrLen|!insertmacro GetInQuotes) \$(conductorEarlier\w+)/.exec(t)
+    const exec = /^ExecWait .* \$(conductorEarlier\w+)$/.exec(t)
+    if (w) {
+      writes = [w[1]!]
+      rest = t.slice(w[0].length)
+    } else if (exec) {
+      writes = [exec[1]!]
+      rest = t.slice(0, t.lastIndexOf('$'))
+    }
+    const known = sure()
+    for (const [, v] of rest.matchAll(/\$(conductorEarlier\w+)/g)) if (!known.has(v!)) misses.push(`${v}: ${t}`)
+    if (head === 'If' || head === 'IfNot' || head === 'ElseIf' || head === 'ElseIfNot' || head === 'Else') {
+      const on = /^\$\{(?:If|ElseIf)\} \$conductorEarlierForm == (\w+)$/.exec(t)?.[1]
+      scopes.push(new Set(on ? (decided.get(on) ?? []) : []))
+    }
+    for (const v of writes) scopes[scopes.length - 1]!.add(v)
+    const form = /^StrCpy \$conductorEarlierForm (\w+)$/.exec(t)?.[1]
+    if (form) {
+      const now = sure()
+      const before = decided.get(form)
+      decided.set(form, before ? new Set([...before].filter((v) => now.has(v))) : now)
+    }
+  }
+  expect(scopes).toHaveLength(1)
+  return misses
 }
 
 describe('the earlier app id replaced by the installer', () => {
@@ -147,11 +231,13 @@ describe('the earlier app id replaced by the installer', () => {
   it("the move acts only on an entry in the earlier installer's form", () => {
     const s = compiled(script(), 'io.rocksolidlabs.conductor')
     // The form is the template's: registryAddInstallInfo writes InstallLocation "$INSTDIR" and UninstallString
-    // '"$INSTDIR\Uninstall <product>.exe" <mode>', and common.nsh names the two files after the product, Conductor for the rc.
+    // '"$INSTDIR\Uninstall <product>.exe" <mode>', the mode /allusers for an install for everyone (HKLM) and /currentuser for one
+    // per user (HKCU); common.nsh names the two files after the product, Conductor for the rc.
     const installer = read(join(templates, 'include', 'installer.nsh'))
     expect(installer).toContain('WriteRegStr SHELL_CONTEXT "${INSTALL_REGISTRY_KEY}" InstallLocation "$INSTDIR"')
     expect(installer).toContain('StrCpy $2 "$INSTDIR\\${UNINSTALL_FILENAME}"')
     expect(installer).toContain(`WriteRegStr SHELL_CONTEXT "\${UNINSTALL_REGISTRY_KEY}" UninstallString '"$2" $0'`)
+    expect(installer).toMatch(/\$\{if\} \$installMode == "all"\n\s*StrCpy \$0 "\/allusers"\n\s*StrCpy \$1 ""\n\s*\$\{else\}\n\s*StrCpy \$0 "\/currentuser"\n/)
     const common = read(join(templates, 'common.nsh'))
     expect(common).toContain('!define APP_EXECUTABLE_FILENAME "${PRODUCT_FILENAME}.exe"')
     expect(common).toContain('!define UNINSTALL_FILENAME "Uninstall ${PRODUCT_FILENAME}.exe"')
@@ -159,30 +245,72 @@ describe('the earlier app id replaced by the installer', () => {
     expect(script()).toContain('!define CONDUCTOR_EARLIER_EXE "Conductor.exe"')
     expect(script()).toContain('!define CONDUCTOR_EARLIER_UNINSTALLER "\\Uninstall Conductor.exe"')
     expect('\\Uninstall Conductor.exe').toHaveLength(24)
-    // The judgement: the quoted path's file is the uninstaller, the path absolute on a drive that exists, its folder the one the
-    // move works on, and InstallLocation, when there, that folder.
+    // Each root's pass is given that root's mode word, and its judge is given the same.
+    const check = macro(s, 'customUnInstallCheck')
+    expect(steps(check).filter((t) => t.includes('conductorReplaceEarlier'))).toEqual([
+      '!insertmacro conductorReplaceEarlier HKCU "/currentuser"',
+      '!insertmacro conductorReplaceEarlier HKLM "/allusers"',
+    ])
+    const replace = macro(s, 'conductorReplaceEarlier')
+    expect(steps(replace)[0]).toBe('!insertmacro conductorEarlierJudge ${ROOT} "${MODE}"')
+    // The judgement, step by step and in this order, each step only once the one before holds: the uninstall entry found; the
+    // whole UninstallString the quoted part rebuilt as the template writes it with this root's mode word, compared byte for
+    // byte (nothing before the first quote, no second quoted part, exactly one space and the mode word after it); the quoted
+    // path's file the uninstaller; the path absolute on a drive that exists; the folder that file's own; InstallLocation
+    // required and that folder; then the outcome.
     const judge = macro(s, 'conductorEarlierJudge')
-    for (const line of [
+    expect(steps(judge)).toEqual([
       'StrCpy $conductorEarlierForm none',
+      '!insertmacro conductorEarlierFound ${ROOT} "${CONDUCTOR_EARLIER_UNINSTALL_KEY}"',
+      '${IfNot} ${Errors}',
       'StrCpy $conductorEarlierForm stop',
+      'ReadRegStr $conductorEarlierText ${ROOT} "${CONDUCTOR_EARLIER_UNINSTALL_KEY}" UninstallString',
       '!insertmacro GetInQuotes $conductorEarlierUninstaller $conductorEarlierText',
-      'StrCpy $conductorEarlierDir $conductorEarlierUninstaller -24',
+      '${If} $conductorEarlierText S== `"$conductorEarlierUninstaller" ${MODE}`',
       'StrCpy $conductorEarlierText $conductorEarlierUninstaller "" -24',
+      'StrCpy $conductorEarlierProbe $conductorEarlierUninstaller 1',
+      'StrCpy $conductorEarlierDrive $conductorEarlierUninstaller 3',
+      'StrCpy $conductorEarlierDir $conductorEarlierUninstaller -24',
       '${If} $conductorEarlierText S== "${CONDUCTOR_EARLIER_UNINSTALLER}"',
       '${AndIf} $conductorEarlierDrive S== "$conductorEarlierProbe:\\"',
       '${AndIf} ${FileExists} "$conductorEarlierDrive*.*"',
+      'ReadRegStr $conductorEarlierLocation ${ROOT} "${CONDUCTOR_EARLIER_INSTALL_KEY}" InstallLocation',
+      '${If} $conductorEarlierLocation == $conductorEarlierDir',
       '${OrIf} $conductorEarlierLocation == "$conductorEarlierDir\\"',
-    ]) {
-      expect(judge, line).toContain(line)
-    }
-    // A removal needs the uninstaller and Conductor.exe there; a stale entry, both the uninstaller and the folder gone.
-    expect(judge).toMatch(
-      /\$\{If\} \$\{FileExists\} "\$conductorEarlierUninstaller"\n\s*\$\{AndIf\} \$\{FileExists\} "\$conductorEarlierDir\\\$\{CONDUCTOR_EARLIER_EXE\}"\n\s*StrCpy \$conductorEarlierForm run\n\s*\$\{ElseIfNot\} \$\{FileExists\} "\$conductorEarlierUninstaller"\n\s*\$\{AndIfNot\} \$\{FileExists\} "\$conductorEarlierDir\\\*\.\*"\n\s*StrCpy \$conductorEarlierForm stale\n/,
-    )
+      '${If} ${FileExists} "$conductorEarlierUninstaller"',
+      '${AndIf} ${FileExists} "$conductorEarlierDir\\${CONDUCTOR_EARLIER_EXE}"',
+      'StrCpy $conductorEarlierForm run',
+      '${ElseIfNot} ${FileExists} "$conductorEarlierUninstaller"',
+      '${AndIfNot} ${FileExists} "$conductorEarlierDir\\*.*"',
+      'StrCpy $conductorEarlierForm stale',
+      '${EndIf}',
+      '${EndIf}',
+      '${EndIf}',
+      '${EndIf}',
+      '${EndIf}',
+    ])
+    // What leads to each outcome: a run and a stale entry only through every test of the whole form, and nothing but a found
+    // entry leads to a stop.
+    const form = [
+      '${IfNot} ${Errors}',
+      '${If} $conductorEarlierText S== `"$conductorEarlierUninstaller" ${MODE}`',
+      '${If} $conductorEarlierText S== "${CONDUCTOR_EARLIER_UNINSTALLER}"',
+      '${AndIf} $conductorEarlierDrive S== "$conductorEarlierProbe:\\"',
+      '${AndIf} ${FileExists} "$conductorEarlierDrive*.*"',
+      '${If} $conductorEarlierLocation == $conductorEarlierDir',
+      '${OrIf} $conductorEarlierLocation == "$conductorEarlierDir\\"',
+    ]
+    expect(Object.fromEntries(outcomes(judge))).toEqual({
+      none: [[]],
+      stop: [['${IfNot} ${Errors}']],
+      run: [[...form, '${If} ${FileExists} "$conductorEarlierUninstaller"', '${AndIf} ${FileExists} "$conductorEarlierDir\\${CONDUCTOR_EARLIER_EXE}"']],
+      stale: [[...form, '${ElseIfNot} ${FileExists} "$conductorEarlierUninstaller"', '${AndIfNot} ${FileExists} "$conductorEarlierDir\\*.*"']],
+    })
+    // One root's pass reads nothing it has not set itself: the HKLM pass, right after the HKCU pass, never sees HKCU's entry.
+    expect(unset(onePass(s))).toEqual([])
     // The folder is the uninstaller's own, never one read from elsewhere or guessed.
     expect(s.match(/StrCpy \$conductorEarlierDir|ReadRegStr \$conductorEarlierDir|Pop \$conductorEarlierDir/g)).toEqual(['StrCpy $conductorEarlierDir'])
     // Only a judged entry is acted on: a stop runs and deletes nothing, a stale one's keys are deleted, only a runnable one runs.
-    const replace = macro(s, 'conductorReplaceEarlier')
     const lines = replace.split('\n')
     const branch = (form: string) => {
       const at = lines.findIndex((l) => /^\s*\$\{(If|ElseIf)\} \$conductorEarlierForm == (\w+)$/.exec(l)?.[2] === form)
