@@ -219,6 +219,49 @@ export function sidebarLinks(page: Page): Promise<string[]> {
 }
 
 /**
+ * A read of the page made after a call that may move it (the stubbed app's invite, #281), for the expect.poll around it: a
+ * rejection in the words Playwright gives an answer the page lost ("Execution context was destroyed", a page load's among them)
+ * is "not yet", so the poll reads again until its bound and, ending there, shows that rejection as the value it last saw. Any
+ * other rejection (a page function that throws, a wrong name) fails the poll at once in its own words.
+ */
+export function notYet<T>(read: () => Promise<T>): Promise<T | string> {
+  return read().catch((e: unknown) => {
+    if (e instanceof Error && e.message.includes('Execution context was destroyed')) return `not yet: ${e.message.split('\n')[0]}`
+    throw e
+  })
+}
+
+let calls = 0
+/**
+ * The stubbed app calls the page's `callback` with `arg` and the page keeps its answer under the key returned, read by
+ * `callAnswer`: the call is started, never awaited across what it does to the page (#281), and a start made again after a lost
+ * answer (notYet) calls nothing twice in one page.
+ */
+export async function startCall(page: Page, callback: string, arg: unknown): Promise<number> {
+  const key = ++calls
+  const start = () =>
+    page.evaluate(
+      ({ callback, arg, key }) => {
+        const w = window as unknown as Record<string, unknown> & { e2eAnswers?: Record<number, unknown> }
+        const answers = (w.e2eAnswers ??= {})
+        if (key in answers) return true
+        answers[key] = 'started'
+        const call = (w[callback] as (arg: unknown) => unknown)(arg)
+        void Promise.resolve(call).then((a) => (answers[key] = a), (e) => (answers[key] = `rejected: ${e}`))
+        return true
+      },
+      { callback, arg, key },
+    )
+  await expect.poll(() => notYet(start)).toBe(true)
+  return key
+}
+
+/** The answer the page kept for the call `key` (startCall): 'started' until it answers. */
+export function callAnswer(page: Page, key: number): Promise<unknown> {
+  return notYet(() => page.evaluate((key) => (window as unknown as { e2eAnswers?: Record<number, unknown> }).e2eAnswers?.[key], key))
+}
+
+/**
  * The id of the session a `conductor host` registered, or '' before it has: it is on the line the host prints once the server has
  * answered (`conductor: hosting session <id> at …`, internal/cli/host.go), read from `log`, which must be this one host's file so
  * that the first such line is its own.
