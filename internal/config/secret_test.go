@@ -76,12 +76,17 @@ func TestGitHubTokenFromEnvironment(t *testing.T) {
 		{strings.Repeat("a", MaxTrackerToken+1), "", "visible ASCII"},
 		{planted, "127.0.0.1", "CONDUCTOR_GITHUB_HOST"},
 		{planted, "GitHub.com", "CONDUCTOR_GITHUB_HOST"},
+		// The two variables swapped: the host variable holding a made-up
+		// token (and a 40-hex one, a single label): refused, and the
+		// start's error holds nothing of the value.
+		{"github.com", planted, "CONDUCTOR_GITHUB_HOST"},
+		{"github.com", "d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f7a8b9c0d", "CONDUCTOR_GITHUB_HOST"},
 	} {
 		t.Setenv("CONDUCTOR_GITHUB_TOKEN", c.tok)
 		t.Setenv("CONDUCTOR_GITHUB_HOST", c.host)
 		_, err := Load("")
-		if err == nil || !strings.Contains(err.Error(), c.want) || strings.Contains(err.Error(), c.tok) {
-			t.Errorf("token %.12q host %q: %v", c.tok, c.host, err)
+		if err == nil || !strings.Contains(err.Error(), c.want) || (c.tok != "github.com" && strings.Contains(err.Error(), c.tok)) || (c.host != "" && strings.Contains(err.Error(), c.host)) || strings.Contains(err.Error(), planted[4:16]) {
+			t.Errorf("token %.12q host %.12q: %v", c.tok, c.host, err)
 		}
 	}
 	t.Setenv("CONDUCTOR_GITHUB_TOKEN", planted)

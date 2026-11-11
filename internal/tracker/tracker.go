@@ -318,7 +318,10 @@ func (a Account) Check() error {
 }
 
 // CheckFor is Check, and refuses an account any field of which holds the
-// token c was made of: a short token can be in a login's form.
+// token c was made of, byte for byte. That refusal is a courtesy, not the
+// promise: no comparison recognises a token in every spelling a host
+// could answer it in, so what a token's own host answers of an account is
+// that host's data, held to the account's form (Check) and never logged.
 func (a Account) CheckFor(c Credential) error {
 	if err := a.Check(); err != nil {
 		return err

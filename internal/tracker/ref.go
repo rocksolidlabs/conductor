@@ -187,7 +187,8 @@ var ErrHost = errors.New("not a host Conductor admits")
 // CheckHost is the one rule of what a host is, for every host Conductor
 // sends a request to or judges an address by: a credential's, a saved
 // Enterprise Server host, an image's, a log's and a reference's. A host is
-// a name, never a number: an exact DNS name, lower-case ASCII, labels of 1
+// a name, never a number: an exact DNS name of at least two labels (so a
+// word typed in the wrong field is not one), lower-case ASCII, labels of 1
 // to 63 bytes of [a-z0-9-], neither starting nor ending with '-', joined
 // by single dots, 253 bytes at most, no trailing dot, whose last label
 // begins with a letter (so no spelling of an address, dotted, decimal,
@@ -197,21 +198,23 @@ var ErrHost = errors.New("not a host Conductor admits")
 // way an address or localhost is ever a host. Nothing else is a host: a
 // user, a path, a query, a fragment, a port, a bracket, a percent sign, an
 // upper case letter or a byte past ASCII is refused, never normalised, so
-// the string judged is the string the transport dials.
+// the string judged is the string the transport dials. A refusal is
+// ErrHost alone: it quotes nothing of what was refused.
 func CheckHost(host string, loopback bool) error {
 	if loopback && IsLoopback(host) {
 		return nil
 	}
 	if !dnsName(host) {
-		return fmt.Errorf("%w: %q", ErrHost, host)
+		return ErrHost
 	}
 	return nil
 }
 
-// dnsName reports an exact lower-case ASCII DNS name that is a name: its
-// last label begins with a letter, and it is not localhost.
+// dnsName reports an exact lower-case ASCII DNS name of at least two
+// labels that is a name: its last label begins with a letter, and it is
+// not localhost.
 func dnsName(h string) bool {
-	if h == "" || len(h) > 253 || h == "localhost" || strings.HasSuffix(h, ".localhost") {
+	if h == "" || len(h) > 253 || !strings.Contains(h, ".") || strings.HasSuffix(h, ".localhost") {
 		return false
 	}
 	if last := h[strings.LastIndexByte(h, '.')+1:]; last == "" || last[0] < 'a' || last[0] > 'z' {

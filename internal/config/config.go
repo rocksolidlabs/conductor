@@ -1081,12 +1081,12 @@ func (c *Config) Validate() error {
 		if c.GitHubHost == "" {
 			c.GitHubHost = tracker.GitHubHost
 		}
-		// Neither message names the token: only its form is said.
+		// Neither message names a value: only its form is said.
 		if !TrackerTokenForm(c.GitHubToken.Reveal()) {
 			errs = append(errs, fmt.Errorf("CONDUCTOR_GITHUB_TOKEN must be 1 to %d bytes of visible ASCII", MaxTrackerToken))
 		}
-		if err := tracker.CheckHost(c.GitHubHost, c.TrackerLoopback); err != nil {
-			errs = append(errs, fmt.Errorf("CONDUCTOR_GITHUB_HOST: %w", err))
+		if tracker.CheckHost(c.GitHubHost, c.TrackerLoopback) != nil {
+			errs = append(errs, errors.New("CONDUCTOR_GITHUB_HOST is not a host: github.com or a GitHub Enterprise Server's name of at least two labels, in lower case"))
 		}
 	}
 	if c.ICE.UDPPort < 0 || c.ICE.UDPPort > 65535 {

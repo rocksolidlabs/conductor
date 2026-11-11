@@ -91,9 +91,15 @@ func TestCheckHost(t *testing.T) {
 	}
 	for _, h := range []string{"", "GitHub.com", "github.com.", ".github.com", "git..hub.com", "-a.example", "a-.example", "a_b.example",
 		"gİthub.com", "g%c4%b0thub.com", "github.com:443", "user@github.com", "github.com/x", "github.com?x", "github.com#x", "github .com",
-		"localhost:8123", "127.0.0.1:8123", strings.Repeat("a", 64) + ".example"} {
-		if err := CheckHost(h, false); !errors.Is(err, ErrHost) {
+		"localhost:8123", "127.0.0.1:8123", strings.Repeat("a", 64) + ".example",
+		// One label is no host: a word typed in the wrong field (a made-up
+		// 40-hex value among them) is never resolved or dialled.
+		"ghe", "github", "d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f7a8b9c0d"} {
+		err := CheckHost(h, false)
+		if !errors.Is(err, ErrHost) {
 			t.Errorf("CheckHost(%q) admitted", h)
+		} else if h != "" && strings.Contains(err.Error(), h) {
+			t.Errorf("CheckHost(%q) quotes it: %v", h, err)
 		}
 	}
 	for _, h := range []string{"localhost:8123", "127.0.0.1:1", "[::1]:65535"} {
