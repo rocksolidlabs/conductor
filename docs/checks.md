@@ -47,6 +47,7 @@ multiple of it), so a hang still ends the job.
 
 A file CI's jobs fetch from a release mirror is cached by its version (`actions/cache`) and its download retried for minutes: Neovim's tarball through `curl --retry-all-errors`, refetched when it is not a gzip, and Electron's binary through
 `desktop/scripts/install-electron.mjs` (the desktop tests' `pretest`, six tries of electron's own installer), so a mirror's bad half hour fails one try, not the run (#281).
+The browser's system packages (the `e2e` job, `live.yml`) come from the runner's apt mirror list: a step before the install takes out a mirror whose name does not resolve, and uses kernel.org's Ubuntu mirror when none does (apt still checks its indexes against the image's Ubuntu archive key); the install itself gets three tries a minute apart (#281).
 
 `make lint` ends with the open-core rules (`internal/opencore`,
 `TestModuleKeepsTheRules`; CONTRIBUTING.md, The open-core rules): no import

@@ -37,8 +37,38 @@ jobs:
       - run: npm ci
         working-directory: web
       - run: make build
-      - run: npx playwright install --with-deps chromium
+      # ci.yml's e2e job has the same two steps and says why (2026-11-11, #281): keep them alike.
+      - name: Take out package mirrors whose names do not resolve
+        run: |
+          f=/etc/apt/apt-mirrors.txt fallback=https://mirrors.edge.kernel.org/ubuntu/
+          if [ ! -f "$f" ]; then echo "No $f on this image: its package sources are left as they are."; exit 0; fi
+          echo "The runner's mirror list, $f:"; cat "$f"
+          kept=$(mktemp)
+          while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in
+              *://*) host=${line#*://}; host=${host%%[/[:space:]]*} ;;
+              *) host= ;;
+            esac
+            if [ -z "$host" ] || timeout 30 getent ahosts "$host" >/dev/null; then
+              printf '%s\n' "$line" >> "$kept"
+            else
+              echo "::warning::$host does not resolve: taken out of $f for this job (#281)"
+            fi
+          done < "$f"
+          if grep -q '://' "$f" && ! grep -q '://' "$kept"; then
+            echo "::warning::no mirror of $f resolves: this job uses $fallback (#281)"
+            printf '%s\tpriority:1\n' "$fallback" > "$kept"
+          fi
+          if cmp -s "$f" "$kept"; then echo "Every mirror's name resolves: $f is unchanged."; else sudo cp "$kept" "$f"; echo "$f now:"; cat "$f"; fi
+      - name: Install Chromium with its system packages
         working-directory: web
+        run: |
+          for try in 1 2 3; do
+            npx playwright install --with-deps chromium && exit 0
+            echo "::warning::try $try of 3 of the browser's install failed (#281)"
+            [ "$try" = 3 ] || sleep 60
+          done
+          exit 1
       - name: install the agents
         run: |
           npm install -g @anthropic-ai/claude-code @openai/codex
