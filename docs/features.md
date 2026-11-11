@@ -5985,7 +5985,7 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
     refused where the switchyard admits none (a server's publication is
     then owed and the next Share publishes it; `conductor host` tries
     again for two minutes); for a token it does not own, the token as
-    before.
+    before. Such a registration follows no redirect.
   - A host connection the provider admitted is asked about again every
     30 s and closed `4403 access revoked` once it no longer admits it; its
     `registered` says `renews`, and a replacement credential reaches the

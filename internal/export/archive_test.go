@@ -290,6 +290,42 @@ func TestProviderStateMarkAtTheRoot(t *testing.T) {
 	}
 }
 
+// TestProviderStateMarkAboveAndDuring: an export whose directory lies
+// under a marked one (the provider's own <state>/ext/<name>) is refused
+// before anything is written, and one whose directory is marked while it
+// runs (after the records, through the seam) is refused when its walk
+// reaches the root: neither archive is one a restore takes, and neither
+// holds the provider's files.
+func TestProviderStateMarkAboveAndDuring(t *testing.T) {
+	t.Run("above", func(t *testing.T) {
+		f := newFixture(t)
+		put(t, filepath.Dir(f.dir), config.ProviderStateMark, "")
+		put(t, f.dir, "lease.json", `{"lease":"x"}`)
+		var buf bytes.Buffer
+		if _, err := export.Write(t.Context(), &buf, f.source()); err == nil || buf.Len() != 0 {
+			t.Fatalf("a directory under a marked one exported: %v, %d bytes", err, buf.Len())
+		}
+	})
+	t.Run("during", func(t *testing.T) {
+		f := newFixture(t)
+		export.SetAfterRecords(t, func() {
+			put(t, f.dir, config.ProviderStateMark, "")
+			put(t, f.dir, "cloud/lease.json", `{"lease":"x"}`)
+		})
+		var buf bytes.Buffer
+		if _, err := export.Write(t.Context(), &buf, f.source()); err == nil {
+			t.Fatal("a directory marked during its export exported")
+		}
+		if _, err := restore(buf.Bytes(), filepath.Join(t.TempDir(), "restored")); err == nil {
+			t.Fatal("the cut-short archive restored")
+		}
+		// An entry's name is in its local header as it is, deflate aside.
+		if bytes.Contains(buf.Bytes(), []byte("lease.json")) {
+			t.Fatal("the archive holds the provider's state")
+		}
+	})
+}
+
 // The records go in before the ledger's snapshot: a run that finishes and
 // a run that starts between the two (through the seam) are a record that
 // lags its ledger and a record missing, never one ahead; the restored

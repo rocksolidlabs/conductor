@@ -530,17 +530,25 @@ registers again with what its identity provider gives then
 `host_token{token}`, the credential that replaces the one the connection
 was admitted with: at most one per 30 s step and only for a changed
 token, `token` 1 to 2048 bytes of token68 (`A-Z a-z 0-9 - . _ ~ + / =`),
-the message at most 2560 bytes and decoded strictly; the server tells it
-by its `t`, read without decoding the message whole, and refuses one past
-2560 bytes before decoding it. The server takes one
+the message at most 2560 bytes and one object alone, decoded strictly. On
+such a connection the server tells a `host_token` by its `t` within the
+message's first 2560 bytes, and refuses one past its bound; a message whose
+type is `host_token` by any reading that did not pass that way closes the
+connection `4403` (`access revoked`), on every host connection, and like
+every host message it is read under the connection's read limit. The
+server takes one
 at a time, in the connection's read loop, within the provider's 1 s wait
 and the slots of its own, under the connection's credential turn, which a
 recheck takes too: a token the provider admits for the same subject with
 the host grant becomes the connection's, and the next recheck asks about
 it. The token the connection holds already is taken as it is, nobody
 asked, and a renewal the server cannot put to the provider at that moment
-(every renewal slot taken) leaves the connection with the token it holds,
-as a recheck that cannot be asked does. Anything else (a message past its
+(every renewal slot taken) leaves the connection with the token it holds
+and keeps the offered one pending (a later renewal replaces it): the
+connection's next recheck asks about the pending token in the held one's
+place, and makes it the connection's when the provider admits it, closes
+the connection `4403` when it does not, and, with no answer, keeps both
+for the recheck after. Anything else (a message past its
 bounds, a connection not admitted
 so, a token of the server's own (the workbench token, a host token, a
 link, expired or revoked: never asked of the provider), an error, a late
@@ -548,10 +556,10 @@ or panicking answer, another subject or no host grant) closes the
 connection `4403` (`access revoked`), and the host registers again. A host
 whose send is withdrawn or fails closes the connection `1000` itself. A
 connection of the workbench token, a host token or an open host is never
-told `renews`, never asked about, and sends no `host_token`; nor does a
-host whose registration was answered from another origin than the server
-it was given (a redirect): it takes `renews` as false there and counts
-nothing as presented.
+told `renews`, never asked about, and sends no `host_token`. A host whose
+registration carries its identity provider's credential registers at the
+server it was given alone: a redirect is a failed registration, never
+followed; with no provider, a redirect is followed as before.
 
 Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links, recipe?, decisions?, renews?}`
 (`decisions: true` from a switchyard that carries a decision link's lane,

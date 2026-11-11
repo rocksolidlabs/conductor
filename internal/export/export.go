@@ -176,11 +176,15 @@ type writer struct {
 }
 
 func (e *writer) write() error {
-	// The mark in the data directory itself (rest looks for it below):
+	// The mark in the data directory itself, or in any directory above it
+	// (rest looks for it below, and at the root again as its walk begins):
 	// the whole directory is a provider's state, and nothing of it is
 	// taken, records, databases and files alike.
-	if _, err := e.root.Lstat(config.ProviderStateMark); err == nil {
-		return errors.New("export: the data directory holds a provider's state (its mark), which no export takes")
+	if err := e.marked(); err != nil {
+		return err
+	}
+	if markedAbove(e.src.Dir) {
+		return errors.New("export: the data directory lies in a provider's state (a directory above it holds its mark), which no export takes")
 	}
 	if err := e.records(); err != nil {
 		return err
@@ -198,6 +202,34 @@ func (e *writer) write() error {
 		return err
 	}
 	return e.manifest()
+}
+
+// marked refuses the export when the data directory itself holds the mark.
+func (e *writer) marked() error {
+	if _, err := e.root.Lstat(config.ProviderStateMark); err == nil {
+		return errors.New("export: the data directory holds a provider's state (its mark), which no export takes")
+	}
+	return nil
+}
+
+// markedAbove says a directory above dir, its real path's, holds the mark
+// (looked at once, each, up to the filesystem's root).
+func markedAbove(dir string) bool {
+	p, err := filepath.EvalSymlinks(dir)
+	if err == nil {
+		p, err = filepath.Abs(p)
+	}
+	if err != nil {
+		return true // a place not known is not taken
+	}
+	for d := filepath.Dir(p); ; d = filepath.Dir(d) {
+		if _, err := os.Lstat(filepath.Join(d, config.ProviderStateMark)); err == nil {
+			return true
+		}
+		if d == filepath.Dir(d) {
+			return false
+		}
+	}
 }
 
 // records copies the runs' records, runs/<id>.json.
@@ -362,7 +394,8 @@ func (e *writer) rest() error {
 			return err
 		}
 		if rel == "." {
-			return nil
+			// The mark written at the root since write looked: refused.
+			return e.marked()
 		}
 		if rel == attachmentsPath && d.IsDir() {
 			// What the snapshot requires is in already (dispatch); the
