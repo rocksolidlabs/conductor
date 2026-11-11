@@ -83,17 +83,28 @@ the parser, the same rules as the web's `utils/invite.ts`).
 
 ## Updates
 
-`src/updater.ts`. A package names its own update feed: electron-builder
-writes `app-update.yml` beside the app for a package with a publish
-target, and the app updates itself (macOS, Windows, AppImage) only when it
-finds that file; a package with none has no updater, so it never fails at
-every check, and its log says "this build names no update feed", a deb or
-rpm among them (it names no download page either). A deb or rpm that names
+`src/updater.ts`. A package names its own update feed: the app updates
+itself (macOS, Windows, AppImage) only when it finds `app-update.yml` in
+its resources. What decides is whether electron-builder writes that file,
+and it writes it whenever a publish configuration resolves for the build
+(26.15's `PublishManager`: on macOS for a dmg or zip, on Windows for an
+nsis, on Linux for every package): the target's, the platform's or the top-level `publish`;
+with none set, a provider named by a token in the build's environment
+(`GH_TOKEN` or `GITHUB_TOKEN`, `GITLAB_TOKEN`, `KEYGEN_TOKEN`,
+`BITBUCKET_TOKEN`); with none of those, the GitHub repository the project
+names (`package.json`'s `repository`, a CI's repository variable or the
+project's `.git/config`). Only `publish: null` (or `-c.publish=null`)
+leaves it out for sure. `electron-builder.yml` names a GitHub `publish`,
+so every package built from it has a feed unless the build sets it to
+null. A package with none has no updater, so it never fails at every
+check, and its log says "this build names no update feed", a deb or rpm
+among them (it names no download page either). A deb or rpm that names
 a feed is updated by its package manager, and the log names the download
 page, by its address without a query or fragment: the packaged
 `package.json`'s `conductor.downloadPage`, an `https://` URL of at most 200
 bytes in the form `switchyard.appURL` takes (a host name of letters, digits,
-hyphens and dots, printable ASCII; anything else is ignored), or the
+hyphens and dots, printable ASCII; anything else is ignored), as the URL
+standard writes it, which must be in that form and bound too, or the
 repository's releases page (`/releases`: `/releases/latest` answers 404
 while every release is a prerelease).
 
@@ -106,18 +117,24 @@ and a staging installer hold none of it). In the install section, after the
 pages and electron-builder's running-app check and before any file is
 copied, it looks for the earlier id's uninstall entry (the GUID
 electron-builder derives from `dev.conductor.app`) under HKCU and HKLM; with
-none, it installs as usual. It acts only on an entry in the form the
-earlier installer wrote: an absolute path to `Uninstall Conductor.exe` in
-its `UninstallString`, that file's folder the one its `InstallLocation`
-names. Such an entry, with the uninstaller and `Conductor.exe` in its
-folder, is removed as electron-builder removes an earlier version of an
+none, it installs as usual. An entry under a key the installer cannot open
+is not seen, and the install goes on, as electron-builder's own upgrade
+step does not see an entry of the installer's own id that it cannot open.
+It acts only on an entry that is, whole, what the earlier installer wrote
+under that root: its `UninstallString` a quote, an absolute path to
+`Uninstall Conductor.exe`, a quote, one space and the root's mode word
+(`/currentuser` under HKCU, `/allusers` under HKLM), and nothing else; and
+its `InstallLocation` there and naming that file's folder (the earlier
+uninstaller takes its folder from that value). Such an entry, with the
+uninstaller and `Conductor.exe` in its folder, is removed as electron-builder removes an earlier version of an
 installer's own id: a copy of its uninstaller run in place with
 `/S /KEEP_APP_DATA --updated` (user data kept, every file restored at one
 it cannot move), tried five times a second apart; then the entry and the
 files must be gone before the install goes on. Such an entry whose
 uninstaller and folder are both gone is removed, and must then be gone.
-Anything else stops the install, and says why, with none of the new app
-copied: the earlier app could not be removed, was not fully removed, is
+Any other entry, every value the earlier installer did not write among
+them, stops the install with nothing run and nothing deleted. Every stop
+comes before any of the new app is copied, and says why: the earlier app could not be removed, was not fully removed, is
 installed for everyone and the installer is not running as administrator,
 or is not in a form the installer can remove (remove it from the installed
 apps, then run the installer again). A stop does not undo what

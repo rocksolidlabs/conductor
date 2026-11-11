@@ -27,7 +27,8 @@ describe('update channel', () => {
     expect(updateChannel('linux', true, false, true)).toBe('none')
   })
 
-  // A package built with no publish target has no app-update.yml: an updater there would fail at every check.
+  // A package with no app-update.yml (one built with publish set to null, desktop/README.md, Updates): an updater there would fail
+  // at every check.
   it('no feed in the package is no updater', async () => {
     for (const [platform, appImage] of [
       ['darwin', false],
@@ -63,6 +64,11 @@ describe('the download page', () => {
       ['https://example.test:8443/download', 'https://example.test:8443/download'],
       ['https://example.test/download?from=app#mac', 'https://example.test/download?from=app#mac'],
       ['https://Example.Test/a%2Fb', 'https://example.test/a%2Fb'],
+      ['https://Example.TEST:00443/a?B=C#D', 'https://example.test/a?B=C#D'],
+      ['https://EXAMPLE.test:08443/a', 'https://example.test:8443/a'],
+      // The parser writes a " in a path as three characters: the page it gives is within the bound too.
+      ['https://example.test/a"b', 'https://example.test/a%22b'],
+      [`${at200.slice(0, 197)}"`, `${at200.slice(0, 197)}%22`],
     ]) {
       expect(downloadPage(pkg(page)), page).toBe(parsed)
     }
@@ -91,6 +97,9 @@ describe('the download page', () => {
       at200 + 'a',
       // Fewer than 200 characters, more than 200 bytes.
       'https://example.test/' + 'é'.repeat(100),
+      // Within the bound as named, past it as the parser writes it (a " is three characters there).
+      `${at200.slice(0, 198)}"`,
+      'https://example.test/' + '"'.repeat(179),
       'https://:443/download',
       'https://:/download',
       'https://example.test:99999/',

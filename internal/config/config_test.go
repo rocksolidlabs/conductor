@@ -1587,18 +1587,27 @@ func TestSwitchyardAppURL(t *testing.T) {
 	// The same rows as desktop/test/updater.test.ts's download page: the two addresses take one form.
 	in := func(r rune) string { return "https://example.test/a" + string(r) + "b" }
 	at200 := "https://example.test/" + strings.Repeat("a", 200-len("https://example.test/"))
-	for _, good := range []string{
-		at200,
-		"https://example.test",
-		"https://example.test/download",
-		"https://example.test:8443/download",
-		"https://example.test/download?from=app#mac",
-		"https://Example.Test/a%2Fb",
+	// The link is the parsed address's own text: its host in lower case, its port as a number with 443 left out, the rest as
+	// written.
+	for _, good := range []struct{ set, link string }{
+		{at200, at200},
+		{"https://example.test", "https://example.test"},
+		{"https://example.test/download", "https://example.test/download"},
+		{"https://example.test:8443/download", "https://example.test:8443/download"},
+		{"https://example.test/download?from=app#mac", "https://example.test/download?from=app#mac"},
+		{"https://Example.Test/a%2Fb", "https://example.test/a%2Fb"},
+		{"https://Example.TEST:00443/a?B=C#D", "https://example.test/a?B=C#D"},
+		{"https://EXAMPLE.test:08443/a", "https://example.test:8443/a"},
+		{"https://example.test:443", "https://example.test"},
+		{`https://example.test/a"b`, `https://example.test/a"b`},
 	} {
 		c := Defaults()
-		c.Switchyard.AppURL = good
+		c.Switchyard.AppURL = good.set
 		if err := c.Validate(); err != nil {
-			t.Errorf("%q: %v", good, err)
+			t.Errorf("%q: %v", good.set, err)
+		}
+		if link, ok := c.SwitchyardAppURL(); link != good.link || !ok {
+			t.Errorf("%q links %q %v, want %q", good.set, link, ok, good.link)
 		}
 	}
 	for _, bad := range []string{

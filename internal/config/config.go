@@ -197,18 +197,20 @@ const DefaultSwitchyardAppURL = "https://github.com/rocksolidlabs/conductor/rele
 const MaxSwitchyardAppURL = 200
 
 // SwitchyardAppURL is the desktop app's link on a switchyard's pages
-// (switchyard.appURL), DefaultSwitchyardAppURL when it names none. One out
-// of form (appURLOK) is the default too, with ok false: Validate refuses it
-// at load, so only a config that skipped Validate gets here with one.
+// (switchyard.appURL), DefaultSwitchyardAppURL when it names none. The link
+// is the address as parsed (appURL), and the address checked is the one
+// linked. One out of form is the default too, with ok false: Validate
+// refuses it at load, so only a config that skipped Validate gets here with
+// one.
 func (c *Config) SwitchyardAppURL() (link string, ok bool) {
-	switch v := c.Switchyard.AppURL; {
-	case v == "":
+	v := c.Switchyard.AppURL
+	if v == "" {
 		return DefaultSwitchyardAppURL, true
-	case appURLOK(v):
-		return v, true
-	default:
-		return DefaultSwitchyardAppURL, false
 	}
+	if link, ok := appURL(v); ok {
+		return link, true
+	}
+	return DefaultSwitchyardAppURL, false
 }
 
 // appURLForm is switchyard.appURL's form, the same text as the desktop
@@ -220,22 +222,52 @@ func (c *Config) SwitchyardAppURL() (link string, ok bool) {
 // information, no IP literal and no space or control character.
 var appURLForm = regexp.MustCompile(`^https://((?:[A-Za-z0-9-]+\.)*[A-Za-z][A-Za-z0-9-]*)(?::([0-9]{1,5}))?(?:[/?#](?:[!-$&-\[\]-~]|%[0-9A-Fa-f]{2})*)?$`)
 
-// appURLOK reports whether raw is in switchyard.appURL's form (appURLForm),
-// of at most MaxSwitchyardAppURL bytes, no label of its host beginning
-// xn-- (an internationalised name, which the form cannot check), its port
-// 1 to 65535, and parsed by url.Parse as the host it names.
-func appURLOK(raw string) bool {
-	m := appURLForm.FindStringSubmatch(raw)
+// appURL is raw as the link the pages use, ok when raw is in
+// switchyard.appURL's form (appURLForm), of at most MaxSwitchyardAppURL
+// bytes, no label of its host beginning xn-- (an internationalised name,
+// which the form cannot check), its port 1 to 65535, and parsed by
+// url.Parse as the host it names. The link is the parsed address's own
+// text: its host in lower case and its port as a number, 443 left out, then
+// the rest as written (url.URL.String would write the whole path again,
+// escaped its own way, once one character of it needs escaping). The link
+// is checked the same way, so the address checked is the one used.
+func appURL(raw string) (link string, ok bool) {
+	m, ok := appURLParse(raw)
+	if !ok {
+		return "", false
+	}
+	rest := raw[len("https://")+len(m[1]):]
+	link = "https://" + strings.ToLower(m[1])
+	if m[2] != "" {
+		rest = rest[len(":")+len(m[2]):]
+		if n, _ := strconv.Atoi(m[2]); n != 443 {
+			link += ":" + strconv.Itoa(n)
+		}
+	}
+	link += rest
+	if _, ok := appURLParse(link); !ok {
+		return "", false
+	}
+	return link, true
+}
+
+// appURLParse is appURL's check of an address: the form's match (its host
+// and its port), ok when the address passes.
+func appURLParse(raw string) (m []string, ok bool) {
+	m = appURLForm.FindStringSubmatch(raw)
 	if m == nil || len(raw) > MaxSwitchyardAppURL || strings.HasPrefix(strings.ToLower(m[1]), "xn--") || strings.Contains(strings.ToLower(m[1]), ".xn--") {
-		return false
+		return nil, false
 	}
 	if m[2] != "" {
 		if n, _ := strconv.Atoi(m[2]); n < 1 || n > 65535 {
-			return false
+			return nil, false
 		}
 	}
 	u, err := url.Parse(raw)
-	return err == nil && u.Hostname() == m[1] && u.User == nil
+	if err != nil || u.Hostname() != m[1] || u.User != nil {
+		return nil, false
+	}
+	return m, true
 }
 
 // SwitchyardRelay reports whether the switchyard relays (Switchyard.Relay, on by default).

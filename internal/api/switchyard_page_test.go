@@ -220,6 +220,11 @@ func TestSwitchyardPagesLinkTheAppURL(t *testing.T) {
 		c.Switchyard.Enabled = true
 		c.Switchyard.AppURL = "https://example.test/download/conductor"
 	}), "https://example.test/download/conductor")
+	// The link is the address as parsed, the one checked: its host in lower case, its port as a number with 443 left out.
+	pages(newTestEnv(t, func(c *config.Config) {
+		c.Switchyard.Enabled = true
+		c.Switchyard.AppURL = "https://Example.Test:00443/download/conductor"
+	}), "https://example.test/download/conductor")
 
 	logs := &logBuffer{}
 	bad := newTestEnvLogging(t, func(c *config.Config) { c.Switchyard.Enabled = true }, slog.New(slog.NewTextHandler(logs, nil)))

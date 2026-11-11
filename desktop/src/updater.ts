@@ -3,9 +3,9 @@ import type { Logs } from './logs'
 /**
  * updateChannel says whether the app can update itself: the dmg/zip and nsis installs and the AppImage do (electron-updater
  * against the update feed the package names), while a deb or rpm from a package manager is updated by it, so the app only
- * points at the download page. feed is whether the package names an update feed (an app-update.yml in its resources, which
- * electron-builder writes for a package with a publish target): a package with none has no updater, which would fail at every
- * check.
+ * points at the download page. feed is whether the package names an update feed: an app-update.yml in its resources, which
+ * electron-builder writes whenever a publish configuration resolves for the build (desktop/README.md, Updates, says how); only
+ * publish set to null is sure to leave it out. A package with none has no updater, which would fail at every check.
  */
 export function updateChannel(platform: string, appImage: boolean, packaged: boolean, feed: boolean): 'auto' | 'link' | 'none' {
   if (!packaged || !feed) return 'none'
@@ -33,8 +33,9 @@ const ADDRESS_FORM = /^https:\/\/((?:[A-Za-z0-9-]+\.)*[A-Za-z][A-Za-z0-9-]*)(?::
  * downloadPage is where the app points for a new version: the packaged package.json's conductor.downloadPage (packageJson, its
  * text, null when it could not be read) in ADDRESS_FORM, of at most MAX_DOWNLOAD_PAGE bytes, no label of its host beginning
  * xn-- (an internationalised name, which the form cannot check), its port 1 to 65535, and parsed by the URL standard as the
- * host it names; the page is then the parsed address (its href). Anything else is ignored, and the page is
- * DEFAULT_DOWNLOAD_PAGE.
+ * host it names; the page is then the parsed address's canonical text (its href), which must be in the form and within the bound
+ * too (the parser writes some characters as three), so the address checked is the one used. Anything else is ignored, and the
+ * page is DEFAULT_DOWNLOAD_PAGE.
  */
 export function downloadPage(packageJson: string | null): string {
   let page: unknown
@@ -49,7 +50,7 @@ export function downloadPage(packageJson: string | null): string {
   if (!m || page.length > MAX_DOWNLOAD_PAGE || /(^|\.)xn--/i.test(m[1]!) || (m[2] && (Number(m[2]) < 1 || Number(m[2]) > 65535))) return DEFAULT_DOWNLOAD_PAGE
   try {
     const u = new URL(page)
-    return u.hostname === m[1]!.toLowerCase() ? u.href : DEFAULT_DOWNLOAD_PAGE
+    return u.hostname === m[1]!.toLowerCase() && u.href.length <= MAX_DOWNLOAD_PAGE && ADDRESS_FORM.test(u.href) ? u.href : DEFAULT_DOWNLOAD_PAGE
   } catch {
     return DEFAULT_DOWNLOAD_PAGE
   }
