@@ -69,6 +69,12 @@ type ticketCreated struct {
 	Key       string    `json:"key"`
 	CreatedAt time.Time `json:"createdAt"`
 	CreatedBy string    `json:"createdBy"`
+	// Fingerprint is an import's (ticket.import's): the content of the
+	// request that made the ticket, kept with its first row for good, so a
+	// resend whose receipt is pruned is answered with this ticket when its
+	// content is the same (prunedAnswer) and never makes a second. A
+	// ticket.create keeps none, as before.
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 // ticketDefaults is a ticket's scalar fields that its create and its
@@ -101,102 +107,122 @@ var (
 // project refuses it (archived). The receipt carries its id and key.
 func (s *Store) CreateTicket(ctx context.Context, op Op, n NewTicket) (Receipt, error) {
 	return s.Apply(ctx, op, "ticket.create", n, func(t *tx) error {
-		p, err := t.project(n.Project)
-		if err != nil {
-			return err
-		}
-		if !p.ArchivedAt.IsZero() {
-			return refuse(RefusalArchived, "%s is archived", p.Key)
-		}
-		status := n.Status
-		if status == "" {
-			status = TicketBacklog
-		}
-		after := fieldValues(ticketDefaults)
-		for _, f := range []struct{ key, label, column, value string }{
-			{"ticket.title", "the title", "title", n.Title},
-			{"ticket.description", "the description", "description", n.Description},
-			{"ticket.acceptance", "the acceptance criteria", "acceptance", n.Acceptance},
-		} {
-			if err := setText(after, f.key, f.label, f.column, f.value); err != nil {
-				return err
-			}
-		}
-		if err := setVocabulary(after, status, n.Priority, n.Horizon, n.Owner); err != nil {
-			return err
-		}
-		if err := checkMembers(TicketMembers{Assignees: n.Assignees, Labels: n.Labels}, TicketMembers{}); err != nil {
-			return err
-		}
-		if err := checkCount("assignees", len(n.Assignees), MaxAssignees); err != nil {
-			return err
-		}
-		if err := checkCount("labels", len(n.Labels), MaxTicketLabels); err != nil {
-			return err
-		}
-		// The references, inside the transaction.
-		for _, id := range n.Labels {
-			if err := t.reference("labels", "label", p, id); err != nil {
-				return err
-			}
-		}
-		if n.Milestone != "" {
-			if err := t.reference("milestones", "milestone", p, n.Milestone); err != nil {
-				return err
-			}
-			setField(after, "milestone_id", n.Milestone)
-		}
-		if n.Parent != "" {
-			parent, err := t.parent(p, n.Parent, Ticket{})
-			if err != nil {
-				return err
-			}
-			setField(after, "parent_id", parent)
-		}
-		if closed(status) {
-			setField(after, "closed_at", stamp(t.now))
-		}
-		// Made done, it meets its project's close policy as made: no
-		// acceptance and no link yet, so only a policy that requires
-		// nothing lets it.
-		if status == TicketDone {
-			if st := closeState(p.CloseRequires, Ticket{Owner: n.Owner, Acceptance: n.Acceptance}, nil); len(st.Missing) > 0 {
-				return policyRefusal("a new ticket", st)
-			}
-		}
-		number, err := allocateNumber(t, p.ID)
-		if err != nil {
-			return err
-		}
-		id, key := newID(), TicketKey(p.Key, number)
-		by := t.op.author()
-		if _, err := t.tx.ExecContext(t.ctx, "INSERT INTO tickets (id, project_id, number, key, title, created_at, created_by, updated_at) VALUES (?, ?, ?, ?, '', ?, ?, ?)",
-			id, p.ID, number, key, stamp(t.now), by, stamp(t.now)); err != nil {
-			return err
-		}
-		t.created(id, key)
-		value, err := encodeValue(ticketCreated{ID: id, ProjectID: p.ID, Number: number, Key: key, CreatedAt: t.now, CreatedBy: by})
-		if err != nil {
-			return err
-		}
-		base := ChangeRow{Entity: EntityTicket, EntityID: id, TicketID: id, ProjectID: p.ID}
-		create := base
-		create.Op, create.Value = OpCreate, value
-		if err := t.record(create); err != nil {
-			return err
-		}
-		if err := t.setScalars("tickets", base, ticketDefaults, after); err != nil {
-			return err
-		}
-		assignees, err := t.members(base, assigneeSet, n.Assignees, nil)
-		if err != nil {
-			return err
-		}
-		if _, err := t.members(base, labelSet, n.Labels, nil); err != nil {
-			return err
-		}
-		return t.knowPeople(n.Owner, assignees)
+		_, err := t.createTicket(n, nil, nil, "")
+		return err
 	})
+}
+
+// createTicket makes the ticket n names (CreateTicket's rules), extra's
+// columns (an import's source and linked issue) set after its own fields,
+// each row's op opOf of its column where opOf names one (an import's title
+// and description, observe), its create row keeping fingerprint where it
+// is one (an import's), and gives its id.
+func (t *tx) createTicket(n NewTicket, extra []fieldValue, opOf map[string]string, fingerprint string) (string, error) {
+	p, err := t.project(n.Project)
+	if err != nil {
+		return "", err
+	}
+	if !p.ArchivedAt.IsZero() {
+		return "", refuse(RefusalArchived, "%s is archived", p.Key)
+	}
+	status := n.Status
+	if status == "" {
+		status = TicketBacklog
+	}
+	after := fieldValues(ticketDefaults)
+	for _, f := range []struct{ key, label, column, value string }{
+		{"ticket.title", "the title", "title", n.Title},
+		{"ticket.description", "the description", "description", n.Description},
+		{"ticket.acceptance", "the acceptance criteria", "acceptance", n.Acceptance},
+	} {
+		if err := setText(after, f.key, f.label, f.column, f.value); err != nil {
+			return "", err
+		}
+	}
+	if err := setVocabulary(after, status, n.Priority, n.Horizon, n.Owner); err != nil {
+		return "", err
+	}
+	if err := checkMembers(TicketMembers{Assignees: n.Assignees, Labels: n.Labels}, TicketMembers{}); err != nil {
+		return "", err
+	}
+	if err := checkCount("assignees", len(n.Assignees), MaxAssignees); err != nil {
+		return "", err
+	}
+	if err := checkCount("labels", len(n.Labels), MaxTicketLabels); err != nil {
+		return "", err
+	}
+	// The references, inside the transaction.
+	for _, id := range n.Labels {
+		if err := t.reference("labels", "label", p, id); err != nil {
+			return "", err
+		}
+	}
+	if n.Milestone != "" {
+		if err := t.reference("milestones", "milestone", p, n.Milestone); err != nil {
+			return "", err
+		}
+		setField(after, "milestone_id", n.Milestone)
+	}
+	if n.Parent != "" {
+		parent, err := t.parent(p, n.Parent, Ticket{})
+		if err != nil {
+			return "", err
+		}
+		setField(after, "parent_id", parent)
+	}
+	if closed(status) {
+		setField(after, "closed_at", stamp(t.now))
+	}
+	// Made done, it meets its project's close policy as made: no
+	// acceptance and no link yet, so only a policy that requires
+	// nothing lets it.
+	if status == TicketDone {
+		if st := closeState(p.CloseRequires, Ticket{Owner: n.Owner, Acceptance: n.Acceptance}, nil, t.now); len(st.Missing) > 0 {
+			return "", policyRefusal("a new ticket", st)
+		}
+	}
+	number, err := allocateNumber(t, p.ID)
+	if err != nil {
+		return "", err
+	}
+	id, key := newID(), TicketKey(p.Key, number)
+	by := t.op.author()
+	if _, err := t.tx.ExecContext(t.ctx, "INSERT INTO tickets (id, project_id, number, key, title, created_at, created_by, updated_at) VALUES (?, ?, ?, ?, '', ?, ?, ?)",
+		id, p.ID, number, key, stamp(t.now), by, stamp(t.now)); err != nil {
+		return "", err
+	}
+	t.created(id, key)
+	value, err := encodeValue(ticketCreated{ID: id, ProjectID: p.ID, Number: number, Key: key, CreatedAt: t.now, CreatedBy: by, Fingerprint: fingerprint})
+	if err != nil {
+		return "", err
+	}
+	base := ChangeRow{Entity: EntityTicket, EntityID: id, TicketID: id, ProjectID: p.ID}
+	create := base
+	create.Op, create.Value = OpCreate, value
+	if err := t.record(create); err != nil {
+		return "", err
+	}
+	if err := t.writeScalars("tickets", base, ticketDefaults, after, opOf); err != nil {
+		return "", err
+	}
+	if len(extra) > 0 {
+		cols := columns(extra)
+		before, err := t.scalars("tickets", id, cols)
+		if err != nil {
+			return "", err
+		}
+		if err := t.setScalars("tickets", base, before, extra); err != nil {
+			return "", err
+		}
+	}
+	assignees, err := t.members(base, assigneeSet, n.Assignees, nil)
+	if err != nil {
+		return "", err
+	}
+	if _, err := t.members(base, labelSet, n.Labels, nil); err != nil {
+		return "", err
+	}
+	return id, t.knowPeople(n.Owner, assignees)
 }
 
 // EditTicket edits the live ticket with the key (ticket.edit): it sets
@@ -220,8 +246,12 @@ func (s *Store) CreateTicket(ctx context.Context, op Op, n NewTicket) (Receipt, 
 // and removed, or named twice, is invalid; an edit that changes nothing
 // is refused invalid. A name the edit gives (a new owner, a person:
 // assignee added) that the directory lacks is added to it, after the
-// ticket's rows (knowPeople). A deleted ticket is not_found; an archived
-// project refuses it (archived).
+// ticket's rows (knowPeople). A title or description the ticket's owners
+// give its linked item's system is not the edit's to change
+// (external_owned: a read writes it, or a take over makes it Dispatch's).
+// A close gated by a policy that requires merged records the read it
+// rested on in closed_on, in the same operation. A deleted ticket is
+// not_found; an archived project refuses it (archived).
 func (s *Store) EditTicket(ctx context.Context, op Op, key string, e TicketEdit) (Receipt, error) {
 	args := struct {
 		Key string `json:"key"`
@@ -247,6 +277,13 @@ func (s *Store) EditTicket(ctx context.Context, op Op, key string, e TicketEdit)
 		} {
 			if f.value == nil {
 				continue
+			}
+			// A field the linked item's system owns is written by a read
+			// alone: an edit that would change it is external_owned.
+			if *f.value != valueOf(before, f.column) {
+				if err := ownedRefusal(tk, f.column); err != nil {
+					return err
+				}
 			}
 			if err := setText(after, f.key, f.label, f.column, *f.value); err != nil {
 				return err
@@ -315,20 +352,42 @@ func (s *Store) EditTicket(ctx context.Context, op Op, key string, e TicketEdit)
 		}
 		// The gate: done is entered only when the policy is met by the
 		// ticket as this edit leaves it.
+		var closedOn *ClosedOn
 		if status != tk.Status && status == TicketDone {
 			draft := tk
 			draft.Owner, draft.Acceptance = valueOf(after, "owner"), valueOf(after, "acceptance")
-			st, err := closeOf(t.ctx, t.tx, p, draft)
+			st, err := closeOf(t.ctx, t.tx, p, draft, t.now)
 			if err != nil {
 				return err
 			}
 			if len(st.Missing) > 0 {
 				return policyRefusal(tk.Key, st)
 			}
+			if slices.Contains(p.CloseRequires, RequireMerged) {
+				closedOn = st.mergedOn
+			}
 		}
 		base := ChangeRow{Entity: EntityTicket, EntityID: tk.ID, TicketID: tk.ID, ProjectID: tk.ProjectID}
 		if err := t.setScalars("tickets", base, before, after); err != nil {
 			return err
+		}
+		if closedOn != nil {
+			// The read the gated close rested on, which travels in the log
+			// with it (closed_on).
+			value, err := encodeValue(closedOn)
+			if err != nil {
+				return err
+			}
+			if len(value) > MaxClosedOn {
+				return refuse(RefusalBound, "the read the close rests on is %d bytes, more than %d", len(value), MaxClosedOn)
+			}
+			prior, err := t.scalars("tickets", tk.ID, []string{"closed_on"})
+			if err != nil {
+				return err
+			}
+			if err := t.setScalars("tickets", base, prior, []fieldValue{{"closed_on", value}}); err != nil {
+				return err
+			}
 		}
 		assignees, err := t.members(base, assigneeSet, e.Add.Assignees, e.Remove.Assignees)
 		if err != nil {
@@ -377,8 +436,11 @@ func (s *Store) DeleteTicket(ctx context.Context, op Op, key string) (Receipt, e
 // reference may not come back: a run link of its naming a run another
 // live ticket has linked meanwhile (a tombstone holds no run) is removed
 // in the same operation, one remove row naming its tags, so a run
-// belongs to one live ticket at most. A live ticket is invalid; an
-// archived project refuses it (archived).
+// belongs to one live ticket at most. Its linked issue cannot be shared so:
+// a ticket whose linked item another live ticket took while it was deleted
+// is refused external_linked, naming that ticket (one item, one live
+// ticket: the check an import and a link make, linkedTo). A live ticket is
+// invalid; an archived project refuses it (archived).
 func (s *Store) UndeleteTicket(ctx context.Context, op Op, key string) (Receipt, error) {
 	args := struct {
 		Key string `json:"key"`
@@ -394,6 +456,14 @@ func (s *Store) UndeleteTicket(ctx context.Context, op Op, key string) (Receipt,
 		}
 		if before[0].value == "" {
 			return refuse(RefusalInvalid, "%s is not deleted", tk.Key)
+		}
+		// Live again, it would be a second live ticket of its linked item
+		// when another took the item while it was deleted (external_linked,
+		// naming that ticket): one item, one live ticket.
+		if tk.ExternalID != "" {
+			if err := t.linkedTo(tk.ExternalID, tk.ID); err != nil {
+				return err
+			}
 		}
 		if err := t.setScalars("tickets", ChangeRow{Entity: EntityTicket, EntityID: tk.ID, TicketID: tk.ID, ProjectID: tk.ProjectID},
 			before, []fieldValue{{"deleted_at", ""}}); err != nil {
@@ -769,13 +839,14 @@ const ticketColumns = `id, project_id, number, key, title, description, acceptan
 // scanTicket reads a ticket's row, its sets not among it.
 func scanTicket(row interface{ Scan(...any) error }) (Ticket, error) {
 	var tk Ticket
-	var accepted, created, updated, closedAt, deleted string
+	var accepted, created, updated, closedAt, deleted, snapshot, authority string
 	if err := row.Scan(&tk.ID, &tk.ProjectID, &tk.Number, &tk.Key, &tk.Title, &tk.Description, &tk.Acceptance, &tk.Status, &tk.Priority,
 		&tk.Horizon, &tk.Owner, &tk.ParentID, &tk.MilestoneID, &accepted, &tk.AcceptedBy, &tk.AcceptedFor, &tk.AcceptedCriteria,
-		&tk.AcceptedNote, &tk.Source, &tk.ExternalID, &tk.ExternalURL, &tk.ExternalSnapshot, &tk.Authority, &created, &tk.CreatedBy,
+		&tk.AcceptedNote, &tk.Source, &tk.ExternalID, &tk.ExternalURL, &snapshot, &authority, &created, &tk.CreatedBy,
 		&updated, &closedAt, &deleted, &tk.Rev); err != nil {
 		return Ticket{}, err
 	}
+	tk.ExternalSnapshot, tk.Authority = rawJSON(snapshot), rawJSON(authority)
 	tk.AcceptedAt, tk.CreatedAt, tk.UpdatedAt, tk.ClosedAt, tk.DeletedAt = unstamp(accepted), unstamp(created), unstamp(updated), unstamp(closedAt), unstamp(deleted)
 	return tk, nil
 }
@@ -925,7 +996,24 @@ func readTicket(ctx context.Context, q queryer, key string) (Ticket, error) {
 			tk.MilestoneID = ""
 		}
 	}
+	if schemaOf(q) >= 4 {
+		// A database before version 4, read as it was found, has no
+		// closed_on.
+		var closedOn string
+		if err := q.QueryRowContext(ctx, "SELECT closed_on FROM tickets WHERE id = ?", tk.ID).Scan(&closedOn); err != nil {
+			return Ticket{}, err
+		}
+		tk.ClosedOn = rawJSON(closedOn)
+	}
 	return tk, nil
+}
+
+// rawJSON is a JSON column's text as a raw value, nil for an empty one.
+func rawJSON(s string) json.RawMessage {
+	if s == "" {
+		return nil
+	}
+	return json.RawMessage(s)
 }
 
 // readTexts reads the one text column of the rows a query gives; none is
@@ -957,9 +1045,12 @@ func readTexts(ctx context.Context, q queryer, query string, args ...any) ([]str
 // with its number; its close policy's state, computed now; its approved
 // plan revisions' summaries, newest first (none, one on a local write,
 // more when a merge left more: the field rules), at most
-// MaxTicketApproved, each with its staleness; and how many launches it
-// has. The revisions and the launches are reads of their own (Plans), so
-// the read keeps its bound.
+// MaxTicketApproved, each with its staleness; how many launches it has;
+// and, from schema version 4, its linked issue's owners and last read and
+// its links' reads summarised (with the snapshot, the counterpart group,
+// closed_on and the policy's merged, at most MaxTicketExternalParts more
+// than main's read). The revisions, the launches and a link's whole read are reads
+// of their own (Plans, LinkReadOf), so the read keeps its bound.
 type TicketView struct {
 	Ticket
 	Parent         *RelatedTicket   `json:"parent,omitempty"`
@@ -973,6 +1064,13 @@ type TicketView struct {
 	Close          CloseState       `json:"close"`
 	Approved       []PlanSummary    `json:"approved"`
 	LaunchCount    int              `json:"launchCount"`
+	// Owners is the ticket's field owners, when it has a linked issue;
+	// ExternalRead its ticket_reads row, when its linked issue was read;
+	// LinkReads its live links' last reads as summaries, by link id
+	// (Program item IN1a). The snapshot itself is the Ticket's.
+	Owners       *Owners                    `json:"owners,omitempty"`
+	ExternalRead *TicketRead                `json:"externalRead,omitempty"`
+	LinkReads    map[string]LinkReadSummary `json:"linkReads"`
 }
 
 // TicketChildren is the first MaxTicketChildren live children of a
@@ -1040,11 +1138,26 @@ func (s *Store) Ticket(ctx context.Context, key string) (TicketView, error) {
 		if err != nil {
 			return err
 		}
-		if v.Close, err = closeOf(ctx, q, p, tk); err != nil {
+		if v.Close, err = closeOf(ctx, q, p, tk, time.Now()); err != nil {
 			return err
 		}
 		if v.Approved, err = plansOf(ctx, q, tk, true); err != nil {
 			return err
+		}
+		if tk.ExternalID != "" {
+			o := ParseAuthority(string(tk.Authority)).Owners()
+			v.Owners = &o
+		}
+		if v.ExternalRead, err = ticketReadOf(ctx, q, tk.ID); err != nil {
+			return err
+		}
+		reads, err := linkReadsOf(ctx, q, tk.ID)
+		if err != nil {
+			return err
+		}
+		v.LinkReads = map[string]LinkReadSummary{}
+		for id, r := range reads {
+			v.LinkReads[id] = r.summary()
 		}
 		if schemaOf(q) < 2 {
 			// A version 1 database, read as it was found: no launches.

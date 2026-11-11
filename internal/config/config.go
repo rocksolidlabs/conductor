@@ -177,7 +177,9 @@ type Switchyard struct {
 	// OpenHostLinks bounds the links the open hosts of one address keep on
 	// the switchyard at a time (32 by default): links outlive restarts, so
 	// they are counted, not only rate-limited. A link whose host has been
-	// gone five minutes gives its place to a new one of the address.
+	// gone five minutes gives its place to a new one of the address. A host
+	// admitted open counts here the links its instance made with a host
+	// token, and those past the bound end, the oldest first.
 	OpenHostLinks int `json:"openHostLinks,omitempty"`
 }
 

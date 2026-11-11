@@ -90,6 +90,14 @@ func ConfirmsSubmit(agentID string, sig catalog.Signal) bool {
 func (a Adapter) clone() Adapter {
 	a.Assets = maps.Clone(a.Assets)
 	a.Events = slices.Clone(a.Events)
+	if a.Usage != nil {
+		u := *a.Usage
+		a.Usage = &u
+	}
+	if a.Probe != nil {
+		p := *a.Probe
+		a.Probe = &p
+	}
 	return a
 }
 

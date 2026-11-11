@@ -63,6 +63,10 @@ type Adapter struct {
 	// Probe says how the agent identifies itself (its version flag and
 	// output); nil when Conductor does not know it yet.
 	Probe *Probe
+	// Usage reads the agent's usage windows through its own tool
+	// (usage.go); nil when Conductor knows no way to read this agent's
+	// usage, which is never zero.
+	Usage *UsageReader
 	// MCP returns the arguments that register Conductor's MCP server
 	// (conductor mcp) with the agent for one launch, given the hooks dir;
 	// nil for an agent Conductor cannot register it with at launch.

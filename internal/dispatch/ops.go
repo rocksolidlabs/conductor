@@ -111,6 +111,14 @@ const (
 	// revision whose handed-over comment is edited or gone, a launch of
 	// one whose ticket's intent changed since it was approved.
 	RefusalStalePlan = "stale_plan"
+	// RefusalExternalLinked is an outside item another live ticket has as
+	// its linked issue already, the receipt's Key naming that ticket;
+	// RefusalExternalOwned an edit of a field the linked item's system
+	// owns; RefusalStaleRead a read older, by the system's own clock, than
+	// the one kept (Program item IN1a, external.go, reads.go).
+	RefusalExternalLinked = "external_linked"
+	RefusalExternalOwned  = "external_owned"
+	RefusalStaleRead      = "stale_read"
 )
 
 // The words of an op_conflict refusal: the id was used with other
@@ -172,7 +180,7 @@ func (r *Refusal) Error() string { return r.Code + ": " + r.Words }
 
 // refuse is a Refusal with the given code and words.
 func refuse(code, format string, args ...any) error {
-	return &Refusal{Code: code, Words: fmt.Sprintf(format, args...)}
+	return &Refusal{Code: code, Words: addressFree(fmt.Sprintf(format, args...))}
 }
 
 // The entities a change row names. A set member (an assignee, label,
@@ -214,6 +222,14 @@ const (
 	OpDelete    = "delete"
 	OpReconcile = "reconcile"
 	OpMigrate   = "migrate"
+	// OpObserve is a ticket's title or description set to what a read of
+	// its linked item made it (an import, a refresh, a field given back),
+	// and OpAdopt the field made Dispatch's keeping its text (a take over,
+	// an unlink: value the text, prior the system that owned it), so a
+	// row says by its own kind which side wrote it (Program item IN1a,
+	// "The counterpart group").
+	OpObserve = "observe"
+	OpAdopt   = "adopt"
 )
 
 // ChangeRow is one row of the changes log: an operation on one field of
@@ -290,6 +306,8 @@ type tx struct {
 	// runSuffix mints a run id's last part for a launch (mintRunID), nil
 	// for crypto/rand's: a test's seam.
 	runSuffix func() string
+	// systems is the store's trackers' systems (Options.Systems).
+	systems []string
 	// onRefusal, when a change sets it, runs once a refusal has undone the
 	// change, in its transaction before its receipt: what a refusal keeps
 	// beside the receipt (an upload's lease, dropped with it).
@@ -352,8 +370,9 @@ func (t *tx) record(c ChangeRow) error {
 var searchedFields = map[string]bool{"title": true, "description": true, "acceptance": true}
 
 // searchedBy is the search entry a change row makes stale, and whether
-// there is one: a ticket's own on its create and on a set of a field the
-// entry holds; a comment's on every row of the comment (its create, its
+// there is one: a ticket's own on its create and on a set or an observe of
+// a field the entry holds (an adopt keeps the field's text, so it makes
+// none stale); a comment's on every row of the comment (its create, its
 // body, its delete), since the entry holds the body while the comment is
 // live. No other entry: a comment's rows leave its ticket's own entry and
 // its other comments' as they are (docs/plans/dispatch.md, Owner
@@ -361,7 +380,7 @@ var searchedFields = map[string]bool{"title": true, "description": true, "accept
 // since a list leaves a deleted ticket out by its row.
 func searchedBy(c ChangeRow) (searchEntry, bool) {
 	switch {
-	case c.Entity == EntityTicket && (c.Op == OpCreate || (c.Op == OpSet && searchedFields[c.Field])):
+	case c.Entity == EntityTicket && (c.Op == OpCreate || ((c.Op == OpSet || c.Op == OpObserve) && searchedFields[c.Field])):
 		return searchEntry{id: c.EntityID}, true
 	case c.Entity == EntityComment:
 		return searchEntry{comment: true, id: c.EntityID}, true
@@ -578,7 +597,7 @@ func (s *Store) apply(ctx context.Context, op Op, intent, fp string, change func
 	if found {
 		return rc, nil, nil
 	}
-	t := &tx{ctx: ctx, tx: dbtx, now: time.Now().UTC(), op: op, intent: intent, fp: fp, runExists: s.runExists, sight: s.sight, runSuffix: s.runSuffix}
+	t := &tx{ctx: ctx, tx: dbtx, now: time.Now().UTC(), op: op, intent: intent, fp: fp, runExists: s.runExists, sight: s.sight, runSuffix: s.runSuffix, systems: s.systems}
 	// The change runs under a savepoint: a refusal undoes it and keeps the
 	// transaction, and with it the write lock, for its receipt, so no other
 	// writer (a second store on the file) runs the same operation between
@@ -676,8 +695,10 @@ func conflictReceipt(op Op, intent, words string) Receipt {
 // another, op_conflict, as the receipt would have answered. A plan
 // revision's proposal finds its create row (entity plan), a launch its
 // create row (entity launch), a link's add its add row (a ticket's links),
-// whose link names the fingerprint; a first row of another kind is
-// another operation's, op_conflict. A record with no fingerprint (a link
+// whose link names the fingerprint, an import its ticket's create row,
+// which keeps the import's fingerprint and is answered with the ticket's
+// id and key; a first row of another kind is another operation's,
+// op_conflict. A record with no fingerprint (a link
 // a version 1 store added) cannot be compared: op_conflict with the words
 // that say so, which refuses the resend rather than take content it
 // cannot check, and a new operation for the same link is refused as a
@@ -719,6 +740,24 @@ func prunedAnswer(ctx context.Context, q queryer, op Op, intent, fp string) (rc 
 			return conflictReceipt(op, intent, wordsOpConflict), true, nil
 		}
 		table, id = "reviews", entityID
+	case IntentTicketImport:
+		// An import's first row is its ticket's create row, which keeps the
+		// import's fingerprint (ticketCreated): the same content is answered
+		// with that ticket, so a resend finds what it made and imports
+		// nothing twice (R1); a create row of another kind of operation (a
+		// ticket.create keeps none) is another operation's.
+		var v ticketCreated
+		if entity != EntityTicket || kind != OpCreate || json.Unmarshal([]byte(value), &v) != nil || v.Fingerprint != fp {
+			return conflictReceipt(op, intent, wordsOpConflict), true, nil
+		}
+		if err := q.QueryRowContext(ctx, "SELECT key FROM tickets WHERE id = ?", entityID).Scan(&done.Key); err != nil {
+			if isNoRows(err) {
+				return Receipt{}, false, fmt.Errorf("dispatch: the operation %s made ticket %s, which has no row", op.ID, entityID)
+			}
+			return Receipt{}, false, err
+		}
+		done.ID = entityID
+		return done, true, nil
 	case IntentFindingMark:
 		var v struct {
 			ID string `json:"id"`
@@ -820,8 +859,11 @@ func insertReceipt(ctx context.Context, dbtx *sql.Tx, op Op, intent, fp string, 
 	return err
 }
 
-// words cuts a refusal's words to maxReceiptWords characters.
+// words is a refusal's words as a receipt keeps them: address-free
+// (addressFree: no address's query, fragment or user) and cut to
+// maxReceiptWords characters.
 func words(s string) string {
+	s = addressFree(s)
 	rs := []rune(s)
 	if len(rs) <= maxReceiptWords {
 		return s
@@ -1035,6 +1077,13 @@ func (t *tx) scalars(table, id string, cols []string) ([]fieldValue, error) {
 // set row naming the field, its value and its prior. A field unchanged
 // writes nothing. table and the columns are the code's, never a client's.
 func (t *tx) setScalars(table string, base ChangeRow, before, after []fieldValue) error {
+	return t.writeScalars(table, base, before, after, nil)
+}
+
+// writeScalars is setScalars, each row's op opOf of its column where
+// opOf names one (an import's title and description, observe), set
+// otherwise.
+func (t *tx) writeScalars(table string, base ChangeRow, before, after []fieldValue, opOf map[string]string) error {
 	prior := map[string]string{}
 	for _, f := range before {
 		prior[f.column] = f.value
@@ -1048,6 +1097,9 @@ func (t *tx) setScalars(table string, base ChangeRow, before, after []fieldValue
 		}
 		row := base
 		row.Field, row.Op, row.Value, row.Prior = f.column, OpSet, f.value, prior[f.column]
+		if op := opOf[f.column]; op != "" {
+			row.Op = op
+		}
 		if err := t.record(row); err != nil {
 			return err
 		}
