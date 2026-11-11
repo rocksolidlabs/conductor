@@ -301,6 +301,24 @@ func TestCaptureBoundsAtTheirEdges(t *testing.T) {
 		{"a source's path", MaxHintFile, RefusalBound, false, func(_ *NewCapture, f *CaptureFacts, k int) {
 			f.Sources[0] = []Source{{Path: rep("a", k), How: "vue", Class: "tracked"}}
 		}},
+		{"a hint's line", MaxFindingLine, RefusalInvalid, false, func(n *NewCapture, _ *CaptureFacts, k int) {
+			element(n).Hints = []Hint{{How: "vue", File: "a.vue", Line: k}}
+		}},
+		{"a hint's column", MaxFindingLine, RefusalInvalid, false, func(n *NewCapture, _ *CaptureFacts, k int) {
+			element(n).Hints = []Hint{{How: "vue", File: "a.vue", Column: k}}
+		}},
+		{"a source's line", MaxFindingLine, RefusalInvalid, false, func(_ *NewCapture, f *CaptureFacts, k int) {
+			f.Sources[0] = []Source{{Path: "a.vue", How: "vue", Class: "tracked", Line: k}}
+		}},
+		{"a source's column", MaxFindingLine, RefusalInvalid, false, func(_ *NewCapture, f *CaptureFacts, k int) {
+			f.Sources[0] = []Source{{Path: "a.vue", How: "vue", Class: "tracked", Column: k}}
+		}},
+		{"the viewport's width", MaxRectCoord, RefusalInvalid, false, func(n *NewCapture, _ *CaptureFacts, k int) { n.Viewport.Width = k }},
+		{"the viewport's height", MaxRectCoord, RefusalInvalid, false, func(n *NewCapture, _ *CaptureFacts, k int) { n.Viewport.Height = k }},
+		{"the viewport's scale", 64, RefusalInvalid, false, func(n *NewCapture, _ *CaptureFacts, k int) { n.Viewport.Scale = float64(k) }},
+		{"the viewport's pixel ratio", 64, RefusalInvalid, false, func(n *NewCapture, _ *CaptureFacts, k int) { n.Viewport.DPR = float64(k) }},
+		{"the element's motion", MaxRectCoord, RefusalInvalid, false, func(n *NewCapture, _ *CaptureFacts, k int) { element(n).State.Motion = k }},
+		{"the cut steps", 10, RefusalBound, false, func(n *NewCapture, _ *CaptureFacts, k int) { element(n).Cut = slices.Repeat([]string{"html"}, k) }},
 		{"the selection's changed count", MaxChangedCount, RefusalInvalid, false, func(n *NewCapture, _ *CaptureFacts, k int) { n.Label.Changed = k }},
 		{"the tree's changed count", MaxChangedCount, RefusalInvalid, false, func(_ *NewCapture, f *CaptureFacts, k int) { f.Changed = k }},
 		{"the element's report, as measured", MaxElementReport, RefusalBound, false, func(n *NewCapture, _ *CaptureFacts, k int) {
@@ -330,8 +348,46 @@ func TestCaptureBoundsAtTheirEdges(t *testing.T) {
 			}
 		})
 	}
+	// The numbers bound from below: one past refused (a scale and a pixel
+	// ratio are above 0, the rest 0 or more).
+	for _, c := range []struct {
+		name string
+		set  func(n *NewCapture, f *CaptureFacts)
+	}{
+		{"the viewport's width", func(n *NewCapture, _ *CaptureFacts) { n.Viewport.Width = -1 }},
+		{"the viewport's height", func(n *NewCapture, _ *CaptureFacts) { n.Viewport.Height = -1 }},
+		{"the viewport's scale", func(n *NewCapture, _ *CaptureFacts) { n.Viewport.Scale = 0 }},
+		{"the viewport's pixel ratio", func(n *NewCapture, _ *CaptureFacts) { n.Viewport.DPR = 0 }},
+		{"the element's motion", func(n *NewCapture, _ *CaptureFacts) { element(n).State.Motion = -1 }},
+		{"a hint's line", func(n *NewCapture, _ *CaptureFacts) { element(n).Hints = []Hint{{How: "vue", File: "a.vue", Line: -1}} }},
+		{"a hint's column", func(n *NewCapture, _ *CaptureFacts) {
+			element(n).Hints = []Hint{{How: "vue", File: "a.vue", Column: -1}}
+		}},
+		{"a source's line", func(_ *NewCapture, f *CaptureFacts) {
+			f.Sources[0] = []Source{{Path: "a.vue", How: "vue", Class: "tracked", Line: -1}}
+		}},
+		{"a source's column", func(_ *NewCapture, f *CaptureFacts) {
+			f.Sources[0] = []Source{{Path: "a.vue", How: "vue", Class: "tracked", Column: -1}}
+		}},
+	} {
+		n, f := testCapture(true)
+		c.set(&n, &f)
+		moment(&n)
+		var ref *Refusal
+		if _, _, err := checkCapture(n, f, true); !errors.As(err, &ref) || ref.Code != RefusalInvalid {
+			t.Errorf("%s below its bound: %v, want invalid", c.name, err)
+		}
+	}
 	// The changed paths are cut, never refused: at whichever bound comes
-	// first, the count whole.
+	// first, the count whole. exact(0) encodes to MaxChangedPathsBytes
+	// exactly, exact(1) one byte past.
+	exact := func(past int) []string {
+		paths := slices.Repeat([]string{rep("p", 4000)}, 3)
+		return append(paths, rep("q", MaxChangedPathsBytes-measure(paths)-len(`,""`)+past))
+	}
+	if measure(exact(0)) != MaxChangedPathsBytes || measure(exact(1)) != MaxChangedPathsBytes+1 {
+		t.Fatalf("the changed paths encode to %d and %d", measure(exact(0)), measure(exact(1)))
+	}
 	for _, c := range []struct {
 		paths    []string
 		kept     int
@@ -342,6 +398,8 @@ func TestCaptureBoundsAtTheirEdges(t *testing.T) {
 		{slices.Repeat([]string{"a.go"}, MaxChangedPaths), MaxChangedPaths, false, MaxChangedPaths, false},
 		{slices.Repeat([]string{"a.go"}, MaxChangedPaths+1), MaxChangedPaths, true, MaxChangedPaths + 1, true},
 		{slices.Repeat([]string{rep("p", 4000)}, 5), 4, true, 5, true},
+		{exact(0), 4, false, 4, false},
+		{exact(1), 3, true, 4, true},
 		{[]string{"a.go"}, 1, false, 9, true},
 	} {
 		n, f := testCapture(true)

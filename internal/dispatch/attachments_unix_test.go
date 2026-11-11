@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -303,5 +304,68 @@ func TestPublishOnUnix(t *testing.T) {
 	}
 	if err := publish(tmp, dst, syncDirectory); !errors.Is(err, errUploadGone) {
 		t.Fatalf("no temp file: %v", err)
+	}
+}
+
+// A publication that fails before its file is renamed into place (the
+// shard cannot be made; the rename fails) fails the upload, a capture's
+// and an attachment's, and leaves no file of it anywhere under the
+// store's folder and no lease, at once, before any sweep.
+func TestAPublicationThatFailsLeavesNoFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("a directory's mode does not bind root")
+	}
+	s, key := attachmentTicket(t)
+	root := rootOf(s)
+	t.Cleanup(func() { os.Chmod(root, 0o700) })
+	unmakable := func(string) {
+		if err := os.Chmod(root, 0o500); err != nil {
+			t.Error(err)
+		}
+	}
+	unrenamable := func(sum string) {
+		if err := os.MkdirAll(filepath.Join(contentAt(s, sum), "in-the-way"), 0o700); err != nil {
+			t.Error(err)
+		}
+	}
+	n, f := testCapture(true)
+	tries := 0
+	for _, c := range []struct {
+		name string
+		in   func(sum string)
+	}{{"the shard cannot be made", unmakable}, {"the rename fails", unrenamable}} {
+		for _, capture := range []bool{true, false} {
+			tries++
+			content := pngOf(t, 8, 8, byte(tries))
+			s.beforePublish = func() { c.in(sumOf(content)) }
+			var err error
+			if capture {
+				_, err = create(t, s, opID("capture", tries), n, f, content)
+			} else {
+				_, _, err = put(s, opID("attachment", tries), key, "a.png", content)
+			}
+			s.beforePublish = nil
+			if err := os.Chmod(root, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err == nil {
+				t.Fatalf("%s (capture %v): the upload was taken", c.name, capture)
+			}
+			noUploads(t, s)
+			if err := filepath.WalkDir(s.dir, func(p string, d fs.DirEntry, err error) error {
+				if err != nil || !d.Type().IsRegular() {
+					return err
+				}
+				if b, err := os.ReadFile(p); err != nil || bytes.Equal(b, content) {
+					t.Errorf("%s (capture %v): the upload's content is left at %s (%v)", c.name, capture, p, err)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.RemoveAll(filepath.Dir(contentAt(s, sumOf(content)))); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 }

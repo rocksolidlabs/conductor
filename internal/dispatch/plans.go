@@ -885,7 +885,7 @@ func (s *Store) Plans(ctx context.Context, key string) ([]PlanSummary, error) {
 		out, err = plansOf(ctx, q, tk, false)
 		return err
 	})
-	return out, err
+	return answer(out, err)
 }
 
 // plansOf reads the revisions of the ticket, newest first, each with its
@@ -962,7 +962,7 @@ func (s *Store) Plan(ctx context.Context, id string) (PlanView, error) {
 		out = PlanView{PlanSummary: p, Body: json.RawMessage(body)}
 		return nil
 	})
-	return out, err
+	return answer(out, err)
 }
 
 // planColumns is a revision's row as scanPlan reads it, its body not

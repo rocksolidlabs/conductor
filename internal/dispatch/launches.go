@@ -649,7 +649,7 @@ func (s *Store) Launches(ctx context.Context, key string, limit int) ([]LaunchSu
 		out, err = scanLaunches(ctx, q, "SELECT "+launchColumns+launchFrom+" WHERE l.ticket_id = ? ORDER BY l.created_at DESC, l.id DESC LIMIT ?", tk.ID, limit)
 		return err
 	})
-	return out, err
+	return answer(out, err)
 }
 
 // LaunchByID reads the launch with the id, whole: its summary and its
@@ -674,7 +674,7 @@ func (s *Store) LaunchByID(ctx context.Context, id string) (LaunchView, error) {
 		out = LaunchView{LaunchSummary: l, Package: json.RawMessage(pkg)}
 		return nil
 	})
-	return out, err
+	return answer(out, err)
 }
 
 // LaunchActor reads the actor the launch with the id was made under: its
@@ -691,7 +691,7 @@ func (s *Store) LaunchActor(ctx context.Context, id string) (string, error) {
 		}
 		return err
 	})
-	return actor, err
+	return answer(actor, err)
 }
 
 // PendingLaunches reads every launch still pending, oldest first: what
@@ -708,7 +708,7 @@ func (s *Store) PendingLaunches(ctx context.Context) ([]LaunchSummary, error) {
 		out, err = scanLaunches(ctx, q, "SELECT "+launchColumns+launchFrom+" WHERE l.state = ? ORDER BY l.created_at, l.id", LaunchPending)
 		return err
 	})
-	return out, err
+	return answer(out, err)
 }
 
 // ChangedSince reads what changed of the ticket of the launch with the id
@@ -767,8 +767,5 @@ func (s *Store) ChangedSince(ctx context.Context, id string) (LaunchChanges, err
 			(SELECT entity_id FROM changes WHERE entity = ? AND op = ? AND ticket_id = ? AND seq > ?)`,
 			ticketID, EntityComment, OpCreate, ticketID, since).Scan(&out.Comments)
 	})
-	if errors.Is(err, ErrNotFound) {
-		return LaunchChanges{}, ErrNotFound
-	}
-	return out, err
+	return answer(out, err)
 }

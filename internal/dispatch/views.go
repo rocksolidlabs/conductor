@@ -254,7 +254,7 @@ func (s *Store) Views(ctx context.Context, project string) ([]View, error) {
 		out, err = projectViews(ctx, q, p.ID)
 		return err
 	})
-	return out, err
+	return answer(out, err)
 }
 
 // View reads the view with the id, deleted or not. ErrNotFound when there
@@ -269,7 +269,7 @@ func (s *Store) View(ctx context.Context, id string) (View, error) {
 		}
 		return err
 	})
-	return out, err
+	return answer(out, err)
 }
 
 // viewOrder is the order the views are read in: by name, without regard

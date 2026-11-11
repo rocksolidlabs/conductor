@@ -433,7 +433,10 @@ func (s *Store) LinkReadOf(ctx context.Context, linkID string) (r LinkRead, foun
 		found = true
 		return nil
 	})
-	return r, found, err
+	if err != nil {
+		return LinkRead{}, false, err
+	}
+	return r, found, nil
 }
 
 // linkReadsOf reads the reads of the ticket's live links, by link id; none

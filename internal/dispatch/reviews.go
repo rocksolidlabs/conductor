@@ -1743,7 +1743,7 @@ func (s *Store) Review(ctx context.Context, id string) (Review, error) {
 		}
 		return err
 	})
-	return out, err
+	return answer(out, err)
 }
 
 // Finding reads the finding with the id, with its review's candidate, its
@@ -1768,7 +1768,10 @@ func (s *Store) Finding(ctx context.Context, id string) (Finding, string, error)
 		out = fs[0]
 		return q.QueryRowContext(ctx, "SELECT key FROM tickets WHERE id = ?", out.TicketID).Scan(&key)
 	})
-	return out, key, err
+	if err != nil {
+		return Finding{}, "", err
+	}
+	return out, key, nil
 }
 
 // Reviews reads a page of the reviews of the ticket with the key, deleted
@@ -1837,7 +1840,7 @@ func (s *Store) PendingReviews(ctx context.Context) ([]ReviewSummary, error) {
 		out, err = scanReviews(ctx, q, "SELECT "+reviewColumns+reviewFrom+" WHERE r.app_state = ? ORDER BY r.created_at, r.id", ApplicationPending)
 		return err
 	})
-	return out, err
+	return answer(out, err)
 }
 
 // SetReviewReadFailsForTest sets the seam Review runs before its read (nil
@@ -1911,7 +1914,7 @@ func (s *Store) Marks(ctx context.Context, findingID, after string) (MarksPage, 
 		}
 		return rows.Err()
 	})
-	return out, err
+	return answer(out, err)
 }
 
 // Findings reads a page of the findings of the ticket with the key,

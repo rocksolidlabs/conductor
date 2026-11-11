@@ -3,6 +3,7 @@ package dispatch
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -433,10 +435,37 @@ func TestEveryReadHidesADeletedCapture(t *testing.T) {
 	}
 }
 
+// failingAfter is a read's queryer (the store's readQueryer) whose
+// statements past the first after fail as a cancelled context fails them;
+// steps counts every statement it was given.
+type failingAfter struct {
+	queryer
+	after int64
+	steps *atomic.Int64
+}
+
+func (q failingAfter) fails() bool { return q.steps.Add(1) > q.after }
+
+func (q failingAfter) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	if q.fails() {
+		return nil, context.Canceled
+	}
+	return q.queryer.QueryContext(ctx, query, args...)
+}
+
+func (q failingAfter) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	if q.fails() {
+		cctx, cancel := context.WithCancel(ctx)
+		cancel()
+		return q.queryer.QueryRowContext(cctx, query, args...)
+	}
+	return q.queryer.QueryRowContext(ctx, query, args...)
+}
+
 // An error answers nothing else: every read of the package, driven into
 // its errors (a capture deleted, one that never was, a page past its
-// bound, a store closed), gives the zero value of every result beside a
-// non-nil error.
+// bound, a read that fails after each of its steps, a store closed), gives
+// the zero value of every result beside a non-nil error.
 func TestAnErrorAnswersNothingElse(t *testing.T) {
 	ctx := context.Background()
 	s, key := attachmentTicket(t)
@@ -444,7 +473,7 @@ func TestAnErrorAnswersNothingElse(t *testing.T) {
 	gone := mustCreate(t, s, "gone", n, f, pngOf(t, 8, 8, 42))
 	rc, err := s.DeleteCapture(ctx, testOp("delete"), gone)
 	want(t, rc, err, StatusDone, "")
-	mustCreate(t, s, "live", n, f, pngOf(t, 8, 8, 43))
+	live := mustCreate(t, s, "live", n, f, pngOf(t, 8, 8, 43))
 	errs := 0
 	drive := func(when string) {
 		for _, name := range storeReads() {
@@ -482,6 +511,41 @@ func TestAnErrorAnswersNothingElse(t *testing.T) {
 			t.Errorf("%s: no error", c.name)
 		}
 		answersNothingElse(t, c.name, results, err)
+	}
+	// A read that fails in its middle: every read, driven by the captures'
+	// names and the seqs of their change rows, its statements failing from
+	// the one after its first, then after its second, and so on until it
+	// makes no statement more.
+	feed, err := s.ChangesAfter(ctx, 0, MaxFeedPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ks := []int{0, 1, 2, 10}
+	for _, c := range feed {
+		if c.Entity == EntityCapture {
+			ks = append(ks, int(c.Seq))
+		}
+	}
+	failed := map[string]bool{}
+	for _, name := range storeReads() {
+		for _, word := range []string{gone, live, newID(), key, f.Run, f.Task, ""} {
+			for _, k := range ks {
+				for after := int64(1); ; after++ {
+					var steps atomic.Int64
+					s.readQueryer = func(q queryer) queryer { return failingAfter{q, after, &steps} }
+					results, err := callRead(ctx, s, name, word, k)
+					s.readQueryer = nil
+					if steps.Load() <= after {
+						break
+					}
+					failed[name] = true
+					answersNothingElse(t, fmt.Sprintf("failing after %d step(s): %s(%q, %d)", after, name, word, k), results, err)
+				}
+			}
+		}
+	}
+	if !failed["ChangeValue"] || !failed["Document"] || !failed["Captures"] {
+		t.Fatalf("the reads failed in their middle: %v", failed)
 	}
 	if err := s.Close(); err != nil {
 		t.Fatal(err)

@@ -237,7 +237,7 @@ func (s *Store) Labels(ctx context.Context, project string) ([]Label, error) {
 		out, err = labelsOf(ctx, q, p.ID)
 		return err
 	})
-	return out, err
+	return answer(out, err)
 }
 
 // Label reads the label with the id of the project with the key, deleted
@@ -258,7 +258,7 @@ func (s *Store) Label(ctx context.Context, project, id string) (Label, error) {
 		}
 		return err
 	})
-	return out, err
+	return answer(out, err)
 }
 
 // labelsOf reads the live labels of the project with the id, by name.

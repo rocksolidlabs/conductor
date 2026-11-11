@@ -867,5 +867,5 @@ func (s *Store) Blockers(ctx context.Context, key string) ([]RelatedTicket, erro
 		}
 		return rows.Err()
 	})
-	return out, err
+	return answer(out, err)
 }

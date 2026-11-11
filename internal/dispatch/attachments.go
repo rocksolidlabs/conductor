@@ -221,9 +221,10 @@ func (s *Store) takes(op Op, intent string) (Receipt, bool, error) {
 // limit, or that check refuses (received.refused), is removed and nothing
 // is leased or published. The operation that names it takes the lease
 // (takeUpload); one that never ran drops it (dropLease). A publication
-// that fails drops the lease and gives the error with the content's hash
-// alone, since the file may be in place (a directory's sync failed after
-// the rename): the caller's to collect or to leave to the sweep.
+// that fails drops the lease, removes the temp file and gives the error
+// with the content's hash alone, since the file may be in place (a
+// directory's sync failed after the rename): the caller's to collect or
+// to leave to the sweep.
 func (s *Store) upload(ctx context.Context, r io.Reader, limit int64, check func(path string) error) (received, error) {
 	s.mu.Lock()
 	syncDir, beforePublish, beforeCommit := s.syncDir, s.beforePublish, s.beforeCommit
@@ -239,15 +240,20 @@ func (s *Store) upload(ctx context.Context, r io.Reader, limit int64, check func
 	if u.tmp == "" {
 		return u, nil
 	}
+	// The temp file goes on every way out that does not publish it.
+	tmp, published := u.tmp, false
+	defer func() {
+		if !published {
+			os.Remove(tmp)
+		}
+	}()
 	if check != nil {
 		if u.refused = check(u.tmp); u.refused != nil {
-			os.Remove(u.tmp)
 			u.tmp = ""
 			return u, nil
 		}
 	}
 	if u.lease, err = s.lease(ctx, u.sum); err != nil {
-		os.Remove(u.tmp)
 		return received{}, err
 	}
 	if beforePublish != nil {
@@ -260,6 +266,7 @@ func (s *Store) upload(ctx context.Context, r io.Reader, limit int64, check func
 		s.dropLease(ctx, u.lease)
 		return received{sum: u.sum}, err
 	}
+	published = true
 	if beforeCommit != nil {
 		beforeCommit()
 	}
@@ -503,7 +510,7 @@ func (s *Store) Attachment(ctx context.Context, id string) (Attachment, error) {
 		}
 		return err
 	})
-	return a, err
+	return answer(a, err)
 }
 
 // OpenAttachment opens the content of the live attachment with the id, of

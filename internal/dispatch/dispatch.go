@@ -144,6 +144,9 @@ type Store struct {
 	// a test commits a change there and sees the read answer the state
 	// before it whole.
 	betweenReads func()
+	// readQueryer, when set, wraps the queryer of every read transaction
+	// (read): a test fails a read's statements from one of its choosing.
+	readQueryer func(queryer) queryer
 	// beforeReceipt, when set, runs inside an operation's transaction,
 	// the write lock held, once the change is made (or refused and
 	// undone) and before the receipt is written and the transaction
@@ -652,10 +655,23 @@ func (s *Store) read(ctx context.Context, fn func(q queryer) error) error {
 			q = olderSchema{queryer: rtx, version: version}
 		}
 	}
+	if s.readQueryer != nil {
+		q = s.readQueryer(q)
+	}
 	if err := fn(q); err != nil {
 		return err
 	}
 	return rtx.Commit()
+}
+
+// answer is what a read gives: its result, or beside an error the zero
+// value, whatever the read had read before the error.
+func answer[T any](v T, err error) (T, error) {
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	return v, nil
 }
 
 // olderSchema is a read's queryer on a database of a version before

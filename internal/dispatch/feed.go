@@ -89,5 +89,5 @@ func (s *Store) ChangeValue(ctx context.Context, seq int64) (string, error) {
 		}
 		return err
 	})
-	return value, err
+	return answer(value, err)
 }
