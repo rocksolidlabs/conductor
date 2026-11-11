@@ -49,11 +49,6 @@ Usage:
   conductor history search|show|similar|sessions|session|forget|resume|reindex [--server URL] [--token T]
                                search the history, read and forget session records, and resume a
                                session's agent conversation from its record
-  conductor accounts list|add|rename|retire|remove|default [--server URL] [--token T]
-                               the account references an agent's login lives in, and each
-                               adapter's default
-  conductor capacity [--agent ID] [--account ID] [--model M] [--read [--check]] [--json]
-                               the agents' usage windows, plans and resets before a launch
   conductor export [--server URL] [--token T] [--out FILE]
                                write the running server's data directory as one zip archive
   conductor export --data-dir DIR [--config FILE] [--out FILE]
@@ -119,10 +114,6 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return runDecision(ctx, args[1:], stdout, stderr)
 	case "history":
 		return runHistory(ctx, args[1:], stdout, stderr)
-	case "accounts":
-		return runAccounts(ctx, args[1:], stdout, stderr)
-	case "capacity":
-		return runCapacity(ctx, args[1:], stdout, stderr)
 	case "export":
 		return runExport(ctx, args[1:], stdout, stderr)
 	case "restore":

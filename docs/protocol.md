@@ -5336,7 +5336,3 @@ for a page to read the view again; it names no label, folder or figure.
 It goes through each client's queue (256 entries, the stream's own bound),
 and a client that cannot keep up is dropped, as for a `run` event: a slow
 listener costs the server one bounded queue and nothing more.
-
-`conductor accounts list|add|rename|retire|remove|default` and
-`conductor capacity [--agent] [--account] [--model] [--read [--check]]
-[--json]` are these routes from the shell; a write reads the rev first.
