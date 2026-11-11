@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { anyStarting, asCapabilities, extensionsWords, has, NO_EXTENSIONS, type Capabilities } from './capabilities'
+import { anyStarting, asCapabilities, extensionsWords, has, identityLine, MAX_IDENTITY_DETAIL, NO_EXTENSIONS, type Capabilities } from './capabilities'
 
 describe('extensionsWords', () => {
   it('says the open-source feature set for none', () => {
@@ -79,5 +79,31 @@ describe('asCapabilities', () => {
   it('reads a body with no list as none', () => {
     expect(asCapabilities({})).toEqual({ providers: [] })
     expect(asCapabilities(null)).toEqual({ providers: [] })
+  })
+
+  it("keeps a detail of one line and at most 80 characters, counted as Go counts runes, and drops any other", () => {
+    const row = (detail: unknown) => asCapabilities({ providers: [{ kind: 'identity', name: 'cloud', state: 'ready', detail }] }).providers[0]!.detail
+    expect(row('signed in as Ana · workspace Acme')).toBe('signed in as Ana · workspace Acme')
+    const astral = '😀'.repeat(MAX_IDENTITY_DETAIL)
+    expect(astral.length).toBe(160) // UTF-16 units: the bound is code points
+    expect(row(astral)).toBe(astral)
+    expect(row('😀'.repeat(MAX_IDENTITY_DETAIL + 1))).toBeUndefined()
+    expect(row('a'.repeat(MAX_IDENTITY_DETAIL + 1))).toBeUndefined()
+    expect(row('two\nlines')).toBeUndefined()
+    expect(row(7)).toBeUndefined()
+    expect(row('')).toBeUndefined()
+  })
+})
+
+describe('identityLine', () => {
+  it("is the About card's Identity row for a ready identity provider with a detail, and empty otherwise", () => {
+    const caps = (state: 'ready' | 'starting', detail?: string): Capabilities => ({
+      providers: [{ kind: 'notifications', name: 'push', state: 'ready', detail: 'not this one' }, { kind: 'identity', name: 'cloud', state, ...(detail ? { detail } : {}) }],
+    })
+    expect(identityLine(caps('ready', 'signed in as Ana · workspace Acme'))).toBe('cloud: signed in as Ana · workspace Acme')
+    expect(identityLine(caps('starting', 'signed in as Ana'))).toBe('')
+    expect(identityLine(caps('ready'))).toBe('')
+    expect(identityLine({ providers: [] })).toBe('')
+    expect(identityLine(null)).toBe('')
   })
 })

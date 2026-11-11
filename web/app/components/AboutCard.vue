@@ -19,6 +19,8 @@ const rows = computed(() => {
   if (server) out.push({ key: 'server', label: 'Server', value: server, mono: true })
   if (v?.electron) out.push({ key: 'runtime', label: 'Runtime', value: `electron ${v.electron} · chrome ${v.chrome}`, mono: true })
   if (capabilities.words.value) out.push({ key: 'extensions', label: 'Extensions', value: capabilities.words.value, wrap: true })
+  // Who the server is signed in as, from the identity provider (docs/plans/identity-uplink.md).
+  if (capabilities.identity.value) out.push({ key: 'identity', label: 'Identity', value: capabilities.identity.value, wrap: true })
   return out
 })
 </script>
