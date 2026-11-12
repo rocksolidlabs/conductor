@@ -285,9 +285,9 @@ export interface DecisionEvent {
 export const MAX_DECISION_EVENT = 256
 
 /**
- * The decide grant (docs/protocol.md "Decisions", docs/plans/decide-grant.md; internal/proto/decide.go): a principal an identity
- * provider gives `decide` and not `admin` is admitted to `GET /api/me`, `GET /api/me/decisions` and the read and the respond
- * route of a decision given to the grant, and is answered by every other route as without it.
+ * The decide grant (docs/protocol.md "Decisions", docs/plans/decide-grant.md; internal/proto/decide.go): a grant an identity
+ * provider may give a principal. Yardmaster's admission judges what such a principal may read and answer of a decision given to
+ * the grant; the routes that admit it, whose replies the types below are, are #847's, and no route serves them yet.
  */
 export const GRANT_DECIDE = 'decide'
 
@@ -365,16 +365,6 @@ export interface DecideRefusal {
 }
 export const MAX_DECIDE_REPLY = MAX_DECIDE_VIEW + 1024
 export const MAX_DECIDE_REFUSAL_WORDS = 200
-
-/** A route's destinations (`POST /api/decisions/{did}/route`): the grant's beside the operator, a person and a responsibility. */
-export type DecisionDestination =
-  | { kind: 'operator' }
-  | { kind: 'person'; name: string }
-  | { kind: 'role'; name: string }
-  | { kind: 'grant'; grant: typeof GRANT_DECIDE }
-
-/** The route to the grant's refusal on a server with no identity provider registered. */
-export const NO_IDENTITY = 'no_identity'
 
 /**
  * Data of a `capacity` event on GET /api/events (Program item AC1, docs/protocol.md "Capacity"): a reading of an agent's usage on
