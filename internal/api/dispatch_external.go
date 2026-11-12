@@ -1296,10 +1296,21 @@ func (s *Server) readAddedLink(ds *dispatch.Store, key string, l dispatch.NewLin
 // without a failure: a read not made (no token kept for the link's host,
 // the link's wait ended, no slot within the phase, an address the parser
 // no longer reads for a link read before) or failed refuses it, 409
-// close_policy naming the link, nothing closed (the answer; nil to go on).
-func (s *Server) readForClose(r *http.Request, ds *dispatch.Store, key string, op dispatch.Op, e dispatch.TicketEdit) *apiError {
+// close_policy naming the link, nothing closed. A store's failure before
+// the reads is the edit's to answer, but once the server has begun to stop
+// an edit whose reads it could not settle is a busy route's 503, nothing
+// closed. False once it answered.
+func (s *Server) readForClose(w http.ResponseWriter, r *http.Request, ds *dispatch.Store, key string, op dispatch.Op, e dispatch.TicketEdit) bool {
 	if e.Set.Status == nil || *e.Set.Status != dispatch.TicketDone {
-		return nil
+		return true
+	}
+	running := func() bool {
+		if s.external.stopping().Err() == nil {
+			return true
+		}
+		w.Header().Set("Retry-After", "5")
+		writeAPIError(w, errItemBusy)
+		return false
 	}
 	caps := s.trackerCaps()
 	ctx, cancel := s.trackerContext(r, caps.busy+caps.merged+caps.write)
@@ -1310,20 +1321,28 @@ func (s *Server) readForClose(r *http.Request, ds *dispatch.Store, key string, o
 	defer pcancel()
 	project, _, _ := dispatch.ParseKey(key)
 	pv, err := ds.Project(ctx, project)
-	if err != nil || !slices.Contains(pv.Project.CloseRequires, dispatch.RequireMerged) {
-		return nil
+	switch {
+	case err != nil:
+		return running()
+	case !slices.Contains(pv.Project.CloseRequires, dispatch.RequireMerged):
+		return true
 	}
 	// The edit's content as EditTicket hands it to Apply.
 	args := struct {
 		Key string `json:"key"`
 		dispatch.TicketEdit
 	}{key, e}
-	if _, found, err := ds.Replay(ctx, op, "ticket.edit", args); err != nil || found {
-		return nil
+	_, found, err := ds.Replay(ctx, op, "ticket.edit", args)
+	if err != nil {
+		return running()
 	}
 	tv, err := ticketFor(ctx, ds, key)
-	if err != nil || tv.Status == dispatch.TicketDone || op.ExpectedRev != 0 && op.ExpectedRev != tv.Rev {
-		return nil
+	var refused *dispatch.Refusal
+	switch {
+	case found, errors.As(err, &refused), err == nil && (tv.Status == dispatch.TicketDone || op.ExpectedRev != 0 && op.ExpectedRev != tv.Rev):
+		return true
+	case err != nil:
+		return running()
 	}
 	var wg sync.WaitGroup
 	at := make(chan struct{}, maxCloseReads)
@@ -1364,15 +1383,16 @@ func (s *Server) readForClose(r *http.Request, ds *dispatch.Store, key string, o
 		})
 	}
 	wg.Wait()
-	if s.external.stopping().Err() != nil {
-		return errItemBusy
+	if !running() {
+		return false
 	}
 	for _, name := range failed {
 		if name != "" {
-			return newAPIError(http.StatusConflict, "close_policy", "the delivery "+name+" could not be read for the close, so the ticket is not closed: read it again")
+			writeAPIError(w, newAPIError(http.StatusConflict, "close_policy", "the delivery "+name+" could not be read for the close, so the ticket is not closed: read it again"))
+			return false
 		}
 	}
-	return nil
+	return true
 }
 
 // ticketFor reads key's ticket for a route that reads GitHub: a deleted

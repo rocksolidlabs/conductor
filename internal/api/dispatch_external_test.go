@@ -1560,7 +1560,8 @@ func closeRefused(t *testing.T, e *testEnv, what, key string, out map[string]any
 // read succeeds again; with the token removed after a merged read, the
 // close is refused naming the link, nothing closed, and closes once a
 // token is kept again; a read the store's check refuses is recorded as
-// failed and refuses the close.
+// failed and refuses the close; once the server has begun to stop, the
+// close is a busy route's answer, nothing closed.
 func TestCloseMergedLatestRead(t *testing.T) {
 	e, g, merged := mergedEnv(t, nil)
 	key, link := merged(96)
@@ -1592,6 +1593,13 @@ func TestCloseMergedLatestRead(t *testing.T) {
 	closeRefused(t, e, "a read the store's check refuses", key, e.closeIt(t, key, http.StatusConflict), "octo/app#90")
 	if r, _, err := e.srv.dispatch.LinkReadOf(t.Context(), link); err != nil || !strings.Contains(r.Error, "could not be kept") {
 		t.Fatalf("the refused read was not recorded as failed: %+v %v", r, err)
+	}
+
+	key, _ = merged(89)
+	e.srv.external.end()
+	out := e.closeIt(t, key, http.StatusServiceUnavailable)
+	if tv, _ := e.srv.dispatch.Ticket(t.Context(), key); errorCode(out) != "tracker_busy" || tv.Status == dispatch.TicketDone {
+		t.Fatalf("a close once the stop began: %v, the ticket %s", out, tv.Status)
 	}
 }
 
