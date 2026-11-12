@@ -68,7 +68,7 @@ type ghItems struct {
 
 // poisonText is a control sequence, the characters that reorder a line,
 // and a value past every one-line bound.
-var poisonText = "\x1b[2J\x07‮⁦" + strings.Repeat("z", 2100)
+var poisonText = "\x1b[2J\x07\xe2\x80\xae\xe2\x81\xa6" + strings.Repeat("z", 2100)
 
 // formKeys are the fields of the fake's answers in a fixed form the
 // adapter parses (an id, an address, a time, a commit), not text.

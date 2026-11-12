@@ -38,10 +38,11 @@ func TestStorableAgreesWithCheck(t *testing.T) {
 			}
 		}
 	}
-	if got := Storable("line‮one\nand\ttwo\x1b[2J", 100, true); got != "line‮one\nand\ttwo[2J" {
+	const rlo = "\xe2\x80\xae" // U+202E
+	if got := Storable("line"+rlo+"one\nand\ttwo\x1b[2J", 100, true); got != "line"+rlo+"one\nand\ttwo[2J" {
 		t.Errorf("lines: %q", got)
 	}
-	if got := Storable("line‮one\nand\ttwo\x1b[2J", 100, false); got != "lineoneandtwo[2J" {
+	if got := Storable("line"+rlo+"one\nand\ttwo\x1b[2J", 100, false); got != "lineoneandtwo[2J" {
 		t.Errorf("one line: %q", got)
 	}
 }
