@@ -146,22 +146,35 @@ func stubViews() map[string]capacity.View {
 		"ghost": {Agent: capacity.ViewAgent{ID: "ghost", Name: "Ghost", Adapter: "claude"}, Account: capacity.ViewAccount{ID: "default"},
 			Host: capacity.ViewHost{Kind: capacity.HostNative, Name: "box"}, State: capacity.StateNotInstalled, Words: capacity.StateWords(capacity.StateNotInstalled), Fresh: capacity.FreshNone},
 		"later": {Agent: capacity.ViewAgent{ID: "later", Adapter: "claude"}, Account: capacity.ViewAccount{ID: "default"},
-			Host: capacity.ViewHost{Kind: "elsewhere"}, State: "a_later_state", Fresh: "a_later_freshness"},
+			Host: capacity.ViewHost{Kind: "elsewhere"}, State: "a_later_state", ReadAt: &read, Fresh: "a_later_freshness"},
 	}
 }
 
 type cliRun func(args []string, out, errOut io.Writer) (int, error)
 
-// runCLI runs a command against url and answers its exit and all it
-// printed, its error's text last (what conductor prints on stderr).
-func runCLI(t *testing.T, run cliRun, url string, args ...string) (int, string) {
+// runCmd runs a command with args and answers its exit, what it wrote on
+// standard output and on standard error, and its error. Every test of
+// the two commands runs them through here (runCLI too), so every command
+// a test runs is checked to print the token nowhere: on neither stream
+// and not in its error's text.
+func runCmd(t *testing.T, run cliRun, args ...string) (int, string, string, error) {
 	t.Helper()
 	var out, errb bytes.Buffer
-	code, err := run(append(args, "--server", url, "--token", dispatchToken), &out, &errb)
+	code, err := run(args, &out, &errb)
+	noToken(t, dispatchToken, out.String(), errb.String(), err)
+	return code, out.String(), errb.String(), err
+}
+
+// runCLI runs a command against url with the token, through runCmd, and
+// answers its exit and all it printed, its error's text last (what
+// conductor prints on stderr).
+func runCLI(t *testing.T, run cliRun, url string, args ...string) (int, string) {
+	t.Helper()
+	code, out, errOut, err := runCmd(t, run, append(args, "--server", url, "--token", dispatchToken)...)
 	if err != nil && code == 0 {
 		t.Fatalf("%v: %v", args, err)
 	}
-	text := out.String() + errb.String()
+	text := out + errOut
 	if err != nil {
 		text += "conductor: " + err.Error() + "\n"
 	}
@@ -292,7 +305,8 @@ func TestCapacityCommand(t *testing.T) {
 	}
 
 	code, out = runCLI(t, run, hs.URL, "--agent", "later")
-	for _, want := range []string{"runs where this conductor does not know (elsewhere)", "a_later_state: a state this conductor does not know"} {
+	for _, want := range []string{"runs where this conductor does not know (elsewhere)", "a_later_state: a state this conductor does not know",
+		"read 2026-11-10 20:00 UTC; a freshness this conductor does not know (a_later_freshness)"} {
 		if code != 0 || !strings.Contains(out, want) {
 			t.Errorf("a view of states this conductor does not know lacks %q:\n%s", want, out)
 		}
@@ -749,19 +763,18 @@ func TestCapacityCommandsArgumentsPrintOnlyPrinted(t *testing.T) {
 		{false, []string{"--server", host, "--insecure"}, 1},
 		{true, []string{"remove", "a" + evil, "--server", host, "--insecure"}, 1},
 	} {
-		var out, errb bytes.Buffer
-		args := append(c.args, "--token", dispatchToken)
-		run := runCapacity
+		command := runCapacity
 		if c.accounts {
-			run = runAccounts
+			command = runAccounts
 		}
-		code, err := run(cancelled, args, &out, &errb)
+		run := func(args []string, out, errOut io.Writer) (int, error) { return command(cancelled, args, out, errOut) }
+		code, out, errOut, err := runCmd(t, run, append(c.args, "--token", dispatchToken)...)
 		what := fmt.Sprintf("%q", c.args)
 		if code != c.code || err == nil {
 			t.Errorf("%s: exit %d %v, want %d with an error", what, code, err, c.code)
 		}
-		clean(t, what+" on stdout", out.String())
-		clean(t, what+" on stderr", errb.String())
+		clean(t, what+" on stdout", out)
+		clean(t, what+" on stderr", errOut)
 		if err != nil {
 			clean(t, what+" as its error", err.Error())
 		}
@@ -1157,6 +1170,9 @@ func TestTheCapacityOperationsCLIFormsAreCommands(t *testing.T) {
 	clearConductorEnv(t)
 	hs := (&capacityStub{views: stubViews()}).serve(t)
 	values := map[string]string{"ADAPTER": "claude", "WORDS": "Work", "DIR": "/srv/work", "ID": "a-aaaaaaaaaaaa"}
+	root := func(args []string, out, errOut io.Writer) (int, error) {
+		return Run(t.Context(), args, strings.NewReader(""), out, errOut)
+	}
 	rows := 0
 	for _, op := range api.Operations() {
 		if !strings.HasPrefix(op.Name, "accounts_") && !strings.HasPrefix(op.Name, "capacity_") {
@@ -1182,9 +1198,8 @@ func TestTheCapacityOperationsCLIFormsAreCommands(t *testing.T) {
 			}
 			args[i] = v
 		}
-		var out, errb bytes.Buffer
-		if code, err := Run(t.Context(), append(args, "--server", hs.URL, "--token", dispatchToken), strings.NewReader(""), &out, &errb); code != 0 || err != nil {
-			t.Errorf("%s: %q is not a command as written: exit %d %v\n%s", op.Name, op.CLI, code, err, errb.String())
+		if code, out := runCLI(t, root, hs.URL, args...); code != 0 {
+			t.Errorf("%s: %q is not a command as written: exit %d\n%s", op.Name, op.CLI, code, out)
 		}
 	}
 	if rows != 8 {
