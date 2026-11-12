@@ -301,6 +301,10 @@ type tx struct {
 	fp  string
 	n   int
 	seq int64
+	// holds, when a change sets it, says that what the operation asks
+	// holds already (a cancel of a send cancelled): done with no row, an
+	// answer every run of it gives again.
+	holds bool
 	// touched is every (entity, id) the change rows named, in order; the
 	// first is the operation's subject, whose rev the receipt carries.
 	touched []touched
@@ -574,6 +578,11 @@ func (s *Store) Apply(ctx context.Context, op Op, intent string, args any, chang
 		return Receipt{}, err
 	}
 	s.mu.Lock()
+	if beforeLock := s.beforeLock; beforeLock != nil {
+		s.mu.Unlock()
+		beforeLock()
+		s.mu.Lock()
+	}
 	rc, changed, err := s.apply(ctx, op, intent, fp, change)
 	if err == nil && len(changed) > 0 {
 		s.committed(changed)
@@ -619,9 +628,10 @@ func (s *Store) apply(ctx context.Context, op Op, intent, fp string, change func
 		return Receipt{}, nil, cancelledAs(ctx, err)
 	}
 	err = change(t)
-	if err == nil && t.n == 0 {
+	if err == nil && t.n == 0 && !t.holds {
 		// Done with no row, a success would leave the log nothing to answer
-		// a resend by once its receipt is pruned, and run again.
+		// a resend by once its receipt is pruned, and run again: only one
+		// whose run again gives the same answer (holds) may.
 		err = refuse(RefusalInvalid, "the operation changes nothing")
 	}
 	if err != nil {
@@ -696,6 +706,25 @@ func conflictReceipt(op Op, intent, words string) Receipt {
 	return Receipt{OpID: op.ID, Intent: intent, Status: StatusFailed, Refusal: RefusalOpConflict, Error: words}
 }
 
+// capturedAnswers is, for each intent whose operation's first row is a
+// capture's or a send's, the row that may answer it once its receipt is
+// pruned (prunedAnswer): its entity, its op and its field; that row's
+// fingerprint must then be the operation's. A row of these entities
+// answers no other intent: op_conflict.
+var capturedAnswers = map[string]struct {
+	entity, op string
+	fields     []string
+}{
+	IntentCaptureCreate: {EntityCapture, OpCreate, []string{""}},
+	IntentCaptureEdit:   {EntityCapture, OpAdd, []string{"versions", "sets"}},
+	IntentCaptureDelete: {EntityCapture, OpSet, []string{"deleted_at"}},
+	IntentCaptureSend:   {EntityCaptureSend, OpCreate, []string{""}},
+	IntentSendSent:      {EntityCaptureSend, OpAdd, []string{"outcomes"}},
+	IntentSendRefused:   {EntityCaptureSend, OpAdd, []string{"outcomes"}},
+	IntentSendCancelled: {EntityCaptureSend, OpAdd, []string{"outcomes"}},
+	IntentSendCancel:    {EntityCaptureSend, OpAdd, []string{"cancels"}},
+}
+
 // prunedAnswer is the answer to an operation whose receipt the store
 // keeps no more (prune), from the changes log, which keeps the
 // operation's first row (actor, op id, 0) for good: none, and found is
@@ -729,6 +758,12 @@ func prunedAnswer(ctx context.Context, q queryer, op Op, intent, fp string) (rc 
 		return Receipt{}, false, err
 	}
 	done := Receipt{OpID: op.ID, Intent: intent, Status: StatusDone, Repeat: true}
+	if entity == EntityCapture || entity == EntityCaptureSend {
+		// A capture's or a send's first row answers its own intent alone.
+		if a, ok := capturedAnswers[intent]; !ok || a.entity != entity || a.op != kind || !slices.Contains(a.fields, field) {
+			return conflictReceipt(op, intent, wordsOpConflict), true, nil
+		}
+	}
 	var table, id string
 	switch intent {
 	case IntentPlanPropose:
@@ -801,13 +836,12 @@ func prunedAnswer(ctx context.Context, q queryer, op Op, intent, fp string) (rc 
 			return Receipt{}, false, err
 		}
 	case IntentSendSent, IntentSendRefused, IntentSendCancelled, IntentSendCancel:
-		// A send's outcome and a cancel are the operation's first row, which
-		// keeps its fingerprint (sendRow).
-		field0 := map[bool]string{true: "cancels", false: "outcomes"}[intent == IntentSendCancel]
+		// A send's outcome and a cancel are the operation's first row
+		// (capturedAnswers), which keeps its fingerprint.
 		var v struct {
 			Fingerprint string `json:"fingerprint"`
 		}
-		if entity != EntityCaptureSend || field != field0 || kind != OpAdd || json.Unmarshal([]byte(value), &v) != nil || v.Fingerprint != fp {
+		if json.Unmarshal([]byte(value), &v) != nil || v.Fingerprint != fp {
 			return conflictReceipt(op, intent, wordsOpConflict), true, nil
 		}
 		done.ID = entityID

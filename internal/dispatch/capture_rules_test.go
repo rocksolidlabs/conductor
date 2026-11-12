@@ -651,7 +651,8 @@ func TestTheDocumentCarriesTheDrift(t *testing.T) {
 		t.Fatalf("the document sent: %v %+v", err, d.Origin.Drift)
 	}
 	desc := ticketPage(t, s, sendOf(t, s, sid).Target).Description
-	if !strings.HasPrefix(desc, "> **The tree changed between the selection and the save**: the selection read `bbbbbbb+ddddddd`, the save `aaaaaaa+ccccccc`.\n") {
+	if !strings.HasPrefix(desc, "> **The tree changed between the selection and the save.**\n") ||
+		!strings.Contains(desc, "\nthe selection read: bbbbbbb+ddddddd\nthe save read: aaaaaaa+ccccccc\n") {
 		t.Fatalf("the description: %s", desc)
 	}
 }

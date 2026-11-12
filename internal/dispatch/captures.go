@@ -435,20 +435,21 @@ func (s *Store) EditCapture(ctx context.Context, op Op, digest, id string, expec
 // files) and its annotations' versions and sets, so a capture deleted
 // unsent leaves nothing the sweep must keep; the rest is hidden by every
 // read (the package's comment says what a delete removes and what it
-// hides). Its sends, the files they hold and the ticket attachments they
-// made stay. Once the delete has committed, the screenshot it released
-// goes through the one collection (collectOne): at once when nothing else
-// names it, kept when anything does. not_found when there is none or it
-// is deleted.
+// hides). Its sends stay, each readable as a row, and so do the ticket
+// attachments they made; a sent send and a pending one keep the files they
+// hold, and one that ended refused or cancelled, having delivered nothing,
+// lets its files go in the same transaction (releaseEnded; a pending one
+// does when it ends so), so its files answer not_found. Once the delete
+// has committed, the files it released go through the one collection
+// (collectOne): at once when nothing else names them, kept when anything
+// does. not_found when there is none or it is deleted.
 func (s *Store) DeleteCapture(ctx context.Context, op Op, id string) (Receipt, error) {
-	released := ""
+	var released []string
 	rc, err := s.withUpload(ctx, op, IntentCaptureDelete, captureArgs{ID: id}, func() error { return nil }, nil, 0, nil, func(t *tx, _ *received) error {
-		released = ""
 		c, err := t.liveCapture(id)
 		if err != nil {
 			return err
 		}
-		released = c.Image.SHA256
 		base := ChangeRow{Entity: EntityCapture, EntityID: id}
 		if err := t.setScalars("captures", base, []fieldValue{{"deleted_at", ""}}, []fieldValue{{"deleted_at", stamp(t.now)}}); err != nil {
 			return err
@@ -471,11 +472,13 @@ func (s *Store) DeleteCapture(ctx context.Context, op Op, id string) (Receipt, e
 				return err
 			}
 		}
-		return nil
+		// After the tombstone's row, the delete's first.
+		if released, err = t.releaseEnded(id, ""); err == nil && c.Image.SHA256 != "" {
+			released = append(released, c.Image.SHA256)
+		}
+		return err
 	})
-	if err == nil && rc.Status == StatusDone && released != "" {
-		_ = s.collectOne(ctx, released)
-	}
+	s.collectAll(ctx, rc, err, released)
 	return rc, err
 }
 

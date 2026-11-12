@@ -21,16 +21,19 @@ import (
 // (CaptureDocument, conductor.capture/1), frozen as a content file named by
 // its SHA-256 (the send's row keeps the digest, never the document), and
 // the screenshot's content file when there is one; the send holds both
-// (capture_files, holder its id) for as long as it is there. A send to a
-// ticket writes, in its one transaction, the ticket when it is new (its
-// description ticketText), an attachment row naming each of the two files
-// (no file copied), a comment naming the capture and its revision, and its
-// sent outcome. A send to Brakeman carries the request the API made of it
-// (SendFacts.Request, a JSON object of at most MaxSendRequest bytes), kept
-// whole so the desk can be asked again, and is pending until it is
-// settled. A send never carries an edit made after its revision, the
-// screenshot's bytes inside the document, or a request beside a ticket;
-// the tree's secret never reaches a capture (the API scrubs it first).
+// (capture_files, holder its id) while something can still use them: a
+// send of a live capture, and a sent one, for good; a send of a deleted
+// capture that ended refused or cancelled lets them go (releaseEnded). A
+// send to a ticket writes, in its one transaction, the ticket when it is
+// new (its description ticketText), an attachment row naming each of the
+// two files (no file copied), a comment in the store's own words
+// (sendComment), and its sent outcome. A send to Brakeman carries the
+// request the API made of it (SendFacts.Request, a JSON object of at most
+// MaxSendRequest bytes), kept whole so the desk can be asked again, and is
+// pending until it is settled. A send never carries an edit made after its
+// revision, the screenshot's bytes inside the document, or a request
+// beside a ticket; the tree's secret never reaches a capture (the API
+// scrubs it first).
 //
 // Who may make one: any operation's actor, as for every operation of the
 // store, which knows no roles (the API's route decides who sends).
@@ -44,7 +47,9 @@ import (
 // (CancelSend) only once a cancel was asked, and one the desk admitted
 // first is settled sent with its cancel still asked (AskedCancels), for the
 // settlement to close its request at the desk. A capture's delete leaves
-// its sends whole: what was sent stays.
+// its sends whole, each readable as a row: what was sent stays. Locally a
+// send that ended is ended: a sent outcome a replica brings later for one
+// whose files went makes it sent, and this store holds no file of it.
 
 // A send's kind and its state. SendReview and SendDecision are reserved:
 // the store refuses them until the items that own reviews and decisions
@@ -70,8 +75,11 @@ const (
 )
 
 // brakemanTarget is what a send to Brakeman is sent as: its request's id
-// at the desk, br-<n>.
-var brakemanTarget = regexp.MustCompile(`^br-[1-9][0-9]{0,18}$`)
+// at the desk, br-<n> of at most 18 digits. It is a copy of Brakeman's own
+// form (requestIDPattern, internal/brakeman/refs.go), since this package
+// imports none of the module's; TestBrakemansRequestIDIsTheStores holds
+// the copy to that source.
+var brakemanTarget = regexp.MustCompile(`^br-[1-9][0-9]{0,17}$`)
 
 // Destination is where a send goes as the person named it, kept as its
 // asked: a new ticket (Project, a project's key, and Title), an existing
@@ -386,16 +394,28 @@ func (t *tx) sendToTicket(c Capture, to Destination, doc *received) (string, []s
 			Value: value}); err != nil {
 			return "", nil, err
 		}
-		ids, names = append(ids, a.ID), append(names, inline(a.Name))
+		ids, names = append(ids, a.ID), append(names, a.Name)
 	}
-	body := fmt.Sprintf("Capture %s r%d of %s, attached as %s.", c.ID, c.Rev, inline(pageAddress(c.URL)), strings.Join(names, " and "))
-	if c.Image.How == ImageNone {
-		body += " No screenshot: " + c.Image.Why
-	}
-	if err := t.addComment(tk.Key, fitText(body, true)); err != nil {
+	if err := t.addComment(tk.Key, sendComment(c, names)); err != nil {
 		return "", nil, err
 	}
 	return tk.Key, ids, nil
+}
+
+// sendComment is the comment a send to a ticket writes, in the store's own
+// words alone: the capture's id and revision, the attachments' names
+// (fileName: the id and the revision) and whether there is a screenshot.
+// What the page gave and why there is no screenshot are the description's
+// (in its blocks) and the attached document's.
+func sendComment(c Capture, names []string) string {
+	for i, n := range names {
+		names[i] = "`" + n + "`"
+	}
+	body := fmt.Sprintf("Capture %s r%d, attached as %s.", c.ID, c.Rev, strings.Join(names, " and "))
+	if c.Image.How == ImageNone {
+		body += " It has no screenshot."
+	}
+	return body
 }
 
 // outcome appends an outcome to a send: its row and one add row of the
@@ -445,10 +465,13 @@ func (s *Store) CancelSend(ctx context.Context, op Op, id string) (Receipt, erro
 
 // settleSend appends an outcome of the kind to a send under the terminal
 // rule: a pending send alone takes one, any other is refused
-// stale_revision with its state named; not_found for no such send. The
-// receipt's id is the send's.
+// stale_revision with its state named; not_found for no such send. A send
+// of a deleted capture that ends refused or cancelled lets its files go in
+// the same transaction (releaseEnded). The receipt's id is the send's.
 func (s *Store) settleSend(ctx context.Context, op Op, intent, kind string, args captureArgs) (Receipt, error) {
-	return s.Apply(ctx, op, intent, args, func(t *tx) error {
+	var released []string
+	rc, err := s.Apply(ctx, op, intent, args, func(t *tx) error {
+		released = nil
 		sv, err := readSend(t.ctx, t.tx, args.ID, false)
 		switch {
 		case errors.Is(err, ErrNotFound):
@@ -478,17 +501,92 @@ func (s *Store) settleSend(ctx context.Context, op Op, intent, kind string, args
 			}
 		}
 		t.created(args.ID, "")
-		return t.outcome(args.ID, kind, args.Target, nil, why)
+		if err := t.outcome(args.ID, kind, args.Target, nil, why); err != nil || kind == SendSent {
+			return err
+		}
+		var gone bool
+		if err := t.tx.QueryRowContext(t.ctx, "SELECT deleted_at != '' FROM captures WHERE id = ?", sv.Capture).Scan(&gone); err != nil || !gone {
+			return err
+		}
+		released, err = t.releaseEnded(sv.Capture, args.ID)
+		return err
 	})
+	s.collectAll(ctx, rc, err, released)
+	return rc, err
+}
+
+// collectAll collects the files an operation done released, once it is
+// committed (collectOne keeps any something else still names).
+func (s *Store) collectAll(ctx context.Context, rc Receipt, err error, released []string) {
+	if err == nil && rc.Status == StatusDone && !rc.Repeat {
+		for _, sum := range released {
+			_ = s.collectOne(ctx, sum)
+		}
+	}
+}
+
+// releaseEnded lets go the files held by the sends of the capture with the
+// id that ended without being sent (refused or cancelled), the send with
+// the id send alone when it is not "": each file row deleted and its add
+// row removed in the change log, in the caller's transaction (a delete's,
+// or the outcome's that ended the send once its capture was deleted). A
+// sent send keeps what it holds: those are its ticket's. It gives the
+// hashes let go, for the caller to collect once committed.
+func (t *tx) releaseEnded(captureID, send string) ([]string, error) {
+	where, args := "s.capture_id = ? AND "+sendStateSQL("s.id")+" IN ('refused', 'cancelled')", []any{captureID}
+	if send != "" {
+		where, args = where+" AND s.id = ?", append(args, send)
+	}
+	held := [][2]string{}
+	err := func() error {
+		rows, err := t.tx.QueryContext(t.ctx, "SELECT f.holder, f.sha256 FROM capture_sends s JOIN capture_files f ON f.capture_id = s.capture_id AND f.holder = s.id WHERE "+where+
+			" ORDER BY f.holder, f.sha256", args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var h [2]string
+			if err := rows.Scan(&h[0], &h[1]); err != nil {
+				return err
+			}
+			held = append(held, h)
+		}
+		return rows.Err()
+	}()
+	if err != nil {
+		return nil, err
+	}
+	sums := []string{}
+	for _, h := range held {
+		value := fmt.Sprintf(`{"sha256":%q,"holder":%q}`, h[1], h[0])
+		var tag Tag
+		if err := t.tx.QueryRowContext(t.ctx, "SELECT actor, op_id, n FROM changes WHERE entity = ? AND entity_id = ? AND field = 'files' AND op = ? AND value = ?",
+			EntityCaptureSend, h[0], OpAdd, value).Scan(&tag.Actor, &tag.OpID, &tag.N); err != nil && !isNoRows(err) {
+			return nil, err
+		}
+		if _, err := t.tx.ExecContext(t.ctx, "DELETE FROM capture_files WHERE capture_id = ? AND sha256 = ? AND holder = ?", captureID, h[1], h[0]); err != nil {
+			return nil, err
+		}
+		if err := t.recordRemove(ChangeRow{Entity: EntityCaptureSend, EntityID: h[0], Field: "files", Value: value}, []Tag{tag}); err != nil {
+			return nil, err
+		}
+		sums = append(sums, h[1])
+	}
+	return sums, nil
 }
 
 // AskCancel records a person's cancel of the send with the id
 // (capture_send.cancel), its row and its receipt in one transaction,
-// before anything acts on it: a pending, a sent (its request is closed at
-// the desk) and a cancelled send take it, a send to a ticket (made in its
-// one step: nothing of it is under way) and a refused one are refused
-// stale_revision. At most MaxSendCancels a send (bound). The receipt's id
-// is the send's.
+// before anything acts on it: a pending and a sent send (its request is
+// closed at the desk) take it; one cancelled already is answered from its
+// state, done with nothing written, the same answer for every repeat; a
+// send to a ticket (made in its one step: nothing of it is under way) and
+// a refused one are refused stale_revision. At most MaxSendCancels a send
+// (bound), so the bound counts the cancels asked while one could still
+// act. A cancel is known on its send by its operation's id: an id another
+// cancel of the send took is refused op_conflict. The receipt's id is the
+// send's.
 func (s *Store) AskCancel(ctx context.Context, op Op, id string) (Receipt, error) {
 	return s.Apply(ctx, op, IntentSendCancel, captureArgs{ID: id}, func(t *tx) error {
 		sv, err := readSend(t.ctx, t.tx, id, false)
@@ -501,6 +599,10 @@ func (s *Store) AskCancel(ctx context.Context, op Op, id string) (Receipt, error
 			return refuse(RefusalStaleRevision, "a send to a ticket is made in its one step: nothing of it is under way")
 		case sv.State == SendRefused:
 			return refuse(RefusalStaleRevision, "the send was refused: nothing of it is under way")
+		case sv.State == SendCancelled:
+			t.created(id, "")
+			t.holds = true
+			return nil
 		}
 		if err := checkCount("cancels of a send", len(sv.Cancels)+1, MaxSendCancels); err != nil {
 			return err
@@ -511,7 +613,7 @@ func (s *Store) AskCancel(ctx context.Context, op Op, id string) (Receipt, error
 			return err
 		}
 		if n, _ := res.RowsAffected(); n != 1 {
-			return refuse(RefusalInvalid, "the operation %s cancelled this send already", t.op.ID)
+			return refuse(RefusalOpConflict, "the operation id %s is taken on this send by another cancel: ask again under another id", t.op.ID)
 		}
 		t.created(id, "")
 		value, err := encodeValue(struct {
@@ -711,7 +813,10 @@ func (s *Store) CaptureSends(ctx context.Context, kind, target, after string, li
 
 // PendingSends lists every pending send by sendState, oldest first, by
 // pages (sendsPage), without their requests (CaptureSend reads one whole):
-// what a settlement asks its target for again.
+// what a settlement asks its target for again. Its answer is a page; the
+// work of a page is not bounded by it, since version 5 keeps nothing a read
+// finds a send by its state with: it reads the sends the store keeps. The
+// row that first calls it (issue #794) brings what bounds that.
 func (s *Store) PendingSends(ctx context.Context, after string, limit int) (SendsPage, error) {
 	return s.sendsPage(ctx, sendStateSQL("s.id")+" = 'pending'", nil, false, after, limit)
 }
@@ -719,7 +824,10 @@ func (s *Store) PendingSends(ctx context.Context, after string, limit int) (Send
 // AskedCancels lists every send with a cancel asked whose state is not
 // cancelled, oldest first, by pages (sendsPage): what a settlement
 // finishes (a pending one cancelled, a sent one's request closed at the
-// desk), whether a cancel is done at the desk being the desk's to say.
+// desk), whether a cancel is done at the desk being the desk's to say. A
+// send sent with its cancel asked stays listed, since nothing records its
+// cancel closed; its answer is a page and its work, as PendingSends', is
+// not bounded by it. Issue #794 brings both.
 func (s *Store) AskedCancels(ctx context.Context, after string, limit int) (SendsPage, error) {
 	return s.sendsPage(ctx, "s.id IN (SELECT send_id FROM capture_send_cancels) AND "+sendStateSQL("s.id")+" != 'cancelled'", nil, false, after, limit)
 }
@@ -766,101 +874,159 @@ func pageAddress(s string) string {
 	return u.Scheme + "://" + u.Host + u.EscapedPath()
 }
 
-// inline is a page's words as one inline code span of Markdown, on one
-// line and fenced by one backtick more than their longest run of them, so
-// they are read as they are and never as Markdown or HTML.
-func inline(s string) string {
-	s = strings.Join(strings.Fields(s), " ")
-	longest, run := 0, 0
-	for i := 0; i < len(s); i++ {
-		if s[i] == '`' {
-			run++
-			longest = max(longest, run)
+// ticketFence opens and closes a block of a capture's values in a ticket's
+// description. Every line between two of them begins with the store's
+// label (ticketWords.block), so no line of a block is a fence, and nothing
+// a capture holds can end the block it stands in.
+const ticketFence = "```"
+
+// ticketWords is a ticket's description made from a capture, line by
+// line: the store's own words, blocks of the capture's values, and the
+// person's notes, each quoted (ticketWords.quote). Only the store's own
+// fence lines are a fence alone.
+type ticketWords struct{ strings.Builder }
+
+// say adds a line of the store's own words.
+func (w *ticketWords) say(line string) { w.WriteString(line + "\n") }
+
+// block adds a block of values, each on one line after its label (a word
+// of the store's, which value is given): every string of the capture but
+// the person's notes is written this way and no other. A value is folded
+// onto one line and made address-free (addressFree); an empty one is its
+// label alone.
+func (w *ticketWords) block(values func(value func(label, s string))) {
+	w.say(ticketFence)
+	values(func(label, s string) {
+		if v := strings.Join(strings.Fields(addressFree(fitText(s, false))), " "); v != "" {
+			label += ": " + v
 		} else {
-			run = 0
+			label += ":"
 		}
-	}
-	if strings.HasPrefix(s, "`") || strings.HasSuffix(s, "`") {
-		s = " " + s + " "
-	}
-	fence := strings.Repeat("`", longest+1)
-	return fence + s + fence
+		w.say(label)
+	})
+	w.say(ticketFence)
 }
 
-// ticketText is a new ticket's description made from a capture: its
-// warnings first (the tree changed between the selection and the save,
-// the page served another revision or one not confirmed, no screenshot and
-// why), then the page (pageAddress) and its revision, then each
-// annotation: its element's tag, name and selector, what a click at its
-// centre reaches, whether it is disabled, its first source, and the note.
-// The page's words go in code spans (inline), address-free (addressFree);
-// the note is the person's Markdown. Cut to MaxTicketDescription bytes at a
-// line's end, so the warnings always stand.
-func ticketText(c Capture) string {
-	var b strings.Builder
-	line := func(format string, args ...any) { fmt.Fprintf(&b, format+"\n", args...) }
-	page := func(s string) string { return inline(addressFree(s)) }
-	revision := func(commit, content string) string {
-		w := short(commit)
-		if content != "" {
-			w += "+" + short(content)
-		}
-		if w == "" {
-			return "nothing"
-		}
-		return inline(w)
+// quote adds the person's note, their Markdown, each of its lines in a
+// block quote, so whatever the note opens (a fence, a list) ends with the
+// quote, at the blank line after it.
+func (w *ticketWords) quote(note string) {
+	for _, l := range strings.Split(fitText(note, true), "\n") {
+		w.say("> " + l)
 	}
+}
+
+// text is the description within n bytes: whole when it fits, else cut at
+// a line's end with "…" after it, a block open there closed by its fence
+// first, the fence counted in the bound.
+func (w *ticketWords) text(n int) string {
+	const more = "\n…"
+	text := w.String()
+	if len(text) <= n {
+		return text
+	}
+	open := func(s string) bool { return strings.Count("\n"+s, "\n"+ticketFence+"\n")%2 == 1 }
+	keep, _ := cutLines(text, n-len(more), "")
+	if open(keep) {
+		if keep, _ = cutLines(text, n-len(more)-len(ticketFence)-1, ""); open(keep) {
+			keep += ticketFence + "\n"
+		}
+	}
+	return keep + more
+}
+
+// ticketText is a new ticket's description made from a capture
+// (describe), within MaxTicketDescription bytes.
+func ticketText(c Capture) string { return describe(c).text(MaxTicketDescription) }
+
+// describe is a new ticket's description made from a capture: its
+// warnings first, in fixed words (the tree changed between the selection
+// and the save, the page served another revision or one not confirmed, no
+// screenshot); the capture's id and revision; one block of what the page
+// and the tree gave (the page's address by pageAddress, its title, the
+// viewport, the run and task, the commits of the selection's read and the
+// save's, what the page declares, and why there is no screenshot: a text
+// of the client's, of no fixed kind); then for each annotation a block of
+// its kind, its element's tag, name and selector, what a click at its
+// centre reaches, whether it is disabled and its first source, and the
+// person's note, their Markdown, quoted. Every string of the capture but
+// the notes stands in a block (ticketWords.block), whatever it holds; the
+// capture's id and the numbers are the store's.
+func describe(c Capture) *ticketWords {
+	w := &ticketWords{}
 	o := c.Origin
-	if d := o.Drift; d != nil {
-		line("> **The tree changed between the selection and the save**: the selection read %s, the save %s.", revision(d.Commit, d.Content),
-			revision(o.Commit, o.Content))
+	if o.Drift != nil {
+		w.say("> **The tree changed between the selection and the save.**")
 	}
 	switch {
 	case o.Serving.State == ServingStale:
-		line("> **The page served another revision**: it declares %s, and the tree is at %s.", inline(o.Serving.Page), inline(short(o.Commit)))
+		w.say("> **The page served another revision than the tree's.**")
 	case o.Serving.State == ServingUnconfirmed && o.Kind != OriginURL:
-		line("> What the page served is not confirmed against the tree.")
+		w.say("> What the page served is not confirmed against the tree.")
 	}
 	if c.Image.How == ImageNone {
-		line("> **No screenshot**: %s", c.Image.Why)
+		w.say("> **No screenshot.**")
 	}
-	line("")
-	title := ""
-	if c.Title != "" {
-		title = " (" + page(c.Title) + ")"
+	if w.Len() > 0 {
+		w.say("")
 	}
-	line("Capture %s, revision %d, of %s%s in a %s viewport of %d by %d.", c.ID, c.Rev, inline(pageAddress(c.URL)), title, c.Viewport.Mode,
-		c.Viewport.Width, c.Viewport.Height)
-	if o.Kind != OriginURL {
-		line("The %s of %s, task %s, attempt %d, at %s with %d changed paths.", o.Tree, inline(o.Run), inline(o.Task), o.Attempt, inline(short(o.Commit)), o.Changed)
+	revision := func(commit, content string) string {
+		if content != "" {
+			return short(commit) + "+" + short(content)
+		}
+		return short(commit)
 	}
+	w.say(fmt.Sprintf("Capture %s, revision %d, as the page and the tree gave it:", c.ID, c.Rev))
+	w.say("")
+	w.block(func(value func(label, s string)) {
+		value("page", pageAddress(c.URL))
+		value("title", c.Title)
+		value("viewport", fmt.Sprintf("%s %d by %d", c.Viewport.Mode, c.Viewport.Width, c.Viewport.Height))
+		if o.Kind != OriginURL {
+			value("tree", o.Tree)
+			value("run", o.Run)
+			value("task", o.Task)
+			value("attempt", fmt.Sprint(o.Attempt))
+			value("commit", short(o.Commit))
+			value("changed paths", fmt.Sprint(o.Changed))
+		}
+		if d := o.Drift; d != nil {
+			value("the selection read", revision(d.Commit, d.Content))
+			value("the save read", revision(o.Commit, o.Content))
+		}
+		if o.Serving.State == ServingStale {
+			value("the page declares", o.Serving.Page)
+		}
+		if c.Image.How == ImageNone {
+			value("no screenshot", c.Image.Why)
+		}
+	})
 	for _, a := range c.Annotations {
-		line("")
-		line("### %d. %s", a.K, a.Kind)
-		if e := a.Element; e != nil {
-			words := page(e.Tag)
-			if e.Name != "" {
-				words += " named " + page(e.Name)
+		w.say("")
+		w.say(fmt.Sprintf("### Annotation %d", a.K))
+		w.say("")
+		w.block(func(value func(label, s string)) {
+			value("kind", a.Kind)
+			if e := a.Element; e != nil {
+				value("element", e.Tag)
+				value("name", e.Name)
+				value("selector", e.Selector)
+				if !e.Hit.Self {
+					value("a click at its centre reaches", e.Hit.Selector)
+				}
+				if e.State.Disabled {
+					value("disabled", "yes")
+				}
 			}
-			if e.Selector != "" {
-				words += " at " + page(e.Selector)
+			if len(a.Sources) > 0 {
+				value("source", a.Sources[0].Path)
+				value("source class", a.Sources[0].Class)
 			}
-			line("The element %s.", words)
-			if !e.Hit.Self && e.Hit.Selector != "" {
-				line("A click at its centre reaches %s.", page(e.Hit.Selector))
-			}
-			if e.State.Disabled {
-				line("It is disabled.")
-			}
-		}
-		if len(a.Sources) > 0 {
-			line("Its source: %s (%s).", page(a.Sources[0].Path), a.Sources[0].Class)
-		}
+		})
 		if a.Note != "" {
-			line("")
-			line("%s", a.Note)
+			w.say("")
+			w.quote(a.Note)
 		}
 	}
-	text, _ := cutLines(fitText(strings.TrimLeft(b.String(), "\n"), true), MaxTicketDescription, "\n…")
-	return text
+	return w
 }

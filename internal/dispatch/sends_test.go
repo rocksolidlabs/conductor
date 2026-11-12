@@ -8,9 +8,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -182,11 +184,12 @@ func TestSendToANewTicket(t *testing.T) {
 		t.Fatalf("the commit's changes: %+v", changes)
 	}
 	for _, w := range []string{
-		"> What the page served is not confirmed against the tree.",
-		"Capture " + id + ", revision 1, of `http://127.0.0.1:5173/app` (`App`) in a desktop viewport of 1280 by 800.",
-		"The worktree of `crew-0123abcd`, task `build`, attempt 2, at `aaaaaaa` with 1 changed paths.",
-		"### 1. element", "The element `button` named `Save` at `button.save`.", "A click at its centre reaches `div.overlay`.",
-		"Its source: `web/app/components/SaveBar.vue` (tracked).", "Broken", "### 2. region", "here",
+		"> What the page served is not confirmed against the tree.\n\nCapture " + id + ", revision 1, as the page and the tree gave it:\n\n```\n" +
+			"page: http://127.0.0.1:5173/app\ntitle: App\nviewport: desktop 1280 by 800\ntree: worktree\nrun: crew-0123abcd\ntask: build\nattempt: 2\n" +
+			"commit: aaaaaaa\nchanged paths: 1\n```\n",
+		"### Annotation 1\n\n```\nkind: element\nelement: button\nname: Save\nselector: button.save\na click at its centre reaches: div.overlay\n" +
+			"source: web/app/components/SaveBar.vue\nsource class: tracked\n```\n\n> Broken\n",
+		"### Annotation 2\n\n```\nkind: region\n```\n\n> here\n",
 	} {
 		if !strings.Contains(tk.Description, w) {
 			t.Errorf("the description lacks %q:\n%s", w, tk.Description)
@@ -214,7 +217,7 @@ func TestSendToANewTicket(t *testing.T) {
 	if a := byName[js]; a.SHA256 != sumOf(doc) || a.Size != int64(len(doc)) || a.ContentType != "application/json" {
 		t.Errorf("the document's attachment: %+v", a)
 	}
-	wantComment := "Capture " + id + " r1 of `http://127.0.0.1:5173/app`, attached as `" + png + "` and `" + js + "`."
+	wantComment := "Capture " + id + " r1, attached as `" + png + "` and `" + js + "`."
 	if len(tk.Comments) != 1 || tk.Comments[0].Body != wantComment {
 		t.Fatalf("the comments: %+v", tk.Comments)
 	}
@@ -271,8 +274,9 @@ func TestASendWithoutAScreenshotIsTheDocumentAlone(t *testing.T) {
 	if len(tk.Attachments) != 1 || !strings.HasSuffix(tk.Attachments[0].Name, ".json") || tk.Attachments[0].SHA256 != sendOf(t, s, rc.ID).Digest {
 		t.Fatalf("the attachments: %+v", tk.Attachments)
 	}
-	if !strings.Contains(tk.Description, "> **No screenshot**: the person declined the tab capture") ||
-		!strings.HasSuffix(tk.Comments[0].Body, "No screenshot: the person declined the tab capture") {
+	if !strings.HasPrefix(tk.Description, "> What the page served is not confirmed against the tree.\n> **No screenshot.**\n") ||
+		!strings.Contains(tk.Description, "\nno screenshot: the person declined the tab capture\n") ||
+		!strings.HasSuffix(tk.Comments[0].Body, ".json`. It has no screenshot.") {
 		t.Fatalf("the words: %s / %s", tk.Description, tk.Comments[0].Body)
 	}
 	if n := count(t, s, "SELECT COUNT(*) FROM capture_files WHERE holder = ?", rc.ID); n != 1 {
@@ -524,11 +528,11 @@ func TestAPendingSendIsSettledOnce(t *testing.T) {
 }
 
 // outcomeRow is an outcome as a replica's row: its kind, target, time,
-// actor and op id.
+// actor and op id, and its id (a new one when "").
 type outcomeRow struct {
-	kind, target string
-	at           time.Time
-	actor, op    string
+	kind, target  string
+	at            time.Time
+	actor, op, id string
 }
 
 // insertOutcomes writes a send's outcome rows in their order, as a
@@ -536,28 +540,44 @@ type outcomeRow struct {
 func insertOutcomes(t *testing.T, s *Store, sendID string, rows ...outcomeRow) {
 	t.Helper()
 	for _, o := range rows {
+		id := o.id
+		if id == "" {
+			id = newID()
+		}
 		if _, err := s.db.Exec("INSERT INTO capture_send_outcomes (send_id, id, kind, target, files, why, at, actor, op_id) VALUES (?, ?, ?, ?, '[]', '', ?, ?, ?)",
-			sendID, newID(), o.kind, o.target, stamp(o.at), o.actor, o.op); err != nil {
+			sendID, id, o.kind, o.target, stamp(o.at), o.actor, o.op); err != nil {
 			t.Fatal(err)
 		}
 	}
 }
 
 // A send's state is one projection of its outcomes: pending beside sent,
-// refused beside cancelled and sent beside cancelled, each in both orders
-// of arrival, give one state and one target, the same through sendState
-// and through every read that picks sends by their state.
+// refused beside cancelled and sent beside cancelled, and outcomes tied
+// through their time and actor (told apart by the op id) and through the
+// op id too (by the id), each in both orders of arrival, give one state
+// and one target, the same through sendState and through every read that
+// picks sends by their state.
 func TestSendOutcomesMergeByTheProjection(t *testing.T) {
 	s := openStore(t, storeDir(t))
 	n, f := testCapture(false)
 	id := mustCreate(t, s, "c1", n, f, nil)
 	t0 := momentAt
-	sent := outcomeRow{SendSent, "br-1", t0.Add(2 * time.Second), "b", "o1"}
-	early := outcomeRow{SendSent, "br-2", t0.Add(time.Second), "z", "o2"}
-	refused := outcomeRow{SendRefused, "", t0, "a", "o3"}
-	cancelled := outcomeRow{SendCancelled, "", t0.Add(time.Second), "a", "o4"}
-	tied := outcomeRow{SendCancelled, "", t0, "b", "o5"}
-	late := outcomeRow{SendRefused, "", t0.Add(3 * time.Second), "a", "o6"}
+	sent := outcomeRow{SendSent, "br-1", t0.Add(2 * time.Second), "b", "o1", ""}
+	early := outcomeRow{SendSent, "br-2", t0.Add(time.Second), "z", "o2", ""}
+	refused := outcomeRow{SendRefused, "", t0, "a", "o3", ""}
+	cancelled := outcomeRow{SendCancelled, "", t0.Add(time.Second), "a", "o4", ""}
+	tied := outcomeRow{SendCancelled, "", t0, "b", "o5", ""}
+	late := outcomeRow{SendRefused, "", t0.Add(3 * time.Second), "a", "o6", ""}
+	// Tied through at and actor: the lesser op id decides; tied through the
+	// op id too: the lesser id.
+	opFirst := outcomeRow{SendRefused, "", t0, "a", "p1", ""}
+	opSecond := outcomeRow{SendCancelled, "", t0, "a", "p2", ""}
+	sentOpFirst := outcomeRow{SendSent, "br-1", t0, "a", "p1", ""}
+	sentOpSecond := outcomeRow{SendSent, "br-2", t0, "a", "p2", ""}
+	idFirst := outcomeRow{SendCancelled, "", t0, "a", "p1", "0000000000000001"}
+	idSecond := outcomeRow{SendRefused, "", t0, "a", "p1", "0000000000000002"}
+	sentIDFirst := outcomeRow{SendSent, "br-2", t0, "a", "p1", "0000000000000001"}
+	sentIDSecond := outcomeRow{SendSent, "br-1", t0, "a", "p1", "0000000000000002"}
 	for i, c := range []struct {
 		name   string
 		rows   []outcomeRow
@@ -571,6 +591,10 @@ func TestSendOutcomesMergeByTheProjection(t *testing.T) {
 		{"cancelled before refused", []outcomeRow{cancelled, late}, SendCancelled, ""},
 		{"sent beside cancelled", []outcomeRow{cancelled, sent}, SendSent, "br-1"},
 		{"sent beside refused and cancelled", []outcomeRow{refused, tied, sent}, SendSent, "br-1"},
+		{"tied but for the op id", []outcomeRow{opFirst, opSecond}, SendRefused, ""},
+		{"two sent tied but for the op id", []outcomeRow{sentOpFirst, sentOpSecond}, SendSent, "br-1"},
+		{"tied but for the id", []outcomeRow{idFirst, idSecond}, SendCancelled, ""},
+		{"two sent tied but for the id", []outcomeRow{sentIDFirst, sentIDSecond}, SendSent, "br-2"},
 	} {
 		for j, order := range [][]outcomeRow{c.rows, arrivedBackwards(c.rows)} {
 			sid := mustSend(t, s, opID(fmt.Sprintf("s%d-", i), j), id, 1, toBrakeman, askBrakeman)
@@ -606,7 +630,7 @@ func TestSendOutcomesMergeByTheProjection(t *testing.T) {
 	_, key2 := newTicket(t, s2, "CND", "Another")
 	c2 := mustCreate(t, s2, "c1", n, f, nil)
 	sid := mustSend(t, s2, "s1", c2, 1, Destination{Kind: SendTicket, Key: key}, SendFacts{})
-	insertOutcomes(t, s2, sid, outcomeRow{SendSent, key2, time.Time{}.Add(time.Hour), "a", "o1"})
+	insertOutcomes(t, s2, sid, outcomeRow{SendSent, key2, time.Time{}.Add(time.Hour), "a", "o1", ""})
 	if sv := sendOf(t, s2, sid); sv.Target != key2 || !slices.Equal(ticketCaptures(t, s2, key2), []string{c2}) || len(ticketCaptures(t, s2, key)) != 0 ||
 		len(sentToIDs(t, s2, SendTicket, key)) != 0 || !slices.Equal(sentToIDs(t, s2, SendTicket, key2), []string{sid}) {
 		t.Fatalf("a ticket's send sent elsewhere first: %+v", sv)
@@ -617,17 +641,9 @@ func TestSendOutcomesMergeByTheProjection(t *testing.T) {
 	}
 }
 
-// A page's words in a ticket's text are one code span each, on one line,
-// fenced past every run of backticks in them; a page's address is named
-// without its user, query or fragment.
-func TestAPagesWordsAreCodeSpans(t *testing.T) {
-	for in, want := range map[string]string{
-		"button.save": "`button.save`", "a`b": "``a`b``", "``x": "``` ``x ```", "a\n\tb  c": "`a b c`", "<b>bold</b>": "`<b>bold</b>`",
-	} {
-		if got := inline(in); got != want {
-			t.Errorf("inline(%q) = %q, want %q", in, got, want)
-		}
-	}
+// A page's address in a ticket's text is named without its user, query or
+// fragment.
+func TestAPagesAddressInATicket(t *testing.T) {
 	for in, want := range map[string]string{
 		"http://u:p@h:8/a/b?token=x#f": "http://h:8/a/b", "https://h/a%20b": "https://h/a%20b", "not a url": "the page",
 	} {
@@ -758,6 +774,11 @@ func (w *sendWalk) step(t *testing.T, state, op string) {
 	default:
 		if rc.Status != StatusDone || rc.ID != sid || after.State != takes {
 			t.Errorf("%s, %s: %+v, the send %s, want %s", state, op, rc, after.State, takes)
+		}
+		// A cancel is kept while one could still act; asked of a send
+		// cancelled, it is answered from the state, nothing written.
+		if added := len(after.Cancels) - len(before.Cancels); op == "ask cancel" && added != map[bool]int{true: 0, false: 1}[before.State == SendCancelled] {
+			t.Errorf("%s, %s: %d cancels added", state, op, added)
 		}
 	}
 	if got := slices.Contains(pending(t, w.s), sid); got != (after.State == SendPending) {
@@ -905,9 +926,17 @@ func TestACancelIsKeptBeforeItActs(t *testing.T) {
 	if got := asked(t, s); len(got) != 0 {
 		t.Fatalf("asked after the cancel: %v", got)
 	}
-	// One already cancelled takes another, which nothing has to finish.
-	rc, err = s.AskCancel(ctx, testOp("k2"), sid)
-	want(t, rc, err, StatusDone, "")
+	// One already cancelled is answered from its state: done, nothing
+	// written, and the same answer for a repeat, its receipt kept or
+	// pruned (below).
+	before := count(t, s, "SELECT COUNT(*) FROM changes")
+	for range 2 {
+		rc, err = s.AskCancel(ctx, testOp("k2"), sid)
+		want(t, rc, err, StatusDone, "")
+		if rc.ID != sid || count(t, s, "SELECT COUNT(*) FROM capture_send_cancels WHERE send_id = ?", sid) != 1 || count(t, s, "SELECT COUNT(*) FROM changes") != before {
+			t.Fatalf("a cancel of a cancelled send: %+v", rc)
+		}
+	}
 	if got := asked(t, s); len(got) != 0 {
 		t.Fatalf("asked of a cancelled send: %v", got)
 	}
@@ -944,8 +973,32 @@ func TestACancelIsKeptBeforeItActs(t *testing.T) {
 	want(t, rc, err, StatusFailed, RefusalOpConflict)
 	rc, err = s.AskCancel(ctx, testOp("k1"), taken)
 	want(t, rc, err, StatusFailed, RefusalOpConflict)
-	if n := count(t, s, "SELECT COUNT(*) FROM capture_send_cancels WHERE send_id = ?", sid); n != 2 {
+	rc, err = s.AskCancel(ctx, testOp("k2"), sid)
+	if err != nil || rc.Status != StatusDone || rc.ID != sid {
+		t.Fatalf("a cancel of a cancelled send, its receipt pruned: %+v %v", rc, err)
+	}
+	if n := count(t, s, "SELECT COUNT(*) FROM capture_send_cancels WHERE send_id = ?", sid); n != 1 {
 		t.Fatalf("%d cancels", n)
+	}
+	// Another person's cancel whose op id one cancel of the send took:
+	// refused as what it is, the id taken on this send, nothing written,
+	// and the same answer again; under another id it is kept.
+	other := mustSend(t, s, "s6", id, 1, toBrakeman, askBrakeman)
+	rc, err = s.AskCancel(ctx, testOp("k7"), other)
+	want(t, rc, err, StatusDone, "")
+	bob := Op{Actor: "person:bob", ID: "k7", By: "Bob"}
+	for range 2 {
+		rc, err = s.AskCancel(ctx, bob, other)
+		want(t, rc, err, StatusFailed, RefusalOpConflict)
+		if !strings.Contains(rc.Error, "is taken on this send") || len(sendOf(t, s, other).Cancels) != 1 {
+			t.Fatalf("another's cancel under a taken id: %+v", rc)
+		}
+	}
+	bob.ID = "k8"
+	rc, err = s.AskCancel(ctx, bob, other)
+	want(t, rc, err, StatusDone, "")
+	if c := sendOf(t, s, other).Cancels; len(c) != 2 || c[1].Actor != "person:bob" && c[0].Actor != "person:bob" {
+		t.Fatalf("the cancels: %+v", c)
 	}
 }
 
@@ -1238,7 +1291,7 @@ func TestSendBoundsAtTheirEdges(t *testing.T) {
 	for i, c := range []struct {
 		target, code string
 	}{
-		{"br-1" + rep("0", 18), ""}, {"br-1" + rep("0", 19), RefusalInvalid}, {"br-" + rep("1", MaxSendTarget-3), RefusalInvalid},
+		{"br-1" + rep("0", 17), ""}, {"br-1" + rep("0", 18), RefusalInvalid}, {"br-" + rep("1", MaxSendTarget-3), RefusalInvalid},
 		{"br-" + rep("1", MaxSendTarget-2), RefusalBound}, {"br-0", RefusalInvalid}, {"BR-1", RefusalInvalid}, {"", RefusalInvalid},
 	} {
 		rc, err := s.MarkSent(ctx, testOp(opID("target", i)), sends[i], c.target)
@@ -1279,7 +1332,7 @@ func TestSendBoundsAtTheirEdges(t *testing.T) {
 		func(after string, limit int) (SendsPage, error) { return s.PendingSends(ctx, after, limit) },
 		func(after string, limit int) (SendsPage, error) { return s.AskedCancels(ctx, after, limit) },
 		func(after string, limit int) (SendsPage, error) {
-			return s.CaptureSends(ctx, SendBrakeman, "br-1"+rep("0", 18), after, limit)
+			return s.CaptureSends(ctx, SendBrakeman, "br-1"+rep("0", 17), after, limit)
 		},
 	} {
 		for _, c := range []struct {
@@ -1309,6 +1362,293 @@ func TestSendBoundsAtTheirEdges(t *testing.T) {
 	for _, c := range []struct{ kind, target string }{{SendTicket, "br-1"}, {SendBrakeman, "CND-1"}, {SendReview, "x"}, {"", ""}, {SendTicket, "cnd-1"}} {
 		if _, err := s.CaptureSends(ctx, c.kind, c.target, "", 10); !errors.Is(err, ErrBadQuery) {
 			t.Errorf("%s to %q: %v, want a bad query", c.kind, c.target, err)
+		}
+	}
+}
+
+// atOnce runs two writes, each held where Apply takes the store's lock
+// (beforeLock) until both have done what they do before it, so the lock
+// alone orders them, and gives their receipts.
+func atOnce(t *testing.T, s *Store, writes ...func() (Receipt, error)) []Receipt {
+	t.Helper()
+	var arrived sync.WaitGroup
+	arrived.Add(len(writes))
+	var n atomic.Int32
+	s.mu.Lock()
+	s.beforeLock = func() {
+		if int(n.Add(1)) <= len(writes) {
+			arrived.Done()
+			arrived.Wait()
+		}
+	}
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.beforeLock = nil
+		s.mu.Unlock()
+	}()
+	rcs := make([]Receipt, len(writes))
+	var wg sync.WaitGroup
+	for i, write := range writes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var err error
+			if rcs[i], err = write(); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	return rcs
+}
+
+// oneRefused fails t unless one receipt is done and the other refused
+// bound.
+func oneRefused(t *testing.T, what string, rcs []Receipt) {
+	t.Helper()
+	done := slices.IndexFunc(rcs, func(rc Receipt) bool { return rc.Status == StatusDone })
+	if done < 0 || rcs[1-done].Status != StatusFailed || rcs[1-done].Refusal != RefusalBound {
+		t.Fatalf("%s: %+v", what, rcs)
+	}
+}
+
+// Each counted bound of a send holds under two writes at once, ordered by
+// the store's lock alone: two sends of a capture at 49 sends, two sends of
+// a screenshot and its document to a ticket at 48 attachments, two cancels
+// of a send at 9; one is done and the other refused bound.
+func TestTwoWritesAtOnceMeetTheBounds(t *testing.T) {
+	ctx := context.Background()
+	s, key := attachmentTicket(t)
+	n, f := testCapture(false)
+	id := mustCreate(t, s, "c1", n, f, nil)
+	for i := range MaxCaptureSends - 1 {
+		mustSend(t, s, opID("s", i), id, 1, toBrakeman, askBrakeman)
+	}
+	oneRefused(t, "two sends at 49", atOnce(t, s,
+		func() (Receipt, error) { return send(t, s, "a1", id, 1, toBrakeman, askBrakeman) },
+		func() (Receipt, error) { return send(t, s, "a2", id, 1, toBrakeman, askBrakeman) }))
+	if got := count(t, s, "SELECT COUNT(*) FROM capture_sends WHERE capture_id = ?", id); got != MaxCaptureSends {
+		t.Fatalf("%d sends", got)
+	}
+	tk := ticketPage(t, s, key)
+	for range MaxAttachments - 2 {
+		insertAttachment(t, s, tk.ID, 1)
+	}
+	in, iff := testCapture(true)
+	shot := mustCreate(t, s, "c2", in, iff, pngOf(t, 8, 8, 70))
+	to := Destination{Kind: SendTicket, Key: key}
+	oneRefused(t, "two sends of two rows at 48 attachments", atOnce(t, s,
+		func() (Receipt, error) { return send(t, s, "b1", shot, 1, to, SendFacts{}) },
+		func() (Receipt, error) { return send(t, s, "b2", shot, 1, to, SendFacts{}) }))
+	if got := len(ticketPage(t, s, key).Attachments); got != MaxAttachments {
+		t.Fatalf("%d attachments", got)
+	}
+	sid := mustSend(t, s, "d1", shot, 1, toBrakeman, askBrakeman)
+	for i := range MaxSendCancels - 1 {
+		rc, err := s.AskCancel(ctx, testOp(opID("k", i)), sid)
+		want(t, rc, err, StatusDone, "")
+	}
+	oneRefused(t, "two cancels at 9", atOnce(t, s,
+		func() (Receipt, error) { return s.AskCancel(ctx, testOp("k-a"), sid) },
+		func() (Receipt, error) { return s.AskCancel(ctx, testOp("k-b"), sid) }))
+	if got := len(sendOf(t, s, sid).Cancels); got != MaxSendCancels {
+		t.Fatalf("%d cancels", got)
+	}
+	noUploads(t, s)
+}
+
+// Once its receipt is pruned, what an operation on a capture or a send
+// kept answers a request of its own kind alone: another operation (the
+// adding of a person, a ticket's create) under the id of a pruned send, a
+// pruned outcome, a pruned cancel or a pruned capture's create is
+// op_conflict, and writes nothing.
+func TestAPrunedAnswerIsForItsOwnKind(t *testing.T) {
+	ctx := context.Background()
+	s, _ := attachmentTicket(t)
+	n, f := testCapture(false)
+	id := mustCreate(t, s, "made", n, f, nil)
+	sid := mustSend(t, s, "sent", id, 1, toBrakeman, askBrakeman)
+	rc, err := s.AskCancel(ctx, testOp("asked"), sid)
+	want(t, rc, err, StatusDone, "")
+	rc, err = s.CancelSend(ctx, testOp("ended"), sid)
+	want(t, rc, err, StatusDone, "")
+	if _, err := s.db.Exec("DELETE FROM ops"); err != nil {
+		t.Fatal(err)
+	}
+	for _, opID := range []string{"made", "sent", "asked", "ended"} {
+		changes := count(t, s, "SELECT COUNT(*) FROM changes")
+		rc, err := s.AddPerson(ctx, testOp(opID), "Ann")
+		want(t, rc, err, StatusFailed, RefusalOpConflict)
+		rc, err = s.CreateTicket(ctx, testOp(opID), NewTicket{Project: "CND", Title: "Another"})
+		want(t, rc, err, StatusFailed, RefusalOpConflict)
+		if people, err := s.People(ctx); err != nil || len(people) != 0 || count(t, s, "SELECT COUNT(*) FROM changes") != changes {
+			t.Fatalf("under %s: %+v %v", opID, people, err)
+		}
+	}
+	// Each still answers its own.
+	if rc, err := s.AskCancel(ctx, testOp("asked"), sid); err != nil || !rc.Repeat || rc.Status != StatusDone {
+		t.Fatalf("the cancel's own resend: %+v %v", rc, err)
+	}
+	if rc, err := s.CancelSend(ctx, testOp("ended"), sid); err != nil || !rc.Repeat || rc.Status != StatusDone {
+		t.Fatalf("the outcome's own resend: %+v %v", rc, err)
+	}
+}
+
+// A file is held while something can still use it: a capture deleted
+// whose sends ended refused or cancelled (before the delete, or after it)
+// lets their screenshot and document go, the sweep leaves none, and each
+// send is still read whole, its files not_found; a sent send keeps its
+// files whichever came first, and a file another live capture or an
+// attachment names is kept.
+func TestAFileIsHeldWhileSomethingCanUseIt(t *testing.T) {
+	ctx := context.Background()
+	s, key := attachmentTicket(t)
+	end := func(sid, how string) {
+		t.Helper()
+		var rc Receipt
+		var err error
+		switch how {
+		case SendRefused:
+			rc, err = s.MarkRefused(ctx, testOp("r-"+sid), sid, "Brakeman is off")
+		case SendCancelled:
+			if rc, err = s.AskCancel(ctx, testOp("k-"+sid), sid); err == nil {
+				want(t, rc, err, StatusDone, "")
+				rc, err = s.CancelSend(ctx, testOp("x-"+sid), sid)
+			}
+		case SendSent:
+			rc, err = s.MarkSent(ctx, testOp("m-"+sid), sid, "br-9")
+		}
+		want(t, rc, err, StatusDone, "")
+	}
+	swept := func() {
+		t.Helper()
+		if err := s.sweep(ctx, time.Now().Add(2*defaultSweepGrace)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	made := 0
+	capture := func(img []byte) (string, string) {
+		t.Helper()
+		made++
+		n, f := testCapture(true)
+		n.Title = fmt.Sprintf("page %d", made)
+		moment(&n)
+		id := mustCreate(t, s, opID("c", made), n, f, img)
+		return id, sumOf(documentOfRev(t, s, id, 1))
+	}
+	gone := func(what, sid string, sums ...string) {
+		t.Helper()
+		for _, sum := range sums {
+			if exists(t, contentAt(s, sum)) {
+				t.Errorf("%s: %.12s is kept", what, sum)
+			}
+			if fh, err := s.OpenSendFile(ctx, sid, sum); !errors.Is(err, ErrNotFound) || fh != nil {
+				t.Errorf("%s: the send opens %.12s: %v", what, sum, err)
+			}
+		}
+		if n := count(t, s, "SELECT COUNT(*) FROM capture_files WHERE holder = ?", sid); n != 0 {
+			t.Errorf("%s: the send holds %d files", what, n)
+		}
+	}
+	kept := func(what, sid string, sums ...string) {
+		t.Helper()
+		for _, sum := range sums {
+			if !exists(t, contentAt(s, sum)) {
+				t.Errorf("%s: %.12s is gone", what, sum)
+			}
+		}
+	}
+	// Ended, then deleted.
+	img := pngOf(t, 8, 8, 71)
+	id, doc := capture(img)
+	cancelled, refused := mustSend(t, s, "s1", id, 1, toBrakeman, askBrakeman), mustSend(t, s, "s2", id, 1, toBrakeman, askBrakeman)
+	end(cancelled, SendCancelled)
+	end(refused, SendRefused)
+	rc, err := s.DeleteCapture(ctx, testOp("d1"), id)
+	want(t, rc, err, StatusDone, "")
+	swept()
+	gone("cancelled, then deleted", cancelled, sumOf(img), doc)
+	gone("refused, then deleted", refused, sumOf(img), doc)
+	if sv := sendOf(t, s, cancelled); sv.State != SendCancelled || len(sv.Cancels) != 1 || sv.Request == nil || sendOf(t, s, refused).State != SendRefused {
+		t.Fatalf("the send after its files went: %+v", sv)
+	}
+	// The delete is still its own first row: a resend, its receipt pruned,
+	// is answered by it.
+	if _, err := s.db.Exec("DELETE FROM ops"); err != nil {
+		t.Fatal(err)
+	}
+	if rc, err := s.DeleteCapture(ctx, testOp("d1"), id); err != nil || !rc.Repeat || rc.Status != StatusDone {
+		t.Fatalf("the delete's resend, pruned: %+v %v", rc, err)
+	}
+	// Deleted, then ended: the last send to end lets them go.
+	img2 := pngOf(t, 8, 8, 72)
+	id2, doc2 := capture(img2)
+	first, last := mustSend(t, s, "s3", id2, 1, toBrakeman, askBrakeman), mustSend(t, s, "s4", id2, 1, toBrakeman, askBrakeman)
+	rc, err = s.DeleteCapture(ctx, testOp("d2"), id2)
+	want(t, rc, err, StatusDone, "")
+	end(first, SendRefused)
+	swept()
+	kept("one of two ended", last, sumOf(img2), doc2)
+	if got := sendFile(t, s, last, doc2); sumOf(got) != doc2 {
+		t.Fatal("the pending send's document")
+	}
+	end(last, SendCancelled)
+	swept()
+	gone("deleted, then refused", first, sumOf(img2), doc2)
+	gone("deleted, then cancelled", last, sumOf(img2), doc2)
+	// Sent keeps, whichever came first; so does a send to a ticket.
+	img3 := pngOf(t, 8, 8, 73)
+	id3, doc3 := capture(img3)
+	before, after := mustSend(t, s, "s5", id3, 1, toBrakeman, askBrakeman), mustSend(t, s, "s6", id3, 1, toBrakeman, askBrakeman)
+	toTicket := mustSend(t, s, "s7", id3, 1, Destination{Kind: SendTicket, Key: key}, SendFacts{})
+	end(before, SendSent)
+	rc, err = s.DeleteCapture(ctx, testOp("d3"), id3)
+	want(t, rc, err, StatusDone, "")
+	end(after, SendSent)
+	swept()
+	for _, sid := range []string{before, after, toTicket} {
+		kept("sent", sid, sumOf(img3), doc3)
+		if got := sendFile(t, s, sid, sumOf(img3)); sumOf(got) != sumOf(img3) {
+			t.Fatalf("the sent send %s's screenshot", sid)
+		}
+	}
+	// A file something else names is kept: the screenshot by a live
+	// capture, the document by an attachment.
+	img4 := pngOf(t, 8, 8, 74)
+	id4, doc4 := capture(img4)
+	capture(img4)
+	body := documentOfRev(t, s, id4, 1)
+	if rc, _, err := s.AddAttachment(ctx, testOp("a1"), key, "document.json", "application/json", strings.NewReader(string(body))); err != nil || rc.Status != StatusDone {
+		t.Fatalf("the attachment: %+v %v", rc, err)
+	}
+	ended := mustSend(t, s, "s8", id4, 1, toBrakeman, askBrakeman)
+	end(ended, SendCancelled)
+	rc, err = s.DeleteCapture(ctx, testOp("d4"), id4)
+	want(t, rc, err, StatusDone, "")
+	swept()
+	kept("named elsewhere", ended, sumOf(img4), doc4)
+	if n := count(t, s, "SELECT COUNT(*) FROM capture_files WHERE holder = ?", ended); n != 0 {
+		t.Fatalf("the ended send holds %d files", n)
+	}
+	noUploads(t, s)
+}
+
+// The store's form of a Brakeman request's id is Brakeman's: the copy is
+// held to internal/brakeman/refs.go's requestIDPattern, read from its
+// source (this package imports none of the module's), at 18 digits and 19.
+func TestBrakemansRequestIDIsTheStores(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "brakeman", "refs.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile("requestIDPattern += regexp\\.MustCompile\\(`([^`]*)`\\)").FindSubmatch(src)
+	if m == nil || string(m[1]) != brakemanTarget.String() {
+		t.Fatalf("Brakeman's request id is %q, the store's %q", m, brakemanTarget)
+	}
+	for digits, ok := range map[int]bool{1: true, 18: true, 19: false} {
+		if id := "br-1" + rep("0", digits-1); brakemanTarget.MatchString(id) != ok {
+			t.Errorf("%s: %v", id, !ok)
 		}
 	}
 }

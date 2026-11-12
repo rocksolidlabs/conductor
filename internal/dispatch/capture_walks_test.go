@@ -654,6 +654,12 @@ func TestAnErrorAnswersNothingElse(t *testing.T) {
 			if steps.Load() <= after {
 				break
 			}
+			// A read whose statement failed answers the error, and nothing
+			// else; it failed in its middle only when it did.
+			if err == nil {
+				t.Errorf("failing after %d step(s): %s answers no error: %.300s", after, what, encodeResults(results))
+				continue
+			}
 			failed[name] = true
 			answersNothingElse(t, fmt.Sprintf("failing after %d step(s): %s", after, what), results, err)
 		}
