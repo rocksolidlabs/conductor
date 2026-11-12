@@ -1222,9 +1222,11 @@ func TestPreviewMeasureCountsANegativeZeroAsZero(t *testing.T) {
 // Every member of a message, taken from its Go type, is accepted at its
 // edges in some row of the fixture: each list empty, of one item and at its
 // bound; each string empty but those the schema refuses empty; each number
-// at the least and the greatest of its range. A member the types gain
-// fails here until its edges are in previewCases (the strings' upper
-// bounds are previewBounds', held by TestEveryPreviewBoundIsInTheTable).
+// at the least and the greatest of its range; each flag both ways, or one
+// way where the schema has it so. A member the types gain fails here until
+// its edges are in previewCases, and one of a kind the test does not judge
+// fails until the test judges it (the strings' upper bounds are
+// previewBounds', held by TestEveryPreviewBoundIsInTheTable).
 func TestEveryPreviewMemberIsAcceptedAtItsEdges(t *testing.T) {
 	lists := map[string]int{"hints": len(PreviewHintKinds), "element.attributes": MaxElementAttributes, "element.ancestors": MaxAncestors,
 		"element.styles": MaxStyles, "element.hints": MaxHints, "element.cut": len(ElementCuts)}
@@ -1235,17 +1237,20 @@ func TestEveryPreviewMemberIsAcceptedAtItsEdges(t *testing.T) {
 		"viewport.scrollX": place, "viewport.scrollY": place, "element.box.x": place, "element.box.y": place}
 	nonEmpty := map[string]bool{"conductor": true, "t": true, "nonce": true, "selector": true, "viewport.colorScheme": true,
 		"element.hints.*.how": true, "hints.*": true, "element.cut.*": true}
+	// A flag the schema has one way only: a described's missing is true or absent.
+	oneWay := map[string]bool{"missing": true}
 	type seen struct {
 		lens     map[int]bool
 		empty    bool
 		least    float64
 		greatest float64
 		numbers  bool
+		flags    map[bool]bool
 	}
 	at := map[string]*seen{}
 	get := func(p string) *seen {
 		if at[p] == nil {
-			at[p] = &seen{lens: map[int]bool{}}
+			at[p] = &seen{lens: map[int]bool{}, flags: map[bool]bool{}}
 		}
 		return at[p]
 	}
@@ -1264,6 +1269,8 @@ func TestEveryPreviewMemberIsAcceptedAtItsEdges(t *testing.T) {
 			}
 		case string:
 			get(p).empty = get(p).empty || x == ""
+		case bool:
+			get(p).flags[x] = true
 		case float64:
 			s := get(p)
 			if !s.numbers {
@@ -1303,6 +1310,12 @@ func TestEveryPreviewMemberIsAcceptedAtItsEdges(t *testing.T) {
 			if r, ok := numbers[p]; !ok || !get(p).numbers || get(p).least != r[0] || get(p).greatest != r[1] {
 				t.Errorf("%s: accepted from %v to %v, want its range %v", p, get(p).least, get(p).greatest, r)
 			}
+		case reflect.Bool:
+			if f := get(p).flags; !f[true] || f[false] == oneWay[p] {
+				t.Errorf("%s: accepted %v, want true and, but where the schema has it one way, false", p, f)
+			}
+		default:
+			t.Errorf("%s: a member of a kind (%s) this test does not judge: give it a case and its rows", p, typ.Kind())
 		}
 	}
 	member(reflect.TypeFor[PreviewMessage](), "")
