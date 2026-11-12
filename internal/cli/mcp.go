@@ -186,7 +186,7 @@ func (s *mcpServer) serve(ctx context.Context, in io.Reader) (int, error) {
 // a ticket of '<' would be six times its size otherwise.
 func (s *mcpServer) reply(r mcpResponse) {
 	b, _ := encodeJSON(r)
-	_, _ = s.out.Write(append(b, '\n'))
+	_, _ = printReply(s.out, b, false)
 }
 
 func (s *mcpServer) handle(ctx context.Context, req mcpRequest) (any, *mcpError) {
@@ -518,8 +518,8 @@ func decisionTool(ctx context.Context, c *crewClient, name string, body map[stri
 		return "", err
 	}
 	if name == "decision_list" || name == "decision_read" {
-		b, err := json.MarshalIndent(out, "", "  ")
-		return string(b), err
+		b, _ := json.Marshal(out) // decoded JSON: it marshals, or jsonText refuses nil
+		return jsonText(b, true)
 	}
 	d, _ := out["decision"].(map[string]any)
 	if name == "decision_withdraw" {
