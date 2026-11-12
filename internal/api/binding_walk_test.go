@@ -437,8 +437,9 @@ func adapterByCatalog(files []*ast.File) []string {
 }
 
 // A launched session's adapter is the one it was started as
-// (Launched.Adapter), everywhere: no function decides it by the catalog's
-// entry of the session's agent id. The clone's choice as it was made
+// (Launched.Adapter): no function decides it by a catalog lookup of the
+// session's agent id in the spelling the walk reads (an early signal; each
+// route's own test holds the rule). The clone's choice as it was made
 // before, from the source's entry, is found.
 func TestLaunchedAdapterNotFromTheCatalog(t *testing.T) {
 	if got := adapterByCatalog(apiSource(t)); len(got) > 0 {
@@ -479,7 +480,8 @@ var keptDecoders = map[string]string{
 }
 
 // An agent's members are decoded in one place: every function of the
-// package that decodes a crew's member from bytes is decodeAgentMembers,
+// package that decodes a crew's member from bytes, in a spelling the walk
+// reads, is decodeAgentMembers,
 // which refuses a member naming an account or a binding, or one only the
 // admin's token reaches, or one that reads what the server keeps
 // (keptDecoders). A decoder added on a path an agent reaches, in a

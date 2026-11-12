@@ -5785,10 +5785,10 @@ builds its environment the same way and starts only when its login is the
 bound one, refused `409 account_gone` with words before any process exists
 otherwise: an account removed, an entry or a recipe that now sets another
 folder or key. A continuation of a managed run, and a resume from the
-record of a session no longer listed, are made from what is written,
-where the tool's own login is written as nothing, and so, in a session's
-record, is a login its entry or its launch set: those are made again
-under what the entry gives then, within the server's life too. A resume
+record of a session no longer listed, are made from what is written, and
+what is written is compared: a run keeps every binding but the tool's own
+login, a session's record a registered account's id and source; a launch
+whose binding is not kept is made as a launch of `default` is. A resume
 from the record of a session still listed is made from what the server
 holds of its launch and compared, as a listed resume is. A clone is a new
 launch: onto an entry of its source's launched adapter it starts from its
@@ -5858,10 +5858,10 @@ crew cannot be read holds every account); a stopped or finished run is no
 bar (continuing it is refused `account_gone`), and a kept run that
 another run has continued holds nothing. A registered session, and a
 member of a run not ended (the engine's, or the ledger's as above), whose
-binding is pinned to a folder that a
-registered account holds (an entry or the server's passthrough sets the
-folder) holds that account, its `source` still what the environment says,
-and such a session is counted on it. For a login that an entry, the
+binding is `pinned` (its entry or the server's passthrough sets the login,
+and the launch's own environment sets none of its login variables) to a
+folder that a registered account holds, holds that account, its `source`
+still what the environment says, and such a session is counted on it. For a login that an entry, the
 passthrough or a launch's own environment sets, what is held and counted
 begins at the session's registration and follows what the binding keeps.
 
@@ -5905,8 +5905,8 @@ the provider did not report it (never a zero); the counts (`running`,
 `started5h`, `started7d`, `since`) carry `source: "conductor"` and
 `estimate: true`: the server sessions of the agent on the account this
 server counted since it started, each from its registration: a session
-bound to the account, and one whose binding is pinned to the account's
-folder (Capacity's binding paragraph above). `host.kind` is `native`
+bound to the account, and one bound `pinned` to the account's folder
+(Capacity's binding paragraph above). `host.kind` is `native`
 (with the server's name), `remote`, or, for a managed run of the agent's
 own login when a Runtime other than the native one is registered,
 `undetermined` ("this server's login: if <Runtime> takes the run, its usage

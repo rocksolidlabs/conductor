@@ -341,8 +341,9 @@ func TestRemovedAndReaddedRefused(t *testing.T) {
 // A resume whose login would differ from the bound one is refused
 // account_gone, for every source: a pinned entry's folder changed, a yolo
 // recipe's key changed, a yolo recipe's folder changed (the launch's own
-// additions, launch_env). A managed run's next attempt the same:
-// TestAttemptAccountGone.
+// additions, launch_env). A history resume of the pinned session, still
+// listed, is made from what the server holds of its launch and refused the
+// same. A managed run's next attempt the same: TestAttemptAccountGone.
 func TestBindingLoginChanged(t *testing.T) {
 	e := newBindEnv(t, nil)
 	cat := e.srv.Catalog()
@@ -359,6 +360,11 @@ func TestBindingLoginChanged(t *testing.T) {
 	e.probe(t, pinned)
 	e.probe(t, yolo)
 	e.probe(t, dir)
+	// A turn the pinned session's agent reported: a conversation its record
+	// keeps, for a history resume.
+	l, _ := e.srv.lookupLocal(pinned)
+	l.ReportAgentSession("conv-a", session.PolicyLatest, true)
+	e.recordResumable(t, pinned)
 	if b := e.bound(t, dir); b.Source != session.SourceLaunchEnv {
 		t.Fatalf("the recipe's folder: %+v", b)
 	}
@@ -378,6 +384,10 @@ func TestBindingLoginChanged(t *testing.T) {
 		e.stopAndWait(sid)
 		e.expect(t, "POST", "/api/sessions/"+sid+"/resume", nil, http.StatusConflict, "account_gone")
 	}
+	if _, ok := e.srv.lookupLocal(pinned); !ok {
+		t.Fatal("the pinned session is no longer listed")
+	}
+	e.expect(t, "POST", "/api/history/sessions/"+pinned+"/resume", map[string]any{"commandId": "c-1", "confirmLost": true}, http.StatusConflict, "account_gone")
 }
 
 // The fingerprint is the adapter and the login variables' values: the

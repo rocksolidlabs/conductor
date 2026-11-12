@@ -153,7 +153,9 @@ func (s *Server) launchEnv(agent catalog.Agent, adapterEnv map[string]string, ap
 // account (Reserve); a launch made again holds the one it was bound to
 // (Hold). The binding answered has no Login yet (createLocalSession reads
 // it from the environment built). Release lets go of the account's
-// reservation, once the session is registered or its launch failed.
+// reservation once the session is registered, its launch failed before its
+// process started, or the process of a launch whose registration was
+// refused has ended.
 func (s *Server) bindLogin(agent catalog.Agent, account, cwd string, want loginWant, entry, full []string, env map[string]string) (session.BoundAccount, func(), *apiError) {
 	nothing := func() {}
 	refuse := func(words string) (session.BoundAccount, func(), *apiError) {
