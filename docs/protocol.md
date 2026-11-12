@@ -5764,8 +5764,10 @@ folder or key. A changed default moves nothing launched. A retired or
 unknown account, or one of another adapter, is refused `400
 invalid_account`; a server that does not own the accounts refuses a
 registered account `409 accounts_not_owner`; while the accounts cannot be
-read, a launch naming none is refused `503 capacity_unavailable` (its
-default is not known) and one naming `default` is started. A `model` (1 to
+read, a launch that would read them is refused `503 capacity_unavailable`
+(one naming no account, whose default is not known; a registered
+account; a Brakeman turn with a folder) and one naming `default` is
+started. A `model` (1 to
 100 of `A-Z a-z 0-9 . _ : / @ -`) goes through the adapter's flag
 (`--model=`) after the launch's own arguments, `400 invalid_request` for an
 agent whose adapter takes none or beside arguments that choose one.
