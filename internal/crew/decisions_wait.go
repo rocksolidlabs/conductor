@@ -1250,7 +1250,10 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 	}
 	e.opMu.Lock()
 	defer e.opMu.Unlock()
+	// changed says the last try's row was not what its look chose from.
+	changed := false
 	for range maxDecisionTries {
+		changed = false
 		rec, ok, err := e.readDecision(ctx, n)
 		if err != nil {
 			return OpReceipt{}, err
@@ -1492,6 +1495,7 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 		case errors.As(err, &rep):
 			return receiptOfRow(id, rep.row), nil
 		case errors.Is(err, errOpMoved) || errors.Is(err, errOpChosen):
+			changed = errors.Is(err, errOpChosen)
 			continue
 		case errors.Is(err, ledger.ErrDecisionConflict):
 			return OpReceipt{}, refuse(CodeOpConflict, "operation %s on %s was sent before with another body", op.opID, id)
@@ -1502,6 +1506,9 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			return OpReceipt{}, err
 		}
 		return out, nil
+	}
+	if changed {
+		return OpReceipt{}, refuse(CodeDecisionMoved, "%s changed while the route was made: send it again", id)
 	}
 	return OpReceipt{}, refuse(CodeDecisionMoved, "%s moved to another run while it was changed: send it again", id)
 }
@@ -1673,6 +1680,9 @@ func (e *Engine) RouteDecision(ctx context.Context, id, opID string, expectedRev
 		return OpReceipt{}, refuse(CodeInvalid, "a route names its destination")
 	}
 	label, ok := routeLabel(to)
+	if i := slices.IndexFunc(to, func(d Destination) bool { return d.Grant != "" && d.Kind != DestGrant }); !ok && i >= 0 {
+		return OpReceipt{}, refuse(CodeInvalid, "a destination of kind %q names no grant: grant is a field of {kind: grant} alone", shortText(to[i].Kind))
+	}
 	if !ok {
 		return OpReceipt{}, refuse(CodeInvalid, "a decision is routed to the operator, a person of its run's crew (person, by name) or a responsibility of it (role: architecture, product, security or acceptance), not %q", shortText(to[0].Kind+" "+to[0].Name))
 	}

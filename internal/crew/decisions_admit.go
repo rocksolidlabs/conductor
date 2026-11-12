@@ -72,6 +72,10 @@ func (e PolicyEntry) admits(who Admittee) bool {
 	return false
 }
 
+// operator is the operator entry's own rule, reading no policy: AdmissionOf
+// and a response's transaction (respondTx) judge the operator by it.
+func (who Admittee) operator() bool { return PolicyEntry{Kind: EntryOperator}.admits(who) }
+
 // Admits says whether one of entries admits who.
 func Admits(entries []PolicyEntry, who Admittee) bool {
 	return slices.ContainsFunc(entries, func(e PolicyEntry) bool { return e.admits(who) })
@@ -122,7 +126,7 @@ const (
 // AdmissionOf is the one judgement of what who may read of rec and answer.
 func AdmissionOf(rec ledger.DecisionRecord, who Admittee) Admission {
 	switch {
-	case (PolicyEntry{Kind: EntryOperator}).admits(who):
+	case who.operator():
 		// The operator entry's own rule: the admin grant through the
 		// workbench token or an identity, and no other way in.
 		return AdmitWhole

@@ -2,9 +2,11 @@ package crew
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -656,6 +658,304 @@ func TestATurnLeavesTheGrantToTheOperator(t *testing.T) {
 	}
 	if rc, err := e.RouteDecision(t.Context(), d.ID, "t2", 3, []Destination{{Kind: DestOperator}}, "", ledger.TurnActor); err != nil || rc.Rev != 3 {
 		t.Fatalf("a turn's route of a decision not given: %+v %v", rc, err)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// The response id a decision router's answer is kept under is a router's
+// alone, and a router answers under it alone. A router's answer kept in
+// ana's name; ana, holding the decide grant, sends that id with the
+// router's body and with another, of a decision given to the grant and of
+// one never given: invalid both times, no receipt, nothing kept. The
+// router's own repeat is its receipt; a router's answer under another id,
+// and the operator's under the router's, are invalid; the operator's
+// answer under an id of its own is taken.
+func TestTheRouterResponseIDIsTheRouters(t *testing.T) {
+	for _, given := range []bool{true, false} {
+		e, ld, run, d := grantedDecision(t)
+		rev := 1
+		if given {
+			if _, err := routeToGrant(e, d.ID, "g1", 1); err != nil {
+				t.Fatal(err)
+			}
+			rev = 2
+		}
+		router := Authority{Via: ViaRouter, Subject: "ana", Boot: e.Boot()}
+		sent := Response{ResponseID: RouterResponseID, Text: "secret router words", ExpectedRev: rev, ByName: "Ana via chat"}
+		first, err := e.RespondDecision(t.Context(), d.ID, sent, "user:ana", router)
+		if codeOf(err) != CodeNotApprover || first.K != 1 {
+			t.Fatalf("given %v: the router's answer: %+v %v", given, first, err)
+		}
+		kept := decisionWhen(t, ld, d.ID, "the router's answer kept", func(rec ledger.DecisionRecord) bool { return len(rec.Responses) == 1 })
+		unchanged := func(why string) {
+			t.Helper()
+			rec := decisionWhen(t, ld, d.ID, "read", func(ledger.DecisionRecord) bool { return true })
+			if len(rec.Responses) != 1 || len(rec.History) != len(kept.History) || rec.Rev != kept.Rev {
+				t.Fatalf("given %v: %s kept something: %d responses, %d history rows, rev %d", given, why, len(rec.Responses), len(rec.History), rec.Rev)
+			}
+		}
+		other := sent
+		other.Text = "another body"
+		for _, resp := range []Response{sent, other} {
+			rc, err := e.RespondDecision(t.Context(), d.ID, resp, "user:ana", decideAuth(e, "ana"))
+			if codeOf(err) != CodeInvalid || !strings.Contains(err.Error(), "reserved") || rc.Decision != "" || rc.K != 0 || rc.Repeat || rc.Text != "" {
+				t.Fatalf("given %v: ana's send of the router's id (%q): %+v %v", given, resp.Text, rc, err)
+			}
+			unchanged("ana's send of the router's id")
+		}
+		if rc, err := e.RespondDecision(t.Context(), d.ID, sent, "user:ana", router); codeOf(err) != CodeNotApprover || !rc.Repeat || rc.K != 1 {
+			t.Fatalf("given %v: the router's repeat: %+v %v", given, rc, err)
+		}
+		if _, err := e.RespondDecision(t.Context(), d.ID, Response{ResponseID: "r9", Text: "btree", ExpectedRev: rev}, "user:ana", router); codeOf(err) != CodeInvalid {
+			t.Fatalf("given %v: a router's answer under another id: %v", given, err)
+		}
+		if _, err := e.RespondDecision(t.Context(), d.ID, Response{ResponseID: RouterResponseID, Text: "btree", ExpectedRev: rev}, "admin", workbench(e)); codeOf(err) != CodeInvalid {
+			t.Fatalf("given %v: the operator's answer under the router's id: %v", given, err)
+		}
+		unchanged("a send under the wrong id")
+		answer(t, e, d.ID, Response{ResponseID: "r1", Text: "btree", ExpectedRev: rev})
+		if rec := decisionWhen(t, ld, d.ID, "answered", func(rec ledger.DecisionRecord) bool { return len(rec.Responses) == 2 }); rec.Responses[1].ResponseID != "r1" || rec.Responses[1].Status != ledger.ResponseAccepted {
+			t.Fatalf("given %v: the operator's answer: %+v", given, rec.Responses)
+		}
+		stopRun(t, e, run.ID)
+	}
+}
+
+// The operator is admitted by the operator entry's own rule, before any
+// policy is read. Of a decision whose policy names no operator entry its
+// answer is taken; of one whose policy does not decode it is refused
+// stale_policy. A decide principal is refused not_approver by both.
+func TestTheOperatorAnswersByItsOwnRule(t *testing.T) {
+	dir, ldir := newRepo(t), t.TempDir()
+	e, fl, ld := decisionEngineAt(t, ldir)
+	run := launchManaged(t, e, peopleCrew(dir))
+	b, _, _ := attemptOn(t, e, fl, run.ID, "build")
+	noOperator := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
+	unreadable := ask(t, e, b.Attempt.SessionID, clarification("q2", "Which table?"))
+	db, err := sql.Open("sqlite", filepath.Join(ldir, ledger.File)+"?_pragma=busy_timeout(10000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, policy := range map[string]string{noOperator.ID: `{"revision":"local/1","authority":[{"kind":"subject"}]}`, unreadable.ID: "{"} {
+		n, _ := ledger.ParseDecisionID(id)
+		if _, err := db.Exec("UPDATE decisions SET policy = ? WHERE n = ?", policy, n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+	for _, id := range []string{noOperator.ID, unreadable.ID} {
+		rc, err := e.RespondDecision(t.Context(), id, Response{ResponseID: "d1", Text: "btree", ExpectedRev: 1}, "user:ana", decideAuth(e, "ana"))
+		if codeOf(err) != CodeNotApprover || rc.Words != id+" is the operator's to answer: refused under local/1" {
+			t.Fatalf("a decide principal's answer to %s: %+v %v", id, rc, err)
+		}
+	}
+	answer(t, e, noOperator.ID, Response{ResponseID: "r1", Text: "btree", ExpectedRev: 1})
+	if rec := decisionWhen(t, ld, noOperator.ID, "answered", func(rec ledger.DecisionRecord) bool { return rec.State != ledger.DecisionOpen }); rec.AnsweredAt.IsZero() {
+		t.Fatalf("the operator's answer under a policy with no operator entry: %+v", rec.DecisionRow)
+	}
+	if rc, err := e.RespondDecision(t.Context(), unreadable.ID, Response{ResponseID: "r1", Text: "users", ExpectedRev: 1, ByName: "Nate"}, "admin", workbench(e)); codeOf(err) != CodeStalePolicy {
+		t.Fatalf("the operator's answer under a policy that does not decode: %+v %v", rc, err)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A route to the operator of a run not held (after a restart) is chosen on
+// the record its look reads and judged by the row its transaction reads: a
+// failed read answers the error and writes nothing, and the same route sent
+// again takes the grant back; whom the decision is for written between the
+// look and the transaction (beforeOperate), either way, makes the route
+// chosen again from a new look.
+func TestTheTakeBackIsChosenOnARunNotHeld(t *testing.T) {
+	dir, ldir := newRepo(t), t.TempDir()
+	e, fl, ld := decisionEngineAt(t, ldir)
+	run := launchManaged(t, e, peopleCrew(dir))
+	b, _, _ := attemptOn(t, e, fl, run.ID, "build")
+	failed := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
+	notGiven := ask(t, e, b.Attempt.SessionID, clarification("q2", "Which table?"))
+	given := ask(t, e, b.Attempt.SessionID, clarification("q3", "Which column?"))
+	for _, x := range []Decision{failed, given} {
+		if _, err := routeToGrant(e, x.ID, "g1", 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e2, _, ld2 := restart(t, e, ld, ldir, run.ID)
+	var armed atomic.Bool
+	e2.UseLedger(failingLook{sqlLedger{l: ld2}, &armed})
+	operator := []Destination{{Kind: DestOperator}}
+
+	before := decisionWhen(t, ld2, failed.ID, "given", func(rec ledger.DecisionRecord) bool { return rec.Rev == 2 })
+	ctx := context.WithValue(t.Context(), lookMark{}, true)
+	armed.Store(true)
+	rc, err := e2.RouteDecision(ctx, failed.ID, "o1", 2, operator, "", "admin")
+	rec := decisionWhen(t, ld2, failed.ID, "read", func(ledger.DecisionRecord) bool { return true })
+	if err == nil || codeOf(err) != "" || armed.Load() || rec.Rev != 2 || !GivenToGrant(rec.Request) || len(rec.History) != len(before.History) {
+		t.Fatalf("a route whose read failed: %+v %v; rev %d, given %v, %d history rows", rc, err, rec.Rev, GivenToGrant(rec.Request), len(rec.History))
+	}
+	rc, err = e2.RouteDecision(ctx, failed.ID, "o1", 2, operator, "", "admin")
+	if err != nil || rc.Rev != 3 || rc.Words != failed.ID+" is now for the operator alone: routed by admin" {
+		t.Fatalf("the route sent again: %+v %v", rc, err)
+	}
+	if rec := decisionWhen(t, ld2, failed.ID, "taken back", func(rec ledger.DecisionRecord) bool { return rec.Rev == 3 }); GivenToGrant(rec.Request) {
+		t.Fatalf("still given: %s", rec.Request)
+	}
+
+	looks := 0
+	writeAtFirstLook := func(id string, f *DecisionFor) {
+		looks = 0
+		n, _ := ledger.ParseDecisionID(id)
+		e2.beforeOperate = func(int64) {
+			if looks++; looks > 1 {
+				return
+			}
+			rec := decisionWhen(t, ld2, id, "read", func(ledger.DecisionRecord) bool { return true })
+			req, err := withFor(rec.Request, f)
+			if err == nil {
+				_, err = ld2.Transition(context.Background(), rec.CurrentRun, func(tx *ledger.Tx) error { return tx.RouteFor(n, req) })
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// Given to the grant since the look: the take-back.
+	writeAtFirstLook(notGiven.ID, &DecisionFor{Label: GrantDecideLabel})
+	rc, err = e2.RouteDecision(t.Context(), notGiven.ID, "o2", 1, operator, "", "admin")
+	rec = decisionWhen(t, ld2, notGiven.ID, "read", func(ledger.DecisionRecord) bool { return true })
+	if err != nil || looks != 2 || rc.Rev != 2 || rc.Words != notGiven.ID+" is now for the operator alone: routed by admin" || GivenToGrant(rec.Request) {
+		t.Fatalf("given since the look: %+v %v; %d looks, given %v", rc, err, looks, GivenToGrant(rec.Request))
+	}
+	// Taken from the grant since the look: DR1's route.
+	writeAtFirstLook(given.ID, nil)
+	rc, err = e2.RouteDecision(t.Context(), given.ID, "o3", 2, operator, "", "admin")
+	rec = decisionWhen(t, ld2, given.ID, "read", func(ledger.DecisionRecord) bool { return true })
+	if err != nil || looks != 2 || rc.Rev != 2 || rc.Words != given.ID+" is routed to the operator" || rec.Rev != 2 || GivenToGrant(rec.Request) {
+		t.Fatalf("taken from the grant since the look: %+v %v; %d looks, rev %d, given %v", rc, err, looks, rec.Rev, GivenToGrant(rec.Request))
+	}
+	e2.beforeOperate = nil
+}
+
+// A route whose first look chose DR1's route, whose transaction then found
+// the decision given to the grant (written at beforeOperate) and whose
+// second look fails: the failure is answered and nothing is written; sent
+// again, the route takes the grant back.
+func TestARouteAnswersItsSecondFailedRead(t *testing.T) {
+	dir := newRepo(t)
+	e, fl := readyEngine(t)
+	ld, err := ledger.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ld.Close() })
+	var armed atomic.Bool
+	e.UseLedger(failingLook{sqlLedger{l: ld}, &armed})
+	run := launchManaged(t, e, peopleCrew(dir))
+	b, _, _ := attemptOn(t, e, fl, run.ID, "build")
+	d := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
+	n, _ := ledger.ParseDecisionID(d.ID)
+	looks := 0
+	e.beforeOperate = func(int64) {
+		if looks++; looks > 1 {
+			return
+		}
+		rec := decisionWhen(t, ld, d.ID, "read", func(ledger.DecisionRecord) bool { return true })
+		req, err := withFor(rec.Request, &DecisionFor{Label: GrantDecideLabel})
+		if err == nil {
+			_, err = ld.Transition(context.Background(), rec.CurrentRun, func(tx *ledger.Tx) error { return tx.RouteFor(n, req) })
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		armed.Store(true)
+	}
+	ctx := context.WithValue(t.Context(), lookMark{}, true)
+	rc, err := e.RouteDecision(ctx, d.ID, "o1", 1, []Destination{{Kind: DestOperator}}, "", "admin")
+	e.beforeOperate = nil
+	rec := decisionWhen(t, ld, d.ID, "read", func(ledger.DecisionRecord) bool { return true })
+	if err == nil || codeOf(err) != "" || armed.Load() || looks != 1 || rec.Rev != 1 || !GivenToGrant(rec.Request) || kindCount(rec, ledger.HistoryRouted) != 1 {
+		t.Fatalf("a route whose second read failed: %+v %v; %d looks, rev %d, given %v, %d routed rows", rc, err, looks, rec.Rev, GivenToGrant(rec.Request), kindCount(rec, ledger.HistoryRouted))
+	}
+	rc, err = e.RouteDecision(ctx, d.ID, "o1", 1, []Destination{{Kind: DestOperator}}, "", "admin")
+	if err != nil || rc.Rev != 2 || rc.Words != d.ID+" is now for the operator alone: routed by admin" {
+		t.Fatalf("the route sent again: %+v %v", rc, err)
+	}
+	if rec := decisionWhen(t, ld, d.ID, "taken back", func(rec ledger.DecisionRecord) bool { return rec.Rev == 2 }); GivenToGrant(rec.Request) {
+		t.Fatalf("still given: %s", rec.Request)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A route's id sent again answers its first receipt, marked a repeat, and
+// makes no second act, whatever the decision became since: DR1's route
+// after the decision was given to the grant, and the take-back after it
+// was given anew. The take-back's id with another body is op_conflict.
+func TestARoutesRepeatIsItsFirstReceipt(t *testing.T) {
+	e, ld, run, d := grantedDecision(t)
+	plain, err := route(e, d.ID, "o1", 1, DestOperator, "")
+	if err != nil || plain.Rev != 1 || plain.Words != d.ID+" is routed to the operator" {
+		t.Fatalf("DR1's route: %+v %v", plain, err)
+	}
+	if _, err := routeToGrant(e, d.ID, "g1", 1); err != nil {
+		t.Fatal(err)
+	}
+	given := decisionWhen(t, ld, d.ID, "given", func(rec ledger.DecisionRecord) bool { return rec.Rev == 2 })
+	again, err := route(e, d.ID, "o1", 1, DestOperator, "")
+	rec := decisionWhen(t, ld, d.ID, "read", func(ledger.DecisionRecord) bool { return true })
+	if err != nil || !again.Repeat || again.Rev != plain.Rev || again.Words != plain.Words || rec.Rev != 2 || !GivenToGrant(rec.Request) || len(rec.History) != len(given.History) {
+		t.Fatalf("DR1's route again, the decision given: %+v %v; rev %d, given %v", again, err, rec.Rev, GivenToGrant(rec.Request))
+	}
+	back, err := route(e, d.ID, "o2", 2, DestOperator, "")
+	if err != nil || back.Rev != 3 || back.Words != d.ID+" is now for the operator alone: routed by admin" {
+		t.Fatalf("the take-back: %+v %v", back, err)
+	}
+	if _, err := routeToGrant(e, d.ID, "g2", 3); err != nil {
+		t.Fatal(err)
+	}
+	anew := decisionWhen(t, ld, d.ID, "given anew", func(rec ledger.DecisionRecord) bool { return rec.Rev == 4 })
+	again, err = route(e, d.ID, "o2", 2, DestOperator, "")
+	rec = decisionWhen(t, ld, d.ID, "read", func(ledger.DecisionRecord) bool { return true })
+	if err != nil || !again.Repeat || again.Rev != back.Rev || again.Words != back.Words || rec.Rev != 4 || !GivenToGrant(rec.Request) || len(rec.History) != len(anew.History) {
+		t.Fatalf("the take-back again, the decision given anew: %+v %v; rev %d, given %v", again, err, rec.Rev, GivenToGrant(rec.Request))
+	}
+	if _, err := route(e, d.ID, "o2", 4, DestPerson, "ana"); codeOf(err) != CodeOpConflict {
+		t.Fatalf("the take-back's id with another body: %v", err)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A writer that flips whom the decision is for before every try's
+// transaction (beforeOperate): the route is refused once its tries are
+// spent, in words that say the decision changed, with no row; its id stays
+// free, and sent again with nothing writing it is made.
+func TestARouteOnATargetThatKeepsChanging(t *testing.T) {
+	e, ld, run, d := grantedDecision(t)
+	n, _ := ledger.ParseDecisionID(d.ID)
+	before := decisionWhen(t, ld, d.ID, "open", inState(ledger.DecisionOpen))
+	looks := 0
+	e.beforeOperate = func(int64) {
+		looks++
+		rec := decisionWhen(t, ld, d.ID, "read", func(ledger.DecisionRecord) bool { return true })
+		var f *DecisionFor
+		if !GivenToGrant(rec.Request) {
+			f = &DecisionFor{Label: GrantDecideLabel}
+		}
+		req, err := withFor(rec.Request, f)
+		if err == nil {
+			_, err = ld.Transition(context.Background(), rec.CurrentRun, func(tx *ledger.Tx) error { return tx.RouteFor(n, req) })
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := route(e, d.ID, "o1", 1, DestOperator, "")
+	e.beforeOperate = nil
+	rec := decisionWhen(t, ld, d.ID, "read", func(ledger.DecisionRecord) bool { return true })
+	if codeOf(err) != CodeDecisionMoved || !strings.Contains(err.Error(), d.ID+" changed while the route was made") || looks != maxDecisionTries ||
+		rec.Rev != 1 || kindCount(rec, ledger.HistoryRouted) != kindCount(before, ledger.HistoryRouted) {
+		t.Fatalf("a route on a target that kept changing: %v; %d looks, rev %d, %d routed rows", err, looks, rec.Rev, kindCount(rec, ledger.HistoryRouted))
+	}
+	// Flipped an odd number of times: given, so the route is the take-back.
+	if rc, err := route(e, d.ID, "o1", 1, DestOperator, ""); err != nil || rc.Rev != 2 || rc.Words != d.ID+" is now for the operator alone: routed by admin" {
+		t.Fatalf("the route sent again: %+v %v", rc, err)
 	}
 	stopRun(t, e, run.ID)
 }

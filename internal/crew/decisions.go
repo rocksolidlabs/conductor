@@ -1641,10 +1641,11 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 		Revision string `json:"revision"`
 	}
 	_ = json.Unmarshal([]byte(d.Policy), &policy)
+	who := Admittee{Grants: []string{auth.Grant}, Via: auth.Via, Subject: auth.Subject}
 	switch {
-	case !Admits(EntriesOf(rec), Admittee{Grants: []string{auth.Grant}, Via: auth.Via, Subject: auth.Subject}):
-		// The entries this transaction reads judge (docs/plans/decide-grant.md):
-		// the operator's, and the decide grant's while it is given to it.
+	case !who.operator() && !Admits(EntriesOf(rec), who):
+		// The operator by its own rule (AdmissionOf's), everyone else by the
+		// entries this transaction reads (docs/plans/decide-grant.md).
 		rc.Code, rc.Words = CodeNotApprover, fmt.Sprintf("%s is the operator's to answer: refused under local/1", id)
 	case policy.Revision != policyLocal:
 		rc.Code, rc.Words = CodeStalePolicy, fmt.Sprintf("%s was opened under policy %s, and %s is in force", id, policy.Revision, policyLocal)
@@ -1919,6 +1920,11 @@ func (e *Engine) RespondDecision(ctx context.Context, id string, resp Response, 
 	}
 	if actor == "" || len(actor) > ledger.MaxDecisionActor {
 		return ResponseReceipt{}, refuse(CodeInvalid, "a response names its actor")
+	}
+	// RouterResponseID is a decision router's id and no one else's, and a
+	// router answers under it alone: judged before any record is read.
+	if (resp.ResponseID == RouterResponseID) != (auth.Via == ViaRouter) {
+		return ResponseReceipt{}, refuse(CodeInvalid, "the response id %s is reserved: a decision router's answer is sent under it, and nothing else is", RouterResponseID)
 	}
 	// The process that accepts the response is this one, whatever the
 	// caller says: an identity's is applied only here (applyDecisions).

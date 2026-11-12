@@ -5547,7 +5547,9 @@ is judged against the decision's row in the transaction that applies
 it, before anything changes, whatever the engine holds in memory.
 
 The routes. Each body is read with unknown fields refused and bounded;
-`responseId`, `commandId` and `opId` are 1 to 32 of `A-Z a-z 0-9 . _ ~ -`,
+`responseId`, `commandId` and `opId` are 1 to 32 of `A-Z a-z 0-9 . _ ~ -`
+(the `responseId` `router` is kept for a registered decision router's
+answers, which take no other: a response sent with it is `400 invalid`),
 and the same id again under the same actor answers the same receipt with
 `repeat: true` (another body: `response_conflict` or `op_conflict`). A
 refusal is `{error: {code, message}}`, its message the words of what to do,
