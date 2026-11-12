@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
@@ -171,9 +172,9 @@ func runUp(ctx context.Context, args []string, stdout, stderr io.Writer) (int, e
 }
 
 // printableURL reports whether a URL from a reply may be printed: http or
-// https with a host, and printed characters alone (printed).
+// https with a host, and nothing a terminal would read as a control sequence.
 func printableURL(s string) bool {
-	if strings.ContainsFunc(s, func(r rune) bool { return !printed(r) }) {
+	if strings.ContainsFunc(s, unicode.IsControl) {
 		return false
 	}
 	u, err := url.Parse(s)
@@ -352,7 +353,7 @@ func (c *apiClient) doBody(ctx context.Context, method, path string, body, out a
 	return c.doLimit(ctx, method, path, body, out, maxReply)
 }
 
-// doLimit is doBody with a reply of at most limit bytes, a whole number of MiB.
+// doLimit is doBody with a reply of at most limit bytes.
 func (c *apiClient) doLimit(ctx context.Context, method, path string, body, out any, limit int) error {
 	return c.doWithin(ctx, requestTimeout, method, path, body, out, limit)
 }
@@ -394,7 +395,7 @@ func (c *apiClient) doWithin(ctx context.Context, timeout time.Duration, method,
 		return c.transportError(err)
 	}
 	if len(reply) > limit {
-		return fmt.Errorf("the reply from %s is larger than %d MiB", c.host, limit>>20)
+		return fmt.Errorf("the reply from %s is larger than %g MiB", c.host, float64(limit)/(1<<20))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return replyRefusal{status: resp.StatusCode, body: reply, err: c.statusError(resp.Status, reply)}

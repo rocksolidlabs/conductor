@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
 
@@ -26,8 +27,8 @@ import (
 // dispatch takes. A write reads the accounts' rev first and names it, so
 // a write over a change made since is refused, not taken. Everything the
 // two commands write, and their error, goes through printedOnly, a line at
-// a time through oneLine; a string of a reply is put through oneLine where
-// it is printed too, so it stays on its line, and --json is jsonText's.
+// a time through printedLine; a reply's string is put through oneLine
+// where it is printed too, so it stays on its line; --json is jsonText's.
 
 const accountsUsage = `Usage:
   conductor accounts list [--json]
@@ -72,17 +73,16 @@ does.
 `
 
 // maxCapacityPages is how many pages of the listing conductor capacity
-// reads before it gives up, each at most maxReply bytes; the whole walk
-// reads at most maxListingBytes and ends within listingTimeout. A listing
-// past any of them, or one whose next names a page already read, is
-// refused whole, never shown cut.
-const maxCapacityPages = 64
+// reads, each at most maxListingPage bytes as they arrive (the route's
+// page: 8 MiB in all), within listingTimeout. A listing past any of them,
+// or whose next names a page already read, is refused whole, never cut.
+const maxCapacityPages, maxListingPage = 64, 128 << 10
 
-// maxListingBytes is 64 of the route's largest pages (128 KiB): 8 MiB.
-var maxListingBytes = 8 << 20
-
-// listingTimeout is the listing's one deadline, for all its pages.
+// listingTimeout is the walk's one deadline, set at its start by listingDeadline (a seam).
 var listingTimeout = time.Minute
+var listingDeadline = func(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, listingTimeout)
+}
 
 // accountsArgs is how many arguments each accounts command takes.
 var accountsArgs = map[string]int{"list": 0, "add": 0, "rename": 2, "retire": 1, "remove": 1, "default": 2}
@@ -168,10 +168,26 @@ func refusalOf(err error) error {
 	return errors.New(text)
 }
 
+// printed reports whether the two commands write r as it is: a letter, a
+// mark, a number, punctuation or a symbol, by its category, or U+0020;
+// printedLine is oneLine(s) with every other character U+FFFD. The
+// commands' text is plain on purpose: a joiner in it is U+FFFD as well.
+func printed(r rune) bool {
+	return r == ' ' || unicode.In(r, unicode.L, unicode.M, unicode.N, unicode.P, unicode.S)
+}
+func printedLine(s string) string {
+	return strings.Map(func(r rune) rune {
+		if !printed(r) {
+			return utf8.RuneError
+		}
+		return r
+	}, oneLine(s))
+}
+
 // jsonText is the one way the package prints JSON: raw indented, or
 // compact as the server's own replies are, with every character that is
 // not printed and every byte that is not UTF-8 written as its JSON escape,
-// so the text is the same JSON and holds printed characters and the
+// so the text holds the same values and printed characters and the
 // indent's newlines alone. A JSON text holds such characters only inside
 // its strings, where the escape means the same.
 func jsonText(raw []byte, indent bool) (string, error) {
@@ -214,8 +230,8 @@ func printReply(w io.Writer, raw []byte, indent bool) (int, error) {
 	return 0, err
 }
 
-// termWriter writes to w a line at a time, each through oneLine: what the
-// two commands write reaches the terminal as printed characters and
+// termWriter writes to w a line at a time, each through printedLine: what
+// the two commands write reaches the terminal as printed characters and
 // newlines alone.
 type termWriter struct {
 	w    io.Writer
@@ -229,7 +245,7 @@ func (t *termWriter) Write(p []byte) (int, error) {
 		if i < 0 {
 			return len(p), nil
 		}
-		if _, err := io.WriteString(t.w, oneLine(string(t.part[:i]))+"\n"); err != nil {
+		if _, err := io.WriteString(t.w, printedLine(string(t.part[:i]))+"\n"); err != nil {
 			return 0, err
 		}
 		t.part = t.part[i+1:]
@@ -237,17 +253,17 @@ func (t *termWriter) Write(p []byte) (int, error) {
 }
 
 // printedOnly runs a command with its two streams behind termWriters and
-// answers its exit, its error's text through oneLine: the flag parser's
-// words, a usage error, the client's set-up and every reply all reach the
-// terminal one way.
+// answers its exit, its error's text through printedLine: the flag
+// parser's words, a usage error, the client's set-up and every reply all
+// reach the terminal one way.
 func printedOnly(stdout, stderr io.Writer, command func(stdout, stderr io.Writer) (int, error)) (int, error) {
 	out, errOut := &termWriter{w: stdout}, &termWriter{w: stderr}
 	code, err := command(out, errOut)
 	for _, t := range []*termWriter{out, errOut} {
-		io.WriteString(t.w, oneLine(string(t.part)))
+		io.WriteString(t.w, printedLine(string(t.part)))
 	}
 	if err != nil {
-		err = errors.New(oneLine(err.Error()))
+		err = errors.New(printedLine(err.Error()))
 	}
 	return code, err
 }
@@ -448,9 +464,9 @@ func capacityCmd(ctx context.Context, args []string, stdout, stderr io.Writer) (
 	default:
 		// The listing, page by page, until a page names no next, within
 		// its bounds and its one deadline.
-		lctx, cancel := context.WithTimeout(ctx, listingTimeout)
+		lctx, cancel := listingDeadline(ctx)
 		defer cancel()
-		after, followed, size := "", map[string]bool{}, 0
+		after, followed := "", map[string]bool{}
 		for pages := 0; ; pages++ {
 			if pages == maxCapacityPages {
 				return 1, fmt.Errorf("capacity: the listing is longer than %d pages: ask for one agent with --agent", maxCapacityPages)
@@ -460,14 +476,11 @@ func capacityCmd(ctx context.Context, args []string, stdout, stderr io.Writer) (
 				path += "?" + url.Values{"after": {after}}.Encode()
 			}
 			var raw json.RawMessage
-			if err := c.doBody(lctx, http.MethodGet, path, nil, &raw); err != nil {
+			if err := c.doLimit(lctx, http.MethodGet, path, nil, &raw, maxListingPage); err != nil {
 				if lctx.Err() != nil && ctx.Err() == nil {
 					return 1, fmt.Errorf("capacity: the listing takes longer than %s: ask for one agent with --agent", listingTimeout)
 				}
 				return 1, refusalOf(err)
-			}
-			if size += len(raw); size > maxListingBytes {
-				return 1, fmt.Errorf("capacity: the listing is larger than %d MiB: ask for one agent with --agent", maxListingBytes>>20)
 			}
 			var page capacityPageReply
 			if err := json.Unmarshal(raw, &page); err != nil {

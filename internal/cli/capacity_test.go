@@ -837,36 +837,48 @@ func TestCapacityCommandsWriteThroughOneWriter(t *testing.T) {
 	}
 }
 
-// jsonText escapes what JSON may carry raw in a string and is not
-// printed (DEL, C1, a format character, a byte that is not UTF-8, a
-// character past the basic plane as its surrogate pair) and
-// keeps the JSON's meaning, indented or compact.
-func TestJSONTextEscapesControls(t *testing.T) {
-	raw := []byte("{\"a\":\"x\x7f\xc2\x9b2J\xc2\x85\x9b\u2028\u202e\U000e0001y\"}\r\n")
-	for _, indent := range []bool{true, false} {
-		text, err := jsonText(raw, indent)
-		if err != nil {
-			t.Fatal(err)
+// jsonText keeps every value it is given: each string, written raw into
+// the JSON as a server may (encodeJSON) or escaped as encoding/json
+// writes it, indented or compact, parses back to the same string, the
+// text holding printed characters and the indent's newlines alone; what
+// is not printed is written as its JSON escape (a character past the
+// basic plane as its surrogate pair), never replaced.
+func TestJSONTextKeepsEveryValue(t *testing.T) {
+	for _, s := range []string{
+		"a\u200db", "\U0001F469\u200d\U0001F4BB", "\u200c", "\u202eabc\u202c", "\u05e9\u05dc\u05d5\u05dd", "a\u2028b\u2029c",
+		"\x7f", "\u0080\u0085\u009b2J\u009f", "\ufffd", string(rune(0xd800)), "\U0001F600\U000e0001\U0010fffd", "\x1b[31m\x00\t\r\n",
+		"\u00a0\u3000\u00ad\ufeff", "<&>", hostile,
+	} {
+		raw, _ := encodeJSON(map[string]string{"a": s})
+		escaped, _ := json.Marshal(map[string]string{"a": s})
+		for _, in := range [][]byte{raw, escaped} {
+			for _, indent := range []bool{true, false} {
+				text, err := jsonText(append(in, "\r\n"...), indent)
+				var got map[string]string
+				if err != nil || json.Unmarshal([]byte(text), &got) != nil || got["a"] != s {
+					t.Errorf("jsonText(%q, %v) = %q %v: not the value %q", in, indent, text, err, s)
+				}
+				clean(t, fmt.Sprintf("jsonText of %q", s), text)
+				if strings.Contains(text, "\n") != indent {
+					t.Errorf("indent %v: %q", indent, text)
+				}
+			}
 		}
-		clean(t, "jsonText", text)
-		var got struct{ A string }
-		if err := json.Unmarshal([]byte(text), &got); err != nil || got.A != "x\x7f\u009b2J\u0085\ufffd\u2028\u202e\U000e0001y" {
-			t.Errorf("jsonText changed the JSON: %v %q from %q", err, got.A, text)
-		}
-		if strings.Contains(text, "\n") != indent {
-			t.Errorf("indent %v: %q", indent, text)
-		}
+	}
+	if text, err := jsonText([]byte("{\"a\":\"x\x9by\"}"), false); err != nil || text != `{"a":"x\ufffdy"}` {
+		t.Errorf("a byte that is not UTF-8 (which encoding/json reads as U+FFFD): %q %v", text, err)
 	}
 	if _, err := jsonText([]byte("not json \x1b[2J"), true); err == nil || strings.ContainsRune(err.Error(), 0x1b) {
 		t.Errorf("a reply that is not JSON: %v", err)
 	}
 }
 
-// A printed character is one of a letter, a mark, a number, punctuation,
-// a symbol or a space, by its category: one character of every category
-// the standard library tells, and characters not assigned, are printed or
-// not as their category says; oneLine and textBlock replace each one that
-// is not, and jsonText escapes it and keeps its meaning.
+// A character the two commands print is one of a letter, a mark, a
+// number, punctuation or a symbol, by its category, or the space U+0020:
+// one character of every category the standard library tells, and
+// characters not assigned, are printed or not as their category says;
+// the commands' writer replaces each one that is not, and jsonText
+// escapes it and keeps its value.
 func TestPrintedIsByCategory(t *testing.T) {
 	seen := 0
 	check := func(what string, r rune, want bool) {
@@ -878,11 +890,10 @@ func TestPrintedIsByCategory(t *testing.T) {
 			return // no string holds a surrogate
 		}
 		s := "a" + string(r) + "b"
-		if got := oneLine(s); (got == s) != (want || r == ' ') || (!want && r > ' ' && got != "a\ufffdb") {
-			t.Errorf("%s %U: oneLine gives %q", what, r, got)
-		}
-		if got := textBlock(s); (got == s) != (want || r == '\n' || r == '\t') {
-			t.Errorf("%s %U: textBlock gives %q", what, r, got)
+		var out bytes.Buffer
+		printedOnly(&out, io.Discard, func(w, _ io.Writer) (int, error) { _, err := fmt.Fprintln(w, s); return 0, err })
+		if got, tab := strings.TrimSuffix(out.String(), "\n"), r == '\t' || r == '\r'; (got == s) != want || (!want && !tab && got != "a\ufffdb") || (tab && got != "a b") {
+			t.Errorf("%s %U: the commands' writer gives %q", what, r, got)
 		}
 		b, _ := json.Marshal(map[string]string{"a": string(r)})
 		text, err := jsonText(b, false)
@@ -903,12 +914,13 @@ func TestPrintedIsByCategory(t *testing.T) {
 		} else {
 			r = rune(table.R32[0].Lo)
 		}
-		check(name, r, strings.ContainsRune("LMNPSZ", rune(name[0])))
+		check(name, r, strings.ContainsRune("LMNPS", rune(name[0])) || r == ' ')
 	}
 	for r, want := range map[rune]bool{
 		0x0378: false, 0x086f: false, 0x10fffe: false, 0x10ffff: false, // not assigned
-		0x1d: false, 0x7f: false, 0x9b: false, 0x200b: false, 0x202e: false, 0xfeff: false, 0xad: false, 0xe0001: false,
-		0xa0: true, 0x3000: true, 0x2028: true, 0x2014: true, 0x1f600: true, 0x0301: true,
+		0x09: false, 0x0d: false, 0x1d: false, 0x7f: false, 0x9b: false, 0x200b: false, 0x200c: false, 0x200d: false, 0x202e: false, 0xfeff: false, 0xad: false, 0xe0001: false,
+		0xa0: false, 0x3000: false, 0x2028: false, 0x2029: false, // separators other than the space
+		0x20: true, 0x2014: true, 0x1f600: true, 0x0301: true,
 	} {
 		check("by hand", r, want)
 	}
@@ -917,10 +929,15 @@ func TestPrintedIsByCategory(t *testing.T) {
 	}
 }
 
-// Every JSON the package prints goes through jsonText: no other function
-// indents or compacts JSON, and no file writes a byte slice onto a stream
-// as the package's printers once did (w.Write(append(b, '\n')),
-// fmt.Fprintln(w, string(b))).
+// Every JSON the package prints goes through jsonText. What this check
+// reads is the source's calls, by their shape: no function but jsonText
+// calls json.Indent, json.MarshalIndent or json.Compact, none but
+// encodeJSON makes a json.NewEncoder, no call writes x.Write(append(...)),
+// and no fmt.Fprint* is handed a string(...) argument, the shapes the
+// package's printers once had. It follows no value through a variable: a
+// JSON reply held as a string and written with io.WriteString is not one
+// of its shapes, and brakeman observe's, the one the package had, is held
+// by its own test (TestObservePrintsALogsBytesAsTheyCame).
 func TestEveryJSONGoesThroughJSONText(t *testing.T) {
 	fset := token.NewFileSet()
 	files, err := filepath.Glob("*.go")
@@ -978,9 +995,9 @@ func TestEveryJSONGoesThroughJSONText(t *testing.T) {
 }
 
 // The listing's walk ends by itself: a next that names a page already
-// read, at once or after three pages, is refused whole, as are a walk past
-// its one deadline though no page passed its own, and pages that together
-// pass the walk's bound on bytes though none passed its own.
+// read, at once or after three pages, is refused whole, as is a page past
+// the route's bound on one page by the white space after its value; 64
+// pages each just inside it are read whole.
 func TestCapacityListingEndsByItself(t *testing.T) {
 	view, _ := json.Marshal(stubViews()["ghost"])
 	listing := func(t *testing.T, page func(n int, after string, w http.ResponseWriter, r *http.Request)) (int, string, int) {
@@ -1016,26 +1033,118 @@ func TestCapacityListingEndsByItself(t *testing.T) {
 		}
 	}
 
-	oldRequest, oldListing, oldBytes := requestTimeout, listingTimeout, maxListingBytes
-	t.Cleanup(func() { requestTimeout, listingTimeout, maxListingBytes = oldRequest, oldListing, oldBytes })
-	requestTimeout, listingTimeout = time.Hour, 300*time.Millisecond
-	code, out, n := listing(t, func(at int, _ string, w http.ResponseWriter, r *http.Request) {
-		if at == 4 {
-			<-r.Context().Done() // far inside its own hour: the walk's deadline ends it
-			return
+	// A page is read through the route's bound on one page, counted on its
+	// bytes as they arrive, the white space around its value included: so
+	// the 64 pages are 8 MiB at most.
+	page := func(at, last int, pad string) []byte {
+		next := fmt.Sprintf("k%d", at)
+		if at == last {
+			next = ""
 		}
-		answer(w, fmt.Sprintf("k%d", at), 0)
-	})
-	if code != 1 || n != 4 || strings.Contains(out, "Ghost") || !strings.Contains(out, "the listing takes longer than 300ms") {
-		t.Errorf("a walk past its deadline: exit %d after %d pages:\n%s", code, n, out)
+		b, _ := json.Marshal(map[string]any{"views": []json.RawMessage{view}, "next": next})
+		return append(b, pad[:max(0, len(pad)-len(b))]...)
 	}
-
-	requestTimeout, listingTimeout, maxListingBytes = oldRequest, time.Hour, 2<<20
+	inside, past := strings.Repeat(" ", maxListingPage), strings.Repeat(" ", maxListingPage+1)
+	code, out, n := listing(t, func(at int, _ string, w http.ResponseWriter, _ *http.Request) { w.Write(page(at, 3, past)) })
+	if code != 1 || n != 1 || strings.Contains(out, "Ghost") || !strings.Contains(out, "larger than 0.125 MiB") {
+		t.Errorf("a page padded past its bound outside its value: exit %d after %d pages:\n%.300s", code, n, out)
+	}
 	code, out, n = listing(t, func(at int, _ string, w http.ResponseWriter, _ *http.Request) {
-		answer(w, fmt.Sprintf("k%d", at), 800<<10) // inside maxReply alone
+		w.Write(page(at, maxCapacityPages, inside))
 	})
-	if code != 1 || n != 3 || strings.Contains(out, "Ghost") || !strings.Contains(out, "the listing is larger than 2 MiB") {
-		t.Errorf("a walk past its bytes: exit %d after %d pages:\n%.300s", code, n, out)
+	if code != 0 || n != maxCapacityPages || strings.Count(out, "Ghost (ghost)") != maxCapacityPages {
+		t.Errorf("%d pages each just inside the page bound: exit %d after %d pages:\n%.300s", maxCapacityPages, code, n, out)
+	}
+}
+
+// listingClock is a clock the test owns for the listing's deadline: each
+// deadline set (listingDeadline) is the clock's time then plus
+// listingTimeout, and passes when the test moves the clock to it.
+type listingClock struct {
+	mu        sync.Mutex
+	now       time.Duration
+	deadlines []listingClockDeadline
+}
+
+type listingClockDeadline struct {
+	at     time.Duration
+	ctx    context.Context
+	cancel context.CancelCauseFunc
+}
+
+func (c *listingClock) deadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	dctx, cancel := context.WithCancelCause(ctx)
+	c.deadlines = append(c.deadlines, listingClockDeadline{c.now + listingTimeout, dctx, cancel})
+	return dctx, func() { cancel(context.Canceled) }
+}
+
+// advance moves the clock on by d, passing every deadline it reaches, and
+// answers whether the last one set, the one the request in flight is
+// under, passed now.
+func (c *listingClock) advance(d time.Duration) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now += d
+	passed := false
+	for i, dl := range c.deadlines {
+		if dl.at <= c.now && dl.ctx.Err() == nil {
+			dl.cancel(context.DeadlineExceeded)
+			passed = i == len(c.deadlines)-1
+		}
+	}
+	return passed
+}
+
+// The listing's walk has one deadline, set at its start, for all its
+// pages, and the test owns its clock: a stated number of pages answer,
+// then the deadline passes while a page is held, and the walk is refused.
+// Each page moving the clock on by less than the deadline, as a deadline
+// set again for each page would let through, is refused as well, at the
+// page where the walk's own time passes it.
+func TestCapacityListingHasOneDeadline(t *testing.T) {
+	view, _ := json.Marshal(stubViews()["ghost"])
+	oldRequest, oldDeadline := requestTimeout, listingDeadline
+	t.Cleanup(func() { requestTimeout, listingDeadline = oldRequest, oldDeadline })
+	requestTimeout = time.Hour // a page's own bound is never the one that ends it
+	for _, c := range []struct {
+		what        string
+		step        func(at int) time.Duration // how far the clock moves at page at
+		pages, held int
+	}{
+		{"three pages answer, then the deadline passes while the fourth is held", func(at int) time.Duration {
+			return map[bool]time.Duration{true: listingTimeout}[at == 4]
+		}, 6, 4},
+		{"each page takes four tenths of the deadline", func(int) time.Duration { return listingTimeout * 4 / 10 }, 6, 3},
+	} {
+		clock := &listingClock{}
+		listingDeadline = clock.deadline
+		var mu sync.Mutex
+		n := 0
+		hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			n++
+			at := n
+			mu.Unlock()
+			if clock.advance(c.step(at)) {
+				<-r.Context().Done() // held: the walk's deadline ends it
+				return
+			}
+			next := fmt.Sprintf("k%d", at)
+			if at == c.pages {
+				next = ""
+			}
+			json.NewEncoder(w).Encode(map[string]any{"views": []json.RawMessage{view}, "next": next})
+		}))
+		code, out := runCLI(t, capacityRun(t), hs.URL)
+		hs.Close()
+		mu.Lock()
+		got := n
+		mu.Unlock()
+		if code != 1 || got != c.held || strings.Contains(out, "Ghost") || !strings.Contains(out, "the listing takes longer than "+listingTimeout.String()) {
+			t.Errorf("%s: exit %d after %d pages, want the refusal at page %d:\n%s", c.what, code, got, c.held, out)
+		}
 	}
 }
 

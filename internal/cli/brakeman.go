@@ -319,7 +319,7 @@ func (c *brakemanClient) act(ctx context.Context, name string, params map[string
 	}
 	text, jerr := jsonText(reply, true)
 	if jerr != nil {
-		text = textBlock(string(reply))
+		text = string(reply)
 	}
 	return actWords(name, opID, reply) + "\n\n" + text, reply, opID, nil
 }
@@ -558,7 +558,7 @@ func requestText(raw json.RawMessage, read, submit string) (string, error) {
 	if err != nil {
 		return "", errors.New("brakeman: an unreadable request")
 	}
-	return fmt.Sprintf("Brakeman request %s (%s), %s. Read what you need with %s, then submit one brief with %s.\n\n%s", oneLine(head.ID), oneLine(head.Kind), oneLine(head.State), read, submit, text), nil
+	return fmt.Sprintf("Brakeman request %s (%s), %s. Read what you need with %s, then submit one brief with %s.\n\n%s", head.ID, head.Kind, head.State, read, submit, text), nil
 }
 
 // observe reads what, its query's keys the parameters of the route the
@@ -923,8 +923,8 @@ func brakemanObserve(ctx context.Context, args []string, stdout, stderr io.Write
 		return 1, err
 	}
 	if isJSON {
-		// A JSON answer ends at its value: one line ends it here.
-		text += "\n"
+		// A JSON answer is printed as every JSON of the package is.
+		return printReply(stdout, []byte(text), false)
 	}
 	// A log is written as it came, so it still matches its SHA-256.
 	_, err = io.WriteString(stdout, text)
@@ -1354,7 +1354,7 @@ func fieldText(v json.RawMessage) string {
 func compactJSON(v json.RawMessage) string {
 	text, err := jsonText(v, false)
 	if err != nil {
-		return oneLine(string(v))
+		return string(v)
 	}
 	return text
 }
