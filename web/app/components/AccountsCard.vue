@@ -16,6 +16,8 @@ const agents = ref<AgentInfo[]>([])
 const error = ref('')
 const notice = ref('')
 
+// Another workbench token empties the store (useAccounts): the card reads the accounts again with it.
+watch(useWorkbenchToken().token, () => void store.load())
 onMounted(async () => {
   await store.load()
   try {
@@ -98,8 +100,17 @@ const removing = ref('')
       <UAlert v-if="!owner" color="warning" variant="subtle" icon="i-lucide-lock" title="Another server over this data directory keeps the accounts: they are shown here, and changed there" :description="doc?.why" data-accounts-not-owner />
       <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" data-accounts-error />
       <UAlert v-if="notice" color="success" variant="subtle" icon="i-lucide-check" :title="notice" data-accounts-notice />
-      <p v-if="!doc && available === null" class="text-sm text-muted">Reading the accounts…</p>
-      <p v-else-if="!doc" class="text-sm text-error">{{ problem }}</p>
+      <UAlert
+        v-if="problem"
+        color="error"
+        variant="subtle"
+        icon="i-lucide-circle-alert"
+        :title="doc ? 'The accounts could not be read again: what is shown is the last read' : 'The accounts could not be read'"
+        :description="problem"
+        :actions="[{ label: 'Try again', color: 'neutral', variant: 'outline', onClick: () => store.load() }]"
+        data-accounts-problem
+      />
+      <p v-else-if="!doc && available === null" class="text-sm text-muted">Reading the accounts…</p>
 
       <section v-for="ad in doc?.adapters ?? []" :key="ad.adapter" class="flex flex-col gap-2" :data-accounts-adapter="ad.adapter">
         <h3 class="text-sm font-semibold">{{ ad.name }}</h3>
@@ -125,7 +136,7 @@ const removing = ref('')
                 <span class="text-sm font-medium" data-account-name>{{ a.label }}</span>
                 <UBadge v-if="ad.default === a.id" label="default" color="primary" variant="subtle" size="sm" data-account-is-default />
                 <UBadge v-if="a.retired" label="retired" color="neutral" variant="outline" size="sm" data-account-retired />
-                <code class="min-w-0 flex-1 truncate text-xs text-muted" :title="a.folder" data-account-folder>{{ a.folder }}</code>
+                <code class="min-w-0 flex-1 break-all text-xs text-muted" data-account-folder>{{ a.folder }}</code>
               </template>
             </div>
             <div v-if="renaming?.id !== a.id" class="flex flex-wrap items-center gap-1.5">

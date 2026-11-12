@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   WARN_PERCENT,
   accountChoices,
+  accountOfLaunch,
   asCapacityEvent,
   capacityHostWords,
   capacityKey,
@@ -10,7 +11,6 @@ import {
   clockWords,
   countsWords,
   creditWords,
-  defaultChoice,
   figureWords,
   freshnessWords,
   inWords,
@@ -19,10 +19,12 @@ import {
   modelWords,
   offersCheck,
   offersRead,
+  ownLogin,
   planWords,
   readAgoWords,
   readWait,
   severityColor,
+  viewTurns,
   warns,
   windowWords,
   type CapacityState,
@@ -207,9 +209,52 @@ describe('the questions and the account choice', () => {
     // A tool whose login folder Conductor cannot move: no choice at all.
     expect(accountChoices(doc, 'copilot')).toEqual([])
     expect(accountChoices(null, 'claude')).toEqual([])
-    expect(defaultChoice(doc, 'claude')).toBe('a-work')
-    // A default naming a retired account is the default login, as the server reads it.
-    expect(defaultChoice({ ...doc, adapters: [{ adapter: 'claude', default: 'a-old' }] }, 'claude')).toBe('default')
+  })
+
+  describe("a launch's account, decided by the server's view of the launch with none named", () => {
+    const choices = [
+      { value: 'default', label: 'Default login' },
+      { value: 'a-work', label: 'Work (default)' },
+    ]
+    it('sends no account for a launch whose yolo recipe sets a login variable while the default is a registered account, and offers none', () => {
+      // The view of {agent, yolo: true}: env_set, its account still the adapter's default.
+      const d = accountOfLaunch(choices, view({ state: 'env_set', account: { id: 'a-work', label: 'Work', default: true } }), '')
+      expect(d).toEqual({ offered: false, shown: 'a-work', sent: undefined })
+      // A pick made before the switch moved is not sent either.
+      expect(accountOfLaunch(choices, view({ state: 'env_set', account: { id: 'a-work' } }), 'a-work').sent).toBeUndefined()
+    })
+    it('offers every account for an entry that keeps its own login while the default is the default login: the view cannot tell it', () => {
+      // GET /api/capacity?agent=…&yolo=false of such an entry: the default login, in the state of its last reading, as any other.
+      const d = accountOfLaunch(choices, view({ state: 'never_read', account: { id: 'default', default: true } }), '')
+      expect(d).toEqual({ offered: true, shown: 'default', sent: undefined })
+      // A pick is sent as picked: the route's refusal is what the dialog then shows.
+      expect(accountOfLaunch(choices, view({ account: { id: 'default', default: true } }), 'a-work')).toEqual({ offered: true, shown: 'a-work', sent: 'a-work' })
+    })
+    it('sends no account for a launch made before the view arrived, and shows none chosen', () => {
+      expect(accountOfLaunch(choices, null, '')).toEqual({ offered: true, shown: '', sent: undefined })
+    })
+    it('shows the account the view resolved, sends it only when picked, and offers nothing to an agent that takes no account', () => {
+      expect(accountOfLaunch(choices, view({ account: { id: 'a-work', default: true } }), '')).toEqual({ offered: true, shown: 'a-work', sent: undefined })
+      expect(accountOfLaunch(choices, view({ account: { id: 'a-work' } }), 'default').sent).toBe('default')
+      expect(accountOfLaunch([], view(), 'a-work')).toEqual({ offered: false, shown: 'a-work', sent: undefined })
+    })
+  })
+
+  it('names no account for a launch with its own login', () => {
+    expect(ownLogin(view({ host: { kind: 'remote' }, state: 'remote' }))).toBe(true)
+    expect(ownLogin(view({ state: 'env_set' }))).toBe(true)
+    expect(ownLogin(view())).toBe(false)
+  })
+
+  it("says when a view's words change by the clock: fifteen minutes after its read, or a window's reset, whichever is first", () => {
+    const readAt = '2026-11-12T10:00:00Z'
+    const w = (resetsAt: string) => ({ source: 'provider' as const, kind: 'session', name: '5-hour', percent: 10, resetsAt })
+    expect(viewTurns(view({ readAt, fresh: 'fresh', windows: [] }))).toBe(NOW + 15 * 60_000)
+    expect(viewTurns(view({ readAt, fresh: 'fresh', windows: [w('2026-11-12T10:05:00Z')] }))).toBe(NOW + 5 * 60_000)
+    expect(viewTurns(view({ readAt, fresh: 'stale', windows: [w('2026-11-12T12:00:00Z')] }))).toBe(NOW + 2 * 3_600_000)
+    expect(viewTurns(view({ readAt, fresh: 'stale', windows: [] }))).toBeNull()
+    expect(viewTurns(view({ readAt, fresh: 'reset_passed', windows: [w('2026-11-12T12:00:00Z')] }))).toBeNull()
+    expect(viewTurns(view({ readAt: undefined, fresh: 'none' }))).toBeNull()
   })
 
   it('holds a model to the form the server takes', () => {

@@ -1,10 +1,18 @@
-import { asCapacityEvent, capacityKey, capacityParams, readWait, type CapacityQuery, type CapacityView } from '../utils/capacity'
+import { asCapacityEvent, capacityKey, capacityParams, readWait, realAfter, viewTurns, withDeadline, type After, type CapacityQuery, type CapacityView } from '../utils/capacity'
 
 /** What the store asks of the server: a view (`GET /api/capacity`, which reads nothing) and a read (`POST /api/capacity/read`). */
 export interface CapacityReads {
-  view: (q: CapacityQuery) => Promise<CapacityView>
-  read: (q: CapacityQuery, check: boolean) => Promise<CapacityView>
+  view: (q: CapacityQuery, signal: AbortSignal) => Promise<CapacityView>
+  read: (q: CapacityQuery, check: boolean, signal: AbortSignal) => Promise<CapacityView>
 }
+
+/** A view's deadline: the GET reads nothing, the server answers it from what it keeps, so this only bounds a hang. */
+export const VIEW_DEADLINE_MS = 30_000
+/**
+ * A read's deadline: the server answers a read within capacity.Wait (2 s, internal/capacity/cache.go) and bounds the read itself by
+ * the reader's own (90 s for Claude Code, claudeUsageTimeout in internal/agents/usage.go); this is above both, a bound on a hang.
+ */
+export const READ_DEADLINE_MS = 120_000
 
 /** What is known of one question: the last view answered, the error of the last ask, and whether a read is out. */
 export interface CapacityEntry {
@@ -16,32 +24,45 @@ export interface CapacityEntry {
 }
 
 interface Slot extends CapacityEntry {
-  /** How many pages show it: an event reads again only what is shown. */
+  /** How many pages show it: an event reads again only what is shown, and a slot no page shows is not kept. */
   watchers: number
   /** A GET of it is out (one at a time), and whether another is owed once it lands. */
   fetching: boolean
   again: boolean
-  /** The number of the last ask sent, and of the last whose answer was taken: an answer older than one taken is dropped. */
-  sent: number
-  taken: number
   /** Why the last read was refused, in the server's words; "" when it was not. */
   readError: string
+  /** The moment of the view's own change (viewTurns) a GET was last asked for. */
+  agedFor: number | null
+  /** The GET out and those owed after it, ended. */
+  landing: Promise<void>
+}
+
+/** A step under way: the slot it asked for and the token's epoch it asked under. */
+interface Step {
+  slot: Slot
+  epoch: number
 }
 
 /**
  * The capacity views the app shows (docs/plans/capacity.md, PR-5), one for the app: a view per question (an agent, an account, the
- * launch's model, yolo and place), fetched one at a time per question, and fetched again when the `capacity` event names its key or
- * the events stream comes back (`snapshot`). A read is asked only through `read`, which sends nothing while the view's
- * `nextReadAfter` is ahead of the clock: the server would answer the kept reading anyway. Each answer is the question's that asked
- * it: one older than an answer taken is dropped, so a GET that crossed a read never puts the earlier view back.
+ * launch's model, yolo and place) that a page shows, fetched one at a time per question, and fetched again when the `capacity` event
+ * names its key, the events stream comes back (`snapshot`) or the view's words change by the clock (`age`). A read is asked only
+ * through `read`, which sends nothing while the view's `nextReadAfter` is ahead of the clock. Every step after each of its answers
+ * asks `stands` whether its question is still shown under the token it asked with, and does nothing more when it is not; every
+ * request has a deadline.
  */
 export class CapacityLive {
   private slots = new Map<string, Slot>()
   private reads: CapacityReads | null = null
+  /** Bumped by `forget`: a step begun under another token stands no more. */
+  private epoch = 0
   /** Bumped on every change, for a page's computed to follow. */
   changed: () => void = () => {}
 
-  constructor(private readonly now: () => number = Date.now) {}
+  constructor(
+    private readonly now: () => number = Date.now,
+    private readonly after: After = realAfter,
+  ) {}
 
   attach(reads: CapacityReads) {
     this.reads = reads
@@ -53,82 +74,88 @@ export class CapacityLive {
     return s ? { query: s.query, view: s.view, error: s.readError || s.error, reading: s.reading } : { query: q, view: null, error: '', reading: false }
   }
 
-  private slot(q: CapacityQuery): Slot {
-    const key = capacityKey(q)
-    let s = this.slots.get(key)
-    if (!s) {
-      s = { query: { ...q }, view: null, error: '', reading: false, watchers: 0, fetching: false, again: false, sent: 0, taken: 0, readError: '' }
-      this.slots.set(key, s)
-    }
-    return s
+  /** Whether a step still stands: its token is the one held, and its question is still shown, by the slot it began with. */
+  private stands(t: Step): boolean {
+    return t.epoch === this.epoch && t.slot.watchers > 0 && this.slots.get(capacityKey(t.slot.query)) === t.slot
   }
 
   /** A page shows q: it is fetched now, and again on its key's events, until `unwatch`. */
   watch(q: CapacityQuery): Promise<void> {
-    const s = this.slot(q)
+    const key = capacityKey(q)
+    let s = this.slots.get(key)
+    if (!s) {
+      s = { query: { ...q }, view: null, error: '', reading: false, watchers: 0, fetching: false, again: false, readError: '', agedFor: null, landing: Promise.resolve() }
+      this.slots.set(key, s)
+    }
     s.watchers++
     return this.fetch(s)
   }
 
-  /** A page no longer shows q; with no page left showing it, what is known of it goes. */
+  /** A page no longer shows q; with no page left showing it, its slot goes, and what is on its way for it is dropped. */
   unwatch(q: CapacityQuery) {
     const key = capacityKey(q)
     const s = this.slots.get(key)
     if (!s) return
     s.watchers = Math.max(0, s.watchers - 1)
-    if (s.watchers === 0 && !s.fetching && !s.reading) this.slots.delete(key)
+    if (s.watchers === 0) this.slots.delete(key)
   }
 
-  /** Fetches q's view: one GET at a time; one asked while it is out is made once it lands. */
-  private async fetch(s: Slot): Promise<void> {
-    if (!this.reads) return
+  /** Fetches s's view: one GET at a time; one asked while it is out is made once it lands, and answers when that one has. */
+  private fetch(s: Slot): Promise<void> {
+    const t = { slot: s, epoch: this.epoch }
+    if (!this.reads || !this.stands(t)) return Promise.resolve()
     if (s.fetching) {
       s.again = true
-      return
+      return s.landing
     }
     s.fetching = true
     s.again = false
-    const n = ++s.sent
-    try {
-      const v = await this.reads.view(s.query)
-      this.take(s, n, v, '')
-    } catch (e) {
-      this.take(s, n, null, (e as Error).message)
-    } finally {
-      s.fetching = false
-      this.changed()
-    }
-    if (s.again && this.slots.get(capacityKey(s.query)) === s) await this.fetch(s)
+    return (s.landing = this.get(t, this.reads))
   }
 
-  private take(s: Slot, n: number, v: CapacityView | null, error: string) {
-    if (n < s.taken) return
-    s.taken = n
+  /** One GET of t's view, then the one owed after it. */
+  private async get(t: Step, reads: CapacityReads): Promise<void> {
+    const s = t.slot
+    let v: CapacityView | null = null
+    let error = ''
+    try {
+      v = await withDeadline((signal) => reads.view(s.query, signal), VIEW_DEADLINE_MS, `The server did not answer within ${VIEW_DEADLINE_MS / 1000} s`, this.after)
+    } catch (e) {
+      error = (e as Error).message
+    }
+    if (!this.stands(t)) return
     if (v) s.view = v
     s.error = error
+    s.fetching = false
+    this.changed()
+    if (s.again) await this.fetch(s)
   }
 
   /**
    * Asks the server to read q's agent and account now (`check`: the admin's explicit check of a Claude Code version not checked):
-   * nothing is sent while a read of q is out or the view's `nextReadAfter` is ahead of the clock. Answers whether a read was sent.
+   * nothing is sent for a question no page shows, while a read of q is out, or while the view's `nextReadAfter` is ahead of the
+   * clock. Answers whether a read was sent.
    */
   async read(q: CapacityQuery, check = false): Promise<boolean> {
-    if (!this.reads) return false
-    const s = this.slot(q)
-    if (s.reading || (s.view && readWait(s.view, this.now()) !== null)) return false
+    const s = this.slots.get(capacityKey(q))
+    if (!this.reads || !s || s.watchers === 0 || s.reading || (s.view && readWait(s.view, this.now()) !== null)) return false
+    const t = { slot: s, epoch: this.epoch }
+    const reads = this.reads
     s.reading = true
     s.readError = ''
     this.changed()
+    let error = ''
     try {
       // The read's own answer is the view of its agent and account as a plain session's launch would get it; the question's own
       // (its model, yolo and place) is fetched after it, a GET that reads nothing.
-      await this.reads.read(q, check)
+      await withDeadline((signal) => reads.read(q, check, signal), READ_DEADLINE_MS, `The server did not answer the read within ${READ_DEADLINE_MS / 1000} s`, this.after)
     } catch (e) {
-      s.readError = (e as Error).message
-    } finally {
-      s.reading = false
-      this.changed()
+      error = (e as Error).message
     }
+    if (!this.stands(t)) return true
+    s.reading = false
+    s.readError = error
+    this.changed()
     await this.fetch(s)
     return true
   }
@@ -138,7 +165,7 @@ export class CapacityLive {
     const e = asCapacityEvent(payload)
     if (!e) return
     for (const s of this.slots.values()) {
-      if (s.watchers === 0 || s.query.agent !== e.agent) continue
+      if (s.query.agent !== e.agent) continue
       const account = s.query.account || s.view?.account.id
       if (!account || account === e.account) void this.fetch(s)
     }
@@ -146,17 +173,26 @@ export class CapacityLive {
 
   /** The events stream came back: whatever was missed meanwhile, every question shown is fetched again. */
   snapshot() {
-    for (const s of this.slots.values()) if (s.watchers > 0) void this.fetch(s)
+    for (const s of this.slots.values()) void this.fetch(s)
   }
 
-  /** Another workbench token: nothing known through the old one stays, and an answer on its way for it is dropped. */
-  forget() {
+  /** Every view shown whose words have changed by the clock since it was fetched (stale, a reset passed) is fetched again: a GET, never a read. */
+  age() {
+    const now = this.now()
     for (const s of this.slots.values()) {
-      s.view = null
-      s.error = ''
-      s.readError = ''
-      s.taken = s.sent + 1
-      s.sent = s.taken
+      const at = s.view ? viewTurns(s.view) : null
+      if (at === null || at > now || s.agedFor === at) continue
+      s.agedFor = at
+      void this.fetch(s)
+    }
+  }
+
+  /** Another workbench token: nothing known through the old one stays, and every step on its way for it stands no more. */
+  forget() {
+    this.epoch++
+    for (const [key, s] of this.slots) {
+      if (s.watchers === 0) this.slots.delete(key)
+      Object.assign(s, { view: null, error: '', readError: '', reading: false, fetching: false, again: false, agedFor: null })
     }
     this.changed()
   }
@@ -175,13 +211,18 @@ export function useCapacity() {
   const version = useState<number>('capacityVersion', () => 0)
   const store = capacityLive()
   store.attach({
-    view: (q) => request<CapacityView>('/api/capacity', { query: capacityParams(q) }),
-    read: (q, check) => request<CapacityView>('/api/capacity/read', { method: 'POST', body: { agent: q.agent, ...(q.account ? { account: q.account } : {}), ...(check ? { check: true } : {}) } }),
+    view: (q, signal) => request<CapacityView>('/api/capacity', { query: capacityParams(q), signal }),
+    read: (q, check, signal) => request<CapacityView>('/api/capacity/read', { method: 'POST', body: { agent: q.agent, ...(q.account ? { account: q.account } : {}), ...(check ? { check: true } : {}) }, signal }),
   })
   store.changed = () => version.value++
-  const token = useState<string | null>('capacityToken', () => null)
-  if (token.value !== null && token.value !== admin.token.value) store.forget()
-  token.value = admin.token.value
+  // The token is watched while a page shows capacity: another one empties the store, so nothing asked with the old one is shown.
+  const held = useState<string | null>('capacityToken', () => null)
+  const judge = () => {
+    if (held.value !== null && held.value !== admin.token.value) store.forget()
+    held.value = admin.token.value
+  }
+  judge()
+  watch(admin.token, judge)
 
   /** What is known of q, followed by a computed. */
   function entry(q: CapacityQuery) {

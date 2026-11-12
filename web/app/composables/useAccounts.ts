@@ -1,4 +1,9 @@
+import { realAfter, withDeadline, type After } from '../utils/capacity'
 import { ApiError } from './useApi'
+
+/** A request's deadline: the accounts are a small file the server answers from at once, so this only bounds a hang. */
+export const ACCOUNTS_DEADLINE_MS = 30_000
+const DEADLINE_WORDS = `The server did not answer within ${ACCOUNTS_DEADLINE_MS / 1000} s`
 
 /** An account as `GET /api/accounts` lists it, the admin's alone: a reference to an agent's own login, never a credential. */
 export interface Account {
@@ -32,7 +37,7 @@ export interface AccountsDoc {
 
 /** What the store asks of the server; each write names the revision it read (`expectedRev`). */
 export interface AccountsReads {
-  list: () => Promise<AccountsDoc>
+  list: (signal: AbortSignal) => Promise<AccountsDoc>
   add: (body: { adapter: string; label: string; folder: string; expectedRev: number }) => Promise<unknown>
   rename: (id: string, body: { label: string; expectedRev: number }) => Promise<unknown>
   retire: (id: string, body: { expectedRev: number }) => Promise<unknown>
@@ -63,57 +68,77 @@ export class AccountsLive {
   doc: AccountsDoc | null = null
   /** Whether the server offers accounts: unknown (null) until a read answers. */
   available: boolean | null = null
+  /** Why the last read failed, in the server's words (or "Cannot reach the server"); "" when it did not. */
   problem = ''
+  /** A write is under way, until the read of the document after it has ended. */
   busy = false
   private reads: AccountsReads | null = null
+  /** Bumped by `forget`: a step begun under another token stands no more. */
+  private epoch = 0
   private sent = 0
   private taken = 0
   changed: () => void = () => {}
+
+  constructor(private readonly after: After = realAfter) {}
 
   attach(reads: AccountsReads) {
     this.reads = reads
   }
 
+  /** Whether a step still stands: its token is the one held, and (for a read, numbered n) no later read's answer was taken. */
+  private stands(epoch: number, n = Infinity): boolean {
+    return epoch === this.epoch && n > this.taken
+  }
+
   /** Reads the document; an answer to an earlier read than one taken is dropped. */
   async load(): Promise<void> {
     if (!this.reads) return
+    const epoch = this.epoch
     const n = ++this.sent
+    const reads = this.reads
+    let doc: AccountsDoc | null = null
+    let error: unknown = null
     try {
-      const doc = await this.reads.list()
-      if (n < this.taken) return
-      this.taken = n
+      doc = await withDeadline((signal) => reads.list(signal), ACCOUNTS_DEADLINE_MS, DEADLINE_WORDS, this.after)
+    } catch (e) {
+      error = e
+    }
+    if (!this.stands(epoch, n)) return
+    this.taken = n
+    if (doc) {
       this.doc = doc
       this.available = true
       this.problem = ''
-    } catch (e) {
-      if (n < this.taken) return
-      this.taken = n
-      if (e instanceof ApiError && (e.status === 403 || e.status === 503 || e.status === 404)) {
-        this.available = false
-        this.doc = null
-      }
-      this.problem = (e as Error).message
-    } finally {
-      this.changed()
+    } else if (error instanceof ApiError && (error.status === 403 || error.status === 503 || error.status === 404)) {
+      this.available = false
+      this.doc = null
+      this.problem = ''
+    } else {
+      this.problem = (error as Error).message || 'Cannot reach the server'
     }
+    this.changed()
   }
 
-  /** Runs one write against the revision read, then reads the document again; a refusal is thrown in its words. */
+  /** Runs one write against the revision read, then reads the document again, busy until that read has ended; a refusal is thrown in its words. */
   private async write(send: (rev: number) => Promise<unknown>): Promise<void> {
     if (!this.reads || !this.doc) throw new Error('The accounts have not been read yet')
     if (this.busy) throw new Error('Another change to the accounts is under way')
+    const epoch = this.epoch
+    const rev = this.doc.rev
     this.busy = true
     this.changed()
+    let refusal: unknown = null
     try {
-      await send(this.doc.rev)
+      await withDeadline(() => send(rev), ACCOUNTS_DEADLINE_MS, DEADLINE_WORDS, this.after)
     } catch (e) {
-      await this.load()
-      throw new Error(accountRefusalWords(e))
-    } finally {
-      this.busy = false
-      this.changed()
+      refusal = e
     }
+    if (!this.stands(epoch)) return
     await this.load()
+    if (!this.stands(epoch)) return
+    this.busy = false
+    this.changed()
+    if (refusal) throw new Error(accountRefusalWords(refusal))
   }
 
   add(adapter: string, label: string, folder: string) {
@@ -136,12 +161,13 @@ export class AccountsLive {
     return this.write((rev) => this.reads!.setDefault(adapter, { account, expectedRev: rev }))
   }
 
-  /** Another workbench token: nothing read through the old one stays, and a read on its way for it is dropped. */
+  /** Another workbench token: nothing read through the old one stays, and every step on its way for it stands no more. */
   forget() {
+    this.epoch++
     this.doc = null
     this.available = null
     this.problem = ''
-    this.taken = ++this.sent
+    this.busy = false
     this.changed()
   }
 }
@@ -160,7 +186,7 @@ export function useAccounts() {
   const store = accountsLive()
   const id = (s: string) => encodeURIComponent(s)
   store.attach({
-    list: () => request<AccountsDoc>('/api/accounts'),
+    list: (signal) => request<AccountsDoc>('/api/accounts', { signal }),
     add: (body) => request('/api/accounts', { method: 'POST', body }),
     rename: (a, body) => request(`/api/accounts/${id(a)}`, { method: 'PATCH', body }),
     retire: (a, body) => request(`/api/accounts/${id(a)}/retire`, { method: 'POST', body }),
@@ -168,9 +194,14 @@ export function useAccounts() {
     setDefault: (ad, body) => request(`/api/accounts/defaults/${id(ad)}`, { method: 'PUT', body }),
   })
   store.changed = () => version.value++
-  const token = useState<string | null>('accountsToken', () => null)
-  if (token.value !== null && token.value !== admin.token.value) store.forget()
-  token.value = admin.token.value
+  // The token is watched while a page shows the accounts: another one empties the store, so nothing read with the old one is shown.
+  const held = useState<string | null>('accountsToken', () => null)
+  const judge = () => {
+    if (held.value !== null && held.value !== admin.token.value) store.forget()
+    held.value = admin.token.value
+  }
+  judge()
+  watch(admin.token, judge)
 
   const doc = computed(() => {
     void version.value

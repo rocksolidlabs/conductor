@@ -2,7 +2,7 @@ import { randomBytes, randomInt } from 'node:crypto'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test, type Api, type Session } from './fixtures'
-import type { Locator, Page } from '@playwright/test'
+import type { Locator, Page, Response, Route } from '@playwright/test'
 
 // Accounts and the capacity panel (docs/plans/capacity.md, Program item AC1, PR-5). Every account is a folder of this spec's own
 // under the test HOME, holding the stub's `stub-usage` line (web/e2e/stub-agent.sh): the state the stub's Claude Code or Codex
@@ -12,8 +12,8 @@ import type { Locator, Page } from '@playwright/test'
 // at that name is seen from another machine, and the launch dialog asks where the agent runs. The other tests open 127.0.0.1.
 test.use({ launchOptions: { args: ['--no-sandbox', '--host-resolver-rules=MAP conductor.test 127.0.0.1'] } })
 
-/** What one test made, ended after it whatever its outcome. */
-const made = { sessions: [] as string[], accounts: [] as string[], folders: [] as string[], defaults: new Set<string>() }
+/** What one test made, ended after it whatever its outcome; `gated` are the accounts whose usage read waits for its gate file. */
+const made = { sessions: [] as string[], accounts: [] as string[], folders: [] as string[], defaults: new Set<string>(), gated: [] as Array<{ agent: string; id: string; dir: string }> }
 
 interface AccountsDoc {
   rev: number
@@ -49,6 +49,14 @@ async function setDefault(api: Api, adapter: string, account: string) {
 const label = (what: string) => `e2e ${what} ${randomBytes(3).toString('hex')}`
 
 test.afterEach(async ({ api }) => {
+  // A gated read is a process of the server's that removing its account does not end: its gate is opened, and the server's view
+  // of its key is waited on until no read of it is under way, before anything of it goes.
+  for (const g of made.gated.splice(0)) {
+    writeFileSync(join(g.dir, 'stub-usage-gate'), 'open\n')
+    await expect
+      .poll(async () => (await api.ok<{ state: string }>('GET', `/api/capacity?agent=${g.agent}&account=${g.id}`)).state, { timeout: 120_000, message: `the read of ${g.id} has ended` })
+      .not.toBe('reading')
+  }
   for (const id of made.sessions.splice(0)) await api.stopSession(id)
   for (const adapter of made.defaults) {
     const d = await accounts(api)
@@ -162,7 +170,11 @@ test('an account added in Settings and made the default launches a session that 
   const first = answer.ok() ? ((await answer.json()) as Session) : null
   if (first) made.sessions.push(first.id)
   expect(answer.status(), 'the launch made a session').toBe(201)
-  expect(answer.request().postDataJSON()).toMatchObject({ agentId: 'claude', account: id })
+  // Nobody picked an account or typed a model: neither is sent, and the route binds the default (the launch's record below).
+  const sent = answer.request().postDataJSON()
+  expect(sent).toMatchObject({ agentId: 'claude' })
+  expect(sent).not.toHaveProperty('account')
+  expect(sent).not.toHaveProperty('model')
   const firstThread = agentSessionOf(first!)
   await expect.poll(() => transcript(state.home, firstThread), { timeout: 15_000 }).toContain(`env: CLAUDE_CONFIG_DIR=${dir}\n`)
 
@@ -242,7 +254,7 @@ test('each state the stub answers shows its words, and an agent no reader knows 
   // A read under way says so, and the panel shows its reading when it lands, by the server's event, with no reload.
   const slowDir = folder(state.home, 'slow')
   const slow = label('slow')
-  await addAccount(api, 'claude', slow, slowDir)
+  made.gated.push({ agent: 'claude', id: await addAccount(api, 'claude', slow, slowDir), dir: slowDir })
   await page.keyboard.press('Escape')
   await expect(dialog).toHaveCount(0)
   const reopened = await launchDialog(page, 'Claude Code (e2e stub)')
@@ -295,6 +307,10 @@ test.describe('on this computer', () => {
     const panel = dialog.locator('[data-capacity-panel]')
     await expect(panel).toHaveAttribute('data-capacity-state', 'remote')
     await expect(panel.locator('[data-capacity-host]')).toHaveText('On this computer: your own login there, usage unknown here')
+    // The launch uses the login there: the panel names no account of this server's, and no model.
+    await expect(panel).not.toContainText(mine)
+    await expect(panel.locator('[data-capacity-account]')).toHaveCount(0)
+    await expect(panel.locator('[data-capacity-model]')).toHaveCount(0)
     await dialog.getByLabel('Name', { exact: true }).fill('capacity-host')
     const command = dialog.locator('[data-code-block] li').first()
     await expect(command).toContainText(' --name capacity-host ')
@@ -304,5 +320,135 @@ test.describe('on this computer', () => {
     expect(text).not.toContain(id)
     expect(text).not.toContain('CLAUDE_CONFIG_DIR')
     expect(text).not.toContain('--account')
+  })
+})
+
+/** The dialog's launch on this server. */
+const isLaunch = (r: Response) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/sessions'
+
+/** Launches what the dialog holds and answers the reply, the session it made ended after the test. */
+async function launch(page: Page, dialog: Locator): Promise<{ status: number; sent: Record<string, unknown>; session: Session | null }> {
+  const answered = page.waitForResponse(isLaunch)
+  await dialog.getByRole('button', { name: 'Launch' }).click()
+  const answer = await answered
+  const session = answer.status() === 201 ? ((await answer.json()) as Session) : null
+  if (session) made.sessions.push(session.id)
+  return { status: answer.status(), sent: answer.request().postDataJSON(), session }
+}
+
+/** The account and model a session's launch was bound to, as the server keeps them. */
+async function boundOf(api: Api, id: string) {
+  return (await api.ok<{ launch: { account?: { id: string; label?: string; source: string }; model?: string } }>('GET', `/api/sessions/${id}`)).launch
+}
+
+test.describe('the account a launch is sent with', () => {
+  test("a picked account and a typed model are sent as picked and typed, the launch keeps them, and a refusal of them is shown in the route's words", async ({ page, api, state }) => {
+    const work = label('work')
+    const id = await addAccount(api, 'claude', work, folder(state.home, 'ok'))
+    await page.goto('/')
+    const dialog = await launchDialog(page, 'Claude Code (e2e stub)')
+    await pickAccount(page, dialog, work)
+    const model = dialog.locator('[data-launch-model-input]')
+    await model.fill('claude-e2e-model')
+    await expect(model).toHaveValue('claude-e2e-model')
+    // The arguments choose a model as well: the route refuses, in its words, and the dialog stays open with the pick as it was.
+    const args = dialog.locator('[data-launch-args]')
+    await args.fill('--model opus')
+    await expect(args).toHaveValue('--model opus')
+    const refused = await launch(page, dialog)
+    expect(refused.status).toBe(400)
+    await expect(dialog.locator('[data-launch-error]')).toHaveText('the arguments choose a model already: set the model in one place (invalid_request)')
+    await expect(dialog.locator('[data-account-select]')).toContainText(work)
+    await args.fill('')
+    await expect(args).toHaveValue('')
+    const started = await launch(page, dialog)
+    expect(started.status, 'the launch made a session').toBe(201)
+    expect(started.sent).toMatchObject({ agentId: 'claude', account: id, model: 'claude-e2e-model' })
+    expect(await boundOf(api, started.session!.id)).toMatchObject({ account: { id, source: 'account' }, model: 'claude-e2e-model' })
+  })
+
+  test('a launch whose yolo recipe sets a login variable offers no account, names none, and starts on that login while an account is the default', async ({ page, api, state }) => {
+    const work = label('work')
+    const id = await addAccount(api, 'claude', work, folder(state.home, 'ok'))
+    await setDefault(api, 'claude', id)
+    await page.goto('/')
+    const dialog = await launchDialog(page, 'Yolo login (e2e stub)')
+    const yolo = dialog.locator('[data-yolo-switch]')
+    // Without yolo, the default account is the one shown, as for any agent of Claude Code.
+    await expect(yolo).toHaveAttribute('aria-checked', 'false')
+    await expect(dialog.locator('[data-account-select]')).toContainText(`${work} (default)`)
+    await yolo.click()
+    await expect(yolo).toHaveAttribute('aria-checked', 'true')
+    const panel = dialog.locator('[data-capacity-panel]')
+    await expect(panel).toHaveAttribute('data-capacity-state', 'env_set')
+    await expect(dialog.locator('[data-launch-account]')).toHaveCount(0)
+    await expect(panel.locator('[data-capacity-account]')).toHaveCount(0)
+    await expect(panel).not.toContainText(work)
+    const started = await launch(page, dialog)
+    expect(started.status, 'the launch made a session').toBe(201)
+    expect(started.sent).not.toHaveProperty('account')
+    expect((await boundOf(api, started.session!.id)).account).toMatchObject({ id: 'default', source: 'launch_env' })
+  })
+
+  test("an entry that keeps its own login is offered the accounts, and a pick its launch refuses is said in the route's words, still to change", async ({ page, api, state }) => {
+    const work = label('work')
+    const id = await addAccount(api, 'claude', work, folder(state.home, 'ok'))
+    await page.goto('/')
+    const dialog = await launchDialog(page, 'Own login (e2e stub)')
+    // The server's view of this launch with no account named is the default login, as any agent's is.
+    await expect(dialog.locator('[data-account-select]')).toContainText('Default login (default)')
+    await pickAccount(page, dialog, work)
+    const panel = dialog.locator('[data-capacity-panel]')
+    await expect(panel).toHaveAttribute('data-capacity-state', 'env_set')
+    await expect(panel.locator('[data-capacity-account]')).toHaveCount(0)
+    await expect(panel).not.toContainText(work)
+    const refused = await launch(page, dialog)
+    expect(refused.status).toBe(400)
+    expect(refused.sent).toMatchObject({ account: id })
+    await expect(dialog.locator('[data-launch-error]')).toContainText('its default account only (invalid_account)')
+    await pickAccount(page, dialog, 'Default login (default)')
+    const started = await launch(page, dialog)
+    expect(started.status, 'the launch made a session').toBe(201)
+    expect(started.sent).toMatchObject({ account: 'default' })
+    expect((await boundOf(api, started.session!.id)).account).toMatchObject({ id: 'default', source: 'pinned' })
+  })
+
+  test('a launch sent before the server said which account it takes names none, and the route binds the default', async ({ page, api, state }) => {
+    const work = label('work')
+    const id = await addAccount(api, 'claude', work, folder(state.home, 'ok'))
+    await setDefault(api, 'claude', id)
+    // The dialog's questions of the capacity view are held until the launch has been sent.
+    const held: Route[] = []
+    await page.route((url) => url.pathname === '/api/capacity', (route) => void held.push(route))
+    await page.goto('/')
+    const dialog = await launchDialog(page, 'Claude Code (e2e stub)')
+    await expect.poll(() => held.length, { message: "the dialog asked the server's view" }).toBeGreaterThan(0)
+    await expect(dialog.locator('[data-account-select]')).toContainText('as the server resolves it')
+    const started = await launch(page, dialog)
+    expect(started.status, 'the launch made a session').toBe(201)
+    expect(started.sent).not.toHaveProperty('account')
+    expect((await boundOf(api, started.session!.id)).account).toMatchObject({ id, source: 'account' })
+    await page.unroute((url) => url.pathname === '/api/capacity')
+    for (const r of held.splice(0)) await r.continue().catch(() => {})
+  })
+})
+
+test.describe('on a phone', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+
+  test("Settings' capacity line and an account's folder wrap: nothing is cut, and the page does not scroll sideways", async ({ page, api, state }) => {
+    const dir = mkdtempSync(join(state.home, 'e2e-account-a-folder-name-long-enough-to-wrap-on-a-phone-'))
+    made.folders.push(dir)
+    writeFileSync(join(dir, 'stub-usage'), 'signed_out\n')
+    const id = await addAccount(api, 'claude', label('phone'), dir)
+    await page.goto('/settings')
+    const row = page.locator(`[data-accounts-card] [data-account-row="${id}"]`)
+    const line = row.locator('[data-capacity-line]')
+    await expect(line).toContainText('Not read yet')
+    await expect(row.locator('[data-account-folder]')).toHaveText(dir)
+    for (const el of [line, row.locator('[data-account-folder]'), page.locator('[data-accounts-card] [data-accounts-adapter="claude"] [data-account-row="default"] [data-capacity-line]')]) {
+      expect(await el.evaluate((e) => ({ cut: e.scrollWidth > e.clientWidth, text: e.textContent }))).toMatchObject({ cut: false })
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
   })
 })

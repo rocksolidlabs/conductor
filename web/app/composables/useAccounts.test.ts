@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ApiError } from './useApi'
-import { AccountsLive, STALE_WORDS, accountRefusalWords, type AccountsDoc, type AccountsReads } from './useAccounts'
+import { ACCOUNTS_DEADLINE_MS, AccountsLive, STALE_WORDS, accountRefusalWords, type AccountsDoc, type AccountsReads } from './useAccounts'
 
 // The accounts store (docs/plans/capacity.md, PR-5): every write names the revision read and is followed by a read of the document;
 // a stale revision reads it again and says so; a refusal is the server's words, with what holds an account; a server that offers
@@ -116,4 +116,69 @@ describe('AccountsLive', () => {
     expect(other.doc).toBeNull()
     expect(other.available).toBeNull()
   })
+
+  it("stays busy through a write's read of the document: a second click sends nothing, and the next carries the new revision", async () => {
+    const srv = fakeServer(doc(1))
+    let hold: Promise<void> | null = null
+    const live = new AccountsLive()
+    live.attach({ ...srv.reads, list: () => (hold ? hold.then(() => srv.reads.list(new AbortController().signal)) : srv.reads.list(new AbortController().signal)) })
+    await live.load()
+    let release!: () => void
+    hold = new Promise((r) => (release = r))
+    const first = live.retire('a-1')
+    await settle()
+    // The write has landed (revision 2 now); its read of the document is held.
+    expect(srv.writes).toHaveLength(1)
+    expect(live.busy).toBe(true)
+    await expect(live.retire('a-2')).rejects.toThrow('under way')
+    expect(srv.writes).toHaveLength(1)
+    hold = null
+    release()
+    await first
+    expect(live.busy).toBe(false)
+    await live.retire('a-2')
+    expect(srv.writes.map((w) => w.args)).toEqual([
+      ['a-1', 1],
+      ['a-2', 2],
+    ])
+  })
+
+  it('says a failed read in its words, at the first read and over a document already shown, and reads again when asked', async () => {
+    let fail: Error | null = new ApiError(500, 'http_error', 'Internal Server Error')
+    const srv = fakeServer(doc(1))
+    const live = new AccountsLive()
+    live.attach({ ...srv.reads, list: (signal) => (fail ? Promise.reject(fail) : srv.reads.list(signal)) })
+    await live.load()
+    expect(live).toMatchObject({ doc: null, available: null, problem: 'Internal Server Error' })
+    fail = new ApiError(0, 'network', 'Cannot reach the server')
+    await live.load()
+    expect(live.problem).toBe('Cannot reach the server')
+    fail = null
+    await live.load()
+    expect(live).toMatchObject({ available: true, problem: '' })
+    fail = new ApiError(413, 'bound', 'the reply would pass its bound')
+    await live.load()
+    expect(live.problem).toBe('the reply would pass its bound')
+    expect(live.doc?.rev).toBe(1)
+  })
+
+  it('lets a read that never answers go at its deadline, in words', async () => {
+    let fire: () => void = () => {}
+    const live = new AccountsLive((ms, fn) => {
+      expect(ms).toBe(ACCOUNTS_DEADLINE_MS)
+      fire = fn
+      return () => {}
+    })
+    let signal: AbortSignal | null = null
+    live.attach({ ...fakeServer(doc(1)).reads, list: (s) => ((signal = s), new Promise(() => {})) })
+    const loading = live.load()
+    fire()
+    await loading
+    expect(live.problem).toBe(`The server did not answer within ${ACCOUNTS_DEADLINE_MS / 1000} s`)
+    expect(signal!.aborted).toBe(true)
+  })
 })
+
+const settle = async () => {
+  for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0))
+}

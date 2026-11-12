@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { accountWords, capacityKey, clockWords, countsWords, creditWords, freshnessWords, capacityHostWords, limitsWords, modelWords, offersCheck, offersRead, planWords, readWait, severityColor, capacityStateWords, warns, windowWords, type CapacityQuery } from '~/utils/capacity'
+import { accountWords, capacityKey, clockWords, countsWords, creditWords, freshnessWords, capacityHostWords, limitsWords, modelWords, offersCheck, offersRead, ownLogin, planWords, readWait, severityColor, capacityStateWords, warns, windowWords, type CapacityQuery } from '~/utils/capacity'
 
 /**
  * The capacity panel (docs/plans/capacity.md, PR-5): what the server's capacity view says of an agent on an account before a launch.
@@ -8,6 +8,7 @@ import { accountWords, capacityKey, clockWords, countsWords, creditWords, freshn
  * the provider's; Conductor's own count in another, marked as an estimate; how fresh it is. Every state that is not a reading says
  * what it is, in the server's words. It never disables a launch. `readOnOpen` asks the server to read as the panel shows a question
  * (the launch dialog's opening), which the server does at most once in five minutes per agent and account; `compact` is one line.
+ * A launch with its own login (on this computer, or a login its environment sets) is shown with no account and no model.
  */
 const props = defineProps<{ query: CapacityQuery | null; compact?: boolean; readOnOpen?: boolean; /** The model the launch names, shown as typed. */ model?: string }>()
 
@@ -15,7 +16,11 @@ const cap = useCapacity()
 const now = ref(Date.now())
 let tick: ReturnType<typeof setInterval> | undefined
 onMounted(() => {
-  tick = setInterval(() => (now.value = Date.now()), 30_000)
+  // The clock moves the words; a view whose own words changed by it (stale, a reset passed) is asked of the server again.
+  tick = setInterval(() => {
+    now.value = Date.now()
+    cap.store.age()
+  }, 30_000)
 })
 
 const entry = computed(() => (props.query ? cap.entry(props.query) : null))
@@ -24,11 +29,11 @@ const state = computed(() => (view.value ? capacityStateWords(view.value) : null
 const wait = computed(() => (view.value ? readWait(view.value, now.value) : null))
 const reading = computed(() => !!entry.value?.reading || view.value?.state === 'reading')
 
-/** Shows a question: fetched now, then read when it is the opening's and the server reads it. */
-async function show(q: CapacityQuery) {
+/** Shows a question: fetched now, then read when it is the opening's, still shown here, and the server reads it. */
+async function show(q: CapacityQuery, gone: () => boolean) {
   await cap.store.watch(q)
   const v = cap.store.entry(q).view
-  if (props.readOnOpen && q.launch !== 'remote' && v && offersRead(v)) await cap.store.read(q)
+  if (!gone() && props.readOnOpen && q.launch !== 'remote' && v && offersRead(v)) await cap.store.read(q)
 }
 watch(
   () => (props.query ? capacityKey(props.query) : ''),
@@ -36,8 +41,12 @@ watch(
     const q = props.query
     if (!key || !q) return
     const shown = { ...q }
-    void show(shown)
-    onCleanup(() => cap.store.unwatch(shown))
+    let gone = false
+    void show(shown, () => gone)
+    onCleanup(() => {
+      gone = true
+      cap.store.unwatch(shown)
+    })
   },
   { immediate: true },
 )
@@ -64,8 +73,8 @@ const compactLine = computed(() => {
 <template>
   <div v-if="query" class="flex flex-col gap-2 rounded-md border border-default p-3 text-sm" :class="compact ? 'gap-1 p-2' : ''" data-capacity-panel :data-capacity-agent="query.agent" :data-capacity-state="view?.state">
     <p v-if="!view && !entry?.error" class="flex items-center gap-2 text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" />Reading what the server knows of this agent's usage…</p>
-    <div v-else-if="view && compact" class="flex min-w-0 items-center gap-2">
-      <p class="min-w-0 flex-1 truncate text-xs" :title="compactLine" data-capacity-line>
+    <div v-else-if="view && compact" class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+      <p class="min-w-0 flex-[1_1_16rem] text-xs [overflow-wrap:anywhere]" data-capacity-line>
         <template v-if="plan">{{ plan }} · </template>{{ compactLine }}<span class="text-muted"> · {{ freshnessWords(view, now) || 'not read yet' }}</span>
       </p>
       <span v-if="wait" class="flex-none text-xs text-muted" data-capacity-wait>again after {{ clockWords(wait) }}</span>
@@ -74,10 +83,12 @@ const compactLine = computed(() => {
     <template v-else-if="view">
       <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
         <span data-capacity-host>{{ capacityHostWords(view.host) }}</span>
-        <span aria-hidden="true">·</span>
-        <span>Account: <span class="text-default" data-capacity-account>{{ accountWords(view.account) }}</span></span>
-        <span aria-hidden="true">·</span>
-        <span>Model: <span class="text-default" data-capacity-model>{{ model }}</span></span>
+        <template v-if="!ownLogin(view)">
+          <span aria-hidden="true">·</span>
+          <span>Account: <span class="text-default" data-capacity-account>{{ accountWords(view.account) }}</span></span>
+          <span aria-hidden="true">·</span>
+          <span>Model: <span class="text-default" data-capacity-model>{{ model }}</span></span>
+        </template>
         <UBadge v-if="plan" :label="plan" color="neutral" variant="subtle" size="sm" title="The plan as the agent's own tool reported it" data-capacity-plan />
       </div>
       <p v-if="view.host.kind === 'undetermined' && view.host.words" class="text-xs text-muted" data-capacity-host-words>{{ view.host.words }}</p>
@@ -100,7 +111,7 @@ const compactLine = computed(() => {
       </p>
 
       <p v-if="provider.length" class="text-xs" data-capacity-provider><span class="text-muted">The provider's figures: </span>{{ provider.join(' · ') }}</p>
-      <p v-if="view.counts && view.state !== 'remote'" class="text-xs" data-capacity-estimate><span class="text-muted">Conductor's estimate: </span>{{ countsWords(view.counts) }}</p>
+      <p v-if="view.counts && !ownLogin(view)" class="text-xs" data-capacity-estimate><span class="text-muted">Conductor's estimate: </span>{{ countsWords(view.counts) }}</p>
 
       <div class="flex flex-wrap items-center gap-2">
         <span class="text-xs text-muted" data-capacity-fresh>{{ freshnessWords(view, now) }}</span>

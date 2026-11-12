@@ -360,10 +360,54 @@ export function accountChoices(doc: AccountsLike | null | undefined, adapter: st
   return [{ value: 'default', label: mark('default', 'Default login') }, ...doc.accounts.filter((a) => a.adapter === adapter && !a.retired).map((a) => ({ value: a.id, label: mark(a.id, a.label) }))]
 }
 
-/** The account a launch of `adapter` starts with chosen: the adapter's default when it is offered, else the default login. */
-export function defaultChoice(doc: AccountsLike | null | undefined, adapter: string | undefined): string {
-  const want = doc?.adapters.find((a) => a.adapter === adapter)?.default ?? 'default'
-  return accountChoices(doc, adapter).some((c) => c.value === want) ? want : 'default'
+/**
+ * The Account choice of a launch on this server, decided by the server's view of the launch with no account named (`unnamed`): it is
+ * offered unless that view says the launch has its own login (`env_set`); it shows the person's pick, else the account the view
+ * resolved ('' before the view is here); and only a pick is sent, so a launch nobody chose an account for is the route's to resolve.
+ */
+export function accountOfLaunch(choices: AccountChoice[], unnamed: Pick<CapacityView, 'state' | 'account'> | null, picked: string): { offered: boolean; shown: string; sent?: string } {
+  const offered = choices.length > 0 && unnamed?.state !== 'env_set'
+  const resolved = unnamed && choices.some((c) => c.value === unnamed.account.id) ? unnamed.account.id : ''
+  return { offered, shown: picked || resolved, sent: offered && picked ? picked : undefined }
+}
+
+/** Whether a view's launch uses its own login, not a registered account: on this computer, or a login its environment sets. */
+export function ownLogin(v: Pick<CapacityView, 'state' | 'host'>): boolean {
+  return v.host.kind === 'remote' || v.state === 'env_set'
+}
+
+/** How long a reading is fresh (internal/capacity FreshFor). */
+export const FRESH_FOR_MS = 15 * 60_000
+
+/** The first moment a view's words change by the clock alone (it goes stale, or a window resets), or null for none. */
+export function viewTurns(v: Pick<CapacityView, 'readAt' | 'fresh' | 'windows'>): number | null {
+  const at = Date.parse(v.readAt ?? '')
+  if (Number.isNaN(at) || v.fresh === 'reset_passed') return null
+  const times = v.windows.map((w) => Date.parse(w.resetsAt ?? '')).filter((r) => r > at)
+  if (v.fresh === 'fresh') times.push(at + FRESH_FOR_MS)
+  return times.length ? Math.min(...times) : null
+}
+
+/** A timer: calls `fn` after `ms`, and answers how to cancel it. A store's clock, a test's own. */
+export type After = (ms: number, fn: () => void) => () => void
+export const realAfter: After = (ms, fn) => {
+  const t = setTimeout(fn, ms)
+  return () => clearTimeout(t)
+}
+
+/** `ask`, aborted and refused in `words` once `ms` has passed without its answer: a request that never answers holds nothing. */
+export function withDeadline<T>(ask: (signal: AbortSignal) => Promise<T>, ms: number, words: string, after: After = realAfter): Promise<T> {
+  const ctl = new AbortController()
+  return new Promise<T>((resolve, reject) => {
+    const cancel = after(ms, () => {
+      ctl.abort()
+      reject(new Error(words))
+    })
+    ask(ctl.signal).then(
+      (v) => (cancel(), resolve(v)),
+      (e) => (cancel(), reject(e)),
+    )
+  })
 }
 
 /** A model as the server holds one to (1 to 100 of `A-Z a-z 0-9 . _ : / @ -`, the first a letter or digit). */
