@@ -869,11 +869,23 @@ func TestCapacityStaysWithTheAdmin(t *testing.T) {
 	var logged bytes.Buffer
 	var logMu sync.Mutex
 	log := slog.New(slog.NewTextHandler(lockedWriter{&logged, &logMu}, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	e := newTestEnvAgents(t, nil, log, append(bkAgents(), capAgents...), capReaders(claude, codex))
+	off := false
+	walker := catalog.Agent{ID: "claude-w", Name: "Claude W", Adapter: "claude", Command: []string{"/bin/sh", "-c", "exec /bin/cat"}, Probe: &off}
+	e := newTestEnvAgents(t, nil, log, append(append(bkAgents(), capAgents...), walker), capReaders(claude, codex))
 	bk := bkEnvOf(t, e)
 	id := addAccount(t, e, "claude", label)
 	doc, _ := e.srv.capacity.st.Accounts()
 	folder := doc.Accounts[0].Folder
+	// A session and a run's member bound to the account (#784): what
+	// reaches the walk's principals of them is the account's id and
+	// source, never its label, its folder or its fingerprint.
+	boundSid := e.expect(t, "POST", "/api/sessions", map[string]any{"agentId": "claude-w", "account": id}, http.StatusCreated, "")["id"].(string)
+	t.Cleanup(func() { e.stopAndWait(boundSid) })
+	boundRun := e.launchCrew(t, "Bound", map[string]any{"name": "lead", "agentId": "claude-w", "prompt": "", "account": id, "start": map[string]any{"when": "immediately"}})
+	memberSid := e.waitRunning(t, boundRun, "lead")
+	t.Cleanup(func() { e.stopAndWait(memberSid) })
+	bl, _ := e.srv.lookupLocal(boundSid)
+	fingerprint := bl.Launched().Account.Login
 	if v := readNow(t, e, "claude-a", id, false); !strings.Contains(fmt.Sprint(v), figure) {
 		t.Fatalf("the admin's view: %v", v)
 	}
@@ -891,8 +903,10 @@ func TestCapacityStaysWithTheAdmin(t *testing.T) {
 	bk.enable(t, "bk", nil)
 	bsid, btok, _ := bk.turnSession(t, bk.briefing(t))
 	wild := regexp.MustCompile(`\{[a-z]+\}`)
+	_, blo := e.do("POST", "/api/sessions/"+boundSid+"/links", adminToken, map[string]any{"role": "control"})
+	boundLink, _ := blo["token"].(string)
 	leaked := func(who, path string, data []byte) {
-		for _, s := range []string{label, folder, figure} {
+		for _, s := range []string{label, folder, figure, fingerprint} {
 			if bytes.Contains(data, []byte(s)) {
 				t.Errorf("%s's %s carries %q", who, path, s)
 			}
@@ -907,10 +921,14 @@ func TestCapacityStaysWithTheAdmin(t *testing.T) {
 	// success, a real account in the path; every other with {} for a body.
 	row := rowBodies(t, id, accountsRev(t, e))
 	for _, op := range Operations() {
-		for _, p := range []struct{ who, tok, sid string }{{"a session", e.agentToken(sid), sid}, {"a link", link, sid}, {"a host", "test-host-token", sid}, {"a Brakeman turn", btok, bsid}} {
+		for _, p := range []struct{ who, tok, sid string }{{"a session", e.agentToken(sid), sid}, {"a link", link, sid}, {"a host", "test-host-token", sid}, {"a Brakeman turn", btok, bsid},
+			{"a bound session", e.agentToken(boundSid), boundSid}, {"a bound session's link", boundLink, boundSid}, {"a bound run's member", e.agentToken(memberSid), memberSid}} {
 			path := wild.ReplaceAllStringFunc(op.Path, func(w string) string {
-				if w == "{id}" {
+				switch w {
+				case "{id}":
 					return p.sid
+				case "{run}":
+					return boundRun
 				}
 				return "x"
 			})

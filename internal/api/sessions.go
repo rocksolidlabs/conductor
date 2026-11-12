@@ -385,7 +385,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	// An agent whose environment moves its configuration directory (a copy
 	// of Claude Code under a CLAUDE_CONFIG_DIR of its own, #291) reads its
 	// skills there: the skill goes there too.
-	s.installSkillInConfigDir(agent.Adapter, agents.ConfigDirOf(agent.Adapter, pty.Lookup(procEnv)), hooksDir)
+	s.installSkillInConfigDir(agent.Adapter, agents.ConfigDirOf(agent.Adapter, pty.Lookup(procEnv)), hooksDir, bound.Source == session.SourceAccount)
 	startCtx := req.ctx
 	if startCtx == nil {
 		startCtx = context.Background()
@@ -803,8 +803,9 @@ func (s *Server) installSkillAtLaunch(adapter, hooksDir string) {
 // configuration directory of its own the adapter's agent is launched with
 // (agents.ConfigDirOf; "" for none), once per adapter and directory since the
 // server started, as installSkillAtLaunch does for the home. Nothing here
-// stops the launch.
-func (s *Server) installSkillInConfigDir(adapter, dir, hooksDir string) {
+// stops the launch. account says dir is a registered account's folder,
+// which a log line never names: its lines say what happened alone.
+func (s *Server) installSkillInConfigDir(adapter, dir, hooksDir string, account bool) {
 	if adapter == "" || dir == "" || !s.cfg.InstallSkill() {
 		return
 	}
@@ -819,6 +820,9 @@ func (s *Server) installSkillInConfigDir(adapter, dir, hooksDir string) {
 	path, changed, err := agents.InstallSkillIn(adapter, dir, hooksDir)
 	switch {
 	case path == "":
+	case account && err != nil && !errors.Is(err, agents.ErrByHand):
+		s.log.Warn("skill install under an account's folder failed", "adapter", adapter)
+	case account:
 	case errors.Is(err, agents.ErrByHand):
 		s.log.Info("the agent's configuration directory holds a SKILL.md of the user's own, which stays; conductor skill prints Conductor's", "adapter", adapter, "path", path)
 	case err != nil:

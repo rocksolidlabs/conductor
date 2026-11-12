@@ -187,12 +187,12 @@ func TestLegacyRecordKeepsBindings(t *testing.T) {
 		t.Fatalf("the bindings read back: %+v", got.Members)
 	}
 	reply, _ := json.Marshal(got)
-	for _, leak := range []string{b.Folder, b.Login, pinned.Folder, pinned.Login, `"bound"`} {
+	for _, leak := range []string{b.Folder, b.Login, b.Label, pinned.Folder, pinned.Login, `"bound"`} {
 		if strings.Contains(string(reply), leak) {
 			t.Fatalf("the run as a reply carries %q: %s", leak, reply)
 		}
 	}
-	if !strings.Contains(string(reply), `"account":{"id":"a-aaaaaaaaaaaa","label":"Work","source":"account"}`) {
+	if !strings.Contains(string(reply), `"account":{"id":"a-aaaaaaaaaaaa","source":"account"}`) {
 		t.Fatalf("the member's account in the reply: %s", reply)
 	}
 	list, err := again.List("api-sweep")
@@ -276,11 +276,11 @@ func TestLegacyMemberStartedLaterKeepsAccount(t *testing.T) {
 	}
 	now, _ := e.Get(run.ID)
 	reply, _ := json.Marshal(now)
-	if strings.Contains(string(reply), "/logins/") || strings.Contains(string(reply), "fingerprint-of-") || strings.Contains(string(reply), `"bound"`) {
+	if strings.Contains(string(reply), "/logins/") || strings.Contains(string(reply), "fingerprint-of-") || strings.Contains(string(reply), `"bound"`) || strings.Contains(string(reply), `"Work"`) {
 		t.Fatalf("the run's reply carries a binding: %s", reply)
 	}
 	i := slices.IndexFunc(now.Members, func(m MemberState) bool { return m.Name == "later" })
-	if a := now.Members[i].Account; a == nil || *a != (MemberAccount{ID: b.ID, Label: b.Label, Source: b.Source}) {
+	if a := now.Members[i].Account; a == nil || *a != (MemberAccount{ID: b.ID, Source: b.Source}) {
 		t.Fatalf("the member's account: %+v", a)
 	}
 	stopRun(t, e, run.ID)

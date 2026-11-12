@@ -5727,7 +5727,8 @@ invalid_account`): a member of the session's own tool takes the session's
 login, refused `400 invalid_account` when its entry would give another (a
 session whose launch set its login adds none of its tool), and a member of
 another tool takes that tool's default. A run reply names each member's
-`account` as `{id, label?, source}` and its `model`. A managed run any
+`account` as `{id, source}` and its `model`, to whoever may read the run;
+the label stays in the accounts and the session's launch, the admin's. A managed run any
 member of which is bound to anything but `own` is offered to no Runtime and
 runs on this server. `DELETE /api/accounts/{id}` is refused `409
 account_in_use`, naming at most 10, while a launch is under way on the

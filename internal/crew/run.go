@@ -184,8 +184,8 @@ type MemberState struct {
 	Name    string `json:"name"`
 	AgentID string `json:"agentId"`
 	Start   Start  `json:"start"`
-	// Account is the login the member is bound to, by its id, label and
-	// source alone (never its folder or fingerprint), and Model its model.
+	// Account is the login the member is bound to, by its id and source
+	// alone (MemberAccount), and Model its model.
 	Account *MemberAccount `json:"account,omitempty"`
 	Model   string         `json:"model,omitempty"`
 	// bound is the member's whole binding (Member.Bound), carried with the
@@ -1365,16 +1365,17 @@ func newMember(m Member) *member {
 	m.Args = slices.Clone(m.Args)
 	st := MemberState{Name: m.Name, AgentID: m.AgentID, Start: m.Start, Status: MemberPending, Model: m.Model}
 	if b := m.Bound; b != nil {
-		st.Account, st.bound = &MemberAccount{ID: b.ID, Label: b.Label, Source: b.Source}, b
+		st.Account, st.bound = &MemberAccount{ID: b.ID, Source: b.Source}, b
 	}
 	return &member{def: m, state: st, wake: make(chan struct{}, 1)}
 }
 
-// MemberAccount is a member's binding as a run reply shows it: no folder,
-// no fingerprint.
+// MemberAccount is a member's binding as a run reply shows it, to whoever
+// may read the run: the account's id and where the login comes from. Its
+// label, folder and fingerprint stay with the admin (the accounts and the
+// session's launch).
 type MemberAccount struct {
 	ID     string `json:"id"`
-	Label  string `json:"label,omitempty"`
 	Source string `json:"source"`
 }
 

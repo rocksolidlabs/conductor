@@ -535,7 +535,7 @@ func TestSelfCrewAdoptsSessionBinding(t *testing.T) {
 	_, data, _ := e.callAs(t, tok, "GET", "/api/sessions/"+sid+"/run", nil)
 	replies = append(replies, data)
 	for _, b := range replies {
-		if strings.Contains(string(b), folderA) || strings.Contains(string(b), fp) || strings.Contains(string(b), `"bound"`) || strings.Contains(string(b), e.pin) {
+		if strings.Contains(string(b), folderA) || strings.Contains(string(b), fp) || strings.Contains(string(b), `"bound"`) || strings.Contains(string(b), e.pin) || strings.Contains(string(b), `"Work"`) {
 			t.Fatalf("a run reply carries a binding: %.400s", b)
 		}
 	}
