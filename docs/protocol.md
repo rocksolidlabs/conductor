@@ -2497,8 +2497,10 @@ the bridge reads any of it is the engine's work, the bridge bounding what
 it reads of it: an attribute's value, the title, the stack under the
 pointer, an element's animations, its computed style, an element's own
 keys, a describe's one query, the id form's one question to the document
-(`#` and the id, for each selector a report writes), and the element
-links an arrow key follows in selection mode. Of an element that takes a
+(`#` and the id, for each selector a report writes), the lookups by id
+of a label's ids (at most 8, of aria-labelledby's), the one hit test at
+the box's centre, and the element links an arrow key follows in
+selection mode. Of an element that takes a
 person's input (`input`, `textarea`, `select`, `option`) or one a person
 edits in place it writes the tag and its `type`, `name`, `id`, `class`,
 `role`, `contenteditable` and `aria-*` attributes alone; of a `script`, a
@@ -2664,7 +2666,10 @@ properties throw as they are read gets no answer).
 **The element report** (`element`): `{tag, id, classes, role, name (the
 accessible name: aria-label, the text of at most 8 of aria-labelledby's
 ids, of the label for its id within 256 links of a walk of its third
-ancestor's subtree or of the label around it, else its own), text (of
+ancestor's subtree or of the label around it, else its own; an id past
+its bound is not looked for as a label's `for`, and an aria-labelledby
+list past its bound drops its last token, so a value past its bound
+names no element), text (of
 what a walk of its subtree reaches within 256 links), selector (built,
 never searched for and never cut: `#` and its id escaped, in a document
 not in quirks mode, when that is within the bound and the document,
@@ -2737,8 +2742,8 @@ began is called before the bridge's; a tap's touches and a wheel keep
 their default action). Selection mode picks, and stops what it stops,
 only on events the browser delivered: a pointer move outlines the
 element under it, a click picks the element under its own point, the
-release of Enter picks the outlined element if it is still in the page
-and otherwise does nothing, and the release of Escape leaves. A scroll
+release of Enter picks the outlined element if it is still connected to
+a document, and otherwise does nothing, and the release of Escape leaves. A scroll
 or a resize of the window takes the outline off (every such event the
 window hears, the page's own among them) until the next pointer event or
 arrow key gives one; a scroll inside the page, of a container, does not:
@@ -2749,7 +2754,8 @@ is outlined when the browser delivers the page's window a pointer event
 aimed at it (a mouse pointer entering it), and while it is outlined the
 outline's box, drawn over it, takes the pointer, so a click there picks
 it. Not otherwise: a touch on a frame, a frame inside a component's own
-tree, and a frame that a scroll brings under a resting pointer keep their
+tree, a frame that a scroll brings under a resting pointer, and a frame
+the pointer already rests in when selection mode begins keep their
 events, and so do keys typed while the focus is inside a frame.
 Outside selection mode it stops none; a throw while it handles one
 leaves selection mode. It posts only to `window.parent`, addressed to

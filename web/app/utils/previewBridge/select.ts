@@ -169,7 +169,7 @@ const MOTION_EVENTS = ['animationstart', 'animationiteration', 'animationend', '
  * The page epoch: a counter bumped, at most once per animation frame, by a resize or a scroll of the window, a mutation of the
  * document (the bridge's host put on the page or taken off, alone in its record, left out) and every animation and transition
  * event. It says only that the page moved: the records are looked at up to the first of the page's. A resize or a scroll of the
- * window (any the window hears; not a container's, whose scroll does not reach it) also calls moved, which selection mode takes
+ * window (any the window hears; not a container's, whose scroll does not bubble to it) also calls moved, which selection mode takes
  * its outline off by.
  */
 export function pageEpoch(p: EpochPage): { value(): number; stop(): void } {

@@ -7,7 +7,7 @@ import { nameOf, pageEpoch, pageText, stackAt, stepStack, walk, walkTree, type E
 /**
  * The preview bridge (docs/protocol.md, Preview bridge) in the page's window: it does nothing until a workbench origin the server
  * wrote into it says hello from the page's parent window, and it takes a message only through its gate (gate.ts). It reads, never
- * writes, the page: the one thing it adds is its outline's host, a div holding a closed shadow root no style of the page reaches,
+ * writes, the page: the one thing it adds is its outline's host, a div holding a closed shadow root, its styles set inline,
  * put on the page when selection mode starts and taken off when it ends, before any report is read. It reads no storage, cookie,
  * console or network, takes a message only from an event the browser delivered, and answers nothing it was not asked.
  */
@@ -129,8 +129,9 @@ export function startBridge(win: Window & typeof globalThis, origins: readonly s
     ArrowRight: (s) => (s.current ? walk(s.current, 'child', s.host) : null),
   }
   // A pointer move outlines what is under it, the arrows step and walk, a click picks what is under its own point, the release of
-  // Enter picks what is outlined while it is in the page, the release of Escape leaves, and an event aimed at an element that holds
-  // a frame outlines it. Only an event the browser delivered is stopped or acted on; a throw while handling one leaves selection mode.
+  // Enter picks what is outlined if it is still connected to a document (and otherwise does nothing), the release of Escape leaves,
+  // and an event aimed at an element that holds a frame outlines it. Only an event the browser delivered is stopped or acted on; a
+  // throw while handling one leaves selection mode.
   const onEvent = (e: Event) => {
     const s = sel
     if (!e.isTrusted || !s) return

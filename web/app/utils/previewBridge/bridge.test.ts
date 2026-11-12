@@ -122,7 +122,7 @@ describe('selection mode', () => {
     expect([down.swallowed, up.swallowed, after.swallowed, answers().map((a) => a.t), win.count]).toEqual([true, true, false, ['selected'], 3])
   })
 
-  /** A page of two buttons, the first under the point (1, 10) until the page scrolls, the second after. */
+  /** A page of two buttons, the first under the point (1, 10) until the window scrolls, the second after. */
   function twoButtons() {
     const [one, two] = [h('button', { id: 'one' }, 'One'), h('button', { id: 'two' }, 'Two')]
     const root = h('html', {}, h('head'), h('body', {}, one, two))
@@ -149,7 +149,7 @@ describe('selection mode', () => {
     expect(p.picked()).toEqual(['two'])
   })
 
-  it('takes the outline off when the page scrolls, so a click picks what is under it then and Enter picks nothing', () => {
+  it('takes the outline off when the window scrolls, so a click picks what is under it then and Enter picks nothing', () => {
     const p = twoButtons()
     p.ask('select')
     p.win.dispatch('pointermove', event('pointermove', { clientX: 1, clientY: 10 }))
