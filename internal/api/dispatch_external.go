@@ -173,10 +173,14 @@ func (s *Server) lockFor(ctx context.Context, w http.ResponseWriter, key string)
 	return release, ok
 }
 
-// atGitHub is the one door of this file to GitHub: the credential for ref
-// (credentialFor, 412 no_token without one), then fn with the adapter,
-// which alone opens it and makes every request.
+// atGitHub is the one door of this file to GitHub: once the server has
+// begun to stop, none (errItemBusy, nothing asked); else the credential
+// for ref (credentialFor, 412 no_token without one), then fn with the
+// adapter, which alone opens it and makes every request.
 func (s *Server) atGitHub(ctx context.Context, ref tracker.Ref, fn func(tracker.Adapter, tracker.Credential) error) error {
+	if s.external.stopping().Err() != nil {
+		return errItemBusy
+	}
 	c, err := s.credentialFor(ctx, ref)
 	if err != nil {
 		return err
@@ -364,13 +368,20 @@ func (s *Server) trackerLog(r *http.Request, ref tracker.Ref, status int) {
 
 // trackerContext is a route's context: the request's values, not its end
 // (a client gone mid-way leaves the operation whole, its resend answered
-// by the receipt), bounded by its deadline, and ended as the server begins
-// to stop (externalState.stopping).
+// by the receipt), bounded by its deadline, and made of the server's stop
+// (externalState.stopping), so it has ended already when the stop began
+// before it.
 func (s *Server) trackerContext(r *http.Request, d time.Duration) (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), d)
-	stop := context.AfterFunc(s.external.stopping(), cancel)
-	return ctx, func() { stop(); cancel() }
+	return context.WithTimeout(stopValues{s.external.stopping(), r.Context()}, d)
 }
+
+// stopValues is the server's stop with a request's values.
+type stopValues struct {
+	context.Context
+	values context.Context
+}
+
+func (c stopValues) Value(key any) any { return c.values.Value(key) }
 
 // The bodies of this file's writes.
 type (

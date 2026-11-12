@@ -471,6 +471,11 @@ func (s *Server) dispatchError(w http.ResponseWriter, what string, err error) {
 		writeError(w, http.StatusNotFound, "not_found", "no such "+what)
 	case errors.Is(err, dispatch.ErrUnavailable), errors.Is(err, dispatch.ErrClosed), errors.Is(err, dispatch.ErrReadOnly):
 		writeError(w, http.StatusServiceUnavailable, "dispatch_unavailable", words)
+	case errors.Is(err, context.Canceled) && s.external.stopping().Err() != nil:
+		// A GitHub route's context ends with the server's stop
+		// (trackerContext): a busy route's answer.
+		w.Header().Set("Retry-After", "5")
+		writeAPIError(w, errItemBusy)
 	default:
 		// A read the client left is no failure of the store's.
 		if !errors.Is(err, context.Canceled) {

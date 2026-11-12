@@ -870,9 +870,10 @@ func (s *Server) track(f func()) {
 // viewers of a forgotten run's links being closed. Shutdown does the same
 // at its end; tests call it before their directories go.
 func (s *Server) WaitBackground(ctx context.Context) {
+	// No request to GitHub of a ticket's item from now on.
+	s.external.end()
 	s.stopExtensions()
 	s.stopRevokeRetries()
-	s.external.end()
 	s.bgMu.Lock()
 	s.bgDone = true
 	s.bgMu.Unlock()
@@ -1318,7 +1319,9 @@ const recordsGrace = 5 * time.Second
 // records of the runs stopped are then waited for within recordsGrace,
 // whatever ctx says, and closed, and the ledger after them.
 func (s *Server) Shutdown(ctx context.Context) {
-	// Brakeman's desk first: it writes no request's state from now on, so
+	// No request to GitHub of a ticket's item from now on, before any wait.
+	s.external.end()
+	// Brakeman's desk next: it writes no request's state from now on, so
 	// the turn the stops below end is left running in its records and the
 	// next start finds it interrupted; its launch outstanding is waited
 	// for, and every act whose operation has begun (no other begins), so
@@ -1400,9 +1403,7 @@ func (s *Server) Shutdown(ctx context.Context) {
 	}
 	s.hosts.CloseAll()
 	// What the server started on its own (the viewers of a forgotten run's
-	// links being closed) ends before Shutdown returns, or ctx does; the
-	// requests to GitHub of a ticket's item end now.
-	s.external.end()
+	// links being closed) ends before Shutdown returns, or ctx does.
 	s.bgMu.Lock()
 	s.bgDone = true
 	s.bgMu.Unlock()

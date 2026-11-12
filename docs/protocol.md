@@ -4593,9 +4593,9 @@ limit, GitHub unreachable), makes the link not count until a read
 succeeds again, so while GitHub cannot be read a ticket under `merged`
 is not closed. Nothing else reads GitHub by itself: no timer, no poller,
 no webhook; and every read, the background ones and the routes', ends
-with the server: once it begins to stop no request starts, one under way
-is ended and records nothing, and a route so ended answers `503
-tracker_busy`. Reads of one
+with the server: its stop begins first thing in its shutdown, and from
+then no request starts, one under way is ended and records nothing, and
+a route so ended, or begun after, answers `503 tracker_busy`. Reads of one
 ticket's item, and of one link's, are made one at a time, under a lock
 held from the request to the commit: a request that waits for one past
 15 s answers `503 tracker_busy` with `Retry-After`, nothing read or

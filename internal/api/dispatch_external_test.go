@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
+	"github.com/rocksolidlabs/conductor/internal/tracker"
 )
 
 // The tests of a ticket's GitHub item (dispatch_external.go). Every token
@@ -1286,7 +1288,11 @@ func (e *testEnv) addPullLink(t *testing.T, key string, n int) string {
 // held at the fake when the server begins to stop, asks nothing more (the
 // pull request's half), records nothing, and the stop does not wait for
 // it; a link added once the stop began asks GitHub nothing; a route's read
-// held the same way ends with the stop, answered as a busy route is.
+// held the same way ends with the stop, answered as a busy route is. Once
+// the stop has begun, the one door to GitHub asks nothing, and 2,000
+// previews and 500 imports on one processor make no request, each
+// answered busy; routes begun inside the server's real shutdown, held at
+// its seam after the runs' stops, are answered busy and ask nothing.
 func TestTrackerReadsEndWithServer(t *testing.T) {
 	t.Run("the read after a link's add", func(t *testing.T) {
 		e, g, key := pullEnv(t, 92)
@@ -1342,6 +1348,61 @@ func TestTrackerReadsEndWithServer(t *testing.T) {
 		<-stopped
 		if errorCode(out) != "tracker_busy" || g.count("api.github.com", itemsRepo+"/pulls/94") != 1 {
 			t.Fatalf("the held route: %v, the pull request asked %d times", out, g.count("api.github.com", itemsRepo+"/pulls/94"))
+		}
+	})
+	t.Run("routes begun once the stop began", func(t *testing.T) {
+		e, g, _ := pullEnv(t, 95)
+		e.newDispatchProject(t, "BGN", nil)
+		preview := map[string]any{"url": "https://github.com/octo/app/issues/95"}
+		// The connection to the fake made before the stop, so a request
+		// after it would be quick to go.
+		e.expect(t, "POST", "/api/dispatch/external/preview", preview, http.StatusOK, "")
+		e.srv.external.end()
+		defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+		before := len(g.f.Requests())
+		asked := false
+		if err := e.srv.atGitHub(context.Background(), tracker.Ref{System: tracker.GitHub, Host: tracker.GitHubHost, Space: "octo/app", Kind: tracker.KindIssue, ID: "95"},
+			func(tracker.Adapter, tracker.Credential) error { asked = true; return nil }); err != errItemBusy || asked {
+			t.Fatalf("the one door after the stop: %v, asked %v", err, asked)
+		}
+		busy := 0
+		for i := range 2500 {
+			path, body := "/api/dispatch/external/preview", preview
+			if i >= 2000 {
+				path, body = "/api/dispatch/projects/BGN/import", map[string]any{"opId": opID(), "url": preview["url"]}
+			}
+			if _, _, out := e.call(t, "POST", path, body); errorCode(out) == "tracker_busy" {
+				busy++
+			}
+		}
+		if n := len(g.f.Requests()) - before; n != 0 || busy != 2500 {
+			t.Fatalf("2,000 previews and 500 imports once the stop began: %d requests, %d answered busy", n, busy)
+		}
+	})
+	t.Run("a route begun inside the shutdown", func(t *testing.T) {
+		e, g, _ := pullEnv(t, 99)
+		e.newDispatchProject(t, "SHD", nil)
+		var answers []map[string]any
+		var asked int
+		e.srv.launches.setSeams(func(gate *launchGate) {
+			gate.afterStops = func() {
+				before := len(g.f.Requests())
+				for _, c := range []struct {
+					path string
+					body map[string]any
+				}{
+					{"/api/dispatch/external/preview", map[string]any{"url": "https://github.com/octo/app/issues/99"}},
+					{"/api/dispatch/projects/SHD/import", map[string]any{"opId": opID(), "url": "https://github.com/octo/app/issues/99"}},
+				} {
+					_, _, out := e.call(t, "POST", c.path, c.body)
+					answers = append(answers, out)
+				}
+				asked = len(g.f.Requests()) - before
+			}
+		})
+		e.srv.Shutdown(context.Background())
+		if len(answers) != 2 || errorCode(answers[0]) != "tracker_busy" || errorCode(answers[1]) != "tracker_busy" || asked != 0 {
+			t.Fatalf("routes begun inside the shutdown: %v, %d requests", answers, asked)
 		}
 	})
 }
