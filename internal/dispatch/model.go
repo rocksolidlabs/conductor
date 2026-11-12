@@ -470,6 +470,9 @@ const (
 	MaxHints             = 8
 	MaxHintFile          = 1 << 10
 	MaxHintComponent     = 256
+	// MaxHintLine bounds a hint's and a source's line and column: the
+	// largest integer the bridge's JavaScript holds exactly, its own bound.
+	MaxHintLine = 1<<53 - 1
 	// MaxElementWord bounds the report's short words the plan names no
 	// bound for: a state's words, a style's property, a hint's how, a cut's
 	// step.
