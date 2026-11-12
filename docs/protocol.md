@@ -2394,7 +2394,10 @@ not judged: one no browser would report matches no page) whose last
 label begins with a letter, an IPv4 address in its dotted form, an IPv6
 one in brackets in its own form (never as IPv4), a port without leading
 zeros that is not the scheme's default. An address gives an origin only
-when it is a unicast address that is neither loopback nor unspecified; a
+when it is a unicast address that is neither loopback nor unspecified,
+as Go's own `net` package judges it (global or link-local unicast): an
+address that package counts as unicast is written as given, and matches
+no page unless the machine holds that address; a
 name gives none when it is `localhost` or a name under it, in any case,
 with or without a final dot. A `publicUrl` written otherwise, or one of
 those, is left out (`conductor serve` says so once as it starts; the
@@ -2420,19 +2423,22 @@ tree of a server with no bridge or no loopback listener, none.
 `web/app/utils/protocol.ts`, both held to
 `internal/proto/testdata/preview-messages.json`, which carries the
 bounds both hold by their Go names, every bound at it and one past in
-characters of each measure, every member of every object null, of
-another kind and, a string, with a lone surrogate, each flag both ways,
-the measure of each code unit at the edge of its class, and each
-message's text as spelled, the content both parsers give an accepted
-one compared with its text's): each a plain object
+characters of each measure, every list empty and of one item, a cut of
+one step, every member of every object null, of another kind and, a
+string, empty and with a lone surrogate, each flag both ways, every
+character next to each end of the nonce's ranges, the measure of each
+code unit at the edge of its class, and each message's text as spelled,
+the content both parsers give an accepted one compared with its
+text's): each a plain object
 through `postMessage` with `conductor: "preview/1"`, its type in `t` and
 a `nonce`, and exactly the fields its type carries. Each parser is told
 the way a message travels, to the bridge or to the workbench
 (`ParsePreviewMessage(data, to, nonce)`, `parsePreviewMessage(v, to,
 nonce)`), and refuses the other way's types. A field is its value, never
 its spelling: a number is the double its text rounds to (to nearest, ties
-to even; a text past the largest finite double is refused), every range
-below is judged on that double, and a negative zero is zero; so a whole
+to even; a text that rounds past the largest finite double is refused),
+every range below is judged on that double, and a negative zero is
+zero; so a whole
 number is any text that rounds to one (`3`, `3.0`, `3e0`, and
 `2.99999999999999999999` or `9007199254740991.4`), an `epoch` written
 `-1e-400` is 0, a `version` written `1.0000000000000001` is 1, and a
@@ -2447,7 +2453,13 @@ accepted has one content on both sides). Numbers: `epoch`, a state's
 2^53-1; the viewport's `width` and `height` and the box's `width` and
 `height` are at least 0; `dpr` is above 0; the scroll offsets and the
 box's `x` and `y` may be negative; every number is finite; `version` is
-1. The server's parser refuses a message's text past twice its way's
+1. Strings and lists: every string may be empty but `conductor`, `t`,
+the `nonce`, a `describe`'s `selector`, `colorScheme`, a hint's `how`, a
+`ready`'s hint kinds and a `cut`'s steps (the selector holds 1 to 1,024
+bytes, each of the others one of its set or its pattern); a `ready`'s
+`hints` and each list of the element report may be
+empty, and an attribute or a style is a pair of exactly two strings.
+The server's parser refuses a message's text past twice its way's
 measured bound (8 KiB to the bridge, 128 KiB to the workbench) or not
 UTF-8 before it decodes it. That bound is the writer's: the browser's
 own JSON writer escapes nothing it need not and never writes a message

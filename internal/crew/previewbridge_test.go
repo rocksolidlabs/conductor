@@ -80,6 +80,8 @@ func TestTheBridgeURLReachesServices(t *testing.T) {
 	if got := readState(t, wt+".check", "web.bridge"); got != testBridge {
 		t.Fatalf("the checkout's service's CONDUCTOR_PREVIEW_BRIDGE: %q", got)
 	}
+	// This test reads no ledger, so the trees' ending is all it waits for
+	// (a test that reads the ledger waits for the ended rows first).
 	waitTreesEnded(t, e, run.ID)
 	stopRun(t, e, run.ID)
 }

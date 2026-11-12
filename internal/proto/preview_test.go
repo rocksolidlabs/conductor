@@ -553,6 +553,12 @@ func previewCases() previewFile {
 		}
 		return out
 	}
+	// The strings the schema refuses empty, by their keys: the mark, the
+	// type, the nonce, the colour scheme and a hint's kind (each one of a
+	// set or of a pattern no empty string is in), and a describe's selector.
+	// Every other string may be empty: a page without a title, an element
+	// without text, a hint without a file.
+	refusesEmpty := map[string]bool{"conductor": true, "t": true, "nonce": true, "colorScheme": true, "how": true}
 	members := func(what string, m obj, path []string, k map[string]reflect.Kind, keys []string) {
 		add(what+" with a member of its own", n, with(m, "x", append(slices.Clone(path), "own")...), false)
 		for _, key := range keys {
@@ -563,12 +569,13 @@ func previewCases() previewFile {
 			}
 			add(what+"'s "+key+" of null", n, nulled(m, at...), false)
 			add(what+"'s "+key+" of another kind", n, with(m, other[kind], at...), false)
-			// Every string member with a lone surrogate; every flag (but
-			// missing, which is true alone) given its other value, so that
-			// each takes both across the accepted rows.
+			// Every string member with a lone surrogate and empty; every flag
+			// (but missing, which is true alone) given its other value, so
+			// that each takes both across the accepted rows.
 			switch {
 			case kind == reflect.String:
 				lone(what+"'s "+key, with(m, loneMark, at...))
+				add(what+"'s "+key+" empty", n, with(m, "", at...), !refusesEmpty[key] && !(what == "a describe" && key == "selector"))
 			case kind == reflect.Bool && key != "missing":
 				add(what+"'s "+key+" true", n, with(m, true, at...), true)
 			}
@@ -623,9 +630,68 @@ func previewCases() previewFile {
 	add("a ready in the light colour scheme", n, with(ready, "light", "viewport", "colorScheme"), true)
 	add("an ancestor of another tag with an id and a role", n, sel(with(element(), []any{obj{"tag": "section", "id": "bar", "classes": "bar wide", "role": "toolbar"}}, "ancestors")), true)
 	add("hello with a nonce of every kind of character", "", msg(PreviewHello, "AZaz09_-AZaz09_-"), true)
-	for _, c := range []string{".", "+", "/", ":", "=", "@", "[", "`", "{", "~", "^"} {
+	// The characters next to each end of the alphabet's ranges, written
+	// here from its definition (A-Z a-z 0-9 _ -), and a few further off.
+	nonceRanges := [][2]rune{{'A', 'Z'}, {'a', 'z'}, {'0', '9'}, {'_', '_'}, {'-', '-'}}
+	inNonce := func(c rune) bool {
+		return slices.ContainsFunc(nonceRanges, func(r [2]rune) bool { return r[0] <= c && c <= r[1] })
+	}
+	neighbours := []string{"+", "=", "~"}
+	for _, r := range nonceRanges {
+		for _, c := range []rune{r[0] - 1, r[1] + 1} {
+			if !inNonce(c) && !slices.Contains(neighbours, string(c)) {
+				neighbours = append(neighbours, string(c))
+			}
+		}
+	}
+	for _, c := range neighbours {
 		add("hello with a nonce holding "+c, "", msg(PreviewHello, "AZaz09_-AZaz09_-"+c), false)
 	}
+	// The lower edge of every member, from its definition as the bounds
+	// above are its upper one: each list empty and of one item (each one's
+	// bound is above), the strings of each list's items empty (beside the
+	// objects' strings, made empty with the schema above), a cut of exactly
+	// one step, and the smallest page and element, every list empty and
+	// every string that may be empty empty.
+	add("ready with no hint kind", n, with(ready, []any{}, "hints"), true)
+	add("ready with one hint kind", n, with(ready, []any{"react"}, "hints"), true)
+	add("a ready's hint kind empty", n, with(ready, []any{""}, "hints"), false)
+	for _, l := range []struct {
+		member string
+		one    any
+	}{
+		{"attributes", []any{"id", "save"}},
+		{"styles", []any{"display", "block"}},
+		{"ancestors", ancestorBase},
+		{"hints", hintBase},
+	} {
+		add("an element with no "+l.member, n, sel(with(element(), []any{}, l.member)), true)
+		add("an element with one of its "+l.member, n, sel(with(element(), []any{l.one}, l.member)), true)
+	}
+	for _, l := range []string{"attributes", "styles"} {
+		add("an item of "+l+" with an empty name", n, sel(with(element(), []any{[]any{"", "v"}}, l)), true)
+		add("an item of "+l+" with an empty value", n, sel(with(element(), []any{[]any{"n", ""}}, l)), true)
+		add("an item of "+l+" with both empty", n, sel(with(element(), []any{[]any{"", ""}}, l)), true)
+	}
+	add("a cut of no step", n, sel(with(element(), []any{}, "cut")), true)
+	add("a cut of its first step", n, sel(with(element(), []any{ElementCuts[0]}, "cut")), true)
+	add("a cut step empty", n, sel(with(element(), []any{""}, "cut")), false)
+	smallestPage := obj{"url": "", "title": "", "epoch": 0, "revision": "",
+		"viewport": obj{"width": 0, "height": 0, "dpr": math.SmallestNonzeroFloat64, "scrollX": 0, "scrollY": 0, "colorScheme": "light", "userAgent": ""}}
+	smallestElement := obj{"tag": "", "id": "", "classes": "", "role": "", "name": "", "text": "", "selector": "",
+		"box":        obj{"x": 0, "y": 0, "width": 0, "height": 0},
+		"attributes": []any{},
+		"state":      obj{"disabled": false, "hidden": false, "ariaDisabled": "", "ariaExpanded": "", "pointerEvents": "", "inert": false, "hovered": false, "motion": 0},
+		"hit":        obj{"self": false, "selector": "", "tag": ""},
+		"html":       "", "neighbourhood": "", "ancestors": []any{}, "styles": []any{}, "hints": []any{}, "cut": []any{},
+	}
+	add("the smallest ready", n, msg(PreviewReady, n, smallestPage, obj{"version": PreviewVersion, "hints": []any{}}), true)
+	add("the smallest selected", n, msg(PreviewSelected, n, smallestPage, obj{"element": smallestElement}), true)
+	add("the smallest described", n, msg(PreviewDescribed, n, smallestPage, obj{"element": smallestElement}), true)
+	add("the smallest looked", n, msg(PreviewLooked, n, smallestPage), true)
+	add("the smallest page's element with an ancestor and a hint of empty strings", n, msg(PreviewSelected, n, smallestPage, obj{"element": with(with(smallestElement,
+		[]any{obj{"tag": "", "id": "", "classes": "", "role": ""}}, "ancestors"), []any{obj{"how": "attribute", "file": "", "line": 0, "column": 0, "component": ""}}, "hints")}), true)
+	add("describe with a selector of one character", n, msg(PreviewDescribe, n, obj{"selector": "a"}), true)
 	add("a revision of every hex digit", n, with(ready, "0123456789abcdef+fedcba9876543210", "revision"), true)
 	add("a revision of a commit in digits", n, with(ready, "0123456789", "revision"), true)
 	// A string at its bound in a control character with no short escape,
