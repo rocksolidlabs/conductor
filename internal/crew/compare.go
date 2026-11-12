@@ -154,7 +154,7 @@ func (cmp *Compare) validate(c Crew) error {
 		if strings.TrimSpace(cr.Text) == "" || utf8.RuneCountInString(cr.Text) > maxCriterionText {
 			return invalidf("compare: criterion %s: the text is 1 to %d characters", quote(cr.ID), maxCriterionText)
 		}
-		if strings.ContainsFunc(cr.Text, unicode.IsControl) {
+		if strings.ContainsFunc(cr.Text, func(r rune) bool { return unicode.IsControl(r) || r == ' ' || r == ' ' }) {
 			return invalidf("compare: criterion %s: the text is one line, with no control character", quote(cr.ID))
 		}
 	}

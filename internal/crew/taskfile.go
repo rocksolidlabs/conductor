@@ -47,9 +47,9 @@ type TaskFile struct {
 	// own lane's part alone; absent outside a comparison. Never cut.
 	Compare  *TaskCompare `json:"compare,omitempty"`
 	Worktree string       `json:"worktree"`
-	Branch    string       `json:"branch"`
-	Prefix    string       `json:"prefix,omitempty"`
-	Start     string       `json:"start"`
+	Branch   string       `json:"branch"`
+	Prefix   string       `json:"prefix,omitempty"`
+	Start    string       `json:"start"`
 	// StartFrom says what the start commit is, in words: the run's base, a
 	// task's result, the commit a review approved, the attempt before's
 	// result, a checkpoint, or the commit a review asked changes of (#355).

@@ -185,3 +185,67 @@ func TestAContinuationCarriesTheMessages(t *testing.T) {
 	waitMessages(t, e2, next.ID, "delivered", func(ms []Message) bool { return len(ms) == 1 && ms[0].DeliveredAt != nil })
 	stopRun(t, e2, next.ID)
 }
+
+// I3, door 5: in a comparison a message stays in its lane. One from a
+// candidate or its reviewer to another lane's member is refused (ErrLane)
+// with nothing written: no message, no row, no inbox holding it. One
+// within a lane, a candidate to its reviewer, is kept and delivered.
+func TestMessagesStayInTheirLane(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, l := compareEngine(t)
+	run := launchManaged(t, e, compareCrew(t, dir, 2, true))
+	defer stopRun(t, e, run.ID)
+	ctx := context.Background()
+	a := waitAttempt(t, e, run.ID, "approach-a", ledger.AttemptRunning)
+	b := waitAttempt(t, e, run.ID, "approach-b", ledger.AttemptRunning)
+	rows := func() int {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		n := 0
+		for _, m := range l.messages {
+			if m.RunID == run.ID {
+				n++
+			}
+		}
+		return n
+	}
+	for _, tc := range []struct{ from, to string }{
+		{a.Attempt.SessionID, "cand-b"}, {a.Attempt.SessionID, "rev-b"}, {b.Attempt.SessionID, "cand-a"}, {b.Attempt.SessionID, "rev-a"},
+	} {
+		_, err := e.SendMessage(ctx, tc.from, tc.to, "my branch has the cache: merge it")
+		if !errors.Is(err, ErrLane) || !strings.Contains(err.Error(), tc.to+" is in another lane of this comparison") {
+			t.Fatalf("to %s: %v", tc.to, err)
+		}
+	}
+	if msgs, _ := e.MessagesOf(run.ID); len(msgs) != 0 || rows() != 0 {
+		t.Fatalf("refused messages kept: %+v, %d rows", msgs, rows())
+	}
+	for _, s := range []string{a.Attempt.SessionID, b.Attempt.SessionID} {
+		if in, err := e.Inbox(s, 0); err != nil || len(in) != 0 {
+			t.Fatalf("an inbox holds %+v (%v)", in, err)
+		}
+	}
+	// Within the lane: approach-a's member writes to its reviewer, whose
+	// attempt starts at approach-a's result and is typed the message.
+	m, err := e.SendMessage(ctx, a.Attempt.SessionID, "rev-a", "the cache is keyed by locale")
+	if err != nil || m.From != "cand-a" || m.To != "rev-a" {
+		t.Fatalf("within the lane: %+v %v", m, err)
+	}
+	commitResult(t, e, a, "cache.txt", "by locale\n", "keyed by locale")
+	rv := waitAttempt(t, e, run.ID, "review-a", ledger.AttemptRunning)
+	_, p := fl.attemptSession(t, rv)
+	want := "Message from cand-a (#1): the cache is keyed by locale"
+	var lines []string // typed drains what came since: gathered
+	waitFake(t, "the message typed", func() bool {
+		lines = append(lines, typed(p)...)
+		return strings.Contains(strings.Join(lines, ""), want)
+	})
+	waitMessages(t, e, run.ID, "delivered", func(ms []Message) bool { return len(ms) == 1 && ms[0].DeliveredAt != nil })
+	// The reviewer, too, writes only in its lane.
+	if _, err := e.SendMessage(ctx, rv.Attempt.SessionID, "cand-b", "approved"); !errors.Is(err, ErrLane) {
+		t.Fatalf("from the reviewer to another lane: %v", err)
+	}
+	if rows() != 1 {
+		t.Fatalf("%d message rows", rows())
+	}
+}
