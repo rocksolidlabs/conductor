@@ -40,6 +40,8 @@ type options struct {
 	// notices is the third-party notices text the server serves
 	// (WithNotices); the embedded one unless a main handed in its own.
 	notices string
+	// previewBridge is the built preview bridge (WithPreviewBridge).
+	previewBridge []byte
 	// usageReaders stand for the adapters' usage readers in the tests
 	// (capacity.go); nil outside them.
 	usageReaders map[string]*agents.UsageReader
