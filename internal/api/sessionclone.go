@@ -160,11 +160,11 @@ func (s *Server) handleCloneSession(w http.ResponseWriter, r *http.Request) {
 	}
 	next.Yolo = &yolo
 	// The source's account and model, for an agent of the source's
-	// adapter: its registered account, else the tool's own login; for
-	// another adapter, its default and the agent's default model.
-	src, _ := s.Catalog().Get(launched.AgentID)
+	// adapter (the one it was started as, whatever became of its entry):
+	// its registered account, else the tool's own login; for another
+	// adapter, its default and the agent's default model.
 	agent, known := s.Catalog().Get(next.AgentID)
-	if known && src.Adapter == agent.Adapter {
+	if known && launched.Adapter == agent.Adapter {
 		next.Account, next.Model = capacity.DefaultID, launched.Model
 		if launched.Account.Source == session.SourceAccount {
 			next.Account = launched.Account.ID

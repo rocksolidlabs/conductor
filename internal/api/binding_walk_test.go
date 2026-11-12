@@ -341,6 +341,103 @@ func adminOnly(files []*ast.File) map[string]bool {
 	return out
 }
 
+// sessionView says e is a session's view of itself: X.Launched() or
+// X.Info(), which name the agent id it was launched from.
+func sessionView(e ast.Expr) bool {
+	c, ok := e.(*ast.CallExpr)
+	if !ok || len(c.Args) != 0 {
+		return false
+	}
+	sel, ok := c.Fun.(*ast.SelectorExpr)
+	return ok && (sel.Sel.Name == "Launched" || sel.Sel.Name == "Info")
+}
+
+// adapterByCatalog is every function of files that decides by the
+// catalog's entry of a launched session's agent id which adapter that
+// session runs under: a lookup (X.Get) of the AgentID of a session's
+// Launched() or Info() (called there, held in a variable, or a parameter
+// of type session.Launched or session.Info), whose entry's Adapter the
+// function reads.
+func adapterByCatalog(files []*ast.File) []string {
+	var out []string
+	for name, fd := range funcs(files) {
+		views := map[string]bool{}
+		for _, f := range fd.Type.Params.List {
+			if sel, ok := f.Type.(*ast.SelectorExpr); ok && (sel.Sel.Name == "Launched" || sel.Sel.Name == "Info") {
+				for _, n := range f.Names {
+					views[n.Name] = true
+				}
+			}
+		}
+		entries := map[string]bool{}
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			as, ok := n.(*ast.AssignStmt)
+			if !ok {
+				return true
+			}
+			for i, rhs := range as.Rhs {
+				id, _ := as.Lhs[min(i, len(as.Lhs)-1)].(*ast.Ident)
+				if id == nil {
+					continue
+				}
+				if sessionView(rhs) {
+					views[id.Name] = true
+				}
+				c, ok := rhs.(*ast.CallExpr)
+				if !ok || len(c.Args) != 1 {
+					continue
+				}
+				fn, ok := c.Fun.(*ast.SelectorExpr)
+				arg, isSel := c.Args[0].(*ast.SelectorExpr)
+				if !ok || fn.Sel.Name != "Get" || !isSel || arg.Sel.Name != "AgentID" {
+					continue
+				}
+				if v, ok := arg.X.(*ast.Ident); (ok && views[v.Name]) || sessionView(arg.X) {
+					entries[id.Name] = true
+				}
+			}
+			return true
+		})
+		found := false
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "Adapter" {
+				if id, ok := sel.X.(*ast.Ident); ok && entries[id.Name] {
+					found = true
+				}
+			}
+			return !found
+		})
+		if found {
+			out = append(out, name)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// A launched session's adapter is the one it was started as
+// (Launched.Adapter), everywhere: no function decides it by the catalog's
+// entry of the session's agent id. The clone's choice as it was made
+// before, from the source's entry, is found.
+func TestLaunchedAdapterNotFromTheCatalog(t *testing.T) {
+	if got := adapterByCatalog(apiSource(t)); len(got) > 0 {
+		t.Errorf("a launched session's adapter decided by its catalog entry: %v", got)
+	}
+	const before = `package api
+func (s *Server) handleCloneSession(w http.ResponseWriter, r *http.Request) {
+	launched := local.Launched()
+	src, _ := s.Catalog().Get(launched.AgentID)
+	agent, known := s.Catalog().Get(next.AgentID)
+	if known && src.Adapter == agent.Adapter {
+		next.Account = launched.Account.ID
+	}
+}
+`
+	if got := adapterByCatalog(apiSource(t, before)); !slices.Contains(got, "Server.handleCloneSession") {
+		t.Errorf("the clone deciding by the source's entry is not found: %v", got)
+	}
+}
+
 // keptDecoders decode a crew's members from what the server itself wrote
 // and keeps (the ledger's crew as launched, a run's record, a plan
 // revision approved), never from bytes an agent sends: each with where it

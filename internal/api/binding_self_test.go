@@ -135,6 +135,54 @@ func TestAgentMemberTakesItsSessionsLogin(t *testing.T) {
 	}
 }
 
+// A clone takes the source's account and model for an entry of the
+// adapter the source was started as (its Launched), whatever became of the
+// source's entry: removed from the catalog, or moved to another adapter,
+// before the clone, the clone onto another entry of the source's adapter
+// is started on the source's account with its model, never on the
+// adapter's default of the moment.
+func TestCloneKeepsTheSourcesLogin(t *testing.T) {
+	for _, change := range []string{"removed", "another adapter"} {
+		t.Run(change, func(t *testing.T) {
+			e := newBindEnv(t, nil)
+			a, folderA := e.account(t, "claude", "Work")
+			b, _ := e.account(t, "claude", "Other")
+			e.addAgents(t, map[string]map[string]string{"claude-q": nil})
+			sid := e.launch(t, "claude-p", map[string]any{"account": a, "model": "opus"})
+			e.probe(t, sid)
+			e.setDefault(t, "claude", b)
+			cat := e.srv.Catalog()
+			list := cat.List()
+			if change == "removed" {
+				var kept []catalog.Agent
+				for _, ag := range list {
+					if ag.ID != "claude-p" {
+						kept = append(kept, ag)
+					}
+				}
+				list = kept
+			} else {
+				p, _ := cat.Get("claude-p")
+				p.Adapter = "codex"
+				list = replaceAgent(list, p)
+			}
+			changed, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: list})
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.setCatalog(changed)
+			cid := e.expect(t, "POST", "/api/sessions/"+sid+"/clone", map[string]any{"name": "copy", "agentId": "claude-q"}, http.StatusCreated, "")["id"].(string)
+			t.Cleanup(func() { e.stopAndWait(cid) })
+			if got := e.probe(t, cid); got != login(folderA) {
+				t.Fatalf("the clone's login: %s", got)
+			}
+			if l, _ := e.srv.lookupLocal(cid); l.Launched().Account.ID != a || l.Launched().Model != "opus" {
+				t.Fatalf("the clone's binding and model: %+v %q", l.Launched().Account, l.Launched().Model)
+			}
+		})
+	}
+}
+
 // The member an agent's crew adopts is its session, model included: a self
 // member naming another model is refused, and so is one whose own
 // arguments choose a model beside the session's, judged as every member's
