@@ -1052,7 +1052,7 @@ func Recovered(rec Run, from Loaded) Run {
 		if err := json.Unmarshal([]byte(from.Run.Crew), &c); err == nil {
 			rec.Name, rec.Goal, rec.Cwd, rec.Isolation, rec.Yolo = c.Name, c.Goal, c.Cwd, c.Isolation, c.Yolo != nil && *c.Yolo
 			for _, m := range c.Members {
-				rec.Members = append(rec.Members, MemberState{Name: m.Name, AgentID: m.AgentID, Start: m.Start, Status: MemberPending})
+				rec.Members = append(rec.Members, memberStateOf(m))
 			}
 			for _, t := range c.Tasks {
 				rec.Tasks = append(rec.Tasks, TaskState{ID: t.ID, Member: t.Member, Kind: t.Kind, Needs: slices.Clone(t.Needs), State: ledger.TaskBlocked})

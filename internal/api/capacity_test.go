@@ -28,6 +28,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 	"github.com/rocksolidlabs/conductor/internal/store"
 )
@@ -869,11 +870,50 @@ func TestCapacityStaysWithTheAdmin(t *testing.T) {
 	var logged bytes.Buffer
 	var logMu sync.Mutex
 	log := slog.New(slog.NewTextHandler(lockedWriter{&logged, &logMu}, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	e := newTestEnvAgents(t, nil, log, append(bkAgents(), capAgents...), capReaders(claude, codex))
+	off := false
+	walker := catalog.Agent{ID: "claude-w", Name: "Claude W", Adapter: "claude", Command: []string{"/bin/sh", "-c", "exec /bin/cat"}, Probe: &off}
+	bkKey := bkAgents()[0]
+	bkKey.ID, bkKey.Name, bkKey.Env = "bk-key", "bk-key", map[string]string{"ANTHROPIC_API_KEY": "made-up-key-7731"}
+	e := newTestEnvAgents(t, nil, log, append(append(bkAgents(), capAgents...), walker, bkKey), capReaders(claude, codex))
 	bk := bkEnvOf(t, e)
 	id := addAccount(t, e, "claude", label)
-	doc, _ := e.srv.capacity.st.Accounts()
-	folder := doc.Accounts[0].Folder
+	folderOf := func(id string) string {
+		doc, _ := e.srv.capacity.st.Accounts()
+		for _, a := range doc.Accounts {
+			if a.ID == id {
+				return a.Folder
+			}
+		}
+		t.Fatalf("no account %s", id)
+		return ""
+	}
+	folder := folderOf(id)
+	// A launch whose entry pins another account's folder, naming none, and
+	// a Brakeman turn on a third's folder beside a key its entry sets: each
+	// bound pinned, each the first launch in its folder, so the skill is
+	// installed there, and no line of the log names the folder.
+	pinnedFolder, bkFolder := folderOf(addAccount(t, e, "claude", label+" pinned")), folderOf(addAccount(t, e, "claude", label+" brakeman"))
+	pinnedEntry := catalog.Agent{ID: "claude-in", Name: "Claude In", Adapter: "claude", Command: []string{"/bin/sh", "-c", "exec /bin/cat"}, Probe: &off, Env: map[string]string{"CLAUDE_CONFIG_DIR": pinnedFolder}}
+	withPinned, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: append(e.srv.Catalog().List(), pinnedEntry)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.setCatalog(withPinned)
+	pinnedSid := e.expect(t, "POST", "/api/sessions", map[string]any{"agentId": "claude-in"}, http.StatusCreated, "")["id"].(string)
+	t.Cleanup(func() { e.stopAndWait(pinnedSid) })
+	if pl, _ := e.srv.lookupLocal(pinnedSid); pl.Launched().Account.Source != session.SourcePinned || pl.Launched().Account.Folder != pinnedFolder {
+		t.Fatalf("the pinned launch's binding: %+v", pl.Launched().Account)
+	}
+	// A session and a run's member bound to the account (#784): what
+	// reaches the walk's principals of them is the account's id and
+	// source, never its label, its folder or its fingerprint.
+	boundSid := e.expect(t, "POST", "/api/sessions", map[string]any{"agentId": "claude-w", "account": id}, http.StatusCreated, "")["id"].(string)
+	t.Cleanup(func() { e.stopAndWait(boundSid) })
+	boundRun := e.launchCrew(t, "Bound", map[string]any{"name": "lead", "agentId": "claude-w", "prompt": "", "account": id, "start": map[string]any{"when": "immediately"}})
+	memberSid := e.waitRunning(t, boundRun, "lead")
+	t.Cleanup(func() { e.stopAndWait(memberSid) })
+	bl, _ := e.srv.lookupLocal(boundSid)
+	fingerprint := bl.Launched().Account.Login
 	if v := readNow(t, e, "claude-a", id, false); !strings.Contains(fmt.Sprint(v), figure) {
 		t.Fatalf("the admin's view: %v", v)
 	}
@@ -888,11 +928,16 @@ func TestCapacityStaysWithTheAdmin(t *testing.T) {
 	sid := e.createSession("cat")
 	_, lo := e.do("POST", "/api/sessions/"+sid+"/links", adminToken, map[string]any{"role": "control"})
 	link, _ := lo["token"].(string)
-	bk.enable(t, "bk", nil)
-	bsid, btok, _ := bk.turnSession(t, bk.briefing(t))
+	bk.enable(t, "bk-key", func(c map[string]any) { c["account"] = bkFolder })
+	bsid, btok, bl := bk.turnSession(t, bk.briefing(t))
+	if b := bl.Launched().Account; b.Source != session.SourcePinned || b.Folder != bkFolder {
+		t.Fatalf("the Brakeman turn's binding: %+v", b)
+	}
 	wild := regexp.MustCompile(`\{[a-z]+\}`)
+	_, blo := e.do("POST", "/api/sessions/"+boundSid+"/links", adminToken, map[string]any{"role": "control"})
+	boundLink, _ := blo["token"].(string)
 	leaked := func(who, path string, data []byte) {
-		for _, s := range []string{label, folder, figure} {
+		for _, s := range []string{label, folder, pinnedFolder, bkFolder, figure, fingerprint} {
 			if bytes.Contains(data, []byte(s)) {
 				t.Errorf("%s's %s carries %q", who, path, s)
 			}
@@ -907,10 +952,14 @@ func TestCapacityStaysWithTheAdmin(t *testing.T) {
 	// success, a real account in the path; every other with {} for a body.
 	row := rowBodies(t, id, accountsRev(t, e))
 	for _, op := range Operations() {
-		for _, p := range []struct{ who, tok, sid string }{{"a session", e.agentToken(sid), sid}, {"a link", link, sid}, {"a host", "test-host-token", sid}, {"a Brakeman turn", btok, bsid}} {
+		for _, p := range []struct{ who, tok, sid string }{{"a session", e.agentToken(sid), sid}, {"a link", link, sid}, {"a host", "test-host-token", sid}, {"a Brakeman turn", btok, bsid},
+			{"a bound session", e.agentToken(boundSid), boundSid}, {"a bound session's link", boundLink, boundSid}, {"a bound run's member", e.agentToken(memberSid), memberSid}} {
 			path := wild.ReplaceAllStringFunc(op.Path, func(w string) string {
-				if w == "{id}" {
+				switch w {
+				case "{id}":
 					return p.sid
+				case "{run}":
+					return boundRun
 				}
 				return "x"
 			})
@@ -955,6 +1004,9 @@ func TestCapacityStaysWithTheAdmin(t *testing.T) {
 		if !bytes.Contains(logged.Bytes(), []byte(words)) {
 			t.Errorf("the log lacks %q", words)
 		}
+	}
+	if n := bytes.Count(logged.Bytes(), []byte("skill installed in the agent's configuration directory")); n < 2 {
+		t.Errorf("the skill's line was written %d times: not for the pinned launch and the turn", n)
 	}
 	leaked("the log", "", logged.Bytes())
 }
@@ -1382,7 +1434,15 @@ func loginsIn(t *testing.T, root string) string {
 // viewOfFiles is a new cat session's id on e and a view link's token for it.
 func viewOfFiles(t *testing.T, e *testEnv) (string, string) {
 	t.Helper()
-	sid := e.createSession("cat")
+	// On the tool's own login, which needs no account read: a launch that
+	// names none takes the adapter's default, which an unreadable
+	// document cannot say (TestLaunchRefusedWhileTheAccountsCannotBeRead).
+	resp, out := e.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "cat", "account": "default"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create session: %d %v", resp.StatusCode, out)
+	}
+	sid := out["id"].(string)
+	t.Cleanup(func() { e.stopAndWait(sid) })
 	_, lo := e.do("POST", "/api/sessions/"+sid+"/links", adminToken, map[string]any{"role": "view"})
 	tok, _ := lo["token"].(string)
 	if tok == "" {

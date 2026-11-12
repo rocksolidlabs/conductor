@@ -8,6 +8,7 @@ import (
 	"regexp"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/internal/capacity"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -302,8 +303,10 @@ func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agent, id := plan.agent, plan.id
+	account, login := boundOf(launched)
 	next, aerr := s.resumeLaunch(context.WithoutCancel(r.Context()), resumeSpec{agentID: launched.AgentID, name: launched.Name, cwd: plan.cwd,
-		args: launched.Args, env: launched.Env, yolo: launched.Yolo, renamed: launched.Renamed, resume: id, from: info.ID})
+		args: launched.Args, env: launched.Env, yolo: launched.Yolo, renamed: launched.Renamed, resume: id, from: info.ID,
+		account: account, login: login, model: launched.Model})
 	if aerr != nil {
 		writeAPIError(w, aerr)
 		return
@@ -316,8 +319,10 @@ func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
 // whether the name is a person's, the Runtime (where; "" is the native
 // one), the agent's conversation to take up ("" for a plain relaunch),
 // the session it resumes (from), the new session's id (id; "" makes
-// one, a record's resume allocates it with its receipt), and a record's
-// last read at the launch (atLaunch, createSessionRequest's).
+// one, a record's resume allocates it with its receipt), a record's
+// last read at the launch (atLaunch, createSessionRequest's), and the
+// login and the model it was launched with (a record from before them:
+// account, the tool's own login, as it resumed then).
 type resumeSpec struct {
 	agentID, name, cwd string
 	args               []string
@@ -326,6 +331,20 @@ type resumeSpec struct {
 	where              ext.Where
 	resume, from, id   string
 	atLaunch           func() *apiError
+	account, model     string
+	login              loginWant
+}
+
+// boundOf is what a resume of a session launched with l asks of its
+// login: the binding l holds, which it must get again; for a session
+// made with no binding (none is launched so; a test's process double),
+// the tool's own login.
+func boundOf(l session.Launched) (string, loginWant) {
+	if l.Account.Source == "" {
+		return capacity.DefaultID, loginWant{}
+	}
+	b := l.Account
+	return "", loginWant{bound: &b}
 }
 
 // resumeLaunch is the launch both resume routes make
@@ -338,7 +357,8 @@ type resumeSpec struct {
 func (s *Server) resumeLaunch(ctx context.Context, sp resumeSpec) (*session.Local, *apiError) {
 	yolo := sp.yolo
 	return s.createLocalSession(createSessionRequest{AgentID: sp.agentID, Name: sp.name, Cwd: sp.cwd, Args: sp.args, Env: sp.env, Yolo: &yolo,
-		resume: sp.resume, resumedFrom: sp.from, renamed: sp.renamed, where: sp.where, id: sp.id, atLaunch: sp.atLaunch, ctx: ctx}, nil)
+		resume: sp.resume, resumedFrom: sp.from, renamed: sp.renamed, where: sp.where, id: sp.id, atLaunch: sp.atLaunch, ctx: ctx,
+		Account: sp.account, Model: sp.model, login: sp.login}, nil)
 }
 
 // handleResumeRunMember resumes an ended member of a run, in its worktree:

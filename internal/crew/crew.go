@@ -122,7 +122,26 @@ type Member struct {
 	Prompt  string   `json:"prompt"` // typed once the member is ready; see ExpandPrompt
 	Args    []string `json:"args,omitempty"`
 	Start   Start    `json:"start"`
+	// Account and Model are the member's login and model: an account's id
+	// ("" for its adapter's default at the launch, "default" for the tool's
+	// own login) and a model ("" for the agent's default).
+	Account string `json:"account,omitempty"`
+	Model   string `json:"model,omitempty"`
+	// Bound is the login a launch bound the member to (the API's
+	// bindMembers): set by the server alone, kept with the run's crew (the
+	// ledger's runs.crew, a legacy run's record) for every launch of the
+	// member, and in no reply. A crew a person or an agent sends with it is
+	// refused.
+	Bound *session.BoundAccount `json:"bound,omitempty" guide:"-"`
 }
+
+// memberAccountPattern and memberModelPattern are an account's id and a
+// model's name, as internal/capacity and the API hold them (this package
+// imports neither).
+var (
+	memberAccountPattern = regexp.MustCompile(`^(default|a-[a-z2-7]{12})$`)
+	memberModelPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,99}$`)
+)
 
 // Task is a unit of a managed crew's work: a member does it once the tasks
 // it needs have results, in a worktree of its own made at those results,
@@ -273,6 +292,11 @@ func gitRefuses(name string) bool {
 func (c Crew) ValidateSave() error {
 	if err := c.Validate(); err != nil {
 		return err
+	}
+	for _, m := range c.Members {
+		if m.Bound != nil {
+			return invalidf("member %s: a binding is the server's to make at a launch: name an account", quote(m.Name))
+		}
 	}
 	for _, t := range c.Tasks {
 		for i, n := range t.Needs {
@@ -621,6 +645,12 @@ func (m Member) Validate() error {
 	}
 	if total > maxArgsBytes {
 		return invalidf("member %s: args must be at most %d bytes in all", quote(m.Name), maxArgsBytes)
+	}
+	if m.Account != "" && !memberAccountPattern.MatchString(m.Account) {
+		return invalidf("member %s: account is default or a- and 12 of a-z 2-7", quote(m.Name))
+	}
+	if m.Model != "" && !memberModelPattern.MatchString(m.Model) {
+		return invalidf("member %s: model is 1 to 100 of A-Z a-z 0-9 . _ : / @ -", quote(m.Name))
 	}
 	switch m.Start.When {
 	case StartAfter:

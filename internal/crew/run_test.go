@@ -40,6 +40,9 @@ type launchCall struct {
 	agentSHA256 string
 	// where is the spec's Where: the Runtime the session starts in.
 	where string
+	// account and model are the spec's: the member's binding and model.
+	account session.BoundAccount
+	model   string
 }
 
 // fakeLauncher starts member sessions over fake processes, where the API
@@ -139,7 +142,7 @@ func (f *fakeLauncher) Reserve(ctx context.Context) (*session.Reservation, error
 func (f *fakeLauncher) Launch(ctx context.Context, spec LaunchSpec) (*session.Local, error) {
 	name, ref := spec.Name, spec.Ref
 	f.mu.Lock()
-	f.calls = append(f.calls, launchCall{spec.AgentID, name, spec.Cwd, slices.Clone(spec.Args), maps.Clone(spec.Env), ref, spec.Yolo, spec.Resume, maps.Clone(spec.Inject), slices.Clone(spec.Allow), spec.AgentSHA256, string(spec.Where)})
+	f.calls = append(f.calls, launchCall{spec.AgentID, name, spec.Cwd, slices.Clone(spec.Args), maps.Clone(spec.Env), ref, spec.Yolo, spec.Resume, maps.Clone(spec.Inject), slices.Clone(spec.Allow), spec.AgentSHA256, string(spec.Where), spec.Account, spec.Model})
 	err, block := f.fail[name], f.block[name]
 	pause := cmp.Or(f.pauses[name], f.pause, 5*time.Millisecond)
 	f.mu.Unlock()

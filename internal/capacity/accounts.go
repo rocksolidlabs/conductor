@@ -109,9 +109,10 @@ type Facts interface {
 	// absolute, clean and bounded already.
 	CheckAccountDir(dir string) error
 	// Bound names, in words, what the server lists bound to the account
-	// id: a session, an engine run, a ledger run running or interrupted.
-	// None is nil. Reservations are counted by the Store itself.
-	Bound(id string) []string
+	// a, by its id or by its folder: a session, an engine run, a ledger
+	// run running or interrupted. None is nil. Reservations are counted by
+	// the Store itself.
+	Bound(a Account) []string
 }
 
 // The codes of an Error.
@@ -583,7 +584,7 @@ func (s *Store) Remove(f Facts, id string, expectedRev int64) (int64, error) {
 		if n := s.reserved[id]; n > 0 {
 			names = append(names, fmt.Sprintf("%d launch(es) under way", n))
 		}
-		names = append(names, f.Bound(id)...)
+		names = append(names, f.Bound(d.Accounts[i])...)
 		if len(names) > 0 {
 			return &Error{Code: CodeInUse, Words: "the account is in use: stop what is bound to it, or retire it", Names: names[:min(len(names), MaxBound)]}
 		}
@@ -667,7 +668,13 @@ func DefaultOf(d Accounts, adapter string) string {
 // server that does not cannot see a removal, so it binds no registered
 // account. "default" needs no reservation: it answers a zero Account and
 // a release that does nothing.
-func (s *Store) Reserve(id string) (Account, func(), error) {
+func (s *Store) Reserve(id string) (Account, func(), error) { return s.reserve(id, false) }
+
+// Hold is Reserve for a launch made again under a binding (a resume): a
+// retired account, kept for what is bound to it, is held as well.
+func (s *Store) Hold(id string) (Account, func(), error) { return s.reserve(id, true) }
+
+func (s *Store) reserve(id string, retired bool) (Account, func(), error) {
 	if id == DefaultID {
 		return Account{}, func() {}, nil
 	}
@@ -685,7 +692,7 @@ func (s *Store) Reserve(id string) (Account, func(), error) {
 		return Account{}, nil, err
 	}
 	a := d.Accounts[i]
-	if a.Retired {
+	if a.Retired && !retired {
 		return Account{}, nil, invalid("account", "%s is retired", id)
 	}
 	s.reserved[id]++

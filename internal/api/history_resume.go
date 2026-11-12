@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/internal/capacity"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/journal"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -317,8 +318,17 @@ func (s *Server) resumeFromRecord(ctx context.Context, rec journal.Record, body 
 	if p.listed != nil {
 		l := p.listed.Launched()
 		sp.agentID, sp.name, sp.args, sp.env, sp.yolo, sp.renamed = l.AgentID, l.Name, l.Args, l.Env, l.Yolo, l.Renamed
+		sp.account, sp.login = boundOf(l)
+		sp.model = l.Model
 	} else {
-		sp.args, sp.yolo, sp.renamed = slices.Clone(rec.Launch.Args), rec.Launch.Yolo, rec.Launch.Renamed
+		sp.args, sp.yolo, sp.renamed, sp.model = slices.Clone(rec.Launch.Args), rec.Launch.Yolo, rec.Launch.Renamed, rec.Launch.Model
+		// A registered account it was bound to, by the id and source its
+		// record keeps, compared; any other launch as a launch of default
+		// gives it now, as a record from before bindings resumed.
+		sp.account = capacity.DefaultID
+		if rec.Launch.Source == session.SourceAccount {
+			sp.account, sp.login = "", loginWant{bound: &session.BoundAccount{ID: rec.Launch.Account, Source: session.SourceAccount}, kept: true, adapter: rec.Agent.Adapter}
+		}
 		if names, n := envNamesOf(rec.Launch); n > 0 {
 			if !body.WithoutEnv {
 				return nil, newAPIError(http.StatusConflict, "env_not_kept", "its launch had variables, whose values no record keeps; resume without them (withoutEnv): "+envWords(names, n))

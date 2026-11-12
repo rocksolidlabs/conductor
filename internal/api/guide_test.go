@@ -704,7 +704,9 @@ func fill(v reflect.Value) {
 		fill(v.Elem())
 	case reflect.Struct:
 		for i := range v.NumField() {
-			if v.Field(i).CanSet() {
+			// A field the guide leaves out is the server's, which a body
+			// sending it is refused (crew.Member.Bound): none is sent.
+			if v.Field(i).CanSet() && v.Type().Field(i).Tag.Get("guide") != "-" {
 				fill(v.Field(i))
 			}
 		}

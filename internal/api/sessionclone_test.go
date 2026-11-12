@@ -433,8 +433,12 @@ func TestTheLaunchGoesToAnAdminOnly(t *testing.T) {
 
 	_, out := e.do("GET", "/api/sessions/"+id, adminToken, nil)
 	launch, _ := out["launch"].(map[string]any)
-	if launch == nil || launch["agentId"] != "echo" || launch["cwd"] != e.root || launch["yolo"] != true || len(launch) != 4 {
+	// Its login by its id and source, never a folder or a fingerprint.
+	if launch == nil || launch["agentId"] != "echo" || launch["cwd"] != e.root || launch["yolo"] != true || len(launch) != 5 {
 		t.Fatalf("launch %v", out)
+	}
+	if acct, _ := launch["account"].(map[string]any); acct["id"] != "default" || acct["source"] != "own" || len(acct) != 2 {
+		t.Fatalf("launch's account %v", launch["account"])
 	}
 	if args := launch["args"].([]any); len(args) != 2 || args[0] != "-i" || args[1] != "it's" {
 		t.Fatalf("args %v", args)
@@ -442,7 +446,7 @@ func TestTheLaunchGoesToAnAdminOnly(t *testing.T) {
 	// A member's: no env, though its launch had a GOAL.
 	_, out = e.do("GET", "/api/sessions/"+sid, adminToken, nil)
 	launch, _ = out["launch"].(map[string]any)
-	if launch == nil || launch["env"] != nil || len(launch) != 4 || launch["args"] == nil {
+	if launch == nil || launch["env"] != nil || len(launch) != 5 || launch["args"] == nil {
 		t.Fatalf("member's launch %v", out)
 	}
 	// A link's holder reads the session without it.

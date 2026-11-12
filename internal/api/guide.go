@@ -661,11 +661,11 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			Input:   bodySchema(accountRevBody{}),
 			Bounds:  map[string]int{"body": maxAccountEditBody}},
 		{Name: "accounts_remove", Scope: "admin", Method: http.MethodDelete, Path: "/api/accounts/{id}", needs: needLauncher,
-			Summary: "Remove an account (?expectedRev=); its id is never minted again. No launch takes an account yet, so nothing holds one.",
+			Summary: "Remove an account (?expectedRev=); its id is never minted again. Refused (account_in_use, naming at most 10) while a launch under way, a session running, or a run running or interrupted is bound to it.",
 			CLI:     []string{"conductor", "accounts", "remove", "ID"},
 			Input:   map[string]any{"type": "object", "description": "no body; ?expectedRev="}},
 		{Name: "accounts_default", Scope: "admin", Method: http.MethodPut, Path: "/api/accounts/defaults/{adapter}", needs: needLauncher,
-			Summary: "Set an adapter's default account (default for the agent's own login), the account its capacity view answers when none is named. No launch takes an account yet: a session runs on the agent's own login whatever the default.",
+			Summary: "Set an adapter's default account (default for the agent's own login), the account its capacity view answers and a launch naming none takes. What is launched keeps the account it was bound to whatever the default becomes.",
 			CLI:     []string{"conductor", "accounts", "default", "ADAPTER", "ID"},
 			Input:   bodySchema(accountDefaultBody{}),
 			Bounds:  map[string]int{"body": maxAccountEditBody}},
@@ -807,6 +807,10 @@ func schemaFields(t reflect.Type, d int, props map[string]any, required map[stri
 			continue
 		}
 		name, opts, _ := strings.Cut(tag, ",")
+		if f.Tag.Get("guide") == "-" {
+			// The server's alone (crew.Member.Bound): no body may send it.
+			continue
+		}
 		ft := f.Type
 		if ft.Kind() == reflect.Pointer {
 			ft = ft.Elem()
