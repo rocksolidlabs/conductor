@@ -132,7 +132,7 @@ type Member struct {
 	// ledger's runs.crew, a legacy run's record) for every launch of the
 	// member, and in no reply. A crew a person or an agent sends with it is
 	// refused.
-	Bound *session.BoundAccount `json:"bound,omitempty"`
+	Bound *session.BoundAccount `json:"bound,omitempty" guide:"-"`
 }
 
 // memberAccountPattern and memberModelPattern are an account's id and a

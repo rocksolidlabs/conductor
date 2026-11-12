@@ -19,6 +19,22 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
+// The guide's crew body offers a member's account and model, never the
+// binding the server makes.
+func TestGuideCrewSchemaNamesNoBinding(t *testing.T) {
+	for _, op := range Operations() {
+		if op.Name != "crew_create" {
+			continue
+		}
+		s := mustJSON(op.Input)
+		if !strings.Contains(s, `"account"`) || !strings.Contains(s, `"model"`) || strings.Contains(s, `"bound"`) || strings.Contains(s, `"login"`) {
+			t.Fatalf("crew_create's input: %s", s)
+		}
+		return
+	}
+	t.Fatal("no crew_create operation")
+}
+
 // A ticket's approved revision launches with the accounts it names: one
 // naming an account Accounts does not hold is refused, the launch kept
 // failed with the words and no run made; one naming none launches its

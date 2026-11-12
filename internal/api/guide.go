@@ -799,6 +799,10 @@ func schemaFields(t reflect.Type, d int, props map[string]any, required map[stri
 			continue
 		}
 		name, opts, _ := strings.Cut(tag, ",")
+		if f.Tag.Get("guide") == "-" {
+			// The server's alone (crew.Member.Bound): no body may send it.
+			continue
+		}
 		ft := f.Type
 		if ft.Kind() == reflect.Pointer {
 			ft = ft.Elem()
