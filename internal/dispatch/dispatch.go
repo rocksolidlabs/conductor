@@ -153,6 +153,11 @@ type Store struct {
 	// committed: a test makes the commit fail with an error, or acts
 	// while the lock is held.
 	beforeReceipt func() error
+	// beforeLock, when set, runs in Apply before the store's lock is taken
+	// for the operation's transaction, once whatever its caller does
+	// first is done: a test holds two writes there, so the lock alone
+	// orders them.
+	beforeLock func()
 
 	// The attachments' files (attachments.go, sweep.go). syncDir makes a
 	// directory's entries durable (syncDirectory; on Windows the move is
