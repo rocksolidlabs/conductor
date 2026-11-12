@@ -132,9 +132,9 @@ func hostileWords() []string {
 	return ws
 }
 
-// hostileWord stands in every other field while one is walked: what took
-// a span open in an earlier form of the description, a link and an image
-// after it.
+// hostileWord stands in every other field while one is walked: backticks,
+// a link, an attachment's image, raw HTML, a mention, a fence and
+// emphasis in one word.
 const hostileWord = "x``[QZlink](https://evil.example/login) ![QZimg](attachment:0123456789abcdef) <img src=x onerror=alert(1)> @QZmention ~~~ **QZbold** `"
 
 // ticketLabel is a line of a block: one of describe's labels, alone or
@@ -351,10 +351,10 @@ func TestNothingACaptureHoldsIsMarkdownInATicket(t *testing.T) {
 	}
 }
 
-// Through the store's own writes: a capture whose element is named by
-// white space alone and whose other words hold backticks, a link and an
-// address, sent to a new ticket and to it again, gives a description and
-// comments of the store's words, the page's in blocks.
+// Through the store's own writes: a capture whose words are blank or hold
+// backticks, links and an address, sent to a new ticket and to it again,
+// gives a description and comments of the store's words, the page's in
+// blocks.
 func TestASentCapturesWordsStandInBlocks(t *testing.T) {
 	s, _ := attachmentTicket(t)
 	n, f := testCapture(false)
