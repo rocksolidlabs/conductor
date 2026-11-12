@@ -5034,7 +5034,9 @@ come with the pages' part, #532),
 `comparison/1`, `evidence/1`, `draft_ticket/1` (at most 20, their `blocks`
 without a cycle), `draft_crew/1` (a member that names an `account` or
 a `bound` is refused at the brief's check, `400 invalid_brief`, and at
-the make, `400 invalid_draft`: an agent does not choose accounts), `draft_plan/1` (`ticket`, a `ticket:`
+the make, `400 invalid_draft`, a person's own `edit` of the draft
+included: an agent does not choose accounts; a member's `model` is
+taken, a person making the draft), `draft_plan/1` (`ticket`, a `ticket:`
 ref; `crew`, a saved crew's id; `base?` at most 256 bytes; `basedOn?`, a
 `plan:` ref; `references?` at most 20 `{path, start?, end?, note?}`;
 `attachments?` at most 8 ids; `comments?` at most 20 `comment:` refs;
@@ -5288,7 +5290,7 @@ the records reads a file again only when its size or time changed.
 | `GET /api/history/sessions/{id}` | admin | `{record, live, newer}`: the record whole (at most 64 KiB), `live` while the registry lists its session running; `404 not_found` |
 | `DELETE /api/history/sessions/{id}` | admin | `204`: the record forgotten, its file deleted; `409 live_session` for a session still running, `409 resume_pending` for a record whose resume is being started, `409 history_read_only` on a server that does not hold the records, `404 not_found`, `500 history_failed` when its file could not be deleted: the record stays as last written, listed and forgettable again, nothing its session says is written to it, and one whose file has no end is listed `lost` and written so; `503 history_index_failed` when the record is removed but the history's index could not drop its entries yet (they are dropped before the index is read again); a `204` answers once the index holds nothing of it |
 | `DELETE /api/history/sessions` | admin | `{forgotten, kept}`: every record neither live nor pending forgotten, those kept counted, answered once the index holds nothing of those forgotten; `500 history_failed` when a file could not be deleted (those records stay, as above); `503 history_index_failed` as above |
-| `POST /api/history/sessions/{id}/resume` | admin | resume the session's agent conversation from its record, after a restart as much as while the session is listed: body `{commandId, withoutEnv?, confirmLost?}` (at most 1 KiB; `commandId` 1 to 32 of `[A-Za-z0-9._~-]`; `400 invalid_request` otherwise, an unknown field among it). The command id is looked up first, under the record's lock: its receipt answers at once and starts nothing (started: `200 {receipt, session?}`, the session while it is listed; failed: its refusal's code with `{error, receipt}`; `409 resume_uncertain` with its words; `409 resume_pending` while it is being started). A record holding 16 receipts refuses a new id, `409 resume_limit`, with nothing reserved (a receipt is never let go to make room: it goes only with its record); else a receipt is reserved `pending`, with the new session's id allocated now, and written before anything is checked or launched. Then, in this order, the refusals (each settling the receipt `failed` with its code, its words cut to the receipt's 200 bytes: the reply's `error.message` is the receipt's `error`, as every resend of the id answers it): `400 hosted_session` (its machine resumes it), `409 brakeman_run`, `409 managed_run` (its run continues), `409 crew_member` (a run's member, known by the record's crew, the engine's runs or a run record naming the session: its run's member route resumes it, `POST /api/runs/{run}/members/{name}/resume`, which the words name), `503 member_unknown` (the run records could not all be read), `409 args_not_kept` (its launch's arguments were too long to keep), `409 runtime_gone` (the record's `where` is no Runtime of this server), `409 still_running` (the session still running), `409 cwd_not_kept` (the record's working directory may be a cut of a longer one: its JSON form within 6 bytes of the record's 4096-byte bound; a listed session starts in its own, whole), `400 invalid_agent`, `409 already_resumed` (a running session holds the conversation, or one is being made for it), `400 invalid_cwd` (its folder gone and its agent resumes only where it ran; else it starts in the default folder), `409 not_resumable` (no session recipe, or the agent had no turn: nothing of its conversation to take up), `409 env_not_kept` naming the variables its launch had, whose values no record keeps, unless `withoutEnv: true` (resumed without them, the reply's `notice` says which), `409 account_gone` for a record of a registered account whose login is not the one it would get (a record keeps a registered account's id and source and the model, never a folder or fingerprint, and nothing of any other login: a record of the agent's own login, of one its entry or its launch set, or from before bindings resumes as a launch of `default` gives it at the resume, as before bindings), then, read again as the launch takes the conversation and deciding alone (whatever was read before, a removal or a failed stop since included): `409 still_running` while a local session of the conversation (one holding it, the record's own, any it resumed from or resumed from it, up the `resumedFrom` chain) has a process not done (listed, running or ended by a stop that failed, or removed while its process ran; `409 already_resumed` for another running one), and `409 lost_unconfirmed` for a record whose end was not observed (`lost`, or open with its session no longer listed: its process may still be running) unless `confirmLost: true`; otherwise as `POST /api/sessions` answers. The session is made as the session route's resume makes one (the same launch: the agent's `resumeArgs` for the conversation, then the launch's own arguments; the record's folder, name and yolo choice; a listed session's own launch, its variables among it), in the record's Runtime, with the allocated id; `201 {session, resumed, notice?, receipt}`, the receipt `started` naming it. A receipt a stop left `pending` is settled at the next start: `started` when the allocated session's record exists, else `uncertain` ("the server stopped while starting the session; its process may have started before its record was written"): that id answers it, a new one may try again. `404 not_found`, `409 history_read_only`, `409 record_newer` (a later version's record), `503 history_closed` (the server is stopping), `500 history_failed` when the receipt could not be written (nothing launched) |
+| `POST /api/history/sessions/{id}/resume` | admin | resume the session's agent conversation from its record, after a restart as much as while the session is listed: body `{commandId, withoutEnv?, confirmLost?}` (at most 1 KiB; `commandId` 1 to 32 of `[A-Za-z0-9._~-]`; `400 invalid_request` otherwise, an unknown field among it). The command id is looked up first, under the record's lock: its receipt answers at once and starts nothing (started: `200 {receipt, session?}`, the session while it is listed; failed: its refusal's code with `{error, receipt}`; `409 resume_uncertain` with its words; `409 resume_pending` while it is being started). A record holding 16 receipts refuses a new id, `409 resume_limit`, with nothing reserved (a receipt is never let go to make room: it goes only with its record); else a receipt is reserved `pending`, with the new session's id allocated now, and written before anything is checked or launched. Then, in this order, the refusals (each settling the receipt `failed` with its code, its words cut to the receipt's 200 bytes: the reply's `error.message` is the receipt's `error`, as every resend of the id answers it): `400 hosted_session` (its machine resumes it), `409 brakeman_run`, `409 managed_run` (its run continues), `409 crew_member` (a run's member, known by the record's crew, the engine's runs or a run record naming the session: its run's member route resumes it, `POST /api/runs/{run}/members/{name}/resume`, which the words name), `503 member_unknown` (the run records could not all be read), `409 args_not_kept` (its launch's arguments were too long to keep), `409 runtime_gone` (the record's `where` is no Runtime of this server), `409 still_running` (the session still running), `409 cwd_not_kept` (the record's working directory may be a cut of a longer one: its JSON form within 6 bytes of the record's 4096-byte bound; a listed session starts in its own, whole), `400 invalid_agent`, `409 already_resumed` (a running session holds the conversation, or one is being made for it), `400 invalid_cwd` (its folder gone and its agent resumes only where it ran; else it starts in the default folder), `409 not_resumable` (no session recipe, or the agent had no turn: nothing of its conversation to take up), `409 env_not_kept` naming the variables its launch had, whose values no record keeps, unless `withoutEnv: true` (resumed without them, the reply's `notice` says which), `409 account_gone` when its login is not the one it would get: for a session still listed, judged by what the server holds of its launch (its binding, compared whole, as a listed resume is); for one no longer listed, for a record of a registered account (a record keeps a registered account's id and source and the model, never a folder or fingerprint, and nothing of any other login: a record of the agent's own login, of one its entry or its launch set, or from before bindings resumes as a launch of `default` gives it at the resume, as before bindings), then, read again as the launch takes the conversation and deciding alone (whatever was read before, a removal or a failed stop since included): `409 still_running` while a local session of the conversation (one holding it, the record's own, any it resumed from or resumed from it, up the `resumedFrom` chain) has a process not done (listed, running or ended by a stop that failed, or removed while its process ran; `409 already_resumed` for another running one), and `409 lost_unconfirmed` for a record whose end was not observed (`lost`, or open with its session no longer listed: its process may still be running) unless `confirmLost: true`; otherwise as `POST /api/sessions` answers. The session is made as the session route's resume makes one (the same launch: the agent's `resumeArgs` for the conversation, then the launch's own arguments; the record's folder, name and yolo choice; a listed session's own launch, its variables among it), in the record's Runtime, with the allocated id; `201 {session, resumed, notice?, receipt}`, the receipt `started` naming it. A receipt a stop left `pending` is settled at the next start: `started` when the allocated session's record exists, else `uncertain` ("the server stopped while starting the session; its process may have started before its record was written"): that id answers it, a new one may try again. `404 not_found`, `409 history_read_only`, `409 record_newer` (a later version's record), `503 history_closed` (the server is stopping), `500 history_failed` when the receipt could not be written (nothing launched) |
 | `POST /api/history/reindex` | admin | `202 {indexing}`: the history's index cleared in place and caught up from nothing, on the indexer's goroutine; `409 history_read_only` on a server that does not hold `history/owner.lock` |
 
 From a forget on, nothing the forgotten record's session says is written
@@ -5744,8 +5746,10 @@ launch names (an account's id, or `default` for the agent's own login),
 or, naming none, its adapter's default at that moment. A registered
 account's folder is set as the adapter's folder variable
 (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) over everything else the process's
-environment holds, and the account is held (a remove refused) from then
-until the session is registered or its launch failed. An entry whose
+environment holds, and the account is held (a remove refused) from its
+reservation until the launch's process has ended, whether or not its
+session was registered; a launch that fails before its process starts
+lets it go. An entry whose
 environment, or the server's passthrough, sets the folder variable or one
 of the adapter's login variables has that login alone, and so has a launch
 whose own additions (its yolo recipe's variables, an attempt's approved
@@ -5762,11 +5766,16 @@ a member's attempt, a retry, a member started later, a continuation)
 builds its environment the same way and starts only when its login is the
 bound one, refused `409 account_gone` with words before any process exists
 otherwise: an account removed, an entry or a recipe that now sets another
-folder or key. A continuation of a managed run and a resume from a record
-are made from what is written, where the tool's own login is written as
-nothing, and so, in a session's record, is a login its entry or its
-launch set: those are made again under what the entry gives then, within
-the server's life too. A changed default moves nothing launched. A retired or
+folder or key. A continuation of a managed run, and a resume from the
+record of a session no longer listed, are made from what is written,
+where the tool's own login is written as nothing, and so, in a session's
+record, is a login its entry or its launch set: those are made again
+under what the entry gives then, within the server's life too. A resume
+from the record of a session still listed is made from what the server
+holds of its launch and compared, as a listed resume is. A clone is a new
+launch: onto an entry of its source's launched adapter it starts from its
+source's account and model, and it is bound as any new launch is. A
+changed default moves nothing launched. A retired or
 unknown account, or one of another adapter, is refused `400
 invalid_account`; a server that does not own the accounts refuses a
 registered account `409 accounts_not_owner`; while the accounts cannot be
@@ -5820,18 +5829,23 @@ offered to no Runtime and runs on this server, and a process is started
 on a Runtime other than the native one only under the agent's own login
 (`400 invalid_account` otherwise, an attempt failed with those words).
 `DELETE /api/accounts/{id}` is refused `409 account_in_use`, naming at
-most 10, while a launch is under way on the account (a launch whose
-process started and whose session was not registered, its registration
-refused and its stop failed, until that process has ended), a server
-session's process bound to it still runs (its stop failed, or it was
-removed from the listing), an engine run not ended, or a ledger run
-running or interrupted, and continued by no other run, is bound to it
-(one whose crew cannot be read holds every account); a stopped or
-finished run is no bar (continuing it is refused `account_gone`). A
-binding of another source that keeps the account's folder (an entry or
-the passthrough that pins that folder, Brakeman's folder beside a key)
-holds the account and is counted on it, its `source` still what the
-environment says.
+most 10, while a launch that names the account (or takes it as its
+adapter's default) is under way, from its reservation until its process
+has ended, whether or not its session was registered (its registration
+refused and its stop failed among them), a registered server session's
+process bound to it still runs (its stop failed, or it was removed from
+the listing), an engine run not ended, or a ledger run running or
+interrupted, and continued by no other run, is bound to it (one whose
+crew cannot be read holds every account); a stopped or finished run is no
+bar (continuing it is refused `account_gone`), and a kept run that
+another run has continued holds nothing. A registered session, and a
+member of a run not ended (the engine's, or the ledger's as above), whose
+binding is pinned to a folder that a
+registered account holds (an entry or the server's passthrough sets the
+folder) holds that account, its `source` still what the environment says,
+and such a session is counted on it. For a login that an entry, the
+passthrough or a launch's own environment sets, what is held and counted
+begins at the session's registration and follows what the binding keeps.
 
 **The routes**, each the workbench token's alone (a session's, a host's, a
 link's and a Brakeman turn's are refused `401`) and a launch route's (a
@@ -5872,8 +5886,9 @@ has its words. Each window carries `source: "provider"` and is absent when
 the provider did not report it (never a zero); the counts (`running`,
 `started5h`, `started7d`, `since`) carry `source: "conductor"` and
 `estimate: true`: the server sessions of the agent on the account this
-server counted since it started (no launch binds an account other than
-`default` yet, so another account counts none). `host.kind` is `native`
+server counted since it started, each from its registration: a session
+bound to the account, and one whose binding is pinned to the account's
+folder (Capacity's binding paragraph above). `host.kind` is `native`
 (with the server's name), `remote`, or, for a managed run of the agent's
 own login when a Runtime other than the native one is registered,
 `undetermined` ("this server's login: if <Runtime> takes the run, its usage
