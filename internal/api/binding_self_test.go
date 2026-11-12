@@ -107,8 +107,10 @@ func TestAgentMemberTakesItsSessionsLogin(t *testing.T) {
 }
 
 // The member an agent's crew adopts is its session, model included: a self
-// member naming another model is refused; one naming none has the
-// session's, and a resume of it starts with that model.
+// member naming another model is refused, and so is one whose own
+// arguments choose a model beside the session's, judged as every member's
+// are (it could never be resumed); one naming none has the session's, and
+// a resume of it starts with that model.
 func TestAdoptedMemberKeepsItsModel(t *testing.T) {
 	e := newBindEnv(t, nil)
 	sid := e.launch(t, "claude-p", map[string]any{"model": "opus"})
@@ -124,6 +126,11 @@ func TestAdoptedMemberKeepsItsModel(t *testing.T) {
 	other := map[string]any{"name": "x", "agentId": "codex-p", "prompt": "", "start": map[string]any{"when": "manual"}}
 	if status, data, _ := e.callAs(t, tok, "POST", "/api/sessions/"+sid+"/crew", map[string]any{"name": "Other", "goal": "g", "self": "me", "members": []any{self("sonnet"), other}}); status != http.StatusBadRequest {
 		t.Fatalf("a self member naming another model: %d %s", status, data)
+	}
+	chooses := self("")
+	chooses["args"] = []string{"--model", "sonnet"}
+	if status, data, out := e.callAs(t, tok, "POST", "/api/sessions/"+sid+"/crew", map[string]any{"name": "Args", "goal": "g", "self": "me", "members": []any{chooses, other}}); status != http.StatusBadRequest || errorCode(out) != "invalid_request" {
+		t.Fatalf("a self member whose arguments choose a model: %d %s", status, data)
 	}
 	out := e.expectAs(t, tok, "POST", "/api/sessions/"+sid+"/crew", map[string]any{"name": "Mine", "goal": "g", "self": "me", "members": []any{self(""), other}}, http.StatusCreated, "")
 	if m := runMember(t, out["run"].(map[string]any), "me"); m["model"] != "opus" {

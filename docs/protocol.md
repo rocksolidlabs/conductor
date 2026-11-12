@@ -5770,11 +5770,15 @@ account; a Brakeman turn with a folder) and one naming `default` is
 started. A `model` (1 to
 100 of `A-Z a-z 0-9 . _ : / @ -`) goes through the adapter's flag
 (`--model=`) after the launch's own arguments, `400 invalid_request` for an
-agent whose adapter takes none or beside any argument of the command line
-that chooses one, as its adapter says (Claude Code's `--model`; Codex's
-`--model`, `-m` and a `-c`/`--config` override of `model`), in the
-entry's command, a resume recipe's, the launch's or a member's arguments
-or a yolo recipe's.
+agent whose adapter takes none or beside any of the launch's own arguments
+(the request's `args`, a member's) that reads as choosing one, as its
+adapter's list says (Claude Code's `--model`; Codex's `--model`, `-m` and
+a `-c`/`--config` override of `model`), whatever it was meant as: name the
+model in one place. Nothing else is read for a model: an entry's command
+and its recipes' arguments (a yolo recipe's, a fresh session's, a
+resume's) are the catalog's own configuration, and a model they, or the
+tool's own configuration, profile or environment, choose beside a
+launch's is the tool's to resolve.
 Brakeman's turn is bound from its configured folder: none is the agent's
 own login (never the adapter's default), a folder a registered account of
 the adapter holds is that account, any other `unlisted`; beside a login

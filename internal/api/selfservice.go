@@ -170,13 +170,21 @@ func (s *Server) handleSelfCrew(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_crew", "the self member's agent must be this session's ("+info.AgentID+")")
 		return
 	}
-	// The self member is this session: its model is the session's.
+	// The self member is this session: its model is the session's, and its
+	// own arguments are judged beside it as every member's are, under the
+	// adapter the session was started as.
 	launched := local.Launched()
 	if selfDef.Model != "" && selfDef.Model != launched.Model {
 		writeError(w, http.StatusBadRequest, "invalid_crew", "the self member is this session, launched with model "+cmp.Or(launched.Model, "its agent's default")+": name that model or none")
 		return
 	}
 	cat := s.Catalog()
+	selfAgent, _ := cat.Get(selfDef.AgentID)
+	selfAgent.Adapter = launched.Adapter
+	if _, aerr := launchModel(selfAgent, launched.Model, selfDef.Args); aerr != nil {
+		writeError(w, aerr.status, aerr.Code, "member "+self+": "+aerr.Message)
+		return
+	}
 	if err := checkLaunch(others, cat, s.installedFor(r.Context(), cat, others), s.identityFor(r.Context(), cat, others)); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
 		return

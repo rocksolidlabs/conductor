@@ -325,10 +325,11 @@ func accountGone(was, now session.BoundAccount) *apiError {
 // launchModel is the arguments that choose model for agent (its adapter's
 // ModelArgs, after the launch's own), none for "": a model is held to
 // modelPattern, refused for an adapter that takes none, and refused beside
-// any argument of line, the command line the launch is started with
-// (commandLine), that chooses one already, as the adapter says
-// (ChoosesModel).
-func launchModel(agent catalog.Agent, model string, line []string) ([]string, *apiError) {
+// any of args, the launch's own arguments (a request's, a member's), that
+// reads as choosing one, as the adapter's list of forms says
+// (ChoosesModel). Nothing else is judged: the entry's command and its
+// recipes' arguments are the catalog's own configuration.
+func launchModel(agent catalog.Agent, model string, args []string) ([]string, *apiError) {
 	if model == "" {
 		return nil, nil
 	}
@@ -338,26 +339,10 @@ func launchModel(agent catalog.Agent, model string, line []string) ([]string, *a
 		return nil, newAPIError(http.StatusBadRequest, "invalid_request", "a model is 1 to 100 of A-Z a-z 0-9 . _ : / @ -")
 	case !ok || ad.ModelArgs == nil || ad.ChoosesModel == nil || len(ad.ModelArgs(model)) == 0:
 		return nil, newAPIError(http.StatusBadRequest, "invalid_request", agent.Name+" takes no model")
-	case ad.ChoosesModel(line):
-		return nil, newAPIError(http.StatusBadRequest, "invalid_request", "the command line chooses a model already (its entry's command, its arguments or its yolo recipe's): set the model in one place")
+	case ad.ChoosesModel(args):
+		return nil, newAPIError(http.StatusBadRequest, "invalid_request", "the arguments choose a model already: set the model in one place")
 	}
 	return ad.ModelArgs(model), nil
-}
-
-// commandLine is the command line a launch of agent with args, before the
-// arguments Conductor adds of its own, is started with: the entry's
-// command, a resume recipe's arguments for resume, args, and the yolo
-// recipe's when it is applied.
-func commandLine(agent catalog.Agent, resume string, args []string, applied bool) []string {
-	line := slices.Clone(agent.Command)
-	if resume != "" && agent.Session != nil {
-		line = append(line, catalog.Expand(agent.Session.ResumeArgs, resume)...)
-	}
-	line = append(line, args...)
-	if applied {
-		line = append(line, agent.Yolo.Args...)
-	}
-	return line
 }
 
 // bindMembers binds each member of ms as its session will be started
@@ -404,10 +389,10 @@ func (s *Server) bindMembers(ms []crew.Member, yolo bool, caller *session.Local)
 		case !ok:
 			return refuse(*m, newAPIError(http.StatusBadRequest, "invalid_crew", "unknown agent "+m.AgentID))
 		}
-		applied := yolo && !agent.Yolo.Empty()
-		if _, aerr := launchModel(agent, m.Model, commandLine(agent, "", m.Args, applied)); aerr != nil {
+		if _, aerr := launchModel(agent, m.Model, m.Args); aerr != nil {
 			return refuse(*m, aerr)
 		}
+		applied := yolo && !agent.Yolo.Empty()
 		account, mine := m.Account, caller != nil && agent.Adapter == byAdapter
 		if mine {
 			if by.Source == session.SourceLaunchEnv {
