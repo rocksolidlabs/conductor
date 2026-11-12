@@ -14,12 +14,16 @@ import (
 // host token host, a share link nothing; an identity provider's principal
 // its subject, its name and the grants it holds here (admin includes host,
 // as the workbench token's does). Anything else is 401 under the rate
-// limit. A switchyard answers it too: its lack of a role is whoami's to
-// say.
+// limit, and a decide principal is under its subject's bound
+// (decideAllowed). A switchyard answers it too: its lack of a role is
+// whoami's to say.
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	p := s.authenticate(r, false)
 	if !p.admin && !p.host && !p.decide && p.link == nil {
 		s.unauthorized(w, r)
+		return
+	}
+	if !s.decideAllowed(w, p) {
 		return
 	}
 	writeJSON(w, http.StatusOK, proto.MeReply{Subject: p.subject, Name: p.name, Grants: grantsOf(p)})

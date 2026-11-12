@@ -64,6 +64,27 @@ func (l *decideListing) begin(subject string) (done func(), ok bool) {
 	}, true
 }
 
+// decidePerMinute is how many requests of the four routes a decide
+// principal's subject is taken in a minute, whichever pass it sends;
+// one past it is 429, nothing read. The admin is under no such bound.
+const decidePerMinute = 120
+
+// newDecideLimiter is the bound per subject on the four routes.
+func newDecideLimiter() *rateLimiter {
+	return newRateLimiter(decidePerMinute/60.0, decidePerMinute)
+}
+
+// decideAllowed takes one of p's requests of the four routes under its
+// subject's bound, answering 429 in the server's words past it; any
+// principal but a decide one passes.
+func (s *Server) decideAllowed(w http.ResponseWriter, p principal) bool {
+	if !p.decider() || s.decideLimiter.allow(p.subject) {
+		return true
+	}
+	writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests of yours: ask again in a minute")
+	return false
+}
+
 // decideHook runs the seam pick names, when a test set one.
 func (s *Server) decideHook(pick func(*decideSeams) func()) {
 	if h := s.decideSeam.Load(); h != nil {
@@ -111,7 +132,8 @@ func decideAdmission(rec ledger.DecisionRecord, p principal) crew.Admission {
 // admin nor a decide principal (a host-only one, no credential) 401 under
 // the rate limit, as requireAdmin does; then, on a switchyard, 403
 // switchyard to the admin and a decide principal alike; else the admin as
-// launching passes it and a decide principal to the handler.
+// launching passes it and a decide principal, under its subject's bound
+// (decideAllowed), to the handler.
 func (s *Server) deciding(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p := s.authenticate(r, false)
@@ -120,6 +142,7 @@ func (s *Server) deciding(next http.HandlerFunc) http.HandlerFunc {
 			s.unauthorized(w, r)
 		case s.cfg.Switchyard.Enabled:
 			writeError(w, http.StatusForbidden, "switchyard", "this server coordinates hosted sessions and launches none")
+		case !s.decideAllowed(w, p):
 		default:
 			next(w, withPrincipal(r, p))
 		}
@@ -259,11 +282,12 @@ func (s *Server) admittedRecord(w http.ResponseWriter, r *http.Request, p princi
 // written. A repeat's receipt is the past act it answers: its status and
 // its rev are the send's, the view beside it the decision now.
 func (s *Server) decideRespond(w http.ResponseWriter, r *http.Request, p principal) {
-	var resp crew.Response
-	if err := decodeJSONLimit(w, r, &resp, maxDecisionRespondBody); err != nil {
+	var body decideBody
+	if err := decodeJSONLimit(w, r, &body, maxDecisionRespondBody); err != nil {
 		writeError(w, http.StatusBadRequest, crew.CodeInvalid, "the body is not a response")
 		return
 	}
+	resp := decideResponse(body, p)
 	rec, a, ok := s.admittedRecord(w, r, p)
 	if !ok {
 		return
@@ -313,6 +337,25 @@ func (s *Server) decideRespond(w http.ResponseWriter, r *http.Request, p princip
 		}
 	}
 	s.writeBounded(w, status, reply, proto.MaxDecideReply)
+}
+
+// decideBody is what a decide principal's response carries, and all it
+// may: decoded strictly, a body with any other member is 400 invalid
+// before any read, whatever the decision.
+type decideBody struct {
+	ResponseID  string `json:"responseId"`
+	Choice      *int   `json:"choice,omitempty"`
+	Text        string `json:"text,omitempty"`
+	Rationale   string `json:"rationale,omitempty"`
+	ExpectedRev int    `json:"expectedRev"`
+}
+
+// decideResponse is the engine's response of p's body, each field set by
+// name: the name the answer is shown under is the provider's for p (one
+// line of at most ext.MaxPrincipalName characters, as GET /api/me says
+// it; the actor when there is none), never anything the request carries.
+func decideResponse(b decideBody, p principal) crew.Response {
+	return crew.Response{ResponseID: b.ResponseID, Choice: b.Choice, Text: b.Text, Rationale: b.Rationale, ExpectedRev: b.ExpectedRev, ByName: p.name}
 }
 
 // decideReceipt is rc reduced to what a decide principal reads of its own
@@ -395,10 +438,12 @@ func decideWords(code, did string) string {
 	return did + " could not take this answer."
 }
 
-// writeBounded answers v, at most max bytes as encoded; one past it is a
-// 500 in the server's words, never a reply cut short.
+// writeBounded answers v, at most max bytes as written, its newline among
+// them; one past it is a 500 in the server's words, never a reply cut
+// short.
 func (s *Server) writeBounded(w http.ResponseWriter, status int, v any, max int) {
 	b, err := json.Marshal(v)
+	b = append(b, '\n')
 	if err != nil || len(b) > max {
 		s.log.Warn("a decide reply passed its bound", "bytes", len(b), "bound", max)
 		writeError(w, http.StatusInternalServerError, "internal", "the reply would pass its bound")
@@ -406,7 +451,7 @@ func (s *Server) writeBounded(w http.ResponseWriter, status int, v any, max int)
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	_, _ = w.Write(append(b, '\n'))
+	_, _ = w.Write(b)
 }
 
 // hasIdentity says an identity provider is registered: the one check the

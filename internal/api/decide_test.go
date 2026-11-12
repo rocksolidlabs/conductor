@@ -23,6 +23,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/ext/exttest"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
@@ -30,6 +32,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // The decide grant's routes (docs/plans/decide-grant.md, PR-1): a
@@ -349,7 +352,9 @@ func apiPatterns(t *testing.T) []string {
 // as the unknown one (and as no credential where the route needs one:
 // the events stream, the inbox, the operator's list), the host-and-decide
 // pass exactly as the host-only one; the four answer both decide passes
-// alike.
+// alike. The WebSocket routes are asked by real handshakes too: the
+// decide-only pass refused (4401, or 401 before the upgrade) as the
+// unknown one, the host-and-decide pass as the host-only one.
 func TestDecideGrantAdmitsDecisionRoutesOnly(t *testing.T) {
 	f := newDecideFixture(t, nil)
 	did := f.open(t, "r1")
@@ -378,14 +383,58 @@ func TestDecideGrantAdmitsDecisionRoutesOnly(t *testing.T) {
 		data, _ := io.ReadAll(resp.Body)
 		return resp.StatusCode, string(data)
 	}
-	for _, pattern := range apiPatterns(t) {
-		method, path, _ := strings.Cut(pattern, " ")
-		path = wildcard.ReplaceAllStringFunc(path, func(w string) string {
+	fill := func(path string) string {
+		return wildcard.ReplaceAllStringFunc(path, func(w string) string {
 			if v, ok := values[wildcard.FindStringSubmatch(w)[1]]; ok {
 				return v
 			}
 			return "x1"
 		})
+	}
+	// What a WebSocket route answers a pass by a real handshake: refused
+	// with its status, let in, or closed with its code after the hello.
+	shake := func(path, tok string) string {
+		ctx, cancel := context.WithTimeout(t.Context(), testWait)
+		defer cancel()
+		c, resp, err := websocket.Dial(ctx, strings.Replace(f.http.URL, "http://", "ws://", 1)+path+"?token="+url.QueryEscape(tok), nil)
+		if err != nil {
+			if resp == nil {
+				t.Fatalf("%s: %v", path, err)
+			}
+			return fmt.Sprintf("refused %d", resp.StatusCode)
+		}
+		defer c.CloseNow()
+		if path == "/ws/host" {
+			return "let in" // a host's connection waits for its own first message
+		}
+		_ = c.Write(ctx, websocket.MessageBinary, proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1}))
+		if _, _, err := c.Read(ctx); err != nil {
+			return fmt.Sprintf("closed %d", websocket.CloseStatus(err))
+		}
+		return "let in"
+	}
+	walked := 0
+	for _, pattern := range apiPatterns(t) {
+		path, ok := strings.CutPrefix(pattern, "GET /ws/")
+		if !ok {
+			continue
+		}
+		path = fill("/ws/" + path)
+		walked++
+		ds, us := shake(path, passAna), shake(path, passUnknown)
+		if ds != us || ds != fmt.Sprintf("closed %d", proto.CloseUnauthorized) && ds != "refused 401" {
+			t.Errorf("%s by handshake: decide-only %s, an unknown pass %s", pattern, ds, us)
+		}
+		if hs, hos := shake(path, passHostAna), shake(path, passHostOnly); hs != hos {
+			t.Errorf("%s by handshake: host-and-decide %s, host-only %s", pattern, hs, hos)
+		}
+	}
+	if walked < 3 {
+		t.Fatalf("%d WebSocket routes walked", walked)
+	}
+	for _, pattern := range apiPatterns(t) {
+		method, path, _ := strings.Cut(pattern, " ")
+		path = fill(path)
 		ds, db := call(method, path, passAna)
 		hs, hb := call(method, path, passHostAna)
 		if four[pattern] {
@@ -495,9 +544,9 @@ func TestDecideReadCarriesNothingElse(t *testing.T) {
 	f.give(t, other)
 	f.expect(t, http.MethodPost, "/api/decisions/"+other+"/comment", map[string]any{"opId": "c2", "kind": "comment", "text": "marker-other-0e7a", "expectedRev": f.rev(t, other)}, http.StatusOK, "")
 	// Another subject's refusal (a stale rev), kept with its name.
-	f.callAs(t, passBob, http.MethodPost, "/api/decisions/"+did+"/respond", map[string]any{"responseId": "b1", "choice": 0, "expectedRev": 1, "byName": "marker-bob-4c2f"})
+	f.callAs(t, passBob, http.MethodPost, "/api/decisions/"+did+"/respond", map[string]any{"responseId": "b1", "choice": 0, "expectedRev": 1})
 	f.createSession("cat")
-	markers := []string{"marker-comment-6b1d", "marker-other-0e7a", "marker-bob-4c2f", "bob", "zelda", "CND-1", f.sid, f.run, other, "evidence", "history", "admin"}
+	markers := []string{"marker-comment-6b1d", "marker-other-0e7a", "Bob", "bob", "zelda", "CND-1", f.sid, f.run, other, "evidence", "history", "admin"}
 	clean := func(what string, data []byte) {
 		t.Helper()
 		for _, m := range markers {
@@ -784,6 +833,25 @@ func TestDecideOutcomeTakesOnlyItsOwnSendAgain(t *testing.T) {
 			t.Fatalf("bob's send to %s: %d", did, status)
 		}
 	}
+	// What is its own is the caller's response alone: of a decision bob
+	// answered, ana, whose own refusal is kept, sends under bob's id.
+	both := f.open(t, "r3")
+	f.give(t, both)
+	if status, data, out := f.respondAs(t, passAna, both, "s3", 0, 1); status != http.StatusConflict || codeOf(out) != crew.CodeStaleDecision {
+		t.Fatalf("ana's stale send: %d %s", status, data)
+	}
+	f.respond(t, passBob, both, "b3", 0, 2, http.StatusCreated, "")
+	f.decisionWhen(t, both, "applied", inState(ledger.DecisionApplied))
+	rows := len(f.record(t, both).Responses)
+	status, data, _ = f.respondAs(t, passAna, both, "b3", 0, 2)
+	var under proto.DecideRefusal
+	strictly(t, data, &under)
+	if status != http.StatusConflict || under.Error.Code != crew.CodeDecisionAnswered || under.Error.Message != decideWords(crew.CodeDecisionAnswered, both) || under.Receipt != nil {
+		t.Fatalf("ana's send under bob's id: %d %s", status, data)
+	}
+	if got := len(f.record(t, both).Responses); got != rows {
+		t.Fatalf("%s's responses: %d, were %d", both, got, rows)
+	}
 }
 
 // The response id a decision router's answer is kept under is refused to
@@ -930,7 +998,7 @@ func TestDecideRefusalsNameNobody(t *testing.T) {
 		return <-done
 	}
 	decisionAnswered := between(answered, func() {
-		f.callAs(t, passBob, http.MethodPost, "/api/decisions/"+answered+"/respond", map[string]any{"responseId": "b1", "choice": 0, "expectedRev": 2, "byName": "Robert Marker"})
+		f.respond(t, passBob, answered, "b1", 0, 2, http.StatusCreated, "")
 	})
 	notApprover := between(taken, func() { f.takeBack(t, taken) })
 	_, staleDecision, _ := f.respondAs(t, passAna, stale, "a2", 0, 1)
@@ -941,7 +1009,7 @@ func TestDecideRefusalsNameNobody(t *testing.T) {
 		if r.Error.Code != code || r.Error.Message != decideWords(code, of[code]) || len(r.Error.Message) > proto.MaxDecideRefusalWords || r.Receipt == nil || r.Receipt.Code != code || r.Receipt.Status != "refused" {
 			t.Errorf("%s: %s", code, data)
 		}
-		for _, m := range []string{"Robert", "Marker", "bob", "admin", "user:"} {
+		for _, m := range []string{"Bob", "bob", "admin", "user:"} {
 			if bytes.Contains(data, []byte(m)) {
 				t.Errorf("%s names %q: %s", code, m, data)
 			}
@@ -1089,7 +1157,7 @@ func TestAdmitsIsTheOneCheck(t *testing.T) {
 		principals[pass] = f.srv.tokenPrincipal(&http.Request{Header: http.Header{}, URL: &url.URL{}}, pass)
 	}
 	principals["workbench"] = f.srv.tokenPrincipal(&http.Request{Header: http.Header{}, URL: &url.URL{}}, adminToken)
-	principals["a router"] = principal{}
+	principals["no credential"] = principal{}
 	_, list := f.list(t, passAna)
 	for name, p := range principals {
 		for _, r := range rows {
@@ -1111,13 +1179,27 @@ func TestAdmitsIsTheOneCheck(t *testing.T) {
 			}
 		}
 	}
-	// The respond route's check and the transaction's: an admitted open
-	// row is answered, every other refused (404 before, or the
-	// transaction's code).
-	for _, r := range rows[:2] {
-		status, data, _ := f.respondAs(t, passAna, r.did, "z-"+r.did, 0, f.rev(t, r.did))
-		if (status == http.StatusCreated) != r.given || !r.given && status != http.StatusNotFound {
-			t.Errorf("ana's answer to %s (given %v): %d %s", r.did, r.given, status, data)
+	// A decision router reaches no route (no credential is a router's): its
+	// admission is AdmitNone on every row. internal/crew's TestAdmission
+	// holds a router's rows whole.
+	for _, r := range rows {
+		if a := crew.AdmissionOf(f.record(t, r.did), crew.Admittee{Via: crew.ViaRouter}); a != crew.AdmitNone {
+			t.Errorf("a router's admission to %s: %d", r.did, a)
+		}
+	}
+	// The respond route's check and the transaction's, for each decide
+	// principal on every row, judged at once before its send: AdmitNone is
+	// 404, AdmitOutcome the route's 409 with nothing written, AdmitOpen
+	// taken (and the next principal then reads its outcome).
+	want := map[crew.Admission]int{crew.AdmitNone: http.StatusNotFound, crew.AdmitOutcome: http.StatusConflict, crew.AdmitOpen: http.StatusCreated}
+	for i, pass := range []string{passAna, passHostAna} {
+		for _, r := range rows {
+			rec := f.record(t, r.did)
+			a := decideAdmission(rec, principals[pass])
+			status, data, _ := f.respondAs(t, pass, r.did, fmt.Sprintf("z%d-%s", i, r.did), 0, rec.Rev)
+			if status != want[a] || a != crew.AdmitOpen && len(f.record(t, r.did).Responses) != len(rec.Responses) {
+				t.Errorf("%.12s answers %s, admission %d: %d %s", pass, r.did, a, status, data)
+			}
 		}
 	}
 	// The recheck's verdict is Admits over the entries the response was
@@ -1360,20 +1442,21 @@ func TestDecideListRefusesOthers(t *testing.T) {
 	}
 }
 
-// Each decide reply is written whole within its bound and refused past
-// it, never cut; a response's body is taken at its bound and refused one
+// Each decide reply is written whole within its bound, its newline
+// counted, and refused one byte past it, never cut; a response's body is taken at its bound and refused one
 // past it in the server's words; a pass is read from the header alone,
 // never from a query.
 func TestDecideBoundsAtTheRoutes(t *testing.T) {
 	srv := &Server{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	entry := proto.DecideEntry{ID: "dr-1", Rev: 1}
 	one, _ := json.Marshal(proto.DecideList{Decisions: []proto.DecideEntry{entry}})
+	whole := append(one, '\n')
 	for _, tc := range []struct {
 		max, status int
-	}{{len(one), http.StatusOK}, {len(one) - 1, http.StatusInternalServerError}} {
+	}{{len(whole), http.StatusOK}, {len(whole) - 1, http.StatusInternalServerError}} {
 		rec := httptest.NewRecorder()
 		srv.writeBounded(rec, http.StatusOK, proto.DecideList{Decisions: []proto.DecideEntry{entry}}, tc.max)
-		if rec.Code != tc.status || tc.status == http.StatusOK && !bytes.Equal(bytes.TrimSpace(rec.Body.Bytes()), one) || tc.status != http.StatusOK && bytes.Contains(rec.Body.Bytes(), []byte("dr-1")) {
+		if rec.Code != tc.status || tc.status == http.StatusOK && (rec.Body.Len() != tc.max || !bytes.Equal(rec.Body.Bytes(), whole)) || tc.status != http.StatusOK && bytes.Contains(rec.Body.Bytes(), []byte("dr-1")) {
 			t.Errorf("at %d bytes: %d %s", tc.max, rec.Code, rec.Body.Bytes())
 		}
 	}
@@ -1396,5 +1479,194 @@ func TestDecideBoundsAtTheRoutes(t *testing.T) {
 	}
 	if status, data, out := f.callAs(t, passAna, http.MethodGet, "/api/me/decisions?after=dr-1", nil); status != http.StatusBadRequest || apiMessage(out) != "this route takes no query" {
 		t.Fatalf("a query: %d %s", status, data)
+	}
+}
+
+// A holder's response carries five members alone (responseId, choice,
+// text, rationale, expectedRev): a body with any other, a name among them
+// in any spelling the decoder takes, is 400 invalid in the server's words,
+// nothing written, the same whether the decision is given to the grant or
+// not. Its answer is shown under the name its sign-in carries (the fake
+// provider's "Ana"): in the operator's read and the receipt's words, the
+// line the asking session is given and what a later responder is told.
+// The same body again is a repeat, answered from its receipt.
+func TestDecideAnswerIsShownUnderItsSignIn(t *testing.T) {
+	f := newDecideFixture(t, nil)
+	did, other := f.open(t, "r1"), f.open(t, "r2")
+	f.give(t, did)
+	rev := f.rev(t, did)
+	for _, extra := range []string{
+		`"byName":"the operator"`, `"ByName":"the operator"`, `"BYNAME":"the operator"`,
+		`"byName":"Bob","byName":"the operator"`, `"` + `\` + `u0062yName":"the operator"`,
+		`"actor":"user:nate"`, `"for":"zelda"`,
+	} {
+		body := []byte(fmt.Sprintf(`{"responseId":"a1","choice":0,"expectedRev":%d,%s}`, rev, extra))
+		var given []byte
+		for _, d := range []string{did, other} {
+			status, data, out := f.callAs(t, passAna, http.MethodPost, "/api/decisions/"+d+"/respond", body)
+			if status != http.StatusBadRequest || codeOf(out) != crew.CodeInvalid || apiMessage(out) != "the body is not a response" || given != nil && !bytes.Equal(data, given) {
+				t.Errorf("%s to %s: %d %s", extra, d, status, data)
+			}
+			given = data
+		}
+	}
+	for _, d := range []string{did, other} {
+		if n := len(f.record(t, d).Responses); n != 0 {
+			t.Errorf("%s holds %d responses after the refused bodies", d, n)
+		}
+	}
+	status, sent, _ := f.respondAs(t, passAna, did, "a2", 0, rev)
+	if status != http.StatusCreated {
+		t.Errorf("the answer: %d %s", status, sent)
+	}
+	f.decisionWhen(t, did, "applied", inState(ledger.DecisionApplied))
+	_, data, _ := f.callAs(t, adminToken, http.MethodGet, "/api/decisions/"+did, nil)
+	var read struct {
+		Decision crew.Decision `json:"decision"`
+	}
+	if err := json.Unmarshal(data, &read); err != nil {
+		t.Fatal(err)
+	}
+	for _, rc := range read.Decision.Responses {
+		if rc.Status == "accepted" && (rc.ByName != "Ana" || rc.Actor != "user:ana" || rc.Words != "Recorded: "+did+" answered by Ana") {
+			t.Errorf("the operator reads the answer by %q (%s): %q", rc.ByName, rc.Actor, rc.Words)
+		}
+	}
+	d, _ := f.srv.registry.Get(f.sid)
+	var line string
+	waitUntil(t, "the answer's line in the asking session", func() bool {
+		for _, en := range d.(*session.Local).Activity() {
+			if strings.HasPrefix(en.Message, "Decision "+did+" ") {
+				line = en.Message
+				return true
+			}
+		}
+		return false
+	})
+	if !strings.Contains(line, " answered by Ana: ") {
+		t.Errorf("the asking session is given %q", line)
+	}
+	_, later, out := f.callAs(t, adminToken, http.MethodPost, "/api/decisions/"+did+"/respond", map[string]any{"responseId": "op1", "choice": 1, "expectedRev": f.rev(t, did)})
+	if codeOf(out) != crew.CodeDecisionAnswered || !strings.HasPrefix(apiMessage(out), did+" was answered by Ana at ") {
+		t.Errorf("a later responder is told: %s", later)
+	}
+	status, again, _ := f.respondAs(t, passAna, did, "a2", 0, rev)
+	var r1, r2 proto.DecideReply
+	_ = json.Unmarshal(sent, &r1)
+	_ = json.Unmarshal(again, &r2)
+	if status != http.StatusOK || r2.Receipt.K != r1.Receipt.K || r2.Receipt.Status != "accepted" {
+		t.Errorf("the same body again: %d %s, first %s", status, again, sent)
+	}
+}
+
+// One answer for every decision a holder is not admitted to: on the read
+// and on the respond route, a decision never given to the grant, one given
+// and taken back, one answered by another holder, one answered by the
+// operator, one that does not exist, ids out of form and ids of other
+// kinds of record are answered one status, one body and the same headers.
+func TestDecideNotFoundIsOneAnswer(t *testing.T) {
+	f := newDecideFixture(t, nil)
+	notGiven, taken, byBob, byOperator := f.open(t, "r1"), f.open(t, "r2"), f.open(t, "r3"), f.open(t, "r4")
+	f.give(t, taken)
+	f.takeBack(t, taken)
+	for _, did := range []string{byBob, byOperator} {
+		f.give(t, did)
+	}
+	f.respond(t, passBob, byBob, "b1", 0, f.rev(t, byBob), http.StatusCreated, "")
+	f.respond(t, adminToken, byOperator, "o1", 0, f.rev(t, byOperator), http.StatusCreated, "")
+	call := func(method, path string, body []byte) string {
+		t.Helper()
+		var rd io.Reader
+		if body != nil {
+			rd = bytes.NewReader(body)
+		}
+		req, err := http.NewRequest(method, f.http.URL+path, rd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+passAna)
+		resp, err := f.client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(resp.Body)
+		h := resp.Header.Clone()
+		h.Del("Date")
+		hb, _ := json.Marshal(h)
+		return fmt.Sprintf("%d %s %s", resp.StatusCode, hb, data)
+	}
+	cases := []string{notGiven, taken, byBob, byOperator, "dr-999999", "dr-0", "dr-01", "dr-1x", "dr-" + strings.Repeat("9", 25), "zz-1", "pl-1", "CND-1", f.run, f.sid}
+	for _, route := range []string{"read", "respond"} {
+		var first string
+		for _, id := range cases {
+			got := ""
+			if route == "read" {
+				got = call(http.MethodGet, "/api/decisions/"+id, nil)
+			} else {
+				got = call(http.MethodPost, "/api/decisions/"+id+"/respond", []byte(`{"responseId":"a9","choice":0,"expectedRev":5}`))
+			}
+			if first == "" {
+				first = got
+				if !strings.HasPrefix(got, "404 ") || !strings.Contains(got, `"no such decision"`) {
+					t.Fatalf("%s %s: %s", route, id, got)
+				}
+			} else if got != first {
+				t.Errorf("%s %s: %s, the first %s", route, id, got, first)
+			}
+		}
+	}
+}
+
+// The four routes take decidePerMinute requests of one subject a minute,
+// whichever of its passes sends them: the last taken, the next refused 429
+// in the server's words on each route, nothing read or written; another
+// subject's taken meanwhile; the admin's never under the bound; a minute
+// later on the tests' clock the subject's next taken again.
+func TestDecideRequestsAreBoundPerSubject(t *testing.T) {
+	f := newDecideFixture(t, nil)
+	did := f.open(t, "r1")
+	f.give(t, did)
+	var clock atomic.Int64
+	clock.Store(time.Now().UnixNano())
+	rl := f.srv.decideLimiter
+	rl.mu.Lock()
+	rl.now = func() time.Time { return time.Unix(0, clock.Load()) }
+	rl.mu.Unlock()
+	type route struct {
+		method, path string
+		body         any
+	}
+	reads := []route{{http.MethodGet, "/api/me", nil}, {http.MethodGet, "/api/me/decisions", nil}, {http.MethodGet, "/api/decisions/" + did, nil}}
+	for i := range decidePerMinute {
+		r, pass := reads[i%len(reads)], []string{passAna, passHostAna}[i%2]
+		if status, data, _ := f.callAs(t, pass, r.method, r.path, r.body); status != http.StatusOK {
+			t.Fatalf("request %d, %s: %d %s", i+1, r.path, status, data)
+		}
+	}
+	all := slices.Concat(reads, []route{{http.MethodPost, "/api/decisions/" + did + "/respond", map[string]any{"responseId": "a1", "choice": 0, "expectedRev": 2}}})
+	for _, r := range all {
+		for _, pass := range []string{passAna, passHostAna} {
+			status, data, out := f.callAs(t, pass, r.method, r.path, r.body)
+			if status != http.StatusTooManyRequests || codeOf(out) != "rate_limited" || apiMessage(out) != "too many requests of yours: ask again in a minute" || bytes.Contains(data, []byte(did)) {
+				t.Errorf("past the bound, %s: %d %s", r.path, status, data)
+			}
+		}
+	}
+	if n := len(f.record(t, did).Responses); n != 0 {
+		t.Fatalf("a refused send wrote %d responses", n)
+	}
+	f.list(t, passBob)
+	f.view(t, passBob, did)
+	for i := range decidePerMinute + 1 {
+		tok := []string{passAdmin, passAdminDecide}[i%2]
+		if status, data, _ := f.callAs(t, tok, http.MethodGet, []string{"/api/me", "/api/decisions/" + did}[i%2], nil); status != http.StatusOK {
+			t.Fatalf("the admin's request %d: %d %.200s", i+1, status, data)
+		}
+	}
+	clock.Add(int64(time.Minute))
+	f.list(t, passAna)
+	if status, data, _ := f.respondAs(t, passHostAna, did, "a1", 0, 2); status != http.StatusCreated {
+		t.Fatalf("a minute later: %d %s", status, data)
 	}
 }
