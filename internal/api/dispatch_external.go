@@ -49,9 +49,10 @@ const (
 	// the ticket's write, the images (their downloads and their commits).
 	ImportTimeout = trackerBusyWait + trackerReadsBudget + dispatchWriteTimeout + trackerImagesBudget
 	// MergedCloseTimeout bounds a ticket's edit to done when its project
-	// requires merged: the links' locks, their reads at most
-	// maxCloseReads at once, the edit.
-	MergedCloseTimeout = trackerBusyWait + mergedReadsBudget + dispatchWriteTimeout
+	// requires merged: the links' locks and their reads, at most
+	// maxCloseReads at once, in one phase; the reads' records, each
+	// within a write's cap of its own; the edit.
+	MergedCloseTimeout = trackerBusyWait + mergedReadsBudget + dispatchWriteTimeout + dispatchWriteTimeout
 
 	// trackerBusyWait bounds a wait for a ticket's or a link's lock (the
 	// plan's trackerLockWait, a name trackers.go's file lock holds).
@@ -266,18 +267,43 @@ func etag(v string) string {
 
 // externalOf is a read as the store's operations take it: the snapshot
 // with the body's images as the manifest's ids and its steps to reproduce,
-// the body, the validators. The store cleans, cuts and digests it.
+// the body, the validators. Every text GitHub wrote is made storable here
+// (dispatch.Storable: the title, the labels, the assignees, the author,
+// the milestone and the base branch as one line each, the body as lines);
+// the rest is of a fixed form the adapter made (the place, the ids, the
+// state, the times, the commits) or the store admits (the page, the
+// images' ids). The store cuts and digests it.
 func externalOf(it tracker.Item) dispatch.ExternalRead {
-	repro, _ := tracker.Repro(it.Body)
+	line := func(s string, n int) string { return dispatch.Storable(s, n, false) }
+	lines := func(l []string, n int) []string {
+		out := make([]string, 0, len(l))
+		for _, s := range l {
+			out = append(out, line(s, n))
+		}
+		return out
+	}
+	body := dispatch.Storable(it.Body, tracker.MaxBody, true)
+	repro, _ := tracker.Repro(body)
 	sn := dispatch.ExternalSnapshot{V: dispatch.SnapshotVersion, System: it.Ref.System, Host: it.Ref.Host, Space: it.Ref.Space, Kind: it.Ref.Kind, ID: it.Ref.ID,
-		NodeID: it.NodeID, DatabaseID: string(it.DatabaseID), URL: it.URL, Title: it.Title, BodyTruncated: it.BodyTruncated, State: it.State,
-		StateReason: it.StateReason, Merged: it.Merged, MergedAt: it.MergedAt, MergeSha: it.MergeSHA, HeadSha: it.HeadSHA, BaseRef: it.BaseRef,
-		Labels: it.Labels, LabelsTotal: len(it.Labels), Assignees: it.Assignees, Milestone: it.Milestone, Author: it.Author, AuthorID: string(it.AuthorID),
-		CreatedAt: it.CreatedAt, UpdatedAt: it.UpdatedAt, ClosedAt: it.ClosedAt, Repro: repro}
+		NodeID: it.NodeID, DatabaseID: string(it.DatabaseID), URL: it.URL, Title: line(it.Title, dispatch.MaxSnapshotTitle), BodyTruncated: it.BodyTruncated,
+		State: it.State, StateReason: it.StateReason, Merged: it.Merged, MergedAt: it.MergedAt, MergeSha: it.MergeSHA, HeadSha: it.HeadSHA,
+		BaseRef: line(it.BaseRef, dispatch.MaxSnapshotName), Labels: lines(it.Labels, dispatch.MaxSnapshotLabel), LabelsTotal: max(it.LabelsTotal, len(it.Labels)),
+		Assignees: lines(it.Assignees, dispatch.MaxSnapshotLogin), Milestone: line(it.Milestone, dispatch.MaxSnapshotName), Author: line(it.Author, dispatch.MaxSnapshotLogin),
+		AuthorID: string(it.AuthorID), CreatedAt: it.CreatedAt, UpdatedAt: it.UpdatedAt, ClosedAt: it.ClosedAt, Repro: repro}
 	for _, im := range it.Images {
 		sn.Images = append(sn.Images, dispatch.SnapshotImage{ID: im.ID})
 	}
-	return dispatch.ExternalRead{Snapshot: sn, Body: it.Body, IssueETag: etag(it.Validators.Issue), PullETag: etag(it.Validators.Pull)}
+	return dispatch.ExternalRead{Snapshot: sn, Body: body, IssueETag: etag(it.Validators.Issue), PullETag: etag(it.Validators.Pull)}
+}
+
+// checkWord is a check's status or conclusion as a read keeps it: the
+// system's word (lower-case letters and '_', at most 40), "" for none, and
+// "other" for anything else, which the store counts as other.
+func checkWord(s string) string {
+	if s == "" || len(s) <= 40 && strings.Trim(s, "abcdefghijklmnopqrstuvwxyz_") == "" {
+		return s
+	}
+	return "other"
 }
 
 // trackerAnswer is a GitHub path's failure as its answer, in fixed words
@@ -436,12 +462,13 @@ func (s *Server) replayed(ctx context.Context, w http.ResponseWriter, ds *dispat
 	return false
 }
 
-// externalPreview is what an import of an item would make: the title and
-// the description as the store would make them (the description's first
-// maxPreviewDescription bytes and its length), the images by id, the
-// steps to reproduce, GitHub's state, labels and assignees (shown, never
-// mapped), the owners an import gives (the item's system for both), and
-// the live ticket that has it as its linked issue already, if any.
+// externalPreview is what an import of an item would make, from the
+// import's own projection (dispatch.Projection): the title and the
+// description (the description's first maxPreviewDescription bytes and
+// its length), the manifest's images by id, the steps to reproduce,
+// GitHub's state, labels and assignees as the snapshot keeps them (shown,
+// never mapped), the owners an import gives (the item's system for both),
+// and the live ticket that has it as its linked issue already, if any.
 type externalPreview struct {
 	Ref               tracker.Ref     `json:"ref"`
 	URL               string          `json:"url"`
@@ -496,25 +523,21 @@ func (s *Server) handleDispatchExternalPreview(w http.ResponseWriter, r *http.Re
 		s.trackerFail(w, r, ref, err)
 		return
 	}
-	read := externalOf(it)
-	title, description, _ := dispatch.FromExternal(it.Title, it.Body)
-	p := externalPreview{Ref: it.Ref, URL: it.URL, Title: title, DescriptionLength: len(description), Repro: read.Snapshot.Repro, State: it.State,
-		StateReason: it.StateReason, Labels: append([]string{}, it.Labels...), Assignees: append([]string{}, it.Assignees...),
-		Owners: dispatch.Owners{Title: it.Ref.System, Description: it.Ref.System}, Images: []string{}}
+	// What the import keeps, made by the import's own projection.
+	sn, title, description, err := dispatch.Projection(externalOf(it))
+	if err != nil {
+		s.refusal(w, err)
+		return
+	}
+	p := externalPreview{Ref: it.Ref, URL: sn.URL, Title: title, DescriptionLength: len(description), Repro: sn.Repro, State: sn.State,
+		StateReason: sn.StateReason, Labels: sn.Labels, Assignees: sn.Assignees, Owners: dispatch.Owners{Title: it.Ref.System, Description: it.Ref.System}, Images: []string{}}
 	p.Description, _ = tracker.CutBytes(description, maxPreviewDescription)
-	for _, im := range read.Snapshot.Images {
+	for _, im := range sn.Images {
 		p.Images = append(p.Images, im.ID)
 	}
-	// The live ticket whose linked issue it is: among the first tickets
-	// the URL finds (its linked issue's page, or one of its links').
-	if page, err := ds.List(ctx, dispatch.Query{External: it.URL}); err == nil {
-		for _, t := range page.Tickets[:min(len(page.Tickets), 8)] {
-			if tv, err := ds.Ticket(ctx, t.Key); err == nil && tv.DeletedAt.IsZero() && tv.ExternalURL == it.URL {
-				p.Linked = t.Key
-				break
-			}
-		}
-	}
+	// The live ticket whose linked issue it is, looked up by the item's
+	// identity as the store holds one item to one ticket.
+	p.Linked, _ = ds.LinkedTicket(ctx, sn.System, sn.Host, sn.NodeID)
 	s.trackerLog(r, ref, http.StatusOK)
 	writeDispatch(w, http.StatusOK, map[string]any{"preview": p})
 }
@@ -1046,6 +1069,15 @@ func (s *Server) readableLink(ctx context.Context, w http.ResponseWriter, ds *di
 // and returned. Every request is made through atGitHub, within ctx; once
 // the server begins to stop, none is made and nothing is recorded.
 func (s *Server) readLink(ctx context.Context, ds *dispatch.Store, linkID string, ref tracker.Ref, withChecks bool) error {
+	rctx, rcancel := context.WithTimeout(ctx, s.trackerCaps().reads)
+	defer rcancel()
+	return s.readLinkIn(rctx, ctx, ds, linkID, ref, withChecks)
+}
+
+// readLinkIn is readLink with its reads made within rctx and its record
+// within a write's cap of its own taken from ctx, so a read that used all
+// of its time leaves the record its own.
+func (s *Server) readLinkIn(rctx, ctx context.Context, ds *dispatch.Store, linkID string, ref tracker.Ref, withChecks bool) error {
 	caps := s.trackerCaps()
 	stop := s.external.stopping()
 	if stop.Err() != nil {
@@ -1058,7 +1090,6 @@ func (s *Server) readLink(ctx context.Context, ds *dispatch.Store, linkID string
 	var it tracker.Item
 	var set tracker.CheckSet
 	var checksErr error
-	rctx, rcancel := context.WithTimeout(ctx, caps.reads)
 	err = s.atGitHub(rctx, ref, func(ad tracker.Adapter, c tracker.Credential) error {
 		var e error
 		if it, _, e = ad.Read(rctx, c, ref, tracker.Validators{NodeID: prior.NodeID}); e != nil {
@@ -1069,7 +1100,6 @@ func (s *Server) readLink(ctx context.Context, ds *dispatch.Store, linkID string
 		}
 		return nil
 	})
-	rcancel()
 	wctx, wcancel := context.WithTimeout(ctx, caps.write)
 	defer wcancel()
 	var ae *apiError
@@ -1095,11 +1125,19 @@ func (s *Server) readLink(ctx context.Context, ds *dispatch.Store, linkID string
 	case checksErr != nil:
 		lr.Incomplete = &dispatch.ChecksIncomplete{Words: []string{"the checks could not be read: " + trackerAnswer(checksErr, ref).Code}}
 	default:
+		// Every text GitHub wrote made storable (dispatch.Storable), each
+		// state one of the system's words (checkWord).
 		for _, c := range set.Checks {
-			lr.Checks = append(lr.Checks, dispatch.LinkCheck{ID: c.ID, Name: c.Name, Status: c.Status, Conclusion: c.Conclusion, URL: c.URL, App: c.App, HasLog: c.HasLog, CompletedAt: c.CompletedAt})
+			lr.Checks = append(lr.Checks, dispatch.LinkCheck{ID: c.ID, Name: dispatch.Storable(c.Name, dispatch.MaxCheckName, false), Status: checkWord(c.Status),
+				Conclusion: checkWord(c.Conclusion), URL: c.URL, App: dispatch.Storable(c.App, dispatch.MaxCheckName, false), HasLog: c.HasLog, CompletedAt: c.CompletedAt})
 		}
 		if len(set.Incomplete) > 0 {
-			lr.Incomplete = &dispatch.ChecksIncomplete{Words: set.Incomplete, Omitted: set.Omitted}
+			lr.Incomplete = &dispatch.ChecksIncomplete{Omitted: set.Omitted}
+			for _, w := range set.Incomplete {
+				if w = dispatch.Storable(w, dispatch.MaxIncompleteWord, false); w != "" {
+					lr.Incomplete.Words = append(lr.Incomplete.Words, w)
+				}
+			}
 		}
 	}
 	return ds.RecordRead(wctx, linkID, lr)
@@ -1225,18 +1263,24 @@ func (s *Server) readAddedLink(ds *dispatch.Store, key string, l dispatch.NewLin
 
 // readForClose reads, before a ticket's edit to done whose project's
 // policy requires merged, every live delivery link to a GitHub item (at
-// most maxCloseReads at once, each under its link's lock, within the
-// merged reads' budget), recording each, so the edit's transaction judges
-// a read made now (dispatch.MaxMergedReadAge). A read that fails leaves
-// the link's last read and its words: the close is then the policy's to
+// most maxCloseReads at once, each under its link's lock, the waits and
+// the reads within one phase, each read within the merged reads' cap),
+// recording each within a write's cap of its own, so the edit's
+// transaction judges a read made now (dispatch.MaxMergedReadAge). A read
+// that fails is recorded as the read's words, and the link then does not
+// count for merged until a read succeeds: the close is the policy's to
 // refuse. It never refuses the edit itself.
 func (s *Server) readForClose(r *http.Request, ds *dispatch.Store, key string, e dispatch.TicketEdit) {
 	if e.Set.Status == nil || *e.Set.Status != dispatch.TicketDone {
 		return
 	}
 	caps := s.trackerCaps()
-	ctx, cancel := s.trackerContext(r, caps.busy+caps.merged)
+	ctx, cancel := s.trackerContext(r, caps.busy+caps.merged+caps.write)
 	defer cancel()
+	// The locks' waits and the reads in one phase, each read within the
+	// merged reads' cap; each record within a write's cap of its own after.
+	pctx, pcancel := context.WithTimeout(ctx, caps.busy+caps.merged)
+	defer pcancel()
 	project, _, _ := dispatch.ParseKey(key)
 	pv, err := ds.Project(ctx, project)
 	if err != nil || !slices.Contains(pv.Project.CloseRequires, dispatch.RequireMerged) {
@@ -1257,12 +1301,18 @@ func (s *Server) readForClose(r *http.Request, ds *dispatch.Store, key string, e
 			continue
 		}
 		wg.Go(func() {
-			at <- struct{}{}
+			select {
+			case at <- struct{}{}:
+			case <-pctx.Done():
+				return
+			}
 			defer func() { <-at }()
-			if release, ok := s.external.lock(ctx, "link:"+l.ID, caps.busy); ok {
-				if err := s.readLink(ctx, ds, l.ID, ref, false); err != nil {
+			if release, ok := s.external.lock(pctx, "link:"+l.ID, caps.busy); ok {
+				rctx, rcancel := context.WithTimeout(pctx, caps.merged)
+				if err := s.readLinkIn(rctx, ctx, ds, l.ID, ref, false); err != nil {
 					s.log.Info("tracker read", "route", r.Pattern, "ref", ref.Key(), "status", trackerAnswer(err, ref).status)
 				}
+				rcancel()
 				release()
 			}
 		})

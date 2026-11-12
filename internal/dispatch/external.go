@@ -644,6 +644,27 @@ const (
 	IntentImportImage    = "ticket.import_image"
 )
 
+// Projection is what an import of read keeps (normalSnapshot): the
+// snapshot, its manifest among it, and the ticket's title and
+// description. A preview shows it.
+func Projection(read ExternalRead) (ExternalSnapshot, string, string, error) {
+	return normalSnapshot(read)
+}
+
+// LinkedTicket is the key of the live ticket whose linked issue is the
+// item system, host and nodeID name, looked up as linkedTo refuses a
+// second one; "" for none.
+func (s *Store) LinkedTicket(ctx context.Context, system, host, nodeID string) (key string, err error) {
+	err = s.read(ctx, func(q queryer) error {
+		err := q.QueryRowContext(ctx, "SELECT key FROM tickets WHERE external_id = ? AND deleted_at = '' ORDER BY number LIMIT 1", ExternalIdentity(system, host, nodeID)).Scan(&key)
+		if isNoRows(err) {
+			return nil
+		}
+		return err
+	})
+	return key, err
+}
+
 // linkedTo refuses an item another live ticket than except has as its
 // linked issue (external_linked, the receipt's Key naming it).
 func (t *tx) linkedTo(identity, except string) error {

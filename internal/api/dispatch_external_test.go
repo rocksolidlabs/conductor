@@ -17,6 +17,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
@@ -48,15 +49,64 @@ type ghItem struct {
 	Pull, Merged                     bool
 	Images                           []string // the body's images, by path on imageHost
 	Fail                             int
-	Huge                             bool // an answer past the adapter's bound
+	Huge                             bool     // an answer past the adapter's bound
+	Labels                           []string // the labels, ["bug"] when nil
 }
 
-// ghItems scripts the fake's items and images.
+// ghItems scripts the fake's items and images. With poison set, every
+// text of its answers (each string but those of a fixed form, formKeys)
+// gets poisonText after it, and the checks a check run and the item a
+// milestone, so every string a read takes is in it.
 type ghItems struct {
 	f      *fakeGH
 	mu     sync.Mutex
 	items  map[int]*ghItem
 	images map[string][]byte
+	poison bool
+}
+
+// poisonText is a control sequence, the characters that reorder a line,
+// and a value past every one-line bound.
+var poisonText = "\x1b[2J\x07‮⁦" + strings.Repeat("z", 2100)
+
+// formKeys are the fields of the fake's answers in a fixed form the
+// adapter parses (an id, an address, a time, a commit), not text.
+var formKeys = map[string]bool{"node_id": true, "html_url": true, "url": true, "target_url": true, "details_url": true, "created_at": true, "updated_at": true,
+	"closed_at": true, "merged_at": true, "completed_at": true, "started_at": true, "sha": true, "merge_commit_sha": true, "head_sha": true}
+
+// poisoned is v with poisonText after each of its texts (poison).
+func poisoned(v any, key string) any {
+	switch x := v.(type) {
+	case map[string]any:
+		out := map[string]any{}
+		for k, e := range x {
+			out[k] = poisoned(e, k)
+		}
+		return out
+	case []any:
+		out := []any{}
+		for _, e := range x {
+			out = append(out, poisoned(e, key))
+		}
+		return out
+	case string:
+		if !formKeys[key] {
+			return x + poisonText
+		}
+	}
+	return v
+}
+
+// answer writes v as JSON, poisoned when the fake is.
+func (g *ghItems) answer(w http.ResponseWriter, v map[string]any) {
+	g.mu.Lock()
+	p := g.poison
+	g.mu.Unlock()
+	if p {
+		v = poisoned(v, "").(map[string]any)
+	}
+	b, _ := json.Marshal(v)
+	_, _ = w.Write(b)
 }
 
 func newGHItems(f *fakeGH) *ghItems {
@@ -77,10 +127,27 @@ func (g *ghItems) set(n int, it ghItem) {
 	num := strconv.Itoa(n)
 	g.f.Handle("GET", "api.github.com", itemsRepo+"/issues/"+num, func(w http.ResponseWriter, r *http.Request) { g.serve(w, r, n, false) })
 	g.f.Handle("GET", "api.github.com", itemsRepo+"/pulls/"+num, func(w http.ResponseWriter, r *http.Request) { g.serve(w, r, n, true) })
-	g.f.Reply("GET", "api.github.com", itemsRepo+"/commits/"+headSHA+"/status", http.StatusOK, map[string]any{"state": "success", "total_count": 1,
-		"statuses": []any{map[string]any{"id": 31, "context": "lint", "state": "success", "target_url": "https://ci.example.com/31", "created_at": itemsLayout, "updated_at": "2026-11-01T10:00:00Z"}}})
-	g.f.Reply("GET", "api.github.com", itemsRepo+"/actions/runs", http.StatusOK, map[string]any{"total_count": 0, "workflow_runs": []any{}})
-	g.f.Reply("GET", "api.github.com", itemsRepo+"/commits/"+headSHA+"/check-runs", http.StatusOK, map[string]any{"total_count": 0, "check_runs": []any{}})
+	g.f.Handle("GET", "api.github.com", itemsRepo+"/commits/"+headSHA+"/status", func(w http.ResponseWriter, r *http.Request) {
+		g.answer(w, map[string]any{"state": "success", "total_count": 1, "statuses": []any{map[string]any{"id": 31, "context": "lint", "state": "success",
+			"target_url": "https://ci.example.com/31", "created_at": itemsLayout, "updated_at": "2026-11-01T10:00:00Z"}}})
+	})
+	g.f.Handle("GET", "api.github.com", itemsRepo+"/actions/runs", func(w http.ResponseWriter, r *http.Request) {
+		g.answer(w, map[string]any{"total_count": 0, "workflow_runs": []any{}})
+	})
+	g.f.Handle("GET", "api.github.com", itemsRepo+"/commits/"+headSHA+"/check-runs", func(w http.ResponseWriter, r *http.Request) {
+		runs := []any{}
+		if g.poisonOn() {
+			runs = append(runs, map[string]any{"id": 41, "name": "build", "status": "completed", "conclusion": "success", "head_sha": headSHA,
+				"html_url": "https://ci.example.com/41", "started_at": itemsLayout, "completed_at": itemsLayout, "app": map[string]any{"slug": "ci-app"}})
+		}
+		g.answer(w, map[string]any{"total_count": len(runs), "check_runs": runs})
+	})
+}
+
+func (g *ghItems) poisonOn() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.poison
 }
 
 // edit changes item n on the fake.
@@ -151,10 +218,20 @@ func (g *ghItems) serve(w http.ResponseWriter, r *http.Request, n int, pull bool
 		for _, p := range it.Images {
 			fmt.Fprintf(&html, `<p><img src="https://%s%s?jwt=%s" alt="shot"></p>`, imageHost, p, plantedJWT)
 		}
+		labels := []any{map[string]any{"name": "bug"}}
+		if it.Labels != nil {
+			labels = []any{}
+			for _, l := range it.Labels {
+				labels = append(labels, map[string]any{"name": l})
+			}
+		}
 		v = map[string]any{"id": 5000000 + n, "node_id": it.Node, "number": n, "html_url": "https://github.com/octo/app/" + kind + "/" + num, "title": it.Title,
-			"body": it.Body, "body_html": html.String(), "state": it.State, "state_reason": it.Reason, "labels": []any{map[string]any{"name": "bug"}},
+			"body": it.Body, "body_html": html.String(), "state": it.State, "state_reason": it.Reason, "labels": labels,
 			"assignees": []any{map[string]any{"login": "hubot"}}, "user": map[string]any{"login": "mona", "id": 9000001},
 			"created_at": itemsLayout, "updated_at": it.Updated.UTC().Format(time.RFC3339)}
+		if g.poisonOn() {
+			v["milestone"] = map[string]any{"title": "v1"}
+		}
 		if it.State == "" {
 			v["state"] = "open"
 		}
@@ -164,6 +241,9 @@ func (g *ghItems) serve(w http.ResponseWriter, r *http.Request, n int, pull bool
 		if it.Huge {
 			v["body_html"] = strings.Repeat("x", 1<<20)
 		}
+	}
+	if g.poisonOn() {
+		v = poisoned(v, "").(map[string]any)
 	}
 	b, _ := json.Marshal(v)
 	sum := sha256.Sum256(b)
@@ -802,8 +882,8 @@ func TestTrackerRouteDeadlines(t *testing.T) {
 	}{
 		{TrackerReadTimeout, c.busy + c.reads + c.write},
 		{ImportTimeout, c.busy + c.reads + c.write + c.images},
-		{MergedCloseTimeout, c.busy + c.merged + c.write},
-		{TrackerReadTimeout, 90 * time.Second}, {ImportTimeout, 150 * time.Second}, {MergedCloseTimeout, 75 * time.Second},
+		{MergedCloseTimeout, c.busy + c.merged + c.write + c.write},
+		{TrackerReadTimeout, 90 * time.Second}, {ImportTimeout, 150 * time.Second}, {MergedCloseTimeout, 105 * time.Second},
 	} {
 		if d.got != d.want {
 			t.Errorf("a deadline of %s, not %s", d.got, d.want)
@@ -1204,4 +1284,204 @@ func TestTrackerReadsEndWithServer(t *testing.T) {
 			t.Fatalf("the held route: %v, the pull request asked %d times", out, g.count("api.github.com", itemsRepo+"/pulls/94"))
 		}
 	})
+}
+
+// The close under merged counts a delivery's read only while it is the
+// link's latest: a link read merged, then read as another item (moved),
+// or not read for a rate limit, is refused at the close inside the five
+// minutes, naming the link, until a read succeeds again; the close's
+// read held to its cap at the fake still has its failure recorded, and
+// the close is answered from that record.
+func TestCloseMergedLatestRead(t *testing.T) {
+	e, g := externalEnv(t)
+	caps := trackerCaps{busy: time.Second, reads: testWait, images: testWait, merged: 300 * time.Millisecond, write: testWait}
+	e.srv.external.caps = &caps
+	e.newDispatchProject(t, "MLR", map[string]any{"closeRequires": []string{"merged"}})
+	merged := func(n int) (key, link string) {
+		t.Helper()
+		g.set(n, ghItem{Node: "PR_kwDOlatest" + strconv.Itoa(n), Title: "Merged", Pull: true, Merged: true, State: "closed", Updated: t0})
+		key = e.newDispatchTicket(t, "MLR", "Close it", nil)["key"].(string)
+		link = e.addPullLink(t, key, n)
+		if !waitFor(testWait, func() bool {
+			r, ok, _ := e.srv.dispatch.LinkReadOf(t.Context(), link)
+			return ok && r.Merged && r.Error == ""
+		}) {
+			t.Fatalf("%d was not read merged", n)
+		}
+		return key, link
+	}
+	closeIt := func(key string, status int) map[string]any {
+		t.Helper()
+		return e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/edit", map[string]any{"opId": opID(), "set": map[string]any{"status": "done"}}, status, "")
+	}
+	refused := func(what string, out map[string]any, n int) {
+		t.Helper()
+		if errorCode(out) != "close_policy" || !strings.Contains(apiMessage(out), "the last read of the delivery") || !strings.Contains(apiMessage(out), "pull/"+strconv.Itoa(n)) {
+			t.Fatalf("%s: %v", what, out)
+		}
+	}
+	key, link := merged(96)
+	g.edit(96, func(i *ghItem) { i.Node, i.Updated = "PR_kwDOanother96", t0.Add(time.Hour) })
+	e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links/"+link+"/read", map[string]any{}, http.StatusConflict, "moved")
+	refused("read as another item", closeIt(key, http.StatusConflict), 96)
+
+	key, link = merged(97)
+	g.edit(97, func(i *ghItem) { i.Fail = http.StatusTooManyRequests })
+	e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links/"+link+"/read", map[string]any{}, http.StatusTooManyRequests, "rate_limited")
+	refused("not read for a rate limit", closeIt(key, http.StatusConflict), 97)
+	g.edit(97, func(i *ghItem) { i.Fail = 0 })
+	if tk := entityOf(t, closeIt(key, http.StatusOK), "ticket"); tk["status"] != "done" {
+		t.Fatalf("read again: %v", tk)
+	}
+
+	key, link = merged(98)
+	gate := g.f.Hold("GET", "api.github.com", itemsRepo+"/issues/98")
+	defer gate.Open()
+	refused("the close's read held to its cap", closeIt(key, http.StatusConflict), 98)
+	if r, _, err := e.srv.dispatch.LinkReadOf(t.Context(), link); err != nil || r.Error == "" {
+		t.Fatalf("the held read's failure was not recorded: %+v %v", r, err)
+	}
+}
+
+// keptBounds is the bound of each kind of text a ticket's GitHub item
+// keeps, by its field's name in the answers.
+var keptBounds = map[string]int{"title": dispatch.MaxSnapshotTitle, "labels": dispatch.MaxSnapshotLabel, "assignees": dispatch.MaxSnapshotLogin,
+	"author": dispatch.MaxSnapshotLogin, "milestone": dispatch.MaxSnapshotName, "baseRef": dispatch.MaxSnapshotName, "name": dispatch.MaxCheckName,
+	"app": dispatch.MaxCheckName, "status": 40, "conclusion": 40, "words": dispatch.MaxIncompleteWord}
+
+// keptTexts checks every text of an answer: no control character (a
+// description's and steps' lines and tabs aside), none of one line with a
+// character that reorders a line, none past its field's bound; the
+// snapshot's JSON text is read as its own.
+func keptTexts(t *testing.T, what string, v any, key string) {
+	t.Helper()
+	switch x := v.(type) {
+	case map[string]any:
+		for k, e := range x {
+			keptTexts(t, what, e, k)
+		}
+	case []any:
+		for _, e := range x {
+			keptTexts(t, what, e, key)
+		}
+	case string:
+		if key == "externalSnapshot" {
+			var sn any
+			if json.Unmarshal([]byte(x), &sn) == nil {
+				keptTexts(t, what, sn, "")
+			}
+			return
+		}
+		lines := key == "description" || key == "repro"
+		if strings.ContainsFunc(x, func(r rune) bool { return unicode.IsControl(r) && !(lines && (r == '\n' || r == '\t')) }) ||
+			!lines && strings.ContainsFunc(x, func(r rune) bool { return r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069 }) {
+			t.Errorf("%s: %s holds %.40q", what, key, x)
+		}
+		if n, ok := keptBounds[key]; ok && len(x) > n {
+			t.Errorf("%s: %s is %d bytes, past %d", what, key, len(x), n)
+		}
+	}
+}
+
+// Every text GitHub writes is made storable where a read becomes the
+// store's record: with a control sequence, the characters that reorder a
+// line and a value past every one-line bound after every text of the
+// fake's answers (poison, a walk over them, so a field added later is in
+// it), every route records its read (the preview, the import, a refresh, a
+// field given back, a link, the read after a link's add and a link's
+// read), and nothing kept holds a control character, nothing of one line
+// a reordering character, nothing is past its bound.
+func TestOutsideTextStorable(t *testing.T) {
+	e, g := externalEnv(t)
+	g.image("/1/a.png", []byte(pngBytes))
+	g.image("/1/b.svg", []byte(svgBytes))
+	g.mu.Lock()
+	g.poison = true
+	g.mu.Unlock()
+	g.set(150, issue("I_kwDOpoison150", "Poisoned", t0))
+	g.set(151, ghItem{Node: "PR_kwDOpoison151", Title: "Poisoned change", Pull: true, Updated: t0})
+	e.newDispatchProject(t, "PSN", nil)
+	pv := e.expect(t, "POST", "/api/dispatch/external/preview", map[string]any{"url": "https://github.com/octo/app/issues/150"}, http.StatusOK, "")
+	keptTexts(t, "the preview", pv, "")
+	key := entityOf(t, e.importItem(t, "PSN", "https://github.com/octo/app/issues/150", opID(), http.StatusCreated, nil), "ticket")["key"].(string)
+	g.edit(150, func(i *ghItem) { i.Title, i.Updated = "Poisoned again", t0.Add(time.Hour) })
+	if out := e.refresh(t, key, http.StatusOK, nil); out["changed"] != true {
+		t.Fatalf("the refresh: %v", out)
+	}
+	e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/external/authority", map[string]any{"opId": opID(), "field": "title", "owner": "dispatch"}, http.StatusOK, "")
+	e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/external/authority", map[string]any{"opId": opID(), "field": "title", "owner": "github"}, http.StatusOK, "")
+	own := e.newDispatchTicket(t, "PSN", "Own", nil)["key"].(string)
+	e.expect(t, "POST", "/api/dispatch/tickets/"+own+"/external", map[string]any{"opId": opID(), "url": "octo/app#151"}, http.StatusOK, "")
+	link := e.addPullLink(t, key, 151)
+	if !waitFor(testWait, func() bool { r, ok, _ := e.srv.dispatch.LinkReadOf(t.Context(), link); return ok && r.Error == "" }) {
+		r, _, _ := e.srv.dispatch.LinkReadOf(t.Context(), link)
+		t.Fatalf("the read after the link's add was not recorded: %+v", r)
+	}
+	read := entityOf(t, e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links/"+link+"/read", map[string]any{}, http.StatusOK, ""), "read")
+	if checks, _ := read["checks"].([]any); len(checks) != 2 {
+		t.Fatalf("the link's read: %v", read)
+	}
+	for _, k := range []string{key, own} {
+		tk := entityOf(t, e.expect(t, "GET", "/api/dispatch/tickets/"+k, nil, http.StatusOK, ""), "ticket")
+		keptTexts(t, k, tk, "")
+		var sn dispatch.ExternalSnapshot
+		_ = json.Unmarshal([]byte(snapText(t, tk["externalSnapshot"])), &sn)
+		if len(sn.Labels) != 1 || !strings.HasPrefix(sn.Labels[0], "bug") || !strings.HasPrefix(sn.Author, "mona") {
+			t.Fatalf("%s: the snapshot does not hold the texts read: %+v", k, sn)
+		}
+	}
+	keptTexts(t, "the link's read", e.expect(t, "GET", "/api/dispatch/tickets/"+key+"/links/"+link+"/read", nil, http.StatusOK, ""), "")
+}
+
+// What the import keeps is what is counted and shown: an issue of 51
+// labels keeps 20 and counts 51; the preview of an issue of nine images,
+// one of them past an image id's bound, lists what the import then keeps;
+// and the preview names the ticket that has the item as its linked issue,
+// though eight tickets before it hold its address as an ordinary link.
+func TestImportKeepsWhatIsShown(t *testing.T) {
+	e, g := externalEnv(t)
+	e.newDispatchProject(t, "KPS", nil)
+	labels := []string{}
+	for i := range 51 {
+		labels = append(labels, fmt.Sprintf("label-%02d", i))
+	}
+	it := issue("I_kwDOkeeps152", "Labels", t0)
+	it.Labels, it.Images = labels, nil
+	g.set(152, it)
+	tk := entityOf(t, e.importItem(t, "KPS", "https://github.com/octo/app/issues/152", opID(), http.StatusCreated, nil), "ticket")
+	var sn dispatch.ExternalSnapshot
+	_ = json.Unmarshal([]byte(snapText(t, tk["externalSnapshot"])), &sn)
+	if len(sn.Labels) != dispatch.MaxSnapshotLabels || sn.LabelsTotal != 51 {
+		t.Fatalf("51 labels: %d kept, %d counted", len(sn.Labels), sn.LabelsTotal)
+	}
+
+	it = issue("I_kwDOkeeps153", "Images", t0)
+	it.Images = []string{"/9/" + strings.Repeat("l", dispatch.MaxImageID) + ".png"}
+	for i := range 8 {
+		it.Images = append(it.Images, fmt.Sprintf("/9/i%d.png", i))
+	}
+	g.set(153, it)
+	pv := entityOf(t, e.expect(t, "POST", "/api/dispatch/external/preview", map[string]any{"url": "https://github.com/octo/app/issues/153"}, http.StatusOK, ""), "preview")
+	out := e.importItem(t, "KPS", "https://github.com/octo/app/issues/153", opID(), http.StatusCreated, map[string]any{"images": false})
+	var shown, kept []string
+	for _, id := range pv["images"].([]any) {
+		shown = append(shown, id.(string))
+	}
+	for _, im := range out["images"].([]any) {
+		kept = append(kept, im.(map[string]any)["id"].(string))
+	}
+	if !slices.Equal(shown, kept) || len(kept) != dispatch.MaxImportImages {
+		t.Fatalf("the preview shows %d images, the import keeps %d: %v, %v", len(shown), len(kept), shown, kept)
+	}
+
+	g.set(154, ghItem{Node: "I_kwDOkeeps154", Title: "Linked", Updated: t0})
+	page := "https://github.com/octo/app/issues/154"
+	for range 8 {
+		k := e.newDispatchTicket(t, "KPS", "Mentions it", nil)["key"].(string)
+		e.expect(t, "POST", "/api/dispatch/tickets/"+k+"/links", map[string]any{"opId": opID(), "kind": "external", "url": page}, http.StatusCreated, "")
+	}
+	linked := entityOf(t, e.importItem(t, "KPS", page, opID(), http.StatusCreated, nil), "ticket")["key"].(string)
+	if pv := entityOf(t, e.expect(t, "POST", "/api/dispatch/external/preview", map[string]any{"url": page}, http.StatusOK, ""), "preview"); pv["linked"] != linked {
+		t.Fatalf("the preview names %v, not %s", pv["linked"], linked)
+	}
 }

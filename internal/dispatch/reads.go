@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -171,6 +172,25 @@ func (r LinkRead) summary() LinkReadSummary {
 	return s
 }
 
+// Storable is a text from outside as the store keeps it, the one maker of
+// one: valid UTF-8, every control character dropped (\n and \t kept when
+// lines), a text of one line (not lines) also without the nine characters
+// that reorder a line (U+202A to U+202E, U+2066 to U+2069), cut to n
+// bytes at a character's edge. checkText accepts whatever it returns of
+// one line; a text of lines keeps those nine, shown as written.
+func Storable(s string, n int, lines bool) string {
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case unicode.IsControl(r) && !(lines && (r == '\n' || r == '\t')):
+			return -1
+		case !lines && (r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069):
+			return -1
+		}
+		return r
+	}, strings.ToValidUTF8(s, "�"))
+	return cutBytes(s, n)
+}
+
 // checkText checks one of a read's texts: valid UTF-8 with no control
 // character, at most n bytes (invalid, bound).
 func checkText(what, s string, n int) error {
@@ -240,14 +260,12 @@ func encodeLinkRead(r LinkRead) (checks, incomplete string, err error) {
 		}
 		list[i].Name, list[i].App = cutBytes(addressFree(c.Name), MaxCheckName), cutBytes(addressFree(c.App), MaxCheckName)
 		if c.URL != "" {
-			// A check's page is kept only whole: one that carries a query, a
-			// fragment or a user is not kept, the check kept without it.
+			// A check's page is kept only whole: one the store does not
+			// admit, or that carries a query, a fragment or a user, is not
+			// kept, the check kept without it.
 			a, err := admitAddress("a check's page", c.URL)
-			if err != nil {
-				return "", "", err
-			}
 			list[i].URL = a.kept
-			if a.carries() {
+			if err != nil || a.carries() {
 				list[i].URL = ""
 			}
 		}
