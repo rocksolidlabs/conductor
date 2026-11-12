@@ -97,13 +97,16 @@ func mentionsMember(e ast.Expr, holds map[string]bool) bool {
 }
 
 // memberDecoders is every function of files that decodes bytes into a
-// value holding a crew's member: a call of json.Unmarshal, store's
-// decoders, a Decoder's Decode, the package's decodeJSON, decodeJSONLimit
-// or decodeOptionalJSON (a call of decodeAgentMembers goes through the one
-// decoder, and is not one), whose target is a variable,
-// a parameter or a field of a type that holds one (a target of no named
-// type, such as a parameter of any, counts when a parameter of the
-// function holds one).
+// value holding a crew's member, in the spellings it reads: a call of
+// json.Unmarshal, store's decoders, a Decoder's Decode, the package's
+// decodeJSON, decodeJSONLimit or decodeOptionalJSON (a call of
+// decodeAgentMembers goes through the one decoder, and is not one), whose
+// target is a variable (declared with its type, or given a composite
+// literal or new(T), with or without a declared type), a parameter or a
+// field of a type that holds one (a target of no named type, such as a
+// parameter of any, counts when a parameter of the function holds one).
+// It is an early signal for those spellings, not a proof that no other
+// exists: each route's own test holds the rule.
 func memberDecoders(files []*ast.File) []string {
 	specs := map[string]ast.Expr{}
 	for _, f := range files {
@@ -169,22 +172,38 @@ func memberDecoders(files []*ast.File) []string {
 				params = params || mentionsMember(f.Type, holds)
 			}
 		}
+		// valueType is the type a variable's value gives it: a composite
+		// literal's, its address taken or not, or new(T)'s T.
+		valueType := func(v ast.Expr) ast.Expr {
+			if u, ok := v.(*ast.UnaryExpr); ok && u.Op == token.AND {
+				v = u.X
+			}
+			switch v := v.(type) {
+			case *ast.CompositeLit:
+				return v.Type
+			case *ast.CallExpr:
+				if fn, ok := v.Fun.(*ast.Ident); ok && fn.Name == "new" && len(v.Args) == 1 {
+					return v.Args[0]
+				}
+			}
+			return nil
+		}
 		ast.Inspect(fd.Body, func(n ast.Node) bool {
 			switch n := n.(type) {
 			case *ast.ValueSpec:
-				for _, id := range n.Names {
-					if n.Type != nil {
+				for i, id := range n.Names {
+					switch {
+					case n.Type != nil:
 						vars[id.Name] = n.Type
+					case i < len(n.Values) && valueType(n.Values[i]) != nil:
+						vars[id.Name] = valueType(n.Values[i])
 					}
 				}
 			case *ast.AssignStmt:
 				for i, rhs := range n.Rhs {
-					if u, ok := rhs.(*ast.UnaryExpr); ok && u.Op == token.AND {
-						rhs = u.X
-					}
-					if cl, ok := rhs.(*ast.CompositeLit); ok && i < len(n.Lhs) && cl.Type != nil {
+					if typ := valueType(rhs); typ != nil && i < len(n.Lhs) {
 						if id, ok := n.Lhs[i].(*ast.Ident); ok {
-							vars[id.Name] = cl.Type
+							vars[id.Name] = typ
 						}
 					}
 				}
@@ -354,10 +373,12 @@ func sessionView(e ast.Expr) bool {
 
 // adapterByCatalog is every function of files that decides by the
 // catalog's entry of a launched session's agent id which adapter that
-// session runs under: a lookup (X.Get) of the AgentID of a session's
-// Launched() or Info() (called there, held in a variable, or a parameter
-// of type session.Launched or session.Info), whose entry's Adapter the
-// function reads.
+// session runs under, in the spelling it reads: a lookup (X.Get) of the
+// AgentID of a session's Launched() or Info() (called there, held in a
+// variable, or a parameter of type session.Launched or session.Info),
+// assigned to a variable whose Adapter the function reads. It is an early
+// signal for that spelling, not a proof that no other exists: each route's
+// own test holds the rule.
 func adapterByCatalog(files []*ast.File) []string {
 	var out []string
 	for name, fd := range funcs(files) {
@@ -461,9 +482,10 @@ var keptDecoders = map[string]string{
 // package that decodes a crew's member from bytes is decodeAgentMembers,
 // which refuses a member naming an account or a binding, or one only the
 // admin's token reaches, or one that reads what the server keeps
-// (keptDecoders). A decoder added on a path an agent reaches fails the
-// walk: so does Brakeman's draft check as it was before it went through
-// decodeAgentMembers.
+// (keptDecoders). A decoder added on a path an agent reaches, in a
+// spelling the walk reads (memberDecoders), fails it: so does Brakeman's
+// draft check as it was before it went through decodeAgentMembers, its
+// variable declared with its type, made by new(T) or given a literal.
 func TestAgentMembersDecodedInOnePlace(t *testing.T) {
 	stray := func(files []*ast.File) []string {
 		admin := adminOnly(files)
@@ -483,11 +505,18 @@ func TestAgentMembersDecodedInOnePlace(t *testing.T) {
 			t.Errorf("%s is listed as a decoder of what the server keeps and decodes no member", f)
 		}
 	}
-	// Brakeman's draft check as it decoded the draft before: a stray.
-	const before = `package api
+	// Brakeman's draft check as it decoded the draft before, and the same
+	// decoder with its variable made by new(T) or declared with a value and
+	// no type: each a stray.
+	for spelling, decl := range map[string]string{
+		"var in T":      "var in crewInput\n\tif err := store.DecodeStrict(body, &in); err != nil {",
+		"in := new(T)":  "in := new(crewInput)\n\tif err := store.DecodeStrict(body, in); err != nil {",
+		"var in = T{}":  "var in = crewInput{}\n\tif err := store.DecodeStrict(body, &in); err != nil {",
+		"var in = &T{}": "var in = &crewInput{}\n\tif err := store.DecodeStrict(body, in); err != nil {",
+	} {
+		before := `package api
 func (f brakemanFacts) CheckCrew(body json.RawMessage) error {
-	var in crewInput
-	if err := store.DecodeStrict(body, &in); err != nil {
+	` + decl + `
 		return err
 	}
 	c := in.crew()
@@ -497,7 +526,8 @@ func (f brakemanFacts) CheckCrew(body json.RawMessage) error {
 	return c.CheckAgents(f.s.Catalog())
 }
 `
-	if got := stray(apiSource(t, before)); !slices.Contains(got, "brakemanFacts.CheckCrew") {
-		t.Errorf("the draft check decoding its own crew is not found: %v", got)
+		if got := stray(apiSource(t, before)); !slices.Contains(got, "brakemanFacts.CheckCrew") {
+			t.Errorf("the draft check decoding its own crew (%s) is not found: %v", spelling, got)
+		}
 	}
 }

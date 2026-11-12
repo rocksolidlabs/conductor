@@ -8,6 +8,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // Brakeman's draft crew is an agent's bytes too, decoded by the one
@@ -135,12 +136,14 @@ func TestAgentMemberTakesItsSessionsLogin(t *testing.T) {
 	}
 }
 
-// A clone takes the source's account and model for an entry of the
-// adapter the source was started as (its Launched), whatever became of the
-// source's entry: removed from the catalog, or moved to another adapter,
-// before the clone, the clone onto another entry of the source's adapter
-// is started on the source's account with its model, never on the
-// adapter's default of the moment.
+// A clone is a new launch that starts from the source's account and model
+// for an entry of the adapter the source was started as (its Launched),
+// whatever became of the source's entry: removed from the catalog, or
+// moved to another adapter, before the clone, the clone onto another entry
+// of the source's adapter is started on the source's account (or the
+// tool's own login, the source's) with its model, never on the adapter's
+// default of the moment; onto another adapter it takes that adapter's
+// default.
 func TestCloneKeepsTheSourcesLogin(t *testing.T) {
 	for _, change := range []string{"removed", "another adapter"} {
 		t.Run(change, func(t *testing.T) {
@@ -181,13 +184,69 @@ func TestCloneKeepsTheSourcesLogin(t *testing.T) {
 			}
 		})
 	}
+	// removeEntry takes the agent id out of e's catalog.
+	removeEntry := func(t *testing.T, e *bindEnv, id string) {
+		t.Helper()
+		var kept []catalog.Agent
+		for _, ag := range e.srv.Catalog().List() {
+			if ag.ID != id {
+				kept = append(kept, ag)
+			}
+		}
+		changed, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: kept})
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.setCatalog(changed)
+	}
+	// A source on the tool's own login, its entry removed: the clone onto an
+	// entry of its adapter starts on the tool's own login with its model,
+	// never on the adapter's default of the moment.
+	t.Run("own login", func(t *testing.T) {
+		e := newBindEnv(t, nil)
+		b, _ := e.account(t, "claude", "Other")
+		e.addAgents(t, map[string]map[string]string{"claude-q": nil})
+		sid := e.launch(t, "claude-p", map[string]any{"account": "default", "model": "opus"})
+		e.probe(t, sid)
+		e.setDefault(t, "claude", b)
+		removeEntry(t, e, "claude-p")
+		cid := e.expect(t, "POST", "/api/sessions/"+sid+"/clone", map[string]any{"name": "copy", "agentId": "claude-q"}, http.StatusCreated, "")["id"].(string)
+		t.Cleanup(func() { e.stopAndWait(cid) })
+		if got := e.probe(t, cid); got != login("") {
+			t.Fatalf("the clone's login: %s", got)
+		}
+		if l, _ := e.srv.lookupLocal(cid); l.Launched().Account.Source != session.SourceOwn || l.Launched().Model != "opus" {
+			t.Fatalf("the clone's binding and model: %+v %q", l.Launched().Account, l.Launched().Model)
+		}
+	})
+	// Onto an entry of another adapter, the source's entry removed: that
+	// adapter's default and its agent's default model, never the source's
+	// account or model.
+	t.Run("onto another adapter, the source's entry removed", func(t *testing.T) {
+		e := newBindEnv(t, nil)
+		a, _ := e.account(t, "claude", "Work")
+		c, folderC := e.account(t, "codex", "Codex work")
+		e.setDefault(t, "codex", c)
+		sid := e.launch(t, "claude-p", map[string]any{"account": a, "model": "opus"})
+		e.probe(t, sid)
+		removeEntry(t, e, "claude-p")
+		cid := e.expect(t, "POST", "/api/sessions/"+sid+"/clone", map[string]any{"name": "copy", "agentId": "codex-p"}, http.StatusCreated, "")["id"].(string)
+		t.Cleanup(func() { e.stopAndWait(cid) })
+		if got := e.probe(t, cid); got != "D=[] K=[] H=["+folderC+"]" {
+			t.Fatalf("the clone's login: %s", got)
+		}
+		if l, _ := e.srv.lookupLocal(cid); l.Launched().Account.ID != c || l.Launched().Model != "" {
+			t.Fatalf("the clone's binding and model: %+v %q", l.Launched().Account, l.Launched().Model)
+		}
+	})
 }
 
 // The member an agent's crew adopts is its session, model included: a self
 // member naming another model is refused, and so is one whose own
 // arguments choose a model beside the session's, judged as every member's
-// are (it could never be resumed); one naming none has the session's, and
-// a resume of it starts with that model.
+// are (it could never be resumed) under the adapter the session was
+// started as; one naming none has the session's, and a resume of it starts
+// with that model.
 func TestAdoptedMemberKeepsItsModel(t *testing.T) {
 	e := newBindEnv(t, nil)
 	sid := e.launch(t, "claude-p", map[string]any{"model": "opus"})
@@ -216,5 +275,26 @@ func TestAdoptedMemberKeepsItsModel(t *testing.T) {
 	next := e.resume(t, sid)
 	if l, _ := e.srv.lookupLocal(next); l.Launched().Model != "opus" {
 		t.Fatalf("the adopted member's resume: model %q", l.Launched().Model)
+	}
+	// Judged under the adapter the session was started as, not its entry as
+	// it is now: a Codex session whose entry moved to Claude Code since,
+	// with a self member whose -m (Codex's model flag, not Claude Code's)
+	// chooses a model beside the session's, is refused.
+	cs := e.launch(t, "codex-p", map[string]any{"model": "gpt-y"})
+	e.probe(t, cs)
+	ctok := e.agentToken(cs)
+	cat := e.srv.Catalog()
+	p, _ := cat.Get("codex-p")
+	p.Adapter = "claude"
+	moved, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: replaceAgent(cat.List(), p)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.setCatalog(moved)
+	flag := self("")
+	flag["args"] = []string{"-m", "o3"}
+	claudeOther := map[string]any{"name": "x", "agentId": "claude-p", "prompt": "", "start": map[string]any{"when": "manual"}}
+	if status, data, out := e.callAs(t, ctok, "POST", "/api/sessions/"+cs+"/crew", map[string]any{"name": "Moved", "goal": "g", "self": "me", "members": []any{flag, claudeOther}}); status != http.StatusBadRequest || errorCode(out) != "invalid_request" {
+		t.Fatalf("a self member whose arguments choose a model by its launched adapter's flag: %d %s", status, data)
 	}
 }

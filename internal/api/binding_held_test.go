@@ -130,10 +130,11 @@ func TestRemoveAccountInUseByTheLedger(t *testing.T) {
 	}
 }
 
-// An account is held by whatever keeps its folder: an entry that pins a
-// registered account's folder, launched naming none, is bound pinned (its
-// source what the environment says) and holds that account: the remove is
-// refused naming its session, and the account's count includes it.
+// A registered session whose binding is pinned to a registered account's
+// folder holds that account: an entry that pins the folder, launched
+// naming none, is bound pinned (its source what the environment says), the
+// remove is refused naming its session, and the account's count includes
+// it.
 func TestAccountHeldByItsFolder(t *testing.T) {
 	e := newBindEnv(t, nil)
 	a, folder := e.account(t, "claude", "Work")
@@ -151,11 +152,11 @@ func TestAccountHeldByItsFolder(t *testing.T) {
 	}
 }
 
-// A launch whose process started holds its account until that process has
-// ended, whether or not its session was registered: at the session cap the
-// launch's registration is refused after its process started, and its stop
-// fails; the remove is refused while the process lives (a launch under
-// way) and taken once it has ended.
+// A launch naming an account, its process started, holds the account until
+// that process has ended, whether or not its session was registered: at
+// the session cap the launch's registration is refused after its process
+// started, and its stop fails; the remove is refused while the process
+// lives (a launch under way) and taken once it has ended.
 func TestAccountHeldByAProcessNeverRegistered(t *testing.T) {
 	terms := &outliving{procs: make(chan *sessiontest.FakeProc, 4)}
 	t.Cleanup(func() {

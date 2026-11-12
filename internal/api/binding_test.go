@@ -454,9 +454,9 @@ func namesOf(out map[string]any) []string {
 	return names
 }
 
-// A launch between its account's resolution and its session's
-// registration holds the account: Remove is refused; a launch that fails
-// after its resolution lets it go.
+// A launch naming an account, between its reservation and its session's
+// registration, holds the account: Remove is refused; a launch refused
+// after its reservation, its process ended, lets it go.
 func TestRemoveWhileLaunchHeld(t *testing.T) {
 	e := newBindEnv(t, func(c *config.Config) { c.MaxSessions = 1 })
 	a, _ := e.account(t, "claude", "Work")

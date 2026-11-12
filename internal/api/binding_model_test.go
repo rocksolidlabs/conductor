@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/rocksolidlabs/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // The model is one promise the server keeps: a model a launch names goes
@@ -14,11 +15,11 @@ import (
 // own arguments (a request's, a crew member's) may not choose one beside
 // it. Each form the adapter's list names (ChoosesModel) is refused, for a
 // session and for a member at its admission. That is the whole of it: an
-// entry's command, its yolo recipe and its fresh session's recipe are the
-// catalog's own configuration and are not read for a model, so a launch
-// naming a model beside one of them that chooses another is started with
-// the launch's model passed after the launch's arguments, and which of the
-// two the tool takes is the tool's.
+// entry's command, its yolo recipe, its fresh session's recipe and its
+// resume's recipe are the catalog's own configuration and are not read for
+// a model, so a launch naming a model beside one of them that chooses
+// another is started (or resumed) with the launch's model passed after the
+// launch's arguments, and which of the two the tool takes is the tool's.
 func TestModelJudgedInTheLaunchsOwnArguments(t *testing.T) {
 	e := newBindEnv(t, nil)
 	off := false
@@ -32,7 +33,9 @@ func TestModelJudgedInTheLaunchsOwnArguments(t *testing.T) {
 	command.Command = append(command.Command, "--model=sonnet")
 	start := stub("claude-start-model", "claude")
 	start.Session = &catalog.SessionRecipe{ResumeArgs: []string{"--resume", "{id}"}, StartArgs: []string{"--session-id", "{id}", "--model", "sonnet"}, NewID: "uuid", IDPattern: "^[0-9a-f-]+$"}
-	cat, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: append(list, yolo, command, start)})
+	resume := stub("claude-resume-model", "claude")
+	resume.Session = &catalog.SessionRecipe{IDFrom: "hook", ResumeArgs: []string{"--resume", "{id}", "--model", "sonnet"}, IDPattern: "^conv-[a-z]+$"}
+	cat, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: append(list, yolo, command, start, resume)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,4 +74,16 @@ func TestModelJudgedInTheLaunchsOwnArguments(t *testing.T) {
 	started("claude-command-model", map[string]any{"model": "m-2"}, "m-2")
 	started("codex-yolo-model", map[string]any{"model": "m-2", "yolo": true}, "m-2")
 	started("claude-start-model", map[string]any{"model": "m-2"}, "m-2")
+	// A resume's recipe that chooses one, beside the model the launch named:
+	// the resume, made with the recipe, starts with the launch's model passed.
+	sid := e.launch(t, "claude-resume-model", map[string]any{"model": "m-2"})
+	e.probe(t, sid)
+	l, _ := e.srv.lookupLocal(sid)
+	l.ReportAgentSession("conv-a", session.PolicyLatest, true)
+	next := e.resume(t, sid)
+	e.probe(t, next)
+	r, _ := e.srv.lookupLocal(next)
+	if cmd := r.Info().Command; !slices.Contains(cmd, "conv-a") || !slices.Contains(cmd, "sonnet") || !slices.Contains(cmd, "--model=m-2") || r.Launched().Model != "m-2" {
+		t.Errorf("the resume by a recipe choosing a model: started as %q, model %q; want the recipe and --model=m-2 passed", cmd, r.Launched().Model)
+	}
 }
