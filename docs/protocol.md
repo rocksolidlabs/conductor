@@ -2480,11 +2480,16 @@ it by the desktop shell, that reads the page for the workbench framing
 it: the frame's document is another origin's, so nothing else can. It
 reads, never writes, the page; it reads no storage, cookie, console or
 network, never an `input`'s value, a password field or a `textarea`'s
-text; and it does nothing until a workbench origin says `hello`.
+text (the HTML it reads is a copy made in a document with no window, so
+copying runs none of the page's code and loads nothing); and it does
+nothing until a workbench origin says `hello`. The one thing it puts on
+the page is its outline's host (a closed shadow root), in selection mode
+alone: it takes it off when selection mode ends.
 
 **Serving.** `GET /preview-bridge.js` (no credential: a script tag
 carries none, and the script holds no secret) serves the bridge the web
-build emits (the script and its build are PV1 PR-2b's) whole, its bytes
+build emits (`web/build/previewBridge.ts`; `make web-build` fails when
+the built app has none, or one that is a module) whole, its bytes
 unchanged, inside a wrapper the server writes:
 `(function (conductorWorkbenchOrigins) {` and a line break, the script,
 a line break and `})(`, the server's workbench origins as a JSON array
@@ -2523,14 +2528,16 @@ at most 256 bytes.
 `Content-Type: text/javascript;
 charset=utf-8`, `Cache-Control: no-cache`, `Cross-Origin-Resource-Policy:
 cross-origin`, `X-Content-Type-Options: nosniff`. A server whose embedded
-app has no bridge (built without `make web-build`, by a web build that
-emits none, or `make dev`'s), and
+app has no bridge (built without `make web-build`, or `make dev`'s), and
 a switchyard, answer `404 no_bridge` ("this server was built without the
 web app's preview bridge: run make web-build"). A tree with a preview
 resolved once the server listens on the loopback (or on every address)
 is given `CONDUCTOR_PREVIEW_BRIDGE`, `http://127.0.0.1:<port>/preview-bridge.js`
 (`[::1]` for a listener there alone); a tree without a preview, and every
-tree of a server with no bridge or no loopback listener, none.
+tree of a server with no bridge or no loopback listener, none. The Nuxt
+dev server serves the same script at the same path in the same wrapper,
+its origin the dev server's own when the page asks it over the loopback,
+else none.
 
 **Messages** (`conductor-preview/1`; `internal/proto/preview.go` and
 `web/app/utils/protocol.ts`, both held to
@@ -2660,10 +2667,14 @@ string's bound leaves its quotes out.
 **Bounds and the gate.** A message to the bridge is at most 4 KiB, one
 to the workbench at most 64 KiB, as measured; one past it, or that does
 not parse by its type's schema, is dropped unanswered. The bridge takes
-a message only from `window.parent`, at one of the origins written into
-it, and, after the `hello`, only from that hello's origin with its
-nonce (a later `hello` starts again); it posts only to `window.parent`,
-addressed to that origin, never `*`. The workbench takes an answer only
+a message only from an event the browser delivered (`isTrusted`), from
+`window.parent`, at one of the origins written into it (compared
+exactly), and, after the `hello`, only from that hello's origin with its
+nonce (a later `hello` starts again); what it drops changes nothing. It
+acts in selection mode only on pointer and key events the browser
+delivered. It posts only to `window.parent`, addressed to that origin,
+never `*`, and only a message its own parser takes as one to the
+workbench. The workbench takes an answer only
 from the frame's window at the preview's origin with the nonce it sent.
 Nothing the page sends is executed or rendered as HTML by the workbench.
 
