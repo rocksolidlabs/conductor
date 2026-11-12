@@ -14,12 +14,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/go-git/go-billy/v5"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/cache"
@@ -96,31 +97,66 @@ type Detail struct {
 	Truncated bool
 }
 
-func open(dir string) (*git.Repository, string, error) {
-	r, err := git.PlainOpenWithOptions(dir, &git.PlainOpenOptions{DetectDotGit: true, EnableDotGitCommonDir: true})
+// open is the repository at dir or the nearest folder above it, a crew's
+// linked worktree through its common directory, as go-git's
+// PlainOpenWithOptions finds it with DetectDotGit and
+// EnableDotGitCommonDir (gitDirs, commonDir), every file of it opened
+// through careOS: the one way the package opens a repository. ErrNotRepo
+// when there is none; ErrUnreadable (wrapped) when one of its files was
+// refused, whatever go-git made of the refusal; seen keeps those of the
+// reads that follow.
+func open(dir string) (r *git.Repository, top string, seen *refusal, err error) {
+	seen = &refusal{}
+	r, top, err = openOver(dir, seen)
+	if refused := seen.first(); refused != nil {
+		return nil, "", nil, refused
+	}
+	if errors.Is(err, git.ErrRepositoryNotExists) {
+		return nil, "", nil, ErrNotRepo
+	}
 	if err != nil {
-		if errors.Is(err, git.ErrRepositoryNotExists) {
-			return nil, "", ErrNotRepo
+		return nil, "", nil, err
+	}
+	return r, top, seen, nil
+}
+
+func openOver(dir string, seen *refusal) (*git.Repository, string, error) {
+	dot, wt, err := gitDirs(dir, seen)
+	if err != nil {
+		return nil, "", err
+	}
+	if _, err := dot.Stat(""); err != nil {
+		if os.IsNotExist(err) {
+			return nil, "", git.ErrRepositoryNotExists
 		}
 		return nil, "", err
 	}
-	top := dir
-	var wt billy.Filesystem
-	if w, err := r.Worktree(); err == nil {
-		top, wt = w.Filesystem.Root(), w.Filesystem
-	}
-	// The same repository over a storage that reads an object past
-	// largeObject as a stream from its file, a delta applied as it is
-	// read, never whole in memory: go-git's own opening reads every
-	// object whole, however large (a blob of a gigabyte, a gigabyte of
-	// heap, and a delta's base besides).
-	fs, ok := r.Storer.(*filesystem.Storage)
-	if !ok {
-		return nil, "", fmt.Errorf("the repository's storage is a %T, not its files", r.Storer)
-	}
-	st := filesystem.NewStorageWithOptions(fs.Filesystem(), cache.NewObjectLRUDefault(), filesystem.Options{LargeObjectThreshold: largeObject})
-	if r, err = git.Open(st, wt); err != nil {
+	common, err := commonDir(dot, seen)
+	if err != nil {
 		return nil, "", err
+	}
+	// A storage that reads an object past largeObject as a stream from
+	// its file, a delta applied as it is read, never whole in memory:
+	// go-git's own opening reads every object whole, however large (a
+	// blob of a gigabyte, a gigabyte of heap, and a delta's base besides).
+	files := dotgit.NewRepositoryFilesystem(dot, common)
+	st := filesystem.NewStorageWithOptions(files, cache.NewObjectLRUDefault(), filesystem.Options{LargeObjectThreshold: largeObject})
+	r, err := git.Open(st, wt)
+	if err != nil {
+		return nil, "", err
+	}
+	// The small files go-git's opening has not read (it read HEAD and
+	// config) and a read may, go-git's or the git binary's (FileAt): each
+	// opened once through careOS, which notes one refused. Any other error
+	// is the read's to meet, as before.
+	for _, name := range []string{"packed-refs", "shallow", filepath.Join("objects", "info", "alternates")} {
+		if f, err := files.Open(name); err == nil {
+			f.Close()
+		}
+	}
+	top := dir
+	if w, err := r.Worktree(); err == nil {
+		top = w.Filesystem.Root()
 	}
 	return r, top, nil
 }
@@ -133,21 +169,28 @@ func open(dir string) (*git.Repository, string, error) {
 // loose objects and deletes them, and drops packs it merged), so a read
 // begun before the repack looks for an object in a pack it never listed or
 // in a pack since removed. The second opening lists them again. A commit
-// or a file that truly is not there is looked for twice.
+// or a file that truly is not there is looked for twice. A file refused
+// on the way (careOS) is the answer, whatever f made of it.
 func read[T any](dir string, f func(r *git.Repository, top string) (T, error)) (T, error) {
-	r, top, err := open(dir)
+	var none T
+	r, top, seen, err := open(dir)
 	if err != nil {
-		var none T
 		return none, err
 	}
 	out, err := f(r, top)
+	if refused := seen.first(); refused != nil {
+		return none, refused
+	}
 	if !gone(err) {
 		return out, err
 	}
-	if r, top, err = open(dir); err != nil {
+	if r, top, seen, err = open(dir); err != nil {
 		return out, err
 	}
-	return f(r, top)
+	if out, err = f(r, top); seen.first() != nil {
+		return none, seen.first()
+	}
+	return out, err
 }
 
 // gone reports whether err says an object was not found where go-git
