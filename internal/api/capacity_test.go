@@ -570,9 +570,22 @@ func TestCapacityRepliesBounded(t *testing.T) {
 	base := realRoot(t, t.TempDir())
 	var ids []string
 	for i := range capacity.MaxAccounts {
-		dir := filepath.Join(base, fmt.Sprintf("%02d", i), strings.Repeat("f", 200), strings.Repeat("g", 200), strings.Repeat("h", 200), strings.Repeat("i", 200), strings.Repeat("j", 200), strings.Repeat("k", 200), strings.Repeat("l", 200), strings.Repeat("m", 200), strings.Repeat("n", 200), strings.Repeat("o", 200))
+		// The folder as long as the system makes one, up to ten names of
+		// 200 bytes (about 2,000, within the product's MaxFolder): macOS
+		// refuses a path past 1,024 bytes, Linux one past 4,096.
+		dir := filepath.Join(base, fmt.Sprintf("%02d", i))
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
+		}
+		for _, c := range "fghijklmno" {
+			next := filepath.Join(dir, strings.Repeat(string(c), 200))
+			if len(next) > capacity.MaxFolder || os.Mkdir(next, 0o700) != nil {
+				break
+			}
+			dir = next
+		}
+		if dir == filepath.Join(base, fmt.Sprintf("%02d", i)) {
+			t.Fatalf("no folder of a 200-byte name could be made in %s", dir)
 		}
 		status, data, out := e.callAs(t, adminToken, "POST", "/api/accounts", map[string]any{"adapter": "claude", "label": long, "folder": dir, "expectedRev": accountsRev(t, e)})
 		if status != http.StatusCreated {
