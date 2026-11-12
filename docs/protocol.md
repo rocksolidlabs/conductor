@@ -5032,7 +5032,9 @@ resolved to its revision's state and `rev` like any ref; the app's
 pages draw neither such a card's Approve nor a `draft_plan/1` yet, which
 come with the pages' part, #532),
 `comparison/1`, `evidence/1`, `draft_ticket/1` (at most 20, their `blocks`
-without a cycle), `draft_crew/1`, `draft_plan/1` (`ticket`, a `ticket:`
+without a cycle), `draft_crew/1` (a member that names an `account` or
+a `bound` is refused, at the brief's check and at the make, `400
+invalid_draft`: an agent does not choose accounts), `draft_plan/1` (`ticket`, a `ticket:`
 ref; `crew`, a saved crew's id; `base?` at most 256 bytes; `basedOn?`, a
 `plan:` ref; `references?` at most 20 `{path, start?, end?, note?}`;
 `attachments?` at most 8 ids; `comments?` at most 20 `comment:` refs;

@@ -20,6 +20,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/pty"
 	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
 // A launch's login (docs/plans/capacity.md, PR-4). createLocalSession is
@@ -349,7 +350,7 @@ func launchModel(agent catalog.Agent, model string, args []string) ([]string, *a
 // (launchEnv, under the run's yolo choice): to the account it names, or
 // its adapter's default at this moment. On an agent's own routes (caller,
 // the calling session), whose members name no account
-// (agentNamesNoAccount), one of the caller's adapter takes the caller's
+// (decodeAgentMembers), one of the caller's adapter takes the caller's
 // login, resolved as a launch would resolve it
 // with the caller's account and compared by effective login (its folder
 // and its fingerprint), never copied by id; one of another adapter takes
@@ -425,13 +426,34 @@ func (s *Server) bindMembers(ms []crew.Member, yolo bool, caller *session.Local)
 	return out, release, nil
 }
 
-// agentNamesNoAccount refuses the members an agent's route decoded when
-// any names an account, the member the agent becomes included: an agent
-// does not choose accounts.
-func agentNamesNoAccount(ms []crew.Member) *apiError {
-	for _, m := range ms {
-		if m.Account != "" {
+// memberBody is a body that carries crew members, as an agent sends it.
+type memberBody interface{ members() []crew.Member }
+
+func (in *selfCrewInput) members() []crew.Member { return in.Members }
+func (in *crewInput) members() []crew.Member     { return in.Members }
+
+// agentMember is the body of an agent's add_member: one member.
+type agentMember struct{ crew.Member }
+
+func (m *agentMember) members() []crew.Member { return []crew.Member{m.Member} }
+
+// decodeAgentMembers is the one way bytes an agent sends become crew
+// members: a self route's body (the crew it forms, the member it adds) and
+// a Brakeman draft crew's, at its check and at its making. body is decoded
+// strictly into v, and a member that names an account or a binding is
+// refused, the member the agent becomes included: an agent does not choose
+// accounts, and a binding is the server's to make. No other path an agent
+// reaches decodes a member (TestAgentMembersDecodedInOnePlace).
+func decodeAgentMembers(body []byte, v memberBody) *apiError {
+	if err := store.DecodeStrict(body, v); err != nil {
+		return newAPIError(http.StatusBadRequest, "invalid_request", err.Error())
+	}
+	for _, m := range v.members() {
+		switch {
+		case m.Account != "":
 			return newAPIError(http.StatusBadRequest, "invalid_account", "member "+m.Name+": an agent does not choose accounts")
+		case m.Bound != nil:
+			return newAPIError(http.StatusBadRequest, "invalid_crew", "member "+m.Name+": a binding is the server's to make")
 		}
 	}
 	return nil

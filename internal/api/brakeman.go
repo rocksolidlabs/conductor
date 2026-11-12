@@ -2457,11 +2457,10 @@ func (f brakemanFacts) CheckCwd(dir string) error {
 func (f brakemanFacts) ServesAct(op string) error { return actServed(op) }
 
 func (f brakemanFacts) CheckCrew(body json.RawMessage) error {
-	var in crewInput
-	if err := store.DecodeStrict(body, &in); err != nil {
+	c, err := crewOfBody(body)
+	if err != nil {
 		return err
 	}
-	c := in.crew()
 	if err := c.ValidateSave(); err != nil {
 		return err
 	}

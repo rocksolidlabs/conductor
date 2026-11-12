@@ -118,12 +118,13 @@ func (s *Server) handleSelfCrew(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "no data directory is configured")
 		return
 	}
-	var in selfCrewInput
-	if err := decodeJSONLimit(w, r, &in, maxCrewBody); err != nil {
+	body, err := readBodyLimit(w, r, maxCrewBody)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	if aerr := agentNamesNoAccount(in.Members); aerr != nil {
+	var in selfCrewInput
+	if aerr := decodeAgentMembers(body, &in); aerr != nil {
 		writeAPIError(w, aerr)
 		return
 	}
@@ -251,15 +252,17 @@ func (s *Server) handleSelfAddMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "no_run", "the session is not a member of a run; form a crew first")
 		return
 	}
-	var m crew.Member
-	if err := decodeJSONLimit(w, r, &m, maxMemberBody); err != nil {
+	body, err := readBodyLimit(w, r, maxMemberBody)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	if aerr := agentNamesNoAccount([]crew.Member{m}); aerr != nil {
+	var in agentMember
+	if aerr := decodeAgentMembers(body, &in); aerr != nil {
 		writeAPIError(w, aerr)
 		return
 	}
+	m := in.Member
 	cat := s.Catalog()
 	if _, ok := cat.Get(m.AgentID); !ok {
 		writeError(w, http.StatusBadRequest, "invalid_crew", "unknown agent "+m.AgentID)

@@ -1,11 +1,40 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
+	"strconv"
 	"testing"
 
+	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 )
+
+// Brakeman's draft crew is an agent's bytes too, decoded by the one
+// decoder of an agent's members: a member that names an account or a
+// binding, in each spelling of the key the decoder takes (the last of two
+// keys deciding), is refused at the draft's check (the brief's) and at its
+// making, and no crew is saved.
+func TestBrakemanDraftNamesNoAccount(t *testing.T) {
+	f := newObsFixture(t)
+	for i, member := range []string{
+		`"account":"a-aaaaaaaaaaaa"`, `"Account":"a-aaaaaaaaaaaa"`, `"ACCOUNT":"default"`, `"account":"","ACCOUNT":"a-aaaaaaaaaaaa"`,
+		`"bound":{"id":"default","source":"own"}`, `"BOUND":{"id":"default","source":"own"}`,
+	} {
+		body := json.RawMessage(`{"name":"Fixers","goal":"fix the build","cwd":` + strconv.Quote(f.root) + `,"where":"server","isolation":"none",` +
+			`"members":[{"name":"lead","agentId":"cat","start":{"when":"immediately"},` + member + `}]}`)
+		if err := (brakemanFacts{s: f.srv}).CheckCrew(body); err == nil {
+			t.Errorf("the check of a draft member with %s: accepted", member)
+		}
+		req := f.drafts(t, brakeman.Item{Kind: brakeman.ItemDraftCrew, DraftCrew: &brakeman.DraftCrew{Crew: body}})
+		if status, out := f.make(t, req, 0, "crew-"+itoa(i), nil); status != http.StatusBadRequest || errorCode(out) != "invalid_draft" {
+			t.Errorf("the making of a draft member with %s: %d %v", member, status, out)
+		}
+	}
+	if _, total, _ := f.srv.crews.List(0, 100); total != 0 {
+		t.Fatalf("%d crews saved", total)
+	}
+}
 
 // An agent's crew: the members an agent sends name no account, the one it
 // becomes included, in every spelling of the key the decoder takes; the
