@@ -1151,12 +1151,8 @@ func (s *Server) readLinkIn(rctx, ctx context.Context, ds *dispatch.Store, linkI
 				Conclusion: checkWord(c.Conclusion), URL: c.URL, App: dispatch.Storable(c.App, dispatch.MaxCheckName, false), HasLog: c.HasLog, CompletedAt: c.CompletedAt})
 		}
 		if len(set.Incomplete) > 0 {
-			lr.Incomplete = &dispatch.ChecksIncomplete{Omitted: set.Omitted}
-			for _, w := range set.Incomplete {
-				if w = dispatch.Storable(w, dispatch.MaxIncompleteWord, false); w != "" {
-					lr.Incomplete.Words = append(lr.Incomplete.Words, w)
-				}
-			}
+			// Cut to what the store keeps, measured as it measures.
+			lr.Incomplete = dispatch.FitIncomplete(set.Incomplete, set.Omitted)
 		}
 	}
 	err = ds.RecordRead(wctx, linkID, lr)

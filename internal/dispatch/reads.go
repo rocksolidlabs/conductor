@@ -173,15 +173,16 @@ func (r LinkRead) summary() LinkReadSummary {
 }
 
 // Storable is a text from outside as the store keeps it, the one maker of
-// one: valid UTF-8, every control character dropped (\n and \t kept when
-// lines), a text of one line (not lines) also without the nine characters
-// that reorder a line (U+202A to U+202E, U+2066 to U+2069), cut to n
-// bytes at a character's edge. checkText accepts whatever it returns of
-// one line; a text of lines keeps those nine, shown as written.
+// one: valid UTF-8, every control character and every Unicode tag
+// character (U+E0000 to U+E007F) dropped (\n and \t kept when lines), a
+// text of one line (not lines) also without the nine characters that
+// reorder a line (U+202A to U+202E, U+2066 to U+2069), cut to n bytes at a
+// character's edge. checkText accepts whatever it returns of one line; a
+// text of lines keeps those nine, shown as written.
 func Storable(s string, n int, lines bool) string {
 	s = strings.Map(func(r rune) rune {
 		switch {
-		case unicode.IsControl(r) && !(lines && (r == '\n' || r == '\t')):
+		case unicode.IsControl(r) && !(lines && (r == '\n' || r == '\t')), r >= 0xe0000 && r <= 0xe007f:
 			return -1
 		case !lines && (r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069):
 			return -1
@@ -278,29 +279,64 @@ func encodeLinkRead(r LinkRead) (checks, incomplete string, err error) {
 		return "", "", refuse(RefusalBound, "the read's checks are %d bytes, more than %d", len(checks), MaxLinkChecksJSON)
 	}
 	if r.Incomplete != nil {
-		// A copy, its words address-free (addressFree) within their bound:
-		// the caller's read is never changed under it.
-		in := ChecksIncomplete{Words: slices.Clone(r.Incomplete.Words), Omitted: r.Incomplete.Omitted}
-		if len(in.Words) == 0 || len(in.Words) > MaxIncompleteWords || in.Omitted < 0 {
-			return "", "", refuse(RefusalInvalid, "an incomplete set of checks says why in 1 to %d reasons", MaxIncompleteWords)
-		}
-		for i, w := range in.Words {
-			if w == "" {
-				return "", "", refuse(RefusalInvalid, "a reason the checks are incomplete is empty")
-			}
-			if err := checkText("a reason the checks are incomplete", w, MaxIncompleteWord); err != nil {
-				return "", "", err
-			}
-			in.Words[i] = cutBytes(addressFree(w), MaxIncompleteWord)
-		}
-		if incomplete, err = encodeValue(in); err != nil {
+		if incomplete, err = encodeIncomplete(*r.Incomplete); err != nil {
 			return "", "", err
-		}
-		if len(incomplete) > MaxChecksIncomplete {
-			return "", "", refuse(RefusalBound, "why the checks are incomplete is %d bytes, more than %d", len(incomplete), MaxChecksIncomplete)
 		}
 	}
 	return checks, incomplete, nil
+}
+
+// encodeIncomplete checks why a read's checks are incomplete and gives it
+// as its column holds it: 1 to MaxIncompleteWords reasons, none empty,
+// each of at most MaxIncompleteWord bytes kept address-free (addressFree)
+// within that bound, in at most MaxChecksIncomplete (bound, invalid).
+func encodeIncomplete(r ChecksIncomplete) (string, error) {
+	// A copy: the caller's read is never changed under it.
+	in := ChecksIncomplete{Words: slices.Clone(r.Words), Omitted: r.Omitted}
+	if len(in.Words) == 0 || len(in.Words) > MaxIncompleteWords || in.Omitted < 0 {
+		return "", refuse(RefusalInvalid, "an incomplete set of checks says why in 1 to %d reasons", MaxIncompleteWords)
+	}
+	for i, w := range in.Words {
+		if w == "" {
+			return "", refuse(RefusalInvalid, "a reason the checks are incomplete is empty")
+		}
+		if err := checkText("a reason the checks are incomplete", w, MaxIncompleteWord); err != nil {
+			return "", err
+		}
+		in.Words[i] = cutBytes(addressFree(w), MaxIncompleteWord)
+	}
+	incomplete, err := encodeValue(in)
+	if err == nil && len(incomplete) > MaxChecksIncomplete {
+		err = refuse(RefusalBound, "why the checks are incomplete is %d bytes, more than %d", len(incomplete), MaxChecksIncomplete)
+	}
+	return incomplete, err
+}
+
+// incompleteRest is the last reason kept when FitIncomplete left some out.
+const incompleteRest = "more reasons than Conductor keeps; see the checks on the tracker"
+
+// FitIncomplete is why a read's checks are incomplete as RecordRead keeps
+// it, measured as it measures (encodeIncomplete): each reason made
+// storable (Storable) and the empty ones left out, then the reasons
+// dropped from the end, the last kept saying the rest were left out
+// (incompleteRest), until the set fits.
+func FitIncomplete(words []string, omitted int) *ChecksIncomplete {
+	var kept []string
+	for _, w := range words {
+		if w = Storable(w, MaxIncompleteWord, false); w != "" {
+			kept = append(kept, w)
+		}
+	}
+	for n := len(kept); n > 0; n-- {
+		in := ChecksIncomplete{Words: kept[:n:n], Omitted: max(omitted, 0)}
+		if n < len(kept) {
+			in.Words = append(kept[:n-1:n-1], incompleteRest)
+		}
+		if _, err := encodeIncomplete(in); err == nil {
+			return &in
+		}
+	}
+	return &ChecksIncomplete{Words: []string{incompleteRest}, Omitted: max(omitted, 0)}
 }
 
 // RecordRead records a read of the outside item the link with the id

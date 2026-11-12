@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"unicode"
@@ -44,5 +45,30 @@ func TestStorableAgreesWithCheck(t *testing.T) {
 	}
 	if got := Storable("line"+rlo+"one\nand\ttwo\x1b[2J", 100, false); got != "lineoneandtwo[2J" {
 		t.Errorf("one line: %q", got)
+	}
+	for _, lines := range []bool{false, true} {
+		if got := Storable("a\U000E0000\U000E0041\U000E007Fb", 100, lines); got != "ab" {
+			t.Errorf("tag characters, lines %v: %q", lines, got)
+		}
+	}
+}
+
+// FitIncomplete gives what the store's own check keeps, whatever the
+// reasons: eight of quotes, backslashes or short scheme:// tokens at their
+// bound, more than eight, none, or all emptied by Storable; a set it cut
+// ends saying so.
+func TestFitIncomplete(t *testing.T) {
+	long := func(s string) []string {
+		return slices.Repeat([]string{strings.Repeat(s, MaxIncompleteWord)}, MaxIncompleteWords)
+	}
+	for what, words := range map[string][]string{"quotes": long(`"`), "backslashes": long(`\`), "schemes": long("x:// "), "nine": slices.Repeat([]string{"w"}, 9),
+		"none": nil, "emptied": {"\x1b", "\u202e"}} {
+		in := FitIncomplete(words, 3)
+		if _, err := encodeIncomplete(*in); err != nil {
+			t.Errorf("%s: %v", what, err)
+		}
+		if len(in.Words) < len(words) && in.Words[len(in.Words)-1] != incompleteRest {
+			t.Errorf("%s: %d of %d kept, ending %q", what, len(in.Words), len(words), in.Words[len(in.Words)-1])
+		}
 	}
 }

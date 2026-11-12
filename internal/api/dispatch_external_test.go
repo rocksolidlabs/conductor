@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -58,43 +59,54 @@ type ghItem struct {
 
 // ghItems scripts the fake's items and images. With poison set, every
 // text of its answers (each string but those of a fixed form, formKeys)
-// gets poisonText after it, and the checks a check run and the item a
-// milestone, so every string a read takes is in it.
+// gets the poison after it, the checks a check run and eight workflow runs
+// whose job listings are cut, and the item a milestone, so every string a
+// read takes, and every listing the adapter reads, is in it.
 type ghItems struct {
 	f      *fakeGH
 	mu     sync.Mutex
 	items  map[int]*ghItem
 	images map[string][]byte
-	poison bool
+	poison string
 }
 
-// poisonText is a control sequence, the characters that reorder a line,
-// and a value past every one-line bound.
-var poisonText = "\x1b[2J\x07\xe2\x80\xae\xe2\x81\xa6" + strings.Repeat("z", 2100)
+// poisons are the hostile fillers the walk puts after every text, each
+// alone and all together (TestOutsideTextStorable).
+var poisons = func() map[string]string {
+	m := map[string]string{"a control character": "\x1b[2J\x07", "a reordering character": "\u202e\u2066", "a quote": strings.Repeat(`"`, 60),
+		"a backslash": strings.Repeat(`\`, 60), "a short scheme token": strings.Repeat("x:// ", 12), "a tag character": "\U000E0041\U000E0049",
+		"an over-long value": strings.Repeat("z", 2100)}
+	all := ""
+	for _, k := range slices.Sorted(maps.Keys(m)) {
+		all += m[k]
+	}
+	m["all together"] = all
+	return m
+}()
 
 // formKeys are the fields of the fake's answers in a fixed form the
 // adapter parses (an id, an address, a time, a commit), not text.
 var formKeys = map[string]bool{"node_id": true, "html_url": true, "url": true, "target_url": true, "details_url": true, "created_at": true, "updated_at": true,
-	"closed_at": true, "merged_at": true, "completed_at": true, "started_at": true, "sha": true, "merge_commit_sha": true, "head_sha": true}
+	"closed_at": true, "merged_at": true, "completed_at": true, "started_at": true, "sha": true, "merge_commit_sha": true, "head_sha": true, "check_run_url": true}
 
-// poisoned is v with poisonText after each of its texts (poison).
-func poisoned(v any, key string) any {
+// poisoned is v with poison after each of its texts.
+func poisoned(v any, key, poison string) any {
 	switch x := v.(type) {
 	case map[string]any:
 		out := map[string]any{}
 		for k, e := range x {
-			out[k] = poisoned(e, k)
+			out[k] = poisoned(e, k, poison)
 		}
 		return out
 	case []any:
 		out := []any{}
 		for _, e := range x {
-			out = append(out, poisoned(e, key))
+			out = append(out, poisoned(e, key, poison))
 		}
 		return out
 	case string:
 		if !formKeys[key] {
-			return x + poisonText
+			return x + poison
 		}
 	}
 	return v
@@ -102,11 +114,8 @@ func poisoned(v any, key string) any {
 
 // answer writes v as JSON, poisoned when the fake is.
 func (g *ghItems) answer(w http.ResponseWriter, v map[string]any) {
-	g.mu.Lock()
-	p := g.poison
-	g.mu.Unlock()
-	if p {
-		v = poisoned(v, "").(map[string]any)
+	if p := g.poisonWith(); p != "" {
+		v = poisoned(v, "", p).(map[string]any)
 	}
 	b, _ := json.Marshal(v)
 	_, _ = w.Write(b)
@@ -135,8 +144,22 @@ func (g *ghItems) set(n int, it ghItem) {
 			"target_url": "https://ci.example.com/31", "created_at": itemsLayout, "updated_at": "2026-11-01T10:00:00Z"}}})
 	})
 	g.f.Handle("GET", "api.github.com", itemsRepo+"/actions/runs", func(w http.ResponseWriter, r *http.Request) {
-		g.answer(w, map[string]any{"total_count": 0, "workflow_runs": []any{}})
+		runs := []any{}
+		if g.poisonOn() {
+			for id := range 8 {
+				runs = append(runs, map[string]any{"id": 6100 + id, "name": "r"})
+			}
+		}
+		g.answer(w, map[string]any{"total_count": len(runs), "workflow_runs": runs})
 	})
+	for id := range 8 {
+		g.f.Handle("GET", "api.github.com", fmt.Sprintf("%s/actions/runs/%d/jobs", itemsRepo, 6100+id), func(w http.ResponseWriter, r *http.Request) {
+			// One job of a thousand listed: the listing is cut, and says so.
+			g.answer(w, map[string]any{"total_count": 1000, "jobs": []any{map[string]any{"id": 6200 + id, "name": "job", "status": "completed", "conclusion": "success",
+				"head_sha": headSHA, "html_url": "https://github.com/octo/app/actions/runs/1/job/2", "started_at": itemsLayout, "completed_at": itemsLayout,
+				"check_run_url": fmt.Sprintf("https://api.github.com/repos/octo/app/check-runs/%d", 6200+id)}}})
+		})
+	}
 	g.f.Handle("GET", "api.github.com", itemsRepo+"/commits/"+headSHA+"/check-runs", func(w http.ResponseWriter, r *http.Request) {
 		runs := []any{}
 		if g.poisonOn() {
@@ -147,7 +170,9 @@ func (g *ghItems) set(n int, it ghItem) {
 	})
 }
 
-func (g *ghItems) poisonOn() bool {
+func (g *ghItems) poisonOn() bool { return g.poisonWith() != "" }
+
+func (g *ghItems) poisonWith() string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.poison
@@ -245,8 +270,8 @@ func (g *ghItems) serve(w http.ResponseWriter, r *http.Request, n int, pull bool
 			v["body_html"] = strings.Repeat("x", 1<<20)
 		}
 	}
-	if g.poisonOn() {
-		v = poisoned(v, "").(map[string]any)
+	if p := g.poisonWith(); p != "" {
+		v = poisoned(v, "", p).(map[string]any)
 	}
 	b, _ := json.Marshal(v)
 	sum := sha256.Sum256(b)
@@ -1682,7 +1707,7 @@ var keptBounds = map[string]int{"title": dispatch.MaxSnapshotTitle, "labels": di
 	"app": dispatch.MaxCheckName, "status": 40, "conclusion": 40, "words": dispatch.MaxIncompleteWord}
 
 // keptTexts checks every text of an answer: no control character (a
-// description's and steps' lines and tabs aside), none of one line with a
+// description's and steps' lines and tabs aside) and no tag character, none of one line with a
 // character that reorders a line, none past its field's bound; the
 // snapshot's JSON text is read as its own.
 func keptTexts(t *testing.T, what string, v any, key string) {
@@ -1705,7 +1730,10 @@ func keptTexts(t *testing.T, what string, v any, key string) {
 			return
 		}
 		lines := key == "description" || key == "repro"
-		if strings.ContainsFunc(x, func(r rune) bool { return unicode.IsControl(r) && !(lines && (r == '\n' || r == '\t')) }) ||
+		hidden := func(r rune) bool {
+			return unicode.IsControl(r) && !(lines && (r == '\n' || r == '\t')) || r >= 0xe0000 && r <= 0xe007f
+		}
+		if strings.ContainsFunc(x, hidden) ||
 			!lines && strings.ContainsFunc(x, func(r rune) bool { return r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069 }) {
 			t.Errorf("%s: %s holds %.40q", what, key, x)
 		}
@@ -1715,54 +1743,62 @@ func keptTexts(t *testing.T, what string, v any, key string) {
 	}
 }
 
-// Every text GitHub writes is made storable where a read becomes the
-// store's record: with a control sequence, the characters that reorder a
-// line and a value past every one-line bound after every text of the
-// fake's answers (poison, a walk over them, so a field added later is in
-// it), every route records its read (the preview, the import, a refresh, a
-// field given back, a link, the read after a link's add and a link's
-// read), and nothing kept holds a control character, nothing of one line
-// a reordering character, nothing is past its bound.
+// Nothing GitHub writes makes the store refuse a read: with each hostile
+// filler (poisons: a control character, a reordering character, quotes,
+// backslashes, short scheme:// tokens, a tag character, a value past every
+// one-line bound), alone and all together, after every text of the fake's
+// answers (a walk over them, so a field added later is in it), and every
+// listing the adapter reads served (eight workflow runs whose job listings
+// are cut among them), every route records its read (the preview, the
+// import, a refresh, a field given back, a link, the read after a link's
+// add and a link's read, its reasons cut to the store's bounds), and
+// nothing kept holds a control or tag character, nothing of one line a
+// reordering character, nothing is past its bound.
 func TestOutsideTextStorable(t *testing.T) {
 	e, g := externalEnv(t)
 	g.image("/1/a.png", []byte(pngBytes))
 	g.image("/1/b.svg", []byte(svgBytes))
-	g.mu.Lock()
-	g.poison = true
-	g.mu.Unlock()
-	g.set(150, issue("I_kwDOpoison150", "Poisoned", t0))
-	g.set(151, ghItem{Node: "PR_kwDOpoison151", Title: "Poisoned change", Pull: true, Updated: t0})
 	e.newDispatchProject(t, "PSN", nil)
-	pv := e.expect(t, "POST", "/api/dispatch/external/preview", map[string]any{"url": "https://github.com/octo/app/issues/150"}, http.StatusOK, "")
-	keptTexts(t, "the preview", pv, "")
-	key := entityOf(t, e.importItem(t, "PSN", "https://github.com/octo/app/issues/150", opID(), http.StatusCreated, nil), "ticket")["key"].(string)
-	g.edit(150, func(i *ghItem) { i.Title, i.Updated = "Poisoned again", t0.Add(time.Hour) })
-	if out := e.refresh(t, key, http.StatusOK, nil); out["changed"] != true {
-		t.Fatalf("the refresh: %v", out)
-	}
-	e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/external/authority", map[string]any{"opId": opID(), "field": "title", "owner": "dispatch"}, http.StatusOK, "")
-	e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/external/authority", map[string]any{"opId": opID(), "field": "title", "owner": "github"}, http.StatusOK, "")
-	own := e.newDispatchTicket(t, "PSN", "Own", nil)["key"].(string)
-	e.expect(t, "POST", "/api/dispatch/tickets/"+own+"/external", map[string]any{"opId": opID(), "url": "octo/app#151"}, http.StatusOK, "")
-	link := e.addPullLink(t, key, 151)
-	if !waitFor(testWait, func() bool { r, ok, _ := e.srv.dispatch.LinkReadOf(t.Context(), link); return ok && r.Error == "" }) {
-		r, _, _ := e.srv.dispatch.LinkReadOf(t.Context(), link)
-		t.Fatalf("the read after the link's add was not recorded: %+v", r)
-	}
-	read := entityOf(t, e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links/"+link+"/read", map[string]any{}, http.StatusOK, ""), "read")
-	if checks, _ := read["checks"].([]any); len(checks) != 2 {
-		t.Fatalf("the link's read: %v", read)
-	}
-	for _, k := range []string{key, own} {
-		tk := entityOf(t, e.expect(t, "GET", "/api/dispatch/tickets/"+k, nil, http.StatusOK, ""), "ticket")
-		keptTexts(t, k, tk, "")
-		var sn dispatch.ExternalSnapshot
-		_ = json.Unmarshal([]byte(snapText(t, tk["externalSnapshot"])), &sn)
-		if len(sn.Labels) != 1 || !strings.HasPrefix(sn.Labels[0], "bug") || !strings.HasPrefix(sn.Author, "mona") {
-			t.Fatalf("%s: the snapshot does not hold the texts read: %+v", k, sn)
+	n := 200
+	for _, what := range slices.Sorted(maps.Keys(poisons)) {
+		g.mu.Lock()
+		g.poison = poisons[what]
+		g.mu.Unlock()
+		n += 2
+		issueN, pullN := strconv.Itoa(n), strconv.Itoa(n+1)
+		g.set(n, issue("I_kwDOpoison"+issueN, "Poisoned", t0))
+		g.set(n+1, ghItem{Node: "PR_kwDOpoison" + pullN, Title: "Poisoned change", Pull: true, Updated: t0})
+		pv := e.expect(t, "POST", "/api/dispatch/external/preview", map[string]any{"url": "https://github.com/octo/app/issues/" + issueN}, http.StatusOK, "")
+		keptTexts(t, what+": the preview", pv, "")
+		key := entityOf(t, e.importItem(t, "PSN", "https://github.com/octo/app/issues/"+issueN, opID(), http.StatusCreated, nil), "ticket")["key"].(string)
+		g.edit(n, func(i *ghItem) { i.Title, i.Updated = "Poisoned again", t0.Add(time.Hour) })
+		if out := e.refresh(t, key, http.StatusOK, nil); out["changed"] != true {
+			t.Fatalf("%s: the refresh: %v", what, out)
 		}
+		e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/external/authority", map[string]any{"opId": opID(), "field": "title", "owner": "dispatch"}, http.StatusOK, "")
+		e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/external/authority", map[string]any{"opId": opID(), "field": "title", "owner": "github"}, http.StatusOK, "")
+		own := e.newDispatchTicket(t, "PSN", "Own", nil)["key"].(string)
+		e.expect(t, "POST", "/api/dispatch/tickets/"+own+"/external", map[string]any{"opId": opID(), "url": "octo/app#" + pullN}, http.StatusOK, "")
+		link := e.addPullLink(t, key, n+1)
+		if !waitFor(testWait, func() bool { r, ok, _ := e.srv.dispatch.LinkReadOf(t.Context(), link); return ok && r.Error == "" }) {
+			r, _, _ := e.srv.dispatch.LinkReadOf(t.Context(), link)
+			t.Fatalf("%s: the read after the link's add was not recorded: %+v", what, r)
+		}
+		read := entityOf(t, e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links/"+link+"/read", map[string]any{}, http.StatusOK, ""), "read")
+		if checks, _ := read["checks"].([]any); len(checks) != 10 || read["incomplete"] == nil {
+			t.Fatalf("%s: the link's read: %v", what, read)
+		}
+		for _, k := range []string{key, own} {
+			tk := entityOf(t, e.expect(t, "GET", "/api/dispatch/tickets/"+k, nil, http.StatusOK, ""), "ticket")
+			keptTexts(t, what+": "+k, tk, "")
+			var sn dispatch.ExternalSnapshot
+			_ = json.Unmarshal([]byte(snapText(t, tk["externalSnapshot"])), &sn)
+			if len(sn.Labels) != 1 || !strings.HasPrefix(sn.Labels[0], "bug") || !strings.HasPrefix(sn.Author, "mona") {
+				t.Fatalf("%s: %s: the snapshot does not hold the texts read: %+v", what, k, sn)
+			}
+		}
+		keptTexts(t, what+": the link's read", e.expect(t, "GET", "/api/dispatch/tickets/"+key+"/links/"+link+"/read", nil, http.StatusOK, ""), "")
 	}
-	keptTexts(t, "the link's read", e.expect(t, "GET", "/api/dispatch/tickets/"+key+"/links/"+link+"/read", nil, http.StatusOK, ""), "")
 }
 
 // What the import keeps is what is counted and shown: an issue of 51
