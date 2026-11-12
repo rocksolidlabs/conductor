@@ -453,7 +453,7 @@ func HomeConfigDir(agentID string, getenv func(string) string) string {
 		return ""
 	}
 	first, _, _ := strings.Cut(a.SkillPath, "/")
-	return filepath.Join(home, first)
+	return home + string(filepath.Separator) + first
 }
 
 // InstallSkillIn puts the Conductor skill where the agent of adapter agentID

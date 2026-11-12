@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"os"
 	"path/filepath"
 	"slices"
 	"time"
@@ -235,10 +236,15 @@ func (s *Server) bindLogin(agent catalog.Agent, account, cwd string, want loginW
 		env[ad.ConfigDirEnv] = folder
 	}
 	// The folder its process runs in, as it sees it: the one wanted, the
-	// folder variable's, else the tool's own under its home.
+	// folder variable's, else the tool's own under its home; one that is
+	// not whole is under cwd as written, not cleaned (accountFolder asks
+	// that and its cleaned form).
 	in := folder
 	if in == "" && ad.ConfigDirEnv != "" {
-		in = seenFolder(cmp.Or(fl(ad.ConfigDirEnv), agents.HomeConfigDir(agent.Adapter, fl)), cwd)
+		in = cmp.Or(fl(ad.ConfigDirEnv), agents.HomeConfigDir(agent.Adapter, fl))
+		if in != "" && !filepath.IsAbs(in) && cwd != "" {
+			in = cwd + string(filepath.Separator) + in
+		}
 	}
 	var b session.BoundAccount
 	switch {
@@ -430,11 +436,11 @@ func (s *Server) bindMembers(ms []crew.Member, yolo bool, caller *session.Local)
 		// in each.
 		lookup := pty.Lookup(pty.BuildEnv(pty.ParentEnv(), passthrough, env, nil))
 		if ad, _ := agents.Get(agent.Adapter); in != "" && !filepath.IsAbs(in) {
-			n := ad.ConfigDirEnv
-			if lookup(n) == "" {
-				n = "HOME"
+			words := "its entry sets " + ad.ConfigDirEnv + " to a folder under the one it starts in"
+			if lookup(ad.ConfigDirEnv) == "" {
+				words = "HOME is not a whole path: the agent's folder under it would be under the one it starts in"
 			}
-			return refuse(*m, newAPIError(http.StatusBadRequest, "invalid_account", "its entry sets "+n+" to a folder under the one it starts in, which would be another login in each of its working folders: set a whole path"))
+			return refuse(*m, newAPIError(http.StatusBadRequest, "invalid_account", words+", which would be another login in each of its working folders: set a whole path"))
 		}
 		b.Login = loginOf(agent.Adapter, "", lookup)
 		if mine && (b.Folder != by.Folder || b.Login != by.Login) {
@@ -516,36 +522,44 @@ func (s *Server) holdFolder(b session.BoundAccount, in string) func() {
 
 // runsIn is what holds an account, for the reservation and the remove
 // alike: a launch bound b in the folder in runs in a's when b names a, or
-// in is a's folder (clean or through links), whatever a's adapter.
+// in is a's folder (accountFolder), whatever a's adapter.
 func runsIn(a capacity.Account, b session.BoundAccount, in string) bool {
 	return (b.Source == session.SourceAccount && b.ID == a.ID) || (in != "" && accountFolder(a, in))
 }
 
 // heldAccount is the one account a session of adapter bound b, its process
 // in the folder in, is counted on, of those doc holds: the account b
-// names, else adapter's own whose folder in is, else another adapter's,
-// else b's id. The start count and the counts read it, and only they.
+// names, else adapter's own whose folder in is, else b's id (the default
+// login, or unlisted), never another adapter's. The start count and the
+// counts read it, and only they.
 func heldAccount(doc capacity.Accounts, adapter string, b session.BoundAccount, in string) string {
 	if b.Source == session.SourceAccount || in == "" {
 		return b.ID
 	}
-	held := b.ID
 	for _, a := range doc.Accounts {
-		switch {
-		case !accountFolder(a, in):
-		case a.Adapter == adapter:
+		if a.Adapter == adapter && accountFolder(a, in) {
 			return a.ID
-		case held == b.ID:
-			held = a.ID
 		}
 	}
-	return held
+	return b.ID
 }
 
-// accountFolder says folder is the account a's, compared clean and
-// through its links.
+// accountFolder says folder is the account a's: the same directory, as
+// the file system says (os.SameFile), however either is written, asked of
+// folder as written and of its cleaned form; while either does not exist,
+// the two are compared clean.
 func accountFolder(a capacity.Account, folder string) bool {
-	return filepath.Clean(a.Folder) == filepath.Clean(folder) || sameFolder(a.Folder, folder)
+	fa, errA := os.Stat(a.Folder)
+	for _, f := range []string{folder, filepath.Clean(folder)} {
+		if fi, err := os.Stat(f); errA == nil && err == nil {
+			if os.SameFile(fa, fi) {
+				return true
+			}
+		} else if filepath.Clean(a.Folder) == filepath.Clean(f) {
+			return true
+		}
+	}
+	return false
 }
 
 // boundTo names, in words, what holds the account a (capacity.Facts.Bound),

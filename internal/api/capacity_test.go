@@ -1029,6 +1029,26 @@ func TestCapacityStaysWithTheAdmin(t *testing.T) {
 	}
 	launchAgain()
 	e.expect(t, "POST", "/api/integrations/claude/install", nil, http.StatusInternalServerError, "install_failed")
+	// The same in the configuration folder the pinned entry names, an
+	// account's: a skill of the user's own there, then one that cannot be
+	// written, each at a launch of the entry.
+	_, tail, _ := strings.Cut(ad.SkillPath, "/")
+	pinnedSkill := filepath.Join(pinnedFolder, filepath.FromSlash(tail))
+	pinnedAgain := func() {
+		e.srv.skillMu.Lock()
+		delete(e.srv.skillDone, "claude\x00"+pinnedFolder)
+		e.srv.skillMu.Unlock()
+		e.stopAndWait(e.expect(t, "POST", "/api/sessions", map[string]any{"agentId": "claude-in"}, http.StatusCreated, "")["id"].(string))
+	}
+	writeFile(t, pinnedSkill, []byte("a skill of the user's own\n"))
+	pinnedAgain()
+	if err := os.Remove(pinnedSkill); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(pinnedSkill, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pinnedAgain()
 	logMu.Lock()
 	defer logMu.Unlock()
 	for _, words := range []string{denyAllWords, denyEndWords} {
@@ -1040,7 +1060,9 @@ func TestCapacityStaysWithTheAdmin(t *testing.T) {
 		t.Errorf("the skill's line was written %d times: not for the pinned launch and the turn", n)
 	}
 	for _, line := range []string{`msg="skill installed" adapter=claude`, `holds a SKILL.md of the user's own, which stays; conductor skill prints Conductor's" adapter=claude`,
-		`msg="skill install failed" adapter=claude`, `msg="integration install failed" integration=claude`} {
+		`msg="skill install failed" adapter=claude`, `msg="integration install failed" integration=claude`,
+		`configuration directory holds a SKILL.md of the user's own, which stays; conductor skill prints Conductor's" adapter=claude`,
+		`msg="skill install in the agent's configuration directory failed" adapter=claude`} {
 		if !bytes.Contains(logged.Bytes(), []byte(line)) {
 			t.Errorf("the log lacks %s", line)
 		}

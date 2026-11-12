@@ -448,6 +448,9 @@ func TestHomeConfigDir(t *testing.T) {
 	if got := HomeConfigDir("claude", home("relative/u")); got != "relative/u/.claude" {
 		t.Errorf("a relative home: %q", got)
 	}
+	if got := HomeConfigDir("claude", home("h/../u")); got != "h/../u/.claude" {
+		t.Errorf("a home with ..: %q, want it as written", got)
+	}
 }
 
 // SkillFile names the skill under an absolute hooks dir, and nothing under
