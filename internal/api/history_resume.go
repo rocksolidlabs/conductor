@@ -332,7 +332,7 @@ func (s *Server) resumeFromRecord(ctx context.Context, rec journal.Record, body 
 		// tool's own login, as it resumed then.
 		sp.account = capacity.DefaultID
 		if src := rec.Launch.Source; src != "" {
-			sp.account, sp.login = "", loginWant{bound: &session.BoundAccount{ID: rec.Launch.Account, Source: src}, kept: true}
+			sp.account, sp.login = "", loginWant{bound: &session.BoundAccount{ID: rec.Launch.Account, Source: src}, kept: true, adapter: rec.Agent.Adapter}
 		}
 		if names, n := envNamesOf(rec.Launch); n > 0 {
 			if !body.WithoutEnv {

@@ -5773,7 +5773,14 @@ started. A `model` (1 to
 agent whose adapter takes none or beside arguments that choose one.
 Brakeman's turn is bound from its configured folder: none is the agent's
 own login (never the adapter's default), a folder a registered account of
-the adapter holds is that account, any other `unlisted`. A crew member
+the adapter holds is that account, any other `unlisted`; beside a login
+variable its entry, the passthrough or its launch sets, the folder is
+bound `pinned` or `launch_env` as any such launch is, and a folder of a
+retired account is refused `400 invalid_account` (a new launch binds no
+retired account). A folder variable that is not a whole path names the
+folder under the one the process starts in, and that is the folder bound
+and compared; a crew member of such an entry, bound before it has a
+folder, is refused `400 invalid_account`. A crew member
 names `account` and `model` beside its agent; a launch of the crew (`POST
 /api/crews/{id}/launch`, an approved ticket's, an `ext.Host` launch) and an
 added member (`POST /api/runs/{run}/members`) bind each member before the

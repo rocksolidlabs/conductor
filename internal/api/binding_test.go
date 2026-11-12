@@ -378,9 +378,15 @@ func TestBindingFingerprint(t *testing.T) {
 			return ""
 		}
 	}
-	base := loginOf("claude", env("CLAUDE_CONFIG_DIR", "/a", "ANTHROPIC_API_KEY", "made-up-key-1"))
-	if base != loginOf("claude", env("ANTHROPIC_API_KEY", "made-up-key-1", "CLAUDE_CONFIG_DIR", "/a", "OTHER", "x")) {
+	base := loginOf("claude", "", env("CLAUDE_CONFIG_DIR", "/a", "ANTHROPIC_API_KEY", "made-up-key-1"))
+	if base != loginOf("claude", "/w", env("ANTHROPIC_API_KEY", "made-up-key-1", "CLAUDE_CONFIG_DIR", "/a", "OTHER", "x")) {
 		t.Fatal("the same login gave another fingerprint")
+	}
+	// A folder that is not whole is the folder under the one the process
+	// starts in.
+	rel := env("CLAUDE_CONFIG_DIR", ".login")
+	if loginOf("claude", "/w1", rel) == loginOf("claude", "/w2", rel) || loginOf("claude", "/w1", rel) != loginOf("claude", "", env("CLAUDE_CONFIG_DIR", "/w1/.login")) {
+		t.Fatal("a folder under the working one hashed as written")
 	}
 	for _, other := range []func(string) string{
 		env("CLAUDE_CONFIG_DIR", "/a", "ANTHROPIC_API_KEY", "made-up-key-2"),
@@ -388,11 +394,11 @@ func TestBindingFingerprint(t *testing.T) {
 		env("CLAUDE_CONFIG_DIR", "/a", "ANTHROPIC_API_KEY", "made-up-key-1", "ANTHROPIC_BASE_URL", "http://example.test"),
 		env("CLAUDE_CONFIG_DIR", "/a"),
 	} {
-		if loginOf("claude", other) == base {
+		if loginOf("claude", "", other) == base {
 			t.Fatal("another login gave the same fingerprint")
 		}
 	}
-	if loginOf("codex", env("CLAUDE_CONFIG_DIR", "/a", "ANTHROPIC_API_KEY", "made-up-key-1")) == base {
+	if loginOf("codex", "", env("CLAUDE_CONFIG_DIR", "/a", "ANTHROPIC_API_KEY", "made-up-key-1")) == base {
 		t.Fatal("another adapter gave the same fingerprint")
 	}
 	b, _ := json.Marshal(session.BoundAccount{ID: "default", Source: session.SourceLaunchEnv, Login: base})

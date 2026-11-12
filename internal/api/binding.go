@@ -49,14 +49,20 @@ func loginNames(adapter string) []string {
 }
 
 // loginOf is the fingerprint of adapter's login in an environment (lookup,
-// pty.Lookup's): a SHA-256 under the prefix conductor-login/1 of the
-// adapter and each of loginNames with its value or a mark that it is
-// unset. It holds no value: only the hash is kept.
-func loginOf(adapter string, lookup func(string) string) string {
+// pty.Lookup's) of a process started in cwd: a SHA-256 under the prefix
+// conductor-login/1 of the adapter and each of loginNames with its value
+// or a mark that it is unset, the folder variable's as the process sees
+// it (seenFolder). It holds no value: only the hash is kept.
+func loginOf(adapter, cwd string, lookup func(string) string) string {
+	ad, _ := agents.Get(adapter)
 	h := sha256.New()
 	fmt.Fprintf(h, "conductor-login/1\x00%s\x00", adapter)
 	for _, n := range loginNames(adapter) {
-		if v := lookup(n); v != "" {
+		v := lookup(n)
+		if n == ad.ConfigDirEnv {
+			v = seenFolder(v, cwd)
+		}
+		if v != "" {
 			fmt.Fprintf(h, "%s=set:%d:%s\x00", n, len(v), v)
 		} else {
 			fmt.Fprintf(h, "%s=unset\x00", n)
@@ -65,12 +71,22 @@ func loginOf(adapter string, lookup func(string) string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// keptLogin is the Login of a binding whose only login variable is its
-// folder ("" for none): a binding of the tool's own login or of a
-// registered account, the two a session's record keeps (journal.Launch).
+// seenFolder is the folder a folder variable set to v names for a process
+// started in cwd: v when it is whole (or cwd is not known), else v under
+// cwd, as the tool reads it.
+func seenFolder(v, cwd string) string {
+	if v == "" || filepath.IsAbs(v) || cwd == "" {
+		return v
+	}
+	return filepath.Join(cwd, v)
+}
+
+// keptLogin is adapter's Login of a binding whose only login variable is
+// its folder ("" for none): a binding of a registered account, the one a
+// session's record keeps (journal.Launch).
 func keptLogin(adapter, folder string) string {
 	ad, _ := agents.Get(adapter)
-	return loginOf(adapter, func(n string) string {
+	return loginOf(adapter, "", func(n string) string {
 		if n == ad.ConfigDirEnv {
 			return folder
 		}
@@ -83,11 +99,13 @@ func keptLogin(adapter, folder string) string {
 // default at this moment, "default" for the tool's own login, or a
 // registered account's id): Brakeman's configured folder (folder), or,
 // for a launch made again, the binding it must get again (bound), of
-// which a session's record keeps the id and the source alone (kept).
+// which a session's record keeps the id and the source alone (kept)
+// beside the adapter it was started as (adapter).
 type loginWant struct {
-	folder string
-	bound  *session.BoundAccount
-	kept   bool
+	folder  string
+	bound   *session.BoundAccount
+	kept    bool
+	adapter string
 }
 
 // launchEnv is the environment a launch of agent is started with, but for
@@ -96,10 +114,11 @@ type loginWant struct {
 // takes too), what the launch adds over it (its yolo recipe's variables
 // when applied, set's, the allow names beside the passthrough, which is
 // agentEnv's clone so one launch never grows the list another reads), then
-// the login bindLogin decides over all of them. createLocalSession starts
-// every session with it, and bindMembers binds a member by it, as its
-// session will be started.
-func (s *Server) launchEnv(agent catalog.Agent, adapterEnv map[string]string, applied bool, set map[string]string, allow []string, account string, want loginWant) ([]string, map[string]string, session.BoundAccount, func(), *apiError) {
+// the login bindLogin decides over all of them, for a process started in
+// cwd ("" while it is not known). createLocalSession starts every session
+// with it, and bindMembers binds a member by it, as its session will be
+// started.
+func (s *Server) launchEnv(agent catalog.Agent, adapterEnv map[string]string, applied bool, set map[string]string, allow []string, account, cwd string, want loginWant) ([]string, map[string]string, session.BoundAccount, func(), *apiError) {
 	passthrough, env := s.agentEnv(agent, adapterEnv)
 	entry := pty.BuildEnv(pty.ParentEnv(), passthrough, env, nil)
 	if applied {
@@ -107,7 +126,7 @@ func (s *Server) launchEnv(agent catalog.Agent, adapterEnv map[string]string, ap
 	}
 	maps.Copy(env, set)
 	passthrough = append(passthrough, allow...)
-	bound, release, aerr := s.bindLogin(agent, account, want, entry, pty.BuildEnv(pty.ParentEnv(), passthrough, env, nil), env)
+	bound, release, aerr := s.bindLogin(agent, account, cwd, want, entry, pty.BuildEnv(pty.ParentEnv(), passthrough, env, nil), env)
 	if aerr != nil {
 		if was := want.bound; was != nil && aerr.Code == "invalid_account" {
 			aerr = accountGone(*was, session.BoundAccount{ID: was.ID, Source: was.Source})
@@ -117,32 +136,54 @@ func (s *Server) launchEnv(agent catalog.Agent, adapterEnv map[string]string, ap
 	return passthrough, env, bound, release, nil
 }
 
-// bindLogin decides the login a launch of agent gets, from the
-// environment its entry and the server give (entry, built as pty.BuildEnv
-// builds it) and the one the launch's own additions give over it (full),
-// and sets env, the variables the process is started with, for it: an
-// account's folder, or Brakeman's, as the adapter's folder variable. The
-// binding answered has no Login yet (createLocalSession reads it from the
-// environment built). Release lets go of the account's reservation, once
-// the session is registered or its launch failed.
-func (s *Server) bindLogin(agent catalog.Agent, account string, want loginWant, entry, full []string, env map[string]string) (session.BoundAccount, func(), *apiError) {
+// bindLogin decides the login a launch of agent, started in cwd, gets,
+// from the environment its entry and the server give (entry, built as
+// pty.BuildEnv builds it) and the one the launch's own additions give over
+// it (full), and sets env, the variables the process is started with, for
+// it. What is wanted is resolved first: an account's id (the one named, or
+// the adapter's default at this moment), or a folder (Brakeman's, set as
+// the adapter's folder variable over the entry's), which is the registered
+// account that holds it or none. Then one judgement, the same for every
+// want, decides the binding from the environment: a login variable set
+// besides the folder wanted makes it the login its launch (launch_env) or
+// its entry (pinned) sets; else it is the tool's own login, the registered
+// account, or the folder no account holds. So a registered account is
+// bound only when its folder is the one login variable the process gets,
+// and one named beside another is refused. A new launch binds no retired
+// account (Reserve); a launch made again holds the one it was bound to
+// (Hold). The binding answered has no Login yet (createLocalSession reads
+// it from the environment built). Release lets go of the account's
+// reservation, once the session is registered or its launch failed.
+func (s *Server) bindLogin(agent catalog.Agent, account, cwd string, want loginWant, entry, full []string, env map[string]string) (session.BoundAccount, func(), *apiError) {
 	nothing := func() {}
+	refuse := func(words string) (session.BoundAccount, func(), *apiError) {
+		return session.BoundAccount{}, nil, newAPIError(http.StatusBadRequest, "invalid_account", words)
+	}
 	ad, _ := agents.Get(agent.Adapter)
+	id, folder := account, want.folder
+	if b := want.bound; b != nil {
+		id = b.ID
+		if b.Source == session.SourceUnlisted {
+			folder = b.Folder
+		}
+	}
+	if folder != "" && ad.ConfigDirEnv == "" {
+		return session.BoundAccount{}, nil, newAPIError(http.StatusBadRequest, "invalid_agent", "the agent takes no account folder")
+	}
+	// The login variables the environment holds besides a folder wanted:
+	// the first its entry or the server's passthrough sets (pinned), the
+	// first the launch's own additions set or change (added).
 	el, fl := pty.Lookup(entry), pty.Lookup(full)
 	pinned, added := "", ""
 	for _, n := range loginNames(agent.Adapter) {
+		if folder != "" && n == ad.ConfigDirEnv {
+			continue
+		}
 		if pinned == "" && el(n) != "" {
 			pinned = n
 		}
 		if added == "" && fl(n) != el(n) {
 			added = n
-		}
-	}
-	id, folder := account, want.folder
-	if b := want.bound; b != nil {
-		id = b.ID
-		if b.Source == session.SourceUnlisted {
-			id, folder = "", b.Folder
 		}
 	}
 	var doc capacity.Accounts
@@ -152,58 +193,61 @@ func (s *Server) bindLogin(agent catalog.Agent, account string, want loginWant, 
 			return session.BoundAccount{}, nil, aerr
 		}
 	}
-	if folder != "" {
-		// Brakeman's folder: the registered account that holds it, else
-		// a folder not in Accounts.
-		if ad.ConfigDirEnv == "" {
-			return session.BoundAccount{}, nil, newAPIError(http.StatusBadRequest, "invalid_agent", "the agent takes no account folder")
-		}
-		env[ad.ConfigDirEnv] = folder
+	// What is wanted, resolved: a folder is the registered account that
+	// holds it ("" for none); no id is the adapter's default at this
+	// moment, the tool's own login when a variable sets the login.
+	switch {
+	case folder != "":
+		id = ""
 		for _, a := range doc.Accounts {
 			if a.Adapter == agent.Adapter && (filepath.Clean(a.Folder) == filepath.Clean(folder) || sameFolder(a.Folder, folder)) {
-				_, release, err := s.capacity.st.Hold(a.ID)
-				if err != nil {
-					return session.BoundAccount{}, nil, loginRefusal(err)
+				if a.Retired && want.bound == nil {
+					return refuse("the folder is the account " + a.ID + "'s, which is retired: a new launch takes no retired account")
 				}
-				return session.BoundAccount{ID: a.ID, Label: a.Label, Folder: folder, Source: session.SourceAccount}, release, nil
+				id = a.ID
+				break
 			}
 		}
-		return session.BoundAccount{ID: session.SourceUnlisted, Folder: folder, Source: session.SourceUnlisted}, nothing, nil
-	}
-	if id == "" {
+	case id == "":
 		id = capacity.DefaultID
 		if pinned == "" && added == "" {
 			id = capacity.DefaultOf(doc, agent.Adapter)
 		}
-	}
-	if id == capacity.DefaultID {
+	case id != capacity.DefaultID:
+		// An account named (or the default naming one) beside another
+		// login variable is refused.
 		switch {
-		case added != "":
-			return session.BoundAccount{ID: id, Source: session.SourceLaunchEnv}, nothing, nil
+		case !capacity.ValidID(id):
+			return refuse("an account is default or a- and 12 of a-z 2-7")
+		case ad.ConfigDirEnv == "":
+			return refuse(agent.Name + " does not move its login folder: it takes its own login alone")
 		case pinned != "":
-			b := session.BoundAccount{ID: id, Source: session.SourcePinned}
-			if ad.ConfigDirEnv != "" {
-				b.Folder = el(ad.ConfigDirEnv)
-			}
-			return b, nothing, nil
+			return refuse("this agent's entry sets " + pinned + ": it uses that login, its default account only")
+		case added != "":
+			return refuse("this launch sets " + added + ": it uses that login, its default account only")
 		}
-		return session.BoundAccount{ID: id, Source: session.SourceOwn}, nothing, nil
 	}
-	refuse := func(words string) (session.BoundAccount, func(), *apiError) {
-		return session.BoundAccount{}, nil, newAPIError(http.StatusBadRequest, "invalid_account", words)
+	// The one judgement, from the environment the process gets.
+	if folder != "" {
+		env[ad.ConfigDirEnv] = folder
 	}
 	switch {
-	case !capacity.ValidID(id):
-		return refuse("an account is default or a- and 12 of a-z 2-7")
-	case ad.ConfigDirEnv == "":
-		return refuse(agent.Name + " does not move its login folder: it takes its own login alone")
-	case pinned != "":
-		return refuse("this agent's entry sets " + pinned + ": it uses that login, its default account only")
 	case added != "":
-		return refuse("this launch sets " + added + ": it uses that login, its default account only")
+		return session.BoundAccount{ID: capacity.DefaultID, Folder: folder, Source: session.SourceLaunchEnv}, nothing, nil
+	case pinned != "":
+		b := session.BoundAccount{ID: capacity.DefaultID, Folder: folder, Source: session.SourcePinned}
+		if folder == "" && ad.ConfigDirEnv != "" {
+			b.Folder = seenFolder(el(ad.ConfigDirEnv), cwd)
+		}
+		return b, nothing, nil
+	case folder == "" && id == capacity.DefaultID:
+		return session.BoundAccount{ID: id, Source: session.SourceOwn}, nothing, nil
+	case folder != "" && id == "":
+		return session.BoundAccount{ID: session.SourceUnlisted, Folder: folder, Source: session.SourceUnlisted}, nothing, nil
 	case s.capacity == nil || s.capacity.st == nil:
 		return refuse("this server keeps no accounts")
 	}
+	// A registered account, its folder the one login variable.
 	hold := s.capacity.st.Reserve
 	if want.bound != nil {
 		hold = s.capacity.st.Hold
@@ -216,8 +260,11 @@ func (s *Server) bindLogin(agent catalog.Agent, account string, want loginWant, 
 		release()
 		return refuse("the account " + id + " is " + a.Adapter + "'s, not " + agent.Adapter + "'s")
 	}
-	env[ad.ConfigDirEnv] = a.Folder
-	return session.BoundAccount{ID: a.ID, Label: a.Label, Folder: a.Folder, Source: session.SourceAccount}, release, nil
+	if folder == "" {
+		folder = a.Folder
+		env[ad.ConfigDirEnv] = folder
+	}
+	return session.BoundAccount{ID: a.ID, Label: a.Label, Folder: folder, Source: session.SourceAccount}, release, nil
 }
 
 // accountsForLaunch is the accounts document a launch resolves an account
@@ -360,12 +407,19 @@ func (s *Server) bindMembers(ms []crew.Member, yolo bool, caller *session.Local)
 		}
 		applied := yolo && !agent.Yolo.Empty()
 		_, adapterEnv := agents.InjectFor(agent.Adapter, agents.HooksDir(s.cfg.DataDir), agent.EffectiveSignal(), applied)
-		passthrough, env, b, rel, aerr := s.launchEnv(agent, adapterEnv, applied, nil, nil, account, loginWant{})
+		passthrough, env, b, rel, aerr := s.launchEnv(agent, adapterEnv, applied, nil, nil, account, "", loginWant{})
 		if aerr != nil {
 			return refuse(*m, aerr)
 		}
 		releases = append(releases, rel)
-		b.Login = loginOf(agent.Adapter, pty.Lookup(pty.BuildEnv(pty.ParentEnv(), passthrough, env, nil)))
+		// A member is bound before the folder it starts in is known (each
+		// attempt of a managed run has its own): a folder variable that is
+		// not whole would be another login in each.
+		lookup := pty.Lookup(pty.BuildEnv(pty.ParentEnv(), passthrough, env, nil))
+		if ad, _ := agents.Get(agent.Adapter); ad.ConfigDirEnv != "" && lookup(ad.ConfigDirEnv) != "" && !filepath.IsAbs(lookup(ad.ConfigDirEnv)) {
+			return refuse(*m, newAPIError(http.StatusBadRequest, "invalid_account", "its entry sets "+ad.ConfigDirEnv+" to a folder under the one it starts in, which would be another login in each of its working folders: set a whole path"))
+		}
+		b.Login = loginOf(agent.Adapter, "", lookup)
 		if mine && (b.Folder != by.Folder || b.Login != by.Login) {
 			return refuse(*m, newAPIError(http.StatusBadRequest, "invalid_account", "this agent's entry uses another login than the session's: "+loginWords(b)))
 		}

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -303,7 +304,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	}
 	// The environment and the login (launchEnv: the entry's, the server's
 	// and this launch's part, then the login decided over them).
-	passthrough, env, bound, releaseAccount, aerr := s.launchEnv(agent, adapterEnv, applied, req.Env, req.allow, req.Account, req.login)
+	passthrough, env, bound, releaseAccount, aerr := s.launchEnv(agent, adapterEnv, applied, req.Env, req.allow, req.Account, cwd, req.login)
 	if aerr != nil {
 		return nil, aerr
 	}
@@ -369,13 +370,13 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	}
 	// The binding's Login is read from the environment the process starts
 	// with, whole; a launch made again starts only when it is the one it
-	// was bound to (a record keeps the id and the source alone, whose
-	// login is the folder's: keptLogin).
-	bound.Login = loginOf(agent.Adapter, pty.Lookup(procEnv))
+	// was bound to (a record keeps the id, the source and the adapter
+	// alone, whose login is the folder's: keptLogin).
+	bound.Login = loginOf(agent.Adapter, cwd, pty.Lookup(procEnv))
 	if was := req.login.bound; was != nil {
 		want := *was
 		if req.login.kept {
-			want.Folder, want.Login = bound.Folder, keptLogin(agent.Adapter, bound.Folder)
+			want.Folder, want.Login = bound.Folder, keptLogin(cmp.Or(req.login.adapter, agent.Adapter), bound.Folder)
 		}
 		if bound.ID != want.ID || bound.Source != want.Source || bound.Folder != want.Folder || bound.Login != want.Login {
 			dirFile.Close()
