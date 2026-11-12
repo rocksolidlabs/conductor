@@ -48,29 +48,48 @@ func Handler() http.Handler {
 // handler is Handler for the generated app in fsys.
 func handler(fsys fs.FS) http.Handler {
 	files := http.FS(fsys)
-	static := http.FileServer(files)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
+	return app{files: files, static: http.FileServer(files)}
+}
+
+// app is the generated app: it serves it, and names its files (Holds).
+type app struct {
+	files  http.FileSystem
+	static http.Handler
+}
+
+func (a app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if p := path.Clean("/" + r.URL.Path); a.isFile(p) {
+		if strings.HasPrefix(p, "/_nuxt/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
 		}
-		p := path.Clean("/" + r.URL.Path)
-		if f, err := files.Open(p); err == nil {
-			st, statErr := f.Stat()
-			f.Close()
-			if statErr == nil && !st.IsDir() {
-				if strings.HasPrefix(p, "/_nuxt/") {
-					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-				} else {
-					w.Header().Set("Cache-Control", "no-cache")
-				}
-				static.ServeHTTP(w, r)
-				return
-			}
-		}
-		w.Header().Set("Cache-Control", "no-cache")
-		r2 := r.Clone(r.Context())
-		r2.URL.Path = "/"
-		static.ServeHTTP(w, r2)
-	})
+		a.static.ServeHTTP(w, r)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-cache")
+	r2 := r.Clone(r.Context())
+	r2.URL.Path = "/"
+	a.static.ServeHTTP(w, r2)
+}
+
+// Holds reports whether p is, exactly as spelt, the path of one of the
+// app's files: the request log names such a request by its path, the
+// server's own text (internal/api, logPath).
+func (a app) Holds(p string) bool {
+	return p != "" && p[0] == '/' && path.Clean(p) == p && a.isFile(p)
+}
+
+func (a app) isFile(p string) bool {
+	f, err := a.files.Open(p)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	return err == nil && !st.IsDir()
 }

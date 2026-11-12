@@ -13,6 +13,9 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"io/fs"
 	"math/big"
@@ -1266,5 +1269,64 @@ func TestServeWarnsOnceForAnInsecureSwitchyard(t *testing.T) {
 	defer cancel()
 	if code, err := runServe(ctx, []string{"--config", cfg, "--listen", "127.0.0.1:0"}, strings.NewReader(""), io.Discard, io.Discard); code != 1 || err == nil || !strings.Contains(err.Error(), "plain http and not localhost or a loopback address") {
 		t.Fatalf("CONDUCTOR_RENDEZVOUS_INSECURE=0 over the file: exit %d, %v", code, err)
+	}
+}
+
+// Once serve has read its configuration, the environment's GitHub token is
+// the configuration's alone: it is gone from the server's own environment,
+// which a process started with no environment built for it inherits. The
+// token is a made-up string.
+func TestServeConfigTakesTheTokenOutOfTheEnvironment(t *testing.T) {
+	clearConductorEnv(t)
+	const tok = "ghp_PLANTEDserveENVtoken0123456789abcdWXYZ"
+	t.Setenv("CONDUCTOR_GITHUB_TOKEN", tok)
+	cfg, err := serveConfig("")
+	if err != nil || !cfg.GitHubToken.Set() || cfg.GitHubToken.Reveal() != tok {
+		t.Fatalf("the configuration: %v %v", cfg, err)
+	}
+	if v, ok := os.LookupEnv("CONDUCTOR_GITHUB_TOKEN"); ok {
+		t.Fatalf("the server's environment still holds CONDUCTOR_GITHUB_TOKEN (%d bytes)", len(v))
+	}
+	for _, kv := range os.Environ() {
+		if strings.Contains(kv, tok) {
+			t.Fatal("the server's environment still holds the token")
+		}
+	}
+}
+
+// serve reads its configuration through serveConfig, the function that
+// takes the token out of the environment, and through nothing else.
+func TestServeReadsItsConfigurationThroughServeConfig(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "serve.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, d := range file.Decls {
+		fd, ok := d.(*ast.FuncDecl)
+		if !ok || fd.Name.Name != "runServe" {
+			continue
+		}
+		found = true
+		calls := map[string]int{}
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			if c, ok := n.(*ast.CallExpr); ok {
+				switch fn := c.Fun.(type) {
+				case *ast.Ident:
+					calls[fn.Name]++
+				case *ast.SelectorExpr:
+					if x, ok := fn.X.(*ast.Ident); ok {
+						calls[x.Name+"."+fn.Sel.Name]++
+					}
+				}
+			}
+			return true
+		})
+		if calls["serveConfig"] != 1 || calls["config.Load"] != 0 {
+			t.Fatalf("runServe reads its configuration by %v, not serveConfig alone", calls)
+		}
+	}
+	if !found {
+		t.Fatal("no runServe in serve.go")
 	}
 }
