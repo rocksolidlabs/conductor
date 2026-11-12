@@ -148,11 +148,6 @@ func (s *Server) recordResume(rec journal.Record) (recordPlan, *apiError) {
 			agentID, cwd, as = launched.AgentID, launched.Cwd, info.AgentSession
 		}
 	}
-	if src := rec.Launch.Source; p.listed == nil && src != "" && src != session.SourceOwn && src != session.SourceAccount {
-		// A login its agent's entry or its launch set: the record keeps
-		// neither, so it could not show the login is the same.
-		return p, newAPIError(http.StatusConflict, "login_not_kept", "its login was set by its agent's entry or its launch, which its record does not keep: resume it while the server lists it, or start a session anew")
-	}
 	if p.listed == nil && journal.CwdMayBeCut(cwd) {
 		// The record's folder may be a cut of the session's, its parent
 		// or another: never one to start the conversation in.
@@ -327,12 +322,12 @@ func (s *Server) resumeFromRecord(ctx context.Context, rec journal.Record, body 
 		sp.model = l.Model
 	} else {
 		sp.args, sp.yolo, sp.renamed, sp.model = slices.Clone(rec.Launch.Args), rec.Launch.Yolo, rec.Launch.Renamed, rec.Launch.Model
-		// The login it was bound to, by the id and source its record keeps
-		// (recordResume refused any other); a record from before them, the
-		// tool's own login, as it resumed then.
+		// A registered account it was bound to, by the id and source its
+		// record keeps, compared; any other launch as a launch of default
+		// gives it now, as a record from before bindings resumed.
 		sp.account = capacity.DefaultID
-		if src := rec.Launch.Source; src != "" {
-			sp.account, sp.login = "", loginWant{bound: &session.BoundAccount{ID: rec.Launch.Account, Source: src}, kept: true, adapter: rec.Agent.Adapter}
+		if rec.Launch.Source == session.SourceAccount {
+			sp.account, sp.login = "", loginWant{bound: &session.BoundAccount{ID: rec.Launch.Account, Source: session.SourceAccount}, kept: true, adapter: rec.Agent.Adapter}
 		}
 		if names, n := envNamesOf(rec.Launch); n > 0 {
 			if !body.WithoutEnv {

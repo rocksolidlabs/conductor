@@ -306,10 +306,11 @@ type Launch struct {
 	EnvSHA256  string   `json:"envSha256,omitempty"`
 	Yolo       bool     `json:"yolo,omitempty"`
 	Renamed    bool     `json:"renamed,omitempty"`
-	// Account and Source are the login the launch was bound to, its id and
-	// where it came from (session.BoundAccount's, never its folder or its
-	// fingerprint), and Model its model. A record holding one is written at
-	// VLogin.
+	// Account and Source are the registered account the launch was bound
+	// to, its id and source (session.BoundAccount's, never its folder or its
+	// fingerprint; nothing for any other login, which a resume from the
+	// record takes as a launch of default gives it then), and Model its
+	// model. A record holding one is written at VLogin.
 	Account string `json:"account,omitempty"`
 	Source  string `json:"source,omitempty"`
 	Model   string `json:"model,omitempty"`

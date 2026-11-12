@@ -157,6 +157,10 @@ var (
 	// continuation that read them in part would ask a released gate again
 	// or drop an answer (readDecisionHistory). Nothing is made or moved.
 	ErrChainTooLong = errors.New("the run's chain of continuations is longer than this server reads: it is not continued")
+	// ErrLoginNotKept refuses a resume from a record that names a member's
+	// account and keeps no binding for it: it is never resumed on another
+	// login.
+	ErrLoginNotKept = errors.New("the record names a member's account and keeps no binding for it: it is not resumed on another login")
 	// ErrManaged says the run is a managed one (a crew with tasks, #334),
 	// which the start, add and resume paths of a legacy run do not serve:
 	// a managed run dispatches its own tasks, and continues after a restart
@@ -1088,8 +1092,12 @@ func (e *Engine) ResumeRecord(ctx context.Context, rec Run) (*Run, error) {
 	c := Crew{ID: rec.CrewID, Name: rec.Name, Goal: rec.Goal, Cwd: rec.Cwd, Where: WhereServer, Isolation: rec.Isolation, Yolo: &yolo}
 	keeps := map[string]kept{}
 	for _, st := range rec.Members {
-		// Its binding as the record keeps it; a record from before bindings
-		// has none, and the member takes the tool's own login.
+		// Its binding as the record keeps it; one that keeps none (a record
+		// from before bindings, a member on the tool's own login) takes the
+		// login a launch of default gives now, as it did.
+		if st.Account != nil && st.bound == nil {
+			return nil, fmt.Errorf("%w: member %s", ErrLoginNotKept, st.Name)
+		}
 		c.Members = append(c.Members, Member{Name: st.Name, AgentID: st.AgentID, Prompt: st.Prompt, Args: slices.Clone(st.Args), Start: st.Start, Model: st.Model, Bound: st.bound})
 		if st.AgentSession != nil && st.AgentSession.Resumable && st.AgentSession.ID != "" {
 			keeps[st.Name] = kept{agentSession: st.AgentSession.ID, sessionID: st.SessionID, worktree: st.Worktree, branch: st.Branch, base: st.Base}
@@ -1363,11 +1371,20 @@ func (e *Engine) launched(r *run) {
 
 func newMember(m Member) *member {
 	m.Args = slices.Clone(m.Args)
+	return &member{def: m, state: memberStateOf(m), wake: make(chan struct{}, 1)}
+}
+
+// memberStateOf is the state, pending, of m as a run keeps it: its model,
+// and its binding by id and source (Account) and whole (bound, for a
+// legacy record), except the tool's own login, which a run keeps as no
+// binding, as a run from before bindings has (the run's engine holds m's
+// whole binding all the same, and compares every launch of it).
+func memberStateOf(m Member) MemberState {
 	st := MemberState{Name: m.Name, AgentID: m.AgentID, Start: m.Start, Status: MemberPending, Model: m.Model}
-	if b := m.Bound; b != nil {
+	if b := m.Bound; b != nil && b.Source != session.SourceOwn {
 		st.Account, st.bound = &MemberAccount{ID: b.ID, Source: b.Source}, b
 	}
-	return &member{def: m, state: st, wake: make(chan struct{}, 1)}
+	return st
 }
 
 // MemberAccount is a member's binding as a run reply shows it, to whoever

@@ -3,6 +3,7 @@ package crew
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -235,6 +236,68 @@ func TestLegacyRecordKeepsBindings(t *testing.T) {
 		if got := fl.accountsOf(name); len(got) != 1 || got[0] != want {
 			t.Errorf("%s resumed under %+v, want %+v", name, got, want)
 		}
+	}
+}
+
+// A run is kept with the tool's own login as no binding, as a run from
+// before bindings is: its member's state names no account and its legacy
+// record keeps no binding for it; the ledger's crew holds none either,
+// while every other binding there is whole.
+func TestOwnLoginKeptAsNoBinding(t *testing.T) {
+	own := immediate("own", "x")
+	own.Bound = &session.BoundAccount{ID: "default", Source: session.SourceOwn, Login: "fingerprint-own"}
+	named := immediate("named", "y")
+	named.Bound = boundAt("a-aaaaaaaaaaaa")
+	if st := memberStateOf(own); st.Account != nil || st.bound != nil {
+		t.Fatalf("the own member's state: %+v", st)
+	}
+	s := storedOf(Run{Members: []MemberState{memberStateOf(own), memberStateOf(named)}})
+	if _, ok := s.Bound["own"]; ok || s.Bound["named"] != *named.Bound {
+		t.Fatalf("the record's bindings: %+v", s.Bound)
+	}
+	kept := crewAsLaunched(testCrew(own, named))
+	var c Crew
+	if err := json.Unmarshal([]byte(kept), &c); err != nil || c.Members[0].Bound != nil || c.Members[1].Bound == nil || *c.Members[1].Bound != *named.Bound {
+		t.Fatalf("the ledger's crew: %v %s", err, kept)
+	}
+}
+
+// A run rebuilt from its ledger row alone (its record missing) has its
+// members as a launch makes them: the account, the model and the whole
+// binding of each, but the tool's own login's.
+func TestRecoveredRunKeepsItsMembersBindings(t *testing.T) {
+	named := immediate("named", "x")
+	named.Bound, named.Model = boundAt("a-aaaaaaaaaaaa"), "opus"
+	plain := immediate("plain", "y")
+	c := testCrew(named, plain)
+	rec := Recovered(Run{}, Loaded{Run: ledger.RunRow{ID: "api-sweep-0000beef", CrewID: c.ID, Crew: crewAsLaunched(c), State: ledger.RunInterrupted}})
+	if len(rec.Members) != 2 {
+		t.Fatalf("the members: %+v", rec.Members)
+	}
+	m := rec.Members[0]
+	if m.Account == nil || *m.Account != (MemberAccount{ID: "a-aaaaaaaaaaaa", Source: session.SourceAccount}) || m.Model != "opus" || m.bound == nil || *m.bound != *named.Bound {
+		t.Fatalf("the named member: %+v", m)
+	}
+	if p := rec.Members[1]; p.Account != nil || p.bound != nil {
+		t.Fatalf("the plain member: %+v", p)
+	}
+	if s := storedOf(rec); s.Bound["named"] != *named.Bound {
+		t.Fatalf("the record written of it: %+v", s.Bound)
+	}
+}
+
+// A record that names a member's account and keeps no binding for it is
+// refused at its resume (ErrLoginNotKept): nothing is launched.
+func TestRecordWithoutItsBindingIsNotResumed(t *testing.T) {
+	st := newMember(immediate("lead", "x")).state
+	st.Status, st.Account = MemberEnded, &MemberAccount{ID: "a-aaaaaaaaaaaa", Source: session.SourceAccount}
+	rec := Run{ID: "api-sweep-0000beef", CrewID: "api-sweep", Name: "API sweep", Cwd: "/work", State: RunStopped, Isolation: IsolationNone, Members: []MemberState{st}}
+	e, fl := newEngine(t)
+	if _, err := e.ResumeRecord(t.Context(), rec); !errors.Is(err, ErrLoginNotKept) {
+		t.Fatalf("the resume: %v", err)
+	}
+	if n := len(fl.launched()); n != 0 {
+		t.Fatalf("%d sessions launched", n)
 	}
 }
 

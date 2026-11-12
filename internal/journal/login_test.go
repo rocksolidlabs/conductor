@@ -5,11 +5,13 @@ import (
 	"testing"
 )
 
-// A record whose launch names its login (an account's id and source) or
-// its model is written at VLogin, so a server that knows only the
-// versions before it reads it as a later version's, never strictly
-// without them; a launch naming neither stays at V. Both read back
-// strictly here.
+// A record whose launch names its login (a registered account's id and
+// source, the one login a server's record keeps) or its model is written
+// at VLogin, so a server that knows only the versions before it lists it
+// as a later version's and refuses its resume, never reading it strictly
+// without them; a launch that takes no registered account and no model
+// (the server writes nothing of its login then: its tool's own, or one
+// its entry or its launch sets) stays at V. Both read back strictly here.
 func TestALaunchsLoginIsWrittenAtItsOwnVersion(t *testing.T) {
 	dir := t.TempDir()
 	j := openAt(t, dir, Options{})

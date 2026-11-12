@@ -291,8 +291,14 @@ func (s *Server) beginServerRecord(info session.Info, launched session.Launched,
 		ResumedFrom: info.ResumedFrom,
 		StartedAt:   info.CreatedAt,
 	}
-	// The login it was bound to, by its id and source alone, and its model.
-	r.Launch.Account, r.Launch.Source, r.Launch.Model = launched.Account.ID, launched.Account.Source, launched.Model
+	// A registered account's binding, by its id and source alone, and the
+	// model; nothing of the tool's own login or of a login its entry or
+	// its launch sets, which a resume from the record takes as a launch of
+	// default gives it then, as it did before bindings.
+	if launched.Account.Source == session.SourceAccount {
+		r.Launch.Account, r.Launch.Source = launched.Account.ID, launched.Account.Source
+	}
+	r.Launch.Model = launched.Model
 	switch {
 	case info.Crew != nil && info.Crew.Task != "":
 		// An attempt's start is the engine's own, the ledger's.

@@ -694,6 +694,8 @@ func (s *Server) runError(w http.ResponseWriter, what, id string, err error) {
 		writeError(w, http.StatusConflict, "managed_run", err.Error())
 	case errors.Is(err, crew.ErrChainTooLong):
 		writeError(w, http.StatusConflict, "chain_too_long", err.Error())
+	case errors.Is(err, crew.ErrLoginNotKept):
+		writeError(w, http.StatusConflict, "login_not_kept", err.Error())
 	case errors.Is(err, crew.ErrBrakemanRun):
 		writeError(w, http.StatusConflict, "brakeman_run", err.Error())
 	case errors.As(err, &aerr):

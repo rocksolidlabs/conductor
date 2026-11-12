@@ -52,8 +52,9 @@ func TestApprovedLaunchBindsAccounts(t *testing.T) {
 	}
 	l := newLaunchTest(t, nil, nil)
 	run := entityOf(t, l.launch(t, l.testEnv, map[string]any{"byName": "Nate"}, http.StatusCreated, ""), "run")
-	if got := acct(runMember(t, run, "lead")["account"]); got != "default/own" {
-		t.Fatalf("a revision naming none: %s", got)
+	// The tool's own login, which a run reply names by no account.
+	if m := runMember(t, run, "lead"); m["account"] != nil {
+		t.Fatalf("a revision naming none: %v", m)
 	}
 }
 
@@ -534,7 +535,7 @@ func TestSelfCrewAdoptsSessionBinding(t *testing.T) {
 	for _, m := range out["run"].(map[string]any)["members"].([]any) {
 		accounts[m.(map[string]any)["name"].(string)] = m.(map[string]any)["account"]
 	}
-	if acct(accounts["me"]) != a+"/account" || acct(accounts["twin"]) != a+"/account" || acct(accounts["other"]) != "default/own" {
+	if acct(accounts["me"]) != a+"/account" || acct(accounts["twin"]) != a+"/account" || accounts["other"] != nil {
 		t.Fatalf("the members' accounts: %v", accounts)
 	}
 	twin := e.waitRunning(t, run, "twin")
@@ -630,43 +631,42 @@ func TestCrewLaunchBindsAccounts(t *testing.T) {
 		"members": []any{map[string]any{"name": "x", "agentId": "claude-p", "prompt": "", "start": map[string]any{"when": "manual"}, "bound": map[string]any{"id": a, "source": "account", "folder": "/elsewhere", "login": "x"}}}}, http.StatusBadRequest, "invalid_crew")
 }
 
-// A resume from a session's record after a restart keeps its binding:
-// a session of a registered account resumes on it; one whose login its
-// entry set is refused login_not_kept, which its record cannot show is
-// the same.
+// A resume from a session's record after a restart: a session of a
+// registered account resumes on it, the default changed since, and once
+// the account is gone it is refused account_gone; one whose login its
+// entry set is resumed as a launch of default gives it then, as before
+// bindings, its record keeping nothing of that login.
 func TestRecordResumeKeepsAccount(t *testing.T) {
 	e := newBindEnv(t, nil)
 	a, folderA := e.account(t, "claude", "Work")
 	b, _ := e.account(t, "claude", "Other")
 	sid := e.launch(t, "claude-p", map[string]any{"account": a})
+	again := e.launch(t, "claude-p", map[string]any{"account": a})
 	pinned := e.launch(t, "claude-pin", nil)
-	for i, id := range []string{sid, pinned} {
+	for i, id := range []string{sid, again, pinned} {
 		e.probe(t, id)
 		// A turn its agent reported: a conversation to take up.
 		l, _ := e.srv.lookupLocal(id)
 		l.ReportAgentSession("conv-"+string(rune('a'+i)), session.PolicyLatest, true)
-		deadline := time.Now().Add(10 * time.Second)
-		for {
-			_, out := e.do("GET", "/api/history/sessions/"+id, adminToken, nil)
-			if as, _ := out["record"].(map[string]any)["agent"].(map[string]any)["session"].(map[string]any); as["resumable"] == true {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("the record of %s holds no conversation: %v", id, out)
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
+		e.recordResumable(t, id)
 	}
 	e.setDefault(t, "claude", b)
 	shutdown(e.testEnv)
 	next := &bindEnv{testEnv: serveSecond(t, e.testEnv, newFakeUsage("claude"), newFakeUsage("codex")), probes: e.probes, pin: e.pin}
-	next.expect(t, "POST", "/api/history/sessions/"+pinned+"/resume", map[string]any{"commandId": "c-1", "confirmLost": true}, http.StatusConflict, "login_not_kept")
-	out := next.expect(t, "POST", "/api/history/sessions/"+sid+"/resume", map[string]any{"commandId": "c-2", "confirmLost": true}, http.StatusCreated, "")
+	out := next.expect(t, "POST", "/api/history/sessions/"+pinned+"/resume", map[string]any{"commandId": "c-1", "confirmLost": true}, http.StatusCreated, "")
+	pid := out["session"].(map[string]any)["id"].(string)
+	t.Cleanup(func() { next.stopAndWait(pid) })
+	if got, bound := next.probe(t, pid), next.bound(t, pid); got != login(e.pin) || bound.Source != session.SourcePinned {
+		t.Fatalf("the pinned record's resume: %s %+v", got, bound)
+	}
+	out = next.expect(t, "POST", "/api/history/sessions/"+sid+"/resume", map[string]any{"commandId": "c-2", "confirmLost": true}, http.StatusCreated, "")
 	id := out["session"].(map[string]any)["id"].(string)
-	t.Cleanup(func() { next.stopAndWait(id) })
 	if got, bound := next.probe(t, id), next.bound(t, id); got != login(folderA) || bound.ID != a {
 		t.Fatalf("the record's resume: %s %+v", got, bound)
 	}
+	next.stopAndWait(id)
+	next.expect(t, "DELETE", "/api/accounts/"+a+"?expectedRev="+itoa(int(accountsRev(t, next.testEnv))), nil, http.StatusNoContent, "")
+	next.expect(t, "POST", "/api/history/sessions/"+again+"/resume", map[string]any{"commandId": "c-3", "confirmLost": true}, http.StatusConflict, "account_gone")
 }
 
 // Brakeman's turn is bound from its configured folder: none is the tool's

@@ -309,6 +309,12 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		return nil, aerr
 	}
 	defer releaseAccount()
+	// A process on a Runtime other than the native one starts under the
+	// tool's own login alone: a login of this server's (a folder, a value)
+	// is nothing a guest has.
+	if req.where != "" && req.where != ext.WhereNative && bound.Source != session.SourceOwn {
+		return nil, newAPIError(http.StatusBadRequest, "invalid_account", "this run's Runtime cannot take a login from this server: "+loginWords(bound))
+	}
 	// What the session watches on its screen: the trust question and its
 	// answers, the other questions, the window title that says the agent
 	// works (Codex's, with the title its adapter's launch asks for), and
