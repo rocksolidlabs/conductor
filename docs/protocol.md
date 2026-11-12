@@ -4544,25 +4544,39 @@ item gives is content from outside: it goes into Dispatch through the
 store's own operations and bounds (its title cut to 200 characters, its
 description to 64 KiB at a line's end with a last line saying the rest
 is on GitHub, the snapshot at most 40 KiB, at most 20 labels and 20
-assignees shown and never mapped, the steps to reproduce at most 8 KiB,
-at most 8 images), and nothing is made of it. The routes are the
-admin's alone and a switchyard's `403 switchyard`; a body is at most
-64 KiB (`413 bound`), decoded strictly before the path is read. A
-reference is a URL (`https://<host>/<owner>/<repo>/issues/<n>` or
-`…/pull/<n>`, the host github.com or a GitHub Enterprise Server's with a
-saved token), `owner/repo#n` or `#n` in the project's repository (its
-tracker's URL, else its folder's `origin` remote, read from the
-repository's configuration with no git process); anything else is `400
-not_a_tracker_url`, quoting nothing of it.
+assignees shown and never mapped, the labels past 20 left out and
+counted (`labelsTotal`, the number GitHub's answer listed), the steps to
+reproduce at most 8 KiB, at most 8 images), and nothing is made of it.
+Every text it gives has its control characters dropped (a description's
+and its steps' line breaks and tabs aside), each text of one line (a
+title, a label, a person's name, a milestone, a branch, a check's name)
+also the characters that reorder a line (U+202A to U+202E, U+2066 to
+U+2069), and is cut to its bound; a check's status and conclusion are
+GitHub's word or `other`. The routes are the admin's alone and a
+switchyard's `403 switchyard`; a body is at most 64 KiB (`413 bound`),
+decoded strictly before the path is read. A reference is a URL
+(`https://<host>/<owner>/<repo>/issues/<n>` or `…/pull/<n>`, the host
+github.com or a GitHub Enterprise Server's with a saved token), which
+never reads the project's folder, `owner/repo#n` or `#n` in the
+project's repository: its tracker's URL, else its folder's `origin`
+remote, read from the repository's configuration with no git process
+(each file it needs a regular file, read to its bound: 4 KiB for a
+`.git` file or a `commondir`, 1 MiB for the configuration), its host
+and repository alone taken. A folder with no repository or no `origin`
+gives no default; one whose configuration cannot be read so, or whose
+`origin` is in no form the server reads, refuses a short form (`400
+not_a_tracker_url`, saying to give the whole address or set the
+project's tracker URL), never read on another host. Anything else is
+`400 not_a_tracker_url`, quoting nothing of it.
 
 | Route | Body | Answer |
 |---|---|---|
-| `POST /api/dispatch/external/preview` | `{url, project?}` | reads the item and answers `{preview: {ref, url, title, description (its first 2 KiB), descriptionLength, images, repro?, state, stateReason?, labels, assignees, owners, linked?}}`, what an import would make, `linked` the live ticket that has it already; writes nothing |
+| `POST /api/dispatch/external/preview` | `{url, project?}` | reads the item and answers `{preview: {ref, url, title, description (its first 2 KiB), descriptionLength, images, repro?, state, stateReason?, labels, assignees, owners, linked?}}`, what an import would make, made by the import's own projection (its images, labels and assignees what the import keeps), `linked` the live ticket that has the item as its linked issue already; writes nothing |
 | `POST /api/dispatch/projects/{key}/import` | `{opId, byName?, url, status?, priority?, horizon?, owner?, assignees?, labels?, milestone?, images?}` | replays the operation first, before any request to GitHub. A first send reads the item once and runs `ticket.import` (its snapshot holding the image manifest, at most 8), then, within the images' budget, downloads each image the manifest holds (from GitHub's image hosts alone, at most 16 MiB, its type sniffed from its bytes) and makes it an attachment with its manifest entry in one operation (`ticket.import_image`, a derived op id of the image's id and its bytes' SHA-256), or records its skip (a type other than PNG, JPEG, GIF or WebP, a size past the bound), never fetched again. `201 {receipt, ticket, images: [{id, attachmentId?, skipped?, pending?}]}`, `pending` an image the budget or a failed download left. A resend is answered from the replay and from the stored manifest, never from a receipt: only the entries with neither an attachment nor a skip are fetched again, with fresh addresses from one read, matched by id; with GitHub unreachable it answers `200` with them pending. `409 external_linked` (the receipt's `key` naming the ticket that has the item), `409 archived` |
-| `POST /api/dispatch/tickets/{key}/external` | `{opId, expectedRev?, byName?, url}` | replays, then reads the item and runs `ticket.link_external`: every field stays Dispatch's. `{receipt, ticket}`; `409 invalid` for a ticket linked already, `409 external_linked` |
+| `POST /api/dispatch/tickets/{key}/external` | `{opId, expectedRev?, byName?, url}` | replays (again once it holds the ticket's lock: a resend that waited for its first send answers the first's receipt and asks GitHub nothing), then reads the item and runs `ticket.link_external`: every field stays Dispatch's. `{receipt, ticket}`; `409 invalid` for a ticket linked already, `409 external_linked` |
 | `POST /api/dispatch/tickets/{key}/external/delete` | `{opId, expectedRev?, byName?}` | `ticket.unlink_external`: each field GitHub owned becomes Dispatch's with its text. `{receipt, ticket}` |
-| `POST /api/dispatch/tickets/{key}/external/refresh` | `{opId, byName?, images?}` | replays (a resend of a refresh that changed the ticket answers `{receipt, ticket}` from its receipt), then reads the item with the validators its last read kept: another item than the one held is `409 moved` naming it; a `304`, or a `200` that changes nothing, is recorded as the ticket's read alone (no change, no receipt); otherwise `ticket.refresh` writes the snapshot and the fields GitHub owns. Then, whatever the read found, unless `images` is false, the manifest's pending entries are completed as an import's resend does, after a `304` from one more read without validators, made only when one is pending. `200 {changed, receipt?, ticket, images}`. The ticket's status never moves |
-| `POST /api/dispatch/tickets/{key}/external/authority` | `{opId, expectedRev?, byName?, field, owner}` | `field` `title` or `description`, `owner` `dispatch` or `github`: replays, then to GitHub reads the item first and hands the read to `ticket.authority`, which writes the snapshot, the owner and the field from it. `{receipt, ticket}` |
+| `POST /api/dispatch/tickets/{key}/external/refresh` | `{opId, byName?, images?}` | replays under the ticket's lock (a resend of a refresh that changed the ticket, its first send's done or waited for, completes the images that send left pending and answers `{changed: true, receipt, ticket, images}` from its receipt, asking GitHub nothing more), then reads the item with the validators its last read kept: another item than the one held is `409 moved` naming it; a `304`, or a `200` that changes nothing, is recorded as the ticket's read alone (no change, no receipt); otherwise `ticket.refresh` writes the snapshot and the fields GitHub owns. Then, whatever the read found, unless `images` is false, the manifest's pending entries are completed as an import's resend does, after a `304` from one more read without validators, made only when one is pending. `200 {changed, receipt?, ticket, images}`. The ticket's status never moves |
+| `POST /api/dispatch/tickets/{key}/external/authority` | `{opId, expectedRev?, byName?, field, owner}` | `field` `title` or `description`, `owner` `dispatch` or `github`: replays (again under the ticket's lock, as a link does), then to GitHub reads the item first and hands the read to `ticket.authority`, which writes the snapshot, the owner and the field from it. `{receipt, ticket}` |
 | `POST /api/dispatch/tickets/{key}/links/{id}/read` | `{}` | reads the item a live `delivery` or `external` link names, and for a pull request its checks at its head commit (at most 100; a cut list says so), and records it as the link's read: `200 {read}`. A failure keeps its words on the link's read |
 | `GET /api/dispatch/tickets/{key}/links/{id}/read` | none | `{read}`, the link's last read whole, its checks among it, or `null` |
 
@@ -4571,8 +4585,16 @@ a token kept, reads it once after the operation commits, in the
 background (one at a time per ticket and per link, within 90 s); and a
 ticket's edit to `done` whose project requires `merged` first reads every
 live delivery link to a GitHub item, at most 4 at once, so the edit's
-transaction judges a read made now (at most 5 minutes old). Nothing else
-reads GitHub by itself: no timer, no poller, no webhook. Reads of one
+transaction judges a read made now (at most 5 minutes old). A delivery
+counts for `merged` only while its latest read succeeded: a read that
+failed after the merged one, for any reason (the item moved, a rate
+limit, GitHub unreachable), makes the link not count until a read
+succeeds again, so while GitHub cannot be read a ticket under `merged`
+is not closed. Nothing else reads GitHub by itself: no timer, no poller,
+no webhook; and every read, the background ones and the routes', ends
+with the server: once it begins to stop no request starts, one under way
+is ended and records nothing, and a route so ended answers `503
+tracker_busy`. Reads of one
 ticket's item, and of one link's, are made one at a time, under a lock
 held from the request to the commit: a request that waits for one past
 15 s answers `503 tracker_busy` with `Retry-After`, nothing read or
@@ -4584,8 +4606,9 @@ Each route's deadline is the sum of its steps' caps: 15 s for the lock,
 30 s for each store write, and 60 s for an import's or a refresh's
 images: `TrackerReadTimeout` 90 s (the preview, a link, an unlink, a
 field given back, a link's read), `ImportTimeout` 150 s (an import, a
-refresh) and `MergedCloseTimeout` 75 s (the edit to `done`: the locks,
-30 s for the links' reads, the edit). A budget that ends keeps what its
+refresh) and `MergedCloseTimeout` 105 s (the edit to `done`: the locks
+and the links' reads in one phase, the reads within 30 s; each read's
+record within a write's cap of its own; the edit). A budget that ends keeps what its
 phase has: images not downloaded stay pending, a cut list of checks says
 so. GitHub's failures: `404 external_not_found` (no such item, or the
 token cannot see it), `422 token_refused` (GitHub refuses the token:
