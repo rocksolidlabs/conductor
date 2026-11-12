@@ -383,8 +383,11 @@ func deliveryWords(d delivery) string {
 }
 
 // mergedState is the close policy's merged, pure, at now: met by a live
-// delivery whose last read says merged and was made at most
-// MaxMergedReadAge before now, the first such in the order the deliveries
+// delivery whose last read says merged, was made at most MaxMergedReadAge
+// before now and has no failed read recorded after it (a read that failed
+// for any reason, the item moved or GitHub unreachable among them, makes
+// the link not count until a read succeeds), the first such in the order
+// the deliveries
 // come (on, the read it rests on); else the words for the latest delivery
 // that fell short, or "no delivery link's pull request was read merged".
 func mergedState(deliveries []delivery, now time.Time) (met bool, why string, on *ClosedOn) {
@@ -393,6 +396,10 @@ func mergedState(deliveries []delivery, now time.Time) (met bool, why string, on
 		switch {
 		case d.read == nil || d.read.ReadAt.IsZero():
 			why = "the delivery " + deliveryWords(d) + " has not been read"
+		case !d.read.ErrorAt.IsZero():
+			// A read that failed since (RecordRead clears the failure): the
+			// link counts again once a read succeeds.
+			why = "the last read of the delivery " + deliveryWords(d) + " failed: read it again"
 		case !d.read.Merged:
 			why = "GitHub said the delivery " + deliveryWords(d) + " is " + d.read.State + ", not merged"
 		case now.Sub(d.read.ReadAt) > MaxMergedReadAge:

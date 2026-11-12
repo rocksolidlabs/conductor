@@ -340,6 +340,25 @@ func (h *eventHub) dispatch(changes []dispatch.Change) {
 	}
 }
 
+// maxDispatchReadEvent bounds a dispatch_read event's data: a ticket's id
+// and a link's (16 hex each), a project's key (at most 6), a time
+// (RFC 3339 with nanoseconds, 30) and the envelope's 50 come to about 120
+// bytes, never escaped.
+const maxDispatchReadEvent = 256
+
+// dispatchRead announces a read of a ticket's linked item or of a link's
+// item (dispatch.Store.OnRead): {ticket, project, link?, readAt}, with no
+// seq, since a read is no change of the log's and has no place in its
+// sequence; a page reads the ticket again on it, apart from the dispatch
+// events' seq. It goes the dispatch event's way: to the clients alone.
+func (h *eventHub) dispatchRead(n dispatch.ReadNotice) {
+	b, err := json.Marshal(n)
+	if err != nil || len(b) > maxDispatchReadEvent {
+		return
+	}
+	h.broadcast([]byte("event: dispatch_read\ndata: " + string(b) + "\n\n"))
+}
+
 // broadcast queues msg, one event or a commit's several, as one entry for
 // every client; a client that cannot keep up is dropped.
 func (h *eventHub) broadcast(msg []byte) {
