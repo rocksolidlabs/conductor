@@ -433,6 +433,33 @@ test.describe('the account a launch is sent with', () => {
   })
 })
 
+test("a failed read of the accounts is said in the server's words, with Try again in Settings and one line in the launch dialog", async ({ page }) => {
+  let fail = true
+  await page.route(
+    (url) => url.pathname === '/api/accounts',
+    (route) =>
+      fail && route.request().method() === 'GET'
+        ? route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'bound', message: 'the reply would pass its bound' } }) })
+        : route.continue(),
+  )
+  await page.goto('/settings')
+  const card = page.locator('[data-accounts-card]')
+  await expect(card.locator('[data-accounts-problem]')).toContainText('The accounts could not be read')
+  await expect(card.locator('[data-accounts-problem]')).toContainText('the reply would pass its bound')
+  await expect(card).not.toContainText('Reading the accounts')
+  fail = false
+  await card.locator('[data-accounts-problem]').getByRole('button', { name: 'Try again' }).click()
+  await expect(card.locator('[data-accounts-adapter="claude"]')).toBeVisible()
+  await expect(card.locator('[data-accounts-problem]')).toHaveCount(0)
+
+  fail = true
+  await page.goto('/')
+  const dialog = await launchDialog(page, 'Claude Code (e2e stub)')
+  await expect(dialog.locator('[data-launch-accounts-unread]')).toContainText('the reply would pass its bound')
+  await expect(dialog.locator('[data-launch-account]')).toHaveCount(0)
+  await expect(dialog.locator('[data-launch-model]')).toHaveCount(0)
+})
+
 test.describe('on a phone', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
 

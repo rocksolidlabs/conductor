@@ -175,11 +175,11 @@ describe('CapacityLive', () => {
     const opening = live.watch(q).then(() => live.read(q))
     live.unwatch(q)
     srv.gets[0]!.answer(view('claude', 'a-work', { state: 'never_read' }))
-    expect(await opening).toBe(false)
     await settle()
     expect(srv.posts).toHaveLength(0)
     expect(srv.gets).toHaveLength(1)
     expect(slots(live)).toBe(0)
+    expect(await opening).toBe(false)
   })
 
   it('lets a GET that never answers go at its deadline: the next event asks again and the panel recovers', async () => {
