@@ -337,6 +337,27 @@ func TestValidHostToken(t *testing.T) {
 	}
 }
 
+// TestGrantDecideValid holds the decide grant to the grants a principal may
+// hold: alone and beside admin and host, never twice; an unknown grant's
+// words name the three.
+func TestGrantDecideValid(t *testing.T) {
+	if !ext.GrantDecide.Valid() || ext.GrantDecide != "decide" {
+		t.Fatalf("the decide grant %q is not valid", ext.GrantDecide)
+	}
+	for _, gs := range [][]ext.Grant{{ext.GrantDecide}, {ext.GrantAdmin, ext.GrantDecide}, {ext.GrantHost, ext.GrantDecide}, {ext.GrantAdmin, ext.GrantHost, ext.GrantDecide}} {
+		if err := (ext.Principal{Subject: "s", Name: "n", Grants: gs}).Valid(); err != nil {
+			t.Errorf("%v: %v", gs, err)
+		}
+	}
+	if err := (ext.Principal{Subject: "s", Name: "n", Grants: []ext.Grant{ext.GrantDecide, ext.GrantDecide}}).Valid(); err == nil {
+		t.Error("the decide grant given twice was taken")
+	}
+	err := ext.Principal{Subject: "s", Name: "n", Grants: []ext.Grant{"reviewer"}}.Valid()
+	if err == nil || !strings.Contains(err.Error(), "is not admin, host or decide") {
+		t.Errorf("an unknown grant's words: %v", err)
+	}
+}
+
 // with is a copy of r changed by edit.
 func with[T any](r T, edit func(*T)) T {
 	edit(&r)

@@ -1038,7 +1038,7 @@ func TestAResponsesRechecks(t *testing.T) {
 	d := ask(t, e, b.Attempt.SessionID, approval("q1", "Merge it?"))
 	var de *DecisionError
 	router := Authority{Via: ViaRouter, Subject: "nate", Boot: e.Boot()}
-	if rc, err := e.RespondDecision(t.Context(), d.ID, Response{ResponseID: "x1", Choice: choice(0), ExpectedRev: 1}, "user:nate", router); !errors.As(err, &de) || de.Code != CodeNotApprover || rc.K != 1 {
+	if rc, err := e.RespondDecision(t.Context(), d.ID, Response{ResponseID: RouterResponseID, Choice: choice(0), ExpectedRev: 1}, "user:nate", router); !errors.As(err, &de) || de.Code != CodeNotApprover || rc.K != 1 {
 		t.Fatalf("a router's answer: %+v %v", rc, err)
 	}
 	if _, err := e.RespondDecision(t.Context(), d.ID, Response{ResponseID: "x2", Choice: choice(0), ExpectedRev: 5}, "admin", workbench(e)); !errors.As(err, &de) || de.Code != CodeInvalid {
