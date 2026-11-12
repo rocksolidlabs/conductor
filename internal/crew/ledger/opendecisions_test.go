@@ -232,7 +232,7 @@ func TestTheOwnerMakesTheOpenIndex(t *testing.T) {
 
 	old := accessPaths
 	t.Cleanup(func() { accessPaths = old })
-	accessPaths = []string{"CREATE INDEX IF NOT EXISTS decisions_open ON no_such_table(n)"}
+	accessPaths = []accessPath{{"decisions_open", "CREATE INDEX decisions_open ON no_such_table(n)"}}
 	failed := openLedger(t, filepath.Join(t.TempDir(), "runs"))
 	if ro, why := failed.ReadOnly(); ro {
 		t.Fatalf("an index not made made the ledger read-only: %s", why)
@@ -245,6 +245,50 @@ func TestTheOwnerMakesTheOpenIndex(t *testing.T) {
 	}
 	if _, err := failed.OpenDecisionsNewest(ctx, 0, func(DecisionRow) bool { return true }); !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "could not be made") {
 		t.Fatalf("the read of an index not made: %v", err)
+	}
+}
+
+// An index of the open decisions' name made over another expression, or
+// over another state, before the owner prepares the database: the ledger
+// is the owner's and writable, every other read and write works, and the
+// read answers its error and hands nothing. The definition the owner makes
+// is the one SQLite keeps.
+func TestTheOwnerReadsTheOpenIndexBack(t *testing.T) {
+	ctx := context.Background()
+	const run = "team-00000001"
+	for _, other := range []string{
+		"CREATE INDEX decisions_open ON decisions(n)",
+		"CREATE INDEX decisions_open ON decisions(n) WHERE state = 'cancelled'",
+	} {
+		dir := filepath.Join(t.TempDir(), "runs")
+		l := openLedger(t, dir)
+		newRun(t, l, run)
+		n := open1(t, l, run, "g1")
+		var def string
+		if err := l.db.QueryRow("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'decisions_open'").Scan(&def); err != nil || def != accessPaths[0].def {
+			t.Fatalf("the index the owner made is kept as %q: %v", def, err)
+		}
+		l.Close()
+		rawExec(t, dir, "DROP INDEX decisions_open")
+		rawExec(t, dir, other)
+
+		owner := openLedger(t, dir)
+		if ro, why := owner.ReadOnly(); ro {
+			t.Fatalf("%s: the ledger opened read-only: %s", other, why)
+		}
+		handed := 0
+		if _, err := owner.OpenDecisionsNewest(ctx, 0, func(DecisionRow) bool { handed++; return true }); !errors.Is(err, ErrUnavailable) || handed != 0 {
+			t.Fatalf("%s: the read handed %d: %v", other, handed, err)
+		}
+		m := open1(t, owner, run, "g2")
+		setState(t, owner, run, n, DecisionCancelled, "")
+		if rec := record(t, owner, n); rec.State != DecisionCancelled {
+			t.Fatalf("%s: a write: %+v", other, rec.DecisionRow)
+		}
+		if rec := record(t, owner, m); rec.State != DecisionOpen {
+			t.Fatalf("%s: a read: %+v", other, rec.DecisionRow)
+		}
+		owner.Close()
 	}
 }
 

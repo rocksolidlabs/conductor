@@ -706,8 +706,18 @@ func (l *Ledger) prepare(ctx context.Context) error {
 	if err := l.schemaAt(ctx); err != nil {
 		return err
 	}
-	for _, stmt := range accessPaths {
-		if _, err := l.db.ExecContext(ctx, stmt); err != nil {
+	for _, p := range accessPaths {
+		// Made if missing, then read back: any other definition is kept as
+		// the cause, as a failure to make it is.
+		var have string
+		_, err := l.db.ExecContext(ctx, strings.Replace(p.def, "CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ", 1))
+		if err == nil {
+			err = l.db.QueryRowContext(ctx, "SELECT COALESCE(sql, '') FROM sqlite_master WHERE type = 'index' AND name = ?", p.name).Scan(&have)
+		}
+		if err == nil && have != p.def {
+			err = fmt.Errorf("the index %s there is not the one this ledger makes", p.name)
+		}
+		if err != nil {
 			l.pathsErr = err
 			break
 		}
@@ -715,15 +725,19 @@ func (l *Ledger) prepare(ctx context.Context) error {
 	return nil
 }
 
+// accessPath is an index's name and its definition as sqlite_master keeps it.
+type accessPath struct{ name, def string }
+
 // accessPaths are made, if missing, each time the owner prepares the
 // database, after its schema is Version: what may ever be put here is an
 // index that serves a read and that no reader depends on for its answer,
 // never a table, a column or a change of meaning, so a binary that does
 // not know of it opens the database as its own, and SQLite keeps it under
-// that binary's writes. A failure to make one leaves the ledger as it is:
-// only a read that names it answers the cause (OpenDecisionsNewest).
-var accessPaths = []string{
-	`CREATE INDEX IF NOT EXISTS decisions_open ON decisions(n) WHERE state = 'open'`,
+// that binary's writes. A failure to make one, or one of its name there
+// with another definition, leaves the ledger as it is: only a read that
+// names it answers the cause (OpenDecisionsNewest).
+var accessPaths = []accessPath{
+	{"decisions_open", `CREATE INDEX decisions_open ON decisions(n) WHERE state = 'open'`},
 }
 
 // schemaAt checks the database (quick_check) and brings it to Version, or

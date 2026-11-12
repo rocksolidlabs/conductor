@@ -1747,8 +1747,8 @@ var openScanBytes = MaxOpenScanBytes
 // reads a request or a policy. It walks the open decisions' index,
 // decisions_open (accessPaths), and nothing else: where the index is
 // missing (a database this ledger may only read, last prepared by a binary
-// without it) or could not be made, it answers ErrUnavailable and hands
-// none. visit must not read the ledger, whose one connection the read
+// without it), could not be made, is not the one the owner makes, or
+// cannot serve the statement, it answers ErrUnavailable and hands none. visit must not read the ledger, whose one connection the read
 // holds. A database older than the decision tables hands none.
 func (l *Ledger) OpenDecisionsNewest(ctx context.Context, limit int, visit func(DecisionRow) bool) (more bool, err error) {
 	if limit <= 0 || limit > MaxOpenScan {
@@ -1767,7 +1767,7 @@ func (l *Ledger) OpenDecisionsNewest(ctx context.Context, limit int, visit func(
 		// The literal state, as the partial index's condition names it: a
 		// bound parameter could not use the index.
 		rows, err := q.QueryContext(ctx, openDecisionsNewest, limit+1)
-		if err != nil && strings.Contains(err.Error(), "no such index") {
+		if err != nil && (strings.Contains(err.Error(), "no such index") || strings.Contains(err.Error(), "no query solution")) {
 			return fmt.Errorf("%w: the open decisions cannot be read without their index: %v", ErrUnavailable, err)
 		} else if err != nil {
 			return err
