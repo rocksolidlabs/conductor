@@ -312,6 +312,38 @@ func TestMcpTicketReadGivesTheLargestTicketWhole(t *testing.T) {
 	checkWhole(t, text, l.view, l.labels, l.milestone)
 }
 
+// ticket_read gives the agent a ticket's text exactly as it is stored,
+// through the JSON-RPC reply: a zero-width joiner and non-joiner, an
+// emoji sequence, right-to-left text, and a file name that holds a joiner,
+// in the description, a comment and an attachment's name.
+func TestMcpTicketReadKeepsTheTicketsCharacters(t *testing.T) {
+	zwj, zwnj := string(rune(0x200d)), string(rune(0x200c))
+	emoji := string([]rune{0x1f469, 0x200d, 0x1f4bb})
+	persian := string([]rune{0x0645, 0x06cc, 0x200c, 0x062e, 0x0648, 0x0627, 0x0647, 0x0645})
+	file := "src/a" + zwj + "b.txt"
+	description := "Fix " + file + " for " + emoji + "\n\n" + persian
+	comment := "join" + zwj + "ed and not" + zwnj + "joined, " + persian + " " + emoji
+	ticket := map[string]any{"ticket": map[string]any{"key": "CND-1", "title": "A title " + emoji, "status": "open", "description": description,
+		"comments":    []any{map[string]any{"n": 1, "author": "you", "body": comment, "createdAt": time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)}},
+		"attachments": []any{map[string]any{"name": file, "size": 10, "contentType": "text/plain"}}}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/sessions/s1/ticket" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ticket)
+	}))
+	t.Cleanup(srv.Close)
+	read := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ticket_read","arguments":{}}}`
+	text, isErr := toolText(t, mcpRun(t, sessionEnv(srv.URL, "s1", "agent-tok"), read)[0])
+	for _, want := range []string{"# CND-1: A title " + emoji + "\n", "## Description\n\n" + description + "\n", "\n\n" + comment + "\n", "- " + file + " ("} {
+		if isErr || !strings.Contains(text, want) {
+			t.Errorf("ticket_read lacks %q exactly as stored: %v\n%q", want, isErr, text)
+		}
+	}
+}
+
 // ticket_comment reports a comment made whose reply carries no comment,
 // the server unable to read it back after its commit (comment null beside
 // a done receipt), as made, without a number it does not have.
