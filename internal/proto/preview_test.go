@@ -236,8 +236,9 @@ type previewBound struct {
 }
 
 var (
-	ancestorBase = obj{"tag": "div", "id": "", "classes": "", "role": ""}
-	hintBase     = obj{"how": "attribute", "file": "app/a.vue", "line": 4, "column": 2, "component": ""}
+	ancestorBase  = obj{"tag": "div", "id": "", "classes": "", "role": ""}
+	emptyAncestor = obj{"tag": "", "id": "", "classes": "", "role": ""}
+	hintBase      = obj{"how": "attribute", "file": "app/a.vue", "line": 4, "column": 2, "component": ""}
 )
 
 func readyMessage() obj {
@@ -291,10 +292,15 @@ func previewBounds() []previewBound {
 		previewBound{"an attribute's name", "MaxElementAttributeName", MaxElementAttributeName, inBytes, items("attributes", func(s string) any { return []any{s, "v"} })},
 		previewBound{"an attribute's value", "MaxElementAttributeValue", MaxElementAttributeValue, inBytes, items("attributes", func(s string) any { return []any{"n", s} })},
 		previewBound{"the ancestors", "MaxAncestors", MaxAncestors, inItems, count("ancestors", ancestorBase)},
-		// An ancestor's fields are bounded by its whole: the whole is grown.
-		previewBound{"an ancestor", "MaxAncestor", MaxAncestor, inBytes, func(size int, fill func(int) string) obj {
-			return selectedOf(with(element(), []any{with(ancestorBase, fill(size-PreviewMeasure(ancestorBase)), "classes")}, "ancestors"))
-		}},
+	)
+	// An ancestor's fields are bounded by its whole: each field is grown in turn, the others empty, so the whole is at its bound
+	// with that field at the most it can hold.
+	for _, k := range []string{"tag", "id", "classes", "role"} {
+		bs = append(bs, previewBound{"an ancestor's " + k, "MaxAncestor", MaxAncestor, inBytes, func(size int, fill func(int) string) obj {
+			return selectedOf(with(element(), []any{with(emptyAncestor, fill(size-PreviewMeasure(emptyAncestor)), k)}, "ancestors"))
+		}})
+	}
+	bs = append(bs,
 		previewBound{"the styles", "MaxStyles", MaxStyles, inItems, count("styles", []any{"p", "v"})},
 		previewBound{"a style's name", "MaxStyleName", MaxStyleName, inBytes, items("styles", func(s string) any { return []any{s, "v"} })},
 		previewBound{"a style's value", "MaxStyleValue", MaxStyleValue, inBytes, items("styles", func(s string) any { return []any{"n", s} })},
@@ -1221,12 +1227,14 @@ func TestPreviewMeasureCountsANegativeZeroAsZero(t *testing.T) {
 
 // Every member of a message, taken from its Go type, is accepted at its
 // edges in some row of the fixture: each list empty, of one item and at its
-// bound; each string empty but those the schema refuses empty; each number
-// at the least and the greatest of its range; each flag both ways, or one
-// way where the schema has it so. A member the types gain fails here until
-// its edges are in previewCases, and one of a kind the test does not judge
-// fails until the test judges it (the strings' upper bounds are
-// previewBounds', held by TestEveryPreviewBoundIsInTheTable).
+// bound; each string empty but those the schema refuses empty, and at its
+// own bound but those of a set or a pattern; each number at the least and
+// the greatest of its range; each flag both ways, or one way where the
+// schema has it so. A member the types gain fails here until its edges are
+// in previewCases, and one of a kind the test does not judge (a struct with
+// no fields among them) fails until the test judges it (previewBounds' rows
+// are the strings' upper edges, held to preview.go's constants by
+// TestEveryPreviewBoundIsInTheTable).
 func TestEveryPreviewMemberIsAcceptedAtItsEdges(t *testing.T) {
 	lists := map[string]int{"hints": len(PreviewHintKinds), "element.attributes": MaxElementAttributes, "element.ancestors": MaxAncestors,
 		"element.styles": MaxStyles, "element.hints": MaxHints, "element.cut": len(ElementCuts)}
@@ -1239,9 +1247,26 @@ func TestEveryPreviewMemberIsAcceptedAtItsEdges(t *testing.T) {
 		"element.hints.*.how": true, "hints.*": true, "element.cut.*": true}
 	// A flag the schema has one way only: a described's missing is true or absent.
 	oneWay := map[string]bool{"missing": true}
+	// The upper edge of every string member with a bound: its bound in measured bytes (the title's is in characters, so at least
+	// so many bytes; an ancestor's fields the whole's less an ancestor's of empty fields; a pair's two strings share their path,
+	// so its greater), reached by an accepted row. The rest are one of a set or a pattern, with no bound in bytes of their own.
+	upper := map[string]int{"selector": MaxPreviewSelector, "url": MaxPreviewURL, "title": MaxPreviewTitle, "revision": MaxPreviewRevision,
+		"viewport.userAgent": MaxPreviewUserAgent, "element.text": MaxElementText, "element.selector": MaxElementSelector,
+		"element.hit.selector": MaxElementSelector, "element.html": MaxElementHTML, "element.neighbourhood": MaxNeighbourhood,
+		"element.attributes.*.*": max(MaxElementAttributeName, MaxElementAttributeValue), "element.styles.*.*": max(MaxStyleName, MaxStyleValue),
+		"element.hints.*.file": MaxHintFile, "element.hints.*.component": MaxHintComponent}
+	for _, k := range []string{"tag", "id", "classes", "role", "name", "state.ariaDisabled", "state.ariaExpanded", "state.pointerEvents", "hit.tag"} {
+		upper["element."+k] = MaxElementName
+	}
+	for _, k := range []string{"tag", "id", "classes", "role"} {
+		upper["element.ancestors.*."+k] = MaxAncestor - PreviewMeasure(emptyAncestor)
+	}
+	unbounded := map[string]bool{"conductor": true, "t": true, "nonce": true, "viewport.colorScheme": true, "element.hints.*.how": true,
+		"element.cut.*": true, "hints.*": true}
 	type seen struct {
 		lens     map[int]bool
 		empty    bool
+		longest  int
 		least    float64
 		greatest float64
 		numbers  bool
@@ -1269,6 +1294,7 @@ func TestEveryPreviewMemberIsAcceptedAtItsEdges(t *testing.T) {
 			}
 		case string:
 			get(p).empty = get(p).empty || x == ""
+			get(p).longest = max(get(p).longest, measured(x))
 		case bool:
 			get(p).flags[x] = true
 		case float64:
@@ -1291,6 +1317,9 @@ func TestEveryPreviewMemberIsAcceptedAtItsEdges(t *testing.T) {
 		case reflect.Pointer:
 			member(typ.Elem(), p)
 		case reflect.Struct:
+			if typ.NumField() == 0 {
+				t.Errorf("%s: a struct with no fields, which has no edges this test judges: give it fields and their rows", p)
+			}
 			for i := range typ.NumField() {
 				name, _, _ := strings.Cut(typ.Field(i).Tag.Get("json"), ",")
 				member(typ.Field(i).Type, join(p, name))
@@ -1305,6 +1334,9 @@ func TestEveryPreviewMemberIsAcceptedAtItsEdges(t *testing.T) {
 		case reflect.String:
 			if !nonEmpty[p] && !get(p).empty {
 				t.Errorf("%s: never accepted empty", p)
+			}
+			if want, ok := upper[p]; !unbounded[p] && (!ok || get(p).longest < want) {
+				t.Errorf("%s: accepted at most %d bytes, want a row at its bound (%d; none where the test names no bound)", p, get(p).longest, want)
 			}
 		case reflect.Float64, reflect.Int, reflect.Int64:
 			if r, ok := numbers[p]; !ok || !get(p).numbers || get(p).least != r[0] || get(p).greatest != r[1] {
@@ -1357,17 +1389,18 @@ func TestTheBridgesOwnMessagesParse(t *testing.T) {
 			t.Errorf("%s in a selected: %v", name, err)
 		}
 	}
+	// Each answer parsed from its own text in the file, as the bridge's writer wrote it, never from a re-encoding of it.
 	answers := func(name string) []string {
 		var page struct {
-			Nonce    string `json:"nonce"`
-			Messages []obj  `json:"messages"`
+			Nonce    string            `json:"nonce"`
+			Messages []json.RawMessage `json:"messages"`
 		}
 		read(name, &page)
 		var types []string
 		for i, m := range page.Messages {
-			p, err := ParsePreviewMessage(writeText(m), PreviewToWorkbench, page.Nonce)
+			p, err := ParsePreviewMessage(m, PreviewToWorkbench, page.Nonce)
 			if err != nil {
-				t.Fatalf("%s, answer %d (%v): %v", name, i, m["t"], err)
+				t.Fatalf("%s, answer %d: %v", name, i, err)
 			}
 			types = append(types, p.T)
 		}

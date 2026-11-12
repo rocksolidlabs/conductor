@@ -252,8 +252,7 @@ describe('the bridge in a page', () => {
     expect(described.element!.html).toBe('<html><head></head><body><p>Hello</p></body></html>')
     expect(selected.element).toMatchObject({ tag: 'p', text: 'Hello', selector: pSelector, hit: { self: true, selector: pSelector, tag: 'p' }, hints: [], cut: [] })
     expect(selected.element.ancestors.map((a) => a.tag)).toEqual(['body', 'html'])
-    const comment = "Written by web/app/utils/previewBridge/bridge.test.ts: the bridge's answers on a plain page (no framework, no title, the root element described, a paragraph selected), each with the hello's nonce, for internal/proto's parser."
-    fixture('plain-page-messages.json', JSON.stringify({ comment, nonce: NONCE, messages: got }, null, 1) + '\n')
+    writeAnswers('plain-page-messages.json', 'the bridge’s answers on a plain page (no framework, no title, the root element described, a paragraph selected)', got)
   })
 
   it('puts its host on the page while it selects and takes it off, and acts only on what the browser delivers', () => {
@@ -464,7 +463,7 @@ describe('what the bridge reads of a page', () => {
   })
 })
 
-/** The answers written for internal/proto's parser (internal/api/testdata), one message a line. */
+/** The answers written for internal/proto's parser (internal/api/testdata), one message a line, as the browser's JSON writer writes it. */
 function writeAnswers(name: string, what: string, messages: PreviewToWorkbench[]) {
   const comment = `Written by web/app/utils/previewBridge/bridge.test.ts: ${what}, each with the hello's nonce, for internal/proto's parser.`
   fixture(name, `{"comment": ${JSON.stringify(comment)}, "nonce": ${JSON.stringify(NONCE)}, "messages": [\n${messages.map((m) => JSON.stringify(m)).join(',\n')}\n]}\n`)

@@ -50,7 +50,7 @@ web-build: $(NODE_STAMP) ## generate the static SPA and copy it into internal/we
 	find internal/web/dist -mindepth 1 -not -name .gitkeep -delete
 	cp -r web/.output/public/. internal/web/dist/
 	touch internal/web/dist/.gitkeep
-	@node -e 'const fs = require("node:fs"), [head, tail, end] = JSON.parse(fs.readFileSync("internal/api/testdata/preview-bridge-served.json", "utf8")).wrapper, s = fs.readFileSync(process.argv[1], "utf8"); if (!s.trim()) throw new Error("empty"); new (require("node:vm").Script)(head + s + tail + "[]" + end, { filename: process.argv[1] })' internal/web/dist/preview-bridge.js || { echo "web-build: internal/web/dist/preview-bridge.js is missing, empty or not one classic script in the wrapper the server serves it in (web/build/previewBridge.ts builds it as one)"; exit 1; }
+	@node web/build/checkPreviewBridge.mjs internal/web/dist/preview-bridge.js internal/api/testdata/preview-bridge-served.json || { echo "web-build: internal/web/dist/preview-bridge.js is missing, empty or not one classic script in the wrapper the server serves it in (web/build/previewBridge.ts builds it as one)"; exit 1; }
 
 web-typecheck: $(NODE_STAMP) ## vue-tsc type check
 	cd web && npm run typecheck

@@ -1,4 +1,7 @@
-import { readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { FakeDoc, FakeWin, h } from '../app/utils/previewBridge/fakeDom'
@@ -8,6 +11,21 @@ import { buildPreviewBridge, devPreviewBridge, wrapPreviewBridge } from './previ
 const webRoot = fileURLToPath(new URL('..', import.meta.url))
 const WORKBENCH = 'http://127.0.0.1:8080'
 const NONCE = 'n0nce-of-the-hello-1234'
+const SERVED = fileURLToPath(new URL('../../internal/api/testdata/preview-bridge-served.json', import.meta.url))
+
+/** make web-build's check (checkPreviewBridge.mjs) run on each text given (null: no file), whether it passed. */
+function checked(texts: Array<string | null>): boolean[] {
+  const dir = mkdtempSync(join(tmpdir(), 'preview-bridge-check-'))
+  try {
+    return texts.map((text, i) => {
+      const file = join(dir, `${i}.js`)
+      if (text !== null) writeFileSync(file, text)
+      return spawnSync(process.execPath, [fileURLToPath(new URL('./checkPreviewBridge.mjs', import.meta.url)), file, SERVED]).status === 0
+    })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
 
 /** text run as a page runs a classic script, its window given; a module's import or export is a syntax error here. */
 function run(text: string, win: FakeWin) {
@@ -33,7 +51,15 @@ describe('the built preview bridge', () => {
       bare.deliver(WORKBENCH, { conductor: PREVIEW_MARK, t: 'hello', nonce: NONCE })
       expect([bare.count, bare.posts]).toEqual([0, []])
     }
+    // make web-build's check passes what is built.
+    expect(checked([code])).toEqual([true])
   }, 60_000)
+
+  it("fails make web-build's check for a file that is missing, empty or not one classic script in the server's wrapper", () => {
+    const refused = [null, '', '  \n\n', 'export { a };', 'import x from "y";', 'export default 1', 'import"./y.js";', "import'./y.js';",
+      '  export const a = 1;', 'var u = import.meta.url;', 'await Promise.resolve(1);', 'var a=1;export{a}', 'var a = (;']
+    expect(checked([...refused, '(function(){ var a = 1; })();'])).toEqual([...refused.map(() => false), true])
+  })
 
   it("answers in the dev server as the route answers a page on the loopback: its headers, its wrapper and the loopback's names", () => {
     // What internal/api's TestTheBridgeIsServedWhole wrote of the route's answer to a listener on 127.0.0.1:8080.
