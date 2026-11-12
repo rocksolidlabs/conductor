@@ -97,7 +97,8 @@ export default defineNuxtConfig({
         })
       bundle.catch(() => {})
       // The preview bridge, for developing Conductor itself (devPreviewBridge): wrapped as the route wraps it, with the loopback's
-      // three names at the port a request over the loopback names; its headers and its routing are the dev server's own.
+      // three names at the port the request's Host text names when that is a loopback name (the text alone is read, never the
+      // socket); its headers and its routing are the dev server's own.
       const bridge = buildPreviewBridge(webRoot)
       bridge.catch(() => {})
       server.middlewares.stack.unshift({

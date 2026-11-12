@@ -240,7 +240,10 @@ export function markup(root: El, most: number, keep?: El): string {
   return out.concat(closes.reverse()).join('')
 }
 
-/** The text of root's subtree, from the text the walk reaches within TEXT_NODES links to most code units and one more, spaces folded: none of what shut keeps. */
+/**
+ * The text of root's subtree, from the text the walk reaches within TEXT_NODES links to most code units and one more, spaces
+ * folded: none of what shut keeps. A node costs the walk up to three links, so the text may end at that budget before most.
+ */
 export function textOf(root: El, most: number): string {
   let out = ''
   walkTree(root, TEXT_NODES, (n) => {

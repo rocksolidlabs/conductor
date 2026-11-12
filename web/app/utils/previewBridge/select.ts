@@ -1,10 +1,12 @@
 import { ELEMENT_BOUNDS, measuredBytes, wellFormed } from '../protocol'
 
 /**
- * How the bridge reads a page (docs/protocol.md, Preview bridge): every string through pageText, every list it walks by index up
- * to its bound, every walk of the tree its own and bounded (walkTree, up); and what it picks an element by: a selector it builds, the
- * elements stacked under the pointer and the DOM's walk from one, each leaving out the bridge's own host; and the page epoch,
- * which says only that the page moved. The DOM's types; a test hands in fakes.
+ * How the bridge reads a page (docs/protocol.md, Preview bridge): every string through pageText, every list it walks itself by
+ * index up to its bound, of the engine's lists (the stack under the pointer, an element's own keys) a bounded number, every walk of
+ * the tree bounded in the links it follows (walkTree; up, the ancestors and the hints' climbs, each to a fixed number of steps; a
+ * selector's path within PATH nodes), and an arrow key's step one element link, which the engine follows; and what it picks an
+ * element by: a selector it builds, the elements stacked under the pointer and the DOM's walk from one, each leaving out the
+ * bridge's own host; and the page epoch, which says only that the page moved. The DOM's types; a test hands in fakes.
  */
 export type El = Element
 export type Doc = Document
@@ -166,8 +168,9 @@ const MOTION_EVENTS = ['animationstart', 'animationiteration', 'animationend', '
 /**
  * The page epoch: a counter bumped, at most once per animation frame, by a resize or a scroll of the window, a mutation of the
  * document (the bridge's host put on the page or taken off, alone in its record, left out) and every animation and transition
- * event. It says only that the page moved: the records are looked at up to the first of the page's. A resize or a scroll also
- * calls moved, which selection mode takes its outline off by.
+ * event. It says only that the page moved: the records are looked at up to the first of the page's. A resize or a scroll of the
+ * window (any the window hears; not a container's, whose scroll does not reach it) also calls moved, which selection mode takes
+ * its outline off by.
  */
 export function pageEpoch(p: EpochPage): { value(): number; stop(): void } {
   let epoch = 0

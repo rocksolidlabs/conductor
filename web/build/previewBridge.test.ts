@@ -57,8 +57,12 @@ describe('the built preview bridge', () => {
 
   it("fails make web-build's check for a file that is missing, empty or not one classic script in the server's wrapper", () => {
     const refused = [null, '', '  \n\n', 'export { a };', 'import x from "y";', 'export default 1', 'import"./y.js";', "import'./y.js';",
-      '  export const a = 1;', 'var u = import.meta.url;', 'await Promise.resolve(1);', 'var a=1;export{a}', 'var a = (;']
-    expect(checked([...refused, '(function(){ var a = 1; })();'])).toEqual([...refused.map(() => false), true])
+      '  export const a = 1;', 'var u = import.meta.url;', 'await Promise.resolve(1);', 'var a=1;export{a}', 'var a = (;',
+      // Refused only inside the wrapper: its parameter declared again.
+      'let conductorWorkbenchOrigins = 1;']
+    // A classic script, and one that compiles only inside the wrapper's function.
+    const accepted = ['(function(){ var a = 1; })();', 'return;']
+    expect(checked([...refused, ...accepted])).toEqual([...refused.map(() => false), ...accepted.map(() => true)])
   })
 
   it("answers in the dev server as the route answers a page on the loopback: its headers, its wrapper and the loopback's names", () => {
