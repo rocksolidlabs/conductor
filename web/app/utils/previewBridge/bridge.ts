@@ -9,14 +9,15 @@ import { nameOf, pageEpoch, pageText, stackAt, stepStack, walk, walkTree, type E
  * wrote into it says hello from the page's parent window, and it takes a message only through its gate (gate.ts). It reads, never
  * writes, the page: the one thing it adds is its outline's host, a div holding a closed shadow root no style of the page reaches,
  * put on the page when selection mode starts and taken off when it ends, before any report is read. It reads no storage, cookie,
- * console or network, acts only on events the browser delivered, and answers nothing it was not asked.
+ * console or network, takes a message only from an event the browser delivered, and answers nothing it was not asked.
  */
 const LOADED = Symbol.for('conductor.previewBridge')
 
 /**
- * The pointer, mouse (not drag), touch and key events selection mode stops (the page's own listeners never see them) and acts on,
- * of those the browser delivers to the page's own window: its listeners are added and removed from this table alone. A tap's
- * touches and a wheel keep their default action (the click a tap makes, a scroll); the rest have theirs prevented.
+ * The pointer, mouse (not drag), touch and key events selection mode stops and acts on, of those the browser delivers to the page's
+ * own window: its listeners, in the window's capture phase, are added and removed from this table alone, so a listener the page put
+ * on the window in that phase before selection mode began is called first. A tap's touches and a wheel keep their default action
+ * (the click a tap makes, a scroll); the rest have theirs prevented.
  */
 export const SELECTION_EVENTS = [
   'pointerover', 'pointerenter', 'pointerdown', 'pointermove', 'pointerrawupdate', 'pointerup', 'pointercancel', 'pointerout', 'pointerleave',
@@ -128,8 +129,8 @@ export function startBridge(win: Window & typeof globalThis, origins: readonly s
     ArrowRight: (s) => (s.current ? walk(s.current, 'child', s.host) : null),
   }
   // A pointer move outlines what is under it, the arrows step and walk, a click picks what is under its own point, the release of
-  // Enter picks what is outlined, the release of Escape leaves, and an event aimed at an element that holds a frame outlines it.
-  // Every event of the table is stopped; a throw while handling one leaves selection mode.
+  // Enter picks what is outlined while it is in the page, the release of Escape leaves, and an event aimed at an element that holds
+  // a frame outlines it. Only an event the browser delivered is stopped or acted on; a throw while handling one leaves selection mode.
   const onEvent = (e: Event) => {
     const s = sel
     if (!e.isTrusted || !s) return
@@ -145,7 +146,7 @@ export function startBridge(win: Window & typeof globalThis, origins: readonly s
         const el = under()
         if (el) choose(el)
       } else if (e.type === 'keydown' && Object.hasOwn(ways, k.key)) show(s, ways[k.key]!(s, k.shiftKey))
-      else if (e.type === 'keyup' && k.key === 'Enter' && s.current) choose(s.current)
+      else if (e.type === 'keyup' && k.key === 'Enter' && s.current?.isConnected) choose(s.current)
       else if (e.type === 'keyup' && k.key === 'Escape') {
         leave()
         answer({ t: 'cancelled' })
@@ -180,7 +181,8 @@ export function startBridge(win: Window & typeof globalThis, origins: readonly s
     try {
       switch (m.t) {
         case 'hello':
-          // A resize or a scroll takes selection mode's outline off: what was under it may be elsewhere now.
+          // A resize or a scroll of the window, any the window hears, takes selection mode's outline off: what was under it may be
+          // elsewhere now. A scroll of a container inside the page does not.
           epoch ??= pageEpoch({ win, doc, mine: (n) => hosts.has(n as object), observer: (cb) => new win.MutationObserver(cb), frame: (cb) => win.requestAnimationFrame(cb), moved: () => sel && show(sel, null) })
           answer({ t: 'ready', version: PREVIEW_VERSION, hints: hintKindsOf(doc), ...page() })
           break

@@ -108,11 +108,11 @@ export function selectorFor(el: El, doc: Doc): string {
 /** The most elements under the pointer selection mode steps through. */
 export const STACK = 64
 
-/** The elements stacked under the point (elementsFromPoint), topmost first, the bridge's host left out: at most STACK. */
+/** The elements stacked under the point (elementsFromPoint), topmost first, the bridge's host left out: of its list the first STACK, the host among them. */
 export function stackAt(doc: Doc, x: number, y: number, host: El | null): El[] {
   const all = doc.elementsFromPoint(x, y)
   const out: El[] = []
-  for (let i = 0; i < all.length && out.length < STACK; i++) if (all[i] !== host) out.push(all[i]!)
+  for (let i = 0, n = Math.min(all.length, STACK); i < n; i++) if (all[i] !== host) out.push(all[i]!)
   return out
 }
 

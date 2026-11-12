@@ -187,6 +187,21 @@ describe('the reading of an element', () => {
     expect(validElement(r)).toBe(true)
   })
 
+  it('names nothing by an id, a for or an aria-labelledby token past its bound', () => {
+    const long = 'i'.repeat(B.name + 1)
+    const first = h('input', { id: `${long}1` })
+    const second = h('input', { id: `${long}2` })
+    const other = h('span', { id: long }, 'Other')
+    const end = h('span', { id: 'end' }, 'End')
+    const pad = ' '.repeat(B.name - 2)
+    const byToken = h('button', { 'aria-labelledby': `${long}x` }, 'Own')
+    const byList = h('button', { 'aria-labelledby': `${pad}endless` }, 'Kept')
+    const f = h('form', {}, h('label', { for: `${long}1` }, 'First'), first, h('label', { for: `${long}2` }, 'Second'), second, other, end, byToken, byList)
+    const d = new FakeDoc(h('html', {}, h('body', {}, f)))
+    const name = (e: El) => readElement(e, { doc: d as unknown as Doc, win: win() }).name
+    expect([second, byToken, byList].map((e) => name(e as unknown as El))).toEqual(['', 'Own', 'Kept'])
+  })
+
   it('makes every string it reads from the page well-formed before it measures or cuts it, and bounds the lists as it reads them', () => {
     const lone = '\uD800'
     const attrs: Record<string, string> = { class: `a${lone} b`, role: `r${lone}`, 'aria-disabled': lone, 'aria-expanded': `\uDC00x`, title: `t${lone}` }

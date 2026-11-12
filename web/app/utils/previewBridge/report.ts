@@ -265,11 +265,14 @@ function labelFor(el: El, id: string): El | null {
 export function accessibleName(el: El, doc: Doc): string {
   const label = pageText(el.getAttribute('aria-label'), B.name).trim()
   if (label) return label
-  const ids = [...new Set(pageText(el.getAttribute('aria-labelledby'), B.name).split(/\s+/).filter(Boolean))].slice(0, LABELLED_BY)
-  const names = ids.map((id) => doc.getElementById(id)).flatMap((e) => (e ? [textOf(e, B.name)] : [])).filter(Boolean)
+  // A value past its bound names nothing: a list's last token, an id (and so a label's for, which must equal it).
+  const listed = pageText(el.getAttribute('aria-labelledby'), B.name)
+  const tokens = listed.split(/\s+/).filter(Boolean)
+  if (listed.length > B.name) tokens.pop()
+  const names = [...new Set(tokens)].slice(0, LABELLED_BY).map((id) => doc.getElementById(id)).flatMap((e) => (e ? [textOf(e, B.name)] : [])).filter(Boolean)
   if (names.length) return names.join(' ')
   const id = pageText(el.id, B.name)
-  return textOf((id && labelFor(el, id)) || up(el, (e) => nameOf(e, 8) === 'label') || el, B.name)
+  return textOf((id && id.length <= B.name && labelFor(el, id)) || up(el, (e) => nameOf(e, 8) === 'label') || el, B.name)
 }
 
 function ancestorOf(a: El): ElementReport['ancestors'][number] {

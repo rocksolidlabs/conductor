@@ -166,6 +166,20 @@ describe('selection mode', () => {
     expect(seen).toEqual(['block', 'none', [], true, 3 + SELECTION_EVENTS.length, ['two'], false])
   })
 
+  it('picks nothing with Enter when the outlined element has left the page, and stays in selection mode', () => {
+    const p = twoButtons()
+    p.ask('select')
+    p.win.dispatch('pointermove', event('pointermove', { clientX: 1, clientY: 10 }))
+    const seen: unknown[] = [p.box()]
+    p.one.remove()
+    p.win.observers[0]!([{ type: 'childList', target: p.root.children[1], addedNodes: [], removedNodes: [p.one] }])
+    p.win.dispatch('keydown', event('keydown', { key: 'Enter' }))
+    const up = event('keyup', { key: 'Enter' })
+    p.win.dispatch('keyup', up)
+    seen.push(up.swallowed, p.picked(), hostOf(p.root) !== null, p.win.count)
+    expect(seen).toEqual(['block', true, [], true, 3 + SELECTION_EVENTS.length])
+  })
+
   it('outlines a frame’s element from an event aimed at it, and its box then takes the pointer, so a click there picks it', () => {
     const p = plainPage()
     const frame = h('iframe', { id: 'frame', src: '/inner.html' })

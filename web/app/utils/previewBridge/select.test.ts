@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { measuredBytes } from '../protocol'
-import { FakeDoc, HTML_NS, h, named, svg, type FakeEl } from './fakeDom'
+import { FakeDoc, HTML_NS, h, named, reads, resetReads, svg, type FakeEl } from './fakeDom'
 import { readElement } from './report'
-import { pageEpoch, selectorFor, stackAt, stepStack, walk, type Doc, type El } from './select'
+import { STACK, pageEpoch, selectorFor, stackAt, stepStack, walk, type Doc, type El } from './select'
 
 const el = (e: FakeEl) => e as unknown as El
 const doc = (d: FakeDoc) => d as unknown as Doc
@@ -117,6 +117,19 @@ describe('the stack and the walk', () => {
     p.root.append(host)
     p.d.hitAt = () => [host, p.overlay, p.save]
     expect(stackAt(doc(p.d), 0, 0, el(host))).toEqual([p.overlay, p.save])
+  })
+
+  it('reads the stack to its bound whatever is in it, the bridge host counted as read', () => {
+    const p = page()
+    const host = h('conductor-preview-bridge')
+    p.root.append(host)
+    const counts = [1, 10].map((k) => {
+      p.d.hitAt = () => Array.from({ length: STACK * k }, () => host)
+      resetReads()
+      const stack = stackAt(doc(p.d), 0, 0, el(host))
+      return [stack.length, reads.items]
+    })
+    expect(counts).toEqual([[0, STACK], [0, STACK]])
   })
 
   it('reaches a pointer-events: none button and an inert subtree by the DOM, neither in the stack', () => {
