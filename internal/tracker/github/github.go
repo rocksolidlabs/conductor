@@ -203,12 +203,6 @@ func (a *Adapter) Parse(raw, defaultSpace string) (tracker.Ref, error) {
 	return tracker.ParseGitHub(raw, defaultSpace, a.parseOptions())
 }
 
-// ParseIn reads a reference whose short form's repository is a git
-// remote's host and path (tracker.ParseGitHubIn).
-func (a *Adapter) ParseIn(raw, host, path string) (tracker.Ref, error) {
-	return tracker.ParseGitHubIn(raw, host, path, a.parseOptions())
-}
-
 // endpoint is a host's API: the item's host, the API's scheme and host,
 // and the paths REST and GraphQL are under. An address is built from these
 // parts, never by joining strings, and every request's URL is held to

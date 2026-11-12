@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
-	"github.com/rocksolidlabs/conductor/internal/gitrepo"
 	"github.com/rocksolidlabs/conductor/internal/tracker"
 )
 
@@ -79,7 +78,7 @@ var defaultTrackerCaps = trackerCaps{busy: trackerBusyWait, reads: trackerReadsB
 // externalState is the server's part of this file: the locks of a
 // ticket's and a link's reads, held from the request to GitHub to the
 // commit (never a database transaction across the call), and the tests'
-// seams (caps, cut, remote, waiting), unset in the product.
+// seams (caps, cut, waiting), unset in the product.
 type externalState struct {
 	mu   sync.Mutex
 	held map[string]chan struct{}
@@ -88,9 +87,7 @@ type externalState struct {
 	// each image's commit ("image"): true ends the route there, as a crash
 	// would, so a resend is what completes it.
 	cut func(at string) bool
-	// remote, when set, reads a folder's remote in gitrepo.Remote's place;
-	// waiting is told of a lock found held, before its wait.
-	remote  func(ctx context.Context, dir, name string) (host, path string, err error)
+	// waiting, when set, is told of a lock found held, before its wait.
 	waiting func(key string)
 	// stop ends as the server begins to stop (end): every request this
 	// file makes to GitHub is made under it, and none begins after it.
@@ -210,43 +207,39 @@ func (s *Server) parseItem(raw, space string) (tracker.Ref, *apiError) {
 	return ref, nil
 }
 
-// errNoDefault answers a short form in a project whose folder's default
-// repository could not be read; it quotes nothing of the folder.
-var errNoDefault = newAPIError(http.StatusBadRequest, "not_a_tracker_url", "the project's default repository could not be read from its folder: give the item's whole address (https://github.com/<owner>/<repo>/issues/<n>), or set the project's tracker address")
+// errNoTracker answers #n in a project with no tracker address, and
+// errNoDefault a short form in one whose tracker address is set and is no
+// repository this server reads; neither quotes the address.
+var (
+	errNoTracker = newAPIError(http.StatusBadRequest, "not_a_tracker_url", "#n needs the project's tracker address, and the project has none: give the item's whole address (https://github.com/<owner>/<repo>/issues/<n>), or set the project's tracker address")
+	errNoDefault = newAPIError(http.StatusBadRequest, "not_a_tracker_url", "the project's tracker address is not a GitHub repository this server reads: give the item's whole address (https://github.com/<owner>/<repo>/issues/<n>), or set the project's tracker address")
+)
 
-// projectItem reads raw as an item's reference in project p. Only a short
-// form (a '#' and no "://") takes a default repository: the project's
-// tracker address, else its folder's origin remote (resolveCwd, then
-// gitrepo.Remote, whose host and path the parse takes as they are), else
-// none; a whole address never asks the folder. A folder with no
-// repository or no origin has no default; one whose git data could not be
-// read, or whose origin is in no form Remote reads, refuses the short form
-// (errNoDefault), never read on another host. Nothing of the remote is
-// answered or logged.
-func (s *Server) projectItem(ctx context.Context, raw string, p dispatch.Project) (tracker.Ref, *apiError) {
-	if p.TrackerURL != "" || p.Cwd == "" || strings.Contains(raw, "://") || !strings.Contains(raw, "#") {
-		return s.parseItem(raw, p.TrackerURL)
-	}
-	dir, err := s.resolveCwd(p.Cwd)
-	if err != nil {
-		return s.parseItem(raw, "")
-	}
-	read := gitrepo.Remote
-	if s.external.remote != nil {
-		read = s.external.remote
-	}
-	host, path, err := read(ctx, dir, "origin")
+// projectItem reads raw as an item's reference in project p, for the
+// preview, the import and the link alike. A whole address is read as it
+// is. A short form's default repository is the project's tracker address
+// and nothing else (the project's folder is never read): with none, there
+// is no default (#n is errNoTracker, owner/repo#n read on github.com); one
+// naming a repository on a host the parser admits is the default; one set
+// and unusable (in no form the parser reads, or on a host it does not
+// admit) refuses every short form (errNoDefault), none read on another
+// host.
+func (s *Server) projectItem(raw string, p dispatch.Project) (tracker.Ref, *apiError) {
 	switch {
-	case errors.Is(err, gitrepo.ErrNotRepo), errors.Is(err, gitrepo.ErrNoRemote):
+	case strings.Contains(raw, "://"):
 		return s.parseItem(raw, "")
-	case err != nil:
+	case p.TrackerURL == "":
+		if space, _, ok := strings.Cut(strings.TrimSpace(raw), "#"); ok && space == "" {
+			return tracker.Ref{}, errNoTracker
+		}
+		return s.parseItem(raw, "")
+	}
+	// The address read as #n's repository: the parser refuses one it does
+	// not read or whose host it does not admit.
+	if _, err := s.trackers.gh.Parse("#1", p.TrackerURL); err != nil {
 		return tracker.Ref{}, errNoDefault
 	}
-	ref, err := s.trackers.gh.ParseIn(raw, host, path)
-	if err != nil {
-		return tracker.Ref{}, errNotAnItem
-	}
-	return ref, nil
+	return s.parseItem(raw, p.TrackerURL)
 }
 
 // snapshotRef is the item a ticket's snapshot names, and its validators'
@@ -511,7 +504,7 @@ func (s *Server) handleDispatchExternalPreview(w http.ResponseWriter, r *http.Re
 		}
 		project = pv.Project
 	}
-	ref, ae := s.projectItem(ctx, body.URL, project)
+	ref, ae := s.projectItem(body.URL, project)
 	if ae != nil {
 		writeAPIError(w, ae)
 		return
@@ -717,7 +710,7 @@ func (s *Server) handleDispatchImport(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var ae *apiError
-		if ref, ae = s.projectItem(ctx, body.URL, pv.Project); ae != nil {
+		if ref, ae = s.projectItem(body.URL, pv.Project); ae != nil {
 			writeAPIError(w, ae)
 			return
 		}
@@ -786,7 +779,7 @@ func (s *Server) handleDispatchLinkExternal(w http.ResponseWriter, r *http.Reque
 		s.dispatchError(w, "project", err)
 		return
 	}
-	ref, ae := s.projectItem(ctx, body.URL, pv.Project)
+	ref, ae := s.projectItem(body.URL, pv.Project)
 	if ae != nil {
 		writeAPIError(w, ae)
 		return

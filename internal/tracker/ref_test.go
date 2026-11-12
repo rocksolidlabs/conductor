@@ -106,36 +106,6 @@ func TestParsersQuoteNoRefusedHost(t *testing.T) {
 	}
 }
 
-// A short form whose repository is a git remote's host and path is read on
-// that host alone: #n and owner/name#n take its host, #n its repository; a
-// host not admitted, or a path that names no repository, refuses both,
-// never read on github.com instead. A URL is read as it is.
-func TestParseGitHubIn(t *testing.T) {
-	o := ParseOptions{Hosts: []string{"ghe.example.com"}}
-	for _, c := range []struct {
-		raw, host, path string
-		want            Ref
-	}{
-		{"#5", "github.com", "octo/app.git", Ref{GitHub, "github.com", "octo/app", KindIssue, "5", ""}},
-		{"#5", "GitHub.com", "octo/app/", Ref{GitHub, "github.com", "octo/app", KindIssue, "5", ""}},
-		{"other/repo#6", "ghe.example.com", "octo/app.git", Ref{GitHub, "ghe.example.com", "other/repo", KindIssue, "6", ""}},
-		{"https://github.com/o/r/pull/7", "ghe.example.com", "x", Ref{GitHub, "github.com", "o/r", KindChange, "7", ""}},
-	} {
-		if got, err := ParseGitHubIn(c.raw, c.host, c.path, o); err != nil || got != c.want {
-			t.Errorf("ParseGitHubIn(%q, %q, %q) = %+v, %v", c.raw, c.host, c.path, got, err)
-		}
-	}
-	for _, c := range []struct{ raw, host, path string }{
-		{"#5", "gitlab.example.com", "octo/app.git"}, {"octo/app#5", "gitlab.example.com", "octo/app.git"},
-		{"octo/app#5", "ghe.example.com:2222", "octo/app.git"}, {"#5", "github.com", "~octo/app.git"},
-		{"octo/app#5", "github.com", "group/sub/app.git"}, {"#5", "", ""}, {"octo/app", "github.com", "octo/app"},
-	} {
-		if got, err := ParseGitHubIn(c.raw, c.host, c.path, o); !errors.Is(err, ErrRef) {
-			t.Errorf("ParseGitHubIn(%q, %q, %q) = %+v, %v; want ErrRef", c.raw, c.host, c.path, got, err)
-		}
-	}
-}
-
 func TestCheckHost(t *testing.T) {
 	for _, h := range []string{"github.com", "ghe.example.test", "a.b-c.d", "xn--github-qyd.com", "a1.example"} {
 		if err := CheckHost(h, false); err != nil {

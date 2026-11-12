@@ -1,7 +1,6 @@
 package tracker
 
 import (
-	"cmp"
 	"errors"
 	"fmt"
 	"net/url"
@@ -86,36 +85,6 @@ func ParseGitHub(raw, defaultSpace string, o ParseOptions) (Ref, error) {
 	return makeRef(host, owner, name, KindIssue, num)
 }
 
-// ParseGitHubIn is ParseGitHub with a short form's repository given by its
-// parts, as a git remote names them (gitrepo.Remote): its host, and its
-// path, owner/name with .git or a trailing slash. A host the options do
-// not admit, or a path that names no repository, refuses every short
-// form: neither #n nor owner/name#n is ever read on another host. A URL
-// is read as ParseGitHub reads it.
-func ParseGitHubIn(raw, host, path string, o ParseOptions) (Ref, error) {
-	raw = strings.TrimSpace(raw)
-	if strings.Contains(raw, "://") {
-		return ParseGitHub(raw, "", o)
-	}
-	host, ok := asciiLower(host)
-	if !ok || !hostAdmitted(host, o) {
-		return Ref{}, fmt.Errorf("%w: %s", ErrRef, ErrHost)
-	}
-	space, err := spaceOf(splitPath(path))
-	if err != nil {
-		return Ref{}, err
-	}
-	given, num, ok := strings.Cut(raw, "#")
-	if !ok || len(raw) > 2048 {
-		return Ref{}, ErrRef
-	}
-	owner, name, ok := strings.Cut(cmp.Or(given, space), "/")
-	if !ok {
-		return Ref{}, ErrRef
-	}
-	return makeRef(host, owner, name, KindIssue, num)
-}
-
 // ParseRepository reads a repository: owner/name, its URL
 // (https://<host>/<owner>/<name>, with .git or a trailing slash), or a git
 // remote (git@<host>:<owner>/<name>.git, ssh://git@<host>[:port]/<owner>/<name>.git).
@@ -158,22 +127,14 @@ func ParseRepository(raw string, o ParseOptions) (host, space string, err error)
 		host = GitHubHost
 		segs = strings.Split(raw, "/")
 	}
-	if space, err = spaceOf(segs); err != nil {
-		return "", "", err
-	}
-	return host, space, nil
-}
-
-// spaceOf is owner/name of a repository's path segments, .git dropped.
-func spaceOf(segs []string) (string, error) {
 	if len(segs) != 2 {
-		return "", fmt.Errorf("%w: a repository is <owner>/<name>", ErrRef)
+		return "", "", fmt.Errorf("%w: a repository is <owner>/<name>", ErrRef)
 	}
 	name := strings.TrimSuffix(segs[1], ".git")
 	if err := checkSpace(segs[0], name); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return segs[0] + "/" + name, nil
+	return host, segs[0] + "/" + name, nil
 }
 
 // parseURL reads an https URL (http on a loopback host with the loopback

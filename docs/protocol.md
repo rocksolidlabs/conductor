@@ -4545,28 +4545,29 @@ store's own operations and bounds (its title cut to 200 characters, its
 description to 64 KiB at a line's end with a last line saying the rest
 is on GitHub, the snapshot at most 40 KiB, at most 20 labels and 20
 assignees shown and never mapped, the labels past 20 left out and
-counted (`labelsTotal`, the number GitHub's answer listed), the steps to
-reproduce at most 8 KiB, at most 8 images), and nothing is made of it.
-Every text it gives has its control characters dropped (a description's
-and its steps' line breaks and tabs aside), each text of one line (a
-title, a label, a person's name, a milestone, a branch, a check's name)
-also the characters that reorder a line (U+202A to U+202E, U+2066 to
-U+2069), and is cut to its bound; a check's status and conclusion are
-GitHub's word or `other`. The routes are the admin's alone and a
-switchyard's `403 switchyard`; a body is at most 64 KiB (`413 bound`),
-decoded strictly before the path is read. A reference is a URL
-(`https://<host>/<owner>/<repo>/issues/<n>` or `…/pull/<n>`, the host
-github.com or a GitHub Enterprise Server's with a saved token), which
-never reads the project's folder, `owner/repo#n` or `#n` in the
-project's repository: its tracker's URL, else its folder's `origin`
-remote, read from the repository's configuration with no git process
-(each file it needs a regular file, read to its bound: 4 KiB for a
-`.git` file or a `commondir`, 1 MiB for the configuration), its host
-and repository alone taken. A folder with no repository or no `origin`
-gives no default; one whose configuration cannot be read so, or whose
-`origin` is in no form the server reads, refuses a short form (`400
+counted (`labelsTotal`, the named labels GitHub's answer listed), the
+steps to reproduce at most 8 KiB, at most 8 images), and nothing is made
+of it. Every text it gives has its control characters and the Unicode
+tag characters (U+E0000 to U+E007F) dropped (a description's and its
+steps' line breaks and tabs aside), each text of one line (a title, a
+label, a person's name, a milestone, a branch, a check's name) also the
+characters that reorder a line (U+202A to U+202E, U+2066 to U+2069), and
+is cut to its bound; a check's status and conclusion are GitHub's word
+or `other`. Other characters that draw nothing are kept as written. The
+routes are the admin's alone and a switchyard's `403 switchyard`; a body
+is at most 64 KiB (`413 bound`), decoded strictly before the path is
+read. A reference is a URL (`https://<host>/<owner>/<repo>/issues/<n>`
+or `…/pull/<n>`, the host github.com or a GitHub Enterprise Server's
+with a saved token), `owner/repo#n` or `#n`. A short form's repository
+is the project's tracker URL and nothing else (the project's folder is
+never read): with none, `#n` is `400 not_a_tracker_url` saying the
+project has no tracker URL and the whole address works, and
+`owner/repo#n` is on github.com; a tracker URL naming a repository on a
+host the server reads (github.com, or a GitHub Enterprise Server's with
+a saved token) is the default for both; a tracker URL set in another
+form, or on another host, refuses every short form (`400
 not_a_tracker_url`, saying to give the whole address or set the
-project's tracker URL), never read on another host. Anything else is
+project's tracker URL), none read on another host. Anything else is
 `400 not_a_tracker_url`, quoting nothing of it.
 
 | Route | Body | Answer |
