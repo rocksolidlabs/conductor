@@ -51,7 +51,7 @@ var actWords = map[string]map[string]string{
 		"findings[].check.quote": "planted",
 	},
 	brakeman.ActRouteDecision: {
-		"opId": "the act's op id", "to.kind": "operator, person or role", "to.name": "a person or a responsibility of the crew's", "note": "planted",
+		"opId": "the act's op id", "to.kind": "operator, person or role", "to.name": "a person or a responsibility of the crew's", "to.grant": "a turn's route to a grant is refused (decide-grant.md)", "note": "planted",
 	},
 }
 

@@ -732,6 +732,13 @@ func (s *Server) handleDecisionRoute(w http.ResponseWriter, r *http.Request) {
 	if !opRev(w, body.ExpectedRev) {
 		return
 	}
+	if body.To.Kind == crew.DestGrant {
+		// The engine takes the decide grant as a destination; this route
+		// offers it once the grant's routes are served
+		// (docs/plans/decide-grant.md).
+		writeError(w, http.StatusBadRequest, crew.CodeInvalid, "a decision is routed to the operator, a person of its run's crew (person, by name) or a responsibility of it (role), not to a grant")
+		return
+	}
 	ctx, cancel := runContext(r)
 	defer cancel()
 	rc, err := s.runs.RouteDecision(ctx, did, body.OpID, body.ExpectedRev, []crew.Destination{body.To}, body.Note, actorOf(r))

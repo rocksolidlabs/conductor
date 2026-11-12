@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 )
 
@@ -107,8 +108,29 @@ func holdersWords(c Crew) string {
 	return words
 }
 
+// grantWords are whom a decision given to the decide grant is for.
+const grantWords = "anyone holding the decide grant"
+
+// toGrant says f is the decide grant's route target.
+func toGrant(f *DecisionFor) bool { return f != nil && f.Label == GrantDecideLabel && f.Person == "" }
+
+// forName is whom f is for in a route's words: the decide grant's holders,
+// the operator alone for no person, else the person.
+func forName(f *DecisionFor) string {
+	switch {
+	case toGrant(f):
+		return grantWords
+	case f == nil || f.Person == "":
+		return "the operator alone"
+	}
+	return f.words()
+}
+
 // forRule is the rule a routed row says for f under local/1.
 func forRule(f *DecisionFor) string {
+	if toGrant(f) {
+		return "local/1: the operator, or " + grantWords
+	}
 	if f == nil || f.Person == "" {
 		return "local/1: the operator answers"
 	}
@@ -122,6 +144,9 @@ func forRule(f *DecisionFor) string {
 // beside it the person f names.
 func forTo(f *DecisionFor) []any {
 	to := []any{map[string]string{"kind": "operator"}}
+	if toGrant(f) {
+		to = append(to, map[string]string{"kind": DestGrant, "grant": string(ext.GrantDecide)})
+	}
 	if f != nil && f.Person != "" {
 		to = append(to, map[string]string{"kind": "person", "name": f.Person})
 	}
@@ -180,27 +205,31 @@ func withFor(request string, f *DecisionFor) (string, error) {
 }
 
 // The destinations of a route (Destination.Kind): the operator, DR1's
-// one, and a person's label (HM1): a person by name, or a responsibility's
-// holder.
+// one, a person's label (HM1): a person by name, or a responsibility's
+// holder, and the decide grant ({kind: grant, grant: decide}: anyone an
+// identity provider gives it, docs/plans/decide-grant.md).
 const (
 	DestOperator = "operator"
 	DestPerson   = "person"
 	DestRole     = "role"
+	DestGrant    = "grant"
 )
 
 // routeLabel is the label a route's destination names, "" for the
 // operator's; false for a destination that is not one.
 func routeLabel(to []Destination) (string, bool) {
 	if len(to) == 1 {
-		switch to[0].Kind {
+		switch d := to[0]; d.Kind {
 		case DestPerson:
-			return labelPerson + to[0].Name, to[0].Name != ""
+			return labelPerson + d.Name, d.Name != "" && d.Grant == ""
 		case DestRole:
-			return labelRole + to[0].Name, to[0].Name != ""
+			return labelRole + d.Name, d.Name != "" && d.Grant == ""
+		case DestGrant:
+			return GrantDecideLabel, d.Grant == string(ext.GrantDecide) && d.Name == ""
 		}
 	}
 	for _, d := range to {
-		if d.Kind != DestOperator || d.Name != "" {
+		if d.Kind != DestOperator || d.Name != "" || d.Grant != "" {
 			return "", false
 		}
 	}
@@ -212,7 +241,10 @@ func routeLabel(to []Destination) (string, bool) {
 // as the route's transaction reads it (held, the engine's copy d): taken
 // only while the decision is open (decision_answered for one answered,
 // decision_closed for one applied or otherwise final, a response's words),
-// the label resolved in r's crew as launched. It returns the route's detail and the record's edit.
+// the label resolved in r's crew as launched; the decide grant's label is
+// the grant's target, no person, and "" no target at all (the take-back of
+// a decision given to the grant, which r nil, a run not held, may make). It
+// returns the route's detail and the record's edit.
 func (e *Engine) forRoute(r *run, d *decision, rec ledger.DecisionRecord, id, label, note, actor string) (opDetail, func(decisionTx, ledger.DecisionRow) error, error) {
 	state := cmpState(d, rec)
 	switch {
@@ -221,11 +253,22 @@ func (e *Engine) forRoute(r *run, d *decision, rec ledger.DecisionRecord, id, la
 	case state != ledger.DecisionOpen:
 		return opDetail{}, nil, refuse(CodeDecisionClosed, "%s is %s: whom it is for changes only while it is open", id, state)
 	}
-	f, err := r.resolveFor(label)
-	if err != nil {
-		return opDetail{}, nil, err
+	var f *DecisionFor
+	switch label {
+	case "":
+	case GrantDecideLabel:
+		f = &DecisionFor{Label: GrantDecideLabel}
+	default:
+		var err error
+		if f, err = r.resolveFor(label); err != nil {
+			return opDetail{}, nil, err
+		}
 	}
-	dt := forDetail(id, f, requestFor(rec.Request), note, actor)
+	was := requestFor(rec.Request)
+	if GivenToGrant(rec.Request) {
+		was = &DecisionFor{Label: GrantDecideLabel}
+	}
+	dt := forDetail(id, f, was, note, actor)
 	edit := func(dtx decisionTx, row ledger.DecisionRow) error {
 		// Its row judges, as the transaction reads it: answered or closed
 		// since the look is refused in a response's words, and nothing of
@@ -261,7 +304,7 @@ const routeCut = 24
 func forDetail(id string, f, was *DecisionFor, note, actor string) opDetail {
 	build := func(f, was *DecisionFor, by, cut string) opDetail {
 		return opDetail{To: forTo(f), Rule: forRule(f), By: by, For: f, ForWas: was,
-			Words: fmt.Sprintf("%s is now for %s: routed by %s%s", id, f.words(), by, cut)}
+			Words: fmt.Sprintf("%s is now for %s: routed by %s%s", id, forName(f), by, cut)}
 	}
 	dt := build(f, was, actor, "")
 	if dt.Note = note; fitsDetail(dt) {
@@ -270,7 +313,7 @@ func forDetail(id string, f, was *DecisionFor, note, actor string) opDetail {
 	if dt.Note = ""; !fitsDetail(dt) {
 		cf, cw, by := cutFor(f), cutFor(was), cutName(actor)
 		cut := ""
-		if by != actor || *cf != *f || was != nil && *cw != *was {
+		if by != actor || f != nil && *cf != *f || was != nil && *cw != *was {
 			cut = " (names cut to fit the history)"
 		}
 		dt = build(cf, cw, by, cut)
@@ -359,6 +402,10 @@ func (r *run) gateFor(pd PackageDecision) *DecisionFor {
 	}
 	f, err := r.resolveFor(pd.For)
 	if err != nil {
+		if strings.HasPrefix(pd.For, "grant:") {
+			// Never a grant's target: only a route gives a decision to one.
+			return nil
+		}
 		return &DecisionFor{Label: pd.For}
 	}
 	return f
