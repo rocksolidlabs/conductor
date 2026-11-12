@@ -77,8 +77,8 @@ var defaultTrackerCaps = trackerCaps{busy: trackerBusyWait, reads: trackerReadsB
 
 // externalState is the server's part of this file: the locks of a
 // ticket's and a link's reads, held from the request to GitHub to the
-// commit (never a database transaction across the call), and two seams of
-// the tests (caps, cut), unset in the product.
+// commit (never a database transaction across the call), and the tests'
+// seams (caps, cut, remote, waiting), unset in the product.
 type externalState struct {
 	mu   sync.Mutex
 	held map[string]chan struct{}
@@ -87,8 +87,10 @@ type externalState struct {
 	// each image's commit ("image"): true ends the route there, as a crash
 	// would, so a resend is what completes it.
 	cut func(at string) bool
-	// remote, when set, reads a folder's remote in gitrepo.Remote's place.
-	remote func(ctx context.Context, dir, name string) (host, path string, err error)
+	// remote, when set, reads a folder's remote in gitrepo.Remote's place;
+	// waiting is told of a lock found held, before its wait.
+	remote  func(ctx context.Context, dir, name string) (host, path string, err error)
+	waiting func(key string)
 }
 
 func (s *Server) trackerCaps() trackerCaps {
@@ -121,6 +123,9 @@ func (x *externalState) lock(ctx context.Context, key string, wait time.Duration
 			}, true
 		}
 		x.mu.Unlock()
+		if x.waiting != nil {
+			x.waiting(key)
+		}
 		select {
 		case <-ch:
 		case <-timer.C:
@@ -385,8 +390,11 @@ func (s *Server) externalStart(w http.ResponseWriter, r *http.Request, v any, op
 	return ds, key, ok
 }
 
-// replayed answers an operation sent again from its receipt (Replay),
-// before anything is read or locked: true once it answered.
+// replayed answers an operation sent again from its receipt (Replay): true
+// once it answered. A route asks it first, a shortcut, and again once it
+// holds the ticket's lock, which a first send holds from its read of
+// GitHub through its commit: that answer decides, so a resend that waited
+// for its first send answers what the first did and asks GitHub nothing.
 func (s *Server) replayed(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, op dispatch.Op, intent string, args any, key string) bool {
 	rc, found, err := ds.Replay(ctx, op, intent, args)
 	if err != nil || found {
@@ -646,10 +654,7 @@ func (s *Server) handleDispatchImport(w http.ResponseWriter, r *http.Request) {
 		}
 		var node string
 		ref, node, _ = snapshotRef(tv.ExternalSnapshot)
-		images = func() ([]tracker.ImageRef, error) {
-			it, _, err := s.readItem(rctx, ref, tracker.Validators{NodeID: node})
-			return it.Images, err
-		}
+		images = s.readImages(rctx, ref, node)
 	} else {
 		pv, err := ds.Project(ctx, key)
 		if err != nil {
@@ -703,9 +708,10 @@ func (s *Server) linkedTicket(ctx context.Context, w http.ResponseWriter, ds *di
 
 // handleDispatchLinkExternal sets a ticket's linked issue to the item at
 // url (ticket.link_external), every field staying Dispatch's: the
-// operation replayed first, then, under the ticket's lock, the item read
-// and the operation run with the read. {receipt, ticket}; the store's
-// refusals (409 external_linked, invalid for a ticket linked already).
+// operation replayed (replayed, again under the ticket's lock), then the
+// item read and the operation run with the read. {receipt, ticket}; the
+// store's refusals (409 external_linked, invalid for a ticket linked
+// already).
 func (s *Server) handleDispatchLinkExternal(w http.ResponseWriter, r *http.Request) {
 	var body externalLinkBody
 	ds, key, ok := s.externalStart(w, r, &body, &body.dispatchOp, ticketKey)
@@ -735,6 +741,9 @@ func (s *Server) handleDispatchLinkExternal(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	defer release()
+	if s.replayed(ctx, w, ds, op, dispatch.IntentLinkExternal, args, key) {
+		return
+	}
 	rctx, rcancel := context.WithTimeout(ctx, caps.reads)
 	it, _, err := s.readItem(rctx, ref, tracker.Validators{})
 	rcancel()
@@ -780,7 +789,10 @@ func (s *Server) handleDispatchUnlinkExternal(w http.ResponseWriter, r *http.Req
 // (completeImages) from this read's images, or after a 304 from one more
 // read without validators, made only when an entry is pending. 200
 // {changed, receipt?, ticket, images}, receipt only when ticket.refresh
-// ran.
+// ran. The receipt is looked for under the ticket's lock: a resend of a
+// refresh that changed the ticket completes the images its first send
+// left pending (completeImages, one more read made only then) and answers
+// {changed: true, receipt, ticket, images}.
 func (s *Server) handleDispatchRefresh(w http.ResponseWriter, r *http.Request) {
 	var body externalRefreshBody
 	ds, key, ok := s.externalStart(w, r, &body, &body.dispatchOp, ticketKey)
@@ -791,19 +803,35 @@ func (s *Server) handleDispatchRefresh(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := trackerContext(r, caps.busy+caps.reads+caps.write+caps.images)
 	defer cancel()
 	op := body.op(r)
-	if s.replayed(ctx, w, ds, op, dispatch.IntentRefresh, dispatch.RefreshArgs{Key: key}, key) {
-		return
-	}
 	release, ok := s.lockFor(ctx, w, "ticket:"+key)
 	if !ok {
 		return
 	}
 	defer release()
+	// The receipt is looked for under the ticket's lock, which a first send
+	// holds from its read of GitHub through its commit: a resend answers
+	// what the first did, its pending images completed first.
+	rc, found, err := ds.Replay(ctx, op, dispatch.IntentRefresh, dispatch.RefreshArgs{Key: key})
+	if err != nil || found && rc.Status != dispatch.StatusDone {
+		s.writeOp(w, "ticket", rc, err, false, "ticket", ticketAfter(ctx, ds, key))
+		return
+	}
 	tv, ok := s.linkedTicket(ctx, w, ds, key)
 	if !ok {
 		return
 	}
 	ref, node, linked := snapshotRef(tv.ExternalSnapshot)
+	rctx, rcancel := context.WithTimeout(ctx, caps.reads)
+	defer rcancel()
+	if found {
+		if linked && (body.Images == nil || *body.Images) {
+			ictx, icancel := context.WithTimeout(ctx, caps.images)
+			s.completeImages(ictx, ds, op, key, ref, s.readImages(rctx, ref, node))
+			icancel()
+		}
+		s.refreshReply(ctx, w, ds, key, map[string]any{"changed": true, "receipt": rc})
+		return
+	}
 	if tv.ExternalID == "" || !linked {
 		writeDispatch(w, http.StatusConflict, map[string]any{"error": apiError{Code: dispatch.RefusalInvalid, Message: key + " has no linked issue"}})
 		return
@@ -812,8 +840,6 @@ func (s *Server) handleDispatchRefresh(w http.ResponseWriter, r *http.Request) {
 	if er := tv.ExternalRead; er != nil && er.ExternalID == tv.ExternalID && er.Error == "" {
 		v.Issue, v.Pull = er.IssueETag, er.PullETag
 	}
-	rctx, rcancel := context.WithTimeout(ctx, caps.reads)
-	defer rcancel()
 	it, notModified, err := s.readItem(rctx, ref, v)
 	if err != nil {
 		// GitHub's failure is kept as the read's words; no token, or a host
@@ -843,6 +869,9 @@ func (s *Server) handleDispatchRefresh(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			extra["changed"], extra["receipt"] = true, rc
+			if s.external.cut != nil && s.external.cut("ticket") {
+				return
+			}
 		}
 	}
 	if !need {
@@ -856,23 +885,35 @@ func (s *Server) handleDispatchRefresh(w http.ResponseWriter, r *http.Request) {
 		if notModified {
 			// No body, and no signed address is ever kept: one more read,
 			// without validators, made only when an entry is pending.
-			images = func() ([]tracker.ImageRef, error) {
-				again, _, err := s.readItem(rctx, ref, tracker.Validators{NodeID: node})
-				return again.Images, err
-			}
+			images = s.readImages(rctx, ref, node)
 		}
 		ictx, icancel := context.WithTimeout(ctx, caps.images)
 		s.completeImages(ictx, ds, op, key, ref, images)
 		icancel()
 	}
 	s.trackerLog(r, ref, http.StatusOK)
-	tv, err = ds.Ticket(ctx, key)
+	s.refreshReply(ctx, w, ds, key, extra)
+}
+
+// refreshReply answers a refresh: extra, the ticket and its manifest.
+func (s *Server) refreshReply(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, key string, extra map[string]any) {
+	tv, err := ds.Ticket(ctx, key)
 	if err != nil {
 		s.dispatchError(w, "ticket", err)
 		return
 	}
 	extra["ticket"], extra["images"] = tv, manifestOf(tv.Ticket)
 	writeDispatch(w, http.StatusOK, extra)
+}
+
+// readImages is the images of ref's item as one more read finds them, by
+// its node id and without validators (atGitHub), for completeImages, which
+// asks only when an entry is pending.
+func (s *Server) readImages(ctx context.Context, ref tracker.Ref, node string) func() ([]tracker.ImageRef, error) {
+	return func() ([]tracker.ImageRef, error) {
+		it, _, err := s.readItem(ctx, ref, tracker.Validators{NodeID: node})
+		return it.Images, err
+	}
 }
 
 // refusal answers an error of a read's record: a store's refusal as 409
@@ -892,7 +933,8 @@ func (s *Server) refusal(w http.ResponseWriter, err error) {
 }
 
 // handleDispatchAuthority moves a field of a ticket between Dispatch and
-// its linked item's system (ticket.authority): replayed first; to
+// its linked item's system (ticket.authority): replayed (replayed, again
+// under the ticket's lock); to
 // Dispatch, run as it is; to the system, under the ticket's lock, the item
 // read first and handed to the operation, which writes the snapshot, the
 // owner and the field from it. {receipt, ticket}.
@@ -914,6 +956,9 @@ func (s *Server) handleDispatchAuthority(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer release()
+	if s.replayed(ctx, w, ds, op, dispatch.IntentAuthority, args, key) {
+		return
+	}
 	tv, ok := s.linkedTicket(ctx, w, ds, key)
 	if !ok {
 		return

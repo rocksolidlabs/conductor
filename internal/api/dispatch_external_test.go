@@ -1003,3 +1003,124 @@ func driveExternal(t *testing.T, e *testEnv, g *ghItems, do func(pattern, path, 
 	<-sent
 	gate.Open()
 }
+
+// waitLock waits for a request found waiting on the lock named key
+// (externalState.waiting), testWait only bounding a hang.
+func waitLock(t *testing.T, waits <-chan string, key string) {
+	t.Helper()
+	deadline := time.After(testWait)
+	for {
+		select {
+		case k := <-waits:
+			if k == key {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("nothing waits on %s", key)
+		}
+	}
+}
+
+// heldWaits is a channel told of every ticket's or link's lock found held.
+func heldWaits(e *testEnv) <-chan string {
+	waits := make(chan string, 64)
+	e.srv.external.waiting = func(key string) {
+		select {
+		case waits <- key:
+		default:
+		}
+	}
+	return waits
+}
+
+// A resend that waits behind its first send, which holds the ticket's lock
+// while the fake holds its read of GitHub, answers the first's receipt and
+// asks GitHub nothing: a refresh that changed the ticket, a link, and a
+// field given back to GitHub alike.
+func TestResendBehindItsFirst(t *testing.T) {
+	e, g := externalEnv(t)
+	waits := heldWaits(e)
+	e.newDispatchProject(t, "RSD", nil)
+	// twice sends body to path twice, the second once the first is held at
+	// the fake's read of item n and the second waits on key's lock: both
+	// answers, and the fake's reads of the item made meanwhile.
+	twice := func(path string, n int, key string, body map[string]any) (a, b map[string]any, reads int) {
+		t.Helper()
+		item := itemsRepo + "/issues/" + strconv.Itoa(n)
+		before := g.count("api.github.com", item)
+		gate := g.f.Hold("GET", "api.github.com", item)
+		first, second := make(chan map[string]any, 1), make(chan map[string]any, 1)
+		go func() { _, _, out := e.call(t, "POST", path, body); first <- out }()
+		<-gate.Reached()
+		go func() { _, _, out := e.call(t, "POST", path, body); second <- out }()
+		waitLock(t, waits, "ticket:"+key)
+		gate.Open()
+		a, b = <-first, <-second
+		return a, b, g.count("api.github.com", item) - before
+	}
+	same := func(what string, a, b map[string]any, reads int) {
+		t.Helper()
+		ra, rb := rcOf(a), rcOf(b)
+		if reads != 1 || ra["status"] != "done" || rb["repeat"] != true || ra["opId"] != rb["opId"] || ra["rev"] != rb["rev"] || ra["key"] != rb["key"] || a["changed"] != b["changed"] {
+			t.Fatalf("%s: %d reads; %v, then %v", what, reads, a, b)
+		}
+	}
+	it := issue("I_kwDOresend88", "Before", t0)
+	it.Images = nil
+	g.set(88, it)
+	key := entityOf(t, e.importItem(t, "RSD", "https://github.com/octo/app/issues/88", opID(), http.StatusCreated, nil), "ticket")["key"].(string)
+	g.edit(88, func(i *ghItem) { i.Title, i.Updated = "After", t0.Add(time.Hour) })
+	a, b, reads := twice("/api/dispatch/tickets/"+key+"/external/refresh", 88, key, map[string]any{"opId": opID()})
+	same("a refresh", a, b, reads)
+	if a["changed"] != true {
+		t.Fatalf("the first refresh: %v", a)
+	}
+
+	g.set(89, ghItem{Node: "I_kwDOresend89", Title: "Linked", Updated: t0})
+	own := e.newDispatchTicket(t, "RSD", "Own", nil)["key"].(string)
+	a, b, reads = twice("/api/dispatch/tickets/"+own+"/external", 89, own, map[string]any{"opId": opID(), "url": "octo/app#89"})
+	same("a link", a, b, reads)
+
+	e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/external/authority", map[string]any{"opId": opID(), "field": "title", "owner": "dispatch"}, http.StatusOK, "")
+	a, b, reads = twice("/api/dispatch/tickets/"+key+"/external/authority", 88, key, map[string]any{"opId": opID(), "field": "title", "owner": "github"})
+	same("a field given back", a, b, reads)
+}
+
+// A refresh that changed the ticket and stopped before its images (the
+// test's cut after its ticket's commit, or images false) is completed by
+// the same operation sent again: the images done, the answer the
+// receipt's.
+func TestRefreshResendCompletesImages(t *testing.T) {
+	e, g := externalEnv(t)
+	g.image("/1/a.png", []byte(pngBytes))
+	g.image("/1/b.svg", []byte(svgBytes))
+	e.newDispatchProject(t, "RIM", nil)
+	for _, c := range []struct {
+		n     int
+		cut   bool
+		first map[string]any
+	}{{86, true, nil}, {87, false, map[string]any{"images": false}}} {
+		g.set(c.n, issue("I_kwDOresend"+strconv.Itoa(c.n), "Before", t0))
+		key := entityOf(t, e.importItem(t, "RIM", "https://github.com/octo/app/issues/"+strconv.Itoa(c.n), opID(), http.StatusCreated, map[string]any{"images": false}), "ticket")["key"].(string)
+		g.edit(c.n, func(i *ghItem) { i.Title, i.Updated = "After", t0.Add(time.Hour) })
+		op := opID()
+		body := map[string]any{"opId": op}
+		for k, v := range c.first {
+			body[k] = v
+		}
+		if c.cut {
+			e.srv.external.cut = func(at string) bool { return at == "ticket" }
+		}
+		downloads := g.count(imageHost, "/1/")
+		e.call(t, "POST", "/api/dispatch/tickets/"+key+"/external/refresh", body)
+		e.srv.external.cut = nil
+		if v, _ := e.srv.dispatch.Ticket(t.Context(), key); v.Title != "After" || g.count(imageHost, "/1/") != downloads {
+			t.Fatalf("%d: the first send: %q, %d downloads", c.n, v.Title, g.count(imageHost, "/1/")-downloads)
+		}
+		out := e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/external/refresh", map[string]any{"opId": op}, http.StatusOK, "")
+		ims := imagesOf(t, out)
+		if out["changed"] != true || rcOf(out)["opId"] != op || rcOf(out)["repeat"] != true || ims[pngID]["attachmentId"] == nil || ims[svgID]["skipped"] != "type" {
+			t.Fatalf("%d: the resend: %v", c.n, out)
+		}
+	}
+}
