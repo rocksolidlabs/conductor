@@ -424,7 +424,7 @@ func newUplink(cfg *config.Config, server string, srv *api.Server, log *slog.Log
 	rv := cfg.Rendezvous
 	return &hostagent.Uplink{ServerURL: server, Token: rv.Token, HostName: rv.HostName, RelayOnly: rv.RelayOnly, Insecure: rv.Insecure,
 		ICE: hostagent.ICE{UDPPort: cfg.ICE.UDPPort, PublicIP: cfg.ICE.PublicIP}, Log: log,
-		Decisions: srv.Lane(), LinkGone: srv.RemoteLinkGone}
+		Decisions: srv.Lane(), LinkGone: srv.RemoteLinkGone, LinkUnnamed: srv.RemoteLinkUnnamed}
 }
 
 // uplinkPublisher adapts hostagent.Uplink to api.Publisher and

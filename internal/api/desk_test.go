@@ -57,7 +57,7 @@ func deskPair(t *testing.T, decisions bool) (yard, local *testEnv) {
 	local = readyEnv(t, nil)
 	local.gitRepo(t)
 	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: yard.http.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true,
-		Decisions: local.srv.Lane(), LinkGone: local.srv.RemoteLinkGone}})
+		Decisions: local.srv.Lane(), LinkGone: local.srv.RemoteLinkGone, LinkUnnamed: local.srv.RemoteLinkUnnamed}})
 	return yard, local
 }
 
@@ -961,10 +961,10 @@ func keptDeskPair(t *testing.T) (yard, local *testEnv, dir string, gone <-chan s
 	local.gitRepo(t)
 	told := make(chan string, 8)
 	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: yard.http.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true,
-		Decisions: local.srv.Lane(), LinkGone: func(linkID, sessionID, runID string) {
-			local.srv.RemoteLinkGone(linkID, sessionID, runID)
+		Decisions: local.srv.Lane(), LinkGone: func(linkID, sessionID, runID string, ended bool) {
+			local.srv.RemoteLinkGone(linkID, sessionID, runID, ended)
 			told <- linkID
-		}}})
+		}, LinkUnnamed: local.srv.RemoteLinkUnnamed}})
 	return yard, local, dir, told
 }
 
@@ -1298,18 +1298,18 @@ func TestAMembersLinkGoneIsNoRunLinksEnd(t *testing.T) {
 	next := retries(local)
 	run, _ := heldRun(t, local)
 	linkID, _ := remoteDecisionLink(t, local, "/api/runs/"+run.ID+"/links", "phone")
-	local.srv.RemoteLinkGone(linkID, sessionHex("member"), "")
+	local.srv.RemoteLinkGone(linkID, sessionHex("member"), "", false)
 	if !local.srv.Lane().DecisionLink(linkID, "", run.ID) {
 		t.Fatal("a member's link_gone ended the run's decision link")
 	}
 	if l := linksOf(t, local, "/api/runs/"+run.ID+"/links"); len(l) != 1 {
 		t.Fatalf("the run's links after a member's link_gone: %v", l)
 	}
-	local.srv.RemoteLinkGone(linkID, "", "another-run")
+	local.srv.RemoteLinkGone(linkID, "", "another-run", false)
 	if !local.srv.Lane().DecisionLink(linkID, "", run.ID) {
 		t.Fatal("another run's desk's link_gone ended the link")
 	}
-	local.srv.RemoteLinkGone(linkID, "", run.ID)
+	local.srv.RemoteLinkGone(linkID, "", run.ID, false)
 	if local.srv.Lane().DecisionLink(linkID, "", run.ID) {
 		t.Fatal("the desk's link_gone left the link standing")
 	}
@@ -1330,11 +1330,11 @@ func TestAMembersLinkGoneIsNoRunLinksEnd(t *testing.T) {
 	local.srv.publish(fs.l)
 	until(t, "the session published", func() bool { return local.srv.publishedOf(id) != nil })
 	sl, _ := remoteDecisionLink(t, local, "/api/sessions/"+id+"/links", "phone")
-	local.srv.RemoteLinkGone(sl, sessionHex("other"), "")
+	local.srv.RemoteLinkGone(sl, sessionHex("other"), "", false)
 	if !local.srv.Lane().DecisionLink(sl, id, "") {
 		t.Fatal("another session's link_gone ended the session's link")
 	}
-	local.srv.RemoteLinkGone(sl, id, "")
+	local.srv.RemoteLinkGone(sl, id, "", false)
 	if local.srv.Lane().DecisionLink(sl, id, "") {
 		t.Fatal("its own session's link_gone left it standing")
 	}
