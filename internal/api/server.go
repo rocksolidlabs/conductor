@@ -82,11 +82,10 @@ type Server struct {
 	laneSeam *laneSeams
 	lanes    laneState
 	// decideSeam is nil but in tests; decideLists the decide lists being
-	// read, decideLimiter the bound per subject on the four routes
-	// (decide.go).
-	decideSeam    atomic.Pointer[decideSeams]
-	decideLists   decideListing
-	decideLimiter *rateLimiter
+	// read, decideRequests the four routes' requests being answered, of
+	// each subject (decide.go).
+	decideSeam                  atomic.Pointer[decideSeams]
+	decideLists, decideRequests decideInFlight
 	// decisionItemSeam is nil but in tests: called with a DR1 record's n
 	// as its item is about to be made, after the read of the record and
 	// what it holds (inbox_decisions.go).
@@ -524,7 +523,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// Every provider behind the guard before the server's first write of
 	// its own (the ledger's recovery, the records): nothing calls them yet.
 	s.readRevision = gitcli.RevisionOf
-	s.decideLimiter = newDecideLimiter()
+	s.decideLists.limit, s.decideRequests.limit = 1, decideAtOnce
 	if len(o.previewBridge) > 0 {
 		s.bridge.script = append([]byte(nil), o.previewBridge...)
 	}
