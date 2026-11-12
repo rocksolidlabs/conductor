@@ -852,7 +852,7 @@ func TestEveryDataDirectoryNamedHasItsAccountsRead(t *testing.T) {
 		}
 	}
 	desktop, folder := filepath.Join(realTempDir(t), "desktop-data"), filepath.Join(home, "logins", "work")
-	write(filepath.Join(base, "conductor-desktop", "settings.json"), `{"dataDir": "`+desktop+`"}`)
+	write(filepath.Join(userConfigDir(t), "conductor-desktop", "settings.json"), `{"dataDir": "`+desktop+`"}`)
 	write(filepath.Join(folder, "auth.json"), "login\n")
 	write(filepath.Join(home, "notes.md"), "# beside\n")
 	doc := filepath.Join(desktop, "capacity", "accounts.json")
@@ -905,9 +905,10 @@ func TestTheDesktopAppsDefaultDataDirectoryHasItsAccountsRead(t *testing.T) {
 			folder := filepath.Join(home, "logins", "work")
 			write(filepath.Join(folder, "auth.json"), "login\n")
 			write(filepath.Join(home, "notes.md"), "# beside\n")
-			doc := filepath.Join(base, name, "conductor", "capacity", "accounts.json")
+			app := filepath.Join(userConfigDir(t), name)
+			doc := filepath.Join(app, "conductor", "capacity", "accounts.json")
 			write(doc, `{"rev":1,"accounts":[{"id":"a-aaaaaaaaaaaa","adapter":"codex","label":"L","folder":"`+folder+`","createdAt":"2026-11-11T00:00:00Z"}]}`)
-			if _, err := os.Stat(filepath.Join(base, name, "settings.json")); !os.IsNotExist(err) {
+			if _, err := os.Stat(filepath.Join(app, "settings.json")); !os.IsNotExist(err) {
 				t.Fatalf("settings file: %v, want none", err)
 			}
 			deny, err := LocalFileDenyFunc("")
