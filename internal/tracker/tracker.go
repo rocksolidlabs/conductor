@@ -147,6 +147,9 @@ type Item struct {
 	// reason, so a caller can say "N images not imported".
 	ImagesLeftOut ImagesLeftOut `json:"imagesLeftOut,omitzero"`
 	Validators    Validators    `json:"validators"`
+	// LabelsTotal counts the labels the answer listed, Labels holding at
+	// most MaxLabels of them.
+	LabelsTotal int `json:"labelsTotal,omitempty"`
 }
 
 // ImagesLeftOut counts an item's images a read left out: Unlisted those on

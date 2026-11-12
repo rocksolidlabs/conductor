@@ -609,8 +609,8 @@ const (
 	RequireVerified   = "verified"
 	// RequireMerged is a live delivery link whose pull request GitHub says
 	// is merged, by a read of the link at most MaxMergedReadAge old
-	// (Program item IN1a, reads.go). The model meets it; a project's
-	// policy refuses it until the API reads a close's links (offered).
+	// (Program item IN1a, reads.go). The API reads a close's delivery
+	// links first when a project's policy names it (dispatch_external.go).
 	RequireMerged = "merged"
 )
 
@@ -618,10 +618,9 @@ const (
 var CloseRequirements = []string{RequireAcceptance, RequireDelivery, RequireVerified, RequireMerged}
 
 // offeredRequirements is the requirements a project's policy may name on
-// a local write: merged waits for the close route's reads of GitHub
-// (docs/plans/tracker-linking.md, PR-4), so that no project is set to a
-// requirement nothing yet meets.
-var offeredRequirements = []string{RequireAcceptance, RequireDelivery, RequireVerified}
+// a local write: every one, merged since the close route reads GitHub
+// (docs/plans/tracker-linking.md, PR-4).
+var offeredRequirements = CloseRequirements
 
 // The kinds of a relation: "depends on" is blocks read from the other
 // end.
@@ -1341,7 +1340,7 @@ func checkTracker(tracker, trackerURL string) error {
 }
 
 // closePolicy checks a close policy and gives it in CloseRequirements'
-// order: acceptance, delivery and verified, each at most once.
+// order: acceptance, delivery, verified and merged, each at most once.
 func closePolicy(requires []string) ([]string, error) {
 	out := []string{}
 	for _, want := range CloseRequirements {
@@ -1359,11 +1358,8 @@ func closePolicy(requires []string) ([]string, error) {
 		}
 	}
 	for _, r := range requires {
-		if r == RequireMerged {
-			return nil, refuse(RefusalInvalid, "the close policy's merged needs the close's reads of GitHub, which this server does not make yet")
-		}
 		if !slices.Contains(offeredRequirements, r) {
-			return nil, refuse(RefusalInvalid, "the close policy's %q is none of acceptance, delivery and verified", r)
+			return nil, refuse(RefusalInvalid, "the close policy's %q is none of acceptance, delivery, verified and merged", r)
 		}
 	}
 	return out, nil
