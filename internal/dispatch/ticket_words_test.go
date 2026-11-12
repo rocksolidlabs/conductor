@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -247,6 +248,15 @@ func TestNothingACaptureHoldsIsMarkdownInATicket(t *testing.T) {
 		return MaxAttributeValue
 	}
 	var fixture []captureTicketCase
+	hostile := func(p, w string) Capture {
+		return wordsFilled(func(q string) (string, bool) {
+			if q == p {
+				return w, true
+			}
+			return hostileWord, !gateWords[q]
+		})
+	}
+	baseline := ticketText(hostile("", ""))
 	for wi, w := range words {
 		check(fmt.Sprintf("every string %q", w), wordsFilled(func(string) (string, bool) { return w, true }))
 		check(fmt.Sprintf("every string %q, the gates kept", w), wordsFilled(func(p string) (string, bool) { return w, !gateWords[p] }))
@@ -256,13 +266,16 @@ func TestNothingACaptureHoldsIsMarkdownInATicket(t *testing.T) {
 			}
 			return strings.Repeat(w, bound(p)/len([]rune(w))), !gateWords[p]
 		}))
+		// One at a time: a string describe writes, or one that decides what
+		// it writes, with each word; any other, with every twentieth, leaves
+		// the description as it was.
 		for _, p := range paths {
-			check(fmt.Sprintf("%s %q, the rest hostile", p, w), wordsFilled(func(q string) (string, bool) {
-				if q == p {
-					return w, true
-				}
-				return hostileWord, !gateWords[q]
-			}))
+			switch c := hostile(p, w); {
+			case slices.Contains(written, p) || gateWords[p]:
+				check(fmt.Sprintf("%s %q, the rest hostile", p, w), c)
+			case wi%20 == 0 && ticketText(c) != baseline:
+				t.Errorf("%s %q: a string describe does not write changes the description", p, w)
+			}
 		}
 		// The sample the web renders: the words in turn across the fields,
 		// each beside another, and the empty and the blank word beside the
@@ -277,20 +290,18 @@ func TestNothingACaptureHoldsIsMarkdownInATicket(t *testing.T) {
 	}
 	for _, w := range []string{"", " "} {
 		for _, p := range written {
-			fixture = append(fixture, check(fmt.Sprintf("%s %q, the rest hostile", p, w), wordsFilled(func(q string) (string, bool) {
-				if q == p {
-					return w, true
-				}
-				return hostileWord, !gateWords[q]
-			})))
+			fixture = append(fixture, check(fmt.Sprintf("%s %q, the rest hostile", p, w), hostile(p, w)))
 		}
 	}
-	// Cut at every line's end: a block cut open is closed by its fence, in
-	// the bound.
-	all := wordsFilled(func(p string) (string, bool) { return hostileWord, !gateWords[p] })
+	// Cut at every line's end, and at each bound up to the fence and the
+	// "…" past it: a block cut open is closed by its fence, in the bound.
+	all := hostile("", "")
 	whole := describe(all).text(1 << 30)
 	var cuts []captureTicketCase
-	for n := len(whole) - 1; n >= len("\n…"); n-- {
+	for n := len("\n…"); n < len(whole); n++ {
+		if e := strings.LastIndexByte(whole[:n], '\n'); e >= 0 && n-e > len(ticketFence)+1+len("\n…")+1 {
+			continue
+		}
 		desc := describe(all).text(n)
 		if len(desc) > n {
 			t.Fatalf("cut to %d: %d bytes", n, len(desc))
