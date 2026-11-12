@@ -752,6 +752,28 @@ export interface HostRegisteredDecisions {
 }
 
 /**
+ * The part of registered that says the switchyard rechecks the connection's credential and takes host_token on it
+ * (docs/protocol.md, Host control connection): only on a connection admitted through an identity provider's principal;
+ * absent from an older switchyard. The web never sees it.
+ */
+export interface HostRegisteredRenews {
+  renews?: boolean
+}
+
+/**
+ * host → switchyard, after a registered that said renews: the credential that replaces the one the connection was admitted
+ * with, at most one per 30 s step and only when it changed. The token is 1 to HOST_MAX_TOKEN bytes of token68 (A-Z a-z 0-9
+ * - . _ ~ + / =), the message at most HOST_MAX_TOKEN_MESSAGE bytes; anything but its one success closes the connection 4403
+ * (access revoked). The web never sends it.
+ */
+export interface HostTokenMsg {
+  t: 'host_token'
+  token: string
+}
+export const HOST_MAX_TOKEN = 2048
+export const HOST_MAX_TOKEN_MESSAGE = 2560
+
+/**
  * host → switchyard, the first message of a run's desk's connection in place of register (docs/protocol.md, A run's desk):
  * a connection with no session that carries a run decision link's lane, so the run's decisions are reached with no member
  * alive. host.instance is required; localId is hostDeskLocalId(run.id); the whole message is at most 64 KiB (a host

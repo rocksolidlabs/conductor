@@ -19,7 +19,9 @@ import (
 // a new Host, after a backoff, and only once the earlier try has returned:
 // a provider never has two Starts running. ctx ends when the server shuts
 // down or gives that try up, and the provider's goroutines end with it; the
-// Host of a try given up refuses every call.
+// Host of a try given up refuses every call. In host mode (conductor host,
+// ModeHost) Start is called too, for the identity provider alone, before
+// the host registers.
 type Starter interface {
 	Start(ctx context.Context, h Host) error
 }
@@ -35,10 +37,27 @@ type Host interface {
 	Submit(ctx context.Context, r SubmitRequest) (SubmitResult, error)
 	// Notify hands a notice to the notification sinks.
 	Notify(ctx context.Context, n Notification) error
-	// DataDir is a directory of the provider's own, <dataDir>/ext/<name>.
+	// DataDir is a directory of the provider's own, <dataDir>/ext/<name>;
+	// in host mode <state>/ext/<name>, <state> $XDG_STATE_HOME/conductor or
+	// ~/.local/state/conductor. That one is shared by every conductor host
+	// process of the user on the machine, which may run at once, each with
+	// its own Start: the host takes no lock and gives no exclusivity, so a
+	// provider that keeps state one process must own (a one-time code
+	// redeemed once) takes its own lock in that directory.
 	DataDir() (string, error)
 	// Log is the server's logger, naming the provider.
 	Log() *slog.Logger
+	// HostToken is the configured host token of the binary that runs the
+	// provider: Settings' Host token (rendezvous.token) on a server that
+	// publishes to a switchyard, conductor host's --token
+	// (CONDUCTOR_HOST_TOKEN); "" for none, on a switchyard, and on the Host
+	// of every provider but the one in the identity slot. Only the
+	// machine's owner writes it. It is never logged.
+	HostToken() string
+	// Mode is the composition root that runs the provider: ModeServer,
+	// ModeSwitchyard or ModeHost, so a provider enrols as the kind of
+	// device its binary is.
+	Mode() string
 	// LaunchTurn launches a Brakeman turn as a run: an unsaved one-member
 	// crew of the agent in its adapter's read-only mode, never yolo,
 	// through the engine, the one scheduler. Only the Host the server
@@ -127,6 +146,13 @@ var (
 	ErrNotFound         = errors.New("ext: not found")
 	ErrQuestionAnswered = errors.New("ext: the question no longer waits")
 	ErrRefused          = errors.New("ext: refused") // wrapped with the words why
+)
+
+// The composition roots a provider runs in (Host.Mode).
+const (
+	ModeServer     = "server"
+	ModeSwitchyard = "switchyard"
+	ModeHost       = "host"
 )
 
 const (

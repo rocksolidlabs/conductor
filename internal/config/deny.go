@@ -140,6 +140,7 @@ func (c *Config) machineFiles() (dirs, files []string) {
 	if home, err := os.UserHomeDir(); err == nil && filepath.IsAbs(home) {
 		dirs = append(dirs, filepath.Join(home, ".conductor"))
 	}
+	dirs = append(dirs, hostStateDirs()...)
 	d, f, _ := desktopFiles()
 	dirs = append(dirs, d...)
 	files = append(files, f...)
@@ -223,6 +224,7 @@ func LocalFileDeny(path string) ([]string, error) {
 	if home, err := os.UserHomeDir(); err == nil && filepath.IsAbs(home) {
 		dirs = append(dirs, filepath.Join(home, ".conductor"))
 	}
+	dirs = append(dirs, hostStateDirs()...)
 	desktopDirs, desktopSettings, err := desktopFiles()
 	if err != nil {
 		return nil, err
@@ -236,6 +238,53 @@ func LocalFileDeny(path string) ([]string, error) {
 	}
 	return c.fileDeny(slices.Concat(dirs, folders, desktopDirs), append([]string{read}, desktopSettings...)), nil
 }
+
+// HostStateDir is where conductor host keeps what is its own on this
+// machine, its identity provider's directory among it (<state>/ext/<name>):
+// $XDG_STATE_HOME/conductor when that is set and absolute, else
+// ~/.local/state/conductor. Every session's file reads, saves and editors
+// are refused it (machineFiles, LocalFileDeny, through hostStateDirs).
+func HostStateDir() (string, error) {
+	if state := os.Getenv("XDG_STATE_HOME"); filepath.IsAbs(state) {
+		return filepath.Join(state, "conductor"), nil
+	}
+	return defaultHostStateDir()
+}
+
+// defaultHostStateDir is ~/.local/state/conductor.
+func defaultHostStateDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(home) {
+		return "", fmt.Errorf("the home directory %q is not an absolute path", home)
+	}
+	return filepath.Join(home, ".local", "state", "conductor"), nil
+}
+
+// hostStateDirs is every place a deny list names for the host's state:
+// HostStateDir as this process's environment gives it and the default
+// under the home directory, since a host and a server on one machine may
+// run with different environments. A host started with XDG_STATE_HOME set
+// to a place this process's environment does not name keeps its state
+// where this list does not reach: the default and this process's own
+// setting are all it knows.
+func hostStateDirs() []string {
+	var dirs []string
+	for _, f := range []func() (string, error){HostStateDir, defaultHostStateDir} {
+		if d, err := f(); err == nil && !slices.Contains(dirs, d) {
+			dirs = append(dirs, d)
+		}
+	}
+	return dirs
+}
+
+// ProviderStateMark names the file that marks a directory as a
+// provider's state in host mode (<state>/ext): written before the provider
+// can write there, and an export leaves every directory that holds it out,
+// wherever it lies.
+const ProviderStateMark = ".conductor-provider-state"
 
 // readConfigFile is os.ReadFile: a test replaces it to move a link while
 // the config file is read.

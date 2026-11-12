@@ -13,15 +13,11 @@ import (
 // messages (attention, activity, chat, resize, a session's link) are a
 // protocol error from it.
 
-// deskMessage says whether data is a message a desk may send.
-func deskMessage(data []byte) bool {
-	t, err := proto.ParseHeader(data)
-	if err != nil {
-		return false
-	}
+// deskMessage says whether a message of type t is one a desk may send.
+func deskMessage(t string) bool {
 	switch t {
 	case proto.HostAnswer, proto.HostICE, proto.HostViewerError, proto.HostViewerClose,
-		proto.HostRunLink, proto.HostRunLinkUpdate, proto.HostLinkRevoke, proto.HostStatus:
+		proto.HostRunLink, proto.HostRunLinkUpdate, proto.HostLinkRevoke, proto.HostStatus, proto.HostTokenType:
 		return true
 	}
 	return false

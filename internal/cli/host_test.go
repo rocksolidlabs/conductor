@@ -229,15 +229,17 @@ func TestHostNeedsNoToken(t *testing.T) {
 func TestHostRefusesTheServersFilesToItsSession(t *testing.T) {
 	clearConductorEnv(t)
 	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
 	home := os.Getenv("HOME")
 	// The desktop app's directories are in the user's configuration
 	// directory as the product finds it: ~/.config on Linux,
-	// ~/Library/Application Support on macOS.
+	// ~/Library/Application Support on macOS. The host's own state
+	// directory (config.HostStateDir) is refused too.
 	config, err := os.UserConfigDir()
 	if err != nil {
 		t.Fatal(err)
 	}
-	local := []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), filepath.Join(config, "conductor-desktop"), filepath.Join(config, "Conductor")}
+	local := []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "state", "conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), filepath.Join(config, "conductor-desktop"), filepath.Join(config, "Conductor")}
 	var desktopSettings []string
 	for _, name := range []string{"conductor-desktop", "Conductor"} {
 		desktopSettings = append(desktopSettings, filepath.Join(config, name, "settings.json"), filepath.Join(config, name, "*settings.json*"))

@@ -220,7 +220,11 @@ func fullestCapabilities(t *testing.T) capabilitiesReply {
 	for _, en := range srv.exts.all {
 		srv.extStarts = append(srv.extStarts, &extStarter{name: en.Name})
 	}
-	return srv.capabilities()
+	caps := srv.capabilities(context.Background(), false)
+	// The identity row with the longest detail as encoded: 80 runes that
+	// JSON escapes ("<" as <).
+	caps.Providers[0].Detail = strings.Repeat("<", ext.MaxIdentityDetail)
+	return caps
 }
 
 // The fullest registry the registry allows (a provider in each of the six

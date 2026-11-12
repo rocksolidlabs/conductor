@@ -24,12 +24,13 @@ func TestFileDeny(t *testing.T) {
 	home := realTempDir(t)
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
 	base := userConfigDir(t)
 	dir := realTempDir(t)
 	data, other := filepath.Join(dir, "data"), filepath.Join(dir, "store")
 	cfg, cat := filepath.Join(dir, "conductor.json"), filepath.Join(dir, "agents.json")
 	app := filepath.Join(dir, "mnt", "c", "Users", "me", "AppData", "Roaming", "conductor-desktop")
-	machine := []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), filepath.Join(base, "conductor-desktop"), filepath.Join(base, "Conductor")}
+	machine := []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "state", "conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), filepath.Join(base, "conductor-desktop"), filepath.Join(base, "Conductor")}
 	var settings []string
 	for _, name := range []string{"conductor-desktop", "Conductor"} {
 		settings = append(settings, filepath.Join(base, name, "settings.json"), filepath.Join(base, name, "*settings.json*"))
@@ -179,6 +180,7 @@ func TestLocalFileDeny(t *testing.T) {
 		home, cwd = realTempDir(t), realTempDir(t)
 		t.Setenv("HOME", home)
 		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("XDG_STATE_HOME", "")
 		t.Setenv("CONDUCTOR_DATA_DIR", "")
 		t.Setenv("CONDUCTOR_CATALOG_PATH", "")
 		t.Chdir(cwd)
@@ -189,7 +191,7 @@ func TestLocalFileDeny(t *testing.T) {
 	// under either name, in the user's configuration directory.
 	local := func(t *testing.T, home string) []string {
 		config := userConfigDir(t)
-		return []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), filepath.Join(config, "conductor-desktop"), filepath.Join(config, "Conductor")}
+		return []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "state", "conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), filepath.Join(config, "conductor-desktop"), filepath.Join(config, "Conductor")}
 	}
 	// settings are the desktop app's settings files in config, each with
 	// the name entry beside it.
@@ -400,21 +402,21 @@ func TestLocalFileDeny(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", realTempDir(t))
 		config := userConfigDir(t)
 		app, renamed := filepath.Join(config, "conductor-desktop"), filepath.Join(config, "Conductor")
-		dirs := []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), app, renamed}
+		dirs := []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "state", "conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), app, renamed}
 		base := slices.Concat(dirs, settings(config))
 		if got := deny(t, ""); !slices.Equal(got, base) {
 			t.Errorf("no settings: %q, want %q", got, base)
 		}
 		data := filepath.Join(realTempDir(t), "elsewhere")
 		writeFile(t, filepath.Join(app, "settings.json"), `{"dataDir":"`+data+`/","allowedRoots":["`+home+`"],"switchyardToken":"t","zoomLevel":0}`)
-		want := slices.Concat([]string{dirs[0], dirs[1], app, data, renamed}, settings(config))
+		want := slices.Concat([]string{dirs[0], dirs[1], dirs[2], app, data, renamed}, settings(config))
 		if got := deny(t, ""); !slices.Equal(got, want) {
 			t.Errorf("settings naming a data directory: %q, want %q", got, want)
 		}
 		// The settings under the other name count too.
 		other := filepath.Join(realTempDir(t), "other")
 		writeFile(t, filepath.Join(renamed, "settings.json"), `{"dataDir":"`+other+`"}`)
-		if got, want := deny(t, ""), slices.Concat([]string{dirs[0], dirs[1], app, data, renamed, other}, settings(config)); !slices.Equal(got, want) {
+		if got, want := deny(t, ""), slices.Concat([]string{dirs[0], dirs[1], dirs[2], app, data, renamed, other}, settings(config)); !slices.Equal(got, want) {
 			t.Errorf("settings under both names: %q", got)
 		}
 		os.Remove(filepath.Join(renamed, "settings.json"))
@@ -598,6 +600,112 @@ func TestFileDenyFuncKeepsWhereALinkToNothingLed(t *testing.T) {
 	}
 	if r, err := session.ResolvePath(home, "repo/old-data/catalog.json", got); err == nil {
 		t.Fatalf("a path the link led to resolved to %s", r)
+	}
+}
+
+// TestHostStateDirDenied: conductor host's state directory, where its
+// identity provider keeps its own, is refused to a server's sessions and a
+// hosted one's, with XDG_STATE_HOME set and unset, and where a link leads.
+func TestHostStateDirDenied(t *testing.T) {
+	home := realTempDir(t)
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("CONDUCTOR_DATA_DIR", "")
+	t.Setenv("CONDUCTOR_CATALOG_PATH", "")
+	t.Chdir(realTempDir(t))
+	state := realTempDir(t)
+	for _, xdg := range []string{"", state, "relative/ignored"} {
+		t.Setenv("XDG_STATE_HOME", xdg)
+		dir, err := HostStateDir()
+		want := filepath.Join(home, ".local", "state", "conductor")
+		if xdg == state {
+			want = filepath.Join(state, "conductor")
+		}
+		if err != nil || dir != want {
+			t.Fatalf("XDG_STATE_HOME %q: HostStateDir %q, %v; want %q", xdg, dir, err, want)
+		}
+		local, err := LocalFileDeny("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains((&Config{DataDir: filepath.Join(home, "data")}).FileDeny(), dir) || !slices.Contains(local, dir) {
+			t.Errorf("XDG_STATE_HOME %q: %s is not refused", xdg, dir)
+		}
+		if xdg == state {
+			continue
+		}
+		// Under the home a session runs in: resolved without the list, refused with it.
+		if err := os.MkdirAll(filepath.Join(dir, "ext", "cloud"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "ext", "cloud", "state.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		rel := filepath.Join(".local", "state", "conductor", "ext", "cloud", "state.json")
+		if _, err := session.ResolvePath(home, rel, nil); err != nil {
+			t.Fatalf("the provider's file without the list: %v", err)
+		}
+		if _, err := session.ResolvePath(home, rel, local); err == nil {
+			t.Errorf("XDG_STATE_HOME %q: a provider's file resolved", xdg)
+		}
+	}
+	// A state directory reached through a link: the link's target is refused too.
+	target := filepath.Join(realTempDir(t), "real-state")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(realTempDir(t), "state")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_STATE_HOME", link)
+	deny := (&Config{DataDir: filepath.Join(home, "data")}).FileDenyFunc()
+	if got := deny(); !slices.Contains(got, filepath.Join(target, "conductor")) {
+		t.Errorf("the link's target is not refused: %q", got)
+	}
+}
+
+// TestHostStateDirBothPlaces: a server and a host on one machine may run
+// with different environments, so a deny list names both places a host
+// can have used: the one its own process's XDG_STATE_HOME gives and the
+// default. A server started with XDG_STATE_HOME set refuses its session
+// the default place, where a host started without it keeps its provider's
+// state.
+func TestHostStateDirBothPlaces(t *testing.T) {
+	home := realTempDir(t)
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("CONDUCTOR_DATA_DIR", "")
+	t.Setenv("CONDUCTOR_CATALOG_PATH", "")
+	t.Chdir(realTempDir(t))
+	// The host's environment: none set.
+	t.Setenv("XDG_STATE_HOME", "")
+	hostState, err := HostStateDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(hostState, "ext", "cloud", "state.json")
+	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rel, _ := filepath.Rel(home, file)
+	// The server's environment, and another host's: set elsewhere.
+	elsewhere := realTempDir(t)
+	t.Setenv("XDG_STATE_HOME", elsewhere)
+	local, err := LocalFileDeny("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, deny := range map[string][]string{"a server's": (&Config{DataDir: filepath.Join(home, "data")}).FileDenyFunc()(), "a host's": local} {
+		if _, err := session.ResolvePath(home, rel, deny); err == nil {
+			t.Errorf("%s session resolved the provider's file at the default place", name)
+		}
+		if !slices.Contains(deny, filepath.Join(elsewhere, "conductor")) {
+			t.Errorf("%s list does not name its own setting's place: %q", name, deny)
+		}
 	}
 }
 

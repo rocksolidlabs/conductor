@@ -12,6 +12,22 @@ export interface Capability {
   kind: string
   name: string
   state: CapabilityState
+  /** Who the server is signed in as, on the identity provider's row alone: one line of at most MAX_IDENTITY_DETAIL characters. */
+  detail?: string
+}
+
+/** A detail's bound, in characters (code points, as Go counts runes): ext.MaxIdentityDetail. */
+export const MAX_IDENTITY_DETAIL = 80
+
+/** The identity row's words: "<name>: <detail>" for a ready identity provider with a detail, '' otherwise. */
+export function identityLine(caps: Capabilities | null | undefined): string {
+  const c = caps?.providers.find((p) => p.kind === 'identity' && isReady(p) && p.detail)
+  return c ? `${c.name}: ${c.detail}` : ''
+}
+
+/** Whether a ready identity provider shows no detail yet: its sign-in may complete after its start, so the route is read again. */
+export function identityPending(caps: Capabilities | null | undefined): boolean {
+  return !!caps?.providers.some((p) => p.kind === 'identity' && isReady(p) && !p.detail)
 }
 
 /** The route's reply. */
@@ -53,9 +69,11 @@ export function asCapabilities(body: unknown): Capabilities {
   const providers: Capability[] = []
   for (const r of rows) {
     if (!r || typeof r !== 'object') continue
-    const { kind, name, state } = r as Record<string, unknown>
+    const { kind, name, state, detail } = r as Record<string, unknown>
     if (typeof kind !== 'string' || typeof name !== 'string' || !kind || !name) continue
-    providers.push({ kind, name, state: state === 'ready' ? 'ready' : 'starting' })
+    const c: Capability = { kind, name, state: state === 'ready' ? 'ready' : 'starting' }
+    if (typeof detail === 'string' && detail && !/[\r\n]/.test(detail) && [...detail].length <= MAX_IDENTITY_DETAIL) c.detail = detail
+    providers.push(c)
   }
   return { providers }
 }
