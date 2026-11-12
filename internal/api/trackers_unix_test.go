@@ -28,8 +28,9 @@ import (
 // answered), and a write there puts nothing in the link's directory.
 func TestTrackerReadRefuses(t *testing.T) {
 	const secret = "ghp_PLANTEDinTHEfileTOKEN0123456789abWXYZ"
+	savedAt := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 	valid := func(host string) []byte {
-		b, err := store.Encode(trackerWire{GitHub: []trackerWireEntry{{Host: host, Token: secret, Login: "mona", AccountID: "1"}}})
+		b, err := store.Encode(trackerWire{GitHub: []trackerWireEntry{{Host: host, Token: secret, Login: "mona", AccountID: "1", SavedAt: savedAt}}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -154,7 +155,7 @@ func TestTrackerReadRefuses(t *testing.T) {
 			return nil
 		}, "is more than 16384 bytes"},
 		{"a host's entry twice", func(t *testing.T, creds, file string) func() {
-			b, _ := store.Encode(trackerWire{GitHub: []trackerWireEntry{{Host: "github.com", Token: "a"}, {Host: "github.com", Token: "b"}}})
+			b, _ := store.Encode(trackerWire{GitHub: []trackerWireEntry{{Host: "github.com", Token: "a", Login: "mona", AccountID: "1", SavedAt: savedAt}, {Host: "github.com", Token: "b", Login: "mona", AccountID: "1", SavedAt: savedAt}}})
 			put(t, file, b)
 			return nil
 		}, "holds a host's entry twice"},
@@ -310,7 +311,7 @@ func TestTrackerReadRefuses(t *testing.T) {
 			must(os.Rename(creds, creds+".old"))
 			must(os.Symlink(other, creds))
 		})
-		if err := writeTrackerFile(k, trackerFile{GitHub: []trackerEntry{{Host: gheHost, keptSecret: kept(secret), Login: "mona", AccountID: "1"}}}); err != nil {
+		if err := writeTrackerFile(k, trackerFile{GitHub: []trackerEntry{{Host: gheHost, keptSecret: kept(secret), Login: "mona", AccountID: "1", SavedAt: savedAt}}}); err != nil {
 			t.Fatal(err)
 		}
 		if names, err := os.ReadDir(other); err != nil || len(names) != 0 {

@@ -979,7 +979,7 @@ func TestTrackerTwoServersOneFile(t *testing.T) {
 		case <-busy:
 		case <-bDone:
 		}
-		file.GitHub = append(file.GitHub, trackerEntry{Host: "ghe-1.example.com", keptSecret: kept(plantedToken), Login: "mona", AccountID: "1"})
+		file.GitHub = append(file.GitHub, trackerEntry{Host: "ghe-1.example.com", keptSecret: kept(plantedToken), Login: "mona", AccountID: "1", SavedAt: time.Now().UTC().Truncate(time.Second)})
 		if err := ka.writeTokens(d, file); err != nil {
 			return newAPIError(http.StatusInternalServerError, "store_failed", err.Error())
 		}
@@ -1030,7 +1030,7 @@ func TestTrackerOneFileHoldsTheToken(t *testing.T) {
 	}
 	leftover := func() {
 		t.Helper()
-		b, _ := store.Encode(trackerWire{GitHub: []trackerWireEntry{{Host: "ghe-1.example.com", Token: plantedToken2, Login: "mona", AccountID: "1"}}})
+		b, _ := store.Encode(trackerWire{GitHub: []trackerWireEntry{{Host: "ghe-1.example.com", Token: plantedToken2, Login: "mona", AccountID: "1", SavedAt: time.Now().UTC().Truncate(time.Second)}}})
 		if err := os.WriteFile(filepath.Join(dir, trackerTemp), b, 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -1229,26 +1229,45 @@ func TestTrackerHostIsAName(t *testing.T) {
 
 // The one reader holds the file to what a save writes: a file written by
 // hand with an empty token, a token with a line break, a host of one
-// label, or five hosts is refused whole, naming the file alone, by the
-// list, a save (GitHub is not asked) and credentialFor.
+// label, five hosts, an account out of its form (a login holding a
+// control character, an empty login, a scope with a space, more scopes
+// than a save allows) or a zero saved-at is refused whole, naming the
+// file alone, by the list, a save (GitHub is not asked), a remove (the
+// file left as it was) and credentialFor.
 func TestTrackerFileHoldsWhatASaveWrites(t *testing.T) {
-	const oneLabel = "PLANTEDoneLABELhost"
+	const oneLabel, badLogin = "PLANTEDoneLABELhost", "PLANTEDlogin\x1b[31m"
 	e, f := trackerEnv(t, nil)
 	if status, data, _ := e.saveToken(t, "github.com", plantedToken); status != http.StatusOK {
 		t.Fatalf("save: %d %s", status, data)
 	}
+	saved := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 	entry := func(host, tok string) trackerWireEntry {
-		return trackerWireEntry{Host: host, Token: tok, Login: "mona", AccountID: "1"}
+		return trackerWireEntry{Host: host, Token: tok, Login: "mona", AccountID: "1", Scopes: []string{"repo"}, SavedAt: saved}
+	}
+	with := func(change func(*trackerWireEntry)) []trackerWireEntry {
+		x := entry("github.com", plantedToken)
+		change(&x)
+		return []trackerWireEntry{x}
 	}
 	var five []trackerWireEntry
 	for _, h := range []string{"github.com", "ghe-1.example.com", "ghe-2.example.com", "ghe-3.example.com", "ghe-4.example.com"} {
 		five = append(five, entry(h, plantedToken))
 	}
+	tooMany := make([]string, tracker.MaxScopes+1)
+	for i := range tooMany {
+		tooMany[i] = "repo"
+	}
 	for name, entries := range map[string][]trackerWireEntry{
-		"an empty token":            {entry("github.com", "")},
-		"a token with a line break": {entry("github.com", plantedToken[:20]+"\nX-Made-Up: 1")},
-		"a host of one label":       {entry(oneLabel, plantedToken)},
-		"five hosts":                five,
+		"an empty token":                    {entry("github.com", "")},
+		"a token with a line break":         {entry("github.com", plantedToken[:20]+"\nX-Made-Up: 1")},
+		"a host of one label":               {entry(oneLabel, plantedToken)},
+		"five hosts":                        five,
+		"a login holding a control byte":    with(func(x *trackerWireEntry) { x.Login = badLogin }),
+		"an empty login":                    with(func(x *trackerWireEntry) { x.Login = "" }),
+		"a scope with a space":              with(func(x *trackerWireEntry) { x.Scopes = []string{"repo PLANTEDscope"} }),
+		"more scopes than a save allows":    with(func(x *trackerWireEntry) { x.Scopes = tooMany }),
+		"a zero saved-at":                   with(func(x *trackerWireEntry) { x.SavedAt = time.Time{} }),
+		"a good entry beside a bad account": append(with(func(x *trackerWireEntry) { x.Host = "ghe-1.example.com" }), with(func(x *trackerWireEntry) { x.Login = "" })...),
 	} {
 		b, err := store.Encode(trackerWire{GitHub: entries})
 		if err != nil {
@@ -1269,6 +1288,11 @@ func TestTrackerFileHoldsWhatASaveWrites(t *testing.T) {
 			t.Errorf("%s: a save %d %s, GitHub asked %d times", name, status, data, f.userCalls()-calls)
 		}
 		said = append(said, string(data))
+		status, data, out = e.callAs(t, adminToken, "POST", "/api/trackers/github/remove", map[string]any{"host": "github.com"})
+		if after, _ := os.ReadFile(e.credentialsFile()); status != http.StatusInternalServerError || codeOf(out) != "credentials_unusable" || !bytes.Equal(after, b) {
+			t.Errorf("%s: a remove %d %s, the file changed: %v", name, status, data, !bytes.Equal(after, b))
+		}
+		said = append(said, string(data))
 		for _, host := range []string{"github.com", "ghe-1.example.com"} {
 			c, err := e.srv.credentialFor(t.Context(), tracker.Ref{System: tracker.GitHub, Host: host})
 			var ae *apiError
@@ -1280,10 +1304,21 @@ func TestTrackerFileHoldsWhatASaveWrites(t *testing.T) {
 			}
 		}
 		for _, s := range said {
-			if !strings.Contains(s, "credentials/github.json") || strings.Contains(s, oneLabel) || strings.Contains(s, plantedToken[4:16]) || strings.Contains(s, "Made-Up") {
+			if !strings.Contains(s, "credentials/github.json") || strings.Contains(s, oneLabel) || strings.Contains(s, plantedToken[4:16]) || strings.Contains(s, "Made-Up") || strings.Contains(s, "PLANTEDlogin") || strings.Contains(s, "PLANTEDscope") {
 				t.Errorf("%s: not the file's name alone: %s", name, s)
 			}
 		}
+	}
+	// The entries the cases change are read when nothing is changed.
+	b, err := store.Encode(trackerWire{GitHub: []trackerWireEntry{entry("ghe-1.example.com", plantedToken2), entry("github.com", plantedToken)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(e.credentialsFile(), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if l := e.trackersListed(t); len(l) != 2 {
+		t.Fatalf("a file of entries in their forms: %v", l)
 	}
 }
 
@@ -1318,10 +1353,78 @@ func TestTrackerCheckTimeIsThisServers(t *testing.T) {
 	}
 }
 
+// A change made while a save holds the file's lock over its check waits
+// for the lock and, the save still held past the lock's bound, is refused
+// busy with the file as it was; once released, the held save lands.
+func TestTrackerChangeMadeMeanwhileIsRefusedBusy(t *testing.T) {
+	e, f := trackerEnv(t, nil)
+	if status, data, _ := e.saveToken(t, "github.com", plantedToken); status != http.StatusOK {
+		t.Fatalf("save: %d %s", status, data)
+	}
+	before, _ := os.ReadFile(e.credentialsFile())
+	busy := lockWaits(e)
+	gate, held := heldSave(t, e, f, "ghe-1.example.com", plantedToken2)
+	got := removeAct(e, "github.com")()
+	select {
+	case <-busy:
+	default:
+		t.Fatal("the remove did not wait for the lock")
+	}
+	if after, _ := os.ReadFile(e.credentialsFile()); !strings.HasPrefix(got, "503 credentials_busy ") || !bytes.Equal(before, after) {
+		t.Fatalf("a remove made while a save is held: %s, the file changed: %v", got, !bytes.Equal(before, after))
+	}
+	gate.Open()
+	if s := <-held; s != "200  <nil>" {
+		t.Fatalf("the held save: %s", s)
+	}
+	if h := hostsKept(t, e); !slices.Equal(h, []string{"ghe-1.example.com", "github.com"}) {
+		t.Fatalf("after the held save: %v", h)
+	}
+}
+
+// A check is shown beside a kept token only when it was asked at or after
+// that entry was saved: server B records GitHub's refusal of a token,
+// server A over the same data directory removes the host and saves the
+// token again later, and B lists the entry with neither the older refusal
+// nor a check time.
+func TestTrackerCheckOlderThanTheSaveNotShown(t *testing.T) {
+	a, f := trackerEnv(t, nil)
+	b := newTestEnv(t, func(c *config.Config) { c.DataDir = a.srv.store.Dir() })
+	b.srv.limiter = newRateLimiter(1e6, 1e6)
+	useFake(b.srv, f)
+	t0 := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	t1, t2 := t0.Add(time.Minute), t0.Add(2*time.Minute)
+	a.srv.trackers.now = func() time.Time { return t0 }
+	b.srv.trackers.now = func() time.Time { return t1 }
+	if status, data, _ := a.saveToken(t, "github.com", plantedToken); status != http.StatusOK {
+		t.Fatalf("save on A: %d %s", status, data)
+	}
+	f.deny(plantedToken)
+	if status, data, _ := b.saveToken(t, "github.com", plantedToken); status != http.StatusUnprocessableEntity {
+		t.Fatalf("a save on B GitHub refuses: %d %s", status, data)
+	}
+	if row := rowOf(b.trackersListed(t), "github.com"); row["state"] != "refused" || row["checkedAt"] != t1.Format(time.RFC3339) {
+		t.Fatalf("B after its refused check: %v", row)
+	}
+	f.allow(plantedToken)
+	a.srv.trackers.now = func() time.Time { return t2 }
+	if status, data, out := a.callAs(t, adminToken, "POST", "/api/trackers/github/remove", map[string]any{"host": "github.com"}); status != http.StatusOK || out["removed"] != true {
+		t.Fatalf("remove on A: %d %s", status, data)
+	}
+	if status, data, _ := a.saveToken(t, "github.com", plantedToken); status != http.StatusOK {
+		t.Fatalf("the save again on A: %d %s", status, data)
+	}
+	row := rowOf(b.trackersListed(t), "github.com")
+	if _, has := row["checkedAt"]; has || row["state"] != "ok" || row["savedAt"] != t2.Format(time.RFC3339) {
+		t.Fatalf("B after A's remove and save again: %v, a check older than the save", row)
+	}
+}
+
 // A request that carries a token is made on a connection of its own,
 // closed after its answer: a host on a real loopback listener sees each
 // connection closed by the server, and through a save it accepts, one it
-// refuses and the list, neither the server's log nor the standard logger
+// refuses, the list and a request over a credential's own transport with
+// no base of its caller's, neither the server's log nor the standard logger
 // holds anything the host sent. The standard logger is the process's: the
 // test runs beside no other.
 func TestTrackerRequestOnItsOwnConnection(t *testing.T) {
@@ -1378,6 +1481,18 @@ func TestTrackerRequestOnItsOwnConnection(t *testing.T) {
 		t.Fatalf("listed: %v", l)
 	}
 	<-closed
+	<-closed
+	// A credential's own transport over no base of its caller's is the same.
+	cred, err := tracker.Token(host, tok, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := (&http.Client{Transport: cred.Transport(nil)}).Get("http://" + host + "/api/v3/user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, res.Body)
+	res.Body.Close()
 	<-closed
 	for _, out := range []string{std.String(), logs.String()} {
 		for _, form := range []string{after, tok, wrong, tok[4:16], wrong[4:16]} {

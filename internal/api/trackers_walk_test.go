@@ -448,8 +448,14 @@ func mustRequest(t *testing.T, url string) *http.Request {
 // routesTouching is every route pattern the package's code registers
 // (every direct call of a mux's Handle or HandleFunc) whose handler names
 // one of names or a function of the package that does, at any depth: a
-// function or method by its name, a package variable by what it is set
-// to. A call through a field is not followed: a field of a function type
+// function or method by its name, a package variable by what its
+// declaration and every assignment to its name (x = v) set it to. A
+// Handle or HandleFunc named outside a function declaration (in a package
+// variable's value) is refused as unreadable. It does not follow a value
+// through a local variable or a call's result: a field of function type
+// given a function that way is not judged, and a handler field given a
+// local is followed to the local and no further. A call through a field
+// is not followed: a field of a function type
 // written as one (func(...)) given a function of the package or a literal
 // that reaches the token fails the test; one of a named function type
 // (http.HandlerFunc) is not judged, nor is a function reached through a
@@ -500,6 +506,8 @@ func routesTouching(t *testing.T, names ...string) []string {
 	}
 	assigned := map[string][]given{} // what a field is given, by its name
 	vars := map[string][]given{}     // what a package variable is set to
+	pkgVars := map[string]bool{}     // the package's variables, by name
+	setTo := map[string][]given{}    // what a name is set to by an assignment (x = v)
 	str := func(e ast.Expr) (string, bool) {
 		lit, ok := e.(*ast.BasicLit)
 		if !ok || lit.Kind != token.STRING {
@@ -722,6 +730,14 @@ func routesTouching(t *testing.T, names ...string) []string {
 					}
 				}
 			case *ast.GenDecl:
+				// A registration outside a function declaration (in a
+				// package variable's value) is not read: it is refused.
+				ast.Inspect(d, func(n ast.Node) bool {
+					if sel, ok := n.(*ast.SelectorExpr); ok && (sel.Sel.Name == "Handle" || sel.Sel.Name == "HandleFunc") {
+						t.Errorf("%s: %s outside a function declaration, a registration this check cannot read", fset.Position(sel.Pos()), sel.Sel.Name)
+					}
+					return true
+				})
 				for _, spec := range d.Specs {
 					switch sp := spec.(type) {
 					case *ast.ValueSpec:
@@ -730,6 +746,9 @@ func routesTouching(t *testing.T, names ...string) []string {
 								if s, ok := str(sp.Values[i]); ok {
 									consts[n.Name] = s
 								}
+							}
+							if d.Tok == token.VAR {
+								pkgVars[n.Name] = true
 							}
 							if d.Tok == token.VAR && i < len(sp.Values) {
 								vars[n.Name] = append(vars[n.Name], given{sp.Values[i], imports})
@@ -761,6 +780,9 @@ func routesTouching(t *testing.T, names ...string) []string {
 					if sel, ok := l.(*ast.SelectorExpr); ok && len(x.Lhs) == len(x.Rhs) {
 						assigned[sel.Sel.Name] = append(assigned[sel.Sel.Name], given{x.Rhs[i], imports})
 					}
+					if id, ok := l.(*ast.Ident); ok && x.Tok == token.ASSIGN && len(x.Lhs) == len(x.Rhs) {
+						setTo[id.Name] = append(setTo[id.Name], given{x.Rhs[i], imports})
+					}
 				}
 			}
 			return true
@@ -769,7 +791,14 @@ func routesTouching(t *testing.T, names ...string) []string {
 	// A package variable reaches what the value it is set to names. A
 	// field is followed only as a handler (handler): followed wherever it
 	// is named, the name-joined graph would reach every route; a field of
-	// function type is judged by what it is given instead (below).
+	// function type is judged by what it is given instead (below). An
+	// assignment to a name of a package variable is read like its
+	// initialiser (a local of that name only adds to what it reaches).
+	for name, gs := range setTo {
+		if pkgVars[name] {
+			vars[name] = append(vars[name], gs...)
+		}
+	}
 	for name, gs := range vars {
 		for _, g := range gs {
 			if refs[name] == nil {

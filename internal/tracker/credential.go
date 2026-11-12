@@ -183,18 +183,31 @@ func (c Credential) Write() (Write, bool) {
 // the destination is fixed by the credential at the level of the address:
 // no request for another address carries the token. base itself is the
 // caller's round tripper (the adapter's Options.Transport, a seam for
-// tests, nil for the standard one): it is handed the copy that carries
-// Authorization, and it dials where it dials. An address the system signs
-// is fetched over base, with no credential.
+// tests, nil for DefaultBase): it is handed the copy that carries
+// Authorization, and it dials where it dials; a caller that supplies its
+// own base is responsible for it. An address the system signs is fetched
+// over base, with no credential.
 func (c Credential) Transport(base http.RoundTripper) http.RoundTripper {
 	if base == nil {
-		base = http.DefaultTransport
+		base = defaultBase
 	}
 	if c.IsZero() {
 		return base
 	}
 	return tokenTransport{base: base, c: c.c}
 }
+
+// DefaultBase is the one base a credential's requests go over when its
+// caller names none (Transport(nil), the adapter's Options.Transport
+// nil): the standard transport's settings with keep-alives off, so each
+// request is made on a connection of its own, closed after its answer.
+func DefaultBase() http.RoundTripper { return defaultBase }
+
+var defaultBase = func() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.DisableKeepAlives = true
+	return t
+}()
 
 // tokenTransport holds the credential, whose secret no print reaches.
 type tokenTransport struct {

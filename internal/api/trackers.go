@@ -281,7 +281,9 @@ func (k *trackerKeep) read() (trackerFile, error) {
 // and judged as it was opened: a regular file, the server's user's, open
 // to no one else, at most maxTrackerFile bytes, decoded strictly, and
 // what a save writes: at most maxTrackerHosts entries, each host's once,
-// each a host and a token in their forms. No file is no entry.
+// each a host, a token and an account in their forms (the account's own
+// check, tracker.Account.Check) and a saved-at that is not zero. No file
+// is no entry.
 func (k *trackerKeep) readIn(d *os.File) (trackerFile, error) {
 	if k.afterDirOpen != nil {
 		k.afterDirOpen()
@@ -324,7 +326,8 @@ func (k *trackerKeep) readIn(d *os.File) (trackerFile, error) {
 		if _, twice := f.entry(x.Host); twice {
 			return trackerFile{}, fmt.Errorf("%s holds a host's entry twice", name)
 		}
-		if i >= maxTrackerHosts || !config.TrackerTokenForm(x.Token) || tracker.CheckHost(x.Host, k.cfg.TrackerLoopback) != nil {
+		if i >= maxTrackerHosts || !config.TrackerTokenForm(x.Token) || tracker.CheckHost(x.Host, k.cfg.TrackerLoopback) != nil ||
+			(tracker.Account{Login: x.Login, ID: x.AccountID, Scopes: x.Scopes}).Check() != nil || x.SavedAt.IsZero() {
 			return trackerFile{}, fmt.Errorf("%s holds what a save would not have written", name)
 		}
 		tok := x.Token
@@ -527,7 +530,8 @@ type trackerView struct {
 	// CheckedAt: save a new one), unchecked (the environment's, before any
 	// call) or unused (the file's for the host the environment gives a
 	// token for: the environment's is used). CheckedAt is when this server
-	// asked, absent when it has not since it started.
+	// asked, absent when it has not since it started or asked before the
+	// entry's SavedAt (seenOf).
 	State     string     `json:"state"`
 	CheckedAt *time.Time `json:"checkedAt,omitempty"`
 }
@@ -544,10 +548,13 @@ func (k *trackerKeep) tokenView(e trackerEntry) trackerView {
 	return v
 }
 
+// seenOf adds to v what this server last heard of its token: only a check
+// asked at or after the entry was saved, since an older one is not that
+// save's (another server may have removed the host and saved it again).
 func (k *trackerKeep) seenOf(v *trackerView) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	if s, ok := k.seen[v.Host]; ok && s.fingerprint == v.Fingerprint {
+	if s, ok := k.seen[v.Host]; ok && s.fingerprint == v.Fingerprint && (v.SavedAt == nil || !s.at.Before(*v.SavedAt)) {
 		at := s.at
 		v.State, v.CheckedAt = s.state, &at
 	}
@@ -717,7 +724,8 @@ func (s *Server) handleTrackerSave(w http.ResponseWriter, r *http.Request) {
 			k.recordCheck(f, host, cred.Fingerprint(), "ok", asked)
 			return nil
 		}
-		kept = trackerEntry{Host: host, keptSecret: func() string { return tok }, Login: acct.Login, AccountID: acct.ID, Scopes: acct.Scopes, SavedAt: k.now().UTC().Truncate(time.Second)}
+		// Saved at its check's time, to the second, so that check is shown with it (seenOf).
+		kept = trackerEntry{Host: host, keptSecret: func() string { return tok }, Login: acct.Login, AccountID: acct.ID, Scopes: acct.Scopes, SavedAt: asked.Truncate(time.Second)}
 		switch i := slices.IndexFunc(f.GitHub, func(x trackerEntry) bool { return x.Host == host }); {
 		case i >= 0:
 			f.GitHub[i] = kept

@@ -142,9 +142,7 @@ var _ tracker.Adapter = (*Adapter)(nil)
 func New(o Options) *Adapter {
 	a := &Adapter{o: o, base: o.Transport, log: o.Logger, ua: o.UserAgent}
 	if a.base == nil {
-		t := http.DefaultTransport.(*http.Transport).Clone()
-		t.DisableKeepAlives = true // each request on a connection of its own, closed after its answer
-		a.base = t
+		a.base = tracker.DefaultBase() // each request on a connection of its own, closed after its answer
 	}
 	if a.log == nil {
 		a.log = slog.Default()

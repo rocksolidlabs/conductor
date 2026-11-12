@@ -4186,19 +4186,22 @@ and is then asked to be sent again (`503 credentials_busy`); there is no
 (`500 credentials_unusable`) while the list still answers; the list and
 a read of a credential take no lock and never wait. `credentials/` holds
 the file and its lock alone: the next file is written under one fixed
-name and renamed into place; after any remove, and after any save that
-got as far as asking its host, no other file of the directory holds a
-token; a save refused before that (its form, the environment's host)
-touches nothing; the start's removal of what a change cut short is tried
-once and is skipped when another server holds the lock. A file that holds
-what no save writes (a token or a host out of its form, more than 4
-hosts) is refused whole, naming the file alone. The three routes are the admin's alone (a share link, a
+name and renamed into place; after any remove that was made, and after
+any save that got as far as asking its host, no other file of the
+directory holds a token; a save or a remove refused for its body, its
+host or its token's form, or for the environment's host, touches
+nothing; the start's
+removal of what a change cut short is tried once and is skipped when
+another server holds the lock. A file that holds what no save writes (a
+token, a host or an account out of its form, a zero `savedAt`, more than
+4 hosts), edited by hand, is refused whole, naming the file alone, by
+every route, a remove too: it is put right or deleted by hand. The three routes are the admin's alone (a share link, a
 session's token, a host token and a Brakeman turn answer `401`) and a
 switchyard's `403 switchyard`; a body is one JSON object, at most 4 KiB.
 
 | Route | Body | Answer |
 |---|---|---|
-| `GET /api/trackers` | none | `{github: [{host, login, accountId, fingerprint, scopes, savedAt, source: settings\|environment, state: ok\|refused\|unchecked\|unused, checkedAt?}]}`, the file's entries by host then the environment's: what is shown of a token's last check is this server's own, and `checkedAt` is when this server asked GitHub about that token, absent when it has not since it started (`savedAt` is there); `refused` when GitHub refused that token when asked at `checkedAt` (save a new one; only a later check of that token changes it), `unchecked` for the environment's before any call, `unused` for the file's entry for the host the environment gives a token for (the environment's is the one used); never a token |
+| `GET /api/trackers` | none | `{github: [{host, login, accountId, fingerprint, scopes, savedAt, source: settings\|environment, state: ok\|refused\|unchecked\|unused, checkedAt?}]}`, the file's entries by host then the environment's: `savedAt` is the time of the check that kept the token, to the second; what is shown of a token's last check is this server's own (a remove made on another server does not drop it), and `checkedAt` is when this server asked GitHub about that token, shown only when it is not before the entry's `savedAt` (an older check is not that save's) and absent when this server has not asked since it started (`savedAt` is there); `refused` when GitHub refused that token when asked at `checkedAt` (save a new one; only a later check of that token changes it), `unchecked` for the environment's before any call, `unused` for the file's entry for the host the environment gives a token for (the environment's is the one used); never a token |
 | `POST /api/trackers/github` | `{host?, token}`: a token of 1 to 255 bytes of visible ASCII (`400 invalid_token` otherwise), a host as the tracker's rule admits it (`400 invalid_host`) | holding the file's lock, checks the token with GitHub (`GET /user`, within 15 s), then keeps it: `200 {tracker}`, `{tracker, unchanged: true}` for the token already kept (compared in constant time; nothing written). An account is kept only in its form: a login of 1 to 64 letters, digits, `-` and `_`, at most 32 scopes of 1 to 40 lower-case letters, digits, `_` and `:`; one with a field holding the token sent, byte for byte, is refused too, a courtesy and not the promise: what the host answers within the form is its data. A failed check keeps nothing and leaves a kept token as it was, in fixed words that carry nothing GitHub sent (no permission's name either): `422 token_refused` (refused, or no account named), `429 rate_limited` with `Retry-After`, `502 tracker_unavailable` (unreachable, a redirect, an answer that is no account), `502 tracker_bound`. `503 credentials_busy` when another change holds the lock past 5 s, `409 too_many_hosts` past 4, `409 environment` for the environment's host, `500 store_failed` when the file could not be written, one past what a read takes (16 KiB) among them |
 | `POST /api/trackers/github/remove` | `{host}`: a remove names its host (`400 invalid_host` without one, as for `{}`) | drops the host's entry: `200 {removed}`; a call already under way finishes with the token it read, every later one answers `412 no_token`. It stops Conductor's use of the token only: it stays valid on GitHub until revoked there. For the environment's host the file's entry goes too, and the answer adds `inUse: "environment"` and a message: the environment's token is still the one in use and cannot be removed here |
 
