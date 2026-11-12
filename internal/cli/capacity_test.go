@@ -7,7 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -340,6 +343,60 @@ func TestCapacityCommand(t *testing.T) {
 	}
 	if n := len(stub.sent()) - before; n != maxCapacityPages {
 		t.Errorf("an endless listing asked %d pages, want %d", n, maxCapacityPages)
+	}
+}
+
+// The commands against a real server, whose routes take what they take
+// and nothing else: each write is taken, a refusal comes back in the
+// server's words with its field, and a view of an agent with no reader
+// is said in words. No agent's tool runs: the catalog's agents run
+// /bin/cat, whose usage nothing reads.
+func TestCapacityCommandsAgainstTheServer(t *testing.T) {
+	a := newDispatchAPI(t)
+	folder := filepath.Join(realTempDir(t), "login")
+	if err := os.Mkdir(folder, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	accounts, capacityCmd := accountsRun(t), capacityRun(t)
+	must := func(run cliRun, want string, args ...string) string {
+		t.Helper()
+		code, out := runCLI(t, run, a.hs.URL, args...)
+		if code != 0 || !strings.Contains(out, want) {
+			t.Fatalf("%v: exit %d, want %q:\n%s", args, code, want, out)
+		}
+		return out
+	}
+	must(accounts, "Claude Code (claude): default default; its own login: never read", "list")
+	out := must(accounts, "added a-", "add", "--agent", "claude", "--label", "Work", "--folder", folder)
+	id := regexp.MustCompile(`a-[a-z2-7]{12}`).FindString(out)
+	must(accounts, id+"  claude  Work  "+folder+"  never read", "list")
+	must(accounts, "renamed "+id+" to Home office", "rename", id, "Home", "office")
+	must(accounts, "the default of claude is "+id, "default", "claude", id)
+	must(accounts, "Claude Code (claude): default "+id, "list")
+	must(accounts, "the default of claude is default", "default", "claude", "default")
+	must(accounts, "retired "+id, "retire", id)
+	must(accounts, id+"  claude  Home office (retired)", "list")
+	must(accounts, "removed "+id, "remove", id)
+	if out := must(accounts, "Codex CLI (codex)", "list"); strings.Contains(out, id) {
+		t.Errorf("a removed account listed:\n%s", out)
+	}
+	if code, out := runCLI(t, accounts, a.hs.URL, "add", "--agent", "claude", "--label", "W", "--folder", "relative"); code != 1 || !strings.Contains(out, "invalid_account: ") || !strings.Contains(out, "(the field folder)") {
+		t.Errorf("a relative folder: exit %d:\n%s", code, out)
+	}
+	if code, out := runCLI(t, accounts, a.hs.URL, "retire", id); code != 1 || strings.Contains(out, "retired") {
+		t.Errorf("retiring a removed account: exit %d:\n%s", code, out)
+	}
+
+	must(capacityCmd, "cat (cat) on the agent's own login (default)", "--agent", "cat")
+	must(capacityCmd, "unsupported: "+capacity.StateWords(capacity.StateUnsupported), "--agent", "cat", "--read")
+	out = must(capacityCmd, `"state": "unsupported"`, "--agent", "cat", "--json")
+	var v capacity.View
+	if err := json.Unmarshal([]byte(out), &v); err != nil || v.Agent.ID != "cat" {
+		t.Errorf("--json is not the view: %v %s", err, out)
+	}
+	must(capacityCmd, "", "--json")
+	if code, out := runCLI(t, capacityCmd, a.hs.URL, "--agent", "nobody"); code != 1 || !strings.Contains(out, "not_found: no such agent") {
+		t.Errorf("an agent the catalog does not have: exit %d:\n%s", code, out)
 	}
 }
 
