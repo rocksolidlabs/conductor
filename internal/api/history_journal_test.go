@@ -471,35 +471,6 @@ func TestANonNativeSessionGetsNoGitReadOnTheServer(t *testing.T) {
 	}
 }
 
-// A hosted session gets no record (PR-12 gives it one): a host registers
-// a session, reports activity and a chat line, and ends it; no record file
-// is made, no route lists or reads it, and the session's own page answers
-// as it does without the journal.
-func TestAHostedSessionGetsNoRecord(t *testing.T) {
-	e := newTestEnv(t, nil)
-	hs, _ := registerHost(t, e, "instance-a", "1")
-	id := hs.Info().ID
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	hs.HostActivity(proto.Activity{Type: "progress", Message: "built", At: now}, "")
-	hs.HostChat(proto.ChatMessage{ID: "m1", Kind: proto.ChatKindMessage, By: proto.ChatBy{Role: string(session.RoleAgent), Name: "claude"}, Text: "done", At: now})
-	if resp, got := e.do("GET", "/api/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusOK {
-		t.Fatalf("the hosted session's own page: %d %v", resp.StatusCode, got)
-	}
-	code := 0
-	hs.HostStatus(session.StatusExited, &code)
-	e.srv.sessionRecords.Flush()
-	if _, err := os.Stat(filepath.Join(e.srv.cfg.DataDir, journal.Dir, journal.SessionsDir, id+".json")); !os.IsNotExist(err) {
-		t.Fatalf("a hosted session has a record file: %v", err)
-	}
-	resp, list := e.do("GET", "/api/history/sessions", adminToken, nil)
-	if recs, _ := list["records"].([]any); resp.StatusCode != http.StatusOK || len(recs) != 0 {
-		t.Fatalf("the list: %d %v", resp.StatusCode, list)
-	}
-	if resp, _ := e.do("GET", "/api/history/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("the hosted session's record read: %d", resp.StatusCode)
-	}
-}
-
 // restartServer shuts e's server down and starts another over its store.
 func restartServer(t *testing.T, e *testEnv) *testEnv {
 	t.Helper()
@@ -779,7 +750,7 @@ func TestARemovedRecordLetsItsRepositoryGo(t *testing.T) {
 	if !ok {
 		t.Fatal("the launch kept no repository")
 	}
-	repoB := v.(*launchRepo)
+	repoB := v.(*gitcli.LaunchRepo)
 	head := commitAt(t, wa, "during the session")
 	armed.Store(true)
 	e.stopAndWait(a)
@@ -795,10 +766,8 @@ func TestARemovedRecordLetsItsRepositoryGo(t *testing.T) {
 	if _, ok := e.srv.recordRepos.Load(b); ok {
 		t.Fatal("the forgotten record's repository is still kept")
 	}
-	if repoB.held != nil {
-		if _, err := repoB.held.Stat(); !errors.Is(err, os.ErrClosed) {
-			t.Fatalf("the forgotten record's repository is still open: %v", err)
-		}
+	if repoB.Holding() {
+		t.Fatal("the forgotten record's repository is still open")
 	}
 	letGo()
 	if r := endedRecord(t, e, a); r.End != head {

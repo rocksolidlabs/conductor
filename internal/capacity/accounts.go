@@ -36,6 +36,7 @@ package capacity
 
 import (
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -329,6 +330,40 @@ func (s *Store) Own() error {
 	return nil
 }
 
+// Disown is Own's inverse, the call a server makes before it lets
+// capacity/owner.lock go: under the Store's lock, so a write under way
+// ends first, and from then on every write, Reserve and Admit is refused
+// accounts_not_owner, as before Own, and no outcome is saved.
+func (s *Store) Disown() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.owned = false
+	s.ver.mu.Lock()
+	defer s.ver.mu.Unlock()
+	// An outcome whose save failed is tried once more while this Store
+	// still owns the record; failing again, it goes with the process.
+	_ = s.ver.keepLocked()
+	s.ver.owned = false
+}
+
+// Folders answers the folder of every account in the accounts document of
+// the data directory dataDir, retired ones included: the document read and
+// judged as the Store reads it (loadAccounts), with no lock and no record of
+// versions, but for a member it does not know, which is passed over so that
+// a later version's document still names its folders. A document that is
+// not there answers none; one the Store would refuse is an error.
+func Folders(dataDir string) ([]string, error) {
+	d, err := loadAccounts(store.At(filepath.Join(dataDir, Dir)), json.Unmarshal)
+	var out []string
+	for _, a := range d.Accounts {
+		out = append(out, a.Folder)
+	}
+	return out, err
+}
+
+// ValidID says id has an account id's form: "default", or a minted one.
+func ValidID(id string) bool { return id == DefaultID || idPattern.MatchString(id) }
+
 // Versions is the record of versions in the same folder.
 func (s *Store) Versions() *Versions { return s.ver }
 
@@ -345,10 +380,19 @@ type accountsWire struct {
 // with no account. One that exists is the document this package writes or
 // cannot be read: an object with a rev of 1 or more (every write bumps it
 // from 0) and an accounts list, within its counts (checkDoc).
-func (s *Store) load() (Accounts, error) {
+func (s *Store) load() (Accounts, error) { return loadAccounts(s.st, store.DecodeStrict) }
+
+// loadAccounts is load from st, its bytes decoded by decode.
+func loadAccounts(st *store.Store, decode func([]byte, any) error) (Accounts, error) {
 	cannot := func(err error) error { return fmt.Errorf("capacity: %s cannot be read: %w", AccountsFile, err) }
+	var raw json.RawMessage
 	var w accountsWire
-	ok, err := s.st.LoadLimit(AccountsFile, &w, MaxAccountsDoc)
+	ok, err := st.LoadLimit(AccountsFile, &raw, MaxAccountsDoc)
+	if err == nil && ok {
+		if err = decode(raw, &w); err != nil {
+			err = &store.ParseError{Name: AccountsFile, Err: err}
+		}
+	}
 	if err != nil {
 		return Accounts{}, cannot(err)
 	}

@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRenderer, defineComponent, h, nextTick, ref } from 'vue'
-import { extensionsWords, type Capabilities } from '../utils/capabilities'
+import { extensionsWords, identityLine, type Capabilities } from '../utils/capabilities'
 import { CAPABILITIES_RETRY_FIRST_MS, CAPABILITIES_RETRY_MOST_MS, CapabilitiesPoll, followToken, readWhileMounted } from './useCapabilities'
 
 // The reads of GET /api/capabilities on fake timers, the route a stubbed fetch: when the reply is read again, and when it never is.
 
-const starting: Capabilities = { providers: [{ kind: 'identity', name: 'cloud', state: 'starting' }, { kind: 'notifications', name: 'push', state: 'ready' }] }
-const ready: Capabilities = { providers: [{ kind: 'identity', name: 'cloud', state: 'ready' }, { kind: 'notifications', name: 'push', state: 'ready' }] }
+// A sync provider, not an identity provider: a ready identity provider with no detail is read again on its own (below).
+const starting: Capabilities = { providers: [{ kind: 'sync', name: 'cloud', state: 'starting' }, { kind: 'notifications', name: 'push', state: 'ready' }] }
+const ready: Capabilities = { providers: [{ kind: 'sync', name: 'cloud', state: 'ready' }, { kind: 'notifications', name: 'push', state: 'ready' }] }
 
 /** The route, stubbed: each call answers the next reply (the last again once they run out), or fails for an Error; `at` the times. */
 function route(...replies: Array<Capabilities | Error>) {
@@ -39,12 +40,12 @@ describe('a provider starting', () => {
     const { poll, words } = shown(fetch)
     await poll.load()
     expect(fetch).toHaveBeenCalledTimes(1)
-    expect(words()).toBe('identity: cloud (starting) · notifications: push')
+    expect(words()).toBe('sync: cloud (starting) · notifications: push')
     await vi.advanceTimersByTimeAsync(CAPABILITIES_RETRY_FIRST_MS - 1)
     expect(fetch).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(1)
     expect(fetch).toHaveBeenCalledTimes(2)
-    expect(words()).toBe('identity: cloud · notifications: push')
+    expect(words()).toBe('sync: cloud · notifications: push')
     expect(words()).not.toContain('(starting)')
     await vi.advanceTimersByTimeAsync(10 * CAPABILITIES_RETRY_MOST_MS)
     expect(fetch).toHaveBeenCalledTimes(2)
@@ -75,7 +76,37 @@ describe('a provider starting', () => {
     expect(fetch).toHaveBeenCalledTimes(2)
     await vi.advanceTimersByTimeAsync(CAPABILITIES_RETRY_FIRST_MS)
     expect(fetch).toHaveBeenCalledTimes(3)
-    expect(words()).toBe('identity: cloud · notifications: push')
+    expect(words()).toBe('sync: cloud · notifications: push')
+  })
+})
+
+// Who the server is signed in as (docs/plans/identity-uplink.md): it changes while every provider stays ready.
+describe("the identity provider's detail", () => {
+  const signedIn = (detail?: string): Capabilities => ({ providers: [{ kind: 'identity', name: 'cloud', state: 'ready', ...(detail ? { detail } : {}) }] })
+
+  it('is read again for a reader attached after the last reply: a detail that appeared, changed or went', async () => {
+    const { fetch } = route(signedIn('signed in as Ana'), signedIn('signed in as Bo'), signedIn())
+    const { caps, poll } = shown(fetch)
+    await poll.load()
+    expect(identityLine(caps.value)).toBe('cloud: signed in as Ana')
+    for (const want of ['cloud: signed in as Bo', '']) {
+      poll.detach()
+      poll.attach()
+      await poll.load()
+      expect(identityLine(caps.value)).toBe(want)
+    }
+    expect(fetch).toHaveBeenCalledTimes(3)
+  })
+
+  it('is read again on the schedule while a ready identity provider has none, and no more once one comes', async () => {
+    const { fetch, at } = route(signedIn(), signedIn(), signedIn('signed in as Ana'))
+    const { caps, poll } = shown(fetch)
+    await poll.load()
+    await vi.advanceTimersByTimeAsync(10 * CAPABILITIES_RETRY_MOST_MS)
+    expect(at.slice(1).map((t, i) => t - at[i]!)).toEqual([2000, 4000])
+    expect(identityLine(caps.value)).toBe('cloud: signed in as Ana')
+    await poll.load()
+    expect(fetch).toHaveBeenCalledTimes(3)
   })
 })
 

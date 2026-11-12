@@ -4804,7 +4804,7 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   batches and findings, in its own entry below. PR-11 (#630, PR #764):
   Brakeman reads history within its grant, in its own entry below.
   PR-12 (#632): what a host reports of its sessions, and a hosted
-  session's record.
+  session's record, in its own entry below.
 - **Searchable history: DR1's decisions in it (HS1 PR-9, #626,
   2026-11-08).** Program item HS1, planned in `docs/plans/history.md`
   (PR #609); PR-8 (#624) writes the item's entry, with each PR's checks
@@ -4908,6 +4908,80 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   (`TestNoActsWordsReachATurn`, `TestEveryActsFieldIsDecided`). The by-hand look, a real
   agent's turn finding an earlier session after a restart, is not made
   yet. Its checks are in its body.
+- **Searchable history: what a host reports of its sessions (HS1 PR-12,
+  #632, 2026-11-10).** Program item HS1, planned in
+  `docs/plans/history.md` (PR #609); PR-12 (#632): a hosted session gets
+  a record, and its host, the launch site, reports what the record holds
+  of its launch. A protocol change on the host's control connection
+  (`docs/protocol.md`, What a host reports of its session): the
+  register's session gains `where` (the host's Runtime), `agentVersion`
+  (its adapter's probe of the agent), and, read in the host's folder
+  before its process starts and only on a native Runtime, `repo`,
+  `repoCommon` and `startCommit`; `registered` gains `sessionInfo`; and
+  one new host message, `session_info{endCommit}`, at most 2 KiB, sent
+  before the status that ends the session. Each field is optional and
+  bounded, a register past a bound refused, and an older host's register
+  taken: its record says "not reported by its host" for each absent,
+  never native. A hosted agent's own session is captured on the server
+  from its hook's report, by the catalog's recipe for the agent
+  (`session.NextAgentSession`, the policy a server session's capture
+  uses), into the record alone. The record ends `host away` when the
+  server stops observing it (a restart, its host away past the grace),
+  never lost or ended, and the same host's next registration of the
+  session takes it up again (`journal.BeginHosted`, `reopened` counted,
+  its entries kept), and the agent session it captured is the record's,
+  the recipe's policy going on from it whichever registration reports
+  next. It holds no question: a host's chat sends none. A hosted record
+  takes nothing from the server's machine (no probe, no git read, no deny
+  list asked of its paths: the host leaves out what its own refuses), and
+  past the journal's bound a hosted record goes before any of the server's
+  own sessions' records. The host reads its revision through the folder
+  it opened for the launch, keeps its end commit only for the same
+  repository and reads it only once it has seen the process it launched
+  gone (the work of a process that one left behind can be in it), and
+  reports its agent's version only from the agent's own program, never
+  probing one given as a relative path (a bare name is found through the
+  host's own search path); every reported text field is made of
+  letters, numbers, punctuation, symbols, the space and the marks after
+  them, nothing a renderer ignores by default. A hook that comes while a
+  registration is still putting its recorder in place waits for it, at
+  most 10 s; one answered 200 was applied or had nothing to apply to by
+  design, and one whose wait ran out is refused (`503 registering`), to
+  a client that waits that long: `conductor notify` gives a report 5 s
+  and sends it once, so it sees no answer, and the agent's session id
+  reaches the record with a later hook's report that carries it. A
+  `conductor history session` view prints every field of a record
+  through its one-line helper. A hosted session whose host is away inside the grace is `host
+  away` in history, not `live`. No
+  record field and no history kind is new, and a Brakeman turn's history
+  read draws no row of a hosted record whatever its grant: whether a row
+  is a hosted session's is a
+  key of the indexes a read draws by, and a turn's places read only the
+  server's own (narrower than a grant of every session says; a later row
+  may place hosted records for a turn). The index's schema is version 3
+  for it: an index of version 2 is rebuilt at the first start. Observed by
+  the tests: `TestTheHostReadsItsLaunchRevisionBeforeItStarts`,
+  `TestANonNativeHostReportsItsWhereAndNoGit`,
+  `TestTheHostsEndCommitIsItsLaunchRepositorys`,
+  `TestTheEndCommitWaitsForTheProcessToBeGone`,
+  `TestTheAgentsVersionIsTheAgents`, `TestARelativeProgramIsNotProbed`,
+  `TestAHookDuringARegistrationReachesTheRecord`,
+  `TestTheHostLeavesOutWhatItsDenyListRefuses`,
+  `TestAHostedAgentSessionIsCapturedFromItsHook`,
+  `TestAReopenedRecordKeepsItsAgentSession`,
+  `TestAHostedRecordTakesWhatItsHostReports`,
+  `TestAHostedRecordBorrowsNothingFromTheServer`,
+  `TestABrakemanTurnReadsNoHostedRecord`,
+  `TestAnOldHostsRecordSaysNotReported`,
+  `TestAHostedRecordIsTakenUpAgainByItsHost`, the journal's
+  `TestBeginHostedReopensTheSameHostsRecord`,
+  `TestAHostedRecordAsksNothingOfThisMachine` and
+  `TestAHostsRecordsGoBeforeTheServersOwn`, and the protocol's bounds in
+  Go and vitest (`TestAReportedFieldIsOneLineDrawnInOrder`,
+  `TestAReportedFieldIsMadeOfWhatItsFormAllows`). Not made yet, the maintainers' by hand: a hosted session
+  from `conductor host` on the Mac recorded with the agent's version, its
+  own session and its launch commit as the Mac reports them. Its checks
+  are in its body.
 - **Project manifests: a fresh attempt worktree made usable, predictably
   (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
   `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the
@@ -5960,6 +6034,52 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   default passing the contract suite. With C1, the two clauses of the R0
   gate this stream owns are observed: a plain build registers nothing,
   and every default passes the contract suite.
+- **The identity provider and the uplink: the host token, a credential
+  that fails closed, host connections rechecked and renewed (#775,
+  2026-11-10).** The plan is `docs/plans/identity-uplink.md`. What a build
+  with a registered identity provider shows:
+  - The configured host token (Settings' Host token on a server that
+    publishes to a switchyard, `conductor host --token`) is handed to the
+    identity provider alone (`ext.Host.HostToken`), with the kind of binary
+    that runs it (`Mode`: `server`, `switchyard` or `host`);
+    `conductor host` starts the provider before it registers, its
+    directory under `$XDG_STATE_HOME/conductor/ext/<name>` (or
+    `~/.local/state/conductor`), marked so no export takes it and refused
+    to every session's files. A deny list names both places, the one its
+    own process's `XDG_STATE_HOME` gives and the default: a host started
+    with `XDG_STATE_HOME` set to a place a server's environment does not
+    name keeps its provider's state where that server's sessions are not
+    refused it.
+  - The uplink presents what the provider chooses, asked through a guard
+    at every registration (`hostagent.UplinkCredential`): a token the
+    provider owns, or may own (its answer late, panicking or busy), is
+    never presented, in no header, no `host_token` and no log. The
+    provider's credential when it gives a valid one in time; else, for a
+    token it owns, nothing: the session registers as an open host, or is
+    refused where the switchyard admits none (a server's publication is
+    then owed and the next Share publishes it; `conductor host` tries
+    again for two minutes); for a token it does not own, the token as
+    before. Such a registration follows no redirect, and to a server
+    reached without TLS it takes no proxy.
+  - A host connection the provider admitted is asked about again every
+    30 s and closed `4403 access revoked` once it no longer admits it; its
+    `registered` says `renews`, and a replacement credential reaches the
+    switchyard as `host_token` on the live connection, taken only for the
+    same subject with the host grant. Every other outcome closes the
+    connection, and the host registers again as after any drop; a host
+    that comes back with nothing is an open host, its links held to the
+    open-host bound (#803).
+  - Settings → The app shows an **Identity** row, "cloud: signed in as Ana
+    · workspace Acme", from the provider's detail on its
+    `GET /api/capabilities` row (never in the guide's rows).
+  A build with no provider registered shows and does nothing new: the
+  configured token is presented as before, nothing is rechecked, no row
+  appears, and `GET /api/capabilities` still answers `{"providers": []}`.
+  The Go race tests (`TestOwnedTokenNeverPresented`,
+  `TestHostTokenRenewalSameSubjectOnly`, `TestHostConnectionRechecked`,
+  `TestHostTokenRenewal`, `TestCapabilitiesDetail`, the host's start and
+  export tests), vitest and `about-identity.spec.ts` stand in for a real
+  provider, which no build of this repository registers.
 - **A main hands in its own third-party notices (#662, 2026-11-05).** A
   `main` built outside this repository on `app.Run` links more modules than
   this one, and its server served this module's embedded notices, which do

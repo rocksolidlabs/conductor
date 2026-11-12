@@ -526,11 +526,13 @@ var injectablePort = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,15}$`)
 
 // injectable reports whether name is one of Conductor's own per-tree names
 // a command may be given (Spec.Inject): CONDUCTOR_RUN, CONDUCTOR_TASK,
-// CONDUCTOR_ATTEMPT, CONDUCTOR_STATE_DIR, CONDUCTOR_PREVIEW_URL and
-// CONDUCTOR_PORT_<NAME>. A token is none of them.
+// CONDUCTOR_ATTEMPT, CONDUCTOR_STATE_DIR, CONDUCTOR_PREVIEW_URL,
+// CONDUCTOR_PREVIEW_BRIDGE, CONDUCTOR_TREE_SECRET (the tree's own, minted
+// for it) and CONDUCTOR_PORT_<NAME>. No token of the server's is one of
+// them.
 func injectable(name string) bool {
 	switch name {
-	case "CONDUCTOR_RUN", "CONDUCTOR_TASK", "CONDUCTOR_ATTEMPT", "CONDUCTOR_STATE_DIR", "CONDUCTOR_PREVIEW_URL":
+	case "CONDUCTOR_RUN", "CONDUCTOR_TASK", "CONDUCTOR_ATTEMPT", "CONDUCTOR_STATE_DIR", "CONDUCTOR_PREVIEW_URL", "CONDUCTOR_PREVIEW_BRIDGE", "CONDUCTOR_TREE_SECRET":
 		return true
 	}
 	port, ok := strings.CutPrefix(name, "CONDUCTOR_PORT_")

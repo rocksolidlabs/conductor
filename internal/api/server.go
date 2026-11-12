@@ -22,6 +22,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor"
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
@@ -153,6 +154,11 @@ type Server struct {
 	// brakeman is Brakeman's desk (brakeman.go), opened beside Dispatch;
 	// nil without a data directory and on a switchyard.
 	brakeman *brakemanDesk
+	// capacity is the accounts and the readings of usage (capacity.go);
+	// nil without a data directory and on a switchyard. usageReaders, a
+	// test's, stands for the adapters' readers when set.
+	capacity     *capacityDesk
+	usageReaders map[string]*agents.UsageReader
 	// sessionRecords is the session journal (history_journal.go), opened
 	// beside Brakeman's desk; nil without a data directory, on a
 	// switchyard, and when it could not be opened. readRevision is how a
@@ -176,7 +182,7 @@ type Server struct {
 	commits          *commitFan // the commit hooks' observers (commits.go)
 	readRevision     func(ctx context.Context, dir string) (gitcli.Revision, error)
 	// recordRepos is each native server session's launch repository, by
-	// the identity of its common git directory (*launchRepo, which holds
+	// the identity of its common git directory (*gitcli.LaunchRepo, which holds
 	// it open where the system reuses identities), until its end commit is
 	// read (recordEndCommit) or none is to be read; recCur, under recMu, the
 	// registration each record follows (*recorder), by its id, until its
@@ -207,6 +213,9 @@ type Server struct {
 	// stages (launchSeam).
 	starting   startingSessions
 	launchHook atomic.Pointer[func(stage, id string)]
+	// captureWait, when a test sets it, bounds a hosted hook's wait for its
+	// recorder in place of launchWait (captureHostedAgentSession).
+	captureWait atomic.Int64
 	// planFacts keeps what the plan revisions' reads take from each
 	// revision's body, by its digest (dispatch_plans.go), so a list reads
 	// no body it has read before.
@@ -244,6 +253,8 @@ type Server struct {
 	reachMu sync.Mutex
 	reach   reachSource
 	certs   certSource
+	// bridge is the preview bridge and the listener's address (previewbridge.go).
+	bridge previewBridge
 	// opens holds the links agents opened that wait for a desktop app (opens.go).
 	opens *openDesk
 	// publisher publishes sessions to a rendezvous (SetPublisher); published
@@ -303,8 +314,9 @@ type Server struct {
 	runSent         map[string]string
 	pubPending      map[string]chan struct{}
 	pubErr          map[string]string
-	// pubStopped are the sessions whose publication the rendezvous ended
-	// with a stop of its own: the next Share publishes them again.
+	// pubStopped are the sessions owed a publication: the rendezvous ended
+	// theirs with a stop of its own, or refused it for a credential the
+	// identity provider withheld. The next Share publishes them again.
 	pubStopped map[string]bool
 	// runSyncMu orders, per run, what tells the rendezvous a run's members
 	// (lockRunSync); the map is guarded by pubMu.
@@ -379,6 +391,16 @@ type Server struct {
 	extStarts   []*extStarter
 	extStarting atomic.Bool
 	extAfter    func(time.Duration) <-chan time.Time
+	// hostCred holds a host connection's credential steps in tests
+	// (hostCredSeam); nil outside them.
+	hostCred *hostCredSeam
+	// uplinkHeld answers the tokens the uplink's credential took from the
+	// identity provider (SetUplinkHeld); watched is every long-lived
+	// connection's credential a provider's principal holds (principalWatch).
+	// The provider's detail is refused when it holds one (guardIdentity).
+	uplinkHeld atomic.Pointer[func() []string]
+	watchedMu  sync.Mutex
+	watched    map[*watchedToken]struct{}
 	// syncs is the sync adapter (sync.go): what the data directory, the
 	// ledger and Dispatch commit, told to the sync store.
 	syncs *syncAdapter
@@ -483,7 +505,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		store:       st,
 		trackers:    newTrackers(cfg, st, log),
 		crews:       crews,
-		fileDeny:    fileDeny(cfg, st),
+		fileDeny:    fileDeny(cfg, st, log),
 		lookups:     newLookupCache(),
 		probes:      newProbeCache(),
 		home:        home,
@@ -496,6 +518,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// Every provider behind the guard before the server's first write of
 	// its own (the ledger's recovery, the records): nothing calls them yet.
 	s.readRevision = gitcli.RevisionOf
+	if len(o.previewBridge) > 0 {
+		s.bridge.script = append([]byte(nil), o.previewBridge...)
+	}
 	s.installExtensions(o.providers)
 	s.installRuntimes(o.providers, o.native)
 	s.syncs = syncs
@@ -622,6 +647,8 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		}
 		if !cfg.Switchyard.Enabled {
 			s.brakeman = s.openBrakemanDesk(st)
+			s.usageReaders = o.usageReaders
+			s.capacity = s.openCapacity(st)
 			s.sessionRecords = s.openSessionRecords(st)
 			// The history's indexer, which opens the index off the start
 			// path once the journal holds history/owner.lock.
@@ -700,10 +727,19 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		if info.Status.Ended() {
 			s.endLinks(info.ID)
 		}
+		s.recordHostedHint(info.ID)
 	}
-	s.hosts.OnActivity = s.events.activity
+	s.hosts.OnActivity = func(id string, e session.ActivityEntry, st session.AttentionState) {
+		s.events.activity(id, e, st)
+		s.recordHostedActivity(id, e)
+	}
 	// A hosted session's chat reaches the browsers' unread counts as a server session's does.
-	s.hosts.OnChat = func(id string, m session.ChatMessage) { s.events.chat(id, "", m) }
+	s.hosts.OnChat = func(id string, m session.ChatMessage) {
+		s.events.chat(id, "", m)
+		s.recordHostedChat(id, m)
+	}
+	// A hosted session's record (history_hosted.go).
+	s.hosts.OnAdded, s.hosts.OnSessionInfo = s.beginHostedRecord, s.recordSessionInfo
 	s.registry.OnRemove = func(id string, d session.Driver) {
 		// Its viewers go with it first, and none attaches after: a run
 		// link's revoke, or its run forgotten, looks for them in the
@@ -850,6 +886,7 @@ func (s *Server) WaitBackground(ctx context.Context) {
 	// read the stores closed after them.
 	s.stopReviews()
 	s.stopHistory()
+	s.capacity.close()
 	if s.brakeman != nil {
 		s.brakeman.release(ctx)
 	}
@@ -870,6 +907,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /third-party-notices.txt", s.handleNotices)
+	mux.HandleFunc("GET /preview-bridge.js", s.handlePreviewBridge)
 	mux.HandleFunc("GET /api/reach", s.requireAdmin(s.handleReach))
 	mux.HandleFunc("GET /.well-known/acme-challenge/{token}", s.handleACMEChallenge)
 	mux.HandleFunc("GET /api/whoami", s.requireAdmin(s.handleWhoAmI))
@@ -938,6 +976,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/repair", s.launching(s.handlePrepareRepair))
 	// Brakeman's desk and its turn's session routes (brakeman.go).
 	s.routeBrakeman(mux)
+	s.routeCapacity(mux)
 	// The operating guide, the admin's and a session's (guide.go).
 	mux.HandleFunc("GET /api/guide", s.requireAdmin(s.handleGuide))
 	mux.HandleFunc("GET /api/sessions/{id}/guide", s.handleSessionGuide)
@@ -1285,6 +1324,9 @@ func (s *Server) Shutdown(ctx context.Context) {
 	if s.brakeman != nil {
 		s.brakeman.quiesce(ctx)
 	}
+	// No usage read starts from now on, and those under way are ended,
+	// their outcomes recorded, before capacity/owner.lock goes.
+	s.capacity.close()
 	s.runs.Draining(ctx)
 	s.shutDesks()
 	s.stopRevokeRetries()

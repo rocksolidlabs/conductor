@@ -284,6 +284,21 @@ export interface DecisionEvent {
 /** The bound of a `decision` event's data, in bytes (internal/api, maxDecisionEvent). */
 export const MAX_DECISION_EVENT = 256
 
+/**
+ * Data of a `capacity` event on GET /api/events (Program item AC1, docs/protocol.md "Capacity"): a reading of an agent's usage on
+ * an account was kept, for a page to read its view again with `GET /api/capacity?agent=&account=`. It names the key, the reading's
+ * state and when it was read, never a label, a folder or a figure. At most 512 bytes of data (`MAX_CAPACITY_EVENT`).
+ */
+export interface CapacityEvent {
+  agent: string
+  account: string
+  state: 'ok' | 'signed_out' | 'key_paid' | 'unqualified' | 'error' | 'never_read'
+  readAt: string
+}
+
+/** The bound of a `capacity` event's data, in bytes (internal/api, maxCapacityEvent). */
+export const MAX_CAPACITY_EVENT = 512
+
 export interface ICEServer {
   urls: string[]
   username?: string
@@ -722,6 +737,60 @@ export interface HostAnswerAsMessage {
 }
 export const HOST_MAX_ANSWER_AS_SUBJECT = 48
 
+/**
+ * What a host reports of its session for its record (docs/protocol.md, Host control connection; HS1 PR-12), beside the register's
+ * session fields: its Runtime (`where`, ext.Where's slug), its agent's version, and, read before its process starts and only on a
+ * native Runtime, its working tree's top, its repository's common git directory and its start commit. Each optional: an older host
+ * sends none, and its record says "not reported by its host". A register past a bound is refused. The web never sends it.
+ */
+export interface HostReport {
+  where?: string
+  agentVersion?: string
+  repo?: string
+  repoCommon?: string
+  startCommit?: string
+}
+export const HOST_MAX_REPORT_WHERE = 32
+export const HOST_MAX_AGENT_VERSION = 64
+export const HOST_MAX_REPORT_PATH = 4096
+/** A session_info message (below) is at most this many bytes. */
+export const HOST_MAX_SESSION_INFO = 2048
+
+/** A full commit id: 40 (SHA-1) or 64 (SHA-256) lowercase hex digits. */
+export function validCommit(s: string): boolean {
+  return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(s)
+}
+
+/** Whether a HostReport is within its bounds, as the server's hub holds it (proto.HostReport.Check): lengths in UTF-8 bytes. */
+export function hostReportValid(r: HostReport): boolean {
+  const bytes = (s: string) => new TextEncoder().encode(s).length
+  // Made of what a reported field may hold (proto's oneLine): letters, numbers, punctuation, symbols and the space, each followed by
+  // any combining marks, so none first; nothing a renderer ignores by default (a variation selector, the grapheme joiner). The
+  // server's verdict is the one that counts: this mirror is for the tests, and where its Unicode tables and Go's differ, Go's rule.
+  const oneLine = (s: string) =>
+    /^(?:[\p{L}\p{N}\p{P}\p{S} ]\p{M}*)*$/u.test(s) && !/[\p{Default_Ignorable_Code_Point}\p{Variation_Selector}]/u.test(s)
+  const path = (p?: string) => !p || (bytes(p) <= HOST_MAX_REPORT_PATH && oneLine(p) && /^(?:\/|\\\\|[A-Za-z]:[\\/])/.test(p))
+  if (r.where && !new RegExp(`^[a-z][a-z0-9-]{0,${HOST_MAX_REPORT_WHERE - 1}}$`).test(r.where)) return false
+  if (r.agentVersion && (bytes(r.agentVersion) > HOST_MAX_AGENT_VERSION || !oneLine(r.agentVersion))) return false
+  return path(r.repo) && path(r.repoCommon) && (!r.startCommit || validCommit(r.startCommit))
+}
+
+/**
+ * host → server, only to a server whose registered said sessionInfo, never to a switchyard: what the host read of its session once
+ * its process ended (`endCommit`, a full commit id, or none), sent before the status that ends it; at most HOST_MAX_SESSION_INFO
+ * bytes, else dropped. The web never sends it.
+ */
+export interface HostSessionInfoMessage {
+  t: 'session_info'
+  sessionId?: string
+  endCommit?: string
+}
+
+/** The part of registered that says the server takes session_info; absent from an older server, a switchyard and a desk's. */
+export interface HostRegisteredSessionInfo {
+  sessionInfo?: boolean
+}
+
 /** The part of registered that says which links the server still holds for the session; absent from an older server. */
 export interface HostRegisteredLinks {
   links?: string[]
@@ -735,6 +804,28 @@ export interface HostRegisteredLinks {
 export interface HostRegisteredDecisions {
   decisions?: boolean
 }
+
+/**
+ * The part of registered that says the switchyard rechecks the connection's credential and takes host_token on it
+ * (docs/protocol.md, Host control connection): only on a connection admitted through an identity provider's principal;
+ * absent from an older switchyard. The web never sees it.
+ */
+export interface HostRegisteredRenews {
+  renews?: boolean
+}
+
+/**
+ * host → switchyard, after a registered that said renews: the credential that replaces the one the connection was admitted
+ * with, at most one per 30 s step and only when it changed. The token is 1 to HOST_MAX_TOKEN bytes of token68 (A-Z a-z 0-9
+ * - . _ ~ + / =), the message at most HOST_MAX_TOKEN_MESSAGE bytes; anything but its one success closes the connection 4403
+ * (access revoked). The web never sends it.
+ */
+export interface HostTokenMsg {
+  t: 'host_token'
+  token: string
+}
+export const HOST_MAX_TOKEN = 2048
+export const HOST_MAX_TOKEN_MESSAGE = 2560
 
 /**
  * host → switchyard, the first message of a run's desk's connection in place of register (docs/protocol.md, A run's desk):
@@ -1111,4 +1202,317 @@ export function decodeDecision(payload: Uint8Array): DecisionReply | null {
   if (payload.length > MAX_DECISION) return null
   const d = parseJSON<DecisionReply>(payload)
   return d && typeof d.reqId === 'string' && d.reqId !== '' ? d : null
+}
+
+// The preview bridge's messages (internal/proto/preview.go; docs/protocol.md, Preview bridge): what the workbench and the bridge,
+// a script in a previewed page, say through postMessage. Both parsers are held to internal/proto/testdata/preview-messages.json.
+
+/** Every message's `conductor` field, and the bridge's version a `ready` names. */
+export const PREVIEW_MARK = 'preview/1'
+export const PREVIEW_VERSION = 1
+
+/** A message to the bridge, one to the workbench and the element report one carries, as previewMeasure counts them. */
+export const MAX_PREVIEW_TO_BRIDGE = 4 * 1024
+export const MAX_PREVIEW_TO_WORKBENCH = 64 * 1024
+export const MAX_ELEMENT_REPORT = 32 * 1024
+/** A describe's selector, a page's URL, its title (in characters), the user agent and the revision a page declares. */
+export const MAX_PREVIEW_SELECTOR = 1024
+export const MAX_PREVIEW_URL = 2048
+export const MAX_PREVIEW_TITLE = 200
+export const MAX_PREVIEW_USER_AGENT = 512
+export const MAX_PREVIEW_REVISION = 128
+
+/** The element report's fields, each cut to its bound by the bridge (proto.MaxElementName and the rest), in measured bytes. */
+export const ELEMENT_BOUNDS = {
+  name: 1024,
+  text: 1024,
+  selector: 1024,
+  attributes: 32,
+  attributeName: 64,
+  attributeValue: 512,
+  html: 12 * 1024,
+  neighbourhood: 24 * 1024,
+  ancestors: 12,
+  ancestor: 512,
+  styles: 64,
+  styleName: 64,
+  styleValue: 256,
+  hints: 8,
+  hintFile: 1024,
+  hintComponent: 256,
+} as const
+
+/** How a page says what drew an element: a data-conductor-source attribute, Vue's, Svelte's, React's dev hooks. */
+export const PREVIEW_HINT_KINDS = ['attribute', 'vue', 'svelte', 'react'] as const
+export type PreviewHintKind = (typeof PREVIEW_HINT_KINDS)[number]
+
+/** The steps the bridge cuts a report by to fit MAX_ELEMENT_REPORT, in their order: a report's cut is always a prefix of them. */
+export const ELEMENT_CUTS = ['neighbourhood', 'html', 'styles', 'attributes', 'tag', 'hints', 'ancestors', 'attribute-count', 'names', 'style-count'] as const
+export type ElementCut = (typeof ELEMENT_CUTS)[number]
+
+const PREVIEW_NONCE = /^[A-Za-z0-9_-]{16,64}$/
+const PREVIEW_REVISION = /^[0-9a-f]{4,64}(?:\+[0-9a-f]{4,64})?$/
+const MAX_PREVIEW_INT = Number.MAX_SAFE_INTEGER
+
+export interface PreviewViewport {
+  width: number
+  height: number
+  dpr: number
+  scrollX: number
+  scrollY: number
+  colorScheme: 'light' | 'dark'
+  userAgent: string
+}
+
+export interface ElementReport {
+  tag: string
+  id: string
+  classes: string
+  role: string
+  name: string
+  text: string
+  selector: string
+  box: { x: number; y: number; width: number; height: number }
+  attributes: Array<[string, string]>
+  state: { disabled: boolean; hidden: boolean; ariaDisabled: string; ariaExpanded: string; pointerEvents: string; inert: boolean; hovered: boolean; motion: number }
+  hit: { self: boolean; selector: string; tag: string }
+  html: string
+  neighbourhood: string
+  ancestors: Array<{ tag: string; id: string; classes: string; role: string }>
+  styles: Array<[string, string]>
+  hints: Array<{ how: PreviewHintKind; file: string; line: number; column: number; component: string }>
+  cut: ElementCut[]
+}
+
+/** What every answer carries of the page, read at that moment. */
+export interface PreviewPage {
+  url: string
+  title: string
+  viewport: PreviewViewport
+  epoch: number
+  revision: string
+}
+
+interface Marked {
+  conductor: typeof PREVIEW_MARK
+  nonce: string
+}
+
+export type PreviewToBridge = Marked & ({ t: 'hello' | 'select' | 'look' | 'cancel' } | { t: 'describe'; selector: string })
+export type PreviewToWorkbench = Marked &
+  (
+    | ({ t: 'ready'; version: number; hints: PreviewHintKind[] } & PreviewPage)
+    | ({ t: 'selected'; element: ElementReport } & PreviewPage)
+    | ({ t: 'described'; element?: ElementReport; missing?: true } & PreviewPage)
+    | ({ t: 'looked' } & PreviewPage)
+    | { t: 'cancelled' }
+  )
+export type PreviewMessage = PreviewToBridge | PreviewToWorkbench
+/** The way a message travels: to the bridge (the workbench's) or to the workbench (the bridge's answers). */
+export type PreviewDirection = 'bridge' | 'workbench'
+
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+const LONE_SURROGATES = new RegExp(LONE_SURROGATE.source, 'g')
+
+/** s with every lone surrogate made U+FFFD, as Go's encoder writes invalid UTF-8 (String.prototype.toWellFormed). */
+export function wellFormed(s: string): string {
+  return s.replace(LONE_SURROGATES, '�')
+}
+
+/** How deep a message's values go: the message, its element, a list of the element's, an item of that list. */
+const PREVIEW_DEPTH = 4
+/** The most members an object of a message has: an element report's. */
+const PREVIEW_MEMBERS = 17
+
+/**
+ * How many own keys v has, counted as they are met and no further than one past most: the parser inspects at most most + 1 of them.
+ * Enumerating them costs the engine time in proportion to v, which the browser has already spent, several times over, deserialising it.
+ */
+function keyCount(v: object, most: number): number {
+  let n = 0
+  for (const k in v) if (Object.hasOwn(v, k) && ++n > most) break
+  return n
+}
+
+type Obj = Record<string, unknown>
+
+/** Whether v is a plain object: not an array, a date, a map or any other kind a structured clone carries. */
+function plain(v: unknown): v is Obj {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false
+  const p = Object.getPrototypeOf(v)
+  return p === Object.prototype || p === null
+}
+
+/** Whether v is an array with every index present and no member beside them, its length judged before its keys are counted. */
+function dense(v: unknown): v is unknown[] {
+  return Array.isArray(v) && Object.getPrototypeOf(v) === Array.prototype && keyCount(v, v.length) === v.length
+}
+
+/**
+ * v's size as the bridge and the server count it (proto.PreviewMeasure): the UTF-8 length of its JSON as Go writes it with HTML
+ * escaping off, U+2028 and U+2029 in six bytes each, a negative zero as 0. A string's measure counts its quotes. It is one walk of v
+ * that stops past most: Infinity for a value past most and for one a message does not hold (a big integer, a symbol, a function,
+ * undefined, a number not finite, a string with a lone surrogate, an object of another kind than a plain object or an array, an
+ * object of more members than PREVIEW_MEMBERS, an array with a hole or a named member, nesting past a message's depth), so nothing
+ * is written out to be measured, at most PREVIEW_MEMBERS + 1 of an object's keys are inspected, a list's length is judged before any
+ * of it is read, and nothing throws. Enumerating a value's keys costs the engine time in proportion to the value (keyCount).
+ */
+export function previewMeasure(v: unknown, most = Infinity): number {
+  let n = 0
+  const add = (k: number) => (n += k) <= most
+  const walk = (x: unknown, depth: number): boolean => {
+    switch (typeof x) {
+      case 'string':
+        // Every code unit is a byte at least: a string longer than what is left is past it unread.
+        return x.length <= most - n && !LONE_SURROGATE.test(x) && add(measuredBytes(x) + 2)
+      case 'number':
+        return Number.isFinite(x) && add(String(x).length) // String(-0) is "0", as JSON.stringify writes it
+      case 'boolean':
+        return add(x ? 4 : 5)
+      case 'object':
+        break
+      default:
+        return false
+    }
+    if (x === null) return add(4)
+    if (depth >= PREVIEW_DEPTH) return false
+    if (Array.isArray(x)) {
+      if (x.length > most - n || !dense(x) || !add(2 + Math.max(0, x.length - 1))) return false
+      for (let i = 0; i < x.length; i++) if (!walk(x[i], depth + 1)) return false
+      return true
+    }
+    if (!plain(x) || !add(2)) return false
+    let members = 0
+    for (const k in x) {
+      if (!Object.hasOwn(x, k)) continue
+      if (++members > PREVIEW_MEMBERS || k.length > most - n || !add(measuredBytes(k) + (members > 1 ? 4 : 3)) || !walk(x[k], depth + 1)) return false
+    }
+    return true
+  }
+  return walk(v, 0) ? n : Infinity
+}
+
+/** A string's measure in a message, its quotes left out: U+2028, U+2029 and control characters but \b, \f, \n, \r and \t in six bytes. */
+export function measuredBytes(s: string): number {
+  let n = 0
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    if (c < 0x20) n += c === 8 || c === 9 || c === 10 || c === 12 || c === 13 ? 2 : 6
+    else if (c === 0x22 || c === 0x5c) n += 2
+    else if (c < 0x80) n += 1
+    else if (c < 0x800) n += 2
+    else if (c === 0x2028 || c === 0x2029) n += 6
+    else if (c >= 0xd800 && c <= 0xdbff && (s.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
+      n += 4
+      i++
+    } else n += 3 // the rest of the plane, and a lone surrogate as U+FFFD
+  }
+  return n
+}
+
+function exactKeys(m: Obj, keys: string[]): boolean {
+  return keyCount(m, keys.length) === keys.length && keys.every((k) => Object.hasOwn(m, k))
+}
+
+function object(v: unknown, ...keys: string[]): Obj | null {
+  return plain(v) && exactKeys(v, keys) ? v : null
+}
+
+const str = (v: unknown, most: number) => typeof v === 'string' && v.length <= most && measuredBytes(v) <= most
+const num = (v: unknown, min: number) => typeof v === 'number' && Number.isFinite(v) && v >= min
+const integer = (v: unknown) => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= MAX_PREVIEW_INT
+const bool = (v: unknown) => typeof v === 'boolean'
+
+/** Whether v is a list of at most most items, every index judged (a hole is no item). */
+function list(v: unknown, most: number, item: (x: unknown, i: number) => boolean): boolean {
+  if (!Array.isArray(v) || v.length > most || !dense(v)) return false
+  for (let i = 0; i < v.length; i++) if (!item(v[i], i)) return false
+  return true
+}
+
+const pair = (name: number, value: number) => (v: unknown) => Array.isArray(v) && v.length === 2 && dense(v) && str(v[0], name) && str(v[1], value)
+
+function pageFields(m: Obj): boolean {
+  if (typeof m.title !== 'string' || [...m.title].length > MAX_PREVIEW_TITLE || !str(m.url, MAX_PREVIEW_URL) || !integer(m.epoch)) return false
+  if (typeof m.revision !== 'string' || (m.revision !== '' && (m.revision.length > MAX_PREVIEW_REVISION || !PREVIEW_REVISION.test(m.revision)))) return false
+  const vp = object(m.viewport, 'width', 'height', 'dpr', 'scrollX', 'scrollY', 'colorScheme', 'userAgent')
+  if (!vp || !num(vp.width, 0) || !num(vp.height, 0) || !num(vp.dpr, Number.MIN_VALUE) || !num(vp.scrollX, -Infinity) || !num(vp.scrollY, -Infinity)) return false
+  return str(vp.userAgent, MAX_PREVIEW_USER_AGENT) && (vp.colorScheme === 'light' || vp.colorScheme === 'dark')
+}
+
+function hintKinds(v: unknown): boolean {
+  return list(v, PREVIEW_HINT_KINDS.length, (x, i) => (PREVIEW_HINT_KINDS as readonly unknown[]).includes(x) && (v as unknown[]).indexOf(x) === i)
+}
+
+/** Whether v is an element report by its schema, each field within its bound and the whole within MAX_ELEMENT_REPORT. */
+export function validElement(v: unknown): v is ElementReport {
+  const B = ELEMENT_BOUNDS
+  const e = object(v, 'tag', 'id', 'classes', 'role', 'name', 'text', 'selector', 'box', 'attributes', 'state', 'hit', 'html', 'neighbourhood', 'ancestors', 'styles', 'hints', 'cut')
+  if (!e || previewMeasure(e, MAX_ELEMENT_REPORT) > MAX_ELEMENT_REPORT) return false
+  if (!['tag', 'id', 'classes', 'role', 'name'].every((k) => str(e[k], B.name))) return false
+  if (!str(e.text, B.text) || !str(e.selector, B.selector) || !str(e.html, B.html) || !str(e.neighbourhood, B.neighbourhood)) return false
+  const box = object(e.box, 'x', 'y', 'width', 'height')
+  if (!box || !num(box.x, -Infinity) || !num(box.y, -Infinity) || !num(box.width, 0) || !num(box.height, 0)) return false
+  const st = object(e.state, 'disabled', 'hidden', 'ariaDisabled', 'ariaExpanded', 'pointerEvents', 'inert', 'hovered', 'motion')
+  if (!st || !bool(st.disabled) || !bool(st.hidden) || !bool(st.inert) || !bool(st.hovered) || !integer(st.motion)) return false
+  if (!str(st.ariaDisabled, B.name) || !str(st.ariaExpanded, B.name) || !str(st.pointerEvents, B.name)) return false
+  const hit = object(e.hit, 'self', 'selector', 'tag')
+  if (!hit || !bool(hit.self) || !str(hit.selector, B.selector) || !str(hit.tag, B.name)) return false
+  const ancestor = (x: unknown) => {
+    const a = object(x, 'tag', 'id', 'classes', 'role')
+    return !!a && ['tag', 'id', 'classes', 'role'].every((k) => str(a[k], B.ancestor)) && previewMeasure(a, B.ancestor) <= B.ancestor
+  }
+  const hint = (x: unknown) => {
+    const h = object(x, 'how', 'file', 'line', 'column', 'component')
+    return !!h && (PREVIEW_HINT_KINDS as readonly unknown[]).includes(h.how) && str(h.file, B.hintFile) && integer(h.line) && integer(h.column) && str(h.component, B.hintComponent)
+  }
+  return (
+    list(e.attributes, B.attributes, pair(B.attributeName, B.attributeValue)) &&
+    list(e.ancestors, B.ancestors, ancestor) &&
+    list(e.styles, B.styles, pair(B.styleName, B.styleValue)) &&
+    list(e.hints, B.hints, hint) &&
+    // The cut is a prefix of ELEMENT_CUTS: its first steps, in their order.
+    list(e.cut, ELEMENT_CUTS.length, (x, i) => x === ELEMENT_CUTS[i])
+  )
+}
+
+const PREVIEW_FIELDS: Record<string, string[]> = {
+  hello: [],
+  select: [],
+  look: [],
+  cancel: [],
+  cancelled: [],
+  describe: ['selector'],
+  ready: ['version', 'url', 'title', 'viewport', 'epoch', 'revision', 'hints'],
+  selected: ['element', 'url', 'title', 'viewport', 'epoch', 'revision'],
+  described: ['url', 'title', 'viewport', 'epoch', 'revision'],
+  looked: ['url', 'title', 'viewport', 'epoch', 'revision'],
+}
+const TO_BRIDGE = new Set(['hello', 'select', 'describe', 'look', 'cancel'])
+
+/**
+ * v, a message travelling to, as one of the bridge's messages held to its type's schema (proto.ParsePreviewMessage): a type of to's
+ * way, every field the type carries and no other, each within its bound, the whole within to's bound and an element within
+ * MAX_ELEMENT_REPORT. A hello gives the nonce (any well-formed one passes); every other message must carry `nonce`, the one the
+ * hello gave. v is a value a page made (a structured clone), so it is judged in one walk that stops at the bound before anything else reads it
+ * whole (previewMeasure), the type's keys first: null for anything else, never an exception.
+ */
+export function parsePreviewMessage(v: unknown, to: PreviewDirection, nonce: string): PreviewMessage | null {
+  if (!plain(v)) return null
+  const m = v
+  const t = typeof m.t === 'string' ? m.t : ''
+  const fields = Object.hasOwn(PREVIEW_FIELDS, t) ? PREVIEW_FIELDS[t]! : null
+  if (!fields || m.conductor !== PREVIEW_MARK || TO_BRIDGE.has(t) !== (to === 'bridge')) return null
+  const keys = ['conductor', 't', 'nonce', ...fields]
+  if (t === 'described') keys.push(Object.hasOwn(m, 'element') ? 'element' : 'missing')
+  if (!exactKeys(m, keys)) return null
+  const most = to === 'bridge' ? MAX_PREVIEW_TO_BRIDGE : MAX_PREVIEW_TO_WORKBENCH
+  if (previewMeasure(m, most) > most) return null
+  if (typeof m.nonce !== 'string' || !PREVIEW_NONCE.test(m.nonce) || (t !== 'hello' && m.nonce !== nonce)) return null
+  if (t === 'describe' && (typeof m.selector !== 'string' || m.selector === '' || measuredBytes(m.selector) > MAX_PREVIEW_SELECTOR)) return null
+  if (['ready', 'selected', 'described', 'looked'].includes(t) && !pageFields(m)) return null
+  if (t === 'ready' && (m.version !== PREVIEW_VERSION || !hintKinds(m.hints))) return null
+  if (t === 'selected' && !validElement(m.element)) return null
+  if (t === 'described' && (Object.hasOwn(m, 'element') ? !validElement(m.element) : m.missing !== true)) return null
+  return m as unknown as PreviewMessage
 }

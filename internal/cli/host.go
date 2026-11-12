@@ -73,11 +73,13 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		return 2, errors.New("a command is required after --")
 	}
 	// The registry is closed in host mode too, so no provider registers
-	// mid-run. Nothing of it is used: the host's command starts through
-	// the native Runtime (hostagent.Options.Runtime left nil) whatever is
-	// registered, since a host runs no managed run and a hosted session is
-	// a person's (docs/plans/runtime.md, decision RT7).
-	_ = extensions()
+	// mid-run. Only the identity provider is used, started below and asked
+	// what each registration presents (docs/plans/identity-uplink.md); the
+	// host's command starts through the native Runtime
+	// (hostagent.Options.Runtime left nil) whatever is registered, since a
+	// host runs no managed run and a hosted session is a person's
+	// (docs/plans/runtime.md, decision RT7).
+	providers := extensions()
 	// The environment's server is read once the flags are, as conductor up
 	// reads it: never a flag's default, which usage messages print.
 	*server = cmp.Or(*server, os.Getenv("CONDUCTOR_SERVER"), defaultServer)
@@ -113,8 +115,8 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	}
 	// The Files tab of a hosted session refuses what a session of the
 	// server on this machine refuses: its data directory, config file and
-	// catalog file, and the copies beside the two files, followed while the
-	// session runs.
+	// catalog file, the copies beside the two files, and the folders its
+	// accounts register, followed while the session runs.
 	deny, err := config.LocalFileDenyFunc(*serverConfig)
 	if err != nil {
 		return 2, fmt.Errorf("the files of the server on this machine, which the Files tab refuses: %w", err)
@@ -204,6 +206,15 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			}
 		}()
 		opts.LinkAgain = again
+	}
+	if providers.Identity != nil {
+		// Handed the --token and started before the host registers; it ends
+		// once the host has.
+		name := identityName(providers)
+		state, _ := config.HostStateDir() // "" starts no provider (StartIdentity)
+		started, stop := hostagent.StartIdentity(ctx, providers.Identity, name, hostagent.HostIdentity{Token: *token, StateDir: state, Log: log})
+		defer stop()
+		opts.Credential = hostagent.NewUplinkCredential(providers.Identity, name, *server, *token, started, log)
 	}
 	if f, ok := stdin.(*os.File); ok {
 		opts.Stdin = f

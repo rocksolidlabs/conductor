@@ -160,7 +160,7 @@ func TestAccountFolderFixed(t *testing.T) {
 	for i := range ty.NumMethod() {
 		names = append(names, ty.Method(i).Name)
 	}
-	want := []string{"Accounts", "Add", "Own", "Remove", "Rename", "Reserve", "Retire", "SetDefault", "Versions"}
+	want := []string{"Accounts", "Add", "Disown", "Own", "Remove", "Rename", "Reserve", "Retire", "SetDefault", "Versions"}
 	if !slices.Equal(names, want) {
 		t.Errorf("Store's methods are %v, want %v", names, want)
 	}
@@ -364,9 +364,71 @@ func TestAccountsDocumentBounded(t *testing.T) {
 }
 
 // TestNotOwnerWritesNothing: a Store opened without Own (a server without
-// capacity/owner.lock) reads the accounts and writes nothing: every write
-// and every Reserve of a registered account is refused accounts_not_owner
-// in words, and nothing is made on disk. Own lets the same Store write.
+// capacity/owner.lock), and one that owned and then Disowned (a server
+// letting the lock go), reads the accounts and writes nothing: every write,
+// every Reserve of a registered account and every Admit is refused
+// accounts_not_owner in words, and nothing is made on disk. Own lets the
+// same Store write.
+// Folders reads the accounts document's folders as the Store reads the
+// document: none for no document; every account's, retired ones included,
+// from the document the Store writes and from one a later version writes (a
+// member this one does not know); an error for whatever the Store refuses:
+// a file that is not JSON, past its bound, a link, null, an object without
+// its rev or its accounts list, and an account without a folder in its form.
+func TestFolders(t *testing.T) {
+	dir := t.TempDir()
+	if got, err := Folders(dir); err != nil || got != nil {
+		t.Fatalf("no document: %q, %v", got, err)
+	}
+	s := openAt(t, dir, Options{Now: clockAt(t0)})
+	f := newFacts()
+	a, rev, err := s.Add(f, "claude", "Work", "/home/u/work", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, rev, err = s.Add(f, "codex", "Home", "/home/u/home", rev); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = s.Retire(a.ID, rev); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/home/u/work", "/home/u/home"}
+	if got, err := Folders(dir); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("the Store's document: %q, %v", got, err)
+	}
+	path := filepath.Join(dir, Dir, AccountsFile)
+	write := func(b string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(b), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	account := func(folder string) string {
+		return `{"id":"a-aaaaaaaaaaaa","adapter":"codex","label":"L",` + folder + `"createdAt":"2030-01-02T03:04:05Z","pinned":true}`
+	}
+	write(`{"rev":9,"bindings":{"s":"a"},"accounts":[` + account(`"folder":"/home/u/work",`) + `]}`)
+	if got, err := Folders(dir); err != nil || !slices.Equal(got, want[:1]) {
+		t.Fatalf("a later version's document: %q, %v", got, err)
+	}
+	for name, b := range map[string]string{"not JSON": "{oops", "a folder not absolute": `{"rev":1,"accounts":[` + account(`"folder":"rel/work",`) + `]}`, "accounts not a list": `{"rev":1,"accounts":{}}`,
+		"past its bound": `{"rev":1,"accounts":[],"x":"` + strings.Repeat("x", MaxAccountsDoc) + `"}`, "null": "null", "{}": "{}", "accounts null": `{"rev":1,"accounts":null}`,
+		"no rev": `{"accounts":[]}`, "an account without a folder": `{"rev":1,"accounts":[` + account("") + `]}`} {
+		write(b)
+		if got, err := Folders(dir); err == nil {
+			t.Errorf("%s: %q", name, got)
+		}
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "elsewhere.json"), path); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := Folders(dir); err == nil {
+		t.Errorf("a link: %q", got)
+	}
+}
+
 func TestNotOwnerWritesNothing(t *testing.T) {
 	f := newFacts()
 	dir := t.TempDir()
@@ -375,23 +437,27 @@ func TestNotOwnerWritesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	owner.Disown()
 	path := filepath.Join(dir, Dir, AccountsFile)
 	before, _ := os.ReadFile(path)
 	s := openNotOwned(t, dir, Options{Now: clockAt(t0)})
 	if d, err := s.Accounts(); err != nil || d.Rev != rev || len(d.Accounts) != 1 {
 		t.Fatalf("read without owning: %+v, %v", d, err)
 	}
-	writes := map[string]func() error{
-		"add":     func() error { _, _, err := s.Add(f, "codex", "Home", "/home/u/home", rev); return err },
-		"rename":  func() error { _, _, err := s.Rename(a.ID, "Job", rev); return err },
-		"retire":  func() error { _, _, err := s.Retire(a.ID, rev); return err },
-		"remove":  func() error { _, err := s.Remove(f, a.ID, rev); return err },
-		"default": func() error { _, _, err := s.SetDefault("claude", a.ID, rev); return err },
-		"reserve": func() error { _, _, err := s.Reserve(a.ID); return err },
-	}
-	for name, w := range writes {
-		if err := w(); code(err) != CodeNotOwner || !strings.Contains(err.Error(), "does not own") {
-			t.Errorf("%s without owning: %v", name, err)
+	for who, s := range map[string]*Store{"never owning": s, "disowned": owner} {
+		writes := map[string]func() error{
+			"add":     func() error { _, _, err := s.Add(f, "codex", "Home", "/home/u/home", rev); return err },
+			"rename":  func() error { _, _, err := s.Rename(a.ID, "Job", rev); return err },
+			"retire":  func() error { _, _, err := s.Retire(a.ID, rev); return err },
+			"remove":  func() error { _, err := s.Remove(f, a.ID, rev); return err },
+			"default": func() error { _, _, err := s.SetDefault("claude", a.ID, rev); return err },
+			"reserve": func() error { _, _, err := s.Reserve(a.ID); return err },
+			"admit":   func() error { _, err := s.Versions().Admit("claude", "2.1.0", false, true); return err },
+		}
+		for name, w := range writes {
+			if err := w(); code(err) != CodeNotOwner || !strings.Contains(err.Error(), "does not own") {
+				t.Errorf("%s, %s: %v", who, name, err)
+			}
 		}
 	}
 	if _, _, err := s.Reserve(DefaultID); err != nil {

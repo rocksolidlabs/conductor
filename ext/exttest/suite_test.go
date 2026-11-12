@@ -250,6 +250,23 @@ func (p waitIdentity) Authenticate(context.Context, string) (ext.Principal, bool
 	return ext.Principal{}, false, nil
 }
 
+// quitterIdentity knows "tok-q" while its service answers and says ok
+// false, not an error, when it cannot reach it.
+type quitterIdentity struct {
+	n    *Network
+	addr string
+}
+
+func (quitterIdentity) Name() string { return "quitter" }
+func (p quitterIdentity) Authenticate(ctx context.Context, tok string) (ext.Principal, bool, error) {
+	conn, err := p.n.DialContext(ctx, "tcp", p.addr)
+	if err != nil {
+		return ext.Principal{}, false, nil
+	}
+	conn.Close()
+	return ada, tok == "tok-q", nil
+}
+
 // emptyIdentity admits every token, the empty one too.
 type emptyIdentity struct{}
 
@@ -499,6 +516,9 @@ func TestSuiteCatchesABreach(t *testing.T) {
 		{"ok for the empty token", func(t T, n *Network) {
 			Identity(t, n, emptyIdentity{}, nil, nil)
 		}, []string{`exttest: Identity "lenient": Authenticate said ok for the empty token: nothing is recognised for an empty token`}},
+		{"ok false for a token it cannot tell", func(t T, n *Network) {
+			Identity(t, n, quitterIdentity{n, srv.Listener.Addr().String()}, []string{"tok-q"}, nil)
+		}, []string{`exttest: Identity "quitter": Authenticate said ok false for known token 0 with the network blocked`, "for an admission that has ended"}},
 		{"nine blocks", func(t T, n *Network) {
 			Context(t, n, newNineBlocks(), SampleQuery(t.TempDir()))
 		}, []string{`exttest: Context "nine": Context answered 9 blocks`, "MaxContextBlocks (8)"}},

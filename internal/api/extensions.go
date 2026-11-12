@@ -5,12 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/ext/local"
+	"github.com/rocksolidlabs/conductor/internal/agents"
 )
 
 // Extensions: the providers the composition root read from the registry
@@ -36,6 +40,11 @@ type options struct {
 	// notices is the third-party notices text the server serves
 	// (WithNotices); the embedded one unless a main handed in its own.
 	notices string
+	// previewBridge is the built preview bridge (WithPreviewBridge).
+	previewBridge []byte
+	// usageReaders stand for the adapters' usage readers in the tests
+	// (capacity.go); nil outside them.
+	usageReaders map[string]*agents.UsageReader
 }
 
 // WithExtensions gives the server the providers p, as the composition root
@@ -273,11 +282,47 @@ func (s *Server) extFailed(kind, name, why, detail string) {
 	g.mu.Unlock()
 	attrs := []any{"kind", kind, "provider", name, "failure", why, "failures", failures}
 	// An identity provider's words are never quoted: its error, its panic
-	// and its refused principal may carry the token it was given.
-	if detail != "" && kind != ext.KindIdentity && kind != kindIdentityRecheck {
+	// and its refused principal may carry the token it was given, and so
+	// may any failure of the value registered under its name, in every
+	// slot it holds (its Start among them), which was handed the host
+	// token.
+	quiet := kind == ext.KindIdentity || kind == kindIdentityRecheck || kind == kindIdentityRenew ||
+		(name != "" && name == s.identityName())
+	if detail != "" && !quiet {
 		attrs = append(attrs, "err", detail)
 	}
 	s.log.Warn("extension call failed: its free default answered", attrs...)
+}
+
+// quietErr is err as it leaves the guard of the provider name of kind: as
+// it is, unless name is the value registered in the identity slot, which
+// was handed the host token: then the guard's own words, its kind and
+// name, io.EOF and the context's ends kept as they are (the standard
+// library's, which carry nothing of the provider's). No method of err is
+// called. Every guard method that answers a provider's error, or a result
+// that carries a status text (quietWords: an error's words, a signal's),
+// passes it through here. What is replaced is the errors and the status
+// texts; what a command the provider runs prints (a result's Head and
+// Tail, a terminal's bytes, a command's Log) is that command's output and
+// is passed on as it is.
+func (s *Server) quietErr(kind, name string, err error) error {
+	if err == nil || err == io.EOF || err == context.Canceled || err == context.DeadlineExceeded || name == "" || name != s.identityName() {
+		return err
+	}
+	return errors.New(quietText(kind, name))
+}
+
+// quietWords is quietErr for a status text inside a result (a command's
+// Err, LogErr and Signal, a terminal's exit's Err and Signal): "" stays "".
+func (s *Server) quietWords(kind, name, words string) string {
+	if words == "" || name == "" || name != s.identityName() {
+		return words
+	}
+	return quietText(kind, name)
+}
+
+func quietText(kind, name string) string {
+	return fmt.Sprintf("the %s provider %s failed", kind, name)
 }
 
 // extCall runs fn, a call of the provider name of kind, within wait and
@@ -466,6 +511,7 @@ func extDeliver(ctx context.Context, s *Server, kind, name string, fn func(conte
 		if err != nil && ctx.Err() == nil {
 			s.extFailed(kind, name, "delivery", err.Error())
 		}
+		err = s.quietErr(kind, name, err)
 	}()
 	// An error once the context ended is the context's end (the deferred
 	// check answers it), whatever the provider made of it.
@@ -679,14 +725,63 @@ const kindIdentityRecheck = ext.KindIdentity + "-recheck"
 // is an answer (it may do nothing here), not a failure. Until its Start
 // has succeeded, nothing is known and nothing asked.
 func (g guardIdentity) recheck(ctx context.Context, token string) (p ext.Principal, ok, known bool) {
+	p, ok, known, _ = g.reask(ctx, kindIdentityRecheck, token)
+	return p, ok, known
+}
+
+// kindIdentityRenew is the guard's kind of a host connection's renewal
+// (host_token): slots of its own, so renewals never take a recheck's or a
+// request's, and its failures are logged without the provider's words.
+const kindIdentityRenew = ext.KindIdentity + "-renew"
+
+// renew asks the provider about token, the credential a host connection
+// presents in place of the one it was admitted with, as recheck asks;
+// busy says it was not asked, every renewal slot taken.
+func (g guardIdentity) renew(ctx context.Context, token string) (p ext.Principal, ok, known, busy bool) {
+	return g.reask(ctx, kindIdentityRenew, token)
+}
+
+// detail is who the server is signed in as (ext.IdentityDetail), asked
+// only once the provider has started and only of one that says it: one
+// line of 1 to ext.MaxIdentityDetail characters with no control
+// character, or false. A detail is also dropped when it holds, as
+// written, one of the credentials providerCredentials lists as the
+// detail is asked for (the uplink's last eight distinct ones among them);
+// that literal match against that list is all this filter does.
+func (g guardIdentity) detail(ctx context.Context) (string, bool) {
+	d, isDetail := g.p.(ext.IdentityDetail)
+	if !isDetail || !live(g.ready) {
+		return "", false
+	}
+	own := g.s.providerCredentials()
+	v := extCall(ctx, g.s, ext.KindIdentity, g.name, ext.IdentityWait, "", func(v string) error {
+		if v == "" {
+			return nil
+		}
+		if n := utf8.RuneCountInString(v); !utf8.ValidString(v) || n > ext.MaxIdentityDetail || strings.ContainsFunc(v, unicode.IsControl) {
+			return errors.New("detail: not one line of at most 80 characters")
+		}
+		for _, tok := range own {
+			if tok != "" && strings.Contains(v, tok) {
+				return errors.New("detail: it holds a token")
+			}
+		}
+		return nil
+	}, func(context.Context) (string, error) { return d.Detail(), nil })
+	return v, v != ""
+}
+
+// reask is recheck's and renew's ask, in kind's slots; busy says it was
+// not made, every slot of kind taken.
+func (g guardIdentity) reask(ctx context.Context, kind, token string) (p ext.Principal, ok, known, busy bool) {
 	if !live(g.ready) {
-		return ext.Principal{}, false, false
+		return ext.Principal{}, false, false, false
 	}
 	type answer struct {
 		p         ext.Principal
 		ok, known bool
 	}
-	a := extCall(ctx, g.s, kindIdentityRecheck, g.name, ext.IdentityWait, answer{}, func(a answer) error {
+	a, sent := extCallSent(ctx, g.s, kind, g.name, ext.IdentityWait, answer{}, func(a answer) error {
 		if !a.ok {
 			return nil
 		}
@@ -696,9 +791,9 @@ func (g guardIdentity) recheck(ctx context.Context, token string) (p ext.Princip
 		return answer{copyPrincipal(p), ok, true}, err
 	})
 	if !a.known || !a.ok {
-		return ext.Principal{}, false, a.known
+		return ext.Principal{}, false, a.known, !sent
 	}
-	return a.p, true, true
+	return a.p, true, true, false
 }
 
 // guardRouter is a decision router behind the guard.
@@ -921,8 +1016,12 @@ func (g guardSync) Deleted(ctx context.Context, d ext.Doc) error {
 func (g guardSync) Restore(ctx context.Context, r ext.RestoreRequest, w io.Writer) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			err = fmt.Errorf("panic: %v", p)
+			err = errors.New("panic")
+			if g.s.quietErr(ext.KindSync, g.name, err) == err {
+				err = fmt.Errorf("panic: %v", p) // not the identity's value: quoted, as before
+			}
 		}
+		err = g.s.quietErr(ext.KindSync, g.name, err)
 	}()
 	return g.p.Restore(ctx, r, w)
 }

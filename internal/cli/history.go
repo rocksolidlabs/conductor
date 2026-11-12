@@ -496,12 +496,12 @@ func historySession(ctx context.Context, c *apiClient, id string, asJSON bool, s
 }
 
 // writeRecord writes a session's record as conductor history session
-// prints it.
+// prints it, every string of it through oneLine.
 func writeRecord(w io.Writer, r journal.Record, live bool) {
-	fmt.Fprintf(w, "%s  %s\n", r.ID, oneLine(r.Name))
-	agent := cmp.Or(r.Agent.Name, r.Agent.ID)
+	fmt.Fprintf(w, "%s  %s\n", oneLine(r.ID), oneLine(r.Name))
+	agent := oneLine(cmp.Or(r.Agent.Name, r.Agent.ID))
 	if r.Agent.Version != "" {
-		agent += " " + r.Agent.Version
+		agent += " " + oneLine(r.Agent.Version)
 	}
 	fmt.Fprintf(w, "agent:      %s\n", agent)
 	if s := r.Agent.Session; s != nil {
@@ -509,63 +509,63 @@ func writeRecord(w io.Writer, r journal.Record, live bool) {
 		if s.Resumable {
 			resumable = "resumable"
 		}
-		fmt.Fprintf(w, "its session: %s (%s, %s)\n", s.ID, cmp.Or(s.Source, "-"), resumable)
+		fmt.Fprintf(w, "its session: %s (%s, %s)\n", oneLine(s.ID), oneLine(cmp.Or(s.Source, "-")), resumable)
 	}
-	host := cmp.Or(r.Host.Name, "-")
+	host := oneLine(cmp.Or(r.Host.Name, "-"))
 	if r.Host.User != "" {
-		host = r.Host.User + "@" + host
+		host = oneLine(r.Host.User) + "@" + host
 	}
-	fmt.Fprintf(w, "host:       %s on %s\n", host, cmp.Or(r.Where, "an unknown Runtime"))
-	fmt.Fprintf(w, "folder:     %s\n", r.Cwd)
+	fmt.Fprintf(w, "host:       %s on %s\n", host, oneLine(cmp.Or(r.Where, "an unknown Runtime")))
+	fmt.Fprintf(w, "folder:     %s\n", oneLine(r.Cwd))
 	if r.Repo != "" {
-		fmt.Fprintf(w, "repository: %s on %s\n", r.Repo, cmp.Or(r.Branch, "no branch"))
+		fmt.Fprintf(w, "repository: %s on %s\n", oneLine(r.Repo), oneLine(cmp.Or(r.Branch, "no branch")))
 	}
 	if r.Start != "" {
-		fmt.Fprintf(w, "start:      %s (%s)\n", r.Start, r.StartFrom)
+		fmt.Fprintf(w, "start:      %s (%s)\n", oneLine(r.Start), oneLine(r.StartFrom))
 	}
 	if r.End != "" {
-		fmt.Fprintf(w, "end:        %s\n", r.End)
+		fmt.Fprintf(w, "end:        %s\n", oneLine(r.End))
 	}
 	if l := r.Launch; l != nil {
 		args := strings.Join(l.Args, " ")
 		if !l.ArgsKept {
 			args = fmt.Sprintf("%d arguments, too long to keep", l.ArgCount)
 		}
-		fmt.Fprintf(w, "launch:     %s", cmp.Or(args, "no arguments"))
+		fmt.Fprintf(w, "launch:     %s", oneLine(cmp.Or(args, "no arguments")))
 		if l.Yolo {
 			fmt.Fprint(w, ", yolo")
 		}
 		if n := max(l.EnvCount, len(l.EnvNames)); n > 0 {
-			fmt.Fprintf(w, ", variables %s (their values never kept)", envNames(l.EnvNames, n))
+			fmt.Fprintf(w, ", variables %s (their values never kept)", oneLine(envNames(l.EnvNames, n)))
 		}
 		fmt.Fprintln(w)
 	}
 	if cr := r.Crew; cr != nil {
-		fmt.Fprintf(w, "crew:       run %s", cr.RunID)
+		fmt.Fprintf(w, "crew:       run %s", oneLine(cr.RunID))
 		if cr.Member != "" {
-			fmt.Fprintf(w, ", member %s", cr.Member)
+			fmt.Fprintf(w, ", member %s", oneLine(cr.Member))
 		}
 		if cr.Task != "" {
-			fmt.Fprintf(w, ", task %s attempt %d", cr.Task, cr.Attempt)
+			fmt.Fprintf(w, ", task %s attempt %d", oneLine(cr.Task), cr.Attempt)
 		}
 		fmt.Fprintln(w)
 	}
 	if r.ResumedFrom != "" {
-		fmt.Fprintf(w, "resumed from: %s\n", r.ResumedFrom)
+		fmt.Fprintf(w, "resumed from: %s\n", oneLine(r.ResumedFrom))
 	}
 	fmt.Fprintf(w, "started:    %s\n", when(r.StartedAt))
 	switch {
 	case live:
 		fmt.Fprintln(w, "running")
 	case !r.EndedAt.IsZero():
-		fmt.Fprintf(w, "ended:      %s, %s\n", when(r.EndedAt), r.Ending)
+		fmt.Fprintf(w, "ended:      %s, %s\n", when(r.EndedAt), oneLine(r.Ending))
 	case !r.LostAt.IsZero():
 		fmt.Fprintf(w, "not observed since %s; whether its process ended is not known\n", when(r.LostAt))
 	}
 	for _, x := range r.Resumes {
-		line := fmt.Sprintf("resume %s by %s at %s: %s", x.CommandID, cmp.Or(x.Actor, "-"), when(x.At), x.State)
+		line := fmt.Sprintf("resume %s by %s at %s: %s", oneLine(x.CommandID), oneLine(cmp.Or(x.Actor, "-")), when(x.At), oneLine(x.State))
 		if x.Session != "" && x.State == journal.ResumeStarted {
-			line += " as " + x.Session
+			line += " as " + oneLine(x.Session)
 		}
 		if x.Error != "" {
 			line += ": " + oneLine(x.Error)
@@ -586,13 +586,13 @@ func writeRecord(w io.Writer, r journal.Record, live bool) {
 			if e.Event != "" {
 				kind += " " + e.Event
 			}
-			fmt.Fprintf(w, "  %s  %s  %s\n", e.At.UTC().Format("15:04:05"), kind, oneLine(text))
+			fmt.Fprintf(w, "  %s  %s  %s\n", e.At.UTC().Format("15:04:05"), oneLine(kind), oneLine(text))
 		}
 	}
 	if len(r.Files) > 0 {
 		fmt.Fprintf(w, "\nfiles: %d\n", len(r.Files))
 		for _, f := range r.Files {
-			fmt.Fprintf(w, "  %s %s ×%d\n", f.Op, f.Path, f.Count)
+			fmt.Fprintf(w, "  %s %s ×%d\n", oneLine(f.Op), oneLine(f.Path), f.Count)
 		}
 	}
 	if r.Dropped > 0 {

@@ -450,13 +450,13 @@ refusal is an HTTP error before the upgrade, `{"error": {code, message}}`:
 when longer, and stops when the session ends. Text frames are JSON; binary
 frames are RELAY envelopes.
 
-Host → server: `register{proto, host{name,version,user?,answerAs?}, session{name,agentId,command,cwd,cols,rows,relayOnly?,agentToken?,branch?}, resume?{sessionId,secret}}`
+Host → server: `register{proto, host{name,version,user?,answerAs?}, session{name,agentId,command,cwd,cols,rows,relayOnly?,agentToken?,branch?,where?,agentVersion?,repo?,repoCommon?,startCommit?}, resume?{sessionId,secret}}`
 (`user` ≤ 64 bytes is the OS user for "hosted by"; `answerAs: true` says the host takes `answer_as` and
 sends `kept` with its `attention` (below): `conductor host` says it, a server publishing to a switchyard
 never does, an older host leaves it out and an older server ignores it; `cwd` ≤ 4096 bytes; `branch` ≤ 200 bytes is read from `.git/HEAD`;
 a server publishing its sessions to a switchyard registers each with less: `command` is one word, the
-agent's id or else the program's name, never an argument; `cwd` the folder's last element; no `user`
-and no `branch`),
+agent's id or else the program's name, never an argument; `cwd` the folder's last element; no `user`,
+no `branch` and none of what the host reports, below),
 `status{sessionId,status,exitCode?}`, `resize{sessionId,cols,rows}`,
 `answer{viewerId,sdp}`, `ice{viewerId,candidate}`, `viewer_error{viewerId,code,message}`,
 `viewer_closed{viewerId}`, `attention{sessionId,state,message?,source,kind?,options?,id?,ask?,kept?}`
@@ -482,6 +482,7 @@ that resumes without it has the pair it last sent stand until its first
 `attention`, which then drops the `kept`), and an older server ignores the
 field),
 `activity{sessionId,entry,state?}`,
+`session_info{sessionId?,endCommit?}` (what the host reports, below),
 `chat{sessionId,message}` (a chat message the host's session kept, as `chat` carries it to a viewer; the server takes the connection's session, keeps `message`, `system` and `sent_to_agent` kinds, scope `session`, bounded ids, cleaned names, the text cleaned and cut to 2048 bytes, `to` only as `agent`, and mirrors it into the events stream; a switchyard drops it),
 `link{requestId, role, ttlSeconds?, label?}` (a share link to the session,
 minted by the server: `requestId` ≤ 32 bytes, `label` ≤ 120 bytes,
@@ -516,7 +517,54 @@ started cannot reach it after. A server that knows no revision ignores the
 field (it decodes host messages without refusing unknown fields), and an
 older host sends none.
 
-Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links, recipe?, decisions?}`
+A connection admitted through an identity provider's principal (its token
+none of the server's own, a session's or a desk's) is told `renews: true`
+in its `registered`, and the server asks the provider about the token it
+holds again every 30 s, as a viewer's connection is asked about: once the
+provider answers in time that it no longer admits it (no principal,
+another subject, no host grant), the connection is closed `4403` (`access
+revoked`); an error, a late answer or a panic leaves it. Nothing the host
+sends after that verdict is handled (a link request, a `host_token`, a
+relayed frame), the session stays as for any host away, and the host
+registers again with what its identity provider gives then
+(docs/plans/identity-uplink.md). On such a connection alone the host sends
+`host_token{token}`, the credential that replaces the one the connection
+was admitted with: at most one per 30 s step and only for a changed
+token, `token` 1 to 2048 bytes of token68 (`A-Z a-z 0-9 - . _ ~ + / =`),
+the message at most 2560 bytes and one object alone, decoded strictly. On
+such a connection the server tells a `host_token` by its `t` within the
+message's first 2560 bytes, and refuses one past its bound; a message whose
+type is `host_token` by any reading that did not pass that way closes the
+connection `4403` (`access revoked`), on every host connection, and like
+every host message it is read under the connection's read limit. The
+server takes one
+at a time, in the connection's read loop, within the provider's 1 s wait
+and the slots of its own, under the connection's credential turn, which a
+recheck takes too: a token the provider admits for the same subject with
+the host grant becomes the connection's, and the next recheck asks about
+it. The token the connection holds already is taken as it is, nobody
+asked, and clears a pending one; a renewal the server cannot put to the provider at that moment
+(every renewal slot taken) leaves the connection with the token it holds
+and keeps the offered one pending (a later renewal replaces it): the
+connection's next recheck asks about the pending token in the held one's
+place, and makes it the connection's when the provider admits it, closes
+the connection `4403` when it does not, and, with no answer, keeps both
+for the recheck after. Anything else (a message past its
+bounds, a connection not admitted
+so, a token of the server's own (the workbench token, a host token, a
+link, expired or revoked: never asked of the provider), an error, a late
+or panicking answer, another subject or no host grant) closes the
+connection `4403` (`access revoked`), and the host registers again. A host
+whose send is withdrawn or fails closes the connection `1000` itself. A
+connection of the workbench token, a host token or an open host is never
+told `renews`, never asked about, and sends no `host_token`. A host whose
+registration carries its identity provider's credential registers at the
+server it was given alone: a redirect is a failed registration, never
+followed, and a server reached without TLS is dialed directly, through no
+proxy (over TLS a proxy carries a tunnel, as before); with no provider, a
+redirect is followed and a proxy used as before.
+
+Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links, recipe?, decisions?, renews?, sessionInfo?}`
 (`decisions: true` from a switchyard that carries a decision link's lane,
 relaying DECISION and DECIDE, keeping run desks and serving the join
 page's Decide tab, below, Decision links: a publisher mints a decision link
@@ -535,7 +583,8 @@ longer name as not named, which is not an `ended` word: the publisher
 ends such a link only where not being named can mean nothing else (a
 session's own link on its session's connection, a run's link on the
 run's desk), and a member's registration ends nothing of a run's link;
-`recipe`, below),
+`recipe`, below; `sessionInfo: true` says the server takes `session_info`,
+below, absent from a switchyard, on a desk's and from an older server),
 `viewer_join{viewerId, role, linkId?, linkLabel?, principal?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
 `relay_start{viewerId}`, `viewer_leave{viewerId, reason?}`, `link_gone{linkId, ended?}`, `stop{sessionId}`,
 `viewer_behind{viewerId, behind}` (a relayed viewer fell behind what the
@@ -660,6 +709,57 @@ host keeps its record), `error{code, message, requestId?}`
 (`requestId` names the link request a refusal answers: `invalid_role`,
 `invalid_request`, `rate_limited`, `link_refused`, `no_instance`, `not_found`,
 `store_unavailable`, `stale`).
+
+**What a host reports of its session** (Program item HS1, PR-12), for
+the session's record (History): the host is where the session is
+launched, so it reads the launch on its own machine. `session.where` is
+its Runtime, 1–32 bytes of `a-z`, `0-9` and `-` beginning with a letter
+(`native` for `conductor host`); `session.agentVersion`, at most 64 bytes
+of one line, its adapter's probe of the agent's own program alone (none
+when the launched program is not the agent's, a wrapper such as `npx` or
+a shell, whose version is its own; a program given as a relative path,
+one with a `/` or `\` that is not absolute, is never probed, and a bare
+name is found through the host's own search path, which is the host's); and only when its Runtime is native,
+read in the folder it opened for the launch, before its process starts
+(one `git rev-parse`, the C locale, 2 s), `session.repo` (the working
+tree's top) and `session.repoCommon` (the repository's common git
+directory), each an absolute path (`/…`, `X:\…`, `\\…`) of at most 4096
+bytes of one line, and `session.startCommit`, 40 or 64 lowercase hex
+digits. One line is UTF-8 made only of letters, numbers, punctuation,
+symbols and the space U+0020, each followed by any combining marks (so
+no mark first), and of nothing a renderer ignores by default (Unicode's
+Default_Ignorable_Code_Point: the variation selectors, the grapheme
+joiner); everything else is refused, controls, format characters and the
+other separators among it. A host on another Runtime reports its `where` and
+no git fact.
+Each is optional: an older host sends none, an older server ignores
+them, and the record says "not reported by its host" for each one
+absent, never the server's own fact and never native. A register with
+any of them past its bound is refused (`registration rejected`). Once
+its process has ended, a host whose `registered` said `sessionInfo`
+(its end commit read only when the host has seen the process it launched
+gone, so the work of a process that one left behind can be in it; a
+session marked ended while its launched process may still run, a stop
+that failed or an output that closed first, reports none)
+sends `session_info{endCommit?}` (its folder's HEAD read the same way,
+through the folder it opened, native only, and kept only when the
+repository there is still the launch's by the file system's identity:
+none for a folder moved away with another repository at its path where
+the system cannot read a folder through its handle, or a repository made
+again; none when not read) before the `status` that says the
+session ended, so the server has it as it records the end; the whole
+message is at most 2 KiB, and one past it, or whose `endCommit` is not a
+full commit id, is dropped and logged, the connection kept. None of it
+goes to a switchyard, which records nothing. The server keeps all of it
+in the hosted session's record alone, never as a path on its own disk or
+an argument of a command: a hosted record's repository places it in no
+project, and a file path in its activity is kept as text, never looked
+up on the server (a host leaves out of what it sends the files its own
+deny list refuses). A hosted agent's own session id is not reported by the host: its
+hooks report it to the server (`POST /api/sessions/{id}/attention`,
+`agentSession`), which keeps it in the record by the catalog's recipe for
+the agent, never in the hosted session's listing, and Resume of a hosted
+record stays its host's (`400 hosted_session`).
 
 `registered.recipe` (#293) is what the server's catalog says to watch on
 the screen of the agent the host registered (`session.agentId`), so that a
@@ -1911,7 +2011,17 @@ the server it starts: on Windows its folder in the Windows profile, under
 `/mnt` inside WSL), its settings file as a config file, the data directory
 those settings name and `~/.local/share/conductor/data`, looked up again at
 each request and kept once named, so a data directory the app moves to while
-the server runs is refused from then on. The config file, the
+the server runs is refused from then on. A registered account's folder
+(Capacity) is left out as the data directory is, with everything in it, read
+from the `capacity/accounts.json` of each of these data directories (and of
+`conductor` in the desktop app's own directory, the data directory the app's
+server uses when its settings name none) at each request, as the server
+reads that document but for a member it does not know, and kept once named:
+an account added is refused from then on, the server names its folder as it
+registers it, and one removed stays refused until the server stops. While
+that document is there and cannot be read, every
+file of every session is refused, until it can be read again; the server's
+log says so once as that begins and once as it ends. The config file, the
 catalog file and the settings file are matched as files, so a link to them is
 refused as well; the copies are matched by name alone. One of these paths that is not on
 disk (a data directory never made, a config file moved away) is matched by its
@@ -1925,10 +2035,13 @@ the config file `conductor host --server-config` names, with its `dataDir`
 and `catalogPath`; and for the desktop app's server, the app's own directory,
 its settings file as a config file (its link target and the copies there
 included), the data directory its settings name and, inside WSL,
-`~/.local/share/conductor/data`. The host looks these up again at each
+`~/.local/share/conductor/data`; and each folder the accounts document of
+each of these data directories (the app's default one, `conductor` in its own
+directory, among them) registers. The host looks these up again at each
 request and keeps refusing what it refused before, so a data directory moved
-while the session runs is refused at both places. While one of these paths
-is relative, or the config file or the desktop app's settings cannot be read,
+while the session runs is refused at both places, and a removed account's
+folder stays refused once that session's list has named it. While one of these paths is relative, or the config
+file, the desktop app's settings or the accounts document cannot be read,
 every file is refused (and the host does not start). Saves, and opening a file
 in the editor's Neovim, go through the same rules.
 Responses carry a JSON header
@@ -2359,6 +2472,201 @@ with them and refuses every lane message `unsupported`; a hosted
 session's viewer at the server itself is welcomed without them, so a
 client sends none there.
 
+## Preview bridge
+
+The preview bridge (docs/plans/browser-evidence.md, PR-2) is a script a
+previewed page runs, loaded by the page itself in a browser or put into
+it by the desktop shell, that reads the page for the workbench framing
+it: the frame's document is another origin's, so nothing else can. It
+reads, never writes, the page; it reads no storage, cookie, console or
+network, never an `input`'s value, a password field or a `textarea`'s
+text; and it does nothing until a workbench origin says `hello`.
+
+**Serving.** `GET /preview-bridge.js` (no credential: a script tag
+carries none, and the script holds no secret) serves the bridge the web
+build emits (the script and its build are PV1 PR-2b's) whole, its bytes
+unchanged, inside a wrapper the server writes:
+`(function (conductorWorkbenchOrigins) {` and a line break, the script,
+a line break and `})(`, the server's workbench origins as a JSON array
+of strings, and `);`. Nothing of the script is searched, counted or
+replaced; the script is a script, not a module, and reads its origins
+from that parameter and from nowhere else. The array is data: beside
+JSON's own escapes (`"`, `\`, `<`, `>`, `&`, control characters, U+2028,
+U+2029), `'`, `` ` `` and `$` are written as `\u` escapes, so no origin's
+text can end a string of any quote, a line, a comment or the script. The
+origins are written as a browser writes an origin: each listener's at
+the port it is bound to (the plain one's and the TLS one's; a listener
+on a loopback address names that address and `127.0.0.1`, `localhost`
+and `[::1]` at its port; one on every address those three and the
+machine's addresses of both families as they are when the script is
+served, but IPv6 link-local ones; one on another address that address
+alone), and `publicUrl`'s origin when `publicUrl` already writes it as
+a browser does: scheme and host in lower case, a name in ASCII (an
+internationalised one in its `xn--` form, which is written as given and
+not judged: one no browser would report matches no page) whose last
+label begins with a letter, an IPv4 address in its dotted form, an IPv6
+one in brackets in its own form (never as IPv4), a port without leading
+zeros that is not the scheme's default. An address gives an origin only
+when it is a unicast address that is neither loopback nor unspecified,
+as Go's own `net` package judges it (global or link-local unicast): an
+address that package counts as unicast is written as given, and matches
+no page unless the machine holds that address; a
+name gives none when it is `localhost` or a name under it, in any case,
+with or without a final dot. A `publicUrl` written otherwise, or one of
+those, is left out (`conductor serve` says so once as it starts; the
+default's `localhost`, `127.0.0.1` and `[::1]` and a loopback address
+are left out silently): a loopback origin enters the list only through a
+listener that holds it. Every other name is the owner's statement of
+where the server is reached: the server does not resolve it, and does
+not check that an address is its own. Each origin once, at most 16, each
+at most 256 bytes.
+`Content-Type: text/javascript;
+charset=utf-8`, `Cache-Control: no-cache`, `Cross-Origin-Resource-Policy:
+cross-origin`, `X-Content-Type-Options: nosniff`. A server whose embedded
+app has no bridge (built without `make web-build`, by a web build that
+emits none, or `make dev`'s), and
+a switchyard, answer `404 no_bridge` ("this server was built without the
+web app's preview bridge: run make web-build"). A tree with a preview
+resolved once the server listens on the loopback (or on every address)
+is given `CONDUCTOR_PREVIEW_BRIDGE`, `http://127.0.0.1:<port>/preview-bridge.js`
+(`[::1]` for a listener there alone); a tree without a preview, and every
+tree of a server with no bridge or no loopback listener, none.
+
+**Messages** (`conductor-preview/1`; `internal/proto/preview.go` and
+`web/app/utils/protocol.ts`, both held to
+`internal/proto/testdata/preview-messages.json`, which carries the
+bounds both hold by their Go names, every bound at it and one past in
+characters of each measure, every list empty and of one item, a cut of
+one step, every member of every object null, of another kind and, a
+string, empty and with a lone surrogate, each flag both ways, every
+character next to each end of the nonce's ranges, the measure of each
+code unit at the edge of its class, and each message's text as spelled,
+the content both parsers give an accepted one compared with its
+text's): each a plain object
+through `postMessage` with `conductor: "preview/1"`, its type in `t` and
+a `nonce`, and exactly the fields its type carries. Each parser is told
+the way a message travels, to the bridge or to the workbench
+(`ParsePreviewMessage(data, to, nonce)`, `parsePreviewMessage(v, to,
+nonce)`), and refuses the other way's types. A field is its value, never
+its spelling: a number is the double its text rounds to (to nearest, ties
+to even; a text that rounds past the largest finite double is refused),
+every range below is judged on that double, and a negative zero is
+zero; so a whole
+number is any text that rounds to one (`3`, `3.0`, `3e0`, and
+`2.99999999999999999999` or `9007199254740991.4`), an `epoch` written
+`-1e-400` is 0, a `version` written `1.0000000000000001` is 1, and a
+`dpr` written `2e-324` is 0 and refused. A key is exactly its own letters
+(another case, or a letter that folds to one, is another key). The language is the text an
+honest writer writes and nothing else: no object gives a member twice
+(the server refuses such a text, whichever value comes first; a value
+holds no such thing), and every string is well-formed (a string holding
+half of a surrogate pair alone is refused by both parsers, so what is
+accepted has one content on both sides). Numbers: `epoch`, a state's
+`motion` and a hint's `line` and `column` are whole numbers from 0 to
+2^53-1; the viewport's `width` and `height` and the box's `width` and
+`height` are at least 0; `dpr` is above 0; the scroll offsets and the
+box's `x` and `y` may be negative; every number is finite; `version` is
+1. Strings and lists: every string may be empty but `conductor`, `t`,
+the `nonce`, a `describe`'s `selector`, `colorScheme`, a hint's `how`, a
+`ready`'s hint kinds and a `cut`'s steps (the selector holds 1 to 1,024
+bytes, each of the others one of its set or its pattern); a `ready`'s
+`hints` and each list of the element report may be
+empty, and an attribute or a style is a pair of exactly two strings.
+The server's parser refuses a message's text past twice its way's
+measured bound (8 KiB to the bridge, 128 KiB to the workbench) or not
+UTF-8 before it decodes it. That bound is the writer's: the browser's
+own JSON writer escapes nothing it need not and never writes a message
+longer than its measure; a text that escapes what need not be escaped
+(each `<` in six bytes, as Go's `json.Marshal` writes it) can pass the
+bound and is refused, so a Go writer of a message writes with HTML
+escaping off. It decodes the text once, a single JSON value with only
+white space after it, refusing it at the first object or list nested
+past the schema's deepest value (four levels: the message, its element,
+a list of the element's, an item of that list) where it meets it, and
+builds the message from the value it judged; its refusals are fixed
+words, never the message's text. The app's parser is handed a value a
+page made (a structured clone), so it judges plain objects and arrays
+alone, every index of a list present and no member beside them, no
+object of more members than a message's objects have (an element
+report's 17), numbers finite, no big integer or other kind of object,
+no nesting past a message's four levels, the type's keys before the
+measure, in one walk that stops at the bound; it answers null for
+anything else and never throws. It inspects at most the type's number of
+an object's keys and one more, and judges a list's length before it
+reads any of it; enumerating a value's keys costs the engine time in
+proportion to the value, which the browser has already spent, several
+times over, deserialising the message to hand it to the page. From the workbench:
+`hello` (its `nonce`, 16 to 64 of `A-Z a-z 0-9 _ -`, is the one every
+later message of either side carries), `select` (selection mode: the
+pointer outlines, a click or Enter selects, Up and Down step through the
+elements stacked under the pointer, Left and Right walk to the parent
+and the first child, Shift with Up and Down to the siblings, Escape
+leaves), `describe {selector}` (the element a selector of at most 1,024
+bytes finds), `look` (the page now) and `cancel`. From the bridge:
+`ready {version: 1, hints}` (`hints` the kinds of source the page gives,
+each once: `attribute`, `vue`, `svelte`, `react`), `selected {element}`,
+`described {element}` or `described {missing: true}`, `looked` and
+`cancelled`; every one but `cancelled` with the page read at that
+moment, never the handshake's: `url` (at most 2,048 bytes), `title` (at
+most 200 characters), `viewport {width, height, dpr, scrollX, scrollY,
+colorScheme (light, dark), userAgent (at most 512 bytes)}`, `epoch` (a
+whole number the bridge bumps, at most once an animation frame, on a
+resize or scroll of the window, a mutation of the document but its own
+host's, and every animation and transition event: it says only that the
+page moved) and `revision` (the page's `<meta name="conductor-revision"
+content="<commit>[+<content>]">`, lower-case hex of 4 to 64 digits with
+one optional `+` part, at most 128 bytes, else "").
+
+**The element report** (`element`): `{tag, id, classes, role, name (the
+accessible name), text, selector (found exactly once: a unique id, else
+the shortest chain of tag, stable classes and :nth-of-type), box {x, y,
+width, height}, attributes ([name, value]; an input's value never),
+state {disabled, hidden, ariaDisabled, ariaExpanded, pointerEvents,
+inert, hovered, motion (the animations playing on it, its subtree and
+its ancestors)}, hit {self, selector, tag} (what elementFromPoint finds
+at the box's centre), html (its outer HTML from a copy with every input
+value and textarea text emptied, cut at a tag's end), neighbourhood (its
+parent's, each sibling's subtree past depth 2 elided), ancestors ([{tag,
+id, classes, role}], innermost first), styles ([property, value] of a
+fixed list of 64), hints ([{how, file, line, column, component}]: a
+data-conductor-source "<file>:<line>:<column>" on it or an ancestor, a
+Vue dev build's component chain, Svelte's __svelte_meta, React 18's
+_debugSource), cut (the steps it was cut by)}`. Each field to its bound,
+in bytes as measured below: the tag, id, classes, role, name and the
+state's strings 1,024 each, the text and the selectors 1,024, at most 32
+attributes of a 64-byte name and a 512-byte value, the HTML 12 KiB, the
+neighbourhood 24 KiB, at most 12 ancestors of 512 each, at most 64 styles
+of a 64-byte name and a 256-byte value, at most 8 hints of a 1,024-byte
+file and a 256-byte component. The report as a whole is at most 32 KiB:
+the bridge cuts it to fit, measuring after each step and stopping at the
+first that fits, in this order, each named in `cut`: `neighbourhood` (to
+nothing), `html` (to its opening tag), `styles` (to the first 16),
+`attributes` (each value to 64 bytes), `tag` (the opening tag to 512
+bytes, then the HTML dropped), `hints` (the innermost 2, each file to its
+last 256 bytes and component to 128), `ancestors` (the innermost 4),
+`attribute-count` (the first 8), `names` (the tag, text, name, id, role,
+classes, selector and the hit test's tag and selector to 256 bytes each),
+`style-count` (the first 8). What the last step leaves is under 12 KiB
+whatever the fields held. So `cut` is always a prefix of that order, its
+first steps with none skipped or twice; a report whose `cut` is not is
+refused. **One measure**: a value's size is the UTF-8
+length of its JSON as Go writes it with HTML escaping off (`<`, `>` and
+`&` as they are; U+2028, U+2029 and control characters but `\b`, `\f`,
+`\n`, `\r` and `\t` in six bytes; a lone surrogate as U+FFFD), a negative
+zero as `0` (one byte, as `JSON.stringify` writes it, where Go writes
+`-0`), which `proto.PreviewMeasure` and `previewMeasure` both compute; a
+string's bound leaves its quotes out.
+
+**Bounds and the gate.** A message to the bridge is at most 4 KiB, one
+to the workbench at most 64 KiB, as measured; one past it, or that does
+not parse by its type's schema, is dropped unanswered. The bridge takes
+a message only from `window.parent`, at one of the origins written into
+it, and, after the `hello`, only from that hello's origin with its
+nonce (a later `hello` starts again); it posts only to `window.parent`,
+addressed to that origin, never `*`. The workbench takes an answer only
+from the frame's window at the preview's origin with the nonce it sent.
+Nothing the page sends is executed or rendered as HTML by the workbench.
+
 ## HTTP API
 
 On a switchyard (`switchyard.enabled`, `conductor switchyard`) every route
@@ -2370,7 +2678,8 @@ routes (a switchyard keeps no tickets, and opens no Dispatch store), answers
 `/api/join`, the events stream, health, reach and whoami, is as below. A
 switchyard serves no workbench either: `GET /` is its landing page, every
 workbench path is its 404 page (both server-rendered HTML), and the app is
-served only under `/join/` and `/paste` and for its assets.
+served only under `/join/` and `/paste` and for its assets. A switchyard
+frames no preview: `GET /preview-bridge.js` answers it `404 no_bridge`.
 
 Every `/api/...` route, with the credential it needs. Admin means
 `Authorization: Bearer <workbench token>`; a share token is also accepted where the
@@ -2427,10 +2736,11 @@ its run, and on no other.
 | `GET /api/health` | none | liveness: `ok`, `version`, `commit`, `sessions`, `instance` (a random id of this server process, which the reach self-check matches); `switchyard` (whether this server is one) and `relay` (whether it relays hosted sessions: always on a plain server) |
 | `GET /api/reach` | admin | what the server knows about being reached from outside its network (`reach.mode`): `{mode, mapped, method?, publicUrl?, externalIp?, externalPort?, listenPort?, expiresAt?, renewedAt?, verified?, error?, tls?}`; `mapped` says a port on the public address reaches the server (`method` `upnp`, `pcp` or `nat-pmp`; `manual` with `mapped` false names a port the person forwarded); `publicUrl` is `https://<externalIp>[:port]`, the base share links take once `tls.ready`; `verified` is `ok` when the server reached itself through that URL and `unverified` when it did not, which is usual from inside the network and proves nothing; `error` is the last failure in words; `tls` is the TLS listener's certificate, absent without a TLS listener: `{mode (acme or files), identifiers?, challenge?, notAfter?, renewAt?, ready, lastError?, nextTry?}`, `ready` saying a certificate is served (the discovered address becomes a link's base only then) |
 | `GET /.well-known/acme-challenge/{token}` | none | the key authorization of an open ACME `http-01` order (RFC 8555 §8.3), on the plain listener; `404` for any other token, a token over 128 bytes, or without a TLS listener |
+| `GET /preview-bridge.js` | none | the preview bridge, its bytes unchanged, inside a wrapper called with the server's workbench origins (Preview bridge): `200` with `Content-Type: text/javascript; charset=utf-8`, `Cache-Control: no-cache`, `Cross-Origin-Resource-Policy: cross-origin` and `X-Content-Type-Options: nosniff`, the same bytes for every request; `404 no_bridge` when the embedded app has no bridge, and on a switchyard |
 | `GET /api/switchyard/status` | admin | on a switchyard only (`404` elsewhere): the landing page's operator figures, `{hosts, sessions, viewers, relayBytesHour, hostList: [{name, since, sessions, viewers}]}`, the live hosted sessions grouped by the publishing host, earliest first, and the bytes the relay carried in the last sixty minutes |
 | `GET /api/whoami` | admin | OS user running the server (the default display name); `host` is the machine's name (`""` when it cannot tell) and `switchyard` whether this server launches nothing; `home` the server user's home directory, when it has one (the settings picker's Home); `version` the server's version, as `conductor version` prints it (Settings → The app) |
 | `GET /api/export` | admin (a switchyard's too) | the data directory as one zip archive (`docs/plans/ext.md`, C6), streamed as it is made, nothing buffered whole: `200` with `Content-Type: application/zip` and `Content-Disposition: attachment; filename="conductor-export-<UTC time>.zip"` (`20060102T150405Z`). The archive holds `data/` as the data directory holds it (the catalog, the crews, the runs' records, a switchyard's `links/` (hashes, never tokens), `hooks/` and any other file) with the ledger's and Dispatch's databases as snapshots (`VACUUM INTO`, consistent while the server writes), the attachment files the Dispatch snapshot's live rows and launch pins require, and `conductor-export.json` last: `{format: 1, version, createdAt, files: [{path, size, sha256}], left: [{path, why}]}`. Left out, and listed with why: the workbench token and its lock, `restore.lock`, `runs/owner.lock`, `brakeman/owner.lock`, `history/owner.lock`, the databases' `-wal`, `-shm` and `-journal`, `*.tmp`, `.probe-*`, `.restore-*`, `dispatch/attachments/tmp/`, `tls/`, `ext/`, anything not a regular file or a directory, and a name not of `[A-Za-z0-9._-]` elements. The catalog is resolved against the configuration the server runs with, so saved agents' env values, configured ones they inherit among them, are in it in full: the archive is the person's own file. The records are copied before the ledger's snapshot, and none written after their copy is taken, so a record may lag its ledger, never lead it. A failure before the first byte is `500 internal`; one after it cuts the archive short, with no manifest, which no restore takes, and aborts the response (the connection dropped, or the stream reset, never a whole `200`), so the client's transfer fails; `503 no_data_dir` for a server with none |
-| `GET /api/capabilities` | admin | what is registered beside the open-source feature set (`docs/plans/ext.md`, C9): `{providers: [{kind, name, state}]}`, one row per provider in each slot it holds (one value in two slots is two rows under one name), in the registry's order (the kinds `identity`, `decisions`, `context`, `notifications`, `sync`, `entitlements`, `media`, `runtime`, then a list's registration order); `state` is `ready` once the provider's start has succeeded (or it needs none) and `starting` until then, its start tried again and its slot answering the free default meanwhile. A plain build answers `{"providers": []}`. No provider is asked anything to answer it, and a row says nothing a caller could gate a feature on: the web app shows a capability that is there, never a plan (Settings → The app, its Extensions row, read again while a provider is `starting`, 2 s after the last reply doubling to a minute). At most a few KB (six one-value slots and two lists of at most 16). A kind added later joins as a row of its own, and a field a kind needs is added to the row, left out when empty. The guide's `providers` section (Guide, below) carries the same rows to the admin and to a session's agent, which this route does not answer |
+| `GET /api/capabilities` | admin | what is registered beside the open-source feature set (`docs/plans/ext.md`, C9): `{providers: [{kind, name, state}]}`, one row per provider in each slot it holds (one value in two slots is two rows under one name), in the registry's order (the kinds `identity`, `decisions`, `context`, `notifications`, `sync`, `entitlements`, `media`, `runtime`, then a list's registration order); `state` is `ready` once the provider's start has succeeded (or it needs none) and `starting` until then, its start tried again and its slot answering the free default meanwhile; the identity provider's row adds `detail`, who the server is signed in as ("signed in as Ana · workspace Acme": one line of 1 to 80 characters), when it says one, asked through the guard within 1 s once it has started (a late, failing or out-of-bounds answer leaves it out, as does one that holds, as written, a token of the server's own (the host token, the workbench token or a host token) or a credential the server holds from the provider as the detail is asked for (of its uplink's, the last eight distinct ones; a watched connection's token and pending one): a literal match against that list, and nothing more; never in the guide's rows, below, and reading the guide asks no provider). A plain build answers `{"providers": []}`. No other provider is asked anything to answer it, and a row says nothing a caller could gate a feature on: the web app shows a capability that is there, never a plan (Settings → The app, its Extensions row, read again while a provider is `starting`, 2 s after the last reply doubling to a minute). At most a few KB (six one-value slots and two lists of at most 16). A kind added later joins as a row of its own, and a field a kind needs is added to the row, left out when empty. The guide's `providers` section (Guide, below) carries the same rows to the admin and to a session's agent, which this route does not answer |
 | `GET /api/catalog` | admin | `{agents, hidden, yoloDefault}`: the launchable agents, `env` values masked as `***`, and the IDs hidden from the catalog; each agent, here and in the replies of the catalog routes below, also carries `source` (`built-in`, `config` or `saved`) and, for a saved agent that replaces a built-in or configured one, `replaces` (where that one came from); `available`, whether `command[0]` resolves on the server (the check of `POST /api/catalog/check`; any program of that name on the server's `PATH` counts, and a relative `command[0]` with a path separator counts without a lookup, since it resolves in the session's directory, which the server's own cannot stand for; the answer is kept 30 s per program, and the programs with no fresh answer are looked up together, at most 8 lookups at a time across all requests; a lookup that does not answer within 2 s (a `PATH` entry on a mount that stalls), or before the client goes away, counts as available, so the launch of such an agent is allowed and its spawn fails if the program is missing, and the lookup's answer is kept when it lands); and `site` when the agent has a website (an `https` URL: a built-in's, or the saved agent's); each agent also carries, when it has them, its `yolo` recipe `{args?, env?}` (its `env` values shown as they are: switches, not secrets), its `trustPrompt`, its `promptShape` and its `session` recipe `{startArgs?, newId?, idFrom?, idPolicy?, resumeArgs?, idPattern?, resumeNeedsCwd?}` (limits below); `yoloDefault` is the server's `yolo` setting, which a launch or a crew without `yolo` follows; each agent whose adapter has an identity probe (the real agent's `--version` line, checked against what it prints: Claude Code and Codex verified live, the others from their docs until the nightly recipes job confirms them) and whose program the lookup found at an absolute path also carries `identity` `{ran, pending?, identified, impostor?, verified, name?, version?, output?, error?}`: the program on the server run with its version flag (argv only, a spartan environment, 3 s, 4 KiB), its answer kept 10 min; `identified` with `version` when it is the agent, `impostor` when it is a known other program of that name (the Go migrations tool called goose; the agent's `available` is then `false`: it is not offered, and `POST /api/sessions` refuses it), `output` the first line it printed otherwise, `pending` when the probe is still under way (ask again), `verified` whether the adapter's expectation was checked against the real CLI (a verified probe that matches nothing means the program is not the agent; an unverified one leaves it unidentified and refuses nothing); an agent with `probe: false` is not probed |
 | `POST /api/catalog` | admin | add an agent or replace the one with the same `id` (a built-in too); body is the agent, reply `{agent}`; `source`, `replaces` and `available` in the body are ignored; an `env` value of `***` (what `GET /api/catalog` shows) keeps the value the saved entry holds for that key; for an agent that replaces a built-in or configured one, a `***` value the saved entry does not hold is stored as `***` and means "the replaced agent's value", so a change in the config reaches it, and a value equal to the replaced agent's is stored as `***` too; a saved agent that leaves out `adapter`, `signal`, `site`, `yolo`, `trustPrompt`, `promptShape` or `session` takes those of the agent it replaces, and a `signal` without `workingTitle` the replaced agent's `workingTitle`, and `"yolo": {}` or `"session": {}` says it has none; `browser` (#436), the browser the agent's links open in, is `{name, profile?}`, `name` one of `chrome`, `edge`, `firefox`, `brave` and `safari`, `profile` a Chromium profile directory (`Default`, `Profile 2`) for `chrome`, `edge` and `brave` alone, at most 100 characters with no control character, quote or space at either end; left out it is the replaced agent's, and `"browser": {}` is the computer's default browser over it, as no `browser` is for an agent of its own (a config file's agents take it too, and the catalog shows it unmasked); `***` is rejected for a key neither has; `site`, when present, must be an `https://` URL with a host name, a valid port if it has one, no user info and no white space, at most 200 bytes, a rule that also holds for the config's agents and for `catalog.json`; `400 invalid_agent` carries the validation message, an unknown `adapter` or a bad `site` included (the adapter check also runs for the config's agents and for `catalog.json` at startup); `503 store_unavailable` when there is no data directory |
 | `DELETE /api/catalog/{id}` | admin | remove the saved override with that `id`, which restores a built-in it replaced; an agent with no override is hidden instead; `204`, `404` when unknown |
@@ -2554,9 +2864,9 @@ its run, and on no other.
 | `POST /api/sessions/{id}/links` | admin | create a share link (`403 switchyard` on a switchyard, where the publishing machine mints a session's links over its own connection, `link`): `{role, label?, ttlSeconds?, decide?}` (`decide: true`, a decision link: see Decision links; control only, `400 bad_request` with a view role; `409 unsupported` for a hosted session, whose decisions are answered where it runs; `409 switchyard_too_old` for a session published to a switchyard whose `registered` does not say `decisions`; at one that does, minted there: see Decision links, Through a switchyard), reply `201 {link, token, url, invite}` (`invite` is the same link as `conductor://<host>/join/<token>`, which the desktop app opens itself); for a session published to a rendezvous the link is minted there over the host connection and the reply is `201 {link{id, role, label, expiresAt, sessionId, remote: true}, url, invite, remote: true}` with the rendezvous's URL and no `token` (`502 rendezvous_unavailable` when it does not answer within 15 s); while that session's publication is still being made the request waits up to 10 s for it, and when it failed or is not there the link is made here and the reply adds `rendezvous: {server, error}` (why the session is not at the switchyard); `url` is `<base>/join/<token>`, where the base is `publicUrl` when it names another machine, and otherwise (unset, or localhost, as the default is) the address the request came through: `X-Forwarded-Proto` and `X-Forwarded-Host` when a reverse proxy sets them, else the request's scheme and `Host` (a malformed host falls back to `publicUrl`) |
 | `DELETE /api/sessions/{id}/links/{linkId}` | admin | revoke a share link, which closes every viewer attached through it (`4403`); `204`; revoking a revoked link answers `204`, records nothing and closes any viewer still attached through it; a session that ended took its links with it (local ones revoked and dropped, their viewers closed as the session's end, `4410`; those minted at the rendezvous forgotten here and ended there by the session's end, which the rendezvous hears from the publication; a hosted session's at its end too), so they are no longer listed and a revoke of one answers `204`, and stops what the session's end still writes their viewers (here, and at the rendezvous over the publication, which outlasts the session's end by 5 s for it: `502 rendezvous_unavailable` when the rendezvous does not answer then); a link minted at the rendezvous is revoked there over the host connection (`link_revoke`), `204` also when the rendezvous no longer holds it, `502 rendezvous_unavailable` when it does not answer|
 | `GET /api/sessions/{id}/files` | admin or share token | read a file of a server session (`path`, `stat`, `raw` query), see File reads |
-| `POST /api/sessions/{id}/attention` | agent token or admin (not a switchyard's) | report an attention state, and with it the agent's own session id (`agentSession`, at most 128 bytes) and whether the report is of a turn (`turn`), see Attention |
+| `POST /api/sessions/{id}/attention` | agent token or admin (not a switchyard's) | report an attention state, and with it the agent's own session id (`agentSession`, at most 128 bytes) and whether the report is of a turn (`turn`), see Attention; on a hosted session still registering, the id waits for the session's recorder, and when that wait (10 s) runs out the answer is `503 registering`: the attention applied, the id not kept, the report to be sent again. A client whose own wait is shorter ends first and sees no answer: `conductor notify` gives each report 5 s and sends it once (only a `429` again), and the hooks that carry the agent's session id carry it again in a later report (Claude Code's in each attention report; Codex's, Copilot's, Cursor's and Antigravity's at a turn's end, Copilot's and Cursor's at its start too) |
 | `POST /api/sessions/{id}/events` | agent token or admin (not a switchyard's) | report an event or an attention word, reply `202 {accepted}`, see Events |
-| `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one), of chat messages (`chat`: the message as `chat` carries it, with `sessionId` for a session's chat or `runId` for a run's; as droppable as `activity`; for the browsers' unread counts; a `conductor host` session's chat arrives the same way, the host sending each message on its control connection), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), and of Dispatch's changes (`dispatch`: `{seq, entity, id, ticket, project}`, one per entity a commit changed, but one with `id` and `ticket` `""` for more than 64 of a kind in a project, a commit's arriving together and in order, at most 160 bytes; dropped with the client as a `run` event is, see Dispatch), and of Brakeman's requests (`brakeman`: `{id, state}`, at most 200 bytes, `id` `role` for a change of the background role, see Brakeman), and of durable decisions (`decision`: `{id, run, task?, state, rev}`, at most 256 bytes, after each committed change of one, dropped with the client as a `run` event is, see Decisions), and of the links agents open (`open`: `{id, sessionId, url, browser?, state}`, at most 15,200 bytes, as droppable as `activity`, see Opening a link); a desktop app's workbench that opens links sends `X-Conductor-Desktop: 1` with it, see Attention and Events |
+| `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one), of chat messages (`chat`: the message as `chat` carries it, with `sessionId` for a session's chat or `runId` for a run's; as droppable as `activity`; for the browsers' unread counts; a `conductor host` session's chat arrives the same way, the host sending each message on its control connection), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), and of Dispatch's changes (`dispatch`: `{seq, entity, id, ticket, project}`, one per entity a commit changed, but one with `id` and `ticket` `""` for more than 64 of a kind in a project, a commit's arriving together and in order, at most 160 bytes; dropped with the client as a `run` event is, see Dispatch), and of Brakeman's requests (`brakeman`: `{id, state}`, at most 200 bytes, `id` `role` for a change of the background role, see Brakeman), and of durable decisions (`decision`: `{id, run, task?, state, rev}`, at most 256 bytes, after each committed change of one, dropped with the client as a `run` event is, see Decisions), and of the links agents open (`open`: `{id, sessionId, url, browser?, state}`, at most 15,200 bytes, as droppable as `activity`, see Opening a link), and of usage readings kept (`capacity`: `{agent, account, state, readAt}`, at most 512 bytes, dropped with the client as a `run` event is, see Capacity); a desktop app's workbench that opens links sends `X-Conductor-Desktop: 1` with it, see Attention and Events |
 | `GET /api/join/{token}` | share token in the path | resolve a share link for the join page (rate limited): `{session, role, label}` for a session link; `{run: {id, name, members}, role, label}` for a run link, each with `switchyard` (whether this server is one, which the join page names), each member `{name, sessionId?, agentId, status}` in the run's order, with `sessionId` only while its session runs (`agentId` and `status` then the session's) and otherwise its state in the run, `pending`, `starting` or `ended`; `404` with `invalid_link`, `revoked`, `expired`, `session_gone` or `run_gone`; on a switchyard, `503 host_offline` for a link it keeps whose host is not connected now (it works again once the host registers) |
 
 The catalog routes persist their changes as `catalog.json` in the data
@@ -3336,9 +3646,20 @@ all, a `url` 2048, `preview` 512): one past its bound fails the tree at
 more than 512"), before anything is written or run in it. A step and a
 check run in a tree are given the tree's names, `CONDUCTOR_PORT_<NAME>` (the
 port's name in upper case) for each port, `CONDUCTOR_STATE_DIR` (its absolute
-path), with a preview `CONDUCTOR_PREVIEW_URL`, and `CONDUCTOR_RUN`,
-`CONDUCTOR_TASK` and `CONDUCTOR_ATTEMPT`, and no other `CONDUCTOR_` name, a
-token least of all; and the manifest's approved `env` names, and no other
+path), with a preview `CONDUCTOR_PREVIEW_URL` (and `CONDUCTOR_PREVIEW_BRIDGE`,
+see Preview bridge), `CONDUCTOR_TREE_SECRET` (32 random bytes as hex, minted
+as the tree is resolved, held in the server's memory alone; Conductor
+writes it into the environment of the tree's commands and its session and
+into nothing else of its own accord: no placeholder expands to it, so no
+argv holds it, and a preview names it as `${CONDUCTOR_TREE_SECRET}` and
+keeps the name. What a command prints is its output: Conductor keeps
+output (a step's head, tail and log, a session's scrollback) and quotes a
+failing command's last lines in the failure's words, which reach the
+receipt, the run's rows, events and log, the state the routes answer and
+the next attempt's task files, so a command that prints its environment
+puts the secret there), and
+`CONDUCTOR_RUN`, `CONDUCTOR_TASK` and `CONDUCTOR_ATTEMPT`, and no other
+`CONDUCTOR_` name, no token of the server's; and the manifest's approved `env` names, and no other
 name of the server's passthrough. The attempt's session is given the tree's
 names and the approved names beside its own (a session keeps its crew's
 names and the passthrough every session has). The setup steps run in
@@ -4877,7 +5198,9 @@ Program item HS1; `internal/journal`): a JSON document of its own,
 each file 0600), begun and written as the session is made, before it can
 keep an entry, then written by the journal's writer as it changes, and
 at once at its end and when a crew is taken after its launch. A hosted
-session has no record yet. A server killed loses what was not yet
+session gets one too, begun as its host registers it and holding what
+its host reports (Host control connection, What a host reports of its
+session). A server killed loses what was not yet
 written; no time bound is promised. The server holding `history/owner.lock` writes the
 records; another server on the same data directory reads them (its own
 sessions unrecorded, `readOnly` on the list) and takes the lock when the
@@ -4888,8 +5211,16 @@ server with no data directory, and a switchyard, keep none.
 A record holds the session's id, name and kind; its agent (`id`, `name`,
 `adapter`, `version` from the server's probe, its own `session` `{id,
 source, resumable}` as the session knows it); its host (`name`, `user`;
-`owner` and `hosted` are kept for a later version's hosted records,
-empty here); `where` it ran (its Runtime, always set); its `cwd`; for a native
+for a hosted session `hosted: true` and `owner`, a hash of its host's
+instance); `where` it ran (its Runtime, always set for a server session;
+a hosted session's as its host reported it, none when it reported none:
+not reported, never native); its `cwd`; for a hosted session `repo`,
+`repoCommon`, `startCommit` (`startFrom: "host"`), `endCommit` and the
+agent's `version` as its host reported them, and its agent's own
+`session` as its hooks reported it to this server, none of it read on
+this server's machine, and of its evidence what its host sends (its
+activity and chat messages: no question and no answer, which its host's
+chat keeps); for a native
 session the `repo` (the worktree's top), `repoCommon` (the
 repository's common git directory, absolute), `branch` and `startCommit`
 read in one `git rev-parse` in the folder opened and checked, the one its
@@ -4912,10 +5243,14 @@ the record open), or `lostAt` when the server stopped observing it
 (`ending` `lost`: a session removed from the listing, or still there at
 a shutdown, while its process ran; a record found open at the next
 start; a record whose delete failed while its file said open: whether
-its process ended is not known); the end is read from the session
+its process ended is not known; `host away` for a hosted one, whose end
+is the one its host reported); the end is read from the session
 itself, not from the order its events arrive in, and once recorded it
-stands; `ending` (`exited (exit 0)`, `stopped`, `lost`, …); `reopened`,
-kept for a later version's hosted records, 0 here; and its evidence: `entries[{seq, at, kind, id?, ref?, event?,
+stands; `ending` (`exited (exit 0)`, `stopped`, `lost`, `host away`, …);
+`reopened`, how many times a hosted record was taken up again by the same
+host registering the same session after the server stopped observing it
+(a restart, its host away past the grace), its entries kept and a status
+line `taken up again by its host` among them; and its evidence: `entries[{seq, at, kind, id?, ref?, event?,
 byName?, message?, path?, tool?, url?, to?, choices?, outcome?}]` in order
 of `at`, then `seq`: `typed` (a line Conductor typed: a crew's prompt, a
 broadcast, a handoff), `question` (the agent's question in the chat, `id`
@@ -5149,7 +5484,9 @@ and a finding or a resolution the same with `&focus=findings` (a
 resolution at the candidate it was verified on), a session `/sessions/<id>` while the server lists it and
 `/history/sessions/<id>#e<seq>` after; every other ref the page Brakeman's
 references open. `availability.state` is `live`, `listed`, `record`,
-`lost` or `host_away` for a session, `worktree`, `worktree_gone` or
+`lost` or `host_away` for a session (`host_away` a hosted one's whose
+host is away, inside the disconnection's grace too, never `live`),
+`worktree`, `worktree_gone` or
 `elsewhere` (another Runtime's, not looked at) for an attempt, `pruned`
 for an attempt or a receipt whose run's rows are gone, `log`,
 `log_dropped` or `pruned` for a receipt, `deleted` for a ticket's or a
@@ -5352,3 +5689,106 @@ the authority `{via: router}` and no grant, which `local/1` refuses
 (`not_approver`, "refused under local/1") whatever principal the subject
 names: kept as a refused response with its `responded` row, never
 applied. The operator answers it as any other.
+
+### Capacity
+
+An **account** is a reference to an agent's own login on this server
+(`docs/plans/capacity.md`, Program item AC1; `internal/capacity`): an
+adapter that moves its login folder (`claude`: `CLAUDE_CONFIG_DIR`,
+`codex`: `CODEX_HOME`), a label of 1 to 60 characters and the folder that
+login lives in (absolute, at most 4,096 bytes, a directory the server's
+user owns, neither inside the server's data directory nor holding it,
+compared with the links on both resolved, and one that a deny list given
+that path alone refuses, by the path and where its links lead, fixed once added), under an id the server mints (`a-` and 12
+base32 characters, never minted again once removed). Every adapter also
+has the account `default`, never stored: the agent's own login. No
+credential, email, organisation or provider id is kept, and nothing in the
+folder is read. The accounts are `capacity/accounts.json` (0600, at most
+64 KiB, 32 accounts); the record of the Claude Code versions a read may
+start is `capacity/versions.json` (0600, at most 16 KiB). Both ride in an
+export; `capacity/owner.lock` and `capacity/run/` (the readers' working
+folder) do not, and a restore refuses an archive that holds either.
+
+The server holding `capacity/owner.lock` writes both documents (another
+server over the same data directory waits up to 10 s for it, then stays a
+reader); one without it answers `owner: false` with why, refuses every
+write `409 accounts_not_owner`, starts no Claude Code program for a read or
+a check (its view is `not_owner`, a check `409 accounts_not_owner`), and
+still reads Codex, whose reads cost no turn and change no record. A server
+that lets the lock go (at shutdown) first waits for the write under way and
+then refuses every write `409 accounts_not_owner`, as one that never held
+it, so the next owner is the only writer. A check's outcome is saved when it
+is known and tried once more before the lock is given up; a server that
+ends without having saved it leaves the version as the record has it, and
+the next owner may read that version once more before it learns the same. A
+**reading** is what an agent's own tool reported of a login's usage at one
+moment (`internal/agents`' readers), kept in memory only, at most 8 per
+key and 128 keys, so a restart starts at `never_read`. A key (an agent and
+an account) is read at most once in 5 minutes whoever asks, two at once
+across the server, an asker waiting at most 2 s; a reading is fresh for 15
+minutes. Only `POST /api/capacity/read` reads; every `GET` answers what is
+kept. A read runs with the environment a session of that agent gets (the
+entry's and the server's part, one function for both), then
+`TERM=dumb`, `NO_COLOR=1` and the account's folder; a reading keeps a
+SHA-256 of the agent's adapter and that environment, never its values, and
+a view whose adapter or environment now hashes otherwise is `stale`. A reader's words are Conductor's own, never the
+tool's output.
+
+No launch takes an account yet: a session runs on the agent's own login
+whatever the default says, and nothing holds an account, so a remove is
+never refused for one in use (`account_in_use` comes with the launches
+that bind an account, issue #784).
+
+**The routes**, each the workbench token's alone (a session's, a host's, a
+link's and a Brakeman turn's are refused `401`) and a launch route's (a
+switchyard answers `403 switchyard`); a server with no data directory
+answers `503 capacity_unavailable`. A value outside its form (an agent's
+id, an account's, an adapter's name, `after`) is refused `400` in the
+server's own words, which do not repeat it, and every refusal is at most
+32 KiB. A query is read as the other routes read theirs (a `;` is part of a
+value): one with an escape that is not one or past 10,000 parameters is
+refused `400 invalid_request`, never answered as another question. A
+write's body is bounded by its largest valid spelling, each text field at
+its limit with every character escaped as JSON may escape it: an add's at
+25,744 bytes, every other write's at 976 (`413 bound` past it):
+
+| Route | Body and answer |
+|---|---|
+| `GET /api/accounts` | `{owner, why?, rev, accounts: [{id, adapter, label, folder, retired?, createdAt, reading?: {agent, state, readAt}}], adapters: [{adapter, name, default, reading?}]}`: the document without its removed ids, each adapter that moves its login folder with its default account (`default` for the agent's own login, also when the one set is retired or gone) and its own login's last reading (read through an entry that pins no other login); at most 68 KiB (the document's 64 KiB, then the readings and adapters beside it) |
+| `POST /api/accounts` | `{adapter, label, folder, expectedRev}` → `201 {account, rev}`; `400 invalid_account` with `field`; an `id` in the body refused (`field: "id"`); `409 stale_rev` |
+| `PATCH /api/accounts/{id}` | `{label, expectedRev}` → `{account, rev}`; a `folder` in the body refused (`field: "folder"`) |
+| `POST /api/accounts/{id}/retire` | `{expectedRev}` → `{account, rev}`: kept in the accounts, out of every choice and default |
+| `DELETE /api/accounts/{id}?expectedRev=n` | `204` |
+| `PUT /api/accounts/defaults/{adapter}` | `{account, expectedRev}` → `{defaults, rev}`; a retired account, or one of another adapter, refused |
+| `GET /api/capacity?agent=&account=&model=&launch=&yolo=` | one view, reading nothing; at most 32 KiB. `account` defaults to the agent's default: its adapter's, or `default` for an entry whose environment (or the server's passthrough) sets the adapter's folder variable or one of its login variables, which has that login alone; `launch` is `session` (the default), `legacy` (a legacy crew's member), `managed` (a managed run's attempt) or `remote` (a session on another computer) |
+| `GET /api/capacity?after=&limit=` | without `agent`: `{views, next?}`, every installed agent's view for its default and, unless its entry sets its login, each account of its adapter not retired, ordered by `<agent>/<account>`, each asked as the single view would be with the same `launch` and `yolo`, at most `limit` (1 to 16, 16 by default) and until the next would pass 128 KiB (at least one); `next` is the cursor to pass as `after` |
+| `POST /api/capacity/read` | `{agent, account?, check?}` → `202` the view: `reading` when the read did not end within 2 s, the kept reading with `nextReadAfter` inside the 5 minutes; `check` (Claude Code only, `400` otherwise) runs a version not recorded `checked` once; at most 1 KiB of body |
+
+A **view** is `{agent: {id, name, adapter, version}, model: {chosen,
+words}, account: {id, label, default, retired, plan}, host: {kind, name?,
+words?}, state, words, windows, credits, limits, counts, readAt?, readBy?:
+{program, version, qualified}, fresh, nextReadAfter?}`. `state` is one of
+`ok`, `reading`, `never_read`, `signed_out`, `key_paid`, `unqualified`,
+`error`, `unsupported` (no reader for the agent), `not_installed` (also
+an entry whose command is a path relative to a working folder: no read,
+check or view looks it up or runs it, and the listing leaves it out),
+`remote`, `env_set` (the launch's yolo environment, or the entry for an
+account other than `default`, sets the agent's login), `not_owner`; each
+has its words. Each window carries `source: "provider"` and is absent when
+the provider did not report it (never a zero); the counts (`running`,
+`started5h`, `started7d`, `since`) carry `source: "conductor"` and
+`estimate: true`: the server sessions of the agent on the account this
+server counted since it started (no launch binds an account other than
+`default` yet, so another account counts none). `host.kind` is `native`
+(with the server's name), `remote`, or, for a managed run of the agent's
+own login when a Runtime other than the native one is registered,
+`undetermined` ("this server's login: if <Runtime> takes the run, its usage
+there is unknown"). `fresh` is `fresh`, `stale`, `reset_passed` or `none`.
+
+**The `capacity` event.** Once a reading is kept the server sends `event:
+capacity` on `GET /api/events` with `{agent, account, state, readAt}`
+(at most 512 bytes; an agent id is at most 32 bytes, an account id 14),
+for a page to read the view again; it names no label, folder or figure.
+It goes through each client's queue (256 entries, the stream's own bound),
+and a client that cannot keep up is dropped, as for a `run` event: a slow
+listener costs the server one bounded queue and nothing more.

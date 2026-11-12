@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -396,7 +397,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		cutting = false
 		cutMu.Unlock()
 	}()
-	if watch := s.principalWatch(p, presentedToken(r, false)); watch != nil {
+	if watch := s.principalWatch(p, newWatchedToken(presentedToken(r, false)), ext.GrantAdmin); watch != nil {
 		go watch(ctx, func() {
 			cutMu.Lock()
 			if cutting {

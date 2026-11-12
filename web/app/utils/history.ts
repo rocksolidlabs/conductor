@@ -365,6 +365,22 @@ export function recordAgent(r: Pick<SessionRecord, 'agent'>): string {
   return [r.agent.name || r.agent.id, r.agent.version].filter(Boolean).join(' ')
 }
 
+/**
+ * Where a record's session ran, in words: "ran natively", "ran on vm"; "" for a record that does not say, never natively (a
+ * hosted record whose host reported none says so in hostUnreported).
+ */
+export function recordWhere(r: Pick<SessionRecord, 'where'>): string {
+  if (!r.where) return ''
+  return r.where === 'native' ? 'ran natively' : `ran on ${r.where}`
+}
+
+/** What a hosted record's host did not report of its launch (an older host, a Runtime elsewhere): none for a server session's. */
+export function hostUnreported(r: Pick<SessionRecord, 'host' | 'where' | 'agent' | 'repo' | 'startCommit'>): string[] {
+  if (!r.host.hosted) return []
+  const missing: Array<[unknown, string]> = [[r.where, 'where it ran'], [r.agent.version, "the agent's version"], [r.repo, 'the repository'], [r.startCommit, 'the start commit']]
+  return missing.filter(([v]) => !v).map(([, what]) => what)
+}
+
 /** One entry of a record in words: what it is (its label) and what it says (`text`, empty when the record keeps no words for it). */
 export function recordEntryWords(e: RecordEntry): { label: string; text: string; icon: string } {
   switch (e.kind) {

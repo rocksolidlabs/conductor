@@ -53,11 +53,15 @@ type stubYard struct {
 	// dropLinks is how many link requests are met by closing the connection
 	// before an answer, as a connection that drops at that moment does.
 	dropLinks atomic.Int32
+	// renews is what its registered says of renews; auths is each
+	// registration's Authorization header, in order.
+	renews atomic.Bool
+	auths  chan string
 }
 
 func newStubYard(t *testing.T) *stubYard {
 	t.Helper()
-	y := &stubYard{t: t, conn: make(chan *websocket.Conn, 4), reg: make(chan proto.Register, 4), in: make(chan yardMsg, 4096)}
+	y := &stubYard{t: t, conn: make(chan *websocket.Conn, 4), reg: make(chan proto.Register, 4), in: make(chan yardMsg, 4096), auths: make(chan string, 64)}
 	done := make(chan struct{})
 	y.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/ws/host" {
@@ -75,8 +79,12 @@ func newStubYard(t *testing.T) *stubYard {
 		}
 		var reg proto.Register
 		_ = json.Unmarshal(data, &reg)
+		select {
+		case y.auths <- r.Header.Get("Authorization"):
+		default:
+		}
 		y.reg <- reg
-		b, _ := json.Marshal(proto.Registered{T: proto.HostRegistered, SessionID: "yard-session-1", Secret: "s", ShareBaseURL: "https://yard.invalid", Links: []string{}})
+		b, _ := json.Marshal(proto.Registered{T: proto.HostRegistered, SessionID: "yard-session-1", Secret: "s", ShareBaseURL: "https://yard.invalid", Links: []string{}, Renews: y.renews.Load()})
 		if err := c.Write(r.Context(), websocket.MessageText, b); err != nil {
 			return
 		}

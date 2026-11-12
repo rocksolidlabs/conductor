@@ -370,6 +370,17 @@ type controlWriter struct {
 	live *connLive
 	// controlTurn replaces controlTurnWait in tests.
 	controlTurn time.Duration
+	// after is the clock of put's turn waits (a test's own; nil is a
+	// timer), and taking is told, in tests, each time run is about to
+	// take a message from a lane.
+	after  func(time.Duration) <-chan time.Time
+	taking func()
+	// presented is what the connection's registration presented and
+	// renews whether its registered said renews (renewToken's): made with
+	// the connection, gone with it. presented changes only on renewToken's
+	// goroutine.
+	presented string
+	renews    bool
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -384,8 +395,14 @@ type controlWriter struct {
 
 // newControlWriter starts the writer of c, whose socket is pc.
 func newControlWriter(c *websocket.Conn, pc *pacedConn) *controlWriter {
+	return newControlWriterWith(c, pc, nil, nil)
+}
+
+// newControlWriterWith is newControlWriter with its clock and its taking
+// hook (tests; nil for none).
+func newControlWriterWith(c *websocket.Conn, pc *pacedConn, after func(time.Duration) <-chan time.Time, taking func()) *controlWriter {
 	ctx, cancel := context.WithCancel(context.Background())
-	w := &controlWriter{c: c, pc: pc, ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1), done: make(chan struct{})}
+	w := &controlWriter{c: c, pc: pc, ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1), done: make(chan struct{}), after: after, taking: taking}
 	go w.run()
 	return w
 }
@@ -441,7 +458,9 @@ func (w *controlWriter) put(control bool, typ websocket.MessageType, data []byte
 	default:
 	}
 	var expired <-chan time.Time
-	if turn > 0 {
+	if turn > 0 && w.after != nil {
+		expired = w.after(turn)
+	} else if turn > 0 {
 		t := time.NewTimer(turn)
 		defer t.Stop()
 		expired = t.C
@@ -490,6 +509,9 @@ func (w *controlWriter) run() {
 				return
 			}
 			continue
+		}
+		if w.taking != nil {
+			w.taking()
 		}
 		w.mu.Lock()
 		if w.stopped {
