@@ -50,8 +50,9 @@ func TestSkillText(t *testing.T) {
 		// A project manifest's tree (EN1 PR-3): its ports, its preview and
 		// its state directory, in the environment.
 		"CONDUCTOR_PORT_<NAME> holds each of its ports", "CONDUCTOR_PREVIEW_URL its preview", "CONDUCTOR_STATE_DIR (.conductor/state)",
-		// PV1 PR-2a: the tree's secret.
-		"CONDUCTOR_TREE_SECRET is\n  a credential of this tree alone", "never print\n  it, and never dump the environment (env, printenv, set) in a step, a\n  check, a verify step or a service", "quotes a failing command's last lines in its failure",
+		// PV1 PR-2: the preview bridge and the tree's secret.
+		"CONDUCTOR_PREVIEW_BRIDGE,\n  when set, is the script a page of the preview loads",
+		"CONDUCTOR_TREE_SECRET is a credential\n  of this tree alone", "never print it, and\n  never dump the environment (env, printenv, set) in a step, a check, a\n  verify step or a service", "quotes a\n  failing command's last lines in its failure",
 		`"${CONDUCTOR_BIN:-conductor}" task send --to docs "the API is under internal/api/users.go; the handler names are final"`,
 		`"${CONDUCTOR_BIN:-conductor}" task inbox`,
 		`"${CONDUCTOR_BIN:-conductor}" task ack 3`,
