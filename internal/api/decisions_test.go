@@ -1029,3 +1029,17 @@ func TestATasksDecisionKeysAreItsOwn(t *testing.T) {
 		t.Fatalf("build's decision after docs' tries: %v", d)
 	}
 }
+
+// The operator's route to the decide grant is refused as a destination
+// the route does not take, 400 invalid with nothing written, until the
+// grant's routes are served (docs/plans/decide-grant.md): the engine
+// takes it, the route does not offer it yet.
+func TestTheRouteDoesNotOfferTheGrantYet(t *testing.T) {
+	f := newDecisionFixture(t, nil, nil)
+	f.ask(t, approvalBody("r1"), http.StatusCreated, "")
+	f.expect(t, http.MethodPost, "/api/decisions/dr-1/route", map[string]any{"opId": "g1", "to": map[string]any{"kind": "grant", "grant": "decide"}, "expectedRev": 1}, http.StatusBadRequest, crew.CodeInvalid)
+	rec, _, err := f.srv.ledger.Decision(t.Context(), 1)
+	if err != nil || rec.Rev != 1 || crew.GivenToGrant(rec.Request) || len(rec.History) != 2 {
+		t.Fatalf("the refused route wrote: %+v %v", rec.History, err)
+	}
+}

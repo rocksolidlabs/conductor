@@ -97,6 +97,11 @@ type Grant string
 const (
 	GrantAdmin Grant = "admin" // what the workbench token may do
 	GrantHost  Grant = "host"  // register a hosted session, as a host token
+	// GrantDecide is to answer a decision routed to the grant, and to read
+	// nothing else (docs/plans/decide-grant.md). Yardmaster's engine admits
+	// it; no route serves it until #847, and a principal holding it alone
+	// is answered as one with no grant.
+	GrantDecide Grant = "decide"
 )
 
 // SubjectActor is the prefix a principal's subject takes as the actor of
@@ -112,7 +117,7 @@ const (
 )
 
 // Valid reports whether g is a grant this repository knows.
-func (g Grant) Valid() bool { return g == GrantAdmin || g == GrantHost }
+func (g Grant) Valid() bool { return g == GrantAdmin || g == GrantHost || g == GrantDecide }
 
 // Valid checks p against its bounds: a subject of 1 to MaxSubject bytes of
 // printable ASCII with no space, a name of 1 to MaxPrincipalName characters
@@ -135,7 +140,7 @@ func (p Principal) Valid() error {
 	seen := make(map[Grant]bool, len(p.Grants))
 	for _, g := range p.Grants {
 		if !g.Valid() {
-			return invalid(r, "grant %q is not admin or host", g)
+			return invalid(r, "grant %q is not admin, host or decide", g)
 		}
 		if seen[g] {
 			return invalid(r, "grant %q is given twice", g)

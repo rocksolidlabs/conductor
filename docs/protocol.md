@@ -5620,7 +5620,9 @@ is judged against the decision's row in the transaction that applies
 it, before anything changes, whatever the engine holds in memory.
 
 The routes. Each body is read with unknown fields refused and bounded;
-`responseId`, `commandId` and `opId` are 1 to 32 of `A-Z a-z 0-9 . _ ~ -`,
+`responseId`, `commandId` and `opId` are 1 to 32 of `A-Z a-z 0-9 . _ ~ -`
+(the `responseId` `router` is kept for a registered decision router's
+answers, which take no other: a response sent with it is `400 invalid`),
 and the same id again under the same actor answers the same receipt with
 `repeat: true` (another body: `response_conflict` or `op_conflict`). A
 refusal is `{error: {code, message}}`, its message the words of what to do,
@@ -5630,6 +5632,22 @@ workbench token, or an identity provider's principal with the admin grant;
 a share link's controller, an agent's token and a Brakeman turn's token
 are refused (`401 unauthorized`): the operator is the free build's one
 approver.
+
+The decide grant's wire (`internal/proto/decide.go`, mirrored in
+`web/app/utils/protocol.ts`; `docs/plans/decide-grant.md`): what a principal an
+identity provider gives `decide` and not `admin` is to be answered, once the
+grant's routes are served. `MeReply` `{subject?, name?, grants}`, at most
+1 KiB. `DecideList` `{decisions: [{id, rev}], cut?}`: at most 200 entries,
+at most 16 KiB. `DecideView` `{id, rev, state?, type?, question?, context?,
+options?[{label, tradeoffs?}], recommendation?, uncertainty?, authorizes?,
+createdAt?, own[{k, responseId, status, code?, rev, at, choice?}], outcome?,
+outcomeCode?}`, at most 32 KiB, `own` at most 8 receipts, `outcome` one of
+`applied`, `waiting`, `not_used`, `refused` (with `outcomeCode`).
+`DecideReply` `{receipt, decision?}` and `DecideRefusal` `{error: {code,
+message}, receipt?}`, at most 33 KiB, a refusal's message at most 200
+bytes. Until those routes are served, `POST /api/decisions/{did}/route` with
+`to: {kind: "grant", grant: "decide"}` is `400 invalid`, a destination the
+route does not take.
 
 | Route | Who | Body → reply |
 |---|---|---|
