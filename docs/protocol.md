@@ -5866,3 +5866,18 @@ for a page to read the view again; it names no label, folder or figure.
 It goes through each client's queue (256 entries, the stream's own bound),
 and a client that cannot keep up is dropped, as for a `run` event: a slow
 listener costs the server one bounded queue and nothing more.
+
+`conductor accounts list|add|rename|retire|remove|default` and
+`conductor capacity [--agent] [--account] [--model] [--read [--check]]
+[--json]` are these routes from the shell, with the workbench token in
+the `Authorization` header: a write reads the rev first and names it; a
+reply is read to at most 1 MiB, and the listing to at most 64 pages of
+128 KiB each as the bytes arrive (8 MiB in all) under one deadline of
+one minute, until a page names no `next`: a listing past a bound, or one
+whose `next` names a page already read, is refused whole. Everything the
+two commands print, and their errors, holds printed characters alone (a
+letter, a mark, a number, punctuation or a symbol, by Unicode category,
+and the space U+0020) and newlines: the rest is replaced, so their text
+is plain on purpose. Every JSON the CLI prints, their `--json` too, keeps
+the values it was given, a character outside those written as its JSON
+escape.

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -332,15 +333,18 @@ func TestObserveReadsUpToItsTableBound(t *testing.T) {
 
 // A check's log is printed as the server gave it, so it matches the
 // SHA-256 printed above it: one with no final newline gains none, one
-// with several keeps them all, and the MCP tool's text is the same; a
-// JSON answer ends with one newline.
+// with several keeps them all, one with any other byte keeps it, and the
+// MCP tool's text is the same; a JSON answer is printed through jsonText,
+// on one line: the same values, each character jsonText escapes escaped.
 func TestObservePrintsALogsBytesAsTheyCame(t *testing.T) {
 	clearConductorEnv(t)
 	var log atomic.Value
+	format := string([]rune{0x202e, 0x200d, 0x7f, 0x85, 0x2028}) // a character of each kind jsonText escapes
+	answer := `{"runs":[{"name":"a` + format + `b"}]}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/log") {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"runs":[]}`+"\n\n")
+			_, _ = io.WriteString(w, answer+"\n\n")
 			return
 		}
 		b := log.Load().(string)
@@ -354,7 +358,7 @@ func TestObservePrintsALogsBytesAsTheyCame(t *testing.T) {
 	t.Setenv("CONDUCTOR_NOTIFY_TOKEN", "agent-tok")
 	t.Setenv(envBrakeman, "br-1")
 	keys := []string{"--run", "r1", "--task", "build", "--n", "1", "--id", "test", "--k", "1"}
-	for _, b := range []string{"ok", "FAIL\n\n\n", "\n", ""} {
+	for _, b := range []string{"ok", "FAIL\n\n\n", "\n", "", "\x1b[31mred\x1b[0m\r" + format + "\n"} {
 		log.Store(b)
 		sum := sha256.Sum256([]byte(b))
 		want := "sha256 " + hex.EncodeToString(sum[:]) + "\n\n" + b
@@ -372,7 +376,14 @@ func TestObservePrintsALogsBytesAsTheyCame(t *testing.T) {
 			t.Errorf("the tool's text for %q: %q %v", b, text, isErr)
 		}
 	}
-	if code, out, _, err := brakemanCmd(t, "", "observe", "runs"); code != 0 || err != nil || out != `{"runs":[]}`+"\n" {
+	code, out, _, err := brakemanCmd(t, "", "observe", "runs")
+	var got, want any
+	_ = json.Unmarshal([]byte(answer), &want)
+	escaped := ""
+	for _, r := range format {
+		escaped += fmt.Sprintf(`\u%04x`, r)
+	}
+	if code != 0 || err != nil || out != `{"runs":[{"name":"a`+escaped+`b"}]}`+"\n" || json.Unmarshal([]byte(out), &got) != nil || !reflect.DeepEqual(got, want) {
 		t.Errorf("a JSON answer printed: %d %v %q", code, err, out)
 	}
 }
