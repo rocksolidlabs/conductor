@@ -653,6 +653,9 @@ func TestSendOutcomesMergeByTheProjection(t *testing.T) {
 func TestAPagesAddressInATicket(t *testing.T) {
 	for in, want := range map[string]string{
 		"http://u:p@h:8/a/b?token=x#f": "http://h:8/a/b", "https://h/a%20b": "https://h/a%20b", "not a url": "the page",
+		// A path whose given form is not a valid encoding is written
+		// re-encoded from the parsed path.
+		"http://h/a b": "http://h/a%20b", "http://h/a%2Fb`c": "http://h/a/b%60c",
 	} {
 		if got := pageAddress(in); got != want {
 			t.Errorf("pageAddress(%q) = %q, want %q", in, got, want)
@@ -669,6 +672,7 @@ func TestAPagesAddressInATicket(t *testing.T) {
 	for in, want := range map[string]string{
 		"http://127.0.0.1:5173/app": "page: http://127.0.0.1:5173/app", "http://devbox:8080/app": "page: http://devbox:8080/app",
 		"https://USERWORD:PASSWORD@h.example:8443/a/b?QUERYWORD=1#FRAGMENTWORD": "page: https://h.example:8443/a/b",
+		"http://h.example/a b`c": "page: http://h.example/a%20b%60c",
 	} {
 		c := wordsCapture()
 		c.URL = in
