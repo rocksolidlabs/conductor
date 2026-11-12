@@ -575,17 +575,19 @@ func storedPaths(paths []string) []string {
 // when the directory's path came to name another meanwhile; in an index
 // of the server's own for that tree, kept for the next read of it (at
 // most maxTreeIndexes, the least recently read let go), one read of a
-// tree at a time; within labelReadWait.
+// tree at a time, the wait for it and the read together within
+// labelReadWait.
 type treeReads struct {
 	mu    sync.Mutex
 	dir   string
 	order []string
-	locks map[string]*sync.Mutex
+	gates map[string]chan struct{}
 }
 
 // index takes the index of the tree at dir, made under the reads' own
-// temporary directory: its path, and the lock that is its own.
-func (tr *treeReads) index(dir string) (string, *sync.Mutex, error) {
+// temporary directory: its path, and the gate that is its own (held by
+// sending to it).
+func (tr *treeReads) index(dir string) (string, chan struct{}, error) {
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
 	if tr.dir == "" {
@@ -593,28 +595,30 @@ func (tr *treeReads) index(dir string) (string, *sync.Mutex, error) {
 		if err != nil {
 			return "", nil, err
 		}
-		tr.dir, tr.locks = d, map[string]*sync.Mutex{}
+		tr.dir, tr.gates = d, map[string]chan struct{}{}
 	}
-	sum := sha256.Sum256([]byte(dir))
-	path := filepath.Join(tr.dir, hex.EncodeToString(sum[:16])+".index")
+	name := func(dir string) string {
+		sum := sha256.Sum256([]byte(dir))
+		return filepath.Join(tr.dir, hex.EncodeToString(sum[:16])+".index")
+	}
 	if i := slices.Index(tr.order, dir); i >= 0 {
 		tr.order = append(slices.Delete(tr.order, i, i+1), dir)
-		return path, tr.locks[dir], nil
+		return name(dir), tr.gates[dir], nil
 	}
+	// Past the bound, the least recently read index no read holds goes.
 	for i := 0; i < len(tr.order) && len(tr.order) >= maxTreeIndexes; {
 		old := tr.order[i]
-		if l := tr.locks[old]; l.TryLock() {
-			sum := sha256.Sum256([]byte(old))
-			_ = os.Remove(filepath.Join(tr.dir, hex.EncodeToString(sum[:16])+".index"))
-			delete(tr.locks, old)
+		select {
+		case tr.gates[old] <- struct{}{}:
+			_ = os.Remove(name(old))
+			delete(tr.gates, old)
 			tr.order = slices.Delete(tr.order, i, i+1)
-			l.Unlock()
-			continue
+		default:
+			i++
 		}
-		i++
 	}
-	tr.order, tr.locks[dir] = append(tr.order, dir), &sync.Mutex{}
-	return path, tr.locks[dir], nil
+	tr.order, tr.gates[dir] = append(tr.order, dir), make(chan struct{}, 1)
+	return name(dir), tr.gates[dir], nil
 }
 
 // close removes the reads' indexes.
@@ -623,16 +627,20 @@ func (tr *treeReads) close() {
 	defer tr.mu.Unlock()
 	if tr.dir != "" {
 		_ = os.RemoveAll(tr.dir)
-		tr.dir, tr.order, tr.locks = "", nil, nil
+		tr.dir, tr.order, tr.gates = "", nil, nil
 	}
 }
 
 // read reads the tree at dir now (crew.TreeRevision) and, for each
-// annotation's hints, its sources (captureSources). A read that ends past
+// annotation's hints, its sources (captureSources). The tree's directory
+// is opened through its parent's (session.OpenFolderIn), so a link put in
+// its place leads nowhere outside that parent. A read that ends past
 // labelReadWait or fails after naming HEAD gives the commit with no
 // content and the error.
 func (tr *treeReads) read(ctx context.Context, dir string, hints [][]dispatch.Hint) (crew.TreeRead, [][]dispatch.Source, error) {
-	folder, err := session.OpenFolder(dir)
+	ctx, cancel := context.WithTimeout(ctx, labelReadWait)
+	defer cancel()
+	folder, err := session.OpenFolderIn(filepath.Dir(dir), filepath.Base(dir), nil)
 	if err != nil {
 		return crew.TreeRead{}, nil, err
 	}
@@ -643,14 +651,16 @@ func (tr *treeReads) read(ctx context.Context, dir string, hints [][]dispatch.Hi
 	}
 	defer d.Close()
 	at, still := gitcli.OpenedPath(d, dir)
-	index, lock, err := tr.index(dir)
+	index, gate, err := tr.index(dir)
 	if err != nil {
 		return crew.TreeRead{}, nil, err
 	}
-	lock.Lock()
-	defer lock.Unlock()
-	ctx, cancel := context.WithTimeout(ctx, labelReadWait)
-	defer cancel()
+	select {
+	case gate <- struct{}{}:
+	case <-ctx.Done():
+		return crew.TreeRead{}, nil, ctx.Err()
+	}
+	defer func() { <-gate }()
 	read, err := crew.TreeRevision(ctx, at, index)
 	if err != nil {
 		read.Content = ""
