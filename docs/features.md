@@ -4937,15 +4937,21 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   past the journal's bound a hosted record goes before any of the server's
   own sessions' records. The host reads its revision through the folder
   it opened for the launch, keeps its end commit only for the same
-  repository and reads it only once it has seen its process gone, and
+  repository and reads it only once it has seen the process it launched
+  gone (the work of a process that one left behind can be in it), and
   reports its agent's version only from the agent's own program, never
-  one given as a relative path; every reported text field is made of
+  probing one given as a relative path (a bare name is found through the
+  host's own search path); every reported text field is made of
   letters, numbers, punctuation, symbols, the space and the marks after
   them, nothing a renderer ignores by default. A hook that comes while a
-  registration is still putting its recorder in place waits for it; one
-  answered 200 was applied or had nothing to apply to by design, and one
-  whose wait ran out is refused (`503 registering`) and can be sent
-  again. A hosted session whose host is away inside the grace is `host
+  registration is still putting its recorder in place waits for it, at
+  most 10 s; one answered 200 was applied or had nothing to apply to by
+  design, and one whose wait ran out is refused (`503 registering`), to
+  a client that waits that long: `conductor notify` gives a report 5 s
+  and sends it once, so it sees no answer, and the agent's session id
+  reaches the record with a later hook's report that carries it. A
+  `conductor history session` view prints every field of a record
+  through its one-line helper. A hosted session whose host is away inside the grace is `host
   away` in history, not `live`. No
   record field and no history kind is new, and a Brakeman turn's history
   read draws no row of a hosted record whatever its grant: whether a row
