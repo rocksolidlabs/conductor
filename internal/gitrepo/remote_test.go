@@ -230,8 +230,8 @@ func TestRemoteUnreadable(t *testing.T) {
 }
 
 // call is Remote(dir, "origin") with the test's own wait above it, which
-// only bounds a hang: past it, unhold (when given) lets a held read go,
-// and the test fails.
+// only bounds a hang: past it, unhold (when given) runs until the call
+// returns, so the test ends, and it fails.
 func call(t *testing.T, dir string, unhold func()) (host, path string, err error) {
 	t.Helper()
 	type answer struct {
@@ -256,12 +256,12 @@ func call(t *testing.T, dir string, unhold func()) (host, path string, err error
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	t.Fatalf("the read of %s is held", dir)
+	t.Fatalf("the read of %s did not return within the test's wait", dir)
 	return "", "", nil
 }
 
-// release opens a named pipe for writing without waiting, which lets a
-// reader held in its open go.
+// release opens a named pipe for writing without waiting, which ends a
+// reader's open of it.
 func release(p string) {
 	if f, err := os.OpenFile(p, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
 		f.Close()

@@ -39,8 +39,8 @@ const (
 // knows: no user, password, scheme or ssh port. The folder's files are
 // read by Remote alone, as git finds them (dir and each folder above it,
 // at most maxWalk, for a .git directory or a .git file naming one), each
-// opened without waiting (a pipe never holds it), held to a regular file
-// and read to its bound; anything else is ErrUnread. The configuration's
+// opened without waiting, held to a regular file and read to its bound;
+// anything else is ErrUnread. The configuration's
 // bytes are parsed by go-git's decoder, its url.<base>.insteadOf rules
 // applied; no git process is started, so none of the repository's own
 // programs (a credential helper, an ssh command, a hook) runs. No

@@ -56,7 +56,7 @@ func (g gitFolder) origin(t *testing.T, origin string) {
 
 // bounded is call made with the test's own wait above it, which only
 // bounds a hang: past it the named pipe at pipe (when given) is opened for
-// writing until the call returns, so a held read goes, and the test fails.
+// writing until the call returns, so the test ends, and it fails.
 func bounded(t *testing.T, pipe string, call func() map[string]any) map[string]any {
 	t.Helper()
 	done := make(chan map[string]any, 1)
@@ -76,7 +76,7 @@ func bounded(t *testing.T, pipe string, call func() map[string]any) map[string]a
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	t.Fatal("the route is held by the project's folder")
+	t.Fatal("the route did not answer within the test's wait")
 	return nil
 }
 
