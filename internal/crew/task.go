@@ -2243,7 +2243,7 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	// approved for it.
 	spec := LaunchSpec{AgentID: m.def.AgentID, Name: fmt.Sprintf("%s · %s #%d", m.def.Name, t.def.ID, a.n), Cwd: cwd, Args: slices.Clone(m.def.Args),
 		Env: map[string]string{"GOAL": r.goal}, Ref: session.CrewRef{RunID: r.id, CrewID: r.crewID, Member: m.def.Name, Task: t.def.ID, Attempt: a.n}, Yolo: r.yolo, Reservation: res,
-		Where: r.rt.Where()}
+		Where: r.rt.Where(), Account: m.def.boundAccount(), Model: m.def.Model}
 	if tr != nil {
 		spec.Inject, spec.Allow = tr.names(), slices.Clone(tr.allow)
 	}

@@ -101,7 +101,7 @@ func NextAgentSession(cur *AgentSession, id, policy string, turn bool) (next Age
 
 // Launched is what a server session was launched with, kept for Resume: the
 // agent, the name, the working directory, the arguments and variables of the
-// launch, and its yolo choice.
+// launch, its yolo choice, the login it is bound to and its model.
 type Launched struct {
 	AgentID, Name, Cwd string
 	Args               []string
@@ -111,6 +111,34 @@ type Launched struct {
 	// session it resumes: a crew member's resume starts under it, where it
 	// starts under the member's own name otherwise (api.Server.Launch).
 	Renamed bool
+	// Account is the login the launch was bound to, and Model the model it
+	// was given ("" for the agent's default): a resume starts under both.
+	Account BoundAccount
+	Model   string
+}
+
+// Where a bound login comes from (BoundAccount.Source).
+const (
+	SourceOwn       = "own"        // the tool's own login: nothing sets its folder or a login variable
+	SourceAccount   = "account"    // a registered account: its folder
+	SourcePinned    = "pinned"     // the agent's entry (or the server's passthrough) sets the login
+	SourceUnlisted  = "unlisted"   // Brakeman's folder, held by no registered account
+	SourceLaunchEnv = "launch_env" // the launch's own additions set the login
+)
+
+// BoundAccount is the login a launch was bound to: the account's id
+// ("default" for the agent's own, "unlisted" for a folder no account
+// holds), its label, the folder its adapter's folder variable is set to
+// ("" for none), where the login comes from (Source), and Login, a
+// fingerprint of every variable that says where the process's login comes
+// from, as its environment held them. Folder and Login are kept for the
+// launches made again from it and go in no reply.
+type BoundAccount struct {
+	ID     string `json:"id"`
+	Label  string `json:"label,omitempty"`
+	Folder string `json:"folder,omitempty"`
+	Source string `json:"source"`
+	Login  string `json:"login"`
 }
 
 // Launched returns what the session was launched with (Options.Launched),

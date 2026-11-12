@@ -117,13 +117,19 @@ import (
 const (
 	V     = 1
 	VCode = 2
+	// VLogin added the launch's login and model (Launch.Account, Source,
+	// Model).
+	VLogin = 3
 	// maxV is the latest version this package reads strictly.
-	maxV = VCode
+	maxV = VLogin
 )
 
-// versionOf is the version r is written at: VCode when a receipt of its
-// carries a Code, else V.
+// versionOf is the version r is written at: VLogin when its launch names
+// its login or model, VCode when a receipt of its carries a Code, else V.
 func versionOf(r *Record) int {
+	if l := r.Launch; l != nil && (l.Account != "" || l.Source != "" || l.Model != "") {
+		return VLogin
+	}
 	for _, x := range r.Resumes {
 		if x.Code != "" {
 			return VCode
@@ -300,6 +306,13 @@ type Launch struct {
 	EnvSHA256  string   `json:"envSha256,omitempty"`
 	Yolo       bool     `json:"yolo,omitempty"`
 	Renamed    bool     `json:"renamed,omitempty"`
+	// Account and Source are the login the launch was bound to, its id and
+	// where it came from (session.BoundAccount's, never its folder or its
+	// fingerprint), and Model its model. A record holding one is written at
+	// VLogin.
+	Account string `json:"account,omitempty"`
+	Source  string `json:"source,omitempty"`
+	Model   string `json:"model,omitempty"`
 }
 
 // Crew is the run the session is a member of.
