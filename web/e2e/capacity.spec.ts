@@ -87,7 +87,7 @@ function agentSessionOf(s: Session): string {
 async function launchDialog(page: Page, agentName: string): Promise<Locator> {
   await page.getByRole('button', { name: 'Launch agent' }).first().click()
   const dialog = page.getByRole('dialog')
-  const agent = dialog.getByRole('radiogroup', { name: 'Agent' }).getByRole('radio', { name: agentName, exact: true })
+  const agent = dialog.getByRole('radiogroup', { name: 'Agent' }).getByRole('radio', { name: agentName })
   await agent.click()
   await expect(agent).toHaveAttribute('aria-checked', 'true')
   return dialog
@@ -268,7 +268,7 @@ test('each state the stub answers shows its words, and an agent no reader knows 
   await expect(codexPanel).toContainText(/5-hour: 33% used, resets .*, in 2 hours/)
   await expect(codexPanel.locator('[data-capacity-provider]')).toContainText('Credits: 1,250')
   await expect(codexPanel.locator('[data-capacity-plan]')).toHaveText('ChatGPT Pro')
-  await expect(codexPanel.locator('[data-capacity-fresh]')).toContainText('by Codex 0.163.0')
+  await expect(codexPanel.locator('[data-capacity-fresh]')).toHaveText(/^Read (just now|\d+ minutes? ago) by Codex CLI 0\.163\.0$/)
 
   // An agent no reader knows: unknown, said so, with no account to choose and nothing read.
   await page.keyboard.press('Escape')
