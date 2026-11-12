@@ -810,12 +810,7 @@ func dispatchTickets(ctx context.Context, c *apiClient, d dispatchFlags, stdout 
 		if err != nil {
 			return 1, err
 		}
-		var indented bytes.Buffer
-		if err := json.Indent(&indented, b, "", "  "); err != nil {
-			return 1, err
-		}
-		fmt.Fprintln(stdout, indented.String())
-		return 0, nil
+		return printReply(stdout, b, true)
 	}
 	if len(all) == 0 {
 		fmt.Fprintln(stdout, "no tickets")

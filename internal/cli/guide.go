@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -79,8 +78,7 @@ func runGuide(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 		return 1, err
 	}
 	if *asJSON {
-		_, err = stdout.Write(append(bytes.TrimRight(raw, "\n"), '\n'))
-		return 0, err
+		return printReply(stdout, raw, false)
 	}
 	text, err := guideText(raw, how)
 	if err != nil {
@@ -240,9 +238,8 @@ func guideText(raw []byte, how string) (string, error) {
 			if len(via) > 0 {
 				fmt.Fprintf(&b, "\n    %s", strings.Join(via, "; "))
 			}
-			var input bytes.Buffer
-			if len(op.Input) > 0 && json.Compact(&input, op.Input) == nil && input.String() != "null" {
-				fmt.Fprintf(&b, "\n    input %s", input.String())
+			if input, err := jsonText(op.Input, false); len(op.Input) > 0 && err == nil && input != "null" {
+				fmt.Fprintf(&b, "\n    input %s", input)
 			}
 			if len(op.Bounds) > 0 {
 				bounds := make([]string, 0, len(op.Bounds))
@@ -289,16 +286,15 @@ func guideText(raw []byte, how string) (string, error) {
 		for _, w := range briefs.Words {
 			fmt.Fprintf(&b, "%s\n", w)
 		}
-		var schema bytes.Buffer
-		if json.Compact(&schema, briefs.JSONSchema) == nil {
-			fmt.Fprintf(&b, "\nIts JSON Schema, with an example brief: %s", schema.String())
+		if schema, err := jsonText(briefs.JSONSchema, false); err == nil {
+			fmt.Fprintf(&b, "\nIts JSON Schema, with an example brief: %s", schema)
 		}
 	default:
-		var out bytes.Buffer
-		if err := json.Indent(&out, env[section], "", "  "); err != nil {
+		text, err := jsonText(env[section], true)
+		if err != nil {
 			return "", fmt.Errorf("guide: an unreadable %s: %w", section, err)
 		}
-		b.Write(out.Bytes())
+		b.WriteString(text)
 	}
 	return strings.TrimRight(b.String(), "\n"), nil
 }
