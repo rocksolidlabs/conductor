@@ -291,7 +291,10 @@ func (a *Adapter) item(r tracker.Ref, issue issueJSON, etag string) tracker.Item
 		}
 	}
 	for _, l := range issue.Labels {
-		if len(it.Labels) < tracker.MaxLabels && l.Name != "" {
+		if l.Name == "" {
+			continue
+		}
+		if it.LabelsTotal++; len(it.Labels) < tracker.MaxLabels {
 			it.Labels = append(it.Labels, cut(l.Name, 100))
 		}
 	}
