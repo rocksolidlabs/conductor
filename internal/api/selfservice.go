@@ -2,7 +2,9 @@ package api
 
 import (
 	"cmp"
+	"encoding/json"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -117,9 +119,14 @@ func (s *Server) handleSelfCrew(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "no data directory is configured")
 		return
 	}
-	var in selfCrewInput
-	if err := decodeJSONLimit(w, r, &in, maxCrewBody); err != nil {
+	var body json.RawMessage
+	if err := decodeJSONLimit(w, r, &body, maxCrewBody); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	var in selfCrewInput
+	if aerr := decodeAgentMembers(body, &in); aerr != nil {
+		writeAPIError(w, aerr)
 		return
 	}
 	info := local.Info()
@@ -165,11 +172,33 @@ func (s *Server) handleSelfCrew(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_crew", "the self member's agent must be this session's ("+info.AgentID+")")
 		return
 	}
+	// The self member is this session: its model is the session's, and its
+	// own arguments are judged beside it as every member's are, under the
+	// adapter the session was started as.
+	launched := local.Launched()
+	if selfDef.Model != "" && selfDef.Model != launched.Model {
+		writeError(w, http.StatusBadRequest, "invalid_crew", "the self member is this session, launched with model "+cmp.Or(launched.Model, "its agent's default")+": name that model or none")
+		return
+	}
 	cat := s.Catalog()
+	selfAgent, _ := cat.Get(selfDef.AgentID)
+	selfAgent.Adapter = launched.Adapter
+	if _, aerr := launchModel(selfAgent, launched.Model, selfDef.Args); aerr != nil {
+		writeError(w, aerr.status, aerr.Code, "member "+self+": "+aerr.Message)
+		return
+	}
 	if err := checkLaunch(others, cat, s.installedFor(r.Context(), cat, others), s.identityFor(r.Context(), cat, others)); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
 		return
 	}
+	// The others bound as the session's own logins allow (bindMembers);
+	// the session itself, adopted, keeps the login it was launched with.
+	bound, unbind, aerr := s.bindMembers(others, yolo, local)
+	if aerr != nil {
+		writeAPIError(w, aerr)
+		return
+	}
+	defer unbind()
 	if !s.selfLimits.take(s.selfLimits.crews, info.ID, selfCrewsPerHour, time.Hour) {
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "this session has formed its crews for the hour")
 		return
@@ -179,9 +208,21 @@ func (s *Server) handleSelfCrew(w http.ResponseWriter, r *http.Request) {
 		s.crewStoreError(w, "", err)
 		return
 	}
+	launch := saved
+	launch.Members = slices.Clone(saved.Members)
+	for i := range launch.Members {
+		if launch.Members[i].Name == self {
+			if b := launched.Account; b.Source != "" {
+				launch.Members[i].Bound = &b
+			}
+			launch.Members[i].Model = launched.Model
+			continue
+		}
+		launch.Members[i] = bound[slices.IndexFunc(bound, func(m crew.Member) bool { return m.Name == launch.Members[i].Name })]
+	}
 	ctx, cancel := runContext(r)
 	defer cancel()
-	run, release, err := s.runs.LaunchAdopting(ctx, saved, self, info.ID)
+	run, release, err := s.runs.LaunchAdopting(ctx, launch, self, info.ID)
 	defer release()
 	if err != nil {
 		s.runError(w, "self crew", saved.ID, err)
@@ -212,11 +253,17 @@ func (s *Server) handleSelfAddMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "no_run", "the session is not a member of a run; form a crew first")
 		return
 	}
-	var m crew.Member
-	if err := decodeJSONLimit(w, r, &m, maxMemberBody); err != nil {
+	var body json.RawMessage
+	if err := decodeJSONLimit(w, r, &body, maxMemberBody); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	var in agentMember
+	if aerr := decodeAgentMembers(body, &in); aerr != nil {
+		writeAPIError(w, aerr)
+		return
+	}
+	m := in.Member
 	cat := s.Catalog()
 	if _, ok := cat.Get(m.AgentID); !ok {
 		writeError(w, http.StatusBadRequest, "invalid_crew", "unknown agent "+m.AgentID)
@@ -226,6 +273,12 @@ func (s *Server) handleSelfAddMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
 		return
 	}
+	m, unbind, aerr := s.bindMember(runID, m, local)
+	if aerr != nil {
+		writeAPIError(w, aerr)
+		return
+	}
+	defer unbind()
 	ctx, cancel := runContext(r)
 	defer cancel()
 	if err := s.runs.AddMember(ctx, runID, m); err != nil {

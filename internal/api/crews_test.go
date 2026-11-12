@@ -263,7 +263,7 @@ func TestCrewSaveRejectsInvalidCrews(t *testing.T) {
 		{"name with a control character", with(func(b map[string]any) { b["name"] = "API\x1b[2Jsweep" }), "invalid_crew", "control"},
 		{"id sent by the client", with(func(b map[string]any) { b["id"] = "mine" }), "invalid_request", `"id"`},
 		{"createdAt sent by the client", with(func(b map[string]any) { b["createdAt"] = "2026-09-29T10:00:00Z" }), "invalid_request", `"createdAt"`},
-		{"unknown member field", with(func(b map[string]any) { crewMember(b, 0)["model"] = "x" }), "invalid_request", `"model"`},
+		{"unknown member field", with(func(b map[string]any) { crewMember(b, 0)["colour"] = "x" }), "invalid_request", `"colour"`},
 		{"no body", nil, "invalid_request", ""},
 		{"body over 2 MiB", with(func(b map[string]any) { b["goal"] = strings.Repeat("g", maxCrewBody) }), "invalid_request", "too large"},
 	}

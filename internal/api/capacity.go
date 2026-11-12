@@ -233,13 +233,13 @@ func (d *capacityDesk) close() {
 	d.owned = false
 }
 
-// started counts a server session of agent started now, on its default
-// account (PR-3: nothing binds another yet).
-func (d *capacityDesk) started(agent string) {
+// started counts a server session of agent started now, bound to account
+// (its binding's id: "default" for the agent's own login).
+func (d *capacityDesk) started(agent, account string) {
 	if d == nil || d.starts == nil {
 		return
 	}
-	k := capacity.Key{Agent: agent, Account: capacity.DefaultID}
+	k := capacity.Key{Agent: agent, Account: account}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if _, ok := d.starts[k]; !ok && len(d.starts) >= maxCountKeys {
@@ -260,16 +260,16 @@ func (d *capacityDesk) started(agent string) {
 }
 
 // counts is this server's estimate for k: the server sessions running of
-// its agent on its account and those started in the last 5 hours and 7
-// days, since this server started.
-func (d *capacityDesk) counts(k capacity.Key) capacity.Counts {
+// its agent that hold its account (heldAccount, over doc) and those
+// started in the last 5 hours and 7 days, since this server started.
+func (d *capacityDesk) counts(k capacity.Key, doc capacity.Accounts) capacity.Counts {
 	since := d.since
 	c := capacity.Counts{Since: &since}
-	if k.Account != capacity.DefaultID {
-		return c
-	}
 	for _, info := range d.s.registry.List() {
-		if info.Kind == session.KindServer && info.AgentID == k.Agent && !info.Status.Ended() {
+		if info.Kind != session.KindServer || info.AgentID != k.Agent || info.Status.Ended() {
+			continue
+		}
+		if l, ok := d.s.lookupLocal(info.ID); ok && heldAccount(doc, l.Launched().Account) == k.Account {
 			c.Running++
 		}
 	}
@@ -697,7 +697,7 @@ func (d *capacityDesk) viewOf(ctx context.Context, agent catalog.Agent, q capaci
 		}
 	}
 	account.Plan = plan
-	v.Account, v.Model, v.Host, v.Counts = account, model, host, d.counts(k)
+	v.Account, v.Model, v.Host, v.Counts = account, model, host, d.counts(k, doc)
 	return v, nil
 }
 
