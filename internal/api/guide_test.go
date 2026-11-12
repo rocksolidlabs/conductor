@@ -825,6 +825,7 @@ func TestEachBodySchemaIsWhatItsRouteDecodes(t *testing.T) {
 		"history_resume": historyResumeBody{},
 		// A person's reviews.
 		"review_submit": reviewSubmitBody{}, "review_retry": reviewRetryBody{}, "finding_mark": findingMarkBody{},
+		"tracker_set": trackerSaveBody{},
 	}
 	seen := 0
 	for _, op := range Operations() {
@@ -1065,8 +1066,11 @@ func TestEachBodyBoundIsItsRoutes(t *testing.T) {
 			if status != http.StatusRequestEntityTooLarge && !strings.Contains(apiMessage(out), errBodyTooLarge.Error()) {
 				t.Errorf("%s: %d bytes, one past its bound, answers %d %.200s", op.Name, len(over), status, data)
 			}
+			// Read whole, it is refused for its member: in the decoder's
+			// words, or in the tracker routes' own sentence (they never pass
+			// a decoder's words on).
 			status, data, out = call(t, c.token, op.Method, path, []byte(at))
-			if status != http.StatusBadRequest || !strings.Contains(apiMessage(out), `unknown field "boundProbe"`) {
+			if status != http.StatusBadRequest || !strings.Contains(apiMessage(out), `unknown field "boundProbe"`) && apiMessage(out) != trackerBodyWords {
 				t.Errorf("%s: %d bytes, at its bound, answers %d %.200s", op.Name, len(at), status, data)
 			}
 		}

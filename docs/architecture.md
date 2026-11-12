@@ -1482,9 +1482,12 @@ still resolved. A switchyard routes and answers none.
   the desktop app's directories).
 - Frame sizes, viewer counts, session counts, scrollback and in-flight file
   requests are all bounded. Query strings (which may carry tokens) are never
-  logged; a request is logged by the route pattern it matched (`/api/join/{token}`),
-  or, on a catch-all route, by its path with a link's token replaced
-  (`/join/{token}`). A workbench token the server generates is kept in
+  logged; a request is logged by what the server holds, never by what a
+  client sent: the route pattern it matched (`/api/join/{token}`), on a
+  catch-all route that pattern alone (`/`, `/api/`), unless the path is
+  exactly one of the embedded app's files, and with no route
+  `(no route)`; its method is one of the standard methods or `(other)`.
+  A workbench token the server generates is kept in
   `workbench-token` in the data directory (mode 0600, written atomically) while
   the server runs, and nowhere else but the `--print-listen` line; the
   terminal and the log name the file, never the token. A configured token

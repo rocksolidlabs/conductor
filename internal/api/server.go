@@ -2,6 +2,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -107,6 +108,8 @@ type Server struct {
 	log             *slog.Logger
 	web             http.Handler
 	store           *store.Store
+	// trackers keeps the person's GitHub token (trackers.go).
+	trackers *trackerKeep
 	// crews holds the saved crews, one file each in crews/ of the data
 	// directory; nil when there is no store.
 	crews *crew.Store
@@ -500,6 +503,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		log:         log,
 		web:         web,
 		store:       st,
+		trackers:    newTrackers(cfg, st, log),
 		crews:       crews,
 		fileDeny:    fileDeny(cfg, st, log),
 		lookups:     newLookupCache(),
@@ -996,6 +1000,7 @@ func (s *Server) Handler() http.Handler {
 	// and links, the saved views, a run's ticket and the receipts
 	// (dispatch.go), the admin's alone.
 	s.routeDispatch(mux)
+	s.routeTrackers(mux) // the GitHub token (trackers.go)
 	mux.HandleFunc("GET /api/integrations", s.launching(s.handleIntegrations))
 	mux.HandleFunc("POST /api/integrations/{id}/install", s.launching(s.handleInstallIntegration))
 	mux.HandleFunc("GET /api/sessions", s.readable("GET /api/sessions", s.handleListSessions))
@@ -1076,30 +1081,30 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 					// A handler aborting its response on purpose: net/http
 					// drops the connection (or resets the stream) rather
 					// than end the response.
-					s.log.Debug("request aborted", "method", r.Method, "path", logPath(r), "ms", time.Since(start).Milliseconds())
+					s.log.Debug("request aborted", "method", logMethod(r.Method), "path", logPath(r, s.webHolds), "ms", time.Since(start).Milliseconds())
 					panic(rec)
 				}
-				s.log.Error("panic in handler", "path", logPath(r), "panic", rec)
+				s.log.Error("panic in handler", "path", logPath(r, s.webHolds), "panic", rec)
 				if !rw.wrote {
 					// Through rw, so the request line below records the 500.
 					writeError(rw, http.StatusInternalServerError, "internal", "internal error")
 				}
 			}
-			s.log.Debug("request", "method", r.Method, "path", logPath(r), "status", rw.status, "ms", time.Since(start).Milliseconds())
+			s.log.Debug("request", "method", logMethod(r.Method), "path", logPath(r, s.webHolds), "status", rw.status, "ms", time.Since(start).Milliseconds())
 		}()
 		next.ServeHTTP(rw, r)
 	})
 }
 
-// logPath is how the request and panic log lines name a request: by the
-// route pattern the mux matched (it sets r.Pattern before the handler runs),
-// without its method, so a token in a path wildcard such as the join route's
-// {token} stays out. A catch-all route (one ending in /) or none names it by
-// its path, with everything from a link's token on replaced: /join/<token>
-// (the join page) and /api/join/<token> (the join route reached with
-// another method), in any case, as the app's router matches it. The query
-// string, where the other tokens travel, is never logged.
-func logPath(r *http.Request) string {
+// logPath is how the request and panic log lines name a request: by what
+// the server holds, never by what a client sent. That is the route
+// pattern the mux matched (it sets r.Pattern before the handler runs),
+// without its method, so a path wildcard such as the join route's {token}
+// stays out; a catch-all route (one ending in /) is named by its pattern
+// alone, and no route by "(no route)", except a path that is exactly one
+// of the embedded app's files (holds), the server's own text. The query
+// string is never logged.
+func logPath(r *http.Request, holds func(string) bool) string {
 	p := r.Pattern
 	if i := strings.IndexAny(p, " \t"); i >= 0 {
 		p = strings.TrimLeft(p[i:], " \t")
@@ -1107,42 +1112,26 @@ func logPath(r *http.Request) string {
 	if p != "" && !strings.HasSuffix(p, "/") {
 		return p
 	}
-	return withoutLinkToken(r.URL.Path)
+	if holds != nil && holds(r.URL.Path) {
+		return r.URL.Path
+	}
+	return cmp.Or(p, "(no route)")
 }
 
-// joinSegment is the path segment a share link's token follows.
-const joinSegment = "/join/"
-
-// withoutLinkToken is path with what follows its first /join/ (in any
-// case) replaced by {token}.
-func withoutLinkToken(path string) string {
-	for i := 0; i+len(joinSegment) <= len(path); i++ {
-		if asciiEqualFold(path[i:i+len(joinSegment)], joinSegment) {
-			return path[:i+len(joinSegment)] + "{token}"
-		}
+// logMethod names a request's method in the log: a standard one, or one fixed word.
+func logMethod(m string) string {
+	switch m {
+	case "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "CONNECT", "OPTIONS", "TRACE":
+		return m
 	}
-	return path
+	return "(other)"
 }
 
-// asciiEqualFold reports whether a and b are equal with ASCII letters
-// compared without case.
-func asciiEqualFold(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := 0; i < len(a); i++ {
-		x, y := a[i], b[i]
-		if 'A' <= x && x <= 'Z' {
-			x += 'a' - 'A'
-		}
-		if 'A' <= y && y <= 'Z' {
-			y += 'a' - 'A'
-		}
-		if x != y {
-			return false
-		}
-	}
-	return true
+// webHolds reports whether path is exactly one of the embedded app's
+// files (internal/web).
+func (s *Server) webHolds(path string) bool {
+	h, ok := s.web.(interface{ Holds(string) bool })
+	return ok && h.Holds(path)
 }
 
 // launching wraps an admin route that launches or edits what is launched

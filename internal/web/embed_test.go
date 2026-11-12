@@ -58,3 +58,22 @@ func TestAPersonsPageIsTheApps(t *testing.T) {
 		}
 	}
 }
+
+// The app holds its files by their exact paths alone: a directory, a name
+// it has not, and another spelling of a file's path are not held.
+func TestAppHoldsItsFiles(t *testing.T) {
+	h := handler(fstest.MapFS{
+		"index.html":     {Data: []byte("the app")},
+		"_nuxt/entry.js": {Data: []byte("x")},
+		"brand/mark.svg": {Data: []byte("<svg/>")},
+	}).(interface{ Holds(string) bool })
+	for p, want := range map[string]bool{
+		"/index.html": true, "/_nuxt/entry.js": true, "/brand/mark.svg": true,
+		"/_nuxt": false, "/": false, "": false, "_nuxt/entry.js": false, "/x/../_nuxt/entry.js": false,
+		"//_nuxt/entry.js": false, "/_nuxt/entry.js/": false, "/join/abc": false,
+	} {
+		if got := h.Holds(p); got != want {
+			t.Errorf("Holds(%q) = %v", p, got)
+		}
+	}
+}
