@@ -309,6 +309,105 @@ func TestAHookDuringARegistrationReachesTheRecord(t *testing.T) {
 	}
 }
 
+// A hook whose wait for the registration runs out on its bound is refused,
+// 503 registering, never answered 200 with its agent session lost: the
+// registration held at its gate past the wait (the server's captureWait,
+// so only the bound can end it), the report is refused, its attention
+// applied and nothing captured; once the gate opens the same report, sent
+// again, is answered 200 and the record holds its id.
+func TestAHookWhoseRegistrationWaitRunsOutIsRefused(t *testing.T) {
+	codex := catalog.Agent{ID: "codex-like", Name: "codex-like", Command: []string{"/bin/cat"},
+		Session: &catalog.SessionRecipe{IDFrom: "hook", IDPolicy: session.PolicyLowest, ResumeArgs: []string{"resume", "{id}"}, IDPattern: "^[0-9a-f-]+$"}}
+	e := newTestEnvAgents(t, nil, nil, []catalog.Agent{codex})
+	tok := "hosted-agent-token-0123456789abcdef"
+	s := proto.HostSession{AgentID: "codex-like", Command: []string{"codex"}, Cwd: "/Users/ada/app", Cols: 80, Rows: 24, LocalID: "1", AgentToken: tok}
+	conn := signal.NewHostConn()
+	hs := registerSession(t, e, conn, s)
+	id := hs.Info().ID
+	hs.HostDisconnected(conn)
+	e.srv.hosts.Expire(time.Now().Add(signal.DisconnectGrace + time.Second))
+	until(t, "the hub let the session go", func() bool { _, ok := e.srv.registry.Get(id); return !ok })
+	begun, gate := make(chan struct{}), make(chan struct{})
+	hook := func(stage, sid string) {
+		if sid == id && stage == "hostedBegun" {
+			close(begun)
+			<-gate
+		}
+	}
+	e.srv.recordHook.Store(&hook)
+	t.Cleanup(func() { e.srv.recordHook.Store(nil) })
+	e.srv.captureWait.Store(int64(time.Millisecond))
+	registered := make(chan error, 1)
+	go func() {
+		_, _, err := e.srv.hosts.Register(proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion, Host: proto.HostInfo{Name: "mac", User: "ada", Instance: "instance-r"}, Session: s}, signal.NewHostConn())
+		registered <- err
+	}()
+	<-begun
+	report := func() (*http.Response, map[string]any) {
+		return e.do("POST", "/api/sessions/"+id+"/attention", tok, map[string]any{"state": "done", "agentSession": "0000aaaa-0001", "turn": true})
+	}
+	resp, out := report()
+	refusal, _ := out["error"].(map[string]any)
+	if code, _ := refusal["code"].(string); resp.StatusCode != http.StatusServiceUnavailable || code != "registering" {
+		close(gate)
+		t.Fatalf("the hook past the wait: %d %v", resp.StatusCode, out)
+	}
+	if d, ok := e.srv.registry.Get(id); !ok || d.Info().Attention.State != session.AttentionDone {
+		close(gate)
+		t.Fatalf("the refused report's attention was not applied")
+	}
+	r, _, err := e.srv.sessionRecords.Get(id)
+	if err != nil || r.Agent.Session != nil {
+		close(gate)
+		t.Fatalf("the refused report captured: %+v %v", r.Agent.Session, err)
+	}
+	close(gate)
+	if err := <-registered; err != nil {
+		t.Fatal(err)
+	}
+	if resp, out := report(); resp.StatusCode != http.StatusOK {
+		t.Fatalf("the report sent again: %d %v", resp.StatusCode, out)
+	}
+	if r, _, err = e.srv.sessionRecords.Get(id); err != nil || r.Agent.Session == nil || r.Agent.Session.ID != "0000aaaa-0001" {
+		t.Fatalf("the record after the report sent again: %+v %v", r.Agent.Session, err)
+	}
+}
+
+// A hosted session's availability follows its host: live while it is
+// connected, host away while it is disconnected inside the grace, live
+// again once it has connected again, and its record's host away once the
+// hub let the session go, as before.
+func TestAHostedSessionsAvailabilityFollowsItsHost(t *testing.T) {
+	e := newTestEnv(t, nil)
+	s := proto.HostSession{AgentID: "codex", Command: []string{"codex"}, Cwd: "/Users/ada/app", Cols: 80, Rows: 24, LocalID: "1"}
+	conn := signal.NewHostConn()
+	hs := registerSession(t, e, conn, s)
+	id := hs.Info().ID
+	state := func() string {
+		return e.srv.newAvailability(t.Context(), nil, e.srv.ledger).session(id, true, history.Entry{Hosted: true, Outcome: "running"}).State
+	}
+	if st := state(); st != availLive {
+		t.Fatalf("connected: %s", st)
+	}
+	hs.HostDisconnected(conn)
+	if st := state(); st != availHostAway {
+		t.Fatalf("disconnected, inside the grace: %s", st)
+	}
+	again := signal.NewHostConn()
+	if back := registerSession(t, e, again, s); back != hs {
+		t.Fatalf("the host connected again to a new session %s", back.Info().ID)
+	}
+	if st := state(); st != availLive {
+		t.Fatalf("connected again: %s", st)
+	}
+	hs.HostDisconnected(again)
+	e.srv.hosts.Expire(time.Now().Add(signal.DisconnectGrace + time.Second))
+	until(t, "the hub let the session go", func() bool { _, ok := e.srv.registry.Get(id); return !ok })
+	if st := state(); st != availHostAway {
+		t.Fatalf("let go: %s", st)
+	}
+}
+
 // A hosted record takes nothing from this server's machine: its folder,
 // on this machine a repository with a commit, gives it no repository and
 // no commit; its agent, whose version this server's own probe holds, no

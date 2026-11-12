@@ -179,30 +179,45 @@ func (s *Server) recordSessionInfo(hs *signal.HostedSession, m proto.HostSession
 // is still putting the session's recorder in place (the registry holds
 // the session before the hub's OnAdded returns) waits for it, bounded as
 // a report for a launch under way is (launchWait), and is then applied.
-func (s *Server) captureHostedAgentSession(ctx context.Context, hs *signal.HostedSession, agentSession string, turn bool) {
+//
+// registering true says that wait ran out on its bound, the registration
+// still under way: nothing was captured, and the route refuses the report
+// to be sent again. False is a capture made or nothing to capture by
+// design (no recipe, no change, a record not kept or held by a newer
+// registration).
+func (s *Server) captureHostedAgentSession(ctx context.Context, hs *signal.HostedSession, agentSession string, turn bool) (registering bool) {
 	info := hs.Info()
 	policy, ok := s.agentSessionPolicy(info.AgentID, agentSession)
 	if !ok {
 		s.log.Debug("agent session id dropped", "session", info.ID)
-		return
+		return false
 	}
 	select {
 	case <-hs.Added():
 	default:
 		s.recordSeam("hostedCaptureWaits", info.ID)
-		t := time.NewTimer(launchWait)
+		bound := launchWait
+		if d := s.captureWait.Load(); d > 0 {
+			bound = time.Duration(d)
+		}
+		t := time.NewTimer(bound)
+		defer t.Stop()
 		select {
 		case <-hs.Added():
 		case <-ctx.Done():
 		case <-t.C:
+			select {
+			case <-hs.Added():
+			default:
+				return true
+			}
 		}
-		t.Stop()
 	}
 	s.recMu.Lock()
 	defer s.recMu.Unlock()
 	rc := s.recCur[info.ID]
 	if rc == nil || rc.h != hs || !s.held(rc) {
-		return
+		return false
 	}
 	var cur *session.AgentSession
 	if as := s.sessionRecords.AgentSession(rc.in); as != nil {
@@ -210,8 +225,9 @@ func (s *Server) captureHostedAgentSession(ctx context.Context, hs *signal.Hoste
 	}
 	next, changed := session.NextAgentSession(cur, agentSession, policy, turn)
 	if !changed {
-		return
+		return false
 	}
 	rc.as = &next
 	s.reconcileLocked(rc, false)
+	return false
 }

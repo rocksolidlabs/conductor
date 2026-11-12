@@ -204,6 +204,9 @@ type Server struct {
 	// stages (launchSeam).
 	starting   startingSessions
 	launchHook atomic.Pointer[func(stage, id string)]
+	// captureWait, when a test sets it, bounds a hosted hook's wait for its
+	// recorder in place of launchWait (captureHostedAgentSession).
+	captureWait atomic.Int64
 	// planFacts keeps what the plan revisions' reads take from each
 	// revision's body, by its digest (dispatch_plans.go), so a list reads
 	// no body it has read before.

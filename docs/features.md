@@ -4942,7 +4942,11 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   one given as a relative path; every reported text field is made of
   letters, numbers, punctuation, symbols, the space and the marks after
   them, nothing a renderer ignores by default. A hook that comes while a
-  registration is still putting its recorder in place waits for it. No
+  registration is still putting its recorder in place waits for it; one
+  answered 200 was applied or had nothing to apply to by design, and one
+  whose wait ran out is refused (`503 registering`) and can be sent
+  again. A hosted session whose host is away inside the grace is `host
+  away` in history, not `live`. No
   record field and no history kind is new, and a Brakeman turn's history
   read draws no row of a hosted record whatever its grant: whether a row
   is a hosted session's is a
