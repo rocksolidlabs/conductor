@@ -5762,7 +5762,11 @@ a member's attempt, a retry, a member started later, a continuation)
 builds its environment the same way and starts only when its login is the
 bound one, refused `409 account_gone` with words before any process exists
 otherwise: an account removed, an entry or a recipe that now sets another
-folder or key. A changed default moves nothing launched. A retired or
+folder or key. A continuation of a managed run and a resume from a record
+are made from what is written, where the tool's own login is written as
+nothing, and so, in a session's record, is a login its entry or its
+launch set: those are made again under what the entry gives then, within
+the server's life too. A changed default moves nothing launched. A retired or
 unknown account, or one of another adapter, is refused `400
 invalid_account`; a server that does not own the accounts refuses a
 registered account `409 accounts_not_owner`; while the accounts cannot be
@@ -5803,7 +5807,10 @@ another tool takes that tool's default. A run reply names each member's
 `account` as `{id, source}` and its `model`, to whoever may read the run;
 a member with no `account` is on the agent's own login (a run keeps that
 login as no binding, as a run from before bindings, and a launch of it
-from what was kept takes what `default` gives then); the label stays in
+from what was kept takes what `default` gives then), but for a Brakeman
+turn's member, which names no account in its run: its login is its
+configured folder's, which its session's launch block names (the
+admin's); the label stays in
 the accounts and the session's launch, the admin's. A legacy run's record
 that names a member's account and keeps no binding for it is refused at
 its resume `409 login_not_kept`. A sync store is handed a run's record as

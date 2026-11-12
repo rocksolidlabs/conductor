@@ -589,6 +589,8 @@ func TestSelfCrewAdoptsSessionBinding(t *testing.T) {
 	if got := e.probe(t, pin); got != login(e.pin) {
 		t.Fatalf("the pinned member's login: %s", got)
 	}
+	// add_member as that session: a plain member of its adapter is refused.
+	e.expectAs(t, ptok, "POST", "/api/sessions/"+pinned+"/run/members", map[string]any{"name": "plain", "agentId": "claude-p", "prompt": "", "start": map[string]any{"when": "manual"}}, http.StatusBadRequest, "invalid_account")
 	// No reply of the run with a pinned member carries its folder or a
 	// fingerprint either.
 	pl, _ := e.srv.lookupLocal(pinned)

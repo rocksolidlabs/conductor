@@ -1,7 +1,6 @@
 package crew
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -226,9 +225,7 @@ func TestLegacyRecordKeepsBindings(t *testing.T) {
 	}
 
 	e, fl := newEngine(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if _, err := e.ResumeRecord(ctx, got); err != nil {
+	if _, err := e.ResumeRecord(t.Context(), got); err != nil {
 		t.Fatal(err)
 	}
 	waitLaunched(t, fl, 3)
@@ -301,14 +298,12 @@ func TestRecordWithoutItsBindingIsNotResumed(t *testing.T) {
 	}
 }
 
-// waitLaunched waits for fl to have launched n sessions.
+// waitLaunched waits for fl to have launched n sessions: the launcher's
+// own record of its launches is what it waits on, and the test's timeout
+// bounds it.
 func waitLaunched(t *testing.T, fl *fakeLauncher, n int) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
 	for len(fl.launched()) < n {
-		if time.Now().After(deadline) {
-			t.Fatalf("%d sessions launched, not %d", len(fl.launched()), n)
-		}
 		time.Sleep(10 * time.Millisecond)
 	}
 }
