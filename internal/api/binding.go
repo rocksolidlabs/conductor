@@ -304,8 +304,9 @@ func launchModel(agent catalog.Agent, model string, args []string) ([]string, *a
 // bindMembers binds each member of ms as its session will be started
 // (launchEnv, under the run's yolo choice): to the account it names, or
 // its adapter's default at this moment. On an agent's own routes (caller,
-// the calling session) a member names no account: one of the caller's
-// adapter takes the caller's login, resolved as a launch would resolve it
+// the calling session), whose members name no account
+// (agentNamesNoAccount), one of the caller's adapter takes the caller's
+// login, resolved as a launch would resolve it
 // with the caller's account and compared by effective login (its folder
 // and its fingerprint), never copied by id; one of another adapter takes
 // that adapter's default. It answers ms bound (Member.Bound) and the
@@ -322,13 +323,16 @@ func (s *Server) bindMembers(ms []crew.Member, yolo bool, caller *session.Local)
 		release()
 		return nil, nil, newAPIError(aerr.status, aerr.Code, "member "+m.Name+": "+aerr.Message)
 	}
+	// The caller's login and adapter are what its session was started
+	// with (Launched), never its catalog entry as it is now; a session whose
+	// launch kept neither adds no member.
 	var by session.BoundAccount
 	byAdapter := ""
 	if caller != nil {
 		l := caller.Launched()
-		by = l.Account
-		if a, ok := s.Catalog().Get(l.AgentID); ok {
-			byAdapter = a.Adapter
+		by, byAdapter = l.Account, l.Adapter
+		if by.Source == "" && len(ms) > 0 {
+			return refuse(ms[0], newAPIError(http.StatusBadRequest, "invalid_account", "this session was started before its login was kept: it adds no member; start it anew"))
 		}
 	}
 	out := slices.Clone(ms)
@@ -340,8 +344,6 @@ func (s *Server) bindMembers(ms []crew.Member, yolo bool, caller *session.Local)
 			return refuse(*m, newAPIError(http.StatusBadRequest, "invalid_crew", "a binding is the server's to make: name an account"))
 		case !ok:
 			return refuse(*m, newAPIError(http.StatusBadRequest, "invalid_crew", "unknown agent "+m.AgentID))
-		case caller != nil && m.Account != "":
-			return refuse(*m, newAPIError(http.StatusBadRequest, "invalid_account", "an agent does not choose accounts"))
 		}
 		if _, aerr := launchModel(agent, m.Model, m.Args); aerr != nil {
 			return refuse(*m, aerr)
@@ -370,6 +372,18 @@ func (s *Server) bindMembers(ms []crew.Member, yolo bool, caller *session.Local)
 		m.Bound = &b
 	}
 	return out, release, nil
+}
+
+// agentNamesNoAccount refuses the members an agent's route decoded when
+// any names an account, the member the agent becomes included: an agent
+// does not choose accounts.
+func agentNamesNoAccount(ms []crew.Member) *apiError {
+	for _, m := range ms {
+		if m.Account != "" {
+			return newAPIError(http.StatusBadRequest, "invalid_account", "member "+m.Name+": an agent does not choose accounts")
+		}
+	}
+	return nil
 }
 
 // bindMember is bindMembers for a member added to the run runID, under its

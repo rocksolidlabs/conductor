@@ -437,7 +437,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		info.Crew = &ref
 	}
 	launched := session.Launched{AgentID: agent.ID, Name: name, Cwd: cwd, Args: slices.Clone(req.Args), Env: maps.Clone(req.Env), Yolo: yolo, Renamed: req.renamed,
-		Account: bound, Model: req.Model}
+		Account: bound, Model: req.Model, Adapter: agent.Adapter}
 	// Its record exists before the session can keep an entry, and the
 	// session's hooks feed it (recordHooks).
 	var rc *recorder

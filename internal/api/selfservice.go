@@ -123,6 +123,10 @@ func (s *Server) handleSelfCrew(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	if aerr := agentNamesNoAccount(in.Members); aerr != nil {
+		writeAPIError(w, aerr)
+		return
+	}
 	info := local.Info()
 	if info.Status.Ended() {
 		writeError(w, http.StatusConflict, "session_ended", "the session has ended")
@@ -166,6 +170,12 @@ func (s *Server) handleSelfCrew(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_crew", "the self member's agent must be this session's ("+info.AgentID+")")
 		return
 	}
+	// The self member is this session: its model is the session's.
+	launched := local.Launched()
+	if selfDef.Model != "" && selfDef.Model != launched.Model {
+		writeError(w, http.StatusBadRequest, "invalid_crew", "the self member is this session, launched with model "+cmp.Or(launched.Model, "its agent's default")+": name that model or none")
+		return
+	}
 	cat := s.Catalog()
 	if err := checkLaunch(others, cat, s.installedFor(r.Context(), cat, others), s.identityFor(r.Context(), cat, others)); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
@@ -192,9 +202,10 @@ func (s *Server) handleSelfCrew(w http.ResponseWriter, r *http.Request) {
 	launch.Members = slices.Clone(saved.Members)
 	for i := range launch.Members {
 		if launch.Members[i].Name == self {
-			if b := local.Launched().Account; b.Source != "" {
+			if b := launched.Account; b.Source != "" {
 				launch.Members[i].Bound = &b
 			}
+			launch.Members[i].Model = launched.Model
 			continue
 		}
 		launch.Members[i] = bound[slices.IndexFunc(bound, func(m crew.Member) bool { return m.Name == launch.Members[i].Name })]
@@ -235,6 +246,10 @@ func (s *Server) handleSelfAddMember(w http.ResponseWriter, r *http.Request) {
 	var m crew.Member
 	if err := decodeJSONLimit(w, r, &m, maxMemberBody); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if aerr := agentNamesNoAccount([]crew.Member{m}); aerr != nil {
+		writeAPIError(w, aerr)
 		return
 	}
 	cat := s.Catalog()

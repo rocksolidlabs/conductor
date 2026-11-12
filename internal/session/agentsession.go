@@ -113,8 +113,11 @@ type Launched struct {
 	Renamed bool
 	// Account is the login the launch was bound to, and Model the model it
 	// was given ("" for the agent's default): a resume starts under both.
+	// Adapter is the adapter the process was started as, whatever its
+	// catalog entry says since.
 	Account BoundAccount
 	Model   string
+	Adapter string
 }
 
 // Where a bound login comes from (BoundAccount.Source).
