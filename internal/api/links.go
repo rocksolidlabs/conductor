@@ -133,12 +133,26 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "too_many_links", "too many links for this session")
 			return
 		}
+		if req.Decide {
+			s.pubMu.Lock()
+			seam := s.remoteHeldSeam
+			s.pubMu.Unlock()
+			if seam != nil {
+				seam(res.LinkID)
+			}
+		}
 		role := res.Role
 		if req.Decide {
 			role = "decision link, " + laneActor(res.LinkID)
 		}
 		s.recordLink(id, "link created at the rendezvous: "+linkLabelOr(res.Label)+" ("+role+")")
 		s.recordRemoteLink(id, res, pub.CurrentID(), req.Decide)
+		// The switchyard may have ended the link while it was being made:
+		// its word drops it from the held links before the publisher takes
+		// it (remoteLinkEnded), so it is looked at again now it is recorded.
+		if held, known := pub.HeldLinks(); known && !slices.Contains(held, res.LinkID) {
+			s.endedNow(id, "", res.LinkID)
+		}
 		link := map[string]any{"id": res.LinkID, "role": res.Role, "label": res.Label, "expiresAt": res.ExpiresAt, "sessionId": id, "remote": true}
 		if req.Decide {
 			link["decide"] = true
