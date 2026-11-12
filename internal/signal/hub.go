@@ -41,6 +41,13 @@ type Hub struct {
 	// contract as OnActivity: it must not block, and it must be safe for
 	// concurrent use. Set it before the first host registers.
 	OnChat func(sessionID string, m session.ChatMessage)
+	// OnAdded is called with each hosted session a register made (not one
+	// it attached again), once the registry holds it and before its first
+	// change is told, on the registering connection's goroutine with no lock
+	// of the hub's held; OnSessionInfo with each session_info its host
+	// sends, checked (report.go). Set them before the first host registers.
+	OnAdded       func(*HostedSession)
+	OnSessionInfo func(*HostedSession, proto.HostSessionInfoMsg)
 	// decisions says this switchyard carries a decision link's lane
 	// (SetDecisions).
 	decisions atomic.Bool
@@ -89,6 +96,9 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 	if (reg.Host.Instance == "") != (reg.Session.LocalID == "") || len(reg.Host.Instance) > proto.MaxHostInstance || len(reg.Session.LocalID) > proto.MaxLocalID {
 		return nil, false, ErrBadRegister
 	}
+	if reg.Session.HostReport.Check() != nil {
+		return nil, false, ErrBadRegister
+	}
 	if reg.Resume != nil {
 		hub.mu.Lock()
 		hs, ok := hub.sessions[reg.Resume.SessionID]
@@ -133,6 +143,8 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 		relayOnly:  reg.Session.RelayOnly,
 		viewers:    map[string]*Viewer{},
 		maxViewers: hub.MaxViewers,
+		report:     reg.Session.HostReport,
+		added:      make(chan struct{}),
 		info: session.Info{
 			ID:        id,
 			Name:      name,
@@ -157,6 +169,10 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 	hub.mu.Lock()
 	hub.sessions[hs.info.ID] = hs
 	hub.mu.Unlock()
+	if hub.OnAdded != nil {
+		hub.OnAdded(hs)
+	}
+	close(hs.added)
 	hs.notifyChange()
 	return hs, false, nil
 }

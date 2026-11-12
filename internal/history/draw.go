@@ -40,10 +40,10 @@ const (
 const ftsTokens = "tokenize = 'unicode61 remove_diacritics 2', prefix = '2 3'"
 
 // placeColumns are the columns a clause's rows are drawn by (Place), each
-// with the index that holds the entries by kind, that column's value
+// with the index that holds the entries by kind, hosted, that column's value
 // (expr, an expression over the row; none for "", every row of a kind),
-// time and key: a draw reads that index's range of one kind and one value
-// and nothing else.
+// time and key: a draw reads that index's range of one kind, one hosted
+// and one value and nothing else.
 var placeColumns = map[string]struct{ index, expr string }{
 	"":               {"entries_draw", ""},
 	"tree":           {"entries_draw_tree", "tree"},
@@ -53,9 +53,9 @@ var placeColumns = map[string]struct{ index, expr string }{
 	"ticket.project": {"entries_draw_project", "substr(ticket, 1, instr(ticket, '-') - 1)"},
 }
 
-// SetDrawSeam gives f the id of every row a restricted read draws from
-// now on (nil: none): a test's count of what a read reads.
-func (ix *Index) SetDrawSeam(f func(id int64)) {
+// SetDrawSeam gives f the id and key of every row a restricted read draws
+// from now on (nil: none): a test's count of what a read reads.
+func (ix *Index) SetDrawSeam(f func(id int64, key string)) {
 	if f == nil {
 		ix.drawSeam.Store(nil)
 		return
@@ -95,7 +95,7 @@ type drawer struct {
 	places []*drawPlace
 	budget int
 	drawn  int
-	seam   func(id int64)
+	seam   func(id int64, key string)
 }
 
 // fill asks p for its next rows, as many as its chunk and the budget let.
@@ -121,7 +121,7 @@ func (d *drawer) fill(p *drawPlace) error {
 		p.buf = append(p.buf, r)
 		p.last = &r
 		if d.seam != nil {
-			d.seam(r.id)
+			d.seam(r.id, r.key)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -196,11 +196,19 @@ func (q Query) kindsOf() map[string]bool {
 }
 
 // places is every place q's restriction draws from: each kind of each
-// clause the line's kind filters leave, by each value of its column,
-// from the line's since (its until is where each reads from, searchDrawn).
+// clause the line's kind filters leave, of the server's own rows and, when
+// the restriction holds them (Hosted), of hosted sessions' rows, by each
+// value of its column, from the line's since (its until is where each
+// reads from, searchDrawn). Whether a row is hosted is a key of the
+// index a place reads, so a place of the server's own rows reads no
+// hosted row at all.
 func (q Query) places(now time.Time) []*drawPlace {
 	since, _ := q.window(now)
 	kinds := q.kindsOf()
+	hosted := []any{0}
+	if q.Restrict.Hosted {
+		hosted = append(hosted, 1)
+	}
 	var out []*drawPlace
 	for _, c := range q.Restrict.Clauses {
 		col, values := "", []string{""}
@@ -208,7 +216,7 @@ func (q Query) places(now time.Time) []*drawPlace {
 			col, values = c.Place.Column, c.Place.Values
 		}
 		pc := placeColumns[col]
-		where := "SELECT id, at, key FROM entries INDEXED BY " + pc.index + " WHERE kind = ?"
+		where := "SELECT id, at, key FROM entries INDEXED BY " + pc.index + " WHERE kind = ? AND hosted = ?"
 		if pc.expr != "" {
 			where += " AND " + pc.expr + " = ?"
 		}
@@ -227,14 +235,16 @@ func (q Query) places(now time.Time) []*drawPlace {
 					continue
 				}
 				seenValue[v] = true
-				args := []any{k}
-				if pc.expr != "" {
-					args = append(args, v)
+				for _, h := range hosted {
+					args := []any{k, h}
+					if pc.expr != "" {
+						args = append(args, v)
+					}
+					if since != "" {
+						args = append(args, since)
+					}
+					out = append(out, &drawPlace{stmt: where, args: args, chunk: 1})
 				}
-				if since != "" {
-					args = append(args, since)
-				}
-				out = append(out, &drawPlace{stmt: where, args: args, chunk: 1})
 			}
 		}
 	}

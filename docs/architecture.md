@@ -856,8 +856,13 @@ evidence entries by the journal itself; what a person typed, a typed
 answer's text and a variable's value never reach it (`typedEntry` in
 `internal/session/submit.go`). A record is at most 64 KiB, the newest
 2,000 ended ones kept; Forget, Forget all and the prune take a record
-out of every read before its file goes. A hosted session has no record
-until PR-12 (`internal/signal` is unchanged).
+out of every read before its file goes. A hosted session's record holds
+what its host reports (its Runtime, its agent's version, its repository
+and its start and end commits, read on the host's machine before its
+process starts and after it ends) and its agent's own session as its
+hooks report it to the server; it ends `host away` when the server stops
+observing it, and the same host's next registration of the session takes
+it up again (`journal.BeginHosted`).
 
 **The index** (`internal/history`, `history/index.sqlite`) is a cache:
 derived from the stores, rebuilt when missing or of another version,
