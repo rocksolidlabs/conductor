@@ -455,19 +455,19 @@ func (s *Server) bindMember(runID string, m crew.Member, caller *session.Local) 
 }
 
 // boundTo names, in words, what holds the account id (capacity.Facts.Bound):
-// the server sessions running bound to it, the engine's runs a member of
-// which is bound to it and that have not ended, and the ledger's runs
-// running or interrupted whose crew as launched binds it. A stopped or
-// finished run is no bar: a continuation of it is refused account_gone.
-// A ledger that cannot be read holds it, since what it holds is not known.
+// the server sessions bound to it whose process has not ended (the
+// registry's Holders: a session whose stop failed, or removed from the
+// listing while its process runs, holds it as a running one does), the
+// engine's runs a member of which is bound to it and that have not ended,
+// and the ledger's runs running or interrupted whose crew as launched
+// binds it. A stopped or finished run is no bar: a continuation of it is
+// refused account_gone. A ledger, or a run's crew in it, that cannot be
+// read holds it, since what it holds is not known.
 func (s *Server) boundTo(id string) []string {
 	var names []string
-	for _, info := range s.registry.List() {
-		if info.Kind != session.KindServer || info.Status.Ended() {
-			continue
-		}
-		if l, ok := s.lookupLocal(info.ID); ok && l.Launched().Account.ID == id {
-			names = append(names, "session "+info.Name)
+	for _, d := range s.registry.Holders() {
+		if l, ok := d.(*session.Local); ok && l.Info().Kind == session.KindServer && l.Launched().Account.ID == id {
+			names = append(names, "session "+l.Info().Name)
 		}
 	}
 	seen := map[string]bool{}
@@ -490,11 +490,13 @@ func (s *Server) boundTo(id string) []string {
 		return append(names, "the ledger's runs, which could not be read")
 	}
 	for _, row := range rows {
-		if seen[row.ID] || (row.State != ledger.RunRunning && row.State != ledger.RunInterrupted) {
+		if seen[row.ID] || row.Crew == "" || (row.State != ledger.RunRunning && row.State != ledger.RunInterrupted) {
 			continue
 		}
 		var c crew.Crew
-		if json.Unmarshal([]byte(row.Crew), &c) == nil && slices.ContainsFunc(c.Members, func(m crew.Member) bool { return m.Bound != nil && m.Bound.ID == id }) {
+		if err := json.Unmarshal([]byte(row.Crew), &c); err != nil {
+			names = append(names, "run "+row.ID+", whose crew could not be read")
+		} else if slices.ContainsFunc(c.Members, func(m crew.Member) bool { return m.Bound != nil && m.Bound.ID == id }) {
 			names = append(names, "run "+row.ID)
 		}
 	}

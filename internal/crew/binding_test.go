@@ -111,6 +111,30 @@ func TestEveryAttemptKeepsItsMembersBinding(t *testing.T) {
 	stopRun(t, e, run.ID)
 }
 
+// A repair continuation copies the crew as launched: the repair attempt
+// of a member on a registered account is launched under its binding, the
+// first attempt's.
+func TestRepairKeepsAccount(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, l := managedEngine(t)
+	c := repoCrew(dir, work("build", "lead"))
+	b := boundAt("a-aaaaaaaaaaaa")
+	c.Members[0].Bound = b
+	run := launchManaged(t, e, c)
+	commitResult(t, e, waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning), "built.txt", "built\n", "built")
+	c1 := waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1).Result.Commit
+	runFinished(t, e, l, run.ID, ledger.OutcomeSucceeded)
+	next, err := continueWithRepair(e, run.ID, "rv.rv-0021.1", "build", 1, c1, "", personsRequest("rv-0021"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptN(t, e, next.ID, "build", 2)
+	if got := fl.accountsOf("lead"); len(got) != 2 || got[0] != *b || got[1] != *b {
+		t.Fatalf("the attempts' bindings: %+v", got)
+	}
+	stopRun(t, e, next.ID)
+}
+
 // A managed run any member of which is bound to a login of this server's
 // (a registered account, an entry's pinned folder, Brakeman's unlisted
 // folder, a launch's own login variables) is offered to no Runtime: the
