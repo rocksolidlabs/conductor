@@ -215,7 +215,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			Input: obj(map[string]any{
 				"name":      str("the crew's name"),
 				"goal":      str("the goal, reaching prompts as $GOAL"),
-				"members":   map[string]any{"type": "array", "description": "{name, agentId, prompt, model?, start: {when: immediately|after|manual, member?}}; no account: a member of this session's tool takes this session's login, another its tool's default", "items": map[string]any{"type": "object"}},
+				"members":   map[string]any{"type": "array", "description": "{name, agentId, prompt, start: {when: immediately|after|manual, member?}}", "items": map[string]any{"type": "object"}},
 				"self":      str("the member this session becomes"),
 				"isolation": map[string]any{"type": "string", "enum": []string{"none", "worktree"}},
 				"open":      map[string]any{"type": "boolean", "description": "offer the run in the workbench"},
@@ -223,7 +223,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			Bounds: map[string]int{"body": maxCrewBody}},
 		{Name: "add_member", MCP: "add_member", Scope: "session", Method: http.MethodPost, Path: sessions + "/run/members", needs: needLauncher | needSelfService | needRun | needUnmanaged | needNotBrakeman,
 			Summary:     "Add a member to this session's run.",
-			Description: "Add a member to this session's run: {name, agentId, prompt, model?, start}, naming no account: a member of this session's tool takes this session's login, another its tool's default.",
+			Description: "Add a member to this session's run: {name, agentId, prompt, start}.",
 			CLI:         []string{"conductor", "crew", "add", "MEMBER.json"},
 			Input:       obj(map[string]any{"member": map[string]any{"type": "object"}}, "member"),
 			Bounds:      map[string]int{"body": maxMemberBody}},
