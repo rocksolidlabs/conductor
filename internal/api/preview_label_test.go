@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
@@ -42,7 +45,14 @@ type previewed struct {
 // files (committed), and waits for its attempt's preview.
 func previewEnv(t *testing.T, files map[string]string) *previewed {
 	t.Helper()
-	e := readyEnv(t, nil)
+	return previewEnvLogging(t, files, io.Discard)
+}
+
+// previewEnvLogging is previewEnv with the server's log written to logs.
+func previewEnvLogging(t *testing.T, files map[string]string, logs io.Writer) *previewed {
+	t.Helper()
+	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(logs, nil)),
+		[]catalog.Agent{{ID: "ready-cat", Name: "ready cat", Command: []string{"/bin/sh", "-c", "echo ready; exec cat"}}})
 	e.gitRepo(t)
 	for name, body := range files {
 		writeIn(t, e.root, name, body)
@@ -182,6 +192,49 @@ func TestLongChangedPathsAreCutByBytes(t *testing.T) {
 	paths, _ := json.Marshal(l["changedPaths"])
 	if l["changed"] != float64(200) || l["changedCut"] != true || len(paths) > dispatch.MaxChangedPathsBytes || len(l["changedPaths"].([]any)) == 0 {
 		t.Fatalf("the label: changed %v, cut %v, %d bytes of paths", l["changed"], l["changedCut"], len(paths))
+	}
+}
+
+// The label answers the tree's secret in its URL and nowhere else: a file
+// whose name holds it, in either case, is named with the secret's name.
+func TestTheLabelsChangedPathsHoldNoSecret(t *testing.T) {
+	p := previewEnv(t, nil)
+	writeIn(t, p.dir, "a-"+p.secret+".txt", "x\n")
+	writeIn(t, p.dir, "b-"+strings.ToUpper(p.secret)+".txt", "x\n")
+	status, data, out := p.e.callAs(t, adminToken, "GET", "/api/runs/"+p.run+"/tasks/build/attempts/1/preview", nil)
+	rest := strings.Replace(string(data), p.page+"#token="+p.secret, "", 1)
+	if status != http.StatusOK || strings.Contains(strings.ToLower(rest), p.secret) ||
+		fmt.Sprint(out["changedPaths"]) != "[a-${CONDUCTOR_TREE_SECRET}.txt b-${CONDUCTOR_TREE_SECRET}.txt]" {
+		t.Fatalf("the label: %d %s", status, data)
+	}
+}
+
+// A read git fails in an ordinary way (a file it cannot open) is logged
+// in fixed words, nothing of git's message, and the label says the tree
+// could not be read.
+func TestAFailedReadIsLoggedInFixedWords(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a file whatever its mode")
+	}
+	logs := &logBuffer{}
+	p := previewEnvLogging(t, nil, logs)
+	writeIn(t, p.dir, "closed.txt", "x\n")
+	path := filepath.Join(p.dir, "closed.txt")
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+	if l := p.label(t); l["unread"] != "the tree could not be read" || l["content"] != "" {
+		t.Fatalf("the label: %v", l)
+	}
+	got := logs.String()
+	i := strings.Index(got, "the preview label's tree was not read")
+	if i < 0 {
+		t.Fatalf("no line for the read: %s", got)
+	}
+	line, _, _ := strings.Cut(got[i:], "\n")
+	if !strings.Contains(line, `why="git failed"`) || strings.Contains(line, "closed.txt") || strings.Contains(line, "Permission") || strings.Contains(line, "git add") {
+		t.Fatalf("the line: %s", line)
 	}
 }
 

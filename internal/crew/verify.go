@@ -684,6 +684,26 @@ func (e *Engine) WorktreePreview(runID, taskID string, n int) (WorktreePreview, 
 	return WorktreePreview{}, false
 }
 
+// TreeSecrets is the secret of every tree the engine holds one for now,
+// for the server's routes to scrub from what they answer or keep.
+func (e *Engine) TreeSecrets() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var out []string
+	for _, r := range e.runs {
+		for _, t := range r.tasks {
+			for _, a := range t.attempts {
+				for _, tr := range a.trees {
+					if tr.secret != "" {
+						out = append(out, tr.secret)
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
 // TreeRead is a tree's revision as one read found it: HEAD's commit; the
 // tree id of everything the tree holds that git would see (Content: the
 // commit's tree with every change and every file that is not ignored);

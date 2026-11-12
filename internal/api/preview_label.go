@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
+	"github.com/rocksolidlabs/conductor/internal/gitcli"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
@@ -261,18 +263,99 @@ func (s *Server) handlePreviewLabel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	read, err := s.trees.read(r.Context(), wp)
-	paths := storedPaths(read.Paths)
-	cut := labelPaths(paths)
-	l := previewLabel{URL: labelURL(wp.URL, wp.Secret, principalAdmin(r)), Tree: dispatch.TreeWorktree, Commit: read.Commit, Content: read.Content,
-		Changed: read.Changed, ChangedPaths: cut, ChangedCut: len(cut) < read.Changed, Mutable: true, State: "ready", Where: cmpOr(wp.Where, "native"),
-		ReadAt: time.Now().UTC()}
+	cut := labelPaths(storedPaths(read.Paths))
+	l := previewLabel{Tree: dispatch.TreeWorktree, Commit: read.Commit, Content: read.Content, Changed: read.Changed, ChangedPaths: cut,
+		ChangedCut: len(cut) < read.Changed, Mutable: true, State: "ready", Where: cmpOr(wp.Where, "native"), ReadAt: time.Now().UTC()}
 	if err != nil {
+		s.log.Warn("the preview label's tree was not read", "run", runID, "task", taskID, "attempt", n, "why", readFailure(err))
 		l.Unread = "the tree could not be read"
 		if errors.Is(err, context.DeadlineExceeded) {
 			l.Unread = "the tree was not read in time"
 		}
 	}
+	// The tree's secret is in the URL alone: every other field is
+	// scrubbed of the secret of every tree the engine holds one for.
+	scrubSecrets(&l, s.runs.TreeSecrets())
+	l.URL = labelURL(wp.URL, wp.Secret, principalAdmin(r))
 	writeDispatch(w, http.StatusOK, l)
+}
+
+// readFailure is the kind of a tree's read that failed, in fixed words for
+// the log, never git's own: late, not a repository, refused or git
+// failed.
+func readFailure(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		return "late"
+	case errors.Is(err, crew.ErrTreeNotWorktree), errors.Is(err, gitcli.ErrNotRepo):
+		return "not a repository"
+	case errors.Is(err, crew.ErrTreeMoved), errors.Is(err, errReadsStopped):
+		return "refused"
+	}
+	return "git failed"
+}
+
+// scrubSecrets replaces every occurrence of each of secrets, in any
+// case, with its name (treeSecretName) in every string v (a pointer)
+// holds, however deep. A secret is hex, so its URL-encoded form is
+// itself, and the name holds no run of hex that could make it again.
+func scrubSecrets(v any, secrets []string) {
+	for _, s := range secrets {
+		if s != "" {
+			scrubValue(reflect.ValueOf(v), asciiLower(s))
+		}
+	}
+}
+
+func scrubValue(v reflect.Value, secret string) {
+	switch v.Kind() {
+	case reflect.String:
+		if v.CanSet() {
+			v.SetString(scrubText(v.String(), secret))
+		}
+	case reflect.Pointer:
+		if !v.IsNil() {
+			scrubValue(v.Elem(), secret)
+		}
+	case reflect.Struct:
+		for i := range v.NumField() {
+			scrubValue(v.Field(i), secret)
+		}
+	case reflect.Slice, reflect.Array:
+		for i := range v.Len() {
+			scrubValue(v.Index(i), secret)
+		}
+	}
+}
+
+// scrubText is s with every occurrence of secret, compared without regard
+// to ASCII case, made treeSecretName.
+func scrubText(s, secret string) string {
+	low := asciiLower(s)
+	var b strings.Builder
+	for {
+		i := strings.Index(low, secret)
+		if i < 0 {
+			break
+		}
+		b.WriteString(s[:i])
+		b.WriteString(treeSecretName)
+		s, low = s[i+len(secret):], low[i+len(secret):]
+	}
+	b.WriteString(s)
+	return b.String()
+}
+
+// asciiLower is s with its ASCII letters lower-cased, every byte in its
+// place.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	return string(b)
 }
 
 // labelPaths is the first of paths within dispatch.MaxChangedPaths and
