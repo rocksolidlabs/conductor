@@ -48,14 +48,15 @@ type Admittee struct {
 // holds says who holds grant g.
 func (who Admittee) holds(g ext.Grant) bool { return slices.Contains(who.Grants, string(g)) }
 
-// actor is the actor who's responses are kept under: an identity's
-// "user:<subject>", "" for anyone else (whose responses this judgement
-// never reads).
-func (who Admittee) actor() string {
-	if who.Via != ViaIdentity || who.Subject == "" {
-		return ""
-	}
-	return ext.SubjectActor + who.Subject
+// Sent says response r is who's own: who is an identity, and r was kept
+// under its actor ("user:<subject>") with an authority that says it came
+// through an identity with who's subject. An authority that does not
+// decode is nobody's, and a decision router's answer kept in a person's
+// name is the router's, never that person's.
+func (who Admittee) Sent(r ledger.ResponseRow) bool {
+	var a Authority
+	return who.Via == ViaIdentity && who.Subject != "" && r.Actor == ext.SubjectActor+who.Subject &&
+		json.Unmarshal([]byte(r.Authority), &a) == nil && a.Via == ViaIdentity && a.Subject == who.Subject
 }
 
 // admits says whether e admits who: the operator the admin grant through
@@ -121,34 +122,34 @@ const (
 // AdmissionOf is the one judgement of what who may read of rec and answer.
 func AdmissionOf(rec ledger.DecisionRecord, who Admittee) Admission {
 	switch {
-	case who.holds(ext.GrantAdmin):
+	case (PolicyEntry{Kind: EntryOperator}).admits(who):
+		// The operator entry's own rule: the admin grant through the
+		// workbench token or an identity, and no other way in.
 		return AdmitWhole
 	case !who.holds(ext.GrantDecide) || !Admits(EntriesOf(rec), who):
 		return AdmitNone
 	case rec.State == ledger.DecisionOpen:
 		return AdmitOpen
-	}
-	actor := who.actor()
-	if actor != "" && slices.ContainsFunc(rec.Responses, func(r ledger.ResponseRow) bool { return r.Actor == actor }) {
+	case slices.ContainsFunc(rec.Responses, who.Sent):
 		return AdmitOutcome
 	}
 	return AdmitNone
 }
 
-// OutcomeOf is the outcome of actor's own answers to rec, from the record
-// whole, never naming a reason: applied when the application names its
-// accepted response, whatever the state now; waiting while it is the
+// OutcomeOf is the outcome of who's own answers to rec (Sent), from the
+// record whole, never naming a reason: applied when the application names
+// its accepted response, whatever the state now; waiting while it is the
 // accepted one and the decision answered; not_used once the decision is
 // final without applying it; refused, with the newest one's code, when
 // none of its responses was accepted; "" when it has none.
-func OutcomeOf(rec ledger.DecisionRecord, actor string) (outcome, code string) {
+func OutcomeOf(rec ledger.DecisionRecord, who Admittee) (outcome, code string) {
 	var app struct {
 		Response int `json:"response"`
 	}
 	applied := rec.Applied != "" && json.Unmarshal([]byte(rec.Applied), &app) == nil
 	own := false
 	for _, r := range rec.Responses {
-		if r.Actor != actor {
+		if !who.Sent(r) {
 			continue
 		}
 		own = true

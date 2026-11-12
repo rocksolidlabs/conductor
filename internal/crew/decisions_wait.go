@@ -1180,6 +1180,13 @@ type operation struct {
 	// actor wrote of its kind. Its row takes the bound of its kind, never
 	// one of the operator's operations (Tx.History).
 	once bool
+	// choose, when set, makes the operation from the record its look
+	// reads, under opMu and after the look for a repeat (RouteDecision's
+	// route to the operator: the take-back of a decision given to the
+	// decide grant, else DR1's route). The row its transaction reads must
+	// be given to the grant as that record is (judge), or the operation is
+	// made again from a new look.
+	choose func(rec ledger.DecisionRecord) (operation, error)
 	// ahead says the held change moves the engine's state past what an
 	// undo could put back (the cancel: a decision closed, its holds
 	// released, tasks cancelled): it has no undo, its commit is under no
@@ -1221,6 +1228,10 @@ func movedSinceAdmitted(ctx context.Context, id, now string) error {
 // by another run than the one it chose: it is made again there.
 var errOpMoved = errors.New("the decision moved to another run")
 
+// errOpChosen is an operation's transaction whose row is not what its
+// look chose it from (operation.choose): it is made again from a new look.
+var errOpChosen = errors.New("the decision changed from what its operation was chosen on")
+
 func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceipt, error) {
 	n, ok := ledger.ParseDecisionID(id)
 	if !ok {
@@ -1234,6 +1245,9 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 	}
 	// One operation at a time, from its look to its commit: a repeat or a
 	// conflict of its id is found by the look, never by its transaction.
+	if e.enterOperate != nil {
+		e.enterOperate(n)
+	}
 	e.opMu.Lock()
 	defer e.opMu.Unlock()
 	for range maxDecisionTries {
@@ -1252,6 +1266,12 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 		}
 		if op.expectedRev < 0 {
 			return OpReceipt{}, refuse(CodeInvalid, "an operation names the rev it read, expectedRev")
+		}
+		op, chosen, given := op, op.choose != nil, GivenToGrant(rec.Request)
+		if chosen {
+			if op, err = op.choose(rec); err != nil {
+				return OpReceipt{}, err
+			}
 		}
 		if e.beforeOperate != nil {
 			e.beforeOperate(n)
@@ -1286,6 +1306,9 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			}
 			if row.CurrentRun != rec.CurrentRun {
 				return errOpMoved
+			}
+			if chosen && GivenToGrant(row.Request) != given {
+				return errOpChosen
 			}
 			if why := staleOp(id, op.expectedRev, row.Rev); why != nil {
 				return why
@@ -1468,7 +1491,7 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			return OpReceipt{}, refused
 		case errors.As(err, &rep):
 			return receiptOfRow(id, rep.row), nil
-		case errors.Is(err, errOpMoved):
+		case errors.Is(err, errOpMoved) || errors.Is(err, errOpChosen):
 			continue
 		case errors.Is(err, ledger.ErrDecisionConflict):
 			return OpReceipt{}, refuse(CodeOpConflict, "operation %s on %s was sent before with another body", op.opID, id)
@@ -1658,21 +1681,16 @@ func (e *Engine) RouteDecision(ctx context.Context, id, opID string, expectedRev
 	if err != nil {
 		return OpReceipt{}, err
 	}
-	// A route to the operator of a decision given to the decide grant takes
-	// the grant back: whom it is for rewritten with no target, through the
-	// held run or the ledger alone. What the look reads chooses it, and the
-	// rev the operator read judges it in its transaction (staleOp), so a
-	// route to the grant committed since is stale_decision.
-	takeBack := label == "" && e.givenToGrant(ctx, id)
-	if label != "" || takeBack {
-		if expectedRev < 1 {
-			return OpReceipt{}, refuse(CodeInvalid, "a route to a person or the grant names the rev it read, expectedRev")
-		}
+	// routed rewrites whom the decision is for: label's target, or none
+	// for "" (the take-back of a decision given to the decide grant,
+	// through the held run or the ledger alone).
+	routed := func(label string) operation {
+		takeBack := label == ""
 		to := "a person"
 		if label == GrantDecideLabel {
 			to = "the grant"
 		}
-		return e.operate(ctx, id, operation{kind: ledger.HistoryRouted, opID: opID, fp: fp, actor: actor, rev: true, expectedRev: expectedRev,
+		return operation{kind: ledger.HistoryRouted, opID: opID, fp: fp, actor: actor, rev: true, expectedRev: expectedRev,
 			held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
 				dt, edit, err := e.forRoute(r, d, rec, id, label, note, actor)
 				dt.edit = edit
@@ -1689,25 +1707,36 @@ func (e *Engine) RouteDecision(ctx context.Context, id, opID string, expectedRev
 					return dt, err
 				}
 				return opDetail{}, refuse(CodeNotHeld, "%s's run is not running: continue it, then route it to %s", id, to)
-			}})
+			}}
+	}
+	if label != "" {
+		if expectedRev < 1 {
+			return OpReceipt{}, refuse(CodeInvalid, "a route to a person or the grant names the rev it read, expectedRev")
+		}
+		return e.operate(ctx, id, routed(label))
 	}
 	dt := opDetail{Note: note, To: []any{map[string]string{"kind": "operator"}}, Rule: "local/1: the operator answers", By: actor, Words: fmt.Sprintf("%s is routed to the operator", id)}
-	return e.operate(ctx, id, operation{kind: ledger.HistoryRouted, opID: opID, fp: fp, actor: actor, expectedRev: expectedRev,
+	plain := operation{kind: ledger.HistoryRouted, opID: opID, fp: fp, actor: actor, expectedRev: expectedRev,
 		held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
 			return dt, nil, nil
 		},
-		notHeld: func(rec ledger.DecisionRecord) (opDetail, error) { return dt, nil }})
-}
-
-// givenToGrant says decision id, as the ledger holds it now, is given to
-// the decide grant.
-func (e *Engine) givenToGrant(ctx context.Context, id string) bool {
-	n, ok := ledger.ParseDecisionID(id)
-	if !ok {
-		return false
+		notHeld: func(rec ledger.DecisionRecord) (opDetail, error) { return dt, nil }}
+	// To the operator: of a decision given to the decide grant, the
+	// take-back, the operator's own and at the rev the operator read; of
+	// any other, DR1's route. The record operate's look reads chooses, and
+	// the row its transaction reads judges the choice again (judge).
+	plain.choose = func(rec ledger.DecisionRecord) (operation, error) {
+		switch {
+		case !GivenToGrant(rec.Request):
+			return plain, nil
+		case actor == ledger.TurnActor:
+			return operation{}, refuse(CodeStaleDecision, "%s is given to the decide grant, which the operator alone takes back: read it again", id)
+		case expectedRev < 1:
+			return operation{}, refuse(CodeInvalid, "a route to a person or the grant names the rev it read, expectedRev")
+		}
+		return routed(""), nil
 	}
-	rec, ok, err := e.readDecision(ctx, n)
-	return err == nil && ok && GivenToGrant(rec.Request)
+	return e.operate(ctx, id, plain)
 }
 
 // RouterResponseID is the response id of a decision router's answer

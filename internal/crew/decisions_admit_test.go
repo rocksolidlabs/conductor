@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
@@ -40,6 +41,15 @@ func codeOf(err error) string {
 	return ""
 }
 
+// identityRaw is a response's authority as kept for an identity's decide
+// answer, routerRaw a decision router's offered in a person's name.
+func identityRaw(subject string) string {
+	return `{"grant":"decide","via":"identity","subject":"` + subject + `","boot":"b1"}`
+}
+func routerRaw(subject string) string {
+	return `{"via":"router","subject":"` + subject + `","boot":"b1"}`
+}
+
 // grantedRequest is a request as the ledger keeps it, given to the grant
 // when given is set.
 func grantedRequest(given bool) string {
@@ -61,6 +71,11 @@ func TestAdmission(t *testing.T) {
 		"host and decide":  {Grants: []string{"host", "decide"}, Via: ViaIdentity, Subject: "ana"},
 		"none":             {Via: ViaIdentity, Subject: "ana"},
 		"a router":         {Via: ViaRouter},
+		// The admin grant held by any way in but the workbench token and an
+		// identity admits nothing, as the operator's entry has it.
+		"a router holding admin":            {Grants: []string{"admin", "host"}, Via: ViaRouter, Subject: "ana"},
+		"a router holding admin and decide": {Grants: []string{"admin", "decide"}, Via: ViaRouter, Subject: "ana"},
+		"an unknown way in holding admin":   {Grants: []string{"admin", "host"}, Via: "share"},
 	}
 	policies := map[string]string{"local/1": policyJSON, "unreadable": "{", "an unknown kind": `{"revision":"local/1","authority":[{"kind":"subject"}]}`}
 	for wname, w := range who {
@@ -70,7 +85,7 @@ func TestAdmission(t *testing.T) {
 					for _, own := range []bool{true, false} {
 						rec := ledger.DecisionRecord{DecisionRow: ledger.DecisionRow{N: 7, State: state, Policy: policy, Request: grantedRequest(given)}}
 						if own {
-							rec.Responses = []ledger.ResponseRow{{Actor: "user:ana", K: 1, Status: ledger.ResponseRefused}}
+							rec.Responses = []ledger.ResponseRow{{Actor: "user:ana", Authority: identityRaw("ana"), K: 1, Status: ledger.ResponseRefused}}
 						}
 						want := AdmitNone
 						entry := given && pname != "unreadable"
@@ -107,6 +122,19 @@ func TestAdmission(t *testing.T) {
 	}
 	if got := EntriesOf(ledger.DecisionRecord{DecisionRow: ledger.DecisionRow{Policy: policyJSON, Request: grantedRequest(true)}}); len(got) != 2 || got[1] != grant {
 		t.Errorf("the entries of a decision given to the grant: %+v", got)
+	}
+	// One's own rows are those one sent through an identity: a router's row
+	// kept in ana's name, a row whose authority does not decode and another
+	// subject's are nobody's of hers.
+	for name, auth := range map[string]string{"a router's": routerRaw("ana"), "not JSON": "{", "another subject's": identityRaw("bo")} {
+		rec := ledger.DecisionRecord{DecisionRow: ledger.DecisionRow{N: 7, State: ledger.DecisionApplied, Policy: policyJSON, Request: grantedRequest(true)},
+			Responses: []ledger.ResponseRow{{Actor: "user:ana", Authority: auth, K: 1, Status: ledger.ResponseRefused}}}
+		if got := AdmissionOf(rec, who["decide"]); got != AdmitNone {
+			t.Errorf("%s row: admitted %d", name, got)
+		}
+		if out, code := OutcomeOf(rec, who["decide"]); out != "" || code != "" {
+			t.Errorf("%s row: the outcome %q %q", name, out, code)
+		}
 	}
 }
 
@@ -362,7 +390,7 @@ func TestDecideResponseUnderTheTarget(t *testing.T) {
 	}
 	e.ConfirmAuthority(d.ID, rc.K, true)
 	done := decisionWhen(t, ld, d.ID, "applied", inState(ledger.DecisionApplied))
-	if out, _ := OutcomeOf(done, "user:ana"); out != proto.OutcomeApplied {
+	if out, _ := OutcomeOf(done, Admittee{Grants: []string{"decide"}, Via: ViaIdentity, Subject: "ana"}); out != proto.OutcomeApplied {
 		t.Fatalf("the outcome: %s", out)
 	}
 	stopRun(t, e, run.ID)
@@ -388,18 +416,28 @@ func TestReplacementIsTheOperators(t *testing.T) {
 	if GivenToGrant(fresh.Request) || requestForOf(t, fresh.Request) != nil || AdmissionOf(fresh, ana) != AdmitNone {
 		t.Fatalf("the replacement: %s", fresh.Request)
 	}
-	if out, code := OutcomeOf(old, "user:ana"); AdmissionOf(old, ana) != AdmitOutcome || out != proto.OutcomeNotUsed || code != "" {
+	if out, code := OutcomeOf(old, ana); AdmissionOf(old, ana) != AdmitOutcome || out != proto.OutcomeNotUsed || code != "" {
 		t.Fatalf("the answered one's outcome: %s %s", out, code)
 	}
 	stopRun(t, e, run.ID)
 }
 
-// The outcome of one's own answers, from the record whole, never a reason.
+// The outcome of one's own answers, from the record whole, never a reason;
+// a router's row in one's name is not one's own.
 func TestOutcomeOf(t *testing.T) {
 	const ana = "user:ana"
 	resp := func(actor string, k int, status, code string) ledger.ResponseRow {
 		rc, _ := json.Marshal(ResponseReceipt{Status: status, Code: code, Words: "dr-7 was answered by Nate"})
-		return ledger.ResponseRow{Actor: actor, K: k, Status: status, Receipt: string(rc)}
+		auth := `{"grant":"admin","via":"workbench","boot":"b1"}`
+		if subject, ok := strings.CutPrefix(actor, "user:"); ok {
+			auth = identityRaw(subject)
+		}
+		return ledger.ResponseRow{Actor: actor, Authority: auth, K: k, Status: status, Receipt: string(rc)}
+	}
+	routers := func(k int) ledger.ResponseRow {
+		r := resp(ana, k, ledger.ResponseRefused, CodeNotApprover)
+		r.Authority = routerRaw("ana")
+		return r
 	}
 	accepted, refused := ledger.ResponseAccepted, ledger.ResponseRefused
 	rec := func(state, applied string, rs ...ledger.ResponseRow) ledger.DecisionRecord {
@@ -422,9 +460,202 @@ func TestOutcomeOf(t *testing.T) {
 			rec(ledger.DecisionApplied, `{"response":2}`, resp(ana, 1, refused, CodeStaleDecision), resp("admin", 2, accepted, ""), resp(ana, 3, refused, CodeDecisionAnswered))},
 		{"its accepted one after eight refusals", proto.OutcomeWaiting, "", rec(ledger.DecisionAnswered, "", eight...)},
 		{"none of its own", "", "", rec(ledger.DecisionApplied, `{"response":1}`, resp("admin", 1, accepted, ""))},
+		{"a router's alone", "", "", rec(ledger.DecisionApplied, `{"response":2}`, routers(1), resp("admin", 2, accepted, ""))},
+		{"its own beside a router's newer", proto.OutcomeRefused, CodeStaleDecision,
+			rec(ledger.DecisionApplied, `{"response":2}`, resp(ana, 1, refused, CodeStaleDecision), resp("admin", 2, accepted, ""), routers(3))},
 	} {
-		if out, code := OutcomeOf(tc.rec, ana); out != tc.want || code != tc.code {
+		if out, code := OutcomeOf(tc.rec, Admittee{Grants: []string{"decide"}, Via: ViaIdentity, Subject: "ana"}); out != tc.want || code != tc.code {
 			t.Errorf("%s: %q %q, want %q %q", tc.name, out, code, tc.want, tc.code)
 		}
 	}
+}
+
+// A decision router's refused answer kept in ana's name, the decision then
+// answered by the operator and applied: ana, holding the decide grant, is
+// admitted to nothing of it and has no outcome.
+func TestARoutersAnswerIsNotOnesOwn(t *testing.T) {
+	e, ld, run, d := grantedDecision(t)
+	if _, err := routeToGrant(e, d.ID, "g1", 1); err != nil {
+		t.Fatal(err)
+	}
+	rc, err := e.RespondDecision(t.Context(), d.ID, Response{ResponseID: RouterResponseID, Text: "btree", ExpectedRev: 2}, "user:ana", Authority{Via: ViaRouter, Subject: "ana", Boot: e.Boot()})
+	if codeOf(err) != CodeNotApprover || rc.Kept != nil {
+		t.Fatalf("the router's answer: %+v %v", rc, err)
+	}
+	answer(t, e, d.ID, Response{ResponseID: "r1", Text: "btree", ExpectedRev: 2})
+	done := decisionWhen(t, ld, d.ID, "applied", inState(ledger.DecisionApplied))
+	ana := Admittee{Grants: []string{"decide"}, Via: ViaIdentity, Subject: "ana"}
+	if len(done.Responses) != 2 || done.Responses[0].Actor != "user:ana" {
+		t.Fatalf("the responses kept: %+v", done.Responses)
+	}
+	if got := AdmissionOf(done, ana); got != AdmitNone {
+		t.Fatalf("ana is admitted %d by the router's row", got)
+	}
+	if out, code := OutcomeOf(done, ana); out != "" || code != "" {
+		t.Fatalf("ana's outcome of the router's row: %q %q", out, code)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// failingLook is the engine's ledger with the next decision read made
+// under a context marked lookMark failing once, as a busy store's may.
+type failingLook struct {
+	sqlLedger
+	armed *atomic.Bool
+}
+
+type lookMark struct{}
+
+func (f failingLook) Decision(ctx context.Context, n int64) (ledger.DecisionRecord, bool, error) {
+	if ctx.Value(lookMark{}) != nil && f.armed.CompareAndSwap(true, false) {
+		return ledger.DecisionRecord{}, false, errors.New("the ledger is busy (test)")
+	}
+	return f.sqlLedger.Decision(ctx, n)
+}
+
+// A route to the operator whose read of the decision fails answers that
+// failure and writes nothing; sent again, it takes the grant back.
+func TestARouteAnswersItsFailedRead(t *testing.T) {
+	dir := newRepo(t)
+	e, fl := readyEngine(t)
+	ld, err := ledger.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ld.Close() })
+	var armed atomic.Bool
+	e.UseLedger(failingLook{sqlLedger{l: ld}, &armed})
+	run := launchManaged(t, e, peopleCrew(dir))
+	b, _, _ := attemptOn(t, e, fl, run.ID, "build")
+	d := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
+	if _, err := routeToGrant(e, d.ID, "g1", 1); err != nil {
+		t.Fatal(err)
+	}
+	given := decisionWhen(t, ld, d.ID, "given", func(rec ledger.DecisionRecord) bool { return rec.Rev == 2 })
+	ctx := context.WithValue(t.Context(), lookMark{}, true)
+	armed.Store(true)
+	rc, err := e.RouteDecision(ctx, d.ID, "o1", 2, []Destination{{Kind: DestOperator}}, "", "admin")
+	rec := decisionWhen(t, ld, d.ID, "read", func(ledger.DecisionRecord) bool { return true })
+	if err == nil || codeOf(err) != "" || armed.Load() || rec.Rev != 2 || !GivenToGrant(rec.Request) || len(rec.History) != len(given.History) {
+		t.Fatalf("a route whose read failed: %+v %v; rev %d, given %v, %d history rows", rc, err, rec.Rev, GivenToGrant(rec.Request), len(rec.History))
+	}
+	rc, err = e.RouteDecision(ctx, d.ID, "o1", 2, []Destination{{Kind: DestOperator}}, "", "admin")
+	if err != nil || rc.Rev != 3 || rc.Words != d.ID+" is now for the operator alone: routed by admin" {
+		t.Fatalf("the route sent again: %+v %v", rc, err)
+	}
+	if rec := decisionWhen(t, ld, d.ID, "taken back", func(rec ledger.DecisionRecord) bool { return rec.Rev == 3 }); GivenToGrant(rec.Request) {
+		t.Fatalf("still given: %s", rec.Request)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A route to the operator that names no rev, sent while a route to the
+// grant holds the operations' lock (held at beforeOperate until the second
+// has entered operate, enterOperate) is chosen on what its look reads
+// under the lock: a decision given to the grant, whose take-back names
+// the rev it read, so it is refused invalid.
+func TestARouteIsChosenUnderTheLock(t *testing.T) {
+	e, ld, run, d := grantedDecision(t)
+	reached, release, entered := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var enters, befores atomic.Int32
+	e.enterOperate = func(int64) {
+		if enters.Add(1) == 2 {
+			close(entered)
+		}
+	}
+	e.beforeOperate = func(int64) {
+		if befores.Add(1) == 1 {
+			close(reached)
+			<-release
+		}
+	}
+	type result struct {
+		rc  OpReceipt
+		err error
+	}
+	granted, routed := make(chan result, 1), make(chan result, 1)
+	go func() { rc, err := routeToGrant(e, d.ID, "g1", 1); granted <- result{rc, err} }()
+	<-reached
+	go func() { rc, err := route(e, d.ID, "o1", 0, DestOperator, ""); routed <- result{rc, err} }()
+	<-entered
+	close(release)
+	g, o := <-granted, <-routed
+	e.enterOperate, e.beforeOperate = nil, nil
+	rec := decisionWhen(t, ld, d.ID, "given", func(rec ledger.DecisionRecord) bool { return rec.Rev == 2 })
+	if g.err != nil || o.err == nil && GivenToGrant(rec.Request) {
+		t.Fatalf("the route to the grant %+v %v; the route to the operator %+v %v; given %v", g.rc, g.err, o.rc, o.err, GivenToGrant(rec.Request))
+	}
+	if codeOf(o.err) != CodeInvalid || !GivenToGrant(rec.Request) || kindCount(rec, ledger.HistoryRouted) != 2 {
+		t.Fatalf("the route to the operator with no rev: %v; given %v, %d routed rows", o.err, GivenToGrant(rec.Request), kindCount(rec, ledger.HistoryRouted))
+	}
+	stopRun(t, e, run.ID)
+}
+
+// The row the route's transaction reads judges its choice again: whom the
+// decision is for written straight to the ledger between the look and the
+// transaction (beforeOperate), given to the grant or taken from it, makes
+// the route chosen again from a new look, never committed as the other.
+func TestTheRowJudgesTheRoutesChoice(t *testing.T) {
+	e, ld, run, d := grantedDecision(t)
+	n, _ := ledger.ParseDecisionID(d.ID)
+	looks := 0
+	writeAtFirstLook := func(f *DecisionFor) {
+		looks = 0
+		e.beforeOperate = func(int64) {
+			if looks++; looks > 1 {
+				return
+			}
+			rec := decisionWhen(t, ld, d.ID, "read", func(ledger.DecisionRecord) bool { return true })
+			req, err := withFor(rec.Request, f)
+			if err == nil {
+				_, err = ld.Transition(context.Background(), rec.CurrentRun, func(tx *ledger.Tx) error { return tx.RouteFor(n, req) })
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// Given to the grant since the look: the take-back.
+	writeAtFirstLook(&DecisionFor{Label: GrantDecideLabel})
+	rc, err := route(e, d.ID, "o1", 1, DestOperator, "")
+	rec := decisionWhen(t, ld, d.ID, "read", func(ledger.DecisionRecord) bool { return true })
+	if err != nil || looks != 2 || rc.Rev != 2 || rc.Words != d.ID+" is now for the operator alone: routed by admin" || GivenToGrant(rec.Request) {
+		t.Fatalf("given since the look: %+v %v; %d looks, given %v", rc, err, looks, GivenToGrant(rec.Request))
+	}
+	// Taken from the grant since the look: DR1's route.
+	e.beforeOperate = nil
+	if _, err := routeToGrant(e, d.ID, "g1", 2); err != nil {
+		t.Fatal(err)
+	}
+	writeAtFirstLook(nil)
+	rc, err = route(e, d.ID, "o2", 3, DestOperator, "")
+	rec = decisionWhen(t, ld, d.ID, "read", func(ledger.DecisionRecord) bool { return true })
+	if err != nil || looks != 2 || rc.Rev != 3 || rc.Words != d.ID+" is routed to the operator" || rec.Rev != 3 || GivenToGrant(rec.Request) {
+		t.Fatalf("taken from the grant since the look: %+v %v; %d looks, rev %d, given %v", rc, err, looks, rec.Rev, GivenToGrant(rec.Request))
+	}
+	e.beforeOperate = nil
+	stopRun(t, e, run.ID)
+}
+
+// A Brakeman turn's route to the operator of a decision given to the
+// grant, sent straight to the engine: refused stale_decision, no row, the
+// grant in place; the take-back is the operator's own. Of a decision not
+// given to it, a turn's route is DR1's.
+func TestATurnLeavesTheGrantToTheOperator(t *testing.T) {
+	e, ld, run, d := grantedDecision(t)
+	if _, err := routeToGrant(e, d.ID, "g1", 1); err != nil {
+		t.Fatal(err)
+	}
+	_, err := e.RouteDecision(t.Context(), d.ID, "t1", 2, []Destination{{Kind: DestOperator}}, "", ledger.TurnActor)
+	rec := decisionWhen(t, ld, d.ID, "given", func(rec ledger.DecisionRecord) bool { return rec.Rev == 2 })
+	if codeOf(err) != CodeStaleDecision || !GivenToGrant(rec.Request) || kindCount(rec, ledger.HistoryRouted) != 2 {
+		t.Fatalf("a turn's take-back: %v; given %v, %d routed rows", err, GivenToGrant(rec.Request), kindCount(rec, ledger.HistoryRouted))
+	}
+	if _, err := route(e, d.ID, "o1", 2, DestOperator, ""); err != nil {
+		t.Fatal(err)
+	}
+	if rc, err := e.RouteDecision(t.Context(), d.ID, "t2", 3, []Destination{{Kind: DestOperator}}, "", ledger.TurnActor); err != nil || rc.Rev != 3 {
+		t.Fatalf("a turn's route of a decision not given: %+v %v", rc, err)
+	}
+	stopRun(t, e, run.ID)
 }
