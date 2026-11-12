@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { PREVIEW_MARK, parsePreviewMessage, type PreviewToWorkbench } from '../protocol'
 import { startBridge } from './bridge'
-import { FakeDoc, FakeWin, event, h, type FakeEl } from './fakeDom'
+import { FakeDoc, FakeWin, event, h, pageStrings, plainText, reads, resetReads, type FakeEl } from './fakeDom'
 
 const WORKBENCH = 'http://127.0.0.1:8080'
 const NONCE = 'n0nce-of-the-hello-1234'
@@ -92,8 +92,10 @@ describe('the bridge in a page', () => {
     expect(got.map((a) => a.t)).toEqual(['ready', 'described', 'selected'])
     const [ready, described, selected] = got as [Extract<PreviewToWorkbench, { t: 'ready' }>, Extract<PreviewToWorkbench, { t: 'described' }>, Extract<PreviewToWorkbench, { t: 'selected' }>]
     expect([ready.hints, ready.title, ready.revision]).toEqual([[], '', ''])
-    expect(described.element).toMatchObject({ tag: 'html', selector: 'html', ancestors: [], hints: [], neighbourhood: '', hit: { self: false, selector: '', tag: '' }, cut: [] })
-    expect(selected.element).toMatchObject({ tag: 'p', text: 'Hello', selector: 'p', hit: { self: true, selector: 'p', tag: 'p' }, hints: [], cut: [] })
+    const pSelector = ':root > body:nth-child(2) > p:nth-child(1)'
+    expect(described.element).toMatchObject({ tag: 'html', selector: ':root', ancestors: [], hints: [], neighbourhood: '', hit: { self: false, selector: '', tag: '' }, cut: [] })
+    expect(described.element!.html).toBe('<html><head></head><body><p>Hello</p></body></html>')
+    expect(selected.element).toMatchObject({ tag: 'p', text: 'Hello', selector: pSelector, hit: { self: true, selector: pSelector, tag: 'p' }, hints: [], cut: [] })
     expect(selected.element.ancestors.map((a) => a.tag)).toEqual(['body', 'html'])
     const dir = fileURLToPath(new URL('../../../../internal/api/testdata/', import.meta.url))
     mkdirSync(dir, { recursive: true })
@@ -150,3 +152,113 @@ describe('the bridge in a page', () => {
     expect(answers().map((a) => [a.t, 'missing' in a && a.missing])).toEqual([['ready', false], ['described', true], ['described', true], ['described', true], ['cancelled', false]])
   })
 })
+
+/**
+ * A page on which every walk of the bridge's reaches its bound, made k times larger in every direction a page controls: its
+ * elements, attributes, classes, children, depth and text, an id of megabytes and an attribute naming ten thousand ids.
+ */
+function bigPage(k: number) {
+  const n = (x: number) => x * k
+  const many = (count: number, f: () => FakeEl) => Array.from({ length: count }, f)
+  const values = new Map<number, string>()
+  const value = (size: number) => values.get(size) ?? (values.set(size, 'v'.repeat(size)), values.get(size)!)
+  const attrs = (count: number, size: number) => Object.fromEntries(Array.from({ length: count }, (_, i) => [`data-a${i}`, value(size)]))
+  const words = (count: number) => 'word '.repeat(count)
+  const head = h('head', {}, ...many(n(2100), () => h('meta', { name: 'x', content: 'y' })), h('meta', { name: 'conductor-revision', content: 'abcdef' }))
+  const big = h('div', { id: 'big' }, ...many(n(1000), () => h('span', {}, words(10))))
+  const ctl = h('input', { id: 'ctl', type: 'text', name: 'q', value: 'default-value', ...attrs(n(100), 8) })
+  ctl.value = 'typed-text'
+  const form = h('form', { id: 'f' }, ...many(n(4000), () => h('i', {}, 'x')), h('label', { for: 'ctl' }, 'Query'), ctl)
+  const classes = Array.from({ length: n(2000) }, (_, i) => `c${i}`).join(' ')
+  const leaf = h('span', { id: 'leaf', class: classes, 'aria-labelledby': 'big '.repeat(n(10000)), 'data-conductor-source': 'src/Leaf.vue:1:1', ...attrs(n(100), 200) }, words(n(6000)))
+  let chain = h('div', { id: 'x'.repeat(n(1_000_000)), 'data-conductor-source': 'src/Inner.vue:1:1' }, leaf, ...many(n(200), () => h('div', attrs(n(40), 600), h('p', {}, h('b', {}, words(n(50)))))))
+  for (let d = 0; d < n(100); d++) chain = h('div', { 'data-conductor-source': `src/D${d}.vue:${d + 1}:1` }, chain)
+  const root = h('html', {}, head, h('body', {}, big, form, chain))
+  const stack: FakeEl[] = []
+  for (let e: FakeEl | null = leaf; e; e = e._parent) stack.push(e)
+  return { root, stack }
+}
+
+/** A page of fields and code: a typed input, a textarea, a select, a template holding controls, scripts, styles, an editable region. */
+function fieldsPage() {
+  const typed = h('input', { id: 'q', name: 'q', type: 'text', value: 'secret-default-value' })
+  typed.value = 'secret-typed-text'
+  const area = h('textarea', { id: 'note', name: 'note' }, 'secret-textarea-text')
+  area.value = 'secret-textarea-typed'
+  const option = h('option', { id: 'opt', value: 'secret-option-value', selected: '' }, 'secret-option-text')
+  const select = h('select', { id: 'pick', name: 'pick' }, option)
+  const tpl = h('template', { id: 'tpl' }, h('input', { value: 'secret-template-child' }))
+  tpl.content = h('#document-fragment', {}, h('input', { value: 'secret-template-content' }), h('textarea', {}, 'secret-template-textarea'))
+  const script = h('script', { id: 'js' }, 'var s = "secret-script-text"')
+  const style = h('style', { id: 'css' }, '.x::after { content: "secret-style-text" }')
+  const editable = h('div', { id: 'ed', contenteditable: 'true', role: 'textbox' }, h('p', { id: 'edp' }, 'secret-edited-text'))
+  const form = h('form', { id: 'f' }, h('label', { for: 'q' }, 'Search'), typed, area, select, tpl, script, style, editable, h('button', { id: 'go' }, 'Go'))
+  const root = h('html', {}, h('head', {}, h('style', {}, 'body { --x: "secret-head-style" }'), h('script', {}, 'secret-head-script')), h('body', {}, form))
+  return { root, ids: ['f', 'q', 'note', 'pick', 'opt', 'tpl', 'js', 'css', 'ed', 'edp', 'go'], typed, area }
+}
+
+describe('what the bridge reads of a page', () => {
+  /** Every answer the bridge gives on bigPage(k), and what it read of the page for each: [nodes, list items, string units]. */
+  function everyAnswer(k: number) {
+    const p = bigPage(k)
+    const { doc, win, answers, ask } = framed(p.root)
+    doc.hitAt = () => p.stack
+    const counts: Record<string, number[]> = {}
+    const took = (name: string, act: () => void) => {
+      resetReads()
+      act()
+      counts[name] = [reads.nodes, reads.items, reads.units]
+    }
+    took('ready', () => ask('hello'))
+    took('selected', () => {
+      ask('select')
+      win.dispatch('pointermove', event('pointermove', { clientX: 1, clientY: 1 }))
+      win.dispatch('click', event('click'))
+    })
+    for (const [name, selector] of [['the root', ':root'], ['a leaf', '#leaf'], ['a control', '#ctl']] as const) took(`described ${name}`, () => ask('describe', { selector }))
+    took('looked', () => ask('look'))
+    return { counts, got: answers() }
+  }
+
+  it('reads as much of a page ten times larger as of the page: every walk, list and string stops at its bound', () => {
+    pageStrings(true)
+    try {
+      const small = everyAnswer(1)
+      const large = everyAnswer(10)
+      console.log('reads [nodes, items, units] of the page:', JSON.stringify(small.counts), 'and of the page ten times larger:', JSON.stringify(large.counts))
+      for (const { got } of [small, large]) expect(got.map((a) => a.t)).toEqual(['ready', 'selected', 'described', 'described', 'described', 'looked'])
+      expect(large.counts).toEqual(small.counts)
+      writeAnswers('large-page-messages.json', 'the bridge’s answers on a page ten times larger than its bounds in every direction', large.got)
+    } finally {
+      pageStrings(false)
+    }
+  }, 60_000)
+
+  it('puts no field’s value, no typed text and nothing of a script, a style or a template in any answer', () => {
+    const p = fieldsPage()
+    const { doc, win, answers, ask } = framed(p.root)
+    ask('hello')
+    for (const id of p.ids) ask('describe', { selector: `#${id}` })
+    ask('describe', { selector: ':root' })
+    for (const id of p.ids) {
+      doc.hitAt = () => [doc.getElementById(id)!]
+      ask('select')
+      win.dispatch('pointermove', event('pointermove', { clientX: 1, clientY: 1 }))
+      win.dispatch('click', event('click'))
+    }
+    const got = answers()
+    expect(got.map((a) => a.t)).toEqual(['ready', ...p.ids.map(() => 'described'), 'described', ...p.ids.map(() => 'selected')])
+    expect(JSON.stringify(got)).not.toContain('secret')
+    // The page keeps them all: nothing was written to it.
+    expect([p.typed.attrs.get('value'), p.typed.value, plainText(p.area)]).toEqual(['secret-default-value', 'secret-typed-text', 'secret-textarea-text'])
+    writeAnswers('fields-page-messages.json', 'the bridge’s answers on a page of fields, a template, scripts and styles, every element described and selected', got)
+  })
+})
+
+/** The answers written for internal/proto's parser (internal/api/testdata), one message a line. */
+function writeAnswers(name: string, what: string, messages: PreviewToWorkbench[]) {
+  const dir = fileURLToPath(new URL('../../../../internal/api/testdata/', import.meta.url))
+  mkdirSync(dir, { recursive: true })
+  const comment = `Written by web/app/utils/previewBridge/bridge.test.ts: ${what}, each with the hello's nonce, for internal/proto's parser.`
+  writeFileSync(dir + name, `{"comment": ${JSON.stringify(comment)}, "nonce": ${JSON.stringify(NONCE)}, "messages": [\n${messages.map((m) => JSON.stringify(m)).join(',\n')}\n]}\n`)
+}

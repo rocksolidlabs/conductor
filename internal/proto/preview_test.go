@@ -1312,10 +1312,12 @@ func TestEveryPreviewMemberIsAcceptedAtItsEdges(t *testing.T) {
 // fixtures report.test.ts writes (every field at its bound, and the
 // largest-tag shape), each within the element report's schema and its bound
 // by the shared measure and, in a selected, the deepest shape the bridge
-// writes, within the walk's depth; and its answers on a plain page
-// (bridge.test.ts: no hint kind, no title, an element without ancestors),
-// each taken by this parser as the bridge's parser took it. Each is written
-// with HTML escaping off, as the browser's writer writes it.
+// writes, within the walk's depth; and its answers (bridge.test.ts) on a
+// plain page (no hint kind, no title, an element without ancestors), on a
+// page larger than every bound of its reads, and on a page of fields,
+// scripts, styles and a template, each taken by this parser as the bridge's
+// parser took it. Each is written with HTML escaping off, as the browser's
+// writer writes it.
 func TestTheBridgesOwnMessagesParse(t *testing.T) {
 	read := func(name string, into any) {
 		raw, err := os.ReadFile(filepath.Join("..", "api", "testdata", name))
@@ -1342,20 +1344,30 @@ func TestTheBridgesOwnMessagesParse(t *testing.T) {
 			t.Errorf("%s in a selected: %v", name, err)
 		}
 	}
-	var plain struct {
-		Nonce    string `json:"nonce"`
-		Messages []obj  `json:"messages"`
-	}
-	read("plain-page-messages.json", &plain)
-	var types []string
-	for _, m := range plain.Messages {
-		p, err := ParsePreviewMessage(writeText(m), PreviewToWorkbench, plain.Nonce)
-		if err != nil {
-			t.Errorf("%s: %v", m["t"], err)
+	answers := func(name string) []string {
+		var page struct {
+			Nonce    string `json:"nonce"`
+			Messages []obj  `json:"messages"`
 		}
-		types = append(types, p.T)
+		read(name, &page)
+		var types []string
+		for i, m := range page.Messages {
+			p, err := ParsePreviewMessage(writeText(m), PreviewToWorkbench, page.Nonce)
+			if err != nil {
+				t.Fatalf("%s, answer %d (%v): %v", name, i, m["t"], err)
+			}
+			types = append(types, p.T)
+		}
+		return types
 	}
-	if !slices.Equal(types, []string{PreviewReady, PreviewDescribed, PreviewSelected}) {
+	if types := answers("plain-page-messages.json"); !slices.Equal(types, []string{PreviewReady, PreviewDescribed, PreviewSelected}) {
 		t.Fatalf("the plain page's answers: %v", types)
+	}
+	// A page larger than every bound of the bridge's reads, and a page of fields, scripts, styles and a template.
+	if types := answers("large-page-messages.json"); len(types) != 6 {
+		t.Fatalf("the large page's answers: %v", types)
+	}
+	if types := answers("fields-page-messages.json"); len(types) != 24 {
+		t.Fatalf("the fields page's answers: %v", types)
 	}
 }

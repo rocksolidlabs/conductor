@@ -1,8 +1,8 @@
 import { MAX_PREVIEW_REVISION, MAX_PREVIEW_TITLE, MAX_PREVIEW_URL, MAX_PREVIEW_USER_AGENT, PREVIEW_VERSION, type PreviewPage } from '../protocol'
 import { createGate, type Answer } from './gate'
 import { hintKindsOf } from './hints'
-import { cutStart, readElement, text } from './report'
-import { pageEpoch, stackAt, stepStack, walk, type El } from './select'
+import { cutStart, readElement } from './report'
+import { nameOf, pageEpoch, pageText, stackAt, stepStack, walk, walkTree, type El } from './select'
 
 /**
  * The preview bridge (docs/protocol.md, Preview bridge) in the page's window: it does nothing until a workbench origin the server
@@ -18,10 +18,17 @@ function finite(v: unknown, min: number, fallback: number): number {
   return typeof v === 'number' && Number.isFinite(v) && v >= min ? v : fallback
 }
 
-/** The page's revision (<meta name="conductor-revision">) when it is in the schema's form, else "". */
+/** The most nodes the revision is looked for among: the root's children and, of the head, its children. */
+const HEAD_NODES = 128
+
+/** The page's revision (<meta name="conductor-revision"> in the head) when it is in the schema's form, else "". */
 function revisionOf(doc: Document): string {
-  const meta = text(doc.querySelector('meta[name="conductor-revision"]')?.getAttribute('content')).trim().toLowerCase()
-  return meta.length <= MAX_PREVIEW_REVISION && /^[0-9a-f]{4,64}(?:\+[0-9a-f]{4,64})?$/.test(meta) ? meta : ''
+  let rev = ''
+  const meta = (e: El) => nameOf(e, 8) === 'meta' && pageText(e.getAttribute('name'), 32) === 'conductor-revision'
+  const visit = (e: El, depth: number) =>
+    depth === 2 && meta(e) ? ((rev = pageText(e.getAttribute('content'), MAX_PREVIEW_REVISION).trim().toLowerCase()), null) : depth === 0 || (depth === 1 && nameOf(e, 8) === 'head')
+  if (doc.documentElement) walkTree(doc.documentElement, HEAD_NODES, (n, depth) => n.nodeType === 1 && visit(n as El, depth))
+  return rev.length <= MAX_PREVIEW_REVISION && /^[0-9a-f]{4,64}(?:\+[0-9a-f]{4,64})?$/.test(rev) ? rev : ''
 }
 
 /** Starts the bridge in win, answering the workbench origins given (the server's): none, or a window no parent frames, starts nothing. */
@@ -43,9 +50,9 @@ export function startBridge(win: Window & typeof globalThis, origins: readonly s
   let epoch: { value(): number } | null = null
 
   const page = (): PreviewPage => ({
-    url: cutStart(text(win.location?.href), MAX_PREVIEW_URL),
+    url: cutStart(pageText(win.location?.href, MAX_PREVIEW_URL), MAX_PREVIEW_URL),
     // Characters, not bytes: twice the bound in code units holds the bound in characters, a pair cut there past it.
-    title: [...text(typeof doc.title === 'string' ? doc.title.slice(0, 2 * MAX_PREVIEW_TITLE) : '')].slice(0, MAX_PREVIEW_TITLE).join(''),
+    title: [...pageText(doc.title, 2 * MAX_PREVIEW_TITLE)].slice(0, MAX_PREVIEW_TITLE).join(''),
     viewport: {
       width: finite(win.innerWidth, 0, 0),
       height: finite(win.innerHeight, 0, 0),
@@ -53,7 +60,7 @@ export function startBridge(win: Window & typeof globalThis, origins: readonly s
       scrollX: finite(win.scrollX, -Infinity, 0),
       scrollY: finite(win.scrollY, -Infinity, 0),
       colorScheme: win.matchMedia?.('(prefers-color-scheme: dark)')?.matches === true ? 'dark' : 'light',
-      userAgent: cutStart(text(win.navigator.userAgent), MAX_PREVIEW_USER_AGENT),
+      userAgent: cutStart(pageText(win.navigator.userAgent, MAX_PREVIEW_USER_AGENT), MAX_PREVIEW_USER_AGENT),
     },
     epoch: epoch?.value() ?? 0,
     revision: revisionOf(doc),
@@ -74,8 +81,9 @@ export function startBridge(win: Window & typeof globalThis, origins: readonly s
     }
     const r = el.getBoundingClientRect()
     Object.assign(box.style, { display: 'block', left: `${r.x}px`, top: `${r.y}px`, width: `${r.width}px`, height: `${r.height}px` })
-    const id = text(el.id)
-    label.textContent = `${text(el.tagName).toLowerCase()}${id ? '#' + id : ''}${[...el.classList].slice(0, 2).map((c) => '.' + c).join('')}`
+    const id = pageText(el.id, 64)
+    const classes = pageText(el.getAttribute('class'), 128).trim().split(/\s+/).filter(Boolean).slice(0, 2)
+    label.textContent = `${nameOf(el, 64)}${id ? '#' + id : ''}${classes.map((c) => '.' + c).join('')}`
   }
 
   const leave = () => {
@@ -86,7 +94,7 @@ export function startBridge(win: Window & typeof globalThis, origins: readonly s
     host?.remove()
   }
 
-  const read = (el: El) => readElement(el, { doc, win, host })
+  const read = (el: El) => readElement(el, { doc, win })
   const choose = (el: El) => {
     // The outline is off the page before it is read, so no frame holds it.
     leave()
@@ -164,7 +172,7 @@ export function startBridge(win: Window & typeof globalThis, origins: readonly s
     try {
       switch (m.t) {
         case 'hello':
-          epoch ??= pageEpoch({ win, doc, host: () => host, observer: (cb) => new win.MutationObserver(cb), frame: (cb) => win.requestAnimationFrame(cb) })
+          epoch ??= pageEpoch({ win, doc, mine: (n) => !!host && n === host, observer: (cb) => new win.MutationObserver(cb), frame: (cb) => win.requestAnimationFrame(cb) })
           answer({ t: 'ready', version: PREVIEW_VERSION, hints: hintKindsOf(doc), ...page() })
           break
         case 'select':

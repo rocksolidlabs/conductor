@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { measuredBytes } from '../protocol'
 import { FakeDoc, h, type FakeEl } from './fakeDom'
 import { readElement } from './report'
 import { pageEpoch, selectorFor, stackAt, stepStack, walk, type Doc, type El } from './select'
@@ -12,7 +13,7 @@ function page() {
   const cancel = h('button', { class: 'btn' }, 'Cancel')
   const bar = h('div', { class: 'bar' }, save, cancel)
   const ghost = h('button', { id: 'ghost', class: 'ghost' }, 'Ghost')
-  ghost.style['pointer-events'] = 'none'
+  ghost.computed['pointer-events'] = 'none'
   const sleeper = h('a', { href: '/x' }, 'Asleep')
   const inert = h('section', { inert: '' }, h('p', {}, sleeper))
   const overlay = h('div', { class: 'overlay' })
@@ -28,28 +29,44 @@ function page() {
   return { d, root, body, main, bar, save, cancel, ghost, inert, sleeper, overlay, twins }
 }
 
-describe('the selector', () => {
-  it('is found exactly once, an id only when no other element has it', () => {
-    const p = page()
-    for (const e of [p.save, p.cancel, p.ghost, p.sleeper, p.overlay, p.twins[0]!, p.twins[1]!]) {
-      const s = selectorFor(el(e), doc(p.d))
-      expect(p.d.querySelectorAll(s)).toEqual([e])
-    }
-    expect(selectorFor(el(p.ghost), doc(p.d))).toBe('#ghost')
-    // Two spans share an id: the id is no selector, their place among their parent's spans is.
-    expect(selectorFor(el(p.twins[1]!), doc(p.d))).toBe('span:nth-of-type(2)')
-    expect(selectorFor(el(p.save), doc(p.d))).toBe('button.btn.save:nth-of-type(1)')
-    // A step found more than once climbs to its parent's, up to an ancestor's unique id.
-    p.body.append(h('div', { class: 'bar' }, h('button', { class: 'btn' }, 'A'), h('button', { class: 'btn' }, 'B')))
-    expect(selectorFor(el(p.cancel), doc(p.d))).toBe('#app > div.bar > button.btn:nth-of-type(2)')
-  })
+const nowhere = { getComputedStyle: () => ({ getPropertyValue: () => '' }) }
 
-  it('leaves classes a build generated out, and gives none for the bridge host', () => {
+describe('the selector', () => {
+  it('is an id the document gives for the element, else its path from the root, and a describe of it finds the element', () => {
     const p = page()
-    const gen = h('i', { class: 'css-1a2b3c4d icon' })
-    p.bar.append(gen)
-    expect(selectorFor(el(gen), doc(p.d))).toBe('i.icon')
-    expect(selectorFor(el(p.overlay), doc(p.d), el(p.overlay))).toBe('')
+    for (const e of [p.root, p.save, p.cancel, p.ghost, p.sleeper, p.overlay, p.twins[0]!, p.twins[1]!]) expect(p.d.querySelector(selectorFor(el(e), doc(p.d)))).toBe(e)
+    expect(selectorFor(el(p.ghost), doc(p.d))).toBe('#ghost')
+    // Two spans share an id: the document gives the first for it; the second is named by its path.
+    expect(selectorFor(el(p.twins[0]!), doc(p.d))).toBe('#twin')
+    expect(selectorFor(el(p.twins[1]!), doc(p.d))).toBe(':root > body:nth-child(1) > main:nth-child(1) > span:nth-child(5)')
+    expect(selectorFor(el(p.save), doc(p.d))).toBe(':root > body:nth-child(1) > main:nth-child(1) > div:nth-child(1) > button:nth-child(1)')
+    expect(selectorFor(el(p.root), doc(p.d))).toBe(':root')
+    // A name that is not a plain one is any; an element the document does not hold has none.
+    const odd = h('my:Thing')
+    p.bar.append(odd, 'text between', h('i'))
+    expect(selectorFor(el(odd), doc(p.d))).toBe(':root > body:nth-child(1) > main:nth-child(1) > div:nth-child(1) > *:nth-child(3)')
+    expect(selectorFor(el(p.bar.elements[3]!), doc(p.d))).toMatch(/> i:nth-child\(4\)$/)
+    expect(selectorFor(el(h('div', {}, h('b'))), doc(p.d))).toBe('')
+  })
+})
+
+describe('the selector a report carries', () => {
+  it('is whole and finds its element, or is absent: ids past the bound, a hundred levels down, one of ten thousand', () => {
+    const longer = h('button', { id: 'a'.repeat(1100) })
+    const atBound = h('button', { id: 'a'.repeat(1023) })
+    let deep = h('i')
+    const deepest = deep
+    for (let i = 0; i < 100; i++) deep = h('div', {}, deep)
+    const rows = Array.from({ length: 10000 }, () => h('li'))
+    const root = h('html', {}, h('body', {}, longer, atBound, deep, h('ul', {}, ...rows)))
+    const d = new FakeDoc(root)
+    const named = [longer, atBound, deepest, rows[0]!, rows[50]!, rows[9999]!].map((e) => {
+      const s = readElement(el(e), { doc: doc(d), win: nowhere }).selector
+      expect(measuredBytes(s)).toBeLessThanOrEqual(1024)
+      if (s) expect(d.querySelectorAll(s), s.slice(0, 80)).toEqual([e])
+      return s !== ''
+    })
+    expect(named).toEqual([true, true, false, true, true, false])
   })
 })
 
@@ -61,8 +78,8 @@ describe('the stack and the walk', () => {
     const down = stepStack(stack, stack[0]!, true)
     expect(down).toBe(p.save)
     expect(stepStack(stack, down, false)).toBe(p.overlay)
-    const r = readElement(down as El, { doc: doc(p.d), win: { getComputedStyle: () => ({ getPropertyValue: () => '' }) }, host: null })
-    expect(r.hit).toEqual({ self: false, selector: 'div.overlay', tag: 'div' })
+    const r = readElement(down as El, { doc: doc(p.d), win: nowhere })
+    expect(r.hit).toEqual({ self: false, selector: ':root > body:nth-child(1) > div:nth-child(2)', tag: 'div' })
   })
 
   it('leaves the bridge host out of the stack', () => {
@@ -91,7 +108,7 @@ describe('the stack and the walk', () => {
     expect(walk(inert, 'previous', null)).toBe(p.ghost)
     expect(walk(el(p.save), 'previous', null)).toBe(p.save)
     // The report of the inert link says so; a click there reaches the overlay.
-    const r = readElement(el(p.sleeper), { doc: doc(p.d), win: { getComputedStyle: () => ({ getPropertyValue: () => '' }) }, host: null })
+    const r = readElement(el(p.sleeper), { doc: doc(p.d), win: nowhere })
     expect(r.state.inert).toBe(true)
     expect(r.hit.tag).toBe('div')
   })
@@ -117,7 +134,7 @@ describe('the page epoch', () => {
     const epoch = pageEpoch({
       win: target as unknown as Window,
       doc: { ...target, documentElement: h('html') } as unknown as Document,
-      host: () => el(host),
+      mine: (n) => n === host,
       observer: (cb) => {
         mutate = cb
         return { observe: () => {}, disconnect: () => {} }

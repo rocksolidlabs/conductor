@@ -31,7 +31,7 @@
     "role": "",
     "name": "Hello",
     "text": "Hello",
-    "selector": "html",
+    "selector": ":root",
     "box": {
      "x": 0,
      "y": 0,
@@ -343,7 +343,7 @@
     "role": "",
     "name": "Hello",
     "text": "Hello",
-    "selector": "p",
+    "selector": ":root > body:nth-child(2) > p:nth-child(1)",
     "box": {
      "x": 0,
      "y": 0,
@@ -363,7 +363,7 @@
     },
     "hit": {
      "self": true,
-     "selector": "p",
+     "selector": ":root > body:nth-child(2) > p:nth-child(1)",
      "tag": "p"
     },
     "html": "<p>Hello</p>",

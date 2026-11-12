@@ -2,8 +2,8 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { ELEMENT_BOUNDS as B, ELEMENT_CUTS, MAX_ELEMENT_REPORT, measuredBytes, previewMeasure, validElement, type ElementReport } from '../protocol'
-import { FakeDoc, h } from './fakeDom'
-import { REPORT_STYLES, boundFields, cutEnd, cutHTML, cutReport, cutStart, readElement } from './report'
+import { FakeDoc, h, plainText } from './fakeDom'
+import { REPORT_STYLES, boundFields, cutEnd, cutReport, cutStart, markup, readElement, tagWithin } from './report'
 import type { Doc, El } from './select'
 
 /** s of exactly n measured bytes, made of c (a character of a measure that divides n, or 'a'). */
@@ -61,19 +61,42 @@ describe('the cut of one field', () => {
     expect(cutEnd('😀' + 'a'.repeat(8), 8)).toBe('a'.repeat(8))
   })
 
-  it('cuts HTML at an element boundary at each bound', () => {
-    expect(cutHTML('<p>aaa</p><p>bbb</p>', 12)).toBe('<p>aaa</p>')
-    expect(cutHTML('<p>aaa</p><p>bbb</p>', 2)).toBe('')
-    const html = '<ul>' + '<li class="row">item</li>'.repeat(2000) + '</ul>'
+  it('never cuts markup or a selector: one past its bound is none, an opening tag loses whole attributes', () => {
+    const over = '<ul>' + '<li class="row">item</li>'.repeat(2000) + '</ul>'
+    const r = boundFields({ ...fullest('a'), html: over, neighbourhood: over, selector: '#' + of(B.selector), hit: { self: true, selector: '#' + of(B.selector), tag: 'a' } })
+    expect([r.html, r.neighbourhood, r.selector, r.hit.selector]).toEqual(['', '', '', ''])
+    const open = '<div id="a b" class="x &quot;y&quot;" title="t">text</div>'
+    // Measured as a message measures them: each quote in two bytes.
+    expect([tagWithin(open, 100), tagWithin(open, 42), tagWithin(open, 41), tagWithin(open, 5), tagWithin(open, 4)]).toEqual([
+      '<div id="a b" class="x &quot;y&quot;" title="t">',
+      '<div id="a b" class="x &quot;y&quot;">',
+      '<div id="a b">',
+      '<div>',
+      '',
+    ])
+  })
+})
+
+describe('the markup the bridge writes', () => {
+  it('writes tags and attributes itself, escaped, closes every element it opens and stops whole at its bound', () => {
+    const p = h('p', { title: 'a "quoted" <b>' }, 'one < two & ', h('b', {}, 'three'), h('br'), 'four')
+    expect(markup(p as unknown as El, 1000)).toBe('<p title="a &quot;quoted&quot; &lt;b&gt;">one &lt; two &amp; <b>three</b><br>four</p>')
+    const list = h('ul', {}, ...Array.from({ length: 2000 }, (_, i) => h('li', { class: 'row' }, `item ${i}`)))
     for (const bound of [B.html, B.neighbourhood]) {
-      const cut = cutHTML(html, bound)
-      expect(measuredBytes(cut)).toBeLessThanOrEqual(bound)
-      expect(measuredBytes(cut)).toBeGreaterThan(bound - 30)
-      expect(cut.endsWith('>')).toBe(true)
-      expect(html.startsWith(cut)).toBe(true)
+      const html = markup(list as unknown as El, bound)
+      expect(measuredBytes(html)).toBeLessThanOrEqual(bound)
+      expect(measuredBytes(html)).toBeGreaterThan(bound - 40)
+      // A text node written up to what is left, then every open element closed: never half a tag.
+      expect(html).toMatch(/^<ul><li class="row">item 0<\/li>.*<\/li><\/ul>$|^<ul>.*<li class="row">item \d*<\/li><\/ul>$/)
+      expect(html.match(/<li/g)!.length).toBe(html.match(/<\/li>/g)!.length)
     }
-    const r = boundFields({ ...fullest('a'), html, neighbourhood: html })
-    expect([r.html.at(-1), r.neighbourhood.at(-1)]).toEqual(['>', '>'])
+  })
+
+  it('writes the neighbourhood to the siblings’ grandchildren, the element itself whole', () => {
+    const el = h('span', {}, h('i', {}, h('b', {}, h('u', {}, 'deep'))))
+    const sib = h('div', {}, h('i', {}, h('b', {}, h('u', {}, 'deep'))))
+    const parent = h('section', {}, el, sib)
+    expect(markup(parent as unknown as El, B.neighbourhood, el as unknown as El)).toBe('<section><span><i><b><u>deep</u></b></i></span><div><i><b>…</b></i></div></section>')
   })
 })
 
@@ -116,7 +139,7 @@ describe('the cut of a report', () => {
 
   it('stops at the first step that fits', () => {
     const lean = { ...fullest('a'), attributes: [], styles: [], hints: [], ancestors: [] }
-    const small = cutReport({ ...lean, html: '<b>' + 'x'.repeat(12000) + '</b>', neighbourhood: '<i>aaaa</i>'.repeat(3000) })
+    const small = cutReport({ ...lean, html: '<b>' + 'x'.repeat(12000) + '</b>', neighbourhood: '<i>aaaa</i>'.repeat(2234) })
     expect(small.cut).toEqual(['neighbourhood'])
     expect(cutReport({ ...fullest('a'), neighbourhood: '', html: '', attributes: [], styles: [], hints: [], ancestors: [] }).cut).toEqual([])
   })
@@ -140,19 +163,22 @@ describe('the reading of an element', () => {
   it('never reads an input value, a password or a textarea text', () => {
     const p = form()
     for (const el of [p.f, p.pw, p.typed, p.area, p.label]) {
-      const r = readElement(el as unknown as El, { doc: p.d as unknown as Doc, win: win(), host: null })
+      const r = readElement(el as unknown as El, { doc: p.d as unknown as Doc, win: win() })
       const all = JSON.stringify(r)
-      for (const secret of ['hunter2', 'typed-words', 'draft-text']) expect(all, `${el.tagName} ${secret}`).not.toContain(secret)
+      for (const secret of ['hunter2', 'typed-words', 'draft-text']) expect(all, `${el.tag} ${secret}`).not.toContain(secret)
     }
-    // The page keeps them: the clone is emptied, never the page.
+    // Of a control, what it is: its type, its name, its id, its classes, its role and its aria- attributes.
+    const typed = readElement(p.typed as unknown as El, { doc: p.d as unknown as Doc, win: win() })
+    expect([typed.attributes, typed.html, typed.text]).toEqual([[['name', 'q']], '<input name="q">', ''])
+    // The page keeps them: nothing is written to it.
     expect(p.pw.getAttribute('value')).toBe('hunter2')
-    expect(p.area.textContent).toBe('draft-text')
+    expect(plainText(p.area)).toBe('draft-text')
   })
 
   it('reads the name, the state, the hit test and the fixed list of styles', () => {
     const p = form()
     p.save.attrs.set('disabled', '')
-    const r = readElement(p.save as unknown as El, { doc: p.d as unknown as Doc, win: win({ display: 'block', 'pointer-events': 'none' }), host: null })
+    const r = readElement(p.save as unknown as El, { doc: p.d as unknown as Doc, win: win({ display: 'block', 'pointer-events': 'none' }) })
     expect(r.name).toBe('Save the form')
     expect(r.selector).toBe('#save')
     expect(r.state).toMatchObject({ disabled: true, pointerEvents: 'none' })
@@ -172,7 +198,7 @@ describe('the reading of an element', () => {
     const parent = h('div', { class: `bar${lone}`, role: lone }, el)
     const d = new FakeDoc(h('html', {}, h('body', {}, parent)))
     d.hitAt = () => [el]
-    const r = readElement(el as unknown as El, { doc: d as unknown as Doc, win: win({ 'pointer-events': `auto${lone}` }), host: null })
+    const r = readElement(el as unknown as El, { doc: d as unknown as Doc, win: win({ 'pointer-events': `auto${lone}` }) })
     expect(validElement(r)).toBe(true)
     expect(previewMeasure(r)).toBeLessThanOrEqual(MAX_ELEMENT_REPORT)
     expect([r.classes, r.role, r.text, r.state.ariaDisabled, r.state.ariaExpanded, r.state.pointerEvents]).toEqual(['a� b', 'r�', 'Save�', '�', '�x', 'auto�'])
