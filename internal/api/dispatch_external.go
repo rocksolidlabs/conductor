@@ -397,13 +397,14 @@ type externalPreview struct {
 const maxPreviewDescription = 2 << 10
 
 // handleDispatchExternalPreview reads an item and answers what its import
-// would make (externalPreview); it writes nothing.
+// would make (externalPreview); it writes nothing, and a store that takes
+// no import (read-only) answers it as an import's 503.
 func (s *Server) handleDispatchExternalPreview(w http.ResponseWriter, r *http.Request) {
 	var body externalPreviewBody
 	if !decodeExternal(w, r, &body, nil) {
 		return
 	}
-	ds, ok := s.dispatchStore(w)
+	ds, ok := s.dispatchWriter(w)
 	if !ok {
 		return
 	}
@@ -764,6 +765,10 @@ func (s *Server) handleDispatchRefresh(w http.ResponseWriter, r *http.Request) {
 	caps := s.trackerCaps()
 	ctx, cancel := trackerContext(r, caps.busy+caps.reads+caps.write+caps.images)
 	defer cancel()
+	op := body.op(r)
+	if s.replayed(ctx, w, ds, op, dispatch.IntentRefresh, dispatch.RefreshArgs{Key: key}, key) {
+		return
+	}
 	release, ok := s.lockFor(ctx, w, "ticket:"+key)
 	if !ok {
 		return
@@ -778,7 +783,6 @@ func (s *Server) handleDispatchRefresh(w http.ResponseWriter, r *http.Request) {
 		writeDispatch(w, http.StatusConflict, map[string]any{"error": apiError{Code: dispatch.RefusalInvalid, Message: key + " has no linked issue"}})
 		return
 	}
-	op := body.op(r)
 	v := tracker.Validators{NodeID: node}
 	if er := tv.ExternalRead; er != nil && er.ExternalID == tv.ExternalID && er.Error == "" {
 		v.Issue, v.Pull = er.IssueETag, er.PullETag

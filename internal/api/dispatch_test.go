@@ -265,6 +265,15 @@ var dispatchRequests = map[string]struct {
 	"POST /api/dispatch/views/{id}/edit":                       {"/api/dispatch/views/0123456789abcdef/edit", map[string]any{"opId": "b15", "name": "x"}},
 	"POST /api/dispatch/views/{id}/delete":                     {"/api/dispatch/views/0123456789abcdef/delete", map[string]any{"opId": "b16"}},
 	"GET /api/dispatch/ops/{opId}":                             {"/api/dispatch/ops/a1", nil},
+	// A ticket's GitHub item (dispatch_external.go).
+	"POST /api/dispatch/external/preview":                 {"/api/dispatch/external/preview", map[string]any{"url": "https://github.com/octo/app/issues/1"}},
+	"POST /api/dispatch/projects/{key}/import":            {"/api/dispatch/projects/CND/import", map[string]any{"opId": "e1", "url": "https://github.com/octo/app/issues/1"}},
+	"POST /api/dispatch/tickets/{key}/external":           {"/api/dispatch/tickets/CND-1/external", map[string]any{"opId": "e2", "url": "https://github.com/octo/app/issues/1"}},
+	"POST /api/dispatch/tickets/{key}/external/delete":    {"/api/dispatch/tickets/CND-1/external/delete", map[string]any{"opId": "e3"}},
+	"POST /api/dispatch/tickets/{key}/external/refresh":   {"/api/dispatch/tickets/CND-1/external/refresh", map[string]any{"opId": "e4"}},
+	"POST /api/dispatch/tickets/{key}/external/authority": {"/api/dispatch/tickets/CND-1/external/authority", map[string]any{"opId": "e5", "field": "title", "owner": "dispatch"}},
+	"POST /api/dispatch/tickets/{key}/links/{id}/read":    {"/api/dispatch/tickets/CND-1/links/0123456789abcdef/read", map[string]any{}},
+	"GET /api/dispatch/tickets/{key}/links/{id}/read":     {"/api/dispatch/tickets/CND-1/links/0123456789abcdef/read", nil},
 }
 
 // eachDispatchRoute calls f with every Dispatch route the server has, by
@@ -529,7 +538,7 @@ func TestDispatchProjectRoutes(t *testing.T) {
 	}
 	e.expect(t, "POST", "/api/dispatch/projects/CND/edit", map[string]any{"opId": opID(), "expectedRev": rev, "name": "Lost"}, http.StatusConflict, "stale_revision")
 	e.expect(t, "POST", "/api/dispatch/projects/NOPE/edit", map[string]any{"opId": opID(), "name": "x"}, http.StatusNotFound, "not_found")
-	e.expect(t, "POST", "/api/dispatch/projects/CND/edit", map[string]any{"opId": opID(), "closeRequires": []string{"merged"}}, http.StatusConflict, "invalid")
+	e.expect(t, "POST", "/api/dispatch/projects/CND/edit", map[string]any{"opId": opID(), "closeRequires": []string{"merged", "merged"}}, http.StatusConflict, "invalid")
 	e.expect(t, "POST", "/api/dispatch/projects/C/edit", map[string]any{"opId": opID(), "name": "x"}, http.StatusBadRequest, "invalid_request")
 
 	// Archived: every write under it refused, archived again refused.
@@ -1467,8 +1476,11 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 		t.Fatalf("the review: %+v %v", rrc, err)
 	}
 	review, marks := "/api/dispatch/reviews/"+rv.ID, "/api/dispatch/findings/"+rv.Findings[0].ID+"/marks"
+	// A link's read reads an external link of the ticket's, never read.
+	linkRead := "/api/dispatch/tickets/CND-1/links/" + doneOf(t)(e.srv.dispatch.AddLink(context.Background(), adminOp(""), "CND-1",
+		dispatch.NewLink{Kind: dispatch.LinkExternal, URL: "https://github.com/octo/app/issues/1"}, nil)).ID + "/read"
 	takeNone := []string{"/api/dispatch/people", "/api/dispatch/projects/CND", "/api/dispatch/tickets/CND-1", "/api/dispatch/ops/a1", attachment,
-		"/api/dispatch/tickets/CND-1/plans", plan, launch, review}
+		"/api/dispatch/tickets/CND-1/plans", plan, launch, review, linkRead}
 	reads := 0
 	eachDispatchRoute(t, e.srv, func(method, path string, _ any) {
 		if method != http.MethodGet {
@@ -1494,6 +1506,9 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 			if strings.HasPrefix(path, "/api/dispatch/findings/") {
 				path = marks
 			}
+			if strings.HasSuffix(path, "/read") {
+				path = linkRead
+			}
 			e.expect(t, method, path, nil, http.StatusOK, "")
 		}
 		sep := "?"
@@ -1508,7 +1523,7 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 			e.expect(t, method, path+sep+q, nil, http.StatusBadRequest, "invalid_request")
 		}
 	})
-	if reads != 19 {
+	if reads != 20 {
 		t.Fatalf("%d reads", reads)
 	}
 }
@@ -1623,6 +1638,9 @@ func TestDispatchEveryWriteBodyIsBounded(t *testing.T) {
 	// the body.
 	fields := map[string]string{"POST /api/dispatch/tickets": `"project":"CND",`}
 	refusal := strings.TrimPrefix(dispatch.ErrBadBy.Error(), "dispatch: ")
+	// A read of GitHub's that runs no operation takes no opId: a body at
+	// its bound is read whole and refused for its first member.
+	noOp := map[string]bool{"POST /api/dispatch/external/preview": true, "POST /api/dispatch/tickets/{key}/links/{id}/read": true}
 	// shapes are the bodies of n bytes that are not JSON, with their
 	// Content-Type: the upload's, its display name one character past its
 	// bound and its file the rest.
@@ -1665,12 +1683,16 @@ func TestDispatchEveryWriteBodyIsBounded(t *testing.T) {
 			switch {
 			case n > bound && (status != http.StatusRequestEntityTooLarge || errorCode(out) != "bound"):
 				t.Fatalf("%s, a body past its bound: %d %.300s", r.pattern, status, data)
+			case n == bound && noOp[r.pattern]:
+				if status != http.StatusBadRequest || !strings.Contains(apiMessage(out), `unknown field "opId"`) {
+					t.Fatalf("%s, a body at its bound: %d %.300s", r.pattern, status, data)
+				}
 			case n == bound && (status != http.StatusBadRequest || errorCode(out) != "invalid_request" || out["error"].(map[string]any)["message"] != refusal):
 				t.Fatalf("%s, a body at its bound: %d %.300s, want the display name's refusal", r.pattern, status, data)
 			}
 		}
 	}
-	if writes != 36 {
+	if writes != 43 {
 		t.Fatalf("%d writes", writes)
 	}
 }

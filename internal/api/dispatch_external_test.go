@@ -395,6 +395,8 @@ func TestImportTimeout(t *testing.T) {
 		t.Fatalf("the held image: %v", out["images"])
 	}
 	gate.Open()
+	// The resend's own budget is not what is tested: it is the product's.
+	caps.images = testWait
 	again := e.importItem(t, "TMO", "https://github.com/octo/app/issues/30", op, http.StatusOK, nil)
 	if ims := imagesOf(t, again); ims[pngID]["attachmentId"] == nil || ims[svgID]["skipped"] != "type" {
 		t.Fatalf("the resend: %v", again["images"])
