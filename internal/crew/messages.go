@@ -127,7 +127,8 @@ func (r *run) unacked(to string) int {
 // SendMessage sends text from the session's member to the member named,
 // in a managed run: kept, then typed into the recipient's session once it
 // has its task line. ErrInboxFull once the recipient has maxInbox
-// messages not acknowledged.
+// messages not acknowledged; ErrLane, nothing written, when the two are in
+// two lanes of a comparison.
 func (e *Engine) SendMessage(ctx context.Context, sessionID, to, text string) (Message, error) {
 	v, ok := e.bySession.Load(sessionID)
 	if !ok {
@@ -162,6 +163,9 @@ func (e *Engine) send(ctx context.Context, r *run, from *member, to, text string
 	case toM == from:
 		e.mu.Unlock()
 		return Message{}, fmt.Errorf("%w: a message to oneself", ErrBadMessage)
+	case r.laneOf(from) != r.laneOf(toM):
+		e.mu.Unlock()
+		return Message{}, fmt.Errorf("%w: %s is in another lane of this comparison: a message stays in its lane", ErrLane, to)
 	case r.stoppedAt != nil:
 		e.mu.Unlock()
 		return Message{}, ErrRunStopped

@@ -43,7 +43,10 @@ type TaskFile struct {
 	Owner     *TaskPerson  `json:"owner,omitempty"`
 	OwnerFrom string       `json:"ownerFrom,omitempty"`
 	People    []TaskPerson `json:"people,omitempty"`
-	Worktree  string       `json:"worktree"`
+	// Compare is the comparison the task is a lane of (compareFor), its
+	// own lane's part alone; absent outside a comparison. Never cut.
+	Compare  *TaskCompare `json:"compare,omitempty"`
+	Worktree string       `json:"worktree"`
 	Branch    string       `json:"branch"`
 	Prefix    string       `json:"prefix,omitempty"`
 	Start     string       `json:"start"`
@@ -256,6 +259,7 @@ func (e *Engine) taskFile(ctx context.Context, r *run, a *attempt, tr *tree, blo
 	f := TaskFile{Run: r.id, Crew: r.crewID, CrewName: r.name, Goal: r.goal, Task: t.def.ID, Attempt: a.n, MaxAttempts: maxAttemptsPerTask + t.extra, Member: a.m.def.Name, Role: a.m.def.Prompt, Kind: t.def.Kind,
 		Instructions: t.def.Instructions, Worktree: a.worktree, Branch: a.branch, Prefix: r.prefix, Start: a.start, Checks: append([]Check(nil), t.def.Checks...), WrittenAt: time.Now().UTC()}
 	f.Owner, f.OwnerFrom, f.People = taskPeople(Crew{People: r.people}, t.def)
+	f.Compare = compareFor(r.compare, r.plan, t.def.ID, r.base)
 	if tr != nil {
 		f.Manifest = tr.task()
 	}
@@ -365,7 +369,8 @@ func (t *task) unusableBefore(a *attempt) *unusable {
 // command (the attempt before's receipt, failedcheck.go), then the attempt
 // before's error past maxPreviousError; what is cut goes,
 // in full, into task-more.json, which task.md names. The crew's goal, role
-// and instructions are never cut: the crew's validation bounds them
+// and instructions, and a comparison's part, are never cut: the crew's
+// validation bounds them
 // (maxTaskText), so a task file always fits and no attempt fails at it for
 // its size, nor for its context, which can be cut whole; one that does not
 // after every cut is an error, never written.
@@ -651,6 +656,7 @@ func taskMarkdown(f TaskFile) string {
 		fmt.Fprintf(&b, "Your role: %s\n\n", strings.TrimSpace(f.Role))
 	}
 	fmt.Fprintf(&b, "## Instructions\n\n%s\n\n", strings.TrimSpace(f.Instructions))
+	writeCompare(&b, f)
 	writePeople(&b, f)
 	if tk := f.Ticket; tk != nil {
 		fmt.Fprintf(&b, "## Your ticket\n\nThis run works for the ticket %s, %q, as it stood at its revision %d, when plan revision %d launched the run. ", tk.Key, f.ticketTitle, tk.Rev, tk.PlanN)
@@ -715,6 +721,9 @@ func taskMarkdown(f TaskFile) string {
 		b.WriteString("\n")
 	}
 	writeDecisions(&b, f.Decisions)
+	if f.Compare != nil && len(f.Context) == 0 {
+		b.WriteString(noDerivedContext)
+	}
 	writeContext(&b, f.Context)
 	if len(f.Checks) == 0 && slices.ContainsFunc(f.Cut, func(s string) bool { return strings.HasSuffix(s, "checks' commands") }) {
 		b.WriteString("## Checks\n\nAfter you submit, Conductor runs checks in a fresh checkout of your result commit (their commands are in the file named under \"Cut to fit\"). Each must exit 0 without changing tracked files.\n\n")

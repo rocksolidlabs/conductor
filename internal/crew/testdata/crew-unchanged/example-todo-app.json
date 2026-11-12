@@ -1,0 +1,48 @@
+{
+  "id": "example-todo-app",
+  "name": "Example: todo app",
+  "goal": "Build a small command-line todo app in this repository (meant for a fresh repository with one commit: point the crew's working directory at one before launching, not at a real project): add, list and done commands, items kept in a JSON file in the user's home directory, with tests",
+  "cwd": "/srv/work",
+  "where": "server",
+  "isolation": "worktree",
+  "openAfterLaunch": true,
+  "members": [
+    {
+      "name": "lead",
+      "agentId": "claude",
+      "prompt": "You lead a crew of four on this goal: $GOAL. Plan, do not build. Write PLAN.md at the top of the repository with the data model, the command-line interface and the file layout, then split the work into two parts, core (storage and the data model) and cli (the commands), naming the files each part owns and the interface between them. Commit PLAN.md on your branch and stop: the builders merge your branch and start when you report done.",
+      "start": {
+        "when": "immediately"
+      }
+    },
+    {
+      "name": "core",
+      "agentId": "claude",
+      "prompt": "Start by merging the lead's branch, which holds PLAN.md: git merge --no-edit crew/$CONDUCTOR_RUN/lead (your run is in $CONDUCTOR_RUN). Then build the core part of PLAN.md for this goal: $GOAL. Work only in the files PLAN.md gives to core, with unit tests, and commit as you go. Report done when the storage and the data model are complete and their tests pass.",
+      "start": {
+        "when": "after",
+        "member": "lead"
+      }
+    },
+    {
+      "name": "cli",
+      "agentId": "codex",
+      "prompt": "Start by merging the lead's branch, which holds PLAN.md: git merge --no-edit crew/$CONDUCTOR_RUN/lead (your run is in $CONDUCTOR_RUN). Then build the cli part of PLAN.md for this goal: $GOAL. Work only in the files PLAN.md gives to cli, against the interface PLAN.md says core exposes, and commit as you go. Report done when every command works end to end.",
+      "start": {
+        "when": "after",
+        "member": "lead"
+      }
+    },
+    {
+      "name": "tester",
+      "agentId": "codex",
+      "prompt": "Start by merging the lead's and cli's branches: git merge --no-edit crew/$CONDUCTOR_RUN/lead, then git merge --no-edit crew/$CONDUCTOR_RUN/cli (your run is in $CONDUCTOR_RUN). You test the todo app built for this goal: $GOAL. You start once cli reports done; core may still be at work: wait until crew/$CONDUCTOR_RUN/core holds the core part PLAN.md describes, then git merge --no-edit crew/$CONDUCTOR_RUN/core, run the whole test suite, add the tests PLAN.md asks for that are missing, and change test code only. Hand a bug in the app to its owner with: \"${CONDUCTOR_BIN:-conductor}\" notify --event handoff --to core --message \"what and where\" (or --to cli). Report done when the suite is green.",
+      "start": {
+        "when": "after",
+        "member": "cli"
+      }
+    }
+  ],
+  "createdAt": "2026-11-01T09:00:00Z",
+  "updatedAt": "2026-11-01T09:00:00Z"
+}

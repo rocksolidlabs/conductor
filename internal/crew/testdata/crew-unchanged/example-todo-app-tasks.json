@@ -1,0 +1,156 @@
+{
+  "id": "example-todo-app-tasks",
+  "name": "Example: todo app, with tasks",
+  "goal": "Build a small command-line todo app in this repository (meant for a fresh repository with one commit: point the crew's working directory at one before launching, not at a real project): add, list and done commands, items kept in a JSON file in the user's home directory (the path in TODO_FILE when it is set), with tests, in Python with its standard library only",
+  "cwd": "/srv/work",
+  "where": "server",
+  "isolation": "worktree",
+  "openAfterLaunch": true,
+  "tasks": [
+    {
+      "id": "plan",
+      "member": "lead",
+      "kind": "work",
+      "instructions": "Write PLAN.md at the top of the repository: the data model, the command-line interface (add, list and done, their output and exit codes), the file layout and the split into two parts. core owns todo/store.py: a Store class over the JSON file and the item type, with the file's path from TODO_FILE, else ~/.todo.json. cli owns todo/cli.py, whose main(argv, store) takes the store as an argument so that cli is built and tested without core, and todo/__main__.py, which makes the Store and calls main. Give core's interface exactly (names, arguments, return values, the error for an unknown id): cli writes against it while core is written. Tests go in tests/test_*.py, run from the top of the repository by python3 -m unittest discover -s tests -t . (core's in tests/test_store.py, cli's in tests/test_cli.py with a fake store, the end-to-end ones in tests/test_end_to_end.py); a test never touches the real home: it sets TODO_FILE to a file in a temporary directory. Commit PLAN.md with the empty todo/__init__.py and tests/__init__.py and a .gitignore for __pycache__/ and *.pyc, so that both parts start from them and running the tests leaves the worktree clean.",
+      "checks": [
+        {
+          "id": "plan",
+          "argv": [
+            "test",
+            "-s",
+            "PLAN.md"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "core",
+      "member": "core",
+      "kind": "work",
+      "instructions": "Build core as PLAN.md gives it: todo/store.py with exactly the interface PLAN.md names, and its unit tests in tests/test_store.py against a TODO_FILE in a temporary directory. Touch no file PLAN.md gives to cli.",
+      "needs": [
+        "plan"
+      ],
+      "checks": [
+        {
+          "id": "tests",
+          "argv": [
+            "python3",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "tests",
+            "-t",
+            "."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cli",
+      "member": "cli",
+      "kind": "work",
+      "instructions": "Build cli as PLAN.md gives it: todo/cli.py and todo/__main__.py, against the interface PLAN.md gives core, which is being written at the same time and is not in your worktree. Test main(argv, store) in tests/test_cli.py with a fake store written in the test file; import nothing from todo/store.py there or in todo/cli.py. Touch no file PLAN.md gives to core.",
+      "needs": [
+        "plan"
+      ],
+      "checks": [
+        {
+          "id": "tests",
+          "argv": [
+            "python3",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "tests",
+            "-t",
+            "."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "tests",
+      "member": "core",
+      "kind": "work",
+      "instructions": "Put the two parts together: your worktree starts at core's result; merge cli's branch (named under Inputs) with git merge --no-edit and resolve any conflict. Add tests/test_end_to_end.py, which runs python3 -m todo in a subprocess with TODO_FILE in a temporary directory: add, list, done, done of an unknown id, and list with nothing in it. Fix whatever the merged app gets wrong, in either part, with a test for each fix. When the review asks for changes, this task is done again: address each finding, in whichever file it names.",
+      "needs": [
+        "core",
+        "cli"
+      ],
+      "checks": [
+        {
+          "id": "suite",
+          "argv": [
+            "python3",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "tests",
+            "-t",
+            "."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review",
+      "member": "reviewer",
+      "kind": "review",
+      "instructions": "Review the app at HEAD against PLAN.md and the goal: run python3 -m unittest discover -s tests -t . and each command by hand with TODO_FILE set to a file in a temporary directory, and read the code. Approve when the app does what PLAN.md and the goal say and the tests cover it; otherwise ask for changes, with a finding for each problem naming its file and line.",
+      "needs": [
+        "tests"
+      ]
+    }
+  ],
+  "manifest": {
+    "prerequisites": [
+      {
+        "id": "python",
+        "argv": [
+          "python3",
+          "--version"
+        ]
+      }
+    ]
+  },
+  "members": [
+    {
+      "name": "lead",
+      "agentId": "claude",
+      "prompt": "You lead the crew: you plan the todo app and write no code of it.",
+      "start": {
+        "when": "task"
+      }
+    },
+    {
+      "name": "core",
+      "agentId": "claude",
+      "prompt": "You build the todo app's core, storage and the data model, then put it together with the cli and make the whole suite pass, production code and tests alike.",
+      "start": {
+        "when": "task"
+      }
+    },
+    {
+      "name": "cli",
+      "agentId": "codex",
+      "prompt": "You build the todo app's command-line interface against the interface the plan gives core.",
+      "start": {
+        "when": "task"
+      }
+    },
+    {
+      "name": "reviewer",
+      "agentId": "codex",
+      "prompt": "You review the finished todo app against its plan and the goal, and change nothing.",
+      "start": {
+        "when": "task"
+      }
+    }
+  ],
+  "createdAt": "2026-11-01T09:00:00Z",
+  "updatedAt": "2026-11-01T09:00:00Z"
+}
