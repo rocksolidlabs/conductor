@@ -6034,6 +6034,32 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   default passing the contract suite. With C1, the two clauses of the R0
   gate this stream owns are observed: a plain build registers nothing,
   and every default passes the contract suite.
+- **The foundations together on main, and where release candidates come
+  from (#851, 2026-11-12).** What was observed of the R0 gate as a whole
+  for `main` at 40eccb5f (the merge of PR #844), in its CI run
+  43196571406 (a push to `main`, Go 1.26.11). A plain build registers no
+  provider and is the free binary: the extension seams' entry above
+  observed it (C1 and C9). Every default passes the contract suite: the
+  run's go job passed `ext/exttest`, the package of
+  `TestSuitePassesEveryDefault`, in the whole race suite. The server
+  matrix and the desktop smoke are green on that commit, each job's
+  conclusion as GitHub gives it: `build-matrix (linux, amd64)`,
+  `build-matrix (linux, arm64)`, `build-matrix (darwin, amd64)` and
+  `build-matrix (darwin, arm64)` success, `desktop-smoke` success. The
+  sign-off check, `dco`, is success in the same run, as are its other
+  jobs: `go`, `web`, `e2e`, `desktop-test (ubuntu-latest)`,
+  `desktop-test (macos-latest)`, `desktop-test (windows-latest)`, `vuln`,
+  `pebble` and `required-checks`. A decision of the maintainers on
+  2026-11-12: release candidates keep coming from this repository's
+  `release.yml` until the official build is published; `v0.7.0-rc.23` is
+  the first cut under it, published as a pre-release on 2026-11-12, its
+  tag at 40eccb5f, with 20 assets, by the second attempt of the release
+  workflow's run 43226977986. That run's first attempt failed in its
+  `go` job on one flaky test, `TestWriteTable` in
+  `internal/tracker/github` (being fixed under #281), and built nothing;
+  its second attempt passed every job. Open, not observed yet: the
+  Runtime layer's run in the Windows desktop app, which the Runtime
+  seam's entry above counts among its by-hand runs not yet run.
 - **The identity provider and the uplink: the host token, a credential
   that fails closed, host connections rechecked and renewed (#775,
   2026-11-10).** The plan is `docs/plans/identity-uplink.md`. What a build
