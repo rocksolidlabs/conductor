@@ -7,10 +7,11 @@
  * It counts what is read of it (reads): every node a link of the DOM reaches (parentNode, firstChild, nextSibling and the
  * element links, and the nodes an engine's search or serialiser goes through: querySelectorAll, closest, contains, outerHTML,
  * textContent, importNode), every item of a list (attributes, children, childNodes, classList, animations, a hit test's stack,
- * a query's result) and every code unit of a page's string a slice gives. With pageStrings on, the page's strings (names, ids,
- * attributes, text, title, URL, styles) are values that answer only their length and a slice: anything else asked of them throws.
+ * a query's result, an element's own keys inside keysCounted) and every code unit of a page's string a slice gives. With
+ * pageStrings on, the page's strings (names, ids, attributes, text, title, URL, styles) are values that answer only their length
+ * and a slice: anything else asked of them throws.
  */
-export const reads = { nodes: 0, items: 0, units: 0 }
+export const reads = { nodes: 0, items: 0, units: 0, keys: 0 }
 
 // CSS.escape, as CSSOM serialises an identifier, which a browser has and node does not.
 ;(globalThis as { CSS?: unknown }).CSS ??= {
@@ -27,7 +28,26 @@ export const reads = { nodes: 0, items: 0, units: 0 }
 }
 
 export function resetReads() {
-  reads.nodes = reads.items = reads.units = 0
+  reads.nodes = reads.items = reads.units = reads.keys = 0
+}
+
+/**
+ * act run with a wrapper on Object.keys that counts what it lists of the page's elements: each element listed (reads.keys) and
+ * each key read of its list (reads.items), the element's own fields and the expandos the page gave it.
+ */
+export function keysCounted<T>(act: () => T): T {
+  const keys = Object.keys
+  Object.keys = ((o: object) => {
+    const own = keys(o)
+    if (!(o instanceof FakeEl)) return own
+    reads.keys++
+    return counted([...own, ...Array.from({ length: o.expandos }, (_, i) => `expando${i}`)])
+  }) as typeof Object.keys
+  try {
+    return act()
+  } finally {
+    Object.keys = keys
+  }
 }
 
 let guarded = false
@@ -134,7 +154,20 @@ export class FakeText extends FakeNode {
   }
 }
 
-export type Kid = FakeEl | FakeText | string
+export class FakeComment extends FakeNode {
+  readonly nodeType = 8
+  constructor(public text: string) {
+    super()
+  }
+  get data() {
+    return pg(this.text)
+  }
+}
+
+/** A comment node. */
+export const comment = (s: string) => new FakeComment(s)
+
+export type Kid = FakeEl | FakeText | FakeComment | string
 
 export const HTML_NS = 'http://www.w3.org/1999/xhtml'
 export const SVG_NS = 'http://www.w3.org/2000/svg'
@@ -145,7 +178,9 @@ export class FakeEl extends FakeNode {
   /** Its local name and namespace: an HTML element's lower case as made by markup or createElement (see svg and named). */
   local: string
   namespaceURI = HTML_NS
-  _kids: Array<FakeEl | FakeText> = []
+  /** How many own keys the page gave it beside its fields: what Object.keys lists of it inside keysCounted. */
+  expandos = 0
+  _kids: Array<FakeEl | FakeText | FakeComment> = []
   _elements = 0
   attrs = new Map<string, string>()
   rect = { x: 0, y: 0, width: 0, height: 0 }
@@ -316,8 +351,9 @@ function first(list: FakeEl[], sel: string): FakeEl | null {
 const VOID = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr'])
 
 /** n's markup (or its text alone), as a serialiser of the page's writes it: every node of the subtree visited. */
-function serialise(n: FakeEl | FakeText, markup: boolean): string {
+function serialise(n: FakeEl | FakeText | FakeComment, markup: boolean): string {
   reads.nodes++
+  if (n instanceof FakeComment) return markup ? `<!--${n.text}-->` : ''
   if (n instanceof FakeText) return markup ? n.text.replace(/&/g, '&amp;').replace(/</g, '&lt;') : n.text
   const inner = n._kids.map((c) => serialise(c, markup)).join('')
   if (!markup) return inner
@@ -328,7 +364,7 @@ function serialise(n: FakeEl | FakeText, markup: boolean): string {
 
 /** The test's own look at the text of n's subtree: nothing counted, nothing guarded. */
 export function plainText(n: FakeEl): string {
-  return n._kids.map((c) => (c instanceof FakeText ? c.text : plainText(c))).join('')
+  return n._kids.map((c) => (c instanceof FakeEl ? plainText(c) : c instanceof FakeText ? c.text : '')).join('')
 }
 
 // An identifier's characters: a name character, one past ASCII, or an escape (CSS Syntax, 4.3.7, as CSS.escape writes them).
@@ -341,7 +377,7 @@ function unescaped(s: string): string {
   return s.replace(/\\([0-9a-fA-F]{1,6}) ?|\\(.)/gsu, (_, hex: string | undefined, ch: string | undefined) => {
     if (hex === undefined) return ch!
     const c = Number.parseInt(hex, 16)
-    return c === 0 || c > 0x10ffff || (c >= 0xd800 && c <= 0xdfff) ? '�' : String.fromCodePoint(c)
+    return String.fromCodePoint(c === 0 || c > 0x10ffff || (c >= 0xd800 && c <= 0xdfff) ? 0xfffd : c)
   })
 }
 
@@ -406,7 +442,7 @@ function matches(e: FakeEl, sel: string): boolean {
 function copy(el: FakeEl): FakeEl {
   reads.nodes++
   const out = new FakeEl(el.tag, Object.fromEntries(el.attrs))
-  for (const c of el._kids) out.append(c instanceof FakeText ? (reads.nodes++, c.text) : copy(c))
+  for (const c of el._kids) out.append(c instanceof FakeEl ? copy(c) : (reads.nodes++, c instanceof FakeText ? c.text : comment(c.text)))
   return out
 }
 

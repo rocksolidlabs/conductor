@@ -37,26 +37,33 @@ export function up(el: El | null, test: (e: El) => boolean, most = UP): El | nul
 }
 
 /**
- * root's subtree in tree order by the DOM's own links (firstChild, nextSibling, parentNode), one node a step, at most most nodes
- * visited, root first: visit says of each whether the walk goes into its children (true), past them (false) or ends (null), and
- * leave is called after the children of every node it went into.
+ * root's subtree in tree order by the DOM's own links (firstChild, nextSibling, parentNode), root first, every link it follows,
+ * down, across or up, counted against most: when they are spent the walk ends where it is. visit says of each node whether the
+ * walk goes into its children (true), past them (false) or ends (null), and leave is called after the children of every node it
+ * went into.
  */
 export function walkTree(root: Node, most: number, visit: (n: Node, depth: number) => boolean | null, leave: (n: Node) => void = () => {}) {
   let n: Node = root
   let depth = 0
-  for (let seen = 1; seen <= most; seen++) {
+  let left = most
+  for (;;) {
     const go = visit(n, depth)
     if (go === null) return
-    const child = go ? n.firstChild : undefined
-    if (child) {
-      ;[n, depth] = [child, depth + 1]
-      continue
+    if (go) {
+      if (--left < 0) return
+      const child = n.firstChild
+      if (child) {
+        ;[n, depth] = [child, depth + 1]
+        continue
+      }
+      leave(n)
     }
-    if (child === null) leave(n)
-    let next: Node | null = null
-    while (n !== root && !(next = n.nextSibling)) leave((n = n.parentNode!)), depth--
-    if (n === root) return
-    n = next!
+    for (let next: Node | null = null; !next; ) {
+      if (n === root || --left < 0) return
+      if ((next = n.nextSibling)) n = next
+      else if (--left < 0) return
+      else leave((n = n.parentNode!)), depth--
+    }
   }
 }
 

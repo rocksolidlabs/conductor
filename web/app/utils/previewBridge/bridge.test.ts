@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { PREVIEW_MARK, parsePreviewMessage, type PreviewToWorkbench } from '../protocol'
+import { ELEMENT_BOUNDS, PREVIEW_MARK, parsePreviewMessage, type PreviewToWorkbench } from '../protocol'
 import * as bridge from './bridge'
 import { startBridge } from './bridge'
+import { HINT_NODES } from './hints'
 
 /** The event names selection mode stops (none where the bridge has no such table). */
 const SELECTION_EVENTS: readonly string[] = (bridge as { SELECTION_EVENTS?: readonly string[] }).SELECTION_EVENTS ?? []
-import { FakeDoc, FakeWin, event, h, pageStrings, plainText, reads, resetReads, type FakeEl } from './fakeDom'
+import { FakeDoc, FakeWin, comment, event, h, keysCounted, pageStrings, plainText, reads, resetReads, type FakeEl } from './fakeDom'
 import { fixture } from './fixture'
 
 const WORKBENCH = 'http://127.0.0.1:8080'
@@ -176,7 +177,7 @@ describe('selection mode', () => {
     ask('select')
     const host = hostOf(p.root)!
     const box = host.shadow!.elements[0]!
-    const seen: unknown[] = [host.style.cssText.includes('pointer-events: none')]
+    const seen: unknown[] = [(host.style.cssText ?? '').includes('pointer-events: none')]
     win.dispatch('pointermove', event('pointermove', { target: p.p, clientX: 1, clientY: 1 }))
     seen.push([box.style.display, box.style.pointerEvents])
     win.dispatch('pointerover', event('pointerover', { target: frame, clientX: 150, clientY: 10 }))
@@ -311,7 +312,8 @@ describe('the bridge in a page', () => {
 
 /**
  * A page on which every walk of the bridge's reaches its bound, made k times larger in every direction a page controls: its
- * elements, attributes, classes, children, depth and text, an id of megabytes and an attribute naming ten thousand ids.
+ * elements, attributes, classes, children, depth and text, an id of megabytes, an attribute naming ten thousand ids, the own keys
+ * of every element, text and comment nodes between elements, and a deeper tree a walk climbs back up.
  */
 function bigPage(k: number) {
   const n = (x: number) => x * k
@@ -320,16 +322,29 @@ function bigPage(k: number) {
   const value = (size: number) => values.get(size) ?? (values.set(size, 'v'.repeat(size)), values.get(size)!)
   const attrs = (count: number, size: number) => Object.fromEntries(Array.from({ length: count }, (_, i) => [`data-a${i}`, value(size)]))
   const words = (count: number) => 'word '.repeat(count)
-  const head = h('head', {}, ...many(n(2100), () => h('meta', { name: 'x', content: 'y' })), h('meta', { name: 'conductor-revision', content: 'abcdef' }))
+  const gap = (count: number) => Array.from({ length: count }, (_, i) => (i % 2 ? comment('c') : ' '))
+  // The head: 600 elements (past where the root's markup ends), a tree n(100) deep and n(1,500) text and comment nodes (which the
+  // hint kinds' walk goes down, climbs back up and goes across), then n(2,100) elements and the revision past every walk.
+  let deepTree = h('div')
+  for (let d = 0; d < n(100); d++) deepTree = h('div', {}, deepTree)
+  const head = h('head')
+  const meta = () => h('meta', { name: 'x', content: 'y' })
+  for (let i = 0; i < 600; i++) head.append(meta())
+  head.append(deepTree)
+  for (const node of gap(n(1500))) head.append(node)
+  for (let i = 0; i < n(2100); i++) head.append(meta())
+  head.append(h('meta', { name: 'conductor-revision', content: 'abcdef' }))
   const big = h('div', { id: 'big' }, ...many(n(1000), () => h('span', {}, words(10))))
   const ctl = h('input', { id: 'ctl', type: 'text', name: 'q', value: 'default-value', ...attrs(n(100), 8) })
   ctl.value = 'typed-text'
   const form = h('form', { id: 'f' }, ...many(n(4000), () => h('i', {}, 'x')), h('label', { for: 'ctl' }, 'Query'), ctl)
   const classes = Array.from({ length: n(2000) }, (_, i) => `c${i}`).join(' ')
   const leaf = h('span', { id: 'leaf', class: classes, 'aria-labelledby': 'big '.repeat(n(10000)), 'data-conductor-source': 'src/Leaf.vue:1:1', ...attrs(n(100), 200) }, words(n(6000)))
-  let chain = h('div', { id: 'x'.repeat(n(1_000_000)), 'data-conductor-source': 'src/Inner.vue:1:1' }, leaf, ...many(n(200), () => h('div', attrs(n(40), 600), h('p', {}, h('b', {}, words(n(50)))))))
+  const siblings = many(n(200), () => h('div', attrs(n(40), 600), h('p', {}, h('b', {}, words(n(50))))))
+  let chain = h('div', { id: 'x'.repeat(n(1_000_000)), 'data-conductor-source': 'src/Inner.vue:1:1' }, leaf, ...siblings)
   for (let d = 0; d < n(100); d++) chain = h('div', { 'data-conductor-source': `src/D${d}.vue:${d + 1}:1` }, chain)
   const root = h('html', {}, head, h('body', {}, big, form, chain))
+  for (const e of [root, ...root.descendants()]) e.expandos = n(100)
   const stack: FakeEl[] = []
   for (let e: FakeEl | null = leaf; e; e = e._parent) stack.push(e)
   return { root, stack }
@@ -354,7 +369,7 @@ function fieldsPage() {
 }
 
 describe('what the bridge reads of a page', () => {
-  /** Every answer the bridge gives on bigPage(k), and what it read of the page for each: [nodes, list items, string units]. */
+  /** Every answer the bridge gives on bigPage(k), and what it read of the page for each: [nodes, list items, string units, elements whose keys were listed]. */
   function everyAnswer(k: number) {
     const p = bigPage(k)
     const { doc, win, answers, ask } = framed(p.root)
@@ -362,8 +377,8 @@ describe('what the bridge reads of a page', () => {
     const counts: Record<string, number[]> = {}
     const took = (name: string, act: () => void) => {
       resetReads()
-      act()
-      counts[name] = [reads.nodes, reads.items, reads.units]
+      keysCounted(act)
+      counts[name] = [reads.nodes, reads.items, reads.units, reads.keys]
     }
     took('ready', () => ask('hello'))
     took('selected', () => {
@@ -381,7 +396,7 @@ describe('what the bridge reads of a page', () => {
     try {
       const small = everyAnswer(1)
       const large = everyAnswer(10)
-      console.log('reads [nodes, items, units] of the page:', JSON.stringify(small.counts), 'and of the page ten times larger:', JSON.stringify(large.counts))
+      console.log('reads [nodes, items, units, elements whose keys were listed] of the page:', JSON.stringify(small.counts), 'and of the page ten times larger:', JSON.stringify(large.counts))
       for (const { got } of [small, large]) expect(got.map((a) => a.t)).toEqual(['ready', 'selected', 'described', 'described', 'described', 'looked'])
       expect(large.counts).toEqual(small.counts)
       writeAnswers('large-page-messages.json', 'the bridge’s answers on a page ten times larger than its bounds in every direction', large.got)
@@ -389,6 +404,44 @@ describe('what the bridge reads of a page', () => {
       pageStrings(false)
     }
   }, 60_000)
+
+  it('follows no more links than each walk’s budget in a hello, a pick and a describe, whatever the page’s links answer', () => {
+    const { root } = plainPage()
+    const body = root.children[1]!
+    const b = h('b', {}, 'x')
+    body.append(b)
+    // b's links as the page's own getters answer them: no child, no sibling, and each parent a new one with no sibling. The test
+    // bounds its own run: past a million parents the getter throws.
+    let climbs = 0
+    const parent = (): object => {
+      if (++climbs > 1_000_000) throw new Error('a million parents climbed')
+      return Object.defineProperties({}, { nextSibling: { value: null }, parentNode: { get: parent } })
+    }
+    Object.defineProperties(b, { firstChild: { get: () => null }, nextSibling: { get: () => null }, parentNode: { get: parent } })
+    const { doc, win, answers, ask } = framed(root)
+    doc.hitAt = () => [b, body, root]
+    const counts: number[] = []
+    const took = (act: () => void) => {
+      climbs = 0
+      act()
+      counts.push(climbs)
+    }
+    took(() => ask('hello'))
+    took(() => {
+      ask('select')
+      win.dispatch('click', event('click', { clientX: 1, clientY: 1 }))
+    })
+    took(() => ask('describe', { selector: ':root' }))
+    console.log('parents climbed by a hello, a pick and a describe:', JSON.stringify(counts))
+    // Each within the walks that reach b: the hint kinds' (a hello), the neighbourhood's (a pick of b), the root's markup, text and motion.
+    const B = ELEMENT_BOUNDS
+    expect([answers().map((a) => a.t), counts[0]! <= HINT_NODES, counts[1]! <= B.neighbourhood / 4, counts[2]! <= B.html / 4 + 256 + 64]).toEqual([
+      ['ready', 'selected', 'described'],
+      true,
+      true,
+      true,
+    ])
+  })
 
   it('puts no field’s value, no typed text and nothing of a script, a style or a template in any answer', () => {
     const p = fieldsPage()

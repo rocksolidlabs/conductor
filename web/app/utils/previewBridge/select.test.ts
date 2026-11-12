@@ -82,7 +82,7 @@ describe('the selector a report carries', () => {
     const fixtures: Array<[string, FakeDoc]> = [
       ['two ids that differ in case, in quirks mode', ids('BackCompat')],
       ['two ids that differ in case', ids('CSS1Compat')],
-      ['an id holding a NUL', new FakeDoc(h('html', {}, h('body', {}, h('div', { id: 'a�b' }), h('div', { id: 'a\u0000b' }))))],
+      ['an id holding a NUL', new FakeDoc(h('html', {}, h('body', {}, h('div', { id: `a${String.fromCodePoint(0xfffd)}b` }), h('div', { id: 'a\u0000b' }))))],
       ['a button inside an SVG foreignObject', new FakeDoc(h('html', {}, h('body', {}, svg('svg', {}, svg('foreignObject', {}, h('div', {}, h('button', {}, 'Go')))))))],
       ['an element of a mixed-case name made by script', new FakeDoc(h('html', {}, h('body', {}, h('div', {}, named('MyThing', {}, HTML_NS, 'M')))))],
       ['100 levels deep', new FakeDoc(h('html', {}, h('body', {}, deep)))],

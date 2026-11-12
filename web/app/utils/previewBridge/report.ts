@@ -184,7 +184,7 @@ export const CONTROL_ATTRIBUTES = ['type', 'name', 'id', 'class', 'role', 'conte
 /** Of a script, a style and a template, the tag and attributes alone; a void element has no end tag. */
 const CODE = new Set(['script', 'style', 'template'])
 const VOID = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr'])
-/** The walks' bounds in nodes (a text or a name, the label for an id, a subtree's animations); the most aria-labelledby ids and animations of one element. */
+/** The walks' bounds in links followed (a text or a name, the label for an id, a subtree's animations); the most aria-labelledby ids and animations of one element. */
 const [TEXT_NODES, LABEL_NODES, MOTION, LABELLED_BY] = [256, 256, 64, 8] as const
 
 const isControl = (e: El) => CONTROLS.has(nameOf(e, 16)) || (e as HTMLElement).isContentEditable === true
@@ -210,7 +210,7 @@ function attributesOf(e: El): Array<[string, string]> {
 /**
  * The markup of root's subtree, written by the bridge from the live tree (walkTree) with its own writer, never a copy and never the
  * page's serialiser: of an element its tag (to 64 bytes) and attributes (attributesOf), escaped; of a text node its data; nothing of
- * a comment; of a control, a script, a style and a template the tag alone. It visits at most most / 4 nodes and writes at most most
+ * a comment; of a control, a script, a style and a template the tag alone. It follows at most most / 4 links and writes at most most
  * bytes, a node whole or not at all (a text node up to what is left) and every element it opens closed, so it is never cut after.
  * With keep (the neighbourhood), each child of root but keep is written to its grandchildren, their content as `…`.
  */
@@ -240,7 +240,7 @@ export function markup(root: El, most: number, keep?: El): string {
   return out.concat(closes.reverse()).join('')
 }
 
-/** The text of root's subtree, from its first TEXT_NODES nodes' text to most code units and one more, spaces folded: none of what shut keeps. */
+/** The text of root's subtree, from the text the walk reaches within TEXT_NODES links to most code units and one more, spaces folded: none of what shut keeps. */
 export function textOf(root: El, most: number): string {
   let out = ''
   walkTree(root, TEXT_NODES, (n) => {
@@ -251,7 +251,7 @@ export function textOf(root: El, most: number): string {
   return out.replace(/\s+/g, ' ').trim()
 }
 
-/** The label whose for is id among the first LABEL_NODES nodes around el (its third ancestor's subtree), else null. */
+/** The label whose for is id among the nodes within LABEL_NODES links around el (its third ancestor's subtree), else null. */
 function labelFor(el: El, id: string): El | null {
   let top = el
   for (let i = 0; i < 3 && top.parentElement; i++) top = top.parentElement
@@ -277,7 +277,7 @@ function ancestorOf(a: El): ElementReport['ancestors'][number] {
   return { tag: nameOf(a, m), id: pageText(a.id, m), classes: classesOf(a, m), role: pageText(a.getAttribute('role'), m) }
 }
 
-/** The animations playing on el, on the elements of its subtree's first MOTION nodes and on its ancestors (getAnimations where the page has it). */
+/** The animations playing on el, on the elements of its subtree within MOTION links and on its ancestors (getAnimations where the page has it). */
 function motionOf(el: El): number {
   let n = 0
   const playing = (e: El) => {

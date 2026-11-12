@@ -32,7 +32,7 @@ function finite(v: unknown, min: number, fallback: number): number {
   return typeof v === 'number' && Number.isFinite(v) && v >= min ? v : fallback
 }
 
-/** The most nodes the revision is looked for among: the root's children and, of the head, its children. */
+/** The most links the revision is looked for along: the root's children and, of the head, its children. */
 const HEAD_NODES = 128
 
 /** The page's revision (<meta name="conductor-revision"> in the head) when it is in the schema's form, else "". */
