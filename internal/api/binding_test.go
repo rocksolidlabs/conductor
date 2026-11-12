@@ -14,8 +14,32 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/capacity"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
+
+// A ticket's approved revision launches with the accounts it names: one
+// naming an account Accounts does not hold is refused, the launch kept
+// failed with the words and no run made; one naming none launches its
+// member on its adapter's default at the launch.
+func TestApprovedLaunchBindsAccounts(t *testing.T) {
+	off := false
+	readyClaude := catalog.Agent{ID: "ready-claude", Name: "ready claude", Adapter: "claude", Command: []string{"/bin/sh", "-c", "echo ready; exec cat"}, Probe: &off}
+	gone := newLaunchTest(t, nil, func(c *crew.Crew) { c.Members[0].AgentID, c.Members[0].Account = "ready-claude", "a-aaaaaaaaaaaa" }, readyClaude)
+	out := gone.launch(t, gone.testEnv, map[string]any{"opId": "gone"}, http.StatusConflict, "launch_failed")
+	if launch := entityOf(t, out, "launch"); launch["state"] != dispatch.LaunchFailed || !strings.Contains(launch["why"].(string), "a-aaaaaaaaaaaa") {
+		t.Fatalf("a revision naming an account gone: %v", out)
+	}
+	if rows, err := gone.srv.ledger.Runs(t.Context()); err != nil || len(rows) != 0 {
+		t.Fatalf("the ledger's runs: %+v %v", rows, err)
+	}
+	l := newLaunchTest(t, nil, nil)
+	run := entityOf(t, l.launch(t, l.testEnv, map[string]any{"byName": "Nate"}, http.StatusCreated, ""), "run")
+	if got := acct(runMember(t, run, "lead")["account"]); got != "default/own" {
+		t.Fatalf("a revision naming none: %s", got)
+	}
+}
 
 // A launch bound to its account and model (docs/plans/capacity.md, PR-4).
 // No real agent tool runs: every agent here is a shell stub that writes the
