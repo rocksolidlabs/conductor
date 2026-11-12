@@ -286,6 +286,18 @@ func TestImportRoute(t *testing.T) {
 			t.Fatalf("%q: %s", u, data)
 		}
 	}
+	// An attempt's read of its ticket (ticket_read) shows the linked
+	// issue's page, GitHub's state and when it was read, and nothing of the
+	// token.
+	run, sid, tok := e.memberSession(t, "Imported")
+	doneOf(t)(e.srv.dispatch.AddLink(t.Context(), adminOp("Ada"), key, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run}, nil))
+	status, raw, sess := e.callAs(t, tok, "GET", "/api/sessions/"+sid+"/ticket", nil)
+	st := entityOf(t, sess, "ticket")
+	read, _ := st["externalRead"].(map[string]any)
+	snap, _ := st["externalSnapshot"].(map[string]any)
+	if status != http.StatusOK || st["externalUrl"] != "https://github.com/octo/app/issues/12" || snap["state"] != "open" || read["readAt"] == nil || len(leaks(raw)) > 0 {
+		t.Fatalf("the session's read: %d %.400s", status, raw)
+	}
 	e.expect(t, "POST", "/api/trackers/github/remove", map[string]any{"host": "github.com"}, http.StatusOK, "")
 	e.expect(t, "POST", "/api/dispatch/external/preview", map[string]any{"url": "octo/app#12"}, http.StatusPreconditionFailed, "no_token")
 }
@@ -586,8 +598,9 @@ func TestRefreshOrderGuarded(t *testing.T) {
 		_, _, out := e.call(t, "POST", "/api/dispatch/tickets/"+key+"/external/refresh", map[string]any{"opId": opID()})
 		second <- out
 	}()
-	// The second waits for the ticket's lock: GitHub saw one read of it.
-	if !waitFor(testWait, func() bool { _, held := e.srv.external.heldKey("ticket:" + key); return held }) {
+	// The first holds the ticket's lock while GitHub holds it, so the second
+	// reads only after the first committed, and reads what GitHub says then.
+	if _, held := e.srv.external.heldKey("ticket:" + key); !held {
 		t.Fatal("the first refresh holds no lock")
 	}
 	g.edit(80, func(i *ghItem) { i.Title, i.Updated = "Three", t0.Add(2*time.Hour) })

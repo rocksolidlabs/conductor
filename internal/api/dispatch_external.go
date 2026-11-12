@@ -345,6 +345,32 @@ func decodeExternal(w http.ResponseWriter, r *http.Request, v any, op *dispatchO
 	return true
 }
 
+// externalStart begins one of this file's writes: its body decoded first
+// (decodeExternal), the store for a write, the path's key (keyOf); false
+// once it answered.
+func (s *Server) externalStart(w http.ResponseWriter, r *http.Request, v any, op *dispatchOp, keyOf func(http.ResponseWriter, *http.Request) (string, bool)) (*dispatch.Store, string, bool) {
+	if !decodeExternal(w, r, v, op) {
+		return nil, "", false
+	}
+	ds, ok := s.dispatchWriter(w)
+	if !ok {
+		return nil, "", false
+	}
+	key, ok := keyOf(w, r)
+	return ds, key, ok
+}
+
+// replayed answers an operation sent again from its receipt (Replay),
+// before anything is read or locked: true once it answered.
+func (s *Server) replayed(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, op dispatch.Op, intent string, args any, key string) bool {
+	rc, found, err := ds.Replay(ctx, op, intent, args)
+	if err != nil || found {
+		s.writeOp(w, "ticket", rc, err, false, "ticket", ticketAfter(ctx, ds, key))
+		return true
+	}
+	return false
+}
+
 // externalPreview is what an import of an item would make: the title and
 // the description as the store would make them (the description's first
 // maxPreviewDescription bytes and its length), the images by id, the
@@ -565,14 +591,7 @@ func (s *Server) externalReply(ctx context.Context, w http.ResponseWriter, ds *d
 // failures as trackerAnswer says, nothing written.
 func (s *Server) handleDispatchImport(w http.ResponseWriter, r *http.Request) {
 	var body externalImportBody
-	if !decodeExternal(w, r, &body, &body.dispatchOp) {
-		return
-	}
-	ds, ok := s.dispatchWriter(w)
-	if !ok {
-		return
-	}
-	key, ok := projectKey(w, r)
+	ds, key, ok := s.externalStart(w, r, &body, &body.dispatchOp, projectKey)
 	if !ok {
 		return
 	}
@@ -663,14 +682,7 @@ func (s *Server) linkedTicket(ctx context.Context, w http.ResponseWriter, ds *di
 // refusals (409 external_linked, invalid for a ticket linked already).
 func (s *Server) handleDispatchLinkExternal(w http.ResponseWriter, r *http.Request) {
 	var body externalLinkBody
-	if !decodeExternal(w, r, &body, &body.dispatchOp) {
-		return
-	}
-	ds, ok := s.dispatchWriter(w)
-	if !ok {
-		return
-	}
-	key, ok := ticketKey(w, r)
+	ds, key, ok := s.externalStart(w, r, &body, &body.dispatchOp, ticketKey)
 	if !ok {
 		return
 	}
@@ -678,8 +690,7 @@ func (s *Server) handleDispatchLinkExternal(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := trackerContext(r, caps.busy+caps.reads+caps.write)
 	defer cancel()
 	op, args := body.op(r), dispatch.LinkArgs{Key: key, URL: body.URL}
-	if rc, found, err := ds.Replay(ctx, op, dispatch.IntentLinkExternal, args); err != nil || found {
-		s.writeOp(w, "ticket", rc, err, false, "ticket", ticketAfter(ctx, ds, key))
+	if s.replayed(ctx, w, ds, op, dispatch.IntentLinkExternal, args, key) {
 		return
 	}
 	project, _, _ := dispatch.ParseKey(key)
@@ -717,14 +728,7 @@ func (s *Server) handleDispatchLinkExternal(w http.ResponseWriter, r *http.Reque
 // inside a refresh or a link of the same ticket. {receipt, ticket}.
 func (s *Server) handleDispatchUnlinkExternal(w http.ResponseWriter, r *http.Request) {
 	var body dispatchOp
-	if !decodeExternal(w, r, &body, &body) {
-		return
-	}
-	ds, ok := s.dispatchWriter(w)
-	if !ok {
-		return
-	}
-	key, ok := ticketKey(w, r)
+	ds, key, ok := s.externalStart(w, r, &body, &body, ticketKey)
 	if !ok {
 		return
 	}
@@ -753,14 +757,7 @@ func (s *Server) handleDispatchUnlinkExternal(w http.ResponseWriter, r *http.Req
 // ran.
 func (s *Server) handleDispatchRefresh(w http.ResponseWriter, r *http.Request) {
 	var body externalRefreshBody
-	if !decodeExternal(w, r, &body, &body.dispatchOp) {
-		return
-	}
-	ds, ok := s.dispatchWriter(w)
-	if !ok {
-		return
-	}
-	key, ok := ticketKey(w, r)
+	ds, key, ok := s.externalStart(w, r, &body, &body.dispatchOp, ticketKey)
 	if !ok {
 		return
 	}
@@ -872,14 +869,7 @@ func (s *Server) refusal(w http.ResponseWriter, err error) {
 // owner and the field from it. {receipt, ticket}.
 func (s *Server) handleDispatchAuthority(w http.ResponseWriter, r *http.Request) {
 	var body externalAuthorityBody
-	if !decodeExternal(w, r, &body, &body.dispatchOp) {
-		return
-	}
-	ds, ok := s.dispatchWriter(w)
-	if !ok {
-		return
-	}
-	key, ok := ticketKey(w, r)
+	ds, key, ok := s.externalStart(w, r, &body, &body.dispatchOp, ticketKey)
 	if !ok {
 		return
 	}
@@ -887,8 +877,7 @@ func (s *Server) handleDispatchAuthority(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := trackerContext(r, caps.busy+caps.reads+caps.write)
 	defer cancel()
 	op, args := body.op(r), dispatch.AuthorityArgs{Key: key, Field: body.Field, Owner: body.Owner}
-	if rc, found, err := ds.Replay(ctx, op, dispatch.IntentAuthority, args); err != nil || found {
-		s.writeOp(w, "ticket", rc, err, false, "ticket", ticketAfter(ctx, ds, key))
+	if s.replayed(ctx, w, ds, op, dispatch.IntentAuthority, args, key) {
 		return
 	}
 	release, ok := s.lockFor(ctx, w, "ticket:"+key)
@@ -1010,14 +999,7 @@ func (s *Server) readLink(ctx context.Context, ds *dispatch.Store, linkID string
 // on the link's read.
 func (s *Server) handleDispatchReadLink(w http.ResponseWriter, r *http.Request) {
 	var body linkReadBody
-	if !decodeExternal(w, r, &body, nil) {
-		return
-	}
-	ds, ok := s.dispatchWriter(w)
-	if !ok {
-		return
-	}
-	key, ok := ticketKey(w, r)
+	ds, key, ok := s.externalStart(w, r, &body, nil, ticketKey)
 	if !ok {
 		return
 	}
