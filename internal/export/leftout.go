@@ -54,6 +54,9 @@ var leftOut = []leftRule{
 	{name: "*.tmp", why: WhyTemporary},
 	{name: ".probe-*", why: WhyTemporary},
 	{name: ".restore-*", why: WhyTemporary},
+	// config.ProviderStateMark: a directory holding it is a provider's
+	// (rest), and no archive may plant it.
+	{name: ".conductor-provider-state", why: WhyProvider},
 }
 
 // reserved says why the slash path rel, relative to the data directory,

@@ -1,6 +1,7 @@
 package export_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/rocksolidlabs/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
@@ -240,6 +242,88 @@ func TestExportLeavesOut(t *testing.T) {
 	if _, err := restore(b, filepath.Join(t.TempDir(), "restored")); err != nil {
 		t.Fatalf("the archive does not restore: %v", err)
 	}
+}
+
+// TestProviderStateMarkLeftOut: a host's state directory nested in the
+// data directory (an XDG_STATE_HOME set inside it) is left out by its mark,
+// not by its name, and no archive may plant the mark.
+func TestProviderStateMarkLeftOut(t *testing.T) {
+	f := newFixture(t)
+	put(t, f.dir, "a/b/ext/"+config.ProviderStateMark, "")
+	put(t, f.dir, "a/b/ext/cloud/lease.json", `{"lease":"x"}`)
+	put(t, f.dir, "c/ext/plain.json", "{}")
+	b, m := archive(t, f.source())
+	left := map[string]string{}
+	for _, l := range m.Left {
+		left[l.Path] = l.Why
+	}
+	if left["a/b/ext/"] != export.WhyProvider {
+		t.Errorf("a/b/ext/ left out for %q: %v", left["a/b/ext/"], m.Left)
+	}
+	names, _ := entries(t, b)
+	for _, name := range names {
+		if strings.HasPrefix(name, export.DataDir+"a/") {
+			t.Errorf("the archive holds %s", name)
+		}
+	}
+	if !slices.Contains(names, export.DataDir+"c/ext/plain.json") {
+		t.Errorf("a directory named ext without the mark is left out: %v", names)
+	}
+	if _, err := restore(craft(t, [2]string{"x/" + config.ProviderStateMark, ""}), filepath.Join(t.TempDir(), "restored")); err == nil {
+		t.Error("an archive holding the mark restored")
+	}
+}
+
+// TestProviderStateMarkAtTheRoot: an export whose directory itself holds
+// the mark (the host's <state>/ext given as the directory) takes nothing
+// of it.
+func TestProviderStateMarkAtTheRoot(t *testing.T) {
+	f := newFixture(t)
+	put(t, f.dir, config.ProviderStateMark, "")
+	put(t, f.dir, "cloud/lease.json", `{"lease":"x"}`)
+	var buf bytes.Buffer
+	if _, err := export.Write(t.Context(), &buf, f.source()); err == nil {
+		t.Fatal("a marked directory exported")
+	}
+	if bytes.Contains(buf.Bytes(), []byte("lease")) {
+		t.Fatal("the archive holds the provider's state")
+	}
+}
+
+// TestProviderStateMarkAboveAndDuring: an export whose directory lies
+// under a marked one (the provider's own <state>/ext/<name>) is refused
+// before anything is written, and one whose directory is marked while it
+// runs (after the records, through the seam) is refused when its walk
+// reaches the root: neither archive is one a restore takes, and neither
+// holds the provider's files.
+func TestProviderStateMarkAboveAndDuring(t *testing.T) {
+	t.Run("above", func(t *testing.T) {
+		f := newFixture(t)
+		put(t, filepath.Dir(f.dir), config.ProviderStateMark, "")
+		put(t, f.dir, "lease.json", `{"lease":"x"}`)
+		var buf bytes.Buffer
+		if _, err := export.Write(t.Context(), &buf, f.source()); err == nil || buf.Len() != 0 {
+			t.Fatalf("a directory under a marked one exported: %v, %d bytes", err, buf.Len())
+		}
+	})
+	t.Run("during", func(t *testing.T) {
+		f := newFixture(t)
+		export.SetAfterRecords(t, func() {
+			put(t, f.dir, config.ProviderStateMark, "")
+			put(t, f.dir, "cloud/lease.json", `{"lease":"x"}`)
+		})
+		var buf bytes.Buffer
+		if _, err := export.Write(t.Context(), &buf, f.source()); err == nil {
+			t.Fatal("a directory marked during its export exported")
+		}
+		if _, err := restore(buf.Bytes(), filepath.Join(t.TempDir(), "restored")); err == nil {
+			t.Fatal("the cut-short archive restored")
+		}
+		// An entry's name is in its local header as it is, deflate aside.
+		if bytes.Contains(buf.Bytes(), []byte("lease.json")) {
+			t.Fatal("the archive holds the provider's state")
+		}
+	})
 }
 
 // The records go in before the ledger's snapshot: a run that finishes and

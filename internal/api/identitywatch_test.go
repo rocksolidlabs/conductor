@@ -577,12 +577,12 @@ func TestChainConnectionsUnwatched(t *testing.T) {
 			srv.tokenPrincipal(tokenRequest("test-host-token", false), "test-host-token"),
 			srv.tokenPrincipal(tokenRequest(linkTok, false), linkTok),
 		} {
-			if srv.principalWatch(p, "a-token") != nil {
+			if srv.principalWatch(p, newWatchedToken("a-token"), ext.GrantAdmin) != nil {
 				t.Fatalf("a watch for %+v", p)
 			}
 		}
 	}
-	if free.srv.principalWatch(free.srv.tokenPrincipal(tokenRequest(watchToken, false), watchToken), watchToken) != nil {
+	if free.srv.principalWatch(free.srv.tokenPrincipal(tokenRequest(watchToken, false), watchToken), newWatchedToken(watchToken), ext.GrantAdmin) != nil {
 		t.Fatal("the free default's server watches an unknown token")
 	}
 }

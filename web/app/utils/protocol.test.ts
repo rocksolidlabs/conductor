@@ -8,6 +8,8 @@ import {
   HOST_MAX_DESK_ID,
   HOST_MAX_LOCAL_ID,
   HOST_MAX_RUN_ID,
+  HOST_MAX_TOKEN,
+  HOST_MAX_TOKEN_MESSAGE,
   MAX_DECIDE,
   MAX_DECIDE_IN_FLIGHT,
   MAX_DECISION,
@@ -35,9 +37,27 @@ import {
   type DecisionEvent,
   type DecisionsChangedMsg,
   type HostRegisterDeskMessage,
+  type HostRegisteredRenews,
   type HostRunGroup,
+  type HostTokenMsg,
   type Welcome,
 } from './protocol'
+
+// host_token (internal/proto HostTokenMsg, ParseHostToken; docs/protocol.md, Host control connection): a token at its bound,
+// of token68's characters, which JSON never escapes, fits the message's bound; registered's renews is optional.
+describe('host_token', () => {
+  it('fits a token at its bound in the message', () => {
+    expect(HOST_MAX_TOKEN).toBe(2048)
+    expect(HOST_MAX_TOKEN_MESSAGE).toBe(2560)
+    const m: HostTokenMsg = { t: 'host_token', token: 'Az09-._~+/='.padEnd(HOST_MAX_TOKEN, 'x') }
+    expect(m.token).toHaveLength(HOST_MAX_TOKEN)
+    expect(new TextEncoder().encode(JSON.stringify(m)).length).toBeLessThanOrEqual(HOST_MAX_TOKEN_MESSAGE)
+    const plain: HostRegisteredRenews = {}
+    const renews: HostRegisteredRenews = { renews: true }
+    expect(plain.renews).toBeUndefined()
+    expect(JSON.parse(JSON.stringify(renews)).renews).toBe(true)
+  })
+})
 
 // The decision lane's mirror of internal/proto/decisions.go (docs/protocol.md, Decision links): each message within the bounds the
 // owner checks, each refused past them, and the committed fixture read equal to Go's values.

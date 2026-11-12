@@ -168,7 +168,7 @@ func TestTokenChainUnchanged(t *testing.T) {
 					if got := e.srv.authenticate(tokenRequest(tok, false), false).actor(); got != adminActor {
 						t.Fatalf("%s: actor %q", what, got)
 					}
-					if got := e.srv.hostAllowed(tokenRequest(tok, false), tok); got != w.host {
+					if _, got := e.srv.hostPrincipal(tokenRequest(tok, false), tok); got != w.host {
 						t.Fatalf("%s: a host registration allowed %v", what, got)
 					}
 				}
@@ -370,7 +370,7 @@ func TestProviderRefused(t *testing.T) {
 		if got := strings.Count(logs.String(), "failure="+c.failure); got != before+1 {
 			t.Fatalf("%s: %d warn lines of failure=%s, want %d:\n%s", c.prefix, got, c.failure, before+1, logs.String())
 		}
-		if c.prefix != "late-" && srv.hostAllowed(tokenRequest(tok, false), tok) {
+		if _, allowed := srv.hostPrincipal(tokenRequest(tok, false), tok); c.prefix != "late-" && allowed {
 			t.Fatalf("%s: a host registration allowed", c.prefix)
 		}
 	}
