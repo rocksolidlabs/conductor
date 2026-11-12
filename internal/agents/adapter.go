@@ -118,6 +118,12 @@ type Adapter struct {
 	// an agent whose model flag Conductor has not checked: no model can be
 	// set for it.
 	ModelArgs func(model string) []string
+	// ChoosesModel, set beside ModelArgs, says whether a command line's
+	// arguments choose the agent's model already, in any form the agent
+	// takes (its flag in both forms, a short one, a configuration
+	// override): a launch given a model beside one is refused. A way the
+	// agent's own configuration or environment chooses one is not seen.
+	ChoosesModel func(args []string) bool
 	// AllowTools, when set, returns the arguments that let the agent call
 	// every tool of the MCP server named server without asking for each,
 	// for one launch (Claude Code's allow rule, Codex's approval mode for

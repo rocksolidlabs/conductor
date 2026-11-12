@@ -160,6 +160,7 @@ func codexAdapter() Adapter {
 			}
 			return []string{"--model=" + model}
 		},
+		ChoosesModel: codexChoosesModel,
 		// Codex asks before every tool of an MCP server ("Allow the
 		// conductor MCP server to run tool …?" in 0.163.0), whatever the
 		// sandbox, unless the server's default_tools_approval_mode is
@@ -218,6 +219,32 @@ func codexAdapter() Adapter {
 // codexReadOnlyGap as a warning, which Settings shows beside the choice
 // (brakeman.Warnings).
 const codexReadOnlyApprovals = `approval_policy={granular={sandbox_approval=false,rules=false,request_permissions=false,mcp_elicitations=true}}`
+
+// codexChoosesModel says args choose Codex's model already (`codex
+// --help`, 0.163.0): --model in both forms, its short -m (a value
+// attached or not), or a configuration override of model (-c or --config,
+// its key=value apart or attached).
+func codexChoosesModel(args []string) bool {
+	model := func(kv string) bool {
+		k, _, ok := strings.Cut(kv, "=")
+		return ok && strings.Trim(strings.TrimSpace(k), `"'`) == "model"
+	}
+	for i, a := range args {
+		next := ""
+		if i+1 < len(args) {
+			next = args[i+1]
+		}
+		switch {
+		case a == "--model" || strings.HasPrefix(a, "--model="),
+			strings.HasPrefix(a, "-m") && !strings.HasPrefix(a, "--"),
+			(a == "-c" || a == "--config") && model(next),
+			strings.HasPrefix(a, "--config=") && model(strings.TrimPrefix(a, "--config=")),
+			strings.HasPrefix(a, "-c") && !strings.HasPrefix(a, "--") && len(a) > 2 && model(strings.TrimPrefix(a[2:], "=")):
+			return true
+		}
+	}
+	return false
+}
 
 // codexReadOnlyGap is codexReadOnlyApprovals' list above, in Settings'
 // words (Adapter.ReadOnlyGap).

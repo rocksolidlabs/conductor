@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"path/filepath"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/agents"
@@ -326,8 +325,10 @@ func accountGone(was, now session.BoundAccount) *apiError {
 // launchModel is the arguments that choose model for agent (its adapter's
 // ModelArgs, after the launch's own), none for "": a model is held to
 // modelPattern, refused for an adapter that takes none, and refused beside
-// arguments that choose one already.
-func launchModel(agent catalog.Agent, model string, args []string) ([]string, *apiError) {
+// any argument of line, the command line the launch is started with
+// (commandLine), that chooses one already, as the adapter says
+// (ChoosesModel).
+func launchModel(agent catalog.Agent, model string, line []string) ([]string, *apiError) {
 	if model == "" {
 		return nil, nil
 	}
@@ -335,17 +336,28 @@ func launchModel(agent catalog.Agent, model string, args []string) ([]string, *a
 	switch {
 	case !modelPattern.MatchString(model):
 		return nil, newAPIError(http.StatusBadRequest, "invalid_request", "a model is 1 to 100 of A-Z a-z 0-9 . _ : / @ -")
-	case !ok || ad.ModelArgs == nil || len(ad.ModelArgs(model)) == 0:
+	case !ok || ad.ModelArgs == nil || ad.ChoosesModel == nil || len(ad.ModelArgs(model)) == 0:
 		return nil, newAPIError(http.StatusBadRequest, "invalid_request", agent.Name+" takes no model")
+	case ad.ChoosesModel(line):
+		return nil, newAPIError(http.StatusBadRequest, "invalid_request", "the command line chooses a model already (its entry's command, its arguments or its yolo recipe's): set the model in one place")
 	}
-	margs := ad.ModelArgs(model)
-	flag, _, _ := strings.Cut(margs[0], "=")
-	for _, a := range args {
-		if a == flag || strings.HasPrefix(a, flag+"=") {
-			return nil, newAPIError(http.StatusBadRequest, "invalid_request", "the arguments choose a model already: set the model in one place")
-		}
+	return ad.ModelArgs(model), nil
+}
+
+// commandLine is the command line a launch of agent with args, before the
+// arguments Conductor adds of its own, is started with: the entry's
+// command, a resume recipe's arguments for resume, args, and the yolo
+// recipe's when it is applied.
+func commandLine(agent catalog.Agent, resume string, args []string, applied bool) []string {
+	line := slices.Clone(agent.Command)
+	if resume != "" && agent.Session != nil {
+		line = append(line, catalog.Expand(agent.Session.ResumeArgs, resume)...)
 	}
-	return margs, nil
+	line = append(line, args...)
+	if applied {
+		line = append(line, agent.Yolo.Args...)
+	}
+	return line
 }
 
 // bindMembers binds each member of ms as its session will be started
@@ -392,7 +404,8 @@ func (s *Server) bindMembers(ms []crew.Member, yolo bool, caller *session.Local)
 		case !ok:
 			return refuse(*m, newAPIError(http.StatusBadRequest, "invalid_crew", "unknown agent "+m.AgentID))
 		}
-		if _, aerr := launchModel(agent, m.Model, m.Args); aerr != nil {
+		applied := yolo && !agent.Yolo.Empty()
+		if _, aerr := launchModel(agent, m.Model, commandLine(agent, "", m.Args, applied)); aerr != nil {
 			return refuse(*m, aerr)
 		}
 		account, mine := m.Account, caller != nil && agent.Adapter == byAdapter
@@ -405,7 +418,6 @@ func (s *Server) bindMembers(ms []crew.Member, yolo bool, caller *session.Local)
 				account = by.ID
 			}
 		}
-		applied := yolo && !agent.Yolo.Empty()
 		_, adapterEnv := agents.InjectFor(agent.Adapter, agents.HooksDir(s.cfg.DataDir), agent.EffectiveSignal(), applied)
 		passthrough, env, b, rel, aerr := s.launchEnv(agent, adapterEnv, applied, nil, nil, account, "", loginWant{})
 		if aerr != nil {

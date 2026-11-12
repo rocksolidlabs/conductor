@@ -283,8 +283,8 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	}
 	argv = append(argv, req.Args...)
 	// The model, through the adapter's flag after the launch's own
-	// arguments.
-	modelArgs, aerr := launchModel(agent, req.Model, req.Args)
+	// arguments, judged over the whole command line.
+	modelArgs, aerr := launchModel(agent, req.Model, commandLine(agent, req.resume, req.Args, applied))
 	if aerr != nil {
 		return nil, aerr
 	}

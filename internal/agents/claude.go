@@ -154,6 +154,9 @@ func claudeAdapter() Adapter {
 			}
 			return []string{"--model=" + model}
 		},
+		ChoosesModel: func(args []string) bool {
+			return slices.ContainsFunc(args, func(a string) bool { return a == "--model" || strings.HasPrefix(a, "--model=") })
+		},
 		AllowTools: func(server string) []string {
 			if !mcpServerName.MatchString(server) {
 				return nil
