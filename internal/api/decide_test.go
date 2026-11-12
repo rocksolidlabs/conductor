@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1471,7 +1470,9 @@ func TestDecideListRefusesOthers(t *testing.T) {
 // counted, and refused one byte past it, never cut; a response's body is taken at its bound and refused one
 // past it in the server's words; a pass is read from the header alone,
 // never from a query; the list, the read and the respond route refuse a
-// query, nothing written.
+// query from either decide pass in one status and one body, the respond
+// route's the same for a decision given to the grant, one not given and
+// one that does not exist, nothing written.
 func TestDecideBoundsAtTheRoutes(t *testing.T) {
 	srv := &Server{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	entry := proto.DecideEntry{ID: "dr-1", Rev: 1}
@@ -1503,21 +1504,34 @@ func TestDecideBoundsAtTheRoutes(t *testing.T) {
 	for _, path := range []string{"/api/me", "/api/me/decisions", "/api/decisions/" + did} {
 		f.expectAs(t, "", http.MethodGet, path+"?token="+passAna, nil, http.StatusUnauthorized, "unauthorized")
 	}
+	notGiven := f.open(t, "r2")
 	rows := len(f.record(t, did).Responses)
-	for _, tc := range []struct {
-		method, path string
-		body         any
-	}{
-		{http.MethodGet, "/api/me/decisions?after=dr-1", nil},
-		{http.MethodGet, "/api/decisions/" + did + "?x=1", nil},
-		{http.MethodPost, "/api/decisions/" + did + "/respond?x=1", map[string]any{"responseId": "q1", "choice": 0, "expectedRev": 2}},
-	} {
-		if status, data, out := f.callAs(t, passAna, tc.method, tc.path, tc.body); status != http.StatusBadRequest || codeOf(out) != "invalid_request" || apiMessage(out) != "this route takes no query" {
-			t.Errorf("a query, %s %s: %d %s", tc.method, tc.path, status, data)
+	answer := map[string]any{"responseId": "q1", "choice": 0, "expectedRev": 2}
+	var first []byte
+	for _, pass := range []string{passAna, passHostAna} {
+		for _, tc := range []struct {
+			method, path string
+			body         any
+		}{
+			{http.MethodGet, "/api/me/decisions?after=dr-1", nil},
+			{http.MethodGet, "/api/decisions/" + did + "?x=1", nil},
+			{http.MethodPost, "/api/decisions/" + did + "/respond?x=1", answer},
+			{http.MethodPost, "/api/decisions/dr-999999/respond?x=1", answer},
+			{http.MethodPost, "/api/decisions/" + notGiven + "/respond?x=1", answer},
+		} {
+			status, data, out := f.callAs(t, pass, tc.method, tc.path, tc.body)
+			if first == nil {
+				first = data
+			}
+			if status != http.StatusBadRequest || codeOf(out) != "invalid_request" || apiMessage(out) != "this route takes no query" || !bytes.Equal(data, first) {
+				t.Errorf("a query (%s), %s %s: %d %s", pass, tc.method, tc.path, status, data)
+			}
 		}
 	}
-	if got := len(f.record(t, did).Responses); got != rows {
-		t.Errorf("a send with a query wrote: %d responses, were %d", got, rows)
+	for _, d := range []string{did, notGiven} {
+		if got := len(f.record(t, d).Responses); d == did && got != rows || d == notGiven && got != 0 {
+			t.Errorf("a send with a query wrote to %s: %d responses", d, got)
+		}
 	}
 }
 
@@ -1615,20 +1629,22 @@ func (f *decideFixture) answerLine(t *testing.T, did string) string {
 	return line
 }
 
-// The name an answer is shown under draws as one line: the provider's
-// name without its characters of Unicode's Cf, Zl and Zp (a line
+// The name an answer is shown under is the provider's name without its
+// characters of Unicode's Cf, Zl and Zp (a line separator, a paragraph
 // separator, a direction override, a zero-width space, a tag character,
-// the joiner of an emoji) in the receipt's words, the line the asking
-// session is given and what a later responder is told, the rest of it as
-// given; a name of such characters alone is shown as the actor.
-func TestDecideNameDrawsAsOneLine(t *testing.T) {
+// the joiner of an emoji), each of the three removed, in the receipt's
+// words, the line the asking session is given and what a later responder
+// is told, the rest of it as given; a name of such characters alone is
+// shown as the actor.
+func TestDecideNameIsShownWithoutCfZlZp(t *testing.T) {
 	f := newDecideFixture(t, nil)
-	drawsNothing := func(s string) bool {
-		return strings.ContainsFunc(s, func(r rune) bool { return unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) })
+	categories := map[string]*unicode.RangeTable{"Cf": unicode.Cf, "Zl": unicode.Zl, "Zp": unicode.Zp}
+	holds := func(s string, cat *unicode.RangeTable) bool {
+		return strings.ContainsFunc(s, func(r rune) bool { return unicode.Is(cat, r) })
 	}
 	for i, tc := range []struct{ subject, name, shown string }{
-		{"zoe", "Zo\U00002028e \U0000202ESmith\U0000200B \U000E0041x \U0001F469\U0000200D\U0001F4BB", "Zoe Smith x \U0001F469\U0001F4BB"},
-		{"zed", "\U00002028\U0000202E\U0000200B\U000E0041\U0000200D", "user:zed"},
+		{"zoe", "Zo\U00002028e \U0000202ESm\U00002029ith\U0000200B \U000E0041x \U0001F469\U0000200D\U0001F4BB", "Zoe Smith x \U0001F469\U0001F4BB"},
+		{"zed", "\U00002028\U00002029\U0000202E\U0000200B\U000E0041\U0000200D", "user:zed"},
 	} {
 		pass := "pass.decide." + tc.subject
 		f.id.Add(pass, ext.Principal{Subject: tc.subject, Name: tc.name, Grants: []ext.Grant{ext.GrantDecide}})
@@ -1649,15 +1665,21 @@ func TestDecideNameDrawsAsOneLine(t *testing.T) {
 		line := f.answerLine(t, did)
 		_, later, out := f.callAs(t, adminToken, http.MethodPost, "/api/decisions/"+did+"/respond", map[string]any{"responseId": "op1", "choice": 1, "expectedRev": f.rev(t, did)})
 		told := apiMessage(out)
-		if words != "Recorded: "+did+" answered by "+tc.shown || !strings.Contains(line, " answered by "+tc.shown+": ") || !strings.HasPrefix(told, did+" was answered by "+tc.shown+" at ") ||
-			drawsNothing(words) || drawsNothing(line) || drawsNothing(told) {
+		if words != "Recorded: "+did+" answered by "+tc.shown || !strings.Contains(line, " answered by "+tc.shown+": ") || !strings.HasPrefix(told, did+" was answered by "+tc.shown+" at ") {
 			t.Errorf("%s's answer shown as %q, %q, %q (%s)", tc.subject, words, line, told, later)
+		}
+		for name, cat := range categories {
+			if !holds(tc.name, cat) || holds(words, cat) || holds(line, cat) || holds(told, cat) {
+				t.Errorf("%s's name, %s: given %v, in words %v, line %v, told %v", tc.subject, name, holds(tc.name, cat), holds(words, cat), holds(line, cat), holds(told, cat))
+			}
 		}
 	}
 }
 
-// A repeat is the same send under the same name: the provider renaming the
-// subject between two sends of one body makes the second 409
+// A repeat is the same send under the same name as it is shown: the
+// provider renaming the subject to a name that cleans to the same one
+// (spaces around it, a zero-width space) leaves the same body the repeat,
+// from its receipt; renaming it to another makes the second send 409
 // response_conflict in the server's words, no receipt, nothing written;
 // the same body once the name is back is the repeat, from its receipt.
 func TestDecideRepeatIsTheSameSendUnderTheSameName(t *testing.T) {
@@ -1672,6 +1694,19 @@ func TestDecideRepeatIsTheSameSendUnderTheSameName(t *testing.T) {
 	rows := len(f.record(t, did).Responses)
 	named := func(name string) {
 		f.id.Add(passAna, ext.Principal{Subject: "ana", Name: name, Grants: []ext.Grant{ext.GrantDecide}})
+	}
+	named(" A\U0000200Bna ")
+	status, same, _ := f.respondAs(t, passAna, did, "a1", 0, 2)
+	var first, cleaned proto.DecideReply
+	if status == http.StatusOK {
+		strictly(t, sent, &first)
+		strictly(t, same, &cleaned)
+	}
+	if status != http.StatusOK || cleaned.Receipt.K != first.Receipt.K || cleaned.Receipt.Status != "accepted" {
+		t.Errorf("the same body under a name that cleans to the same one: %d %s, first %s", status, same, sent)
+	}
+	if got := len(f.record(t, did).Responses); got != rows {
+		t.Errorf("responses after the repeat: %d, were %d", got, rows)
 	}
 	named("Ana Smith")
 	status, data, _ := f.respondAs(t, passAna, did, "a1", 0, 2)
@@ -1788,168 +1823,60 @@ func TestDecideNotFoundIsOneAnswer(t *testing.T) {
 	}
 }
 
-// held is what l counts in flight now, by subject.
-func (l *decideInFlight) held() map[string]int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return maps.Clone(l.in)
+// heldWriter is a reply's writer whose Write waits for gate, telling at as
+// it starts to wait.
+type heldWriter struct {
+	*httptest.ResponseRecorder
+	at, gate chan struct{}
 }
 
-// emptied waits for the requests in flight the fixture's server counts to
-// be none, the four routes' and the list's: what is left after the last
-// reply is its deferred release.
-func (f *decideFixture) emptied(t *testing.T, what string) {
-	t.Helper()
-	waitUntil(t, what+": the requests in flight", func() bool {
-		return len(f.srv.decideRequests.held()) == 0 && len(f.srv.decideLists.held()) == 0
-	})
+func (w heldWriter) Write(b []byte) (int, error) {
+	close(w.at)
+	<-w.gate
+	return w.ResponseRecorder.Write(b)
 }
 
-// The four routes answer decideAtOnce of one subject's requests at once,
-// whichever of its passes sends them: with four of ana's held at the
-// read's seam, a fifth on each route is 429 in the server's words, nothing
-// read and nothing written; bob's and the admin's are answered meanwhile;
-// as each held one is released, one more of hers is taken; once none is in
-// flight the table holds nothing.
-func TestDecideRequestsAtOncePerSubject(t *testing.T) {
+// A list's guard covers its read and not its reply's way to the client:
+// with one list of ana's held at its reply's writer, another list of hers,
+// by either pass, is answered; the held one is then written whole.
+func TestDecideListGuardEndsBeforeItsReply(t *testing.T) {
 	f := newDecideFixture(t, nil)
 	did := f.open(t, "r1")
 	f.give(t, did)
-	var (
-		mu    sync.Mutex
-		reads int
-	)
-	at, gates := make(chan struct{}, decideAtOnce), make([]chan struct{}, decideAtOnce)
-	for i := range gates {
-		gates[i] = make(chan struct{})
-	}
-	hold := func() {
-		mu.Lock()
-		reads++
-		n := reads
-		mu.Unlock()
-		if n <= decideAtOnce {
-			at <- struct{}{}
-			<-gates[n-1]
-		}
-	}
-	read := func() int {
-		mu.Lock()
-		defer mu.Unlock()
-		return reads
-	}
-	f.srv.decideSeam.Store(&decideSeams{afterRead: hold, afterList: hold})
+	w := heldWriter{httptest.NewRecorder(), make(chan struct{}), make(chan struct{})}
 	t.Cleanup(func() {
-		for _, g := range gates {
-			select {
-			case <-g:
-			default:
-				close(g)
-			}
+		select {
+		case <-w.gate:
+		default:
+			close(w.gate)
 		}
 	})
-	type route struct {
-		pass, method, path string
-		body               any
-	}
-	respond := func(id string) any { return map[string]any{"responseId": id, "choice": 0, "expectedRev": 2} }
-	held := []route{{passAna, http.MethodGet, "/api/decisions/" + did, nil}, {passHostAna, http.MethodGet, "/api/decisions/" + did, nil},
-		{passAna, http.MethodGet, "/api/decisions/" + did, nil}, {passHostAna, http.MethodPost, "/api/decisions/" + did + "/respond", respond("h1")}}
-	done := make(chan int, len(held))
-	for i, r := range held {
-		go func() {
-			status, _, _ := f.callAs(t, r.pass, r.method, r.path, r.body)
-			done <- status
-		}()
-		select {
-		case <-at:
-		case <-time.After(testWait):
-			t.Fatalf("held request %d never reached its seam", i+1)
+	req := httptest.NewRequest(http.MethodGet, "/api/me/decisions", nil)
+	req.Header.Set("Authorization", "Bearer "+passAna)
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		f.http.Config.Handler.ServeHTTP(w, req)
+	}()
+	reached(t, w.at, "the first list's reply")
+	for _, pass := range []string{passAna, passHostAna} {
+		status, data, _ := f.callAs(t, pass, http.MethodGet, "/api/me/decisions", nil)
+		var l proto.DecideList
+		if status == http.StatusOK {
+			strictly(t, data, &l)
+		}
+		if status != http.StatusOK || !slices.Equal(ids(l), []string{did}) {
+			t.Errorf("ana's list (%s) while her first list's reply is held: %d %s", pass, status, data)
 		}
 	}
-	for _, path := range []string{"/api/me", "/api/me/decisions", "/api/decisions/" + did, "/api/decisions/" + did + "/respond"} {
-		method, body := http.MethodGet, any(nil)
-		if strings.HasSuffix(path, "/respond") {
-			method, body = http.MethodPost, respond("x1")
-		}
-		for _, pass := range []string{passAna, passHostAna} {
-			status, data, out := f.callAs(t, pass, method, path, body)
-			if status != http.StatusTooManyRequests || codeOf(out) != "rate_limited" || apiMessage(out) != "too many of your requests are being answered: ask again" || bytes.Contains(data, []byte(did)) {
-				t.Errorf("a fifth, %s %s: %d %s", method, path, status, data)
-			}
-		}
+	close(w.gate)
+	select {
+	case <-served:
+	case <-time.After(testWait):
+		t.Fatal("the held list never ended")
 	}
-	if n, rows := read(), len(f.record(t, did).Responses); n != decideAtOnce || rows != 0 {
-		t.Fatalf("past the bound: %d reads made, %d responses written", n, rows)
+	var l proto.DecideList
+	if strictly(t, w.Body.Bytes(), &l); w.Code != http.StatusOK || !slices.Equal(ids(l), []string{did}) {
+		t.Errorf("the held list: %d %s", w.Code, w.Body.Bytes())
 	}
-	if got := f.srv.decideRequests.held(); !maps.Equal(got, map[string]int{"ana": decideAtOnce}) {
-		t.Fatalf("in flight: %v", got)
-	}
-	f.view(t, passBob, did)
-	for _, tok := range []string{adminToken, passAdminDecide} {
-		if status, data, _ := f.callAs(t, tok, http.MethodGet, "/api/decisions/"+did, nil); status != http.StatusOK {
-			t.Fatalf("the admin's read (%.12s): %d %.200s", tok, status, data)
-		}
-	}
-	for i := range decideAtOnce {
-		close(gates[i])
-		if status := <-done; status != http.StatusOK && status != http.StatusCreated {
-			t.Fatalf("held request released: %d", status)
-		}
-		left := decideAtOnce - 1 - i
-		waitUntil(t, "a released request's end", func() bool { return f.srv.decideRequests.held()["ana"] == left })
-		if status, data, _ := f.callAs(t, []string{passAna, passHostAna}[i%2], http.MethodGet, "/api/me", nil); status != http.StatusOK {
-			t.Fatalf("one more with %d in flight: %d %s", left, status, data)
-		}
-	}
-	f.emptied(t, "every request answered")
-}
-
-// Every way out of the four routes ends its request's count: after each
-// (an answer, a refusal, a 404, a 400, a reply past its bound, a ledger
-// that cannot be read) nothing is left in flight; nor after 1,000
-// subjects one after another.
-func TestDecideRequestsInFlightEnd(t *testing.T) {
-	f := newDecideFixture(t, nil)
-	did, big := f.open(t, "r1"), f.seed(t, 1, seedRequest(grantFor))[0]
-	f.give(t, did)
-	f.rawWrite(t, "UPDATE decisions SET request = ? WHERE n = ?", `{"question":"q","context":"`+strings.Repeat("x", proto.MaxDecideView)+
-		`","options":[{"label":"Approve"},{"label":"Reject"}],"subject":{"kind":"plan","plan":"pl-1","digest":"d1"},"for":`+grantFor+`}`, numberOf(big))
-	respond := func(id string, rev int) any { return map[string]any{"responseId": id, "choice": 0, "expectedRev": rev} }
-	for _, tc := range []struct {
-		method, path string
-		body         any
-		status       int
-	}{
-		{http.MethodGet, "/api/me", nil, http.StatusOK},
-		{http.MethodGet, "/api/me/decisions", nil, http.StatusOK},
-		{http.MethodGet, "/api/me/decisions?after=dr-1", nil, http.StatusBadRequest},
-		{http.MethodGet, "/api/decisions/" + did, nil, http.StatusOK},
-		{http.MethodGet, "/api/decisions/" + did + "?x=1", nil, http.StatusBadRequest},
-		{http.MethodGet, "/api/decisions/dr-999", nil, http.StatusNotFound},
-		{http.MethodGet, "/api/decisions/" + big, nil, http.StatusInternalServerError},
-		{http.MethodPost, "/api/decisions/" + did + "/respond", []byte(`{"nope":1}`), http.StatusBadRequest},
-		{http.MethodPost, "/api/decisions/dr-999/respond", respond("n1", 2), http.StatusNotFound},
-		{http.MethodPost, "/api/decisions/" + did + "/respond", respond("s1", 1), http.StatusConflict},
-		{http.MethodPost, "/api/decisions/" + did + "/respond", respond("a1", 2), http.StatusCreated},
-	} {
-		status, data, _ := f.callAs(t, passAna, tc.method, tc.path, tc.body)
-		if status != tc.status {
-			t.Fatalf("%s %s: %d %.200s, want %d", tc.method, tc.path, status, data, tc.status)
-		}
-		f.emptied(t, tc.method+" "+tc.path)
-	}
-	f.rawWrite(t, "DROP INDEX decisions_open")
-	if status, data, _ := f.callAs(t, passAna, http.MethodGet, "/api/me/decisions", nil); status != http.StatusServiceUnavailable {
-		t.Fatalf("the list without its index: %d %s", status, data)
-	}
-	f.emptied(t, "a list the ledger cannot read")
-	for i := range 1000 {
-		pass := fmt.Sprintf("pass.decide.s%04d", i)
-		f.id.Add(pass, ext.Principal{Subject: fmt.Sprintf("s%04d", i), Name: "S", Grants: []ext.Grant{ext.GrantDecide}})
-		if status, data, _ := f.callAs(t, pass, http.MethodGet, "/api/me", nil); status != http.StatusOK {
-			t.Fatalf("subject %d: %d %s", i, status, data)
-		}
-	}
-	f.emptied(t, "1,000 subjects one after another")
 }

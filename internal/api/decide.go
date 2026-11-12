@@ -38,56 +38,32 @@ type decideSeams struct {
 	afterList, afterRead func()
 }
 
-// decideInFlight is the subjects with requests in flight and how many
-// each, at most limit: decideRequests' on the four routes (decideAtOnce),
-// decideLists' on the list (one: one bounded read of the ledger at a
-// time). An entry lives as long as its requests and no longer.
-type decideInFlight struct {
-	limit int
-	mu    sync.Mutex
-	in    map[string]int
+// decideListing is the subjects whose list read is in flight, one each at
+// most, so what one principal has the ledger read for its list is one
+// bounded read at a time (ledger.MaxOpenScan rows, ledger.MaxOpenScanBytes
+// of their text). An entry lives as long as its read and no longer.
+type decideListing struct {
+	mu sync.Mutex
+	in map[string]bool
 }
 
-// begin counts one more of subject's requests in flight, false past the
-// limit; done ends it.
-func (l *decideInFlight) begin(subject string) (done func(), ok bool) {
+// begin marks subject's list read in flight, false when one already is;
+// done ends it.
+func (l *decideListing) begin(subject string) (done func(), ok bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.in[subject] >= l.limit {
+	if l.in[subject] {
 		return nil, false
 	}
 	if l.in == nil {
-		l.in = map[string]int{}
+		l.in = map[string]bool{}
 	}
-	l.in[subject]++
+	l.in[subject] = true
 	return func() {
 		l.mu.Lock()
 		defer l.mu.Unlock()
-		if l.in[subject]--; l.in[subject] == 0 {
-			delete(l.in, subject)
-		}
+		delete(l.in, subject)
 	}, true
-}
-
-// decideAtOnce is how many of one subject's requests the four routes
-// answer at once, whichever passes send them; the admin is under no bound.
-const decideAtOnce = 4
-
-// decideCounted runs answer, a decide principal's counted among its
-// subject's in flight on the four routes: past decideAtOnce 429 in the
-// server's words, nothing read. Any other principal's runs uncounted.
-func (s *Server) decideCounted(w http.ResponseWriter, p principal, answer func()) {
-	if !p.decider() {
-		answer()
-		return
-	}
-	done, ok := s.decideRequests.begin(p.subject)
-	if !ok {
-		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many of your requests are being answered: ask again")
-		return
-	}
-	defer done()
-	answer()
 }
 
 // decideHook runs the seam pick names, when a test set one.
@@ -137,8 +113,7 @@ func decideAdmission(rec ledger.DecisionRecord, p principal) crew.Admission {
 // admin nor a decide principal (a host-only one, no credential) 401 under
 // the rate limit, as requireAdmin does; then, on a switchyard, 403
 // switchyard to the admin and a decide principal alike; else the admin as
-// launching passes it and a decide principal, counted among its subject's
-// requests in flight (decideCounted), to the handler.
+// launching passes it and a decide principal to the handler.
 func (s *Server) deciding(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p := s.authenticate(r, false)
@@ -148,7 +123,7 @@ func (s *Server) deciding(next http.HandlerFunc) http.HandlerFunc {
 		case s.cfg.Switchyard.Enabled:
 			writeError(w, http.StatusForbidden, "switchyard", "this server coordinates hosted sessions and launches none")
 		default:
-			s.decideCounted(w, p, func() { next(w, withPrincipal(r, p)) })
+			next(w, withPrincipal(r, p))
 		}
 	}
 }
@@ -183,7 +158,8 @@ func decideNotFound(w http.ResponseWriter) {
 // proto.MaxDecideListEntries, cut when one more admitted was met or the
 // read reached its own bound first. The admin is 403 not_decide, nothing
 // read. One subject has one list read in flight at most (decideLists):
-// another while it is is 429, nothing read.
+// another while it is is 429, nothing read. The reply is made inside that
+// guard and written after it.
 func (s *Server) handleDecideList(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 	if !p.decider() {
@@ -202,6 +178,7 @@ func (s *Server) handleDecideList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "a list of yours is being read: read it again once it is answered")
 		return
 	}
+	done = sync.OnceFunc(done)
 	defer done()
 	limit := 0
 	if h := s.decideSeam.Load(); h != nil {
@@ -226,7 +203,9 @@ func (s *Server) handleDecideList(w http.ResponseWriter, r *http.Request) {
 	}
 	s.decideHook(func(h *decideSeams) func() { return h.afterList })
 	list.Cut = met || more
-	s.writeBounded(w, http.StatusOK, list, proto.MaxDecideList)
+	b, _ := json.Marshal(list)
+	done()
+	s.writeBounded(w, http.StatusOK, json.RawMessage(b), proto.MaxDecideList)
 }
 
 // decideRead answers a decide principal's GET /api/decisions/{did}: one
@@ -358,11 +337,10 @@ type decideBody struct {
 }
 
 // decideResponse is the engine's response of p's body, each field set by
-// name: the name the answer is shown under is the provider's for p (one
-// line of at most ext.MaxPrincipalName characters, as GET /api/me says
-// it) without the characters that draw nothing or change the line or the
-// direction of the text (Unicode's Cf, Zl and Zp) and the space around
-// it, the actor when nothing is left; never anything the request carries.
+// name: the name the answer is shown under is the provider's for p (as
+// GET /api/me says it) without its characters of Unicode's Cf, Zl and Zp
+// and the space around it, the actor when nothing is left; every other
+// character is kept as given, and nothing the request carries names it.
 func decideResponse(b decideBody, p principal) crew.Response {
 	name := strings.TrimSpace(strings.Map(func(r rune) rune {
 		if unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) {
