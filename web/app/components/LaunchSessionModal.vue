@@ -6,6 +6,7 @@ import { launchListNote, serverAgents } from '~/utils/agents'
 import { splitArgs } from '~/utils/argv'
 import { ATTEMPT_WARNING, SHARED_TREE_WARNING, cloneArgsShown, cloneCwd, cloneLaunchArgs, cloneLaunchCwd, cloneName, cloneNameError, cloneRefusal, inRunWorktree, missingSourceAgent, yoloStored } from '~/utils/clone'
 import { hostAdapter, hostCommand } from '~/utils/hostCommand'
+import { accountChoices, modelProblem, type CapacityQuery } from '~/utils/capacity'
 import { plainOffMachine, showsRunsOn } from '~/utils/launch'
 import { effectiveYolo, yoloSummary } from '~/utils/yolo'
 
@@ -77,6 +78,10 @@ watch([open, launchModal.asked], async ([v]) => {
   if (!v) return
   error.value = ''
   submitting.value = false
+  launchAccount.forAgent = ''
+  launchAccount.picked = ''
+  model.value = ''
+  void accounts.store.load()
   knownHosted.value = new Set(live.sessions.value.filter((s) => s.kind === 'hosted').map((s) => s.id))
   state.yolo = undefined
   // A prefill (#303: Launch <agent> here, Launch another like this, the launch verb), taken once per opening: its agent is set
@@ -131,6 +136,49 @@ const yolo = computed({
 })
 const extraArgs = computed(() => (selected.value?.allowArgs && state.args.trim() ? splitArgs(state.args) : []))
 const yoloView = computed(() => yoloSummary(selected.value, yolo.value, extraArgs.value))
+
+// Account and model (docs/plans/capacity.md, PR-5): for an agent whose tool's login folder Conductor can move (the adapters
+// GET /api/accounts lists), on this server, and not for a clone, which keeps its source's unless its body names others. The account
+// starts as the one the server resolves for the agent (its adapter's default, or the default login for an entry that sets its own
+// login), read from the capacity view; a pick of the person's is sent as picked. An entry whose own environment sets its login is
+// offered its default login alone. The capacity panel below shows the view of what is chosen; it never disables Launch.
+const accounts = useAccounts()
+const capacity = useCapacity()
+const launchAccount = reactive<{ forAgent: string; picked: string }>({ forAgent: '', picked: '' })
+const model = ref('')
+const adapter = computed(() => selected.value?.adapter || undefined)
+const choices = computed(() => accountChoices(accounts.doc.value, adapter.value))
+const takesAccount = computed(() => !cloning.value && state.runsOn === 'server' && choices.value.length > 0)
+/** The panel's question: the agent and, once the person picked one for it, the account; on this computer, the remote state. */
+const capacityQuery = computed<CapacityQuery | null>(() => {
+  if (!selected.value || cloning.value) return null
+  if (state.runsOn === 'local') return { agent: selected.value.id, launch: 'remote' }
+  const picked = launchAccount.forAgent === selected.value.id && launchAccount.picked ? launchAccount.picked : undefined
+  return { agent: selected.value.id, account: picked, yolo: yolo.value }
+})
+/** The account the server resolves for the agent with none named, from the view of the question without one. */
+const resolved = computed(() => {
+  if (!selected.value || state.runsOn !== 'server') return ''
+  return capacity.entry({ agent: selected.value.id, yolo: yolo.value }).view?.account.id ?? ''
+})
+/** An entry that sets its own login: the server answers its default login with none named although its adapter's default is another. */
+const pinned = computed(() => {
+  const ad = accounts.doc.value?.adapters.find((a) => a.adapter === adapter.value)
+  return !!ad && ad.default !== 'default' && resolved.value === 'default'
+})
+/** The account shown chosen: the person's pick for this agent, else what the server resolves, else the adapter's default. */
+const account = computed({
+  get: () => {
+    if (selected.value && launchAccount.forAgent === selected.value.id && launchAccount.picked) return launchAccount.picked
+    if (resolved.value && choices.value.some((c) => c.value === resolved.value)) return resolved.value
+    return accounts.doc.value?.adapters.find((a) => a.adapter === adapter.value)?.default ?? 'default'
+  },
+  set: (v: string) => {
+    launchAccount.forAgent = selected.value?.id ?? ''
+    launchAccount.picked = v
+  },
+})
+const modelError = computed(() => modelProblem(model.value))
 
 const server = computed(() => httpBase.value || (import.meta.client ? location.origin : ''))
 // A workbench opened over plain http from another machine: the host refuses
@@ -212,12 +260,16 @@ async function submit() {
       cwd: state.cwd || undefined,
       args: selected.value?.allowArgs && state.args.trim() ? splitArgs(state.args) : undefined,
       yolo: state.yolo,
+      // The account as chosen (the server's own refusal is shown in its words); none for an agent that takes none.
+      account: takesAccount.value ? (pinned.value ? 'default' : account.value) : undefined,
+      model: takesAccount.value && model.value.trim() ? model.value.trim() : undefined,
     })
     toast.add({ title: 'Session started', description: session.name, color: 'success', icon: 'i-lucide-play' })
     emit('launched', session)
     open.value = false
     state.name = ''
     state.args = ''
+    model.value = ''
   } catch (e) {
     error.value = e instanceof ApiError ? `${e.message} (${e.code})` : (e as Error).message
   } finally {
@@ -287,6 +339,15 @@ async function submit() {
           >
             <UInput v-model="state.args" placeholder="--model opus" class="w-full font-mono" data-launch-args />
           </UFormField>
+          <template v-if="takesAccount">
+            <UFormField label="Account" name="account" :hint="pinned ? 'set by this agent\'s entry' : 'the login it uses'" data-launch-account>
+              <p v-if="pinned" class="text-sm text-muted" data-launch-account-pinned>This agent's entry sets its own login: it launches on that login only.</p>
+              <AccountSelect v-else v-model="account" :doc="accounts.doc.value" :adapter="adapter" />
+            </UFormField>
+            <UFormField label="Model" name="model" hint="empty for the agent's default" :error="modelError || undefined" data-launch-model>
+              <UInput v-model="model" placeholder="the agent's default" class="w-full font-mono" data-launch-model-input />
+            </UFormField>
+          </template>
           <div class="flex flex-col gap-1.5" data-launch-yolo>
             <USwitch
               v-model="yolo"
@@ -299,6 +360,7 @@ async function submit() {
               Skips its permission prompts: <code class="font-mono" data-yolo-argv>{{ yoloView.argv.join(' ') }}</code><template v-if="yoloView.env.length"> with {{ yoloView.env.join(', ') }}</template>
             </p>
           </div>
+          <CapacityPanel :query="capacityQuery" :model="takesAccount ? model : undefined" read-on-open />
         </template>
 
         <template v-else>
@@ -317,6 +379,7 @@ async function submit() {
             </span>
           </p>
           <p class="text-xs leading-relaxed text-muted">The session appears here as <b class="text-default">hosted</b> as soon as it connects, and this dialog closes; your terminal stays attached to it.</p>
+          <CapacityPanel :query="capacityQuery" />
         </template>
       </form>
     </template>
