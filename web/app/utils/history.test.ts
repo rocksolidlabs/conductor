@@ -24,8 +24,10 @@ import {
   historyQuestions,
   linkLine,
   lostQuestion,
+  hostUnreported,
   recordEnding,
   recordEntryWords,
+  recordWhere,
   repeatWords,
   resumeDestination,
   resumeQuestion,
@@ -396,5 +398,23 @@ describe("a resume's outcome when it did not answer started (PR-7, the record pa
   it('says a refusal and an error did not resume, with the refusal\'s code', () => {
     expect(resumeFailure(receipt('failed', 'env_not_kept'), where)).toMatchObject({ outcome: 'refused', code: 'env_not_kept', title: 'It did not resume', color: 'warning' })
     expect(resumeFailure(Object.assign(new Error('boom'), { status: 500, code: 'internal' }), where)).toMatchObject({ outcome: 'failed', code: 'internal', title: 'It did not resume', description: 'boom', color: 'error' })
+  })
+})
+
+// A hosted record says what its host did not report (an older host, a Runtime elsewhere), and never reads an unknown where as
+// native (HS1 PR-12).
+describe('what a host reported', () => {
+  const hosted = { host: { name: 'mac', user: 'ada', hosted: true }, agent: { id: 'claude' } }
+  it('says an older host reported nothing, and a server session lacks nothing', () => {
+    expect(recordWhere({})).toBe('')
+    expect(hostUnreported(hosted)).toEqual(['where it ran', "the agent's version", 'the repository', 'the start commit'])
+    expect(hostUnreported({ host: { name: 'lab-box' }, agent: { id: 'cat' } })).toEqual([])
+  })
+  it('says what a host on another Runtime reported, and what a native one did', () => {
+    expect(recordWhere({ where: 'vm' })).toBe('ran on vm')
+    expect(hostUnreported({ ...hosted, where: 'vm', agent: { id: 'claude' } })).toEqual(["the agent's version", 'the repository', 'the start commit'])
+    const native = { ...hosted, where: 'native', agent: { id: 'claude', version: '2.1.304' }, repo: '/Users/ada/app', startCommit: 'a'.repeat(40) }
+    expect(recordWhere(native)).toBe('ran natively')
+    expect(hostUnreported(native)).toEqual([])
   })
 })

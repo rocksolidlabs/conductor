@@ -1,5 +1,5 @@
 // Package journal is the session journal (docs/plans/history.md, Program
-// item HS1): one record of every server session, kept as a JSON document
+// item HS1): one record of every session, kept as a JSON document
 // in the data directory's history/sessions/<id>.json (the directory 0700,
 // each file 0600) from the session's start: its agent and that agent's own
 // session, its host and where it ran, its folder and commits, its launch,
@@ -7,9 +7,9 @@
 // Conductor typed into it, its questions and how each ended, its chat,
 // what its agent reported, the files it reported touching). What a person
 // types into a terminal or a reply box is never kept, nor a variable's
-// value. A hosted session has no record yet; the record's hosted fields
-// (Host.Hosted, Host.Owner, Reopened, EndingHostAway) are read as they are
-// and written by none of this package's callers.
+// value. A hosted session's record holds what its host reports of it,
+// nothing of the server's machine, and is taken up again when its host
+// registers the same session again (hosted.go).
 //
 // Like internal/dispatch and internal/brakeman it has no HTTP, no session
 // and no process: it imports the standard library and internal/store

@@ -114,6 +114,9 @@ type HostSession struct {
 	// LocalID is the session's id on the host; with HostInfo.Instance,
 	// both or neither.
 	LocalID string `json:"localId,omitempty"`
+	// HostReport is what the host reports of the session for its record
+	// (hostreport.go), its fields beside these.
+	HostReport
 }
 
 // HostResume lets a reconnecting host reclaim its session.
@@ -165,6 +168,10 @@ type Registered struct {
 	// there; absent from an older switchyard and from one built without
 	// the tab, at which the publisher refuses one (switchyard_too_old).
 	Decisions bool `json:"decisions,omitempty"`
+	// SessionInfo says the server takes session_info (HostSessionInfoMsg):
+	// only then does the host send it. Absent from an older server, from a
+	// switchyard and on a desk's registered.
+	SessionInfo bool `json:"sessionInfo,omitempty"`
 	// Renews says the switchyard rechecks this connection's credential and
 	// takes host_token on it (HostTokenMsg): only on a connection admitted
 	// through an identity provider's principal; absent from an older

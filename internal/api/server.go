@@ -179,7 +179,7 @@ type Server struct {
 	commits          *commitFan // the commit hooks' observers (commits.go)
 	readRevision     func(ctx context.Context, dir string) (gitcli.Revision, error)
 	// recordRepos is each native server session's launch repository, by
-	// the identity of its common git directory (*launchRepo, which holds
+	// the identity of its common git directory (*gitcli.LaunchRepo, which holds
 	// it open where the system reuses identities), until its end commit is
 	// read (recordEndCommit) or none is to be read; recCur, under recMu, the
 	// registration each record follows (*recorder), by its id, until its
@@ -210,6 +210,9 @@ type Server struct {
 	// stages (launchSeam).
 	starting   startingSessions
 	launchHook atomic.Pointer[func(stage, id string)]
+	// captureWait, when a test sets it, bounds a hosted hook's wait for its
+	// recorder in place of launchWait (captureHostedAgentSession).
+	captureWait atomic.Int64
 	// planFacts keeps what the plan revisions' reads take from each
 	// revision's body, by its digest (dispatch_plans.go), so a list reads
 	// no body it has read before.
@@ -715,10 +718,19 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		if info.Status.Ended() {
 			s.endLinks(info.ID)
 		}
+		s.recordHostedHint(info.ID)
 	}
-	s.hosts.OnActivity = s.events.activity
+	s.hosts.OnActivity = func(id string, e session.ActivityEntry, st session.AttentionState) {
+		s.events.activity(id, e, st)
+		s.recordHostedActivity(id, e)
+	}
 	// A hosted session's chat reaches the browsers' unread counts as a server session's does.
-	s.hosts.OnChat = func(id string, m session.ChatMessage) { s.events.chat(id, "", m) }
+	s.hosts.OnChat = func(id string, m session.ChatMessage) {
+		s.events.chat(id, "", m)
+		s.recordHostedChat(id, m)
+	}
+	// A hosted session's record (history_hosted.go).
+	s.hosts.OnAdded, s.hosts.OnSessionInfo = s.beginHostedRecord, s.recordSessionInfo
 	s.registry.OnRemove = func(id string, d session.Driver) {
 		// Its viewers go with it first, and none attaches after: a run
 		// link's revoke, or its run forgotten, looks for them in the

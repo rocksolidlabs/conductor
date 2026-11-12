@@ -39,20 +39,31 @@ func sessionPattern(agent catalog.Agent) (*regexp.Regexp, *catalog.SessionRecipe
 // names, when the agent's recipe takes ids from its hooks and the id has the
 // recipe's shape; anything else is dropped.
 func (s *Server) captureAgentSession(local *session.Local, id string, turn bool) {
-	agent, ok := s.Catalog().Get(local.Info().AgentID)
+	policy, ok := s.agentSessionPolicy(local.Info().AgentID, id)
 	if !ok {
-		return
-	}
-	re, r := sessionPattern(agent)
-	if r == nil || r.IDFrom != "hook" || !session.ValidAgentSessionID(id, re) {
 		s.log.Debug("agent session id dropped", "session", local.Info().ID)
 		return
 	}
-	policy := r.IDPolicy
-	if policy == "" {
-		policy = session.PolicyLatest
-	}
 	local.ReportAgentSession(id, policy, turn)
+}
+
+// agentSessionPolicy is the policy by which an agent session id reported
+// by a hook of agentID's is taken: the catalog's recipe for the agent's
+// (latest when it names none), ok false when the catalog has no such
+// agent, its recipe takes no id from a hook, or id is not of its pattern.
+func (s *Server) agentSessionPolicy(agentID, id string) (string, bool) {
+	agent, ok := s.Catalog().Get(agentID)
+	if !ok {
+		return "", false
+	}
+	re, r := sessionPattern(agent)
+	if r == nil || r.IDFrom != "hook" || !session.ValidAgentSessionID(id, re) {
+		return "", false
+	}
+	if r.IDPolicy == "" {
+		return session.PolicyLatest, true
+	}
+	return r.IDPolicy, true
 }
 
 // newAgentSessionID makes a fresh id for a recipe's StartArgs: a UUID, or
