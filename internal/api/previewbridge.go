@@ -107,8 +107,8 @@ func (s *Server) SetTLSListen(addr string) {
 // one (MessageEvent.origin), "" for a host or a port it would write
 // otherwise: an IP address in its own form (an IPv6 one in brackets), a
 // name of lower-case letters, digits and hyphens whose last label begins
-// with a letter (no internationalised name but its xn-- form), a port of
-// 1 to 65535 left out when it is the scheme's default.
+// with a letter (no internationalised name but its xn-- form, not
+// judged), a port of 1 to 65535 left out when it is the scheme's default.
 func webOrigin(scheme, host, port string) string {
 	if ip := net.ParseIP(host); ip != nil {
 		host = ip.String()
@@ -131,31 +131,36 @@ func webOrigin(scheme, host, port string) string {
 // browserName is a host name a browser keeps as it is.
 var browserName = regexp.MustCompile(`^([a-z0-9-]+\.)*[a-z][a-z0-9-]*$`)
 
-// publicOrigin is publicUrl's origin; "" when publicUrl names this machine
-// alone (a local address enters the list only through a listener that
-// holds it), or, left, when it does not already write its origin as a
-// browser does (capitals, the default port, a port of leading zeros, a
-// name not in ASCII, an address in another spelling, a user).
+// publicOrigin is publicUrl's origin; "" when publicUrl is the default's
+// local address or a loopback one (a loopback origin enters the list only
+// through a listener that holds it), or, left, when its host is an address
+// that is not a unicast one, loopback or unspecified, or localhost's name
+// or one under it, or it does not already write its origin as a browser
+// does (capitals, the default port, a port of leading zeros, a name not in
+// ASCII, an address in another spelling, a user). Any other name is the
+// owner's statement of where the server is reached: it is not resolved,
+// and an xn-- label is not judged.
 func (s *Server) publicOrigin() (o string, left bool) {
 	pub := s.cfg.PublicURL
 	u, err := url.Parse(pub)
 	if err != nil || s.cfg.PublicURLIsLocal() || net.ParseIP(u.Hostname()).IsLoopback() {
 		return "", false
 	}
+	ip, name := net.ParseIP(u.Hostname()), strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
 	port := u.Port()
 	if port == "" {
 		port = map[string]string{"http": "80", "https": "443"}[u.Scheme]
 	}
 	o = webOrigin(u.Scheme, u.Hostname(), port)
-	if u.User != nil || o == "" || !strings.HasPrefix(pub, o) || len(pub) > len(o) && !strings.ContainsRune("/?#", rune(pub[len(o)])) {
+	if ip != nil && !ip.IsGlobalUnicast() && !ip.IsLinkLocalUnicast() || name == "localhost" || strings.HasSuffix(name, ".localhost") ||
+		u.User != nil || o == "" || !strings.HasPrefix(pub, o) || len(pub) > len(o) && !strings.ContainsRune("/?#", rune(pub[len(o)])) {
 		return "", true
 	}
 	return o, false
 }
 
 // PublicOriginLeftOut reports whether the bridge leaves publicUrl out of
-// its origins as not written as a browser writes one (conductor serve
-// says so once).
+// its origins (publicOrigin's left; conductor serve says so once).
 func (s *Server) PublicOriginLeftOut() bool {
 	_, left := s.publicOrigin()
 	return s.bridge.script != nil && !s.cfg.Switchyard.Enabled && left

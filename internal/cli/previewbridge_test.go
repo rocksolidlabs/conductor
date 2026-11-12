@@ -65,8 +65,44 @@ func TestServeHandsTheBridgeTheAddressesItIsBoundTo(t *testing.T) {
 			}
 		}
 	}, "--config", cfg)
-	if lines := logLines(logs, "publicUrl is not written as a browser writes an origin"); len(lines) != 1 {
+	if lines := logLines(logs, "publicUrl is left out of the preview bridge's origins"); len(lines) != 1 {
 		t.Fatalf("the publicUrl line, %d times:\n%s", len(lines), logs)
+	}
+}
+
+// A publicUrl at a fixed port that names this machine by an unspecified
+// address or a name under localhost is not one serve moves to the port the
+// listener drew (--listen 127.0.0.1:0): the bridge leaves it out, names
+// the loopback at the drawn port alone, and serve says so once.
+func TestServeLeavesALocalPublicURLAtAFixedPortOut(t *testing.T) {
+	for _, public := range []string{"http://0.0.0.0:9000", "http://[::]:9000", "http://app.localhost:9000", "http://LOCALHOST.:9000", "http://a.b.localhost:9000"} {
+		t.Run(public, func(t *testing.T) {
+			clearConductorEnv(t)
+			dir := t.TempDir()
+			cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "publicUrl": %q}`,
+				dir, dir, filepath.Join(dir, "state"), public))
+			oldNew := newServer
+			t.Cleanup(func() { newServer = oldNew })
+			newServer = func(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, ui http.Handler, st *store.Store, p ext.Providers, notices string) (*api.Server, error) {
+				return api.New(cfg, cat, log, ui, st, api.WithExtensions(p), api.WithNotices(notices), api.WithPreviewBridge([]byte("start(conductorWorkbenchOrigins);")))
+			}
+			logs := serveWhile(t, "conductor serving", func(logs string) {
+				var plain string
+				for _, f := range strings.Fields(logLines(logs, "conductor serving")[0]) {
+					if v, ok := strings.CutPrefix(f, "listen="); ok {
+						plain = v
+					}
+				}
+				_, port, _ := net.SplitHostPort(plain)
+				want := []string{"http://127.0.0.1:" + port, "http://localhost:" + port, "http://[::1]:" + port}
+				if got := servedOrigins(t, "http://"+plain+"/preview-bridge.js"); port == "" || port == "9000" || !slices.Equal(got, want) {
+					t.Fatalf("origins %q, want %q", got, want)
+				}
+			}, "--config", cfg)
+			if lines := logLines(logs, "publicUrl is left out of the preview bridge's origins"); len(lines) != 1 {
+				t.Fatalf("the publicUrl line, %d times:\n%s", len(lines), logs)
+			}
+		})
 	}
 }
 

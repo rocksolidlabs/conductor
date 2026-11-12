@@ -252,14 +252,24 @@ describe('the preview bridge', () => {
   })
 
   // A text that gives a member twice is no value (the server reads such a text and refuses it): the app's parser never meets one.
-  it('gives every message of the fixture the verdict and the content Go gives it, the message as text read and as a structured clone', () => {
+  // What an accepted message is compared with is a copy the parser never held, frozen: a parser that changed what it was handed
+  // would fail, given the frozen copy itself (a change throws) or a fresh clone of it (the change shows).
+  it('gives every message of the fixture the verdict and the content Go gives it, compared with a copy the parser never held', () => {
+    const freeze = (v: unknown): unknown => {
+      if (typeof v === 'object' && v !== null) {
+        for (const x of Object.values(v)) freeze(x)
+        Object.freeze(v)
+      }
+      return v
+    }
     const values = fixture.messages.filter((c) => !c.asText)
     expect(values.length).toBeGreaterThan(600)
     for (const c of values) {
-      for (const v of [c.message, structuredClone(c.message)]) {
+      const want = freeze(structuredClone(c.message))
+      for (const v of [want, structuredClone(want)]) {
         const got = parsePreviewMessage(v, c.to, c.nonce)
         expect({ name: c.name, ok: got !== null }).toEqual({ name: c.name, ok: c.ok })
-        if (got) expect({ name: c.name, got }).toEqual({ name: c.name, got: c.message })
+        if (got) expect({ name: c.name, got }).toEqual({ name: c.name, got: want })
       }
     }
   })
@@ -291,9 +301,9 @@ describe('the preview bridge', () => {
     expect(JSON.parse(JSON.stringify(back[0]))).toEqual(served.origins)
   })
 
-  // The work is counted in the keys the parser lists and the members it asks of: no list of a value's keys is made, and the count
-  // stops one past the most an object of a message has.
-  it('counts an object\'s members as it meets them, a list\'s length first, and stops past the schema\'s number', () => {
+  // What is counted is the properties the parser inspects: the keys it asks Object.keys for and the members it asks Object.hasOwn
+  // of, which stop one past the most an object of a message has. The engine's own enumeration of a value's keys is not counted.
+  it('inspects an object\'s members as it meets them, a list\'s length first, and no more than one past the schema\'s number', () => {
     const extra = (o: object) => {
       const out: Record<string, unknown> = { ...o }
       for (let i = 0; i < 100_000; i++) out[`m${i}`] = i

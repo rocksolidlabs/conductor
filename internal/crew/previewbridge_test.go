@@ -152,6 +152,10 @@ func TestTheTreeSecretIsInNoReceipt(t *testing.T) {
 	if !hex64.MatchString(checkout) || checkout == worktree {
 		t.Fatalf("the checkout's secret is not its own")
 	}
+	// The task read as succeeded is a commit ahead of the ledger: wait for
+	// both trees' ended rows, which follow that commit, then for the trees,
+	// before reading what the ledger holds.
+	l.waitTreeRowsEnded(t, run.ID, "build", 1, ledger.TreeWorktree, ledger.TreeCheckout)
 	waitTreesEnded(t, e, run.ID)
 	// The step that printed the secret has it in its output, as it printed
 	// it: its log and its tail, in each tree it ran in.

@@ -287,7 +287,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	// The address it got, for the preview bridge's origins and its URL in a tree.
 	srv.SetListen(ln.Addr().String())
 	if srv.PublicOriginLeftOut() {
-		log.Warn("publicUrl is not written as a browser writes an origin (lower case, no default port, an address in its own form), so the preview bridge does not answer a workbench opened there")
+		log.Warn("publicUrl is left out of the preview bridge's origins (not written as a browser writes an origin: lower case, no default port, an address in its own form; or a name under localhost, or an address that is not one machine's), so the bridge does not answer a workbench opened there")
 	}
 	log.Info("conductor serving", "version", version.String(), "listen", ln.Addr().String(), "publicUrl", cfg.PublicURL, "agents", len(srv.Catalog().List()), "dataDir", cfg.DataDir)
 	if cfg.PublicURLIsLocal() {

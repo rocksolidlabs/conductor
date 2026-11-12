@@ -1233,7 +1233,10 @@ const PREVIEW_DEPTH = 4
 /** The most members an object of a message has: an element report's. */
 const PREVIEW_MEMBERS = 17
 
-/** How many own keys v has, counted as they are met and no further than one past most: no list of them is made. */
+/**
+ * How many own keys v has, counted as they are met and no further than one past most: the parser inspects at most most + 1 of them.
+ * Enumerating them costs the engine time in proportion to v, which the browser has already spent, several times over, deserialising it.
+ */
 function keyCount(v: object, most: number): number {
   let n = 0
   for (const k in v) if (Object.hasOwn(v, k) && ++n > most) break
@@ -1260,7 +1263,8 @@ function dense(v: unknown): v is unknown[] {
  * that stops past most: Infinity for a value past most and for one a message does not hold (a big integer, a symbol, a function,
  * undefined, a number not finite, a string with a lone surrogate, an object of another kind than a plain object or an array, an
  * object of more members than PREVIEW_MEMBERS, an array with a hole or a named member, nesting past a message's depth), so nothing
- * is written out to be measured, no list of a value's keys is made, and nothing throws.
+ * is written out to be measured, at most PREVIEW_MEMBERS + 1 of an object's keys are inspected, a list's length is judged before any
+ * of it is read, and nothing throws. Enumerating a value's keys costs the engine time in proportion to the value (keyCount).
  */
 export function previewMeasure(v: unknown, most = Infinity): number {
   let n = 0
@@ -1399,7 +1403,7 @@ const TO_BRIDGE = new Set(['hello', 'select', 'describe', 'look', 'cancel'])
  * v, a message travelling to, as one of the bridge's messages held to its type's schema (proto.ParsePreviewMessage): a type of to's
  * way, every field the type carries and no other, each within its bound, the whole within to's bound and an element within
  * MAX_ELEMENT_REPORT. A hello gives the nonce (any well-formed one passes); every other message must carry `nonce`, the one the
- * hello gave. v is a value a page made (a structured clone), so it is judged in one bounded walk before anything else reads it
+ * hello gave. v is a value a page made (a structured clone), so it is judged in one walk that stops at the bound before anything else reads it
  * whole (previewMeasure), the type's keys first: null for anything else, never an exception.
  */
 export function parsePreviewMessage(v: unknown, to: PreviewDirection, nonce: string): PreviewMessage | null {

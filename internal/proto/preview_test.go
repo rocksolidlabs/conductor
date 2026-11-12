@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -505,6 +506,39 @@ func previewCases() previewFile {
 		spelled("a selector holding "+s.name, n, describe, `"#x"`, `"`+s.text+`"`, s.ok)
 		spelled("an element's selector holding "+s.name, n, sel(element()), `"#save"`, `"`+s.text+`"`, s.ok)
 	}
+	// The corners of the surrogates' halves, each escape in lower, upper
+	// and mixed case: each half alone refused, the pairs of the first high
+	// and the first low half and of the last of each passed.
+	esc := func(hex string) string { return `\` + "u" + hex }
+	cases := func(hex string) []string {
+		mixed := []byte(hex)
+		for i := range mixed {
+			if i%2 == 0 {
+				mixed[i] = strings.ToUpper(hex)[i]
+			}
+		}
+		return slices.Compact([]string{hex, strings.ToUpper(hex), string(mixed)})
+	}
+	for _, half := range []string{"d800", "dbff", "dc00", "dfff"} {
+		for _, h := range cases(half) {
+			spelled("a selector holding the escape u"+h+" alone", n, describe, `"#x"`, `"#`+esc(h)+`"`, false)
+			spelled("an element's selector holding the escape u"+h+" alone", n, sel(element()), `"#save"`, `"#`+esc(h)+`"`, false)
+		}
+	}
+	for _, p := range [][2]string{{"d800", "dc00"}, {"dbff", "dfff"}} {
+		hs, ls := cases(p[0]), cases(p[1])
+		for i := range hs {
+			pair := esc(hs[i]) + esc(ls[min(i, len(ls)-1)])
+			spelled("a selector holding the pair u"+hs[i]+" u"+ls[min(i, len(ls)-1)], n, describe, `"#x"`, `"#`+pair+`"`, true)
+			spelled("an element's selector holding the pair u"+hs[i]+" u"+ls[min(i, len(ls)-1)], n, sel(element()), `"#save"`, `"#`+pair+`"`, true)
+		}
+	}
+	// lone is m, whose member holds loneMark alone, with that member holding
+	// a low surrogate alone: refused, whatever the member.
+	const loneMark = "a-member-to-hold-a-lone-surrogate"
+	lone := func(what string, m obj) {
+		spelled(what+" holding a lone surrogate", n, m, `"`+loneMark+`"`, `"a`+esc("dfff")+`"`, false)
+	}
 	// The schema itself: every object of a message (each type's own, the
 	// viewport and each object of the element report) with a member of its
 	// own, and each of its members null and of another kind; each refused.
@@ -529,6 +563,15 @@ func previewCases() previewFile {
 			}
 			add(what+"'s "+key+" of null", n, nulled(m, at...), false)
 			add(what+"'s "+key+" of another kind", n, with(m, other[kind], at...), false)
+			// Every string member with a lone surrogate; every flag (but
+			// missing, which is true alone) given its other value, so that
+			// each takes both across the accepted rows.
+			switch {
+			case kind == reflect.String:
+				lone(what+"'s "+key, with(m, loneMark, at...))
+			case kind == reflect.Bool && key != "missing":
+				add(what+"'s "+key+" true", n, with(m, true, at...), true)
+			}
 		}
 	}
 	message := kinds(reflect.TypeFor[PreviewMessage]())
@@ -566,6 +609,47 @@ func previewCases() previewFile {
 	add("a hint of another kind", n, sel(with(element(), []any{"vue"}, "hints")), false)
 	add("a cut step of another kind", n, sel(with(element(), []any{0}, "cut")), false)
 	add("a ready's hint kind of another kind", n, with(ready, []any{0}, "hints"), false)
+	// The strings of each list, each with a lone surrogate.
+	for _, l := range []string{"attributes", "styles"} {
+		lone("an item of "+l+"'s name", sel(with(element(), loneMark, l, "0", "0")))
+		lone("an item of "+l+"'s value", sel(with(element(), loneMark, l, "0", "1")))
+	}
+	lone("a cut step", sel(with(element(), []any{loneMark}, "cut")))
+	lone("a ready's hint kind", with(ready, []any{loneMark}, "hints"))
+	// A second value for the members every other accepted row gives one:
+	// the other colour scheme, an ancestor of another tag with an id and a
+	// role, a nonce of every kind of character its alphabet has (and one of
+	// each character next to it, refused), a revision of every hex digit.
+	add("a ready in the light colour scheme", n, with(ready, "light", "viewport", "colorScheme"), true)
+	add("an ancestor of another tag with an id and a role", n, sel(with(element(), []any{obj{"tag": "section", "id": "bar", "classes": "bar wide", "role": "toolbar"}}, "ancestors")), true)
+	add("hello with a nonce of every kind of character", "", msg(PreviewHello, "AZaz09_-AZaz09_-"), true)
+	for _, c := range []string{".", "+", "/", ":", "=", "@", "[", "`", "{", "~", "^"} {
+		add("hello with a nonce holding "+c, "", msg(PreviewHello, "AZaz09_-AZaz09_-"+c), false)
+	}
+	add("a revision of every hex digit", n, with(ready, "0123456789abcdef+fedcba9876543210", "revision"), true)
+	add("a revision of a commit in digits", n, with(ready, "0123456789", "revision"), true)
+	// A string at its bound in a control character with no short escape,
+	// and in characters outside the basic plane from each end of their
+	// range, each one past refused.
+	for _, b := range previewBounds() {
+		if b.member != "the describe's selector" && b.member != "the element's selector" {
+			continue
+		}
+		for _, w := range []width{{"vertical-tab", "\v", 6}, {"U+10000", string(rune(0x10000)), 4}, {"U+10FFFF", string(rune(0x10ffff)), 4}} {
+			add(b.member+" at its bound in "+w.name+" characters", n, b.build(b.n, w.fill), true)
+			add(b.member+" one "+w.name+" character past", n, b.build(b.n+w.n, w.fill), false)
+		}
+	}
+	// A number is the double its text rounds to, and every range is judged
+	// on that double: these are what both parsers give such texts.
+	spelled("an epoch whose text is negative and rounds to zero", n, ready, `"epoch":3`, `"epoch":-1e-400`, true)
+	spelled("an epoch whose text is past zero and rounds to zero", n, ready, `"epoch":3`, `"epoch":1e-400`, true)
+	spelled("an epoch whose text has a fraction that rounds away", n, ready, `"epoch":3`, `"epoch":9007199254740991.4`, true)
+	spelled("an epoch whose text is below 3 and rounds to 3", n, ready, `"epoch":3`, `"epoch":2.99999999999999999999`, true)
+	spelled("a version whose text is past 1 and rounds to 1", n, ready, `"version":1`, `"version":1.0000000000000001`, true)
+	spelled("a version whose text is below 1 and rounds to 1", n, ready, `"version":1`, `"version":0.99999999999999999`, true)
+	spelled("a device pixel ratio whose text is above zero and rounds to zero", n, ready, `"dpr":2`, `"dpr":2e-324`, false)
+	spelled("a device pixel ratio whose text rounds to the smallest double", n, ready, `"dpr":2`, `"dpr":2.4703282292062328e-324`, true)
 	// The flag missing is true, not merely truthy.
 	for _, v := range []any{1, "true", []any{}, obj{}} {
 		add("described as missing "+marshal(v), n, msg(PreviewDescribed, n, page(), obj{"missing": v}), false)
@@ -666,6 +750,19 @@ func previewCases() previewFile {
 	addM("NUL and U+001F", units("\x00\x1f"))
 	addM("a quote and a backslash", units(`"\`))
 	addM("two-byte and three-byte characters", units("é€߿ࠀ￿"))
+	// The measure from its definition: each code unit at the edge of a
+	// class (every control character, DEL, the first and the last two-byte
+	// one, the first three-byte one, the separators and their neighbours,
+	// the plane's last) alone, and the pairs at the corners of the halves.
+	for c := uint16(0); c < 0x20; c++ {
+		addM(fmt.Sprintf("U+%04X alone", c), []uint16{c})
+	}
+	for _, c := range []uint16{0x7f, 0x80, 0x7ff, 0x800, 0x2027, 0x2028, 0x2029, 0x202a, 0xffff, 0xdfff} {
+		addM(fmt.Sprintf("U+%04X alone", c), []uint16{c})
+	}
+	for _, p := range [][]uint16{{0xd800, 0xdc00}, {0xd800, 0xdfff}, {0xdbff, 0xdc00}, {0xdbff, 0xdfff}} {
+		addM(fmt.Sprintf("the pair U+%04X U+%04X", p[0], p[1]), p)
+	}
 	bounds := map[string]int{}
 	for _, b := range previewBounds() {
 		bounds[b.bound] = b.n
@@ -894,6 +991,85 @@ func TestAPreviewMessagesTextIsBoundedBeforeItIsDecoded(t *testing.T) {
 	}
 	if _, err := ParsePreviewMessage(selectText, 0, fixtureNonce); err == nil {
 		t.Fatal("a message of no way passed")
+	}
+}
+
+// The walk of a message's text goes as deep as the schema's deepest value
+// (the message, its element, a list of the element's, an item of it: four
+// levels) and refuses the text at the first object or list past it, where
+// it meets it, reading nothing further: the level is read off the
+// decoder's own offset, the bytes it has taken.
+func TestAPreviewMessagesTextIsRefusedPastTheSchemasDepth(t *testing.T) {
+	deepest := writeText(selectedOf(element()))
+	if _, err := ParsePreviewMessage(deepest, PreviewToWorkbench, fixtureNonce); err != nil {
+		t.Fatalf("the deepest shape the schema allows: %v", err)
+	}
+	for _, tc := range []struct{ name, old, new string }{
+		{"an attribute holding a list", `["id","save"]`, `[["id"],"save"]`},
+		{"an attribute holding an object", `["id","save"]`, `[{"id":"save"},"save"]`},
+		{"an ancestor's tag a list", `{"classes":"bar","id":"","role":"","tag":"div"}`, `{"classes":"bar","id":"","role":"","tag":[]}`},
+		{"an ancestor's tag an object", `{"classes":"bar","id":"","role":"","tag":"div"}`, `{"classes":"bar","id":"","role":"","tag":{}}`},
+	} {
+		text := bytes.Replace(deepest, []byte(tc.old), []byte(tc.new), 1)
+		if bytes.Equal(text, deepest) {
+			t.Fatalf("%s: not in the message", tc.name)
+		}
+		if _, err := decodeOnce(text); err == nil {
+			t.Errorf("%s: one level past the schema's passed the walk", tc.name)
+		}
+		if _, err := ParsePreviewMessage(text, PreviewToWorkbench, fixtureNonce); err == nil {
+			t.Errorf("%s: passed", tc.name)
+		}
+	}
+	// offset is how far the walk read into text before it answered.
+	offset := func(text []byte) (int64, error) {
+		dec := json.NewDecoder(bytes.NewReader(text))
+		_, err := decodeValue(dec, 1)
+		return dec.InputOffset(), err
+	}
+	for _, tc := range []struct {
+		name  string
+		text  []byte
+		ok    bool
+		taken int64
+	}{
+		{"four lists", []byte("[[[[]]]]"), true, 8},
+		{"four objects", []byte(`{"a":{"a":{"a":{}}}}`), true, 20},
+		{"five lists", []byte("[[[[[]]]]]"), false, 5},
+		{"five objects", []byte(`{"a":{"a":{"a":{"a":{}}}}}`), false, 21},
+		{"lists to the bridge's text bound", bytes.Repeat([]byte("["), MaxPreviewTextToBridge), false, 5},
+		{"lists to the workbench's text bound", bytes.Repeat([]byte("["), MaxPreviewTextToWorkbench), false, 5},
+		{"objects to the workbench's text bound", bytes.Repeat([]byte(`{"a":`), MaxPreviewTextToWorkbench/5), false, 21},
+	} {
+		taken, err := offset(tc.text)
+		if (err == nil) != tc.ok || taken != tc.taken {
+			t.Errorf("%s: ok %v after %d bytes, want %v after %d (%v)", tc.name, err == nil, taken, tc.ok, tc.taken, err)
+		}
+		if !tc.ok {
+			for _, to := range []PreviewDirection{PreviewToBridge, PreviewToWorkbench} {
+				if _, err := ParsePreviewMessage(tc.text, to, fixtureNonce); err == nil {
+					t.Errorf("%s: passed", tc.name)
+				}
+			}
+		}
+	}
+}
+
+// A message's text is one JSON value: white space may follow it, and
+// nothing else, neither a further value nor a byte.
+func TestAPreviewMessagesTextIsOneValue(t *testing.T) {
+	text := string(writeText(msg(PreviewSelect, fixtureNonce)))
+	for _, tc := range []struct {
+		after string
+		ok    bool
+	}{
+		{"", true}, {" ", true}, {" \t\r\n", true},
+		{"{}", false}, {" {}", false}, {"x", false}, {" x", false}, {"1", false}, {"null", false}, {`""`, false}, {"[]", false},
+		{"]", false}, {"}", false}, {",", false}, {":", false}, {"/", false}, {"\x00", false}, {"\xef\xbb\xbf", false}, {" " + text, false},
+	} {
+		if _, err := ParsePreviewMessage([]byte(text+tc.after), PreviewToBridge, fixtureNonce); (err == nil) != tc.ok {
+			t.Errorf("a select followed by %q: ok %v, want %v (%v)", tc.after, err == nil, tc.ok, err)
+		}
 	}
 }
 

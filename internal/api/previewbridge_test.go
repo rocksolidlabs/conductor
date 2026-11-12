@@ -109,9 +109,13 @@ func TestTheBridgeIsServedWithItsHeaders(t *testing.T) {
 // names, one on every address the three names and the machine's addresses
 // as they are when the script is served, one on another address that
 // address alone), and publicUrl's only when it is already written as a
-// browser writes it and names another machine. Each once, each within its
-// bound. The engine is given the bridge's URL on the loopback when the
-// listener is there (or on every address), none when it is not.
+// browser writes it and is not the loopback by an address or by a name
+// under localhost, nor an address that is not a unicast one: those are
+// left out, the default's local address and a loopback one silently, the
+// others said. Any other name is written as the owner gave it. Each once,
+// each within its bound. The engine is given the bridge's URL on the
+// loopback when the listener is there (or on every address), none when it
+// is not.
 func TestTheBridgeNamesTheServersOrigins(t *testing.T) {
 	fakeMachine(t, "127.0.0.1/8", "192.168.1.5/24", "fd00::5/64", "fe80::1/64", "::1/128")
 	loop := func(scheme, port string) []string {
@@ -127,22 +131,39 @@ func TestTheBridgeNamesTheServersOrigins(t *testing.T) {
 		tls                  string // the TLS listener's bound address, "" for none
 		want                 []string
 		engine               string
+		left                 bool // publicUrl is said to be left out
 	}{
-		{"every address", "0.0.0.0:8080", "http://127.0.0.1:8080", "", cat(loop("http", ":8080"), machine("http", ":8080")), "http://127.0.0.1:8080/preview-bridge.js"},
+		{"every address", "0.0.0.0:8080", "http://127.0.0.1:8080", "", cat(loop("http", ":8080"), machine("http", ":8080")), "http://127.0.0.1:8080/preview-bridge.js", false},
 		{"a LAN address and TLS on the loopback", "192.168.1.5:8080", "https://conductor.example:9443/base/", "127.0.0.1:41443",
-			cat([]string{"http://192.168.1.5:8080"}, loop("https", ":41443"), []string{"https://conductor.example:9443"}), ""},
-		{"a LAN address and a local public URL", "192.168.1.5:8080", "http://localhost:8080", "", []string{"http://192.168.1.5:8080"}, ""},
-		{"a LAN address and a public URL on the loopback", "192.168.1.5:8080", "http://127.0.0.2:8080", "", []string{"http://192.168.1.5:8080"}, ""},
-		{"TLS on every address", lp, "http://localhost:8080", "[::]:8443", cat(loop("http", ":8080"), loop("https", ":8443"), machine("https", ":8443")), "http://127.0.0.1:8080/preview-bridge.js"},
-		{"TLS on a LAN address", lp, "http://localhost:8080", "10.0.0.7:8443", append(loop("http", ":8080"), "https://10.0.0.7:8443"), "http://127.0.0.1:8080/preview-bridge.js"},
-		{"the IPv6 loopback", "[::1]:7000", "http://[::1]:7000/", "", []string{"http://[::1]:7000", "http://127.0.0.1:7000", "http://localhost:7000"}, "http://[::1]:7000/preview-bridge.js"},
-		{"another loopback address", "127.0.0.2:8080", "http://127.0.0.2:8080/", "", append([]string{"http://127.0.0.2:8080"}, loop("http", ":8080")...), "http://127.0.0.2:8080/preview-bridge.js"},
-		{"the default ports", "127.0.0.1:80", "http://127.0.0.1/", "0.0.0.0:443", cat(loop("http", ""), loop("https", ""), machine("https", "")), "http://127.0.0.1:80/preview-bridge.js"},
-		{"a public name", lp, "https://conductor.example/x?y", "", append(loop("http", ":8080"), "https://conductor.example"), "http://127.0.0.1:8080/preview-bridge.js"},
-		{"a public name in its xn-- form", lp, "https://xn--bcher-kva.example", "", append(loop("http", ":8080"), "https://xn--bcher-kva.example"), "http://127.0.0.1:8080/preview-bridge.js"},
-		{"a public IPv4 address", lp, "http://10.0.0.7:9000", "", append(loop("http", ":8080"), "http://10.0.0.7:9000"), "http://127.0.0.1:8080/preview-bridge.js"},
-		{"a public IPv6 address", lp, "https://[2001:db8::1]/", "", append(loop("http", ":8080"), "https://[2001:db8::1]"), "http://127.0.0.1:8080/preview-bridge.js"},
-		{"a public URL past its bound", lp, "https://" + strings.Repeat("a", 260) + ".example", "", loop("http", ":8080"), "http://127.0.0.1:8080/preview-bridge.js"},
+			cat([]string{"http://192.168.1.5:8080"}, loop("https", ":41443"), []string{"https://conductor.example:9443"}), "", false},
+		{"a LAN address and a local public URL", "192.168.1.5:8080", "http://localhost:8080", "", []string{"http://192.168.1.5:8080"}, "", false},
+		{"a LAN address and a public URL on the loopback", "192.168.1.5:8080", "http://127.0.0.2:8080", "", []string{"http://192.168.1.5:8080"}, "", false},
+		{"TLS on every address", lp, "http://localhost:8080", "[::]:8443", cat(loop("http", ":8080"), loop("https", ":8443"), machine("https", ":8443")), "http://127.0.0.1:8080/preview-bridge.js", false},
+		{"TLS on a LAN address", lp, "http://localhost:8080", "10.0.0.7:8443", append(loop("http", ":8080"), "https://10.0.0.7:8443"), "http://127.0.0.1:8080/preview-bridge.js", false},
+		{"the IPv6 loopback", "[::1]:7000", "http://[::1]:7000/", "", []string{"http://[::1]:7000", "http://127.0.0.1:7000", "http://localhost:7000"}, "http://[::1]:7000/preview-bridge.js", false},
+		{"another loopback address", "127.0.0.2:8080", "http://127.0.0.2:8080/", "", append([]string{"http://127.0.0.2:8080"}, loop("http", ":8080")...), "http://127.0.0.2:8080/preview-bridge.js", false},
+		{"the default ports", "127.0.0.1:80", "http://127.0.0.1/", "0.0.0.0:443", cat(loop("http", ""), loop("https", ""), machine("https", "")), "http://127.0.0.1:80/preview-bridge.js", false},
+		{"a public name", lp, "https://conductor.example/x?y", "", append(loop("http", ":8080"), "https://conductor.example"), "http://127.0.0.1:8080/preview-bridge.js", false},
+		{"a public name in its xn-- form", lp, "https://xn--bcher-kva.example", "", append(loop("http", ":8080"), "https://xn--bcher-kva.example"), "http://127.0.0.1:8080/preview-bridge.js", false},
+		{"a public IPv4 address", lp, "http://10.0.0.7:9000", "", append(loop("http", ":8080"), "http://10.0.0.7:9000"), "http://127.0.0.1:8080/preview-bridge.js", false},
+		{"a public IPv6 address", lp, "https://[2001:db8::1]/", "", append(loop("http", ":8080"), "https://[2001:db8::1]"), "http://127.0.0.1:8080/preview-bridge.js", false},
+		{"a public URL past its bound", lp, "https://" + strings.Repeat("a", 260) + ".example", "", loop("http", ":8080"), "http://127.0.0.1:8080/preview-bridge.js", false},
+		// The unspecified addresses, an address that is not a unicast one
+		// and localhost's names: no machine is reached at them but this
+		// one's loopback, which no listener holds here. Left out, and said.
+		{"a LAN address and a public URL on the unspecified IPv4 address", "192.168.1.5:8080", "http://0.0.0.0:8080", "", []string{"http://192.168.1.5:8080"}, "", true},
+		{"a LAN address and a public URL on the unspecified IPv6 address", "192.168.1.5:8080", "http://[::]:8080", "", []string{"http://192.168.1.5:8080"}, "", true},
+		{"a LAN address and a public URL on a multicast address", "192.168.1.5:8080", "http://224.0.0.1:8080", "", []string{"http://192.168.1.5:8080"}, "", true},
+		{"a LAN address and a public URL under localhost", "192.168.1.5:8080", "http://app.localhost:8080", "", []string{"http://192.168.1.5:8080"}, "", true},
+		{"a LAN address and a public URL of localhost in capitals with a final dot", "192.168.1.5:8080", "http://LOCALHOST.:8080", "", []string{"http://192.168.1.5:8080"}, "", true},
+		{"a LAN address and a public URL two labels under localhost", "192.168.1.5:8080", "http://a.b.localhost:8080", "", []string{"http://192.168.1.5:8080"}, "", true},
+		// Any other name is the owner's statement of where the server is
+		// reached: written as given, never resolved.
+		{"a public name under another top-level name", lp, "https://conductor.local", "", append(loop("http", ":8080"), "https://conductor.local"), "http://127.0.0.1:8080/preview-bridge.js", false},
+		{"a public name whose first label is localhost", lp, "http://localhost.example:9000", "", append(loop("http", ":8080"), "http://localhost.example:9000"), "http://127.0.0.1:8080/preview-bridge.js", false},
+		// An xn-- label is not judged: this one is no name a browser
+		// writes, so the origin is written as given and matches no page.
+		{"a public name of an xn-- label no browser writes", lp, "https://xn--a.example", "", append(loop("http", ":8080"), "https://xn--a.example"), "http://127.0.0.1:8080/preview-bridge.js", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := bridgeEnv(t, func(c *config.Config) { c.PublicURL = tc.public }, WithPreviewBridge([]byte(fakeBridge)))
@@ -165,8 +186,8 @@ func TestTheBridgeNamesTheServersOrigins(t *testing.T) {
 			if b := e.srv.runs.PreviewBridge(); b != tc.engine {
 				t.Fatalf("the engine's bridge %q, want %q", b, tc.engine)
 			}
-			if e.srv.PublicOriginLeftOut() {
-				t.Fatal("publicUrl is said to be left out")
+			if left := e.srv.PublicOriginLeftOut(); left != tc.left {
+				t.Fatalf("publicUrl said to be left out %v, want %v", left, tc.left)
 			}
 		})
 	}

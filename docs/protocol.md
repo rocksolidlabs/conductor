@@ -2388,16 +2388,22 @@ and `[::1]` at its port; one on every address those three and the
 machine's addresses of both families as they are when the script is
 served, but IPv6 link-local ones; one on another address that address
 alone), and `publicUrl`'s origin when `publicUrl` already writes it as
-a browser does and names another machine: scheme and host in lower
-case, a name in ASCII (an internationalised one in its `xn--` form)
-whose last label begins with a letter, an IPv4 address in its dotted
-form, an IPv6 one in brackets in its own form (never as IPv4), a port
-without leading zeros that is not the scheme's default. A `publicUrl`
-written otherwise is left out (`conductor serve` says so once as it
-starts), and a local one (a local name, a loopback address) is never
-written as one: a loopback origin enters the list only through a
-listener that holds it. Each origin once, at most 16, each at most 256
-bytes.
+a browser does: scheme and host in lower case, a name in ASCII (an
+internationalised one in its `xn--` form, which is written as given and
+not judged: one no browser would report matches no page) whose last
+label begins with a letter, an IPv4 address in its dotted form, an IPv6
+one in brackets in its own form (never as IPv4), a port without leading
+zeros that is not the scheme's default. An address gives an origin only
+when it is a unicast address that is neither loopback nor unspecified; a
+name gives none when it is `localhost` or a name under it, in any case,
+with or without a final dot. A `publicUrl` written otherwise, or one of
+those, is left out (`conductor serve` says so once as it starts; the
+default's `localhost`, `127.0.0.1` and `[::1]` and a loopback address
+are left out silently): a loopback origin enters the list only through a
+listener that holds it. Every other name is the owner's statement of
+where the server is reached: the server does not resolve it, and does
+not check that an address is its own. Each origin once, at most 16, each
+at most 256 bytes.
 `Content-Type: text/javascript;
 charset=utf-8`, `Cache-Control: no-cache`, `Cross-Origin-Resource-Policy:
 cross-origin`, `X-Content-Type-Options: nosniff`. A server whose embedded
@@ -2414,17 +2420,24 @@ tree of a server with no bridge or no loopback listener, none.
 `web/app/utils/protocol.ts`, both held to
 `internal/proto/testdata/preview-messages.json`, which carries the
 bounds both hold by their Go names, every bound at it and one past in
-characters of each measure, every member of every object null and of
-another kind, and each message's text as spelled, the content both
-parsers give an accepted one compared with its text's): each a plain object
+characters of each measure, every member of every object null, of
+another kind and, a string, with a lone surrogate, each flag both ways,
+the measure of each code unit at the edge of its class, and each
+message's text as spelled, the content both parsers give an accepted
+one compared with its text's): each a plain object
 through `postMessage` with `conductor: "preview/1"`, its type in `t` and
 a `nonce`, and exactly the fields its type carries. Each parser is told
 the way a message travels, to the bridge or to the workbench
 (`ParsePreviewMessage(data, to, nonce)`, `parsePreviewMessage(v, to,
 nonce)`), and refuses the other way's types. A field is its value, never
-its spelling: a whole number is any JSON number of that value (`3`,
-`3.0`, `3e0`), and a key is exactly its own letters (another case, or a
-letter that folds to one, is another key). The language is the text an
+its spelling: a number is the double its text rounds to (to nearest, ties
+to even; a text past the largest finite double is refused), every range
+below is judged on that double, and a negative zero is zero; so a whole
+number is any text that rounds to one (`3`, `3.0`, `3e0`, and
+`2.99999999999999999999` or `9007199254740991.4`), an `epoch` written
+`-1e-400` is 0, a `version` written `1.0000000000000001` is 1, and a
+`dpr` written `2e-324` is 0 and refused. A key is exactly its own letters
+(another case, or a letter that folds to one, is another key). The language is the text an
 honest writer writes and nothing else: no object gives a member twice
 (the server refuses such a text, whichever value comes first; a value
 holds no such thing), and every string is well-formed (a string holding
@@ -2441,16 +2454,23 @@ own JSON writer escapes nothing it need not and never writes a message
 longer than its measure; a text that escapes what need not be escaped
 (each `<` in six bytes, as Go's `json.Marshal` writes it) can pass the
 bound and is refused, so a Go writer of a message writes with HTML
-escaping off. It decodes the text once and builds the message from the
-value it judged; its refusals are fixed words, never the message's
-text. The app's parser is handed a value a page made (a structured
-clone), so it judges plain objects and arrays alone, every index of a
-list present and no member beside them, no object of more members than
-a message's objects have (an element report's 17), counted as they are
-met, numbers finite, no big integer or other kind of object, no nesting
-past a message's four levels, the type's keys before the measure, in
-one walk that stops at the bound; it answers null for anything else and
-never throws. From the workbench:
+escaping off. It decodes the text once, a single JSON value with only
+white space after it, refusing it at the first object or list nested
+past the schema's deepest value (four levels: the message, its element,
+a list of the element's, an item of that list) where it meets it, and
+builds the message from the value it judged; its refusals are fixed
+words, never the message's text. The app's parser is handed a value a
+page made (a structured clone), so it judges plain objects and arrays
+alone, every index of a list present and no member beside them, no
+object of more members than a message's objects have (an element
+report's 17), numbers finite, no big integer or other kind of object,
+no nesting past a message's four levels, the type's keys before the
+measure, in one walk that stops at the bound; it answers null for
+anything else and never throws. It inspects at most the type's number of
+an object's keys and one more, and judges a list's length before it
+reads any of it; enumerating a value's keys costs the engine time in
+proportion to the value, which the browser has already spent, several
+times over, deserialising the message to hand it to the page. From the workbench:
 `hello` (its `nonce`, 16 to 64 of `A-Z a-z 0-9 _ -`, is the one every
 later message of either side carries), `select` (selection mode: the
 pointer outlines, a click or Enter selects, Up and Down step through the

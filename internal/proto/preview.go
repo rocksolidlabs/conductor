@@ -293,10 +293,11 @@ func negativeZeros(v any) int {
 // bridge's messages and holds it to its type's schema. Its text is
 // refused past to's text bound (MaxPreviewTextToBridge or
 // MaxPreviewTextToWorkbench) or when it is not UTF-8, before anything
-// decodes it; it is then decoded once (decodeOnce: no member twice, no
-// lone surrogate), and the value is judged: a type of to's way, every
-// field the type carries there and no other, each of its kind and within
-// its bound (a whole number in any spelling of its value, 3, 3.0 or 3e0), the whole
+// decodes it; it is then decoded once (decodeOnce: one value, no member
+// twice, no lone surrogate, no nesting past the schema's), and the value
+// is judged: a type of to's way, every field the type carries there and
+// no other, each of its kind and within its bound (a number is the double
+// its text rounds to: 3, 3.0 or 3e0), the whole
 // within to's measured bound (MaxPreviewToBridge or MaxPreviewToWorkbench)
 // and an element within MaxElementReport. A hello gives the nonce: any
 // well-formed one passes; every other message must carry nonce, the one
@@ -328,42 +329,59 @@ func ParsePreviewMessage(data []byte, to PreviewDirection, nonce string) (Previe
 	return buildPreview(m), nil
 }
 
-// decodeOnce is data's one JSON value, refused when an object gives a
+// decodeOnce is data's one JSON value, refused when anything but white
+// space follows it, it nests past previewDepth, an object gives a
 // member twice or a string escapes half of a surrogate pair alone: no
 // writer of a message writes either and no value holds either, so what is
 // accepted has the content the app's parser, handed a value, judges.
 func decodeOnce(data []byte) (any, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
-	v, err := decodeValue(dec)
-	if _, end := dec.Token(); err != nil || end != io.EOF || loneSurrogate(data) {
+	v, err := decodeValue(dec, 1)
+	if err != nil {
+		return nil, errPreview
+	}
+	if _, end := dec.Token(); end != io.EOF || loneSurrogate(data) {
 		return nil, errPreview
 	}
 	return v, nil
 }
 
-// decodeValue is dec's next value, the decoder's errors sticking.
-func decodeValue(dec *json.Decoder) (v any, err error) {
+// previewDepth is how deep a message's values go: the message, its
+// element, a list of the element's, an item of that list.
+const previewDepth = 4
+
+// decodeValue is dec's next value, at depth (the message is at 1): an
+// object or a list past previewDepth is refused as it is met, and an error
+// ends the walk where it is, reading nothing further.
+func decodeValue(dec *json.Decoder, depth int) (any, error) {
 	tok, err := dec.Token()
 	if d, ok := tok.(json.Delim); err != nil || !ok {
 		return tok, err
+	} else if depth > previewDepth {
+		return nil, errPreview
 	} else if d == '[' {
 		a := []any{}
-		for dec.More() && err == nil {
-			v, err = decodeValue(dec)
+		for dec.More() {
+			v, err := decodeValue(dec, depth+1)
+			if err != nil {
+				return nil, err
+			}
 			a = append(a, v)
 		}
-		return a, errors.Join(err, closing(dec))
+		return a, closing(dec)
 	}
 	m := map[string]any{}
-	for dec.More() && err == nil {
-		k, _ := dec.Token()
+	for dec.More() {
+		k, err := dec.Token()
 		key, _ := k.(string)
-		if _, twice := m[key]; twice {
+		if _, twice := m[key]; err != nil || twice {
 			return nil, errPreview
 		}
-		m[key], err = decodeValue(dec)
+		if m[key], err = decodeValue(dec, depth+1); err != nil {
+			return nil, err
+		}
 	}
-	return m, errors.Join(err, closing(dec))
+	return m, closing(dec)
 }
 
 func closing(dec *json.Decoder) error { _, err := dec.Token(); return err }
