@@ -75,7 +75,7 @@ func (s *Server) handleViewerWS(w http.ResponseWriter, r *http.Request) {
 	// An identity provider's principal is asked about again while it is
 	// attached, and closed as revoked once the provider no longer admits
 	// it (principalWatch); nil for the server's own tokens and links.
-	watch := s.principalWatch(p, presentedToken(r, true))
+	watch := s.principalWatch(p, newWatchedToken(presentedToken(r, true)), ext.GrantAdmin)
 	switch drv := d.(type) {
 	case *session.Local:
 		s.serveLocalViewer(r.Context(), c, hk.conn, drv, role, p.linkID(), p.admin, check, watch)

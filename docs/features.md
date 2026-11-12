@@ -5960,6 +5960,52 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   default passing the contract suite. With C1, the two clauses of the R0
   gate this stream owns are observed: a plain build registers nothing,
   and every default passes the contract suite.
+- **The identity provider and the uplink: the host token, a credential
+  that fails closed, host connections rechecked and renewed (#775,
+  2026-11-10).** The plan is `docs/plans/identity-uplink.md`. What a build
+  with a registered identity provider shows:
+  - The configured host token (Settings' Host token on a server that
+    publishes to a switchyard, `conductor host --token`) is handed to the
+    identity provider alone (`ext.Host.HostToken`), with the kind of binary
+    that runs it (`Mode`: `server`, `switchyard` or `host`);
+    `conductor host` starts the provider before it registers, its
+    directory under `$XDG_STATE_HOME/conductor/ext/<name>` (or
+    `~/.local/state/conductor`), marked so no export takes it and refused
+    to every session's files. A deny list names both places, the one its
+    own process's `XDG_STATE_HOME` gives and the default: a host started
+    with `XDG_STATE_HOME` set to a place a server's environment does not
+    name keeps its provider's state where that server's sessions are not
+    refused it.
+  - The uplink presents what the provider chooses, asked through a guard
+    at every registration (`hostagent.UplinkCredential`): a token the
+    provider owns, or may own (its answer late, panicking or busy), is
+    never presented, in no header, no `host_token` and no log. The
+    provider's credential when it gives a valid one in time; else, for a
+    token it owns, nothing: the session registers as an open host, or is
+    refused where the switchyard admits none (a server's publication is
+    then owed and the next Share publishes it; `conductor host` tries
+    again for two minutes); for a token it does not own, the token as
+    before. Such a registration follows no redirect, and to a server
+    reached without TLS it takes no proxy.
+  - A host connection the provider admitted is asked about again every
+    30 s and closed `4403 access revoked` once it no longer admits it; its
+    `registered` says `renews`, and a replacement credential reaches the
+    switchyard as `host_token` on the live connection, taken only for the
+    same subject with the host grant. Every other outcome closes the
+    connection, and the host registers again as after any drop; a host
+    that comes back with nothing is an open host, its links held to the
+    open-host bound (#803).
+  - Settings → The app shows an **Identity** row, "cloud: signed in as Ana
+    · workspace Acme", from the provider's detail on its
+    `GET /api/capabilities` row (never in the guide's rows).
+  A build with no provider registered shows and does nothing new: the
+  configured token is presented as before, nothing is rechecked, no row
+  appears, and `GET /api/capabilities` still answers `{"providers": []}`.
+  The Go race tests (`TestOwnedTokenNeverPresented`,
+  `TestHostTokenRenewalSameSubjectOnly`, `TestHostConnectionRechecked`,
+  `TestHostTokenRenewal`, `TestCapabilitiesDetail`, the host's start and
+  export tests), vitest and `about-identity.spec.ts` stand in for a real
+  provider, which no build of this repository registers.
 - **A main hands in its own third-party notices (#662, 2026-11-05).** A
   `main` built outside this repository on `app.Run` links more modules than
   this one, and its server served this module's embedded notices, which do

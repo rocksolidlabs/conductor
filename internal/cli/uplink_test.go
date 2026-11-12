@@ -16,6 +16,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/api"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
@@ -56,7 +57,7 @@ func TestUplinkPassesDecisions(t *testing.T) {
 	t.Cleanup(older.Close)
 	cfg.Rendezvous.Token = "host-token"
 	cfg.Rendezvous.Insecure = true
-	u := newUplink(cfg, older.URL, srv, slog.New(slog.DiscardHandler))
+	u := newUplink(cfg, older.URL, srv, ext.Providers{}, slog.New(slog.DiscardHandler))
 	if lane, ok := u.Decisions.(*api.Lane); !ok || lane == nil || u.LinkGone == nil {
 		t.Fatalf("the uplink's decisions %T, link gone set %v", u.Decisions, u.LinkGone != nil)
 	}
@@ -166,7 +167,7 @@ func switchyardDesk(t *testing.T, ui http.Handler) (string, api.Desk) {
 	})
 	cfg.Rendezvous.Token = "host-token"
 	cfg.Rendezvous.Insecure = true
-	u := newUplink(cfg, yard, srv, slog.New(slog.DiscardHandler))
+	u := newUplink(cfg, yard, srv, ext.Providers{}, slog.New(slog.DiscardHandler))
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
 	desk, err := (uplinkPublisher{u}).OpenDesk(ctx, proto.DeskRun{ID: "run-1", Name: "Run"})

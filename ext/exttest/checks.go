@@ -295,7 +295,9 @@ func (c *checker) phases(call func(ph phase)) {
 // request a token was sent in) is shown without its query, user
 // information or fragment, whatever credential rides there. With the
 // network blocked a provider may
-// answer an error for a known token (it cannot tell), never ok false.
+// answer an error for a known token (it cannot tell), never ok false: a
+// provider then still holds a current lease, and ok false is for an
+// admission that has ended, which ends the token's connections.
 func Identity(t T, n *Network, p ext.IdentityProvider, known, unknown []string) {
 	t.Helper()
 	c, ok := begin(t, n, "Identity", p)
@@ -331,7 +333,7 @@ func Identity(t T, n *Network, p ext.IdentityProvider, known, unknown []string) 
 				c.found("Authenticate did not recognise %s with the network open", which)
 			}
 		case !a.ok && isKnown && ph == blocked && a.err == nil:
-			c.found("Authenticate said ok false for %s with the network blocked: a provider that cannot tell answers an error, never ok false, which would end the token's connections", which)
+			c.found("Authenticate said ok false for %s with the network blocked: a provider that cannot tell answers an error, never ok false, which is for an admission that has ended and ends the token's connections", which)
 		}
 		if a.ok {
 			if err := a.p.Valid(); err != nil {

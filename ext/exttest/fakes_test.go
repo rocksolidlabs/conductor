@@ -357,6 +357,14 @@ func TestFakes(t *testing.T) {
 		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 			t.Errorf("DataDir %q: %v", dir, err)
 		}
+		if h.HostToken() != "" || h.Mode() != ext.ModeServer {
+			t.Errorf("HostToken %q, Mode %q by default", h.HostToken(), h.Mode())
+		}
+		h.SetHostToken("code-1")
+		h.SetMode(ext.ModeHost)
+		if h.HostToken() != "code-1" || h.Mode() != ext.ModeHost {
+			t.Errorf("HostToken %q, Mode %q once set", h.HostToken(), h.Mode())
+		}
 		h.Log().Info("provider started", "provider", "fake")
 		if got := lt.logged(); len(got) != 1 || !strings.Contains(got[0], "provider started") {
 			t.Errorf("the host's log reached the test's as %q", got)

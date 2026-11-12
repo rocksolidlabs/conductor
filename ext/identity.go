@@ -20,11 +20,66 @@ type IdentityProvider interface {
 	// long-lived connection opened with it lasts (a viewer's WebSocket, the
 	// events stream), and that answer is a revocation when it is ok false,
 	// another subject or a principal without the admin grant: the
-	// connection is closed. A provider that cannot tell (the keys it checks
-	// against out of reach, its service down or lapsed) returns an error,
-	// never ok false: an error ends no connection, and for a new request it
-	// is the free default's answer, an unknown token.
+	// connection is closed. A host connection (the host grant) is asked
+	// about the same way. A provider whose admission has ended (its lease
+	// with its service past, its workspace lapsed, its own registration
+	// revoked) answers ok false, the free default, which ends the token's
+	// connections at the next recheck. An error is only for a moment it
+	// cannot tell (the keys it checks against out of reach for now): an
+	// error ends no connection, and for a new request it is the free
+	// default's answer, an unknown token.
 	Authenticate(ctx context.Context, token string) (p Principal, ok bool, err error)
+}
+
+// UplinkIdentity is an identity provider that chooses what the uplink
+// presents to a switchyard. Both are answered from what the provider
+// holds, never with a round trip, and are asked through a guard.
+type UplinkIdentity interface {
+	// OwnsHostToken says configured, the host token, is the provider's
+	// own: a pure check of its form. A late or panicking answer counts as
+	// owned.
+	OwnsHostToken(configured string) bool
+	// UplinkToken is what to present to the switchyard server (its URL,
+	// as the uplink dials it) for configured: ok false for nothing. When
+	// the provider replaces a credential, it answers the replacement at
+	// least UplinkTokenLead before the one it replaces stops being
+	// admitted. It never answers configured itself when it owns it.
+	UplinkToken(server, configured string) (token string, ok bool)
+}
+
+// IdentityDetail is an identity provider that says who the server is
+// signed in as: one line of at most MaxIdentityDetail characters
+// ("signed in as Ana · workspace Acme"), "" for nothing.
+type IdentityDetail interface{ Detail() string }
+
+const (
+	MaxHostToken      = 2048 // bytes, proto.MaxHostToken
+	MaxIdentityDetail = 80   // characters (runes)
+	// UplinkTokenLead is how long, at least, before a credential stops
+	// being admitted its replacement is answered; how much earlier is the
+	// provider's choice. A renewal is in time only if it is delivered
+	// before the switchyard's recheck finds the old credential ended;
+	// when it is not, the connection closes and the host registers again
+	// (docs/plans/identity-uplink.md, Two timers).
+	UplinkTokenLead = 2 * time.Minute
+)
+
+// ValidHostToken reports whether t can be presented: 1 to MaxHostToken
+// bytes of RFC 6750's token68 characters (A-Z a-z 0-9 - . _ ~ + / =),
+// which a header carries as they are and JSON never escapes.
+func ValidHostToken(t string) bool {
+	if t == "" || len(t) > MaxHostToken {
+		return false
+	}
+	for i := 0; i < len(t); i++ {
+		switch c := t[i]; {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9':
+		case c == '-' || c == '.' || c == '_' || c == '~' || c == '+' || c == '/' || c == '=':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // Principal is who presented a credential, or who acts (an answer's By, a

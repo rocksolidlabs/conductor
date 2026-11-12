@@ -1,5 +1,10 @@
 import { effectScope, onBeforeUnmount, onMounted, watch, type Ref } from 'vue'
-import { anyStarting, asCapabilities, extensionsWords, has, type Capabilities } from '../utils/capabilities'
+import { anyStarting, asCapabilities, extensionsWords, has, identityLine, identityPending, type Capabilities } from '../utils/capabilities'
+
+/** Whether what is known is to be read again on the schedule: a provider starting, or a ready identity provider with no detail yet. */
+function pending(caps: Capabilities | null | undefined): boolean {
+  return anyStarting(caps) || identityPending(caps)
+}
 
 /** The first re-read of a reply that has a provider still starting, after the reply; each later one waits twice the last, up to the most. */
 export const CAPABILITIES_RETRY_FIRST_MS = 2000
@@ -11,7 +16,9 @@ export const CAPABILITIES_RETRY_MOST_MS = 60_000
  * CAPABILITIES_RETRY_MOST_MS, and no more once none is, so a page opened while a provider was starting shows it ready when it is, with
  * no reload and no change of token. A provider that never starts costs one small request a minute while a reader shows (`attach`); with
  * none, nothing is read. The cache goes with the workbench token (`token`), as the palette's do: another token, or none, never sees the
- * last one's reply, and a reply on its way for it is dropped. A read that fails keeps what is known.
+ * last one's reply, and a reply on its way for it is dropped. A read that fails keeps what is known. The identity provider's detail
+ * changes while every provider stays ready (a sign-in completed after its start, a sign-out), so a reader that attaches after the last
+ * reply reads the route once more, and while a ready identity provider has no detail it is read again on the same schedule.
  */
 export class CapabilitiesPoll {
   private gen = 0
@@ -20,6 +27,8 @@ export class CapabilitiesPoll {
   private delay = CAPABILITIES_RETRY_FIRST_MS
   private readers = 0
   private forToken: string | undefined
+  /** A reader attached after the last reply: its load reads again. */
+  private again = false
 
   constructor(
     private readonly read: () => Promise<unknown>,
@@ -37,8 +46,13 @@ export class CapabilitiesPoll {
   load(): Promise<void> {
     if (this.reading) return this.reading
     if (this.readers === 0) return Promise.resolve()
+    if (this.again) {
+      this.again = false
+      this.stop()
+      return this.readNow()
+    }
     if (this.timer !== undefined) return Promise.resolve()
-    if (this.caps.value && !anyStarting(this.caps.value)) return Promise.resolve()
+    if (this.caps.value && !pending(this.caps.value)) return Promise.resolve()
     return this.readNow()
   }
 
@@ -50,6 +64,7 @@ export class CapabilitiesPoll {
   /** A reader shows the capabilities: re-reads may be due. */
   attach() {
     this.readers++
+    if (this.caps.value) this.again = true
   }
 
   /** A reader is gone: with none left, no re-read is made (what is known stays, and the next reader's load reads on, its waits anew). */
@@ -95,7 +110,7 @@ export class CapabilitiesPoll {
 
   /** After a reply: a re-read while a provider is starting and a reader shows, the wait doubled for the one after; none otherwise. */
   private next() {
-    if (!anyStarting(this.caps.value)) {
+    if (!pending(this.caps.value)) {
       this.delay = CAPABILITIES_RETRY_FIRST_MS
       return
     }
@@ -164,6 +179,7 @@ export function useCapabilities() {
   return {
     caps,
     words: computed(() => (caps.value ? extensionsWords(caps.value) : '')),
+    identity: computed(() => identityLine(caps.value)),
     has: (kind: string) => has(caps.value, kind),
   }
 }

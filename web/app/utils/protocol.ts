@@ -284,6 +284,21 @@ export interface DecisionEvent {
 /** The bound of a `decision` event's data, in bytes (internal/api, maxDecisionEvent). */
 export const MAX_DECISION_EVENT = 256
 
+/**
+ * Data of a `capacity` event on GET /api/events (Program item AC1, docs/protocol.md "Capacity"): a reading of an agent's usage on
+ * an account was kept, for a page to read its view again with `GET /api/capacity?agent=&account=`. It names the key, the reading's
+ * state and when it was read, never a label, a folder or a figure. At most 512 bytes of data (`MAX_CAPACITY_EVENT`).
+ */
+export interface CapacityEvent {
+  agent: string
+  account: string
+  state: 'ok' | 'signed_out' | 'key_paid' | 'unqualified' | 'error' | 'never_read'
+  readAt: string
+}
+
+/** The bound of a `capacity` event's data, in bytes (internal/api, maxCapacityEvent). */
+export const MAX_CAPACITY_EVENT = 512
+
 export interface ICEServer {
   urls: string[]
   username?: string
@@ -735,6 +750,28 @@ export interface HostRegisteredLinks {
 export interface HostRegisteredDecisions {
   decisions?: boolean
 }
+
+/**
+ * The part of registered that says the switchyard rechecks the connection's credential and takes host_token on it
+ * (docs/protocol.md, Host control connection): only on a connection admitted through an identity provider's principal;
+ * absent from an older switchyard. The web never sees it.
+ */
+export interface HostRegisteredRenews {
+  renews?: boolean
+}
+
+/**
+ * host → switchyard, after a registered that said renews: the credential that replaces the one the connection was admitted
+ * with, at most one per 30 s step and only when it changed. The token is 1 to HOST_MAX_TOKEN bytes of token68 (A-Z a-z 0-9
+ * - . _ ~ + / =), the message at most HOST_MAX_TOKEN_MESSAGE bytes; anything but its one success closes the connection 4403
+ * (access revoked). The web never sends it.
+ */
+export interface HostTokenMsg {
+  t: 'host_token'
+  token: string
+}
+export const HOST_MAX_TOKEN = 2048
+export const HOST_MAX_TOKEN_MESSAGE = 2560
 
 /**
  * host → switchyard, the first message of a run's desk's connection in place of register (docs/protocol.md, A run's desk):
