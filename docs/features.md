@@ -6051,12 +6051,15 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `desktop-test (macos-latest)`, `desktop-test (windows-latest)`, `vuln`,
   `pebble` and `required-checks`. A decision of the maintainers on
   2026-11-12: release candidates keep coming from this repository's
-  `release.yml` until the official build is published; `v0.7.0-rc.23`,
-  built from 40eccb5f by the release workflow (run 43226977986, still
-  running when this entry was written, its release not yet published), is
-  the first cut under it. Open, not observed yet: the Runtime layer's run
-  in the Windows desktop app, which the Runtime seam's entry above counts
-  among its by-hand runs not yet run.
+  `release.yml` until the official build is published; `v0.7.0-rc.23` is
+  the first cut under it, published as a pre-release on 2026-11-12, its
+  tag at 40eccb5f, with 20 assets, by the second attempt of the release
+  workflow's run 43226977986. That run's first attempt failed in its
+  `go` job on one flaky test, `TestWriteTable` in
+  `internal/tracker/github` (being fixed under #281), and built nothing;
+  its second attempt passed every job. Open, not observed yet: the
+  Runtime layer's run in the Windows desktop app, which the Runtime
+  seam's entry above counts among its by-hand runs not yet run.
 - **The identity provider and the uplink: the host token, a credential
   that fails closed, host connections rechecked and renewed (#775,
   2026-11-10).** The plan is `docs/plans/identity-uplink.md`. What a build
