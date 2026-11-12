@@ -13,14 +13,23 @@ const WORKBENCH = 'http://127.0.0.1:8080'
 const NONCE = 'n0nce-of-the-hello-1234'
 const SERVED = fileURLToPath(new URL('../../internal/api/testdata/preview-bridge-served.json', import.meta.url))
 
-/** make web-build's check (checkPreviewBridge.mjs) run on each text given (null: no file), whether it passed. */
-function checked(texts: Array<string | null>): boolean[] {
+/** The wrapper's three parts as the server writes them (TestTheBridgeIsServedWhole, from the route). */
+const serverWrapper = (): [string, string, string] => JSON.parse(readFileSync(SERVED, 'utf8')).wrapper
+
+/** code inside the server's own wrapper, called with origins, as GET /preview-bridge.js serves it. */
+const servedAsTheServerDoes = (code: string, origins: string[]) => {
+  const [head, tail, end] = serverWrapper()
+  return head + code + tail + JSON.stringify(origins) + end
+}
+
+/** make web-build's check (checkPreviewBridge.mjs) run on each text given (null: no file), whether it passed; served is the wrapper's fixture. */
+function checked(texts: Array<string | null>, served = SERVED): boolean[] {
   const dir = mkdtempSync(join(tmpdir(), 'preview-bridge-check-'))
   try {
     return texts.map((text, i) => {
       const file = join(dir, `${i}.js`)
       if (text !== null) writeFileSync(file, text)
-      return spawnSync(process.execPath, [fileURLToPath(new URL('./checkPreviewBridge.mjs', import.meta.url)), file, SERVED]).status === 0
+      return spawnSync(process.execPath, [fileURLToPath(new URL('./checkPreviewBridge.mjs', import.meta.url)), file, served]).status === 0
     })
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -39,13 +48,13 @@ describe('the built preview bridge', () => {
     expect(code).not.toContain('__CONDUCTOR_WORKBENCH_ORIGINS__')
     const page = () => new FakeWin(new FakeDoc(h('html', {}, h('body', {}, h('p', {}, 'Hello')))))
     const served = page()
-    run(wrapPreviewBridge(code, [WORKBENCH]), served)
+    run(servedAsTheServerDoes(code, [WORKBENCH]), served)
     served.deliver('http://127.0.0.1:5173', { conductor: PREVIEW_MARK, t: 'hello', nonce: NONCE })
     served.deliver(WORKBENCH, { conductor: PREVIEW_MARK, t: 'hello', nonce: NONCE })
     expect(served.posts.map((p) => [p.target, (p.message as { t: string }).t])).toEqual([[WORKBENCH, 'ready']])
     expect(parsePreviewMessage(served.posts[0]!.message, 'workbench', NONCE)).not.toBeNull()
     // Run without the wrapper, or wrapped with no origin, it answers no one and listens for nothing.
-    for (const text of [code, wrapPreviewBridge(code, [])]) {
+    for (const text of [code, servedAsTheServerDoes(code, [])]) {
       const bare = page()
       run(text, bare)
       bare.deliver(WORKBENCH, { conductor: PREVIEW_MARK, t: 'hello', nonce: NONCE })
@@ -63,6 +72,18 @@ describe('the built preview bridge', () => {
     // A classic script, and one that compiles only inside the wrapper's function.
     const accepted = ['(function(){ var a = 1; })();', 'return;']
     expect(checked([...refused, ...accepted])).toEqual([...refused.map(() => false), ...accepted.map(() => true)])
+  })
+
+  it("compiles in the wrapper the server's fixture holds: with its parameter named otherwise, the check follows it", () => {
+    const dir = mkdtempSync(join(tmpdir(), 'preview-bridge-served-'))
+    try {
+      const [head, tail, end] = serverWrapper()
+      const renamed = join(dir, 'served.json')
+      writeFileSync(renamed, JSON.stringify({ wrapper: [head.replace('conductorWorkbenchOrigins', 'anotherName'), tail, end] }))
+      expect(checked(['let conductorWorkbenchOrigins = 1;', 'let anotherName = 1;'], renamed)).toEqual([true, false])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it("answers in the dev server as the route answers a page on the loopback: its headers, its wrapper and the loopback's names", () => {
