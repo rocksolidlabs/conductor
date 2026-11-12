@@ -183,10 +183,11 @@ func TestTrackerTokenSavedNeverServed(t *testing.T) {
 	admin("POST /api/trackers/github/remove", "/api/trackers/github/remove", `{"host":"`+echoHost+`"}`, http.StatusOK, "")
 
 	// A ticket's GitHub item (IN1a PR-4): a preview, an import with its
-	// images and its resend, a link, refreshes, a field given back, a
-	// link's add and read, a close that reads its delivery, each failure
-	// of GitHub's (its refusals echo the token they were sent) and a
-	// request its client cancels, all with the settings token.
+	// images, a link, refreshes, a field given back, a link's add and read,
+	// a close whose read fails and one that reads its delivery, an import's
+	// resend with an image past its bound, a refresh's second read after a
+	// 304, each failure of GitHub's (its refusals echo the token they were
+	// sent) and a request its client cancels, all with the settings token.
 	driveExternal(t, b.testEnv, newGHItems(f), admin)
 
 	// Bodies that are not the route's: one fixed sentence, whatever the

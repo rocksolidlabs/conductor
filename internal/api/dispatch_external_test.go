@@ -51,6 +51,7 @@ type ghItem struct {
 	Fail                             int
 	Huge                             bool     // an answer past the adapter's bound
 	Labels                           []string // the labels, ["bug"] when nil
+	ETag                             string   // the issue's ETag, the body's digest when ""
 }
 
 // ghItems scripts the fake's items and images. With poison set, every
@@ -248,6 +249,9 @@ func (g *ghItems) serve(w http.ResponseWriter, r *http.Request, n int, pull bool
 	b, _ := json.Marshal(v)
 	sum := sha256.Sum256(b)
 	tag := `"` + hex.EncodeToString(sum[:8]) + `"`
+	if it.ETag != "" && !pull {
+		tag = it.ETag
+	}
 	w.Header().Set("ETag", tag)
 	if r.Header.Get("If-None-Match") == tag {
 		w.WriteHeader(http.StatusNotModified)
@@ -720,10 +724,17 @@ func TestLinkReadOnAdd(t *testing.T) {
 	e.newDispatchProject(t, "LNK", nil)
 	tk := e.newDispatchTicket(t, "LNK", "Deliver it", nil)
 	key := tk["key"].(string)
-	out := e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links", map[string]any{"opId": opID(), "kind": "delivery", "url": "https://github.com/octo/app/pull/90"}, http.StatusCreated, "")
+	add := map[string]any{"opId": opID(), "kind": "delivery", "url": "https://github.com/octo/app/pull/90"}
+	out := e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links", add, http.StatusCreated, "")
 	link := rcOf(out)["id"].(string)
 	if !waitNamed(t, events, "dispatch_read", link) {
 		t.Fatal("no dispatch_read for the link's read")
+	}
+	// The add sent again is its receipt: no read is started (the token is
+	// asked for, on the request, only for a read to start).
+	reached := e.srv.trackers.reached.Load()
+	if again := e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links", add, http.StatusOK, ""); rcOf(again)["repeat"] != true || e.srv.trackers.reached.Load() != reached {
+		t.Fatalf("the add's resend: %v, the token asked for %d times", again, e.srv.trackers.reached.Load()-reached)
 	}
 	read, found, err := e.srv.dispatch.LinkReadOf(t.Context(), link)
 	if err != nil || !found || read.State != "open" || read.Kind != "change" || read.HeadSha != headSHA || len(read.Checks) != 1 || read.Checks[0].Name != "lint" {
@@ -749,6 +760,28 @@ func TestLinkReadOnAdd(t *testing.T) {
 	}
 	if got := e.expect(t, "GET", "/api/dispatch/tickets/"+key+"/links/"+other+"/read", nil, http.StatusOK, ""); got["read"] != nil {
 		t.Fatalf("a read of no read: %v", got)
+	}
+}
+
+// A validator GitHub answers out of the store's form (past 200 bytes, or
+// holding a query or an address) is dropped: the import keeps none, and
+// the next refresh asks without If-None-Match.
+func TestOutOfFormValidatorDropped(t *testing.T) {
+	e, g := externalEnv(t)
+	e.newDispatchProject(t, "VAL", nil)
+	for i, tag := range []string{`"` + strings.Repeat("v", dispatch.MaxValidator-1) + `"`, `"a?b"`, `"https://example.com/x"`} {
+		n := 155 + i
+		it := issue("I_kwDOvalid"+strconv.Itoa(n), "Validator", t0)
+		it.Images, it.ETag = nil, tag
+		g.set(n, it)
+		key := entityOf(t, e.importItem(t, "VAL", "https://github.com/octo/app/issues/"+strconv.Itoa(n), opID(), http.StatusCreated, nil), "ticket")["key"].(string)
+		before := len(g.f.Requests())
+		e.refresh(t, key, http.StatusOK, nil)
+		for _, r := range g.f.Requests()[before:] {
+			if r.Path == itemsRepo+"/issues/"+strconv.Itoa(n) && r.Header.Get("If-None-Match") != "" {
+				t.Errorf("%.20s: the refresh sent If-None-Match %.20s", tag, r.Header.Get("If-None-Match"))
+			}
+		}
 	}
 }
 
@@ -1005,13 +1038,15 @@ var externalTouching = []string{
 
 // driveExternal drives every operation of this row that calls GitHub,
 // through do (a fixture: the pattern, the path, the body, the answer it
-// must give): a preview, an import with its images and its resend, a link,
-// refreshes (unchanged, changed), a field taken over and given back, a
-// link's add and its read, a close that reads its delivery, and the
-// failures of GitHub's (each refusal, a 5xx, an answer past its bound), a
-// request held at the fake and cancelled by its client, a reference out of
-// form. The fake's items are octo/app's 140 to 143; the project DRV
-// requires merged.
+// must give): a preview, an import with its images, a link, refreshes
+// (unchanged, changed), a field taken over and given back, a link's add
+// and its read, a close whose read of its delivery fails and one that
+// reads it, an import's resend with its images left pending and one past
+// its bound, a refresh answered 304 with an image pending (its second
+// read), the failures of GitHub's (each refusal, a 5xx, an answer past its
+// bound), a request held at the fake and cancelled by its client, a
+// reference out of form. The fake's items are octo/app's 140 to 145; the
+// project DRV requires merged.
 func driveExternal(t *testing.T, e *testEnv, g *ghItems, do func(pattern, path, body string, status int, code string) map[string]any) {
 	t.Helper()
 	g.set(140, issue("I_kwDOdrive140", "Drive", t0))
@@ -1049,7 +1084,32 @@ func driveExternal(t *testing.T, e *testEnv, g *ghItems, do func(pattern, path, 
 		t.Fatal("the added link was not read")
 	}
 	do("POST /api/dispatch/tickets/{key}/links/{id}/read", "/api/dispatch/tickets/"+key+"/links/"+link+"/read", `{}`, http.StatusOK, "")
+	// The close's read of its delivery failing (a 5xx), then read.
+	g.edit(142, func(i *ghItem) { i.Fail = http.StatusServiceUnavailable })
+	do("POST /api/dispatch/tickets/{key}/edit", "/api/dispatch/tickets/"+key+"/edit", `{"opId":"`+opID()+`","set":{"status":"done"}}`, http.StatusConflict, "close_policy")
+	g.edit(142, func(i *ghItem) { i.Fail = 0 })
 	do("POST /api/dispatch/tickets/{key}/edit", "/api/dispatch/tickets/"+key+"/edit", `{"opId":"`+opID()+`","set":{"status":"done"}}`, http.StatusOK, "")
+	// The import's resend with its images left pending, one of them past
+	// its bound; a refresh answered 304 with an image pending, which reads
+	// once more without validators.
+	big := issue("I_kwDOdrive144", "Drive resend", t0)
+	big.Images = []string{"/1/a.png", "/7/big.png"}
+	g.set(144, big)
+	g.image("/7/big.png", bytes.Repeat([]byte("a"), dispatch.MaxAttachmentSize+1))
+	iop := opID()
+	do("POST /api/dispatch/projects/{key}/import", "/api/dispatch/projects/DRV/import", `{"opId":"`+iop+`","url":"octo/app#144","images":false}`, http.StatusCreated, "")
+	out = do("POST /api/dispatch/projects/{key}/import", "/api/dispatch/projects/DRV/import", `{"opId":"`+iop+`","url":"octo/app#144"}`, http.StatusOK, "")
+	if ims := imagesOf(t, out); ims["https://"+imageHost+"/7/big.png"]["skipped"] != "size" || ims[pngID]["attachmentId"] == nil {
+		t.Errorf("the import's resend: %v", out["images"])
+	}
+	g.set(145, issue("I_kwDOdrive145", "Drive 304", t0))
+	k145 := entityOf(t, do("POST /api/dispatch/projects/{key}/import", "/api/dispatch/projects/DRV/import", `{"opId":"`+opID()+`","url":"octo/app#145","images":false}`, http.StatusCreated, ""), "ticket")["key"].(string)
+	do("POST /api/dispatch/tickets/{key}/external/refresh", "/api/dispatch/tickets/"+k145+"/external/refresh", `{"opId":"`+opID()+`","images":false}`, http.StatusOK, "")
+	reads := g.count("api.github.com", itemsRepo+"/issues/145")
+	do("POST /api/dispatch/tickets/{key}/external/refresh", "/api/dispatch/tickets/"+k145+"/external/refresh", `{"opId":"`+opID()+`"}`, http.StatusOK, "")
+	if g.count("api.github.com", itemsRepo+"/issues/145") != reads+2 {
+		t.Errorf("a 304 with an image pending: %d reads", g.count("api.github.com", itemsRepo+"/issues/145")-reads)
+	}
 	// GitHub's failures, each answered in its fixed words.
 	for _, c := range []struct {
 		fail   int
