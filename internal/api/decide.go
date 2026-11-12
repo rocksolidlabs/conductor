@@ -41,7 +41,7 @@ type decideSeams struct {
 // decideListing is the subjects whose list read is in flight, one each at
 // most, so what one principal has the ledger read for its list is one
 // bounded read at a time (ledger.MaxOpenScan rows, ledger.MaxOpenScanBytes
-// of their text). An entry lives as long as its read and no longer.
+// of their text). Its done ends an entry on every way out of its list.
 type decideListing struct {
 	mu sync.Mutex
 	in map[string]bool
@@ -158,8 +158,8 @@ func decideNotFound(w http.ResponseWriter) {
 // proto.MaxDecideListEntries, cut when one more admitted was met or the
 // read reached its own bound first. The admin is 403 not_decide, nothing
 // read. One subject has one list read in flight at most (decideLists):
-// another while it is is 429, nothing read. The reply is made inside that
-// guard and written after it.
+// another while it is is 429, nothing read. The list it answers is made
+// inside that guard and written after it.
 func (s *Server) handleDecideList(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 	if !p.decider() {

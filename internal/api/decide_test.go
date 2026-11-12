@@ -1470,9 +1470,9 @@ func TestDecideListRefusesOthers(t *testing.T) {
 // counted, and refused one byte past it, never cut; a response's body is taken at its bound and refused one
 // past it in the server's words; a pass is read from the header alone,
 // never from a query; the list, the read and the respond route refuse a
-// query from either decide pass in one status and one body, the respond
-// route's the same for a decision given to the grant, one not given and
-// one that does not exist, nothing written.
+// query from either decide pass in one status and one body, the read's
+// and the respond route's the same for a decision given to the grant, one
+// not given and one that does not exist, nothing written.
 func TestDecideBoundsAtTheRoutes(t *testing.T) {
 	srv := &Server{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	entry := proto.DecideEntry{ID: "dr-1", Rev: 1}
@@ -1515,6 +1515,8 @@ func TestDecideBoundsAtTheRoutes(t *testing.T) {
 		}{
 			{http.MethodGet, "/api/me/decisions?after=dr-1", nil},
 			{http.MethodGet, "/api/decisions/" + did + "?x=1", nil},
+			{http.MethodGet, "/api/decisions/dr-999999?x=1", nil},
+			{http.MethodGet, "/api/decisions/" + notGiven + "?x=1", nil},
 			{http.MethodPost, "/api/decisions/" + did + "/respond?x=1", answer},
 			{http.MethodPost, "/api/decisions/dr-999999/respond?x=1", answer},
 			{http.MethodPost, "/api/decisions/" + notGiven + "/respond?x=1", answer},
@@ -1878,5 +1880,116 @@ func TestDecideListGuardEndsBeforeItsReply(t *testing.T) {
 	var l proto.DecideList
 	if strictly(t, w.Body.Bytes(), &l); w.Code != http.StatusOK || !slices.Equal(ids(l), []string{did}) {
 		t.Errorf("the held list: %d %s", w.Code, w.Body.Bytes())
+	}
+}
+
+// A list's guard is let go on every way out of the list, each shown with
+// a subject of its own: after a list of bob's that panicked at its seam
+// (500 internal) bob lists again; after a list of ana's the ledger could
+// not read (503 ledger_unavailable), every next list of hers, by either
+// pass, is the same 503, never 429.
+func TestDecideListGuardEndsOnEveryWayOut(t *testing.T) {
+	f := newDecideFixture(t, nil)
+	did := f.open(t, "r1")
+	f.give(t, did)
+	var panicked atomic.Bool
+	f.srv.decideSeam.Store(&decideSeams{afterList: func() {
+		if panicked.CompareAndSwap(false, true) {
+			panic("the list's seam")
+		}
+	}})
+	t.Cleanup(func() { f.srv.decideSeam.Store(nil) })
+	if status, data, out := f.callAs(t, passBob, http.MethodGet, "/api/me/decisions", nil); status != http.StatusInternalServerError || codeOf(out) != "internal" {
+		t.Fatalf("bob's list that panicked: %d %s", status, data)
+	}
+	status, data, _ := f.callAs(t, passBob, http.MethodGet, "/api/me/decisions", nil)
+	var l proto.DecideList
+	if status == http.StatusOK {
+		strictly(t, data, &l)
+	}
+	if status != http.StatusOK || !slices.Equal(ids(l), []string{did}) {
+		t.Errorf("bob's list after one that panicked: %d %s", status, data)
+	}
+	f.rawWrite(t, "DROP INDEX decisions_open")
+	for i := range 2 {
+		for _, pass := range []string{passAna, passHostAna} {
+			if status, data, out := f.callAs(t, pass, http.MethodGet, "/api/me/decisions", nil); status != http.StatusServiceUnavailable || codeOf(out) != "ledger_unavailable" {
+				t.Errorf("ana's list %d (%s) without the index: %d %s", i+1, pass, status, data)
+			}
+		}
+	}
+}
+
+// A list whose guard was let go before its reply was written does not let
+// go a later list's: with one list of ana's held at its reply's writer and
+// a second held at the list's seam (being read), the first is let go and
+// ends; a third list of hers, by either pass, is still 429 rate_limited
+// while the second is read, and the second is then answered.
+func TestDecideListEndedEarlyFreesNoLaterList(t *testing.T) {
+	f := newDecideFixture(t, nil)
+	did := f.open(t, "r1")
+	f.give(t, did)
+	w := heldWriter{httptest.NewRecorder(), make(chan struct{}), make(chan struct{})}
+	at, gate := make(chan struct{}), make(chan struct{})
+	t.Cleanup(func() {
+		for _, c := range []chan struct{}{w.gate, gate} {
+			select {
+			case <-c:
+			default:
+				close(c)
+			}
+		}
+		f.srv.decideSeam.Store(nil)
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/me/decisions", nil)
+	req.Header.Set("Authorization", "Bearer "+passAna)
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		f.http.Config.Handler.ServeHTTP(w, req)
+	}()
+	reached(t, w.at, "the first list's reply")
+	var held atomic.Bool
+	f.srv.decideSeam.Store(&decideSeams{afterList: func() {
+		if held.CompareAndSwap(false, true) {
+			close(at)
+			<-gate
+		}
+	}})
+	type reply struct {
+		status int
+		data   []byte
+	}
+	second := make(chan reply, 1)
+	go func() {
+		status, data, _ := f.callAs(t, passHostAna, http.MethodGet, "/api/me/decisions", nil)
+		second <- reply{status, data}
+	}()
+	reached(t, at, "the second list")
+	close(w.gate)
+	select {
+	case <-served:
+	case <-time.After(testWait):
+		t.Fatal("the first list never ended")
+	}
+	if w.Code != http.StatusOK {
+		t.Errorf("the first list: %d %s", w.Code, w.Body.Bytes())
+	}
+	for _, pass := range []string{passAna, passHostAna} {
+		if status, data, out := f.callAs(t, pass, http.MethodGet, "/api/me/decisions", nil); status != http.StatusTooManyRequests || codeOf(out) != "rate_limited" || bytes.Contains(data, []byte(did)) {
+			t.Errorf("ana's third list (%s) while the second is read, after the first ended: %d %s", pass, status, data)
+		}
+	}
+	close(gate)
+	got := <-second
+	var l proto.DecideList
+	if got.status == http.StatusOK {
+		strictly(t, got.data, &l)
+	}
+	if got.status != http.StatusOK || !slices.Equal(ids(l), []string{did}) {
+		t.Errorf("the second list: %d %s", got.status, got.data)
+	}
+	if _, l := f.list(t, passAna); !slices.Equal(ids(l), []string{did}) {
+		t.Errorf("ana's list after: %+v", l)
 	}
 }
