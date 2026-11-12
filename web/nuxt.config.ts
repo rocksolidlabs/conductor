@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { fileURLToPath } from 'node:url'
 import { AGENT_ICONS } from './app/utils/agentIcons'
 import { bundledPackages } from './build/bundledPackages'
-import { PREVIEW_BRIDGE, buildPreviewBridge, previewBridgeBuild, wrapPreviewBridge } from './build/previewBridge'
+import { PREVIEW_BRIDGE, buildPreviewBridge, devPreviewBridge, previewBridgeBuild } from './build/previewBridge'
 import { MERMAID_RENDERER_DEV_PATH } from './app/utils/mermaidRules'
 
 const webRoot = fileURLToPath(new URL('.', import.meta.url))
@@ -96,7 +96,8 @@ export default defineNuxtConfig({
           return code
         })
       bundle.catch(() => {})
-      // The preview bridge, wrapped as the server wraps it, its origin the dev server's own when a page asks it over the loopback.
+      // The preview bridge, answered as the server answers a page on the loopback (devPreviewBridge): its headers, its wrapper and,
+      // for a page that asks over the loopback, the loopback's three names at the dev server's port.
       const bridge = buildPreviewBridge(webRoot)
       bridge.catch(() => {})
       server.middlewares.stack.unshift({
@@ -104,13 +105,9 @@ export default defineNuxtConfig({
         handle: (req: IncomingMessage, res: ServerResponse, next: (err?: unknown) => void) => {
           bridge.then(
             (code) => {
-              const host = req.headers.host ?? ''
-              const origins = /^(localhost|127\.0\.0\.1|\[::1\]):\d+$/.test(host) ? [`http://${host}`] : []
-              res.setHeader('Content-Type', 'text/javascript; charset=utf-8')
-              res.setHeader('Cache-Control', 'no-store')
-              res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
-              res.setHeader('X-Content-Type-Options', 'nosniff')
-              res.end(wrapPreviewBridge(code, origins))
+              const { headers, body } = devPreviewBridge(code, req.headers.host ?? '')
+              for (const [k, v] of Object.entries(headers)) res.setHeader(k, v)
+              res.end(body)
             },
             (e) => next(e),
           )

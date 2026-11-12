@@ -1,5 +1,5 @@
 {
- "comment": "Written by internal/api's TestTheBridgeIsServedWhole (CONDUCTOR_WRITE_FIXTURES=1) and run by web/app/utils/protocol.test.ts: each script as GET /preview-bridge.js serves it, wrapped with origins.",
+ "comment": "Written by internal/api's TestTheBridgeIsServedWhole (CONDUCTOR_WRITE_FIXTURES=1) and run by web/app/utils/protocol.test.ts: each script as GET /preview-bridge.js serves it, wrapped with origins; the wrapper's three parts, which make web-build compiles the built bridge in; and the route's answer for a listener on the loopback, which web/build/previewBridge.test.ts holds the dev server's to.",
  "origins": [
   "https://a\"b",
   "https://a'b",
@@ -33,5 +33,21 @@
    "script": "var s = \"__CONDUCTOR_WORKBENCH_ORIGINS__\"; /* \"__CONDUCTOR_WORKBENCH_ORIGINS__\" */\nvar r = /\"__CONDUCTOR_WORKBENCH_ORIGINS__\"/;\nreport(s, r.source, conductorWorkbenchOrigins); // '__CONDUCTOR_WORKBENCH_ORIGINS__'\n",
    "served": "(function (conductorWorkbenchOrigins) {\nvar s = \"__CONDUCTOR_WORKBENCH_ORIGINS__\"; /* \"__CONDUCTOR_WORKBENCH_ORIGINS__\" */\nvar r = /\"__CONDUCTOR_WORKBENCH_ORIGINS__\"/;\nreport(s, r.source, conductorWorkbenchOrigins); // '__CONDUCTOR_WORKBENCH_ORIGINS__'\n\n})([\"https://a\\\"b\",\"https://a\\u0027b\",\"https://a\\u0060b\",\"https://a\\\\b\",\"https://a\\u003c/script\\u003e\\u003cscript\\u003ex()\\u003c/script\\u003e\",\"https://a\\u2028b\\u2029c\",\"https://a\\nb\\r\",\"https://a\\u0000b\",\"https://a\\u0024{x}b\",\"https://a*/b//c\"]);\n"
   }
- ]
+ ],
+ "wrapper": [
+  "(function (conductorWorkbenchOrigins) {\n",
+  "\n})(",
+  ");\n"
+ ],
+ "loopback": {
+  "listen": "127.0.0.1:8080",
+  "script": "start(conductorWorkbenchOrigins);\n",
+  "headers": {
+   "Cache-Control": "no-cache",
+   "Content-Type": "text/javascript; charset=utf-8",
+   "Cross-Origin-Resource-Policy": "cross-origin",
+   "X-Content-Type-Options": "nosniff"
+  },
+  "served": "(function (conductorWorkbenchOrigins) {\nstart(conductorWorkbenchOrigins);\n\n})([\"http://127.0.0.1:8080\",\"http://localhost:8080\",\"http://[::1]:8080\"]);\n"
+ }
 }

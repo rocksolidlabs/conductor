@@ -38,3 +38,16 @@ export async function buildPreviewBridge(root: string): Promise<string> {
 export function wrapPreviewBridge(code: string, origins: string[]): string {
   return `(function (conductorWorkbenchOrigins) {\n${code}\n})(${JSON.stringify(origins)});\n`
 }
+
+/**
+ * The dev server's answer for the bridge to a request with host (its Host header), as the route answers one on a loopback listener
+ * (internal/api/testdata/preview-bridge-served.json, which web/build/previewBridge.test.ts holds it to): the route's four headers,
+ * and the script in its wrapper with the loopback's three names at the host's port, or no origin for a host off the loopback.
+ */
+export function devPreviewBridge(code: string, host: string): { headers: Record<string, string>; body: string } {
+  const m = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::(\d{1,5}))?$/.exec(host)
+  const port = m ? Number(m[1] ?? 80) : 0
+  const origins = port > 0 && port < 65536 ? ['127.0.0.1', 'localhost', '[::1]'].map((h) => `http://${h}${port === 80 ? '' : ':' + port}`) : []
+  const headers = { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache', 'Cross-Origin-Resource-Policy': 'cross-origin', 'X-Content-Type-Options': 'nosniff' }
+  return { headers, body: wrapPreviewBridge(code, origins) }
+}
