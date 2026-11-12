@@ -729,10 +729,12 @@ func treeEnv(dir, index string) map[string]string {
 // TreeRevision reads the tree at dir as it is now, through git with argv
 // in the C locale (gitcli), in the index at index, a file of the
 // reader's own kept between reads so that git's stat cache keeps a read
-// near git status's cost: rev-parse HEAD; read-tree -m HEAD, a one-tree
-// merge that makes the index HEAD's entries again, each keeping its stat
-// data only where the file still matches HEAD, so nothing an earlier read
-// staged survives into this one; add -A, the ignored paths aside;
+// near git status's cost: rev-parse HEAD; read-tree --reset HEAD, the
+// one-tree merge of -m that discards what it cannot merge instead of
+// failing (an entry an earlier read staged whose file has changed again),
+// so the index is HEAD's entries again, each keeping its stat data only
+// where the entry is HEAD's, and nothing an earlier read staged survives
+// into this one; add -A, the ignored paths aside;
 // write-tree, the content; and diff --cached --name-only -z HEAD, read as
 // it comes, counted whole and kept to its bounds. Its time is ctx's. A
 // read that cannot name HEAD's commit is an error; one that fails after
@@ -744,7 +746,7 @@ func TreeRevision(ctx context.Context, dir, index string) (TreeRead, error) {
 	}
 	out := TreeRead{Commit: head}
 	env := treeEnv(dir, index)
-	for _, args := range [][]string{{"read-tree", "-m", "--no-sparse-checkout", head}, {"add", "-A"}} {
+	for _, args := range [][]string{{"read-tree", "--reset", "--no-sparse-checkout", head}, {"add", "-A"}} {
 		if _, err := gitcli.RunEnv(ctx, dir, env, args...); err != nil {
 			return out, err
 		}
