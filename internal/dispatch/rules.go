@@ -227,10 +227,10 @@ func Class(entity, field string) FieldClass {
 			"at", "actor", "op_id", "holder", "send_id", "target", "files", "why":
 			return ClassImmutable
 		}
-	case "capture_send", "capture_sends":
-		// A send (its operations come with Program item PV1's PR-1b): its
-		// input written once; its outcomes and its cancels a log, every one
-		// kept, its state read from them; the files it holds a set.
+	case EntityCaptureSend, "capture_sends":
+		// A send: its input written once; its outcomes and its cancels a
+		// log, every one kept, its state read from them by one projection
+		// (sendState); the files it holds a set.
 		switch field {
 		case "id", "capture_id", "rev", "kind", "asked", "digest", "request", "created_at", "created_by", "actor", "op_id", "fingerprint":
 			return ClassImmutable

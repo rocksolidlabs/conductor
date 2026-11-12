@@ -97,6 +97,7 @@ var planBounds = map[string]struct {
 	"element.word":            {64, false},
 	"element.hint_file":       {1 << 10, false},
 	"element.hint_component":  {256, false},
+	"send.request":            {8 << 10, false},
 	"send.target":             {100, false},
 	"send.why":                {2000, true},
 	"op.by":                   {60, true},

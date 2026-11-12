@@ -1166,6 +1166,7 @@ var fieldRules = map[string]textRule{
 	"element.word":            {max: MaxElementWord, kind: kindText},
 	"element.hint_file":       {max: MaxHintFile, kind: kindText},
 	"element.hint_component":  {max: MaxHintComponent, kind: kindText},
+	"send.request":            {max: MaxSendRequest, required: true, kind: kindJSON},
 	"send.target":             {max: MaxSendTarget, required: true, kind: kindText},
 	"send.why":                {max: MaxSendWhy, chars: true, required: true, kind: kindMarkdown},
 	"op.by":                   {max: MaxByName, chars: true, kind: kindName},
