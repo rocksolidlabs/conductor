@@ -1099,11 +1099,12 @@ func (s *Server) readableLink(ctx context.Context, w http.ResponseWriter, ds *di
 // the head commit (a cut set saying so; checks that could not be read
 // said, the state kept). Without checks (the close's reads), the last
 // read's checks are kept when the head is the same, and said not read
-// otherwise. A failure, GitHub's or the store's check of what was read,
-// is recorded as the read's words (RecordReadError) and returned. Every
-// request is made through atGitHub, within ctx; once the server has begun
-// to stop, no call enters it and nothing is recorded. Its caller holds the
-// link's lock; key's ticket is loaded under it (ticketFor) before any
+// otherwise. A failure, GitHub's or the store's check of what was read
+// (a read older than the one kept and a removed link's aside, which record
+// nothing), is recorded as the read's words (RecordReadError) and
+// returned. Every request is made through atGitHub, within ctx; once the
+// server has begun to stop, no call enters it and nothing is recorded. Its
+// caller holds the link's lock; key's ticket is loaded under it (ticketFor) before any
 // request, so a ticket deleted by then is asked nothing (ticketFor's
 // refusal returned).
 func (s *Server) readLink(ctx context.Context, ds *dispatch.Store, key, linkID string, ref tracker.Ref, withChecks bool) error {
@@ -1309,24 +1310,30 @@ func (s *Server) readAddedLink(ds *dispatch.Store, key string, l dispatch.NewLin
 // close under merged, every live delivery link to a GitHub item again (at
 // most maxCloseReads at once, each under its link's lock, the waits and
 // the reads within one phase, each read within the merged reads' cap),
-// recording each within a write's cap of its own: a read that failed is
-// recorded as failed, one it could not make (no token kept for the link's
-// host, the link's wait or the phase ended, an address the parser no
-// longer reads for a link read before, the ticket deleted meanwhile)
-// records nothing, and either refuses the edit, 409 close_policy naming
-// the link, nothing closed. The store decides every close under merged: it
-// closes only while a live delivery link's latest read was made within
+// recording each within a write's cap of its own: a read that failed
+// (GitHub's answer, or the store's check of what was read, other than a
+// read older than the one kept or one of a link removed meanwhile, which
+// record nothing) is recorded as failed, one it could not make (no token
+// kept for the link's host, the link's wait or the phase ended, an address
+// the parser no longer reads for a link read before, the ticket deleted
+// meanwhile) records nothing, and either refuses the edit, 409
+// close_policy naming the link, nothing closed; once the server has begun
+// to stop, a close whose reads it ended answers 503 tracker_busy, nothing
+// closed. The store decides every close under merged: it closes only
+// while a live delivery link's latest read was made within
 // dispatch.MaxMergedReadAge (five minutes), says merged, and has no failed
 // read recorded after it. Where the route does not
 // read, the store's rule alone decides: an edit answered from its receipt;
 // a ticket done, deleted or at another revision when the route looked;
 // the route's own look at the project, the receipt or the ticket failed
-// (once the server has begun to stop, a busy route's 503, nothing
+// (a request whose client left before the route read the project among
+// them; once the server has begun to stop, a busy route's 503, nothing
 // closed); or the ticket or its policy changed between the route's look
 // and the store's edit. The project is read under the request's own
 // context, so an edit to done in a project without merged goes to the
-// store as any edit does; the stop's context is taken once merged is
-// found. False once it answered.
+// store as any edit does (and a client that leaves before that read
+// leaves the close to the store's rule alone); the stop's context is
+// taken once merged is found. False once it answered.
 func (s *Server) readForClose(w http.ResponseWriter, r *http.Request, ds *dispatch.Store, key string, op dispatch.Op, e dispatch.TicketEdit) bool {
 	if e.Set.Status == nil || *e.Set.Status != dispatch.TicketDone {
 		return true

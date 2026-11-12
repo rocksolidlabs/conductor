@@ -1430,15 +1430,20 @@ func (e *testEnv) addPullLink(t *testing.T, key string, n int) string {
 // it; a link added once the stop began asks GitHub nothing; a route's read
 // held the same way ends with the stop, answered as a busy route is. Once
 // the stop has begun, the one door to GitHub asks nothing, and 2,000
-// previews and 500 imports on one processor make no request, each
-// answered as a route the stop ended (stopAnswer); routes begun inside the
-// server's real shutdown, held at its seam after the runs' stops, are
-// answered so and ask nothing.
+// previews and 500 imports on one processor make no request, each held to
+// its own route's answer once the stop ended it (stopAnswer): a preview
+// busy, an import the store's failure; routes begun inside the server's
+// real shutdown, held at its seam after the runs' stops, are answered so
+// and ask nothing.
 func TestTrackerReadsEndWithServer(t *testing.T) {
-	// stopAnswer is a route the stop ended: the one door's busy answer, or
-	// the store's failure for a store call the stop ended.
-	stopAnswer := func(out map[string]any) bool {
-		return errorCode(out) == "tracker_busy" || errorCode(out) == "store_failed"
+	// stopAnswer is the answer of a route the stop ended, by its path: a
+	// preview's is the busy answer, an import's the store's failure for its
+	// call to the store, which the stop ended.
+	stopAnswer := func(path string, out map[string]any) bool {
+		if strings.HasSuffix(path, "/import") {
+			return errorCode(out) == "store_failed"
+		}
+		return errorCode(out) == "tracker_busy"
 	}
 	t.Run("the read after a link's add", func(t *testing.T) {
 		e, g, key := pullEnv(t, 92)
@@ -1517,7 +1522,7 @@ func TestTrackerReadsEndWithServer(t *testing.T) {
 			if i >= 2000 {
 				path, body = "/api/dispatch/projects/BGN/import", map[string]any{"opId": opID(), "url": preview["url"]}
 			}
-			if _, _, out := e.call(t, "POST", path, body); stopAnswer(out) {
+			if _, _, out := e.call(t, "POST", path, body); stopAnswer(path, out) {
 				ended++
 			}
 		}
@@ -1530,16 +1535,17 @@ func TestTrackerReadsEndWithServer(t *testing.T) {
 		e.newDispatchProject(t, "SHD", nil)
 		var answers []map[string]any
 		var asked int
+		routes := []struct {
+			path string
+			body map[string]any
+		}{
+			{"/api/dispatch/external/preview", map[string]any{"url": "https://github.com/octo/app/issues/99"}},
+			{"/api/dispatch/projects/SHD/import", map[string]any{"opId": opID(), "url": "https://github.com/octo/app/issues/99"}},
+		}
 		e.srv.launches.setSeams(func(gate *launchGate) {
 			gate.afterStops = func() {
 				before := len(g.f.Requests())
-				for _, c := range []struct {
-					path string
-					body map[string]any
-				}{
-					{"/api/dispatch/external/preview", map[string]any{"url": "https://github.com/octo/app/issues/99"}},
-					{"/api/dispatch/projects/SHD/import", map[string]any{"opId": opID(), "url": "https://github.com/octo/app/issues/99"}},
-				} {
+				for _, c := range routes {
 					_, _, out := e.call(t, "POST", c.path, c.body)
 					answers = append(answers, out)
 				}
@@ -1547,7 +1553,7 @@ func TestTrackerReadsEndWithServer(t *testing.T) {
 			}
 		})
 		e.srv.Shutdown(context.Background())
-		if len(answers) != 2 || !stopAnswer(answers[0]) || !stopAnswer(answers[1]) || asked != 0 {
+		if len(answers) != 2 || !stopAnswer(routes[0].path, answers[0]) || !stopAnswer(routes[1].path, answers[1]) || asked != 0 {
 			t.Fatalf("routes begun inside the shutdown: %v, %d requests", answers, asked)
 		}
 	})
@@ -1644,7 +1650,8 @@ func closeRefused(t *testing.T, e *testEnv, what, key string, out map[string]any
 }
 
 // The close under merged counts a delivery's read only while it is the
-// link's latest and is decided by reads made for it: a link read merged,
+// link's latest, and the route reads each delivery link again before a
+// close it sees: a link read merged,
 // then read as another item (moved), or not read for a rate limit, is
 // refused at the close inside the five minutes, naming the link, until a
 // read succeeds again; with the token removed after a merged read, the

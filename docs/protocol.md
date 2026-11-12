@@ -2886,7 +2886,7 @@ its run, and on no other.
 | `POST /api/runs/{run}/links` | admin | create a run link: `{role, label?, ttlSeconds?, decide?}`, reply `201 {link, token, url}` as for a session link (its `url` on the same base); it grants its role on the session of every member of the run, a member added later included (see Crew runs); `decide: true` makes it a decision link (see Decision links: control only, `400 bad_request` with a view role; the link says `decide: true`; `409 switchyard_too_old` where the link would be minted at a switchyard whose `registered` does not say `decisions`, or that keeps no desks; at one that does, minted there over the run's desk: see Decision links, Through a switchyard; `502 rendezvous_unavailable` when the desk cannot be opened); `409 too_many_links` past 100 links for the run; `404` when unknown |
 | `DELETE /api/runs/{run}/links/{linkId}` | admin | revoke a run link, which closes every viewer attached through it (`4403`); `204`, `404` when the link is not the run's; a link minted at a switchyard is revoked there over a member's publication or the run's desk, `502 rendezvous_unavailable` when it is not (a decision link then stays listed with `revokePending: true` and is tried again until the switchyard confirms: Decision links, Through a switchyard); a revoke again of a decision link the switchyard has confirmed revoked answers `204` |
 | `GET /api/dispatch/projects` | admin | Dispatch's projects (see Dispatch below): `{projects, next?}`, a page of at most `limit` (1 to 200, 200 when absent) summaries by key after `cursor` (a page's opaque `next`), each `{id, key, name, tracker, archivedAt?, open, done, rev, updatedAt}`, `open` counting its live tickets neither done nor cancelled and `done` those done, without its description, folder, tracker URL and close policy, which its read carries, so a page is under 128 KiB (a name of 60 characters encodes to at most 360 bytes); the archived ones only with `archived=1`; `400 invalid_request` for a bad value |
-| `POST /api/dispatch/projects` | admin | make a project (`project.create`, Dispatch operations below): `{opId, byName?, key, name, description?, cwd?, tracker?, trackerUrl?, closeRequires?}`, `key` one upper-case letter then one to five upper-case letters or digits, chosen now and never changed, `name` 1 to 60 characters, `description` Markdown of at most 16 KiB, `cwd` a folder kept as text (at most 4096 bytes), `tracker` `native` (the default) or `external` with an `http` or `https` `trackerUrl` (at most 2 KiB), `closeRequires` any of `acceptance`, `delivery`, `verified` (A delivery's candidate, below) and `merged` (a live delivery link GitHub says is merged, read at the close: A ticket's GitHub item, below), each at most once, kept in that order (`["acceptance"]` for a native project and `[]` for an external one when absent); reply `201 {receipt, project}`; `409 key_taken` for a key another project holds, archived or not |
+| `POST /api/dispatch/projects` | admin | make a project (`project.create`, Dispatch operations below): `{opId, byName?, key, name, description?, cwd?, tracker?, trackerUrl?, closeRequires?}`, `key` one upper-case letter then one to five upper-case letters or digits, chosen now and never changed, `name` 1 to 60 characters, `description` Markdown of at most 16 KiB, `cwd` a folder kept as text (at most 4096 bytes), `tracker` `native` (the default) or `external` with an `http` or `https` `trackerUrl` (at most 2 KiB), `closeRequires` any of `acceptance`, `delivery`, `verified` (A delivery's candidate, below) and `merged` (a live delivery link GitHub says is merged, by a read at most five minutes old: A ticket's GitHub item, below), each at most once, kept in that order (`["acceptance"]` for a native project and `[]` for an external one when absent); reply `201 {receipt, project}`; `409 key_taken` for a key another project holds, archived or not |
 | `GET /api/dispatch/projects/{key}` | admin | a project, archived or not, with what its pages offer: `{project, labels, milestones, views}`, its live labels by name, its live milestones by target, and the live saved views of the project and of every project, a view's `query` the JSON it is; at most 3 MiB with every field and set at its bound (`maxProjectReply`); `404 not_found` |
 | `POST /api/dispatch/projects/{key}/edit` | admin | set the fields given of a project (`project.edit`): `{opId, expectedRev?, byName?, name?, description?, cwd?, tracker?, trackerUrl?, closeRequires?}`, each held to its create's rule, the key never changing; reply `{receipt, project}`; `409 archived` for an archived project |
 | `POST /api/dispatch/projects/{key}/archive`, `…/unarchive` | admin | archive a project, which refuses every write under it (`409 archived`) until it is unarchived, or unarchive it: `{opId, expectedRev?, byName?}`; reply `{receipt, project}`; `409 invalid` for one archived already, or not archived; a project is never deleted |
@@ -4655,9 +4655,11 @@ text of an answer is made storable where the answer becomes the store's
 record, and the reasons a link's checks are incomplete are fitted to the
 store's bound; the fields of a fixed form (ids, addresses, commits,
 times) are checked for their form; the store measures what it is handed
-after its own normalisation, and a read it refuses is recorded as a
-failed read. The
-routes are the admin's alone and a switchyard's `403 switchyard`; a body
+after its own normalisation; a link's read it refuses is recorded as the
+link's failed read (one older than the read kept is refused as stale,
+and one of a link removed meanwhile is dropped, each recording nothing),
+and a refresh, link or field given back that it refuses answers its
+refusal and records no read. The routes are the admin's alone and a switchyard's `403 switchyard`; a body
 is at most 64 KiB (`413 bound`), decoded strictly before the path is
 read. A reference is a URL (`https://<host>/<owner>/<repo>/issues/<n>`
 or `…/pull/<n>`, the host github.com or a GitHub Enterprise Server's
@@ -4694,24 +4696,30 @@ five minutes, says merged, and has no failed read recorded after it (a
 merged pull request stays merged). Before an edit that the route sees is
 such a close, the route reads each live delivery link to a GitHub item
 again, at most 4 at once: a read that failed (GitHub's answer, or the
-store's check of what was read) is recorded as failed, one it could not
-make (no token kept for the link's host, the link's read under way past
-the wait, no slot within the close's time, an address no longer read for
-a link read before, the ticket deleted meanwhile) records nothing, and
+store's check of what was read, other than a read older than the one
+kept or one of a link removed meanwhile, which record nothing) is
+recorded as failed, one it could not make (no token kept for the link's
+host, the link's read under way past the wait, no slot within the
+close's time, an address no longer read for a link read before, the
+ticket deleted meanwhile) records nothing, and
 either refuses the edit, `409 close_policy` naming the link, nothing
-closed. Where the route does not read, the store's rule alone decides:
-the edit is answered from its receipt; the ticket was done, deleted or at
-another revision than the one sent when the route looked; the route's own
-look at the project, the receipt or the ticket failed (once the server has begun to
-stop, `503 tracker_busy`, nothing closed); or the ticket or its policy
+closed; once the server has begun to stop, a close whose reads it ended
+answers `503 tracker_busy`, nothing closed. Where the route does not
+read, the store's rule alone decides: the edit is answered from its
+receipt; the ticket was done, deleted or at another revision than the
+one sent when the route looked; the route's own look at the project, the
+receipt or the ticket failed (a request whose client left before the
+route read the project among them; once the server has begun to stop,
+`503 tracker_busy`, nothing closed); or the ticket or its policy
 changed between the route's look and the store's edit. An edit to `done`
 in a project without `merged` goes to the store as any edit does. A
 deleted ticket is asked nothing: a link's read, a refresh, a field given
 back, a link and the close answer its `404 not_found` before any
 request; a read that waited for its link's lock loads the ticket under
 it and asks nothing for one deleted meanwhile (a link's read answers its
-`404 not_found`); and a read that answers after the delete is not
-recorded. Nothing else reads GitHub by itself: no timer, no poller, no
+`404 not_found`); a link removed while its read waits is asked once more
+and its read is dropped (`404 not_found`), nothing recorded; and a read
+that answers after the delete is not recorded. Nothing else reads GitHub by itself: no timer, no poller, no
 webhook; and every read, the background ones and the routes', ends with
 the server: its stop begins first thing in its shutdown, and from then
 no call enters the one function every request to GitHub passes (it
