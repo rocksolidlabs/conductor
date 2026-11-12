@@ -285,6 +285,88 @@ export interface DecisionEvent {
 export const MAX_DECISION_EVENT = 256
 
 /**
+ * The decide grant (docs/protocol.md "Decisions", docs/plans/decide-grant.md; internal/proto/decide.go): a grant an identity
+ * provider may give a principal. Yardmaster's admission judges what such a principal may read and answer of a decision given to
+ * the grant; the routes that admit it, whose replies the types below are, are #847's, and no route serves them yet.
+ */
+export const GRANT_DECIDE = 'decide'
+
+/** `GET /api/me`: who the credential is and the grants it holds here; at most MAX_ME_REPLY bytes. */
+export interface MeReply {
+  subject?: string
+  name?: string
+  grants: string[]
+}
+export const MAX_ME_REPLY = 1024
+
+/** `GET /api/me/decisions`: the open decisions that admit the caller, newest first; `cut` when more may await it. */
+export interface DecideList {
+  decisions: DecideEntry[]
+  cut?: boolean
+}
+export interface DecideEntry {
+  id: string
+  rev: number
+}
+export const MAX_DECIDE_LIST = 16 * 1024
+export const MAX_DECIDE_LIST_ENTRIES = 200
+
+/** One of a decision's options as a decide view gives it, at the index a response's `choice` names. */
+export interface DecideOption {
+  label: string
+  tradeoffs?: string
+}
+
+/** One of a decide principal's own responses: never its words or its actor. */
+export interface DecideReceipt {
+  k: number
+  responseId: string
+  status: 'accepted' | 'refused'
+  code?: string
+  rev: number
+  at: string
+  choice?: number
+}
+
+/** The outcome of a decide principal's own answer. */
+export type DecideOutcome = 'applied' | 'waiting' | 'not_used' | 'refused'
+
+/**
+ * A decide principal's read of a decision (`GET /api/decisions/{did}`): every field while it is open; once answered or final,
+ * `id`, `rev`, `own` and `outcome` alone. At most MAX_DECIDE_VIEW bytes.
+ */
+export interface DecideView {
+  id: string
+  rev: number
+  state?: 'open'
+  type?: 'clarification' | 'approval' | 'assignment'
+  question?: string
+  context?: string
+  options?: DecideOption[]
+  recommendation?: number
+  uncertainty?: string
+  authorizes?: string
+  createdAt?: string
+  own: DecideReceipt[]
+  outcome?: DecideOutcome
+  /** The newest own response's code, with `outcome: 'refused'`. */
+  outcomeCode?: string
+}
+export const MAX_DECIDE_VIEW = 32 * 1024
+
+/** The respond route's reply to a decide principal, and its refusal (the server's fixed words of the code). */
+export interface DecideReply {
+  receipt: DecideReceipt
+  decision?: DecideView
+}
+export interface DecideRefusal {
+  error: { code: string; message: string }
+  receipt?: DecideReceipt
+}
+export const MAX_DECIDE_REPLY = MAX_DECIDE_VIEW + 1024
+export const MAX_DECIDE_REFUSAL_WORDS = 200
+
+/**
  * Data of a `capacity` event on GET /api/events (Program item AC1, docs/protocol.md "Capacity"): a reading of an agent's usage on
  * an account was kept, for a page to read its view again with `GET /api/capacity?agent=&account=`. It names the key, the reading's
  * state and when it was read, never a label, a folder or a figure. At most 512 bytes of data (`MAX_CAPACITY_EVENT`).

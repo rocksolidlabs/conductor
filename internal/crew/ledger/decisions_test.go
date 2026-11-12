@@ -320,7 +320,9 @@ func TestMigrationSevenToEightAddsOnlyTables(t *testing.T) {
 	if got := schemaNames(t, again, "table"); !slices.Equal(got, wantTables) {
 		t.Fatalf("tables after the migration: %v", got)
 	}
-	if got, want := schemaNames(t, again, "index"), []string{"decision_holds_decision", "decision_ops", "decisions_current", "decisions_request"}; !slices.Equal(got, want) {
+	// The indexes: the versions', and the access path the owner makes as it
+	// prepares the database (accessPaths), which no version names.
+	if got, want := schemaNames(t, again, "index"), []string{"decision_holds_decision", "decision_ops", "decisions_current", "decisions_open", "decisions_request"}; !slices.Equal(got, want) {
 		t.Fatalf("indexes after the migration: %v", got)
 	}
 	if n := countRows(t, again, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'sqlite_sequence'"); n != 1 {

@@ -295,6 +295,11 @@ func (s *Server) admitVisibleRoute(ctx context.Context, o *observer, n int64, di
 		return "", missing
 	}
 	switch {
+	case body.To.Kind == crew.DestGrant:
+		return "", newAPIError(http.StatusBadRequest, crew.CodeInvalid, "Brakeman routes a decision to the operator or a person of its run's crew, never to a grant")
+	case crew.GivenToGrant(rec.Request):
+		// Neither given nor taken back by a turn: the operator's alone.
+		return "", newAPIError(http.StatusConflict, "stale_target", fmt.Sprintf("%s is given to the decide grant: the operator may route it", did))
 	case rec.State != ledger.DecisionOpen:
 		return "", newAPIError(http.StatusConflict, "stale_target", fmt.Sprintf("%s is %s: Brakeman routes only a decision still open", did, rec.State))
 	case rec.Rev != body.ExpectedRev:
