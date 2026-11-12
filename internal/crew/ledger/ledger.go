@@ -255,6 +255,9 @@ type Ledger struct {
 
 	readOnly bool
 	why      string
+	// pathsErr is why prepare could not make the access paths (accessPaths),
+	// nil when it made them or did not prepare.
+	pathsErr error
 	// version is the schema version of the database db reads, read as it
 	// is attached (attach) and so again after a migration: below Version
 	// when the ledger opened read-only and unmigrated (the owner lock
@@ -354,6 +357,7 @@ func Open(dir string) (*Ledger, error) {
 // is Open.
 func (l *Ledger) attach(ctx context.Context, path string) error {
 	defer l.readVersion(ctx)
+	l.pathsErr = nil
 	_, statErr := os.Lstat(path)
 	if l.readOnly && statErr != nil {
 		// Nothing to read, and not ours to make.
@@ -695,9 +699,44 @@ func dsn(path string, readOnly bool) string {
 	return u.String()
 }
 
-// prepare checks the database (quick_check) and brings it to Version, or
-// refuses it: a later version, or one that fails the check.
+// prepare brings the database to Version (schemaAt), then makes the access
+// paths (accessPaths) where they are missing: a failure of those it keeps
+// (pathsErr), and the ledger is the owner's as before. It does not judge
+// a definition already there: the read that names the index does, on its
+// own snapshot (OpenDecisionsNewest), for every ledger.
 func (l *Ledger) prepare(ctx context.Context) error {
+	if err := l.schemaAt(ctx); err != nil {
+		return err
+	}
+	for _, p := range accessPaths {
+		_, err := l.db.ExecContext(ctx, strings.Replace(p.def, "CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ", 1))
+		if err != nil {
+			l.pathsErr = err
+			break
+		}
+	}
+	return nil
+}
+
+// accessPath is an index's name and its definition as sqlite_master keeps it.
+type accessPath struct{ name, def string }
+
+// accessPaths are made, if missing, each time the owner prepares the
+// database, after its schema is Version: what may ever be put here is an
+// index that serves a read and that no reader depends on for its answer,
+// never a table, a column or a change of meaning, so a binary that does
+// not know of it opens the database as its own, and SQLite keeps it under
+// that binary's writes. A failure to make one, or one of its name there
+// with another definition, leaves the ledger as it is: only a read that
+// names it answers the cause (OpenDecisionsNewest).
+var accessPaths = []accessPath{openIndex}
+
+// openIndex is the open decisions' index, the one OpenDecisionsNewest walks.
+var openIndex = accessPath{"decisions_open", `CREATE INDEX decisions_open ON decisions(n) WHERE state = 'open'`}
+
+// schemaAt checks the database (quick_check) and brings it to Version, or
+// refuses it: a later version, or one that fails the check.
+func (l *Ledger) schemaAt(ctx context.Context) error {
 	var check string
 	if err := l.db.QueryRowContext(ctx, "PRAGMA quick_check").Scan(&check); err != nil {
 		return fmt.Errorf("ledger: quick_check: %w", err)
