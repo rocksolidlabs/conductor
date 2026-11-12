@@ -1745,10 +1745,13 @@ var openScanBytes = MaxOpenScanBytes
 // that it did not hand, past either bound; visit answering false stops it
 // there, more false. Its condition is the state alone: no JSON function
 // reads a request or a policy. It walks the open decisions' index,
-// decisions_open (accessPaths), and nothing else: where the index is
-// missing (a database this ledger may only read, last prepared by a binary
-// without it), could not be made, is not the one the owner makes, or
-// cannot serve the statement, it answers ErrUnavailable and hands none. visit must not read the ledger, whose one connection the read
+// decisions_open (openIndex), and nothing else: where the owner could not
+// make the index, or where the read's own snapshot holds none of that name
+// (a database this ledger may only read, last prepared by a binary without
+// it) or one whose kept definition is not, byte for byte, the one the
+// owner makes (whoever made it, and whenever), it answers ErrUnavailable
+// and hands none. That holds for an owner and a ledger that may only read
+// alike. visit must not read the ledger, whose one connection the read
 // holds. A database older than the decision tables hands none.
 func (l *Ledger) OpenDecisionsNewest(ctx context.Context, limit int, visit func(DecisionRow) bool) (more bool, err error) {
 	if limit <= 0 || limit > MaxOpenScan {
@@ -1763,6 +1766,17 @@ func (l *Ledger) OpenDecisionsNewest(ctx context.Context, limit int, visit func(
 	err = l.readSnapshot(ctx, func(q querier, version int) error {
 		if version < versionDecisions {
 			return nil
+		}
+		// The index this snapshot holds under the name, judged by its kept
+		// text before the statement walks it.
+		var have string
+		err := q.QueryRowContext(ctx, "SELECT COALESCE(sql, '') FROM sqlite_master WHERE type = 'index' AND name = ?", openIndex.name).Scan(&have)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: the database holds no index %s", ErrUnavailable, openIndex.name)
+		} else if err == nil && have != openIndex.def {
+			return fmt.Errorf("%w: the index %s there is not the one this ledger makes", ErrUnavailable, openIndex.name)
+		} else if err != nil {
+			return err
 		}
 		// The literal state, as the partial index's condition names it: a
 		// bound parameter could not use the index.

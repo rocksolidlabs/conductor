@@ -184,9 +184,21 @@ func TestRouteToGrantSetsTheTarget(t *testing.T) {
 	if rc, err := routeToGrant(e, d.ID, "g2", 2); err != nil || rc.Rev != 3 {
 		t.Fatalf("given again: %+v %v", rc, err)
 	}
-	for i, bad := range [][]Destination{{{Kind: DestGrant, Grant: "admin"}}, {{Kind: DestGrant, Grant: "host"}}, {{Kind: DestGrant, Grant: "decide", Name: "ana"}}, {{Kind: DestGrant}}, {{Kind: DestOperator, Grant: "decide"}}} {
-		if _, err := e.RouteDecision(t.Context(), d.ID, fmt.Sprintf("bad%d", i), 3, bad, "", "admin"); codeOf(err) != CodeInvalid {
-			t.Fatalf("a route to %+v: %v", bad, err)
+	// Each refused, its words naming the grant destination the route takes
+	// and quoting the grant it was sent, or the field a kind may not carry.
+	takes := "or the decide grant ({kind: grant, grant: decide}), not "
+	for i, bad := range []struct {
+		to    []Destination
+		words string
+	}{
+		{[]Destination{{Kind: DestGrant, Grant: "admin"}}, takes + `{kind: "grant", name: "", grant: "admin"}`},
+		{[]Destination{{Kind: DestGrant, Grant: "host"}}, takes + `{kind: "grant", name: "", grant: "host"}`},
+		{[]Destination{{Kind: DestGrant, Grant: "decide", Name: "ana"}}, takes + `{kind: "grant", name: "ana", grant: "decide"}`},
+		{[]Destination{{Kind: DestGrant}}, takes + `{kind: "grant", name: "", grant: ""}`},
+		{[]Destination{{Kind: DestOperator, Grant: "decide"}}, `a destination of kind "operator" may name no grant`},
+	} {
+		if _, err := e.RouteDecision(t.Context(), d.ID, fmt.Sprintf("bad%d", i), 3, bad.to, "", "admin"); codeOf(err) != CodeInvalid || !strings.Contains(err.Error(), bad.words) {
+			t.Fatalf("a route to %+v: %v", bad.to, err)
 		}
 	}
 	if _, err := routeToGrant(e, d.ID, "g3", 2); codeOf(err) != CodeStaleDecision {
@@ -724,7 +736,9 @@ func TestTheRouterResponseIDIsTheRouters(t *testing.T) {
 // The operator is admitted by the operator entry's own rule, before any
 // policy is read. Of a decision whose policy names no operator entry its
 // answer is taken; of one whose policy does not decode it is refused
-// stale_policy. A decide principal is refused not_approver by both.
+// stale_policy, through the workbench or an identity, also once the
+// decision was given to the grant. A decide principal is refused
+// not_approver by both.
 func TestTheOperatorAnswersByItsOwnRule(t *testing.T) {
 	dir, ldir := newRepo(t), t.TempDir()
 	e, fl, ld := decisionEngineAt(t, ldir)
@@ -732,11 +746,15 @@ func TestTheOperatorAnswersByItsOwnRule(t *testing.T) {
 	b, _, _ := attemptOn(t, e, fl, run.ID, "build")
 	noOperator := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
 	unreadable := ask(t, e, b.Attempt.SessionID, clarification("q2", "Which table?"))
+	given := ask(t, e, b.Attempt.SessionID, clarification("q3", "Which column?"))
+	if _, err := routeToGrant(e, given.ID, "g1", 1); err != nil {
+		t.Fatal(err)
+	}
 	db, err := sql.Open("sqlite", filepath.Join(ldir, ledger.File)+"?_pragma=busy_timeout(10000)")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for id, policy := range map[string]string{noOperator.ID: `{"revision":"local/1","authority":[{"kind":"subject"}]}`, unreadable.ID: "{"} {
+	for id, policy := range map[string]string{noOperator.ID: `{"revision":"local/1","authority":[{"kind":"subject"}]}`, unreadable.ID: "{", given.ID: "{"} {
 		n, _ := ledger.ParseDecisionID(id)
 		if _, err := db.Exec("UPDATE decisions SET policy = ? WHERE n = ?", policy, n); err != nil {
 			t.Fatal(err)
@@ -753,8 +771,15 @@ func TestTheOperatorAnswersByItsOwnRule(t *testing.T) {
 	if rec := decisionWhen(t, ld, noOperator.ID, "answered", func(rec ledger.DecisionRecord) bool { return rec.State != ledger.DecisionOpen }); rec.AnsweredAt.IsZero() {
 		t.Fatalf("the operator's answer under a policy with no operator entry: %+v", rec.DecisionRow)
 	}
-	if rc, err := e.RespondDecision(t.Context(), unreadable.ID, Response{ResponseID: "r1", Text: "users", ExpectedRev: 1, ByName: "Nate"}, "admin", workbench(e)); codeOf(err) != CodeStalePolicy {
-		t.Fatalf("the operator's answer under a policy that does not decode: %+v %v", rc, err)
+	for _, x := range []struct {
+		id    string
+		rev   int
+		actor string
+		auth  Authority
+	}{{unreadable.ID, 1, "admin", workbench(e)}, {unreadable.ID, 1, "user:nate", identity(e, "nate")}, {given.ID, 2, "admin", workbench(e)}, {given.ID, 2, "user:nate", identity(e, "nate")}} {
+		if rc, err := e.RespondDecision(t.Context(), x.id, Response{ResponseID: "r1", Text: "users", ExpectedRev: x.rev, ByName: "Nate"}, x.actor, x.auth); codeOf(err) != CodeStalePolicy {
+			t.Fatalf("the operator's answer (%s) to %s under a policy that does not decode: %+v %v", x.actor, x.id, rc, err)
+		}
 	}
 	stopRun(t, e, run.ID)
 }

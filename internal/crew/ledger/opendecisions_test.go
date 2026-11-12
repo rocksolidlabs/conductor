@@ -249,11 +249,13 @@ func TestTheOwnerMakesTheOpenIndex(t *testing.T) {
 }
 
 // An index of the open decisions' name made over another expression, or
-// over another state, before the owner prepares the database: the ledger
-// is the owner's and writable, every other read and write works, and the
-// read answers its error and hands nothing. The definition the owner makes
-// is the one SQLite keeps.
-func TestTheOwnerReadsTheOpenIndexBack(t *testing.T) {
+// over another state: before the owner prepares the database, read by the
+// owner and by a ledger that may only read it, and after the owner
+// prepared it, under the owner. The ledger is the owner's and writable,
+// every other read and write works, and each read answers its error and
+// hands nothing; the index put back as the owner makes it is read again.
+// The definition the owner makes is the one SQLite keeps.
+func TestTheReadChecksItsOwnIndex(t *testing.T) {
 	ctx := context.Background()
 	const run = "team-00000001"
 	for _, other := range []string{
@@ -265,7 +267,7 @@ func TestTheOwnerReadsTheOpenIndexBack(t *testing.T) {
 		newRun(t, l, run)
 		n := open1(t, l, run, "g1")
 		var def string
-		if err := l.db.QueryRow("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'decisions_open'").Scan(&def); err != nil || def != accessPaths[0].def {
+		if err := l.db.QueryRow("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'decisions_open'").Scan(&def); err != nil || def != openIndex.def {
 			t.Fatalf("the index the owner made is kept as %q: %v", def, err)
 		}
 		l.Close()
@@ -276,10 +278,20 @@ func TestTheOwnerReadsTheOpenIndexBack(t *testing.T) {
 		if ro, why := owner.ReadOnly(); ro {
 			t.Fatalf("%s: the ledger opened read-only: %s", other, why)
 		}
-		handed := 0
-		if _, err := owner.OpenDecisionsNewest(ctx, 0, func(DecisionRow) bool { handed++; return true }); !errors.Is(err, ErrUnavailable) || handed != 0 {
-			t.Fatalf("%s: the read handed %d: %v", other, handed, err)
+		refused := func(who string, l *Ledger) {
+			t.Helper()
+			handed := 0
+			if _, err := l.OpenDecisionsNewest(ctx, 0, func(DecisionRow) bool { handed++; return true }); !errors.Is(err, ErrUnavailable) || handed != 0 {
+				t.Fatalf("%s, %s: the read handed %d: %v", other, who, handed, err)
+			}
 		}
+		refused("the owner", owner)
+		reader := openReadOnly(t, dir)
+		refused("read only", reader)
+		if rec := record(t, reader, n); rec.State != DecisionOpen {
+			t.Fatalf("%s: a read, read only: %+v", other, rec.DecisionRow)
+		}
+		reader.Close()
 		m := open1(t, owner, run, "g2")
 		setState(t, owner, run, n, DecisionCancelled, "")
 		if rec := record(t, owner, n); rec.State != DecisionCancelled {
@@ -287,6 +299,17 @@ func TestTheOwnerReadsTheOpenIndexBack(t *testing.T) {
 		}
 		if rec := record(t, owner, m); rec.State != DecisionOpen {
 			t.Fatalf("%s: a read: %+v", other, rec.DecisionRow)
+		}
+
+		rawExec(t, dir, "DROP INDEX decisions_open", openIndex.def)
+		var got []int64
+		if _, err := owner.OpenDecisionsNewest(ctx, 0, func(d DecisionRow) bool { got = append(got, d.N); return true }); err != nil || !slices.Equal(got, []int64{m}) {
+			t.Fatalf("%s: the index put back: %v %v", other, got, err)
+		}
+		rawExec(t, dir, "DROP INDEX decisions_open", other)
+		refused("replaced after the owner prepared", owner)
+		if rec := record(t, owner, m); rec.State != DecisionOpen {
+			t.Fatalf("%s: a read after the index was replaced: %+v", other, rec.DecisionRow)
 		}
 		owner.Close()
 	}

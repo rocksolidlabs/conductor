@@ -1681,10 +1681,10 @@ func (e *Engine) RouteDecision(ctx context.Context, id, opID string, expectedRev
 	}
 	label, ok := routeLabel(to)
 	if i := slices.IndexFunc(to, func(d Destination) bool { return d.Grant != "" && d.Kind != DestGrant }); !ok && i >= 0 {
-		return OpReceipt{}, refuse(CodeInvalid, "a destination of kind %q names no grant: grant is a field of {kind: grant} alone", shortText(to[i].Kind))
+		return OpReceipt{}, refuse(CodeInvalid, "a destination of kind %q may name no grant: grant is a field of {kind: grant} alone", shortText(to[i].Kind))
 	}
 	if !ok {
-		return OpReceipt{}, refuse(CodeInvalid, "a decision is routed to the operator, a person of its run's crew (person, by name) or a responsibility of it (role: architecture, product, security or acceptance), not %q", shortText(to[0].Kind+" "+to[0].Name))
+		return OpReceipt{}, refuse(CodeInvalid, "a decision is routed to the operator, a person of its run's crew (person, by name), a responsibility of it (role: architecture, product, security or acceptance) or the decide grant ({kind: grant, grant: decide}), not {kind: %q, name: %q, grant: %q}", shortText(to[0].Kind), shortText(to[0].Name), shortText(to[0].Grant))
 	}
 	fp := fingerprintOf([]any{"route", to, note})
 	note, err := cleanOpText(note, false)

@@ -700,23 +700,16 @@ func dsn(path string, readOnly bool) string {
 }
 
 // prepare brings the database to Version (schemaAt), then makes the access
-// paths (accessPaths): a failure of those it keeps (pathsErr), and the
-// ledger is the owner's as before.
+// paths (accessPaths) where they are missing: a failure of those it keeps
+// (pathsErr), and the ledger is the owner's as before. It does not judge
+// a definition already there: the read that names the index does, on its
+// own snapshot (OpenDecisionsNewest), for every ledger.
 func (l *Ledger) prepare(ctx context.Context) error {
 	if err := l.schemaAt(ctx); err != nil {
 		return err
 	}
 	for _, p := range accessPaths {
-		// Made if missing, then read back: any other definition is kept as
-		// the cause, as a failure to make it is.
-		var have string
 		_, err := l.db.ExecContext(ctx, strings.Replace(p.def, "CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ", 1))
-		if err == nil {
-			err = l.db.QueryRowContext(ctx, "SELECT COALESCE(sql, '') FROM sqlite_master WHERE type = 'index' AND name = ?", p.name).Scan(&have)
-		}
-		if err == nil && have != p.def {
-			err = fmt.Errorf("the index %s there is not the one this ledger makes", p.name)
-		}
 		if err != nil {
 			l.pathsErr = err
 			break
@@ -736,9 +729,10 @@ type accessPath struct{ name, def string }
 // that binary's writes. A failure to make one, or one of its name there
 // with another definition, leaves the ledger as it is: only a read that
 // names it answers the cause (OpenDecisionsNewest).
-var accessPaths = []accessPath{
-	{"decisions_open", `CREATE INDEX decisions_open ON decisions(n) WHERE state = 'open'`},
-}
+var accessPaths = []accessPath{openIndex}
+
+// openIndex is the open decisions' index, the one OpenDecisionsNewest walks.
+var openIndex = accessPath{"decisions_open", `CREATE INDEX decisions_open ON decisions(n) WHERE state = 'open'`}
 
 // schemaAt checks the database (quick_check) and brings it to Version, or
 // refuses it: a later version, or one that fails the check.
