@@ -160,7 +160,7 @@ func TestAccountFolderFixed(t *testing.T) {
 	for i := range ty.NumMethod() {
 		names = append(names, ty.Method(i).Name)
 	}
-	want := []string{"Accounts", "Add", "Disown", "Hold", "Own", "Remove", "Rename", "Reserve", "Retire", "SetDefault", "Versions"}
+	want := []string{"Accounts", "Add", "Disown", "Hold", "HoldOf", "Own", "Remove", "Rename", "Reserve", "Retire", "SetDefault", "Versions"}
 	if !slices.Equal(names, want) {
 		t.Errorf("Store's methods are %v, want %v", names, want)
 	}
@@ -595,5 +595,32 @@ func TestReservationHoldsRemove(t *testing.T) {
 	// The agent's own login needs no reservation.
 	if d, rel, err := s.Reserve(DefaultID); err != nil || d != (Account{}) || rel == nil {
 		t.Errorf("default: %+v, %v", d, err)
+	}
+}
+
+// HoldOf holds the account its pick names in the accounts as they are
+// under the accounts' lock, a retired one too, as Reserve does; a pick
+// naming none holds nothing.
+func TestHoldOfHoldsWhatItsPickNames(t *testing.T) {
+	f := newFacts()
+	s := openAt(t, t.TempDir(), Options{Now: clockAt(t0)})
+	a, rev, _ := s.Add(f, "claude", "Work", "/home/u/work", 0)
+	a, rev, _ = s.Retire(a.ID, rev)
+	var seen Accounts
+	got, release, err := s.HoldOf(func(d Accounts) string { seen = d; return a.ID })
+	if err != nil || got != a || len(seen.Accounts) != 1 {
+		t.Fatalf("hold: %+v, %v, the pick saw %+v", got, err, seen)
+	}
+	if _, err := s.Remove(f, a.ID, rev); code(err) != CodeInUse || !strings.Contains(err.Error(), "1 launch") {
+		t.Fatalf("remove while held: %v", err)
+	}
+	release()
+	for _, id := range []string{DefaultID, "unlisted", "a-bbbbbbbbbbbb"} {
+		if got, rel, err := s.HoldOf(func(Accounts) string { return id }); err != nil || got != (Account{}) || rel == nil {
+			t.Errorf("a pick of %s: %+v, %v", id, got, err)
+		}
+	}
+	if _, err := s.Remove(f, a.ID, rev); err != nil {
+		t.Fatalf("remove once released: %v", err)
 	}
 }

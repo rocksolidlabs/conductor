@@ -888,6 +888,15 @@ func TestCapacityStaysWithTheAdmin(t *testing.T) {
 		return ""
 	}
 	folder := folderOf(id)
+	// An account on the tool's own folder in the server's home, which the
+	// stubs run under too: the skill is installed in that home at the first
+	// launch, and no line of the log names the folder (#856).
+	t.Setenv("HOME", e.srv.home)
+	homeFolder := filepath.Join(e.srv.home, ".claude")
+	if err := os.MkdirAll(homeFolder, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e.expect(t, "POST", "/api/accounts", map[string]any{"adapter": "claude", "label": label + " home", "folder": homeFolder, "expectedRev": accountsRev(t, e)}, http.StatusCreated, "")
 	// A launch whose entry pins another account's folder, naming none, and
 	// a Brakeman turn on a third's folder beside a key its entry sets: each
 	// bound pinned, each the first launch in its folder, so the skill is
@@ -937,7 +946,7 @@ func TestCapacityStaysWithTheAdmin(t *testing.T) {
 	_, blo := e.do("POST", "/api/sessions/"+boundSid+"/links", adminToken, map[string]any{"role": "control"})
 	boundLink, _ := blo["token"].(string)
 	leaked := func(who, path string, data []byte) {
-		for _, s := range []string{label, folder, pinnedFolder, bkFolder, figure, fingerprint} {
+		for _, s := range []string{label, folder, pinnedFolder, bkFolder, homeFolder, figure, fingerprint} {
 			if bytes.Contains(data, []byte(s)) {
 				t.Errorf("%s's %s carries %q", who, path, s)
 			}
@@ -1007,6 +1016,9 @@ func TestCapacityStaysWithTheAdmin(t *testing.T) {
 	}
 	if n := bytes.Count(logged.Bytes(), []byte("skill installed in the agent's configuration directory")); n < 2 {
 		t.Errorf("the skill's line was written %d times: not for the pinned launch and the turn", n)
+	}
+	if !bytes.Contains(logged.Bytes(), []byte(`msg="skill installed" adapter=claude`)) {
+		t.Errorf("the log lacks the line of the skill installed in the server's home")
 	}
 	leaked("the log", "", logged.Bytes())
 }

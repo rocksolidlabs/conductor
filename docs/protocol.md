@@ -5773,8 +5773,8 @@ of the adapter's login variables has that login alone, and so has a launch
 whose own additions (its yolo recipe's variables, an attempt's approved
 names) set one: each takes `default` only, and another account is refused
 `400 invalid_account` naming the variable. What the session was bound to
-is its binding: the account's id and label, the folder (none for the
-agent's own login), where the login comes from (`source`: `own`,
+is its binding: the account's id and label, the folder its process runs
+in (the folder variable's, else the agent's own under its home), where the login comes from (`source`: `own`,
 `account`, `pinned` for an entry or passthrough that sets it, `launch_env`
 for a launch's additions, `unlisted` for Brakeman's folder that no account
 holds) and a SHA-256 of the adapter and its login variables as the
@@ -5799,8 +5799,9 @@ invalid_account`; a server that does not own the accounts refuses a
 registered account `409 accounts_not_owner`; while the accounts cannot be
 read, a launch that would read them is refused `503 capacity_unavailable`
 (one naming no account, whose default is not known; a registered
-account; a Brakeman turn with a folder) and one naming `default` is
-started. A `model` (1 to
+account; a Brakeman turn with a folder) and one naming `default`, or
+whose entry or launch sets its login, is started, holding the account of
+its folder from its registration. A `model` (1 to
 100 of `A-Z a-z 0-9 . _ : / @ -`) goes through the adapter's flag
 (`--model=`) after the launch's own arguments, `400 invalid_request` for an
 agent whose adapter takes none or beside any of the launch's own arguments
@@ -5846,24 +5847,24 @@ A managed run any member of which is bound to anything but `own` is
 offered to no Runtime and runs on this server, and a process is started
 on a Runtime other than the native one only under the agent's own login
 (`400 invalid_account` otherwise, an attempt failed with those words).
+Whatever runs in an account's folder holds that account and is counted
+on it, from its start to its end, whatever set its login: a launch
+reserves the registered account whose folder its binding keeps (the
+account it names, or takes as its adapter's default) before its process
+starts, until its process has ended, whether or not its session was
+registered (its registration refused and its stop failed among them), and
+its session is counted on the account from its registration.
 `DELETE /api/accounts/{id}` is refused `409 account_in_use`, naming at
-most 10, while a launch that names the account (or takes it as its
-adapter's default) is under way, from its reservation until its process
-has ended, whether or not its session was registered (its registration
-refused and its stop failed among them), a registered server session's
-process bound to it still runs (its stop failed, or it was removed from
-the listing), an engine run not ended, or a ledger run running or
-interrupted, and continued by no other run, is bound to it (one whose
-crew cannot be read holds every account); a stopped or finished run is no
-bar (continuing it is refused `account_gone`), and a kept run that
-another run has continued holds nothing. A registered session, and a
-member of a run not ended (the engine's, or the ledger's as above), whose
-binding is `pinned` (its entry or the server's passthrough sets the login,
-and the launch's own environment sets none of its login variables) to a
-folder that a registered account holds, holds that account, its `source`
-still what the environment says, and such a session is counted on it. For a login that an entry, the
-passthrough or a launch's own environment sets, what is held and counted
-begins at the session's registration and follows what the binding keeps.
+most 10, while a launch holds the account so, a registered server
+session's process bound to it or to its folder still runs (its stop
+failed, or it was removed from the listing), or an engine run not ended,
+or a ledger run running or interrupted, and continued by no other run, has
+a member bound to it or to its folder (one whose crew cannot be read holds
+every account); a stopped or finished run is no bar (continuing it is
+refused `account_gone`), and a kept run that another run has continued
+holds nothing. A run keeps a member on the agent's own login as no
+binding: such a member holds the account of its folder through its
+session.
 
 **The routes**, each the workbench token's alone (a session's, a host's, a
 link's and a Brakeman turn's are refused `401`) and a launch route's (a
@@ -5905,8 +5906,8 @@ the provider did not report it (never a zero); the counts (`running`,
 `started5h`, `started7d`, `since`) carry `source: "conductor"` and
 `estimate: true`: the server sessions of the agent on the account this
 server counted since it started, each from its registration: a session
-bound to the account, and one bound `pinned` to the account's folder
-(Capacity's binding paragraph above). `host.kind` is `native`
+bound to the account or to its folder, whatever its `source` (Capacity's
+binding paragraph above). `host.kind` is `native`
 (with the server's name), `remote`, or, for a managed run of the agent's
 own login when a Runtime other than the native one is registered,
 `undetermined` ("this server's login: if <Runtime> takes the run, its usage

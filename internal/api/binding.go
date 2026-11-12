@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -151,13 +152,15 @@ func (s *Server) launchEnv(agent catalog.Agent, adapterEnv map[string]string, ap
 // bound only when its folder is the one login variable the process gets,
 // and one named beside another is refused. A new launch binds no retired
 // account (Reserve); a launch made again holds the one it was bound to
-// (Hold). The binding answered has no Login yet (createLocalSession reads
-// it from the environment built). Release lets go of the account's
-// reservation once the session is registered, its launch failed before its
-// process started, or the process of a launch whose registration was
-// refused has ended.
+// (Hold). Every binding keeps the folder its process runs in, and a
+// launch of any other source holds the registered account whose folder
+// that is (holdFolder), so whatever runs in an account's folder holds it
+// from before its process starts. The binding answered has no Login yet
+// (createLocalSession reads it from the environment built). Release lets
+// go of the reservation once the session is registered, its launch failed
+// before its process started, or the process of a launch whose
+// registration was refused has ended.
 func (s *Server) bindLogin(agent catalog.Agent, account, cwd string, want loginWant, entry, full []string, env map[string]string) (session.BoundAccount, func(), *apiError) {
-	nothing := func() {}
 	refuse := func(words string) (session.BoundAccount, func(), *apiError) {
 		return session.BoundAccount{}, nil, newAPIError(http.StatusBadRequest, "invalid_account", words)
 	}
@@ -233,21 +236,28 @@ func (s *Server) bindLogin(agent catalog.Agent, account, cwd string, want loginW
 	if folder != "" {
 		env[ad.ConfigDirEnv] = folder
 	}
+	// Every binding keeps the folder its process runs in, as it sees it:
+	// the one wanted, the folder variable set, else the tool's own under
+	// its home.
+	seen := folder
+	if seen == "" && ad.ConfigDirEnv != "" {
+		seen = cmp.Or(seenFolder(fl(ad.ConfigDirEnv), cwd), agents.HomeConfigDir(agent.Adapter, fl))
+	}
+	var b session.BoundAccount
 	switch {
 	case added != "":
-		return session.BoundAccount{ID: capacity.DefaultID, Folder: folder, Source: session.SourceLaunchEnv}, nothing, nil
+		b = session.BoundAccount{ID: capacity.DefaultID, Folder: seen, Source: session.SourceLaunchEnv}
 	case pinned != "":
-		b := session.BoundAccount{ID: capacity.DefaultID, Folder: folder, Source: session.SourcePinned}
-		if folder == "" && ad.ConfigDirEnv != "" {
-			b.Folder = seenFolder(el(ad.ConfigDirEnv), cwd)
-		}
-		return b, nothing, nil
+		b = session.BoundAccount{ID: capacity.DefaultID, Folder: seen, Source: session.SourcePinned}
 	case folder == "" && id == capacity.DefaultID:
-		return session.BoundAccount{ID: id, Source: session.SourceOwn}, nothing, nil
+		b = session.BoundAccount{ID: id, Folder: seen, Source: session.SourceOwn}
 	case folder != "" && id == "":
-		return session.BoundAccount{ID: session.SourceUnlisted, Folder: folder, Source: session.SourceUnlisted}, nothing, nil
+		b = session.BoundAccount{ID: session.SourceUnlisted, Folder: folder, Source: session.SourceUnlisted}
 	case s.capacity == nil || s.capacity.st == nil:
 		return refuse("this server keeps no accounts")
+	}
+	if b.Source != "" {
+		return b, s.holdFolder(agent.Adapter, b), nil
 	}
 	// A registered account, its folder the one login variable.
 	hold := s.capacity.st.Reserve
@@ -475,20 +485,44 @@ func (s *Server) bindMember(runID string, m crew.Member, caller *session.Local) 
 	return ms[0], release, nil
 }
 
-// heldAccount is the account a binding holds and is counted on, of those
-// doc holds: its own id, or, for a binding of another source that keeps
-// the folder of a registered account (an entry or the passthrough that
-// pins that folder, Brakeman's folder beside a key), that account, whatever
-// the source says; the source stays what the environment says.
-func heldAccount(doc capacity.Accounts, b session.BoundAccount) string {
-	if b.Source != session.SourceAccount && b.Folder != "" {
-		for _, a := range doc.Accounts {
-			if accountFolder(a, b.Folder) {
-				return a.ID
-			}
+// holdFolder is the reservation of a launch bound b, of a source other
+// than account, from before its process starts: the registered account
+// whose folder b keeps (heldAccount, under the accounts' lock), held as a
+// launch that names it is and let go by the same release. A server that
+// keeps no accounts, does not own them or cannot read them removes none
+// meanwhile, and nothing is held.
+func (s *Server) holdFolder(adapter string, b session.BoundAccount) func() {
+	if b.Folder == "" || s.capacity == nil || s.capacity.st == nil {
+		return func() {}
+	}
+	_, release, err := s.capacity.st.HoldOf(func(doc capacity.Accounts) string { return heldAccount(doc, adapter, b) })
+	if err != nil {
+		return func() {}
+	}
+	return release
+}
+
+// heldAccount is the one judgement of the account a binding of a process
+// of adapter holds and is counted on, of those doc holds: its own id, or,
+// for a binding of another source, the registered account whose folder it
+// keeps (the folder its process runs in, whatever set it), adapter's own
+// before another adapter's on the same folder, whatever the source says;
+// the source stays what the environment says.
+func heldAccount(doc capacity.Accounts, adapter string, b session.BoundAccount) string {
+	if b.Source == session.SourceAccount || b.Folder == "" {
+		return b.ID
+	}
+	held := b.ID
+	for _, a := range doc.Accounts {
+		switch {
+		case !accountFolder(a, b.Folder):
+		case a.Adapter == adapter:
+			return a.ID
+		case held == b.ID:
+			held = a.ID
 		}
 	}
-	return b.ID
+	return held
 }
 
 // accountFolder says folder is the account a's, compared clean and
@@ -510,7 +544,7 @@ func accountFolder(a capacity.Account, folder string) bool {
 // it, that cannot be read holds it, since what it holds is not known.
 func (s *Server) boundTo(a capacity.Account) []string {
 	id, only := a.ID, capacity.Accounts{Accounts: []capacity.Account{a}}
-	holds := func(b session.BoundAccount) bool { return heldAccount(only, b) == id }
+	holds := func(b session.BoundAccount) bool { return heldAccount(only, "", b) == id }
 	var names []string
 	for _, d := range s.registry.Holders() {
 		if l, ok := d.(*session.Local); ok && l.Info().Kind == session.KindServer && holds(l.Launched().Account) {

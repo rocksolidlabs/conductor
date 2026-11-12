@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"net/http"
 	"os"
@@ -156,7 +157,9 @@ func TestOneJudgementForEveryWant(t *testing.T) {
 				continue
 			}
 			got, b := s.e.probe(t, sid), s.e.bound(t, sid)
-			if want := "D=[" + folder + "] K=[" + env.key + "] H=[]"; got != want || b.Source != source || b.ID != id || b.Folder != folder {
+			// The binding keeps the folder the process runs in: the tool's
+			// own under its home where no folder is set.
+			if want := "D=[" + folder + "] K=[" + env.key + "] H=[]"; got != want || b.Source != source || b.ID != id || b.Folder != cmp.Or(folder, ownFolder()) {
 				t.Errorf("%s: %s %+v, want %s source %s id %s", cell, got, b, want, source, id)
 			}
 			if (b.Source == session.SourceAccount || b.Source == session.SourceUnlisted) && !strings.Contains(got, "K=[]") {

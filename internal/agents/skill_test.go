@@ -427,6 +427,28 @@ func TestInstallSkillInAConfigurationDirectoryOfTheAgentsOwn(t *testing.T) {
 	}
 }
 
+// The folder an agent reads while its folder variable is unset is its
+// directory under the home its environment names; none for an agent
+// without a folder variable, and none for a home that is not whole.
+func TestHomeConfigDir(t *testing.T) {
+	home := func(h string) func(string) string {
+		return func(n string) string {
+			if n == "HOME" {
+				return h
+			}
+			return ""
+		}
+	}
+	for adapter, want := range map[string]string{"claude": "/h/u/.claude", "codex": "/h/u/.codex", "pi": "", "nope": ""} {
+		if got := HomeConfigDir(adapter, home("/h/u")); got != want {
+			t.Errorf("%s: %q, want %q", adapter, got, want)
+		}
+	}
+	if got := HomeConfigDir("claude", home("relative/u")); got != "" {
+		t.Errorf("a relative home: %q", got)
+	}
+}
+
 // SkillFile names the skill under an absolute hooks dir, and nothing under
 // a relative one or none.
 func TestSkillFile(t *testing.T) {

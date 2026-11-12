@@ -523,7 +523,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	held := bound.ID
 	if bound.Folder != "" {
 		if doc, aerr := s.accountsForLaunch(); aerr == nil {
-			held = heldAccount(doc, bound)
+			held = heldAccount(doc, agent.Adapter, bound)
 		}
 	}
 	s.capacity.started(agent.ID, held)
@@ -803,7 +803,8 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 // reads skills, in the server user's home, once per adapter since the
 // server started (agents.installSkill, on by default): a SKILL.md of the
 // user's own is left to them, said once in the log. Nothing here stops the
-// launch.
+// launch. A line names the agent's adapter and what happened, never a path
+// or an error that holds one: the folder may be a registered account's.
 func (s *Server) installSkillAtLaunch(adapter, hooksDir string) {
 	if adapter == "" || s.home == "" || !s.cfg.InstallSkill() {
 		return
@@ -819,11 +820,11 @@ func (s *Server) installSkillAtLaunch(adapter, hooksDir string) {
 	switch {
 	case path == "":
 	case errors.Is(err, agents.ErrByHand):
-		s.log.Info("the agent's skills directory holds a SKILL.md of the user's own, which stays; conductor skill prints Conductor's", "adapter", adapter, "path", path)
+		s.log.Info("the agent's skills directory holds a SKILL.md of the user's own, which stays; conductor skill prints Conductor's", "adapter", adapter)
 	case err != nil:
-		s.log.Warn("skill install failed", "adapter", adapter, "path", path, "err", err)
+		s.log.Warn("skill install failed", "adapter", adapter)
 	case changed:
-		s.log.Info("skill installed", "adapter", adapter, "path", path)
+		s.log.Info("skill installed", "adapter", adapter)
 	}
 }
 

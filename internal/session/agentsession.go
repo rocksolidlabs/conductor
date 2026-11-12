@@ -131,8 +131,9 @@ const (
 
 // BoundAccount is the login a launch was bound to: the account's id
 // ("default" for the agent's own, "unlisted" for a folder no account
-// holds), its label, the folder its adapter's folder variable is set to
-// ("" for none), where the login comes from (Source), and Login, a
+// holds), its label, the folder its process runs in as its adapter's
+// folder (the folder variable's, else the tool's own under its home; ""
+// for an adapter with none), where the login comes from (Source), and Login, a
 // fingerprint of every variable that says where the process's login comes
 // from, as its environment held them. Folder and Login are kept for the
 // launches made again from it and go in no reply.

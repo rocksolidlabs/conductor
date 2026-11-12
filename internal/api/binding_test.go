@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -100,6 +101,8 @@ type bindEnv struct {
 
 func newBindEnv(t *testing.T, mutate func(*config.Config)) *bindEnv {
 	t.Helper()
+	// The stubs' home is the test's own: the tool's own folder under it.
+	t.Setenv("HOME", realRoot(t, t.TempDir()))
 	probes, pin := t.TempDir(), realRoot(t, t.TempDir())
 	e := capEnv(t, mutate, nil, newFakeUsage("claude"), newFakeUsage("codex"), bindAgents(probes, pin))
 	return &bindEnv{testEnv: e, probes: probes, pin: pin}
@@ -165,6 +168,10 @@ func (e *bindEnv) resume(t *testing.T, sid string) string {
 }
 
 func login(folder string) string { return "D=[" + folder + "] K=[] H=[]" }
+
+// ownFolder is Claude Code's own folder under the stubs' home, the one a
+// process whose CLAUDE_CONFIG_DIR is unset runs in.
+func ownFolder() string { return filepath.Join(os.Getenv("HOME"), ".claude") }
 
 // A launch naming an account is started with its folder as the adapter's
 // folder variable, and holds the binding (its id, label, folder, source and
@@ -282,7 +289,7 @@ func TestLaunchPinnedEntry(t *testing.T) {
 		t.Fatalf("the refusal's words: %v", out)
 	}
 	yolo := e.launch(t, "claude-yolo", map[string]any{"yolo": true})
-	if got, b := e.probe(t, yolo), e.bound(t, yolo); got != "D=[] K=[made-up-key-1] H=[]" || b.ID != capacity.DefaultID || b.Source != session.SourceLaunchEnv || b.Folder != "" {
+	if got, b := e.probe(t, yolo), e.bound(t, yolo); got != "D=[] K=[made-up-key-1] H=[]" || b.ID != capacity.DefaultID || b.Source != session.SourceLaunchEnv || b.Folder != ownFolder() {
 		t.Fatalf("the launch_env launch: %s %+v", got, b)
 	}
 	e.expect(t, "POST", "/api/sessions", map[string]any{"agentId": "claude-yolo", "yolo": true, "account": id}, http.StatusBadRequest, "invalid_account")
@@ -734,7 +741,7 @@ func TestBrakemanTurnBinding(t *testing.T) {
 		sid := local.Info().ID
 		t.Cleanup(func() { e.stopAndWait(sid) })
 		got, bound := e.probe(t, sid), e.bound(t, sid)
-		if got != login(tc.folder) || bound.ID != tc.id || bound.Source != tc.source || bound.Folder != tc.folder {
+		if got != login(tc.folder) || bound.ID != tc.id || bound.Source != tc.source || bound.Folder != cmp.Or(tc.folder, ownFolder()) {
 			t.Errorf("%q: %s %+v", tc.folder, got, bound)
 		}
 	}
