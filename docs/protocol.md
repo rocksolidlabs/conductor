@@ -517,7 +517,54 @@ started cannot reach it after. A server that knows no revision ignores the
 field (it decodes host messages without refusing unknown fields), and an
 older host sends none.
 
-Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links, recipe?, decisions?, sessionInfo?}`
+A connection admitted through an identity provider's principal (its token
+none of the server's own, a session's or a desk's) is told `renews: true`
+in its `registered`, and the server asks the provider about the token it
+holds again every 30 s, as a viewer's connection is asked about: once the
+provider answers in time that it no longer admits it (no principal,
+another subject, no host grant), the connection is closed `4403` (`access
+revoked`); an error, a late answer or a panic leaves it. Nothing the host
+sends after that verdict is handled (a link request, a `host_token`, a
+relayed frame), the session stays as for any host away, and the host
+registers again with what its identity provider gives then
+(docs/plans/identity-uplink.md). On such a connection alone the host sends
+`host_token{token}`, the credential that replaces the one the connection
+was admitted with: at most one per 30 s step and only for a changed
+token, `token` 1 to 2048 bytes of token68 (`A-Z a-z 0-9 - . _ ~ + / =`),
+the message at most 2560 bytes and one object alone, decoded strictly. On
+such a connection the server tells a `host_token` by its `t` within the
+message's first 2560 bytes, and refuses one past its bound; a message whose
+type is `host_token` by any reading that did not pass that way closes the
+connection `4403` (`access revoked`), on every host connection, and like
+every host message it is read under the connection's read limit. The
+server takes one
+at a time, in the connection's read loop, within the provider's 1 s wait
+and the slots of its own, under the connection's credential turn, which a
+recheck takes too: a token the provider admits for the same subject with
+the host grant becomes the connection's, and the next recheck asks about
+it. The token the connection holds already is taken as it is, nobody
+asked, and clears a pending one; a renewal the server cannot put to the provider at that moment
+(every renewal slot taken) leaves the connection with the token it holds
+and keeps the offered one pending (a later renewal replaces it): the
+connection's next recheck asks about the pending token in the held one's
+place, and makes it the connection's when the provider admits it, closes
+the connection `4403` when it does not, and, with no answer, keeps both
+for the recheck after. Anything else (a message past its
+bounds, a connection not admitted
+so, a token of the server's own (the workbench token, a host token, a
+link, expired or revoked: never asked of the provider), an error, a late
+or panicking answer, another subject or no host grant) closes the
+connection `4403` (`access revoked`), and the host registers again. A host
+whose send is withdrawn or fails closes the connection `1000` itself. A
+connection of the workbench token, a host token or an open host is never
+told `renews`, never asked about, and sends no `host_token`. A host whose
+registration carries its identity provider's credential registers at the
+server it was given alone: a redirect is a failed registration, never
+followed, and a server reached without TLS is dialed directly, through no
+proxy (over TLS a proxy carries a tunnel, as before); with no provider, a
+redirect is followed and a proxy used as before.
+
+Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links, recipe?, decisions?, renews?, sessionInfo?}`
 (`decisions: true` from a switchyard that carries a decision link's lane,
 relaying DECISION and DECIDE, keeping run desks and serving the join
 page's Decide tab, below, Decision links: a publisher mints a decision link
@@ -1964,7 +2011,17 @@ the server it starts: on Windows its folder in the Windows profile, under
 `/mnt` inside WSL), its settings file as a config file, the data directory
 those settings name and `~/.local/share/conductor/data`, looked up again at
 each request and kept once named, so a data directory the app moves to while
-the server runs is refused from then on. The config file, the
+the server runs is refused from then on. A registered account's folder
+(Capacity) is left out as the data directory is, with everything in it, read
+from the `capacity/accounts.json` of each of these data directories (and of
+`conductor` in the desktop app's own directory, the data directory the app's
+server uses when its settings name none) at each request, as the server
+reads that document but for a member it does not know, and kept once named:
+an account added is refused from then on, the server names its folder as it
+registers it, and one removed stays refused until the server stops. While
+that document is there and cannot be read, every
+file of every session is refused, until it can be read again; the server's
+log says so once as that begins and once as it ends. The config file, the
 catalog file and the settings file are matched as files, so a link to them is
 refused as well; the copies are matched by name alone. One of these paths that is not on
 disk (a data directory never made, a config file moved away) is matched by its
@@ -1978,10 +2035,13 @@ the config file `conductor host --server-config` names, with its `dataDir`
 and `catalogPath`; and for the desktop app's server, the app's own directory,
 its settings file as a config file (its link target and the copies there
 included), the data directory its settings name and, inside WSL,
-`~/.local/share/conductor/data`. The host looks these up again at each
+`~/.local/share/conductor/data`; and each folder the accounts document of
+each of these data directories (the app's default one, `conductor` in its own
+directory, among them) registers. The host looks these up again at each
 request and keeps refusing what it refused before, so a data directory moved
-while the session runs is refused at both places. While one of these paths
-is relative, or the config file or the desktop app's settings cannot be read,
+while the session runs is refused at both places, and a removed account's
+folder stays refused once that session's list has named it. While one of these paths is relative, or the config
+file, the desktop app's settings or the accounts document cannot be read,
 every file is refused (and the host does not start). Saves, and opening a file
 in the editor's Neovim, go through the same rules.
 Responses carry a JSON header
@@ -2483,7 +2543,7 @@ its run, and on no other.
 | `GET /api/switchyard/status` | admin | on a switchyard only (`404` elsewhere): the landing page's operator figures, `{hosts, sessions, viewers, relayBytesHour, hostList: [{name, since, sessions, viewers}]}`, the live hosted sessions grouped by the publishing host, earliest first, and the bytes the relay carried in the last sixty minutes |
 | `GET /api/whoami` | admin | OS user running the server (the default display name); `host` is the machine's name (`""` when it cannot tell) and `switchyard` whether this server launches nothing; `home` the server user's home directory, when it has one (the settings picker's Home); `version` the server's version, as `conductor version` prints it (Settings → The app) |
 | `GET /api/export` | admin (a switchyard's too) | the data directory as one zip archive (`docs/plans/ext.md`, C6), streamed as it is made, nothing buffered whole: `200` with `Content-Type: application/zip` and `Content-Disposition: attachment; filename="conductor-export-<UTC time>.zip"` (`20060102T150405Z`). The archive holds `data/` as the data directory holds it (the catalog, the crews, the runs' records, a switchyard's `links/` (hashes, never tokens), `hooks/` and any other file) with the ledger's and Dispatch's databases as snapshots (`VACUUM INTO`, consistent while the server writes), the attachment files the Dispatch snapshot's live rows and launch pins require, and `conductor-export.json` last: `{format: 1, version, createdAt, files: [{path, size, sha256}], left: [{path, why}]}`. Left out, and listed with why: the workbench token and its lock, `restore.lock`, `runs/owner.lock`, `brakeman/owner.lock`, `history/owner.lock`, the databases' `-wal`, `-shm` and `-journal`, `*.tmp`, `.probe-*`, `.restore-*`, `dispatch/attachments/tmp/`, `tls/`, `ext/`, anything not a regular file or a directory, and a name not of `[A-Za-z0-9._-]` elements. The catalog is resolved against the configuration the server runs with, so saved agents' env values, configured ones they inherit among them, are in it in full: the archive is the person's own file. The records are copied before the ledger's snapshot, and none written after their copy is taken, so a record may lag its ledger, never lead it. A failure before the first byte is `500 internal`; one after it cuts the archive short, with no manifest, which no restore takes, and aborts the response (the connection dropped, or the stream reset, never a whole `200`), so the client's transfer fails; `503 no_data_dir` for a server with none |
-| `GET /api/capabilities` | admin | what is registered beside the open-source feature set (`docs/plans/ext.md`, C9): `{providers: [{kind, name, state}]}`, one row per provider in each slot it holds (one value in two slots is two rows under one name), in the registry's order (the kinds `identity`, `decisions`, `context`, `notifications`, `sync`, `entitlements`, `media`, `runtime`, then a list's registration order); `state` is `ready` once the provider's start has succeeded (or it needs none) and `starting` until then, its start tried again and its slot answering the free default meanwhile. A plain build answers `{"providers": []}`. No provider is asked anything to answer it, and a row says nothing a caller could gate a feature on: the web app shows a capability that is there, never a plan (Settings → The app, its Extensions row, read again while a provider is `starting`, 2 s after the last reply doubling to a minute). At most a few KB (six one-value slots and two lists of at most 16). A kind added later joins as a row of its own, and a field a kind needs is added to the row, left out when empty. The guide's `providers` section (Guide, below) carries the same rows to the admin and to a session's agent, which this route does not answer |
+| `GET /api/capabilities` | admin | what is registered beside the open-source feature set (`docs/plans/ext.md`, C9): `{providers: [{kind, name, state}]}`, one row per provider in each slot it holds (one value in two slots is two rows under one name), in the registry's order (the kinds `identity`, `decisions`, `context`, `notifications`, `sync`, `entitlements`, `media`, `runtime`, then a list's registration order); `state` is `ready` once the provider's start has succeeded (or it needs none) and `starting` until then, its start tried again and its slot answering the free default meanwhile; the identity provider's row adds `detail`, who the server is signed in as ("signed in as Ana · workspace Acme": one line of 1 to 80 characters), when it says one, asked through the guard within 1 s once it has started (a late, failing or out-of-bounds answer leaves it out, as does one that holds, as written, a token of the server's own (the host token, the workbench token or a host token) or a credential the server holds from the provider as the detail is asked for (of its uplink's, the last eight distinct ones; a watched connection's token and pending one): a literal match against that list, and nothing more; never in the guide's rows, below, and reading the guide asks no provider). A plain build answers `{"providers": []}`. No other provider is asked anything to answer it, and a row says nothing a caller could gate a feature on: the web app shows a capability that is there, never a plan (Settings → The app, its Extensions row, read again while a provider is `starting`, 2 s after the last reply doubling to a minute). At most a few KB (six one-value slots and two lists of at most 16). A kind added later joins as a row of its own, and a field a kind needs is added to the row, left out when empty. The guide's `providers` section (Guide, below) carries the same rows to the admin and to a session's agent, which this route does not answer |
 | `GET /api/catalog` | admin | `{agents, hidden, yoloDefault}`: the launchable agents, `env` values masked as `***`, and the IDs hidden from the catalog; each agent, here and in the replies of the catalog routes below, also carries `source` (`built-in`, `config` or `saved`) and, for a saved agent that replaces a built-in or configured one, `replaces` (where that one came from); `available`, whether `command[0]` resolves on the server (the check of `POST /api/catalog/check`; any program of that name on the server's `PATH` counts, and a relative `command[0]` with a path separator counts without a lookup, since it resolves in the session's directory, which the server's own cannot stand for; the answer is kept 30 s per program, and the programs with no fresh answer are looked up together, at most 8 lookups at a time across all requests; a lookup that does not answer within 2 s (a `PATH` entry on a mount that stalls), or before the client goes away, counts as available, so the launch of such an agent is allowed and its spawn fails if the program is missing, and the lookup's answer is kept when it lands); and `site` when the agent has a website (an `https` URL: a built-in's, or the saved agent's); each agent also carries, when it has them, its `yolo` recipe `{args?, env?}` (its `env` values shown as they are: switches, not secrets), its `trustPrompt`, its `promptShape` and its `session` recipe `{startArgs?, newId?, idFrom?, idPolicy?, resumeArgs?, idPattern?, resumeNeedsCwd?}` (limits below); `yoloDefault` is the server's `yolo` setting, which a launch or a crew without `yolo` follows; each agent whose adapter has an identity probe (the real agent's `--version` line, checked against what it prints: Claude Code and Codex verified live, the others from their docs until the nightly recipes job confirms them) and whose program the lookup found at an absolute path also carries `identity` `{ran, pending?, identified, impostor?, verified, name?, version?, output?, error?}`: the program on the server run with its version flag (argv only, a spartan environment, 3 s, 4 KiB), its answer kept 10 min; `identified` with `version` when it is the agent, `impostor` when it is a known other program of that name (the Go migrations tool called goose; the agent's `available` is then `false`: it is not offered, and `POST /api/sessions` refuses it), `output` the first line it printed otherwise, `pending` when the probe is still under way (ask again), `verified` whether the adapter's expectation was checked against the real CLI (a verified probe that matches nothing means the program is not the agent; an unverified one leaves it unidentified and refuses nothing); an agent with `probe: false` is not probed |
 | `POST /api/catalog` | admin | add an agent or replace the one with the same `id` (a built-in too); body is the agent, reply `{agent}`; `source`, `replaces` and `available` in the body are ignored; an `env` value of `***` (what `GET /api/catalog` shows) keeps the value the saved entry holds for that key; for an agent that replaces a built-in or configured one, a `***` value the saved entry does not hold is stored as `***` and means "the replaced agent's value", so a change in the config reaches it, and a value equal to the replaced agent's is stored as `***` too; a saved agent that leaves out `adapter`, `signal`, `site`, `yolo`, `trustPrompt`, `promptShape` or `session` takes those of the agent it replaces, and a `signal` without `workingTitle` the replaced agent's `workingTitle`, and `"yolo": {}` or `"session": {}` says it has none; `browser` (#436), the browser the agent's links open in, is `{name, profile?}`, `name` one of `chrome`, `edge`, `firefox`, `brave` and `safari`, `profile` a Chromium profile directory (`Default`, `Profile 2`) for `chrome`, `edge` and `brave` alone, at most 100 characters with no control character, quote or space at either end; left out it is the replaced agent's, and `"browser": {}` is the computer's default browser over it, as no `browser` is for an agent of its own (a config file's agents take it too, and the catalog shows it unmasked); `***` is rejected for a key neither has; `site`, when present, must be an `https://` URL with a host name, a valid port if it has one, no user info and no white space, at most 200 bytes, a rule that also holds for the config's agents and for `catalog.json`; `400 invalid_agent` carries the validation message, an unknown `adapter` or a bad `site` included (the adapter check also runs for the config's agents and for `catalog.json` at startup); `503 store_unavailable` when there is no data directory |
 | `DELETE /api/catalog/{id}` | admin | remove the saved override with that `id`, which restores a built-in it replaced; an agent with no override is hidden instead; `204`, `404` when unknown |
@@ -2609,7 +2669,7 @@ its run, and on no other.
 | `GET /api/sessions/{id}/files` | admin or share token | read a file of a server session (`path`, `stat`, `raw` query), see File reads |
 | `POST /api/sessions/{id}/attention` | agent token or admin (not a switchyard's) | report an attention state, and with it the agent's own session id (`agentSession`, at most 128 bytes) and whether the report is of a turn (`turn`), see Attention; on a hosted session still registering, the id waits for the session's recorder, and when that wait (10 s) runs out the answer is `503 registering`: the attention applied, the id not kept, the report to be sent again. A client whose own wait is shorter ends first and sees no answer: `conductor notify` gives each report 5 s and sends it once (only a `429` again), and the hooks that carry the agent's session id carry it again in a later report (Claude Code's in each attention report; Codex's, Copilot's, Cursor's and Antigravity's at a turn's end, Copilot's and Cursor's at its start too) |
 | `POST /api/sessions/{id}/events` | agent token or admin (not a switchyard's) | report an event or an attention word, reply `202 {accepted}`, see Events |
-| `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one), of chat messages (`chat`: the message as `chat` carries it, with `sessionId` for a session's chat or `runId` for a run's; as droppable as `activity`; for the browsers' unread counts; a `conductor host` session's chat arrives the same way, the host sending each message on its control connection), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), and of Dispatch's changes (`dispatch`: `{seq, entity, id, ticket, project}`, one per entity a commit changed, but one with `id` and `ticket` `""` for more than 64 of a kind in a project, a commit's arriving together and in order, at most 160 bytes; dropped with the client as a `run` event is, see Dispatch), and of Brakeman's requests (`brakeman`: `{id, state}`, at most 200 bytes, `id` `role` for a change of the background role, see Brakeman), and of durable decisions (`decision`: `{id, run, task?, state, rev}`, at most 256 bytes, after each committed change of one, dropped with the client as a `run` event is, see Decisions), and of the links agents open (`open`: `{id, sessionId, url, browser?, state}`, at most 15,200 bytes, as droppable as `activity`, see Opening a link); a desktop app's workbench that opens links sends `X-Conductor-Desktop: 1` with it, see Attention and Events |
+| `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one), of chat messages (`chat`: the message as `chat` carries it, with `sessionId` for a session's chat or `runId` for a run's; as droppable as `activity`; for the browsers' unread counts; a `conductor host` session's chat arrives the same way, the host sending each message on its control connection), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), and of Dispatch's changes (`dispatch`: `{seq, entity, id, ticket, project}`, one per entity a commit changed, but one with `id` and `ticket` `""` for more than 64 of a kind in a project, a commit's arriving together and in order, at most 160 bytes; dropped with the client as a `run` event is, see Dispatch), and of Brakeman's requests (`brakeman`: `{id, state}`, at most 200 bytes, `id` `role` for a change of the background role, see Brakeman), and of durable decisions (`decision`: `{id, run, task?, state, rev}`, at most 256 bytes, after each committed change of one, dropped with the client as a `run` event is, see Decisions), and of the links agents open (`open`: `{id, sessionId, url, browser?, state}`, at most 15,200 bytes, as droppable as `activity`, see Opening a link), and of usage readings kept (`capacity`: `{agent, account, state, readAt}`, at most 512 bytes, dropped with the client as a `run` event is, see Capacity); a desktop app's workbench that opens links sends `X-Conductor-Desktop: 1` with it, see Attention and Events |
 | `GET /api/join/{token}` | share token in the path | resolve a share link for the join page (rate limited): `{session, role, label}` for a session link; `{run: {id, name, members}, role, label}` for a run link, each with `switchyard` (whether this server is one, which the join page names), each member `{name, sessionId?, agentId, status}` in the run's order, with `sessionId` only while its session runs (`agentId` and `status` then the session's) and otherwise its state in the run, `pending`, `starting` or `ended`; `404` with `invalid_link`, `revoked`, `expired`, `session_gone` or `run_gone`; on a switchyard, `503 host_offline` for a link it keeps whose host is not connected now (it works again once the host registers) |
 
 The catalog routes persist their changes as `catalog.json` in the data
@@ -5367,3 +5427,106 @@ the authority `{via: router}` and no grant, which `local/1` refuses
 (`not_approver`, "refused under local/1") whatever principal the subject
 names: kept as a refused response with its `responded` row, never
 applied. The operator answers it as any other.
+
+### Capacity
+
+An **account** is a reference to an agent's own login on this server
+(`docs/plans/capacity.md`, Program item AC1; `internal/capacity`): an
+adapter that moves its login folder (`claude`: `CLAUDE_CONFIG_DIR`,
+`codex`: `CODEX_HOME`), a label of 1 to 60 characters and the folder that
+login lives in (absolute, at most 4,096 bytes, a directory the server's
+user owns, neither inside the server's data directory nor holding it,
+compared with the links on both resolved, and one that a deny list given
+that path alone refuses, by the path and where its links lead, fixed once added), under an id the server mints (`a-` and 12
+base32 characters, never minted again once removed). Every adapter also
+has the account `default`, never stored: the agent's own login. No
+credential, email, organisation or provider id is kept, and nothing in the
+folder is read. The accounts are `capacity/accounts.json` (0600, at most
+64 KiB, 32 accounts); the record of the Claude Code versions a read may
+start is `capacity/versions.json` (0600, at most 16 KiB). Both ride in an
+export; `capacity/owner.lock` and `capacity/run/` (the readers' working
+folder) do not, and a restore refuses an archive that holds either.
+
+The server holding `capacity/owner.lock` writes both documents (another
+server over the same data directory waits up to 10 s for it, then stays a
+reader); one without it answers `owner: false` with why, refuses every
+write `409 accounts_not_owner`, starts no Claude Code program for a read or
+a check (its view is `not_owner`, a check `409 accounts_not_owner`), and
+still reads Codex, whose reads cost no turn and change no record. A server
+that lets the lock go (at shutdown) first waits for the write under way and
+then refuses every write `409 accounts_not_owner`, as one that never held
+it, so the next owner is the only writer. A check's outcome is saved when it
+is known and tried once more before the lock is given up; a server that
+ends without having saved it leaves the version as the record has it, and
+the next owner may read that version once more before it learns the same. A
+**reading** is what an agent's own tool reported of a login's usage at one
+moment (`internal/agents`' readers), kept in memory only, at most 8 per
+key and 128 keys, so a restart starts at `never_read`. A key (an agent and
+an account) is read at most once in 5 minutes whoever asks, two at once
+across the server, an asker waiting at most 2 s; a reading is fresh for 15
+minutes. Only `POST /api/capacity/read` reads; every `GET` answers what is
+kept. A read runs with the environment a session of that agent gets (the
+entry's and the server's part, one function for both), then
+`TERM=dumb`, `NO_COLOR=1` and the account's folder; a reading keeps a
+SHA-256 of the agent's adapter and that environment, never its values, and
+a view whose adapter or environment now hashes otherwise is `stale`. A reader's words are Conductor's own, never the
+tool's output.
+
+No launch takes an account yet: a session runs on the agent's own login
+whatever the default says, and nothing holds an account, so a remove is
+never refused for one in use (`account_in_use` comes with the launches
+that bind an account, issue #784).
+
+**The routes**, each the workbench token's alone (a session's, a host's, a
+link's and a Brakeman turn's are refused `401`) and a launch route's (a
+switchyard answers `403 switchyard`); a server with no data directory
+answers `503 capacity_unavailable`. A value outside its form (an agent's
+id, an account's, an adapter's name, `after`) is refused `400` in the
+server's own words, which do not repeat it, and every refusal is at most
+32 KiB. A query is read as the other routes read theirs (a `;` is part of a
+value): one with an escape that is not one or past 10,000 parameters is
+refused `400 invalid_request`, never answered as another question. A
+write's body is bounded by its largest valid spelling, each text field at
+its limit with every character escaped as JSON may escape it: an add's at
+25,744 bytes, every other write's at 976 (`413 bound` past it):
+
+| Route | Body and answer |
+|---|---|
+| `GET /api/accounts` | `{owner, why?, rev, accounts: [{id, adapter, label, folder, retired?, createdAt, reading?: {agent, state, readAt}}], adapters: [{adapter, name, default, reading?}]}`: the document without its removed ids, each adapter that moves its login folder with its default account (`default` for the agent's own login, also when the one set is retired or gone) and its own login's last reading (read through an entry that pins no other login); at most 68 KiB (the document's 64 KiB, then the readings and adapters beside it) |
+| `POST /api/accounts` | `{adapter, label, folder, expectedRev}` → `201 {account, rev}`; `400 invalid_account` with `field`; an `id` in the body refused (`field: "id"`); `409 stale_rev` |
+| `PATCH /api/accounts/{id}` | `{label, expectedRev}` → `{account, rev}`; a `folder` in the body refused (`field: "folder"`) |
+| `POST /api/accounts/{id}/retire` | `{expectedRev}` → `{account, rev}`: kept in the accounts, out of every choice and default |
+| `DELETE /api/accounts/{id}?expectedRev=n` | `204` |
+| `PUT /api/accounts/defaults/{adapter}` | `{account, expectedRev}` → `{defaults, rev}`; a retired account, or one of another adapter, refused |
+| `GET /api/capacity?agent=&account=&model=&launch=&yolo=` | one view, reading nothing; at most 32 KiB. `account` defaults to the agent's default: its adapter's, or `default` for an entry whose environment (or the server's passthrough) sets the adapter's folder variable or one of its login variables, which has that login alone; `launch` is `session` (the default), `legacy` (a legacy crew's member), `managed` (a managed run's attempt) or `remote` (a session on another computer) |
+| `GET /api/capacity?after=&limit=` | without `agent`: `{views, next?}`, every installed agent's view for its default and, unless its entry sets its login, each account of its adapter not retired, ordered by `<agent>/<account>`, each asked as the single view would be with the same `launch` and `yolo`, at most `limit` (1 to 16, 16 by default) and until the next would pass 128 KiB (at least one); `next` is the cursor to pass as `after` |
+| `POST /api/capacity/read` | `{agent, account?, check?}` → `202` the view: `reading` when the read did not end within 2 s, the kept reading with `nextReadAfter` inside the 5 minutes; `check` (Claude Code only, `400` otherwise) runs a version not recorded `checked` once; at most 1 KiB of body |
+
+A **view** is `{agent: {id, name, adapter, version}, model: {chosen,
+words}, account: {id, label, default, retired, plan}, host: {kind, name?,
+words?}, state, words, windows, credits, limits, counts, readAt?, readBy?:
+{program, version, qualified}, fresh, nextReadAfter?}`. `state` is one of
+`ok`, `reading`, `never_read`, `signed_out`, `key_paid`, `unqualified`,
+`error`, `unsupported` (no reader for the agent), `not_installed` (also
+an entry whose command is a path relative to a working folder: no read,
+check or view looks it up or runs it, and the listing leaves it out),
+`remote`, `env_set` (the launch's yolo environment, or the entry for an
+account other than `default`, sets the agent's login), `not_owner`; each
+has its words. Each window carries `source: "provider"` and is absent when
+the provider did not report it (never a zero); the counts (`running`,
+`started5h`, `started7d`, `since`) carry `source: "conductor"` and
+`estimate: true`: the server sessions of the agent on the account this
+server counted since it started (no launch binds an account other than
+`default` yet, so another account counts none). `host.kind` is `native`
+(with the server's name), `remote`, or, for a managed run of the agent's
+own login when a Runtime other than the native one is registered,
+`undetermined` ("this server's login: if <Runtime> takes the run, its usage
+there is unknown"). `fresh` is `fresh`, `stale`, `reset_passed` or `none`.
+
+**The `capacity` event.** Once a reading is kept the server sends `event:
+capacity` on `GET /api/events` with `{agent, account, state, readAt}`
+(at most 512 bytes; an agent id is at most 32 bytes, an account id 14),
+for a page to read the view again; it names no label, folder or figure.
+It goes through each client's queue (256 entries, the stream's own bound),
+and a client that cannot keep up is dropped, as for a `run` event: a slow
+listener costs the server one bounded queue and nothing more.

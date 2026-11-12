@@ -100,7 +100,10 @@ func processRefOf(id string, crewRef *session.CrewRef) ext.ProcessRef {
 // ServiceProcess it answers are behind the guard too (guardProcess), since
 // the server's goroutines call them for as long as the process lives. The
 // panic's value is not quoted: the spec the Runtime was handed holds a
-// session's agent token.
+// session's agent token. The errors and a result's status texts of a
+// Runtime that is the identity provider's value leave the guard as the
+// guard's own words (quietErr), from every method of its, its processes'
+// too; what its commands print is their output, passed on as it is.
 type guardRuntime struct {
 	s     *Server
 	name  string
@@ -139,9 +142,19 @@ func (g guardRuntime) StartTerminal(ctx context.Context, s ext.TerminalSpec) (t 
 	}()
 	pt, err := g.p.StartTerminal(ctx, s)
 	if err != nil {
-		return nil, err
+		return nil, g.quiet(err)
 	}
 	return g.terminal(pt), nil
+}
+
+// quiet is a process method's error as it leaves the guard (quietErr), and
+// quietResult a command's result's status texts.
+func (g guardRuntime) quiet(err error) error { return g.s.quietErr(ext.KindRuntime, g.name, err) }
+
+func (g guardRuntime) quietResult(r ext.CommandResult) ext.CommandResult {
+	r.Err, r.LogErr = g.s.quietWords(ext.KindRuntime, g.name, r.Err), g.s.quietWords(ext.KindRuntime, g.name, r.LogErr)
+	r.Signal = g.s.quietWords(ext.KindRuntime, g.name, r.Signal)
+	return r
 }
 
 func (g guardRuntime) Run(ctx context.Context, s ext.CommandSpec) (r ext.CommandResult) {
@@ -150,7 +163,7 @@ func (g guardRuntime) Run(ctx context.Context, s ext.CommandSpec) (r ext.Command
 			r = ext.CommandResult{Exit: -1, Err: g.panicked("Run")}
 		}
 	}()
-	return g.p.Run(ctx, s)
+	return g.quietResult(g.p.Run(ctx, s))
 }
 
 func (g guardRuntime) Serve(ctx context.Context, s ext.CommandSpec) (svc ext.ServiceProcess, err error) {
@@ -161,7 +174,7 @@ func (g guardRuntime) Serve(ctx context.Context, s ext.CommandSpec) (svc ext.Ser
 	}()
 	ps, err := g.p.Serve(ctx, s)
 	if err != nil {
-		return nil, err
+		return nil, g.quiet(err)
 	}
 	return g.service(ps), nil
 }
@@ -172,7 +185,8 @@ func (g guardRuntime) Probe(ctx context.Context, s ext.ProbeSpec) (status int, e
 			status, err = 0, errors.New(g.panicked("Probe"))
 		}
 	}()
-	return g.p.Probe(ctx, s)
+	status, err = g.p.Probe(ctx, s)
+	return status, g.quiet(err)
 }
 
 func (g guardRuntime) Port(ctx context.Context, ref ext.ProcessRef) (n int, err error) {
@@ -181,7 +195,8 @@ func (g guardRuntime) Port(ctx context.Context, ref ext.ProcessRef) (n int, err 
 			n, err = 0, errors.New(g.panicked("Port"))
 		}
 	}()
-	return g.p.Port(ctx, ref)
+	n, err = g.p.Port(ctx, ref)
+	return n, g.quiet(err)
 }
 
 // guardProcess is what the guard keeps of a process a registered Runtime
@@ -292,7 +307,7 @@ func (p *guardProcess) safeStop(ctx context.Context) (err error) {
 			err = errors.New(p.words)
 		}
 	}()
-	return p.stop(ctx)
+	return p.g.quiet(p.stop(ctx))
 }
 
 // broken says a method of the process has panicked.
@@ -337,21 +352,21 @@ func (t guardTerminal) Read(b []byte) (n int, err error) {
 	if t.broken() || !t.guard("Read", func() { n, err = t.t.Read(b) }) {
 		return 0, t.err()
 	}
-	return n, err
+	return n, t.g.quiet(err)
 }
 
 func (t guardTerminal) Write(b []byte) (n int, err error) {
 	if t.broken() || !t.guard("Write", func() { n, err = t.t.Write(b) }) {
 		return 0, t.err()
 	}
-	return n, err
+	return n, t.g.quiet(err)
 }
 
 func (t guardTerminal) Resize(cols, rows uint16) (err error) {
 	if t.broken() || !t.guard("Resize", func() { err = t.t.Resize(cols, rows) }) {
 		return t.err()
 	}
-	return err
+	return t.g.quiet(err)
 }
 
 func (t guardTerminal) Done() <-chan struct{} { return t.done }
@@ -360,6 +375,7 @@ func (t guardTerminal) Exit() (st ext.ExitStatus) {
 	if t.broken() || !t.guard("Exit", func() { st = t.t.Exit() }) {
 		return ext.ExitStatus{Code: -1, Err: t.words}
 	}
+	st.Err, st.Signal = t.g.s.quietWords(ext.KindRuntime, t.g.name, st.Err), t.g.s.quietWords(ext.KindRuntime, t.g.name, st.Signal)
 	return st
 }
 
@@ -370,7 +386,7 @@ func (t guardTerminal) Stop(ctx context.Context, grace time.Duration) (err error
 		if err == nil {
 			t.end()
 		}
-		return err
+		return t.g.quiet(err)
 	}
 	return t.stopBroken(ctx)
 }
@@ -400,7 +416,7 @@ func (s guardService) Result() (r ext.CommandResult) {
 	if s.broken() || !s.guard("Result", func() { r = s.sp.Result() }) {
 		return ext.CommandResult{Exit: -1, Err: s.words}
 	}
-	return r
+	return s.g.quietResult(r)
 }
 
 // Stop is the Runtime's Stop; its success ends the service (end) before
@@ -410,7 +426,7 @@ func (s guardService) Stop(ctx context.Context) (err error) {
 		if err == nil {
 			s.end()
 		}
-		return err
+		return s.g.quiet(err)
 	}
 	return s.stopBroken(ctx)
 }

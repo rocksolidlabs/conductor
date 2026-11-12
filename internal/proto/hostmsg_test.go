@@ -296,3 +296,88 @@ func TestRegisteredRecipeWireShapeAndBounds(t *testing.T) {
 		t.Error("a padded label past the bound: checked")
 	}
 }
+
+// TestHostTokenMessage holds host_token to its bounds and its strict
+// decode, and registered's renews to being left out when false.
+func TestHostTokenMessage(t *testing.T) {
+	// Every token68 character at once, and a token at its bound.
+	for _, tok := range []string{"Az09-._~+/=", strings.Repeat("A", MaxHostToken)} {
+		b, _ := json.Marshal(HostTokenMsg{T: HostTokenType, Token: tok})
+		if len(b) > MaxHostTokenMessage {
+			t.Fatalf("a token of %d bytes is a message of %d, past %d", len(tok), len(b), MaxHostTokenMessage)
+		}
+		if got, err := ParseHostToken(b); err != nil || got != tok {
+			t.Errorf("ParseHostToken(%d bytes) = %d bytes, %v", len(tok), len(got), err)
+		}
+	}
+	// A message at its bound parses; one byte past it does not.
+	small := `{"t":"host_token","token":"a"}`
+	atBound := small + strings.Repeat(" ", MaxHostTokenMessage-len(small))
+	if got, err := ParseHostToken([]byte(atBound)); err != nil || got != "a" {
+		t.Errorf("ParseHostToken(a message of %d bytes) = %q, %v", len(atBound), got, err)
+	}
+	for name, msg := range map[string]string{
+		"past the token's bound":  `{"t":"host_token","token":"` + strings.Repeat("A", MaxHostToken+1) + `"}`,
+		"past the message's":      atBound + " ",
+		"empty":                   `{"t":"host_token","token":""}`,
+		"not token68":             `{"t":"host_token","token":"a b"}`,
+		"escaped":                 `{"t":"host_token","token":"a\u0000"}`,
+		"an unknown field":        `{"t":"host_token","token":"a","more":1}`,
+		"another type":            `{"t":"status","token":"a"}`,
+		"two values":              `{"t":"host_token","token":"a"}{}`,
+		"a closing bracket after": `{"t":"host_token","token":"a"}]`,
+		"a closing brace after":   `{"t":"host_token","token":"a"}}`,
+		"a string after":          `{"t":"host_token","token":"a"} "b"`,
+	} {
+		if _, err := ParseHostToken([]byte(msg)); err == nil {
+			t.Errorf("%s: parsed", name)
+		}
+	}
+	b, _ := json.Marshal(Registered{T: HostRegistered})
+	if strings.Contains(string(b), "renews") {
+		t.Errorf("registered without renews says it: %s", b)
+	}
+	b, _ = json.Marshal(Registered{T: HostRegistered, Renews: true})
+	if !strings.Contains(string(b), `"renews":true`) {
+		t.Errorf("registered with renews: %s", b)
+	}
+}
+
+// TestPeekType reads a message's t as ParseHeader does, stepping over what
+// comes before it and never reading past it: a message cut short after
+// its t still has one.
+func TestPeekType(t *testing.T) {
+	for msg, want := range map[string]string{
+		`{"t":"host_token","token":"a"}`:                          HostTokenType,
+		`{"t":"host_token","token":"` + strings.Repeat("a", 4096): HostTokenType,
+		`{"T":"status"}`:                                         "status",
+		`{"token":"a","t":"host_token"}`:                         HostTokenType,
+		`{"x":{"t":"inner","y":[1,{"t":"deeper"}]},"t":"outer"}`: "outer",
+		`{"x":"a"}`: "",
+		`{"t":1}`:   "",
+		`[1]`:       "",
+		`{"x":`:     "",
+		``:          "",
+		// Within the message's first MaxHostTokenMessage bytes alone: a t
+		// after a value that reaches past them, or after a number no reader
+		// holds, is not read.
+		`{"token":"` + strings.Repeat("a", MaxHostTokenMessage) + `","t":"host_token"}`: "",
+		`{"x":[` + strings.Repeat("0,", MaxHostTokenMessage) + `0],"t":"host_token"}`:   "",
+		`{"a":1e999,"t":"host_token","token":"a"}`:                                      "",
+	} {
+		if got := PeekType([]byte(msg)); got != want {
+			t.Errorf("PeekType(%.40q) = %q, want %q", msg, got, want)
+		}
+		if want == "" {
+			continue
+		}
+		// What follows the bound is never read: the same message with
+		// anything after it peeks the same.
+		if got := PeekType([]byte(msg + strings.Repeat("x", MaxHostTokenMessage))); len(msg) <= MaxHostTokenMessage && got != want {
+			t.Errorf("PeekType(%.40q and more) = %q, want %q", msg, got, want)
+		}
+		if h, err := ParseHeader([]byte(msg)); err == nil && h != want {
+			t.Errorf("%.40q: ParseHeader says %q", msg, h)
+		}
+	}
+}

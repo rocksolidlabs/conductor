@@ -287,16 +287,11 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	if s.cfg.MCP() {
 		argv = append(argv, agents.MCPFor(agent.Adapter, agents.HooksDir(s.cfg.DataDir))...)
 	}
-	env := agent.Env
-	if len(adapterEnv) > 0 || len(yoloEnv) > 0 || len(req.Env) > 0 {
-		env = maps.Clone(adapterEnv)
-		if env == nil {
-			env = map[string]string{}
-		}
-		maps.Copy(env, agent.Env)
-		maps.Copy(env, yoloEnv)
-		maps.Copy(env, req.Env)
-	}
+	// The entry's and the server's part (agentEnv, which a usage read
+	// takes too), then what this launch adds.
+	passthrough, env := s.agentEnv(agent, adapterEnv)
+	maps.Copy(env, yoloEnv)
+	maps.Copy(env, req.Env)
 	// What the session watches on its screen: the trust question and its
 	// answers, the other questions, the window title that says the agent
 	// works (Codex's, with the title its adapter's launch asks for), and
@@ -337,10 +332,9 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	// and an attempt's tree's after them (the engine's own names).
 	maps.Copy(inject, crewInject(crewRef))
 	maps.Copy(inject, req.inject)
-	// The agent's envPassthrough adds to the server-wide list, and an
-	// attempt's approved env names to both; the clone keeps one launch from
-	// growing the list another launch reads.
-	passthrough := append(slices.Clone(s.cfg.EnvPassthrough), agent.EnvPassthrough...)
+	// The agent's envPassthrough adds to the server-wide list (agentEnv's
+	// clone, so one launch never grows the list another reads), and an
+	// attempt's approved env names to both.
 	passthrough = append(passthrough, req.allow...)
 	launchHook("checked")
 	// The process starts in the folder opened and checked, not at its path.
@@ -476,6 +470,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	// Its registration complete, its record reconciled once: an exit
 	// before the registry held it is read now.
 	s.registered(rc)
+	s.capacity.started(agent.ID)
 	s.log.Info("session started", "session", id, "agent", agent.ID, "pid", term.Process().PID, "yolo", applied)
 	if yolo && !applied {
 		local.Record(session.ActivityEntry{Type: session.ActivityStatus, Message: noYoloRecipe(agent)})

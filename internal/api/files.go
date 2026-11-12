@@ -1,7 +1,9 @@
 package api
 
 import (
+	"log/slog"
 	"net/http"
+	"sync"
 
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/proto"
@@ -15,16 +17,41 @@ import (
 // the catalog file, each of the two files with the copies an editor leaves
 // beside it; and what the other Conductors on the machine keep: ~/.conductor,
 // the desktop app's directories and settings, and the directory the app
-// names for the server it starts (CONDUCTOR_DESKTOP_DIR). The list is
-// looked up again at each request and keeps what it named before
-// (config.Config.FileDenyFunc), so a data directory the desktop app's
-// settings move to while the server runs is refused from then on.
-func fileDeny(cfg *config.Config, st *store.Store) func() []string {
-	if st == nil {
-		return cfg.FileDenyFunc()
+// names for the server it starts (CONDUCTOR_DESKTOP_DIR); and each folder
+// the accounts document of each of those registers (Capacity). The list is looked up again at
+// each request and keeps what it named before (config.Config.FileDenyFunc),
+// so a data directory the desktop app's settings move to while the server
+// runs, or an account added, is refused from then on. While the accounts
+// document is there and cannot be read the list refuses every file, and the
+// log says so once as that begins and once as it ends, in fixed words.
+func fileDeny(cfg *config.Config, st *store.Store, log *slog.Logger) func() []string {
+	var dirs []string
+	if st != nil {
+		dirs = []string{st.Dir()}
 	}
-	return cfg.FileDenyFunc(st.Dir())
+	deny := cfg.FileDenyStateFunc(dirs...)
+	var mu sync.Mutex
+	refusing := false
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		list, err := deny()
+		switch {
+		case err != nil && !refusing:
+			log.Warn(denyAllWords)
+		case err == nil && refusing:
+			log.Info(denyEndWords)
+		}
+		refusing = err != nil
+		return list
+	}
 }
+
+// The log's words as the deny list starts and stops refusing every file.
+const (
+	denyAllWords = "capacity/accounts.json cannot be read: every file of every session is refused until it can be"
+	denyEndWords = "capacity/accounts.json can be read again: the files of sessions are served as before"
+)
 
 // handleGetFile reads a file from a server-hosted session's working directory
 // under the same rules as the in-band file_get message.

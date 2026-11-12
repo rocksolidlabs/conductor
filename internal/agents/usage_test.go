@@ -686,6 +686,28 @@ func TestUsageWrappedCommand(t *testing.T) {
 	}
 }
 
+// A read runs an absolute program or one found on the search path, never
+// a command given as a path relative to a working folder: a program of that
+// name in the server's working folder is not run, by either reader.
+func TestUsageRunsNoRelativeProgram(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran")
+	if err := os.WriteFile(filepath.Join(dir, "tool"), []byte("#!/bin/sh\necho \"$0 $*\" >> "+marker+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	for name, read := range map[string]func(context.Context, UsageInput) UsageReport{"claude": readClaudeUsage, "codex": readCodexUsage} {
+		s := newStub(t, name)
+		adm := &fakeAdmit{}
+		if rep := read(context.Background(), s.input([]string{"./tool"}, adm.admit)); rep.State != UsageError || !strings.Contains(rep.Words, "relative") {
+			t.Errorf("%s: %+v", name, rep)
+		}
+	}
+	if b, err := os.ReadFile(marker); err == nil {
+		t.Fatalf("the program in the working folder ran: %s", b)
+	}
+}
+
 func TestBoundedLines(t *testing.T) {
 	b := &boundedLines{r: bufio.NewReaderSize(strings.NewReader("one\n\n  two  \r\nthree"), 16)}
 	var got []string

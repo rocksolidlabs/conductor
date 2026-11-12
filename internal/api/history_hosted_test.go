@@ -65,10 +65,10 @@ func TestAHostedRecordTakesWhatItsHostReports(t *testing.T) {
 	hs.HostActivity(proto.Activity{Type: "file", Op: "edit", Path: "main.go", At: now}, "")
 	hs.HostChat(proto.ChatMessage{ID: "m1", Kind: proto.ChatKindMessage, By: proto.ChatBy{Role: string(session.RoleControl), Name: "ada"}, Text: "done", At: now})
 	past := `{"t":"session_info","endCommit":"` + strings.Repeat("c", 40) + `"}` + strings.Repeat(" ", proto.MaxSessionInfo)
-	if !e.srv.handleHostMessage(hs, &hostConnState{}, []byte(past)) {
+	if !e.srv.handleHostMessage(hs, &hostConnState{}, proto.HostSessionInfo, []byte(past)) {
 		t.Fatal("a session_info past its bound closed the connection")
 	}
-	if !e.srv.handleHostMessage(hs, &hostConnState{}, []byte(`{"t":"session_info","endCommit":"`+end+`"}`)) {
+	if !e.srv.handleHostMessage(hs, &hostConnState{}, proto.HostSessionInfo, []byte(`{"t":"session_info","endCommit":"`+end+`"}`)) {
 		t.Fatal("a session_info closed the connection")
 	}
 	code := 0

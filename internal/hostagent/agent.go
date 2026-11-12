@@ -174,6 +174,11 @@ type Options struct {
 	// registered also stops naming a run's link once it left the group.
 	LinkUnnamed func(linkID, sessionID, runID string)
 
+	// Credential, when set, chooses what each registration presents in
+	// place of Token, and renews it on the live connection
+	// (uplinkcred.go): an identity provider's (NewUplinkCredential).
+	Credential *UplinkCredential
+
 	// transport, when set (tests), is the control connection's transport in
 	// place of the standard one: a test's names dialed to its own servers.
 	transport *http.Transport
@@ -182,6 +187,13 @@ type Options struct {
 	// (report.go).
 	revision func(ctx context.Context, dir string) (gitcli.Revision, error)
 	probe    func(ctx context.Context, command []string, p agents.Probe, env map[string]string) agents.ProbeResult
+	// after, when set (tests), is the clock of the first registration's
+	// retries, the renewal's steps and each writer's turn waits; renewed
+	// is told each renewal step's outcome; taking, each connection
+	// writer's turn to take a message (controlWriter.taking).
+	after   func(time.Duration) <-chan time.Time
+	renewed func(renewStep)
+	taking  func()
 }
 
 // Result reports how the hosted process ended.
@@ -258,6 +270,10 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	a.report = a.readReport(ctx, folder)
 	defer a.letLaunchGo()
 	firstConn, registered, err := a.dialAndRegister(ctx)
+	if withheldRefusal(err) {
+		// The provider signs in after Start: waited for a while (uplinkcred.go).
+		firstConn, registered, err = a.registerWhileWithheld(ctx, err)
+	}
 	if err != nil {
 		folder.Close()
 		return Result{}, err
@@ -676,11 +692,17 @@ func (a *agent) controlLoop(ctx context.Context, first *websocket.Conn) {
 // dialAndRegister opens the control connection and registers (or resumes)
 // the session. On success the connection is stored as the active one.
 func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Registered, error) {
+	// What the identity provider gives, when there is one, asked anew at
+	// every registration (UplinkCredential.Present), before the dial.
+	token, withheld := a.opts.Token, false
+	if a.opts.Credential != nil {
+		token, withheld = a.opts.Credential.Present(ctx)
+	}
 	dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	// No token, no header: an open host on a switchyard that admits them.
 	header := map[string][]string{}
-	if a.opts.Token != "" {
-		header["Authorization"] = []string{"Bearer " + a.opts.Token}
+	if token != "" {
+		header["Authorization"] = []string{"Bearer " + token}
 	}
 	base := &http.Client{}
 	if a.opts.ServerIsOwners {
@@ -690,7 +712,23 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	}
 	// A redirect the dial follows is held to the rule the URL given was
 	// (Run, Uplink.Publish): plain to another machine only with Insecure.
+	// A registration through an identity provider (Credential) is made to
+	// the configured address alone: a redirect is a failed registration,
+	// never followed, and to a server reached without TLS it is dialed
+	// directly, never through a proxy (over TLS a proxy carries a tunnel).
 	base.CheckRedirect = a.redirectRule(base.CheckRedirect)
+	if a.opts.Credential != nil {
+		base.CheckRedirect = func(*http.Request, []*http.Request) error { return errCredentialRedirect }
+		if strings.HasPrefix(a.wsURL, "ws://") {
+			t, _ := base.Transport.(*http.Transport)
+			if t == nil {
+				t = http.DefaultTransport.(*http.Transport)
+			}
+			t = t.Clone()
+			t.Proxy = nil
+			base.Transport = t
+		}
+	}
 	// The connection's socket is a pacedConn (controlWriter). Whatever the
 	// host reads on the connection, a frame's part included, as its TLS
 	// gives it, it notes as heard (hearingTransport), for its give-up alone:
@@ -700,6 +738,7 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	cancel()
 	if err != nil {
 		if refused := refusal(resp); refused != nil {
+			refused.Withheld = withheld
 			return nil, proto.Registered{}, refused
 		}
 		// A redirect the policy refused (redirectRule): the refusal's words
@@ -776,13 +815,19 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	for _, id := range unnamed {
 		a.linkWent(id, false, true)
 	}
-	a.useConnHearing(c, pc, live)
+	w := a.useConnHearing(c, pc, live)
+	w.presented, w.renews = token, registered.Renews
 	a.log.Info("registered with conductor", "session", registered.SessionID, "resumed", registered.Resumed)
 	if first && a.opts.Registered != nil {
 		a.opts.Registered(registered.SessionID, registered.ShareBaseURL)
 	}
 	return c, registered, nil
 }
+
+// errCredentialRedirect is a redirect answered to a registration through
+// an identity provider (dialAndRegister): in the host's own words, which
+// name no address the answer gave.
+var errCredentialRedirect = &redirectRefused{errors.New("host: the server answered the registration with a redirect, which a registration through the identity provider does not follow")}
 
 // registration is the register message: the session as the owner's own
 // server lists it, or, to a switchyard (Options.Switchyard), as little as
@@ -1205,7 +1250,7 @@ func (a *agent) useConnHearing(c *websocket.Conn, pc *pacedConn, live *connLive)
 	if live == nil {
 		live = newConnLive()
 	}
-	w := newControlWriter(c, pc)
+	w := newControlWriterWith(c, pc, a.opts.after, a.opts.taking)
 	w.controlTurn = a.controlWait
 	w.live = live
 	a.mu.Lock()
@@ -1277,6 +1322,9 @@ func (a *agent) serveConn(ctx context.Context, c *websocket.Conn) error {
 	}
 	// Ping the server while a link's viewer may need it.
 	go a.keepHearing(ctx, c, w.live, w.done)
+	// The provider's replacement credential, on the writer's context,
+	// which ends with the connection (uplinkcred.go).
+	go a.renewToken(w)
 
 	for {
 		typ, data, err := c.Read(ctx)
@@ -2041,9 +2089,19 @@ type RefusedError struct {
 	Code       string
 	Message    string
 	RetryAfter time.Duration
+	// Withheld says the registration presented nothing for a host token
+	// the identity provider owns or may own, which had no credential then.
+	Withheld bool
 }
 
+// CredentialWithheld is Withheld: a server's publication refused so is
+// owed, and the next Share publishes it.
+func (e *RefusedError) CredentialWithheld() bool { return e.Withheld }
+
 func (e *RefusedError) Error() string {
+	if e.Withheld && e.Status == http.StatusUnauthorized {
+		return "the switchyard refused it: the identity provider has no credential to present for the host token yet"
+	}
 	msg := e.Message
 	if msg == "" {
 		msg = http.StatusText(e.Status)

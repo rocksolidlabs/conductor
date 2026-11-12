@@ -50,6 +50,14 @@ type Uplink struct {
 	// LinkUnnamed, when set, is told each link one of its connections held
 	// that the connection's registered no longer names (Options.LinkUnnamed).
 	LinkUnnamed func(linkID, sessionID, runID string)
+	// Credential chooses what each publication and desk presents in place
+	// of Token (Options.Credential); nil presents Token.
+	Credential *UplinkCredential
+	// after, renewed and taking are every publication's and desk's
+	// (Options), for tests.
+	after   func(time.Duration) <-chan time.Time
+	renewed func(renewStep)
+	taking  func()
 
 	// instance is this server's secret with the rendezvous: with each
 	// session's own id it gives a published session the same id after the
@@ -104,6 +112,7 @@ func (u *Uplink) options(info session.Info) Options {
 		ServerURL: u.ServerURL, Token: u.Token, Name: info.Name, HostName: u.HostName, AgentID: info.AgentID,
 		Argv: info.Command, Dir: info.Cwd, RelayOnly: u.RelayOnly, Insecure: u.Insecure, ICEServers: u.ICEServers, ICE: u.ICE, ReconnectMax: u.ReconnectMax, Log: log,
 		Switchyard: true, Decisions: u.Decisions, LinkGone: u.LinkGone, LinkUnnamed: u.LinkUnnamed,
+		Credential: u.Credential, after: u.after, renewed: u.renewed, taking: u.taking,
 	}
 	if opts.HostName == "" {
 		opts.HostName, _ = os.Hostname()

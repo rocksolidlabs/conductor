@@ -4,10 +4,14 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/share"
 )
 
 // The identity provider at authentication (Program item C2, the plan's
@@ -58,12 +62,141 @@ func (s *Server) grantPrincipal(pr ext.Principal) principal {
 	return p
 }
 
-// hostAllowed reports whether tok, presented with r, authorizes a host
-// registration: the workbench token, a host token, or an identity
-// provider's principal with either grant. A share link is no host's, and a
-// link's token never reaches the provider (tokenPrincipal).
-func (s *Server) hostAllowed(r *http.Request, tok string) bool {
-	return tok != "" && s.tokenPrincipal(r, tok).host
+// hostPrincipal is the principal of tok, presented with r, and whether it
+// authorizes a host registration: the workbench token, a host token, or
+// an identity provider's principal with either grant, whose subject the
+// connection keeps. A share link is no host's, and a link's token never
+// reaches the provider (tokenPrincipal).
+func (s *Server) hostPrincipal(r *http.Request, tok string) (principal, bool) {
+	if tok == "" {
+		return principal{}, false
+	}
+	p := s.tokenPrincipal(r, tok)
+	return p, p.host
+}
+
+// watchedToken is the credential of a long-lived connection an identity
+// provider's principal holds, made with the connection and gone with it.
+// turn is the connection's credential turn: a recheck and a renewal of
+// the connection take it from their ask to their verdict, so one never
+// overlaps the other and a verdict concerns the token it asked about. tok
+// is read and changed only under the turn. ended is the connection's
+// terminal state, a verdict recorded, set only under the turn and read
+// without it (the host connection's reader looks at it before each
+// message). pending is a host's renewal the guard could not put to the
+// provider (every renewal slot taken): the next recheck asks about it
+// first (principalWatch). tok and pending change only under the turn and
+// under mu, so the detail's check reads them under mu alone (held).
+type watchedToken struct {
+	turn    chan struct{}
+	mu      sync.Mutex
+	tok     string
+	pending string
+	ended   atomic.Bool
+}
+
+func newWatchedToken(tok string) *watchedToken {
+	return &watchedToken{turn: make(chan struct{}, 1), tok: tok}
+}
+
+// set changes tok and pending; the caller holds the turn.
+func (w *watchedToken) set(tok, pending string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.tok, w.pending = tok, pending
+}
+
+// held is the tokens the connection holds, its pending one among them.
+func (w *watchedToken) held() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return []string{w.tok, w.pending}
+}
+
+// watching adds wt to the server's watched credentials, or removes it.
+func (s *Server) watching(wt *watchedToken, on bool) {
+	s.watchedMu.Lock()
+	defer s.watchedMu.Unlock()
+	if s.watched == nil {
+		s.watched = map[*watchedToken]struct{}{}
+	}
+	if on {
+		s.watched[wt] = struct{}{}
+	} else {
+		delete(s.watched, wt)
+	}
+}
+
+// SetUplinkHeld gives the server what answers the tokens its uplink's
+// credential took from the identity provider (hostagent.UplinkCredential's
+// Held), for the detail's check; before it starts serving.
+func (s *Server) SetUplinkHeld(held func() []string) { s.uplinkHeld.Store(&held) }
+
+// providerCredentials is what the detail's filter compares with, as it
+// stands when asked: the host token the provider was handed, the
+// workbench token and the host tokens, the last eight distinct tokens the
+// uplink's credential took from it (hostagent's heldTokens), and every
+// watched connection's token and pending one.
+func (s *Server) providerCredentials() []string {
+	own := append([]string{s.cfg.Rendezvous.Token, s.cfg.WorkbenchToken}, s.cfg.HostTokens...)
+	if held := s.uplinkHeld.Load(); held != nil {
+		own = append(own, (*held)()...)
+	}
+	s.watchedMu.Lock()
+	ws := make([]*watchedToken, 0, len(s.watched))
+	for wt := range s.watched {
+		ws = append(ws, wt)
+	}
+	s.watchedMu.Unlock()
+	for _, wt := range ws {
+		own = append(own, wt.held()...)
+	}
+	return own
+}
+
+// take takes the turn, telling the seam first when it must wait for it;
+// false when ctx ends first.
+func (w *watchedToken) take(ctx context.Context, waiting func()) bool {
+	select {
+	case w.turn <- struct{}{}:
+		return true
+	default:
+	}
+	if waiting != nil {
+		waiting()
+	}
+	select {
+	case w.turn <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// give gives the turn back.
+func (w *watchedToken) give() { <-w.turn }
+
+// hostCredSeam lets a test hold a host connection's credential steps;
+// nil outside tests. waiting is told a recheck or a renewal waits for the
+// turn; reading, a host message read, before ended is looked at; closing,
+// a verdict recorded and the turn given back, before the close handshake;
+// watchEnded, a watch returning (principalWatch); peeked, the look ahead
+// for host_token run on a message (the host read loop).
+type hostCredSeam struct {
+	waiting, reading, closing, watchEnded, peeked func()
+}
+
+func (s *Server) credHook(pick func(*hostCredSeam) func()) func() {
+	if s.hostCred == nil {
+		return nil
+	}
+	return pick(s.hostCred)
+}
+
+func runHook(f func()) {
+	if f != nil {
+		f()
+	}
 }
 
 // principalKey is the request context's key of requireAdmin's principal.
@@ -112,21 +245,28 @@ const identityRecheckEvery = 30 * time.Second
 // revoked link's viewer is closed, with words that name no link.
 var errPrincipalRevoked = fmt.Errorf("access revoked by the identity provider: %w", session.ErrRevoked)
 
-// principalWatch is the watch of a long-lived connection p holds, opened
-// with tok: run on a goroutine of its own with the connection's context,
-// it asks the identity provider again every identityRecheckEvery
-// (guardIdentity.recheck, through the guard) and calls end, once, when
-// the provider answers in time that it no longer admits tok as p: no
-// principal, another subject, or one without the admin grant, which every
-// connection it watches needs (a viewer's control role, the events
-// stream). A provider that fails, panics, is late, is busy or answers a
+// principalWatch is the watch of a long-lived connection p holds, with
+// its credential wt: run on a goroutine of its own with the connection's
+// context, it asks the identity provider again every identityRecheckEvery
+// (guardIdentity.recheck, through the guard) about the token current then
+// and calls end, once, when the provider answers in time that it no
+// longer admits it as p: no principal, another subject, or one without
+// the grant the connection needs (admin for a viewer's control role and
+// the events stream, host for a host connection). A host connection's
+// pending renewal (hostToken) is asked about in the held token's place:
+// admitted, it becomes the connection's; refused, the connection ends; no
+// verdict leaves both, and the held token is not asked that round. Each ask holds the
+// connection's credential turn until its verdict is recorded (wt.ended);
+// the turn is given back before end runs, so no close handshake runs
+// under it. A provider that fails, panics, is late, is busy or answers a
 // principal out of bounds has said nothing, and the connection stays: the
 // guard's rule that a failure answers what was there before. It returns
-// when ctx ends or after end. Nil, and nothing asked, for every principal
-// of the server's own chain (the workbench token, a host token, a link:
-// no subject), so a build with no provider watches nothing.
-func (s *Server) principalWatch(p principal, tok string) func(ctx context.Context, end func()) {
-	if p.subject == "" || tok == "" {
+// when ctx ends, once the connection has ended (a renewal's verdict), or
+// after end. Nil, and nothing asked, for every principal of the server's
+// own chain (the workbench token, a host token, a link: no subject), so a
+// build with no provider watches nothing.
+func (s *Server) principalWatch(p principal, wt *watchedToken, need ext.Grant) func(ctx context.Context, end func()) {
+	if p.subject == "" || wt == nil || wt.tok == "" {
 		return nil
 	}
 	g, ok := s.exts.identity.(guardIdentity)
@@ -134,23 +274,120 @@ func (s *Server) principalWatch(p principal, tok string) func(ctx context.Contex
 		return nil
 	}
 	return func(ctx context.Context, end func()) {
+		s.watching(wt, true)
+		defer s.watching(wt, false)
+		defer func() { runHook(s.credHook(func(h *hostCredSeam) func() { return h.watchEnded })) }()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-s.extAfterOr(identityRecheckEvery):
 			}
+			if !wt.take(ctx, s.credHook(func(h *hostCredSeam) func() { return h.waiting })) {
+				return
+			}
+			if wt.ended.Load() {
+				wt.give()
+				return
+			}
+			// A pending renewal is what the host presents now: asked
+			// about in its place, and alone, this round.
+			tok, pending := wt.tok, wt.pending
+			if pending != "" {
+				tok = pending
+			}
 			pr, admitted, known := g.recheck(ctx, tok)
 			if !known || ctx.Err() != nil {
+				wt.give()
 				continue
 			}
-			if admitted && pr.Subject == p.subject && s.grantPrincipal(pr).admin {
+			if admitted && s.admitsAs(pr, p.subject, need) {
+				if pending != "" {
+					wt.set(pending, "")
+				}
+				wt.give()
 				continue
 			}
+			wt.ended.Store(true)
+			wt.give()
+			runHook(s.credHook(func(h *hostCredSeam) func() { return h.closing }))
 			// By the provider's name alone: the token is never logged.
 			s.log.Debug("identity provider no longer admits a connection's principal: closed", "provider", g.name)
 			end()
 			return
 		}
 	}
+}
+
+// hostToken takes a host_token, inline in the host connection's read
+// loop: it reports whether the connection stays, which it does on the
+// one success path (the same subject admitted with the host grant, the
+// new token then the connection's) and on two that ask nobody: the token
+// the connection holds already, which clears a pending one, and a
+// renewal the guard could not put to the provider, every renewal slot
+// taken, which is no verdict (as a busy recheck is none), the
+// connection keeping its token and the offered one pending for its next
+// recheck. Every other outcome is the one fallback,
+// false, and the caller closes the connection 4403 access revoked: a
+// message past its bounds (proto.ParseHostToken), a connection not
+// admitted through a provider's principal, a token the server's own
+// chain knows (never asked of the provider), a connection already
+// ended, an error, a late or panicking answer, and a verdict (no
+// principal, another subject, no host grant), recorded under the turn as
+// a recheck's is. The ask is made under the connection's credential
+// turn, in the renewals' own slots (kindIdentityRenew), within
+// ext.IdentityWait, and the turn is given back before it returns, so no
+// close runs under it.
+func (s *Server) hostToken(hc *hostConnState, data []byte) bool {
+	tok, err := proto.ParseHostToken(data)
+	if err != nil || hc.cred == nil {
+		return false
+	}
+	if _, known := s.chainPrincipal(tok); known {
+		return false
+	}
+	g, ok := s.exts.identity.(guardIdentity)
+	if !ok || !hc.cred.take(hc.ctx, s.credHook(func(h *hostCredSeam) func() { return h.waiting })) {
+		return false
+	}
+	defer hc.cred.give()
+	if hc.cred.ended.Load() {
+		return false
+	}
+	if share.Equal(tok, hc.cred.tok) {
+		// The token the connection holds: nobody is asked, and a pending
+		// renewal is cleared, as a renewal admitted clears it, since this is
+		// what the host presents now.
+		hc.cred.set(hc.cred.tok, "")
+		return true
+	}
+	pr, admitted, known, busy := g.renew(hc.ctx, tok)
+	if busy {
+		// Not put to the provider, every renewal slot taken: no verdict,
+		// as a busy recheck is none. The connection keeps its token and
+		// keeps this one pending (a later renewal replaces it), which its
+		// next recheck asks about first, in the recheck's own slots.
+		hc.cred.set(hc.cred.tok, tok)
+		return true
+	}
+	if known && admitted && s.admitsAs(pr, hc.subject, ext.GrantHost) {
+		hc.cred.set(tok, "")
+		return true
+	}
+	// A verdict, or a renewal that could not be told: either way the
+	// connection ends, and nothing it reads after this is handled.
+	hc.cred.ended.Store(true)
+	return false
+}
+
+// admitsAs says pr is subject's principal with the grant need gives here.
+func (s *Server) admitsAs(pr ext.Principal, subject string, need ext.Grant) bool {
+	if pr.Subject != subject {
+		return false
+	}
+	gp := s.grantPrincipal(pr)
+	if need == ext.GrantHost {
+		return gp.host
+	}
+	return gp.admin
 }
