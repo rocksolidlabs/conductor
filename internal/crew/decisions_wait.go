@@ -1324,6 +1324,9 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 					return err
 				}
 			}
+			if err := keepTakeBack(dtx, n, id, op); err != nil {
+				return err
+			}
 			dt.Rev = max(dt.Rev, row.Rev)
 			hr := ledger.HistoryRow{Kind: op.kind, By: op.actor, Detail: historyDetail(dt), OpID: op.opID, Fingerprint: op.fp}
 			if op.once {
@@ -1480,6 +1483,30 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 	return OpReceipt{}, refuse(CodeDecisionMoved, "%s moved to another run while it was changed: send it again", id)
 }
 
+// keepTakeBack keeps the last of decision n's operator operations for
+// taking the decide grant back: an operation after which the decision is
+// given to the grant (the route to it, and every comment, request for more
+// or route while it is, the take-back excepted) is refused decision_limit
+// when it would take that last one, in its transaction, after its edit. A
+// Brakeman turn's operations, the router's row and a cancel count apart.
+func keepTakeBack(dtx decisionTx, n int64, id string, op operation) error {
+	if op.once || op.kind == ledger.HistoryCancelled || op.actor == ledger.TurnActor {
+		return nil
+	}
+	row, ok, err := dtx.Decision(n)
+	if err != nil || !ok || !GivenToGrant(row.Request) {
+		return err
+	}
+	have, err := dtx.Operations(n)
+	if err != nil {
+		return err
+	}
+	if have+1 >= ledger.MaxDecisionOperations {
+		return refuse(CodeDecisionLimit, "the last operation of %s is kept for taking the decide grant back", id)
+	}
+	return nil
+}
+
 // staleOp refuses an operation sent at the rev read when the decision is
 // at the rev now: stale_decision when it moved past it, invalid for a rev
 // it never had; nil when they agree, or when no rev was sent (read 0).
@@ -1595,6 +1622,8 @@ func cmpState(d *decision, rec ledger.DecisionRecord) string {
 type Destination struct {
 	Kind string `json:"kind"`
 	Name string `json:"name,omitempty"`
+	// Grant is a grant destination's grant: decide, the only one.
+	Grant string `json:"grant,omitempty"`
 }
 
 // RouteDecision records a re-route of decision id with a note (what
@@ -1608,7 +1637,14 @@ type Destination struct {
 // route); in one transaction it rewrites the request's for, writes the
 // routed row with the label before and after, and bumps rev, so a
 // response made against the card before it is stale_decision. Who may
-// answer does not change: the operator, under local/1 (decision D4).
+// answer does not change: the operator, under local/1 (decision D4). To
+// the decide grant ({kind: grant, grant: decide}) it is a route to a
+// person with the grant as the target: anyone an identity provider gives
+// the grant answers it beside the operator (docs/plans/decide-grant.md).
+// To the operator, of a decision given to the grant, it takes the grant
+// back while the decision is open, held run or not. While a decision is
+// given to the grant, the last of its operations is kept for that
+// take-back (operate).
 func (e *Engine) RouteDecision(ctx context.Context, id, opID string, expectedRev int, to []Destination, note, actor string) (OpReceipt, error) {
 	if len(to) == 0 {
 		return OpReceipt{}, refuse(CodeInvalid, "a route names its destination")
@@ -1622,9 +1658,19 @@ func (e *Engine) RouteDecision(ctx context.Context, id, opID string, expectedRev
 	if err != nil {
 		return OpReceipt{}, err
 	}
-	if label != "" {
+	// A route to the operator of a decision given to the decide grant takes
+	// the grant back: whom it is for rewritten with no target, through the
+	// held run or the ledger alone. What the look reads chooses it, and the
+	// rev the operator read judges it in its transaction (staleOp), so a
+	// route to the grant committed since is stale_decision.
+	takeBack := label == "" && e.givenToGrant(ctx, id)
+	if label != "" || takeBack {
 		if expectedRev < 1 {
-			return OpReceipt{}, refuse(CodeInvalid, "a route to a person names the rev it read, expectedRev")
+			return OpReceipt{}, refuse(CodeInvalid, "a route to a person or the grant names the rev it read, expectedRev")
+		}
+		to := "a person"
+		if label == GrantDecideLabel {
+			to = "the grant"
 		}
 		return e.operate(ctx, id, operation{kind: ledger.HistoryRouted, opID: opID, fp: fp, actor: actor, rev: true, expectedRev: expectedRev,
 			held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
@@ -1633,11 +1679,16 @@ func (e *Engine) RouteDecision(ctx context.Context, id, opID string, expectedRev
 				return dt, nil, err
 			},
 			notHeld: func(rec ledger.DecisionRecord) (opDetail, error) {
-				if rec.State != ledger.DecisionOpen {
-					_, _, err := e.forRoute(nil, nil, rec, id, label, note, actor)
-					return opDetail{}, err
+				if rec.State != ledger.DecisionOpen || takeBack {
+					if why := staleOp(id, expectedRev, rec.Rev); takeBack && why != nil {
+						// The rev before the state, as the held run's transaction judges.
+						return opDetail{}, why
+					}
+					dt, edit, err := e.forRoute(nil, nil, rec, id, label, note, actor)
+					dt.edit = edit
+					return dt, err
 				}
-				return opDetail{}, refuse(CodeNotHeld, "%s's run is not running: continue it, then route it to a person", id)
+				return opDetail{}, refuse(CodeNotHeld, "%s's run is not running: continue it, then route it to %s", id, to)
 			}})
 	}
 	dt := opDetail{Note: note, To: []any{map[string]string{"kind": "operator"}}, Rule: "local/1: the operator answers", By: actor, Words: fmt.Sprintf("%s is routed to the operator", id)}
@@ -1646,6 +1697,17 @@ func (e *Engine) RouteDecision(ctx context.Context, id, opID string, expectedRev
 			return dt, nil, nil
 		},
 		notHeld: func(rec ledger.DecisionRecord) (opDetail, error) { return dt, nil }})
+}
+
+// givenToGrant says decision id, as the ledger holds it now, is given to
+// the decide grant.
+func (e *Engine) givenToGrant(ctx context.Context, id string) bool {
+	n, ok := ledger.ParseDecisionID(id)
+	if !ok {
+		return false
+	}
+	rec, ok, err := e.readDecision(ctx, n)
+	return err == nil && ok && GivenToGrant(rec.Request)
 }
 
 // RouterResponseID is the response id of a decision router's answer

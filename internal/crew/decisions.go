@@ -350,6 +350,7 @@ type decisionTx interface {
 	Answer(n int64, run string, rev int) (bool, error)
 	Respond(n int64, r ledger.ResponseRow) (ledger.Responded, error)
 	History(n int64, h ledger.HistoryRow) (ledger.HistoryRow, bool, error)
+	Operations(n int64) (int, error)
 	Hold(run, task string, n int64) error
 	Release(run, task string, n int64) (bool, error)
 	Decision(n int64) (ledger.DecisionRow, bool, error)
@@ -1641,7 +1642,9 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 	}
 	_ = json.Unmarshal([]byte(d.Policy), &policy)
 	switch {
-	case auth.Via == ViaRouter || auth.Grant != grantAdmin || auth.Via != ViaWorkbench && auth.Via != ViaIdentity:
+	case !Admits(EntriesOf(rec), Admittee{Grants: []string{auth.Grant}, Via: auth.Via, Subject: auth.Subject}):
+		// The entries this transaction reads judge (docs/plans/decide-grant.md):
+		// the operator's, and the decide grant's while it is given to it.
 		rc.Code, rc.Words = CodeNotApprover, fmt.Sprintf("%s is the operator's to answer: refused under local/1", id)
 	case policy.Revision != policyLocal:
 		rc.Code, rc.Words = CodeStalePolicy, fmt.Sprintf("%s was opened under policy %s, and %s is in force", id, policy.Revision, policyLocal)
@@ -2467,6 +2470,13 @@ func (e *Engine) replaceDecision(r *run, d *decision, why string) (*decision, tx
 		// Opened in the run that holds the decision now, a continuation's
 		// when it moved there.
 		row.N, row.RequestID, row.RunID = 0, "", ""
+		if GivenToGrant(row.Request) {
+			// The replacement is the operator's alone: the operator routes it
+			// again if a holder of the decide grant should answer it.
+			if row.Request, err = withFor(row.Request, nil); err != nil {
+				return err
+			}
+		}
 		// Superseded first: the answer's place among the run's bounds is the
 		// replacement's (A replacement always has its place).
 		old.State, old.Rev, old.Why = ledger.DecisionSuperseded, old.Rev+1, why

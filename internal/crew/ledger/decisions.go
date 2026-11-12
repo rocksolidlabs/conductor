@@ -1279,7 +1279,7 @@ func (t *Tx) History(n int64, h HistoryRow) (HistoryRow, bool, error) {
 	var err error
 	switch group {
 	case "ops":
-		have, err = t.count(`SELECT COUNT(*) FROM decision_history WHERE decision = ? AND (kind IN ('commented', 'info_requested') OR (kind = 'routed' AND op_id != '')) AND by != ?`, n, TurnActor)
+		have, err = t.Operations(n)
 	case "turn":
 		have, err = t.count(`SELECT COUNT(*) FROM decision_history WHERE decision = ? AND by = ? AND op_id != '' AND kind != 'cancelled'`, n, TurnActor)
 	case "rest":
@@ -1336,6 +1336,13 @@ func (t *Tx) History(n int64, h HistoryRow) (HistoryRow, bool, error) {
 	_, err = t.tx.ExecContext(t.ctx, `INSERT INTO decision_history (decision, seq, at, kind, by, detail, op_id, fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		n, h.Seq, stamp(h.At), h.Kind, h.By, h.Detail, h.OpID, h.Fingerprint)
 	return h, false, err
+}
+
+// Operations counts decision n's operator operations, the group of
+// MaxDecisionOperations (History): its comments, requests for information
+// and routes with an op id, a Brakeman turn's apart.
+func (t *Tx) Operations(n int64) (int, error) {
+	return t.count(`SELECT COUNT(*) FROM decision_history WHERE decision = ? AND (kind IN ('commented', 'info_requested') OR (kind = 'routed' AND op_id != '')) AND by != ?`, n, TurnActor)
 }
 
 // withDropped is a detail with the count of the notified rows not written
@@ -1706,6 +1713,73 @@ func (l *Ledger) Decisions(ctx context.Context, f DecisionFilter) ([]DecisionRow
 		return cmp.Or(rows.Err(), rows.Close())
 	})
 	return out, err
+}
+
+// MaxOpenScan bounds the rows OpenDecisionsNewest hands, and
+// MaxOpenScanBytes the text of them, the sum of the lengths of what
+// scanDecision reads for each (openScanBytes, which the package's own test
+// lowers).
+const (
+	MaxOpenScan      = 500
+	MaxOpenScanBytes = 16 << 20
+)
+
+var openScanBytes = MaxOpenScanBytes
+
+// OpenDecisionsNewest hands visit the open decisions' rows, newest first
+// by n, each as scanDecision reads it, inside one read transaction, one at
+// a time, keeping none: at most limit (at most MaxOpenScan, 0 for that)
+// and MaxOpenScanBytes of their text. more says open decisions remain
+// that it did not hand, past either bound; visit answering false stops it
+// there, more false. Its condition is the state alone: no JSON function
+// reads a request or a policy. visit must not read the ledger, whose one
+// connection the read holds. A database older than the decision tables
+// hands none.
+func (l *Ledger) OpenDecisionsNewest(ctx context.Context, limit int, visit func(DecisionRow) bool) (more bool, err error) {
+	if limit <= 0 || limit > MaxOpenScan {
+		limit = MaxOpenScan
+	}
+	err = l.readSnapshot(ctx, func(q querier, version int) error {
+		if version < versionDecisions {
+			return nil
+		}
+		rows, err := q.QueryContext(ctx, "SELECT "+decisionCols+" FROM decisions d WHERE d.state = ? ORDER BY d.n DESC LIMIT ?", DecisionOpen, limit+1)
+		if err != nil {
+			return err
+		}
+		handed, size := 0, 0
+		for rows.Next() {
+			d, err := scanDecision(rows)
+			if err != nil {
+				rows.Close()
+				return err
+			}
+			size += decisionText(d)
+			if handed == limit || size > openScanBytes {
+				more = true
+				break
+			}
+			handed++
+			if !visit(d) {
+				break
+			}
+		}
+		return cmp.Or(rows.Err(), rows.Close())
+	})
+	if err != nil {
+		return false, err
+	}
+	return more, nil
+}
+
+// decisionText is the length of the text a decision's row holds.
+func decisionText(d DecisionRow) int {
+	n := 0
+	for _, s := range []string{d.RunID, d.CurrentRun, d.Origin, d.Type, d.Gate, d.TaskID, d.SessionID, d.Member, d.Ticket, d.Plan, d.PlanDigest,
+		d.RequestID, d.Fingerprint, d.Request, d.Evidence, d.Policy, d.State, d.Why, d.SupersededBy, d.Applied} {
+		n += len(s)
+	}
+	return n
 }
 
 // DecisionRevision is what every change of a decision moves, as the
