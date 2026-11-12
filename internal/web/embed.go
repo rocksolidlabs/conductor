@@ -21,8 +21,8 @@ func Available() bool {
 }
 
 // PreviewBridge is the preview bridge the web build emits
-// (preview-bridge.js), nil when the embedded app has none (a server built
-// without make web-build, or by a web build that emits no bridge).
+// (preview-bridge.js, web/build/previewBridge.ts), nil when the embedded app has
+// none (a server built without make web-build).
 func PreviewBridge() []byte {
 	b, err := fs.ReadFile(dist, "dist/preview-bridge.js")
 	if err != nil {

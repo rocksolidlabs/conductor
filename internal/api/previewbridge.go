@@ -15,8 +15,8 @@ import (
 
 // The preview bridge (docs/protocol.md, Preview bridge): the script a
 // previewed page loads, or the desktop shell puts into it, to read the page
-// for the workbench that frames it. The web build emits it (PV1 PR-2b;
-// until it does, the embed has none and the route answers 404 no_bridge);
+// for the workbench that frames it. The web build emits it
+// (web/build/previewBridge.ts; an embed without one answers 404 no_bridge);
 // GET /preview-bridge.js serves it whole, unchanged, inside a wrapper the
 // server writes: a function whose one parameter is the server's own
 // workbench origins, called with them, so the bridge answers a parent
