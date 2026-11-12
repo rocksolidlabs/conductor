@@ -176,6 +176,20 @@ func TestViewMarkEnv(t *testing.T) {
 	}
 }
 
+// A reading's Filed, its reader's caller's, reaches the View as it was,
+// for every state a reading keeps, and never its JSON.
+func TestReadingFiledCarried(t *testing.T) {
+	for i, r := range []Reading{{State: StateOK}, {State: StateSignedOut}, {State: "nonsense"}} {
+		r.Filed = "claude:default"
+		c := NewCache(CacheOptions{Clock: newClock(), Read: func(context.Context, Key, Intent) Reading { return r }})
+		v := c.Read(context.Background(), key(i), ReadOptions{})
+		c.Close()
+		if b, _ := json.Marshal(v); v.Filed != r.Filed || strings.Contains(string(b), r.Filed) {
+			t.Errorf("%s: filed %q, %s", r.State, v.Filed, b)
+		}
+	}
+}
+
 // TestReadingFields holds the fields of what the cache keeps and shows.
 // A field added to one of them must be added here, and, when it is a
 // pointer, a slice or a map, to the copies Reading.kept and Reading.view
@@ -194,13 +208,13 @@ func TestReadingFields(t *testing.T) {
 		want []string
 	}{
 		{Reading{}, []string{"Key capacity.Key", "State string", "Words string", "Plan string", "Windows []capacity.Window", "Credits []capacity.Credit", "Limits capacity.Limits",
-			"Program string", "Version string", "Qualified string", "ReadAt time.Time", "Env string"}},
+			"Program string", "Version string", "Qualified string", "ReadAt time.Time", "Env string", "Filed string"}},
 		{Window{}, []string{"Source string", "Kind string", "Name string", "Minutes int", "Percent int", "ResetsAt *time.Time", "Severity string", "Active *bool", "Limit string"}},
 		{Credit{}, []string{"Source string", "Kind string", "Enabled *bool", "Used *string", "Limit *string", "Balance *string", "Unlimited bool", "Currency string"}},
 		{Limits{}, []string{"Source string", "Reached string", "SpendControl *bool", "OrdinaryAllowed *bool"}},
 		{View{}, []string{"Agent capacity.ViewAgent", "Model capacity.ViewModel", "Account capacity.ViewAccount", "Host capacity.ViewHost", "State string", "Words string",
 			"Windows []capacity.Window", "Credits []capacity.Credit", "Limits capacity.Limits", "Counts capacity.Counts", "ReadAt *time.Time", "ReadBy *capacity.ReadBy",
-			"Fresh string", "NextRead *time.Time", "Env string"}},
+			"Fresh string", "NextRead *time.Time", "Env string", "Filed string"}},
 	} {
 		if got := fields(c.v); !slices.Equal(got, c.want) {
 			t.Errorf("%T's fields:\n%v\nwant\n%v", c.v, got, c.want)

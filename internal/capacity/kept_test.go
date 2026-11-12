@@ -150,6 +150,55 @@ func TestVersionsUnsavedOutcomeRetried(t *testing.T) {
 	noLooser(t, dir, v, "claude@2.1.600")
 }
 
+// TestDisownSavesAnOutcomeNotYetKept: an outcome whose save failed is
+// saved once more as the Store gives its ownership up, while it still owns,
+// so the next owner holds it and admits no run of it; a save that fails
+// then too leaves the record on disk as it was, and nothing is saved after
+// (a late Done is refused accounts_not_owner).
+func TestDisownSavesAnOutcomeNotYetKept(t *testing.T) {
+	for _, works := range []bool{true, false} {
+		dir := t.TempDir()
+		s := openAt(t, dir, Options{})
+		f := faultSaves(s)
+		a, err := s.Versions().Admit("claude", "2.1.620", false, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.failNext(VersionsFile, 1)
+		if err := a.Done(Turned); code(err) != CodeNotKept {
+			t.Fatalf("a Turned whose save failed: %v", err)
+		}
+		path := filepath.Join(dir, Dir, VersionsFile)
+		before, _ := os.ReadFile(path)
+		if !works {
+			f.failNext(VersionsFile, 1)
+		}
+		s.Disown()
+		after, _ := os.ReadFile(path)
+		if !works {
+			if string(after) != string(before) {
+				t.Fatalf("the record changed with its save failing: %s, then %s", before, after)
+			}
+			if err := a.Done(Turned); code(err) != CodeNotOwner {
+				t.Fatalf("a Done after Disown: %v", err)
+			}
+			if again, _ := os.ReadFile(path); string(again) != string(before) {
+				t.Fatalf("saved after Disown: %s", again)
+			}
+			continue
+		}
+		if got := stateOnDisk(t, dir, "claude@2.1.620"); got != VersionTurned {
+			t.Fatalf("on disk after Disown: %q", got)
+		}
+		next := openAt(t, dir, Options{})
+		for _, check := range []bool{false, true} {
+			if _, err := next.Versions().Admit("claude", "2.1.620", false, check); code(err) != CodeUnqualified {
+				t.Fatalf("the next owner's admission (check %v): %v", check, err)
+			}
+		}
+	}
+}
+
 // TestVersionsReloadAfterOwn: the owner's record is the one in memory. A
 // Reload after Own is refused in words and changes nothing, so an outcome
 // held unsaved is never replaced by the file's older state, and the

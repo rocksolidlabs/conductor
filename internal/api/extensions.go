@@ -11,6 +11,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/ext/local"
+	"github.com/rocksolidlabs/conductor/internal/agents"
 )
 
 // Extensions: the providers the composition root read from the registry
@@ -36,6 +37,9 @@ type options struct {
 	// notices is the third-party notices text the server serves
 	// (WithNotices); the embedded one unless a main handed in its own.
 	notices string
+	// usageReaders stand for the adapters' usage readers in the tests
+	// (capacity.go); nil outside them.
+	usageReaders map[string]*agents.UsageReader
 }
 
 // WithExtensions gives the server the providers p, as the composition root

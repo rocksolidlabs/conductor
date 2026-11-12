@@ -10,8 +10,8 @@ import (
 // archive that holds it.
 const (
 	WhySecret     = "secret"             // the workbench token, tls/
-	WhyLock       = "lock"               // a lock file: the token's, the ledger's, Brakeman's and the session journal's owner locks, restore.lock
-	WhyTemporary  = "temporary"          // a database's -wal, -shm or -journal, *.tmp, .probe-*, .restore-*, Dispatch's attachments/tmp/
+	WhyLock       = "lock"               // a lock file: the token's, the ledger's, Brakeman's, the session journal's and capacity's owner locks, restore.lock
+	WhyTemporary  = "temporary"          // a database's -wal, -shm or -journal, *.tmp, .probe-*, .restore-*, Dispatch's attachments/tmp/, the usage readers' capacity/run/
 	WhyProvider   = "provider"           // ext/, a provider's own state
 	WhyNotRegular = "not a regular file" // a link, a device, a socket, a pipe
 	WhyName       = "unsupported name"   // a name an archive cannot hold, or another spelling of one it holds (Install would refuse it)
@@ -41,6 +41,8 @@ var leftOut = []leftRule{
 	{file: "runs/owner.lock", why: WhyLock},
 	{file: "brakeman/owner.lock", why: WhyLock},
 	{file: "history/owner.lock", why: WhyLock},
+	{file: "capacity/owner.lock", why: WhyLock},
+	{dir: "capacity/run", why: WhyTemporary},
 	{file: "history/index.sqlite", why: WhyDerived},
 	{file: "history/index.sqlite.damaged", why: WhyDerived},
 	{dir: "tls", why: WhySecret},
