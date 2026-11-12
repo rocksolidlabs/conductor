@@ -14,7 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/capacity"
@@ -24,10 +24,10 @@ import (
 // PR-3): the account references and the capacity view from the shell,
 // through the admin's routes, with the server and the token conductor
 // dispatch takes. A write reads the accounts' rev first and names it, so
-// a write over a change made since is refused, not taken. Every string a
-// reply carries reaches the terminal through oneLine, and --json through
-// jsonText: nothing the server says is read by a terminal as a control
-// sequence.
+// a write over a change made since is refused, not taken. Everything the
+// two commands write, and their error, goes through printedOnly, a line at
+// a time through oneLine; a string of a reply is put through oneLine where
+// it is printed too, so it stays on its line, and --json is jsonText's.
 
 const accountsUsage = `Usage:
   conductor accounts list [--json]
@@ -58,7 +58,9 @@ const capacityUsage = `Usage:
       the provider reported with its share used and reset ("not reported"
       for one it did not), its credit figures, this server's own counts
       (an estimate), and how fresh the reading is; every other state in
-      words. Nothing is read: the view is what the server keeps.
+      words. Nothing is read: the view is what the server keeps. The
+      listing is read in at most 64 pages, 8 MiB and one minute, or
+      refused whole
   conductor capacity --agent ID [--account ID] --read [--check]
       read the agent's usage now through its own tool, at most once in
       five minutes; --check runs a Claude Code version not yet checked
@@ -70,9 +72,17 @@ does.
 `
 
 // maxCapacityPages is how many pages of the listing conductor capacity
-// reads before it gives up, each at most maxReply bytes: a listing past
-// it is refused whole, never shown cut.
+// reads before it gives up, each at most maxReply bytes; the whole walk
+// reads at most maxListingBytes and ends within listingTimeout. A listing
+// past any of them, or one whose next names a page already read, is
+// refused whole, never shown cut.
 const maxCapacityPages = 64
+
+// maxListingBytes is 64 of the route's largest pages (128 KiB): 8 MiB.
+var maxListingBytes = 8 << 20
+
+// listingTimeout is the listing's one deadline, for all its pages.
+var listingTimeout = time.Minute
 
 // accountsArgs is how many arguments each accounts command takes.
 var accountsArgs = map[string]int{"list": 0, "add": 0, "rename": 2, "retire": 1, "remove": 1, "default": 2}
@@ -158,14 +168,21 @@ func refusalOf(err error) error {
 	return errors.New(text)
 }
 
-// jsonText is a reply for --json: indented, and every control character
-// and every byte that is not UTF-8 written as its JSON escape, so the
-// text is the same JSON and no terminal reads a sequence in it. A JSON
-// text holds such characters only inside its strings, where the escape
-// means the same; the newlines are the indent's.
-func jsonText(raw []byte) (string, error) {
+// jsonText is the one way the package prints JSON: raw indented, or
+// compact as the server's own replies are, with every character that is
+// not printed and every byte that is not UTF-8 written as its JSON escape,
+// so the text is the same JSON and holds printed characters and the
+// indent's newlines alone. A JSON text holds such characters only inside
+// its strings, where the escape means the same.
+func jsonText(raw []byte, indent bool) (string, error) {
 	var buf bytes.Buffer
-	if err := json.Indent(&buf, bytes.TrimSpace(raw), "", "  "); err != nil {
+	raw = bytes.TrimSpace(raw)
+	err := json.Compact(&buf, raw)
+	if indent && err == nil {
+		buf.Reset()
+		err = json.Indent(&buf, raw, "", "  ")
+	}
+	if err != nil {
 		return "", errors.New("the server's reply is not JSON")
 	}
 	var b strings.Builder
@@ -173,9 +190,11 @@ func jsonText(raw []byte) (string, error) {
 		r, n := utf8.DecodeRune(s)
 		switch {
 		case r == utf8.RuneError && n == 1:
-			b.WriteString(`�`)
-		case r != '\n' && unicode.IsControl(r):
-			fmt.Fprintf(&b, `\u%04x`, r)
+			fmt.Fprintf(&b, `\u%04x`, utf8.RuneError)
+		case r != '\n' && !printed(r):
+			for _, u := range utf16.Encode([]rune{r}) {
+				fmt.Fprintf(&b, `\u%04x`, u)
+			}
 		default:
 			b.Write(s[:n])
 		}
@@ -184,19 +203,68 @@ func jsonText(raw []byte) (string, error) {
 	return b.String(), nil
 }
 
-// printReply prints raw as jsonText gives it, answering the command's exit.
-func printReply(w io.Writer, raw []byte) (int, error) {
-	text, err := jsonText(raw)
+// printReply prints raw as jsonText gives it, a line, answering the
+// command's exit.
+func printReply(w io.Writer, raw []byte, indent bool) (int, error) {
+	text, err := jsonText(raw, indent)
 	if err != nil {
 		return 1, err
 	}
-	fmt.Fprintln(w, text)
-	return 0, nil
+	_, err = fmt.Fprintln(w, text)
+	return 0, err
 }
 
-// runAccounts is conductor accounts. Exit 2 for a usage error, before any
-// request; 1 when the server refuses or cannot be asked.
+// termWriter writes to w a line at a time, each through oneLine: what the
+// two commands write reaches the terminal as printed characters and
+// newlines alone.
+type termWriter struct {
+	w    io.Writer
+	part []byte
+}
+
+func (t *termWriter) Write(p []byte) (int, error) {
+	t.part = append(t.part, p...)
+	for {
+		i := bytes.IndexByte(t.part, '\n')
+		if i < 0 {
+			return len(p), nil
+		}
+		if _, err := io.WriteString(t.w, oneLine(string(t.part[:i]))+"\n"); err != nil {
+			return 0, err
+		}
+		t.part = t.part[i+1:]
+	}
+}
+
+// printedOnly runs a command with its two streams behind termWriters and
+// answers its exit, its error's text through oneLine: the flag parser's
+// words, a usage error, the client's set-up and every reply all reach the
+// terminal one way.
+func printedOnly(stdout, stderr io.Writer, command func(stdout, stderr io.Writer) (int, error)) (int, error) {
+	out, errOut := &termWriter{w: stdout}, &termWriter{w: stderr}
+	code, err := command(out, errOut)
+	for _, t := range []*termWriter{out, errOut} {
+		io.WriteString(t.w, oneLine(string(t.part)))
+	}
+	if err != nil {
+		err = errors.New(oneLine(err.Error()))
+	}
+	return code, err
+}
+
+// runAccounts is conductor accounts, through printedOnly.
 func runAccounts(ctx context.Context, args []string, stdout, stderr io.Writer) (int, error) {
+	return printedOnly(stdout, stderr, func(out, errOut io.Writer) (int, error) { return accountsCmd(ctx, args, out, errOut) })
+}
+
+// runCapacity is conductor capacity, through printedOnly.
+func runCapacity(ctx context.Context, args []string, stdout, stderr io.Writer) (int, error) {
+	return printedOnly(stdout, stderr, func(out, errOut io.Writer) (int, error) { return capacityCmd(ctx, args, out, errOut) })
+}
+
+// accountsCmd is conductor accounts. Exit 2 for a usage error, before any
+// request; 1 when the server refuses or cannot be asked.
+func accountsCmd(ctx context.Context, args []string, stdout, stderr io.Writer) (int, error) {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
 		fmt.Fprint(stderr, accountsUsage)
 		if len(args) == 0 {
@@ -257,7 +325,7 @@ func runAccounts(ctx context.Context, args []string, stdout, stderr io.Writer) (
 	}
 	if sub == "list" {
 		if *asJSON {
-			return printReply(stdout, raw)
+			return printReply(stdout, raw, true)
 		}
 		writeAccounts(stdout, doc)
 		return 0, nil
@@ -313,8 +381,8 @@ func writeAccounts(w io.Writer, doc listedAccounts) {
 	}
 }
 
-// runCapacity is conductor capacity.
-func runCapacity(ctx context.Context, args []string, stdout, stderr io.Writer) (int, error) {
+// capacityCmd is conductor capacity.
+func capacityCmd(ctx context.Context, args []string, stdout, stderr io.Writer) (int, error) {
 	fs := flag.NewFlagSet("capacity", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	server := addAPIFlags(fs)
@@ -378,37 +446,48 @@ func runCapacity(ctx context.Context, args []string, stdout, stderr io.Writer) (
 		}
 		views = append(views, v)
 	default:
-		// The listing, page by page, until a page names no next or one
-		// that does not move on; one past maxCapacityPages is refused.
-		after := ""
+		// The listing, page by page, until a page names no next, within
+		// its bounds and its one deadline.
+		lctx, cancel := context.WithTimeout(ctx, listingTimeout)
+		defer cancel()
+		after, followed, size := "", map[string]bool{}, 0
 		for pages := 0; ; pages++ {
 			if pages == maxCapacityPages {
 				return 1, fmt.Errorf("capacity: the listing is longer than %d pages: ask for one agent with --agent", maxCapacityPages)
 			}
-			var page capacityPageReply
 			path := "/api/capacity"
 			if after != "" {
 				path += "?" + url.Values{"after": {after}}.Encode()
 			}
-			if err := c.doBody(ctx, http.MethodGet, path, nil, &page); err != nil {
+			var raw json.RawMessage
+			if err := c.doBody(lctx, http.MethodGet, path, nil, &raw); err != nil {
+				if lctx.Err() != nil && ctx.Err() == nil {
+					return 1, fmt.Errorf("capacity: the listing takes longer than %s: ask for one agent with --agent", listingTimeout)
+				}
 				return 1, refusalOf(err)
 			}
+			if size += len(raw); size > maxListingBytes {
+				return 1, fmt.Errorf("capacity: the listing is larger than %d MiB: ask for one agent with --agent", maxListingBytes>>20)
+			}
+			var page capacityPageReply
+			if err := json.Unmarshal(raw, &page); err != nil {
+				return 1, errors.New("capacity: the server's listing could not be read")
+			}
 			views = append(views, page.Views...)
-			if page.Next == "" || page.Next <= after {
+			if page.Next == "" {
 				break
 			}
-			after = page.Next
+			if followed[page.Next] {
+				return 1, errors.New("capacity: the server's listing does not move on: a page names as its next one already read")
+			}
+			followed[page.Next], after = true, page.Next
 		}
 	}
 	if *asJSON {
 		if *agent != "" {
-			return printReply(stdout, views[0])
+			return printReply(stdout, views[0], true)
 		}
-		b, err := json.Marshal(map[string]any{"views": views})
-		if err != nil {
-			return 1, errors.New("the server's views are not JSON")
-		}
-		return printReply(stdout, b)
+		return printJSON(stdout, map[string]any{"views": views})
 	}
 	for i, raw := range views {
 		var v capacity.View

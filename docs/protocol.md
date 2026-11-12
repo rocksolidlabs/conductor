@@ -5743,6 +5743,10 @@ listener costs the server one bounded queue and nothing more.
 `conductor capacity [--agent] [--account] [--model] [--read [--check]]
 [--json]` are these routes from the shell, with the workbench token in
 the `Authorization` header: a write reads the rev first and names it; a
-reply is read to at most 1 MiB, the listing to at most 64 pages; every
-string of a reply or a refusal is printed with its control characters
-replaced, and `--json` escapes them.
+reply is read to at most 1 MiB, and the listing to at most 64 pages,
+8 MiB in all and one minute, until a page names no `next`: a listing
+past a bound, or one whose `next` names a page already read, is refused
+whole. Everything the two commands print, and their errors, holds
+printed characters alone (a letter, a mark, a number, punctuation, a
+symbol or a space (a separator), by Unicode category) and newlines: the rest is
+replaced, and `--json` escapes it, as every `--json` of the CLI does.

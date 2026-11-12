@@ -810,12 +810,7 @@ func dispatchTickets(ctx context.Context, c *apiClient, d dispatchFlags, stdout 
 		if err != nil {
 			return 1, err
 		}
-		var indented bytes.Buffer
-		if err := json.Indent(&indented, b, "", "  "); err != nil {
-			return 1, err
-		}
-		fmt.Fprintln(stdout, indented.String())
-		return 0, nil
+		return printReply(stdout, b, true)
 	}
 	if len(all) == 0 {
 		fmt.Fprintln(stdout, "no tickets")
@@ -872,15 +867,24 @@ func namesOf(labels []dispatch.Label, milestones []dispatch.Milestone) ticketNam
 	return n
 }
 
+// printed reports whether r is a printed character: a letter, a mark, a
+// number, punctuation, a symbol or a space (a separator), by its Unicode
+// category. The rest (the controls of both ranges and DEL, the format
+// characters, private use, surrogates and a character not assigned) is
+// never printed as it is, by any command of the package.
+func printed(r rune) bool {
+	return unicode.In(r, unicode.L, unicode.M, unicode.N, unicode.P, unicode.S, unicode.Z)
+}
+
 // oneLine is s for one line of a terminal: a newline or a tab a space,
-// and every other control character U+FFFD, so nothing a reply carries
-// is read by a terminal as a control sequence.
+// and every other character that is not printed U+FFFD, so a reply's
+// text is shown as the characters it is and nothing else.
 func oneLine(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch {
 		case r == '\n' || r == '\t' || r == '\r':
 			return ' '
-		case unicode.IsControl(r):
+		case !printed(r):
 			return utf8.RuneError
 		}
 		return r
@@ -888,10 +892,11 @@ func oneLine(s string) string {
 }
 
 // textBlock is s for a block of lines, Markdown as a ticket keeps it: its
-// newlines and tabs kept and every other control character U+FFFD.
+// newlines and tabs kept and every other character that is not printed
+// U+FFFD.
 func textBlock(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r != '\n' && r != '\t' && unicode.IsControl(r) {
+		if r != '\n' && r != '\t' && !printed(r) {
 			return utf8.RuneError
 		}
 		return r

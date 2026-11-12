@@ -317,12 +317,11 @@ func (c *brakemanClient) act(ctx context.Context, name string, params map[string
 	if err != nil {
 		return "", nil, "", err
 	}
-	var b2 bytes.Buffer
-	if json.Indent(&b2, reply, "", "  ") != nil {
-		b2.Reset()
-		b2.Write(reply)
+	text, jerr := jsonText(reply, true)
+	if jerr != nil {
+		text = textBlock(string(reply))
 	}
-	return actWords(name, opID, reply) + "\n\n" + b2.String(), reply, opID, nil
+	return actWords(name, opID, reply) + "\n\n" + text, reply, opID, nil
 }
 
 // pathParams is a route's path parameters, as a schema's properties.
@@ -555,11 +554,11 @@ func requestText(raw json.RawMessage, read, submit string) (string, error) {
 	if err := json.Unmarshal(raw, &out); err != nil || json.Unmarshal(out.Request, &head) != nil {
 		return "", errors.New("brakeman: an unreadable request")
 	}
-	var b bytes.Buffer
-	if err := json.Indent(&b, out.Request, "", "  "); err != nil {
+	text, err := jsonText(out.Request, true)
+	if err != nil {
 		return "", errors.New("brakeman: an unreadable request")
 	}
-	return fmt.Sprintf("Brakeman request %s (%s), %s. Read what you need with %s, then submit one brief with %s.\n\n%s", head.ID, head.Kind, head.State, read, submit, b.String()), nil
+	return fmt.Sprintf("Brakeman request %s (%s), %s. Read what you need with %s, then submit one brief with %s.\n\n%s", oneLine(head.ID), oneLine(head.Kind), oneLine(head.State), read, submit, text), nil
 }
 
 // observe reads what, its query's keys the parameters of the route the
@@ -817,8 +816,7 @@ func runBrakeman(ctx context.Context, args []string, stdin io.Reader, stdout, st
 				return 1, err
 			}
 			if *asJSON {
-				_, err = stdout.Write(append(bytes.TrimRight(raw, "\n"), '\n'))
-				return 0, err
+				return printReply(stdout, raw, false)
 			}
 			text, err := requestText(raw, `"conductor brakeman observe WHAT"`, `"conductor brakeman brief --file F"`)
 			if err != nil {
@@ -1010,8 +1008,7 @@ func brakemanAct(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		if err != nil {
 			return 1, fmt.Errorf("act: %w", err)
 		}
-		_, err = stdout.Write(append(out, '\n'))
-		return 0, err
+		return printReply(stdout, out, false)
 	}
 	fmt.Fprintln(stdout, text)
 	return 0, nil
@@ -1099,8 +1096,7 @@ func brakemanStatus(ctx context.Context, c *apiClient, asJSON bool, stdout io.Wr
 		return 1, fmt.Errorf("brakeman status: %w", err)
 	}
 	if asJSON {
-		_, err := stdout.Write(append(raw, '\n'))
-		return 0, err
+		return printReply(stdout, raw, false)
 	}
 	var st struct {
 		Config     brakeman.Config    `json:"config"`
@@ -1191,8 +1187,7 @@ func brakemanList(ctx context.Context, c *apiClient, asJSON bool, stdout io.Writ
 		if err != nil {
 			return 1, err
 		}
-		_, err = stdout.Write(append(b, '\n'))
-		return 0, err
+		return printReply(stdout, b, false)
 	}
 	if len(all) == 0 {
 		fmt.Fprintln(stdout, "no requests")
@@ -1216,8 +1211,7 @@ func brakemanShow(ctx context.Context, c *apiClient, id string, asJSON bool, std
 		return 1, fmt.Errorf("brakeman show: %w", err)
 	}
 	if asJSON {
-		_, err := stdout.Write(append(raw, '\n'))
-		return 0, err
+		return printReply(stdout, raw, false)
 	}
 	var out struct {
 		Request brakeman.Request `json:"request"`
@@ -1358,11 +1352,11 @@ func fieldText(v json.RawMessage) string {
 
 // compactJSON is v on one line, '<', '>' and '&' as they are.
 func compactJSON(v json.RawMessage) string {
-	var b bytes.Buffer
-	if err := json.Compact(&b, v); err != nil {
-		return string(v)
+	text, err := jsonText(v, false)
+	if err != nil {
+		return oneLine(string(v))
 	}
-	return b.String()
+	return text
 }
 
 // roleActions are conductor brakeman role's actions.
@@ -1395,8 +1389,7 @@ func brakemanRole(ctx context.Context, c *apiClient, action string, asJSON bool,
 			return 1, fmt.Errorf("brakeman role %s: %w", action, err)
 		}
 		if asJSON {
-			_, err := stdout.Write(append(raw, '\n'))
-			return 0, err
+			return printReply(stdout, raw, false)
 		}
 		var out struct {
 			Config brakeman.Config `json:"config"`
@@ -1420,8 +1413,7 @@ func brakemanRole(ctx context.Context, c *apiClient, action string, asJSON bool,
 			return 1, fmt.Errorf("brakeman role %s: %w", action, err)
 		}
 		if asJSON {
-			_, err := stdout.Write(append(raw, '\n'))
-			return 0, err
+			return printReply(stdout, raw, false)
 		}
 		var out struct {
 			Role crew.RoleRecord `json:"role"`
@@ -1437,8 +1429,7 @@ func brakemanRole(ctx context.Context, c *apiClient, action string, asJSON bool,
 		return 1, fmt.Errorf("brakeman role status: %w", err)
 	}
 	if asJSON {
-		_, err := stdout.Write(append(raw, '\n'))
-		return 0, err
+		return printReply(stdout, raw, false)
 	}
 	var out struct {
 		Role struct {

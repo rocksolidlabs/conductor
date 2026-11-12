@@ -493,7 +493,7 @@ func printHandshake(w io.Writer, cfg *config.Config, ln, tlsLn net.Listener) err
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintln(w, string(b))
+	_, err = printReply(w, b, false)
 	return err
 }
 

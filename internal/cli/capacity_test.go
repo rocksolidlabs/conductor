@@ -2,15 +2,21 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +24,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/rocksolidlabs/conductor/internal/api"
 	"github.com/rocksolidlabs/conductor/internal/capacity"
 )
 
@@ -400,10 +407,13 @@ func TestCapacityCommandsAgainstTheServer(t *testing.T) {
 	}
 }
 
-// hostile is text that holds control characters of every kind a terminal
-// reads: an escape sequence, an operating system command, a bell, C1's
-// CSI and NEL, DEL, NUL, a backspace, a carriage return and a newline.
-const hostile = "mark\x1b[31m\x1b]0;title\x07\u009b2J\u0085\x7f\x00\b\r\n\tend"
+// hostile is text that holds characters of every kind that is not printed:
+// an escape sequence, an operating system command, a bell, C1's CSI and
+// NEL, DEL, NUL, a backspace, a carriage return and a newline, a
+// bidirectional override, a zero-width space and a private-use character.
+// It begins with mark and ends with kram, so a line that holds one and
+// not the other was broken by its newline.
+const hostile = "mark\x1b[31m\x1b]0;title\x07\u009b2J\u0085\x7f\x00\b\r\n\t" + string(rune(0x202e)) + string(rune(0x200b)) + string(rune(0xe000)) + "kram"
 
 // fill sets every string v holds, however deep, to s (a map gets one entry
 // keyed s), every bool to true and every number to 1, and makes every
@@ -465,97 +475,243 @@ func filled[T any](t *testing.T) T {
 	return v
 }
 
-// clean fails t when text holds a control character other than a newline,
-// or a byte that is not UTF-8.
+// clean fails t when text holds a character that is not printed, other
+// than a newline, or a byte that is not UTF-8, or a line that holds a
+// mark without its kram or a kram without its mark: hostile's newline
+// broke the line it was printed on.
 func clean(t *testing.T, what, text string) {
 	t.Helper()
 	if !utf8.ValidString(text) {
 		t.Errorf("%s printed a byte that is not UTF-8:\n%q", what, text)
 	}
 	for i, r := range text {
-		if r != '\n' && unicode.IsControl(r) {
+		if r != '\n' && !printed(r) {
 			t.Errorf("%s printed %U at byte %d:\n%q", what, r, i, text)
+			return
+		}
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Count(line, "mark") != strings.Count(line, "kram") {
+			t.Errorf("%s broke a line at a string's newline:\n%q", what, text)
 			return
 		}
 	}
 }
 
+// jsonTree is v as encoding/json decodes it into an any.
+func jsonTree(t *testing.T, v any) any {
+	t.Helper()
+	b, err := json.Marshal(v)
+	var tree any
+	if err != nil || json.Unmarshal(b, &tree) != nil {
+		t.Fatalf("%T: %v", v, err)
+	}
+	return tree
+}
+
+// cloneTree is a deep copy of a jsonTree.
+func cloneTree(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		m := make(map[string]any, len(x))
+		for k, e := range x {
+			m[k] = cloneTree(e)
+		}
+		return m
+	case []any:
+		s := make([]any, len(x))
+		for i, e := range x {
+			s[i] = cloneTree(e)
+		}
+		return s
+	}
+	return v
+}
+
+// isString reports whether v is a string of the reply's types: a time is
+// a string in JSON and none in Go, and is never empty.
+func isString(v any) bool {
+	s, ok := v.(string)
+	_, err := time.Parse(time.RFC3339, s)
+	return ok && err != nil
+}
+
+// emptied is a copy of v with every string empty.
+func emptied(v any) any {
+	switch x := v.(type) {
+	case string:
+		if isString(x) {
+			return ""
+		}
+		return x
+	case map[string]any:
+		m := make(map[string]any, len(x))
+		for k, e := range x {
+			m[k] = emptied(e)
+		}
+		return m
+	case []any:
+		s := make([]any, len(x))
+		for i, e := range x {
+			s[i] = emptied(e)
+		}
+		return s
+	}
+	return v
+}
+
+// members answers the path of every member of every object v holds,
+// however deep: a key of an object, or an index of an array, a step.
+func members(v any, at []any) [][]any {
+	var out [][]any
+	switch x := v.(type) {
+	case map[string]any:
+		for _, k := range slices.Sorted(maps.Keys(x)) {
+			p := append(slices.Clip(at), k)
+			out = append(append(out, p), members(x[k], p)...)
+		}
+	case []any:
+		for i, e := range x {
+			out = append(out, members(e, append(slices.Clip(at), i))...)
+		}
+	}
+	return out
+}
+
+// holder is the object in v that holds the member at path.
+func holder(v any, path []any) map[string]any {
+	for _, step := range path[:len(path)-1] {
+		if i, ok := step.(int); ok {
+			v = v.([]any)[i]
+		} else {
+			v = v.(map[string]any)[step.(string)]
+		}
+	}
+	return v.(map[string]any)
+}
+
+type replyVariant struct {
+	name string
+	tree any
+}
+
+// variants are the ways a reply is given: every string filled, every
+// string empty, every member absent, and then each member alone empty
+// (a string) and absent, the rest filled.
+func variants(filled any) []replyVariant {
+	out := []replyVariant{{"filled", filled}, {"every string empty", emptied(filled)}, {"every member absent", map[string]any{}}}
+	for _, p := range members(filled, nil) {
+		key := p[len(p)-1].(string)
+		if isString(holder(filled, p)[key]) {
+			v := cloneTree(filled)
+			holder(v, p)[key] = ""
+			out = append(out, replyVariant{fmt.Sprintf("%v empty", p), v})
+		}
+		v := cloneTree(filled)
+		delete(holder(v, p), key)
+		out = append(out, replyVariant{fmt.Sprintf("%v absent", p), v})
+	}
+	return out
+}
+
 // Every string of every reply these commands read (the accounts, a
 // write's answer, a view and a page of them, a refusal), filled through
 // reflection so a field added later is filled too, with text that holds
-// control characters, reaches the terminal without one, in the text form,
-// in --json (still the same JSON) and in a refusal's words.
+// characters that are not printed, reaches the terminal as printed
+// characters on the line it was printed on, in the text form, in --json
+// (still the same JSON) and in a refusal's words. Each reply is given
+// every way a string can take: filled, empty and absent, each member
+// alone and all together, so every branch a string decides is run.
 func TestCapacityCommandsPrintNoControlCharacter(t *testing.T) {
 	accounts := filled[listedAccounts](t)
 	accounts.Owner = false // so its why is printed
-	write := filled[accountWrite](t)
 	view := filled[capacity.View](t)
 	viewOK := filled[capacity.View](t) // the state whose figures are printed
 	viewOK.State, viewOK.Host.Kind, viewOK.Agent.Adapter = capacity.StateOK, capacity.HostNative, "claude"
-	refusal := filled[capacityRefusal](t)
-	page := filled[capacityPageReply](t) // its next the same each time, so the walk ends
+	page := filled[capacityPageReply](t) // a next filled too: its page names none
 	for i, v := range []capacity.View{view, viewOK} {
 		page.Views[i], _ = json.Marshal(v)
+	}
+	replies := map[string]any{
+		"accounts": jsonTree(t, accounts), "write": jsonTree(t, filled[accountWrite](t)), "view": jsonTree(t, viewOK),
+		"page": jsonTree(t, page), "refusal": jsonTree(t, filled[capacityRefusal](t)),
 	}
 
 	var refusing bool
 	var mu sync.Mutex
 	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		refuse := refusing
-		mu.Unlock()
 		status, reply := http.StatusOK, any(nil)
 		switch {
-		case refuse:
-			status, reply = http.StatusConflict, refusal
+		case refusing:
+			status, reply = http.StatusConflict, replies["refusal"]
 		case r.URL.Path == "/api/accounts" && r.Method == http.MethodGet:
-			reply = accounts
+			reply = replies["accounts"]
 		case r.Method == http.MethodDelete:
+			mu.Unlock()
 			w.WriteHeader(http.StatusNoContent)
 			return
 		case strings.HasPrefix(r.URL.Path, "/api/accounts"):
-			reply = write
+			reply = replies["write"]
 		case r.URL.Path == "/api/capacity" && r.URL.Query().Get("agent") == "":
-			reply = page
+			reply = cloneTree(replies["page"])
+			if m, ok := reply.(map[string]any); ok && r.URL.Query().Get("after") != "" {
+				delete(m, "next") // the page after the first ends the walk
+			}
 		default:
-			reply = viewOK
+			reply = replies["view"]
 		}
+		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		json.NewEncoder(w).Encode(reply)
 	}))
 	t.Cleanup(hs.Close)
 
-	commands := []struct {
+	type command struct {
 		run  cliRun
 		args []string
-	}{
-		{accountsRun(t), []string{"list"}},
-		{accountsRun(t), []string{"list", "--json"}},
+	}
+	list, listJSON := command{accountsRun(t), []string{"list"}}, command{accountsRun(t), []string{"list", "--json"}}
+	writes := []command{
 		{accountsRun(t), []string{"add", "--agent", "claude", "--label", "W", "--folder", "/x"}},
 		{accountsRun(t), []string{"rename", "a-aaaaaaaaaaaa", "W"}},
 		{accountsRun(t), []string{"retire", "a-aaaaaaaaaaaa"}},
-		{accountsRun(t), []string{"remove", hostile}},
 		{accountsRun(t), []string{"default", hostile, "a-aaaaaaaaaaaa"}},
-		{capacityRun(t), nil},
-		{capacityRun(t), []string{"--json"}},
-		{capacityRun(t), []string{"--agent", "a"}},
-		{capacityRun(t), []string{"--agent", "a", "--json"}},
-		{capacityRun(t), []string{"--agent", "a", "--read"}},
 	}
-	for _, refused := range []bool{false, true} {
-		mu.Lock()
-		refusing = refused
-		mu.Unlock()
-		for _, c := range commands {
-			what := fmt.Sprintf("%v (refused %v)", c.args, refused)
-			code, out := runCLI(t, c.run, hs.URL, c.args...)
-			if want := map[bool]int{false: 0, true: 1}[refused]; code != want || !strings.Contains(out, "mark") {
-				t.Errorf("%s: exit %d, want %d, with the reply's text:\n%q", what, code, want, out)
+	views := []command{{capacityRun(t), []string{"--agent", "a"}}, {capacityRun(t), []string{"--agent", "a", "--json"}}, {capacityRun(t), []string{"--agent", "a", "--read"}}}
+	listing := []command{{capacityRun(t), nil}, {capacityRun(t), []string{"--json"}}}
+	every := append(append(append([]command{list, listJSON, {accountsRun(t), []string{"remove", hostile}}}, writes...), views...), listing...)
+	readers := map[string][]command{"accounts": {list, listJSON}, "write": writes, "view": views, "page": listing, "refusal": every}
+
+	runs := 0
+	for _, reply := range slices.Sorted(maps.Keys(readers)) {
+		base := replies[reply]
+		for _, v := range variants(base) {
+			mu.Lock()
+			replies[reply], refusing = v.tree, reply == "refusal"
+			mu.Unlock()
+			for _, c := range readers[reply] {
+				what := fmt.Sprintf("%q", fmt.Sprintf("%v, the %s %s", c.args, reply, v.name))
+				code, out := runCLI(t, c.run, hs.URL, c.args...)
+				runs++
+				if want := map[bool]int{false: 0, true: 1}[reply == "refusal"]; code != want {
+					t.Errorf("%s: exit %d, want %d:\n%q", what, code, want, out)
+				}
+				if v.name == "filled" && !strings.Contains(out, "mark") {
+					t.Errorf("%s: without the reply's text:\n%q", what, out)
+				}
+				clean(t, what, out)
 			}
-			clean(t, what, out)
 		}
+		mu.Lock()
+		replies[reply] = base
+		mu.Unlock()
 	}
+	if runs < 1000 {
+		t.Errorf("only %d runs: a reply's members were not walked", runs)
+	}
+	t.Logf("%d runs", runs)
 
 	// --json is the same JSON: its strings decode to what the server sent.
 	mu.Lock()
@@ -568,20 +724,361 @@ func TestCapacityCommandsPrintNoControlCharacter(t *testing.T) {
 	}
 }
 
-// jsonText escapes what JSON may carry raw in a string and a terminal
-// reads (DEL, C1, a byte that is not UTF-8) and keeps the JSON's meaning.
-func TestJSONTextEscapesControls(t *testing.T) {
-	raw := []byte("{\"a\":\"x\x7f\xc2\x9b2J\xc2\x85\x9b\u2028y\"}\r\n")
-	text, err := jsonText(raw)
+// What the two commands write that is not a reply (the flag parser's
+// words and usage, a usage error that names an argument, the client's
+// set-up refusal and warning that name the server) holds printed
+// characters alone, on either stream, as their error does.
+func TestCapacityCommandsArgumentsPrintOnlyPrinted(t *testing.T) {
+	clearConductorEnv(t)
+	evil := "\x1b[31m\u009b2J\u202e"
+	host := "http://ho\u009b\u202est.example:1" // plain http off the machine
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel() // a request is never sent: the client's set-up is all that runs
+	for _, c := range []struct {
+		accounts bool
+		args     []string
+		code     int
+	}{
+		{false, []string{"--bad" + evil}, 2},
+		{true, []string{"list", "--bad" + evil}, 2},
+		{true, []string{"forget" + evil}, 2},
+		{false, []string{"stray" + evil}, 2},
+		{false, []string{"--server", "http://h\x1bst" + evil}, 2},
+		{false, []string{"--server", host}, 2},
+		{true, []string{"list", "--server", host}, 2},
+		{false, []string{"--server", host, "--insecure"}, 1},
+		{true, []string{"remove", "a" + evil, "--server", host, "--insecure"}, 1},
+	} {
+		var out, errb bytes.Buffer
+		args := append(c.args, "--token", dispatchToken)
+		run := runCapacity
+		if c.accounts {
+			run = runAccounts
+		}
+		code, err := run(cancelled, args, &out, &errb)
+		what := fmt.Sprintf("%q", c.args)
+		if code != c.code || err == nil {
+			t.Errorf("%s: exit %d %v, want %d with an error", what, code, err, c.code)
+		}
+		clean(t, what+" on stdout", out.String())
+		clean(t, what+" on stderr", errb.String())
+		if err != nil {
+			clean(t, what+" as its error", err.Error())
+		}
+	}
+}
+
+// The two commands write through printedOnly and nothing else: neither
+// names a raw stream, each runs its command through printedOnly alone,
+// handing it the two streams and naming them nowhere else, and the
+// commands are run from nowhere but there.
+func TestCapacityCommandsWriteThroughOneWriter(t *testing.T) {
+	fset := token.NewFileSet()
+	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	clean(t, "jsonText", text)
-	var got struct{ A string }
-	if err := json.Unmarshal([]byte(text), &got); err != nil || got.A != "x\x7f\u009b2J\u0085\ufffd\u2028y" {
-		t.Errorf("jsonText changed the JSON: %v %q from %q", err, got.A, text)
+	calls := map[string][]string{} // accountsCmd and capacityCmd: the functions that call them
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range f.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok {
+				continue
+			}
+			ast.Inspect(fn, func(n ast.Node) bool {
+				switch x := n.(type) {
+				case *ast.SelectorExpr:
+					if id, ok := x.X.(*ast.Ident); ok && id.Name == "os" && (x.Sel.Name == "Stdout" || x.Sel.Name == "Stderr") && name == "capacity.go" {
+						t.Errorf("%s names os.%s", fn.Name.Name, x.Sel.Name)
+					}
+				case *ast.CallExpr:
+					if id, ok := x.Fun.(*ast.Ident); ok && (id.Name == "accountsCmd" || id.Name == "capacityCmd") {
+						calls[id.Name] = append(calls[id.Name], fn.Name.Name)
+					}
+				}
+				return true
+			})
+			if name != "capacity.go" || (fn.Name.Name != "runAccounts" && fn.Name.Name != "runCapacity") {
+				continue
+			}
+			ret, ok := fn.Body.List[0].(*ast.ReturnStmt)
+			if len(fn.Body.List) != 1 || !ok || len(ret.Results) != 1 {
+				t.Errorf("%s is not one return of printedOnly", fn.Name.Name)
+				continue
+			}
+			call, ok := ret.Results[0].(*ast.CallExpr)
+			if id, isID := call.Fun.(*ast.Ident); !ok || !isID || id.Name != "printedOnly" || len(call.Args) != 3 {
+				t.Errorf("%s does not return printedOnly's answer", fn.Name.Name)
+				continue
+			}
+			uses := map[string]int{}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				if id, ok := n.(*ast.Ident); ok {
+					uses[id.Name]++
+				}
+				return true
+			})
+			a, aok := call.Args[0].(*ast.Ident)
+			b, bok := call.Args[1].(*ast.Ident)
+			if !aok || !bok || a.Name != "stdout" || b.Name != "stderr" || uses["stdout"] != 1 || uses["stderr"] != 1 {
+				t.Errorf("%s names its raw streams other than as printedOnly's: %v", fn.Name.Name, uses)
+			}
+		}
 	}
-	if _, err := jsonText([]byte("not json \x1b[2J")); err == nil || strings.ContainsRune(err.Error(), 0x1b) {
+	if !slices.Equal(calls["accountsCmd"], []string{"runAccounts"}) || !slices.Equal(calls["capacityCmd"], []string{"runCapacity"}) {
+		t.Errorf("the commands are run from %v, not through printedOnly alone", calls)
+	}
+}
+
+// jsonText escapes what JSON may carry raw in a string and is not
+// printed (DEL, C1, a format character, a byte that is not UTF-8, a
+// character past the basic plane as its surrogate pair) and
+// keeps the JSON's meaning, indented or compact.
+func TestJSONTextEscapesControls(t *testing.T) {
+	raw := []byte("{\"a\":\"x\x7f\xc2\x9b2J\xc2\x85\x9b\u2028\u202e\U000e0001y\"}\r\n")
+	for _, indent := range []bool{true, false} {
+		text, err := jsonText(raw, indent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clean(t, "jsonText", text)
+		var got struct{ A string }
+		if err := json.Unmarshal([]byte(text), &got); err != nil || got.A != "x\x7f\u009b2J\u0085\ufffd\u2028\u202e\U000e0001y" {
+			t.Errorf("jsonText changed the JSON: %v %q from %q", err, got.A, text)
+		}
+		if strings.Contains(text, "\n") != indent {
+			t.Errorf("indent %v: %q", indent, text)
+		}
+	}
+	if _, err := jsonText([]byte("not json \x1b[2J"), true); err == nil || strings.ContainsRune(err.Error(), 0x1b) {
 		t.Errorf("a reply that is not JSON: %v", err)
+	}
+}
+
+// A printed character is one of a letter, a mark, a number, punctuation,
+// a symbol or a space, by its category: one character of every category
+// the standard library tells, and characters not assigned, are printed or
+// not as their category says; oneLine and textBlock replace each one that
+// is not, and jsonText escapes it and keeps its meaning.
+func TestPrintedIsByCategory(t *testing.T) {
+	seen := 0
+	check := func(what string, r rune, want bool) {
+		t.Helper()
+		if printed(r) != want {
+			t.Errorf("%s %U: printed %v, want %v", what, r, printed(r), want)
+		}
+		if unicode.Is(unicode.Cs, r) {
+			return // no string holds a surrogate
+		}
+		s := "a" + string(r) + "b"
+		if got := oneLine(s); (got == s) != (want || r == ' ') || (!want && r > ' ' && got != "a\ufffdb") {
+			t.Errorf("%s %U: oneLine gives %q", what, r, got)
+		}
+		if got := textBlock(s); (got == s) != (want || r == '\n' || r == '\t') {
+			t.Errorf("%s %U: textBlock gives %q", what, r, got)
+		}
+		b, _ := json.Marshal(map[string]string{"a": string(r)})
+		text, err := jsonText(b, false)
+		var back map[string]string
+		if err != nil || json.Unmarshal([]byte(text), &back) != nil || back["a"] != string(r) || (!want && strings.ContainsRune(text, r)) {
+			t.Errorf("%s %U: jsonText gives %q %v", what, r, text, err)
+		}
+		seen++
+	}
+	for _, name := range slices.Sorted(maps.Keys(unicode.Categories)) {
+		if len(name) != 2 {
+			continue // a major category: its subcategories are walked
+		}
+		table := unicode.Categories[name]
+		r := rune(0)
+		if len(table.R16) > 0 {
+			r = rune(table.R16[0].Lo)
+		} else {
+			r = rune(table.R32[0].Lo)
+		}
+		check(name, r, strings.ContainsRune("LMNPSZ", rune(name[0])))
+	}
+	for r, want := range map[rune]bool{
+		0x0378: false, 0x086f: false, 0x10fffe: false, 0x10ffff: false, // not assigned
+		0x1d: false, 0x7f: false, 0x9b: false, 0x200b: false, 0x202e: false, 0xfeff: false, 0xad: false, 0xe0001: false,
+		0xa0: true, 0x3000: true, 0x2028: true, 0x2014: true, 0x1f600: true, 0x0301: true,
+	} {
+		check("by hand", r, want)
+	}
+	if seen < 30 {
+		t.Errorf("only %d categories walked", seen)
+	}
+}
+
+// Every JSON the package prints goes through jsonText: no other function
+// indents or compacts JSON, and no file writes a byte slice onto a stream
+// as the package's printers once did (w.Write(append(b, '\n')),
+// fmt.Fprintln(w, string(b))).
+func TestEveryJSONGoesThroughJSONText(t *testing.T) {
+	fset := token.NewFileSet()
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range f.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok {
+				continue
+			}
+			ast.Inspect(fn, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				sel, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				pkg, _ := sel.X.(*ast.Ident)
+				at := fset.Position(call.Pos()).String()
+				switch {
+				case pkg != nil && pkg.Name == "json" && slices.Contains([]string{"Indent", "MarshalIndent", "Compact"}, sel.Sel.Name) && fn.Name.Name != "jsonText":
+					t.Errorf("%s: %s calls json.%s: print JSON through jsonText", at, fn.Name.Name, sel.Sel.Name)
+				case pkg != nil && pkg.Name == "json" && sel.Sel.Name == "NewEncoder" && fn.Name.Name != "encodeJSON":
+					t.Errorf("%s: %s makes a JSON encoder", at, fn.Name.Name)
+				case sel.Sel.Name == "Write" && len(call.Args) == 1:
+					if inner, ok := call.Args[0].(*ast.CallExpr); ok {
+						if id, ok := inner.Fun.(*ast.Ident); ok && id.Name == "append" {
+							t.Errorf("%s: %s writes a byte slice onto a stream", at, fn.Name.Name)
+						}
+					}
+				case pkg != nil && pkg.Name == "fmt" && strings.HasPrefix(sel.Sel.Name, "Fprint"):
+					for _, a := range call.Args[1:] {
+						if conv, ok := a.(*ast.CallExpr); ok {
+							if id, ok := conv.Fun.(*ast.Ident); ok && id.Name == "string" {
+								t.Errorf("%s: %s prints a byte slice as it is", at, fn.Name.Name)
+							}
+						}
+					}
+				}
+				return true
+			})
+		}
+	}
+}
+
+// The listing's walk ends by itself: a next that names a page already
+// read, at once or after three pages, is refused whole, as are a walk past
+// its one deadline though no page passed its own, and pages that together
+// pass the walk's bound on bytes though none passed its own.
+func TestCapacityListingEndsByItself(t *testing.T) {
+	view, _ := json.Marshal(stubViews()["ghost"])
+	listing := func(t *testing.T, page func(n int, after string, w http.ResponseWriter, r *http.Request)) (int, string, int) {
+		var mu sync.Mutex
+		n := 0
+		hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			n++
+			at := n
+			mu.Unlock()
+			page(at, r.URL.Query().Get("after"), w, r)
+		}))
+		t.Cleanup(hs.Close)
+		code, out := runCLI(t, capacityRun(t), hs.URL)
+		mu.Lock()
+		defer mu.Unlock()
+		return code, out, n
+	}
+	answer := func(w http.ResponseWriter, next string, pad int) {
+		json.NewEncoder(w).Encode(map[string]any{"views": []json.RawMessage{view}, "next": next, "pad": strings.Repeat("x", pad)})
+	}
+	for _, c := range []struct {
+		what  string
+		nexts []string
+		pages int
+	}{
+		{"a next that repeats at once", []string{"x", "x"}, 2},
+		{"a next that cycles after three pages", []string{"a", "b", "c", "a"}, 4},
+	} {
+		code, out, n := listing(t, func(at int, _ string, w http.ResponseWriter, _ *http.Request) { answer(w, c.nexts[at-1], 0) })
+		if code != 1 || n != c.pages || strings.Contains(out, "Ghost") || !strings.Contains(out, "the server's listing does not move on") {
+			t.Errorf("%s: exit %d after %d pages:\n%s", c.what, code, n, out)
+		}
+	}
+
+	oldRequest, oldListing, oldBytes := requestTimeout, listingTimeout, maxListingBytes
+	t.Cleanup(func() { requestTimeout, listingTimeout, maxListingBytes = oldRequest, oldListing, oldBytes })
+	requestTimeout, listingTimeout = time.Hour, 300*time.Millisecond
+	code, out, n := listing(t, func(at int, _ string, w http.ResponseWriter, r *http.Request) {
+		if at == 4 {
+			<-r.Context().Done() // far inside its own hour: the walk's deadline ends it
+			return
+		}
+		answer(w, fmt.Sprintf("k%d", at), 0)
+	})
+	if code != 1 || n != 4 || strings.Contains(out, "Ghost") || !strings.Contains(out, "the listing takes longer than 300ms") {
+		t.Errorf("a walk past its deadline: exit %d after %d pages:\n%s", code, n, out)
+	}
+
+	requestTimeout, listingTimeout, maxListingBytes = oldRequest, time.Hour, 2<<20
+	code, out, n = listing(t, func(at int, _ string, w http.ResponseWriter, _ *http.Request) {
+		answer(w, fmt.Sprintf("k%d", at), 800<<10) // inside maxReply alone
+	})
+	if code != 1 || n != 3 || strings.Contains(out, "Ghost") || !strings.Contains(out, "the listing is larger than 2 MiB") {
+		t.Errorf("a walk past its bytes: exit %d after %d pages:\n%.300s", code, n, out)
+	}
+}
+
+// The guide's CLI forms of the accounts and capacity operations are
+// commands as written: each, its placeholders given values, runs through
+// the commands' own parser against a stub of the routes and exits 0, and
+// each placeholder is one its command's usage names. (The guide's other
+// rows have no test of this kind: this one is for these eight rows.)
+func TestTheCapacityOperationsCLIFormsAreCommands(t *testing.T) {
+	clearConductorEnv(t)
+	hs := (&capacityStub{views: stubViews()}).serve(t)
+	values := map[string]string{"ADAPTER": "claude", "WORDS": "Work", "DIR": "/srv/work", "ID": "a-aaaaaaaaaaaa"}
+	rows := 0
+	for _, op := range api.Operations() {
+		if !strings.HasPrefix(op.Name, "accounts_") && !strings.HasPrefix(op.Name, "capacity_") {
+			continue
+		}
+		rows++
+		if len(op.CLI) < 2 || op.CLI[0] != "conductor" {
+			t.Errorf("%s: no CLI form: %q", op.Name, op.CLI)
+			continue
+		}
+		usage := map[string]string{"accounts": accountsUsage, "capacity": capacityUsage}[op.CLI[1]]
+		args := slices.Clone(op.CLI[1:])
+		for i, w := range args {
+			if w != strings.ToUpper(w) || strings.HasPrefix(w, "-") {
+				continue
+			}
+			v, ok := values[w]
+			if i > 0 && args[i-1] == "--agent" {
+				v = "claude-a" // an agent of the stub's
+			}
+			if !ok || !strings.Contains(usage, " "+w) {
+				t.Errorf("%s: the placeholder %s is not one the usage names", op.Name, w)
+			}
+			args[i] = v
+		}
+		var out, errb bytes.Buffer
+		if code, err := Run(t.Context(), append(args, "--server", hs.URL, "--token", dispatchToken), strings.NewReader(""), &out, &errb); code != 0 || err != nil {
+			t.Errorf("%s: %q is not a command as written: exit %d %v\n%s", op.Name, op.CLI, code, err, errb.String())
+		}
+	}
+	if rows != 8 {
+		t.Errorf("%d accounts and capacity rows, want 8", rows)
 	}
 }

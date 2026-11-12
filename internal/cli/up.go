@@ -16,7 +16,6 @@ import (
 	"runtime"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
@@ -172,9 +171,9 @@ func runUp(ctx context.Context, args []string, stdout, stderr io.Writer) (int, e
 }
 
 // printableURL reports whether a URL from a reply may be printed: http or
-// https with a host, and nothing a terminal would read as a control sequence.
+// https with a host, and printed characters alone (printed).
 func printableURL(s string) bool {
-	if strings.ContainsFunc(s, unicode.IsControl) {
+	if strings.ContainsFunc(s, func(r rune) bool { return !printed(r) }) {
 		return false
 	}
 	u, err := url.Parse(s)
