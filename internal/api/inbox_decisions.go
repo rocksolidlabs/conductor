@@ -93,6 +93,10 @@ func requestOf(row ledger.DecisionRow) recordRequest {
 // alone.
 func answererOf(r recordRequest) string {
 	f := r.For
+	if f != nil && f.Label == crew.GrantDecideLabel && f.Person == "" {
+		// Given to the decide grant (docs/plans/decide-grant.md).
+		return inboxAnswerer + ", or anyone holding the decide grant"
+	}
 	if f == nil || f.Person == "" {
 		return inboxAnswerer
 	}

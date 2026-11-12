@@ -81,6 +81,10 @@ type Server struct {
 	// watches (lane.go).
 	laneSeam *laneSeams
 	lanes    laneState
+	// decideSeam is nil but in tests; decideLists the decide lists being
+	// read (decide.go).
+	decideSeam  atomic.Pointer[decideSeams]
+	decideLists decideListing
 	// decisionItemSeam is nil but in tests: called with a DR1 record's n
 	// as its item is about to be made, after the read of the record and
 	// what it holds (inbox_decisions.go).
@@ -911,6 +915,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/reach", s.requireAdmin(s.handleReach))
 	mux.HandleFunc("GET /.well-known/acme-challenge/{token}", s.handleACMEChallenge)
 	mux.HandleFunc("GET /api/whoami", s.requireAdmin(s.handleWhoAmI))
+	mux.HandleFunc("GET /api/me", s.handleMe)
 	mux.HandleFunc("GET /api/switchyard/status", s.requireAdmin(s.handleSwitchyardStatus))
 	mux.HandleFunc("GET /api/export", s.requireAdmin(s.handleExport))
 	mux.HandleFunc("GET /api/capabilities", s.requireAdmin(s.handleCapabilities))
