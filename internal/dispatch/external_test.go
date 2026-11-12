@@ -747,16 +747,21 @@ func TestRemovedLinkDropsRead(t *testing.T) {
 // The close policy's merged: met by a live delivery read merged at most
 // five minutes ago, the close writing closed_on with the read; not by an
 // old read, a pull request closed unmerged, or an external link read
-// merged. In this row a project's policy refuses merged (the test sets it
-// by hand, as a replica's row would).
+// merged. A project's policy takes merged (since the close route reads
+// its delivery links, PR-4), once.
 func TestCloseRequiresMerged(t *testing.T) {
 	ctx := context.Background()
 	s := linkedStore(t)
-	rc, err := s.CreateProject(ctx, testOp("p0"), NewProject{Key: "NOP", Name: "No", CloseRequires: &[]string{RequireMerged}})
+	rc, err := s.CreateProject(ctx, testOp("p0"), NewProject{Key: "NOP", Name: "No", CloseRequires: &[]string{RequireMerged, RequireMerged}})
 	want(t, rc, err, StatusFailed, RefusalInvalid)
+	rc, err = s.CreateProject(ctx, testOp("p0b"), NewProject{Key: "MRG", Name: "Merged", CloseRequires: &[]string{RequireMerged}})
+	want(t, rc, err, StatusDone, "")
 	newProject(t, s, "CND")
-	rc, err = s.EditProject(ctx, testOp("p1"), "CND", ProjectEdit{CloseRequires: &[]string{RequireDelivery, RequireMerged}})
-	want(t, rc, err, StatusFailed, RefusalInvalid)
+	rc, err = s.EditProject(ctx, testOp("p1"), "CND", ProjectEdit{CloseRequires: &[]string{RequireMerged, RequireDelivery}})
+	want(t, rc, err, StatusDone, "")
+	if v, err := s.Project(ctx, "CND"); err != nil || !slices.Equal(v.Project.CloseRequires, []string{RequireDelivery, RequireMerged}) {
+		t.Fatalf("the policy in its order: %+v %v", v.Project.CloseRequires, err)
+	}
 	if _, err := s.db.Exec(`UPDATE projects SET close_requires = '["merged"]' WHERE key = 'CND'`); err != nil {
 		t.Fatal(err)
 	}
