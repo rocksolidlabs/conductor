@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
@@ -10,7 +11,9 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -565,45 +568,140 @@ func (e *testEnv) post(path string, body any) (int, map[string]any, error) {
 	return resp.StatusCode, out, err
 }
 
-// A save held in its check (on the fake's gate) while the host's token is
-// removed is refused once released (409 changed) and keeps nothing, so a
-// check that finishes after a remove never brings the token back; two
-// hosts saved at once are both kept, and a remove of one beside a save of
-// the other leaves each as its last act left it.
+// lockWaits makes e's server signal its first change that finds the
+// file's lock held.
+func lockWaits(e *testEnv) <-chan struct{} {
+	busy := make(chan struct{})
+	var once sync.Once
+	e.srv.trackers.lockFile = func(l *os.File) error {
+		err := lockTrackerFile(l)
+		if errors.Is(err, errTrackerBusy) {
+			once.Do(func() { close(busy) })
+		}
+		return err
+	}
+	return busy
+}
+
+// heldAcross holds a save of tok for host on held's server at the fake,
+// GitHub's other answers let through, and makes acts on other's server
+// meanwhile, one after another; the gate opens once the first act waits
+// for the file's lock (or all have answered, as they would with no lock):
+// the held save's answer and the acts', in their order.
+func heldAcross(t *testing.T, f *fakeGH, held *testEnv, host, tok string, other *testEnv, acts ...func() string) (string, []string) {
+	t.Helper()
+	busy := lockWaits(other)
+	gate, first := heldSave(t, held, f, host, tok)
+	apiHost, path := host, "/api/v3/user"
+	if host == "github.com" {
+		apiHost, path = "api.github.com", "/user"
+	}
+	f.Hold("GET", apiHost, path).Open()
+	done := make(chan []string, 1)
+	go func() {
+		var out []string
+		for _, act := range acts {
+			out = append(out, act())
+		}
+		done <- out
+	}()
+	var answers []string
+	select {
+	case <-busy:
+		gate.Open()
+		answers = <-done
+	case answers = <-done:
+		gate.Open()
+	}
+	return <-first, answers
+}
+
+// landed reports an act made while a save was held as answered want: at
+// once after the release, or refused busy past the lock's bound and then
+// made again by again.
+func landed(t *testing.T, answer string, again func() string, want string) bool {
+	t.Helper()
+	if strings.HasPrefix(answer, "503 credentials_busy ") {
+		answer = again()
+	}
+	return answer == want
+}
+
+// listAct is the list on e: its status and the marks it shows.
+func listAct(e *testEnv) func() string {
+	return func() string {
+		req, _ := http.NewRequest("GET", e.http.URL+"/api/trackers", nil)
+		req.Header.Set("Authorization", "Bearer "+adminToken)
+		resp, err := e.client.Do(req)
+		if err != nil {
+			return err.Error()
+		}
+		defer resp.Body.Close()
+		var out trackersReply
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		marks := []string{fmt.Sprint(resp.StatusCode)}
+		for _, v := range out.GitHub {
+			marks = append(marks, v.Fingerprint)
+		}
+		return strings.Join(marks, " ")
+	}
+}
+
+// removeAct and saveAct are a remove and a save on e, answered as
+// heldSave's are.
+func removeAct(e *testEnv, host string) func() string {
+	return func() string {
+		status, out, err := e.post("/api/trackers/github/remove", map[string]any{"host": host})
+		return fmt.Sprint(status, " ", codeOf(out), " ", out["removed"], " ", err)
+	}
+}
+
+func saveAct(e *testEnv, host, tok string) func() string {
+	return func() string {
+		status, out, err := e.post("/api/trackers/github", map[string]any{"host": host, "token": tok})
+		return fmt.Sprint(status, " ", codeOf(out), " ", err)
+	}
+}
+
+// A save holds the file's lock from its read to its write, its check with
+// GitHub included: a remove made while it is held at the fake waits for it
+// and lands after it, so after the release and a remove that answered,
+// nothing is kept and credentialFor answers no token. The list and
+// credentialFor answer at once while the save is held. Two hosts saved at
+// once are both kept, and a remove of one beside a save of the other
+// leaves each as its last act left it.
 func TestTrackerSaveRaceRemove(t *testing.T) {
 	e, f := trackerEnv(t, nil)
 	if status, data, _ := e.saveToken(t, "", plantedToken); status != http.StatusOK {
 		t.Fatalf("save: %d %s", status, data)
 	}
-	gate := f.Hold("GET", "api.github.com", "/user")
-	type answer struct {
-		status int
-		out    map[string]any
-		err    error
+	ref := tracker.Ref{System: tracker.GitHub, Host: "github.com"}
+	saved, during := heldAcross(t, f, e, "github.com", plantedToken2, e, listAct(e), func() string {
+		c, err := e.srv.credentialFor(t.Context(), ref)
+		return fmt.Sprint(c.Fingerprint() == tokenMark(plantedToken), " ", err)
+	}, removeAct(e, "github.com"))
+	// Neither read waits on the held save, and both answer what is kept.
+	if during[0] != "200 "+tokenMark(plantedToken) || during[1] != "true <nil>" {
+		t.Fatalf("while a save is held: the list %s, credentialFor %s", during[0], during[1])
 	}
-	held := make(chan answer, 1)
-	go func() {
-		status, out, err := e.post("/api/trackers/github", map[string]any{"token": plantedToken2})
-		held <- answer{status, out, err}
-	}()
-	<-gate.Reached()
-	if status, data, out := e.callAs(t, adminToken, "POST", "/api/trackers/github/remove", map[string]any{"host": "github.com"}); status != http.StatusOK || out["removed"] != true {
-		t.Fatalf("remove: %d %s", status, data)
-	}
-	gate.Open()
-	if a := <-held; a.err != nil || a.status != http.StatusConflict || codeOf(a.out) != "changed" {
-		t.Fatalf("the held save: %d %v %v", a.status, a.out, a.err)
+	if saved != "200  <nil>" || !landed(t, during[2], removeAct(e, "github.com"), "200  true <nil>") {
+		t.Fatalf("the held save: %s; the remove made meanwhile: %s", saved, during[2])
 	}
 	if l := e.trackersListed(t); len(l) != 0 {
 		t.Fatalf("the removed host is kept again: %v", l)
 	}
-	// A token checked and not kept leaves no record of what GitHub said.
+	var ae *apiError
+	if _, err := e.srv.credentialFor(t.Context(), ref); !errors.As(err, &ae) || ae.Code != "no_token" {
+		t.Fatalf("credentialFor after the remove: %v", err)
+	}
+	// A removed token leaves no record of what GitHub said.
 	e.srv.trackers.mu.Lock()
-	s, recorded := e.srv.trackers.seen["github.com"]
+	_, recorded := e.srv.trackers.seen["github.com"]
 	e.srv.trackers.mu.Unlock()
 	if recorded {
-		t.Fatalf("a token not kept is recorded: %v", s.fingerprint == tokenMark(plantedToken2))
+		t.Fatal("a removed token is recorded")
 	}
+	e.srv.trackers.lockFile = lockTrackerFile
 
 	acts := func(fs ...func() (int, map[string]any, error)) {
 		t.Helper()
@@ -820,47 +918,55 @@ func hostsKept(t *testing.T, e *testEnv) []string {
 	return out
 }
 
-// Two servers over one data directory: every change is made under the
-// file's own lock from what the file holds then. A save held at GitHub on
-// one while the other removes its host is not kept; two saves of two hosts
-// at once, one on each, are both kept; a save of a host while the other
-// replaces that host's token: the replace is kept, the save answers 409
-// changed, and both servers list the one kept.
+// Two servers over one data directory make their saves and removes one
+// at a time: a change on A made while B's save is held at GitHub waits for
+// it and lands after it, and A's last change is what the file holds,
+// whatever the changes (a save and a remove of B's host, none kept there;
+// a remove and a save in the same second, one kept); neither server hands
+// out a token A removed. Two saves of two hosts at once, one on each, are
+// both kept; A's replace of the host B's held save is for is kept, and
+// both servers list it.
 func TestTrackerTwoServersOneFile(t *testing.T) {
 	a, f := trackerEnv(t, nil)
 	b := newTestEnv(t, func(c *config.Config) { c.DataDir = a.srv.store.Dir() })
 	b.srv.limiter = newRateLimiter(1e6, 1e6)
 	useFake(b.srv, f)
-	if status, data, _ := a.saveToken(t, "github.com", plantedToken); status != http.StatusOK {
-		t.Fatalf("save on A: %d %s", status, data)
-	}
-	gate, held := heldSave(t, b, f, "github.com", plantedToken2)
-	if status, data, out := a.callAs(t, adminToken, "POST", "/api/trackers/github/remove", map[string]any{"host": "github.com"}); status != http.StatusOK || out["removed"] != true {
-		t.Fatalf("remove on A: %d %s", status, data)
-	}
-	gate.Open()
-	if got := <-held; got != "409 changed <nil>" {
-		t.Fatalf("B's save across A's remove: %s", got)
+	ref := tracker.Ref{System: tracker.GitHub, Host: "github.com"}
+	saved, acts := heldAcross(t, f, b, "github.com", plantedToken, a, saveAct(a, "github.com", plantedToken), removeAct(a, "github.com"))
+	if saved != "200  <nil>" || !landed(t, acts[1], removeAct(a, "github.com"), "200  true <nil>") {
+		t.Fatalf("B's held save: %s; A's save and remove: %v", saved, acts)
 	}
 	if h := hostsKept(t, a); len(h) != 0 {
 		t.Fatalf("the removed host is kept again: %v", h)
 	}
-	if _, err := a.srv.credentialFor(t.Context(), tracker.Ref{System: tracker.GitHub, Host: "github.com"}); err == nil {
-		t.Fatal("A hands out the token its admin removed")
+	for _, e := range []*testEnv{a, b} {
+		var ae *apiError
+		if _, err := e.srv.credentialFor(t.Context(), ref); !errors.As(err, &ae) || ae.Code != "no_token" {
+			t.Fatalf("a server hands out the token its admin removed: %v", err)
+		}
+	}
+	// The same second on both servers' clocks.
+	at := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	a.srv.trackers.now, b.srv.trackers.now = func() time.Time { return at }, func() time.Time { return at }
+	if status, data, _ := a.saveToken(t, "github.com", plantedToken); status != http.StatusOK {
+		t.Fatalf("save on A: %d %s", status, data)
+	}
+	saved, acts = heldAcross(t, f, b, "github.com", plantedToken2, a, removeAct(a, "github.com"), saveAct(a, "github.com", plantedToken))
+	if saved != "200  <nil>" || !landed(t, acts[1], saveAct(a, "github.com", plantedToken), "200  <nil>") {
+		t.Fatalf("B's held save: %s; A's remove and save: %v", saved, acts)
+	}
+	if row := rowOf(a.trackersListed(t), "github.com"); row["fingerprint"] != tokenMark(plantedToken) {
+		t.Fatalf("after A's remove and save again in the same second: %v, not A's token", row)
+	}
+	a.srv.trackers.now, b.srv.trackers.now = time.Now, time.Now
+	if status, data, _ := a.callAs(t, adminToken, "POST", "/api/trackers/github/remove", map[string]any{"host": "github.com"}); status != http.StatusOK {
+		t.Fatalf("remove on A: %d %s", status, data)
 	}
 
 	// Two changes at once, one on each server: A's has read the file and
 	// not yet written it when B's save comes to the lock (B is then told
 	// it is busy, and waits), or, were there no lock, has answered.
-	busy, bDone := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	b.srv.trackers.lockFile = func(l *os.File) error {
-		err := lockTrackerFile(l)
-		if errors.Is(err, errTrackerBusy) {
-			once.Do(func() { close(busy) })
-		}
-		return err
-	}
+	busy, bDone := lockWaits(b), make(chan struct{})
 	var bAnswer string
 	ka := a.srv.trackers
 	if ae := ka.change(true, func(d *os.File, file trackerFile) *apiError {
@@ -889,15 +995,9 @@ func TestTrackerTwoServersOneFile(t *testing.T) {
 	if status, data, _ := a.saveToken(t, "ghe-3.example.com", plantedToken); status != http.StatusOK {
 		t.Fatalf("save on A: %d %s", status, data)
 	}
-	gate, held = heldSave(t, b, f, "ghe-3.example.com", plantedToken2)
-	// B's check stays at its gate; A's goes through one already open.
-	f.Hold("GET", "ghe-3.example.com", "/api/v3/user").Open()
-	if status, data, _ := a.saveToken(t, "ghe-3.example.com", plantedEnv); status != http.StatusOK {
-		t.Fatalf("the replace on A: %d %s", status, data)
-	}
-	gate.Open()
-	if got := <-held; got != "409 changed <nil>" {
-		t.Fatalf("B's save across A's replace: %s", got)
+	saved, acts = heldAcross(t, f, b, "ghe-3.example.com", plantedToken2, a, saveAct(a, "ghe-3.example.com", plantedEnv))
+	if saved != "200  <nil>" || !landed(t, acts[0], saveAct(a, "ghe-3.example.com", plantedEnv), "200  <nil>") {
+		t.Fatalf("B's held save: %s; A's replace: %s", saved, acts[0])
 	}
 	for _, e := range []*testEnv{a, b} {
 		if row := rowOf(e.trackersListed(t), "ghe-3.example.com"); row["fingerprint"] != tokenMark(plantedEnv) {
@@ -907,9 +1007,9 @@ func TestTrackerTwoServersOneFile(t *testing.T) {
 }
 
 // Nothing but the one file keeps a token: what a change cut short left
-// under the temporary file's one name goes at the next save or remove,
-// and at a start; after each, the directory holds the file and the lock
-// alone. On a file system without locks every change is refused in fixed
+// under the temporary file's one name goes at the next save or remove (a
+// save its host refuses among them), and at a start; after each, the
+// directory holds the file and the lock alone. On a file system without locks every change is refused in fixed
 // words and nothing is written, and the list still answers.
 func TestTrackerOneFileHoldsTheToken(t *testing.T) {
 	e, f := trackerEnv(t, nil)
@@ -949,6 +1049,11 @@ func TestTrackerOneFileHoldsTheToken(t *testing.T) {
 		t.Fatalf("save: %d %s", status, data)
 	}
 	names("a save over a leftover")
+	leftover()
+	if status, data, out := e.saveToken(t, "ghe-2.example.com", plantedWrong); status != http.StatusUnprocessableEntity || codeOf(out) != "token_refused" {
+		t.Fatalf("a save its host refuses: %d %s", status, data)
+	}
+	names("a save its host refused")
 	leftover()
 	stopEnv(t, e)
 	e = e.restart()
@@ -1030,36 +1135,56 @@ func TestTrackerKeptTokenPrintsNothing(t *testing.T) {
 	}
 }
 
-// What is shown is the latest answer by when GitHub was asked: a check
-// that accepts the kept token asked first, one that refuses it asked
-// second, the second recorded first: after both, the list shows refused,
-// with the second's time.
+// What is shown is the latest answer: two checks of one token for a host
+// with none kept, the first held at the fake, are asked one after the
+// other, the second only once the first has answered. Accepted first and
+// refused second: the token is kept and shown refused at the second's
+// time; refused first and accepted second: kept and shown ok at the
+// second's.
 func TestTrackerLatestAnswerShown(t *testing.T) {
 	e, f := trackerEnv(t, nil)
 	var tick atomic.Int64
 	base := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 	e.srv.trackers.now = func() time.Time { return base.Add(time.Duration(tick.Add(1)) * time.Second) }
-	const host = "ghe-2.example.com"
-	if status, data, _ := e.saveToken(t, host, plantedToken); status != http.StatusOK {
-		t.Fatalf("save: %d %s", status, data)
-	}
-	gate, first := heldSave(t, e, f, host, plantedToken)
-	f.deny(plantedToken)
-	f.Hold("GET", host, "/api/v3/user").Open()
-	if status, data, _ := e.saveToken(t, host, plantedToken); status != http.StatusUnprocessableEntity {
-		t.Fatalf("the second check: %d %s", status, data)
-	}
-	row := rowOf(e.trackersListed(t), host)
-	if row["state"] != "refused" {
-		t.Fatalf("after the second: %v", row)
-	}
-	f.allow(plantedToken)
-	gate.Open()
-	if got := <-first; got != "200  <nil>" {
-		t.Fatalf("the first check: %s", got)
-	}
-	if after := rowOf(e.trackersListed(t), host); after["state"] != "refused" || after["checkedAt"] != row["checkedAt"] {
-		t.Fatalf("after both: %v, not refused at %v", after, row["checkedAt"])
+	for _, c := range []struct {
+		host, tok     string
+		first, second bool // GitHub accepts
+		want          string
+	}{
+		{"ghe-2.example.com", plantedToken, true, false, "refused"},
+		{"ghe-3.example.com", plantedToken2, false, true, "ok"},
+	} {
+		answer := func(accept bool) {
+			if accept {
+				f.allow(c.tok)
+			} else {
+				f.deny(c.tok)
+			}
+		}
+		answer(c.first)
+		busy := lockWaits(e)
+		gate, first := heldSave(t, e, f, c.host, c.tok)
+		next := f.Hold("GET", c.host, "/api/v3/user")
+		second := make(chan string, 1)
+		go func() { second <- saveAct(e, c.host, c.tok)() }()
+		select {
+		case <-busy:
+		case <-next.Reached():
+			t.Fatalf("%s: the second check asked GitHub while the first was held", c.host)
+		}
+		gate.Open()
+		got := <-first
+		<-next.Reached()
+		// The second has taken its asked time, the clock's latest.
+		asked := base.Add(time.Duration(tick.Load()) * time.Second).Format(time.RFC3339)
+		answer(c.second)
+		next.Open()
+		if got2 := <-second; !strings.HasPrefix(got, map[bool]string{true: "200", false: "422"}[c.first]) || !strings.HasPrefix(got2, map[bool]string{true: "200", false: "422"}[c.second]) {
+			t.Fatalf("%s: the first check %s, the second %s", c.host, got, got2)
+		}
+		if row := rowOf(e.trackersListed(t), c.host); row == nil || row["state"] != c.want || row["checkedAt"] != asked {
+			t.Fatalf("%s: after both, %v: not %s at the second's time %s", c.host, row, c.want, asked)
+		}
 	}
 }
 
@@ -1091,5 +1216,174 @@ func TestTrackerHostIsAName(t *testing.T) {
 	}
 	if out := logs.String(); strings.Contains(out, hexTok[:12]) || strings.Contains(out, plantedToken[4:16]) || strings.Contains(out, `"host":"ghe"`) {
 		t.Fatalf("the log holds a refused host:\n%s", out)
+	}
+	// credentialFor quotes a host only once it is accepted.
+	for _, host := range []string{hexTok, plantedToken, "ghe", ""} {
+		var ae *apiError
+		_, err := e.srv.credentialFor(t.Context(), tracker.Ref{System: tracker.GitHub, Host: host})
+		if !errors.As(err, &ae) || ae.Code != "invalid_host" || (host != "" && strings.Contains(err.Error(), host)) {
+			t.Errorf("credentialFor %.12q: %v", host, err)
+		}
+	}
+}
+
+// The one reader holds the file to what a save writes: a file written by
+// hand with an empty token, a token with a line break, a host of one
+// label, or five hosts is refused whole, naming the file alone, by the
+// list, a save (GitHub is not asked) and credentialFor.
+func TestTrackerFileHoldsWhatASaveWrites(t *testing.T) {
+	const oneLabel = "PLANTEDoneLABELhost"
+	e, f := trackerEnv(t, nil)
+	if status, data, _ := e.saveToken(t, "github.com", plantedToken); status != http.StatusOK {
+		t.Fatalf("save: %d %s", status, data)
+	}
+	entry := func(host, tok string) trackerWireEntry {
+		return trackerWireEntry{Host: host, Token: tok, Login: "mona", AccountID: "1"}
+	}
+	var five []trackerWireEntry
+	for _, h := range []string{"github.com", "ghe-1.example.com", "ghe-2.example.com", "ghe-3.example.com", "ghe-4.example.com"} {
+		five = append(five, entry(h, plantedToken))
+	}
+	for name, entries := range map[string][]trackerWireEntry{
+		"an empty token":            {entry("github.com", "")},
+		"a token with a line break": {entry("github.com", plantedToken[:20]+"\nX-Made-Up: 1")},
+		"a host of one label":       {entry(oneLabel, plantedToken)},
+		"five hosts":                five,
+	} {
+		b, err := store.Encode(trackerWire{GitHub: entries})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(e.credentialsFile(), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		calls := f.userCalls()
+		var said []string
+		status, data, out := e.callAs(t, adminToken, "GET", "/api/trackers", nil)
+		if status != http.StatusInternalServerError || codeOf(out) != "credentials_unusable" {
+			t.Errorf("%s: the list %d %s", name, status, data)
+		}
+		said = append(said, string(data))
+		status, data, out = e.saveToken(t, "ghe-1.example.com", plantedToken2)
+		if status != http.StatusInternalServerError || codeOf(out) != "credentials_unusable" || f.userCalls() != calls {
+			t.Errorf("%s: a save %d %s, GitHub asked %d times", name, status, data, f.userCalls()-calls)
+		}
+		said = append(said, string(data))
+		for _, host := range []string{"github.com", "ghe-1.example.com"} {
+			c, err := e.srv.credentialFor(t.Context(), tracker.Ref{System: tracker.GitHub, Host: host})
+			var ae *apiError
+			if !errors.As(err, &ae) || ae.Code != "credentials_unusable" || !c.IsZero() {
+				t.Errorf("%s: credentialFor %s: %v %v", name, host, c, err)
+			}
+			if err != nil {
+				said = append(said, err.Error())
+			}
+		}
+		for _, s := range said {
+			if !strings.Contains(s, "credentials/github.json") || strings.Contains(s, oneLabel) || strings.Contains(s, plantedToken[4:16]) || strings.Contains(s, "Made-Up") {
+				t.Errorf("%s: not the file's name alone: %s", name, s)
+			}
+		}
+	}
+}
+
+// What is shown of a token's last check is this server's own: after a
+// save the list shows when this server asked; after a restart the kept
+// token shows its savedAt and no checkedAt until this server asks again.
+func TestTrackerCheckTimeIsThisServers(t *testing.T) {
+	e, f := trackerEnv(t, nil)
+	asked := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	e.srv.trackers.now = func() time.Time { return asked }
+	if status, data, _ := e.saveToken(t, "github.com", plantedToken); status != http.StatusOK {
+		t.Fatalf("save: %d %s", status, data)
+	}
+	stamp := asked.Format(time.RFC3339)
+	if row := rowOf(e.trackersListed(t), "github.com"); row["checkedAt"] != stamp || row["savedAt"] != stamp {
+		t.Fatalf("after the save: %v", row)
+	}
+	stopEnv(t, e)
+	e = e.restart()
+	useFake(e.srv, f)
+	row := rowOf(e.trackersListed(t), "github.com")
+	if _, has := row["checkedAt"]; has || row["savedAt"] != stamp || row["state"] != "ok" {
+		t.Fatalf("after a restart: %v, a check time this server did not ask at", row)
+	}
+	later := asked.Add(time.Hour)
+	e.srv.trackers.now = func() time.Time { return later }
+	if status, data, _ := e.saveToken(t, "github.com", plantedToken); status != http.StatusOK {
+		t.Fatalf("the same token again: %d %s", status, data)
+	}
+	if row := rowOf(e.trackersListed(t), "github.com"); row["checkedAt"] != later.Format(time.RFC3339) || row["savedAt"] != stamp {
+		t.Fatalf("asked again after the restart: %v", row)
+	}
+}
+
+// A request that carries a token is made on a connection of its own,
+// closed after its answer: a host on a real loopback listener sees each
+// connection closed by the server, and through a save it accepts, one it
+// refuses and the list, neither the server's log nor the standard logger
+// holds anything the host sent. The standard logger is the process's: the
+// test runs beside no other.
+func TestTrackerRequestOnItsOwnConnection(t *testing.T) {
+	const (
+		tok   = "ghp_PLANTEDownCONNtoken0123456789abcdWXYZ"
+		wrong = "ghp_PLANTEDownCONNrefused0123456789abWXYZ"
+		after = "PLANTEDpastTHEanswer"
+	)
+	std := &logBuffer{}
+	prev := log.Writer()
+	log.SetOutput(std)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	closed := make(chan struct{}, 4)
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				req, err := http.ReadRequest(bufio.NewReader(c))
+				if err != nil {
+					return
+				}
+				sent := strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
+				status, body := "200 OK", `{"login":"mona","id":1}`
+				if sent != tok {
+					status, body = "401 Unauthorized", `{"message":"Bad credentials"}`
+				}
+				_, _ = fmt.Fprintf(c, "HTTP/1.1 %s\r\nContent-Type: application/json\r\nX-OAuth-Scopes: repo\r\nContent-Length: %d\r\n\r\n%s%s %s", status, len(body), body, after, sent)
+				// The connection's end is the server's: read until it closes.
+				_, _ = io.Copy(io.Discard, c)
+				closed <- struct{}{}
+			}()
+		}
+	}()
+	logs := &logBuffer{}
+	e := newTestEnvLogging(t, func(c *config.Config) { c.TrackerLoopback = true }, slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	e.srv.limiter = newRateLimiter(1e6, 1e6)
+	host := ln.Addr().String()
+	if status, data, _ := e.saveToken(t, host, tok); status != http.StatusOK {
+		t.Fatalf("a save the host accepts: %d %s", status, data)
+	}
+	if status, data, out := e.saveToken(t, host, wrong); status != http.StatusUnprocessableEntity || codeOf(out) != "token_refused" {
+		t.Fatalf("a save the host refuses: %d %s", status, data)
+	}
+	if l := e.trackersListed(t); len(l) != 1 {
+		t.Fatalf("listed: %v", l)
+	}
+	<-closed
+	<-closed
+	for _, out := range []string{std.String(), logs.String()} {
+		for _, form := range []string{after, tok, wrong, tok[4:16], wrong[4:16]} {
+			if strings.Contains(out, form) {
+				t.Fatalf("a log holds what the host sent past its answer:\n%s", out)
+			}
+		}
 	}
 }

@@ -28,9 +28,9 @@ import (
 
 // The person's GitHub token (docs/plans/tracker-linking.md, PR-3). The
 // server writes a token to one file and sends it in one header to one
-// address; it derives nothing from it that leaves the process; what the
-// token's own host answers of an account is that host's data, kept and
-// shown to the admin in a bounded form and never logged.
+// address; nothing that can be computed from a token alone leaves the
+// process; what the token's own host answers of an account is that
+// host's data, kept and shown to the admin in a bounded form, never logged.
 //
 // The one file is credentials/github.json in the data directory: the
 // directory 0700, the file 0600, both the server's user's. Every
@@ -73,7 +73,7 @@ const (
 	// (TestTrackerFileBounds).
 	maxTrackerFile = 16 << 10
 	// trackerLockWait bounds a change's wait for the file's lock, which
-	// another change holds only over a read and a rename.
+	// another change holds over a read, a save's check and a rename.
 	trackerLockWait = 5 * time.Second
 	// trackerCheckTimeout bounds a save's check of the token with GitHub
 	// (Whoami): the adapter's own request's bound.
@@ -119,8 +119,8 @@ type trackerWireEntry struct {
 	SavedAt   time.Time        `json:"savedAt"`
 }
 
-// trackerSeen is what GitHub last said of the token in use for a host, by
-// its mark, and when GitHub was asked, since the server started (recordCheck).
+// trackerSeen is what GitHub last said of the token kept for a host, by
+// its mark, and when this server asked, since it started (recordCheck).
 type trackerSeen struct {
 	fingerprint, state string
 	at                 time.Time
@@ -133,8 +133,8 @@ type trackerKeep struct {
 	cfg *config.Config
 	st  *store.Store
 	log *slog.Logger
-	// mu guards checking and seen. No change of the file is made under it:
-	// the file's own lock orders them (change).
+	// mu guards checking and seen, never held over a read of the file or a
+	// check: the file's own lock orders the changes (change).
 	mu       sync.Mutex
 	checking map[string]int
 	seen     map[string]trackerSeen
@@ -279,8 +279,9 @@ func (k *trackerKeep) read() (trackerFile, error) {
 // readIn is the file of the directory d, read whole: opened relative to
 // d without following a link or waiting (a named pipe answers at once),
 // and judged as it was opened: a regular file, the server's user's, open
-// to no one else, at most maxTrackerFile bytes, decoded strictly, each
-// host's entry once. No file is no entry.
+// to no one else, at most maxTrackerFile bytes, decoded strictly, and
+// what a save writes: at most maxTrackerHosts entries, each host's once,
+// each a host and a token in their forms. No file is no entry.
 func (k *trackerKeep) readIn(d *os.File) (trackerFile, error) {
 	if k.afterDirOpen != nil {
 		k.afterDirOpen()
@@ -319,9 +320,12 @@ func (k *trackerKeep) readIn(d *os.File) (trackerFile, error) {
 		return trackerFile{}, fmt.Errorf("%s cannot be read as a token file", name)
 	}
 	var f trackerFile
-	for _, x := range w.GitHub {
+	for i, x := range w.GitHub {
 		if _, twice := f.entry(x.Host); twice {
 			return trackerFile{}, fmt.Errorf("%s holds a host's entry twice", name)
+		}
+		if i >= maxTrackerHosts || !config.TrackerTokenForm(x.Token) || tracker.CheckHost(x.Host, k.cfg.TrackerLoopback) != nil {
+			return trackerFile{}, fmt.Errorf("%s holds what a save would not have written", name)
 		}
 		tok := x.Token
 		f.GitHub = append(f.GitHub, trackerEntry{Host: x.Host, keptSecret: func() string { return tok }, Login: x.Login, AccountID: x.AccountID, Scopes: x.Scopes, SavedAt: x.SavedAt})
@@ -455,7 +459,7 @@ func (k *trackerKeep) writeTokens(d *os.File, f trackerFile) error {
 	return nil
 }
 
-// errNoToken is credentialFor's answer for a host with no token.
+// errNoToken is credentialFor's answer for an accepted host with no token.
 func errNoToken(host string) *apiError {
 	return newAPIError(http.StatusPreconditionFailed, "no_token", "no GitHub token is saved for "+host+": save one in Settings")
 }
@@ -463,53 +467,48 @@ func errNoToken(host string) *apiError {
 // credentialFor is the one place every tracker route gets its credential:
 // the token for ref's host, the environment's when it gives that host,
 // else the file's, read now (a remove takes effect at the next call),
-// wrapped at once in a tracker.Credential. 412 no_token without one. It
-// takes the whole ref so that a later credential source chooses inside
-// it and no route changes.
+// wrapped at once in a tracker.Credential, never one without a token (412
+// no_token); a host out of its form is refused in fixed words. It takes
+// the whole ref so that a later credential source chooses inside it and
+// no route changes. It takes no lock.
 func (s *Server) credentialFor(_ context.Context, ref tracker.Ref) (tracker.Credential, error) {
 	k := s.trackers
 	if ref.System != tracker.GitHub {
 		return tracker.Credential{}, newAPIError(http.StatusBadRequest, "not_a_tracker_url", "no tracker this server reads")
 	}
-	if tok, ok := k.environmentToken(ref.Host); ok {
-		return tracker.Token(ref.Host, tok, k.cfg.TrackerLoopback)
+	if tracker.CheckHost(ref.Host, k.cfg.TrackerLoopback) != nil {
+		return tracker.Credential{}, newAPIError(http.StatusBadRequest, "invalid_host", trackerHostWords)
 	}
-	f, err := k.read()
-	if err != nil {
-		return tracker.Credential{}, newAPIError(http.StatusInternalServerError, "credentials_unusable", err.Error())
-	}
-	e, ok := f.entry(ref.Host)
+	tok, ok := k.environmentToken(ref.Host)
 	if !ok {
+		f, err := k.read()
+		if err != nil {
+			return tracker.Credential{}, newAPIError(http.StatusInternalServerError, "credentials_unusable", err.Error())
+		}
+		if e, kept := f.entry(ref.Host); kept {
+			tok = k.reveal(e)
+		}
+	}
+	c, err := tracker.Token(ref.Host, tok, k.cfg.TrackerLoopback)
+	if err == nil && c.IsZero() {
 		return tracker.Credential{}, errNoToken(ref.Host)
 	}
-	return tracker.Token(ref.Host, k.reveal(e), k.cfg.TrackerLoopback)
+	return c, err
 }
 
 // recordCheck notes what GitHub said (ok, or refused: a token that
 // stopped working), asked at asked, of the token of mark m for host, when
-// it is the token in use there (the environment's for its host, else the
-// one f keeps) and asked is later than what is shown of it: the latest
-// answer is shown, by when it was asked, whatever order the answers came
-// in.
+// it is the one f keeps there. A save calls it holding the file's lock,
+// f read under it (change), so checks are recorded in the order they
+// were asked and the latest is shown. A save for the environment's host
+// is refused before it asks.
 func (k *trackerKeep) recordCheck(f trackerFile, host, m, state string, asked time.Time) {
-	var inUse string
-	var shown time.Time
-	if tok, ok := k.environmentToken(host); ok {
-		inUse = tracker.Mark(tok)
-	} else if e, ok := f.entry(host); ok {
-		inUse, shown = tracker.Mark(k.reveal(e)), e.SavedAt
-	}
-	if inUse == "" || inUse != m {
+	if e, ok := f.entry(host); !ok || tracker.Mark(k.reveal(e)) != m {
 		return
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	if s, ok := k.seen[host]; ok && s.fingerprint == m {
-		shown = s.at
-	}
-	if asked.After(shown) {
-		k.seen[host] = trackerSeen{fingerprint: m, state: state, at: asked}
-	}
+	k.seen[host] = trackerSeen{fingerprint: m, state: state, at: asked}
 }
 
 // trackerView is a token as a person is shown it: never the token.
@@ -527,7 +526,8 @@ type trackerView struct {
 	// State is ok, refused (GitHub refused it when it was asked at
 	// CheckedAt: save a new one), unchecked (the environment's, before any
 	// call) or unused (the file's for the host the environment gives a
-	// token for: the environment's is used).
+	// token for: the environment's is used). CheckedAt is when this server
+	// asked, absent when it has not since it started.
 	State     string     `json:"state"`
 	CheckedAt *time.Time `json:"checkedAt,omitempty"`
 }
@@ -536,10 +536,10 @@ type trackersReply struct {
 	GitHub []trackerView `json:"github"`
 }
 
-// tokenView is e as shown, with what GitHub said of it since.
+// tokenView is e as shown, with what GitHub said of it when this server asked.
 func (k *trackerKeep) tokenView(e trackerEntry) trackerView {
 	saved := e.SavedAt
-	v := trackerView{Host: e.Host, Login: e.Login, AccountID: e.AccountID, Fingerprint: tracker.Mark(k.reveal(e)), Scopes: append([]string{}, e.Scopes...), SavedAt: &saved, Source: "settings", State: "ok", CheckedAt: &saved}
+	v := trackerView{Host: e.Host, Login: e.Login, AccountID: e.AccountID, Fingerprint: tracker.Mark(k.reveal(e)), Scopes: append([]string{}, e.Scopes...), SavedAt: &saved, Source: "settings", State: "ok"}
 	k.seenOf(&v)
 	return v
 }
@@ -630,11 +630,14 @@ func trackerBody[T any](w http.ResponseWriter, r *http.Request) (T, bool) {
 	return zero, false
 }
 
+// trackerHostWords answer a host out of its form, quoting nothing of it.
+const trackerHostWords = "the host is github.com or a GitHub Enterprise Server's name of at least two labels, in lower case, https only"
+
 // trackerHost holds host to the tracker's rule; false once it has
-// answered, in words that quote nothing of it.
+// answered (trackerHostWords).
 func (s *Server) trackerHost(w http.ResponseWriter, host string) bool {
 	if tracker.CheckHost(host, s.cfg.TrackerLoopback) != nil {
-		writeError(w, http.StatusBadRequest, "invalid_host", "the host is github.com or a GitHub Enterprise Server's name of at least two labels, in lower case, https only")
+		writeError(w, http.StatusBadRequest, "invalid_host", trackerHostWords)
 		return false
 	}
 	return true
@@ -645,14 +648,13 @@ func environmentWords(host string) string {
 	return "the token for " + host + " is given in the server's environment (CONDUCTOR_GITHUB_TOKEN): change it there"
 }
 
-// handleTrackerSave checks a token with GitHub (Whoami), then keeps it.
-// It notes the host's entry as the file holds it when the save begins;
-// the check runs with no lock held; the token is then kept only if,
-// holding the file's lock, the entry is still that one (change), so a
-// remove or another save that landed meanwhile, on this server or
-// another, means this one is not kept (409 changed). A token equal to the
-// one kept (share.Equal) changes nothing. A token GitHub refuses is kept
-// nowhere, and the one already kept stays.
+// handleTrackerSave checks a token with GitHub (Whoami) and keeps it, all
+// holding the file's lock (change): the file read, GitHub asked, the token
+// written or not and what GitHub said recorded before the lock is let go,
+// so saves and removes are made one at a time, on this server and every
+// other over the data directory. A token equal to the one kept
+// (share.Equal) changes nothing. A token GitHub refuses is kept nowhere,
+// and the one already kept stays.
 func (s *Server) handleTrackerSave(w http.ResponseWriter, r *http.Request) {
 	k := s.trackers
 	b, ok := trackerBody[trackerSaveBody](w, r)
@@ -680,63 +682,49 @@ func (s *Server) handleTrackerSave(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_host", "not a host Conductor reads")
 		return
 	}
-	before, err := k.read()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "credentials_unusable", err.Error())
-		return
-	}
-	noted, had := before.entry(host)
-	k.mu.Lock()
-	k.checking[host]++
-	k.mu.Unlock()
-	asked := k.now().UTC()
-	ctx, cancel := context.WithTimeout(r.Context(), trackerCheckTimeout)
-	acct, err := k.gh.Whoami(ctx, cred)
-	cancel()
-	k.mu.Lock()
-	if k.checking[host]--; k.checking[host] == 0 {
-		delete(k.checking, host)
-	}
-	k.mu.Unlock()
-	if errors.Is(err, tracker.ErrUnauthorized) {
-		if f, rerr := k.read(); rerr == nil {
-			k.recordCheck(f, host, cred.Fingerprint(), "refused", asked)
-		}
-	}
-	if err != nil {
-		e := trackerRefusal(err, host)
-		var rl *tracker.ErrRateLimited
-		if errors.As(err, &rl) {
-			wait := 60
-			if !rl.Reset.IsZero() {
-				wait = max(1, int(time.Until(rl.Reset).Seconds()+0.999))
-			}
-			w.Header().Set("Retry-After", strconv.Itoa(wait))
-		}
-		s.log.Info("tracker token not saved", "route", r.Pattern, "host", host, "status", e.status, "code", e.Code)
-		writeAPIError(w, e)
-		return
-	}
 	tok := b.Token
-	e := trackerEntry{Host: host, keptSecret: func() string { return tok }, Login: acct.Login, AccountID: acct.ID, Scopes: acct.Scopes, SavedAt: k.now().UTC().Truncate(time.Second)}
-	kept, unchanged := e, false
+	kept, unchanged := trackerEntry{}, false
 	refused := k.change(true, func(d *os.File, f trackerFile) *apiError {
-		cur, has := f.entry(host)
-		if has != had || has && !(cur.SavedAt.Equal(noted.SavedAt) && share.Equal(k.reveal(cur), k.reveal(noted))) {
-			return newAPIError(http.StatusConflict, "changed", "the token for "+host+" was changed or removed while this one was checked: save it again")
+		k.mu.Lock()
+		k.checking[host]++
+		k.mu.Unlock()
+		asked := k.now().UTC()
+		ctx, cancel := context.WithTimeout(r.Context(), trackerCheckTimeout)
+		acct, err := k.gh.Whoami(ctx, cred)
+		cancel()
+		k.mu.Lock()
+		if k.checking[host]--; k.checking[host] == 0 {
+			delete(k.checking, host)
 		}
+		k.mu.Unlock()
+		if err != nil {
+			if errors.Is(err, tracker.ErrUnauthorized) {
+				k.recordCheck(f, host, cred.Fingerprint(), "refused", asked)
+			}
+			var rl *tracker.ErrRateLimited
+			if errors.As(err, &rl) {
+				wait := 60
+				if !rl.Reset.IsZero() {
+					wait = max(1, int(time.Until(rl.Reset).Seconds()+0.999))
+				}
+				w.Header().Set("Retry-After", strconv.Itoa(wait))
+			}
+			return trackerRefusal(err, host)
+		}
+		cur, has := f.entry(host)
 		if has && share.Equal(tok, k.reveal(cur)) {
 			kept, unchanged = cur, true
 			k.recordCheck(f, host, cred.Fingerprint(), "ok", asked)
 			return nil
 		}
+		kept = trackerEntry{Host: host, keptSecret: func() string { return tok }, Login: acct.Login, AccountID: acct.ID, Scopes: acct.Scopes, SavedAt: k.now().UTC().Truncate(time.Second)}
 		switch i := slices.IndexFunc(f.GitHub, func(x trackerEntry) bool { return x.Host == host }); {
 		case i >= 0:
-			f.GitHub[i] = e
+			f.GitHub[i] = kept
 		case len(f.GitHub) >= maxTrackerHosts:
 			return newAPIError(http.StatusConflict, "too_many_hosts", fmt.Sprintf("tokens are kept for at most %d hosts: remove one first", maxTrackerHosts))
 		default:
-			f.GitHub = append(f.GitHub, e)
+			f.GitHub = append(f.GitHub, kept)
 		}
 		if err := k.writeTokens(d, f); err != nil {
 			k.log.Error("tracker token not written", "host", host, "err", err)
@@ -750,7 +738,7 @@ func (s *Server) handleTrackerSave(w http.ResponseWriter, r *http.Request) {
 	})
 	if refused != nil {
 		lvl := slog.LevelInfo
-		if refused.status >= 500 {
+		if refused.status >= 500 && refused.status != http.StatusBadGateway { // a 502 is GitHub's
 			lvl = slog.LevelError
 		}
 		s.log.Log(r.Context(), lvl, "tracker token not saved", "route", r.Pattern, "host", host, "status", refused.status, "code", refused.Code)
@@ -779,6 +767,7 @@ func (s *Server) handleTrackerRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	removed := false
+	given := k.cfg.GitHubToken.Set() && k.cfg.GitHubHost == b.Host
 	if refused := k.change(false, func(d *os.File, f trackerFile) *apiError {
 		n := len(f.GitHub)
 		f.GitHub = slices.DeleteFunc(f.GitHub, func(e trackerEntry) bool { return e.Host == b.Host })
@@ -789,16 +778,15 @@ func (s *Server) handleTrackerRemove(w http.ResponseWriter, r *http.Request) {
 			s.log.Error("tracker token not removed", "route", r.Pattern, "host", b.Host, "status", http.StatusInternalServerError, "err", err)
 			return newAPIError(http.StatusInternalServerError, "store_failed", "the token could not be removed: the server's log says why")
 		}
+		if !given {
+			k.mu.Lock()
+			delete(k.seen, b.Host)
+			k.mu.Unlock()
+		}
 		return nil
 	}); refused != nil {
 		writeAPIError(w, refused)
 		return
-	}
-	given := k.cfg.GitHubToken.Set() && k.cfg.GitHubHost == b.Host
-	if removed && !given {
-		k.mu.Lock()
-		delete(k.seen, b.Host)
-		k.mu.Unlock()
 	}
 	s.log.Info("tracker token removed", "route", r.Pattern, "host", b.Host, "status", http.StatusOK, "removed", removed)
 	reply := map[string]any{"removed": removed}

@@ -83,6 +83,29 @@ func TestRefStrings(t *testing.T) {
 	}
 }
 
+// The reference parsers answer a host they do not read in fixed words: a
+// made-up token where the host goes, and a name not among the hosts, are
+// quoted by no error, which stays ErrRef.
+func TestParsersQuoteNoRefusedHost(t *testing.T) {
+	const hexTok = "d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f7a8b9c0d"
+	for _, host := range []string{hexTok, "ghp_PLANTEDhostTOKEN0123456789abcdWXYZ", "planted-not-admitted.example"} {
+		var errs []error
+		_, err := ParseGitHub("https://"+host+"/o/r/issues/1", "", ParseOptions{})
+		errs = append(errs, err)
+		_, err = ParseGitHub("#1", "git@"+host+":o/r.git", ParseOptions{})
+		errs = append(errs, err)
+		for _, raw := range []string{"https://" + host + "/o/r", "ssh://git@" + host + "/o/r.git", "git@" + host + ":o/r.git"} {
+			_, _, err := ParseRepository(raw, ParseOptions{})
+			errs = append(errs, err)
+		}
+		for i, err := range errs {
+			if !errors.Is(err, ErrRef) || strings.Contains(err.Error(), host) || strings.Contains(err.Error(), host[4:16]) {
+				t.Errorf("%.12s, parse %d: %v", host, i, err)
+			}
+		}
+	}
+}
+
 func TestCheckHost(t *testing.T) {
 	for _, h := range []string{"github.com", "ghe.example.test", "a.b-c.d", "xn--github-qyd.com", "a1.example"} {
 		if err := CheckHost(h, false); err != nil {

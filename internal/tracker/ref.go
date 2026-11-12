@@ -103,7 +103,7 @@ func ParseRepository(raw string, o ParseOptions) (host, space string, err error)
 		}
 		host, _ = asciiLower(u.Hostname())
 		if !hostAdmitted(host, o) {
-			return "", "", fmt.Errorf("%w: %s is not a host Conductor reads", ErrRef, host)
+			return "", "", fmt.Errorf("%w: %s", ErrRef, ErrHost)
 		}
 		segs = splitPath(u.Path)
 	case strings.Contains(raw, "://"):
@@ -120,7 +120,7 @@ func ParseRepository(raw string, o ParseOptions) (host, space string, err error)
 		}
 		host, _ = asciiLower(h)
 		if !hostAdmitted(host, o) {
-			return "", "", fmt.Errorf("%w: %s is not a host Conductor reads", ErrRef, host)
+			return "", "", fmt.Errorf("%w: %s", ErrRef, ErrHost)
 		}
 		segs = splitPath(p)
 	default:
@@ -165,7 +165,7 @@ func parseURL(raw string, o ParseOptions) (string, []string, error) {
 		return "", nil, fmt.Errorf("%w: https only", ErrRef)
 	}
 	if !hostAdmitted(host, o) {
-		return "", nil, fmt.Errorf("%w: %s is not a host Conductor reads", ErrRef, host)
+		return "", nil, fmt.Errorf("%w: %s", ErrRef, ErrHost)
 	}
 	return host, splitPath(u.Path), nil
 }

@@ -446,15 +446,29 @@ func mustRequest(t *testing.T, url string) *http.Request {
 }
 
 // routesTouching is every route pattern the package's code registers
-// (every call of a mux's Handle or HandleFunc) whose handler names one of
-// names or a function of the package that does, at any depth. Every
+// (every direct call of a mux's Handle or HandleFunc) whose handler names
+// one of names or a function of the package that does, at any depth: a
+// function or method by its name, a package variable by what it is set
+// to. A call through a field is not followed: a field of a function type
+// written as one (func(...)) given a function of the package or a literal
+// that reaches the token fails the test; one of a named function type
+// (http.HandlerFunc) is not judged, nor is a function reached through a
+// map, a slice, a channel or an interface value made elsewhere. A field
+// registered as the handler is followed to what it is given. Every
 // registration's pattern is read as a literal: one written there, a
 // constant written as one, or the field of each row of a table that a
 // function of the package returns as a literal and the registration
-// ranges over; a registration whose pattern it cannot read so fails the
-// test, so that no route is skipped. A name is a method or field reached
-// through a value (s.x) or a function of the package (x()); a package's
-// own (errors.New) is not the package's.
+// ranges over. Its handler is read as a function or method of the
+// package, a function literal (its body as written), a call of either or
+// of another package's function with such arguments, the table's row's
+// fields, or a field of the package given a value in it, followed to that
+// value. Anything else fails the test as unreadable, so that no route is
+// skipped: a pattern it cannot read so, a handler held in a local variable
+// or a parameter, a field given no value in the package, a value called,
+// a variable of the enclosing function a function literal names, and a
+// Handle or HandleFunc taken as a value rather than called. A name is a
+// method or field reached through a value (s.x) or a function of the
+// package (x()); a package's own (errors.New) is not the package's.
 func routesTouching(t *testing.T, names ...string) []string {
 	t.Helper()
 	paths, err := filepath.Glob("*.go")
@@ -478,6 +492,14 @@ func routesTouching(t *testing.T, names ...string) []string {
 	consts := map[string]string{}       // a package constant written as a string literal
 	fields := map[string][]string{}     // a struct type's fields, in order
 	funcs := map[string]*ast.FuncDecl{} // a function of the package, by name
+	recvs := map[any]bool{}             // a method's receiver, by its object
+	funcFields := map[string]bool{}     // a struct field of a function type written as one
+	type given struct {
+		e       ast.Expr
+		imports map[string]bool
+	}
+	assigned := map[string][]given{} // what a field is given, by its name
+	vars := map[string][]given{}     // what a package variable is set to
 	str := func(e ast.Expr) (string, bool) {
 		lit, ok := e.(*ast.BasicLit)
 		if !ok || lit.Kind != token.STRING {
@@ -620,6 +642,57 @@ func routesTouching(t *testing.T, names ...string) []string {
 		})
 		return out
 	}
+	// handler reads a registration's handler (row: the table's row
+	// variable, "" for none): what it names, a field it names followed to
+	// the values the package gives it; false for what it cannot resolve to
+	// a function or a method of the package.
+	var handler func(e ast.Expr, row string, imports map[string]bool) ([]ast.Expr, bool)
+	handler = func(e ast.Expr, row string, imports map[string]bool) ([]ast.Expr, bool) {
+		switch x := e.(type) {
+		case *ast.BasicLit:
+			return nil, true
+		case *ast.ParenExpr:
+			return handler(x.X, row, imports)
+		case *ast.Ident:
+			if _, ok := literal(x); ok || x.Obj == nil && (x.Name == "true" || x.Name == "false" || x.Name == "nil") {
+				return nil, true
+			}
+			return []ast.Expr{x}, funcs[x.Name] != nil && (x.Obj == nil || x.Obj.Kind == ast.Fun)
+		case *ast.SelectorExpr:
+			if id, ok := x.X.(*ast.Ident); ok && (imports[id.Name] || id.Name == row) || funcs[x.Sel.Name] != nil {
+				return []ast.Expr{x}, true
+			}
+			out := []ast.Expr{x}
+			for _, g := range assigned[x.Sel.Name] {
+				out = append(out, g.e)
+			}
+			return out, len(out) > 1
+		case *ast.CallExpr:
+			out, ok := handler(x.Fun, row, imports)
+			if _, lit := x.Fun.(*ast.FuncLit); !lit && len(out) > 1 {
+				ok = false // a field's value called: not a function of the package
+			}
+			for _, a := range x.Args {
+				more, aok := handler(a, row, imports)
+				out, ok = append(out, more...), ok && aok
+			}
+			return out, ok
+		case *ast.FuncLit:
+			// Its body is read as written; a variable of the function
+			// around it (other than a method's receiver) is not followed.
+			ok := true
+			ast.Inspect(x.Body, func(n ast.Node) bool {
+				if id, isID := n.(*ast.Ident); isID && id.Obj != nil && id.Obj.Kind == ast.Var && !recvs[id.Obj] {
+					if d, isNode := id.Obj.Decl.(ast.Node); isNode && (d.Pos() < x.Pos() || d.Pos() >= x.End()) {
+						ok = false
+					}
+				}
+				return true
+			})
+			return []ast.Expr{x}, ok
+		}
+		return []ast.Expr{e}, false
+	}
 	for _, p := range paths {
 		if strings.HasSuffix(p, "_test.go") {
 			continue
@@ -643,6 +716,11 @@ func routesTouching(t *testing.T, names ...string) []string {
 				if d.Recv == nil || funcs[d.Name.Name] == nil {
 					funcs[d.Name.Name] = d
 				}
+				if d.Recv != nil {
+					for _, n := range d.Recv.List[0].Names {
+						recvs[n.Obj] = true
+					}
+				}
 			case *ast.GenDecl:
 				for _, spec := range d.Specs {
 					switch sp := spec.(type) {
@@ -653,17 +731,52 @@ func routesTouching(t *testing.T, names ...string) []string {
 									consts[n.Name] = s
 								}
 							}
+							if d.Tok == token.VAR && i < len(sp.Values) {
+								vars[n.Name] = append(vars[n.Name], given{sp.Values[i], imports})
+							}
 						}
 					case *ast.TypeSpec:
 						if st, ok := sp.Type.(*ast.StructType); ok {
 							for _, fl := range st.Fields.List {
+								_, isFunc := fl.Type.(*ast.FuncType)
 								for _, n := range fl.Names {
 									fields[sp.Name.Name] = append(fields[sp.Name.Name], n.Name)
+									funcFields[n.Name] = funcFields[n.Name] || isFunc
 								}
 							}
 						}
 					}
 				}
+			}
+		}
+		// What a field is given: in a literal (f: v) or by an assignment (x.f = v).
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.KeyValueExpr:
+				if id, ok := x.Key.(*ast.Ident); ok {
+					assigned[id.Name] = append(assigned[id.Name], given{x.Value, imports})
+				}
+			case *ast.AssignStmt:
+				for i, l := range x.Lhs {
+					if sel, ok := l.(*ast.SelectorExpr); ok && len(x.Lhs) == len(x.Rhs) {
+						assigned[sel.Sel.Name] = append(assigned[sel.Sel.Name], given{x.Rhs[i], imports})
+					}
+				}
+			}
+			return true
+		})
+	}
+	// A package variable reaches what the value it is set to names. A
+	// field is followed only as a handler (handler): followed wherever it
+	// is named, the name-joined graph would reach every route; a field of
+	// function type is judged by what it is given instead (below).
+	for name, gs := range vars {
+		for _, g := range gs {
+			if refs[name] == nil {
+				refs[name] = map[string]bool{}
+			}
+			for k := range named(g.e, g.imports) {
+				refs[name][k] = true
 			}
 		}
 	}
@@ -682,33 +795,56 @@ func routesTouching(t *testing.T, names ...string) []string {
 			for k := range named(fd.Body, imports) {
 				refs[fd.Name.Name][k] = true
 			}
+			called := map[ast.Expr]bool{}
 			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				if sel, ok := n.(*ast.SelectorExpr); ok && (sel.Sel.Name == "Handle" || sel.Sel.Name == "HandleFunc") && !called[sel] {
+					t.Errorf("%s: %s taken as a value, a registration this check cannot read", fset.Position(sel.Pos()), sel.Sel.Name)
+				}
 				call, ok := n.(*ast.CallExpr)
 				if !ok {
 					return true
 				}
 				sel, ok := call.Fun.(*ast.SelectorExpr)
+				if ok {
+					called[sel] = true
+				}
 				if !ok || (sel.Sel.Name != "Handle" && sel.Sel.Name != "HandleFunc") || len(call.Args) != 2 {
 					return true
 				}
 				// A function that registers routes is no handler: what it
 				// registers is judged route by route.
 				registrars[fd.Name.Name] = true
+				unreadable := func(what string) {
+					t.Errorf("%s: a route registered with %s this check cannot read", fset.Position(call.Pos()), what)
+				}
 				if s, ok := literal(call.Args[0]); ok {
-					sites = append(sites, site{s, call.Args[1:], imports})
+					h, ok := handler(call.Args[1], "", imports)
+					if !ok {
+						unreadable("a handler")
+					}
+					sites = append(sites, site{s, h, imports})
 					return true
 				}
 				if f, ok := call.Args[0].(*ast.SelectorExpr); ok {
 					if v, ok := f.X.(*ast.Ident); ok {
 						if rs, ps, ok := rows(fd, v.Name, f.Sel.Name); ok {
+							base, ok := handler(call.Args[1], v.Name, imports)
 							for i := range rs {
-								sites = append(sites, site{ps[i], append(rs[i], call.Args[1:]...), imports})
+								h := slices.Clone(base)
+								for _, x := range rs[i] {
+									more, rok := handler(x, "", imports)
+									h, ok = append(h, more...), ok && rok
+								}
+								sites = append(sites, site{ps[i], h, imports})
+							}
+							if !ok {
+								unreadable("a handler")
 							}
 							return true
 						}
 					}
 				}
-				t.Errorf("%s: a route registered with a pattern this check cannot read as a literal", fset.Position(call.Pos()))
+				unreadable("a pattern")
 				return true
 			})
 		}
@@ -727,6 +863,30 @@ func routesTouching(t *testing.T, names ...string) []string {
 				if touch[r] {
 					touch[fn], changed = true, true
 					break
+				}
+			}
+		}
+	}
+	// A call through a field is not followed, so a field of function type
+	// may not be given a function (a function or method of the package, or
+	// a function literal) that reaches the token.
+	for name := range funcFields {
+		for _, g := range assigned[name] {
+			fn := false
+			switch x := g.e.(type) {
+			case *ast.FuncLit:
+				fn = true
+			case *ast.Ident:
+				fn = funcs[x.Name] != nil
+			case *ast.SelectorExpr:
+				fn = funcs[x.Sel.Name] != nil
+			}
+			if !fn {
+				continue
+			}
+			for k := range named(g.e, g.imports) {
+				if touch[k] {
+					t.Errorf("%s: the field %s of function type is given %s, which reaches the token: a call through a field is not followed", fset.Position(g.e.Pos()), name, k)
 				}
 			}
 		}

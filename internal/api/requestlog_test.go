@@ -191,7 +191,9 @@ func TestLogPath(t *testing.T) {
 }
 
 // A made-up token put in a path segment under each tracker route and
-// under /api/ reaches no log line at any level; a file of the embedded app
+// under /api/ reaches no log line at any level; the log names a method
+// from the standard ones and any other (to a tracker route and to paths
+// only the catch-alls take) by one fixed word; a file of the embedded app
 // is still named.
 func TestRequestLogNamesWhatTheServerHolds(t *testing.T) {
 	const tok = "ghp_PLANTEDpathTOKEN0123456789abcdefWXYZ"
@@ -204,24 +206,34 @@ func TestRequestLogNamesWhatTheServerHolds(t *testing.T) {
 	h := e.srv.Handler()
 	paths := []string{
 		"/api/trackers/" + tok, "/api/trackers/github/" + tok, "/api/trackers/github/remove/" + tok,
-		"/api/" + tok, "/" + tok, "/_nuxt/entry.js",
+		"/api/" + tok, "/" + tok, "/_nuxt/entry.js", "/api/trackers", "/api/other", "/other",
 	}
+	methods := []string{"GET", "POST", tok}
 	for _, p := range paths {
-		for _, method := range []string{"GET", "POST"} {
+		for _, method := range methods {
 			r := httptest.NewRequest(method, p, strings.NewReader("{}"))
 			r.Header.Set("Authorization", "Bearer "+adminToken)
 			h.ServeHTTP(httptest.NewRecorder(), r)
 		}
 	}
-	lines := requestLines(t, logs, 2*len(paths))
+	lines := requestLines(t, logs, len(methods)*len(paths))
 	out := logs.String()
 	for _, f := range []string{tok, tok[4:16]} {
 		if strings.Contains(out, f) {
 			t.Errorf("the log holds %q:\n%s", f, out)
 		}
 	}
-	if !strings.Contains(strings.Join(lines, "\n"), "path=/_nuxt/entry.js ") {
-		t.Errorf("the embedded file is not named:\n%s", out)
+	if all := strings.Join(lines, "\n"); !strings.Contains(all, "path=/_nuxt/entry.js ") || strings.Count(all, "method=(other) ") != len(paths) {
+		t.Errorf("the embedded file is not named, or a method sent is not one fixed word:\n%s", out)
+	}
+}
+
+// The log names a method from a fixed list, and any other by one word.
+func TestLogMethod(t *testing.T) {
+	for m, want := range map[string]string{"GET": "GET", "DELETE": "DELETE", "OPTIONS": "OPTIONS", "get": "(other)", "PROPFIND": "(other)", "ghp_PLANTEDmethod0123": "(other)", "": "(other)"} {
+		if got := logMethod(m); got != want {
+			t.Errorf("logMethod(%q) = %q, want %q", m, got, want)
+		}
 	}
 }
 

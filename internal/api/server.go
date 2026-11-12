@@ -1042,7 +1042,7 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 					// A handler aborting its response on purpose: net/http
 					// drops the connection (or resets the stream) rather
 					// than end the response.
-					s.log.Debug("request aborted", "method", r.Method, "path", logPath(r, s.webHolds), "ms", time.Since(start).Milliseconds())
+					s.log.Debug("request aborted", "method", logMethod(r.Method), "path", logPath(r, s.webHolds), "ms", time.Since(start).Milliseconds())
 					panic(rec)
 				}
 				s.log.Error("panic in handler", "path", logPath(r, s.webHolds), "panic", rec)
@@ -1051,7 +1051,7 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 					writeError(rw, http.StatusInternalServerError, "internal", "internal error")
 				}
 			}
-			s.log.Debug("request", "method", r.Method, "path", logPath(r, s.webHolds), "status", rw.status, "ms", time.Since(start).Milliseconds())
+			s.log.Debug("request", "method", logMethod(r.Method), "path", logPath(r, s.webHolds), "status", rw.status, "ms", time.Since(start).Milliseconds())
 		}()
 		next.ServeHTTP(rw, r)
 	})
@@ -1077,6 +1077,15 @@ func logPath(r *http.Request, holds func(string) bool) string {
 		return r.URL.Path
 	}
 	return cmp.Or(p, "(no route)")
+}
+
+// logMethod names a request's method in the log: a standard one, or one fixed word.
+func logMethod(m string) string {
+	switch m {
+	case "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "CONNECT", "OPTIONS", "TRACE":
+		return m
+	}
+	return "(other)"
 }
 
 // webHolds reports whether path is exactly one of the embedded app's
