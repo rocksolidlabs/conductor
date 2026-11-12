@@ -737,6 +737,60 @@ export interface HostAnswerAsMessage {
 }
 export const HOST_MAX_ANSWER_AS_SUBJECT = 48
 
+/**
+ * What a host reports of its session for its record (docs/protocol.md, Host control connection; HS1 PR-12), beside the register's
+ * session fields: its Runtime (`where`, ext.Where's slug), its agent's version, and, read before its process starts and only on a
+ * native Runtime, its working tree's top, its repository's common git directory and its start commit. Each optional: an older host
+ * sends none, and its record says "not reported by its host". A register past a bound is refused. The web never sends it.
+ */
+export interface HostReport {
+  where?: string
+  agentVersion?: string
+  repo?: string
+  repoCommon?: string
+  startCommit?: string
+}
+export const HOST_MAX_REPORT_WHERE = 32
+export const HOST_MAX_AGENT_VERSION = 64
+export const HOST_MAX_REPORT_PATH = 4096
+/** A session_info message (below) is at most this many bytes. */
+export const HOST_MAX_SESSION_INFO = 2048
+
+/** A full commit id: 40 (SHA-1) or 64 (SHA-256) lowercase hex digits. */
+export function validCommit(s: string): boolean {
+  return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(s)
+}
+
+/** Whether a HostReport is within its bounds, as the server's hub holds it (proto.HostReport.Check): lengths in UTF-8 bytes. */
+export function hostReportValid(r: HostReport): boolean {
+  const bytes = (s: string) => new TextEncoder().encode(s).length
+  // Made of what a reported field may hold (proto's oneLine): letters, numbers, punctuation, symbols and the space, each followed by
+  // any combining marks, so none first; nothing a renderer ignores by default (a variation selector, the grapheme joiner). The
+  // server's verdict is the one that counts: this mirror is for the tests, and where its Unicode tables and Go's differ, Go's rule.
+  const oneLine = (s: string) =>
+    /^(?:[\p{L}\p{N}\p{P}\p{S} ]\p{M}*)*$/u.test(s) && !/[\p{Default_Ignorable_Code_Point}\p{Variation_Selector}]/u.test(s)
+  const path = (p?: string) => !p || (bytes(p) <= HOST_MAX_REPORT_PATH && oneLine(p) && /^(?:\/|\\\\|[A-Za-z]:[\\/])/.test(p))
+  if (r.where && !new RegExp(`^[a-z][a-z0-9-]{0,${HOST_MAX_REPORT_WHERE - 1}}$`).test(r.where)) return false
+  if (r.agentVersion && (bytes(r.agentVersion) > HOST_MAX_AGENT_VERSION || !oneLine(r.agentVersion))) return false
+  return path(r.repo) && path(r.repoCommon) && (!r.startCommit || validCommit(r.startCommit))
+}
+
+/**
+ * host → server, only to a server whose registered said sessionInfo, never to a switchyard: what the host read of its session once
+ * its process ended (`endCommit`, a full commit id, or none), sent before the status that ends it; at most HOST_MAX_SESSION_INFO
+ * bytes, else dropped. The web never sends it.
+ */
+export interface HostSessionInfoMessage {
+  t: 'session_info'
+  sessionId?: string
+  endCommit?: string
+}
+
+/** The part of registered that says the server takes session_info; absent from an older server, a switchyard and a desk's. */
+export interface HostRegisteredSessionInfo {
+  sessionInfo?: boolean
+}
+
 /** The part of registered that says which links the server still holds for the session; absent from an older server. */
 export interface HostRegisteredLinks {
   links?: string[]

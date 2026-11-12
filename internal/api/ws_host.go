@@ -169,7 +169,7 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		recipe = s.hostRecipe(reg.Session.AgentID)
 	}
 	registered, dropped := registeredMessage(proto.Registered{T: proto.HostRegistered, SessionID: info.ID, Secret: hs.Secret(), ShareBaseURL: s.publicBase(r), Resumed: resumed, ICEServers: ice, Links: s.liveLinkIDs(info.ID),
-		Recipe: recipe, Decisions: s.hosts.Decisions(), Renews: hc.cred != nil})
+		Recipe: recipe, Decisions: s.hosts.Decisions(), Renews: hc.cred != nil, SessionInfo: !isDesk && !s.cfg.Switchyard.Enabled})
 	if dropped {
 		s.log.Warn("registered with the agent's recipe is past a host message; the hosted session watches no questions", "session", info.ID, "agent", reg.Session.AgentID)
 	}
@@ -627,6 +627,19 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 			return false
 		}
 		s.hostRunLinkUpdate(hs, hc, m)
+	case proto.HostSessionInfo:
+		// What the host read of its session once its process ended, sent
+		// before the status that ends it, for its record; a switchyard keeps
+		// none. One out of its bounds is dropped, the connection kept.
+		if s.cfg.Switchyard.Enabled {
+			break
+		}
+		m, err := proto.ParseSessionInfo(data)
+		if err != nil {
+			s.log.Warn("a host's session_info was dropped", "session", hs.Info().ID, "err", err)
+			break
+		}
+		hs.HostSessionInfo(m)
 	case proto.HostRegister:
 		return false
 	default:

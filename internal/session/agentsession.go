@@ -71,8 +71,23 @@ func (s *Local) SetAgentSession(as AgentSession) {
 // notifies OnChange.
 func (s *Local) ReportAgentSession(id, policy string, turn bool) {
 	s.mu.Lock()
-	cur := s.info.AgentSession
-	next := AgentSession{ID: id, Source: AgentSessionHook}
+	next, changed := NextAgentSession(s.info.AgentSession, id, policy, turn)
+	if changed {
+		s.info.AgentSession = &next
+	}
+	s.mu.Unlock()
+	if changed {
+		s.notifyChange()
+	}
+}
+
+// NextAgentSession is the agent session a report of id makes of cur (nil
+// for none), by policy: id when there is none, else the latest one or the
+// lowest one; turn marks it resumable. changed says it differs from cur.
+// A server session's own (ReportAgentSession) and a hosted session's
+// record's, which the server keeps apart from the hosted Info.
+func NextAgentSession(cur *AgentSession, id, policy string, turn bool) (next AgentSession, changed bool) {
+	next = AgentSession{ID: id, Source: AgentSessionHook}
 	switch {
 	case cur == nil:
 	case cur.ID == id:
@@ -81,14 +96,7 @@ func (s *Local) ReportAgentSession(id, policy string, turn bool) {
 		next = *cur
 	}
 	next.Resumable = next.Resumable || (turn && next.ID == id)
-	changed := cur == nil || *cur != next
-	if changed {
-		s.info.AgentSession = &next
-	}
-	s.mu.Unlock()
-	if changed {
-		s.notifyChange()
-	}
+	return next, cur == nil || *cur != next
 }
 
 // Launched is what a server session was launched with, kept for Resume: the

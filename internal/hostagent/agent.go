@@ -34,6 +34,7 @@ import (
 	"github.com/rocksolidlabs/conductor/ext/local"
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/gitcli"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/pty"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -181,6 +182,11 @@ type Options struct {
 	// transport, when set (tests), is the control connection's transport in
 	// place of the standard one: a test's names dialed to its own servers.
 	transport *http.Transport
+	// revision and probe, when set (tests), read the folder's revision and
+	// run the agent's probe in place of gitcli's and agents.RunProbe
+	// (report.go).
+	revision func(ctx context.Context, dir string) (gitcli.Revision, error)
+	probe    func(ctx context.Context, command []string, p agents.Probe, env map[string]string) agents.ProbeResult
 	// after, when set (tests), is the clock of the first registration's
 	// retries, the renewal's steps and each writer's turn waits; renewed
 	// is told each renewal step's outcome; taking, each connection
@@ -253,12 +259,23 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	instance, _ := share.NewToken()
 	a := &agent{opts: opts, wsURL: wsURL, dir: dir, cols: cols, rows: rows, peers: map[string]*peer{}, log: opts.Log, agentToken: agentToken, instance: instance, localID: "1"}
 	a.activity = newActivityForwarder(a.sendActivity, a.sendChat, opts.Log)
+	// The folder is opened once, before anything is read of it: the
+	// report's reads, the process's start and the session's file reads and
+	// saves go through it.
+	folder, err := session.OpenFolder(dir)
+	if err != nil {
+		return Result{}, err
+	}
+	// What the host reports of the session, read before its process starts.
+	a.report = a.readReport(ctx, folder)
+	defer a.letLaunchGo()
 	firstConn, registered, err := a.dialAndRegister(ctx)
 	if withheldRefusal(err) {
 		// The provider signs in after Start: waited for a while (uplinkcred.go).
 		firstConn, registered, err = a.registerWhileWithheld(ctx, err)
 	}
 	if err != nil {
+		folder.Close()
 		return Result{}, err
 	}
 	notifyURL := attentionURL(opts.ServerURL, registered.SessionID)
@@ -273,14 +290,6 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		if _, ok := env[k]; !ok {
 			env[k] = v
 		}
-	}
-	// The folder is opened once: the process starts in it and the
-	// session's file reads and saves go through it.
-	folder, err := session.OpenFolder(dir)
-	if err != nil {
-		a.dropConn(firstConn)
-		firstConn.Close(websocket.StatusNormalClosure, "start failed")
-		return Result{}, err
 	}
 	dirFile, err := folder.Dir()
 	if err != nil {
@@ -510,6 +519,18 @@ type agent struct {
 	// publication's or the desk's end waits for its workers before it is
 	// done.
 	lanes laneGroup
+
+	// report is what the host reports of its session (report.go), read
+	// before its process starts; launchDir the launch's folder and
+	// launchRepo its repository, held for the end's read, which must find
+	// the same; sessionInfo what the server's last registered said of
+	// session_info; endCommit the end's, read once.
+	report      proto.HostReport
+	launchDir   *os.File
+	launchRepo  *gitcli.LaunchRepo
+	sessionInfo atomic.Bool
+	endOnce     sync.Once
+	endCommit   string
 
 	// ticks counts keepHearing's ticks done, each counted after its ping
 	// is reserved, or not: two more ticks after a link went means one
@@ -785,6 +806,7 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	a.secret = registered.Secret
 	a.ice = registered.ICEServers
 	a.decisions.Store(registered.Decisions)
+	a.sessionInfo.Store(registered.SessionInfo)
 	unnamed := a.takeHeldLocked(registered.Links)
 	if len(a.opts.ICEServers) > 0 {
 		a.ice = a.opts.ICEServers
@@ -829,6 +851,7 @@ func (a *agent) registration(cols, rows uint16) proto.Register {
 		// The owner's own server may route the session's questions: it is
 		// told what the session keeps, and its answers are taken.
 		reg.Host.AnswerAs = true
+		reg.Session.HostReport = a.report
 		return reg
 	}
 	reg.Host.User = ""
@@ -1109,8 +1132,14 @@ func (a *agent) sendChat(m session.ChatMessage) {
 }
 
 // sendActivity delivers one entry, and the attention state it records, on the
-// control connection.
+// control connection. A file entry whose path this host's own deny list
+// refuses (Options.FileDeny) is not sent: what the host leaves out of its
+// sessions' files it leaves out of what it reports of them, the server
+// asking nothing of its own machine about a host's paths.
 func (a *agent) sendActivity(e session.ActivityEntry, state session.AttentionState) {
+	if e.Type == session.ActivityFile && a.opts.FileDeny != nil && e.Path != "" && session.DeniedBy(session.TouchedAbs(a.dir, e.Path), a.opts.FileDeny()) {
+		return
+	}
 	m := hostActivityMsg(a.sessionID(), e)
 	m.State = string(state)
 	a.send(m)
@@ -1332,8 +1361,18 @@ func (a *agent) watchStatus(ctx context.Context, w *controlWriter) {
 		return
 	case <-a.local.Ended():
 	}
+	// The end commit, for a server that takes it, is read while the
+	// viewers are handed the end, and sent ahead of the status.
+	var ended chan string
+	if a.takesSessionInfo() {
+		ended = make(chan string, 1)
+		go func() { ended <- a.endRevision(ctx) }()
+	}
 	a.handViewersTheEnd(ctx, w.done)
 	info := a.local.Info()
+	if ended != nil {
+		a.sendSessionInfo(w, info.ID, <-ended)
+	}
 	if b, err := json.Marshal(proto.HostStatusMsg{T: proto.HostStatus, SessionID: info.ID, Status: string(info.Status), ExitCode: info.ExitCode}); err == nil {
 		_ = w.sendControl(websocket.MessageText, b)
 	}

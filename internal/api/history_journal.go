@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"runtime"
 	"strconv"
 	"time"
 
@@ -15,6 +14,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/journal"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/signal"
 	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
@@ -22,7 +22,7 @@ import (
 // a record of every server session, kept by internal/journal under the
 // data directory's history/. The server opens it with its data directory
 // (a switchyard keeps none) and keeps each recorded session's record in
-// step with the session. A hosted session has no record yet.
+// step with the session; a hosted session's is in history_hosted.go.
 //
 // # The record follows the session (reconcile)
 //
@@ -177,14 +177,14 @@ func (s *Server) recording() bool {
 // Runtime elsewhere runs on a tree this server does not observe); a read
 // that fails or times out, or whose folder could not be named as opened,
 // leaves it empty. repo is the repository it names, as the file system
-// knows it (openLaunchRepo): what the end commit's read must find again
-// (recordEndCommit), nil with no repository; its caller closes it unless
-// beginServerRecord takes it.
-func (s *Server) launchRevision(where ext.Where, cwd string, dir *os.File) (rev gitcli.Revision, repo *launchRepo) {
+// knows it (gitcli.OpenLaunchRepo): what the end commit's read must find
+// again (recordEndCommit), nil with no repository; its caller closes it
+// unless beginServerRecord takes it.
+func (s *Server) launchRevision(where ext.Where, cwd string, dir *os.File) (rev gitcli.Revision, repo *gitcli.LaunchRepo) {
 	if !s.recording() || where != ext.WhereNative {
 		return gitcli.Revision{}, nil
 	}
-	at, still := openedPath(dir, cwd)
+	at, still := gitcli.OpenedPath(dir, cwd)
 	ctx, cancel := context.WithTimeout(context.Background(), revisionTimeout)
 	defer cancel()
 	rev, err := s.readRevision(ctx, at)
@@ -194,49 +194,10 @@ func (s *Server) launchRevision(where ext.Where, cwd string, dir *os.File) (rev 
 	if rev.Common == "" {
 		return rev, nil
 	}
-	if repo = openLaunchRepo(rev.Common); repo == nil {
+	if repo = gitcli.OpenLaunchRepo(rev.Common); repo == nil {
 		return gitcli.Revision{}, nil
 	}
 	return rev, repo
-}
-
-// launchRepo is a launch's repository as the file system knows it: the
-// identity of its common git directory, and, where the system gives a
-// removed directory's identity to the next one made (Linux reuses an
-// inode's number once it is freed), that directory held open from the
-// launch until the end commit is read, so its identity cannot be given to
-// a repository made again at its path. Windows needs no hold: a file's id
-// there carries a sequence number that its reuse changes.
-type launchRepo struct {
-	id   os.FileInfo
-	held *os.File
-}
-
-func openLaunchRepo(common string) *launchRepo {
-	if runtime.GOOS == "windows" {
-		fi, err := os.Stat(common)
-		if err != nil {
-			return nil
-		}
-		return &launchRepo{id: fi}
-	}
-	f, err := os.Open(common)
-	if err != nil {
-		return nil
-	}
-	fi, err := f.Stat()
-	if err != nil || !fi.IsDir() {
-		f.Close()
-		return nil
-	}
-	return &launchRepo{id: fi, held: f}
-}
-
-// close lets the held directory go; nothing for nil.
-func (r *launchRepo) close() {
-	if r != nil && r.held != nil {
-		r.held.Close()
-	}
 }
 
 // dropRecordRepo lets id's launch repository go: its end commit read, or
@@ -245,31 +206,7 @@ func (r *launchRepo) close() {
 // journal's Removed, the journal closed).
 func (s *Server) dropRecordRepo(id string) {
 	if v, ok := s.recordRepos.LoadAndDelete(id); ok {
-		v.(*launchRepo).close()
-	}
-}
-
-// openedPath is a path that names the directory dir holds open, for a git
-// read in it: its descriptor's (/proc/<pid>/fd/<n>, where the system has
-// one, as the process's own start uses, internal/pty), which nothing done
-// to cwd moves; else cwd, which still says whether cwd named it as the
-// read ended. It never names another directory than dir's: none (still
-// false) when dir cannot be read.
-func openedPath(dir *os.File, cwd string) (string, func() bool) {
-	if dir == nil {
-		return cwd, func() bool { return false }
-	}
-	want, err := dir.Stat()
-	if err != nil {
-		return cwd, func() bool { return false }
-	}
-	byHandle := "/proc/" + strconv.Itoa(os.Getpid()) + "/fd/" + strconv.FormatUint(uint64(dir.Fd()), 10)
-	if fi, err := os.Stat(byHandle); err == nil && os.SameFile(fi, want) {
-		return byHandle, func() bool { return true }
-	}
-	return cwd, func() bool {
-		fi, err := os.Stat(cwd)
-		return err == nil && os.SameFile(fi, want)
+		v.(*gitcli.LaunchRepo).Close()
 	}
 }
 
@@ -288,6 +225,13 @@ type recorder struct {
 	watching bool
 	leaving  bool
 	gone     chan struct{}
+	// h is a hosted session's recorder's session (history_hosted.go), d
+	// nil; as is the agent session this registration last settled into the
+	// record (the record's is what a capture goes on from), and endCommit
+	// what its host sent before its end. Guarded by recMu.
+	h         *signal.HostedSession
+	as        *session.AgentSession
+	endCommit string
 }
 
 // recordSeam runs the test's hook at stage (recordHook), with the
@@ -313,11 +257,11 @@ func (s *Server) recordSeam(stage, id string) {
 // stays open on disk, for the next start's recovery to close as lost (the
 // admission rule). It takes repo (launchRevision's), kept until the end
 // commit is read, else closed.
-func (s *Server) beginServerRecord(info session.Info, launched session.Launched, agentAdapter, agentName string, version string, where ext.Where, rev gitcli.Revision, repo *launchRepo) *recorder {
+func (s *Server) beginServerRecord(info session.Info, launched session.Launched, agentAdapter, agentName string, version string, where ext.Where, rev gitcli.Revision, repo *gitcli.LaunchRepo) *recorder {
 	kept := false
 	defer func() {
 		if !kept {
-			repo.close()
+			repo.Close()
 		}
 	}()
 	if !s.recording() {
@@ -494,6 +438,10 @@ func (s *Server) reconcile(rc *recorder) {
 // and waits for a process whose status ended while it runs
 // (awaitProcessEnd). The caller holds recMu.
 func (s *Server) reconcileLocked(rc *recorder, finalPass bool) {
+	if rc.h != nil {
+		s.reconcileHostedLocked(rc, finalPass)
+		return
+	}
 	id := rc.in.ID()
 	if s.recCur[id] != rc || rc.leaving {
 		return
@@ -551,7 +499,7 @@ func (s *Server) recordRemoved(id string, d session.Driver) {
 	s.recordSeam("beforeRemovedReconcile", id)
 	s.recMu.Lock()
 	defer s.recMu.Unlock()
-	if rc := s.recCur[id]; rc != nil && rc.d != nil && session.Driver(rc.d) == d {
+	if rc := s.recCur[id]; rc != nil && ((rc.d != nil && session.Driver(rc.d) == d) || (rc.h != nil && session.Driver(rc.h) == d)) {
 		s.reconcileLocked(rc, false)
 	}
 }
@@ -576,6 +524,9 @@ func (s *Server) recordActivity(rc *recorder, e session.ActivityEntry) {
 	a := journal.Activity{At: e.At, Type: e.Type, By: e.By, ByName: e.ByName, Message: e.Message, URL: e.URL, To: e.To, Tool: e.Tool, Op: e.Op, Path: e.Path}
 	if e.Type == session.ActivityFile {
 		a.Path = session.TouchedAbs(rc.cwd, e.Path)
+		if rc.h != nil {
+			a.Path = signal.HostAbs(rc.cwd, e.Path)
+		}
 	}
 	s.recMu.Lock()
 	defer s.recMu.Unlock()
@@ -613,12 +564,12 @@ func endingOf(info session.Info) string {
 // recordEndCommit is the journal's EndCommit: HEAD of a native server
 // session's folder after its end, an observation; nothing for any other.
 // The folder is the session's own, the one it was opened as (FolderDir),
-// read through its handle where the system names one (openedPath), never
-// whatever its path leads to now; and the repository found there must be
-// the launch's, by the file system's identity of its common directory
-// (launchRevision), held open from the launch where the system would give
-// it to a directory made after (launchRepo), never by the text of a path:
-// a folder moved, a
+// read through its handle where the system names one (gitcli.OpenedPath),
+// never whatever its path leads to now; and the repository found there
+// must be the launch's, by the file system's identity of its common
+// directory (launchRevision), held open from the launch where the system
+// would give it to a directory made after (gitcli.LaunchRepo), never by
+// the text of a path: a folder moved, a
 // repository put in its place or made again at the same path lends no
 // commit. A session the server no longer holds (its folder closed) has
 // none read.
@@ -627,12 +578,11 @@ func (s *Server) recordEndCommit(ctx context.Context, r journal.Record) string {
 	if !ok {
 		return ""
 	}
-	repo := v.(*launchRepo)
-	defer repo.close()
+	repo := v.(*gitcli.LaunchRepo)
+	defer repo.Close()
 	if r.Where != string(ext.WhereNative) || r.Repo == "" {
 		return ""
 	}
-	want := repo.id
 	d, ok := s.registry.Get(r.ID)
 	l, local := d.(*session.Local)
 	if !ok || !local {
@@ -643,14 +593,11 @@ func (s *Server) recordEndCommit(ctx context.Context, r journal.Record) string {
 		return ""
 	}
 	defer dir.Close()
-	at, still := openedPath(dir, l.Info().Cwd)
+	at, still := gitcli.OpenedPath(dir, l.Info().Cwd)
 	ctx, cancel := context.WithTimeout(ctx, revisionTimeout)
 	defer cancel()
 	rev, err := s.readRevision(ctx, at)
-	if err != nil || !still() || rev.Common == "" {
-		return ""
-	}
-	if fi, err := os.Stat(rev.Common); err != nil || !os.SameFile(fi, want) {
+	if err != nil || !still() || !repo.Is(rev.Common) {
 		return ""
 	}
 	return rev.Commit

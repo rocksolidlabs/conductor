@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/journal"
@@ -257,6 +259,88 @@ func TestHistorySearchSaysWhichBoundItStoppedAt(t *testing.T) {
 		case c.want == "" && strings.Contains(out, "bound"):
 			t.Errorf("no cut: a bound named in\n%s", out)
 		}
+	}
+}
+
+// conductor history session prints every string of a record through
+// oneLine: a control character a record holds reaches the terminal as a
+// space or U+FFFD, never as itself, and makes no line of its own. The
+// record is filled by reflection over its type and every type it holds,
+// so a field added later is held to the same.
+func TestARecordsViewPrintsEveryFieldThroughOneLine(t *testing.T) {
+	const marked = "a\x1b]0;t\x07\x1b[2J\x00\x7f\u0085\u009b\r\t\v\fb\nc"
+	at := time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		name   string
+		live   bool
+		adjust func(*journal.Record)
+	}{
+		{"ended", false, func(*journal.Record) {}},
+		{"live", true, func(*journal.Record) {}},
+		// The branches a field's own value picks: a resume that started
+		// names its session; an answer's entry prints its outcome.
+		{"a resume started, an answer", false, func(r *journal.Record) {
+			r.Resumes[0].State = journal.ResumeStarted
+			r.Entries[0].Kind = journal.KindAnswer
+		}},
+		{"arguments not kept", false, func(r *journal.Record) { r.Launch.ArgsKept = false }},
+	} {
+		view := func(text string) string {
+			var r journal.Record
+			fillRecord(reflect.ValueOf(&r).Elem(), text, at)
+			c.adjust(&r)
+			var b bytes.Buffer
+			writeRecord(&b, r, c.live)
+			return b.String()
+		}
+		plain, out := view("x"), view(marked)
+		for _, ch := range out {
+			if ch != '\n' && unicode.IsControl(ch) {
+				t.Errorf("%s: the view holds %U:\n%q", c.name, ch, out)
+				break
+			}
+		}
+		if got, want := strings.Count(out, "\n"), strings.Count(plain, "\n"); got != want {
+			t.Errorf("%s: the view has %d lines, %d with plain text:\n%q", c.name, got, want, out)
+		}
+		if !strings.Contains(out, "b c") {
+			t.Errorf("%s: the fields' text is not in the view:\n%q", c.name, out)
+		}
+	}
+}
+
+// fillRecord sets every exported field v holds, through pointers, slices
+// and maps: a string to text, a bool to true, a number to 1, a time to at.
+func fillRecord(v reflect.Value, text string, at time.Time) {
+	switch {
+	case v.Type() == reflect.TypeFor[time.Time]():
+		v.Set(reflect.ValueOf(at))
+	case v.Kind() == reflect.String:
+		v.SetString(text)
+	case v.Kind() == reflect.Bool:
+		v.SetBool(true)
+	case v.CanInt():
+		v.SetInt(1)
+	case v.Kind() == reflect.Pointer:
+		v.Set(reflect.New(v.Type().Elem()))
+		fillRecord(v.Elem(), text, at)
+	case v.Kind() == reflect.Slice:
+		v.Set(reflect.MakeSlice(v.Type(), 1, 1))
+		fillRecord(v.Index(0), text, at)
+	case v.Kind() == reflect.Map:
+		k, e := reflect.New(v.Type().Key()).Elem(), reflect.New(v.Type().Elem()).Elem()
+		fillRecord(k, text, at)
+		fillRecord(e, text, at)
+		v.Set(reflect.MakeMap(v.Type()))
+		v.SetMapIndex(k, e)
+	case v.Kind() == reflect.Struct:
+		for i := range v.NumField() {
+			if v.Type().Field(i).IsExported() {
+				fillRecord(v.Field(i), text, at)
+			}
+		}
+	default:
+		panic("fillRecord: a field of kind " + v.Kind().String())
 	}
 }
 

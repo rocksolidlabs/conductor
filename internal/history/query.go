@@ -402,9 +402,12 @@ func termKey(term string) string {
 // the rows' own columns alone, and a Newest search reads its rows by them
 // (searchDrawn): each clause's rows are drawn by their kind and the column
 // that places them, through an index of those columns, so a row of
-// another kind or another value of that column is never read.
+// another kind or another value of that column is never read. Its rows
+// are the server's own alone unless it holds hosted sessions' too
+// (Hosted): a hosted row is then not drawn, as one of another kind is not.
 type Restriction struct {
 	Clauses []Clause `json:"c"`
+	Hosted  bool     `json:"h,omitempty"`
 }
 
 // Clause is rows of its kinds whose Place column holds one of its values
@@ -506,6 +509,9 @@ func (r *Restriction) sql() (string, []any) {
 	}
 	if len(ors) == 0 {
 		return "0", nil
+	}
+	if !r.Hosted {
+		return "(e.hosted = 0 AND (" + strings.Join(ors, " OR ") + "))", args
 	}
 	return "(" + strings.Join(ors, " OR ") + ")", args
 }
