@@ -174,7 +174,7 @@ func (j *Journal) takeLocked(id string) (*rec, error) {
 		if fi, err := os.Stat(filepath.Join(j.sess.Dir(), id+".json")); err == nil {
 			mod = fi.ModTime().UTC()
 		}
-		x.r.LostAt, x.r.Ending = mod, EndingLost
+		x.r.LostAt, x.r.Ending = mod, lostEnding(&x.r)
 		x.dirty, x.urgent = true, true
 	}
 	j.recs[id] = x

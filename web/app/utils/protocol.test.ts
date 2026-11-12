@@ -5,13 +5,20 @@ import {
   DECISION_PAGE,
   DecideCode,
   FrameType,
+  HOST_MAX_AGENT_VERSION,
   HOST_MAX_DESK_ID,
   HOST_MAX_LOCAL_ID,
+  HOST_MAX_REPORT_PATH,
+  HOST_MAX_REPORT_WHERE,
+  HOST_MAX_SESSION_INFO,
   HOST_MAX_RUN_ID,
+  HOST_MAX_TOKEN,
+  HOST_MAX_TOKEN_MESSAGE,
   MAX_DECIDE,
   MAX_DECIDE_IN_FLIGHT,
   MAX_DECISION,
   MAX_DECISION_CURSOR,
+  MAX_CAPACITY_EVENT,
   MAX_DECISION_EVENT,
   MAX_DECISION_READS_IN_FLIGHT,
   MAX_DECISION_RECEIPT,
@@ -26,16 +33,39 @@ import {
   encodeJSONFrame,
   goJSONLength,
   hostDeskLocalId,
+  hostReportValid,
   parseJSON,
+  validCommit,
   type DecideMsg,
   type DecideOkMsg,
   type DecideRefusedMsg,
+  type CapacityEvent,
   type DecisionEvent,
   type DecisionsChangedMsg,
   type HostRegisterDeskMessage,
+  type HostRegisteredRenews,
+  type HostReport,
   type HostRunGroup,
+  type HostSessionInfoMessage,
+  type HostTokenMsg,
   type Welcome,
 } from './protocol'
+
+// host_token (internal/proto HostTokenMsg, ParseHostToken; docs/protocol.md, Host control connection): a token at its bound,
+// of token68's characters, which JSON never escapes, fits the message's bound; registered's renews is optional.
+describe('host_token', () => {
+  it('fits a token at its bound in the message', () => {
+    expect(HOST_MAX_TOKEN).toBe(2048)
+    expect(HOST_MAX_TOKEN_MESSAGE).toBe(2560)
+    const m: HostTokenMsg = { t: 'host_token', token: 'Az09-._~+/='.padEnd(HOST_MAX_TOKEN, 'x') }
+    expect(m.token).toHaveLength(HOST_MAX_TOKEN)
+    expect(new TextEncoder().encode(JSON.stringify(m)).length).toBeLessThanOrEqual(HOST_MAX_TOKEN_MESSAGE)
+    const plain: HostRegisteredRenews = {}
+    const renews: HostRegisteredRenews = { renews: true }
+    expect(plain.renews).toBeUndefined()
+    expect(JSON.parse(JSON.stringify(renews)).renews).toBe(true)
+  })
+})
 
 // The decision lane's mirror of internal/proto/decisions.go (docs/protocol.md, Decision links): each message within the bounds the
 // owner checks, each refused past them, and the committed fixture read equal to Go's values.
@@ -164,6 +194,22 @@ describe('the decision event', () => {
   })
 })
 
+// The `capacity` event's data (docs/protocol.md "Capacity"): its largest, an agent id of 32 bytes, an account id, the longest
+// state and a time with nanoseconds, fits the bound the server holds it to (internal/api, maxCapacityEvent,
+// TestCapacityEventBounded).
+describe('the capacity event', () => {
+  it('fits its bound at its largest', () => {
+    const largest: CapacityEvent = {
+      agent: 'a'.repeat(32),
+      account: 'a-abcdefghijkl',
+      state: 'unqualified',
+      readAt: '2026-11-10T23:59:59.999999999+14:00',
+    }
+    expect(new TextEncoder().encode(JSON.stringify(largest)).length).toBeLessThanOrEqual(MAX_CAPACITY_EVENT)
+    expect(MAX_CAPACITY_EVENT).toBe(512)
+  })
+})
+
 // A run's desk (internal/proto RegisterDesk, RunGroup.Desk; docs/protocol.md, A run's desk): its local id is the run's, and
 // a group may name it with no member yet.
 describe('a run desk', () => {
@@ -178,8 +224,8 @@ describe('a run desk', () => {
   })
 })
 
-// The preview bridge's messages (internal/proto/preview.go): both parsers judge one fixture alike. Imported here, at the end, so
-// this block stays apart from the lanes' list above.
+// The preview bridge's messages (internal/proto/preview.go): both parsers judge one fixture alike. Imported here, with the block,
+// so it stays apart from the lanes' list above.
 import { runInNewContext } from 'node:vm'
 import { vi } from 'vitest'
 import {
@@ -427,5 +473,82 @@ describe('the preview bridge', () => {
     }
     expect(got).toEqual([null, null, null, null])
     expect(reads).toBeLessThan(100_000)
+  })
+})
+
+// What a host reports of its session (internal/proto HostReport, HostSessionInfoMsg; docs/protocol.md, Host control connection):
+// each field at its bound taken and one past it refused, as the server's hub holds them; an older host's register, with none, taken.
+describe('a host report', () => {
+  const path = '/' + 'p'.repeat(HOST_MAX_REPORT_PATH - 1)
+  it('takes every field at its bound, and none', () => {
+    expect(hostReportValid({})).toBe(true)
+    expect(hostReportValid({ where: 'w' + '-'.repeat(HOST_MAX_REPORT_WHERE - 1), agentVersion: 'é'.repeat(HOST_MAX_AGENT_VERSION / 2), repo: path, repoCommon: 'C:\\src\\app\\.git', startCommit: '0f'.repeat(32) })).toBe(true)
+    expect(hostReportValid({ where: 'native', repo: '\\\\server\\share', startCommit: 'a'.repeat(40) })).toBe(true)
+  })
+  it('refuses each one past its bound or out of its form', () => {
+    for (const r of [
+      { where: 'w'.repeat(HOST_MAX_REPORT_WHERE + 1) },
+      { where: 'VM' },
+      { where: '9vm' },
+      { agentVersion: 'é'.repeat(HOST_MAX_AGENT_VERSION / 2) + '1' },
+      { agentVersion: '2.1\nfake' },
+      { repo: path + 'p' },
+      { repoCommon: 'src/app' },
+      { repo: 'https://user:secret@example.com/app.git' },
+      { startCommit: 'a'.repeat(39) },
+      { startCommit: 'a'.repeat(41) },
+      { startCommit: 'A'.repeat(40) },
+    ]) expect(hostReportValid(r), JSON.stringify(r)).toBe(false)
+  })
+  it('refuses in each text field a character that changes how the line is drawn', () => {
+    // Built from their code points (a direction override and isolate, zero-width space and joiner, BOM, line and paragraph
+    // separators), as proto's TestAReportedFieldIsOneLineDrawnInOrder has them.
+    for (const c of [0x202e, 0x2066, 0x200b, 0x200d, 0xfeff, 0x2028, 0x2029].map((n) => String.fromCodePoint(n))) {
+      for (const r of [{ agentVersion: '2.1.304' + c }, { repo: '/src/' + c + 'app' }, { repoCommon: '/src/app/' + c + '.git' }]) {
+        expect(hostReportValid(r), JSON.stringify(r)).toBe(false)
+      }
+    }
+    expect(hostReportValid({ agentVersion: '2.1.304 (Claude Code)', repo: '/Users/adá/app' })).toBe(true)
+  })
+  it('takes in each text field exactly what its form allows', () => {
+    // One character of each general category, the first Go's tables hold of it (proto's TestAReportedFieldIsMadeOfWhatItsFormAllows):
+    // a letter, a number, punctuation, a symbol and the space taken anywhere; a mark after one of those (never a version's first);
+    // everything else nowhere.
+    const firsts: Record<string, number> = {
+      Cc: 0x0, Cf: 0xad, Cn: 0x378, Co: 0xe000, Ll: 0x61, Lm: 0x2b0, Lo: 0xaa, Lt: 0x1c5, Lu: 0x41, Mc: 0x903, Me: 0x488, Mn: 0x300,
+      Nd: 0x30, Nl: 0x16ee, No: 0xb2, Pc: 0x5f, Pd: 0x2d, Pe: 0x29, Pf: 0xbb, Pi: 0xab, Po: 0x21, Ps: 0x28, Sc: 0x24, Sk: 0x5e,
+      Sm: 0x2b, So: 0xa6, Zl: 0x2028, Zp: 0x2029, Zs: 0x20,
+    }
+    const fields: Record<string, (v: string) => HostReport> = {
+      agentVersion: (v) => ({ agentVersion: v }),
+      repo: (v) => ({ repo: '/' + v }),
+      repoCommon: (v) => ({ repoCommon: '/' + v }),
+    }
+    for (const [cat, n] of Object.entries(firsts)) {
+      const c = String.fromCodePoint(n)
+      const base = 'LNPS'.includes(cat[0]!) || n === 0x20
+      const at = [(s: string) => c + s, (s: string) => s.slice(0, 2) + c + s.slice(2), (s: string) => s + c]
+      at.forEach((put, i) => {
+        for (const [name, rep] of Object.entries(fields)) {
+          const want = base || (cat[0] === 'M' && (i > 0 || name !== 'agentVersion'))
+          expect(hostReportValid(rep(put('1.4.0'))), `${name} ${cat} at ${i}`).toBe(want)
+        }
+      })
+    }
+    for (const n of [0x034f, 0xfe00, 0xfe0f, 0xe0100, 0xe01ef]) {
+      for (const rep of Object.values(fields)) expect(hostReportValid(rep('é' + String.fromCodePoint(n) + '1.4'))).toBe(false)
+    }
+    for (const ok of [
+      { agentVersion: 'v0.163.0-alpha.2+build_7', repo: '/home/ада/проект', repoCommon: '/home/ада/проект/.git' },
+      { repo: '/Users/李/项目', repoCommon: 'C:\\Users\\Zoë\\app\\.git' },
+      { repo: '/Users/ade\u0301/app' },
+    ]) expect(hostReportValid(ok), JSON.stringify(ok)).toBe(true)
+  })
+  it('bounds a session_info by its bytes and its end commit by its form', () => {
+    const m: HostSessionInfoMessage = { t: 'session_info', endCommit: 'c'.repeat(64) }
+    const body = JSON.stringify(m)
+    expect(body.length).toBeLessThan(HOST_MAX_SESSION_INFO)
+    expect(validCommit(m.endCommit!)).toBe(true)
+    expect(validCommit('HEAD')).toBe(false)
   })
 })

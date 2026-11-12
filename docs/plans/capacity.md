@@ -482,8 +482,9 @@ single launch adds on top (yolo's env, an attempt's approved names, a
 request's env) is not read: a launch whose additions set or pass the
 adapter's `ConfigDirEnv` or one of its login variables (`AuthEnv`, a
 fixed list per adapter: Claude Code's `ANTHROPIC_API_KEY`,
-`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK`,
-`CLAUDE_CODE_USE_VERTEX`; Codex's `OPENAI_API_KEY`, `CODEX_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_OAUTH_TOKEN`
+(added in PR-3's review: the long-lived token login Claude Code documents),
+`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`; Codex's `OPENAI_API_KEY`, `CODEX_API_KEY`,
 `OPENAI_BASE_URL`) is shown `env_set` ("this launch's environment sets
 the agent's login: its usage is not read"). Each reading keeps a SHA-256
 of the variables it read with (in memory, never their values); a view

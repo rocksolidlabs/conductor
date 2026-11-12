@@ -324,7 +324,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	// provider's Start launches at once is published as any other is.
 	if server := cfg.RendezvousServer(); server != "" {
 		rv := cfg.Rendezvous
-		srv.SetPublisher(uplinkPublisher{newUplink(cfg, server, srv, log)})
+		srv.SetPublisher(uplinkPublisher{newUplink(cfg, server, srv, providers, log)})
 		log.Info("sessions are published to the switchyard", "server", config.ShownURL(server), "hostToken", rv.Token != "")
 		if rv.Insecure && config.PlainOffMachine(server) {
 			// Once per start: the config allowed it (rendezvous.insecure).
@@ -417,11 +417,29 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 // (api.Lane), which serves the decision links minted there over each
 // publication and each run's desk (docs/plans/decision-inbox.md, PR-6),
 // told of each link the switchyard says is gone.
-func newUplink(cfg *config.Config, server string, srv *api.Server, log *slog.Logger) *hostagent.Uplink {
+func newUplink(cfg *config.Config, server string, srv *api.Server, p ext.Providers, log *slog.Logger) *hostagent.Uplink {
 	rv := cfg.Rendezvous
+	// The identity provider chooses what is presented, when it can
+	// (hostagent.UplinkCredential); nil presents the host token as before.
+	name := identityName(p)
+	cred := hostagent.NewUplinkCredential(p.Identity, name, server, rv.Token, func(ctx context.Context) bool { return srv.ProviderStarted(ctx, name) }, log)
+	if cred != nil {
+		srv.SetUplinkHeld(cred.Held)
+	}
 	return &hostagent.Uplink{ServerURL: server, Token: rv.Token, HostName: rv.HostName, RelayOnly: rv.RelayOnly, Insecure: rv.Insecure,
 		ICE: hostagent.ICE{UDPPort: cfg.ICE.UDPPort, PublicIP: cfg.ICE.PublicIP}, Log: log,
-		Decisions: srv.Lane(), LinkGone: srv.RemoteLinkGone, LinkUnnamed: srv.RemoteLinkUnnamed}
+		Decisions: srv.Lane(), LinkGone: srv.RemoteLinkGone, LinkUnnamed: srv.RemoteLinkUnnamed, Credential: cred}
+}
+
+// identityName is the name the identity provider registered under, "" for
+// none.
+func identityName(p ext.Providers) string {
+	for _, e := range p.All {
+		if e.Kind == ext.KindIdentity {
+			return e.Name
+		}
+	}
+	return ""
 }
 
 // uplinkPublisher adapts hostagent.Uplink to api.Publisher and

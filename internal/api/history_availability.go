@@ -286,12 +286,15 @@ func (av *availability) of(e history.Entry, full bool) availabilityOf {
 	return availabilityOf{State: availKept, Words: "kept"}
 }
 
-// session is a session's availability: listed (running or ended), else
-// its record's (kept, lost while it ran, its host away); unknown when an
-// entry read asked the journal for its record and the read failed.
+// session is a session's availability: listed (running, its host away in
+// the grace, or ended), else its record's (kept, lost while it ran, its
+// host away); unknown when an entry read asked the journal for its record
+// and the read failed.
 func (av *availability) session(id string, record bool, e history.Entry) availabilityOf {
 	if d, ok := av.s.registry.Get(id); ok {
-		if !d.Info().Status.Ended() {
+		if st := d.Info().Status; st == session.StatusHostDisconnected {
+			return availabilityOf{State: availHostAway, Words: "host away"}
+		} else if !st.Ended() {
 			return availabilityOf{State: availLive, Words: "live"}
 		}
 		return availabilityOf{State: availListed, Words: "ended, listed"}

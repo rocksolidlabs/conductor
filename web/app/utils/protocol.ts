@@ -284,6 +284,21 @@ export interface DecisionEvent {
 /** The bound of a `decision` event's data, in bytes (internal/api, maxDecisionEvent). */
 export const MAX_DECISION_EVENT = 256
 
+/**
+ * Data of a `capacity` event on GET /api/events (Program item AC1, docs/protocol.md "Capacity"): a reading of an agent's usage on
+ * an account was kept, for a page to read its view again with `GET /api/capacity?agent=&account=`. It names the key, the reading's
+ * state and when it was read, never a label, a folder or a figure. At most 512 bytes of data (`MAX_CAPACITY_EVENT`).
+ */
+export interface CapacityEvent {
+  agent: string
+  account: string
+  state: 'ok' | 'signed_out' | 'key_paid' | 'unqualified' | 'error' | 'never_read'
+  readAt: string
+}
+
+/** The bound of a `capacity` event's data, in bytes (internal/api, maxCapacityEvent). */
+export const MAX_CAPACITY_EVENT = 512
+
 export interface ICEServer {
   urls: string[]
   username?: string
@@ -722,6 +737,60 @@ export interface HostAnswerAsMessage {
 }
 export const HOST_MAX_ANSWER_AS_SUBJECT = 48
 
+/**
+ * What a host reports of its session for its record (docs/protocol.md, Host control connection; HS1 PR-12), beside the register's
+ * session fields: its Runtime (`where`, ext.Where's slug), its agent's version, and, read before its process starts and only on a
+ * native Runtime, its working tree's top, its repository's common git directory and its start commit. Each optional: an older host
+ * sends none, and its record says "not reported by its host". A register past a bound is refused. The web never sends it.
+ */
+export interface HostReport {
+  where?: string
+  agentVersion?: string
+  repo?: string
+  repoCommon?: string
+  startCommit?: string
+}
+export const HOST_MAX_REPORT_WHERE = 32
+export const HOST_MAX_AGENT_VERSION = 64
+export const HOST_MAX_REPORT_PATH = 4096
+/** A session_info message (below) is at most this many bytes. */
+export const HOST_MAX_SESSION_INFO = 2048
+
+/** A full commit id: 40 (SHA-1) or 64 (SHA-256) lowercase hex digits. */
+export function validCommit(s: string): boolean {
+  return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(s)
+}
+
+/** Whether a HostReport is within its bounds, as the server's hub holds it (proto.HostReport.Check): lengths in UTF-8 bytes. */
+export function hostReportValid(r: HostReport): boolean {
+  const bytes = (s: string) => new TextEncoder().encode(s).length
+  // Made of what a reported field may hold (proto's oneLine): letters, numbers, punctuation, symbols and the space, each followed by
+  // any combining marks, so none first; nothing a renderer ignores by default (a variation selector, the grapheme joiner). The
+  // server's verdict is the one that counts: this mirror is for the tests, and where its Unicode tables and Go's differ, Go's rule.
+  const oneLine = (s: string) =>
+    /^(?:[\p{L}\p{N}\p{P}\p{S} ]\p{M}*)*$/u.test(s) && !/[\p{Default_Ignorable_Code_Point}\p{Variation_Selector}]/u.test(s)
+  const path = (p?: string) => !p || (bytes(p) <= HOST_MAX_REPORT_PATH && oneLine(p) && /^(?:\/|\\\\|[A-Za-z]:[\\/])/.test(p))
+  if (r.where && !new RegExp(`^[a-z][a-z0-9-]{0,${HOST_MAX_REPORT_WHERE - 1}}$`).test(r.where)) return false
+  if (r.agentVersion && (bytes(r.agentVersion) > HOST_MAX_AGENT_VERSION || !oneLine(r.agentVersion))) return false
+  return path(r.repo) && path(r.repoCommon) && (!r.startCommit || validCommit(r.startCommit))
+}
+
+/**
+ * host → server, only to a server whose registered said sessionInfo, never to a switchyard: what the host read of its session once
+ * its process ended (`endCommit`, a full commit id, or none), sent before the status that ends it; at most HOST_MAX_SESSION_INFO
+ * bytes, else dropped. The web never sends it.
+ */
+export interface HostSessionInfoMessage {
+  t: 'session_info'
+  sessionId?: string
+  endCommit?: string
+}
+
+/** The part of registered that says the server takes session_info; absent from an older server, a switchyard and a desk's. */
+export interface HostRegisteredSessionInfo {
+  sessionInfo?: boolean
+}
+
 /** The part of registered that says which links the server still holds for the session; absent from an older server. */
 export interface HostRegisteredLinks {
   links?: string[]
@@ -735,6 +804,28 @@ export interface HostRegisteredLinks {
 export interface HostRegisteredDecisions {
   decisions?: boolean
 }
+
+/**
+ * The part of registered that says the switchyard rechecks the connection's credential and takes host_token on it
+ * (docs/protocol.md, Host control connection): only on a connection admitted through an identity provider's principal;
+ * absent from an older switchyard. The web never sees it.
+ */
+export interface HostRegisteredRenews {
+  renews?: boolean
+}
+
+/**
+ * host → switchyard, after a registered that said renews: the credential that replaces the one the connection was admitted
+ * with, at most one per 30 s step and only when it changed. The token is 1 to HOST_MAX_TOKEN bytes of token68 (A-Z a-z 0-9
+ * - . _ ~ + / =), the message at most HOST_MAX_TOKEN_MESSAGE bytes; anything but its one success closes the connection 4403
+ * (access revoked). The web never sends it.
+ */
+export interface HostTokenMsg {
+  t: 'host_token'
+  token: string
+}
+export const HOST_MAX_TOKEN = 2048
+export const HOST_MAX_TOKEN_MESSAGE = 2560
 
 /**
  * host → switchyard, the first message of a run's desk's connection in place of register (docs/protocol.md, A run's desk):

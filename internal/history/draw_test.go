@@ -25,7 +25,7 @@ func restrictedTo(t *testing.T, line, session string) Query {
 func drawnBy(t *testing.T, ix *Index, q Query) (Page, []int64) {
 	t.Helper()
 	var drawn []int64
-	ix.SetDrawSeam(func(id int64) { drawn = append(drawn, id) })
+	ix.SetDrawSeam(func(id int64, _ string) { drawn = append(drawn, id) })
 	defer ix.SetDrawSeam(nil)
 	p, err := ix.Search(context.Background(), q)
 	if err != nil {
@@ -120,7 +120,7 @@ func TestARestrictedReadDrawsOnlyItsRows(t *testing.T) {
 }
 
 // Every statement a restricted read draws by reads one range of its
-// index: one kind and one value of its column, its rows in the read's
+// index: one kind, one hosted and one value of its column, its rows in the read's
 // order, so the database reads no row the range does not hold and sorts
 // nothing.
 func TestARestrictedReadDrawsByItsIndex(t *testing.T) {
@@ -144,7 +144,7 @@ func planOf(t *testing.T, ix *Index, q Query, since bool) {
 		if col != "" {
 			c.Place = &Cond{Column: col, Values: []string{"v"}}
 		}
-		q.Restrict = &Restriction{Clauses: []Clause{c}}
+		q.Restrict = &Restriction{Clauses: []Clause{c}, Hosted: true}
 		for _, p := range q.places(t0) {
 			for _, at := range []bool{false, true} {
 				stmt, args := p.stmt, slices.Clone(p.args)
@@ -166,7 +166,7 @@ func planOf(t *testing.T, ix *Index, q Query, since bool) {
 					plan = append(plan, detail)
 				}
 				rows.Close()
-				want := "SEARCH entries USING COVERING INDEX " + pc.index + " (kind=?"
+				want := "SEARCH entries USING COVERING INDEX " + pc.index + " (kind=? AND hosted=?"
 				switch {
 				case strings.Contains(pc.expr, "("):
 					want += " AND <expr>=?"

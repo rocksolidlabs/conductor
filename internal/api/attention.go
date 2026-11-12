@@ -248,6 +248,9 @@ func (s *Server) handleAttention(w http.ResponseWriter, r *http.Request) {
 	}
 	if local, ok := d.(*session.Local); ok && req.AgentSession != "" {
 		s.captureAgentSession(local, req.AgentSession, req.Turn)
+	} else if hs, ok := d.(*signal.HostedSession); ok && req.AgentSession != "" && s.captureHostedAgentSession(r.Context(), hs, req.AgentSession, req.Turn) {
+		writeError(w, http.StatusServiceUnavailable, "registering", "the session is still registering, so its agent session was not kept; the attention was applied; send the report again")
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"attention": d.Info().Attention})
 }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { relativeTime, shortCwd } from '~/utils/sessions'
-import { recordAgent, recordEnding, recordEntryWords, resumeReceiptWords } from '~/utils/history'
+import { hostUnreported, recordAgent, recordEnding, recordEntryWords, recordWhere, resumeReceiptWords } from '~/utils/history'
 
 // A session's record (Program item HS1, docs/plans/history.md, "web/app", PR-6): what the server kept of a session it ran, after the
 // session is gone from the list as much as while it is listed. Its header (the agent with its version and its own session, the host,
@@ -81,7 +81,7 @@ const modalOpen = computed({
       <div class="mx-auto flex w-full max-w-4xl flex-col gap-5" data-record-page :data-record-id="id">
         <UAlert v-if="error" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
         <UAlert v-if="forgotten" color="neutral" variant="subtle" icon="i-lucide-trash-2" title="This record was forgotten" description="Its file is deleted from this server's data directory, and the history no longer holds anything of it." data-record-forgotten />
-        <UAlert v-else-if="missing" color="neutral" variant="subtle" icon="i-lucide-search-x" :title="`No record has the id ${id}`" description="It was forgotten, pruned past the newest 2,000, or never kept (history.sessions off, or a hosted session)." data-record-missing />
+        <UAlert v-else-if="missing" color="neutral" variant="subtle" icon="i-lucide-search-x" :title="`No record has the id ${id}`" description="It was forgotten, pruned past the newest 2,000, or never kept (history.sessions off, or a hosted session from before this server recorded them)." data-record-missing />
         <p v-else-if="!record && !error" class="text-sm text-muted">Reading the record…</p>
 
         <template v-if="record">
@@ -98,7 +98,11 @@ const modalOpen = computed({
                 <span v-else class="text-muted"> · its own session not known</span>
               </dd>
               <dt class="text-muted">Host</dt>
-              <dd class="min-w-0 break-words">{{ record.host.name || 'this server' }}<span v-if="record.where" class="text-muted"> · ran {{ record.where === 'native' ? 'natively' : `on ${record.where}` }}</span></dd>
+              <dd class="min-w-0 break-words">{{ record.host.name || 'this server' }}<span v-if="recordWhere(record)" class="text-muted" data-record-where> · {{ recordWhere(record) }}</span></dd>
+              <template v-if="hostUnreported(record).length">
+                <dt class="text-muted">Not reported</dt>
+                <dd class="min-w-0 break-words text-muted" data-record-unreported>by its host: {{ hostUnreported(record).join(', ') }}</dd>
+              </template>
               <dt class="text-muted">Folder</dt>
               <dd class="min-w-0 break-all font-mono text-xs" :title="record.cwd" data-record-cwd>{{ shortCwd(record.cwd) }}</dd>
               <template v-if="record.repo">
@@ -110,7 +114,7 @@ const modalOpen = computed({
                 <dd class="min-w-0 font-mono text-xs">
                   <span v-if="record.startCommit" :title="record.startCommit" data-record-start-commit>from {{ short(record.startCommit) }}</span>
                   <span v-if="record.endCommit" :title="record.endCommit" data-record-end-commit> → {{ short(record.endCommit) }}</span>
-                  <span v-else-if="record.endedAt" class="font-sans text-muted"> · its end commit was not read</span>
+                  <span v-else-if="record.endedAt" class="font-sans text-muted"> · its end commit was not {{ record.host.hosted ? 'reported by its host' : 'read' }}</span>
                 </dd>
               </template>
               <dt class="text-muted">Started</dt>

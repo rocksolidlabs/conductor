@@ -1,8 +1,11 @@
 package proto
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -43,6 +46,10 @@ const (
 	// HostRegisterDesk is the first message of a run's desk's connection
 	// (RegisterDesk), in place of register.
 	HostRegisterDesk = "register_desk"
+	// HostTokenType renews the credential a host connection was admitted
+	// with (HostTokenMsg): {"t":"host_token","token":"…"}. Sent only on a
+	// connection whose registered said Renews.
+	HostTokenType = "host_token"
 
 	// server -> host
 	HostRegistered  = "registered"
@@ -107,6 +114,9 @@ type HostSession struct {
 	// LocalID is the session's id on the host; with HostInfo.Instance,
 	// both or neither.
 	LocalID string `json:"localId,omitempty"`
+	// HostReport is what the host reports of the session for its record
+	// (hostreport.go), its fields beside these.
+	HostReport
 }
 
 // HostResume lets a reconnecting host reclaim its session.
@@ -158,7 +168,111 @@ type Registered struct {
 	// there; absent from an older switchyard and from one built without
 	// the tab, at which the publisher refuses one (switchyard_too_old).
 	Decisions bool `json:"decisions,omitempty"`
+	// SessionInfo says the server takes session_info (HostSessionInfoMsg):
+	// only then does the host send it. Absent from an older server, from a
+	// switchyard and on a desk's registered.
+	SessionInfo bool `json:"sessionInfo,omitempty"`
+	// Renews says the switchyard rechecks this connection's credential and
+	// takes host_token on it (HostTokenMsg): only on a connection admitted
+	// through an identity provider's principal; absent from an older
+	// switchyard and on a connection of the workbench token, a host token
+	// or an open host.
+	Renews bool `json:"renews,omitempty"`
 }
+
+// HostTokenMsg is host_token: the credential that replaces the one the
+// connection was admitted with.
+type HostTokenMsg struct {
+	T     string `json:"t"`
+	Token string `json:"token"`
+}
+
+const (
+	MaxHostToken        = 2048 // ext.MaxHostToken
+	MaxHostTokenMessage = 2560 // the message, encoded
+)
+
+// ParseHostToken decodes a host_token, refusing a message past
+// MaxHostTokenMessage before it is decoded, an unknown field, anything
+// after its one object, and a token that is empty, past MaxHostToken or
+// not of token68's characters (A-Z a-z 0-9 - . _ ~ + / =,
+// ext.ValidHostToken's rule).
+func ParseHostToken(data []byte) (string, error) {
+	if len(data) > MaxHostTokenMessage {
+		return "", fmt.Errorf("host_token: %d bytes, past %d", len(data), MaxHostTokenMessage)
+	}
+	var m HostTokenMsg
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&m); err != nil || m.T != HostTokenType {
+		return "", errors.New("host_token: not a host_token message")
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return "", errors.New("host_token: not one object alone")
+	}
+	if m.Token == "" || len(m.Token) > MaxHostToken || strings.TrimLeft(m.Token, token68) != "" {
+		return "", errors.New("host_token: the token is not 1 to 2048 bytes of token68")
+	}
+	return m.Token, nil
+}
+
+// PeekType is the type of a JSON message, its top-level t (matched as
+// ParseHeader matches it, case aside), read within the message's first
+// MaxHostTokenMessage bytes alone, by a decoder that stops at t: what
+// comes before it is stepped over token by token, never past those bytes,
+// so its work is bounded whatever the message holds. "" when those bytes
+// are no object's start or hold no string t before the decoder fails: a t
+// past them cannot be a valid host_token's. Where t appears twice, the
+// first is the one read (ParseHeader takes the last). The host read loop
+// runs it only on a connection admitted through an identity provider, and
+// closes one whose type ParseHeader reads as host_token otherwise.
+func PeekType(data []byte) string {
+	dec := json.NewDecoder(bytes.NewReader(data[:min(len(data), MaxHostTokenMessage)]))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return ""
+	}
+	for dec.More() {
+		k, err := dec.Token()
+		if err != nil {
+			return ""
+		}
+		if key, _ := k.(string); strings.EqualFold(key, "t") {
+			v, err := dec.Token()
+			t, _ := v.(string)
+			if err != nil {
+				return ""
+			}
+			return t
+		}
+		if !skipValue(dec) {
+			return ""
+		}
+	}
+	return ""
+}
+
+// skipValue steps dec over one value.
+func skipValue(dec *json.Decoder) bool {
+	depth := 0
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return false
+		}
+		switch tok {
+		case json.Delim('{'), json.Delim('['):
+			depth++
+		case json.Delim('}'), json.Delim(']'):
+			depth--
+		}
+		if depth == 0 {
+			return true
+		}
+	}
+}
+
+// token68 is the characters a host token is made of.
+const token68 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~+/="
 
 // RegisterDesk is the first message of a run's desk's connection, in
 // place of register (docs/plans/decision-inbox.md, PR-6): one more host

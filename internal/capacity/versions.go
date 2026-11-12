@@ -95,7 +95,7 @@ type Versions struct {
 	owned   bool                    // Store.Own has run: admissions and saves are this server's
 	recs    []record                // oldest change first
 	pending int                     // shared admissions whose Turned would add a held record
-	unsaved bool                    // recs hold a change the file does not; only ever true once owned
+	unsaved bool                    // recs hold a change the file does not; only ever true once Own has run
 	seam    func(name string) error // this package's tests: asked before each save, its error the save's
 }
 
@@ -234,6 +234,9 @@ const NotKeptWords = "an outcome is held in memory and not yet kept in capacity/
 func (v *Versions) keepLocked() error {
 	if !v.unsaved {
 		return nil
+	}
+	if !v.owned { // Store.Disown: the record is another server's to save
+		return notOwner()
 	}
 	if err := v.save(); err != nil {
 		return &Error{Code: CodeNotKept, Words: fmt.Sprintf("%s (%v): this server keeps to it and starts no read until it is kept; the next admission or outcome saves it again", NotKeptWords, err)}

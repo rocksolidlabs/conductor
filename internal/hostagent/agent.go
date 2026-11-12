@@ -34,6 +34,7 @@ import (
 	"github.com/rocksolidlabs/conductor/ext/local"
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/gitcli"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/pty"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -173,9 +174,26 @@ type Options struct {
 	// registered also stops naming a run's link once it left the group.
 	LinkUnnamed func(linkID, sessionID, runID string)
 
+	// Credential, when set, chooses what each registration presents in
+	// place of Token, and renews it on the live connection
+	// (uplinkcred.go): an identity provider's (NewUplinkCredential).
+	Credential *UplinkCredential
+
 	// transport, when set (tests), is the control connection's transport in
 	// place of the standard one: a test's names dialed to its own servers.
 	transport *http.Transport
+	// revision and probe, when set (tests), read the folder's revision and
+	// run the agent's probe in place of gitcli's and agents.RunProbe
+	// (report.go).
+	revision func(ctx context.Context, dir string) (gitcli.Revision, error)
+	probe    func(ctx context.Context, command []string, p agents.Probe, env map[string]string) agents.ProbeResult
+	// after, when set (tests), is the clock of the first registration's
+	// retries, the renewal's steps and each writer's turn waits; renewed
+	// is told each renewal step's outcome; taking, each connection
+	// writer's turn to take a message (controlWriter.taking).
+	after   func(time.Duration) <-chan time.Time
+	renewed func(renewStep)
+	taking  func()
 }
 
 // Result reports how the hosted process ended.
@@ -241,8 +259,23 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	instance, _ := share.NewToken()
 	a := &agent{opts: opts, wsURL: wsURL, dir: dir, cols: cols, rows: rows, peers: map[string]*peer{}, log: opts.Log, agentToken: agentToken, instance: instance, localID: "1"}
 	a.activity = newActivityForwarder(a.sendActivity, a.sendChat, opts.Log)
-	firstConn, registered, err := a.dialAndRegister(ctx)
+	// The folder is opened once, before anything is read of it: the
+	// report's reads, the process's start and the session's file reads and
+	// saves go through it.
+	folder, err := session.OpenFolder(dir)
 	if err != nil {
+		return Result{}, err
+	}
+	// What the host reports of the session, read before its process starts.
+	a.report = a.readReport(ctx, folder)
+	defer a.letLaunchGo()
+	firstConn, registered, err := a.dialAndRegister(ctx)
+	if withheldRefusal(err) {
+		// The provider signs in after Start: waited for a while (uplinkcred.go).
+		firstConn, registered, err = a.registerWhileWithheld(ctx, err)
+	}
+	if err != nil {
+		folder.Close()
 		return Result{}, err
 	}
 	notifyURL := attentionURL(opts.ServerURL, registered.SessionID)
@@ -257,14 +290,6 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		if _, ok := env[k]; !ok {
 			env[k] = v
 		}
-	}
-	// The folder is opened once: the process starts in it and the
-	// session's file reads and saves go through it.
-	folder, err := session.OpenFolder(dir)
-	if err != nil {
-		a.dropConn(firstConn)
-		firstConn.Close(websocket.StatusNormalClosure, "start failed")
-		return Result{}, err
 	}
 	dirFile, err := folder.Dir()
 	if err != nil {
@@ -495,6 +520,18 @@ type agent struct {
 	// done.
 	lanes laneGroup
 
+	// report is what the host reports of its session (report.go), read
+	// before its process starts; launchDir the launch's folder and
+	// launchRepo its repository, held for the end's read, which must find
+	// the same; sessionInfo what the server's last registered said of
+	// session_info; endCommit the end's, read once.
+	report      proto.HostReport
+	launchDir   *os.File
+	launchRepo  *gitcli.LaunchRepo
+	sessionInfo atomic.Bool
+	endOnce     sync.Once
+	endCommit   string
+
 	// ticks counts keepHearing's ticks done, each counted after its ping
 	// is reserved, or not: two more ticks after a link went means one
 	// began after it went and reserved none (tests wait on that before
@@ -655,11 +692,17 @@ func (a *agent) controlLoop(ctx context.Context, first *websocket.Conn) {
 // dialAndRegister opens the control connection and registers (or resumes)
 // the session. On success the connection is stored as the active one.
 func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Registered, error) {
+	// What the identity provider gives, when there is one, asked anew at
+	// every registration (UplinkCredential.Present), before the dial.
+	token, withheld := a.opts.Token, false
+	if a.opts.Credential != nil {
+		token, withheld = a.opts.Credential.Present(ctx)
+	}
 	dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	// No token, no header: an open host on a switchyard that admits them.
 	header := map[string][]string{}
-	if a.opts.Token != "" {
-		header["Authorization"] = []string{"Bearer " + a.opts.Token}
+	if token != "" {
+		header["Authorization"] = []string{"Bearer " + token}
 	}
 	base := &http.Client{}
 	if a.opts.ServerIsOwners {
@@ -669,7 +712,23 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	}
 	// A redirect the dial follows is held to the rule the URL given was
 	// (Run, Uplink.Publish): plain to another machine only with Insecure.
+	// A registration through an identity provider (Credential) is made to
+	// the configured address alone: a redirect is a failed registration,
+	// never followed, and to a server reached without TLS it is dialed
+	// directly, never through a proxy (over TLS a proxy carries a tunnel).
 	base.CheckRedirect = a.redirectRule(base.CheckRedirect)
+	if a.opts.Credential != nil {
+		base.CheckRedirect = func(*http.Request, []*http.Request) error { return errCredentialRedirect }
+		if strings.HasPrefix(a.wsURL, "ws://") {
+			t, _ := base.Transport.(*http.Transport)
+			if t == nil {
+				t = http.DefaultTransport.(*http.Transport)
+			}
+			t = t.Clone()
+			t.Proxy = nil
+			base.Transport = t
+		}
+	}
 	// The connection's socket is a pacedConn (controlWriter). Whatever the
 	// host reads on the connection, a frame's part included, as its TLS
 	// gives it, it notes as heard (hearingTransport), for its give-up alone:
@@ -679,6 +738,7 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	cancel()
 	if err != nil {
 		if refused := refusal(resp); refused != nil {
+			refused.Withheld = withheld
 			return nil, proto.Registered{}, refused
 		}
 		// A redirect the policy refused (redirectRule): the refusal's words
@@ -746,6 +806,7 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	a.secret = registered.Secret
 	a.ice = registered.ICEServers
 	a.decisions.Store(registered.Decisions)
+	a.sessionInfo.Store(registered.SessionInfo)
 	unnamed := a.takeHeldLocked(registered.Links)
 	if len(a.opts.ICEServers) > 0 {
 		a.ice = a.opts.ICEServers
@@ -754,13 +815,19 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	for _, id := range unnamed {
 		a.linkWent(id, false, true)
 	}
-	a.useConnHearing(c, pc, live)
+	w := a.useConnHearing(c, pc, live)
+	w.presented, w.renews = token, registered.Renews
 	a.log.Info("registered with conductor", "session", registered.SessionID, "resumed", registered.Resumed)
 	if first && a.opts.Registered != nil {
 		a.opts.Registered(registered.SessionID, registered.ShareBaseURL)
 	}
 	return c, registered, nil
 }
+
+// errCredentialRedirect is a redirect answered to a registration through
+// an identity provider (dialAndRegister): in the host's own words, which
+// name no address the answer gave.
+var errCredentialRedirect = &redirectRefused{errors.New("host: the server answered the registration with a redirect, which a registration through the identity provider does not follow")}
 
 // registration is the register message: the session as the owner's own
 // server lists it, or, to a switchyard (Options.Switchyard), as little as
@@ -784,6 +851,7 @@ func (a *agent) registration(cols, rows uint16) proto.Register {
 		// The owner's own server may route the session's questions: it is
 		// told what the session keeps, and its answers are taken.
 		reg.Host.AnswerAs = true
+		reg.Session.HostReport = a.report
 		return reg
 	}
 	reg.Host.User = ""
@@ -1064,8 +1132,14 @@ func (a *agent) sendChat(m session.ChatMessage) {
 }
 
 // sendActivity delivers one entry, and the attention state it records, on the
-// control connection.
+// control connection. A file entry whose path this host's own deny list
+// refuses (Options.FileDeny) is not sent: what the host leaves out of its
+// sessions' files it leaves out of what it reports of them, the server
+// asking nothing of its own machine about a host's paths.
 func (a *agent) sendActivity(e session.ActivityEntry, state session.AttentionState) {
+	if e.Type == session.ActivityFile && a.opts.FileDeny != nil && e.Path != "" && session.DeniedBy(session.TouchedAbs(a.dir, e.Path), a.opts.FileDeny()) {
+		return
+	}
 	m := hostActivityMsg(a.sessionID(), e)
 	m.State = string(state)
 	a.send(m)
@@ -1176,7 +1250,7 @@ func (a *agent) useConnHearing(c *websocket.Conn, pc *pacedConn, live *connLive)
 	if live == nil {
 		live = newConnLive()
 	}
-	w := newControlWriter(c, pc)
+	w := newControlWriterWith(c, pc, a.opts.after, a.opts.taking)
 	w.controlTurn = a.controlWait
 	w.live = live
 	a.mu.Lock()
@@ -1248,6 +1322,9 @@ func (a *agent) serveConn(ctx context.Context, c *websocket.Conn) error {
 	}
 	// Ping the server while a link's viewer may need it.
 	go a.keepHearing(ctx, c, w.live, w.done)
+	// The provider's replacement credential, on the writer's context,
+	// which ends with the connection (uplinkcred.go).
+	go a.renewToken(w)
 
 	for {
 		typ, data, err := c.Read(ctx)
@@ -1284,8 +1361,18 @@ func (a *agent) watchStatus(ctx context.Context, w *controlWriter) {
 		return
 	case <-a.local.Ended():
 	}
+	// The end commit, for a server that takes it, is read while the
+	// viewers are handed the end, and sent ahead of the status.
+	var ended chan string
+	if a.takesSessionInfo() {
+		ended = make(chan string, 1)
+		go func() { ended <- a.endRevision(ctx) }()
+	}
 	a.handViewersTheEnd(ctx, w.done)
 	info := a.local.Info()
+	if ended != nil {
+		a.sendSessionInfo(w, info.ID, <-ended)
+	}
 	if b, err := json.Marshal(proto.HostStatusMsg{T: proto.HostStatus, SessionID: info.ID, Status: string(info.Status), ExitCode: info.ExitCode}); err == nil {
 		_ = w.sendControl(websocket.MessageText, b)
 	}
@@ -2002,9 +2089,19 @@ type RefusedError struct {
 	Code       string
 	Message    string
 	RetryAfter time.Duration
+	// Withheld says the registration presented nothing for a host token
+	// the identity provider owns or may own, which had no credential then.
+	Withheld bool
 }
 
+// CredentialWithheld is Withheld: a server's publication refused so is
+// owed, and the next Share publishes it.
+func (e *RefusedError) CredentialWithheld() bool { return e.Withheld }
+
 func (e *RefusedError) Error() string {
+	if e.Withheld && e.Status == http.StatusUnauthorized {
+		return "the switchyard refused it: the identity provider has no credential to present for the host token yet"
+	}
 	msg := e.Message
 	if msg == "" {
 		msg = http.StatusText(e.Status)

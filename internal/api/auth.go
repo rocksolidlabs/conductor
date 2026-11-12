@@ -138,25 +138,35 @@ func (s *Server) tokenPrincipal(r *http.Request, tok string) principal {
 	if tok == "" {
 		return principal{}
 	}
+	if p, known := s.chainPrincipal(tok); known {
+		return p
+	}
+	return s.providerPrincipal(r, tok)
+}
+
+// chainPrincipal is the principal of tok in the server's own chain (the
+// workbench token, each host token, a link), and whether the chain knows
+// it: an expired or revoked link is known, and has no principal.
+func (s *Server) chainPrincipal(tok string) (principal, bool) {
 	if share.Equal(tok, s.cfg.WorkbenchToken) {
-		return principal{admin: true, yard: s.cfg.Switchyard.Enabled, host: true}
+		return principal{admin: true, yard: s.cfg.Switchyard.Enabled, host: true}, true
 	}
 	for _, ht := range s.cfg.HostTokens {
 		if share.Equal(tok, ht) {
-			return principal{host: true}
+			return principal{host: true}, true
 		}
 	}
 	link, err := s.links.Resolve(tok)
 	if err == nil {
-		return principal{link: link, runOf: s.runOf}
+		return principal{link: link, runOf: s.runOf}, true
 	}
 	if !errors.Is(err, share.ErrUnknownToken) {
 		// An expired or revoked link is a link: refused as one, never asked
 		// of the identity provider.
 		s.log.Debug("share token rejected", "reason", err)
-		return principal{}
+		return principal{}, true
 	}
-	return s.providerPrincipal(r, tok)
+	return principal{}, false
 }
 
 // requireAdmin wraps handlers that need the workbench token (the admin

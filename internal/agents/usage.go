@@ -188,8 +188,9 @@ type program struct {
 	name  string // the command's words, for people
 }
 
-// resolveProgram resolves command[0] to its file (exec.LookPath, then
-// filepath.EvalSymlinks), and every later element that names a regular
+// resolveProgram resolves command[0], an absolute path or a name on the
+// search path (a relative path is its error), to its file (exec.LookPath,
+// then filepath.EvalSymlinks), and every later element that names a regular
 // file (the script a wrapper runs) the same way, a relative one taken in
 // dir, the folder the program runs in; it notes each file's identity, and
 // the program runs with the resolved paths.
@@ -202,6 +203,11 @@ func resolveProgram(command []string, dir string) (program, error) {
 		words = append(words, filepath.Base(c))
 	}
 	p := program{name: clip(strings.Join(words, " "), 80)}
+	// An absolute path, or a name found on the search path: never a path
+	// resolved against this process's working folder.
+	if strings.ContainsAny(command[0], "/"+string(filepath.Separator)) && !filepath.IsAbs(command[0]) {
+		return p, fmt.Errorf("%s is a path relative to a working folder: a read runs an absolute path or a program on the search path", filepath.Base(command[0]))
+	}
 	first, err := exec.LookPath(command[0])
 	if err != nil {
 		return p, fmt.Errorf("%s is not installed here", filepath.Base(command[0]))

@@ -40,6 +40,39 @@ type FakeHost struct {
 	notify   func(ext.Notification) error
 	approve  func(ext.ApprovedLaunch) (ext.RunRef, error)
 	decision func(string) (ext.DecisionState, error)
+	token    string
+	mode     string
+}
+
+// SetHostToken has HostToken answer t ("" by default).
+func (h *FakeHost) SetHostToken(t string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.token = t
+}
+
+// SetMode has Mode answer m (ext.ModeServer by default).
+func (h *FakeHost) SetMode(m string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.mode = m
+}
+
+// HostToken answers what SetHostToken set.
+func (h *FakeHost) HostToken() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.token
+}
+
+// Mode answers what SetMode set, ext.ModeServer by default.
+func (h *FakeHost) Mode() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.mode == "" {
+		return ext.ModeServer
+	}
+	return h.mode
 }
 
 // NewFakeHost is an open FakeHost whose DataDir is t.TempDir(). When t

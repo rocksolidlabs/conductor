@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -61,6 +62,43 @@ type extStarter struct {
 	mayNotify bool
 	// cancel ends the context of the try that succeeded, with the server's.
 	cancel context.CancelFunc
+	// tried is closed once the first try of Start has returned or been
+	// given up, whichever comes first (ProviderStarted).
+	tried     chan struct{}
+	triedOnce sync.Once
+}
+
+// markTried closes tried, once.
+func (st *extStarter) markTried() { st.triedOnce.Do(func() { close(st.tried) }) }
+
+// ProviderStarted reports whether the provider name has started: true at
+// once for one that is no ext.Starter; otherwise once its first try of
+// Start has returned or been given up (or ctx ends), whether a try has
+// succeeded. The uplink's credential asks it before the provider's first
+// UplinkToken (hostagent.UplinkCredential).
+func (s *Server) ProviderStarted(ctx context.Context, name string) bool {
+	for _, st := range s.extStarts {
+		if st.name == name {
+			select {
+			case <-st.tried:
+			case <-ctx.Done():
+				return st.started.Load()
+			}
+			return st.started.Load()
+		}
+	}
+	return true
+}
+
+// identityName is the name the identity slot's provider registered under,
+// "" when nothing is registered there.
+func (s *Server) identityName() string {
+	for _, e := range s.exts.all {
+		if e.Kind == ext.KindIdentity {
+			return e.Name
+		}
+	}
+	return ""
 }
 
 // extStarters answers, for p.All, a starter per distinct name whose value
@@ -74,7 +112,7 @@ func extStarters(p ext.Providers) []*extStarter {
 			continue
 		}
 		seen[e.Name] = true
-		out = append(out, &extStarter{name: e.Name, value: st, mayNotify: true})
+		out = append(out, &extStarter{name: e.Name, value: st, mayNotify: true, tried: make(chan struct{})})
 	}
 	return out
 }
@@ -145,9 +183,16 @@ func (s *Server) StartExtensions(ctx context.Context) {
 func (s *Server) superviseStart(ctx context.Context, st *extStarter) {
 	st.mayNotify = !s.takesNotices(ctx, st.name)
 	delay := extStartFirst
+	// A first try given up closes tried itself (tryStart); one never made
+	// (ctx ended first) closes it here.
+	defer st.markTried()
 	for ctx.Err() == nil {
-		if s.tryStart(ctx, st) {
+		ok := s.tryStart(ctx, st)
+		if ok {
 			st.started.Store(true)
+		}
+		st.markTried()
+		if ok {
 			s.beginQueues(st.name)
 			s.log.Info("extension started", "provider", st.name)
 			return
@@ -219,6 +264,7 @@ func (s *Server) tryStart(ctx context.Context, st *extStarter) bool {
 		return false
 	case <-wait:
 		cancel()
+		st.markTried()
 		s.extFailed(extKindStart, st.name, "late", fmt.Sprintf("Start did not return within %s", ext.StartWait))
 		if f := extAbandoned.Load(); f != nil {
 			(*f)(st.name)
@@ -734,3 +780,22 @@ func (h *extHost) DataDir() (string, error) {
 
 // Log is the server's logger, naming the provider.
 func (h *extHost) Log() *slog.Logger { return h.s.log.With("provider", h.name) }
+
+// HostToken is Settings' Host token (rendezvous.token) while the server
+// publishes to a switchyard, on the Host of the identity slot's provider
+// alone (by its registered name); "" on every other Host, on a
+// switchyard, on Brakeman's desk's, and once the try has ended.
+func (h *extHost) HostToken() string {
+	if h.desk || h.gone() != nil || h.s.cfg.RendezvousServer() == "" || h.name == "" || h.name != h.s.identityName() {
+		return ""
+	}
+	return h.s.cfg.Rendezvous.Token
+}
+
+// Mode is ext.ModeSwitchyard on a switchyard, ext.ModeServer otherwise.
+func (h *extHost) Mode() string {
+	if h.s.cfg.Switchyard.Enabled {
+		return ext.ModeSwitchyard
+	}
+	return ext.ModeServer
+}
