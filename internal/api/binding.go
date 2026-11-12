@@ -199,7 +199,7 @@ func (s *Server) bindLogin(agent catalog.Agent, account, cwd string, want loginW
 	case folder != "":
 		id = ""
 		for _, a := range doc.Accounts {
-			if a.Adapter == agent.Adapter && (filepath.Clean(a.Folder) == filepath.Clean(folder) || sameFolder(a.Folder, folder)) {
+			if a.Adapter == agent.Adapter && accountFolder(a, folder) {
 				if a.Retired && want.bound == nil {
 					return refuse("the folder is the account " + a.ID + "'s, which is retired: a new launch takes no retired account")
 				}
@@ -451,19 +451,45 @@ func (s *Server) bindMember(runID string, m crew.Member, caller *session.Local) 
 	return ms[0], release, nil
 }
 
-// boundTo names, in words, what holds the account id (capacity.Facts.Bound):
-// the server sessions bound to it whose process has not ended (the
-// registry's Holders: a session whose stop failed, or removed from the
-// listing while its process runs, holds it as a running one does), the
-// engine's runs a member of which is bound to it and that have not ended,
-// and the ledger's runs running or interrupted whose crew as launched
-// binds it. A stopped or finished run is no bar: a continuation of it is
-// refused account_gone. A ledger, or a run's crew in it, that cannot be
-// read holds it, since what it holds is not known.
-func (s *Server) boundTo(id string) []string {
+// heldAccount is the account a binding holds and is counted on, of those
+// doc holds: its own id, or, for a binding of another source that keeps
+// the folder of a registered account (an entry or the passthrough that
+// pins that folder, Brakeman's folder beside a key), that account, whatever
+// the source says; the source stays what the environment says.
+func heldAccount(doc capacity.Accounts, b session.BoundAccount) string {
+	if b.Source != session.SourceAccount && b.Folder != "" {
+		for _, a := range doc.Accounts {
+			if accountFolder(a, b.Folder) {
+				return a.ID
+			}
+		}
+	}
+	return b.ID
+}
+
+// accountFolder says folder is the account a's, compared clean and
+// through its links.
+func accountFolder(a capacity.Account, folder string) bool {
+	return filepath.Clean(a.Folder) == filepath.Clean(folder) || sameFolder(a.Folder, folder)
+}
+
+// boundTo names, in words, what holds the account a (capacity.Facts.Bound),
+// each binding judged by heldAccount: the server sessions bound to it
+// whose process has not ended (the registry's Holders: a session whose
+// stop failed, or removed from the listing while its process runs, holds
+// it as a running one does), the engine's runs a member of which is bound
+// to it and that have not ended, and the ledger's runs running or
+// interrupted, and continued by no other run, whose crew as launched binds
+// it. A stopped or finished run is no bar: a continuation of it is refused
+// account_gone; a run another has continued starts nothing again, and its
+// continuation's own row holds what it binds. A ledger, or a run's crew in
+// it, that cannot be read holds it, since what it holds is not known.
+func (s *Server) boundTo(a capacity.Account) []string {
+	id, only := a.ID, capacity.Accounts{Accounts: []capacity.Account{a}}
+	holds := func(b session.BoundAccount) bool { return heldAccount(only, b) == id }
 	var names []string
 	for _, d := range s.registry.Holders() {
-		if l, ok := d.(*session.Local); ok && l.Info().Kind == session.KindServer && l.Launched().Account.ID == id {
+		if l, ok := d.(*session.Local); ok && l.Info().Kind == session.KindServer && holds(l.Launched().Account) {
 			names = append(names, "session "+l.Info().Name)
 		}
 	}
@@ -472,7 +498,7 @@ func (s *Server) boundTo(id string) []string {
 		if run.State == crew.RunStopped || run.State == crew.RunFinished {
 			continue
 		}
-		if slices.ContainsFunc(run.Members, func(m crew.MemberState) bool { return m.Account != nil && m.Account.ID == id }) {
+		if slices.ContainsFunc(run.Members, func(m crew.MemberState) bool { return holds(m.Binding()) }) {
 			seen[run.ID] = true
 			names = append(names, "run "+run.ID)
 		}
@@ -487,13 +513,13 @@ func (s *Server) boundTo(id string) []string {
 		return append(names, "the ledger's runs, which could not be read")
 	}
 	for _, row := range rows {
-		if seen[row.ID] || row.Crew == "" || (row.State != ledger.RunRunning && row.State != ledger.RunInterrupted) {
+		if seen[row.ID] || row.Crew == "" || row.ContinuedBy != "" || (row.State != ledger.RunRunning && row.State != ledger.RunInterrupted) {
 			continue
 		}
 		var c crew.Crew
 		if err := json.Unmarshal([]byte(row.Crew), &c); err != nil {
 			names = append(names, "run "+row.ID+", whose crew could not be read")
-		} else if slices.ContainsFunc(c.Members, func(m crew.Member) bool { return m.Bound != nil && m.Bound.ID == id }) {
+		} else if slices.ContainsFunc(c.Members, func(m crew.Member) bool { return m.Bound != nil && holds(*m.Bound) }) {
 			names = append(names, "run "+row.ID)
 		}
 	}

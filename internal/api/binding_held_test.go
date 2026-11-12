@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/capacity"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -71,7 +73,7 @@ func TestAccountHeldWhileItsProcessRuns(t *testing.T) {
 // The ledger's runs hold the accounts their crews as launched bind, with
 // the engine holding none of them: one running and one interrupted are
 // named; one whose crew cannot be read holds every account; one stopped
-// is no bar.
+// is no bar, nor one interrupted that another run continued.
 func TestRemoveAccountInUseByTheLedger(t *testing.T) {
 	e := newBindEnv(t, nil)
 	a, folderA := e.account(t, "claude", "Work")
@@ -105,6 +107,92 @@ func TestRemoveAccountInUseByTheLedger(t *testing.T) {
 	status, out = e.removeAccount(t, a)
 	if names := strings.Join(namesOf(out), "|"); status != http.StatusConflict || !strings.Contains(names, "kept-0000dddd") || strings.Contains(names, "kept-0000aaaa") {
 		t.Fatalf("a crew that cannot be read: %d %v", status, out)
+	}
+	// An interrupted run another run continued starts nothing again and
+	// holds nothing: its continuation's own row holds what it binds, and,
+	// that one ended, the account is taken.
+	if _, err := e.srv.ledger.Transition(t.Context(), "kept-0000dddd", func(tx *ledger.Tx) error {
+		return tx.PutRun(ledger.RunRow{ID: "kept-0000dddd", CrewID: "kept", Crew: string(bound), State: ledger.RunStopped, CreatedAt: time.Now(), ClosedAt: time.Now()})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	put("kept-0000eeee", ledger.RunInterrupted, string(bound))
+	if _, err := e.srv.ledger.Transition(t.Context(), "kept-0000ffff", func(tx *ledger.Tx) error {
+		if err := tx.CreateRun(ledger.RunRow{ID: "kept-0000ffff", CrewID: "kept", Crew: string(bound), State: ledger.RunStopped, ContinuedFrom: "kept-0000eeee", CreatedAt: time.Now(), ClosedAt: time.Now()}); err != nil {
+			return err
+		}
+		return tx.Continued("kept-0000eeee")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if status, out := e.removeAccount(t, a); status != http.StatusNoContent {
+		t.Fatalf("an interrupted run continued by one that ended: %d %v", status, out)
+	}
+}
+
+// An account is held by whatever keeps its folder: an entry that pins a
+// registered account's folder, launched naming none, is bound pinned (its
+// source what the environment says) and holds that account: the remove is
+// refused naming its session, and the account's count includes it.
+func TestAccountHeldByItsFolder(t *testing.T) {
+	e := newBindEnv(t, nil)
+	a, folder := e.account(t, "claude", "Work")
+	e.addAgents(t, map[string]map[string]string{"claude-on-a": {"CLAUDE_CONFIG_DIR": folder}})
+	sid := e.launch(t, "claude-on-a", map[string]any{"name": "in its folder"})
+	if got, b := e.probe(t, sid), e.bound(t, sid); got != login(folder) || b.ID != capacity.DefaultID || b.Source != session.SourcePinned || b.Folder != folder {
+		t.Fatalf("the launch: %s %+v", got, b)
+	}
+	status, out := e.removeAccount(t, a)
+	if status != http.StatusConflict || errorCode(out) != "account_in_use" || !strings.Contains(strings.Join(namesOf(out), "|"), "session in its folder") {
+		t.Fatalf("a session in the account's folder: %d %v", status, out)
+	}
+	if v := viewOfKey(t, e.testEnv, "agent=claude-on-a&account="+a); v["counts"].(map[string]any)["running"] != float64(1) {
+		t.Fatalf("the account's counts: %v", v["counts"])
+	}
+}
+
+// A launch whose process started holds its account until that process has
+// ended, whether or not its session was registered: at the session cap the
+// launch's registration is refused after its process started, and its stop
+// fails; the remove is refused while the process lives (a launch under
+// way) and taken once it has ended.
+func TestAccountHeldByAProcessNeverRegistered(t *testing.T) {
+	terms := &outliving{procs: make(chan *sessiontest.FakeProc, 4)}
+	t.Cleanup(func() {
+		for {
+			select {
+			case p := <-terms.procs:
+				p.End(0)
+			default:
+				return
+			}
+		}
+	})
+	probes, pin := t.TempDir(), realRoot(t, t.TempDir())
+	e := &bindEnv{testEnv: capEnv(t, func(c *config.Config) { c.MaxSessions = 1 }, nil, newFakeUsage("claude"), newFakeUsage("codex"), bindAgents(probes, pin),
+		withNativeRuntime(&sessiontest.FakeRuntime{Place: "seam", Base: terms})), probes: probes, pin: pin}
+	a, _ := e.account(t, "claude", "Work")
+	e.expect(t, "POST", "/api/sessions", map[string]any{"agentId": "claude-p"}, http.StatusCreated, "")
+	first := <-terms.procs
+	t.Cleanup(func() { first.End(0) })
+	e.expect(t, "POST", "/api/sessions", map[string]any{"agentId": "claude-p", "account": a}, http.StatusConflict, "too_many_sessions")
+	p := <-terms.procs
+	status, out := e.removeAccount(t, a)
+	if status != http.StatusConflict || errorCode(out) != "account_in_use" || !strings.Contains(strings.Join(namesOf(out), "|"), "launch") {
+		t.Fatalf("its registration refused, its stop failed, its process running: %d %v", status, out)
+	}
+	p.End(0)
+	// The release follows the process's end: the remove is asked until it
+	// is taken, and is never anything but in use before.
+	for {
+		status, out = e.removeAccount(t, a)
+		if status == http.StatusNoContent {
+			break
+		}
+		if status != http.StatusConflict {
+			t.Fatalf("its process ended: %d %v", status, out)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

@@ -1396,6 +1396,19 @@ type MemberAccount struct {
 	Source string `json:"source"`
 }
 
+// Binding is the member's binding as the run holds it, whole when it is
+// kept (its folder among it), else its id and source; the zero binding
+// for the tool's own login. It is the server's, never a reply's.
+func (m MemberState) Binding() session.BoundAccount {
+	switch {
+	case m.bound != nil:
+		return *m.bound
+	case m.Account != nil:
+		return session.BoundAccount{ID: m.Account.ID, Source: m.Account.Source}
+	}
+	return session.BoundAccount{}
+}
+
 // boundAccount is m's binding for its launches: the zero binding for a
 // member no launch bound.
 func (m Member) boundAccount() session.BoundAccount {

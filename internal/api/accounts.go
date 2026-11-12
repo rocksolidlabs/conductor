@@ -23,12 +23,12 @@ import (
 // refusal's words never reach a log.
 
 // capacityFacts is what internal/capacity asks of the server: Bound names
-// the sessions running bound to an account (Server.boundTo); a launch's
-// reservation the store counts itself.
+// what holds an account (Server.boundTo); a launch's reservation the store
+// counts itself.
 type capacityFacts struct {
 	seam  func()
 	data  string // the server's data directory, which no account's folder overlaps
-	bound func(id string) []string
+	bound func(a capacity.Account) []string
 }
 
 func (capacityFacts) ConfigDirEnv(adapter string) (string, bool) {
@@ -58,11 +58,11 @@ func (f capacityFacts) CheckAccountDir(dir string) error {
 	return nil
 }
 
-func (f capacityFacts) Bound(id string) []string {
+func (f capacityFacts) Bound(a capacity.Account) []string {
 	if f.bound == nil {
 		return nil
 	}
-	return f.bound(id)
+	return f.bound(a)
 }
 
 // accountsAdapter is an adapter with a ConfigDirEnv as GET /api/accounts

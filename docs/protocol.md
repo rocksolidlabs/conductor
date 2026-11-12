@@ -5811,12 +5811,18 @@ offered to no Runtime and runs on this server, and a process is started
 on a Runtime other than the native one only under the agent's own login
 (`400 invalid_account` otherwise, an attempt failed with those words).
 `DELETE /api/accounts/{id}` is refused `409 account_in_use`, naming at
-most 10, while a launch is under way on the account, a server session's
-process bound to it still runs (its stop failed, or it was removed from
-the listing), an engine run not ended, or a ledger run running or
-interrupted is bound to it (one whose crew cannot be read holds every
-account); a stopped or finished run is no bar (continuing it is refused
-`account_gone`).
+most 10, while a launch is under way on the account (a launch whose
+process started and whose session was not registered, its registration
+refused and its stop failed, until that process has ended), a server
+session's process bound to it still runs (its stop failed, or it was
+removed from the listing), an engine run not ended, or a ledger run
+running or interrupted, and continued by no other run, is bound to it
+(one whose crew cannot be read holds every account); a stopped or
+finished run is no bar (continuing it is refused `account_gone`). A
+binding of another source that keeps the account's folder (an entry or
+the passthrough that pins that folder, Brakeman's folder beside a key)
+holds the account and is counted on it, its `source` still what the
+environment says.
 
 **The routes**, each the workbench token's alone (a session's, a host's, a
 link's and a Brakeman turn's are refused `401`) and a launch route's (a

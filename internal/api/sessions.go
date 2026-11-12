@@ -308,7 +308,21 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	if aerr != nil {
 		return nil, aerr
 	}
-	defer releaseAccount()
+	// The account's reservation is let go as this returns, but a process
+	// started whose session the registry does not hold (its registration
+	// refused, its stop failed) holds it until that process has ended.
+	var unlisted *session.Local
+	defer func() {
+		if p := unlisted; p != nil {
+			select {
+			case <-p.ProcessDone():
+			default:
+				go func() { <-p.ProcessDone(); releaseAccount() }()
+				return
+			}
+		}
+		releaseAccount()
+	}()
 	// A process on a Runtime other than the native one starts under the
 	// tool's own login alone: a login of this server's (a folder, a value)
 	// is nothing a guest has.
@@ -495,6 +509,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		req.spawned(local)
 	}
 	if err := s.registry.AddReserved(local, req.reservation); err != nil {
+		unlisted = local
 		s.abandon(rc)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -505,7 +520,13 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	// Its registration complete, its record reconciled once: an exit
 	// before the registry held it is read now.
 	s.registered(rc)
-	s.capacity.started(agent.ID, bound.ID)
+	held := bound.ID
+	if bound.Folder != "" {
+		if doc, aerr := s.accountsForLaunch(); aerr == nil {
+			held = heldAccount(doc, bound)
+		}
+	}
+	s.capacity.started(agent.ID, held)
 	s.log.Info("session started", "session", id, "agent", agent.ID, "pid", term.Process().PID, "yolo", applied)
 	if yolo && !applied {
 		local.Record(session.ActivityEntry{Type: session.ActivityStatus, Message: noYoloRecipe(agent)})
