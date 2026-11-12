@@ -53,7 +53,10 @@ var ErrRemoteAddress = errors.New("the remote's URL is not an address in a form 
 // git://host[:port]/path, ssh://[user@]host[:port]/path (an ssh user's
 // name alone kept) and the scp-like [user@]host:path. Anything else (a
 // remote helper's form, a second scheme, a local path, a bundle, a query
-// or a fragment, a part outside its form) is ErrRemoteAddress.
+// or a fragment, a part outside its form: a host or a user that begins
+// with '-', which ssh would read as an option, a path with a "." or ".."
+// segment, a one-letter host of the scp-like form, which git on Windows
+// reads as a drive) is ErrRemoteAddress.
 func address(raw string) (string, error) {
 	scheme, _, ok := strings.Cut(raw, "://")
 	if !ok {
@@ -66,7 +69,7 @@ func address(raw string) (string, error) {
 	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Opaque != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" ||
-		!inForm(u.Hostname(), hostByte) || !inForm(u.Port(), digit) && u.Port() != "" || !strings.HasPrefix(u.Path, "/") || !inForm(u.Path, pathByte) {
+		!hostInForm(u.Hostname()) || !inForm(u.Port(), digit) && u.Port() != "" || !strings.HasPrefix(u.Path, "/") || !pathInForm(u.Path) {
 		return "", ErrRemoteAddress
 	}
 	out := url.URL{Scheme: scheme, Host: u.Hostname(), Path: u.Path}
@@ -74,7 +77,7 @@ func address(raw string) (string, error) {
 		out.Host += ":" + u.Port()
 	}
 	if scheme == "ssh" && u.User != nil {
-		if !inForm(u.User.Username(), userByte) {
+		if !userInForm(u.User.Username()) {
 			return "", ErrRemoteAddress
 		}
 		out.User = url.User(u.User.Username())
@@ -93,7 +96,7 @@ func scpAddress(raw string) (string, error) {
 	if !named {
 		user, host = "", user
 	}
-	if named && !inForm(user, userByte) || !inForm(host, hostByte) || !inForm(raw[i+1:], pathByte) {
+	if named && !userInForm(user) || !hostInForm(host) || len(host) == 1 || !pathInForm(raw[i+1:]) {
 		return "", ErrRemoteAddress
 	}
 	if named {
@@ -109,6 +112,22 @@ func digit(c byte) bool    { return c >= '0' && c <= '9' }
 func userByte(c byte) bool { return c == '.' || c == '-' || c == '_' || alnum(c) }
 func pathByte(c byte) bool { return c == '/' || c == '~' || userByte(c) }
 func alnum(c byte) bool    { return digit(c) || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' }
+
+// hostInForm and userInForm: the part's form, not beginning with '-';
+// pathInForm: the path's form, with no "." or ".." segment.
+func hostInForm(h string) bool { return inForm(h, hostByte) && h[0] != '-' }
+func userInForm(u string) bool { return inForm(u, userByte) && u[0] != '-' }
+func pathInForm(p string) bool {
+	if !inForm(p, pathByte) {
+		return false
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
+}
 
 // inForm reports s is 1 to 1024 bytes, each in its part's form.
 func inForm(s string, ok func(byte) bool) bool {
