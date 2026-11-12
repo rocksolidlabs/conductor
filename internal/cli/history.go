@@ -312,8 +312,7 @@ func historyEntries(ctx context.Context, c *apiClient, path string, asJSON bool,
 		return 1, err
 	}
 	if asJSON {
-		fmt.Fprintln(stdout, string(raw))
-		return 0, nil
+		return printReply(stdout, raw, false)
 	}
 	var out struct {
 		Entries     []historyEntry `json:"entries"`
@@ -374,8 +373,7 @@ func historyShow(ctx context.Context, c *apiClient, key string, asJSON bool, std
 		return 1, err
 	}
 	if asJSON {
-		fmt.Fprintln(stdout, string(raw))
-		return 0, nil
+		return printReply(stdout, raw, false)
 	}
 	var out struct {
 		Entry historyEntry `json:"entry"`
@@ -453,8 +451,7 @@ func historySessions(ctx context.Context, c *apiClient, asJSON bool, stdout io.W
 		if err != nil {
 			return 1, err
 		}
-		fmt.Fprintln(stdout, string(b))
-		return 0, nil
+		return printReply(stdout, b, false)
 	}
 	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "ID\tSTARTED\tAGENT\tENDING\tNAME\tFOLDER")
@@ -481,8 +478,7 @@ func historySession(ctx context.Context, c *apiClient, id string, asJSON bool, s
 		return 1, err
 	}
 	if asJSON {
-		fmt.Fprintln(stdout, string(raw))
-		return 0, nil
+		return printReply(stdout, raw, false)
 	}
 	var out struct {
 		Record journal.Record `json:"record"`

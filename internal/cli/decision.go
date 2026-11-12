@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -402,14 +401,13 @@ func summaryText(s decisionSummary) string {
 	return b.String()
 }
 
-// printJSON prints v indented.
+// printJSON prints v indented, through jsonText.
 func printJSON(stdout io.Writer, v any) (int, error) {
-	b, err := json.MarshalIndent(v, "", "  ")
+	b, err := json.Marshal(v)
 	if err != nil {
 		return 1, err
 	}
-	fmt.Fprintln(stdout, string(b))
-	return 0, nil
+	return printReply(stdout, b, true)
 }
 
 // taskDecisionRead prints one of the attempt's task's decisions whole, or
@@ -802,12 +800,7 @@ func decisionShow(ctx context.Context, c *apiClient, id string, asJSON bool, std
 		return 1, err
 	}
 	if asJSON {
-		var b bytes.Buffer
-		if err := json.Indent(&b, raw, "", "  "); err != nil {
-			return 1, err
-		}
-		fmt.Fprintln(stdout, b.String())
-		return 0, nil
+		return printReply(stdout, raw, true)
 	}
 	fmt.Fprint(stdout, decisionText(d, refs, true))
 	return 0, nil

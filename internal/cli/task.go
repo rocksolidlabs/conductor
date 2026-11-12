@@ -1,9 +1,7 @@
 package cli
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -253,12 +251,7 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			return 1, err
 		}
 		if *asJSON {
-			var b bytes.Buffer
-			if err := json.Indent(&b, raw, "", "  "); err != nil {
-				return 1, err
-			}
-			fmt.Fprintln(stdout, b.String())
-			return 0, nil
+			return printReply(stdout, raw, true)
 		}
 		fmt.Fprint(stdout, sessionTicketText(st))
 		return 0, nil
@@ -283,12 +276,7 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			return 1, err
 		}
 		if *asJSON {
-			b, err := json.MarshalIndent(out["messages"], "", "  ")
-			if err != nil {
-				return 1, err
-			}
-			fmt.Fprintln(stdout, string(b))
-			return 0, nil
+			return printJSON(stdout, out["messages"])
 		}
 		fmt.Fprintln(stdout, inboxText(out))
 		return 0, nil
@@ -374,12 +362,7 @@ func taskContext(ctx context.Context, c *crewClient, page int, asJSON bool, stdo
 		return 1, err
 	}
 	if asJSON {
-		b, err := json.MarshalIndent(out["task"], "", "  ")
-		if err != nil {
-			return 1, err
-		}
-		fmt.Fprintln(stdout, string(b))
-		return 0, nil
+		return printJSON(stdout, out["task"])
 	}
 	text, _ := out["markdown"].(string)
 	fmt.Fprint(stdout, text)

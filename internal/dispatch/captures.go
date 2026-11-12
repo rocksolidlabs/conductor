@@ -19,7 +19,8 @@ import (
 // pruned by what its first row keeps (prunedAnswer: a create's
 // fingerprint on the capture's row, an edit's on its set's change row, a
 // delete's capture on its tombstone's row), each answered only by its own
-// kind. A file an operation names (a create's screenshot) takes the upload
+// kind. A file an operation names (a create's screenshot, a send's
+// document: sends.go) takes the upload
 // path first (upload), and the operation's one transaction takes its
 // lease with the rows; every way out of it after the file is published
 // that commits no row naming the file (a refusal, a repeat, an error, a
@@ -45,10 +46,13 @@ const (
 )
 
 // captureArgs is a capture operation's content, its fingerprint: the
-// capture it names and the request's digest.
+// capture or the send it names, the request's digest, and what a send's
+// outcome records (its target, why it was refused).
 type captureArgs struct {
 	ID       string `json:"id,omitempty"`
 	Received string `json:"received,omitempty"`
+	Target   string `json:"target,omitempty"`
+	Why      string `json:"why,omitempty"`
 }
 
 // withUpload runs a capture operation that names a file: a resend is
@@ -198,13 +202,14 @@ type captureCreated struct {
 }
 
 // retakeVia checks the capture c retakes and says how the two are related:
-// run (the same run and task), else repo (the same repository); a link's
-// capture retakes a link's of the same page origin (pageOrigin), related
-// so by nothing more. A deleted capture, another repository's or another
-// origin's is refused invalid. The plan's ticket (a run launched from a
-// ticket a sent send of the first targets) needs the sends, issue #825's:
-// until then such a retake is recorded repo, and a later version leaves
-// the rows already written as they are.
+// run (the same run and task), else ticket (c's run was launched from a
+// ticket that a send of the first was sent to, by sendState: sentTo),
+// else repo (the same repository); a link's capture retakes a link's of
+// the same page origin (pageOrigin), related so by nothing more. A
+// deleted capture, another repository's or another origin's is refused
+// invalid. One query decides the ticket, whatever the sends and the
+// launches number; a retake written before the sends were the store's
+// stays as it was recorded.
 func (t *tx) retakeVia(c Capture) (string, error) {
 	first, _, err := readCapture(t.ctx, t.tx, c.RetakeOf)
 	if err != nil || !first.DeletedAt.IsZero() {
@@ -224,6 +229,14 @@ func (t *tx) retakeVia(c Capture) (string, error) {
 		return "", refuse(RefusalInvalid, "the capture retaken is another repository's")
 	case first.Origin.Run == c.Origin.Run && first.Origin.Task == c.Origin.Task:
 		return RetakeRun, nil
+	}
+	var ticket bool
+	if err := t.tx.QueryRowContext(t.ctx, `SELECT EXISTS (SELECT 1 FROM capture_sends s JOIN launches l ON l.run_id = ? JOIN tickets k ON k.id = l.ticket_id
+		WHERE s.capture_id = ? AND s.kind = 'ticket' AND `+sentTo("s.id", "k.key")+`)`, c.Origin.Run, first.ID).Scan(&ticket); err != nil {
+		return "", err
+	}
+	if ticket {
+		return RetakeTicket, nil
 	}
 	return RetakeRepo, nil
 }
@@ -419,23 +432,24 @@ func (s *Store) EditCapture(ctx context.Context, op Op, digest, id string, expec
 // DeleteCapture deletes the live capture with the id (capture.delete): a
 // tombstone, and in the same transaction what only the live capture held
 // removed, its screenshot's row (holder capture, one remove row of its
-// files) and its annotations' versions and sets, so a capture deleted
-// unsent leaves nothing the sweep must keep; the rest is hidden by every
+// files) and its annotations' versions and sets, so a capture with no
+// send leaves nothing the sweep must keep; the rest is hidden by every
 // read (the package's comment says what a delete removes and what it
-// hides). Its sends, the files they hold and the ticket attachments they
-// made stay. Once the delete has committed, the screenshot it released
-// goes through the one collection (collectOne): at once when nothing else
-// names it, kept when anything does. not_found when there is none or it
-// is deleted.
+// hides). Its sends stay, each readable as a row, and so do the ticket
+// attachments they made; a sent send and a pending one keep the files they
+// hold, and one that ended refused or cancelled, having delivered nothing,
+// lets its files go in the same transaction (releaseEnded; a pending one
+// does when it ends so), so its files answer not_found. Once the delete
+// has committed, the files it released go through the one collection
+// (collectOne): at once when nothing else names them, kept when anything
+// does. not_found when there is none or it is deleted.
 func (s *Store) DeleteCapture(ctx context.Context, op Op, id string) (Receipt, error) {
-	released := ""
+	var released []string
 	rc, err := s.withUpload(ctx, op, IntentCaptureDelete, captureArgs{ID: id}, func() error { return nil }, nil, 0, nil, func(t *tx, _ *received) error {
-		released = ""
 		c, err := t.liveCapture(id)
 		if err != nil {
 			return err
 		}
-		released = c.Image.SHA256
 		base := ChangeRow{Entity: EntityCapture, EntityID: id}
 		if err := t.setScalars("captures", base, []fieldValue{{"deleted_at", ""}}, []fieldValue{{"deleted_at", stamp(t.now)}}); err != nil {
 			return err
@@ -458,11 +472,13 @@ func (s *Store) DeleteCapture(ctx context.Context, op Op, id string) (Receipt, e
 				return err
 			}
 		}
-		return nil
+		// After the tombstone's row, the delete's first.
+		if released, err = t.releaseEnded(id, ""); err == nil && c.Image.SHA256 != "" {
+			released = append(released, c.Image.SHA256)
+		}
+		return err
 	})
-	if err == nil && rc.Status == StatusDone && released != "" {
-		_ = s.collectOne(ctx, released)
-	}
+	s.collectAll(ctx, rc, err, released)
 	return rc, err
 }
 
@@ -575,9 +591,10 @@ func (s *Store) Document(ctx context.Context, id string, rev int64) ([]byte, err
 	return out, nil
 }
 
-// Capture reads the capture with the id and its annotations, as a read
-// gives it: a deleted capture is its tombstone alone (Capture).
-// ErrNotFound when there is none.
+// Capture reads the capture with the id, its annotations and its sends
+// (without their requests: CaptureSend), as a read gives it: a deleted
+// capture is its tombstone alone (Capture), its sends read by their own
+// reads. ErrNotFound when there is none.
 func (s *Store) Capture(ctx context.Context, id string) (Capture, error) {
 	var c Capture
 	err := s.read(ctx, func(q queryer) error {
@@ -589,9 +606,11 @@ func (s *Store) Capture(ctx context.Context, id string) (Capture, error) {
 		if !c.DeletedAt.IsZero() {
 			d := tombstoneOf(c)
 			c = Capture{CaptureDocument: CaptureDocument{ID: d.ID, Rev: d.Rev}, CreatedAt: d.CreatedAt, DeletedAt: d.DeletedAt}
+			return nil
 		}
 		c.Annotations = anns
-		return nil
+		c.Sends, err = readSends(ctx, q, "WHERE s.capture_id = ? ORDER BY s.created_at, s.id", id)
+		return err
 	})
 	if err != nil {
 		return Capture{}, err
@@ -622,11 +641,13 @@ func deletedCapture(ctx context.Context, q queryer, id string) (string, bool, er
 }
 
 // CaptureFilter picks a list's captures: a run's (Run), a task's of it
-// (and Task), an attempt's (and Attempt); none, the most recent.
+// (and Task), an attempt's (and Attempt); a ticket's (Ticket, its key:
+// the captures a send was sent to, by sendState); none, the most recent.
 type CaptureFilter struct {
 	Run     string
 	Task    string
 	Attempt int
+	Ticket  string
 }
 
 // CapturesPage is a page of live captures, newest first, each with its
@@ -639,18 +660,28 @@ type CapturesPage struct {
 
 // Captures lists the live captures the filter picks, newest first, after
 // the capture with the id after (a page's Next, a capture deleted since
-// among them), at most limit, 1 to MaxCapturePage. ErrBadQuery for a limit
-// out of range, a task with no run or an attempt with no task, or an after
-// that names no capture.
+// among them), at most limit, 1 to MaxCapturePage. A ticket's are its
+// sends': a capture is listed there once a send of it was sent to the
+// ticket. ErrBadQuery for a limit out of range, a task with no run or an
+// attempt with no task, a ticket beside a run or no ticket's key, or an
+// after that names no capture.
 func (s *Store) Captures(ctx context.Context, f CaptureFilter, after string, limit int) (CapturesPage, error) {
+	_, _, isKey := ParseKey(f.Ticket)
 	switch {
 	case limit < 1 || limit > MaxCapturePage:
 		return CapturesPage{}, badQuery("a page of captures is 1 to %d, not %d", MaxCapturePage, limit)
 	case (f.Task != "" && f.Run == "") || (f.Attempt != 0 && f.Task == "") || f.Attempt < 0:
 		return CapturesPage{}, badQuery("a page of captures names a task of a run, and an attempt of a task")
+	case f.Ticket != "" && (!isKey || f.Run != ""):
+		return CapturesPage{}, badQuery("a page of a ticket's captures names a ticket's key, and no run")
 	}
 	page := CapturesPage{Captures: []Capture{}}
 	where, args := []string{"deleted_at = ''"}, []any{}
+	if f.Ticket != "" {
+		where = append(where, `id IN (SELECT s.capture_id FROM capture_sends s WHERE s.kind = 'ticket' AND s.id IN
+			(SELECT send_id FROM capture_send_outcomes WHERE kind = 'sent' AND target = ?) AND `+sentTo("s.id", "?")+`)`)
+		args = append(args, f.Ticket, f.Ticket)
+	}
 	for _, w := range []struct {
 		col string
 		v   any
