@@ -149,6 +149,8 @@ export interface EpochPage {
   mine: (n: unknown) => boolean
   observer: (cb: (records: MutationRecord[]) => void) => { observe(target: Node, options: MutationObserverInit): void; disconnect(): void }
   frame: (cb: () => void) => void
+  /** Called on a resize or a scroll of the window, beside the bump. */
+  moved?: () => void
 }
 
 const MOTION_EVENTS = ['animationstart', 'animationiteration', 'animationend', 'animationcancel', 'transitionrun', 'transitionend', 'transitioncancel']
@@ -156,7 +158,8 @@ const MOTION_EVENTS = ['animationstart', 'animationiteration', 'animationend', '
 /**
  * The page epoch: a counter bumped, at most once per animation frame, by a resize or a scroll of the window, a mutation of the
  * document (the bridge's host put on the page or taken off, alone in its record, left out) and every animation and transition
- * event. It says only that the page moved: the records are looked at up to the first of the page's.
+ * event. It says only that the page moved: the records are looked at up to the first of the page's. A resize or a scroll also
+ * calls moved, which selection mode takes its outline off by.
  */
 export function pageEpoch(p: EpochPage): { value(): number; stop(): void } {
   let epoch = 0
@@ -175,15 +178,16 @@ export function pageEpoch(p: EpochPage): { value(): number; stop(): void } {
     for (let i = 0; !bumped && i < records.length; i++) if (!ours(records[i]!)) bump()
   })
   mo.observe(p.doc.documentElement, { subtree: true, childList: true, attributes: true, characterData: true })
-  p.win.addEventListener('resize', bump)
-  p.win.addEventListener('scroll', bump)
+  const moved = () => (bump(), p.moved?.())
+  p.win.addEventListener('resize', moved)
+  p.win.addEventListener('scroll', moved)
   for (const e of MOTION_EVENTS) p.doc.addEventListener(e, bump, true)
   return {
     value: () => epoch,
     stop() {
       mo.disconnect()
-      p.win.removeEventListener('resize', bump)
-      p.win.removeEventListener('scroll', bump)
+      p.win.removeEventListener('resize', moved)
+      p.win.removeEventListener('scroll', moved)
       for (const e of MOTION_EVENTS) p.doc.removeEventListener(e, bump, true)
     },
   }

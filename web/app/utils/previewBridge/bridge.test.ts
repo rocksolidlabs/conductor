@@ -91,7 +91,7 @@ describe('selection mode', () => {
     expect(answers().map((a) => a.t)).toEqual(['ready'])
   })
 
-  it('stops every pointer, mouse, touch and key event the browser delivers while it selects, by one table, and none outside', () => {
+  it('stops the pointer, mouse, touch and key events of its table while it selects, and none outside', () => {
     const { root, p } = plainPage()
     const { doc, win, answers, ask } = framed(root)
     ask('hello')
@@ -119,6 +119,73 @@ describe('selection mode', () => {
     const after = event('keyup', { key: 'Enter' })
     win.dispatch('keyup', after)
     expect([down.swallowed, up.swallowed, after.swallowed, answers().map((a) => a.t), win.count]).toEqual([true, true, false, ['selected'], 3])
+  })
+
+  /** A page of two buttons, the first under the point (1, 10) until the page scrolls, the second after. */
+  function twoButtons() {
+    const [one, two] = [h('button', { id: 'one' }, 'One'), h('button', { id: 'two' }, 'Two')]
+    const root = h('html', {}, h('head'), h('body', {}, one, two))
+    const page = framed(root)
+    let scrolled = false
+    page.doc.hitAt = (_x, y) => [y < 50 === !scrolled ? one : two, root.children[1]!, root]
+    page.ask('hello')
+    page.answers()
+    const scroll = () => ((scrolled = true), page.win.dispatch('scroll', event('scroll')))
+    const box = () => hostOf(root)?.shadow?.elements[0]?.style.display
+    const picked = () => page.answers().map((a) => (a.t === 'selected' ? a.element.id : a.t))
+    return { ...page, root, one, two, scroll, box, picked }
+  }
+
+  it('picks the element under the click’s own point, whether a move came before it or not', () => {
+    const p = twoButtons()
+    p.ask('select')
+    p.win.dispatch('click', event('click', { clientX: 1, clientY: 10 }))
+    expect([p.picked(), hostOf(p.root) !== null, p.win.count]).toEqual([['one'], false, 3])
+    // A move over the first, a click at the second's point: the second.
+    p.ask('select')
+    p.win.dispatch('pointermove', event('pointermove', { clientX: 1, clientY: 10 }))
+    p.win.dispatch('click', event('click', { clientX: 1, clientY: 60 }))
+    expect(p.picked()).toEqual(['two'])
+  })
+
+  it('takes the outline off when the page scrolls, so a click picks what is under it then and Enter picks nothing', () => {
+    const p = twoButtons()
+    p.ask('select')
+    p.win.dispatch('pointermove', event('pointermove', { clientX: 1, clientY: 10 }))
+    const seen: unknown[] = [p.box()]
+    p.scroll()
+    seen.push(p.box())
+    // Enter with nothing outlined: nothing sent, selection mode still on.
+    p.win.dispatch('keydown', event('keydown', { key: 'Enter' }))
+    p.win.dispatch('keyup', event('keyup', { key: 'Enter' }))
+    seen.push(p.picked(), hostOf(p.root) !== null, p.win.count)
+    // The click at the point the pointer stayed at picks what the scroll brought there.
+    p.win.dispatch('click', event('click', { clientX: 1, clientY: 10 }))
+    seen.push(p.picked(), hostOf(p.root) !== null)
+    expect(seen).toEqual(['block', 'none', [], true, 3 + SELECTION_EVENTS.length, ['two'], false])
+  })
+
+  it('outlines a frame’s element from an event aimed at it, and its box then takes the pointer, so a click there picks it', () => {
+    const p = plainPage()
+    const frame = h('iframe', { id: 'frame', src: '/inner.html' })
+    p.root.children[1]!.append(frame)
+    const { doc, win, answers, ask } = framed(p.root)
+    // A real hit test lists the host first where its box takes the pointer; the bridge leaves it out.
+    doc.hitAt = (x) => (x >= 100 ? [hostOf(p.root), frame, p.root] : [p.p, p.root]).filter((e): e is FakeEl => e !== null)
+    ask('hello')
+    ask('select')
+    const host = hostOf(p.root)!
+    const box = host.shadow!.elements[0]!
+    const seen: unknown[] = [host.style.cssText.includes('pointer-events: none')]
+    win.dispatch('pointermove', event('pointermove', { target: p.p, clientX: 1, clientY: 1 }))
+    seen.push([box.style.display, box.style.pointerEvents])
+    win.dispatch('pointerover', event('pointerover', { target: frame, clientX: 150, clientY: 10 }))
+    seen.push([box.style.display, box.style.pointerEvents])
+    // What is aimed at the box reaches the window as aimed at the host, and is hit-tested by its point.
+    win.dispatch('pointermove', event('pointermove', { target: host, clientX: 160, clientY: 20 }))
+    win.dispatch('click', event('click', { target: host, clientX: 160, clientY: 20 }))
+    seen.push(answers().map((a) => (a.t === 'selected' ? a.element.tag : a.t)), hostOf(p.root) !== null)
+    expect(seen).toEqual([true, ['block', 'none'], ['block', 'auto'], ['ready', 'iframe'], false])
   })
 })
 
