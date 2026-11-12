@@ -2789,7 +2789,7 @@ its run, and on no other.
 | `POST /api/runs/{run}/links` | admin | create a run link: `{role, label?, ttlSeconds?, decide?}`, reply `201 {link, token, url}` as for a session link (its `url` on the same base); it grants its role on the session of every member of the run, a member added later included (see Crew runs); `decide: true` makes it a decision link (see Decision links: control only, `400 bad_request` with a view role; the link says `decide: true`; `409 switchyard_too_old` where the link would be minted at a switchyard whose `registered` does not say `decisions`, or that keeps no desks; at one that does, minted there over the run's desk: see Decision links, Through a switchyard; `502 rendezvous_unavailable` when the desk cannot be opened); `409 too_many_links` past 100 links for the run; `404` when unknown |
 | `DELETE /api/runs/{run}/links/{linkId}` | admin | revoke a run link, which closes every viewer attached through it (`4403`); `204`, `404` when the link is not the run's; a link minted at a switchyard is revoked there over a member's publication or the run's desk, `502 rendezvous_unavailable` when it is not (a decision link then stays listed with `revokePending: true` and is tried again until the switchyard confirms: Decision links, Through a switchyard); a revoke again of a decision link the switchyard has confirmed revoked answers `204` |
 | `GET /api/dispatch/projects` | admin | Dispatch's projects (see Dispatch below): `{projects, next?}`, a page of at most `limit` (1 to 200, 200 when absent) summaries by key after `cursor` (a page's opaque `next`), each `{id, key, name, tracker, archivedAt?, open, done, rev, updatedAt}`, `open` counting its live tickets neither done nor cancelled and `done` those done, without its description, folder, tracker URL and close policy, which its read carries, so a page is under 128 KiB (a name of 60 characters encodes to at most 360 bytes); the archived ones only with `archived=1`; `400 invalid_request` for a bad value |
-| `POST /api/dispatch/projects` | admin | make a project (`project.create`, Dispatch operations below): `{opId, byName?, key, name, description?, cwd?, tracker?, trackerUrl?, closeRequires?}`, `key` one upper-case letter then one to five upper-case letters or digits, chosen now and never changed, `name` 1 to 60 characters, `description` Markdown of at most 16 KiB, `cwd` a folder kept as text (at most 4096 bytes), `tracker` `native` (the default) or `external` with an `http` or `https` `trackerUrl` (at most 2 KiB), `closeRequires` any of `acceptance`, `delivery` and `verified` (A delivery's candidate, below), each at most once, kept in that order (`["acceptance"]` for a native project and `[]` for an external one when absent); reply `201 {receipt, project}`; `409 key_taken` for a key another project holds, archived or not |
+| `POST /api/dispatch/projects` | admin | make a project (`project.create`, Dispatch operations below): `{opId, byName?, key, name, description?, cwd?, tracker?, trackerUrl?, closeRequires?}`, `key` one upper-case letter then one to five upper-case letters or digits, chosen now and never changed, `name` 1 to 60 characters, `description` Markdown of at most 16 KiB, `cwd` a folder kept as text (at most 4096 bytes), `tracker` `native` (the default) or `external` with an `http` or `https` `trackerUrl` (at most 2 KiB), `closeRequires` any of `acceptance`, `delivery`, `verified` (A delivery's candidate, below) and `merged` (a live delivery link GitHub says is merged, read at the close: A ticket's GitHub item, below), each at most once, kept in that order (`["acceptance"]` for a native project and `[]` for an external one when absent); reply `201 {receipt, project}`; `409 key_taken` for a key another project holds, archived or not |
 | `GET /api/dispatch/projects/{key}` | admin | a project, archived or not, with what its pages offer: `{project, labels, milestones, views}`, its live labels by name, its live milestones by target, and the live saved views of the project and of every project, a view's `query` the JSON it is; at most 3 MiB with every field and set at its bound (`maxProjectReply`); `404 not_found` |
 | `POST /api/dispatch/projects/{key}/edit` | admin | set the fields given of a project (`project.edit`): `{opId, expectedRev?, byName?, name?, description?, cwd?, tracker?, trackerUrl?, closeRequires?}`, each held to its create's rule, the key never changing; reply `{receipt, project}`; `409 archived` for an archived project |
 | `POST /api/dispatch/projects/{key}/archive`, `…/unarchive` | admin | archive a project, which refuses every write under it (`409 archived`) until it is unarchived, or unarchive it: `{opId, expectedRev?, byName?}`; reply `{receipt, project}`; `409 invalid` for one archived already, or not archived; a project is never deleted |
@@ -4527,6 +4527,80 @@ switchyard's `403 switchyard`; a body is one JSON object, at most 4 KiB.
 | `POST /api/trackers/github/remove` | `{host}`: a remove names its host (`400 invalid_host` without one, as for `{}`) | drops the host's entry: `200 {removed}`; a call already under way finishes with the token it read, every later one answers `412 no_token`. It stops Conductor's use of the token only: it stays valid on GitHub until revoked there. For the environment's host the file's entry goes too, and the answer adds `inUse: "environment"` and a message: the environment's token is still the one in use and cannot be removed here |
 
 A body that is not one JSON object of exactly the route's members (`null`, a number, a string, a list and no body among them) answers `400 invalid_request` in one fixed sentence, never the decoder's words, and nothing is defaulted from it; a body past 4 KiB answers `413 body_too_large`.
+
+#### A ticket's GitHub item
+
+A ticket may mirror one GitHub issue or pull request, its **linked
+issue** (`docs/plans/tracker-linking.md`): imported as a ticket (GitHub
+owning its title and description) or linked to one (Dispatch owning
+both), read again on demand, with its field owners moved by a person.
+Every request to GitHub is made with the token kept for the item's host
+(GitHub tokens, above): with none, `412 no_token`, nothing read or
+written. The token goes only to that host's API, in `Authorization`, on
+a connection of its own; nothing GitHub answers is logged (a line names
+the route, the item's reference and the status); a refusal is in fixed
+words and names an item only as its reference was accepted. What an
+item gives is content from outside: it goes into Dispatch through the
+store's own operations and bounds (its title cut to 200 characters, its
+description to 64 KiB at a line's end with a last line saying the rest
+is on GitHub, the snapshot at most 40 KiB, at most 20 labels and 20
+assignees shown and never mapped, the steps to reproduce at most 8 KiB,
+at most 8 images), and nothing is made of it. The routes are the
+admin's alone and a switchyard's `403 switchyard`; a body is at most
+64 KiB (`413 bound`), decoded strictly before the path is read. A
+reference is a URL (`https://<host>/<owner>/<repo>/issues/<n>` or
+`…/pull/<n>`, the host github.com or a GitHub Enterprise Server's with a
+saved token), `owner/repo#n` or `#n` in the project's repository (its
+tracker's URL, else its folder's `origin` remote, read from the
+repository's configuration with no git process); anything else is `400
+not_a_tracker_url`, quoting nothing of it.
+
+| Route | Body | Answer |
+|---|---|---|
+| `POST /api/dispatch/external/preview` | `{url, project?}` | reads the item and answers `{preview: {ref, url, title, description (its first 2 KiB), descriptionLength, images, repro?, state, stateReason?, labels, assignees, owners, linked?}}`, what an import would make, `linked` the live ticket that has it already; writes nothing |
+| `POST /api/dispatch/projects/{key}/import` | `{opId, byName?, url, status?, priority?, horizon?, owner?, assignees?, labels?, milestone?, images?}` | replays the operation first, before any request to GitHub. A first send reads the item once and runs `ticket.import` (its snapshot holding the image manifest, at most 8), then, within the images' budget, downloads each image the manifest holds (from GitHub's image hosts alone, at most 16 MiB, its type sniffed from its bytes) and makes it an attachment with its manifest entry in one operation (`ticket.import_image`, a derived op id of the image's id and its bytes' SHA-256), or records its skip (a type other than PNG, JPEG, GIF or WebP, a size past the bound), never fetched again. `201 {receipt, ticket, images: [{id, attachmentId?, skipped?, pending?}]}`, `pending` an image the budget or a failed download left. A resend is answered from the replay and from the stored manifest, never from a receipt: only the entries with neither an attachment nor a skip are fetched again, with fresh addresses from one read, matched by id; with GitHub unreachable it answers `200` with them pending. `409 external_linked` (the receipt's `key` naming the ticket that has the item), `409 archived` |
+| `POST /api/dispatch/tickets/{key}/external` | `{opId, expectedRev?, byName?, url}` | replays, then reads the item and runs `ticket.link_external`: every field stays Dispatch's. `{receipt, ticket}`; `409 invalid` for a ticket linked already, `409 external_linked` |
+| `POST /api/dispatch/tickets/{key}/external/delete` | `{opId, expectedRev?, byName?}` | `ticket.unlink_external`: each field GitHub owned becomes Dispatch's with its text. `{receipt, ticket}` |
+| `POST /api/dispatch/tickets/{key}/external/refresh` | `{opId, byName?, images?}` | reads the item with the validators its last read kept: another item than the one held is `409 moved` naming it; a `304`, or a `200` that changes nothing, is recorded as the ticket's read alone (no change, no receipt); otherwise `ticket.refresh` writes the snapshot and the fields GitHub owns. Then, whatever the read found, unless `images` is false, the manifest's pending entries are completed as an import's resend does, after a `304` from one more read without validators, made only when one is pending. `200 {changed, receipt?, ticket, images}`. The ticket's status never moves |
+| `POST /api/dispatch/tickets/{key}/external/authority` | `{opId, expectedRev?, byName?, field, owner}` | `field` `title` or `description`, `owner` `dispatch` or `github`: replays, then to GitHub reads the item first and hands the read to `ticket.authority`, which writes the snapshot, the owner and the field from it. `{receipt, ticket}` |
+| `POST /api/dispatch/tickets/{key}/links/{id}/read` | `{}` | reads the item a live `delivery` or `external` link names, and for a pull request its checks at its head commit (at most 100; a cut list says so), and records it as the link's read: `200 {read}`. A failure keeps its words on the link's read |
+| `GET /api/dispatch/tickets/{key}/links/{id}/read` | none | `{read}`, the link's last read whole, its checks among it, or `null` |
+
+Beside these, a `link.add` whose URL is a GitHub item's, for a host with
+a token kept, reads it once after the operation commits, in the
+background (one at a time per ticket and per link, within 90 s); and a
+ticket's edit to `done` whose project requires `merged` first reads every
+live delivery link to a GitHub item, at most 4 at once, so the edit's
+transaction judges a read made now (at most 5 minutes old). Nothing else
+reads GitHub by itself: no timer, no poller, no webhook. Reads of one
+ticket's item, and of one link's, are made one at a time, under a lock
+held from the request to the commit: a request that waits for one past
+15 s answers `503 tracker_busy` with `Retry-After`, nothing read or
+written; and the store keeps the read with the later GitHub `updatedAt`
+(`409 stale_read` for an older one, nothing written).
+
+Each route's deadline is the sum of its steps' caps: 15 s for the lock,
+45 s for its requests to GitHub (each within 15 s, an image within 60 s),
+30 s for each store write, and 60 s for an import's or a refresh's
+images: `TrackerReadTimeout` 90 s (the preview, a link, an unlink, a
+field given back, a link's read), `ImportTimeout` 150 s (an import, a
+refresh) and `MergedCloseTimeout` 75 s (the edit to `done`: the locks,
+30 s for the links' reads, the edit). A budget that ends keeps what its
+phase has: images not downloaded stay pending, a cut list of checks says
+so. GitHub's failures: `404 external_not_found` (no such item, or the
+token cannot see it), `422 token_refused` (GitHub refuses the token:
+never `401`, which the app reads as its own token refused), `403
+token_permission`, `429 rate_limited` with `Retry-After`, `409 moved`,
+`502 tracker_bound` (an answer past its bound), `502
+tracker_unavailable`; each leaves the store as it was, but its words on
+the ticket's or the link's read.
+
+**The `dispatch_read` event.** A read recorded (a ticket's linked item's
+or a link's) is no logged change, so it is announced by an event of its
+own on `GET /api/events`, never by a `dispatch` event: `{ticket,
+project, link?, readAt}`, at most 256 bytes, with **no `seq`**: a page
+reads the ticket again on it, and its sequence for the log does not
+move.
 
 ### Brakeman
 
