@@ -2742,7 +2742,7 @@ and otherwise does nothing, and the release of Escape leaves. A scroll
 or a resize of the window takes the outline off (every such event the
 window hears, the page's own among them) until the next pointer event or
 arrow key gives one; a scroll inside the page, of a container, does not:
-the outline stays where it was drawn until the next pointer event or
+the outline stays where it was drawn until the next pointer move or
 arrow key. What is aimed at a frame inside the page (`iframe`, `frame`,
 `object`, `embed`) the browser delivers to the frame. A frame's element
 is outlined when the browser delivers the page's window a pointer event
