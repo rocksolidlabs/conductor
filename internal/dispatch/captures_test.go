@@ -20,7 +20,7 @@ import (
 )
 
 // The captures and their annotations (Program item PV1, PR-1a,
-// docs/plans/browser-evidence.md). Their sends are PR-1b's (#825).
+// docs/plans/browser-evidence.md). Their sends are sends_test.go's.
 
 // version5Tables is the tables version 5 makes.
 var version5Tables = []string{"captures", "capture_annotations", "capture_annotation_sets", "capture_sends", "capture_send_outcomes",
@@ -468,37 +468,21 @@ func TestCaptureBoundsAtTheirEdges(t *testing.T) {
 // Every bound at once: twenty elements, each report at
 // MaxElementReport as measured and its eight sources at their bound, every
 // note four thousand characters that encode as six bytes each, and two
-// hundred changed paths of 4,000 bytes; created and every note edited, the
-// document within MaxCaptureDocument and every change row within
-// MaxChangeValue.
+// hundred changed paths of 4,000 bytes; created, every note edited and
+// sent to a new ticket, the document within MaxCaptureDocument and frozen
+// whole by the send, the ticket's description cut within its bound, and
+// every change row within MaxChangeValue.
 func TestTheFullestCaptureFitsItsDocument(t *testing.T) {
 	ctx := context.Background()
 	s := openStore(t, storeDir(t))
-	n, f := testCapture(true)
-	el := *element(&n)
-	el.Hints = slices.Repeat([]Hint{{How: "vue", File: rep("f", MaxHintFile), Component: rep("c", MaxHintComponent)}}, MaxHints)
-	el.HTML = rep("h", MaxElementHTML)
-	el.Neighbourhood = rep("n", MaxElementReport-measure(&el)-len(`,"neighbourhood":""`))
-	if measure(&el) != MaxElementReport {
-		t.Fatalf("the report measures %d", measure(&el))
-	}
-	sources := slices.Repeat([]Source{{Path: rep("p", MaxHintFile), Component: rep("c", MaxHintComponent), How: "vue", Class: "tracked"}}, MaxHints)
-	note := rep("\u2028", MaxAnnotationNote)
-	n.Annotations, f.Sources = nil, nil
-	for range MaxCaptureAnnotations {
-		e := el
-		n.Annotations = append(n.Annotations, NewAnnotation{Kind: AnnotationElement, Note: note, Rect: Rect{1, 1, 2, 2}, Element: &e})
-		f.Sources = append(f.Sources, sources)
-	}
-	f.ChangedPaths, f.Changed = slices.Repeat([]string{rep("p", 4000)}, MaxChangedPaths), MaxChangedPaths
-	n.Title, n.URL = rep("\u2028", MaxCaptureTitle), "http://h/"+rep("a", MaxCaptureURL-9)
-	moment(&n)
+	newProject(t, s, "CND")
+	n, f := fullestCapture(t)
 	rc, err := create(t, s, "full", n, f, pngOf(t, 8, 8, 7))
 	want(t, rc, err, StatusDone, "")
 	c := captureOf(t, s, rc.ID)
 	edits := kept(c)
 	for i := range edits {
-		edits[i].Note = rep("\u2029", MaxAnnotationNote)
+		edits[i].Note = rep(" ", MaxAnnotationNote)
 	}
 	erc, err := reedit(t, s, "full-edit", rc.ID, 1, edits)
 	want(t, erc, err, StatusDone, "")
@@ -526,6 +510,28 @@ func TestTheFullestCaptureFitsItsDocument(t *testing.T) {
 	if !utf8.Valid(doc) {
 		t.Fatal("the document is not UTF-8")
 	}
+	// The fullest capture sent: its document frozen whole as a file, and a
+	// new ticket's description within its bound, cut at a line's end with
+	// its warning first.
+	sid := mustSend(t, s, "full-send", rc.ID, 2, Destination{Kind: SendTicket, Project: "CND", Title: "The fullest capture"}, SendFacts{})
+	if got := sendFile(t, s, sid, sumOf(doc)); string(got) != string(doc) {
+		t.Fatal("the send froze another document")
+	}
+	tk := ticketPage(t, s, sendOf(t, s, sid).Target)
+	if len(tk.Description) > MaxTicketDescription || len(tk.Description) < MaxTicketDescription-2*MaxAnnotationNote*3 ||
+		!strings.HasPrefix(tk.Description, "> What the page served is not confirmed") || !strings.HasSuffix(tk.Description, "\n…") ||
+		!utf8.ValidString(tk.Description) {
+		t.Fatalf("the description: %d bytes, %.80q … %q", len(tk.Description), tk.Description, tk.Description[max(0, len(tk.Description)-20):])
+	}
+	// Notes of short lines: the cut lands at the line's end nearest the
+	// bound, within it.
+	short := captureOf(t, s, rc.ID)
+	for i := range short.Annotations {
+		short.Annotations[i].Note = rep("é\n", MaxAnnotationNote/2)
+	}
+	if text := ticketText(short); len(text) > MaxTicketDescription || len(text) < MaxTicketDescription-8 || !strings.HasSuffix(text, "\n…") {
+		t.Fatalf("a description of short lines cut to %d bytes", len(text))
+	}
 	// The document's own bound, which no capture within the other bounds
 	// reaches: a set whose document would be past it is refused bound, and
 	// one at it is written.
@@ -544,6 +550,87 @@ func TestTheFullestCaptureFitsItsDocument(t *testing.T) {
 			return x.writeSet(big, big.Rev+1, big.Annotations)
 		})
 		want(t, brc, err, status, c.code)
+	}
+}
+
+// fullestCapture is a capture at every bound: twenty elements, each its
+// report at MaxElementReport, its note of six-byte characters and eight
+// sources at theirs, the title and the address at theirs and 200 changed
+// paths of 4,000 bytes.
+func fullestCapture(t *testing.T) (NewCapture, CaptureFacts) {
+	t.Helper()
+	n, f := testCapture(true)
+	el := *element(&n)
+	el.Hints = slices.Repeat([]Hint{{How: "vue", File: rep("f", MaxHintFile), Component: rep("c", MaxHintComponent)}}, MaxHints)
+	el.HTML = rep("h", MaxElementHTML)
+	el.Neighbourhood = rep("n", MaxElementReport-measure(&el)-len(`,"neighbourhood":""`))
+	if measure(&el) != MaxElementReport {
+		t.Fatalf("the report measures %d", measure(&el))
+	}
+	sources := slices.Repeat([]Source{{Path: rep("p", MaxHintFile), Component: rep("c", MaxHintComponent), How: "vue", Class: "tracked"}}, MaxHints)
+	note := rep("\u2028", MaxAnnotationNote)
+	n.Annotations, f.Sources = nil, nil
+	for range MaxCaptureAnnotations {
+		e := el
+		n.Annotations = append(n.Annotations, NewAnnotation{Kind: AnnotationElement, Note: note, Rect: Rect{1, 1, 2, 2}, Element: &e})
+		f.Sources = append(f.Sources, sources)
+	}
+	f.ChangedPaths, f.Changed = slices.Repeat([]string{rep("p", 4000)}, MaxChangedPaths), MaxChangedPaths
+	n.Title, n.URL = rep("\u2028", MaxCaptureTitle), "http://h/"+rep("a", MaxCaptureURL-9)
+	moment(&n)
+	return n, f
+}
+
+// Every change row of the fullest capture's life goes through record
+// within MaxChangeValue: its create, an edit of every note (the pointer's
+// row its value and prior, {rev, set} each), a send to a new ticket (the
+// ticket's description at its bound among them), a send to Brakeman with
+// a request at its bound, the desk's refusal of another with its words at
+// theirs, and a cancel.
+func TestTheFullestCaptureGoesThroughTheChangeLog(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t, storeDir(t))
+	newProject(t, s, "CND")
+	n, f := fullestCapture(t)
+	id := mustCreate(t, s, "full", n, f, pngOf(t, 8, 8, 8))
+	edits := kept(captureOf(t, s, id))
+	for i := range edits {
+		edits[i].Note = rep("\u2029", MaxAnnotationNote)
+	}
+	rc, err := reedit(t, s, "full-edit", id, 1, edits)
+	want(t, rc, err, StatusDone, "")
+	mustSend(t, s, "full-ticket", id, 2, Destination{Kind: SendTicket, Project: "CND", Title: rep("\u2028", MaxTicketTitle)}, SendFacts{})
+	request := SendFacts{Request: json.RawMessage(`{"q":"` + rep("\\u2028", (MaxSendRequest-len(`{"q":""}`))/6) + `"}`)}
+	desk := mustSend(t, s, "full-desk", id, 2, toBrakeman, request)
+	refused := mustSend(t, s, "full-refused", id, 2, toBrakeman, request)
+	rc, err = s.MarkRefused(ctx, testOp("full-why"), refused, rep("\u2028", MaxSendWhy))
+	want(t, rc, err, StatusDone, "")
+	rc, err = s.AskCancel(ctx, testOp("full-cancel"), desk)
+	want(t, rc, err, StatusDone, "")
+	pointers := 0
+	for _, op := range []string{"full", "full-edit", "full-ticket", "full-desk", "full-refused", "full-why", "full-cancel"} {
+		rows := changesOf(t, s, "test", op)
+		if len(rows) == 0 {
+			t.Fatalf("%s wrote no row", op)
+		}
+		for _, row := range rows {
+			if len(row.Value) > MaxChangeValue || len(row.Prior) > MaxChangeValue {
+				t.Fatalf("%s's row %d (%s) is %d bytes", op, row.N, row.Field, len(row.Value))
+			}
+			if row.Entity == EntityCapture && row.Field == "annotations" {
+				var v, p SetPointer
+				if json.Unmarshal([]byte(row.Value), &v) != nil || json.Unmarshal([]byte(row.Prior), &p) != nil || v.Set == "" || v.Rev != p.Rev+1 {
+					t.Fatalf("the pointer's row: %s from %s", row.Value, row.Prior)
+				}
+				pointers++
+			}
+		}
+	}
+	if pointers != 2 {
+		t.Fatalf("%d pointer rows", pointers)
+	}
+	if got := sendOf(t, s, desk).Request; len(got) < MaxSendRequest-6 {
+		t.Fatalf("the request at its bound is %d bytes", len(got))
 	}
 }
 

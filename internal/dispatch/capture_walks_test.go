@@ -192,6 +192,9 @@ func encodeResults(results []any) []byte {
 // read the store offers: each read whose results can hold a capture's
 // words (storeReads) is driven after the delete or says why it holds none,
 // a read added later in neither failing, and the feed's reads among them.
+// A deleted capture's words reach a read only as a send of it froze them:
+// its sends are read whole, and what it held after its sends (an edit's
+// note) reaches none.
 func TestEveryReadHidesADeletedCapture(t *testing.T) {
 	ctx := context.Background()
 	s, key := attachmentTicket(t)
@@ -210,6 +213,27 @@ func TestEveryReadHidesADeletedCapture(t *testing.T) {
 	want(t, rc, err, StatusDone, "")
 	words := []string{"Walk title", "walk-page", "WalkAgent", "walk note", "walk/changed.vue", "/walk-repo", sumOf(img)}
 	ops := []string{"walk-create", "walk-edit", "walk-delete"}
+	// A capture sent, then edited, then deleted: what its sends froze stays
+	// theirs (the ticket's description, attachments and comment, the files
+	// the sends hold), and what was never sent reaches no read.
+	sn, sf := testCapture(true)
+	sn.Title, sn.URL = "Sent title", "http://127.0.0.1:5173/sent-page"
+	sn.Annotations[0].Note = "sent note"
+	moment(&sn)
+	sent := mustCreate(t, s, "walk-sent", sn, sf, pngOf(t, 8, 8, 44))
+	toTicket := mustSend(t, s, "walk-send-ticket", sent, 1, Destination{Kind: SendTicket, Key: key}, SendFacts{})
+	toDesk := mustSend(t, s, "walk-send-desk", sent, 1, toBrakeman, askBrakeman)
+	rc, err = s.AskCancel(ctx, testOp("walk-cancel"), toDesk)
+	want(t, rc, err, StatusDone, "")
+	sentEdits := kept(captureOf(t, s, sent))
+	sentEdits[0].Note = "walk never sent"
+	rc, err = reedit(t, s, "walk-sent-edit", sent, 1, sentEdits)
+	want(t, rc, err, StatusDone, "")
+	rc, err = s.DeleteCapture(ctx, testOp("walk-sent-delete"), sent)
+	want(t, rc, err, StatusDone, "")
+	sentDigest := sendOf(t, s, toTicket).Digest
+	unsent := []string{"walk never sent"}
+	ops = append(ops, "walk-sent", "walk-send-ticket", "walk-send-desk", "walk-cancel", "walk-sent-edit", "walk-sent-delete")
 	enc := func(vs ...any) []byte {
 		b, _ := json.Marshal(vs)
 		return b
@@ -232,7 +256,7 @@ func TestEveryReadHidesADeletedCapture(t *testing.T) {
 		},
 		"Captures": func() ([]byte, error) {
 			var out []byte
-			for _, filter := range []CaptureFilter{{}, {Run: f.Run}, {Run: f.Run, Task: f.Task, Attempt: f.Attempt}} {
+			for _, filter := range []CaptureFilter{{}, {Run: f.Run}, {Run: f.Run, Task: f.Task, Attempt: f.Attempt}, {Ticket: key}} {
 				page, err := s.Captures(ctx, filter, "", MaxCapturePage)
 				if err != nil || len(page.Captures) != 0 {
 					return enc(page), fmt.Errorf("listed: %+v %v", page, err)
@@ -313,6 +337,60 @@ func TestEveryReadHidesADeletedCapture(t *testing.T) {
 				return b, fmt.Errorf("not not found: %v", err)
 			}
 			return b, nil
+		},
+		// A deleted capture's sends, whole: what they froze is theirs.
+		"CaptureSend": func() ([]byte, error) {
+			var out []byte
+			for _, sid := range []string{toTicket, toDesk} {
+				sv, err := s.CaptureSend(ctx, sid)
+				if err != nil {
+					return nil, err
+				}
+				if sv.Capture != sent || sv.Rev != 1 {
+					return enc(sv), fmt.Errorf("not the send as it was made: %+v", sv)
+				}
+				out = append(out, enc(sv)...)
+			}
+			return out, nil
+		},
+		"CaptureSends": func() ([]byte, error) {
+			p, err := s.CaptureSends(ctx, SendTicket, key, "", MaxCapturePage)
+			if err == nil && (len(p.Sends) != 1 || p.Sends[0].ID != toTicket) {
+				err = fmt.Errorf("the ticket's sends: %+v", p)
+			}
+			return enc(p), err
+		},
+		"PendingSends": func() ([]byte, error) {
+			p, err := s.PendingSends(ctx, "", MaxCapturePage)
+			if err == nil && (len(p.Sends) != 1 || p.Sends[0].ID != toDesk) {
+				err = fmt.Errorf("the pending sends: %+v", p)
+			}
+			return enc(p), err
+		},
+		"AskedCancels": func() ([]byte, error) {
+			p, err := s.AskedCancels(ctx, "", MaxCapturePage)
+			if err == nil && (len(p.Sends) != 1 || p.Sends[0].ID != toDesk) {
+				err = fmt.Errorf("the asked cancels: %+v", p)
+			}
+			return enc(p), err
+		},
+		"OpenSendFile": func() ([]byte, error) {
+			var out []byte
+			for _, sid := range []string{toTicket, toDesk} {
+				fh, err := s.OpenSendFile(ctx, sid, sentDigest)
+				if err != nil {
+					return nil, err
+				}
+				doc := file(fh)
+				if !bytes.Contains(doc, []byte("sent note")) {
+					return doc, errors.New("the send's document is not what was sent")
+				}
+				out = append(out, doc...)
+				if fh, err := s.OpenSendFile(ctx, sid, sumOf(img)); !errors.Is(err, ErrNotFound) {
+					return file(fh), fmt.Errorf("a send opened another capture's image: %v", err)
+				}
+			}
+			return out, nil
 		},
 		"OpenAttachment": func() ([]byte, error) {
 			a, fh, err := s.OpenAttachment(ctx, id)
@@ -395,18 +473,19 @@ func TestEveryReadHidesADeletedCapture(t *testing.T) {
 		}
 	}
 	// Every read, driven by each of the capture's names (its id, its image's
-	// hash, its run and task, its create's op id), a capture that never was
-	// and the ticket's key for every word, at 0 and 10 for every number: no
-	// result gives a word of the deleted capture, and an error answers
-	// nothing else.
+	// hash, its run and task, its create's op id), the sent capture's and its
+	// sends', a capture that never was and the ticket's key for every word,
+	// at 0 and 10 for every number: no result gives a word of the deleted
+	// capture or what the sent one never sent, and an error answers nothing
+	// else.
 	for _, name := range storeReads() {
-		for _, word := range []string{id, newID(), key, sumOf(img), f.Run, f.Task, "walk-create", ""} {
+		for _, word := range []string{id, newID(), key, sumOf(img), f.Run, f.Task, "walk-create", "", sent, toTicket, toDesk, sentDigest} {
 			for _, k := range []int{0, 10} {
 				results, err := callRead(ctx, s, name, word, k)
 				what := fmt.Sprintf("%s(%q, %d)", name, word, k)
 				answersNothingElse(t, what, results, err)
 				got := encodeResults(results)
-				for _, w := range words {
+				for _, w := range append(words, unsent...) {
 					if bytes.Contains(got, []byte(w)) {
 						t.Errorf("%s after the delete gives %q: %.300s", what, w, got)
 					}
@@ -424,7 +503,7 @@ func TestEveryReadHidesADeletedCapture(t *testing.T) {
 		if err != nil {
 			t.Errorf("%s after the delete: %v", name, err)
 		}
-		for _, w := range words {
+		for _, w := range append(words, unsent...) {
 			if bytes.Contains(got, []byte(w)) {
 				t.Errorf("%s after the delete gives %q: %.300s", name, w, got)
 			}
@@ -481,7 +560,10 @@ func (c cancelAtEnd) Read(p []byte) (int, error) {
 // its errors (a capture deleted, one that never was, a page past its
 // bound, a store closed, and a read whose statements in the store's read
 // transaction fail after each of its steps), gives the zero value of every
-// result beside a non-nil error. The failing statements reach the reads
+// result beside a non-nil error; the reads of sends among them, over a
+// ticket's send, a pending one with a cancel asked and one of the deleted
+// capture, those of arguments of more than one kind by name (CaptureSends,
+// Captures by a ticket, OpenSendFile). The failing statements reach the reads
 // made through read alone (People, main's, reads outside it), and they
 // fail a statement, never a read's rows or its commit after its last.
 func TestAnErrorAnswersNothingElse(t *testing.T) {
@@ -489,13 +571,21 @@ func TestAnErrorAnswersNothingElse(t *testing.T) {
 	s, key := attachmentTicket(t)
 	n, f := testCapture(true)
 	gone := mustCreate(t, s, "gone", n, f, pngOf(t, 8, 8, 42))
+	goneSend := mustSend(t, s, "gone-send", gone, 1, toBrakeman, askBrakeman)
 	rc, err := s.DeleteCapture(ctx, testOp("delete"), gone)
 	want(t, rc, err, StatusDone, "")
 	live := mustCreate(t, s, "live", n, f, pngOf(t, 8, 8, 43))
+	// The sends the reads of sends read: a ticket's, and one to Brakeman
+	// pending with a cancel asked.
+	ticketSend := mustSend(t, s, "ticket-send", live, 1, Destination{Kind: SendTicket, Key: key}, SendFacts{})
+	deskSend := mustSend(t, s, "desk-send", live, 1, toBrakeman, askBrakeman)
+	rc, err = s.AskCancel(ctx, testOp("cancel"), deskSend)
+	want(t, rc, err, StatusDone, "")
+	docSum := sendOf(t, s, ticketSend).Digest
 	errs := 0
 	drive := func(when string) {
 		for _, name := range storeReads() {
-			for _, word := range []string{gone, newID(), key, f.Run, "", "not an id"} {
+			for _, word := range []string{gone, newID(), key, f.Run, "", "not an id", goneSend, ticketSend} {
 				for _, k := range []int{-1, 0, MaxCapturePage + 1} {
 					results, err := callRead(ctx, s, name, word, k)
 					if err != nil {
@@ -519,6 +609,16 @@ func TestAnErrorAnswersNothingElse(t *testing.T) {
 			return []any{p}, err
 		}},
 		{"a page after no capture", func() ([]any, error) { p, err := s.Captures(ctx, CaptureFilter{}, newID(), 10); return []any{p}, err }},
+		{"a send that never was", func() ([]any, error) { sv, err := s.CaptureSend(ctx, newID()); return []any{sv}, err }},
+		{"a page of sends after no send", func() ([]any, error) { p, err := s.PendingSends(ctx, newID(), 10); return []any{p}, err }},
+		{"a ticket's sends past their bound", func() ([]any, error) {
+			p, err := s.CaptureSends(ctx, SendTicket, key, "", MaxCapturePage+1)
+			return []any{p}, err
+		}},
+		{"a file the send does not hold", func() ([]any, error) {
+			fh, err := s.OpenSendFile(ctx, ticketSend, sumOf([]byte("x")))
+			return []any{fh}, err
+		}},
 		{"the hashes of no copy", func() ([]any, error) {
 			h, err := SnapshotHashes(ctx, filepath.Join(t.TempDir(), "none.sqlite"))
 			return []any{h}, err
@@ -545,25 +645,51 @@ func TestAnErrorAnswersNothingElse(t *testing.T) {
 		}
 	}
 	failed := map[string]bool{}
+	inTheMiddle := func(name, what string, call func() ([]any, error)) {
+		for after := int64(1); ; after++ {
+			var steps atomic.Int64
+			s.readQueryer = func(q queryer) queryer { return failingAfter{q, after, &steps} }
+			results, err := call()
+			s.readQueryer = nil
+			if steps.Load() <= after {
+				break
+			}
+			failed[name] = true
+			answersNothingElse(t, fmt.Sprintf("failing after %d step(s): %s", after, what), results, err)
+		}
+	}
 	for _, name := range storeReads() {
-		for _, word := range []string{gone, live, newID(), key, f.Run, f.Task, ""} {
+		for _, word := range []string{gone, live, newID(), key, f.Run, f.Task, "", goneSend, ticketSend, deskSend} {
 			for _, k := range ks {
-				for after := int64(1); ; after++ {
-					var steps atomic.Int64
-					s.readQueryer = func(q queryer) queryer { return failingAfter{q, after, &steps} }
-					results, err := callRead(ctx, s, name, word, k)
-					s.readQueryer = nil
-					if steps.Load() <= after {
-						break
-					}
-					failed[name] = true
-					answersNothingElse(t, fmt.Sprintf("failing after %d step(s): %s(%q, %d)", after, name, word, k), results, err)
-				}
+				inTheMiddle(name, fmt.Sprintf("%s(%q, %d)", name, word, k), func() ([]any, error) { return callRead(ctx, s, name, word, k) })
 			}
 		}
 	}
-	if !failed["ChangeValue"] || !failed["Document"] || !failed["Captures"] {
-		t.Fatalf("the reads failed in their middle: %v", failed)
+	// The reads of sends whose arguments are of more than one kind, by name.
+	for _, c := range []struct {
+		name string
+		call func() ([]any, error)
+	}{
+		{"CaptureSends", func() ([]any, error) { p, err := s.CaptureSends(ctx, SendTicket, key, "", 10); return []any{p}, err }},
+		{"Captures by ticket", func() ([]any, error) {
+			p, err := s.Captures(ctx, CaptureFilter{Ticket: key}, "", 10)
+			return []any{p}, err
+		}},
+		{"OpenSendFile", func() ([]any, error) { fh, err := s.OpenSendFile(ctx, ticketSend, docSum); return []any{fh}, err }},
+	} {
+		inTheMiddle(c.name, c.name, func() ([]any, error) {
+			results, err := c.call()
+			if fh, ok := results[0].(*os.File); ok && err == nil {
+				fh.Close()
+			}
+			return results, err
+		})
+	}
+	for _, name := range []string{"ChangeValue", "Document", "Captures", "Capture", "CaptureSend", "PendingSends", "AskedCancels", "CaptureSends",
+		"Captures by ticket", "OpenSendFile"} {
+		if !failed[name] {
+			t.Errorf("%s never failed in its middle: %v", name, failed)
+		}
 	}
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
@@ -744,6 +870,35 @@ func TestEveryWayOutOfAnUploadCollectsItsFile(t *testing.T) {
 		t.Fatalf("a cancelled create: %v", err)
 	}
 	settled("a cancelled context")
+	// A send's document takes the same ways out: its sync failing, its
+	// context cancelled between the publication and the operation, a
+	// refusal in the transaction (a capture's sends past their bound being
+	// TestSendBoundsAtTheirEdges'), each leaving no file of it.
+	sn, sf := testCapture(false)
+	sendable := mustCreate(t, s, "sendable", sn, sf, nil)
+	sendDoc := sumOf(documentOfRev(t, s, sendable, 1))
+	if syncs {
+		failSync(true)
+		_, err := send(t, s, "send-sync", sendable, 1, toBrakeman, askBrakeman)
+		failSync(false)
+		if !errors.Is(err, errSync) || exists(t, contentAt(s, sendDoc)) {
+			t.Fatalf("a send whose sync fails: %v, its document there %v", err, exists(t, contentAt(s, sendDoc)))
+		}
+		settled("a send whose sync fails")
+	}
+	cctx, cancel = context.WithCancel(ctx)
+	s.beforeCommit = func() { s.beforeCommit = nil; cancel() }
+	if _, err := s.SendCapture(cctx, testOp("send-cancelled"), sendDigest(t, sendable, 1, toBrakeman, askBrakeman), sendable, 1, toBrakeman,
+		askBrakeman); !errors.Is(err, context.Canceled) || exists(t, contentAt(s, sendDoc)) {
+		t.Fatalf("a cancelled send: %v", err)
+	}
+	settled("a send cancelled")
+	rc, err = send(t, s, "send-refused", sendable, 1, Destination{Kind: SendTicket, Key: "CND-999"}, SendFacts{})
+	want(t, rc, err, StatusFailed, RefusalNotFound)
+	if exists(t, contentAt(s, sendDoc)) {
+		t.Fatal("a refused send's document is left")
+	}
+	settled("a send refused")
 	// Before the publication: a context cancelled as the upload's file is
 	// read whole, so its lease fails; a capture's upload and an attachment's.
 	for i, capture := range []bool{true, false} {

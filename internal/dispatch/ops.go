@@ -141,8 +141,10 @@ const (
 	IntentFindingMark  = "finding.mark"
 	// A capture's create keeps it on its row (Program item PV1), an edit
 	// on its set's change row, a delete on its tombstone's row (the
-	// capture it names).
+	// capture it names); a send on its row, and a send's outcome and
+	// cancel on their change rows.
 	IntentCaptureCreate = "capture.create"
+	IntentCaptureSend   = "capture.send"
 )
 
 // Receipt is what an operation gets and what the store keeps under
@@ -211,9 +213,12 @@ const (
 	// log, field marks).
 	EntityReview  = "review"
 	EntityFinding = "finding"
-	// EntityCapture is a person's capture of a preview (Program item PV1):
-	// its rows name no ticket or project, and it bumps its own rev.
-	EntityCapture = "capture"
+	// EntityCapture is a person's capture of a preview and EntityCaptureSend
+	// one of its sends (Program item PV1): their rows name no ticket or
+	// project (a send to a ticket changes the ticket by the ticket's own
+	// rows); a capture bumps its own rev, and a send has none.
+	EntityCapture     = "capture"
+	EntityCaptureSend = "capture_send"
 )
 
 // The ops of a change row: a scalar field set (value and prior), a set
@@ -705,7 +710,10 @@ func conflictReceipt(op Op, intent, words string) Receipt {
 // create row (entity launch), a link's add its add row (a ticket's links),
 // whose link names the fingerprint, an import its ticket's create row,
 // which keeps the import's fingerprint and is answered with the ticket's
-// id and key; a first row of another kind is another operation's,
+// id and key, a capture's send its create row (answered with the send's
+// id and the key of the ticket it went to), a send's outcome and a cancel
+// their add rows, which keep the fingerprint; a first row of another kind
+// is another operation's,
 // op_conflict. A record with no fingerprint (a link
 // a version 1 store added) cannot be compared: op_conflict with the words
 // that say so, which refuses the resend rather than take content it
@@ -781,6 +789,29 @@ func prunedAnswer(ctx context.Context, q queryer, op Op, intent, fp string) (rc 
 			return conflictReceipt(op, intent, wordsOpConflict), true, nil
 		}
 		table, id = "captures", entityID
+	case IntentCaptureSend:
+		// A send's create row is the operation's first, and its row keeps
+		// the operation's fingerprint; the ticket a send to a ticket made
+		// its rows on is the receipt's key (sendKey).
+		if entity != EntityCaptureSend || kind != OpCreate || schemaOf(q) < captureSchema {
+			return conflictReceipt(op, intent, wordsOpConflict), true, nil
+		}
+		table, id = "capture_sends", entityID
+		if done.Key, err = sendKey(ctx, q, entityID); err != nil {
+			return Receipt{}, false, err
+		}
+	case IntentSendSent, IntentSendRefused, IntentSendCancelled, IntentSendCancel:
+		// A send's outcome and a cancel are the operation's first row, which
+		// keeps its fingerprint (sendRow).
+		field0 := map[bool]string{true: "cancels", false: "outcomes"}[intent == IntentSendCancel]
+		var v struct {
+			Fingerprint string `json:"fingerprint"`
+		}
+		if entity != EntityCaptureSend || field != field0 || kind != OpAdd || json.Unmarshal([]byte(value), &v) != nil || v.Fingerprint != fp {
+			return conflictReceipt(op, intent, wordsOpConflict), true, nil
+		}
+		done.ID = entityID
+		return done, true, nil
 	case IntentCaptureEdit:
 		// An edit's first row is a version's or its set's, and its set's
 		// change row keeps the edit's fingerprint (writeSet), also after
@@ -1009,7 +1040,7 @@ func (s *Store) Committed(ctx context.Context, actor, id string) (rc Receipt, fo
 		return Receipt{}, false, err
 	}
 	rc = Receipt{OpID: id, Status: StatusDone, Repeat: true}
-	if kind == OpCreate && (entity == EntityPlan || entity == EntityLaunch || entity == EntityReview || entity == EntityCapture) {
+	if kind == OpCreate && (entity == EntityPlan || entity == EntityLaunch || entity == EntityReview || entity == EntityCapture || entity == EntityCaptureSend) {
 		rc.ID = entityID
 	}
 	return rc, true, nil

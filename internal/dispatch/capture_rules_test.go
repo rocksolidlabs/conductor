@@ -642,6 +642,18 @@ func TestTheDocumentCarriesTheDrift(t *testing.T) {
 	rc, err := reedit(t, s, "e1", id, 1, edits)
 	want(t, rc, err, StatusDone, "")
 	check(2)
+	// Sent, the document frozen carries it, and the new ticket's description
+	// warns of it first.
+	newProject(t, s, "CND")
+	sid := mustSend(t, s, "s1", id, 2, Destination{Kind: SendTicket, Project: "CND", Title: "Drifted"}, SendFacts{})
+	var d CaptureDocument
+	if err := json.Unmarshal(sendFile(t, s, sid, sendOf(t, s, sid).Digest), &d); err != nil || !same(d.Origin.Drift) || d.Rev != 2 {
+		t.Fatalf("the document sent: %v %+v", err, d.Origin.Drift)
+	}
+	desc := ticketPage(t, s, sendOf(t, s, sid).Target).Description
+	if !strings.HasPrefix(desc, "> **The tree changed between the selection and the save**: the selection read `bbbbbbb+ddddddd`, the save `aaaaaaa+ccccccc`.\n") {
+		t.Fatalf("the description: %s", desc)
+	}
 }
 
 // Two addresses are of one origin when their scheme, their host without
