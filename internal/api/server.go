@@ -225,7 +225,7 @@ type Server struct {
 	// runs launches crews and keeps their runs, in memory.
 	runs *crew.Engine
 	// trees reads the trees of the previews, their indexes kept
-	// (captures.go).
+	// (preview_label.go).
 	trees treeReads
 	// runOf answers the run a session is a member of, for run links (see
 	// principal.role). It takes no lock of the engine.
@@ -1003,7 +1003,8 @@ func (s *Server) Handler() http.Handler {
 	// and links, the saved views, a run's ticket and the receipts
 	// (dispatch.go), the admin's alone.
 	s.routeDispatch(mux)
-	s.routeCaptures(mux)
+	// An attempt's preview label (preview_label.go), the admin's alone.
+	s.routePreviewLabel(mux)
 	s.routeTrackers(mux) // the GitHub token (trackers.go)
 	mux.HandleFunc("GET /api/integrations", s.launching(s.handleIntegrations))
 	mux.HandleFunc("POST /api/integrations/{id}/install", s.launching(s.handleInstallIntegration))
