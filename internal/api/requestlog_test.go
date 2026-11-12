@@ -35,8 +35,8 @@ func requestLines(t *testing.T, logs *logBuffer, n int) []string {
 }
 
 // The request and panic log lines name a request by the route the mux
-// matched; on a catch-all route (the join page) or none, by its path with a
-// share link's token replaced. Query strings are never logged.
+// matched; on a catch-all route (the join page among them) by its pattern
+// alone, and with none by fixed words. Query strings are never logged.
 func TestRequestLogNamesTheRouteNotTheLinkToken(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -111,7 +111,9 @@ func TestRequestLogNamesTheRouteNotTheLinkToken(t *testing.T) {
 
 			if tc.level == slog.LevelDebug {
 				lines := requestLines(t, logs, len(gets)+3)
-				for _, want := range []string{"path=/join/{token}", "path=/JOIN/{token}", "path=/api/join/{token}", "path=/ws/sessions/{id}", "path=/api/events", "path=/api/sessions/{id}/files"} {
+				// The join page, in any case, is the app's catch-all, named by
+				// its pattern; a POST on the join path, the /api/ one.
+				for _, want := range []string{"path=/", "path=/api/", "path=/api/join/{token}", "path=/ws/sessions/{id}", "path=/api/events", "path=/api/sessions/{id}/files"} {
 					found := false
 					for _, line := range lines {
 						found = found || strings.Contains(line, want+" ")
@@ -122,8 +124,8 @@ func TestRequestLogNamesTheRouteNotTheLinkToken(t *testing.T) {
 				}
 			}
 			out := logs.String()
-			if got := strings.Count(out, `msg="panic in handler" path=/api/join/{token} `); got != 2 {
-				t.Errorf("%d panic lines naming /api/join/{token}, want 2:\n%s", got, out)
+			if strings.Count(out, `msg="panic in handler" path=/api/join/{token} `) != 1 || strings.Count(out, `msg="panic in handler" path="(no route)" `) != 1 {
+				t.Errorf("the panic lines name neither the route nor no route:\n%s", out)
 			}
 			for _, s := range secrets {
 				if strings.Contains(out, s) {
@@ -152,30 +154,91 @@ func TestRequestLogRecordsTheStatusAfterAPanic(t *testing.T) {
 	}
 }
 
+// A request is named by what the server holds: its route's pattern; on a
+// catch-all, the pattern alone, unless the path is exactly one of the
+// embedded app's files; with no route, fixed words.
 func TestLogPath(t *testing.T) {
+	const tok = "ghp_PLANTEDpathTOKEN0123456789abcdefWXYZ"
+	holds := func(p string) bool { return p == "/_nuxt/entry.js" || p == "/brand/conductor-favicon.svg" }
 	for _, tc := range []struct{ pattern, path, want string }{
 		{"GET /api/join/{token}", "/api/join/abc", "/api/join/{token}"},
 		{"GET /api/sessions/{id}/files", "/api/sessions/s1/files", "/api/sessions/{id}/files"},
 		{"GET /api/health", "/api/health", "/api/health"},
 		{"POST /api/runs/{run}/members/{name}/start", "/api/runs/r1/members/a/start", "/api/runs/{run}/members/{name}/start"},
-		// The catch-alls and no route: the path, a link's token replaced.
-		{"/", "/join/abc", "/join/{token}"},
-		{"/", "/join/abc/", "/join/{token}"},
-		{"/", "/Join/abc/more", "/Join/{token}"},
-		{"/", "/x/../JOIN/abc", "/x/../JOIN/{token}"},
-		{"/api/", "/api/join/abc", "/api/join/{token}"},
-		{"", "/api/join/abc", "/api/join/{token}"},
-		{"", "/join/abc", "/join/{token}"},
-		{"/", "/join", "/join"},
+		// The catch-alls: the pattern alone, whatever the path holds.
+		{"/", "/join/abc", "/"},
+		{"/", "/Join/abc/more", "/"},
+		{"/", "/sessions/s1", "/"},
+		{"/api/", "/api/join/abc", "/api/"},
+		{"/api/", "/api/trackers/github/" + tok, "/api/"},
+		{"/api/", "/api/trackers/" + tok, "/api/"},
+		{"/api/", "/api/" + tok, "/api/"},
+		{"/ws/", "/ws/other", "/ws/"},
+		// An embedded file is named, by its exact path alone.
 		{"/", "/_nuxt/entry.js", "/_nuxt/entry.js"},
-		{"/", "/sessions/s1", "/sessions/s1"},
-		{"/ws/", "/ws/other", "/ws/other"},
-		{"", "/nowhere", "/nowhere"},
+		{"/", "/brand/conductor-favicon.svg", "/brand/conductor-favicon.svg"},
+		{"/", "/" + tok + "/../_nuxt/entry.js", "/"},
+		// No route.
+		{"", "/api/join/abc", "(no route)"},
+		{"", "/" + tok, "(no route)"},
 	} {
 		r := httptest.NewRequest("GET", "http://example.test"+tc.path, nil)
 		r.Pattern = tc.pattern
-		if got := logPath(r); got != tc.want {
+		if got := logPath(r, holds); got != tc.want {
 			t.Errorf("logPath(%q, %q) = %q, want %q", tc.pattern, tc.path, got, tc.want)
 		}
 	}
 }
+
+// A made-up token put in a path segment under each tracker route and
+// under /api/ reaches no log line at any level; the log names a method
+// from the standard ones and any other (to a tracker route and to paths
+// only the catch-alls take) by one fixed word; a file of the embedded app
+// is still named.
+func TestRequestLogNamesWhatTheServerHolds(t *testing.T) {
+	const tok = "ghp_PLANTEDpathTOKEN0123456789abcdefWXYZ"
+	logs := &logBuffer{}
+	log := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	e := newTestEnvLogging(t, nil, log)
+	// No request reaches the test's own listener: this handler, over the
+	// app, is the one asked.
+	e.srv.web = heldApp{"/_nuxt/entry.js": true}
+	h := e.srv.Handler()
+	paths := []string{
+		"/api/trackers/" + tok, "/api/trackers/github/" + tok, "/api/trackers/github/remove/" + tok,
+		"/api/" + tok, "/" + tok, "/_nuxt/entry.js", "/api/trackers", "/api/other", "/other",
+	}
+	methods := []string{"GET", "POST", tok}
+	for _, p := range paths {
+		for _, method := range methods {
+			r := httptest.NewRequest(method, p, strings.NewReader("{}"))
+			r.Header.Set("Authorization", "Bearer "+adminToken)
+			h.ServeHTTP(httptest.NewRecorder(), r)
+		}
+	}
+	lines := requestLines(t, logs, len(methods)*len(paths))
+	out := logs.String()
+	for _, f := range []string{tok, tok[4:16]} {
+		if strings.Contains(out, f) {
+			t.Errorf("the log holds %q:\n%s", f, out)
+		}
+	}
+	if all := strings.Join(lines, "\n"); !strings.Contains(all, "path=/_nuxt/entry.js ") || strings.Count(all, "method=(other) ") != len(paths) {
+		t.Errorf("the embedded file is not named, or a method sent is not one fixed word:\n%s", out)
+	}
+}
+
+// The log names a method from a fixed list, and any other by one word.
+func TestLogMethod(t *testing.T) {
+	for m, want := range map[string]string{"GET": "GET", "DELETE": "DELETE", "OPTIONS": "OPTIONS", "get": "(other)", "PROPFIND": "(other)", "ghp_PLANTEDmethod0123": "(other)", "": "(other)"} {
+		if got := logMethod(m); got != want {
+			t.Errorf("logMethod(%q) = %q, want %q", m, got, want)
+		}
+	}
+}
+
+// heldApp is an embedded app holding the paths it names.
+type heldApp map[string]bool
+
+func (a heldApp) ServeHTTP(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }
+func (a heldApp) Holds(p string) bool                              { return a[p] }
