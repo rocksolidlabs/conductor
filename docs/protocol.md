@@ -3092,9 +3092,10 @@ tasks of one lane. `selector` is refused when set. Each rule is refused
 `400 invalid_crew` in its words, and the block counts toward the crew's
 1 MiB. A task's comparison part of its task file (Managed runs) is never
 cut, so its goal, role, instructions, people and comparison together take
-at most 40 KiB as `task.json` keeps them. In this build no crew route's
-body takes `compare` (an unknown field), and every launch and continuation
-of a crew with one, from the crews page or a ticket's plan revision, is
+at most 40 KiB as `task.json` keeps them. A crew's create and update take
+`compare` with the rest, so a crew read back saves again; in this build
+every launch and continuation of a crew with one, from the crews page or a
+ticket's plan revision, is
 refused as a crew that breaks a rule ("comparisons arrive with their
 launch statement"; `400 invalid_crew` from the crew launch route) before
 a run exists.
