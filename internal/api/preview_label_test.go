@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -181,6 +182,124 @@ func TestLongChangedPathsAreCutByBytes(t *testing.T) {
 	paths, _ := json.Marshal(l["changedPaths"])
 	if l["changed"] != float64(200) || l["changedCut"] != true || len(paths) > dispatch.MaxChangedPathsBytes || len(l["changedPaths"].([]any)) == 0 {
 		t.Fatalf("the label: changed %v, cut %v, %d bytes of paths", l["changed"], l["changedCut"], len(paths))
+	}
+}
+
+// An entry a read has been handed is not let go before the read takes its
+// gate: eight other trees read meanwhile let others go, and the read then
+// takes its gate.
+func TestAnEntryAReadAwaitsIsNotLetGo(t *testing.T) {
+	tr := &treeReads{}
+	t.Cleanup(tr.close)
+	handed, on := make(chan struct{}), make(chan struct{})
+	tr.seam = func(at, dir string) {
+		if at == "handed" && dir == "first" {
+			close(handed)
+			<-on
+		}
+	}
+	done := make(chan error, 1)
+	go func() {
+		e, err := tr.take(t.Context(), "first")
+		if err == nil {
+			tr.give(e, true)
+		}
+		done <- err
+	}()
+	<-handed
+	for i := range maxTreeIndexes {
+		e, err := tr.take(t.Context(), fmt.Sprintf("tree-%d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		tr.give(e, true)
+	}
+	tr.mu.Lock()
+	first, n, evicted := tr.entries["first"], len(tr.entries), tr.entries["tree-0"] == nil
+	tr.mu.Unlock()
+	if first == nil || len(first.gate) != 0 || n != maxTreeIndexes || !evicted {
+		t.Fatalf("the awaited entry: %v, %d entries, tree-0 let go %v", first, n, evicted)
+	}
+	close(on)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// With eight entries held, a read of a ninth tree makes no ninth: it
+// waits within its own time and is answered without a read when that
+// ends, and takes an entry once one is let go.
+func TestANinthTreeWaitsWhileEightAreHeld(t *testing.T) {
+	tr := &treeReads{}
+	t.Cleanup(tr.close)
+	var held []*treeEntry
+	for i := range maxTreeIndexes {
+		e, err := tr.take(t.Context(), fmt.Sprintf("tree-%d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, e)
+	}
+	waiting := make(chan struct{}, maxTreeIndexes)
+	tr.seam = func(at, dir string) {
+		if at == "waiting" {
+			waiting <- struct{}{}
+		}
+	}
+	entries := func() int {
+		tr.mu.Lock()
+		defer tr.mu.Unlock()
+		return len(tr.entries)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		_, err := tr.take(ctx, "ninth")
+		done <- err
+	}()
+	<-waiting
+	if n := entries(); n != maxTreeIndexes {
+		t.Fatalf("%d entries while the ninth waits", n)
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("the ninth when its time ended: %v", err)
+	}
+	go func() {
+		e, err := tr.take(t.Context(), "ninth")
+		if err == nil {
+			tr.give(e, true)
+		}
+		done <- err
+	}()
+	<-waiting
+	tr.give(held[0], true)
+	if err := <-done; err != nil || entries() != maxTreeIndexes {
+		t.Fatalf("the ninth once an entry was let go: %v, %d entries", err, entries())
+	}
+}
+
+// A read that begins once the server's stop has begun makes no folder and
+// no index; the stop removes the ones made before.
+func TestAReadAfterTheStopMakesNothing(t *testing.T) {
+	tr := &treeReads{}
+	e, err := tr.take(t.Context(), "tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(e.ix.Path, []byte("index"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tr.give(e, true)
+	dir := tr.dir
+	tr.close()
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the reads' folder after the stop: %v", err)
+	}
+	for _, name := range []string{"tree", "another"} {
+		if _, err := tr.take(t.Context(), name); !errors.Is(err, errReadsStopped) || tr.dir != "" || tr.entries != nil {
+			t.Fatalf("a read of %s after the stop: %v, folder %q", name, err, tr.dir)
+		}
 	}
 }
 

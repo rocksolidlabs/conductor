@@ -930,10 +930,19 @@ func (t *Tree) git(ctx context.Context, ix *TreeIndex, in io.Reader, w io.Writer
 // keeping its stat data only where the entry is HEAD's, and nothing an
 // earlier read staged survives into this one; add -A, the ignored paths
 // aside; write-tree, the content; and diff --cached --name-only -z HEAD,
-// read as it comes, counted whole and kept to its bounds. Its time is
-// ctx's. A read that cannot name HEAD's commit is an error; one that
-// fails after gives the commit with no content.
+// read as it comes, counted whole and kept to its bounds. Reads of one
+// index run one at a time, so a lock of the index's there as a read
+// starts is one a cut read left: the index and its lock are dropped, and
+// the read starts from none. Its time is ctx's. A read that cannot name
+// HEAD's commit is an error; one that fails after gives the commit with
+// no content.
 func TreeRevision(ctx context.Context, t *Tree, ix *TreeIndex) (TreeRead, error) {
+	if _, err := os.Lstat(ix.Path + ".lock"); err == nil {
+		_ = os.Remove(ix.Path)
+		if err := os.Remove(ix.Path + ".lock"); err != nil {
+			return TreeRead{}, err
+		}
+	}
 	var head strings.Builder
 	if err := t.git(ctx, ix, nil, &head, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"); err != nil {
 		return TreeRead{}, err

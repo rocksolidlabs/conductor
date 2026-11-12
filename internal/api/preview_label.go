@@ -53,90 +53,151 @@ func storedPaths(paths []string) []string {
 	return out
 }
 
-// treeReads reads the trees of the previews: each opened as the engine
-// made it (crew.OpenTree), git run in that open directory with the
-// tree's git directory and work tree named outright; in an index of the
-// server's own for that tree, kept for the next read of it (at most
-// maxTreeIndexes, the least recently read let go), one read of a tree at
-// a time, the wait for it and the read together within labelReadWait.
+// treeReads reads the trees of the previews, each in an index of the
+// server's own for that tree, kept for the next read of it, one read of a
+// tree at a time (its entry's gate), the wait for it and the read together
+// within labelReadWait. At most maxTreeIndexes are kept: an entry a read
+// holds or waits for is reserved, and the least recently read of the
+// others is let go to make room; with none to let go, a read of another
+// tree waits for one. Once the server's stop has begun (close), a read
+// makes nothing.
 type treeReads struct {
 	mu      sync.Mutex
 	dir     string
+	stopped bool
 	order   []string
-	gates   map[string]chan struct{}
-	indexes map[string]*crew.TreeIndex
+	entries map[string]*treeEntry
+	// freed is closed, and made again, when an entry stops being
+	// reserved, and at the stop.
+	freed chan struct{}
+	// seam, when set (by a test), is called at "handed" (a read has its
+	// entry and has not yet taken its gate) and at "waiting" (a read waits
+	// for room).
+	seam func(at, dir string)
 }
 
-// index takes the index of the tree at dir, made under the reads' own
-// temporary directory, and the gate that is its own (held by sending to
-// it).
-func (tr *treeReads) index(dir string) (*crew.TreeIndex, chan struct{}, error) {
+// treeEntry is a tree's kept index, its gate (held by sending to it) and
+// how many reads hold or wait for it.
+type treeEntry struct {
+	ix       *crew.TreeIndex
+	gate     chan struct{}
+	reserved int
+}
+
+// errReadsStopped is a read that began once the server's stop had begun.
+var errReadsStopped = errors.New("the server is stopping")
+
+// take hands out the entry of the tree at dir, reserved under the reads'
+// lock, made under the reads' own temporary directory when it is new, and
+// then takes its gate, all within ctx. give lets it go.
+func (tr *treeReads) take(ctx context.Context, dir string) (*treeEntry, error) {
+	var e *treeEntry
+	for e == nil {
+		tr.mu.Lock()
+		if tr.stopped {
+			tr.mu.Unlock()
+			return nil, errReadsStopped
+		}
+		if tr.dir == "" {
+			d, err := os.MkdirTemp("", "conductor-labels-")
+			if err != nil {
+				tr.mu.Unlock()
+				return nil, err
+			}
+			tr.dir, tr.entries, tr.freed = d, map[string]*treeEntry{}, make(chan struct{})
+		}
+		e = tr.entries[dir]
+		// Past the bound, the least recently read entry no read holds or
+		// waits for goes, its index and the index's lock with it.
+		for i := 0; e == nil && i < len(tr.order) && len(tr.order) >= maxTreeIndexes; {
+			if old := tr.entries[tr.order[i]]; old.reserved == 0 {
+				_, _ = os.Remove(old.ix.Path), os.Remove(old.ix.Path+".lock")
+				delete(tr.entries, tr.order[i])
+				tr.order = slices.Delete(tr.order, i, i+1)
+			} else {
+				i++
+			}
+		}
+		if e == nil && len(tr.order) < maxTreeIndexes {
+			sum := sha256.Sum256([]byte(dir))
+			e = &treeEntry{ix: &crew.TreeIndex{Path: filepath.Join(tr.dir, hex.EncodeToString(sum[:16])+".index")}, gate: make(chan struct{}, 1)}
+			tr.entries[dir] = e
+		}
+		if e != nil {
+			e.reserved++
+			tr.order = append(slices.DeleteFunc(tr.order, func(d string) bool { return d == dir }), dir)
+			tr.mu.Unlock()
+			continue
+		}
+		freed := tr.freed
+		tr.mu.Unlock()
+		if tr.seam != nil {
+			tr.seam("waiting", dir)
+		}
+		select {
+		case <-freed:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if tr.seam != nil {
+		tr.seam("handed", dir)
+	}
+	select {
+	case e.gate <- struct{}{}:
+		return e, nil
+	case <-ctx.Done():
+		tr.give(e, false)
+		return nil, ctx.Err()
+	}
+}
+
+// give lets the entry e go: its gate when the read held it, and its
+// reservation.
+func (tr *treeReads) give(e *treeEntry, held bool) {
+	if held {
+		<-e.gate
+	}
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
-	if tr.dir == "" {
-		d, err := os.MkdirTemp("", "conductor-labels-")
-		if err != nil {
-			return nil, nil, err
-		}
-		tr.dir, tr.gates, tr.indexes = d, map[string]chan struct{}{}, map[string]*crew.TreeIndex{}
+	if e.reserved--; e.reserved == 0 && tr.freed != nil {
+		close(tr.freed)
+		tr.freed = make(chan struct{})
 	}
-	if i := slices.Index(tr.order, dir); i >= 0 {
-		tr.order = append(slices.Delete(tr.order, i, i+1), dir)
-		return tr.indexes[dir], tr.gates[dir], nil
-	}
-	// Past the bound, the least recently read index no read holds goes.
-	for i := 0; i < len(tr.order) && len(tr.order) >= maxTreeIndexes; {
-		old := tr.order[i]
-		select {
-		case tr.gates[old] <- struct{}{}:
-			_ = os.Remove(tr.indexes[old].Path)
-			delete(tr.gates, old)
-			delete(tr.indexes, old)
-			tr.order = slices.Delete(tr.order, i, i+1)
-		default:
-			i++
-		}
-	}
-	sum := sha256.Sum256([]byte(dir))
-	tr.order, tr.gates[dir] = append(tr.order, dir), make(chan struct{}, 1)
-	tr.indexes[dir] = &crew.TreeIndex{Path: filepath.Join(tr.dir, hex.EncodeToString(sum[:16])+".index")}
-	return tr.indexes[dir], tr.gates[dir], nil
 }
 
-// close removes the reads' indexes.
+// close begins the stop: the reads' indexes are removed, a read waiting
+// for room is let go, and no later read makes anything.
 func (tr *treeReads) close() {
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
+	tr.stopped = true
 	if tr.dir != "" {
 		_ = os.RemoveAll(tr.dir)
-		tr.dir, tr.order, tr.gates, tr.indexes = "", nil, nil, nil
+		close(tr.freed)
+		tr.dir, tr.order, tr.entries, tr.freed = "", nil, nil, nil
 	}
 }
 
-// read reads the worktree of wp now (crew.TreeRevision), opened as the
-// engine made it (crew.OpenTree: a tree that cannot be reached so, or is
-// not a worktree of the run's repository, is not read). A read that ends
-// past labelReadWait or fails after naming HEAD gives the commit with no
-// content and the error.
+// read reads the worktree of wp now (crew.TreeRevision) in its entry,
+// opened as the engine made it (crew.OpenTree: a tree that cannot be
+// reached so, or is not a worktree of the run's repository, is not read).
+// A read that ends past labelReadWait or fails after naming HEAD gives the
+// commit with no content and the error.
 func (tr *treeReads) read(ctx context.Context, wp crew.WorktreePreview) (crew.TreeRead, error) {
 	ctx, cancel := context.WithTimeout(ctx, labelReadWait)
 	defer cancel()
+	e, err := tr.take(ctx, wp.Dir)
+	if err != nil {
+		return crew.TreeRead{}, err
+	}
+	defer tr.give(e, true)
 	t, err := crew.OpenTree(ctx, wp.Root, wp.Dir)
 	if err != nil {
 		return crew.TreeRead{}, err
 	}
 	defer t.Close()
-	ix, gate, err := tr.index(wp.Dir)
-	if err != nil {
-		return crew.TreeRead{}, err
-	}
-	select {
-	case gate <- struct{}{}:
-	case <-ctx.Done():
-		return crew.TreeRead{}, ctx.Err()
-	}
-	defer func() { <-gate }()
-	read, err := crew.TreeRevision(ctx, t, ix)
+	read, err := crew.TreeRevision(ctx, t, e.ix)
 	if err == nil && !t.Still() {
 		err = crew.ErrTreeMoved
 	}

@@ -264,6 +264,43 @@ func TestTheClassesAreTheRecordedCommitsForTheGivenPaths(t *testing.T) {
 	}
 }
 
+// A read cut while git holds the index's lock leaves the lock; the next
+// read of that index drops the index and its lock and names the content,
+// as a read in a new index does.
+func TestALockACutReadLeftIsDroppedByTheNextRead(t *testing.T) {
+	repo := newRepo(t)
+	wt := linkedTree(t, repo, "build.1")
+	writeFile(t, filepath.Join(wt, "README"), "edited\n")
+	tr, err := OpenTree(t.Context(), repo, wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+	ix := &TreeIndex{Path: filepath.Join(t.TempDir(), "index")}
+	// The runner stands in for add -A: it takes the index's lock, as git
+	// does, and the read is cut there.
+	ctx, cancel := context.WithCancel(t.Context())
+	recordTreeGit(t, func(c gitCall) (bool, error) {
+		if c.args[0] != "add" || ctx.Err() != nil {
+			return false, nil
+		}
+		writeFile(t, ix.Path+".lock", "")
+		cancel()
+		return true, ctx.Err()
+	})
+	if read, err := TreeRevision(ctx, tr, ix); !errors.Is(err, context.Canceled) || read.Content != "" {
+		t.Fatalf("the cut read: %+v %v", read, err)
+	}
+	if _, err := os.Stat(ix.Path + ".lock"); err != nil {
+		t.Fatalf("the cut read left no lock: %v", err)
+	}
+	read, err := TreeRevision(t.Context(), tr, ix)
+	fresh, ferr := TreeRevision(t.Context(), tr, &TreeIndex{Path: filepath.Join(t.TempDir(), "index")})
+	if err != nil || ferr != nil || read.Content == "" || read.Content != fresh.Content || read.Changed != 1 {
+		t.Fatalf("the next read: %+v %v (a read in a new index: %+v %v)", read, err, fresh, ferr)
+	}
+}
+
 // An answer about the paths asked is read within an entry and its bytes
 // for each: past either nothing more is read.
 func TestAnAnswerIsReadWithinWhatWasAsked(t *testing.T) {
