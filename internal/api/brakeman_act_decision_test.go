@@ -567,3 +567,57 @@ func TestDecisionForReadsWhomItIsFor(t *testing.T) {
 		}
 	}
 }
+
+// The turn's route keeps off the decide grant (docs/plans/decide-grant.md):
+// one admitted at rev R and held at its pending seam while the operator
+// gives the decision to the grant (the engine's route) is stale_decision
+// once released, the target still the grant; any route of a decision
+// given to the grant is stale_target; a route to the grant is invalid.
+func TestBrakemanRouteKeepsOffTheGrant(t *testing.T) {
+	f := newRouteFixture(t, []string{brakeman.ActRouteDecision}, nil)
+	at, gate := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	hold := func(stage, _, _ string) error {
+		if stage == "pending" {
+			once.Do(func() { close(at); <-gate })
+		}
+		return nil
+	}
+	actSeam.Store(&hold)
+	t.Cleanup(func() { actSeam.Store(nil) })
+	rev := f.rev(t)
+	done := make(chan int, 1)
+	var out map[string]any
+	go func() {
+		status, o := f.routeAt(t, "t-1", map[string]any{"kind": "operator"}, rev)
+		out = o
+		done <- status
+	}()
+	select {
+	case <-at:
+	case <-time.After(testWait):
+		close(gate)
+		t.Fatal("the route never reached its pending seam")
+	}
+	if _, err := f.srv.runs.RouteDecision(t.Context(), f.did, "g1", rev, []crew.Destination{{Kind: crew.DestGrant, Grant: "decide"}}, "", "admin"); err != nil {
+		close(gate)
+		t.Fatal(err)
+	}
+	close(gate)
+	if status := <-done; status != http.StatusConflict || codeOf(out) != crew.CodeStaleDecision {
+		t.Fatalf("the held route: %d %v", status, out)
+	}
+	actSeam.Store(nil)
+	n, _ := ledger.ParseDecisionID(f.did)
+	if rec, _, _ := f.srv.ledger.Decision(t.Context(), n); !crew.GivenToGrant(rec.Request) {
+		t.Fatalf("the target moved: %s", rec.Request)
+	}
+	for i, to := range []map[string]any{{"kind": "operator"}, {"kind": "person", "name": "nate"}, {"kind": "role", "name": "security"}} {
+		if status, out := f.route(t, fmt.Sprintf("t-%d", i+2), to); status != http.StatusConflict || codeOf(out) != "stale_target" {
+			t.Fatalf("a turn's route of a decision given to the grant, to %v: %d %v", to, status, out)
+		}
+	}
+	if status, out := f.route(t, "t-9", map[string]any{"kind": "grant", "grant": "decide"}); status != http.StatusBadRequest || codeOf(out) != crew.CodeInvalid {
+		t.Fatalf("a turn's route to the grant: %d %v", status, out)
+	}
+}
