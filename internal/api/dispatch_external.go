@@ -87,6 +87,8 @@ type externalState struct {
 	// each image's commit ("image"): true ends the route there, as a crash
 	// would, so a resend is what completes it.
 	cut func(at string) bool
+	// remote, when set, reads a folder's remote in gitrepo.Remote's place.
+	remote func(ctx context.Context, dir, name string) (host, path string, err error)
 }
 
 func (s *Server) trackerCaps() trackerCaps {
@@ -178,20 +180,43 @@ func (s *Server) parseItem(raw, space string) (tracker.Ref, *apiError) {
 	return ref, nil
 }
 
-// projectSpace is a project's repository for a short form: its tracker's
-// URL, else its folder's origin remote (resolveCwd, read by go-git), else
-// none. Nothing of it is answered or logged: the parse keeps a host and a
-// repository from it alone.
-func (s *Server) projectSpace(ctx context.Context, p dispatch.Project) string {
-	if p.TrackerURL != "" || p.Cwd == "" {
-		return p.TrackerURL
+// errNoDefault answers a short form in a project whose folder's default
+// repository could not be read; it quotes nothing of the folder.
+var errNoDefault = newAPIError(http.StatusBadRequest, "not_a_tracker_url", "the project's default repository could not be read from its folder: give the item's whole address (https://github.com/<owner>/<repo>/issues/<n>), or set the project's tracker address")
+
+// projectItem reads raw as an item's reference in project p. Only a short
+// form (a '#' and no "://") takes a default repository: the project's
+// tracker address, else its folder's origin remote (resolveCwd, then
+// gitrepo.Remote, whose host and path the parse takes as they are), else
+// none; a whole address never asks the folder. A folder with no
+// repository or no origin has no default; one whose git data could not be
+// read, or whose origin is in no form Remote reads, refuses the short form
+// (errNoDefault), never read on another host. Nothing of the remote is
+// answered or logged.
+func (s *Server) projectItem(ctx context.Context, raw string, p dispatch.Project) (tracker.Ref, *apiError) {
+	if p.TrackerURL != "" || p.Cwd == "" || strings.Contains(raw, "://") || !strings.Contains(raw, "#") {
+		return s.parseItem(raw, p.TrackerURL)
 	}
 	dir, err := s.resolveCwd(p.Cwd)
 	if err != nil {
-		return ""
+		return s.parseItem(raw, "")
 	}
-	u, _ := gitrepo.RemoteURL(ctx, dir, "origin")
-	return u
+	read := gitrepo.Remote
+	if s.external.remote != nil {
+		read = s.external.remote
+	}
+	host, path, err := read(ctx, dir, "origin")
+	switch {
+	case errors.Is(err, gitrepo.ErrNotRepo), errors.Is(err, gitrepo.ErrNoRemote):
+		return s.parseItem(raw, "")
+	case err != nil:
+		return tracker.Ref{}, errNoDefault
+	}
+	ref, err := s.trackers.gh.ParseIn(raw, host, path)
+	if err != nil {
+		return tracker.Ref{}, errNotAnItem
+	}
+	return ref, nil
 }
 
 // snapshotRef is the item a ticket's snapshot names, and its validators'
@@ -410,16 +435,16 @@ func (s *Server) handleDispatchExternalPreview(w http.ResponseWriter, r *http.Re
 	}
 	ctx, cancel := trackerContext(r, TrackerReadTimeout)
 	defer cancel()
-	space := ""
+	var project dispatch.Project
 	if body.Project != "" && !strings.Contains(body.URL, "://") {
 		pv, err := ds.Project(ctx, body.Project)
 		if err != nil {
 			s.dispatchError(w, "project", err)
 			return
 		}
-		space = s.projectSpace(ctx, pv.Project)
+		project = pv.Project
 	}
-	ref, ae := s.parseItem(body.URL, space)
+	ref, ae := s.projectItem(ctx, body.URL, project)
 	if ae != nil {
 		writeAPIError(w, ae)
 		return
@@ -632,7 +657,7 @@ func (s *Server) handleDispatchImport(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var ae *apiError
-		if ref, ae = s.parseItem(body.URL, s.projectSpace(ctx, pv.Project)); ae != nil {
+		if ref, ae = s.projectItem(ctx, body.URL, pv.Project); ae != nil {
 			writeAPIError(w, ae)
 			return
 		}
@@ -700,7 +725,7 @@ func (s *Server) handleDispatchLinkExternal(w http.ResponseWriter, r *http.Reque
 		s.dispatchError(w, "project", err)
 		return
 	}
-	ref, ae := s.parseItem(body.URL, s.projectSpace(ctx, pv.Project))
+	ref, ae := s.projectItem(ctx, body.URL, pv.Project)
 	if ae != nil {
 		writeAPIError(w, ae)
 		return
