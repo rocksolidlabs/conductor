@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/rocksolidlabs/conductor/internal/capacity"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/store"
 )
@@ -26,32 +27,100 @@ import (
 // it, a file on its own. What the other Conductors on this machine keep is
 // refused as well (machineFiles): a session must not read the desktop
 // app's settings, which hold its switchyard token, nor another server's
-// data directory.
+// data directory. The folder of each account the accounts document of each
+// directory the list names registers (accountFolders; the desktop app's
+// default data directory, inside its own, among them: desktopDefaultData)
+// is refused as a
+// directory too; while a document cannot be read, the list holds the file
+// system's root as well, which refuses every file.
 func (c *Config) FileDeny(dirs ...string) []string {
+	list, err := c.fileDenyNow(dirs)
+	if err != nil {
+		return append(list, string(filepath.Separator))
+	}
+	return list
+}
+
+// fileDenyNow is FileDeny's list, and the error of an accounts document
+// that cannot be read, whose folders the list then lacks.
+func (c *Config) fileDenyNow(dirs []string) ([]string, error) {
 	more, files := c.machineFiles()
-	return c.fileDeny(append(slices.Clone(dirs), more...), files)
+	folders, err := accountFolders(slices.Concat([]string{c.DataDir}, dirs, more, desktopDefaultData()))
+	return c.fileDeny(slices.Concat(dirs, folders, more), files), err
+}
+
+// accountFolders are the folders of the accounts each data directory's
+// accounts document registers (capacity.Folders), each directory read once;
+// the error of the first document that cannot be read or names a folder
+// its own deny list would not refuse (Refuses).
+func accountFolders(data []string) ([]string, error) {
+	var out, seen []string
+	for _, d := range data {
+		if d == "" || slices.Contains(seen, filepath.Clean(d)) {
+			continue
+		}
+		seen = append(seen, filepath.Clean(d))
+		f, err := capacity.Folders(d)
+		if err == nil && slices.ContainsFunc(f, func(p string) bool { return !Refuses(p) }) {
+			err = fmt.Errorf("%s names a folder that is not registered as it is spelt", filepath.Join(d, capacity.Dir, capacity.AccountsFile))
+		}
+		if err != nil {
+			return out, err
+		}
+		out = append(out, f...)
+	}
+	return out, nil
+}
+
+// Refuses says whether the deny list of folder alone, built as every deny
+// list is (session.DenyList, withTargets), refuses folder, and so all in it:
+// reached by its own path and by where its links lead (session.Leads).
+func Refuses(folder string) bool {
+	deny := withTargets(nil, session.DenyList([]string{folder}, nil))
+	real := session.Leads(folder)
+	return real != "" && session.DeniedBy(folder, deny) && session.DeniedBy(real, deny)
 }
 
 // FileDenyFunc is FileDeny(dirs...) for a server that runs a long time
 // (session.Options.FileDenyFunc, the files route): the function it returns
 // computes the list again at each call, so that what the other Conductors
 // on the machine come to keep while the server runs (a data directory the
-// desktop app's settings move to) is refused from then on, and keeps every
-// entry it has named before, with the path a link on its way led to then
-// (withTargets), so that what was refused once stays refused until the
-// server stops. The paths of c are taken when it is called. It is safe to
-// call from many goroutines, and the slices it returns are never changed.
+// desktop app's settings move to) and the accounts' folders registered
+// meanwhile are refused from then on, and keeps every entry it has named
+// before, with the path a link on its way led to then (withTargets), so
+// that what was refused once (a removed account's folder among it) stays
+// refused until the server stops. While an accounts document cannot be
+// read, the list holds the file system's root as well, which refuses every
+// file. The paths of c are taken when it is called. It is safe to call from
+// many goroutines, and the slices it returns are never changed.
 func (c *Config) FileDenyFunc(dirs ...string) func() []string {
+	deny := c.FileDenyStateFunc(dirs...)
+	return func() []string {
+		list, _ := deny()
+		return list
+	}
+}
+
+// FileDenyStateFunc is FileDenyFunc whose function also answers why its
+// list holds the file system's root: the error of an accounts document that
+// cannot be read, nil when none, for the caller to say so (this package
+// keeps no log).
+func (c *Config) FileDenyStateFunc(dirs ...string) func() ([]string, error) {
 	own := &Config{DataDir: c.DataDir, Path: c.Path, CatalogPath: c.CatalogPath, DesktopDir: c.DesktopDir}
 	dirs = slices.Clone(dirs)
 	var mu sync.Mutex
-	list := withTargets(nil, own.FileDeny(dirs...))
-	return func() []string {
-		next := own.FileDeny(dirs...)
+	first, _ := own.fileDenyNow(dirs)
+	list := withTargets(nil, first)
+	everything := []string{string(filepath.Separator)}
+	return func() ([]string, error) {
+		next, err := own.fileDenyNow(dirs)
 		mu.Lock()
 		defer mu.Unlock()
 		list = withTargets(list, slices.Concat(list, next))
-		return list
+		if err != nil {
+			return slices.Concat(list, everything), err
+		}
+		return list, nil
 	}
 }
 
@@ -94,9 +163,10 @@ func (c *Config) fileDeny(dirs, files []string) []string {
 // told), with CONDUCTOR_DATA_DIR and CONDUCTOR_CATALOG_PATH over it, and
 // finds its data directory as ResolveDataDir does. The default data
 // directory, ~/.conductor, is refused whichever directory that is, as are
-// the copies beside the config file and the catalog file, and the
-// directories and settings of the desktop app's server (desktopFiles). A
-// config file that cannot be read or parsed is an error, and so are the
+// the copies beside the config file and the catalog file, the directories
+// and settings of the desktop app's server (desktopFiles), and the folder of
+// each account the accounts document of each of these directories registers. A config file or
+// an accounts document that cannot be read or parsed is an error, and so are the
 // desktop app's settings when they are there but cannot be read, and a data
 // directory or a catalog file given as a relative path: conductor serve
 // resolves it against the directory it runs in, which a session elsewhere
@@ -159,7 +229,14 @@ func LocalFileDeny(path string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return c.fileDeny(append(dirs, desktopDirs...), append([]string{read}, desktopSettings...)), nil
+	// The folders the accounts of each data directory named register, as
+	// the server's own sessions refuse them (FileDeny): a document that
+	// cannot be read is an error.
+	folders, err := accountFolders(slices.Concat([]string{c.DataDir}, dirs, desktopDirs, desktopDefaultData()))
+	if err != nil {
+		return nil, fmt.Errorf("the accounts of a data directory refused: %w", err)
+	}
+	return c.fileDeny(slices.Concat(dirs, folders, desktopDirs), append([]string{read}, desktopSettings...)), nil
 }
 
 // HostStateDir is where conductor host keeps what is its own on this
@@ -244,7 +321,8 @@ func physicalPath(p string) (string, error) {
 // a symbolic link on its way led to when it was named (withTargets), so that
 // a link changed later still leaves what it named refused. The first
 // computation's error is returned; while a later one lasts (a config file
-// broken, or a path in it made relative), the list holds the file system's
+// or the accounts document broken, or a path in the config made relative),
+// the list holds the file system's
 // root as well, which refuses every file. It is safe to call from many
 // goroutines, and the slices it returns are never changed.
 func LocalFileDenyFunc(path string) (func() []string, error) {
@@ -323,7 +401,8 @@ const maxDesktopSettings = 1 << 20
 // settings rather than with a config file (desktop/src/env.ts). The
 // directories: the app's own (desktopAppNames), which holds its settings
 // (desktop/src/main.ts) and, unless they say otherwise, the data directory
-// (conductor in it); the data directory its settings name; and, inside WSL,
+// (conductor in it, desktopDefaultData); the data directory its settings
+// name; and, inside WSL,
 // where the app on Windows runs the server, the default it gives a server
 // there, ~/.local/share/conductor/data (desktop/src/settings.ts,
 // wslDefaults). The files: each settings.json, so that one which is a
@@ -360,6 +439,24 @@ func desktopFiles() (dirs, files []string, err error) {
 		}
 	}
 	return dirs, files, err
+}
+
+// desktopDefaultData are the data directories the desktop app runs its
+// server on when its settings name none or it refuses them
+// (desktop/src/settings.ts, defaultSettings: conductor in its own
+// directory), under each of its names. Each is inside a directory
+// desktopFiles names, so the list refuses it already; they are given only
+// to accountFolders, so that the accounts registered there are read.
+func desktopDefaultData() []string {
+	base, err := os.UserConfigDir()
+	if err != nil || !filepath.IsAbs(base) {
+		return nil
+	}
+	var dirs []string
+	for _, name := range desktopAppNames {
+		dirs = append(dirs, filepath.Join(base, name, "conductor"))
+	}
+	return dirs
 }
 
 // desktopDataDir is the data directory the desktop app's settings file

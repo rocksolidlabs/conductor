@@ -115,9 +115,10 @@ func (s *Store) commit(name, op string, do func() (bool, error)) error {
 
 // beforeCommit and afterCommit, when a test sets them, run in every
 // commit with its path: before the observer's mutex is taken, and once
-// the rename or remove has landed and before it is numbered and told.
-// nil outside tests.
-var beforeCommit, afterCommit func(path string)
+// the rename or remove has landed and before it is numbered and told;
+// beforeOpen in LoadLimit with the path it has looked at, before it opens
+// it. nil outside tests.
+var beforeCommit, afterCommit, beforeOpen func(path string)
 
 // Open creates dir with mode 0700 when it is missing and fails when it is not
 // writable, so a misconfigured data directory is caught at startup.
@@ -136,6 +137,10 @@ func Open(dir string) (*Store, error) {
 	os.Remove(probe.Name())
 	return &Store{dir: dir, obs: &observer{}}, nil
 }
+
+// At is the store of dir as it is, for reading another's documents: nothing
+// is made, probed or observed, and a directory not there holds none.
+func At(dir string) *Store { return &Store{dir: dir, obs: &observer{}} }
 
 // Dir returns the directory the store reads from and writes to.
 func (s *Store) Dir() string { return s.dir }
@@ -340,6 +345,9 @@ func (s *Store) LoadLimit(name string, v any, limit int64) (bool, error) {
 			what = "a symbolic link, which is not followed"
 		}
 		return false, fmt.Errorf("store: %s is %s", name, what)
+	}
+	if beforeOpen != nil {
+		beforeOpen(path)
 	}
 	f, err := os.Open(path)
 	if err != nil {
