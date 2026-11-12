@@ -458,10 +458,9 @@ func dbTexts(t *testing.T, db *sql.DB, query string, args ...any) []string {
 	return out
 }
 
-// How version 5 keeps a text (the captures, Program item PV1), beside
-// keptDerived, keptClosed, keptOpaque (an id or a hex of a pattern no
-// address meets) and keptNone (no operation of this row writes it: the
-// sends' tables, #825's).
+// How version 5 keeps a text (the captures and their sends, Program item
+// PV1), beside keptDerived, keptClosed and keptOpaque (an id, a hex, a
+// ticket's key or a desk's br-<n>, of a pattern no address meets).
 const (
 	// keptEvidence: what the page, its bridge or the person gave (the
 	// page's address and title, the viewport, the element's report and
@@ -472,9 +471,12 @@ const (
 	// line prints it (the captures' code logs nothing).
 	keptEvidence = "evidence"
 	// keptFacts: what the API read at the save (the run's scope, the
-	// tree's changed paths, the sources), kept as handed in within the
-	// field rules.
+	// tree's changed paths, the sources) or made of a send (its request),
+	// kept as handed in within the field rules.
 	keptFacts = "facts"
+	// keptDeskWords: what a send's target said of it (why it was refused),
+	// kept address-free (addressFree) within its field rule.
+	keptDeskWords = "desk's words"
 	// keptOperator: the operation's actor and display name, as every
 	// row of the store keeps them (op.actor, op.by).
 	keptOperator = "operator"
@@ -497,15 +499,18 @@ var version5Kept = map[string]string{
 	"capture_annotation_sets.members": keptDerived, "capture_annotation_sets.at": keptDerived, "capture_annotation_sets.actor": keptOperator,
 	"capture_annotation_sets.op_id": keptOpaque, "capture_files.capture_id": keptDerived, "capture_files.sha256": keptDerived,
 	"capture_files.holder": keptDerived,
-	// The sends' tables: #825's operations write them and decide each.
-	"capture_sends.id": keptNone, "capture_sends.capture_id": keptNone, "capture_sends.kind": keptNone, "capture_sends.asked": keptNone,
-	"capture_sends.digest": keptNone, "capture_sends.request": keptNone, "capture_sends.created_at": keptNone, "capture_sends.created_by": keptNone,
-	"capture_sends.actor": keptNone, "capture_sends.op_id": keptNone, "capture_sends.fingerprint": keptNone,
-	"capture_send_outcomes.send_id": keptNone, "capture_send_outcomes.id": keptNone, "capture_send_outcomes.kind": keptNone,
-	"capture_send_outcomes.target": keptNone, "capture_send_outcomes.files": keptNone, "capture_send_outcomes.why": keptNone,
-	"capture_send_outcomes.at": keptNone, "capture_send_outcomes.actor": keptNone, "capture_send_outcomes.op_id": keptNone,
-	"capture_send_cancels.send_id": keptNone, "capture_send_cancels.op_id": keptNone, "capture_send_cancels.at": keptNone,
-	"capture_send_cancels.actor": keptNone,
+	// The sends' tables: where a send went as the person named it is their
+	// word (a project's key and a title, or a ticket's key); its request is
+	// what the API made; a target is a ticket's key or a desk's br-<n>.
+	"capture_sends.id": keptDerived, "capture_sends.capture_id": keptDerived, "capture_sends.kind": keptClosed,
+	"capture_sends.asked": keptEvidence, "capture_sends.digest": keptDerived, "capture_sends.request": keptFacts,
+	"capture_sends.created_at": keptDerived, "capture_sends.created_by": keptOperator, "capture_sends.actor": keptOperator,
+	"capture_sends.op_id": keptOpaque, "capture_sends.fingerprint": keptDerived,
+	"capture_send_outcomes.send_id": keptDerived, "capture_send_outcomes.id": keptDerived, "capture_send_outcomes.kind": keptClosed,
+	"capture_send_outcomes.target": keptOpaque, "capture_send_outcomes.files": keptDerived, "capture_send_outcomes.why": keptDeskWords,
+	"capture_send_outcomes.at": keptDerived, "capture_send_outcomes.actor": keptOperator, "capture_send_outcomes.op_id": keptOpaque,
+	"capture_send_cancels.send_id": keptDerived, "capture_send_cancels.op_id": keptOpaque, "capture_send_cancels.at": keptDerived,
+	"capture_send_cancels.actor": keptOperator,
 }
 
 // Every text column version 5 adds has a decision (version5Kept): the
@@ -555,7 +560,7 @@ func TestEveryVersionFiveTextHasADecision(t *testing.T) {
 	}
 	// No log line: the captures' code imports no logger.
 	fset := token.NewFileSet()
-	for _, name := range []string{"capture.go", "captures.go"} {
+	for _, name := range []string{"capture.go", "captures.go", "sends.go"} {
 		file, err := parser.ParseFile(fset, name, nil, parser.ImportsOnly)
 		if err != nil {
 			t.Fatal(err)

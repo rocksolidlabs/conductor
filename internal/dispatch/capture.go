@@ -32,8 +32,8 @@ import (
 // knows and stored as given. The names the privacy rule compares are what
 // its lists of names allow and nothing else, judged in one form (isTag,
 // isAttributeName, namedAs). The capture's document
-// (CaptureDocument, conductor.capture/1) is what a send will freeze as a
-// content file.
+// (CaptureDocument, conductor.capture/1) is what a send freezes as a
+// content file (sends.go).
 
 // CaptureSchemaName is a capture document's schema.
 const CaptureSchemaName = "conductor.capture/1"
@@ -359,20 +359,22 @@ type SetPointer struct {
 }
 
 // Capture is a capture as a read gives it: its document at its revision
-// now, who made it and how, the bridge's epoch, the run's scope and its
-// live set. A deleted capture is its id, rev and times alone
-// (captureTombstone) through every read the store offers (DeleteCapture
-// says what a delete removes and what it hides).
+// now, who made it and how, the bridge's epoch, the run's scope, its live
+// set and, read alone (Capture), its sends. A deleted capture is its id,
+// rev and times alone (captureTombstone) through every read the store
+// offers (DeleteCapture says what a delete removes and what it hides);
+// its sends are read by their own reads (CaptureSend, CaptureSends).
 type Capture struct {
 	CaptureDocument
-	CreatedAt time.Time    `json:"createdAt"`
-	CreatedBy string       `json:"createdBy,omitempty"`
-	Actor     string       `json:"actor,omitempty"`
-	Via       string       `json:"via,omitempty"`
-	Epoch     int64        `json:"epoch,omitempty"`
-	Scope     CaptureScope `json:"scope"`
-	Set       SetPointer   `json:"set"`
-	DeletedAt time.Time    `json:"deletedAt,omitzero"`
+	CreatedAt time.Time     `json:"createdAt"`
+	CreatedBy string        `json:"createdBy,omitempty"`
+	Actor     string        `json:"actor,omitempty"`
+	Via       string        `json:"via,omitempty"`
+	Epoch     int64         `json:"epoch,omitempty"`
+	Scope     CaptureScope  `json:"scope"`
+	Set       SetPointer    `json:"set"`
+	DeletedAt time.Time     `json:"deletedAt,omitzero"`
+	Sends     []CaptureSend `json:"sends,omitempty"`
 }
 
 // captureTombstone is what every read gives of a deleted capture: its id,
