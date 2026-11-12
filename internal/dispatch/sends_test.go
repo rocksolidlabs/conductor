@@ -569,12 +569,13 @@ func TestSendOutcomesMergeByTheProjection(t *testing.T) {
 	cancelled := outcomeRow{SendCancelled, "", t0.Add(time.Second), "a", "o4", ""}
 	tied := outcomeRow{SendCancelled, "", t0, "b", "o5", ""}
 	late := outcomeRow{SendRefused, "", t0.Add(3 * time.Second), "a", "o6", ""}
-	// Tied through at and actor: the lesser op id decides; tied through the
+	// Tied through at and actor: the lesser op id decides, the ids ordered
+	// against the op ids, so the op id alone can decide; tied through the
 	// op id too: the lesser id.
-	opFirst := outcomeRow{SendRefused, "", t0, "a", "p1", ""}
-	opSecond := outcomeRow{SendCancelled, "", t0, "a", "p2", ""}
-	sentOpFirst := outcomeRow{SendSent, "br-1", t0, "a", "p1", ""}
-	sentOpSecond := outcomeRow{SendSent, "br-2", t0, "a", "p2", ""}
+	opFirst := outcomeRow{SendRefused, "", t0, "a", "p1", "0000000000000002"}
+	opSecond := outcomeRow{SendCancelled, "", t0, "a", "p2", "0000000000000001"}
+	sentOpFirst := outcomeRow{SendSent, "br-1", t0, "a", "p1", "0000000000000002"}
+	sentOpSecond := outcomeRow{SendSent, "br-2", t0, "a", "p2", "0000000000000001"}
 	idFirst := outcomeRow{SendCancelled, "", t0, "a", "p1", "0000000000000001"}
 	idSecond := outcomeRow{SendRefused, "", t0, "a", "p1", "0000000000000002"}
 	sentIDFirst := outcomeRow{SendSent, "br-2", t0, "a", "p1", "0000000000000001"}
@@ -1384,12 +1385,20 @@ func TestSendBoundsAtTheirEdges(t *testing.T) {
 	}
 	// Ten cancels of a pending send and of one Brakeman took, the eleventh
 	// refused bound; a send cancelled at the bound refuses a cancel by its
-	// state.
+	// state. The bound is counted before the id: below ten, another actor's
+	// cancel under a cancel's id is op_conflict; at ten, it is bound.
 	for _, sid := range []string{sends[30], sends[0]} {
+		first := opID("cancel-"+sid+"-", 0)
 		for i := range MaxSendCancels {
+			if i == MaxSendCancels-1 {
+				rc, err := s.AskCancel(ctx, Op{Actor: "person:bob", ID: first, By: "Bob"}, sid)
+				want(t, rc, err, StatusFailed, RefusalOpConflict)
+			}
 			rc, err := s.AskCancel(ctx, testOp(opID("cancel-"+sid+"-", i)), sid)
 			want(t, rc, err, StatusDone, "")
 		}
+		rc, err = s.AskCancel(ctx, Op{Actor: "person:carol", ID: first, By: "Carol"}, sid)
+		want(t, rc, err, StatusFailed, RefusalBound)
 		rc, err = s.AskCancel(ctx, testOp("cancel-past-"+sid), sid)
 		want(t, rc, err, StatusFailed, RefusalBound)
 	}
@@ -1706,6 +1715,52 @@ func TestAFileIsHeldWhileSomethingCanUseIt(t *testing.T) {
 		t.Fatalf("the ended send holds %d files", n)
 	}
 	noUploads(t, s)
+}
+
+// A sent send to a ticket holds its document and its screenshot itself,
+// for as long as the store keeps the send: with both of the ticket's
+// attachments of them removed and the capture deleted, the sweep past its
+// grace keeps both files, nothing but the send's two file rows names
+// them, and the send's own read opens each.
+func TestASentSendToATicketHoldsItsFilesItself(t *testing.T) {
+	ctx := context.Background()
+	s, key := attachmentTicket(t)
+	n, f := testCapture(true)
+	moment(&n)
+	img := pngOf(t, 8, 8, 75)
+	id := mustCreate(t, s, "c1", n, f, img)
+	sums := []string{sumOf(img), sumOf(documentOfRev(t, s, id, 1))}
+	sid := mustSend(t, s, "s1", id, 1, Destination{Kind: SendTicket, Key: key}, SendFacts{})
+	sv := sendOf(t, s, sid)
+	if sv.State != SendSent || sv.Target != key || len(sv.Files) != 2 {
+		t.Fatalf("the send to the ticket: %+v", sv)
+	}
+	for i, a := range sv.Files {
+		rc, err := s.RemoveAttachment(ctx, testOp(opID("r", i)), key, a)
+		want(t, rc, err, StatusDone, "")
+	}
+	rc, err := s.DeleteCapture(ctx, testOp("d1"), id)
+	want(t, rc, err, StatusDone, "")
+	if err := s.sweep(ctx, time.Now().Add(2*defaultSweepGrace)); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(t, s, "SELECT COUNT(*) FROM attachments WHERE sha256 IN (?, ?) AND deleted_at = ''", sums[0], sums[1]); n != 0 {
+		t.Fatalf("%d live attachments name the send's files", n)
+	}
+	if n := count(t, s, "SELECT COUNT(*) FROM capture_files WHERE sha256 IN (?, ?) AND holder != ?", sums[0], sums[1], sid); n != 0 {
+		t.Fatalf("%d file rows but the send's name its files", n)
+	}
+	if n := count(t, s, "SELECT COUNT(*) FROM capture_files WHERE holder = ?", sid); n != 2 {
+		t.Fatalf("the send holds %d files", n)
+	}
+	for _, sum := range sums {
+		if !exists(t, contentAt(s, sum)) {
+			t.Errorf("%.12s is gone", sum)
+		}
+		if got := sendFile(t, s, sid, sum); sumOf(got) != sum {
+			t.Errorf("the send's file %.12s opens other content", sum)
+		}
+	}
 }
 
 // The store's form of a Brakeman request's id is Brakeman's: the copy is

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // A ticket made from a capture (Program item PV1, PR-1b, issue #825):
@@ -359,6 +360,16 @@ func TestNothingACaptureHoldsIsMarkdownInATicket(t *testing.T) {
 		blocks, marks := checkTicketWords(t, fmt.Sprintf("the long note cut at %d", e), desc, ticketComments(all))
 		fixture = append(fixture, captureTicketCase{Name: fmt.Sprintf("a note of more than three lines, cut at its line ending at %d", e), Description: desc,
 			Comment: ticketComments(all), Blocks: blocks, Marks: marks, Notes: true})
+	}
+	// A note of as many lines as its bound holds, its last opening a fence,
+	// is quoted on every line, whatever number of lines a quote were cut to.
+	many := strings.Repeat("a\n", (MaxAnnotationNote-len(ticketFence))/2) + ticketFence
+	lines := strings.Count(many, "\n") + 1
+	row := check(fmt.Sprintf("a note of %d lines, its last opening a fence, the rest hostile", lines), noted(many))
+	row.Notes = true
+	fixture = append(fixture, row)
+	if quoted := strings.Repeat("> a\n", lines-1) + "> " + ticketFence + "\n"; utf8.RuneCountInString(many) > MaxAnnotationNote || !strings.Contains(row.Description, quoted) {
+		t.Errorf("the note of %d lines is not quoted on every line", lines)
 	}
 	path := filepath.Join("testdata", "capture-tickets.json")
 	var b bytes.Buffer

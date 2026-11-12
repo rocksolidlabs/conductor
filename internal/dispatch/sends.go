@@ -101,8 +101,9 @@ type SendFacts struct {
 }
 
 // SendInput is a send's input, written once: the capture and the revision
-// it sent, where to as asked, the document's digest, the request (read
-// whole by CaptureSend alone), and who made it when.
+// it sent, where to as asked, the document's digest, the request (among
+// the reads of sends, read whole by CaptureSend alone; the send's create
+// row in the change log holds it too), and who made it when.
 type SendInput struct {
 	ID        string          `json:"id"`
 	Capture   string          `json:"capture"`
@@ -454,8 +455,9 @@ func (s *Store) MarkSent(ctx context.Context, op Op, id, target string) (Receipt
 // MarkRefused records that the pending send with the id was refused by
 // its target, with the target's words (capture_send.refused): at most
 // MaxSendWhy characters as given, then folded (addressFree) and kept
-// within MaxSendWhy, cut at a character's end, so words within their
-// bound are never refused for what the fold makes of them.
+// within MaxSendWhy, cut at a character's end (the cut carries no mark),
+// so words within their bound are never refused for what the fold makes
+// of them.
 func (s *Store) MarkRefused(ctx context.Context, op Op, id, why string) (Receipt, error) {
 	return s.settleSend(ctx, op, IntentSendRefused, SendRefused, captureArgs{ID: id, Why: why})
 }
@@ -534,9 +536,9 @@ func (s *Store) collectAll(ctx context.Context, rc Receipt, err error, released 
 // the id send alone when it is not "": each file row deleted and its add
 // row removed in the change log, in the caller's transaction (a delete's,
 // or the outcome's that ended the send once its capture was deleted). A
-// sent send keeps what it holds for as long as the store keeps it (a
-// ticket's attachments name the same content). It gives the
-// hashes let go, for the caller to collect once committed.
+// sent send, to a ticket or one Brakeman took, keeps what it holds for as
+// long as the store keeps it. It gives the hashes let go, for the caller
+// to collect once committed.
 func (t *tx) releaseEnded(captureID, send string) ([]string, error) {
 	where, args := "s.capture_id = ? AND "+sendStateSQL("s.id")+" IN ('refused', 'cancelled')", []any{captureID}
 	if send != "" {
@@ -587,10 +589,13 @@ func (t *tx) releaseEnded(captureID, send string) ([]string, error) {
 // closed at the desk) take it; a send to a ticket (made in its one step),
 // a refused one and a cancelled one are refused stale_revision, nothing of
 // them under way, writing nothing, so a resend is refused the same by the
-// send's state whatever was pruned. At most MaxSendCancels a send (bound),
-// counted after the state. A cancel is known on its send by its
-// operation's id: an id another cancel of the send took is refused
-// op_conflict. The receipt's id is the send's.
+// send's state while that state is the same, whatever was pruned. At most
+// MaxSendCancels a send (bound), counted after the state and before the
+// id: at MaxSendCancels cancels every further cancel is refused bound, one
+// under an id another cancel of the send took among them. Below the bound
+// a cancel is known on its send by its operation's id: an id another
+// cancel of the send took is refused op_conflict. The receipt's id is the
+// send's.
 func (s *Store) AskCancel(ctx context.Context, op Op, id string) (Receipt, error) {
 	return s.Apply(ctx, op, IntentSendCancel, captureArgs{ID: id}, func(t *tx) error {
 		sv, err := readSend(t.ctx, t.tx, id, false)
@@ -801,8 +806,7 @@ func (s *Store) sendsPage(ctx context.Context, where string, args []any, newest 
 // CaptureSends lists the sends of the kind sent to the target (a ticket's
 // key, br-<n>) by sendState, newest first, by pages (sendsPage): a
 // ticket's captures as they were sent, a deleted capture's among them.
-// Its answer is a page; its work, as PendingSends', is the target's sends
-// (#794). ErrBadQuery for another kind, a target of no such form, or a bad
+// Its answer is a page; its work is the target's sends (#794). ErrBadQuery for another kind, a target of no such form, or a bad
 // page.
 func (s *Store) CaptureSends(ctx context.Context, kind, target, after string, limit int) (SendsPage, error) {
 	_, _, isKey := ParseKey(target)
@@ -867,8 +871,10 @@ func fileName(c Capture, ext string) string {
 
 // pageAddress is a page's address as a ticket's words name it, written
 // from its parts and nothing else: its scheme, its host with its port and
-// its path, never its user, query or fragment, an address on any host
-// shown as what it is (the document attached keeps it whole).
+// its path (in the escaped form the URL parser gives: a path whose given
+// form is not a valid encoding is written re-encoded), never its user,
+// query or fragment, an address on any host shown as what it is (the
+// document attached keeps it whole).
 func pageAddress(s string) string {
 	u, err := url.Parse(s)
 	if err != nil || u.Hostname() == "" {

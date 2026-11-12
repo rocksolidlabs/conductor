@@ -432,8 +432,8 @@ func (s *Store) EditCapture(ctx context.Context, op Op, digest, id string, expec
 // DeleteCapture deletes the live capture with the id (capture.delete): a
 // tombstone, and in the same transaction what only the live capture held
 // removed, its screenshot's row (holder capture, one remove row of its
-// files) and its annotations' versions and sets, so a capture deleted
-// unsent leaves nothing the sweep must keep; the rest is hidden by every
+// files) and its annotations' versions and sets, so a capture with no
+// send leaves nothing the sweep must keep; the rest is hidden by every
 // read (the package's comment says what a delete removes and what it
 // hides). Its sends stay, each readable as a row, and so do the ticket
 // attachments they made; a sent send and a pending one keep the files they
