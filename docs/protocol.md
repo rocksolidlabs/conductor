@@ -2472,6 +2472,201 @@ with them and refuses every lane message `unsupported`; a hosted
 session's viewer at the server itself is welcomed without them, so a
 client sends none there.
 
+## Preview bridge
+
+The preview bridge (docs/plans/browser-evidence.md, PR-2) is a script a
+previewed page runs, loaded by the page itself in a browser or put into
+it by the desktop shell, that reads the page for the workbench framing
+it: the frame's document is another origin's, so nothing else can. It
+reads, never writes, the page; it reads no storage, cookie, console or
+network, never an `input`'s value, a password field or a `textarea`'s
+text; and it does nothing until a workbench origin says `hello`.
+
+**Serving.** `GET /preview-bridge.js` (no credential: a script tag
+carries none, and the script holds no secret) serves the bridge the web
+build emits (the script and its build are PV1 PR-2b's) whole, its bytes
+unchanged, inside a wrapper the server writes:
+`(function (conductorWorkbenchOrigins) {` and a line break, the script,
+a line break and `})(`, the server's workbench origins as a JSON array
+of strings, and `);`. Nothing of the script is searched, counted or
+replaced; the script is a script, not a module, and reads its origins
+from that parameter and from nowhere else. The array is data: beside
+JSON's own escapes (`"`, `\`, `<`, `>`, `&`, control characters, U+2028,
+U+2029), `'`, `` ` `` and `$` are written as `\u` escapes, so no origin's
+text can end a string of any quote, a line, a comment or the script. The
+origins are written as a browser writes an origin: each listener's at
+the port it is bound to (the plain one's and the TLS one's; a listener
+on a loopback address names that address and `127.0.0.1`, `localhost`
+and `[::1]` at its port; one on every address those three and the
+machine's addresses of both families as they are when the script is
+served, but IPv6 link-local ones; one on another address that address
+alone), and `publicUrl`'s origin when `publicUrl` already writes it as
+a browser does: scheme and host in lower case, a name in ASCII (an
+internationalised one in its `xn--` form, which is written as given and
+not judged: one no browser would report matches no page) whose last
+label begins with a letter, an IPv4 address in its dotted form, an IPv6
+one in brackets in its own form (never as IPv4), a port without leading
+zeros that is not the scheme's default. An address gives an origin only
+when it is a unicast address that is neither loopback nor unspecified,
+as Go's own `net` package judges it (global or link-local unicast): an
+address that package counts as unicast is written as given, and matches
+no page unless the machine holds that address; a
+name gives none when it is `localhost` or a name under it, in any case,
+with or without a final dot. A `publicUrl` written otherwise, or one of
+those, is left out (`conductor serve` says so once as it starts; the
+default's `localhost`, `127.0.0.1` and `[::1]` and a loopback address
+are left out silently): a loopback origin enters the list only through a
+listener that holds it. Every other name is the owner's statement of
+where the server is reached: the server does not resolve it, and does
+not check that an address is its own. Each origin once, at most 16, each
+at most 256 bytes.
+`Content-Type: text/javascript;
+charset=utf-8`, `Cache-Control: no-cache`, `Cross-Origin-Resource-Policy:
+cross-origin`, `X-Content-Type-Options: nosniff`. A server whose embedded
+app has no bridge (built without `make web-build`, by a web build that
+emits none, or `make dev`'s), and
+a switchyard, answer `404 no_bridge` ("this server was built without the
+web app's preview bridge: run make web-build"). A tree with a preview
+resolved once the server listens on the loopback (or on every address)
+is given `CONDUCTOR_PREVIEW_BRIDGE`, `http://127.0.0.1:<port>/preview-bridge.js`
+(`[::1]` for a listener there alone); a tree without a preview, and every
+tree of a server with no bridge or no loopback listener, none.
+
+**Messages** (`conductor-preview/1`; `internal/proto/preview.go` and
+`web/app/utils/protocol.ts`, both held to
+`internal/proto/testdata/preview-messages.json`, which carries the
+bounds both hold by their Go names, every bound at it and one past in
+characters of each measure, every list empty and of one item, a cut of
+one step, every member of every object null, of another kind and, a
+string, empty and with a lone surrogate, each flag both ways, every
+character next to each end of the nonce's ranges, the measure of each
+code unit at the edge of its class, and each message's text as spelled,
+the content both parsers give an accepted one compared with its
+text's): each a plain object
+through `postMessage` with `conductor: "preview/1"`, its type in `t` and
+a `nonce`, and exactly the fields its type carries. Each parser is told
+the way a message travels, to the bridge or to the workbench
+(`ParsePreviewMessage(data, to, nonce)`, `parsePreviewMessage(v, to,
+nonce)`), and refuses the other way's types. A field is its value, never
+its spelling: a number is the double its text rounds to (to nearest, ties
+to even; a text that rounds past the largest finite double is refused),
+every range below is judged on that double, and a negative zero is
+zero; so a whole
+number is any text that rounds to one (`3`, `3.0`, `3e0`, and
+`2.99999999999999999999` or `9007199254740991.4`), an `epoch` written
+`-1e-400` is 0, a `version` written `1.0000000000000001` is 1, and a
+`dpr` written `2e-324` is 0 and refused. A key is exactly its own letters
+(another case, or a letter that folds to one, is another key). The language is the text an
+honest writer writes and nothing else: no object gives a member twice
+(the server refuses such a text, whichever value comes first; a value
+holds no such thing), and every string is well-formed (a string holding
+half of a surrogate pair alone is refused by both parsers, so what is
+accepted has one content on both sides). Numbers: `epoch`, a state's
+`motion` and a hint's `line` and `column` are whole numbers from 0 to
+2^53-1; the viewport's `width` and `height` and the box's `width` and
+`height` are at least 0; `dpr` is above 0; the scroll offsets and the
+box's `x` and `y` may be negative; every number is finite; `version` is
+1. Strings and lists: every string may be empty but `conductor`, `t`,
+the `nonce`, a `describe`'s `selector`, `colorScheme`, a hint's `how`, a
+`ready`'s hint kinds and a `cut`'s steps (the selector holds 1 to 1,024
+bytes, each of the others one of its set or its pattern); a `ready`'s
+`hints` and each list of the element report may be
+empty, and an attribute or a style is a pair of exactly two strings.
+The server's parser refuses a message's text past twice its way's
+measured bound (8 KiB to the bridge, 128 KiB to the workbench) or not
+UTF-8 before it decodes it. That bound is the writer's: the browser's
+own JSON writer escapes nothing it need not and never writes a message
+longer than its measure; a text that escapes what need not be escaped
+(each `<` in six bytes, as Go's `json.Marshal` writes it) can pass the
+bound and is refused, so a Go writer of a message writes with HTML
+escaping off. It decodes the text once, a single JSON value with only
+white space after it, refusing it at the first object or list nested
+past the schema's deepest value (four levels: the message, its element,
+a list of the element's, an item of that list) where it meets it, and
+builds the message from the value it judged; its refusals are fixed
+words, never the message's text. The app's parser is handed a value a
+page made (a structured clone), so it judges plain objects and arrays
+alone, every index of a list present and no member beside them, no
+object of more members than a message's objects have (an element
+report's 17), numbers finite, no big integer or other kind of object,
+no nesting past a message's four levels, the type's keys before the
+measure, in one walk that stops at the bound; it answers null for
+anything else and never throws. It inspects at most the type's number of
+an object's keys and one more, and judges a list's length before it
+reads any of it; enumerating a value's keys costs the engine time in
+proportion to the value, which the browser has already spent, several
+times over, deserialising the message to hand it to the page. From the workbench:
+`hello` (its `nonce`, 16 to 64 of `A-Z a-z 0-9 _ -`, is the one every
+later message of either side carries), `select` (selection mode: the
+pointer outlines, a click or Enter selects, Up and Down step through the
+elements stacked under the pointer, Left and Right walk to the parent
+and the first child, Shift with Up and Down to the siblings, Escape
+leaves), `describe {selector}` (the element a selector of at most 1,024
+bytes finds), `look` (the page now) and `cancel`. From the bridge:
+`ready {version: 1, hints}` (`hints` the kinds of source the page gives,
+each once: `attribute`, `vue`, `svelte`, `react`), `selected {element}`,
+`described {element}` or `described {missing: true}`, `looked` and
+`cancelled`; every one but `cancelled` with the page read at that
+moment, never the handshake's: `url` (at most 2,048 bytes), `title` (at
+most 200 characters), `viewport {width, height, dpr, scrollX, scrollY,
+colorScheme (light, dark), userAgent (at most 512 bytes)}`, `epoch` (a
+whole number the bridge bumps, at most once an animation frame, on a
+resize or scroll of the window, a mutation of the document but its own
+host's, and every animation and transition event: it says only that the
+page moved) and `revision` (the page's `<meta name="conductor-revision"
+content="<commit>[+<content>]">`, lower-case hex of 4 to 64 digits with
+one optional `+` part, at most 128 bytes, else "").
+
+**The element report** (`element`): `{tag, id, classes, role, name (the
+accessible name), text, selector (found exactly once: a unique id, else
+the shortest chain of tag, stable classes and :nth-of-type), box {x, y,
+width, height}, attributes ([name, value]; an input's value never),
+state {disabled, hidden, ariaDisabled, ariaExpanded, pointerEvents,
+inert, hovered, motion (the animations playing on it, its subtree and
+its ancestors)}, hit {self, selector, tag} (what elementFromPoint finds
+at the box's centre), html (its outer HTML from a copy with every input
+value and textarea text emptied, cut at a tag's end), neighbourhood (its
+parent's, each sibling's subtree past depth 2 elided), ancestors ([{tag,
+id, classes, role}], innermost first), styles ([property, value] of a
+fixed list of 64), hints ([{how, file, line, column, component}]: a
+data-conductor-source "<file>:<line>:<column>" on it or an ancestor, a
+Vue dev build's component chain, Svelte's __svelte_meta, React 18's
+_debugSource), cut (the steps it was cut by)}`. Each field to its bound,
+in bytes as measured below: the tag, id, classes, role, name and the
+state's strings 1,024 each, the text and the selectors 1,024, at most 32
+attributes of a 64-byte name and a 512-byte value, the HTML 12 KiB, the
+neighbourhood 24 KiB, at most 12 ancestors of 512 each, at most 64 styles
+of a 64-byte name and a 256-byte value, at most 8 hints of a 1,024-byte
+file and a 256-byte component. The report as a whole is at most 32 KiB:
+the bridge cuts it to fit, measuring after each step and stopping at the
+first that fits, in this order, each named in `cut`: `neighbourhood` (to
+nothing), `html` (to its opening tag), `styles` (to the first 16),
+`attributes` (each value to 64 bytes), `tag` (the opening tag to 512
+bytes, then the HTML dropped), `hints` (the innermost 2, each file to its
+last 256 bytes and component to 128), `ancestors` (the innermost 4),
+`attribute-count` (the first 8), `names` (the tag, text, name, id, role,
+classes, selector and the hit test's tag and selector to 256 bytes each),
+`style-count` (the first 8). What the last step leaves is under 12 KiB
+whatever the fields held. So `cut` is always a prefix of that order, its
+first steps with none skipped or twice; a report whose `cut` is not is
+refused. **One measure**: a value's size is the UTF-8
+length of its JSON as Go writes it with HTML escaping off (`<`, `>` and
+`&` as they are; U+2028, U+2029 and control characters but `\b`, `\f`,
+`\n`, `\r` and `\t` in six bytes; a lone surrogate as U+FFFD), a negative
+zero as `0` (one byte, as `JSON.stringify` writes it, where Go writes
+`-0`), which `proto.PreviewMeasure` and `previewMeasure` both compute; a
+string's bound leaves its quotes out.
+
+**Bounds and the gate.** A message to the bridge is at most 4 KiB, one
+to the workbench at most 64 KiB, as measured; one past it, or that does
+not parse by its type's schema, is dropped unanswered. The bridge takes
+a message only from `window.parent`, at one of the origins written into
+it, and, after the `hello`, only from that hello's origin with its
+nonce (a later `hello` starts again); it posts only to `window.parent`,
+addressed to that origin, never `*`. The workbench takes an answer only
+from the frame's window at the preview's origin with the nonce it sent.
+Nothing the page sends is executed or rendered as HTML by the workbench.
+
 ## HTTP API
 
 On a switchyard (`switchyard.enabled`, `conductor switchyard`) every route
@@ -2483,7 +2678,8 @@ routes (a switchyard keeps no tickets, and opens no Dispatch store), answers
 `/api/join`, the events stream, health, reach and whoami, is as below. A
 switchyard serves no workbench either: `GET /` is its landing page, every
 workbench path is its 404 page (both server-rendered HTML), and the app is
-served only under `/join/` and `/paste` and for its assets.
+served only under `/join/` and `/paste` and for its assets. A switchyard
+frames no preview: `GET /preview-bridge.js` answers it `404 no_bridge`.
 
 Every `/api/...` route, with the credential it needs. Admin means
 `Authorization: Bearer <workbench token>`; a share token is also accepted where the
@@ -2540,6 +2736,7 @@ its run, and on no other.
 | `GET /api/health` | none | liveness: `ok`, `version`, `commit`, `sessions`, `instance` (a random id of this server process, which the reach self-check matches); `switchyard` (whether this server is one) and `relay` (whether it relays hosted sessions: always on a plain server) |
 | `GET /api/reach` | admin | what the server knows about being reached from outside its network (`reach.mode`): `{mode, mapped, method?, publicUrl?, externalIp?, externalPort?, listenPort?, expiresAt?, renewedAt?, verified?, error?, tls?}`; `mapped` says a port on the public address reaches the server (`method` `upnp`, `pcp` or `nat-pmp`; `manual` with `mapped` false names a port the person forwarded); `publicUrl` is `https://<externalIp>[:port]`, the base share links take once `tls.ready`; `verified` is `ok` when the server reached itself through that URL and `unverified` when it did not, which is usual from inside the network and proves nothing; `error` is the last failure in words; `tls` is the TLS listener's certificate, absent without a TLS listener: `{mode (acme or files), identifiers?, challenge?, notAfter?, renewAt?, ready, lastError?, nextTry?}`, `ready` saying a certificate is served (the discovered address becomes a link's base only then) |
 | `GET /.well-known/acme-challenge/{token}` | none | the key authorization of an open ACME `http-01` order (RFC 8555 §8.3), on the plain listener; `404` for any other token, a token over 128 bytes, or without a TLS listener |
+| `GET /preview-bridge.js` | none | the preview bridge, its bytes unchanged, inside a wrapper called with the server's workbench origins (Preview bridge): `200` with `Content-Type: text/javascript; charset=utf-8`, `Cache-Control: no-cache`, `Cross-Origin-Resource-Policy: cross-origin` and `X-Content-Type-Options: nosniff`, the same bytes for every request; `404 no_bridge` when the embedded app has no bridge, and on a switchyard |
 | `GET /api/switchyard/status` | admin | on a switchyard only (`404` elsewhere): the landing page's operator figures, `{hosts, sessions, viewers, relayBytesHour, hostList: [{name, since, sessions, viewers}]}`, the live hosted sessions grouped by the publishing host, earliest first, and the bytes the relay carried in the last sixty minutes |
 | `GET /api/whoami` | admin | OS user running the server (the default display name); `host` is the machine's name (`""` when it cannot tell) and `switchyard` whether this server launches nothing; `home` the server user's home directory, when it has one (the settings picker's Home); `version` the server's version, as `conductor version` prints it (Settings → The app) |
 | `GET /api/export` | admin (a switchyard's too) | the data directory as one zip archive (`docs/plans/ext.md`, C6), streamed as it is made, nothing buffered whole: `200` with `Content-Type: application/zip` and `Content-Disposition: attachment; filename="conductor-export-<UTC time>.zip"` (`20060102T150405Z`). The archive holds `data/` as the data directory holds it (the catalog, the crews, the runs' records, a switchyard's `links/` (hashes, never tokens), `hooks/` and any other file) with the ledger's and Dispatch's databases as snapshots (`VACUUM INTO`, consistent while the server writes), the attachment files the Dispatch snapshot's live rows and launch pins require, and `conductor-export.json` last: `{format: 1, version, createdAt, files: [{path, size, sha256}], left: [{path, why}]}`. Left out, and listed with why: the workbench token and its lock, `restore.lock`, `runs/owner.lock`, `brakeman/owner.lock`, `history/owner.lock`, the databases' `-wal`, `-shm` and `-journal`, `*.tmp`, `.probe-*`, `.restore-*`, `dispatch/attachments/tmp/`, `tls/`, `ext/`, anything not a regular file or a directory, and a name not of `[A-Za-z0-9._-]` elements. The catalog is resolved against the configuration the server runs with, so saved agents' env values, configured ones they inherit among them, are in it in full: the archive is the person's own file. The records are copied before the ledger's snapshot, and none written after their copy is taken, so a record may lag its ledger, never lead it. A failure before the first byte is `500 internal`; one after it cuts the archive short, with no manifest, which no restore takes, and aborts the response (the connection dropped, or the stream reset, never a whole `200`), so the client's transfer fails; `503 no_data_dir` for a server with none |
@@ -3449,9 +3646,20 @@ all, a `url` 2048, `preview` 512): one past its bound fails the tree at
 more than 512"), before anything is written or run in it. A step and a
 check run in a tree are given the tree's names, `CONDUCTOR_PORT_<NAME>` (the
 port's name in upper case) for each port, `CONDUCTOR_STATE_DIR` (its absolute
-path), with a preview `CONDUCTOR_PREVIEW_URL`, and `CONDUCTOR_RUN`,
-`CONDUCTOR_TASK` and `CONDUCTOR_ATTEMPT`, and no other `CONDUCTOR_` name, a
-token least of all; and the manifest's approved `env` names, and no other
+path), with a preview `CONDUCTOR_PREVIEW_URL` (and `CONDUCTOR_PREVIEW_BRIDGE`,
+see Preview bridge), `CONDUCTOR_TREE_SECRET` (32 random bytes as hex, minted
+as the tree is resolved, held in the server's memory alone; Conductor
+writes it into the environment of the tree's commands and its session and
+into nothing else of its own accord: no placeholder expands to it, so no
+argv holds it, and a preview names it as `${CONDUCTOR_TREE_SECRET}` and
+keeps the name. What a command prints is its output: Conductor keeps
+output (a step's head, tail and log, a session's scrollback) and quotes a
+failing command's last lines in the failure's words, which reach the
+receipt, the run's rows, events and log, the state the routes answer and
+the next attempt's task files, so a command that prints its environment
+puts the secret there), and
+`CONDUCTOR_RUN`, `CONDUCTOR_TASK` and `CONDUCTOR_ATTEMPT`, and no other
+`CONDUCTOR_` name, no token of the server's; and the manifest's approved `env` names, and no other
 name of the server's passthrough. The attempt's session is given the tree's
 names and the approved names beside its own (a session keeps its crew's
 names and the passthrough every session has). The setup steps run in

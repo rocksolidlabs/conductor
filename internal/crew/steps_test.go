@@ -759,6 +759,10 @@ func TestATreeHasTheHostsNamesItsPortsAndItsStateDirectory(t *testing.T) {
 	want := map[string]string{"CONDUCTOR_RUN": run.ID, "CONDUCTOR_TASK": "build", "CONDUCTOR_ATTEMPT": "1", "CONDUCTOR_STATE_DIR": state,
 		"CONDUCTOR_PORT_WEB": strconv.Itoa(ports["web"]), "CONDUCTOR_PORT_DB": strconv.Itoa(ports["db"])}
 	env := envFile(t, filepath.Join(state, "env.txt"))
+	// The tree's own secret (PV1 PR-2), drawn for it: 32 bytes as hex.
+	if want["CONDUCTOR_TREE_SECRET"] = env["CONDUCTOR_TREE_SECRET"]; len(want["CONDUCTOR_TREE_SECRET"]) != 64 {
+		t.Fatalf("the step's CONDUCTOR_TREE_SECRET is %d characters", len(want["CONDUCTOR_TREE_SECRET"]))
+	}
 	if got := conductorVars(env); !maps.Equal(got, want) {
 		t.Fatalf("the step's CONDUCTOR_ names: %v, want %v", got, want)
 	}
@@ -778,7 +782,7 @@ func TestATreeHasTheHostsNamesItsPortsAndItsStateDirectory(t *testing.T) {
 	fl.mu.Lock()
 	call := fl.calls[len(fl.calls)-1]
 	fl.mu.Unlock()
-	wantInject := map[string]string{"CONDUCTOR_STATE_DIR": state, "CONDUCTOR_PORT_WEB": want["CONDUCTOR_PORT_WEB"], "CONDUCTOR_PORT_DB": want["CONDUCTOR_PORT_DB"]}
+	wantInject := map[string]string{"CONDUCTOR_STATE_DIR": state, "CONDUCTOR_PORT_WEB": want["CONDUCTOR_PORT_WEB"], "CONDUCTOR_PORT_DB": want["CONDUCTOR_PORT_DB"], "CONDUCTOR_TREE_SECRET": want["CONDUCTOR_TREE_SECRET"]}
 	if call.name != "lead · build #1" || !maps.Equal(call.inject, wantInject) || !slices.Equal(call.allow, []string{"EN1_STEP_TOKEN"}) {
 		t.Fatalf("the session %q: inject %v, allow %v", call.name, call.inject, call.allow)
 	}
