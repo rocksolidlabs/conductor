@@ -34,7 +34,8 @@ export function originsOf(v: unknown): string[] {
   return v.filter((o): o is string => typeof o === 'string' && o.length > 0 && o.length <= MAX_PREVIEW_URL && o !== '*' && o !== 'null')
 }
 
-export function createGate(origins: readonly string[], parent: Parent): Gate {
+/** The gate for origins, answering parent; ending is called on every hello it takes, before the hello's nonce replaces the last. */
+export function createGate(origins: readonly string[], parent: Parent, ending: () => void = () => {}): Gate {
   const allowed = [...origins]
   let nonce = ''
   let origin = ''
@@ -46,6 +47,7 @@ export function createGate(origins: readonly string[], parent: Parent): Gate {
       const m = parsePreviewMessage(e.data, 'bridge', nonce)
       if (!m || (m.t !== 'hello' && e.origin !== origin)) return null
       if (m.t === 'hello') {
+        ending()
         nonce = m.nonce
         origin = e.origin
       }

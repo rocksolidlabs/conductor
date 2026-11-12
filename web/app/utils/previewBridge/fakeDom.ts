@@ -80,8 +80,9 @@ function counted<T>(items: T[]): T[] {
 
 abstract class FakeNode {
   _parent: FakeEl | null = null
-  /** Its place among its parent's nodes. */
+  /** Its place among its parent's nodes, and among its parent's elements. */
   _i = 0
+  _ei = 0
   abstract readonly nodeType: number
   private sibling(d: number, element: boolean): FakeNode | null {
     const s = this._parent?._kids ?? []
@@ -115,7 +116,9 @@ abstract class FakeNode {
     if (!this._parent) return
     const self: FakeNode = this
     this._parent._kids = this._parent._kids.filter((c) => c !== self)
-    this._parent._kids.forEach((c, i) => (c._i = i))
+    let e = 0
+    this._parent._kids.forEach((c, i) => ((c._i = i), (c._ei = c instanceof FakeEl ? e++ : e)))
+    this._parent._elements = e
     this._parent = null
   }
 }
@@ -136,6 +139,7 @@ export class FakeEl extends FakeNode {
   readonly nodeType = 1
   readonly tag: string
   _kids: Array<FakeEl | FakeText> = []
+  _elements = 0
   attrs = new Map<string, string>()
   rect = { x: 0, y: 0, width: 0, height: 0 }
   /** What getComputedStyle answers for it. */
@@ -167,6 +171,8 @@ export class FakeEl extends FakeNode {
       n.remove()
       n._parent = this
       n._i = this._kids.length
+      n._ei = this._elements
+      if (n instanceof FakeEl) this._elements++
       this._kids.push(n)
     }
   }
@@ -222,6 +228,7 @@ export class FakeEl extends FakeNode {
   }
   set textContent(s: string) {
     this._kids = []
+    this._elements = 0
     if (s) this.append(s)
   }
   /** Its markup, every node of its subtree visited. */
@@ -331,9 +338,8 @@ function compound(e: FakeEl, s: string): boolean {
       if (!e.attrs.has(name!) || (value !== undefined && e.attrs.get(name!) !== value.slice(1, -1))) return false
     }
     const n = Number(/\d+/.exec(part)?.[0])
-    const siblings = e._parent?.elements ?? [e]
-    if (part.startsWith(':nth-of-type') && siblings.filter((c) => c.tag === e.tag).indexOf(e) + 1 !== n) return false
-    if (part.startsWith(':nth-child') && siblings.indexOf(e) + 1 !== n) return false
+    if (part.startsWith(':nth-of-type') && (e._parent?.elements ?? [e]).filter((c) => c.tag === e.tag).indexOf(e) + 1 !== n) return false
+    if (part.startsWith(':nth-child') && e._ei + 1 !== n) return false
     if (part === ':root' && (e._parent || e.tag !== 'HTML')) return false
     if (part === ':disabled' && !e.attrs.has('disabled')) return false
     if (part === ':hover' && !e.hovered) return false
@@ -341,9 +347,11 @@ function compound(e: FakeEl, s: string): boolean {
   return true
 }
 
+const parsed = new Map<string, string[][]>()
+
 function matches(e: FakeEl, sel: string): boolean {
-  return sel.split(',').some((one) => {
-    const parts = one.trim().split(/\s*>\s*/)
+  if (!parsed.has(sel)) parsed.set(sel, sel.split(',').map((one) => one.trim().split(/\s*>\s*/)))
+  return parsed.get(sel)!.some((parts) => {
     let at: FakeEl | null = e
     for (let i = parts.length - 1; i >= 0; i--) {
       if (!at || !compound(at, parts[i]!)) return false
@@ -424,7 +432,15 @@ export class FakeDoc extends Listeners {
   /** The first element with the id, as an engine answers it from its map of ids: one node. */
   getElementById(id: string) {
     reads.nodes++
-    return [this.documentElement, ...this.documentElement.descendants()].find((e) => e.attrs.get('id') === id) ?? null
+    const find = (e: FakeEl): FakeEl | null => {
+      if (e.attrs.get('id') === id) return e
+      for (const c of e.elements) {
+        const f = find(c)
+        if (f) return f
+      }
+      return null
+    }
+    return find(this.documentElement)
   }
   elementsFromPoint(x: number, y: number) {
     return counted(this.hitAt(x, y))

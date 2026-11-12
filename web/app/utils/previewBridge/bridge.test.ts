@@ -2,7 +2,11 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { PREVIEW_MARK, parsePreviewMessage, type PreviewToWorkbench } from '../protocol'
+import * as bridge from './bridge'
 import { startBridge } from './bridge'
+
+/** The event names selection mode stops (none where the bridge has no such table). */
+const SELECTION_EVENTS: readonly string[] = (bridge as { SELECTION_EVENTS?: readonly string[] }).SELECTION_EVENTS ?? []
 import { FakeDoc, FakeWin, event, h, pageStrings, plainText, reads, resetReads, type FakeEl } from './fakeDom'
 
 const WORKBENCH = 'http://127.0.0.1:8080'
@@ -33,7 +37,91 @@ function plainPage() {
   return { root, p }
 }
 
-const hostOf = (root: FakeEl) => root.children.find((c) => c.tagName === 'CONDUCTOR-PREVIEW-BRIDGE') ?? null
+/** The outline's host on the page: the element the bridge puts there, known by its style. */
+const hostOf = (root: FakeEl) => root.elements.find((c) => (c.attrs.get('style') ?? '').includes('2147483647')) ?? null
+const OTHER_NONCE = 'a-later-hello-nonce-5678'
+
+describe('selection mode', () => {
+  it('ends with a later hello, which is sent nothing of the exchange before it', () => {
+    const { root, p } = plainPage()
+    const { doc, win, ask } = framed(root)
+    doc.hitAt = () => [p, root]
+    ask('hello')
+    ask('select')
+    win.dispatch('pointermove', event('pointermove', { clientX: 1, clientY: 1 }))
+    win.deliver(WORKBENCH, m('hello', {}, OTHER_NONCE))
+    expect([hostOf(root), win.count]).toEqual([null, 3])
+    win.dispatch('pointermove', event('pointermove', { clientX: 1, clientY: 1 }))
+    const click = event('click')
+    win.dispatch('click', click)
+    expect(click.swallowed).toBe(false)
+    expect(win.posts.map((x) => [(x.message as { t: string }).t, (x.message as { nonce: string }).nonce])).toEqual([['ready', NONCE], ['ready', OTHER_NONCE]])
+  })
+
+  it('ends before a describe reads, so no answer holds anything of the bridge’s', () => {
+    const { root } = plainPage()
+    const { win, answers, ask } = framed(root)
+    ask('hello')
+    for (const selector of [':root', ':root > body:nth-child(2)']) {
+      ask('select')
+      ask('describe', { selector })
+      expect([hostOf(root), win.count]).toEqual([null, 3])
+    }
+    const [, html, body] = answers() as Array<Extract<PreviewToWorkbench, { t: 'described' }>>
+    expect([html!.element!.html, body!.element!.neighbourhood].join('')).not.toMatch(/2147483647|shadow/)
+    expect(html!.element!.html).toBe('<html><head></head><body><p>Hello</p></body></html>')
+  })
+
+  it('draws its outline whatever the page has registered, and a throw in its handlers leaves selection mode clean', () => {
+    const { root, p } = plainPage()
+    const { doc, win, answers, ask } = framed(root)
+    doc.registry.set('conductor-preview-bridge', (el) => el.attachShadow({ mode: 'open' }))
+    doc.hitAt = () => [p, root]
+    ask('hello')
+    ask('select')
+    win.dispatch('pointermove', event('pointermove', { clientX: 1, clientY: 1 }))
+    const box = hostOf(root)?.shadow?.elements[0]
+    expect(box?.style.display).toBe('block')
+    p.getBoundingClientRect = () => {
+      throw new Error('a getter of the page’s')
+    }
+    win.dispatch('pointermove', event('pointermove', { clientX: 2, clientY: 2 }))
+    expect([hostOf(root), win.count]).toEqual([null, 3])
+    answers()
+    ask('hello')
+    expect(answers().map((a) => a.t)).toEqual(['ready'])
+  })
+
+  it('stops every pointer, mouse, touch and key event the browser delivers while it selects, by one table, and none outside', () => {
+    const { root, p } = plainPage()
+    const { doc, win, answers, ask } = framed(root)
+    ask('hello')
+    // Each event of the table, with a key that does nothing and nothing under the pointer: none picks or leaves.
+    const each = (trusted = true) =>
+      SELECTION_EVENTS.map((t) => {
+        const e = event(t, { key: 'a' }, trusted)
+        win.dispatch(t, e)
+        return e.swallowed
+      })
+    expect(each()).toEqual(SELECTION_EVENTS.map(() => false))
+    ask('select')
+    expect(win.count).toBe(3 + SELECTION_EVENTS.length)
+    expect(each(false)).toEqual(SELECTION_EVENTS.map(() => false))
+    expect(each()).toEqual(SELECTION_EVENTS.map(() => true))
+    expect(SELECTION_EVENTS).toEqual(expect.arrayContaining(['keyup', 'touchstart', 'touchend', 'pointerdown', 'mousedown', 'click', 'contextmenu', 'wheel']))
+    // The key that picks is stopped to its release, and what follows the pick reaches the page.
+    doc.hitAt = () => [p, root]
+    win.dispatch('pointermove', event('pointermove', { clientX: 1, clientY: 1 }))
+    const down = event('keydown', { key: 'Enter' })
+    const up = event('keyup', { key: 'Enter' })
+    win.dispatch('keydown', down)
+    expect(answers().map((a) => a.t)).toEqual(['ready'])
+    win.dispatch('keyup', up)
+    const after = event('keyup', { key: 'Enter' })
+    win.dispatch('keyup', after)
+    expect([down.swallowed, up.swallowed, after.swallowed, answers().map((a) => a.t), win.count]).toEqual([true, true, false, ['selected'], 3])
+  })
+})
 
 describe('the bridge in a page', () => {
   it('starts nothing in a window no parent frames, without origins, or a second time', () => {
@@ -112,7 +200,8 @@ describe('the bridge in a page', () => {
     ask('select')
     const host = hostOf(root)
     expect(host).not.toBeNull()
-    expect(win.count).toBe(10) // the messages, the epoch's two, and selection mode's seven
+    expect(host!.tag).toBe('DIV')
+    expect(win.count).toBe(3 + SELECTION_EVENTS.length) // the messages, the epoch's two, and selection mode's table
     // What the page's own script dispatches is neither swallowed nor acted on.
     for (const e of [event('pointermove', { clientX: 10, clientY: 10 }, false), event('click', {}, false), event('keydown', { key: 'Escape' }, false)]) {
       win.dispatch(e.type, e)
@@ -126,10 +215,13 @@ describe('the bridge in a page', () => {
     expect(epoch()).toBe(before)
     win.observers[0]!([{ type: 'attributes', target: p, addedNodes: [], removedNodes: [] }])
     expect(epoch()).toBe(before + 1)
-    // Escape leaves: cancelled, the host off the page, selection mode's listeners gone.
+    // Escape leaves as it is released: cancelled, the host off the page, selection mode's listeners gone.
     const esc = event('keydown', { key: 'Escape' })
     win.dispatch('keydown', esc)
-    expect([esc.swallowed, answers().map((a) => a.t), hostOf(root), win.count]).toEqual([true, ['cancelled'], null, 3])
+    expect([esc.swallowed, answers(), hostOf(root)]).toEqual([true, [], host])
+    const released = event('keyup', { key: 'Escape' })
+    win.dispatch('keyup', released)
+    expect([released.swallowed, answers().map((a) => a.t), hostOf(root), win.count]).toEqual([true, ['cancelled'], null, 3])
     // Again, and a click selects: the host is off the page before the element is read.
     ask('select')
     win.dispatch('pointermove', event('pointermove', { clientX: 1, clientY: 1 }))
@@ -139,7 +231,7 @@ describe('the bridge in a page', () => {
     win.dispatch('click', event('click'))
     const [sel] = answers() as [Extract<PreviewToWorkbench, { t: 'selected' }>]
     expect([down.swallowed, sel.t, sel.element.tag, hostOf(root), win.count]).toEqual([true, 'selected', 'p', null, 3])
-    expect(sel.element.html).not.toContain('conductor-preview-bridge')
+    expect(sel.element.html).not.toContain('2147483647')
   })
 
   it('answers a describe that finds nothing, that the page refuses, or that names its own host as missing', () => {

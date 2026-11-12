@@ -85,6 +85,21 @@ describe('the bridge gate', () => {
     expect(posts).toHaveLength(1)
   })
 
+  it('ends the exchange before an accepted hello takes its nonce, and only for an accepted hello', () => {
+    const { m, ev } = setup()
+    const seen: string[] = []
+    const parent = { postMessage: (message: unknown) => seen.push((message as { nonce: string }).nonce) }
+    let gate: ReturnType<typeof createGate> | null = null
+    gate = createGate([WORKBENCH], parent, () => (seen.push('ending'), gate!.answer({ t: 'cancelled' })))
+    const at = (e: ReturnType<typeof ev>) => ({ ...e, source: parent })
+    gate.take(at(ev(m('hello'))))
+    gate.take(at(ev(m('hello', {}, 'another-nonce-0000000'), { isTrusted: false })))
+    gate.take(at(ev(m('select'))))
+    gate.take(at(ev(m('hello', {}, 'another-nonce-0000000'))))
+    // What ending did was of the exchange it ended: the first hello found none, the second ended the first's.
+    expect(seen).toEqual(['ending', 'ending', NONCE])
+  })
+
   it('takes only the origins the server wrote in', () => {
     expect(originsOf(undefined)).toEqual([])
     expect(originsOf('http://127.0.0.1:8080')).toEqual([])
