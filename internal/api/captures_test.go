@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -63,6 +64,14 @@ func previewEnv(t *testing.T, files map[string]string) *previewed {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The run's service ends with the test, before its directories go: a
+	// stopped run's trees are ended, and Drain waits for their ends.
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		_ = e.srv.runs.Stop(ctx, run.ID)
+		e.srv.runs.Drain(ctx)
+	})
 	a := runningAttempt(t, e, run.ID, "build", 1)
 	p := &previewed{e: e, run: run.ID, dir: a["worktree"].(string)}
 	u, secret, _ := strings.Cut(p.label(t)["url"].(string), "#token=")
