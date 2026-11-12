@@ -2,6 +2,7 @@ package api
 
 import (
 	"cmp"
+	"encoding/json"
 	"net/http"
 	"slices"
 	"strconv"
@@ -118,8 +119,8 @@ func (s *Server) handleSelfCrew(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "no data directory is configured")
 		return
 	}
-	body, err := readBodyLimit(w, r, maxCrewBody)
-	if err != nil {
+	var body json.RawMessage
+	if err := decodeJSONLimit(w, r, &body, maxCrewBody); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
@@ -252,8 +253,8 @@ func (s *Server) handleSelfAddMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "no_run", "the session is not a member of a run; form a crew first")
 		return
 	}
-	body, err := readBodyLimit(w, r, maxMemberBody)
-	if err != nil {
+	var body json.RawMessage
+	if err := decodeJSONLimit(w, r, &body, maxMemberBody); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}

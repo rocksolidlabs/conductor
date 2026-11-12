@@ -83,13 +83,3 @@ func decodeJSONLimit(w http.ResponseWriter, r *http.Request, v any, limit int64)
 	}
 	return nil
 }
-
-// readBodyLimit is the request's body, bounded to limit bytes: past it,
-// errBodyTooLarge.
-func readBodyLimit(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, error) {
-	b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
-	if mbe := (*http.MaxBytesError)(nil); errors.As(err, &mbe) {
-		return nil, errBodyTooLarge
-	}
-	return b, err
-}
