@@ -269,7 +269,7 @@ func (d *capacityDesk) counts(k capacity.Key, doc capacity.Accounts) capacity.Co
 		if info.Kind != session.KindServer || info.AgentID != k.Agent || info.Status.Ended() {
 			continue
 		}
-		if l, ok := d.s.lookupLocal(info.ID); ok && heldAccount(doc, l.Launched().Adapter, l.Launched().Account) == k.Account {
+		if l, ok := d.s.lookupLocal(info.ID); ok && heldAccount(doc, l.Launched().Adapter, l.Launched().Account, l.Launched().LoginFolder) == k.Account {
 			c.Running++
 		}
 	}

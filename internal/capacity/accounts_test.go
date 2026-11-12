@@ -598,29 +598,30 @@ func TestReservationHoldsRemove(t *testing.T) {
 	}
 }
 
-// HoldOf holds the account its pick names in the accounts as they are
-// under the accounts' lock, a retired one too, as Reserve does; a pick
-// naming none holds nothing.
+// HoldOf holds every account its pick names in the accounts as they are
+// under the accounts' lock, a retired one too, as Hold does, and passes
+// over an id the document does not hold; its release lets go of each.
 func TestHoldOfHoldsWhatItsPickNames(t *testing.T) {
 	f := newFacts()
 	s := openAt(t, t.TempDir(), Options{Now: clockAt(t0)})
 	a, rev, _ := s.Add(f, "claude", "Work", "/home/u/work", 0)
+	b, rev, _ := s.Add(f, "codex", "Work", "/home/u/work", rev)
 	a, rev, _ = s.Retire(a.ID, rev)
 	var seen Accounts
-	got, release, err := s.HoldOf(func(d Accounts) string { seen = d; return a.ID })
-	if err != nil || got != a || len(seen.Accounts) != 1 {
-		t.Fatalf("hold: %+v, %v, the pick saw %+v", got, err, seen)
+	release, err := s.HoldOf(func(d Accounts) []string { seen = d; return []string{a.ID, DefaultID, "a-bbbbbbbbbbbb", b.ID} })
+	if err != nil || len(seen.Accounts) != 2 {
+		t.Fatalf("hold: %v, the pick saw %+v", err, seen)
 	}
-	if _, err := s.Remove(f, a.ID, rev); code(err) != CodeInUse || !strings.Contains(err.Error(), "1 launch") {
-		t.Fatalf("remove while held: %v", err)
-	}
-	release()
-	for _, id := range []string{DefaultID, "unlisted", "a-bbbbbbbbbbbb"} {
-		if got, rel, err := s.HoldOf(func(Accounts) string { return id }); err != nil || got != (Account{}) || rel == nil {
-			t.Errorf("a pick of %s: %+v, %v", id, got, err)
+	for _, id := range []string{a.ID, b.ID} {
+		if _, err := s.Remove(f, id, rev); code(err) != CodeInUse || !strings.Contains(err.Error(), "1 launch") {
+			t.Fatalf("remove %s while held: %v", id, err)
 		}
 	}
-	if _, err := s.Remove(f, a.ID, rev); err != nil {
-		t.Fatalf("remove once released: %v", err)
+	release()
+	release()
+	for _, id := range []string{a.ID, b.ID} {
+		if rev, err = s.Remove(f, id, rev); err != nil {
+			t.Fatalf("remove %s once released: %v", id, err)
+		}
 	}
 }

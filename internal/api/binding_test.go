@@ -1,7 +1,6 @@
 package api
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -289,7 +288,7 @@ func TestLaunchPinnedEntry(t *testing.T) {
 		t.Fatalf("the refusal's words: %v", out)
 	}
 	yolo := e.launch(t, "claude-yolo", map[string]any{"yolo": true})
-	if got, b := e.probe(t, yolo), e.bound(t, yolo); got != "D=[] K=[made-up-key-1] H=[]" || b.ID != capacity.DefaultID || b.Source != session.SourceLaunchEnv || b.Folder != ownFolder() {
+	if got, b := e.probe(t, yolo), e.bound(t, yolo); got != "D=[] K=[made-up-key-1] H=[]" || b.ID != capacity.DefaultID || b.Source != session.SourceLaunchEnv || b.Folder != "" {
 		t.Fatalf("the launch_env launch: %s %+v", got, b)
 	}
 	e.expect(t, "POST", "/api/sessions", map[string]any{"agentId": "claude-yolo", "yolo": true, "account": id}, http.StatusBadRequest, "invalid_account")
@@ -741,7 +740,7 @@ func TestBrakemanTurnBinding(t *testing.T) {
 		sid := local.Info().ID
 		t.Cleanup(func() { e.stopAndWait(sid) })
 		got, bound := e.probe(t, sid), e.bound(t, sid)
-		if got != login(tc.folder) || bound.ID != tc.id || bound.Source != tc.source || bound.Folder != cmp.Or(tc.folder, ownFolder()) {
+		if got != login(tc.folder) || bound.ID != tc.id || bound.Source != tc.source || bound.Folder != tc.folder {
 			t.Errorf("%q: %s %+v", tc.folder, got, bound)
 		}
 	}

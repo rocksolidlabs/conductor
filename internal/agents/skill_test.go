@@ -429,8 +429,8 @@ func TestInstallSkillInAConfigurationDirectoryOfTheAgentsOwn(t *testing.T) {
 }
 
 // The folder an agent reads while its folder variable is unset is its
-// directory under the home its environment names; none for an agent
-// without a folder variable, and none for a home that is not whole.
+// directory under the home its environment names, as the home is written;
+// none for an agent without a folder variable.
 func TestHomeConfigDir(t *testing.T) {
 	home := func(h string) func(string) string {
 		return func(n string) string {
@@ -445,7 +445,7 @@ func TestHomeConfigDir(t *testing.T) {
 			t.Errorf("%s: %q, want %q", adapter, got, want)
 		}
 	}
-	if got := HomeConfigDir("claude", home("relative/u")); got != "" {
+	if got := HomeConfigDir("claude", home("relative/u")); got != "relative/u/.claude" {
 		t.Errorf("a relative home: %q", got)
 	}
 }

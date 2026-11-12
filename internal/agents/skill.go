@@ -441,15 +441,15 @@ func ConfigDirOf(agentID string, getenv func(string) string) string {
 
 // HomeConfigDir is the configuration directory the agent of adapter
 // agentID reads while its folder variable is unset: its directory under
-// the home its environment names (getenv; ~/.claude, ~/.codex). "" for an
-// agent without a folder variable or a skill path, and with no whole home.
+// the home its environment names as written (getenv; ~/.claude, ~/.codex).
+// "" for an agent without a folder variable or a skill path, or no home.
 func HomeConfigDir(agentID string, getenv func(string) string) string {
 	a, ok := Get(agentID)
 	if !ok || a.ConfigDirEnv == "" || a.SkillPath == "" {
 		return ""
 	}
 	home := homeOf(getenv)
-	if !filepath.IsAbs(home) {
+	if home == "" {
 		return ""
 	}
 	first, _, _ := strings.Cut(a.SkillPath, "/")

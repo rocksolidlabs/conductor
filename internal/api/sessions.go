@@ -304,7 +304,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	}
 	// The environment and the login (launchEnv: the entry's, the server's
 	// and this launch's part, then the login decided over them).
-	passthrough, env, bound, releaseAccount, aerr := s.launchEnv(agent, adapterEnv, applied, req.Env, req.allow, req.Account, cwd, req.login)
+	passthrough, env, bound, in, releaseAccount, aerr := s.launchEnv(agent, adapterEnv, applied, req.Env, req.allow, req.Account, cwd, req.login)
 	if aerr != nil {
 		return nil, aerr
 	}
@@ -458,7 +458,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		info.Crew = &ref
 	}
 	launched := session.Launched{AgentID: agent.ID, Name: name, Cwd: cwd, Args: slices.Clone(req.Args), Env: maps.Clone(req.Env), Yolo: yolo, Renamed: req.renamed,
-		Account: bound, Model: req.Model, Adapter: agent.Adapter}
+		Account: bound, Model: req.Model, Adapter: agent.Adapter, LoginFolder: in}
 	// Its record exists before the session can keep an entry, and the
 	// session's hooks feed it (recordHooks).
 	var rc *recorder
@@ -521,9 +521,9 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	// before the registry held it is read now.
 	s.registered(rc)
 	held := bound.ID
-	if bound.Folder != "" {
+	if in != "" {
 		if doc, aerr := s.accountsForLaunch(); aerr == nil {
-			held = heldAccount(doc, agent.Adapter, bound)
+			held = heldAccount(doc, agent.Adapter, bound, in)
 		}
 	}
 	s.capacity.started(agent.ID, held)

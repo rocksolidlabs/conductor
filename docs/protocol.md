@@ -5870,8 +5870,8 @@ of the adapter's login variables has that login alone, and so has a launch
 whose own additions (its yolo recipe's variables, an attempt's approved
 names) set one: each takes `default` only, and another account is refused
 `400 invalid_account` naming the variable. What the session was bound to
-is its binding: the account's id and label, the folder its process runs
-in (the folder variable's, else the agent's own under its home), where the login comes from (`source`: `own`,
+is its binding: the account's id and label, the folder (none for the
+agent's own login), where the login comes from (`source`: `own`,
 `account`, `pinned` for an entry or passthrough that sets it, `launch_env`
 for a launch's additions, `unlisted` for Brakeman's folder that no account
 holds) and a SHA-256 of the adapter and its login variables as the
@@ -5896,9 +5896,8 @@ invalid_account`; a server that does not own the accounts refuses a
 registered account `409 accounts_not_owner`; while the accounts cannot be
 read, a launch that would read them is refused `503 capacity_unavailable`
 (one naming no account, whose default is not known; a registered
-account; a Brakeman turn with a folder) and one naming `default`, or
-whose entry or launch sets its login, is started, holding the account of
-its folder from its registration. A `model` (1 to
+account; a Brakeman turn with a folder) and one naming `default` is
+started. A `model` (1 to
 100 of `A-Z a-z 0-9 . _ : / @ -`) goes through the adapter's flag
 (`--model=`) after the launch's own arguments, `400 invalid_request` for an
 agent whose adapter takes none or beside any of the launch's own arguments
@@ -5918,7 +5917,8 @@ bound `pinned` or `launch_env` as any such launch is, and a folder of a
 retired account is refused `400 invalid_account` (a new launch binds no
 retired account). A folder variable that is not a whole path names the
 folder under the one the process starts in, and that is the folder bound
-and compared; a crew member of such an entry, bound before it has a
+and compared; a crew member of such an entry, or of one whose home is not
+a whole path while the folder variable is unset, bound before it has a
 folder, is refused `400 invalid_account`. A crew member
 names `account` and `model` beside its agent; a launch of the crew (`POST
 /api/crews/{id}/launch`, an approved ticket's, an `ext.Host` launch) and an
@@ -5944,24 +5944,38 @@ A managed run any member of which is bound to anything but `own` is
 offered to no Runtime and runs on this server, and a process is started
 on a Runtime other than the native one only under the agent's own login
 (`400 invalid_account` otherwise, an attempt failed with those words).
-Whatever runs in an account's folder holds that account and is counted
-on it, from its start to its end, whatever set its login: a launch
-reserves the registered account whose folder its binding keeps (the
-account it names, or takes as its adapter's default) before its process
-starts, until its process has ended, whether or not its session was
-registered (its registration refused and its stop failed among them), and
-its session is counted on the account from its registration.
+Whatever a launch of this server runs in a registered account's folder
+holds that account from before its process starts until it has ended;
+its session is counted on one account from its registration. A launch
+runs in an account's folder when it names the account, or the folder its
+process runs in (the folder variable's as the process sees it, else the
+agent's own under its home, a home that is not whole read under the
+folder it starts in) is the account's, written clean or through links,
+whatever the account's adapter: it holds every such account, whether or
+not its session is registered (its registration refused and its stop
+failed among them). That folder is kept in memory beside the binding,
+never written, compared or answered. Its session is counted on the
+account it names, else its adapter's account on that folder, else the
+first; holding and counting are two questions, since one folder can be
+more than one account's. A usage read is not a launch and holds nothing;
+an account registered on a folder after a launch into it began is held
+from that launch's registration; where the accounts cannot be read, or on
+a server that does not own them, nothing is held by folder (a remove is
+refused there too); a launch on another Runtime is held and counted as one
+that runs here; a home that an entry or a launch sets moves the agent's
+own folder, and the binding's `source` still says the agent's own login.
 `DELETE /api/accounts/{id}` is refused `409 account_in_use`, naming at
 most 10, while a launch holds the account so, a registered server
-session's process bound to it or to its folder still runs (its stop
-failed, or it was removed from the listing), or an engine run not ended,
-or a ledger run running or interrupted, and continued by no other run, has
-a member bound to it or to its folder (one whose crew cannot be read holds
-every account); a stopped or finished run is no bar (continuing it is
-refused `account_gone`), and a kept run that another run has continued
-holds nothing. A run keeps a member on the agent's own login as no
-binding: such a member holds the account of its folder through its
-session.
+session's process that runs in its folder still runs (its stop failed,
+or it was removed from the listing), or an engine run not ended, or a
+ledger run running or interrupted, and continued by no other run, has a
+member whose binding names it or keeps its folder (one whose crew cannot
+be read holds every account); a stopped or finished run is no bar
+(continuing it is refused `account_gone`), and a kept run that another
+run has continued holds nothing. A run keeps a member on the agent's own
+login as no binding, and one bound `launch_env`, or `pinned` by a key
+alone, with no folder: such a member holds the account of its folder
+through its launches.
 
 **The routes**, each the workbench token's alone (a session's, a host's, a
 link's and a Brakeman turn's are refused `401`) and a launch route's (a
@@ -6003,8 +6017,8 @@ the provider did not report it (never a zero); the counts (`running`,
 `started5h`, `started7d`, `since`) carry `source: "conductor"` and
 `estimate: true`: the server sessions of the agent on the account this
 server counted since it started, each from its registration: a session
-bound to the account or to its folder, whatever its `source` (Capacity's
-binding paragraph above). `host.kind` is `native`
+counted on the account, whatever its `source` (Capacity's binding
+paragraph above). `host.kind` is `native`
 (with the server's name), `remote`, or, for a managed run of the agent's
 own login when a Runtime other than the native one is registered,
 `undetermined` ("this server's login: if <Runtime> takes the run, its usage

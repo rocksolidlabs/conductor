@@ -674,25 +674,33 @@ func (s *Store) Reserve(id string) (Account, func(), error) { return s.reserve(i
 // retired account, kept for what is bound to it, is held as well.
 func (s *Store) Hold(id string) (Account, func(), error) { return s.reserve(id, true) }
 
-// HoldOf is Hold for the account pick names in the accounts as they are
+// HoldOf is Hold for each account pick names in the accounts as they are
 // under the accounts' lock, so no Remove comes between the pick and the
-// reservation (an api launch's pick: the account whose folder its process
-// runs in). A pick that names no account of the document holds nothing:
-// a zero Account and a release that does nothing.
-func (s *Store) HoldOf(pick func(Accounts) string) (Account, func(), error) {
-	return s.reserveOf(pick, true, true)
+// reservations; an id the document does not hold is passed over.
+func (s *Store) HoldOf(pick func(Accounts) []string) (func(), error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.owned {
+		return nil, notOwner()
+	}
+	d, err := s.load()
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, id := range pick(d) {
+		if _, err := find(&d, id); err == nil {
+			s.reserved[id]++
+			ids = append(ids, id)
+		}
+	}
+	return s.releaser(ids), nil
 }
 
 func (s *Store) reserve(id string, retired bool) (Account, func(), error) {
 	if id == DefaultID {
 		return Account{}, func() {}, nil
 	}
-	return s.reserveOf(func(Accounts) string { return id }, retired, false)
-}
-
-// reserveOf reserves the account pick names in the document; one it does
-// not hold is refused, or, orNone, holds nothing.
-func (s *Store) reserveOf(pick func(Accounts) string, retired, orNone bool) (Account, func(), error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.owned {
@@ -702,12 +710,8 @@ func (s *Store) reserveOf(pick func(Accounts) string, retired, orNone bool) (Acc
 	if err != nil {
 		return Account{}, nil, err
 	}
-	id := pick(d)
 	i, err := find(&d, id)
-	switch {
-	case err != nil && orNone:
-		return Account{}, func() {}, nil
-	case err != nil:
+	if err != nil {
 		return Account{}, nil, err
 	}
 	a := d.Accounts[i]
@@ -715,14 +719,21 @@ func (s *Store) reserveOf(pick func(Accounts) string, retired, orNone bool) (Acc
 		return Account{}, nil, invalid("account", "%s is retired", id)
 	}
 	s.reserved[id]++
+	return a, s.releaser([]string{id}), nil
+}
+
+// releaser lets go, once, of a reservation on each of ids.
+func (s *Store) releaser(ids []string) func() {
 	var once sync.Once
-	return a, func() {
+	return func() {
 		once.Do(func() {
 			s.mu.Lock()
 			defer s.mu.Unlock()
-			if s.reserved[id]--; s.reserved[id] <= 0 {
-				delete(s.reserved, id)
+			for _, id := range ids {
+				if s.reserved[id]--; s.reserved[id] <= 0 {
+					delete(s.reserved, id)
+				}
 			}
 		})
-	}, nil
+	}
 }

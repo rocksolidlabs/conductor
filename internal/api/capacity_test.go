@@ -1007,6 +1007,28 @@ func TestCapacityStaysWithTheAdmin(t *testing.T) {
 	e.getFile(sid, link, "notes.md", "raw")
 	writeFile(t, accountsFile, before)
 	e.getFile(sid, link, "notes.md", "raw")
+	// The home's skill a file of the user's own, then one that cannot be
+	// read, each at a launch the server installs it again at, and the
+	// integration's install failing on it: no line names a path under the
+	// account's folder.
+	ad, _ := agents.Get("claude")
+	skill := filepath.Join(e.srv.home, filepath.FromSlash(ad.SkillPath))
+	launchAgain := func() {
+		e.srv.skillMu.Lock()
+		delete(e.srv.skillDone, "claude")
+		e.srv.skillMu.Unlock()
+		e.stopAndWait(e.expect(t, "POST", "/api/sessions", map[string]any{"agentId": "claude-w"}, http.StatusCreated, "")["id"].(string))
+	}
+	writeFile(t, skill, []byte("a skill of the user's own\n"))
+	launchAgain()
+	if err := os.Remove(skill); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(skill, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	launchAgain()
+	e.expect(t, "POST", "/api/integrations/claude/install", nil, http.StatusInternalServerError, "install_failed")
 	logMu.Lock()
 	defer logMu.Unlock()
 	for _, words := range []string{denyAllWords, denyEndWords} {
@@ -1017,8 +1039,11 @@ func TestCapacityStaysWithTheAdmin(t *testing.T) {
 	if n := bytes.Count(logged.Bytes(), []byte("skill installed in the agent's configuration directory")); n < 2 {
 		t.Errorf("the skill's line was written %d times: not for the pinned launch and the turn", n)
 	}
-	if !bytes.Contains(logged.Bytes(), []byte(`msg="skill installed" adapter=claude`)) {
-		t.Errorf("the log lacks the line of the skill installed in the server's home")
+	for _, line := range []string{`msg="skill installed" adapter=claude`, `holds a SKILL.md of the user's own, which stays; conductor skill prints Conductor's" adapter=claude`,
+		`msg="skill install failed" adapter=claude`, `msg="integration install failed" integration=claude`} {
+		if !bytes.Contains(logged.Bytes(), []byte(line)) {
+			t.Errorf("the log lacks %s", line)
+		}
 	}
 	leaked("the log", "", logged.Bytes())
 }

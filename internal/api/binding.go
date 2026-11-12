@@ -116,10 +116,10 @@ type loginWant struct {
 // when applied, set's, the allow names beside the passthrough, which is
 // agentEnv's clone so one launch never grows the list another reads), then
 // the login bindLogin decides over all of them, for a process started in
-// cwd ("" while it is not known). createLocalSession starts every session
-// with it, and bindMembers binds a member by it, as its session will be
-// started.
-func (s *Server) launchEnv(agent catalog.Agent, adapterEnv map[string]string, applied bool, set map[string]string, allow []string, account, cwd string, want loginWant) ([]string, map[string]string, session.BoundAccount, func(), *apiError) {
+// cwd ("" while it is not known), and the folder its process runs in
+// (bindLogin's). createLocalSession starts every session with it, and
+// bindMembers binds a member by it, as its session will be started.
+func (s *Server) launchEnv(agent catalog.Agent, adapterEnv map[string]string, applied bool, set map[string]string, allow []string, account, cwd string, want loginWant) ([]string, map[string]string, session.BoundAccount, string, func(), *apiError) {
 	passthrough, env := s.agentEnv(agent, adapterEnv)
 	entry := pty.BuildEnv(pty.ParentEnv(), passthrough, env, nil)
 	if applied {
@@ -127,14 +127,14 @@ func (s *Server) launchEnv(agent catalog.Agent, adapterEnv map[string]string, ap
 	}
 	maps.Copy(env, set)
 	passthrough = append(passthrough, allow...)
-	bound, release, aerr := s.bindLogin(agent, account, cwd, want, entry, pty.BuildEnv(pty.ParentEnv(), passthrough, env, nil), env)
+	bound, in, release, aerr := s.bindLogin(agent, account, cwd, want, entry, pty.BuildEnv(pty.ParentEnv(), passthrough, env, nil), env)
 	if aerr != nil {
 		if was := want.bound; was != nil && aerr.Code == "invalid_account" {
 			aerr = accountGone(*was, session.BoundAccount{ID: was.ID, Source: was.Source})
 		}
-		return nil, nil, session.BoundAccount{}, nil, aerr
+		return nil, nil, session.BoundAccount{}, "", nil, aerr
 	}
-	return passthrough, env, bound, release, nil
+	return passthrough, env, bound, in, release, nil
 }
 
 // bindLogin decides the login a launch of agent, started in cwd, gets,
@@ -152,17 +152,15 @@ func (s *Server) launchEnv(agent catalog.Agent, adapterEnv map[string]string, ap
 // bound only when its folder is the one login variable the process gets,
 // and one named beside another is refused. A new launch binds no retired
 // account (Reserve); a launch made again holds the one it was bound to
-// (Hold). Every binding keeps the folder its process runs in, and a
-// launch of any other source holds the registered account whose folder
-// that is (holdFolder), so whatever runs in an account's folder holds it
-// from before its process starts. The binding answered has no Login yet
-// (createLocalSession reads it from the environment built). Release lets
-// go of the reservation once the session is registered, its launch failed
-// before its process started, or the process of a launch whose
-// registration was refused has ended.
-func (s *Server) bindLogin(agent catalog.Agent, account, cwd string, want loginWant, entry, full []string, env map[string]string) (session.BoundAccount, func(), *apiError) {
-	refuse := func(words string) (session.BoundAccount, func(), *apiError) {
-		return session.BoundAccount{}, nil, newAPIError(http.StatusBadRequest, "invalid_account", words)
+// (Hold). The binding answered has no Login yet (createLocalSession reads
+// it from the environment built); beside it, the folder its process runs
+// in, kept in memory alone, whose accounts are held too (holdFolder).
+// Release lets go of the reservations once the session is registered, its
+// launch failed before its process started, or the process of a launch
+// whose registration was refused has ended.
+func (s *Server) bindLogin(agent catalog.Agent, account, cwd string, want loginWant, entry, full []string, env map[string]string) (session.BoundAccount, string, func(), *apiError) {
+	refuse := func(words string) (session.BoundAccount, string, func(), *apiError) {
+		return session.BoundAccount{}, "", nil, newAPIError(http.StatusBadRequest, "invalid_account", words)
 	}
 	ad, _ := agents.Get(agent.Adapter)
 	id, folder := account, want.folder
@@ -173,7 +171,7 @@ func (s *Server) bindLogin(agent catalog.Agent, account, cwd string, want loginW
 		}
 	}
 	if folder != "" && ad.ConfigDirEnv == "" {
-		return session.BoundAccount{}, nil, newAPIError(http.StatusBadRequest, "invalid_agent", "the agent takes no account folder")
+		return session.BoundAccount{}, "", nil, newAPIError(http.StatusBadRequest, "invalid_agent", "the agent takes no account folder")
 	}
 	// The login variables the environment holds besides a folder wanted:
 	// the first its entry or the server's passthrough sets (pinned), the
@@ -195,7 +193,7 @@ func (s *Server) bindLogin(agent catalog.Agent, account, cwd string, want loginW
 	if folder != "" || (id == "" && pinned == "" && added == "") || (id != "" && id != capacity.DefaultID) {
 		var aerr *apiError
 		if doc, aerr = s.accountsForLaunch(); aerr != nil {
-			return session.BoundAccount{}, nil, aerr
+			return session.BoundAccount{}, "", nil, aerr
 		}
 	}
 	// What is wanted, resolved: a folder is the registered account that
@@ -236,28 +234,30 @@ func (s *Server) bindLogin(agent catalog.Agent, account, cwd string, want loginW
 	if folder != "" {
 		env[ad.ConfigDirEnv] = folder
 	}
-	// Every binding keeps the folder its process runs in, as it sees it:
-	// the one wanted, the folder variable set, else the tool's own under
-	// its home.
-	seen := folder
-	if seen == "" && ad.ConfigDirEnv != "" {
-		seen = cmp.Or(seenFolder(fl(ad.ConfigDirEnv), cwd), agents.HomeConfigDir(agent.Adapter, fl))
+	// The folder its process runs in, as it sees it: the one wanted, the
+	// folder variable's, else the tool's own under its home.
+	in := folder
+	if in == "" && ad.ConfigDirEnv != "" {
+		in = seenFolder(cmp.Or(fl(ad.ConfigDirEnv), agents.HomeConfigDir(agent.Adapter, fl)), cwd)
 	}
 	var b session.BoundAccount
 	switch {
 	case added != "":
-		b = session.BoundAccount{ID: capacity.DefaultID, Folder: seen, Source: session.SourceLaunchEnv}
+		b = session.BoundAccount{ID: capacity.DefaultID, Folder: folder, Source: session.SourceLaunchEnv}
 	case pinned != "":
-		b = session.BoundAccount{ID: capacity.DefaultID, Folder: seen, Source: session.SourcePinned}
+		b = session.BoundAccount{ID: capacity.DefaultID, Folder: folder, Source: session.SourcePinned}
+		if folder == "" && ad.ConfigDirEnv != "" {
+			b.Folder = seenFolder(el(ad.ConfigDirEnv), cwd)
+		}
 	case folder == "" && id == capacity.DefaultID:
-		b = session.BoundAccount{ID: id, Folder: seen, Source: session.SourceOwn}
+		b = session.BoundAccount{ID: id, Source: session.SourceOwn}
 	case folder != "" && id == "":
 		b = session.BoundAccount{ID: session.SourceUnlisted, Folder: folder, Source: session.SourceUnlisted}
 	case s.capacity == nil || s.capacity.st == nil:
 		return refuse("this server keeps no accounts")
 	}
 	if b.Source != "" {
-		return b, s.holdFolder(agent.Adapter, b), nil
+		return b, in, s.holdFolder(b, in), nil
 	}
 	// A registered account, its folder the one login variable.
 	hold := s.capacity.st.Reserve
@@ -266,7 +266,7 @@ func (s *Server) bindLogin(agent catalog.Agent, account, cwd string, want loginW
 	}
 	a, release, err := hold(id)
 	if err != nil {
-		return session.BoundAccount{}, nil, loginRefusal(err)
+		return session.BoundAccount{}, "", nil, loginRefusal(err)
 	}
 	if a.Adapter != agent.Adapter {
 		release()
@@ -276,7 +276,9 @@ func (s *Server) bindLogin(agent catalog.Agent, account, cwd string, want loginW
 		folder = a.Folder
 		env[ad.ConfigDirEnv] = folder
 	}
-	return session.BoundAccount{ID: a.ID, Label: a.Label, Folder: folder, Source: session.SourceAccount}, release, nil
+	b = session.BoundAccount{ID: a.ID, Label: a.Label, Folder: folder, Source: session.SourceAccount}
+	others := s.holdFolder(b, folder)
+	return b, folder, func() { release(); others() }, nil
 }
 
 // accountsForLaunch is the accounts document a launch resolves an account
@@ -417,17 +419,22 @@ func (s *Server) bindMembers(ms []crew.Member, yolo bool, caller *session.Local)
 			}
 		}
 		_, adapterEnv := agents.InjectFor(agent.Adapter, agents.HooksDir(s.cfg.DataDir), agent.EffectiveSignal(), applied)
-		passthrough, env, b, rel, aerr := s.launchEnv(agent, adapterEnv, applied, nil, nil, account, "", loginWant{})
+		passthrough, env, b, in, rel, aerr := s.launchEnv(agent, adapterEnv, applied, nil, nil, account, "", loginWant{})
 		if aerr != nil {
 			return refuse(*m, aerr)
 		}
 		releases = append(releases, rel)
 		// A member is bound before the folder it starts in is known (each
-		// attempt of a managed run has its own): a folder variable that is
-		// not whole would be another login in each.
+		// attempt of a managed run has its own): a folder variable, or a
+		// home it is unset under, that is not whole would be another login
+		// in each.
 		lookup := pty.Lookup(pty.BuildEnv(pty.ParentEnv(), passthrough, env, nil))
-		if ad, _ := agents.Get(agent.Adapter); ad.ConfigDirEnv != "" && lookup(ad.ConfigDirEnv) != "" && !filepath.IsAbs(lookup(ad.ConfigDirEnv)) {
-			return refuse(*m, newAPIError(http.StatusBadRequest, "invalid_account", "its entry sets "+ad.ConfigDirEnv+" to a folder under the one it starts in, which would be another login in each of its working folders: set a whole path"))
+		if ad, _ := agents.Get(agent.Adapter); in != "" && !filepath.IsAbs(in) {
+			n := ad.ConfigDirEnv
+			if lookup(n) == "" {
+				n = "HOME"
+			}
+			return refuse(*m, newAPIError(http.StatusBadRequest, "invalid_account", "its entry sets "+n+" to a folder under the one it starts in, which would be another login in each of its working folders: set a whole path"))
 		}
 		b.Login = loginOf(agent.Adapter, "", lookup)
 		if mine && (b.Folder != by.Folder || b.Login != by.Login) {
@@ -485,37 +492,47 @@ func (s *Server) bindMember(runID string, m crew.Member, caller *session.Local) 
 	return ms[0], release, nil
 }
 
-// holdFolder is the reservation of a launch bound b, of a source other
-// than account, from before its process starts: the registered account
-// whose folder b keeps (heldAccount, under the accounts' lock), held as a
-// launch that names it is and let go by the same release. A server that
-// keeps no accounts, does not own them or cannot read them removes none
-// meanwhile, and nothing is held.
-func (s *Server) holdFolder(adapter string, b session.BoundAccount) func() {
-	if b.Folder == "" || s.capacity == nil || s.capacity.st == nil {
+// holdFolder reserves, under the accounts' lock, every account but the one
+// b names that a launch bound b in the folder in runs in (runsIn), in the
+// count a named launch takes. Where the accounts are not kept, owned or
+// readable, none is removed meanwhile, and nothing is held.
+func (s *Server) holdFolder(b session.BoundAccount, in string) func() {
+	if in == "" || s.capacity == nil || s.capacity.st == nil {
 		return func() {}
 	}
-	_, release, err := s.capacity.st.HoldOf(func(doc capacity.Accounts) string { return heldAccount(doc, adapter, b) })
+	release, err := s.capacity.st.HoldOf(func(doc capacity.Accounts) (ids []string) {
+		for _, a := range doc.Accounts {
+			if a.ID != b.ID && runsIn(a, b, in) {
+				ids = append(ids, a.ID)
+			}
+		}
+		return ids
+	})
 	if err != nil {
 		return func() {}
 	}
 	return release
 }
 
-// heldAccount is the one judgement of the account a binding of a process
-// of adapter holds and is counted on, of those doc holds: its own id, or,
-// for a binding of another source, the registered account whose folder it
-// keeps (the folder its process runs in, whatever set it), adapter's own
-// before another adapter's on the same folder, whatever the source says;
-// the source stays what the environment says.
-func heldAccount(doc capacity.Accounts, adapter string, b session.BoundAccount) string {
-	if b.Source == session.SourceAccount || b.Folder == "" {
+// runsIn is what holds an account, for the reservation and the remove
+// alike: a launch bound b in the folder in runs in a's when b names a, or
+// in is a's folder (clean or through links), whatever a's adapter.
+func runsIn(a capacity.Account, b session.BoundAccount, in string) bool {
+	return (b.Source == session.SourceAccount && b.ID == a.ID) || (in != "" && accountFolder(a, in))
+}
+
+// heldAccount is the one account a session of adapter bound b, its process
+// in the folder in, is counted on, of those doc holds: the account b
+// names, else adapter's own whose folder in is, else another adapter's,
+// else b's id. The start count and the counts read it, and only they.
+func heldAccount(doc capacity.Accounts, adapter string, b session.BoundAccount, in string) string {
+	if b.Source == session.SourceAccount || in == "" {
 		return b.ID
 	}
 	held := b.ID
 	for _, a := range doc.Accounts {
 		switch {
-		case !accountFolder(a, b.Folder):
+		case !accountFolder(a, in):
 		case a.Adapter == adapter:
 			return a.ID
 		case held == b.ID:
@@ -532,22 +549,22 @@ func accountFolder(a capacity.Account, folder string) bool {
 }
 
 // boundTo names, in words, what holds the account a (capacity.Facts.Bound),
-// each binding judged by heldAccount: the server sessions bound to it
-// whose process has not ended (the registry's Holders: a session whose
-// stop failed, or removed from the listing while its process runs, holds
-// it as a running one does), the engine's runs a member of which is bound
-// to it and that have not ended, and the ledger's runs running or
-// interrupted, and continued by no other run, whose crew as launched binds
-// it. A stopped or finished run is no bar: a continuation of it is refused
-// account_gone; a run another has continued starts nothing again, and its
-// continuation's own row holds what it binds. A ledger, or a run's crew in
-// it, that cannot be read holds it, since what it holds is not known.
+// each judged by runsIn: the server sessions that run in it (by their
+// folder) whose process has not ended (the registry's Holders: a session
+// whose stop failed, or removed from the listing while its process runs,
+// holds it as a running one does), and, by the binding kept, the engine's
+// runs not ended a member of which is bound to it, and the ledger's runs
+// running or interrupted, and continued by no other run, whose crew as
+// launched binds it. A stopped or finished run is no bar: a continuation
+// of it is refused account_gone; a run another has continued starts
+// nothing again, and its continuation's own row holds what it binds. A
+// ledger, or a run's crew in it, that cannot be read holds it, since what
+// it holds is not known.
 func (s *Server) boundTo(a capacity.Account) []string {
-	id, only := a.ID, capacity.Accounts{Accounts: []capacity.Account{a}}
-	holds := func(b session.BoundAccount) bool { return heldAccount(only, "", b) == id }
+	holds := func(b session.BoundAccount) bool { return runsIn(a, b, b.Folder) }
 	var names []string
 	for _, d := range s.registry.Holders() {
-		if l, ok := d.(*session.Local); ok && l.Info().Kind == session.KindServer && holds(l.Launched().Account) {
+		if l, ok := d.(*session.Local); ok && l.Info().Kind == session.KindServer && runsIn(a, l.Launched().Account, l.Launched().LoginFolder) {
 			names = append(names, "session "+l.Info().Name)
 		}
 	}
