@@ -18,6 +18,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/store"
@@ -33,7 +34,9 @@ import (
 // adapter only marks the document pending there, never waiting. What
 // reaches the sync store is an allowlist: catalog.json, crews/<id>.json and
 // runs/<id>.json from the data directory (the catalog masked, every env
-// value catalog.RedactedValue), a run's pointer from the ledger (never the
+// value catalog.RedactedValue; a run's record as the run its routes answer,
+// encoded again, never what the record keeps beside it for the server
+// alone, such as its members' bindings), a run's pointer from the ledger (never the
 // crew as launched, its rows or its logs) and a reference to each Dispatch
 // entity a commit changed. The workbench token, links/, tls/, hooks/, ext/
 // and every other file never reach it, and nothing a sync store answers is
@@ -559,16 +562,23 @@ func (a *syncAdapter) deliverData(ctx context.Context, d ext.Doc) error {
 		return err
 	}
 	defer f.Close()
-	if d.Path == catalogFile {
+	if d.Path == catalogFile || strings.HasPrefix(d.Path, "runs/") {
 		b, err := io.ReadAll(f)
 		if err != nil {
-			a.warn("sync: the catalog could not be read; it is tried again", err)
+			a.warn("sync: a document could not be read; it is tried again", err)
 			return err
 		}
-		// One that does not decode goes with no data.
-		masked, _ := maskCatalogDoc(b)
-		return a.parts(ctx, d, int64(len(masked)), func(off int64, p []byte) error {
-			copy(p, masked[off:])
+		// The catalog masked; a run's record as its routes answer the run
+		// (crew.Run, encoded again), never what the record keeps beside it
+		// for the server. One that does not decode goes with no data.
+		var out []byte
+		if d.Path == catalogFile {
+			out, _ = maskCatalogDoc(b)
+		} else {
+			out = publicRunDoc(b)
+		}
+		return a.parts(ctx, d, int64(len(out)), func(off int64, p []byte) error {
+			copy(p, out[off:])
 			return nil
 		})
 	}
@@ -653,6 +663,23 @@ func maskCatalogDoc(b []byte) ([]byte, error) {
 		}
 	}
 	return store.Encode(ov)
+}
+
+// publicRunDoc is a run's record (runs/<id>.json) as a sync store is given
+// it: the run as its routes answer it (crew.Run, re-encoded as the store
+// writes it), so a field the record keeps for the server alone, the
+// members' bindings among them, is not in it by the type; nil for bytes
+// that do not decode.
+func publicRunDoc(b []byte) []byte {
+	var r crew.Run
+	if json.Unmarshal(b, &r) != nil {
+		return nil
+	}
+	out, err := store.Encode(r)
+	if err != nil {
+		return nil
+	}
+	return out
 }
 
 // maskedEnv is env with every value catalog.RedactedValue.

@@ -677,6 +677,14 @@ func (s *Server) launchPlanned(ctx context.Context, ds *dispatch.Store, l dispat
 	if err := checkLaunch(c.Members, cat, s.installedFor(ctx, cat, c.Members), identity); err != nil {
 		return nil, noop, err
 	}
+	// Each member bound to the account the revision names, or its
+	// adapter's default at this launch; a retired or removed one refuses.
+	members, unbind, aerr := s.bindMembers(c.Members, *c.Yolo, nil)
+	if aerr != nil {
+		return nil, noop, fmt.Errorf("%w: %s", crew.ErrInvalid, aerr.Message)
+	}
+	defer unbind()
+	c.Members = members
 	if f := gateSeam(&s.launches, &s.launches.beforePlanned); f != nil {
 		f(l.ID)
 	}

@@ -839,11 +839,13 @@ func (s *Server) proposeAsOperator(ctx context.Context, pm planMake, op, by stri
 }
 
 // crewOfBody is the crew a draft crew's body makes, decoded strictly as
-// POST /api/crews decodes its body.
+// POST /api/crews decodes its body, by the one decoder of an agent's
+// members (decodeAgentMembers): a draft names no account and no binding,
+// at its check (CheckCrew) and at its making alike.
 func crewOfBody(body json.RawMessage) (crew.Crew, error) {
 	var in crewInput
-	if err := store.DecodeStrict(body, &in); err != nil {
-		return crew.Crew{}, err
+	if aerr := decodeAgentMembers(body, &in); aerr != nil {
+		return crew.Crew{}, aerr
 	}
 	return in.crew(), nil
 }

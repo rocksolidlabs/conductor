@@ -160,7 +160,7 @@ func TestAccountFolderFixed(t *testing.T) {
 	for i := range ty.NumMethod() {
 		names = append(names, ty.Method(i).Name)
 	}
-	want := []string{"Accounts", "Add", "Disown", "Own", "Remove", "Rename", "Reserve", "Retire", "SetDefault", "Versions"}
+	want := []string{"Accounts", "Add", "Disown", "Hold", "Own", "Remove", "Rename", "Reserve", "Retire", "SetDefault", "Versions"}
 	if !slices.Equal(names, want) {
 		t.Errorf("Store's methods are %v, want %v", names, want)
 	}

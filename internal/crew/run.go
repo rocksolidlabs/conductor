@@ -86,6 +86,12 @@ type LaunchSpec struct {
 	// run's Runtime's (the engine's offered one when it took the run, the
 	// native one otherwise); empty for a legacy member, started natively.
 	Where ext.Where
+	// Account is the login the member was bound to (Member.Bound; the
+	// zero binding for a member no launch bound, whose session takes the
+	// tool's own login), which the launcher starts the session under or
+	// refuses (account_gone); Model the member's model.
+	Account session.BoundAccount
+	Model   string
 }
 
 // Member states (MemberState.Status).
@@ -151,6 +157,10 @@ var (
 	// continuation that read them in part would ask a released gate again
 	// or drop an answer (readDecisionHistory). Nothing is made or moved.
 	ErrChainTooLong = errors.New("the run's chain of continuations is longer than this server reads: it is not continued")
+	// ErrLoginNotKept refuses a resume from a record that names a member's
+	// account and keeps no binding for it: it is never resumed on another
+	// login.
+	ErrLoginNotKept = errors.New("the record names a member's account and keeps no binding for it: it is not resumed on another login")
 	// ErrManaged says the run is a managed one (a crew with tasks, #334),
 	// which the start, add and resume paths of a legacy run do not serve:
 	// a managed run dispatches its own tasks, and continues after a restart
@@ -178,6 +188,14 @@ type MemberState struct {
 	Name    string `json:"name"`
 	AgentID string `json:"agentId"`
 	Start   Start  `json:"start"`
+	// Account is the login the member is bound to, by its id and source
+	// alone (MemberAccount), and Model its model.
+	Account *MemberAccount `json:"account,omitempty"`
+	Model   string         `json:"model,omitempty"`
+	// bound is the member's whole binding (Member.Bound), carried with the
+	// run in memory for its legacy record, whose storage form keeps it
+	// (storedRun): no reply carries it, and only ResumeRecord reads it.
+	bound *session.BoundAccount
 	// SessionID is the member's session once it has started.
 	SessionID string `json:"sessionId,omitempty"`
 	// Branch and Worktree are set with isolation "worktree" once it starts.
@@ -1075,7 +1093,13 @@ func (e *Engine) ResumeRecord(ctx context.Context, rec Run) (*Run, error) {
 	c := Crew{ID: rec.CrewID, Name: rec.Name, Goal: rec.Goal, Cwd: rec.Cwd, Where: WhereServer, Isolation: rec.Isolation, Yolo: &yolo}
 	keeps := map[string]kept{}
 	for _, st := range rec.Members {
-		c.Members = append(c.Members, Member{Name: st.Name, AgentID: st.AgentID, Prompt: st.Prompt, Args: slices.Clone(st.Args), Start: st.Start})
+		// Its binding as the record keeps it; one that keeps none (a record
+		// from before bindings, a member on the tool's own login) takes the
+		// login a launch of default gives now, as it did.
+		if st.Account != nil && st.bound == nil {
+			return nil, fmt.Errorf("%w: member %s", ErrLoginNotKept, st.Name)
+		}
+		c.Members = append(c.Members, Member{Name: st.Name, AgentID: st.AgentID, Prompt: st.Prompt, Args: slices.Clone(st.Args), Start: st.Start, Model: st.Model, Bound: st.bound})
 		if st.AgentSession != nil && st.AgentSession.Resumable && st.AgentSession.ID != "" {
 			keeps[st.Name] = kept{agentSession: st.AgentSession.ID, sessionID: st.SessionID, worktree: st.Worktree, branch: st.Branch, base: st.Base}
 		}
@@ -1134,7 +1158,7 @@ func (e *Engine) resumeInto(ctx context.Context, c Crew, keeps map[string]kept, 
 		}
 		local, err := e.launcher.Launch(ctx, LaunchSpec{AgentID: m.def.AgentID, Name: name, Cwd: cwd, Args: slices.Clone(m.def.Args),
 			Env: map[string]string{"GOAL": r.goal}, Ref: session.CrewRef{RunID: r.id, CrewID: r.crewID, Member: name}, Yolo: r.yolo,
-			Resume: k.agentSession, ResumedFrom: k.sessionID})
+			Resume: k.agentSession, ResumedFrom: k.sessionID, Account: m.def.boundAccount(), Model: m.def.Model})
 		if err != nil {
 			r.starts.Done()
 			e.fail(r, m, err)
@@ -1285,7 +1309,7 @@ func (e *Engine) addRun(c Crew, p prepared, label, id string, pkg *runPackage) (
 		if want == "" {
 			want = e.mintRunID(c.ID)
 		}
-		r.rt, r.taken = e.runtimeFor(r.managed, want)
+		r.rt, r.taken = e.runtimeFor(r.managed && ownLogins(c.Members), want)
 		// Under endMu as well: a run evict forgets has its record written
 		// (journalForgotten) in its turn among the saves, before the run is
 		// gone for a resume from that record to find.
@@ -1348,8 +1372,64 @@ func (e *Engine) launched(r *run) {
 
 func newMember(m Member) *member {
 	m.Args = slices.Clone(m.Args)
-	return &member{def: m, state: MemberState{Name: m.Name, AgentID: m.AgentID, Start: m.Start, Status: MemberPending},
-		wake: make(chan struct{}, 1)}
+	return &member{def: m, state: memberStateOf(m), wake: make(chan struct{}, 1)}
+}
+
+// memberStateOf is the state, pending, of m as a run keeps it: its model,
+// and its binding by id and source (Account) and whole (bound, for a
+// legacy record), except the tool's own login, which a run keeps as no
+// binding, as a run from before bindings has (the run's engine holds m's
+// whole binding all the same, and compares every launch of it).
+func memberStateOf(m Member) MemberState {
+	st := MemberState{Name: m.Name, AgentID: m.AgentID, Start: m.Start, Status: MemberPending, Model: m.Model}
+	if b := m.Bound; b != nil && b.Source != session.SourceOwn {
+		st.Account, st.bound = &MemberAccount{ID: b.ID, Source: b.Source}, b
+	}
+	return st
+}
+
+// MemberAccount is a member's binding as a run reply shows it, to whoever
+// may read the run: the account's id and where the login comes from. Its
+// label, folder and fingerprint stay with the admin (the accounts and the
+// session's launch).
+type MemberAccount struct {
+	ID     string `json:"id"`
+	Source string `json:"source"`
+}
+
+// Binding is the member's binding as the run holds it, whole when it is
+// kept (its folder among it), else its id and source; the zero binding
+// for the tool's own login. It is the server's, never a reply's.
+func (m MemberState) Binding() session.BoundAccount {
+	switch {
+	case m.bound != nil:
+		return *m.bound
+	case m.Account != nil:
+		return session.BoundAccount{ID: m.Account.ID, Source: m.Account.Source}
+	}
+	return session.BoundAccount{}
+}
+
+// boundAccount is m's binding for its launches: the zero binding for a
+// member no launch bound.
+func (m Member) boundAccount() session.BoundAccount {
+	if m.Bound == nil {
+		return session.BoundAccount{}
+	}
+	return *m.Bound
+}
+
+// ownLogins says every member of c takes the tool's own login, or was
+// bound by no launch (a crew from before bindings, which took it): a run
+// with any other binding depends on a login of this server, and is
+// offered to no Runtime (runtimeFor).
+func ownLogins(members []Member) bool {
+	for _, m := range members {
+		if m.Bound != nil && m.Bound.Source != session.SourceOwn {
+			return false
+		}
+	}
+	return true
 }
 
 // member returns the member of r with the given name. The caller holds e.mu.
@@ -1463,7 +1543,7 @@ func (e *Engine) launch(ctx context.Context, r *run, m *member) (*session.Local,
 	}
 	local, err := e.launcher.Launch(ctx, LaunchSpec{AgentID: m.def.AgentID, Name: name, Cwd: cwd, Args: slices.Clone(m.def.Args),
 		Env: map[string]string{"GOAL": r.goal}, Ref: session.CrewRef{RunID: r.id, CrewID: r.crewID, Member: name}, Yolo: r.yolo,
-		Class: r.class, Request: r.request})
+		Class: r.class, Request: r.request, Account: m.def.boundAccount(), Model: m.def.Model})
 	if err != nil {
 		return nil, err
 	}
@@ -2738,7 +2818,7 @@ func (e *Engine) ResumeMember(ctx context.Context, runID, name, resume string) (
 	defer context.AfterFunc(r.ctx, cancel)()
 	local, err := e.launcher.Launch(ctx, LaunchSpec{AgentID: m.def.AgentID, Name: name, Cwd: cwd, Args: slices.Clone(m.def.Args),
 		Env: map[string]string{"GOAL": r.goal}, Ref: session.CrewRef{RunID: r.id, CrewID: r.crewID, Member: name}, Yolo: r.yolo,
-		Resume: resume, ResumedFrom: old})
+		Resume: resume, ResumedFrom: old, Account: m.def.boundAccount(), Model: m.def.Model})
 	if err != nil {
 		e.mu.Lock()
 		m.resuming = false

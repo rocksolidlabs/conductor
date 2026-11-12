@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
@@ -49,6 +50,46 @@ func (rs *Records) Close() {
 
 // maxRecords bounds the records kept.
 const maxRecords = 500
+
+// storedRun is a record as it is on disk: the run as GET /api/runs/{run}
+// answers it, and beside it its members' bindings by name (bound, at most
+// maxMembers), which the run as every reply carries it has none of. Every
+// record is read in this form and handed on as the Run alone, the
+// bindings riding its members unexported (MemberState.bound) for
+// ResumeRecord.
+type storedRun struct {
+	Run
+	Bound map[string]session.BoundAccount `json:"bound,omitempty"`
+}
+
+// storedOf is r's storage form.
+func storedOf(r Run) storedRun {
+	s := storedRun{Run: r}
+	for _, m := range r.Members {
+		if m.bound != nil {
+			if s.Bound == nil {
+				s.Bound = map[string]session.BoundAccount{}
+			}
+			s.Bound[m.Name] = *m.bound
+		}
+	}
+	return s
+}
+
+// loadRun reads the record name into its Run, its members' bindings on
+// them.
+func (rs *Records) loadRun(name string, r *Run, limit int64) (bool, error) {
+	var s storedRun
+	ok, err := rs.st.LoadLimit(name, &s, limit)
+	*r = s.Run
+	r.Members = slices.Clone(r.Members)
+	for i := range r.Members {
+		if b, found := s.Bound[r.Members[i].Name]; found {
+			r.Members[i].bound = &b
+		}
+	}
+	return ok, err
+}
 
 // maxRecordSize bounds one record, written and read back: a run with 200
 // log lines is well under it, and Save trims the chat and the log of one
@@ -135,7 +176,7 @@ func (rs *Records) reconcile() error {
 	}
 	var errs []error
 	for i := range changed {
-		errs = append(errs, rs.st.Save(files[i].run.ID+".json", files[i].run))
+		errs = append(errs, rs.st.Save(files[i].run.ID+".json", storedOf(files[i].run)))
 	}
 	return errors.Join(errs...)
 }
@@ -197,7 +238,7 @@ func (rs *Records) Mark(runID, by string) (bool, error) {
 // caller holds rs.mu.
 func (rs *Records) current(runID string) (Run, bool, error) {
 	var have Run
-	ok, err := rs.st.LoadLimit(runID+".json", &have, maxGuardSize)
+	ok, err := rs.loadRun(runID+".json", &have, maxGuardSize)
 	if err != nil {
 		return Run{}, false, fmt.Errorf("records: %s.json cannot be read, so it is not replaced: %w", runID, err)
 	}
@@ -218,7 +259,7 @@ func (rs *Records) write(r Run) error {
 	if err != nil {
 		return err
 	}
-	if err := rs.st.Save(r.ID+".json", r); err != nil {
+	if err := rs.st.Save(r.ID+".json", storedOf(r)); err != nil {
 		return err
 	}
 	return rs.prune()
@@ -229,7 +270,7 @@ func (rs *Records) write(r Run) error {
 // does not fit without them is refused.
 func fit(r Run) (Run, error) {
 	for {
-		b, err := store.Encode(r)
+		b, err := store.Encode(storedOf(r))
 		if err != nil {
 			return r, err
 		}
@@ -345,12 +386,12 @@ func (rs *Records) load(entries []store.Entry) ([]recordFile, error) {
 			continue
 		}
 		var r Run
-		ok, err := rs.st.LoadLimit(en.Name, &r, maxRecordSize)
+		ok, err := rs.loadRun(en.Name, &r, maxRecordSize)
 		if errors.Is(err, store.ErrChanged) {
 			// Another was renamed over it as it was read, as a save does:
 			// read again, once.
 			r = Run{}
-			ok, err = rs.st.LoadLimit(en.Name, &r, maxRecordSize)
+			ok, err = rs.loadRun(en.Name, &r, maxRecordSize)
 		}
 		if err != nil || !ok || r.ID+".json" != en.Name {
 			out = append(out, recordFile{name: en.Name, large: errors.Is(err, store.ErrTooLarge), err: err})
@@ -409,7 +450,7 @@ func (rs *Records) Get(runID string) (Run, bool, error) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 	var r Run
-	ok, err := rs.st.LoadLimit(runID+".json", &r, maxRecordSize)
+	ok, err := rs.loadRun(runID+".json", &r, maxRecordSize)
 	if err != nil || !ok || r.ID != runID {
 		return Run{}, false, err
 	}
@@ -437,7 +478,7 @@ func (rs *Records) MemberOf(sessionID string) (runID, member string, err error) 
 			continue
 		}
 		var r Run
-		found, err := rs.st.LoadLimit(en.Name, &r, maxRecordSize)
+		found, err := rs.loadRun(en.Name, &r, maxRecordSize)
 		if err != nil {
 			if unread == nil {
 				unread = fmt.Errorf("records: the record %s: %w", en.Name, err)
@@ -484,7 +525,7 @@ func (rs *Records) Marks() ([]RecordMarks, error) {
 			continue
 		}
 		var r Run
-		found, err := rs.st.LoadLimit(en.Name, &r, maxGuardSize)
+		found, err := rs.loadRun(en.Name, &r, maxGuardSize)
 		if err != nil {
 			return nil, fmt.Errorf("records: the record %s: %w", en.Name, err)
 		}

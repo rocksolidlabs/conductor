@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -37,6 +38,15 @@ type createSessionRequest struct {
 	// Yolo overrides the server's yolo default for this launch: nil follows
 	// it, false launches without the agent's yolo recipe, true with it.
 	Yolo *bool `json:"yolo,omitempty"`
+	// Account is the login the launch takes: "" the adapter's default at
+	// this moment, "default" the tool's own login, or a registered
+	// account's id (bindLogin). Model is the model it is given, through its
+	// adapter's flag ("" for the agent's default).
+	Account string `json:"account,omitempty"`
+	Model   string `json:"model,omitempty"`
+	// login, set by a resume or a Brakeman turn's launch, is the binding
+	// the launch must get again, or Brakeman's folder.
+	login loginWant
 	// resume, set by Resume, is the agent session id the launch resumes with
 	// the agent's recipe; resumedFrom the session it resumes or relaunches.
 	resume, resumedFrom string
@@ -272,10 +282,15 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		agentSession = &session.AgentSession{ID: id, Source: session.AgentSessionSet}
 	}
 	argv = append(argv, req.Args...)
-	var yoloEnv map[string]string
+	// The model, through the adapter's flag after the launch's own
+	// arguments, which are judged beside it (launchModel).
+	modelArgs, aerr := launchModel(agent, req.Model, req.Args)
+	if aerr != nil {
+		return nil, aerr
+	}
+	argv = append(argv, modelArgs...)
 	if applied {
 		argv = append(argv, agent.Yolo.Args...)
-		yoloEnv = agent.Yolo.Env
 		argv = append(argv, agents.TrustArgsFor(agent.Adapter, func() []string {
 			ctx, cancel := context.WithTimeout(context.Background(), gitCheckTimeout)
 			defer cancel()
@@ -287,11 +302,33 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	if s.cfg.MCP() {
 		argv = append(argv, agents.MCPFor(agent.Adapter, agents.HooksDir(s.cfg.DataDir))...)
 	}
-	// The entry's and the server's part (agentEnv, which a usage read
-	// takes too), then what this launch adds.
-	passthrough, env := s.agentEnv(agent, adapterEnv)
-	maps.Copy(env, yoloEnv)
-	maps.Copy(env, req.Env)
+	// The environment and the login (launchEnv: the entry's, the server's
+	// and this launch's part, then the login decided over them).
+	passthrough, env, bound, releaseAccount, aerr := s.launchEnv(agent, adapterEnv, applied, req.Env, req.allow, req.Account, cwd, req.login)
+	if aerr != nil {
+		return nil, aerr
+	}
+	// The account's reservation is let go as this returns, but a process
+	// started whose session the registry does not hold (its registration
+	// refused, its stop failed) holds it until that process has ended.
+	var unlisted *session.Local
+	defer func() {
+		if p := unlisted; p != nil {
+			select {
+			case <-p.ProcessDone():
+			default:
+				go func() { <-p.ProcessDone(); releaseAccount() }()
+				return
+			}
+		}
+		releaseAccount()
+	}()
+	// A process on a Runtime other than the native one starts under the
+	// tool's own login alone: a login of this server's (a folder, a value)
+	// is nothing a guest has.
+	if req.where != "" && req.where != ext.WhereNative && bound.Source != session.SourceOwn {
+		return nil, newAPIError(http.StatusBadRequest, "invalid_account", "this run's Runtime cannot take a login from this server: "+loginWords(bound))
+	}
 	// What the session watches on its screen: the trust question and its
 	// answers, the other questions, the window title that says the agent
 	// works (Codex's, with the title its adapter's launch asks for), and
@@ -332,10 +369,6 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	// and an attempt's tree's after them (the engine's own names).
 	maps.Copy(inject, crewInject(crewRef))
 	maps.Copy(inject, req.inject)
-	// The agent's envPassthrough adds to the server-wide list (agentEnv's
-	// clone, so one launch never grows the list another reads), and an
-	// attempt's approved env names to both.
-	passthrough = append(passthrough, req.allow...)
 	launchHook("checked")
 	// The process starts in the folder opened and checked, not at its path.
 	dirFile, err := folder.Dir()
@@ -353,6 +386,21 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 			s.log.Warn("the opener for BROWSER could not be written; the agent opens links its own way", "agent", agent.ID, "err", err)
 		} else {
 			procEnv = agents.WithOpener(procEnv, opener)
+		}
+	}
+	// The binding's Login is read from the environment the process starts
+	// with, whole; a launch made again starts only when it is the one it
+	// was bound to (a record keeps the id, the source and the adapter
+	// alone, whose login is the folder's: keptLogin).
+	bound.Login = loginOf(agent.Adapter, cwd, pty.Lookup(procEnv))
+	if was := req.login.bound; was != nil {
+		want := *was
+		if req.login.kept {
+			want.Folder, want.Login = bound.Folder, keptLogin(cmp.Or(req.login.adapter, agent.Adapter), bound.Folder)
+		}
+		if bound.ID != want.ID || bound.Source != want.Source || bound.Folder != want.Folder || bound.Login != want.Login {
+			dirFile.Close()
+			return nil, accountGone(want, bound)
 		}
 	}
 	// An agent whose environment moves its configuration directory (a copy
@@ -409,7 +457,8 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		ref := *crewRef
 		info.Crew = &ref
 	}
-	launched := session.Launched{AgentID: agent.ID, Name: name, Cwd: cwd, Args: slices.Clone(req.Args), Env: maps.Clone(req.Env), Yolo: yolo, Renamed: req.renamed}
+	launched := session.Launched{AgentID: agent.ID, Name: name, Cwd: cwd, Args: slices.Clone(req.Args), Env: maps.Clone(req.Env), Yolo: yolo, Renamed: req.renamed,
+		Account: bound, Model: req.Model, Adapter: agent.Adapter}
 	// Its record exists before the session can keep an entry, and the
 	// session's hooks feed it (recordHooks).
 	var rc *recorder
@@ -460,6 +509,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		req.spawned(local)
 	}
 	if err := s.registry.AddReserved(local, req.reservation); err != nil {
+		unlisted = local
 		s.abandon(rc)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -470,7 +520,13 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	// Its registration complete, its record reconciled once: an exit
 	// before the registry held it is read now.
 	s.registered(rc)
-	s.capacity.started(agent.ID)
+	held := bound.ID
+	if bound.Folder != "" {
+		if doc, aerr := s.accountsForLaunch(); aerr == nil {
+			held = heldAccount(doc, bound)
+		}
+	}
+	s.capacity.started(agent.ID, held)
 	s.log.Info("session started", "session", id, "agent", agent.ID, "pid", term.Process().PID, "yolo", applied)
 	if yolo && !applied {
 		local.Record(session.ActivityEntry{Type: session.ActivityStatus, Message: noYoloRecipe(agent)})
@@ -775,7 +831,10 @@ func (s *Server) installSkillAtLaunch(adapter, hooksDir string) {
 // configuration directory of its own the adapter's agent is launched with
 // (agents.ConfigDirOf; "" for none), once per adapter and directory since the
 // server started, as installSkillAtLaunch does for the home. Nothing here
-// stops the launch.
+// stops the launch. A line names the agent's adapter and what happened,
+// never a path or an error that holds one, for any launch: the folder may
+// be where a login lives (a registered account's, whatever the binding's
+// source).
 func (s *Server) installSkillInConfigDir(adapter, dir, hooksDir string) {
 	if adapter == "" || dir == "" || !s.cfg.InstallSkill() {
 		return
@@ -788,14 +847,13 @@ func (s *Server) installSkillInConfigDir(adapter, dir, hooksDir string) {
 	if done {
 		return
 	}
-	path, changed, err := agents.InstallSkillIn(adapter, dir, hooksDir)
+	_, changed, err := agents.InstallSkillIn(adapter, dir, hooksDir)
 	switch {
-	case path == "":
 	case errors.Is(err, agents.ErrByHand):
-		s.log.Info("the agent's configuration directory holds a SKILL.md of the user's own, which stays; conductor skill prints Conductor's", "adapter", adapter, "path", path)
+		s.log.Info("the agent's configuration directory holds a SKILL.md of the user's own, which stays; conductor skill prints Conductor's", "adapter", adapter)
 	case err != nil:
-		s.log.Warn("skill install failed", "adapter", adapter, "path", path, "err", err)
+		s.log.Warn("skill install in the agent's configuration directory failed", "adapter", adapter)
 	case changed:
-		s.log.Info("skill installed", "adapter", adapter, "path", path)
+		s.log.Info("skill installed in the agent's configuration directory", "adapter", adapter)
 	}
 }
