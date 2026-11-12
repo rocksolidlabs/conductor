@@ -1898,8 +1898,12 @@ func TestDispatchTheLargestTicketIsUnderItsBound(t *testing.T) {
 				t.Fatalf("read: %d %.300s", status, raw)
 			}
 			t.Logf("the largest ticket's reply, %s: %d bytes of %d", f.name, len(raw), MaxTicketReply)
-			if len(raw) >= MaxTicketReply {
-				t.Fatalf("the largest ticket's reply is %d bytes, not under %d", len(raw), MaxTicketReply)
+			// Beside it, a linked issue's parts at their bound (its snapshot,
+			// owners, read, closed_on and fifty links' reads, which
+			// internal/dispatch's TestTicketReplyBound measures under
+			// dispatch.MaxTicketExternalParts at their escaped worst).
+			if len(raw)+dispatch.MaxTicketExternalParts >= MaxTicketReply {
+				t.Fatalf("the largest ticket's reply is %d bytes and its linked issue's parts %d, not under %d", len(raw), dispatch.MaxTicketExternalParts, MaxTicketReply)
 			}
 			if f == angleFiller {
 				for _, esc := range []string{"u003c", "u003e"} {
@@ -3149,8 +3153,8 @@ func sessionReadOfTheLargest(t *testing.T, e *testEnv, f filler, want largestTic
 		t.Fatalf("the session's read: %d %.300s", status, raw)
 	}
 	t.Logf("the largest ticket through its session, %s: %d bytes of %d", f.name, len(raw), MaxTicketReply)
-	if len(raw) >= MaxTicketReply {
-		t.Fatalf("the largest ticket's reply through its session is %d bytes, not under %d", len(raw), MaxTicketReply)
+	if len(raw)+dispatch.MaxTicketExternalParts >= MaxTicketReply {
+		t.Fatalf("the largest ticket's reply through its session is %d bytes and its linked issue's parts %d, not under %d", len(raw), dispatch.MaxTicketExternalParts, MaxTicketReply)
 	}
 	for _, esc := range []string{"u003c", "u003e"} {
 		if f == angleFiller && bytes.Contains(raw, []byte(`\`+esc)) {

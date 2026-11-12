@@ -108,8 +108,10 @@ type Server struct {
 	log             *slog.Logger
 	web             http.Handler
 	store           *store.Store
-	// trackers keeps the person's GitHub token (trackers.go).
+	// trackers keeps the person's GitHub token (trackers.go); external the
+	// locks of a ticket's GitHub reads (dispatch_external.go).
 	trackers *trackerKeep
+	external externalState
 	// crews holds the saved crews, one file each in crews/ of the data
 	// directory; nil when there is no store.
 	crews *crew.Store
@@ -635,7 +637,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		// (OnChange hands the hub a commit at a time), and a run link names
 		// a run the engine holds or has a record of.
 		if !cfg.Switchyard.Enabled {
-			s.dispatch = openDispatch(st, log)
+			s.dispatch = openDispatch(st, log, s.trackers.gh)
 			if s.dispatch == nil {
 				syncs.unopened("Dispatch")
 			}
@@ -644,6 +646,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			fan.observeDispatch(s.dispatch)
 			s.dispatch.SetRunExists(s.runKnown)
 			s.dispatch.OnChange(s.events.dispatch)
+			s.dispatch.OnRead(s.events.dispatchRead)
 		}
 		if !cfg.Switchyard.Enabled {
 			s.brakeman = s.openBrakemanDesk(st)

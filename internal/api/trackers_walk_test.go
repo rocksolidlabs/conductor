@@ -182,6 +182,13 @@ func TestTrackerTokenSavedNeverServed(t *testing.T) {
 	}
 	admin("POST /api/trackers/github/remove", "/api/trackers/github/remove", `{"host":"`+echoHost+`"}`, http.StatusOK, "")
 
+	// A ticket's GitHub item (IN1a PR-4): a preview, an import with its
+	// images and its resend, a link, refreshes, a field given back, a
+	// link's add and read, a close that reads its delivery, each failure
+	// of GitHub's (its refusals echo the token they were sent) and a
+	// request its client cancels, all with the settings token.
+	driveExternal(t, b.testEnv, newGHItems(f), admin)
+
 	// Bodies that are not the route's: one fixed sentence, whatever the
 	// body holds of a token (a member's name, a control byte, a bad escape,
 	// a value unquoted, a second member).
@@ -793,12 +800,16 @@ func routesTouching(t *testing.T, names ...string) []string {
 	// is named, the name-joined graph would reach every route; a field of
 	// function type is judged by what it is given instead (below). An
 	// assignment to a name of a package variable is read like its
-	// initialiser (a local of that name only adds to what it reaches).
+	// initialiser (a local of that name only adds to what it reaches). The
+	// blank identifier is no variable: what is assigned to it (var _ = v,
+	// _ = f()) is evaluated where it is written, which reads it already, and
+	// is held by no name another function could read.
 	for name, gs := range setTo {
 		if pkgVars[name] {
 			vars[name] = append(vars[name], gs...)
 		}
 	}
+	delete(vars, "_")
 	for name, gs := range vars {
 		for _, g := range gs {
 			if refs[name] == nil {
