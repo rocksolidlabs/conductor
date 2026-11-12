@@ -71,6 +71,8 @@ func previewEnv(t *testing.T, files map[string]string) *previewed {
 		defer cancel()
 		_ = e.srv.runs.Stop(ctx, run.ID)
 		e.srv.runs.Drain(ctx)
+		// The reads' indexes go as the server's Shutdown removes them.
+		e.srv.trees.close()
 	})
 	a := runningAttempt(t, e, run.ID, "build", 1)
 	p := &previewed{e: e, run: run.ID, dir: a["worktree"].(string)}
