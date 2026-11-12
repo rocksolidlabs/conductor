@@ -2480,16 +2480,26 @@ it by the desktop shell, that reads the page for the workbench framing
 it: the frame's document is another origin's, so nothing else can. It
 reads, never writes, the page; it reads no storage, cookie, console or
 network, never an `input`'s value, a password field or a `textarea`'s
-text (the HTML it reads is a copy made in a document with no window, so
-copying runs none of the page's code and loads nothing); and it does
-nothing until a workbench origin says `hello`. The one thing it puts on
-the page is its outline's host (a closed shadow root), in selection mode
-alone: it takes it off when selection mode ends.
+text; and it does nothing until a workbench origin says `hello`. What it
+reports of the page it writes itself: every string of the page's is cut
+to its bound by one slice before anything else reads it, every list read
+by index to its bound, every walk of the tree bounded in nodes, and the
+markup and text written by the bridge's own writer from the live tree,
+never a copy and never the page's serialiser. Of an element that takes a
+person's input (`input`, `textarea`, `select`, `option`) or one a person
+edits in place it writes the tag and its `type`, `name`, `id`, `class`,
+`role`, `contenteditable` and `aria-*` attributes alone; of a `script`, a
+`style` and a `template` the tag and its attributes alone. The one thing
+it puts on the page is its outline's host, a `div` holding a closed
+shadow root, in selection mode alone: it takes it off when selection mode
+ends, and selection mode ends before anything is read (a pick, Escape, a
+`cancel`, a `describe`, a `hello`, a `select`).
 
 **Serving.** `GET /preview-bridge.js` (no credential: a script tag
 carries none, and the script holds no secret) serves the bridge the web
 build emits (`web/build/previewBridge.ts`; `make web-build` fails when
-the built app has none, or one that is a module) whole, its bytes
+the built app has none, an empty one, or one that does not compile as one
+classic script inside the wrapper below) whole, its bytes
 unchanged, inside a wrapper the server writes:
 `(function (conductorWorkbenchOrigins) {` and a line break, the script,
 a line break and `})(`, the server's workbench origins as a JSON array
@@ -2535,9 +2545,10 @@ resolved once the server listens on the loopback (or on every address)
 is given `CONDUCTOR_PREVIEW_BRIDGE`, `http://127.0.0.1:<port>/preview-bridge.js`
 (`[::1]` for a listener there alone); a tree without a preview, and every
 tree of a server with no bridge or no loopback listener, none. The Nuxt
-dev server serves the same script at the same path in the same wrapper,
-its origin the dev server's own when the page asks it over the loopback,
-else none.
+dev server answers the same path as the route answers a listener on the
+loopback: the same four headers, the same wrapper and, for a page that
+asks it over the loopback, the loopback's three names at the dev
+server's port (no origin for a page that asks otherwise).
 
 **Messages** (`conductor-preview/1`; `internal/proto/preview.go` and
 `web/app/utils/protocol.ts`, both held to
@@ -2621,24 +2632,38 @@ whole number the bridge bumps, at most once an animation frame, on a
 resize or scroll of the window, a mutation of the document but its own
 host's, and every animation and transition event: it says only that the
 page moved) and `revision` (the page's `<meta name="conductor-revision"
-content="<commit>[+<content>]">`, lower-case hex of 4 to 64 digits with
-one optional `+` part, at most 128 bytes, else "").
+content="<commit>[+<content>]">` among the head's children, within the
+first 128 nodes of the root's and the head's, lower-case hex of 4 to 64
+digits with one optional `+` part, at most 128 bytes, else ""). A
+`ready`'s hint kinds are read from the elements among the document's
+first 2,000 nodes.
 
 **The element report** (`element`): `{tag, id, classes, role, name (the
-accessible name), text, selector (found exactly once: a unique id, else
-the shortest chain of tag, stable classes and :nth-of-type), box {x, y,
-width, height}, attributes ([name, value]; an input's value never),
-state {disabled, hidden, ariaDisabled, ariaExpanded, pointerEvents,
-inert, hovered, motion (the animations playing on it, its subtree and
-its ancestors)}, hit {self, selector, tag} (what elementFromPoint finds
-at the box's centre), html (its outer HTML from a copy with every input
-value and textarea text emptied, cut at a tag's end), neighbourhood (its
-parent's, each sibling's subtree past depth 2 elided), ancestors ([{tag,
-id, classes, role}], innermost first), styles ([property, value] of a
-fixed list of 64), hints ([{how, file, line, column, component}]: a
-data-conductor-source "<file>:<line>:<column>" on it or an ancestor, a
-Vue dev build's component chain, Svelte's __svelte_meta, React 18's
-_debugSource), cut (the steps it was cut by)}`. Each field to its bound,
+accessible name: aria-label, the text of at most 8 of aria-labelledby's
+ids, of the label for its id among the 256 nodes of its third ancestor's
+subtree or of the label around it, else its own), text (of its subtree's
+first 256 nodes), selector (built, never searched for and never cut: its
+id when the id is within the bound and the document gives the element
+for it, else its path from the root, `:root > tag:nth-child(n) > …`, a
+step's tag `*` when it is not a plain name; "" when the path passes
+4,096 nodes or the bound, and a describe of it finds the element), box
+{x, y, width, height}, attributes ([name, value], the first 32 by index;
+of a control, what it is alone), state {disabled, hidden, ariaDisabled,
+ariaExpanded, pointerEvents, inert (it or one of its 64 nearest
+ancestors), hovered, motion (the animations playing on it, on the
+elements of its subtree's first 64 nodes and on its 12 nearest
+ancestors)}, hit {self, selector, tag} (what elementFromPoint finds at
+the box's centre; self when that is it or within its 64 levels), html
+(its markup as the bridge writes it, at most 3,072 nodes and its bound in
+bytes, every node whole and every element closed, so it is never cut
+afterwards), neighbourhood (its parent's, written the same way within
+6,144 nodes, each sibling's subtree past depth 2 elided), ancestors
+([{tag, id, classes, role}], innermost first), styles ([property, value]
+of a fixed list of 64), hints ([{how, file, line, column, component}]: a
+data-conductor-source "<file>:<line>:<column>" on it or one of its 64
+nearest ancestors, a Vue dev build's component chain, Svelte's
+__svelte_meta, React 18's _debugSource; each walk stopping at 8 hints),
+cut (the steps it was cut by)}`. Each field to its bound,
 in bytes as measured below: the tag, id, classes, role, name and the
 state's strings 1,024 each, the text and the selectors 1,024, at most 32
 attributes of a 64-byte name and a 512-byte value, the HTML 12 KiB, the
@@ -2649,11 +2674,12 @@ the bridge cuts it to fit, measuring after each step and stopping at the
 first that fits, in this order, each named in `cut`: `neighbourhood` (to
 nothing), `html` (to its opening tag), `styles` (to the first 16),
 `attributes` (each value to 64 bytes), `tag` (the opening tag to 512
-bytes, then the HTML dropped), `hints` (the innermost 2, each file to its
-last 256 bytes and component to 128), `ancestors` (the innermost 4),
-`attribute-count` (the first 8), `names` (the tag, text, name, id, role,
-classes, selector and the hit test's tag and selector to 256 bytes each),
-`style-count` (the first 8). What the last step leaves is under 12 KiB
+bytes, its attributes from the last that does not fit left out, then the
+HTML dropped), `hints` (the innermost 2, each file to its last 256 bytes
+and component to 128), `ancestors` (the innermost 4), `attribute-count`
+(the first 8), `names` (the tag, text, name, id, role, classes and the
+hit test's tag to 256 bytes each, a selector longer than 256 bytes to
+""), `style-count` (the first 8). What the last step leaves is under 12 KiB
 whatever the fields held. So `cut` is always a prefix of that order, its
 first steps with none skipped or twice; a report whose `cut` is not is
 refused. **One measure**: a value's size is the UTF-8
@@ -2670,11 +2696,16 @@ not parse by its type's schema, is dropped unanswered. The bridge takes
 a message only from an event the browser delivered (`isTrusted`), from
 `window.parent`, at one of the origins written into it (compared
 exactly), and, after the `hello`, only from that hello's origin with its
-nonce (a later `hello` starts again); what it drops changes nothing. It
-acts in selection mode only on pointer and key events the browser
-delivered. It posts only to `window.parent`, addressed to that origin,
-never `*`, and only a message its own parser takes as one to the
-workbench. The workbench takes an answer only
+nonce (a later `hello` starts again: selection mode is ended first, and
+nothing of the exchange before is sent under the new nonce); what it
+drops changes nothing. In selection mode it stops every pointer, mouse,
+touch and key event the browser delivers (one table, the listeners added
+and removed from it; a tap's touches and a wheel keep their default
+action) and acts only on those (a click or the release of Enter picks,
+the release of Escape leaves); outside it, none; a throw while it handles
+one leaves selection mode. It posts only to `window.parent`, addressed to
+that origin, never `*`, and only a message its own parser takes as one to
+the workbench. The workbench takes an answer only
 from the frame's window at the preview's origin with the nonce it sent.
 Nothing the page sends is executed or rendered as HTML by the workbench.
 
