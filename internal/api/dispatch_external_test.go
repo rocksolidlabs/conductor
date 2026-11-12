@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"maps"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -642,6 +643,43 @@ func TestResendAfterRelink(t *testing.T) {
 	relink(key, 73)
 	reads = g.count("api.github.com", itemsRepo+"/issues/73")
 	untouched("the refresh sent again", e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/external/refresh", map[string]any{"opId": op}, http.StatusOK, ""), 73, reads)
+}
+
+// An import's first send completes its images only while the ticket is
+// still linked to the item it imported: unlinked and linked to another item
+// between its commit and its images (the cut seam after the commit, the
+// routes run from inside it), the other item's text naming the same image
+// address, it attaches nothing and downloads nothing.
+func TestImportImagesAfterRelink(t *testing.T) {
+	e, g := externalEnv(t)
+	e.newDispatchProject(t, "IRL", nil)
+	first := issue("I_kwDOfirst90", "First", t0)
+	first.Images = []string{"/90/shared.png"}
+	other := issue("I_kwDOfirst91", "Other", t0)
+	other.Images = []string{"/90/shared.png", "/91/own.png"}
+	g.set(90, first)
+	g.set(91, other)
+	g.image("/90/shared.png", []byte(pngBytes))
+	g.image("/91/own.png", []byte(pngBytes))
+	const key = "IRL-1"
+	var unlink, link int
+	e.srv.external.cut = func(at string) bool {
+		if at == "ticket" {
+			unlink, _, _ = e.call(t, "POST", "/api/dispatch/tickets/"+key+"/external/delete", map[string]any{"opId": opID()})
+			link, _, _ = e.call(t, "POST", "/api/dispatch/tickets/"+key+"/external", map[string]any{"opId": opID(), "url": "https://github.com/octo/app/issues/91"})
+		}
+		return false
+	}
+	out := e.importItem(t, "IRL", "https://github.com/octo/app/issues/90", opID(), http.StatusCreated, nil)
+	e.srv.external.cut = nil
+	tv, err := e.srv.dispatch.Ticket(t.Context(), key)
+	if err != nil || unlink != http.StatusOK || link != http.StatusOK || entityOf(t, out, "ticket")["key"] != key {
+		t.Fatalf("the relink: unlink %d, link %d, %v, %v", unlink, link, err, out)
+	}
+	ims := imagesOf(t, out)
+	if n := g.count(imageHost, "/90/") + g.count(imageHost, "/91/"); n != 0 || len(tv.Attachments) != 0 || ims["https://"+imageHost+"/90/shared.png"]["pending"] != true || ims["https://"+imageHost+"/91/own.png"]["pending"] != true {
+		t.Fatalf("the import of 90, its ticket linked to 91 since: %d downloads, attachments %v, images %v", n, tv.Attachments, out["images"])
+	}
 }
 
 func (e *testEnv) refresh(t *testing.T, key string, status int, extra map[string]any) map[string]any {
@@ -1393,9 +1431,15 @@ func (e *testEnv) addPullLink(t *testing.T, key string, n int) string {
 // held the same way ends with the stop, answered as a busy route is. Once
 // the stop has begun, the one door to GitHub asks nothing, and 2,000
 // previews and 500 imports on one processor make no request, each
-// answered busy; routes begun inside the server's real shutdown, held at
-// its seam after the runs' stops, are answered busy and ask nothing.
+// answered as a route the stop ended (stopAnswer); routes begun inside the
+// server's real shutdown, held at its seam after the runs' stops, are
+// answered so and ask nothing.
 func TestTrackerReadsEndWithServer(t *testing.T) {
+	// stopAnswer is a route the stop ended: the one door's busy answer, or
+	// the store's failure for a store call the stop ended.
+	stopAnswer := func(out map[string]any) bool {
+		return errorCode(out) == "tracker_busy" || errorCode(out) == "store_failed"
+	}
 	t.Run("the read after a link's add", func(t *testing.T) {
 		e, g, key := pullEnv(t, 92)
 		gate := g.f.Hold("GET", "api.github.com", itemsRepo+"/issues/92")
@@ -1467,18 +1511,18 @@ func TestTrackerReadsEndWithServer(t *testing.T) {
 			func(tracker.Adapter, tracker.Credential) error { asked = true; return nil }); err != errItemBusy || asked {
 			t.Fatalf("the one door after the stop: %v, asked %v", err, asked)
 		}
-		busy := 0
+		ended := 0
 		for i := range 2500 {
 			path, body := "/api/dispatch/external/preview", preview
 			if i >= 2000 {
 				path, body = "/api/dispatch/projects/BGN/import", map[string]any{"opId": opID(), "url": preview["url"]}
 			}
-			if _, _, out := e.call(t, "POST", path, body); errorCode(out) == "tracker_busy" {
-				busy++
+			if _, _, out := e.call(t, "POST", path, body); stopAnswer(out) {
+				ended++
 			}
 		}
-		if n := len(g.f.Requests()) - before; n != 0 || busy != 2500 {
-			t.Fatalf("2,000 previews and 500 imports once the stop began: %d requests, %d answered busy", n, busy)
+		if n := len(g.f.Requests()) - before; n != 0 || ended != 2500 {
+			t.Fatalf("2,000 previews and 500 imports once the stop began: %d requests, %d answered as ended by the stop", n, ended)
 		}
 	})
 	t.Run("a route begun inside the shutdown", func(t *testing.T) {
@@ -1503,10 +1547,56 @@ func TestTrackerReadsEndWithServer(t *testing.T) {
 			}
 		})
 		e.srv.Shutdown(context.Background())
-		if len(answers) != 2 || errorCode(answers[0]) != "tracker_busy" || errorCode(answers[1]) != "tracker_busy" || asked != 0 {
+		if len(answers) != 2 || !stopAnswer(answers[0]) || !stopAnswer(answers[1]) || asked != 0 {
 			t.Fatalf("routes begun inside the shutdown: %v, %d requests", answers, asked)
 		}
 	})
+}
+
+// Once the server has begun to stop, the stop reaches a close under merged
+// and nothing else of an edit: an edit to done in a project without merged
+// is made as any edit is; one in a project with merged is a busy route's
+// 503, nothing closed, nothing asked.
+func TestCloseOnceTheStopBegan(t *testing.T) {
+	e, g, merged := mergedEnv(t, nil)
+	e.newDispatchProject(t, "NMG", map[string]any{"closeRequires": []string{}})
+	plain := e.newDispatchTicket(t, "NMG", "Close it", nil)["key"].(string)
+	key, _ := merged(99)
+	e.srv.external.end()
+	before := len(g.f.Requests())
+	status, _, out := e.call(t, "POST", "/api/dispatch/tickets/"+plain+"/edit", map[string]any{"opId": opID(), "set": map[string]any{"status": "done"}})
+	if status != http.StatusOK || entityOf(t, out, "ticket")["status"] != "done" {
+		t.Fatalf("an edit to done without merged once the stop began: %d %v", status, out)
+	}
+	status, _, out = e.call(t, "POST", "/api/dispatch/tickets/"+key+"/edit", map[string]any{"opId": opID(), "set": map[string]any{"status": "done"}})
+	tv, _ := e.srv.dispatch.Ticket(t.Context(), key)
+	if status != http.StatusServiceUnavailable || errorCode(out) != "tracker_busy" || tv.Status == dispatch.TicketDone || len(g.f.Requests()) != before {
+		t.Fatalf("an edit to done under merged once the stop began: %d %v, the ticket %s, %d requests", status, out, tv.Status, len(g.f.Requests())-before)
+	}
+}
+
+// The shared error mapper answers a store call ended by a canceled request
+// as it does on main whether or not the server has begun to stop: an
+// ordinary Dispatch read whose request is canceled answers the same before
+// and after the stop.
+func TestDispatchReadCanceledAtTheStop(t *testing.T) {
+	e, _ := externalEnv(t)
+	e.newDispatchProject(t, "CNL", nil)
+	key := e.newDispatchTicket(t, "CNL", "Read it", nil)["key"].(string)
+	read := func() (int, string) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		r := httptest.NewRequestWithContext(ctx, "GET", "/api/dispatch/tickets/"+key, nil)
+		r.SetPathValue("key", key)
+		w := httptest.NewRecorder()
+		e.srv.handleDispatchTicket(w, r)
+		return w.Code, w.Body.String()
+	}
+	status, body := read()
+	e.srv.external.end()
+	if after, abody := read(); after != status || abody != body || status != http.StatusInternalServerError || !strings.Contains(body, "store_failed") {
+		t.Fatalf("a canceled read: %d %s before the stop, %d %s after", status, body, after, abody)
+	}
 }
 
 // mergedEnv is a server whose project MLR requires merged, with caps
@@ -1708,6 +1798,94 @@ func TestDeletedTicketAskedNothing(t *testing.T) {
 	}
 }
 
+// A read that waited for its link's lock while its ticket was deleted asks
+// nothing: it loads the ticket under the lock (ticketFor) before any
+// request. A link's read behind the read after a link's add answers the
+// deleted ticket's 404, the read after a second link's add, queued behind
+// the first, asks nothing, and a close under merged behind a link's read
+// asks nothing and refuses, nothing closed.
+func TestDeletedWhileTheReadWaits(t *testing.T) {
+	e, g, key := pullEnv(t, 92)
+	g.set(97, ghItem{Node: "PR_kwDOstop97", Title: "Stop", Pull: true, Updated: t0})
+	waits := heldWaits(e)
+	// heldOn waits until a lock named want is found held by a waiter.
+	heldOn := func(want string) {
+		t.Helper()
+		for {
+			select {
+			case got := <-waits:
+				if got == want {
+					return
+				}
+			case <-time.After(testWait):
+				t.Fatalf("no wait on %s", want)
+			}
+		}
+	}
+	gate := g.f.Hold("GET", "api.github.com", itemsRepo+"/issues/92")
+	link := e.addPullLink(t, key, 92)
+	<-gate.Reached()
+	answer := make(chan map[string]any, 1)
+	go func() {
+		_, _, out := e.call(t, "POST", "/api/dispatch/tickets/"+key+"/links/"+link+"/read", map[string]any{})
+		answer <- out
+	}()
+	heldOn("link:" + link)
+	link2 := e.addPullLink(t, key, 97)
+	heldOn("added:" + key)
+	// The second link's own lock held here, so its read, once it holds the
+	// ticket's "added:" lock, is seen waiting.
+	release2, ok := e.srv.external.lock(t.Context(), "link:"+link2, testWait)
+	if !ok {
+		t.Fatal("the second link's lock")
+	}
+	e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/delete", map[string]any{"opId": opID()}, http.StatusOK, "")
+	gate.Open()
+	out := <-answer
+	heldOn("link:" + link2)
+	release2()
+	// The "added:" lock is the second read's until it has ended.
+	ended, ok := e.srv.external.lock(t.Context(), "added:"+key, testWait)
+	if !ok {
+		t.Fatal("the second link's read did not end")
+	}
+	ended()
+	_, kept, _ := e.srv.dispatch.LinkReadOf(t.Context(), link2)
+	if n, n2 := g.count("api.github.com", itemsRepo+"/issues/92"), g.count("api.github.com", itemsRepo+"/issues/97"); errorCode(out) != "not_found" || !strings.Contains(apiMessage(out), key+" is deleted") || n != 1 || n2 != 0 || kept {
+		t.Fatalf("deleted while the reads waited: the link's read %v, 92 asked %d times, 97 asked %d, the second link's read kept %v", out, n, n2, kept)
+	}
+
+	e, g, merged := mergedEnv(t, nil)
+	waits = heldWaits(e)
+	key, link = merged(98)
+	gate = g.f.Hold("GET", "api.github.com", itemsRepo+"/issues/98")
+	go func() {
+		_, _, out := e.call(t, "POST", "/api/dispatch/tickets/"+key+"/links/"+link+"/read", map[string]any{})
+		answer <- out
+	}()
+	<-gate.Reached()
+	// The waits seen before the link's read held its lock are not the
+	// close's.
+	for len(waits) > 0 {
+		<-waits
+	}
+	closed := make(chan map[string]any, 1)
+	go func() {
+		_, _, out := e.call(t, "POST", "/api/dispatch/tickets/"+key+"/edit", map[string]any{"opId": opID(), "set": map[string]any{"status": "done"}})
+		closed <- out
+	}()
+	heldOn("link:" + link)
+	e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/delete", map[string]any{"opId": opID()}, http.StatusOK, "")
+	asked := g.count("api.github.com", itemsRepo+"/issues/98")
+	gate.Open()
+	<-answer
+	out = <-closed
+	tv, _ := e.srv.dispatch.Ticket(t.Context(), key)
+	if n := g.count("api.github.com", itemsRepo+"/issues/98"); errorCode(out) != "close_policy" || tv.Status == dispatch.TicketDone || n != asked {
+		t.Fatalf("a close behind a link's read, its ticket deleted: %v, the ticket %s, 98 asked %d more times", out, tv.Status, n-asked)
+	}
+}
+
 // keptBounds is the bound of each kind of text a ticket's GitHub item
 // keeps, by its field's name in the answers.
 var keptBounds = map[string]int{"title": dispatch.MaxSnapshotTitle, "labels": dispatch.MaxSnapshotLabel, "assignees": dispatch.MaxSnapshotLogin,
@@ -1751,17 +1929,19 @@ func keptTexts(t *testing.T, what string, v any, key string) {
 	}
 }
 
-// Nothing GitHub writes makes the store refuse a read: with each hostile
-// filler (poisons: a control character, a reordering character, quotes,
-// backslashes, short scheme:// tokens, a tag character, a value past every
-// one-line bound), alone and all together, after every text of the fake's
-// answers (a walk over them, so a field added later is in it), and every
+// Each text GitHub writes is made storable where a read becomes the
+// store's record: with each hostile filler (poisons: a control character,
+// a reordering character, quotes, backslashes, short scheme:// tokens, a
+// tag character, a value past every one-line bound), alone and all
+// together, after every text of the fake's answers (a walk over them, so a
+// field added later is in it; the fields of a fixed form aside), and every
 // listing the adapter reads served (eight workflow runs whose job listings
-// are cut among them), every route records its read (the preview, the
-// import, a refresh, a field given back, a link, the read after a link's
-// add and a link's read, its reasons cut to the store's bounds), and
-// nothing kept holds a control or tag character, nothing of one line a
-// reordering character, nothing is past its bound.
+// are cut among them), the preview answers, every route that records a
+// read records it (the import, a refresh, a field given back, a link, the
+// read after a link's add and a link's read, its reasons cut to the
+// store's bounds), and nothing kept or shown holds a control or tag
+// character, nothing of one line a reordering character, nothing is past
+// its bound.
 func TestOutsideTextStorable(t *testing.T) {
 	e, g := externalEnv(t)
 	g.image("/1/a.png", []byte(pngBytes))

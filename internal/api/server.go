@@ -870,7 +870,8 @@ func (s *Server) track(f func()) {
 // viewers of a forgotten run's links being closed. Shutdown does the same
 // at its end; tests call it before their directories go.
 func (s *Server) WaitBackground(ctx context.Context) {
-	// No request to GitHub of a ticket's item from now on.
+	// From now on no call enters the one door to GitHub of a ticket's
+	// item (atGitHub).
 	s.external.end()
 	s.stopExtensions()
 	s.stopRevokeRetries()
@@ -1319,7 +1320,8 @@ const recordsGrace = 5 * time.Second
 // records of the runs stopped are then waited for within recordsGrace,
 // whatever ctx says, and closed, and the ledger after them.
 func (s *Server) Shutdown(ctx context.Context) {
-	// No request to GitHub of a ticket's item from now on, before any wait.
+	// From now on no call enters the one door to GitHub of a ticket's
+	// item (atGitHub), before any wait.
 	s.external.end()
 	// Brakeman's desk next: it writes no request's state from now on, so
 	// the turn the stops below end is left running in its records and the

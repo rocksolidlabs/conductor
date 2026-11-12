@@ -90,7 +90,9 @@ type externalState struct {
 	// waiting, when set, is told of a lock found held, before its wait.
 	waiting func(key string)
 	// stop ends as the server begins to stop (end): every request this
-	// file makes to GitHub is made under it, and none begins after it.
+	// file makes to GitHub is made under a context made of it; once it has
+	// ended, no call enters atGitHub, and a request already inside is
+	// ended by its context.
 	stop    context.Context
 	stopped context.CancelFunc
 }
@@ -227,7 +229,8 @@ var (
 // naming a repository on a host the parser admits is the default; one set
 // and unusable (in no form the parser reads, or on a host it does not
 // admit) refuses every short form (errNoDefault), none read on another
-// host.
+// host. A short form whose parse names another host than the address's
+// first parse is refused the same way (the hosts are read at each parse).
 func (s *Server) projectItem(raw string, p dispatch.Project) (tracker.Ref, *apiError) {
 	switch {
 	case strings.Contains(raw, "://"):
@@ -240,10 +243,15 @@ func (s *Server) projectItem(raw string, p dispatch.Project) (tracker.Ref, *apiE
 	}
 	// The address read as #n's repository: the parser refuses one it does
 	// not read or whose host it does not admit.
-	if _, err := s.trackers.gh.Parse("#1", p.TrackerURL); err != nil {
+	d, err := s.trackers.gh.Parse("#1", p.TrackerURL)
+	if err != nil {
 		return tracker.Ref{}, errNoDefault
 	}
-	return s.parseItem(raw, p.TrackerURL)
+	ref, ae := s.parseItem(raw, p.TrackerURL)
+	if ae == nil && ref.Host != d.Host {
+		return tracker.Ref{}, errNoDefault
+	}
+	return ref, ae
 }
 
 // snapshotRef is the item a ticket's snapshot names, and its validators'
@@ -328,7 +336,7 @@ func trackerAnswer(err error, ref tracker.Ref) *apiError {
 	case errors.Is(err, tracker.ErrTargetChanged):
 		return newAPIError(http.StatusConflict, "moved", "the repository of "+item+" now names another repository")
 	case errors.Is(err, tracker.ErrNotFound):
-		return newAPIError(http.StatusNotFound, "external_not_found", "GitHub has no "+item+", or the token cannot see it")
+		return newAPIError(http.StatusNotFound, "external_not_found", "GitHub has no item "+ref.String()+", or the token cannot see it")
 	case errors.Is(err, tracker.ErrUnauthorized):
 		return newAPIError(http.StatusUnprocessableEntity, "token_refused", "GitHub refused the token saved for "+ref.Host+": save a new one in Settings")
 	case errors.Is(err, tracker.ErrForbidden):
@@ -370,7 +378,7 @@ func (s *Server) trackerLog(r *http.Request, ref tracker.Ref, status int) {
 // (a client gone mid-way leaves the operation whole, its resend answered
 // by the receipt), bounded by its deadline, and made of the server's stop
 // (externalState.stopping), so it has ended already when the stop began
-// before it.
+// before it, and ends a moment after the stop for a route begun before.
 func (s *Server) trackerContext(r *http.Request, d time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(stopValues{s.external.stopping(), r.Context()}, d)
 }
@@ -579,17 +587,20 @@ var imageExt = map[string]string{"image/png": "png", "image/jpeg": "jpg", "image
 // SHA-256)), or its skip recorded (a type the store does not take, a size
 // past the bound) so it is never fetched again. An entry the read does not
 // name, or whose download fails, stays pending, for a resend or the next
-// refresh; an image the budget cuts commits nothing. The manifest is the
-// record of what is left to do, so a resend never repeats a done image.
-// A resend (replay) completes only what its own operation left: nothing,
-// read or attached, once the ticket was unlinked or linked to an item
-// since that operation (dispatch.LinkedSince).
-func (s *Server) completeImages(ctx context.Context, ds *dispatch.Store, parent dispatch.Op, key string, ref tracker.Ref, images func() ([]tracker.ImageRef, error), replay bool) {
+// refresh; an image whose own operation was refused stays pending for the
+// import's resends (its derived op id answers that refusal again), and the
+// next refresh completes it; an image the budget cuts commits nothing. The
+// manifest is the record of what is left to do, so a resend never repeats
+// a done image. With compare (every import, a refresh's resend), it
+// completes only what its own operation left: nothing, read or attached,
+// once the ticket was unlinked or linked to an item since that operation
+// (dispatch.LinkedSince).
+func (s *Server) completeImages(ctx context.Context, ds *dispatch.Store, parent dispatch.Op, key string, ref tracker.Ref, images func() ([]tracker.ImageRef, error), compare bool) {
 	tv, err := ticketFor(ctx, ds, key)
 	if err != nil {
 		return
 	}
-	if replay {
+	if compare {
 		if since, err := ds.LinkedSince(ctx, parent, key); err != nil || since {
 			return
 		}
@@ -686,7 +697,11 @@ func (s *Server) externalReply(ctx context.Context, w http.ResponseWriter, ds *d
 // A resend is answered from the replay and from the stored manifest, never
 // from a receipt: only the entries without an attachment or a skip are
 // fetched again, with fresh addresses from one read, by id; with GitHub
-// unreachable it answers its receipt with those images pending. 201
+// unreachable it answers its receipt with those images pending. An image
+// whose own operation was refused stays pending for the resends; the next
+// refresh completes it. A first send and a resend alike complete images
+// only while the ticket has not been unlinked or linked since the import
+// (completeImages' comparison). 201
 // {receipt, ticket, images}; 200 for a resend; the store's refusals as
 // writeOp answers them (409 external_linked naming the ticket); GitHub's
 // failures as trackerAnswer says, nothing written.
@@ -753,7 +768,7 @@ func (s *Server) handleDispatchImport(w http.ResponseWriter, r *http.Request) {
 	if body.Images == nil || *body.Images {
 		if release, ok := s.external.lock(ctx, "ticket:"+rc.Key, caps.busy); ok {
 			ictx, icancel := context.WithTimeout(ctx, caps.images)
-			s.completeImages(ictx, ds, op, rc.Key, ref, images, found)
+			s.completeImages(ictx, ds, op, rc.Key, ref, images, true)
 			icancel()
 			release()
 		}
@@ -1085,22 +1100,29 @@ func (s *Server) readableLink(ctx context.Context, w http.ResponseWriter, ds *di
 // said, the state kept). Without checks (the close's reads), the last
 // read's checks are kept when the head is the same, and said not read
 // otherwise. A failure, GitHub's or the store's check of what was read,
-// is recorded as the read's words (RecordReadError) and returned. Every request is made through atGitHub, within ctx; once
-// the server begins to stop, none is made and nothing is recorded.
-func (s *Server) readLink(ctx context.Context, ds *dispatch.Store, linkID string, ref tracker.Ref, withChecks bool) error {
+// is recorded as the read's words (RecordReadError) and returned. Every
+// request is made through atGitHub, within ctx; once the server has begun
+// to stop, no call enters it and nothing is recorded. Its caller holds the
+// link's lock; key's ticket is loaded under it (ticketFor) before any
+// request, so a ticket deleted by then is asked nothing (ticketFor's
+// refusal returned).
+func (s *Server) readLink(ctx context.Context, ds *dispatch.Store, key, linkID string, ref tracker.Ref, withChecks bool) error {
 	rctx, rcancel := context.WithTimeout(ctx, s.trackerCaps().reads)
 	defer rcancel()
-	return s.readLinkIn(rctx, ctx, ds, linkID, ref, withChecks)
+	return s.readLinkIn(rctx, ctx, ds, key, linkID, ref, withChecks)
 }
 
 // readLinkIn is readLink with its reads made within rctx and its record
 // within a write's cap of its own taken from ctx, so a read that used all
 // of its time leaves the record its own.
-func (s *Server) readLinkIn(rctx, ctx context.Context, ds *dispatch.Store, linkID string, ref tracker.Ref, withChecks bool) error {
+func (s *Server) readLinkIn(rctx, ctx context.Context, ds *dispatch.Store, key, linkID string, ref tracker.Ref, withChecks bool) error {
 	caps := s.trackerCaps()
 	stop := s.external.stopping()
 	if stop.Err() != nil {
 		return stop.Err()
+	}
+	if _, err := ticketFor(ctx, ds, key); err != nil {
+		return err
 	}
 	prior, _, err := ds.LinkReadOf(ctx, linkID)
 	if err != nil {
@@ -1191,7 +1213,7 @@ func (s *Server) handleDispatchReadLink(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	defer release()
-	if err := s.readLink(ctx, ds, id, ref, true); err != nil {
+	if err := s.readLink(ctx, ds, key, id, ref, true); err != nil {
 		var refused *dispatch.Refusal
 		if errors.As(err, &refused) {
 			s.refusal(w, err)
@@ -1277,29 +1299,34 @@ func (s *Server) readAddedLink(ds *dispatch.Store, key string, l dispatch.NewLin
 		}
 		defer release()
 		if release, ok := s.external.lock(ctx, "link:"+rc.ID, caps.busy); ok {
-			_ = s.readLink(ctx, ds, rc.ID, ref, true)
+			_ = s.readLink(ctx, ds, key, rc.ID, ref, true)
 			release()
 		}
 	})
 }
 
-// readForClose reads, before a ticket's edit to done whose project's
-// policy requires merged, every live delivery link to a GitHub item (at
+// readForClose reads, before a ticket's edit to done that it sees is a
+// close under merged, every live delivery link to a GitHub item again (at
 // most maxCloseReads at once, each under its link's lock, the waits and
 // the reads within one phase, each read within the merged reads' cap),
-// recording each within a write's cap of its own, so the edit's
-// transaction judges reads made now (dispatch.MaxMergedReadAge). It reads
-// nothing for an edit the store would not run as a close: one whose
-// receipt is kept (a resend), or of a ticket deleted, done already, or at
-// another revision than the one sent; the store answers those. The edit
-// goes to the store only when every read it needed was made and recorded
-// without a failure: a read not made (no token kept for the link's host,
-// the link's wait ended, no slot within the phase, an address the parser
-// no longer reads for a link read before) or failed refuses it, 409
-// close_policy naming the link, nothing closed. A store's failure before
-// the reads is the edit's to answer, but once the server has begun to stop
-// an edit whose reads it could not settle is a busy route's 503, nothing
-// closed. False once it answered.
+// recording each within a write's cap of its own: a read that failed is
+// recorded as failed, one it could not make (no token kept for the link's
+// host, the link's wait or the phase ended, an address the parser no
+// longer reads for a link read before, the ticket deleted meanwhile)
+// records nothing, and either refuses the edit, 409 close_policy naming
+// the link, nothing closed. The store decides every close under merged: it
+// closes only while a live delivery link's latest read was made within
+// dispatch.MaxMergedReadAge (five minutes), says merged, and has no failed
+// read recorded after it. Where the route does not
+// read, the store's rule alone decides: an edit answered from its receipt;
+// a ticket done, deleted or at another revision when the route looked;
+// the route's own look at the project, the receipt or the ticket failed
+// (once the server has begun to stop, a busy route's 503, nothing
+// closed); or the ticket or its policy changed between the route's look
+// and the store's edit. The project is read under the request's own
+// context, so an edit to done in a project without merged goes to the
+// store as any edit does; the stop's context is taken once merged is
+// found. False once it answered.
 func (s *Server) readForClose(w http.ResponseWriter, r *http.Request, ds *dispatch.Store, key string, op dispatch.Op, e dispatch.TicketEdit) bool {
 	if e.Set.Status == nil || *e.Set.Status != dispatch.TicketDone {
 		return true
@@ -1312,6 +1339,14 @@ func (s *Server) readForClose(w http.ResponseWriter, r *http.Request, ds *dispat
 		writeAPIError(w, errItemBusy)
 		return false
 	}
+	project, _, _ := dispatch.ParseKey(key)
+	pv, err := ds.Project(r.Context(), project)
+	switch {
+	case err != nil:
+		return running()
+	case !slices.Contains(pv.Project.CloseRequires, dispatch.RequireMerged):
+		return true
+	}
 	caps := s.trackerCaps()
 	ctx, cancel := s.trackerContext(r, caps.busy+caps.merged+caps.write)
 	defer cancel()
@@ -1319,14 +1354,6 @@ func (s *Server) readForClose(w http.ResponseWriter, r *http.Request, ds *dispat
 	// merged reads' cap; each record within a write's cap of its own after.
 	pctx, pcancel := context.WithTimeout(ctx, caps.busy+caps.merged)
 	defer pcancel()
-	project, _, _ := dispatch.ParseKey(key)
-	pv, err := ds.Project(ctx, project)
-	switch {
-	case err != nil:
-		return running()
-	case !slices.Contains(pv.Project.CloseRequires, dispatch.RequireMerged):
-		return true
-	}
 	// The edit's content as EditTicket hands it to Apply.
 	args := struct {
 		Key string `json:"key"`
@@ -1375,7 +1402,7 @@ func (s *Server) readForClose(w http.ResponseWriter, r *http.Request, ds *dispat
 			defer release()
 			rctx, rcancel := context.WithTimeout(pctx, caps.merged)
 			defer rcancel()
-			if err := s.readLinkIn(rctx, ctx, ds, l.ID, ref, false); err != nil {
+			if err := s.readLinkIn(rctx, ctx, ds, key, l.ID, ref, false); err != nil {
 				s.log.Info("tracker read", "route", r.Pattern, "ref", ref.Key(), "status", trackerAnswer(err, ref).status)
 				return
 			}
