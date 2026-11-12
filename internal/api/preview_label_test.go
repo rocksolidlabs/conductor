@@ -97,8 +97,8 @@ func (p *previewed) label(t *testing.T) map[string]any {
 	return out
 }
 
-// A label is the tree now: a file changed between two reads changes the
-// content and the changed paths, at the same commit.
+// A label is the tree now: a file edited and a file made between two
+// reads change the content and the changed paths, at the same commit.
 func TestThePreviewLabelReadsTheTreeNow(t *testing.T) {
 	p := previewEnv(t, nil)
 	first := p.label(t)
@@ -106,9 +106,10 @@ func TestThePreviewLabelReadsTheTreeNow(t *testing.T) {
 		t.Fatalf("the first read: %v", first)
 	}
 	writeIn(t, p.dir, "README", "changed\n")
+	writeIn(t, p.dir, "new.txt", "new\n")
 	second := p.label(t)
-	if second["commit"] != first["commit"] || second["content"] == first["content"] || second["changed"] != float64(1) ||
-		fmt.Sprint(second["changedPaths"]) != "[README]" {
+	if second["commit"] != first["commit"] || second["content"] == first["content"] || second["changed"] != float64(2) ||
+		fmt.Sprint(second["changedPaths"]) != "[README new.txt]" || second["unread"] != nil {
 		t.Fatalf("the second read: %v (the first %v)", second, first)
 	}
 }

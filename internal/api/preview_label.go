@@ -17,9 +17,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
-	"github.com/rocksolidlabs/conductor/internal/gitcli"
 	"github.com/rocksolidlabs/conductor/internal/proto"
-	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // The label of an attempt's preview over HTTP (Program item PV1,
@@ -55,56 +53,54 @@ func storedPaths(paths []string) []string {
 	return out
 }
 
-// treeReads reads the trees of the previews: each through its directory
-// opened once (session.OpenFolder, an os.Root), git started at a path
-// that names that open directory (gitcli.OpenedPath), the read refused
-// when the directory's path came to name another meanwhile; in an index
-// of the server's own for that tree, kept for the next read of it (at
-// most maxTreeIndexes, the least recently read let go), one read of a
-// tree at a time, the wait for it and the read together within
-// labelReadWait.
+// treeReads reads the trees of the previews: each opened as the engine
+// made it (crew.OpenTree), git run in that open directory with the
+// tree's git directory and work tree named outright; in an index of the
+// server's own for that tree, kept for the next read of it (at most
+// maxTreeIndexes, the least recently read let go), one read of a tree at
+// a time, the wait for it and the read together within labelReadWait.
 type treeReads struct {
-	mu    sync.Mutex
-	dir   string
-	order []string
-	gates map[string]chan struct{}
+	mu      sync.Mutex
+	dir     string
+	order   []string
+	gates   map[string]chan struct{}
+	indexes map[string]*crew.TreeIndex
 }
 
 // index takes the index of the tree at dir, made under the reads' own
-// temporary directory: its path, and the gate that is its own (held by
-// sending to it).
-func (tr *treeReads) index(dir string) (string, chan struct{}, error) {
+// temporary directory, and the gate that is its own (held by sending to
+// it).
+func (tr *treeReads) index(dir string) (*crew.TreeIndex, chan struct{}, error) {
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
 	if tr.dir == "" {
 		d, err := os.MkdirTemp("", "conductor-labels-")
 		if err != nil {
-			return "", nil, err
+			return nil, nil, err
 		}
-		tr.dir, tr.gates = d, map[string]chan struct{}{}
-	}
-	name := func(dir string) string {
-		sum := sha256.Sum256([]byte(dir))
-		return filepath.Join(tr.dir, hex.EncodeToString(sum[:16])+".index")
+		tr.dir, tr.gates, tr.indexes = d, map[string]chan struct{}{}, map[string]*crew.TreeIndex{}
 	}
 	if i := slices.Index(tr.order, dir); i >= 0 {
 		tr.order = append(slices.Delete(tr.order, i, i+1), dir)
-		return name(dir), tr.gates[dir], nil
+		return tr.indexes[dir], tr.gates[dir], nil
 	}
 	// Past the bound, the least recently read index no read holds goes.
 	for i := 0; i < len(tr.order) && len(tr.order) >= maxTreeIndexes; {
 		old := tr.order[i]
 		select {
 		case tr.gates[old] <- struct{}{}:
-			_ = os.Remove(name(old))
+			_ = os.Remove(tr.indexes[old].Path)
 			delete(tr.gates, old)
+			delete(tr.indexes, old)
 			tr.order = slices.Delete(tr.order, i, i+1)
 		default:
 			i++
 		}
 	}
+	sum := sha256.Sum256([]byte(dir))
 	tr.order, tr.gates[dir] = append(tr.order, dir), make(chan struct{}, 1)
-	return name(dir), tr.gates[dir], nil
+	tr.indexes[dir] = &crew.TreeIndex{Path: filepath.Join(tr.dir, hex.EncodeToString(sum[:16])+".index")}
+	return tr.indexes[dir], tr.gates[dir], nil
 }
 
 // close removes the reads' indexes.
@@ -113,30 +109,24 @@ func (tr *treeReads) close() {
 	defer tr.mu.Unlock()
 	if tr.dir != "" {
 		_ = os.RemoveAll(tr.dir)
-		tr.dir, tr.order, tr.gates = "", nil, nil
+		tr.dir, tr.order, tr.gates, tr.indexes = "", nil, nil, nil
 	}
 }
 
-// read reads the tree at dir now (crew.TreeRevision). The tree's
-// directory is opened through its parent's (session.OpenFolderIn), so a
-// link put in its place leads nowhere outside that parent. A read that
-// ends past labelReadWait or fails after naming HEAD gives the commit
-// with no content and the error.
-func (tr *treeReads) read(ctx context.Context, dir string) (crew.TreeRead, error) {
+// read reads the worktree of wp now (crew.TreeRevision), opened as the
+// engine made it (crew.OpenTree: a tree that cannot be reached so, or is
+// not a worktree of the run's repository, is not read). A read that ends
+// past labelReadWait or fails after naming HEAD gives the commit with no
+// content and the error.
+func (tr *treeReads) read(ctx context.Context, wp crew.WorktreePreview) (crew.TreeRead, error) {
 	ctx, cancel := context.WithTimeout(ctx, labelReadWait)
 	defer cancel()
-	folder, err := session.OpenFolderIn(filepath.Dir(dir), filepath.Base(dir), nil)
+	t, err := crew.OpenTree(ctx, wp.Root, wp.Dir)
 	if err != nil {
 		return crew.TreeRead{}, err
 	}
-	defer folder.Close()
-	d, err := folder.Dir()
-	if err != nil {
-		return crew.TreeRead{}, err
-	}
-	defer d.Close()
-	at, still := gitcli.OpenedPath(d, dir)
-	index, gate, err := tr.index(dir)
+	defer t.Close()
+	ix, gate, err := tr.index(wp.Dir)
 	if err != nil {
 		return crew.TreeRead{}, err
 	}
@@ -146,9 +136,9 @@ func (tr *treeReads) read(ctx context.Context, dir string) (crew.TreeRead, error
 		return crew.TreeRead{}, ctx.Err()
 	}
 	defer func() { <-gate }()
-	read, err := crew.TreeRevision(ctx, at, index)
-	if err == nil && !still() {
-		err = errors.New("the tree's directory moved while it was read")
+	read, err := crew.TreeRevision(ctx, t, ix)
+	if err == nil && !t.Still() {
+		err = crew.ErrTreeMoved
 	}
 	if err != nil {
 		read.Content = ""
@@ -209,7 +199,7 @@ func (s *Server) handlePreviewLabel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no_preview", "the attempt's preview is not open now")
 		return
 	}
-	read, err := s.trees.read(r.Context(), wp.Dir)
+	read, err := s.trees.read(r.Context(), wp)
 	paths := storedPaths(read.Paths)
 	cut := labelPaths(paths)
 	l := previewLabel{URL: labelURL(wp.URL, wp.Secret, principalAdmin(r)), Tree: dispatch.TreeWorktree, Commit: read.Commit, Content: read.Content,

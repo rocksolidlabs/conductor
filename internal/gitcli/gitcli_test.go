@@ -1,6 +1,7 @@
 package gitcli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -449,6 +450,34 @@ func TestAddWorktreeChecksOutWhereItWasMadeWhateverCoreWorktreeSays(t *testing.T
 		}
 	}
 	r.NoneFired(t, "worktree add")
+}
+
+// RunTree runs git with the git directory and the work tree it is given,
+// whatever core.worktree the repository sets, with its input given and
+// its output written as it comes, and starts no program the repository
+// names.
+func TestRunTreeRunsWhereItIsToldWhateverCoreWorktreeSays(t *testing.T) {
+	r := gitclitest.New(t, gitclitest.Options{})
+	ctx := context.Background()
+	wt := filepath.Join(r.Dir, ".conductor", "worktrees", "run", "lead")
+	if err := AddWorktree(ctx, r.Dir, wt, "crew/run/lead", "HEAD"); err != nil {
+		t.Fatal(err)
+	}
+	gitclitest.Git(t, r.Dir, "config", "core.repositoryformatversion", "1")
+	gitclitest.Git(t, r.Dir, "config", "extensions.worktreeConfig", "true")
+	gitclitest.Git(t, wt, "config", "--worktree", "core.worktree", r.Dir)
+	gitDir := filepath.Join(r.Dir, ".git", "worktrees", "lead")
+	var top, id bytes.Buffer
+	if err := RunTree(ctx, gitDir, wt, map[string]string{"GIT_NO_REPLACE_OBJECTS": "1"}, nil, &top, "rev-parse", "--show-toplevel"); err != nil || strings.TrimSpace(top.String()) != wt {
+		t.Fatalf("the top: %q %v", top.String(), err)
+	}
+	if err := RunTree(ctx, gitDir, wt, nil, strings.NewReader("one\n"), &id, "hash-object", "--stdin"); err != nil || strings.TrimSpace(id.String()) != "5626abf0f72e58d7a153368ba57db4c673c0e171" {
+		t.Fatalf("the input's id: %q %v", id.String(), err)
+	}
+	if out, err := Run(ctx, wt, "rev-parse", "--show-toplevel"); err != nil || strings.TrimSpace(out) != r.Dir {
+		t.Fatalf("git with no work tree named: %q %v (the repository's core.worktree is not in force)", out, err)
+	}
+	r.NoneFired(t, "RunTree")
 }
 
 // filterNames reads the names a configuration gives a filter program,

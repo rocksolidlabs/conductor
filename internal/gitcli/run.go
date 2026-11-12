@@ -183,6 +183,26 @@ func RunToEnv(ctx context.Context, dir string, env map[string]string, w io.Write
 	return nil
 }
 
+// RunTree runs git with args in the working tree workTree whose git
+// directory is gitDir, both named outright (-C workTree --git-dir
+// --work-tree, as AddWorktree's checkout names them), so that git looks
+// for no repository and takes no working tree from any configuration:
+// with env set in git's environment beside the safe one, in (nil for
+// none) on its standard input and its standard output written to w as it
+// comes. It is how a tree's read runs git (crew.TreeRevision).
+func RunTree(ctx context.Context, gitDir, workTree string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
+	loc := []string{"-C", workTree, "--git-dir=" + gitDir, "--work-tree=" + workTree}
+	argv, err := argvFor(ctx, "", loc, args)
+	if err != nil {
+		return err
+	}
+	var stderr bytes.Buffer
+	if err := execGitIO(ctx, "", argv, env, in, w, &stderr); err != nil {
+		return gitError(ctx, args[0], stderr.String(), err)
+	}
+	return nil
+}
+
 // runEnv is run with env set in git's environment beside the safe one, in
 // the working directory cwd ("" for the server's own: loc then points git
 // where it runs).
@@ -299,8 +319,15 @@ func execGit(ctx context.Context, cwd string, argv []string, env map[string]stri
 
 // execGitTo is execGit with its output written to stdout and stderr.
 func execGitTo(ctx context.Context, cwd string, argv []string, env map[string]string, stdout, stderr io.Writer) error {
+	return execGitIO(ctx, cwd, argv, env, nil, stdout, stderr)
+}
+
+// execGitIO is execGitTo with stdin on git's standard input (nil for
+// none).
+func execGitIO(ctx context.Context, cwd string, argv []string, env map[string]string, stdin io.Reader, stdout, stderr io.Writer) error {
 	cmd := exec.CommandContext(ctx, "git", argv...)
 	cmd.Dir = cwd
+	cmd.Stdin = stdin
 	set := safeEnv
 	if len(env) > 0 {
 		set = maps.Clone(safeEnv)
