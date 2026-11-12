@@ -93,6 +93,15 @@
         "signal": { "kind": "bell" }
       },
       {
+        "id": "plain",
+        "name": "Plain (e2e stub)",
+        "description": "The stub under no adapter: an agent whose usage no reader knows, which the capacity panel says it cannot read (capacity.spec.ts).",
+        "command": ["@BASH@", "@STUB@"],
+        "allowArgs": true,
+        "env": { "STUB_IDENTITY": "stub", "STUB_REPORT": "plain" },
+        "signal": { "kind": "bell" }
+      },
+      {
         "id": "worker",
         "name": "Worker (e2e stub)",
         "description": "The stub as a worker of a managed run, through the MCP tools: it reads its task, commits stub-<member>.txt (and stub-fixed.txt when asked), submits, and reviews needs_changes once, then approved.",

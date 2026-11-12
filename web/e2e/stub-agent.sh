@@ -151,11 +151,106 @@ run=${CONDUCTOR_RUN:-}
 conductor=${CONDUCTOR_BIN:-conductor}
 wait_s=${STUB_MERGE_WAIT_S:-60}
 
+# Usage (Program item AC1, docs/plans/capacity.md, PR-5): what Claude Code's
+# `auth status --json` and `-p /usage …` and Codex's `app-server` answer, as
+# the two tools do, from web/e2e/fixtures/usage/ (synthetic: the tools'
+# shapes, invented values). The state is read from the file stub-usage in the
+# account's folder (CLAUDE_CONFIG_DIR for the claude identity, CODEX_HOME for
+# codex), one line "<state> [<version>]", so one spec holds several states at
+# once over the suite's one server: ok, signed_out, key_paid, turn (/usage
+# answered with a model turn), slow (/usage answered once the file
+# stub-usage-gate is in the same folder, a spec's gate, waited for at most
+# 80 s, under the reader's 90 s) and error (a result line that says the run
+# failed; Codex's limits refused). With that file the stub says it is the
+# version the readers were checked on (Claude Code 2.1.322, Codex 0.163.0),
+# or the one the line names; without it, the older one it always said, which
+# the readers read nothing of past --version. Resets are counted from now.
+usage_dir=
+case $identity in
+claude) usage_dir=${CLAUDE_CONFIG_DIR:-} ;;
+codex) usage_dir=${CODEX_HOME:-} ;;
+esac
+usage_state= usage_version=
+if [[ -n $usage_dir && -f $usage_dir/stub-usage ]]; then
+	read -r usage_state usage_version _ <"$usage_dir/stub-usage" || true
+fi
+claude_version=2.1.287 codex_version=0.159.0
+if [[ -n $usage_state ]]; then
+	claude_version=${usage_version:-2.1.322}
+	codex_version=${usage_version:-0.163.0}
+fi
+usage_fixtures=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures/usage
+
+# usage_iso prints a Unix time as RFC 3339 in UTC (GNU date, else BSD's).
+usage_iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ; }
+
+# usage_fill prints a fixture with its resets made: the five-hour window's two
+# hours and ten minutes from now, the weekly one's five days and an hour.
+usage_fill() {
+	local now five week text
+	now=$(date +%s)
+	five=$((now + 7800))
+	week=$((now + 435600))
+	text=$(<"$usage_fixtures/$1")
+	text=${text//@FIVE_HOUR_RESET_S@/$five}
+	text=${text//@WEEKLY_RESET_S@/$week}
+	text=${text//@FIVE_HOUR_RESET@/$(usage_iso "$five")}
+	text=${text//@WEEKLY_RESET@/$(usage_iso "$week")}
+	printf '%s\n' "$text"
+}
+
+# claude_usage answers `auth status --json` and `-p /usage …` for the state.
+claude_usage() {
+	case $1/$usage_state in
+	auth/signed_out) usage_fill claude-auth-signed-out.json ;;
+	auth/key_paid) usage_fill claude-auth-key.json ;;
+	auth/*) usage_fill claude-auth.json ;;
+	usage/turn) usage_fill claude-usage-turn.jsonl ;;
+	usage/error) usage_fill claude-usage-error.jsonl ;;
+	usage/slow)
+		local i
+		for ((i = 0; i < 800; i++)); do
+			[[ -e $usage_dir/stub-usage-gate ]] && break
+			sleep 0.1
+		done
+		usage_fill claude-usage.jsonl
+		;;
+	usage/*) usage_fill claude-usage.jsonl ;;
+	esac
+}
+
+# codex_app_server answers app-server's JSON-RPC on stdio, a reply by id to
+# each request, notifications (no id) unanswered, until stdin ends.
+codex_app_server() {
+	local line id result
+	while IFS= read -r line; do
+		[[ $line =~ \"id\":([0-9]+) ]] || continue
+		id=${BASH_REMATCH[1]}
+		result=
+		case $line in
+		*'"method":"initialize"'*) result=$(usage_fill codex-initialize.json) ;;
+		*'"method":"account/read"'*)
+			case $usage_state in
+			signed_out) result=$(usage_fill codex-account-signed-out.json) ;;
+			key_paid) result=$(usage_fill codex-account-key.json) ;;
+			*) result=$(usage_fill codex-account.json) ;;
+			esac
+			;;
+		*'"method":"account/rateLimits/read"'*) [[ $usage_state == error ]] || result=$(usage_fill codex-limits.json) ;;
+		esac
+		if [[ -n $result ]]; then
+			printf '{"id":%s,"result":%s}\n' "$id" "$result"
+		else
+			printf '{"id":%s,"error":{"code":-32603,"message":"e2e stub refusal"}}\n' "$id"
+		fi
+	done
+}
+
 case "${1:-}" in
 --version | -V)
 	case $identity in
-	claude) echo "2.1.287 (Claude Code)" ;;
-	codex) echo "codex-cli 0.159.0" ;;
+	claude) echo "$claude_version (Claude Code)" ;;
+	codex) echo "codex-cli $codex_version" ;;
 	pressly-goose) echo "goose version: v3.22.1" ;;
 	*) echo "conductor e2e stub 2.0" ;;
 	esac
@@ -174,6 +269,24 @@ Options:
   --dangerously-bypass-approvals-and-sandbox
   --version          print the version
 HELP
+	exit 0
+	;;
+auth)
+	# Claude Code's auth status, for a usage read; nothing is answered without a state.
+	[[ $identity == claude && -n $usage_state && ${2:-} == status ]] || exit 1
+	claude_usage auth
+	exit 0
+	;;
+-p)
+	if [[ $identity == claude && ${2:-} == /usage ]]; then
+		[[ -n $usage_state ]] || exit 1
+		claude_usage usage
+		exit 0
+	fi
+	;;
+app-server)
+	[[ $identity == codex && -n $usage_state ]] || exit 1
+	codex_app_server
 	exit 0
 	;;
 esac

@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","cwd":"/e2e/run","session_id":"00000000-0000-4000-8000-0000000e2e02","tools":[],"mcp_servers":[],"model":"e2e-model","permissionMode":"default","slash_commands":["usage"],"apiKeySource":"none","claude_code_version":"2.1.322"}
+{"type":"result","subtype":"error_during_execution","is_error":true,"duration_ms":10,"num_turns":0,"result":"E2E-PEOPLE-TEXT result","session_id":"00000000-0000-4000-8000-0000000e2e02","total_cost_usd":0,"local_command":"usage"}
