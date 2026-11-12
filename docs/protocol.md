@@ -2497,7 +2497,8 @@ a label's `for`, aria-labelledby's ids) is compared as the page wrote
 it, never made well-formed: one past its bound (of a list, its last
 token) or one that making it well-formed would change names no element,
 and a list of ids is split on HTML's white space alone (tab, line feed,
-form feed, carriage return, space). What the engine builds in one call before
+form feed, carriage return, space), by the bridge's own loop over the
+bounded slice. What the engine builds in one call before
 the bridge reads any of it is the engine's work, the bridge bounding what
 it reads of it: an attribute's value, the title, the stack under the
 pointer, an element's animations, its computed style, an element's own
@@ -2747,15 +2748,25 @@ listener the page put on the window in that phase before selection mode
 began is called before the bridge's; a tap's touches and a wheel keep
 their default action). Selection mode picks, and stops what it stops,
 only on events the browser delivered: a pointer move outlines the
-element under it, a click picks the element under its own point, the
-release of Enter picks the outlined element if it is still in the
-page's own tree (its root node is the page's document), and otherwise
-does nothing, and the release of Escape leaves. After a resize of the
-window or a scroll the browser delivered (the window's, or a
-container's, which the window hears in its capture phase) the outline is
-drawn again over the element now under the pointer's last point; before
-the pointer has given a point it draws none, and a scroll the page's own
-script dispatches changes nothing. What is aimed at a frame inside the
+element under it, a click picks the element under its own point, the release of
+Enter picks the outlined element if the outline still shows it and it is
+still in the page's own tree (connected, and its root node the page's
+document), and otherwise does
+nothing, and the release of Escape leaves. After a resize of the window
+or a scroll the browser delivered (the window's, or a container's, which
+the window hears in its capture phase) the bridge looks under the
+pointer's last point again: when the topmost element there is another
+than the one the point last gave, that element is outlined; otherwise
+the outlined element stays, an arrow key's choice too, and its outline
+is drawn again where it now is. Before the pointer has given a point
+(the arrow keys alone) the outline is drawn again over the outlined
+element, never taken off, and a scroll the page's own script dispatches
+changes nothing. The release of Enter looks the same way first: when
+the outlined element changes, that release moves the outline and picks
+nothing, and the next release picks. So a scroll the window does not
+hear, of a container inside a component's own tree, moves the outline
+at the next pointer move, the next scroll the window hears or the next
+release of Enter, which then picks nothing. What is aimed at a frame inside the
 page (`iframe`, `frame`, `object`, `embed`) the browser delivers to the
 frame. A frame's element is outlined when the browser delivers the
 page's window a pointer event aimed at it (a mouse pointer entering it)

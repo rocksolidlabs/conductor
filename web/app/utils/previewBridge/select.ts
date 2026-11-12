@@ -33,13 +33,23 @@ function pageSlice(v: unknown, most: number, end = false): string {
  * The one way the bridge reads a page's string to compare it with another, a value that names an element (an id, a label's for,
  * aria-labelledby's ids): the slice the page gave, never made well-formed, a list (list true) split on HTML's white space alone.
  * A value past most (of a list, its last, which the slice cut) or one that making well-formed would change is none: a value
- * names its own element or none.
+ * names its own element or none. The slice is read by the bridge's own loop, a character at a time, so a token is never longer
+ * than the slice and is judged whole before it is kept.
  */
 export function pageIds(v: unknown, most: number, list = false): string[] {
   const s = pageSlice(v, most)
-  const ids = list ? s.split(/[\t\n\f\r ]+/) : [s]
-  if (s.length > most) ids.pop()
-  return ids.filter((id) => id !== '' && wellFormed(id) === id)
+  const ids: string[] = []
+  let token = ''
+  for (let i = 0; i <= s.length; i++) {
+    const end = i === s.length
+    const c = end ? '' : s[i]!
+    if (!end && !(list && (c === ' ' || c === '\t' || c === '\n' || c === '\f' || c === '\r'))) token += c
+    else {
+      if (token !== '' && !(end && s.length > most) && wellFormed(token) === token) ids.push(token)
+      token = ''
+    }
+  }
+  return ids
 }
 
 /** e's local name, lower case, read to most bytes. */

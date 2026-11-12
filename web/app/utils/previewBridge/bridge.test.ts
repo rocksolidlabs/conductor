@@ -124,14 +124,15 @@ describe('selection mode', () => {
   })
 
   /**
-   * A page of two buttons, the first under the point (1, 10) until the page scrolls, the second after. A scroll is delivered as
-   * the browser delivers one to the window (a container's in the capture phase, whose listeners the fake does not tell apart), or
-   * dispatched by the page's own script (untrusted).
+   * A page of two buttons, the first under the point (1, 10) until the page scrolls, the second after, and a ticker beside them. A
+   * scroll is delivered as the browser delivers one to the window (a container's in the capture phase, whose listeners the fake
+   * does not tell apart), or dispatched by the page's own script (untrusted); shift moves the second under the point with no event.
    */
   function twoButtons() {
     const [one, two] = [h('button', { id: 'one' }, 'One'), h('button', { id: 'two' }, 'Two')]
     const list = h('div', { id: 'list' }, one, two)
-    const root = h('html', {}, h('head'), h('body', {}, list))
+    const ticker = h('div', { id: 'ticker' }, 'News')
+    const root = h('html', {}, h('head'), h('body', {}, list, ticker))
     const page = framed(root)
     let scrolled = false
     page.doc.hitAt = (_x, y) => [y < 50 === !scrolled ? one : two, list, root.children[1]!, root]
@@ -142,8 +143,10 @@ describe('selection mode', () => {
     // What the outline's label names: the outlined element's tag and id.
     const outlined = () => (box() === 'block' ? plainText(hostOf(root)!.shadow!.elements[0]!.elements[0]!) : 'none')
     const picked = () => page.answers().map((a) => (a.t === 'selected' ? a.element.id : a.t))
-    const enter = () => (page.win.dispatch('keydown', event('keydown', { key: 'Enter' })), page.win.dispatch('keyup', event('keyup', { key: 'Enter' })))
-    return { ...page, root, list, one, two, scroll, box, outlined, picked, enter }
+    const press = (key: string) => (page.win.dispatch('keydown', event('keydown', { key })), page.win.dispatch('keyup', event('keyup', { key })))
+    const enter = () => press('Enter')
+    const shift = () => (scrolled = true)
+    return { ...page, root, list, ticker, one, two, scroll, box, outlined, picked, press, enter, shift }
   }
 
   it('picks the element under the click’s own point, whether a move came before it or not', () => {
@@ -194,6 +197,69 @@ describe('selection mode', () => {
     p.win.dispatch('click', event('click', { clientX: 1, clientY: 10 }))
     seen.push(p.picked(), hostOf(p.root) !== null)
     expect(seen).toEqual(['button#one', ['one'], 'none', [], true, 3 + SELECTION_EVENTS.length, ['two'], false])
+  })
+
+  it('keeps what the arrow keys chose across a scroll, drawn again where it is, and Enter picks it', () => {
+    const seen = (['the parent, then a scroll of another container', 'keys alone, then a scroll'] as const).map((how) => {
+      const p = twoButtons()
+      p.ask('select')
+      const outlines: string[] = []
+      if (how === 'keys alone, then a scroll') {
+        p.press('ArrowDown')
+        outlines.push(p.outlined())
+        p.scroll()
+      } else {
+        p.win.dispatch('pointermove', event('pointermove', { clientX: 1, clientY: 10 }))
+        p.press('ArrowLeft')
+        outlines.push(p.outlined())
+        // A scroll of the ticker, which leaves the element under the point where it was.
+        p.win.dispatch('scroll', event('scroll', { target: p.ticker }))
+      }
+      outlines.push(p.outlined())
+      p.enter()
+      return [how, outlines, p.picked()]
+    })
+    expect(seen).toEqual([
+      ['the parent, then a scroll of another container', ['div#list', 'div#list'], ['list']],
+      ['keys alone, then a scroll', ['button#one', 'button#one'], ['one']],
+    ])
+  })
+
+  it('outlines with Enter the element now under the pointer’s last point when it changed with no scroll heard, and picks it with the next Enter', () => {
+    const p = twoButtons()
+    p.ask('select')
+    p.win.dispatch('pointermove', event('pointermove', { clientX: 1, clientY: 10 }))
+    // The second button moves under the point, and the window hears nothing of it (a container in a component's own tree).
+    p.shift()
+    const seen: unknown[] = [p.outlined()]
+    p.enter()
+    seen.push(p.picked(), p.outlined())
+    p.enter()
+    seen.push(p.picked(), hostOf(p.root) !== null)
+    expect(seen).toEqual(['button#one', [], 'button#two', ['two'], false])
+  })
+
+  it('picks nothing with Enter for an element taken out of its document', () => {
+    const seen = (['on the element', 'on its prototype'] as const).map((where) => {
+      const p = twoButtons()
+      p.ask('select')
+      p.win.dispatch('pointermove', event('pointermove', { clientX: 1, clientY: 10 }))
+      const owner = (where === 'on the element' ? p.one : Object.getPrototypeOf(p.one)) as { getRootNode: () => unknown }
+      const kept = Object.getOwnPropertyDescriptor(owner, 'getRootNode')
+      owner.getRootNode = () => p.doc
+      try {
+        p.one.remove()
+        p.enter()
+        return [where, p.picked(), hostOf(p.root) !== null]
+      } finally {
+        if (kept) Object.defineProperty(owner, 'getRootNode', kept)
+        else delete (owner as { getRootNode?: unknown }).getRootNode
+      }
+    })
+    expect(seen).toEqual([
+      ['on the element', [], true],
+      ['on its prototype', [], true],
+    ])
   })
 
   it('picks nothing with Enter when the outlined element has moved into another document or a component’s own tree, and picks one put back in the page', () => {
@@ -534,6 +600,32 @@ describe('what the bridge reads of a page', () => {
       true,
       true,
     ])
+  })
+
+  it('reads a list of ids by its own loop over the bounded slice', () => {
+    const long = 'z'.repeat(1_000_000)
+    const button = h('button', { id: 'b', 'aria-labelledby': 'short' }, 'Own')
+    const root = h('html', {}, h('head'), h('body', {}, button, h('span', { id: long }, 'Long')))
+    const { answers, ask } = framed(root)
+    ask('hello')
+    // String's split as the page has it now, and the longest string made well-formed counted.
+    const [split, replace] = [String.prototype.split, String.prototype.replace]
+    let longest = 0
+    String.prototype.split = function (this: string, ...a: Parameters<string['split']>) {
+      return String(this) === 'short' ? [long] : split.apply(this, a)
+    } as typeof split
+    String.prototype.replace = function (this: string, ...a: [never, never]) {
+      longest = Math.max(longest, String(this).length)
+      return replace.apply(this, a)
+    } as typeof replace
+    try {
+      ask('describe', { selector: '#b' })
+    } finally {
+      ;[String.prototype.split, String.prototype.replace] = [split, replace]
+    }
+    const [, described] = answers() as Array<Extract<PreviewToWorkbench, { t: 'described' }>>
+    console.log('the longest string made well-formed in the describe:', longest)
+    expect([described!.element!.name, longest <= ELEMENT_BOUNDS.name + 1]).toEqual(['Own', true])
   })
 
   it('puts no field’s value, no typed text and nothing of a script, a style or a template in any answer', () => {
