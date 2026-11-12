@@ -16,10 +16,6 @@ type principal struct {
 	// published there and has no role on any of them (role).
 	yard bool
 	host bool
-	// decide is an identity provider's principal with the decide grant
-	// (decide.go): without the admin grant, it is admitted to the decide
-	// grant's four routes alone.
-	decide bool
 	// subject and name are an identity provider's principal's (identity.go):
 	// empty for every token of the server's own chain.
 	subject string
@@ -180,20 +176,14 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p := s.authenticate(r, false)
 		if !p.admin {
-			s.unauthorized(w, r)
+			if !s.limiter.allow(clientKey(r)) {
+				writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")
+				return
+			}
+			w.Header().Set("WWW-Authenticate", `Bearer realm="conductor"`)
+			writeError(w, http.StatusUnauthorized, "unauthorized", "workbench token required")
 			return
 		}
 		next(w, withPrincipal(r, p))
 	}
-}
-
-// unauthorized answers a request requireAdmin does not admit: 401, or 429
-// past the rate limit.
-func (s *Server) unauthorized(w http.ResponseWriter, r *http.Request) {
-	if !s.limiter.allow(clientKey(r)) {
-		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")
-		return
-	}
-	w.Header().Set("WWW-Authenticate", `Bearer realm="conductor"`)
-	writeError(w, http.StatusUnauthorized, "unauthorized", "workbench token required")
 }

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -73,10 +72,8 @@ func (s *Server) routeDecisions(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/sessions/{id}/decisions/{did}", s.launchingAny(s.handleSessionDecision))
 	mux.HandleFunc("POST /api/sessions/{id}/decisions/{did}/withdraw", s.launchingAny(s.handleSessionDecisionWithdraw))
 	mux.HandleFunc("GET /api/decisions", s.launching(s.handleDecisions))
-	// The decide grant's three decision routes, the admin's too (decide.go).
-	mux.HandleFunc("GET /api/me/decisions", s.deciding(s.handleDecideList))
-	mux.HandleFunc("GET /api/decisions/{did}", s.deciding(s.handleDecision))
-	mux.HandleFunc("POST /api/decisions/{did}/respond", s.deciding(s.handleDecisionRespond))
+	mux.HandleFunc("GET /api/decisions/{did}", s.launching(s.handleDecision))
+	mux.HandleFunc("POST /api/decisions/{did}/respond", s.launching(s.handleDecisionRespond))
 	mux.HandleFunc("POST /api/decisions/{did}/cancel", s.launching(s.handleDecisionCancel))
 	mux.HandleFunc("POST /api/decisions/{did}/comment", s.launching(s.handleDecisionComment))
 	// A Brakeman turn granted route_decision is taken here too (actable):
@@ -87,17 +84,14 @@ func (s *Server) routeDecisions(mux *http.ServeMux) {
 
 // authorityOf is the authority a response of r's principal is judged by
 // (crew.Authority), beside actorOf, the audit's words: the admin grant
-// the principal holds, else the decide grant, how it authenticated (the
-// workbench token, or an identity provider's principal with its subject)
-// and this server process's boot. It is the principal's, never the body's.
+// the principal holds, how it authenticated (the workbench token, or an
+// identity provider's principal with its subject) and this server
+// process's boot. It is the principal's, never the body's.
 func (s *Server) authorityOf(r *http.Request) crew.Authority {
-	p := principalOf(r)
+	p, _ := r.Context().Value(principalKey{}).(principal)
 	a := crew.Authority{Via: crew.ViaWorkbench, Boot: s.runs.Boot()}
-	switch {
-	case p.admin:
+	if p.admin {
 		a.Grant = string(ext.GrantAdmin)
-	case p.decide:
-		a.Grant = string(ext.GrantDecide)
 	}
 	if p.subject != "" {
 		a.Via, a.Subject = crew.ViaIdentity, p.subject
@@ -565,10 +559,6 @@ func (s *Server) handleTicketDecisions(w http.ResponseWriter, r *http.Request) {
 // handleDecision reads a decision whole with its evidence's refs:
 // {decision, refs}.
 func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request) {
-	if p := principalOf(r); p.decider() {
-		s.decideRead(w, r, p)
-		return
-	}
 	if !noQuery(w, r) {
 		return
 	}
@@ -587,10 +577,6 @@ func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request) {
 // response is applied only once the provider admits its token again
 // (recheckResponse).
 func (s *Server) handleDecisionRespond(w http.ResponseWriter, r *http.Request) {
-	if p := principalOf(r); p.decider() {
-		s.decideRespond(w, r, p)
-		return
-	}
 	did := r.PathValue("did")
 	var resp crew.Response
 	if err := decodeJSONLimit(w, r, &resp, maxDecisionRespondBody); err != nil {
@@ -626,19 +612,16 @@ func (s *Server) handleDecisionRespond(w http.ResponseWriter, r *http.Request) {
 
 // recheckResponse asks the identity provider again, once the response k
 // to decision did has committed, about the token r presented, and tells
-// the engine whether it admitted it as the same subject holding the grant
-// the response's authority names, admin or decide
-// (crew.Engine.ConfirmAuthority): a provider that fails, is late or is
-// busy has not said yes. It reads no record: a decision's entries change
-// only while it is open. The token is the request's alone: never kept or
-// logged.
+// the engine whether it admitted it as the same subject with the admin
+// grant (crew.Engine.ConfirmAuthority): a provider that fails, is late or
+// is busy has not said yes. The token is the request's alone: never kept
+// or logged.
 func (s *Server) recheckResponse(ctx context.Context, r *http.Request, did string, k int) {
-	p := principalOf(r)
+	p, _ := r.Context().Value(principalKey{}).(principal)
 	admitted := false
 	if g, ok := s.exts.identity.(guardIdentity); ok && p.subject != "" {
 		pr, yes, known := g.recheck(ctx, presentedToken(r, false))
-		grant := s.authorityOf(r).Grant
-		admitted = known && yes && pr.Subject == p.subject && grant != "" && slices.Contains(grantsOf(s.grantPrincipal(pr)), grant)
+		admitted = known && yes && pr.Subject == p.subject && s.grantPrincipal(pr).admin
 	}
 	s.runs.ConfirmAuthority(did, k, admitted)
 }
@@ -749,8 +732,11 @@ func (s *Server) handleDecisionRoute(w http.ResponseWriter, r *http.Request) {
 	if !opRev(w, body.ExpectedRev) {
 		return
 	}
-	if body.To.Kind == crew.DestGrant && !s.hasIdentity() {
-		writeError(w, http.StatusConflict, "no_identity", "no identity provider is registered: a decision is given to the decide grant only where one is")
+	if body.To.Kind == crew.DestGrant {
+		// The engine takes the decide grant as a destination; this route
+		// offers it once the grant's routes are served
+		// (docs/plans/decide-grant.md).
+		writeError(w, http.StatusBadRequest, crew.CodeInvalid, "a decision is routed to the operator or a person of its run's crew")
 		return
 	}
 	ctx, cancel := runContext(r)
