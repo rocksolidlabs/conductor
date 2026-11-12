@@ -1124,3 +1124,84 @@ func TestRefreshResendCompletesImages(t *testing.T) {
 		}
 	}
 }
+
+// pullEnv is externalEnv with a project STP, a ticket of it, and pull
+// request n on the fake.
+func pullEnv(t *testing.T, n int) (*testEnv, *ghItems, string) {
+	t.Helper()
+	e, g := externalEnv(t)
+	g.set(n, ghItem{Node: "PR_kwDOstop" + strconv.Itoa(n), Title: "Stop", Pull: true, Updated: t0})
+	e.newDispatchProject(t, "STP", nil)
+	return e, g, e.newDispatchTicket(t, "STP", "Stop it", nil)["key"].(string)
+}
+
+// addLink adds a delivery link to pull request n of octo/app: its id.
+func (e *testEnv) addPullLink(t *testing.T, key string, n int) string {
+	t.Helper()
+	out := e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links", map[string]any{"opId": opID(), "kind": "delivery", "url": "https://github.com/octo/app/pull/" + strconv.Itoa(n)}, http.StatusCreated, "")
+	return rcOf(out)["id"].(string)
+}
+
+// The reads of GitHub end with the server. The read after a link's add,
+// held at the fake when the server begins to stop, asks nothing more (the
+// pull request's half), records nothing, and the stop does not wait for
+// it; a link added once the stop began asks GitHub nothing; a route's read
+// held the same way ends with the stop, answered as a busy route is.
+func TestTrackerReadsEndWithServer(t *testing.T) {
+	t.Run("the read after a link's add", func(t *testing.T) {
+		e, g, key := pullEnv(t, 92)
+		gate := g.f.Hold("GET", "api.github.com", itemsRepo+"/issues/92")
+		link := e.addPullLink(t, key, 92)
+		<-gate.Reached()
+		wctx, cancel := context.WithTimeout(context.Background(), testWait)
+		defer cancel()
+		e.srv.WaitBackground(wctx)
+		stoppedFirst := wctx.Err() == nil
+		gate.Open()
+		e.srv.bg.Wait()
+		ds, err := dispatch.OpenOptions(filepath.Join(e.srv.store.Dir(), "dispatch"), dispatch.Options{Systems: []string{"github"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ds.Close()
+		_, found, err := ds.LinkReadOf(t.Context(), link)
+		if !stoppedFirst || g.count("api.github.com", itemsRepo+"/pulls/92") != 0 || found || err != nil {
+			t.Fatalf("after the stop: it ended first %v, the pull request asked %d times, a read recorded %v %v", stoppedFirst, g.count("api.github.com", itemsRepo+"/pulls/92"), found, err)
+		}
+	})
+	t.Run("a link added once the stop began", func(t *testing.T) {
+		e, g, key := pullEnv(t, 93)
+		e.srv.external.end()
+		before := len(g.f.Requests())
+		e.addPullLink(t, key, 93)
+		// What the add started is waited for: the stop's own wait.
+		wctx, cancel := context.WithTimeout(context.Background(), testWait)
+		defer cancel()
+		e.srv.WaitBackground(wctx)
+		if n := len(g.f.Requests()) - before; n != 0 || wctx.Err() != nil {
+			t.Fatalf("%d requests after the stop began (the wait ended on its own: %v)", n, wctx.Err() != nil)
+		}
+	})
+	t.Run("a route's read", func(t *testing.T) {
+		e, g, key := pullEnv(t, 94)
+		link := e.addPullLink(t, key, 94)
+		if !waitFor(testWait, func() bool { _, ok, _ := e.srv.dispatch.LinkReadOf(t.Context(), link); return ok }) {
+			t.Fatal("the added link was not read")
+		}
+		gate := g.f.Hold("GET", "api.github.com", itemsRepo+"/issues/94")
+		answer := make(chan map[string]any, 1)
+		go func() {
+			_, _, out := e.call(t, "POST", "/api/dispatch/tickets/"+key+"/links/"+link+"/read", map[string]any{})
+			answer <- out
+		}()
+		<-gate.Reached()
+		stopped := make(chan struct{})
+		go func() { e.srv.WaitBackground(context.Background()); close(stopped) }()
+		out := <-answer
+		gate.Open()
+		<-stopped
+		if errorCode(out) != "tracker_busy" || g.count("api.github.com", itemsRepo+"/pulls/94") != 1 {
+			t.Fatalf("the held route: %v, the pull request asked %d times", out, g.count("api.github.com", itemsRepo+"/pulls/94"))
+		}
+	})
+}

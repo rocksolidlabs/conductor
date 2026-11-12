@@ -872,6 +872,7 @@ func (s *Server) track(f func()) {
 func (s *Server) WaitBackground(ctx context.Context) {
 	s.stopExtensions()
 	s.stopRevokeRetries()
+	s.external.end()
 	s.bgMu.Lock()
 	s.bgDone = true
 	s.bgMu.Unlock()
@@ -1399,7 +1400,9 @@ func (s *Server) Shutdown(ctx context.Context) {
 	}
 	s.hosts.CloseAll()
 	// What the server started on its own (the viewers of a forgotten run's
-	// links being closed) ends before Shutdown returns, or ctx does.
+	// links being closed) ends before Shutdown returns, or ctx does; the
+	// requests to GitHub of a ticket's item end now.
+	s.external.end()
 	s.bgMu.Lock()
 	s.bgDone = true
 	s.bgMu.Unlock()

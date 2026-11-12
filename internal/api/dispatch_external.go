@@ -91,6 +91,30 @@ type externalState struct {
 	// waiting is told of a lock found held, before its wait.
 	remote  func(ctx context.Context, dir, name string) (host, path string, err error)
 	waiting func(key string)
+	// stop ends as the server begins to stop (end): every request this
+	// file makes to GitHub is made under it, and none begins after it.
+	stop    context.Context
+	stopped context.CancelFunc
+}
+
+// stopping is the context that ends as the server begins to stop.
+func (x *externalState) stopping() context.Context {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.stop == nil {
+		x.stop, x.stopped = context.WithCancel(context.Background())
+	}
+	return x.stop
+}
+
+// end ends stopping's context, at WaitBackground and Shutdown, where the
+// server marks its own work done.
+func (x *externalState) end() {
+	x.stopping()
+	x.mu.Lock()
+	end := x.stopped
+	x.mu.Unlock()
+	end()
 }
 
 func (s *Server) trackerCaps() trackerCaps {
@@ -296,6 +320,11 @@ func trackerAnswer(err error, ref tracker.Ref) *apiError {
 // beside a rate limit, and logs it: the route, the reference, the status.
 func (s *Server) trackerFail(w http.ResponseWriter, r *http.Request, ref tracker.Ref, err error) {
 	ae := trackerAnswer(err, ref)
+	if s.external.stopping().Err() != nil {
+		// The server's stop ended it: a busy route's answer.
+		ae = errItemBusy
+		w.Header().Set("Retry-After", "5")
+	}
 	var rl *tracker.ErrRateLimited
 	if errors.As(err, &rl) {
 		wait := 60
@@ -316,9 +345,12 @@ func (s *Server) trackerLog(r *http.Request, ref tracker.Ref, status int) {
 
 // trackerContext is a route's context: the request's values, not its end
 // (a client gone mid-way leaves the operation whole, its resend answered
-// by the receipt), bounded by its deadline.
-func trackerContext(r *http.Request, d time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(r.Context()), d)
+// by the receipt), bounded by its deadline, and ended as the server begins
+// to stop (externalState.stopping).
+func (s *Server) trackerContext(r *http.Request, d time.Duration) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), d)
+	stop := context.AfterFunc(s.external.stopping(), cancel)
+	return ctx, func() { stop(); cancel() }
 }
 
 // The bodies of this file's writes.
@@ -441,7 +473,7 @@ func (s *Server) handleDispatchExternalPreview(w http.ResponseWriter, r *http.Re
 	if !ok {
 		return
 	}
-	ctx, cancel := trackerContext(r, TrackerReadTimeout)
+	ctx, cancel := s.trackerContext(r, TrackerReadTimeout)
 	defer cancel()
 	var project dispatch.Project
 	if body.Project != "" && !strings.Contains(body.URL, "://") {
@@ -630,7 +662,7 @@ func (s *Server) handleDispatchImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	caps := s.trackerCaps()
-	ctx, cancel := trackerContext(r, caps.busy+caps.reads+caps.write+caps.images)
+	ctx, cancel := s.trackerContext(r, caps.busy+caps.reads+caps.write+caps.images)
 	defer cancel()
 	op := body.op(r)
 	args := dispatch.ImportArgs{Project: key, URL: body.URL, Status: body.Status, Priority: body.Priority, Horizon: body.Horizon, Owner: body.Owner,
@@ -719,7 +751,7 @@ func (s *Server) handleDispatchLinkExternal(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	caps := s.trackerCaps()
-	ctx, cancel := trackerContext(r, caps.busy+caps.reads+caps.write)
+	ctx, cancel := s.trackerContext(r, caps.busy+caps.reads+caps.write)
 	defer cancel()
 	op, args := body.op(r), dispatch.LinkArgs{Key: key, URL: body.URL}
 	if s.replayed(ctx, w, ds, op, dispatch.IntentLinkExternal, args, key) {
@@ -768,7 +800,7 @@ func (s *Server) handleDispatchUnlinkExternal(w http.ResponseWriter, r *http.Req
 		return
 	}
 	caps := s.trackerCaps()
-	ctx, cancel := trackerContext(r, caps.busy+caps.write)
+	ctx, cancel := s.trackerContext(r, caps.busy+caps.write)
 	defer cancel()
 	release, ok := s.lockFor(ctx, w, "ticket:"+key)
 	if !ok {
@@ -800,7 +832,7 @@ func (s *Server) handleDispatchRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	caps := s.trackerCaps()
-	ctx, cancel := trackerContext(r, caps.busy+caps.reads+caps.write+caps.images)
+	ctx, cancel := s.trackerContext(r, caps.busy+caps.reads+caps.write+caps.images)
 	defer cancel()
 	op := body.op(r)
 	release, ok := s.lockFor(ctx, w, "ticket:"+key)
@@ -945,7 +977,7 @@ func (s *Server) handleDispatchAuthority(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	caps := s.trackerCaps()
-	ctx, cancel := trackerContext(r, caps.busy+caps.reads+caps.write)
+	ctx, cancel := s.trackerContext(r, caps.busy+caps.reads+caps.write)
 	defer cancel()
 	op, args := body.op(r), dispatch.AuthorityArgs{Key: key, Field: body.Field, Owner: body.Owner}
 	if s.replayed(ctx, w, ds, op, dispatch.IntentAuthority, args, key) {
@@ -1011,9 +1043,14 @@ func (s *Server) readableLink(ctx context.Context, w http.ResponseWriter, ds *di
 // said, the state kept). Without checks (the close's reads), the last
 // read's checks are kept when the head is the same, and said not read
 // otherwise. A failure is recorded as the read's words (RecordReadError)
-// and returned. Every request is made through atGitHub, within ctx.
+// and returned. Every request is made through atGitHub, within ctx; once
+// the server begins to stop, none is made and nothing is recorded.
 func (s *Server) readLink(ctx context.Context, ds *dispatch.Store, linkID string, ref tracker.Ref, withChecks bool) error {
 	caps := s.trackerCaps()
+	stop := s.external.stopping()
+	if stop.Err() != nil {
+		return stop.Err()
+	}
 	prior, _, err := ds.LinkReadOf(ctx, linkID)
 	if err != nil {
 		return err
@@ -1037,6 +1074,8 @@ func (s *Server) readLink(ctx context.Context, ds *dispatch.Store, linkID string
 	defer wcancel()
 	var ae *apiError
 	switch {
+	case stop.Err() != nil:
+		return stop.Err()
 	case errors.As(err, &ae):
 		// No token, or a host out of form: GitHub was not asked.
 		return err
@@ -1082,7 +1121,7 @@ func (s *Server) handleDispatchReadLink(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	caps := s.trackerCaps()
-	ctx, cancel := trackerContext(r, caps.busy+caps.reads+caps.write)
+	ctx, cancel := s.trackerContext(r, caps.busy+caps.reads+caps.write)
 	defer cancel()
 	ref, ok := s.readableLink(ctx, w, ds, key, id)
 	if !ok {
@@ -1150,9 +1189,10 @@ func (s *Server) handleDispatchLinkRead(w http.ResponseWriter, r *http.Request) 
 // readAddedLink reads, once, the GitHub item a delivery or external link
 // just added names, when a token is kept for its host (asked on the
 // request, credentialFor): in the background, bounded by
-// TrackerReadTimeout, one at a time per ticket and per link, its read
-// recorded as the link's (readLink). A host with no token, a link no
-// adapter reads and a resend record nothing: the link is as DS1 made it.
+// TrackerReadTimeout and ended as the server begins to stop (none begun
+// after), one at a time per ticket and per link, its read recorded as the
+// link's (readLink). A host with no token, a link no adapter reads and a
+// resend record nothing: the link is as DS1 made it.
 func (s *Server) readAddedLink(ds *dispatch.Store, key string, l dispatch.NewLink, rc dispatch.Receipt, err error) {
 	if err != nil || rc.Status != dispatch.StatusDone || rc.Repeat || rc.ID == "" || l.Kind != dispatch.LinkDelivery && l.Kind != dispatch.LinkExternal {
 		return
@@ -1166,8 +1206,11 @@ func (s *Server) readAddedLink(ds *dispatch.Store, key string, l dispatch.NewLin
 	}
 	s.track(func() {
 		caps := s.trackerCaps()
-		ctx, cancel := context.WithTimeout(context.Background(), caps.busy+caps.reads+caps.write)
+		ctx, cancel := context.WithTimeout(s.external.stopping(), caps.busy+caps.reads+caps.write)
 		defer cancel()
+		if ctx.Err() != nil {
+			return
+		}
 		release, ok := s.external.lock(ctx, "added:"+key, caps.busy)
 		if !ok {
 			return
@@ -1192,7 +1235,7 @@ func (s *Server) readForClose(r *http.Request, ds *dispatch.Store, key string, e
 		return
 	}
 	caps := s.trackerCaps()
-	ctx, cancel := trackerContext(r, caps.busy+caps.merged)
+	ctx, cancel := s.trackerContext(r, caps.busy+caps.merged)
 	defer cancel()
 	project, _, _ := dispatch.ParseKey(key)
 	pv, err := ds.Project(ctx, project)
