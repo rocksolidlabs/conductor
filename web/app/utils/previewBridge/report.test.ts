@@ -1,8 +1,7 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { ELEMENT_BOUNDS as B, ELEMENT_CUTS, MAX_ELEMENT_REPORT, measuredBytes, previewMeasure, validElement, type ElementReport } from '../protocol'
 import { FakeDoc, h, plainText } from './fakeDom'
+import { fixture } from './fixture'
 import { REPORT_STYLES, boundFields, cutEnd, cutReport, cutStart, markup, readElement, tagWithin } from './report'
 import type { Doc, El } from './select'
 
@@ -39,10 +38,8 @@ function largestTag(c: string): ElementReport {
 
 /** The fixture the server's tests read (internal/api/testdata): the report as cut and its measure. */
 function writeFixture(name: string, r: ElementReport) {
-  const dir = fileURLToPath(new URL('../../../../internal/api/testdata/', import.meta.url))
-  mkdirSync(dir, { recursive: true })
   const comment = `Written by web/app/utils/previewBridge/report.test.ts: the bridge's report cut to ${MAX_ELEMENT_REPORT} bytes by its measure, which bytes is.`
-  writeFileSync(dir + name, JSON.stringify({ comment, bytes: previewMeasure(r), report: r }, null, 1) + '\n')
+  fixture(name, JSON.stringify({ comment, bytes: previewMeasure(r), report: r }, null, 1) + '\n')
 }
 
 describe('the cut of one field', () => {

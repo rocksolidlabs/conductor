@@ -1,5 +1,3 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { PREVIEW_MARK, parsePreviewMessage, type PreviewToWorkbench } from '../protocol'
 import * as bridge from './bridge'
@@ -8,6 +6,7 @@ import { startBridge } from './bridge'
 /** The event names selection mode stops (none where the bridge has no such table). */
 const SELECTION_EVENTS: readonly string[] = (bridge as { SELECTION_EVENTS?: readonly string[] }).SELECTION_EVENTS ?? []
 import { FakeDoc, FakeWin, event, h, pageStrings, plainText, reads, resetReads, type FakeEl } from './fakeDom'
+import { fixture } from './fixture'
 
 const WORKBENCH = 'http://127.0.0.1:8080'
 const NONCE = 'n0nce-of-the-hello-1234'
@@ -185,10 +184,8 @@ describe('the bridge in a page', () => {
     expect(described.element!.html).toBe('<html><head></head><body><p>Hello</p></body></html>')
     expect(selected.element).toMatchObject({ tag: 'p', text: 'Hello', selector: pSelector, hit: { self: true, selector: pSelector, tag: 'p' }, hints: [], cut: [] })
     expect(selected.element.ancestors.map((a) => a.tag)).toEqual(['body', 'html'])
-    const dir = fileURLToPath(new URL('../../../../internal/api/testdata/', import.meta.url))
-    mkdirSync(dir, { recursive: true })
     const comment = "Written by web/app/utils/previewBridge/bridge.test.ts: the bridge's answers on a plain page (no framework, no title, the root element described, a paragraph selected), each with the hello's nonce, for internal/proto's parser."
-    writeFileSync(dir + 'plain-page-messages.json', JSON.stringify({ comment, nonce: NONCE, messages: got }, null, 1) + '\n')
+    fixture('plain-page-messages.json', JSON.stringify({ comment, nonce: NONCE, messages: got }, null, 1) + '\n')
   })
 
   it('puts its host on the page while it selects and takes it off, and acts only on what the browser delivers', () => {
@@ -349,8 +346,6 @@ describe('what the bridge reads of a page', () => {
 
 /** The answers written for internal/proto's parser (internal/api/testdata), one message a line. */
 function writeAnswers(name: string, what: string, messages: PreviewToWorkbench[]) {
-  const dir = fileURLToPath(new URL('../../../../internal/api/testdata/', import.meta.url))
-  mkdirSync(dir, { recursive: true })
   const comment = `Written by web/app/utils/previewBridge/bridge.test.ts: ${what}, each with the hello's nonce, for internal/proto's parser.`
-  writeFileSync(dir + name, `{"comment": ${JSON.stringify(comment)}, "nonce": ${JSON.stringify(NONCE)}, "messages": [\n${messages.map((m) => JSON.stringify(m)).join(',\n')}\n]}\n`)
+  fixture(name, `{"comment": ${JSON.stringify(comment)}, "nonce": ${JSON.stringify(NONCE)}, "messages": [\n${messages.map((m) => JSON.stringify(m)).join(',\n')}\n]}\n`)
 }
