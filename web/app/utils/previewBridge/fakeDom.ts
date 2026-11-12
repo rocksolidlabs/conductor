@@ -1,7 +1,8 @@
 /**
  * A small DOM for the bridge's tests (vitest runs in node): elements and text nodes, attributes, a selector matcher for what the
  * bridge writes and the tests ask (tags, *, #id, .class, [attr], :root, :nth-child, :nth-of-type, :disabled, :hover, lists and the
- * child combinator), and a document whose hit tests the test sets. Never imported by the bridge itself.
+ * child combinator) that matches names and ids as the standard does (a document's mode, an element's namespace), and a document
+ * whose hit tests the test sets. Never imported by the bridge itself.
  *
  * It counts what is read of it (reads): every node a link of the DOM reaches (parentNode, firstChild, nextSibling and the
  * element links, and the nodes an engine's search or serialiser goes through: querySelectorAll, closest, contains, outerHTML,
@@ -135,9 +136,15 @@ export class FakeText extends FakeNode {
 
 export type Kid = FakeEl | FakeText | string
 
+export const HTML_NS = 'http://www.w3.org/1999/xhtml'
+export const SVG_NS = 'http://www.w3.org/2000/svg'
+
 export class FakeEl extends FakeNode {
   readonly nodeType = 1
   readonly tag: string
+  /** Its local name and namespace: an HTML element's lower case as made by markup or createElement (see svg and named). */
+  local: string
+  namespaceURI = HTML_NS
   _kids: Array<FakeEl | FakeText> = []
   _elements = 0
   attrs = new Map<string, string>()
@@ -161,6 +168,7 @@ export class FakeEl extends FakeNode {
   constructor(tag: string, attrs: Record<string, string> = {}, children: Kid[] = []) {
     super()
     this.tag = tag.toUpperCase()
+    this.local = tag.toLowerCase()
     for (const [k, v] of Object.entries(attrs)) this.attrs.set(k, v)
     this.append(...children)
   }
@@ -180,7 +188,7 @@ export class FakeEl extends FakeNode {
     return pg(this.tag)
   }
   get localName() {
-    return pg(this.tag.toLowerCase())
+    return pg(this.local)
   }
   get elements(): FakeEl[] {
     return this._kids.filter((c): c is FakeEl => c instanceof FakeEl)
@@ -323,15 +331,48 @@ export function plainText(n: FakeEl): string {
   return n._kids.map((c) => (c instanceof FakeText ? c.text : plainText(c))).join('')
 }
 
-const PART = /#[\w-]+|\.[\w-]+|\[[\w-]+(?:="[^"]*")?\]|:nth-of-type\(\d+\)|:nth-child\(\d+\)|:root|:disabled|:hover/g
-const COMPOUND = new RegExp(`^([a-z][a-z0-9-]*|\\*)?((?:${PART.source})*)$`)
+// An identifier's characters: a name character, one past ASCII, or an escape (CSS Syntax, 4.3.7, as CSS.escape writes them).
+const IDENT = String.raw`(?:[\w-]|[^\x00-\x7f]|\\[0-9a-fA-F]{1,6} ?|\\[^0-9a-fA-F\n])+`
+const PART = new RegExp(String.raw`#${IDENT}|\.[\w-]+|\[[\w-]+(?:="[^"]*")?\]|:nth-of-type\(\d+\)|:nth-child\(\d+\)|:root|:disabled|:hover`, 'gu')
+const COMPOUND = new RegExp(`^([A-Za-z][A-Za-z0-9-]*|\\*)?((?:${PART.source})*)$`, 'u')
 
+/** An identifier's escapes read: a code point (U+FFFD for 0, a surrogate or one past the last), else the character escaped. */
+function unescaped(s: string): string {
+  return s.replace(/\\([0-9a-fA-F]{1,6}) ?|\\(.)/gsu, (_, hex: string | undefined, ch: string | undefined) => {
+    if (hex === undefined) return ch!
+    const c = Number.parseInt(hex, 16)
+    return c === 0 || c > 0x10ffff || (c >= 0xd800 && c <= 0xdfff) ? '�' : String.fromCodePoint(c)
+  })
+}
+
+const asciiLower = (s: string) => s.replace(/[A-Z]/g, (c) => c.toLowerCase())
+const compounds = new Map<string, [string | undefined, string[]]>()
+
+/** The documents by their root, so an element's matching knows its document's mode. */
+const docs = new WeakMap<FakeEl, FakeDoc>()
+function quirks(e: FakeEl): boolean {
+  let top = e
+  while (top._parent) top = top._parent
+  return docs.get(top)?.compatMode === 'BackCompat'
+}
+
+/**
+ * Whether e matches the compound s as the HTML Standard has selectors matched (4.16.2, case-sensitivity of selectors): a type
+ * selector lower-cased against an HTML element's name and as written against any other's; an id exactly, but without regard to
+ * ASCII case in a document in quirks mode.
+ */
 function compound(e: FakeEl, s: string): boolean {
-  const m = COMPOUND.exec(s)
-  if (!m) throw new SyntaxError(`not a selector the fake reads: ${s}`)
-  if (m[1] && m[1] !== '*' && m[1] !== e.tag.toLowerCase()) return false
-  for (const part of m[2]!.match(PART) ?? []) {
-    if (part[0] === '#' && (e.attrs.get('id') ?? '') !== part.slice(1)) return false
+  let c = compounds.get(s)
+  if (!c) {
+    const m = COMPOUND.exec(s)
+    if (!m) throw new SyntaxError(`not a selector the fake reads: ${s}`)
+    compounds.set(s, (c = [m[1], m[2]!.match(PART) ?? []]))
+  }
+  const [name, parts] = c
+  if (name && name !== '*' && (e.namespaceURI === HTML_NS ? name.toLowerCase() : name) !== e.local) return false
+  for (const part of parts) {
+    const id = e.attrs.get('id') ?? ''
+    if (part[0] === '#' && (quirks(e) ? asciiLower(id) !== asciiLower(unescaped(part.slice(1))) : id !== unescaped(part.slice(1)))) return false
     if (part[0] === '.' && !(e.attrs.get('class') ?? '').split(/\s+/).includes(part.slice(1))) return false
     if (part[0] === '[') {
       const [name, value] = part.slice(1, -1).split('=')
@@ -405,8 +446,11 @@ export class FakeDoc extends Listeners {
   /** The page's custom elements: a name the page defined runs its constructor as the element is made. */
   readonly registry = new Map<string, (el: FakeEl) => void>()
   readonly implementation = { createHTMLDocument: (_title: string) => ({ importNode: (el: FakeEl, _deep: boolean) => copy(el) }) }
+  /** Its mode: 'BackCompat' is quirks mode (a page without a doctype). */
+  compatMode = 'CSS1Compat'
   constructor(readonly documentElement: FakeEl) {
     super()
+    docs.set(documentElement, this)
   }
   get title() {
     return pg(this._title)
@@ -424,9 +468,9 @@ export class FakeDoc extends Listeners {
     reads.nodes += all.length
     return counted(all.filter((e) => matches(e, sel)))
   }
-  /** The first element sel matches; a lone #id as an engine answers it, from its map of ids. */
+  /** The first element sel matches; a lone #id of name characters, outside quirks mode, as an engine answers it, from its map of ids. */
   querySelector(sel: string): FakeEl | null {
-    if (/^#[\w-]+$/.test(sel)) return this.getElementById(sel.slice(1))
+    if (this.compatMode !== 'BackCompat' && /^#[\w-]+$/.test(sel)) return this.getElementById(sel.slice(1))
     return first([this.documentElement, ...this.documentElement.descendants()], sel)
   }
   /** The first element with the id, as an engine answers it from its map of ids: one node. */
@@ -521,4 +565,17 @@ export function event(type: string, fields: Record<string, unknown> = {}, isTrus
 /** h('button', {id: 'save'}, 'Save'): an element. */
 export function h(tag: string, attrs: Record<string, string> = {}, ...children: Kid[]) {
   return new FakeEl(tag, attrs, children)
+}
+
+/** An element of another namespace (SVG's by default), its name as written: svg('foreignObject', {}, …). */
+export function svg(tag: string, attrs: Record<string, string> = {}, ...children: Kid[]) {
+  return named(tag, attrs, SVG_NS, ...children)
+}
+
+/** An element whose local name is exactly tag, in ns: what createElementNS makes, an HTML one of a mixed-case name included. */
+export function named(tag: string, attrs: Record<string, string>, ns: string, ...children: Kid[]) {
+  const e = new FakeEl(tag, attrs, children)
+  e.local = tag
+  e.namespaceURI = ns
+  return e
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { measuredBytes } from '../protocol'
-import { FakeDoc, h, type FakeEl } from './fakeDom'
+import { FakeDoc, HTML_NS, h, named, svg, type FakeEl } from './fakeDom'
 import { readElement } from './report'
 import { pageEpoch, selectorFor, stackAt, stepStack, walk, type Doc, type El } from './select'
 
@@ -68,6 +68,35 @@ describe('the selector a report carries', () => {
     })
     expect(named).toEqual([true, true, false, true, true, false])
   })
+
+  it('finds its element when the document is asked it, in quirks mode or not and in any namespace, or is absent', () => {
+    // The tests' DOM matches as the HTML Standard does (4.16.2): ids without regard to case in quirks mode, exactly otherwise;
+    // an element's name exactly when the element is not HTML's.
+    const ids = (mode: string) => {
+      const d = new FakeDoc(h('html', {}, h('body', {}, h('div', { id: 'Save' }), h('div', { id: 'save' }))))
+      d.compatMode = mode
+      return d
+    }
+    let deep = h('i')
+    for (let i = 0; i < 100; i++) deep = h('div', {}, deep)
+    const fixtures: Array<[string, FakeDoc]> = [
+      ['two ids that differ in case, in quirks mode', ids('BackCompat')],
+      ['two ids that differ in case', ids('CSS1Compat')],
+      ['an id holding a NUL', new FakeDoc(h('html', {}, h('body', {}, h('div', { id: 'a�b' }), h('div', { id: 'a\u0000b' }))))],
+      ['a button inside an SVG foreignObject', new FakeDoc(h('html', {}, h('body', {}, svg('svg', {}, svg('foreignObject', {}, h('div', {}, h('button', {}, 'Go')))))))],
+      ['an element of a mixed-case name made by script', new FakeDoc(h('html', {}, h('body', {}, h('div', {}, named('MyThing', {}, HTML_NS, 'M')))))],
+      ['100 levels deep', new FakeDoc(h('html', {}, h('body', {}, deep)))],
+      ['among 10,000 siblings', new FakeDoc(h('html', {}, h('body', {}, h('ul', {}, ...Array.from({ length: 10000 }, () => h('li'))))))],
+    ]
+    const wrong = fixtures.flatMap(([what, d]) =>
+      [d.documentElement, ...d.documentElement.descendants()].flatMap((e) => {
+        const s = selectorFor(el(e), doc(d))
+        const found = s ? d.querySelector(s) : e
+        return found === e ? [] : [`${what}: <${e.local}> written ${JSON.stringify(s)}, which finds ${found ? `<${found.local} id=${JSON.stringify(found.attrs.get('id'))}>` : 'nothing'}`]
+      }),
+    )
+    expect(wrong).toEqual([])
+  }, 120_000)
 })
 
 describe('the stack and the walk', () => {

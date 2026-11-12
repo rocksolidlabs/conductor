@@ -67,16 +67,17 @@ const cssIdent = (s: string) => (globalThis as { CSS?: { escape?: (s: string) =>
 export const PATH = 4096
 
 /**
- * The selector an element is named by, built and never searched for or cut: its id, when the id is within the bound, well-formed
- * and the one the document gives for it (getElementById); else its path from the root, `:root > tag:nth-child(n) > …`, each step
- * its tag (any, `*`, for a name that is not a plain one) and its place among its siblings. "" when the path passes PATH nodes,
- * leaves the document, or would pass ELEMENT_BOUNDS.selector bytes.
+ * The selector an element is named by, built and never searched for or cut: its id, `#` and the id escaped, in a document not in
+ * quirks mode, when it is within the bound and the document, asked that very selector, gives the element; else its path from the
+ * root, `:root > tag:nth-child(n) > …`, each step its place among its siblings and its name only where the element's local name,
+ * as read, is a plain lower-case one (else any, `*`), so a step matches one child in any document and namespace. "" when the path
+ * passes PATH nodes, leaves the document, or would pass ELEMENT_BOUNDS.selector bytes.
  */
 export function selectorFor(el: El, doc: Doc): string {
   const most = ELEMENT_BOUNDS.selector
   const id = pageText(el.id, most)
-  const ident = id && cssIdent(id)
-  if (ident && measuredBytes('#' + ident) <= most && doc.getElementById(id) === el) return '#' + ident
+  const ident = id && pageText(doc.compatMode, 16) === 'CSS1Compat' && cssIdent(id)
+  if (ident && measuredBytes('#' + ident) <= most && doc.querySelector('#' + ident) === el) return '#' + ident
   const steps: string[] = []
   let left = PATH
   let bytes = ':root'.length
@@ -88,7 +89,7 @@ export function selectorFor(el: El, doc: Doc): string {
       if (--left < 0) return ''
       if (s.nodeType === 1) place++
     }
-    const tag = nameOf(e, 32)
+    const tag = pageText(e.localName, 32)
     const step = `${/^[a-z][a-z0-9-]{0,31}$/.test(tag) ? tag : '*'}:nth-child(${place})`
     if ((bytes += step.length + 3) > most) return ''
     steps.push(step)
