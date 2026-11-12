@@ -305,8 +305,9 @@ func encodeLinkRead(r LinkRead) (checks, incomplete string, err error) {
 
 // RecordRead records a read of the outside item the link with the id
 // names, in its link_reads row, in a transaction of its own outside Apply
-// (no changes row, no receipt): the link must be live (a *Refusal
-// not_found otherwise: a read for a link since removed is dropped) and a
+// (no changes row, no receipt): the link and its ticket must be live (a
+// *Refusal not_found otherwise: a read for a link since removed, or a
+// ticket since deleted, is dropped) and a
 // delivery or an external link (invalid); the read checked and bounded as
 // encodeLinkRead says, on a copy (r is never changed); a read of another
 // item than the one the link was first read as (its system, host and node
@@ -377,11 +378,14 @@ func (s *Store) recordLinkRead(ctx context.Context, linkID string, write func(*s
 		case l.Kind != LinkDelivery && l.Kind != LinkExternal:
 			return refuse(RefusalInvalid, "a %s link names no outside item to read", l.Kind)
 		}
-		if err := write(dbtx, l, now); err != nil {
-			return err
-		}
 		tk, err := ticketByID(ctx, dbtx, l.TicketID)
-		if err != nil {
+		switch {
+		case err != nil:
+			return err
+		case !tk.DeletedAt.IsZero():
+			return refuse(RefusalNotFound, "%s is deleted: the read is dropped", tk.Key)
+		}
+		if err := write(dbtx, l, now); err != nil {
 			return err
 		}
 		p, err := projectByID(ctx, dbtx, tk.ProjectID)

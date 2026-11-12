@@ -1225,7 +1225,10 @@ func (s *Server) handleDispatchEditTicket(w http.ResponseWriter, r *http.Request
 	if !readOp(w, r, &body, &body.dispatchOp, maxTicketBody) {
 		return
 	}
-	s.readForClose(r, ds, key, body.TicketEdit)
+	if ae := s.readForClose(r, ds, key, body.op(r), body.TicketEdit); ae != nil {
+		writeAPIError(w, ae)
+		return
+	}
 	ctx, cancel := opContext(r)
 	defer cancel()
 	rc, err := ds.EditTicket(ctx, body.op(r), key, body.TicketEdit)

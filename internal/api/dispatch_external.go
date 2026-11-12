@@ -581,10 +581,18 @@ var imageExt = map[string]string{"image/png": "png", "image/jpeg": "jpg", "image
 // name, or whose download fails, stays pending, for a resend or the next
 // refresh; an image the budget cuts commits nothing. The manifest is the
 // record of what is left to do, so a resend never repeats a done image.
-func (s *Server) completeImages(ctx context.Context, ds *dispatch.Store, parent dispatch.Op, key string, ref tracker.Ref, images func() ([]tracker.ImageRef, error)) {
-	tv, err := ds.Ticket(ctx, key)
+// A resend (replay) completes only what its own operation left: nothing,
+// read or attached, once the ticket was unlinked or linked to an item
+// since that operation (dispatch.LinkedSince).
+func (s *Server) completeImages(ctx context.Context, ds *dispatch.Store, parent dispatch.Op, key string, ref tracker.Ref, images func() ([]tracker.ImageRef, error), replay bool) {
+	tv, err := ticketFor(ctx, ds, key)
 	if err != nil {
 		return
+	}
+	if replay {
+		if since, err := ds.LinkedSince(ctx, parent, key); err != nil || since {
+			return
+		}
 	}
 	var pending []imageState
 	for _, im := range manifestOf(tv.Ticket) {
@@ -745,7 +753,7 @@ func (s *Server) handleDispatchImport(w http.ResponseWriter, r *http.Request) {
 	if body.Images == nil || *body.Images {
 		if release, ok := s.external.lock(ctx, "ticket:"+rc.Key, caps.busy); ok {
 			ictx, icancel := context.WithTimeout(ctx, caps.images)
-			s.completeImages(ictx, ds, op, rc.Key, ref, images)
+			s.completeImages(ictx, ds, op, rc.Key, ref, images, found)
 			icancel()
 			release()
 		}
@@ -754,12 +762,13 @@ func (s *Server) handleDispatchImport(w http.ResponseWriter, r *http.Request) {
 	s.externalReply(ctx, w, ds, rc, rc.Key, true, nil)
 }
 
-// linkedTicket reads key's ticket for an operation on its linked issue,
-// answering a store's failure: false once it answered.
+// linkedTicket reads key's ticket for an operation on its linked issue
+// (ticketFor), answering a store's failure and a deleted ticket's 404:
+// false once it answered.
 func (s *Server) linkedTicket(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, key string) (dispatch.TicketView, bool) {
-	tv, err := ds.Ticket(ctx, key)
+	tv, err := ticketFor(ctx, ds, key)
 	if err != nil {
-		s.dispatchError(w, "ticket", err)
+		s.refusal(w, err)
 		return tv, false
 	}
 	return tv, true
@@ -801,6 +810,9 @@ func (s *Server) handleDispatchLinkExternal(w http.ResponseWriter, r *http.Reque
 	}
 	defer release()
 	if s.replayed(ctx, w, ds, op, dispatch.IntentLinkExternal, args, key) {
+		return
+	}
+	if _, ok := s.linkedTicket(ctx, w, ds, key); !ok {
 		return
 	}
 	rctx, rcancel := context.WithTimeout(ctx, caps.reads)
@@ -850,8 +862,11 @@ func (s *Server) handleDispatchUnlinkExternal(w http.ResponseWriter, r *http.Req
 // {changed, receipt?, ticket, images}, receipt only when ticket.refresh
 // ran. The receipt is looked for under the ticket's lock: a resend of a
 // refresh that changed the ticket completes the images its first send
-// left pending (completeImages, one more read made only then) and answers
-// {changed: true, receipt, ticket, images}.
+// left pending (completeImages, one more read of the item, and its
+// downloads, made only when an entry is pending, and none once the
+// ticket was unlinked or linked since) and answers {changed: true,
+// receipt, ticket, images}. A refresh that changed nothing keeps no
+// receipt, so its resend is a new read.
 func (s *Server) handleDispatchRefresh(w http.ResponseWriter, r *http.Request) {
 	var body externalRefreshBody
 	ds, key, ok := s.externalStart(w, r, &body, &body.dispatchOp, ticketKey)
@@ -885,7 +900,7 @@ func (s *Server) handleDispatchRefresh(w http.ResponseWriter, r *http.Request) {
 	if found {
 		if linked && (body.Images == nil || *body.Images) {
 			ictx, icancel := context.WithTimeout(ctx, caps.images)
-			s.completeImages(ictx, ds, op, key, ref, s.readImages(rctx, ref, node))
+			s.completeImages(ictx, ds, op, key, ref, s.readImages(rctx, ref, node), true)
 			icancel()
 		}
 		s.refreshReply(ctx, w, ds, key, map[string]any{"changed": true, "receipt": rc})
@@ -947,7 +962,7 @@ func (s *Server) handleDispatchRefresh(w http.ResponseWriter, r *http.Request) {
 			images = s.readImages(rctx, ref, node)
 		}
 		ictx, icancel := context.WithTimeout(ctx, caps.images)
-		s.completeImages(ictx, ds, op, key, ref, images)
+		s.completeImages(ictx, ds, op, key, ref, images, false)
 		icancel()
 	}
 	s.trackerLog(r, ref, http.StatusOK)
@@ -1069,8 +1084,8 @@ func (s *Server) readableLink(ctx context.Context, w http.ResponseWriter, ds *di
 // the head commit (a cut set saying so; checks that could not be read
 // said, the state kept). Without checks (the close's reads), the last
 // read's checks are kept when the head is the same, and said not read
-// otherwise. A failure is recorded as the read's words (RecordReadError)
-// and returned. Every request is made through atGitHub, within ctx; once
+// otherwise. A failure, GitHub's or the store's check of what was read,
+// is recorded as the read's words (RecordReadError) and returned. Every request is made through atGitHub, within ctx; once
 // the server begins to stop, none is made and nothing is recorded.
 func (s *Server) readLink(ctx context.Context, ds *dispatch.Store, linkID string, ref tracker.Ref, withChecks bool) error {
 	rctx, rcancel := context.WithTimeout(ctx, s.trackerCaps().reads)
@@ -1144,7 +1159,13 @@ func (s *Server) readLinkIn(rctx, ctx context.Context, ds *dispatch.Store, linkI
 			}
 		}
 	}
-	return ds.RecordRead(wctx, linkID, lr)
+	err = ds.RecordRead(wctx, linkID, lr)
+	if ref := (*dispatch.Refusal)(nil); errors.As(err, &ref) && ref.Code != dispatch.RefusalNotFound && ref.Code != dispatch.RefusalStaleRead {
+		// The store's check refused what was read: a failed read, as
+		// GitHub's failures are.
+		_ = ds.RecordReadError(wctx, linkID, "GitHub's answer for the item could not be kept: "+ref.Code)
+	}
+	return err
 }
 
 // handleDispatchReadLink reads the GitHub item a ticket's live delivery or
@@ -1208,8 +1229,9 @@ func (s *Server) handleDispatchLinkRead(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	tv, ok := s.linkedTicket(r.Context(), w, ds, key)
-	if !ok {
+	tv, err := ds.Ticket(r.Context(), key)
+	if err != nil {
+		s.dispatchError(w, "ticket", err)
 		return
 	}
 	if !slices.ContainsFunc(tv.Links, func(l dispatch.Link) bool { return l.ID == id }) {
@@ -1270,13 +1292,18 @@ func (s *Server) readAddedLink(ds *dispatch.Store, key string, l dispatch.NewLin
 // most maxCloseReads at once, each under its link's lock, the waits and
 // the reads within one phase, each read within the merged reads' cap),
 // recording each within a write's cap of its own, so the edit's
-// transaction judges a read made now (dispatch.MaxMergedReadAge). A read
-// that fails is recorded as the read's words, and the link then does not
-// count for merged until a read succeeds: the close is the policy's to
-// refuse. It never refuses the edit itself.
-func (s *Server) readForClose(r *http.Request, ds *dispatch.Store, key string, e dispatch.TicketEdit) {
+// transaction judges reads made now (dispatch.MaxMergedReadAge). It reads
+// nothing for an edit the store would not run as a close: one whose
+// receipt is kept (a resend), or of a ticket deleted, done already, or at
+// another revision than the one sent; the store answers those. The edit
+// goes to the store only when every read it needed was made and recorded
+// without a failure: a read not made (no token kept for the link's host,
+// the link's wait ended, no slot within the phase, an address the parser
+// no longer reads for a link read before) or failed refuses it, 409
+// close_policy naming the link, nothing closed (the answer; nil to go on).
+func (s *Server) readForClose(r *http.Request, ds *dispatch.Store, key string, op dispatch.Op, e dispatch.TicketEdit) *apiError {
 	if e.Set.Status == nil || *e.Set.Status != dispatch.TicketDone {
-		return
+		return nil
 	}
 	caps := s.trackerCaps()
 	ctx, cancel := s.trackerContext(r, caps.busy+caps.merged+caps.write)
@@ -1288,38 +1315,77 @@ func (s *Server) readForClose(r *http.Request, ds *dispatch.Store, key string, e
 	project, _, _ := dispatch.ParseKey(key)
 	pv, err := ds.Project(ctx, project)
 	if err != nil || !slices.Contains(pv.Project.CloseRequires, dispatch.RequireMerged) {
-		return
+		return nil
 	}
-	tv, err := ds.Ticket(ctx, key)
-	if err != nil {
-		return
+	// The edit's content as EditTicket hands it to Apply.
+	args := struct {
+		Key string `json:"key"`
+		dispatch.TicketEdit
+	}{key, e}
+	if _, found, err := ds.Replay(ctx, op, "ticket.edit", args); err != nil || found {
+		return nil
+	}
+	tv, err := ticketFor(ctx, ds, key)
+	if err != nil || tv.Status == dispatch.TicketDone || op.ExpectedRev != 0 && op.ExpectedRev != tv.Rev {
+		return nil
 	}
 	var wg sync.WaitGroup
 	at := make(chan struct{}, maxCloseReads)
-	for _, l := range tv.Links {
+	failed := make([]string, len(tv.Links))
+	for i, l := range tv.Links {
 		if l.Kind != dispatch.LinkDelivery || !l.DeletedAt.IsZero() {
 			continue
 		}
 		ref, ae := s.parseItem(l.URL, "")
 		if ae != nil {
+			// Not a GitHub item the parser reads now: needed only when a
+			// read of it is kept, which the policy could count.
+			if _, kept, _ := ds.LinkReadOf(ctx, l.ID); kept {
+				failed[i] = "link " + l.ID
+			}
 			continue
 		}
 		wg.Go(func() {
+			failed[i] = ref.String()
 			select {
 			case at <- struct{}{}:
 			case <-pctx.Done():
 				return
 			}
 			defer func() { <-at }()
-			if release, ok := s.external.lock(pctx, "link:"+l.ID, caps.busy); ok {
-				rctx, rcancel := context.WithTimeout(pctx, caps.merged)
-				if err := s.readLinkIn(rctx, ctx, ds, l.ID, ref, false); err != nil {
-					s.log.Info("tracker read", "route", r.Pattern, "ref", ref.Key(), "status", trackerAnswer(err, ref).status)
-				}
-				rcancel()
-				release()
+			release, ok := s.external.lock(pctx, "link:"+l.ID, caps.busy)
+			if !ok {
+				return
 			}
+			defer release()
+			rctx, rcancel := context.WithTimeout(pctx, caps.merged)
+			defer rcancel()
+			if err := s.readLinkIn(rctx, ctx, ds, l.ID, ref, false); err != nil {
+				s.log.Info("tracker read", "route", r.Pattern, "ref", ref.Key(), "status", trackerAnswer(err, ref).status)
+				return
+			}
+			failed[i] = ""
 		})
 	}
 	wg.Wait()
+	if s.external.stopping().Err() != nil {
+		return errItemBusy
+	}
+	for _, name := range failed {
+		if name != "" {
+			return newAPIError(http.StatusConflict, "close_policy", "the delivery "+name+" could not be read for the close, so the ticket is not closed: read it again")
+		}
+	}
+	return nil
+}
+
+// ticketFor reads key's ticket for a route that reads GitHub: a deleted
+// one is refused (a *dispatch.Refusal not_found, as the store refuses an
+// operation on it), so it is asked nothing.
+func ticketFor(ctx context.Context, ds *dispatch.Store, key string) (dispatch.TicketView, error) {
+	tv, err := ds.Ticket(ctx, key)
+	if err == nil && !tv.DeletedAt.IsZero() {
+		err = &dispatch.Refusal{Code: dispatch.RefusalNotFound, Words: key + " is deleted"}
+	}
+	return tv, err
 }

@@ -540,6 +540,83 @@ func TestImportResendCompletes(t *testing.T) {
 		g.count(imageHost, "/4/a.png") != downloadsA {
 		t.Fatalf("the last resend: %v", out["images"])
 	}
+
+	// An image's file written and its row not committed (the store's seam
+	// between the two, its lease dropped there), then every receipt pruned:
+	// the resend completes the image once, with no op_conflict.
+	it = issue("I_kwDOitem41", "File first", t0)
+	it.Images = []string{"/41/a.png", "/41/b.png"}
+	g.set(41, it)
+	for _, p := range it.Images {
+		g.image(p, []byte(pngBytes+p))
+	}
+	raw := openRaw(t, filepath.Join(e.srv.dispatch.Dir(), dispatch.File))
+	var once sync.Once
+	e.srv.dispatch.SetBeforeCommitForTest(func() {
+		once.Do(func() {
+			if _, err := raw.Exec("DELETE FROM uploads"); err != nil {
+				t.Error(err)
+			}
+		})
+	})
+	op = opID()
+	out = e.importItem(t, "CUT", "https://github.com/octo/app/issues/41", op, http.StatusCreated, nil)
+	e.srv.dispatch.SetBeforeCommitForTest(nil)
+	if ims := imagesOf(t, out); ims[img("/41/a.png")]["pending"] != true || ims[img("/41/b.png")]["attachmentId"] == nil {
+		t.Fatalf("the image whose row was not committed: %v", out["images"])
+	}
+	if _, err := raw.Exec("DELETE FROM ops"); err != nil {
+		t.Fatal(err)
+	}
+	out = e.importItem(t, "CUT", "https://github.com/octo/app/issues/41", op, http.StatusOK, nil)
+	key := entityOf(t, out, "ticket")["key"].(string)
+	attached := entityOf(t, e.expect(t, "GET", "/api/dispatch/tickets/"+key, nil, http.StatusOK, ""), "ticket")["attachments"].([]any)
+	if ims := imagesOf(t, out); ims[img("/41/a.png")]["attachmentId"] == nil || ims[img("/41/b.png")]["attachmentId"] == nil || len(attached) != 2 || rcOf(out)["status"] != "done" {
+		t.Fatalf("the resend with its receipts pruned: %v, %d attachments", out, len(attached))
+	}
+}
+
+// A resend completes only what its own operation left: an import, and a
+// refresh that changed the ticket, each leaving an image pending, then the
+// ticket unlinked and linked to another item with its own image pending,
+// sent again under their first operation ids, answer their receipts and
+// neither read that item nor attach its image.
+func TestResendAfterRelink(t *testing.T) {
+	e, g := externalEnv(t)
+	e.newDispatchProject(t, "RLK", nil)
+	for _, n := range []int{70, 71, 72, 73} {
+		it := issue("I_kwDOrelink"+strconv.Itoa(n), "Relinked", t0)
+		it.Images = []string{fmt.Sprintf("/%d/a.png", n)}
+		g.set(n, it)
+		g.image(it.Images[0], []byte(pngBytes))
+	}
+	relink := func(key string, n int) {
+		t.Helper()
+		e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/external/delete", map[string]any{"opId": opID()}, http.StatusOK, "")
+		e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/external", map[string]any{"opId": opID(), "url": "https://github.com/octo/app/issues/" + strconv.Itoa(n)}, http.StatusOK, "")
+	}
+	untouched := func(what string, out map[string]any, n int, reads int) {
+		t.Helper()
+		p := fmt.Sprintf("https://%s/%d/a.png", imageHost, n)
+		if rcOf(out)["repeat"] != true || g.count("api.github.com", itemsRepo+"/issues/"+strconv.Itoa(n)) != reads || g.count(imageHost, fmt.Sprintf("/%d/", n)) != 0 || imagesOf(t, out)[p]["pending"] != true {
+			t.Fatalf("%s: %v, item %d read %d more times", what, out, n, g.count("api.github.com", itemsRepo+"/issues/"+strconv.Itoa(n))-reads)
+		}
+	}
+	op := opID()
+	key := entityOf(t, e.importItem(t, "RLK", "https://github.com/octo/app/issues/70", op, http.StatusCreated, map[string]any{"images": false}), "ticket")["key"].(string)
+	relink(key, 71)
+	reads := g.count("api.github.com", itemsRepo+"/issues/71")
+	untouched("the import sent again", e.importItem(t, "RLK", "https://github.com/octo/app/issues/70", op, http.StatusOK, nil), 71, reads)
+
+	key = entityOf(t, e.importItem(t, "RLK", "https://github.com/octo/app/issues/72", opID(), http.StatusCreated, map[string]any{"images": false}), "ticket")["key"].(string)
+	g.edit(72, func(i *ghItem) { i.Title, i.Updated = "Changed", t0.Add(time.Hour) })
+	op = opID()
+	if out := e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/external/refresh", map[string]any{"opId": op, "images": false}, http.StatusOK, ""); out["changed"] != true {
+		t.Fatalf("the refresh: %v", out)
+	}
+	relink(key, 73)
+	reads = g.count("api.github.com", itemsRepo+"/issues/73")
+	untouched("the refresh sent again", e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/external/refresh", map[string]any{"opId": op}, http.StatusOK, ""), 73, reads)
 }
 
 func (e *testEnv) refresh(t *testing.T, key string, status int, extra map[string]any) map[string]any {
@@ -1407,18 +1484,15 @@ func TestTrackerReadsEndWithServer(t *testing.T) {
 	})
 }
 
-// The close under merged counts a delivery's read only while it is the
-// link's latest: a link read merged, then read as another item (moved),
-// or not read for a rate limit, is refused at the close inside the five
-// minutes, naming the link, until a read succeeds again; the close's
-// read held to its cap at the fake still has its failure recorded, and
-// the close is answered from that record.
-func TestCloseMergedLatestRead(t *testing.T) {
-	e, g := externalEnv(t)
-	caps := trackerCaps{busy: time.Second, reads: testWait, images: testWait, merged: 300 * time.Millisecond, write: testWait}
-	e.srv.external.caps = &caps
+// mergedEnv is a server whose project MLR requires merged, with caps
+// when given; merged makes a ticket of it with a delivery link to pull
+// request n, read merged after the add (its key and its link's id).
+func mergedEnv(t *testing.T, caps *trackerCaps) (e *testEnv, g *ghItems, merged func(n int) (key, link string)) {
+	t.Helper()
+	e, g = externalEnv(t)
+	e.srv.external.caps = caps
 	e.newDispatchProject(t, "MLR", map[string]any{"closeRequires": []string{"merged"}})
-	merged := func(n int) (key, link string) {
+	return e, g, func(n int) (key, link string) {
 		t.Helper()
 		g.set(n, ghItem{Node: "PR_kwDOlatest" + strconv.Itoa(n), Title: "Merged", Pull: true, Merged: true, State: "closed", Updated: t0})
 		key = e.newDispatchTicket(t, "MLR", "Close it", nil)["key"].(string)
@@ -1431,36 +1505,173 @@ func TestCloseMergedLatestRead(t *testing.T) {
 		}
 		return key, link
 	}
-	closeIt := func(key string, status int) map[string]any {
-		t.Helper()
-		return e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/edit", map[string]any{"opId": opID(), "set": map[string]any{"status": "done"}}, status, "")
+}
+
+// closeIt sends key's edit to done, expecting status.
+func (e *testEnv) closeIt(t *testing.T, key string, status int) map[string]any {
+	t.Helper()
+	return e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/edit", map[string]any{"opId": opID(), "set": map[string]any{"status": "done"}}, status, "")
+}
+
+// closeRefused fails unless out refuses a close in words holding names
+// and the ticket is not done.
+func closeRefused(t *testing.T, e *testEnv, what, key string, out map[string]any, names ...string) {
+	t.Helper()
+	tv, _ := e.srv.dispatch.Ticket(t.Context(), key)
+	if errorCode(out) != "close_policy" || tv.Status == dispatch.TicketDone {
+		t.Fatalf("%s: %v, the ticket %s", what, out, tv.Status)
 	}
-	refused := func(what string, out map[string]any, n int) {
-		t.Helper()
-		if errorCode(out) != "close_policy" || !strings.Contains(apiMessage(out), "the last read of the delivery") || !strings.Contains(apiMessage(out), "pull/"+strconv.Itoa(n)) {
-			t.Fatalf("%s: %v", what, out)
+	for _, n := range names {
+		if !strings.Contains(apiMessage(out), n) {
+			t.Fatalf("%s: %v does not name %s", what, out, n)
 		}
 	}
+}
+
+// The close under merged counts a delivery's read only while it is the
+// link's latest and is decided by reads made for it: a link read merged,
+// then read as another item (moved), or not read for a rate limit, is
+// refused at the close inside the five minutes, naming the link, until a
+// read succeeds again; with the token removed after a merged read, the
+// close is refused naming the link, nothing closed, and closes once a
+// token is kept again; a read the store's check refuses is recorded as
+// failed and refuses the close.
+func TestCloseMergedLatestRead(t *testing.T) {
+	e, g, merged := mergedEnv(t, nil)
 	key, link := merged(96)
 	g.edit(96, func(i *ghItem) { i.Node, i.Updated = "PR_kwDOanother96", t0.Add(time.Hour) })
 	e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links/"+link+"/read", map[string]any{}, http.StatusConflict, "moved")
-	refused("read as another item", closeIt(key, http.StatusConflict), 96)
+	closeRefused(t, e, "read as another item", key, e.closeIt(t, key, http.StatusConflict), "octo/app#96")
 
 	key, link = merged(97)
 	g.edit(97, func(i *ghItem) { i.Fail = http.StatusTooManyRequests })
 	e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links/"+link+"/read", map[string]any{}, http.StatusTooManyRequests, "rate_limited")
-	refused("not read for a rate limit", closeIt(key, http.StatusConflict), 97)
+	closeRefused(t, e, "not read for a rate limit", key, e.closeIt(t, key, http.StatusConflict), "octo/app#97")
 	g.edit(97, func(i *ghItem) { i.Fail = 0 })
-	if tk := entityOf(t, closeIt(key, http.StatusOK), "ticket"); tk["status"] != "done" {
+	if tk := entityOf(t, e.closeIt(t, key, http.StatusOK), "ticket"); tk["status"] != "done" {
 		t.Fatalf("read again: %v", tk)
 	}
 
-	key, link = merged(98)
+	key, _ = merged(98)
+	e.expect(t, "POST", "/api/trackers/github/remove", map[string]any{"host": "github.com"}, http.StatusOK, "")
+	closeRefused(t, e, "the token removed", key, e.closeIt(t, key, http.StatusConflict), "octo/app#98")
+	if status, data, _ := e.saveToken(t, "", plantedToken); status != http.StatusOK {
+		t.Fatalf("the token again: %d %s", status, data)
+	}
+	if tk := entityOf(t, e.closeIt(t, key, http.StatusOK), "ticket"); tk["status"] != "done" {
+		t.Fatalf("with a token again: %v", tk)
+	}
+
+	key, link = merged(90)
+	g.edit(90, func(i *ghItem) { i.Updated = time.Time{} })
+	closeRefused(t, e, "a read the store's check refuses", key, e.closeIt(t, key, http.StatusConflict), "octo/app#90")
+	if r, _, err := e.srv.dispatch.LinkReadOf(t.Context(), link); err != nil || !strings.Contains(r.Error, "could not be kept") {
+		t.Fatalf("the refused read was not recorded as failed: %+v %v", r, err)
+	}
+}
+
+// With the close's caps short, and only here: the close's read held to its
+// cap at the fake has its failure recorded and refuses the close; the
+// link's lock held by a link's read (held at the fake) past the close's
+// wait refuses the close naming the link, nothing closed, the read kept
+// from before not counted.
+func TestCloseMergedCapped(t *testing.T) {
+	e, g, merged := mergedEnv(t, &trackerCaps{busy: 300 * time.Millisecond, reads: testWait, images: testWait, merged: 300 * time.Millisecond, write: testWait})
+	key, link := merged(98)
 	gate := g.f.Hold("GET", "api.github.com", itemsRepo+"/issues/98")
-	defer gate.Open()
-	refused("the close's read held to its cap", closeIt(key, http.StatusConflict), 98)
+	closeRefused(t, e, "the close's read held to its cap", key, e.closeIt(t, key, http.StatusConflict), "octo/app#98")
+	gate.Open()
 	if r, _, err := e.srv.dispatch.LinkReadOf(t.Context(), link); err != nil || r.Error == "" {
 		t.Fatalf("the held read's failure was not recorded: %+v %v", r, err)
+	}
+
+	key, link = merged(99)
+	gate = g.f.Hold("GET", "api.github.com", itemsRepo+"/issues/99")
+	held := make(chan struct{})
+	go func() {
+		defer close(held)
+		e.call(t, "POST", "/api/dispatch/tickets/"+key+"/links/"+link+"/read", map[string]any{})
+	}()
+	<-gate.Reached()
+	closeRefused(t, e, "the link's lock held past the wait", key, e.closeIt(t, key, http.StatusConflict), "octo/app#99")
+	gate.Open()
+	<-held
+}
+
+// The close's reads are made only for an edit the store runs as a close:
+// a resend of a committed edit to done, an edit to done of a ticket done
+// already and one with a stale revision ask GitHub nothing, each answered
+// as the store answers it.
+func TestCloseReadsOnlyForAClose(t *testing.T) {
+	e, g, merged := mergedEnv(t, nil)
+	key, _ := merged(91)
+	pulls := func() int { return g.count("api.github.com", itemsRepo+"/pulls/91") }
+	op := opID()
+	body := map[string]any{"opId": op, "set": map[string]any{"status": "done"}}
+	e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/edit", body, http.StatusOK, "")
+	before := pulls()
+	if out := e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/edit", body, http.StatusOK, ""); rcOf(out)["repeat"] != true || pulls() != before {
+		t.Fatalf("a resend: %v, %d reads", out, pulls()-before)
+	}
+	e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/edit", map[string]any{"opId": opID(), "set": map[string]any{"status": "done", "priority": 2}}, http.StatusOK, "")
+	if pulls() != before {
+		t.Fatalf("an edit of a ticket done already: %d reads", pulls()-before)
+	}
+	key, _ = merged(92)
+	before = g.count("api.github.com", itemsRepo+"/pulls/92")
+	e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/edit", map[string]any{"opId": opID(), "expectedRev": 99, "set": map[string]any{"status": "done"}}, http.StatusConflict, "stale_revision")
+	if n := g.count("api.github.com", itemsRepo+"/pulls/92") - before; n != 0 {
+		t.Fatalf("a stale edit: %d reads", n)
+	}
+}
+
+// A deleted ticket is asked nothing and records nothing: a link's read, a
+// refresh, a field given back to GitHub, a link and an edit to done under
+// merged each answer the one 404 and make no request; a link's read held
+// at the fake while its ticket is deleted records nothing.
+func TestDeletedTicketAskedNothing(t *testing.T) {
+	e, g, merged := mergedEnv(t, nil)
+	g.set(93, issue("I_kwDOdeleted93", "Deleted", t0))
+	key := entityOf(t, e.importItem(t, "MLR", "https://github.com/octo/app/issues/93", opID(), http.StatusCreated, map[string]any{"images": false}), "ticket")["key"].(string)
+	g.set(94, ghItem{Node: "PR_kwDOdeleted94", Title: "Merged", Pull: true, Merged: true, State: "closed", Updated: t0})
+	link := e.addPullLink(t, key, 94)
+	if !waitFor(testWait, func() bool { _, ok, _ := e.srv.dispatch.LinkReadOf(t.Context(), link); return ok }) {
+		t.Fatal("the link was not read")
+	}
+	e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/delete", map[string]any{"opId": opID()}, http.StatusOK, "")
+	before := len(g.f.Requests())
+	for _, c := range []struct {
+		path string
+		body map[string]any
+	}{
+		{"/links/" + link + "/read", map[string]any{}},
+		{"/external/refresh", map[string]any{"opId": opID()}},
+		{"/external/authority", map[string]any{"opId": opID(), "field": "title", "owner": "github"}},
+		{"/external", map[string]any{"opId": opID(), "url": "https://github.com/octo/app/issues/95"}},
+		{"/edit", map[string]any{"opId": opID(), "set": map[string]any{"status": "done"}}},
+	} {
+		if status, _, out := e.call(t, "POST", "/api/dispatch/tickets/"+key+c.path, c.body); status != http.StatusNotFound || errorCode(out) != "not_found" || !strings.Contains(apiMessage(out), key+" is deleted") {
+			t.Errorf("%s of a deleted ticket: %d %v", c.path, status, out)
+		}
+	}
+	if n := len(g.f.Requests()) - before; n != 0 {
+		t.Fatalf("a deleted ticket's routes made %d requests", n)
+	}
+
+	key, link = merged(96)
+	prior, _, _ := e.srv.dispatch.LinkReadOf(t.Context(), link)
+	gate := g.f.Hold("GET", "api.github.com", itemsRepo+"/issues/96")
+	answer := make(chan int, 1)
+	go func() {
+		status, _, _ := e.call(t, "POST", "/api/dispatch/tickets/"+key+"/links/"+link+"/read", map[string]any{})
+		answer <- status
+	}()
+	<-gate.Reached()
+	e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/delete", map[string]any{"opId": opID()}, http.StatusOK, "")
+	gate.Open()
+	status := <-answer
+	if r, _, err := e.srv.dispatch.LinkReadOf(t.Context(), link); err != nil || !r.ReadAt.Equal(prior.ReadAt) || r.Error != prior.Error || status != http.StatusNotFound {
+		t.Fatalf("a read held across its ticket's delete: %d, %+v, kept %+v", status, r, prior)
 	}
 }
 
