@@ -45,9 +45,10 @@ func SnapshotFile(ctx context.Context, path, dst string) error {
 
 // SnapshotHashes reads, from the database file at path (a snapshot, or a
 // restore's staged copy: nothing writes it), the content every live row
-// requires: the distinct SHA-256 of every attachment row not removed, and
-// of every file a launch's package pins (launch_files, which the sweep
-// keeps after the attachment's removal and OpenLaunchFile opens), sorted.
+// requires: the distinct SHA-256 of every attachment row not removed, of
+// every file a launch's package pins (launch_files, which the sweep
+// keeps after the attachment's removal and OpenLaunchFile opens), and of
+// every file a live capture or a send holds (capture_files), sorted.
 // A removed attachment's content that nothing else names is not among
 // them: the next sweep deletes it.
 func SnapshotHashes(ctx context.Context, path string) ([]string, error) {
@@ -57,12 +58,16 @@ func SnapshotHashes(ctx context.Context, path string) ([]string, error) {
 	}
 	defer db.Close()
 	query := "SELECT DISTINCT sha256 FROM attachments WHERE deleted_at = ''"
-	var pins bool
-	if err := db.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'launch_files')").Scan(&pins); err != nil {
-		return nil, fmt.Errorf("dispatch: %s: %w", path, err)
-	}
-	if pins {
-		query += " UNION SELECT sha256 FROM launch_files"
+	// A launch's pins (version 2) and a capture's or a send's files
+	// (captureSchema), in a copy whose version has them.
+	for _, table := range []string{"launch_files", "capture_files"} {
+		var there bool
+		if err := db.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)", table).Scan(&there); err != nil {
+			return nil, fmt.Errorf("dispatch: %s: %w", path, err)
+		}
+		if there {
+			query += " UNION SELECT sha256 FROM " + table
+		}
 	}
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {

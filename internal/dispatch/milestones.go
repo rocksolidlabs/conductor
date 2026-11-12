@@ -244,7 +244,7 @@ func (s *Store) Milestones(ctx context.Context, project string) ([]Milestone, er
 		out, err = milestonesOf(ctx, q, p.ID)
 		return err
 	})
-	return out, err
+	return answer(out, err)
 }
 
 // milestonesOf reads the live milestones of the project with the id, by
@@ -284,7 +284,7 @@ func (s *Store) Milestone(ctx context.Context, project, id string) (Milestone, e
 		}
 		return err
 	})
-	return out, err
+	return answer(out, err)
 }
 
 // milestoneColumns is a milestone's row as scanMilestone reads it.

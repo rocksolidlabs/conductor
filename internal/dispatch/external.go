@@ -1427,7 +1427,7 @@ func (s *Store) Instance(ctx context.Context) (string, error) {
 		}
 		return err
 	})
-	return id, err
+	return answer(id, err)
 }
 
 // Reissue writes a new random instance in the Dispatch database at path,

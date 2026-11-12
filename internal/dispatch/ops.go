@@ -139,6 +139,10 @@ const (
 	IntentLinkAdd      = "link.add"
 	IntentReviewSubmit = "review.submit"
 	IntentFindingMark  = "finding.mark"
+	// A capture's create keeps it on its row (Program item PV1), an edit
+	// on its set's change row, a delete on its tombstone's row (the
+	// capture it names).
+	IntentCaptureCreate = "capture.create"
 )
 
 // Receipt is what an operation gets and what the store keeps under
@@ -207,6 +211,9 @@ const (
 	// log, field marks).
 	EntityReview  = "review"
 	EntityFinding = "finding"
+	// EntityCapture is a person's capture of a preview (Program item PV1):
+	// its rows name no ticket or project, and it bumps its own rev.
+	EntityCapture = "capture"
 )
 
 // The ops of a change row: a scalar field set (value and prior), a set
@@ -271,6 +278,7 @@ var revTables = map[string]struct {
 	EntityPlan:      {"plans", false},
 	EntityLaunch:    {"launches", false},
 	EntityReview:    {"reviews", false},
+	EntityCapture:   {"captures", false},
 }
 
 // tx is one operation's transaction: what a change writes through. It
@@ -766,6 +774,43 @@ func prunedAnswer(ctx context.Context, q queryer, op Op, intent, fp string) (rc 
 			return conflictReceipt(op, intent, wordsOpConflict), true, nil
 		}
 		table, id = "finding_marks", v.ID
+	case IntentCaptureCreate:
+		// A capture's create row is the operation's first; a database
+		// before captureSchema holds none.
+		if entity != EntityCapture || kind != OpCreate || schemaOf(q) < captureSchema {
+			return conflictReceipt(op, intent, wordsOpConflict), true, nil
+		}
+		table, id = "captures", entityID
+	case IntentCaptureEdit:
+		// An edit's first row is a version's or its set's, and its set's
+		// change row keeps the edit's fingerprint (writeSet), also after
+		// the capture's delete.
+		if entity != EntityCapture || kind != OpAdd || (field != "versions" && field != "sets") || schemaOf(q) < captureSchema {
+			return conflictReceipt(op, intent, wordsOpConflict), true, nil
+		}
+		var set string
+		if err := q.QueryRowContext(ctx, "SELECT value FROM changes WHERE actor = ? AND op_id = ? AND entity = ? AND field = 'sets' AND op = ?",
+			op.Actor, op.ID, EntityCapture, OpAdd).Scan(&set); err != nil && !isNoRows(err) {
+			return Receipt{}, false, err
+		}
+		var v struct {
+			Fingerprint string `json:"fingerprint"`
+		}
+		if json.Unmarshal([]byte(set), &v) != nil || v.Fingerprint != fp {
+			return conflictReceipt(op, intent, wordsOpConflict), true, nil
+		}
+		return done, true, nil
+	case IntentCaptureDelete:
+		// A delete's first row is its tombstone's, and the capture it names
+		// is the delete's whole content (captureArgs).
+		want, err := fingerprint(IntentCaptureDelete, captureArgs{ID: entityID})
+		if err != nil {
+			return Receipt{}, false, err
+		}
+		if entity != EntityCapture || field != "deleted_at" || kind != OpSet || want != fp {
+			return conflictReceipt(op, intent, wordsOpConflict), true, nil
+		}
+		return done, true, nil
 	default:
 		return done, true, nil
 	}
@@ -964,7 +1009,7 @@ func (s *Store) Committed(ctx context.Context, actor, id string) (rc Receipt, fo
 		return Receipt{}, false, err
 	}
 	rc = Receipt{OpID: id, Status: StatusDone, Repeat: true}
-	if kind == OpCreate && (entity == EntityPlan || entity == EntityLaunch || entity == EntityReview) {
+	if kind == OpCreate && (entity == EntityPlan || entity == EntityLaunch || entity == EntityReview || entity == EntityCapture) {
 		rc.ID = entityID
 	}
 	return rc, true, nil

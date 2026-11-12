@@ -257,7 +257,7 @@ func (s *Store) ChainHolders(ctx context.Context, run string) ([]ChainHolder, er
 		}
 		return nil
 	})
-	return out, err
+	return answer(out, err)
 }
 
 // chainRefusal is why a run link to the run, on the ticket tk, is refused
@@ -538,7 +538,7 @@ func (s *Store) Links(ctx context.Context, key string) ([]Link, error) {
 		out, err = linksOf(ctx, q, tk.ID)
 		return err
 	})
-	return out, err
+	return answer(out, err)
 }
 
 // linksOf reads the live links of the ticket with the id, each member
@@ -615,7 +615,10 @@ func (s *Store) RunTicket(ctx context.Context, run string) (tk Ticket, found boo
 		tk, found, err = runTicket(ctx, q, run)
 		return err
 	})
-	return tk, found, err
+	if err != nil {
+		return Ticket{}, false, err
+	}
+	return tk, found, nil
 }
 
 // runTicket is RunTicket read through q: a read transaction's, or an

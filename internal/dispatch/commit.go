@@ -43,5 +43,5 @@ func (s *Store) Head(ctx context.Context) (int64, error) {
 	err := s.read(ctx, func(q queryer) error {
 		return q.QueryRowContext(ctx, "SELECT COALESCE(MAX(seq), 0) FROM changes").Scan(&seq)
 	})
-	return seq, err
+	return answer(seq, err)
 }

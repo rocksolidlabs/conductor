@@ -147,7 +147,7 @@ func (s *Store) CloseState(ctx context.Context, key string) (CloseState, error) 
 		out, err = closeOf(ctx, q, p, tk, time.Now())
 		return err
 	})
-	return out, err
+	return answer(out, err)
 }
 
 // closeOf is the close policy's state of the ticket tk of the project p at

@@ -252,7 +252,7 @@ func (s *Store) Comments(ctx context.Context, key string, after, limit int) ([]C
 		out, err = commentsOf(ctx, q, tk.ID, after, limit)
 		return err
 	})
-	return out, err
+	return answer(out, err)
 }
 
 // Comment reads the comment with the id of the ticket with the key, with
@@ -274,7 +274,7 @@ func (s *Store) Comment(ctx context.Context, key, id string) (Comment, error) {
 		}
 		return err
 	})
-	return out, err
+	return answer(out, err)
 }
 
 // numberedComments is the numbers of a ticket's comments, each comment's

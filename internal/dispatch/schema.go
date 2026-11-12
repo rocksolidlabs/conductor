@@ -15,8 +15,15 @@ import (
 // (docs/plans/review-repair.md, Program item RV1); version 4 adds a
 // ticket's linked issue in the columns DS1 reserved, the reads of linked
 // GitHub items, the store's instance and the publications' table, and a
-// ticket's closed_on (docs/plans/tracker-linking.md, Program item IN1a).
-const Version = 4
+// ticket's closed_on (docs/plans/tracker-linking.md, Program item IN1a);
+// version 5 adds a person's captures of a preview, their annotations and
+// their sends (docs/plans/browser-evidence.md, Program item PV1).
+const Version = captureSchema
+
+// captureSchema is the version that made the captures' tables: the one
+// place a later version renumbers them (the migration's key, the reads of
+// an older database, the version 4 test).
+const captureSchema = 5
 
 // migrations bring a database from the version keyed to the next, in the
 // transaction that read the version, with the version's bump. A migration
@@ -44,7 +51,13 @@ const Version = 4
 // other row: every version 3 ticket has source native and the other
 // reserved columns empty, since nothing wrote them, so nothing is derived
 // and no migrate row is written.
+//
+// Version 4 to 5 makes the seven tables of captures, their annotations'
+// versions and sets, their sends, the sends' outcomes and cancels and the
+// files they hold, and their five indexes, and reads or rewrites no row: a
+// version 4 database holds no capture.
 var migrations = map[int][]string{
+	captureSchema - 1: append(slices.Clone(captureTables), captureIndexes...),
 	1: append([]string{
 		plansTable,
 		launchesTable,
@@ -308,6 +321,135 @@ const publicationsTable = `CREATE TABLE publications (
 		rev INTEGER NOT NULL DEFAULT 0
 	)`
 
+// captureTables is version 5's tables (captures.go, Program item PV1). A
+// capture's page, origin and image are written once with it; annotations
+// points at its live annotation set ({rev, set}). An annotation's version
+// is content alone, keyed by its SHA-256, and a set is a revision of its
+// own with its members' hashes in their order: both written once, never
+// changed, removed only with the live capture they belong to. A send's
+// input is written once, its outcomes and its cancels appended, its state
+// read from the outcomes (sendState), never kept. capture_files is every
+// content file a live capture (holder capture) or a send (holder its id)
+// holds, which the sweep keeps while the row is there.
+var captureTables = []string{
+	`CREATE TABLE captures (
+		id TEXT PRIMARY KEY,
+		rev INTEGER NOT NULL DEFAULT 0,
+		created_at TEXT NOT NULL,
+		created_by TEXT NOT NULL DEFAULT '',
+		actor TEXT NOT NULL,
+		via TEXT NOT NULL,
+		fingerprint TEXT NOT NULL DEFAULT '',
+		url TEXT NOT NULL,
+		title TEXT NOT NULL DEFAULT '',
+		viewport TEXT NOT NULL,
+		selected_at TEXT NOT NULL,
+		saved_at TEXT NOT NULL,
+		origin TEXT NOT NULL,
+		run_id TEXT NOT NULL DEFAULT '',
+		task_id TEXT NOT NULL DEFAULT '',
+		attempt_n INTEGER NOT NULL DEFAULT 0,
+		tree TEXT NOT NULL DEFAULT '',
+		commit_id TEXT NOT NULL DEFAULT '',
+		changed INTEGER NOT NULL DEFAULT 0,
+		changed_paths TEXT NOT NULL DEFAULT '[]',
+		changed_cut INTEGER NOT NULL DEFAULT 0,
+		content TEXT NOT NULL DEFAULT '',
+		mutable INTEGER NOT NULL DEFAULT 0,
+		candidate TEXT NOT NULL DEFAULT '',
+		where_ran TEXT NOT NULL DEFAULT '',
+		scope TEXT NOT NULL DEFAULT '{}',
+		drift TEXT NOT NULL DEFAULT '',
+		serving TEXT NOT NULL DEFAULT '{}',
+		image_sha256 TEXT NOT NULL DEFAULT '',
+		image_width INTEGER NOT NULL DEFAULT 0,
+		image_height INTEGER NOT NULL DEFAULT 0,
+		image_bytes INTEGER NOT NULL DEFAULT 0,
+		image_how TEXT NOT NULL,
+		image_why TEXT NOT NULL DEFAULT '',
+		image_scale REAL NOT NULL DEFAULT 0,
+		epoch INTEGER NOT NULL DEFAULT 0,
+		retake_of TEXT NOT NULL DEFAULT '',
+		retake_via TEXT NOT NULL DEFAULT '',
+		deleted_at TEXT NOT NULL DEFAULT '',
+		annotations TEXT NOT NULL DEFAULT '{}'
+	)`,
+	`CREATE TABLE capture_annotations (
+		capture_id TEXT NOT NULL REFERENCES captures(id),
+		sha256 TEXT NOT NULL,
+		bytes INTEGER NOT NULL,
+		kind TEXT NOT NULL,
+		note TEXT NOT NULL DEFAULT '',
+		rect TEXT NOT NULL,
+		element TEXT NOT NULL DEFAULT '',
+		observed TEXT NOT NULL DEFAULT '',
+		sources TEXT NOT NULL DEFAULT '[]',
+		PRIMARY KEY (capture_id, sha256)
+	)`,
+	`CREATE TABLE capture_annotation_sets (
+		capture_id TEXT NOT NULL REFERENCES captures(id),
+		id TEXT NOT NULL,
+		rev INTEGER NOT NULL,
+		digest TEXT NOT NULL,
+		members TEXT NOT NULL,
+		at TEXT NOT NULL,
+		actor TEXT NOT NULL,
+		op_id TEXT NOT NULL,
+		PRIMARY KEY (capture_id, id)
+	)`,
+	`CREATE TABLE capture_sends (
+		id TEXT PRIMARY KEY,
+		capture_id TEXT NOT NULL REFERENCES captures(id),
+		rev INTEGER NOT NULL,
+		kind TEXT NOT NULL,
+		asked TEXT NOT NULL DEFAULT '{}',
+		digest TEXT NOT NULL,
+		request TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		created_by TEXT NOT NULL DEFAULT '',
+		actor TEXT NOT NULL,
+		op_id TEXT NOT NULL,
+		fingerprint TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE TABLE capture_send_outcomes (
+		send_id TEXT NOT NULL REFERENCES capture_sends(id),
+		id TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		target TEXT NOT NULL DEFAULT '',
+		files TEXT NOT NULL DEFAULT '[]',
+		why TEXT NOT NULL DEFAULT '',
+		at TEXT NOT NULL,
+		actor TEXT NOT NULL,
+		op_id TEXT NOT NULL,
+		PRIMARY KEY (send_id, id)
+	)`,
+	`CREATE TABLE capture_send_cancels (
+		send_id TEXT NOT NULL REFERENCES capture_sends(id),
+		op_id TEXT NOT NULL,
+		at TEXT NOT NULL,
+		actor TEXT NOT NULL,
+		PRIMARY KEY (send_id, op_id)
+	)`,
+	`CREATE TABLE capture_files (
+		capture_id TEXT NOT NULL REFERENCES captures(id),
+		sha256 TEXT NOT NULL,
+		holder TEXT NOT NULL,
+		PRIMARY KEY (capture_id, sha256, holder)
+	)`,
+}
+
+// captureIndexes is the indexes version 5 adds: an attempt's captures, the
+// captures in their order, a capture's sends in theirs, the outcomes by
+// their target (a ticket's captures), and the files by their hash (the
+// sweep). None is unique beyond the keys.
+var captureIndexes = []string{
+	`CREATE INDEX captures_attempt ON captures (run_id, task_id, attempt_n)`,
+	`CREATE INDEX captures_created ON captures (created_at)`,
+	`CREATE INDEX capture_sends_capture_created ON capture_sends (capture_id, created_at)`,
+	`CREATE INDEX capture_send_outcomes_target ON capture_send_outcomes (kind, target)`,
+	`CREATE INDEX capture_files_sha256 ON capture_files (sha256)`,
+}
+
 // version4Indexes is the indexes version 4 adds: the tickets by their
 // linked item's identity, a ticket's links' reads, a ticket's
 // publications in their order, and the publications by their state. None
@@ -344,13 +486,14 @@ var version2Indexes = []string{
 	`CREATE INDEX launch_files_sha256 ON launch_files (sha256)`,
 }
 
-// schema is version 4, whole: every table of docs/plans/dispatch.md's
+// schema is version 5, whole: every table of docs/plans/dispatch.md's
 // schema table, docs/plans/dispatch-evidence.md's (plans, launches,
 // launch_files, and a link's three columns, last of its table as the
 // migration adds them), docs/plans/review-repair.md's (reviews,
 // review_findings, finding_marks) and docs/plans/tracker-linking.md's
 // (link_reads, ticket_reads, store_instance, publications, and a ticket's
-// closed_on, last of its columns as the migration adds it), the FTS index included, its indexes and two of the
+// closed_on, last of its columns as the migration adds it) and
+// docs/plans/browser-evidence.md's (captureTables), the FTS index included, its indexes and two of the
 // list's own (tickets_list, ticket_labels_label), and the unique
 // indexes of the keys never minted twice and nothing else (projects.key,
 // tickets.key and (project_id, number), people.name, changes (actor,
@@ -603,12 +746,13 @@ var schema = append([]string{
 	ticketReadsTable,
 	storeInstanceTable,
 	publicationsTable,
-}, append(append(slices.Clone(version2Indexes), version3Indexes...), version4Indexes...)...)
+}, append(append(append(append(slices.Clone(version2Indexes), version3Indexes...), version4Indexes...), captureTables...), captureIndexes...)...)
 
 // tables is every table of the schema but the FTS index's own and
 // SQLite's, by name: what a test lists sqlite_master against.
 var tables = []string{
-	"attachments", "changes", "comments", "finding_marks", "labels", "launch_files", "launches", "link_reads", "links", "milestones", "ops",
+	"attachments", "capture_annotation_sets", "capture_annotations", "capture_files", "capture_send_cancels", "capture_send_outcomes", "capture_sends",
+	"captures", "changes", "comments", "finding_marks", "labels", "launch_files", "launches", "link_reads", "links", "milestones", "ops",
 	"people", "plans", "projects", "publications", "relations", "review_findings", "reviews", "schema_version", "store_instance",
 	"ticket_assignees", "ticket_labels", "ticket_reads", "tickets", "tickets_fts", "uploads", "views",
 }

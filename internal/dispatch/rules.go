@@ -198,6 +198,47 @@ func Class(entity, field string) FieldClass {
 			"fingerprint":
 			return ClassImmutable
 		}
+	case EntityCapture, "captures":
+		// A capture (docs/plans/browser-evidence.md, "rules.go"): its page,
+		// origin and image written once; its annotations one pointer to a
+		// set, the last writer's set whole (the scalar rule), never a mix of
+		// two edits; its versions and sets rows of their own, appended and
+		// never changed, so two replicas' sets are both kept; the files it
+		// holds a set its delete removes; its delete a tombstone.
+		switch field {
+		case "id", "created_at", "created_by", "actor", "via", "fingerprint", "url", "title", "viewport", "selected_at", "saved_at",
+			"origin", "run_id", "task_id", "attempt_n", "tree", "commit_id", "changed", "changed_paths", "changed_cut", "content", "mutable",
+			"candidate", "where_ran", "scope", "drift", "serving", "image_sha256", "image_width", "image_height", "image_bytes", "image_how",
+			"image_why", "image_scale", "epoch", "retake_of", "retake_via":
+			return ClassImmutable
+		case "annotations", "deleted_at":
+			return ClassScalar
+		case "versions", "sets":
+			return ClassLog
+		case "files":
+			return ClassSet
+		}
+	case "capture_annotation", "capture_annotations", "capture_annotation_set", "capture_annotation_sets", "capture_file", "capture_files",
+		"capture_send_outcome", "capture_send_outcomes", "capture_send_cancel", "capture_send_cancels":
+		// An annotation's version and set, a file held, a send's outcome and
+		// cancel: rows written once, never changed.
+		switch field {
+		case "capture_id", "sha256", "bytes", "kind", "note", "rect", "element", "observed", "sources", "id", "rev", "digest", "members",
+			"at", "actor", "op_id", "holder", "send_id", "target", "files", "why":
+			return ClassImmutable
+		}
+	case "capture_send", "capture_sends":
+		// A send (its operations come with Program item PV1's PR-1b): its
+		// input written once; its outcomes and its cancels a log, every one
+		// kept, its state read from them; the files it holds a set.
+		switch field {
+		case "id", "capture_id", "rev", "kind", "asked", "digest", "request", "created_at", "created_by", "actor", "op_id", "fingerprint":
+			return ClassImmutable
+		case "outcomes", "cancels":
+			return ClassLog
+		case "files":
+			return ClassSet
+		}
 	case "link_read", "link_reads", "ticket_read", "ticket_reads", "store_instance":
 		// The reads of GitHub and the store's instance (schema version 4):
 		// each replica's own, every column.

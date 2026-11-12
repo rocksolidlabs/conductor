@@ -445,6 +445,69 @@ const (
 	MaxMergedReadAge = 5 * time.Minute
 )
 
+// The bounds of a capture (captures.go, Program item PV1,
+// docs/plans/browser-evidence.md "Bounds"), in bytes unless they say
+// characters, each enforced by the store on every write.
+const (
+	MaxCaptureAnnotations = 20
+	MaxAnnotationNote     = 4000 // characters
+	MaxCaptureURL         = 2 << 10
+	MaxCaptureTitle       = 200 // characters
+	MaxElementText        = 1 << 10
+	MaxSelector           = 1 << 10
+	// MaxElementName bounds each of an element's tag, accessible name, id,
+	// role and classes (joined by spaces).
+	MaxElementName       = 1 << 10
+	MaxElementAttributes = 32
+	MaxAttributeName     = 64
+	MaxAttributeValue    = 512
+	MaxElementHTML       = 12 << 10
+	MaxNeighbourhood     = 24 << 10
+	MaxAncestors         = 12
+	MaxAncestor          = 512 // each, as encoded
+	MaxStyles            = 64
+	MaxStyleValue        = 256
+	MaxHints             = 8
+	MaxHintFile          = 1 << 10
+	MaxHintComponent     = 256
+	// MaxElementWord bounds the report's short words the plan names no
+	// bound for: a state's words, a style's property, a hint's how, a cut's
+	// step.
+	MaxElementWord = 64
+	// MaxChangedPaths and MaxChangedPathsBytes cut a tree's changed paths,
+	// at whichever comes first, as encoded; the count stays whole.
+	MaxChangedPaths      = 200
+	MaxChangedPathsBytes = 16 << 10
+	// MaxChangedCount bounds a tree's changed paths as counted, the
+	// selection's read's and the save's.
+	MaxChangedCount = 1 << 24
+	MaxUserAgent    = 512
+	MaxCaptureScope = 2 << 10 // as encoded
+	// MaxDeclaredRevision bounds what a page declares it serves:
+	// <commit>[+<content>] in hex.
+	MaxDeclaredRevision = 128
+	MaxElementReport    = 32 << 10 // as encoded (measure)
+	MaxCaptureDocument  = 2 << 20  // as encoded
+	MaxCaptureImage     = 4 << 20
+	MaxCaptureImageSide = 4096 // pixels
+	MaxImageWhy         = 500  // characters
+	MaxCaptureSends     = 50   // a capture's
+	MaxCaptures         = 5000 // live in the store
+	MaxAnnotationSets   = 50   // a capture's
+	MaxSendRequest      = 8 << 10
+	MaxSendTarget       = 100
+	MaxSendWhy          = 2000 // characters
+	MaxSendCancels      = 10   // a send's
+	// MaxRectCoord bounds a box's or a rectangle's numbers either way, in
+	// pixels.
+	MaxRectCoord = 1 << 20
+	// MaxScroll bounds a frame's scroll either way, in pixels: what a
+	// browser scrolls to (Chromium's largest layout, 2^25).
+	MaxScroll = 1 << 25
+	// MaxCapturePage bounds a page of captures or of sends a read gives.
+	MaxCapturePage = 100
+)
+
 // The bounds of the reads (query.go, and the composite reads of a
 // ticket and of the projects).
 const (
@@ -1087,6 +1150,25 @@ var fieldRules = map[string]textRule{
 	"finding.quote":           {max: MaxCheckExcerpt, kind: kindMarkdown},
 	"mark.note":               {max: MaxMarkNote, chars: true, kind: kindMarkdown},
 	"mark.located":            {max: MaxMarkLocated, kind: kindJSON},
+	"capture.url":             {max: MaxCaptureURL, required: true, kind: kindURL},
+	"capture.title":           {max: MaxCaptureTitle, chars: true, kind: kindName},
+	"capture.user_agent":      {max: MaxUserAgent, kind: kindText},
+	"capture.image_why":       {max: MaxImageWhy, chars: true, kind: kindName},
+	"capture.changed_path":    {max: MaxChangedPathsBytes, required: true, kind: kindText},
+	"annotation.note":         {max: MaxAnnotationNote, chars: true, kind: kindMarkdown},
+	"element.name":            {max: MaxElementName, kind: kindMarkdown},
+	"element.text":            {max: MaxElementText, kind: kindMarkdown},
+	"element.selector":        {max: MaxSelector, kind: kindText},
+	"element.attribute_name":  {max: MaxAttributeName, required: true, kind: kindText},
+	"element.attribute_value": {max: MaxAttributeValue, kind: kindMarkdown},
+	"element.html":            {max: MaxElementHTML, kind: kindMarkdown},
+	"element.neighbourhood":   {max: MaxNeighbourhood, kind: kindMarkdown},
+	"element.style_value":     {max: MaxStyleValue, kind: kindText},
+	"element.word":            {max: MaxElementWord, kind: kindText},
+	"element.hint_file":       {max: MaxHintFile, kind: kindText},
+	"element.hint_component":  {max: MaxHintComponent, kind: kindText},
+	"send.target":             {max: MaxSendTarget, required: true, kind: kindText},
+	"send.why":                {max: MaxSendWhy, chars: true, required: true, kind: kindMarkdown},
 	"op.by":                   {max: MaxByName, chars: true, kind: kindName},
 	"op.actor":                {max: MaxActor, required: true, kind: kindName},
 }

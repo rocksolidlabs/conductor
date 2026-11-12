@@ -1380,7 +1380,7 @@ func TestMigrationTwoToThreeKeepsEveryRow(t *testing.T) {
 	cols := map[string][]string{}
 	for _, table := range tables {
 		if slices.Contains([]string{"reviews", "review_findings", "finding_marks", "link_reads", "ticket_reads", "store_instance", "publications",
-			"tickets_fts", "schema_version"}, table) {
+			"tickets_fts", "schema_version"}, table) || slices.Contains(version5Tables, table) {
 			continue
 		}
 		cols[table] = columnsOf(t, raw, table)

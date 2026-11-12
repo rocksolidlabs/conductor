@@ -267,7 +267,7 @@ func (s *Store) Relations(ctx context.Context, key string) ([]TicketRelation, er
 		out, err = relationsOf(ctx, q, tk.ID)
 		return err
 	})
-	return out, err
+	return answer(out, err)
 }
 
 // relationsOf reads the live relations of the ticket with the id, both
@@ -357,7 +357,7 @@ func (s *Store) Blocked(ctx context.Context, key string) (bool, error) {
 		out, err = blockedOf(ctx, q, tk.ID)
 		return err
 	})
-	return out, err
+	return answer(out, err)
 }
 
 // blockedOf reports whether the ticket with the id is blocked (Blocked).

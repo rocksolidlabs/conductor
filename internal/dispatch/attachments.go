@@ -64,12 +64,14 @@ func contentPath(root, sum string) string { return filepath.Join(root, sum[:2], 
 
 // received is an upload's content as receive wrote it: its temp file (""
 // once it is removed), its hash and its size; the lease that holds the
-// hash once it is taken, and whether publish found the temp file gone.
+// hash once it is taken, whether publish found the temp file gone, and
+// what upload's check refused of it.
 type received struct {
 	tmp, sum string
 	size     int64
 	lease    string
 	gone     bool
+	refused  error
 }
 
 // AddAttachment attaches a file to the live ticket with the key
@@ -127,42 +129,12 @@ func (s *Store) addAttachment(ctx context.Context, op Op, intent, key, name, con
 	if err := op.check(); err != nil {
 		return Receipt{}, Attachment{}, err
 	}
-	s.mu.Lock()
-	closed, readOnly, why := s.closed, s.readOnly || s.db == nil, s.why
-	syncDir, beforePublish, beforeCommit := s.syncDir, s.beforePublish, s.beforeCommit
-	s.mu.Unlock()
-	switch {
-	case closed:
-		return Receipt{}, Attachment{}, ErrClosed
-	case readOnly:
-		return readOnlyReceipt(op, intent, why), Attachment{}, nil
+	if rc, ok, err := s.takes(op, intent); !ok || err != nil {
+		return rc, Attachment{}, err
 	}
-	root, err := s.attachmentDirs(syncDir)
+	u, err := s.upload(ctx, r, MaxAttachmentSize, nil)
 	if err != nil {
 		return Receipt{}, Attachment{}, err
-	}
-	u, err := receive(filepath.Join(root, uploadsDir), r)
-	if err != nil {
-		return Receipt{}, Attachment{}, err
-	}
-	if u.tmp != "" {
-		if u.lease, err = s.lease(ctx, u.sum); err != nil {
-			os.Remove(u.tmp)
-			return Receipt{}, Attachment{}, err
-		}
-		if beforePublish != nil {
-			beforePublish()
-		}
-		switch err := publish(u.tmp, contentPath(root, u.sum), syncDir); {
-		case errors.Is(err, errUploadGone):
-			u.gone = true
-		case err != nil:
-			s.dropLease(ctx, u.lease)
-			return Receipt{}, Attachment{}, err
-		}
-		if beforeCommit != nil {
-			beforeCommit()
-		}
 	}
 	args := argsOf(u.size, u.sum)
 	// ran says the change ran, so its transaction dropped the lease
@@ -171,29 +143,8 @@ func (s *Store) addAttachment(ctx context.Context, op Op, intent, key, name, con
 	var made Attachment
 	rc, err := s.Apply(ctx, op, intent, args, func(t *tx) error {
 		ran = true
-		if u.lease != "" {
-			drop := func() (bool, error) {
-				res, err := t.tx.ExecContext(t.ctx, "DELETE FROM uploads WHERE id = ?", u.lease)
-				if err != nil {
-					return false, err
-				}
-				n, err := res.RowsAffected()
-				return n == 1, err
-			}
-			t.onRefusal = func() error {
-				_, err := drop()
-				return err
-			}
-			held, err := drop()
-			if err != nil {
-				return err
-			}
-			if !held {
-				return refuse(RefusalExpired, "the upload outlived its lease before its row was written: upload the file again")
-			}
-		}
-		if u.gone {
-			return refuse(RefusalExpired, "the upload's file was swept before it was published: upload the file again")
+		if err := t.takeUpload(u); err != nil {
+			return err
 		}
 		tk, _, err := t.ticket(key, false)
 		if err != nil {
@@ -247,27 +198,134 @@ func (s *Store) addAttachment(ctx context.Context, op Op, intent, key, name, con
 	return rc, made, err
 }
 
-// receive writes r's content, at most MaxAttachmentSize and one byte
-// more, to a new temp file in dir (0600) while it hashes it, and syncs
-// it: its name begins with when it was made, which the sweep reads. A
-// content past the bound is hashed as far as it was read and its temp
-// file removed (tmp ""); so is the file when r or the disk fails, which is
-// the error.
-func receive(dir string, r io.Reader) (received, error) {
+// takes is whether the store takes an operation now, before an upload
+// reads anything: ErrClosed once it is closed, a read_only refusal (ok
+// false) when it takes no writes.
+func (s *Store) takes(op Op, intent string) (Receipt, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case s.closed:
+		return Receipt{}, false, ErrClosed
+	case s.readOnly || s.db == nil:
+		return readOnlyReceipt(op, intent, s.why), false, nil
+	}
+	return Receipt{}, true, nil
+}
+
+// upload is the upload path a content file takes before anything names
+// it: r received into a temp file under attachments/tmp, at most limit
+// bytes, hashed and synced (receive); then, when check (given) refuses
+// nothing of the temp file, its hash leased in a transaction of its own,
+// the file published under it and its name made durable. Content past
+// limit, or that check refuses (received.refused), is removed and nothing
+// is leased or published. The operation that names it takes the lease
+// (takeUpload); one that never ran drops it (dropLease). A publication
+// that fails drops the lease, removes the temp file and gives the error
+// with the content's hash alone, since the file may be in place (a
+// directory's sync failed after the rename): the caller's to collect or
+// to leave to the sweep.
+func (s *Store) upload(ctx context.Context, r io.Reader, limit int64, check func(path string) error) (received, error) {
+	s.mu.Lock()
+	syncDir, beforePublish, beforeCommit := s.syncDir, s.beforePublish, s.beforeCommit
+	s.mu.Unlock()
+	root, err := s.attachmentDirs(syncDir)
+	if err != nil {
+		return received{}, err
+	}
+	u, err := receive(filepath.Join(root, uploadsDir), r, limit)
+	if err != nil {
+		return received{}, err
+	}
+	if u.tmp == "" {
+		return u, nil
+	}
+	// The temp file goes on every way out that does not publish it.
+	tmp, published := u.tmp, false
+	defer func() {
+		if !published {
+			os.Remove(tmp)
+		}
+	}()
+	if check != nil {
+		if u.refused = check(u.tmp); u.refused != nil {
+			u.tmp = ""
+			return u, nil
+		}
+	}
+	if u.lease, err = s.lease(ctx, u.sum); err != nil {
+		return received{}, err
+	}
+	if beforePublish != nil {
+		beforePublish()
+	}
+	switch err := publish(u.tmp, contentPath(root, u.sum), syncDir); {
+	case errors.Is(err, errUploadGone):
+		u.gone = true
+	case err != nil:
+		s.dropLease(ctx, u.lease)
+		return received{sum: u.sum}, err
+	}
+	published = true
+	if beforeCommit != nil {
+		beforeCommit()
+	}
+	return u, nil
+}
+
+// takeUpload is the operation's half of the upload path, first in its
+// transaction: the upload's lease deleted (a refusal deletes it too:
+// onRefusal), expired when it is gone (the sweep took it, older than its
+// grace) or when publish found no temp file, and the check's refusal. A
+// content past its bound is the caller's to refuse.
+func (t *tx) takeUpload(u received) error {
+	if u.lease != "" {
+		drop := func() (bool, error) {
+			res, err := t.tx.ExecContext(t.ctx, "DELETE FROM uploads WHERE id = ?", u.lease)
+			if err != nil {
+				return false, err
+			}
+			n, err := res.RowsAffected()
+			return n == 1, err
+		}
+		t.onRefusal = func() error {
+			_, err := drop()
+			return err
+		}
+		held, err := drop()
+		if err != nil {
+			return err
+		}
+		if !held {
+			return refuse(RefusalExpired, "the upload outlived its lease before its row was written: upload the file again")
+		}
+	}
+	if u.gone {
+		return refuse(RefusalExpired, "the upload's file was swept before it was published: upload the file again")
+	}
+	return u.refused
+}
+
+// receive writes r's content, at most limit bytes and one byte more, to a
+// new temp file in dir (0600) while it hashes it, and syncs it: its name
+// begins with when it was made, which the sweep reads. A content past the
+// bound is hashed as far as it was read and its temp file removed (tmp
+// ""); so is the file when r or the disk fails, which is the error.
+func receive(dir string, r io.Reader, limit int64) (received, error) {
 	f, err := os.CreateTemp(dir, strconv.FormatInt(time.Now().UnixNano(), 10)+"-*")
 	if err != nil {
 		return received{}, err
 	}
 	h := sha256.New()
-	n, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(r, MaxAttachmentSize+1))
-	if err == nil && n <= MaxAttachmentSize {
+	n, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(r, limit+1))
+	if err == nil && n <= limit {
 		err = f.Sync()
 	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
 	u := received{tmp: f.Name(), sum: hex.EncodeToString(h.Sum(nil)), size: n}
-	if err != nil || n > MaxAttachmentSize {
+	if err != nil || n > limit {
 		os.Remove(u.tmp)
 		u.tmp = ""
 	}
@@ -452,7 +510,7 @@ func (s *Store) Attachment(ctx context.Context, id string) (Attachment, error) {
 		}
 		return err
 	})
-	return a, err
+	return answer(a, err)
 }
 
 // OpenAttachment opens the content of the live attachment with the id, of
