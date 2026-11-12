@@ -175,7 +175,8 @@ func Body(body any) []byte {
 }
 
 // Hold makes the requests of method host path wait at a gate until the
-// test opens it (or the server stops).
+// test opens it (or the server stops). A held request whose client leaves
+// is answered nothing: its connection is closed.
 func (s *Server) Hold(method, host, path string) *Gate {
 	g := &Gate{reached: make(chan struct{}), open: make(chan struct{})}
 	s.mu.Lock()
@@ -260,7 +261,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-g.open:
 		case <-r.Context().Done():
-			return
+			// The client left: GitHub answers nothing. A return would
+			// have net/http write its own 200 with no body, which a
+			// TLS client reads when it comes between its close_notify
+			// and its socket's close (#281); the abort closes the
+			// connection with nothing written.
+			panic(http.ErrAbortHandler)
 		}
 	}
 	if h == nil {

@@ -158,11 +158,13 @@ the end of your turn finishes nothing; only a submitted result does.
   your session started: CONDUCTOR_PORT_<NAME> holds each of its ports,
   this tree's alone, CONDUCTOR_PREVIEW_URL its preview when it has one,
   and CONDUCTOR_STATE_DIR (.conductor/state) the directory its tools and
-  services keep their state in, as task.md says. CONDUCTOR_TREE_SECRET is
-  a credential of this tree alone, for a server the tree runs: never print
-  it, and never dump the environment (env, printenv, set) in a step, a
-  check, a verify step or a service: Conductor keeps their output and
-  quotes a failing command's last lines in its failure.
+  services keep their state in, as task.md says. CONDUCTOR_PREVIEW_BRIDGE,
+  when set, is the script a page of the preview loads so a person can
+  select its elements in Conductor. CONDUCTOR_TREE_SECRET is a credential
+  of this tree alone, for a server the tree runs: never print it, and
+  never dump the environment (env, printenv, set) in a step, a check, a
+  verify step or a service: Conductor keeps their output and quotes a
+  failing command's last lines in its failure.
 
 - A work task: commit your work on the branch you are on (the worktree
   must be clean apart from .conductor/), then submit the commit with a

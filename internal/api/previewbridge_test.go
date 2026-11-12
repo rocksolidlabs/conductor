@@ -297,6 +297,19 @@ type servedFile struct {
 	Comment string       `json:"comment"`
 	Origins []string     `json:"origins"`
 	Cases   []servedCase `json:"cases"`
+	// The wrapper's head, tail and end (make web-build compiles the built
+	// bridge inside them), and what the route answers for a listener on the
+	// loopback: its headers and the served text (the dev server's answer is
+	// held to them, web/build/previewBridge.test.ts).
+	Wrapper  [3]string      `json:"wrapper"`
+	Loopback servedLoopback `json:"loopback"`
+}
+
+type servedLoopback struct {
+	Listen  string            `json:"listen"`
+	Script  string            `json:"script"`
+	Headers map[string]string `json:"headers"`
+	Served  string            `json:"served"`
 }
 
 // The route serves the built script's bytes unchanged: the wrapper's head,
@@ -326,7 +339,7 @@ func TestTheBridgeIsServedWhole(t *testing.T) {
 			"var s = \"__CONDUCTOR_WORKBENCH_ORIGINS__\"; /* \"__CONDUCTOR_WORKBENCH_ORIGINS__\" */\nvar r = /\"__CONDUCTOR_WORKBENCH_ORIGINS__\"/;\n" +
 				"report(s, r.source, conductorWorkbenchOrigins); // '__CONDUCTOR_WORKBENCH_ORIGINS__'\n"},
 	}
-	f := servedFile{Comment: "Written by internal/api's TestTheBridgeIsServedWhole (CONDUCTOR_WRITE_FIXTURES=1) and run by web/app/utils/protocol.test.ts: each script as GET /preview-bridge.js serves it, wrapped with origins.",
+	f := servedFile{Comment: "Written by internal/api's TestTheBridgeIsServedWhole (CONDUCTOR_WRITE_FIXTURES=1) and run by web/app/utils/protocol.test.ts: each script as GET /preview-bridge.js serves it, wrapped with origins; the wrapper's three parts, which make web-build compiles the built bridge in; and the route's answer for a listener on the loopback, which web/build/previewBridge.test.ts holds the dev server's to.",
 		Origins: hostile}
 	for _, s := range scripts {
 		served := string(wrapBridge([]byte(s.script), hostile))
@@ -340,6 +353,17 @@ func TestTheBridgeIsServedWhole(t *testing.T) {
 		if code, body, _ := getBridge(t, e); code != http.StatusOK || body != string(wrapBridge([]byte(s.script), []string{"http://127.0.0.1:8080", "http://localhost:8080", "http://[::1]:8080"})) {
 			t.Fatalf("%s: served %d %q", s.name, code, body)
 		}
+	}
+	f.Wrapper = [3]string{bridgeHead, bridgeTail, bridgeEnd}
+	e := bridgeEnv(t, func(c *config.Config) { c.PublicURL = "http://localhost:8080" }, WithPreviewBridge([]byte(fakeBridge)))
+	e.srv.SetListen("127.0.0.1:8080")
+	code, body, h := getBridge(t, e)
+	if code != http.StatusOK {
+		t.Fatalf("the loopback's answer: %d %q", code, body)
+	}
+	f.Loopback = servedLoopback{Listen: "127.0.0.1:8080", Script: fakeBridge, Headers: map[string]string{}, Served: body}
+	for _, k := range []string{"Content-Type", "Cache-Control", "Cross-Origin-Resource-Policy", "X-Content-Type-Options"} {
+		f.Loopback.Headers[k] = h.Get(k)
 	}
 	var want bytes.Buffer
 	enc := json.NewEncoder(&want)

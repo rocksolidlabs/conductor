@@ -195,9 +195,9 @@ type ElementHint struct {
 }
 
 // ElementReport is the bridge's report of one element, every field always
-// there: Attributes and Styles are name and value pairs, HTML its outer
-// HTML with every input's value and password field emptied, cut, and Cut
-// the steps it was cut by to fit MaxElementReport.
+// there: Attributes and Styles are name and value pairs, HTML its markup as
+// the bridge writes it from the page (of a field what it is, never its
+// value), and Cut the steps it was cut by to fit MaxElementReport.
 type ElementReport struct {
 	Tag           string            `json:"tag"`
 	ID            string            `json:"id"`
