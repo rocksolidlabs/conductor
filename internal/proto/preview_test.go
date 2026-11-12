@@ -11,6 +11,7 @@ import (
 	"maps"
 	"math"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -751,11 +752,11 @@ func previewCases() previewFile {
 		{"a motion", sel(element()), []string{"element", "state", "motion"}, []any{0, maxPreviewInt}, []any{-1, 0.5, maxPreviewInt + 1}},
 		{"a hint's line", sel(element()), []string{"element", "hints", "0", "line"}, []any{0, maxPreviewInt}, []any{-1, 0.5, maxPreviewInt + 1}},
 		{"a hint's column", sel(element()), []string{"element", "hints", "0", "column"}, []any{0, maxPreviewInt}, []any{-1, 0.5, maxPreviewInt + 1}},
-		{"a viewport's width", ready, []string{"viewport", "width"}, []any{0, 0.5}, []any{-1, -0.5}},
-		{"a viewport's height", ready, []string{"viewport", "height"}, []any{0, 0.5}, []any{-1, -0.5}},
-		{"a box's width", sel(element()), []string{"element", "box", "width"}, []any{0, 0.5}, []any{-1, -0.5}},
-		{"a box's height", sel(element()), []string{"element", "box", "height"}, []any{0, 0.5}, []any{-1, -0.5}},
-		{"a device pixel ratio", ready, []string{"viewport", "dpr"}, []any{math.SmallestNonzeroFloat64, 0.5}, []any{0, -1}},
+		{"a viewport's width", ready, []string{"viewport", "width"}, []any{0, 0.5, math.MaxFloat64}, []any{-1, -0.5}},
+		{"a viewport's height", ready, []string{"viewport", "height"}, []any{0, 0.5, math.MaxFloat64}, []any{-1, -0.5}},
+		{"a box's width", sel(element()), []string{"element", "box", "width"}, []any{0, 0.5, math.MaxFloat64}, []any{-1, -0.5}},
+		{"a box's height", sel(element()), []string{"element", "box", "height"}, []any{0, 0.5, math.MaxFloat64}, []any{-1, -0.5}},
+		{"a device pixel ratio", ready, []string{"viewport", "dpr"}, []any{math.SmallestNonzeroFloat64, 0.5, math.MaxFloat64}, []any{0, -1}},
 		{"a scroll", ready, []string{"viewport", "scrollX"}, []any{-math.MaxFloat64, math.MaxFloat64}, nil},
 		{"a vertical scroll", ready, []string{"viewport", "scrollY"}, []any{-math.MaxFloat64, math.MaxFloat64}, nil},
 		{"a box's x", sel(element()), []string{"element", "box", "x"}, []any{-math.MaxFloat64, math.MaxFloat64}, nil},
@@ -1215,5 +1216,146 @@ func TestPreviewMeasureCountsANegativeZeroAsZero(t *testing.T) {
 	}
 	if got, want := PreviewMeasure(ElementBox{X: negZero, Y: negZero}), PreviewMeasure(ElementBox{}); got != want {
 		t.Fatalf("a typed value with negative zeros: %d, want %d", got, want)
+	}
+}
+
+// Every member of a message, taken from its Go type, is accepted at its
+// edges in some row of the fixture: each list empty, of one item and at its
+// bound; each string empty but those the schema refuses empty; each number
+// at the least and the greatest of its range. A member the types gain
+// fails here until its edges are in previewCases (the strings' upper
+// bounds are previewBounds', held by TestEveryPreviewBoundIsInTheTable).
+func TestEveryPreviewMemberIsAcceptedAtItsEdges(t *testing.T) {
+	lists := map[string]int{"hints": len(PreviewHintKinds), "element.attributes": MaxElementAttributes, "element.ancestors": MaxAncestors,
+		"element.styles": MaxStyles, "element.hints": MaxHints, "element.cut": len(ElementCuts)}
+	whole, size, place := [2]float64{0, maxPreviewInt}, [2]float64{0, math.MaxFloat64}, [2]float64{-math.MaxFloat64, math.MaxFloat64}
+	numbers := map[string][2]float64{"version": {PreviewVersion, PreviewVersion}, "epoch": whole, "element.state.motion": whole,
+		"element.hints.*.line": whole, "element.hints.*.column": whole, "viewport.width": size, "viewport.height": size,
+		"element.box.width": size, "element.box.height": size, "viewport.dpr": {math.SmallestNonzeroFloat64, math.MaxFloat64},
+		"viewport.scrollX": place, "viewport.scrollY": place, "element.box.x": place, "element.box.y": place}
+	nonEmpty := map[string]bool{"conductor": true, "t": true, "nonce": true, "selector": true, "viewport.colorScheme": true,
+		"element.hints.*.how": true, "hints.*": true, "element.cut.*": true}
+	type seen struct {
+		lens     map[int]bool
+		empty    bool
+		least    float64
+		greatest float64
+		numbers  bool
+	}
+	at := map[string]*seen{}
+	get := func(p string) *seen {
+		if at[p] == nil {
+			at[p] = &seen{lens: map[int]bool{}}
+		}
+		return at[p]
+	}
+	join := func(p, k string) string { return strings.TrimPrefix(p+"."+k, ".") }
+	var walk func(v any, p string)
+	walk = func(v any, p string) {
+		switch x := v.(type) {
+		case obj:
+			for k, e := range x {
+				walk(e, join(p, k))
+			}
+		case []any:
+			get(p).lens[len(x)] = true
+			for _, e := range x {
+				walk(e, join(p, "*"))
+			}
+		case string:
+			get(p).empty = get(p).empty || x == ""
+		case float64:
+			s := get(p)
+			if !s.numbers {
+				s.least, s.greatest, s.numbers = x, x, true
+			}
+			s.least, s.greatest = min(s.least, x), max(s.greatest, x)
+		}
+	}
+	for _, c := range previewCases().Messages {
+		var v any
+		if c.OK && json.Unmarshal(c.Message, &v) == nil {
+			walk(v, "")
+		}
+	}
+	var member func(typ reflect.Type, p string)
+	member = func(typ reflect.Type, p string) {
+		switch typ.Kind() {
+		case reflect.Pointer:
+			member(typ.Elem(), p)
+		case reflect.Struct:
+			for i := range typ.NumField() {
+				name, _, _ := strings.Cut(typ.Field(i).Tag.Get("json"), ",")
+				member(typ.Field(i).Type, join(p, name))
+			}
+		case reflect.Slice:
+			if s, bound := get(p), lists[p]; bound == 0 || !s.lens[0] || !s.lens[1] || !s.lens[bound] {
+				t.Errorf("%s: accepted at the lengths %v, want 0, 1 and its bound %d", p, slices.Sorted(maps.Keys(s.lens)), bound)
+			}
+			member(typ.Elem(), join(p, "*"))
+		case reflect.Array: // a pair, two strings
+			member(typ.Elem(), join(p, "*"))
+		case reflect.String:
+			if !nonEmpty[p] && !get(p).empty {
+				t.Errorf("%s: never accepted empty", p)
+			}
+		case reflect.Float64, reflect.Int, reflect.Int64:
+			if r, ok := numbers[p]; !ok || !get(p).numbers || get(p).least != r[0] || get(p).greatest != r[1] {
+				t.Errorf("%s: accepted from %v to %v, want its range %v", p, get(p).least, get(p).greatest, r)
+			}
+		}
+	}
+	member(reflect.TypeFor[PreviewMessage](), "")
+}
+
+// The bridge's own writing (web/app/utils/previewBridge): the two report
+// fixtures report.test.ts writes (every field at its bound, and the
+// largest-tag shape), each within the element report's schema and its bound
+// by the shared measure and, in a selected, the deepest shape the bridge
+// writes, within the walk's depth; and its answers on a plain page
+// (bridge.test.ts: no hint kind, no title, an element without ancestors),
+// each taken by this parser as the bridge's parser took it. Each is written
+// with HTML escaping off, as the browser's writer writes it.
+func TestTheBridgesOwnMessagesParse(t *testing.T) {
+	read := func(name string, into any) {
+		raw, err := os.ReadFile(filepath.Join("..", "api", "testdata", name))
+		if err == nil {
+			err = json.Unmarshal(raw, into)
+		}
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	for _, name := range []string{"fullest-report.json", "largest-tag-report.json"} {
+		var f struct {
+			Report obj `json:"report"`
+			Bytes  int `json:"bytes"`
+		}
+		read(name, &f)
+		if got := PreviewMeasure(f.Report); got != f.Bytes || got > MaxElementReport {
+			t.Errorf("%s: %d bytes by Go's measure, the bridge's %d, the bound %d", name, got, f.Bytes, MaxElementReport)
+		}
+		if !validElement(f.Report) {
+			t.Errorf("%s is not an element report", name)
+		}
+		if _, err := ParsePreviewMessage(writeText(selectedOf(f.Report)), PreviewToWorkbench, fixtureNonce); err != nil {
+			t.Errorf("%s in a selected: %v", name, err)
+		}
+	}
+	var plain struct {
+		Nonce    string `json:"nonce"`
+		Messages []obj  `json:"messages"`
+	}
+	read("plain-page-messages.json", &plain)
+	var types []string
+	for _, m := range plain.Messages {
+		p, err := ParsePreviewMessage(writeText(m), PreviewToWorkbench, plain.Nonce)
+		if err != nil {
+			t.Errorf("%s: %v", m["t"], err)
+		}
+		types = append(types, p.T)
+	}
+	if !slices.Equal(types, []string{PreviewReady, PreviewDescribed, PreviewSelected}) {
+		t.Fatalf("the plain page's answers: %v", types)
 	}
 }

@@ -1,0 +1,663 @@
+{
+ "comment": "Written by web/app/utils/previewBridge/bridge.test.ts: the bridge's answers on a plain page (no framework, no title, the root element described, a paragraph selected), each with the hello's nonce, for internal/proto's parser.",
+ "nonce": "n0nce-of-the-hello-1234",
+ "messages": [
+  {
+   "t": "ready",
+   "version": 1,
+   "hints": [],
+   "url": "http://127.0.0.1:5173/",
+   "title": "",
+   "viewport": {
+    "width": 1280,
+    "height": 800,
+    "dpr": 2,
+    "scrollX": 0,
+    "scrollY": 0,
+    "colorScheme": "dark",
+    "userAgent": "Mozilla/5.0 (a test)"
+   },
+   "epoch": 0,
+   "revision": "",
+   "conductor": "preview/1",
+   "nonce": "n0nce-of-the-hello-1234"
+  },
+  {
+   "t": "described",
+   "element": {
+    "tag": "html",
+    "id": "",
+    "classes": "",
+    "role": "",
+    "name": "Hello",
+    "text": "Hello",
+    "selector": "html",
+    "box": {
+     "x": 0,
+     "y": 0,
+     "width": 0,
+     "height": 0
+    },
+    "attributes": [],
+    "state": {
+     "disabled": false,
+     "hidden": false,
+     "ariaDisabled": "",
+     "ariaExpanded": "",
+     "pointerEvents": "",
+     "inert": false,
+     "hovered": false,
+     "motion": 0
+    },
+    "hit": {
+     "self": false,
+     "selector": "",
+     "tag": ""
+    },
+    "html": "<html><head></head><body><p>Hello</p></body></html>",
+    "neighbourhood": "",
+    "ancestors": [],
+    "styles": [
+     [
+      "display",
+      ""
+     ],
+     [
+      "visibility",
+      ""
+     ],
+     [
+      "opacity",
+      ""
+     ],
+     [
+      "pointer-events",
+      ""
+     ],
+     [
+      "position",
+      ""
+     ],
+     [
+      "z-index",
+      ""
+     ],
+     [
+      "inset",
+      ""
+     ],
+     [
+      "transform",
+      ""
+     ],
+     [
+      "width",
+      ""
+     ],
+     [
+      "height",
+      ""
+     ],
+     [
+      "overflow",
+      ""
+     ],
+     [
+      "content-visibility",
+      ""
+     ],
+     [
+      "clip-path",
+      ""
+     ],
+     [
+      "filter",
+      ""
+     ],
+     [
+      "cursor",
+      ""
+     ],
+     [
+      "box-sizing",
+      ""
+     ],
+     [
+      "margin",
+      ""
+     ],
+     [
+      "padding",
+      ""
+     ],
+     [
+      "border-width",
+      ""
+     ],
+     [
+      "border-style",
+      ""
+     ],
+     [
+      "border-color",
+      ""
+     ],
+     [
+      "border-radius",
+      ""
+     ],
+     [
+      "min-width",
+      ""
+     ],
+     [
+      "min-height",
+      ""
+     ],
+     [
+      "max-width",
+      ""
+     ],
+     [
+      "max-height",
+      ""
+     ],
+     [
+      "overflow-x",
+      ""
+     ],
+     [
+      "overflow-y",
+      ""
+     ],
+     [
+      "flex-direction",
+      ""
+     ],
+     [
+      "flex-wrap",
+      ""
+     ],
+     [
+      "flex-grow",
+      ""
+     ],
+     [
+      "flex-shrink",
+      ""
+     ],
+     [
+      "flex-basis",
+      ""
+     ],
+     [
+      "justify-content",
+      ""
+     ],
+     [
+      "align-items",
+      ""
+     ],
+     [
+      "align-self",
+      ""
+     ],
+     [
+      "gap",
+      ""
+     ],
+     [
+      "grid-template-columns",
+      ""
+     ],
+     [
+      "grid-template-rows",
+      ""
+     ],
+     [
+      "grid-column",
+      ""
+     ],
+     [
+      "grid-row",
+      ""
+     ],
+     [
+      "order",
+      ""
+     ],
+     [
+      "color",
+      ""
+     ],
+     [
+      "background-color",
+      ""
+     ],
+     [
+      "background-image",
+      ""
+     ],
+     [
+      "font-family",
+      ""
+     ],
+     [
+      "font-size",
+      ""
+     ],
+     [
+      "font-weight",
+      ""
+     ],
+     [
+      "font-style",
+      ""
+     ],
+     [
+      "line-height",
+      ""
+     ],
+     [
+      "letter-spacing",
+      ""
+     ],
+     [
+      "text-align",
+      ""
+     ],
+     [
+      "text-decoration-line",
+      ""
+     ],
+     [
+      "text-transform",
+      ""
+     ],
+     [
+      "white-space",
+      ""
+     ],
+     [
+      "text-overflow",
+      ""
+     ],
+     [
+      "outline",
+      ""
+     ],
+     [
+      "box-shadow",
+      ""
+     ],
+     [
+      "isolation",
+      ""
+     ],
+     [
+      "mix-blend-mode",
+      ""
+     ],
+     [
+      "user-select",
+      ""
+     ],
+     [
+      "touch-action",
+      ""
+     ],
+     [
+      "transition-property",
+      ""
+     ],
+     [
+      "animation-name",
+      ""
+     ]
+    ],
+    "hints": [],
+    "cut": []
+   },
+   "url": "http://127.0.0.1:5173/",
+   "title": "",
+   "viewport": {
+    "width": 1280,
+    "height": 800,
+    "dpr": 2,
+    "scrollX": 0,
+    "scrollY": 0,
+    "colorScheme": "dark",
+    "userAgent": "Mozilla/5.0 (a test)"
+   },
+   "epoch": 0,
+   "revision": "",
+   "conductor": "preview/1",
+   "nonce": "n0nce-of-the-hello-1234"
+  },
+  {
+   "t": "selected",
+   "element": {
+    "tag": "p",
+    "id": "",
+    "classes": "",
+    "role": "",
+    "name": "Hello",
+    "text": "Hello",
+    "selector": "p",
+    "box": {
+     "x": 0,
+     "y": 0,
+     "width": 0,
+     "height": 0
+    },
+    "attributes": [],
+    "state": {
+     "disabled": false,
+     "hidden": false,
+     "ariaDisabled": "",
+     "ariaExpanded": "",
+     "pointerEvents": "",
+     "inert": false,
+     "hovered": false,
+     "motion": 0
+    },
+    "hit": {
+     "self": true,
+     "selector": "p",
+     "tag": "p"
+    },
+    "html": "<p>Hello</p>",
+    "neighbourhood": "<body><p>Hello</p></body>",
+    "ancestors": [
+     {
+      "tag": "body",
+      "id": "",
+      "classes": "",
+      "role": ""
+     },
+     {
+      "tag": "html",
+      "id": "",
+      "classes": "",
+      "role": ""
+     }
+    ],
+    "styles": [
+     [
+      "display",
+      ""
+     ],
+     [
+      "visibility",
+      ""
+     ],
+     [
+      "opacity",
+      ""
+     ],
+     [
+      "pointer-events",
+      ""
+     ],
+     [
+      "position",
+      ""
+     ],
+     [
+      "z-index",
+      ""
+     ],
+     [
+      "inset",
+      ""
+     ],
+     [
+      "transform",
+      ""
+     ],
+     [
+      "width",
+      ""
+     ],
+     [
+      "height",
+      ""
+     ],
+     [
+      "overflow",
+      ""
+     ],
+     [
+      "content-visibility",
+      ""
+     ],
+     [
+      "clip-path",
+      ""
+     ],
+     [
+      "filter",
+      ""
+     ],
+     [
+      "cursor",
+      ""
+     ],
+     [
+      "box-sizing",
+      ""
+     ],
+     [
+      "margin",
+      ""
+     ],
+     [
+      "padding",
+      ""
+     ],
+     [
+      "border-width",
+      ""
+     ],
+     [
+      "border-style",
+      ""
+     ],
+     [
+      "border-color",
+      ""
+     ],
+     [
+      "border-radius",
+      ""
+     ],
+     [
+      "min-width",
+      ""
+     ],
+     [
+      "min-height",
+      ""
+     ],
+     [
+      "max-width",
+      ""
+     ],
+     [
+      "max-height",
+      ""
+     ],
+     [
+      "overflow-x",
+      ""
+     ],
+     [
+      "overflow-y",
+      ""
+     ],
+     [
+      "flex-direction",
+      ""
+     ],
+     [
+      "flex-wrap",
+      ""
+     ],
+     [
+      "flex-grow",
+      ""
+     ],
+     [
+      "flex-shrink",
+      ""
+     ],
+     [
+      "flex-basis",
+      ""
+     ],
+     [
+      "justify-content",
+      ""
+     ],
+     [
+      "align-items",
+      ""
+     ],
+     [
+      "align-self",
+      ""
+     ],
+     [
+      "gap",
+      ""
+     ],
+     [
+      "grid-template-columns",
+      ""
+     ],
+     [
+      "grid-template-rows",
+      ""
+     ],
+     [
+      "grid-column",
+      ""
+     ],
+     [
+      "grid-row",
+      ""
+     ],
+     [
+      "order",
+      ""
+     ],
+     [
+      "color",
+      ""
+     ],
+     [
+      "background-color",
+      ""
+     ],
+     [
+      "background-image",
+      ""
+     ],
+     [
+      "font-family",
+      ""
+     ],
+     [
+      "font-size",
+      ""
+     ],
+     [
+      "font-weight",
+      ""
+     ],
+     [
+      "font-style",
+      ""
+     ],
+     [
+      "line-height",
+      ""
+     ],
+     [
+      "letter-spacing",
+      ""
+     ],
+     [
+      "text-align",
+      ""
+     ],
+     [
+      "text-decoration-line",
+      ""
+     ],
+     [
+      "text-transform",
+      ""
+     ],
+     [
+      "white-space",
+      ""
+     ],
+     [
+      "text-overflow",
+      ""
+     ],
+     [
+      "outline",
+      ""
+     ],
+     [
+      "box-shadow",
+      ""
+     ],
+     [
+      "isolation",
+      ""
+     ],
+     [
+      "mix-blend-mode",
+      ""
+     ],
+     [
+      "user-select",
+      ""
+     ],
+     [
+      "touch-action",
+      ""
+     ],
+     [
+      "transition-property",
+      ""
+     ],
+     [
+      "animation-name",
+      ""
+     ]
+    ],
+    "hints": [],
+    "cut": []
+   },
+   "url": "http://127.0.0.1:5173/",
+   "title": "",
+   "viewport": {
+    "width": 1280,
+    "height": 800,
+    "dpr": 2,
+    "scrollX": 0,
+    "scrollY": 0,
+    "colorScheme": "dark",
+    "userAgent": "Mozilla/5.0 (a test)"
+   },
+   "epoch": 0,
+   "revision": "",
+   "conductor": "preview/1",
+   "nonce": "n0nce-of-the-hello-1234"
+  }
+ ]
+}
