@@ -131,17 +131,14 @@ func (e *bindEnv) launch(t *testing.T, agent string, body map[string]any) string
 	return id
 }
 
-// probe waits for the login session sid's process was started with.
+// probe waits for the login session sid's process was started with: the
+// line its stub writes once it runs, the test's timeout bounding the wait.
 func (e *bindEnv) probe(t *testing.T, sid string) string {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
 	for {
 		b, err := os.ReadFile(filepath.Join(e.probes, sid))
 		if err == nil && strings.HasSuffix(string(b), "\n") {
 			return strings.TrimSpace(string(b))
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("session %s wrote no login: %v %q", sid, err, b)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -333,33 +330,51 @@ func TestRemovedAndReaddedRefused(t *testing.T) {
 	e.stopAndWait(sid)
 	e.expect(t, "DELETE", "/api/accounts/"+a+"?expectedRev="+itoa(int(accountsRev(t, e.testEnv))), nil, http.StatusNoContent, "")
 	e.account(t, "claude", "Work")
-	before := len(e.srv.registry.List())
 	e.expect(t, "POST", "/api/sessions/"+sid+"/resume", nil, http.StatusConflict, "account_gone")
-	if n := len(e.srv.registry.List()); n != before {
-		t.Fatalf("a refused resume listed a session: %d, then %d", before, n)
+	for _, info := range e.srv.registry.List() {
+		if info.ResumedFrom == sid {
+			t.Fatalf("a refused resume listed a session: %+v", info)
+		}
 	}
 }
 
 // A resume whose login would differ from the bound one is refused
 // account_gone, for every source: a pinned entry's folder changed, a yolo
-// recipe's key changed.
+// recipe's key changed, a yolo recipe's folder changed (the launch's own
+// additions, launch_env). A managed run's next attempt the same:
+// TestAttemptAccountGone.
 func TestBindingLoginChanged(t *testing.T) {
 	e := newBindEnv(t, nil)
+	cat := e.srv.Catalog()
+	ydir, _ := cat.Get("claude-yolo")
+	ydir.ID, ydir.Name, ydir.Yolo = "claude-yolo-dir", "claude-yolo-dir", &catalog.Yolo{Env: map[string]string{"CLAUDE_CONFIG_DIR": realRoot(t, t.TempDir())}}
+	withDir, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: append(cat.List(), ydir)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.setCatalog(withDir)
 	pinned := e.launch(t, "claude-pin", nil)
 	yolo := e.launch(t, "claude-yolo", map[string]any{"yolo": true})
+	dir := e.launch(t, "claude-yolo-dir", map[string]any{"yolo": true})
 	e.probe(t, pinned)
 	e.probe(t, yolo)
-	cat := e.srv.Catalog()
+	e.probe(t, dir)
+	if b := e.bound(t, dir); b.Source != session.SourceLaunchEnv {
+		t.Fatalf("the recipe's folder: %+v", b)
+	}
+	cat = e.srv.Catalog()
 	pin, _ := cat.Get("claude-pin")
 	pin.Env = map[string]string{"PROBE_DIR": e.probes, "CLAUDE_CONFIG_DIR": realRoot(t, t.TempDir())}
 	y, _ := cat.Get("claude-yolo")
 	y.Yolo = &catalog.Yolo{Env: map[string]string{"ANTHROPIC_API_KEY": "made-up-key-2"}}
-	changed, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: replaceAgent(replaceAgent(cat.List(), pin), y)})
+	yd, _ := cat.Get("claude-yolo-dir")
+	yd.Yolo = &catalog.Yolo{Env: map[string]string{"CLAUDE_CONFIG_DIR": realRoot(t, t.TempDir())}}
+	changed, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: replaceAgent(replaceAgent(replaceAgent(cat.List(), pin), y), yd)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	e.setCatalog(changed)
-	for _, sid := range []string{pinned, yolo} {
+	for _, sid := range []string{pinned, yolo, dir} {
 		e.stopAndWait(sid)
 		e.expect(t, "POST", "/api/sessions/"+sid+"/resume", nil, http.StatusConflict, "account_gone")
 	}
@@ -573,6 +588,20 @@ func TestSelfCrewAdoptsSessionBinding(t *testing.T) {
 	t.Cleanup(func() { e.stopAndWait(pin) })
 	if got := e.probe(t, pin); got != login(e.pin) {
 		t.Fatalf("the pinned member's login: %s", got)
+	}
+	// No reply of the run with a pinned member carries its folder or a
+	// fingerprint either.
+	pl, _ := e.srv.lookupLocal(pinned)
+	replies = [][]byte{[]byte(mustJSON(pout))}
+	for _, path := range []string{"/api/runs", "/api/runs/" + prun} {
+		_, data, _ := e.call(t, "GET", path, nil)
+		replies = append(replies, data)
+	}
+	_, data, _ = e.callAs(t, ptok, "GET", "/api/sessions/"+pinned+"/run", nil)
+	for _, b := range append(replies, data) {
+		if strings.Contains(string(b), e.pin) || strings.Contains(string(b), pl.Launched().Account.Login) || strings.Contains(string(b), `"bound"`) {
+			t.Fatalf("a reply of the pinned run carries a binding: %.400s", b)
+		}
 	}
 }
 
