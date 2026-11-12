@@ -142,7 +142,7 @@ var _ tracker.Adapter = (*Adapter)(nil)
 func New(o Options) *Adapter {
 	a := &Adapter{o: o, base: o.Transport, log: o.Logger, ua: o.UserAgent}
 	if a.base == nil {
-		a.base = http.DefaultTransport.(*http.Transport).Clone()
+		a.base = tracker.DefaultBase() // each request on a connection of its own, closed after its answer
 	}
 	if a.log == nil {
 		a.log = slog.Default()
@@ -727,13 +727,15 @@ func (a *Adapter) Whoami(ctx context.Context, c tracker.Credential) (tracker.Acc
 		return tracker.Account{}, err
 	}
 	acct := tracker.Account{Login: u.Login, ID: remoteID(u.ID)}
-	if err := acct.Check(); err != nil || u.Login == "" {
-		return tracker.Account{}, &tracker.RequestError{System: tracker.GitHub, Method: r.method, Path: ep.errPath(r), Status: ans.status, Err: tracker.ErrUnsupported, Words: "an account Conductor cannot read"}
-	}
 	for _, s := range strings.Split(ans.header.Get("X-OAuth-Scopes"), ",") {
-		if s = strings.TrimSpace(s); s != "" && len(acct.Scopes) < 50 {
+		if s = strings.TrimSpace(s); s != "" && len(acct.Scopes) <= tracker.MaxScopes {
 			acct.Scopes = append(acct.Scopes, s)
 		}
+	}
+	// An answer outside an account's form, or one that holds the token it
+	// was asked with, is no account: nothing of it is handed on.
+	if err := acct.CheckFor(c); err != nil {
+		return tracker.Account{}, &tracker.RequestError{System: tracker.GitHub, Method: r.method, Path: ep.errPath(r), Status: ans.status, Err: tracker.ErrUnsupported, Words: "an account Conductor cannot read"}
 	}
 	return acct, nil
 }

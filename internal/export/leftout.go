@@ -9,7 +9,7 @@ import (
 // Why an export left a path out (Left.Why), and why a restore refuses an
 // archive that holds it.
 const (
-	WhySecret     = "secret"             // the workbench token, tls/
+	WhySecret     = "secret"             // the workbench token, tls/, credentials/ (a tracker's token)
 	WhyLock       = "lock"               // a lock file: the token's, the ledger's, Brakeman's, the session journal's and capacity's owner locks, restore.lock
 	WhyTemporary  = "temporary"          // a database's -wal, -shm or -journal, *.tmp, .probe-*, .restore-*, Dispatch's attachments/tmp/, the usage readers' capacity/run/
 	WhyProvider   = "provider"           // ext/, a provider's own state
@@ -46,6 +46,7 @@ var leftOut = []leftRule{
 	{file: "history/index.sqlite", why: WhyDerived},
 	{file: "history/index.sqlite.damaged", why: WhyDerived},
 	{dir: "tls", why: WhySecret},
+	{dir: "credentials", why: WhySecret},
 	{dir: "ext", why: WhyProvider},
 	{dir: "dispatch/attachments/tmp", why: WhyTemporary},
 	{name: "*.sqlite-wal", why: WhyTemporary},

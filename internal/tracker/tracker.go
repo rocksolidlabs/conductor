@@ -286,8 +286,77 @@ type Account struct {
 	Scopes []string `json:"scopes,omitempty"`
 }
 
-// Check refuses an account whose id is not a RemoteID.
-func (a Account) Check() error { return CheckRemoteID(a.ID) }
+// The bounds of an account's form (Account.Check). A github.com login is
+// at most 39 bytes; an Enterprise Server's may be longer.
+const (
+	MaxLogin  = 64
+	MaxScope  = 40
+	MaxScopes = 32
+)
+
+// Check refuses an account that is not in the form an account is kept,
+// shown or logged in: its id a RemoteID, its login 1 to MaxLogin bytes of
+// ASCII letters, digits, '-' and '_', and at most MaxScopes scopes, each 1
+// to MaxScope bytes of lower-case letters, digits, '_' and ':'. What a host
+// answers is data: an answer outside this form is no account.
+func (a Account) Check() error {
+	if err := CheckRemoteID(a.ID); err != nil {
+		return err
+	}
+	if !inForm(a.Login, MaxLogin, loginByte) {
+		return fmt.Errorf("tracker: a login is 1 to %d bytes of letters, digits, '-' and '_'", MaxLogin)
+	}
+	if len(a.Scopes) > MaxScopes {
+		return fmt.Errorf("tracker: an account has at most %d scopes", MaxScopes)
+	}
+	for _, s := range a.Scopes {
+		if !inForm(s, MaxScope, scopeByte) {
+			return fmt.Errorf("tracker: a scope is 1 to %d bytes of lower-case letters, digits, '_' and ':'", MaxScope)
+		}
+	}
+	return nil
+}
+
+// CheckFor is Check, and refuses an account any field of which holds the
+// token c was made of, byte for byte. That refusal is a courtesy, not the
+// promise: no comparison recognises a token in every spelling a host
+// could answer it in, so what a token's own host answers of an account is
+// that host's data, held to the account's form (Check) and never logged.
+func (a Account) CheckFor(c Credential) error {
+	if err := a.Check(); err != nil {
+		return err
+	}
+	if c.IsZero() {
+		return nil
+	}
+	secret := c.c.secret()
+	for _, f := range append([]string{a.Login, string(a.ID)}, a.Scopes...) {
+		if strings.Contains(f, secret) {
+			return errors.New("tracker: an account that holds the token it was asked with")
+		}
+	}
+	return nil
+}
+
+func loginByte(c byte) bool {
+	return c == '-' || c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+}
+
+func scopeByte(c byte) bool {
+	return c == '_' || c == ':' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z'
+}
+
+func inForm(s string, max int, ok func(byte) bool) bool {
+	if s == "" || len(s) > max {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if !ok(s[i]) {
+			return false
+		}
+	}
+	return true
+}
 
 // Match is what FindComment looks for: a comment whose body holds Marker
 // and whose normalised body (BodyDigest) has the SHA-256 BodySha256, and,

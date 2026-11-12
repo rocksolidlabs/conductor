@@ -209,3 +209,74 @@ func TestErrorsWrap(t *testing.T) {
 		t.Fatal("a sorted error sorted again")
 	}
 }
+
+// An account is one only in its form: a login of letters, digits, '-' and
+// '_' within MaxLogin, at most MaxScopes scopes of lower-case letters,
+// digits, '_' and ':' within MaxScope; at every bound it passes. CheckFor
+// refuses one any field of which holds the token it was asked with,
+// whatever its form, and its error quotes nothing of it.
+func TestAccountForm(t *testing.T) {
+	scopes := func(n int, s string) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = s
+		}
+		return out
+	}
+	for _, a := range []Account{
+		{Login: "mona-example", ID: "9000001", Scopes: []string{"repo", "read:org", "admin:repo_hook"}},
+		{Login: "Mona_Ex-1", ID: "1"},
+		{Login: strings.Repeat("a", MaxLogin), ID: "1", Scopes: scopes(MaxScopes, strings.Repeat("b", MaxScope))},
+	} {
+		if err := a.Check(); err != nil {
+			t.Errorf("%.40q: %v", a.Login, err)
+		}
+	}
+	for name, a := range map[string]Account{
+		"no login":             {ID: "1"},
+		"a long login":         {Login: strings.Repeat("a", MaxLogin+1), ID: "1"},
+		"a login with a space": {Login: "mona example", ID: "1"},
+		"a login with a quote": {Login: `mona"`, ID: "1"},
+		"a login with a dot":   {Login: "mona.example", ID: "1"},
+		"a non-ASCII login":    {Login: "moná", ID: "1"},
+		"an upper-case scope":  {Login: "mona", ID: "1", Scopes: []string{"Repo"}},
+		"an empty scope":       {Login: "mona", ID: "1", Scopes: []string{""}},
+		"a long scope":         {Login: "mona", ID: "1", Scopes: []string{strings.Repeat("a", MaxScope+1)}},
+		"a scope with a space": {Login: "mona", ID: "1", Scopes: []string{"read org"}},
+		"too many scopes":      {Login: "mona", ID: "1", Scopes: scopes(MaxScopes+1, "repo")},
+		"no id":                {Login: "mona"},
+	} {
+		if a.Check() == nil {
+			t.Errorf("%s: passed", name)
+		}
+	}
+	// Made-up tokens short enough for a login's form, and a lower-case one
+	// for a scope's.
+	const short, lower = "PLANTEDshort1", "planted_short_2"
+	cred := func(tok string) Credential {
+		c, err := Token("github.com", tok, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	if err := (Account{Login: "mona", ID: "1", Scopes: []string{"repo"}}).CheckFor(cred(short)); err != nil {
+		t.Errorf("an account that holds no token: %v", err)
+	}
+	for name, c := range map[string]struct {
+		a   Account
+		tok string
+	}{
+		"the login":        {Account{Login: short, ID: "1"}, short},
+		"inside the login": {Account{Login: "x" + short + "y", ID: "1"}, short},
+		"the id":           {Account{Login: "mona", ID: RemoteID(short)}, short},
+		"a scope":          {Account{Login: "mona", ID: "1", Scopes: []string{"repo", lower}}, lower},
+	} {
+		if err := c.a.Check(); err != nil {
+			t.Fatalf("%s: the account is in its form: %v", name, err)
+		}
+		if err := c.a.CheckFor(cred(c.tok)); err == nil || strings.Contains(err.Error(), c.tok) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}

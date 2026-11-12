@@ -1,6 +1,8 @@
 package tracker
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,8 +14,9 @@ import (
 // Credential is an opaque value the adapter alone opens: a person's token
 // for one host (Token), possibly tagged with the write it is for
 // (ForWrite). Its String, its fmt forms (every verb), its slog value and
-// its JSON are token(<fingerprint>), never a byte of the secret, so no
-// caller can log one by printing what it holds. It is made for one API
+// its JSON are token(set) or token(none), fixed words that carry nothing
+// of the secret, so no caller can log one by printing what it holds. It
+// is made for one API
 // address (Token, APIAddress) and opened one way: Transport, for requests
 // to that address alone.
 type Credential struct{ c *credential }
@@ -44,9 +47,25 @@ func Token(host, secret string, loopback bool) (Credential, error) {
 	if secret == "" {
 		return Credential{c}, nil
 	}
-	sum := sha256.Sum256([]byte(secret))
-	c.secret, c.fingerprint = func() string { return secret }, hex.EncodeToString(sum[:6])
+	c.secret, c.fingerprint = func() string { return secret }, Mark(secret)
 	return Credential{c}, nil
+}
+
+// markKey is made when the process starts and never written anywhere.
+var markKey = func() []byte {
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	return b
+}()
+
+// Mark is what tells one token from another for this process's life: the
+// first 12 hex digits of the token's HMAC-SHA256 under a key the process
+// makes at start and never writes, so it cannot be computed from a token
+// alone, and it changes when the process restarts.
+func Mark(secret string) string {
+	m := hmac.New(sha256.New, markKey)
+	m.Write([]byte(secret))
+	return hex.EncodeToString(m.Sum(nil)[:6])
 }
 
 // APIAddress is the address of a host's API, the one place a token for
@@ -87,9 +106,9 @@ func (c Credential) API() (scheme, host string) {
 	return c.c.scheme, c.c.api
 }
 
-// Fingerprint is the first 12 hex digits of the SHA-256 of the secret:
-// what a person is shown to tell tokens apart, never a character of the
-// token.
+// Fingerprint is the secret's Mark: what a person is shown to tell this
+// server's tokens apart, never a character of the token nor anything that
+// can be computed from it alone.
 func (c Credential) Fingerprint() string {
 	if c.c == nil {
 		return ""
@@ -97,12 +116,12 @@ func (c Credential) Fingerprint() string {
 	return c.c.fingerprint
 }
 
-// String is token(<fingerprint>).
+// String is token(set), or token(none) for the credential of no token.
 func (c Credential) String() string {
 	if c.IsZero() {
 		return "token(none)"
 	}
-	return "token(" + c.c.fingerprint + ")"
+	return "token(set)"
 }
 
 // GoString is the String, for %#v.
@@ -164,18 +183,31 @@ func (c Credential) Write() (Write, bool) {
 // the destination is fixed by the credential at the level of the address:
 // no request for another address carries the token. base itself is the
 // caller's round tripper (the adapter's Options.Transport, a seam for
-// tests, nil for the standard one): it is handed the copy that carries
-// Authorization, and it dials where it dials. An address the system signs
-// is fetched over base, with no credential.
+// tests, nil for DefaultBase): it is handed the copy that carries
+// Authorization, and it dials where it dials; a caller that supplies its
+// own base is responsible for it. An address the system signs is fetched
+// over base, with no credential.
 func (c Credential) Transport(base http.RoundTripper) http.RoundTripper {
 	if base == nil {
-		base = http.DefaultTransport
+		base = defaultBase
 	}
 	if c.IsZero() {
 		return base
 	}
 	return tokenTransport{base: base, c: c.c}
 }
+
+// DefaultBase is the one base a credential's requests go over when its
+// caller names none (Transport(nil), the adapter's Options.Transport
+// nil): the standard transport's settings with keep-alives off, so each
+// request is made on a connection of its own, closed after its answer.
+func DefaultBase() http.RoundTripper { return defaultBase }
+
+var defaultBase = func() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.DisableKeepAlives = true
+	return t
+}()
 
 // tokenTransport holds the credential, whose secret no print reaches.
 type tokenTransport struct {

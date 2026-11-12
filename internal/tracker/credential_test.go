@@ -2,6 +2,8 @@ package tracker
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,13 +52,20 @@ func TestCredentialNeverPrinted(t *testing.T) {
 			slog.New(h(&buf)).Info("x", "cred", c, "held", holder{C: c}, "ptr", &c)
 			out = append(out, buf.String())
 		}
+		// Nothing printed carries the secret, nor anything computed from
+		// the secret alone (its SHA-256's first digits).
+		sum := sha256.Sum256([]byte(secret))
+		unkeyed := hex.EncodeToString(sum[:6])
 		for _, s := range out {
-			if strings.Contains(s, secret) || strings.Contains(s, "FixtureSecret") {
-				t.Fatalf("the secret printed: %s", s)
+			if strings.Contains(s, secret) || strings.Contains(s, "FixtureSecret") || strings.Contains(s, unkeyed) {
+				t.Fatalf("printed: %s", s)
 			}
 		}
-		if !strings.Contains(c.String(), c.Fingerprint()) || strings.Contains(secret, c.Fingerprint()) {
+		if c.String() != "token(set)" || c.Fingerprint() != Mark(secret) || len(c.Fingerprint()) != 12 || c.Fingerprint() == unkeyed || strings.Contains(secret, c.Fingerprint()) {
 			t.Fatalf("String %q, fingerprint %q", c.String(), c.Fingerprint())
+		}
+		if Mark(secret+"x") == Mark(secret) {
+			t.Fatal("two tokens, one mark")
 		}
 	}
 	if (Credential{}).String() != "token(none)" || !(Credential{}).IsZero() {

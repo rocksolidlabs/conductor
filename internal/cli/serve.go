@@ -80,6 +80,16 @@ var terminalOf = func(w io.Writer) io.Writer {
 	return nil
 }
 
+// serveConfig is the configuration serve runs with, and once it is read
+// CONDUCTOR_GITHUB_TOKEN is gone from the server's own environment: a
+// process the server starts with no environment built for it inherits the
+// server's (pty.BuildEnv drops CONDUCTOR_* from the ones it builds).
+func serveConfig(path string) (*config.Config, error) {
+	cfg, err := config.Load(path)
+	_ = os.Unsetenv("CONDUCTOR_GITHUB_TOKEN")
+	return cfg, err
+}
+
 func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -104,7 +114,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	}
 	log := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
 
-	cfg, err := config.Load(*configPath)
+	cfg, err := serveConfig(*configPath)
 	if err != nil {
 		return 1, err
 	}
