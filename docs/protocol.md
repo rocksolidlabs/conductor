@@ -4583,16 +4583,54 @@ offered: `{url, tree: "worktree", commit, content, changed,
 changedPaths, changedCut, mutable: true, state: "ready", where, readAt,
 unread?}`; `404 no_preview` when it is not open. `url` is the preview
 with the tree's secret put in for `${CONDUCTOR_TREE_SECRET}`: the one
-place its value leaves the server. The revision is read now, through the
-tree's directory opened once, in an index of the server's own for that
-tree (made HEAD's entries again at every read, so a read is the tree at
-that read alone), within 5 s: `commit` HEAD's, `content` the tree id of
-everything the tree holds that git would see (uncommitted edits and new
-files that are not ignored), `changed` every path that differs from HEAD
-counted, `changedPaths` the first of them within 200 and 16 KiB as
-encoded (a path with a control character left out, still counted),
-`changedCut` when some are left out. A read that fails or passes 5 s
-answers `content` `""` and `unread` in words.
+place its value leaves the server: every other field is scrubbed of the
+secret of every tree the engine holds one for (in any case, made
+`${CONDUCTOR_TREE_SECRET}`), a changed path that holds one among them.
+The revision is read now, within 5 s for the wait and the read together,
+in an index of the server's own for that tree (made HEAD's entries again
+at every read, so a read is the tree at that read alone): `commit`
+HEAD's, `content` the tree id of everything the tree holds that git
+would see (uncommitted edits and new files that are not ignored),
+`changed` every path that differs from HEAD counted, `changedPaths` the
+first of them within 200 and 16 KiB as encoded (a path with a control
+character left out, still counted), `changedCut` when some are left
+out. A read that fails or passes 5 s answers `content` `""` and `unread`
+in words, and the server logs it by its kind alone (late, not a
+repository, refused, git failed), never with git's message.
+
+Where a read runs. From the run's working directory the tree is reached
+one name at a time, each looked at without following it, a directory,
+opened through the one before it and the directory that was looked at;
+its git directory is the one its `.git` file names (at most 4 KiB), taken
+only when it is a folder directly under `worktrees` of the run's
+repository's common git directory whose `gitdir` file names this tree's
+`.git` back (the same file). No `.git` file, a `.git` directory, any
+other git directory, or a name that is a link: the tree is not read and
+no git command runs in it. Every command (`rev-parse HEAD`, `read-tree
+--reset`, `add -A`, `write-tree`, `diff --cached --name-only -z`) names
+`--git-dir` and `--work-tree` outright, the work tree the opened
+directory, with `GIT_NO_REPLACE_OBJECTS=1`, literal pathspecs, the stat
+data trusted in full, no sparse checkout, `core.symlinks` from a link
+made and removed in the run's worktrees folder, and `core.fileMode` true
+where a file made once per index in the tree keeps the executable bit. A
+source's class, for the captures (a later row), is read the same way at
+the commit the read recorded: `ls-tree` of that commit for exactly the
+paths given, and `check-ignore` with them on its input (it takes no
+literal pathspec, so a path that begins with `:` is not given to it),
+each answer read within an entry
+and its bytes for each path, past which the class is not known.
+
+The kept indexes. One read of a tree runs at a time, so a lock of its
+index found as a read starts is one a cut read left: the index and its
+lock are dropped and the read starts from none. At most eight indexes are
+kept: an index a read holds or waits for is never let go, the least
+recently read of the others is to make room, and with all eight held a
+read of a ninth tree waits within its 5 s and then answers unread. Once
+the server's stop has begun, a read makes no folder and no index.
+
+Where this differs from the plan: the label is the admin's alone until
+the row of the shared read; the classes are read by two commands over
+the exact paths; the index is made HEAD's again with `read-tree --reset`.
 
 #### GitHub tokens
 
